@@ -403,7 +403,9 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
             if let Some(w) = &who {
                 req.extensions_mut().insert(w.clone());
             }
-            keys::noting_change(next.run(req)).await
+            // Who the request's queries are from ([`telemetry::Caller`]).
+            let caller = telemetry::Caller::of(&who.clone().unwrap_or_else(Principal::open), keys::caller().as_ref());
+            telemetry::calling(Arc::new(caller), keys::noting_change(next.run(req))).await
         }
     };
     let status = res.status().as_u16();

@@ -1839,7 +1839,8 @@ impl Service {
         if req.plan.is_none() {
             if let Some(call) = Call::of_sql(&req.sql)? {
                 let res = self.json_paths(&call, &req.params, &req.after, req.timeout_ms).await.map(|p| (p.to_result(), Vec::new()));
-                return self.done(&req.sql, "paths", t0, None, req.shard, (false, req.quiet), res);
+                let meta = self.meta(&req);
+                return self.done(&req.sql, "paths", t0, None, req.shard, (false, req.quiet), &meta, res);
             }
         }
         let timeout = self.timeout_of(req.timeout_ms);
@@ -1883,9 +1884,10 @@ impl Service {
             Ok((schema, select)) => self.select(req, schema, select, t0, timeout).await,
             Err(e) => {
                 let secs = t0.elapsed().as_secs_f64();
-                self.metrics.query("invalid", "error", secs);
+                let outcome = telemetry::outcome_of(e.status, false);
+                self.metrics.query("invalid", outcome, secs);
                 // Kept with its error, as a query that ran and failed is.
-                self.query_log.add(&req.sql, "invalid", "error", secs, 0, req.shard, Some(&e.message), false, None, false);
+                self.query_log.add(&req.sql, "invalid", outcome, secs, 0, req.shard, Some(&e.message), false, None, false, &self.meta(&req));
                 Err(e)
             }
         }
@@ -1988,7 +1990,8 @@ impl Service {
         let mut lease = 0;
         req.profile |= self.profiling.cpu_all.load(Ordering::Relaxed);
         let profiled = req.profile;
-        let live = self.live.start(&req.sql, kind, req.shard);
+        let meta = self.meta(&req);
+        let live = self.live.start(&req.sql, kind, req.shard, &meta);
         // A shard's answer to a coordinator's leaf, as Arrow columns.
         let mut arrow = Vec::new();
         let res = match &self.backend {
@@ -2093,7 +2096,7 @@ impl Service {
             }
         }
         // A shard's answer to a coordinator is not a client's.
-        let a = self.done(&req.sql, kind, t0, self.max_rows.filter(|_| !req.shard), req.shard, (profiled, req.quiet), res);
+        let a = self.done(&req.sql, kind, t0, self.max_rows.filter(|_| !req.shard), req.shard, (profiled, req.quiet), &meta, res);
         // A lease made for a query that failed holds nothing to fetch.
         let made = (lease != req.snapshot).then_some(lease).filter(|_| a.is_err());
         if let Some(l) = (req.release && req.snapshot != 0).then_some(req.snapshot).or(made) {
@@ -2102,11 +2105,24 @@ impl Service {
         a.map(|a| Answer { lease, arrow, ..a })
     }
 
+    /// What the query log keeps of a query besides its text: who sent it
+    /// ([`telemetry::caller`]), its parameters, its deadline, and whether
+    /// that is the client's own.
+    pub fn meta(&self, req: &QueryReq) -> telemetry::Meta {
+        let deadline = self.timeout_of(req.timeout_ms);
+        telemetry::Meta {
+            caller: telemetry::caller(),
+            params: telemetry::params_json(&req.params),
+            deadline_ms: deadline.as_millis() as u64,
+            client_deadline: !req.shard && req.timeout_ms > 0 && deadline < self.timeout,
+        }
+    }
+
     /// Counts a query's outcome, logs it if it was slow, and makes its
     /// answer. One with more rows than `window` (a compound query's, or a
     /// coordinator's without a LIMIT) fails.
     #[allow(clippy::too_many_arguments)]
-    fn done(&self, sql: &str, kind: &'static str, t0: Instant, window: Option<usize>, shard: bool, (profiled, quiet): (bool, bool), res: Result<(ResultSet, Vec<String>), ApiError>) -> Result<Answer, ApiError> {
+    fn done(&self, sql: &str, kind: &'static str, t0: Instant, window: Option<usize>, shard: bool, (profiled, quiet): (bool, bool), meta: &telemetry::Meta, res: Result<(ResultSet, Vec<String>), ApiError>) -> Result<Answer, ApiError> {
         let mut res = match (res, window) {
             (Ok((rs, _)), Some(m)) if rs.rows.len() > m => Err(ApiError::bad(format!("query error: the query matches more than {m} rows, the most a query returns; add a LIMIT"))),
             (r, _) => r,
@@ -2118,14 +2134,12 @@ impl Service {
             steps::rebase(&mut rs.stats.steps, steps::us_at(start));
         }
         let secs = t0.elapsed().as_secs_f64();
+        // Out of query memory (429), or a shard was; a client's own
+        // deadline that passed is not the server's failure.
         let outcome = match &res {
             Ok((_, missing)) if !missing.is_empty() => "partial",
             Ok(_) => "ok",
-            Err(e) if e.status == 504 => "timeout",
-            // Out of query memory, or a shard was.
-            Err(e) if e.status == 429 => "rejected",
-            Err(e) if e.status == 499 => "cancelled",
-            Err(_) => "error",
+            Err(e) => telemetry::outcome_of(e.status, meta.client_deadline),
         };
         self.metrics.query(kind, outcome, secs);
         let rows = res.as_ref().map_or(0, |(rs, _)| rs.rows.len());
@@ -2135,7 +2149,7 @@ impl Service {
             tracing::warn!(kind, outcome, secs, rows, sql = %obs::truncate(sql, 2000), "slow query");
         }
         if !quiet {
-            self.query_log.add(sql, kind, outcome, secs, rows, shard, res.as_ref().err().map(|e| e.message.as_str()), slow, res.as_ref().ok().map(|(rs, _)| &rs.stats), profiled);
+            self.query_log.add(sql, kind, outcome, secs, rows, shard, res.as_ref().err().map(|e| e.message.as_str()), slow, res.as_ref().ok().map(|(rs, _)| &rs.stats), profiled, meta);
         }
         res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0, arrow: Vec::new() })
     }
@@ -2150,14 +2164,15 @@ impl Service {
         let catalog = self.catalog();
         let deadline = t0 + timeout;
         let req_sql = req.sql.clone();
-        let live = self.live.start(&req.sql, kind, req.shard);
+        let meta = self.meta(&req);
+        let live = self.live.start(&req.sql, kind, req.shard, &meta);
         let r = LiveQueries::run(&live, self.compound_run(req, plan, catalog, t0, timeout)).await;
         drop(live);
         let res = match r {
             Err(_) if Instant::now() > deadline => Err(ApiError { status: 504, message: format!("the query ran past its {} ms deadline", timeout.as_millis()) }),
             r => r,
         };
-        self.done(&req_sql, kind, t0, self.max_rows, false, (profiled, quiet), res)
+        self.done(&req_sql, kind, t0, self.max_rows, false, (profiled, quiet), &meta, res)
     }
 
     /// The work of [`Self::compound`]; [`Self::done`] counts it.
@@ -2260,7 +2275,7 @@ impl Service {
 
     /// Counts a query refused for want of a slot, and says so (429).
     fn rejected(&self, kind: &'static str, t0: Instant) -> ApiError {
-        self.metrics.query(kind, "rejected", t0.elapsed().as_secs_f64());
+        self.metrics.query(kind, "refused", t0.elapsed().as_secs_f64());
         too_many()
     }
 
@@ -3132,6 +3147,7 @@ impl Service {
     pub fn sample(&self) -> Sample {
         let mut s = Sample { at: Some(Instant::now()), ts_ms: telemetry::now_ms(), ..Default::default() };
         self.metrics.totals(&mut s);
+        s.query_max_s = self.metrics.take_query_max();
         let (rss, cpu) = telemetry::process_usage();
         s.cpu_s = cpu;
         let heap = crate::heap::stats();

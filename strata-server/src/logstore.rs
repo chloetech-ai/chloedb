@@ -14,9 +14,13 @@
 //! - `queries`, a row per query answered: its time, `node`, `request_id`,
 //!   `kind`, `outcome`, whether it was a shard's part of a coordinator's
 //!   query (`shard`), its `sql`, `fingerprint` (its statement's shape,
-//!   [`crate::telemetry::fingerprint`]), `ms`, `n_rows`, `error`, and the
-//!   rest of what the query log keeps of it, its trace among them, as a
-//!   JSON object (`detail`).
+//!   [`crate::telemetry::fingerprint`]), `ms`, `n_rows`, `error`, who sent
+//!   it (`key_name`, `key_id`, `addr`, `app`, and `client`:
+//!   `command-center` for the UI's own), its `params` (JSON, capped; only
+//!   their types with `--redact-params`), its `deadline_ms`, and the rest
+//!   of what the query log keeps of it, its trace among them, as a JSON
+//!   object (`detail`). A store an older server made gets the columns it
+//!   lacks.
 //! - `load`, a row a minute: how busy the server was over that minute
 //!   ([`Load`]): its `role` (`coordinator`, `primary`, `replica` or
 //!   `standalone`) and `shard`, `qps`, `cpu` (cores busy), `cores`, `busy`
@@ -98,7 +102,8 @@ const TABLES: [&str; 3] = [LOGS, QUERIES, LOAD];
 const LOGS_SQL: &str = "CREATE TABLE logs (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, minute INT, hour INT, node KEYWORD, level KEYWORD, target KEYWORD, \
      message TEXT, fields TEXT, request_id KEYWORD, method KEYWORD, route KEYWORD, status INT, error TEXT, ms FLOAT)";
 const QUERIES_SQL: &str = "CREATE TABLE queries (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, minute INT, hour INT, node KEYWORD, request_id KEYWORD, kind KEYWORD, \
-     outcome KEYWORD, shard BOOL, sql TEXT, fingerprint KEYWORD, ms FLOAT, n_rows INT, error TEXT, detail KEYWORD OPTIONS(indexed = false))";
+     outcome KEYWORD, shard BOOL, sql TEXT, fingerprint KEYWORD, ms FLOAT, n_rows INT, error TEXT, detail KEYWORD OPTIONS(indexed = false), \
+     key_name KEYWORD, key_id KEYWORD, addr KEYWORD, app KEYWORD, client KEYWORD, params TEXT, deadline_ms INT)";
 const LOAD_SQL: &str = "CREATE TABLE load (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, minute INT, hour INT, step INT, node KEYWORD, role KEYWORD, shard INT, \
      qps FLOAT, cpu FLOAT, cores INT, busy FLOAT, p99_ms FLOAT, disk_used_ratio FLOAT)";
 
@@ -246,6 +251,16 @@ fn open_db(path: &Path) -> Result<Db, String> {
             None => db.create_table((**want).clone()).map_err(at)?,
             Some(have) => {
                 let same = |f: &strata::schema::Field| have.fields.iter().any(|h| h.name == f.name && std::mem::discriminant(&h.ty) == std::mem::discriminant(&f.ty) && h.logical == f.logical);
+                // Columns a newer version added are added to an older
+                // store's table; a column of another type is another
+                // version's table.
+                let missing: Vec<&strata::schema::Field> = want.fields.iter().filter(|f| !have.fields.iter().any(|h| h.name == f.name)).collect();
+                let differ = want.fields.iter().any(|f| !missing.iter().any(|m| m.name == f.name) && !same(f));
+                if !missing.is_empty() && !differ && have.primary_key.map(|k| &have.fields[k].name) == want.primary_key.map(|k| &want.fields[k].name) {
+                    let alters: Vec<strata::schema::Alter> = missing.iter().map(|f| strata::schema::Alter::AddField(strata::schema::Field { id: strata::schema::NO_ID, ..(*f).clone() })).collect();
+                    db.alter_table(&want.table, &alters).map_err(at)?;
+                    continue;
+                }
                 if have.primary_key.map(|k| &have.fields[k].name) != want.primary_key.map(|k| &want.fields[k].name) || !want.fields.iter().all(same) {
                     return Err(format!(
                         "log store {}: its table {} is not the one this server writes (another version made it): move it aside, or pass --log-store another path",
@@ -333,7 +348,7 @@ fn line_row(schema: &Schema, node: &str, l: &LogLine, last: &mut i64) -> Documen
 /// The query log's fields that are columns of `queries`, and its `id`
 /// (the query's number in this run of the server); the rest go to
 /// `detail`.
-const QUERY_COLUMNS: [&str; 11] = ["id", "ts_ms", "request_id", "kind", "outcome", "shard", "sql", "fingerprint", "ms", "rows", "error"];
+const QUERY_COLUMNS: [&str; 18] = ["id", "ts_ms", "request_id", "kind", "outcome", "shard", "sql", "fingerprint", "ms", "rows", "error", "key", "key_id", "addr", "app", "client", "params", "deadline_ms"];
 
 fn query_row(schema: &Schema, node: &str, q: &Finished, last: &mut i64) -> Document {
     let ts = q.ts_ms as i64 * 1000;
@@ -362,6 +377,13 @@ fn query_row(schema: &Schema, node: &str, q: &Finished, last: &mut i64) -> Docum
             ("n_rows", Value::Int(q.rows as i64)),
             ("error", text(q.error.as_deref())),
             ("detail", detail.map_or(Value::Null, Value::Str)),
+            ("key_name", text(q.caller.key.as_deref())),
+            ("key_id", text(q.caller.key_id.as_deref())),
+            ("addr", text(q.caller.addr.as_deref())),
+            ("app", text(q.caller.app.as_deref())),
+            ("client", text(q.caller.client.as_deref())),
+            ("params", q.params.as_ref().map_or(Value::Null, |p| Value::Str(p.to_string()))),
+            ("deadline_ms", if q.deadline_ms > 0 { Value::Int(q.deadline_ms as i64) } else { Value::Null }),
         ],
     )
 }
@@ -967,6 +989,7 @@ mod tests {
                 plan: vec!["filter x = 1".into()],
                 filter_docs: 3,
                 scored: 0,
+                ..Default::default()
             })
         };
         for _ in 0..5 {
@@ -1108,6 +1131,24 @@ mod tests {
         let tables: Vec<String> = Db::open(&path, DbOptions::default()).unwrap().catalog().into_iter().map(|t| t.table.clone()).collect();
         for t in TABLES {
             assert!(tables.iter().any(|have| have == t), "{t} in {tables:?}");
+        }
+    }
+
+    #[test]
+    fn a_store_an_older_server_made_gets_the_new_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.logs");
+        let old = "CREATE TABLE queries (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, minute INT, hour INT, node KEYWORD, request_id KEYWORD, kind KEYWORD, \
+             outcome KEYWORD, shard BOOL, sql TEXT, fingerprint KEYWORD, ms FLOAT, n_rows INT, error TEXT, detail KEYWORD OPTIONS(indexed = false))";
+        let Command::CreateTable { schema, .. } = bind_command(old, &[], &Params::new()).unwrap() else { unreachable!() };
+        let db = Db::create(&path, (**schema_of(LOGS)).clone(), DbOptions::default()).unwrap();
+        db.create_table(schema).unwrap();
+        drop(db);
+        drop(open_db(&path).unwrap());
+        let db = Db::open(&path, DbOptions::default()).unwrap();
+        let q = db.catalog().into_iter().find(|t| t.table == QUERIES).unwrap();
+        for c in ["key_name", "addr", "params", "deadline_ms"] {
+            assert!(q.field_index(c).is_some(), "{c}");
         }
     }
 }

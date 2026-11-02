@@ -304,7 +304,15 @@ impl Grpc {
             obs::scope(Some(id.clone()), async { audit(&self.0, &who, method, e.status, t0, None) }).await;
             return Err(Status::from(e));
         }
+        // Who the call's queries are from ([`crate::telemetry::Caller`]).
+        let caller = {
+            let md = |k: &str| req.metadata().get(k).and_then(|v| v.to_str().ok()).map(String::from);
+            let app = md("x-strata-app").or_else(|| md("user-agent").as_deref().and_then(keys::product));
+            let r = keys::Caller { addr: req.remote_addr().map(|a| a.ip().to_string()), client: md("x-strata-client"), app, reason: None };
+            crate::telemetry::Caller::of(&who, Some(&r))
+        };
         let call = keys::noting(crate::service::ROUTED.scope(std::cell::Cell::new(0), f(self.0.clone(), who.clone(), req.into_inner())));
+        let call = crate::telemetry::calling(Arc::new(caller), call);
         let (r, note) = crate::telemetry::traced(crate::telemetry::Trace::new(), obs::scope(Some(id.clone()), call)).instrument(span.clone()).await;
         let status = r.as_ref().map_or_else(|e| e.status, |_| 200);
         obs::scope(Some(id.clone()), async { audit(&self.0, &who, method, status, t0, note) }).await;
