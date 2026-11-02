@@ -162,6 +162,51 @@ def test_numpy_values(db):
     assert db.query("SELECT year FROM books WHERE id = 'n'").scalar() == 2001
 
 
+def test_numpy_vectors_are_read_from_their_bytes(tmp_path):
+    np = pytest.importorskip("numpy")
+    schema = {"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "emb", "type": "vector", "dim": 4}]}
+    m = np.arange(24, dtype=np.float64).reshape(4, 6) / 10
+    rows = {
+        "f4": np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32),
+        "f8": np.array([0.1, 0.2, 0.3, 0.4]),
+        "list": [0.1, 0.2, 0.3, 0.4],
+        # A strided view, a big-endian array and integers: copied in C order,
+        # or read through tolist().
+        "view": m[:, 1],
+        "be": np.array([1, 2, 3, 4], dtype=">f4"),
+        "int": np.array([1, 0, 0, 1], dtype=np.int32),
+    }
+    with strata.open(tmp_path / "n.strata", schema) as db:
+        db.insert([{"id": k, "emb": v} for k, v in rows.items()])
+        emb = lambda k: db.query("SELECT emb FROM t WHERE id = :k", k=k).scalar()  # noqa: E731
+        for k, v in rows.items():
+            assert emb(k) == [float(np.float32(x)) for x in np.asarray(v, dtype=np.float64)], k
+        with pytest.raises(strata.StrataError):
+            db.insert({"id": "short", "emb": np.zeros(3, dtype=np.float32)})
+        with pytest.raises(strata.StrataError):
+            db.insert({"id": "nan", "emb": np.array([0.0, np.nan, 0.0, 1.0], dtype=np.float32)})
+        db.upsert([{"id": "f4", "emb": np.ones(4, dtype=np.float32)}])
+        assert emb("f4") == [1.0] * 4
+        assert db.query("SELECT id FROM t ORDER BY similarity(emb, :v) DESC LIMIT 1", v=np.array([0, 0, 0, 1.0])).keys == ["be"]
+
+
+def test_inserts_gather_in_memory_until_a_segment_fills(tmp_path):
+    # Inserts below 10,000 rows go to the memtable, which flushes into a
+    # segment once it fills; optimize() writes the rest out.
+    schema = {"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "n", "type": "int"}, {"name": "body", "type": "text"}]}
+    path = tmp_path / "g.strata"
+    with strata.open(path, schema) as db:
+        for b in range(13):
+            db.insert([{"id": f"r{b}-{i}", "n": b, "body": f"batch {b} row {i}"} for i in range(1_000)])
+            assert len(db) == 1_000 * (b + 1)
+        assert db.query("SELECT count(*) FROM t WHERE n = 12").scalar() == 1_000
+        db.optimize()
+        assert db.query("SELECT count(*) FROM t WHERE MATCH(body, 'batch')").scalar() == 13_000
+        db.insert([{"id": f"big{i}", "n": -1, "body": "bulk"} for i in range(10_000)])
+    with strata.open(path) as db:
+        assert len(db) == 23_000 and db.get("r12-999")["n"] == 12 and db.get("big9999")["n"] == -1
+
+
 def test_search(db):
     text = db.search("dragon", mode="text", limit=5)
     assert len(text) == 5 and all("dragon" in (r["title"] + r["description"]) for r in text)

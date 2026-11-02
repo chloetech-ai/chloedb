@@ -54,7 +54,7 @@ use crate::segment::DocId;
 use crate::vector::build::Rows;
 use crate::vector::kernels::{self, dot_f32};
 use crate::vector::codes::QueryCode;
-use crate::vector::sq8::{Sq8, Sq8Query};
+use crate::vector::sq8::Sq8;
 use crate::vector::topk::{Members, TopK};
 use crate::vector::{io, Codes, SearchStats};
 
@@ -141,10 +141,12 @@ impl BuildCodes<'_> {
     }
 }
 
-/// A vector prepared for scoring others during construction.
+/// A vector prepared for scoring others during construction: its float32
+/// values, or its int8 weights for the others' SQ8 codes (an
+/// [`crate::vector::sq8::Sq8Query`]'s, in a thread's buffer).
 enum Probe<'a> {
     F32(&'a [f32]),
-    Sq8(Sq8Query),
+    Sq8 { q8: &'a [i8], alpha: f32, bias: f32 },
 }
 
 struct Builder<'a> {
@@ -158,6 +160,10 @@ struct Builder<'a> {
     /// on TREC-COVID, notes/vector.md).
     ef_seeded: usize,
     levels: Vec<u8>,
+    /// With codes, each node's SQ8 probe's alpha and bias
+    /// ([`Sq8::int8_params`]), computed once: a node is prepared for every
+    /// node whose links it is compared with, many times over a build.
+    params: Vec<(f32, f32)>,
     /// links[v][l]: node v's neighbours on layer l (empty for absent docs).
     links: Vec<Vec<Mutex<Vec<u32>>>>,
     entry: Mutex<(u32, usize)>,
@@ -167,14 +173,22 @@ struct Builder<'a> {
     done: Vec<AtomicBool>,
 }
 
+/// A building thread's buffers.
 struct Scratch {
     visited: Vec<u32>,
     epoch: u32,
+    /// A node's links, copied out of their lock.
+    links: Vec<u32>,
+    /// int8 weights: of the node being inserted, of a node whose links are
+    /// being cut, and of the neighbours a selection has kept (a row each).
+    q8: Vec<i8>,
+    base8: Vec<i8>,
+    kept8: Vec<i8>,
 }
 
 impl Scratch {
     fn new(n: usize) -> Self {
-        Scratch { visited: vec![0; n], epoch: 0 }
+        Scratch { visited: vec![0; n], epoch: 0, links: Vec::new(), q8: Vec::new(), base8: Vec::new(), kept8: Vec::new() }
     }
     fn next_epoch(&mut self) -> u32 {
         self.epoch = self.epoch.wrapping_add(1);
@@ -191,22 +205,48 @@ impl Builder<'_> {
         self.rows.row(v as usize)
     }
 
-    /// `v` prepared for scoring the others.
-    fn probe(&self, v: u32) -> Probe<'_> {
+    /// `v` prepared for scoring the others, its int8 weights in `buf`.
+    fn probe<'b>(&'b self, v: u32, buf: &'b mut Vec<i8>) -> Probe<'b> {
         match self.codes {
             None => Probe::F32(self.row(v)),
-            Some(c) => Probe::Sq8(c.sq8.prepare_int8(self.row(v), c.stride)),
+            Some(c) => {
+                // Only `..dim` is ever written: the padding stays zero.
+                buf.resize(c.stride, 0);
+                let (alpha, bias) = self.params[v as usize];
+                c.sq8.quantize_int8(self.row(v), alpha, buf);
+                Probe::Sq8 { q8: buf, alpha, bias }
+            }
         }
     }
 
     /// Similarity of `p` with `v`: exact, or of `p`'s float32 values with
-    /// `v`'s codes.
+    /// `v`'s codes (as [`crate::vector::sq8::Sq8Query::score`] gives it).
     fn score(&self, p: &Probe, v: u32) -> f32 {
         match (p, self.codes) {
-            (Probe::Sq8(q), Some(c)) => q.score(q.dot(c.row(v))),
+            (&Probe::Sq8 { q8, alpha, bias }, Some(c)) => bias + alpha * kernels::dot_u8_i8(c.row(v), q8) as f32,
             (Probe::F32(q), _) => dot_f32(q, self.row(v)),
-            (Probe::Sq8(_), None) => unreachable!("probes match the builder"),
+            (Probe::Sq8 { .. }, None) => unreachable!("probes match the builder"),
         }
+    }
+
+    /// [`Self::score`] of up to four nodes, the same numbers: with codes,
+    /// four at once share the query's loads.
+    fn score4(&self, p: &Probe, vs: &[u32]) -> [f32; 4] {
+        let mut out = [0f32; 4];
+        match (p, self.codes, vs) {
+            (&Probe::Sq8 { q8, alpha, bias }, Some(c), &[a, b, d, e]) => {
+                let dots = kernels::dot_u8_i8_x4([c.row(a), c.row(b), c.row(d), c.row(e)], q8);
+                for (o, dot) in out.iter_mut().zip(dots) {
+                    *o = bias + alpha * dot as f32;
+                }
+            }
+            _ => {
+                for (o, &v) in out.iter_mut().zip(vs) {
+                    *o = self.score(p, v);
+                }
+            }
+        }
+        out
     }
 
     /// Vectors are 4 KiB at 1024 dimensions (1 KiB as codes) and scattered:
@@ -224,14 +264,18 @@ impl Builder<'_> {
         }
     }
 
-    fn neighbours(&self, v: u32, l: usize) -> Vec<u32> {
-        self.links[v as usize][l].lock().unwrap().clone()
+    /// `v`'s links on layer `l` into `out`, held under their lock only
+    /// while copied.
+    fn links_into(&self, v: u32, l: usize, out: &mut Vec<u32>) {
+        out.clear();
+        out.extend_from_slice(&self.links[v as usize][l].lock().unwrap());
     }
 
-    fn greedy(&self, q: &Probe, mut cur: Scored, l: usize) -> Scored {
+    fn greedy(&self, q: &Probe, mut cur: Scored, l: usize, sc: &mut Scratch) -> Scored {
         loop {
             let mut changed = false;
-            for nb in self.neighbours(cur.1, l) {
+            self.links_into(cur.1, l, &mut sc.links);
+            for &nb in &sc.links {
                 let s = self.score(q, nb);
                 if s > cur.0 {
                     cur = Scored(s, nb);
@@ -257,26 +301,36 @@ impl Builder<'_> {
         while res.len() > ef {
             res.pop();
         }
+        let mut fresh = std::mem::take(&mut sc.links);
         while let Some(c) = cand.pop() {
             if res.len() >= ef && c < res.peek().unwrap().0 {
                 break;
             }
-            let mut fresh = self.neighbours(c.1, l);
+            self.links_into(c.1, l, &mut fresh);
             fresh.retain(|&nb| std::mem::replace(&mut sc.visited[nb as usize], epoch) != epoch);
-            for (i, &nb) in fresh.iter().enumerate() {
-                if let Some(&next) = fresh.get(i + 1) {
+            // Scored four at a time (one query load for four code rows),
+            // the next four fetched meanwhile.
+            for &nb in fresh.iter().take(4) {
+                self.prefetch(nb);
+            }
+            for (g, four) in fresh.chunks(4).enumerate() {
+                for &next in fresh.iter().skip(4 * (g + 1)).take(4) {
                     self.prefetch(next);
                 }
-                let s = Scored(self.score(q, nb), nb);
-                if res.len() < ef || s > res.peek().unwrap().0 {
-                    cand.push(s);
-                    res.push(Reverse(s));
-                    if res.len() > ef {
-                        res.pop();
+                let scores = self.score4(q, four);
+                for (&nb, &score) in four.iter().zip(&scores) {
+                    let s = Scored(score, nb);
+                    if res.len() < ef || s > res.peek().unwrap().0 {
+                        cand.push(s);
+                        res.push(Reverse(s));
+                        if res.len() > ef {
+                            res.pop();
+                        }
                     }
                 }
             }
         }
+        sc.links = fresh;
         let mut v: Vec<Scored> = res.into_iter().map(|r| r.0).collect();
         v.sort_unstable_by(|a, b| b.cmp(a));
         v
@@ -284,9 +338,14 @@ impl Builder<'_> {
 
     /// Keeps a candidate (best first) only if it is closer to the base than
     /// to every neighbour already kept, which spreads links across directions.
-    fn select(&self, cands: &[Scored], m: usize) -> Vec<u32> {
+    fn select(&self, cands: &[Scored], m: usize, sc: &mut Scratch) -> Vec<u32> {
         let mut out: Vec<u32> = Vec::with_capacity(m);
-        let mut kept: Vec<Probe> = Vec::with_capacity(m);
+        // The kept neighbours' int8 weights, a row each (`out[k]`'s in row k).
+        let stride = self.codes.map_or(0, |c| c.stride);
+        if sc.kept8.len() < m * stride {
+            sc.kept8.resize(m * stride, 0);
+        }
+        let kept8 = &mut sc.kept8;
         for (i, c) in cands.iter().enumerate() {
             if out.len() >= m {
                 break;
@@ -294,10 +353,18 @@ impl Builder<'_> {
             if let Some(next) = cands.get(i + 1) {
                 self.prefetch(next.1);
             }
-            if kept.iter().all(|r| self.score(r, c.1) <= c.0) {
+            let kept = |k: usize| match self.codes {
+                None => Probe::F32(self.row(out[k])),
+                Some(_) => {
+                    let (alpha, bias) = self.params[out[k] as usize];
+                    Probe::Sq8 { q8: &kept8[k * stride..(k + 1) * stride], alpha, bias }
+                }
+            };
+            if (0..out.len()).all(|k| self.score(&kept(k), c.1) <= c.0) {
+                let k = out.len();
                 out.push(c.1);
-                if out.len() < m {
-                    kept.push(self.probe(c.1));
+                if let (Some(cd), true) = (self.codes, out.len() < m) {
+                    cd.sq8.quantize_int8(self.row(c.1), self.params[c.1 as usize].0, &mut kept8[k * stride..(k + 1) * stride]);
                 }
             }
         }
@@ -312,7 +379,7 @@ impl Builder<'_> {
         }
     }
 
-    fn connect(&self, e: u32, new: u32, l: usize) {
+    fn connect(&self, e: u32, new: u32, l: usize, sc: &mut Scratch) {
         let cap = self.cap(l);
         let mut g = self.links[e as usize][l].lock().unwrap();
         if g.len() < cap {
@@ -320,12 +387,13 @@ impl Builder<'_> {
             return;
         }
         let ids: Vec<u32> = g.iter().copied().chain([new]).collect();
-        *g = self.prune(e, &ids, cap);
+        *g = self.prune(e, &ids, cap, sc);
     }
 
     /// `ids`, more than `cap` neighbours of `v`, cut to `cap` by the heuristic.
-    fn prune(&self, v: u32, ids: &[u32], cap: usize) -> Vec<u32> {
-        let p = self.probe(v);
+    fn prune(&self, v: u32, ids: &[u32], cap: usize, sc: &mut Scratch) -> Vec<u32> {
+        let mut buf = std::mem::take(&mut sc.base8);
+        let p = self.probe(v, &mut buf);
         let mut cands: Vec<Scored> = Vec::with_capacity(ids.len());
         for (i, &x) in ids.iter().enumerate() {
             if let Some(&next) = ids.get(i + 1) {
@@ -333,15 +401,16 @@ impl Builder<'_> {
             }
             cands.push(Scored(self.score(&p, x), x));
         }
+        sc.base8 = buf;
         cands.sort_unstable_by(|a, b| b.cmp(a));
-        self.select(&cands, cap)
+        self.select(&cands, cap, sc)
     }
 
     /// Sets `i`'s links on layer `l` to `sel`, keeping the links other
     /// threads added meanwhile: they reached `i` through its links on the
     /// layer above and linked it to their node, which `i` would otherwise
     /// never link back to.
-    fn set_links(&self, i: u32, l: usize, sel: &[u32]) {
+    fn set_links(&self, i: u32, l: usize, sel: &[u32], sc: &mut Scratch) {
         let mut g = self.links[i as usize][l].lock().unwrap();
         if g.is_empty() {
             g.extend_from_slice(sel);
@@ -349,13 +418,14 @@ impl Builder<'_> {
         }
         let ids: Vec<u32> = sel.iter().copied().chain(g.iter().copied().filter(|x| !sel.contains(x))).collect();
         let cap = self.cap(l);
-        *g = if ids.len() <= cap { ids } else { self.prune(i, &ids, cap) };
+        *g = if ids.len() <= cap { ids } else { self.prune(i, &ids, cap, sc) };
     }
 
     /// Inserts `i`; a non-empty `seeds` starts its layer-0 search instead of
     /// the layer above's result, with the narrower beam.
     fn insert(&self, i: u32, seeds: &[u32], sc: &mut Scratch) {
-        let q = self.probe(i);
+        let mut q8 = std::mem::take(&mut sc.q8);
+        let q = self.probe(i, &mut q8);
         let level = self.levels[i as usize] as usize;
         let (mut ep, mut top) = *self.entry.lock().unwrap();
         let _grow = if level > top {
@@ -367,7 +437,7 @@ impl Builder<'_> {
         };
         let mut cur = Scored(self.score(&q, ep), ep);
         for l in (level + 1..=top).rev() {
-            cur = self.greedy(&q, cur, l);
+            cur = self.greedy(&q, cur, l, sc);
         }
         let mut eps = vec![cur];
         for l in (0..=level.min(top)).rev() {
@@ -383,13 +453,14 @@ impl Builder<'_> {
             } else {
                 self.search_layer(&q, &eps, self.ef, l, sc)
             };
-            let sel = self.select(&w, self.m);
-            self.set_links(i, l, &sel);
+            let sel = self.select(&w, self.m, sc);
+            self.set_links(i, l, &sel, sc);
             for e in sel {
-                self.connect(e, i, l);
+                self.connect(e, i, l, sc);
             }
             eps = w;
         }
+        sc.q8 = q8;
         if level > top {
             *self.entry.lock().unwrap() = (i, level);
         }
@@ -494,7 +565,7 @@ impl Joined<'_> {
         for &v in s.view.neighbours(i - s.base, 0) {
             if self.join[v as usize] || b.done[(s.base + v) as usize].load(Ordering::Acquire) {
                 out.push(s.base + v);
-                out.extend(b.neighbours(s.base + v, 0));
+                out.extend_from_slice(&b.links[(s.base + v) as usize][0].lock().unwrap());
             }
         }
         out.sort_unstable();
@@ -544,6 +615,10 @@ pub(crate) fn build(rows: &Rows, present: &(dyn Fn(u32) -> bool + Sync), cfg: &H
         return Graph { m, entry: NONE, max_level: 0, layer0: vec![NONE; n * m0], upper: Vec::new() };
     };
     let ef = cfg.ef_construction.max(m);
+    let params = match codes {
+        Some(c) => probe_params(rows, present, c.sq8, cfg.threads),
+        None => Vec::new(),
+    };
     let b = Builder {
         rows,
         codes,
@@ -552,6 +627,7 @@ pub(crate) fn build(rows: &Rows, present: &(dyn Fn(u32) -> bool + Sync), cfg: &H
         ef,
         ef_seeded: (ef / 2).max(m),
         levels,
+        params,
         links,
         entry: Mutex::new((first, 0)),
         grow: Mutex::new(()),
@@ -625,6 +701,29 @@ pub(crate) fn build(rows: &Rows, present: &(dyn Fn(u32) -> bool + Sync), cfg: &H
         upper.push((ids, adj));
     }
     Graph { m, entry, max_level, layer0, upper }
+}
+
+/// Each present row's SQ8 probe's alpha and bias, on `threads` threads.
+fn probe_params(rows: &Rows, present: &(dyn Fn(u32) -> bool + Sync), sq8: &Sq8, threads: usize) -> Vec<(f32, f32)> {
+    let mut out = vec![(0f32, 0f32); rows.n];
+    let fill = |base: usize, part: &mut [(f32, f32)]| {
+        for (j, x) in part.iter_mut().enumerate() {
+            if present((base + j) as u32) {
+                *x = sq8.int8_params(rows.row(base + j));
+            }
+        }
+    };
+    let per = rows.n.div_ceil(threads.max(1)).max(4096);
+    if per >= rows.n {
+        fill(0, &mut out);
+    } else {
+        std::thread::scope(|s| {
+            for (t, part) in out.chunks_mut(per).enumerate() {
+                s.spawn(move || fill(t * per, part));
+            }
+        });
+    }
+    out
 }
 
 /// Zero-copy view of a stored graph.
@@ -897,21 +996,23 @@ mod tests {
             ef: 8,
             ef_seeded: 4,
             levels: vec![0; 6],
+            params: Vec::new(),
             links: (0..6).map(|_| vec![Mutex::new(Vec::new())]).collect(),
             entry: Mutex::new((0, 0)),
             grow: Mutex::new(()),
             done: (0..6).map(|_| AtomicBool::new(false)).collect(),
         };
         // Another thread linked node 5 to node 0 while 0 was still searching.
+        let sc = &mut Scratch::new(6);
         b.links[0][0].lock().unwrap().push(5);
-        b.set_links(0, 0, &[1, 2]);
+        b.set_links(0, 0, &[1, 2], sc);
         assert_eq!(*b.links[0][0].lock().unwrap(), vec![1, 2, 5]);
         // A node with none added gets its selection as it is.
-        b.set_links(3, 0, &[2, 4]);
+        b.set_links(3, 0, &[2, 4], sc);
         assert_eq!(*b.links[3][0].lock().unwrap(), vec![2, 4]);
         // Past the cap, the neighbour heuristic cuts them, without repeats.
         b.links[2][0].lock().unwrap().extend([0, 4, 5, 3]);
-        b.set_links(2, 0, &[1, 3]);
+        b.set_links(2, 0, &[1, 3], sc);
         let g = b.links[2][0].lock().unwrap().clone();
         assert!(!g.is_empty() && g.len() <= 4, "{g:?}");
         assert!(g.iter().all(|&x| x != 2) && g.iter().collect::<std::collections::HashSet<_>>().len() == g.len(), "{g:?}");

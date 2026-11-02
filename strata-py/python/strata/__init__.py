@@ -291,7 +291,9 @@ class Database(Search):
 
     def insert(self, rows: Mapping[str, Any] | Iterable[Mapping[str, Any]], *, table: str | None = None) -> int:
         """Inserts a row or rows, whose keys must be new, into the first
-        table or `table`; all or none are written. Returns how many."""
+        table or `table`; all or none are written. Returns how many. A
+        vector may be a numpy array (float32 or float64), read from its
+        bytes."""
         return self._db.insert(rows, table)
 
     def upsert(self, rows: Mapping[str, Any] | Iterable[Mapping[str, Any]], *, table: str | None = None) -> int:
@@ -425,7 +427,8 @@ class Database(Search):
         return {p: dict(cs) for p, cs in zip(prefixes, got)}
 
     def optimize(self) -> None:
-        """Merges small segments (many small writes leave many)."""
+        """Writes the rows still in memory into segments and merges small
+        segments (many small writes leave many)."""
         self._db.optimize()
 
     def close(self) -> None:
