@@ -3430,9 +3430,13 @@ fn save_slots(path: &Path, map: &SlotMap, shard: usize, since: u64) -> std::io::
 }
 
 /// Writes `j` to `path` and syncs it, through a new file renamed over the
-/// old one, so that a crash leaves one or the other.
+/// old one, so that a crash leaves one or the other. One at a time: two at
+/// once would write the same new file (a primary's vote kept as a call of
+/// the new primary fences it), and leave it torn or gone.
 pub(crate) fn save_json(path: &Path, j: &Json) -> std::io::Result<()> {
     use std::io::Write as _;
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let body = serde_json::to_vec_pretty(j).map_err(std::io::Error::other)?;
@@ -4038,6 +4042,27 @@ fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A primary fenced by a call of the new primary as it kept its vote
+    // for it wrote its replication file twice at once, through one new
+    // file: one rename failed (no such file), and the file was left with
+    // the end of the longer write after the shorter, which no later step
+    // down or start could read.
+    #[test]
+    fn json_saved_at_once_by_two_threads_is_one_or_the_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kept.json");
+        let bodies: Vec<Json> = (0..8).map(|i| json!({"i": i, "pad": "x".repeat(1 + i * 300)})).collect();
+        for _ in 0..50 {
+            std::thread::scope(|s| {
+                for b in &bodies {
+                    s.spawn(|| save_json(&path, b).unwrap());
+                }
+            });
+            let j: Json = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert!(bodies.contains(&j), "{j}");
+        }
+    }
 
     // OPS-6: a panic in the writer thread ended it, and every later write
     // failed with health still "ok". The writer now catches it; the
