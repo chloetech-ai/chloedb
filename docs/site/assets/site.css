@@ -70,7 +70,7 @@
 }
 
 * { box-sizing: border-box; }
-html { color-scheme: light; scroll-padding-top: 88px; }
+html { color-scheme: light; scroll-padding-top: 88px; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   margin: 0;
   background: var(--paper);
@@ -470,7 +470,7 @@ dialog.lightbox .close { position: sticky; top: 8px; float: right; margin: 8px 8
 .tour-panel p { color: var(--ink-2); font-size: 0.95rem; max-width: 80ch; }
 .cc-points { display: flex; flex-wrap: wrap; gap: 8px; }
 .cc-points span { font: 500 0.8rem/1 var(--mono); padding: 7px 10px; border-radius: 999px; background: var(--accent-wash); color: var(--ink); }
-.mark-line { display: inline-block; min-width: 100%; margin: 0 -18px; padding: 0 18px; background: rgba(135, 150, 255, 0.16); box-shadow: inset 3px 0 0 #8796ff; }
+.mark-line { font: inherit; background: rgba(135, 150, 255, 0.22); border-radius: 3px; }
 .app-steps { gap: 12px; }
 .app-steps-head { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; }
 .app-steps-head b { font: 650 1rem/1.3 var(--display); }
