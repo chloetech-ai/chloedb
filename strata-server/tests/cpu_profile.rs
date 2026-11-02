@@ -30,7 +30,7 @@ async fn serve() -> String {
 }
 
 async fn post(base: &str, path: &str, body: Json) -> (u16, String) {
-    let r = reqwest::Client::new().post(format!("{base}{path}")).json(&body).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{base}{path}")).json(&body).send().await.unwrap();
     (r.status().as_u16(), r.text().await.unwrap())
 }
 
@@ -76,7 +76,7 @@ async fn a_cpu_profile_samples_the_server_s_threads() {
         let c: u64 = stacks.iter().filter(|s| s["frames"].as_array().unwrap().last().is_some_and(|f| !names[f.as_u64().unwrap() as usize].contains("::"))).map(|s| s["samples"].as_u64().unwrap()).sum();
         assert!(c > 0, "no samples in the C library: {:?}", &names[..names.len().min(40)]);
     }
-    let recent: Json = reqwest::get(format!("{base}/v1/queries/recent")).await.unwrap().json().await.unwrap();
+    let recent: Json = strata_server::http_client().build().unwrap().get(format!("{base}/v1/queries/recent")).send().await.unwrap().json().await.unwrap();
     assert!(recent["queries"].as_array().unwrap().is_empty(), "the runs are not kept: {recent}");
 
     // One at a time.
@@ -114,7 +114,7 @@ async fn a_cpu_profile_samples_the_server_s_threads() {
 async fn without_the_counting_allocator_memory_says_so() {
     // This test binary keeps the system's allocator.
     let base = serve().await;
-    let m: Json = reqwest::get(format!("{base}/v1/profile/memory")).await.unwrap().json().await.unwrap();
+    let m: Json = strata_server::http_client().build().unwrap().get(format!("{base}/v1/profile/memory")).send().await.unwrap().json().await.unwrap();
     assert_eq!(m["heap"]["installed"], false, "{m}");
     assert_eq!(m["heap"]["in_use_bytes"], 0, "{m}");
     let (status, body) = post(&base, "/v1/profile/heap", json!({"seconds": 0.1})).await;

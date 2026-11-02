@@ -363,7 +363,7 @@ async fn every_table_over_http_and_grpc() {
     let dir = tempfile::tempdir().unwrap();
     let svc = local(dir.path(), "one.strata");
     let (h, g) = (http(svc.clone()).await, grpc(svc.clone()).await);
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let post = |path: &str, body: Json| {
         let (c, url) = (c.clone(), format!("{h}{path}"));
         async move {

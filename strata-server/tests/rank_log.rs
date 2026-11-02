@@ -134,9 +134,9 @@ async fn three_shards_log_what_one_database_logs() {
     assert_eq!((count(whole.clone()).await, count(coord.clone()).await), (n, n));
     // A shard's query is not logged, and a coordinator does not export.
     let h = http(coord.clone()).await;
-    let r = reqwest::Client::new().post(format!("{h}/v1/rank_log/export")).json(&json!({})).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{h}/v1/rank_log/export")).json(&json!({})).send().await.unwrap();
     assert_eq!(r.status().as_u16(), 400);
-    let r = reqwest::Client::new().post(format!("{h}/v1/query")).json(&json!({"sql": QUERIES[0], "params": {"t": "red mug"}, "shard": true, "log": true})).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{h}/v1/query")).json(&json!({"sql": QUERIES[0], "params": {"t": "red mug"}, "shard": true, "log": true})).send().await.unwrap();
     assert_eq!(r.status().as_u16(), 400);
 }
 
@@ -146,7 +146,7 @@ async fn a_logged_query_over_http_and_its_export() {
     let (svc, db) = local(dir.path(), "one.strata");
     load(&svc).await;
     let h = http(svc.clone()).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let post = |path: &str, body: Json| {
         let (c, url) = (c.clone(), format!("{h}{path}"));
         async move {
@@ -207,7 +207,7 @@ async fn two_rankings_interleaved_and_credited() {
     let (svc, db) = local(dir.path(), "il.strata");
     load(&svc).await;
     let h = http(svc.clone()).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let post = |path: &str, body: Json| {
         let (c, url) = (c.clone(), format!("{h}{path}"));
         async move {

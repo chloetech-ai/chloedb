@@ -113,7 +113,7 @@ async fn rows_by_key_from_a_server_and_a_coordinator() {
         run(svc, &format!("INSERT INTO kv (id, n, note, until) VALUES {}", values.join(", "))).await;
     }
     let expired: Vec<usize> = (0..n).filter(|i| i % 9 == 4).collect();
-    let client = reqwest::Client::new();
+    let client = strata_server::http_client().build().unwrap();
     let (cu, ou) = (http(coord.clone()).await, http(one.clone()).await);
     for url in [&cu, &ou] {
         check(&client, url, n, &expired).await;

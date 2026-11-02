@@ -36,7 +36,7 @@ impl HttpFetcher {
                 attempt.error(format!("a redirect to {to}, which is not on the media fetch list"))
             }
         });
-        let client = reqwest::Client::builder().redirect(policy).timeout(timeout).build().map_err(|e| format!("the media fetch client: {e}"))?;
+        let client = crate::http_client().redirect(policy).timeout(timeout).build().map_err(|e| format!("the media fetch client: {e}"))?;
         let runtime = tokio::runtime::Handle::try_current().map_err(|e| format!("the media fetch client needs a Tokio runtime: {e}"))?;
         Ok(HttpFetcher { client, runtime })
     }

@@ -1251,7 +1251,7 @@ async fn the_server_starts_as_a_primary_or_a_replica() {
         tokio::spawn(server::serve_http(svc, l, Access::default()));
         url
     };
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     for body in [None, Some(json!({"timeout_ms": 5000}))] {
         let mut req = c.post(format!("{}/v1/admin/verify", http(p.clone()).await));
         if let Some(b) = &body {

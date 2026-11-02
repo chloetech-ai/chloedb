@@ -433,7 +433,7 @@ pub struct Admin {
 
 impl Admin {
     pub fn new(base: &str, token: Option<String>) -> Admin {
-        let http = reqwest::Client::builder().timeout(Duration::from_secs(60)).build().expect("an HTTP client");
+        let http = crate::http_client().timeout(Duration::from_secs(60)).build().expect("an HTTP client");
         Admin { base: base.trim_end_matches('/').to_string(), token, http }
     }
 

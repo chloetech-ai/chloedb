@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as Json};
@@ -149,8 +149,17 @@ impl Procs {
     }
 }
 
+/// One client for every call the tests make: building one can take a
+/// second on macOS (`strata_server::http_client`), and a step asks every
+/// server whether it is ready. It keeps no idle connections, so none
+/// outlives the test (and runtime) that opened it.
+fn http() -> &'static reqwest::Client {
+    static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+    HTTP.get_or_init(|| strata_server::http_client().pool_max_idle_per_host(0).build().unwrap())
+}
+
 async fn ready(http: u16) -> bool {
-    reqwest::get(format!("http://127.0.0.1:{http}/readyz")).await.is_ok_and(|r| r.status().is_success())
+    self::http().get(format!("http://127.0.0.1:{http}/readyz")).send().await.is_ok_and(|r| r.status().is_success())
 }
 
 impl Platform for Procs {
@@ -354,7 +363,7 @@ impl Run {
         let servers: Vec<u16> = self.procs.state.lock().unwrap().sets.values().flat_map(|(_, pods)| pods.values().map(|p| p.http)).collect();
         assert_eq!(servers.len(), 9);
         for http in servers {
-            let mut r = reqwest::Client::new().get(format!("http://127.0.0.1:{http}/v1/profile/settings"));
+            let mut r = self::http().get(format!("http://127.0.0.1:{http}/v1/profile/settings"));
             if let Some((_, cluster)) = &self.procs.tokens {
                 r = r.bearer_auth(cluster);
             }
@@ -401,7 +410,7 @@ async fn a_cluster_with_its_own_token_is_made_grown_shrunk_and_healed() {
     every_step(&mut run).await;
     // A server takes the cluster's token, not the admin's.
     let server = run.procs.state.lock().unwrap().sets[&0].1[&0].http;
-    let ask = |token: &'static str| reqwest::Client::new().get(format!("http://127.0.0.1:{server}/v1/stats")).bearer_auth(token).send();
+    let ask = |token: &'static str| http().get(format!("http://127.0.0.1:{server}/v1/stats")).bearer_auth(token).send();
     assert_eq!(ask("admin-token").await.unwrap().status(), 401);
     assert_eq!(ask("cluster-token").await.unwrap().status(), 200);
 }
