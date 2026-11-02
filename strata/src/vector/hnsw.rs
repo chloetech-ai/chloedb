@@ -3,10 +3,11 @@
 //! **Construction** inserts documents in docID order (in a seeded random
 //! order with several threads) with the neighbour-selection heuristic, `M`
 //! links per node on the upper layers and `2M` on layer 0. Several threads
-//! insert at once; each node's link list has its own lock, as in hnswlib.
-//! Levels come from a seeded hash of the docID, so the layer structure does
-//! not depend on the thread count (the links do, slightly, through insertion
-//! races). Similarities are those a search uses: the inserted vector's
+//! insert at once, after the first `32 × threads` nodes went in on one;
+//! each node's link list has its own lock, as in hnswlib, and a node setting
+//! its own links keeps those other threads added meanwhile. Levels come from
+//! a seeded hash of the docID, so the layer structure does not depend on the
+//! thread count (the links do, slightly, through insertion races). Similarities are those a search uses: the inserted vector's
 //! float32 values against the others' SQ8 codes ([`BuildCodes`]), a quarter
 //! of the memory traffic of float32 rows; a field with binary codes builds on
 //! float32.
@@ -112,6 +113,10 @@ impl Ord for Scored {
         self.0.total_cmp(&o.0).then(o.1.cmp(&self.1))
     }
 }
+
+/// A multi-threaded build inserts on one thread until the graph holds this
+/// many nodes per thread.
+const SOLO_PER_THREAD: usize = 32;
 
 /// Level of node `i`: floor(-ln(U) / ln(M)) with U from a seeded hash.
 fn level_of(i: u32, seed: u64, m: usize) -> usize {
@@ -299,24 +304,52 @@ impl Builder<'_> {
         out
     }
 
+    fn cap(&self, l: usize) -> usize {
+        if l == 0 {
+            self.m0
+        } else {
+            self.m
+        }
+    }
+
     fn connect(&self, e: u32, new: u32, l: usize) {
-        let cap = if l == 0 { self.m0 } else { self.m };
+        let cap = self.cap(l);
         let mut g = self.links[e as usize][l].lock().unwrap();
         if g.len() < cap {
             g.push(new);
             return;
         }
-        let ev = self.probe(e);
         let ids: Vec<u32> = g.iter().copied().chain([new]).collect();
+        *g = self.prune(e, &ids, cap);
+    }
+
+    /// `ids`, more than `cap` neighbours of `v`, cut to `cap` by the heuristic.
+    fn prune(&self, v: u32, ids: &[u32], cap: usize) -> Vec<u32> {
+        let p = self.probe(v);
         let mut cands: Vec<Scored> = Vec::with_capacity(ids.len());
         for (i, &x) in ids.iter().enumerate() {
             if let Some(&next) = ids.get(i + 1) {
                 self.prefetch(next);
             }
-            cands.push(Scored(self.score(&ev, x), x));
+            cands.push(Scored(self.score(&p, x), x));
         }
         cands.sort_unstable_by(|a, b| b.cmp(a));
-        *g = self.select(&cands, cap);
+        self.select(&cands, cap)
+    }
+
+    /// Sets `i`'s links on layer `l` to `sel`, keeping the links other
+    /// threads added meanwhile: they reached `i` through its links on the
+    /// layer above and linked it to their node, which `i` would otherwise
+    /// never link back to.
+    fn set_links(&self, i: u32, l: usize, sel: &[u32]) {
+        let mut g = self.links[i as usize][l].lock().unwrap();
+        if g.is_empty() {
+            g.extend_from_slice(sel);
+            return;
+        }
+        let ids: Vec<u32> = sel.iter().copied().chain(g.iter().copied().filter(|x| !sel.contains(x))).collect();
+        let cap = self.cap(l);
+        *g = if ids.len() <= cap { ids } else { self.prune(i, &ids, cap) };
     }
 
     /// Inserts `i`; a non-empty `seeds` starts its layer-0 search instead of
@@ -351,7 +384,7 @@ impl Builder<'_> {
                 self.search_layer(&q, &eps, self.ef, l, sc)
             };
             let sel = self.select(&w, self.m);
-            *self.links[i as usize][l].lock().unwrap() = sel.clone();
+            self.set_links(i, l, &sel);
             for e in sel {
                 self.connect(e, i, l);
             }
@@ -541,10 +574,19 @@ pub(crate) fn build(rows: &Rows, present: &(dyn Fn(u32) -> bool + Sync), cfg: &H
         order.shuffle(&mut rng);
         seeded.shuffle(&mut rng);
     }
-    for (pass, ids) in [order, seeded].iter().enumerate() {
-        let next = AtomicUsize::new(0);
+    // In a graph of a few nodes, concurrent inserts are a large share of it
+    // and miss each other: 8 threads cut recall@10 on 2,000-vector segments
+    // of FiQA from 0.999 to 0.992. The first nodes go in on one thread, until
+    // the graph holds SOLO_PER_THREAD nodes per thread.
+    let solo = if cfg.threads > 1 { (SOLO_PER_THREAD * cfg.threads).saturating_sub(start.map_or(1, |s| s.n)).min(order.len()) } else { 0 };
+    let rest = order.split_off(solo);
+    for (pass, ids, threads) in [(0, order, 1), (0, rest, cfg.threads), (1, seeded, cfg.threads)] {
+        if ids.is_empty() {
+            continue;
+        }
+        let (ids, next) = (&ids, AtomicUsize::new(0));
         std::thread::scope(|s| {
-            for _ in 0..cfg.threads.max(1) {
+            for _ in 0..threads.max(1) {
                 s.spawn(|| {
                     let mut sc = Scratch::new(n);
                     loop {
@@ -840,5 +882,39 @@ mod tests {
         assert!((p1 - 1.0 / 16.0).abs() < 0.005, "p1 {p1}");
         let p2 = count[2] as f64 / n as f64;
         assert!((p2 - 1.0 / 256.0).abs() < 0.001, "p2 {p2}");
+    }
+
+    #[test]
+    fn a_node_setting_its_links_keeps_those_other_threads_added() {
+        // Six unit vectors at angles 0, 10, ..., 50 degrees; M = 2 (cap 4 on layer 0).
+        let data: Vec<f32> = (0..6).flat_map(|i| [(i as f32 * 10f32).to_radians().cos(), (i as f32 * 10f32).to_radians().sin()]).collect();
+        let rows = Rows { data: &data, dim: 2, stride: 2, n: 6 };
+        let b = Builder {
+            rows: &rows,
+            codes: None,
+            m: 2,
+            m0: 4,
+            ef: 8,
+            ef_seeded: 4,
+            levels: vec![0; 6],
+            links: (0..6).map(|_| vec![Mutex::new(Vec::new())]).collect(),
+            entry: Mutex::new((0, 0)),
+            grow: Mutex::new(()),
+            done: (0..6).map(|_| AtomicBool::new(false)).collect(),
+        };
+        // Another thread linked node 5 to node 0 while 0 was still searching.
+        b.links[0][0].lock().unwrap().push(5);
+        b.set_links(0, 0, &[1, 2]);
+        assert_eq!(*b.links[0][0].lock().unwrap(), vec![1, 2, 5]);
+        // A node with none added gets its selection as it is.
+        b.set_links(3, 0, &[2, 4]);
+        assert_eq!(*b.links[3][0].lock().unwrap(), vec![2, 4]);
+        // Past the cap, the neighbour heuristic cuts them, without repeats.
+        b.links[2][0].lock().unwrap().extend([0, 4, 5, 3]);
+        b.set_links(2, 0, &[1, 3]);
+        let g = b.links[2][0].lock().unwrap().clone();
+        assert!(!g.is_empty() && g.len() <= 4, "{g:?}");
+        assert!(g.iter().all(|&x| x != 2) && g.iter().collect::<std::collections::HashSet<_>>().len() == g.len(), "{g:?}");
+        assert!(g.contains(&1) && g.contains(&3), "the nearest stay: {g:?}");
     }
 }

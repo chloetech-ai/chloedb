@@ -28,6 +28,7 @@ use strata::rank_log::{Export, Log};
 use strata::schema::Schema;
 use strata::sid::{Codebook, TrainOptions};
 use strata::sqlite;
+use strata::segment::build::BuildOptions;
 use strata::storage::{DbOptions, Layout, MergePolicy};
 use strata::{FieldType, Value};
 
@@ -194,6 +195,37 @@ fn rows_json(rows: &Bound<'_, PyAny>) -> PyResult<Vec<Json>> {
     rows.try_iter()?.map(|r| to_json(&r?)).collect()
 }
 
+/// The cores a database uses unless `threads` says otherwise: the machine's
+/// (on Linux, its cgroup's quota).
+fn threads_or_cores(threads: Option<usize>) -> PyResult<usize> {
+    match threads {
+        Some(0) => Err(PyValueError::new_err("threads: at least 1")),
+        Some(n) => Ok(n),
+        None => Ok(std::thread::available_parallelism().map_or(1, |n| n.get())),
+    }
+}
+
+/// How this module opens a database, as strata-server does: segment builds
+/// (flushes, merges) build vector indexes on `threads` cores, and the newest
+/// in-memory chunk keeps its vectors flat, since a graph over so few rows
+/// costs more to build at every write than an exact scan of them costs a
+/// query.
+fn db_options(directory: bool, threads: usize) -> DbOptions {
+    DbOptions {
+        layout: if directory { Layout::Directory } else { Layout::SingleFile },
+        build: BuildOptions::default().set("vector.threads", threads),
+        mem_build: Some(BuildOptions::default().set("vector.index", "flat")),
+        ..DbOptions::default()
+    }
+}
+
+/// Queries search segments on up to `threads` cores: the calling thread and
+/// the process's shared pool, as its threads come free.
+fn with_threads(mut db: Db, threads: usize) -> Db {
+    db.exec.threads = threads;
+    db
+}
+
 /// A database file (or directory) opened in this process. Only one process
 /// may have a database open at a time.
 #[pyclass(frozen, module = "strata._strata")]
@@ -314,21 +346,24 @@ fn table_of(db: &Db, table: Option<&str>) -> strata::Result<Arc<Schema>> {
 impl Database {
     /// Creates a database at `path` with a schema (JSON text, either form).
     #[staticmethod]
-    #[pyo3(signature = (path, schema, directory = false, models = None))]
-    fn create(py: Python<'_>, path: PathBuf, schema: &str, directory: bool, models: Option<PathBuf>) -> PyResult<Self> {
+    #[pyo3(signature = (path, schema, directory = false, models = None, threads = None))]
+    fn create(py: Python<'_>, path: PathBuf, schema: &str, directory: bool, models: Option<PathBuf>, threads: Option<usize>) -> PyResult<Self> {
         let schema = Schema::from_json(schema).map_err(err)?;
-        let opts = DbOptions { layout: if directory { Layout::Directory } else { Layout::SingleFile }, ..DbOptions::default() };
+        let threads = threads_or_cores(threads)?;
+        let opts = db_options(directory, threads);
         let models = models.unwrap_or_else(strata::embed::models_dir);
         let db = py.detach(|| Db::create_in(&path, schema, opts, &models)).map_err(err)?;
-        Ok(Database::new(db, Some(models)))
+        Ok(Database::new(with_threads(db, threads), Some(models)))
     }
 
     /// Opens the database at `path`.
     #[staticmethod]
-    #[pyo3(signature = (path, models = None))]
-    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>) -> PyResult<Self> {
-        let db = py.detach(|| Db::open(&path, DbOptions::default())).map_err(err)?;
-        Ok(Database::new(db, models))
+    #[pyo3(signature = (path, models = None, threads = None))]
+    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>) -> PyResult<Self> {
+        let threads = threads_or_cores(threads)?;
+        // The layout comes from the file; the option only matters to a create.
+        let db = py.detach(|| Db::open(&path, db_options(false, threads))).map_err(err)?;
+        Ok(Database::new(with_threads(db, threads), models))
     }
 
     /// The schema of the first table, or of `table`, in its short JSON form.
@@ -706,7 +741,7 @@ impl Database {
     /// Creates a database at `path` from the tables of the SQLite file
     /// `sqlite_path`; returns it and what the import did as JSON.
     #[staticmethod]
-    #[pyo3(signature = (sqlite_path, path, tables = None, schemas = None, blobs_base64 = false, directory = false, models = None))]
+    #[pyo3(signature = (sqlite_path, path, tables = None, schemas = None, blobs_base64 = false, directory = false, models = None, threads = None))]
     #[allow(clippy::too_many_arguments)]
     fn from_sqlite(
         py: Python<'_>,
@@ -717,9 +752,11 @@ impl Database {
         blobs_base64: bool,
         directory: bool,
         models: Option<PathBuf>,
+        threads: Option<usize>,
     ) -> PyResult<(Self, String)> {
         let opts = Database::sqlite_options(tables, schemas, blobs_base64)?;
-        let db_opts = DbOptions { layout: if directory { Layout::Directory } else { Layout::SingleFile }, ..DbOptions::default() };
+        let threads = threads_or_cores(threads)?;
+        let db_opts = db_options(directory, threads);
         let models = models.unwrap_or_else(strata::embed::models_dir);
         let (db, embed_errors, report) = py
             .detach(|| -> strata::Result<_> {
@@ -734,7 +771,7 @@ impl Database {
                 Ok((db, embed_errors, r.to_json().to_string()))
             })
             .map_err(err)?;
-        Ok((Database { db: RwLock::new(Some(Arc::new(db))), embed_errors }, report))
+        Ok((Database { db: RwLock::new(Some(Arc::new(with_threads(db, threads)))), embed_errors }, report))
     }
 
     /// What an import of the SQLite file `sqlite_path` into a new database
