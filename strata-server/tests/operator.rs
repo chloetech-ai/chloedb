@@ -462,8 +462,12 @@ impl Platform for Procs {
             st.sets.remove(&id)
         };
         if let Some((_, pods)) = pods {
-            for k in pods.keys() {
-                let _ = std::fs::remove_dir_all(self.volume(id, *k));
+            // Stopped first: a server still running writes into the
+            // volume as it goes, and the volume is left behind.
+            let copies: Vec<usize> = pods.keys().copied().collect();
+            drop(pods);
+            for k in copies {
+                let _ = std::fs::remove_dir_all(self.volume(id, k));
             }
         }
         Ok(())
