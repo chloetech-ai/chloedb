@@ -1809,7 +1809,7 @@ function render(page, r) {
       title: `Apply ${plural(P.steps.length, "step")} to the cluster`, danger: !!removing, ok: "Apply", typed,
       body: h("div", { class: "stack", style: { gap: "8px" } },
         h("ol", { class: "cc-steps plain" }, P.steps.map((x) => h("li", {}, cap(x.text)))),
-        h("div", { class: "small dim" }, `About ${dur(P.estimate)}; ${fmt.si(P.rowsToCopy)} rows to copy. The steps run one at a time from this page: keep it open. Stop halts after the step under way.`),
+        h("div", { class: "small dim" }, `About ${dur(planTime(P).estimate)}; ${fmt.si(planTime(P).rows)} rows to copy. The steps run one at a time from this page: keep it open. Stop halts after the step under way.`),
         removing ? h("div", { class: "small", style: { color: "var(--crit-ink)" } }, `Removed: ${[...P.removes.map((x) => cname(M.all.find((c) => c.url === x.url) || { id: short(x.url) })), ...P.drops.map((i) => "shard " + i)].join(", ")}, and nothing else.`) : null),
     });
     if (!ok) return;
