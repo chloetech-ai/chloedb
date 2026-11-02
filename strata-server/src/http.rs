@@ -44,7 +44,7 @@
 //! | `GET /v1/profile/memory?node=` | | the heap ([`crate::heap`]: bytes in use and their peak, bytes allocated, allocations and frees), the resident memory and its peak, and the threads |
 //! | `POST /v1/profile/heap?format=folded&value=in_use&node=` | `{seconds?, every?, sql?, params?, clients?}` | an allocation profile ([`crate::heap::take`]): about one allocation in every `every` bytes (default 2 MiB) a thread allocates, sampled for `seconds`, with its stack; by stack, the bytes allocated and those still in use at the end; a query in a loop as for a CPU profile |
 //! | `GET /v1/profile/threads?node=` | | each thread of the process: its name, state, CPU time and context switches (Linux); on a coordinator, each of these four with `node` (a replica URL of `/v1/cluster`) is that server's, asked over gRPC (`Profile`) |
-//! | `GET /v1/queries/stats?limit=n`, `POST /v1/queries/stats/reset` | | statistics per statement shape, by time spent ([`crate::telemetry::Statements`]) |
+//! | `GET /v1/queries/stats?from=&to=&limit=n`, `GET /v1/queries/stats/:fingerprint`, `POST /v1/queries/stats/reset` | | statistics per statement shape over a window of the last day, by time spent ([`crate::telemetry::Statements`]) |
 //! | `GET /v1/timeseries?since=ms` | | `{interval_ms, points}`: rates and gauges every few seconds, the last hour ([`crate::telemetry::Series`]) |
 //! | `GET /v1/timeseries?from=&to=` | | the same over any range: memory's points when it holds `from`, else a point a minute from the log store's `load` (`source`) |
 //! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, its skew, writes and reads a minute, growth over a day and a week, and copies behind; kept 30 s ([`crate::inspect::tables`]) |
@@ -205,6 +205,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/profile/threads", get(threads))
         .route("/v1/queries/stats", get(query_stats))
         .route("/v1/queries/stats/reset", post(reset_query_stats))
+        // workload (alerts agent): one statement over a window
+        .route("/v1/queries/stats/:fingerprint", get(query_stat))
         .route("/v1/timeseries", get(timeseries))
         .route("/v1/logs", get(logs))
         .route("/v1/logs/filter", put(log_filter).merge(get(log_filter_now)))
@@ -2085,14 +2087,38 @@ async fn request_queries(State(app): State<App>, axum::extract::Path(id): axum::
     AxJson(json!({"queries": app.svc.query_log.by_request(&id)}))
 }
 
-async fn query_stats(State(app): State<App>, Query(q): Params) -> Res {
-    Ok(AxJson(app.svc.query_log.statements.list(param_u64(&q, "limit", 200)? as usize)))
+// ----- workload (alerts agent): statements over a window
+
+/// The window `from`/`to` (ms) a request names, by default the last 15
+/// minutes ([`telemetry::window_of`]).
+fn window_param(q: &std::collections::HashMap<String, String>) -> Result<(u64, u64), ApiError> {
+    let at = |k: &str| param_u64(q, k, 0).map(|v| (v > 0).then_some(v));
+    Ok(telemetry::window_of(at("from")?, at("to")?))
 }
 
+/// The statements of a window, by time spent, each with the window before
+/// (`prev`), its keys and whether it is new ([`telemetry::Statements`]).
+async fn query_stats(State(app): State<App>, Query(q): Params) -> Res {
+    let (from, to) = window_param(&q)?;
+    Ok(AxJson(app.svc.query_log.statements.window(from, to, param_u64(&q, "limit", 200)? as usize)))
+}
+
+/// One statement (by its id or fingerprint) over a window: a point a
+/// minute, its keys, shards, slowest calls and errors.
+async fn query_stat(State(app): State<App>, axum::extract::Path(which): axum::extract::Path<String>, Query(q): Params) -> Res {
+    let (from, to) = window_param(&q)?;
+    app.svc.query_log.statements.detail(&which, from, to).map(AxJson).ok_or_else(|| ApiError { status: 404, message: format!("no statement {which:?} in the last day") })
+}
+
+/// Starts this server's statement counts again (audited; a coordinator's
+/// shards keep theirs).
 async fn reset_query_stats(State(app): State<App>) -> AxJson<Json> {
     app.svc.query_log.statements.reset();
+    keys::note("reset this server's statement statistics");
     AxJson(json!({"reset": true}))
 }
+
+// ----- end workload
 
 /// `GET /v1/timeseries?since=` (memory's points, every 2 s over the last
 /// hour) or `?from=&to=`: memory's points when it holds `from`, else a
