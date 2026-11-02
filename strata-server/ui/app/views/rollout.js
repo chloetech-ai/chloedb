@@ -638,7 +638,7 @@ function render(page, r) {
     const count = p.done != null && p.total != null ? `${fmt.n(p.done)} of ${fmt.n(p.total)} copies` : null;
     const cost = back ? rollbackCost(back) : null;
     const rollbackAct = (primary) => back ? action({
-      label: imageChange || back.spec?.image !== spec().image ? `Roll back ${cost?.n != null ? plural(cost.n, "copy", "copies") + " " : ""}to ${vname(vOf(back.spec?.image))}…` : `Roll back to spec v${back.version}…`,
+      label: imageChange || back.spec?.image !== spec().image ? `Roll back ${cost?.n != null ? plural(cost.n, "copy", "copies") + " " : ""}to ${((t) => (named(t) || commitOf(t) ? vname(t) : `spec v${back.version}'s image`))(vOf(back.spec?.image))}…` : `Roll back to spec v${back.version}…`,
       sub: [cost?.secs != null ? `about ${span(cost.secs)}` : null, "one copy at a time", "shows the plan first"].filter(Boolean).join(" · "),
       cls: primary ? "danger solid" : "danger", disabled: adminOnly(), onclick: () => rollback(back),
     }) : null;
@@ -992,7 +992,8 @@ function render(page, r) {
         all || !map.length ? null : h("div", { class: "ro-hd-safe" }, "Copies of different versions serve side by side; finish the upgrade (or go back) before the next change."),
         kerr, versionStrip(map, { total })),
       h("div", { class: "ro-hd-acts" },
-        action({ label: "Pick a version…", sub: "the published images, and how to run one", cls: "primary", onclick: () => setTab("upgrades") }),
+        reg?.missing ? action({ label: "How to upgrade…", sub: "one copy at a time, by hand", cls: "primary", onclick: () => setTab("upgrades") })
+          : action({ label: "Pick a version…", sub: "the published images, and how to run one", cls: "primary", onclick: () => setTab("upgrades") }),
         action({ label: "Open the cluster", sub: "hand a primary over, see each copy", href: "#/cluster" }))));
   }
   function drawOwnNow() {
