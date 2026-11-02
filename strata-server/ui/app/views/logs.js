@@ -611,9 +611,9 @@ function render(page, r) {
   const stop = every(1000, tick, false);
   return () => { stop(); memStop?.(); offs.forEach((x) => x()); reroute = null; };
 }
-/** The old Logs links (?request=, ?node=, ?level=) as a search. */
+/** The old Logs links (?request=, ?node=, ?shard=, ?level=) as a search. */
 function legacyQ(p) {
-  return [p.get("level") ? `level>=${p.get("level")}` : null, p.get("node") ? `server:${quote(p.get("node"))}` : null, p.get("request") ? `request:${p.get("request")}` : null].filter(Boolean).join(" ");
+  return [p.get("level") ? `level>=${p.get("level")}` : null, p.get("node") ? `server:${quote(p.get("node"))}` : null, p.get("shard") ? `shard:${p.get("shard")}` : null, p.get("request") ? `request:${p.get("request")}` : null].filter(Boolean).join(" ");
 }
 
 // ---------------------------------------------------------------- stores

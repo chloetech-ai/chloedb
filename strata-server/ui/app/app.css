@@ -1880,6 +1880,10 @@ a.al-goto > svg { color: var(--muted); flex: none; }
   .al-hubspace { display: block; height: 76px; }
   .al-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px; }
   .al-row .card .hd { flex-wrap: wrap; }
+  .al-rhd { flex-wrap: wrap; }
+  .al-rhd .tools { width: 100%; flex-wrap: wrap; gap: 8px; }
+  .al-rhd .seg { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .al-rhd .tools .input, .al-rhd .tools input { flex: 1 1 100%; min-height: 40px; font-size: 16px; }
   .al-row .card .hd .tools { width: 100%; }
   /* Logs */
   .al-sqrow { flex-wrap: wrap; }

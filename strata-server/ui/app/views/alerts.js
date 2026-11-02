@@ -19,7 +19,7 @@ import { pattern } from "./logs.js";
 const view = { id: "alerts", title: "Alerts", icon: "alerts", group: "Operate", keywords: "alerts rules firing incidents acknowledge silence runbook owner routes webhook notifications backtest", render, onParams, badge };
 export default view;
 /** The alert page, `#/alert/<rule>`: not in the navigation. */
-export const alertPage = { id: "alert", title: "Alert", icon: "alerts", group: "Operate", hidden: true, nav: false, render: (page, r) => alertHub(page, r.rest?.[0] || r.params.get("rule") || "", r), onParams: (r) => hubParams?.(r) };
+export const alertPage = { id: "alert", title: "Alert", icon: "alerts", group: "Operate", hidden: true, nav: false, render, onParams };
 
 // ---------------------------------------------------------------- helpers
 const Needs = (scope) => needs(scope).replace(/^n/, "N");
@@ -192,14 +192,31 @@ export function badge() {
 
 // ---------------------------------------------------------------- the list
 let openRule = null, openRoutes = null, hubParams = null;
+// The list (#/alerts) and an alert's page (#/alert/<rule>, which the router hands to this view
+// with the rule in r.rest) share one view: going from one to the other only changes the params,
+// so onParams mounts the other one in the same page.
+let mount = null;
+const hubOf = (r) => { const id = r.rest?.[0] ? decodeURIComponent(r.rest[0]) : null; return id || (r.id === "alert" ? r.params.get("rule") : null) || null; };
+function mountInto(r) {
+  try { mount.stop?.(); } catch (e) { console.error(e); }
+  clear(mount.page);
+  mount.id = hubOf(r);
+  mount.stop = mount.id ? alertHub(mount.page, mount.id, r) : listView(mount.page, r);
+}
+function render(page, r) {
+  const me = mount = { page, id: null, stop: null };
+  mountInto(r);
+  return () => { try { me.stop?.(); } catch (e) { console.error(e); } if (mount === me) mount = null; };
+}
 function onParams(r) {
+  if (mount && hubOf(r) !== mount.id) { mountInto(r); mount.page.parentElement?.scrollTo?.(0, 0); return; }
+  if (mount?.id) { hubParams?.(r); return; }
   if (r.params.get("rule")) openRule?.(r.params.get("rule"));
   else if (r.params.get("new")) openRule?.(null);
   if (r.params.get("routes")) openRoutes?.();
 }
 
-function render(page, r) {
-  if (r.rest?.[0]) return alertHub(page, decodeURIComponent(r.rest[0]), r);
+function listView(page, r) {
   const sub = h("p");
   const routesBtn = h("button", { class: "btn", onclick: () => routesDrawer() }, icon("route"), "Routes");
   const newBtn = h("button", { class: "btn primary", onclick: () => editRule(null) }, icon("plus"), "New rule");
@@ -217,7 +234,7 @@ function render(page, r) {
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Alerts"), sub), h("div", { class: "tools" }, routesBtn, newBtn)),
     sum,
     card({ title: "Firing now", sub: "firing first, then pending · not silenced", body: [firingBox, silencedBox], flush: true, attrs: { style: { marginBottom: "14px" } } }),
-    h("section", { class: "card", style: { marginBottom: "14px" } }, h("div", { class: "hd" }, h("h3", {}, "Rules"), rulesSub, h("div", { class: "tools" }, filters, search)), h("div", { class: "bd flush" }, rulesBox)),
+    h("section", { class: "card", style: { marginBottom: "14px" } }, h("div", { class: "hd al-rhd" }, h("h3", {}, "Rules"), rulesSub, h("div", { class: "tools" }, filters, search)), h("div", { class: "bd flush" }, rulesBox)),
     h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "When each rule fired"), histSub), h("div", { class: "bd" }, histBox)));
 
   let m = null, longEvents = null, longFor = null;
@@ -685,7 +702,7 @@ function alertHub(page, id, r) {
       x.since_ms && st !== "ok" ? ` · since ${when(x.since_ms)}` : "", ` · now ${x.value == null ? "no value" : fv(rule.metric, x.value)}`, h("span", { class: "al-peak" }));
     const w8 = can("write"), fleet = m.fleet;
     const ackBtn = x.ack
-      ? h("button", { class: "btn al-acked", disabled: true, title: x.ack.note || "" }, icon("check"), h("span", { class: "al-wide-only" }, `Acknowledged · ${x.ack.by || "someone"} ${hm(x.ack.at_ms)}`), h("span", { class: "al-narrow-only" }, `Acked · ${x.ack.by || "someone"}`))
+      ? h("button", { class: "btn al-acked", disabled: true, title: x.ack.note || "" }, icon("check"), h("span", { class: "al-wide-only" }, `Acknowledged · ${x.ack.by || "someone"} ${hm(x.ack.at_ms)}`), h("span", { class: "al-narrow-only" }, "Acked"))
       : h("button", { class: "btn primary", disabled: !fleet || !w8 || st !== "firing", title: !fleet ? "This server cannot acknowledge alerts yet" : !w8 ? Needs("write") : st !== "firing" ? "Only a firing alert is acknowledged" : "Acknowledge: you are on it", onclick: async () => {
         try { await api(`/v1/alerts/${encodeURIComponent(id)}/ack`, { body: {} }); toast("Acknowledged", "ok"); await refreshAlerts(); load(); } catch (e) { toast(failMsg(e, "Acknowledging"), "bad"); }
       } }, icon("check"), h("span", { class: "al-wide-only" }, "Acknowledge"), h("span", { class: "al-narrow-only" }, "Ack"));
@@ -800,7 +817,7 @@ function alertHub(page, id, r) {
         { key: "f", label: "failed", num: true, sort: errs, render: (x2) => h("b", {}, fmt.si(errs(x2))) },
         { key: "p99_ms", label: "p99", num: true, render: (x2) => h("span", { class: "nowrap" }, fmt.ms(x2.p99_ms)) },
       ], { rows: failing, compact: true }) : h("div", { class: "small muted", style: { padding: "4px 14px 12px" } }, `No statement failed on the server's side${windowed ? " since it fired" : ""}.`),
-      windowed ? null : h("div", { class: "tiny muted", style: { padding: "0 14px 10px" } }, "Counted since this server started: it keeps no per-window statements."));
+      windowed ? null : h("div", { class: "tiny muted", style: { padding: "0 14px 10px" } }, "Counted since this server started, client errors (bad SQL) included: it keeps no per-window statements."));
     } catch (e) { clear(stmts, h("div", { class: "small muted", style: { padding: "4px 14px 12px" } }, e instanceof ApiError && e.status === 403 ? "Statements need an admin key." : "No statements from this server.")); }
   }
 
