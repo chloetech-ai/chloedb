@@ -15,6 +15,7 @@ import queries from "./queries.js";
 import performance from "./performance.js";
 import profile from "./profile.js";
 import querypath from "./querypath.js";
+import tables from "./tables.js";
 import inspector from "./inspector.js";
 import rollout from "./rollout.js";
 import autoscale from "./autoscale.js";
@@ -33,7 +34,7 @@ import media from "./media.js";
 import graph from "./graph.js";
 import classic from "./classic.js";
 
-export const VIEWS = [home, timeline, alerts, cluster, logs, queries, performance, profile, querypath, inspector, rollout, autoscale, access, system, cloud, sql, schema, importer, builder, relevance, recsys, sid, autocomplete, media, graph, classic];
+export const VIEWS = [home, timeline, alerts, cluster, logs, queries, performance, profile, querypath, tables, inspector, rollout, autoscale, access, system, cloud, sql, schema, importer, builder, relevance, recsys, sid, autocomplete, media, graph, classic];
 
 export const GROUPS = ["Operate", "Diagnose", "Change", "Data", "Labs"];
 
