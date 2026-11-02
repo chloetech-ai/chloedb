@@ -266,7 +266,7 @@ function render(page, r) {
         out.push({
           url: rr.url, short: rr.short || (typeof core.copyName === "function" ? core.copyName(rr.url, state.cluster) : `s${x.shard ?? i}-${j}`),
           shard: x.shard ?? i, role: rr.takes_writes ? "primary" : rr.role || "replica", node: rr.node || rr.name || null,
-          down: rr.status === "down" || rr.role === "unknown",
+          down: rr.status === "down" || rr.role === "unknown", since: rr.down_since_ms || null, was: rr.last_role || null,
           ver: rr.version?.digest || rr.version?.image || rr.version?.version || rr.detail?.system?.version || null,
           load: rr.detail?.load || {}, up_s: rr.detail?.system?.uptime_s,
         });
@@ -305,6 +305,7 @@ function render(page, r) {
     } else {
       const by = new Map();
       for (const c of copies()) {
+        if (c.down) continue; // not answering: no version to count, said apart (downLine)
         const k = c.ver || "unknown";
         if (!by.has(k)) by.set(k, []);
         by.get(k).push(c.short);
@@ -319,6 +320,24 @@ function render(page, r) {
     const isWant = (x) => !!want && ((wantV?.digest && x.key === wantV.digest) || x.key === want || (x.v?.image && x.v.image === want) || (!wantV?.digest && st().upgrade?.current?.digest === x.key));
     for (const x of list) x.target = isWant(x);
     return list;
+  }
+
+  /**
+   * Copies that do not answer and shards that take no writes, in one line:
+   * restarting another copy then could take a shard down.
+   */
+  function downLine() {
+    const gone = copies().filter((c) => c.down);
+    const stuck = (state.cluster?.shards || []).filter((x) => x.takes_writes === false || x.state === "no_writes");
+    if (!gone.length && !stuck.length) return null;
+    const first = gone.map((c) => c.since).filter(Boolean).sort((a, b) => a - b)[0];
+    const words = [];
+    if (gone.length) words.push(`${gone.map((c) => c.short + (c.was === "primary" ? " (the primary)" : "")).join(", ")} ${first ? `${gone.length === 1 ? "has" : "have"} not answered since ${clock(first)}` : `${gone.length === 1 ? "does" : "do"} not answer`}`);
+    if (stuck.length) words.push(`shard ${stuck.map((x) => x.shard).join(", ")} ${stuck.length === 1 ? "takes" : "take"} no writes`);
+    const shard = (gone[0]?.shard ?? stuck[0]?.shard);
+    return h("div", { class: "ro-hd-down" }, icon("warn"),
+      h("span", {}, words.join(": ") + ". Restart no other copy until ", gone.length === 1 ? "it is" : "they are", " back. ",
+        h("a", { href: `#/cluster?shard=${shard}` }, `Open shard ${shard}`)));
   }
 
   // ---------------------------------------------------------- what is happening
@@ -732,6 +751,7 @@ function render(page, r) {
         h("div", { class: "ro-hd-title" }, h("span", { class: "ro-badge" }, badge), h("span", {}, title)),
         why.length ? h("div", { class: "ro-hd-why" }, why) : null,
         safe ? h("div", { class: "ro-hd-safe" }, safe) : null,
+        downLine(),
         versionStrip(map, p, !moving(m)),
         bar),
       h("div", { class: "ro-hd-acts" }, acts)));
@@ -982,14 +1002,26 @@ function render(page, r) {
     const map = versionMap();
     const all = map.length === 1;
     const total = map.reduce((t, x) => t + x.count, 0);
-    const title = !map.length ? "No copy has said which version it runs yet" : all ? `Every copy runs ${vname(map[0].v)} (${plural(total, "copy", "copies")})` : `Copies run ${plural(map.length, "version")}: ${map.map((x) => `${fmt.n(x.count)} on ${vname(x.v)}`).join(", ")}`;
+    const nDown = copies().filter((c) => c.down).length;
+    const title = !map.length ? "No copy has said which version it runs yet" : all ? (nDown ? `Every copy that answers runs ${vname(map[0].v)} (${total} of ${total + nDown})` : `Every copy runs ${vname(map[0].v)} (${plural(total, "copy", "copies")})`) : `Copies run ${plural(map.length, "version")}: ${map.map((x) => `${fmt.n(x.count)} on ${vname(x.v)}`).join(", ")}`;
     const kerr = kubeErr && kubeErr.status !== 404 ? h("div", { class: "small dim" }, "The operator's status: " + kubeErr.message) : null;
-    clear(status, h("section", { class: "ro-hd " + (all || !map.length ? "ok" : "warn") },
+    const down = copies().some((c) => c.down);
+    const tone = down ? "failed" : all || !map.length ? "ok" : "warn";
+    const badge = down ? "Copy down" : all ? "One version" : map.length ? "Mixed" : "Unknown";
+    // On the other tabs, one line: what runs, and whether a copy is down.
+    if (tab !== "now") {
+      clear(status, h("section", { class: "ro-hd compact " + tone, "aria-live": "polite" },
+        h("div", { class: "ro-hd-title" }, h("span", { class: "ro-badge" }, badge), h("span", {}, title),
+          h("button", { class: "btn xs ghost", onclick: () => setTab("now") }, "Details")),
+        h("div", { class: "ro-hd-acts" }, action({ label: "Open the cluster", sub: "hand a primary over, see each copy", href: "#/cluster" }))));
+      return;
+    }
+    clear(status, h("section", { class: "ro-hd " + tone },
       h("div", { class: "ro-hd-t" },
-        h("div", { class: "ro-hd-title" }, h("span", { class: "ro-badge" }, all ? "One version" : map.length ? "Mixed" : "Unknown"), h("span", {}, title)),
+        h("div", { class: "ro-hd-title" }, h("span", { class: "ro-badge" }, badge), h("span", {}, title)),
         h("div", { class: "ro-hd-why" }, "No operator runs this cluster: a server takes a new version when you restart it with it. Restart the replicas first, then hand each primary over and restart it, one copy at a time."),
         all || !map.length ? null : h("div", { class: "ro-hd-safe" }, "Copies of different versions serve side by side; finish the upgrade (or go back) before the next change."),
-        kerr, versionStrip(map, { total })),
+        downLine(), kerr, versionStrip(map, { total })),
       h("div", { class: "ro-hd-acts" },
         reg?.missing ? action({ label: "How to upgrade…", sub: "one copy at a time, by hand", cls: "primary", onclick: () => setTab("upgrades") })
           : action({ label: "Pick a version…", sub: "the published images, and how to run one", cls: "primary", onclick: () => setTab("upgrades") }),
@@ -998,8 +1030,12 @@ function render(page, r) {
   function drawOwnNow() {
     const map = versionMap();
     const rows = map.map((x, i) => h("div", { class: "ro-run" },
-      h("div", { class: "row between" }, h("span", { class: "row nw" }, h("i", { class: "ro-sw " + (i === 0 ? "t" : "o" + Math.min(i, 3)) }), vsaid(x.v)), h("span", { class: "small dim" }, plural(x.count, "copy", "copies"))),
+      h("div", { class: "row between" }, h("span", { class: "row nw" }, h("i", { class: "ro-sw o" + Math.min(i, 3) }), vsaid(x.v)), h("span", { class: "small dim" }, plural(x.count, "copy", "copies"))),
       h("div", { class: "ro-run-s" }, x.copies.map((c) => { const cc = copies().find((y) => y.short === c); return h("span", { class: "ro-srv" + (cc?.role === "primary" ? " p" : ""), title: cc ? `${cc.url} · ${cc.role}${cc.up_s ? " · up " + span(cc.up_s) : ""}` : c }, c); }))));
+    const gone = copies().filter((c) => c.down);
+    if (gone.length) rows.push(h("div", { class: "ro-run" },
+      h("div", { class: "row between" }, h("span", { class: "row nw" }, h("i", { class: "ro-sw down" }), "not answering"), h("span", { class: "small dim" }, plural(gone.length, "copy", "copies"))),
+      h("div", { class: "ro-run-s" }, gone.map((c) => h("span", { class: "ro-srv down", title: `${c.url}${c.was ? " · was " + c.was : ""}${c.since ? " · down since " + clock(c.since) : ""}` }, c.short)))));
     clear(body, h("div", { class: "ro-main" },
       h("div", { class: "ro-col" }, card({ title: "What each copy runs", sub: "by version; a primary is outlined", body: rows.length ? h("div", { class: "stack", style: { gap: "8px" } }, rows) : h("div", { class: "small dim" }, "No copies yet.") })),
       h("div", { class: "ro-col" }, howCard())));
@@ -1098,14 +1134,14 @@ function render(page, r) {
       body: h("div", { class: "stack", style: { gap: "10px" } },
         h("div", { class: "row" }, find, only),
         h("div", { class: "small" }, curRow ? ["The cluster runs ", h("b", {}, vname({ ...curRow, track: reg.track })), curRow.created ? `, built ${clock(sec(curRow.created))} ${TZ}` : "", ". ", newer ? h("b", {}, `${plural(newer, "newer build")}.`) : "Nothing newer is published.", cmp ? [" ", h("a", { href: cmp, target: "_blank", rel: "noopener" }, "What changed since")] : null]
-          : readOnly ? "Published images, newest first. Nothing here changes this cluster: its servers are restarted by hand." : "Published images, newest first."),
-        readOnly ? h("div", { class: "notice" }, "This server is not run by the Kubernetes operator: the list is for reading. Copy an image's pull command, then restart your machines with it one copy at a time.") : null,
+          : "Published images, newest first."),
+        readOnly ? h("div", { class: "notice" }, "This server is not run by the Kubernetes operator, so nothing here changes the cluster. Copy an image's pull command, then restart your machines with it one copy at a time.") : null,
         moving(m) ? h("div", { class: "ro-warnline" }, icon("warn"), h("span", {}, "A change is under way: picking a version replaces it, from where it is.")) : null,
         reg.error ? h("div", { class: "small dim" }, "Some answers are old: " + reg.error) : null,
         h("div", { class: "tbl-wrap", style: { maxHeight: "560px" } }, h("table", { class: "t compact ro-pk" },
           h("thead", {}, h("tr", {}, h("th", {}, "version"), h("th", {}, `built (${TZ})`), h("th", {}, ""), h("th", {}, "digest"), h("th", {}, ""))),
           h("tbody", {}, list.length ? list.map(tr) : h("tr", {}, h("td", { colspan: 5 }, empty("search", "No version matches", q ? `Nothing has "${q}" in its tag or commit.` : "")))))),
-        h("div", { class: "small dim" }, "Picking one shows the plan first: the restarts, the time it takes and how to go back. Nothing restarts until you confirm.")),
+        readOnly ? null : h("div", { class: "small dim" }, "Picking one shows the plan first: the restarts, the time it takes and how to go back. Nothing restarts until you confirm.")),
     });
   }
   /** An older server: no list of versions; name an image, or take the upgrader's newest. */

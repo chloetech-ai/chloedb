@@ -325,6 +325,8 @@ function render(page, r) {
     const live = new Set((keysJ?.keys || []).map((k) => k.id));
     return gone.filter((g) => !live.has(g.id)).map((g) => ({ ...made[g.id], ...g, name: made[g.id]?.name || `key ${g.id.slice(0, 8)}`, fromLog: true }));
   }
+  /** Whether a key is the one an audit entry names: by id when the server says it, else by name. */
+  const keyOf = (e) => (k) => (e.key ? k.id === e.key : k.name === e.who);
   const liveKeys = () => (keysJ?.keys || []).filter((k) => !k.revoked_ms);
   /** Rotations under way: [{old, next}] (a newer key of the same scope that succeeds it). */
   function rotations() {
@@ -440,13 +442,14 @@ function render(page, r) {
     const top = [...groups.values()].sort((a, b) => b.n - a.n)[0];
     if (!top || top.n < 3) return;
     const e = top.e, from = [e.addr, clientName(e.client)].filter(Boolean);
-    const revoked = revokedKeys().find((k) => k.name === e.who);
-    const what = revoked ? [`${top.n} requests refused with the revoked key `, h("b", {}, e.who), ` since ${at(top.first)}`]
+    const revoked = revokedKeys().find(keyOf(e));
+    const expired = !revoked && (/\bexpired\b/.test(e.detail || "") || liveKeys().find(keyOf(e))?.expires_ms < e.ts_ms);
+    const what = revoked || expired ? [`${top.n} requests refused with the ${revoked ? "revoked" : "expired"} key `, h("b", {}, e.who), ` since ${at(top.first)}`]
       : e.status === 403 ? [`${top.n} requests from `, h("b", {}, whoName(e)), ` refused since ${at(top.first)}: they need a wider scope`]
         : [`${top.n} requests refused since ${at(top.first)}: no key, or a wrong, expired or revoked one`];
     clear(bannerBox, h("div", { class: "ac-banner" },
       h("span", { class: "ac-dot" }),
-      h("div", { class: "grow" }, ...what, from.length ? `, from ${from[0]}${from[1] ? ` (${from[1]})` : ""}` : "", ".", revoked ? " That client was not moved to a new key." : ""),
+      h("div", { class: "grow" }, ...what, from.length ? `, from ${from[0]}${from[1] ? ` (${from[1]})` : ""}` : "", ".", revoked || expired ? " That client was not moved to a new key." : ""),
       h("button", { class: "btn sm", onclick: () => { tab = "refused"; f.who = whoName(e); f.q = e.addr || ""; setParams(); draw(); } }, "Show them")));
   }
 
@@ -518,8 +521,12 @@ function render(page, r) {
   function bodyOf(e) {
     const out = [];
     if (sortOf(e) === "refusal") {
-      const gone = e.status === 401 && revokedKeys().find((k) => k.name === e.who);
+      const gone = e.status === 401 && revokedKeys().find(keyOf(e));
+      const old = e.status === 401 && !gone && liveKeys().find(keyOf(e));
+      const said = /^refused: (.+)/.exec(e.detail || "")?.[1];
       out.push(h("div", { class: "dim" }, gone ? `The key was revoked ${at(gone.revoked_ms)}${gone.revoked_by ? ` by ${whoName({ who: gone.revoked_by })}` : ""}.`
+        : old?.expires_ms && old.expires_ms <= e.ts_ms ? `The key expired ${at(old.expires_ms)} ${TZ}.`
+        : said ? words(said + ".")
         : e.status === 401 ? "No key, or a wrong, expired or revoked one." : `${e.scope ? `A ${e.scope} key` : "This key"} may not do this.`));
       return out;
     }
@@ -674,11 +681,11 @@ function render(page, r) {
   }
   function revokedRow(k) {
     const by = k.revoked_by ? ` by ${whoName({ who: k.revoked_by })}` : "";
-    const refused = (audit?.refusals || []).filter((e) => e.who === k.name).sort((a, b) => b.ts_ms - a.ts_ms)[0];
+    const refused = (audit?.refusals || []).filter((e) => keyOf(e)(k)).sort((a, b) => b.ts_ms - a.ts_ms)[0];
     return h("tr", { class: "ac-revoked", "data-key": k.id },
       h("td", { class: "ac-kname" }, h("b", { title: k.fromLog ? "From the audit log: this server does not list revoked keys" : "" }, k.name), h("div", { class: "small muted" }, `revoked ${at(k.revoked_ms)}${by}`)),
       h("td", {}, k.scope ? h("span", { class: "ac-scope " + k.scope }, k.scope) : "–"),
-      h("td", { class: "num" }, refused ? h("span", { class: "ac-bad-t", title: whenT(refused.ts_ms) }, `refused ${ago(refused.ts_ms)}`) : h("span", { title: k.last_used_ms ? whenT(k.last_used_ms) : "" }, k.last_used_ms ? ago(k.last_used_ms) : "–")),
+      h("td", { class: "num" + (refused ? " ac-said" : "") }, refused ? h("span", { class: "ac-bad-t", title: whenT(refused.ts_ms) }, `refused ${ago(refused.ts_ms)}`) : h("span", { title: k.last_used_ms ? whenT(k.last_used_ms) : "" }, k.last_used_ms ? ago(k.last_used_ms) : "–")),
       h("td", { class: "num" }, "–"), h("td", {}));
   }
 

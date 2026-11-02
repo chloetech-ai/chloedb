@@ -10,6 +10,7 @@
 // installs Strata's operator through the new cluster's API, follows its
 // copies until they answer, and deletes it (its volumes first) when asked.
 
+import * as core from "../core.js";
 import { h, s, icon, clear, fmt, card, api, toast, confirm, seg, toggle, pill, empty, table, tipOn, hideTip, debounce, copy, failure, clamp, modal } from "../core.js";
 import { state } from "../data.js";
 
@@ -300,7 +301,7 @@ function render(page, r) {
       title: prov === "aws" ? "Credentials" : "Token", sub: prov === "aws" ? "an IAM user's access key" : "a personal access token",
       body: h("div", { class: "stack" }, f, h("div", { class: "small dim" }, note), extra),
     }));
-    setTimeout(() => first.focus(), 0);
+    if (!(core.isNarrow?.() || core.isPhone?.())) setTimeout(() => first.focus(), 0); // a phone would open its keyboard over the page
   }
 
   async function forget() {
