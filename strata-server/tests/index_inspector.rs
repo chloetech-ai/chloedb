@@ -44,7 +44,7 @@ async fn listen() -> (TcpListener, String) {
 }
 
 async fn call(method: Method, url: String, body: Option<Json>) -> (u16, Json) {
-    let mut r = reqwest::Client::new().request(method, url);
+    let mut r = strata_server::http_client().build().unwrap().request(method, url);
     if let Some(b) = body {
         r = r.json(&b);
     }

@@ -55,6 +55,16 @@ pub mod slots;
 pub mod telemetry;
 pub mod ui;
 
+/// A builder of the HTTP clients the server makes. They trust the roots
+/// built in (webpki-roots), not the platform's store: the `s3` feature's
+/// S3 client (object_store) turns on reqwest's native roots for every
+/// client in the build, and those are loaded again each time a client is
+/// built, which on macOS reads the keychain (about a second each on CI's
+/// runners). S3 itself keeps them, in object_store's own client.
+pub fn http_client() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().tls_built_in_native_certs(false)
+}
+
 pub mod pb {
     tonic::include_proto!("strata.v1");
 }

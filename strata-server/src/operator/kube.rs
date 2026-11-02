@@ -72,7 +72,7 @@ impl Kube {
             None if o.api.is_none() => Some(std::fs::read(format!("{SA}/ca.crt")).map_err(|e| format!("{SA}/ca.crt: {e}"))?),
             None => None,
         };
-        let mut b = reqwest::Client::builder().timeout(Duration::from_secs(30));
+        let mut b = crate::http_client().timeout(Duration::from_secs(30));
         if let Some(pem) = ca {
             for c in reqwest::Certificate::from_pem_bundle(&pem).map_err(|e| format!("the API server's CA: {e}"))? {
                 b = b.add_root_certificate(c);

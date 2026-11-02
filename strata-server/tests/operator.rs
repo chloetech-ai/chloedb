@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as Json};
@@ -144,7 +144,7 @@ impl Service {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
         let s = svc.clone();
         tokio::spawn(async move {
-            let http = reqwest::Client::builder().timeout(Duration::from_millis(500)).build().unwrap();
+            let http = strata_server::http_client().timeout(Duration::from_millis(500)).build().unwrap();
             loop {
                 let ports = s.ports.lock().unwrap().clone();
                 let mut ready = Vec::new();
@@ -405,8 +405,17 @@ impl Procs {
     }
 }
 
+/// One client for every call the tests make: building one can take a
+/// second on macOS (`strata_server::http_client`), and a step asks every
+/// server whether it is ready. It keeps no idle connections, so none
+/// outlives the test (and runtime) that opened it.
+fn http() -> &'static reqwest::Client {
+    static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+    HTTP.get_or_init(|| strata_server::http_client().pool_max_idle_per_host(0).build().unwrap())
+}
+
 async fn ready(http: u16) -> bool {
-    reqwest::get(format!("http://127.0.0.1:{http}/readyz")).await.is_ok_and(|r| r.status().is_success())
+    self::http().get(format!("http://127.0.0.1:{http}/readyz")).send().await.is_ok_and(|r| r.status().is_success())
 }
 
 impl Platform for Procs {
@@ -691,7 +700,7 @@ impl Run {
         let servers: Vec<u16> = self.procs.state.lock().unwrap().sets.values().flat_map(|(_, pods)| pods.values().map(|p| p.http)).collect();
         assert_eq!(servers.len(), 9);
         for http in servers {
-            let mut r = reqwest::Client::new().get(format!("http://127.0.0.1:{http}/v1/profile/settings"));
+            let mut r = self::http().get(format!("http://127.0.0.1:{http}/v1/profile/settings"));
             if let Some((_, cluster)) = &self.procs.tokens {
                 r = r.bearer_auth(cluster);
             }
@@ -739,7 +748,7 @@ async fn a_cluster_with_its_own_token_is_made_grown_shrunk_and_healed() {
     every_step(&mut run).await;
     // A server takes the cluster's token, not the admin's.
     let server = run.procs.state.lock().unwrap().sets[&0].1[&0].http;
-    let ask = |token: &'static str| reqwest::Client::new().get(format!("http://127.0.0.1:{server}/v1/stats")).bearer_auth(token).send();
+    let ask = |token: &'static str| http().get(format!("http://127.0.0.1:{server}/v1/stats")).bearer_auth(token).send();
     assert_eq!(ask("admin-token").await.unwrap().status(), 401);
     assert_eq!(ask("cluster-token").await.unwrap().status(), 200);
 }
@@ -999,7 +1008,7 @@ impl Load {
         for n in 0..readers {
             let (stop, seen, url) = (stop.clone(), seen.clone(), url.clone());
             tasks.push(tokio::spawn(async move {
-                let http = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().unwrap();
+                let http = strata_server::http_client().timeout(Duration::from_secs(15)).build().unwrap();
                 let mut i = n;
                 while !stop.load(Ordering::Relaxed) {
                     i += 1;
@@ -1022,7 +1031,7 @@ impl Load {
         }
         let (stop2, seen2) = (stop.clone(), seen.clone());
         tasks.push(tokio::spawn(async move {
-            let http = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().unwrap();
+            let http = strata_server::http_client().timeout(Duration::from_secs(15)).build().unwrap();
             let mut i = 0i64;
             while !stop2.load(Ordering::Relaxed) {
                 i += 1;
@@ -1050,7 +1059,7 @@ impl Load {
         }));
         let (stop3, seen3) = (stop.clone(), seen.clone());
         tasks.push(tokio::spawn(async move {
-            let http = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().unwrap();
+            let http = strata_server::http_client().timeout(Duration::from_secs(15)).build().unwrap();
             while !stop3.load(Ordering::Relaxed) {
                 let sql = format!("UPDATE products SET sold = sold + 1 WHERE id = '{COUNTER}'");
                 let (r, ms) = ask(http.clone(), url3.clone(), sql.clone()).await;

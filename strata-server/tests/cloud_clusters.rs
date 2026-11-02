@@ -213,7 +213,7 @@ async fn aws(State(seen): State<Arc<Mutex<Aws_>>>, OriginalUri(uri): OriginalUri
 
 /// Sends `method path body` as the administrator.
 async fn call(base: &str, method: &str, path: &str, body: Option<Json>) -> (u16, Json) {
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let mut r = match method {
         "GET" => c.get(format!("{base}{path}")),
         "DELETE" => c.delete(format!("{base}{path}")),

@@ -81,7 +81,7 @@ async fn coordinator(urls: &[String], token: Option<Secret>, access: Access) -> 
 }
 
 async fn http(base: &str, method: &str, path: &str, auth: Option<&str>, body: Option<Json>) -> (u16, Json) {
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let mut r = match method {
         "GET" => c.get(format!("{base}{path}")),
         "DELETE" => c.delete(format!("{base}{path}")),

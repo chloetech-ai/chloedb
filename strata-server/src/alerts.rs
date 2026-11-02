@@ -164,7 +164,7 @@ impl Alerts {
             },
             None => defaults(),
         };
-        let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().map_err(|e| e.to_string())?;
+        let http = crate::http_client().timeout(std::time::Duration::from_secs(5)).build().map_err(|e| e.to_string())?;
         Ok(Alerts { rules: Mutex::new(rules), states: Mutex::new(HashMap::new()), events: Mutex::new(VecDeque::new()), file, webhook, http })
     }
 

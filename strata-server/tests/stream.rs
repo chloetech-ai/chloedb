@@ -99,17 +99,17 @@ fn line(i: usize) -> String {
 async fn stream(url: &str, lines: Vec<String>) -> Vec<Json> {
     let chunks: Vec<Result<String, std::io::Error>> = lines.chunks(37).map(|c| Ok(c.concat())).collect();
     let body = reqwest::Body::wrap_stream(futures::stream::iter(chunks));
-    let r = reqwest::Client::new().post(format!("{url}/v1/stream")).header("content-type", "application/x-ndjson").body(body).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{url}/v1/stream")).header("content-type", "application/x-ndjson").body(body).send().await.unwrap();
     assert_eq!(r.status(), 200);
     r.text().await.unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
 }
 
 async fn post(url: &str, path: &str, body: Json) -> Json {
-    reqwest::Client::new().post(format!("{url}{path}")).json(&body).send().await.unwrap().json().await.unwrap()
+    strata_server::http_client().build().unwrap().post(format!("{url}{path}")).json(&body).send().await.unwrap().json().await.unwrap()
 }
 
 async fn get(url: &str, path: &str) -> Json {
-    reqwest::get(format!("{url}{path}")).await.unwrap().json().await.unwrap()
+    strata_server::http_client().build().unwrap().get(format!("{url}{path}")).send().await.unwrap().json().await.unwrap()
 }
 
 /// The events and the users' counts' sum, through `/v1/sql`.
@@ -185,7 +185,7 @@ async fn a_replayed_stream_applies_each_event_once() {
     assert!(r["error"].as_str().unwrap().contains("system table"), "{r}");
 
     // Each event's lag was measured once, when its rows became visible.
-    let m = reqwest::get(format!("{url}/metrics")).await.unwrap().text().await.unwrap();
+    let m = strata_server::http_client().build().unwrap().get(format!("{url}/metrics")).send().await.unwrap().text().await.unwrap();
     assert!(m.contains("strata_stream_lag_seconds_count 4002\n"), "{}", m.lines().filter(|l| l.contains("lag")).collect::<Vec<_>>().join("\n"));
 }
 
@@ -387,7 +387,7 @@ async fn kill_9_mid_stream_neither_loses_nor_duplicates() {
     };
     let up = |url: String| async move {
         let t0 = Instant::now();
-        while reqwest::get(format!("{url}/v1/health")).await.is_err() {
+        while strata_server::http_client().build().unwrap().get(format!("{url}/v1/health")).send().await.is_err() {
             assert!(t0.elapsed() < Duration::from_secs(30), "the server did not start");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -405,7 +405,7 @@ async fn kill_9_mid_stream_neither_loses_nor_duplicates() {
         tokio::time::sleep(Duration::from_micros(200)).await;
         c
     }));
-    let r = reqwest::Client::new().post(format!("{url}/v1/stream")).header("content-type", "application/x-ndjson").body(body).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{url}/v1/stream")).header("content-type", "application/x-ndjson").body(body).send().await.unwrap();
     let mut answers = r.bytes_stream();
     let mut acked = 0;
     let mut text = String::new();

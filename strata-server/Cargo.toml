@@ -16,7 +16,9 @@ axum = "0.7"
 tonic = { version = "0.12", features = ["tls", "tls-webpki-roots"] }
 prost = "0.13"
 # "stream": request bodies sent as they are made (strata-stream-bench, tests/stream.rs).
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# "rustls-tls-native-roots-no-provider": only for `tls_built_in_native_certs(false)`
+# in `http_client`, since object_store (feature s3) turns native roots on.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots-no-provider", "stream"] }
 futures = "0.3"
 tokio-stream = { version = "0.1", features = ["net"] }
 # TLS for the HTTP listener (tonic serves gRPC's), with ring as tonic does.

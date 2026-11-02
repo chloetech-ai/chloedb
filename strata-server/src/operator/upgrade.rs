@@ -162,7 +162,7 @@ impl Default for Registry {
 
 impl Registry {
     pub fn new() -> Registry {
-        Registry { http: reqwest::Client::builder().timeout(Duration::from_secs(20)).build().expect("an HTTP client") }
+        Registry { http: crate::http_client().timeout(Duration::from_secs(20)).build().expect("an HTTP client") }
     }
 
     /// GETs `url`, with a token when the registry asks for one.

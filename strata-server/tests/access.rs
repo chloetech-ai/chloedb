@@ -36,7 +36,7 @@ async fn listen() -> (TcpListener, String) {
 /// Sends `method path body` with `auth` as the bearer credential; the
 /// status and the answer.
 async fn call(base: &str, method: &str, path: &str, auth: Option<&str>, body: Option<Json>) -> (u16, Json) {
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let mut r = match method {
         "GET" => c.get(format!("{base}{path}")),
         "DELETE" => c.delete(format!("{base}{path}")),
@@ -248,7 +248,7 @@ async fn a_request_s_statements_and_options_need_their_scope_over_http_and_grpc(
     let import = |auth: &str, q: &str| {
         let (base, bytes, auth, q) = (base.clone(), bytes.clone(), auth.to_string(), q.to_string());
         async move {
-            let r = reqwest::Client::new().post(format!("{base}/v1/import?format=sqlite{q}")).bearer_auth(auth).header("content-type", "application/vnd.sqlite3").body(bytes).send().await.unwrap();
+            let r = strata_server::http_client().build().unwrap().post(format!("{base}/v1/import?format=sqlite{q}")).bearer_auth(auth).header("content-type", "application/vnd.sqlite3").body(bytes).send().await.unwrap();
             (r.status().as_u16(), r.json::<Json>().await.unwrap())
         }
     };
@@ -321,7 +321,7 @@ async fn an_open_server_s_first_key_closes_it() {
     assert_eq!(call(&base, "GET", "/v1/stats", None, None).await.0, 401);
     assert_eq!(call(&base, "GET", "/v1/stats", Some(&admin), None).await.0, 200);
     // The UI and health stay open.
-    assert_eq!(reqwest::get(format!("{base}/v1/health")).await.unwrap().status(), 200);
+    assert_eq!(strata_server::http_client().build().unwrap().get(format!("{base}/v1/health")).send().await.unwrap().status(), 200);
     // Its last admin key cannot be revoked: no one could manage it.
     let id = j["key"]["id"].as_str().unwrap();
     assert_eq!(call(&base, "DELETE", &format!("/v1/admin/keys/{id}"), Some(&admin), None).await.0, 409);
@@ -373,7 +373,7 @@ async fn alert_rules_fire_on_points_and_post_to_the_webhook() {
     let sent = got.lock().unwrap().clone();
     assert_eq!(sent.len(), 1);
     assert!(sent[0]["text"].as_str().unwrap().contains("Many rows"), "{sent:?}");
-    let metrics = reqwest::get(format!("{base}/metrics")).await.unwrap().text().await.unwrap();
+    let metrics = strata_server::http_client().build().unwrap().get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
     assert!(metrics.contains("strata_alerts_firing{severity=\"critical\"} 1"), "{metrics}");
     // Kept in the file.
     assert_eq!(Alerts::new(Some(dir.path().join("alerts.json")), None).unwrap().rules()[0].id, "rows");

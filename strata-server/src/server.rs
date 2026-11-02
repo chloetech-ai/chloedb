@@ -484,7 +484,9 @@ fn open_log_store(svc: &mut Service, o: &Options) -> Result<(), String> {
 /// term, shipping to `replicas` under `write_acks` (`POST
 /// /v1/admin/promote`), and answers what it said.
 pub async fn promote(url: &str, replicas: &[String], write_acks: &str, force: bool, token: Option<&str>) -> Result<serde_json::Value, String> {
-    let mut req = reqwest::Client::new()
+    let mut req = crate::http_client()
+        .build()
+        .map_err(|e| e.to_string())?
         .post(format!("{}/v1/admin/promote", url.trim_end_matches('/')))
         .json(&serde_json::json!({"replicas": replicas, "write_acks": write_acks, "force": force}));
     if let Some(t) = token.filter(|t| !t.is_empty()) {
@@ -518,7 +520,7 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
     };
     let out = dir.join(&local);
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    let client = reqwest::Client::new();
+    let client = crate::http_client().build().map_err(|e| e.to_string())?;
     // Each file's path in the repository, and its name here.
     let files: Vec<(&str, &str)> = match (derives, cross_encoder::fetch_files(&local)) {
         (true, _) => strata::derive::model_files(&local).iter().map(|&f| (f, f)).collect(),
