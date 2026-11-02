@@ -109,14 +109,20 @@ push)
     in_pod "echo pushed: \$(ls /work/strata | wc -l) entries"
     ;;
 setup)
-    in_pod "set -e; apt-get update -qq && apt-get install -y -qq build-essential curl git >/dev/null
-        command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null
-        . \$HOME/.cargo/env
-        python3 -m venv /work/venv && . /work/venv/bin/activate
-        pip install -q maturin numpy pyarrow duckdb lancedb tantivy sqlite-vec faiss-cpu fastembed psutil
-        cd /work/strata/strata-py && maturin develop --release -q
-        cd /work/strata/strata && cargo build --release --features baselines --bin strata-baselines -q
-        python3 -c 'import strata, sqlite3; c = sqlite3.connect(\":memory:\"); c.enable_load_extension(True); print(\"setup ok\")'"
+    # In the background (a long kubectl exec can be cut); `status` shows its log.
+    in_pod "mkdir -p /work/logs; cat >/work/setup.sh <<'SH'
+set -e
+apt-get update -qq && apt-get install -y -qq build-essential curl git >/dev/null
+command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null
+. \$HOME/.cargo/env
+python3 -m venv /work/venv && . /work/venv/bin/activate
+pip install -q maturin numpy pyarrow duckdb lancedb tantivy sqlite-vec faiss-cpu fastembed psutil
+cd /work/strata/strata-py && maturin develop --release -q
+cd /work/strata/strata && cargo build --release --features baselines --bin strata-baselines -q
+python3 -c 'import strata, sqlite3; c = sqlite3.connect(\":memory:\"); c.enable_load_extension(True); print(\"SETUP DONE\")'
+SH
+        nohup bash /work/setup.sh >/work/logs/setup.log 2>&1 &
+        echo setup started"
     ;;
 prep)
     in_pod "set -e; . /work/venv/bin/activate; mkdir -p /work/data/shop-raw /work/data/beir; cd /work/strata
