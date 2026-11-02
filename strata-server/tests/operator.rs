@@ -1,27 +1,35 @@
 //! The operator's steps ([`strata_server::operator::reconcile`]) on a
 //! platform of server processes on this machine, which stand for a
 //! Kubernetes cluster's pods: each set of copies is a StatefulSet's pods,
-//! each with a directory for its volume, and the coordinator a process
-//! started again when its `--shards` list changes. A cluster is made,
-//! grows and shrinks in shards and in copies, hands a primary over before
-//! its copy goes, starts every copy again with new settings one at a
-//! time, and takes back a copy that lost its volume, answering
-//! every row throughout: open, and with a cluster token of its own, the
-//! admin token held by the coordinator alone.
+//! each with a directory for its volume, stopped as the kubelet stops a
+//! pod (SIGTERM, then a kill after the grace period); the coordinators a
+//! Deployment that starts a new one, ready, before it stops an old one,
+//! behind a Service (a TCP proxy sending each connection to a coordinator
+//! whose `/readyz` answers). A cluster is made, grows and shrinks in
+//! shards and in copies, hands a primary over before its copy goes, starts
+//! every copy again with new settings one at a time, and takes back a
+//! copy that lost its volume, answering every row throughout: open, and
+//! with a cluster token of its own, the admin token held by the
+//! coordinator alone. And a new image rolls out while queries and writes
+//! come in, none of them failing; one whose servers exit is rolled back,
+//! and one that does not run is refused before any server restarts.
 
 #![cfg(unix)]
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as Json};
-use strata_server::operator::{noted, reconcile, Admin, Gates, Outcome, Phase, Platform, Rollout, RolloutSpec, Set, Spec};
+use strata_server::operator::{back_to, noted, patched, reconcile, rollback_target, versions, Admin, Check, Gates, OnFailure, Outcome, Phase, Platform, Rolled, Rollout, RolloutSpec, Set, Spec, Trouble};
 
 const ROWS: usize = 300;
+
+/// How long a server serves on once told to stop (`--drain-ms`).
+const DRAIN_MS: u64 = 1000;
 
 /// A port of a block of 60 this process takes alone (as in
 /// tests/failover.rs).
@@ -38,17 +46,139 @@ fn port() -> u16 {
     }
 }
 
+/// The binary an image runs, and arguments it adds: an image named
+/// `:missing` has none (it cannot be pulled), and one named `:crashes`
+/// runs a server that exits at once.
+fn binary(image: &str) -> Option<(PathBuf, Vec<String>)> {
+    match image.rsplit(':').next() {
+        Some("missing") => None,
+        Some("crashes") => Some((PathBuf::from(env!("CARGO_BIN_EXE_strata-server")), vec!["--no-such-flag".into()])),
+        _ => Some((PathBuf::from(env!("CARGO_BIN_EXE_strata-server")), Vec::new())),
+    }
+}
+
 struct Pod {
-    child: Child,
+    /// None when its image could not be started.
+    child: Option<Child>,
     http: u16,
-    /// The settings it was started with ([`Spec::server_config`]).
+    /// The settings it was started with ([`Spec::server_config`], or a
+    /// coordinator's).
     config: String,
+    image: String,
+    /// Its log, for why it exited.
+    log: PathBuf,
+}
+
+impl Pod {
+    /// Why it does not run, if it does not: exited, or never started.
+    fn trouble(&mut self) -> Option<String> {
+        let Some(c) = self.child.as_mut() else { return Some(format!("ErrImagePull: the image {} cannot be pulled", self.image)) };
+        let status = c.try_wait().ok().flatten()?;
+        let log = std::fs::read_to_string(&self.log).unwrap_or_default();
+        let last = log.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default().to_string();
+        Some(format!("it {status}: {last}"))
+    }
+
+    /// Asks it to stop, as the kubelet does (SIGTERM).
+    fn terminate(&self) {
+        if let Some(c) = &self.child {
+            unsafe { libc::kill(c.id() as i32, libc::SIGTERM) };
+        }
+    }
+
+    /// Whether it has stopped, killing it once the grace period is over.
+    fn stopped(&mut self, since: Instant) -> bool {
+        let Some(c) = self.child.as_mut() else { return true };
+        if c.try_wait().ok().flatten().is_some() {
+            return true;
+        }
+        if since.elapsed() > Duration::from_secs(20) {
+            let _ = c.kill();
+            let _ = c.wait();
+            return true;
+        }
+        false
+    }
 }
 
 impl Drop for Pod {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(c) = self.child.as_mut() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
+/// A coordinator pod of the Deployment, and the shards list it runs.
+struct CoordPod {
+    pod: Pod,
+    list: Vec<Vec<String>>,
+}
+
+/// The coordinators' Deployment: what its template asks, and its pods.
+#[derive(Default)]
+struct Deployment {
+    want: Option<(Vec<Vec<String>>, usize, Spec)>,
+    pods: Vec<CoordPod>,
+}
+
+/// The coordinators' Service: a TCP proxy sending each new connection to
+/// a coordinator whose `/readyz` answered 200 within the last 100 ms, as
+/// endpoints follow readiness.
+struct Service {
+    /// Every coordinator process that runs, ready or not.
+    ports: Mutex<Vec<u16>>,
+    ready: Mutex<Vec<u16>>,
+    next: AtomicUsize,
+}
+
+impl Service {
+    async fn start(port: u16) -> Arc<Service> {
+        let svc = Arc::new(Service { ports: Mutex::default(), ready: Mutex::default(), next: AtomicUsize::new(0) });
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+        let s = svc.clone();
+        tokio::spawn(async move {
+            let http = reqwest::Client::builder().timeout(Duration::from_millis(500)).build().unwrap();
+            loop {
+                let ports = s.ports.lock().unwrap().clone();
+                let mut ready = Vec::new();
+                for p in ports {
+                    if http.get(format!("http://127.0.0.1:{p}/readyz")).send().await.is_ok_and(|r| r.status().is_success()) {
+                        ready.push(p);
+                    }
+                }
+                *s.ready.lock().unwrap() = ready;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        let s = svc.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut client, _)) = listener.accept().await else { continue };
+                let s = s.clone();
+                tokio::spawn(async move {
+                    // No coordinator ready: the connection waits a little,
+                    // then is refused.
+                    let t0 = Instant::now();
+                    let to = loop {
+                        let ready = s.ready.lock().unwrap().clone();
+                        if !ready.is_empty() {
+                            break Some(ready[s.next.fetch_add(1, Ordering::Relaxed) % ready.len()]);
+                        }
+                        if t0.elapsed() > Duration::from_secs(2) {
+                            break None;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    };
+                    let Some(to) = to else { return };
+                    if let Ok(mut server) = tokio::net::TcpStream::connect(("127.0.0.1", to)).await {
+                        let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+                    }
+                });
+            }
+        });
+        svc
     }
 }
 
@@ -60,7 +190,12 @@ struct State {
     /// pod template holds them.
     configs: BTreeMap<u32, Spec>,
     ports: HashMap<(u32, usize), (u16, u16)>,
-    coordinator: Option<(Vec<Vec<String>>, Pod)>,
+    /// Copies told to stop, each started again once it has (the
+    /// StatefulSet makes the pod again).
+    stopping: Vec<(u32, usize, Pod, Instant)>,
+    deployment: Deployment,
+    /// Coordinators told to stop.
+    retiring: Vec<(Pod, Instant)>,
 }
 
 struct Procs {
@@ -75,6 +210,10 @@ struct Procs {
     /// platform's objects are made from.
     spec: Mutex<Spec>,
     state: Mutex<State>,
+    service: tokio::sync::OnceCell<Arc<Service>>,
+    /// Images tried before a rollout, and copies restarted.
+    preflights: Mutex<Vec<String>>,
+    restarts: AtomicUsize,
 }
 
 impl Procs {
@@ -82,7 +221,17 @@ impl Procs {
         let schema = dir.join("schema.json");
         std::fs::write(&schema, serde_json::to_string(&strata_server::demo::schema(ROWS)).unwrap()).unwrap();
         let tokens = tokens.map(|(a, c)| (a.to_string(), c.to_string()));
-        Procs { dir: dir.to_path_buf(), schema, coordinator_port: port(), tokens, spec: Mutex::default(), state: Mutex::new(State::default()) }
+        Procs {
+            dir: dir.to_path_buf(),
+            schema,
+            coordinator_port: port(),
+            tokens,
+            spec: Mutex::default(),
+            state: Mutex::new(State::default()),
+            service: tokio::sync::OnceCell::new(),
+            preflights: Mutex::default(),
+            restarts: AtomicUsize::new(0),
+        }
     }
 
     fn ports(&self, id: u32, k: usize) -> (u16, u16) {
@@ -93,8 +242,9 @@ impl Procs {
         self.dir.join(format!("s{id}-{k}"))
     }
 
-    fn log(&self, name: &str) -> std::fs::File {
-        std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join(format!("{name}.log"))).unwrap()
+    fn log(&self, name: &str) -> (std::fs::File, PathBuf) {
+        let path = self.dir.join(format!("{name}.log"));
+        (std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap(), path)
     }
 
     /// Starts copy `k` of set `id` as the StatefulSet's script does, with
@@ -106,10 +256,14 @@ impl Procs {
         let vol = self.volume(id, k);
         std::fs::create_dir_all(&vol).unwrap();
         let db = vol.join("db.strata");
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_strata-server"));
+        let (log, log_path) = self.log(&format!("s{id}-{k}"));
+        let Some((bin, extra)) = binary(&set.image) else {
+            return Pod { child: None, http, config: set.server_config(), image: set.image.clone(), log: log_path };
+        };
+        let mut cmd = Command::new(bin);
         cmd.arg("--db").arg(&db).args(["--seq-no", "--listen", &format!("127.0.0.1:{http}"), "--grpc", &format!("127.0.0.1:{grpc}")]);
-        cmd.args(["--failover-after-ms", &set.failover_after_ms.to_string(), "--log", "info"]);
-        cmd.args(&set.args);
+        cmd.args(["--failover-after-ms", &set.failover_after_ms.to_string(), "--log", "info", "--drain-ms", &DRAIN_MS.to_string()]);
+        cmd.args(&set.args).args(&extra);
         if let Some((_, cluster)) = &self.tokens {
             cmd.args(["--cluster-token", cluster]);
         }
@@ -119,8 +273,99 @@ impl Procs {
                 _ => cmd.arg("--schema").arg(&self.schema),
             };
         }
-        let child = cmd.stdout(Stdio::null()).stderr(self.log(&format!("s{id}-{k}"))).spawn().unwrap();
-        Pod { child, http, config: set.server_config() }
+        let child = cmd.stdout(Stdio::null()).stderr(log).spawn().unwrap();
+        Pod { child: Some(child), http, config: set.server_config(), image: set.image.clone(), log: log_path }
+    }
+
+    /// Starts a coordinator over `list` with `spec`'s settings, on a port
+    /// of its own.
+    fn start_coordinator(&self, list: &[Vec<String>], spec: &Spec) -> CoordPod {
+        let http = port();
+        let (log, log_path) = self.log(&format!("coordinator-{http}"));
+        let config = spec.coordinator_config();
+        let Some((bin, extra)) = binary(&spec.image) else {
+            return CoordPod { pod: Pod { child: None, http, config, image: spec.image.clone(), log: log_path }, list: list.to_vec() };
+        };
+        let shards = list.iter().map(|s| s.join("|")).collect::<Vec<_>>().join(",");
+        let mut cmd = Command::new(bin);
+        cmd.args(["--shards", &shards, "--listen", &format!("127.0.0.1:{http}"), "--grpc", "off", "--log", "info", "--drain-ms", &DRAIN_MS.to_string()]);
+        cmd.args(&spec.coordinator_args).args(&extra);
+        if let Some((admin, cluster)) = &self.tokens {
+            cmd.args(["--token", admin, "--cluster-token", cluster]);
+        }
+        let child = cmd.stdout(Stdio::null()).stderr(log).spawn().unwrap();
+        CoordPod { pod: Pod { child: Some(child), http, config, image: spec.image.clone(), log: log_path }, list: list.to_vec() }
+    }
+
+    /// What the StatefulSets' and the Deployment's controllers do between
+    /// two looks: a copy that stopped starts again, and the Deployment
+    /// moves its pods toward its template, one at a time: a new one
+    /// starts (one more than asked at most), and an old one stops once
+    /// as many as asked are ready without it.
+    fn drive(&self) {
+        let ready: Vec<u16> = self.service.get().map(|s| s.ready.lock().unwrap().clone()).unwrap_or_default();
+        let mut restart = Vec::new();
+        {
+            let mut st = self.state.lock().unwrap();
+            let mut i = 0;
+            while i < st.stopping.len() {
+                let (_, _, pod, since) = &mut st.stopping[i];
+                let since = *since;
+                if pod.stopped(since) {
+                    let (id, k, _, _) = st.stopping.remove(i);
+                    restart.push((id, k));
+                } else {
+                    i += 1;
+                }
+            }
+            st.retiring.retain_mut(|(p, since)| !p.stopped(*since));
+        }
+        for (id, k) in restart {
+            let demo = self.state.lock().unwrap().sets.get(&id).map(|(d, _)| *d);
+            let Some(demo) = demo else { continue };
+            let pod = self.start(id, k, demo);
+            if let Some((_, pods)) = self.state.lock().unwrap().sets.get_mut(&id) {
+                pods.insert(k, pod);
+            }
+        }
+        let want = self.state.lock().unwrap().deployment.want.clone();
+        if let Some((list, replicas, spec)) = want {
+            let config = spec.coordinator_config();
+            let mut st = self.state.lock().unwrap();
+            let d = &mut st.deployment;
+            let fresh = |p: &CoordPod| p.pod.config == config && p.list == list;
+            let n_fresh = d.pods.iter().filter(|p| fresh(p)).count();
+            let up = |p: &CoordPod| ready.contains(&p.pod.http);
+            let n_up = d.pods.iter().filter(|p| up(p)).count();
+            let mut start = false;
+            let mut stop = None;
+            if n_fresh < replicas && d.pods.len() < replicas + 1 {
+                start = true;
+            } else if let Some(i) = d.pods.iter().position(|p| !fresh(p) && !up(p)) {
+                // An old one that does not serve goes at once.
+                stop = Some(i);
+            } else if let Some(i) = d.pods.iter().position(|p| !fresh(p)) {
+                if n_up > replicas || (n_up == replicas && d.pods.iter().filter(|p| fresh(p) && up(p)).count() >= replicas) {
+                    stop = Some(i);
+                }
+            } else if n_fresh > replicas {
+                stop = d.pods.iter().position(|p| !up(p)).or(Some(0));
+            }
+            if let Some(i) = stop {
+                let p = d.pods.remove(i);
+                p.pod.terminate();
+                st.retiring.push((p.pod, Instant::now()));
+            }
+            drop(st);
+            if start {
+                let p = self.start_coordinator(&list, &spec);
+                self.state.lock().unwrap().deployment.pods.push(p);
+            }
+        }
+        if let Some(svc) = self.service.get() {
+            let st = self.state.lock().unwrap();
+            *svc.ports.lock().unwrap() = st.deployment.pods.iter().map(|p| p.pod.http).chain(st.retiring.iter().map(|(p, _)| p.http)).collect();
+        }
     }
 
     /// Copy `k` of set `id` comes back without its volume.
@@ -134,6 +379,12 @@ impl Procs {
         std::fs::remove_dir_all(self.volume(id, k)).unwrap();
         let pod = self.start(id, k, demo);
         self.state.lock().unwrap().sets.get_mut(&id).unwrap().1.insert(k, pod);
+    }
+
+    /// The process ids of the copies, by set and ordinal.
+    fn pids(&self) -> BTreeMap<(u32, usize), u32> {
+        let st = self.state.lock().unwrap();
+        st.sets.iter().flat_map(|(&id, (_, pods))| pods.iter().filter_map(move |(&k, p)| Some(((id, k), p.child.as_ref()?.id())))).collect()
     }
 
     fn logs(&self) -> String {
@@ -155,9 +406,11 @@ async fn ready(http: u16) -> bool {
 
 impl Platform for Procs {
     async fn sets(&self) -> Result<Vec<Set>, String> {
+        self.drive();
         let pods: Vec<(u32, usize, Vec<(usize, u16)>)> = {
             let st = self.state.lock().unwrap();
-            st.sets.iter().map(|(&id, (_, pods))| (id, pods.len(), pods.iter().map(|(&k, p)| (k, p.http)).collect())).collect()
+            let stopping = |id: u32| st.stopping.iter().filter(|(s, _, _, _)| *s == id).count();
+            st.sets.iter().map(|(&id, (_, pods))| (id, pods.len() + stopping(id), pods.iter().map(|(&k, p)| (k, p.http)).collect())).collect()
         };
         let mut sets = Vec::new();
         for (id, replicas, pods) in pods {
@@ -197,7 +450,6 @@ impl Platform for Procs {
         }
         Ok(())
     }
-
     async fn delete_set(&self, id: u32) -> Result<(), String> {
         let pods = {
             let mut st = self.state.lock().unwrap();
@@ -213,30 +465,72 @@ impl Platform for Procs {
     }
 
     async fn coordinator(&self) -> Result<Option<(Vec<Vec<String>>, usize)>, String> {
-        Ok(self.state.lock().unwrap().coordinator.as_ref().map(|(l, _)| (l.clone(), 1)))
+        self.drive();
+        Ok(self.state.lock().unwrap().deployment.want.as_ref().map(|(l, n, _)| (l.clone(), *n)))
     }
 
-    async fn set_coordinator(&self, shards: &[Vec<String>], _replicas: usize) -> Result<(), String> {
-        drop(self.state.lock().unwrap().coordinator.take());
-        let list = shards.iter().map(|s| s.join("|")).collect::<Vec<_>>().join(",");
-        let http = self.coordinator_port;
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_strata-server"));
-        cmd.args(["--shards", &list, "--listen", &format!("127.0.0.1:{http}"), "--grpc", "off", "--log", "info"]);
-        if let Some((admin, cluster)) = &self.tokens {
-            cmd.args(["--token", admin, "--cluster-token", cluster]);
-        }
-        let child = cmd
-            .stdout(Stdio::null())
-            .stderr(self.log("coordinator"))
-            .spawn()
-            .unwrap();
-        let config = self.spec.lock().unwrap().coordinator_config();
-        self.state.lock().unwrap().coordinator = Some((shards.to_vec(), Pod { child, http, config }));
+    async fn set_coordinator(&self, shards: &[Vec<String>], replicas: usize) -> Result<(), String> {
+        self.service.get_or_init(|| Service::start(self.coordinator_port)).await;
+        let spec = self.spec.lock().unwrap().clone();
+        self.state.lock().unwrap().deployment.want = Some((shards.to_vec(), replicas, spec));
+        self.drive();
         Ok(())
     }
 
     async fn coordinator_config(&self) -> Result<Option<String>, String> {
-        Ok(self.state.lock().unwrap().coordinator.as_ref().map(|(_, p)| p.config.clone()))
+        Ok(self.state.lock().unwrap().deployment.want.as_ref().map(|(_, _, s)| s.coordinator_config()))
+    }
+
+    async fn coordinators_rolled(&self) -> Result<Rolled, String> {
+        self.drive();
+        let ready: Vec<u16> = self.service.get().map(|s| s.ready.lock().unwrap().clone()).unwrap_or_default();
+        let st = self.state.lock().unwrap();
+        let Some((list, n, spec)) = &st.deployment.want else { return Ok(Rolled { done: true, text: "no coordinators".into() }) };
+        let fresh: Vec<&CoordPod> = st.deployment.pods.iter().filter(|p| p.pod.config == spec.coordinator_config() && p.list == *list).collect();
+        let up = fresh.iter().filter(|p| ready.contains(&p.pod.http)).count();
+        let old = st.deployment.pods.len() - fresh.len();
+        let done = fresh.len() == *n && up == *n && old == 0;
+        Ok(Rolled { done, text: format!("{} of {n} restarted, {up} ready{}", fresh.len(), if old > 0 { format!(", {old} older still serving") } else { String::new() }) })
+    }
+
+    async fn trouble(&self, spec: &Spec) -> Result<Vec<Trouble>, String> {
+        let (server, coordinator) = (spec.server_config(), spec.coordinator_config());
+        let mut st = self.state.lock().unwrap();
+        let mut out = Vec::new();
+        for (&id, (_, pods)) in st.sets.iter_mut() {
+            for (&k, pod) in pods.iter_mut() {
+                if let Some(text) = pod.trouble() {
+                    out.push(Trouble { copy: Some((id, k)), who: format!("copy {id}-{k}"), fresh: pod.config == server, text });
+                }
+            }
+        }
+        for p in st.deployment.pods.iter_mut() {
+            if let Some(text) = p.pod.trouble() {
+                out.push(Trouble { copy: None, who: format!("coordinator :{}", p.pod.http), fresh: p.pod.config == coordinator, text });
+            }
+        }
+        Ok(out)
+    }
+
+    async fn preflight(&self, image: &str) -> Result<Check, String> {
+        {
+            let st = self.state.lock().unwrap();
+            let all = st.sets.values().flat_map(|(_, pods)| pods.values()).chain(st.deployment.pods.iter().map(|p| &p.pod)).all(|p| p.image == image);
+            if all {
+                return Ok(Check::Done("every server runs it already".into()));
+            }
+        }
+        self.preflights.lock().unwrap().push(image.to_string());
+        let Some((bin, _)) = binary(image) else { return Ok(Check::Failed(format!("ErrImagePull: the image {image} cannot be pulled"))) };
+        let out = Command::new(bin).arg("--help").output().map_err(|e| e.to_string())?;
+        Ok(match out.status.success() {
+            true => Check::Done("it runs on this machine".into()),
+            false => Check::Failed(format!("strata-server --help exited with {}", out.status)),
+        })
+    }
+
+    async fn end_preflight(&self) -> Result<(), String> {
+        Ok(())
     }
 
     async fn configure(&self, id: u32, spec: &Spec) -> Result<bool, String> {
@@ -255,14 +549,14 @@ impl Platform for Procs {
     }
 
     async fn restart(&self, id: u32, ordinal: usize) -> Result<(), String> {
-        let demo = {
-            let mut st = self.state.lock().unwrap();
-            let (demo, pods) = st.sets.get_mut(&id).ok_or("no such set")?;
-            drop(pods.remove(&ordinal));
-            *demo
-        };
-        let pod = self.start(id, ordinal, demo);
-        self.state.lock().unwrap().sets.get_mut(&id).unwrap().1.insert(ordinal, pod);
+        // As the kubelet stops a pod: SIGTERM, and a kill after the grace
+        // period; the StatefulSet makes it again once it stopped.
+        let mut st = self.state.lock().unwrap();
+        let (_, pods) = st.sets.get_mut(&id).ok_or("no such set")?;
+        let pod = pods.remove(&ordinal).ok_or("no such copy")?;
+        pod.terminate();
+        st.stopping.push((id, ordinal, pod, Instant::now()));
+        self.restarts.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -281,26 +575,64 @@ impl Platform for Procs {
     }
 }
 
+/// Rollouts quick enough for a test: verified for 2 s, a check failing
+/// for 2 s fails the version, a step may take a minute.
+fn quick() -> RolloutSpec {
+    RolloutSpec { verify_seconds: 2, hold_after_seconds: 2, progress_deadline_seconds: 60, ..RolloutSpec::default() }
+}
+
 struct Run {
     procs: Procs,
     admin: Admin,
+    /// The spec as the test last changed it.
     spec: Spec,
     /// What the last step left for the next (the resource's
     /// `status.rollout`).
     rollout: Mutex<Rollout>,
+    /// The cluster's versions (`status.history`).
+    history: Mutex<Json>,
+    /// The spec the operator rolled a failed version back to, while the
+    /// test's spec is that version (its hash, and the spec), as the
+    /// operator patches a `StrataCluster`'s spec.
+    back: Mutex<Option<(String, Spec)>>,
 }
 
 impl Run {
     fn new(procs: Procs, admin: Admin, spec: Spec) -> Run {
-        Run { procs, admin, spec, rollout: Mutex::new(Rollout::default()) }
+        Run { procs, admin, spec, rollout: Mutex::new(Rollout::default()), history: Mutex::new(Json::Null), back: Mutex::new(None) }
     }
 
-    /// One step toward the spec.
+    /// The spec as the operator works to it: the test's, or the version
+    /// it rolled back to.
+    fn current(&self) -> Spec {
+        match &*self.back.lock().unwrap() {
+            Some((v, s)) if *v == self.spec.version() => s.clone(),
+            _ => self.spec.clone(),
+        }
+    }
+
+    /// One step toward the spec, and what the operator does with a
+    /// version that failed (as `kube::once` does with a `StrataCluster`):
+    /// back to the last version that ran everywhere.
     async fn once(&self) -> Outcome {
-        *self.procs.spec.lock().unwrap() = self.spec.clone();
-        let before = self.rollout.lock().unwrap().clone();
-        let out = reconcile(&self.spec, &self.procs, &self.admin, &before).await;
-        *self.rollout.lock().unwrap() = out.rollout.clone();
+        let spec = self.current();
+        *self.procs.spec.lock().unwrap() = spec.clone();
+        let rollback = (spec != self.spec).then(|| spec.version());
+        let before = noted(self.rollout.lock().unwrap().clone(), None, rollback.as_deref(), &spec);
+        let mut out = reconcile(&spec, &self.procs, &self.admin, &before).await;
+        let mut h = self.history.lock().unwrap();
+        *h = versions(&h, &spec, None, None, strata_server::operator::now_ms(), out.phase == Phase::Ready);
+        let mut next = out.rollout.clone();
+        if let Some(f) = out.rollout.failed.clone().filter(|_| spec.rollout.on_failure == OnFailure::Rollback) {
+            if let Some(t) = rollback_target(&h, &spec, out.rollout.ungated) {
+                let now = serde_json::to_value(&spec).unwrap();
+                let (_, back) = patched(&now, &back_to(&now, &t["spec"])).unwrap();
+                out.message = format!("rolling back to version {}: the version failed ({}): {}", t["version"], f.step, f.text);
+                next = Rollout::default();
+                *self.back.lock().unwrap() = Some((self.spec.version(), back));
+            }
+        }
+        *self.rollout.lock().unwrap() = next;
         out
     }
 
@@ -376,7 +708,7 @@ async fn a_cluster_is_made_grown_shrunk_and_healed() {
     let dir = tempfile::tempdir().unwrap();
     let procs = Procs::new(dir.path(), None);
     let admin = Admin::new(&format!("http://127.0.0.1:{}", procs.coordinator_port), None);
-    let spec = Spec { shards: 2, replicas: 2, demo: Some(ROWS), failover_after_ms: 1000, ..Spec::default() };
+    let spec = Spec { shards: 2, replicas: 2, demo: Some(ROWS), failover_after_ms: 1000, rollout: quick(), ..Spec::default() };
     every_step(&mut Run::new(procs, admin, spec)).await;
 }
 
@@ -395,6 +727,7 @@ async fn a_cluster_with_its_own_token_is_made_grown_shrunk_and_healed() {
         failover_after_ms: 1000,
         token_secret: Some("admin".into()),
         cluster_token_secret: Some("inner".into()),
+        rollout: quick(),
         ..Spec::default()
     };
     let mut run = Run::new(procs, admin, spec);
@@ -410,14 +743,14 @@ async fn a_cluster_with_its_own_token_is_made_grown_shrunk_and_healed() {
 /// server does not take; on Kubernetes, requests no node has room for)
 /// restarts at once with the settings that fix it, rather than being
 /// waited for: while the cluster is made, and when a rollout of a bad
-/// setting is rolled back.
+/// setting fails and is rolled back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_that_cannot_start_restarts_with_the_settings_that_fix_it() {
     let dir = tempfile::tempdir().unwrap();
     let procs = Procs::new(dir.path(), None);
     let admin = Admin::new(&format!("http://127.0.0.1:{}", procs.coordinator_port), None);
     let bad = vec!["--no-such-flag".to_string()];
-    let spec = Spec { shards: 1, replicas: 2, demo: Some(ROWS), failover_after_ms: 1000, args: bad.clone(), ..Spec::default() };
+    let spec = Spec { shards: 1, replicas: 2, demo: Some(ROWS), failover_after_ms: 1000, args: bad.clone(), rollout: quick(), ..Spec::default() };
     let mut run = Run::new(procs, admin, spec);
 
     // Made with an argument no copy starts with: it waits for them.
@@ -433,23 +766,23 @@ async fn a_copy_that_cannot_start_restarts_with_the_settings_that_fix_it() {
     assert_eq!(run.shape().await.0, vec![2]);
     assert_eq!(run.count().await, ROWS as i64);
 
-    // The bad argument rolls out to a replica, which does not come back:
-    // the rollout waits for it, and the primary serves.
+    // The bad argument rolls out to a replica, which exits: the version
+    // fails, and goes back to the one that ran everywhere; the copy
+    // restarts with that one's settings, and the primary serves
+    // throughout.
     run.spec.args = bad;
-    let (_, said) = run.until("a copy down", |o| o.message.contains("to be back")).await;
+    let (_, said) = run.until("rolled back", |o| o.phase == Phase::Ready && run.current().args.is_empty()).await;
     assert!(said.iter().any(|m| m.starts_with("restarting")), "{said:?}");
-    for _ in 0..10 {
-        let o = run.once().await;
-        assert!(o.message.contains("to be back"), "{o:?}");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(run.count().await, ROWS as i64);
-    // Rolled back, the copy restarts with the settings it had.
-    run.spec.args = Vec::new();
-    let said = run.settle("rolled back").await;
+    let failed = said.iter().find(|m| m.starts_with("rolling back to version 2: the version failed (copies):")).unwrap_or_else(|| panic!("{said:?}"));
+    assert!(failed.contains("cannot run the new settings") && failed.contains("exit status: 2"), "{failed}");
     assert!(said.iter().any(|m| m.contains("which has not started")), "{said:?}");
+    assert!(said.iter().any(|m| m.starts_with("verifying the version: healthy")), "{said:?}");
     assert_eq!(run.shape().await.0, vec![2]);
     assert_eq!(run.count().await, ROWS as i64);
+    // A failed rollback is not rolled back again: held instead.
+    let h = run.history.lock().unwrap().clone();
+    assert_eq!(h.as_array().unwrap().iter().map(|v| v["version"].as_u64().unwrap()).collect::<Vec<_>>(), vec![1, 2, 3, 4], "{h}");
+    assert!(rollback_target(&h, &run.current(), true).is_none());
 }
 
 /// Makes the cluster, grows it in shards and copies, heals a copy that
@@ -543,7 +876,7 @@ async fn every_step(run: &mut Run) {
     assert_eq!(run.procs.stale(&run.spec).await.unwrap().len(), 9, "no copy restarts while paused");
     // Gated: the fullest volume over 0.01% of its disk, which every volume
     // here is, for a second holds the rollout, until it is resumed.
-    run.spec.rollout = RolloutSpec { paused: false, gates: Gates { disk_used_ratio: Some(0.0001), ..Gates::default() }, hold_after_seconds: 1, soak_seconds: 1 };
+    run.spec.rollout = RolloutSpec { paused: false, gates: Gates { disk_used_ratio: Some(0.0001), ..Gates::default() }, hold_after_seconds: 1, soak_seconds: 1, on_failure: OnFailure::Hold, ..quick() };
     let (held, _) = run.until("held", |o| o.rollout.held.is_some()).await;
     let h = held.rollout.held.clone().unwrap();
     assert!(h.gate == "diskUsedRatio" && h.text.starts_with("the fullest volume was") && h.text.contains("over its 0.01% limit"), "{h:?}");
@@ -567,7 +900,7 @@ async fn every_step(run: &mut Run) {
     assert!(said.iter().any(|m| m.contains("serves 1 s with them before the next restarts")), "{said:?}");
     run.slow_ms_everywhere(778.0).await;
     assert_eq!((run.count().await, run.sold().await), (ROWS as i64, sum));
-    run.spec.rollout = RolloutSpec::default();
+    run.spec.rollout = quick();
 
     // Two copies each again. The highest copy of the first set is made its
     // shard's primary first: it hands the primary over before it goes.
@@ -587,9 +920,10 @@ async fn every_step(run: &mut Run) {
     assert_eq!(run.shape().await, (vec![2, 2], vec![2048, 2048]));
     assert_eq!((run.count().await, run.sold().await), (ROWS as i64, sum));
     assert!(!run.procs.volume(2, 0).exists(), "the removed shard's volumes are deleted");
-    // And the coordinator, started again on its list, serves it all.
-    let (list, _) = run.procs.coordinator().await.unwrap().unwrap();
-    run.procs.set_coordinator(&list, 1).await.unwrap();
+    // And the coordinator, killed and started again on its list, serves
+    // it all.
+    run.procs.state.lock().unwrap().deployment.pods.clear();
+    run.procs.drive();
     let t0 = Instant::now();
     while run.admin.call(reqwest::Method::GET, "/v1/cluster", None).await.is_err() {
         assert!(t0.elapsed() < Duration::from_secs(30), "the coordinator did not start again: {}", run.procs.logs());
@@ -597,4 +931,169 @@ async fn every_step(run: &mut Run) {
     }
     run.settle("coordinator again").await;
     assert_eq!((run.count().await, run.sold().await), (ROWS as i64, sum));
+}
+
+/// What the clients saw while the cluster changed: reads (searches, key
+/// lookups, counts) and writes through the coordinators' Service, each
+/// with the answers that failed.
+#[derive(Debug, Default)]
+struct Seen {
+    reads: usize,
+    writes: usize,
+    failed: Vec<String>,
+    slowest_ms: f64,
+    /// The last value each key was written, as acknowledged.
+    written: BTreeMap<String, i64>,
+}
+
+/// Clients sending queries and writes all along, as an application would.
+struct Load {
+    stop: Arc<AtomicBool>,
+    seen: Arc<Mutex<Seen>>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Load {
+    fn start(port: u16, readers: usize) -> Load {
+        let stop = Arc::new(AtomicBool::new(false));
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let url = format!("http://127.0.0.1:{port}/v1/sql");
+        let mut tasks = Vec::new();
+        let ask = |http: reqwest::Client, url: String, sql: String| async move {
+            let t0 = Instant::now();
+            let r = http.post(&url).json(&json!({"sql": sql})).send().await;
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            let r = match r {
+                Ok(a) if a.status().is_success() => Ok(a.json::<Json>().await.unwrap_or(Json::Null)),
+                Ok(a) => Err(format!("{}: {}", a.status(), a.text().await.unwrap_or_default())),
+                Err(e) => Err(format!("{e:?}")),
+            };
+            (r, ms)
+        };
+        for n in 0..readers {
+            let (stop, seen, url) = (stop.clone(), seen.clone(), url.clone());
+            tasks.push(tokio::spawn(async move {
+                let http = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().unwrap();
+                let mut i = n;
+                while !stop.load(Ordering::Relaxed) {
+                    i += 1;
+                    let sql = match i % 3 {
+                        0 => "SELECT id, title FROM products ORDER BY bm25(body, 'laptop phone tent') DESC LIMIT 5".to_string(),
+                        1 => format!("SELECT id, sold FROM products WHERE id = 'p{:07}'", i % ROWS),
+                        _ => "SELECT COUNT(*) FROM products".to_string(),
+                    };
+                    let (r, ms) = ask(http.clone(), url.clone(), sql.clone()).await;
+                    let mut s = seen.lock().unwrap();
+                    s.reads += 1;
+                    s.slowest_ms = s.slowest_ms.max(ms);
+                    match r {
+                        Ok(j) if i % 3 == 2 && j["rows"][0][0] != json!(ROWS) => s.failed.push(format!("{sql}: {j}")),
+                        Ok(_) => {}
+                        Err(e) => s.failed.push(format!("{sql}: {e}")),
+                    }
+                }
+            }));
+        }
+        let (stop2, seen2) = (stop.clone(), seen.clone());
+        tasks.push(tokio::spawn(async move {
+            let http = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().unwrap();
+            let mut i = 0i64;
+            while !stop2.load(Ordering::Relaxed) {
+                i += 1;
+                let key = format!("p{:07}", i as usize % 40);
+                let sql = format!("UPDATE products SET sold = {} WHERE id = '{key}'", 500_000 + i);
+                let (r, ms) = ask(http.clone(), url.clone(), sql.clone()).await;
+                {
+                    let mut s = seen2.lock().unwrap();
+                    s.writes += 1;
+                    s.slowest_ms = s.slowest_ms.max(ms);
+                    match r {
+                        Ok(_) => {
+                            s.written.insert(key, 500_000 + i);
+                        }
+                        Err(e) => s.failed.push(format!("{sql}: {e}")),
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }));
+        Load { stop, seen, tasks }
+    }
+
+    async fn end(self) -> Seen {
+        self.stop.store(true, Ordering::Relaxed);
+        for t in self.tasks {
+            let _ = t.await;
+        }
+        Arc::try_unwrap(self.seen).unwrap().into_inner().unwrap()
+    }
+
+    fn so_far(&self) -> (usize, usize, Vec<String>) {
+        let s = self.seen.lock().unwrap();
+        (s.reads, s.writes, s.failed.clone())
+    }
+}
+
+/// A new version rolls out while queries and writes come in: the image is
+/// tried first, the coordinators restart (a new one ready before an old
+/// one stops), then each copy, its primary handed over first, and the
+/// version is verified. No query or write fails, and every write is kept.
+/// An image whose servers exit fails at its first copy and is rolled back
+/// to the version before, still without a failed query; one that cannot
+/// be pulled is refused before any server restarts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_new_version_rolls_out_under_load_and_a_bad_one_rolls_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let procs = Procs::new(dir.path(), None);
+    let port = procs.coordinator_port;
+    let admin = Admin::new(&format!("http://127.0.0.1:{port}"), None);
+    let spec = Spec { image: "strata-server:v1".into(), shards: 2, replicas: 3, coordinators: 2, demo: Some(ROWS), failover_after_ms: 1000, rollout: quick(), ..Spec::default() };
+    let mut run = Run::new(procs, admin, spec);
+    run.settle("made").await;
+    assert_eq!(run.shape().await.0, vec![3, 3]);
+    let load = Load::start(port, 4);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // v2: tried, then every coordinator and copy restarts, one at a time.
+    let t0 = Instant::now();
+    run.spec.image = "strata-server:v2".into();
+    let said = run.settle("v2").await;
+    let took = t0.elapsed();
+    for step in ["restarting the coordinators with the new settings", "handing the primary over", "restarting http://", "verifying the version: healthy for 2 s in a row (6 copies back and in sync, a query through the coordinators answered)"] {
+        assert!(said.iter().any(|m| m.contains(step)), "{step}: {said:#?}");
+    }
+    assert!(run.procs.preflights.lock().unwrap().contains(&"strata-server:v2".to_string()));
+    assert_eq!(run.procs.restarts.load(Ordering::Relaxed), 6);
+    assert!(run.procs.stale(&run.spec).await.unwrap().is_empty());
+    let (reads, writes, failed) = load.so_far();
+    assert!(failed.is_empty(), "{} of {reads} reads and {writes} writes failed during the rollout:\n{}", failed.len(), failed.join("\n"));
+    println!("v2 rolled out in {:.1} s: {reads} reads, {writes} writes, none failed", took.as_secs_f64());
+
+    // v3's servers exit: its first copy fails, and v2 comes back.
+    run.spec.image = "strata-server:crashes".into();
+    let (_, said) = run.until("v3 rolled back", |o| o.phase == Phase::Ready && run.current().image.ends_with(":v2")).await;
+    let back = said.iter().find(|m| m.starts_with("rolling back to version 2:")).unwrap_or_else(|| panic!("{said:#?}"));
+    assert!(back.contains("cannot run the new settings") && back.contains("exit status: 2"), "{back}");
+    assert!(run.procs.stale(&run.current()).await.unwrap().is_empty());
+    let (reads, writes, failed) = load.so_far();
+    assert!(failed.is_empty(), "{} of {reads} reads and {writes} writes failed:\n{}", failed.len(), failed.join("\n"));
+
+    // v4 cannot be pulled: refused before any server restarts.
+    let pids = run.procs.pids();
+    let restarts = run.procs.restarts.load(Ordering::Relaxed);
+    run.spec.image = "strata-server:missing".into();
+    let (_, said) = run.until("v4 refused", |o| o.phase == Phase::Ready && run.current().image.ends_with(":v2")).await;
+    let back = said.iter().find(|m| m.contains("the version failed (preflight)")).unwrap_or_else(|| panic!("{said:#?}"));
+    assert!(back.contains("no server was restarted with it") && back.contains("cannot be pulled"), "{back}");
+    assert_eq!((run.procs.pids(), run.procs.restarts.load(Ordering::Relaxed)), (pids, restarts), "no copy restarted");
+
+    let seen = load.end().await;
+    assert!(seen.failed.is_empty(), "{} of {} reads and {} writes failed:\n{}", seen.failed.len(), seen.reads, seen.writes, seen.failed.join("\n"));
+    assert!(seen.reads > 500 && seen.writes > 100, "{seen:?}");
+    // Every write acknowledged is there.
+    for (key, v) in &seen.written {
+        let j = run.sql(&format!("SELECT sold FROM products WHERE id = '{key}'")).await;
+        assert_eq!(j["rows"][0][0], json!(v), "{key}");
+    }
+    println!("{} reads and {} writes through three versions, none failed; the slowest took {:.0} ms", seen.reads, seen.writes, seen.slowest_ms);
 }

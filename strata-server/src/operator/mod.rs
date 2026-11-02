@@ -33,6 +33,7 @@
 
 pub mod autoscale;
 pub mod kube;
+pub mod upgrade;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -98,6 +99,10 @@ pub struct Spec {
     /// how full the servers are ([`autoscale`]). Like `rollout`, not part
     /// of a version: the changes they make are.
     pub autoscale: autoscale::Autoscale,
+    /// Following an image tag for new versions of Strata ([`upgrade`]):
+    /// a new image the tag points to is suggested, or rolled out. Not part
+    /// of a version either.
+    pub upgrade: upgrade::Upgrade,
 }
 
 /// How the operator makes a change (`spec.rollout`). Not part of a
@@ -119,12 +124,47 @@ pub struct RolloutSpec {
     /// How long a copy restarted with new settings serves before the next
     /// one restarts, so that the gates see it.
     pub soak_seconds: u64,
+    /// What a version that fails its checks gets: `rollback` restores
+    /// the last version that ran everywhere (one that is itself a
+    /// rollback is held instead), `hold` holds it until it is resumed or
+    /// the spec changes.
+    pub on_failure: OnFailure,
+    /// How long one step of a rollout may take before its version fails:
+    /// the new image starting on every node (the pre-flight), the
+    /// coordinators restarting, a copy restarting and catching up, and
+    /// the verification.
+    pub progress_deadline_seconds: u64,
+    /// How long, once every server runs a version that restarted them,
+    /// the cluster must stay healthy (every copy back and in sync, no
+    /// server restarting, the gates under their limits and a query
+    /// answered through the coordinators) before the version counts as
+    /// rolled out; 0: not verified.
+    pub verify_seconds: u64,
 }
 
 impl Default for RolloutSpec {
     fn default() -> RolloutSpec {
-        RolloutSpec { paused: false, gates: Gates::default(), hold_after_seconds: 30, soak_seconds: 0 }
+        RolloutSpec {
+            paused: false,
+            gates: Gates::default(),
+            hold_after_seconds: 30,
+            soak_seconds: 0,
+            on_failure: OnFailure::Rollback,
+            progress_deadline_seconds: 600,
+            verify_seconds: 60,
+        }
     }
+}
+
+/// What a version that fails its checks gets (`spec.rollout.onFailure`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OnFailure {
+    /// The operator restores the last version that ran everywhere.
+    #[default]
+    Rollback,
+    /// The change is held until a person resumes it or changes the spec.
+    Hold,
 }
 
 /// The limits of `spec.rollout.gates`, each read from [`Numbers`]; none
@@ -270,6 +310,7 @@ impl Default for Spec {
             coordinator_args: Vec::new(),
             rollout: RolloutSpec::default(),
             autoscale: autoscale::Autoscale::default(),
+            upgrade: upgrade::Upgrade::default(),
         }
     }
 }
@@ -293,15 +334,25 @@ impl Spec {
         }))
     }
 
-    /// The spec but for `rollout` and `autoscale`, as a short hash:
-    /// another one is another version of the cluster.
+    /// The spec but for `rollout`, `autoscale` and `upgrade`, as a short
+    /// hash: another one is another version of the cluster.
     pub fn version(&self) -> String {
         let s = Spec { rollout: RolloutSpec::default(), ..self.clone() };
         let mut j = serde_json::to_value(&s).unwrap_or(Json::Null);
         if let Some(o) = j.as_object_mut() {
-            o.remove("autoscale");
+            for k in UNVERSIONED {
+                o.remove(*k);
+            }
         }
         short_hash(&j)
+    }
+
+    /// The name of the first table, which the verification queries.
+    pub fn first_table(&self) -> String {
+        match &self.schema {
+            Some(s) => strata::schema::Schema::from_json_value(s).map(|s| s.table).unwrap_or_default(),
+            None => crate::demo::schema(self.demo.unwrap_or(0)).table,
+        }
     }
 
     /// What is wrong with it, if anything.
@@ -319,7 +370,11 @@ impl Spec {
         if self.shards > 4096 {
             return Err("a cluster has at most 4,096 shards, one a slot".into());
         }
+        if self.rollout.progress_deadline_seconds < 10 {
+            return Err(format!("rollout.progressDeadlineSeconds is 10 or more (a copy takes seconds to restart), not {}", self.rollout.progress_deadline_seconds));
+        }
         self.autoscale.check()?;
+        self.upgrade.check(&self.image)?;
         if let Some(c) = &self.cluster_token_secret {
             if self.token_secret.is_none() {
                 return Err("clusterTokenSecret needs tokenSecret: the operator, and whoever runs the cluster, call the coordinators with that token".into());
@@ -347,6 +402,11 @@ impl Spec {
         }
     }
 }
+
+/// The fields of a spec that say how it changes, not what the cluster
+/// is: no version of their own ([`Spec::version`]), and left as they are
+/// by a rollback.
+pub const UNVERSIONED: &[&str] = &["rollout", "autoscale", "upgrade"];
 
 /// The first 12 hex digits of the SHA-256 of `j`'s text.
 fn short_hash(j: &Json) -> String {
@@ -421,6 +481,51 @@ pub trait Platform {
     /// The set and ordinal of the copy at `url`, if it is one of this
     /// cluster's.
     fn set_of(&self, url: &str) -> Option<(u32, usize)>;
+    /// How the coordinators' restart with new settings stands: done once
+    /// each runs them and is ready, and none with older ones is left.
+    async fn coordinators_rolled(&self) -> Result<Rolled, String>;
+    /// The servers that cannot run, as the platform says: one that exited
+    /// or restarts again and again, an image that cannot be pulled; each
+    /// said of whether it runs `spec`'s settings.
+    async fn trouble(&self, spec: &Spec) -> Result<Vec<Trouble>, String>;
+    /// Starts `image` on every node that runs copies, without serving, to
+    /// see that it can be pulled and runs there before any server restarts
+    /// with it (each restart then finds it pulled).
+    async fn preflight(&self, image: &str) -> Result<Check, String>;
+    /// Ends the pre-flight: what it started goes.
+    async fn end_preflight(&self) -> Result<(), String>;
+}
+
+/// How the coordinators' restart stands ([`Platform::coordinators_rolled`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rolled {
+    pub done: bool,
+    /// How far it is, in words ("1 of 2 restarted").
+    pub text: String,
+}
+
+/// A server that cannot run ([`Platform::trouble`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Trouble {
+    /// The copy's set and ordinal; none for a coordinator.
+    pub copy: Option<(u32, usize)>,
+    /// The pod, or process, in words.
+    pub who: String,
+    /// It runs the settings of the spec asked about.
+    pub fresh: bool,
+    pub text: String,
+}
+
+/// What a pre-flight found ([`Platform::preflight`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Check {
+    /// The image runs on every node that runs copies, or nothing needs
+    /// it: what it found.
+    Done(String),
+    /// Still starting, in words.
+    Waiting(String),
+    /// It does not run: why.
+    Failed(String),
 }
 
 /// A coordinator's HTTP API.
@@ -588,6 +693,67 @@ pub struct Rollout {
     /// The copies that run older settings, of `copies`.
     pub stale: Vec<String>,
     pub copies: usize,
+    /// The step of the rollout it waits on, and since when: the deadline
+    /// (`progressDeadlineSeconds`) counts from it.
+    pub step: Option<Step>,
+    /// The image whose pre-flight passed for this version: it started on
+    /// every node that runs copies.
+    pub preflight: Option<String>,
+    /// The version restarted servers: it is verified before it is ready.
+    pub rolled: bool,
+    /// The verification, once every server runs the version.
+    pub verify: Option<Verify>,
+    /// Why the version failed, once it did: rolled back, or held.
+    pub failed: Option<Failed>,
+}
+
+/// A step of a rollout, and since when it is waited on.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Step {
+    pub name: String,
+    pub since_ms: u64,
+}
+
+/// The verification of a version that restarted servers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Verify {
+    pub since_ms: u64,
+    /// Since when every check passed, without a break.
+    pub healthy_since_ms: Option<u64>,
+    /// A check that does not pass, and since when.
+    pub failing: Option<String>,
+    pub failing_since_ms: Option<u64>,
+    /// When it passed: the version runs everywhere and is healthy.
+    pub passed_ms: Option<u64>,
+    /// What the checks found, in words.
+    pub checks: Vec<String>,
+}
+
+/// Why a version failed, in words, and when.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Failed {
+    pub at_ms: u64,
+    /// The step it failed in (`preflight`, `coordinators`, `copies`,
+    /// `verify`, `gate`).
+    pub step: String,
+    pub text: String,
+}
+
+impl Rollout {
+    /// Waits on step `name` from now, unless it already does.
+    fn wait(&mut self, name: &str, now: u64) {
+        if self.step.as_ref().is_none_or(|s| s.name != name) {
+            self.step = Some(Step { name: name.into(), since_ms: now });
+        }
+    }
+
+    /// How long it has waited on step `name` (0 when it waits on another).
+    fn waited(&self, name: &str, now: u64) -> u64 {
+        self.step.as_ref().filter(|s| s.name == name).map_or(0, |s| now.saturating_sub(s.since_ms))
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -618,6 +784,9 @@ enum Hold {
     Paused,
     /// A hold from an earlier step, or one a gate makes now.
     Held(Held),
+    /// The version failed a check: it is rolled back, or held until it is
+    /// resumed.
+    Failed(Failed),
 }
 
 impl Hold {
@@ -627,6 +796,7 @@ impl Hold {
             Hold::Go => None,
             Hold::Paused => Some(Outcome::new(Phase::Paused, format!("paused (spec.rollout.paused); next: {next}"))),
             Hold::Held(h) => Some(Outcome::new(Phase::Paused, format!("held: {}; next: {next}", h.text))),
+            Hold::Failed(f) => Some(Outcome::new(Phase::Paused, format!("the version failed: {}; next: {next}", f.text))),
         }
     }
 
@@ -681,7 +851,10 @@ pub fn gates(spec: &Spec, numbers: &Numbers, before: &Rollout, now: u64) -> (Rol
         }),
         _ => None,
     };
-    (Rollout { version, gates, held, paused: spec.rollout.paused, ungated, stale: Vec::new(), copies: 0 }, trip)
+    let kept = |r: &Rollout| if same { r.clone() } else { Rollout::default() };
+    let k = kept(before);
+    let r = Rollout { version, gates, held, paused: spec.rollout.paused, ungated, stale: Vec::new(), copies: 0, step: k.step, preflight: k.preflight, rolled: k.rolled, verify: k.verify, failed: k.failed };
+    (r, trip)
 }
 
 /// Takes the cluster one step toward `spec`: one change to the platform
@@ -735,18 +908,30 @@ async fn step<P: Platform>(spec: &Spec, p: &P, admin: &Admin, before: &Rollout) 
         Err(e) => return Ok(Outcome::new(Phase::Creating, format!("waiting for the coordinator: {e}"))),
     };
     let stale = p.stale(spec).await?;
-    let (mut rollout, trip) = gates(spec, &view.numbers, before, now_ms());
+    let now = now_ms();
+    let (mut rollout, trip) = gates(spec, &view.numbers, before, now);
     rollout.stale = stale.iter().map(|&(id, k)| p.url(id, k)).collect();
     rollout.copies = sets.iter().map(|s| s.replicas).sum();
-    let hold = match rollout.held.clone().or_else(|| trip.clone()) {
-        _ if spec.rollout.paused => Hold::Paused,
-        Some(h) => Hold::Held(h),
-        None => Hold::Go,
+    let trouble = p.trouble(spec).await?;
+    // A gate over its limit while a version rolls out fails it, when a
+    // failed version is rolled back; otherwise it holds the change.
+    let trip = match trip {
+        Some(t) if rolling(&rollout) && spec.rollout.on_failure == OnFailure::Rollback => {
+            rollout.failed = Some(Failed { at_ms: now, step: "gate".into(), text: t.text });
+            None
+        }
+        t => t,
     };
-    let mut out = act(spec, p, admin, &sets, &view, &listed, coordinators, &hold, &stale).await?;
+    let hold = match (rollout.failed.clone(), rollout.held.clone().or_else(|| trip.clone())) {
+        _ if spec.rollout.paused => Hold::Paused,
+        (Some(f), _) => Hold::Failed(f),
+        (None, Some(h)) => Hold::Held(h),
+        (None, None) => Hold::Go,
+    };
+    let mut out = act(spec, p, admin, &sets, &view, &listed, coordinators, &hold, &stale, &mut rollout, now, &trouble).await?;
     match out.phase {
         // A gate's hold stays once it held a step back.
-        Phase::Paused if !spec.rollout.paused => rollout.held = rollout.held.or(trip),
+        Phase::Paused if !spec.rollout.paused && rollout.failed.is_none() => rollout.held = rollout.held.or(trip),
         // Nothing is left to hold.
         Phase::Ready | Phase::Degraded => rollout.held = None,
         _ => {}
@@ -765,7 +950,20 @@ fn set_of_shard<P: Platform>(p: &P, s: &Shard) -> Option<u32> {
 /// The first step toward `spec` of those below, each but the ones that
 /// heal held back by `hold`.
 #[allow(clippy::too_many_arguments)]
-async fn act<P: Platform>(spec: &Spec, p: &P, admin: &Admin, sets: &[Set], view: &View, listed: &[Vec<String>], coordinators: usize, hold: &Hold, stale: &[(u32, usize)]) -> Result<Outcome, String> {
+async fn act<P: Platform>(
+    spec: &Spec,
+    p: &P,
+    admin: &Admin,
+    sets: &[Set],
+    view: &View,
+    listed: &[Vec<String>],
+    coordinators: usize,
+    hold: &Hold,
+    stale: &[(u32, usize)],
+    r: &mut Rollout,
+    now: u64,
+    trouble: &[Trouble],
+) -> Result<Outcome, String> {
     let scaling = |m: String| Ok(Outcome::new(Phase::Scaling, m));
     macro_rules! unless_held {
         ($next:expr) => {
@@ -776,6 +974,7 @@ async fn act<P: Platform>(spec: &Spec, p: &P, admin: &Admin, sets: &[Set], view:
     }
     let up = |url: &str| view.shards.iter().any(|s| s.servers.iter().any(|r| r.url == url && r.up));
     if let Some(m) = restart_stuck(spec, p, sets, up, stale).await? {
+        r.rolled = true;
         return scaling(m);
     }
     let shard_of: HashMap<u32, usize> = view.shards.iter().enumerate().filter_map(|(i, s)| set_of_shard(p, s).map(|id| (id, i))).collect();
@@ -798,9 +997,30 @@ async fn act<P: Platform>(spec: &Spec, p: &P, admin: &Admin, sets: &[Set], view:
     }
     if p.coordinator_config().await?.is_some_and(|c| c != spec.coordinator_config()) {
         unless_held!("restarting the coordinators with the new settings".to_string());
-        let now: Vec<Vec<String>> = view.shards.iter().map(|s| s.servers.iter().map(|r| r.url.clone()).collect()).collect();
-        p.set_coordinator(&now, spec.coordinators).await?;
-        return scaling("restarting the coordinators with the new settings, one at a time".into());
+        if let Some(o) = preflight(spec, p, r, now).await? {
+            return Ok(o);
+        }
+        let list: Vec<Vec<String>> = view.shards.iter().map(|s| s.servers.iter().map(|r| r.url.clone()).collect()).collect();
+        p.set_coordinator(&list, spec.coordinators).await?;
+        r.rolled = true;
+        r.wait("coordinators", now);
+        return scaling("restarting the coordinators with the new settings, one at a time (each new one serves before an old one stops)".into());
+    }
+    // The coordinators finish restarting before a copy does: a new one
+    // that cannot run fails the version, and the old ones serve on.
+    if r.step.as_ref().is_some_and(|s| s.name == "coordinators") {
+        if let Some(t) = trouble.iter().find(|t| t.copy.is_none() && t.fresh) {
+            return Ok(failed(r, "coordinators", format!("{} cannot run the new settings: {}", t.who, t.text), now));
+        }
+        let rolled = p.coordinators_rolled().await?;
+        if !rolled.done {
+            let deadline = spec.rollout.progress_deadline_seconds;
+            if r.waited("coordinators", now) > deadline * 1000 {
+                return Ok(failed(r, "coordinators", format!("the coordinators did not restart with the new settings in {deadline} s ({})", rolled.text), now));
+            }
+            return scaling(format!("restarting the coordinators with the new settings: {}", rolled.text));
+        }
+        r.step = None;
     }
     if let Err(why) = &view.can_change {
         return Ok(Outcome::new(Phase::Failed, format!("the cluster map cannot change: {why}")));
@@ -914,8 +1134,13 @@ async fn act<P: Platform>(spec: &Spec, p: &P, admin: &Admin, sets: &[Set], view:
         admin.post("/v1/admin/rebalance", json!({})).await?;
         return scaling(format!("evening out the slots over {n} shards ({lo} to {hi} each)"));
     }
-    if let Some(o) = roll(spec, p, admin, sets, view, hold, stale).await? {
+    if let Some(o) = roll(spec, p, admin, sets, view, hold, stale, r, now, trouble).await? {
         return Ok(o);
+    }
+    if rolling(r) {
+        if let Some(o) = verify(spec, admin, sets, view, r, now, trouble).await {
+            return Ok(o);
+        }
     }
     let down: Vec<&str> = view.shards.iter().flat_map(|s| s.servers.iter().filter(|r| !r.up).map(|r| r.url.as_str())).collect();
     let short = view.shards.iter().enumerate().filter(|(_, s)| s.servers.len() < spec.replicas).map(|(i, _)| i.to_string()).collect::<Vec<_>>();
@@ -946,14 +1171,78 @@ async fn restart_stuck<P: Platform>(spec: &Spec, p: &P, sets: &[Set], up: impl F
     Ok(Some(format!("restarting {url}, which has not started, with the new settings")))
 }
 
+/// A version that restarted servers and has not yet failed or passed its
+/// verification: it rolls out.
+fn rolling(r: &Rollout) -> bool {
+    r.rolled && r.failed.is_none() && r.verify.as_ref().is_none_or(|v| v.passed_ms.is_none())
+}
+
+/// The version fails in `step`: no step is taken toward it, and it is
+/// rolled back or held ([`OnFailure`]).
+fn failed(r: &mut Rollout, step: &str, text: String, now: u64) -> Outcome {
+    tracing::warn!(step, why = %text, "the version failed");
+    r.failed = Some(Failed { at_ms: now, step: step.into(), text: text.clone() });
+    r.step = None;
+    Outcome::new(Phase::Paused, format!("the version failed: {text}"))
+}
+
+/// Before a server restarts with an image it has not run, the image is
+/// started on every node that runs copies ([`Platform::preflight`]): one
+/// that cannot be pulled, or does not run there, fails the version before
+/// any server stops. A rollback goes back to an image that ran: it is not
+/// tried first.
+async fn preflight<P: Platform>(spec: &Spec, p: &P, r: &mut Rollout, now: u64) -> Result<Option<Outcome>, String> {
+    if r.ungated || r.preflight.as_deref() == Some(spec.image.as_str()) {
+        return Ok(None);
+    }
+    match p.preflight(&spec.image).await? {
+        Check::Done(found) => {
+            p.end_preflight().await?;
+            tracing::info!(image = %spec.image, %found, "pre-flight passed");
+            r.preflight = Some(spec.image.clone());
+            if r.step.as_ref().is_some_and(|s| s.name == "preflight") {
+                r.step = None;
+            }
+            Ok(None)
+        }
+        Check::Failed(why) => {
+            p.end_preflight().await?;
+            Ok(Some(failed(r, "preflight", format!("the image {} does not run here, and no server was restarted with it: {why}", spec.image), now)))
+        }
+        Check::Waiting(what) => {
+            r.wait("preflight", now);
+            let deadline = spec.rollout.progress_deadline_seconds;
+            if r.waited("preflight", now) > deadline * 1000 {
+                p.end_preflight().await?;
+                return Ok(Some(failed(r, "preflight", format!("the image {} did not start on every node in {deadline} s ({what}), and no server was restarted with it", spec.image), now)));
+            }
+            Ok(Some(Outcome::new(Phase::Scaling, format!("trying the image {} on every node before a server restarts with it: {what}", spec.image))))
+        }
+    }
+}
+
 /// New settings: each set starts its copies with them, the volumes grow,
 /// and the copies running older settings (`stale`) restart one at a time.
 /// The next restarts only once every copy is back and in sync, and the
 /// copies restarted have served `soak_seconds`; a primary is first handed
 /// to a copy of its shard in sync, one that runs the new settings if
 /// there is one. A shard of one copy cannot be handed over: its copy
-/// restarts, and its writes wait for it.
-async fn roll<P: Platform>(spec: &Spec, p: &P, admin: &Admin, sets: &[Set], view: &View, hold: &Hold, stale: &[(u32, usize)]) -> Result<Option<Outcome>, String> {
+/// restarts, and its writes wait for it. A copy restarted that cannot run
+/// (it exits, or its image cannot be pulled), or is not back and caught up
+/// within `progress_deadline_seconds`, fails the version.
+#[allow(clippy::too_many_arguments)]
+async fn roll<P: Platform>(
+    spec: &Spec,
+    p: &P,
+    admin: &Admin,
+    sets: &[Set],
+    view: &View,
+    hold: &Hold,
+    stale: &[(u32, usize)],
+    r: &mut Rollout,
+    now: u64,
+    trouble: &[Trouble],
+) -> Result<Option<Outcome>, String> {
     let scaling = |m: String| Ok(Some(Outcome::new(Phase::Scaling, m)));
     for set in sets {
         if p.configure(set.id, spec).await? {
@@ -969,7 +1258,14 @@ async fn roll<P: Platform>(spec: &Spec, p: &P, admin: &Admin, sets: &[Set], view
         p.grow_volumes(&spec.storage.size, true).await?;
         return scaling(what);
     }
-    if stale.is_empty() {
+    if rolling(r) {
+        if let Some(t) = trouble.iter().find(|t| t.fresh && t.copy.is_some()) {
+            return Ok(Some(failed(r, "copies", format!("{} cannot run the new settings: {}", t.who, t.text), now)));
+        }
+    }
+    // The last restart's step, while the copy it restarted settles.
+    let restarted = r.step.clone().filter(|s| s.name.starts_with("restart "));
+    if stale.is_empty() && restarted.is_none() {
         return Ok(None);
     }
     let left = |n: usize| format!("{n} {}", if n == 1 { "copy" } else { "copies" });
@@ -983,7 +1279,20 @@ async fn roll<P: Platform>(spec: &Spec, p: &P, admin: &Admin, sets: &[Set], view
         }
     }
     if !unsettled.is_empty() {
+        if let Some(step) = &restarted {
+            let deadline = spec.rollout.progress_deadline_seconds;
+            if now.saturating_sub(step.since_ms) > deadline * 1000 {
+                let url = step.name.trim_start_matches("restart ");
+                return Ok(Some(failed(r, "copies", format!("{url} restarted with the new settings more than {deadline} s ago, and {} not back and caught up", unsettled.join(", ")), now)));
+            }
+        }
         return scaling(format!("rolling out the new settings ({} left): waiting for {} to be back and caught up", left(stale.len()), unsettled.join(", ")));
+    }
+    if restarted.is_some() {
+        r.step = None;
+    }
+    if stale.is_empty() {
+        return Ok(None);
     }
     let fresh = |url: &str| !stale.iter().any(|&(id, k)| p.url(id, k) == url);
     // And serves a while, for the gates to see it.
@@ -999,6 +1308,9 @@ async fn roll<P: Platform>(spec: &Spec, p: &P, admin: &Admin, sets: &[Set], view
     if let Some(o) = hold.stop(&format!("restarting {url} with the new settings ({} left)", left(stale.len()))) {
         return Ok(Some(o));
     }
+    if let Some(o) = preflight(spec, p, r, now).await? {
+        return Ok(Some(o));
+    }
     if let Some((i, s)) = view.shards.iter().enumerate().find(|(_, s)| s.servers.iter().any(|r| r.url == url && r.takes_writes)) {
         let mut to: Vec<&Server> = s.servers.iter().filter(|o| o.url != url && o.up && o.in_sync && o.role == "replica").collect();
         to.sort_by_key(|o| !fresh(&o.url));
@@ -1008,7 +1320,98 @@ async fn roll<P: Platform>(spec: &Spec, p: &P, admin: &Admin, sets: &[Set], view
         }
     }
     p.restart(id, k).await?;
+    r.rolled = true;
+    r.wait(&format!("restart {url}"), now);
     scaling(format!("restarting {url} with the new settings ({} left)", left(stale.len() - 1)))
+}
+
+/// Once every server runs the version that restarted them, it is watched
+/// for `verify_seconds`: every copy back and in sync, no server of it
+/// stopping, the gates under their limits and a query answered through
+/// the coordinators. A check that fails for `hold_after_seconds` (a
+/// server that stops, at once), or no `verify_seconds` healthy in a row
+/// within `progress_deadline_seconds`, fails the version. Answers the
+/// outcome while it verifies, and none once it passed.
+async fn verify(spec: &Spec, admin: &Admin, sets: &[Set], view: &View, r: &mut Rollout, now: u64, trouble: &[Trouble]) -> Option<Outcome> {
+    let need = spec.rollout.verify_seconds * 1000;
+    let mut v = r.verify.clone().unwrap_or(Verify { since_ms: now, ..Verify::default() });
+    if need == 0 {
+        v.passed_ms = Some(now);
+        r.verify = Some(v);
+        return None;
+    }
+    if let Some(t) = trouble.iter().find(|t| t.fresh) {
+        return Some(failed(r, "verify", format!("{} stopped running while the version was verified: {}", t.who, t.text), now));
+    }
+    let mut checks = Vec::new();
+    let mut bad: Option<String> = None;
+    let servers: Vec<&Server> = view.shards.iter().flat_map(|s| &s.servers).collect();
+    let down: Vec<&str> = servers.iter().filter(|r| !r.up).map(|r| r.url.as_str()).collect();
+    let behind: Vec<&str> = servers.iter().filter(|r| r.up && !r.in_sync).map(|r| r.url.as_str()).collect();
+    let (copies, ready) = (sets.iter().map(|s| s.replicas).sum::<usize>(), sets.iter().map(|s| s.ready.iter().filter(|&&k| k < s.replicas).count()).sum::<usize>());
+    if !down.is_empty() {
+        bad = Some(format!("not answering: {}", down.join(", ")));
+    } else if !behind.is_empty() {
+        bad = Some(format!("not caught up: {}", behind.join(", ")));
+    } else if ready < copies {
+        bad = Some(format!("{ready} of {copies} copies ready"));
+    } else {
+        checks.push(format!("{copies} copies back and in sync"));
+    }
+    let set: Vec<(&str, f64)> = spec.rollout.gates.limits().into_iter().filter_map(|(k, l)| Some((k, l?))).collect();
+    for &(name, limit) in &set {
+        if let Some(n) = view.numbers.get(name).filter(|n| *n > limit) {
+            bad.get_or_insert(format!("{} is {}, over its {} limit", gate_title(name), gate_words(name, n), gate_words(name, limit)));
+        }
+    }
+    if !set.is_empty() && bad.is_none() {
+        checks.push("the gates under their limits".into());
+    }
+    let table = spec.first_table();
+    let t0 = std::time::Instant::now();
+    match admin.post("/v1/sql", json!({"sql": format!("SELECT COUNT(*) FROM {table}")})).await {
+        Ok(j) => checks.push(format!("a query through the coordinators answered ({} rows in {table}, {:.0} ms)", j["rows"][0][0], t0.elapsed().as_secs_f64() * 1000.0)),
+        Err(e) => {
+            bad.get_or_insert(format!("a query through the coordinators failed: {e}"));
+        }
+    }
+    let secs = |ms: u64| ms / 1000;
+    let deadline = spec.rollout.progress_deadline_seconds * 1000;
+    let message = match &bad {
+        None => {
+            v.failing = None;
+            v.failing_since_ms = None;
+            let since = *v.healthy_since_ms.get_or_insert(now);
+            if now.saturating_sub(since) >= need {
+                v.passed_ms = Some(now);
+                v.checks = checks;
+                tracing::info!(checks = %v.checks.join("; "), "the version passed its verification");
+                r.verify = Some(v);
+                return None;
+            }
+            // The same words all along (the log keeps each new message):
+            // how far it is, is in `status.rollout.verify`.
+            let said: Vec<&str> = checks.iter().map(|c| c.split(" (").next().unwrap_or(c)).collect();
+            format!("verifying the version: healthy for {} s in a row ({})", secs(need), said.join(", "))
+        }
+        Some(b) => {
+            v.healthy_since_ms = None;
+            let since = *v.failing_since_ms.get_or_insert(now);
+            v.failing = Some(b.clone());
+            let after = spec.rollout.hold_after_seconds * 1000;
+            if now.saturating_sub(since) >= after {
+                return Some(failed(r, "verify", format!("after it rolled out, {b} for {} s", secs(now.saturating_sub(since))), now));
+            }
+            format!("verifying the version: {b} (it fails if this lasts {} s)", secs(after))
+        }
+    };
+    if now.saturating_sub(v.since_ms) > deadline {
+        let last = bad.unwrap_or_else(|| "healthy, but not long enough".into());
+        return Some(failed(r, "verify", format!("not healthy for {} s in a row within {} s of the rollout (last: {last})", secs(need), secs(deadline)), now));
+    }
+    v.checks = checks;
+    r.verify = Some(v);
+    Some(Outcome::new(Phase::Scaling, message))
 }
 
 fn shards_json<P: Platform>(p: &P, view: &View) -> Json {
@@ -1081,6 +1484,33 @@ pub fn merge_diff(from: &Json, to: &Json) -> Json {
     }
 }
 
+/// The merge patch that takes the spec `now` back to `then` (a version's
+/// spec, as `status.history` keeps it), leaving how it changes
+/// ([`UNVERSIONED`]) as it is.
+pub fn back_to(now: &Json, then: &Json) -> Json {
+    let mut from = now.clone();
+    let mut to = then.clone();
+    for j in [&mut from, &mut to] {
+        if let Some(o) = j.as_object_mut() {
+            for k in UNVERSIONED {
+                o.remove(*k);
+            }
+        }
+    }
+    merge_diff(&from, &to)
+}
+
+/// The version a failed one goes back to (`status.history`): the latest
+/// before it that ran everywhere (`readyMs`), of another hash. None when
+/// the failed one is itself a rollback (`rollback`: its rollout is
+/// ungated), or there is none to go back to.
+pub fn rollback_target<'a>(history: &'a Json, spec: &Spec, rollback: bool) -> Option<&'a Json> {
+    let h = history.as_array()?;
+    let version = spec.version();
+    h.last().filter(|v| v["hash"] == version.as_str() && !rollback)?;
+    h.iter().rev().skip(1).find(|v| v["hash"] != version.as_str() && !v["readyMs"].is_null())
+}
+
 /// How many versions `status.history` keeps.
 pub const VERSIONS: usize = 20;
 
@@ -1097,8 +1527,9 @@ pub fn versions(history: &Json, spec: &Spec, generation: Option<u64>, by: Option
         let restores = h.iter().rev().find(|v| v["hash"] == version.as_str()).and_then(|v| v["version"].as_u64());
         let mut s = serde_json::to_value(spec).unwrap_or(Json::Null);
         if let Some(o) = s.as_object_mut() {
-            o.remove("rollout");
-            o.remove("autoscale");
+            for k in UNVERSIONED {
+                o.remove(*k);
+            }
         }
         h.push(json!({"version": n, "hash": version, "generation": generation, "atMs": now, "by": by, "restores": restores, "spec": s, "readyMs": null}));
     }
@@ -1128,6 +1559,15 @@ pub fn logged(log: &Json, phase: Phase, message: &str, now: u64) -> Json {
 pub fn noted(mut before: Rollout, resume: Option<&str>, rollback: Option<&str>, spec: &Spec) -> Rollout {
     if before.held.as_ref().is_some_and(|h| resume == Some(h.at_ms.to_string().as_str())) {
         before.held = None;
+        for g in &mut before.gates {
+            g.over_since_ms = None;
+        }
+    }
+    // A failure resumed is tried again: its step's clock starts again.
+    if before.failed.as_ref().is_some_and(|f| resume == Some(f.at_ms.to_string().as_str())) {
+        before.failed = None;
+        before.step = None;
+        before.verify = None;
         for g in &mut before.gates {
             g.over_since_ms = None;
         }
@@ -1287,10 +1727,14 @@ pub fn crd() -> Json {
                     "replicaBehind": {"type": "number", "minimum": 0, "description": "The transactions a replica is behind its primary."},
                     "diskUsedRatio": {"type": "number", "minimum": 0, "maximum": 1, "description": "The fullest volume's used share."},
                 }},
-                "holdAfterSeconds": int(0, "How long a gate is over its limit before it holds the change (default 30)."),
+                "holdAfterSeconds": int(0, "How long a gate is over its limit before it holds the change, or a check fails while a version is verified (default 30)."),
                 "soakSeconds": int(0, "How long a copy restarted with new settings serves before the next restarts (default 0)."),
+                "onFailure": {"type": "string", "enum": ["rollback", "hold"], "description": "What a version that fails a check gets: rollback (default) restores the last version that ran everywhere; hold holds it until it is resumed."},
+                "progressDeadlineSeconds": int(10, "How long one step of a rollout (the image tried on every node, the coordinators restarting, a copy restarting and catching up, the verification) may take before the version fails (default 600)."),
+                "verifySeconds": int(0, "How long the cluster must stay healthy once every server runs a version that restarted them, before it counts as rolled out (default 60; 0: not verified)."),
             }},
             "autoscale": autoscale::schema(),
+            "upgrade": upgrade::schema(),
         },
     });
     let status = free("What the operator found and does.");

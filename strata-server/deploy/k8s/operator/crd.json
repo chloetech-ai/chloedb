@@ -249,16 +249,34 @@
                         "type": "object"
                       },
                       "holdAfterSeconds": {
-                        "description": "How long a gate is over its limit before it holds the change (default 30).",
+                        "description": "How long a gate is over its limit before it holds the change, or a check fails while a version is verified (default 30).",
                         "minimum": 0,
                         "type": "integer"
+                      },
+                      "onFailure": {
+                        "description": "What a version that fails a check gets: rollback (default) restores the last version that ran everywhere; hold holds it until it is resumed.",
+                        "enum": [
+                          "rollback",
+                          "hold"
+                        ],
+                        "type": "string"
                       },
                       "paused": {
                         "description": "While true the operator takes no step toward the spec (a copy that lost its data still joins again).",
                         "type": "boolean"
                       },
+                      "progressDeadlineSeconds": {
+                        "description": "How long one step of a rollout (the image tried on every node, the coordinators restarting, a copy restarting and catching up, the verification) may take before the version fails (default 600).",
+                        "minimum": 10,
+                        "type": "integer"
+                      },
                       "soakSeconds": {
                         "description": "How long a copy restarted with new settings serves before the next restarts (default 0).",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "verifySeconds": {
+                        "description": "How long the cluster must stay healthy once every server runs a version that restarted them, before it counts as rolled out (default 60; 0: not verified).",
                         "minimum": 0,
                         "type": "integer"
                       }
@@ -290,6 +308,30 @@
                   "tokenSecret": {
                     "description": "A Secret whose key token every server and coordinator requires; with clusterTokenSecret, the coordinators only (the admin token).",
                     "type": "string"
+                  },
+                  "upgrade": {
+                    "description": "Following an image tag for new versions of Strata: a new image is suggested (suggest) or rolled out (on), by its digest.",
+                    "properties": {
+                      "checkMinutes": {
+                        "description": "Minutes between two looks at the registry (default 10).",
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "mode": {
+                        "description": "off (default): no registry is asked; suggest: a new image waits in status.upgrade for a person; on: the operator rolls it out once the cluster is ready.",
+                        "enum": [
+                          "off",
+                          "suggest",
+                          "on"
+                        ],
+                        "type": "string"
+                      },
+                      "track": {
+                        "description": "The image tag to follow (default: the image's repository at its tag, or at latest).",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
                   },
                   "writeAcks": {
                     "description": "--write-acks of every primary (default all).",

@@ -236,6 +236,25 @@ pub const FETCH_FROM: usize = 8;
 /// again, so that the coordinator follows a rolling upgrade or a rollback.
 const HELLO_EVERY_MS: u64 = 60_000;
 
+/// How long a write waits for its shard to take it again, asking every
+/// [`PRIMARY_ASK_EVERY`]: while no copy takes writes (a handover or an
+/// election in progress: a primary handed over by hand takes
+/// milliseconds, one elected after its primary went silent the failover
+/// delay, `--failover-after-ms`, and its election), and while its primary
+/// refuses writes it did not apply (too few copies in sync for
+/// `--write-acks`, as while one of two restarts, or a new primary
+/// waiting out the lease of the one it replaced). So that a rolling
+/// restart delays writes rather than failing them.
+pub const PRIMARY_WAIT: Duration = Duration::from_secs(10);
+const PRIMARY_ASK_EVERY: Duration = Duration::from_millis(50);
+
+/// Whether a primary's refusal says it did not apply the write and will
+/// take it shortly (`cores::shard::Primary::admit`): too few copies in
+/// sync, or a lease to wait out. Asking it again cannot apply it twice.
+fn not_applied_yet(s: &tonic::Status) -> bool {
+    s.code() == Code::Unavailable && (s.message().contains("the write was not applied") || s.message().contains("it takes writes after that"))
+}
+
 /// How many times a request goes to the shards while the cluster map
 /// changes under it ([`Coordinator::route_again`]).
 pub(crate) const ROUTE_TRIES: u32 = 8;
@@ -1764,20 +1783,39 @@ impl Coordinator {
     /// none is (a promotion may have moved it). `None` when no replica has
     /// a role, and every one takes every write.
     async fn primary(&self, t: &Topology, i: usize) -> Result<Option<usize>, ApiError> {
-        let find = || self.newest_primary(t, i);
-        if let Some(k) = find() {
+        if let Some(k) = self.newest_primary(t, i) {
             return Ok(Some(k));
         }
         if t.replicas[i].iter().all(|r| r.role() == pb::Role::Standalone) {
             return Ok(None);
         }
+        let deadline = Instant::now() + PRIMARY_WAIT;
+        loop {
+            self.ask_all(t, i).await;
+            if let Some(k) = self.newest_primary(t, i) {
+                return Ok(Some(k));
+            }
+            if t.replicas[i].iter().all(|r| r.role() == pb::Role::Standalone) {
+                return Ok(None);
+            }
+            if Instant::now() >= deadline {
+                return Err(ApiError {
+                    status: 503,
+                    message: format!("shard {i} has no primary answering after {} s: its replicas take writes from their primary alone, and none is one; the write was not applied", PRIMARY_WAIT.as_secs()),
+                });
+            }
+            tokio::time::sleep(PRIMARY_ASK_EVERY).await;
+        }
+    }
+
+    /// Asks each copy of shard `i` its part again (`Hello`).
+    async fn ask_all(&self, t: &Topology, i: usize) {
         let asks = t.replicas[i].iter().enumerate().map(|(k, rep)| {
             let mut c = rep.client.clone();
             rep.protocol.store(0, Ordering::Relaxed);
             async move { self.speak(t, i, k, &mut c, PROTOCOL).await }
         });
         join_all(asks).await;
-        find().map(Some).ok_or_else(|| ApiError { status: 503, message: format!("shard {i} has no primary answering: its replicas take writes from their primary alone") })
     }
 
     /// Of the replicas of shard `i`, the primary of the newest term that no
@@ -1792,19 +1830,29 @@ impl Coordinator {
     /// copy that takes the shard's writes now, if another does. A refusal
     /// (409) asks `k` again first, and the other copies only when it no
     /// longer takes writes, so that a conditional write's refusal costs
-    /// one `Hello`.
+    /// one `Hello`. While no other copy takes writes yet (its primary is
+    /// being handed over, or elected), it asks them again for up to
+    /// [`PRIMARY_WAIT`], so that a rolling restart fails no write.
     async fn moved(&self, t: &Topology, i: usize, k: usize, code: Code) -> Option<usize> {
-        let ask = |r: usize| {
-            let rep = &t.replicas[i][r];
-            let mut c = rep.client.clone();
-            rep.protocol.store(0, Ordering::Relaxed);
-            async move { self.speak(t, i, r, &mut c, PROTOCOL).await.is_ok() }
-        };
-        if code == Code::FailedPrecondition && ask(k).await && t.replicas[i][k].takes_writes() {
+        let rep = &t.replicas[i][k];
+        let mut c = rep.client.clone();
+        rep.protocol.store(0, Ordering::Relaxed);
+        if code == Code::FailedPrecondition && self.speak(t, i, k, &mut c, PROTOCOL).await.is_ok() && rep.takes_writes() {
             return None;
         }
-        join_all((0..t.replicas[i].len()).map(ask)).await;
-        self.newest_primary(t, i).filter(|&r| r != k)
+        let deadline = Instant::now() + PRIMARY_WAIT;
+        loop {
+            self.ask_all(t, i).await;
+            if let Some(m) = self.newest_primary(t, i).filter(|&r| r != k) {
+                return Some(m);
+            }
+            // It takes writes again (it came back as the primary), or
+            // none came in time.
+            if rep.takes_writes() || Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(PRIMARY_ASK_EVERY).await;
+        }
     }
 
     /// Writes to shard `i`: to its primary, or to every replica while none
@@ -1813,21 +1861,34 @@ impl Coordinator {
     /// where several replicas took the write, each numbering it its way.
     /// A primary that refuses the write as a replaced one does, or does not
     /// answer, is passed over for the copy that took its place, if any
-    /// (once).
+    /// (once), and one that refuses it unapplied for a moment is asked again
+    /// ([`PRIMARY_WAIT`]).
     async fn write(&self, t: &Topology, i: usize, r: pb::WriteRequest, need: u32) -> Result<Wrote, ApiError> {
         let to: Vec<usize> = match self.primary(t, i).await? {
             Some(k) => vec![k],
             None => (0..t.replicas[i].len()).collect(),
         };
         let named = |(k, s): (usize, tonic::Status)| self.named(&t.replicas[i][k].url, s);
-        if let (&[k], true) = (&to[..], t.replicas[i].len() > 1) {
-            return match self.write_to(t, i, vec![k], r.clone(), need).await {
-                Err((_, s)) if matches!(s.code(), Code::FailedPrecondition | Code::Unavailable) => match self.moved(t, i, k, s.code()).await {
-                    Some(m) => self.write_to(t, i, vec![m], r, need).await.map_err(named),
-                    None => Err(named((k, s))),
-                },
-                a => a.map_err(named),
-            };
+        if let (&[first], true) = (&to[..], t.replicas[i].len() > 1) {
+            let (mut k, mut passed_over) = (first, false);
+            let deadline = Instant::now() + PRIMARY_WAIT;
+            loop {
+                match self.write_to(t, i, vec![k], r.clone(), need).await {
+                    // Refused before it was applied, for a moment: again,
+                    // to the copy that takes the writes then.
+                    Err((_, s)) if not_applied_yet(&s) && Instant::now() < deadline => {
+                        tokio::time::sleep(PRIMARY_ASK_EVERY * 2).await;
+                        if let Some(m) = self.primary(t, i).await? {
+                            k = m;
+                        }
+                    }
+                    Err((_, s)) if matches!(s.code(), Code::FailedPrecondition | Code::Unavailable) && !passed_over => match self.moved(t, i, k, s.code()).await {
+                        Some(m) => (k, passed_over) = (m, true),
+                        None => return Err(named((k, s))),
+                    },
+                    a => return a.map_err(named),
+                }
+            }
         }
         self.write_to(t, i, to, r, need).await.map_err(named)
     }

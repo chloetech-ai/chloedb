@@ -1,6 +1,7 @@
 //! Opening the database, and serving HTTP and gRPC.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -852,10 +853,41 @@ pub async fn serve_grpc(svc: Arc<Service>, listener: TcpListener, access: Access
         .await
 }
 
-/// Ctrl-C, or SIGTERM: how Docker and Kubernetes stop a container. As a
-/// container's first process the server would otherwise ignore SIGTERM, and
-/// be killed only when the grace period ran out (30 s in Kubernetes).
+/// Whether the server was told to stop and serves out its drain time
+/// ([`set_drain`]): `/readyz` answers 503, so that a load balancer sends
+/// it no more clients, and each HTTP answer closes its connection.
+static DRAINING: AtomicBool = AtomicBool::new(false);
+static DRAIN_MS: AtomicU64 = AtomicU64::new(0);
+
+/// How long the server serves on once told to stop (`--drain-ms`), before
+/// it stops taking connections and ends with the requests under way.
+pub fn set_drain(d: Duration) {
+    DRAIN_MS.store(d.as_millis() as u64, Ordering::Relaxed);
+}
+
+/// Whether the server was told to stop and serves out its drain time.
+pub fn draining() -> bool {
+    DRAINING.load(Ordering::Relaxed)
+}
+
+/// Ctrl-C, or SIGTERM: how Docker and Kubernetes stop a container, then
+/// the drain time ([`set_drain`]). As a container's first process the
+/// server would otherwise ignore SIGTERM, and be killed only when the
+/// grace period ran out (30 s in Kubernetes). The HTTP and gRPC servers
+/// each wait for it, and so drain together.
 async fn shutdown() {
+    stop_signal().await;
+    let ms = DRAIN_MS.load(Ordering::Relaxed);
+    if !DRAINING.swap(true, Ordering::Relaxed) {
+        match ms {
+            0 => tracing::info!("stopping: no new connections; the requests under way end first"),
+            _ => tracing::info!(drain_ms = ms, "stopping: /readyz answers 503 while the server serves on for its drain time, then it takes no new connections"),
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(ms)).await;
+}
+
+async fn stop_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};

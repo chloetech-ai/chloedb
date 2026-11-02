@@ -343,6 +343,12 @@ struct Args {
     /// the HTTP port).
     #[arg(long, env = "STRATA_NODE_NAME")]
     node_name: Option<String>,
+    /// Once told to stop (SIGTERM, Ctrl-C), serve on this many
+    /// milliseconds with /readyz answering 503, so that a load balancer
+    /// (a Kubernetes Service) sends no more clients before the server
+    /// stops taking connections; then end the requests under way and stop.
+    #[arg(long, env = "STRATA_DRAIN_MS", default_value_t = 0)]
+    drain_ms: u64,
 }
 
 #[derive(Subcommand)]
@@ -673,6 +679,7 @@ async fn main() {
         },
     };
     let coordinator = !o.shards.is_empty();
+    server::set_drain(std::time::Duration::from_millis(a.drain_ms));
     let svc = server::service(&o).await.unwrap_or_else(|e| fail(&e));
     if token.is_none() && cluster.is_none() && !svc.keys.is_empty() && !svc.keys.managed() {
         tracing::warn!("this server has no token and no admin key that never expires: once its admin keys expire, only starting it with --token manages it. Make an admin key without expires_days");
