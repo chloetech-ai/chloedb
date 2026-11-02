@@ -1583,6 +1583,8 @@ impl Db {
         // In the order a scan of the segments reads the rows.
         let mut found: Vec<((usize, DocId), Value, Vec<Value>)> = keys.into_iter().zip(placed).filter_map(|(k, r)| r.map(|(r, at)| (at, k, r.row))).collect();
         found.sort_by_key(|(at, _, _)| *at);
+        // The rows the filter matches, as the executor counts them.
+        let matched = found.len() as u64;
         if let Some(want) = select.limit.map(|l| l.saturating_add(select.offset)) {
             found.truncate(want);
         }
@@ -1596,7 +1598,7 @@ impl Db {
         if !opts.shard {
             select.typed(&mut rows);
         }
-        let mut stats = ExecStats::default();
+        let mut stats = ExecStats { filter_docs: matched, ..ExecStats::default() };
         let detail = format!("{} key{}", rows.len(), if rows.len() == 1 { "" } else { "s" });
         stats.plan.push(format!("read by key: {detail} found"));
         let step = crate::query::steps::Step { op: "read by key".into(), detail, start_us: crate::query::steps::us_at(t0), us: crate::query::steps::tenth(t0.elapsed().as_nanos() as f64 / 1e3), rows: Some(rows.len() as u64), ..Default::default() };

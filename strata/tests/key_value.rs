@@ -437,6 +437,7 @@ fn writes_by_key_build_nothing_and_match_the_executor() {
         let want = slow.query(reference, &p).unwrap();
         slow_builds += strata::storage::tail_builds() - b;
         assert_eq!((&got.columns, &got.rows, &got.keys, &got.scores), (&want.columns, &want.rows, &want.keys, &want.scores), "step {step}: {sql}");
+        assert_eq!(got.stats.filter_docs, want.stats.filter_docs, "step {step}: {sql}: rows the filter matched");
         assert!(got.stats.plan.iter().any(|l| l.starts_with("read by key: ")), "{:?}", got.stats.plan);
         if step % 150 == 149 {
             fast.storage().flush().unwrap();
