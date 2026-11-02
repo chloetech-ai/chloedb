@@ -248,11 +248,17 @@ const HELLO_EVERY_MS: u64 = 60_000;
 pub const PRIMARY_WAIT: Duration = Duration::from_secs(10);
 const PRIMARY_ASK_EVERY: Duration = Duration::from_millis(50);
 
-/// Whether a primary's refusal says it did not apply the write and will
-/// take it shortly (`cores::shard::Primary::admit`): too few copies in
-/// sync, or a lease to wait out. Asking it again cannot apply it twice.
+/// Whether a primary's refusal says it did not apply the write, and the
+/// shard takes it shortly (`cores::shard::Primary::admit`): too few copies
+/// in sync, a lease to wait out, or a primary another replaced, which
+/// refuses every write from then on (the coordinator may not have heard
+/// of the new one yet). Sending it again cannot apply it twice.
 fn not_applied_yet(s: &tonic::Status) -> bool {
-    s.code() == Code::Unavailable && (s.message().contains("the write was not applied") || s.message().contains("it takes writes after that"))
+    match s.code() {
+        Code::Unavailable => s.message().contains("the write was not applied") || s.message().contains("it takes writes after that"),
+        Code::FailedPrecondition => s.message().contains("another primary replaced this one, which takes no more writes"),
+        _ => false,
+    }
 }
 
 /// Whether a primary's answer says it applied the write but another
@@ -2860,6 +2866,15 @@ mod tests {
         // The saved burst, then one call in twenty.
         assert!((1000 / 20..=HEDGE_BURST as usize + 1000 / 20).contains(&hedged), "{hedged}");
         assert!(!b.spend());
+    }
+
+    #[test]
+    fn a_write_refused_unapplied_is_sent_again_and_one_in_doubt_is_not() {
+        let fenced = tonic::Status::failed_precondition("a copy holds term 2, newer than this primary's (1): another primary replaced this one, which takes no more writes");
+        let doubt = tonic::Status::failed_precondition("the write is durable on this primary as sequence number 7, but a primary of term 2 replaced this one before it was acknowledged, and the new primary may not hold it: write to the new primary");
+        let lease = tonic::Status::unavailable("this primary was promoted by hand, and the primary it replaced may serve reads for 900 ms more: it takes writes after that");
+        assert!(not_applied_yet(&fenced) && not_applied_yet(&lease) && !in_doubt(&fenced));
+        assert!(in_doubt(&doubt) && !not_applied_yet(&doubt));
     }
 
     #[test]
