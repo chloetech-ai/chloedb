@@ -434,12 +434,14 @@ function render(page, r) {
     const since = now() - DAY, groups = new Map();
     for (const e of audit.refusals) {
       if (e.ts_ms < since || e.client === "command-center") continue;
-      const k = `${e.who}|${e.addr || ""}|${e.client || ""}|${e.status}`;
-      const g = groups.get(k) || { n: 0, first: e.ts_ms, e };
+      const k = `${e.key || e.who}|${e.addr || ""}|${e.client || ""}|${e.status}`;
+      const g = groups.get(k) || { n: 0, first: e.ts_ms, last: e.ts_ms, e };
       g.n++; g.first = Math.min(g.first, e.ts_ms);
+      if (e.ts_ms > g.last) { g.last = e.ts_ms; g.e = e; }
       groups.set(k, g);
     }
-    const top = [...groups.values()].sort((a, b) => b.n - a.n)[0];
+    // The client refused most recently, among those refused three times or more.
+    const top = [...groups.values()].filter((g) => g.n >= 3).sort((a, b) => b.last - a.last)[0];
     if (!top || top.n < 3) return;
     const e = top.e, from = [e.addr, clientName(e.client)].filter(Boolean);
     const revoked = revokedKeys().find(keyOf(e));
@@ -698,6 +700,8 @@ function render(page, r) {
       const step = moved ? 3 : 2;
       const made = (audit?.changes || []).find((e) => (e.detail || "").includes(next.id) || (e.object === `key ${next.name}` && Math.abs(e.ts_ms - next.created_ms) < 5000));
       const ends = old.expires_ms && old.expires_ms > now() && old.expires_ms - now() < 14 * DAY;
+      const gone = old.expires_ms && old.expires_ms <= now();
+      const refused = gone ? (audit?.refusals || []).filter((e) => keyOf(e)(old) && e.ts_ms >= old.expires_ms).sort((x, y) => y.ts_ms - x.ts_ms) : [];
       const revokeBtn = gateBtn(h("button", { class: "btn sm " + (moved ? "danger" : ""), onclick: () => revoke(old) }, `Revoke ${old.name}…`), "admin");
       const li = (n, done, head, ...rest) => h("li", { class: done ? "done" : n === step ? "now" : "" }, h("span", { class: "ac-n" + (done ? " ok" : "") }, done ? icon("check") : String(n)), h("div", {}, h("b", {}, head), " ", ...rest));
       return card({
@@ -709,9 +713,10 @@ function render(page, r) {
               : oldSince ? `Both are in use: the old key ${ago(old.last_used_ms)}${old.last_addr ? ` from ${old.last_addr}` : ""}, the new one ${ago(next.last_used_ms)}${next.last_addr ? ` from ${next.last_addr}` : ""}.`
                 : `Done: the new key was used ${ago(next.last_used_ms)}, and the old one not since the new one was made.`),
           li(3, false, "Revoke the old key",
-            ends ? `· it stops working ${until(old.expires_ms)} (${at(old.expires_ms)} ${TZ}) anyway, and then the clients still on it are refused.`
+            gone ? `· it expired ${at(old.expires_ms)} ${TZ}, so it works no more${refused.length ? `: ${fmt.plural(refused.length, "request")} refused with it since, the last ${ago(refused[0].ts_ms)}${refused[0].client ? ` from ${clientName(refused[0].client)}` : ""}` : ""}. Revoking it takes it off the list.`
+              : ends ? `· it stops working ${until(old.expires_ms)} (${at(old.expires_ms)} ${TZ}) anyway, and then the clients still on it are refused.`
               : "· this server keeps it working until it is revoked: revoke it once nothing uses it.")),
-        foot: [revokeBtn, h("span", { class: "small muted" }, moved ? "nothing used it since the new key was made" : "it is still the key some clients send")],
+        foot: [revokeBtn, h("span", { class: "small muted" }, gone ? (refused.length ? "some clients still send it" : "nothing sent it since it expired") : moved ? "nothing used it since the new key was made" : "it is still the key some clients send")],
       });
     }));
   }
