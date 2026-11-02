@@ -5,14 +5,17 @@
 // a SQLite file or a Parquet file a table, and the stream sources show how
 // far each event stream has been written, with a box to send one.
 
-import { h, icon, clear, fmt, api, authHeader, toast, empty, seg, sqlBlock, dropzone, every, failure } from "../core.js";
+import { h, icon, clear, fmt, api, authHeader, toast, empty, seg, sqlBlock, dropzone, every, failure, confirm, gate, can } from "../core.js";
+import { isProduction, isCoordinator } from "../data.js";
 import { tables, cached, invalidate, table as tableOf, typeBadge, typeMeta, TYPES } from "../catalog.js";
 import { quoteName } from "../sqledit.js";
 import { grid } from "../results.js";
 
-export default { id: "import", title: "Import and export", icon: "import", group: "Data", keywords: "import upload load csv tsv json jsonl ndjson sqlite parquet arrow spark file export download stream kafka sources offsets", render };
+export default { id: "import", title: "Import and export", icon: "import", group: "Data", range: false, keywords: "import upload load csv tsv json jsonl ndjson sqlite parquet arrow spark file export download stream kafka sources offsets", render };
 
 const SQLITE = "SQLite format 3\u0000";
+/** A reason as a header value: one line, ASCII, non-ASCII percent-encoded. */
+const safeHeader = (r) => String(r).replace(/[\r\n]+/g, " ").replace(/[^\x20-\x7e]/g, (c) => encodeURIComponent(c)).slice(0, 2000);
 const CT = { csv: "text/csv", tsv: "text/tab-separated-values", jsonl: "application/x-ndjson", json: "application/json", sqlite: "application/vnd.sqlite3", parquet: "application/vnd.apache.parquet" };
 
 /** The format of a file, from its first bytes and its name. */
@@ -113,7 +116,10 @@ function render(page) {
     const keyGuess = cols.find((c) => /^(id|key|_id|pk)$/i.test(c.name) && (c.type === "keyword" || c.type === "int")) || cols.find((c) => (c.type === "keyword" || c.type === "int") && new Set(s.objs.map((o) => o[c.name])).size === s.objs.length);
     const overlap = (t) => (t.short?.fields || []).filter((f) => s.cols.includes(f.name)).length;
     const best = [...ts].sort((a, b) => overlap(b) - overlap(a))[0];
-    const st = { mode: best && overlap(best) >= Math.max(1, s.cols.length / 2) ? "existing" : "new", table: best?.table, name: file.name.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^(\d)/, "t_$1") || "imported", key: keyGuess?.name, cols };
+    // Where the rows go is asked, never assumed: the table that shares the
+    // most columns is offered first.
+    const fits = best && overlap(best) >= Math.max(1, s.cols.length / 2);
+    const st = { mode: null, suggest: fits ? best.table : null, fit: fits ? overlap(best) : 0, table: best?.table, name: file.name.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^(\d)/, "t_$1") || "imported", key: keyGuess?.name, cols };
     drawLoad(file, format, s, st);
   }
   function drawLoad(file, format, s, st) {
@@ -121,7 +127,7 @@ function render(page) {
     const box = h("div", { class: "stack" });
     const fileRow = h("div", { class: "imp-file" }, icon("import", "lg"), h("div", { class: "grow" }, h("b", {}, file.name), h("div", { class: "small muted" }, `${fmt.bytes(file.size)} · ${format.toUpperCase()} · ${fmt.plural(s.objs.length, "row")} read${s.partial ? " from the start of it" : ""} · ${fmt.plural(s.cols.length, "column")}`)),
       h("button", { class: "btn ghost", onclick: start }, icon("x"), "Another file"));
-    const modeSeg = seg([["existing", "Into a table"], ["new", "Into a new table"]], st.mode, (v) => { st.mode = v; drawLoad(file, format, s, st); });
+    const modeSeg = seg([["existing", "Into a table that exists"], ["new", "Into a new table"]], st.mode, (v) => { st.mode = v; if (v === "existing" && st.suggest) st.table = st.suggest; drawLoad(file, format, s, st); });
     const tableSel = h("select", { class: "select", onchange: (e) => { st.table = e.target.value; drawLoad(file, format, s, st); } }, ts.map((t) => h("option", { value: t.table, selected: t.table === st.table }, t.table)));
     const nameIn = h("input", { class: "input mono", value: st.name, oninput: (e) => { st.name = e.target.value.trim(); check(); } });
     // the columns and where each goes
@@ -135,49 +141,82 @@ function render(page) {
         h("td", {}, h("span", { class: "row nw", style: { gap: "6px" } }, typeBadge(c), typeMeta(c).label + (c.multi ? "[]" : "") + (c.dim ? `(${c.dim})` : ""))),
         st.mode === "existing"
           ? h("td", {}, f ? h("span", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "pill ok" }, icon("okc"), f.name), h("span", { class: "small muted" }, typeMeta(f).label + (f.multi ? "[]" : ""))) : h("span", { class: "pill warn" }, icon("warn"), "skipped"))
-          : h("td", {}, h("span", { class: "row nw", style: { gap: "8px" } }, typeSel, (c.type === "keyword" || c.type === "int") && !c.multi ? h("label", { class: "row nw small dim", style: { gap: "4px" } }, h("input", { type: "radio", name: "imp-key", checked: st.key === c.name, onchange: () => { st.key = c.name; check(); } }), "key") : null)));
+          : st.mode === "new" ? h("td", {}, h("span", { class: "row nw", style: { gap: "8px" } }, typeSel, (c.type === "keyword" || c.type === "int") && !c.multi ? h("label", { class: "row nw small dim", style: { gap: "4px" } }, h("input", { type: "radio", name: "imp-key", checked: st.key === c.name, onchange: () => { st.key = c.name; check(); } }), "key") : null)) : h("td", {}));
     });
     const missing = st.mode === "existing" && target ? (target.short.fields || []).filter((f) => !s.cols.includes(f.name) && !f.embed && !f.from && !f.derive && f.name !== target.short.key) : [];
     const keyMissing = st.mode === "existing" && target?.short?.key && !s.cols.includes(target.short.key);
     const checkBox = h("div");
     const go = h("button", { class: "btn primary" }, icon("import"), "Load the rows");
+    // What loading does to rows the table holds: an import upserts, so a row
+    // whose key exists replaces it. Counted over the rows read here.
+    const replaced = h("div", { class: "small" });
+    async function countReplaced() {
+      const key = target?.short?.key;
+      if (st.mode !== "existing" || !target || !key || !s.cols.includes(key)) { clear(replaced); return; }
+      const keys = [...new Set(s.objs.map((o) => o[key]).filter((v) => v != null && v !== ""))].slice(0, 500);
+      if (!keys.length) { clear(replaced); return; }
+      const t = target.short.fields.find((f) => f.name === key);
+      const lit = (v) => t?.type === "int" && /^-?\d+$/.test(String(v)) ? String(v) : `'${String(v).replace(/'/g, "''")}'`;
+      clear(replaced, h("span", { class: "muted" }, "Counting the keys the table holds…"));
+      try {
+        const j = await api("/v1/query", { body: { sql: `SELECT COUNT(*) FROM ${quoteName(target.table)} WHERE ${quoteName(key)} IN (${keys.map(lit).join(", ")})` } });
+        const n = j.rows[0][0];
+        clear(replaced, h("div", { class: n ? "banner warn dt-banner" : "banner dt-done" }, icon(n ? "warn" : "info"), h("div", { class: "grow" },
+          h("b", {}, n ? `${fmt.n(n)} of the ${fmt.plural(keys.length, "key")} read here are in ${target.table} already: those rows are replaced` : `None of the ${fmt.plural(keys.length, "key")} read here is in ${target.table}: every row is new`),
+          h("div", { class: "small muted" }, `An import into a table that holds rows upserts: a row whose ${key} exists replaces the old row whole.${s.partial ? " Only the start of the file was read here, so the whole file may replace more." : ""}`))));
+      } catch (e) { clear(replaced, h("span", { class: "muted" }, `Could not count the keys it replaces: ${e.message}`)); }
+    }
     const progress = h("div", { class: "imp-prog hidden" }, h("div", { class: "bar" }, h("span")), h("span", { class: "small dim txt" }));
     let ddl = null;
     async function check() {
-      if (st.mode !== "new") { ddl = null; clear(checkBox); go.disabled = !target; return; }
+      if (!st.mode) { ddl = null; clear(checkBox); go.disabled = true; go.title = "Pick where the rows go first"; return; }
+      go.title = "";
+      if (st.mode !== "new") { ddl = null; clear(checkBox); go.disabled = !target || !can("write"); return; }
       const short = { table: st.name, key: st.key, fields: st.cols.filter((c) => c.use).map((c) => ({ name: c.name, type: c.type, ...(c.multi ? { multi: true } : {}), ...(c.type === "vector" ? { dim: c.dim || 384 } : {}) })) };
       if (!short.key) delete short.key;
       try { const j = await api("/v1/schema/check", { body: short }); ddl = j.sql; clear(checkBox, h("details", { class: "more" }, h("summary", {}, "The table it makes"), sqlBlock(ddl))); go.disabled = ts.some((t) => t.table === st.name); if (go.disabled) checkBox.prepend(h("div", { class: "error small" }, `${st.name} exists: pick it above, or name the new table something else.`)); }
       catch (e) { ddl = null; go.disabled = true; clear(checkBox, h("div", { class: "error small" }, e.message.replace(/^schema error: /, ""))); }
     }
     go.onclick = async () => {
+      // On production, a load into a table that exists says why (kept with the import).
+      let reason;
+      if (st.mode === "existing" && isProduction()) {
+        const ok = await confirm({ title: `Load ${file.name} into ${st.table}?`, ok: "Load the rows", reason: "Why: kept with the import",
+          body: h("div", { class: "stack", style: { gap: "8px" } }, h("p", { class: "dim", style: { margin: 0 } }, `${fmt.bytes(file.size)} of ${format.toUpperCase()} into ${st.table} on ${location.host}, which counts as production. Rows whose key ${st.table} holds are replaced; there is no undo.`), replaced.cloneNode(true)) });
+        if (!ok) return;
+        reason = ok.reason;
+      }
       go.disabled = true;
       try {
         let name = st.table;
         if (st.mode === "new") { await api("/v1/sql", { body: { sql: ddl } }); invalidate(); ts = await tables(true); name = st.name; }
-        const j = await upload(`/v1/import?format=${format}&table=${encodeURIComponent(name)}`, file, CT[format], progress);
+        const j = await upload(`/v1/import?format=${format}&table=${encodeURIComponent(name)}`, file, CT[format], progress, reason);
         done(name, j, file);
       } catch (e) { toast(e.message, "bad", 9000); go.disabled = false; progress.classList.add("hidden"); }
     };
     clear(left, h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Load a file")), h("div", { class: "bd" }, box)));
     clear(box, fileRow,
-      h("div", { class: "row" }, modeSeg, st.mode === "existing" ? tableSel : h("label", { class: "row nw small dim" }, "named", nameIn)),
+      h("div", { class: "row" }, modeSeg, st.mode === "existing" ? tableSel : st.mode === "new" ? h("label", { class: "row nw small dim" }, "named", nameIn) : null),
+      !st.mode ? h("div", { class: "small" }, h("b", {}, "Where do the rows go? "), h("span", { class: "muted" }, st.suggest ? `${st.suggest} has ${st.fit} of the file's ${s.cols.length} columns: pick “Into a table that exists” to load into it, or make a new table.` : "No table has most of the file's columns: a new table fits it best.")) : null,
       st.mode === "existing" && target ? h("div", { class: "small dim" }, `${fmt.plural(st.cols.filter((c) => fieldOf(c)).length, "column")} of ${st.cols.length} go to fields of ${target.table}.`,
         keyMissing ? h("span", { class: "error small", style: { marginLeft: "6px" } }, `The file has no ${target.short.key} column, the key: rows without one are refused.`) : null,
         missing.length ? h("span", { class: "muted" }, ` ${missing.map((f) => f.name).join(", ")} stay empty.`) : null) : null,
-      h("div", { class: "tbl-wrap" }, h("table", { class: "t imp-map" }, h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "column"), h("th", {}, "reads as"), h("th", {}, st.mode === "existing" ? "goes to" : "the field"))), h("tbody", {}, mapRows))),
+      h("div", { class: "tbl-wrap" }, h("table", { class: "t imp-map" }, h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "column"), h("th", {}, "reads as"), h("th", {}, st.mode === "existing" ? "goes to" : st.mode === "new" ? "the field" : ""))), h("tbody", {}, mapRows))),
       checkBox,
-      h("div", { class: "row" }, go, progress),
+      replaced,
+      h("div", { class: "row" }, go, !st.mode ? h("span", { class: "small muted" }, "Pick where the rows go first") : null, progress),
       h("details", { class: "more", open: true }, h("summary", {}, `The first rows (${fmt.n(Math.min(s.objs.length, 50))})`), h("div", { class: "tbl-wrap", style: { maxHeight: "300px" } }, grid({ columns: s.cols, rows: s.objs.slice(0, 50).map((o) => s.cols.map((c) => o[c] ?? null)) }, { max: 50 }))));
-    check();
+    check(); countReplaced();
   }
   /** Sends a file with a progress bar; resolves the JSON answer. */
-  function upload(url, file, type, progress) {
+  function upload(url, file, type, progress, reason) {
     return new Promise((resolve, reject) => {
       const x = new XMLHttpRequest();
       x.open("POST", url);
       x.setRequestHeader("content-type", type);
       for (const [k, v] of Object.entries(authHeader())) x.setRequestHeader(k, v);
+      x.setRequestHeader("x-strata-client", "command-center");
+      if (reason) x.setRequestHeader("x-strata-reason", safeHeader(reason));
       const bar = progress.querySelector(".bar span"), txt = progress.querySelector(".txt");
       progress.classList.remove("hidden");
       const t0 = performance.now();
@@ -268,6 +307,16 @@ function render(page) {
   // ------------------------------------------------------------ export
   function exportCard() {
     const pick = new Set(cached().map((t) => t.table));
+    // How big the tables are now, where the server lists their sizes.
+    const sizeNote = h("div", { class: "small muted" });
+    async function estimate() {
+      try {
+        const j = await api("/v1/index/tables");
+        const list = (Array.isArray(j) ? j : j.tables || []).filter((t) => pick.has(t.table));
+        const bytes = list.reduce((a, t) => a + (t.bytes || 0), 0), rows = list.reduce((a, t) => a + (t.docs || 0), 0);
+        clear(sizeNote, list.length ? `The ${list.length === 1 ? "table holds" : "tables hold"} ${fmt.plural(rows, "row")}, ${fmt.bytes(bytes)} on disk${isCoordinator() ? " over every shard (one copy)" : ""}: the file is of that order, larger with full-text tables.` : "");
+      } catch { clear(sizeNote); }
+    }
     let fts = true, idx = true, format = "sqlite";
     const download = (b, name) => {
       const a = h("a", { href: URL.createObjectURL(b), download: name });
@@ -315,12 +364,27 @@ function render(page) {
       sub.textContent = v === "parquet" ? "a Parquet file a table, for Spark, DuckDB, polars and pandas" : "the database as a SQLite file";
       hint.textContent = v === "parquet" ? "Vectors go as lists of float32, timestamps in UTC; each file keeps its Strata schema." : "Vectors go as float32 blobs, lists as JSON arrays.";
     });
+    // A coordinator holds no rows: say so before anything is asked for.
+    if (isCoordinator()) {
+      const card = h("section", { class: "card", id: "imp-export" }, h("div", { class: "hd" }, h("h3", {}, "Export"), h("span", { class: "sub" }, "SQLite or Parquet")),
+        h("div", { class: "bd stack", style: { gap: "10px" } },
+          h("div", { class: "banner dt-done" }, icon("info", "lg"), h("div", { class: "grow" }, h("b", {}, "Export runs on a shard's server, not on this coordinator"),
+            h("div", { class: "small muted" }, "A coordinator holds no rows. Open the command center of each shard's primary and export there, or run strata-server export --db on its database; each shard's file holds that shard's rows."))),
+          sizeNote));
+      const old = right.querySelector("#imp-export");
+      if (old) old.replaceWith(card); else right.prepend(card);
+      estimate();
+      return;
+    }
+    gate(go, "admin");
     const card = h("section", { class: "card", id: "imp-export" }, h("div", { class: "hd" }, h("h3", {}, "Export"), sub),
       h("div", { class: "bd stack", style: { gap: "10px" } },
         formatSeg,
-        h("div", { class: "row", style: { gap: "6px" } }, cached().map((t) => h("button", { class: "chip", "aria-pressed": "true", onclick: (e) => { if (pick.has(t.table)) pick.delete(t.table); else pick.add(t.table); e.currentTarget.setAttribute("aria-pressed", String(pick.has(t.table))); go.disabled = !pick.size; } }, icon("table"), t.table))),
+        h("div", { class: "row", style: { gap: "6px" } }, cached().map((t) => h("button", { class: "chip", "aria-pressed": "true", onclick: (e) => { if (pick.has(t.table)) pick.delete(t.table); else pick.add(t.table); e.currentTarget.setAttribute("aria-pressed", String(pick.has(t.table))); go.disabled = !pick.size || !can("admin"); estimate(); } }, icon("table"), t.table))),
         sqliteOpts,
+        sizeNote,
         h("div", { class: "row" }, go, hint)));
+    estimate();
     const old = right.querySelector("#imp-export");
     if (old) old.replaceWith(card); else right.prepend(card);
   }
@@ -329,20 +393,31 @@ function render(page) {
   function streamsCard() {
     const list = h("div");
     const log = h("pre", { class: "code imp-log hidden" });
-    const first = cached()[0];
-    const key = first?.short?.key;
-    const example = first ? JSON.stringify({ source: { name: "ui-test/0", offset: 0 }, op: "upsert", table: first.table, doc: { [key || "id"]: "ui-test-1" } }) : "";
-    const ta = h("textarea", { class: "input mono", rows: 4, spellcheck: "false", style: { width: "100%", fontSize: "12px" }, value: example, placeholder: '{"op": "insert", "table": "events", "doc": {...}}' });
-    const send = h("button", { class: "btn", onclick: async () => {
+    // Empty: a line sent here writes rows, and one with a source keeps that
+    // source's offset for good. The placeholder shows the shape.
+    const ta = h("textarea", { class: "input mono", rows: 4, spellcheck: "false", style: { width: "100%", fontSize: "12px" }, placeholder: '{"op": "upsert", "table": "events", "doc": {"id": "e1", ...}}\n{"source": {"name": "orders/0", "offset": 41}, "op": "delete", "table": "orders", "key": "o7"}', oninput: () => { send.disabled = !ta.value.trim() || !can("write"); } });
+    const send = h("button", { class: "btn", disabled: true, onclick: async () => {
+      const lines = ta.value.trim().split("\n").filter((l) => l.trim());
+      let ops = [];
+      try { ops = lines.map((l) => JSON.parse(l)); } catch (e) { toast(`Not a JSON line: ${e.message}`, "bad", 6000); return; }
+      const tablesHit = [...new Set(ops.map((o) => o.table).filter(Boolean))];
+      const sources = [...new Set(ops.map((o) => o.source?.name).filter(Boolean))];
+      const ok = await confirm({ title: `Send ${fmt.plural(lines.length, "operation")}?`, ok: "Send them", reason: isProduction() ? "Why: kept with the stream" : false,
+        body: h("div", { class: "stack", style: { gap: "8px" } }, h("p", { class: "dim", style: { margin: 0 } }, `They write ${tablesHit.length ? tablesHit.join(", ") : "the first table"} on ${location.host}${isProduction() ? ", which counts as production" : ""}. There is no undo.`),
+          sources.length ? h("p", { class: "small", style: { margin: 0 } }, `The server keeps the offset of ${sources.join(", ")} from now on: a consumer of that source resumes from it.`) : null) });
+      if (!ok) return;
       send.disabled = true; log.classList.remove("hidden"); clear(log);
       try {
-        const r = await fetch("/v1/stream", { method: "POST", headers: { "content-type": "application/x-ndjson", ...authHeader() }, body: ta.value.trim() + "\n" });
+        const headers = { "content-type": "application/x-ndjson", "x-strata-client": "command-center", ...authHeader() };
+        if (ok.reason) headers["x-strata-reason"] = safeHeader(ok.reason);
+        const r = await fetch("/v1/stream", { method: "POST", headers, body: ta.value.trim() + "\n" });
+        if (!r.ok) { let m = `HTTP ${r.status}`; try { const j = await r.json(); m = j.error || m; } catch { /* not JSON */ } throw new Error(m); }
         const rd = r.body.getReader(), dec = new TextDecoder();
         for (;;) { const { value, done } = await rd.read(); if (done) break; log.append(dec.decode(value, { stream: true })); }
         refresh();
       } catch (e) { log.append(String(e.message)); }
-      send.disabled = false;
-    } }, icon("play"), "Send");
+      send.disabled = !ta.value.trim();
+    } }, icon("play"), "Send…");
     async function refresh() {
       try {
         const j = await api("/v1/sources");
