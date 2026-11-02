@@ -101,6 +101,7 @@ use crate::slots::{self, hash_shard_of, Move, SlotMap};
 use crate::{json as js, plan_pb, ApiError};
 
 mod moves;
+pub mod plan;
 pub use moves::{plan_even, MOVE_SLOTS};
 
 /// How the coordinator uses replicas and handles shards that do not answer.
@@ -2612,6 +2613,7 @@ impl Coordinator {
                     j["name"] = place["name"].clone();
                     j["node"] = place["node"].clone();
                     j["zone"] = place["zone"].clone();
+                    j["backup_dir"] = j["detail"]["backup_dir"].clone();
                     j["version"] = match &j["detail"]["version"] {
                         Json::Null => json!({"version": j["detail"]["system"]["version"]}),
                         v => v.clone(),

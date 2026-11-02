@@ -302,7 +302,8 @@ impl Place {
         let var = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
         let image = var("STRATA_IMAGE");
         let digest = var("STRATA_IMAGE_DIGEST").or_else(|| image.as_deref().and_then(crate::operator::upgrade::digest_of));
-        Place { name, node: var("STRATA_NODE").or_else(|| var("NODE_NAME")), zone: var("STRATA_ZONE"), image, digest }
+        // On Kubernetes the operator names the pod (`STRATA_POD`).
+        Place { name: name.or_else(|| var("STRATA_POD")), node: var("STRATA_NODE").or_else(|| var("NODE_NAME")), zone: var("STRATA_ZONE"), image, digest }
     }
 
     /// Its version: this build's, and the image's.
@@ -318,6 +319,20 @@ impl Place {
     }
 }
 
+/// The log filter as last set ([`Service::set_log_level`]).
+#[derive(Clone, Debug, Default)]
+pub struct LogLevel {
+    /// The filter to go back to, when this one expires.
+    pub previous: Option<String>,
+    pub set_by: Option<String>,
+    pub set_ms: Option<u64>,
+    pub expires_ms: Option<u64>,
+    pub generation: u64,
+}
+
+/// How long a log filter set holds by default: 30 minutes.
+pub const LOG_FILTER_S: u64 = 1800;
+
 pub struct Service {
     pub backend: Backend,
     pub schema: Schema,
@@ -332,6 +347,21 @@ pub struct Service {
     pub trusted_proxies: Vec<(std::net::IpAddr, u8)>,
     /// Fleet health's memory ([`crate::fleet`]).
     pub fleet: crate::fleet::Fleet,
+    /// The repository the version picker lists (`--image-repository`).
+    pub image_repository: String,
+    /// The rollout the coordinator watches run: its version, when it saw
+    /// it start, and how many copies were stale then.
+    pub rollout_seen: std::sync::Mutex<Option<(String, u64, u64)>>,
+    /// The last rollout's pace: seconds a copy.
+    pub rollout_pace_s: std::sync::Mutex<Option<f64>>,
+    /// The log filter set for a while: the filter before it, who set it,
+    /// until when, and a number each change takes
+    /// ([`Self::set_log_level`]).
+    pub log_level: Arc<std::sync::Mutex<LogLevel>>,
+    /// `GET /v1/index/tables`'s answer, and when ([`crate::inspect::tables`]).
+    pub tables_kept: tokio::sync::Mutex<Option<(std::time::Instant, Json)>>,
+    /// What happened, in order ([`crate::events`]).
+    pub events: Arc<crate::events::Events>,
     // ----- end core
     /// The `StrataCluster` that runs this coordinator on Kubernetes, if one
     /// does ([`crate::operator::kube::Link`]).
@@ -490,6 +520,12 @@ impl Service {
             crate::heap::watch();
         }
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        // core: a coordinator's events come from its cluster snapshots.
+        let events = Arc::new(crate::events::Events::new());
+        if let Backend::Cluster(c) = &backend {
+            let ev = events.clone();
+            c.observe(move |before, after| ev.observe(before, after));
+        }
         let idempotency = Arc::new(idem::Keys::default());
         let writer_state = Arc::new(WriterState::default());
         let writes = match &backend {
@@ -511,6 +547,12 @@ impl Service {
             place: Place::from_env(None),
             trusted_proxies: Vec::new(),
             fleet: Default::default(),
+            image_repository: crate::operator::upgrade::REPOSITORY.into(),
+            rollout_seen: Default::default(),
+            rollout_pace_s: Default::default(),
+            tables_kept: Default::default(),
+            log_level: Default::default(),
+            events,
             kube: None,
             live: Arc::new(LiveQueries::default()),
             query_log: QueryLog::default(),
@@ -3286,6 +3328,12 @@ impl Service {
 
     /// Keeps an audit entry ([`Audit::add`]).
     pub fn audit_add(&self, e: keys::Entry) {
+        if let Some(s) = &self.log_store {
+            s.keep_audit(&e);
+        }
+        if e.kind() == keys::CHANGE {
+            self.events.add(crate::events::of_change(&e));
+        }
         self.audit.add(e);
     }
 
@@ -3320,6 +3368,66 @@ impl Service {
             j["no_writes"] = json!(e);
         }
         j
+    }
+
+    /// Sets the log filter (`debug`, `info,strata_server::coord=debug`)
+    /// for `expires_s` seconds ([`LOG_FILTER_S`] by default; 0: until it
+    /// is set again), then back to the one before; each change, and the
+    /// way back, is an event (`log_level`).
+    pub fn set_log_level(&self, filter: &str, expires_s: Option<u64>, by: &str) -> Result<Json, ApiError> {
+        let before = crate::obs::log_filter();
+        crate::obs::set_log_filter(filter).map_err(ApiError::bad)?;
+        let now = telemetry::now_ms();
+        let secs = expires_s.unwrap_or(LOG_FILTER_S);
+        let expires_ms = (secs > 0).then(|| now + secs * 1000);
+        let generation = {
+            let mut l = self.log_level.lock().unwrap_or_else(|e| e.into_inner());
+            // The filter to go back to is the one before the first of a run
+            // of changes that expire.
+            let previous = match (&l.expires_ms, expires_ms) {
+                (Some(_), Some(_)) => l.previous.clone(),
+                (_, Some(_)) => before.clone(),
+                (_, None) => None,
+            };
+            *l = LogLevel { previous, set_by: Some(by.to_string()), set_ms: Some(now), expires_ms, generation: l.generation + 1 };
+            l.generation
+        };
+        tracing::info!(filter, by, expires_s = secs, "log filter changed");
+        let until = expires_ms.map_or(String::new(), |_| format!(" for {} min", secs.div_ceil(60)));
+        self.events.add(crate::events::Event {
+            kind: "log_level".into(),
+            severity: "info".into(),
+            title: format!("Logs at {filter}{until}"),
+            detail: json!({"filter": filter, "before": before, "expires_ms": expires_ms}),
+            where_: Json::Null,
+            who: Some(by.to_string()),
+        });
+        if let Some(at) = expires_ms {
+            let (level, events) = (self.log_level.clone(), self.events.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(at.saturating_sub(telemetry::now_ms()))).await;
+                let mut l = level.lock().unwrap_or_else(|e| e.into_inner());
+                if l.generation != generation {
+                    return;
+                }
+                let back = l.previous.clone().unwrap_or_else(|| "info".into());
+                if let Err(e) = crate::obs::set_log_filter(&back) {
+                    tracing::warn!(error = %e, "the log filter could not go back");
+                    return;
+                }
+                *l = LogLevel { generation: l.generation + 1, ..LogLevel::default() };
+                drop(l);
+                tracing::info!(filter = %back, "log filter back, its time over");
+                events.add(crate::events::Event { kind: "log_level".into(), severity: "info".into(), title: format!("Logs back at {back}: the change expired"), detail: json!({"filter": back, "expired": true}), where_: Json::Null, who: None });
+            });
+        }
+        Ok(self.log_filter_json())
+    }
+
+    /// The log filter, and until when and by whom it was set.
+    pub fn log_filter_json(&self) -> Json {
+        let l = self.log_level.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        json!({"filter": crate::obs::log_filter(), "expires_ms": l.expires_ms, "set_by": l.set_by, "set_ms": l.set_ms, "previous": l.previous})
     }
 
     /// Fleet health (`GET /v1/health/fleet`, [`crate::fleet`]): of the
@@ -3366,6 +3474,7 @@ impl Service {
             "capability": self.capability(),
             "place": {"name": self.place.name, "node": self.place.node, "zone": self.place.zone},
             "version": self.place.version(),
+            "backup_dir": self.backup_dir.as_ref().map(|p| p.display().to_string()),
             "cluster": self.identity.json(),
         })
     }
@@ -3384,7 +3493,36 @@ impl Service {
             },
         };
         let shard = self.slots().map(|(_, s)| s);
-        Some(crate::logstore::Load { ts_ms: now_ms, role: role.into(), shard, qps, cpu, cores: self.cores, p99_ms, disk_used_ratio })
+        // core: what the command center charts past the hour in memory.
+        let w = crate::fleet::Window::of(&points);
+        let secs = w.secs.max(1e-3);
+        let per_s = |k: &str, rate: &str| {
+            let n: Option<f64> = points.iter().map(|p| p[k].as_f64().or_else(|| p[rate].as_f64().map(|r| r * p["secs"].as_f64().unwrap_or(2.0)))).sum();
+            n.map(|n| n / secs)
+        };
+        let mean = |k: &str| {
+            let v: Vec<f64> = points.iter().filter_map(|p| p[k].as_f64()).collect();
+            (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64)
+        };
+        let p50_ms = (w.hist.iter().sum::<u64>() > 0).then(|| telemetry::quantile(&crate::metrics::BUCKETS, &w.hist, 0.5).map(|s| s * 1e3)).flatten();
+        Some(crate::logstore::Load {
+            ts_ms: now_ms,
+            role: role.into(),
+            shard,
+            qps,
+            cpu,
+            cores: self.cores,
+            p99_ms,
+            disk_used_ratio,
+            error_ratio: w.error_ratio(),
+            errors_s: Some(w.failures / secs),
+            client_errors_s: per_s("client_errors", "http_4xx_s"),
+            timeouts_s: per_s("timeouts", "timeouts_s"),
+            rejected_s: mean("rejected_s"),
+            p50_ms,
+            writes_s: mean("writes_s"),
+            mem_bytes: points.iter().rev().find_map(|p| p["rss_bytes"].as_u64()),
+        })
     }
 
     /// The metrics (`GET /metrics`). A coordinator does not ask its shards

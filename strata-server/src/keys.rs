@@ -150,21 +150,49 @@ pub struct Key {
     pub sha256: String,
     #[serde(default)]
     pub last_used_ms: u64,
+    /// Who answers for it (a person or team), and what it is for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// The address it was last used from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_addr: Option<String>,
 }
 
 impl Key {
     /// What the API shows of it.
     pub fn json(&self) -> Json {
-        json!({"id": self.id, "name": self.name, "scope": self.scope.name(), "created_ms": self.created_ms, "expires_ms": self.expires_ms, "last_used_ms": self.last_used_ms, "prefix": format!("sk_{}_", self.id)})
+        json!({"id": self.id, "name": self.name, "scope": self.scope.name(), "created_ms": self.created_ms, "expires_ms": self.expires_ms, "last_used_ms": self.last_used_ms, "prefix": format!("sk_{}_", self.id),
+            "owner": self.owner, "note": self.note, "last_addr": self.last_addr})
     }
 }
 
 /// A revoked key's id, kept so that the revocation wins wherever keys are
-/// merged.
+/// merged; and what the key was, so that Access still names it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revoked {
     pub id: String,
     pub revoked_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_by: Option<String>,
+    /// The digest of its secret, to name the key a refused request still
+    /// sends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+impl Revoked {
+    /// What the API shows of it.
+    pub fn json(&self) -> Json {
+        json!({"id": self.id, "name": self.name, "scope": self.scope, "owner": self.owner, "revoked_ms": self.revoked_ms, "revoked_by": self.revoked_by, "prefix": format!("sk_{}_", self.id)})
+    }
 }
 
 /// Keys and the ids of revoked ones: what a keys file holds and the
@@ -215,7 +243,12 @@ impl KeySet {
                 continue;
             }
             match next.keys.iter_mut().find(|x| x.id == k.id) {
-                Some(x) if x.sha256 == k.sha256 => x.last_used_ms = x.last_used_ms.max(k.last_used_ms),
+                Some(x) if x.sha256 == k.sha256 => {
+                    if k.last_used_ms > x.last_used_ms {
+                        x.last_addr = k.last_addr.clone();
+                    }
+                    x.last_used_ms = x.last_used_ms.max(k.last_used_ms);
+                }
                 Some(x) => {
                     if k.sha256 < x.sha256 {
                         *x = k.clone();
@@ -369,6 +402,12 @@ impl Keys {
     /// while it serves in a cluster (`in_cluster`), since the key would
     /// close it to the servers that call it, which send no credential.
     pub fn create(&self, name: &str, scope: Scope, expires_ms: Option<u64>, token: bool, in_cluster: bool) -> Result<(Key, String), ApiError> {
+        self.create_owned(name, scope, expires_ms, None, None, token, in_cluster)
+    }
+
+    /// [`Self::create`], with who answers for the key and what it is for.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_owned(&self, name: &str, scope: Scope, expires_ms: Option<u64>, owner: Option<String>, note: Option<String>, token: bool, in_cluster: bool) -> Result<(Key, String), ApiError> {
         let name = name.trim();
         if name.is_empty() || name.len() > 64 {
             return Err(ApiError::bad("a key's name has 1 to 64 characters"));
@@ -389,7 +428,7 @@ impl Keys {
         let id = hex(&random(8)?);
         let secret = hex(&random(24)?);
         let full = format!("sk_{id}_{secret}");
-        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms, sha256: sha256(&secret), last_used_ms: 0 };
+        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms, sha256: sha256(&secret), last_used_ms: 0, owner, note, last_addr: None };
         let mut next = set.clone();
         next.keys.push(key.clone());
         if !token && !managed(&next.keys) {
@@ -411,13 +450,17 @@ impl Keys {
     /// The revocation is kept, so that it wins wherever these keys are
     /// merged.
     pub fn revoke(&self, id: &str, token: bool) -> Result<bool, ApiError> {
+        self.revoke_by(id, token, None)
+    }
+
+    /// [`Self::revoke`], by `by` (a key's name, for the list of revoked
+    /// keys).
+    pub fn revoke_by(&self, id: &str, token: bool, by: Option<String>) -> Result<bool, ApiError> {
         let mut set = self.lock();
         let mut next = set.clone();
+        let Some(k) = set.keys.iter().find(|k| k.id == id).cloned() else { return Ok(false) };
         next.keys.retain(|k| k.id != id);
-        if next.keys.len() == set.keys.len() {
-            return Ok(false);
-        }
-        next.revoked.push(Revoked { id: id.to_string(), revoked_ms: now_ms() });
+        next.revoked.push(Revoked { id: id.to_string(), revoked_ms: now_ms(), name: Some(k.name), scope: Some(k.scope.name().into()), owner: k.owner, revoked_by: by, sha256: Some(k.sha256) });
         if !token && !managed(&next.keys) {
             return Err(ApiError {
                 status: 409,
@@ -429,6 +472,64 @@ impl Keys {
         drop(set);
         self.changed.notify_one();
         Ok(true)
+    }
+
+    /// The revoked keys, the latest first.
+    pub fn revoked(&self) -> Vec<Json> {
+        let mut v: Vec<Revoked> = self.lock().revoked.clone();
+        v.sort_by(|a, b| b.revoked_ms.cmp(&a.revoked_ms));
+        v.iter().map(Revoked::json).collect()
+    }
+
+    /// A new key in place of key `id`: of its name, scope, owner and note,
+    /// with its expiry; the old one expires `grace_ms` from now (or when
+    /// it did, if sooner). Its secret, not kept, is in the answer only.
+    pub fn rotate(&self, id: &str, grace_ms: u64, token: bool) -> Result<(Key, String, Key), ApiError> {
+        let mut set = self.lock();
+        let now = now_ms();
+        let old = set.keys.iter().find(|k| k.id == id).cloned().ok_or_else(|| ApiError { status: 404, message: format!("no key {id}") })?;
+        if old.expires_ms.is_some_and(|e| now >= e) {
+            return Err(ApiError { status: 409, message: format!("key {} has expired: make a new one instead", old.name) });
+        }
+        let new_id = hex(&random(8)?);
+        let secret = hex(&random(24)?);
+        let full = format!("sk_{new_id}_{secret}");
+        let key = Key { id: new_id, sha256: sha256(&secret), created_ms: now, last_used_ms: 0, last_addr: None, ..old.clone() };
+        let mut next = set.clone();
+        let until = now + grace_ms;
+        let mut ending = old.clone();
+        ending.expires_ms = Some(old.expires_ms.map_or(until, |e| e.min(until)));
+        if let Some(k) = next.keys.iter_mut().find(|k| k.id == id) {
+            k.expires_ms = ending.expires_ms;
+        }
+        next.keys.push(key.clone());
+        if !token && !managed(&next.keys) {
+            return Err(ApiError {
+                status: 409,
+                message: "this server has no token, so one of its admin keys must never expire; rotating this one would leave none. Make an admin key without expires_days first".into(),
+            });
+        }
+        self.save(&next)?;
+        *set = next;
+        drop(set);
+        self.changed.notify_one();
+        Ok((key, full, ending))
+    }
+
+    /// The key a refused credential names, if it is a key these keys knew
+    /// (expired or revoked too) with that secret: its id, its name and
+    /// why it no longer opens anything.
+    pub fn identify(&self, authorization: Option<&str>) -> Option<(String, String, &'static str)> {
+        let rest = authorization?.strip_prefix("Bearer ")?.strip_prefix("sk_")?;
+        let (id, secret) = rest.split_once('_')?;
+        let digest = sha256(secret);
+        let set = self.lock();
+        if let Some(k) = set.keys.iter().find(|k| k.id == id && same_secret(digest.as_bytes(), k.sha256.as_bytes())) {
+            let why = if k.expires_ms.is_some_and(|e| now_ms() >= e) { "expired" } else { "valid" };
+            return Some((k.id.clone(), k.name.clone(), why));
+        }
+        let r = set.revoked.iter().find(|r| r.id == id && r.sha256.as_ref().is_none_or(|d| same_secret(digest.as_bytes(), d.as_bytes())))?;
+        Some((r.id.clone(), r.name.clone().unwrap_or_else(|| format!("key {}", r.id)), "revoked"))
     }
 
     /// Whether an admin key that never expires is among these keys: on a
@@ -451,6 +552,9 @@ impl Keys {
         }
         // Kept in memory; written with the next change of keys.
         k.last_used_ms = now_ms();
+        if let Some(addr) = caller().and_then(|c| c.addr) {
+            k.last_addr = Some(addr);
+        }
         Some(Principal { name: k.name.clone(), key: Some(k.id.clone()), scope: k.scope, root: false })
     }
 
@@ -660,7 +764,7 @@ pub struct Audit {
 }
 
 /// Entries kept in memory.
-pub const AUDIT: usize = 2000;
+pub const AUDIT: usize = 20_000;
 
 impl Audit {
     pub fn new(path: Option<PathBuf>) -> Result<Audit, String> {

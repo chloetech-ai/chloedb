@@ -278,7 +278,7 @@ async fn the_aws_view_keeps_its_keys_private_and_plans_from_aws_prices() {
     for (bad, says) in [
         (json!({"name": "Not A Name", "region": "us-east-1", "machine": "m7g.large", "nodes": 3, "spot": false, "volume_gb": 10, "cluster": {}}), "is not a cluster name"),
         (json!({"name": "search", "region": "us-east-1", "machine": "p5.48xlarge", "nodes": 3, "spot": false, "volume_gb": 10, "cluster": {}}), "is not a machine"),
-        (json!({"name": "search", "region": "us-east-1", "machine": "m7g.large", "nodes": 0, "spot": false, "volume_gb": 10, "cluster": {}}), "nodes is 1 to 100"),
+        (json!({"name": "search", "region": "us-east-1", "machine": "m7g.large", "nodes": 0, "spot": false, "volume_gb": 10, "cluster": {}}), "nodes is 1 to 1,000"),
     ] {
         let (status, j) = call(&base, "POST", "/v1/admin/aws/plan", root, Some(bad)).await;
         assert!(status == 400 && j.contains(says), "{status} {j}");
