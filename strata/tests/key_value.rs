@@ -327,11 +327,11 @@ fn written(db: &Db, sql: &str, p: &Params) -> u64 {
     }
 }
 
-/// UPDATE and DELETE by key (`id = ?`, `id IN (...)`) and `INSERT ... ON
-/// CONFLICT` read their rows by key: they build no memtable chunk, and
-/// they write what the same statements write when the executor reads
-/// their rows (a filter that names the key twice), through rows in the
-/// memtable's newest chunk, its sealed chunks and segments.
+/// UPDATE, DELETE and SELECT by key (`id = ?`, `id IN (...)`) and `INSERT
+/// ... ON CONFLICT` read their rows by key: they build no memtable chunk,
+/// and they write and answer what the same statements do when the
+/// executor reads their rows (a filter that names the key twice), through
+/// rows in the memtable's newest chunk, its sealed chunks and segments.
 #[test]
 fn writes_by_key_build_nothing_and_match_the_executor() {
     let dir = tempfile::tempdir().unwrap();
@@ -422,12 +422,28 @@ fn writes_by_key_build_nothing_and_match_the_executor() {
         let b = strata::storage::tail_builds();
         assert_eq!(a, written(&slow, &reference, &p), "step {step}: {sql}");
         slow_builds += strata::storage::tail_builds() - b;
+        // A read by key straight after the write answers what the
+        // executor answers, in its order.
+        let (sql, reference) = [
+            ("SELECT * FROM p WHERE id = :k", "SELECT * FROM p WHERE id = :k AND id = :k"),
+            ("SELECT title, id, emb FROM p WHERE id IN (:j, :k, :j)", "SELECT title, id, emb FROM p WHERE id IN (:j, :k, :j) AND id IN (:k, :j)"),
+            ("SELECT id, stock FROM p WHERE id IN (:k, :j) LIMIT 1 OFFSET 1", "SELECT id, stock FROM p WHERE id IN (:k, :j) AND id IN (:j, :k) LIMIT 1 OFFSET 1"),
+        ][step as usize % 3];
+        let p = Params::new().set("k", Value::Str(key(i))).set("j", Value::Str(key(rng.gen_range(0..n + 10))));
+        let b = strata::storage::tail_builds();
+        let got = fast.query(sql, &p).unwrap();
+        fast_builds += strata::storage::tail_builds() - b;
+        let b = strata::storage::tail_builds();
+        let want = slow.query(reference, &p).unwrap();
+        slow_builds += strata::storage::tail_builds() - b;
+        assert_eq!((&got.columns, &got.rows, &got.keys, &got.scores), (&want.columns, &want.rows, &want.keys, &want.scores), "step {step}: {sql}");
+        assert!(got.stats.plan.iter().any(|l| l.starts_with("read by key: ")), "{:?}", got.stats.plan);
         if step % 150 == 149 {
             fast.storage().flush().unwrap();
             slow.storage().flush().unwrap();
         }
     }
-    assert_eq!(fast_builds, 0, "writes by key built the memtable's newest chunk");
+    assert_eq!(fast_builds, 0, "writes and reads by key built the memtable's newest chunk");
     assert!(slow_builds > 100, "the reference statements read through the executor ({slow_builds} builds)");
     let rows = |db: &Db, sql: &str| db.query(sql, &Params::new()).unwrap().rows;
     for sql in ["SELECT * FROM p ORDER BY id", "SELECT id, emb FROM p ORDER BY id"] {
