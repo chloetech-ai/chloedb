@@ -1937,4 +1937,44 @@ button.ac-chip:hover { border-color: var(--text-2); }
   .cloud-machines > .hd .tools { margin-left: 0; flex-wrap: wrap; }
   .cloud-made-row > .row.between { flex-direction: column; align-items: flex-start; }
 }
+/* Rollouts on narrow screens */
+@media (max-width: 900px) {
+  .ro-main .card > .hd { flex-wrap: wrap; }
+  .ro-main .card > .hd .sub { white-space: normal; }
+  .ro-hd { padding: 12px; }
+  .ro-hd-title { font-size: 16px; }
+  .ro-pb-seg { flex: 0 0 28px !important; width: auto !important; min-width: 0; }
+  .ro-pb-seg.big { flex: 1 1 0 !important; }
+  .ro-pb-ticks { flex-direction: column; gap: 3px; }
+  .ro-pb-tick { flex: none !important; width: auto !important; white-space: normal; }
+  .ro-pb-tick.big { justify-content: flex-start; order: -1; }
+  .ro-pb-eta { text-align: left; }
+  .ro-tl-e { grid-template-columns: 84px minmax(0, 1fr); }
+  .ro-find { flex: 1 1 160px; width: auto; }
+}
+@media (max-width: 560px) {
+  .ro-hd-acts .ro-act { min-height: 44px; }
+  .ro-hd.compact .ro-act { min-height: 40px; }
+  .ro-cmp th:nth-child(3), .ro-cmp td:nth-child(3) { display: none; }
+  .ro-cmp td:first-child { white-space: normal; }
+  .ro-cmp th { white-space: normal; vertical-align: bottom; }
+  .ro-cmp th, .ro-cmp td { padding-left: 4px; padding-right: 4px; }
+  .ro-gates { grid-template-columns: minmax(0, 1fr); }
+  .ro-fromto { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .ro-arrow { transform: rotate(90deg); justify-self: start; }
+  .ro-facts { grid-template-columns: 78px minmax(0, 1fr); }
+  .ro-pk thead { display: none; }
+  .ro-pk, .ro-pk tbody { display: block; }
+  .ro-pk tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 10px 2px; border-bottom: 1px solid var(--line); align-items: center; }
+  .ro-pk td { padding: 0 !important; border: 0 !important; }
+  .ro-pk td.ro-pk-v { grid-column: 1; grid-row: 1; }
+  .ro-pk td.ro-pk-a { grid-column: 2; grid-row: 1 / 3; }
+  .ro-pk td.ro-pk-d { grid-column: 1; grid-row: 2; font-size: 12px; }
+  .ro-pk td.ro-pk-b { grid-column: 1 / 3; grid-row: 3; }
+  .ro-pk td.ro-pk-b:empty, .ro-pk td.ro-pk-b > .row:empty { display: none; }
+  .ro-pk td.ro-pk-g { display: none; }
+  .ro-pk tr.cur { background: color-mix(in srgb, var(--good-soft) 55%, transparent); border-radius: var(--r-sm); padding-left: 8px; padding-right: 8px; }
+  .ro-pk tr.cur td { background: none !important; }
+  .ro-pk .btn.sm { min-height: 40px; padding: 6px 12px; }
+}
 /* ===== end rollouts ===== */

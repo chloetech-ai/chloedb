@@ -756,7 +756,7 @@ function render(page, r) {
     const heavy = list.some((x) => x.copies);
     const flex = (x) => (!heavy || x.copies ? { flex: "1 1 0" } : { flex: "0 0 auto", width: "156px" });
     const cls = m === "held" || m === "paused" || m === "version failed" ? "held" : m === "rolling back" ? "back" : "run";
-    const segs = list.map((x) => h("div", { class: "ro-pb-seg", style: flex(x), title: x.title },
+    const segs = list.map((x) => h("div", { class: "ro-pb-seg" + (x.copies ? " big" : ""), style: flex(x), title: x.title },
       h("i", { class: x.done ? "done" : x.now || x.frac ? cls : "", style: { width: Math.round(clamp(x.frac || 0, 0, 1) * 100) + "%" } })));
     const ticks = list.map((x) => h("div", { class: "ro-pb-tick" + (x.done ? " done" : x.now ? " now" : "") + (x.copies ? " big" : ""), style: flex(x), title: x.title },
       x.done ? icon("check") : null, h("b", {}, x.copies ? x.title : x.short || x.title), x.copies && p.left ? h("span", { class: "dim" }, ` · ${fmt.n(p.left)} to go`) : null, x.when ? h("span", { class: "dim" }, " " + x.when) : null));
@@ -1081,11 +1081,11 @@ function render(page, r) {
         onclick: () => upgrade(x.digest && reg.repository ? `${reg.repository}@${x.digest}` : x.image),
       }, x.newer ? "Upgrade…" : "Go back to it…");
       return h("tr", { class: x.current ? "cur" : "" },
-        h("td", {}, h("div", { class: "row nw" }, h("b", { class: "ro-vn mono" }, vname(v)), named(v) && commitOf(v) ? h("span", { class: "small dim mono" }, commitOf(v).slice(0, 7)) : null, cl ? h("a", { href: cl, target: "_blank", rel: "noopener", title: "The commit", class: "ro-ext" }, icon("ext")) : null)),
-        h("td", { class: "nowrap" }, x.created ? [at(sec(x.created)), h("span", { class: "small dim" }, " · " + ago(sec(x.created)))] : h("span", { class: "dim" }, "–")),
-        h("td", {}, h("div", { class: "row" }, badges)),
-        h("td", { class: "small dim mono", title: x.digest }, (x.digest || "").replace("sha256:", "").slice(0, 12)),
-        h("td", { class: "num" }, pickBtn));
+        h("td", { class: "ro-pk-v" }, h("div", { class: "row nw" }, h("b", { class: "ro-vn mono" }, vname(v)), named(v) && commitOf(v) ? h("span", { class: "small dim mono" }, commitOf(v).slice(0, 7)) : null, cl ? h("a", { href: cl, target: "_blank", rel: "noopener", title: "The commit", class: "ro-ext" }, icon("ext")) : null)),
+        h("td", { class: "nowrap ro-pk-d" }, x.created ? [at(sec(x.created)), h("span", { class: "small dim" }, " · " + ago(sec(x.created)))] : h("span", { class: "dim" }, "–")),
+        h("td", { class: "ro-pk-b" }, h("div", { class: "row" }, badges)),
+        h("td", { class: "small dim mono ro-pk-g", title: x.digest }, (x.digest || "").replace("sha256:", "").slice(0, 12)),
+        h("td", { class: "num ro-pk-a" }, pickBtn));
     };
     const cmp = curRow && list.find((x) => x.newer) ? compareLink({ ...curRow }, { ...list.find((x) => x.newer) }) : null;
     return card({
