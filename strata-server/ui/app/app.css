@@ -2951,6 +2951,15 @@ body.cc-dragging, body.cc-dragging * { cursor: grabbing !important; user-select:
   .cc-as .as-live-n { flex: 1 1 40%; min-width: 0; }
   .cc-as .as-day { flex: none !important; padding: 6px 8px; }
 }
+/* A big tile beside a taller one keeps its words at the top. */
+.cc-grid.big .cc-t { justify-content: flex-start; }
+/* The Changes tab's head: its kinds go under the title when there is no room. */
+.cc-changes > .hd { flex-wrap: wrap; row-gap: 6px; }
+.cc-changes > .hd .sub { flex: 1 1 220px; min-width: 0; }
+@media (max-width: 900px) {
+  .cc-changes > .hd .tools { margin-left: 0; flex: 1 1 100%; min-width: 0; overflow-x: auto; }
+  .cc-changes > .hd .tools .seg { flex: 0 0 auto; }
+}
 /* ===== end cluster ===== */
 
 /* ===== integration ===== */

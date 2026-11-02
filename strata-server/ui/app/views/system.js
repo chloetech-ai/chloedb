@@ -16,7 +16,7 @@ import { h, s, icon, clear, fmt, card, api, every, toast, modal, drawer, empty, 
 import * as core from "../core.js";
 import { SERIES, sparkline } from "../charts.js";
 import { state, refreshSystem, refreshCluster, last, isCoordinator, isProduction, clusterName } from "../data.js";
-import { SETTINGS, TAKES, value, assign, shown, same, clone, full, patchOf, live, after, steps, quantity, line, words, getPath, argOf, yaml, lineDiff, plural } from "../spec.js";
+import { SETTINGS, TAKES, value, assign, shown, same, clone, full, patchOf, live, after, steps, quantity, line, words, getPath, argOf, yaml, lineDiff, plural, fullIn } from "../spec.js";
 
 let active = null;
 
@@ -84,10 +84,12 @@ export function verifyWords(j, name = (u) => copyName(u)) {
     if (r.in_sync === false) return { tone: "warn", text: `${n} is not in sync yet, so it was not compared: it is once it has caught up` };
     if (r.compared === false) return { tone: "warn", text: `${n} did not answer in time, so it was not compared` };
     if (differ > 0) return { tone: "bad", text: `${n} differed in ${plural(differ, "slot")}${r.first_differing_slot != null ? ` (the first is slot ${fmt.n(r.first_differing_slot)})` : ""}: it is sent a copy of the primary` };
+    // An answer from an earlier comparison, not this one: say how old it is.
+    if (r.ms_ago > 60000) return { tone: "warn", old: true, text: `${n} was not compared now: its last comparison, ${fmt.dur(r.ms_ago / 1000)} ago${r.seq_no != null ? ` up to write ${fmt.n(r.seq_no)}` : ""}, found the same rows. Compare again to be sure` };
     return { tone: "ok", text: `${n} holds the same rows${r.seq_no ? ` (up to write ${fmt.n(r.seq_no)})` : ""}` };
   });
   const bad = lines.filter((l) => l.tone === "bad").length, warn = lines.filter((l) => l.tone === "warn").length;
-  const summary = bad ? `${plural(bad, "replica")} of ${rs.length} differed or failed` : warn ? `${fmt.n(rs.length - warn)} of ${plural(rs.length, "replica")} compared: the same rows` : rs.length === 1 ? "The replica holds the same rows as its primary" : `All ${rs.length} replicas hold the same rows as their primary`;
+  const summary = bad ? `${plural(bad, "replica")} of ${rs.length} differed or failed` : warn ? `${fmt.n(rs.length - warn)} of ${plural(rs.length, "replica")} compared now: the same rows` : rs.length === 1 ? "The replica holds the same rows as its primary" : `All ${rs.length} replicas hold the same rows as their primary`;
   return { tone: bad ? "bad" : warn ? "warn" : "ok", summary, lines };
 }
 
@@ -393,7 +395,14 @@ function render(page, r) {
     function known(st) {
       const L = live(state.cluster), y = state.system;
       const rep = (state.cluster?.shards || []).flatMap((sh) => sh.replicas || []).map((r) => r.detail?.health?.replication).find((x) => x?.role === "primary");
+      // What every copy says of a flag: one value, or null when they differ or none says.
+      const copies = (state.cluster?.shards || []).flatMap((sh) => sh.replicas || []).filter((r) => r.status !== "down");
+      const said = (f) => { const vs = [...new Set(copies.map((r) => f(r)).filter((v) => v != null))]; return vs.length === 1 ? vs[0] : vs.length > 1 ? { mixed: vs } : null; };
       switch (st.at) {
+        case "spec:failoverAfterMs": {
+          const v = said((r) => r.detail?.capability?.failover_after_ms);
+          return v == null ? null : v.mixed ? [v.mixed[0], `the copies differ: ${v.mixed.map((x) => (x ? x + " ms" : "by hand")).join(", ")}`] : [v, "every copy says"];
+        }
         case "spec:writeAcks": return L.acks ? [L.acks, "the primaries say"] : null;
         case "args:--verify-every-s": return rep?.verify_every_s != null ? [rep.verify_every_s, "the primaries say"] : null;
         case "cargs:--hedge-ms": return state.cluster?.hedge_ms != null ? [state.cluster.hedge_ms, "this coordinator says"] : null;
@@ -529,7 +538,7 @@ function render(page, r) {
         tools: h("a", { class: "btn sm", href: link("cluster", { lens: "disk" }) }, "See every disk", icon("right")),
         body: h("div", { class: "stack", style: { gap: "8px" } },
           h("div", { class: "small " + (red.length ? "cc-bad" : amber.length ? "cc-warn" : "") }, say),
-          fd?.days_to_full != null ? h("div", { class: "small dim" }, `At the last week's growth the fullest is full in about ${fmt.n(fd.days_to_full, 1)} days.`) : null,
+          fd?.days_to_full != null ? h("div", { class: "small dim" }, `At the last week's growth the fullest is full in ${fullIn(fd.days_to_full)}.`) : null,
           h("div", { class: "cc-disks" }, known.slice(0, 5).map((c) => h("a", { class: "cc-disk", href: link("cluster", { shard: c.shard, lens: "disk" }) }, meter(c.disk, { ...DISK, why: {} }, `${copyName(c.url)} · shard ${c.shard}${c.free != null ? ` · ${fmt.bytes(c.free)} free` : ""}`)))),
           known.length > 5 ? h("div", { class: "small muted" }, `The ${fmt.n(Math.min(5, known.length))} fullest of ${fmt.n(known.length)}.`) : null) });
     }
@@ -692,7 +701,7 @@ function render(page, r) {
           return h("div", { style: { marginBottom: "12px" } }, h("div", { class: "row nw between small", style: { marginBottom: "4px", gap: "8px" } }, h("b", {}, t), h("span", { class: "muted" }, `${plural(list.length, "segment")} · ${fmt.n(total)} rows · ${fmt.bytes(list.reduce((a, x2) => a + x2.bytes, 0))}`)), svgEl);
         }) : empty("layers", "No segments yet", "Rows wait in the memtable until it flushes."),
         h("div", { class: "row small muted", style: { gap: "6px 16px" } }, h("span", {}, `memtable: ${fmt.n(st.memtable_docs)} rows`), h("span", {}, `pending deletes: ${fmt.n(st.pending_deletes)}`), h("span", {}, `pages: ${fmt.n(st.live_pages)} live · ${fmt.n(st.free_pages)} free · ${fmt.n(st.pending_pages)} held`))] }));
-        clear(merges, card({ title: "Merges", body: mg ? kv([["running", `${mg.running} (${plural(mg.segments_merging ?? 0, "segment")})`], ["memory", `${fmt.bytes(mg.memory)}${mg.memory_budget ? " of " + fmt.bytes(mg.memory_budget) : ""}`], ["done", fmt.n(mg.merges)], ["made smaller", fmt.n(mg.merges_limited)], ...Object.entries(mg).filter(([k]) => !["running", "segments_merging", "memory", "memory_budget", "merges", "merges_limited"].includes(k)).map(([k, v]) => [k.replace(/_/g, " "), typeof v === "object" ? JSON.stringify(v) : String(v)])]) : h("div", { class: "small muted" }, "–") }));
+        clear(merges, card({ title: "Merges", body: mg ? kv([["running", `${mg.running} (${plural(mg.segments_merging ?? 0, "segment")})`], ["memory", `${fmt.bytes(mg.memory)}${mg.memory_budget ? " of " + fmt.bytes(mg.memory_budget) : ""}`], ["done", fmt.n(mg.merges)], ["made smaller", fmt.n(mg.merges_limited)], ...Object.entries(mg).filter(([k]) => !["running", "segments_merging", "memory", "memory_budget", "merges", "merges_limited"].includes(k)).map(([k, v]) => [k.replace(/_/g, " "), v == null ? "none" : typeof v === "object" ? JSON.stringify(v) : typeof v === "number" ? fmt.n(v) : String(v)])]) : h("div", { class: "small muted" }, "–") }));
       } catch (e) { clear(segs, card({ title: "Segments", body: failure(e, "Storage") })); }
     }
     return {

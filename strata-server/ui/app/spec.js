@@ -314,6 +314,12 @@ export function dur(secs) {
   if (hr < 48) return mm ? `${hr} h ${mm} min` : `${hr} h`;
   return `${Math.floor(hr / 24)} d ${hr % 24} h`;
 }
+/** When a disk fills, from days: "about 7 h", "about 12 days". */
+export function fullIn(days) {
+  if (days == null || !Number.isFinite(days)) return null;
+  if (days < 2) { const hr = Math.max(1, Math.round(days * 24)); return `about ${hr} h`; }
+  return `about ${Math.round(days)} days`;
+}
 /** The rows a second the last slot move ran at, as the Cluster canvas kept it in this browser, or an assumed rate. */
 export const ASSUMED_RATE = 20000;
 export function keptRate(store) {
