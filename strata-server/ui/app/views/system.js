@@ -289,8 +289,8 @@ function render(page, r) {
       const set1 = (nv) => set((dd) => assign(dd, st, nv));
       const label = st.label.toLowerCase();
       let control;
-      if (st.type === "seg") control = seg(st.opts.map(([k, l]) => [k === undefined ? "" : k, l]), v ?? "", (nv) => set1(nv === "" ? undefined : nv), { "aria-label": st.label });
-      else if (st.type === "toggle") control = toggle(!!v, (on) => set1(on), v ? "on" : "off");
+      if (st.type === "seg") { control = seg(st.opts.map(([k, l]) => [k === undefined ? "" : k, l]), v ?? "", (nv) => set1(nv === "" ? undefined : nv), { "aria-label": st.label }); if (!canAdmin()) for (const btn of control.querySelectorAll("button")) btn.disabled = true; }
+      else if (st.type === "toggle") { control = toggle(!!v, (on) => set1(on), v ? "on" : "off"); const i = control.querySelector("input"); if (i) i.disabled = !canAdmin(); }
       else if (st.type === "step") {
         const list = st.list, cur = v ?? st.def;
         const lo = st.grows ? Math.max(0, list.findIndex((q) => quantity(q) >= quantity(was))) : 0;
