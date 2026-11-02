@@ -5,12 +5,20 @@
 // took, with the request's trace and CPU time when asked) and the JSON; a
 // sidebar of tables and fields to drag into the editor, snippets written
 // for the table's own fields, history and saved queries.
+//
+// Writes have guard rails (sqlguard.js): a mode bar names the cluster, its
+// environment, its shards and the key; production is read-only until
+// writes are allowed for 15 minutes with a reason; the statement that will
+// run is marked and the Run button says its kind ("Run SELECT", "Check
+// UPDATE"); and every write waits for a check of the rows it changes.
 
-import { h, icon, clear, fmt, api, store, toast, copy, modal, drawer, empty, seg, sqlBlock, debounce, ApiError, failure } from "../core.js";
+import { h, icon, clear, fmt, api, store, bus, toast, copy, modal, drawer, empty, seg, sqlBlock, debounce, ApiError, failure, tipOn } from "../core.js";
 import { editor, quoteName, typeName } from "../sqledit.js";
 import { tables, cached, invalidate, typeBadge } from "../catalog.js";
 import { grid, resultChart, planTree, segments, answerStats, exportMenu } from "../results.js";
 import { profileView } from "../profile.js";
+import { state, isProduction } from "../data.js";
+import { parseStatement, runLabel, mode, askAllow, checkWrite, endWrites, writesAllowed, whereName, reach, describeWrite } from "../sqlguard.js";
 
 export default { id: "sql", title: "SQL workbench", icon: "sql", group: "Data", full: true, keywords: "query editor sql run explain plan results chart history saved snippets parameters", render, onParams };
 
@@ -75,7 +83,8 @@ export function wrongWord(msg) {
     || /unknown (?:ranking )?function:? "?(\w+)/i.exec(msg || "")
     || /, found "?(\w+)"? \(did you mean/i.exec(msg || "")
     || /: (\w+) reads as a name here/i.exec(msg || "")
-    || /^(?:MATCH|bm25)\((\w+), \.\.\.\): \w+ is (?:stored but )?not indexed/i.exec(msg || "");
+    || /^(?:MATCH|bm25)\((\w+), \.\.\.\): \w+ is (?:stored but )?not indexed/i.exec(msg || "")
+    || /^"?(\w+)"?\s*(?:[<>=!]+|IN\b|NOT\b|LIKE\b|BETWEEN\b|IS\b)[^:]*? compares no column of /i.exec(msg || "");
   return m ? m[1].split(".").pop() : null;
 }
 
@@ -97,7 +106,7 @@ export function errorTitle(msg, status) {
   if (status === 0) return "The server could not be reached";
   if (/^SQL syntax error/i.test(msg)) return "Syntax error";
   if (/^no such table/i.test(msg)) return "Unknown table";
-  if (/^no such (column|field)/i.test(msg)) return "Unknown column";
+  if (/^no such (column|field)/i.test(msg) || / compares no column of /i.test(msg)) return "Unknown column";
   if (/^unknown (ranking )?function/i.test(msg)) return "Unknown function";
   if (/^unbound parameter|^:\w+ is not JSON/i.test(msg)) return "A parameter needs a value";
   if (/^duplicate primary key/i.test(msg)) return "A row with that key exists";
@@ -216,7 +225,10 @@ function render(page, r) {
   if (!tabs?.length) tabs = [{ id: uid(), name: "Query 1", sql: "", params: {} }];
   let active = store.get("sql.active", tabs[0].id);
   if (!tabs.some((t) => t.id === active)) active = tabs[0].id;
-  let trace = store.get("sql.trace", true);
+  // The profile (trace and CPU of every step) is off on production unless
+  // ticked for this visit; elsewhere it keeps what was chosen.
+  let traceTouched = false;
+  let trace = isProduction() ? false : store.get("sql.trace", true);
   let last = null, lastKind = "results", running = null;
   const tab = () => tabs.find((t) => t.id === active);
   const save = debounce(() => { store.set("sql.tabs", tabs); store.set("sql.active", active); }, 300);
@@ -230,8 +242,9 @@ function render(page, r) {
   const outBody = h("div", { class: "wb-res" });
   const status = h("div", { class: "wb-status" });
   const runBtn = h("button", { class: "btn primary", title: "Run the statement at the caret (Ctrl+Enter)", onclick: () => run() }, icon("play"), "Run");
-  const traceSw = h("label", { class: "row nw small dim", title: "Ask the server for the request's trace and the CPU time of every step the query took (its Profile tab)", style: { gap: "6px", cursor: "pointer" } },
-    h("input", { type: "checkbox", checked: trace, onchange: (e) => { trace = e.target.checked; store.set("sql.trace", trace); } }), "profile");
+  const traceBox = h("input", { type: "checkbox", checked: trace, onchange: (e) => { trace = e.target.checked; traceTouched = true; if (!isProduction()) store.set("sql.trace", trace); } });
+  const traceSw = h("label", { class: "row nw small dim", title: "Ask the server for the request's trace and the CPU time of every step the query took (its Profile tab). Off by default on production: it costs CPU on every shard.", style: { gap: "6px", cursor: "pointer" } }, traceBox, "profile");
+  const modeBar = h("div", { class: "dt-mode", role: "status" });
   const ed = editor({
     value: tab().sql,
     onChange: (v) => { tab().sql = v; save(); drawParams(); },
@@ -241,6 +254,34 @@ function render(page, r) {
     params: () => paramNames(ed.value),
   });
   const edWrap = h("div", { class: "wb-ed", style: { height: store.get("sql.edH", 260) + "px" } }, ed.el);
+  // The statement Ctrl+Enter runs, marked when the editor holds several.
+  const band = h("div", { class: "dt-band hidden", "aria-hidden": "true" });
+  const ta = ed.el.querySelector("textarea");
+  ed.el.querySelector(".ed-body")?.prepend(band);
+  function current() {
+    const at = statementAt(ed.value, ed.selection);
+    const lead = at.sql.length - at.sql.trimStart().length;
+    return { ...at, from: at.start + lead, to: at.start + at.sql.trimEnd().length, p: parseStatement(at.sql) };
+  }
+  const many = () => ed.value.split(";").filter((x) => x.replace(/--[^\n]*/g, "").trim()).length > 1;
+  function mark() {
+    const c = current();
+    const label = runLabel(c.p);
+    if (!running) {
+      clear(runBtn, icon(c.p.write ? (mode().readOnly ? "lock" : "shield") : "play"), label);
+      runBtn.title = c.p.write ? `${label}: see the rows it changes before it runs (Ctrl+Enter)` : `${label}: the statement at the caret (Ctrl+Enter)`;
+      runBtn.classList.toggle("dt-write", !!c.p.write);
+    }
+    if (!ta || !c.sql.trim() || !many() || ed.selection[1] > ed.selection[0]) { band.classList.add("hidden"); return; }
+    const cs = getComputedStyle(ta), lh = parseFloat(cs.lineHeight) || 20, pt = parseFloat(cs.paddingTop) || 10;
+    const l0 = ed.value.slice(0, c.from).split("\n").length - 1, l1 = ed.value.slice(0, c.to).split("\n").length - 1;
+    band.style.top = (pt + l0 * lh - ta.scrollTop) + "px";
+    band.style.height = ((l1 - l0 + 1) * lh) + "px";
+    band.classList.remove("hidden");
+    band.dataset.kind = c.p.write ? "write" : "read";
+  }
+  const markSoon = debounce(mark, 60);
+  if (ta) for (const ev of ["input", "click", "keyup", "select", "scroll", "focus"]) ta.addEventListener(ev, markSoon);
   const splitter = h("div", { class: "splitter", title: "Drag to resize", role: "separator", "aria-orientation": "horizontal" });
   splitter.onpointerdown = (e) => {
     e.preventDefault();
@@ -258,7 +299,7 @@ function render(page, r) {
     h("button", { class: "btn ghost icon", title: "Copy a link to this query", onclick: () => copy(location.origin + "/#/sql?q=" + encodeURIComponent(ed.value), "Link copied") }, icon("link")),
     h("button", { class: "btn ghost icon", title: "Save this query", onclick: saveQuery }, icon("plus")),
     h("button", { class: "btn ghost", title: "Saved queries and history", onclick: library }, icon("clock"), "Library"));
-  page.append(h("div", { class: "wb" }, side, h("div", { class: "wb-main" }, tabBar, tools, edWrap, paramsBox, splitter, out)));
+  page.append(h("div", { class: "wb" }, side, h("div", { class: "wb-main" }, tabBar, modeBar, tools, edWrap, paramsBox, splitter, out)));
   out.append(h("div", { class: "row between wb-outhd" }, outTabs, status), outBody);
 
   // ------------------------------------------------------------ tabs
@@ -272,7 +313,7 @@ function render(page, r) {
       return b;
     }), h("button", { class: "qt add", title: "A new query", onclick: () => add("") }, icon("plus")));
   }
-  function select(id) { active = id; ed.value = tab().sql; save(); drawTabs(); drawParams(); }
+  function select(id) { active = id; ed.value = tab().sql; save(); drawTabs(); drawParams(); markSoon(); }
   function add(sql, name) { const t = { id: uid(), name: name || `Query ${tabs.length + 1}`, sql, params: {} }; tabs.push(t); select(t.id); ed.focus(); return t; }
   function close(id) { const i = tabs.findIndex((t) => t.id === id); tabs.splice(i, 1); if (active === id) active = tabs[Math.max(0, i - 1)].id; select(active); }
   // `p` is the parameters as JSON: {name: {kind, value, field}}
@@ -282,6 +323,38 @@ function render(page, r) {
     if (p) { try { t.params = JSON.parse(p); save(); drawParams(); } catch { /* a link with broken parameters opens without them */ } }
     history.replaceState(null, "", "#/sql");
   };
+
+  // ------------------------------------------------------------ the mode bar
+  // Where a statement runs, as whom, and whether it may write.
+  function drawMode() {
+    const md = mode(), { name, env } = whereName(), r = reach(), w = state.whoami;
+    const where = [h("b", { title: location.host }, name), env ? ` · ${env}` : h("span", { class: "muted", title: "The server names no environment (--environment), so the workbench treats it as production" }, " · environment not set"),
+      ` · ${r.coordinator ? fmt.plural(r.shards, "shard") : "one server"}`, w ? ` · ${w.name} · ${w.scope} key` : ""];
+    let pillEl, note, action = null;
+    if (md.why === "key") { pillEl = h("span", { class: "dt-pill ro" }, icon("lock"), "Read-only"); note = "this key can read only: writes need a write key"; }
+    else if (md.readOnly) {
+      pillEl = h("span", { class: "dt-pill ro" }, icon("lock"), "Read-only");
+      note = "writes are off on production; when allowed, each waits for a check";
+      action = h("button", { class: "btn sm", onclick: async () => { if (await askAllow()) { drawMode(); mark(); } } }, icon("unlock"), "Allow writes for 15 min…");
+    } else if (md.allowed) {
+      const left = Math.max(0, Math.ceil((md.allowed.until_ms - Date.now()) / 60000));
+      pillEl = h("span", { class: "dt-pill on" }, icon("unlock"), `Writes on · ${left} min left`);
+      note = h("span", { title: md.allowed.reason }, "each write waits for a check · why: ", h("i", {}, md.allowed.reason));
+      action = h("button", { class: "btn sm", onclick: () => { endWrites(); drawMode(); mark(); toast("Writes are off again in this tab"); } }, icon("lock"), "End writes now");
+    } else { pillEl = h("span", { class: "dt-pill" }, icon("shield"), "Writes checked"); note = "each write waits for a check of the rows it changes"; }
+    clear(modeBar, pillEl, h("span", { class: "dt-where ellipsis" }, where, h("span", { class: "muted" }, " · ", note)), h("span", { class: "sep" }), action);
+    modeBar.classList.toggle("ro", md.readOnly);
+  }
+  let wasAllowed = !!writesAllowed();
+  const modeTimer = setInterval(() => {
+    const now = !!writesAllowed();
+    if (wasAllowed && !now) toast("Writes are off again: the 15 minutes are over");
+    wasAllowed = now; drawMode(); mark();
+  }, 15000);
+  const offs = ["cluster", "health", "whoami"].map((ev) => bus.on(ev, () => {
+    drawMode();
+    if (!traceTouched) { const want = isProduction() ? false : store.get("sql.trace", true); if (want !== trace) { trace = want; traceBox.checked = want; } }
+  }));
 
   // ------------------------------------------------------------ parameters
   function drawParams() {
@@ -328,6 +401,7 @@ function render(page, r) {
   async function run(explain = false) {
     if (running) { running.abort(); return; }
     const at = statementAt(ed.value, ed.selection);
+    const range = [at.start, at.start + at.sql.length];
     let sql = at.sql.trimEnd().replace(/;\s*$/, "");
     let start = at.start + sql.length - sql.trimStart().length;
     sql = sql.trim();
@@ -336,7 +410,8 @@ function render(page, r) {
     const ex = /^EXPLAIN(?:\s+ANALYZE)?\s+(?=\S)/i.exec(sql);
     if (ex) { explain = true; sql = sql.slice(ex[0].length); start += ex[0].length; }
     ed.clearMarks();
-    const where = { sql, start };
+    const p = parseStatement(sql);
+    const where = { sql, start, p };
     if (!explain && /^\s*(SHOW|DESCRIBE|DESC)\s/i.test(sql)) {
       try {
         const local = localAnswer(sql, await tables().catch(() => cached()));
@@ -345,30 +420,43 @@ function render(page, r) {
     }
     let params;
     try { params = buildParams(sql); } catch (e) { showError(e.message, where); return; }
+    // A write: allowed in this tab, then checked (rows, shards, no undo, why).
+    let reason;
+    if (!explain && p.write) {
+      const md = mode();
+      if (md.why === "key") { showError(`${p.kind} needs a write key: this key (${state.whoami?.name || "unknown"}) can read only. Nothing was sent.`, null); return; }
+      if (md.readOnly && !await askAllow(p)) return;
+      drawMode();
+      const edit = (fixed) => { const v = ed.value; ed.value = v.slice(0, range[0]) + (range[0] ? "\n" : "") + fixed.trim() + (v.slice(range[1]).startsWith(";") ? "" : ";") + v.slice(range[1]); tab().sql = ed.value; save(); ed.focus(); const i = ed.value.indexOf(fixed.trim()); if (i >= 0) ed.select(i + fixed.trim().length, i + fixed.trim().length); mark(); toast("The fix is in the editor: check it and run it again"); };
+      const ok = await checkWrite({ sql, params, p, onEdit: edit });
+      if (!ok) { mark(); return; }
+      reason = ok.reason || undefined;
+    }
     running = new AbortController();
-    clear(runBtn, icon("stop"), "Stop"); runBtn.classList.add("danger");
+    clear(runBtn, icon("stop"), p.write && !explain ? "Stop waiting" : "Stop"); runBtn.classList.add("danger");
+    runBtn.title = p.write && !explain ? "Stops waiting for the answer. The write may still complete on the server." : "Stop waiting for the answer";
     out.classList.add("loading");
-    const t0 = performance.now();
+    const t0 = performance.now(), sent = Date.now();
     try {
       let j;
       if (explain) j = await api("/v1/explain", { body: { sql, params, hits: 5, profile: trace }, signal: running.signal });
       else if (READ.test(stripStrings(sql))) j = await api("/v1/query", { body: { sql, params, trace, profile: trace }, signal: running.signal });
-      else j = await api("/v1/sql", { body: { sql, params }, signal: running.signal });
+      else j = await api("/v1/sql", { body: { sql, params }, signal: running.signal, reason });
       j.roundtrip_ms = performance.now() - t0;
-      last = { j, sql, explain };
-      remember(sql, j, null);
-      if (/^\s*(CREATE|DROP)\b/i.test(sql)) { invalidate(); tables(true).then(drawSide); toast(/^\s*CREATE/i.test(sql) ? "Table created" : "Table dropped", "ok"); }
-      show(explain ? "plan" : j.written != null ? "results" : lastKind === "plan" ? "results" : lastKind);
+      last = { j, sql, explain, p, reason, sent };
+      remember(sql, j, null, p, reason);
+      if (/^\s*(CREATE|DROP|ALTER)\b/i.test(sql)) { invalidate(); tables(true).then(drawSide); toast(/^\s*CREATE/i.test(sql) ? "Created" : /^\s*ALTER/i.test(sql) ? "Table altered" : "Dropped", "ok"); }
+      show(explain ? "plan" : j.written != null || p.write ? "results" : lastKind === "plan" ? "results" : lastKind);
     } catch (e) {
-      if (e.name === "AbortError") { toast("Stopped waiting: the server may still finish it"); }
-      else { remember(sql, null, e.message); showError(e.message, where, e); }
+      if (e.name === "AbortError") toast(p.write && !explain ? "Stopped waiting. The write may still complete on the server: check with a SELECT before running it again." : "Stopped waiting: the server may still finish it", p.write ? "bad" : "info", p.write ? 9000 : 3800);
+      else { remember(sql, null, e.message, p, reason); showError(e.message, where, e); }
     } finally {
-      running = null; clear(runBtn, icon("play"), "Run"); runBtn.classList.remove("danger"); out.classList.remove("loading");
+      running = null; runBtn.classList.remove("danger"); out.classList.remove("loading"); mark();
     }
   }
-  function remember(sql, j, error) {
+  function remember(sql, j, error, p, reason) {
     const hist = store.get("sql.history", []);
-    hist.unshift({ sql, ts: Date.now(), ms: j?.took_ms, rows: j?.rows?.length ?? j?.written, error });
+    hist.unshift({ sql, ts: Date.now(), ms: j?.took_ms, rows: j?.rows?.length ?? j?.written, error, kind: p?.kind, write: !!p?.write, reason, host: location.host });
     store.set("sql.history", hist.slice(0, 100));
   }
   // The error panel: what kind of error, the server's message whole, the
@@ -406,16 +494,22 @@ function render(page, r) {
       const all = [...new Set(cached().flatMap((t) => [t.table, ...(t.short?.fields || []).map((f) => f.name)]))];
       names = all.map((n) => [n, levenshtein(n.toLowerCase(), word.toLowerCase())]).filter(([, d]) => d > 0 && d <= (word.length < 5 ? 1 : Math.max(2, Math.floor(word.length / 3)))).sort((a, b) => a[1] - b[1]).slice(0, 3).map(([n]) => n);
     }
+    // A fix to a read runs it again; a fix to a write only goes into the
+    // editor, so that the write is checked again before it runs.
+    const writes = !!where?.p?.write;
     const fix = h("div", { class: "row" });
     if (word) for (const n of names.slice(0, 4)) {
-      fix.append(h("button", { class: "btn sm", title: `Write ${n} in place of ${word} and run it again`, onclick: () => {
+      fix.append(h("button", { class: "btn sm", title: writes ? `Write ${n} in place of ${word} in the editor. It does not run: check it again first` : `Write ${n} in place of ${word} and run it again`, onclick: () => {
         const v = ed.value;
         ed.value = pos != null && v.slice(pos, pos + word.length).toLowerCase() === word.toLowerCase()
           ? v.slice(0, pos) + (/^[A-Z]+$/.test(n) ? n : quoteName(n)) + v.slice(pos + word.length)
           : v.replace(new RegExp(`\\b${word}\\b`, "g"), quoteName(n));
-        tab().sql = ed.value; save(); run();
-      } }, icon("wrench"), `Use ${n}`));
+        tab().sql = ed.value; save();
+        if (writes) { ed.clearMarks(); ed.focus(); if (pos != null) ed.select(pos, pos + quoteName(n).length); mark(); clear(fixNote, icon("okc"), ` ${n} is in the editor. ${runLabel(where.p)} to see the rows it changes before it runs.`); }
+        else run();
+      } }, writes ? icon("edit") : icon("wrench"), writes ? `Write ${n} in its place` : `Use ${n}`));
     }
+    const fixNote = h("div", { class: "small muted row nw", style: { gap: "6px" } }, writes && fix.childElementCount ? [icon("shield"), ` This statement writes (${where.p.kind}${where.p.table ? " on " + where.p.table : ""}): the fix goes into the editor and is not run.`] : null);
 
     clear(outBody, h("div", { class: "stack wb-error", style: { padding: "14px", gap: "10px" } },
       h("div", { class: "row", style: { gap: "8px" } }, icon("bad"), h("b", {}, errorTitle(msg, code)),
@@ -426,6 +520,7 @@ function render(page, r) {
       excerpt,
       excerpt ? h("div", { class: "small muted" }, "The editor marks the same place.") : null,
       fix.childElementCount ? h("div", {}, h("div", { class: "small muted", style: { marginBottom: "6px" } }, "Did you mean"), fix) : null,
+      fix.childElementCount ? fixNote : null,
       h("div", { class: "small muted" }, "The query language guide shows every clause and function with an example: ",
         h("a", { href: "https://chloetech-ai.github.io/strata/strata/query-language.html", target: "_blank", rel: "noopener" }, "Query language"),
         ". ", h("code", {}, "SHOW TABLES"), " and ", h("code", {}, "DESCRIBE table"), " list the tables and their columns.")));
@@ -442,7 +537,7 @@ function render(page, r) {
     clear(outTabs, kinds.map(([k, l]) => h("button", { role: "tab", "aria-selected": String(k === kind), onclick: () => show(k) }, l)));
     clear(status, explain ? h("span", { class: "small" }, h("b", {}, j.kind), " · ", fmt.ms(j.took_ms), " · ", fmt.plural(j.rows, "row")) : j.local ? h("span", { class: "small muted", title: "SHOW and DESCRIBE are answered in the browser from GET /v1/tables" }, h("b", {}, fmt.plural(j.rows.length, "row")), " · from the catalog") : answerStats(j),
       j.rows?.length ? h("span", { class: "row nw", style: { gap: "2px" } }, exportMenu(j, "strata-query")) : null);
-    if (kind === "results" && j.written != null) clear(outBody, h("div", { class: "stack", style: { padding: "16px" } }, h("div", { class: "banner ok" }, icon("okc", "lg"), h("div", {}, h("div", { class: "big" }, `${fmt.plural(j.written, "row")} written`), h("div", { class: "small muted" }, `in ${fmt.ms(j.took_ms)}${j.seq_no != null ? ` · sequence number ${j.seq_no}` : ""}${j.skipped ? ` · ${fmt.n(j.skipped)} skipped` : ""}`)))));
+    if (kind === "results" && (j.written != null || last.p?.write)) clear(outBody, written(j, last));
     else if (kind === "results") clear(outBody, grid(j));
     else if (kind === "chart") clear(outBody, h("div", { style: { padding: "12px 14px" } }, resultChart(j)));
     else if (kind === "profile") {
@@ -455,6 +550,33 @@ function render(page, r) {
     }
     else if (kind === "json") clear(outBody, h("pre", { class: "code", style: { margin: "12px 14px", maxHeight: "60vh" } }, JSON.stringify(j.rows && j.rows.length > 200 ? { ...j, rows: j.rows.slice(0, 200), note: `${j.rows.length - 200} more rows left out` } : j, null, 2)));
     else if (kind === "plan") explainView(explain ? j : null);
+  }
+  // What a write did, in neutral colors: a write that worked is not good
+  // news by itself. Whether the server kept it in its audit log, with the
+  // reason, is read back from the log.
+  function written(j, run) {
+    const p = run.p || {};
+    const ddl = ["CREATE", "DROP", "ALTER"].includes(p.kind);
+    const seqs = j.seq_nos ? j.seq_nos.join(", ") : j.seq_no;
+    const audit = h("div", { class: "small muted" });
+    const box = h("div", { class: "stack", style: { padding: "16px", gap: "10px" } },
+      h("div", { class: "banner dt-done" }, icon("info", "lg"), h("div", { class: "grow" },
+        h("div", { class: "big" }, ddl ? `${p.kind} ${(p.what || "").toUpperCase()} ${p.table || ""}: done` : j.written != null ? `${fmt.plural(j.written, "row")} written` : `${p.kind || "Statement"} done`, h("span", { class: "muted", style: { fontWeight: 400 } }, p.table && !ddl ? ` · ${p.kind} on ${p.table}` : "")),
+        h("div", { class: "small muted" }, `in ${fmt.ms(j.took_ms)}${seqs != null && seqs !== "" ? ` · sequence numbers ${seqs}` : ""}${j.skipped ? ` · ${fmt.n(j.skipped)} skipped` : ""} · at ${fmt.time(run.sent)}`),
+        run.reason ? h("div", { class: "small" }, h("span", { class: "muted" }, "why: "), run.reason) : null)),
+      audit,
+      h("div", { class: "small muted" }, "There is no undo. ", p.table && (p.kind === "UPDATE" || p.kind === "DELETE" || p.kind === "INSERT") ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); add(`SELECT * FROM ${quoteName(p.table)}${p.kind !== "INSERT" && p.where && p.kind !== "DELETE" ? ` WHERE ${p.where}` : ""} LIMIT 20;`, p.table); } }, "Look at the rows in a new tab") : null));
+    // The audit log, where this key may read it.
+    (async () => {
+      try {
+        const a = await api("/v1/admin/audit?" + new URLSearchParams({ kind: "change", limit: "30" }));
+        const head = run.sql.slice(0, 60);
+        const e = (a.entries || []).find((x) => x.ts_ms >= run.sent - 5000 && String(x.statement || x.detail || x.sql || "").includes(head));
+        if (!e) clear(audit, icon("info"), " This server did not record the write in its audit log: an older version keeps only table changes there.");
+        else clear(audit, icon("okc"), ` Kept in the audit log as a change by ${e.who}${e.reason ? ", with the reason" : ""}`, e.reason ? "" : " (this server keeps no reason)", ". ", h("a", { href: "#/access" }, "Access and audit"));
+      } catch { /* a key that cannot read the audit log */ }
+    })();
+    return box;
   }
   async function explainView(j) {
     if (!j) {
@@ -486,13 +608,15 @@ function render(page, r) {
     const list = h("div", { class: "stack", style: { gap: "8px" } });
     let which = "saved";
     const tabsEl = seg([["saved", "Saved"], ["history", "History"]], which, (v) => { which = v; draw(); });
-    const d = drawer({ title: "Library", sub: "kept in this browser", wide: true, body: [h("div", { class: "row" }, tabsEl, h("span", { class: "sep" })), q, list] });
+    const d = drawer({ title: "Library", sub: "kept in this browser · writes are marked", wide: true, body: [h("div", { class: "row" }, tabsEl, h("span", { class: "sep" })), q, list] });
     q.oninput = draw;
     function draw() {
       const needle = q.value.toLowerCase();
       const items = (which === "saved" ? store.get("sql.saved", []) : store.get("sql.history", [])).filter((x) => !needle || x.sql.toLowerCase().includes(needle) || x.name?.toLowerCase().includes(needle));
       clear(list, items.length ? items.map((x, i) => h("div", { class: "lib-it" },
-        h("div", { class: "row between" }, h("b", {}, x.name || fmt.datetime(x.ts)), h("span", { class: "small muted" }, x.error ? h("span", { class: "pill bad" }, "failed") : x.ms != null ? `${fmt.ms(x.ms)} · ${fmt.plural(x.rows ?? 0, "row")}` : "", x.name ? " · " + fmt.ago(x.ts) : "")),
+        h("div", { class: "row between" }, h("span", { class: "row nw", style: { gap: "8px" } }, which === "history" ? h("span", { class: "dt-kind " + (x.error ? "bad" : x.write ? "write" : "read") }, x.error ? "failed" : x.write ? "write" : "read") : null, h("b", {}, x.name || fmt.datetime(x.ts))),
+          h("span", { class: "small muted" }, x.error ? h("span", { class: "dim" }, x.error.slice(0, 80)) : x.ms != null ? `${fmt.ms(x.ms)} · ${fmt.plural(x.rows ?? 0, "row")}${x.write ? " written" : ""}` : "", x.name ? " · " + fmt.ago(x.ts) : "", x.host && x.host !== location.host ? ` · on ${x.host}` : "")),
+        x.reason ? h("div", { class: "small dim" }, "why: ", x.reason) : null,
         sqlBlock(x.sql, { style: { maxHeight: "120px", marginTop: "6px" } }),
         h("div", { class: "row", style: { marginTop: "6px" } },
           h("button", { class: "btn sm primary", onclick: () => { d.close(); const t = add(x.sql, x.name); if (x.params) { t.params = x.params; drawParams(); } } }, "Open in a tab"),
@@ -526,11 +650,11 @@ function render(page, r) {
       h("div", { class: "snips" }, snippets(first).map(([name, what, sql]) => h("div", { class: "snip", draggable: "true", title: "Drag into the editor, or click to open in a new tab", ondragstart: (e) => e.dataTransfer.setData("text/plain", sql), onclick: () => add(sql, name) }, h("b", {}, name), h("div", { class: "small muted" }, what)))));
   }
 
-  drawTabs(); drawParams();
-  clear(outBody, empty("sql", "Run a query to see its answer", "Ctrl+Enter runs the statement at the caret; Ctrl+Shift+Enter explains it."));
+  drawTabs(); drawParams(); drawMode();
+  clear(outBody, empty("sql", "Run a query to see its answer", "Ctrl+Enter runs the statement at the caret; Ctrl+Shift+Enter explains it. A write waits for a check of the rows it changes."));
   tables().then(() => { drawSide(); drawParams(); if (!tab().sql.trim() && cached()[0]) { ed.value = `SELECT * FROM ${quoteName(cached()[0].table)} LIMIT 20;`; tab().sql = ed.value; save(); } }).catch((e) => clear(side, failure(e, "The tables")));
   if (r.params.get("q")) openSql(r.params.get("q"), r.params.get("p"));
-  setTimeout(() => ed.focus(), 50);
-  return () => { openSql = null; running?.abort(); };
+  setTimeout(() => { ed.focus(); mark(); }, 50);
+  return () => { openSql = null; running?.abort(); clearInterval(modeTimer); offs.forEach((f) => f()); };
 }
 
