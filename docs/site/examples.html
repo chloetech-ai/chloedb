@@ -46,6 +46,7 @@
       <a href="#graph">Graphs</a>
       <span class="h">Everything else</span>
       <a href="#sql">Analytics, JSON, SQL</a>
+      <a href="#kv">Rows by key</a>
       <a href="#data">Data in and out</a>
       <a href="#clients">Clients</a>
     </nav>
@@ -60,7 +61,7 @@
   id KEYWORD PRIMARY KEY, title TEXT, features TEXT,
   brand KEYWORD, category KEYWORD, platforms KEYWORD[],
   price FLOAT, rating FLOAT, ratings INT, in_stock BOOL DEFAULT TRUE,
-  released TIMESTAMP, attrs JSON,
+  released TIMESTAMP, attrs JSON OPTIONS(text = true),
   emb VECTOR OPTIONS(embed = 'title, features', model = 'bge-small-en-v1.5')
 );
 
@@ -249,10 +250,15 @@ GROUP BY p.brand ORDER BY reviews DESC LIMIT 10;</pre>
         </div>
         <div class="ex">
           <h3>Keys no schema names</h3>
-          <p>Paths into a JSON column are indexed as they arrive; <code>json_paths</code> lists what has been seen.</p>
+          <p>Paths into a JSON column are indexed as they arrive, and with <code>text = true</code> its strings are searchable words too. <code>json_paths</code> lists what has been seen.</p>
 <pre data-lang="sql">SELECT id, title, attrs.dims.w FROM products
 WHERE attrs.voltage >= 5 AND attrs.certs = 'UL'
 ORDER BY attrs.dims.w DESC LIMIT 10;
+
+SELECT attrs.color, COUNT(*), AVG(price) FROM products GROUP BY attrs.color;
+
+SELECT id, title FROM products WHERE MATCH(attrs, 'usb charger')
+ORDER BY bm25(attrs, 'usb charger') DESC LIMIT 10;
 
 SELECT * FROM json_paths('products', 'attrs');</pre>
           <div class="ex-meta"><span class="runs"><b>file</b><b>server</b><b>cluster</b></span></div>
@@ -261,6 +267,26 @@ SELECT * FROM json_paths('products', 'attrs');</pre>
           <h3>Each customer's latest review</h3>
 <pre data-lang="sql">SELECT DISTINCT ON (usr) usr, item, stars, ts FROM reviews ORDER BY ts DESC, id;</pre>
           <div class="ex-meta"><span class="runs"><b>file</b><b>server</b><b>cluster</b></span></div>
+        </div>
+        <div class="ex">
+          <h3>Each brand's three best, and a customer's streak</h3>
+          <p>Window functions rank and compare rows without folding them into groups; <code>QUALIFY</code> filters by them.</p>
+<pre data-lang="sql">SELECT id, title, brand, rating FROM products
+WHERE category = 'Headsets'
+QUALIFY ROW_NUMBER() OVER (PARTITION BY brand ORDER BY rating DESC, id) &lt;= 3;
+
+SELECT item, stars, ts,
+       COUNT(*) OVER (ORDER BY ts) AS nth,
+       stars - LAG(stars) OVER (ORDER BY ts) AS change
+FROM reviews WHERE usr = :u ORDER BY ts;</pre>
+          <div class="ex-meta"><span class="runs"><b>file</b><b>server</b><b>cluster</b></span><span class="small muted">On a cluster, <code>usr = :u</code> sends the second one only to that customer's shard.</span><a class="small" href="../strata/query-language.html#window-functions">Window functions</a></div>
+        </div>
+        <div class="ex">
+          <h3>In stock, and not yet reviewed by this customer</h3>
+<pre data-lang="sql">SELECT id FROM products WHERE category = 'Headsets' AND in_stock
+EXCEPT
+SELECT item FROM reviews WHERE usr = :u;</pre>
+          <div class="ex-meta"><span class="runs"><b>file</b><b>server</b><b>cluster</b></span><a class="small" href="../strata/query-language.html#union-intersect-and-except">UNION, INTERSECT, EXCEPT</a></div>
         </div>
         <div class="ex">
           <h3>Change the schema in place</h3>
@@ -272,6 +298,30 @@ ALTER TABLE products RENAME COLUMN ratings TO rating_count;</pre>
           <h3>See the plan</h3>
 <pre data-lang="sql">EXPLAIN SELECT id FROM products WHERE MATCH(title, :q) AND price &lt; 40
 ORDER BY rrf(bm25(title, :q), similarity(emb, :v)) DESC LIMIT 10;</pre>
+          <div class="ex-meta"><span class="runs"><b>file</b><b>server</b><b>cluster</b></span></div>
+        </div>
+      </div>
+
+      <!-- kv -->
+      <div class="ex-group" id="kv">
+        <div class="block-head"><span class="eyebrow">Everything else</span><h2>Rows by key, and rows that expire</h2>
+          <p>Every table with a primary key is also a key-value store: one row or ten thousand read without SQL, and a row's own time to live for carts, sessions and caches.</p></div>
+        <div class="ex">
+          <h3>A cart that expires in a week</h3>
+<pre data-lang="sql">CREATE TABLE carts (
+  id KEYWORD PRIMARY KEY, usr KEYWORD, items KEYWORD[], until TIMESTAMP
+) OPTIONS(expire_by = 'until');</pre>
+<pre data-lang="sh">curl -s -X PUT localhost:7700/v1/kv/carts/c-u7 \
+  -d '{"usr": "u7", "items": ["B0C1"], "until": "2026-11-09T00:00:00Z"}'
+curl -s localhost:7700/v1/kv/carts/c-u7                  # one row, no SQL
+curl -s localhost:7700/v1/kv/get -d '{"table": "products", "keys": ["B0C1", "B0C2"]}'</pre>
+          <div class="ex-meta"><span class="runs"><b>server</b><b>cluster</b></span><span class="small muted">Through a coordinator each key goes to its own shard, all of a shard's keys in one call.</span><a class="small" href="../strata/server.html#rows-by-key">Rows by key</a></div>
+        </div>
+        <div class="ex">
+          <h3>The same from Python</h3>
+<pre data-lang="python">db.get("B0C1", table="products")                  # a dict, or None
+db.get_many(["B0C1", "B0C2"], table="products")    # in the keys' order
+db.expire()        # in your process; a server deletes expired rows every few seconds</pre>
           <div class="ex-meta"><span class="runs"><b>file</b><b>server</b><b>cluster</b></span></div>
         </div>
       </div>
@@ -297,6 +347,14 @@ db = strata.open("shop.strata")
 db.insert([{"id": "B0C1", "title": "Cooling stand", "brand": "Kiwi", "price": 29.0}], table="products")
 db.import_file("reviews.jsonl", table="reviews")</pre>
           <div class="ex-meta"><span class="runs"><b>file</b><b>server</b><b>cluster</b></span></div>
+        </div>
+        <div class="ex">
+          <h3>Out to pandas, polars and DuckDB</h3>
+          <p>Columns come back as Arrow arrays, which these libraries read where the database wrote them.</p>
+<pre data-lang="python">r = db.query_arrow("SELECT brand, price, rating FROM products WHERE price &lt; :p", p=50)
+df = r.to_polars()            # or r.to_pyarrow(), r.to_pandas()
+duckdb.sql("SELECT brand, avg(rating) FROM r GROUP BY brand")</pre>
+          <div class="ex-meta"><span class="runs"><b>file</b></span><a class="small" href="../strata/python.html#querying">Python</a></div>
         </div>
         <div class="ex">
           <h3>A consistent copy while it serves</h3>

@@ -62,7 +62,7 @@
       <div class="card"><h4>Milvus, Qdrant and Weaviate</h4><p>Indexes built for billions of vectors (on disk, on GPUs), more quantisation choices, and managed clouds. Strata has no vector index built for collections far larger than memory yet.</p></div>
       <div class="card"><h4>SQLite and PostgreSQL</h4><p>Decades of hardening as general-purpose databases, and in SQLite's case a library that runs everywhere in a few hundred kilobytes. Strata loads 1.7–5.9× slower than SQLite when it builds an HNSW graph.</p></div>
       <div class="card"><h4>Tantivy</h4><p>Faster facet counts on small collections (1.1–2.1× on three of four BEIR sets) and faster cold structured filters, where a range in Strata touches more pages.</p></div>
-      <div class="card"><h4>Strata itself</h4><p>A young project: English and simple analyzers only, no managed service, no point-in-time recovery between checkpoints yet, one writing process per file, and changes to the file format and cluster protocol still reviewed one by one.</p></div>
+      <div class="card"><h4>Strata itself</h4><p>A young project: English and simple analyzers only, no managed service, no point-in-time recovery between checkpoints yet, one writing process per file, a cluster changed through one coordinator at a time until its map changes go through consensus, and changes to the file format and cluster protocol still reviewed one by one.</p></div>
     </div>
   </div></section>
 </main>

@@ -81,7 +81,7 @@ window.STRATA_COMPARE = {
       title: "Vectors",
       rows: [
         ["A vector index (HNSW or IVF)", {
-          strata: "y:HNSW, IVF or exact; float32, 8-bit or binary codes", sqlite: "p?:sqlite-vec scans; no ANN index", postgres: "y:HNSW and IVFFlat", lancedb: "y",
+          strata: "y:HNSW, IVF or exact; float32 with 8-bit, binary or RaBitQ codes of 1, 2 or 4 bits", sqlite: "p?:sqlite-vec scans; no ANN index", postgres: "y:HNSW and IVFFlat", lancedb: "y",
           elastic: "y", opensearch: "y", solr: "y", vespa: "y", qdrant: "y", weaviate: "y", milvus: "y" }],
         ["Filtered vector search", {
           strata: "y:Planned per segment from exact counts: an exact scan, the filter inside HNSW, or a post-filter", sqlite: "p", postgres: "p?:Iterative index scans", lancedb: "p:Pre- or post-filter, chosen by the caller",
@@ -92,7 +92,7 @@ window.STRATA_COMPARE = {
           opensearch: "y:Normalisation and RRF processors in search pipelines", solr: "p?:RRF in Solr 10; no normalised sum", vespa: "y:Any ranking expression",
           qdrant: "y:RRF and DBSF", weaviate: "y:Ranked and relative-score fusion", milvus: "y:RRF and weighted rankers" }],
         ["Multi-vector late interaction (ColBERT, ColPali)", {
-          strata: "y:maxsim() over VECTOR(d)[] fields, with token pooling", postgres: "p?:Through extensions such as VectorChord", lancedb: "y?",
+          strata: "y:maxsim() over VECTOR(d)[] fields with token pooling; ColBERT token vectors embedded on write", postgres: "p?:Through extensions such as VectorChord", lancedb: "y?",
           elastic: "p?:The rank_vectors field", opensearch: "n?", vespa: "y", qdrant: "y", weaviate: "y?", milvus: "p?" }],
         ["Learned sparse vectors (SPLADE, ELSER)", {
           strata: "y:SPARSE fields", postgres: "y:pgvector's sparsevec", lancedb: "n?",
@@ -137,8 +137,8 @@ window.STRATA_COMPARE = {
     {
       title: "SQL and data",
       rows: [
-        ["SQL with joins, subqueries and WITH", {
-          strata: "y:With DataFusion as the engine of compound plans", sqlite: "y", postgres: "y", lancedb: "p?:SQL through DataFusion or DuckDB",
+        ["SQL with joins, subqueries, WITH, window functions and UNION", {
+          strata: "y:DataFusion runs the large plans, spilling to disk past their memory budget", sqlite: "y", postgres: "y", lancedb: "p?:SQL through DataFusion or DuckDB",
           elastic: "p:ES|QL and SQL, with lookup joins", opensearch: "p:The SQL and PPL plugin", solr: "p:Parallel SQL", vespa: "p:YQL, without joins",
           weaviate: "n:GraphQL" }],
         ["ACID transactions with snapshot isolation", {
@@ -148,8 +148,14 @@ window.STRATA_COMPARE = {
           strata: "y:REACHABLE, PATH and ppr() over edge fields or edge tables, seeded by any query", sqlite: "p:Recursive CTEs", postgres: "p:Recursive CTEs, or Apache AGE",
           solr: "p:The graph query parser and streaming expressions" }],
         ["Schemaless JSON attributes, indexed", {
-          strata: "y:JSON fields, filtered and grouped by path, listed by json_paths()", sqlite: "p:JSON functions and indexes on expressions", postgres: "y:jsonb with GIN", lancedb: "p?",
+          strata: "y:JSON fields, filtered, grouped and sorted by path, their strings searched as text, listed by json_paths()", sqlite: "p:JSON functions and indexes on expressions", postgres: "y:jsonb with GIN", lancedb: "p?",
           elastic: "y:Dynamic mapping", opensearch: "y", solr: "y:Dynamic fields", vespa: "n?", qdrant: "y:Payload", weaviate: "p:Auto-schema", milvus: "y:JSON and dynamic fields" }],
+        ["Reads and writes by key, with a time to live per row", {
+          strata: "y:GET, PUT and DELETE on /v1/kv, 10,000 keys a call, expire_by per row; a coordinator asks only the key's shard",
+          sqlite: "p:By primary key in SQL; no time to live", postgres: "p:By primary key in SQL; no time to live", lancedb: "p?:Lookups by filter; no time to live",
+          elastic: "p:GET and _mget by id; no time to live per document", opensearch: "p:GET and _mget by id; no time to live per document",
+          solr: "y?:Real-time get, and documents that expire by a field", vespa: "y?:The document API, and garbage collection by a selection",
+          qdrant: "p?:Points by id; no time to live", weaviate: "p?:Objects by id; no time to live", milvus: "p?:Get by primary key; a time to live per collection" }],
         ["Change columns while serving", {
           strata: "y:ALTER TABLE ADD, DROP and RENAME COLUMN, across a cluster", sqlite: "y", postgres: "y", lancedb: "y?",
           elastic: "p:Add fields; other changes reindex", opensearch: "p", solr: "p", vespa: "p:Some changes need a reindex", qdrant: "y:The payload has no schema", weaviate: "p?", milvus: "p?" }],
@@ -167,8 +173,12 @@ window.STRATA_COMPARE = {
           strata: "y:The command center, served by the server itself", postgres: "p:EXPLAIN ANALYZE; consoles are separate",
           elastic: "y:Kibana, a separate service; the profile API", opensearch: "y:OpenSearch Dashboards, a separate service", solr: "y:The admin UI",
           vespa: "p?:Tracing; no bundled console", qdrant: "y?:A web UI", milvus: "p:Attu, a separate service" }],
-        ["Plans a cloud cluster with its cost", {
-          strata: "y:The Cloud view plans EKS or DigitalOcean Kubernetes from live prices and quotas" }],
+        ["Plans, makes and deletes a cloud cluster, with its cost", {
+          strata: "y:The Cloud view plans EKS or DigitalOcean Kubernetes from live prices and quotas, makes the cluster, follows it and deletes it" }],
+        ["Autoscaling, rehearsed on past load", {
+          strata: "y:Rules in the operator that act, wait for a person, or stay off; the last week's load replays on them first",
+          postgres: "n?", elastic: "$?:Autoscaling in Elastic Cloud, and in ECK with an Enterprise licence", opensearch: "n?", solr: "n?", vespa: "p?:In Vespa Cloud",
+          qdrant: "n?", weaviate: "n?", milvus: "n?" }],
         ["Licence", {
           strata: "t:Apache-2.0", sqlite: "t:Public domain", postgres: "t:PostgreSQL", lancedb: "t:Apache-2.0",
           elastic: "t:AGPLv3, SSPL or ELv2", opensearch: "t:Apache-2.0", solr: "t:Apache-2.0", vespa: "t:Apache-2.0",

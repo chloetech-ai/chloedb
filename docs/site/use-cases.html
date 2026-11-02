@@ -32,7 +32,7 @@
     <h1>What people build on one engine</h1>
     <p class="lede">Each of these usually means a database, a search engine and a vector store kept in step by jobs. With Strata it is one file, and later one cluster, holding all three.</p>
     <nav class="toc" aria-label="Sections">
-      <a href="#demos">Demos</a><a href="#app-search">Search in an app</a><a href="#recommendations">Recommendations</a><a href="#rag">Retrieval for assistants</a><a href="#media">Media</a><a href="#logs">Logs</a><a href="#knowledge">Knowledge graphs</a>
+      <a href="#demos">Demos</a><a href="#app-search">Search in an app</a><a href="#recommendations">Recommendations</a><a href="#sessions">Sessions and carts</a><a href="#rag">Retrieval for assistants</a><a href="#media">Media</a><a href="#logs">Logs</a><a href="#knowledge">Knowledge graphs</a>
     </nav>
   </div></div>
 
@@ -71,6 +71,9 @@
       <figure class="shot"><img src="../assets/img/strata-command-center-fleet.png" alt="Fleet view of shards, replicas and slots" loading="lazy"><figcaption>Fleet: shards, replicas and slots</figcaption></figure>
       <figure class="shot"><img src="../assets/img/strata-command-center-cloud.png" alt="Cloud view planning a cluster on EKS or DigitalOcean" loading="lazy"><figcaption>Cloud: plan a cluster on EKS or DigitalOcean</figcaption></figure>
       <figure class="shot"><img src="../assets/img/strata-command-center-logs.png" alt="Logs view searching the cluster's logs with SQL" loading="lazy"><figcaption>Logs, searched with SQL across the cluster</figcaption></figure>
+      <figure class="shot"><img src="../assets/img/strata-command-center-cloud-clusters.png" alt="Cloud view following a cluster being made on AWS and one ready on DigitalOcean, with every step and its cost so far" loading="lazy"><figcaption>Clusters made from the page, followed step by step (against stand-ins for the clouds)</figcaption></figure>
+      <figure class="shot"><img src="../assets/img/strata-command-center-autoscale.png" alt="Autoscaling rules written as sentences, and a week of load replayed on them" loading="lazy"><figcaption>Autoscaling rules, replayed on a week of load (synthetic here)</figcaption></figure>
+      <figure class="shot"><img src="../assets/img/strata-command-center-rollout.png" alt="A rollout held by its p99 gate, with its steps, timeline and versions" loading="lazy"><figcaption>Rollout: a new image held by its latency gate (a sample status)</figcaption></figure>
     </div>
   </div></section>
 
@@ -78,7 +81,7 @@
   <section class="gutter"><div class="wrap block">
     <div class="block-head">
       <span class="eyebrow">Use cases</span>
-      <h2>Six things one engine does</h2>
+      <h2>Seven things one engine does</h2>
     </div>
 
     <div>
@@ -118,6 +121,23 @@ ORDER BY rrf(
   ppr(bought_with,
     (SELECT item FROM reviews WHERE usr = :u ORDER BY ts DESC LIMIT 20))
 ) DESC MAX 2 PER brand LIMIT 10;</pre>
+      </article>
+
+      <article class="uc" id="sessions">
+        <div class="uc-copy">
+          <h3>Sessions, carts and caches</h3>
+          <p>The rows an app reads by key on every request, kept in the same database as everything else, each with its own time to live. Through a coordinator each key goes to its own shard, so a read costs one shard however many there are.</p>
+          <dl class="kv">
+            <dt>Replaces</dt><dd>A key-value store or cache beside the database</dd>
+            <dt>Uses</dt><dd><span class="fam cols">columns</span> GET, PUT and DELETE on /v1/kv, 10,000 keys a call, expire_by, conditional writes by sequence number</dd>
+            <dt>Measured</dt><dd>Pending the benchmark: a key read without SQL, and 100 keys in one call, beside Elasticsearch, OpenSearch, Solr and Vespa.</dd>
+          </dl>
+        </div>
+<pre data-lang="sh">curl -s -X PUT localhost:7700/v1/kv/sessions/s1 \
+  -d '{"usr": "u7", "until": "2026-11-02T12:00:00Z"}'
+curl -s localhost:7700/v1/kv/sessions/s1
+curl -s localhost:7700/v1/kv/get \
+  -d '{"table": "sessions", "keys": ["s1", "s2"]}'</pre>
       </article>
 
       <article class="uc" id="rag">

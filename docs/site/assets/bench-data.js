@@ -73,6 +73,7 @@ window.STRATA_BENCH = {
           rows: [
             { label: "open the file and answer a query", cells: [null, null, null] },
             { label: "a product by id", unit: "µs", cells: [null, null, null] },
+            { label: "100 products by id", unit: "µs", cells: [null, null, null] },
             { label: "a user's reviews by user id", unit: "µs", cells: [null, null, null] },
             { label: "list page: category, price range, by rating, first 20", cells: [null, null, null] },
             { label: "the same list page at offset 10,000", cells: [null, null, null] },
@@ -227,9 +228,12 @@ window.STRATA_BENCH = {
             { label: "GROUP BY two fields with HAVING", cells: ["y", "y", "n:no SQL", "y", "c"] },
             { label: "joins of two tables", data: "shop", cells: ["y", "y", "n:no SQL", "y", "c"] },
             { label: "correlated subqueries", data: "shop", cells: ["y", "y", "n:no SQL", "y", "c"] },
-            { label: "window functions, UNION", cells: ["n:until DataFusion's next step", "y", "n:no SQL", "y", "c"] },
+            { label: "window functions, UNION", cells: ["y", "y", "n:no SQL", "y", "c"] },
             { label: "graph walks over an edge table", data: "shop", cells: ["y", "p:recursive CTE", "n", "p:recursive CTE", "c"] },
-            { label: "percentiles", cells: ["n:not yet", "c", "c", "y", "c"] }
+            { label: "percentiles", cells: ["n:not yet", "c", "c", "y", "c"] },
+            { group: "Keys" },
+            { label: "100 rows by key in one call", cells: ["y:get_many", "y:WHERE id IN (...)", "p:a term query on an id field", "y:WHERE id IN (...)", "c"] },
+            { label: "rows that expire at their own time", cells: ["y:expire_by", "n", "n", "n", "c"] }
           ],
           note: "Marks come from each library's documentation and are confirmed or corrected by the runs. Strata's own gaps stay in the table."
         }
@@ -287,9 +291,9 @@ window.STRATA_BENCH = {
       dataset: "B1: BEIR Quora (523K questions, 1,024-dimension vectors, judged). B2: MS MARCO v2.1, 2M passages, 768-dimension vectors, larger than the memory budget",
       plan: [
         "Elasticsearch 9 (Basic licence, its default), OpenSearch 3, Solr 10 and Vespa 8, each with 2 data nodes in 3 CPUs and 6 GiB; Strata as 2 shards and a coordinator",
-        "14 kinds at 1, 4 and 16 clients: the nine of 28 October plus phrase, typo-tolerant, prefix autocomplete, similar items with exclusions and a SQL aggregate",
+        "16 kinds at 1, 4 and 16 clients: the nine of 28 October plus phrase, typo-tolerant, prefix autocomplete, similar items with exclusions, a SQL aggregate, a key read without SQL and 100 keys in one call",
         "Writes, partial updates and a Kafka-compatible stream (Redpanda, 4 partitions) under load: documents a second, p50 and p99, time until visible, and what a consumer restart loses or repeats",
-        "27 operators, each timed wherever an engine has it and marked where it has none; Elasticsearch's paid hybrid retrievers run on a trial licence, labelled as such",
+        "30 operators, each timed wherever an engine has it and marked where it has none; Elasticsearch's paid hybrid retrievers run on a trial licence, labelled as such",
         "Load, live scale-out from 2 to 3 shards, failover with one replica per shard, footprint"
       ],
       charts: [
@@ -305,13 +309,16 @@ window.STRATA_BENCH = {
             { label: "hybrid, weighted", cells: [{ v: 1.83, p90: 2.18, p99: 2.9 }, { v: 2.42, p90: 3.77, p99: 8.1, note: "a raw-score sum: no normalised fusion on the free licence" }, null, null, { v: 3.47, p90: 4.84, p99: 10.0, note: "a raw-score sum" }, null] },
             { label: "boosted: BM25 × date decay", cells: [{ v: 1.19, p90: 1.47, p99: 2.0 }, { v: 1.59, p90: 3.06, p99: 6.1 }, "skip:only the hybrid kinds, which need the paid features", null, { v: 1.55, p90: 3.27, p99: 6.4 }, null] },
             { label: "facet", cells: [{ v: 0.41, p90: 0.46, p99: 0.7 }, { v: 0.82, p90: 1.44, p99: 3.7 }, "skip:only the hybrid kinds, which need the paid features", null, { v: 0.78, p90: 1.51, p99: 5.0 }, null] },
-            { label: "key lookup", cells: [{ v: 0.32, p90: 0.41, p99: 1.2 }, { v: 0.65, p90: 0.79, p99: 1.2 }, "skip:only the hybrid kinds, which need the paid features", null, { v: 0.81, p90: 0.97, p99: 2.0 }, null] },
+            { label: "key lookup", cells: [{ v: 0.32, p90: 0.41, p99: 1.2, note: "in SQL, asked of both shards: reads by key went to the key's shard alone only from 2 November" }, { v: 0.65, p90: 0.79, p99: 1.2 }, "skip:only the hybrid kinds, which need the paid features", null, { v: 0.81, p90: 0.97, p99: 2.0 }, null] },
             { label: "phrase", s: "placeholder", cells: [null, null, "skip:only the hybrid kinds, which need the paid features", null, null, null] },
             { label: "typo-tolerant", s: "placeholder", cells: [null, null, "skip:only the hybrid kinds, which need the paid features", null, null, null] },
             { label: "prefix autocomplete", s: "placeholder", cells: [null, null, "skip:only the hybrid kinds, which need the paid features", null, null, null] },
             { label: "similar items with exclusions", s: "placeholder", cells: [null, null, "skip:only the hybrid kinds, which need the paid features", null, null, null] },
-            { label: "SQL aggregate: GROUP BY two fields, HAVING", s: "placeholder", cells: [null, null, "skip:only the hybrid kinds, which need the paid features", null, null, null] }
-          ]
+            { label: "SQL aggregate: GROUP BY two fields, HAVING", s: "placeholder", cells: [null, null, "skip:only the hybrid kinds, which need the paid features", null, null, null] },
+            { label: "key lookup without SQL", s: "placeholder", cells: [null, null, "skip:only the hybrid kinds, which need the paid features", null, null, null] },
+            { label: "100 keys in one call", s: "placeholder", cells: [null, null, "skip:only the hybrid kinds, which need the paid features", null, null, null] }
+          ],
+          note: "* Strata's key lookup was SQL asked of both shards; since 2 November a coordinator sends a read by key to its shard alone, which the next run measures."
         },
         {
           id: "b-qps", title: "Sixteen clients", sub: "Queries a second, higher is better", unit: "q/s", digits: 0, better: "higher", scale: "row", status: "earlier", run: "m2-kind-2026-10-28",
@@ -325,9 +332,11 @@ window.STRATA_BENCH = {
             { label: "hybrid, weighted", cells: [759, 707, null, null, 419, null] },
             { label: "boosted: BM25 × date decay", cells: [1492, 1087, "skip:only the hybrid kinds, which need the paid features", null, 1030, null] },
             { label: "facet", cells: [6158, 6272, "skip:only the hybrid kinds, which need the paid features", null, 3180, null] },
-            { label: "key lookup", cells: [11158, 8137, "skip:only the hybrid kinds, which need the paid features", null, 3259, null] }
+            { label: "key lookup", cells: [{ v: 11158, note: "in SQL, asked of both shards: reads by key went to the key's shard alone only from 2 November" }, 8137, "skip:only the hybrid kinds, which need the paid features", null, 3259, null] },
+            { label: "key lookup without SQL", s: "placeholder", cells: [null, null, "skip:only the hybrid kinds, which need the paid features", null, null, null] },
+            { label: "100 keys in one call", s: "placeholder", cells: [null, null, "skip:only the hybrid kinds, which need the paid features", null, null, null] }
           ],
-          note: "At 16 clients every engine is throttled by its CPU quota, and the client shares the same 4 CPUs. Elasticsearch ties Strata on facets."
+          note: "At 16 clients every engine is throttled by its CPU quota, and the client shares the same 4 CPUs. Elasticsearch ties Strata on facets. * Strata's key lookups were SQL asked of both shards; since 2 November a coordinator sends a read by key to its shard alone, which the next run measures."
         },
         {
           id: "b-quality", title: "The same answers", sub: "nDCG@10 against Quora's judgments, or recall@10 against an exact search; higher is better", unit: "", digits: 3, better: "higher", scale: "unit", status: "earlier", run: "m2-kind-2026-10-28",
@@ -432,7 +441,11 @@ window.STRATA_BENCH = {
             { label: "joins of two tables", data: "shop", cells: ["y", "c:ES|QL lookup join", "p:SQL plugin", "p:filter only", "p:parent fields"] },
             { label: "subqueries, correlated subqueries", data: "shop", cells: ["y", "n", "n", "n", "n"] },
             { label: "graph walks over an edge table", data: "shop", cells: ["y", "n", "n", "p:streaming expressions", "n"] },
-            { label: "window functions, UNION", cells: ["n:until DataFusion's next step", "n", "n", "c", "n"] }
+            { label: "window functions, UNION", cells: ["y", "n", "n", "c", "n"] },
+            { group: "Keys" },
+            { label: "a row by key, sent to its shard alone", cells: ["y:GET /v1/kv", "y:GET by id", "y:GET by id", "y:real-time get", "y:document API"] },
+            { label: "100 rows by key in one call", cells: ["y:POST /v1/kv/get", "y:_mget", "y:_mget", "y:real-time get of several ids", "c"] },
+            { label: "rows that expire at their own time", cells: ["y:expire_by", "n:no time to live per document", "n:no time to live per document", "c:expiry by a field", "c:garbage collection by a selection"] }
           ],
           note: "Marks come from each engine's documentation today; the runs confirm or correct each one. Rows marked shop need fields Quora lacks and run on the shop data, loaded into every engine. Strata's own gaps stay in the table."
         },

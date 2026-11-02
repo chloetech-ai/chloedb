@@ -125,7 +125,7 @@ db = strata.connect("http://127.0.0.1:7700")</pre>
       <div class="n"><b>4</b><span>Shards</span></div>
       <div class="stage-copy">
         <h3>A coordinator over shards</h3>
-        <p>Rows are placed by slots of their key (or of a column such as the customer). The coordinator plans each query once, sends it to every shard, and merges their answers so that the result matches one database's. Adding a shard moves slots to it while queries and writes go on.</p>
+        <p>Rows are placed by slots of their key (or of a column such as the customer). The coordinator plans each query once, sends it to the shards its rows can be on, and merges their answers so that the result matches one database's: a read by key, or a query that pins the key or the customer, goes to one shard, and a search goes to all of them. Adding a shard moves slots to it while queries and writes go on.</p>
 <pre data-lang="sh">strata-server --shards http://s0:7701,http://s1:7701 \
   --listen 127.0.0.1:7700 --grpc off</pre>
       </div>
@@ -156,11 +156,13 @@ db = strata.connect("http://127.0.0.1:7700")</pre>
       <div class="n"><b>5</b><span>Kubernetes</span></div>
       <div class="stage-copy">
         <h3>A cluster the operator keeps</h3>
-        <p>One <code>StrataCluster</code> resource says how many shards, copies and coordinators. The operator makes the pods and volumes, grows and shrinks the cluster by moving slots, replaces a lost copy, and rolls new settings or images through one copy at a time.</p>
+        <p>One <code>StrataCluster</code> resource says how many shards, copies and coordinators. The operator makes the pods and volumes, grows and shrinks the cluster by moving slots, replaces a lost copy, and rolls new settings or images through one copy at a time. Autoscaling rules add copies, shards or volume when the servers get busy or full, or suggest it to a person first.</p>
 <pre data-lang="sh">cd strata-server/deploy/k8s/operator
 kubectl apply -f operator.yaml -f cluster.yaml
 kubectl -n strata patch strata demo --type merge \
-  -p '{"spec": {"shards": 3}}'</pre>
+  -p '{"spec": {"shards": 3}}'
+kubectl -n strata patch strata demo --type merge -p \
+  '{"spec": {"autoscale": {"mode": "suggest", "grow": {"max": 5}}}}'</pre>
       </div>
       <figure class="topo" aria-label="The same cluster of an operator, a coordinator and two shards, on kind on a laptop and on EKS or DigitalOcean, from one spec">
         <svg viewBox="0 0 400 206" role="img"><title>Stage 5: Kubernetes, on a laptop and in the cloud</title>
@@ -210,8 +212,8 @@ kubectl -n strata patch strata demo --type merge \
         <span class="eyebrow">Laptop and cloud</span>
         <h2>The cluster on your laptop is the one in production</h2>
         <p>On kind the cluster has the same pods, the same operator and the same resource as on EKS or DigitalOcean Kubernetes. What changes is where the image comes from, the storage class and the sizes; the structure, the failover rules and the write acknowledgements do not.</p>
-        <div class="note warn"><b>Not yet</b><span>No published image yet: a workflow that builds and pushes one is the next pull request of the cluster work. Until then the cloud image is built and pushed by hand.</span></div>
-        <p class="small muted">The command center's Cloud view plans a cluster on EKS or DigitalOcean and estimates its cost; creating one from the page is in review.</p>
+        <div class="note"><b>Published</b><span>The cloud pulls <code>ghcr.io/chloetech-ai/strata-server</code>, built for x86-64 and arm64 whenever Strata or the server changes on main, tagged <code>latest</code> and with the commit. The laptop builds its own from the checkout.</span></div>
+        <p class="small muted">The command center's Cloud view plans a cluster on EKS or DigitalOcean with its cost, makes it, installs Strata on it, follows it until every copy answers, and deletes it when asked.</p>
       </div>
       <div class="code">
         <div class="code-head"><span>cluster.yaml: laptop → cloud</span></div>
@@ -220,7 +222,7 @@ kubectl -n strata patch strata demo --type merge \
   metadata: {name: shop, namespace: strata}
   spec:
 <span class="del">-   image: strata-server:dev</span>
-<span class="add">+   image: REGISTRY/strata-server:RELEASE</span>
+<span class="add">+   image: ghcr.io/chloetech-ai/strata-server:latest</span>
     shards: 2
     replicas: 3
     coordinators: 1
@@ -233,7 +235,8 @@ kubectl -n strata patch strata demo --type merge \
     clusterTokenSecret: shop-cluster-token
     resources:
 <span class="del">-     requests: {cpu: 500m, memory: 1Gi}</span>
-<span class="add">+     requests: {cpu: "4", memory: 16Gi}</span></code></pre>
+<span class="add">+     requests: {cpu: "4", memory: 16Gi}</span>
+<span class="add">+   autoscale: {mode: suggest, grow: {busyAbove: 0.7, max: 5}}</span></code></pre>
       </div>
     </div>
   </div></section>
@@ -246,7 +249,7 @@ kubectl -n strata patch strata demo --type merge \
         <p>Develop against a file, test against the real cluster topology on kind, and ship the same resource to the cloud. The cluster on the laptop fails over, moves slots and rolls out the way the cloud one does, so those paths get tested before production, not in it.</p>
         <ul class="small muted">
           <li>The operator's own tests run the same steps with server processes standing in for pods.</li>
-          <li>A deterministic cluster simulator replays elections, slot moves and lost messages from a seed.</li>
+          <li>A deterministic cluster simulator replays elections, map changes and slot moves from a seed, under crashes, pauses, slow links and lost messages.</li>
         </ul>
       </div>
 <pre data-lang="sh" data-title="on the laptop">git clone https://github.com/chloetech-ai/strata && cd strata
