@@ -568,6 +568,9 @@ pub struct Coordinator {
 pub struct Merged {
     pub rs: ResultSet,
     pub missing: Vec<String>,
+    /// With [`QueryReq::reads`], the keys of the rows by the shard's
+    /// replica that answered each ([`crate::reads`]).
+    pub served: Vec<crate::reads::Served>,
     /// With [`QueryReq::arrow`], the rows as Arrow columns, which `rs` then
     /// does not hold.
     #[cfg(feature = "datafusion")]
@@ -579,6 +582,7 @@ impl Merged {
         Merged {
             rs,
             missing,
+            served: Vec::new(),
             #[cfg(feature = "datafusion")]
             arrow: None,
         }
@@ -1253,11 +1257,14 @@ impl Coordinator {
     /// call, or of every shard for a table placed by shard_by, whose key
     /// does not say where its row is. Per key, in their order, the row and
     /// its number, or none.
-    pub async fn get(&self, schema: &Schema, keys: &[strata::value::Value], after: &After, deadline: Instant) -> Result<Vec<Option<(Vec<strata::value::Value>, u64)>>, ApiError> {
+    /// With them, the keys by the shard's replica that answered each,
+    /// found or not ([`crate::reads`]): for a table placed by shard_by,
+    /// the shard that found it (else the first asked).
+    pub async fn get(&self, schema: &Schema, keys: &[strata::value::Value], after: &After, deadline: Instant) -> Result<(Vec<Option<(Vec<strata::value::Value>, u64)>>, Vec<crate::reads::Served>), ApiError> {
         self.routed(|| self.get_once(schema, keys, after, deadline)).await
     }
 
-    async fn get_once(&self, schema: &Schema, keys: &[strata::value::Value], after: &After, deadline: Instant) -> Result<Vec<Option<(Vec<strata::value::Value>, u64)>>, ApiError> {
+    async fn get_once(&self, schema: &Schema, keys: &[strata::value::Value], after: &After, deadline: Instant) -> Result<(Vec<Option<(Vec<strata::value::Value>, u64)>>, Vec<crate::reads::Served>), ApiError> {
         let t = &self.topo();
         let start = self.turn.fetch_add(1, Ordering::Relaxed);
         let after = &self.after(t, after)?;
@@ -1286,21 +1293,40 @@ impl Coordinator {
                     }
                 })
                 .await?;
-            Ok::<_, ApiError>((a, crate::grpc::rows_from_pb(got.1)))
+            Ok::<_, ApiError>((i, got.0, a, crate::grpc::rows_from_pb(got.1)))
         });
         let mut out = vec![None; keys.len()];
+        // Per key, the shard and replica it counts as read from.
+        let mut by: Vec<Option<(usize, usize)>> = vec![None; keys.len()];
         for r in join_all(calls).await {
-            let (a, rows) = r?;
+            let (i, r, a, rows) = r?;
             if rows.len() != a.len() {
                 return Err(ApiError::internal(format!("a shard answered {} rows for {} keys", rows.len(), a.len())));
             }
             for (&j, row) in a.iter().zip(rows) {
                 if row.is_some() {
                     out[j] = row;
+                    by[j] = Some((i, r));
+                } else if by[j].is_none() {
+                    by[j] = Some((i, r));
                 }
             }
         }
-        Ok(out)
+        let mut served: Vec<crate::reads::Served> = Vec::new();
+        for (j, b) in by.into_iter().enumerate() {
+            let Some((i, r)) = b else { continue };
+            let at = crate::reads::At { shard: t.shards[i].clone(), replica: t.replicas[i][r].url.clone() };
+            let s = match served.iter().position(|s| s.at == at) {
+                Some(p) => &mut served[p],
+                None => {
+                    served.push(crate::reads::Served { at, keys: Vec::new(), found: Vec::new() });
+                    served.last_mut().expect("pushed")
+                }
+            };
+            s.keys.push(keys[j].clone());
+            s.found.push(out[j].is_some());
+        }
+        Ok((out, served))
     }
 
     /// The paths listing `call` asks for ([`strata::query::paths`]) over
@@ -1570,7 +1596,7 @@ impl Coordinator {
                 return Ok(Merged::rows(c.into_result()?, missing));
             }
             let rs = ResultSet { columns: c.names.clone(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() };
-            return Ok(Merged { rs, missing, arrow: Some(c) });
+            return Ok(Merged { rs, missing, served: Vec::new(), arrow: Some(c) });
         }
         let mut merge_step = None;
         let mut merge = |q: &Select, shards: Vec<ResultSet>| {
@@ -1579,14 +1605,16 @@ impl Coordinator {
             merge_step = Some(leaf_step("merge", format!("{} shard answers", held.len()), t0, Some(rs.rows.len() as u64)));
             Ok::<_, ApiError>(rs)
         };
+        // Each key's shard: for the fetch round, and for the reads.
+        let mut owner = HashMap::new();
+        if ids.is_some() || req.reads {
+            for (&(i, _, _), a) in held.iter().zip(&shards) {
+                owner.extend(a.keys.iter().filter(|k| !matches!(k, Value::Null)).map(|k| (Part::of(k), i)));
+            }
+        }
         let rs = match &ids {
             None => merge(select, shards)?,
             Some(ids) => {
-                // Each key's shard, for the fetch round.
-                let mut owner = HashMap::new();
-                for (&(i, _, _), a) in held.iter().zip(&shards) {
-                    owner.extend(a.keys.iter().map(|k| (Part::of(k), i)));
-                }
                 let ranked = merge(ids, shards)?;
                 let mut keys = vec![Vec::new(); n];
                 for k in &ranked.keys {
@@ -1621,7 +1649,8 @@ impl Coordinator {
         if let Some(a) = &asked {
             rs.stats.plan.insert(0, format!("routed by key: {} of {n} shards", a.len()));
         }
-        Ok(Merged::rows(rs, missing))
+        let served = if req.reads { served(t, &held, &owner, &rs.keys) } else { Vec::new() };
+        Ok(Merged { served, ..Merged::rows(rs, missing) })
     }
 
     /// The shards that can hold the rows `select` matches, when its filter
@@ -2233,6 +2262,34 @@ impl Coordinator {
         Ok(Answer::Json(j))
     }
 
+    /// Every replica's index statistics of a table
+    /// ([`crate::inspect::node`]), asked over gRPC as a profile of kind
+    /// `index` with `body` ([`crate::inspect::Asked::body`]): per shard,
+    /// each replica's answer or why it gave none.
+    pub async fn inspect(&self, body: &Json) -> Vec<crate::inspect::ShardNodes> {
+        use crate::inspect::{ReplicaNode, ShardNodes};
+        let t = &self.topo();
+        let body_json = &body.to_string().into_bytes();
+        let wait = crate::profiling::Kind::Index.wait(body);
+        let calls = t.replicas.iter().enumerate().map(|(i, rs)| async move {
+            let replicas = join_all(rs.iter().map(|r| async move {
+                let mut c = r.client.clone();
+                let req = pb::ProfileRequest { kind: "index".into(), body_json: body_json.clone(), folded: false, in_use: false };
+                let answer = match tokio::time::timeout(wait, c.profile(req)).await {
+                    Err(_) => Err(format!("no answer within {} s", wait.as_secs())),
+                    // Older than profiles over gRPC, or than this kind.
+                    Ok(Err(s)) if s.code() == Code::Unimplemented || s.message().contains("no profile of kind") => Err("its server is older than this coordinator's and keeps no index statistics: upgrade it".into()),
+                    Ok(Err(s)) => Err(s.message().to_string()),
+                    Ok(Ok(a)) => serde_json::from_slice(&a.into_inner().body).map_err(|e| format!("it answered statistics that are not JSON: {e}")),
+                };
+                ReplicaNode { url: r.url.clone(), role: r.role().as_str_name().to_lowercase(), takes_writes: r.takes_writes(), answer }
+            }))
+            .await;
+            ShardNodes { index: i, url: t.shards[i].clone(), replicas }
+        });
+        join_all(calls).await
+    }
+
     /// "ok" when every replica answers, "degraded" when every shard still
     /// has one, "down" when a shard has none. Documents and segments are
     /// counted once per shard.
@@ -2793,4 +2850,21 @@ mod tests {
         assert_eq!(s.code(), Code::ResourceExhausted);
         assert_eq!(ApiError::from(s).status, 429);
     }
+}
+
+/// The keys of an answer's rows by the replica that answered each: `held`
+/// names each answering shard's replica, `owner` each key's shard. Rows
+/// without a key are left out.
+fn served(t: &Topology, held: &[(usize, usize, u64)], owner: &HashMap<Part, usize>, keys: &[Value]) -> Vec<crate::reads::Served> {
+    let mut by: Vec<crate::reads::Served> = Vec::new();
+    for k in keys.iter().filter(|k| !matches!(k, Value::Null)) {
+        let Some(&i) = owner.get(&Part::of(k)) else { continue };
+        let Some(&(_, r, _)) = held.iter().find(|h| h.0 == i) else { continue };
+        let (shard, replica) = (&t.shards[i], &t.replicas[i][r].url);
+        match by.iter_mut().find(|s| s.at.shard == *shard && s.at.replica == *replica) {
+            Some(s) => s.keys.push(k.clone()),
+            None => by.push(crate::reads::Served { at: crate::reads::At { shard: shard.clone(), replica: replica.clone() }, keys: vec![k.clone()], found: Vec::new() }),
+        }
+    }
+    by
 }

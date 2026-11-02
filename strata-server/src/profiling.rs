@@ -1,6 +1,8 @@
 //! The profiles a server answers of itself: a CPU profile
 //! ([`crate::profiler`]), an allocation profile ([`crate::heap`]), its
-//! memory and its threads. Asked over HTTP (`/v1/profile/<kind>`,
+//! memory, its threads, and a table's index statistics
+//! ([`crate::inspect::node`], which a coordinator's index inspector asks
+//! each replica for). Asked over HTTP (`/v1/profile/<kind>`,
 //! [`crate::http`]) or over gRPC (`Profile`, [`crate::grpc`]), which a
 //! coordinator calls to profile one of its shards' servers
 //! ([`crate::coord::Coordinator::profile`]).
@@ -22,6 +24,8 @@ pub enum Kind {
     Heap,
     Memory,
     Threads,
+    /// A table's index statistics ([`crate::inspect::node`]).
+    Index,
 }
 
 impl Kind {
@@ -31,7 +35,8 @@ impl Kind {
             "heap" => Kind::Heap,
             "memory" => Kind::Memory,
             "threads" => Kind::Threads,
-            _ => return Err(ApiError::bad(format!("no profile of kind {s:?}: cpu, heap, memory or threads"))),
+            "index" => Kind::Index,
+            _ => return Err(ApiError::bad(format!("no profile of kind {s:?}: cpu, heap, memory, threads or index"))),
         })
     }
 
@@ -41,6 +46,7 @@ impl Kind {
             Kind::Heap => "heap",
             Kind::Memory => "memory",
             Kind::Threads => "threads",
+            Kind::Index => "index",
         }
     }
 
@@ -50,7 +56,7 @@ impl Kind {
     pub fn wait(self, b: &Json) -> std::time::Duration {
         let s = match self {
             Kind::Cpu | Kind::Heap => b.get("seconds").and_then(|v| v.as_f64()).filter(|s| s.is_finite() && *s > 0.0).unwrap_or(5.0).min(profiler::MAX_SECONDS.max(heap::MAX_SECONDS)),
-            Kind::Memory | Kind::Threads => 0.0,
+            Kind::Memory | Kind::Threads | Kind::Index => 0.0,
         };
         std::time::Duration::from_secs_f64(s + 60.0)
     }
@@ -139,6 +145,7 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
             })))
         }
         Kind::Threads => Ok(Answer::Json(json!({"threads": profiler::threads(), "at_ms": telemetry::now_ms()}))),
+        Kind::Index => Ok(Answer::Json(crate::inspect::node(svc, &crate::inspect::Asked::of(b)?).await?)),
     }
 }
 

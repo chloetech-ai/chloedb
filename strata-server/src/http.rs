@@ -135,6 +135,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/schema", get(schema))
         .route("/v1/tables", get(tables))
         .route("/v1/tables/:table/paths", get(json_paths))
+        .route("/v1/index", get(index))
+        .route("/v1/index/reads/reset", post(reset_reads))
         .route("/v1/config", get(config))
         .route("/metrics", get(metrics))
         .route("/v1/query", post(query))
@@ -336,7 +338,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/export" => Scope::Admin,
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
         "/v1/alerts/rules" => Scope::Admin,
-        r if r.starts_with("/v1/admin/") || r.starts_with("/v1/queries") || r.starts_with("/v1/logs") || r.starts_with("/v1/profile") => Scope::Admin,
+        // The inspector names the keys most read.
+        r if r.starts_with("/v1/admin/") || r.starts_with("/v1/queries") || r.starts_with("/v1/logs") || r.starts_with("/v1/profile") || r.starts_with("/v1/index") => Scope::Admin,
         _ => Scope::Read,
     }
 }
@@ -418,6 +421,21 @@ async fn schema(State(app): State<App>, Query(q): Query<std::collections::HashMa
 async fn tables(State(app): State<App>) -> AxJson<Json> {
     let tables: Vec<Json> = app.svc.catalog().iter().map(|s| table_json(&app.svc, s)).collect();
     AxJson(json!({"tables": tables}))
+}
+
+/// `GET /v1/index?table=&sample=&seed=&terms=&top=`: the index
+/// inspector's statistics of a table ([`crate::inspect`]): this server's,
+/// or a coordinator's per replica, per shard and for its cluster.
+async fn index(State(app): State<App>, Query(q): Params) -> Res {
+    let a = crate::inspect::Asked::of(&json!(q))?;
+    Ok(AxJson(crate::inspect::answer(&app.svc, a).await?))
+}
+
+/// `POST /v1/index/reads/reset`: this server's read counts start again
+/// ([`crate::reads`]).
+async fn reset_reads(State(app): State<App>) -> AxJson<Json> {
+    app.svc.reads.reset();
+    AxJson(json!({"reset": true, "at_ms": crate::telemetry::now_ms()}))
 }
 
 /// `GET /v1/tables/:table/paths?field=&path=&where=`: a JSON field's
@@ -676,7 +694,7 @@ fn path_key(schema: &strata::schema::Schema, key: &str) -> Result<Json, ApiError
 async fn kv_one(State(app): State<App>, axum::extract::Path((table, key)): axum::extract::Path<(String, String)>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
     let t0 = Instant::now();
     let timeout_ms = q.get("timeout_ms").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let got = app.svc.get_rows(Some(&table), vec![strata::value::Value::Str(key.clone())], &after_of_query(&q)?, timeout_ms).await?;
+    let got = app.svc.get_rows(Some(&table), vec![strata::value::Value::Str(key.clone())], &after_of_query(&q)?, timeout_ms, true).await?;
     let took_ms = t0.elapsed().as_secs_f64() * 1e3;
     Ok(match got.rows.into_iter().next().flatten() {
         Some((row, seq_no)) => AxJson(json!({"table": got.table, "key": key, "found": true, "row": key_row(&got.columns, &row), "seq_no": seq_no, "took_ms": took_ms})).into_response(),
@@ -696,7 +714,7 @@ async fn kv_get(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         Some(Json::String(t)) => Some(t.as_str()),
         Some(_) => return Err(ApiError::bad("table is a table's name")),
     };
-    let got = app.svc.get_rows(table, keys, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
+    let got = app.svc.get_rows(table, keys, &after(&b)?, body_u64(&b, "timeout_ms"), true).await?;
     let seq_nos: Vec<Json> = got.rows.iter().map(|r| r.as_ref().map_or(Json::Null, |(_, s)| json!(s))).collect();
     let rows: Vec<Json> = got.rows.iter().map(|r| r.as_ref().map_or(Json::Null, |(row, _)| key_row(&got.columns, row))).collect();
     Ok(AxJson(json!({"table": got.table, "columns": got.columns, "rows": rows, "seq_nos": seq_nos, "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
