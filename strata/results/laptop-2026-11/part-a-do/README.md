@@ -219,9 +219,10 @@ as stored, unindexed bytes fields, as Strata keeps them.
 | trec-covid | 171,332 | 56.8 s (29.8 + 27.0), 2,306 MB | 16.8 s (9.0 + 7.8), 402 MB | 4.9 s, 68 MB | 6.4 s, 188 MB | 70% |
 | quora | 522,931 | 210.8 s (93.3 + 117.5), 6,223 MB | 23.9 s (12.4 + 11.6), 185 MB | 8.2 s, 33 MB | 10.2 s, 58 MB | 89% |
 
-The vector field is 68-89% of Strata's build. Without it Strata is still 1.5-2.6x
-Tantivy storing the same text (fiqa 3.2 s against 1.8 s, quora 23.9 s against
-10.2 s). A local profile on fiqa (4 vCPU) found the 2,000-row batches cost the
+The vector field is 68-89% of Strata's build. Without it Strata still takes
+1.8-2.6x as long as Tantivy storing the same text on fiqa, trec-covid and quora
+(fiqa 3.2 s against 1.8 s, quora 23.9 s against 10.2 s), and the same time on
+the two small collections. A local profile on fiqa (4 vCPU) found the 2,000-row batches cost the
 text index most of that: each `insert()` of 1,000 rows or more builds its own
 segment (29 for fiqa, then a merge); one `insert()` of every row builds it in
 1.35 s, Tantivy's time. With vectors, HNSW construction re-quantises each kept
