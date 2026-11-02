@@ -49,7 +49,8 @@ const hostOf = (url) => { try { return new URL(url).hostname; } catch { return s
 const pct0 = (v) => (v == null ? "–" : fmt.pct(v, 0));
 const plural = (n, w, ws) => fmt.plural(n, w, ws);
 const copies_ = (n) => plural(n, "copy", "copies");
-const cap = (t) => (t ? t[0].toUpperCase() + t.slice(1) : t);
+/** Capitalised, except a copy's name (s9-2) or a URL, which keep their case. */
+const cap = (t) => (!t || /^(s\d+-\d+|[a-z]+:\/\/|[a-z0-9-]+\.[a-z])/.test(t) ? t : t[0].toUpperCase() + t.slice(1));
 /** 4 h 45 min, 22 min, 40 s. */
 function dur(secs) {
   if (secs == null || !Number.isFinite(secs)) return "–";
@@ -631,7 +632,9 @@ function render(page, r) {
     const is = issues(sh)[0];
     t.querySelector(".cc-tn .x").textContent = is && is.sev && lens !== "health" ? "●" : "";
     t.querySelector(".cc-tv").textContent = tileValue(sh);
-    clear(t.querySelector(".cc-tp"), pips(sh, LENSES[lens]));
+    const tp = t.querySelector(".cc-tp");
+    clear(tp, pips(sh, LENSES[lens]));
+    tp.classList.toggle("many", tp.children.length > 3);
     t.setAttribute("aria-label", tileLabel(sh));
     t.title = tileLabel(sh);
   }
@@ -643,7 +646,7 @@ function render(page, r) {
       h("div", { class: "cc-sec" }, `Needs attention · ${attn.length}`),
       h("div", { class: "cc-attn-row" }, attn.slice(0, narrow() ? 12 : 5).map(([sh, is]) => {
         const b = h("button", { class: "cc-ac " + (is[0].sev === 2 ? "crit" : "warn") + (sel === sh.i ? " sel" : ""), type: "button", title: is.map((x) => x.long).join("; "), onclick: () => select(sh.i) },
-          h("span", { class: "row nw between" }, h("b", {}, `shard ${sh.i}`), h("span", { class: "cc-tp" }, pips(sh, LENSES[lens]))),
+          h("span", { class: "row nw between" }, h("b", { class: "nowrap" }, `shard ${sh.i}`), (() => { const p = pips(sh, LENSES[lens]); return h("span", { class: "cc-tp" + (p.length > 3 ? " many" : "") }, p); })()),
           h("span", { class: "cc-ac-why" }, is[0].short + (is.length > 1 ? ` +${is.length - 1}` : "")),
           h("span", { class: "small muted" }, lens === "health" ? `${sh.up} of ${sh.n} serving` : `${LENSES[lens].label} ${tileValue(sh)}`));
         return b;
@@ -971,7 +974,7 @@ function render(page, r) {
           h("td", {}, cspan(c), c.version && c.version !== M.mainVersion ? h("div", { class: "small muted" }, c.version) : null),
           h("td", {}, c.down ? h("span", { class: "cc-bad" }, "down") : c.primary ? h("b", {}, "primary") : c.copying ? h("span", { class: "cc-warn" }, "copying") : h("span", { class: "dim" }, "replica"), c.term != null && !c.down ? h("span", { class: "small muted", title: "Its term: the election it last saw" }, ` t${c.term}`) : null),
           h("td", { class: "small", title: [c.node ? "node " + c.node : null, c.zone ? "zone " + c.zone : null, c.url].filter(Boolean).join(" · ") }, c.node ? (M.nodePrefix && c.node.startsWith(M.nodePrefix) ? "…" + c.node.slice(M.nodePrefix.length) : nodeLabel(c.node)) : h("span", { class: "muted" }, c.host), c.zone ? h("span", { class: "muted" }, " · " + c.zone) : null),
-          h("td", { class: "num" + (c.lag >= LAG_WARN ? " cc-warn" : "") }, c.primary || c.down ? "–" : c.lag == null ? "?" : c.lag === 0 ? "0" : kn(c.lag)),
+          h("td", { class: "num" + (c.lag >= LAG_WARN ? " cc-warn" : ""), title: !c.primary && !c.down && c.lag == null ? (sh.primary ? "Its primary does not report it" : "No primary to compare it with") : "" }, c.primary || c.down ? "–" : c.lag == null ? "?" : c.lag === 0 ? "0" : kn(c.lag)),
           h("td", { class: "num" + lv(L.copy(c)) }, c.down ? "–" : L.fmt(L.copy(c))),
           h("td", { style: { width: "28px" } }, copyMenuBtn(sh, c)));
         const note = c.down ? `${c.wasPrimary ? "Was the primary. " : ""}${cap(c.error || "no answer")}${c.downSince ? " · " + sinceText(c.downSince) : ""}` : c.avoided ? `Avoided after failures${c.avoidedWhy ? ": " + c.avoidedWhy : ""}` : null;
@@ -1002,7 +1005,7 @@ function render(page, r) {
     const b = h("button", { class: "btn ghost icon sm", "aria-label": `What to do with ${cname(c)}`, title: "Operate this copy" }, icon("dots"));
     b.onclick = () => {
       const items = copyActions(sh, c);
-      const m = h("div", { class: "menu cc-menu", role: "menu" }, items.map((it) => it.href
+      const m = h("div", { class: "menu cc-menu", role: "menu", "aria-label": `${cname(c)}, shard ${sh.i}` }, h("div", { class: "cc-menu-hd" }, h("b", { class: "mono", style: { color: "var(--text)" } }, cname(c)), ` · shard ${sh.i} · ${c.down ? "down" : c.role}`), items.map((it) => it.href
         ? h("a", { class: "cc-mi", href: it.href, role: "menuitem" }, icon(it.icon), h("span", {}, it.label))
         : h("button", { class: "cc-mi" + (it.danger ? " danger" : ""), role: "menuitem", disabled: !!it.no, title: it.no ? cap(it.no) : "", onclick: () => { close(); it.run(); } }, icon(it.icon), h("span", {}, it.label, it.no ? h("span", { class: "small muted cc-mi-no" }, cap(it.no)) : null))));
       const r = b.getBoundingClientRect();
@@ -1550,16 +1553,29 @@ function render(page, r) {
     catch (e) { if (kubePlanFor === key) { kubePlan = null; kubePlanErr = e.message; } }
     if (alive && mode === "draft" && tab === "map") drawSide();
   }
+  /**
+   * What a StrataCluster patch copies, and how long that takes at the rate
+   * the last move ran: new copies are sent their shard's rows by every
+   * primary at once; slots move to or from shards one job at a time.
+   */
+  function kubeTime(patch, sp) {
+    const S = sp.shards ?? M.shards.length, R = sp.replicas ?? 3;
+    const S1 = patch.shards ?? S, R1 = patch.replicas ?? R;
+    const rows = M.shards.reduce((a, sh) => a + sh.rows, 0);
+    const per = rows / Math.max(1, M.shards.length);
+    const rate = measuredRate(moves && !moves.error ? moves : null);
+    let copyRows = 0, secs = 0, perShard = null;
+    if (R1 > R) { copyRows += (R1 - R) * S1 * per; perShard = ((R1 - R) * per) / rate.rate; secs += perShard; }
+    if (S1 !== S) { const moved = rows * Math.abs(S1 - S) / Math.max(S, S1); copyRows += moved; secs += moved / rate.rate; }
+    return { rows: copyRows, secs, perShard, measured: rate.measured };
+  }
   function kubeNumbers() {
     const sp = kube.spec || {};
     const S0 = sp.shards ?? M.shards.length, R0 = sp.replicas ?? 3;
     const S1 = draft.kube.shards ?? S0, R1 = draft.kube.replicas ?? R0;
     const rows = M.shards.reduce((a, sh) => a + sh.rows, 0);
-    let rowsToCopy = 0;
-    if (R1 > R0) rowsToCopy += (R1 - R0) * rows;
-    if (S1 > S0) rowsToCopy += rows * ((S1 - S0) / S1) + (S1 - S0) * 0; // the slots that move to the new shards
-    if (S1 < S0) rowsToCopy += rows * ((S0 - S1) / S0);
-    return { S0, R0, S1, R1, rows, rowsToCopy };
+    const T = kubeTime({ shards: S1, replicas: R1 }, sp);
+    return { S0, R0, S1, R1, rows, rowsToCopy: T.rows, secs: T.secs, perShard: T.perShard };
   }
 
   // ------------------------------------------------------------ the plan card
@@ -1643,7 +1659,7 @@ function render(page, r) {
     const N = kubeNumbers();
     const mi = moves && !moves.error ? moves : null;
     const R = measuredRate(mi);
-    const est = N.rowsToCopy / R.rate;
+    const est = N.secs;
     const removing = N.R1 < N.R0 || N.S1 < N.S0;
     const pre = [];
     if (ro) pre.push({ ok: "warn", text: `${ro}: the operator finishes it before it makes this change` });
@@ -1666,9 +1682,9 @@ function render(page, r) {
         h("div", { class: "cc-changes" }, Object.entries(p).map(([k, v], j) => h("div", { class: "cc-ch" }, h("span", { class: "k" }, j + 1), h("div", {}, h("b", {}, k === "shards" ? `${v > N.S0 ? "Add" : "Remove"} ${plural(Math.abs(v - N.S0), "shard")}` : `${v > N.R0 ? "One more" : "One fewer"} cop${Math.abs(v - N.R0) === 1 ? "y" : "ies"} of every shard`), h("div", { class: "small dim" }, `spec.${k}: ${k === "shards" ? N.S0 : N.R0} → ${v}`)), h("button", { class: "btn ghost icon sm", "aria-label": "Take it out of the draft", onclick: () => { draft.kube[k] = null; changed(); } }, icon("x"))))),
         h("div", { class: "cc-sec" }, "Before → after"),
         h("table", { class: "cc-ba" }, h("tbody", {}, before.map(([k, a, b]) => h("tr", {}, h("td", {}, k), h("td", { class: "num" }, a), h("td", { class: "num to" + (a !== b ? " moved" : "") }, b))))),
-        h("div", { class: "cc-sec" }, `The operator's steps · about ${dur(est)}`),
+        h("div", { class: "cc-sec" }, `The operator's steps${est > 0 ? ` · about ${dur(est)}` : ""}`),
         kubePlan ? h("ol", { class: "cc-steps" }, (kubePlan.steps || []).map((x, k) => h("li", {}, h("span", { class: "k" }, k + 1), h("span", {}, cap(x)), h("span", { class: "t" })))) : h("div", { class: "small muted" }, kubePlanErr || "Asking the coordinator…"),
-        h("div", { class: "small muted" }, `${fmt.si(N.rowsToCopy)} rows to copy, at ${fmt.n(R.rate, 0)} rows a second ${R.measured ? "(the last move here)" : "(assumed: no move measured yet)"}.`),
+        N.rowsToCopy ? h("div", { class: "small muted" }, `${fmt.si(N.rowsToCopy)} rows to copy at ${fmt.n(R.rate, 0)} rows a second ${R.measured ? "(the rate of the last move here)" : "(assumed: no move measured yet)"}${N.perShard ? `; each shard's primary sends its ${N.R1 - N.R0 === 1 ? "new copy" : "new copies"} its ${fmt.si(N.rows / Math.max(1, M.shards.length))} rows, every shard at once: about ${dur(N.perShard)}` : ""}${N.S1 !== N.S0 ? "; slots move one run at a time" : ""}.`) : null,
         blast.length ? h("div", { class: "cc-blast" }, h("b", {}, "Blast radius"), blast.map((t) => h("div", {}, t))) : null,
         h("div", { class: "cc-sec" }, "Checked before it starts"),
         h("div", { class: "cc-chk" }, pre.map((x) => h("div", { class: x.ok === true ? "ok" : x.ok === false ? "no" : "wn" }, h("span", { class: "m" }, x.ok === true ? "✓" : x.ok === false ? "✕" : "!"), h("span", {}, cap(x.text))))),
@@ -1739,7 +1755,7 @@ function render(page, r) {
             !mi.running || !mi.job ? h("button", { class: "btn sm", disabled: !canAdmin(), title: "Ends the move a stopped coordinator left: completed if it had flipped, given up if not", onclick: finishMove }, "Finish it") : null)),
         h("div", { class: "bd stack", style: { gap: "6px" } }, mi.job ? movesLine(mi) : h("div", { class: "small" }, `From shard ${mi.moving.from} to shard ${mi.moving.to}, ${mi.moving.state || "under way"}: no coordinator runs it now.`)));
     }
-    if (ro) return h("section", { class: "card cc-run" }, h("div", { class: "hd" }, h("h3", {}, "The operator is rolling out"), h("div", { class: "tools" }, h("a", { class: "btn sm", href: "#/rollout" }, "Rollouts"))), h("div", { class: "bd small" }, cap(ro) + ". " + (kube.status?.message || "")));
+    if (ro) return h("section", { class: "card cc-run" }, h("div", { class: "hd" }, h("h3", {}, "The operator is rolling out"), h("div", { class: "tools" }, h("a", { class: "btn sm", href: link("rollout") }, "Rollouts"))), h("div", { class: "bd small" }, kube.status?.message ? cap(kube.status.message) + "." : cap(ro) + "."));
     if (managed() && kube.status?.phase && !["Ready"].includes(kube.status.phase)) return h("section", { class: "card cc-run" + (kube.status.phase === "Failed" ? " bad" : "") }, h("div", { class: "hd" }, h("h3", {}, `The operator: ${kube.status.phase}`)), h("div", { class: "bd small" }, kube.status.message || ""));
     return null;
   }
@@ -1785,7 +1801,9 @@ function render(page, r) {
       copyRows += rows * Math.abs(d) / Math.max(S, patch.shards);
     }
     if (patch.storage?.size) out.push(`grows every volume to ${patch.storage.size}`);
-    const t = copyRows ? `, about ${dur(copyRows / R2.rate)} to copy ${fmt.si(copyRows)} rows${R2.measured ? "" : " (assumed rate)"}` : "";
+    const T = M ? kubeTime(patch, sp) : null;
+    const t = T?.rows ? `; about ${dur(T.secs)} to copy ${fmt.si(T.rows)} rows${T.perShard ? ", the shards in parallel" : ""}${T.measured ? "" : " (at an assumed rate)"}` : "";
+    void copyRows; void R2;
     return out.length ? cap(out.join("; ")) + t + "." : "Changes " + Object.keys(patch).join(", ") + ".";
   }
   function drawCapacity() {
@@ -1876,7 +1894,8 @@ function render(page, r) {
     for (const a of audit || []) {
       if (a.kind && a.kind !== "change") continue;
       if (!a.kind && (a.method === "GET" || a.status >= 400 || !CLUSTER_ROUTE.test(a.route || ""))) continue;
-      if (events && events.some((e) => e.kind === "change" && Math.abs(e.ts_ms - a.ts_ms) < 2000)) continue;
+      const twin = rows.find((r) => r.who && r.who === a.who && Math.abs(r.t - a.ts_ms) < 5000);
+      if (twin) { if (a.reason && !twin.detail) twin.detail = "reason: " + a.reason; if (a.addr) twin.addr = a.addr; continue; }
       const m = /shard[s]?\/(\d+)/.exec(a.route || "") || /shard (\d+)/.exec(a.detail || "");
       rows.push({ t: a.ts_ms, kind: "change", sev: "info", who: a.actor && a.actor !== "person" ? a.actor : a.who === "token" ? "root token" : a.who, what: a.detail || `${a.method} ${a.route}`, detail: a.reason ? "reason: " + a.reason : null, shard: m ? +m[1] : null, addr: a.addr });
     }
