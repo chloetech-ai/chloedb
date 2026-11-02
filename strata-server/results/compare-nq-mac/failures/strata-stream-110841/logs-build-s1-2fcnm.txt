@@ -1,0 +1,1 @@
+{"build_s":82.312561954,"docs":500251,"engine":"strata","file_bytes":1304870912,"of":2,"read_s":2.559453418,"shard":1,"threads":3,"total_s":84.924503706}

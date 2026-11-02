@@ -1,0 +1,25 @@
+LAST SEEN   TYPE      REASON             OBJECT                   MESSAGE
+9m34s       Normal    SuccessfulCreate   job/build-s0             Created pod: build-s0-qcd4f
+9m32s       Normal    Pulled             pod/build-s0-qcd4f       Container image "strata-server:compare" already present on machine and can be accessed by the pod
+9m31s       Normal    Created            pod/build-s0-qcd4f       Container created
+9m31s       Normal    Started            pod/build-s0-qcd4f       Container started
+7m3s        Normal    Completed          job/build-s0             Job completed
+7m3s        Normal    SuccessfulCreate   job/build-s1             Created pod: build-s1-qcjkx
+7m2s        Normal    Created            pod/build-s1-qcjkx       Container created
+7m2s        Normal    Started            pod/build-s1-qcjkx       Container started
+7m2s        Normal    Pulled             pod/build-s1-qcjkx       Container image "strata-server:compare" already present on machine and can be accessed by the pod
+5m1s        Normal    Completed          job/build-s1             Job completed
+5m          Normal    Started            pod/strata-coordinator   Container started
+5m          Normal    Created            pod/strata-coordinator   Container created
+5m          Normal    Pulled             pod/strata-coordinator   Container image "strata-server:compare" already present on machine and can be accessed by the pod
+4m14s       Warning   Unhealthy          pod/strata-coordinator   Readiness probe failed: Get "http://10.244.1.2:7700/v1/health": dial tcp 10.244.1.2:7700: connect: connection refused
+2m9s        Warning   Unhealthy          pod/strata-1             Readiness probe failed: Get "http://10.244.3.3:7700/v1/health": dial tcp 10.244.3.3:7700: connect: connection refused
+2m9s        Normal    Pulled             pod/strata-1             Container image "strata-server:compare" already present on machine and can be accessed by the pod
+2m9s        Normal    Created            pod/strata-1             Container created
+2m9s        Normal    Started            pod/strata-1             Container started
+2m          Warning   Unhealthy          pod/strata-0             Readiness probe failed: Get "http://10.244.2.3:7700/v1/health": dial tcp 10.244.2.3:7700: connect: connection refused
+2m          Normal    Started            pod/strata-0             Container started
+2m          Normal    Created            pod/strata-0             Container created
+2m          Normal    Pulled             pod/strata-0             Container image "strata-server:compare" already present on machine and can be accessed by the pod
+57s         Warning   BackOff            pod/strata-0             Back-off restarting failed container strata in pod strata-0_compare(56f1c8a3-8113-457b-be76-e75c4116db59)
+44s         Warning   BackOff            pod/strata-1             Back-off restarting failed container strata in pod strata-1_compare(51d37600-d484-436c-afaa-2dd60f3fa29b)

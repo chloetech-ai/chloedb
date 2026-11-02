@@ -1,0 +1,85 @@
+Name:             load-os-44h4g
+Namespace:        compare
+Priority:         0
+Service Account:  default
+Node:             strata-worker3/172.19.0.5
+Start Time:       Sun, 01 Nov 2026 22:22:38 -0800
+Labels:           batch.kubernetes.io/controller-uid=08d41994-39fc-435f-9eac-35489c0428ce
+                  batch.kubernetes.io/job-name=load-os
+                  controller-uid=08d41994-39fc-435f-9eac-35489c0428ce
+                  job-name=load-os
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.244.1.8
+IPs:
+  IP:           10.244.1.8
+Controlled By:  Job/load-os
+Containers:
+  compare:
+    Container ID:  containerd://19f4c816bcb72b1ed3c8ed694f1e85bbdaf9d1133bad565b39e318101f2bca6f
+    Image:         strata-server:compare
+    Image ID:      docker.io/library/import-2026-11-02@sha256:558ed7893b0b5b27fdb3d8f76b47c88199cb97a642ae8bcb4d61e041afbbdeda
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      load
+      --engine
+      os
+      --url
+      http://os-0.os:9200,http://os-1.os:9200
+      --out
+      /data/compare
+      --collection
+      nq-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Sun, 01 Nov 2026 22:22:38 -0800
+      Finished:     Sun, 01 Nov 2026 22:35:44 -0800
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:  /beir
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-9p7ll (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  Directory
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-9p7ll:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type    Reason   Age   From     Message
+  ----    ------   ----  ----     -------
+  Normal  Pulled   56m   kubelet  spec.containers{compare}: Container image "strata-server:compare" already present on machine and can be accessed by the pod
+  Normal  Created  56m   kubelet  spec.containers{compare}: Container created
+  Normal  Started  56m   kubelet  spec.containers{compare}: Container started

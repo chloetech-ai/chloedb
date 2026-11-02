@@ -1,0 +1,1 @@
+Allowed arguments to entrypoint are {configserver,services}.

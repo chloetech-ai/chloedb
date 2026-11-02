@@ -1,0 +1,48 @@
+postgres: index created in 0.0 s
+postgres: 25000 documents sent, 1 s
+postgres: 50000 documents sent, 2 s
+postgres: 75000 documents sent, 4 s
+postgres: 100000 documents sent, 5 s
+postgres: 125000 documents sent, 6 s
+postgres: 150000 documents sent, 7 s
+postgres: 175000 documents sent, 8 s
+postgres: 200000 documents sent, 9 s
+postgres: 225000 documents sent, 10 s
+postgres: 250000 documents sent, 12 s
+postgres: 275000 documents sent, 13 s
+postgres: 300000 documents sent, 14 s
+postgres: 325000 documents sent, 15 s
+postgres: 350000 documents sent, 16 s
+postgres: 375000 documents sent, 17 s
+postgres: 400000 documents sent, 18 s
+postgres: 425000 documents sent, 20 s
+postgres: 450000 documents sent, 21 s
+postgres: 475000 documents sent, 22 s
+postgres: 500000 documents sent, 24 s
+postgres: 525000 documents sent, 25 s
+postgres: 550000 documents sent, 26 s
+postgres: 575000 documents sent, 28 s
+postgres: 600000 documents sent, 29 s
+postgres: 625000 documents sent, 30 s
+postgres: 650000 documents sent, 32 s
+postgres: 675000 documents sent, 33 s
+postgres: 700000 documents sent, 34 s
+postgres: 725000 documents sent, 36 s
+postgres: 750000 documents sent, 37 s
+postgres: 775000 documents sent, 38 s
+postgres: 800000 documents sent, 40 s
+postgres: 825000 documents sent, 41 s
+postgres: 850000 documents sent, 42 s
+postgres: 875000 documents sent, 44 s
+postgres: 900000 documents sent, 45 s
+postgres: 925000 documents sent, 46 s
+postgres: 950000 documents sent, 48 s
+postgres: 975000 documents sent, 49 s
+postgres: 1000000 documents sent, 50 s
+postgres: 1000000 documents (5.3 GB) sent in 50.3 s
+postgres: primary_key_s in 2.2 s
+postgres: gin_index_s in 23.0 s
+postgres: hnsw_index_s in 507.0 s
+postgres: analyze_s in 3.8 s
+postgres: indexed 536.0 s after the last write; 586.3 s in all
+wrote /data/compare/load-postgres.json

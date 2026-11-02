@@ -1,0 +1,81 @@
+LAST SEEN   TYPE      REASON             OBJECT                  MESSAGE
+60m         Normal    Started            pod/redpanda            Container started
+60m         Normal    Created            pod/redpanda            Container created
+60m         Normal    Pulled             pod/redpanda            Container image "redpandadata/redpanda:v25.2.9" already present on machine and can be accessed by the pod
+60m         Normal    Created            pod/stream-es-fvr9g     Container created
+60m         Normal    SuccessfulCreate   job/stream-es           Created pod: stream-es-fvr9g
+60m         Normal    Started            pod/stream-es-fvr9g     Container started
+60m         Normal    Pulled             pod/stream-es-fvr9g     Container image "strata-server:compare" already present on machine and can be accessed by the pod
+58m         Normal    Completed          job/stream-es           Job completed
+57m         Normal    Killing            pod/es-1                Stopping container es
+57m         Normal    Killing            pod/es-0                Stopping container es
+57m         Normal    Created            pod/os-1                Container created
+57m         Normal    Pulled             pod/os-1                Container image "opensearchproject/opensearch:3.9.0" already present on machine and can be accessed by the pod
+57m         Normal    Pulled             pod/os-0                Container image "opensearchproject/opensearch:3.9.0" already present on machine and can be accessed by the pod
+57m         Normal    Created            pod/os-0                Container created
+57m         Normal    Started            pod/os-0                Container started
+57m         Normal    Started            pod/os-1                Container started
+57m         Warning   Unhealthy          pod/os-0                Readiness probe failed: Get "http://10.244.2.5:9200/_cluster/health?local=true": dial tcp 10.244.2.5:9200: connect: connection refused
+57m         Warning   Unhealthy          pod/os-1                Readiness probe failed: Get "http://10.244.3.5:9200/_cluster/health?local=true": dial tcp 10.244.3.5:9200: connect: connection refused
+56m         Normal    Started            pod/load-os-44h4g       Container started
+56m         Normal    SuccessfulCreate   job/load-os             Created pod: load-os-44h4g
+56m         Normal    Created            pod/load-os-44h4g       Container created
+56m         Normal    Pulled             pod/load-os-44h4g       Container image "strata-server:compare" already present on machine and can be accessed by the pod
+43m         Normal    Completed          job/load-os             Job completed
+43m         Normal    SuccessfulCreate   job/run-os              Created pod: run-os-dmlx4
+43m         Normal    Pulled             pod/run-os-dmlx4        Container image "strata-server:compare" already present on machine and can be accessed by the pod
+43m         Normal    Created            pod/run-os-dmlx4        Container created
+43m         Normal    Started            pod/run-os-dmlx4        Container started
+38m         Normal    SuccessfulCreate   job/writes-os           Created pod: writes-os-6v8kt
+38m         Normal    Completed          job/run-os              Job completed
+38m         Normal    Created            pod/writes-os-6v8kt     Container created
+38m         Normal    Started            pod/writes-os-6v8kt     Container started
+38m         Normal    Pulled             pod/writes-os-6v8kt     Container image "strata-server:compare" already present on machine and can be accessed by the pod
+37m         Normal    Completed          job/writes-os           Job completed
+37m         Normal    SuccessfulCreate   job/stream-os           Created pod: stream-os-wxlsp
+37m         Normal    Started            pod/stream-os-wxlsp     Container started
+37m         Normal    Created            pod/stream-os-wxlsp     Container created
+37m         Normal    Pulled             pod/stream-os-wxlsp     Container image "strata-server:compare" already present on machine and can be accessed by the pod
+35m         Normal    Completed          job/stream-os           Job completed
+35m         Normal    Killing            pod/os-0                Stopping container os
+35m         Normal    Killing            pod/os-1                Stopping container os
+35m         Normal    Started            pod/solr-0              Container started
+35m         Normal    Created            pod/solr-0              Container created
+35m         Normal    Pulled             pod/solr-0              Container image "solr:10.1.0" already present on machine and can be accessed by the pod
+35m         Normal    Created            pod/solr-1              Container created
+35m         Normal    Started            pod/solr-1              Container started
+35m         Normal    Pulled             pod/solr-1              Container image "solr:10.1.0" already present on machine and can be accessed by the pod
+35m         Normal    SuccessfulCreate   job/load-solr           Created pod: load-solr-hqhj8
+35m         Normal    Pulled             pod/load-solr-hqhj8     Container image "strata-server:compare" already present on machine and can be accessed by the pod
+35m         Normal    Created            pod/load-solr-hqhj8     Container created
+35m         Normal    Started            pod/load-solr-hqhj8     Container started
+15m         Normal    Completed          job/load-solr           Job completed
+15m         Normal    Created            pod/run-solr-697pk      Container created
+15m         Normal    Pulled             pod/run-solr-697pk      Container image "strata-server:compare" already present on machine and can be accessed by the pod
+15m         Normal    SuccessfulCreate   job/run-solr            Created pod: run-solr-697pk
+15m         Normal    Started            pod/run-solr-697pk      Container started
+10m         Normal    Completed          job/run-solr            Job completed
+10m         Normal    SuccessfulCreate   job/writes-solr         Created pod: writes-solr-rhsch
+10m         Normal    Started            pod/writes-solr-rhsch   Container started
+10m         Normal    Pulled             pod/writes-solr-rhsch   Container image "strata-server:compare" already present on machine and can be accessed by the pod
+10m         Normal    Created            pod/writes-solr-rhsch   Container created
+9m11s       Normal    Completed          job/writes-solr         Job completed
+9m10s       Normal    Pulled             pod/stream-solr-clbt8   Container image "strata-server:compare" already present on machine and can be accessed by the pod
+9m10s       Normal    SuccessfulCreate   job/stream-solr         Created pod: stream-solr-clbt8
+9m10s       Normal    Started            pod/stream-solr-clbt8   Container started
+9m10s       Normal    Created            pod/stream-solr-clbt8   Container created
+6m55s       Normal    Completed          job/stream-solr         Job completed
+6m54s       Normal    Killing            pod/solr-0              Stopping container solr
+6m54s       Normal    Killing            pod/solr-1              Stopping container solr
+6m28s       Warning   Unhealthy          pod/solr-0              Readiness probe failed: Get "http://10.244.2.6:8983/solr/admin/info/health": dial tcp 10.244.2.6:8983: connect: connection refused
+6m27s       Warning   Unhealthy          pod/solr-1              Readiness probe failed: Get "http://10.244.3.6:8983/solr/admin/info/health": dial tcp 10.244.3.6:8983: connect: connection refused
+6m23s       Normal    Pulled             pod/vespa-1             Container image "vespaengine/vespa:8.778.45" already present on machine and can be accessed by the pod
+6m23s       Normal    Created            pod/vespa-1             Container created
+6m23s       Normal    Started            pod/vespa-1             Container started
+6m23s       Normal    Pulled             pod/vespa-2             Container image "vespaengine/vespa:8.778.45" already present on machine and can be accessed by the pod
+6m23s       Normal    Created            pod/vespa-2             Container created
+6m22s       Normal    Started            pod/vespa-2             Container started
+27s         Warning   BackOff            pod/vespa-0             Back-off restarting failed container vespa in pod vespa-0_compare(951ff0f7-94a8-4d1c-b560-0f417c39d06b)
+27s         Normal    Started            pod/vespa-0             Container started
+27s         Normal    Created            pod/vespa-0             Container created
+27s         Normal    Pulled             pod/vespa-0             Container image "vespaengine/vespa:8.778.45" already present on machine and can be accessed by the pod

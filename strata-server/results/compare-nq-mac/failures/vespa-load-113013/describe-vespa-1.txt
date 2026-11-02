@@ -1,0 +1,68 @@
+Name:             vespa-1
+Namespace:        compare
+Priority:         0
+Service Account:  default
+Node:             strata-worker/172.19.0.4
+Start Time:       Mon, 02 Nov 2026 03:08:47 -0800
+Labels:           app=vespa
+                  engine=vespa
+Annotations:      <none>
+Status:           Running
+IP:               10.244.2.19
+IPs:
+  IP:  10.244.2.19
+Containers:
+  vespa:
+    Container ID:  containerd://60aa5afe043990b3edb240ae5030fc249eb731d79007c8f6e1a33bd36b68368a
+    Image:         vespaengine/vespa:8.778.45
+    Image ID:      docker.io/library/import-2026-11-02@sha256:7340937f10238c47d325ba28a1f96177b41a0d51aa9d3839b88b022bcb012d5a
+    Ports:         8080/TCP (http), 19071/TCP (config)
+    Host Ports:    0/TCP (http), 0/TCP (config)
+    Args:
+      services
+    State:          Running
+      Started:      Mon, 02 Nov 2026 03:08:47 -0800
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     1
+      memory:  1920Mi
+    Requests:
+      cpu:     1
+      memory:  1920Mi
+    Environment:
+      VESPA_CONFIGSERVERS:             vespa-0.vespa.compare.svc.cluster.local
+      VESPA_IGNORE_NOT_ENOUGH_MEMORY:  true
+      VESPA_CONFIGSERVER_JVMARGS:      -Xms128m -Xmx384m
+      VESPA_CONFIGPROXY_JVMARGS:       -Xms32m -Xmx64m
+    Mounts:
+      /opt/vespa/var from var (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-cjdbb (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  var:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  kube-api-access-cjdbb:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type    Reason   Age   From     Message
+  ----    ------   ----  ----     -------
+  Normal  Pulled   21m   kubelet  spec.containers{vespa}: Container image "vespaengine/vespa:8.778.45" already present on machine and can be accessed by the pod
+  Normal  Created  21m   kubelet  spec.containers{vespa}: Container created
+  Normal  Started  21m   kubelet  spec.containers{vespa}: Container started

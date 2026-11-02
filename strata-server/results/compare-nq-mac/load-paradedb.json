@@ -1,0 +1,23 @@
+{
+  "batch": 500,
+  "clients": 4,
+  "collection": "nq-1000k",
+  "docs": 1000000,
+  "engine": "paradedb",
+  "index_bytes": 5847326720,
+  "indexes_bytes": 3612073984,
+  "ingest_s": 36.567682766,
+  "merge_s": 69.128720448,
+  "prepare_s": 0.0,
+  "refresh_s": 0.0,
+  "request_bytes": 5303262011,
+  "searchable_docs": 1000000,
+  "setup_s": 0.010479333,
+  "steps": {
+    "analyze_s": 3.301278584,
+    "primary_key_s": 1.50194471,
+    "search_index_s": 64.324575821
+  },
+  "table_bytes": 1352802304,
+  "total_s": 105.696428714
+}

@@ -1,0 +1,88 @@
+Name:             stream-strata-hm8pl
+Namespace:        compare
+Priority:         0
+Service Account:  default
+Node:             strata-worker3/172.19.0.5
+Start Time:       Mon, 02 Nov 2026 03:05:32 -0800
+Labels:           batch.kubernetes.io/controller-uid=e59a94db-5e18-4b66-bf87-b73974a6d628
+                  batch.kubernetes.io/job-name=stream-strata
+                  controller-uid=e59a94db-5e18-4b66-bf87-b73974a6d628
+                  job-name=stream-strata
+Annotations:      <none>
+Status:           Failed
+IP:               10.244.1.37
+IPs:
+  IP:           10.244.1.37
+Controlled By:  Job/stream-strata
+Containers:
+  compare:
+    Container ID:  containerd://958b76ca233233ec775ea771530959308b4faf58a637d39bfccb6abadd924a86
+    Image:         strata-server:compare
+    Image ID:      docker.io/library/import-2026-11-02@sha256:a28f87720802b70cf496df806dc4c6d2f88510c0e3aa821b291176efffc5306c
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      stream
+      --engine
+      strata
+      --url
+      http://strata-coordinator:7700
+      --brokers
+      redpanda.redpanda:9092
+      --out
+      /data/compare
+      --collection
+      nq-1000k
+    State:          Terminated
+      Reason:       Error
+      Exit Code:    1
+      Started:      Mon, 02 Nov 2026 03:05:33 -0800
+      Finished:     Mon, 02 Nov 2026 03:07:40 -0800
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:   /beir
+      STRATA_TOKEN:  <set to the key 'token' in secret 'strata-token'>  Optional: true
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-d5n4j (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  Directory
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-d5n4j:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type    Reason   Age    From     Message
+  ----    ------   ----   ----     -------
+  Normal  Pulled   3m13s  kubelet  spec.containers{compare}: Container image "strata-server:compare" already present on machine and can be accessed by the pod
+  Normal  Created  3m12s  kubelet  spec.containers{compare}: Container created
+  Normal  Started  3m12s  kubelet  spec.containers{compare}: Container started

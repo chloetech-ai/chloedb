@@ -1,0 +1,44 @@
+weaviate: index created in 0.3 s
+weaviate: 25000 documents sent, 6 s
+weaviate: 50000 documents sent, 12 s
+weaviate: 75000 documents sent, 20 s
+weaviate: 100000 documents sent, 27 s
+weaviate: 125000 documents sent, 35 s
+weaviate: 150000 documents sent, 43 s
+weaviate: 175000 documents sent, 51 s
+weaviate: 200000 documents sent, 59 s
+weaviate: 225000 documents sent, 68 s
+weaviate: 250000 documents sent, 76 s
+weaviate: 275000 documents sent, 84 s
+weaviate: 300000 documents sent, 93 s
+weaviate: 325000 documents sent, 101 s
+weaviate: 350000 documents sent, 110 s
+weaviate: 375000 documents sent, 119 s
+weaviate: 400000 documents sent, 128 s
+weaviate: 425000 documents sent, 137 s
+weaviate: 450000 documents sent, 146 s
+weaviate: 475000 documents sent, 155 s
+weaviate: 500000 documents sent, 163 s
+weaviate: 525000 documents sent, 174 s
+weaviate: 550000 documents sent, 183 s
+weaviate: 575000 documents sent, 191 s
+weaviate: 600000 documents sent, 201 s
+weaviate: 625000 documents sent, 212 s
+weaviate: 650000 documents sent, 223 s
+weaviate: 675000 documents sent, 232 s
+weaviate: 700000 documents sent, 241 s
+weaviate: 725000 documents sent, 251 s
+weaviate: 750000 documents sent, 262 s
+weaviate: 775000 documents sent, 272 s
+weaviate: 800000 documents sent, 282 s
+weaviate: 825000 documents sent, 294 s
+weaviate: 850000 documents sent, 304 s
+weaviate: 875000 documents sent, 313 s
+weaviate: 900000 documents sent, 324 s
+weaviate: 925000 documents sent, 336 s
+weaviate: 950000 documents sent, 346 s
+weaviate: 975000 documents sent, 356 s
+weaviate: 1000000 documents sent, 366 s
+weaviate: 1000000 documents (5.4 GB) sent in 366.3 s
+weaviate: indexed 0.0 s after the last write; 366.3 s in all
+wrote /data/compare/load-weaviate.json
