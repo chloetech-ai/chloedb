@@ -4,7 +4,7 @@
 // palette (Ctrl+K), which finds views, actions and the fleet's shards,
 // copies, nodes, tables, statements, alerts and keys, and the shortcuts.
 
-import { h, icon, clear, store, bus, api, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow } from "./core.js";
+import { h, icon, clear, store, bus, api, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink } from "./core.js";
 import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, fresh, clusterName, environment, isCoordinator } from "./data.js";
 import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
 
@@ -116,10 +116,12 @@ function labItem(e, pinned) {
   return a;
 }
 
-// Badges: a view's own badge(), else what the shell knows.
+// Badges: a view's own badge(), else what the shell knows. Alerts and the
+// bell show one count: the alerts firing now that nobody silenced.
+const firingNow = () => firingAlerts().filter((a) => !a.silenced);
 function shellBadge(id) {
   if (id === "home") { const f = state.fleet; if (!f) return null; const n = (f.problems || []).length; return n ? { n, tone: f.status === "critical" ? "crit" : "warn", title: `${fmt.plural(n, "problem")} on Home` } : null; }
-  if (id === "alerts") { const fa = firingAlerts(); const n = fa.length; return n ? { n, tone: fa.some((a) => a.severity === "critical") ? "crit" : "warn", title: `${fmt.plural(n, "alert")} firing` } : null; }
+  if (id === "alerts") { const fa = firingNow(); const n = fa.length; return n ? { n, tone: fa.some((a) => a.severity === "critical") ? "crit" : "warn", title: `${fmt.plural(n, "alert")} firing` } : null; }
   if (id === "cluster") {
     const c = state.cluster; if (!c?.shards) return null;
     let down = 0, dark = 0;
@@ -135,7 +137,7 @@ function drawBadges() {
     const e = ENTRIES.find((x) => x.id === a.dataset.view);
     const v = e && viewOf(e);
     let b = null;
-    try { b = v?.badge ? v.badge() : shellBadge(e?.id); } catch (err) { console.warn(err); }
+    try { b = v?.badge && e?.id !== "alerts" ? v.badge() : shellBadge(e?.id); } catch (err) { console.warn(err); }
     let el = a.querySelector(".count");
     if (!b || !b.n) { el?.remove(); continue; }
     if (!el) { el = h("span", { class: "count" }); a.querySelector(".t").after(el); }
@@ -143,7 +145,7 @@ function drawBadges() {
     el.textContent = b.n > 99 ? "99+" : String(b.n);
     el.title = b.title || "";
   }
-  const n = firingAlerts().length;
+  const n = firingNow().length;
   bellCount.textContent = n; bellCount.classList.toggle("hidden", !n);
   bell.title = n ? `${fmt.plural(n, "alert")} firing` : "Alerts: nothing firing";
 }
@@ -504,7 +506,7 @@ function entities(q) {
   // Nodes and zones.
   const nodes = new Map(), zones = new Map();
   shards.forEach((sh) => (sh.replicas || []).forEach((r) => { if (r.node) nodes.set(r.node, (nodes.get(r.node) || 0) + 1); if (r.zone) zones.set(r.zone, (zones.get(r.zone) || 0) + 1); }));
-  for (const [n, k] of nodes) { const sc = score(ql, n); if (sc > 0) out.push({ grp: "Nodes", sc, icon: "node", name: n, sub: fmt.plural(k, "copy", "copies"), hint: "Cluster", run: go(link("cluster", { node: n, group: "node" })), acts: [{ name: `Logs of node ${n}`, icon: "logs", hint: "Logs", run: go(link("logs", { node: n })) }, { name: `Its copies in Cluster`, icon: "cluster", hint: "Cluster", run: go(link("cluster", { node: n, group: "node" })) }] }); }
+  for (const [n, k] of nodes) { const sc = score(ql, n); if (sc > 0) out.push({ grp: "Nodes", sc, icon: "node", name: n, sub: fmt.plural(k, "copy", "copies"), hint: "Cluster", run: go(link("cluster", { node: n, group: "node" })), acts: [{ name: `Logs of node ${n}`, icon: "logs", hint: "Logs", run: go(logsLink({ server: n })) }, { name: `Its copies in Cluster`, icon: "cluster", hint: "Cluster", run: go(link("cluster", { node: n, group: "node" })) }] }); }
   for (const [z, k] of zones) { const sc = score(ql, "zone " + z); if (sc > 0) out.push({ grp: "Nodes", sc: sc - 5, icon: "cloud", name: "Zone " + z, sub: fmt.plural(k, "copy", "copies"), hint: "Cluster", run: go(link("cluster", { zone: z, group: "zone" })) }); }
   // Alerts.
   const fa = firingAlerts();
@@ -512,7 +514,7 @@ function entities(q) {
     const sc = score(ql, `${r.name} ${r.id} ${r.metric || ""} ${r.description || ""}`);
     if (sc <= 0) continue;
     const f = fa.find((a) => a.id === r.id);
-    const st = f ? `firing for ${fmt.dur((Date.now() - (f.since_ms || Date.now())) / 1000)}` : (r.status?.state || state.alerts.states?.find((x) => x.rule === r.id)?.state || "ok");
+    const st = f ? `firing for ${fmt.dur((Date.now() - (f.since_ms || Date.now())) / 1000)}${f.silenced ? ", silenced" : ""}` : (r.status?.state || state.alerts.states?.find((x) => x.rule === r.id)?.state || "ok");
     out.push({ grp: "Alerts", sc: sc + (f ? 30 : 0), icon: "alerts", name: r.name, sub: st, hint: "Alerts", run: go(link("alert/" + encodeURIComponent(r.id))) });
   }
   // Tables.
@@ -539,7 +541,7 @@ function entities(q) {
       acts: [{ name: `Queries from key ${k.name}`, icon: "queries", hint: "Queries", run: go(link("queries", { key: k.name })) }, { name: `The key in Access and audit`, icon: "access", hint: "Access", run: go(link("access", { tab: "keys", key: k.id })) }] });
   }
   // A request id.
-  if (/^[0-9a-f]{12,32}$/i.test(ql)) out.push({ grp: "Requests", sc: 260, icon: "logs", name: `Request ${ql}`, sub: "its log lines and its query", hint: "Logs", run: go(link("logs", { request: ql })) });
+  if (/^[0-9a-f]{12,32}$/i.test(ql)) out.push({ grp: "Requests", sc: 260, icon: "logs", name: `Request ${ql}`, sub: "its log lines and its query", hint: "Logs", run: go(logsLink({ request: ql })) });
   return out;
 }
 function shardActs(n, sh) {
@@ -548,7 +550,7 @@ function shardActs(n, sh) {
   const pn = prim ? copyName(prim.url) : null;
   const w = windowText();
   return [
-    { name: "Its log lines, errors first", icon: "logs", hint: "Logs", run: go(link("logs", { shard: n, level: "warn" })) },
+    { name: "Its log lines, errors first", icon: "logs", hint: "Logs", run: go(logsLink({ shard: n, level: "warn" })) },
     { name: "Its slowest queries", icon: "queries", hint: "Queries", run: go(link("queries", { shard: n, tab: "statements" })) },
     prim ? { name: `Profile ${pn} for 30 s`, icon: "flame", hint: "Profiler", run: go(link("profile", { tab: "cpu", node: prim.url })) } : null,
     { name: "Its events on the timeline", icon: "timeline", hint: "Timeline", run: go(link("timeline", { shard: n })) },
@@ -557,7 +559,7 @@ function shardActs(n, sh) {
 }
 function copyActs(nm, r, shard) {
   return [
-    { name: `Logs of ${nm}`, icon: "logs", hint: "Logs", run: go(link("logs", { node: r.url })) },
+    { name: `Logs of ${nm}`, icon: "logs", hint: "Logs", run: go(logsLink({ server: r.url })) },
     { name: `Profile ${nm} for 30 s`, icon: "flame", hint: "Profiler", run: go(link("profile", { tab: "cpu", node: r.url })) },
     { name: `Shard ${shard} in Cluster`, icon: "cluster", hint: "Cluster", run: go(link("cluster", { shard, copy: nm })) },
     { name: `Copy its address (${r.url})`, icon: "copy", hint: "Copy", run: () => copy(r.url, "Address copied") },

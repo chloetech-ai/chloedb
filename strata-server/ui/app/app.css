@@ -1572,7 +1572,8 @@ a.home-chip:hover { color: var(--text); text-decoration: none; }
 .home-heat .hc em { font-style: normal; font-weight: 700; font-size: 8.5px; letter-spacing: -.02em; white-space: nowrap; line-height: 10px; }
 .home-heat.big .hc em { font-size: 11px; line-height: 14px; }
 .home-heat .hc .names { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; font-size: 11.5px; color: var(--text-2); }
-.home-heat .hc .names .crit { color: var(--crit-ink); text-decoration: line-through; }
+.home-heat .hc .names .crit { color: var(--crit-ink); }
+.home-heat .hc .names .down { color: var(--crit-ink); text-decoration: line-through; }
 .home-heat .hc .names .warn { color: color-mix(in srgb, var(--warn) 70%, var(--text)); }
 .home-heat .hc.warn { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 70%, transparent); color: var(--text); }
 .home-heat .hc.warn em { color: color-mix(in srgb, var(--warn) 80%, var(--text)); }
@@ -1720,6 +1721,7 @@ a.tl-tile:hover { text-decoration: none; border-color: var(--line-2); }
   .top .btn.live.ok { border-color: transparent; background: none; }
   /* Home and Timeline. */
   .home-row > .home-probcard { order: -1; }
+  .home-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
   .home-since-grid { grid-template-columns: minmax(0, 1fr); }
   .home-evside { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 12px; }
   .home-wherecard > .hd .tools { justify-content: flex-start; }
