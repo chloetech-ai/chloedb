@@ -48,6 +48,8 @@ use strata::{Document, Value, VectorCodes, VectorIndexKind};
 use strata_server::server;
 use strata_server::service::shard_of;
 
+mod more;
+
 #[derive(Parser)]
 #[command(about = "Strata, Elasticsearch, OpenSearch, Solr and Vespa on the same BEIR collection")]
 struct Cli {
@@ -75,7 +77,7 @@ enum Cmd {
     /// Loads the collection into Elasticsearch, OpenSearch, Solr or Vespa over HTTP and merges each shard to one segment, timed.
     Load {
         #[arg(long, value_enum)]
-        engine: Engine,
+        engine: Which,
         /// The engine's nodes, comma-separated; bulk requests go round-robin.
         #[arg(long, value_delimiter = ',', required = true)]
         url: Vec<String>,
@@ -96,7 +98,7 @@ enum Cmd {
     /// Times every query kind against an engine and records its answers.
     Run {
         #[arg(long, value_enum)]
-        engine: Engine,
+        engine: Which,
         /// The engine's HTTP endpoints, comma-separated (Strata: its coordinator); requests go round-robin.
         #[arg(long, value_delimiter = ',', required = true)]
         url: Vec<String>,
@@ -125,7 +127,7 @@ enum Cmd {
     /// Then deletes what it wrote and puts the old values back (run it after `run`).
     Writes {
         #[arg(long, value_enum)]
-        engine: Engine,
+        engine: Which,
         /// The engine's HTTP endpoints, comma-separated (Strata: its coordinator); requests go round-robin.
         #[arg(long, value_delimiter = ',', required = true)]
         url: Vec<String>,
@@ -154,7 +156,7 @@ enum Cmd {
     /// after `run`).
     Stream {
         #[arg(long, value_enum)]
-        engine: Engine,
+        engine: Which,
         /// The engine's HTTP endpoints, comma-separated (Strata: its coordinator); partitions go round-robin.
         #[arg(long, value_delimiter = ',', required = true)]
         url: Vec<String>,
@@ -185,7 +187,48 @@ enum Cmd {
     },
 }
 
+/// Every engine the harness drives: the first five here, the rest in `more`.
 #[derive(Clone, Copy, PartialEq, ValueEnum)]
+enum Which {
+    Strata,
+    Es,
+    Os,
+    Solr,
+    Vespa,
+    Meili,
+    Typesense,
+    Manticore,
+    Qdrant,
+    Weaviate,
+    Milvus,
+    Paradedb,
+    Postgres,
+    Redis,
+}
+
+impl Which {
+    fn engine(self) -> Result<Engine, more::Other> {
+        use more::Other;
+        Ok(match self {
+            Which::Strata => Engine::Strata,
+            Which::Es => Engine::Es,
+            Which::Os => Engine::Os,
+            Which::Solr => Engine::Solr,
+            Which::Vespa => Engine::Vespa,
+            Which::Meili => return Err(Other::Meili),
+            Which::Typesense => return Err(Other::Typesense),
+            Which::Manticore => return Err(Other::Manticore),
+            Which::Qdrant => return Err(Other::Qdrant),
+            Which::Weaviate => return Err(Other::Weaviate),
+            Which::Milvus => return Err(Other::Milvus),
+            Which::Paradedb => return Err(Other::Paradedb),
+            Which::Postgres => return Err(Other::Postgres),
+            Which::Redis => return Err(Other::Redis),
+        })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
 enum Engine {
     Strata,
     Es,
@@ -331,7 +374,7 @@ const CLASSIC_STOPWORDS: &[&str] = &[
 /// digits, lowercased and folded to ASCII, minus the classic stopwords,
 /// stemmed with Snowball English (Porter 2); ranked queries also drop
 /// `QUERY_STOPWORDS`.
-fn es_index() -> Json {
+fn es_index(dim: usize) -> Json {
     let query_stop: Vec<&str> = strata::text::analyzer::QUERY_STOPWORDS.to_vec();
     json!({
         "settings": {
@@ -361,7 +404,7 @@ fn es_index() -> Json {
                 "rating": {"type": "float"},
                 "topic": {"type": "keyword"},
                 "emb": {
-                    "type": "dense_vector", "dims": 1024, "index": true, "similarity": "dot_product",
+                    "type": "dense_vector", "dims": dim, "index": true, "similarity": "dot_product",
                     "index_options": {"type": "int8_hnsw", "m": 16, "ef_construction": 200},
                 },
             },
@@ -373,11 +416,11 @@ fn es_index() -> Json {
 /// its k-NN plugin's on-disk mode at 4x compression, which is Lucene's HNSW
 /// over 8-bit codes re-scored with the full vectors, as Elasticsearch's
 /// `int8_hnsw` with `rescore_vector`.
-fn os_index() -> Json {
-    let mut b = es_index();
+fn os_index(dim: usize) -> Json {
+    let mut b = es_index(dim);
     b["settings"]["index.knn"] = json!(true);
     b["mappings"]["properties"]["emb"] = json!({
-        "type": "knn_vector", "dimension": 1024, "space_type": "innerproduct", "mode": "on_disk", "compression_level": "4x",
+        "type": "knn_vector", "dimension": dim, "space_type": "innerproduct", "mode": "on_disk", "compression_level": "4x",
         "method": {"name": "hnsw", "engine": "lucene", "parameters": {"m": 16, "ef_construction": 200}},
     });
     b
@@ -428,11 +471,11 @@ async fn check(r: reqwest::Result<reqwest::Response>, what: &str) -> Result<Json
 
 /// Creates the empty index (Elasticsearch) or collection (Solr), dropping
 /// one a previous run left.
-async fn setup(engine: Engine, client: &reqwest::Client, url: &str, shards: usize) -> Result<(), String> {
+async fn setup(engine: Engine, client: &reqwest::Client, url: &str, shards: usize, dim: usize) -> Result<(), String> {
     match engine {
         Engine::Es | Engine::Os => {
             let _ = client.delete(format!("{url}/quora")).send().await;
-            let mut body = if engine == Engine::Es { es_index() } else { os_index() };
+            let mut body = if engine == Engine::Es { es_index(dim) } else { os_index(dim) };
             body["settings"]["number_of_shards"] = json!(shards);
             check(client.put(format!("{url}/quora")).json(&body).send().await, "create index").await?;
             check(client.get(format!("{url}/_cluster/health/quora?wait_for_status=green&timeout=120s")).send().await, "index health").await?;
@@ -474,7 +517,7 @@ async fn setup(engine: Engine, client: &reqwest::Client, url: &str, shards: usiz
                     .post(format!("{c}/schema"))
                     .json(&json!({"add-field-type": [
                         solr_text_type(),
-                        {"name": "knn_1024", "class": "solr.DenseVectorField", "vectorDimension": 1024, "similarityFunction": "dot_product",
+                        {"name": "knn", "class": "solr.DenseVectorField", "vectorDimension": dim, "similarityFunction": "dot_product",
                          "knnAlgorithm": "hnsw", "hnswM": 16, "hnswEfConstruction": 200},
                     ]}))
                     .send()
@@ -494,7 +537,7 @@ async fn setup(engine: Engine, client: &reqwest::Client, url: &str, shards: usiz
                             {"name": "category", "type": "string", "stored": true},
                             {"name": "rating", "type": "pfloat", "stored": true},
                             {"name": "topic", "type": "string", "stored": true},
-                            {"name": "emb", "type": "knn_1024", "stored": false},
+                            {"name": "emb", "type": "knn", "stored": false},
                         ],
                     }))
                     .send()
@@ -607,7 +650,7 @@ async fn post_batch(engine: Engine, client: &reqwest::Client, url: &str, body: A
 async fn load(collection: &str, engine: Engine, urls: &[String], shards: usize, batch: usize, clients: usize, limit: Option<usize>, out: &Path) -> Result<(), String> {
     let client = reqwest::Client::builder().timeout(Duration::from_secs(6 * 3600)).build().map_err(s)?;
     let t_setup = Instant::now();
-    setup(engine, &client, &urls[0], shards).await?;
+    setup(engine, &client, &urls[0], shards, meta(collection)?.dim).await?;
     let setup_s = t_setup.elapsed().as_secs_f64();
     eprintln!("{}: index created in {setup_s:.1} s", engine.name());
 
@@ -2386,16 +2429,22 @@ async fn main() {
     let cli = Cli::parse();
     let r = match &cli.cmd {
         Cmd::Build { shard, of, out, threads } => build(&cli.collection, *shard, *of, out, *threads),
-        Cmd::Load { engine, url, shards, batch, clients, limit, out } => load(&cli.collection, *engine, url, *shards, *batch, *clients, *limit, out).await,
-        Cmd::Run { engine, url, queries, concurrency, seconds, label, kinds, paid, out } => {
-            run(&cli.collection, *engine, url, *queries, concurrency, *seconds, label.clone(), kinds, *paid, out).await
-        }
-        Cmd::Writes { engine, url, concurrency, seconds, batch, samples, label, out } => {
-            writes(&cli.collection, *engine, url, concurrency, *seconds, *batch, *samples, label.clone(), out).await
-        }
-        Cmd::Stream { engine, url, brokers, partitions, rates, seconds, flat, restart, batch, label, out } => {
-            stream(&cli.collection, *engine, url, brokers, *partitions, rates, *seconds, *flat, *restart, *batch, label.clone(), out).await
-        }
+        Cmd::Load { engine, url, shards, batch, clients, limit, out } => match engine.engine() {
+            Ok(e) => load(&cli.collection, e, url, *shards, *batch, *clients, *limit, out).await,
+            Err(o) => more::load(&cli.collection, o, url, *batch, *clients, *limit, out).await,
+        },
+        Cmd::Run { engine, url, queries, concurrency, seconds, label, kinds, paid, out } => match engine.engine() {
+            Ok(e) => run(&cli.collection, e, url, *queries, concurrency, *seconds, label.clone(), kinds, *paid, out).await,
+            Err(o) => more::run(&cli.collection, o, url, *queries, concurrency, *seconds, label.clone(), kinds, out).await,
+        },
+        Cmd::Writes { engine, url, concurrency, seconds, batch, samples, label, out } => match engine.engine() {
+            Ok(e) => writes(&cli.collection, e, url, concurrency, *seconds, *batch, *samples, label.clone(), out).await,
+            Err(o) => Err(format!("writes are not measured for {} yet", o.name())),
+        },
+        Cmd::Stream { engine, url, brokers, partitions, rates, seconds, flat, restart, batch, label, out } => match engine.engine() {
+            Ok(e) => stream(&cli.collection, e, url, brokers, *partitions, rates, *seconds, *flat, *restart, *batch, label.clone(), out).await,
+            Err(o) => Err(format!("streams are not measured for {} yet", o.name())),
+        },
     };
     if let Err(e) = r {
         eprintln!("error: {e}");

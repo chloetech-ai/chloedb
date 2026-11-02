@@ -1,0 +1,44 @@
+# Typesense 30.2, API key "compare" (engine-compare sends it).
+# One node with the whole budget of the other engines' two data pods (3
+# CPUs, 6 GiB; compare.sh fills in __CPU__ and __MEM__), its data on the
+# node's own disk (emptyDir). compare.sh writes it from this file.
+apiVersion: v1
+kind: Service
+metadata:
+  name: typesense
+  namespace: compare
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {app: typesense}
+  ports:
+    - {name: api, port: 8108}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: typesense-0
+  namespace: compare
+  labels: {app: typesense, engine: typesense}
+spec:
+  hostname: typesense-0
+  subdomain: typesense
+  nodeName: __NODE__
+  containers:
+    - name: typesense
+      image: typesense/typesense:30.2
+      imagePullPolicy: IfNotPresent
+      args: [--data-dir, /data, --api-key, compare, --thread-pool-size, "6"]
+      readinessProbe:
+        httpGet: {path: /health, port: api}
+        periodSeconds: 2
+      ports:
+        - {name: api, containerPort: 8108}
+      resources:
+        requests: {cpu: __CPU__, memory: __MEM__}
+        limits: {cpu: __CPU__, memory: __MEM__}
+      volumeMounts:
+        - {name: data, mountPath: /data}
+  volumes:
+    - name: data
+      emptyDir: {}
