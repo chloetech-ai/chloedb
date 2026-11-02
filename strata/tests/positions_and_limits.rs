@@ -83,7 +83,7 @@ fn the_smallest_integer_is_a_literal() {
     sql(&db, &format!("DELETE FROM t WHERE id = {MIN}"));
     assert_eq!(ints(&sql(&db, "SELECT id FROM t"), 0), vec![1]);
     // One past it is still a FLOAT, which no INT holds.
-    assert!(error(&db, "INSERT INTO t (id, n) VALUES (2, -9223372036854775809)").contains("Int"));
+    assert!(error(&db, "INSERT INTO t (id, n) VALUES (2, -9223372036854775809)").contains("give it a whole number"));
 }
 
 fn graph(dir: &std::path::Path) -> Db {

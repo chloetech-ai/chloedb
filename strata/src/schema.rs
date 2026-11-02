@@ -467,7 +467,7 @@ impl Field {
             Value::Float(x) if x == 0.0 => Value::Float(0.0),
             v => v,
         };
-        let bad = |v: &Value, want: Logical| Error::Schema(format!("bad value for {}: {v:?} ({})", self.name, want.expects()));
+        let bad = |v: &Value, want: Logical| Error::Schema(format!("bad value for {}: {} ({})", self.name, crate::query::hint::sql_value(v), want.expects()));
         const BOOL: Logical = Logical::Bool;
         const TIME: Logical = Logical::Timestamp;
         Ok(match (self.logical, v) {

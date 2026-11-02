@@ -159,7 +159,7 @@ pub fn validate(schema: &Schema, doc: &Document) -> Result<()> {
                 _ => false,
             });
             if !ok {
-                return Err(Error::Schema(format!("bad value for multi-valued field {}: {:?}", f.name, short(v))));
+                return Err(Error::Schema(format!("bad value for multi-valued field {}: {} (a {} field takes a list of values, such as ARRAY['a', 'b'], or one value)", f.name, short(v), crate::query::hint::type_of(f))));
             }
             continue;
         }
@@ -192,16 +192,13 @@ pub fn validate(schema: &Schema, doc: &Document) -> Result<()> {
             _ => false,
         };
         if !ok {
-            return Err(Error::Schema(format!("bad value for field {}: {:?}", f.name, short(v))));
+            return Err(Error::Schema(format!("bad value for field {}: {} does not fit a {} field", f.name, short(v), crate::query::hint::type_of(f))));
         }
     }
     Ok(())
 }
 
+/// A value as SQL writes it, cut short ([`crate::query::hint::sql_value`]).
 fn short(v: &Value) -> String {
-    let s = format!("{v:?}");
-    match s.char_indices().nth(60) {
-        Some((i, _)) => format!("{}...", &s[..i]),
-        None => s,
-    }
+    crate::query::hint::sql_value(v)
 }
