@@ -98,7 +98,7 @@ impl Node {
     }
 
     async fn health(&self) -> Option<Json> {
-        let r = reqwest::get(format!("http://127.0.0.1:{}/v1/health", self.http)).await.ok()?;
+        let r = strata_server::http_client().build().unwrap().get(format!("http://127.0.0.1:{}/v1/health", self.http)).send().await.ok()?;
         r.json().await.ok()
     }
 

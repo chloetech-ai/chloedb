@@ -48,7 +48,11 @@ Elasticsearch and Solr, 28 October 2026) are in
   start below it, so its pods set `VESPA_IGNORE_NOT_ENOUGH_MEMORY`.
   Loading has the same budget: Elasticsearch, OpenSearch and Solr take bulk
   requests on their two data nodes and Vespa one document per request on
-  its container (from a loader pod on the third node, outside the budget),
+  its container, 64 in flight from each of the 4 loading clients (256, what
+  its container queues), a refused put sent again after a pause that grows
+  to 5 s (from a loader pod on the third node, outside the budget; with
+  every put of a 500-document batch at once, the first 1M NQ load failed
+  at 850,000 with puts refused for 20 s on end),
   and Strata builds its shards one after the other in a job of 3 CPUs and 6
   GiB on the shard's node (a shard's build holds its documents in memory;
   two at once in 3 GiB each ran out of memory).
@@ -75,6 +79,11 @@ Elasticsearch and Solr, 28 October 2026) are in
   segment after loading. Vespa has no segments to merge: a document is
   searchable once its put returns, and proton flushes and compacts on its
   own (compare.sh asks it to flush before measuring its size on disk).
+- **Access**: Strata's servers listen beyond loopback only with a token,
+  so its shards, coordinator and the client share a random one, made once
+  per cluster by `compare.sh` and kept in the secret `strata-token`; the
+  other engines run with their security off, as their images start
+  (Typesense needs an API key, a fixed `compare`).
 - **No result caches**: the timed runs repeat 300 queries, so Solr's
   `queryResultCache` is off and Elasticsearch's and OpenSearch's shard
   request caches are bypassed (`request_cache=false`); filter caches stay
@@ -97,7 +106,7 @@ Elasticsearch and Solr, 28 October 2026) are in
 | typo | `bm25(body, :x, fuzzy => 'auto')`, the query with two letters of its longest word swapped | `match` with `fuzziness: AUTO` | each word `~1` or `~2`, as `AUTO` would |
 | prefix | `WHERE MATCH(body, 'pre*')`: the first three letters of the query's last word, ranked by the words before it | `prefix` filter, `match` | `fq=body:pre*` |
 | similar items | `WHERE rating >= 3 AND id NOT IN (20 keys) ORDER BY similarity(emb, :item)`: a recommender's "more like this item", minus what the user has seen | `knn` from the item's vector, filter `range` and `must_not ids` | `{!knn}` with `fq` |
-| sql aggregate | `SELECT category, COUNT(*), AVG(rating) … WHERE year >= :y GROUP BY category HAVING COUNT(*) > 1000 ORDER BY 2 DESC LIMIT 10` | the same statement to `/_sql` | the same statement to `/sql` (Solr's parallel SQL) |
+| sql aggregate | `SELECT category, COUNT(*), AVG(rating) … WHERE year >= :y GROUP BY category HAVING COUNT(*) > 1000 ORDER BY 2 DESC LIMIT 10` | the same statement to `/_sql` | the same statement to `/sql` (Solr's parallel SQL, the `sql` module, which solr.yaml turns on), as a request parameter, with `` `year` `` in backticks and no column aliases (Solr's HAVING matches nothing with them) |
 
 Elasticsearch searches return only `_id` and `_score` (`_source: false`)
 and stop counting hits (`track_total_hits: false`); Solr's are given
@@ -214,7 +223,7 @@ memory). Writes and streams are not measured for them yet.
 | Milvus | `milvusdb/milvus:v2.6.26` (standalone, embedded etcd, local storage) | its BM25 function over the `english` analyzer | `HNSW_SQ` (SQ8) refined with FP32, refine_k 4, `ef` 64 |
 | ParadeDB | `paradedb/paradedb:0.26.4-pg17` | `pg_search`'s BM25 over its `simple` tokenizer with the English stemmer, stopwords and ASCII folding | the vectors in the same index (`vector_ip_ops`) |
 | Postgres | the same image, without `pg_search` | `ts_rank` (no IDF: not BM25) over a generated `tsvector` with a GIN index | `pgvector` HNSW, `ef_search` 64, `iterative_scan` strict_order |
-| Redis | `redis:8.8.4` (Redis Query Engine; no persistence, 5.5 GB maxmemory) | `BM25STD` with its English stemmer and Lucene's stopwords | `HNSW` `FLOAT32`, `EF_RUNTIME` 64 |
+| Redis | `redis:8.8.4` (Redis Query Engine; no persistence, 5.5 GB maxmemory) | `BM25STD` with its English stemmer and Lucene's stopwords | `HNSW` `FLOAT16` (with `FLOAT32` a million 384-dimension vectors, held in the hash and again in the index, and the text do not fit in 6 GiB: the first 1M NQ load ran out of memory at about 93%), `EF_RUNTIME` 64 |
 
 Each kind is the engine's closest native request, and its report says
 where it has none (`unavailable`) or where the request means something

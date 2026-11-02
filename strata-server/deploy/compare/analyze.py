@@ -55,6 +55,9 @@ RUNS = [
     ("postgres", "Postgres"),
     ("redis", "Redis"),
 ]
+# A kind re-run on its own after a fix (run-<label>+<what>.json, for one
+# run solr --kinds "sql aggregate" --label solr+sql) replaces that kind in
+# run-<label>.json; the tables say which kinds came from such a run.
 # The one-node engines: their load reports have no merge, and compare.sh
 # measured their data directories on disk (disk-<engine>.json; Redis: memory).
 ONE_NODE = ["meili", "typesense", "manticore", "qdrant", "weaviate", "milvus", "paradedb", "postgres", "redis"]
@@ -223,6 +226,20 @@ def groups(engines, n=5):
     return [engines[i:i + n] for i in range(0, len(engines), n)]
 
 
+def merge_reruns(rep, e, r):
+    """Kinds of run-<e>+*.json replace those of run-<e>.json; returns [(file, kinds)]."""
+    merged = []
+    names = sorted({p.name.removesuffix(".gz") for p in rep.glob(f"run-{e}+*.json*")})
+    for name in names:
+        x = load_json(rep / name)
+        kinds = set(x.get("answers", {})) | {h["kind"] for h in x.get("http", [])} | set(x.get("unavailable", {}))
+        r["http"] = [h for h in r["http"] if h["kind"] not in kinds] + x.get("http", [])
+        for key in ("answers", "query_ids", "probes", "differs", "unavailable"):
+            r[key] = {k: v for k, v in r.get(key, {}).items() if k not in kinds} | x.get(key, {})
+        merged.append((name, sorted(kinds)))
+    return merged
+
+
 def fmt(x, digits=2):
     if x is None:
         return "–"
@@ -235,13 +252,18 @@ def main():
     rep, beir = Path(sys.argv[1]), Path(sys.argv[2])
     runs = {e: load_json(rep / f"run-{e}.json") for e in ENGINES}
     runs = {e: r for e, r in runs.items() if r}
+    reruns = {e: merge_reruns(rep, e, r) for e, r in runs.items()}
+    for e, m in reruns.items():
+        for name, kinds in m:
+            print(f"{NAMES[e]}: {', '.join(kinds)} from {name}, a later run of these kinds alone.\n")
     # Strata's answers do not depend on how its CPUs are split: score one.
     scored = [e for e in runs if e != "strata-coord500m"]
     if "strata-coord500m" in runs and "strata" in runs:
         same = runs["strata-coord500m"]["answers"] == runs["strata"]["answers"]
         print(f"Strata's answers at both CPU splits are {'identical' if same else 'DIFFERENT'}.\n")
     rel = qrels(beir)
-    summary = {"engines": list(runs), "load": {}, "http": {}, "quality": {}, "unavailable": {}, "differs": {}, "cpu": {}}
+    summary = {"engines": list(runs), "load": {}, "http": {}, "quality": {}, "unavailable": {}, "differs": {}, "cpu": {},
+               "reruns": {e: [{"file": n, "kinds": k} for n, k in m] for e, m in reruns.items() if m}}
 
     # Load time and index size.
     print("## Load time and index size\n")

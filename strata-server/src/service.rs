@@ -127,6 +127,10 @@ pub struct QueryReq {
     /// ([`Answer::arrow`]) when the coordinator puts its rows after the
     /// others' ([`strata::cluster::concatenates`]).
     pub arrow: Option<usize>,
+    /// Count the answer's rows as retrievals of their documents
+    /// ([`crate::reads`]): a client's query, which a coordinator counts by
+    /// the replica that answered each row.
+    pub reads: bool,
 }
 
 /// The writes a read must see, so that a client reads its own writes
@@ -229,6 +233,9 @@ pub struct Service {
     pub live: Arc<LiveQueries>,
     /// The latest and slow queries, and statistics per statement.
     pub query_log: QueryLog,
+    /// How often each table's documents are retrieved and its keys asked
+    /// for ([`crate::reads`]).
+    pub reads: crate::reads::Reads,
     /// Rates and gauges every few seconds ([`Self::sample`]).
     pub series: Series,
     /// When the server started.
@@ -395,6 +402,7 @@ impl Service {
             kube: None,
             live: Arc::new(LiveQueries::default()),
             query_log: QueryLog::default(),
+            reads: crate::reads::Reads::default(),
             series: Series::default(),
             started: std::time::SystemTime::now(),
             keys: Arc::new(Keys::memory()),
@@ -478,8 +486,8 @@ impl Service {
     }
 
     /// Refuses a client's write on a replica (409), and one a primary may
-    /// not apply now ([`Self::admit_write`]).
-    fn writable(&self) -> Result<(), ApiError> {
+    /// not apply now ([`Self::admit_write`]); answers who took it.
+    fn writable(&self) -> Result<Admitted, ApiError> {
         self.takes_writes()?;
         self.admit_write()
     }
@@ -492,19 +500,53 @@ impl Service {
         }
     }
 
-    /// Refuses a write a primary may not apply now ([`Primary::admit`]).
-    fn admit_write(&self) -> Result<(), ApiError> {
+    /// Refuses a write a primary may not apply now ([`Primary::admit`]);
+    /// answers who took it.
+    fn admit_write(&self) -> Result<Admitted, ApiError> {
         match &self.replication() {
-            Replication::Primary(p) => p.admit(),
-            _ => Ok(()),
+            Replication::Primary(p) => {
+                p.admit()?;
+                Ok(Admitted(Some(self.term())))
+            }
+            _ => Ok(Admitted(None)),
+        }
+    }
+
+    /// The term its database numbers writes under: a primary's (0 when
+    /// none).
+    fn term(&self) -> u64 {
+        self.local().and_then(|db| db.storage().numbering()).map_or(0, |n| n.term)
+    }
+
+    /// Who takes a write now, unasked whether it may be applied: a
+    /// statement that changes tables, and a retry of a write applied.
+    fn admitted(&self) -> Admitted {
+        match &self.replication() {
+            Replication::Primary(_) => Admitted(Some(self.term())),
+            _ => Admitted(None),
         }
     }
 
     /// Answers a committed write once the copies `--write-acks` asks for
-    /// hold it, waiting up to `timeout` ([`Primary::acknowledged`]).
-    async fn replicated(&self, w: Written, timeout: Duration) -> Result<Written, ApiError> {
-        if let (Replication::Primary(p), Some(seq)) = (&self.replication(), w.seq_no) {
-            p.acknowledged(seq, Instant::now() + timeout).await?;
+    /// hold it, waiting up to `timeout` ([`Primary::acknowledged`]), on the
+    /// primary that took it (`by`). One that stepped down since, as a
+    /// primary does when it votes for another copy in a handover
+    /// ([`Self::step_down`]), answers it in doubt (409), as it answers a
+    /// write it applied when another replaced it before its copies held it
+    /// ([`Primary::acknowledged`]): the new primary may not hold it, and
+    /// this server, a replica now, waits for no copy.
+    async fn replicated(&self, w: Written, timeout: Duration, by: Admitted) -> Result<Written, ApiError> {
+        let Some(seq) = w.seq_no else { return Ok(w) };
+        match (&self.replication(), by.0) {
+            // Taken by this primary, or on a server of its own, which was
+            // made one since.
+            (Replication::Primary(p), term) if term.is_none_or(|t| t == self.term()) => p.acknowledged(seq, Instant::now() + timeout).await?,
+            (_, Some(term)) => {
+                return Err(conflict(format!(
+                    "the write is durable on this server as sequence number {seq}, but it stopped being the primary of term {term} before it was acknowledged, and the new primary may not hold it: write to the new primary"
+                )))
+            }
+            _ => {}
         }
         Ok(w)
     }
@@ -1857,6 +1899,10 @@ impl Service {
     /// shards.
     async fn select(self: &Arc<Self>, mut req: QueryReq, schema: Arc<Schema>, select: Select, t0: Instant, timeout: Duration) -> Result<Answer, ApiError> {
         let kind = metrics::kind(&select);
+        // A client's answer counts its rows' documents as retrieved; a
+        // shard's to a coordinator, which counts them, does not.
+        req.reads = !req.shard && !req.quiet && self.reads.on();
+        let mut served = Vec::new();
         let mut lease = 0;
         req.profile |= self.profiling.cpu_all.load(Ordering::Relaxed);
         let profiled = req.profile;
@@ -1941,7 +1987,10 @@ impl Service {
                     let reach = select.limit.unwrap_or(0).saturating_add(select.offset);
                     let r = match self.max_rows.filter(|&m| reach > m) {
                         Some(m) => Err(ApiError::bad(format!("query error: LIMIT and OFFSET reach row {reach}; a query returns at most {m} rows"))),
-                        None => c.query(&req, &schema, &select, t0 + timeout).await.map(|m| (m.rs, m.missing)),
+                        None => c.query(&req, &schema, &select, t0 + timeout).await.map(|m| {
+                            served = m.served;
+                            (m.rs, m.missing)
+                        }),
                     };
                     drop(permit);
                     r
@@ -1950,6 +1999,17 @@ impl Service {
             }
         };
         drop(live);
+        if req.reads {
+            match (&res, &self.backend) {
+                (Ok((rs, _)), Backend::Local(_)) => self.reads.retrieved(&schema.table, crate::reads::At::here(), &rs.keys),
+                (Ok(_), Backend::Cluster(_)) => {
+                    for s in served {
+                        self.reads.retrieved(&schema.table, s.at, &s.keys);
+                    }
+                }
+                _ => {}
+            }
+        }
         // A shard's answer to a coordinator is not a client's.
         let a = self.done(&req.sql, kind, t0, self.max_rows.filter(|_| !req.shard), req.shard, (profiled, req.quiet), res);
         // A lease made for a query that failed holds nothing to fetch.
@@ -2278,7 +2338,9 @@ impl Service {
     /// `SELECT *` answers it and the number of the write that last changed
     /// it, or none. A coordinator asks each key's shard. At most
     /// [`MAX_GET_KEYS`] keys.
-    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, after: &After, timeout_ms: u64) -> Result<KeyRows, ApiError> {
+    /// With `count`, a client's read, its keys count as asked for
+    /// ([`crate::reads`]).
+    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, after: &After, timeout_ms: u64, count: bool) -> Result<KeyRows, ApiError> {
         let t0 = Instant::now();
         if keys.len() > MAX_GET_KEYS {
             return Err(ApiError::bad(format!("a read by key takes at most {MAX_GET_KEYS} keys, not {}", keys.len())));
@@ -2298,6 +2360,7 @@ impl Service {
                 let Some(permit) = self.admit(timeout).await else { return Err(self.rejected("get", t0)) };
                 let db = db.clone();
                 let opts = ExecOptions { deadline: Some(deadline), ..db.exec.clone() };
+                let asked = if count && self.reads.on() { keys.clone() } else { Vec::new() };
                 let r = tokio::task::spawn_blocking(move || {
                     let columns = Db::get_columns(view.schema());
                     db.get_many_at(&view, &keys, &opts).map(|rows| KeyRows { table: view.schema().table.clone(), columns, rows: rows.into_iter().map(|r| r.map(|r| (r.row, r.seq_no))).collect() })
@@ -2305,9 +2368,20 @@ impl Service {
                 .await
                 .map_err(ApiError::internal)?;
                 drop(permit);
+                if let Ok(got) = &r {
+                    let found: Vec<bool> = got.rows.iter().map(Option::is_some).collect();
+                    self.reads.asked(&schema.table, crate::reads::At::here(), &asked, &found);
+                }
                 r.map_err(ApiError::from)
             }
-            Backend::Cluster(c) => c.get(&schema, &keys, after, deadline).await.map(|rows| KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }),
+            Backend::Cluster(c) => c.get(&schema, &keys, after, deadline).await.map(|(rows, served)| {
+                if count && self.reads.on() {
+                    for s in served {
+                        self.reads.asked(&schema.table, s.at, &s.keys, &s.found);
+                    }
+                }
+                KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }
+            }),
         };
         telemetry::record("get", t0, if r.is_ok() { "ok" } else { "error" });
         r
@@ -2416,6 +2490,7 @@ impl Service {
         let r = match &self.backend {
             Backend::Local(db) => {
                 self.takes_writes()?;
+                let by = self.admitted();
                 let timeout = self.timeout_of(timeout_ms);
                 let (db, sql, params) = (db.clone(), sql.to_string(), params.clone());
                 let w = tokio::task::spawn_blocking(move || {
@@ -2428,7 +2503,7 @@ impl Service {
                 .await
                 .map_err(ApiError::internal)?;
                 match w {
-                    Ok(w) => self.replicated(w, timeout).await,
+                    Ok(w) => self.replicated(w, timeout, by).await,
                     e => e,
                 }
             }
@@ -2446,7 +2521,7 @@ impl Service {
     where
         F: FnOnce(&Db) -> strata::Result<Option<PreparedWrite>> + Send + 'static,
     {
-        self.writable()?;
+        let by = self.writable()?;
         self.backpressure(db).await?;
         let q = self.enqueue()?;
         let core = match self.embeds() {
@@ -2464,7 +2539,7 @@ impl Service {
         // The deadline bounds the wait for the writer, not the embedding.
         let deadline = Instant::now() + self.timeout_of(timeout_ms);
         let w = self.write(WriteJob::Sql(Box::new(prepared)), deadline, None, q, Moved::No).await?;
-        self.replicated(w, self.timeout_of(timeout_ms)).await
+        self.replicated(w, self.timeout_of(timeout_ms), by).await
     }
 
     /// Applies write operations (see the proto's WriteRequest) in one
@@ -2499,7 +2574,7 @@ impl Service {
                             self.metrics.replay();
                             // A retry after a write its copies did not all
                             // acknowledge waits for them again.
-                            return self.replicated(n, self.timeout).await;
+                            return self.replicated(n, self.timeout, self.admitted()).await;
                         }
                         idem::Begin::Busy => return Err(ApiError { status: 409, message: "a write with this idempotency key is still running".into() }),
                         idem::Begin::Mismatch => return Err(ApiError { status: 422, message: "this idempotency key was used for different operations".into() }),
@@ -2508,7 +2583,7 @@ impl Service {
                 let r = async {
                     // Not a retry of a write applied: a primary may refuse
                     // it before applying it.
-                    self.admit_write()?;
+                    let by = self.admit_write()?;
                     if self.embeds() || self.has_media() {
                         // Queued writes wait for a core to embed on.
                         let core = self.embedding.clone().acquire_owned().await.map_err(ApiError::internal)?;
@@ -2527,7 +2602,7 @@ impl Service {
                     for &ts in &w.stamps {
                         self.metrics.lag(now.saturating_sub(ts) as f64 / 1e6);
                     }
-                    Ok(w)
+                    Ok((w, by))
                 }
                 .await;
                 if let (Err(_), Some(k)) = (&r, &key) {
@@ -2537,8 +2612,8 @@ impl Service {
                 // Committed: a retry with its key answers it, whatever its
                 // copies say.
                 match r {
-                    Ok(w) => self.replicated(w, self.timeout).await,
-                    e => e,
+                    Ok((w, by)) => self.replicated(w, self.timeout, by).await,
+                    Err(e) => Err(e),
                 }
             }
             Backend::Cluster(c) => c.write_ops(ops, key).await,
@@ -2773,6 +2848,112 @@ impl Service {
         }
         reader.await.map_err(ApiError::internal)?;
         Ok(out.to_json())
+    }
+
+    /// Imports the Parquet file `body` into one table, as
+    /// [`Self::import_sqlite`] imports a SQLite file's: into the table
+    /// `opts.table` names (else the one an export kept in the file),
+    /// created from the file's columns when missing
+    /// ([`strata::parquet::Source::plan_over`]), the rows checked before any
+    /// is written and then written through the writer (or routed to the
+    /// shards) [`IMPORT_OPS`] a request. With `plan_only`, returns the plan
+    /// ([`strata::parquet::Plan::to_json`]) and writes nothing; otherwise
+    /// what was written ([`strata::parquet::Imported::to_json`]). Rows need
+    /// a write key, and an import that creates the table an admin key.
+    #[cfg(feature = "parquet")]
+    pub async fn import_parquet(self: &Arc<Self>, who: &Principal, body: axum::body::Bytes, opts: strata::parquet::ImportOptions, plan_only: bool, timeout_ms: u64) -> Result<Json, ApiError> {
+        who.may(Scope::Write, "an import")?;
+        let catalog = self.catalog();
+        let checked = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+            let dir = tempfile::tempdir().map_err(ApiError::internal)?;
+            let path = dir.path().join("upload.parquet");
+            std::fs::write(&path, &body).map_err(ApiError::internal)?;
+            let shown = path.display().to_string();
+            let hide = |e: strata::Error| ApiError::bad(e.to_string().replace(&shown, "the uploaded file").replace("upload.parquet: ", ""));
+            let src = strata::parquet::Source::open(&path).map_err(hide)?;
+            if opts.table.is_none() && opts.schema.is_none() && src.kept_table().is_none() {
+                return Err(ApiError::bad("name the table the rows go to (?table=): the file keeps none"));
+            }
+            let plan = src.plan_over(&catalog, &opts).map_err(hide)?;
+            if !plan_only {
+                src.documents(&plan, |docs| {
+                    for d in docs {
+                        d?;
+                    }
+                    Ok(())
+                })
+                .map_err(hide)?;
+            }
+            Ok((dir, src, plan))
+        })
+        .await
+        .map_err(ApiError::internal)??;
+        let (dir, src, plan) = checked;
+        if plan_only {
+            return Ok(plan.to_json());
+        }
+        if !plan.exists {
+            who.may(Scope::Admin, &format!("an import that creates a table ({})", plan.schema.table))?;
+            keys::note(format!("Parquet import created table {}", plan.schema.table));
+            self.create_table(plan.schema.clone(), timeout_ms).await?;
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<strata::Result<Vec<Json>>>(1);
+        let p = plan.clone();
+        let reader = tokio::task::spawn_blocking(move || {
+            let _dir = dir;
+            let op = if p.schema.primary_key.is_some() { "upsert" } else { "insert" };
+            src.documents(&p, |docs| loop {
+                let chunk: strata::Result<Vec<Json>> = (&mut *docs).take(IMPORT_OPS).map(|d| d.map(|d| json!({"op": op, "table": p.schema.table, "doc": js::document_json(&p.schema, &d)}))).collect();
+                let last = chunk.as_ref().map_or(true, |c| c.len() < IMPORT_OPS);
+                if tx.blocking_send(chunk).is_err() {
+                    return Err(strata::Error::Query("stopped".into()));
+                }
+                if last {
+                    return Ok(());
+                }
+            })
+            .map(|((), nonfinite)| nonfinite)
+        });
+        let mut out = strata::parquet::Imported { table: plan.schema.table.clone(), files: plan.files, created: !plan.exists, skipped: plan.skipped.clone(), notes: plan.notes.clone(), ..Default::default() };
+        while let Some(ops) = rx.recv().await {
+            let ops = ops?;
+            if !ops.is_empty() {
+                out.rows += self.write_ops(ops, None).await?.rows;
+            }
+        }
+        if let Ok(Ok(nonfinite)) = reader.await {
+            out.notes.extend(strata::parquet::nonfinite_notes(&plan.schema, &nonfinite));
+        }
+        Ok(out.to_json())
+    }
+
+    /// Writes one table (the server's only one, or `table`) to a Parquet
+    /// file, from one snapshot ([`strata::parquet::export`]), as
+    /// [`Self::export_sqlite`] writes a SQLite file.
+    #[cfg(feature = "parquet")]
+    pub async fn export_parquet(self: &Arc<Self>, table: Option<String>, meta: bool) -> Result<(tempfile::TempDir, PathBuf, strata::parquet::Exported), ApiError> {
+        let Backend::Local(db) = &self.backend else {
+            return Err(ApiError::bad("a coordinator holds no rows: export from each shard's server, or with strata-server export"));
+        };
+        let db = db.clone();
+        tokio::task::spawn_blocking(move || {
+            let table = match table {
+                Some(t) => t,
+                None => {
+                    let all = db.catalog();
+                    match all.as_slice() {
+                        [one] => one.table.clone(),
+                        _ => return Err(ApiError::bad(format!("a Parquet file holds one table: name it (?tables=), one of {}", all.iter().map(|s| s.table.as_str()).collect::<Vec<_>>().join(", ")))),
+                    }
+                }
+            };
+            let dir = tempfile::tempdir().map_err(ApiError::internal)?;
+            let path = dir.path().join("export.parquet");
+            let r = strata::parquet::export(&db, &path, &strata::parquet::ExportOptions { tables: vec![table], meta })?;
+            Ok((dir, path, r))
+        })
+        .await
+        .map_err(ApiError::internal)?
     }
 
     /// Creates a table, as `CREATE TABLE` does ([`Self::ddl`]): on a local
@@ -3120,6 +3301,12 @@ pub enum SqlAnswer {
     Written { w: Written, took_ms: f64 },
 }
 
+/// The term of the primary that took a write ([`Service::admit_write`]),
+/// which answers it once its copies hold it ([`Service::replicated`]):
+/// `None` on a server of its own.
+#[derive(Clone, Copy, Debug)]
+struct Admitted(Option<u64>);
+
 /// What a write did: the rows it wrote and, in a database that numbers
 /// its writes (`--seq-no`), its transaction's sequence number. Through a
 /// coordinator, whose shards number their own writes, each shard's
@@ -3243,9 +3430,13 @@ fn save_slots(path: &Path, map: &SlotMap, shard: usize, since: u64) -> std::io::
 }
 
 /// Writes `j` to `path` and syncs it, through a new file renamed over the
-/// old one, so that a crash leaves one or the other.
+/// old one, so that a crash leaves one or the other. One at a time: two at
+/// once would write the same new file (a primary's vote kept as a call of
+/// the new primary fences it), and leave it torn or gone.
 pub(crate) fn save_json(path: &Path, j: &Json) -> std::io::Result<()> {
     use std::io::Write as _;
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let body = serde_json::to_vec_pretty(j).map_err(std::io::Error::other)?;
@@ -3851,6 +4042,27 @@ fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A primary fenced by a call of the new primary as it kept its vote
+    // for it wrote its replication file twice at once, through one new
+    // file: one rename failed (no such file), and the file was left with
+    // the end of the longer write after the shorter, which no later step
+    // down or start could read.
+    #[test]
+    fn json_saved_at_once_by_two_threads_is_one_or_the_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kept.json");
+        let bodies: Vec<Json> = (0..8).map(|i| json!({"i": i, "pad": "x".repeat(1 + i * 300)})).collect();
+        for _ in 0..50 {
+            std::thread::scope(|s| {
+                for b in &bodies {
+                    s.spawn(|| save_json(&path, b).unwrap());
+                }
+            });
+            let j: Json = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert!(bodies.contains(&j), "{j}");
+        }
+    }
 
     // OPS-6: a panic in the writer thread ended it, and every later write
     // failed with health still "ok". The writer now catches it; the

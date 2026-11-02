@@ -1,0 +1,17 @@
+{
+  "batch": 500,
+  "clients": 4,
+  "collection": "nq-1000k",
+  "docs": 1000000,
+  "engine": "os",
+  "index_bytes": 2841684107,
+  "indexed_docs": 1000000,
+  "ingest_s": 423.814875652,
+  "json_bytes": 5887412956,
+  "merge_s": 360.180090414,
+  "refresh_s": 1.456446876,
+  "searchable_docs": 1000000,
+  "segments": 2,
+  "setup_s": 0.251411333,
+  "total_s": 785.455389067
+}

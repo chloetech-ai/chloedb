@@ -276,7 +276,8 @@ jobs:
   # operators, window functions on both engines against SQLite's answers,
   # the compound-query suites again with DataFusion as the engine
   # (STRATA_ENGINE=datafusion: a plan it does not lower runs on the
-  # operators), and clippy over the feature's code.
+  # operators), Parquet files in and out (feature parquet, on DataFusion's
+  # Arrow) with s3:// URLs (feature s3), and clippy over the features' code.
   datafusion:
     name: DataFusion engine (feature datafusion)
     needs: changes
@@ -301,7 +302,10 @@ jobs:
           cargo test --profile ci --features datafusion --test datafusion_engine
           cargo test --profile ci --features datafusion,sqlite --test window_functions --test set_operations
           STRATA_ENGINE=datafusion cargo test --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
-          cargo clippy --profile ci --features datafusion --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+          # Parquet files in and out, and s3:// URLs (strata::parquet, strata::objects)
+          cargo test --profile ci --features datafusion,parquet,s3 --test parquet
+          cargo test --profile ci --features datafusion,parquet,s3 --lib -- parquet:: objects:: arrow_rows::
+          cargo clippy --profile ci --features datafusion,parquet,s3 --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   # Power losses, full disks and failing syncs at every write of a storage
   # workload (storage::io, tests/storage_faults.rs). A job of its own: after
@@ -543,8 +547,9 @@ jobs:
           python -m venv .venv
           . .venv/bin/activate
           pip install maturin pytest numpy confluent-kafka
-          # Database.query_arrow's tests (tests/test_arrow.py)
-          pip install pyarrow polars pandas
+          # Database.query_arrow's and the Parquet tests (tests/test_arrow.py,
+          # tests/test_parquet.py), the S3 ones against moto's local server
+          pip install pyarrow polars pandas "moto[server]" boto3
           # strata.train.sequence's test: CPU PyTorch (PyPI's macOS wheel is one)
           if [ "$RUNNER_OS" = Linux ]; then pip install torch --index-url https://download.pytorch.org/whl/cpu; else pip install torch; fi
           # The ci profile, as the crates' tests have: release's link-time

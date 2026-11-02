@@ -172,7 +172,7 @@ pub async fn run(svc: &Arc<Service>, req: JudgeReq) -> Result<Json, ApiError> {
         text.insert(value_text(k), passage(&fields, row));
     }
 
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(120)).build().map_err(ApiError::internal)?;
+    let client = crate::http_client().timeout(Duration::from_secs(120)).build().map_err(ApiError::internal)?;
     let t0 = Instant::now();
     // Each request owns what it sends: a future that borrows across the
     // stream is not `Send` for every lifetime, as the router needs.

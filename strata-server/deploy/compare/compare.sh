@@ -64,12 +64,20 @@ render() {
     sed -e "s/__I__/$2/g" -e "s/__NODE__/$3/g" -e "s/__CPU__/$4/g" -e "s/__MEM__/$5/g" -e "s|__ZK__|${6:-}|g" -e "s|__ROLE__|${6:-}|g" -e "s|__COLL__|$COLLECTION|g" "$HERE/$1"
 }
 
+# Strata's token: random, made once per cluster and kept in the secret
+# strata-token, which its pods and the client read (nothing fixed in the repo).
+token_secret() {
+    $K get secret strata-token >/dev/null 2>&1 ||
+        $K create secret generic strata-token --from-literal=token="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" >/dev/null
+}
+
 # job NAME NODE CPU MEM ARGS...: engine-compare as a Job on NODE (CPU and
 # MEM empty: no limits), following its log until it ends.
 job() {
     local name=$1 node=$2 cpu=$3 mem=$4
     shift 4
     local args res=""
+    token_secret
     args=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" --collection "$COLLECTION")
     [ -n "$cpu" ] && res="resources: {requests: {cpu: $cpu, memory: $mem}, limits: {cpu: $cpu, memory: $mem}}"
     $K delete job "$name" --ignore-not-found >/dev/null
@@ -93,6 +101,7 @@ spec:
           $res
           env:
             - {name: STRATA_DATA, value: /beir}
+            - {name: STRATA_TOKEN, valueFrom: {secretKeyRef: {name: strata-token, key: token, optional: true}}}
           volumeMounts:
             - {name: beir, mountPath: /beir, readOnly: true}
             - {name: data, mountPath: /data}
@@ -189,6 +198,7 @@ up)
     fi
     case $1 in
     strata)
+        token_secret
         render strata.yaml 0 "${NODES[0]}" "$SHARD_CPU" "$SHARD_MEM" | $K apply -f -
         render strata.yaml 1 "${NODES[1]}" "$SHARD_CPU" "$SHARD_MEM" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
         render strata-coordinator.yaml c "$CLIENT_NODE" "$COORD_CPU" "$COORD_MEM" | $K apply -f -
@@ -267,7 +277,8 @@ run)
         prev=$a
     done
     cpu "$e" before "$label"
-    job "run-$label" "$CLIENT_NODE" "" "" run --engine "$e" --url "$(urls "$e")" --out "$OUT" "$@"
+    # A Job is named in lowercase letters, digits and -: a label such as solr+sql runs as run-solr-sql.
+    job "run-${label//+/-}" "$CLIENT_NODE" "" "" run --engine "$e" --url "$(urls "$e")" --out "$OUT" "$@"
     cpu "$e" after "$label"
     ;;
 writes)

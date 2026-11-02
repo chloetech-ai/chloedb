@@ -48,7 +48,7 @@ async fn queries_by_image_over_http() {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", l.local_addr().unwrap());
     tokio::spawn(server::serve_http(Arc::new(svc), l, Access::default()));
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
 
     let colours = [("red", [250, 10, 10]), ("green", [10, 250, 10]), ("blue", [10, 10, 250])];
     let ops: Vec<Json> = colours.iter().map(|(id, rgb)| json!({"op": "insert", "doc": {"id": id, "title": format!("a {id} square"), "image": {"uri": format!("{id}.png"), "data": png(*rgb)}}})).collect();
@@ -97,7 +97,7 @@ async fn derived_text_over_http() {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", l.local_addr().unwrap());
     tokio::spawn(server::serve_http(Arc::new(svc), l, Access::default()));
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
 
     let ops = vec![
         json!({"op": "insert", "doc": {"id": "r", "image": {"uri": "r.png", "data": png([250, 10, 10])}}}),

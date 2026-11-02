@@ -72,7 +72,7 @@ impl Kube {
             None if o.api.is_none() => Some(std::fs::read(format!("{SA}/ca.crt")).map_err(|e| format!("{SA}/ca.crt: {e}"))?),
             None => None,
         };
-        let mut b = reqwest::Client::builder().timeout(Duration::from_secs(30));
+        let mut b = crate::http_client().timeout(Duration::from_secs(30));
         if let Some(pem) = ca {
             for c in reqwest::Certificate::from_pem_bundle(&pem).map_err(|e| format!("the API server's CA: {e}"))? {
                 b = b.add_root_certificate(c);
@@ -247,6 +247,9 @@ impl Cluster {
             json!({"name": "STRATA_FAILOVER_AFTER_MS", "value": s.failover_after_ms.to_string()}),
             json!({"name": "STRATA_WRITE_ACKS", "value": s.write_acks}),
             json!({"name": "STRATA_ARGS", "value": shell_words(&s.args)}),
+            // Told to stop, a copy serves on a while before it stops
+            // taking connections (`--drain-ms`; older servers ignore it).
+            json!({"name": "STRATA_DRAIN_MS", "value": DRAIN_MS.to_string()}),
         ];
         if let (Some(n), Some((i, of))) = (s.demo, demo) {
             env.push(json!({"name": "STRATA_DEMO", "value": n.to_string()}));
@@ -261,6 +264,8 @@ impl Cluster {
             "ports": [{"name": "http", "containerPort": 7700}, {"name": "grpc", "containerPort": 7701}],
             "readinessProbe": {"httpGet": {"path": "/readyz", "port": 7700}, "periodSeconds": 2, "failureThreshold": 3},
             "livenessProbe": {"httpGet": {"path": "/livez", "port": 7700}, "periodSeconds": 10, "failureThreshold": 6, "initialDelaySeconds": 10},
+            // A server that exits says why in its pod's status.
+            "terminationMessagePolicy": "FallbackToLogsOnError",
             "volumeMounts": [{"name": "data", "mountPath": "/data"}, {"name": "schema", "mountPath": "/etc/strata"}],
         });
         if let Some(p) = &s.image_pull_policy {
@@ -314,11 +319,13 @@ impl Cluster {
         args.extend(s.coordinator_args.iter().cloned());
         let mut env = self.coordinator_token_env();
         env.push(json!({"name": "STRATA_KUBE_CLUSTER", "value": format!("{}/{}", self.ns, self.name)}));
+        env.push(json!({"name": "STRATA_DRAIN_MS", "value": DRAIN_MS.to_string()}));
         let mut container = json!({
             "name": "coordinator", "image": s.image, "args": args, "env": env,
             "ports": [{"name": "http", "containerPort": 7700}],
-            "readinessProbe": {"httpGet": {"path": "/readyz", "port": 7700}, "periodSeconds": 2},
+            "readinessProbe": {"httpGet": {"path": "/readyz", "port": 7700}, "periodSeconds": 1, "failureThreshold": 2},
             "livenessProbe": {"httpGet": {"path": "/livez", "port": 7700}, "periodSeconds": 10, "failureThreshold": 6},
+            "terminationMessagePolicy": "FallbackToLogsOnError",
         });
         if let Some(p) = &s.image_pull_policy {
             container["imagePullPolicy"] = json!(p);
@@ -328,8 +335,89 @@ impl Cluster {
         }
         json!({
             "apiVersion": "apps/v1", "kind": "Deployment", "metadata": self.meta(&format!("{}-coordinator", self.name), labels.clone()),
-            "spec": {"replicas": replicas, "selector": {"matchLabels": labels}, "template": {"metadata": {"labels": labels, "annotations": {CONFIG: s.coordinator_config()}}, "spec": {"serviceAccountName": self.coordinator_account(), "containers": [container]}}},
+            "spec": {
+                "replicas": replicas,
+                "selector": {"matchLabels": labels},
+                // A new coordinator is ready before an old one stops, so
+                // that the Service always has one: none is down while they
+                // restart, even when there is one.
+                "strategy": {"type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1}},
+                "minReadySeconds": 2,
+                "template": {
+                    "metadata": {"labels": labels, "annotations": {CONFIG: s.coordinator_config()}},
+                    "spec": {"serviceAccountName": self.coordinator_account(), "terminationGracePeriodSeconds": 30, "containers": [container]},
+                },
+            },
         })
+    }
+
+    /// The pre-flight of `image`: a pod on each of `nodes` that runs
+    /// `strata-server --help` in it and then waits, so that the image is
+    /// pulled there and is known to run there, before any server restarts
+    /// with it ([`super::Platform::preflight`]).
+    pub fn preflight_deployment(&self, image: &str, nodes: &[String]) -> Json {
+        let mut labels = self.labels();
+        labels["app.kubernetes.io/component"] = json!("preflight");
+        let mut container = json!({
+            "name": "preflight", "image": image,
+            "command": ["sh", "-c", "strata-server --help > /dev/null && echo 'strata-server runs here' && exec sleep 86400"],
+            "resources": {"requests": {"cpu": "1m", "memory": "8Mi"}, "limits": {"memory": "128Mi"}},
+            "terminationMessagePolicy": "FallbackToLogsOnError",
+        });
+        if let Some(p) = &self.spec.image_pull_policy {
+            container["imagePullPolicy"] = json!(p);
+        }
+        json!({
+            "apiVersion": "apps/v1", "kind": "Deployment", "metadata": self.meta(&self.preflight_name(), labels.clone()),
+            "spec": {
+                "replicas": nodes.len(),
+                "selector": {"matchLabels": labels},
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": {
+                        "automountServiceAccountToken": false,
+                        "terminationGracePeriodSeconds": 0,
+                        // One on each node that runs copies.
+                        "affinity": {
+                            "nodeAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": {"nodeSelectorTerms": [{"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In", "values": nodes}]}]}},
+                            "podAntiAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [{"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": labels}}]},
+                        },
+                        "containers": [container],
+                    },
+                },
+            },
+        })
+    }
+
+    fn preflight_name(&self) -> String {
+        format!("{}-preflight", self.name)
+    }
+
+    fn preflight_path(&self) -> String {
+        format!("{}/{}", ns_path(&self.ns, "apps/v1", "deployments"), self.preflight_name())
+    }
+
+    /// The cluster's pods: the copies' and the coordinators'.
+    async fn pods(&self) -> Result<Vec<Json>, String> {
+        let sel = format!("app.kubernetes.io/instance={}", self.name);
+        let pods = self.kube.list(&ns_path(&self.ns, "v1", "pods"), &sel).await?;
+        Ok(pods.into_iter().filter(|p| matches!(p["metadata"]["labels"]["app.kubernetes.io/component"].as_str(), Some("shard" | "coordinator"))).collect())
+    }
+
+    /// The digests the servers' pods run (their containers' `imageID`),
+    /// each with how many run it.
+    pub async fn running_images(&self) -> Result<Vec<super::upgrade::Running>, String> {
+        let mut out: Vec<super::upgrade::Running> = Vec::new();
+        for pod in self.pods().await? {
+            let Some(id) = pod["status"]["containerStatuses"][0]["imageID"].as_str() else { continue };
+            let Some(d) = id.rsplit_once('@').map(|(_, d)| d.to_string()).filter(|d| d.starts_with("sha256:")) else { continue };
+            match out.iter_mut().find(|r| r.digest == d) {
+                Some(r) => r.servers += 1,
+                None => out.push(super::upgrade::Running { digest: d, servers: 1 }),
+            }
+        }
+        out.sort_by(|a, b| b.servers.cmp(&a.servers));
+        Ok(out)
     }
 
     fn sets_path(&self) -> String {
@@ -375,6 +463,45 @@ eval "exec strata-server \"\$@\" $STRATA_ARGS"
 /// The annotation of a pod template, and so of its pods, that holds the
 /// settings they start with ([`Spec::server_config`]).
 const CONFIG: &str = "strata.chloetech.ai/config";
+
+/// How long a server serves on once its pod is told to stop
+/// (`STRATA_DRAIN_MS`): long enough for its Service's endpoints, and the
+/// coordinators, to stop sending to it, well within the grace period.
+pub const DRAIN_MS: u64 = 5_000;
+
+/// Why a pod's server cannot run, from its status, if it cannot: an image
+/// that cannot be pulled, a container that cannot be made, a server that
+/// exits again and again, or that has exited twice already.
+/// Whether a pod is ready: not one being deleted, which stays ready while
+/// its server drains (until its readiness probe next fails), and is not
+/// back until its new pod is.
+pub fn pod_ready(pod: &Json) -> bool {
+    pod["metadata"]["deletionTimestamp"].is_null() && pod["status"]["conditions"].as_array().is_some_and(|c| c.iter().any(|c| c["type"] == "Ready" && c["status"] == "True"))
+}
+
+pub fn pod_trouble(pod: &Json) -> Option<String> {
+    let c = &pod["status"]["containerStatuses"][0];
+    let last = &c["lastState"]["terminated"];
+    let exited = || {
+        let code = last["exitCode"].as_i64()?;
+        let said = last["message"].as_str().or_else(|| last["reason"].as_str()).unwrap_or_default();
+        let tail: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
+        let tail = tail[tail.len().saturating_sub(3)..].join(" / ");
+        Some(format!("it exited with code {code}{}", if tail.is_empty() { String::new() } else { format!(": {tail}") }))
+    };
+    let waiting = &c["state"]["waiting"];
+    let reason = waiting["reason"].as_str().unwrap_or_default();
+    let message = waiting["message"].as_str().unwrap_or_default();
+    let restarts = c["restartCount"].as_u64().unwrap_or(0);
+    match reason {
+        "ImagePullBackOff" | "InvalidImageName" | "ErrImageNeverPull" | "CreateContainerConfigError" | "CreateContainerError" | "RunContainerError" => {
+            Some(format!("{reason}{}", if message.is_empty() { String::new() } else { format!(": {message}") }))
+        }
+        "CrashLoopBackOff" => Some(format!("CrashLoopBackOff ({restarts} restarts){}", exited().map(|e| format!(", {e}")).unwrap_or_default())),
+        _ if restarts >= 2 => Some(format!("its server restarted {restarts} times{}", exited().map(|e| format!(", {e}")).unwrap_or_default())),
+        _ => None,
+    }
+}
 
 /// The demo shard (`i/n`) a set's live template loads, if it does.
 fn demo_of(set: &Json) -> Option<(usize, usize)> {
@@ -427,7 +554,7 @@ impl Platform for Cluster {
             let prefix = format!("{}-", self.set_name(id));
             let ready = pods
                 .iter()
-                .filter(|p| p["status"]["conditions"].as_array().is_some_and(|c| c.iter().any(|c| c["type"] == "Ready" && c["status"] == "True")))
+                .filter(|p| pod_ready(p))
                 .filter_map(|p| p["metadata"]["name"].as_str()?.strip_prefix(&prefix)?.parse::<usize>().ok())
                 .collect();
             sets.push(Set { id, replicas: s["spec"]["replicas"].as_u64().unwrap_or(0) as usize, ready });
@@ -534,6 +661,100 @@ impl Platform for Cluster {
         format!("http://{}-{ordinal}.{}.{}.svc:7701", self.set_name(id), self.servers_service(), self.ns)
     }
 
+    async fn coordinators_rolled(&self) -> Result<super::Rolled, String> {
+        let Some(d) = self.kube.get(&self.coordinator_path()).await? else { return Ok(super::Rolled { done: true, text: "no coordinators".into() }) };
+        let st = &d["status"];
+        let n = |j: &Json| j.as_u64().unwrap_or(0);
+        let (want, updated, ready, all) = (n(&d["spec"]["replicas"]), n(&st["updatedReplicas"]), n(&st["readyReplicas"]), n(&st["replicas"]));
+        let seen = n(&st["observedGeneration"]) >= n(&d["metadata"]["generation"]);
+        let done = seen && updated == want && ready >= want && all == want && n(&st["unavailableReplicas"]) == 0;
+        let old = all.saturating_sub(updated);
+        let text = format!("{updated} of {want} restarted, {ready} ready{}", if old > 0 { format!(", {old} older still serving") } else { String::new() });
+        Ok(super::Rolled { done, text })
+    }
+
+    async fn trouble(&self, spec: &Spec) -> Result<Vec<super::Trouble>, String> {
+        let (server, coordinator) = (spec.server_config(), spec.coordinator_config());
+        let label = format!("{GROUP}/set");
+        let mut out = Vec::new();
+        for pod in self.pods().await? {
+            if !pod["metadata"]["deletionTimestamp"].is_null() {
+                continue;
+            }
+            let Some(text) = pod_trouble(&pod) else { continue };
+            let name = pod["metadata"]["name"].as_str().unwrap_or_default().to_string();
+            let config = pod["metadata"]["annotations"][CONFIG].as_str().unwrap_or_default();
+            let copy = pod["metadata"]["labels"][&label].as_str().and_then(|v| v.parse::<u32>().ok()).and_then(|id| {
+                let k = name.strip_prefix(&format!("{}-", self.set_name(id)))?.parse::<usize>().ok()?;
+                Some((id, k))
+            });
+            let fresh = if copy.is_some() { config == server } else { config == coordinator };
+            out.push(super::Trouble { copy, who: format!("pod {name}"), fresh, text });
+        }
+        Ok(out)
+    }
+
+    async fn preflight(&self, image: &str) -> Result<super::Check, String> {
+        use super::Check;
+        let pods = self.pods().await?;
+        let runs = |p: &Json| p["spec"]["containers"][0]["image"] == image;
+        if !pods.is_empty() && pods.iter().all(runs) {
+            return Ok(Check::Done("every server runs it already".into()));
+        }
+        let mut nodes: Vec<String> = pods.iter().filter(|p| p["metadata"]["labels"]["app.kubernetes.io/component"] == "shard").filter_map(|p| p["spec"]["nodeName"].as_str().map(str::to_string)).collect();
+        nodes.sort();
+        nodes.dedup();
+        if nodes.is_empty() {
+            return Ok(Check::Done("no copy runs on a node yet".into()));
+        }
+        let made = self.kube.get(&self.preflight_path()).await?;
+        let template = made.as_ref().map(|d| (&d["spec"]["template"]["spec"]["containers"][0]["image"], d["spec"]["replicas"].as_u64().unwrap_or(0)));
+        if template.is_none_or(|(i, n)| *i != image || n != nodes.len() as u64) {
+            self.kube.apply(&self.preflight_path(), &self.preflight_deployment(image, &nodes)).await?;
+            return Ok(Check::Waiting(format!("starting it on {} node{}", nodes.len(), if nodes.len() == 1 { "" } else { "s" })));
+        }
+        let sel = format!("app.kubernetes.io/instance={},app.kubernetes.io/component=preflight", self.name);
+        let tried: Vec<Json> = self.kube.list(&ns_path(&self.ns, "v1", "pods"), &sel).await?.into_iter().filter(|p| p["spec"]["containers"][0]["image"] == image && p["metadata"]["deletionTimestamp"].is_null()).collect();
+        let (mut ran, mut no_room, mut pulling) = (Vec::new(), Vec::new(), 0);
+        for p in &tried {
+            let node = p["spec"]["nodeName"].as_str().unwrap_or("a node").to_string();
+            if let Some(t) = pod_trouble(p) {
+                return Ok(Check::Failed(format!("on {node}: {t}")));
+            }
+            let c = &p["status"]["containerStatuses"][0];
+            let last = &c["lastState"]["terminated"];
+            if last["exitCode"].as_i64().is_some_and(|c| c != 0) {
+                return Ok(Check::Failed(format!("on {node}: strata-server --help exited with code {}: {}", last["exitCode"], last["message"].as_str().unwrap_or_default().trim())));
+            }
+            let unschedulable = p["status"]["conditions"].as_array().is_some_and(|cs| cs.iter().any(|c| c["type"] == "PodScheduled" && c["status"] == "False" && c["reason"] == "Unschedulable"));
+            if c["state"]["running"].is_object() {
+                ran.push(node);
+            } else if unschedulable {
+                no_room.push(p["status"]["conditions"].as_array().and_then(|cs| cs.iter().find(|c| c["type"] == "PodScheduled")).and_then(|c| c["message"].as_str()).unwrap_or("no room").to_string());
+            } else {
+                pulling += 1;
+            }
+        }
+        if ran.len() + no_room.len() < nodes.len() || pulling > 0 {
+            return Ok(Check::Waiting(format!("running on {} of {} nodes, pulling on {pulling}", ran.len(), nodes.len())));
+        }
+        let mut found = format!("it runs on {} of {} nodes", ran.len(), nodes.len());
+        if let Some(why) = no_room.first() {
+            found += &format!(" ({} had no room to try it: {why}; their copies pull it as they restart)", no_room.len());
+        }
+        Ok(Check::Done(found))
+    }
+
+    async fn no_room(&self, id: u32, k: usize) -> Result<Option<String>, String> {
+        let Some(pod) = self.kube.get(&format!("{}/{}-{k}", ns_path(&self.ns, "v1", "pods"), self.set_name(id))).await? else { return Ok(None) };
+        let scheduled = pod["status"]["conditions"].as_array().and_then(|cs| cs.iter().find(|c| c["type"] == "PodScheduled").cloned());
+        Ok(scheduled.filter(|c| c["status"] == "False" && c["reason"] == "Unschedulable").map(|c| c["message"].as_str().unwrap_or("no node has room").to_string()))
+    }
+
+    async fn end_preflight(&self) -> Result<(), String> {
+        self.kube.delete(&self.preflight_path()).await
+    }
+
     fn set_of(&self, url: &str) -> Option<(u32, usize)> {
         let host = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://"))?;
         let (pod, rest) = host.split_once('.')?;
@@ -615,25 +836,23 @@ impl Link {
     }
 
     /// The spec patch that takes the cluster back to `version` of its
-    /// `status.history`, its `rollout` kept as it is.
+    /// `status.history`, its `rollout`, `autoscale` and `upgrade` kept as
+    /// they are.
     pub fn rollback(now: &Json, version: u64) -> Result<Json, String> {
         let history = now["status"]["history"].as_array().map(Vec::as_slice).unwrap_or_default();
         let then = history.iter().find(|v| v["version"] == version).ok_or_else(|| {
             let kept: Vec<String> = history.iter().filter_map(|v| v["version"].as_u64()).map(|v| v.to_string()).collect();
             format!("no version {version} in the cluster's history (it keeps {})", if kept.is_empty() { "none yet".into() } else { kept.join(", ") })
         })?;
-        let mut from = now["spec"].clone();
-        if let Some(o) = from.as_object_mut() {
-            o.remove("rollout");
-        }
-        Ok(super::merge_diff(&from, &then["spec"]))
+        Ok(super::back_to(&now["spec"], &then["spec"]))
     }
 
     /// Lifts the hold a gate put on the change: the operator goes on, and
     /// its gates count again from now.
     pub async fn resume(&self) -> Result<Json, String> {
         let now = self.get().await?;
-        let at = now["status"]["rollout"]["held"]["atMs"].as_u64().ok_or("no gate holds the change: nothing to resume (a pause is lifted with rollout.paused: false)")?;
+        let r = &now["status"]["rollout"];
+        let at = r["held"]["atMs"].as_u64().or_else(|| r["failed"]["atMs"].as_u64()).ok_or("no gate or failed check holds the change: nothing to resume (a pause is lifted with rollout.paused: false)")?;
         self.kube.merge(&self.path(), &json!({"metadata": {"annotations": {RESUME: at.to_string()}}})).await?;
         self.get().await
     }
@@ -662,6 +881,10 @@ pub const CHANGED_BY: &str = "strata.chloetech.ai/changed-by";
 pub const DISMISS: &str = "strata.chloetech.ai/autoscale-dismiss";
 /// Who the autoscaler is in [`CHANGED_BY`].
 pub const AUTOSCALER: &str = "autoscaler";
+/// Who the upgrader is in [`CHANGED_BY`].
+pub const UPGRADER: &str = "upgrader";
+/// The operator itself, rolling a failed version back.
+pub const OPERATOR: &str = "operator";
 
 /// Runs the operator: installs the CRD (with `install_crd`), then looks
 /// at every `StrataCluster` every `every`, takes each one step toward its
@@ -711,8 +934,9 @@ pub async fn once(kube: &Kube, c: &Json) -> Outcome {
             }
         }
     };
+    let mut out = out;
     let now = super::now_ms();
-    let history = match &spec {
+    let mut history = match &spec {
         Ok(spec) => {
             // Who changed it, if the change came through a coordinator.
             let by = note(CHANGED_BY).and_then(|b| b.rsplit_once(' ')).filter(|(_, v)| *v == spec.version()).map(|(who, _)| who);
@@ -720,14 +944,40 @@ pub async fn once(kube: &Kube, c: &Json) -> Outcome {
         }
         Err(_) => c["status"]["history"].clone(),
     };
+    // A version that failed a check goes back to the last one that ran
+    // everywhere, and its image is not rolled out again by the upgrader.
+    let mut rejected = None;
+    if let (Ok(spec), Some(f)) = (&spec, out.rollout.failed.clone()) {
+        if let Some(last) = history.as_array_mut().and_then(|h| h.last_mut()).filter(|v| v["hash"] == spec.version().as_str()) {
+            last["failed"] = json!({"atMs": f.at_ms, "step": f.step, "text": f.text});
+        }
+        match rolled_back(kube, c, spec, &history, &f, out.rollout.ungated).await {
+            Ok(said) => {
+                // The image of a version rolled back, if it was another.
+                let target = super::rollback_target(&history, spec, out.rollout.ungated).and_then(|t| t["spec"]["image"].as_str().map(str::to_string));
+                if let Some(d) = super::upgrade::digest_of(&spec.image).filter(|_| said.starts_with("rolling back") && target.as_deref() != Some(spec.image.as_str())) {
+                    rejected = Some((d, f.text.clone()));
+                }
+                out.message = said;
+            }
+            Err(e) => out.message = format!("the version failed: {}; could not roll it back: {e}", f.text),
+        }
+    }
     let autoscale = match &spec {
         Ok(spec) => autoscaled(kube, c, spec, &out, &history, now).await,
         Err(_) => c["status"]["autoscale"].clone(),
     };
+    let upgrade = match &spec {
+        Ok(spec) => {
+            let cluster = Cluster { kube: kube.clone(), ns: ns.clone(), name: name.clone(), uid: meta["uid"].as_str().unwrap_or_default().to_string(), spec: spec.clone() };
+            upgraded(&cluster, c, &out, rejected, now).await
+        }
+        Err(_) => c["status"]["upgrade"].clone(),
+    };
     let status = json!({
         "phase": out.phase, "message": out.message, "shards": out.shards, "observedGeneration": meta["generation"],
         "rollout": out.rollout, "history": history, "log": super::logged(&c["status"]["log"], out.phase, &out.message, now),
-        "autoscale": autoscale,
+        "autoscale": autoscale, "upgrade": upgrade,
     });
     // The autoscaler's readings alone rewrite the status once a minute.
     let fresh = c["status"]["autoscale"]["atMs"].as_u64().is_some_and(|t| now.saturating_sub(t) < 60_000);
@@ -750,6 +1000,95 @@ pub async fn once(kube: &Kube, c: &Json) -> Outcome {
         }
     }
     out
+}
+
+/// What becomes of a version that failed (`f`): with `onFailure:
+/// rollback`, the spec goes back to the last version that ran everywhere
+/// ([`super::rollback_target`]), marked as a rollback ([`ROLLBACK`]), which
+/// no gate holds, and as the operator's change ([`CHANGED_BY`]); a version
+/// that is a rollback itself, or one with none before it, is held. Said in
+/// words.
+async fn rolled_back(kube: &Kube, c: &Json, spec: &Spec, history: &Json, f: &super::Failed, rollback: bool) -> Result<String, String> {
+    if spec.rollout.on_failure == super::OnFailure::Hold {
+        return Ok(format!("the version failed: {}; held until it is resumed (POST /v1/admin/kube/resume) or the spec changes", f.text));
+    }
+    let Some(target) = super::rollback_target(history, spec, rollback) else {
+        let why = if rollback { "it is a rollback itself" } else { "no version before it ran everywhere" };
+        return Ok(format!("the version failed: {}; held, not rolled back ({why}): fix the spec, or resume to try again", f.text));
+    };
+    let patch = super::back_to(&c["spec"], &target["spec"]);
+    let (_, new) = super::patched(&c["spec"], &patch)?;
+    let (ns, name) = (c["metadata"]["namespace"].as_str().unwrap_or("default"), c["metadata"]["name"].as_str().unwrap_or_default());
+    let body = json!({"spec": patch, "metadata": {"annotations": {ROLLBACK: new.version(), CHANGED_BY: format!("{OPERATOR} {}", new.version())}}});
+    kube.merge(&format!("/apis/{GROUP}/{VERSION}/namespaces/{ns}/{PLURAL}/{name}"), &body).await?;
+    let n = target["version"].as_u64().unwrap_or(0);
+    tracing::warn!(cluster = %format!("{ns}/{name}"), to = n, why = %f.text, "rolling a failed version back");
+    Ok(format!("rolling back to version {n}: the version failed ({}): {}", f.step, f.text))
+}
+
+/// The upgrader's step for a cluster ([`super::upgrade`]): every
+/// `checkMinutes` it asks the registry what the followed tag names, and
+/// with `mode: on` rolls a new image out (by its digest) once the cluster
+/// is ready, noted as the upgrader's change ([`CHANGED_BY`]). `rejected`
+/// is the image of a version just rolled back. Its state
+/// (`status.upgrade`) answered.
+pub async fn upgraded(cluster: &Cluster, c: &Json, out: &Outcome, rejected: Option<(String, String)>, now: u64) -> Json {
+    use super::upgrade::{available, decide, digest_of, said, Mode, Registry, State};
+    let spec = &cluster.spec;
+    let u = &spec.upgrade;
+    let mut s: State = serde_json::from_value(c["status"]["upgrade"].clone()).unwrap_or_default();
+    if let Some((d, why)) = &rejected {
+        s.reject(d, now, why);
+    }
+    if u.mode == Mode::Off && s.rejected.is_empty() && s.latest.is_none() {
+        return Json::Null;
+    }
+    s.mode = u.mode;
+    let track = u.tracked(&spec.image);
+    if s.due(u, &track, now) {
+        let registry = Registry::new();
+        s.track = track.clone();
+        s.checked_ms = Some(now);
+        match registry.resolve(&track).await {
+            Ok(i) => {
+                if s.latest.as_ref().is_none_or(|l| l.digest != i.digest) {
+                    s.note(now, format!("{track} names {}", said(&i)));
+                }
+                s.latest = Some(i);
+                s.error = None;
+            }
+            Err(e) => s.error = Some(e),
+        }
+        s.current = match digest_of(&spec.image) {
+            Some(d) if s.current.as_ref().is_some_and(|c| c.digest == d) => s.current.clone(),
+            Some(_) => registry.resolve(&spec.image).await.ok(),
+            None => None,
+        };
+    }
+    if let Ok(r) = cluster.running_images().await {
+        s.running = r;
+    }
+    s.available = available(&s, &spec.image);
+    let ready = out.phase == super::Phase::Ready && out.rollout.failed.is_none();
+    if let Some(image) = decide(u, &s, &spec.image, ready) {
+        let made = async {
+            let patch = json!({"image": image});
+            let (_, new) = super::patched(&c["spec"], &patch)?;
+            new.check()?;
+            let body = json!({"spec": patch, "metadata": {"annotations": {CHANGED_BY: format!("{UPGRADER} {}", new.version())}}});
+            cluster.kube.merge(&format!("/apis/{GROUP}/{VERSION}/namespaces/{}/{PLURAL}/{}", cluster.ns, cluster.name), &body).await.map(drop)
+        };
+        let what = s.latest.as_ref().map(said).unwrap_or_default();
+        match made.await {
+            Ok(()) => {
+                tracing::info!(cluster = %cluster.name, image = %image, "upgrading");
+                s.note(now, format!("rolling out {what}"));
+                s.available = false;
+            }
+            Err(e) => s.note(now, format!("could not roll out {what}: {e}")),
+        }
+    }
+    serde_json::to_value(&s).unwrap_or(Json::Null)
 }
 
 /// The autoscaler's step for a cluster ([`super::autoscale::step`]): its
@@ -925,6 +1264,15 @@ mod tests {
         assert_eq!(base64_decode("c2VjcmV0LXRva2Vu").unwrap(), b"secret-token");
         assert_eq!(base64_decode("YQ==").unwrap(), b"a");
         assert_eq!(base64_decode("!!"), None);
+    }
+
+    #[test]
+    fn a_pod_being_deleted_is_not_ready() {
+        let ready = json!({"metadata": {}, "status": {"conditions": [{"type": "Ready", "status": "True"}]}});
+        let mut draining = ready.clone();
+        draining["metadata"]["deletionTimestamp"] = json!("2026-11-02T08:30:00Z");
+        let starting = json!({"metadata": {}, "status": {"conditions": [{"type": "Ready", "status": "False"}]}});
+        assert!(pod_ready(&ready) && !pod_ready(&draining) && !pod_ready(&starting));
     }
 
     /// The server script, as `sh` runs it, for the first copy of a demo

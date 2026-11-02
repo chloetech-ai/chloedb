@@ -1,0 +1,93 @@
+Name:             build-s1-qcjkx
+Namespace:        compare
+Priority:         0
+Service Account:  default
+Node:             strata-worker2/172.19.0.2
+Start Time:       Sun, 01 Nov 2026 21:37:11 -0800
+Labels:           batch.kubernetes.io/controller-uid=01c0707a-fdec-488b-8ad0-e4ccf2b12b75
+                  batch.kubernetes.io/job-name=build-s1
+                  controller-uid=01c0707a-fdec-488b-8ad0-e4ccf2b12b75
+                  job-name=build-s1
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.244.3.2
+IPs:
+  IP:           10.244.3.2
+Controlled By:  Job/build-s1
+Containers:
+  compare:
+    Container ID:  containerd://9b6db00c1ca2dd5f0c77d158a29b5c3153fc7338f01184e1efc4f4de91766715
+    Image:         strata-server:compare
+    Image ID:      docker.io/library/import-2026-11-02@sha256:558ed7893b0b5b27fdb3d8f76b47c88199cb97a642ae8bcb4d61e041afbbdeda
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      build
+      --shard
+      1
+      --of
+      2
+      --out
+      /local/nq-1000k.shard1of2.strata
+      --threads
+      3
+      --collection
+      nq-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Sun, 01 Nov 2026 21:37:12 -0800
+      Finished:     Sun, 01 Nov 2026 21:39:10 -0800
+    Ready:          False
+    Restart Count:  0
+    Limits:
+      cpu:     3
+      memory:  6Gi
+    Requests:
+      cpu:     3
+      memory:  6Gi
+    Environment:
+      STRATA_DATA:  /beir
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-fzhcp (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  Directory
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-fzhcp:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type    Reason   Age   From     Message
+  ----    ------   ----  ----     -------
+  Normal  Pulled   7m2s  kubelet  spec.containers{compare}: Container image "strata-server:compare" already present on machine and can be accessed by the pod
+  Normal  Created  7m2s  kubelet  spec.containers{compare}: Container created
+  Normal  Started  7m2s  kubelet  spec.containers{compare}: Container started

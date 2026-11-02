@@ -368,6 +368,59 @@ class Client(Search):
                 os.remove(part)
         return [t for t in (headers.get("x-strata-tables") or "").split(",") if t]
 
+    def _parquet(self, path: str | os.PathLike, query: dict) -> dict:
+        with open(os.fspath(path), "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            return self._call("POST", "/v1/import?" + urllib.parse.urlencode(query), data=f, headers={"content-length": str(size), "content-type": "application/vnd.apache.parquet"})
+
+    @staticmethod
+    def _parquet_query(table: str | None, key: str | None, **flags: bool) -> dict:
+        q: dict = {"format": "parquet"}
+        if table is not None:
+            q["table"] = table
+        if key is not None:
+            q["key"] = key
+        q.update({k: "true" if v else "false" for k, v in flags.items()})
+        return q
+
+    def import_parquet(self, path: str | os.PathLike, *, table: str | None = None, key: str | None = None, blobs_base64: bool = False) -> dict:
+        """Uploads a Parquet file (up to the server's 256 MB) and imports its
+        rows into `table` (by default, the table an export kept in the
+        file): one the server has keeps its schema and takes the columns
+        whose names match its fields, rows upserted by key; a missing one is
+        created from the file's columns and values, keyed by `key` (default:
+        a column named id; "" for none). Returns {table, rows, created,
+        skipped: {column: why}, notes, written}."""
+        return self._parquet(path, self._parquet_query(table, key, blobs_base64=blobs_base64))
+
+    def plan_parquet(self, path: str | os.PathLike, *, table: str | None = None, key: str | None = None, blobs_base64: bool = False) -> dict:
+        """What `import_parquet` would do, writing nothing: the table's
+        schema, the columns read and what is left out."""
+        return self._parquet(path, self._parquet_query(table, key, blobs_base64=blobs_base64, plan=True))
+
+    def export_parquet(self, path: str | os.PathLike, *, table: str | None = None, schemas: bool = True) -> str:
+        """Downloads one of the server's tables (`table`, which a server of
+        one table may leave out) as a new Parquet file at `path`, which must
+        not exist; the file keeps the table's Strata schema. Returns the
+        table."""
+        path = os.fspath(path)
+        q: dict = {"format": "parquet"}
+        if table is not None:
+            q["tables"] = table
+        if not schemas:
+            q["schemas"] = "false"
+        part = path + ".part"
+        try:
+            with open(part, "xb") as f:
+                headers = self._call("GET", "/v1/export?" + urllib.parse.urlencode(q), out=f)
+            if os.path.exists(path):
+                raise FileExistsError(path)
+            os.replace(part, path)
+        finally:
+            if os.path.exists(part):
+                os.remove(part)
+        return headers.get("x-strata-tables") or ""
+
     def ask(self, question: str, *, model: str | None = None, effort: str | None = None, api_key: str | None = None, max_steps: int | None = None) -> dict:
         """Asks the server's agent a question about the data: {answer,
         steps (the queries it ran), ...}. Needs an Anthropic API key, the

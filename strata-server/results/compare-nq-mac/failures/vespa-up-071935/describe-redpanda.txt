@@ -1,0 +1,76 @@
+Name:             redpanda
+Namespace:        compare
+Priority:         0
+Service Account:  default
+Node:             strata-worker3/172.19.0.5
+Start Time:       Sun, 01 Nov 2026 22:19:12 -0800
+Labels:           app=redpanda
+Annotations:      <none>
+Status:           Running
+IP:               10.244.1.6
+IPs:
+  IP:  10.244.1.6
+Containers:
+  redpanda:
+    Container ID:  containerd://0865e2246ebf0af26d0ba45ce673e3f4b1ffba3ef68d8d6bfda3a0a710c063fa
+    Image:         redpandadata/redpanda:v25.2.9
+    Image ID:      docker.io/library/import-2026-11-02@sha256:825d46baf0dce55864031ce5983d4b5be7d6d2c1695d0b3af99317b41f16be09
+    Port:          9092/TCP (kafka)
+    Host Port:     0/TCP (kafka)
+    Args:
+      redpanda
+      start
+      --mode
+      dev-container
+      --smp
+      1
+      --memory
+      768M
+      --overprovisioned
+      --kafka-addr
+      0.0.0.0:9092
+      --advertise-kafka-addr
+      redpanda.redpanda.compare.svc.cluster.local:9092
+    State:          Running
+      Started:      Sun, 01 Nov 2026 22:19:12 -0800
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     1
+      memory:  1Gi
+    Requests:
+      cpu:        1
+      memory:     1Gi
+    Readiness:    exec [rpk cluster health --exit-when-healthy] delay=0s timeout=10s period=2s successThreshold=1 failureThreshold=3
+    Environment:  <none>
+    Mounts:
+      /var/lib/redpanda/data from data (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-jhk8h (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  data:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  kube-api-access-jhk8h:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type    Reason   Age   From     Message
+  ----    ------   ----  ----     -------
+  Normal  Pulled   60m   kubelet  spec.containers{redpanda}: Container image "redpandadata/redpanda:v25.2.9" already present on machine and can be accessed by the pod
+  Normal  Created  60m   kubelet  spec.containers{redpanda}: Container created
+  Normal  Started  60m   kubelet  spec.containers{redpanda}: Container started

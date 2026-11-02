@@ -1172,6 +1172,18 @@ button.rx-node:hover { border-color: var(--accent); box-shadow: 0 0 0 3px var(--
 .ro-banner.held > .i { color: var(--warn); }
 .ro-banner.paused > .i { color: var(--muted); }
 .ro-banner.back { border-color: var(--serious); }
+.ro-banner.back.over { border-color: var(--good); }
+.ro-banner.back.over > .i { color: var(--good); }
+.ro-banner.failed { border-color: var(--crit); background: var(--crit-soft); }
+.ro-banner.failed > .i { color: var(--crit); }
+.ro-tag.bad { background: var(--crit-soft); color: var(--crit-ink); }
+.ro-failed { color: var(--crit-ink); overflow-wrap: anywhere; }
+.ro-img { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; word-break: break-all; }
+.ro-up-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); min-width: 0; }
+.ro-up-run { display: flex; flex-wrap: wrap; gap: 4px; }
+.ro-up-mode { flex-wrap: wrap; }
+.ro-up-mode > div:first-child { flex: 1 1 160px; }
+.ro-step-t .small { overflow-wrap: anywhere; }
 .ro-steps { display: flex; flex-direction: column; gap: 4px; }
 .ro-step { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; padding: 8px 10px; border-radius: var(--r-sm); border: 1px solid transparent; }
 .ro-step.now { border-color: var(--accent); background: var(--accent-soft); }
@@ -1391,3 +1403,62 @@ button.rx-node:hover { border-color: var(--accent); box-shadow: 0 0 0 3px var(--
 .as-ev { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .as-ev.caught-up, .as-ev.freeze { color: var(--text-2); }
 .as-live-log .as-ev { grid-template-columns: 78px minmax(0, 1fr); }
+
+/* Index inspector: the scope map (cluster > shards > replicas, each a
+   button), tiles, and a 12-column grid of cards that falls to one column. */
+.ix-scope { display: flex; flex-direction: column; gap: 10px; }
+.ix-cluster { border: 1.5px solid var(--line-2); border-radius: 9px; padding: 8px 12px; cursor: pointer; display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; background: var(--surface-2); }
+.ix-shards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.ix-shard { border: 1.5px solid var(--line); border-radius: 9px; padding: 8px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ix-shard-hd { cursor: pointer; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; padding: 2px 4px; border-radius: 6px; }
+.ix-reps { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.ix-n { font-variant-numeric: tabular-nums; }
+.ix-rep { border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; cursor: pointer; background: var(--surface); display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ix-rep:hover, .ix-cluster:hover, .ix-shard-hd:hover { border-color: var(--line-2); background: var(--surface-2); }
+.ix-u { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ix-rep > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ix-scope .sel, .ix-shard.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ix-scope [role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ix-bad { color: var(--crit-ink); }
+.ix-chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--surface-3); color: var(--text-2); white-space: nowrap; }
+.ix-chip.exact { background: var(--good-soft); color: var(--good-ink); }
+.ix-chip.est { background: var(--warn-soft); color: var(--text); }
+.ix-chip.prim { background: var(--accent-soft); color: var(--accent); }
+.ix-tiles { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 14px; }
+.ix-tile .val { font-size: 22px; }
+.ix-tsub { margin-top: 2px; line-height: 1.35; }
+.ix-grid { display: grid; gap: 14px; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+.ix-c12 { grid-column: span 12; } .ix-c7 { grid-column: span 7; } .ix-c6 { grid-column: span 6; } .ix-c5 { grid-column: span 5; } .ix-c4 { grid-column: span 4; }
+@media (max-width: 1100px) { .ix-c4 { grid-column: span 6; } }
+@media (max-width: 900px) { .ix-c7, .ix-c6, .ix-c5, .ix-c4 { grid-column: span 12; } }
+.ix-svg { display: block; overflow: visible; }
+.ix-svg text, .ix-ring text { fill: var(--muted); font: 11px var(--sans); }
+.ix-svg .ix-lbl, .ix-ring .ix-lbl { fill: var(--text); font-weight: 600; }
+.ix-svg text.ix-on { fill: #fff; font-weight: 650; font-size: 12px; pointer-events: none; }
+.ix-svg text.ix-on.dim { font-weight: 400; font-size: 11px; opacity: .92; }
+.ix-svg text.ix-on.ink { fill: #15181d; }
+.ix-marks { display: flex; gap: 14px; flex-wrap: wrap; justify-content: flex-end; margin-bottom: 2px; }
+.ix-marks span b { color: var(--s2); }
+.ix-svg g[tabindex]:focus-visible rect, .ix-svg rect[tabindex]:focus-visible, .ix-svg circle[tabindex]:focus-visible { outline: none; stroke: var(--text); stroke-width: 2; }
+.ix-grid-line { stroke: var(--grid); }
+.ix-bar { fill: var(--s1); }
+.ix-bar2 { fill: var(--s3); }
+.ix-mark { stroke: var(--s2); stroke-dasharray: 3 3; }
+.ix-lane { stroke: var(--line-2); }
+.ix-write { fill: var(--good); }
+.ix-behind { fill: var(--warn); }
+.ix-file { fill: var(--surface); stroke: var(--s1); stroke-width: 2; }
+.ix-empty { fill: var(--surface-3); }
+.ix-even { stroke: var(--axis); stroke-dasharray: 4 4; }
+.ix-curve { fill: none; stroke: var(--s2); stroke-width: 2.2; }
+.ix-dot { fill: var(--s2); }
+.ix-ring { display: block; max-width: 220px; margin: 0 auto; }
+.ix-ring-bg { fill: none; stroke: var(--surface-3); stroke-width: 18; }
+.ix-ring-fg { fill: none; stroke: var(--s3); stroke-width: 18; }
+.ix-ring .ix-big { font-size: 24px; }
+.ix-dl { display: grid; grid-template-columns: auto auto; gap: 2px 14px; justify-content: center; margin: 6px 0; }
+.ix-dl dt { color: var(--muted); } .ix-dl dd { margin: 0; }
+.ix-facts { display: flex; gap: 6px 18px; flex-wrap: wrap; margin-top: 6px; }
+.ix-key::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; background: var(--c); vertical-align: -1px; }
+.ix-spark { display: block; }
+.ix-foot { margin: 14px 2px 0; max-width: 980px; line-height: 1.5; }

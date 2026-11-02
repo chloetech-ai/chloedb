@@ -38,6 +38,8 @@ spec:
         # A third of the pod's memory: its vectors are full precision, so
         # the page cache needs room for 1 GB of them per shard.
         - {name: SOLR_HEAP, value: 1g}
+        # Parallel SQL (the sql aggregate kind) is an optional module since Solr 9.
+        - {name: SOLR_MODULES, value: sql}
       ports:
         - {name: http, containerPort: 8983}
         - {name: zk, containerPort: 9983}

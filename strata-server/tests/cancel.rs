@@ -66,7 +66,7 @@ async fn grpc(svc: Arc<Service>) -> String {
 /// The status, body and time of the join with a deadline of `timeout_ms`.
 async fn join(base: &str, timeout_ms: u64) -> (u16, Json, Duration) {
     let t0 = Instant::now();
-    let r = reqwest::Client::new().post(format!("{base}/v1/query")).json(&json!({"sql": JOIN, "timeout_ms": timeout_ms})).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{base}/v1/query")).json(&json!({"sql": JOIN, "timeout_ms": timeout_ms})).send().await.unwrap();
     (r.status().as_u16(), r.json().await.unwrap_or(Json::Null), t0.elapsed())
 }
 

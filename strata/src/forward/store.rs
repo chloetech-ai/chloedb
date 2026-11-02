@@ -416,6 +416,25 @@ impl DocStore {
     /// # Panics
     /// If `d` is out of range or its block is corrupt.
     pub fn get_fields_cached(&self, d: DocId, fields: &[usize], cache: &mut StoreCache) -> Vec<Value> {
+        let b = self.load(d, cache);
+        let row = cache.rows.get((d - self.first[b]) as usize).and_then(|&(a, z)| self.decode_row(&cache.data[a..z], fields));
+        row.unwrap_or_else(|| panic!("corrupt doc store block {b}"))
+    }
+
+    /// The bytes document `d`'s row takes before compression: its stored
+    /// values as the doc store encodes them, with the block in `cache`
+    /// as [`Self::get_fields_cached`] keeps it.
+    ///
+    /// # Panics
+    /// As for [`Self::get_fields_cached`].
+    pub fn row_len_cached(&self, d: DocId, cache: &mut StoreCache) -> usize {
+        let b = self.load(d, cache);
+        cache.rows.get((d - self.first[b]) as usize).map(|&(a, z)| z - a).unwrap_or_else(|| panic!("corrupt doc store block {b}"))
+    }
+
+    /// Decompresses the block of document `d` into `cache`, unless it is
+    /// there, and returns the block's number.
+    fn load(&self, d: DocId, cache: &mut StoreCache) -> usize {
         assert!((d as usize) < self.n, "document {d} out of range");
         let b = self.first.partition_point(|&f| f <= d) - 1;
         if cache.block != Some(b) {
@@ -436,8 +455,7 @@ impl DocStore {
             parsed.unwrap_or_else(|| panic!("corrupt doc store block {b}"));
             cache.block = Some(b);
         }
-        let row = cache.rows.get((d - self.first[b]) as usize).and_then(|&(a, z)| self.decode_row(&cache.data[a..z], fields));
-        row.unwrap_or_else(|| panic!("corrupt doc store block {b}"))
+        b
     }
 
     fn decompress(&self, b: usize) -> Vec<u8> {

@@ -144,6 +144,7 @@ impl Tail {
         if let Some(s) = lock(&self.cache).as_ref().filter(|s| (s.gen, s.chunk, s.len) == (p.gen, p.chunk, p.len)) {
             return s.clone();
         }
+        TAIL_BUILDS.with(|n| n.set(n.get() + 1));
         let seg = build_memseg(schema, &self.opts, p, next_mem_id());
         *lock(&self.cache) = Some(seg.clone());
         seg
@@ -153,6 +154,19 @@ impl Tail {
     fn live(&self, j: usize) -> bool {
         self.part.live.as_ref().is_none_or(|l| l.contains(j as DocId))
     }
+}
+
+thread_local! {
+    static TAIL_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread has built a memtable's last chunk as a
+/// segment ([`Snapshot::segments`] and what reads through it, once per
+/// chunk as it stands): what tests count to check that writes and reads
+/// by key build none.
+#[doc(hidden)]
+pub fn tail_builds() -> u64 {
+    TAIL_BUILDS.with(|n| n.get())
 }
 
 /// Ids of in-memory segments have this bit set.
@@ -168,9 +182,10 @@ pub(crate) fn next_mem_id() -> u64 {
 /// Where a snapshot found the live row of a primary key ([`Snapshot::find`]).
 pub enum Found<'a> {
     /// In the memtable's last chunk, not built: the document as written,
-    /// with values set in place since applied, and its sequence number (0
-    /// unnumbered).
-    Memtable { doc: Document, seq: u64 },
+    /// with values set in place since applied, its sequence number (0
+    /// unnumbered), and the segment ordinal and docID it has in the
+    /// chunk's segment once built (the last of [`Snapshot::segments`]).
+    Memtable { doc: Document, seq: u64, at: (usize, DocId) },
     /// Document `doc` of segment `seg` (an ordinal of
     /// [`Snapshot::segments`]), whose stored fields are read from `view`.
     Segment { seg: usize, doc: DocId, view: &'a SegmentView },
@@ -334,7 +349,7 @@ impl Snapshot {
                     Some(s) => crate::storage::state::mem_seq(p.updates.as_deref().unwrap_or(&Updates::default()), s, j as u32),
                     None => 0,
                 };
-                return Some(Found::Memtable { doc, seq });
+                return Some(Found::Memtable { doc, seq, at: (slot.base.segments.len(), j as DocId) });
             }
         }
         let v = &slot.base;

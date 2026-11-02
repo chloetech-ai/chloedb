@@ -1,0 +1,14 @@
+{
+  "batch": 500,
+  "clients": 4,
+  "collection": "nq-1000k",
+  "docs": 1000000,
+  "engine": "vespa",
+  "ingest_s": 1324.04348923,
+  "json_bytes": 5878412956,
+  "merge_s": 1.67e-7,
+  "refresh_s": 8.75e-7,
+  "searchable_docs": 1000000,
+  "setup_s": 0.424979459,
+  "total_s": 1324.043507313
+}

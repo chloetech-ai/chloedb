@@ -343,6 +343,17 @@ struct Args {
     /// the HTTP port).
     #[arg(long, env = "STRATA_NODE_NAME")]
     node_name: Option<String>,
+    /// Once told to stop (SIGTERM, Ctrl-C), serve on this many
+    /// milliseconds with /readyz answering 503, so that a load balancer
+    /// (a Kubernetes Service) sends no more clients before the server
+    /// stops taking connections; then end the requests under way and stop.
+    #[arg(long, env = "STRATA_DRAIN_MS", default_value_t = 0)]
+    drain_ms: u64,
+    /// Do not count how often each document is retrieved and each key
+    /// asked for (the index inspector's reads; counted in memory by
+    /// default, cheaply: see docs/strata/server.md).
+    #[arg(long)]
+    no_read_stats: bool,
 }
 
 #[derive(Subcommand)]
@@ -424,39 +435,51 @@ enum Command {
         #[arg(long)]
         kube_ca: Option<PathBuf>,
     },
-    /// Load rows from JSON Lines, JSON, CSV or TSV files, and the tables of
-    /// SQLite databases, into a database. A database that does not exist
-    /// is created with --schema, or from the first SQLite file's tables. A
-    /// SQLite table goes into the table of its name, created from SQLite's
-    /// declarations and values when missing. A server must not have the
-    /// database open (import through `POST /v1/import` instead).
+    /// Load rows from JSON Lines, JSON, CSV or TSV files, the tables of
+    /// SQLite databases, and Parquet files or directories of them (as Spark
+    /// writes), into a database. A file may be an s3:// URL: an object, or
+    /// every object under a prefix (configured by AWS_* variables). A
+    /// database that does not exist is created with --schema, or from the
+    /// first SQLite or Parquet file. A SQLite table goes into the table of
+    /// its name, and Parquet rows into --table (default: the file's name),
+    /// created from the files' types and values when missing. A server must
+    /// not have the database open (import through `POST /v1/import`
+    /// instead).
     Import {
         /// The database.
         #[arg(long)]
         db: PathBuf,
         /// Schema of a new database, as JSON. With SQLite files, schemas
         /// for the tables it creates, in place of the ones made from
-        /// SQLite's: one, an array, or the output of --plan, edited.
+        /// SQLite's: one, an array, or the output of --plan, edited. With
+        /// Parquet files, the schema of the table they create (the output
+        /// of --plan, edited).
         #[arg(long)]
         schema: Option<PathBuf>,
-        /// The table the rows go to (default: the first). A SQLite file's
-        /// tables go to the tables of their names.
+        /// The table the rows go to (default: the first; for Parquet, the
+        /// table an export kept in the file, else the file's name). A
+        /// SQLite file's tables go to the tables of their names.
         #[arg(long)]
         table: Option<String>,
-        /// The files' format: jsonl, json, csv, tsv or sqlite (default:
-        /// SQLite for a SQLite database, else from each file's extension).
+        /// The files' format: jsonl, json, csv, tsv, sqlite or parquet
+        /// (default: SQLite or Parquet when the file or directory is one,
+        /// else from each file's extension).
         #[arg(long)]
         format: Option<String>,
         /// SQLite: import only these tables (comma-separated).
         #[arg(long, value_delimiter = ',')]
         tables: Vec<String>,
-        /// SQLite: keep BLOB columns as base64 text, rather than leave
-        /// them out.
+        /// Parquet: the column that is the key of a table the import
+        /// creates, in place of one named id; "" for no key.
+        #[arg(long)]
+        key: Option<String>,
+        /// SQLite and Parquet: keep binary columns as base64 text, rather
+        /// than leave them out.
         #[arg(long)]
         blobs_base64: bool,
-        /// SQLite: print what the import would do as JSON (each table's
-        /// schema, its columns and what is left out), and write nothing.
-        /// Edit it and give it back with --schema.
+        /// SQLite and Parquet: print what the import would do as JSON (each
+        /// table's schema, its columns and what is left out), and write
+        /// nothing. Edit it and give it back with --schema.
         #[arg(long)]
         plan: bool,
         /// Where embedded fields' models are (see `fetch-model`).
@@ -465,15 +488,18 @@ enum Command {
         /// Create a new database as a directory of segment files.
         #[arg(long)]
         directory: bool,
-        /// The files, loaded in order.
+        /// The files (or s3:// URLs), loaded in order.
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
-    /// Write a database's tables to a new SQLite file, from one snapshot:
-    /// the rows, keys, references, NOT NULL and DEFAULT, a B-tree index on
+    /// Write a database's tables, from one snapshot, to a new SQLite file
+    /// (the rows, keys, references, NOT NULL and DEFAULT, a B-tree index on
     /// each indexed KEYWORD, INT, FLOAT, BOOL and TIMESTAMP field, an FTS5
     /// index over each table's TEXT fields, and the Strata schemas, which
-    /// `import` restores. A server must not have the database open.
+    /// `import` restores), or to Parquet: a `.parquet` file for one table,
+    /// else a directory of `<table>.parquet` files, each keeping its Strata
+    /// schema. OUT may be an s3:// URL. A server must not have the database
+    /// open.
     Export {
         /// The database.
         #[arg(long)]
@@ -481,18 +507,23 @@ enum Command {
         /// Only these tables (comma-separated).
         #[arg(long, value_delimiter = ',')]
         tables: Vec<String>,
-        /// No FTS5 indexes.
+        /// sqlite or parquet (default: Parquet when OUT ends in .parquet
+        /// or /, else SQLite).
+        #[arg(long)]
+        format: Option<String>,
+        /// SQLite: no FTS5 indexes.
         #[arg(long)]
         no_fts: bool,
-        /// No B-tree indexes.
+        /// SQLite: no B-tree indexes.
         #[arg(long)]
         no_indexes: bool,
-        /// Leave out the table that keeps the Strata schemas
-        /// (`_strata_tables`).
+        /// Leave out the Strata schemas: SQLite's table `_strata_tables`,
+        /// each Parquet file's `strata.schema` metadata.
         #[arg(long)]
         no_schemas: bool,
-        /// The SQLite file to write; it must not exist.
-        out: PathBuf,
+        /// The file or directory (or s3:// URL) to write; it must not
+        /// exist.
+        out: String,
     },
 }
 
@@ -554,18 +585,33 @@ async fn main() {
             }
             return;
         }
-        Some(Command::Import { db, schema, table, format, models, directory, files, tables, blobs_base64, plan }) => {
-            let sqlite = server::SqliteImport { format: format.as_deref().is_some_and(|f| f.eq_ignore_ascii_case("sqlite")), tables: tables.clone(), blobs_base64: *blobs_base64, plan: *plan };
-            let format = format.as_deref().filter(|_| !sqlite.format).map(|f| strata::ingest::Format::parse(f).unwrap_or_else(|| fail(&format!("unknown --format {f}: jsonl, json, csv, tsv or sqlite"))));
+        Some(Command::Import { db, schema, table, format, models, directory, files, tables, key, blobs_base64, plan }) => {
+            let named = |n: &str| format.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(n));
+            let files_of = server::FileImport { sqlite: named("sqlite"), parquet: named("parquet"), tables: tables.clone(), key: key.clone(), blobs_base64: *blobs_base64, plan: *plan };
+            let format = format
+                .as_deref()
+                .filter(|_| !files_of.sqlite && !files_of.parquet)
+                .map(|f| strata::ingest::Format::parse(f).unwrap_or_else(|| fail(&format!("unknown --format {f}: jsonl, json, csv, tsv, sqlite or parquet"))));
             let models = models.clone().unwrap_or_else(strata::embed::models_dir);
-            if let Err(e) = server::import_files(db, schema.as_deref(), table.as_deref(), &models, format, *directory, files, sqlite) {
+            if let Err(e) = server::import_files(db, schema.as_deref(), table.as_deref(), &models, format, *directory, files, files_of) {
                 fail(&e);
             }
             return;
         }
-        Some(Command::Export { db, tables, no_fts, no_indexes, no_schemas, out }) => {
-            let opts = strata::sqlite::ExportOptions { tables: tables.clone(), fts: !no_fts, indexes: !no_indexes, meta: !no_schemas };
-            if let Err(e) = server::export_sqlite(db, out, &opts) {
+        Some(Command::Export { db, tables, format, no_fts, no_indexes, no_schemas, out }) => {
+            let parquet = match format.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                Some("parquet") => true,
+                Some("sqlite") => false,
+                Some(f) => fail(&format!("unknown --format {f}: sqlite or parquet")),
+                None => out.to_ascii_lowercase().ends_with(".parquet") || out.ends_with('/'),
+            };
+            let r = if parquet {
+                server::export_parquet(db, out, &server::ParquetExport { tables: tables.clone(), meta: !no_schemas })
+            } else {
+                let opts = strata::sqlite::ExportOptions { tables: tables.clone(), fts: !no_fts, indexes: !no_indexes, meta: !no_schemas };
+                server::export_sqlite(db, out, &opts)
+            };
+            if let Err(e) = r {
                 fail(&e);
             }
             return;
@@ -673,7 +719,9 @@ async fn main() {
         },
     };
     let coordinator = !o.shards.is_empty();
+    server::set_drain(std::time::Duration::from_millis(a.drain_ms));
     let svc = server::service(&o).await.unwrap_or_else(|e| fail(&e));
+    svc.reads.set_on(!a.no_read_stats);
     if token.is_none() && cluster.is_none() && !svc.keys.is_empty() && !svc.keys.managed() {
         tracing::warn!("this server has no token and no admin key that never expires: once its admin keys expire, only starting it with --token manages it. Make an admin key without expires_days");
     }

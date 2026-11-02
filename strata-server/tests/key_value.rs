@@ -113,7 +113,7 @@ async fn rows_by_key_from_a_server_and_a_coordinator() {
         run(svc, &format!("INSERT INTO kv (id, n, note, until) VALUES {}", values.join(", "))).await;
     }
     let expired: Vec<usize> = (0..n).filter(|i| i % 9 == 4).collect();
-    let client = reqwest::Client::new();
+    let client = strata_server::http_client().build().unwrap();
     let (cu, ou) = (http(coord.clone()).await, http(one.clone()).await);
     for url in [&cu, &ou] {
         check(&client, url, n, &expired).await;
@@ -155,7 +155,7 @@ async fn rows_by_key_from_a_server_and_a_coordinator() {
     let got = coord.query(strata_server::service::QueryReq { sql: sql.into(), ..Default::default() }).await.unwrap();
     assert!(!got.rs.stats.plan.iter().any(|l| l.starts_with("routed")), "{:?}", got.rs.stats.plan);
     // Keys of the wrong type, a table without a key, too many keys.
-    let e = coord.get_rows(Some("kv"), vec![Value::Int(3)], &After::Any, 0).await.unwrap_err();
+    let e = coord.get_rows(Some("kv"), vec![Value::Int(3)], &After::Any, 0, true).await.unwrap_err();
     assert!(e.message.contains("KEYWORD"), "{}", e.message);
     // The expirer deletes the expired rows on the server; they were none
     // to reads already.

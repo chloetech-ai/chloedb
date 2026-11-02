@@ -126,7 +126,7 @@ async fn listen() -> (TcpListener, String) {
 /// Sends `method path body` with `auth` as the bearer credential; the
 /// status and the answer, whole, as text.
 async fn call(base: &str, method: &str, path: &str, auth: Option<&str>, body: Option<Json>) -> (u16, String) {
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let mut r = match method {
         "GET" => c.get(format!("{base}{path}")),
         "DELETE" => c.delete(format!("{base}{path}")),

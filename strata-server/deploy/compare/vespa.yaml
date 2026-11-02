@@ -33,7 +33,7 @@ spec:
     - name: vespa
       image: vespaengine/vespa:8.778.45
       imagePullPolicy: IfNotPresent
-      args: [__ROLE__]
+      args: ["__ROLE__"]
       env:
         - {name: VESPA_CONFIGSERVERS, value: vespa-0.vespa.compare.svc.cluster.local}
         - {name: VESPA_IGNORE_NOT_ENOUGH_MEMORY, value: "true"}

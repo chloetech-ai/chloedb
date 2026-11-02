@@ -88,17 +88,22 @@ pub fn fit(cluster: &Json, nodes: u32, node: &Node, volume_gb: u32, storage_clas
     let (shards, replicas, coordinators) = (field(&cluster, "shards", 2), field(&cluster, "replicas", 3), field(&cluster, "coordinators", 1));
     let on = layout(shards, replicas, nodes);
     let per_node = on.iter().map(Vec::len).max().unwrap_or(0) as u32;
+    // A shard of fewer than three copies takes extra ones while an upgrade
+    // restarts its copies (rollout.extraCopies), one shard at a time: each
+    // node keeps room for one more copy.
+    let extra = replicas < 3 && cluster["rollout"]["extraCopies"].as_bool() != Some(false);
+    let room = per_node + u32::from(extra && per_node > 0);
     let alloc = node.alloc_gib;
     // The coordinators and the operator get a fixed share; the copies
     // split the rest of the busiest node.
     let (coordinator_gib, operator_gib) = (0.5_f64.min(alloc / 8.0), 0.25_f64);
     let spare = alloc - (f64::from(coordinators) * coordinator_gib + operator_gib) / f64::from(nodes.max(1));
-    let copy_gib = if per_node > 0 { spare / f64::from(per_node) } else { spare };
+    let copy_gib = if per_node > 0 { spare / f64::from(room) } else { spare };
     // The coordinators, the operator and CoreDNS go where the scheduler
     // finds room, so the busiest node is counted with its share of the
     // coordinators (rounded up) and both of the others.
     let beside = f64::from(coordinators.div_ceil(nodes.max(1))) * COORDINATOR_CPU + OPERATOR_CPU + COREDNS_CPU;
-    let copy_cpu = (f64::from(node.vcpu) - node.system_cpu - beside).max(0.0) / f64::from(per_node.max(1));
+    let copy_cpu = (f64::from(node.vcpu) - node.system_cpu - beside).max(0.0) / f64::from(room.max(1));
     // Requests a little under each copy's share, so they fit.
     let mib = |g: f64| format!("{}Mi", (g * 1024.0 * 0.9).floor().max(64.0) as u64);
     let milli = |c: f64| format!("{}m", (c * 1000.0 * 0.9).floor().max(50.0) as u64);
@@ -212,9 +217,12 @@ mod tests {
         // 4 shards of 2 copies on 4 nodes of 8 vCPUs and 57.5 GiB: 2 copies a node.
         let f = fit(&json!({"shards": 4, "replicas": 2}), 4, &Node { vcpu: 8, alloc_gib: 57.5, system_cpu: 0.5 }, 50, "do-block-storage").unwrap();
         assert_eq!((f.shards, f.replicas, f.coordinators, f.per_node), (4, 2, 1, 2));
-        // Each node keeps half a core, and a coordinator, the operator and
-        // CoreDNS may run beside the copies.
-        assert!((f.copy_gib - (57.5 - (0.5 + 0.25) / 4.0) / 2.0).abs() < 1e-9 && (f.copy_cpu - (8.0 - 0.5 - 0.4) / 2.0).abs() < 1e-9);
+        // Each node keeps half a core, a coordinator, the operator and
+        // CoreDNS may run beside the copies, and so may the third copy an
+        // upgrade adds to a shard of two.
+        assert!((f.copy_gib - (57.5 - (0.5 + 0.25) / 4.0) / 3.0).abs() < 1e-9 && (f.copy_cpu - (8.0 - 0.5 - 0.4) / 3.0).abs() < 1e-9);
+        let without = fit(&json!({"shards": 4, "replicas": 2, "rollout": {"extraCopies": false}}), 4, &Node { vcpu: 8, alloc_gib: 57.5, system_cpu: 0.5 }, 50, "do-block-storage").unwrap();
+        assert!((without.copy_cpu - (8.0 - 0.5 - 0.4) / 2.0).abs() < 1e-9);
         assert_eq!(f.cluster["storage"], json!({"size": "50Gi", "storageClassName": "do-block-storage"}));
         assert_eq!((f.cluster["demo"].as_u64(), f.cluster["image"].as_str()), (Some(10_000), Some(IMAGE)));
         assert_eq!(f.warnings(4), Vec::<String>::new());

@@ -37,6 +37,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand, ValueEnum};
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value as Json};
 use strata::data::{self, col};
@@ -83,7 +84,7 @@ enum Cmd {
         url: Vec<String>,
         #[arg(long, default_value_t = 2)]
         shards: usize,
-        /// Documents per bulk request (Vespa: documents in flight per client, each its own request).
+        /// Documents per bulk request (Vespa: documents a client takes at a time, each its own request, `VESPA_PUTS` in flight).
         #[arg(long, default_value_t = 500)]
         batch: usize,
         /// Bulk requests in flight.
@@ -264,6 +265,18 @@ fn s(e: impl std::fmt::Display) -> String {
 struct Meta {
     docs: usize,
     dim: usize,
+}
+
+/// The HTTP client of `run`, `writes` and `stream`. Strata's servers listen
+/// beyond loopback only with a token, so for Strata it sends
+/// $STRATA_TOKEN (compare.sh gives the servers and this client the same).
+fn http_client(engine: Engine, timeout_s: u64) -> Result<reqwest::Client, String> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let (Engine::Strata, Ok(t)) = (engine, std::env::var("STRATA_TOKEN")) {
+        let v = format!("Bearer {t}").parse().map_err(|_| "STRATA_TOKEN must be printable ASCII".to_string())?;
+        headers.insert(reqwest::header::AUTHORIZATION, v);
+    }
+    reqwest::Client::builder().default_headers(headers).pool_max_idle_per_host(1024).timeout(Duration::from_secs(timeout_s)).build().map_err(s)
 }
 
 fn meta(collection: &str) -> Result<Meta, String> {
@@ -589,13 +602,21 @@ fn id_path(id: &str) -> String {
     out
 }
 
+/// Vespa puts in flight at a time from one loading client.
+const VESPA_PUTS: usize = 64;
+
 /// Posts one bulk request, again after a pause while the engine pushes back.
 /// Vespa has no bulk request: its batch is one document a line (id, a tab,
-/// the document), each put on its own, all of them at once.
+/// the document), each put on its own, `VESPA_PUTS` at a time (a client's
+/// share of the 256 requests Vespa's container queues), and each again
+/// after a pause that grows to 5 s while Vespa is overloaded, for up to ten
+/// minutes: with all 500 of a batch at once from 4 clients, the 1M NQ load
+/// had puts refused for 20 s on end once the content nodes fell behind.
 async fn post_batch(engine: Engine, client: &reqwest::Client, url: &str, body: Arc<Vec<u8>>) -> Result<(), String> {
     if engine == Engine::Vespa {
         let text = std::str::from_utf8(&body).map_err(s)?;
-        let puts = text.lines().map(|line| {
+        // Owned futures (a lazy map over the lines is not Send across the await).
+        let puts: Vec<_> = text.lines().map(|line| {
             let (id, doc) = line.split_once('\t').unwrap_or((line, "{}"));
             let url = format!("{url}/document/v1/doc/doc/docid/{}?timeout=180s", id_path(id));
             let (client, doc) = (client.clone(), doc.to_string());
@@ -608,15 +629,16 @@ async fn post_batch(engine: Engine, client: &reqwest::Client, url: &str, body: A
                         Ok(r) => matches!(r.status().as_u16(), 429 | 503 | 504 | 507),
                         Err(e) => e.is_connect() || e.is_timeout(),
                     };
-                    if retry && tries < 20 {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    if retry && tries < 120 {
+                        tokio::time::sleep(Duration::from_secs(tries.min(5))).await;
                         continue;
                     }
                     return check(r, "put").await.map(|_| ());
                 }
             }
-        });
-        for r in futures::future::join_all(puts).await {
+        }).collect();
+        let mut done = futures::stream::iter(puts).buffer_unordered(VESPA_PUTS);
+        while let Some(r) = done.next().await {
             r?;
         }
         return Ok(());
@@ -1210,8 +1232,11 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
                         "filter": ["rating:[3 TO *]", format!("-id:({})", ids.join(" OR "))]})
                 }
                 "sql aggregate" => {
+                    // Solr's SQL quotes names with backticks (year is a keyword),
+                    // and its HAVING matches nothing once COUNT(*) has an alias,
+                    // so the columns keep their own names (EXPR$1, EXPR$2).
                     let stmt = format!(
-                        "SELECT category, COUNT(*) AS n, AVG(rating) AS r FROM quora WHERE \"year\" >= {year} GROUP BY category HAVING COUNT(*) > 1000 ORDER BY COUNT(*) DESC LIMIT 10"
+                        "SELECT category, COUNT(*), AVG(rating) FROM quora WHERE `year` >= {year} GROUP BY category HAVING COUNT(*) > 1000 ORDER BY COUNT(*) DESC LIMIT 10"
                     );
                     return Some(("/solr/quora/sql", json!({"stmt": stmt})));
                 }
@@ -1295,7 +1320,7 @@ fn answer(engine: Engine, kind: &str, j: &Json) -> Json {
                 .unwrap_or_default()
                 .iter()
                 .filter(|d| d.get("EOF").is_none())
-                .map(|d| json!([d["category"], d["n"], d["r"]]))
+                .map(|d| json!([d["category"], d["EXPR$1"], d["EXPR$2"]]))
                 .collect();
             return json!({"keys": [], "scores": [], "rows": rows});
         }
@@ -1341,9 +1366,18 @@ fn answer(engine: Engine, kind: &str, j: &Json) -> Json {
 
 /// An error in a 2xx answer (Solr's combined handler, for one, can answer
 /// 200 with an "error" object).
+/// `s` percent-encoded for a URL's query string.
+fn query_escape(s: &str) -> String {
+    s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
+}
+
 fn error_of(j: &Json) -> Option<String> {
-    // Vespa answers 200 with root.errors when, for one, a content node timed out.
-    j.get("error").or_else(|| j["root"].get("errors")).map(|e| e.to_string())
+    // Vespa answers 200 with root.errors when, for one, a content node timed
+    // out; Solr's SQL answers 200 with an EXCEPTION row when a statement fails.
+    j.get("error")
+        .or_else(|| j["root"].get("errors"))
+        .or_else(|| j["result-set"]["docs"].as_array().and_then(|d| d.iter().find_map(|r| r.get("EXCEPTION"))))
+        .map(|e| e.to_string())
 }
 
 #[derive(Default)]
@@ -1429,7 +1463,7 @@ async fn run(
     let queries: Vec<data::Query> = coll.queries.iter().filter(|q| !q.text.trim().is_empty()).take(n_queries).cloned().collect();
     let keys: Vec<String> = coll.docs.iter().map(|d| d[col::ID].as_str().unwrap_or("").to_string()).collect();
     let items: Vec<Arc<[f32]>> = coll.docs.iter().map(|d| Arc::from(d[col::EMB].as_vector().unwrap_or(&[]))).collect();
-    let client = reqwest::Client::builder().pool_max_idle_per_host(1024).timeout(Duration::from_secs(30)).build().map_err(s)?;
+    let client = http_client(engine, 30)?;
     let label = label.unwrap_or_else(|| engine.name().to_string());
     let (mut http, mut answers, mut query_ids, mut unavailable, mut differ) = (Vec::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
     // What analyze.py needs to score the kinds that are not about a query's text: each request's item and seen keys, or year.
@@ -1453,6 +1487,11 @@ async fn run(
             let seen: Vec<String> = std::iter::once(it).chain((1..SEEN).map(|j| (it + j * 997) % keys.len())).map(|j| keys[j].clone()).collect();
             let probe = Probe { q, key: &keys[k], item: &items[it], seen: &seen, year: 1990 + (i % 30) as i64, paid };
             if let Some((path, body)) = request(engine, kind, sql, &probe) {
+                // Solr's /sql reads its statement from the request's parameters only, not from a JSON body.
+                let (path, body) = match body.get("stmt").and_then(|x| x.as_str()) {
+                    Some(stmt) if matches!(engine, Engine::Solr) => (format!("{path}?stmt={}", query_escape(stmt)), json!({})),
+                    _ => (path.to_string(), body),
+                };
                 ids.push(q.id.clone());
                 match kind {
                     "similar items" => params.push(json!({"item": keys[it], "seen": seen})),
@@ -1757,7 +1796,7 @@ fn marker(i: usize) -> String {
 
 #[allow(clippy::too_many_arguments)]
 async fn writes(collection: &str, engine: Engine, urls: &[String], concurrency: &[usize], seconds: f64, batch: usize, samples: usize, label: Option<String>, out: &Path) -> Result<(), String> {
-    let client = reqwest::Client::builder().pool_max_idle_per_host(1024).timeout(Duration::from_secs(60)).build().map_err(s)?;
+    let client = http_client(engine, 60)?;
     let label = label.unwrap_or_else(|| engine.name().to_string());
     let u0 = &urls[0];
     // Searchable within a second of a write, as Elasticsearch's and
@@ -1851,15 +1890,7 @@ async fn writes(collection: &str, engine: Engine, urls: &[String], concurrency: 
         "visible_p90_ms": percentile(&seen_ms, 90.0), "visible_max_ms": seen_ms.iter().cloned().fold(0.0, f64::max), "visible_ms": seen_ms,
     });
 
-    // Put the index back: delete what was written, give the updated documents their ratings again.
-    let t_clean = Instant::now();
-    let new_keys: Vec<String> = (0..next_new).map(|n| format!("w{n}")).chain((0..samples).map(|i| format!("v{i}"))).collect();
-    let mut touched: Vec<usize> = (0..next_upd).map(|n| (n * 7919) % docs.len()).collect();
-    touched.sort_unstable();
-    touched.dedup();
-    restore(engine, &client, u0, &new_keys, &touched.iter().map(|&i| &docs[i]).collect::<Vec<_>>()).await?;
-    eprintln!("{label:<8} deleted {} written documents and put back {} ratings in {:.1} s", new_keys.len(), touched.len(), t_clean.elapsed().as_secs_f64());
-
+    // The report first: a clean-up that fails loses no measurement.
     let report = json!({
         "engine": engine.name(), "label": label, "collection": collection, "urls": urls.as_slice(),
         "params": {"seconds": seconds, "concurrency": concurrency, "batch": batch, "samples": samples, "searchable": nrt},
@@ -1869,6 +1900,15 @@ async fn writes(collection: &str, engine: Engine, urls: &[String], concurrency: 
     let path = out.join(format!("writes-{}.json", label.replace(' ', "-")));
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).map_err(s)?;
     eprintln!("wrote {}", path.display());
+
+    // Put the index back: delete what was written, give the updated documents their ratings again.
+    let t_clean = Instant::now();
+    let new_keys: Vec<String> = (0..next_new).map(|n| format!("w{n}")).chain((0..samples).map(|i| format!("v{i}"))).collect();
+    let mut touched: Vec<usize> = (0..next_upd).map(|n| (n * 7919) % docs.len()).collect();
+    touched.sort_unstable();
+    touched.dedup();
+    restore(engine, &client, u0, &new_keys, &touched.iter().map(|&i| &docs[i]).collect::<Vec<_>>()).await?;
+    eprintln!("{label:<8} deleted {} written documents and put back {} ratings in {:.1} s", new_keys.len(), touched.len(), t_clean.elapsed().as_secs_f64());
     Ok(())
 }
 
@@ -1888,6 +1928,22 @@ async fn vespa_retry(rb: impl Fn() -> reqwest::RequestBuilder) -> Option<String>
     Some(format!("still failing after 30 tries: {}", last.unwrap_or_default()))
 }
 
+/// A clean-up write again, a second later, while the engine pushes back
+/// (429 or 503, or a bulk item refused with 429), for up to two minutes: a
+/// clean-up comes right after the heaviest writes (Strata answers 429 while
+/// it is behind on flushing them), and its deletes and puts are idempotent.
+async fn write_retry(client: &reqwest::Client, w: &WriteReq) -> Option<String> {
+    let mut err = None;
+    for _ in 0..120 {
+        err = send_write(client, w).await;
+        match &err {
+            Some(e) if e.starts_with("429") || e.starts_with("503") || e.contains("\"status\":429") => tokio::time::sleep(Duration::from_secs(1)).await,
+            _ => return err,
+        }
+    }
+    err.map(|e| format!("still refused after 120 tries: {e}"))
+}
+
 /// Deletes `keys` and writes `docs` again as they were (their ratings).
 async fn restore(engine: Engine, client: &reqwest::Client, url: &str, keys: &[String], docs: &[&(RawDoc, Vec<f32>)]) -> Result<(), String> {
     // Vespa queues 256 requests at most.
@@ -1896,13 +1952,13 @@ async fn restore(engine: Engine, client: &reqwest::Client, url: &str, keys: &[St
         let err = match engine {
             Engine::Strata => {
                 let ops: Vec<Json> = chunk.iter().map(|k| json!({"op": "delete", "key": k})).collect();
-                send_write(client, &WriteReq::One { url: format!("{url}/v1/write"), put: false, body: serde_json::to_vec(&json!({"ops": ops})).unwrap() }).await
+                write_retry(client, &WriteReq::One { url: format!("{url}/v1/write"), put: false, body: serde_json::to_vec(&json!({"ops": ops})).unwrap() }).await
             }
             Engine::Es | Engine::Os => {
                 let body: String = chunk.iter().map(|k| format!("{}\n", json!({"delete": {"_id": k}}))).collect();
-                send_write(client, &WriteReq::One { url: format!("{url}/quora/_bulk"), put: false, body: body.into_bytes() }).await
+                write_retry(client, &WriteReq::One { url: format!("{url}/quora/_bulk"), put: false, body: body.into_bytes() }).await
             }
-            Engine::Solr => send_write(client, &WriteReq::One { url: format!("{url}/solr/quora/update"), put: false, body: json!({"delete": chunk}).to_string().into_bytes() }).await,
+            Engine::Solr => write_retry(client, &WriteReq::One { url: format!("{url}/solr/quora/update"), put: false, body: json!({"delete": chunk}).to_string().into_bytes() }).await,
             Engine::Vespa => {
                 let dels = chunk.iter().map(|k| async move { vespa_retry(|| client.delete(format!("{url}/document/v1/doc/doc/docid/{}", id_path(k)))).await });
                 futures::future::join_all(dels).await.into_iter().flatten().next()
@@ -1916,7 +1972,7 @@ async fn restore(engine: Engine, client: &reqwest::Client, url: &str, keys: &[St
         let err = match engine {
             Engine::Strata => {
                 let ops: Vec<Json> = chunk.iter().map(|(r, _)| json!({"op": "set", "key": r.id, "field": "rating", "value": r.rating})).collect();
-                send_write(client, &WriteReq::One { url: format!("{url}/v1/write"), put: false, body: serde_json::to_vec(&json!({"ops": ops})).unwrap() }).await
+                write_retry(client, &WriteReq::One { url: format!("{url}/v1/write"), put: false, body: serde_json::to_vec(&json!({"ops": ops})).unwrap() }).await
             }
             Engine::Vespa => {
                 let puts = chunk.iter().map(|(r, _)| async move {
@@ -1933,11 +1989,11 @@ async fn restore(engine: Engine, client: &reqwest::Client, url: &str, keys: &[St
                     body.extend_from_slice(doc_json(r, v).as_bytes());
                     body.push(b'\n');
                 }
-                send_write(client, &WriteReq::One { url: format!("{url}/quora/_bulk"), put: false, body }).await
+                write_retry(client, &WriteReq::One { url: format!("{url}/quora/_bulk"), put: false, body }).await
             }
             Engine::Solr => {
                 let docs: Vec<String> = chunk.iter().map(|(r, v)| doc_json(r, v)).collect();
-                send_write(client, &WriteReq::One { url: format!("{url}/solr/quora/update"), put: false, body: format!("[{}]", docs.join(",")).into_bytes() }).await
+                write_retry(client, &WriteReq::One { url: format!("{url}/solr/quora/update"), put: false, body: format!("[{}]", docs.join(",")).into_bytes() }).await
             }
         };
         if let Some(e) = err {
@@ -2246,7 +2302,7 @@ async fn stream(
 ) -> Result<(), String> {
     use rskafka::client::{partition::UnknownTopicHandling, ClientBuilder};
     let label = label.unwrap_or_else(|| engine.name().to_string());
-    let client = reqwest::Client::builder().pool_max_idle_per_host(1024).timeout(Duration::from_secs(120)).build().map_err(s)?;
+    let client = http_client(engine, 120)?;
     let u0 = urls[0].clone();
     // Searchable within a second of a write, as for `writes`.
     let searchable = match engine {
@@ -2405,13 +2461,7 @@ async fn stream(
         },
     });
 
-    // Delete what was streamed.
-    let t_clean = Instant::now();
-    let keys: Vec<String> = (0..produced).map(|n| format!("s{n}")).collect();
-    restore(engine, &client, &u0, &keys, &[]).await?;
-    eprintln!("{label:<8} deleted {} streamed documents in {:.1} s", keys.len(), t_clean.elapsed().as_secs_f64());
-    let _ = kafka.controller_client().map_err(|e| e.to_string())?.delete_topic(&topic, 30_000).await;
-
+    // The report first: a clean-up that fails loses no measurement.
     let report = json!({
         "engine": engine.name(), "label": label, "collection": collection, "urls": urls, "topic": topic, "partitions": partitions,
         "params": {"rates": rates, "seconds": seconds, "flat": flat, "restart": restart, "batch": batch, "written_means": searchable},
@@ -2421,6 +2471,13 @@ async fn stream(
     let path = out.join(format!("stream-{}.json", label.replace(' ', "-")));
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).map_err(s)?;
     eprintln!("wrote {}", path.display());
+
+    // Delete what was streamed.
+    let t_clean = Instant::now();
+    let keys: Vec<String> = (0..produced).map(|n| format!("s{n}")).collect();
+    restore(engine, &client, &u0, &keys, &[]).await?;
+    eprintln!("{label:<8} deleted {} streamed documents in {:.1} s", keys.len(), t_clean.elapsed().as_secs_f64());
+    let _ = kafka.controller_client().map_err(|e| e.to_string())?.delete_topic(&topic, 30_000).await;
     Ok(())
 }
 

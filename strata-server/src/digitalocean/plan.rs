@@ -304,15 +304,17 @@ mod tests {
         let (cpu, mem) = (req["cpu"].as_str().unwrap(), req["memory"].as_str().unwrap());
         let milli: f64 = cpu.strip_suffix('m').unwrap().parse().unwrap();
         let mib: f64 = mem.strip_suffix("Mi").unwrap().parse().unwrap();
+        // A copy now asks half of that: an upgrade adds a third copy beside
+        // a shard's two (rollout.extraCopies), on either node.
         let free = 2000.0 - 100.0 - 412.0 - 100.0 - 50.0 - 250.0;
-        assert!(milli <= free, "a copy asks {cpu} and the busier node has {free}m");
-        assert!(milli >= free * 0.85, "a copy asks {cpu}, well under the {free}m free");
+        assert!(milli * 2.0 <= free, "two copies ask {cpu} each and the busier node has {free}m");
+        assert!(milli * 2.0 >= free * 0.85, "two copies ask {cpu} each, well under the {free}m free");
         // Its pods could have 3002 MiB (allocatable 3074892Ki), of which
         // Cilium, the metrics agent, CoreDNS, the operator and the
         // coordinator asked 844. The plan keeps to DigitalOcean's table,
         // which gives a 4 GB node less (2.5 GiB) than that.
         let free = 3002.0 - 332.0 - 80.0 - 170.0 - 32.0 - 230.0;
-        assert!(mib <= free, "a copy asks {mem} and the busier node has {free} MiB");
-        assert!(mib >= free * 0.7, "a copy asks {mem}, well under the {free} MiB free");
+        assert!(mib * 2.0 <= free, "two copies ask {mem} each and the busier node has {free} MiB");
+        assert!(mib * 2.0 >= free * 0.7, "two copies ask {mem} each, well under the {free} MiB free");
     }
 }

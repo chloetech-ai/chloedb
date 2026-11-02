@@ -1251,7 +1251,7 @@ async fn the_server_starts_as_a_primary_or_a_replica() {
         tokio::spawn(server::serve_http(svc, l, Access::default()));
         url
     };
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     for body in [None, Some(json!({"timeout_ms": 5000}))] {
         let mut req = c.post(format!("{}/v1/admin/verify", http(p.clone()).await));
         if let Some(b) = &body {
@@ -1517,6 +1517,53 @@ async fn a_replica_is_promoted_and_the_old_primary_follows_it() {
     let w = r1.write_ops(vec![set("p0000004", "sold", json!(8))], None).await.unwrap();
     until("the old primary applies the new one's writes", || async { last(&pdb) == w.seq_no.unwrap() }).await;
     assert_eq!(rows(&pdb), rows(&r1db));
+}
+
+/// A write its primary took, and applied only once that primary had voted
+/// for another copy in a handover (it waited for the writer meanwhile),
+/// is answered in doubt. The primary is a replica by then, and waits for
+/// no copy; the new primary does not hold the write, and the old one is
+/// sent a copy of the new one, which drops it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_applied_as_its_primary_hands_over_is_answered_in_doubt() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = |name: &str| replication::file_of(&dir.path().join(name));
+    let (pdb, r1db) = (create(dir.path(), "p.strata"), create(dir.path(), "r1.strata"));
+    let (r1, u1) = replica(r1db.clone(), Some(&file("r1.strata"))).await;
+    // Two copies: r1 is elected with the primary's vote alone. No
+    // heartbeat is due meanwhile: one that met r1's vote for itself would
+    // tell the primary of term 2 before r1 asks for its vote.
+    let opts = PrimaryOptions { heartbeat: Duration::from_secs(60), ..ships_to(&[&u1], Acks::All) };
+    let p = primary(pdb.clone(), Some(&file("p.strata")), opts, Duration::from_secs(10));
+    let up = grpc(p.clone()).await;
+    p.write_ops(vec![set("p0000001", "sold", json!(1))], None).await.unwrap();
+    until("the replica holds the write", || async { last(&r1db) == 1 }).await;
+
+    // The primary takes a write, which waits for its writer...
+    let stalled = stall(&pdb);
+    let w = tokio::spawn({
+        let p = p.clone();
+        async move { p.write_ops(vec![set("p0000002", "sold", json!(2))], None).await }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!w.is_finished());
+    // ...while it hands over to r1, which holds every transaction it
+    // applied: it votes for r1 and steps down.
+    let a = r1.promote(&Principal::open(), vec![up.clone()], Acks::All, false).await.unwrap();
+    assert_eq!((&a["term"], &a["seq_no"]), (&json!(2), &json!(1)), "{a}");
+    assert_eq!(p.role(), pb::Role::Replica);
+    drop(stalled);
+    let e = w.await.unwrap().unwrap_err();
+    assert!(e.status == 409 && e.message.contains("sequence number 2") && e.message.contains("before it was acknowledged"), "{}", e.message);
+
+    // The new primary does not hold it; its writes go on from its own last,
+    // and the old primary drops the write it applied for the copy.
+    let w = r1.write_ops(vec![set("p0000003", "sold", json!(3))], None).await.unwrap();
+    assert_eq!(w.seq_no, Some(2));
+    until("the old primary is sent a copy of the new one", || async { follower(&r1, 0).await["copies"] == 1 && follower(&r1, 0).await["in_sync"] == true }).await;
+    assert_eq!(rows(&pdb), rows(&r1db), "the write answered in doubt is dropped");
+    let sold = |db: &Db| db.query("SELECT sold FROM products WHERE id = 'p0000002'", &Params::new()).unwrap().rows[0][0].clone();
+    assert_ne!(sold(&r1db), Value::Int(2));
 }
 
 /// A primary that a primary of a newer term replaced is fenced: it takes no

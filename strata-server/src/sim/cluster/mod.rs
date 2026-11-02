@@ -130,10 +130,17 @@ pub enum Bug {
     /// a server that took the first late refuses the second, and the map
     /// forks ([`crate::cores::slots::Change::in_doubt`]).
     GivesAnEpochTwice,
+    /// A coordinator whose change gave the map in doubt again, which a
+    /// server took, routes by the map before once the change made from it
+    /// fails (the map asked for cannot be made from it, or no server takes
+    /// that one): its next change, made from the map before while the
+    /// server that took the one in doubt does not answer, gives that epoch
+    /// again, and the map forks ([`crate::cores::slots::Change::redone`]).
+    ForgetsAMapGivenAgain,
 }
 
 impl Bug {
-    pub const ALL: [Bug; 5] = [Bug::FlipsAnUnheldMove, Bug::RoutesByAMapNoServerTook, Bug::TakesLateCopies, Bug::ChangesAroundTheSource, Bug::GivesAnEpochTwice];
+    pub const ALL: [Bug; 6] = [Bug::FlipsAnUnheldMove, Bug::RoutesByAMapNoServerTook, Bug::TakesLateCopies, Bug::ChangesAroundTheSource, Bug::GivesAnEpochTwice, Bug::ForgetsAMapGivenAgain];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -142,6 +149,7 @@ impl Bug {
             Bug::TakesLateCopies => "takes-late-copies",
             Bug::ChangesAroundTheSource => "changes-around-the-source",
             Bug::GivesAnEpochTwice => "gives-an-epoch-twice",
+            Bug::ForgetsAMapGivenAgain => "forgets-a-map-given-again",
         }
     }
 

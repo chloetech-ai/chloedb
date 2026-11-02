@@ -51,13 +51,13 @@ async fn grpc(svc: Arc<Service>) -> String {
 }
 
 async fn get(base: &str, path: &str) -> Json {
-    let r = reqwest::get(format!("{base}{path}")).await.unwrap();
+    let r = strata_server::http_client().build().unwrap().get(format!("{base}{path}")).send().await.unwrap();
     assert_eq!(r.status(), 200, "{path}");
     r.json().await.unwrap()
 }
 
 async fn query(base: &str, body: Json) -> (u16, Json) {
-    let r = reqwest::Client::new().post(format!("{base}/v1/query")).json(&body).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{base}/v1/query")).json(&body).send().await.unwrap();
     (r.status().as_u16(), r.json().await.unwrap_or(Json::Null))
 }
 
@@ -85,20 +85,20 @@ async fn cancels_the_join(base: &str) {
         tokio::time::sleep(Duration::from_millis(5)).await;
     };
     let t0 = Instant::now();
-    let r = reqwest::Client::new().delete(format!("{base}/v1/queries/{id}")).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().delete(format!("{base}/v1/queries/{id}")).send().await.unwrap();
     assert_eq!(r.status(), 200);
     let ((status, body), _) = run.await.unwrap();
     assert_eq!(status, 499, "{body}");
     assert!(t0.elapsed() < Duration::from_secs(2), "answered {:?} after the cancel", t0.elapsed());
     assert!(body["error"].as_str().unwrap().contains("cancelled"), "{body}");
     // Not running any more, so not cancelled twice.
-    let r = reqwest::Client::new().delete(format!("{base}/v1/queries/{id}")).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().delete(format!("{base}/v1/queries/{id}")).send().await.unwrap();
     assert_eq!(r.status(), 404);
     let recent = get(base, "/v1/queries/recent?limit=5").await;
     let q = &recent["queries"][0];
     assert_eq!(q["sql"], JOIN, "{recent}");
     assert_eq!(q["outcome"], "cancelled");
-    let metrics = reqwest::get(format!("{base}/metrics")).await.unwrap().text().await.unwrap();
+    let metrics = strata_server::http_client().build().unwrap().get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
     assert!(metrics.contains("strata_queries_total{kind=\"compound\",outcome=\"cancelled\"} 1"), "{metrics}");
 }
 
@@ -130,7 +130,7 @@ async fn a_server_lists_times_and_cancels_its_queries() {
     assert_eq!(names(&recent["queries"][0]["trace"]), ["plan", "admission", "execute"]);
     let id = recent["queries"][0]["request_id"].as_str().unwrap().to_string();
     assert_eq!(get(&base, &format!("/v1/queries/request/{id}")).await["queries"].as_array().unwrap().len(), 1);
-    let r = reqwest::Client::new().post(format!("{base}/v1/queries/stats/reset")).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{base}/v1/queries/stats/reset")).send().await.unwrap();
     assert_eq!(r.status(), 200);
     assert_eq!(get(&base, "/v1/queries/stats").await["count"], 0);
 

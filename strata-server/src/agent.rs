@@ -247,7 +247,7 @@ pub async fn run(svc: &Arc<Service>, req: AgentReq) -> Result<Json, ApiError> {
     })?;
     let model = req.model.unwrap_or_else(|| svc.agent.model.clone());
     let docs = svc.health().await["docs"].as_u64().unwrap_or(0);
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(300)).build().map_err(ApiError::internal)?;
+    let client = crate::http_client().timeout(Duration::from_secs(300)).build().map_err(ApiError::internal)?;
     let t0 = Instant::now();
     let mut messages = vec![json!({"role": "user", "content": req.question})];
     let mut steps = Vec::new();

@@ -4,22 +4,27 @@
 // health gates (a limit on a live number: one over its limit for a while
 // holds the change), dragged on their own charts; pause and resume; and
 // every version of the spec, by whom, with its diff and a rollback that
-// shows its plan first. A cluster of machines of your own has no operator
-// to roll out with: it shows the same live numbers.
+// shows its plan first. The Strata version card says what the servers
+// run and what the registry has, and upgrades the cluster to it (by
+// hand, or the upgrader on its own); a version that fails is rolled back
+// and said so. A cluster of machines of your own has no operator to roll
+// out with: it shows the same live numbers.
 
-import { h, s, icon, clear, fmt, card, api, toast, confirm, bus, every, pill, empty, clamp } from "../core.js";
+import { h, s, icon, clear, fmt, card, api, toast, confirm, bus, every, pill, empty, clamp, seg } from "../core.js";
 import { state, isCoordinator } from "../data.js";
 import { yaml, lineDiff } from "./control.js";
 
 export default {
   id: "rollout", title: "Rollout", icon: "rollout", group: "Admin",
-  keywords: "rollout roll out upgrade version versions history rollback roll back undo pause resume hold held gate gates health canary soak progress steps timeline restart operator kubernetes",
+  keywords: "rollout roll out upgrade upgrader new version image tag digest registry ghcr automatic versions history rollback roll back undo pause resume hold held gate gates health canary soak verify verification preflight progress steps timeline restart operator kubernetes",
   render,
 };
 
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const plural = (n, w, ws) => fmt.plural(n, w, ws);
 const short = (url) => (url || "").replace(/^https?:\/\//, "");
+/** An image as people read it: a digest cut to its first 12 digits. */
+const shortImage = (i) => (i || "").replace(/@sha256:([0-9a-f]{12})[0-9a-f]+/, "@$1…");
 
 /** Two digits that mean something: 64%, 2.5%, 0.01% (as the operator says it). */
 function pct(v) {
@@ -69,7 +74,7 @@ function summary(a, b) {
   if (a.shards !== b.shards) out.push(`${b.shards} shards (was ${a.shards})`);
   if (a.replicas !== b.replicas) out.push(`${b.replicas} copies each (was ${a.replicas})`);
   if (a.coordinators !== b.coordinators) out.push(`${b.coordinators} coordinators (was ${a.coordinators})`);
-  if (a.image !== b.image) out.push(`image ${b.image}`);
+  if (a.image !== b.image) out.push(`image ${shortImage(b.image)}`);
   if (!same(a.storage, b.storage)) out.push(`volumes ${b.storage?.size}`);
   if (!same(a.args, b.args)) out.push(`server flags ${(b.args || []).join(" ") || "none"}`);
   if (!same(a.coordinatorArgs, b.coordinatorArgs)) out.push(`coordinator flags ${(b.coordinatorArgs || []).join(" ") || "none"}`);
@@ -95,6 +100,7 @@ function render(page) {
   let draft = null;           // the gates being edited: {gates, holdAfterSeconds, soakSeconds}
   let open = null;            // the version whose diff is open
   let busy = false;
+  let typed = "";             // the image typed in the version card
   const series = {};          // gate → [[t, v]] seen on this page, beyond the coordinator's own series
   const managed = () => !!kube?.managed;
   const st = () => kube?.status || {};
@@ -138,6 +144,7 @@ function render(page) {
   function mode() {
     const s0 = st(), r = ro();
     if (s0.phase === "Failed") return "failed";
+    if (r.failed && !r.ungated) return "version failed";
     if (r.held) return "held";
     // Paused as the spec says, before the operator has seen it too.
     if (s0.phase === "Paused" || r.paused || spec().rollout?.paused) return "paused";
@@ -146,8 +153,10 @@ function render(page) {
     if (s0.phase === "Degraded") return "degraded";
     return cur?.restores && r.ungated ? "rolling back" : "running";
   }
-  const TONE = { running: "info", held: "warn", paused: "disabled", done: "ok", "rolled back": "ok", "rolling back": "serious", failed: "bad", degraded: "degraded" };
-  const SAYS = { running: "rolling out", held: "held by a gate", paused: "paused", done: "done", "rolled back": "rolled back", "rolling back": "rolling back", failed: "failed", degraded: "done, some servers not answering" };
+  const TONE = { running: "info", held: "warn", paused: "disabled", done: "ok", "rolled back": "ok", "rolling back": "serious", failed: "bad", "version failed": "bad", degraded: "degraded" };
+  const SAYS = { running: "rolling out", held: "held by a gate", paused: "paused", done: "done", "rolled back": "rolled back", "rolling back": "rolling back", failed: "failed", "version failed": "the version failed", degraded: "done, some servers not answering" };
+  /** The version a rollback left because it failed, if the current one is such a rollback. */
+  const leftFailed = () => { const hs = history(), cur = hs[hs.length - 1], prev = hs[hs.length - 2]; return cur?.restores && prev?.failed ? prev : null; };
 
   /**
    * The steps of the current version, from what changed since the one
@@ -168,8 +177,12 @@ function render(page) {
       stage("Run the cluster", `${plural(b.shards, "shard")} of ${plural(b.replicas, "copy", "copies")}`, /./, shards.length / Math.max(1, b.shards), ready);
       return finish(out);
     }
+    const restarts = coordinatorConfig(a) !== coordinatorConfig(b) || serverConfig(a) !== serverConfig(b);
+    if (a.image !== b.image && !cur.restores) {
+      stage("Try the image on every node", `${shortImage(b.image).replace(/^.*\//, "")}: a pod of it on each node with copies, before any server restarts`, /trying the image|does not run here/, null, r.preflight === b.image);
+    }
     if (a.coordinators !== b.coordinators || coordinatorConfig(a) !== coordinatorConfig(b)) {
-      stage(a.coordinators !== b.coordinators ? `${plural(b.coordinators, "coordinator")}, from ${a.coordinators}` : "Restart the coordinators with the new settings", "one at a time behind the Service", /coordinators/, null, false);
+      stage(a.coordinators !== b.coordinators ? `${plural(b.coordinators, "coordinator")}, from ${a.coordinators}` : "Restart the coordinators with the new settings", "one at a time behind the Service, a new one ready before an old one stops", /restarting the coordinators|updating the coordinators|coordinators, from/, null, false);
     }
     if (a.replicas !== b.replicas) {
       const per = shards.map((x) => (x.replicas || []).length);
@@ -187,7 +200,13 @@ function render(page) {
     if (a.storage?.size !== b.storage?.size) stage(`Grow the volumes to ${b.storage?.size}`, "each copy's claim, in place (the storage class must allow it)", /growing|volume/, null, false);
     if (serverConfig(a) !== serverConfig(b)) {
       const of = r.copies || shards.reduce((t, x) => t + (x.replicas || []).length, 0), left = (r.stale || []).length;
-      stage(`New settings on ${plural(of, "server")}`, `replicas first, then each primary after handing it over; one at a time${spec().rollout?.soakSeconds ? `, each serving ${spec().rollout.soakSeconds} s before the next` : ""}`, /new settings|restarts with|rolling out/, of ? (of - left) / of : 0, left === 0 && !/new settings/.test(msg));
+      const extra = b.replicas < 3 && spec().rollout?.extraCopies !== false ? `${b.replicas === 2 ? "a third copy with them joins" : "two extra copies with them join"} each shard first, so that most of its copies serve while each restarts; then ` : "";
+      stage(`New settings on ${plural(of, "server")}`, `${extra}replicas first, then each primary after handing it over; one at a time${spec().rollout?.soakSeconds ? `, each serving ${spec().rollout.soakSeconds} s before the next` : ""}`, /new settings|restarts with|rolling out|leaves shard/, of ? (of - left) / of : 0, left === 0 && !/new settings|leaves shard/.test(msg));
+    }
+    if (restarts) {
+      const v = r.verify, need = (spec().rollout?.verifySeconds ?? 60) * 1000;
+      const frac = v?.passedMs ? 1 : v?.healthySinceMs ? clamp((Date.now() - v.healthySinceMs) / Math.max(1, need), 0, 0.99) : v ? 0.02 : null;
+      stage("Verify the version", v?.failing ? `failing: ${v.failing}` : `healthy for ${need / 1000} s in a row: every copy back and in sync, the gates under their limits, a query through the coordinators`, /verifying the version/, frac, !!v?.passedMs);
     }
     if (!out.length) stage("Nothing to do on the servers", summary(a, b), /$^/, 1, true);
     return finish(out);
@@ -211,6 +230,36 @@ function render(page) {
       toast(what, "ok");
       draft = { ...rollout(), from: rollout() };
     } catch (e) { toast("Not changed: " + e.message, "bad", 8000); }
+    busy = false; draw();
+  }
+  async function specChange(patch, what) {
+    busy = true; draw();
+    try { kube = await api("/v1/admin/kube", { body: { spec: patch } }); toast(what, "ok"); }
+    catch (e) { toast("Not changed: " + e.message, "bad", 8000); }
+    busy = false; draw();
+  }
+  /** Upgrades to `image` (the newest the upgrader knows when null), its plan confirmed first. */
+  async function upgrade(image, force = false) {
+    let plan;
+    try { plan = await api("/v1/admin/kube/upgrade", { body: { image, plan: true, force } }); }
+    catch (e) { toast("No upgrade: " + e.message, "bad", 9000); return; }
+    if (plan.refused) { toast("No upgrade: " + plan.refused, "bad", 9000); return; }
+    const to = image || plan.image?.image || "the newest image";
+    const r0 = spec().rollout || {};
+    const ok = await confirm({
+      title: `Upgrade ${kube.namespace}/${kube.name}`,
+      body: h("div", { class: "stack", style: { gap: "8px" } },
+        h("div", {}, h("span", { class: "dim" }, "From "), h("code", { class: "ro-img" }, plan.from), h("span", { class: "dim" }, " to "), h("code", { class: "ro-img" }, to), plan.image?.revision ? h("span", { class: "dim" }, ` (commit ${plan.image.revision.slice(0, 7)})`) : null),
+        h("div", {}, "Queries keep being answered all along: the operator then"),
+        h("ol", { class: "ctl-steps" }, (plan.steps || []).map((x) => h("li", {}, x))),
+        h("div", { class: "small dim" }, `Then it verifies the version for ${r0.verifySeconds ?? 60} s. ${(r0.onFailure || "rollback") === "rollback" ? "If a step fails (a server that does not start, a check that fails), it rolls back to the version before on its own." : "If a step fails, it holds the change for you to resume or roll back."}`),
+        (plan.warnings || []).length ? h("div", { class: "small", style: { color: "var(--serious)" } }, "Mind: " + plan.warnings.join("; ") + ".") : null),
+      ok: "Upgrade",
+    });
+    if (!ok) return;
+    busy = true; draw();
+    try { kube = await api("/v1/admin/kube/upgrade", { body: { image, force } }); toast("Upgrading: the operator rolls it out a server at a time", "ok"); }
+    catch (e) { toast("Not upgraded: " + e.message, "bad", 9000); }
     busy = false; draw();
   }
   const pause = () => change({ paused: true }, "Paused: the operator takes no step until you resume");
@@ -264,11 +313,13 @@ function render(page) {
   }
   function drawRight() {
     if (!managed()) { drawOwn(); return; }
-    clear(right, drawGates(), drawVersions());
+    clear(right, drawUpgrade(), drawGates(), drawVersions());
   }
 
   function drawHead() {
-    const hs = history(), cur = hs[hs.length - 1], prev = hs[hs.length - 2];
+    const hs = history(), cur = hs[hs.length - 1];
+    // The version to go back to: the one before, unless it failed.
+    const prev = hs.slice(0, -1).reverse().find((v) => !v.failed && v.hash !== cur?.hash);
     const m = managed() ? mode() : null;
     const tools = [];
     if (managed()) {
@@ -281,7 +332,7 @@ function render(page) {
       h("div", {},
         h("h1", {}, "Rollout"),
         h("p", {}, managed()
-          ? [h("b", {}, `${kube.namespace}/${kube.name}`), cur ? ` · version ${cur.version}` : "", cur ? " · " + (cur.restores ? `back to v${cur.restores}` : summary(prev?.spec, cur.spec)) : ""]
+          ? [h("b", {}, `${kube.namespace}/${kube.name}`), cur ? ` · version ${cur.version}` : "", cur ? " · " + (cur.restores ? `back to v${cur.restores}` : summary(hs[hs.length - 2]?.spec, cur.spec)) : ""]
           : "The change the operator makes, step by step, and what may stop it.")),
       h("div", { class: "tools" }, m ? pill(TONE[m], SAYS[m]) : null, ...tools)));
   }
@@ -307,6 +358,26 @@ function render(page) {
       clear(banner, h("div", { class: "ro-banner paused" }, icon("pause"),
         h("div", { class: "ro-banner-t" }, h("b", {}, "Paused."), h("div", { class: "small" }, `The operator takes no step toward the spec until you resume${next ? "; next, " + next : ""}. A copy that comes back without its data still joins its shard again.`)),
         h("button", { class: "btn sm primary", disabled: busy, onclick: unpause }, icon("play"), "Resume")));
+      return;
+    }
+    if (m === "version failed" && r.failed) {
+      const hs = history(), prev = hs[hs.length - 2];
+      clear(banner, h("div", { class: "ro-banner failed" }, icon("bad"),
+        h("div", { class: "ro-banner-t" },
+          h("b", {}, `The version failed (${r.failed.step}): ${r.failed.text}.`),
+          h("div", { class: "small" }, `No other server restarts with it; the servers it did not reach keep the version before. The rollout holds it, as onFailure: hold asks. Try it again once the cause is fixed, or roll back${prev ? " to v" + prev.version : ""}.`)),
+        h("div", { class: "row", style: { gap: "6px", flexWrap: "wrap" } },
+          h("button", { class: "btn sm", disabled: busy, onclick: resume }, "Try it again"),
+          prev ? h("button", { class: "btn sm primary", disabled: busy, onclick: () => rollback(prev) }, icon("undo"), `Roll back to v${prev.version}`) : null)));
+      return;
+    }
+    const bad = leftFailed();
+    if (bad && (m === "rolling back" || m === "rolled back")) {
+      const cur = history()[history().length - 1];
+      clear(banner, h("div", { class: "ro-banner back" + (m === "rolled back" ? " over" : "") }, icon(m === "rolled back" ? "okc" : "undo"),
+        h("div", { class: "ro-banner-t" },
+          h("b", {}, `v${bad.version} failed, and ${cur.by === "operator" ? "the operator" : cur.by || "someone"} ${m === "rolled back" ? "rolled it back" : "is rolling it back"} to v${cur.restores}.`),
+          h("div", { class: "small" }, `It failed ${bad.failed.step === "verify" ? "its verification" : "at step " + bad.failed.step}: ${bad.failed.text}.${m === "rolled back" ? " The cluster runs v" + cur.restores + " again, verified." : " No gate holds a rollback."}`))));
       return;
     }
     if (m === "rolling back") {
@@ -448,19 +519,73 @@ function render(page) {
     const cur = hs[0];
     const rows = hs.map((v, i) => {
       const prev = hs[i + 1];
-      const tag = v === cur ? (mode() === "done" || mode() === "rolled back" ? "running" : "rolling out") : v.version === cur.restores ? "restored" : null;
-      const meta = [v.by || "the operator", fmt.datetime(v.atMs), v.readyMs ? "took " + fmt.dur((v.readyMs - v.atMs) / 1000) : v === cur ? null : "never finished", v.restores ? `a rollback to v${v.restores}` : null].filter(Boolean).join(" · ");
+      const tag = v === cur ? (mode() === "done" || mode() === "rolled back" ? "running" : mode() === "version failed" ? "failed" : "rolling out") : v.failed ? "failed" : v.version === cur.restores ? "restored" : null;
+      const meta = [v.by || "the operator", fmt.datetime(v.atMs), v.readyMs ? "took " + fmt.dur((v.readyMs - v.atMs) / 1000) : v === cur || v.failed ? null : "never finished", v.restores ? `a rollback to v${v.restores}` : null].filter(Boolean).join(" · ");
       const isOpen = open === v.version;
       return h("div", { class: "ro-ver" + (v === cur ? " cur" : "") + (isOpen ? " open" : "") },
         h("button", { class: "ro-ver-h", "aria-expanded": String(isOpen), onclick: () => { open = isOpen ? null : v.version; drawRight(); } },
           h("b", { class: "ro-ver-n" }, `v${v.version}`),
-          h("div", { class: "ro-ver-t" }, h("div", {}, v.restores ? `Rolled back to v${v.restores}` : summary(prev?.spec, v.spec)), h("div", { class: "small dim" }, meta)),
-          tag ? h("span", { class: "ro-tag " + (tag === "running" ? "done" : "now") }, tag) : null),
+          h("div", { class: "ro-ver-t" }, h("div", {}, v.restores ? `Rolled back to v${v.restores}` : summary(prev?.spec, v.spec)), h("div", { class: "small dim" }, meta), v.failed ? h("div", { class: "small ro-failed" }, `failed (${v.failed.step}): ${v.failed.text}`) : null),
+          tag ? h("span", { class: "ro-tag " + (tag === "running" ? "done" : tag === "failed" ? "bad" : "now") }, tag) : null),
         isOpen ? h("div", { class: "ro-ver-b stack" },
           h("pre", { class: "ctl-diff" }, (prev ? lineDiff(yaml(prev.spec), yaml(v.spec)) : yaml(v.spec).map((l) => [" ", l])).map(([k, l]) => h("div", { class: "ctl-dl " + (k === "+" ? "add" : k === "-" ? "del" : "") }, `${k} ${l}`))),
           v !== cur && managed() ? h("button", { class: "btn sm", disabled: busy, style: { alignSelf: "flex-start" }, onclick: () => rollback(v) }, icon("undo"), `Roll back to v${v.version}`) : null) : null);
     });
     return card({ title: "Versions", sub: `every change to the spec, by whom; the last ${hs.length}`, body: h("div", { class: "ro-vers" }, rows) });
+  }
+
+  /**
+   * The Strata version: the image the spec names and what the servers
+   * pulled for it, the newest image of the tag the upgrader follows
+   * (status.upgrade), the upgrader's mode, and an upgrade, its plan first.
+   */
+  function drawUpgrade() {
+    const u = st().upgrade || null, want = spec().upgrade || {}, mode0 = want.mode || "off";
+    const image = spec().image || "";
+    const short12 = (d) => (d || "").replace(/^sha256:/, "").slice(0, 12);
+    const said = (i) => i ? `${short12(i.digest)}${i.revision ? " · commit " + i.revision.slice(0, 7) : ""}${i.created ? " · built " + fmt.datetime(Date.parse(i.created)) : ""}` : "";
+    const running = (u?.running || []).slice().sort((x, y) => y.servers - x.servers);
+    const latest = u?.latest || null;
+    const rejected = (d) => (u?.rejected || []).find((r) => r.digest === d);
+    const rolling = ["running", "rolling back", "held", "paused", "version failed"].includes(mode());
+    const runs = h("div", { class: "ro-up-row" },
+      h("div", { class: "small dim" }, "The spec names"),
+      h("code", { class: "ro-img", title: image }, image),
+      running.length
+        ? h("div", { class: "ro-up-run" }, running.map((r) => h("span", { class: "ro-srv" + (latest && r.digest === latest.digest ? " p" : ""), title: r.digest }, `${plural(r.servers, "server")} on ${short12(r.digest)}`)))
+        : h("div", { class: "small dim" }, u ? "No server has said which image it runs yet." : "Which image each server pulled shows once the upgrader is on."),
+      u?.current?.revision ? h("div", { class: "small dim" }, `commit ${u.current.revision.slice(0, 7)}`) : null);
+    const newest = u ? h("div", { class: "ro-up-row" },
+      h("div", { class: "small dim" }, `Newest on ${u.track || "its tag"}${u.checkedMs ? ", asked " + fmt.ago(u.checkedMs) : ""}`),
+      latest ? h("div", { class: "row", style: { gap: "8px", flexWrap: "wrap" } }, h("b", { class: "mono" }, said(latest)),
+        u.available ? pill("info", "new") : rejected(latest.digest) ? pill("bad", "rolled back once") : pill("ok", "the cluster runs it")) : h("div", { class: "small dim" }, "Not asked yet."),
+      u.error ? h("div", { class: "small", style: { color: "var(--crit-ink)" } }, "The registry: " + u.error) : null) : null;
+    const modes = seg([
+      ["off", "Off", "The operator does not ask the registry: upgrade by naming an image"],
+      ["suggest", "Suggest", `Every ${want.checkMinutes || 10} minutes the operator asks the registry what the tag names, and shows a new image here`],
+      ["on", "Automatic", "A new image is rolled out once the cluster is ready, and one that fails is rolled back and not tried again"],
+    ], mode0, (v) => specChange({ upgrade: { mode: v } }, v === "on" ? "Upgrades are automatic: a new image rolls out once the cluster is ready" : v === "suggest" ? "The operator asks the registry and shows a new image here" : "The upgrader is off"));
+    if (busy) for (const b of modes.children) b.disabled = true;
+    const input = h("input", { class: "input sm mono ro-up-in", value: typed, placeholder: image.replace(/[@:][^/]*$/, "") + ":TAG", "aria-label": "An image to upgrade to", style: { flex: "1 1 180px", minWidth: "0" }, oninput: () => { typed = input.value; } });
+    const go = () => { const v = input.value.trim(); if (v) upgrade(v.includes(":") || v.includes("@") || v.includes("/") ? v : image.replace(/[@:][^/]*$/, "") + ":" + v); };
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    const now = latest && u?.available
+      ? h("button", { class: "btn sm primary", disabled: busy || rolling, title: rolling ? "A change is under way: upgrade once it is done" : "", onclick: () => upgrade(null) }, icon("play"), `Upgrade to ${short12(latest.digest)}`)
+      : null;
+    const gone = (u?.rejected || []).slice(-3).reverse();
+    const log = (u?.log || []).slice(-4).reverse();
+    return card({
+      title: "Strata version", sub: "what runs, and what is new",
+      tools: pill(mode0 === "on" ? "ok" : mode0 === "suggest" ? "info" : "disabled", mode0 === "on" ? "automatic" : mode0 === "suggest" ? "suggests" : "by hand"),
+      body: h("div", { class: "stack", style: { gap: "10px" } },
+        runs, newest,
+        h("div", { class: "ro-num ro-up-mode" }, h("div", {}, h("b", {}, "Upgrades"), h("div", { class: "small dim" }, "the upgrader follows the image's tag")), modes),
+        h("div", { class: "row", style: { gap: "6px", flexWrap: "wrap" } }, now, input, h("button", { class: "btn sm", disabled: busy || rolling, onclick: go }, "Plan an upgrade")),
+        gone.length ? h("div", { class: "stack", style: { gap: "4px" } }, h("div", { class: "ctl-gtitle" }, "Rolled back, not rolled out again"),
+          gone.map((r) => h("div", { class: "small ro-failed" }, h("b", { class: "mono" }, short12(r.digest)), ` · ${fmt.datetime(r.atMs)} · ${r.why}`))) : null,
+        log.length ? h("div", { class: "ro-evs" }, log.map((e) => h("div", { class: "ro-ev" }, h("span", { class: "ro-ev-t" }, fmt.time(e.atMs)), h("span", {}, e.text)))) : null,
+        h("div", { class: "small dim" }, "Each server restarts in turn while the others answer: the image is tried on every node first, a primary is handed over before it restarts, and the version is verified at the end.")),
+    });
   }
 
   /** What each server runs, by version: on machines of your own the rollout is done by hand, a copy at a time. */
@@ -488,8 +613,9 @@ function render(page) {
   }
 
   // The live numbers move with each poll of the cluster; the operator's
-  // status every 3 s. Nothing redraws under a limit being dragged.
-  const held = () => !!page.querySelector(".ro-grip[data-drag], .ro-grip:focus");
+  // status every 3 s. Nothing redraws under a limit being dragged, or an
+  // image being typed.
+  const held = () => !!page.querySelector(".ro-grip[data-drag], .ro-grip:focus, .ro-up-in:focus");
   load();
   const offCluster = bus.on("cluster", () => {
     sample();

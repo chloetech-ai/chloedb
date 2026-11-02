@@ -91,7 +91,7 @@ async fn ids_reach_the_shards_and_name_the_log_lines() {
     let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
     let coord = Arc::new(Service::new(Backend::Cluster(Arc::new(c)), schema, agent, 16, Duration::from_secs(10)));
     let base = http(coord).await;
-    let client = reqwest::Client::new();
+    let client = strata_server::http_client().build().unwrap();
     let ask = |id: Option<&str>| {
         let mut r = client.post(format!("{base}/v1/query")).json(&json!({"sql": "SELECT id FROM products WHERE MATCH(body, 'laptop') ORDER BY bm25(body, 'laptop') DESC LIMIT 5"}));
         if let Some(id) = id {
@@ -142,7 +142,7 @@ async fn slow_queries_and_writes_are_logged_and_counted() {
     let mut s = Arc::try_unwrap(svc).ok().unwrap();
     s.slow = Some(Duration::ZERO);
     let base = http(Arc::new(s)).await;
-    let client = reqwest::Client::new();
+    let client = strata_server::http_client().build().unwrap();
     let sql = "SELECT id FROM products WHERE price > 10 LIMIT 3";
     let r = client.post(format!("{base}/v1/query")).header("x-request-id", "slow-1").json(&json!({"sql": sql})).send().await.unwrap();
     assert_eq!(r.status(), 200);

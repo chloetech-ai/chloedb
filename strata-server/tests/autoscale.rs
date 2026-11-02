@@ -34,7 +34,7 @@ async fn listen() -> (TcpListener, String) {
 }
 
 async fn post(base: &str, path: &str, body: Json) -> (u16, Json) {
-    let r = reqwest::Client::new().post(format!("{base}{path}")).json(&body).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{base}{path}")).json(&body).send().await.unwrap();
     (r.status().as_u16(), r.json().await.unwrap_or(Json::Null))
 }
 
