@@ -18,7 +18,7 @@ import { tables, cached, invalidate, typeBadge } from "../catalog.js";
 import { grid, resultChart, planTree, segments, answerStats, exportMenu } from "../results.js";
 import { profileView } from "../profile.js";
 import { state, isProduction } from "../data.js";
-import { parseStatement, runLabel, mode, askAllow, checkWrite, endWrites, writesAllowed, whereName, reach, describeWrite } from "../sqlguard.js";
+import { parseStatement, runLabel, mode, askAllow, checkWrite, endWrites, writesAllowed, whereName, reach, nearNames, replaceWord } from "../sqlguard.js";
 
 export default { id: "sql", title: "SQL workbench", icon: "sql", group: "Data", full: true, keywords: "query editor sql run explain plan results chart history saved snippets parameters", render, onParams };
 
@@ -328,18 +328,18 @@ function render(page, r) {
   // Where a statement runs, as whom, and whether it may write.
   function drawMode() {
     const md = mode(), { name, env } = whereName(), r = reach(), w = state.whoami;
-    const where = [h("b", { title: location.host }, name), env ? ` · ${env}` : h("span", { class: "muted", title: "The server names no environment (--environment), so the workbench treats it as production" }, " · environment not set"),
+    const where = [h("b", { title: location.host }, name), env ? ` · ${env}` : h("span", { title: "The server names no environment (--environment), so the workbench treats it as production" }, " · environment not set"),
       ` · ${r.coordinator ? fmt.plural(r.shards, "shard") : "one server"}`, w ? ` · ${w.name} · ${w.scope} key` : ""];
     let pillEl, note, action = null;
     if (md.why === "key") { pillEl = h("span", { class: "dt-pill ro" }, icon("lock"), "Read-only"); note = "this key can read only: writes need a write key"; }
     else if (md.readOnly) {
       pillEl = h("span", { class: "dt-pill ro" }, icon("lock"), "Read-only");
-      note = "writes are off on production; when allowed, each waits for a check";
+      note = "writes held for a check";
       action = h("button", { class: "btn sm", onclick: async () => { if (await askAllow()) { drawMode(); mark(); } } }, icon("unlock"), "Allow writes for 15 min…");
     } else if (md.allowed) {
       const left = Math.max(0, Math.ceil((md.allowed.until_ms - Date.now()) / 60000));
       pillEl = h("span", { class: "dt-pill on" }, icon("unlock"), `Writes on · ${left} min left`);
-      note = h("span", { title: md.allowed.reason }, "each write waits for a check · why: ", h("i", {}, md.allowed.reason));
+      note = h("span", { title: "Each write still waits for a check of the rows it changes" }, "why: ", h("i", {}, md.allowed.reason));
       action = h("button", { class: "btn sm", onclick: () => { endWrites(); drawMode(); mark(); toast("Writes are off again in this tab"); } }, icon("lock"), "End writes now");
     } else { pillEl = h("span", { class: "dt-pill" }, icon("shield"), "Writes checked"); note = "each write waits for a check of the rows it changes"; }
     clear(modeBar, pillEl, h("span", { class: "dt-where ellipsis" }, where, h("span", { class: "muted" }, " · ", note)), h("span", { class: "sep" }), action);
@@ -428,7 +428,14 @@ function render(page, r) {
       if (md.readOnly && !await askAllow(p)) return;
       drawMode();
       const edit = (fixed) => { const v = ed.value; ed.value = v.slice(0, range[0]) + (range[0] ? "\n" : "") + fixed.trim() + (v.slice(range[1]).startsWith(";") ? "" : ";") + v.slice(range[1]); tab().sql = ed.value; save(); ed.focus(); const i = ed.value.indexOf(fixed.trim()); if (i >= 0) ed.select(i + fixed.trim().length, i + fixed.trim().length); mark(); toast("The fix is in the editor: check it and run it again"); };
-      const ok = await checkWrite({ sql, params, p, onEdit: edit });
+      const fixesFor = (msg) => {
+        const word = wrongWord(msg);
+        if (!word) return [];
+        let names = suggested(msg);
+        if (!names.length) names = nearNames(word, [...new Set(cached().flatMap((t) => [t.table, ...(t.short?.fields || []).map((f) => f.name)]))]).slice(0, 3);
+        return names.slice(0, 3).map((n) => [`Write ${n} in its place`, replaceWord(sql, word, n)]);
+      };
+      const ok = await checkWrite({ sql, params, p, onEdit: edit, fixesFor });
       if (!ok) { mark(); return; }
       reason = ok.reason || undefined;
     }
@@ -440,7 +447,7 @@ function render(page, r) {
     try {
       let j;
       if (explain) j = await api("/v1/explain", { body: { sql, params, hits: 5, profile: trace }, signal: running.signal });
-      else if (READ.test(stripStrings(sql))) j = await api("/v1/query", { body: { sql, params, trace, profile: trace }, signal: running.signal });
+      else if (!p.write && READ.test(stripStrings(sql))) j = await api("/v1/query", { body: { sql, params, trace, profile: trace }, signal: running.signal });
       else j = await api("/v1/sql", { body: { sql, params }, signal: running.signal, reason });
       j.roundtrip_ms = performance.now() - t0;
       last = { j, sql, explain, p, reason, sent };
@@ -505,7 +512,7 @@ function render(page, r) {
           ? v.slice(0, pos) + (/^[A-Z]+$/.test(n) ? n : quoteName(n)) + v.slice(pos + word.length)
           : v.replace(new RegExp(`\\b${word}\\b`, "g"), quoteName(n));
         tab().sql = ed.value; save();
-        if (writes) { ed.clearMarks(); ed.focus(); if (pos != null) ed.select(pos, pos + quoteName(n).length); mark(); clear(fixNote, icon("okc"), ` ${n} is in the editor. ${runLabel(where.p)} to see the rows it changes before it runs.`); }
+        if (writes) { ed.clearMarks(); ed.focus(); if (pos != null) ed.select(pos + quoteName(n).length, pos + quoteName(n).length); mark(); clear(fixNote, icon("okc"), ` ${n} is in the editor. ${runLabel(where.p)} to see the rows it changes before it runs.`); }
         else run();
       } }, writes ? icon("edit") : icon("wrench"), writes ? `Write ${n} in its place` : `Use ${n}`));
     }

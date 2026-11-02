@@ -20,6 +20,8 @@ const OK_S = 1, WARN_S = 30;
 /** A copy's lag as a level: ok (< 1 s), warn (< 30 s), bad (more, or no answer). */
 const lagLevel = (x) => x == null ? "ok" : x.down || x.behind_s == null && x.behind_txn > 0 ? (x.down ? "bad" : "warn") : x.behind_s >= WARN_S ? "bad" : x.behind_s >= OK_S ? "warn" : "ok";
 const pctText = (v, d = 1) => v == null || !Number.isFinite(v) ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + fmt.pct(Math.abs(v), d);
+/** Seconds as "4 s", "47 min", "2 h 5 min". */
+const secs = (v) => v < 60 ? `${Math.round(v)} s` : v < 3600 ? `${Math.round(v / 60)} min` : `${Math.floor(v / 3600)} h${Math.round(v % 3600 / 60) ? ` ${Math.round(v % 3600 / 60)} min` : ""}`;
 const times = (v) => v == null || !Number.isFinite(v) ? "–" : `${v.toFixed(v >= 10 ? 0 : 2).replace(/\.?0+$/, "")}×`;
 
 /** A table's figures, from its row of /v1/index/tables, with what follows from them. */
@@ -37,9 +39,11 @@ export function derive(t) {
   const mr = mean("reads_per_min");
   const d1 = t.growth?.d1_bytes, d7 = t.growth?.d7_bytes;
   const base = (d) => d != null && t.bytes != null && t.bytes - d > 0 ? d / (t.bytes - d) : null;
-  const stale = [...(t.stale || [])].sort((a, b) => (b.behind_s ?? Infinity) - (a.behind_s ?? Infinity));
+  const stale = [...(t.stale || [])].sort((a, b) => (b.down ? Infinity : b.behind_s ?? 0) - (a.down ? Infinity : a.behind_s ?? 0));
+  // The worst lag of a copy that answers; copies that do not are counted apart (they are behind on every table).
+  const answering = stale.filter((x) => !x.down);
   return { ...t, mean_docs: md, mean_bytes: mb, skew, skewShard, skewBytes, bigBytes, hot, hotTimes: hot && mr ? hot.reads_per_min / mr : null,
-    d1, d7, g1: base(d1), g7: base(d7), worst: stale[0] || null, staleList: stale };
+    d1, d7, g1: base(d1), g7: base(d7), worst: answering[0] || null, down: stale.length - answering.length, staleList: stale };
 }
 
 function render(page, r) {
@@ -91,8 +95,7 @@ function render(page, r) {
     if (err) { clear(cards, failure(err, "The table sizes")); clear(list); listCard.hidden = true; return; }
     if (!rows) { clear(cards, empty("layers", "Reading the sizes of every table…")); listCard.hidden = true; return; }
     listCard.hidden = false;
-    const r = reachOf();
-    sub.textContent = `Which table is growing, which shard is skewed or hot, which copy is stale: ${fmt.plural(rows.length, "table")} on ${r.shards > 1 ? `${fmt.n(r.shards)} shards × ${r.copies} copies` : "one server"}.`;
+    drawHead();
     if (legacy) {
       stamp.textContent = "";
       clear(cards, h("div", { class: "banner dt-done", style: { gridColumn: "1 / -1" } }, icon("info", "lg"), h("div", { class: "grow" }, h("b", {}, "This server does not list the sizes of its tables"), h("div", { class: "small muted" }, "It answers GET /v1/index/tables from a newer version on. Open a table below for its fields, bytes, freshness and reads."))));
@@ -107,6 +110,10 @@ function render(page, r) {
     drawCards(); drawList(); drawShards(); drawCopies();
   }
 
+  function drawHead() {
+    const r = reachOf();
+    sub.textContent = `Which table is growing, which shard is skewed or hot, which copy is stale: ${fmt.plural(rows.length, "table")} on ${r.shards > 1 ? `${fmt.n(r.shards)} shards × ${r.copies} copies` : "one server"}.`;
+  }
   const reachOf = () => {
     const sh = state.cluster?.shards || state.health?.shards || [];
     const copies = sh.length ? Math.max(...sh.map((x) => x.replicas?.length || 1)) : 1;
@@ -157,7 +164,7 @@ function render(page, r) {
     clear(cards, c1, c2, c3, c4);
   }
   const name = (c) => /^s\d+-\d+$/.test(c) ? c : copyName(c);
-  const lagText = (x) => x.down ? "no answer" : x.behind_s != null ? `${fmt.dur(x.behind_s)} behind` : `${fmt.si(x.behind_txn)} writes behind`;
+  const lagText = (x) => x.down ? "no answer" : x.behind_s != null ? `${secs(x.behind_s)} behind` : `${fmt.si(x.behind_txn)} writes behind`;
 
   // ------------------------------------------------------------- the list
   function drawList() {
@@ -174,7 +181,9 @@ function render(page, r) {
       { key: "reads_per_min", label: "Reads/min", num: true, render: (t) => fmt.si(t.reads_per_min) },
       { key: "segments", label: "Segments", num: true, render: (t) => fmt.n(t.segments) },
       { key: "skew", label: "Largest shard", num: true, title: "The largest shard's rows against the mean of the shards", render: (t) => t.skew == null || (t.shards?.length || 0) < 2 ? h("span", { class: "muted" }, "–") : h("span", { class: t.skew >= 1.25 ? "dt-flag" : "", title: `shard ${t.skewShard}` }, times(t.skew), h("span", { class: "tiny muted" }, ` s${t.skewShard}`)) },
-      { key: "lag", label: "Worst copy lag", num: true, sort: (t) => t.worst ? (t.worst.down ? Infinity : t.worst.behind_s ?? 0) : -1, render: (t) => t.worst ? h("span", { class: "dt-sc " + lagLevel(t.worst), title: copyTitle(t.worst.copy) }, `${name(t.worst.copy)} · ${lagText(t.worst)}`) : h("span", { class: "muted" }, "under 1 s") },
+      { key: "lag", label: "Worst copy lag", num: true, title: "The copy furthest behind its primary, of those that answer; copies that do not answer are counted apart", sort: (t) => t.worst ? t.worst.behind_s ?? 0 : -1, render: (t) => h("span", { class: "row nw", style: { gap: "6px", justifyContent: "flex-end" } },
+        t.worst ? h("span", { class: "dt-sc " + lagLevel(t.worst), title: copyTitle(t.worst.copy) }, `${name(t.worst.copy)} · ${lagText(t.worst)}`) : h("span", { class: "muted" }, "under 1 s"),
+        t.down ? h("span", { class: "dt-sc bad", title: t.staleList.filter((x) => x.down).map((x) => name(x.copy)).join(", ") + " do not answer" }, `+${t.down} down`) : null) },
     ];
     clear(list, tableEl(cols));
   }
@@ -229,7 +238,8 @@ function render(page, r) {
     });
     // The outliers, named.
     const outs = vals.map((x, i) => ({ ...x, i, ratio: x.v / mean })).filter((x) => x.ratio > 1.25).slice(0, 3);
-    outs.forEach((x, k) => svg.append(s("text", { x: Math.min(W - 160, pad.l + x.i * bw + bw + 4), y: Math.max(pad.t - 6 + k * 13, Y(x.ratio) + 10 + k * 13), class: "dt-out" }, `s${x.shard} · ${times(x.ratio)} · ${unit(x.v)}`)));
+    // Stacked at the top, right of their bars, above the shards near the mean.
+    outs.forEach((x, k) => svg.append(s("text", { x: Math.min(W - 160, pad.l + (x.i + 1) * bw + 6), y: pad.t - 8 + k * 13, class: "dt-out" }, `s${x.shard} · ${times(x.ratio)} · ${unit(x.v)}`)));
     svg.append(s("text", { x: pad.l, y: H - 10 }, `${fmt.n(vals.length)} shards, largest first →`), s("text", { x: W - pad.r, y: H - 10, "text-anchor": "end" }, `within ±25% of the mean: ${fmt.n(within)} of ${fmt.n(vals.length)}`));
     const opts = [["docs", "Rows"], ["bytes", "Bytes"]].concat(hasReads ? [["reads", "Reads/min"]] : []);
     clear(shardsBox, h("div", { class: "row", style: { marginBottom: "6px" } }, seg(opts, by, (v) => { by = v; store.set("tables.by", v); drawShards(); }, { "aria-label": "Compare the shards by" }), h("span", { class: "sep" }),
@@ -269,15 +279,21 @@ function render(page, r) {
     const problems = bad.sort((a, b) => (a.level === "bad" ? 0 : 1) - (b.level === "bad" ? 0 : 1) || (b.st?.behind_s ?? Infinity) - (a.st?.behind_s ?? Infinity));
     const tbl = problems.length ? h("table", { class: "t compact dt-ptbl" }, h("thead", {}, h("tr", {}, h("th", {}, "Copy"), h("th", {}, "Behind"), h("th", {}, "Why, as far as the server knows"), h("th", {}, ""))),
       h("tbody", {}, problems.slice(0, 12).map((c) => h("tr", {},
-        h("td", { class: "mono", title: c.url || "" }, c.short),
+        h("td", { class: "mono dt-nw", title: c.url || "" }, c.short),
         h("td", {}, h("span", { class: "dt-sc " + c.level }, c.st ? lagText(c.st) : "–")),
         h("td", { class: "small dim" }, c.why || (c.st?.behind_txn != null ? `${fmt.n(c.st.behind_txn)} writes behind its primary` : "")),
-        h("td", { class: "num" }, h("a", { class: "btn sm ghost", href: `#/cluster?copy=${encodeURIComponent(c.short)}` }, "Cluster"), h("a", { class: "btn sm ghost", href: `#/logs?q=${encodeURIComponent(c.short)}` }, "Logs"))))))
+        h("td", { class: "num dt-nw" }, h("a", { class: "btn sm ghost", href: `#/cluster?copy=${encodeURIComponent(c.short)}` }, "Cluster"), h("a", { class: "btn sm ghost", href: `#/logs?q=${encodeURIComponent(c.short)}` }, "Logs"))))))
       : h("div", { class: "small muted", style: { marginTop: "8px" } }, `All ${fmt.n(cells.length)} copies are under 1 s behind their primaries.`);
     clear(copiesBox, legend, svg, problems.length > 12 ? h("div", { class: "small muted" }, `${problems.length - 12} more copies behind; the worst are listed.`) : null, tbl);
   }
 
-  const offs = [bus.on("cluster", () => { if (rows && !legacy) drawCopies(); })];
+  // The cluster's shape (shards, copies, which answer) comes every few seconds.
+  let shape = "";
+  const offs = [bus.on("cluster", () => {
+    if (!rows || legacy || err || !rows.length) return;
+    const r = reachOf(), now = `${r.shards}x${r.copies}x${r.total}`;
+    if (now !== shape) { shape = now; draw(); } else { drawCards(); drawCopies(); }
+  })];
   draw();
   load();
   return () => { hideTip(); reselect = null; offs.forEach((f) => f()); };

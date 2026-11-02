@@ -56,7 +56,8 @@ export function tokens(sql) {
 }
 
 const READS = new Set(["SELECT", "WITH", "VALUES", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "TABLE"]);
-const CLAUSE_END = new Set(["WHERE", "ORDER", "LIMIT", "RETURNING", "ON", "SET", "VALUES", "SELECT"]);
+// Verbs that change something (and those Strata refuses, checked all the same).
+const WRITES = new Set(["INSERT", "UPDATE", "DELETE", "REPLACE", "UPSERT", "MERGE", "TRUNCATE", "CREATE", "DROP", "ALTER", "COPY", "GRANT", "REVOKE"]);
 
 /**
  * What a statement is: {kind, read, write, table, target, where, limit,
@@ -80,6 +81,8 @@ export function parseStatement(sql) {
   }
   if (kind === "REPLACE") return insert(ts, k, sql, "replace");
   if (READS.has(kind)) return { kind: kind === "DESC" ? "DESCRIBE" : kind, read: true, write: false };
+  // A word that is no statement: the server says so; nothing to check.
+  if (!WRITES.has(kind)) return { kind, read: false, write: false, unknown: true };
   const base = { kind, read: false, write: true };
   const at0 = (i) => ts[i] && ts[i].depth === 0;
   // The text of a clause: from token a up to the next depth-0 word in `stops` (or the end).
@@ -201,6 +204,7 @@ export function runLabel(p, explain = false) {
   if (!p?.kind) return "Run";
   if (explain || p.kind === "EXPLAIN") return "Explain";
   if (p.write) return "Check " + p.kind;
+  if (p.unknown) return "Run";
   if (p.kind === "WITH" || p.kind === "VALUES" || p.kind === "TABLE") return "Run SELECT";
   return "Run " + p.kind;
 }
@@ -265,7 +269,7 @@ export function askAllow(p) {
     const m = modal({
       title: "Allow writes in this tab?",
       body: [
-        h("p", { class: "dim", style: { margin: 0 } }, p?.kind ? `This is a ${p.kind}. ` : "", `The workbench is read-only on ${name}${env ? ` (${env})` : ", whose environment is not set, so it counts as production"}. Allowing writes lasts 15 minutes, in this tab only. Every write still waits for its check.`),
+        h("p", { class: "dim", style: { margin: 0 } }, p?.kind ? `This is ${/^[AEIOU]/.test(p.kind) ? "an" : "a"} ${p.kind}. ` : "", `The workbench is read-only on ${name}${env ? ` (${env})` : ", whose environment is not set, so it counts as production"}. Allowing writes lasts 15 minutes, in this tab only. Every write still waits for its check.`),
         h("label", { class: "dt-lbl" }, "Why (kept with every write you run, and as a note on the timeline)", reason),
       ],
       foot: [no, ok],
@@ -308,10 +312,11 @@ export function nearNames(word, names) {
 
 /**
  * The check a write waits for. `p` is parseStatement(sql). `onEdit(sql)`
- * puts a statement in the editor (never runs it). Resolves {reason} to
- * run it, or false.
+ * puts a statement in the editor (never runs it); `fixesFor(message)`
+ * gives [label, fixed sql] for an error the count met. Resolves {reason}
+ * to run it, or false.
  */
-export function checkWrite({ sql, params, p, onEdit }) {
+export function checkWrite({ sql, params, p, onEdit, fixesFor }) {
   return new Promise((resolve) => {
     const { name: cluster, env } = whereName();
     const prod = isProduction();
@@ -377,7 +382,9 @@ export function checkWrite({ sql, params, p, onEdit }) {
         if (bad) {
           blocked = e.message;
           const msg = String(e.message).replace(/^(query|sql) error: /i, "");
-          problems.append(h("div", { class: "banner bad dt-banner" }, icon("bad"), h("div", { class: "grow" }, h("b", {}, "The WHERE is refused"), h("div", { class: "small" }, msg, " The statement would fail the same way."))));
+          const fixes = fixesFor?.(msg) || [];
+          problems.append(h("div", { class: "banner bad dt-banner" }, icon("bad"), h("div", { class: "grow" }, h("b", {}, "The WHERE is refused"), h("div", { class: "small" }, msg, " The statement would fail the same way."),
+            fixes.length ? h("div", { class: "row", style: { marginTop: "6px", gap: "6px" } }, fixes.map(([label, fixed]) => h("button", { class: "btn sm", title: "Writes the fix in the editor; it does not run", onclick: () => { finish(false); onEdit?.(fixed); } }, icon("edit"), label))) : null)));
         }
         sync();
       });
@@ -465,9 +472,3 @@ export function replaceWord(sql, from, to) {
   for (const t of ts.reverse()) out = out.slice(0, t.at) + quoteName(to) + out.slice(t.end);
   return out;
 }
-
-/** A short line on what a write did, for the history: "UPDATE audit_orders: 99 rows". */
-export function describeWrite(p, written) {
-  return `${p.kind}${p.table ? " " + p.table : ""}${written != null ? `: ${fmt.plural(written, "row")}` : ""}`;
-}
-
