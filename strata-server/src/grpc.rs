@@ -98,10 +98,11 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// codes of semantic-ID prefixes ([`SIDNEXT_PROTOCOL`]), 8 counts the
 /// rows of a guard's levels ([`GUARD_PROTOCOL`]), 9 keeps the cluster
 /// map, every shard's servers, and takes `Configure` ([`CLUSTER_PROTOCOL`]),
-/// and 10 answers a compound query's leaf as Arrow columns
-/// ([`ARROW_PROTOCOL`]).
+/// 10 answers a compound query's leaf as Arrow columns
+/// ([`ARROW_PROTOCOL`]), and 11 reads rows by key without SQL (`Get`,
+/// [`GET_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 10;
+pub const PROTOCOL: u32 = 11;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -121,6 +122,27 @@ pub const CLUSTER_PROTOCOL: u32 = 9;
 /// The protocol whose shards answer a compound query's leaf as Arrow
 /// columns (`QueryRequest.arrow`, `QueryResponse.arrow`).
 pub const ARROW_PROTOCOL: u32 = 10;
+
+/// The protocol of `Get`, rows by primary key without SQL.
+pub const GET_PROTOCOL: u32 = 11;
+
+/// What `Get` answers ([`crate::service::KeyRows`]).
+pub fn get_response(got: crate::service::KeyRows) -> pb::GetResponse {
+    let rows = got
+        .rows
+        .into_iter()
+        .map(|r| match r {
+            Some((v, seq_no)) => pb::KeyRow { found: true, v: v.iter().map(to_pb).collect(), seq_no },
+            None => pb::KeyRow::default(),
+        })
+        .collect();
+    pb::GetResponse { columns: got.columns, rows }
+}
+
+/// The rows of a `Get` answer: per key, its row's values and number.
+pub fn rows_from_pb(r: pb::GetResponse) -> Vec<Option<(Vec<Value>, u64)>> {
+    r.rows.into_iter().map(|r| r.found.then(|| (r.v.into_iter().map(from_pb).collect(), r.seq_no))).collect()
+}
 
 /// A write's answer ([`crate::service::Written`]).
 pub fn write_response(w: crate::service::Written) -> pb::WriteResponse {
@@ -224,7 +246,7 @@ fn method_scope(method: &str) -> Option<Scope> {
         "Replicate" | "Restore" | "Verify" | "Vote" | "Slots" | "Configure" | "ExportSlots" | "FreezeSlots" | "CleanupSlots" | "Write (moved)" | "Keys" => None,
         "Write" | "WriteStream" => Some(Scope::Write),
         "Logs" | "Profile" => Some(Scope::Admin),
-        "Query" | "TermStats" | "GuardCounts" | "SidNext" | "Sources" | "Schema" | "Hello" | "Release" | "Health" => Some(Scope::Read),
+        "Query" | "TermStats" | "GuardCounts" | "SidNext" | "Sources" | "Schema" | "Hello" | "Release" | "Health" | "Get" => Some(Scope::Read),
         // An unknown method is the root's.
         _ => None,
     }
@@ -594,6 +616,18 @@ impl pb::strata_server::Strata for Grpc {
                 }
             }
             Ok(pb::KeysResponse { keys_json: serde_json::to_vec(&svc.keys.set()).map_err(ApiError::internal)? })
+        })
+        .await
+    }
+
+    async fn get(&self, req: Request<pb::GetRequest>) -> Result<Response<pb::GetResponse>, Status> {
+        self.serve("Get", req, |svc, _who, r| async move {
+            svc.check_epoch(r.epoch)?;
+            let after = After::of(r.min_seq_no, r.min_seq_nos)?;
+            let table = Some(r.table).filter(|t| !t.is_empty());
+            let keys = r.keys.into_iter().map(from_pb).collect();
+            let got = svc.get_rows(table.as_deref(), keys, &after, r.timeout_ms as u64).await?;
+            Ok(get_response(got))
         })
         .await
     }
