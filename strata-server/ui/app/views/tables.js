@@ -59,7 +59,7 @@ function render(page, r) {
   const shardsBox = h("div"), copiesBox = h("div");
   const shardsCard = card({ title: "Shards", sub: "largest first: outliers lead, not 192 slivers", body: shardsBox, cls: "dt-shards" });
   const copiesCard = card({ title: "Copies", sub: "replication lag of every copy, problems listed", body: copiesBox, cls: "dt-copies" });
-  const listCard = card({ title: "Tables", sub: "largest growth first · click a row for its shards and copies, its name for fields, bytes and reads", body: list, flush: true, tools: h("span", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "ix-chip exact", title: "Rows, bytes and segments are read from every segment of every primary" }, "sizes exact"), h("span", { class: "ix-chip est", title: "Reads and writes per minute are rates kept by each server" }, "rates approximate")) });
+  const listCard = card({ title: "Tables", sub: "largest growth first · click a row for its shards and copies, its name for fields, bytes and reads", body: list, flush: true, cls: "dt-list", tools: h("span", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "ix-chip exact", title: "Rows, bytes and segments are read from every segment of every primary" }, "sizes exact"), h("span", { class: "ix-chip est", title: "Reads and writes per minute are rates kept by each server" }, "rates approximate")) });
   page.append(
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Tables and storage"), sub),
       h("div", { class: "tools" }, stamp, h("label", { class: "small muted" }, "growth over"), growthSeg, again)),
@@ -174,7 +174,7 @@ function render(page, r) {
     const cols = [
       { key: "table", label: "Table", render: (t) => h("div", {}, h("a", { href: open(t.table), title: `Fields, bytes, freshness and reads of ${t.table}`, onclick: (e) => e.stopPropagation() }, h("b", {}, t.table)), note(t) ? h("div", { class: "tiny muted" }, note(t)) : null) },
       { key: "docs", label: "Rows", num: true, render: (t) => fmt.si(t.docs) },
-      { key: "bytes", label: "On disk, one copy", num: true, render: (t) => h("div", {}, fmt.bytes(t.bytes), copies > 1 ? h("div", { class: "tiny muted" }, `${fmt.bytes(t.bytes * copies)} all copies`) : null) },
+      { key: "bytes", label: "On disk, one copy", short: "On disk", num: true, render: (t) => h("div", {}, fmt.bytes(t.bytes), copies > 1 ? h("div", { class: "tiny muted" }, `${fmt.bytes(t.bytes * copies)} all copies`) : null) },
       { key: "g", label: growth === "d7" ? "Δ 7 d" : "Δ 24 h", num: true, sort: (t) => g(t) ?? -Infinity, render: (t) => g(t) == null ? h("span", { class: "muted", title: "No size kept that long ago" }, "–") : h("span", { class: "dt-delta" + (g(t) === max && max > 0.01 ? " top" : ""), title: `${gb(t) >= 0 ? "+" : "−"}${fmt.bytes(Math.abs(gb(t)))} on one copy` }, pctText(g(t))) },
       { key: "g7", label: growth === "d7" ? "Δ 24 h" : "Δ 7 d", num: true, sort: (t) => (growth === "d7" ? t.g1 : t.g7) ?? -Infinity, render: (t) => h("span", { class: "dim" }, pctText(growth === "d7" ? t.g1 : t.g7)) },
       { key: "writes_per_min", label: "Writes/min", num: true, render: (t) => fmt.si(t.writes_per_min) },
@@ -196,7 +196,7 @@ function render(page, r) {
       const c = cols.find((x) => x.key === sortKey) || cols[3];
       const rs = [...rows].sort((a, b) => { const x = val(c, a), y = val(c, b); const r = x == null ? 1 : y == null ? -1 : typeof x === "number" ? x - y : String(x).localeCompare(String(y)); return desc ? -r : r; });
       clear(tbody, rs.map((t) => {
-        const tr = h("tr", { class: "click" + (t.table === pick ? " dt-sel" : ""), tabindex: 0, "aria-selected": String(t.table === pick) }, cols.map((c) => h("td", { class: c.num ? "num" : "" }, c.render(t))));
+        const tr = h("tr", { class: "click" + (t.table === pick ? " dt-sel" : ""), tabindex: 0, "aria-selected": String(t.table === pick) }, cols.map((c) => h("td", { class: (c.num ? "num " : "") + "dt-c-" + c.key, "data-label": c.short || c.label }, c.render(t))));
         const sel = () => { pick = t.table; store.set("tables.pick", pick); body(); drawShards(); drawCopies(); };
         tr.onclick = (e) => { if (!e.target.closest("a,button")) sel(); };
         tr.onkeydown = (e) => { if (e.key === "Enter") sel(); };
@@ -204,7 +204,10 @@ function render(page, r) {
       }));
     }
     head(); body();
-    return h("div", { class: "tbl-wrap" }, h("table", { class: "t dt-tbl" }, thead, tbody));
+    // On a phone the rows stack and the header goes: sort from a list instead.
+    const sortSel = h("select", { class: "select sm", "aria-label": "Sort the tables by", onchange: (e) => { sortKey = e.target.value; desc = !!cols.find((c) => c.key === sortKey)?.num; store.set("tables.sort", sortKey); head(); body(); } },
+      cols.map((c) => h("option", { value: c.key, selected: c.key === sortKey }, c.num ? `${c.label}, largest first` : c.label)));
+    return h("div", {}, h("label", { class: "dt-sortsel small muted" }, "sort by", sortSel), h("div", { class: "tbl-wrap" }, h("table", { class: "t dt-tbl" }, thead, tbody)));
   }
   reselect = (t) => { if (t && rows?.some((x) => x.table === t)) { pick = t; draw(); } };
 

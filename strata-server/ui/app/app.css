@@ -1555,4 +1555,35 @@ button.rx-node:hover { border-color: var(--accent); box-shadow: 0 0 0 3px var(--
 .dt-need { display: grid; grid-template-columns: 72px 1fr; gap: 10px; align-items: start; }
 .dt-need .pill { justify-self: start; }
 .card > .dt-empty { border: 0; box-shadow: none; margin: 0; max-width: none; }
+/* Phones (below 560 px): Tables and storage */
+.dt-sortsel { display: none; }
+@media (max-width: 560px) {
+  .dt-answers { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .dt-ans { min-height: 0; }
+  .dt-shards .hd .sub, .dt-copies .hd .sub, .dt-list .hd .sub { display: none; }
+  .dt-list .hd { flex-wrap: wrap; }
+  .dt-sortsel { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  .dt-sortsel select { flex: 1; min-height: 36px; }
+  .dt-tbl thead { display: none; }
+  .dt-tbl, .dt-tbl tbody { display: block; }
+  .dt-tbl tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 10px; padding: 11px 12px; border-bottom: 1px solid var(--line); }
+  table.t.dt-tbl td { display: block; padding: 0; border: 0; background: transparent; text-align: left; min-width: 0; white-space: normal; }
+  table.t.dt-tbl tbody tr:hover td { background: transparent; }
+  table.t.dt-tbl tr.dt-sel { background: var(--accent-soft); }
+  .dt-ptbl thead { display: none; }
+  .dt-ptbl, .dt-ptbl tbody { display: block; }
+  .dt-ptbl tr { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  table.t.dt-ptbl td { padding: 0; border: 0; white-space: normal; }
+  table.t.dt-ptbl td:nth-child(3) { flex-basis: 100%; order: 3; }
+  table.t.dt-ptbl td:nth-child(4) { margin-left: auto; }
+  .dt-tbl td::before { content: attr(data-label); display: block; font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 1px; }
+  .dt-tbl td.dt-c-table { grid-column: 1 / 3; order: -2; font-size: 14px; }
+  .dt-tbl td.dt-c-docs, .dt-tbl td.dt-c-bytes, .dt-tbl td.dt-c-g7 { font-variant-numeric: tabular-nums; }
+  .dt-tbl td.dt-c-table::before, .dt-tbl td.dt-c-g::before { display: none; }
+  .dt-tbl td.dt-c-g { grid-column: 3; order: -1; text-align: right; align-self: center; }
+  table.t.dt-tbl td.dt-c-segments { display: none; }
+  .dt-tbl td.dt-c-lag { grid-column: 1 / -1; }
+  .dt-tbl td.dt-c-lag > .row { justify-content: flex-start !important; flex-wrap: wrap; }
+  .dt-strip text, .dt-bars text { font-size: 10px; }
+}
 /* ===== end data ===== */
