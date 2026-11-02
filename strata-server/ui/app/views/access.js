@@ -94,6 +94,8 @@ function whoSub(e) {
 const PASSIVE = /\/(plan|check|validate|replay)(\/|$)/;
 /** "change", "refusal", "note" or "read" (a server from before kinds audits reads). */
 function sortOf(e) {
+  // A read the server answered with an error is no change, whatever its kind says.
+  if (e.kind === "change" && (e.method === "GET" || e.method === "HEAD")) return "note";
   if (e.kind) return e.kind;
   if (e.status === 401 || e.status === 403) return "refusal";
   const read = e.method === "GET" || e.method === "HEAD" || (e.method === "POST" && PASSIVE.test(e.route || ""));
@@ -162,6 +164,10 @@ function differs(b, a) {
   return [...new Set([...Object.keys(x), ...Object.keys(y)])].filter((k) => x[k] !== y[k]).map((k) => [k, x[k], y[k]]);
 }
 const clip = (s, n = 80) => { const v = /^"[^"]*"$/.test(s) ? s.slice(1, -1) : s; return v.length > n ? v.slice(0, n - 1) + "…" : v; };
+/** A field's path as people read it: `expires_ms` is "expires", `for_s` is "for". */
+const said = (p) => p.replace(/_(ms|s)\b/g, "");
+/** A leaf as people read it: a time for `*_ms` epochs, the rest as it is. */
+const leaf = (path, v) => (/_ms$/.test(path) && /^\d{12,}$/.test(v || "") ? `${at(+v)} ${TZ}`.trim() : /_s$/.test(path) && /^\d+(\.\d+)?$/.test(v || "") ? fmt.ms(+v * 1000) : clip(v));
 
 // ---------------------------------------------------------------- dialogs
 /** Asks before a change: resolves false or {reason}; Cancel has the focus. */
@@ -314,11 +320,13 @@ function render(page, r) {
       const c = /created key (.+?) \(([0-9a-f]{8,}), (read|write|admin)\)/.exec(e.detail || "");
       if (c && e.status < 400) made[c[2]] = { name: c[1], scope: c[3], created_ms: e.ts_ms, created_by: whoName(e) };
       const v = /revoked key ([0-9a-f]{8,})/.exec(e.detail || "");
-      if (v && e.status < 400) gone.push({ id: v[1], revoked_ms: e.ts_ms, revoked_by: whoName(e) });
+      if (v && e.status < 400) gone.push({ id: v[1], revoked_ms: e.ts_ms, revoked_by: e.who });
     }
     const live = new Set((keysJ?.keys || []).map((k) => k.id));
     return gone.filter((g) => !live.has(g.id)).map((g) => ({ ...made[g.id], ...g, name: made[g.id]?.name || `key ${g.id.slice(0, 8)}`, fromLog: true }));
   }
+  /** Whether a key is the one an audit entry names: by id when the server says it, else by name. */
+  const keyOf = (e) => (k) => (e.key ? k.id === e.key : k.name === e.who);
   const liveKeys = () => (keysJ?.keys || []).filter((k) => !k.revoked_ms);
   /** Rotations under way: [{old, next}] (a newer key of the same scope that succeeds it). */
   function rotations() {
@@ -426,21 +434,24 @@ function render(page, r) {
     const since = now() - DAY, groups = new Map();
     for (const e of audit.refusals) {
       if (e.ts_ms < since || e.client === "command-center") continue;
-      const k = `${e.who}|${e.addr || ""}|${e.client || ""}|${e.status}`;
-      const g = groups.get(k) || { n: 0, first: e.ts_ms, e };
+      const k = `${e.key || e.who}|${e.addr || ""}|${e.client || ""}|${e.status}`;
+      const g = groups.get(k) || { n: 0, first: e.ts_ms, last: e.ts_ms, e };
       g.n++; g.first = Math.min(g.first, e.ts_ms);
+      if (e.ts_ms > g.last) { g.last = e.ts_ms; g.e = e; }
       groups.set(k, g);
     }
-    const top = [...groups.values()].sort((a, b) => b.n - a.n)[0];
+    // The client refused most recently, among those refused three times or more.
+    const top = [...groups.values()].filter((g) => g.n >= 3).sort((a, b) => b.last - a.last)[0];
     if (!top || top.n < 3) return;
     const e = top.e, from = [e.addr, clientName(e.client)].filter(Boolean);
-    const revoked = revokedKeys().find((k) => k.name === e.who);
-    const what = revoked ? [`${top.n} requests refused with the revoked key `, h("b", {}, e.who), ` since ${at(top.first)}`]
+    const revoked = revokedKeys().find(keyOf(e));
+    const expired = !revoked && (/\bexpired\b/.test(e.detail || "") || liveKeys().find(keyOf(e))?.expires_ms < e.ts_ms);
+    const what = revoked || expired ? [`${top.n} requests refused with the ${revoked ? "revoked" : "expired"} key `, h("b", {}, e.who), ` since ${at(top.first)}`]
       : e.status === 403 ? [`${top.n} requests from `, h("b", {}, whoName(e)), ` refused since ${at(top.first)}: they need a wider scope`]
         : [`${top.n} requests refused since ${at(top.first)}: no key, or a wrong, expired or revoked one`];
     clear(bannerBox, h("div", { class: "ac-banner" },
       h("span", { class: "ac-dot" }),
-      h("div", { class: "grow" }, ...what, from.length ? `, from ${from[0]}${from[1] ? ` (${from[1]})` : ""}` : "", ".", revoked ? " That client was not moved to a new key." : ""),
+      h("div", { class: "grow" }, ...what, from.length ? `, from ${from[0]}${from[1] ? ` (${from[1]})` : ""}` : "", ".", revoked || expired ? " That client was not moved to a new key." : ""),
       h("button", { class: "btn sm", onclick: () => { tab = "refused"; f.who = whoName(e); f.q = e.addr || ""; setParams(); draw(); } }, "Show them")));
   }
 
@@ -512,16 +523,27 @@ function render(page, r) {
   function bodyOf(e) {
     const out = [];
     if (sortOf(e) === "refusal") {
-      const gone = e.status === 401 && revokedKeys().find((k) => k.name === e.who);
-      out.push(h("div", { class: "dim" }, gone ? `The key was revoked ${at(gone.revoked_ms)}${gone.revoked_by ? ` by ${gone.revoked_by}` : ""}.`
+      const gone = e.status === 401 && revokedKeys().find(keyOf(e));
+      const old = e.status === 401 && !gone && liveKeys().find(keyOf(e));
+      const said = /^refused: (.+)/.exec(e.detail || "")?.[1];
+      out.push(h("div", { class: "dim" }, gone ? `The key was revoked ${at(gone.revoked_ms)}${gone.revoked_by ? ` by ${whoName({ who: gone.revoked_by })}` : ""}.`
+        : old?.expires_ms && old.expires_ms <= e.ts_ms ? `The key expired ${at(old.expires_ms)} ${TZ}.`
+        : said ? words(said + ".")
         : e.status === 401 ? "No key, or a wrong, expired or revoked one." : `${e.scope ? `A ${e.scope} key` : "This key"} may not do this.`));
       return out;
     }
-    if (e.before !== undefined || e.after !== undefined) {
+    if (e.before === undefined && e.after && typeof e.after === "object" && !Array.isArray(e.after)) {
+      // Something made: what it was made with, on one line.
+      const f = flat(e.after);
+      out.push(h("div", { class: "ac-mono" }, Object.entries(f).filter(([k]) => k !== "id").map(([k, v], i) => [i ? " · " : "", h("span", { class: "muted" }, said(k) + " "), leaf(k, v)])));
+    } else if (e.after === undefined && e.before && typeof e.before === "object" && !Array.isArray(e.before)) {
+      // Something removed: what it was, on one line.
+      out.push(h("div", { class: "ac-mono muted" }, Object.entries(flat(e.before)).map(([k, v], i) => [i ? " · " : "", said(k) + " ", leaf(k, v)])));
+    } else if (e.before !== undefined || e.after !== undefined) {
       const ds = differs(e.before, e.after);
-      const row = ([p, b, a]) => h("div", { class: "ac-mono" }, h("span", { class: "ac-path" }, p), " ",
-        b !== undefined ? h("span", { class: "ro-patch-old" }, clip(b)) : null, b !== undefined && a !== undefined ? " → " : "",
-        a !== undefined ? h("span", { class: "ro-patch-new" }, clip(a)) : h("span", { class: "muted" }, "removed"));
+      const row = ([p, b, a]) => h("div", { class: "ac-mono" }, h("span", { class: "ac-path" }, said(p)), " ",
+        b !== undefined ? h("span", { class: "ro-patch-old" }, leaf(p, b)) : null, b !== undefined && a !== undefined ? " → " : "",
+        a !== undefined ? h("span", { class: "ro-patch-new" }, leaf(p, a)) : h("span", { class: "muted" }, " removed"));
       out.push(...ds.slice(0, 4).map(row));
       if (ds.length > 4) out.push(h("details", { class: "ac-moredf" }, h("summary", { class: "small muted" }, `${ds.length - 4} more`), ...ds.slice(4).map(row)));
       if (!ds.length) out.push(h("div", { class: "ac-mono muted" }, "no difference"));
@@ -569,13 +591,13 @@ function render(page, r) {
   // The full log: one row a request, columns that say what they hold.
   const allTable = table([
     { key: "ts_ms", label: "time", num: true, render: (e) => h("time", { class: "nowrap", title: whenT(e.ts_ms) }, at(e.ts_ms)) },
-    { key: "who", label: "who", sort: whoName, render: (e) => h("span", {}, h("b", {}, whoName(e)), h("div", { class: "small muted" }, whoSub(e))) },
-    { key: "kind", label: "kind", sort: sortOf, render: (e) => { const k = sortOf(e); return h("span", { class: "badge" + (k === "refusal" ? " ac-bad" : k === "change" ? " accent" : "") }, k); } },
-    { key: "route", label: "request", render: (e) => h("span", { class: "mono small" }, `${e.method} ${e.route}`) },
-    { key: "status", label: "answered", num: true, title: "The HTTP status the server answered", render: (e) => h("span", { class: e.status >= 400 ? "ac-bad-t" : "" }, e.status) },
-    { key: "ms", label: "took", num: true, title: "How long the server took to answer", render: (e) => fmt.ms(e.ms) },
-    { key: "detail", label: "what", render: (e) => e.detail || e.object ? h("span", { class: "small ellipsis ac-what", title: e.detail || e.object }, e.detail ? words(e.detail) : e.object) : h("span", { class: "muted" }, "–") },
-    { key: "request_id", label: "request id", title: "Opens the request's log lines", render: (e) => e.request_id ? h("a", { class: "mono small", href: core.link ? core.link("logs", { request: e.request_id }) : "#/logs?request=" + encodeURIComponent(e.request_id) }, e.request_id.slice(0, 8)) : "–" },
+    { key: "who", label: "who", sort: whoName, render: (e) => h("span", { class: "ac-allwho" }, h("b", {}, whoName(e)), h("div", { class: "small muted ellipsis", title: whoSub(e) }, whoSub(e))) },
+    { key: "route", label: "request", title: "What was asked, what kind of entry it is, the HTTP status the server answered and how long it took", render: (e) => { const k = sortOf(e); return h("span", {}, h("span", { class: "mono small" }, `${e.method} ${e.route}`),
+      h("div", { class: "small muted nowrap" }, h("span", { class: "badge" + (k === "refusal" ? " ac-bad" : k === "change" ? " accent" : "") }, k), " ",
+        h("span", { class: e.status >= 400 ? "ac-bad-t" : "", title: "HTTP status" }, e.status), e.ms != null ? ` · ${fmt.ms(e.ms)}` : "")); } },
+    { key: "detail", label: "what", render: (e) => h("span", { class: "ac-allwhat" },
+      e.detail || e.object ? h("span", { class: "small ellipsis ac-what", title: e.detail || e.object }, e.detail ? words(e.detail) : e.object) : h("span", { class: "muted" }, "–"),
+      e.request_id ? h("div", {}, h("a", { class: "mono small muted", title: "Opens the request's log lines", href: core.link ? core.link("logs", { request: e.request_id }) : "#/logs?request=" + encodeURIComponent(e.request_id) }, `request ${e.request_id.slice(0, 8)}`)) : null) },
   ], { sortKey: "ts_ms", desc: true, compact: true, max: 500, empty: empty("shield", "Nothing audited yet", "Changes, refusals and noted requests show here.") });
   allTable.classList.add("ac-alltable");
   function drawAll() {
@@ -660,12 +682,12 @@ function render(page, r) {
       h("td", { class: "num" }, "never"), h("td", {}));
   }
   function revokedRow(k) {
-    const by = k.revoked_by ? ` by ${k.revoked_by}` : "";
-    const refused = (audit?.refusals || []).filter((e) => e.who === k.name).sort((a, b) => b.ts_ms - a.ts_ms)[0];
+    const by = k.revoked_by ? ` by ${whoName({ who: k.revoked_by })}` : "";
+    const refused = (audit?.refusals || []).filter((e) => keyOf(e)(k)).sort((a, b) => b.ts_ms - a.ts_ms)[0];
     return h("tr", { class: "ac-revoked", "data-key": k.id },
       h("td", { class: "ac-kname" }, h("b", { title: k.fromLog ? "From the audit log: this server does not list revoked keys" : "" }, k.name), h("div", { class: "small muted" }, `revoked ${at(k.revoked_ms)}${by}`)),
       h("td", {}, k.scope ? h("span", { class: "ac-scope " + k.scope }, k.scope) : "–"),
-      h("td", { class: "num" }, refused ? h("span", { class: "ac-bad-t", title: whenT(refused.ts_ms) }, `refused ${ago(refused.ts_ms)}`) : h("span", { title: k.last_used_ms ? whenT(k.last_used_ms) : "" }, k.last_used_ms ? ago(k.last_used_ms) : "–")),
+      h("td", { class: "num" + (refused ? " ac-said" : "") }, refused ? h("span", { class: "ac-bad-t", title: whenT(refused.ts_ms) }, `refused ${ago(refused.ts_ms)}`) : h("span", { title: k.last_used_ms ? whenT(k.last_used_ms) : "" }, k.last_used_ms ? ago(k.last_used_ms) : "–")),
       h("td", { class: "num" }, "–"), h("td", {}));
   }
 
@@ -678,6 +700,8 @@ function render(page, r) {
       const step = moved ? 3 : 2;
       const made = (audit?.changes || []).find((e) => (e.detail || "").includes(next.id) || (e.object === `key ${next.name}` && Math.abs(e.ts_ms - next.created_ms) < 5000));
       const ends = old.expires_ms && old.expires_ms > now() && old.expires_ms - now() < 14 * DAY;
+      const gone = old.expires_ms && old.expires_ms <= now();
+      const refused = gone ? (audit?.refusals || []).filter((e) => keyOf(e)(old) && e.ts_ms >= old.expires_ms).sort((x, y) => y.ts_ms - x.ts_ms) : [];
       const revokeBtn = gateBtn(h("button", { class: "btn sm " + (moved ? "danger" : ""), onclick: () => revoke(old) }, `Revoke ${old.name}…`), "admin");
       const li = (n, done, head, ...rest) => h("li", { class: done ? "done" : n === step ? "now" : "" }, h("span", { class: "ac-n" + (done ? " ok" : "") }, done ? icon("check") : String(n)), h("div", {}, h("b", {}, head), " ", ...rest));
       return card({
@@ -689,9 +713,10 @@ function render(page, r) {
               : oldSince ? `Both are in use: the old key ${ago(old.last_used_ms)}${old.last_addr ? ` from ${old.last_addr}` : ""}, the new one ${ago(next.last_used_ms)}${next.last_addr ? ` from ${next.last_addr}` : ""}.`
                 : `Done: the new key was used ${ago(next.last_used_ms)}, and the old one not since the new one was made.`),
           li(3, false, "Revoke the old key",
-            ends ? `· it stops working ${until(old.expires_ms)} (${at(old.expires_ms)} ${TZ}) anyway, and then the clients still on it are refused.`
+            gone ? `· it expired ${at(old.expires_ms)} ${TZ}, so it works no more${refused.length ? `: ${fmt.plural(refused.length, "request")} refused with it since, the last ${ago(refused[0].ts_ms)}${refused[0].client ? ` from ${clientName(refused[0].client)}` : ""}` : ""}. Revoking it takes it off the list.`
+              : ends ? `· it stops working ${until(old.expires_ms)} (${at(old.expires_ms)} ${TZ}) anyway, and then the clients still on it are refused.`
               : "· this server keeps it working until it is revoked: revoke it once nothing uses it.")),
-        foot: [revokeBtn, h("span", { class: "small muted" }, moved ? "nothing used it since the new key was made" : "it is still the key some clients send")],
+        foot: [revokeBtn, h("span", { class: "small muted" }, gone ? (refused.length ? "some clients still send it" : "nothing sent it since it expired") : moved ? "nothing used it since the new key was made" : "it is still the key some clients send")],
       });
     }));
   }
@@ -738,7 +763,7 @@ function render(page, r) {
       body: [
         h("p", {}, "Makes a new key with the same scope", k.owner ? " and owner" : "", ", shows its secret once, and keeps the old key working for a while so its clients can move."),
         facts([
-          ["new key", [h("b", {}, k.name), `, ${k.scope}`, lifetime ? `, expires in ${lifetime} days` : ", never expires"]],
+          ["new key", [h("b", {}, k.name), `, the same scope (${k.scope})`, k.owner ? ` and owner (${k.owner})` : ""]],
           ["old key", k.last_used_ms ? `last used ${ago(k.last_used_ms)}${k.last_addr ? ` from ${k.last_addr}` : ""}` : "never used"],
           ["grace", graceSeg],
           ["old stops", ends],
@@ -762,8 +787,9 @@ function render(page, r) {
       }
       showSecret(j, {
         title: `The new key for ${k.name}`,
-        note: fallback ? `This server keeps ${k.name} working until you revoke it: once its clients moved, revoke it from the rotation panel beside the keys.`
+        note: [fallback ? `This server keeps ${k.name} working until you revoke it: once its clients moved, revoke it from the rotation panel beside the keys.`
           : `${k.name} keeps working until ${at(now() + grace * 60000)} ${TZ}, then its requests are refused.`,
+        j.key?.expires_ms && j.key.expires_ms - now() < 14 * DAY ? ` The new key expires ${until(j.key.expires_ms)} too: if that is too soon, make a key with a longer life instead.` : ""].join(""),
       });
       after();
     });

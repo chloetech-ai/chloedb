@@ -2077,6 +2077,9 @@ a.al-goto > svg { color: var(--muted); flex: none; }
 .ro-hd.ok .ro-badge { background: var(--good-soft); color: var(--good-ink); }
 .ro-hd-why { font-size: 14px; color: var(--text); line-height: 1.5; }
 .ro-hd-safe { font-size: 13px; color: var(--text-2); }
+.ro-hd-down { display: flex; gap: 6px; align-items: flex-start; font-size: 13.5px; color: var(--text); }
+.ro-hd-down > svg { color: var(--crit); flex: none; margin-top: 2px; }
+.ro-srv.down { background: var(--crit-soft); color: var(--crit); }
 .ro-hd-acts { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
 .ro-act { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; white-space: normal; padding: 7px 12px; }
 .ro-act .ro-act-l { font-weight: 600; }
@@ -2231,6 +2234,12 @@ button.ac-chip:hover { border-color: var(--text-2); }
 .ac-raw > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .ac-more { display: flex; align-items: center; gap: 8px; padding: 10px 14px; }
 .ac-what { display: inline-block; max-width: 300px; vertical-align: bottom; }
+.ac-allwho { display: block; max-width: 160px; white-space: nowrap; }
+.ac-allwho > b { display: block; overflow: hidden; text-overflow: ellipsis; }
+.ac-allwhat { display: block; max-width: 260px; }
+.ac-alltable td:nth-child(3) .mono { word-break: break-word; }
+.ac-allwhat .ac-what { max-width: 100%; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; overflow: hidden; }
+textarea.input.ro-why { font-family: inherit; }
 .badge.ac-bad { background: var(--crit-soft); color: var(--crit-ink); }
 .ac-bad-t { color: var(--crit-ink); }
 .ac-warn-t { color: color-mix(in srgb, var(--warn) 75%, var(--text)); font-weight: 600; }
@@ -2296,9 +2305,11 @@ button.ac-chip:hover { border-color: var(--text-2); }
   .ac-ktable tr.ac-succ { padding-left: 26px; }
   .ac-ktable tr.ac-succ td:first-child { padding-left: 0 !important; }
   .ac-ktable tr.ac-token { background: var(--surface-2); }
+  .ac-ktable td.ac-said::before { content: none; }
+  .ac-ktable tr.ac-revoked td:nth-child(4) { display: none; }
   .ac-kact .btn.xs { min-height: 32px; min-width: 32px; }
-  .ac-alltable th:nth-child(3), .ac-alltable td:nth-child(3), .ac-alltable th:nth-child(6), .ac-alltable td:nth-child(6),
-  .ac-alltable th:nth-child(7), .ac-alltable td:nth-child(7), .ac-alltable th:nth-child(8), .ac-alltable td:nth-child(8) { display: none; }
+  .ac-alltable th:nth-child(4), .ac-alltable td:nth-child(4) { display: none; }
+  .ac-allwho { max-width: 120px; }
 }
 /* Cloud setup */
 .ro-cnum { width: 72px; text-align: center; -moz-appearance: textfield; }
