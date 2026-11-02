@@ -59,7 +59,7 @@ impl Service {
                 f.vote(&r, sticky).await
             }
             Replication::Primary(p) => {
-                let a = p.vote(&r);
+                let a = p.answer(&r).await;
                 if a.granted && !a.candidate && !r.pre {
                     self.step_down().await;
                 }
