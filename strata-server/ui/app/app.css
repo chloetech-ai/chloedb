@@ -1878,6 +1878,7 @@ a.wl-chip:hover { border-color: var(--accent); }
 .wl-note { display: flex; gap: 8px; align-items: flex-start; padding: 8px 12px; border-radius: var(--r-sm); background: var(--warn-soft); font-size: 12.5px; color: var(--text-2); }
 .wl-note .i { flex: none; margin-top: 2px; }
 @media (max-width: 900px) {
+  .wl-kpis .kpi .val .mono { font-size: 13px !important; white-space: normal; overflow-wrap: anywhere; line-height: 1.3; }
   .wl-pick-box { width: 100%; }
   .wl-pick-row { padding: 10px 8px; }
 }
