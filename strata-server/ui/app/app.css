@@ -2483,3 +2483,90 @@ button.ac-chip:hover { border-color: var(--text-2); }
   .dt-hint { display: none; }
 }
 /* ===== end data ===== */
+/* ===== workload ===== */
+.wl-bad { color: var(--crit-ink); }
+.wl-badbadge { background: var(--crit-soft) !important; color: var(--crit-ink) !important; }
+.wl-link { color: var(--accent); text-decoration: none; }
+.wl-link:hover { text-decoration: underline; }
+.wl-obar { display: inline-flex; height: 8px; border-radius: 3px; overflow: hidden; background: var(--surface-3); vertical-align: middle; }
+.wl-obar > i { display: block; height: 100%; min-width: 2px; }
+.wl-story { line-height: 1.5; }
+.wl-trace .wf .nm .badge { flex-shrink: 0; }
+.wl-ghead > td { background: var(--surface-2); padding: 9px 10px !important; white-space: normal !important; }
+.wl-live td { white-space: nowrap; }
+.wl-card { min-height: 0; }
+.wl-card.bad { border-color: color-mix(in srgb, var(--crit) 45%, var(--line)); }
+.wl-card.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
+.wl-card .bd > div > .mono, .wl-card .bd > .mono { display: block; }
+.wl-stmts td { white-space: nowrap; }
+.wl-stmts td.sql { max-width: 560px; }
+.wl-rule { gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.wl-rule:last-child { border-bottom: 0; }
+.wl-radio input { margin-top: 3px; }
+.wl-radio .input { margin: 0 2px; }
+.wl-clip { max-height: 90px; overflow: auto; }
+.wl-head-scope { max-width: 980px; }
+.wl-kpi-bad { border-color: color-mix(in srgb, var(--crit) 45%, var(--line)); }
+.wl-find { display: flex; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); min-width: 0; }
+.wl-find.bad { border-color: color-mix(in srgb, var(--crit) 40%, var(--line)); }
+.wl-find.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.wl-find-ic { flex-shrink: 0; width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; background: var(--surface-3); }
+.wl-find-t { font-weight: 600; margin-bottom: 4px; }
+.wl-find-b { line-height: 1.5; color: var(--text-2); }
+.wl-find-b code, .wl-why code { font-size: 12px; overflow-wrap: anywhere; }
+.wl-why-l { gap: 10px; align-items: flex-start; padding: 3px 0; }
+.wl-why-l .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; margin-top: 7px; display: inline-block; }
+.wl-ev { gap: 10px; padding: 4px 0; }
+.wl-search { width: 270px; }
+.wl-clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; overflow-wrap: anywhere; }
+.wl-two { display: grid; gap: 14px; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); }
+.wl-two-b { display: grid; gap: 14px; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); }
+@media (max-width: 900px) {
+  .wl-search { width: 100%; }
+  .wl-two, .wl-two-b { grid-template-columns: minmax(0, 1fr); }
+  .grid.wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wl-kpis .kpi .val { font-size: 22px; }
+  .wl-stmts td.sql { max-width: 200px; }
+  .wl-ev { flex-wrap: wrap; }
+  .wl-ev { row-gap: 4px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .wl-ev:last-child { border-bottom: 0; }
+  .wl-ev .grow { white-space: normal; min-width: 0; flex-basis: 100%; order: 3; }
+  .wl-ev > .btn { order: 4; }
+  .wl-find { padding: 10px 12px; gap: 8px; }
+  .wl-find-ic { width: 22px; height: 22px; }
+  .wl-live td, .wl-stmts td { white-space: normal; }
+  .wl-live { table-layout: fixed; width: 100%; }
+  .wl-live th:nth-child(2) { width: 100px; }
+  .wl-live th:nth-child(3) { width: 82px; }
+  .wl-live td { padding-left: 8px !important; padding-right: 8px !important; overflow: hidden; }
+  .wl-tabs-scroll { overflow-x: auto; flex-wrap: nowrap; }
+  .wl-sheet, .wl-kv { grid-template-columns: minmax(80px, max-content) minmax(0, 1fr); gap: 6px 12px; }
+  .wl-trace .wf { grid-template-columns: minmax(0, 1fr) !important; row-gap: 2px; }
+  .wl-trace .wf > div:empty { display: none; }
+  .wl-trace .wf > .nm { margin-top: 6px; }
+  .seg.wl-segwrap { flex-wrap: wrap; height: auto; }
+  .seg.wl-segwrap > button { flex: 1 1 auto; }
+}
+/* the profiler's copy picker and guard rails */
+.wl-pick { margin-bottom: 14px; display: flex; flex-direction: column; gap: 6px; }
+.wl-pick-cur { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.wl-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface); font-size: 12.5px; color: var(--text); text-decoration: none; white-space: nowrap; }
+a.wl-chip:hover { border-color: var(--accent); }
+.wl-pick-box { position: relative; width: 340px; max-width: 100%; }
+.wl-pick-box .input { width: 100%; }
+.wl-pick-list { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 40; background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r-sm); box-shadow: 0 8px 24px rgba(0, 0, 0, .14); padding: 4px; max-height: 360px; overflow-y: auto; }
+.wl-pick-h { padding: 6px 8px; }
+.wl-pick-row { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; padding: 6px 8px; border: 0; background: none; border-radius: var(--r-sm); text-align: left; cursor: pointer; color: var(--text); font: inherit; }
+.wl-pick-row.hi, .wl-pick-row:hover { background: var(--accent-soft); }
+.wl-pick-name { display: flex; gap: 4px; align-items: baseline; }
+.wl-cost { line-height: 1.45; }
+.wl-warn-t { color: var(--text); font-weight: 600; }
+.wl-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.wl-note { display: flex; gap: 8px; align-items: flex-start; padding: 8px 12px; border-radius: var(--r-sm); background: var(--warn-soft); font-size: 12.5px; color: var(--text-2); }
+.wl-note .i { flex: none; margin-top: 2px; }
+@media (max-width: 900px) {
+  .wl-kpis .kpi .val .mono { font-size: 13px !important; white-space: normal; overflow-wrap: anywhere; line-height: 1.3; }
+  .wl-pick-box { width: 100%; }
+  .wl-pick-row { padding: 10px 8px; }
+}
+/* ===== end workload ===== */
