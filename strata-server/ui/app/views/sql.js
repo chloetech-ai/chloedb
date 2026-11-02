@@ -23,7 +23,7 @@ import { parseStatement, runLabel, mode, askAllow, checkWrite, endWrites, writes
 export default { id: "sql", title: "SQL workbench", icon: "sql", group: "Data", full: true, range: false, keywords: "query editor sql run explain plan results chart history saved snippets parameters", render, onParams };
 
 let openSql = null;
-function onParams(r) { const q = r.params.get("q"); if (q && openSql) openSql(q, r.params.get("p")); }
+function onParams(r) { const q = r.params.get("q"); if (q && openSql) openSql(q, r.params.get("p"), r.params.get("store")); }
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const READ = /^\s*(\(|SELECT\b|WITH\b)/i;
@@ -266,8 +266,15 @@ function render(page, r) {
   const many = () => ed.value.split(";").filter((x) => x.replace(/--[^\n]*/g, "").trim()).length > 1;
   function mark() {
     const c = current();
+    explainBtn.disabled = onLogs();
+    explainBtn.title = onLogs() ? "The log store answers SELECT only: no plan" : "Show the plan without the trace (Ctrl+Shift+Enter)";
     const label = runLabel(c.p);
-    if (!running) {
+    if (!running && onLogs() && c.p.write) {
+      // The log store takes no writes: say so on the button.
+      clear(runBtn, icon("lock"), "Read-only here");
+      runBtn.title = "The log store is read-only from here";
+      runBtn.classList.remove("dt-write");
+    } else if (!running) {
       clear(runBtn, icon(c.p.write ? (mode().readOnly ? "lock" : "shield") : "play"), label);
       runBtn.title = c.p.write ? `${label}: see the rows it changes before it runs (Ctrl+Enter)` : `${label}: the statement at the caret (Ctrl+Enter)`;
       runBtn.classList.toggle("dt-write", !!c.p.write);
@@ -290,8 +297,9 @@ function render(page, r) {
     const up = () => { removeEventListener("pointermove", mv); removeEventListener("pointerup", up); store.set("sql.edH", edWrap.offsetHeight); };
     addEventListener("pointermove", mv); addEventListener("pointerup", up);
   };
+  const explainBtn = h("button", { class: "btn", title: "Show the plan without the trace (Ctrl+Shift+Enter)", onclick: () => run(true) }, icon("layers"), "Explain");
   const tools = h("div", { class: "wb-tools" }, runBtn,
-    h("button", { class: "btn", title: "Show the plan without the trace (Ctrl+Shift+Enter)", onclick: () => run(true) }, icon("layers"), "Explain"),
+    explainBtn,
     h("button", { class: "btn ghost", title: "Lay the SQL out a clause a line", onclick: () => { ed.value = formatSql(ed.value); tab().sql = ed.value; save(); ed.focus(); } }, icon("menu"), "Format"),
     traceSw,
     h("span", { class: "sep" }),
@@ -313,20 +321,33 @@ function render(page, r) {
       return b;
     }), h("button", { class: "qt add", title: "A new query", onclick: () => add("") }, icon("plus")));
   }
-  function select(id) { active = id; ed.value = tab().sql; save(); drawTabs(); drawParams(); markSoon(); }
-  function add(sql, name) { const t = { id: uid(), name: name || `Query ${tabs.length + 1}`, sql, params: {} }; tabs.push(t); select(t.id); ed.focus(); return t; }
+  function select(id) { active = id; ed.value = tab().sql; save(); drawTabs(); drawParams(); drawMode(); markSoon(); }
+  function add(sql, name, where) { const t = { id: uid(), name: name || (where === "logs" ? "Log store" : `Query ${tabs.length + 1}`), sql, params: {}, ...(where === "logs" ? { store: "logs" } : {}) }; tabs.push(t); select(t.id); ed.focus(); return t; }
   function close(id) { const i = tabs.findIndex((t) => t.id === id); tabs.splice(i, 1); if (active === id) active = tabs[Math.max(0, i - 1)].id; select(active); }
   // `p` is the parameters as JSON: {name: {kind, value, field}}
-  openSql = (sql, p) => {
-    let t = tabs.find((x) => !x.sql.trim());
-    if (t) { t.sql = sql; select(t.id); } else t = add(sql);
+  // `where` is "logs" for the log store (the link Logs' "As SQL" makes).
+  openSql = (sql, p, where) => {
+    const logs = where === "logs";
+    let t = tabs.find((x) => !x.sql.trim() && !!x.store === logs);
+    if (t) { t.sql = sql; select(t.id); } else t = add(sql, null, logs ? "logs" : null);
     if (p) { try { t.params = JSON.parse(p); save(); drawParams(); } catch { /* a link with broken parameters opens without them */ } }
     history.replaceState(null, "", "#/sql");
   };
+  const onLogs = () => tab()?.store === "logs";
 
   // ------------------------------------------------------------ the mode bar
   // Where a statement runs, as whom, and whether it may write.
   function drawMode() {
+    if (onLogs()) {
+      // The log store: every server's own lines, queries and load, read
+      // with SELECT through POST /v1/logs/query. Nothing here writes.
+      clear(modeBar, h("span", { class: "dt-pill ro" }, icon("logs"), "Log store"),
+        h("span", { class: "dt-where ellipsis" }, h("b", {}, "the log store of every server"), h("span", { class: "muted" }, " · tables logs, queries and load · SELECT only, nothing written")),
+        h("span", { class: "sep" }),
+        h("button", { class: "btn sm", title: "Run this tab's statements on the database's tables instead", onclick: () => { delete tab().store; if (/^Log store/.test(tab().name)) tab().name = `Query ${tabs.indexOf(tab()) + 1}`; save(); drawTabs(); drawMode(); mark(); } }, icon("table"), "Query the tables instead"));
+      modeBar.classList.add("ro");
+      return;
+    }
     const md = mode(), { name, env } = whereName(), r = reach(), w = state.whoami;
     const where = [h("b", { title: location.host }, name), env ? ` · ${env}` : h("span", { title: "The server names no environment (--environment), so the workbench treats it as production" }, " · environment not set"),
       ` · ${r.coordinator ? fmt.plural(r.shards, "shard") : "one server"}`, w ? ` · ${w.name} · ${w.scope} key` : ""];
@@ -412,7 +433,12 @@ function render(page, r) {
     ed.clearMarks();
     const p = parseStatement(sql);
     const where = { sql, start, p };
-    if (!explain && /^\s*(SHOW|DESCRIBE|DESC)\s/i.test(sql)) {
+    const logs = onLogs();
+    if (logs && (p.write || explain)) {
+      showError(p.write ? `The log store is read-only from here: ${p.kind} is not sent. Each server writes its own log store; it keeps lines for its retention and drops the oldest.` : "The log store answers SELECT only: there is no plan to show. Run the statement instead.", null);
+      return;
+    }
+    if (!logs && !explain && /^\s*(SHOW|DESCRIBE|DESC)\s/i.test(sql)) {
       try {
         const local = localAnswer(sql, await tables().catch(() => cached()));
         if (local) { last = { j: local, sql, explain: false }; remember(sql, local, null); show("results"); return; }
@@ -446,12 +472,13 @@ function render(page, r) {
     const t0 = performance.now(), sent = Date.now();
     try {
       let j;
-      if (explain) j = await api("/v1/explain", { body: { sql, params, hits: 5, profile: trace }, signal: running.signal });
+      if (logs) j = await api("/v1/logs/query", { body: { sql, params }, signal: running.signal });
+      else if (explain) j = await api("/v1/explain", { body: { sql, params, hits: 5, profile: trace }, signal: running.signal });
       else if (!p.write && READ.test(stripStrings(sql))) j = await api("/v1/query", { body: { sql, params, trace, profile: trace }, signal: running.signal });
       else j = await api("/v1/sql", { body: { sql, params }, signal: running.signal, reason });
       j.roundtrip_ms = performance.now() - t0;
-      last = { j, sql, explain, p, reason, sent };
-      remember(sql, j, null, p, reason);
+      last = { j, sql, explain, p, reason, sent, logs };
+      remember(sql, j, null, p, reason, logs);
       if (/^\s*(CREATE|DROP|ALTER)\b/i.test(sql)) { invalidate(); tables(true).then(drawSide); toast(/^\s*CREATE/i.test(sql) ? "Created" : /^\s*ALTER/i.test(sql) ? "Table altered" : "Dropped", "ok"); }
       show(explain ? "plan" : j.written != null || p.write ? "results" : lastKind === "plan" ? "results" : lastKind);
     } catch (e) {
@@ -461,9 +488,15 @@ function render(page, r) {
       running = null; runBtn.classList.remove("danger"); out.classList.remove("loading"); mark();
     }
   }
-  function remember(sql, j, error, p, reason) {
+  // Which servers a log-store query reached, and which did not answer.
+  function serversLine(nodes) {
+    const bad = nodes.filter((x) => x.error || (x.status && x.status !== "ok"));
+    return h("span", { class: "small " + (bad.length ? "" : "muted"), title: nodes.map((x) => `${x.node || x.url}: ${x.error || `${fmt.plural(x.rows ?? 0, "row")} in ${fmt.ms(x.ms)}`}`).join("\n") },
+      `${nodes.length - bad.length} of ${fmt.plural(nodes.length, "server")} answered`, bad.length ? h("span", { class: "dt-sc warn", style: { marginLeft: "6px" } }, `${bad.length} did not`) : null);
+  }
+  function remember(sql, j, error, p, reason, logs) {
     const hist = store.get("sql.history", []);
-    hist.unshift({ sql, ts: Date.now(), ms: j?.took_ms, rows: j?.rows?.length ?? j?.written, error, kind: p?.kind, write: !!p?.write, reason, host: location.host });
+    hist.unshift({ sql, ts: Date.now(), ms: j?.took_ms, rows: j?.rows?.length ?? j?.written, error, kind: p?.kind, write: !!p?.write, reason, host: location.host, ...(logs ? { store: "logs" } : {}) });
     store.set("sql.history", hist.slice(0, 100));
   }
   // The error panel: what kind of error, the server's message whole, the
@@ -542,7 +575,7 @@ function render(page, r) {
     if (kind === "trace") kind = "profile";
     if (!kinds.some(([k]) => k === kind)) kind = kinds[0][0];
     clear(outTabs, kinds.map(([k, l]) => h("button", { role: "tab", "aria-selected": String(k === kind), onclick: () => show(k) }, l)));
-    clear(status, explain ? h("span", { class: "small" }, h("b", {}, j.kind), " · ", fmt.ms(j.took_ms), " · ", fmt.plural(j.rows, "row")) : j.local ? h("span", { class: "small muted", title: "SHOW and DESCRIBE are answered in the browser from GET /v1/tables" }, h("b", {}, fmt.plural(j.rows.length, "row")), " · from the catalog") : answerStats(j),
+    clear(status, explain ? h("span", { class: "small" }, h("b", {}, j.kind), " · ", fmt.ms(j.took_ms), " · ", fmt.plural(j.rows, "row")) : j.local ? h("span", { class: "small muted", title: "SHOW and DESCRIBE are answered in the browser from GET /v1/tables" }, h("b", {}, fmt.plural(j.rows.length, "row")), " · from the catalog") : [answerStats(j), j.nodes?.length ? serversLine(j.nodes) : null],
       j.rows?.length ? h("span", { class: "row nw", style: { gap: "2px" } }, exportMenu(j, "strata-query")) : null);
     if (kind === "results" && (j.written != null || last.p?.write)) clear(outBody, written(j, last));
     else if (kind === "results") clear(outBody, grid(j));
@@ -621,12 +654,12 @@ function render(page, r) {
       const needle = q.value.toLowerCase();
       const items = (which === "saved" ? store.get("sql.saved", []) : store.get("sql.history", [])).filter((x) => !needle || x.sql.toLowerCase().includes(needle) || x.name?.toLowerCase().includes(needle));
       clear(list, items.length ? items.map((x, i) => h("div", { class: "lib-it" },
-        h("div", { class: "row between" }, h("span", { class: "row nw", style: { gap: "8px" } }, which === "history" ? h("span", { class: "dt-kind " + (x.error ? "bad" : x.write ? "write" : "read") }, x.error ? "failed" : x.write ? "write" : "read") : null, h("b", {}, x.name || fmt.datetime(x.ts))),
+        h("div", { class: "row between" }, h("span", { class: "row nw", style: { gap: "8px" } }, which === "history" ? h("span", { class: "dt-kind " + (x.error ? "bad" : x.write ? "write" : "read") }, x.error ? "failed" : x.write ? "write" : "read") : null, x.store === "logs" ? h("span", { class: "dt-kind", title: "Ran on the log store" }, "log store") : null, h("b", {}, x.name || fmt.datetime(x.ts))),
           h("span", { class: "small muted" }, x.error ? h("span", { class: "dim" }, x.error.slice(0, 80)) : x.ms != null ? `${fmt.ms(x.ms)} · ${fmt.plural(x.rows ?? 0, "row")}${x.write ? " written" : ""}` : "", x.name ? " · " + fmt.ago(x.ts) : "", x.host && x.host !== location.host ? ` · on ${x.host}` : "")),
         x.reason ? h("div", { class: "small dim" }, "why: ", x.reason) : null,
         sqlBlock(x.sql, { style: { maxHeight: "120px", marginTop: "6px" } }),
         h("div", { class: "row", style: { marginTop: "6px" } },
-          h("button", { class: "btn sm primary", onclick: () => { d.close(); const t = add(x.sql, x.name); if (x.params) { t.params = x.params; drawParams(); } } }, "Open in a tab"),
+          h("button", { class: "btn sm primary", onclick: () => { d.close(); const t = add(x.sql, x.name, x.store); if (x.params) { t.params = x.params; drawParams(); } } }, "Open in a tab"),
           h("button", { class: "btn sm ghost", onclick: () => copy(x.sql, "SQL copied") }, icon("copy"), "Copy"),
           which === "saved" ? h("button", { class: "btn sm ghost danger", onclick: () => { const s = store.get("sql.saved", []); s.splice(i, 1); store.set("sql.saved", s); draw(); } }, icon("trash"), "Remove") : null)))
         : empty(which === "saved" ? "plus" : "clock", which === "saved" ? "Nothing saved yet" : "No history yet", which === "saved" ? "The + above the editor saves a query here." : "Every statement you run is kept here."));
@@ -660,7 +693,7 @@ function render(page, r) {
   drawTabs(); drawParams(); drawMode();
   clear(outBody, empty("sql", "Run a query to see its answer", "Ctrl+Enter runs the statement at the caret; Ctrl+Shift+Enter explains it. A write waits for a check of the rows it changes."));
   tables().then(() => { drawSide(); drawParams(); if (!tab().sql.trim() && cached()[0]) { ed.value = `SELECT * FROM ${quoteName(cached()[0].table)} LIMIT 20;`; tab().sql = ed.value; save(); } }).catch((e) => clear(side, failure(e, "The tables")));
-  if (r.params.get("q")) openSql(r.params.get("q"), r.params.get("p"));
+  if (r.params.get("q")) openSql(r.params.get("q"), r.params.get("p"), r.params.get("store"));
   setTimeout(() => { ed.focus(); mark(); }, 50);
   return () => { openSql = null; running?.abort(); clearInterval(modeTimer); offs.forEach((f) => f()); };
 }
