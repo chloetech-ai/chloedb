@@ -2364,15 +2364,17 @@ impl Database {
         let mut chunk = Vec::new();
         let max = self.opts.segment_max_docs.max(1);
         let mut ties = Ties::default();
+        let mut vw_rows = 0u64;
         for doc in docs {
             let mut doc = doc?;
+            vw_rows += 1;
             conform(schema, &mut doc)?;
             self.fill_sids(&t, &mut doc, &mut ties, &[])?;
             if let Some(pk) = pk {
                 let dup = !seen.insert(Key::of(&doc[pk]).expect("validated key"))
                     || (check_existing && lock(&self.state).find_live(t.pos, &doc[pk]).is_some());
                 if dup {
-                    return Err(Error::Schema(format!("duplicate primary key {:?}", doc[pk])));
+                    return Err(Error::Schema(crate::query::hint::duplicate_key(schema, &doc[pk])));
                 }
             }
             chunk.push(doc);
@@ -2387,9 +2389,13 @@ impl Database {
             return Ok(());
         }
         let c = vw.commit(&mut wal)?;
+        let rows = vw_rows;
         self.publish(c, |st| {
-            if let Some(known) = st.table_index(t.id).and_then(|i| st.tables[i].ties.as_mut()) {
-                known.absorb(&ties);
+            if let Some(i) = st.table_index(t.id) {
+                st.tables[i].activity.wrote(super::state::now_ms(), rows);
+                if let Some(known) = st.tables[i].ties.as_mut() {
+                    known.absorb(&ties);
+                }
             }
         })
     }
@@ -2475,8 +2481,12 @@ impl Database {
             return Ok(ids);
         }
         let c = vw.commit(&mut wal)?;
+        let rows: u64 = loaded.iter().map(|(_, n)| *n as u64).sum();
         // Their semantic IDs are counted again when a write needs them.
-        self.publish(c, |st| st.tables[0].ties = None)?;
+        self.publish(c, |st| {
+            st.tables[0].ties = None;
+            st.tables[0].activity.wrote(super::state::now_ms(), rows);
+        })?;
         Ok(ids)
     }
 
@@ -3217,6 +3227,22 @@ impl Database {
         size(&self.wal_path) + lock(&self.sealed_wals).iter().map(|&t| size(&wal::sealed_path(&self.wal_path, t))).sum::<u64>()
     }
 
+    /// The writes to table `table` since this database was opened
+    /// ([`Activity`]); `None` for a table it does not have.
+    pub fn activity(&self, table: &str) -> Option<super::Activity> {
+        let st = lock(&self.state);
+        st.tables.iter().find(|t| t.schema.table.eq_ignore_ascii_case(table)).map(|t| t.activity)
+    }
+
+    /// When the database last changed on disk, in milliseconds since
+    /// 1970: the newest modification time of its file (its directory, in
+    /// the directory layout) and its write-ahead log. A write changes the
+    /// log; a flush, merge or checkpoint the file.
+    pub fn modified_ms(&self) -> Option<u64> {
+        let at = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64);
+        [at(&self.path), at(&self.wal_path)].into_iter().flatten().max()
+    }
+
     pub fn file_stats(&self) -> FileStats {
         let st = lock(&self.state);
         if let Some(d) = &self.dir {
@@ -3706,10 +3732,22 @@ impl Database {
         let logged = wal.append(txn, seq, &ops, sync).map_err(|e| self.poison(e))?;
         let full = {
             let mut st = lock(&self.state);
+            let now = super::state::now_ms();
+            // Rows changed per table, for its activity.
+            let mut changed: Vec<(usize, u64)> = Vec::new();
             for (table, op) in ops {
                 // The writer lock kept every table of the transaction.
                 let t = st.table_index(table).expect("table of a logged write");
+                if !matches!(op, Op::Profile { .. }) {
+                    match changed.iter_mut().find(|(i, _)| *i == t) {
+                        Some((_, n)) => *n += 1,
+                        None => changed.push((t, 1)),
+                    }
+                }
                 st.apply(t, op, seq.map_or(0, |n| n.seq));
+            }
+            for (t, n) in changed {
+                st.tables[t].activity.wrote(now, n);
             }
             st.txn = txn;
             if let Some(n) = seq {
@@ -4018,7 +4056,7 @@ impl<'a> WriteTxn<'a> {
             let key = Key::of(&doc[pk]).expect("validated key");
             self.drop_expired(t, &key, &doc[pk])?;
             if self.is_live(t, &key, &doc[pk]) {
-                return Err(Error::Schema(format!("duplicate primary key {:?}", doc[pk])));
+                return Err(Error::Schema(crate::query::hint::duplicate_key(&t.schema, &doc[pk])));
             }
             let doc = Arc::new(doc);
             let k = self.keys(t.id);
@@ -4101,7 +4139,7 @@ impl<'a> WriteTxn<'a> {
             (FieldType::Float, Value::Int(x)) => Value::Float(x as f64),
             (FieldType::Float, Value::Float(x)) if !x.is_finite() => return Err(Error::Schema(format!("bad value for {field}: {x} (FLOAT values are finite)"))),
             (FieldType::Float, v @ (Value::Float(_) | Value::Null)) => v,
-            (FieldType::Int | FieldType::Float, v) => return Err(Error::Schema(format!("bad value for {field}: {v:?}"))),
+            (FieldType::Int | FieldType::Float, v) => return Err(Error::Schema(format!("bad value for {field}: {} (it takes a number)", crate::query::hint::sql_value(&v)))),
             _ => return Err(Error::Schema(format!("{field} is not a numeric field; only INT and FLOAT are set in place"))),
         };
         if self.drop_expired(t, &k, key)? || !self.is_live(t, &k, key) {

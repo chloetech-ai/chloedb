@@ -1,0 +1,48 @@
+# Qdrant 1.20.
+# One node with the whole budget of the other engines' two data pods (3
+# CPUs, 6 GiB; compare.sh fills in __CPU__ and __MEM__), its data on the
+# node's own disk (emptyDir). compare.sh writes it from this file.
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  namespace: compare
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {app: qdrant}
+  ports:
+    - {name: api, port: 6333}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qdrant-0
+  namespace: compare
+  labels: {app: qdrant, engine: qdrant}
+spec:
+  hostname: qdrant-0
+  subdomain: qdrant
+  nodeName: __NODE__
+  containers:
+    - name: qdrant
+      image: qdrant/qdrant:v1.20.0
+      imagePullPolicy: IfNotPresent
+      env:
+        - {name: QDRANT__TELEMETRY_DISABLED, value: "true"}
+        # Threads for search and for the optimizer within the pod's budget.
+        - {name: QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS, value: "3"}
+        - {name: QDRANT__STORAGE__PERFORMANCE__MAX_OPTIMIZATION_THREADS, value: "3"}
+      readinessProbe:
+        httpGet: {path: /readyz, port: api}
+        periodSeconds: 2
+      ports:
+        - {name: api, containerPort: 6333}
+      resources:
+        requests: {cpu: __CPU__, memory: __MEM__}
+        limits: {cpu: __CPU__, memory: __MEM__}
+      volumeMounts:
+        - {name: data, mountPath: /qdrant/storage}
+  volumes:
+    - name: data
+      emptyDir: {}

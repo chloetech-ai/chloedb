@@ -127,6 +127,10 @@ pub struct QueryReq {
     /// ([`Answer::arrow`]) when the coordinator puts its rows after the
     /// others' ([`strata::cluster::concatenates`]).
     pub arrow: Option<usize>,
+    /// Count the answer's rows as retrievals of their documents
+    /// ([`crate::reads`]): a client's query, which a coordinator counts by
+    /// the replica that answered each row.
+    pub reads: bool,
 }
 
 /// The writes a read must see, so that a client reads its own writes
@@ -229,6 +233,9 @@ pub struct Service {
     pub live: Arc<LiveQueries>,
     /// The latest and slow queries, and statistics per statement.
     pub query_log: QueryLog,
+    /// How often each table's documents are retrieved and its keys asked
+    /// for ([`crate::reads`]).
+    pub reads: crate::reads::Reads,
     /// Rates and gauges every few seconds ([`Self::sample`]).
     pub series: Series,
     /// When the server started.
@@ -395,6 +402,7 @@ impl Service {
             kube: None,
             live: Arc::new(LiveQueries::default()),
             query_log: QueryLog::default(),
+            reads: crate::reads::Reads::default(),
             series: Series::default(),
             started: std::time::SystemTime::now(),
             keys: Arc::new(Keys::memory()),
@@ -1857,6 +1865,10 @@ impl Service {
     /// shards.
     async fn select(self: &Arc<Self>, mut req: QueryReq, schema: Arc<Schema>, select: Select, t0: Instant, timeout: Duration) -> Result<Answer, ApiError> {
         let kind = metrics::kind(&select);
+        // A client's answer counts its rows' documents as retrieved; a
+        // shard's to a coordinator, which counts them, does not.
+        req.reads = !req.shard && !req.quiet && self.reads.on();
+        let mut served = Vec::new();
         let mut lease = 0;
         req.profile |= self.profiling.cpu_all.load(Ordering::Relaxed);
         let profiled = req.profile;
@@ -1941,7 +1953,10 @@ impl Service {
                     let reach = select.limit.unwrap_or(0).saturating_add(select.offset);
                     let r = match self.max_rows.filter(|&m| reach > m) {
                         Some(m) => Err(ApiError::bad(format!("query error: LIMIT and OFFSET reach row {reach}; a query returns at most {m} rows"))),
-                        None => c.query(&req, &schema, &select, t0 + timeout).await.map(|m| (m.rs, m.missing)),
+                        None => c.query(&req, &schema, &select, t0 + timeout).await.map(|m| {
+                            served = m.served;
+                            (m.rs, m.missing)
+                        }),
                     };
                     drop(permit);
                     r
@@ -1950,6 +1965,17 @@ impl Service {
             }
         };
         drop(live);
+        if req.reads {
+            match (&res, &self.backend) {
+                (Ok((rs, _)), Backend::Local(_)) => self.reads.retrieved(&schema.table, crate::reads::At::here(), &rs.keys),
+                (Ok(_), Backend::Cluster(_)) => {
+                    for s in served {
+                        self.reads.retrieved(&schema.table, s.at, &s.keys);
+                    }
+                }
+                _ => {}
+            }
+        }
         // A shard's answer to a coordinator is not a client's.
         let a = self.done(&req.sql, kind, t0, self.max_rows.filter(|_| !req.shard), req.shard, (profiled, req.quiet), res);
         // A lease made for a query that failed holds nothing to fetch.
@@ -2278,7 +2304,9 @@ impl Service {
     /// `SELECT *` answers it and the number of the write that last changed
     /// it, or none. A coordinator asks each key's shard. At most
     /// [`MAX_GET_KEYS`] keys.
-    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, after: &After, timeout_ms: u64) -> Result<KeyRows, ApiError> {
+    /// With `count`, a client's read, its keys count as asked for
+    /// ([`crate::reads`]).
+    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, after: &After, timeout_ms: u64, count: bool) -> Result<KeyRows, ApiError> {
         let t0 = Instant::now();
         if keys.len() > MAX_GET_KEYS {
             return Err(ApiError::bad(format!("a read by key takes at most {MAX_GET_KEYS} keys, not {}", keys.len())));
@@ -2298,6 +2326,7 @@ impl Service {
                 let Some(permit) = self.admit(timeout).await else { return Err(self.rejected("get", t0)) };
                 let db = db.clone();
                 let opts = ExecOptions { deadline: Some(deadline), ..db.exec.clone() };
+                let asked = if count && self.reads.on() { keys.clone() } else { Vec::new() };
                 let r = tokio::task::spawn_blocking(move || {
                     let columns = Db::get_columns(view.schema());
                     db.get_many_at(&view, &keys, &opts).map(|rows| KeyRows { table: view.schema().table.clone(), columns, rows: rows.into_iter().map(|r| r.map(|r| (r.row, r.seq_no))).collect() })
@@ -2305,9 +2334,20 @@ impl Service {
                 .await
                 .map_err(ApiError::internal)?;
                 drop(permit);
+                if let Ok(got) = &r {
+                    let found: Vec<bool> = got.rows.iter().map(Option::is_some).collect();
+                    self.reads.asked(&schema.table, crate::reads::At::here(), &asked, &found);
+                }
                 r.map_err(ApiError::from)
             }
-            Backend::Cluster(c) => c.get(&schema, &keys, after, deadline).await.map(|rows| KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }),
+            Backend::Cluster(c) => c.get(&schema, &keys, after, deadline).await.map(|(rows, served)| {
+                if count && self.reads.on() {
+                    for s in served {
+                        self.reads.asked(&schema.table, s.at, &s.keys, &s.found);
+                    }
+                }
+                KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }
+            }),
         };
         telemetry::record("get", t0, if r.is_ok() { "ok" } else { "error" });
         r
@@ -2773,6 +2813,112 @@ impl Service {
         }
         reader.await.map_err(ApiError::internal)?;
         Ok(out.to_json())
+    }
+
+    /// Imports the Parquet file `body` into one table, as
+    /// [`Self::import_sqlite`] imports a SQLite file's: into the table
+    /// `opts.table` names (else the one an export kept in the file),
+    /// created from the file's columns when missing
+    /// ([`strata::parquet::Source::plan_over`]), the rows checked before any
+    /// is written and then written through the writer (or routed to the
+    /// shards) [`IMPORT_OPS`] a request. With `plan_only`, returns the plan
+    /// ([`strata::parquet::Plan::to_json`]) and writes nothing; otherwise
+    /// what was written ([`strata::parquet::Imported::to_json`]). Rows need
+    /// a write key, and an import that creates the table an admin key.
+    #[cfg(feature = "parquet")]
+    pub async fn import_parquet(self: &Arc<Self>, who: &Principal, body: axum::body::Bytes, opts: strata::parquet::ImportOptions, plan_only: bool, timeout_ms: u64) -> Result<Json, ApiError> {
+        who.may(Scope::Write, "an import")?;
+        let catalog = self.catalog();
+        let checked = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+            let dir = tempfile::tempdir().map_err(ApiError::internal)?;
+            let path = dir.path().join("upload.parquet");
+            std::fs::write(&path, &body).map_err(ApiError::internal)?;
+            let shown = path.display().to_string();
+            let hide = |e: strata::Error| ApiError::bad(e.to_string().replace(&shown, "the uploaded file").replace("upload.parquet: ", ""));
+            let src = strata::parquet::Source::open(&path).map_err(hide)?;
+            if opts.table.is_none() && opts.schema.is_none() && src.kept_table().is_none() {
+                return Err(ApiError::bad("name the table the rows go to (?table=): the file keeps none"));
+            }
+            let plan = src.plan_over(&catalog, &opts).map_err(hide)?;
+            if !plan_only {
+                src.documents(&plan, |docs| {
+                    for d in docs {
+                        d?;
+                    }
+                    Ok(())
+                })
+                .map_err(hide)?;
+            }
+            Ok((dir, src, plan))
+        })
+        .await
+        .map_err(ApiError::internal)??;
+        let (dir, src, plan) = checked;
+        if plan_only {
+            return Ok(plan.to_json());
+        }
+        if !plan.exists {
+            who.may(Scope::Admin, &format!("an import that creates a table ({})", plan.schema.table))?;
+            keys::note(format!("Parquet import created table {}", plan.schema.table));
+            self.create_table(plan.schema.clone(), timeout_ms).await?;
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<strata::Result<Vec<Json>>>(1);
+        let p = plan.clone();
+        let reader = tokio::task::spawn_blocking(move || {
+            let _dir = dir;
+            let op = if p.schema.primary_key.is_some() { "upsert" } else { "insert" };
+            src.documents(&p, |docs| loop {
+                let chunk: strata::Result<Vec<Json>> = (&mut *docs).take(IMPORT_OPS).map(|d| d.map(|d| json!({"op": op, "table": p.schema.table, "doc": js::document_json(&p.schema, &d)}))).collect();
+                let last = chunk.as_ref().map_or(true, |c| c.len() < IMPORT_OPS);
+                if tx.blocking_send(chunk).is_err() {
+                    return Err(strata::Error::Query("stopped".into()));
+                }
+                if last {
+                    return Ok(());
+                }
+            })
+            .map(|((), nonfinite)| nonfinite)
+        });
+        let mut out = strata::parquet::Imported { table: plan.schema.table.clone(), files: plan.files, created: !plan.exists, skipped: plan.skipped.clone(), notes: plan.notes.clone(), ..Default::default() };
+        while let Some(ops) = rx.recv().await {
+            let ops = ops?;
+            if !ops.is_empty() {
+                out.rows += self.write_ops(ops, None).await?.rows;
+            }
+        }
+        if let Ok(Ok(nonfinite)) = reader.await {
+            out.notes.extend(strata::parquet::nonfinite_notes(&plan.schema, &nonfinite));
+        }
+        Ok(out.to_json())
+    }
+
+    /// Writes one table (the server's only one, or `table`) to a Parquet
+    /// file, from one snapshot ([`strata::parquet::export`]), as
+    /// [`Self::export_sqlite`] writes a SQLite file.
+    #[cfg(feature = "parquet")]
+    pub async fn export_parquet(self: &Arc<Self>, table: Option<String>, meta: bool) -> Result<(tempfile::TempDir, PathBuf, strata::parquet::Exported), ApiError> {
+        let Backend::Local(db) = &self.backend else {
+            return Err(ApiError::bad("a coordinator holds no rows: export from each shard's server, or with strata-server export"));
+        };
+        let db = db.clone();
+        tokio::task::spawn_blocking(move || {
+            let table = match table {
+                Some(t) => t,
+                None => {
+                    let all = db.catalog();
+                    match all.as_slice() {
+                        [one] => one.table.clone(),
+                        _ => return Err(ApiError::bad(format!("a Parquet file holds one table: name it (?tables=), one of {}", all.iter().map(|s| s.table.as_str()).collect::<Vec<_>>().join(", ")))),
+                    }
+                }
+            };
+            let dir = tempfile::tempdir().map_err(ApiError::internal)?;
+            let path = dir.path().join("export.parquet");
+            let r = strata::parquet::export(&db, &path, &strata::parquet::ExportOptions { tables: vec![table], meta })?;
+            Ok((dir, path, r))
+        })
+        .await
+        .map_err(ApiError::internal)?
     }
 
     /// Creates a table, as `CREATE TABLE` does ([`Self::ddl`]): on a local

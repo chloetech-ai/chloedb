@@ -1,0 +1,35 @@
+milvus    bm25                     c=1        651 q/s  p50   1.281 ms  p90   2.185 ms  p99   5.642 ms  errors 0
+milvus    bm25                     c=4       1353 q/s  p50   2.527 ms  p90   4.455 ms  p99  11.523 ms  errors 0
+milvus    bm25                     c=16      1732 q/s  p50   8.272 ms  p90  13.799 ms  p99  22.303 ms  errors 0
+milvus    bm25 + filter            c=1        487 q/s  p50   1.845 ms  p90   2.508 ms  p99   5.182 ms  errors 0
+milvus    bm25 + filter            c=4        772 q/s  p50   4.395 ms  p90   6.708 ms  p99  19.954 ms  errors 0
+milvus    bm25 + filter            c=16      1387 q/s  p50  10.309 ms  p90  18.180 ms  p99  25.374 ms  errors 0
+milvus    vector                   c=1        541 q/s  p50   1.721 ms  p90   2.168 ms  p99   3.255 ms  errors 0
+milvus    vector                   c=4        869 q/s  p50   3.700 ms  p90   5.682 ms  p99  22.600 ms  errors 0
+milvus    vector                   c=16       999 q/s  p50  13.718 ms  p90  26.872 ms  p99  36.005 ms  errors 0
+milvus    vector + filter          c=1        352 q/s  p50   2.703 ms  p90   3.561 ms  p99   5.816 ms  errors 0
+milvus    vector + filter          c=4        488 q/s  p50   6.870 ms  p90  11.244 ms  p99  25.037 ms  errors 0
+milvus    vector + filter          c=16       574 q/s  p50  24.890 ms  p90  38.152 ms  p99  45.694 ms  errors 0
+milvus    hybrid (RRF)             c=1        163 q/s  p50   5.983 ms  p90   7.551 ms  p99   9.816 ms  errors 0
+milvus    hybrid (RRF)             c=4        201 q/s  p50  17.918 ms  p90  30.047 ms  p99  36.599 ms  errors 0
+milvus    hybrid (RRF)             c=16       229 q/s  p50  70.612 ms  p90  80.549 ms  p99  92.371 ms  errors 0
+milvus    hybrid (weighted)        c=1        168 q/s  p50   5.861 ms  p90   7.116 ms  p99   9.117 ms  errors 0
+milvus    hybrid (weighted)        c=4        205 q/s  p50  17.519 ms  p90  30.027 ms  p99  36.519 ms  errors 0
+milvus    hybrid (weighted)        c=16       230 q/s  p50  70.273 ms  p90  79.116 ms  p99  91.406 ms  errors 0
+milvus    boosted (bm25 × decay)   c=1        504 q/s  p50   1.850 ms  p90   2.661 ms  p99   4.011 ms  errors 0
+milvus    boosted (bm25 × decay)   c=4        978 q/s  p50   3.522 ms  p90   5.835 ms  p99  14.583 ms  errors 0
+milvus    boosted (bm25 × decay)   c=16      1069 q/s  p50  13.775 ms  p90  21.739 ms  p99  30.378 ms  errors 0
+milvus    facet                    unavailable: no aggregations: a query counts the rows of a filter, not of each value
+milvus    key lookup               c=1       2387 q/s  p50   0.408 ms  p90   0.447 ms  p99   0.645 ms  errors 0
+milvus    key lookup               c=4       6947 q/s  p50   0.538 ms  p90   0.772 ms  p99   1.464 ms  errors 0
+milvus    key lookup               c=16      7310 q/s  p50   2.057 ms  p90   2.688 ms  p99   4.944 ms  errors 0
+milvus    phrase                   c=1        992 q/s  p50   0.925 ms  p90   1.319 ms  p99   2.490 ms  errors 0
+milvus    phrase                   c=4       1970 q/s  p50   1.878 ms  p90   2.897 ms  p99   5.351 ms  errors 0
+milvus    phrase                   c=16      1976 q/s  p50   7.659 ms  p90  10.206 ms  p99  15.867 ms  errors 0
+milvus    typo                     unavailable: no fuzzy matching
+milvus    prefix                   unavailable: no word prefixes: TEXT_MATCH matches whole terms and LIKE a prefix of the whole string
+milvus    similar items            c=1        467 q/s  p50   2.069 ms  p90   2.484 ms  p99   3.467 ms  errors 0
+milvus    similar items            c=4        676 q/s  p50   4.793 ms  p90   7.396 ms  p99  24.208 ms  errors 0
+milvus    similar items            c=16       680 q/s  p50  19.560 ms  p90  36.953 ms  p99  44.332 ms  errors 0
+milvus    sql aggregate            unavailable: no GROUP BY
+wrote /data/compare/run-milvus.json

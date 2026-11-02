@@ -48,10 +48,15 @@ rskafka = { version = "0.6", default-features = false }
 pprof = { version = "0.15", default-features = false }
 
 [features]
-default = ["datafusion"]
+default = ["datafusion", "parquet", "s3"]
 # DataFusion as the engine of joins, groups and sorts over a few thousand
 # rows or more (`strata::query::df`); the default engine picks it by size.
 datafusion = ["strata/datafusion"]
+# Parquet files in and out: `import` and `export`, `POST /v1/import` and
+# `GET /v1/export` with format=parquet (`strata::parquet`).
+parquet = ["datafusion", "strata/parquet"]
+# `s3://` URLs in `import` and `export` (`strata::objects`).
+s3 = ["strata/s3"]
 # BERT embedding models (bge-small-en-v1.5, snowflake-arctic-embed-m-v1.5) through candle.
 bert = ["strata/bert"]
 # `bert` with matrix products in Apple's Accelerate framework (macOS only).

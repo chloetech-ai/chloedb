@@ -1,0 +1,80 @@
+Name:             run-es-5dvn6
+Namespace:        compare
+Priority:         0
+Service Account:  default
+Node:             strata-worker3/172.19.0.5
+Start Time:       Sun, 01 Nov 2026 22:03:43 -0800
+Labels:           batch.kubernetes.io/controller-uid=ad8a4248-53ed-46c4-bcc3-b6a2554a0321
+                  batch.kubernetes.io/job-name=run-es
+                  controller-uid=ad8a4248-53ed-46c4-bcc3-b6a2554a0321
+                  job-name=run-es
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.244.1.4
+IPs:
+  IP:           10.244.1.4
+Controlled By:  Job/run-es
+Containers:
+  compare:
+    Container ID:  containerd://6796bce9f045677c5edd8401facc444ca447a885345bbb7d311753c08b2514de
+    Image:         strata-server:compare
+    Image ID:      docker.io/library/import-2026-11-02@sha256:558ed7893b0b5b27fdb3d8f76b47c88199cb97a642ae8bcb4d61e041afbbdeda
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      es
+      --url
+      http://es-0.es:9200,http://es-1.es:9200
+      --out
+      /data/compare
+      --collection
+      nq-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Sun, 01 Nov 2026 22:03:43 -0800
+      Finished:     Sun, 01 Nov 2026 22:08:09 -0800
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:  /beir
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-d2crc (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  Directory
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-d2crc:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:                      <none>

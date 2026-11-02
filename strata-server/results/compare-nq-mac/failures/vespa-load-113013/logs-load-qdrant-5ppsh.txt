@@ -1,0 +1,46 @@
+qdrant: average body length 59.2 terms (5.4 s)
+qdrant: index created in 0.1 s
+qdrant: 25000 documents sent, 2 s
+qdrant: 50000 documents sent, 3 s
+qdrant: 75000 documents sent, 5 s
+qdrant: 100000 documents sent, 7 s
+qdrant: 125000 documents sent, 9 s
+qdrant: 150000 documents sent, 11 s
+qdrant: 175000 documents sent, 12 s
+qdrant: 200000 documents sent, 14 s
+qdrant: 225000 documents sent, 16 s
+qdrant: 250000 documents sent, 18 s
+qdrant: 275000 documents sent, 20 s
+qdrant: 300000 documents sent, 22 s
+qdrant: 325000 documents sent, 23 s
+qdrant: 350000 documents sent, 26 s
+qdrant: 375000 documents sent, 28 s
+qdrant: 400000 documents sent, 30 s
+qdrant: 425000 documents sent, 32 s
+qdrant: 450000 documents sent, 34 s
+qdrant: 475000 documents sent, 36 s
+qdrant: 500000 documents sent, 38 s
+qdrant: 525000 documents sent, 40 s
+qdrant: 550000 documents sent, 42 s
+qdrant: 575000 documents sent, 43 s
+qdrant: 600000 documents sent, 45 s
+qdrant: 625000 documents sent, 47 s
+qdrant: 650000 documents sent, 49 s
+qdrant: 675000 documents sent, 51 s
+qdrant: 700000 documents sent, 53 s
+qdrant: 725000 documents sent, 55 s
+qdrant: 750000 documents sent, 57 s
+qdrant: 775000 documents sent, 59 s
+qdrant: 800000 documents sent, 61 s
+qdrant: 825000 documents sent, 63 s
+qdrant: 850000 documents sent, 65 s
+qdrant: 875000 documents sent, 67 s
+qdrant: 900000 documents sent, 69 s
+qdrant: 925000 documents sent, 71 s
+qdrant: 950000 documents sent, 73 s
+qdrant: 975000 documents sent, 75 s
+qdrant: 1000000 documents sent, 77 s
+qdrant: 1000000 documents (6.8 GB) sent in 77.2 s
+qdrant: index_s in 1857.0 s
+qdrant: indexed 1857.0 s after the last write; 1934.2 s in all
+wrote /data/compare/load-qdrant.json

@@ -234,16 +234,50 @@ fn prefixes_through_the_lifecycle() {
     check(&db, &docs);
 }
 
+/// Whether `text` matches LIKE `pattern`: `%` any run of characters, `_`
+/// one.
+fn like(text: &[char], pattern: &[char]) -> bool {
+    match pattern.split_first() {
+        None => text.is_empty(),
+        Some(('%', rest)) => (0..=text.len()).any(|i| like(&text[i..], rest)),
+        Some(('_', rest)) => !text.is_empty() && like(&text[1..], rest),
+        Some((c, rest)) => text.first() == Some(c) && like(&text[1..], rest),
+    }
+}
+
+/// A pattern the index cannot answer (`%` inside it, `_`, any `ILIKE`)
+/// tests each row the other conditions keep; what is no text pattern
+/// at all is refused.
 #[test]
-fn like_patterns_the_index_cannot_answer_are_refused() {
+fn like_patterns_the_index_cannot_answer_test_each_row() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::create(&dir.path().join("r.strata"), schema(), DbOptions::default()).unwrap();
     db.load((0..50).map(doc)).unwrap();
     let none = Params::new();
+    let ids: Vec<String> = (0..50).map(|i| doc(i)[0].as_str().unwrap().to_string()).collect();
+    for (sql, pattern, fold) in [
+        ("SELECT id FROM queries WHERE id LIKE '%how%'", "%how%", false),
+        ("SELECT id FROM queries WHERE id LIKE 'a_b%'", "a_b%", false),
+        ("SELECT id FROM queries WHERE id LIKE 'h_t%' AND n >= 0", "h_t%", false),
+        ("SELECT id FROM queries WHERE id ILIKE 'H%W%'", "h%w%", true),
+        ("SELECT id FROM queries WHERE id NOT LIKE '%o%'", "%o%", false),
+    ] {
+        let p: Vec<char> = pattern.chars().collect();
+        let mut want: Vec<String> = ids
+            .iter()
+            .filter(|id| {
+                let t: Vec<char> = if fold { id.to_lowercase().chars().collect() } else { id.chars().collect() };
+                like(&t, &p) != sql.contains("NOT LIKE")
+            })
+            .cloned()
+            .collect();
+        let mut got: Vec<String> = db.query(sql, &none).unwrap_or_else(|e| panic!("{sql}: {e}")).rows.into_iter().map(|r| r[0].as_str().unwrap().to_string()).collect();
+        want.sort();
+        got.sort();
+        assert!(!want.is_empty() || sql.contains("a_b"), "{sql}: a pattern that matches some rows");
+        assert_eq!(got, want, "{sql}");
+    }
     for (sql, says) in [
-        ("SELECT id FROM queries WHERE id LIKE '%how%'", "not indexed"),
-        ("SELECT id FROM queries WHERE id LIKE 'a_b%'", "not indexed"),
-        ("SELECT id FROM queries WHERE id ILIKE 'how%'", "lowercased"),
         ("SELECT id FROM queries WHERE n LIKE '1%'", "KEYWORD"),
         ("SELECT id FROM queries WHERE PREFIX(id, 'a', synonyms => 1)", "unknown option"),
         ("SELECT id FROM queries WHERE PREFIX(id, 'a', fuzzy => 3)", "fuzzy => 0, 1, 2 or 'auto'"),

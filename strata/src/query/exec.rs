@@ -3542,11 +3542,14 @@ impl<'a> Executor<'a> {
             }
             for (code, c) in code_counts.into_iter().enumerate() {
                 if c > 0 {
-                    let n = counts.len();
                     let v = kw.value(code as u32);
-                    *counts.entry(v.to_string()).or_insert(0) += c;
-                    if counts.len() > n {
-                        self.charge.add(48 + v.len() as u64)?;
+                    // A value an earlier segment had is not copied again.
+                    match counts.get_mut(v) {
+                        Some(n) => *n += c,
+                        None => {
+                            counts.insert(v.to_string(), c);
+                            self.charge.add(48 + v.len() as u64)?;
+                        }
                     }
                 }
             }
@@ -3748,9 +3751,11 @@ impl<'a> Executor<'a> {
         let mut keys = Builder::new();
         let mut bytes = 0u64;
         let mut at: Option<Seg<'a>> = None;
+        let mut seg_keys = None;
         for (r, h) in hits.iter().enumerate() {
             if at.as_ref().is_none_or(|s| s.ord != h.seg) {
                 at = Some(self.seg_by_ord(h.seg));
+                seg_keys = self.snap.pk(h.seg);
             }
             let s = at.as_ref().expect("the hit's segment");
             let fetched = self.fetch(&mut p, s, h)?;
@@ -3769,8 +3774,20 @@ impl<'a> Executor<'a> {
                     return Ok(None);
                 }
             }
-            if pk.is_none() && keys.push(self.key(h), n).is_err() {
-                return Ok(None);
+            // The key copied from its index into the array, not made a
+            // value first ([`Executor::key`]).
+            if pk.is_none() {
+                let pushed = match seg_keys.map(|k| k.key_ref(h.doc)) {
+                    Some(KeyRef::Str(b)) => match std::str::from_utf8(b) {
+                        Ok(x) => keys.push_str(x, n),
+                        Err(_) => keys.push(Value::Str(String::from_utf8_lossy(b).into_owned()), n),
+                    },
+                    Some(KeyRef::Int(k)) => keys.push(Value::Int(k), n),
+                    None => keys.push(Value::Null, n),
+                };
+                if pushed.is_err() {
+                    return Ok(None);
+                }
             }
             // Counted every 1,024 rows rather than every row.
             if r % 1024 == 1023 {

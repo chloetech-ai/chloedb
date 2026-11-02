@@ -154,7 +154,7 @@ fn bad_decays_and_products_are_refused() {
         ("SELECT id FROM docs ORDER BY clamp(year, 1) DESC", "clamp() takes three arguments"),
         ("SELECT id FROM docs ORDER BY bm25(body, 'x') > 2 DESC", "takes + - * / %"),
         ("SELECT id FROM docs ORDER BY 2 * distance(emb, :v) DESC", "use similarity(...)"),
-        ("SELECT id FROM docs ORDER BY upper(category) DESC", "unknown score function upper"),
+        ("SELECT id FROM docs ORDER BY upper(category) DESC", "unknown function upper in a ranking"),
         ("SELECT id FROM docs ORDER BY bm25(body, 'x') + 1 ASC", "ordered DESC"),
     ] {
         let p = Params::new().set("v", Value::Vector(vec![0.5; DIM].into()));

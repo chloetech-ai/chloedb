@@ -4,15 +4,15 @@
     python3 analyze.py REPORTS_DIR BEIR_DIR/quora > tables.md
 
 Reads run-<label>.json (timings and answers), writes-<engine>.json, stream-<engine>.json, load-<engine>.json,
-build-strata-s<i>.json and disk-vespa.jsonl (load time and index size) and
-cpu.jsonl from REPORTS_DIR, and the collection from BEIR_DIR/quora, and
+build-strata-s<i>.json, disk-vespa.jsonl and disk-<engine>.json (load time and index size) and
+cpu.jsonl from REPORTS_DIR, and the collection from BEIR_DIR (quora, nq-1000k, ...), and
 prints Markdown tables: load time and index size; latency and throughput per
 kind; and the quality of each engine's answers:
 
 - recall@10 of the vector kinds against an exact search (dot product over
   every document, with the filter for "vector + filter", and for "similar
   items" the item's vector, rated 3 or more, minus the keys it was seen with);
-- nDCG@10 against Quora's relevance judgments, for every kind ranked for a
+- nDCG@10 against the collection's relevance judgments (qrels.tsv), for every kind ranked for a
   query's text;
 - how many SQL aggregates equal the true answer, computed from the documents;
 - overlap@10 with Strata's answers, for every ranked kind, and how many
@@ -44,10 +44,26 @@ RUNS = [
     ("os", "OpenSearch"),
     ("solr", "Solr"),
     ("vespa", "Vespa"),
+    # One node each, with the whole budget (compare.sh, more/*.yaml).
+    ("meili", "Meilisearch"),
+    ("typesense", "Typesense"),
+    ("manticore", "Manticore"),
+    ("qdrant", "Qdrant"),
+    ("weaviate", "Weaviate"),
+    ("milvus", "Milvus"),
+    ("paradedb", "ParadeDB"),
+    ("postgres", "Postgres"),
+    ("redis", "Redis"),
 ]
+# A kind re-run on its own after a fix (run-<label>+<what>.json, for one
+# run solr --kinds "sql aggregate" --label solr+sql) replaces that kind in
+# run-<label>.json; the tables say which kinds came from such a run.
+# The one-node engines: their load reports have no merge, and compare.sh
+# measured their data directories on disk (disk-<engine>.json; Redis: memory).
+ONE_NODE = ["meili", "typesense", "manticore", "qdrant", "weaviate", "milvus", "paradedb", "postgres", "redis"]
 ENGINES = [k for k, _ in RUNS]
 NAMES = dict(RUNS)
-# Ranked for a query's text: scored against Quora's judgments.
+# Ranked for a query's text: scored against the collection's judgments.
 TEXT_RANKED = [
     "bm25",
     "bm25 + filter",
@@ -205,6 +221,25 @@ def rows_of(a):
     return [list(r.values()) if isinstance(r, dict) else list(r) for r in rows]
 
 
+def groups(engines, n=5):
+    """Engines in tables of at most n, so 14 engines' columns stay readable."""
+    return [engines[i:i + n] for i in range(0, len(engines), n)]
+
+
+def merge_reruns(rep, e, r):
+    """Kinds of run-<e>+*.json replace those of run-<e>.json; returns [(file, kinds)]."""
+    merged = []
+    names = sorted({p.name.removesuffix(".gz") for p in rep.glob(f"run-{e}+*.json*")})
+    for name in names:
+        x = load_json(rep / name)
+        kinds = set(x.get("answers", {})) | {h["kind"] for h in x.get("http", [])} | set(x.get("unavailable", {}))
+        r["http"] = [h for h in r["http"] if h["kind"] not in kinds] + x.get("http", [])
+        for key in ("answers", "query_ids", "probes", "differs", "unavailable"):
+            r[key] = {k: v for k, v in r.get(key, {}).items() if k not in kinds} | x.get(key, {})
+        merged.append((name, sorted(kinds)))
+    return merged
+
+
 def fmt(x, digits=2):
     if x is None:
         return "–"
@@ -217,13 +252,18 @@ def main():
     rep, beir = Path(sys.argv[1]), Path(sys.argv[2])
     runs = {e: load_json(rep / f"run-{e}.json") for e in ENGINES}
     runs = {e: r for e, r in runs.items() if r}
+    reruns = {e: merge_reruns(rep, e, r) for e, r in runs.items()}
+    for e, m in reruns.items():
+        for name, kinds in m:
+            print(f"{NAMES[e]}: {', '.join(kinds)} from {name}, a later run of these kinds alone.\n")
     # Strata's answers do not depend on how its CPUs are split: score one.
     scored = [e for e in runs if e != "strata-coord500m"]
     if "strata-coord500m" in runs and "strata" in runs:
         same = runs["strata-coord500m"]["answers"] == runs["strata"]["answers"]
         print(f"Strata's answers at both CPU splits are {'identical' if same else 'DIFFERENT'}.\n")
     rel = qrels(beir)
-    summary = {"engines": list(runs), "load": {}, "http": {}, "quality": {}, "unavailable": {}, "differs": {}, "cpu": {}}
+    summary = {"engines": list(runs), "load": {}, "http": {}, "quality": {}, "unavailable": {}, "differs": {}, "cpu": {},
+               "reruns": {e: [{"file": n, "kinds": k} for n, k in m] for e, m in reruns.items() if m}}
 
     # Load time and index size.
     print("## Load time and index size\n")
@@ -253,6 +293,21 @@ def main():
             searchable, merged = (f"{l['refresh_s']:.0f}", f"{l['merge_s']:.0f}") if e != "vespa" else ("on write", "(on its own)")
             docs = f"{l['indexed_docs']:,}" if l.get("indexed_docs") is not None else "–"
             print(f"| {NAMES[e]} | {l['total_s']:.0f} | send {l['ingest_s']:.0f} | {searchable} | {merged} | {size} | {docs} |")
+    for e in ONE_NODE:
+        l = load_json(rep / f"load-{e}.json")
+        if not l:
+            continue
+        disk = load_json(rep / f"disk-{e}.json")
+        l["index_bytes"] = disk["bytes"] if disk else l.get("index_bytes")
+        l["indexed_docs"] = l.get("searchable_docs")
+        summary["load"][e] = {k: l.get(k) for k in ["total_s", "ingest_s", "merge_s", "prepare_s", "steps", "index_bytes", "memory_bytes", "indexed_docs", "request_bytes"]}
+        if e == "redis" and l.get("memory_bytes"):
+            size = f"{l['memory_bytes'] / 1e9:.2f} (in memory)"
+        else:
+            size = f"{l['index_bytes'] / 1e9:.2f}" if l.get("index_bytes") is not None else "–"
+        steps = ", ".join(f"{k[:-2].replace('_', ' ')} {v:.0f}" for k, v in (l.get("steps") or {}).items())
+        docs = f"{l['indexed_docs']:,}" if l.get("indexed_docs") is not None else "–"
+        print(f"| {NAMES[e]} (one node) | {l['total_s']:.0f} | send {l['ingest_s']:.0f} | – | {steps or 'none'} | {size} | {docs} |")
 
     # Latency and throughput.
     def http(e, kind, c):
@@ -273,14 +328,16 @@ def main():
 
     for c in concs:
         print(f"\n## {c} client{'s' if c > 1 else ''}: queries per second, and latency in ms (p50 / p90 / p99)\n")
-        print("| kind | " + " | ".join(f"{NAMES[e]} q/s | {NAMES[e]} ms" for e in runs) + " |")
-        print("|---|" + "---|---|" * len(runs))
-        for kind in KINDS:
-            cells = []
-            for e in runs:
-                h = http(e, kind, c)
-                cells += [fmt(h["qps"], 0), pct(h)] if h else ["n/a", "n/a"]
-            print(f"| {kind} | " + " | ".join(cells) + " |")
+        for group in groups(list(runs)):
+            print("| kind | " + " | ".join(f"{NAMES[e]} q/s | {NAMES[e]} ms" for e in group) + " |")
+            print("|---|" + "---|---|" * len(group))
+            for kind in KINDS:
+                cells = []
+                for e in group:
+                    h = http(e, kind, c)
+                    cells += [fmt(h["qps"], 0), pct(h)] if h else ["n/a", "n/a"]
+                print(f"| {kind} | " + " | ".join(cells) + " |")
+            print()
     # Every percentile, for the appendix.
     with open(rep / "latency-full.md", "w") as f:
         f.write("| engine | kind | clients | q/s | p50 | p90 | p95 | p99 | p99.9 | max | mean | errors |\n")
@@ -343,16 +400,18 @@ def main():
             quality[e][kind] = q
     summary["quality"] = quality
 
-    print("\n## Answers: recall@10 against an exact search, nDCG@10 against Quora's judgments\n")
+    print("\n## Answers: recall@10 against an exact search, nDCG@10 against the collection's judgments\n")
     print("Unavailable kinds are n/a; recall is for the kinds an exact search can answer.\n")
-    print("| kind | " + " | ".join(f"{NAMES[e]} recall | {NAMES[e]} nDCG" for e in scored) + " |")
-    print("|---|" + "---|---|" * len(scored))
-    for kind in RANKED:
-        cells = []
-        for e in scored:
-            q = quality[e].get(kind)
-            cells += [fmt(q.get("recall_at_10"), 3) if q else "n/a", fmt(q.get("ndcg_at_10"), 3) if q else "n/a"]
-        print(f"| {kind} | " + " | ".join(cells) + " |")
+    for group in groups(scored):
+        print("| kind | " + " | ".join(f"{NAMES[e]} recall | {NAMES[e]} nDCG" for e in group) + " |")
+        print("|---|" + "---|---|" * len(group))
+        for kind in RANKED:
+            cells = []
+            for e in group:
+                q = quality[e].get(kind)
+                cells += [fmt(q.get("recall_at_10"), 3) if q else "n/a", fmt(q.get("ndcg_at_10"), 3) if q else "n/a"]
+            print(f"| {kind} | " + " | ".join(cells) + " |")
+        print()
     if aggregates:
         print("\n## SQL aggregates equal to the true answer\n")
         print("| " + " | ".join(NAMES[e] for e in scored) + " |")
@@ -365,19 +424,21 @@ def main():
     if strata:
         others = [e for e in scored if e != "strata"]
         print("\n## Agreement with Strata's answers\n")
-        print("| kind | " + " | ".join(NAMES[e] for e in others) + " |")
-        print("|---|" + "---|" * len(others))
-        for kind in (k for k in KINDS if k != "sql aggregate"):
-            cells = []
-            for e in others:
-                q = quality[e].get(kind)
-                if not q:
-                    cells.append("n/a")
-                elif "overlap_with_strata" in q:
-                    cells.append(f"{q['overlap_with_strata']:.3f} of the top 10")
-                else:
-                    cells.append(f"{q.get('same_as_strata')} of {q.get('of')} equal")
-            print(f"| {kind} | " + " | ".join(cells) + " |")
+        for group in groups(others, 7):
+            print("| kind | " + " | ".join(NAMES[e] for e in group) + " |")
+            print("|---|" + "---|" * len(group))
+            for kind in (k for k in KINDS if k != "sql aggregate"):
+                cells = []
+                for e in group:
+                    q = quality[e].get(kind)
+                    if not q:
+                        cells.append("n/a")
+                    elif "overlap_with_strata" in q:
+                        cells.append(f"{q['overlap_with_strata']:.3f} of the top 10")
+                    else:
+                        cells.append(f"{q.get('same_as_strata')} of {q.get('of')} equal")
+                print(f"| {kind} | " + " | ".join(cells) + " |")
+            print()
 
     # Writes (engine-compare writes): documents a second and latency per phase and clients, and how soon a write is found.
     wr = {e: load_json(rep / f"writes-{e}.json") for e in ENGINES}

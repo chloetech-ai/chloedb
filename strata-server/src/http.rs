@@ -21,7 +21,9 @@
 //! | `POST /v1/plan` | `{plan, timeout_ms?, min_seq_no?, min_seq_nos?}` (a plan as `/v1/explain` gives it) | rows, or `{written, seq_no?, seq_nos?}` |
 //! | `POST /v1/import?format=jsonl&table=name` | rows as JSON Lines, JSON, CSV or TSV (of the first table without `table`) | `{written, skipped_fields}` |
 //! | `POST /v1/import?format=sqlite&tables=a,b&plan=true` | a SQLite file (`application/vnd.sqlite3`; recognised by its first bytes too) | `{tables, skipped, written}`, or with `plan` the plan ([`strata::sqlite`]) |
+//! | `POST /v1/import?format=parquet&table=name&key=id&plan=true` | a Parquet file (`application/vnd.apache.parquet`; recognised by its first bytes too) | `{table, rows, created, skipped, notes, written}`, or with `plan` the plan ([`strata::parquet`]) |
 //! | `GET /v1/export?tables=a,b&fts=false&indexes=false&schemas=false` | | the database as a SQLite file |
+//! | `GET /v1/export?format=parquet&tables=name` | | one table as a Parquet file, keeping its Strata schema |
 //! | `POST /v1/schema/check` | a schema, in either JSON form | `{schema, short}`, or an error |
 //! | `POST /v1/explain` | `{sql, params?, hits?}` | the bound query, its plan IR and the executor's plan; with `hits`, the top rows with their `score()` and `features()` |
 //! | `POST /v1/embed` | `{text, field?, table?}` | `{table, field, vector}`: the text's vector by an embedded field's model; `vectors`, a vector a token, for a multi-vector field's (ColBERT) |
@@ -135,6 +137,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/schema", get(schema))
         .route("/v1/tables", get(tables))
         .route("/v1/tables/:table/paths", get(json_paths))
+        .route("/v1/index", get(index))
+        .route("/v1/index/reads/reset", post(reset_reads))
         .route("/v1/config", get(config))
         .route("/metrics", get(metrics))
         .route("/v1/query", post(query))
@@ -338,7 +342,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/export" => Scope::Admin,
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
         "/v1/alerts/rules" => Scope::Admin,
-        r if r.starts_with("/v1/admin/") || r.starts_with("/v1/queries") || r.starts_with("/v1/logs") || r.starts_with("/v1/profile") => Scope::Admin,
+        // The inspector names the keys most read.
+        r if r.starts_with("/v1/admin/") || r.starts_with("/v1/queries") || r.starts_with("/v1/logs") || r.starts_with("/v1/profile") || r.starts_with("/v1/index") => Scope::Admin,
         _ => Scope::Read,
     }
 }
@@ -440,6 +445,21 @@ async fn schema(State(app): State<App>, Query(q): Query<std::collections::HashMa
 async fn tables(State(app): State<App>) -> AxJson<Json> {
     let tables: Vec<Json> = app.svc.catalog().iter().map(|s| table_json(&app.svc, s)).collect();
     AxJson(json!({"tables": tables}))
+}
+
+/// `GET /v1/index?table=&sample=&seed=&terms=&top=`: the index
+/// inspector's statistics of a table ([`crate::inspect`]): this server's,
+/// or a coordinator's per replica, per shard and for its cluster.
+async fn index(State(app): State<App>, Query(q): Params) -> Res {
+    let a = crate::inspect::Asked::of(&json!(q))?;
+    Ok(AxJson(crate::inspect::answer(&app.svc, a).await?))
+}
+
+/// `POST /v1/index/reads/reset`: this server's read counts start again
+/// ([`crate::reads`]).
+async fn reset_reads(State(app): State<App>) -> AxJson<Json> {
+    app.svc.reads.reset();
+    AxJson(json!({"reset": true, "at_ms": crate::telemetry::now_ms()}))
 }
 
 /// `GET /v1/tables/:table/paths?field=&path=&where=`: a JSON field's
@@ -698,7 +718,7 @@ fn path_key(schema: &strata::schema::Schema, key: &str) -> Result<Json, ApiError
 async fn kv_one(State(app): State<App>, axum::extract::Path((table, key)): axum::extract::Path<(String, String)>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
     let t0 = Instant::now();
     let timeout_ms = q.get("timeout_ms").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let got = app.svc.get_rows(Some(&table), vec![strata::value::Value::Str(key.clone())], &after_of_query(&q)?, timeout_ms).await?;
+    let got = app.svc.get_rows(Some(&table), vec![strata::value::Value::Str(key.clone())], &after_of_query(&q)?, timeout_ms, true).await?;
     let took_ms = t0.elapsed().as_secs_f64() * 1e3;
     Ok(match got.rows.into_iter().next().flatten() {
         Some((row, seq_no)) => AxJson(json!({"table": got.table, "key": key, "found": true, "row": key_row(&got.columns, &row), "seq_no": seq_no, "took_ms": took_ms})).into_response(),
@@ -718,7 +738,7 @@ async fn kv_get(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         Some(Json::String(t)) => Some(t.as_str()),
         Some(_) => return Err(ApiError::bad("table is a table's name")),
     };
-    let got = app.svc.get_rows(table, keys, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
+    let got = app.svc.get_rows(table, keys, &after(&b)?, body_u64(&b, "timeout_ms"), true).await?;
     let seq_nos: Vec<Json> = got.rows.iter().map(|r| r.as_ref().map_or(Json::Null, |(_, s)| json!(s))).collect();
     let rows: Vec<Json> = got.rows.iter().map(|r| r.as_ref().map_or(Json::Null, |(row, _)| key_row(&got.columns, row))).collect();
     Ok(AxJson(json!({"table": got.table, "columns": got.columns, "rows": rows, "seq_nos": seq_nos, "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
@@ -795,7 +815,7 @@ async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
     if auth::simple_content_type(header_str(&headers, header::CONTENT_TYPE)) {
         return Err(ApiError {
             status: 415,
-            message: "send the rows with their content type (text/csv, text/tab-separated-values, application/x-ndjson, application/json, application/vnd.sqlite3 or application/octet-stream), not text/plain or a form".into(),
+            message: "send the rows with their content type (text/csv, text/tab-separated-values, application/x-ndjson, application/json, application/vnd.sqlite3, application/vnd.apache.parquet or application/octet-stream), not text/plain or a form".into(),
         });
     }
     let ct = header_str(&headers, header::CONTENT_TYPE).unwrap_or("").split(';').next().unwrap_or("").trim().to_ascii_lowercase();
@@ -806,8 +826,15 @@ async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
     if sqlite {
         return import_sqlite(&app, &who(w), &q, body).await;
     }
+    let parquet = match q.get("format") {
+        Some(f) => f.eq_ignore_ascii_case("parquet"),
+        None => matches!(ct.as_str(), "application/vnd.apache.parquet" | "application/x-parquet") || body.starts_with(b"PAR1"),
+    };
+    if parquet {
+        return import_parquet(&app, &who(w), &q, body).await;
+    }
     let format = match q.get("format") {
-        Some(f) => Some(Format::parse(f).ok_or_else(|| ApiError::bad(format!("unknown format {f:?}: jsonl, json, csv, tsv or sqlite")))?),
+        Some(f) => Some(Format::parse(f).ok_or_else(|| ApiError::bad(format!("unknown format {f:?}: jsonl, json, csv, tsv, sqlite or parquet")))?),
         None => {
             let ct = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
             let ct = ct.split(';').next().unwrap_or("").trim();
@@ -820,7 +847,7 @@ async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
             }
         }
     };
-    let format = format.ok_or_else(|| ApiError::bad("name the rows' format: ?format=jsonl, json, csv, tsv or sqlite"))?;
+    let format = format.ok_or_else(|| ApiError::bad("name the rows' format: ?format=jsonl, json, csv, tsv, sqlite or parquet"))?;
     let t0 = std::time::Instant::now();
     let (n, skipped) = app.svc.import(q.get("table").map(String::as_str), body, format).await?;
     Ok(AxJson(json!({"written": n, "skipped_fields": skipped, "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
@@ -864,17 +891,74 @@ async fn import_sqlite(app: &App, who: &Principal, q: &std::collections::HashMap
     Ok(AxJson(j))
 }
 
+/// A Parquet file's rows, into one table ([`Service::import_parquet`]):
+/// `?table=` names it (else the table an export kept in the file),
+/// `?key=` the key of a table the import creates (`""` for none),
+/// `?blobs_base64=true` keeps binary columns as base64 text, and
+/// `?plan=true` answers what the import would do and writes nothing.
+#[cfg(feature = "parquet")]
+async fn import_parquet(app: &App, who: &Principal, q: &std::collections::HashMap<String, String>, body: Bytes) -> Res {
+    if q.contains_key("tables") {
+        return Err(ApiError::bad("tables is for SQLite files: a Parquet file's rows go to one table (?table=)"));
+    }
+    let opts = strata::parquet::ImportOptions { table: q.get("table").cloned(), schema: None, key: q.get("key").cloned(), blobs_base64: flag(q, "blobs_base64", false)? };
+    let plan = flag(q, "plan", false)?;
+    let t0 = std::time::Instant::now();
+    let mut j = app.svc.import_parquet(who, body, opts, plan, 0).await?;
+    if !plan {
+        j["written"] = j["rows"].clone();
+        j["took_ms"] = json!(t0.elapsed().as_secs_f64() * 1e3);
+    }
+    Ok(AxJson(j))
+}
+
+#[cfg(not(feature = "parquet"))]
+async fn import_parquet(_: &App, _: &Principal, _: &std::collections::HashMap<String, String>, _: Bytes) -> Res {
+    Err(ApiError::bad("this server was built without Parquet (feature parquet)"))
+}
+
 /// The database as a new SQLite file ([`Service::export_sqlite`]), sent
 /// as it is read from disk: `?tables=a,b` for only those tables,
 /// `?fts=false`, `?indexes=false` and `?schemas=false` to leave out the
-/// FTS5 indexes, the B-tree indexes and the kept Strata schemas.
+/// FTS5 indexes, the B-tree indexes and the kept Strata schemas. With
+/// `?format=parquet`, one table (`?tables=`, which a database of one
+/// table may leave out) as a Parquet file ([`Service::export_parquet`]),
+/// `?schemas=false` leaving out its kept Strata schema.
 async fn export(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
-    if let Some(f) = q.get("format").filter(|f| !f.eq_ignore_ascii_case("sqlite")) {
-        return Err(ApiError::bad(format!("unknown format {f:?}: the export is a SQLite file (format=sqlite)")));
+    let format = q.get("format").map(|f| f.to_ascii_lowercase());
+    match format.as_deref() {
+        None | Some("sqlite") => {}
+        Some("parquet") => return export_parquet(&app, &q).await,
+        Some(f) => return Err(ApiError::bad(format!("unknown format {f:?}: format=sqlite or format=parquet"))),
     }
     let opts = strata::sqlite::ExportOptions { tables: tables_param(&q), fts: flag(&q, "fts", true)?, indexes: flag(&q, "indexes", true)?, meta: flag(&q, "schemas", true)? };
     let (dir, path, done) = app.svc.export_sqlite(opts).await?;
-    let file = tokio::fs::File::open(&path).await.map_err(ApiError::internal)?;
+    let name = done.tables.first().map_or("strata".into(), |t| t.table.clone());
+    let tables: Vec<String> = done.tables.iter().map(|t| t.table.clone()).collect();
+    send_file(dir, &path, "application/vnd.sqlite3", &format!("{name}.sqlite"), &tables).await
+}
+
+#[cfg(feature = "parquet")]
+async fn export_parquet(app: &App, q: &std::collections::HashMap<String, String>) -> Result<Response, ApiError> {
+    let mut tables = tables_param(q);
+    if tables.len() > 1 {
+        return Err(ApiError::bad("a Parquet file holds one table: name one (?tables=name), or export to a directory with strata-server export"));
+    }
+    let (dir, path, done) = app.svc.export_parquet(tables.pop(), flag(q, "schemas", true)?).await?;
+    let tables: Vec<String> = done.tables.iter().map(|t| t.table.clone()).collect();
+    let name = tables.first().cloned().unwrap_or_else(|| "strata".into());
+    send_file(dir, &path, "application/vnd.apache.parquet", &format!("{name}.parquet"), &tables).await
+}
+
+#[cfg(not(feature = "parquet"))]
+async fn export_parquet(_: &App, _: &std::collections::HashMap<String, String>) -> Result<Response, ApiError> {
+    Err(ApiError::bad("this server was built without Parquet (feature parquet)"))
+}
+
+/// The file `path` as the answer, read from disk as it is sent; `dir`,
+/// which holds it, goes when the last chunk is sent.
+async fn send_file(dir: tempfile::TempDir, path: &std::path::Path, content_type: &str, filename: &str, tables: &[String]) -> Result<Response, ApiError> {
+    let file = tokio::fs::File::open(path).await.map_err(ApiError::internal)?;
     let len = file.metadata().await.map_err(ApiError::internal)?.len();
     // The directory goes when the last chunk is sent.
     let chunks = futures::stream::unfold((file, Some(dir)), |(mut file, dir)| async move {
@@ -890,13 +974,11 @@ async fn export(State(app): State<App>, Query(q): Query<std::collections::HashMa
             Err(e) => Some((Err(e), (file, None))),
         }
     });
-    let name = done.tables.first().map_or("strata".into(), |t| t.table.clone());
-    let tables: Vec<&str> = done.tables.iter().map(|t| t.table.as_str()).collect();
     Ok((
         [
-            (header::CONTENT_TYPE, "application/vnd.sqlite3".to_string()),
+            (header::CONTENT_TYPE, content_type.to_string()),
             (header::CONTENT_LENGTH, len.to_string()),
-            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}.sqlite\"")),
+            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\"")),
             (header::HeaderName::from_static("x-strata-tables"), tables.join(",")),
         ],
         axum::body::Body::from_stream(chunks),
@@ -1158,9 +1240,11 @@ async fn explain(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         }
     };
     let (ir, tree) = (plan.to_json()?, json!(plan.explain(&tables)));
-    // `hits`: the top rows with the values they were ranked by.
+    // `hits`: the top rows with the values they were ranked by, for a
+    // query that ranks them (another has no values to show).
     let hits = match body_u64(&b, "hits") {
         0 => None,
+        _ if !strata::query::sql::ranks(sql) => None,
         n => {
             let sql = strata::query::sql::with_features(sql)?;
             let h = app.svc.query(QueryReq { sql, params: params.clone(), timeout_ms: body_u64(&b, "timeout_ms"), ..Default::default() }).await?;

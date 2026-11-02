@@ -377,11 +377,43 @@ pub(crate) struct TableState {
     /// The ties its semantic-ID fields have given ([`crate::sid::Ties`]),
     /// once a write needed them; kept up to date by every insert.
     pub ties: Option<crate::sid::Ties>,
+    /// The writes to it since the database was opened.
+    pub activity: Activity,
+}
+
+/// A table's writes since its database was opened, kept in memory only
+/// (nothing of it is written down): when the last one committed and how
+/// many rows they inserted, deleted or set, a replica's replayed ones
+/// and bulk loads included.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Activity {
+    /// Milliseconds since 1970 of the last commit that changed a row; 0
+    /// for none since the database was opened.
+    pub last_ms: u64,
+    /// Rows inserted, deleted or set since then (a replace counts its
+    /// insert and its delete).
+    pub ops: u64,
+    /// Commits that changed a row.
+    pub commits: u64,
+}
+
+impl Activity {
+    /// Notes a commit at `at_ms` that changed `ops` rows.
+    pub fn wrote(&mut self, at_ms: u64, ops: u64) {
+        self.last_ms = self.last_ms.max(at_ms);
+        self.ops += ops;
+        self.commits += 1;
+    }
+}
+
+/// Milliseconds since 1970 now (0 before it).
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
 impl TableState {
     pub fn new(id: u32, schema: Arc<Schema>, handles: Vec<Arc<SegHandle>>, chunk: usize, gen: u64) -> TableState {
-        TableState { id, schema, handles, mem: Memtable::new(chunk, gen), mem_live: Vec::new(), memsegs: Vec::new(), tail: Arc::default(), profiles: Arc::default(), ties: None }
+        TableState { id, schema, handles, mem: Memtable::new(chunk, gen), mem_live: Vec::new(), memsegs: Vec::new(), tail: Arc::default(), profiles: Arc::default(), ties: None, activity: Activity::default() }
     }
 
     /// Empties the memtable (after a flush).

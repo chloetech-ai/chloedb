@@ -147,7 +147,7 @@ async fn query(svc: &Arc<Service>, s: &str) -> Json {
 
 /// Queries of every table, and across them: those whose order is total
 /// (`true`) answer in the same order, the others with the same rows.
-const QUERIES: [(&str, bool); 27] = [
+const QUERIES: [(&str, bool); 29] = [
     ("SELECT item, action, ts FROM events WHERE usr = 'u3' ORDER BY ts DESC, id LIMIT 50", true),
     ("SELECT COUNT(*) FROM events", true),
     ("SELECT usr, COUNT(*) FROM events GROUP BY usr LIMIT 100", false),
@@ -157,6 +157,10 @@ const QUERIES: [(&str, bool); 27] = [
     ("SELECT id, price FROM items WHERE id IN (SELECT item FROM events WHERE usr = 'u5' AND action = 'buy') ORDER BY price DESC LIMIT 100", true),
     ("SELECT e.id, e.ts, i.title FROM events e JOIN items i ON e.item = i.id WHERE e.usr = 'u7' ORDER BY e.ts DESC, e.id LIMIT 20", true),
     ("SELECT u.country, COUNT(*) FROM events e JOIN users u ON e.usr = u.id WHERE e.action = 'buy' GROUP BY u.country", false),
+    // Groups of the other table's rows, the events grouped in their scan
+    // before the join.
+    ("SELECT u.id, u.country, COUNT(*) AS n, MAX(e.ts) FROM events e JOIN users u ON e.usr = u.id GROUP BY u.id, u.country ORDER BY n DESC, u.id LIMIT 20", true),
+    ("SELECT i.id, COUNT(*), COUNT(DISTINCT e.usr), AVG(e.ts) FROM events e JOIN items i ON e.item = i.id WHERE e.action = 'buy' GROUP BY i.id ORDER BY i.id", true),
     ("WITH h AS (SELECT item FROM events WHERE usr = 'u9' ORDER BY ts DESC LIMIT 30) SELECT id, cat FROM items WHERE id IN (SELECT item FROM h) AND cat <> 'c1' ORDER BY price LIMIT 30", true),
     ("SELECT id, score() FROM items WHERE MATCH(title, 'kettle') ORDER BY bm25(title, 'kettle') DESC LIMIT 10", true),
     // The first row of each group: of a column that places rows, of one

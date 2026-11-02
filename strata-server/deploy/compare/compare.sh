@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Strata, Elasticsearch, OpenSearch, Solr and Vespa on the kind cluster of
 # deploy/kind-test.sh, one engine at a time, each with 2 shards on the same
-# two nodes and the same CPU and memory in all. See README.md.
+# two nodes and the same CPU and memory in all; and nine more engines, each
+# one node with the same CPU and memory (meili, typesense, manticore,
+# qdrant, weaviate, milvus, paradedb, postgres, redis). See README.md.
 #
 #   compare.sh image                  # build the image and load it and the engines' images into the nodes
 #   compare.sh build                  # Strata: build both shards, one after the other, each on its node (timed)
-#   compare.sh up ENGINE              # start an engine: strata, es, os, solr or vespa
-#   compare.sh load es|os|solr|vespa  # load the collection into it (timed), then its size on disk
+#   compare.sh up ENGINE              # start an engine: strata, es, os, solr, vespa or one of the nine
+#   compare.sh load ENGINE            # load the collection into it (timed), then its size on disk (any engine but strata)
 #   compare.sh run ENGINE [ARGS]      # time the query kinds and record answers; CPU use around it
 #   compare.sh writes ENGINE [ARGS]   # time writes, updates and how soon a write is found (after run: it changes the index, then puts it back)
 #   compare.sh stream ENGINE [ARGS]   # stream documents through Redpanda into it: rates, flat out, a consumer crash (after run)
@@ -16,6 +18,7 @@
 # The trial licence's own run: compare.sh trial, then
 #   compare.sh run es --kinds "hybrid (RRF),hybrid (weighted)" --paid --label es-trial
 # Reports land in STRATA_WORK/compare (/data/compare in the cluster; OUT=/data/x for another).
+# COLLECTION=nq-1000k (default quora) picks the collection under STRATA_DATA for every step.
 set -euo pipefail
 
 CLUSTER=${CLUSTER:-strata}
@@ -25,6 +28,10 @@ SOLR_IMAGE=solr:10.1.0
 OS_IMAGE=opensearchproject/opensearch:3.9.0
 VESPA_IMAGE=vespaengine/vespa:8.778.45
 REDPANDA_IMAGE=redpandadata/redpanda:v25.2.9
+# The nine one-node engines (more/*.yaml; paradedb and postgres share postgres.yaml).
+MORE_IMAGES=(getmeili/meilisearch:v1.56.0 typesense/typesense:30.2 manticoresearch/manticore:29.9.0 qdrant/qdrant:v1.20.0
+    semitechnologies/weaviate:1.39.14 milvusdb/milvus:v2.6.26 paradedb/paradedb:0.26.4-pg17 redis:8.8.4)
+MORE="meili typesense manticore qdrant weaviate milvus paradedb postgres redis"
 NS=compare
 HERE=$(cd "$(dirname "$0")" && pwd)
 K="kubectl --context kind-$CLUSTER -n $NS"
@@ -46,11 +53,22 @@ COORD_CPU=${COORD_CPU:-1} COORD_MEM=1Gi
 # coordinator, and a content node on each data node; 1 CPU each, 6 GiB in all.
 VESPA_CONFIG_CPU=1 VESPA_CONFIG_MEM=2304Mi VESPA_CONTAINER_HEAP=768m
 VESPA_CONTENT_CPU=1 VESPA_CONTENT_MEM=1920Mi
+# The one-node engines: the whole budget in one pod, on the first data node.
+ONE_CPU=3 ONE_MEM=6Gi
 OUT=${OUT:-/data/compare}
+# The collection under STRATA_DATA (prepare_beir.py or prepare_beir_local.py), e.g. nq-1000k.
+COLLECTION=${COLLECTION:-quora}
 
 # render FILE I NODE CPU MEM [ZK|ROLE]: a manifest for node I.
 render() {
-    sed -e "s/__I__/$2/g" -e "s/__NODE__/$3/g" -e "s/__CPU__/$4/g" -e "s/__MEM__/$5/g" -e "s|__ZK__|${6:-}|g" -e "s|__ROLE__|${6:-}|g" "$HERE/$1"
+    sed -e "s/__I__/$2/g" -e "s/__NODE__/$3/g" -e "s/__CPU__/$4/g" -e "s/__MEM__/$5/g" -e "s|__ZK__|${6:-}|g" -e "s|__ROLE__|${6:-}|g" -e "s|__COLL__|$COLLECTION|g" "$HERE/$1"
+}
+
+# Strata's token: random, made once per cluster and kept in the secret
+# strata-token, which its pods and the client read (nothing fixed in the repo).
+token_secret() {
+    $K get secret strata-token >/dev/null 2>&1 ||
+        $K create secret generic strata-token --from-literal=token="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" >/dev/null
 }
 
 # job NAME NODE CPU MEM ARGS...: engine-compare as a Job on NODE (CPU and
@@ -59,7 +77,8 @@ job() {
     local name=$1 node=$2 cpu=$3 mem=$4
     shift 4
     local args res=""
-    args=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@")
+    token_secret
+    args=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" --collection "$COLLECTION")
     [ -n "$cpu" ] && res="resources: {requests: {cpu: $cpu, memory: $mem}, limits: {cpu: $cpu, memory: $mem}}"
     $K delete job "$name" --ignore-not-found >/dev/null
     $K apply -f - <<EOF
@@ -82,6 +101,7 @@ spec:
           $res
           env:
             - {name: STRATA_DATA, value: /beir}
+            - {name: STRATA_TOKEN, valueFrom: {secretKeyRef: {name: strata-token, key: token, optional: true}}}
           volumeMounts:
             - {name: beir, mountPath: /beir, readOnly: true}
             - {name: data, mountPath: /data}
@@ -106,7 +126,33 @@ urls() {
     os) echo http://os-0.os:9200,http://os-1.os:9200 ;;
     vespa) echo http://vespa-0.vespa:8080 ;;
     solr) echo http://solr-0.solr:8983,http://solr-1.solr:8983 ;;
+    meili) echo http://meili-0.meili:7700 ;;
+    typesense) echo http://typesense-0.typesense:8108 ;;
+    manticore) echo http://manticore-0.manticore:9308 ;;
+    qdrant) echo http://qdrant-0.qdrant:6333 ;;
+    weaviate) echo http://weaviate-0.weaviate:8080 ;;
+    milvus) echo http://milvus-0.milvus:19530 ;;
+    paradedb | postgres) echo "postgres://$1-0.$1:5432" ;;
+    redis) echo redis://redis-0.redis:6379 ;;
     esac
+}
+
+# A one-node engine's data directory (what compare.sh load measures on disk).
+datadir() {
+    case $1 in
+    meili) echo /meili_data ;;
+    typesense) echo /data ;;
+    manticore) echo /var/lib/manticore ;;
+    qdrant) echo /qdrant/storage ;;
+    weaviate) echo /var/lib/weaviate ;;
+    milvus) echo /var/lib/milvus ;;
+    paradedb | postgres) echo /var/lib/postgresql/data/pg ;;
+    esac
+}
+
+is_more() {
+    case " $MORE " in *" $1 "*) return 0 ;; esac
+    return 1
 }
 
 # cpu ENGINE TAG [LABEL]: each of the engine's containers' CPU time so far
@@ -130,6 +176,7 @@ image)
     kind load docker-image "$ES_IMAGE" "$OS_IMAGE" "$SOLR_IMAGE" --name "$CLUSTER" --nodes "$(IFS=,; echo "${NODES[*]}")"
     kind load docker-image "$VESPA_IMAGE" --name "$CLUSTER" --nodes "$nodes"
     kind load docker-image "$REDPANDA_IMAGE" --name "$CLUSTER" --nodes "$CLIENT_NODE"
+    kind load docker-image "${MORE_IMAGES[@]}" --name "$CLUSTER" --nodes "${NODES[0]}"
     kubectl --context "kind-$CLUSTER" create namespace "$NS" --dry-run=client -o yaml | kubectl --context "kind-$CLUSTER" apply -f -
     ;;
 build)
@@ -137,13 +184,21 @@ build)
     # the engine's whole budget: a shard's build holds its documents in
     # memory, and two at once in 3 GiB each were killed for lack of memory.
     for i in 0 1; do
-        job "build-s$i" "${NODES[$i]}" "$BUILD_CPU" "$BUILD_MEM" build --shard "$i" --of 2 --out "/local/quora.shard${i}of2.strata" --threads 3
-        docker exec "${NODES[$i]}" cat "/var/local/compare/quora.shard${i}of2.strata.build.json" >"${STRATA_WORK:?}/${OUT#/data/}/build-strata-s$i.json"
+        job "build-s$i" "${NODES[$i]}" "$BUILD_CPU" "$BUILD_MEM" build --shard "$i" --of 2 --out "/local/$COLLECTION.shard${i}of2.strata" --threads 3
+        docker exec "${NODES[$i]}" cat "/var/local/compare/$COLLECTION.shard${i}of2.strata.build.json" >"${STRATA_WORK:?}/${OUT#/data/}/build-strata-s$i.json"
     done
     ;;
 up)
-    case ${1:?up strata|es|os|solr|vespa} in
+    if is_more "${1:?up ENGINE}"; then
+        f=$1
+        case $1 in paradedb | postgres) f=postgres ;; esac
+        render "more/$f.yaml" 0 "${NODES[0]}" "$ONE_CPU" "$ONE_MEM" "$1" | $K apply -f -
+        $K wait --for=condition=Ready "pod/$1-0" --timeout=600s
+        exit 0
+    fi
+    case $1 in
     strata)
+        token_secret
         render strata.yaml 0 "${NODES[0]}" "$SHARD_CPU" "$SHARD_MEM" | $K apply -f -
         render strata.yaml 1 "${NODES[1]}" "$SHARD_CPU" "$SHARD_MEM" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
         render strata-coordinator.yaml c "$CLIENT_NODE" "$COORD_CPU" "$COORD_MEM" | $K apply -f -
@@ -169,7 +224,8 @@ up)
         # from the config server, which takes a minute or two to start.
         until $K exec vespa-0 -- curl -sf http://localhost:19071/state/v1/health >/dev/null 2>&1; do sleep 2; done
         zip=$(mktemp -d)/app.zip
-        "$HERE/vespa/package.sh" "$zip" 2 1 "$VESPA_CONTAINER_HEAP" "vespa.$NS.svc.cluster.local"
+        DIM=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["dim"])' "${STRATA_DATA:?set STRATA_DATA}/$COLLECTION/meta.json") \
+            "$HERE/vespa/package.sh" "$zip" 2 1 "$VESPA_CONTAINER_HEAP" "vespa.$NS.svc.cluster.local"
         $K exec -i vespa-0 -- curl -sf -H Content-Type:application/zip --data-binary @- \
             http://localhost:19071/application/v2/tenant/default/prepareandactivate <"$zip" >/dev/null
         rm -rf "$(dirname "$zip")"
@@ -184,11 +240,16 @@ up)
     esac
     ;;
 load)
-    e=${1:?load es|os|solr|vespa}
+    e=${1:?load ENGINE}
     shift
     cpu "$e" load-before
     job "load-$e" "$CLIENT_NODE" "" "" load --engine "$e" --url "$(urls "$e")" --out "$OUT" "$@"
     cpu "$e" load-after
+    # The one-node engines' data directories on disk (Redis keeps everything in memory: load-redis.json has its memory).
+    if is_more "$e" && [ "$e" != redis ]; then
+        kb=$($K exec "$e-0" -- du -sk "$(datadir "$e")" | awk '{print $1}')
+        echo "{\"pod\": \"$e-0\", \"dir\": \"$(datadir "$e")\", \"bytes\": $((kb * 1024))}" >"${STRATA_WORK:?}/${OUT#/data/}/disk-$e.json"
+    fi
     # Vespa reports no index size: each content node's documents directory
     # (indexes, attributes and document store) and transaction log, as du
     # sees them once proton has flushed what it holds in memory and the
@@ -208,7 +269,7 @@ load)
     fi
     ;;
 run)
-    e=${1:?run strata|es|os|solr|vespa}
+    e=${1:?run ENGINE}
     shift
     label=$e prev=""
     for a in "$@"; do
@@ -216,7 +277,8 @@ run)
         prev=$a
     done
     cpu "$e" before "$label"
-    job "run-$label" "$CLIENT_NODE" "" "" run --engine "$e" --url "$(urls "$e")" --out "$OUT" "$@"
+    # A Job is named in lowercase letters, digits and -: a label such as solr+sql runs as run-solr-sql.
+    job "run-${label//+/-}" "$CLIENT_NODE" "" "" run --engine "$e" --url "$(urls "$e")" --out "$OUT" "$@"
     cpu "$e" after "$label"
     ;;
 writes)
@@ -244,12 +306,13 @@ trial)
     echo
     ;;
 down)
-    case ${1:?down strata|es|os|solr|vespa} in
+    case ${1:?down ENGINE} in
     strata) $K delete pod strata-0 strata-1 strata-coordinator --ignore-not-found ;;
     es) $K delete pod es-0 es-1 --ignore-not-found ;;
     os) $K delete pod os-0 os-1 --ignore-not-found ;;
     solr) $K delete pod solr-0 solr-1 --ignore-not-found ;;
     vespa) $K delete pod vespa-0 vespa-1 vespa-2 --ignore-not-found ;;
+    *) is_more "$1" && $K delete pod "$1-0" --ignore-not-found ;;
     esac
     ;;
 *)

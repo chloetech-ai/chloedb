@@ -94,6 +94,10 @@ const QUERIES: &[&str] = &[
     "SELECT COUNT(*), SUM(p.weight), AVG(p.year) FROM papers p JOIN venues v ON p.venue = v.id WHERE v.rank > 100",
     "SELECT v.field, a.country, COUNT(*) FROM papers p JOIN venues v ON p.venue = v.id JOIN authors a ON p.author = a.id GROUP BY v.field, a.country ORDER BY 3 DESC, 1, 2",
     "SELECT p.year % 5 AS b, COUNT(*) FROM papers p JOIN venues v ON p.venue = v.id GROUP BY b ORDER BY b",
+    // Groups of the other table's rows, by its key: the papers grouped in
+    // their scan before the join.
+    "SELECT v.id, v.name, COUNT(*) AS n, SUM(p.cites), AVG(p.weight), MIN(p.year), MAX(p.weight), COUNT(DISTINCT p.author) FROM papers p JOIN venues v ON p.venue = v.id GROUP BY v.id, v.name ORDER BY n DESC, v.id",
+    "SELECT a.id, COUNT(*), COUNT(p.year) FROM papers p JOIN authors a ON p.author = a.id WHERE p.year > 2000 GROUP BY a.id HAVING COUNT(*) > 2 ORDER BY a.id",
     // WITH and derived tables.
     "WITH top AS (SELECT id, venue FROM papers ORDER BY bm25(title, 'graph') DESC LIMIT 50) SELECT v.field, COUNT(*) FROM top t JOIN venues v ON t.venue = v.id GROUP BY v.field",
     "WITH old AS (SELECT id, author, year FROM papers WHERE year < 2000) SELECT a.id, b.id FROM old a JOIN old b ON a.author = b.author WHERE a.id < b.id",

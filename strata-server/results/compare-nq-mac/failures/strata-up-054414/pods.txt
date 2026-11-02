@@ -1,0 +1,6 @@
+NAME                 READY   STATUS             RESTARTS       AGE     IP           NODE             NOMINATED NODE   READINESS GATES
+build-s0-qcd4f       0/1     Completed          0              9m34s   10.244.2.2   strata-worker    <none>           <none>
+build-s1-qcjkx       0/1     Completed          0              7m3s    10.244.3.2   strata-worker2   <none>           <none>
+strata-0             0/1     CrashLoopBackOff   5 (2m ago)     5m1s    10.244.2.3   strata-worker    <none>           <none>
+strata-1             0/1     CrashLoopBackOff   5 (2m9s ago)   5m1s    10.244.3.3   strata-worker2   <none>           <none>
+strata-coordinator   0/1     Running            0              5m1s    10.244.1.2   strata-worker3   <none>           <none>

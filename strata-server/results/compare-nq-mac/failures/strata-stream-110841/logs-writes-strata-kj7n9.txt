@@ -1,0 +1,12 @@
+strata   insert one     c=1       1082 docs/s  p50    0.743 ms  p90    1.379 ms  p99    2.032 ms  errors 0
+strata   insert one     c=4       2162 docs/s  p50    1.403 ms  p90    2.747 ms  p99    5.041 ms  errors 0
+strata   insert one     c=16      3725 docs/s  p50    2.963 ms  p90    4.797 ms  p99   34.239 ms  errors 0
+strata   insert batch   c=1       6613 docs/s  p50    7.932 ms  p90   30.093 ms  p99   62.545 ms  errors 0
+strata   insert batch   c=4       8031 docs/s  p50   39.028 ms  p90   83.687 ms  p99  248.211 ms  errors 0
+strata   insert batch   c=16      7779 docs/s  p50  140.807 ms  p90  263.211 ms  p99 1068.356 ms  errors 0
+strata   update one     c=1        450 docs/s  p50    0.688 ms  p90    3.051 ms  p99   49.598 ms  errors 0
+strata   update one     c=4       2295 docs/s  p50    1.164 ms  p90    2.319 ms  p99   20.648 ms  errors 0
+strata   update one     c=16      4600 docs/s  p50    2.266 ms  p90    4.033 ms  p99   29.126 ms  errors 0
+strata   visible        written in p50 0.9 ms, found after p50 1.8 ms  p90 3.3 ms  max 396.5 ms
+strata   deleted 182030 written documents and put back 20000 ratings in 1.8 s
+wrote /data/compare/writes-strata.json

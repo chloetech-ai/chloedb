@@ -549,41 +549,149 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
     Ok(out)
 }
 
-/// What `strata-server import` does with SQLite files.
+/// What `strata-server import` does with SQLite and Parquet files.
 #[derive(Default)]
-pub struct SqliteImport {
+pub struct FileImport {
     /// Every file is a SQLite database (`--format sqlite`); otherwise a
     /// file is one when its first bytes say so.
-    pub format: bool,
-    /// Only these tables.
+    pub sqlite: bool,
+    /// Every file is Parquet, or a directory of Parquet files (`--format
+    /// parquet`); otherwise one is when its name or first bytes say so
+    /// ([`strata::parquet::is_parquet`]).
+    pub parquet: bool,
+    /// SQLite: only these tables.
     pub tables: Vec<String>,
-    /// BLOB columns as base64 text ([`strata::sqlite::ImportOptions::blobs_base64`]).
+    /// Parquet: the key of a table the import creates
+    /// ([`strata::parquet::ImportOptions::key`]).
+    pub key: Option<String>,
+    /// Binary columns as base64 text ([`strata::sqlite::ImportOptions::blobs_base64`]).
     pub blobs_base64: bool,
     /// Print the plan as JSON, and write nothing.
     pub plan: bool,
 }
 
+/// Whether `s` is an `s3://` (or `s3a://`) URL.
+pub fn is_url(s: &str) -> bool {
+    let l = s.get(..6).unwrap_or(s).to_ascii_lowercase();
+    l.starts_with("s3://") || l.starts_with("s3a://")
+}
+
+/// A file to read on this machine: the path given, or what an `s3://`
+/// URL names, read into a temporary directory removed when this is
+/// dropped.
+struct Fetched {
+    path: PathBuf,
+    #[cfg(feature = "s3")]
+    _held: Option<strata::objects::Input>,
+}
+
+fn fetch(f: &Path) -> Result<Fetched, String> {
+    let s = f.to_string_lossy();
+    if !is_url(&s) {
+        return Ok(Fetched {
+            path: f.to_path_buf(),
+            #[cfg(feature = "s3")]
+            _held: None,
+        });
+    }
+    #[cfg(feature = "s3")]
+    {
+        let t0 = std::time::Instant::now();
+        let i = strata::objects::Input::open(&s).map_err(|e| e.to_string())?;
+        tracing::info!(url = %s, secs = t0.elapsed().as_secs_f64(), "fetched");
+        Ok(Fetched { path: i.path().to_path_buf(), _held: Some(i) })
+    }
+    #[cfg(not(feature = "s3"))]
+    Err(format!("{s}: this strata-server was built without s3:// URLs (feature s3)"))
+}
+
+/// A path to write on this machine, and the URL it then goes to.
+struct Upload {
+    path: PathBuf,
+    #[cfg(feature = "s3")]
+    out: Option<strata::objects::Output>,
+}
+
+fn upload_to(out: &str) -> Result<Upload, String> {
+    if !is_url(out) {
+        return Ok(Upload {
+            path: PathBuf::from(out),
+            #[cfg(feature = "s3")]
+            out: None,
+        });
+    }
+    #[cfg(feature = "s3")]
+    {
+        let o = strata::objects::Output::new(out).map_err(|e| e.to_string())?;
+        Ok(Upload { path: o.path().to_path_buf(), out: Some(o) })
+    }
+    #[cfg(not(feature = "s3"))]
+    Err(format!("{out}: this strata-server was built without s3:// URLs (feature s3)"))
+}
+
+impl Upload {
+    /// Sends what was written to the URL, if there is one.
+    fn finish(self) -> Result<(), String> {
+        #[cfg(feature = "s3")]
+        if let Some(o) = self.out {
+            let url = o.url().unwrap_or_default().to_string();
+            let t0 = std::time::Instant::now();
+            let bytes = o.finish().map_err(|e| e.to_string())?;
+            tracing::info!(url = %url, bytes, secs = t0.elapsed().as_secs_f64(), "uploaded");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "parquet")]
+fn is_parquet(f: &Path) -> bool {
+    strata::parquet::is_parquet(f)
+}
+
+#[cfg(not(feature = "parquet"))]
+fn is_parquet(_: &Path) -> bool {
+    false
+}
+
 /// `strata-server import`: loads `files` into the database at `path`, rows
 /// from JSON Lines, JSON, CSV or TSV files (`format`, or each file's
-/// extension) into its table `table` (the first if `None`), and the tables
-/// of SQLite files into the tables of their names, and says what each
-/// wrote. A database that does not exist is created with `schema`, or from
-/// the first SQLite file's tables; with SQLite files, `schema` holds
-/// schemas for the tables they create ([`strata::sqlite::schemas_from_json`]).
+/// extension) into its table `table` (the first if `None`), the tables of
+/// SQLite files into the tables of their names, and Parquet files and
+/// directories into `table` (by default, the table an export kept in them
+/// or one named for them), and says what each wrote. A file may be an
+/// `s3://` URL. A database that does not exist is created with `schema`,
+/// or from the first SQLite or Parquet file; with SQLite files, `schema`
+/// holds schemas for the tables they create
+/// ([`strata::sqlite::schemas_from_json`]), with Parquet files the schema
+/// of the table they create.
 #[allow(clippy::too_many_arguments)]
-pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, models: &Path, format: Option<Format>, directory: bool, files: &[PathBuf], sqlite: SqliteImport) -> Result<(), String> {
+pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, models: &Path, format: Option<Format>, directory: bool, files: &[PathBuf], how: FileImport) -> Result<(), String> {
     let opts = || DbOptions { layout: if directory { Layout::Directory } else { Layout::SingleFile }, build: build_options(), ..DbOptions::default() };
-    let is_sqlite = |f: &Path| sqlite.format || (format.is_none() && strata::sqlite::is_sqlite_file(f));
-    let any_sqlite = files.iter().any(|f| is_sqlite(f));
-    if let Some(f) = files.iter().find(|f| table.is_some() && is_sqlite(f)) {
-        return Err(format!("{}: --table is for rows; a SQLite file's tables go to the tables of their names (--tables picks them)", f.display()));
+    if how.parquet && !cfg!(feature = "parquet") {
+        return Err("this strata-server was built without Parquet (feature parquet)".into());
+    }
+    let is_sqlite = |f: &Path| how.sqlite || (format.is_none() && !how.parquet && strata::sqlite::is_sqlite_file(f));
+    let is_parquet = |f: &Path| how.parquet || (format.is_none() && !how.sqlite && is_parquet(f));
+    let inputs: Vec<(String, Fetched)> = files.iter().map(|f| Ok((f.display().to_string(), fetch(f)?))).collect::<Result<_, String>>()?;
+    let any_sqlite = inputs.iter().any(|(_, f)| is_sqlite(&f.path));
+    let any_parquet = inputs.iter().any(|(_, f)| is_parquet(&f.path));
+    if let Some((f, _)) = inputs.iter().find(|(_, f)| table.is_some() && is_sqlite(&f.path)) {
+        return Err(format!("{f}: --table is for rows; a SQLite file's tables go to the tables of their names (--tables picks them)"));
+    }
+    if any_sqlite && any_parquet && schema.is_some() {
+        return Err("--schema with SQLite and Parquet files: import them one kind at a time".into());
     }
     let text = schema.map(|s| std::fs::read_to_string(s).map_err(|e| format!("read {}: {e}", s.display()))).transpose()?;
     let given = match (&text, schema, any_sqlite) {
         (Some(t), Some(s), true) => strata::sqlite::schemas_from_json(t).map_err(|e| format!("{}: {e}", s.display()))?,
         _ => Vec::new(),
     };
-    let sq = strata::sqlite::ImportOptions { tables: sqlite.tables, schemas: given, blobs_base64: sqlite.blobs_base64 };
+    let given_table = match (&text, schema, any_parquet) {
+        (Some(t), Some(s), true) => Some(Schema::from_json(t).map_err(|e| format!("{}: {e}", s.display()))?),
+        _ => None,
+    };
+    let sq = strata::sqlite::ImportOptions { tables: how.tables.clone(), schemas: given, blobs_base64: how.blobs_base64 };
+    let pq = ParquetImport { table: table.map(String::from), schema: given_table, key: how.key.clone(), blobs_base64: how.blobs_base64 };
     let created = |db: Db| {
         for (field, why) in db.open_embedders(models) {
             tracing::warn!(field = %field, error = %why, "cannot embed this field: its vectors must be in the files");
@@ -591,35 +699,39 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
         db
     };
     let mut db = if path.exists() {
-        if schema.is_some() && !any_sqlite {
+        if schema.is_some() && !any_sqlite && !any_parquet {
             return Err(format!("{} exists: --schema is only for a new database", path.display()));
         }
         Some(created(Db::open(path, opts()).map_err(|e| format!("open {}: {e}", path.display()))?))
     } else {
         None
     };
-    if sqlite.plan {
+    if how.plan {
         let mut plans = Vec::new();
-        for file in files {
-            if !is_sqlite(file) {
-                return Err(format!("{}: --plan is for SQLite files", file.display()));
+        for (shown, file) in &inputs {
+            if is_sqlite(&file.path) {
+                plans.push(strata::sqlite::plan(&file.path, db.as_ref(), &sq).map_err(|e| format!("{shown}: {e}"))?.to_json());
+            } else if is_parquet(&file.path) {
+                plans.push(pq.plan(&file.path, db.as_ref()).map_err(|e| format!("{shown}: {e}"))?);
+            } else {
+                return Err(format!("{shown}: --plan is for SQLite and Parquet files"));
             }
-            plans.push(strata::sqlite::plan(file, db.as_ref(), &sq).map_err(|e| format!("{}: {e}", file.display()))?.to_json());
         }
         let out = if plans.len() == 1 { plans.remove(0) } else { serde_json::Value::Array(plans) };
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
         return Ok(());
     }
-    for file in files {
+    for (shown, fetched) in &inputs {
+        let file = &fetched.path;
         let t0 = std::time::Instant::now();
         if is_sqlite(file) {
-            let at = |e: strata::Error| format!("{}: {e}", file.display());
+            let at = |e: strata::Error| format!("{shown}: {e}");
             let src = strata::sqlite::Source::open(file).map_err(at)?;
             let plan = src.plan(db.as_ref(), &sq).map_err(at)?;
             let d = match db.take() {
                 Some(d) => d,
                 None => {
-                    let first = plan.tables.first().ok_or_else(|| format!("{}: no table to import", file.display()))?;
+                    let first = plan.tables.first().ok_or_else(|| format!("{shown}: no table to import"))?;
                     created(Db::create_in(path, first.schema.clone(), opts(), models).map_err(|e| format!("create {}: {e}", path.display()))?)
                 }
             };
@@ -627,16 +739,20 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
             db = Some(d);
             let r = r.map_err(at)?;
             for (name, why) in &r.skipped {
-                tracing::info!(file = %file.display(), source = %name, "left out: {why}");
+                tracing::info!(file = %shown, source = %name, "left out: {why}");
             }
             for t in &r.tables {
                 let how = if t.bulk { "loaded" } else { "upserted" };
-                tracing::info!(file = %file.display(), source = %t.source, table = %t.table, created = t.created, rows = t.rows, how, "imported");
+                tracing::info!(file = %shown, source = %t.source, table = %t.table, created = t.created, rows = t.rows, how, "imported");
                 for n in &t.notes {
                     tracing::warn!(table = %t.table, "{n}");
                 }
             }
-            tracing::info!(file = %file.display(), tables = r.tables.len(), secs = t0.elapsed().as_secs_f64(), "imported the SQLite file");
+            tracing::info!(file = %shown, tables = r.tables.len(), secs = t0.elapsed().as_secs_f64(), "imported the SQLite file");
+            continue;
+        }
+        if is_parquet(file) {
+            db = Some(pq.import(shown, file, db.take(), |schema| Ok(created(Db::create_in(path, schema, opts(), models).map_err(|e| format!("create {}: {e}", path.display()))?)))?);
             continue;
         }
         let d = match db.take() {
@@ -648,13 +764,13 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
             }
         };
         let into = table.map_or_else(|| d.schema().table.clone(), String::from);
-        let r = strata::ingest::import_file_into(&d, &into, file, format).map_err(|e| format!("{}: {e}", file.display()));
+        let r = strata::ingest::import_file_into(&d, &into, file, format).map_err(|e| format!("{shown}: {e}"));
         db = Some(d);
         let r = r?;
         let how = if r.bulk { "loaded" } else { "upserted" };
-        tracing::info!(file = %file.display(), rows = r.rows, how, secs = t0.elapsed().as_secs_f64(), "imported");
+        tracing::info!(file = %shown, rows = r.rows, how, secs = t0.elapsed().as_secs_f64(), "imported");
         if !r.unknown.is_empty() {
-            tracing::warn!(file = %file.display(), fields = %r.unknown.join(", "), "skipped fields the schema lacks");
+            tracing::warn!(file = %shown, fields = %r.unknown.join(", "), "skipped fields the schema lacks");
         }
     }
     let db = db.ok_or("no files to import")?;
@@ -663,20 +779,113 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
     Ok(())
 }
 
-/// Writes the database at `path` to a new SQLite file `out`
-/// ([`strata::sqlite::export`]).
-pub fn export_sqlite(path: &Path, out: &Path, opts: &strata::sqlite::ExportOptions) -> Result<(), String> {
+/// How `strata-server import` reads Parquet files
+/// ([`strata::parquet::ImportOptions`]).
+#[cfg_attr(not(feature = "parquet"), allow(dead_code))]
+struct ParquetImport {
+    table: Option<String>,
+    schema: Option<Schema>,
+    key: Option<String>,
+    blobs_base64: bool,
+}
+
+#[cfg(feature = "parquet")]
+impl ParquetImport {
+    fn options(&self) -> strata::parquet::ImportOptions {
+        strata::parquet::ImportOptions { table: self.table.clone(), schema: self.schema.clone(), key: self.key.clone(), blobs_base64: self.blobs_base64 }
+    }
+
+    fn plan(&self, file: &Path, db: Option<&Db>) -> strata::Result<serde_json::Value> {
+        Ok(strata::parquet::plan(file, db, &self.options())?.to_json())
+    }
+
+    /// Imports `file` into `db`, or into a database `create` makes with the
+    /// table's schema, and gives the database back.
+    fn import(&self, shown: &str, file: &Path, db: Option<Db>, create: impl FnOnce(Schema) -> Result<Db, String>) -> Result<Db, String> {
+        let t0 = std::time::Instant::now();
+        let at = |e: strata::Error| format!("{shown}: {e}");
+        let src = strata::parquet::Source::open(file).map_err(at)?;
+        let plan = src.plan(db.as_ref(), &self.options()).map_err(at)?;
+        let d = match db {
+            Some(d) => d,
+            None => create(plan.schema.clone())?,
+        };
+        let r = src.load(&d, &plan).map_err(at)?;
+        for (column, why) in &r.skipped {
+            tracing::info!(file = %shown, column = %column, "left out: {why}");
+        }
+        for n in &r.notes {
+            tracing::warn!(table = %r.table, "{n}");
+        }
+        let how = if r.bulk { "loaded" } else { "upserted" };
+        tracing::info!(file = %shown, table = %r.table, created = r.created, files = r.files, rows = r.rows, how, secs = t0.elapsed().as_secs_f64(), "imported the Parquet rows");
+        Ok(d)
+    }
+}
+
+#[cfg(not(feature = "parquet"))]
+impl ParquetImport {
+    fn plan(&self, _: &Path, _: Option<&Db>) -> strata::Result<serde_json::Value> {
+        Err(strata::Error::Schema("this strata-server was built without Parquet (feature parquet)".into()))
+    }
+
+    fn import(&self, _: &str, _: &Path, _: Option<Db>, _: impl FnOnce(Schema) -> Result<Db, String>) -> Result<Db, String> {
+        Err("this strata-server was built without Parquet (feature parquet)".into())
+    }
+}
+
+/// Writes the database at `path` to a new SQLite file `out`, a path or an
+/// `s3://` URL ([`strata::sqlite::export`]).
+pub fn export_sqlite(path: &Path, out: &str, opts: &strata::sqlite::ExportOptions) -> Result<(), String> {
     let db = Db::open(path, DbOptions::default()).map_err(|e| format!("open {}: {e}", path.display()))?;
     let t0 = std::time::Instant::now();
-    let r = strata::sqlite::export(&db, out, opts).map_err(|e| format!("{}: {e}", out.display()))?;
+    let up = upload_to(out)?;
+    let r = strata::sqlite::export(&db, &up.path, opts).map_err(|e| format!("{out}: {e}"))?;
     for t in &r.tables {
         tracing::info!(table = %t.table, rows = t.rows, indexes = t.indexes.len(), fts = t.fts.as_deref().unwrap_or("none"), "exported");
         for n in &t.notes {
             tracing::info!(table = %t.table, "{n}");
         }
     }
-    tracing::info!(out = %out.display(), tables = r.tables.len(), secs = t0.elapsed().as_secs_f64(), "exported to SQLite");
+    up.finish()?;
+    tracing::info!(out = %out, tables = r.tables.len(), secs = t0.elapsed().as_secs_f64(), "exported to SQLite");
     Ok(())
+}
+
+/// Writes the database at `path` (its tables `opts.tables`, or all) to
+/// Parquet at `out`, a path or an `s3://` URL: a `.parquet` file for one table,
+/// else a directory of them ([`strata::parquet::export`]).
+#[cfg(feature = "parquet")]
+pub fn export_parquet(path: &Path, out: &str, opts: &ParquetExport) -> Result<(), String> {
+    let db = Db::open(path, DbOptions::default()).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let t0 = std::time::Instant::now();
+    let up = upload_to(out.trim_end_matches('/'))?;
+    let r = strata::parquet::export(&db, &up.path, opts).map_err(|e| format!("{out}: {e}"))?;
+    for t in &r.tables {
+        tracing::info!(table = %t.table, rows = t.rows, bytes = t.bytes, file = %t.path.file_name().unwrap_or_default().to_string_lossy(), "exported");
+        for n in &t.notes {
+            tracing::info!(table = %t.table, "{n}");
+        }
+    }
+    up.finish()?;
+    tracing::info!(out = %out, tables = r.tables.len(), secs = t0.elapsed().as_secs_f64(), "exported to Parquet");
+    Ok(())
+}
+
+/// What a Parquet export writes, in a build without Parquet.
+#[cfg(not(feature = "parquet"))]
+#[derive(Default)]
+pub struct ParquetExport {
+    pub tables: Vec<String>,
+    pub meta: bool,
+}
+
+#[cfg(feature = "parquet")]
+pub use strata::parquet::ExportOptions as ParquetExport;
+
+#[cfg(not(feature = "parquet"))]
+pub fn export_parquet(_: &Path, _: &str, _: &ParquetExport) -> Result<(), String> {
+    Err("this strata-server was built without Parquet (feature parquet)".into())
 }
 
 /// Releases expired snapshot leases, and reports merges that fail (the

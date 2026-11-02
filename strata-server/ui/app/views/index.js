@@ -19,6 +19,7 @@ import system from "./system.js";
 import sql from "./sql.js";
 import builder from "./builder.js";
 import schema from "./schema.js";
+import inspector from "./inspector.js";
 import importer from "./import.js";
 import relevance from "./relevance.js";
 import recsys from "./recsys.js";
@@ -29,4 +30,4 @@ import graph from "./graph.js";
 import classic from "./classic.js";
 
 export const GROUPS = ["Monitor", "Workload", "Data", "Tune", "Explore", "Admin", "More"];
-export const VIEWS = [overview, topology, fleet, querypath, performance, alerts, queries, profile, logs, sql, builder, schema, importer, relevance, recsys, sid, autocomplete, media, graph, control, rollout, autoscale, cloud, cluster, access, system, classic];
+export const VIEWS = [overview, topology, fleet, querypath, performance, alerts, queries, profile, logs, sql, builder, schema, inspector, importer, relevance, recsys, sid, autocomplete, media, graph, control, rollout, autoscale, cloud, cluster, access, system, classic];

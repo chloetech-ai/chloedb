@@ -1,0 +1,37 @@
+qdrant    bm25                     c=1       1333 q/s  p50   0.735 ms  p90   0.816 ms  p99   1.134 ms  errors 0
+qdrant    bm25                     c=4       2775 q/s  p50   1.327 ms  p90   1.945 ms  p99   3.600 ms  errors 0
+qdrant    bm25                     c=16      3080 q/s  p50   4.698 ms  p90   7.422 ms  p99  13.066 ms  errors 0
+qdrant    bm25 + filter            c=1       1190 q/s  p50   0.804 ms  p90   0.913 ms  p99   1.642 ms  errors 0
+qdrant    bm25 + filter            c=4       2605 q/s  p50   1.393 ms  p90   2.129 ms  p99   3.764 ms  errors 0
+qdrant    bm25 + filter            c=16      2699 q/s  p50   5.226 ms  p90   8.630 ms  p99  14.976 ms  errors 0
+qdrant    vector                   c=1       1659 q/s  p50   0.588 ms  p90   0.639 ms  p99   0.908 ms  errors 0
+qdrant    vector                   c=4       3936 q/s  p50   0.945 ms  p90   1.395 ms  p99   2.180 ms  errors 0
+qdrant    vector                   c=16      4720 q/s  p50   3.134 ms  p90   4.947 ms  p99   8.326 ms  errors 0
+qdrant    vector + filter          c=1        991 q/s  p50   0.981 ms  p90   1.121 ms  p99   1.690 ms  errors 0
+qdrant    vector + filter          c=4       1983 q/s  p50   1.866 ms  p90   2.818 ms  p99   4.440 ms  errors 0
+qdrant    vector + filter          c=16      2164 q/s  p50   6.782 ms  p90  10.625 ms  p99  16.039 ms  errors 0
+qdrant    hybrid (RRF)             c=1        324 q/s  p50   2.846 ms  p90   4.206 ms  p99   4.792 ms  errors 0
+qdrant    hybrid (RRF)             c=4        651 q/s  p50   5.790 ms  p90   8.458 ms  p99  12.052 ms  errors 0
+qdrant    hybrid (RRF)             c=16       663 q/s  p50  22.443 ms  p90  31.265 ms  p99  38.540 ms  errors 0
+qdrant    hybrid (weighted)        c=1        329 q/s  p50   2.802 ms  p90   4.150 ms  p99   4.609 ms  errors 0
+qdrant    hybrid (weighted)        c=4        639 q/s  p50   5.781 ms  p90   8.593 ms  p99  13.130 ms  errors 0
+qdrant    hybrid (weighted)        c=16       664 q/s  p50  22.509 ms  p90  30.894 ms  p99  39.029 ms  errors 0
+qdrant    boosted (bm25 × decay)   c=1       1073 q/s  p50   0.917 ms  p90   1.006 ms  p99   1.344 ms  errors 0
+qdrant    boosted (bm25 × decay)   c=4       2414 q/s  p50   1.508 ms  p90   2.298 ms  p99   3.517 ms  errors 0
+qdrant    boosted (bm25 × decay)   c=16      2718 q/s  p50   5.405 ms  p90   8.540 ms  p99  14.303 ms  errors 0
+qdrant    facet                    c=1         68 q/s  p50  13.256 ms  p90  30.322 ms  p99  44.107 ms  errors 0
+qdrant    facet                    c=4         73 q/s  p50  55.214 ms  p90  85.352 ms  p99 112.442 ms  errors 0
+qdrant    facet                    c=16        73 q/s  p50 215.547 ms  p90 268.226 ms  p99 326.506 ms  errors 0
+qdrant    key lookup               c=1       4134 q/s  p50   0.232 ms  p90   0.280 ms  p99   0.336 ms  errors 0
+qdrant    key lookup               c=4      15830 q/s  p50   0.236 ms  p90   0.339 ms  p99   0.520 ms  errors 0
+qdrant    key lookup               c=16     29814 q/s  p50   0.470 ms  p90   0.795 ms  p99   1.803 ms  errors 0
+qdrant    phrase                   c=1       1098 q/s  p50   0.487 ms  p90   1.238 ms  p99   8.555 ms  errors 0
+qdrant    phrase                   c=4       2378 q/s  p50   1.040 ms  p90   3.182 ms  p99  11.186 ms  errors 0
+qdrant    phrase                   c=16      2613 q/s  p50   5.060 ms  p90  10.952 ms  p99  21.944 ms  errors 0
+qdrant    typo                     unavailable: no fuzzy matching: its text index matches whole words (or prefixes, with a prefix tokenizer)
+qdrant    prefix                   unavailable: prefixes need the prefix tokenizer, an index of its own that would replace the word index the facet and phrase kinds use on the field
+qdrant    similar items            c=1        629 q/s  p50   1.550 ms  p90   1.831 ms  p99   2.731 ms  errors 0
+qdrant    similar items            c=4       1132 q/s  p50   3.361 ms  p90   4.687 ms  p99   7.220 ms  errors 0
+qdrant    similar items            c=16      1199 q/s  p50  12.611 ms  p90  17.421 ms  p99  22.741 ms  errors 0
+qdrant    sql aggregate            unavailable: no grouped aggregates: its facet API counts values only
+wrote /data/compare/run-qdrant.json
