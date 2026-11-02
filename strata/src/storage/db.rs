@@ -2372,7 +2372,7 @@ impl Database {
                 let dup = !seen.insert(Key::of(&doc[pk]).expect("validated key"))
                     || (check_existing && lock(&self.state).find_live(t.pos, &doc[pk]).is_some());
                 if dup {
-                    return Err(Error::Schema(format!("duplicate primary key {:?}", doc[pk])));
+                    return Err(Error::Schema(crate::query::hint::duplicate_key(schema, &doc[pk])));
                 }
             }
             chunk.push(doc);
@@ -4018,7 +4018,7 @@ impl<'a> WriteTxn<'a> {
             let key = Key::of(&doc[pk]).expect("validated key");
             self.drop_expired(t, &key, &doc[pk])?;
             if self.is_live(t, &key, &doc[pk]) {
-                return Err(Error::Schema(format!("duplicate primary key {:?}", doc[pk])));
+                return Err(Error::Schema(crate::query::hint::duplicate_key(&t.schema, &doc[pk])));
             }
             let doc = Arc::new(doc);
             let k = self.keys(t.id);
@@ -4101,7 +4101,7 @@ impl<'a> WriteTxn<'a> {
             (FieldType::Float, Value::Int(x)) => Value::Float(x as f64),
             (FieldType::Float, Value::Float(x)) if !x.is_finite() => return Err(Error::Schema(format!("bad value for {field}: {x} (FLOAT values are finite)"))),
             (FieldType::Float, v @ (Value::Float(_) | Value::Null)) => v,
-            (FieldType::Int | FieldType::Float, v) => return Err(Error::Schema(format!("bad value for {field}: {v:?}"))),
+            (FieldType::Int | FieldType::Float, v) => return Err(Error::Schema(format!("bad value for {field}: {} (it takes a number)", crate::query::hint::sql_value(&v)))),
             _ => return Err(Error::Schema(format!("{field} is not a numeric field; only INT and FLOAT are set in place"))),
         };
         if self.drop_expired(t, &k, key)? || !self.is_live(t, &k, key) {

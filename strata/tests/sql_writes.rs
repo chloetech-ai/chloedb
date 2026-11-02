@@ -214,8 +214,8 @@ fn bare_names_are_columns_not_strings() {
     let p = Params::new();
     let e = db.sql("SELECT id FROM items WHERE tags = sale", &p).unwrap_err().to_string();
     assert!(e.contains("no such column: sale"), "{e}");
-    let e = db.sql("SELECT id FROM items WHERE id = title", &p).unwrap_err().to_string();
-    assert!(e.contains("title is a column"), "{e}");
+    // A column compares with another column, row by row.
+    assert!(matches!(db.sql("SELECT id FROM items WHERE id = title", &p).unwrap(), SqlResult::Rows(r) if r.rows.is_empty()));
     assert!(db.sql("SELECT id FROM items WHERE id IN (a, b)", &p).is_err());
     assert!(db.sql("INSERT INTO items (id, title) VALUES (q, 'x')", &p).is_err());
     assert!(db.sql("UPDATE items SET title = blue WHERE id = 'a'", &p).is_err());

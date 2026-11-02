@@ -40,10 +40,11 @@ use sqlparser::ast::{self as sql, BinaryOperator, Expr, FunctionArg, FunctionArg
 
 use crate::error::{Error, Result};
 use crate::query::exec::{ExecOptions, ResultSet};
+use crate::query::hint;
 use crate::query::ir::eval;
 use crate::query::ir::{self, ArithOp, CmpOp, Func, When};
 use crate::query::ops;
-use crate::query::sql::{Sub, Subs};
+use crate::query::sql::{CastTo, Sub, Subs};
 use crate::query::logical::{OrderBy, Phase, Select};
 use crate::query::rank::Rank;
 use crate::query::{AggFn, Params, Projection};
@@ -123,7 +124,7 @@ pub(crate) fn needs(q: &sql::Query, schema: &Schema) -> bool {
         TableFactor::Table { name, .. } if is_table(name, schema) => {}
         _ => return true,
     }
-    if orders_by_text(q, s, schema) {
+    if orders_by_text(q, s, schema) || filters_rows(s, schema) || orders_by_several(q, s, schema) {
         return true;
     }
     let mut found = false;
@@ -395,6 +396,144 @@ fn of_rows(e: &Expr) -> bool {
     found
 }
 
+/// Whether `c`, a condition of a table's scan, is one its indexes cannot
+/// answer but the row evaluator can, over the rows the scan returns: a
+/// comparison of an expression of columns (`lower(brand) = 'acme'`,
+/// `price * 2 > 10`), of two columns (`price > cost`), a `LIKE` that is
+/// no value or prefix (`'%tent%'`) or of stored text, any `ILIKE`, a
+/// comparison or `IS NULL` of a stored field the index does not hold
+/// (`title = 'x'`, `note IS NULL`), and `AND`, `OR` and `NOT` of these
+/// with other conditions. A condition with a search, a score, a graph
+/// walk, a subquery or a JSON path stays the scan's, as does one naming
+/// a field the scan cannot return (generated text, vectors): there the
+/// binder says what is wrong with it.
+pub(crate) fn of_rows_filter(c: &Expr, schema: &Schema) -> bool {
+    let mut blocked = false;
+    walk(c, &mut |x| {
+        blocked |= match x {
+            // A column of a correlated subquery's outer row: compared only
+            // with the table's own columns, which the scan's filter does.
+            Expr::Function(_) if outer_field(x).is_some() => true,
+            Expr::Function(f) => {
+                let n = fname(f);
+                NATIVE.contains(&n.as_str()) || RANKING.contains(&n.as_str()) || AGGREGATES.contains(&n.as_str()) || f.over.is_some() || matches!(n.as_str(), "prefix" | "at_least" | "count_true" | "json_extract" | "sid_at" | "encode")
+            }
+            Expr::Subquery(_) | Expr::InSubquery { .. } | Expr::Exists { .. } => true,
+            // A field the scan does not return, or a path into a JSON field.
+            Expr::Identifier(_) | Expr::CompoundIdentifier(_) => match column_field(x, schema) {
+                Some(f) => !f.stored || matches!(f.ty, FieldType::Vector { .. } | FieldType::Sparse | FieldType::Edges | FieldType::Json) || f.media.is_some(),
+                // An alias, a path, or no column at all: the binder's.
+                None => true,
+            },
+            _ => false,
+        };
+    });
+    !blocked && needs_rows(c, schema)
+}
+
+/// The field a column reference (`brand`, `p.brand`) names in `schema`.
+fn column_field<'a>(e: &Expr, schema: &'a Schema) -> Option<&'a crate::schema::Field> {
+    match e {
+        Expr::Identifier(id) => schema.field(&id.value),
+        Expr::CompoundIdentifier(ids) if ids.len() == 2 => schema.field(&ids[1].value),
+        _ => None,
+    }
+}
+
+/// [`of_rows_filter`] once `c` holds nothing but values, columns the scan
+/// returns and the row evaluator's functions: whether some part of it is
+/// beyond the scan's binder.
+fn needs_rows(c: &Expr, schema: &Schema) -> bool {
+    let plain = |e: &Expr| column_field(e, schema);
+    // A side with a column that is not just the column.
+    let computed = |e: &Expr| {
+        let mut cols = false;
+        walk(e, &mut |x| cols |= column_field(x, schema).is_some());
+        cols && plain(e).is_none()
+    };
+    // A field the scan's own filters cannot test: stored text, or one it
+    // does not index.
+    let unindexed = |e: &Expr| plain(e).is_some_and(|f| !f.indexed || matches!(f.ty, FieldType::Text { .. }));
+    match c {
+        Expr::Nested(x) | Expr::UnaryOp { op: UnaryOperator::Not, expr: x } => needs_rows(x, schema),
+        Expr::BinaryOp { left, op: BinaryOperator::And | BinaryOperator::Or, right } => needs_rows(left, schema) || needs_rows(right, schema),
+        Expr::BinaryOp { left, op, right }
+            if matches!(op, BinaryOperator::Eq | BinaryOperator::NotEq | BinaryOperator::Lt | BinaryOperator::LtEq | BinaryOperator::Gt | BinaryOperator::GtEq) =>
+        {
+            computed(left) || computed(right) || (plain(left).is_some() && plain(right).is_some()) || unindexed(left) || unindexed(right)
+        }
+        Expr::Between { expr, low, high, .. } => computed(expr) || unindexed(expr) || [low, high].iter().any(|b| computed(b) || plain(b).is_some()),
+        Expr::InList { expr, list, .. } => computed(expr) || unindexed(expr) || list.iter().any(|v| computed(v) || plain(v).is_some()),
+        Expr::IsNull(x) | Expr::IsNotNull(x) => computed(x) || plain(x).is_some_and(|f| !f.indexed || !matches!(f.ty, FieldType::Int | FieldType::Float | FieldType::Keyword)),
+        Expr::IsTrue(x) | Expr::IsFalse(x) | Expr::IsNotTrue(x) | Expr::IsNotFalse(x) => computed(x),
+        // LIKE and ILIKE test text: of another field, and with ESCAPE, the
+        // binder says what is wrong.
+        Expr::Like { escape_char: Some(_), .. } | Expr::ILike { escape_char: Some(_), .. } => false,
+        Expr::Like { expr, .. } | Expr::ILike { expr, .. } if plain(expr).is_some_and(|f| !matches!(f.ty, FieldType::Keyword | FieldType::Text { .. })) => false,
+        Expr::ILike { any: false, .. } => true,
+        Expr::Like { any: false, expr, pattern, escape_char, .. } => {
+            let prefix_or_value = match pattern.as_ref() {
+                Expr::Value(v) => match &v.value {
+                    sql::Value::SingleQuotedString(p) | sql::Value::DoubleQuotedString(p) => escape_char.is_some() || !p.trim_end_matches('%').contains(['%', '_']),
+                    _ => true,
+                },
+                _ => true,
+            };
+            computed(expr) || !plain(expr).is_some_and(|f| f.ty == FieldType::Keyword && f.indexed) || !prefix_or_value
+        }
+        Expr::Case { .. } => true,
+        _ => false,
+    }
+}
+
+/// Whether a SELECT over one table filters by an [`of_rows_filter`]
+/// condition: then the row evaluator filters the scan's rows.
+fn filters_rows(s: &sql::Select, schema: &Schema) -> bool {
+    s.selection.as_ref().is_some_and(|w| split_and(w).iter().any(|c| of_rows_filter(c, schema)))
+}
+
+/// Whether a SELECT over one table orders by more keys than its scan
+/// takes: one key, then the primary key (or, grouped, the first group
+/// field) to break ties. The rows are then sorted in memory.
+fn orders_by_several(q: &sql::Query, s: &sql::Select, schema: &Schema) -> bool {
+    let Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(es), .. }) = &q.order_by else { return false };
+    let es: Vec<&sql::OrderByExpr> = es.iter().filter(|o| !is_per_cap(&o.expr)).collect();
+    match es.as_slice() {
+        [] | [_] => false,
+        [_, second] => {
+            // A position names a selected column.
+            let named = |e: &Expr| -> Option<String> {
+                let e = match super::sql::literal_usize(e) {
+                    Some(n) => match s.projection.get(n.wrapping_sub(1)) {
+                        Some(SelectItem::UnnamedExpr(e)) | Some(SelectItem::ExprWithAlias { expr: e, .. }) => e,
+                        _ => return None,
+                    },
+                    None => e,
+                };
+                match e {
+                    Expr::Identifier(id) => Some(id.value.clone()),
+                    Expr::CompoundIdentifier(ids) => ids.last().map(|i| i.value.clone()),
+                    _ => None,
+                }
+            };
+            let Some(name) = named(&second.expr) else { return true };
+            let grouped = !matches!(&s.group_by, sql::GroupByExpr::Expressions(es, _) if es.is_empty());
+            if grouped {
+                let first = match &s.group_by {
+                    sql::GroupByExpr::Expressions(gs, _) => gs.first().and_then(named),
+                    _ => None,
+                };
+                !first.is_some_and(|g| g.eq_ignore_ascii_case(&name))
+            } else if has_aggregate(s) {
+                false
+            } else {
+                !schema.primary_key.is_some_and(|k| schema.fields[k].name.eq_ignore_ascii_case(&name))
+            }
+        }
+        _ => true,
+    }
+}
+
 /// Whether a SELECT's columns or ORDER BY compute [`of_rows`] values.
 fn rows_of(q: &sql::Query, s: &sql::Select) -> bool {
     select_exprs(s).into_iter().any(of_rows) || q.order_by.as_ref().is_some_and(|ob| matches!(&ob.kind, sql::OrderByKind::Expressions(es) if es.iter().any(|e| of_rows(&e.expr))))
@@ -599,7 +738,7 @@ pub(crate) fn plan_read_query(q: &sql::Query, catalog: &[&Schema], params: &Para
     }
     let schema = match super::tables::read_by(q).first() {
         None => *catalog.first().ok_or_else(|| err("the database has no tables"))?,
-        Some(t) => catalog.iter().copied().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| err(format!("no such table: {t}")))?,
+        Some(t) => catalog.iter().copied().find(|s| s.table.eq_ignore_ascii_case(t)).ok_or_else(|| err(hint::no_table(t, catalog.iter().map(|s| s.table.as_str()))))?,
     };
     if needs(q, schema) {
         return plan_query(q, catalog, params);
@@ -999,6 +1138,54 @@ impl<'a> Planner<'a> {
         Ok(Some(Planned { node: ir::Plan::of_select(schema, &select).root, columns, keyed, multi }))
     }
 
+    /// "no such table: x", with the tables of the database and `WITH`.
+    fn no_table(&self, name: &str) -> String {
+        let ctes: Vec<String> = self.ctes.borrow().iter().map(|c| c.name.clone()).collect();
+        hint::no_table(name, self.catalog.iter().map(|t| t.table.as_str()).chain(ctes.iter().map(String::as_str)))
+    }
+
+    /// Why a SELECT with no table, or with several after FROM, is refused,
+    /// and what to write instead.
+    fn from_hint(&self, s: &sql::Select) -> String {
+        let tables: Vec<&str> = self.catalog.iter().map(|t| t.table.as_str()).collect();
+        let first = tables.first().copied().unwrap_or("t");
+        if s.from.is_empty() {
+            return format!(
+                "a SELECT reads a table: add FROM and one of the database's tables ({}). A value of no table is a column of any of them: SELECT {} FROM {first} LIMIT 1",
+                hint::listing(&tables, 10),
+                s.projection.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+            );
+        }
+        // FROM a, b: the join's ON from an equality of the two in WHERE.
+        let name = |t: &sql::TableWithJoins| match &t.relation {
+            TableFactor::Table { name, alias, .. } => {
+                let n = super::sql::table_name(name);
+                let a = alias.as_ref().map_or_else(|| n.clone(), |a| a.name.value.clone());
+                (if a.eq_ignore_ascii_case(&n) { n } else { format!("{n} {a}") }, a)
+            }
+            t => (t.to_string(), "t".to_string()),
+        };
+        let ((t0, a0), (t1, a1)) = (name(&s.from[0]), name(&s.from[1]));
+        let on = s
+            .selection
+            .iter()
+            .flat_map(split_and)
+            .find(|c| match c {
+                Expr::BinaryOp { left, op: BinaryOperator::Eq, right } => {
+                    let side = |e: &Expr| match e {
+                        Expr::CompoundIdentifier(ids) if ids.len() == 2 => Some(ids[0].value.to_ascii_lowercase()),
+                        _ => None,
+                    };
+                    let (l, r) = (side(left), side(right));
+                    let (x, y) = (a0.to_ascii_lowercase(), a1.to_ascii_lowercase());
+                    l.is_some() && r.is_some() && l != r && [l.clone(), r.clone()].iter().all(|v| v.as_deref() == Some(x.as_str()) || v.as_deref() == Some(y.as_str()))
+                }
+                _ => false,
+            })
+            .map_or_else(|| format!("{a0}.column = {a1}.column"), |c| c.to_string());
+        format!("FROM {} lists {} tables: join them with JOIN ... ON an equality of their columns, e.g. FROM {t0} JOIN {t1} ON {on}", s.from.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", "), s.from.len())
+    }
+
     fn body(&self, q: &sql::Query) -> Result<Planned> {
         let s = match q.body.as_ref() {
             sql::SetExpr::Select(s) => s,
@@ -1006,8 +1193,24 @@ impl<'a> Planner<'a> {
             sql::SetExpr::Values(_) => return Err(err("VALUES lists an INSERT's rows; a query selects them FROM a table")),
             b => return Err(err(format!("this form of query is not supported: {b}"))),
         };
+        // SELECT 1, SELECT now(): values of no table, one row of them, as
+        // the one row a count of a table gives.
+        if s.from.is_empty() && s.selection.is_none() && s.group_by == sql::GroupByExpr::Expressions(vec![], vec![]) && s.having.is_none() {
+            if let Some(first) = self.catalog.first() {
+                let one = format!("SELECT COUNT(*) FROM {}", sql::Ident::with_quote('"', first.table.as_str()));
+                let Some(sql::Statement::Query(one)) = super::parse::parse(&one)?.into_iter().next() else { return Err(err("a query of one row")) };
+                let mut q = q.clone();
+                if let sql::SetExpr::Select(s) = q.body.as_mut() {
+                    s.from = vec![sql::TableWithJoins {
+                        relation: TableFactor::Derived { lateral: false, subquery: one, alias: Some(sql::TableAlias { name: sql::Ident::new("one"), columns: Vec::new() }) },
+                        joins: Vec::new(),
+                    }];
+                }
+                return self.body(&q);
+            }
+        }
         if s.from.len() != 1 {
-            return Err(err("FROM takes one table; join others with JOIN ... ON"));
+            return Err(err(self.from_hint(s)));
         }
         if !s.from[0].joins.is_empty() {
             return self.join(q, s);
@@ -1022,7 +1225,7 @@ impl<'a> Planner<'a> {
             }
             TableFactor::Table { name, .. } => match self.table(&super::sql::table_name(name)) {
                 Some(schema) => self.single(q, s, schema),
-                None => Err(err(format!("no such table: {}", super::sql::table_name(name)))),
+                None => Err(err(self.no_table(&super::sql::table_name(name)))),
             },
             TableFactor::Derived { .. } => self.join(q, s),
             t => Err(err(format!("unsupported FROM: {t}"))),
@@ -1108,7 +1311,11 @@ impl<'a> Planner<'a> {
             // Columns computed from the rows' values, and an order by
             // text, by the row evaluator.
             // Window functions, by operators over the rows.
-            _ if computes_columns(&q, &s) || orders_by_text(&q, &s, schema) || reads_paths(&q, &s) || windowed(&q, &s) => return self.join(&q, &s),
+            // Conditions the indexes cannot answer, and orders by several
+            // keys, by the row evaluator over the scan's rows.
+            _ if computes_columns(&q, &s) || orders_by_text(&q, &s, schema) || reads_paths(&q, &s) || windowed(&q, &s) || filters_rows(&s, schema) || orders_by_several(&q, &s, schema) => {
+                return self.join(&q, &s)
+            }
             Some(sql::Distinct::Distinct) => distinct_to_group(&mut s)?,
             None => {}
         }
@@ -1298,7 +1505,7 @@ impl<'a> Planner<'a> {
                     };
                     return Ok((alias_of(alias, &n), kind));
                 }
-                let schema = self.table(&n).ok_or_else(|| err(format!("no such table: {n}")))?;
+                let schema = self.table(&n).ok_or_else(|| err(self.no_table(&n)))?;
                 Ok((alias_of(alias, &n), SrcKind::Table(schema)))
             }
             TableFactor::Derived { subquery, alias, .. } => {
@@ -1381,7 +1588,7 @@ impl<'a> Planner<'a> {
             let (kind, c) = match &j.join_operator {
                 sql::JoinOperator::Join(c) | sql::JoinOperator::Inner(c) => (ir::JoinKind::Inner, c),
                 sql::JoinOperator::Left(c) | sql::JoinOperator::LeftOuter(c) => (ir::JoinKind::Left, c),
-                o => return Err(err(format!("unsupported join {o:?}: use JOIN or LEFT JOIN ... ON")))?,
+                o => return Err(err(unsupported_join(o)))?,
             };
             let sql::JoinConstraint::On(on) = c else { return Err(err("JOIN needs ON, e.g. JOIN papers b ON a.cites = b.id")) };
             let (alias, src) = self.source(&j.relation)?;
@@ -1408,7 +1615,7 @@ impl<'a> Planner<'a> {
             let at = sides.of(&c)?;
             let left_join_right = |i: usize| srcs[i].join.as_ref().is_some_and(|(k, _)| *k == ir::JoinKind::Left);
             match at.as_slice() {
-                [i] if !in_memory(*i) && !left_join_right(*i) && !of_rows(&c) => pushed[*i].push(c),
+                [i] if !in_memory(*i) && !left_join_right(*i) && !of_rows(&c) && !table(*i).is_some_and(|t| of_rows_filter(&c, t)) => pushed[*i].push(c),
                 _ => residual.push(c),
             }
         }
@@ -1432,7 +1639,7 @@ impl<'a> Planner<'a> {
                         continue;
                     }
                 }
-                if at == [i] && !in_memory(i) {
+                if at == [i] && !in_memory(i) && !table(i).is_some_and(|t| of_rows_filter(&c, t)) {
                     pushed[i].push(c);
                 } else if at.iter().any(|&x| x > i) {
                     return Err(err(format!("ON of {} names a table joined later", srcs[i].alias)));
@@ -1575,7 +1782,9 @@ impl<'a> Planner<'a> {
         if let Some(cond) = and(compile_all(&residual, &cols, &multi, self.params, &subs)?) {
             node = ir::Node::Filter { input: Box::new(node), cond };
         }
-        self.evaluate(s, node, &cols, &multi, &mem_order, offset, limit, srcs.len() > 1, driver_order, per)
+        let mut p = self.evaluate(s, node, &cols, &multi, &mem_order, offset, limit, srcs.len() > 1, driver_order, per)?;
+        group_first(&mut p.node, self.catalog);
+        Ok(p)
     }
 
     /// One side of a join: a leaf with its own conditions and ranking,
@@ -1651,6 +1860,173 @@ fn and(mut cs: Vec<ir::Expr>) -> Option<ir::Expr> {
         1 => cs.pop(),
         _ => Some(ir::Expr::And(cs)),
     }
+}
+
+/// Groups a join's left rows in their own scan, before the join, where the
+/// groups are the right table's rows: `GROUP BY` the right table's primary
+/// key (and other columns of its rows), aggregating the left table's
+/// fields, as in `SELECT p.id, p.title, COUNT(*) FROM reviews r JOIN
+/// products p ON r.product_id = p.id GROUP BY p.id, p.title`. A group of
+/// the join is one right row and the left rows whose key is its key,
+/// which is what the left table's group of that key aggregates; so the
+/// executor groups the left table by its join key (as `GROUP BY
+/// product_id` alone, from the key's column), the join reads a row per
+/// group rather than per row, and each group of the join, now of one row,
+/// takes its aggregates' values from it. The groups then come in the
+/// order of the left's groups rather than of their first rows, so the
+/// plan changes only when the sort above them is by the right table's
+/// key, which no two groups share: the answer is the same, row for row.
+fn group_first(node: &mut ir::Node, catalog: &[&Schema]) {
+    for n in node.inputs_mut() {
+        group_first(n, catalog);
+    }
+    let ir::Node::Sort { input, keys: sort } = node else { return };
+    let at = match input.as_mut() {
+        ir::Node::Filter { input, .. } => input.as_mut(),
+        n => n,
+    };
+    if let Some(n) = grouped_first(at, sort, catalog) {
+        *at = n;
+    }
+}
+
+/// [`group_first`] of `n`, an Aggregate under a sort by `sort`: the
+/// Aggregate over the join of the left table's groups, or `None` where
+/// it does not apply.
+fn grouped_first(n: &ir::Node, sort: &[ir::SortKey], catalog: &[&Schema]) -> Option<ir::Node> {
+    let ir::Node::Aggregate { input, keys, aggs } = n else { return None };
+    let ir::Node::Join { left, right, kind: ir::JoinKind::Inner, keys: on, on: None } = input.as_ref() else { return None };
+    let [ir::JoinKey { left: ir::Expr::Output(li), right: ir::Expr::Output(rj), left_links: false, right_links: false }] = on.as_slice() else { return None };
+    let (li, rj) = (*li as usize, *rj as usize);
+    let table = |name: &str| catalog.iter().copied().find(|t| t.table.eq_ignore_ascii_case(name));
+    // The left: a scan of a table, in no order of its own.
+    let ir::Node::Project { input: scan, columns: lcols } = left.as_ref() else { return None };
+    let ir::Node::Search(search) = scan.as_ref() else { return None };
+    if !search.order.is_empty() || !search.phases.is_empty() || search.per.is_some() {
+        return None;
+    }
+    let lt = table(&search.table)?;
+    // The right: rows of a table, each once, its key among their columns.
+    let ir::Node::Project { input: below, columns: rcols } = right.as_ref() else { return None };
+    let mut x = below.as_ref();
+    let rt = loop {
+        match x {
+            ir::Node::Limit { input, .. } | ir::Node::Filter { input, .. } => x = input,
+            ir::Node::Search(s) => break table(&s.table)?,
+            _ => return None,
+        }
+    };
+    let pk = rt.primary_key?;
+    if rcols.get(rj)?.expr != ir::Expr::Field(pk as u32) {
+        return None;
+    }
+    // One value a left row, of the key's own type, so that it equals the
+    // right's key exactly, and values that a group of the table reads.
+    let ir::Expr::Field(lf) = lcols.get(li)?.expr else { return None };
+    let plain = |f: &crate::schema::Field| f.indexed && !f.multi && f.logical.is_none() && f.media.is_none();
+    let (kf, pf) = (lt.fields.get(lf as usize)?, rt.fields.get(pk)?);
+    if !plain(kf) || pf.logical.is_some() || kf.ty != pf.ty || !matches!(kf.ty, FieldType::Keyword | FieldType::Int) {
+        return None;
+    }
+    // The groups: of values of the right's rows (or the left's key, which
+    // equals the right's), one of them the right's key, which the sort
+    // above orders by.
+    let (lw, rw) = (lcols.len(), rcols.len());
+    let mut by_key = Vec::new();
+    for (g, k) in keys.iter().enumerate() {
+        if matches!(k, ir::Expr::Output(i) if *i as usize == lw + rj || *i as usize == li) {
+            by_key.push(g as u32);
+        }
+        let mut ok = !k.has_operators();
+        k.visit(&mut |e| {
+            ok &= match e {
+                ir::Expr::Output(i) => (lw..lw + rw).contains(&(*i as usize)) || *i as usize == li,
+                ir::Expr::Lit(_)
+                | ir::Expr::Not(_)
+                | ir::Expr::And(_)
+                | ir::Expr::Or(_)
+                | ir::Expr::IsNull(_)
+                | ir::Expr::Cmp { .. }
+                | ir::Expr::Between { .. }
+                | ir::Expr::In { .. }
+                | ir::Expr::Arith { .. }
+                | ir::Expr::Neg(_)
+                | ir::Expr::Concat(_)
+                | ir::Expr::Like { .. }
+                | ir::Expr::Prefix { .. }
+                | ir::Expr::Case { .. }
+                | ir::Expr::Call { .. } => true,
+                _ => false,
+            }
+        });
+        if !ok {
+            return None;
+        }
+    }
+    if !sort.iter().any(|k| matches!(k.expr, ir::Expr::Output(g) if by_key.contains(&g))) {
+        return None;
+    }
+    // The aggregates: of rows, or of single-valued fields of the left,
+    // each once (`COUNT(*)` is both asked for and counts the group's rows).
+    let mut first: Vec<ir::Agg> = Vec::with_capacity(aggs.len());
+    let mut at = Vec::with_capacity(aggs.len());
+    for a in aggs {
+        let arg = match &a.arg {
+            None if a.func == AggFn::Count => None,
+            Some(ir::Expr::Output(i)) if (*i as usize) < lw => {
+                let ir::Expr::Field(f) = lcols[*i as usize].expr else { return None };
+                let fl = lt.fields.get(f as usize)?;
+                let typed = match a.func {
+                    AggFn::Count | AggFn::CountDistinct => matches!(fl.ty, FieldType::Keyword | FieldType::Int | FieldType::Float),
+                    AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max => matches!(fl.ty, FieldType::Int | FieldType::Float),
+                };
+                if !plain(fl) || !typed {
+                    return None;
+                }
+                Some(ir::Expr::Field(f))
+            }
+            _ => return None,
+        };
+        let agg = ir::Agg { func: a.func, arg };
+        at.push(1 + first.iter().position(|x| *x == agg).unwrap_or_else(|| {
+            first.push(agg);
+            first.len() - 1
+        }));
+    }
+    // The left table's groups: its key, then the aggregates.
+    let width = 1 + first.len();
+    let mut columns = vec![ir::Column { name: lcols[li].name.clone(), expr: ir::Expr::Output(0) }];
+    columns.extend((1..width).map(|j| ir::Column { name: format!("#{j}"), expr: ir::Expr::Output(j as u32) }));
+    let groups = ir::Node::Project {
+        input: Box::new(ir::Node::Aggregate { input: Box::new(ir::Node::Search(search.clone())), keys: vec![ir::Expr::Field(lf)], aggs: first }),
+        columns,
+    };
+    ir::Plan::new(groups.clone()).to_select(lt).ok()?;
+    let join = ir::Node::Join {
+        left: Box::new(groups),
+        right: right.clone(),
+        kind: ir::JoinKind::Inner,
+        keys: vec![ir::JoinKey { left: ir::Expr::Output(0), right: ir::Expr::Output(rj as u32), left_links: false, right_links: false }],
+        on: None,
+    };
+    // The same groups over the join's rows, one row each: its aggregates'
+    // values are the row's.
+    let keys = keys
+        .iter()
+        .map(|k| {
+            let mut k = k.clone();
+            k.visit_mut(&mut |e| {
+                if let ir::Expr::Output(i) = e {
+                    *i = if *i as usize == li { 0 } else { *i - lw as u32 + width as u32 };
+                }
+                Ok(())
+            })
+            .ok()?;
+            Some(k)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let aggs = at.into_iter().map(|j| ir::Agg { func: AggFn::Min, arg: Some(ir::Expr::Output(j as u32)) }).collect();
+    Some(ir::Node::Aggregate { input: Box::new(join), keys, aggs })
 }
 
 /// Which tables an expression names, and column lookup.
@@ -1937,6 +2313,21 @@ fn walk_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
             else_result.iter_mut().for_each(|x| walk_mut(x, f));
         }
         _ => {}
+    }
+}
+
+/// Why a join other than `JOIN` and `LEFT JOIN` is refused, and what to
+/// write instead.
+fn unsupported_join(o: &sql::JoinOperator) -> String {
+    use sql::JoinOperator as J;
+    match o {
+        J::Right(_) | J::RightOuter(_) => "RIGHT JOIN is not supported: swap the two tables and use LEFT JOIN (a RIGHT JOIN b ON ... is b LEFT JOIN a ON ...)".into(),
+        J::FullOuter(_) => "FULL JOIN is not supported: JOIN and LEFT JOIN are; a FULL JOIN is the rows of a LEFT JOIN b UNION those of b LEFT JOIN a".into(),
+        J::CrossJoin(_) => "CROSS JOIN is not supported: join with JOIN ... ON an equality of the two tables' columns".into(),
+        J::Semi(_) | J::LeftSemi(_) | J::RightSemi(_) => "SEMI JOIN is not supported: WHERE x IN (SELECT ...) or EXISTS (SELECT ...) keeps the rows that have a match".into(),
+        J::Anti(_) | J::LeftAnti(_) | J::RightAnti(_) => "ANTI JOIN is not supported: WHERE x NOT IN (SELECT ...) or NOT EXISTS (SELECT ...) keeps the rows without a match".into(),
+        J::CrossApply | J::OuterApply => "APPLY is not supported: join with JOIN ... ON".into(),
+        _ => "this kind of join is not supported: use JOIN (inner) or LEFT JOIN, with ON an equality of the two tables' columns".into(),
     }
 }
 
@@ -2237,6 +2628,7 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
             otherwise: else_result.as_deref().map(bx).transpose()?,
         },
         Expr::Function(_) if outer_field(e).is_some() => ir::Expr::Outer(outer_field(e).expect("a field")),
+        e if super::sql::is_now(e) => ir::Expr::Lit(Value::Timestamp(crate::timestamp::now())),
         Expr::Function(f) if fname(f) == "prefix" => {
             let [x, p] = func_args(f)[..] else { return Err(err("PREFIX(text, prefix) takes two arguments")) };
             ir::Expr::Prefix { expr: typed(x, Some(crate::json::Kind::Str))?, prefix: bx(p)?, edits: 0 }
@@ -2283,15 +2675,78 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                     return Err(err(format!("{}(...) works on one table's scan, in its WHERE or ORDER BY (in a join, on that table's column: a.body), not on values of rows", n.to_uppercase())))
                 }
                 n if AGGREGATES.contains(&n) => return Err(err(format!("{}(...) is an aggregate: it needs GROUP BY or a SELECT of aggregates, not a value of one row", n.to_uppercase()))),
-                n => return Err(err(format!("unknown function {n}"))),
+                n => return Err(err(unknown_function(n))),
             };
             let args: Vec<ir::Expr> = func_args(f).into_iter().map(go).collect::<Result<_>>()?;
             func.arity(args.len()).map_err(|a| err(format!("{}() takes {a}", func.name())))?;
             ir::Expr::Call { func, args }
         }
+        // CAST(x AS type) and x::type: a value cast now; a column of the
+        // rows by the arithmetic and functions that make the type.
+        Expr::Cast { expr, data_type, format: None, .. } => {
+            let to = CastTo::of(data_type)?;
+            match go(expr)? {
+                ir::Expr::Lit(v) => ir::Expr::Lit(super::sql::cast_value(v, to)?),
+                x => match to {
+                    CastTo::Float => ir::Expr::Arith { op: ArithOp::Mul, left: Box::new(x), right: Box::new(ir::Expr::Lit(Value::Float(1.0))) },
+                    CastTo::Int => ir::Expr::Call { func: Func::Round, args: vec![x] },
+                    CastTo::Text => ir::Expr::Case {
+                        operand: None,
+                        whens: vec![When { when: ir::Expr::IsNull(Box::new(x.clone())), then: ir::Expr::Lit(Value::Null) }],
+                        otherwise: Some(Box::new(ir::Expr::Concat(vec![x]))),
+                    },
+                    CastTo::Bool | CastTo::Timestamp => {
+                        return Err(err(format!(
+                            "{e}: a column of the rows casts to INT, FLOAT or TEXT; BOOL and TIMESTAMP take a value, such as CAST('2026-11-02' AS TIMESTAMP)"
+                        )))
+                    }
+                },
+            }
+        }
         e @ (Expr::Identifier(_) | Expr::CompoundIdentifier(_)) => return Err(err(format!("no such column: {e}"))),
-        e => return Err(err(format!("unsupported expression: {e}"))),
+        Expr::Substring { .. } => return Err(err(unknown_function("substring"))),
+        Expr::Trim { .. } => return Err(err(unknown_function("trim"))),
+        Expr::Position { .. } => return Err(err(unknown_function("position"))),
+        Expr::Overlay { .. } => return Err(err(unknown_function("replace"))),
+        Expr::Ceil { .. } => return Err(err(unknown_function("ceil"))),
+        Expr::Floor { .. } => return Err(err(unknown_function("floor"))),
+        Expr::Extract { field, expr, .. } => {
+            return Err(err(format!(
+                "EXTRACT({field} FROM {expr}): Strata has no date parts yet; compare the time with a range instead ({expr} >= '2026-01-01' AND {expr} < '2027-01-01')"
+            )))
+        }
+        e => return Err(err(format!("{e} is not something Strata computes for a row: {}", ROW_EXPRESSIONS))),
     })
+}
+
+/// What the row evaluator computes, for an error about what it does not.
+const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp and dot";
+
+/// Why a function is not one the row evaluator knows: the one meant, if
+/// the name is near one, or what there is.
+fn unknown_function(n: &str) -> String {
+    const ROW_FUNCTIONS: [&str; 16] =
+        ["lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot"];
+    let hint = match n {
+        "substr" | "substring" | "left" | "right" | "trim" | "ltrim" | "rtrim" | "replace" | "concat" | "position" | "instr" | "strpos" | "split_part" | "reverse" => {
+            "; to match part of a text, use LIKE '%part%' (ILIKE ignores case) or PREFIX(field, 'start'); to join texts, use ||"
+        }
+        "date_trunc" | "date_part" | "extract" | "strftime" | "date" | "year" | "month" | "day" | "to_char" | "datediff" | "date_add" | "date_sub" => {
+            "; Strata has no date functions yet: compare the time with a range (at >= '2026-01-01' AND at < '2026-02-01')"
+        }
+        "random" | "rand" => "; ORDER BY random() is not supported: Strata orders by columns and scores",
+        "ifnull" | "nvl" | "isnull" => "; coalesce(x, y) gives x, or y where x is NULL",
+        "floor" | "ceil" | "ceiling" | "trunc" | "truncate" => "; round(x) rounds to a whole number, round(x, n) to n decimals",
+        "char_length" | "character_length" | "len" => "; length(text) counts its characters",
+        "lcase" => "; lower(text)",
+        "ucase" => "; upper(text)",
+        _ => "",
+    };
+    format!(
+        "unknown function {n}(){}: over rows Strata computes {}{hint}",
+        hint::did_you_mean(n, ROW_FUNCTIONS),
+        ROW_FUNCTIONS.join(", ")
+    )
 }
 
 /// An aggregate call: its text (how other expressions name it), function and argument.
