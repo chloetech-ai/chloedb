@@ -1,0 +1,309 @@
+{
+  "batch": 500,
+  "clients": 4,
+  "collection": "nq-1000k",
+  "docs": 1000000,
+  "engine": "redis",
+  "engine_stats": {
+    "Index Errors": [
+      "indexing failures",
+      0,
+      "last indexing error",
+      "N/A",
+      "last indexing error key",
+      "N/A",
+      "background indexing status",
+      "OK"
+    ],
+    "attributes": [
+      [
+        "identifier",
+        "body",
+        "attribute",
+        "body",
+        "type",
+        "TEXT",
+        "WEIGHT",
+        "1"
+      ],
+      [
+        "identifier",
+        "key",
+        "attribute",
+        "key",
+        "type",
+        "TAG",
+        "SEPARATOR",
+        ","
+      ],
+      [
+        "identifier",
+        "year",
+        "attribute",
+        "year",
+        "type",
+        "NUMERIC"
+      ],
+      [
+        "identifier",
+        "category",
+        "attribute",
+        "category",
+        "type",
+        "TAG",
+        "SEPARATOR",
+        ","
+      ],
+      [
+        "identifier",
+        "rating",
+        "attribute",
+        "rating",
+        "type",
+        "NUMERIC"
+      ],
+      [
+        "identifier",
+        "emb",
+        "attribute",
+        "emb",
+        "type",
+        "VECTOR",
+        "algorithm",
+        "HNSW",
+        "data_type",
+        "FLOAT16",
+        "dim",
+        384,
+        "distance_metric",
+        "IP",
+        "M",
+        16,
+        "ef_construction",
+        200
+      ]
+    ],
+    "bytes_per_record_avg": "10.360071182250977",
+    "cleaning": 0,
+    "cursor_stats": [
+      "global_idle",
+      0,
+      "global_total",
+      0,
+      "index_capacity",
+      128,
+      "index_total",
+      0
+    ],
+    "dialect_stats": [
+      "dialect_1",
+      0,
+      "dialect_2",
+      0,
+      "dialect_3",
+      0,
+      "dialect_4",
+      0
+    ],
+    "doc_table_size_mb": "80.9564208984375",
+    "field statistics": [
+      [
+        "identifier",
+        "body",
+        "attribute",
+        "body",
+        "Index Errors",
+        [
+          "indexing failures",
+          0,
+          "last indexing error",
+          "N/A",
+          "last indexing error key",
+          "N/A"
+        ]
+      ],
+      [
+        "identifier",
+        "key",
+        "attribute",
+        "key",
+        "Index Errors",
+        [
+          "indexing failures",
+          0,
+          "last indexing error",
+          "N/A",
+          "last indexing error key",
+          "N/A"
+        ]
+      ],
+      [
+        "identifier",
+        "year",
+        "attribute",
+        "year",
+        "Index Errors",
+        [
+          "indexing failures",
+          0,
+          "last indexing error",
+          "N/A",
+          "last indexing error key",
+          "N/A"
+        ]
+      ],
+      [
+        "identifier",
+        "category",
+        "attribute",
+        "category",
+        "Index Errors",
+        [
+          "indexing failures",
+          0,
+          "last indexing error",
+          "N/A",
+          "last indexing error key",
+          "N/A"
+        ]
+      ],
+      [
+        "identifier",
+        "rating",
+        "attribute",
+        "rating",
+        "Index Errors",
+        [
+          "indexing failures",
+          0,
+          "last indexing error",
+          "N/A",
+          "last indexing error key",
+          "N/A"
+        ]
+      ],
+      [
+        "identifier",
+        "emb",
+        "attribute",
+        "emb",
+        "Index Errors",
+        [
+          "indexing failures",
+          0,
+          "last indexing error",
+          "N/A",
+          "last indexing error key",
+          "N/A"
+        ],
+        "memory",
+        1140994272,
+        "marked_deleted",
+        0,
+        "direct_hnsw_insertions",
+        82059,
+        "flat_buffer_size",
+        1001
+      ]
+    ],
+    "gc_stats": [
+      "bytes_collected",
+      "0",
+      "total_ms_run",
+      "0",
+      "total_cycles",
+      "0",
+      "average_cycle_time_ms",
+      "nan",
+      "last_run_time_ms",
+      "0",
+      "gc_numeric_trees_missed",
+      "0",
+      "gc_blocks_denied",
+      "0"
+    ],
+    "geoshapes_sz_mb": "0",
+    "hash_indexing_failures": 0,
+    "index_definition": [
+      "key_type",
+      "HASH",
+      "prefixes",
+      [
+        "d:"
+      ],
+      "default_score",
+      "1",
+      "indexes_all",
+      "false"
+    ],
+    "index_name": "idx",
+    "index_options": [],
+    "indexing": 0,
+    "inverted_sz_mb": "705.5630493164063",
+    "key_table_size_mb": "31.28057098388672",
+    "max_doc_id": 1000000,
+    "num_docs": 1000000,
+    "num_records": 71412296,
+    "num_terms": 1377871,
+    "number_of_uses": 2,
+    "offset_bits_per_record_avg": "8.231522560119629",
+    "offset_vectors_sz_mb": "80.8653564453125",
+    "offsets_per_term_avg": "1.1539825201034546",
+    "percent_indexed": "1",
+    "records_per_doc_avg": "71.41229248046875",
+    "sortable_values_size_mb": "0",
+    "stopwords_list": [
+      "a",
+      "an",
+      "and",
+      "are",
+      "as",
+      "at",
+      "be",
+      "but",
+      "by",
+      "for",
+      "if",
+      "in",
+      "into",
+      "is",
+      "it",
+      "no",
+      "not",
+      "of",
+      "on",
+      "or",
+      "such",
+      "that",
+      "the",
+      "their",
+      "then",
+      "there",
+      "these",
+      "they",
+      "this",
+      "to",
+      "was",
+      "will",
+      "with"
+    ],
+    "tag_overhead_sz_mb": "31.28284454345703",
+    "text_overhead_sz_mb": "56.503726959228516",
+    "total_index_memory_sz_mb": "2088.082275390625",
+    "total_indexing_time": "198945.009771",
+    "total_inverted_index_blocks": 3001046,
+    "vector_index_sz_mb": "1088.136962890625"
+  },
+  "ingest_s": 209.670591887,
+  "memory_bytes": 4449561448,
+  "merge_s": 0.00504425,
+  "prepare_s": 0.0,
+  "refresh_s": 0.0,
+  "request_bytes": 1374617079,
+  "searchable_docs": 1000000,
+  "setup_s": 0.003350542,
+  "steps": {
+    "index_s": 0.004071084
+  },
+  "total_s": 209.675652845
+}

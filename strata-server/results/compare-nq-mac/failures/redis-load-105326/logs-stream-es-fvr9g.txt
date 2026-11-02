@@ -1,0 +1,10 @@
+es       topic docs-es-1793600355, 4 partitions; 1000000 documents before
+es       250/s            produced 7500 in 30.0 s; written 7500 in 30.0 s (250/s); lag p50 23 ms  p90 36 ms  p99 81 ms  max 210 ms (read p50 19 ms)
+es       500/s            produced 15000 in 30.0 s; written 15000 in 30.0 s (500/s); lag p50 21 ms  p90 42 ms  p99 66 ms  max 102 ms (read p50 17 ms)
+es       1000/s           produced 30000 in 30.1 s; written 30000 in 30.1 s (998/s); lag p50 20 ms  p90 39 ms  p99 73 ms  max 163 ms (read p50 15 ms)
+es       2000/s           produced 60000 in 30.1 s; written 60000 in 30.1 s (1996/s); lag p50 23 ms  p90 51 ms  p99 81 ms  max 126 ms (read p50 17 ms)
+es       flat out         produced 20000 in 0.6 s; written 20000 in 3.4 s (5947/s); lag p50 1810 ms  p90 2713 ms  p99 2835 ms  max 2941 ms (read p50 1005 ms)
+es       before the crash produced 10000 in 3.4 s; written 5038 in 3.4 s (1483/s); lag p50 24 ms  p90 56 ms  p99 125 ms  max 153 ms (read p50 17 ms)
+es       after the crash   resumed in 1.5 s: 1975 events written a second time, 0 skipped by the server; 1142500 documents, 0 lost
+es       deleted 142500 streamed documents in 1.2 s
+wrote /data/compare/stream-es.json

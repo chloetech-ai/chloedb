@@ -1,10 +1,13 @@
-# Strata, Elasticsearch, OpenSearch, Solr and Vespa on the same cluster
+# Strata and thirteen other engines on the same cluster
 
 Runs Strata, Elasticsearch, OpenSearch, Solr and Vespa one at a time on the
 kind cluster of [`../kind-test.sh`](../kind-test.sh), on the same data, with
 the same number of shards and the same CPU and memory, and asks each the
 query kinds of `strata-server-bench` and five more (phrase, typo, prefix,
-similar items, an SQL aggregate). Results of a run on a Mac (Strata,
+similar items, an SQL aggregate). Nine more engines get the same data, the
+same budget on one node, and the same kinds where they have them:
+Meilisearch, Typesense, Manticore Search, Qdrant, Weaviate, Milvus,
+ParadeDB, Postgres and Redis ([below](#nine-more-engines-on-one-node)). Results of a run on a Mac (Strata,
 Elasticsearch and Solr, 28 October 2026) are in
 [`../../results/compare-mac/README.md`](../../results/compare-mac/README.md).
 
@@ -15,15 +18,19 @@ Elasticsearch and Solr, 28 October 2026) are in
 | `vespa.yaml`, `vespa/` | Vespa 8.778.45: `vespa-0` (config server, cluster controller and the container that answers queries) and two content nodes; `vespa/package.sh` writes the application package (`services-cluster.xml`, `schemas/doc.sd`, the stopword lists); `vespa/services.xml` is the same application on one node, for trying it in Docker |
 | `strata.yaml`, `strata-coordinator.yaml` | two Strata shards and their coordinator |
 | `redpanda.yaml` | one Redpanda broker for the stream test |
+| `more/*.yaml` | the nine one-node engines (`postgres.yaml` is ParadeDB's and Postgres's, as `paradedb-0` or `postgres-0`) |
 | `analyze.py` | scores the answers and prints the tables |
-| `../../src/bin/engine-compare.rs` | the client: `build` (a Strata shard), `load` (the other engines) and `run` (time the kinds and record the answers) |
+| `../../src/bin/engine-compare/` | the client: `build` (a Strata shard), `load` (the other engines) and `run` (time the kinds and record the answers); `more.rs` speaks to the nine one-node engines |
 
 ## What is the same for every engine
 
 - **Data**: BEIR Quora as `strata/scripts/prepare_beir.py` prepares it:
   522,931 questions with Cohere embed-english-v3 vectors (1,024
   dimensions, unit length) and the synthetic `year`, `category`, `rating`
-  and `topic` fields of `strata::data`.
+  and `topic` fields of `strata::data`. `COLLECTION=` picks another, such
+  as `nq-1000k` from `strata/scripts/prepare_beir_local.py nq --docs
+  1000000` (every judged document of BEIR NQ and the corpus's first ones,
+  1,000,000 in all, with bge-small-en-v1.5 vectors of 384 dimensions).
 - **Shards**: 2, no replicas, on the same two worker nodes (one each);
   the clients run on the third worker. Every index lives on its node's own
   disk.
@@ -41,7 +48,11 @@ Elasticsearch and Solr, 28 October 2026) are in
   start below it, so its pods set `VESPA_IGNORE_NOT_ENOUGH_MEMORY`.
   Loading has the same budget: Elasticsearch, OpenSearch and Solr take bulk
   requests on their two data nodes and Vespa one document per request on
-  its container (from a loader pod on the third node, outside the budget),
+  its container, 64 in flight from each of the 4 loading clients (256, what
+  its container queues), a refused put sent again after a pause that grows
+  to 5 s (from a loader pod on the third node, outside the budget; with
+  every put of a 500-document batch at once, the first 1M NQ load failed
+  at 850,000 with puts refused for 20 s on end),
   and Strata builds its shards one after the other in a job of 3 CPUs and 6
   GiB on the shard's node (a shard's build holds its documents in memory;
   two at once in 3 GiB each ran out of memory).
@@ -68,6 +79,11 @@ Elasticsearch and Solr, 28 October 2026) are in
   segment after loading. Vespa has no segments to merge: a document is
   searchable once its put returns, and proton flushes and compacts on its
   own (compare.sh asks it to flush before measuring its size on disk).
+- **Access**: Strata's servers listen beyond loopback only with a token,
+  so its shards, coordinator and the client share a random one, made once
+  per cluster by `compare.sh` and kept in the secret `strata-token`; the
+  other engines run with their security off, as their images start
+  (Typesense needs an API key, a fixed `compare`).
 - **No result caches**: the timed runs repeat 300 queries, so Solr's
   `queryResultCache` is off and Elasticsearch's and OpenSearch's shard
   request caches are bypassed (`request_cache=false`); filter caches stay
@@ -90,7 +106,7 @@ Elasticsearch and Solr, 28 October 2026) are in
 | typo | `bm25(body, :x, fuzzy => 'auto')`, the query with two letters of its longest word swapped | `match` with `fuzziness: AUTO` | each word `~1` or `~2`, as `AUTO` would |
 | prefix | `WHERE MATCH(body, 'pre*')`: the first three letters of the query's last word, ranked by the words before it | `prefix` filter, `match` | `fq=body:pre*` |
 | similar items | `WHERE rating >= 3 AND id NOT IN (20 keys) ORDER BY similarity(emb, :item)`: a recommender's "more like this item", minus what the user has seen | `knn` from the item's vector, filter `range` and `must_not ids` | `{!knn}` with `fq` |
-| sql aggregate | `SELECT category, COUNT(*), AVG(rating) … WHERE year >= :y GROUP BY category HAVING COUNT(*) > 1000 ORDER BY 2 DESC LIMIT 10` | the same statement to `/_sql` | the same statement to `/sql` (Solr's parallel SQL) |
+| sql aggregate | `SELECT category, COUNT(*), AVG(rating) … WHERE year >= :y GROUP BY category HAVING COUNT(*) > 1000 ORDER BY 2 DESC LIMIT 10` | the same statement to `/_sql` | the same statement to `/sql` (Solr's parallel SQL, the `sql` module, which solr.yaml turns on), as a request parameter, with `` `year` `` in backticks and no column aliases (Solr's HAVING matches nothing with them) |
 
 Elasticsearch searches return only `_id` and `_score` (`_source: false`)
 and stop counting hits (`track_total_hits: false`); Solr's are given
@@ -182,6 +198,54 @@ the time it was due.
 
 Afterwards the streamed documents are deleted and the topic too.
 
+## Nine more engines, on one node
+
+`compare.sh up|load|run|down ENGINE` takes `meili`, `typesense`,
+`manticore`, `qdrant`, `weaviate`, `milvus`, `paradedb`, `postgres` and
+`redis` too. Each is one pod (`more/<engine>.yaml`) with the whole budget of
+the others' two data nodes, 3 CPUs and 6 GiB, on the first data node, its
+data on that node's disk; the clients run on the third worker as before.
+None of them is sharded across the two nodes here: several shard only in
+their paid or cluster editions, and a one-node figure is what a small
+deployment of each would see. `load` creates the index untimed, times the
+bulk writes, then times what the engine does before every document is
+searchable and indexed (its indexing tasks, index builds, flushes and
+merges), and `compare.sh` measures the data directory with `du` (Redis: its
+memory). Writes and streams are not measured for them yet.
+
+| engine | image | text | vectors (HNSW, m 16, ef_construction 200, dot product) |
+|---|---|---|---|
+| Meilisearch | `getmeili/meilisearch:v1.56.0` | its ranking rules (not BM25), no stemming, Lucene's stopwords; 3 indexing threads, 3 GiB | a `userProvided` embedder |
+| Typesense | `typesense/typesense:30.2` | its text match (not BM25), `stem: true`, Lucene's and Strata's query stopwords as a stopword set | `float[]` field, `ef` 64 |
+| Manticore | `manticoresearch/manticore:29.9.0` | BM25 as `bm25a(1.2, 0.75)` with plain IDF, `stem_en`, its English stopwords | `float_vector`, 8-bit quantization, `ef` 64, rescore with oversampling 4 |
+| Qdrant | `qdrant/qdrant:v1.20.0` | BM25 from the client: sparse vectors of Strata's analysis (tf weighted with k1 and b, average length from a pass over the documents), Qdrant's IDF modifier | int8 scalar quantization, `hnsw_ef` 64, rescore with oversampling 4 |
+| Weaviate | `semitechnologies/weaviate:1.39.14` | its BM25 (k1 1.2, b 0.75), word tokenization, no stemming, its English stopwords | 8-bit rotational quantization, `ef` 64, rescore limit 40 |
+| Milvus | `milvusdb/milvus:v2.6.26` (standalone, embedded etcd, local storage) | its BM25 function over the `english` analyzer | `HNSW_SQ` (SQ8) refined with FP32, refine_k 4, `ef` 64 |
+| ParadeDB | `paradedb/paradedb:0.26.4-pg17` | `pg_search`'s BM25 over its `simple` tokenizer with the English stemmer, stopwords and ASCII folding | the vectors in the same index (`vector_ip_ops`) |
+| Postgres | the same image, without `pg_search` | `ts_rank` (no IDF: not BM25) over a generated `tsvector` with a GIN index | `pgvector` HNSW, `ef_search` 64, `iterative_scan` strict_order |
+| Redis | `redis:8.8.4` (Redis Query Engine; no persistence, 5.5 GB maxmemory) | `BM25STD` with its English stemmer and Lucene's stopwords | `HNSW` `FLOAT16` (with `FLOAT32` a million 384-dimension vectors, held in the hash and again in the index, and the text do not fit in 6 GiB: the first 1M NQ load ran out of memory at about 93%), `EF_RUNTIME` 64 |
+
+Each kind is the engine's closest native request, and its report says
+where it has none (`unavailable`) or where the request means something
+else than Strata's (`differs`); `analyze.py` prints both under the tables.
+In short:
+
+| engine | unavailable | means something else |
+|---|---|---|
+| Meilisearch | boosted (no function scores), sql aggregate | text kinds ranked by its rules, typos and a prefix last word on; hybrids by `semanticRatio` 0.5 and 0.8, not RRF or min-max |
+| Typesense | boosted (decays only sort), sql aggregate | text kinds ranked by its text match; hybrids by its rank fusion, `alpha` 0.5 and 0.8 |
+| Manticore | hybrid (weighted): its fusion is RRF only | typo: every word must match (its fuzzy search takes no OR) |
+| Qdrant | typo, prefix, sql aggregate | phrase: BM25 filtered by the text index's phrase match; weighted hybrid by `dbsf` (no weights); boosted re-ranks the BM25 top 100 by a formula |
+| Weaviate | boosted, phrase, typo | prefix as a `Like` filter; facet and sql aggregate as grouped `Aggregate` queries; hybrids by `rankedFusion` and `relativeScoreFusion` |
+| Milvus | facet, typo, prefix, sql aggregate | weighted hybrid normalised by arctan, not min-max; boosted by its decay ranker over the BM25 top 100 |
+| ParadeDB | – | hybrids in SQL over each top 100 (ParadeDB's own pattern); prefix as a regex on the terms |
+| Postgres | typo (full-text search has no fuzzy matching) | `ts_rank`, not BM25; hybrids in SQL over each top 100 |
+| Redis | – | weighted hybrid sums raw BM25STD and vector scores (FT.HYBRID does not normalise them); typo with `%word%` and `%%word%%` |
+
+Postgres and Redis are spoken to over their own protocols (the simple query
+protocol, with trust authentication, and RESP2), a few lines each in
+`more.rs`, so the client needs no library for them.
+
 ## Running it
 
 With the cluster of `../kind-test.sh up` (its `/data` and `/beir`
@@ -200,7 +264,15 @@ $C up vespa;     $C load vespa; $C run vespa; $C writes vespa; $C stream vespa; 
 python3 strata-server/deploy/compare/analyze.py $STRATA_WORK/compare $STRATA_DATA/quora
 # Strata at another split of its 3 CPUs, kept beside the default run:
 SHARD_CPU=1250m COORD_CPU=500m $C up strata; $C run strata --label strata-coord500m; $C down strata
+# The nine one-node engines, one at a time:
+for e in meili typesense manticore qdrant weaviate milvus paradedb postgres redis; do
+    $C up $e; $C load $e; $C run $e; $C down $e
+done
 ```
+
+`COLLECTION=nq-1000k` before any of these runs them on another collection
+(the vector size comes from its `meta.json`; Vespa's schema is written for
+it); give `analyze.py` that collection's directory.
 
 The Docker VM must allow `vm.max_map_count` of at least 262144 for
 Elasticsearch, and have room for one engine (6 GiB) at a time, plus

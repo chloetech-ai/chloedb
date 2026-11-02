@@ -1,0 +1,46 @@
+manticore: index created in 0.0 s
+manticore: 25000 documents sent, 3 s
+manticore: 50000 documents sent, 8 s
+manticore: 75000 documents sent, 13 s
+manticore: 100000 documents sent, 19 s
+manticore: 125000 documents sent, 25 s
+manticore: 150000 documents sent, 31 s
+manticore: 175000 documents sent, 40 s
+manticore: 200000 documents sent, 49 s
+manticore: 225000 documents sent, 58 s
+manticore: 250000 documents sent, 67 s
+manticore: 275000 documents sent, 76 s
+manticore: 300000 documents sent, 84 s
+manticore: 325000 documents sent, 95 s
+manticore: 350000 documents sent, 104 s
+manticore: 375000 documents sent, 113 s
+manticore: 400000 documents sent, 123 s
+manticore: 425000 documents sent, 133 s
+manticore: 450000 documents sent, 143 s
+manticore: 475000 documents sent, 150 s
+manticore: 500000 documents sent, 162 s
+manticore: 525000 documents sent, 171 s
+manticore: 550000 documents sent, 180 s
+manticore: 575000 documents sent, 192 s
+manticore: 600000 documents sent, 199 s
+manticore: 625000 documents sent, 209 s
+manticore: 650000 documents sent, 218 s
+manticore: 675000 documents sent, 229 s
+manticore: 700000 documents sent, 238 s
+manticore: 725000 documents sent, 248 s
+manticore: 750000 documents sent, 258 s
+manticore: 775000 documents sent, 267 s
+manticore: 800000 documents sent, 275 s
+manticore: 825000 documents sent, 288 s
+manticore: 850000 documents sent, 295 s
+manticore: 875000 documents sent, 305 s
+manticore: 900000 documents sent, 316 s
+manticore: 925000 documents sent, 324 s
+manticore: 950000 documents sent, 335 s
+manticore: 975000 documents sent, 344 s
+manticore: 1000000 documents sent, 354 s
+manticore: 1000000 documents (5.4 GB) sent in 354.5 s
+manticore: flush_s in 2.8 s
+manticore: merge_s in 836.1 s
+manticore: indexed 838.9 s after the last write; 1193.4 s in all
+wrote /data/compare/load-manticore.json

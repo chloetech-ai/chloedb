@@ -1,0 +1,80 @@
+Name:             run-paradedb-dvj6g
+Namespace:        compare
+Priority:         0
+Service Account:  default
+Node:             strata-worker3/172.19.0.5
+Start Time:       Mon, 02 Nov 2026 02:14:09 -0800
+Labels:           batch.kubernetes.io/controller-uid=d008e3c7-6a5b-4a89-bfdf-5758f9509171
+                  batch.kubernetes.io/job-name=run-paradedb
+                  controller-uid=d008e3c7-6a5b-4a89-bfdf-5758f9509171
+                  job-name=run-paradedb
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.244.1.30
+IPs:
+  IP:           10.244.1.30
+Controlled By:  Job/run-paradedb
+Containers:
+  compare:
+    Container ID:  containerd://d0d50375af7801a6009f396517abf139084875f33054643a6fba010a7e5fb1e5
+    Image:         strata-server:compare
+    Image ID:      docker.io/library/import-2026-11-02@sha256:558ed7893b0b5b27fdb3d8f76b47c88199cb97a642ae8bcb4d61e041afbbdeda
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      run
+      --engine
+      paradedb
+      --url
+      postgres://paradedb-0.paradedb:5432
+      --out
+      /data/compare
+      --collection
+      nq-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 02 Nov 2026 02:14:10 -0800
+      Finished:     Mon, 02 Nov 2026 02:23:53 -0800
+    Ready:          False
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:  /beir
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-p5xc4 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  Directory
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-p5xc4:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:                      <none>

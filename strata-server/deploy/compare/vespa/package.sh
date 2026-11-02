@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Writes Vespa's application package for the cluster of compare.sh as a zip:
-#   package.sh OUT.zip CONTENT_NODES [REDUNDANCY] [CONTAINER_HEAP] [DOMAIN]
+#   [DIM=384] package.sh OUT.zip CONTENT_NODES [REDUNDANCY] [CONTAINER_HEAP] [DOMAIN]
 # vespa-0 runs the config server and the container; vespa-1 .. vespa-N the
-# content nodes. DOMAIN is the pods' DNS suffix (the headless Service).
+# content nodes. DOMAIN is the pods' DNS suffix (the headless Service); DIM
+# the vectors' dimensions (default 1024, Quora's).
 set -euo pipefail
 out=$(cd "$(dirname "$1")" && pwd)/$(basename "$1") n=$2 redundancy=${3:-1} heap=${4:-512m} domain=${5:-vespa.compare.svc.cluster.local}
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cp -r "$here/schemas" "$here/linguistics" "$work/"
+sed "s/x\[1024\]/x[${DIM:-1024}]/g" "$here/schemas/doc.sd" >"$work/schemas/doc.sd"
 nodes="" hosts="    <host name=\"vespa-0.$domain\"><alias>config</alias></host>"$'\n'
 for i in $(seq 1 "$n"); do
     nodes+="            <node hostalias=\"c$i\" distribution-key=\"$((i - 1))\"/>"$'\n'

@@ -1,0 +1,37 @@
+weaviate  bm25                     c=1        437 q/s  p50   1.899 ms  p90   3.843 ms  p99   7.512 ms  errors 0
+weaviate  bm25                     c=4        920 q/s  p50   3.546 ms  p90   7.047 ms  p99  16.125 ms  errors 0
+weaviate  bm25                     c=16       959 q/s  p50  14.159 ms  p90  32.876 ms  p99  64.024 ms  errors 0
+weaviate  bm25 + filter            c=1        448 q/s  p50   1.984 ms  p90   3.247 ms  p99   6.286 ms  errors 0
+weaviate  bm25 + filter            c=4        910 q/s  p50   3.728 ms  p90   7.120 ms  p99  15.243 ms  errors 0
+weaviate  bm25 + filter            c=16       915 q/s  p50  15.247 ms  p90  30.824 ms  p99  56.611 ms  errors 0
+weaviate  vector                   c=1        543 q/s  p50   1.731 ms  p90   1.988 ms  p99   4.418 ms  errors 0
+weaviate  vector                   c=4       1457 q/s  p50   2.313 ms  p90   4.144 ms  p99   8.601 ms  errors 0
+weaviate  vector                   c=16      1475 q/s  p50   9.391 ms  p90  19.672 ms  p99  34.373 ms  errors 0
+weaviate  vector + filter          c=1        293 q/s  p50   3.307 ms  p90   3.973 ms  p99   7.173 ms  errors 0
+weaviate  vector + filter          c=4        617 q/s  p50   5.100 ms  p90  11.101 ms  p99  20.920 ms  errors 0
+weaviate  vector + filter          c=16       739 q/s  p50  19.395 ms  p90  39.222 ms  p99  67.058 ms  errors 0
+weaviate  hybrid (RRF)             c=1        259 q/s  p50   3.450 ms  p90   5.623 ms  p99   8.684 ms  errors 0
+weaviate  hybrid (RRF)             c=4        423 q/s  p50   8.554 ms  p90  13.898 ms  p99  25.739 ms  errors 0
+weaviate  hybrid (RRF)             c=16       425 q/s  p50  35.727 ms  p90  52.197 ms  p99  91.011 ms  errors 0
+weaviate  hybrid (weighted)        c=1        259 q/s  p50   3.436 ms  p90   5.479 ms  p99   9.238 ms  errors 0
+weaviate  hybrid (weighted)        c=4        432 q/s  p50   8.469 ms  p90  13.397 ms  p99  23.525 ms  errors 0
+weaviate  hybrid (weighted)        c=16       428 q/s  p50  34.744 ms  p90  52.966 ms  p99 107.855 ms  errors 0
+weaviate  boosted (bm25 × decay)   unavailable: no function scores
+weaviate  facet                    c=1         44 q/s  p50   9.012 ms  p90  58.588 ms  p99 184.579 ms  errors 0
+weaviate  facet                    c=4         65 q/s  p50  29.152 ms  p90 144.073 ms  p99 434.144 ms  errors 0
+weaviate  facet                    c=16        64 q/s  p50 183.769 ms  p90 586.454 ms  p99 895.553 ms  errors 0
+weaviate  key lookup               c=1       2973 q/s  p50   0.328 ms  p90   0.357 ms  p99   0.404 ms  errors 0
+weaviate  key lookup               c=4      11303 q/s  p50   0.306 ms  p90   0.446 ms  p99   1.094 ms  errors 0
+weaviate  key lookup               c=16     12101 q/s  p50   1.131 ms  p90   2.020 ms  p99   6.935 ms  errors 0
+weaviate  phrase                   unavailable: no phrase queries
+weaviate  typo                     unavailable: no fuzzy matching
+weaviate  prefix                   c=1        317 q/s  p50   2.809 ms  p90   5.311 ms  p99   9.217 ms  errors 0
+weaviate  prefix                   c=4        735 q/s  p50   4.794 ms  p90   8.877 ms  p99  14.854 ms  errors 0
+weaviate  prefix                   c=16       685 q/s  p50  19.480 ms  p90  46.138 ms  p99  69.430 ms  errors 0
+weaviate  similar items            c=1        314 q/s  p50   2.988 ms  p90   3.359 ms  p99   6.858 ms  errors 0
+weaviate  similar items            c=4        757 q/s  p50   4.527 ms  p90   8.321 ms  p99  13.222 ms  errors 0
+weaviate  similar items            c=16       790 q/s  p50  18.331 ms  p90  36.823 ms  p99  55.005 ms  errors 0
+weaviate  sql aggregate            c=1          0 q/s  p50 2160.333 ms  p90 2276.656 ms  p99 2276.656 ms  errors 0
+weaviate  sql aggregate            c=4          1 q/s  p50 6283.374 ms  p90 6448.231 ms  p99 6448.231 ms  errors 0
+weaviate  sql aggregate            c=16         1 q/s  p50 21359.430 ms  p90 21695.796 ms  p99 21803.953 ms  errors 0
+wrote /data/compare/run-weaviate.json

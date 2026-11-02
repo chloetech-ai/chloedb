@@ -1,0 +1,72 @@
+Name:             strata-0
+Namespace:        compare
+Priority:         0
+Service Account:  default
+Node:             strata-worker/172.19.0.4
+Start Time:       Mon, 02 Nov 2026 02:59:27 -0800
+Labels:           app=strata-shard
+                  engine=strata
+Annotations:      <none>
+Status:           Running
+IP:               10.244.2.18
+IPs:
+  IP:  10.244.2.18
+Containers:
+  strata:
+    Container ID:  containerd://c03ff379933f2efa1b83774f78883ad80b10ebca2b51bacaf94e6779be007f01
+    Image:         strata-server:compare
+    Image ID:      docker.io/library/import-2026-11-02@sha256:a28f87720802b70cf496df806dc4c6d2f88510c0e3aa821b291176efffc5306c
+    Ports:         7700/TCP (http), 7701/TCP (grpc)
+    Host Ports:    0/TCP (http), 0/TCP (grpc)
+    Args:
+      --db
+      /local/nq-1000k.shard0of2.strata
+      --listen
+      0.0.0.0:7700
+      --grpc
+      0.0.0.0:7701
+    State:          Running
+      Started:      Mon, 02 Nov 2026 02:59:27 -0800
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     1
+      memory:  2560Mi
+    Requests:
+      cpu:      1
+      memory:   2560Mi
+    Readiness:  http-get http://:http/v1/health delay=0s timeout=1s period=2s successThreshold=1 failureThreshold=3
+    Environment:
+      STRATA_TOKEN:  <set to the key 'token' in secret 'strata-token'>  Optional: false
+    Mounts:
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-8z9zv (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  Directory
+  kube-api-access-8z9zv:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason     Age    From     Message
+  ----     ------     ----   ----     -------
+  Normal   Pulled     9m17s  kubelet  spec.containers{strata}: Container image "strata-server:compare" already present on machine and can be accessed by the pod
+  Normal   Created    9m17s  kubelet  spec.containers{strata}: Container created
+  Normal   Started    9m17s  kubelet  spec.containers{strata}: Container started
+  Warning  Unhealthy  9m17s  kubelet  spec.containers{strata}: Readiness probe failed: Get "http://10.244.2.18:7700/v1/health": dial tcp 10.244.2.18:7700: connect: connection refused
