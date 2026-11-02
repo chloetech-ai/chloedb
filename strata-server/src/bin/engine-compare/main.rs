@@ -1222,8 +1222,11 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
                         "filter": ["rating:[3 TO *]", format!("-id:({})", ids.join(" OR "))]})
                 }
                 "sql aggregate" => {
+                    // Solr's SQL quotes names with backticks (year is a keyword),
+                    // and its HAVING matches nothing once COUNT(*) has an alias,
+                    // so the columns keep their own names (EXPR$1, EXPR$2).
                     let stmt = format!(
-                        "SELECT category, COUNT(*) AS n, AVG(rating) AS r FROM quora WHERE \"year\" >= {year} GROUP BY category HAVING COUNT(*) > 1000 ORDER BY COUNT(*) DESC LIMIT 10"
+                        "SELECT category, COUNT(*), AVG(rating) FROM quora WHERE `year` >= {year} GROUP BY category HAVING COUNT(*) > 1000 ORDER BY COUNT(*) DESC LIMIT 10"
                     );
                     return Some(("/solr/quora/sql", json!({"stmt": stmt})));
                 }
@@ -1307,7 +1310,7 @@ fn answer(engine: Engine, kind: &str, j: &Json) -> Json {
                 .unwrap_or_default()
                 .iter()
                 .filter(|d| d.get("EOF").is_none())
-                .map(|d| json!([d["category"], d["n"], d["r"]]))
+                .map(|d| json!([d["category"], d["EXPR$1"], d["EXPR$2"]]))
                 .collect();
             return json!({"keys": [], "scores": [], "rows": rows});
         }
@@ -1353,9 +1356,18 @@ fn answer(engine: Engine, kind: &str, j: &Json) -> Json {
 
 /// An error in a 2xx answer (Solr's combined handler, for one, can answer
 /// 200 with an "error" object).
+/// `s` percent-encoded for a URL's query string.
+fn query_escape(s: &str) -> String {
+    s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
+}
+
 fn error_of(j: &Json) -> Option<String> {
-    // Vespa answers 200 with root.errors when, for one, a content node timed out.
-    j.get("error").or_else(|| j["root"].get("errors")).map(|e| e.to_string())
+    // Vespa answers 200 with root.errors when, for one, a content node timed
+    // out; Solr's SQL answers 200 with an EXCEPTION row when a statement fails.
+    j.get("error")
+        .or_else(|| j["root"].get("errors"))
+        .or_else(|| j["result-set"]["docs"].as_array().and_then(|d| d.iter().find_map(|r| r.get("EXCEPTION"))))
+        .map(|e| e.to_string())
 }
 
 #[derive(Default)]
@@ -1465,6 +1477,11 @@ async fn run(
             let seen: Vec<String> = std::iter::once(it).chain((1..SEEN).map(|j| (it + j * 997) % keys.len())).map(|j| keys[j].clone()).collect();
             let probe = Probe { q, key: &keys[k], item: &items[it], seen: &seen, year: 1990 + (i % 30) as i64, paid };
             if let Some((path, body)) = request(engine, kind, sql, &probe) {
+                // Solr's /sql reads its statement from the request's parameters only, not from a JSON body.
+                let (path, body) = match body.get("stmt").and_then(|x| x.as_str()) {
+                    Some(stmt) if matches!(engine, Engine::Solr) => (format!("{path}?stmt={}", query_escape(stmt)), json!({})),
+                    _ => (path.to_string(), body),
+                };
                 ids.push(q.id.clone());
                 match kind {
                     "similar items" => params.push(json!({"item": keys[it], "seen": seen})),
