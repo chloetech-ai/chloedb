@@ -129,6 +129,15 @@ const ICONS = {
   rollout: '<path d="M3 12h4l3 7 4-14 3 7h4"/>',
   autoscale: '<path d="M7 20V6M3.5 9.5 7 6l3.5 3.5"/><path d="M17 4v14M13.5 14.5 17 18l3.5-3.5"/>',
   cloud: '<path d="M7 18h10.5a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.3 9.1 4.5 4.5 0 0 0 7 18z"/>',
+  cluster: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+  timeline: '<path d="M3 12h18"/><circle cx="7" cy="12" r="2"/><circle cx="14" cy="12" r="2"/><path d="M7 5v3M14 16v3M19 5v4"/>',
+  pin: '<path d="M12 17v5M9 3h6l-1 5 3 3v2H7v-2l3-3z"/>',
+  share: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  note: '<path d="M4 4h16v12l-4 4H4z"/><path d="M16 20v-4h4M8 9h8M8 13h5"/>',
+  labs: '<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3"/><path d="M7.5 15h9"/>',
+  node: '<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/>',
+  shard: '<path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.7z"/><path d="M3.3 7 12 12l8.7-5M12 22V12"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 9.2-9.2M16 7l3 3M18 5l2 2"/>',
 };
 
 export function icon(name, cls = "") {
@@ -154,6 +163,25 @@ export const bus = {
   emit(ev, x) { for (const f of handlers.get(ev) || []) { try { f(x); } catch (e) { console.error(e); } } },
 };
 
+// ---------------------------------------------------------------- narrow screens
+/**
+ * The breakpoints, the same numbers as the CSS: below NARROW (900 px, a
+ * tablet or a phone on its side) the sidebar is a drawer behind a menu
+ * button, the range and Share sit in a menu, and drawers, dialogs and the
+ * palette are full-screen sheets; below PHONE (560 px, a phone) one column.
+ * In CSS: `@media (max-width: 900px)` and `@media (max-width: 560px)`.
+ * `narrow` on the bus fires when the width crosses either one (with
+ * isNarrow()); a view that lays out in JS redraws then.
+ */
+export const NARROW = 900, PHONE = 560;
+const mq = (px) => { try { return matchMedia(`(max-width: ${px}px)`); } catch { return null; } };
+const narrowMq = mq(NARROW), phoneMq = mq(PHONE);
+/** True below 900 px. */
+export const isNarrow = () => !!narrowMq?.matches;
+/** True below 560 px (a phone held upright). */
+export const isPhone = () => !!phoneMq?.matches;
+for (const q of [narrowMq, phoneMq]) q?.addEventListener?.("change", () => bus.emit("narrow", isNarrow()));
+
 // ---------------------------------------------------------------- the API
 // The token (or API key) is kept for the tab only, under the key the
 // query console reads too.
@@ -165,26 +193,233 @@ export const hasToken = () => !!token;
 /** The Authorization header, for requests `api` cannot make (an upload with progress). */
 export const authHeader = () => (token ? { authorization: "Bearer " + token } : {});
 
+/**
+ * A failed call. `status` is the HTTP status, 0 when nothing answered (a
+ * network failure or a timeout). `answered` is false when the answer did
+ * not come from Strata (nothing answered, or a proxy's page that is not
+ * JSON): the server counts as not answering then.
+ */
 export class ApiError extends Error {
-  constructor(status, message, body) { super(message); this.status = status; this.body = body; }
+  constructor(status, message, body, answered = true) { super(message); this.status = status; this.body = body; this.answered = answered; }
 }
 
-/** Calls the server: api("/v1/x"), api("/v1/x", {body}), api(p, {method: "DELETE"}). */
+// Whether the server answers: every call of `api` says. A call answered by
+// Strata (any status, its JSON) means yes; a network failure, a timeout or
+// an answer that is not Strata's JSON (an ingress's 502 page) means no.
+const conn = { ok: true, since_ms: null, status: null, message: null, path: null, last_ok_ms: null, last_fail_ms: null };
+/** `{ ok, since_ms, status, message, path, last_ok_ms }`: whether the server answers, and since when it does not. */
+export const connection = () => ({ ...conn });
+function answered() {
+  conn.last_ok_ms = Date.now();
+  if (conn.ok) return;
+  Object.assign(conn, { ok: true, since_ms: null, status: null, message: null, path: null });
+  bus.emit("connection", connection());
+}
+function notAnswering(status, message, path) {
+  const now = Date.now();
+  conn.last_fail_ms = now;
+  const was = conn.ok;
+  Object.assign(conn, { ok: false, since_ms: was ? now : conn.since_ms, status, message, path });
+  bus.emit("connection", connection());
+}
+/** What an HTTP status means when it did not come from Strata. */
+function proxyWhy(status) {
+  return status === 502 ? "502 from the ingress or proxy" : status === 503 ? "503 from the ingress or proxy" : status === 504 ? "504: the ingress or proxy gave up waiting"
+    : status >= 500 ? `${status} that is not Strata's` : `an answer that is not Strata's (HTTP ${status})`;
+}
+// Header values are Latin-1: anything else in a reason goes percent-encoded.
+const headerSafe = (t) => String(t).replace(/[\r\n]+/g, " ").replace(/[^\x20-\x7e]/g, (c) => encodeURIComponent(c)).slice(0, 2000);
+
+/**
+ * Calls the server: api("/v1/x"), api("/v1/x", {body}), api(p, {method: "DELETE"}).
+ * opts: {method, body, type, signal, text, blob, reason, timeout}. `reason`
+ * goes in the `x-strata-reason` header (the audit entry keeps it); `timeout`
+ * (ms) gives up and counts as not answering. Every call says it comes from
+ * the command center (`x-strata-client`), so the server leaves the UI's own
+ * calls out of the routes and queries it shows.
+ */
 export async function api(path, opts = {}) {
-  const init = { method: opts.method || (opts.body === undefined ? "GET" : "POST"), headers: {} };
+  const init = { method: opts.method || (opts.body === undefined ? "GET" : "POST"), headers: { "x-strata-client": "command-center" } };
   if (opts.body !== undefined) {
     if (opts.body instanceof Blob || opts.body instanceof ArrayBuffer || typeof opts.body === "string") { init.body = opts.body; if (opts.type) init.headers["content-type"] = opts.type; }
     else { init.headers["content-type"] = "application/json"; init.body = JSON.stringify(opts.body); }
   }
   if (token) init.headers.authorization = "Bearer " + token;
-  if (opts.signal) init.signal = opts.signal;
-  const r = await fetch(path, init);
-  if (opts.text) { const t = await r.text(); if (!r.ok) throw new ApiError(r.status, t || "HTTP " + r.status); return t; }
-  if (opts.blob) { if (!r.ok) throw new ApiError(r.status, "HTTP " + r.status); return r; }
-  let j; try { j = await r.json(); } catch { j = {}; }
+  if (opts.reason) init.headers["x-strata-reason"] = headerSafe(opts.reason);
+  let timer = null, timedOut = false;
+  if (opts.timeout) {
+    const ac = new AbortController();
+    opts.signal?.addEventListener("abort", () => ac.abort());
+    timer = setTimeout(() => { timedOut = true; ac.abort(); }, opts.timeout);
+    init.signal = ac.signal;
+  } else if (opts.signal) init.signal = opts.signal;
+  let r;
+  try { r = await fetch(path, init); }
+  catch (e) {
+    clearTimeout(timer);
+    if (opts.signal?.aborted && !timedOut) throw e; // the caller cancelled it
+    const why = timedOut ? `no answer in ${fmt.ms(opts.timeout)}` : "no answer: the network failed or the server is not running";
+    notAnswering(0, why, path);
+    throw new ApiError(0, why, null, false);
+  }
+  clearTimeout(timer);
+  if (opts.blob) {
+    if (r.ok) { answered(); return r; }
+    const t = await r.text().catch(() => "");
+    const j = parseJson(t);
+    if (j === undefined && r.status >= 500) { notAnswering(r.status, proxyWhy(r.status), path); throw new ApiError(r.status, proxyWhy(r.status), null, false); }
+    answered();
+    if (r.status === 401) bus.emit("unauthorized", path);
+    throw new ApiError(r.status, j?.error || "HTTP " + r.status, j || {});
+  }
+  const t = await r.text().catch(() => null);
+  if (t == null) { notAnswering(r.status || 0, "the answer was cut off", path); throw new ApiError(r.status || 0, "the answer was cut off", null, false); }
+  if (opts.text) {
+    // A page that is not Strata's error: a proxy answered for it.
+    if (!r.ok && r.status >= 500 && parseJson(t) === undefined) { notAnswering(r.status, proxyWhy(r.status), path); throw new ApiError(r.status, proxyWhy(r.status), null, false); }
+    answered();
+    if (r.status === 401) bus.emit("unauthorized", path);
+    if (!r.ok) throw new ApiError(r.status, parseJson(t)?.error || t || "HTTP " + r.status, parseJson(t) || {});
+    return t;
+  }
+  let j = t.trim() === "" ? {} : parseJson(t);
+  // Strata always answers JSON here (its errors say {"error": ...}). Anything
+  // else came from something in front of it.
+  if (j === undefined || (r.status >= 500 && !isStrataError(j))) {
+    notAnswering(r.status, proxyWhy(r.status), path);
+    throw new ApiError(r.status, proxyWhy(r.status), null, false);
+  }
+  answered();
   if (r.status === 401) bus.emit("unauthorized", path);
-  if (!r.ok) throw new ApiError(r.status, j.error || ("HTTP " + r.status), j);
+  if (!r.ok) throw new ApiError(r.status, j?.error || ("HTTP " + r.status), j);
   return j;
+}
+function parseJson(t) { try { return JSON.parse(t); } catch { return undefined; } }
+const isStrataError = (j) => !!j && typeof j === "object" && (typeof j.error === "string" || typeof j.status === "string");
+
+// ---------------------------------------------------------------- shared context
+// data.js fills this (who is signed in, the cluster, the time range, pause),
+// so that the helpers here read it without importing data.js.
+const ctx = { whoami: null, cluster: null, paused: false, rangeParams: () => ({}) };
+/** For data.js: provide({whoami, cluster, paused, rangeParams}). */
+export function provide(x) { Object.assign(ctx, x); }
+/** Whether the live view is paused (data.js `setPaused`). */
+export const isPaused = () => ctx.paused;
+
+// ---------------------------------------------------------------- scope
+const RANK = { read: 1, write: 2, admin: 3 };
+/**
+ * Whether the signed-in key may do this: can("read" | "write" | "admin").
+ * Unknown (not signed in, or whoami failed) can read only. Views hide or
+ * disable what they cannot do, with `needs(scope)` as the tooltip.
+ */
+export function can(scope) {
+  const w = ctx.whoami;
+  if (!w) return scope === "read";
+  if (w.root) return true;
+  return (RANK[w.scope] || 0) >= (RANK[scope] || 3);
+}
+/** The tooltip of an action the key cannot take: "needs an admin key". */
+export const needs = (scope) => `needs ${scope === "admin" ? "an admin" : `a ${scope}`} key`;
+/** Disables a button the key cannot use, and says why: gate(btn, "admin"). Returns the button. */
+export function gate(btn, scope) {
+  if (!can(scope)) { btn.disabled = true; btn.title = (btn.title ? btn.title + ": " : "") + needs(scope); btn.classList.add("gated"); }
+  return btn;
+}
+
+// ---------------------------------------------------------------- copies
+/** The shard and replica of a copy's URL in a /v1/cluster answer, or null. */
+export function findCopy(url, cluster = ctx.cluster) {
+  if (!url || !cluster?.shards) return null;
+  const u = String(url).replace(/\/+$/, "");
+  for (let i = 0; i < cluster.shards.length; i++) {
+    const sh = cluster.shards[i];
+    const reps = sh.replicas || [];
+    for (let j = 0; j < reps.length; j++) if (String(reps[j].url).replace(/\/+$/, "") === u) return { shard: sh.shard ?? i, copy: j, sh, rep: reps[j] };
+  }
+  return null;
+}
+const hostPort = (url) => String(url).replace(/^[a-z]+:\/\//, "").replace(/\/.*$/, "");
+/**
+ * The short name of a copy: its node name when the server has one, else
+ * "s1-0" (shard 1, copy 0); host:port for a URL the cluster does not list.
+ */
+export function copyName(url, cluster = ctx.cluster) {
+  if (!url) return "–";
+  const f = findCopy(url, cluster);
+  if (!f) return hostPort(url);
+  return f.rep.name || f.rep.short || `s${f.shard}-${f.copy}`;
+}
+/** The long form, for a tooltip: "s1-0: shard 1, copy 0, primary · node … · http://…". */
+export function copyTitle(url, cluster = ctx.cluster) {
+  if (!url) return "";
+  const f = findCopy(url, cluster);
+  if (!f) return String(url);
+  const r = f.rep;
+  const role = r.role === "unknown" ? `not answering${r.last_role ? ` (was ${r.last_role})` : ""}` : r.role;
+  return [`${copyName(url, cluster)}: shard ${f.shard}, copy ${f.copy}${role ? ", " + role : ""}`, r.node ? `node ${r.node}` : null, r.zone ? `zone ${r.zone}` : null, String(url)].filter(Boolean).join(" · ");
+}
+
+// ---------------------------------------------------------------- links
+/**
+ * A link into a view that keeps the global time range: link("logs", {node: "s1-0"})
+ * → "#/logs?node=s1-0&range=6h" (or &from=…&to=… for a fixed window).
+ * `view` may hold a path ("alert/disk-full"); null and "" params are left out;
+ * from/to given in params win over the global range.
+ */
+export function link(view, params = {}) {
+  const q = new URLSearchParams();
+  const own = Object.entries(params || {}).filter(([, v]) => v != null && v !== "");
+  for (const [k, v] of own) q.set(k, String(v));
+  if (!q.has("from") && !q.has("to") && !q.has("range")) for (const [k, v] of Object.entries(ctx.rangeParams() || {})) if (v != null) q.set(k, String(v));
+  const qs = q.toString();
+  return "#/" + String(view).replace(/^#?\/?/, "") + (qs ? "?" + qs : "");
+}
+
+/**
+ * A link to Logs with its search: logsLink({ server, shard, level, request,
+ * text }, params). `server` is a copy's URL (written as its short name), a
+ * short name or a node name; `level: "warn"` finds warn and worse. The global
+ * range goes along (`params.from`/`to` win), as with `link`.
+ * logsLink({ server: url, level: "warn" }) -> "#/logs?q=server:s1-0 level>=warn&range=6h".
+ */
+export function logsLink({ server, shard, level, request, text } = {}, params = {}) {
+  const sv = server && /^https?:\/\//.test(server) ? copyName(server) : server;
+  const q = [sv ? `server:${sv}` : null, shard != null && shard !== "" ? `shard:${shard}` : null, level ? `level>=${level}` : null, request ? `request:${request}` : null, text || null].filter(Boolean).join(" ");
+  return link("logs", { ...params, q: q || null });
+}
+
+// ---------------------------------------------------------------- times
+/** How long ago: "just now", "12 s ago", "4 min ago", "3 h ago", "2 d ago" ("in 5 min" ahead). */
+export const ago = (ms) => fmt.ago(ms);
+const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+/** An absolute local time: "19:42:15" today, "Nov 2 19:42" another day; "–" when unknown. */
+export function when(ms, { sec = true } = {}) {
+  if (ms == null || !Number.isFinite(+ms) || +ms <= 0) return "–";
+  const d = new Date(+ms);
+  const t = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: sec ? "2-digit" : undefined, hour12: false });
+  if (sameDay(d, new Date())) return t;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" }) + " " + t.slice(0, 5);
+}
+/** The full time with its zone, for a title: "Mon, Nov 2, 2026, 19:42:15 GMT+1 (Europe/Madrid)". */
+export function whenTitle(ms) {
+  if (ms == null || !Number.isFinite(+ms) || +ms <= 0) return "";
+  const d = new Date(+ms);
+  let zone = ""; try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { /* old browser */ }
+  return d.toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZoneName: "short" }) + (zone ? ` (${zone})` : "");
+}
+/** A <time> element showing when(ms), with the full time and zone (and how long ago) in its title. */
+export function timeEl(ms, opts = {}) {
+  return h("time", { datetime: ms ? new Date(+ms).toISOString() : null, title: ms ? `${whenTitle(ms)} · ${fmt.ago(ms)}` : null, class: opts.cls || null }, when(ms, opts));
+}
+/** A window as text: "19:12–20:12" today, "Nov 1 19:12–20:12", "Nov 1 22:00 – Nov 2 08:00". */
+export function span(from, to) {
+  if (!from || !to) return "–";
+  const a = new Date(+from), b = new Date(+to);
+  const hm = (d) => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
+  const day = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  if (sameDay(a, b)) return (sameDay(a, new Date()) ? "" : day(a) + " ") + hm(a) + "–" + hm(b);
+  return `${day(a)} ${hm(a)} – ${day(b)} ${hm(b)}`;
 }
 
 // ---------------------------------------------------------------- formats
@@ -315,16 +550,35 @@ export function modal({ title, body, foot, wide, onClose }) {
   return { close, el: m };
 }
 
-/** Asks before doing something: resolves true or false. */
-export function confirm({ title, body, ok = "Confirm", danger = false }) {
+/**
+ * Asks before doing something. Focus starts on Cancel, so Enter alone never
+ * confirms. `typed: "audit_orders"` keeps OK disabled until that text is
+ * typed; `reason: true` (or a placeholder string) asks why, required, and the
+ * answer goes in the audit entry (pass it to `api` as `opts.reason`).
+ * Resolves `false`, or `{ reason }` (truthy; reason is null when not asked).
+ */
+export function confirm({ title, body, ok = "Confirm", danger = false, typed = null, reason = false }) {
   return new Promise((resolve) => {
     let answered = false;
     const yes = h("button", { class: "btn " + (danger ? "danger solid" : "primary") }, ok);
     const no = h("button", { class: "btn" }, "Cancel");
-    const m = modal({ title, body: typeof body === "string" ? h("p", { style: { margin: 0 }, class: "dim" }, body) : body, foot: [no, yes], onClose: () => { if (!answered) resolve(false); } });
-    yes.onclick = () => { answered = true; m.close(); resolve(true); };
+    const typedIn = typed != null ? h("input", { class: "input", autocomplete: "off", spellcheck: "false", "aria-label": `Type ${typed} to confirm`, style: { width: "100%" } }) : null;
+    const reasonIn = reason ? h("textarea", { class: "input", rows: 2, placeholder: typeof reason === "string" ? reason : "Why: kept in the audit log with the change", "aria-label": "Reason", style: { width: "100%", resize: "vertical" } }) : null;
+    const ready = () => (!typedIn || typedIn.value.trim() === String(typed)) && (!reasonIn || reasonIn.value.trim().length > 0);
+    const sync = () => { yes.disabled = !ready(); };
+    const parts = [
+      typeof body === "string" ? h("p", { style: { margin: 0 }, class: "dim" }, body) : body,
+      typedIn ? h("label", { class: "confirm-field" }, h("span", { class: "small dim" }, "Type ", h("b", { class: "mono" }, String(typed)), " to confirm"), typedIn) : null,
+      reasonIn ? h("label", { class: "confirm-field" }, h("span", { class: "small dim" }, "Reason (required)"), reasonIn) : null,
+    ];
+    const m = modal({ title, body: parts, foot: [no, yes], onClose: () => { if (!answered) resolve(false); } });
+    const go = () => { if (!ready()) return; answered = true; const why = reasonIn ? reasonIn.value.trim() : null; m.close(); resolve({ reason: why }); };
+    yes.onclick = go;
     no.onclick = () => { answered = true; m.close(); resolve(false); };
-    setTimeout(() => yes.focus(), 0);
+    for (const i of [typedIn, reasonIn]) if (i) { i.oninput = sync; i.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && ready()) { e.preventDefault(); go(); } }; }
+    sync();
+    // Cancel has the focus; with a field to fill, the first field has it.
+    setTimeout(() => (typedIn || reasonIn || no).focus(), 0);
   });
 }
 
@@ -338,7 +592,10 @@ export function menu(anchor, items) {
   scrim.onclick = close;
   const w = 200;
   m.style.left = Math.min(r.left, innerWidth - w - 8) + "px";
-  m.style.top = (r.bottom + 4) + "px";
+  // Near the bottom of the window it opens upward.
+  const ht = m.offsetHeight || items.length * 34 + 8;
+  if (r.bottom + 4 + ht > innerHeight - 8 && r.top - 4 - ht >= 8) m.style.top = (r.top - 4 - ht) + "px";
+  else m.style.top = Math.max(8, Math.min(r.bottom + 4, innerHeight - 8 - ht)) + "px";
   setTimeout(() => m.querySelector("button")?.focus(), 0);
   return close;
 }
@@ -357,10 +614,20 @@ export function showTip(x, y, content) {
   tipEl.style.top = Math.max(8, top) + "px";
 }
 export function hideTip() { if (tipEl) tipEl.style.display = "none"; }
+let tapArmed = false;
+/** After a tap showed the tooltip: the next tap anywhere, or a scroll, hides it. */
+export function tapTip() {
+  if (tapArmed) return;
+  tapArmed = true;
+  const off = () => { tapArmed = false; hideTip(); removeEventListener("pointerdown", off, true); removeEventListener("scroll", off, true); };
+  setTimeout(() => { addEventListener("pointerdown", off, true); addEventListener("scroll", off, true); }, 0);
+}
 /** A tooltip on hover and focus: tipOn(el, () => nodes). */
 export function tipOn(e, content) {
-  e.addEventListener("pointermove", (ev) => showTip(ev.clientX, ev.clientY, typeof content === "function" ? content() : content));
-  e.addEventListener("pointerleave", hideTip);
+  e.addEventListener("pointermove", (ev) => { if (ev.pointerType === "mouse") showTip(ev.clientX, ev.clientY, typeof content === "function" ? content() : content); });
+  // A tap shows it too (a phone has no hover); the next tap anywhere hides it.
+  e.addEventListener("pointerdown", (ev) => { if (ev.pointerType !== "mouse") { showTip(ev.clientX, ev.clientY - 40, typeof content === "function" ? content() : content); tapTip(); } });
+  e.addEventListener("pointerleave", (ev) => { if (ev.pointerType === "mouse") hideTip(); });
   e.addEventListener("focus", () => { const r = e.getBoundingClientRect(); showTip(r.right, r.top, typeof content === "function" ? content() : content); });
   e.addEventListener("blur", hideTip);
   return e;
@@ -472,12 +739,17 @@ export function dropzone({ label, sub, accept, multiple = true, onFiles }) {
   return z;
 }
 
-/** Repeats `f` every `ms` while the page is visible; returns a stopper. */
-export function every(ms, f, now = true) {
-  let stopped = false, timer = null, running = false;
+/**
+ * Repeats `f` every `ms` while the page is visible; returns a stopper. While
+ * the command center is paused (`isPaused()`), ticks after the first are
+ * skipped, so a view does not redraw; `{always: true}` keeps polling (for a
+ * change under way the person is waiting on).
+ */
+export function every(ms, f, now = true, opts = {}) {
+  let stopped = false, timer = null, running = false, first = true;
   const tick = async () => {
     if (stopped) return;
-    if (!document.hidden && !running) { running = true; try { await f(); } catch (e) { console.warn(e); } running = false; }
+    if (!document.hidden && !running && (first || opts.always || !ctx.paused)) { first = false; running = true; try { await f(); } catch (e) { console.warn(e); } running = false; }
     if (!stopped) timer = setTimeout(tick, ms);
   };
   if (now) tick(); else timer = setTimeout(tick, ms);
