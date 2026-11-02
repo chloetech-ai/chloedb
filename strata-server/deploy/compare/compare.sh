@@ -277,7 +277,8 @@ run)
         prev=$a
     done
     cpu "$e" before "$label"
-    job "run-$label" "$CLIENT_NODE" "" "" run --engine "$e" --url "$(urls "$e")" --out "$OUT" "$@"
+    # A Job is named in lowercase letters, digits and -: a label such as solr+sql runs as run-solr-sql.
+    job "run-${label//+/-}" "$CLIENT_NODE" "" "" run --engine "$e" --url "$(urls "$e")" --out "$OUT" "$@"
     cpu "$e" after "$label"
     ;;
 writes)
