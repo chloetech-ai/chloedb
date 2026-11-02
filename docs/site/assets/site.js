@@ -51,7 +51,12 @@
   function wrapCode(pre) {
     var lang = pre.getAttribute("data-lang");
     var text = pre.textContent.replace(/^\n/, "").replace(/\s+$/, "");
-    pre.innerHTML = "<code>" + highlight(text, lang) + "</code>";
+    var html = highlight(text, lang), mark = parseInt(pre.getAttribute("data-mark") || "0", 10);
+    if (mark > 0) {
+      // data-mark="n": light up line n (its highlighting spans never cross a line)
+      html = html.split("\n").map(function (line, i) { return i === mark - 1 ? '<span class="mark-line">' + line + "</span>" : line; }).join("\n");
+    }
+    pre.innerHTML = "<code>" + html + "</code>";
     if (pre.parentNode && pre.parentNode.classList && pre.parentNode.classList.contains("code")) return;
     var box = document.createElement("div");
     box.className = "code";
@@ -325,18 +330,22 @@
     if (!CMP) return;
     var state = { group: "all" };
     try { var saved = localStorage.getItem("strata-matrix-group"); if (saved) state.group = saved; } catch (e) {}
+    // data-section limits the table to one section, data-systems to some columns (and drops the group filter)
+    var only = el.getAttribute("data-section"), pick = el.getAttribute("data-systems");
+    var picked = pick ? pick.split(",") : null;
+    var sections = CMP.sections.filter(function (sec) { return !only || sec.title === only; });
     var unverified = 0;
-    CMP.sections.forEach(function (sec) { sec.rows.forEach(function (r) { Object.keys(r[1]).forEach(function (k) { if (parseMark(r[1][k]).verify) unverified++; }); }); });
+    sections.forEach(function (sec) { sec.rows.forEach(function (r) { Object.keys(r[1]).forEach(function (k) { if ((!picked || picked.indexOf(k) >= 0) && parseMark(r[1][k]).verify) unverified++; }); }); });
 
     function draw() {
-      var systems = CMP.systems.filter(function (s) { return state.group === "all" || s.group === "self" || s.group === state.group; });
-      var h = '<div class="filters"><span class="label">Compare with</span>' + CMP.groups.map(function (g) {
+      var systems = CMP.systems.filter(function (s) { return picked ? picked.indexOf(s.id) >= 0 : (state.group === "all" || s.group === "self" || s.group === state.group); });
+      var h = picked ? "" : '<div class="filters"><span class="label">Compare with</span>' + CMP.groups.map(function (g) {
         return '<button type="button" class="chipbtn" data-group="' + g.id + '" aria-pressed="' + (state.group === g.id) + '">' + esc(g.label) + "</button>";
       }).join("") + "</div>";
       h += '<div class="matrix-wrap"><table class="matrix"><thead><tr><th class="cap" scope="col">Capability</th>';
       systems.forEach(function (s) { h += '<th scope="col"' + (s.id === "strata" ? ' class="self"' : "") + ">" + esc(s.name) + (s.sub ? "<small>" + esc(s.sub) + "</small>" : "") + "</th>"; });
       h += "</tr></thead><tbody>";
-      CMP.sections.forEach(function (sec) {
+      sections.forEach(function (sec) {
         h += '<tr class="grp"><td colspan="' + (systems.length + 1) + '">' + esc(sec.title) + "</td></tr>";
         sec.rows.forEach(function (r) {
           h += '<tr><td class="cap">' + esc(r[0]) + "</td>";
@@ -375,6 +384,36 @@
     $$("[data-headlines]").forEach(renderHeadlines);
     $$("[data-stages]").forEach(renderStages);
     $$("[data-matrix]").forEach(renderMatrix);
+    initLightbox();
+  }
+
+  /* ---------------------------------------------------------- screenshots open larger */
+  function initLightbox() {
+    var imgs = $$(".shot img, .browser img");
+    if (!imgs.length || typeof HTMLDialogElement === "undefined") return;
+    var d = document.createElement("dialog");
+    d.className = "lightbox";
+    d.setAttribute("aria-label", "Screenshot");
+    d.innerHTML = '<button type="button" class="close" aria-label="Close">×</button><img alt=""><p class="cap"></p>';
+    document.body.appendChild(d);
+    var big = d.querySelector("img"), cap = d.querySelector(".cap");
+    d.querySelector(".close").addEventListener("click", function () { d.close(); });
+    d.addEventListener("click", function (e) { if (e.target === d || e.target === big) d.close(); });
+    imgs.forEach(function (img) {
+      img.classList.add("zoomable");
+      img.tabIndex = 0;
+      img.setAttribute("role", "button");
+      img.setAttribute("aria-label", (img.alt || "Screenshot") + ", open larger");
+      var open = function () {
+        var fig = img.closest("figure"), fc = fig && fig.querySelector("figcaption");
+        big.src = img.currentSrc || img.src;
+        big.alt = img.alt;
+        cap.textContent = fc ? fc.textContent : img.alt;
+        d.showModal();
+      };
+      img.addEventListener("click", open);
+      img.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+    });
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();

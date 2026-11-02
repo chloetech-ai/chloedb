@@ -16,6 +16,7 @@
   <a class="mark" href="index.html"><i><b></b><b></b><b></b></i>Strata</a>
   <nav class="nav" aria-label="Site">
     <a href="features.html">Features</a>
+    <a href="command-center.html">Command center</a>
     <a href="compare.html">Compare</a>
     <a href="benchmarks.html">Benchmarks</a>
     <a href="examples.html">Queries</a>
@@ -35,7 +36,7 @@
       <div class="actions">
         <a class="btn primary" href="examples.html">See the queries</a>
         <a class="btn" href="scale.html">From a file to a cluster</a>
-        <a class="btn" href="https://github.com/chloetech-ai/strata">Source on GitHub</a>
+        <a class="btn" href="command-center.html">Tour the command center</a>
       </div>
     </div>
     <div class="annot">
@@ -63,37 +64,9 @@
 
   <section class="gutter"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">What one file replaces</span>
-      <h2>The database, the search box and the recommendations, in the same rows</h2>
-      <p>An app that needs search and recommendations usually runs four systems and the code that keeps them in step. Strata keeps one copy of each row and indexes it every way at once, inside one transaction.</p>
-    </div>
-    <div class="replace">
-      <div class="col">
-        <div class="box"><b>SQLite or PostgreSQL</b><span>rows, transactions, joins</span></div>
-        <div class="box"><b>Elasticsearch or OpenSearch</b><span>the search box, facets, typos</span></div>
-        <div class="box"><b>A vector database</b><span>similar items, semantic search</span></div>
-        <div class="box"><b>A recommender service</b><span>next items, a feature store, glue code that fuses the lists</span></div>
-      </div>
-      <div class="arrow" aria-hidden="true">→</div>
-      <div class="one">
-        <h3><code>shop.strata</code></h3>
-        <p class="small muted">One file and its write-ahead log. Every table is indexed four ways, read in place through mmap, with ACID commits and snapshot isolation.</p>
-        <div class="core" aria-label="What the file holds">
-          <div style="--c: var(--fam-text)">full text<span>posting lists, BM25, positions</span></div>
-          <div style="--c: var(--fam-cols)">columns<span>keywords, numbers, times, JSON</span></div>
-          <div style="--c: var(--fam-vec)">vectors<span>HNSW, IVF, 8-bit codes</span></div>
-          <div style="--c: var(--fam-graph)">graph edges<span>edge fields, edge tables</span></div>
-          <div>rows and log<span>doc store, WAL, segments</span></div>
-        </div>
-      </div>
-    </div>
-  </div></section>
-
-  <section class="gutter"><div class="wrap block">
-    <div class="block-head">
-      <span class="eyebrow">Start small, go big</span>
-      <h2>The same file at every size</h2>
-      <p>A developer works against the structure the cluster runs: the same schema, the same SQL, the same file format and the same console, on a laptop or on a cloud's Kubernetes.</p>
+      <span class="eyebrow">Small to big</span>
+      <h2>Start with a file in your app. Grow to a cluster. Change one line.</h2>
+      <p>A developer works against the structure the cluster runs: the same schema, the same SQL, the same file format and the same console, on a laptop or on a cloud's Kubernetes. The app's code stays as it is; only the line that opens the database changes.</p>
     </div>
     <div class="ladder">
       <div class="rung">
@@ -133,8 +106,113 @@
       </div>
       <div class="same"><b>The same at every step</b><span>SQL</span><span>schema</span><span>file format</span><span>Python methods</span><span>command center</span></div>
     </div>
+    <div class="tabs app-steps" data-tabs>
+      <div class="app-steps-head"><b>Your app at each step, in Python</b><span class="small muted">Pick a step: only the highlighted line changes.</span></div>
+      <div class="tablist" role="tablist"><button type="button" data-tab="file">1 · A file</button><button type="button" data-tab="server">2 · One server</button><button type="button" data-tab="replicas">3 · Replicas</button><button type="button" data-tab="shards">4 · Shards</button><button type="button" data-tab="k8s">5 · Kubernetes</button></div>
+      <div data-panel="file"><pre data-lang="python" data-title="app.py" data-mark="2">import strata
+db = strata.open("shop.strata")                # in your process, no server
+
+hits = db.query("SELECT id, title FROM products WHERE MATCH(title, :q) "
+                "ORDER BY bm25(title, :q) DESC LIMIT 10", q="racing wheel")
+item = db.get("B0C1", table="products")
+db.insert({"id": "r9", "usr": "u7", "item": "B0C1", "stars": 5}, table="reviews")</pre></div>
+      <div data-panel="server"><pre data-lang="python" data-title="app.py" data-mark="2">import strata
+db = strata.connect("http://localhost:7700")   # strata-server --db shop.strata
+
+hits = db.query("SELECT id, title FROM products WHERE MATCH(title, :q) "
+                "ORDER BY bm25(title, :q) DESC LIMIT 10", q="racing wheel")
+item = db.get("B0C1", table="products")
+db.insert({"id": "r9", "usr": "u7", "item": "B0C1", "stars": 5}, table="reviews")</pre></div>
+      <div data-panel="replicas"><pre data-lang="python" data-title="app.py" data-mark="2">import strata
+db = strata.connect("http://primary:7700")     # writes reach the copies you ask for
+
+hits = db.query("SELECT id, title FROM products WHERE MATCH(title, :q) "
+                "ORDER BY bm25(title, :q) DESC LIMIT 10", q="racing wheel")
+item = db.get("B0C1", table="products")
+db.insert({"id": "r9", "usr": "u7", "item": "B0C1", "stars": 5}, table="reviews")</pre></div>
+      <div data-panel="shards"><pre data-lang="python" data-title="app.py" data-mark="2">import strata
+db = strata.connect("http://coordinator:7700") # a key goes to its shard, a search to all
+
+hits = db.query("SELECT id, title FROM products WHERE MATCH(title, :q) "
+                "ORDER BY bm25(title, :q) DESC LIMIT 10", q="racing wheel")
+item = db.get("B0C1", table="products")
+db.insert({"id": "r9", "usr": "u7", "item": "B0C1", "stars": 5}, table="reviews")</pre></div>
+      <div data-panel="k8s"><pre data-lang="python" data-title="app.py" data-mark="2">import strata
+db = strata.connect("http://demo.strata:7700")  # the cluster's Service; $STRATA_TOKEN signs in
+
+hits = db.query("SELECT id, title FROM products WHERE MATCH(title, :q) "
+                "ORDER BY bm25(title, :q) DESC LIMIT 10", q="racing wheel")
+item = db.get("B0C1", table="products")
+db.insert({"id": "r9", "usr": "u7", "item": "B0C1", "stars": 5}, table="reviews")</pre></div>
+    </div>
     <div class="actions"><a class="btn" href="scale.html">How each step works</a></div>
   </div></section>
+
+  <section class="gutter" id="console"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">The command center</span>
+      <h2>Every server comes with its own console</h2>
+      <p>Open the server's address and the cluster is drawn live: its shards and copies, where a query spent its time, which ranking people prefer, what the next change will cost. Elasticsearch and OpenSearch leave this to a second product to run beside the cluster. Strata serves it from the same binary, on a laptop or on Kubernetes.</p>
+      <div class="cc-points"><span>26 views</span><span>served at /</span><span>works offline</span><span>drag and drop, not forms</span><span>every click an API call</span></div>
+    </div>
+    <div class="tabs tour" data-tabs>
+      <div class="tablist" role="tablist"><button type="button" data-tab="topology">Topology</button><button type="button" data-tab="profile">Profiler</button><button type="button" data-tab="builder">Query builder</button><button type="button" data-tab="relevance">Relevance lab</button><button type="button" data-tab="control">Control center</button><button type="button" data-tab="fleet">Fleet</button></div>
+      <div class="tour-panel" data-panel="topology">
+        <figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/topology</span></div><img src="../assets/img/strata-command-center-topology.png" alt="The topology: the coordinator, two shards and their replicas, calls per second on each link" loading="lazy"></figure>
+        <p>The coordinator and every copy, drawn live: calls a second on each link, each replica's lag. Drag, zoom, and click a copy to promote it.</p>
+      </div>
+      <div class="tour-panel" data-panel="profile">
+        <figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/profile</span></div><img src="../assets/img/strata-command-center-profiler.png" alt="The profiler: a ranked query's steps as a flame chart beside its trace, and the operator tree" loading="lazy"></figure>
+        <p>Any query taken apart as a flame chart beside its trace, with each step's self and CPU time, on any node of the cluster.</p>
+      </div>
+      <div class="tour-panel" data-panel="builder">
+        <figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/builder</span></div><img src="../assets/img/strata-command-center-builder.png" alt="The query builder: a hybrid search with filters and a boost, the SQL it writes and the rows each stage kept" loading="lazy"></figure>
+        <p>Drag words, filters and boosts into stages. The SQL is written and run as you build, with the rows each stage kept.</p>
+      </div>
+      <div class="tour-panel" data-panel="relevance">
+        <figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/relevance</span></div><img src="../assets/img/strata-command-center-relevance.png" alt="The relevance lab: BM25 against a weighted hybrid, graded rows and how they moved" loading="lazy"></figure>
+        <p>Two rankings side by side, rows graded by you or by Claude, and the winner kept with its table as a rank profile.</p>
+      </div>
+      <div class="tour-panel" data-panel="control">
+        <figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/control</span></div><img src="../assets/img/strata-command-center-control.png" alt="Control center: a draft that adds two shards, with its plan, estimates and spec diff" loading="lazy"></figure>
+        <p>Drag the cluster's shape, or say "add 2 shards". The plan, guardrails and estimates come before Apply.</p>
+      </div>
+      <div class="tour-panel" data-panel="fleet">
+        <figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/fleet</span></div><img src="../assets/img/strata-command-center-fleet.png" alt="Fleet: four shards of three copies on three machines, one machine failed in a what-if" loading="lazy"></figure>
+        <p>Every shard as a tile. Fail a machine in a what-if and see which shards keep serving, with nothing stopped.</p>
+      </div>
+    </div>
+    <div class="actions"><a class="btn primary" href="command-center.html">Tour all 26 views</a><a class="btn" href="command-center.html#others">Beside Kibana and the rest</a></div>
+  </div></section>
+
+  <section class="gutter"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">What one file replaces</span>
+      <h2>The database, the search box and the recommendations, in the same rows</h2>
+      <p>An app that needs search and recommendations usually runs four systems and the code that keeps them in step. Strata keeps one copy of each row and indexes it every way at once, inside one transaction.</p>
+    </div>
+    <div class="replace">
+      <div class="col">
+        <div class="box"><b>SQLite or PostgreSQL</b><span>rows, transactions, joins</span></div>
+        <div class="box"><b>Elasticsearch or OpenSearch</b><span>the search box, facets, typos</span></div>
+        <div class="box"><b>A vector database</b><span>similar items, semantic search</span></div>
+        <div class="box"><b>A recommender service</b><span>next items, a feature store, glue code that fuses the lists</span></div>
+      </div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="one">
+        <h3><code>shop.strata</code></h3>
+        <p class="small muted">One file and its write-ahead log. Every table is indexed four ways, read in place through mmap, with ACID commits and snapshot isolation.</p>
+        <div class="core" aria-label="What the file holds">
+          <div style="--c: var(--fam-text)">full text<span>posting lists, BM25, positions</span></div>
+          <div style="--c: var(--fam-cols)">columns<span>keywords, numbers, times, JSON</span></div>
+          <div style="--c: var(--fam-vec)">vectors<span>HNSW, IVF, 8-bit codes</span></div>
+          <div style="--c: var(--fam-graph)">graph edges<span>edge fields, edge tables</span></div>
+          <div>rows and log<span>doc store, WAL, segments</span></div>
+        </div>
+      </div>
+    </div>
+  </div></section>
+
 
   <section class="gutter"><div class="wrap block">
     <div class="block-head">
@@ -193,7 +271,7 @@
 
 <footer class="foot gutter"><div class="wrap">
   <div><h4>Strata</h4><p>A search database with SQL, from one file to a cluster. Apache-2.0.</p></div>
-  <div><h4>This site</h4><ul><li><a href="features.html">Features</a></li><li><a href="compare.html">Compare</a></li><li><a href="benchmarks.html">Benchmarks</a></li><li><a href="examples.html">Queries and examples</a></li><li><a href="use-cases.html">Use cases and demos</a></li><li><a href="scale.html">Small to big</a></li></ul></div>
+  <div><h4>This site</h4><ul><li><a href="features.html">Features</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compare</a></li><li><a href="benchmarks.html">Benchmarks</a></li><li><a href="examples.html">Queries and examples</a></li><li><a href="use-cases.html">Use cases and demos</a></li><li><a href="scale.html">Small to big</a></li></ul></div>
   <div><h4>Documentation</h4><ul><li><a href="../strata/">Design</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li><li><a href="../strata/python.html">Python</a></li><li><a href="../strata/results.html">Results</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../engram/">Engram</a></li><li><a href="../reproduce.html">Reproducing the results</a></li></ul></div>
 </div></footer>

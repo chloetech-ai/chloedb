@@ -433,3 +433,44 @@ table.data th .small { font-weight: 400; }
 .chart.ops table.matrix thead th { min-width: 84px; }
 table.tbars th small.dir { display: block; font: 400 0.68rem/1.3 var(--mono); color: var(--ink-3); }
 .cell.skip .val { color: var(--ink-3); }
+
+/* ---------- command center ---------- */
+.facts { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+.fact { background: var(--panel); border: 1px solid var(--rule); border-top: 3px solid var(--accent); border-radius: 12px; padding: 16px 18px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.fact b { font: 650 1rem/1.3 var(--display); }
+.fact p { color: var(--ink-2); font-size: 0.92rem; }
+.cc-job { display: grid; gap: 36px; grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.22fr); align-items: start; }
+.cc-copy { display: grid; gap: 14px; align-content: start; position: sticky; top: 84px; }
+.cc-copy h2 { max-width: 18ch; }
+.views { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.views li { color: var(--ink-2); font-size: 0.95rem; padding-left: 14px; border-left: 2px solid var(--rule-2); }
+.views li b { color: var(--ink); font-weight: 600; }
+.cc-shots { display: grid; gap: 16px; min-width: 0; }
+.thumbs { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); }
+.thumbs .shot img { aspect-ratio: 16 / 10; object-fit: cover; object-position: top left; }
+.thumbs .shot figcaption { font-size: 0.8rem; }
+@media (max-width: 900px) { .cc-job { grid-template-columns: minmax(0, 1fr); gap: 20px; } .cc-copy { position: static; } }
+.browser { margin: 0; background: var(--panel); border: 1px solid var(--rule-2); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); min-width: 0; }
+.browser .bar { display: flex; align-items: center; gap: 6px; padding: 9px 12px; background: var(--sunk); border-bottom: 1px solid var(--rule); min-width: 0; }
+.browser .bar i { width: 9px; height: 9px; border-radius: 50%; background: var(--rule-2); flex: none; }
+.browser .bar span { margin-left: 8px; font: 500 0.76rem/1.2 var(--mono); color: var(--ink-3); background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.browser img { display: block; width: 100%; height: auto; }
+.browser figcaption { padding: 10px 14px 12px; font-size: 0.84rem; color: var(--ink-2); border-top: 1px solid var(--rule); }
+.zoomable { cursor: zoom-in; }
+.zoomable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+dialog.lightbox { padding: 0; border: 0; background: transparent; width: min(96vw, 1600px); max-width: none; max-height: 94vh; overflow: auto; color: #e6ebf1; }
+dialog.lightbox::backdrop { background: rgba(6, 10, 16, 0.86); }
+dialog.lightbox img { display: block; width: 100%; height: auto; border-radius: 10px; cursor: zoom-out; }
+dialog.lightbox .cap { padding: 10px 2px 2px; font-size: 0.9rem; }
+dialog.lightbox .close { position: sticky; top: 8px; float: right; margin: 8px 8px -44px 0; z-index: 1; width: 36px; height: 36px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.4); background: rgba(6, 10, 16, 0.7); color: #fff; font: 500 1.2rem/1 var(--body); cursor: pointer; }
+/* the tour on the home page */
+.tour { display: grid; gap: 16px; }
+.tour .tablist button { font-size: 0.86rem; }
+.tour-panel { display: grid; gap: 10px; }
+.tour-panel p { color: var(--ink-2); font-size: 0.95rem; max-width: 80ch; }
+.cc-points { display: flex; flex-wrap: wrap; gap: 8px; }
+.cc-points span { font: 500 0.8rem/1 var(--mono); padding: 7px 10px; border-radius: 999px; background: var(--accent-wash); color: var(--ink); }
+.mark-line { display: inline-block; min-width: 100%; margin: 0 -18px; padding: 0 18px; background: rgba(135, 150, 255, 0.16); box-shadow: inset 3px 0 0 #8796ff; }
+.app-steps { gap: 12px; }
+.app-steps-head { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; }
+.app-steps-head b { font: 650 1rem/1.3 var(--display); }

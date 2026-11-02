@@ -167,21 +167,50 @@ window.STRATA_COMPARE = {
       ]
     },
     {
-      title: "Operations",
+      title: "Command center and operations",
       rows: [
-        ["A console with query profiles and flame graphs", {
-          strata: "y:The command center, served by the server itself", postgres: "p:EXPLAIN ANALYZE; consoles are separate",
-          elastic: "y:Kibana, a separate service; the profile API", opensearch: "y:OpenSearch Dashboards, a separate service", solr: "y:The admin UI",
-          vespa: "p?:Tracing; no bundled console", qdrant: "y?:A web UI", milvus: "p:Attu, a separate service" }],
-        ["Plans, makes and deletes a cloud cluster, with its cost", {
-          strata: "y:The Cloud view plans EKS or DigitalOcean Kubernetes from live prices and quotas, makes the cluster, follows it and deletes it" }],
+        ["A console served by the database itself", {
+          strata: "y:GET / on every server, compiled into the binary, offline; nothing else to run", postgres: "n:pgAdmin and others run separately",
+          elastic: "n:Kibana, a separate service to run and secure", opensearch: "n:OpenSearch Dashboards, a separate service", solr: "y:The admin UI",
+          vespa: "n?:None bundled; Vespa Cloud has a console", qdrant: "y:A web UI at /dashboard", weaviate: "n?:A console in Weaviate Cloud", milvus: "n:Attu, a separate service" }],
+        ["SQL editor with completion, plans and charts", {
+          strata: "y:Completes tables, fields and JSON keys; the plan of each segment; scores as bars; charts and profiles", postgres: "p:In pgAdmin, separately",
+          elastic: "p:Dev Tools for the query DSL, ES|QL in Discover", opensearch: "y?:Query Workbench for SQL and PPL", solr: "p:A query form",
+          qdrant: "p?:A console for its REST calls", milvus: "p?:A data explorer in Attu" }],
+        ["A visual query builder that writes the search", {
+          strata: "y:Drag words, filters, boosts and groups into stages; the SQL is written and run as you build, with each stage's rows",
+          elastic: "p?:Filters and Lens in Kibana explore data; they do not build a ranking", opensearch: "p?:Filters and visualisations in Dashboards" }],
+        ["The schema drawn, and tables designed by dragging", {
+          strata: "y:Tables as cards linked by references and edges; types dragged into a new table, checked as you go", postgres: "p?:ER diagrams in pgAdmin",
+          solr: "p:A schema browser", milvus: "p?:Collections and fields in Attu" }],
+        ["Query profiles as flame charts; CPU and memory flame graphs", {
+          strata: "y:Any query on any node, beside its trace; CPU and allocation flame graphs of the server", postgres: "p:EXPLAIN ANALYZE as text",
+          elastic: "p:The Search Profiler in Kibana, a tree of times", opensearch: "p?:Query Insights and the profile API", solr: "p:debug=timing per component", vespa: "p?:Query traces" }],
+        ["Relevance tuned on graded queries, side by side", {
+          strata: "y:Two rankings side by side, grades by you or Claude, nDCG, a hybrid's weight tuned, the winner kept as a rank profile",
+          elastic: "p?:Quepid, a separate tool", opensearch: "y?:The Search Relevance Workbench", solr: "p?:Quepid, a separate tool" }],
+        ["Recommendations measured against what users did next", {
+          strata: "y:The rank log joined to events: nDCG, hit rate, lift and its significance, interleaving" }],
+        ["The cluster drawn live, with what-if failures", {
+          strata: "y:Every copy with calls on its links and its lag; fail machines in a what-if", elastic: "p?:Stack Monitoring lists nodes and shards", opensearch: "p?:Node and shard lists",
+          solr: "p:A graph of collections, shards and replicas", qdrant: "p?:Cluster status", milvus: "p?:A system view in Attu" }],
+        ["The cluster changed by drawing it, with the plan first", {
+          strata: "y:The control center: drag the shape or say it in a sentence; guardrails, estimates and the operator's plan before Apply",
+          elastic: "p?:Resizing in Elastic Cloud's console", vespa: "p?:In Vespa Cloud" }],
+        ["Rollouts with health gates, pause and rollback", {
+          strata: "y:Gates as live charts with limits to drag; every spec version with its diff and a rollback", elastic: "p?:Upgrades in Elastic Cloud and ECK" }],
         ["Autoscaling, rehearsed on past load", {
           strata: "y:Rules in the operator that act, wait for a person, or stay off; the last week's load replays on them first",
           postgres: "n?", elastic: "$?:Autoscaling in Elastic Cloud, and in ECK with an Enterprise licence", opensearch: "n?", solr: "n?", vespa: "p?:In Vespa Cloud",
           qdrant: "n?", weaviate: "n?", milvus: "n?" }],
+        ["Plans, makes and deletes a cloud cluster, with its cost", {
+          strata: "y:The Cloud view plans EKS or DigitalOcean Kubernetes from live prices and quotas, makes the cluster, follows it and deletes it" }],
+        ["The database's own logs, searched with SQL", {
+          strata: "y:Every server's lines and queries kept in Strata, across the cluster", elastic: "p:Its logs once shipped into it", opensearch: "p:Its logs once shipped into it",
+          solr: "p:The latest lines in the admin UI" }],
         ["Licence", {
-          strata: "t:Apache-2.0", sqlite: "t:Public domain", postgres: "t:PostgreSQL", lancedb: "t:Apache-2.0",
-          elastic: "t:AGPLv3, SSPL or ELv2", opensearch: "t:Apache-2.0", solr: "t:Apache-2.0", vespa: "t:Apache-2.0",
+          strata: "t:Apache-2.0, console included", sqlite: "t:Public domain", postgres: "t:PostgreSQL", lancedb: "t:Apache-2.0",
+          elastic: "t:AGPLv3, SSPL or ELv2; Kibana likewise", opensearch: "t:Apache-2.0", solr: "t:Apache-2.0", vespa: "t:Apache-2.0",
           qdrant: "t:Apache-2.0", weaviate: "t:BSD-3-Clause", milvus: "t:Apache-2.0" }]
       ]
     }
