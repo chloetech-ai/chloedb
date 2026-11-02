@@ -967,6 +967,7 @@ mod tests {
                 plan: vec!["filter x = 1".into()],
                 filter_docs: 3,
                 scored: 0,
+                ..Default::default()
             })
         };
         for _ in 0..5 {

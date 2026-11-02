@@ -217,6 +217,37 @@ pub fn cancelled_error(id: u64) -> crate::ApiError {
     crate::ApiError { status: 499, message: format!("query {id} was cancelled by an operator (DELETE /v1/queries/{id})") }
 }
 
+/// How a query can end: answered (`ok`, or `partial` without some
+/// shards), failed on the server's side (`error`, or `timeout`: the
+/// server's deadline passed), the client's doing (`client_error`: a 4xx
+/// such as bad SQL; `client_deadline`: its own `timeout_ms`, below the
+/// server's default, passed), `refused` (429: no slot, no memory, or a
+/// Contain rule) or `cancelled` by an operator.
+pub const OUTCOMES: [&str; 8] = ["ok", "partial", "error", "timeout", "client_error", "client_deadline", "refused", "cancelled"];
+
+/// The outcome of a query that failed with HTTP status `status`; a
+/// deadline that passed was the client's own when `client_deadline`.
+pub fn outcome_of(status: u16, client_deadline: bool) -> &'static str {
+    match status {
+        504 if client_deadline => "client_deadline",
+        504 => "timeout",
+        429 => "refused",
+        499 => "cancelled",
+        400..=498 => "client_error",
+        _ => "error",
+    }
+}
+
+/// Whether a query that ended so failed, for whatever reason.
+pub fn failed(outcome: &str) -> bool {
+    !matches!(outcome, "ok" | "partial")
+}
+
+/// Whether a query that ended so failed on the server's side.
+pub fn server_failed(outcome: &str) -> bool {
+    matches!(outcome, "error" | "timeout")
+}
+
 impl LiveQueries {
     /// Lists `sql` as running until the guard is dropped.
     pub fn start(self: &Arc<Self>, sql: &str, kind: &'static str, shard: bool) -> Live {
@@ -276,8 +307,18 @@ impl LiveQueries {
 
 // ------------------------------------------------- latest and slow queries
 
+/// What a query is kept with besides its text and how it ended.
+#[derive(Clone, Debug, Default)]
+pub struct Meta {
+    /// Its deadline, in milliseconds.
+    pub deadline_ms: u64,
+    /// The deadline is the client's own (its `timeout_ms` below the
+    /// server's default), so one that passes is `client_deadline`.
+    pub client_deadline: bool,
+}
+
 /// A query that ended.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct Finished {
     /// Its number among the queries this server ran, for
     /// `GET /v1/queries/finished/:id`.
@@ -294,6 +335,8 @@ pub struct Finished {
     pub shard: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Its deadline, in milliseconds (0: not known).
+    pub deadline_ms: u64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<Span>,
     /// Its profile: the timed steps of its execution, from the request's
@@ -416,7 +459,7 @@ impl QueryLog {
     /// what it ran (`stats`, its steps from the request's start) and
     /// whether its CPU time was measured (`profiled`).
     #[allow(clippy::too_many_arguments)]
-    pub fn add(&self, sql: &str, kind: &'static str, outcome: &'static str, secs: f64, rows: usize, shard: bool, error: Option<&str>, slow: bool, stats: Option<&ExecStats>, profiled: bool) {
+    pub fn add(&self, sql: &str, kind: &'static str, outcome: &'static str, secs: f64, rows: usize, shard: bool, error: Option<&str>, slow: bool, stats: Option<&ExecStats>, profiled: bool, meta: &Meta) {
         let fingerprint = fingerprint(sql);
         self.statements.add(&fingerprint, sql, kind, outcome, secs, rows, shard);
         let f = Arc::new(Finished {
@@ -431,6 +474,7 @@ impl QueryLog {
             rows,
             shard,
             error: error.map(|e| crate::obs::truncate(e, 500).into_owned()),
+            deadline_ms: meta.deadline_ms,
             trace: trace().map(|t| t.spans()).unwrap_or_default(),
             steps: stats.map(|s| s.steps.clone()).unwrap_or_default(),
             profiled,
@@ -578,7 +622,7 @@ pub struct Statements {
 pub const STATEMENTS: usize = 2000;
 
 /// Latency bounds of [`Stmt::hist`], in milliseconds.
-const STMT_BUCKETS: [f64; 12] = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 5000.0];
+const STMT_BUCKETS: [f64; 15] = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0, 30_000.0];
 
 #[derive(Clone)]
 struct Stmt {
@@ -622,7 +666,7 @@ impl Statements {
             hist: [0; STMT_BUCKETS.len() + 1],
         });
         s.calls += 1;
-        s.errors += (!matches!(outcome, "ok" | "partial")) as u64;
+        s.errors += failed(outcome) as u64;
         s.shard_calls += shard as u64;
         s.total_ms += ms;
         s.max_ms = s.max_ms.max(ms);
@@ -646,7 +690,7 @@ impl Statements {
                 json!({
                     "fingerprint": fp, "example": s.example, "kind": s.kind, "calls": s.calls, "errors": s.errors, "shard_calls": s.shard_calls,
                     "total_ms": s.total_ms, "mean_ms": s.total_ms / s.calls.max(1) as f64, "min_ms": s.min_ms, "max_ms": s.max_ms,
-                    "p50_ms": quantile_ms(&s.hist, 0.5), "p95_ms": quantile_ms(&s.hist, 0.95), "p99_ms": quantile_ms(&s.hist, 0.99),
+                    "p50_ms": quantile_ms(&s.hist, 0.5, s.max_ms), "p95_ms": quantile_ms(&s.hist, 0.95, s.max_ms), "p99_ms": quantile_ms(&s.hist, 0.99, s.max_ms),
                     "rows": s.rows, "rows_per_call": s.rows as f64 / s.calls.max(1) as f64, "last_ms": s.last_ms,
                     "share": if total > 0.0 { s.total_ms / total } else { 0.0 },
                 })
@@ -662,10 +706,9 @@ impl Statements {
 }
 
 /// The `q` quantile of a histogram over [`STMT_BUCKETS`], interpolated
-/// within its bucket.
-fn quantile_ms(hist: &[u64], q: f64) -> f64 {
-    let bounds: Vec<f64> = STMT_BUCKETS.to_vec();
-    quantile(&bounds, hist, q).unwrap_or(0.0)
+/// within its bucket, and at most `max_ms`, the slowest counted.
+fn quantile_ms(hist: &[u64], q: f64, max_ms: f64) -> f64 {
+    quantile_within(&STMT_BUCKETS, hist, q, Some(max_ms)).unwrap_or(0.0)
 }
 
 /// The `q` quantile of counts per bucket (`counts[i]` at most `bounds[i]`,
@@ -690,6 +733,25 @@ pub fn quantile(bounds: &[f64], counts: &[u64], q: f64) -> Option<f64> {
     bounds.last().copied()
 }
 
+/// The `q` quantile of counts per bucket as [`quantile`] gives it, but
+/// never above `max`, the largest value counted: one in the last bucket
+/// (past every bound) is placed between the last bound and `max`.
+pub fn quantile_within(bounds: &[f64], counts: &[u64], q: f64, max: Option<f64>) -> Option<f64> {
+    let Some(max) = max else { return quantile(bounds, counts, q) };
+    let n: u64 = counts.iter().sum();
+    if n == 0 {
+        return None;
+    }
+    let past = counts.get(bounds.len()).copied().unwrap_or(0);
+    let want = (q * n as f64).max(1.0);
+    let below = (n - past) as f64;
+    let v = match (past > 0 && want > below, bounds.last()) {
+        (true, Some(&last)) if max > last => last + (max - last) * ((want - below) / past as f64),
+        _ => quantile(bounds, counts, q)?,
+    };
+    Some(v.min(max))
+}
+
 // ------------------------------------------------------------ the series
 
 /// Cumulative counters and gauges at one moment ([`Service::sample`]):
@@ -698,12 +760,20 @@ pub fn quantile(bounds: &[f64], counts: &[u64], q: f64) -> Option<f64> {
 pub struct Sample {
     pub at: Option<Instant>,
     pub ts_ms: u64,
-    /// Queries ended, and those that failed (error or timeout), were
-    /// refused (429) or answered partially.
+    /// Queries ended, and those that failed on the server's side (an
+    /// error, or the server's deadline passed: `timeouts` of them), were
+    /// the client's fault (a 4xx such as bad SQL), passed the client's own
+    /// deadline, were refused (429), cancelled or answered partially.
     pub queries: u64,
     pub query_errors: u64,
+    pub timeouts: u64,
+    pub client_errors: u64,
+    pub client_deadlines: u64,
     pub rejected: u64,
+    pub cancelled: u64,
     pub partial: u64,
+    /// The slowest query since the sample before, in seconds.
+    pub query_max_s: Option<f64>,
     /// Queries ended by kind.
     pub by_kind: BTreeMap<&'static str, u64>,
     /// Query latencies, every kind together: counts per
@@ -785,7 +855,13 @@ pub fn load_of(points: &[Arc<Json>]) -> Option<(f64, f64, Option<f64>, Option<f6
     Some((mean("qps"), mean("cpu"), p99, disk))
 }
 
-/// The rates between samples `a` and `b`, and `b`'s gauges.
+/// The rates between samples `a` and `b`, and `b`'s gauges. Counts of
+/// the interval: `queries` ended, `query_errors` (failures on the
+/// server's side: errors and the server's deadline), `client_errors` and
+/// `client_deadlines`. `error_ratio` (server failures over queries) and
+/// `availability` (one minus it) are left out when no query ended: no
+/// query is no data, not none failing. No quantile exceeds `max_ms`, the
+/// slowest query of the interval.
 fn point(a: &Sample, b: &Sample) -> Json {
     let secs = match (a.at, b.at) {
         (Some(x), Some(y)) => y.saturating_duration_since(x).as_secs_f64(),
@@ -796,7 +872,8 @@ fn point(a: &Sample, b: &Sample) -> Json {
     let delta = |x: &[u64], y: &[u64]| y.iter().enumerate().map(|(i, &v)| v.saturating_sub(x.get(i).copied().unwrap_or(0))).collect::<Vec<u64>>();
     let qh = delta(&a.query_hist, &b.query_hist);
     let wh = delta(&a.write_hist, &b.write_hist);
-    let ms = |h: &[u64], q: f64| quantile(&crate::metrics::BUCKETS, h, q).map(|s| s * 1e3);
+    let max_s = b.query_max_s.filter(|_| qh.iter().any(|&n| n > 0));
+    let ms = |h: &[u64], q: f64, max: Option<f64>| quantile_within(&crate::metrics::BUCKETS, h, q, max).map(|s| s * 1e3);
     let by_kind: serde_json::Map<String, Json> =
         b.by_kind.iter().map(|(k, &n)| (k.to_string(), json!(rate(a.by_kind.get(k).copied().unwrap_or(0), n)))).filter(|(_, v)| v.as_f64().unwrap_or(0.0) > 0.0).collect();
     let ended = b.queries.saturating_sub(a.queries);
@@ -805,20 +882,35 @@ fn point(a: &Sample, b: &Sample) -> Json {
         "t": b.ts_ms,
         "secs": secs,
         "qps": rate(a.queries, b.queries),
+        "queries": ended,
+        "query_errors": failed,
+        "client_errors": b.client_errors.saturating_sub(a.client_errors),
+        "client_deadlines": b.client_deadlines.saturating_sub(a.client_deadlines),
         "errors_s": rate(a.query_errors, b.query_errors),
-        "error_ratio": if ended > 0 { failed as f64 / ended as f64 } else { 0.0 },
+        "timeouts_s": rate(a.timeouts, b.timeouts),
+        "client_errors_s": rate(a.client_errors, b.client_errors),
+        "client_deadlines_s": rate(a.client_deadlines, b.client_deadlines),
+        "cancelled_s": rate(a.cancelled, b.cancelled),
         "rejected_s": rate(a.rejected, b.rejected),
         "partial_s": rate(a.partial, b.partial),
-        "p50_ms": ms(&qh, 0.5), "p95_ms": ms(&qh, 0.95), "p99_ms": ms(&qh, 0.99),
+        "p50_ms": ms(&qh, 0.5, max_s), "p95_ms": ms(&qh, 0.95, max_s), "p99_ms": ms(&qh, 0.99, max_s),
         "http_s": rate(a.http, b.http), "http_4xx_s": rate(a.http_4xx, b.http_4xx), "http_5xx_s": rate(a.http_5xx, b.http_5xx),
         "writes_s": rate(a.writes, b.writes), "rows_s": rate(a.written_docs, b.written_docs), "write_errors_s": rate(a.write_errors, b.write_errors),
-        "write_p99_ms": ms(&wh, 0.99),
+        "write_p99_ms": ms(&wh, 0.99, None),
         "slow_s": rate(a.slow, b.slow),
         "cpu": ((b.cpu_s - a.cpu_s) / secs).max(0.0),
         "alloc_bytes_s": rate(a.alloc_bytes, b.alloc_bytes), "allocs_s": rate(a.allocs, b.allocs),
         "by_kind": by_kind,
         "latency_hist": qh,
     });
+    if ended > 0 {
+        let ratio = failed as f64 / ended as f64;
+        p["error_ratio"] = json!(ratio);
+        p["availability"] = json!(1.0 - ratio);
+    }
+    if let Some(m) = max_s {
+        p["max_ms"] = json!(m * 1e3);
+    }
     for (k, v) in &b.gauges {
         p[*k] = json!(v);
     }
@@ -920,6 +1012,11 @@ mod tests {
         assert_eq!(quantile(&bounds, &[0, 10, 0, 0], 1.0), Some(2.0));
         assert_eq!(quantile(&bounds, &[5, 0, 5, 0], 0.75), Some(3.0));
         assert_eq!(quantile(&bounds, &[0, 0, 0, 3], 0.99), Some(4.0));
+        // Never above the slowest counted, past the last bound too.
+        assert_eq!(quantile_within(&bounds, &[0, 10, 0, 0], 1.0, Some(1.5)), Some(1.5));
+        assert_eq!(quantile_within(&bounds, &[0, 0, 0, 4], 1.0, Some(9.0)), Some(9.0));
+        assert_eq!(quantile_within(&bounds, &[0, 0, 0, 4], 0.5, Some(8.0)), Some(6.0));
+        assert_eq!(quantile_within(&bounds, &[0, 0, 0, 0], 0.5, Some(8.0)), None);
     }
 
     #[test]
@@ -958,6 +1055,19 @@ mod tests {
         assert!(p50 > 5.0 && p50 <= 10.0, "{p50}");
         assert_eq!(series.since(0).len(), 1);
         assert!(series.since(5).is_empty());
+        assert_eq!(p["availability"], 0.9);
+        // No query ended: no ratio, rather than none failing.
+        let c = Sample { at: Some(t + Duration::from_secs(4)), ts_ms: 7, queries: 30, query_errors: 2, query_hist: b_hist(), ..Default::default() };
+        let q = series.add(c).unwrap();
+        assert_eq!(q["queries"], 0);
+        assert!(q.get("error_ratio").is_none() && q.get("availability").is_none(), "{q}");
+        assert!(q["p99_ms"].is_null());
+    }
+
+    fn b_hist() -> Vec<u64> {
+        let mut h = vec![0; 15];
+        h[3] = 20;
+        h
     }
 
     #[tokio::test]
