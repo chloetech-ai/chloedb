@@ -362,7 +362,8 @@ function resolve(r) {
   return { v: byId.home || VIEWS[0], e: entryOf("home"), unknown: r.id };
 }
 function markCurrent() {
-  const id = currentEntry?.id;
+  // A page under another (a table's details, a statement) lights its parent.
+  const id = currentEntry?.parent || currentEntry?.id;
   for (const a of nav.querySelectorAll("a[data-view]")) { if (a.dataset.view === id) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); }
 }
 function route() {
@@ -370,8 +371,10 @@ function route() {
   const r = parse();
   const { v, e, unknown } = resolve(r);
   rangeFromUrl(r.params);
-  currentEntry = e || { id: v.id, title: v.title, icon: v.icon };
+  currentEntry = e || { id: v.id, title: v.title, icon: v.icon, parent: v.parent };
   markCurrent();
+  // A view with no time axis (the SQL workbench, Schema, Labs) hides the range and Live.
+  top.classList.toggle("no-range", v.range === false);
   if (unknown && unknown !== "home") toast(`There is no view "${unknown}": this is Home`);
   if (current === v && v.onParams) { v.onParams(r); return; }
   try { cleanup?.(); } catch (err) { console.error(err); }

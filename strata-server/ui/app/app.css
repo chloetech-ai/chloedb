@@ -2952,3 +2952,8 @@ body.cc-dragging, body.cc-dragging * { cursor: grabbing !important; user-select:
   .cc-as .as-day { flex: none !important; padding: 6px 8px; }
 }
 /* ===== end cluster ===== */
+
+/* ===== integration ===== */
+/* Views without a time axis (range: false) show no range, window, zoom or Live. */
+.top.no-range > .seg, .top.no-range > .abs, .top.no-range > .chip, .top.no-range > .live { display: none; }
+/* ===== end integration ===== */
