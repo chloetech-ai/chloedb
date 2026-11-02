@@ -1,221 +1,502 @@
-// Queries: what runs now (with a button to cancel it), the latest and the
-// slow ones on a scatter of time against latency, each with its trace as
-// a waterfall (on a coordinator, every call to a shard replica), and the
-// statements grouped by shape with what each costs.
+// Queries: what runs now, grouped by statement and key, with a safe bulk
+// cancel and the contain rules (limit or refuse a statement or a key for
+// a while); the statements over the range in the top bar against the
+// window before, with cards for error groups, new shapes and those that
+// grew most; and the history the log store keeps (7 days), which replaces
+// the old Latest and Slow lists. A query opens in a drawer with who sent
+// it, its parameters, deadline, outcome, the trace summed up and its
+// profile.
 
-import { h, s, icon, clear, fmt, card, api, every, drawer, toast, confirm, pill, empty, table, sqlBlock, copy, shareBar, failure, debounce, showTip, hideTip } from "../core.js";
-import { state } from "../data.js";
-import { profileView } from "../profile.js";
+import { h, s, icon, clear, fmt, api, card, empty, copy, toast, seg, debounce, failure, table, bus, showTip, hideTip } from "../core.js";
+import {
+  state, link, when, can, timeRange, poll, paused, isCoord, copyName, OUTCOME_ORDER, outcomeOf, outcomePill, outcomeBar, split, whoChips, paramsText, isOwn,
+  shortFp, statementLink, roughFp, statements, change, attention, statementDetail, ask, objects, msOf, parseJson, hasLogStore, logStore, queryColumns,
+  queryDrawer, liveDrawer, waterfall, askCancel, containDialog, containRules, containList, profileLink, rounds,
+} from "../workload.js";
 
-export default { id: "queries", title: "Queries", icon: "queries", group: "Workload", keywords: "live running cancel recent slow statements trace waterfall pg_stat_statements", render, onParams };
+export { queryDrawer, waterfall };
 
-const OUTCOMES = { ok: "ok", partial: "warn", error: "bad", timeout: "bad", rejected: "warn", cancelled: "info" };
-const OCOLOR = { ok: "var(--s1)", partial: "var(--s4)", error: "var(--crit)", timeout: "var(--s8)", rejected: "var(--s2)", cancelled: "var(--s7)" };
-const TABS = [["live", "Running now"], ["recent", "Latest"], ["slow", "Slow"], ["statements", "Statements"]];
+export default { id: "queries", title: "Queries", icon: "queries", group: "Operate", keywords: "live running cancel recent latest slow statements history trace waterfall contain limit refuse throttle key client pg_stat_statements", render, onParams };
 
-let switchTab = null;
-function onParams(r) { switchTab?.(r.params.get("tab") || "live"); }
+const TABS = [["live", "Running now"], ["statements", "Statements"], ["history", "History"]];
+const OLD = { recent: ["history", { preset: "latest" }], slow: ["history", { preset: "slow" }] };
 
-/** A trace as a waterfall: a lane per step, bars on one time scale. */
-export function waterfall(spans) {
-  if (!spans?.length) return h("div", { class: "small muted" }, "No trace was kept for this query.");
-  const end = Math.max(...spans.map((x) => x.start_us + x.dur_us), 1);
-  const kind = (n) => n === "admission" ? "k-admission" : n === "execute" ? "k-execute" : n === "plan" ? "k-plan" : n.startsWith("wait") ? "k-wait" : "k-rpc";
-  const rows = spans.slice().sort((a, b) => a.start_us - b.start_us);
-  return h("div", {},
-    h("div", { class: "wf" }, rows.map((x) => [
-      h("div", { class: "nm", title: x.replica || "" }, h("b", {}, x.name), x.shard != null ? h("span", { class: "badge" }, "shard " + x.shard) : null, x.again ? h("span", { class: "badge", title: "a hedge or a retry" }, "again") : null, x.outcome !== "ok" ? h("span", { class: "pill " + (x.outcome === "outrun" ? "info" : "bad"), style: { padding: "0 6px" } }, x.outcome) : null),
-      h("div", { class: "lane" }, h("div", { class: `seg ${kind(x.name)}${x.outcome !== "ok" && x.outcome !== "outrun" ? " bad" : ""}${x.again ? " again" : ""}`, style: { left: (x.start_us / end * 100) + "%", width: Math.max(0.4, x.dur_us / end * 100) + "%" }, title: `${x.name}: ${fmt.ms(x.dur_us / 1000)} from ${fmt.ms(x.start_us / 1000)}${x.replica ? " on " + x.replica : ""}` },
-        h("span", { class: "tiny" }, fmt.ms(x.dur_us / 1000)))),
-    ]),
-    h("div", { class: "scale" }, [0, 0.25, 0.5, 0.75, 1].map((f) => h("span", {}, fmt.ms(end * f / 1000))))));
-}
-
-/** The details of one ended query. */
-export function queryDrawer(q) {
-  // Its profile came with it (the log store keeps the steps), or the
-  // server's list of the latest and the slow has it by its number.
-  const kept = q.steps?.length > 0, fetch = !kept && q.id != null && q.steps_n;
-  const logs = h("div");
-  const same = h("div");
-  const prof = h("div", { class: "small muted" }, "Reading its profile…");
-  const d = drawer({
-    title: h("span", { class: "row nw" }, pill(OUTCOMES[q.outcome] || "info", q.outcome), `${fmt.ms(q.ms)} · ${q.kind}`), sub: `${fmt.datetime(q.ts_ms)} · ${fmt.plural(q.rows, "row")}${q.shard ? " · for a coordinator" : ""}`, wide: true,
-    body: [
-      h("div", { class: "row between" }, h("b", {}, "SQL"), h("div", { class: "row" }, h("button", { class: "btn sm", onclick: () => copy(q.sql, "SQL copied") }, icon("copy"), "Copy"), h("a", { class: "btn sm", href: "#/sql?q=" + encodeURIComponent(q.sql), title: "Open it in the SQL workbench", onclick: () => d.close() }, icon("play"), "Open in the workbench"))),
-      sqlBlock(q.sql),
-      q.error ? h("div", { class: "error" }, q.error) : null,
-      h("dl", { class: "kv" }, [["shape", h("span", { class: "mono small" }, q.fingerprint)], ["request id", q.request_id ? h("span", { class: "row nw" }, h("span", { class: "mono" }, q.request_id), h("button", { class: "btn ghost icon sm", title: "Copy", onclick: () => copy(q.request_id) }, icon("copy")), h("a", { class: "btn ghost sm", href: "#/logs?request=" + encodeURIComponent(q.request_id) }, "Its logs", icon("right"))) : "–"]].flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])),
-      card({ title: "Trace", sub: "where the time went", body: waterfall(q.trace) }),
-      kept || fetch ? card({ title: "Profile", sub: q.cpu_ms != null ? `every step it took, with its CPU time (${fmt.ms(q.cpu_ms)})` : "every step it took", tools: fetch ? h("a", { class: "btn sm", href: `#/profile?tab=${q.ms >= (state.system?.limits?.slow_ms ?? Infinity) ? "slow" : "recent"}&id=${q.id}`, onclick: () => d.close() }, icon("flame"), "Open in the Profiler") : null, body: prof }) : null,
-      q.request_id ? card({ title: "Everything this request ran", body: same }) : null,
-      q.request_id ? card({ title: "Its log lines", body: logs }) : null,
-    ],
-  });
-  if (kept) clear(prof, profileView({ ...q, took_ms: q.ms }, { compact: true }));
-  else if (fetch) api("/v1/queries/finished/" + q.id).then((f) => clear(prof, profileView({ ...f, took_ms: f.ms }, { compact: true }))).catch((e) => clear(prof, e.status === 404 ? "Its profile is gone: the server keeps the latest 500 queries and the slowest." : e.message));
-  if (q.request_id) {
-    api("/v1/queries/request/" + encodeURIComponent(q.request_id)).then((j) => clear(same, j.queries.length > 1 ? j.queries.map((x) => h("div", { class: "row nw small", style: { padding: "3px 0" } }, pill(OUTCOMES[x.outcome] || "info", x.outcome), h("span", { class: "mono ellipsis grow" }, x.sql), h("b", { class: "num" }, fmt.ms(x.ms)))) : h("div", { class: "small muted" }, "Just this query."))).catch((e) => clear(same, h("div", { class: "small muted" }, e.message)));
-    api("/v1/logs?limit=50&request=" + encodeURIComponent(q.request_id)).then((j) => clear(logs, j.lines.length ? h("div", { class: "logs", style: { height: "auto", maxHeight: "240px", minHeight: 0 } }, j.lines.map((l) => h("div", { class: "ln" }, h("span", { class: "muted" }, fmt.time(l.ts_ms)), h("span", { class: "lv " + l.level }, l.level), h("span", { class: "tg" }, l.target), h("span", { class: "msg" }, l.message)))) : h("div", { class: "small muted" }, "No lines at the current log level. Set it to debug in Logs to see every request."))).catch((e) => clear(logs, h("div", { class: "small muted" }, e.message)));
-  }
-  return d;
-}
-
-function scatter(qs, onPick) {
-  const W = 1000, H = 190, M = { l: 52, r: 12, t: 10, b: 22 };
-  const svgEl = s("svg", { viewBox: `0 0 ${W} ${H}`, style: { width: "100%", height: H + "px" }, role: "img", "aria-label": "latency of the latest queries" });
-  if (!qs.length) return svgEl;
-  const t0 = Math.min(...qs.map((q) => q.ts_ms)), t1 = Math.max(...qs.map((q) => q.ts_ms), t0 + 1000);
-  const lo = Math.max(0.01, Math.min(...qs.map((q) => q.ms || 0.01))), hi = Math.max(...qs.map((q) => q.ms || 0.01), lo * 10);
-  const ll = Math.log10(lo), lh = Math.log10(hi);
-  const X = (t) => M.l + (t - t0) / (t1 - t0) * (W - M.l - M.r);
-  const Y = (v) => M.t + (H - M.t - M.b) * (1 - (Math.log10(Math.max(v, lo)) - ll) / ((lh - ll) || 1));
-  for (let e = Math.floor(ll); e <= Math.ceil(lh); e++) {
-    const v = 10 ** e; if (v < lo / 1.01 || v > hi * 1.01) continue;
-    svgEl.append(s("line", { x1: M.l, x2: W - M.r, y1: Y(v), y2: Y(v), style: { stroke: "var(--grid)" } }), s("text", { x: M.l - 6, y: Y(v) + 3.5, "text-anchor": "end", style: { fill: "var(--muted)", fontSize: "10.5px" } }, fmt.ms(v)));
-  }
-  for (let k = 0; k <= 4; k++) { const t = t0 + (t1 - t0) * k / 4; svgEl.append(s("text", { x: X(t), y: H - 6, "text-anchor": "middle", style: { fill: "var(--muted)", fontSize: "10.5px" } }, fmt.time(t))); }
-  for (const q of qs) {
-    const c = s("circle", { cx: X(q.ts_ms), cy: Y(q.ms), r: q.outcome === "ok" ? 4 : 5, tabindex: 0, style: { fill: OCOLOR[q.outcome] || "var(--s1)", stroke: "var(--surface)", strokeWidth: 1.5, cursor: "pointer", opacity: 0.85 } });
-    const hit = s("circle", { cx: X(q.ts_ms), cy: Y(q.ms), r: 11, style: { fill: "transparent", cursor: "pointer" } });
-    const tip = (e) => showTip(e.clientX, e.clientY, [h("div", { class: "t" }, `${fmt.time(q.ts_ms)} · ${q.kind}`), h("div", { class: "r" }, h("span", { class: "k box", style: { background: OCOLOR[q.outcome] } }), h("b", {}, fmt.ms(q.ms)), h("span", { class: "n" }, `${q.outcome} · ${fmt.plural(q.rows, "row")}`)), h("div", { class: "mono", style: { marginTop: "4px", maxWidth: "340px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, q.sql)]);
-    for (const el of [c, hit]) { el.addEventListener("pointermove", tip); el.addEventListener("pointerleave", hideTip); el.addEventListener("click", () => { hideTip(); onPick(q); }); }
-    svgEl.append(c, hit);
-  }
-  return svgEl;
-}
+let reroute = null;
+function onParams(r) { reroute?.(r.params); }
 
 function render(page, r) {
+  const counts = { live: null, statements: null, history: null };
   const tabs = h("div", { class: "tabs", role: "tablist" });
   const body = h("div");
-  page.append(h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Queries"), h("p", {}, "Every query this server ran: the ones running, the latest 500, the slow ones, and their statistics by shape."))), tabs, body);
-  let stop = null, tab = null;
-
-  function show(t) {
-    if (t === tab) return;
-    tab = t;
+  const scope = h("p", { class: "wl-head-scope" });
+  page.append(
+    h("div", { class: "page-head" },
+      h("div", {}, h("h1", {}, "Queries"), scope),
+      h("div", { class: "tools" }, h("button", { class: "btn sm", title: "Copy a link to this view, with its range and filters", onclick: () => copy(location.href, "Link copied") }, icon("link"), "Copy link"))),
+    tabs, body);
+  const drawScope = () => {
+    const c = state.cluster, n = (c?.shards || []).reduce((a, x) => a + (x.replicas?.length || 0), 0);
+    scope.textContent = isCoord()
+      ? `This coordinator${n ? ` and its ${fmt.plural(c.shards.length, "shard")} (${fmt.plural(n, "copy", "copies")})` : ""}: what runs now, the statements over the range in the top bar, and the history the log stores keep.`
+      : "This server: what runs now, the statements over the range in the top bar, and the history its log store keeps.";
+  };
+  drawScope();
+  const offs = [bus.on("cluster", drawScope), bus.on("health", drawScope)];
+  let stop = null, tab = null, key = "";
+  function drawTabs() {
+    clear(tabs, TABS.map(([k, v]) => h("button", { role: "tab", "aria-selected": String(k === tab), onclick: () => { location.hash = link("queries", { tab: k }); } }, v, counts[k] != null ? h("span", { class: "n" }, counts[k]) : null)),
+      h("span", { class: "sep" }), h("span", { class: "small muted", style: { alignSelf: "center" } }, "Latest and Slow are History with a filter"));
+  }
+  const setCount = (k, v) => { counts[k] = v; drawTabs(); };
+  function show(params) {
+    let t = params.get("tab") || "live";
+    if (OLD[t]) { const [nt, extra] = OLD[t]; const p = new URLSearchParams(params); p.set("tab", nt); for (const [a, b] of Object.entries(extra)) p.set(a, b); history.replaceState(null, "", link("queries", Object.fromEntries(p))); t = nt; params = p; }
+    if (!TABS.some(([k]) => k === t)) t = "live";
+    const k = t + "|" + [...params].filter(([a]) => !["from", "to", "range", "tab"].includes(a)).map((x) => x.join("=")).join("&");
+    if (k === key) return;
+    key = k; tab = t;
     stop?.();
-    clear(tabs, TABS.map(([k, v]) => h("button", { role: "tab", "aria-selected": String(k === t), onclick: () => { location.hash = "#/queries?tab=" + k; } }, v)));
+    drawTabs();
     clear(body);
-    stop = t === "live" ? live(body) : t === "statements" ? statements(body) : ended(body, t);
+    stop = t === "live" ? live(body, params, setCount) : t === "statements" ? statementsTab(body, params, setCount) : historyTab(body, params, setCount);
   }
-  switchTab = show;
-  show(r.params.get("tab") || "live");
-  return () => { stop?.(); switchTab = null; };
+  reroute = show;
+  show(r.params);
+  return () => { stop?.(); offs.forEach((f) => f()); reroute = null; };
 }
 
-function live(body) {
+// ---------------------------------------------------------------- running now
+
+function live(body, params, setCount) {
+  let groupBy = params.get("group") || "statement", filt = params.get("q") || "", own = false, open = new Set(), rules = undefined, stmts = new Map();
   const info = h("div", { class: "row", style: { gap: "12px", marginBottom: "10px" } });
-  const tbl = table([
-    { key: "id", label: "id", num: true, render: (q) => h("span", { class: "mono" }, q.id) },
-    { key: "elapsed_ms", label: "running for", num: true, render: (q) => { const lim = state.system?.limits?.timeout_ms || 5000; return h("div", { style: { minWidth: "130px" } }, h("div", { class: "row nw between small" }, h("b", {}, fmt.ms(q.elapsed_ms)), h("span", { class: "muted" }, fmt.pct(Math.min(1, q.elapsed_ms / lim), 0) + " of timeout")), h("div", { class: "meter", style: { marginTop: "3px" } }, h("i", { class: q.elapsed_ms > lim * 0.8 ? "bad" : q.elapsed_ms > lim * 0.5 ? "warn" : "", style: { width: Math.min(100, q.elapsed_ms / lim * 100) + "%" } }))); } },
-    { key: "kind", label: "kind", render: (q) => h("span", { class: "badge mono" }, q.kind) },
-    { key: "sql", label: "SQL", cls: "sql", render: (q) => h("span", { title: q.sql }, q.sql) },
-    { key: "shard", label: "from", render: (q) => q.shard ? h("span", { class: "badge" }, "coordinator") : "client" },
-    { key: "act", label: "", sortable: false, render: (q) => q.cancelled ? pill("info", "cancelling") : h("button", { class: "btn danger sm", onclick: async () => {
-      if (!await confirm({ title: `Cancel query ${q.id}?`, body: sqlBlock(q.sql), ok: "Cancel it", danger: true })) return;
-      try { await api("/v1/queries/" + q.id, { method: "DELETE" }); toast(`Query ${q.id} cancelled; it answers 499`, "ok"); load(); } catch (e) { toast(e.message, "bad"); }
-    } }, icon("stop"), "Cancel") },
-  ], { sortKey: "elapsed_ms", desc: true, empty: empty("okc", "Nothing running", "A query shows here while it runs, with how long it has run against its timeout."), onRow: (q) => drawer({ title: `Query ${q.id}`, sub: `running for ${fmt.ms(q.elapsed_ms)}`, wide: true, body: [sqlBlock(q.sql), card({ title: "Trace so far", body: waterfall(q.trace) })] }) });
-  body.append(info, card({ body: tbl, flush: true }));
-  async function load() {
-    try {
-      const j = await api("/v1/queries");
-      clear(info, pill(j.queries.length ? "info" : "ok", `${j.queries.length} running`), state.system ? h("span", { class: "small muted" }, `${j.running} holding slots of ${state.system.limits.max_concurrent} · timeout ${fmt.ms(state.system.limits.timeout_ms)}`) : null, h("span", { class: "small muted" }, "refreshes every second"));
-      tbl.update(j.queries);
-    } catch (e) { clear(body, failure(e, "The running queries")); stopper(); }
-  }
-  const stopper = every(1000, load);
-  return stopper;
-}
-
-function ended(body, which) {
-  const filt = { outcome: null, kind: null, q: "", shard: true };
-  const chips = h("div", { class: "row" });
-  const search = h("input", { class: "input sm", placeholder: "Filter by SQL…", style: { width: "240px" }, oninput: debounce(() => { filt.q = search.value.toLowerCase(); draw(); }, 150) });
-  const kindSel = h("select", { class: "select sm", onchange: () => { filt.kind = kindSel.value || null; draw(); } });
-  const plot = h("div");
-  const note = h("div", { class: "small muted" });
-  const tbl = table([
-    { key: "ts_ms", label: "time", num: true, render: (q) => h("span", { class: "nowrap", title: fmt.datetime(q.ts_ms) }, fmt.time(q.ts_ms)) },
-    { key: "outcome", label: "outcome", render: (q) => pill(OUTCOMES[q.outcome] || "info", q.outcome) },
-    { key: "kind", label: "kind", render: (q) => h("span", { class: "badge mono" }, q.kind) },
-    { key: "ms", label: "took", num: true, render: (q) => h("b", {}, fmt.ms(q.ms)) },
-    { key: "rows", label: "rows", num: true, render: (q) => fmt.n(q.rows) },
-    { key: "sql", label: "SQL", cls: "sql", render: (q) => h("span", { title: q.sql }, q.sql) },
-    { key: "trace", label: "steps", num: true, sort: (q) => q.trace?.length || 0, render: (q) => q.trace?.length ? miniTrace(q.trace) : "–" },
-  ], { sortKey: "ts_ms", desc: true, onRow: queryDrawer, empty: empty("queries", which === "slow" ? "No slow queries" : "No queries yet", which === "slow" ? (state.system?.limits?.slow_ms ? `None took over ${state.system.limits.slow_ms} ms.` : h("span", {}, "Set a threshold in the ", h("a", { href: "#/profile?tab=slow" }, "Profiler"), " (or start the server with --slow-ms) to keep them.")) : "Run a query and it shows here.") });
+  const search = h("input", { class: "input sm", placeholder: "Filter: SQL, key, app, address, request id", value: filt, style: { width: "270px" }, oninput: debounce(() => { filt = search.value.trim().toLowerCase(); draw(); }, 150) });
+  const groupSeg = seg([["statement", "statement"], ["key", "key"], ["none", "none"]], groupBy, (v) => { groupBy = v; draw(); }, { title: "Group the running queries" });
+  const ownChip = h("button", { class: "chip", "aria-pressed": "false", title: "The command center's own queries (its polling, Query path and Profiler runs) are hidden" });
+  ownChip.onclick = () => { own = !own; ownChip.setAttribute("aria-pressed", String(own)); draw(); };
+  const tbody = h("tbody");
+  const tbl = h("div", { class: "tbl-wrap" }, h("table", { class: "t wl-live" },
+    h("thead", {}, h("tr", {}, h("th", {}, "query"), h("th", {}, "via"), h("th", {}, "running for"), h("th", {}, "key"), h("th", {}, "params"), h("th", {}, "waiting on"), h("th", {}))), tbody));
+  const rulesBox = h("div");
   body.append(
-    h("div", { class: "row", style: { marginBottom: "12px", gap: "10px" } }, chips, kindSel, search, toggleShard(), h("span", { class: "sep" }), note),
-    card({ title: "Latency of each query", sub: "log scale · click a dot for its trace", body: plot, attrs: { style: { marginBottom: "14px" } } }),
-    card({ body: tbl, flush: true }));
-  function toggleShard() { const b = h("button", { class: "chip", "aria-pressed": "true", title: "Queries a coordinator sent this shard", onclick: () => { filt.shard = !filt.shard; b.setAttribute("aria-pressed", String(filt.shard)); draw(); } }, "shard calls"); return b; }
-  let all = [];
+    h("div", { class: "row", style: { gap: "10px", marginBottom: "10px" } }, info, h("span", { class: "sep" }), h("span", { class: "small dim" }, "Group by"), groupSeg, search, ownChip),
+    card({ body: tbl, flush: true }),
+    h("div", { class: "small muted", style: { margin: "10px 0 14px" } }, "A cancel answers the client 499 and is written to the audit log with your name and reason. Cancelling on a coordinator stops its calls to the shards too."),
+    card({ title: "Contain rules", sub: "statements and keys limited or refused for a while", tools: can("admin") ? h("button", { class: "btn sm", onclick: () => containDialog({ onDone: loadRules }) }, icon("shield"), "Contain a key…") : null, body: rulesBox }));
+  let all = [], at = 0, err = null, nodes = null;
+  const shardCount = () => state.cluster?.shards?.length || 0;
+
+  function waitingOn(q) {
+    const rs = rounds(q.trace || []);
+    if (!rs.length) return q.trace?.length ? h("span", { class: "muted" }, isCoord() ? "planning, or the coordinator" : "running here") : h("span", { class: "muted" }, "–");
+    const last = rs[rs.length - 1], n = shardCount();
+    if (n && last.shards < n) {
+      const got = new Set(last.calls.map((c) => c.shard));
+      const missing = (state.cluster?.shards || []).map((x) => x.shard).filter((i) => !got.has(i));
+      return h("span", { class: "small" }, `${last.name}: `, missing.length <= 3 ? missing.map((i) => `shard ${i}`).join(", ") : `${missing.length} of ${n} shards`);
+    }
+    return h("span", { class: "small muted" }, isCoord() ? `${last.name} answered: the coordinator` : "–");
+  }
+  const deadline = (q) => q.deadline_ms ?? state.system?.limits?.timeout_ms ?? null;
+  function qRow(q) {
+    const lim = deadline(q), f = lim ? Math.min(1, q.elapsed_ms / lim) : null;
+    const tr = h("tr", { class: "click", tabindex: 0 },
+      h("td", { class: "num mono small", style: { paddingLeft: "28px" } }, q.node ? `${q.node}:${q.id}` : q.id),
+      h("td", {}, q.node ? h("span", { class: "badge" }, q.node) : q.shard ? h("span", { class: "badge", title: "a shard's part of a coordinator's query" }, "coordinator") : h("span", { class: "muted small" }, "client")),
+      h("td", {}, h("div", { style: { minWidth: "150px" } }, h("div", { class: "row nw between small" }, h("b", {}, fmt.ms(q.elapsed_ms)), lim ? h("span", { class: "muted" }, `of ${q.deadline_ms != null ? "its" : "the server's"} ${fmt.ms(lim)} deadline`) : null),
+        f != null ? h("div", { class: "meter", style: { marginTop: "3px" } }, h("i", { class: f > 0.8 ? "bad" : f > 0.5 ? "warn" : "", style: { width: f * 100 + "%" } })) : null)),
+      h("td", { class: "mono small" }, q.key || h("span", { class: "muted" }, "–")),
+      h("td", { class: "mono small ellipsis", style: { maxWidth: "220px" }, title: paramsText(q.params, 2000) }, paramsText(q.params, 60) || h("span", { class: "muted" }, "–")),
+      h("td", {}, waitingOn(q)),
+      h("td", {}, q.cancelled ? h("span", { class: "pill info" }, "cancelling") : can("admin") ? h("button", { class: "btn sm", onclick: () => cancelOne(q) }, "Cancel query…") : null));
+    tr.onclick = (e) => { if (!e.target.closest("button,a")) liveDrawer(q, { onCancel: cancelOne }); };
+    tr.onkeydown = (e) => { if (e.key === "Enter") liveDrawer(q, { onCancel: cancelOne }); };
+    return tr;
+  }
+  const cancelOne = (q) => askCancel({ sql: q.sql, queries: [q], key: q.key, onDone: load });
+
+  function groupsOf(qs) {
+    const key = groupBy === "statement" ? (q) => q.fingerprint || roughFp(q.sql) : groupBy === "key" ? (q) => q.key || "(no key)" : null;
+    if (!key) return [{ id: "all", qs, label: null }];
+    const m = new Map();
+    for (const q of qs) { const k = key(q); if (!m.has(k)) m.set(k, []); m.get(k).push(q); }
+    return [...m].map(([id, list]) => ({ id, qs: list.sort((a, b) => b.elapsed_ms - a.elapsed_ms) })).sort((a, b) => b.qs.length - a.qs.length || b.qs[0].elapsed_ms - a.qs[0].elapsed_ms);
+  }
+  function groupHead(g) {
+    const qs = g.qs, n = qs.length, oldest = qs[0].elapsed_ms;
+    const keys = countKeys(qs), vias = [...new Set(qs.map((q) => q.node).filter(Boolean))];
+    const fp = groupBy === "statement" ? g.id : null;
+    const st = fp ? stmts.get(fp) : null;
+    const isOpen = open.has(g.id);
+    const mem = qs.reduce((a, q) => a + (q.memory_bytes || 0), 0);
+    const sub = [`oldest ${fmt.ms(oldest)}`,
+      keys.length ? keys.slice(0, 3).map(([k, c]) => `${k} ${fmt.pct(c / n, 0)}`).join(" · ") + (keys.length > 3 ? ` · ${keys.length - 3} more keys` : "") : null,
+      vias.length ? (vias.length > 3 ? `${vias.length} coordinators` : vias.join(", ")) : null,
+      mem ? `${fmt.bytes(mem)} query memory` : null].filter(Boolean).join(" · ");
+    const bySlow = fp ? slowCopy(qs) : null;
+    const isNew = st && st.first_seen_ms && Date.now() - st.first_seen_ms < 30 * 60e3;
+    return h("tr", { class: "wl-ghead" }, h("td", { colspan: 7 },
+      h("div", { class: "row nw", style: { gap: "10px" } },
+        h("button", { class: "btn ghost icon sm", "aria-label": isOpen ? "Fold" : "Show every query", onclick: () => { if (isOpen) open.delete(g.id); else open.add(g.id); draw(); } }, icon(isOpen ? "down" : "right")),
+        h("span", { class: "pill info" }, `${fmt.n(n)} running`),
+        groupBy === "statement" ? h("span", { class: "mono small ellipsis", style: { maxWidth: "660px" }, title: qs[0].sql }, qs[0].sql) : h("b", { class: "mono small" }, g.id),
+        h("span", { class: "sep" }),
+        fp ? h("a", { class: "btn sm", href: statementLink(fp) }, "Statement ›") : null,
+        fp && can("admin") ? h("button", { class: "btn sm", title: "Limit or refuse this statement for a while", onclick: () => containDialog({ fingerprint: fp, sql: qs[0].sql, key: keys.length === 1 ? keys[0][0] : null, keys: keys.map(([k, c]) => ({ key: k, share: c / n })), onDone: loadRules }) }, "Contain…") : null,
+        can("admin") && n > 1 ? h("button", { class: "btn sm danger", onclick: () => askCancel({ sql: qs[0].sql, fingerprint: fp, key: groupBy === "key" ? g.id : keys.length === 1 ? keys[0][0] : null, queries: qs, onDone: load }) }, `Cancel all ${fmt.n(n)}…`) : null),
+      h("div", { class: "small muted", style: { margin: "4px 0 0 34px" } }, sub),
+      isNew ? h("div", { class: "small", style: { margin: "3px 0 0 34px", color: "var(--warn)" } }, `New: first seen ${when(st.first_seen_ms)}`) : null,
+      bySlow ? h("div", { class: "small wl-bad", style: { margin: "3px 0 0 34px" } }, `${bySlow.n} of ${n} are waiting on shard ${bySlow.shard}`, bySlow.copy ? [", copy ", h("b", { class: "mono" }, copyName(bySlow.copy))] : null) : null));
+  }
+  function slowCopy(qs) {
+    if (qs.length < 3 || !shardCount()) return null;
+    const m = new Map();
+    for (const q of qs) {
+      const rs = rounds(q.trace || []); const last = rs[rs.length - 1]; if (!last) continue;
+      const got = new Set(last.calls.map((c) => c.shard));
+      for (const sh of state.cluster.shards) if (!got.has(sh.shard)) m.set(sh.shard, (m.get(sh.shard) || 0) + 1);
+    }
+    const best = [...m].sort((a, b) => b[1] - a[1])[0];
+    return best && best[1] >= qs.length * 0.6 && best[1] >= 3 ? { shard: best[0], n: best[1] } : null;
+  }
+
   function draw() {
-    const outs = {}; for (const q of all) outs[q.outcome] = (outs[q.outcome] || 0) + 1;
-    clear(chips, Object.entries(outs).map(([o, n]) => { const c = h("button", { class: "chip", "aria-pressed": String(filt.outcome === o), onclick: () => { filt.outcome = filt.outcome === o ? null : o; draw(); } }, h("span", { class: "dot", style: { background: OCOLOR[o] } }), `${o} ${n}`); return c; }));
-    const kinds = [...new Set(all.map((q) => q.kind))].sort();
-    if (kindSel.options.length !== kinds.length + 1) { clear(kindSel, h("option", { value: "" }, "every kind"), kinds.map((k) => h("option", { value: k }, k))); kindSel.value = filt.kind || ""; }
-    const rows = all.filter((q) => (!filt.outcome || q.outcome === filt.outcome) && (!filt.kind || q.kind === filt.kind) && (!filt.q || q.sql.toLowerCase().includes(filt.q)) && (filt.shard || !q.shard));
-    clear(plot, scatter(rows, queryDrawer));
-    tbl.update(rows);
-    const ms = rows.map((q) => q.ms).sort((a, b) => a - b);
-    note.textContent = rows.length ? `${fmt.plural(rows.length, "query", "queries")} · median ${fmt.ms(ms[Math.floor(ms.length / 2)])} · slowest ${fmt.ms(ms[ms.length - 1])}` : "";
+    const qs = all.filter((q) => (own || !isOwn(q)) && (!filt || [q.sql, q.key, q.app, q.addr, q.request_id, q.node].some((v) => v && String(v).toLowerCase().includes(filt))));
+    const hidden = all.filter((q) => !own && isOwn(q)).length;
+    ownChip.textContent = `the command center's own${hidden ? ` (${hidden} hidden)` : ""}`;
+    setCount("live", qs.length);
+    const oldest = qs.reduce((a, q) => Math.max(a, q.elapsed_ms), 0);
+    clear(info, h("span", { class: "pill " + (qs.length ? "info" : "ok") }, `${fmt.n(qs.length)} running`),
+      h("span", { class: "small muted" }, [nodes ? `on ${fmt.plural(nodes, "coordinator")}` : isCoord() ? "on this coordinator" : "on this server",
+        qs.length ? `oldest ${fmt.ms(oldest)}` : null, state.system ? `${state.system.limits?.max_concurrent ?? "?"} slots, timeout ${fmt.ms(state.system.limits?.timeout_ms)}` : null,
+        paused() ? "paused" : at ? `refreshed ${fmt.ago(at)}` : null].filter(Boolean).join(" · ")));
+    if (err) { clear(tbody, h("tr", {}, h("td", { colspan: 7 }, failure(err, "The running queries")))); return; }
+    if (!qs.length) { clear(tbody, h("tr", {}, h("td", { colspan: 7 }, empty("okc", "Nothing running", filt ? "No running query matches the filter." : "A query shows here while it runs: who sent it, with what, and how long it has run against its deadline.")))); return; }
+    const rows = [];
+    for (const g of groupsOf(qs)) {
+      if (groupBy !== "none") rows.push(groupHead(g));
+      const show = groupBy === "none" || open.has(g.id) ? g.qs.slice(0, 500) : g.qs.slice(0, 3);
+      rows.push(...show.map(qRow));
+      if (g.qs.length > show.length) rows.push(h("tr", {}, h("td", { colspan: 7, class: "small muted", style: { paddingLeft: "28px" } }, `${fmt.n(g.qs.length - show.length)} more of this ${groupBy === "key" ? "key" : "statement"} · `, h("a", { href: "#", class: "wl-link", onclick: (e) => { e.preventDefault(); open.add(g.id); draw(); } }, "show all"))));
+    }
+    clear(tbody, rows);
   }
-  async function load() {
-    try { const j = await api(`/v1/queries/${which}?limit=500`); all = j.queries; draw(); }
-    catch (e) { clear(body, failure(e, which === "slow" ? "The slow queries" : "The latest queries")); stopper(); }
-  }
-  const stopper = every(4000, load);
-  return stopper;
-}
-
-function miniTrace(spans) {
-  const end = Math.max(...spans.map((x) => x.start_us + x.dur_us), 1);
-  const svgEl = s("svg", { viewBox: "0 0 80 14", width: 80, height: 14, "aria-hidden": "true" });
-  spans.slice(0, 12).forEach((x, i) => svgEl.append(s("rect", { x: x.start_us / end * 80, y: (i % 3) * 4.5, width: Math.max(1, x.dur_us / end * 80), height: 4, rx: 1, style: { fill: x.outcome !== "ok" && x.outcome !== "outrun" ? "var(--crit)" : x.name === "admission" ? "var(--s4)" : x.name === "execute" ? "var(--s1)" : x.name === "plan" ? "var(--s5)" : "var(--s3)" } })));
-  return svgEl;
-}
-
-function statements(body) {
-  const head = h("div", { class: "row", style: { marginBottom: "12px" } });
-  const tbl = table([
-    { key: "fingerprint", label: "statement", cls: "sql", render: (x) => h("span", { title: x.example }, x.fingerprint) },
-    { key: "kind", label: "kind", render: (x) => h("span", { class: "badge mono" }, x.kind) },
-    { key: "calls", label: "calls", num: true, render: (x) => fmt.n(x.calls) },
-    { key: "errors", label: "errors", num: true, render: (x) => x.errors ? h("span", { style: { color: "var(--crit-ink)" } }, fmt.n(x.errors)) : "0" },
-    { key: "total_ms", label: "total", num: true, render: (x) => fmt.ms(x.total_ms) },
-    { key: "mean_ms", label: "mean", num: true, render: (x) => fmt.ms(x.mean_ms) },
-    { key: "p95_ms", label: "p95", num: true, render: (x) => fmt.ms(x.p95_ms) },
-    { key: "p99_ms", label: "p99", num: true, render: (x) => fmt.ms(x.p99_ms) },
-    { key: "rows_per_call", label: "rows/call", num: true, render: (x) => fmt.si(x.rows_per_call) },
-    { key: "share", label: "share of time", num: true, render: (x) => shareBar(x.share) },
-  ], { sortKey: "total_ms", desc: true, onRow: stmtDrawer, empty: empty("queries", "No statements yet", "Queries are grouped by shape: the same SQL with other literals.") });
-  const reset = h("button", { class: "btn sm danger", onclick: async () => {
-    if (!await confirm({ title: "Reset the statement statistics?", body: "Every count starts again from zero. The latest queries are kept.", ok: "Reset", danger: true })) return;
-    try { await api("/v1/queries/stats/reset", { method: "POST", body: {} }); toast("Statistics reset", "ok"); load(); } catch (e) { toast(e.message, "bad"); }
-  } }, icon("refresh"), "Reset");
-  body.append(head, card({ body: tbl, flush: true }));
   async function load() {
     try {
-      const j = await api("/v1/queries/stats?limit=500");
-      const total = j.statements.reduce((a, x) => a + x.total_ms, 0), calls = j.statements.reduce((a, x) => a + x.calls, 0);
-      clear(head, pill("info", fmt.plural(j.count, "shape")), h("span", { class: "small muted" }, `${fmt.n(calls)} calls · ${fmt.ms(total)} in all · since ${fmt.datetime(j.since_ms)}`), h("span", { class: "sep" }), reset);
-      tbl.update(j.statements);
-    } catch (e) { clear(body, failure(e, "The statement statistics")); stopper(); }
+      let j;
+      try { j = await api("/v1/queries?group=shape"); } catch (e) { if (e.status === 400) j = await api("/v1/queries"); else throw e; }
+      all = j.queries || [];
+      nodes = j.nodes ? (Array.isArray(j.nodes) ? j.nodes.length : j.nodes) : null;
+      at = Date.now(); err = null;
+    } catch (e) { err = e; }
+    draw();
   }
-  const stopper = every(5000, load);
-  return stopper;
+  async function loadStmts() {
+    try { const st = await statements({ from: Date.now() - 3600e3, to: Date.now() }); stmts = new Map(st.statements.map((x) => [x.fingerprint, x])); } catch { /* new shapes are not marked */ }
+  }
+  async function loadRules() {
+    try { rules = await containRules(); } catch (e) { clear(rulesBox, failure(e, "The contain rules")); return; }
+    clear(rulesBox, containList(rules, { onChange: loadRules }));
+  }
+  const stops = [poll(2000, load), poll(30000, loadStmts), poll(10000, loadRules), ticker(draw)];
+  return () => stops.forEach((f) => f());
 }
 
-function stmtDrawer(x) {
-  drawer({
-    title: `${fmt.n(x.calls)} calls · ${fmt.ms(x.mean_ms)} mean`, sub: `${x.kind} · ${fmt.pct(x.share)} of the time · last ${fmt.ago(x.last_ms)}`, wide: true,
-    body: [
-      h("b", {}, "The shape"), sqlBlock(x.fingerprint),
-      h("b", {}, "The latest example"), h("div", { class: "row nw" }, h("div", { class: "grow" }, sqlBlock(x.example)), h("button", { class: "btn icon sm", title: "Copy", onclick: () => copy(x.example) }, icon("copy"))),
-      h("div", { class: "grid g4" }, [["min", x.min_ms], ["p50", x.p50_ms], ["p95", x.p95_ms], ["p99", x.p99_ms], ["max", x.max_ms], ["mean", x.mean_ms], ["total", x.total_ms]].map(([k, v], i) => h("div", { class: "card kpi" }, h("div", { class: "lbl" }, k), h("div", { class: "val", style: { fontSize: "20px", color: i === 3 ? "var(--text)" : null } }, fmt.ms(v))))),
-      h("dl", { class: "kv" }, [["errors", fmt.n(x.errors)], ["rows", `${fmt.n(x.rows)} (${fmt.si(x.rows_per_call)} per call)`], ["calls from a coordinator", fmt.n(x.shard_calls)]].flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])),
-    ],
+/** Redraws the "refreshed N s ago" once a second. */
+function ticker(f) { const t = setInterval(() => { if (!document.hidden) f(); }, 1000); return () => clearInterval(t); }
+
+function countKeys(qs) { const m = new Map(); for (const q of qs) if (q.key) m.set(q.key, (m.get(q.key) || 0) + 1); return [...m].sort((a, b) => b[1] - a[1]); }
+
+// ---------------------------------------------------------------- statements
+
+function statementsTab(body, params, setCount) {
+  let only = params.get("changed") === "1", own = false, filt = params.get("q") || "", data = null, err = null;
+  const head = h("div", { class: "row", style: { gap: "10px", marginBottom: "6px" } });
+  const summary = h("div", { class: "small muted", style: { marginBottom: "10px" } });
+  const cards = h("div", { class: "grid g3 wl-cards", style: { marginBottom: "14px" } });
+  const note = h("div");
+  const search = h("input", { class: "input sm", placeholder: "Filter: SQL or key", value: filt, style: { width: "220px" }, oninput: debounce(() => { filt = search.value.trim().toLowerCase(); draw(); }, 150) });
+  const onlyChip = h("button", { class: "chip", "aria-pressed": String(only), title: "Only the statements that fail, are new, or got slower", onclick: () => { only = !only; onlyChip.setAttribute("aria-pressed", String(only)); draw(); } }, "needs a look only");
+  const ownChip = h("button", { class: "chip", "aria-pressed": "false", title: "The command center's own statements (its polling of the log store, Query path and Profiler runs)", onclick: () => { own = !own; ownChip.setAttribute("aria-pressed", String(own)); draw(); } }, "the command center's own");
+  const windowMs = () => { const r = timeRange(); return (r.to ?? Date.now()) - r.from; };
+  const perS = (n) => n / Math.max(1, windowMs() / 1000);
+  const tbl = table([
+    { key: "sql", label: "statement", cls: "sql", sort: (x) => x.sql, render: (x) => { const a = x._att; return h("span", { class: "row nw", style: { gap: "6px" } }, a ? h("span", { class: "pill " + a.tone, style: { padding: "0 7px" } }, a.tag) : null, h("span", { class: "ellipsis", title: x.sql }, x.sql)); } },
+    { key: "keys", label: "keys", sort: (x) => x.keys?.[0]?.key || "", render: (x) => x.keys?.length ? h("span", { class: "small nowrap", title: x.keys.map((k) => `${k.key}: ${fmt.n(k.calls)} calls`).join("\n") }, h("span", { class: "mono" }, x.keys[0].key), x.keys.length > 1 ? h("span", { class: "muted" }, ` +${x.keys.length - 1}`) : null) : h("span", { class: "muted" }, "–") },
+    { key: "first_seen_ms", label: "since", num: true, render: (x) => x.first_seen_ms ? h("span", { class: "nowrap small", title: fmt.datetime(x.first_seen_ms) }, when(x.first_seen_ms)) : h("span", { class: "muted" }, "–") },
+    { key: "calls", label: "calls/s", num: true, render: (x) => h("span", { title: `${fmt.n(x.calls)} calls in the window` }, fmt.si(perS(x.calls))) },
+    { key: "p99_ms", label: "p99", num: true, render: (x) => h("b", {}, fmt.ms(x.p99_ms)) },
+    { key: "dp99", label: "vs before", num: true, sort: (x) => change(x)?.p99X ?? 0, render: (x) => { const c = change(x); if (!c || c.p99X == null) return h("span", { class: "muted" }, x.prev === null && data?.windowed ? "new" : "–"); return h("span", { class: c.p99X >= 2 ? "wl-bad" : "dim", title: `p99 ${fmt.ms(x.prev.p99_ms)} in the window before · calls ×${c.callsX.toFixed(1)}` }, `×${c.p99X.toFixed(1)}`); } },
+    { key: "rows_per_call", label: "rows/call", num: true, render: (x) => fmt.si(x.rows_per_call) },
+    { key: "failed", label: "failed", num: true, sort: (x) => split(x.outcomes, x.calls).failed, render: (x) => { const sp = split(x.outcomes, x.calls); return h("span", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" } }, sp.failed ? h("span", { class: sp.server ? "wl-bad" : "dim" }, fmt.pct(sp.failed / Math.max(1, sp.calls), 1)) : h("span", { class: "muted" }, "0"), outcomeBar(x.outcomes, 60)); } },
+    { key: "share", label: "share of time", num: true, render: (x) => h("div", { class: "row nw", style: { gap: "6px", justifyContent: "flex-end" } }, h("div", { class: "barbox", style: { width: "56px" } }, h("div", { class: "bar", style: { width: Math.min(100, x.share * 100) + "%" } })), h("span", { class: "small dim num" }, fmt.pct(x.share, 0))) },
+  ], { sortKey: null, onRow: (x) => { location.hash = statementLink(x.fingerprint); }, empty: empty("queries", "No statements in this range", "Queries are grouped by shape: the same SQL with other literals.") });
+  tbl.classList.add("wl-stmts");
+  body.append(h("div", { class: "row", style: { gap: "10px", marginBottom: "6px" } }, head, h("span", { class: "sep" }), onlyChip, ownChip, search), summary, note, cards, card({ body: tbl, flush: true }));
+
+  function draw() {
+    const r = timeRange();
+    const mins = Math.round(windowMs() / 60e3);
+    clear(head, h("span", { class: "pill info" }, `${r.label || "the range"} · ${fmt.time(r.from, false)} → ${r.to && !r.live ? fmt.time(r.to, false) : "now"}`),
+      data?.windowed ? h("span", { class: "small muted" }, `compared with the ${mins >= 120 ? fmt.plural(Math.round(mins / 60), "hour") : mins + " min"} before`) : null);
+    if (err) { clear(note, failure(err, "The statements")); clear(cards); tbl.update([]); return; }
+    if (!data) return;
+    clear(note, data.windowed ? null : h("div", { class: "banner warn", style: { marginBottom: "12px" } }, icon("warn"), h("div", { class: "grow" }, h("b", {}, "This server counts statements since it started"), h("div", { class: "small" }, `${data.since_ms ? "Since " + fmt.datetime(data.since_ms) + ", " : ""}not over the range in the top bar, and with no window before to compare with. A newer server answers for any range.`))));
+    let xs = data.statements.filter((x) => own || !isOwn(x));
+    const hidden = data.statements.length - xs.length;
+    ownChip.textContent = `the command center's own${hidden && !own ? ` (${hidden} hidden)` : ""}`;
+    for (const x of xs) x._att = attention(x, windowMs());
+    if (filt) xs = xs.filter((x) => x.sql.toLowerCase().includes(filt) || x.fingerprint?.toLowerCase().includes(filt) || (x.keys || []).some((k) => k.key?.toLowerCase().includes(filt)));
+    const flagged = xs.filter((x) => x._att);
+    // Those that need a look first, worst first; then by time spent.
+    xs.sort((a, b) => (b._att?.rank || 0) - (a._att?.rank || 0) || b.total_ms - a.total_ms);
+    tbl.update(only ? xs.filter((x) => x._att) : xs);
+    setCount("statements", fmt.n(xs.length));
+    const calls = xs.reduce((a, x) => a + x.calls, 0), prevCalls = xs.reduce((a, x) => a + (x.prev?.calls || 0), 0);
+    const sp = xs.reduce((a, x) => { const t = split(x.outcomes, x.calls); a.server += t.server; a.client += t.client; a.dl += t.deadlines; return a; }, { server: 0, client: 0, dl: 0 });
+    const prevErr = xs.reduce((a, x) => a + (x.prev?.errors || 0), 0);
+    clear(summary, [`${fmt.si(perS(calls))} q/s${data.windowed && prevCalls ? ` (was ${fmt.si(prevCalls / Math.max(1, windowMs() / 1000))})` : ""}`,
+      `server errors ${fmt.pct(sp.server / Math.max(1, calls), 2)}${data.windowed && prevCalls ? ` (was ${fmt.pct(prevErr / Math.max(1, prevCalls), 2)})` : ""}`,
+      sp.client ? `client errors ${fmt.pct(sp.client / Math.max(1, calls), 2)}` : null,
+      sp.dl ? `client deadlines ${fmt.pct(sp.dl / Math.max(1, calls), 2)}, counted apart` : null,
+      `${fmt.plural(flagged.length, "statement")} need a look`].filter(Boolean).join(" · "));
+    drawCards(xs, calls);
+  }
+  const msgCache = new Map();
+  function drawCards(xs, calls) {
+    const errs = xs.filter((x) => { const t = split(x.outcomes, x.calls); return t.server + t.client > 0; }).sort((a, b) => { const A = split(a.outcomes, a.calls), B = split(b.outcomes, b.calls); return (B.server + B.client) - (A.server + A.client); });
+    const allFailed = errs.reduce((a, x) => { const t = split(x.outcomes, x.calls); return a + t.server + t.client; }, 0);
+    const news = xs.filter((x) => x.new || (x.first_seen_ms && x.first_seen_ms >= Date.now() - windowMs())).sort((a, b) => b.total_ms - a.total_ms);
+    const grew = data.windowed ? xs.map((x) => [x, change(x)]).filter(([, c]) => c && c.dTotal > 0 && (c.p99X >= 1.5 || c.callsX >= 1.5)).sort((a, b) => b[1].dTotal - a[1].dTotal).slice(0, 3) : [];
+
+    const errCard = h("section", { class: "card wl-card" + (errs.length ? " bad" : "") }, h("div", { class: "hd" }, h("h3", {}, errs.length ? `Errors: ${fmt.plural(Math.min(errs.length, 99), "statement")}` : "Errors"), h("span", { class: "sub" }, "by statement and key")), h("div", { class: "bd" }));
+    const eb = errCard.lastChild;
+    if (!errs.length) eb.append(h("div", { class: "small muted" }, "No statement failed in this range."));
+    else {
+      const x = errs[0], t = split(x.outcomes, x.calls), failed = t.server + t.client;
+      const others = calls - x.calls, othersFailed = allFailed - failed;
+      const k = x.keys?.slice().sort((a, b) => (b.errors || 0) - (a.errors || 0))[0];
+      const msg = h("span", { class: "mono small" });
+      eb.append(
+        h("div", { class: "mono small ellipsis", title: x.sql }, x.sql),
+        h("div", { class: "small", style: { margin: "6px 0" } }, h("b", { class: t.server ? "wl-bad" : "" }, `${fmt.si(perS(failed))}/s failing, ${fmt.pct(failed / Math.max(1, x.calls), 0)} of its calls`), " · ", t.client >= t.server ? "client errors (400)" : "server errors", allFailed ? ` · ${fmt.pct(failed / allFailed, 0)} of all failures` : "", " ", msg),
+        h("div", { class: "row", style: { gap: "4px" } }, k ? h("span", { class: "badge mono" }, "key " + k.key) : null, x.first_seen_ms ? h("span", { class: "badge" }, "first " + when(x.first_seen_ms)) : null, (x.keys?.length || 0) > 1 ? h("span", { class: "badge" }, `${x.keys.length - 1} other keys`) : null),
+        others > 0 ? h("div", { class: "small muted", style: { marginTop: "6px" } }, `The rest: ${fmt.pct(othersFailed / Math.max(1, others), 1)} of every other statement's calls failed.`) : null,
+        h("div", { class: "row", style: { gap: "6px", marginTop: "8px" } },
+          h("a", { class: "btn sm", href: statementLink(x.fingerprint) }, "Open it ›"),
+          can("admin") ? h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: x.fingerprint, sql: x.sql, key: k?.key, keys: x.keys, onDone: () => {} }) }, k ? `Refuse it from ${k.key}…` : "Refuse it…") : null,
+          h("button", { class: "btn sm ghost", title: "A summary to send the team that owns the client", onclick: () => copy(`Statement ${shortFp(x.fingerprint)} fails: ${fmt.n(failed)} of ${fmt.n(x.calls)} calls (${fmt.pct(failed / Math.max(1, x.calls), 0)}) ${timeRange().label || ""}${k ? `, from API key ${k.key}` : ""}.\n${msg.textContent ? "Error: " + msg.textContent + "\n" : ""}SQL: ${x.sql}\n${location.origin}/${statementLink(x.fingerprint)}`, "Summary copied") }, icon("copy"), "Copy for the app team")),
+        errs.length > 1 ? h("div", { class: "small muted", style: { marginTop: "8px" } }, errs.slice(1, 3).map((y) => h("div", { class: "ellipsis" }, h("a", { href: statementLink(y.fingerprint), class: "wl-link" }, `${fmt.n(split(y.outcomes, y.calls).failed)} failed`), " · ", h("span", { class: "mono" }, y.sql)))) : null);
+      const m = msgCache.get(x.fingerprint);
+      if (m && Date.now() - m.at < 30e3) msg.textContent = m.text;
+      else statementDetail(x.fingerprint, timeRange()).then((d) => { const e = d.errors?.[0]; const text = e ? `“${e.message}”` : ""; msgCache.set(x.fingerprint, { at: Date.now(), text }); msg.textContent = text; }).catch(() => {});
+    }
+    const newCard = card({ title: news.length ? `New: ${fmt.plural(news.length, "shape")}` : "New shapes", sub: data.windowed ? "first seen in this range" : "needs a newer server", cls: "wl-card" + (news.length ? " warn" : ""),
+      body: !news.length ? h("div", { class: "small muted" }, data.windowed ? "No statement was first seen in this range." : "This server does not say when a statement was first seen.") : (() => {
+        const x = news[0], k = x.keys?.[0];
+        return h("div", {},
+          h("div", { class: "mono small ellipsis", title: x.sql }, x.sql),
+          h("div", { class: "small", style: { margin: "6px 0" } }, `${fmt.si(perS(x.calls))}/s · `, h("b", {}, `${fmt.si(x.rows_per_call)} rows a call`), ` · p99 ${fmt.ms(x.p99_ms)} · ${fmt.pct(x.share, 0)} of query time · first seen ${when(x.first_seen_ms)}`),
+          h("div", { class: "row", style: { gap: "4px" } }, (x.keys || []).slice(0, 3).map((y) => h("span", { class: "badge mono" }, "key " + y.key))),
+          h("div", { class: "row", style: { gap: "6px", marginTop: "8px" } },
+            h("a", { class: "btn sm", href: statementLink(x.fingerprint) }, "Open it ›"),
+            can("admin") ? h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: x.fingerprint, sql: x.sql, key: k?.key, keys: x.keys }) }, k ? `Limit ${k.key}…` : "Limit it…") : null,
+            h("a", { class: "btn sm ghost", href: profileLink(x.sql, x.sample?.params) }, icon("flame"), "Profile one")),
+          news.length > 1 ? h("div", { class: "small muted", style: { marginTop: "8px" } }, news.slice(1, 3).map((y) => h("div", { class: "ellipsis" }, h("a", { href: statementLink(y.fingerprint), class: "wl-link" }, when(y.first_seen_ms)), " · ", h("span", { class: "mono" }, y.sql)))) : null);
+      })() });
+    const grewCard = card({ title: "Grew most", sub: data.windowed ? "by time spent, against the window before" : "needs a newer server", cls: "wl-card",
+      body: !grew.length ? h("div", { class: "small muted" }, data.windowed ? "No statement grew by half or more." : "This server keeps no window before to compare with.") : h("div", { class: "stack", style: { gap: "8px" } }, grew.map(([x, c]) => h("div", {},
+        h("a", { class: "mono small ellipsis wl-link", style: { display: "block" }, href: statementLink(x.fingerprint), title: x.sql }, x.sql),
+        h("div", { class: "small dim" }, `p99 ${fmt.ms(x.prev.p99_ms)} → ${fmt.ms(x.p99_ms)}, calls ×${c.callsX.toFixed(1)}`, c.verdict ? h("b", {}, ": " + c.verdict) : null)))) });
+    clear(cards, errCard, newCard, grewCard);
+  }
+  async function load() {
+    try { data = await statements(timeRange()); err = null; } catch (e) { err = e; }
+    draw();
+  }
+  const stops = [poll(10000, load), bus.on("range", load)];
+  return () => stops.forEach((f) => f());
+}
+
+// ---------------------------------------------------------------- history
+
+const PRESETS = [["all", "all"], ["failed", "failed"], ["slow", "slow"], ["latest", "last 15 min"]];
+
+function historyTab(body, params, setCount) {
+  const f = {
+    preset: params.get("preset") || "all", q: params.get("q") || "", key: params.get("key") || "", fingerprint: params.get("fingerprint") || "",
+    request: params.get("request") || "", min: params.get("min") || "", parts: false, own: false,
+  };
+  const presetSeg = seg(PRESETS, f.preset, (v) => { f.preset = v; refresh(); }, { title: "Latest is the last 15 minutes; slow is over the slow threshold" });
+  const q = h("input", { class: "input sm", placeholder: "Search the SQL", value: f.q, style: { width: "180px" }, oninput: debounce(() => { f.q = q.value.trim(); refresh(); }, 300) });
+  const keyIn = h("input", { class: "input sm mono", placeholder: "key", value: f.key, style: { width: "120px" }, oninput: debounce(() => { f.key = keyIn.value.trim(); refresh(); }, 300) });
+  const min = h("input", { class: "input sm num", type: "number", min: 0, placeholder: "ms", value: f.min, style: { width: "74px" }, title: "Only queries that took at least this many milliseconds", oninput: debounce(() => { f.min = min.value; refresh(); }, 300) });
+  const parts = h("label", { class: "row nw small dim", style: { gap: "6px", cursor: "pointer" }, title: "A coordinator's query runs a part on each shard, which each shard keeps too" }, h("input", { type: "checkbox", onchange: (e) => { f.parts = e.target.checked; refresh(); } }), "shards' parts");
+  const ownBox = h("label", { class: "row nw small dim", style: { gap: "6px", cursor: "pointer" }, title: "The command center's own queries" }, h("input", { type: "checkbox", onchange: (e) => { f.own = e.target.checked; refresh(); } }), "the command center's own");
+  const chips = h("div", { class: "row", style: { gap: "6px" } });
+  const note = h("div");
+  const hist = h("div", { class: "wl-hist" });
+  const count = h("span", { class: "small muted" });
+  const more = h("div", { class: "row", style: { padding: "8px 12px" } });
+  const asSql = h("a", { class: "btn sm ghost", title: "This search as SQL over the log store, to change it" }, icon("sql"), "As SQL");
+  let cols = new Set(), store = false, rows = [], total = 0, gen = 0;
+  const pick = (k) => (v) => { f[k] = v; if (k === "key") keyIn.value = v; refresh(); };
+  const tbl = table([
+    { key: "ts_ms", label: "time", render: (x) => h("span", { class: "mono small nowrap", title: fmt.datetime(x.ts_ms) }, when(x.ts_ms)) },
+    { key: "node", label: "server", render: (x) => x.node ? h("span", { class: "badge mono" }, x.node) : "–" },
+    { key: "outcome", label: "outcome", render: (x) => outcomePill(x.outcome) },
+    { key: "ms", label: "took", num: true, render: (x) => h("b", {}, fmt.ms(x.ms)) },
+    { key: "rows", label: "rows", num: true, render: (x) => fmt.n(x.rows) },
+    { key: "key", label: "key", render: (x) => x.key ? h("button", { class: "btn ghost sm mono", title: "Only this key's", onclick: () => pick("key")(x.key) }, x.key) : h("span", { class: "muted" }, "–") },
+    { key: "app", label: "app · address", render: (x) => x.app || x.addr ? h("span", { class: "small nowrap" }, x.app || "", x.app && x.addr ? h("span", { class: "muted" }, " · ") : null, x.addr ? h("span", { class: "mono muted" }, x.addr) : null) : h("span", { class: "muted" }, "–") },
+    { key: "sql", label: "SQL", render: (x) => h("div", { class: "mono small ellipsis", style: { maxWidth: "520px" }, title: x.error ? `${x.sql}\n\n${x.error}` : x.sql }, x.shard ? h("span", { class: "badge", style: { marginRight: "6px" } }, "shard part") : null, x.sql) },
+  ], { sortKey: null, compact: true, onRow: (x) => queryDrawer(x), empty: empty("queries", "No queries match", "Try a longer range or fewer filters. Fast queries that ended well are kept at most --log-queries a second; every slow or failed one is kept.") });
+  body.append(
+    h("div", { class: "row", style: { gap: "10px", marginBottom: "8px" } }, presetSeg, q, keyIn, h("span", { class: "row nw small muted", style: { gap: "6px" } }, "at least", min), parts, ownBox, asSql, h("span", { class: "sep" }), count),
+    chips, note,
+    card({ title: "Queries over time", sub: "by how they ended", body: hist, attrs: { style: { marginBottom: "12px" } } }),
+    card({ title: "Queries", sub: "newest first · click one for who sent it, its trace and profile", body: [tbl, more], flush: true }));
+
+  const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
+  const slowMs = () => state.system?.limits?.slow_ms ?? 200;
+  function span() {
+    const r = timeRange();
+    let from = f.preset === "latest" ? Date.now() - 15 * 60e3 : r.from;
+    const to = f.preset === "latest" ? null : r.live ? null : r.to;
+    const floor = Date.now() - 7 * 86400e3;
+    return { from: Math.max(from, floor), to, clipped: from < floor };
+  }
+  const has = (c) => cols.has(c);
+  function where(skip) {
+    const t = span();
+    return [
+      `ts >= ${lit(new Date(t.from).toISOString())}`, t.to ? `ts < ${lit(new Date(t.to).toISOString())}` : null,
+      f.preset === "failed" ? "outcome != 'ok'" : null,
+      f.preset === "slow" ? `ms >= ${slowMs()}` : null,
+      f.q ? `MATCH(sql, ${lit(f.q)})` : null,
+      f.request ? `request_id = ${lit(f.request)}` : null,
+      f.fingerprint && skip !== "fingerprint" ? `fingerprint = ${lit(f.fingerprint)}` : null,
+      f.key && has("key") ? `key = ${lit(f.key)}` : null,
+      f.min !== "" && Number.isFinite(+f.min) ? `ms >= ${+f.min}` : null,
+      f.parts ? null : "shard = false",
+      !f.own && has("client") ? "client != 'command-center'" : null,
+    ].filter(Boolean).join(" AND ");
+  }
+  const extra = () => ["key", "key_id", "addr", "app", "client", "params", "deadline_ms"].filter(has);
+  const rowsSql = (tail = "") => `SELECT ts, node, request_id, kind, outcome, shard, sql, fingerprint, ms, n_rows, error, detail, id${extra().map((c) => ", " + c).join("")} FROM queries WHERE ${where()}${tail} ORDER BY ts DESC, id DESC LIMIT 200`;
+  const finished = (r) => {
+    const d = parseJson(r.detail) || {};
+    const x = { ...d, ts_ms: msOf(r.ts), request_id: r.request_id, kind: r.kind, outcome: r.outcome, shard: r.shard, sql: r.sql, fingerprint: r.fingerprint, ms: r.ms, rows: r.n_rows, error: r.error, node: r.node, _id: r.id, _ts: r.ts };
+    for (const c of extra()) if (r[c] != null) x[c] = c === "params" ? parseJson(r[c]) ?? r[c] : r[c];
+    return x;
+  };
+  function drawChips() {
+    clear(chips, [["fingerprint", "statement"], ["request", "request"], ["key", "key"]].filter(([k]) => f[k]).map(([k, l]) => h("button", { class: "chip", "aria-pressed": "true", title: "Remove", onclick: () => pick(k)("") }, h("span", { class: "ellipsis", style: { maxWidth: "520px" } }, `${l} = ${f[k]}`), h("span", { class: "x" }, "×"))));
+    chips.style.marginBottom = chips.childElementCount ? "8px" : "0";
+  }
+  function own(xs) { return f.own || has("client") ? xs : xs.filter((x) => !isOwn(x)); }
+
+  async function refresh() {
+    const my = ++gen;
+    drawChips();
+    if (!store) return ring(my);
+    const t = span(), unit = (t.to ?? Date.now()) - t.from > 1440 * 60e3 ? 60 : 1, col = unit === 60 ? "hour" : "minute";
+    asSql.href = link("logs", { tab: "sql", sql: rowsSql() });
+    clear(note, [t.clipped ? h("div", { class: "notice", style: { marginBottom: "10px" } }, "The log store keeps 7 days: the range is cut to them.") : null,
+      f.key && !has("key") ? h("div", { class: "notice", style: { marginBottom: "10px" } }, "This server's log store does not record keys yet: the key filter is not applied.") : null]);
+    try {
+      const [rs, hs, by] = await Promise.all([
+        ask(rowsSql()),
+        ask(`SELECT ${col}, outcome, COUNT(*) FROM queries WHERE ${where()} GROUP BY ${col}, outcome LIMIT 20000`),
+        ask(`SELECT outcome, COUNT(*) FROM queries WHERE ${where()} GROUP BY outcome`),
+      ]);
+      if (my !== gen) return;
+      rows = own(objects(rs).map(finished));
+      total = by.rows.reduce((a, r) => a + r[1], 0);
+      const bad = (rs.nodes || []).filter((n) => n.error);
+      if (bad.length) note.append(h("div", { class: "banner warn" }, icon("warn"), h("div", { class: "grow" }, h("b", {}, `${fmt.plural(bad.length, "server")} did not answer, so ${bad.length === 1 ? "its" : "their"} queries are missing here`), bad.map((n) => h("div", { class: "small mono" }, `${n.node || n.url}: ${n.error}`)))));
+      histogram(hist, hs.rows, { unit, t });
+      tbl.update(rows);
+      count.textContent = `${fmt.plural(total, "query", "queries")} · ${by.rows.map(([o, n]) => `${fmt.n(n)} ${outcomeOf(o).label}`).join(" · ")}`;
+      setCount("history", "7 days");
+      drawMore();
+    } catch (e) { if (my === gen) { clear(note, failure(e, "The query history")); tbl.update([]); clear(hist); } }
+  }
+  function drawMore() {
+    clear(more, rows.length ? [h("span", { class: "small muted" }, `${fmt.n(rows.length)} of ${fmt.plural(total, "query", "queries")} shown`), rows.length < total ? h("button", { class: "btn sm", style: { marginLeft: "8px" }, onclick: older }, icon("down"), "Older") : null] : null);
+  }
+  async function older() {
+    if (!rows.length) return;
+    const my = gen, last = rows[rows.length - 1];
+    try {
+      const j = await ask(rowsSql(` AND (ts < ${lit(last._ts)} OR (ts = ${lit(last._ts)} AND id < ${last._id}))`));
+      if (my !== gen) return;
+      const seen = new Set(rows.map((x) => `${x.node}/${x._id}`));
+      const add = own(objects(j).map(finished)).filter((x) => !seen.has(`${x.node}/${x._id}`));
+      rows = rows.concat(add); if (!add.length) total = rows.length;
+      tbl.update(rows); drawMore();
+    } catch (e) { toast(e.message, "bad"); }
+  }
+
+  /** A server without a log store: its own latest and slowest, in memory. */
+  async function ring(my) {
+    clear(note, h("div", { class: "banner warn", style: { marginBottom: "10px" } }, icon("warn"), h("div", { class: "grow" }, h("b", {}, "This server keeps no log store"), h("div", { class: "small" }, "These are the latest 500 queries it ran (a few seconds at a busy server) and its slowest. Start it with --log-store to keep 7 days of every slow and failed query and a sample of the rest."))));
+    asSql.removeAttribute("href");
+    try {
+      const [a, b] = await Promise.all([api("/v1/queries/recent?limit=500"), api("/v1/queries/slow?limit=200").catch(() => ({ queries: [] }))]);
+      if (my !== gen) return;
+      const seen = new Set(), all = [];
+      for (const x of [...a.queries, ...b.queries]) if (!seen.has(x.id)) { seen.add(x.id); all.push(x); }
+      const t = span();
+      rows = own(all.filter((x) => x.ts_ms >= t.from && (!t.to || x.ts_ms < t.to)
+        && (f.preset !== "failed" || x.outcome !== "ok") && (f.preset !== "slow" || x.ms >= slowMs())
+        && (!f.q || x.sql.toLowerCase().includes(f.q.toLowerCase())) && (!f.fingerprint || x.fingerprint === f.fingerprint)
+        && (!f.key || x.key === f.key) && (!f.request || x.request_id === f.request) && (f.min === "" || x.ms >= +f.min) && (f.parts || !x.shard))).sort((p, q2) => q2.ts_ms - p.ts_ms);
+      total = rows.length;
+      const byMin = new Map();
+      for (const x of rows) { const k = Math.floor(x.ts_ms / 60e3) + "|" + x.outcome; byMin.set(k, (byMin.get(k) || 0) + 1); }
+      histogram(hist, [...byMin].map(([k, n]) => { const [m, o] = k.split("|"); return [+m, o, n]; }), { unit: 1, t });
+      tbl.update(rows);
+      count.textContent = `${fmt.plural(total, "query", "queries")} in memory`;
+      setCount("history", "in memory");
+      clear(more);
+    } catch (e) { if (my === gen) { clear(note, failure(e, "The latest queries")); tbl.update([]); } }
+  }
+
+  (async () => { store = await hasLogStore(); if (store) cols = await queryColumns(); refresh(); })();
+  const stops = [poll(5000, () => { if (!rows.length || (span().to == null && document.querySelector(".drawer") == null)) return refresh(); }), bus.on("range", () => refresh())];
+  return () => stops.forEach((x) => x());
+}
+
+/** Counts over time as stacked bars by outcome: rows of [bucket, outcome, n], buckets in minutes (or hours) since 1970. */
+function histogram(box, rows, { unit, t }) {
+  const to = t.to ?? Date.now(), spanMin = Math.max(1, (to - t.from) / 60e3);
+  const binMin = Math.max(unit, Math.ceil(spanMin / 120 / unit) * unit);
+  const t0 = Math.floor(t.from / 60e3 / binMin) * binMin, n = Math.max(1, Math.ceil((to / 60e3 - t0) / binMin));
+  const bins = Array.from({ length: n }, () => ({}));
+  const totals = {};
+  for (const [b, k, c] of rows) {
+    if (b == null) continue;
+    const i = Math.floor((b * unit - t0) / binMin);
+    if (i < 0 || i >= n) continue;
+    bins[i][k] = (bins[i][k] || 0) + c; totals[k] = (totals[k] || 0) + c;
+  }
+  const keys = [...OUTCOME_ORDER.filter((k) => totals[k]).reverse(), ...Object.keys(totals).filter((k) => !OUTCOME_ORDER.includes(k))];
+  const max = Math.max(1, ...bins.map((b) => Object.values(b).reduce((a, x) => a + x, 0)));
+  const W = 1000, H = 70, bw = W / n;
+  const svgEl = s("svg", { viewBox: `0 0 ${W} ${H + 16}`, style: { width: "100%", height: H + 16 + "px" }, preserveAspectRatio: "none", role: "img", "aria-label": "queries over time by outcome" });
+  const tAt = (i) => (t0 + i * binMin) * 60e3;
+  bins.forEach((b, i) => {
+    let y = H;
+    for (const k of keys) {
+      const v = b[k] || 0; if (!v) continue;
+      const hh = Math.max(1, v / max * (H - 4)); y -= hh;
+      const rc = s("rect", { x: i * bw + 0.5, y, width: Math.max(1, bw - 1), height: hh, style: { fill: outcomeOf(k).color } });
+      rc.addEventListener("pointermove", (e) => showTip(e.clientX, e.clientY, [h("div", { class: "t" }, `${fmt.datetime(tAt(i))} – ${fmt.time(tAt(i + 1), binMin < 1440)}`), ...keys.filter((x) => b[x]).reverse().map((x) => h("div", { class: "r" }, h("span", { class: "k box", style: { background: outcomeOf(x).color } }), h("b", {}, fmt.n(b[x])), h("span", { class: "n" }, outcomeOf(x).label)))]));
+      rc.addEventListener("pointerleave", hideTip);
+      svgEl.append(rc);
+    }
   });
+  for (let k = 0; k <= 4; k++) { const i = Math.round((n - 1) * k / 4); svgEl.append(s("text", { x: Math.min(W - 30, Math.max(30, i * bw + bw / 2)), y: H + 13, "text-anchor": "middle", style: { fill: "var(--muted)", fontSize: "10.5px" } }, binMin >= 1440 ? new Date(tAt(i)).toLocaleDateString() : when(tAt(i)))); }
+  clear(box, rows.length ? [svgEl, h("div", { class: "row small", style: { gap: "12px", marginTop: "4px" } }, keys.slice().reverse().map((k) => h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { class: "dot", style: { background: outcomeOf(k).color } }), `${outcomeOf(k).label} ${fmt.n(totals[k])}`)))] : h("div", { class: "small muted" }, "No query in this range."));
 }

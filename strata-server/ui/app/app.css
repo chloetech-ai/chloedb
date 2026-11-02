@@ -1462,3 +1462,28 @@ button.rx-node:hover { border-color: var(--accent); box-shadow: 0 0 0 3px var(--
 .ix-key::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; background: var(--c); vertical-align: -1px; }
 .ix-spark { display: block; }
 .ix-foot { margin: 14px 2px 0; max-width: 980px; line-height: 1.5; }
+
+/* ===== workload ===== */
+.wl-bad { color: var(--crit-ink); }
+.wl-badbadge { background: var(--crit-soft) !important; color: var(--crit-ink) !important; }
+.wl-link { color: var(--accent); text-decoration: none; }
+.wl-link:hover { text-decoration: underline; }
+.wl-obar { display: inline-flex; height: 8px; border-radius: 3px; overflow: hidden; background: var(--surface-3); vertical-align: middle; }
+.wl-obar > i { display: block; height: 100%; min-width: 2px; }
+.wl-story { line-height: 1.5; }
+.wl-trace .wf .nm .badge { flex-shrink: 0; }
+.wl-ghead > td { background: var(--surface-2); padding: 9px 10px !important; white-space: normal !important; }
+.wl-live td { white-space: nowrap; }
+.wl-card { min-height: 0; }
+.wl-card.bad { border-color: color-mix(in srgb, var(--crit) 45%, var(--line)); }
+.wl-card.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
+.wl-card .bd > div > .mono, .wl-card .bd > .mono { display: block; }
+.wl-stmts td { white-space: nowrap; }
+.wl-stmts td.sql { max-width: 560px; }
+.wl-rule { gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.wl-rule:last-child { border-bottom: 0; }
+.wl-radio input { margin-top: 3px; }
+.wl-radio .input { margin: 0 2px; }
+.wl-clip { max-height: 90px; overflow: auto; }
+.wl-head-scope { max-width: 980px; }
+/* ===== end workload ===== */
