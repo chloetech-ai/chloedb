@@ -317,6 +317,16 @@ async fn the_timeseries_over_three_hours_is_a_point_a_minute_from_the_load_table
     // Inside memory's hour: memory's points, as before.
     let m: Json = client().get(format!("{base}/v1/timeseries?since=0")).send().await.unwrap().json().await.unwrap();
     assert_eq!((m["source"].as_str(), m["interval_ms"].as_u64()), (Some("memory"), Some(2000)));
+
+    // A log search is a POST that only reads: not audited, while a reset
+    // of the read counts is a change.
+    let r = client().post(format!("{base}/v1/logs/query")).json(&json!({"sql": "SELECT COUNT(*) AS n FROM logs"})).send().await.unwrap();
+    let (status, body) = (r.status(), r.text().await.unwrap());
+    assert!(status.is_success(), "{body}");
+    assert!(client().post(format!("{base}/v1/index/reads/reset")).send().await.unwrap().status().is_success());
+    let audit: Json = client().get(format!("{base}/v1/admin/audit")).send().await.unwrap().json().await.unwrap();
+    let routes: Vec<&str> = audit["entries"].as_array().unwrap().iter().filter_map(|e| e["route"].as_str()).collect();
+    assert!(routes.contains(&"/v1/index/reads/reset") && !routes.contains(&"/v1/logs/query"), "{routes:?}");
 }
 
 /// On a coordinator, `PUT /v1/logs/filter?node=` sets a copy's log

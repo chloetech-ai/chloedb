@@ -482,8 +482,9 @@ impl Keys {
     }
 
     /// A new key in place of key `id`: of its name, scope, owner and note,
-    /// with its expiry; the old one expires `grace_ms` from now (or when
-    /// it did, if sooner). Its secret, not kept, is in the answer only.
+    /// with the old one's lifetime counted from now (none if it had none);
+    /// the old one expires `grace_ms` from now (or when it did, if sooner).
+    /// Its secret, not kept, is in the answer only.
     pub fn rotate(&self, id: &str, grace_ms: u64, token: bool) -> Result<(Key, String, Key), ApiError> {
         let mut set = self.lock();
         let now = now_ms();
@@ -494,7 +495,8 @@ impl Keys {
         let new_id = hex(&random(8)?);
         let secret = hex(&random(24)?);
         let full = format!("sk_{new_id}_{secret}");
-        let key = Key { id: new_id, sha256: sha256(&secret), created_ms: now, last_used_ms: 0, last_addr: None, ..old.clone() };
+        let expires_ms = old.expires_ms.map(|e| now + e.saturating_sub(old.created_ms));
+        let key = Key { id: new_id, sha256: sha256(&secret), created_ms: now, expires_ms, last_used_ms: 0, last_addr: None, ..old.clone() };
         let mut next = set.clone();
         let until = now + grace_ms;
         let mut ending = old.clone();
@@ -805,6 +807,24 @@ impl Audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rotated_key_lives_as_long_as_the_old_one_did_from_now() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = Keys::open(dir.path().join("keys.json")).unwrap();
+        keys.create("ops", Scope::Admin, None, true, false).unwrap();
+        let day = 86_400_000;
+        let (old, _) = keys.create("ci", Scope::Write, Some(now_ms() + 30 * day), true, false).unwrap();
+        let (new, secret, ending) = keys.rotate(&old.id, 15 * 60_000, true).unwrap();
+        let lifetime = new.expires_ms.unwrap() - new.created_ms;
+        assert!(lifetime.abs_diff(old.expires_ms.unwrap() - old.created_ms) < 1_000, "{lifetime}");
+        assert!(ending.expires_ms.unwrap() <= now_ms() + 15 * 60_000);
+        assert_eq!((new.name.as_str(), new.scope), ("ci", Scope::Write));
+        assert!(secret.starts_with(&format!("sk_{}_", new.id)));
+        // A key that never expired: its successor never does either.
+        let (forever, _) = keys.create("dash", Scope::Read, None, true, false).unwrap();
+        assert_eq!(keys.rotate(&forever.id, 0, true).unwrap().0.expires_ms, None);
+    }
 
     #[test]
     fn keys_resolve_to_their_scope_and_revoke() {

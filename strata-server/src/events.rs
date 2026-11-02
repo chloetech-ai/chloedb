@@ -235,7 +235,7 @@ impl Events {
                     (Some(true), Some(false)) => out.push(Event {
                         detail: json!({"why": s["why"]}),
                         where_: json!({"shard": i}),
-                        ..Event::new("majority_lost", "critical", format!("Shard {i} lost its majority: {}", s["why"].as_str().unwrap_or("too few copies answer")))
+                        ..Event::new("majority_lost", "critical", format!("Shard {i} lost its majority"))
                     }),
                     (Some(false), Some(true)) => out.push(Event { detail: json!({"why": s["why"]}), where_: json!({"shard": i}), ..Event::new("majority_back", "info", format!("Shard {i} has a majority again")) }),
                     _ => {}

@@ -599,9 +599,14 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
     // Changes and refusals: a read answered (GET, HEAD) is not audited,
     // unless something noted it.
     let refusal = status == 401 || status == 403;
-    // A plan asked (`POST .../plan`) changes nothing: a read too.
-    let plan = matches!(route.as_str(), "/v1/admin/plan" | "/v1/admin/kube/plan");
-    let read = (method == axum::http::Method::GET || method == axum::http::Method::HEAD || plan) && status < 400;
+    // A POST that only reads (a plan asked, a log search, a replay, a
+    // cloud's plan or check) changes nothing: a read too.
+    let plan = matches!(
+        route.as_str(),
+        "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
+    );
+    // A read that failed (404, 405, 500) changed nothing either.
+    let read = method == axum::http::Method::GET || method == axum::http::Method::HEAD || plan;
     let caller = keys::caller().unwrap_or_default();
     if refusal || detail.is_some() || (need == Scope::Admin && !read) {
         let kind = if refusal { keys::REFUSAL } else { change.kind.unwrap_or(keys::CHANGE) };
@@ -1803,9 +1808,12 @@ async fn add_replica(State(app): State<App>, axum::extract::Path(i): axum::extra
 /// replica shard `i`'s primary, by a majority of the shard's votes.
 async fn promote_in_shard(State(app): State<App>, axum::extract::Path(i): axum::extract::Path<usize>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let url = body_str(&b, "url")?.to_string();
-    let j = app.svc.coordinator()?.promote(i, &url, body_bool(&b, "force")?).await?;
-    keys::note_change(keys::Change { object: Some(format!("shard {i}")), after: Some(json!({"primary": url})), ..Default::default() });
-    Ok(audited(j, format!("promoted {url} in shard {i}")))
+    let c = app.svc.coordinator()?;
+    // The copy by its short name (`s0-1`), as the cluster names it.
+    let name = copy_of(&*c.snapshot().await, &url).map_or_else(|_| url.clone(), |c| c.short);
+    let j = c.promote(i, &url, body_bool(&b, "force")?).await?;
+    keys::note_change(keys::Change { object: Some(format!("shard {i}")), after: Some(json!({"primary": url, "copy": name})), ..Default::default() });
+    Ok(audited(j, format!("made {name} the primary of shard {i}")))
 }
 
 /// `DELETE /v1/admin/shards/:i/replicas?url=`: one server fewer for shard
