@@ -206,7 +206,11 @@ The operator then:
    shard's own copies restarts, so that a majority of the shard's copies
    serves through each restart. It leaves, its volume deleted, once both
    run the new image. A new image that does not run fails here, before any
-   copy of the shard's own restarts.
+   copy of the shard's own restarts. One shard at a time has its extra
+   copy, so the nodes need room for one more copy (the Cloud view sizes
+   each copy's requests to leave it); an extra copy no node has room for
+   waits for room, the status quoting the scheduler, and fails the version
+   after `progressDeadlineSeconds`.
 4. **Restarts the copies** one at a time, as above.
 5. **Verifies the version** for `rollout.verifySeconds`: every copy up, in
    sync and ready, no pod crash-looping or restarting, the gates under

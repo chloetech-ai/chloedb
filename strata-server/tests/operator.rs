@@ -34,10 +34,13 @@ const DRAIN_MS: u64 = 1000;
 
 /// A port of a block of 200 this process takes alone (as in
 /// tests/failover.rs, larger: its tests run at once, and a rolling
-/// upgrade starts new coordinators beside the old).
+/// upgrade starts new coordinators beside the old). The blocks stay under
+/// 32768, where Linux starts the ports it gives outgoing connections: a
+/// port found free here is bound later (a coordinator's Service, a server
+/// started again), and a connection could take it meanwhile.
 fn port() -> u16 {
     static NEXT: AtomicU32 = AtomicU32::new(0);
-    let base = 10_000 + (std::process::id() % 250) * 200;
+    let base = 10_000 + (std::process::id() % 113) * 200;
     loop {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         assert!(n < 200, "this test process took its 200 ports");

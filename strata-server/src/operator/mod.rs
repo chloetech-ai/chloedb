@@ -500,6 +500,11 @@ pub trait Platform {
     /// see that it can be pulled and runs there before any server restarts
     /// with it (each restart then finds it pulled).
     async fn preflight(&self, image: &str) -> Result<Check, String>;
+    /// Why copy `k` of set `id` has not started, when no node has room
+    /// for it (the scheduler's words); `None` otherwise.
+    async fn no_room(&self, _id: u32, _k: usize) -> Result<Option<String>, String> {
+        Ok(None)
+    }
     /// Ends the pre-flight: what it started goes.
     async fn end_preflight(&self) -> Result<(), String>;
 }
@@ -1186,8 +1191,8 @@ async fn restart_stuck<P: Platform>(spec: &Spec, p: &P, sets: &[Set], up: impl F
 
 /// The copies set `set` keeps now: `spec.replicas`, or three for a shard
 /// of fewer ([`RolloutSpec::extra_copies`]) while one of its own copies
-/// runs older settings, and, once it has the extra ones, until each of its
-/// own is back and in sync.
+/// runs older settings, and, once it has the extra ones (in its shard),
+/// until each of its own is back and in sync.
 fn keeps<P: Platform>(spec: &Spec, p: &P, set: &Set, view: &View, stale: &[(u32, usize)]) -> usize {
     let n = spec.replicas;
     if !spec.rollout.extra_copies || n >= 3 {
@@ -1198,7 +1203,9 @@ fn keeps<P: Platform>(spec: &Spec, p: &P, set: &Set, view: &View, stale: &[(u32,
         set.ready.contains(&k) && view.shards.iter().flat_map(|s| &s.servers).any(|r| r.url == url && r.up && r.in_sync)
     };
     let restarts = stale.iter().any(|&(id, k)| id == set.id && k < n);
-    if restarts || (set.replicas > n && !(0..n).all(settled)) {
+    let extra = p.url(set.id, n);
+    let joined = view.shards.iter().any(|s| s.servers.iter().any(|r| r.url == extra));
+    if restarts || (set.replicas > n && joined && !(0..n).all(settled)) {
         3
     } else {
         n
@@ -1317,15 +1324,31 @@ async fn roll<P: Platform>(
         }
     }
     if !unsettled.is_empty() {
-        if let Some(step) = &restarted {
-            let deadline = spec.rollout.progress_deadline_seconds;
-            if now.saturating_sub(step.since_ms) > deadline * 1000 {
-                let what = match step.name.strip_prefix("add ") {
-                    Some(urls) => format!("{urls} started with the new settings"),
-                    None => format!("{} restarted with the new settings", step.name.trim_start_matches("restart ")),
-                };
-                return Ok(Some(failed(r, "copies", format!("{what} more than {deadline} s ago, and {} not back and caught up", unsettled.join(", ")), now)));
+        let deadline = spec.rollout.progress_deadline_seconds;
+        // An extra copy no node has room for waits for room, and says so.
+        let mut no_room = None;
+        if let Some(urls) = restarted.as_ref().and_then(|s| s.name.strip_prefix("add ")) {
+            for url in urls.split(" and ").filter(|u| unsettled.iter().any(|x| x == u)) {
+                if let Some((id, k)) = p.set_of(url) {
+                    if let Some(why) = p.no_room(id, k).await? {
+                        no_room = Some(format!("no node has room for {url}, the extra copy its shard's copies restart beside ({why})"));
+                        break;
+                    }
+                }
             }
+        }
+        if let Some(step) = &restarted {
+            if now.saturating_sub(step.since_ms) > deadline * 1000 {
+                let what = match (&no_room, step.name.strip_prefix("add ")) {
+                    (Some(why), _) => format!("{why} for more than {deadline} s: add a node or lower spec.resources, or set rollout.extraCopies false to restart a shard's copies without one (the shard then serves no reads and takes no writes for the seconds each restart takes)"),
+                    (None, Some(urls)) => format!("{urls} started with the new settings more than {deadline} s ago, and {} not back and caught up", unsettled.join(", ")),
+                    (None, None) => format!("{} restarted with the new settings more than {deadline} s ago, and {} not back and caught up", step.name.trim_start_matches("restart "), unsettled.join(", ")),
+                };
+                return Ok(Some(failed(r, "copies", what, now)));
+            }
+        }
+        if let Some(why) = no_room {
+            return scaling(format!("{why}: it starts once one has (a node added, or smaller spec.resources), or the version fails {deadline} s after it was made"));
         }
         return scaling(format!("rolling out the new settings ({} left): waiting for {} to be back and caught up", left(stale.len()), unsettled.join(", ")));
     }
@@ -1343,8 +1366,11 @@ async fn roll<P: Platform>(
         return scaling(format!("rolling out the new settings ({} left): {} serves {soak:.0} s with them before the next restarts", left(stale.len()), r.url));
     }
     let primary = |url: &str| view.shards.iter().any(|s| s.servers.iter().any(|r| r.url == url && r.takes_writes));
-    // A replica first, so that each primary can go to a restarted copy.
-    let &(id, k) = stale.iter().find(|&&(id, k)| !primary(&p.url(id, k))).unwrap_or(&stale[0]);
+    // The copies of a shard that has its extra copies first, so that one
+    // shard at a time has them; a replica first, so that each primary can
+    // go to a restarted copy.
+    let has_extra = |id: u32| sets.iter().any(|s| s.id == id && s.replicas > spec.replicas);
+    let &(id, k) = stale.iter().min_by_key(|&&(id, k)| (!has_extra(id), primary(&p.url(id, k)))).unwrap_or(&stale[0]);
     let url = p.url(id, k);
     // A shard of fewer than three copies takes more first, which start
     // with the new settings: most of its copies serve while each of its

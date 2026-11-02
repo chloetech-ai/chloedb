@@ -472,6 +472,13 @@ pub const DRAIN_MS: u64 = 5_000;
 /// Why a pod's server cannot run, from its status, if it cannot: an image
 /// that cannot be pulled, a container that cannot be made, a server that
 /// exits again and again, or that has exited twice already.
+/// Whether a pod is ready: not one being deleted, which stays ready while
+/// its server drains (until its readiness probe next fails), and is not
+/// back until its new pod is.
+pub fn pod_ready(pod: &Json) -> bool {
+    pod["metadata"]["deletionTimestamp"].is_null() && pod["status"]["conditions"].as_array().is_some_and(|c| c.iter().any(|c| c["type"] == "Ready" && c["status"] == "True"))
+}
+
 pub fn pod_trouble(pod: &Json) -> Option<String> {
     let c = &pod["status"]["containerStatuses"][0];
     let last = &c["lastState"]["terminated"];
@@ -547,7 +554,7 @@ impl Platform for Cluster {
             let prefix = format!("{}-", self.set_name(id));
             let ready = pods
                 .iter()
-                .filter(|p| p["status"]["conditions"].as_array().is_some_and(|c| c.iter().any(|c| c["type"] == "Ready" && c["status"] == "True")))
+                .filter(|p| pod_ready(p))
                 .filter_map(|p| p["metadata"]["name"].as_str()?.strip_prefix(&prefix)?.parse::<usize>().ok())
                 .collect();
             sets.push(Set { id, replicas: s["spec"]["replicas"].as_u64().unwrap_or(0) as usize, ready });
@@ -736,6 +743,12 @@ impl Platform for Cluster {
             found += &format!(" ({} had no room to try it: {why}; their copies pull it as they restart)", no_room.len());
         }
         Ok(Check::Done(found))
+    }
+
+    async fn no_room(&self, id: u32, k: usize) -> Result<Option<String>, String> {
+        let Some(pod) = self.kube.get(&format!("{}/{}-{k}", ns_path(&self.ns, "v1", "pods"), self.set_name(id))).await? else { return Ok(None) };
+        let scheduled = pod["status"]["conditions"].as_array().and_then(|cs| cs.iter().find(|c| c["type"] == "PodScheduled").cloned());
+        Ok(scheduled.filter(|c| c["status"] == "False" && c["reason"] == "Unschedulable").map(|c| c["message"].as_str().unwrap_or("no node has room").to_string()))
     }
 
     async fn end_preflight(&self) -> Result<(), String> {
@@ -1251,6 +1264,15 @@ mod tests {
         assert_eq!(base64_decode("c2VjcmV0LXRva2Vu").unwrap(), b"secret-token");
         assert_eq!(base64_decode("YQ==").unwrap(), b"a");
         assert_eq!(base64_decode("!!"), None);
+    }
+
+    #[test]
+    fn a_pod_being_deleted_is_not_ready() {
+        let ready = json!({"metadata": {}, "status": {"conditions": [{"type": "Ready", "status": "True"}]}});
+        let mut draining = ready.clone();
+        draining["metadata"]["deletionTimestamp"] = json!("2026-11-02T08:30:00Z");
+        let starting = json!({"metadata": {}, "status": {"conditions": [{"type": "Ready", "status": "False"}]}});
+        assert!(pod_ready(&ready) && !pod_ready(&draining) && !pod_ready(&starting));
     }
 
     /// The server script, as `sh` runs it, for the first copy of a demo
