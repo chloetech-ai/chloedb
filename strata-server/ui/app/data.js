@@ -196,7 +196,7 @@ async function readSeries() {
       state.points.push(...j.points);
       if (state.points.length > 1800) state.points.splice(0, state.points.length - 1800);
     }
-    if (!state.paused) bus.emit("points");
+    if (!state.paused) { bus.emit("points"); rederive(); }
     return;
   }
   // A window: read it whole, again now and then while it follows now.
@@ -265,8 +265,15 @@ async function pollCluster() {
 }
 
 let fleetMissing = 0; // when the server said it has no /v1/health/fleet
+let derivedAt = 0;
+/** Without /v1/health/fleet the fleet's health follows the points, at most every 4 s. */
+function rederive() {
+  if (!fleetMissing || state.paused || Date.now() - derivedAt < 4000) return;
+  derivedAt = Date.now();
+  state.fleet = deriveFleet(); bus.emit("fleet");
+}
 async function pollFleet() {
-  if (fleetMissing && Date.now() - fleetMissing < 120e3) { if (!state.paused || !state.fleet) { state.fleet = deriveFleet(); bus.emit("fleet"); } return; }
+  if (fleetMissing && Date.now() - fleetMissing < 120e3) { if (!state.paused || !state.fleet) { derivedAt = Date.now(); state.fleet = deriveFleet(); bus.emit("fleet"); } return; }
   try {
     const f = await api("/v1/health/fleet", T);
     fleetMissing = 0; good("fleet");
@@ -324,13 +331,18 @@ export const environment = () => idOf()?.environment || null;
 export const isProduction = () => { const e = environment(); return e == null || /^prod/i.test(e); };
 
 // ---------------------------------------------------------------- the fleet without /v1/health/fleet
-const shardState = (sh) => {
+/**
+ * A shard's state: the server's `state` when it says ("ok", "degraded",
+ * "no_reads", "no_writes", "down"), else worked out from its copies: with
+ * failover a primary needs a majority of its copies to serve reads.
+ */
+export const shardState = (sh) => {
   if (sh.state) return sh.state;
   const reps = sh.replicas || [];
-  const up = reps.filter((r) => r.status === "ok" || r.status == null && r.role !== "unknown").length;
+  const up = reps.filter((r) => (r.status === "ok" || r.status == null) && r.role !== "unknown").length;
   if (!reps.length || up === 0 || sh.status === "down") return "down";
   // With failover, a primary needs a majority of its copies to serve reads.
-  const failover = reps.length > 1;
+  const failover = sh.failover ?? reps.length > 1;
   if (failover && up * 2 <= reps.length) return "no_reads";
   return up < reps.length || sh.status === "degraded" ? "degraded" : "ok";
 };
@@ -383,6 +395,7 @@ export function deriveFleet() {
   checks.push({ id: "error_ratio", status: errRatio == null ? "ok" : sev(errRatio > sloErr, errRatio > sloErr / 2), value: errRatio, slo: sloErr, window_s: 300 });
   checks.push({ id: "p99", status: p99 == null ? "ok" : sev(p99 > sloP99, p99 > sloP99 * 0.8), value_ms: p99, slo_ms: sloP99, window_s: 300 });
   if (shards.length) checks.push({ id: "copies", status: sev(false, downCopies.length > 0), down: downCopies.length, total, where: downCopies.map((d) => d.name) });
+  if (!shards.length && hl && hl.status && hl.status !== "ok") checks.push({ id: "server", status: hl.status === "degraded" ? "warning" : "critical", value: hl.status, where: [location.host] });
   if (maxLag) checks.push({ id: "lag", status: sev(maxLag.v > 100000, maxLag.v > 1000), max_txn: maxLag.v, where: maxLag.where });
   if (maxDisk) checks.push({ id: "disk", status: sev(maxDisk.v > 0.9, maxDisk.v > 0.8), max: maxDisk.v, median, where: maxDisk.where });
   const firing = firingAlerts();
