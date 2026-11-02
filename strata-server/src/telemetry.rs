@@ -176,17 +176,15 @@ pub struct Caller {
 }
 
 impl Caller {
-    /// The caller of a request by `who`, from `addr`, with headers `app`
-    /// (`x-strata-app`), `agent` (`User-Agent`) and `client`
-    /// (`x-strata-client`).
-    pub fn of(who: &crate::keys::Principal, addr: Option<String>, app: Option<&str>, agent: Option<&str>, client: Option<&str>) -> Caller {
+    /// The caller of a request by `who`, as the request's own
+    /// ([`crate::keys::caller`]: its address, app and client) says.
+    pub fn of(who: &crate::keys::Principal, request: Option<&crate::keys::Caller>) -> Caller {
         let key = match who.name.as_str() {
             "open" if who.key.is_none() => None,
-            "token" if who.key.is_none() => Some("root token".to_string()),
-            n => Some(n.to_string()),
+            _ => Some(crate::keys::audit_name(who)),
         };
-        let app = app.filter(|a| !a.trim().is_empty()).or_else(|| agent.and_then(|a| a.split_whitespace().next())).map(|a| crate::obs::truncate(a.trim(), 64).into_owned());
-        Caller { key, key_id: who.key.clone(), addr, app, client: client.filter(|c| c.eq_ignore_ascii_case(COMMAND_CENTER)).map(|_| COMMAND_CENTER.to_string()) }
+        let r = request.cloned().unwrap_or_default();
+        Caller { key, key_id: who.key.clone(), addr: r.addr, app: r.app, client: r.client.filter(|c| c.eq_ignore_ascii_case(COMMAND_CENTER)).map(|_| COMMAND_CENTER.to_string()) }
     }
 
     /// The command center's own request.
@@ -1160,9 +1158,10 @@ mod tests {
         assert_eq!(*r, json!({"n": "int", "q": "text", "v": "vector(384)"}));
         assert!(params_json(&strata::query::Params::new()).is_none());
         let who = crate::keys::Principal { name: "token".into(), key: None, scope: crate::keys::Scope::Admin, root: true };
-        let c = Caller::of(&who, None, None, Some("shop-ios/7.0.0 (iPhone)"), Some("Command-Center"));
-        assert_eq!((c.key.as_deref(), c.app.as_deref(), c.client.as_deref()), (Some("root token"), Some("shop-ios/7.0.0"), Some("command-center")));
-        assert_eq!(Caller::of(&crate::keys::Principal::open(), None, Some("billing"), None, Some("curl")).key, None);
+        let r = crate::keys::Caller { app: Some("shop-ios".into()), client: Some("command-center".into()), ..Default::default() };
+        let c = Caller::of(&who, Some(&r));
+        assert_eq!((c.key.as_deref(), c.app.as_deref(), c.client.as_deref()), (Some("root token"), Some("shop-ios"), Some("command-center")));
+        assert_eq!(Caller::of(&crate::keys::Principal::open(), None).key, None);
     }
 
     #[test]

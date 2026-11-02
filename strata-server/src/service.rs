@@ -55,6 +55,38 @@ tokio::task_local! {
     pub static ROUTED: std::cell::Cell<u64>;
 }
 
+/// The deadline a request asked for (`timeout_ms`), when shorter than the
+/// server's default, and whether it passed while a shard was asked: a
+/// coordinator then neither avoids the copies it asked nor counts their
+/// failure, and the request is logged as the client's deadline, not a
+/// fault ([`client_deadline`]).
+#[derive(Default)]
+pub struct Deadline {
+    asked_ms: std::cell::Cell<Option<u64>>,
+    passed: std::cell::Cell<bool>,
+}
+
+tokio::task_local! {
+    /// The request's [`Deadline`] (HTTP requests run in one).
+    pub static DEADLINE: Deadline;
+}
+
+/// The client's own deadline in ms, when the request being served asked
+/// for one below the server's default.
+pub fn client_deadline() -> Option<u64> {
+    DEADLINE.try_with(|d| d.asked_ms.get()).ok().flatten()
+}
+
+/// Notes that the client's own deadline passed.
+pub fn deadline_passed() {
+    let _ = DEADLINE.try_with(|d| d.passed.set(true));
+}
+
+/// Whether the request's own deadline passed, and that deadline.
+pub fn deadline_of_request() -> Option<u64> {
+    DEADLINE.try_with(|d| d.passed.get().then(|| d.asked_ms.get()).flatten()).ok().flatten()
+}
+
 /// The epoch the request being served routes by ([`ROUTED`]).
 fn routed() -> u64 {
     ROUTED.try_with(std::cell::Cell::get).unwrap_or(0)
@@ -221,11 +253,86 @@ pub struct AgentConfig {
     pub base_url: String,
 }
 
+/// The cluster a server is of, as people name it (`--cluster-name`,
+/// `--environment`), and where its command center is (`--public-url`),
+/// for links.
+#[derive(Clone, Debug, Default)]
+pub struct Identity {
+    pub name: Option<String>,
+    pub environment: Option<String>,
+    pub public_url: Option<String>,
+}
+
+impl Identity {
+    pub fn json(&self) -> Json {
+        json!({"name": self.name, "environment": self.environment, "public_url": self.public_url})
+    }
+}
+
+/// The service levels fleet health checks against (`--slo-error-ratio`,
+/// `--slo-p99-ms`).
+#[derive(Clone, Copy, Debug)]
+pub struct Slo {
+    pub error_ratio: f64,
+    pub p99_ms: f64,
+}
+
+impl Default for Slo {
+    fn default() -> Slo {
+        Slo { error_ratio: 0.01, p99_ms: 250.0 }
+    }
+}
+
+/// Where a server runs: its name if given (`--node-name`), the machine
+/// and zone (`STRATA_NODE` or `NODE_NAME`, `STRATA_ZONE`), and its image
+/// (`STRATA_IMAGE`, which the operator sets; its digest when it pins one,
+/// or `STRATA_IMAGE_DIGEST`).
+#[derive(Clone, Debug, Default)]
+pub struct Place {
+    pub name: Option<String>,
+    pub node: Option<String>,
+    pub zone: Option<String>,
+    pub image: Option<String>,
+    pub digest: Option<String>,
+}
+
+impl Place {
+    /// From the environment, with `name` given or not.
+    pub fn from_env(name: Option<String>) -> Place {
+        let var = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let image = var("STRATA_IMAGE");
+        let digest = var("STRATA_IMAGE_DIGEST").or_else(|| image.as_deref().and_then(crate::operator::upgrade::digest_of));
+        Place { name, node: var("STRATA_NODE").or_else(|| var("NODE_NAME")), zone: var("STRATA_ZONE"), image, digest }
+    }
+
+    /// Its version: this build's, and the image's.
+    pub fn version(&self) -> Json {
+        let mut v = json!({"version": env!("CARGO_PKG_VERSION")});
+        if let Some(i) = &self.image {
+            v["image"] = json!(i);
+        }
+        if let Some(d) = &self.digest {
+            v["digest"] = json!(d);
+        }
+        v
+    }
+}
+
 pub struct Service {
     pub backend: Backend,
     pub schema: Schema,
     pub metrics: Metrics,
     pub agent: AgentConfig,
+    // ----- core: identity, service levels, place (command center rebuild)
+    pub identity: Identity,
+    pub slo: Slo,
+    pub place: Place,
+    /// Proxies whose `X-Forwarded-For` names the client (`--trust-proxy`):
+    /// addresses and prefix lengths.
+    pub trusted_proxies: Vec<(std::net::IpAddr, u8)>,
+    /// Fleet health's memory ([`crate::fleet`]).
+    pub fleet: crate::fleet::Fleet,
+    // ----- end core
     /// The `StrataCluster` that runs this coordinator on Kubernetes, if one
     /// does ([`crate::operator::kube::Link`]).
     pub kube: Option<crate::operator::kube::Link>,
@@ -399,6 +506,11 @@ impl Service {
             schema,
             metrics: Metrics::default(),
             agent,
+            identity: Identity::default(),
+            slo: Slo::default(),
+            place: Place::from_env(None),
+            trusted_proxies: Vec::new(),
+            fleet: Default::default(),
             kube: None,
             live: Arc::new(LiveQueries::default()),
             query_log: QueryLog::default(),
@@ -1488,7 +1600,11 @@ impl Service {
     /// or the default.
     pub fn timeout_of(&self, timeout_ms: u64) -> Duration {
         if timeout_ms > 0 {
-            Duration::from_millis(timeout_ms).min(self.max_timeout)
+            let t = Duration::from_millis(timeout_ms).min(self.max_timeout);
+            if t < self.timeout {
+                let _ = DEADLINE.try_with(|d| d.asked_ms.set(Some(t.as_millis() as u64)));
+            }
+            t
         } else {
             self.timeout
         }
@@ -3156,14 +3272,80 @@ impl Service {
     /// coordinator asks every replica of every shard
     /// ([`Coordinator::cluster`]).
     pub async fn cluster(self: &Arc<Self>) -> Json {
-        match &self.backend {
-            Backend::Local(_) => json!({"role": self.role().as_str_name().to_lowercase(), "node": self.detail().await}),
+        let mut j = match &self.backend {
+            Backend::Local(_) => json!({"role": self.role().as_str_name().to_lowercase(), "node": self.detail().await, "at_ms": telemetry::now_ms()}),
             Backend::Cluster(c) => {
-                let mut j = c.cluster().await;
-                j["coordinator"] = json!({"load": self.series.last().map(|p| (*p).clone()), "health": {"retries": j["retries"], "hedges": j["hedges"]}});
+                let mut j = (*c.snapshot().await).clone();
+                j["coordinator"] = json!({"load": self.series.last().map(|p| (*p).clone()), "health": {"retries": j["retries"], "hedges": j["hedges"]}, "version": self.place.version(), "name": self.place.name, "node": self.place.node});
                 j
             }
+        };
+        j["cluster"] = self.identity.json();
+        j
+    }
+
+    /// Keeps an audit entry ([`Audit::add`]).
+    pub fn audit_add(&self, e: keys::Entry) {
+        self.audit.add(e);
+    }
+
+    /// What this server can do for its shard now: serve reads and take
+    /// writes, and why not (a coordinator reads it from each copy's
+    /// detail, [`Coordinator::cluster`]). A primary serves no reads
+    /// without a majority of its copies (with failover), and takes no
+    /// writes without enough of them in sync; a replica takes none from
+    /// clients.
+    pub fn capability(&self) -> Json {
+        let Backend::Local(_) = &self.backend else { return Json::Null };
+        let (reads, writes): (Result<(), String>, Result<(), String>) = match self.replication() {
+            Replication::None => (Ok(()), Ok(())),
+            Replication::Primary(p) => (p.readable().map_err(|e| e.message), p.admit().map_err(|e| e.message)),
+            Replication::Replica(f) => (
+                match f.serves_reads() {
+                    true => Ok(()),
+                    false => Err("this replica serves no reads while it catches up with its primary, or has not heard from it".into()),
+                },
+                Err("a replica takes no writes from clients".into()),
+            ),
+        };
+        let writes = match self.failing() {
+            Some(why) => Err(why),
+            None => writes,
+        };
+        let mut j = json!({"serves_reads": reads.is_ok(), "takes_writes": writes.is_ok(), "failover_after_ms": self.failover_after.as_millis() as u64});
+        if let Err(e) = reads {
+            j["no_reads"] = json!(e);
         }
+        if let Err(e) = writes {
+            j["no_writes"] = json!(e);
+        }
+        j
+    }
+
+    /// Fleet health (`GET /v1/health/fleet`, [`crate::fleet`]): of the
+    /// cluster on a coordinator, of this server on a shard server.
+    pub async fn fleet_health(self: &Arc<Self>) -> Json {
+        let now = telemetry::now_ms();
+        let (cluster, partial, coordinator) = match &self.backend {
+            Backend::Cluster(c) => {
+                let me = json!({"url": self.identity.public_url, "name": self.place.name.clone().or_else(|| self.place.node.clone())});
+                ((*c.snapshot().await).clone(), c.opts.partial, Some(me))
+            }
+            Backend::Local(_) => (crate::fleet::local_shard(&self.detail().await), false, None),
+        };
+        let points = self.series.since(now.saturating_sub(crate::fleet::WINDOW_S * 1000));
+        let by = self.alerts.firing();
+        let count = |sev: Option<&str>| by.iter().filter(|(k, _)| sev.is_none_or(|s| k.contains(&format!("\"{s}\"")))).map(|(_, n)| *n as u64).sum::<u64>();
+        self.fleet.judge(crate::fleet::Inputs {
+            cluster: &cluster,
+            points: &points,
+            slo_error_ratio: self.slo.error_ratio,
+            slo_p99_ms: self.slo.p99_ms,
+            alerts: (count(None), count(Some("critical"))),
+            partial,
+            coordinator,
+            now_ms: now,
+        })
     }
 
     /// This server's health and latest point, as a coordinator's
@@ -3180,6 +3362,11 @@ impl Service {
             "health": health, "load": load, "minute": minute,
             "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores},
             "running": self.live.len(), "log_store": log_store,
+            // core: what a coordinator's /v1/cluster shows of each copy.
+            "capability": self.capability(),
+            "place": {"name": self.place.name, "node": self.place.node, "zone": self.place.zone},
+            "version": self.place.version(),
+            "cluster": self.identity.json(),
         })
     }
 

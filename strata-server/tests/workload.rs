@@ -155,7 +155,7 @@ async fn queries_are_kept_with_who_sent_them() {
     let (mine, theirs) = (&recent["queries"][1], &recent["queries"][0]);
     assert_eq!(mine["key"], "reports-batch", "{recent}");
     assert!(mine["key_id"].as_str().is_some_and(|k| !k.is_empty()), "{mine}");
-    assert_eq!(mine["app"], "nightly-reports/2.3", "{mine}");
+    assert_eq!(mine["app"], "nightly-reports", "{mine}");
     assert_eq!(mine["addr"], "127.0.0.1", "{mine}");
     assert_eq!(mine["params"], json!({"p": 500, "q": "laptop"}), "{mine}");
     assert_eq!(mine["deadline_ms"], 2000);
@@ -183,7 +183,7 @@ async fn queries_are_kept_with_who_sent_them() {
     store.flush();
     let (rs, _) = store.query("SELECT key_name, app, client, params, deadline_ms FROM queries WHERE key_name = 'reports-batch' ORDER BY ts LIMIT 5", &strata::query::Params::new(), false, Duration::from_secs(5)).await.unwrap();
     assert_eq!(rs.rows.len(), 2, "{:?}", rs.rows);
-    assert_eq!(rs.rows[0][1], strata::Value::Str("nightly-reports/2.3".into()));
+    assert_eq!(rs.rows[0][1], strata::Value::Str("nightly-reports".into()));
     let params: Json = serde_json::from_str(rs.rows[0][3].as_str().unwrap()).unwrap();
     assert_eq!(params["q"], "laptop");
     assert_eq!(rs.rows[0][4], strata::Value::Int(2000));

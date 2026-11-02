@@ -51,7 +51,8 @@
 //! | `POST /v1/logs/query` | `{sql, params?, timeout_ms?, scope?}` (SQL over tables `logs` and `queries`) | rows of the server's log store ([`crate::logstore`]); on a coordinator, of every server's merged, with `nodes`: each server's rows, time and error (`"scope": "local"`: its own store alone) |
 //! | `GET /v1/logs/store` | | `{store, schemas, nodes?}`: the log store (its path, rows, bytes, retention, what it wrote, dropped and deleted; null without one), its tables, and on a coordinator every server's |
 //! | `GET /v1/system`, `/v1/cluster`, `/v1/routes` | | the process and its limits; the cluster's copies; requests by route and queries by kind |
-//! | `GET /v1/whoami` | | `{name, key, scope, root}`: who the request's credential is ([`crate::keys`]) |
+//! | `GET /v1/whoami` | | `{name, key, scope, root, cluster, caller}`: who the request's credential is ([`crate::keys`]) |
+//! | `GET /v1/health/fleet` | | `{status, headline, since_ms, checks, problems, coordinators}`: whether the cluster is all right and what is wrong first ([`crate::fleet`]) |
 //! | `GET /v1/admin/keys`, `POST /v1/admin/keys`, `DELETE /v1/admin/keys/:id` | `{name, scope, expires_days?}` | the API keys, how many were revoked, and how the last merge of keys went with each server of the cluster (`peers`, [`crate::keysync`]); a new one's secret is answered once |
 //! | `GET /v1/admin/audit?limit=n` | | the latest requests that needed the admin scope or were refused |
 //! | `GET /v1/alerts`, `PUT /v1/alerts/rules` | `{rules}` | the alert rules with their states and the latest changes ([`crate::alerts`]) |
@@ -98,7 +99,11 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let code = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let failure = (self.status >= 500).then(|| Failure(self.message.as_str().into()));
+        let client = (400..500).contains(&self.status).then(|| ClientError(self.message.as_str().into()));
         let mut r = (code, AxJson(json!({"error": self.message}))).into_response();
+        if let Some(c) = client {
+            r.extensions_mut().insert(c);
+        }
         // Refused for the server's load: when to try again.
         if self.status == 429 {
             r.headers_mut().insert(header::RETRY_AFTER, header::HeaderValue::from(crate::service::RETRY_AFTER.as_secs()));
@@ -229,6 +234,10 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/audit", get(audit_log))
         .route("/v1/alerts", get(alerts))
         .route("/v1/alerts/rules", put(put_alert_rules))
+        // ----- core: the rebuilt command center's contract (fleet health,
+        // events, time beyond an hour, versions, plans, tables)
+        .route("/v1/health/fleet", get(fleet_health))
+        // ----- end core
         .route_layer(middleware::from_fn_with_state(app.clone(), auth));
     Router::new()
         .route("/", get(ui::index))
@@ -256,15 +265,32 @@ async fn observe(State(app): State<App>, req: Request, next: Next) -> Response {
     let route = req.extensions().get::<MatchedPath>().map_or("other", |p| p.as_str()).to_string();
     let span = tracing::info_span!("request", id = %id, method = %req.method(), route = %route);
     let t0 = Instant::now();
-    let mut res = telemetry::traced(telemetry::Trace::new(), obs::scope(Some(id.clone()), next.run(req))).instrument(span.clone()).await;
+    let peer = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0);
+    let caller = caller_of(req.headers(), peer, &app.svc.trusted_proxies);
+    let ui = caller.command_center();
+    let inner = keys::calling(caller, obs::scope(Some(id.clone()), next.run(req)));
+    let run = crate::service::DEADLINE.scope(crate::service::Deadline::default(), async move { (inner.await, crate::service::deadline_of_request()) });
+    let (mut res, deadline) = telemetry::traced(telemetry::Trace::new(), run).instrument(span.clone()).await;
     let secs = t0.elapsed().as_secs_f64();
     let status = res.status().as_u16();
-    app.svc.metrics.http(&route, status, secs);
+    // The command center's own requests are not the clients' traffic
+    // (`/v1/routes`, the series' HTTP rates).
+    if !ui {
+        app.svc.metrics.http(&route, status, secs);
+    }
     if let Ok(v) = header::HeaderValue::from_str(&id) {
         res.headers_mut().insert(obs::HEADER, v);
     }
     let _in = span.enter();
     match res.extensions().get::<Failure>() {
+        // The client's own deadline passed: its choice, not a fault.
+        Some(Failure(why)) if deadline.is_some() => {
+            static LIMIT: obs::RateLimit = obs::RateLimit::new(10);
+            if let Some(held) = LIMIT.admit() {
+                let ms = deadline.unwrap_or(0);
+                tracing::warn!(status, deadline_ms = ms, error = %why, held_back = held, "client deadline of {ms} ms passed");
+            }
+        }
         Some(Failure(why)) => obs::server_error(status, why),
         None if route.starts_with("/v1/logs") => {}
         None => tracing::debug!(status, secs, "answered"),
@@ -275,6 +301,86 @@ async fn observe(State(app): State<App>, req: Request, next: Next) -> Response {
 fn header_str<'a>(headers: &'a HeaderMap, name: header::HeaderName) -> Option<&'a str> {
     headers.get(name).and_then(|v| v.to_str().ok())
 }
+
+// ----- core: who is calling (command center rebuild)
+
+/// A network as `--trust-proxy` names it: an address, or an address and
+/// a prefix length (`10.0.0.0/8`, `::1`).
+pub fn parse_net(s: &str) -> Result<(std::net::IpAddr, u8), String> {
+    let (ip, bits) = match s.trim().split_once('/') {
+        Some((ip, b)) => (ip, Some(b)),
+        None => (s.trim(), None),
+    };
+    let ip: std::net::IpAddr = ip.parse().map_err(|_| format!("{s:?} is not an address or a network (10.0.0.0/8)"))?;
+    let max = if ip.is_ipv4() { 32 } else { 128 };
+    let bits = match bits {
+        Some(b) => b.parse::<u8>().ok().filter(|b| *b <= max).ok_or_else(|| format!("{s:?}: the prefix length is 0 to {max}"))?,
+        None => max,
+    };
+    Ok((ip, bits))
+}
+
+/// Whether `ip` is in network `net`.
+fn in_net(ip: std::net::IpAddr, net: (std::net::IpAddr, u8)) -> bool {
+    use std::net::IpAddr;
+    let (bits, a, b) = match (ip, net.0) {
+        (IpAddr::V4(a), IpAddr::V4(b)) => (net.1 as u32, u32::from(a) as u128, u32::from(b) as u128),
+        (IpAddr::V6(a), IpAddr::V6(b)) => (net.1 as u32, u128::from(a), u128::from(b)),
+        _ => return false,
+    };
+    let width = if ip.is_ipv4() { 32 } else { 128 };
+    if bits == 0 {
+        return true;
+    }
+    let shift = width - bits.min(width);
+    (a >> shift) == (b >> shift)
+}
+
+/// A header's value as text, `%XX` escapes decoded (the command center
+/// encodes a reason that is not ASCII).
+fn header_text(headers: &HeaderMap, name: &str) -> Option<String> {
+    let raw = headers.get(name)?.to_str().ok()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let b = raw.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(x) = u8::from_str_radix(&raw[i + 1..i + 3], 16) {
+                out.push(x);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    Some(String::from_utf8_lossy(&out).chars().take(1000).collect())
+}
+
+/// Who a request is from ([`keys::Caller`]): its address (the peer, or
+/// the first of `X-Forwarded-For` when the peer is a proxy in `trusted`),
+/// its client (`x-strata-client`), its app (`x-strata-app`, else the
+/// product of its `User-Agent`) and its reason (`x-strata-reason`).
+pub fn caller_of(headers: &HeaderMap, peer: Option<std::net::SocketAddr>, trusted: &[(std::net::IpAddr, u8)]) -> keys::Caller {
+    let mut addr = peer.map(|p| p.ip());
+    if let Some(p) = addr.filter(|ip| trusted.iter().any(|n| in_net(*ip, *n))) {
+        let forwarded = header_str(headers, header::HeaderName::from_static("x-forwarded-for")).and_then(|v| v.split(',').next()).and_then(|v| v.trim().parse().ok());
+        addr = Some(forwarded.unwrap_or(p));
+    }
+    let client = header_text(headers, "x-strata-client").map(|c| c.to_ascii_lowercase()).filter(|c| c == keys::COMMAND_CENTER);
+    let app = header_text(headers, "x-strata-app").or_else(|| header_str(headers, header::USER_AGENT).and_then(keys::product));
+    keys::Caller { addr: addr.map(|a| a.to_string()), client, app, reason: header_text(headers, "x-strata-reason") }
+}
+
+/// `GET /v1/health/fleet` ([`crate::fleet`]).
+async fn fleet_health(State(app): State<App>) -> AxJson<Json> {
+    AxJson(app.svc.fleet_health().await)
+}
+
+// ----- end core
 
 /// Who the request is from ([`crate::keys`]), and whether that may call
 /// its route ([`route_scope`]); what the request then does (a statement, a
@@ -291,54 +397,63 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
         None => Some(ApiError { status: 401, message: "missing or wrong token".into() }),
         Some(w) => w.may(need, &format!("{method} {route}")).err(),
     };
-    let (res, note) = match refused {
-        Some(e) => (e.into_response(), None),
+    let (res, note, change) = match refused {
+        Some(e) => (e.into_response(), None, keys::Change::default()),
         None => {
             if let Some(w) = &who {
                 req.extensions_mut().insert(w.clone());
             }
             // Who the request's queries are from ([`telemetry::Caller`]).
-            let caller = telemetry::Caller::of(&who.clone().unwrap_or_else(Principal::open), client_addr(&req), header_str(&headers, header::HeaderName::from_static("x-strata-app")), header_str(&headers, header::USER_AGENT), header_str(&headers, header::HeaderName::from_static("x-strata-client")));
-            telemetry::calling(Arc::new(caller), keys::noting(next.run(req))).await
+            let caller = telemetry::Caller::of(&who.clone().unwrap_or_else(Principal::open), keys::caller().as_ref());
+            telemetry::calling(Arc::new(caller), keys::noting_change(next.run(req))).await
         }
     };
     let status = res.status().as_u16();
     // What the service noted of the request ([`keys::note`]), or its
     // handler.
     let detail = note.or_else(|| res.extensions().get::<Audited>().map(|a| a.0.clone()));
-    if need == Scope::Admin || status == 401 || status == 403 || detail.is_some() {
-        app.svc.audit.add(keys::Entry {
+    // Changes and refusals: a read answered (GET, HEAD) is not audited,
+    // unless something noted it.
+    let refusal = status == 401 || status == 403;
+    let read = (method == axum::http::Method::GET || method == axum::http::Method::HEAD) && status < 400;
+    let caller = keys::caller().unwrap_or_default();
+    if refusal || detail.is_some() || (need == Scope::Admin && !read) {
+        let kind = if refusal { keys::REFUSAL } else { change.kind.unwrap_or(keys::CHANGE) };
+        app.svc.audit_add(keys::Entry {
             ts_ms: telemetry::now_ms(),
-            who: who.as_ref().map_or("unknown".into(), |w| w.name.clone()),
+            who: who.as_ref().map_or("unknown".into(), keys::audit_name),
             key: who.as_ref().and_then(|w| w.key.clone()),
             scope: who.as_ref().map(|w| w.scope.name()),
             method: method.to_string(),
-            route,
+            route: route.clone(),
             status,
             ms: t0.elapsed().as_secs_f64() * 1e3,
             request_id: obs::current().map(|id| id.to_string()),
             detail,
+            kind: kind.into(),
+            addr: caller.addr.clone(),
+            client: caller.named(),
+            reason: caller.reason.clone(),
+            object: change.object,
+            before: change.before,
+            after: change.after,
+            actor: change.actor.unwrap_or("person").into(),
         });
+    }
+    // A client's mistake (4xx), in one line at info, ten a second at most.
+    if (400..500).contains(&status) {
+        static LIMIT: obs::RateLimit = obs::RateLimit::new(10);
+        if let (Some(e), Some(held)) = (res.extensions().get::<ClientError>(), LIMIT.admit()) {
+            let key = who.as_ref().map(keys::audit_name);
+            tracing::info!(route = %route, status, error = %e.0, key = key.as_deref().unwrap_or("unknown"), held_back = held, "client error");
+        }
     }
     res
 }
 
-/// The client's address: the first of `X-Forwarded-For` when the peer is
-/// on a private network (a proxy or load balancer in front), else the
-/// peer's.
-fn client_addr(req: &Request) -> Option<String> {
-    let peer = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip());
-    let forwarded = header_str(req.headers(), header::HeaderName::from_static("x-forwarded-for")).and_then(|f| f.split(',').next()).map(str::trim).filter(|f| f.parse::<std::net::IpAddr>().is_ok());
-    let private = |ip: &std::net::IpAddr| match ip {
-        std::net::IpAddr::V4(v) => v.is_loopback() || v.is_private() || v.is_link_local(),
-        std::net::IpAddr::V6(v) => v.is_loopback() || (v.segments()[0] & 0xfe00) == 0xfc00,
-    };
-    match (peer, forwarded) {
-        (Some(p), Some(f)) if private(&p) => Some(f.to_string()),
-        (Some(p), _) => Some(p.to_string()),
-        (None, f) => f.map(String::from),
-    }
-}
+/// Why a request failed on the client's side (4xx), for [`auth`] to log.
+#[derive(Clone)]
+struct ClientError(Arc<str>);
 
 /// What the audit log says a request did, set on its answer.
 #[derive(Clone)]
@@ -2291,6 +2406,8 @@ async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -
     let w = who(w);
     let mut j = w.json();
     j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some(), "keys": !app.svc.keys.is_empty(), "open": !app.guarded() && app.svc.keys.is_empty()});
+    j["cluster"] = app.svc.identity.json();
+    j["caller"] = json!(keys::caller());
     AxJson(j)
 }
 

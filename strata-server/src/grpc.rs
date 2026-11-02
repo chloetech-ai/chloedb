@@ -281,7 +281,9 @@ fn audit(svc: &Service, who: &Principal, method: &str, status: u16, t0: Instant,
         status,
         ms: t0.elapsed().as_secs_f64() * 1e3,
         request_id: obs::current().map(|id| id.to_string()),
+        kind: (if status == 401 || status == 403 { keys::REFUSAL } else { keys::CHANGE }).into(),
         detail,
+        ..Default::default()
     });
 }
 
@@ -305,8 +307,9 @@ impl Grpc {
         // Who the call's queries are from ([`crate::telemetry::Caller`]).
         let caller = {
             let md = |k: &str| req.metadata().get(k).and_then(|v| v.to_str().ok()).map(String::from);
-            let (app, agent, client) = (md("x-strata-app"), md("user-agent"), md("x-strata-client"));
-            crate::telemetry::Caller::of(&who, req.remote_addr().map(|a| a.ip().to_string()), app.as_deref(), agent.as_deref(), client.as_deref())
+            let app = md("x-strata-app").or_else(|| md("user-agent").as_deref().and_then(keys::product));
+            let r = keys::Caller { addr: req.remote_addr().map(|a| a.ip().to_string()), client: md("x-strata-client"), app, reason: None };
+            crate::telemetry::Caller::of(&who, Some(&r))
         };
         let call = keys::noting(crate::service::ROUTED.scope(std::cell::Cell::new(0), f(self.0.clone(), who.clone(), req.into_inner())));
         let call = crate::telemetry::calling(Arc::new(caller), call);
