@@ -2,8 +2,8 @@
 embedded here (fastembed), for when no precomputed embeddings fit: the files
 of prepare_beir.py, so every loader reads it as it reads the others.
 
-Usage: python3 scripts/prepare_beir_local.py OUT_DIR NAME [--docs N] [--model M] [--threads T]
-       (needs pyarrow, numpy, fastembed; curl on PATH)
+Usage: python3 scripts/prepare_beir_local.py OUT_DIR NAME [--docs N] [--model M] [--threads T] [--backend fastembed|st]
+       (needs pyarrow, numpy, and fastembed or sentence-transformers; curl on PATH)
 
 Downloads BeIR/<NAME> (corpus and queries, Parquet) and BeIR/<NAME>-qrels
 (test.tsv) from Hugging Face. With --docs N it keeps every document a test
@@ -13,7 +13,10 @@ measure ranking over N documents (higher than over the whole corpus, the
 same for every engine). Documents and queries are embedded with fastembed's
 M (default BAAI/bge-small-en-v1.5, 384 dimensions, unit length), queries with
 the model's query prefix; a document's text is its title and text, its
-first 1,000 characters (the model reads at most 512 tokens).
+first 1,000 characters (the model reads at most 512 tokens). `--backend st`
+embeds with sentence-transformers instead, on Apple's GPU (mps) or CUDA when
+there is one: the same model and query prefix, many times faster than ONNX on
+a laptop's CPU.
 
 OUT_DIR/<NAME>-<N/1000>k/ (OUT_DIR/<NAME>/ without --docs) gets docs.jsonl,
 doc_vecs.f32, queries.jsonl, query_vecs.f32, qrels.tsv and meta.json, with
@@ -41,6 +44,33 @@ def fetch(url, path):
         os.replace(path + ".part", path)
 
 
+# The query prefix fastembed gives the BGE English models.
+BGE_QUERY = "Represent this sentence for searching relevant passages: "
+
+
+class StModel:
+    """sentence-transformers behind fastembed's two calls."""
+
+    def __init__(self, name):
+        import torch
+        from sentence_transformers import SentenceTransformer
+
+        dev = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"   sentence-transformers on {dev}", flush=True)
+        self.m = SentenceTransformer(name, device=dev)
+        self.prefix = BGE_QUERY if "bge-" in name.lower() and "-en" in name.lower() else ""
+
+    def _each(self, texts, batch):
+        for i in range(0, len(texts), batch):
+            yield from self.m.encode(texts[i:i + batch], batch_size=256, normalize_embeddings=True, convert_to_numpy=True)
+
+    def embed(self, texts, batch_size=128):
+        yield from self._each(texts, 4096)
+
+    def query_embed(self, texts):
+        yield from self._each([self.prefix + t for t in texts], 4096)
+
+
 def embed(model, texts, query, what):
     t0 = time.perf_counter()
     rows = []
@@ -63,6 +93,7 @@ def main():
     ap.add_argument("--docs", type=int)
     ap.add_argument("--model", default="BAAI/bge-small-en-v1.5")
     ap.add_argument("--threads", type=int, default=os.cpu_count())
+    ap.add_argument("--backend", choices=["fastembed", "st"], default="fastembed")
     a = ap.parse_args()
 
     raw = os.path.join(a.out, "raw", a.name)
@@ -116,9 +147,12 @@ def main():
 
     d = os.path.join(a.out, dname)
     os.makedirs(d, exist_ok=True)
-    from fastembed import TextEmbedding
+    if a.backend == "st":
+        model = StModel(a.model)
+    else:
+        from fastembed import TextEmbedding
 
-    model = TextEmbedding(a.model, threads=a.threads)
+        model = TextEmbedding(a.model, threads=a.threads)
     vec_path = os.path.join(d, "doc_vecs.f32")
     x = embed(model, [((ti + "\n" + te) if ti else te)[:1000] for ti, te in zip(titles, texts)], False, "documents")
     x.astype("<f4").tofile(vec_path)
@@ -150,7 +184,7 @@ def main():
         for qid, did, score in qrels:
             if did in kept:
                 f.write(f"{qid}\t{did}\t{score}\n")
-    json.dump({"docs": n, "queries": len(q), "dim": dim, "model": a.model, "source": f"BeIR/{a.name}", "of": n_all},
+    json.dump({"docs": n, "queries": len(q), "dim": dim, "model": a.model, "backend": a.backend, "source": f"BeIR/{a.name}", "of": n_all},
               open(os.path.join(d, "meta.json"), "w"))
     print(f"   {len(q)} judged test queries; wrote {d}", flush=True)
 
