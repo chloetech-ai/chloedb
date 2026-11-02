@@ -479,33 +479,110 @@ fn managed(keys: &[Key]) -> bool {
 }
 
 tokio::task_local! {
-    static NOTE: std::cell::RefCell<Option<String>>;
+    static NOTE: std::cell::RefCell<(Option<String>, Change)>;
 }
 
 /// Runs `f`, a request, with room for what the audit log is to say of it
 /// ([`note`]): its output, and that note.
 pub async fn noting<F: std::future::Future>(f: F) -> (F::Output, Option<String>) {
-    NOTE.scope(std::cell::RefCell::new(None), async move {
+    let (out, note, _) = noting_change(f).await;
+    (out, note)
+}
+
+/// [`noting`], with what the request changed ([`note_change`]).
+pub async fn noting_change<F: std::future::Future>(f: F) -> (F::Output, Option<String>, Change) {
+    NOTE.scope(std::cell::RefCell::new((None, Change::default())), async move {
         let out = f.await;
-        (out, NOTE.with(|n| n.borrow_mut().take()))
+        let (note, change) = NOTE.with(|n| std::mem::take(&mut *n.borrow_mut()));
+        (out, note, change)
     })
     .await
+}
+
+/// Says what the request being served changed, for its audit entry: the
+/// object, and it before and after. Outside a request, nothing.
+pub fn note_change(c: Change) {
+    let _ = NOTE.try_with(|n| n.borrow_mut().1 = c);
 }
 
 /// Says what the audit log keeps of the request being served (a table's
 /// statement, the tables an import creates), which audits it whatever its
 /// route or method. Outside a request ([`noting`]), nothing.
 pub fn note(detail: impl Into<String>) {
-    let _ = NOTE.try_with(|n| *n.borrow_mut() = Some(detail.into()));
+    let _ = NOTE.try_with(|n| n.borrow_mut().0 = Some(detail.into()));
 }
 
+/// The client header of the command center's own requests
+/// (`x-strata-client: command-center`).
+pub const COMMAND_CENTER: &str = "command-center";
+
+/// Who is calling, as the request says: the address it came from (its
+/// peer, or the first address of `X-Forwarded-For` when the peer is a
+/// proxy the server trusts, `--trust-proxy`), the client (the command
+/// center, by its `x-strata-client` header), the app (`x-strata-app`, else
+/// the product of its `User-Agent`), and the reason given for a change
+/// (`x-strata-reason`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Caller {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl Caller {
+    /// One of the command center's own requests.
+    pub fn command_center(&self) -> bool {
+        self.client.as_deref() == Some(COMMAND_CENTER)
+    }
+
+    /// The client as the audit log names it: the command center, or the
+    /// app.
+    pub fn named(&self) -> Option<String> {
+        self.client.clone().or_else(|| self.app.clone())
+    }
+}
+
+/// The product of a `User-Agent` (`nightly-reports/2.3 (linux)` is
+/// `nightly-reports`).
+pub fn product(user_agent: &str) -> Option<String> {
+    let p = user_agent.split_whitespace().next()?.split('/').next()?.trim();
+    (!p.is_empty()).then(|| p.chars().take(64).collect())
+}
+
+tokio::task_local! {
+    static CALLER: Caller;
+}
+
+/// Runs `f`, a request, as `caller`'s ([`caller`]).
+pub async fn calling<F: std::future::Future>(caller: Caller, f: F) -> F::Output {
+    CALLER.scope(caller, f).await
+}
+
+/// Who is calling in the request being served (`None` outside one).
+pub fn caller() -> Option<Caller> {
+    CALLER.try_with(Caller::clone).ok()
+}
+
+/// What an audit entry is: a change, a refusal (401, 403), or a note.
+pub const CHANGE: &str = "change";
+pub const REFUSAL: &str = "refusal";
+pub const NOTE_KIND: &str = "note";
+
 /// What the audit log keeps of a request.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Entry {
     pub ts_ms: u64,
+    /// The key's name; "root token" for the token; "cluster" for another
+    /// server; "open" on a server without credentials.
     pub who: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    #[serde(skip_deserializing)]
     pub scope: Option<&'static str>,
     pub method: String,
     pub route: String,
@@ -515,6 +592,63 @@ pub struct Entry {
     pub request_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// [`CHANGE`], [`REFUSAL`] or [`NOTE_KIND`] (empty in entries from
+    /// before kinds: read as a change, or a refusal by its status).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// The client's address, the client, and the reason it gave
+    /// ([`Caller`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// What was changed, in words ("shard 2", "key oncall-bot", "alert
+    /// rules", "table products").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<String>,
+    /// The object before and after, for rules, settings and spec patches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Json>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Json>,
+    /// Who acted: "person" (a request), or the server's own "operator",
+    /// "autoscaler" or "upgrader".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub actor: String,
+}
+
+impl Entry {
+    /// Its kind, for entries from before kinds too.
+    pub fn kind(&self) -> &str {
+        match self.kind.as_str() {
+            "" if self.status == 401 || self.status == 403 => REFUSAL,
+            "" => CHANGE,
+            k => k,
+        }
+    }
+}
+
+/// What a handler adds to the audit entry of its request, beside its
+/// detail ([`note_change`]): its kind (a change by default), the object,
+/// it before and after, and who acted (a person by default).
+#[derive(Clone, Debug, Default)]
+pub struct Change {
+    pub kind: Option<&'static str>,
+    pub object: Option<String>,
+    pub before: Option<Json>,
+    pub after: Option<Json>,
+    pub actor: Option<&'static str>,
+}
+
+/// The name the audit log gives a credential: a key's name, "root token"
+/// for the token.
+pub fn audit_name(p: &Principal) -> String {
+    match (p.key.is_none(), p.name.as_str()) {
+        (true, "token") => "root token".into(),
+        _ => p.name.clone(),
+    }
 }
 
 /// The requests that changed something or were refused: the latest in
@@ -697,7 +831,7 @@ mod tests {
     fn the_audit_log_appends_to_its_file() {
         let dir = tempfile::tempdir().unwrap();
         let a = Audit::new(Some(dir.path().join("audit.jsonl"))).unwrap();
-        let e = |status| Entry { ts_ms: 1, who: "ops".into(), key: None, scope: Some("admin"), method: "POST".into(), route: "/v1/admin/vacuum".into(), status, ms: 1.0, request_id: None, detail: None };
+        let e = |status| Entry { ts_ms: 1, who: "ops".into(), key: None, scope: Some("admin"), method: "POST".into(), route: "/v1/admin/vacuum".into(), status, ms: 1.0, request_id: None, detail: None, ..Default::default() };
         a.add(e(200));
         a.add(e(403));
         assert_eq!(a.latest(10)[0].status, 403);
