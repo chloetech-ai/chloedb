@@ -580,7 +580,7 @@ def vis_summary(lags: list[float | None]) -> dict:
     return {"checked": len(lags), "at_once": sum(1 for x in lags if x == 0.0), "later": sum(1 for x in lags if x), "never_within_5s": sum(1 for x in lags if x is None), "max_s": max(seen) if seen else None}
 
 
-def run(name: str, shop: Path, work: Path, seconds: float, limit: int | None, rates: list[int], stream_seconds: float) -> dict:
+def run(name: str, shop: Path, work: Path, seconds: float, limit: int | None, rates: list[int], stream_seconds: float, stream: bool = True) -> dict:
     s = make(name, work)
     rows, vecs = load_products(shop, limit)
     rng = random.Random(3)
@@ -675,6 +675,10 @@ def run(name: str, shop: Path, work: Path, seconds: float, limit: int | None, ra
     )
 
     # stream
+    if not stream:
+        rep["bytes_end"] = files_bytes(s.files())
+        s.close()
+        return rep
     events = load_events(shop, 600_000)
     words = [w for w in "great love broken fun graphics controller battery story refund gift".split()]
     seq = iter(range(10**12))
@@ -758,6 +762,7 @@ def main() -> None:
     ap.add_argument("--stream-seconds", type=float, default=15.0)
     ap.add_argument("--rates", default="1000,10000,50000")
     ap.add_argument("--limit-products", type=int, default=None)
+    ap.add_argument("--no-stream", action="store_true", help="inserts and updates only")
     ap.add_argument("--one", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
     systems = a.systems.split(",")
@@ -766,14 +771,16 @@ def main() -> None:
             args = [sys.executable, __file__, "--shop", a.shop, "--systems", name, "--work", a.work, "--out", a.out, "--seconds", str(a.seconds), "--stream-seconds", str(a.stream_seconds), "--rates", a.rates, "--one"]
             if a.limit_products:
                 args += ["--limit-products", str(a.limit_products)]
+            if a.no_stream:
+                args += ["--no-stream"]
             subprocess.run(args, check=False)
         return
     name = systems[0]
     work = Path(a.work) / name
     if work.exists():
         shutil.rmtree(work)
-    rep = run(name, Path(a.shop), work, a.seconds, a.limit_products, [int(x) for x in a.rates.split(",") if x], a.stream_seconds)
-    rep["params"] = {"seconds": a.seconds, "stream_seconds": a.stream_seconds}
+    rep = run(name, Path(a.shop), work, a.seconds, a.limit_products, [int(x) for x in a.rates.split(",") if x], a.stream_seconds, not a.no_stream)
+    rep["params"] = {"seconds": a.seconds, "stream_seconds": a.stream_seconds, "stream": not a.no_stream}
     write_report(Path(a.out) / f"writes_{name}.json", rep)
     shutil.rmtree(work, ignore_errors=True)
 

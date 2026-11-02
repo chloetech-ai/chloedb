@@ -144,6 +144,7 @@ impl Tail {
         if let Some(s) = lock(&self.cache).as_ref().filter(|s| (s.gen, s.chunk, s.len) == (p.gen, p.chunk, p.len)) {
             return s.clone();
         }
+        TAIL_BUILDS.with(|n| n.set(n.get() + 1));
         let seg = build_memseg(schema, &self.opts, p, next_mem_id());
         *lock(&self.cache) = Some(seg.clone());
         seg
@@ -153,6 +154,19 @@ impl Tail {
     fn live(&self, j: usize) -> bool {
         self.part.live.as_ref().is_none_or(|l| l.contains(j as DocId))
     }
+}
+
+thread_local! {
+    static TAIL_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread has built a memtable's last chunk as a
+/// segment ([`Snapshot::segments`] and what reads through it, once per
+/// chunk as it stands): what tests count to check that writes and reads
+/// by key build none.
+#[doc(hidden)]
+pub fn tail_builds() -> u64 {
+    TAIL_BUILDS.with(|n| n.get())
 }
 
 /// Ids of in-memory segments have this bit set.
