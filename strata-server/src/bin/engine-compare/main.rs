@@ -1880,15 +1880,7 @@ async fn writes(collection: &str, engine: Engine, urls: &[String], concurrency: 
         "visible_p90_ms": percentile(&seen_ms, 90.0), "visible_max_ms": seen_ms.iter().cloned().fold(0.0, f64::max), "visible_ms": seen_ms,
     });
 
-    // Put the index back: delete what was written, give the updated documents their ratings again.
-    let t_clean = Instant::now();
-    let new_keys: Vec<String> = (0..next_new).map(|n| format!("w{n}")).chain((0..samples).map(|i| format!("v{i}"))).collect();
-    let mut touched: Vec<usize> = (0..next_upd).map(|n| (n * 7919) % docs.len()).collect();
-    touched.sort_unstable();
-    touched.dedup();
-    restore(engine, &client, u0, &new_keys, &touched.iter().map(|&i| &docs[i]).collect::<Vec<_>>()).await?;
-    eprintln!("{label:<8} deleted {} written documents and put back {} ratings in {:.1} s", new_keys.len(), touched.len(), t_clean.elapsed().as_secs_f64());
-
+    // The report first: a clean-up that fails loses no measurement.
     let report = json!({
         "engine": engine.name(), "label": label, "collection": collection, "urls": urls.as_slice(),
         "params": {"seconds": seconds, "concurrency": concurrency, "batch": batch, "samples": samples, "searchable": nrt},
@@ -1898,6 +1890,15 @@ async fn writes(collection: &str, engine: Engine, urls: &[String], concurrency: 
     let path = out.join(format!("writes-{}.json", label.replace(' ', "-")));
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).map_err(s)?;
     eprintln!("wrote {}", path.display());
+
+    // Put the index back: delete what was written, give the updated documents their ratings again.
+    let t_clean = Instant::now();
+    let new_keys: Vec<String> = (0..next_new).map(|n| format!("w{n}")).chain((0..samples).map(|i| format!("v{i}"))).collect();
+    let mut touched: Vec<usize> = (0..next_upd).map(|n| (n * 7919) % docs.len()).collect();
+    touched.sort_unstable();
+    touched.dedup();
+    restore(engine, &client, u0, &new_keys, &touched.iter().map(|&i| &docs[i]).collect::<Vec<_>>()).await?;
+    eprintln!("{label:<8} deleted {} written documents and put back {} ratings in {:.1} s", new_keys.len(), touched.len(), t_clean.elapsed().as_secs_f64());
     Ok(())
 }
 
@@ -1917,6 +1918,22 @@ async fn vespa_retry(rb: impl Fn() -> reqwest::RequestBuilder) -> Option<String>
     Some(format!("still failing after 30 tries: {}", last.unwrap_or_default()))
 }
 
+/// A clean-up write again, a second later, while the engine pushes back
+/// (429 or 503, or a bulk item refused with 429), for up to two minutes: a
+/// clean-up comes right after the heaviest writes (Strata answers 429 while
+/// it is behind on flushing them), and its deletes and puts are idempotent.
+async fn write_retry(client: &reqwest::Client, w: &WriteReq) -> Option<String> {
+    let mut err = None;
+    for _ in 0..120 {
+        err = send_write(client, w).await;
+        match &err {
+            Some(e) if e.starts_with("429") || e.starts_with("503") || e.contains("\"status\":429") => tokio::time::sleep(Duration::from_secs(1)).await,
+            _ => return err,
+        }
+    }
+    err.map(|e| format!("still refused after 120 tries: {e}"))
+}
+
 /// Deletes `keys` and writes `docs` again as they were (their ratings).
 async fn restore(engine: Engine, client: &reqwest::Client, url: &str, keys: &[String], docs: &[&(RawDoc, Vec<f32>)]) -> Result<(), String> {
     // Vespa queues 256 requests at most.
@@ -1925,13 +1942,13 @@ async fn restore(engine: Engine, client: &reqwest::Client, url: &str, keys: &[St
         let err = match engine {
             Engine::Strata => {
                 let ops: Vec<Json> = chunk.iter().map(|k| json!({"op": "delete", "key": k})).collect();
-                send_write(client, &WriteReq::One { url: format!("{url}/v1/write"), put: false, body: serde_json::to_vec(&json!({"ops": ops})).unwrap() }).await
+                write_retry(client, &WriteReq::One { url: format!("{url}/v1/write"), put: false, body: serde_json::to_vec(&json!({"ops": ops})).unwrap() }).await
             }
             Engine::Es | Engine::Os => {
                 let body: String = chunk.iter().map(|k| format!("{}\n", json!({"delete": {"_id": k}}))).collect();
-                send_write(client, &WriteReq::One { url: format!("{url}/quora/_bulk"), put: false, body: body.into_bytes() }).await
+                write_retry(client, &WriteReq::One { url: format!("{url}/quora/_bulk"), put: false, body: body.into_bytes() }).await
             }
-            Engine::Solr => send_write(client, &WriteReq::One { url: format!("{url}/solr/quora/update"), put: false, body: json!({"delete": chunk}).to_string().into_bytes() }).await,
+            Engine::Solr => write_retry(client, &WriteReq::One { url: format!("{url}/solr/quora/update"), put: false, body: json!({"delete": chunk}).to_string().into_bytes() }).await,
             Engine::Vespa => {
                 let dels = chunk.iter().map(|k| async move { vespa_retry(|| client.delete(format!("{url}/document/v1/doc/doc/docid/{}", id_path(k)))).await });
                 futures::future::join_all(dels).await.into_iter().flatten().next()
@@ -1945,7 +1962,7 @@ async fn restore(engine: Engine, client: &reqwest::Client, url: &str, keys: &[St
         let err = match engine {
             Engine::Strata => {
                 let ops: Vec<Json> = chunk.iter().map(|(r, _)| json!({"op": "set", "key": r.id, "field": "rating", "value": r.rating})).collect();
-                send_write(client, &WriteReq::One { url: format!("{url}/v1/write"), put: false, body: serde_json::to_vec(&json!({"ops": ops})).unwrap() }).await
+                write_retry(client, &WriteReq::One { url: format!("{url}/v1/write"), put: false, body: serde_json::to_vec(&json!({"ops": ops})).unwrap() }).await
             }
             Engine::Vespa => {
                 let puts = chunk.iter().map(|(r, _)| async move {
@@ -1962,11 +1979,11 @@ async fn restore(engine: Engine, client: &reqwest::Client, url: &str, keys: &[St
                     body.extend_from_slice(doc_json(r, v).as_bytes());
                     body.push(b'\n');
                 }
-                send_write(client, &WriteReq::One { url: format!("{url}/quora/_bulk"), put: false, body }).await
+                write_retry(client, &WriteReq::One { url: format!("{url}/quora/_bulk"), put: false, body }).await
             }
             Engine::Solr => {
                 let docs: Vec<String> = chunk.iter().map(|(r, v)| doc_json(r, v)).collect();
-                send_write(client, &WriteReq::One { url: format!("{url}/solr/quora/update"), put: false, body: format!("[{}]", docs.join(",")).into_bytes() }).await
+                write_retry(client, &WriteReq::One { url: format!("{url}/solr/quora/update"), put: false, body: format!("[{}]", docs.join(",")).into_bytes() }).await
             }
         };
         if let Some(e) = err {
@@ -2434,13 +2451,7 @@ async fn stream(
         },
     });
 
-    // Delete what was streamed.
-    let t_clean = Instant::now();
-    let keys: Vec<String> = (0..produced).map(|n| format!("s{n}")).collect();
-    restore(engine, &client, &u0, &keys, &[]).await?;
-    eprintln!("{label:<8} deleted {} streamed documents in {:.1} s", keys.len(), t_clean.elapsed().as_secs_f64());
-    let _ = kafka.controller_client().map_err(|e| e.to_string())?.delete_topic(&topic, 30_000).await;
-
+    // The report first: a clean-up that fails loses no measurement.
     let report = json!({
         "engine": engine.name(), "label": label, "collection": collection, "urls": urls, "topic": topic, "partitions": partitions,
         "params": {"rates": rates, "seconds": seconds, "flat": flat, "restart": restart, "batch": batch, "written_means": searchable},
@@ -2450,6 +2461,13 @@ async fn stream(
     let path = out.join(format!("stream-{}.json", label.replace(' ', "-")));
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).map_err(s)?;
     eprintln!("wrote {}", path.display());
+
+    // Delete what was streamed.
+    let t_clean = Instant::now();
+    let keys: Vec<String> = (0..produced).map(|n| format!("s{n}")).collect();
+    restore(engine, &client, &u0, &keys, &[]).await?;
+    eprintln!("{label:<8} deleted {} streamed documents in {:.1} s", keys.len(), t_clean.elapsed().as_secs_f64());
+    let _ = kafka.controller_client().map_err(|e| e.to_string())?.delete_topic(&topic, 30_000).await;
     Ok(())
 }
 
