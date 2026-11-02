@@ -71,17 +71,17 @@ SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 # without comments and blank lines (ci_job_hashes).
 CI_JOBS="
 changes 0543cb44ccca
-test 965ee0a1fac1
-kernels f1d8e09a9818
-vision a264ac583f17
-audio 8159b08f3f6d
-datafusion 9014670457da
-faults 0b4761a7c6c6
-relevance-gate 6b458f48b0c7
-relevance-gate-cross-encoder ba45bc8b551d
-miri 06b2cadaf8b8
-server-smoke f7485bb56886
-python 3c9b1eb6bbb6
+test a90488564980
+kernels bbdbd5cc6f67
+vision f285537564ca
+audio 32586eda6771
+datafusion 1db129cd23d9
+faults 1ab1d52fa757
+relevance-gate c4733098fbd0
+relevance-gate-cross-encoder 578f9a601bd6
+miri fdeae055c68e
+server-smoke 2cc29955c528
+python e700805469a1
 ci-result d810e556389e
 "
 
@@ -434,8 +434,20 @@ crate_tests() {
     fi
 }
 
+# Builds in strata/ on x86-64 Linux name x86-64-v3, as CI's do (so that one
+# cache serves every runner there); on other machines the variable does
+# nothing. Builds in strata-server/ leave it unset, as CI does.
+in_strata() {
+    cd "$CI_LOCAL_TREE/strata"
+    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-cpu=x86-64-v3"
+}
+in_server() {
+    cd "$CI_LOCAL_TREE/strata-server"
+    unset CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS
+}
+
 job_test_strata() {
-    cd strata
+    in_strata
     crate_tests --features sqlite
     cargo clippy --release --all-targets --features sqlite -- $CLIPPY_LINTS
 }
@@ -483,12 +495,12 @@ job_kernels() {
 }
 
 job_faults() {
-    cd strata
+    in_strata
     cargo test --profile ci --features fault-injection --test storage_faults
 }
 
 job_datafusion() {
-    cd strata
+    in_strata
     cargo test --profile ci --features datafusion --test datafusion_engine
     cargo test --profile ci --features datafusion,sqlite --test window_functions --test set_operations
     STRATA_ENGINE=datafusion cargo test --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
@@ -496,32 +508,32 @@ job_datafusion() {
 }
 
 job_audio() {
-    cd strata
+    in_strata
     cargo test --profile ci --features audio --test derived_audio --test audio_vectors
     cargo test --profile ci --features audio --lib -- audio:: clap::
     cargo clippy --profile ci --features audio --all-targets -- $CLIPPY_LINTS
-    cd ../strata-server
+    in_server
     cargo clippy --profile ci --features audio -- $CLIPPY_LINTS
 }
 
 job_vision() {
-    cd strata
+    in_strata
     cargo test --profile ci --features vision --test media_vectors --test media_fields --test derived_text --test rank_cross
     cargo clippy --profile ci --features vision --all-targets -- $CLIPPY_LINTS
-    cd ../strata-server
+    in_server
     cargo test --profile ci --features vision --test media_vectors --test media
 }
 
 job_relevance_gate() {
     strata/tests/fixtures/beir/fetch.sh "$CI_HOME/beir"
-    cd strata
+    in_strata
     STRATA_BEIR_DIR="$CI_HOME/beir" STRATA_RELEVANCE_GATE=required cargo test --profile ci --test relevance_gate -- --nocapture
 }
 
 job_relevance_gate_cross_encoder() {
     strata/tests/fixtures/beir/fetch.sh "$CI_HOME/beir"
     strata/tests/models/fetch_cross_encoder.sh "$CI_HOME/models"
-    cd strata
+    in_strata
     STRATA_BEIR_DIR="$CI_HOME/beir" STRATA_MODELS="$CI_HOME/models" STRATA_RELEVANCE_GATE=required cargo test --profile ci --features bert --test relevance_gate cross_encoder -- --nocapture
 }
 
@@ -602,7 +614,7 @@ job_python() {
     (cd strata-server && cargo build --release)
     if [ "$KAFKA" = 1 ]; then start_redpanda; fi
     cd strata-py
-    maturin develop --release
+    maturin develop --profile ci
     pytest tests -v
     # The recommender gate (Linux only on GitHub), on the same pinned ratings.
     if [ ! -f "$ratings" ] || [ "$(sha256 "$ratings")" != "$ML1M_SHA" ]; then
