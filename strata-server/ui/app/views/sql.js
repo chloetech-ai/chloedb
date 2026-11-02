@@ -550,6 +550,22 @@ function render(page, r) {
       } }, writes ? icon("edit") : icon("wrench"), writes ? `Write ${n} in its place` : `Use ${n}`));
     }
     const fixNote = h("div", { class: "small muted row nw", style: { gap: "6px" } }, writes && fix.childElementCount ? [icon("shield"), ` This statement writes (${where.p.kind}${where.p.table ? " on " + where.p.table : ""}): the fix goes into the editor and is not run.`] : null);
+    // A write that failed on the server's side (a shard did not answer, a
+    // timeout) may have been done by the shards that did answer: a
+    // coordinator does not undo them. Say so, and offer the SELECT that
+    // shows the rows as they are now.
+    const p = where?.p;
+    const partial = writes && p.kind !== "CREATE" && (code === 0 || code >= 500 || /\bshard\b.*\b(connect|timed? ?out|unavailable|no primary|takes no writes)\b/i.test(msg));
+    const checkSql = partial && p.table ? `SELECT * FROM ${quoteName(p.table)}${p.where ? ` WHERE ${p.where}` : ""} LIMIT 200` : null;
+    const partialNote = partial ? h("div", { class: "card dt-partial", role: "note" },
+      h("div", { class: "row", style: { gap: "8px" } }, icon("warn"), h("b", {}, "Part of it may have been written")),
+      h("div", { class: "small" }, code === 0
+        ? "The answer did not arrive: the server may have run the statement. "
+        : `${/\bshard\b/i.test(msg) ? "One shard failed. " : ""}On a cluster each shard's primary writes its own rows, and the shards that answered are not undone when another fails. `,
+        "Look at the rows before you run it again", p.kind === "INSERT" ? ": a second INSERT of the same keys is refused or doubles them." : "."),
+      checkSql ? h("div", { class: "row", style: { gap: "8px", marginTop: "8px" } },
+        h("button", { class: "btn sm", title: checkSql, onclick: () => { add(checkSql, "Check " + p.table); run(); } }, icon("search"), "Look at the rows now"),
+        h("span", { class: "small muted" }, "opens a SELECT in a new tab and runs it")) : null) : null;
 
     clear(outBody, h("div", { class: "stack wb-error", style: { padding: "14px", gap: "10px" } },
       h("div", { class: "row", style: { gap: "8px" } }, icon("bad"), h("b", {}, errorTitle(msg, code)),
@@ -557,6 +573,7 @@ function render(page, r) {
         h("span", { class: "sep" }),
         h("button", { class: "btn ghost sm", title: "Copy the message", onclick: () => copy(msg, "Error copied") }, icon("copy"), "Copy")),
       h("div", { class: "error" }, msg),
+      partialNote,
       excerpt,
       excerpt ? h("div", { class: "small muted" }, "The editor marks the same place.") : null,
       fix.childElementCount ? h("div", {}, h("div", { class: "small muted", style: { marginBottom: "6px" } }, "Did you mean"), fix) : null,
@@ -611,9 +628,9 @@ function render(page, r) {
       try {
         const a = await api("/v1/admin/audit?" + new URLSearchParams({ kind: "change", limit: "30" }));
         const head = run.sql.slice(0, 60);
-        const e = (a.entries || []).find((x) => x.ts_ms >= run.sent - 5000 && String(x.statement || x.detail || x.sql || "").includes(head));
+        const e = (a.entries || []).find((x) => x.ts_ms >= run.sent - 5000 && String(x.after?.statement || x.statement || x.detail || x.sql || "").includes(head));
         if (!e) clear(audit, icon("info"), " This server did not record the write in its audit log: an older version keeps only table changes there.");
-        else clear(audit, icon("okc"), ` Kept in the audit log as a change by ${e.who}${e.reason ? ", with the reason" : ""}`, e.reason ? "" : " (this server keeps no reason)", ". ", h("a", { href: "#/access" }, "Access and audit"));
+        else clear(audit, icon("okc"), ` Kept in the audit log as a change by ${e.who}${e.reason ? ", with the reason" : ""}`, e.reason ? "" : run.reason ? " (this server keeps no reason)" : ", with no reason given", ". ", h("a", { href: "#/access" }, "Access and audit"));
       } catch { /* a key that cannot read the audit log */ }
     })();
     return box;

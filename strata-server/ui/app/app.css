@@ -2354,6 +2354,12 @@ button.ac-chip:hover { border-color: var(--text-2); }
 }
 /* ===== end rollouts ===== */
 /* ===== data ===== */
+/* The answer's tabs keep their width; its numbers stay on one line and are cut first. */
+.wb-outhd > .tabs { flex: none; }
+.wb-outhd > .wb-status { min-width: 0; }
+.wb-status .row { flex-wrap: nowrap; }
+.wb-status > .row:first-child { min-width: 0; overflow: hidden; }
+.wb-status > .row.nw { flex: none; }
 /* SQL workbench: the mode bar, the statement that runs, the check of a write. */
 .dt-mode { display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 6px 8px 6px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); font-size: 12.5px; flex: none; min-width: 0; }
 .dt-mode.ro { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface)); }
@@ -2373,6 +2379,7 @@ button.ac-chip:hover { border-color: var(--text-2); }
 .dt-tile { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 9px 11px; background: var(--surface-2); min-width: 0; }
 .dt-tv { font-size: 19px; font-weight: 650; margin: 2px 0; overflow-wrap: anywhere; }
 .dt-tv.bad { color: var(--crit-ink); }
+.dt-tv.warn { color: var(--serious); }
 .dt-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
 .banner.dt-banner { margin: 0; align-items: flex-start; }
 .banner.dt-banner > svg { margin-top: 2px; flex: none; }
@@ -2435,6 +2442,10 @@ button.ac-chip:hover { border-color: var(--text-2); }
 .dt-needs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .dt-need { display: grid; grid-template-columns: 72px 1fr; gap: 10px; align-items: start; }
 .dt-need .pill { justify-self: start; }
+.dt-partial { padding: 10px 12px; border-color: var(--warn); background: var(--warn-soft); }
+.dt-partial .i { color: var(--warn); }
+.sch-diagram .legend-box { pointer-events: none; }
+.dt-list .banner.dt-downall { margin: 10px 14px 4px; }
 .card > .dt-empty { border: 0; box-shadow: none; margin: 0; max-width: none; }
 /* Phones (below 560 px): Tables and storage */
 .dt-sortsel { display: none; }
@@ -2477,6 +2488,8 @@ button.ac-chip:hover { border-color: var(--text-2); }
   .wb-ed { max-height: 26vh; }
   .wb-outhd { flex-wrap: wrap; padding: 0 10px; }
   .wb-outhd .wb-status { flex-basis: 100%; order: 2; white-space: normal; flex-wrap: wrap; padding: 4px 0 8px; gap: 6px; }
+  .wb-outhd .wb-status .row { flex-wrap: wrap; }
+  .wb-outhd > .tabs { flex: 1 1 100%; min-width: 0; overflow-x: auto; }
   .dt-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .dt-tile { padding: 8px 10px; }
   .dt-fields { grid-template-columns: minmax(0, 1fr); }
