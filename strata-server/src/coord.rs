@@ -255,6 +255,17 @@ fn not_applied_yet(s: &tonic::Status) -> bool {
     s.code() == Code::Unavailable && (s.message().contains("the write was not applied") || s.message().contains("it takes writes after that"))
 }
 
+/// Whether a primary's answer says it applied the write but another
+/// primary replaced it before the copies acknowledged it
+/// (`cores::shard::Primary::acked`): the new primary may hold it or not,
+/// so it is not sent again, which could apply it twice.
+fn in_doubt(s: &tonic::Status) -> bool {
+    s.code() == Code::FailedPrecondition && s.message().contains("before it was acknowledged")
+}
+
+/// What a client is told of a write [`in_doubt`].
+pub const IN_DOUBT: &str = "the write may or may not be kept: a new primary took the shard's writes while it was being acknowledged; read it back, or send it again if applying it twice does no harm";
+
 /// How many times a request goes to the shards while the cluster map
 /// changes under it ([`Coordinator::route_again`]).
 pub(crate) const ROUTE_TRIES: u32 = 8;
@@ -1862,7 +1873,9 @@ impl Coordinator {
     /// A primary that refuses the write as a replaced one does, or does not
     /// answer, is passed over for the copy that took its place, if any
     /// (once), and one that refuses it unapplied for a moment is asked again
-    /// ([`PRIMARY_WAIT`]).
+    /// ([`PRIMARY_WAIT`]). One that applied it and was replaced before its
+    /// copies acknowledged it is answered as such ([`in_doubt`]), not sent
+    /// again: a write applied twice is worse than one refused.
     async fn write(&self, t: &Topology, i: usize, r: pb::WriteRequest, need: u32) -> Result<Wrote, ApiError> {
         let to: Vec<usize> = match self.primary(t, i).await? {
             Some(k) => vec![k],
@@ -1881,6 +1894,12 @@ impl Coordinator {
                         if let Some(m) = self.primary(t, i).await? {
                             k = m;
                         }
+                    }
+                    // Applied, and maybe lost: the client decides.
+                    Err((_, s)) if in_doubt(&s) => {
+                        // The next write goes to the new primary.
+                        self.ask_all(t, i).await;
+                        return Err(ApiError { status: 409, message: format!("shard {}: {}; {IN_DOUBT}", t.replicas[i][k].url, s.message()) });
                     }
                     Err((_, s)) if matches!(s.code(), Code::FailedPrecondition | Code::Unavailable) && !passed_over => match self.moved(t, i, k, s.code()).await {
                         Some(m) => (k, passed_over) = (m, true),

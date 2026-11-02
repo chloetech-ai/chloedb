@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as Json};
 use strata_server::operator::{back_to, noted, patched, reconcile, rollback_target, versions, Admin, Check, Gates, OnFailure, Outcome, Phase, Platform, Rolled, Rollout, RolloutSpec, Set, Spec, Trouble};
+use strata_server::coord::IN_DOUBT;
 
 const ROWS: usize = 300;
 
@@ -945,6 +946,24 @@ struct Seen {
     slowest_ms: f64,
     /// The last value each key was written, as acknowledged.
     written: BTreeMap<String, i64>,
+    /// Writes answered in doubt: applied by a primary that another
+    /// replaced before its copies acknowledged them (409), which the
+    /// coordinator does not send again. Each key's values written so since
+    /// its last acknowledged one.
+    in_doubt: Vec<String>,
+    doubted: BTreeMap<String, Vec<i64>>,
+    /// Increments of [`COUNTER`] acknowledged, and in doubt: a write
+    /// applied twice (or an acknowledged one lost) shows in its value.
+    added: i64,
+    added_in_doubt: i64,
+}
+
+/// The key the load adds 1 to again and again (`sold = sold + 1`), a
+/// write that is wrong when applied twice.
+const COUNTER: &str = "p0000299";
+
+async fn counter(run: &Run) -> i64 {
+    run.sql(&format!("SELECT sold FROM products WHERE id = '{COUNTER}'")).await["rows"][0][0].as_i64().unwrap()
 }
 
 /// Clients sending queries and writes all along, as an application would.
@@ -959,6 +978,7 @@ impl Load {
         let stop = Arc::new(AtomicBool::new(false));
         let seen = Arc::new(Mutex::new(Seen::default()));
         let url = format!("http://127.0.0.1:{port}/v1/sql");
+        let url3 = url.clone();
         let mut tasks = Vec::new();
         let ask = |http: reqwest::Client, url: String, sql: String| async move {
             let t0 = Instant::now();
@@ -1010,7 +1030,34 @@ impl Load {
                     s.slowest_ms = s.slowest_ms.max(ms);
                     match r {
                         Ok(_) => {
+                            s.doubted.remove(&key);
                             s.written.insert(key, 500_000 + i);
+                        }
+                        Err(e) if e.contains(IN_DOUBT) => {
+                            s.doubted.entry(key).or_default().push(500_000 + i);
+                            s.in_doubt.push(format!("{sql}: {e}"));
+                        }
+                        Err(e) => s.failed.push(format!("{sql}: {e}")),
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }));
+        let (stop3, seen3) = (stop.clone(), seen.clone());
+        tasks.push(tokio::spawn(async move {
+            let http = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().unwrap();
+            while !stop3.load(Ordering::Relaxed) {
+                let sql = format!("UPDATE products SET sold = sold + 1 WHERE id = '{COUNTER}'");
+                let (r, ms) = ask(http.clone(), url3.clone(), sql.clone()).await;
+                {
+                    let mut s = seen3.lock().unwrap();
+                    s.writes += 1;
+                    s.slowest_ms = s.slowest_ms.max(ms);
+                    match r {
+                        Ok(_) => s.added += 1,
+                        Err(e) if e.contains(IN_DOUBT) => {
+                            s.added_in_doubt += 1;
+                            s.in_doubt.push(format!("{sql}: {e}"));
                         }
                         Err(e) => s.failed.push(format!("{sql}: {e}")),
                     }
@@ -1052,6 +1099,7 @@ async fn a_new_version_rolls_out_under_load_and_a_bad_one_rolls_back() {
     let mut run = Run::new(procs, admin, spec);
     run.settle("made").await;
     assert_eq!(run.shape().await.0, vec![3, 3]);
+    let counted = counter(&run).await;
     let load = Load::start(port, 4);
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -1090,11 +1138,24 @@ async fn a_new_version_rolls_out_under_load_and_a_bad_one_rolls_back() {
 
     let seen = load.end().await;
     assert!(seen.failed.is_empty(), "{} of {} reads and {} writes failed:\n{}", seen.failed.len(), seen.reads, seen.writes, seen.failed.join("\n"));
+    // A write in flight as its shard's primary changes may be answered in
+    // doubt; a handful at most.
+    assert!(seen.in_doubt.len() <= 6, "{} writes in doubt:\n{}", seen.in_doubt.len(), seen.in_doubt.join("\n"));
     assert!(seen.reads > 500 && seen.writes > 100, "{seen:?}");
-    // Every write acknowledged is there.
+    // Every write acknowledged is there, once (or overwritten by one in
+    // doubt that was kept).
     for (key, v) in &seen.written {
         let j = run.sql(&format!("SELECT sold FROM products WHERE id = '{key}'")).await;
-        assert_eq!(j["rows"][0][0], json!(v), "{key}");
+        let now = j["rows"][0][0].as_i64().unwrap();
+        assert!(now == *v || seen.doubted.get(key).is_some_and(|d| d.contains(&now)), "{key}: {now}, acknowledged {v}, in doubt {:?}", seen.doubted.get(key));
     }
-    println!("{} reads and {} writes through three versions, none failed; the slowest took {:.0} ms", seen.reads, seen.writes, seen.slowest_ms);
+    let n = counter(&run).await - counted;
+    assert!((seen.added..=seen.added + seen.added_in_doubt).contains(&n), "{COUNTER} went up {n}: {} increments acknowledged, {} in doubt", seen.added, seen.added_in_doubt);
+    println!(
+        "{} reads and {} writes through three versions, none failed, {} answered in doubt; the slowest took {:.0} ms",
+        seen.reads,
+        seen.writes,
+        seen.in_doubt.len(),
+        seen.slowest_ms
+    );
 }
