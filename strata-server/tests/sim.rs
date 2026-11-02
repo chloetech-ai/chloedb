@@ -53,13 +53,20 @@ fn a_seed_replays_exactly() {
 /// The first seed below `within` that breaks a promise with `bug` put
 /// back, looking a hundred seeds at a time.
 fn finds(bug: Bug, within: u64) -> Option<sim::Report> {
-    let config = |s| Config { bugs: vec![bug], ..Config::of(s) };
+    finds_with(bug, within, Config::of)
+}
+
+/// [`finds`], with each seed's configuration from `of`.
+fn finds_with(bug: Bug, within: u64, of: impl Fn(u64) -> Config + Sync) -> Option<sim::Report> {
+    let config = |s| Config { bugs: vec![bug], ..of(s) };
     (0..within).step_by(100).find_map(|a| sim::run_seeds(a..(a + 100).min(within), &config, jobs()).into_iter().next())
 }
 
 // A promotion by hand that takes writes inside the replaced primary's
-// lease (`Bug::TakesWritesInALease`) broke a read in one seed of 20,000:
-// the unit tests of `cores::shard` check its fix.
+// lease (`Bug::TakesWritesInALease`) broke a read in one seed of 20,000,
+// and in one of 5,000 at `--promote-ppm 100000` with pauses and slow links
+// in every seed: too few for a test here, the unit tests of `cores::shard`
+// check its fix.
 
 #[test]
 fn a_stalled_election_is_found_again() {
@@ -71,4 +78,22 @@ fn a_stalled_election_is_found_again() {
 fn a_replica_refusing_an_older_term_is_found_again() {
     let r = finds(Bug::RefusesOlderTerms, 3000).expect("a seed whose replicas never catch up");
     assert!(r.violations.iter().any(|v| v.contains("did not settle")), "{:?}", r.violations);
+}
+
+/// Calls dropped 15% of the time (`--drop-ppm 150000`), where a first
+/// primary may stop before any replica heard from it.
+fn lossy(s: u64) -> Config {
+    Config { drop_ppm: 150_000, ..Config::of(s) }
+}
+
+#[test]
+fn a_first_primary_lost_before_its_first_call_is_found_again() {
+    let r = finds_with(Bug::WaitsForAFirstCall, 1000, lossy).expect("a seed whose first copies never elect a primary");
+    assert!(r.violations.iter().any(|v| v.contains("0 primaries serve")), "{:?}", r.violations);
+}
+
+#[test]
+fn a_shard_whose_calls_are_lost_elects_a_primary() {
+    let failed = sim::run_seeds(0..400, &lossy, jobs());
+    assert!(failed.is_empty(), "{} of 400 seeds at --drop-ppm 150000 broke a promise:{}", failed.len(), explain(&failed));
 }

@@ -24,9 +24,9 @@ use std::rc::Rc;
 use crate::error::{Error, Result};
 use crate::query::agg::{self, Acc, Part};
 use crate::query::compound::MAX_ROWS;
-use crate::query::exec::{ExecOptions, ExecStats, ResultSet};
+use crate::query::exec::{ExecOptions, ExecStats, Leaf, ResultSet};
 use crate::query::ir::eval::{self, Ref};
-use crate::query::ir::{Agg, CmpOp, Expr, Graph, GraphKind, JoinKey, JoinKind, KeyValue, Node, Plan, SortKey};
+use crate::query::ir::{Agg, CmpOp, Expr, Graph, GraphKind, JoinKey, JoinKind, KeyValue, Node, Plan, SetOp, SortKey};
 use crate::query::logical::Direction;
 use crate::query::memory::Charge;
 use crate::query::steps::{self, Clock, Step};
@@ -36,6 +36,67 @@ use crate::value::Value;
 
 /// Runs one leaf of a plan.
 pub type Runner<'r> = dyn FnMut(&Plan) -> Result<ResultSet> + 'r;
+
+/// Runs a leaf plan for [`run_on_engine`]: its rows, as Arrow columns
+/// ([`Leaf`]) when there are more than the number it is given, which is
+/// `usize::MAX` for the operators.
+pub type LeafRunner<'r> = dyn FnMut(&Plan, usize) -> Result<Leaf> + 'r;
+
+/// Runs `plan` (one that reads, [`Node::uses_operators`]) on the engine
+/// `opts.engine` chooses ([`crate::query::exec::Engine`]): DataFusion
+/// above its leaves where it lowers the plan (feature `datafusion`), and
+/// otherwise the operators ([`run_in`]), which take the leaves DataFusion
+/// already ran rather than run them again; the plan's first line then
+/// says why DataFusion did not answer. A database runs its compound
+/// queries here over its own tables, and a coordinator over its shards'
+/// answers to each leaf.
+pub fn run_on_engine(plan: &Plan, catalog: &[&Schema], runner: &mut LeafRunner, opts: &ExecOptions) -> Result<ResultSet> {
+    #[allow(unused_mut)]
+    let mut fallback: Option<String> = None;
+    #[cfg(feature = "datafusion")]
+    let mut ran = crate::query::df::Ran::default();
+    #[cfg(feature = "datafusion")]
+    // A leaf with subqueries has no operators for DataFusion to run.
+    if opts.engine != crate::query::exec::Engine::Operators && !plan.root.is_leaf() {
+        use crate::query::df::Outcome;
+        match crate::query::df::run_in(plan, catalog, runner, opts)? {
+            Outcome::Done(rs) => return Ok(rs),
+            Outcome::Fallback(why, _) if opts.engine == crate::query::exec::Engine::DataFusionOnly => return Err(err(format!("not run on DataFusion: {why}"))),
+            Outcome::Fallback(why, r) => {
+                fallback = Some(why);
+                ran = r;
+            }
+            Outcome::Small(r) => ran = r,
+        }
+    }
+    // The leaves DataFusion ran are not run again, and the profile keeps
+    // their steps.
+    #[cfg(feature = "datafusion")]
+    let ran_steps = std::mem::take(&mut ran.steps);
+    let mut rows = |leaf: &Plan| {
+        #[cfg(feature = "datafusion")]
+        if let Some(rs) = ran.take(leaf) {
+            return Ok(rs);
+        }
+        match runner(leaf, usize::MAX)? {
+            Leaf::Rows(rs) => Ok(rs),
+            #[cfg(feature = "datafusion")]
+            Leaf::Arrow(_) => Err(err("a leaf gave Arrow columns where rows were asked for")),
+        }
+    };
+    #[allow(unused_mut)]
+    let mut rs = run_in(plan, catalog, &mut rows, opts)?;
+    #[cfg(feature = "datafusion")]
+    if !ran_steps.is_empty() {
+        let mut steps = ran_steps;
+        rs.stats.steps_dropped += crate::query::steps::nest(&mut steps, &rs.stats.steps, 0) as u64;
+        rs.stats.steps = steps;
+    }
+    if let Some(why) = fallback {
+        rs.stats.plan.insert(0, format!("operators (not datafusion: {why})"));
+    }
+    Ok(rs)
+}
 
 /// Rows an ORDER BY with a correlated subquery ranks at most: each row may
 /// run the subquery once.
@@ -136,6 +197,8 @@ fn label(n: &Node) -> (&'static str, String) {
         Node::Distinct { .. } => ("distinct", String::new()),
         Node::DistinctOn { per, .. } => ("distinct on", format!("{per} per value")),
         Node::KeyOrder { .. } => ("key order", String::new()),
+        Node::SetOp { op, all, .. } => ("set operation", format!("{}{}", op.name(), if *all { " ALL" } else { "" })),
+        Node::Window { funcs, .. } => ("window", funcs.iter().map(|w| w.func.name()).collect::<Vec<_>>().join(", ")),
         Node::Aggregate { keys, aggs, .. } => ("aggregate", format!("{} key{}, {} aggregate{}", keys.len(), if keys.len() == 1 { "" } else { "s" }, aggs.len(), if aggs.len() == 1 { "" } else { "s" })),
         _ => ("node", String::new()),
     }
@@ -272,6 +335,83 @@ impl<'a> Ops<'a, '_> {
                 Ok(rows.pick(&idx))
             }
             Node::Aggregate { input, keys, aggs } => self.aggregate(input, keys, aggs, what),
+            Node::SetOp { op, all, left, right } => {
+                let l = self.node(left, what)?;
+                let r = self.node(right, what)?;
+                if l.columns.len() != r.columns.len() {
+                    return Err(err(format!("{}: one side has {} columns and the other {}", op.name(), l.columns.len(), r.columns.len())));
+                }
+                let rows = match op {
+                    SetOp::Union => {
+                        let mut rows = l.rows;
+                        rows.extend(r.rows);
+                        if !*all {
+                            let mut seen = HashSet::new();
+                            rows.retain(|row| seen.insert(set_key(row)));
+                        }
+                        rows
+                    }
+                    SetOp::Intersect | SetOp::Except => {
+                        let mut right: HashMap<Vec<String>, u64> = HashMap::new();
+                        for row in &r.rows {
+                            self.tick()?;
+                            *right.entry(set_key(row)).or_default() += 1;
+                        }
+                        let keys: Vec<Vec<String>> = l.rows.iter().map(|row| set_key(row)).collect();
+                        let mut left: HashMap<&[String], u64> = HashMap::new();
+                        if *op == SetOp::Except && *all {
+                            for k in &keys {
+                                *left.entry(k.as_slice()).or_default() += 1;
+                            }
+                        }
+                        // Each row's place among the rows of `left` equal to it.
+                        let mut nth: HashMap<&[String], u64> = HashMap::new();
+                        let mut keep = Vec::with_capacity(keys.len());
+                        for k in &keys {
+                            self.tick()?;
+                            let n = nth.entry(k.as_slice()).or_default();
+                            *n += 1;
+                            let theirs = right.get(k).copied().unwrap_or(0);
+                            let kept = match (op, all) {
+                                (SetOp::Intersect, true) => *n <= theirs,
+                                (SetOp::Intersect, false) => *n == 1 && theirs > 0,
+                                (_, true) => *n + theirs <= left[k.as_slice()],
+                                (_, false) => *n == 1 && theirs == 0,
+                            };
+                            keep.push(kept);
+                        }
+                        l.rows.into_iter().zip(keep).filter_map(|(row, k)| k.then_some(row)).collect()
+                    }
+                };
+                Ok(Rows { columns: l.columns, rows, keys: None, scores: None })
+            }
+            Node::Window { input, funcs } => {
+                let mut rows = self.node(input, what)?;
+                let mut funcs = funcs.clone();
+                for x in funcs.iter_mut().flat_map(super::ir::WindowFn::exprs_mut) {
+                    *x = self.resolved(x)?;
+                }
+                let opts = self.opts;
+                let mut steps = self.steps;
+                let mut tick = || {
+                    steps += 1;
+                    if steps < 1024 {
+                        return Ok(());
+                    }
+                    steps = 0;
+                    opts.check()
+                };
+                let cols = super::window::evaluate(&rows.rows, &funcs, &mut tick)?;
+                self.steps = steps;
+                let w = rows.columns.len();
+                for (i, r) in rows.rows.iter_mut().enumerate() {
+                    let added: Vec<Value> = cols.iter().map(|c| c[i].clone()).collect();
+                    self.charge.row(&added)?;
+                    r.extend(added);
+                }
+                rows.columns.extend((0..funcs.len()).map(|i| format!("#{}", w + i)));
+                Ok(rows)
+            }
             Node::Search(_) => Err(err("a Search runs under a Project, which names its columns")),
             Node::Insert { .. } | Node::Update { .. } | Node::Delete { .. } => Err(err("a write runs on its own, not inside a query's plan")),
         }
@@ -1131,7 +1271,7 @@ impl<'a> Ops<'a, '_> {
         let rows = self.node(input, what)?;
         let keys: Vec<Expr> = keys.iter().map(|k| self.resolved(k)).collect::<Result<_>>()?;
         let args: Vec<Option<Expr>> = aggs.iter().map(|a| a.arg.as_ref().map(|x| self.resolved(x)).transpose()).collect::<Result<_>>()?;
-        let new_accs = || aggs.iter().map(|a| Acc::new(&Projection::Agg { func: a.func, field: 0 })).collect::<Vec<_>>();
+        let new_accs = || aggs.iter().map(|a| Acc::new(&Projection::Agg { func: a.func, of: crate::query::logical::Col::Field(0) })).collect::<Vec<_>>();
         let mut at: HashMap<Vec<Part>, usize> = HashMap::new();
         let mut groups: Vec<(Vec<Value>, Vec<Acc>)> = Vec::new();
         for r in &rows.rows {
@@ -1145,7 +1285,7 @@ impl<'a> Ops<'a, '_> {
                     Ok(match value(k, r)? {
                         Value::List(xs) => {
                             let mut seen = HashSet::new();
-                            let xs: Vec<Value> = xs.into_iter().filter(|x| seen.insert(Part::of(x))).collect();
+                            let xs: Vec<Value> = xs.into_iter().filter(|x| seen.insert(Part::group(x))).collect();
                             if xs.is_empty() { vec![Value::Null] } else { xs }
                         }
                         v => vec![v],
@@ -1156,7 +1296,7 @@ impl<'a> Ops<'a, '_> {
             let mut pick = vec![0usize; each.len()];
             loop {
                 let vals: Vec<Value> = each.iter().zip(&pick).map(|(vs, &i)| vs[i].clone()).collect();
-                let key: Vec<Part> = vals.iter().map(Part::of).collect();
+                let key: Vec<Part> = vals.iter().map(Part::group).collect();
                 let g = match at.get(&key) {
                     Some(&g) => g,
                     None => {
@@ -1224,6 +1364,7 @@ impl<'a> Ops<'a, '_> {
                 _ => None,
             },
             Node::Filter { input, .. } | Node::Sort { input, .. } | Node::Limit { input, .. } | Node::Distinct { input } | Node::DistinctOn { input, .. } | Node::KeyOrder { input, .. } => self.source(input, i),
+            Node::Window { input, .. } if i < self.columns(input).len() => self.source(input, i),
             _ => None,
         }
     }
@@ -1234,6 +1375,13 @@ impl<'a> Ops<'a, '_> {
             Node::Join { left, right, .. } => [self.columns(left), self.columns(right)].concat(),
             Node::Ref { name } => self.ctes.iter().rev().find(|(n, _)| n.eq_ignore_ascii_case(name)).map_or_else(Vec::new, |(_, r)| r.columns.clone()),
             Node::Aggregate { keys, aggs, .. } => (0..keys.len() + aggs.len()).map(|i| format!("#{i}")).collect(),
+            Node::SetOp { left, .. } => self.columns(left),
+            Node::Window { input, funcs } => {
+                let mut c = self.columns(input);
+                let w = c.len();
+                c.extend((0..funcs.len()).map(|i| format!("#{}", w + i)));
+                c
+            }
             Node::Filter { input, .. }
             | Node::Sort { input, .. }
             | Node::Limit { input, .. }
@@ -1361,6 +1509,17 @@ pub(crate) fn part(v: &Value) -> Part {
         Value::Float(x) if x.fract() == 0.0 && x.abs() < 9e15 => Part::Int(*x as i64),
         v => Part::of(v),
     }
+}
+
+/// A row's values as a [`Node::SetOp`] compares them: a whole FLOAT as
+/// the INT it equals, NULL as NULL.
+fn set_key(row: &[Value]) -> Vec<String> {
+    row.iter()
+        .map(|v| match v {
+            Value::Float(x) if x.fract() == 0.0 && x.abs() < 9e15 => format!("{:?}", Value::Int(*x as i64)),
+            v => format!("{v:?}"),
+        })
+        .collect()
 }
 
 /// A row key as an error names it.

@@ -13,6 +13,7 @@ use tokio::net::TcpListener;
 
 use crate::auth::{self, Access};
 use crate::coord::{CoordOptions, Coordinator};
+use crate::cores::shard::{self, Restart};
 use crate::replication::{self, Acks, Follow, Primary, PrimaryOptions};
 use crate::service::{shard_of, AgentConfig, Backend, Replication, Service};
 use crate::alerts::Alerts;
@@ -139,6 +140,9 @@ pub struct Options {
     /// `<db>.digitalocean.json` beside a database; in memory on a
     /// coordinator without it).
     pub digitalocean_file: Option<PathBuf>,
+    /// The clusters the cloud view made (default: `<db>.cloud.json` beside
+    /// a database; in memory on a coordinator without it).
+    pub cloud_file: Option<PathBuf>,
     /// The alert rules' file (default rules, in memory, without it).
     pub alerts: Option<PathBuf>,
     /// Post alerts that fire or resolve to this URL.
@@ -334,6 +338,14 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if let Some(file) = digitalocean {
         svc.digitalocean = Arc::new(crate::digitalocean::DigitalOcean::open(file)?);
     }
+    let cloud = o.cloud_file.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::cloud::clusters::Clusters::file_of));
+    if let Some(file) = cloud {
+        svc.clouds = Arc::new(crate::cloud::clusters::Clusters::open(file)?);
+        // Clusters on their way when the server stopped go on.
+        if svc.clouds.list().iter().any(|m| !matches!(m.phase, crate::cloud::clusters::Phase::Deleted | crate::cloud::clusters::Phase::Failed)) {
+            svc.clouds.start(svc.aws.clone(), svc.digitalocean.clone());
+        }
+    }
     let keys = o.keys.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(Keys::file_of));
     if let Some(file) = keys {
         svc.keys = Arc::new(Keys::open(file)?);
@@ -397,19 +409,18 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         // until its shard's copies elect one: another may have been
         // elected while it was down.
         let elects = o.failover_after_ms > 0 && svc.slots().is_some_and(|(m, s)| m.replicas().get(s).is_some_and(|c| c.len() > 1));
-        if let (Some(replication::KeptRole::Primary { .. }), false, true) = (&kept.0, kept.1, elects) {
-            svc.set_replication(Replication::Replica(Arc::new(Follow::open(db.clone(), Some(file))?)));
-            tracing::info!("was its shard's primary: starts as a replica, until its shard's copies elect one (--failover-after-ms)");
-        } else if let (Some(replication::KeptRole::Primary { replicas, acks }), false) = &kept {
-            let opts = PrimaryOptions { replicas: replicas.clone(), acks: *acks, ..ships };
+        let was_primary = matches!(kept.0, Some(replication::KeptRole::Primary { .. })) && !kept.1;
+        if let Some(Restart::Primary { replicas, acks }) = shard::restart(kept.0.as_ref(), kept.1, elects) {
+            let opts = PrimaryOptions { replicas: replicas.clone(), acks, ..ships };
             let p = Primary::start(db.clone(), Some(file), opts)?;
             tracing::info!(replicas = %replicas.join(", "), write_acks = acks.name(), "primary, as kept beside the database: ships its writes to its replicas");
             svc.set_replication(Replication::Primary(p));
         } else if kept.0.is_some() {
             svc.set_replication(Replication::Replica(Arc::new(Follow::open(db.clone(), Some(file))?)));
-            match kept.1 {
-                true => tracing::info!("replica: a primary of a newer term replaced this one, which follows it"),
-                false => tracing::info!("replica, as kept beside the database: applies the writes its primary ships"),
+            match (was_primary, kept.1) {
+                (true, _) => tracing::info!("was its shard's primary: starts as a replica, until its shard's copies elect one (--failover-after-ms)"),
+                (false, true) => tracing::info!("replica: a primary of a newer term replaced this one, which follows it"),
+                (false, false) => tracing::info!("replica, as kept beside the database: applies the writes its primary ships"),
             }
         } else if (!o.replicas.is_empty() && !o.replica) || o.promote {
             let opts = PrimaryOptions { replicas: o.replicas.clone(), acks: o.write_acks, promote: o.promote, ..ships };
@@ -417,7 +428,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
             tracing::info!(replicas = %o.replicas.join(", "), write_acks = o.write_acks.name(), "primary: ships its writes to its replicas");
             svc.set_replication(Replication::Primary(p));
         } else if o.replica {
-            svc.set_replication(Replication::Replica(Arc::new(Follow::open(db.clone(), Some(file))?)));
+            svc.set_replication(Replication::Replica(Arc::new(Follow::open_first(db.clone(), Some(file))?)));
             // Its --replicas: the shard's other copies, the ones a
             // promotion ships to (Service::known_copies).
             svc.promote_options = Some(PrimaryOptions { replicas: o.replicas.clone(), acks: o.write_acks, ..ships });
@@ -427,6 +438,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     open_log_store(&mut svc, o)?;
     let svc = Arc::new(svc);
     spawn_maintenance(&svc);
+    spawn_expirer(&svc, Duration::from_secs(5));
     spawn_sampler(&svc);
     tokio::spawn(svc.clone().keep_models());
     svc.start_failover();
@@ -687,6 +699,38 @@ pub fn spawn_maintenance(svc: &Arc<Service>) {
     });
 }
 
+/// Deletes rows whose `expire_by` time has passed, every `every`
+/// ([`Service::expire_due`]), until the service is dropped.
+pub fn spawn_expirer(svc: &Arc<Service>, every: Duration) {
+    if svc.local_db().is_none() {
+        return;
+    }
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        let mut reported = None;
+        loop {
+            tokio::time::sleep(every).await;
+            let Some(svc) = svc.upgrade() else { return };
+            let r = tokio::task::spawn_blocking(move || svc.expire_due()).await;
+            match r {
+                Ok(Ok(0)) => reported = None,
+                Ok(Ok(n)) => {
+                    reported = None;
+                    tracing::debug!(rows = n, "deleted expired rows");
+                }
+                Ok(Err(e)) => {
+                    let why = e.to_string();
+                    if reported.as_ref() != Some(&why) {
+                        tracing::warn!(error = %why, "could not delete expired rows; reads leave them out meanwhile");
+                    }
+                    reported = Some(why);
+                }
+                Err(e) => tracing::error!(error = %e, "the expirer stopped"),
+            }
+        }
+    });
+}
+
 /// Samples the service's counters and gauges every interval of its
 /// series ([`crate::telemetry::Series`]), for the UI's charts, until the
 /// service is dropped.
@@ -696,6 +740,8 @@ pub fn spawn_sampler(svc: &Arc<Service>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(every);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The minute the log store last had a row of load for.
+        let mut minute = crate::telemetry::now_ms() / 60_000;
         loop {
             tick.tick().await;
             let Some(svc) = svc.upgrade() else { return };
@@ -705,6 +751,13 @@ pub fn spawn_sampler(svc: &Arc<Service>) {
                 if !changes.is_empty() {
                     let svc = svc.clone();
                     tokio::spawn(async move { svc.alerts.notify(&changes).await });
+                }
+            }
+            let now = crate::telemetry::now_ms();
+            if now / 60_000 != minute {
+                minute = now / 60_000;
+                if let Some((store, load)) = svc.log_store.as_ref().zip(svc.minute_load(now)) {
+                    store.keep_load(load);
                 }
             }
         }

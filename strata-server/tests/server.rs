@@ -699,6 +699,9 @@ impl pb::strata_server::Strata for Stuck {
     async fn vote(&self, _: tonic::Request<pb::VoteRequest>) -> Result<tonic::Response<pb::VoteResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
+    async fn get(&self, _: tonic::Request<pb::GetRequest>) -> Result<tonic::Response<pb::GetResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
 }
 
 /// A shard server that refuses every query because too many are running.
@@ -775,6 +778,9 @@ impl pb::strata_server::Strata for Overloaded {
         Err(tonic::Status::unimplemented("a test shard"))
     }
     async fn vote(&self, _: tonic::Request<pb::VoteRequest>) -> Result<tonic::Response<pb::VoteResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
+    async fn get(&self, _: tonic::Request<pb::GetRequest>) -> Result<tonic::Response<pb::GetResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
 }
@@ -1078,6 +1084,10 @@ impl pb::strata_server::Strata for Recording {
     async fn vote(&self, r: tonic::Request<pb::VoteRequest>) -> Result<tonic::Response<pb::VoteResponse>, tonic::Status> {
         self.up()?;
         self.inner.vote(r).await
+    }
+    async fn get(&self, r: tonic::Request<pb::GetRequest>) -> Result<tonic::Response<pb::GetResponse>, tonic::Status> {
+        self.up()?;
+        self.inner.get(r).await
     }
 }
 
@@ -1558,8 +1568,9 @@ async fn a_shard_takes_typed_plans_and_refuses_newer_ones() {
     let svc = service(db, "http://unused");
     let url = grpc(svc.clone()).await;
     let mut c = pb::strata_client::StrataClient::connect(url).await.unwrap();
-    let h = c.hello(pb::HelloRequest { min_protocol: 1, max_protocol: 10 }).await.unwrap().into_inner();
-    assert_eq!((h.min_protocol, h.max_protocol, h.plan_version, h.slot_epoch), (1, 9, strata::query::ir::VERSION, 0));
+    let newest = strata_server::grpc::PROTOCOL;
+    let h = c.hello(pb::HelloRequest { min_protocol: 1, max_protocol: newest + 1 }).await.unwrap().into_inner();
+    assert_eq!((h.min_protocol, h.max_protocol, h.plan_version, h.slot_epoch), (1, newest, strata::query::ir::VERSION, 0));
     assert!(h.plan_features.iter().any(|f| f == "operators") && h.server.starts_with("strata-server "), "{h:?}");
 
     let sql = "SELECT id, price FROM products WHERE year >= 2020 AND MATCH(body, 'waterproof') ORDER BY price DESC, id LIMIT 7";
@@ -1585,9 +1596,9 @@ async fn a_shard_takes_typed_plans_and_refuses_newer_ones() {
     c.release(pb::ReleaseRequest { snapshots: vec![unused, 12345] }).await.unwrap();
     assert_eq!(svc.sweep_leases(), 0);
 
-    let e = c.query(pb::QueryRequest { protocol: 10, ..typed.clone() }).await.unwrap_err();
+    let e = c.query(pb::QueryRequest { protocol: newest + 1, ..typed.clone() }).await.unwrap_err();
     assert_eq!(e.code(), tonic::Code::InvalidArgument);
-    assert!(e.message().contains("protocol 10"), "{}", e.message());
+    assert!(e.message().contains(&format!("protocol {}", newest + 1)), "{}", e.message());
     let newer = pb::Plan { features: vec!["teleport".into()], ..plan };
     let e = c.term_stats(pb::QueryRequest { plan: Some(newer), ..typed }).await.unwrap_err();
     assert_eq!(e.code(), tonic::Code::InvalidArgument);
@@ -1992,6 +2003,41 @@ async fn embedded_fields_over_http() {
     for bad in [json!({"text": "x", "field": "title"}), json!({"text": "x", "field": 3}), json!({"field": "emb"})] {
         let (status, r) = post(&c, &format!("{base}/v1/embed"), bad.clone()).await;
         assert_eq!(status, 400, "{bad}: {r}");
+    }
+}
+
+/// A multi-vector field embedded from text (ColBERT's; here the hash
+/// model's, a vector a word): /v1/embed gives the query's `vectors`, and an
+/// `{"embed": ...}` parameter for the field is that list, as `maxsim` takes
+/// it.
+#[tokio::test(flavor = "multi_thread")]
+async fn token_vectors_over_http() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = strata::Schema::from_json(
+        r#"{"table": "d", "key": "id", "fields": [
+            {"name": "id", "type": "keyword"},
+            {"name": "body", "type": "text"},
+            {"name": "tok", "type": "vector", "dim": 16, "multi": true, "index": "flat", "embed": {"from": ["body"], "model": "hash:16"}}
+        ]}"#,
+    )
+    .unwrap();
+    let db = Db::create(&dir.path().join("t.strata"), schema.clone(), DbOptions { publish_snapshots: true, ..DbOptions::default() }).unwrap();
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent_config("http://unused"), 16, Duration::from_secs(10));
+    svc.open_models(dir.path());
+    let base = http(Arc::new(svc), None).await;
+    let c = reqwest::Client::new();
+    let ops: Vec<Json> = [("a", "green apples"), ("b", "red apples"), ("c", "pears")].iter().map(|(id, body)| json!({"op": "insert", "doc": {"id": id, "body": body}})).collect();
+    let (status, w) = post(&c, &format!("{base}/v1/write"), json!({ "ops": ops })).await;
+    assert_eq!(status, 200, "{w}");
+
+    let (status, e) = post(&c, &format!("{base}/v1/embed"), json!({"text": "green apples", "field": "tok"})).await;
+    assert_eq!((status, &e["field"], e.get("vector")), (200, &json!("tok"), None), "{e}");
+    let vs = e["vectors"].as_array().unwrap();
+    assert_eq!((vs.len(), vs[0].as_array().map(Vec::len)), (2, Some(16)), "{e}");
+    let sql = "WITH top AS (SELECT * FROM d ORDER BY bm25(body, :w) DESC LIMIT 10) SELECT id FROM top ORDER BY maxsim(tok, :q) DESC LIMIT 2";
+    for q in [json!({"embed": "green apples", "field": "tok"}), e["vectors"].clone()] {
+        let (status, r) = post(&c, &format!("{base}/v1/query"), json!({"sql": sql, "params": {"w": "apples", "q": q}})).await;
+        assert_eq!((status, r["keys"].clone()), (200, json!(["a", "b"])), "{r}");
     }
 }
 

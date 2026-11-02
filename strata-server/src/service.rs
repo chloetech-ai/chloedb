@@ -11,7 +11,7 @@ use serde_json::{json, Value as Json};
 use strata::db::{Db, PreparedWrite, Source};
 use strata::embed::Embedder;
 use strata::ingest::{Format, Rows};
-use strata::query::exec::{ExecOptions, ResultSet};
+use strata::query::exec::{Engine, ExecOptions, Leaf, ResultSet};
 use strata::query::memory::MemoryBudget;
 use strata::query::stats::TermStats;
 use strata::query::ir::Plan;
@@ -33,6 +33,7 @@ pub const MAX_LEASES: usize = 10_000;
 use crate::coord::Coordinator;
 use crate::idem;
 use crate::replication::{Acks, Follow, Primary, PrimaryOptions, READ_WAIT};
+use crate::cores::slots::{self as core, Moved};
 use crate::slots::{self, SlotMap};
 use crate::metrics::{self, Family, Metrics};
 use crate::alerts::Alerts;
@@ -70,6 +71,23 @@ pub enum Backend {
     Cluster(Arc<Coordinator>),
 }
 
+/// The most expired rows one transaction of the expirer deletes
+/// ([`Service::expire_due`]).
+pub const EXPIRE_BATCH: usize = 10_000;
+
+/// The most keys one read by key takes ([`Service::get_rows`]).
+pub const MAX_GET_KEYS: usize = 10_000;
+
+/// Rows read by key ([`Service::get_rows`]): per key, in their order, the
+/// row's values (of `columns`, as `SELECT *` names them) and the number
+/// of the write that last changed it, or `None` for a key no live row has.
+#[derive(Clone, Debug)]
+pub struct KeyRows {
+    pub table: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<Option<(Vec<Value>, u64)>>,
+}
+
 /// A SELECT to run.
 #[derive(Clone, Default)]
 pub struct QueryReq {
@@ -102,6 +120,13 @@ pub struct QueryReq {
     /// statistics: a run of a CPU profile's query ([`crate::profiler`]),
     /// which runs it thousands of times. Still counted in the metrics.
     pub quiet: bool,
+    /// A leaf of a compound query that DataFusion runs: its rows as Arrow
+    /// columns when there are more than this many ([`Leaf`]), which a
+    /// coordinator asks its shards for (protocol 10,
+    /// [`crate::grpc::ARROW_PROTOCOL`]) and a shard answers
+    /// ([`Answer::arrow`]) when the coordinator puts its rows after the
+    /// others' ([`strata::cluster::concatenates`]).
+    pub arrow: Option<usize>,
 }
 
 /// The writes a read must see, so that a client reads its own writes
@@ -149,6 +174,9 @@ pub struct Answer {
     pub missing: Vec<String>,
     /// The lease on the snapshot read, with [`QueryReq::hold`]; else 0.
     pub lease: u64,
+    /// A shard's rows as an Arrow IPC stream ([`QueryReq::arrow`],
+    /// `QueryResponse.arrow`), `rs` then holding none; empty otherwise.
+    pub arrow: Vec<u8>,
 }
 
 /// An embedded VECTOR field ([`strata::Embed`]) and its model, which
@@ -215,6 +243,9 @@ pub struct Service {
     /// The cloud view's DigitalOcean token and size catalogues
     /// ([`crate::digitalocean`]).
     pub digitalocean: Arc<crate::digitalocean::DigitalOcean>,
+    /// The clusters the cloud view made, and the loop that sees each one
+    /// through ([`crate::cloud::clusters`]).
+    pub clouds: Arc<crate::cloud::clusters::Clusters>,
     /// The server's log store ([`crate::logstore`]): its log lines and the
     /// queries it answered, in a Strata database of their own (`None`:
     /// `--log-store off`, or a coordinator without one).
@@ -263,6 +294,10 @@ pub struct Service {
     /// The memory queries may hold at once ([`ExecOptions::memory`];
     /// `None`: not counted).
     pub query_memory: Option<Arc<MemoryBudget>>,
+    /// The engine of compound queries' joins, groups and sorts, here or
+    /// above a coordinator's shards ([`Engine`]; `STRATA_ENGINE`, by
+    /// default `auto`).
+    pub engine: Engine,
     /// The most write requests in the write path at once (embedding,
     /// waiting for the writer or being applied); more are refused with 429.
     pub max_queued_writes: usize,
@@ -367,6 +402,7 @@ impl Service {
             alerts: Alerts::new(None, None).expect("the default alert rules"),
             aws: Arc::new(crate::aws::Aws::memory()),
             digitalocean: Arc::new(crate::digitalocean::DigitalOcean::memory()),
+            clouds: Arc::new(crate::cloud::clusters::Clusters::memory()),
             log_store: None,
             models: RwLock::new(Arc::new(Vec::new())),
             models_dir: None,
@@ -384,6 +420,7 @@ impl Service {
             max_rerank: None,
             max_groups: None,
             query_memory: None,
+            engine: Engine::from_env(),
             max_queued_writes: usize::MAX,
             max_body: 256 << 20,
             lease_ttl: Duration::from_secs(60),
@@ -725,44 +762,43 @@ impl Service {
     }
 
     /// Takes `map`, with this server as its shard `shard`, from a
-    /// coordinator: a map of an older epoch than this shard's is refused
-    /// (409), as is another map of the same epoch. Every row here must be
-    /// in the shard's slots, as no rows move between shards yet: a shard
-    /// loaded by another map, or by the hash before slots, refuses the map
-    /// (409) until it is loaded again. A map that leaves the shard its
-    /// slots (another shard's, or servers, changed) keeps serving
-    /// coordinators that route by the one before. Returns the epoch now
-    /// held.
+    /// coordinator, as [`core::take`] decides: a map of an older epoch than
+    /// this shard's is refused (409), as is another map of the same epoch.
+    /// Every row here must be in the shard's slots under a map that changes
+    /// them, but for the next step of a move, whose rows the coordinator
+    /// moved: a shard loaded by another map, or by the hash before slots,
+    /// refuses the map (409) until it is loaded again. A map that leaves
+    /// the shard its slots (another shard's, or servers, changed) keeps
+    /// serving coordinators that route by the one before. A map that gives
+    /// away the slots moving from here is taken only while writes to them
+    /// were held since their rows were last exported ([`core::flip_ok`]).
+    /// Returns the epoch now held.
     pub async fn set_slots(&self, map: SlotMap, shard: usize) -> Result<u64, ApiError> {
         if shard >= map.shards() {
             return Err(ApiError::bad(format!("shard {shard} of a slot map of {} shards", map.shards())));
         }
         let db = self.local().cloned().ok_or_else(|| ApiError::bad("a coordinator holds no slots"))?;
         let file = self.slots_file.lock().await;
+        // Held until the map is set, so that the hold cannot run out
+        // between the check and the change.
+        let frozen = self.moving.frozen.lock().await;
         let held = self.slots();
-        if let Some((m, s)) = &held {
-            if map.epoch < m.epoch {
-                return Err(conflict(format!("slot map epoch {} is older than this shard's ({}): the coordinator must load the newer map (--slot-map)", map.epoch, m.epoch)));
-            }
-            if map.epoch == m.epoch {
-                return match *m == map && *s == shard {
-                    true => Ok(map.epoch),
-                    false => Err(conflict(format!(
-                        "this shard holds a different slot map of epoch {}, as shard {s} of {}: list the shards as when it was given, or give a map of a higher epoch (--slot-map)",
-                        m.epoch,
-                        m.shards()
-                    ))),
-                };
-            }
-        }
-        let same = held.as_ref().is_some_and(|(m, s)| map.same_slots_as(shard, m, *s));
-        let since = match same {
-            true => self.slots_since.load(Ordering::Relaxed).min(map.epoch),
-            false => map.epoch,
+        // Only a server that takes clients' writes may have taken some to
+        // the moving slots that no export copied: a replica's come from its
+        // primary, and a primary another replaced takes none.
+        let writer = match &self.replication() {
+            Replication::Replica(_) => false,
+            Replication::Primary(p) => p.replaced_by() == 0,
+            Replication::None => true,
         };
-        // A move's next step: the coordinator moved the rows itself.
-        let stepped = held.as_ref().is_some_and(|(m, s)| *s == shard && m.shards() == map.shards() && m.moves_to(&map));
-        if !same && !stepped {
+        let exporting = held.as_ref().and_then(|(m, s)| core::exporting(m, *s)).cloned();
+        let covered = !writer || self.moving.covers(exporting.as_ref(), frozen.as_ref().map(|f| f.since));
+        core::flip_ok(held.as_ref().map(|(m, s)| (m, *s)), &map, shard, covered)?;
+        let (since, check_rows) = match core::take(held.as_ref().map(|(m, s)| (m, *s)), self.slots_since.load(Ordering::Relaxed), &map, shard)? {
+            core::Take::Held => return Ok(map.epoch),
+            core::Take::Keep { since, check_rows } => (since, check_rows),
+        };
+        if check_rows {
             let m = map.clone();
             let elsewhere = tokio::task::spawn_blocking(move || rows_elsewhere(&db, &m, shard)).await.map_err(ApiError::internal)??;
             if let Some((n, key)) = elsewhere {
@@ -785,6 +821,7 @@ impl Service {
         self.slots_since.store(since, Ordering::Relaxed);
         self.hide_residue(&map, shard);
         *held = Some((map, shard));
+        drop(frozen);
         Ok(epoch)
     }
 
@@ -801,46 +838,30 @@ impl Service {
         self.epoch_ok(held.as_ref().map_or(0, |(m, _)| m.epoch), epoch)
     }
 
-    /// [`Self::check_epoch`] against a map of epoch `held` (0: none).
+    /// [`Self::check_epoch`] against a map of epoch `held` (0: none)
+    /// ([`core::epoch_ok`]).
     fn epoch_ok(&self, held: u64, epoch: u64) -> Result<(), ApiError> {
-        if epoch == 0 {
-            return Ok(());
-        }
-        match held {
-            e if e == epoch => Ok(()),
-            e if e > epoch && epoch >= self.slots_since.load(Ordering::Relaxed) => Ok(()),
-            e if e > epoch => Err(conflict(format!("slot map epoch {epoch} is older than this shard's ({e}): the coordinator must load the newer map (--slot-map)"))),
-            0 => Err(ApiError { status: 503, message: format!("{NO_MAP_YET}; the request's is epoch {epoch}") }),
-            e => Err(ApiError { status: 503, message: format!("this shard has slot map epoch {e}, {OLDER_THAN_REQUEST} {epoch}") }),
-        }
+        core::epoch_ok(held, self.slots_since.load(Ordering::Relaxed), epoch)
     }
+
 
     /// Refuses (400) to write a row placed in a slot another shard holds,
     /// when this shard has a slot map: by its key, or by its table's
     /// shard_by value ([`op_place`]), each named by `what` (`key`, or the
-    /// shard_by field's name).
-    /// Rows of slots moving to or from the shard pass with `moved`, as
-    /// the coordinator moving them writes them. A request routed by an
-    /// older map that this one changed since it was checked is refused
-    /// for its coordinator to route it again (409).
-    fn check_keys<'a>(&self, keys: impl IntoIterator<Item = (&'a str, &'a Value)>, moved: bool) -> Result<(), ApiError> {
+    /// shard_by field's name). Rows of moving slots pass as `moved` says
+    /// ([`core::misplaced`]): copied by the coordinator moving them to the
+    /// shard they go to while the move copies, or deleted by one of the
+    /// move's two shards. A request routed by an older map that this one
+    /// changed since it was checked is refused for its coordinator to
+    /// route it again (409).
+    fn check_keys<'a>(&self, keys: impl IntoIterator<Item = (&'a str, &'a Value)>, moved: Moved) -> Result<(), ApiError> {
         let held = self.slots.read().unwrap_or_else(|e| e.into_inner());
         let Some((map, shard)) = &*held else { return Ok(()) };
         for (what, key) in keys {
             let s = slots::slot(key);
-            if map.owner(s) == *shard || (moved && map.takes_moved(*shard, s)) {
-                continue;
+            if let Some(m) = core::misplaced(map, *shard, s, moved, routed()) {
+                return Err(m.error(map, *shard, s, what, &js::to_json(key).to_string()));
             }
-            let e = routed();
-            if e > 0 && e < map.epoch {
-                return Err(conflict(format!("slot map epoch {e} is older than this shard's ({}), under which slot {s} is shard {}'s: the coordinator must load the newer map", map.epoch, map.owner(s))));
-            }
-            return Err(ApiError::bad(format!(
-                "{what} {} is in slot {s}, which shard {} holds under slot map epoch {}, not this shard ({shard}): write through the coordinator",
-                js::to_json(key),
-                map.owner(s),
-                map.epoch
-            )));
         }
         Ok(())
     }
@@ -1280,11 +1301,11 @@ impl Service {
 
     /// Hands a write to the writer thread and waits for its commit. The
     /// writer records `key`'s outcome, even if this future is dropped.
-    /// Writes marked `moved` are rows of moving slots, from the
-    /// coordinator moving them ([`Self::check_keys`]); while slots move
+    /// Writes `moved` are rows of moving slots, copied by the coordinator
+    /// moving them or deleted here ([`Self::check_keys`]); while slots move
     /// from this shard, a write to them, or an UPDATE or DELETE statement,
     /// holds the move's gate until it commits ([`Self::pass_gate`]).
-    async fn write(&self, job: WriteJob, deadline: Instant, key: Option<String>, queued: InQueue, moved: bool) -> Result<Written, ApiError> {
+    async fn write(&self, job: WriteJob, deadline: Instant, key: Option<String>, queued: InQueue, moved: Moved) -> Result<Written, ApiError> {
         let tx = self.writes.as_ref().ok_or_else(|| ApiError::internal("no writer for a coordinator"))?;
         // Counted in before it looks at the map, which a move may change.
         let entry = self.moving.enter();
@@ -1301,8 +1322,8 @@ impl Service {
             };
             let statement = matches!(&job, WriteJob::Sql(_)) && places.is_empty();
             let pass = match moved {
-                true => moving::Pass::Entry(entry),
-                false => self.pass_gate(entry, &places, statement).await?,
+                Moved::No => self.pass_gate(entry, &places, statement).await?,
+                Moved::Copy | Moved::Cleanup => moving::Pass::Entry(entry),
             };
             self.check_keys(places.iter().map(|(w, v)| (*w, v)), moved)?;
             pass
@@ -1537,6 +1558,9 @@ impl Service {
     /// out), so that the text and the rows are embedded alike, or
     /// `{"embed": {"image": "<base64>"}, "field": "emb"}` (or `"audio"`),
     /// the vector of an image or sound file by a model of that and text.
+    /// The text of a multi-vector field (`VECTOR(d)[]`) embedded by a
+    /// model of its tokens, such as ColBERT, is the list of its tokens'
+    /// vectors, as `maxsim` takes them.
     pub async fn params(self: &Arc<Self>, j: Option<&Json>) -> Result<Params, ApiError> {
         let mut p = Params::new();
         let Some(j) = j.filter(|j| !j.is_null()) else { return Ok(p) };
@@ -1549,7 +1573,9 @@ impl Service {
                     self.vector_of(&table, &o["vector_of"], &field).await?
                 }
                 Json::Object(o) if o.get("embed").is_some_and(|e| e.is_string() || e.get("image").is_some() || e.get("audio").is_some()) && o.keys().all(|k| ["embed", "field", "table"].contains(&k.as_str())) => {
-                    let (_, field, e) = self.model(o.get("table").and_then(|t| t.as_str()), o.get("field").and_then(|f| f.as_str()))?;
+                    let (table, field, e) = self.model(o.get("table").and_then(|t| t.as_str()), o.get("field").and_then(|f| f.as_str()))?;
+                    // A multi-vector field's model embeds the query's tokens.
+                    let tokens = self.catalog().iter().find(|s| s.table.eq_ignore_ascii_case(&table)).and_then(|s| s.field(&field)).is_some_and(|f| f.multi);
                     let file = match &o["embed"] {
                         Json::String(_) => None,
                         Json::Object(i) if i.len() == 1 => {
@@ -1562,6 +1588,9 @@ impl Service {
                     if let Some((m, _)) = file.as_ref().filter(|(m, _)| !e.modalities().contains(m)) {
                         return Err(ApiError::bad(format!("the model of {field} ({}) does not embed {}", e.name(), strata::embed::modality_name(*m))));
                     }
+                    if tokens && file.is_some() {
+                        return Err(ApiError::bad(format!("{field} is a multi-vector field: its model embeds a text's tokens, not a file")));
+                    }
                     let text = o["embed"].as_str().unwrap_or_default().to_string();
                     let t0 = Instant::now();
                     let core = match tokio::time::timeout(self.timeout, self.embedding.clone().acquire_owned()).await {
@@ -1571,14 +1600,15 @@ impl Service {
                     let v = tokio::task::spawn_blocking(move || {
                         let _core = core;
                         match file {
-                            Some((_, data)) => strata::embed::embed_file(e.as_ref(), &data),
-                            None => e.embed_query(&text),
+                            Some((_, data)) => strata::embed::embed_file(e.as_ref(), &data).map(|v| Value::Vector(v.into())),
+                            None if tokens => e.embed_query_tokens(&text).map(|vs| Value::List(vs.into_iter().map(|v| Value::Vector(v.into())).collect())),
+                            None => e.embed_query(&text).map(|v| Value::Vector(v.into())),
                         }
                     })
                     .await
                     .map_err(ApiError::internal)??;
                     self.metrics.embedded("query", 1, t0.elapsed().as_secs_f64());
-                    Value::Vector(v.into())
+                    v
                 }
                 v => js::param(v)?,
             };
@@ -1831,6 +1861,8 @@ impl Service {
         req.profile |= self.profiling.cpu_all.load(Ordering::Relaxed);
         let profiled = req.profile;
         let live = self.live.start(&req.sql, kind, req.shard);
+        // A shard's answer to a coordinator's leaf, as Arrow columns.
+        let mut arrow = Vec::new();
         let res = match &self.backend {
             Backend::Local(db) => {
                 let stats = req.stats.take().map(Arc::new);
@@ -1868,13 +1900,19 @@ impl Service {
                         ..db.exec.clone()
                     };
                     let db = db.clone();
+                    // Arrow columns for a coordinator that puts this
+                    // shard's rows after the others'.
+                    let columns = req.arrow.filter(|_| req.shard && cfg!(feature = "datafusion") && strata::cluster::concatenates(&select));
                     // The work holds the slot and the count until it ends,
                     // and stops at its next check if this future is dropped.
                     let te = Instant::now();
                     let r = tokio::task::spawn_blocking(move || {
                         let _held = (permit, running);
                         let started = Instant::now();
-                        let r = db.execute(&view, &select, &opts);
+                        let r = match columns {
+                            Some(over) => db.execute_leaf(&view, &select, &opts, over).and_then(shard_leaf),
+                            None => db.execute(&view, &select, &opts).map(|rs| (rs, Vec::new())),
+                        };
                         (r, started, Instant::now())
                     })
                     .await;
@@ -1883,8 +1921,9 @@ impl Service {
                     telemetry::record("execute", te, if matches!(r, Ok((Ok(_), ..))) { "ok" } else { "error" });
                     match r {
                         Ok((r, started, ended)) => r
-                            .map(|mut rs| {
+                            .map(|(mut rs, ipc)| {
                                 steps::around(&mut rs.stats.steps, te, started, ended, back);
+                                arrow = ipc;
                                 (rs, Vec::new())
                             })
                             .map_err(ApiError::from),
@@ -1918,7 +1957,7 @@ impl Service {
         if let Some(l) = (req.release && req.snapshot != 0).then_some(req.snapshot).or(made) {
             self.release(&[l]);
         }
-        a.map(|a| Answer { lease, ..a })
+        a.map(|a| Answer { lease, arrow, ..a })
     }
 
     /// Counts a query's outcome, logs it if it was slow, and makes its
@@ -1956,7 +1995,7 @@ impl Service {
         if !quiet {
             self.query_log.add(sql, kind, outcome, secs, rows, shard, res.as_ref().err().map(|e| e.message.as_str()), slow, res.as_ref().ok().map(|(rs, _)| &rs.stats), profiled);
         }
-        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0 })
+        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0, arrow: Vec::new() })
     }
 
     /// A compound query ([`compound`]): its plan's leaves run on one
@@ -2001,6 +2040,7 @@ impl Service {
                     max_groups: self.max_groups,
                     memory: self.query_memory.clone(),
                     profile: req.profile,
+                    engine: self.engine,
                     ..db.exec.clone()
                 };
                 let db = db.clone();
@@ -2009,12 +2049,12 @@ impl Service {
                     let _held = (permit, running);
                     let started = Instant::now();
                     let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
-                    let r = ops::run_in(
+                    let r = ops::run_on_engine(
                         &plan,
                         &tables,
-                        &mut |leaf| {
+                        &mut |leaf, over| {
                             let view = snap.table(leaf.table()).ok_or_else(|| strata::Error::Query(format!("no such table: {}", leaf.table())))?;
-                            db.execute(&view, &leaf.to_select(view.schema())?, &opts)
+                            db.execute_leaf(&view, &leaf.to_select(view.schema())?, &opts, over)
                         },
                         &opts,
                     );
@@ -2035,6 +2075,7 @@ impl Service {
                 let rt = tokio::runtime::Handle::current();
                 let stop = cancel.0.clone();
                 let memory = self.query_memory.clone();
+                let (engine, threads) = (self.engine, self.cores.max(1));
                 // The leaves' calls to the shards carry the request's id.
                 let id = obs::current();
                 let trace = telemetry::trace();
@@ -2042,22 +2083,26 @@ impl Service {
                     let _held = permit;
                     // Shards any leaf was answered without (partial answers).
                     let mut missing: Vec<String> = Vec::new();
-                    let checks = ExecOptions { deadline: Some(deadline), cancel: Some(stop.clone()), memory, profile: req.profile, ..ExecOptions::default() };
+                    // The shards run the leaves; DataFusion or the operators
+                    // run the rest here, on this server's cores.
+                    let checks = ExecOptions { deadline: Some(deadline), cancel: Some(stop.clone()), memory, profile: req.profile, engine, threads, ..ExecOptions::default() };
                     let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
-                    let rs = ops::run_in(&plan, &tables, &mut |leaf| {
+                    let rs = ops::run_on_engine(&plan, &tables, &mut |leaf, over| {
                         checks.check()?;
                         let schema = catalog.iter().find(|t| t.table.eq_ignore_ascii_case(leaf.table())).ok_or_else(|| strata::Error::Query(format!("no such table: {}", leaf.table())))?;
                         let select = leaf.to_select(schema)?;
                         // The shards run the leaf's plan; its text names it in their logs.
                         let sql = leaf.explain(&tables).join(" / ");
-                        let step = QueryReq { sql, plan: Some(Arc::new(leaf.clone())), partial: req.partial, after: req.after.clone(), profile: req.profile, ..Default::default() };
-                        let m = rt.block_on(telemetry::within(trace.clone(), obs::scope(id.clone(), c.query(&step, schema, &select, deadline)))).map_err(|e| strata::Error::Query(e.message))?;
-                        for s in m.missing {
+                        // DataFusion takes Arrow columns past `over` rows.
+                        let arrow = (over != usize::MAX).then_some(over);
+                        let step = QueryReq { sql, plan: Some(Arc::new(leaf.clone())), partial: req.partial, after: req.after.clone(), profile: req.profile, arrow, ..Default::default() };
+                        let mut m = rt.block_on(telemetry::within(trace.clone(), obs::scope(id.clone(), c.query(&step, schema, &select, deadline)))).map_err(|e| strata::Error::Query(e.message))?;
+                        for s in std::mem::take(&mut m.missing) {
                             if !missing.contains(&s) {
                                 missing.push(s);
                             }
                         }
-                        Ok(m.rs)
+                        Ok(m.leaf())
                     }, &checks);
                     rs.map(|rs| (rs, missing))
                 })
@@ -2210,6 +2255,64 @@ impl Service {
         }
     }
 
+    /// Deletes the rows whose `expire_by` time has passed
+    /// ([`Db::expire`]), as a server that takes writes does every few
+    /// seconds ([`crate::server::spawn_expirer`]): not a replica, which
+    /// applies its primary's deletes, nor a server that cannot write, nor
+    /// one that holds rows of slots moving here or away, which the move
+    /// copies or cleans up. Reads leave expired rows out either way; this
+    /// frees their space. Returns how many it deleted.
+    pub fn expire_due(&self) -> strata::Result<u64> {
+        let Backend::Local(db) = &self.backend else { return Ok(0) };
+        if matches!(self.replication(), Replication::Replica(_)) || self.failing().is_some() || self.moving.mask().is_some() {
+            return Ok(0);
+        }
+        if !db.catalog().iter().any(|t| t.expire_by.is_some()) {
+            return Ok(0);
+        }
+        db.expire(strata::timestamp::now(), EXPIRE_BATCH)
+    }
+
+    /// Rows of table `table` (the first without one) by primary key,
+    /// read without SQL ([`Db::get_many_at`]): per key, its live row as
+    /// `SELECT *` answers it and the number of the write that last changed
+    /// it, or none. A coordinator asks each key's shard. At most
+    /// [`MAX_GET_KEYS`] keys.
+    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, after: &After, timeout_ms: u64) -> Result<KeyRows, ApiError> {
+        let t0 = Instant::now();
+        if keys.len() > MAX_GET_KEYS {
+            return Err(ApiError::bad(format!("a read by key takes at most {MAX_GET_KEYS} keys, not {}", keys.len())));
+        }
+        let schema = match table {
+            Some(t) => self.table(t).await?,
+            None => self.first_table(),
+        };
+        let pk = schema.primary_key.ok_or_else(|| ApiError::bad(format!("{} has no primary key: rows are read by key only from a table with one", schema.table)))?;
+        let keys: Vec<Value> = keys.iter().map(|k| strata::db::key_value(&schema, pk, k)).collect::<strata::Result<_>>()?;
+        let timeout = self.timeout_of(timeout_ms);
+        let deadline = t0 + timeout;
+        let r = match &self.backend {
+            Backend::Local(db) => {
+                let snap = self.read_snapshot(db, 0, after, deadline).await?;
+                let view = snap.table(&schema.table).ok_or_else(|| ApiError::bad(format!("query error: no such table: {}", schema.table)))?;
+                let Some(permit) = self.admit(timeout).await else { return Err(self.rejected("get", t0)) };
+                let db = db.clone();
+                let opts = ExecOptions { deadline: Some(deadline), ..db.exec.clone() };
+                let r = tokio::task::spawn_blocking(move || {
+                    let columns = Db::get_columns(view.schema());
+                    db.get_many_at(&view, &keys, &opts).map(|rows| KeyRows { table: view.schema().table.clone(), columns, rows: rows.into_iter().map(|r| r.map(|r| (r.row, r.seq_no))).collect() })
+                })
+                .await
+                .map_err(ApiError::internal)?;
+                drop(permit);
+                r.map_err(ApiError::from)
+            }
+            Backend::Cluster(c) => c.get(&schema, &keys, after, deadline).await.map(|rows| KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }),
+        };
+        telemetry::record("get", t0, if r.is_ok() { "ok" } else { "error" });
+        r
+    }
+
     /// The paths listing `call` asks for ([`strata::query::paths`]): of
     /// this database's rows, or of every shard's, summed.
     pub async fn json_paths(self: &Arc<Self>, call: &Call, params: &Params, after: &After, timeout_ms: u64) -> Result<Paths, ApiError> {
@@ -2360,7 +2463,7 @@ impl Service {
         .ok_or_else(|| ApiError::bad("not a write statement"))?;
         // The deadline bounds the wait for the writer, not the embedding.
         let deadline = Instant::now() + self.timeout_of(timeout_ms);
-        let w = self.write(WriteJob::Sql(Box::new(prepared)), deadline, None, q, false).await?;
+        let w = self.write(WriteJob::Sql(Box::new(prepared)), deadline, None, q, Moved::No).await?;
         self.replicated(w, self.timeout_of(timeout_ms)).await
     }
 
@@ -2369,12 +2472,13 @@ impl Service {
     /// time may share (see [`writer`]). With an idempotency `key`, a retry
     /// of a request that committed returns its answer unapplied.
     pub async fn write_ops(self: &Arc<Self>, ops: Vec<Json>, key: Option<String>) -> Result<Written, ApiError> {
-        self.write_ops_as(ops, key, false).await
+        self.write_ops_as(ops, key, Moved::No).await
     }
 
-    /// [`Self::write_ops`], of rows of moving slots from the coordinator
-    /// moving them when `moved` ([`Self::write`]).
-    pub async fn write_ops_as(self: &Arc<Self>, mut ops: Vec<Json>, key: Option<String>, moved: bool) -> Result<Written, ApiError> {
+    /// [`Self::write_ops`], of rows of moving slots copied by the
+    /// coordinator moving them, or deleted here, as `moved` says
+    /// ([`Self::write`]).
+    pub async fn write_ops_as(self: &Arc<Self>, mut ops: Vec<Json>, key: Option<String>, moved: Moved) -> Result<Written, ApiError> {
         let t0 = Instant::now();
         let n = match &self.backend {
             Backend::Local(db) => {
@@ -2901,12 +3005,37 @@ impl Service {
     }
 
     /// This server's health and latest point, as a coordinator's
-    /// `/v1/cluster` shows each shard's copy.
+    /// `/v1/cluster` shows each shard's copy, and its last minute's load
+    /// (`minute`), which autoscaling reads.
     pub async fn detail(self: &Arc<Self>) -> Json {
         let health = self.health().await;
         let load = self.series.last().map(|p| (*p).clone());
         let log_store = self.log_store.as_ref().map(|s| s.status());
-        json!({"health": health, "load": load, "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores}, "running": self.live.len(), "log_store": log_store})
+        let minute = self.minute_load(telemetry::now_ms()).map(|l| {
+            json!({"qps": l.qps, "cpu": l.cpu, "cores": l.cores, "busy": l.busy(), "p99_ms": l.p99_ms, "disk_used_ratio": l.disk_used_ratio})
+        });
+        json!({
+            "health": health, "load": load, "minute": minute,
+            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores},
+            "running": self.live.len(), "log_store": log_store,
+        })
+    }
+
+    /// This server's load over the minute before `now_ms` (from its
+    /// points), as the log store's `load` keeps it.
+    pub fn minute_load(&self, now_ms: u64) -> Option<crate::logstore::Load> {
+        let points = self.series.since(now_ms.saturating_sub(60_000));
+        let (qps, cpu, p99_ms, disk_used_ratio) = telemetry::load_of(&points)?;
+        let role = match &self.backend {
+            Backend::Cluster(_) => "coordinator",
+            Backend::Local(_) => match self.role() {
+                pb::Role::Primary => "primary",
+                pb::Role::Replica => "replica",
+                _ => "standalone",
+            },
+        };
+        let shard = self.slots().map(|(_, s)| s);
+        Some(crate::logstore::Load { ts_ms: now_ms, role: role.into(), shard, qps, cpu, cores: self.cores, p99_ms, disk_used_ratio })
     }
 
     /// The metrics (`GET /metrics`). A coordinator does not ask its shards
@@ -3058,6 +3187,20 @@ pub const OLDER_THAN_SHARD: &str = "is older than this shard's";
 const FOR_READS: &str = "min_seq_no and min_seq_nos are for reads: a write sees every write before it";
 
 /// A query refused for want of a slot ([`Service::admit`]).
+/// A shard's answer to a coordinator's leaf ([`QueryReq::arrow`]): its
+/// rows, or its statistics and its rows as an Arrow IPC stream.
+fn shard_leaf(leaf: Leaf) -> strata::Result<(ResultSet, Vec<u8>)> {
+    match leaf {
+        Leaf::Rows(rs) => Ok((rs, Vec::new())),
+        #[cfg(feature = "datafusion")]
+        Leaf::Arrow(c) => {
+            let ipc = c.to_ipc()?;
+            let rs = ResultSet { columns: c.names, rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: c.stats };
+            Ok((rs, ipc))
+        }
+    }
+}
+
 fn too_many() -> ApiError {
     ApiError { status: 429, message: "too many queries running; try again".into() }
 }

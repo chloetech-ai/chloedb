@@ -133,6 +133,40 @@ Latency, alone on the cloud container (Intel Xeon @ 2.80 GHz, AVX-512 VNNI, 4 co
 
 About 50 ms a row in `f32` through candle and 20 ms in int8. Cutting at 256 tokens rather than 512 takes about a third off; ONNX Runtime alone takes about 40% off `f32` (the same scores, from the repository's `onnx/model.onnx`), and int8 a quarter to a third more. A server's `--max-rerank` defaults to 20 rows, whose p99 in `f32` is a quarter of its default 5 s deadline; in int8 the top 100 fits in half of it. `gte-reranker-modernbert-base` (149M parameters, ModernBERT) costs six to seven times as much as the int8 MiniLM; on those 50 queries its top 20 scored nDCG@10 0.791, 0.328 and 0.361 against BM25's 0.796, 0.324 and 0.321 (p = 0.85, 0.82, 0.30), no better than the MiniLM's 0.769, 0.368 and 0.334 there.
 
+### ColBERT reranking
+
+BM25's top rows ranked again by late interaction instead: a multi-vector field embedded from the text when rows are written by `answerai-colbert-small-v1` (ColBERT, 33M parameters, a 96-dimension vector for each token of the text, its punctuation left out, cut at 300 tokens), `tok VECTOR(96)[] OPTIONS(embed = 'body', model = 'answerai-colbert-small-v1')`, and `ORDER BY maxsim(tok, :t)` in a second phase, `:t` the vectors of the query's tokens (padded with masks to 32). Over every test query, with `strata-bm25-eval --variants plain,colbert_rerank<N>` (`--colbert-pool 2` for `pool_factor = 2`), the model run through candle in `f32` (`--features bert`), the field flat and scored with its 8-bit codes; each query's time includes encoding the query. Alone on the cloud container (Intel Xeon @ 2.80 GHz, AVX-512 VNNI, 4 cores, Linux). Results: `strata/results/text/bm25_colbert*.json`.
+
+| nDCG@10 | SciFact | NFCorpus | ArguAna |
+|---|---|---|---|
+| BM25 | 0.691 | 0.329 | 0.362 |
+| top 20, ColBERT | 0.738 (p < 0.001) | 0.354 (p < 0.001) | 0.357 (p = 0.32) |
+| top 100, ColBERT | 0.742 (p < 0.001) | 0.359 (p < 0.001) | 0.336 (p < 0.001) |
+| top 20, ColBERT, `pool_factor = 2` | 0.741 (p < 0.001) | 0.355 (p < 0.001) | |
+| top 100, ColBERT, `pool_factor = 2` | 0.748 (p < 0.001) | 0.359 (p < 0.001) | |
+| top 20, cross-encoder, int8, 256 tokens (above) | 0.684 (p = 0.58) | 0.348 (p = 0.001) | 0.364 (p = 0.78) |
+
+| p50 / p99, ms | SciFact | NFCorpus | ArguAna |
+|---|---|---|---|
+| BM25 | 0.2 / 0.4 | 0.1 / 0.2 | 1.7 / 5.3 |
+| top 20, ColBERT | 79 / 102 | 86 / 112 | 96 / 120 |
+| top 100, ColBERT | 83 / 107 | 96 / 129 | 104 / 133 |
+| top 20, ColBERT, `pool_factor = 2` | 87 / 162 | 92 / 143 | |
+| top 100, ColBERT, `pool_factor = 2` | 89 / 108 | 95 / 118 | |
+
+| what the field costs | SciFact | NFCorpus | ArguAna |
+|---|---|---|---|
+| documents | 5,183 | 3,633 | 8,674 |
+| database, BM25 alone | 6.3 MB | 4.6 MB | 8.1 MB |
+| database with the field | 187 MB | 131 MB | 229 MB |
+| the same, `pool_factor = 2` | 97 MB | 68 MB | |
+| load, embedding included | 788 s | 579 s | 911 s |
+| the same, `pool_factor = 2` | 883 s | 620 s | |
+
+On SciFact and NFCorpus, ColBERT ranks BM25's top 20 better than the cross-encoder does (0.738 against 0.684 and 0.354 against 0.348), in a fifth of the int8 cross-encoder's time (its p50 above, measured on the first 50 queries: 427 and 413 ms). Ranking 100 rows costs only 4 to 10 ms more than 20, so most of a query's time is encoding the query itself, one pass of the model over 32 tokens. On ArguAna, as with the cross-encoder, 100 rows hurt: the document to find is the query's counterargument, and 20 rows keep BM25's ranking (p = 0.32).
+
+The price is paid when rows are written. Embedding every token takes 0.1 to 0.16 s a document on the four cores, and the field makes the database 28 to 30 times BM25's: about 35 KB a document on SciFact and NFCorpus, whose documents mostly reach the 300-token cut, and 25 KB on ArguAna. `pool_factor = 2` (Ward's linkage, as for [multi-vector fields](#multi-vector-fields)) halves the field and scores the same or better here, 0.748 on SciFact's top 100; the clustering adds about a tenth to the load. Its p50 query times, in a separate run, are within 8 ms of the unpooled ones, because encoding the query dominates them.
+
 ## Hybrid ranking
 
 ![Weighted hybrid ranking: nDCG@10 by BM25 weight on four collections, with RRF of the same two rankings as dashed lines](../assets/img/chart-strata-fusion.png)
@@ -204,6 +238,23 @@ A `VECTOR` field can keep 1-bit codes instead of 8-bit ones (`"codes": "binary"`
 Binary codes hold an eighth of the memory of 8-bit codes (a 32nd of the float32 vectors, 1,536 MB here, which are read only for the rescored candidates). The flat scan gets 3.5× faster and IVF 2.0× faster for 0.006 of recall; HNSW is level. HNSW searches as wide as the candidates it rescores, so the 1-bit rows walk the graph 320 wide and are compared with 8-bit codes at ef 320; at the default ef of 64, 8-bit HNSW reaches 0.868 on this data. The two 1-bit HNSW figures come from two builds.
 
 The data is synthetic because the container could not download embeddings. How much recall binary codes cost depends on the embedding model, so measure it on the collection before choosing them. [`strata/notes/vector.md`](https://github.com/rkonow/strata/blob/main/strata/notes/vector.md#binary-codes) has every depth and the kernels; the numbers are in `strata/results/vector/`.
+
+RaBitQ codes (`"rabitq1"`, `"rabitq2"`, `"rabitq4"`: 1, 2 or 4 bits per dimension after a fixed random rotation, with an error bound per row) keep 8, 4 or 2 times as many candidates and skip the float32 rows of those whose bound shows they cannot make the top 10. Measured in a later run on the same container, idle, one search thread, on FiQA's 57,638 Cohere embed-english-v3 vectors (1,024 dimensions, 648 queries) at the default rerank of 40:
+
+| codes | index | candidates | float32 rows read | codes in memory | recall@10 | p50 |
+|---|---|---|---|---|---|---|
+| 8-bit | flat | 40 | 40 | 59.0 MB | 1.000 | 6.93 ms |
+| 1-bit | flat | 320 | 320 | 7.4 MB | 1.000 | 1.93 ms |
+| RaBitQ 1-bit | flat | 320 | 91 | 7.8 MB | 1.000 | 2.50 ms |
+| RaBitQ 2-bit | flat | 160 | 28 | 15.2 MB | 1.000 | 5.31 ms |
+| RaBitQ 4-bit | flat | 80 | 13 | 30.0 MB | 1.000 | 10.11 ms |
+| 8-bit | HNSW, ef 64 | 40 | 40 | 59.0 MB | 0.982 | 0.33 ms |
+| 1-bit | HNSW | 320 | 320 | 7.4 MB | 0.997 | 0.83 ms |
+| RaBitQ 1-bit | HNSW | 320 | 89 | 7.8 MB | 0.998 | 0.57 ms |
+| RaBitQ 2-bit | HNSW | 160 | 28 | 15.2 MB | 0.996 | 0.49 ms |
+| RaBitQ 4-bit | HNSW | 80 | 13 | 30.0 MB | 0.987 | 0.40 ms |
+
+On these embeddings the bounds cut the float32 rows read 3.5 times (1 bit), 11 times (2 bits) and 24 times (4 bits) from binary codes' 320, at the same recall. Each RaBitQ row costs more to scan: 1-bit codes 1.3 to 1.6 times binary's flat time, 4-bit codes 1.4 to 1.5 times SQ8's at half its memory. On the synthetic data above, where every row's error is alike, 1-bit RaBitQ prunes nothing at the default rerank and matches binary codes (0.995 against 0.994 with 320 rows), while 2-bit codes reach 1.000 reading 159 rows and 4-bit codes 1.000 reading 33. So RaBitQ codes pay off where reading float32 rows is the cost, as with a table larger than memory; [`strata/notes/vector.md`](https://github.com/rkonow/strata/blob/main/strata/notes/vector.md#rabitq-codes) has both runs, IVF and builds, in `strata/results/vector/codes-*-rabitq.json`.
 
 ## MaxSim
 

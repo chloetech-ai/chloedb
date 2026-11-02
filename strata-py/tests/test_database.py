@@ -85,6 +85,31 @@ def test_queries_and_results(db):
         db.query("SELECT nope FROM books")
 
 
+def test_a_field_of_token_vectors(tmp_path):
+    """A multi-vector field embedded from text holds a vector a token (the
+    hash model's, a vector a word); `embed_tokens` and `{"embed": ...}`
+    give a query's, and `maxsim` ranks the rows BM25 finds by them."""
+    schema = {
+        "table": "d",
+        "key": "id",
+        "fields": [
+            {"name": "id", "type": "keyword"},
+            {"name": "body", "type": "text"},
+            {"name": "tok", "type": "vector", "dim": 32, "multi": True, "index": "flat", "embed": {"from": ["body"], "model": "hash:32"}},
+        ],
+    }
+    db = strata.Database.create(str(tmp_path / "d.strata"), schema)
+    db.insert([{"id": "a", "body": "green apples"}, {"id": "b", "body": "red apples"}, {"id": "c", "body": "pears"}])
+    assert len(db.query("SELECT tok FROM d WHERE id = 'a'").scalar()) == 2
+    q = db.embed_tokens("green apples", "tok")
+    assert len(q) == 2 and len(q[0]) == 32
+    sql = "WITH top AS (SELECT * FROM d ORDER BY bm25(body, :w) DESC LIMIT 10) SELECT id FROM top ORDER BY maxsim(tok, :q) DESC LIMIT 2"
+    assert db.query(sql, w="apples", q=q).keys == ["a", "b"]
+    assert db.query(sql, w="apples", q={"embed": "green apples", "field": "tok"}).keys == ["a", "b"]
+    with pytest.raises(ValueError, match="embed_tokens"):
+        db.embed("green apples", "tok")
+
+
 def test_a_query_by_sound_needs_a_model_of_sound(db):
     """`embed(audio=...)` and `{"embed": {"audio": ...}}` go to a model of
     sound; the books' model reads text only, and a file given as audio has
@@ -531,3 +556,22 @@ def test_columns_added_dropped_and_renamed(tmp_path):
     with strata.Database.open(path) as db:
         assert [f["name"] for f in db.schema["fields"]] == ["id", "headline", "price", "stock"]
         assert db.query("SELECT price, stock FROM items WHERE id = 'a'")[0] == {"price": 1.5, "stock": 0}
+
+
+def test_rows_by_key(db, tmp_path):
+    got = db.get("b0007")
+    assert got["id"] == "b0007" and got["year"] == book(7)["year"] and "emb" not in got
+    assert db.get("nope") is None
+    rows = db.get_many(["b0001", "missing", "b0002"])
+    assert [r and r["id"] for r in rows] == ["b0001", None, "b0002"]
+    assert rows[0] == db.query("SELECT * FROM books WHERE id = 'b0001'")[0]
+    db.delete("b0002")
+    assert db.get("b0002") is None
+    # Rows of a table with expire_by are none once their time has passed,
+    # and expire() deletes them.
+    db.sql("CREATE TABLE sessions (id KEYWORD PRIMARY KEY, user KEYWORD, until TIMESTAMP) OPTIONS(expire_by = 'until')")
+    db.insert([{"id": "s1", "user": "a", "until": "2001-01-01T00:00:00Z"}, {"id": "s2", "user": "b", "until": "2999-01-01T00:00:00Z"}, {"id": "s3", "user": "c"}], table="sessions")
+    assert [r and r["id"] for r in db.get_many(["s1", "s2", "s3"], table="sessions")] == [None, "s2", "s3"]
+    assert db.sql("SELECT COUNT(*) FROM sessions").scalar() == 2
+    assert db.expire() == 1
+    assert db.expire() == 0

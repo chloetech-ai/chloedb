@@ -10,7 +10,7 @@ use serde_json::{json, Value as Json};
 
 use super::{Catalog, HOURS_A_MONTH, MAX_PODS};
 use crate::aws::catalog::Machine;
-use crate::cloud::{check_name, cluster_yaml, fit, operator_yaml, Node, IMAGE};
+use crate::cloud::{check_name, cluster_objects, cluster_yaml, fit, operator_yaml, Node, IMAGE};
 
 /// The storage class DOKS makes: block storage volumes that grow in place
 /// and are deleted with their claims.
@@ -22,6 +22,12 @@ const NODE_PODS: u32 = 4;
 
 /// The cluster's own pods: two CoreDNS, Cilium's operator.
 const SYSTEM_PODS: u32 = 3;
+
+/// The CPU a DOKS node keeps from its pods, in cores: 0.1 it does not
+/// offer them, and the requests of Cilium (310m) and the metrics agent
+/// (102m) on every node. Measured on a 2-vCPU node of Kubernetes
+/// 1.37.0-do.2 on 1 November 2026 (allocatable 1900m).
+pub const SYSTEM_CPU: f64 = 0.52;
 
 /// What is asked for: `POST /v1/admin/digitalocean/plan`.
 #[derive(Clone, Debug, Deserialize)]
@@ -114,7 +120,7 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
         return Err(format!("DOKS offers Kubernetes {}, not {version}", cat.versions.join(", ")));
     }
     let alloc = allocatable_gib(m.memory_gib);
-    let f = fit(&p.cluster, p.nodes, &Node { vcpu: m.vcpu, alloc_gib: alloc }, p.volume_gb, STORAGE_CLASS)?;
+    let f = fit(&p.cluster, p.nodes, &Node { vcpu: m.vcpu, alloc_gib: alloc, system_cpu: SYSTEM_CPU }, p.volume_gb, STORAGE_CLASS)?;
 
     let mut warnings = f.warnings(p.nodes);
     if let (Some(limit), Some(running)) = (cat.droplet_limit, cat.droplets) {
@@ -165,6 +171,7 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
     // The volumes are the CSI driver's: deleted with their claims, or with
     // the cluster's `--dangerous`.
     let teardown = [format!("kubectl delete -f {name}-cluster.yaml"), "kubectl -n strata delete pvc --all --wait".to_string(), format!("doctl kubernetes cluster delete {name} --dangerous --force")];
+    let objects = cluster_objects(&p.name, &f.cluster, None);
     Ok(json!({
         "provider": "digitalocean",
         "stack": name,
@@ -176,7 +183,8 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
         "quota": {"droplets": cat.droplet_limit, "running": cat.droplets, "needs": p.nodes},
         "cost": cost,
         "warnings": warnings,
-        "manifests": {"operator": operator_yaml(&image)?, "cluster": cluster_yaml("a Strata cluster on DOKS, from strata-server's cloud view", &p.name, &f.cluster, None)},
+        "manifests": {"operator": operator_yaml(&image)?, "cluster": cluster_yaml("A Strata cluster on DOKS, from strata-server's cloud view", &objects)},
+        "objects": objects,
         "commands": commands,
         "teardown": teardown,
         "cluster": f.cluster,
@@ -280,5 +288,31 @@ mod tests {
         assert!(plan(&Plan { machine: "so-8vcpu-64gb".into(), ..p.clone() }, &cat).unwrap_err().contains("is not a size a DOKS node may be"));
         let c = checks(&Plan { nodes: 24, ..p.clone() }, &cat, "active");
         assert_eq!(c.iter().map(|c| c["ok"].as_bool().unwrap()).collect::<Vec<_>>(), [true, true, true, false], "{c:?}");
+    }
+
+    #[test]
+    fn copies_request_what_a_small_node_has_free() {
+        // On 1 November 2026, a DOKS cluster of two 2-vCPU nodes ran one
+        // shard of two copies: the busier node had Cilium, the metrics
+        // agent, a CoreDNS, the operator and the coordinator, and 1088m and
+        // 2158 MiB of its 1900m and 3002 MiB free. Each copy asked 1575m
+        // and none started.
+        let cat = catalog();
+        let p = Plan { machine: "s-2vcpu-4gb".into(), nodes: 2, cluster: json!({"shards": 1, "replicas": 2}), ..Plan::default() };
+        let j = plan(&p, &cat).unwrap();
+        let req = &j["cluster"]["resources"]["requests"];
+        let (cpu, mem) = (req["cpu"].as_str().unwrap(), req["memory"].as_str().unwrap());
+        let milli: f64 = cpu.strip_suffix('m').unwrap().parse().unwrap();
+        let mib: f64 = mem.strip_suffix("Mi").unwrap().parse().unwrap();
+        let free = 2000.0 - 100.0 - 412.0 - 100.0 - 50.0 - 250.0;
+        assert!(milli <= free, "a copy asks {cpu} and the busier node has {free}m");
+        assert!(milli >= free * 0.85, "a copy asks {cpu}, well under the {free}m free");
+        // Its pods could have 3002 MiB (allocatable 3074892Ki), of which
+        // Cilium, the metrics agent, CoreDNS, the operator and the
+        // coordinator asked 844. The plan keeps to DigitalOcean's table,
+        // which gives a 4 GB node less (2.5 GiB) than that.
+        let free = 3002.0 - 332.0 - 80.0 - 170.0 - 32.0 - 230.0;
+        assert!(mib <= free, "a copy asks {mem} and the busier node has {free} MiB");
+        assert!(mib >= free * 0.7, "a copy asks {mem}, well under the {free} MiB free");
     }
 }

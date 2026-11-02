@@ -16,7 +16,7 @@ use crate::forward::{self, DocStore, KeyRange, KeywordColumn, NumericColumn, Ran
 use crate::graph::GraphReader;
 use crate::query::agg;
 use crate::query::memory::{Charge, MemoryBudget};
-use crate::query::logical::{Decay, Expand, GuardSite, OrderBy, Opts, PathTest, Phase, Pred, Projection, Score, Select, Tiebreak, Vectors, MAX_QUERY_VECTORS, CROSS_ENCODER_FIRST};
+use crate::query::logical::{Col, Decay, Expand, GuardSite, OrderBy, Opts, PathCol, PathTest, Phase, Pred, Projection, Score, Select, Tiebreak, Vectors, MAX_QUERY_VECTORS, CROSS_ENCODER_FIRST};
 use crate::query::plan::{CostModel, Estimator, FilterMode, Planner, VectorStrategy};
 use crate::query::rank::{Interval, Rank};
 use crate::query::stats::{FieldStats, TermStats};
@@ -79,6 +79,11 @@ fn cells<T>(n: usize) -> Vec<OnceLock<T>> {
     (0..n).map(|_| OnceLock::new()).collect()
 }
 
+/// Row `d`'s stored value of JSON field `field` (NULL without a doc store).
+fn object(store: Option<&DocStore>, field: usize, d: DocId, cache: &mut forward::StoreCache) -> Result<Value> {
+    Ok(store.and_then(|st| st.get_fields_cached(d, &[field], cache).pop()).unwrap_or(Value::Null))
+}
+
 fn opened<'r, T>(cell: &'r OnceLock<Opened<T>>, open: impl FnOnce() -> Result<Option<T>>) -> Result<Option<&'r T>> {
     match cell.get_or_init(|| open().map_err(|e| e.to_string())) {
         Ok(r) => Ok(r.as_ref()),
@@ -117,7 +122,9 @@ impl SegmentReaders {
         let f = &self.schema.fields[field];
         opened(&self.text[field], || {
             Ok(match f.ty {
+                // A JSON field with text has one beside its terms.
                 FieldType::Text { .. } | FieldType::Sparse if f.indexed => Some(TextFieldReader::open(&self.seg, &f.key())?),
+                FieldType::Json if f.has_text() => Some(TextFieldReader::open(&self.seg, &f.key())?),
                 _ => None,
             })
         })
@@ -168,6 +175,13 @@ impl SegmentReaders {
                 _ => None,
             })
         })
+    }
+
+    /// Whether the terms of JSON field `field` include marks
+    /// ([`crate::json::mark_term`]); a segment written before them reads
+    /// the value of every row holding a path from its object.
+    pub fn json_marks(&self, field: usize) -> bool {
+        self.seg.has(&crate::json::marks_section(&self.schema.fields[field].key()))
     }
 
     pub fn store(&self) -> Result<Option<&DocStore>> {
@@ -250,18 +264,31 @@ pub struct ExecOptions {
     /// `DISTINCT`, groups of derived rows): [`Engine::from_env`] by
     /// default.
     pub engine: Engine,
+    /// The time (microseconds since the epoch) at which rows of a table
+    /// with `expire_by` ([`crate::schema::Schema::with_expire_by`]) have
+    /// expired if their time is at or before it: `None` takes the time the
+    /// query starts. A coordinator gives its shards one time.
+    pub now: Option<i64>,
+    /// Keep expired rows: what deletes them looks for them with it.
+    pub expired: bool,
 }
 
 /// The engine of a plan's operators ([`crate::query::ops`] or
-/// [`crate::query::df`]).
+/// [`crate::query::df`]). Without the feature `datafusion`, the operators
+/// run every plan, whichever is chosen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Engine {
-    /// Strata's operators, in memory ([`crate::query::ops`]).
-    #[default]
+    /// Strata's operators, in memory ([`crate::query::ops`]): the default
+    /// without the feature `datafusion`.
+    #[cfg_attr(not(feature = "datafusion"), default)]
     Operators,
-    /// DataFusion (feature `datafusion`, [`crate::query::df`]), for the
-    /// plans it lowers; the operators run the others. Without the feature,
-    /// the operators run every plan.
+    /// DataFusion for a plan whose leaves read more than a few thousand
+    /// rows (`query::df::SMALL`), the operators for the others, which
+    /// they answer faster; the default with the feature `datafusion`.
+    #[cfg_attr(feature = "datafusion", default)]
+    Auto,
+    /// DataFusion (feature `datafusion`, [`crate::query::df`]), for every
+    /// plan it lowers; the operators run the others.
     DataFusion,
     /// [`Engine::DataFusion`], and a plan it does not lower fails with
     /// the reason instead of running on the operators (to find what the
@@ -270,14 +297,17 @@ pub enum Engine {
 }
 
 impl Engine {
-    /// `STRATA_ENGINE=datafusion` picks [`Engine::DataFusion`],
-    /// `datafusion-only` [`Engine::DataFusionOnly`]; anything else, or
-    /// nothing, the operators.
+    /// `STRATA_ENGINE`: `operators`, `auto`, `datafusion` or
+    /// `datafusion-only`; anything else, or nothing, the default
+    /// ([`Engine::Auto`] with the feature `datafusion`, the operators
+    /// without).
     pub fn from_env() -> Engine {
         match std::env::var("STRATA_ENGINE").as_deref() {
+            Ok("operators") => Engine::Operators,
+            Ok("auto") => Engine::Auto,
             Ok("datafusion") => Engine::DataFusion,
             Ok("datafusion-only") => Engine::DataFusionOnly,
-            _ => Engine::Operators,
+            _ => Engine::default(),
         }
     }
 }
@@ -307,6 +337,8 @@ impl Default for ExecOptions {
             memory: None,
             profile: false,
             engine: Engine::from_env(),
+            now: None,
+            expired: false,
         }
     }
 }
@@ -418,6 +450,15 @@ pub struct ResultSet {
     pub stats: ExecStats,
 }
 
+/// A search leaf's rows for DataFusion ([`Executor::execute_arrow`]):
+/// as rows, or as Arrow columns.
+#[derive(Debug)]
+pub enum Leaf {
+    Rows(ResultSet),
+    #[cfg(feature = "datafusion")]
+    Arrow(crate::query::arrow::Columns),
+}
+
 /// What a coordinator ranks a shard's rows by, row by row, so that it ranks
 /// the rows of several shards once ([`crate::cluster::merge`]): the inputs
 /// of a fused score (a ranking expression, RRF, a weighted sum), and the
@@ -454,6 +495,43 @@ struct PerGroup {
 enum GroupKey<'k> {
     Str(&'k str),
     Int(i64),
+}
+
+/// What [`Executor::projecting`] reads for a projection.
+struct Projecting {
+    stored: Vec<usize>,
+    features: Vec<Option<Vec<f64>>>,
+    /// Each segment's last decompressed doc store block: rows in docID
+    /// order (a scan) decompress each block once rather than once a row.
+    blocks: HashMap<usize, forward::StoreCache>,
+}
+
+/// A row's value in a column, as the executor finds it: made for it, a
+/// stored field fetched, or a keyword column's text.
+enum Cell<'c> {
+    Value(Value),
+    Ref(&'c Value),
+    Str(&'c str),
+}
+
+impl Cell<'_> {
+    fn into_value(self) -> Value {
+        match self {
+            Cell::Value(v) => v,
+            Cell::Ref(v) => v.clone(),
+            Cell::Str(x) => Value::Str(x.to_string()),
+        }
+    }
+
+    /// About the bytes the value holds ([`crate::query::memory::value_bytes`]).
+    #[cfg(feature = "datafusion")]
+    fn bytes(&self) -> u64 {
+        match self {
+            Cell::Value(v) => crate::query::memory::value_bytes(v),
+            Cell::Ref(v) => crate::query::memory::value_bytes(v),
+            Cell::Str(x) => std::mem::size_of::<Value>() as u64 + x.len() as u64,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -596,6 +674,12 @@ pub struct Executor<'a> {
     clock: Clock,
 }
 
+/// The rows of a table that have not expired at `now`: those without a
+/// time in its `expire_by` field `f`, or with a later one.
+pub fn unexpired(f: usize, now: i64) -> Pred {
+    Pred::Or(vec![Pred::Not(Box::new(Pred::Present { field: f })), Pred::IntRange { field: f, lo: now.saturating_add(1), hi: i64::MAX }])
+}
+
 /// Searches with their synonyms and typos resolved to indexed terms.
 #[derive(Default)]
 struct Expanded {
@@ -617,6 +701,29 @@ fn err(m: impl Into<String>) -> Error {
 /// runs plans whose subqueries already ran ([`crate::query::ops`]).
 fn unresolved() -> Error {
     err("a subquery's condition reached the executor before the subquery ran; run the query's plan with operators")
+}
+
+/// The order of rows by their values of a path (`ORDER BY attrs.price`),
+/// as the operators' Sort orders values: by [`agg::cmp`], NULL last
+/// unless `nulls_first`, in either direction.
+pub fn path_order(a: &Value, b: &Value, desc: bool, nulls_first: bool) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (matches!(a, Value::Null), matches!(b, Value::Null)) {
+        (true, true) => Ordering::Equal,
+        (true, false) => if nulls_first { Ordering::Less } else { Ordering::Greater },
+        (false, true) => if nulls_first { Ordering::Greater } else { Ordering::Less },
+        (false, false) if desc => agg::cmp(a, b).reverse(),
+        (false, false) => agg::cmp(a, b),
+    }
+}
+
+/// [`keep_best`] of rows with their values.
+fn keep_best_values(v: &mut Vec<(Value, Hit)>, k: usize, better: impl Fn(&(Value, Hit), &(Value, Hit)) -> std::cmp::Ordering) {
+    if k > 0 && k < v.len() {
+        v.select_nth_unstable_by(k - 1, &better);
+        let cut = v[k - 1].clone();
+        v.retain(|c| better(c, &cut) != std::cmp::Ordering::Greater);
+    }
 }
 
 /// Keeps the rows of `v` that `better` puts among its first `k`, and every
@@ -720,6 +827,20 @@ impl<'a> Executor<'a> {
         }
     }
 
+    /// `q` without the rows that have expired ([`ExecOptions::now`]), unless
+    /// its table has no `expire_by` or [`ExecOptions::expired`] keeps them.
+    fn unexpired<'q>(&self, q: &'q Select) -> std::borrow::Cow<'q, Select> {
+        match self.schema.expire_field() {
+            Some(f) if !self.opts.expired => {
+                let now = self.opts.now.unwrap_or_else(crate::timestamp::now);
+                let mut q = q.clone();
+                q.filter = Pred::And(vec![std::mem::replace(&mut q.filter, Pred::True), unexpired(f, now)]);
+                std::borrow::Cow::Owned(q)
+            }
+            _ => std::borrow::Cow::Borrowed(q),
+        }
+    }
+
     /// A step begins ([`steps`]).
     fn mark(&self) -> Mark {
         self.clock.mark(&self.stats.steps)
@@ -803,6 +924,8 @@ impl<'a> Executor<'a> {
     /// children of a prefix are found by jumping through the field's
     /// sorted dictionary, past each child's own children.
     pub fn sid_next(mut self, q: &Select, field: usize, prefixes: &[String]) -> Result<Vec<Vec<(String, u64)>>> {
+        let unexpired = self.unexpired(q);
+        let q = unexpired.as_ref();
         let mut counts: Vec<std::collections::BTreeMap<u32, u64>> = vec![Default::default(); prefixes.len()];
         let segs = self.segs.clone();
         for s in segs.iter() {
@@ -844,6 +967,8 @@ impl<'a> Executor<'a> {
     /// rows left out: the segments' terms read in one merge, in term order,
     /// each counted over those rows, then each path's runs of a type.
     pub fn json_paths(mut self, q: &Select, field: usize, call: &crate::query::paths::Call) -> Result<crate::query::paths::Paths> {
+        let unexpired = self.unexpired(q);
+        let q = unexpired.as_ref();
         use std::cmp::Reverse;
         use std::collections::BinaryHeap;
         let runs = call.runs();
@@ -953,6 +1078,13 @@ impl<'a> Executor<'a> {
     /// items, deleted rows left out. No levels when the guard has no items
     /// to count (a `bm25` text without optional words).
     pub fn guard_counts(&mut self, q: &Select) -> Result<(usize, Vec<u64>)> {
+        let unexpired = self.unexpired(q);
+        self.level_counts(unexpired.as_ref())
+    }
+
+    /// [`Executor::guard_counts`] of a query whose expired rows are left
+    /// out already.
+    fn level_counts(&mut self, q: &Select) -> Result<(usize, Vec<u64>)> {
         let Some(g) = &q.guard else { return Ok((0, Vec::new())) };
         // A bm25 site's options, and its MATCH filter at level m.
         let bm25 = |m: Option<usize>| -> Result<(usize, Option<String>)> {
@@ -1027,7 +1159,7 @@ impl<'a> Executor<'a> {
         if self.opts.shard {
             return Err(err("a guarded query (min_rows, max_rows) runs on shards at the level its coordinator chose"));
         }
-        let (n, counts) = self.guard_counts(q)?;
+        let (n, counts) = self.level_counts(q)?;
         if counts.is_empty() {
             self.stats.plan.push("guard: no items to count".into());
             return Ok(Some(q.at_level(n)));
@@ -1037,7 +1169,36 @@ impl<'a> Executor<'a> {
         Ok(Some(q.at_level(m)))
     }
 
-    pub fn execute(mut self, q: &Select) -> Result<ResultSet> {
+    /// The rows of `q`'s projection at these places (segment ordinal and
+    /// docID), in their order, as [`Executor::execute`] would give them
+    /// before typing them ([`Select::typed`]): what reads by key fetch
+    /// once they have found their rows ([`crate::db::Db::get_many_at`]).
+    pub fn rows_at(self, q: &Select, at: &[(usize, DocId)]) -> Result<Vec<Vec<Value>>> {
+        let hits: Vec<Hit> = at.iter().map(|&(seg, doc)| Hit { seg, doc, score: f64::NAN }).collect();
+        self.project(q, &hits)
+    }
+
+    pub fn execute(self, q: &Select) -> Result<ResultSet> {
+        match self.answer(q, None)? {
+            Leaf::Rows(rs) => Ok(rs),
+            #[cfg(feature = "datafusion")]
+            Leaf::Arrow(_) => unreachable!("rows asked for"),
+        }
+    }
+
+    /// [`Executor::execute`], with the rows as Arrow columns when there are
+    /// more than `over` of them and the query neither groups nor counts
+    /// (nor, run for a coordinator, needs more than its rows to be merged,
+    /// [`crate::cluster::concatenates`]): what DataFusion reads, without
+    /// the rows being made first.
+    #[cfg(feature = "datafusion")]
+    pub fn execute_arrow(self, q: &Select, over: usize) -> Result<Leaf> {
+        self.answer(q, Some(over))
+    }
+
+    fn answer(mut self, q: &Select, arrow_over: Option<usize>) -> Result<Leaf> {
+        let unexpired = self.unexpired(q);
+        let q = unexpired.as_ref();
         let m = self.mark();
         let settled = self.settle_guard(q)?;
         if q.guard.is_some() {
@@ -1071,8 +1232,12 @@ impl<'a> Executor<'a> {
             let needed = agg::needed(q);
             let m = self.mark();
             let general = agg::is_general(q, |f| self.facet_field(f));
-            let groups = if general { self.aggregate(q, &needed)? } else { self.facets(q, q.group_by[0], &needed)? };
-            let by = q.group_by.iter().map(|&f| self.field_name(f).to_string()).collect::<Vec<_>>().join(", ");
+            let groups = match (general, q.group_by[..].first()) {
+                (false, Some(&Col::Path(p))) => self.path_facets(q, &q.paths[p], &needed)?,
+                (false, Some(&Col::Field(f))) => self.facets(q, f, &needed)?,
+                _ => self.aggregate(q, &needed)?,
+            };
+            let by = q.group_by.iter().map(|&c| self.col_name(q, c)).collect::<Vec<_>>().join(", ");
             self.step(m, if general { "aggregate" } else { "facet" }, if by.is_empty() { "every row".into() } else { format!("by {by}") }, Some(groups.map.len() as u64));
             // Shards return every group with partial aggregates, for the
             // coordinator to combine.
@@ -1083,7 +1248,7 @@ impl<'a> Executor<'a> {
                 q.typed(&mut rows);
                 rows
             };
-            return Ok(empty(columns, rows, self.stats));
+            return Ok(Leaf::Rows(empty(columns, rows, self.stats)));
         }
         let has_count = q.projection.iter().any(|(_, p)| *p == Projection::Count);
         if has_count {
@@ -1095,7 +1260,7 @@ impl<'a> Executor<'a> {
             self.step(m, "count", String::new(), Some(n as u64));
             let one = self.opts.shard || (q.offset == 0 && q.limit != Some(0));
             let rows = if one { vec![vec![Value::Int(n); columns.len()]] } else { Vec::new() };
-            return Ok(empty(columns, rows, self.stats));
+            return Ok(Leaf::Rows(empty(columns, rows, self.stats)));
         }
         let m = self.mark();
         let hits = self.ordered_hits(q, self.opts.max_rows)?;
@@ -1104,6 +1269,17 @@ impl<'a> Executor<'a> {
         let skip = if self.opts.shard { 0 } else { q.offset };
         let hits: Vec<Hit> = hits.into_iter().skip(skip).collect();
         let m = self.mark();
+        #[cfg(feature = "datafusion")]
+        if arrow_over.is_some_and(|o| hits.len() > o) && (!self.opts.shard || crate::cluster::concatenates(q)) {
+            if let Some((arrays, keys)) = self.project_arrow(q, &hits)? {
+                self.step(m, "project", format!("{} column{} into Arrow", columns.len(), if columns.len() == 1 { "" } else { "s" }), Some(hits.len() as u64));
+                let scores = hits.iter().map(|h| h.score).collect();
+                let c = crate::query::arrow::Columns { names: columns, arrays, keys, scores, rows: hits.len(), stats: self.stats };
+                return Ok(Leaf::Arrow(c));
+            }
+        }
+        #[cfg(not(feature = "datafusion"))]
+        let _ = arrow_over;
         let mut rows = self.project(q, &hits)?;
         self.step(m, "project", format!("{} column{}", columns.len(), if columns.len() == 1 { "" } else { "s" }), Some(rows.len() as u64));
         // Shards answer with the stored integers, which the merge types.
@@ -1129,7 +1305,7 @@ impl<'a> Executor<'a> {
             parts.get_or_insert_with(RankParts::default).phases = self.phase_parts(&q.phases, &hits)?;
             self.step(m, "phase values", format!("{} phase{}", q.phases.len(), if q.phases.len() == 1 { "" } else { "s" }), Some(hits.len() as u64));
         }
-        Ok(ResultSet { columns, rows, keys, scores, parts, stats: self.stats })
+        Ok(Leaf::Rows(ResultSet { columns, rows, keys, scores, parts, stats: self.stats }))
     }
 
     /// What the step that finds a query's rows is called, and its order.
@@ -1141,6 +1317,7 @@ impl<'a> Executor<'a> {
         match &q.order {
             None => ("scan", format!("rows WHERE keeps{cut}")),
             Some(OrderBy::Score { score: Score::Column { field }, desc, .. }) => ("order", format!("by {} {}{cut}", self.field_name(*field), if *desc { "DESC" } else { "ASC" })),
+            Some(OrderBy::Path { path, desc, .. }) => ("order", format!("by {} {}{cut}", self.col_name(q, Col::Path(*path)), if *desc { "DESC" } else { "ASC" })),
             Some(OrderBy::Score { score, .. }) => match Rank::of(score, 0) {
                 Some(rank) => ("rank", format!("by {}{cut}", rank.explain(&self.schema))),
                 None => ("rank", format!("by {}{cut}", self.leaf_label(score).0)),
@@ -1287,8 +1464,62 @@ impl<'a> Executor<'a> {
             }
             Some(OrderBy::Score { score, .. }) if Rank::of(score, 0).is_some() => return Err(err("a ranking expression is ordered DESC (negate it to rank the smallest first)")),
             Some(OrderBy::Score { .. }) => return Err(err("relevance scores can only be ordered DESC")),
+            Some(OrderBy::Path { path, desc, nulls_first }) => {
+                let pc = q.paths.get(*path).ok_or_else(|| err("ORDER BY names a path the query does not read"))?.clone();
+                self.by_path(&pc, *desc, *nulls_first, &q.filter, want, q.tiebreak.as_ref())?
+            }
             Some(_) => return Err(err("ORDER BY COUNT(*) needs GROUP BY")),
         })
+    }
+
+    /// The rows of the filter in the order of their values of path `pc`,
+    /// as the operators' Sort orders values ([`path_order`]), rows tied on
+    /// it by key (`ORDER BY attrs.price, id`) or in index order; with a
+    /// LIMIT, the first `want`. Each row's value is read from the path's
+    /// terms ([`Self::path_values`]).
+    fn by_path(&mut self, pc: &PathCol, desc: bool, nulls_first: bool, p: &Pred, want: Option<usize>, tb: Option<&Tiebreak>) -> Result<Vec<Hit>> {
+        let order = |a: &(Value, Hit), b: &(Value, Hit)| path_order(&a.0, &b.0, desc, nulls_first);
+        let mut cands: Vec<(Value, Hit)> = Vec::new();
+        let mut cut_at = want.map_or(usize::MAX, |k| (2 * k).max(4096));
+        let segs = self.segs.clone();
+        let mut tick = self.ticker();
+        for s in segs.iter() {
+            self.check_deadline()?;
+            let set = self.filter_set(s, p)?;
+            let pv = self.path_values(s, pc, &set)?;
+            for d in set.iter() {
+                tick.tick()?;
+                let v = pv.get(d);
+                self.charge.room(&mut cands)?;
+                cands.push((v.clone(), Hit { seg: s.ord, doc: d, score: 0.0 }));
+                self.stats.scored += 1;
+                if cands.len() >= cut_at {
+                    keep_best_values(&mut cands, want.unwrap_or(0), order);
+                    cut_at = cut_at.max(2 * cands.len());
+                }
+            }
+        }
+        if let Some(k) = want {
+            keep_best_values(&mut cands, k, order);
+        }
+        let key_desc = match tb {
+            Some(Tiebreak::Key { desc }) => Some(*desc),
+            _ => None,
+        };
+        let mut keyed: Vec<((Value, Hit), Value)> = cands.into_iter().map(|c| { let k = if key_desc.is_some() { self.key(&c.1) } else { Value::Null }; (c, k) }).collect();
+        keyed.sort_by(|a, b| {
+            order(&a.0, &b.0).then_with(|| match key_desc {
+                Some(kd) => {
+                    let c = cmp_values(&a.1, &b.1);
+                    if kd { c.reverse() } else { c }
+                }
+                None => (a.0 .1.seg, a.0 .1.doc).cmp(&(b.0 .1.seg, b.0 .1.doc)),
+            })
+        });
+        if let Some(k) = want {
+            keyed.truncate(k);
+        }
+        Ok(keyed.into_iter().map(|((_, h), _)| h).collect())
     }
 
     /// The cap of a `MAX k PER` ([`Select::per`]) that the executor keeps
@@ -2482,10 +2713,39 @@ impl<'a> Executor<'a> {
         Ok((q, stats))
     }
 
-    /// Whether facets can count `field`'s values (a keyword column).
-    fn facet_field(&self, field: usize) -> bool {
+    /// Whether facets can count a column's values: a keyword column's, or
+    /// a path's, from its terms.
+    fn facet_field(&self, c: Col) -> bool {
+        let Col::Field(field) = c else { return true };
         let f = &self.schema.fields[field];
         f.ty == FieldType::Keyword || (f.ty == FieldType::Int && f.multi)
+    }
+
+    /// A column's name, for steps.
+    fn col_name(&self, q: &Select, c: Col) -> String {
+        match c {
+            Col::Field(f) => self.field_name(f).to_string(),
+            Col::Path(p) => q.paths.get(p).map_or("?".into(), |pc| format!("{}.{}", self.field_name(pc.field), pc.path)),
+        }
+    }
+
+    /// Path `pc`'s values over the rows of `set` in segment `s`, from the
+    /// field's terms and the objects of the rows they do not give.
+    fn path_values(&mut self, s: &Seg<'a>, pc: &PathCol, set: &DocSet) -> Result<crate::json::PathValues> {
+        let kw = self.keyword(s, pc.field)?;
+        let marks = s.r.json_marks(pc.field);
+        let store = s.r.store()?;
+        let mut cache = forward::StoreCache::default();
+        let pv = crate::json::PathValues::read(kw, marks, &pc.path, pc.kind, set, |d| object(store, pc.field, d, &mut cache))?;
+        self.note_objects(s, pc, pv.objects_read);
+        Ok(pv)
+    }
+
+    /// A step's note of the rows a path's values were read from objects for.
+    fn note_objects(&mut self, s: &Seg<'a>, pc: &PathCol, n: usize) {
+        if n > 0 {
+            self.stats.plan.push(format!("seg {}: {} rows' {}.{} read from their objects", s.ord, n, self.field_name(pc.field), pc.path));
+        }
     }
 
     /// Document `d`'s values of `field` for aggregates: one for a
@@ -2515,14 +2775,37 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
+    /// Document `d`'s values of column `c` for aggregates
+    /// ([`Self::agg_values`]); of a path, from `paths` (each path's values
+    /// over the segment's rows): each of a list's, the distinct ones for a
+    /// group (`key`), as the operators' aggregate reads them.
+    #[allow(clippy::too_many_arguments)]
+    fn col_values(&self, s: &Seg<'a>, c: Col, d: DocId, multi: &HashMap<usize, HashMap<DocId, Vec<u32>>>, paths: &HashMap<usize, crate::json::PathValues>, key: bool, out: &mut Vec<Value>) -> Result<()> {
+        let p = match c {
+            Col::Field(f) => return self.agg_values(s, f, d, multi, out),
+            Col::Path(p) => p,
+        };
+        out.clear();
+        match paths.get(&p).map(|pv| pv.get(d)) {
+            None | Some(Value::Null) => {}
+            Some(Value::List(xs)) if key => {
+                let mut seen = std::collections::HashSet::new();
+                out.extend(xs.iter().filter(|x| seen.insert(agg::Part::group(x))).cloned());
+            }
+            Some(Value::List(xs)) => out.extend(xs.iter().cloned()),
+            Some(v) => out.push(v.clone()),
+        }
+        Ok(())
+    }
+
     /// Groups and aggregates, document by document (anything beyond a
     /// facet's counts).
     fn aggregate(&mut self, q: &Select, needed: &[Projection]) -> Result<agg::Groups> {
-        let mut fields: Vec<usize> = q.group_by.clone();
+        let mut cols: Vec<Col> = q.group_by.clone();
         for p in needed {
-            if let Projection::Agg { field, .. } = p {
-                if !fields.contains(field) {
-                    fields.push(*field);
+            if let Projection::Agg { of, .. } = p {
+                if !cols.contains(of) {
+                    cols.push(*of);
                 }
             }
         }
@@ -2538,7 +2821,16 @@ impl<'a> Executor<'a> {
             self.stats.plan.push(format!("seg {}: aggregate {} rows into groups of {}", s.ord, set.len(), q.group_by.len()));
             // Multi-valued fields: each document's value codes, from the postings.
             let mut multi: HashMap<usize, HashMap<DocId, Vec<u32>>> = HashMap::new();
-            for &f in &fields {
+            let mut paths: HashMap<usize, crate::json::PathValues> = HashMap::new();
+            for &c in &cols {
+                let f = match c {
+                    Col::Field(f) => f,
+                    Col::Path(p) => {
+                        let pv = self.path_values(s, &q.paths[p], &set)?;
+                        paths.insert(p, pv);
+                        continue;
+                    }
+                };
                 if self.schema.fields[f].multi {
                     let kw = self.keyword(s, f)?;
                     let mut m: HashMap<DocId, Vec<u32>> = HashMap::new();
@@ -2557,18 +2849,18 @@ impl<'a> Executor<'a> {
                 // group values.
                 let mut keys: Vec<Vec<agg::Part>> = vec![Vec::new()];
                 for &g in &q.group_by {
-                    self.agg_values(s, g, d, &multi, &mut gv)?;
+                    self.col_values(s, g, d, &multi, &paths, true, &mut gv)?;
                     if gv.is_empty() {
                         gv.push(Value::Null);
                     }
-                    keys = keys.into_iter().flat_map(|k| gv.iter().map(move |v| [k.clone(), vec![agg::Part::of(v)]].concat())).collect();
+                    keys = keys.into_iter().flat_map(|k| gv.iter().map(move |v| [k.clone(), vec![agg::Part::group(v)]].concat())).collect();
                 }
                 for key in keys {
                     let accs = groups.entry(key, needed)?;
                     for (a, p) in accs.iter_mut().zip(needed) {
                         match p {
-                            Projection::Agg { field, .. } => {
-                                self.agg_values(s, *field, d, &multi, &mut vals)?;
+                            Projection::Agg { of, .. } => {
+                                self.col_values(s, *of, d, &multi, &paths, false, &mut vals)?;
                                 for v in &vals {
                                     let more = a.add(v);
                                     if more > 0 {
@@ -3280,6 +3572,36 @@ impl<'a> Executor<'a> {
         Ok(groups)
     }
 
+    /// The groups of one path and their counts ([`Self::facets`] of a
+    /// path), from its terms' postings: only the rows the terms do not
+    /// give are read, from their objects.
+    fn path_facets(&mut self, q: &Select, pc: &PathCol, needed: &[Projection]) -> Result<agg::Groups> {
+        let mut groups = agg::Groups::limited(self.opts.max_groups);
+        groups.charge = self.charge.clone();
+        let segs = self.segs.clone();
+        for s in segs.iter() {
+            self.check_deadline()?;
+            let m = self.mark();
+            let set = self.filter_set(s, &q.filter)?;
+            let kw = self.keyword(s, pc.field)?;
+            let marks = s.r.json_marks(pc.field);
+            let store = s.r.store()?;
+            let mut cache = forward::StoreCache::default();
+            let (counts, objects) = crate::json::PathValues::counts(kw, marks, &pc.path, pc.kind, &set, |d| object(store, pc.field, d, &mut cache))?;
+            self.stats.plan.push(format!("seg {}: facet of a path's terms over {} docs", s.ord, set.len()));
+            self.note_objects(s, pc, objects);
+            for (v, c) in counts {
+                for a in groups.entry(vec![agg::Part::group(&v)], needed)? {
+                    if let agg::Acc::Count(n) = a {
+                        *n += c as i64;
+                    }
+                }
+            }
+            self.seg_step(m, s, Some(set.len() as u64));
+        }
+        Ok(groups)
+    }
+
     // ---- output ----------------------------------------------------------
 
     fn key(&self, h: &Hit) -> Value {
@@ -3314,28 +3636,35 @@ impl<'a> Executor<'a> {
         }
     }
 
-    fn project(&self, q: &Select, hits: &[Hit]) -> Result<Vec<Vec<Value>>> {
+    /// What projecting `hits` reads besides each row's own cells: the
+    /// stored fields to fetch, and each ranking expression's values.
+    fn projecting(&self, q: &Select, hits: &[Hit]) -> Result<Projecting> {
         if q.projection.iter().any(|(_, p)| *p == Projection::SeqNo) && !self.snap.numbers_writes() {
             return Err(Error::Query("seq_no(): the database does not number its writes (Database::start_seq_no)".into()));
         }
-        let stored: Vec<usize> = q
+        let mut stored: Vec<usize> = q
             .projection
             .iter()
             .filter_map(|(_, p)| match p {
                 // Vectors live in their index, not the doc store, and a
-                // single-valued KEYWORD's index reads a row's value without
-                // decompressing its stored fields.
+                // single-valued KEYWORD's, INT's or FLOAT's column reads a
+                // row's value without decompressing its stored fields.
                 Projection::Field(i)
                     if self.schema.fields[*i].stored
                         && Some(*i) != self.schema.primary_key
                         && !matches!(self.schema.fields[*i].ty, FieldType::Vector { .. })
-                        && !self.keyword_column(*i) =>
+                        && !self.keyword_column(*i)
+                        && !self.numeric_column(*i) =>
                 {
                     Some(*i)
                 }
+                // A path of the rows of a page is read from their objects.
+                Projection::Path(p) => Some(q.paths[*p].field),
                 _ => None,
             })
             .collect();
+        let mut seen = std::collections::HashSet::new();
+        stored.retain(|f| seen.insert(*f));
         // Each ranking expression's value of every row, column by column.
         let features: Vec<Option<Vec<f64>>> = q
             .projection
@@ -3345,43 +3674,122 @@ impl<'a> Executor<'a> {
                 _ => Ok(None),
             })
             .collect::<Result<_>>()?;
+        Ok(Projecting { stored, features, blocks: HashMap::new() })
+    }
+
+    /// The stored fields of hit `h` that the projection reads.
+    fn fetch(&self, p: &mut Projecting, s: &Seg<'a>, h: &Hit) -> Result<Vec<Value>> {
+        Ok(match (s.r.store()?, p.stored.is_empty()) {
+            (Some(store), false) => store.get_fields_cached(h.doc, &p.stored, p.blocks.entry(h.seg).or_default()),
+            _ => Vec::new(),
+        })
+    }
+
+    /// Column `c` (`proj`) of hit `h`, the `r`-th row, whose stored fields
+    /// are `fetched`.
+    fn cell<'c>(&self, q: &Select, p: &Projecting, s: &'c Seg<'a>, h: &Hit, r: usize, c: usize, proj: &Projection, fetched: &'c [Value]) -> Result<Cell<'c>> {
+        Ok(Cell::Value(match proj {
+            Projection::Feature(_) => match p.features[c].as_ref().map(|v| v[r]) {
+                Some(x) if x.is_finite() => Value::Float(x),
+                _ => Value::Null,
+            },
+            // A row without the ordering column's value scores ±inf.
+            Projection::Score if h.score.is_finite() => Value::Float(h.score),
+            Projection::Score => Value::Null,
+            Projection::Count | Projection::Agg { .. } => Value::Null,
+            Projection::Hops(g) => self.hops_of(*g, h.seg, h.doc).map_or(Value::Null, |x| Value::Int(x as i64)),
+            Projection::SeqNo => Value::Int(rowseq::of_view(s.view, h.doc)? as i64),
+            Projection::Field(i) if Some(*i) == self.schema.primary_key => self.key(h),
+            Projection::Field(i) if self.updates(s, *i).is_some_and(|u| u.get(*i, h.doc).is_some()) => self.updates(s, *i).and_then(|u| u.get(*i, h.doc)).cloned().unwrap_or(Value::Null),
+            Projection::Field(i) => match p.stored.iter().position(|x| x == i) {
+                Some(j) => return Ok(fetched.get(j).map_or(Cell::Value(Value::Null), Cell::Ref)),
+                None => return self.unstored_cell(s, *i, h.doc),
+            },
+            Projection::Path(path) => {
+                let pc = &q.paths[*path];
+                let j = p.stored.iter().position(|x| *x == pc.field);
+                crate::json::extract(j.and_then(|j| fetched.get(j)).unwrap_or(&Value::Null), &pc.path, pc.kind)?
+            }
+        }))
+    }
+
+    fn project(&self, q: &Select, hits: &[Hit]) -> Result<Vec<Vec<Value>>> {
+        let mut p = self.projecting(q, hits)?;
         let mut rows = Vec::with_capacity(hits.len());
-        // A segment's last decompressed block: rows in docID order (a scan)
-        // decompress each block once rather than once a row.
-        let mut blocks: HashMap<usize, forward::StoreCache> = HashMap::new();
+        let mut at: Option<Seg<'a>> = None;
         for (r, h) in hits.iter().enumerate() {
-            let s = &self.seg_by_ord(h.seg);
-            let fetched = match (s.r.store()?, stored.is_empty()) {
-                (Some(store), false) => store.get_fields_cached(h.doc, &stored, blocks.entry(h.seg as usize).or_default()),
-                _ => Vec::new(),
-            };
+            if at.as_ref().is_none_or(|s| s.ord != h.seg) {
+                at = Some(self.seg_by_ord(h.seg));
+            }
+            let s = at.as_ref().expect("the hit's segment");
+            let fetched = self.fetch(&mut p, s, h)?;
             let mut row = Vec::with_capacity(q.projection.len());
-            for (c, (_, p)) in q.projection.iter().enumerate() {
-                row.push(match p {
-                    Projection::Feature(_) => match features[c].as_ref().map(|v| v[r]) {
-                        Some(x) if x.is_finite() => Value::Float(x),
-                        _ => Value::Null,
-                    },
-                    // A row without the ordering column's value scores ±inf.
-                    Projection::Score if h.score.is_finite() => Value::Float(h.score),
-                    Projection::Score => Value::Null,
-                    Projection::Count | Projection::Agg { .. } => Value::Null,
-                    Projection::Hops(g) => self.hops_of(*g, h.seg, h.doc).map_or(Value::Null, |x| Value::Int(x as i64)),
-                    Projection::SeqNo => Value::Int(rowseq::of_view(s.view, h.doc)? as i64),
-                    Projection::Field(i) if Some(*i) == self.schema.primary_key => self.key(h),
-                    Projection::Field(i) if self.updates(s, *i).is_some_and(|u| u.get(*i, h.doc).is_some()) => {
-                        self.updates(s, *i).and_then(|u| u.get(*i, h.doc)).cloned().unwrap_or(Value::Null)
-                    }
-                    Projection::Field(i) => match stored.iter().position(|x| x == i) {
-                        Some(j) => fetched.get(j).cloned().unwrap_or(Value::Null),
-                        None => self.unstored_value(s, *i, h.doc),
-                    },
-                });
+            for (c, (_, proj)) in q.projection.iter().enumerate() {
+                row.push(self.cell(q, &p, s, h, r, c, proj, &fetched)?.into_value());
             }
             self.charge.row(&row)?;
             rows.push(row);
         }
         Ok(rows)
+    }
+
+    /// [`Executor::project`] into Arrow arrays, typed as the answer types
+    /// them ([`Select::typed`]), with the keys' array: `None` when a
+    /// column holds values of more than one type, which only rows can.
+    #[cfg(feature = "datafusion")]
+    fn project_arrow(&self, q: &Select, hits: &[Hit]) -> Result<Option<(Vec<datafusion::arrow::array::ArrayRef>, datafusion::arrow::array::ArrayRef)>> {
+        use crate::query::arrow::Builder;
+        let n = hits.len();
+        let mut p = self.projecting(q, hits)?;
+        let mut cols: Vec<Builder> = q.projection.iter().map(|_| Builder::new()).collect();
+        // The key column, when the projection has one as it is, is the
+        // keys' array too.
+        let pk = q.projection.iter().enumerate().position(|(c, (_, proj))| matches!(proj, Projection::Field(i) if Some(*i) == self.schema.primary_key) && q.types.get(c).copied().flatten().is_none());
+        let mut keys = Builder::new();
+        let mut bytes = 0u64;
+        let mut at: Option<Seg<'a>> = None;
+        for (r, h) in hits.iter().enumerate() {
+            if at.as_ref().is_none_or(|s| s.ord != h.seg) {
+                at = Some(self.seg_by_ord(h.seg));
+            }
+            let s = at.as_ref().expect("the hit's segment");
+            let fetched = self.fetch(&mut p, s, h)?;
+            bytes += 24;
+            for (c, (_, proj)) in q.projection.iter().enumerate() {
+                let b = &mut cols[c];
+                let cell = self.cell(q, &p, s, h, r, c, proj, &fetched)?;
+                bytes += cell.bytes();
+                let pushed = match (q.types.get(c).copied().flatten(), cell) {
+                    (Some(t), cell) => b.push(t.output(cell.into_value()), n),
+                    (None, Cell::Value(v)) => b.push(v, n),
+                    (None, Cell::Ref(v)) => b.push_ref(v, n),
+                    (None, Cell::Str(x)) => b.push_str(x, n),
+                };
+                if pushed.is_err() {
+                    return Ok(None);
+                }
+            }
+            if pk.is_none() && keys.push(self.key(h), n).is_err() {
+                return Ok(None);
+            }
+            // Counted every 1,024 rows rather than every row.
+            if r % 1024 == 1023 {
+                self.charge.add(std::mem::take(&mut bytes))?;
+            }
+        }
+        self.charge.add(bytes)?;
+        let arrays = match cols.into_iter().map(|b| b.finish(n)).collect::<std::result::Result<Vec<_>, _>>() {
+            Ok(a) => a,
+            Err(_) => return Ok(None),
+        };
+        let keys = match pk {
+            Some(c) => arrays[c].clone(),
+            None => match keys.finish(n) {
+                Ok(k) => k,
+                Err(_) => return Ok(None),
+            },
+        };
+        Ok(Some((arrays, keys)))
     }
 
     /// The value of the ranking expression `score`, which scores each row
@@ -3401,6 +3809,13 @@ impl<'a> Executor<'a> {
             .collect())
     }
 
+    /// Whether the field's values are read from its numeric column: one
+    /// INT or FLOAT a row, which the column holds exactly.
+    fn numeric_column(&self, field: usize) -> bool {
+        let f = &self.schema.fields[field];
+        matches!(f.ty, FieldType::Int | FieldType::Float) && f.indexed && !f.multi
+    }
+
     /// Whether the field's values are read from its keyword column: one
     /// value a row, the value itself (a MEDIA field's column holds its
     /// `sha256`).
@@ -3409,15 +3824,17 @@ impl<'a> Executor<'a> {
         matches!(f.ty, FieldType::Keyword) && f.indexed && !f.multi && f.media.is_none()
     }
 
-    fn unstored_value(&self, s: &Seg<'a>, field: usize, d: DocId) -> Value {
-        match self.schema.fields[field].ty {
+    /// A field read from its index rather than the doc store.
+    fn unstored_cell<'s>(&self, s: &'s Seg<'a>, field: usize, d: DocId) -> Result<Cell<'s>> {
+        Ok(Cell::Value(match self.schema.fields[field].ty {
             FieldType::Vector { .. } => s.r.vector(field).ok().flatten().map_or(Value::Null, |v| v.row_value(d)),
+            FieldType::Int | FieldType::Float if self.numeric_column(field) => s.r.numeric(field)?.map_or(Value::Null, |n| n.col().get(d)),
             FieldType::Int | FieldType::Float => s.r.numeric(field).ok().flatten().map_or(Value::Null, |n| n.col().get(d)),
-            FieldType::Keyword => s.r.keyword(field).ok().flatten().and_then(|k| k.value_of_doc(d)).map_or(Value::Null, |v| Value::Str(v.to_string())),
+            FieldType::Keyword => return Ok(s.r.keyword(field).ok().flatten().and_then(|k| k.value_of_doc(d)).map_or(Cell::Value(Value::Null), Cell::Str)),
             // A JSON field is always stored.
             FieldType::Text { .. } | FieldType::Sparse | FieldType::Json => Value::Null,
             FieldType::Edges => s.r.graph(field).ok().flatten().map_or(Value::Null, |g| g.edges_value(d)),
-        }
+        }))
     }
 }
 

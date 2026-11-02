@@ -10,7 +10,7 @@ use serde_json::{json, Value as Json};
 
 use super::catalog::Machine;
 use super::Catalog;
-use crate::cloud::{check_name, cluster_yaml, fit, operator_yaml, Node};
+use crate::cloud::{check_name, cluster_objects, cluster_yaml, fit, operator_yaml, Node};
 pub use crate::cloud::IMAGE;
 
 /// Hours in a month, as AWS prices them.
@@ -25,6 +25,12 @@ const NODE_PODS: u32 = 4;
 
 /// The cluster's own pods: two CoreDNS and two EBS controllers.
 const SYSTEM_PODS: u32 = 4;
+
+/// The CPU an EKS node keeps from its pods, in cores: what the EKS AMI
+/// reserves for the kubelet (70m to 90m on 2 to 8 vCPUs) and the
+/// requests of aws-node (25m), kube-proxy (100m) and the EBS driver's
+/// node pod on every node. Not measured on a running node yet.
+pub const SYSTEM_CPU: f64 = 0.25;
 
 /// What is asked for: `POST /v1/admin/aws/plan`.
 #[derive(Clone, Debug, Deserialize)]
@@ -80,7 +86,7 @@ pub fn plan(p: &Plan, cat: &Catalog, principal_arn: &str) -> Result<Json, String
         return Err("volume_gb is 1 to 16,384 (a gp3 volume's size)".into());
     }
     let alloc = allocatable_gib(m);
-    let f = fit(&p.cluster, p.nodes, &Node { vcpu: m.vcpu, alloc_gib: alloc }, p.volume_gb, "gp3")?;
+    let f = fit(&p.cluster, p.nodes, &Node { vcpu: m.vcpu, alloc_gib: alloc, system_cpu: SYSTEM_CPU }, p.volume_gb, "gp3")?;
     let (per_node, coordinators, replicas) = (f.per_node, f.coordinators, f.replicas);
 
     let mut warnings = f.warnings(p.nodes);
@@ -136,6 +142,7 @@ pub fn plan(p: &Plan, cat: &Catalog, principal_arn: &str) -> Result<Json, String
         format!("aws cloudformation delete-stack --region {r} --stack-name {stack}"),
         format!("aws cloudformation wait stack-delete-complete --region {r} --stack-name {stack}"),
     ];
+    let objects = cluster_objects(&p.name, &f.cluster, Some(gp3_class()));
     Ok(json!({
         "provider": "aws",
         "stack": p.stack(),
@@ -146,7 +153,8 @@ pub fn plan(p: &Plan, cat: &Catalog, principal_arn: &str) -> Result<Json, String
         "quota": {"vcpus": quota, "needs": need, "kind": kind},
         "cost": cost,
         "warnings": warnings,
-        "manifests": {"operator": operator_yaml(&image)?, "cluster": cluster_yaml("A Strata cluster on EKS, from strata-server's cloud view", &p.name, &f.cluster, Some(gp3_class()))},
+        "manifests": {"operator": operator_yaml(&image)?, "cluster": cluster_yaml("A Strata cluster on EKS, from strata-server's cloud view", &objects)},
+        "objects": objects,
         "commands": commands,
         "teardown": teardown,
         "cluster": f.cluster,

@@ -7,6 +7,9 @@
 //! API ([`strata::ingest`]). Every call that reads or writes the database
 //! releases the GIL.
 
+#[cfg(feature = "datafusion")]
+mod arrow;
+
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -140,7 +143,8 @@ fn param(db: &Db, j: &Json) -> strata::Result<Value> {
             };
             let e = db.embedder_in(&s.table, &field).ok_or_else(|| bad(format!("{field} has no embedding model open (see Database.open's models)")))?;
             match &o["embed"] {
-                Json::String(t) => Value::Vector(e.embed_query(t)?.into()),
+                // A multi-vector field's: the list of the tokens' vectors.
+                Json::String(t) => db.embed_query_in(&s.table, &field, t)?,
                 Json::Object(i) if i.len() == 1 && i.values().all(|v| v.is_string()) => {
                     let (kind, b64) = i.iter().next().expect("one key");
                     let (_, data) = strata::embed::query_file(kind, b64.as_str().unwrap_or_default())?;
@@ -307,6 +311,16 @@ impl Database {
         result_py(py, &rs)
     }
 
+    /// Runs a SELECT; returns its answer as Arrow columns, which Python
+    /// libraries take without copying them (feature `datafusion`).
+    #[cfg(feature = "datafusion")]
+    #[pyo3(signature = (sql, params = None))]
+    fn query_arrow(&self, py: Python<'_>, sql: &str, params: Option<&Bound<'_, PyDict>>) -> PyResult<arrow::Arrow> {
+        let db = self.get()?;
+        let p = params_json(params)?;
+        py.detach(|| self::params(&db, &p).and_then(|p| db.query_leaf(sql, &p)).and_then(arrow::Arrow::of)).map_err(err)
+    }
+
     /// Runs any statement: a SELECT's answer as `query` gives it, or the
     /// number of rows an INSERT, UPDATE or DELETE wrote.
     #[pyo3(signature = (sql, params = None))]
@@ -438,6 +452,46 @@ impl Database {
             Ok(n)
         })
         .map_err(err)
+    }
+
+    /// The rows with these keys of the first table or `table`, read by
+    /// key without SQL ([`Db::get_many`]): per key, in their order, a dict
+    /// of the columns `SELECT *` answers, or None for a key no live row
+    /// has (or whose row has expired).
+    #[pyo3(signature = (keys, table = None))]
+    fn get_many<'py>(&self, py: Python<'py>, keys: &Bound<'py, PyAny>, table: Option<&str>) -> PyResult<Bound<'py, PyList>> {
+        let db = self.get()?;
+        let keys = rows_json(keys)?;
+        let (columns, rows) = py
+            .detach(|| -> strata::Result<_> {
+                let s = table_of(&db, table)?;
+                let pk = s.primary_key.ok_or_else(|| strata::Error::Query(format!("{} has no primary key: rows are read by key only from a table with one", s.table)))?;
+                let keys = keys.iter().map(|k| ingest::value(&s, pk, k)).collect::<strata::Result<Vec<_>>>()?;
+                Ok((Db::get_columns(&s), db.get_many(&s.table, &keys)?))
+            })
+            .map_err(err)?;
+        let out = rows
+            .iter()
+            .map(|r| match r {
+                None => Ok(py.None().into_bound(py)),
+                Some(row) => {
+                    let d = PyDict::new(py);
+                    for (c, v) in columns.iter().zip(row) {
+                        d.set_item(c, to_py(py, v)?)?;
+                    }
+                    Ok(d.into_any())
+                }
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        PyList::new(py, out)
+    }
+
+    /// Deletes the rows whose `expire_by` time has passed, in every table
+    /// that has one ([`Db::expire`]); returns how many. Queries and reads
+    /// by key leave such rows out before this deletes them.
+    fn expire(&self, py: Python<'_>) -> PyResult<u64> {
+        let db = self.get()?;
+        py.detach(|| db.expire(strata::timestamp::now(), 10_000)).map_err(err)
     }
 
     /// Applies write operations as strata-server's /v1/write takes them, in
@@ -607,7 +661,20 @@ impl Database {
         }
         match py.detach(|| param(&db, &Json::Object(o))).map_err(err)? {
             Value::Vector(v) => Ok(v.to_vec()),
-            _ => unreachable!("an embedding is a vector"),
+            _ => Err(PyValueError::new_err("the field's model embeds a text a vector a token (a multi-vector field): Database.embed_tokens gives them")),
+        }
+    }
+
+    /// The vectors of `text`'s tokens as a query, by the model of
+    /// multi-vector field `field` (ColBERT), as `maxsim` takes them
+    /// ([`Db::embed_query_in`]).
+    #[pyo3(signature = (text, field, table = None))]
+    fn embed_tokens(&self, py: Python<'_>, text: &str, field: &str, table: Option<&str>) -> PyResult<Vec<Vec<f32>>> {
+        let db = self.get()?;
+        let table = table_of(&db, table).map_err(err)?.table.clone();
+        match py.detach(|| db.embed_query_in(&table, field, text)).map_err(err)? {
+            Value::List(vs) => Ok(vs.iter().filter_map(|v| if let Value::Vector(v) = v { Some(v.to_vec()) } else { None }).collect()),
+            _ => Err(PyValueError::new_err(format!("{field} is a field of one vector: Database.embed gives it"))),
         }
     }
 
@@ -701,6 +768,8 @@ fn upgrade(py: Python<'_>, path: PathBuf) -> PyResult<Option<(PathBuf, usize, u6
 #[pymodule]
 fn _strata(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Database>()?;
+    #[cfg(feature = "datafusion")]
+    m.add_class::<arrow::Arrow>()?;
     m.add_function(wrap_pyfunction!(train_codebook, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
     m.add("StrataError", m.py().get_type::<StrataError>())?;

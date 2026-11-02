@@ -51,6 +51,7 @@ kubectl -n strata port-forward svc/demo 7700  # http://127.0.0.1:7700
 | `clusterTokenSecret` | | a Secret whose key `token` is the cluster's own token (`--cluster-token`), which the servers and coordinators send each other and clients never hold; with it, the `tokenSecret` token goes to the coordinators alone, as the admin token (the operator's too), and may not make the calls between servers. Needs `tokenSecret` |
 | `image`, `imagePullPolicy`, `resources`, `coordinatorResources`, `args`, `coordinatorArgs` | `strata-server:dev` | the servers' image, containers and further arguments (`args` for every server, `coordinatorArgs` for every coordinator: `--hedge-ms 50`, `--partial`) |
 | `rollout` | `{holdAfterSeconds: 30, soakSeconds: 0}` | how a change is made: `paused`, `gates` (limits on `p99Ms`, `errorRatio`, `replicaBehind`, `diskUsedRatio`: one over its limit for `holdAfterSeconds` holds the change), and `soakSeconds`, how long a restarted copy serves before the next restarts. Not part of a version: changing it restarts nothing |
+| `autoscale` | `{mode: off, cooldownMinutes: 20}` | rules that change `replicas`, `shards` or `storage.size` from how busy and full the servers are: `grow` (`busyAbove`, `forMinutes`, `add`, `max`), `shrink` (`busyBelow`, `forMinutes`, `min`), `volumes` (`fullAbove`, `action`: `grow` or `addShard`), `freeze` (weekly windows in UTC, `from`/`to` like `Fri 16:00`, `allowGrow`) and `cooldownMinutes`; `mode` `on` (the operator acts), `suggest` (a person applies or dismisses) or `off`. Not part of a version: the changes it makes are ([autoscaling](../../docs/strata/server.md#autoscaling)) |
 
 What a change does:
 
@@ -125,10 +126,13 @@ spec as a draft, with the operator's plan for it, and applies it, and the
 makes the change as above; **Rollout** (`#/rollout`) follows it step by
 step with its timeline, pauses and resumes it, sets the gates by dragging
 each limit on its own live chart, and lists the versions with their diffs
-and a rollback that shows its plan first. They go through
+and a rollback that shows its plan first; **Autoscaling**
+(`#/autoscale`) edits `autoscale`, replays it on the servers' last week of
+load, and applies or dismisses what it suggests. They go through
 `POST /v1/admin/kube/plan` and `POST /v1/admin/kube`, which take
 `{"spec": {...}}`, a merge patch of the spec, or `{"rollback": version}`,
-checked first, and `POST /v1/admin/kube/resume`.
+checked first, `POST /v1/admin/kube/resume`, and
+`POST /v1/admin/autoscale/replay` and `/v1/admin/kube/autoscale/dismiss`.
 
 The operator does not choose primaries: the copies of a shard elect one
 among themselves ([failover](../../docs/strata/server.md#failover)), so a
@@ -165,9 +169,13 @@ as `setup-envtest` downloads them).
 
 The command center's **Cloud** view (an admin key; see
 [the server's docs](../../docs/strata/server.md#in-the-cloud)) plans a cluster
-on Amazon EKS or DigitalOcean Kubernetes and writes the files that make it.
-It creates nothing: the commands it gives make the cluster with your own
-tools.
+on Amazon EKS or DigitalOcean Kubernetes and writes the files that make it,
+with the commands that make the cluster with your own tools. Its **Create
+it** button makes the cluster from the server instead, once its name is typed
+again: the server asks the cloud for it, installs the operator and the
+StrataCluster through the new cluster's API, follows the copies until they
+answer, and on **Delete** deletes the StrataCluster and its volumes before
+the cluster ([what it needs](../../docs/strata/server.md#making-it-from-the-view)).
 
 ### On AWS
 

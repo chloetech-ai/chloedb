@@ -1,9 +1,10 @@
 //! JSON fields through a coordinator: a table with a JSON field is created
 //! on every shard, path conditions reach the shards in plans (as
 //! `json_extract` calls, plan feature "json") and filter there from the
-//! field's terms, and paths in SELECT, ORDER BY and GROUP BY are read from
-//! the rows the shards return. Each answer is the one database's of the
-//! same rows.
+//! field's terms, paths in GROUP BY, aggregates and ORDER BY are read from
+//! the shards' terms (plan feature "json_columns"), each shard's groups or
+//! rows merged by value, and paths of the rows returned from their objects.
+//! Each answer is the one database's of the same rows.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -106,14 +107,29 @@ async fn paths_through_a_coordinator_answer_as_one_database() {
         "SELECT id, attrs.color, attrs.dims.w FROM items WHERE attrs.certs = 'CE'",
         "SELECT attrs.color, COUNT(*) FROM items GROUP BY attrs.color",
         "SELECT name, MAX(attrs.dims.w), COUNT(attrs.voltage) FROM items GROUP BY name",
+        // Read from the shards' terms: each shard's groups and partial
+        // aggregates, merged by value.
+        "SELECT attrs.color, COUNT(*) FROM items GROUP BY attrs.color ORDER BY COUNT(*) DESC, attrs.color LIMIT 2",
+        "SELECT attrs.voltage, COUNT(*), MIN(attrs.dims.w) FROM items GROUP BY attrs.voltage HAVING COUNT(*) > 3",
+        "SELECT COUNT(*), AVG(attrs.voltage), MIN(attrs.voltage), MAX(attrs.voltage), SUM(attrs.dims.w), COUNT(DISTINCT attrs.certs) FROM items",
+        "SELECT attrs.certs, name, COUNT(*) FROM items GROUP BY attrs.certs, name",
     ] {
         let want = sorted(local(&one, q));
         assert!(!want.is_empty(), "{q}");
         assert_eq!(sorted(select(&svc, q).await), want, "{q}");
     }
-    // Ordered by a path, across shards.
-    let q = "SELECT id, attrs.dims.w FROM items WHERE attrs.dims.w > 0 ORDER BY attrs.dims.w DESC, id LIMIT 7";
-    assert_eq!(select(&svc, q).await, local(&one, q), "{q}");
+    // Ordered by a path, across shards: merged by the path's column, which
+    // a leaf selects for it when the query does not.
+    for q in [
+        "SELECT id, attrs.dims.w FROM items WHERE attrs.dims.w > 0 ORDER BY attrs.dims.w DESC, id LIMIT 7",
+        "SELECT id, attrs.voltage FROM items ORDER BY attrs.voltage, id LIMIT 9 OFFSET 3",
+        "SELECT id FROM items WHERE attrs.certs = 'UL' ORDER BY attrs.voltage DESC, id LIMIT 6",
+        "SELECT id, attrs.color FROM items ORDER BY attrs.color DESC NULLS FIRST, id LIMIT 5",
+    ] {
+        let want = local(&one, q);
+        assert!(!want.is_empty(), "{q}");
+        assert_eq!(select(&svc, q).await, want, "{q}");
+    }
 
     // The paths listing: each shard's, summed, is the one database's, as
     // SQL and over HTTP. A few rows change first: deleted, rewritten.
@@ -145,4 +161,55 @@ async fn paths_through_a_coordinator_answer_as_one_database() {
         assert_eq!(get(q).await.unwrap().status().as_u16(), status, "{q}");
     }
     assert_eq!(c.get(format!("{url}/v1/tables/nope/paths?field=attrs")).send().await.unwrap().status().as_u16(), 400);
+}
+
+/// A JSON field with text through a coordinator: MATCH finds the rows the
+/// one database finds, and bm25 scores them with the cluster's statistics
+/// as the one database does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_text_of_json_fields_through_a_coordinator_scores_as_one_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let urls = vec![serve(create(d, "s0.strata")).await, serve(create(d, "s1.strata")).await, serve(create(d, "s2.strata")).await];
+    let c = Arc::new(Coordinator::connect(urls).await.unwrap());
+    let schema = c.schema.clone();
+    let svc = Arc::new(Service::new(Backend::Cluster(c), schema, agent(), 16, Duration::from_secs(10)));
+    let one = create(d, "one.strata");
+    let table = "CREATE TABLE notes (id KEYWORD PRIMARY KEY, attrs JSON OPTIONS(text = true))";
+    run(&svc, table).await;
+    local(&one, table);
+    let words = ["zebra", "quokka", "lynx", "otter", "heron"];
+    for chunk in (0..180).collect::<Vec<_>>().chunks(30) {
+        let values: Vec<String> = chunk
+            .iter()
+            .map(|&i| {
+                let mut m = serde_json::Map::new();
+                m.insert("title".into(), format!("{} {}", words[i % 5], words[i * 7 % 5]).into());
+                if i % 3 == 0 {
+                    m.insert("tags".into(), serde_json::json!([words[i % 4], "plain"]));
+                }
+                if i % 4 == 0 {
+                    m.insert("spec".into(), serde_json::json!({ "note": words[(i / 4) % 5].repeat(1 + i % 2), "n": i }));
+                }
+                format!("('n{i:03}', '{}')", serde_json::Value::Object(m))
+            })
+            .collect();
+        let insert = format!("INSERT INTO notes (id, attrs) VALUES {}", values.join(", "));
+        run(&svc, &insert).await;
+        local(&one, &insert);
+    }
+    let sorted = |mut rows: Vec<Vec<Value>>| {
+        rows.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+        rows
+    };
+    for q in ["SELECT id FROM notes WHERE MATCH(attrs, 'zebra')", "SELECT id FROM notes WHERE MATCH(attrs, 'otter OR plain') AND attrs.spec IS NOT NULL"] {
+        let want = sorted(local(&one, q));
+        assert!(!want.is_empty(), "{q}");
+        assert_eq!(sorted(select(&svc, q).await), want, "{q}");
+    }
+    let scores = |rows: Vec<Vec<Value>>| -> Vec<(String, i64)> { rows.into_iter().map(|r| (r[0].as_str().unwrap().to_string(), (r[1].as_f64().unwrap() * 1e4).round() as i64)).collect() };
+    let q = "SELECT id, score() FROM notes ORDER BY bm25(attrs, 'quokka heron') DESC, id LIMIT 20";
+    let want = scores(local(&one, q));
+    assert_eq!(want.len(), 20, "{q}");
+    assert_eq!(scores(select(&svc, q).await), want, "{q}");
 }

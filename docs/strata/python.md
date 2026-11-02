@@ -31,7 +31,7 @@ maturin develop --release                  # builds the extension into the virtu
 pytest tests                               # the client tests also need strata-server built
 ```
 
-Model2Vec embedding models need nothing more. For the BERT models, build with `--features bert` (`--features accelerate` on a Mac): `maturin develop --release --features bert`, or `MATURIN_PEP517_ARGS="--features bert" pip install ./strata-py`. The extension runs on any CPU of its architecture: Strata picks its SIMD kernels (AVX2, AVX-512, the aarch64 dot product instructions) at run time. `RUSTFLAGS="-C target-cpu=native"` builds one for the building machine only.
+The package includes [DataFusion](query-language.md#subqueries-with-and-joins), which runs joins, groups and sorts over many joined rows (`--no-default-features` leaves it out). Model2Vec embedding models need nothing more. For the BERT models, build with `--features bert` (`--features accelerate` on a Mac): `maturin develop --release --features bert`, or `MATURIN_PEP517_ARGS="--features bert" pip install ./strata-py`. The extension runs on any CPU of its architecture: Strata picks its SIMD kernels (AVX2, AVX-512, the aarch64 dot product instructions) at run time. `RUSTFLAGS="-C target-cpu=native"` builds one for the building machine only.
 
 ## A database in your process
 
@@ -79,6 +79,8 @@ Rows are dicts of field name to value: `str`, `int`, `float`, `None`, `bool` for
 | `insert(rows)` | adds a row (a dict) or rows (any iterable of dicts) whose keys must be new; all or none are written. From 1,000 rows on, they are bulk-loaded straight into segments. |
 | `upsert(rows)` | adds rows, replacing the rows with their keys, in transactions of 10,000 |
 | `delete(keys)` | deletes the rows with a key or keys; returns how many there were |
+| `get(key)`, `get_many(keys)` | the row with a primary key (a dict of the columns `SELECT *` gives), or `None`, read without SQL ([rows by key](server.md#rows-by-key)); `get_many` answers a list in the keys' order. Each takes `table=` |
+| `expire()` | deletes the rows whose [`expire_by`](query-language.md#tables) time has passed, which reads leave out already; returns how many |
 | `sql("UPDATE ...")` | `INSERT`, `UPDATE` and `DELETE` statements; returns the rows written. It also runs `CREATE TABLE`, `ALTER TABLE` and `DROP TABLE` ([tables](query-language.md#tables)) and `CREATE` and `DROP RANK PROFILE` ([rank profiles](query-language.md#rank-profiles-a-ranking-kept-with-its-table)), which return 0, and writes any table |
 | `add_column(name, type, **options)`, `drop_column(name)`, `rename_column(old, new)` | change a table's columns while it holds rows, as [`ALTER TABLE`](query-language.md#changing-a-tables-columns) does: `options` are the field's, in the short form of a schema (`db.add_column("price", "float", default=0.0)`, `db.add_column("emb", "vector", embed=["title"], model="potion-retrieval-32M")`); rows written before a column was added read its default, or `None`. Each takes `table=`. In-process only: through the client, send `ALTER TABLE` with `sql` |
 | `import_file(path, format=None)` | loads a JSON Lines, JSON, CSV or TSV file ([how files are read](server.md#loading-rows)); returns `{rows, bulk, skipped_fields}` |
@@ -115,6 +117,29 @@ The answer is a `Result`:
 | `result.stats` | what the engine did |
 | `result.to_pandas()` | a DataFrame (with pandas installed) |
 
+`query_arrow(sql, params)` runs a `SELECT` as `query` does and answers with its columns as Arrow arrays, an `ArrowResult`, without making a Python object of each value; a query of one table that neither groups nor counts reads its columns from the database's segments straight into the arrays. pyarrow, polars, pandas and DuckDB read the arrays where the database wrote them, without copying them, through the [Arrow PyCapsule interface](https://arrow.apache.org/docs/format/CDataInterface/PyCapsuleInterface.html):
+
+```python
+r = db.query_arrow("SELECT id, year, rating FROM books WHERE year >= :y", y=1950)
+r.to_pyarrow()            # a pyarrow Table
+r.to_polars()             # a polars DataFrame (without pyarrow)
+r.to_pandas()             # a pandas DataFrame of the Arrow columns (pandas.ArrowDtype); arrow_dtypes=False copies them into numpy
+pyarrow.table(r)          # any library that reads Arrow streams reads r
+duckdb.sql("SELECT avg(rating) FROM r")
+```
+
+| Strata | Arrow |
+|---|---|
+| `int` | `int64` |
+| `float` | `float64` |
+| `keyword`, `text`, `json` | `string` (a JSON value as its text) |
+| `bool` | `bool` |
+| `timestamp` | `timestamp[us, tz=UTC]` |
+| `vector` | `list<float32>` |
+| a `multi` field | `list<int64>` or `list<string>` |
+
+A computed column has the type of its values: a column of only NULLs (or of no rows) is `null`, and one of integers and floats `float64`. Values of other types mixed in one column (a `CASE` that answers a number in some rows and text in others) are not one Arrow array: `query_arrow` raises `StrataError` naming the column, and `query` answers it. `r.columns`, `len(r)` and `r.stats` are as a `Result`'s. `query_arrow` comes with the package's default feature `datafusion`; `Client` has none, as a server answers in JSON.
+
 `search(text, limit=10, where=None, columns="*", mode="auto")` writes the query for the common case. It ranks by BM25 over the text fields (the generated ones if the table has any, such as a combined `body`, else every indexed text field) fused by reciprocal rank with the similarity of the first embedded vector field whose model is open; `mode="text"` or `"vector"` uses one side only. `where` adds a condition, [built in Python](#queries-built-in-python) or in SQL with `params` for its placeholders:
 
 ```python
@@ -122,7 +147,7 @@ db.search("dragon", where=col("year") >= 1990, columns=["id", "title"])
 db.search("dragon", where="year >= :y", params={"y": 1990})
 ```
 
-`embed(text, field=None)` returns the query vector of a text (`embed(image=data, field="emb")` of an image file's bytes, by a [model of images](server.md#vectors-of-images), with the package built with `--features vision`, and `embed(audio=data)` of a sound file's, by a [model of sound](server.md#vectors-of-sound), built with `--features audio`), and `len(db)` the number of rows.
+`embed(text, field=None)` returns the query vector of a text (`embed(image=data, field="emb")` of an image file's bytes, by a [model of images](server.md#vectors-of-images), with the package built with `--features vision`, and `embed(audio=data)` of a sound file's, by a [model of sound](server.md#vectors-of-sound), built with `--features audio`), `embed_tokens(text, field)` the vectors of a query's tokens by the ColBERT model of a [multi-vector field](server.md#a-vector-a-token), as `maxsim` takes them (`{"embed": text, "field": "tok"}` as a parameter gives the same), and `len(db)` the number of rows.
 
 `plan(sql, params)` returns a statement's [plan](query-language.md#explain) as a dict without running it, and `run(plan)` runs a plan: a read's `Result`, or the number of rows a write wrote.
 
@@ -243,7 +268,7 @@ db.query("""SELECT id FROM items ORDER BY similarity(emb, encode('next',
 
 ## A server from Python
 
-`strata.connect(url, token=None)` returns a `Client` of a running strata-server, using only the standard library. It has `schema`, `tables`, `query`, `sql`, `search`, `insert`, `upsert`, `delete`, `import_file` (an upload to [`/v1/import`](server.md#loading-rows), up to the server's `--max-body-mb`, 256 MiB unless set), `import_sqlite(path, tables=None)` and `plan_sqlite(path)` (a SQLite file's tables, uploaded the same way; [SQLite in and out](sqlite.md#over-http-and-in-the-ui)), `export_sqlite(path, tables=None)` (the server's tables downloaded as a SQLite file) and `len()`, as above, plus `write(ops)` for raw [write operations](server.md#http-api), `explain`, `run(plan)` (a plan from `explain(...)["ir"]` or a `table()` query, run by [`/v1/plan`](server.md#http-api)), `table()` ([queries built in Python](#queries-built-in-python)), `embed(text, field=None)` (a text's vector by the server's model, from [`/v1/embed`](server.md#http-api), or `embed(image=data)` an image's and `embed(audio=data)` a sound's), `query_logged` and `export_rank_log` ([the rank log](#the-rank-log)), `health`, `stats` and `ask(question)` for the [agent](server.md#the-agent).
+`strata.connect(url, token=None)` returns a `Client` of a running strata-server, using only the standard library. It has `schema`, `tables`, `query`, `sql`, `search`, `insert`, `upsert`, `delete`, `import_file` (an upload to [`/v1/import`](server.md#loading-rows), up to the server's `--max-body-mb`, 256 MiB unless set), `import_sqlite(path, tables=None)` and `plan_sqlite(path)` (a SQLite file's tables, uploaded the same way; [SQLite in and out](sqlite.md#over-http-and-in-the-ui)), `export_sqlite(path, tables=None)` (the server's tables downloaded as a SQLite file) and `len()`, as above, plus `get(key)`, `get_many(keys)` and `put(key, row, if_seq_no=None)` for [rows by key](server.md#rows-by-key), `write(ops)` for raw [write operations](server.md#http-api), `explain`, `run(plan)` (a plan from `explain(...)["ir"]` or a `table()` query, run by [`/v1/plan`](server.md#http-api)), `table()` ([queries built in Python](#queries-built-in-python)), `embed(text, field=None)` (a text's vector by the server's model, from [`/v1/embed`](server.md#http-api), or `embed(image=data)` an image's and `embed(audio=data)` a sound's), `embed_tokens(text, field)` (a query's vectors a token, for a multi-vector field), `query_logged` and `export_rank_log` ([the rank log](#the-rank-log)), `health`, `stats` and `ask(question)` for the [agent](server.md#the-agent).
 
 ```python
 client = strata.connect("http://127.0.0.1:7700")   # token= or $STRATA_TOKEN for a server with --token

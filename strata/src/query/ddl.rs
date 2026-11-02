@@ -31,13 +31,16 @@
 //! `positions`, `stored` and `indexed` (true or false), `from` (the fields
 //! a generated TEXT field joins), `analyzer` (`'english'`, the default, or
 //! `'simple'`; another than `english` makes the database format 3), `index` (`'hnsw'` with `m` and
-//! `ef_construction`, `'flat'`, or `'ivf'` with `nlist`), `codes` (`'sq8'`
-//! or `'binary'`), `dim`, and `embed` with `model` (the fields a VECTOR
+//! `ef_construction`, `'flat'`, or `'ivf'` with `nlist`), `codes` (`'sq8'`,
+//! `'binary'`, `'rabitq1'`, `'rabitq2'` or `'rabitq4'`), `dim`, and `embed` with `model` (the fields a VECTOR
 //! field is the model's embedding of). Field lists are a string, `'title,
 //! abstract'`, or `ARRAY['title', 'abstract']`. A KEYWORD[] column with
 //! `semantic_id = 'emb'` and `codebook = 'name'` holds the semantic IDs of
 //! VECTOR column `emb`'s vectors ([`crate::sid`]; feature `semantic_id`):
 //! `sid KEYWORD[] OPTIONS(semantic_id = 'emb', codebook = 'items-rq')`.
+//! A JSON column with `text = true` indexes its strings as text too, for
+//! `MATCH` and `bm25` (and takes `analyzer`; feature `json_text`):
+//! `attrs JSON OPTIONS(text = true)`.
 //!
 //! The key is a column's `PRIMARY KEY` or a `PRIMARY KEY (column)`
 //! constraint. `REFERENCES table [(key)]` on a column, or `FOREIGN KEY
@@ -54,7 +57,10 @@
 //! ([`crate::schema::Schema::with_shard_by`]); `cluster_by`, the column
 //! that orders each segment's rows ([`crate::schema::Schema::with_cluster_by`]);
 //! and `retain`, how long rows are kept after the time in `retain_by`
-//! (default: the table's only TIMESTAMP; [`crate::schema::Schema::with_retain`]):
+//! (default: the table's only TIMESTAMP; [`crate::schema::Schema::with_retain`]);
+//! and `expire_by`, a TIMESTAMP column holding when each row expires
+//! ([`crate::schema::Schema::with_expire_by`]): from then on the row is
+//! left out of every read, and deleted soon after:
 //!
 //! ```sql
 //! CREATE TABLE events (
@@ -81,9 +87,9 @@ fn err(m: impl Into<String>) -> Error {
 }
 
 /// The forms this module binds, for error messages.
-const CREATE_FORM: &str = "CREATE TABLE [IF NOT EXISTS] name (column TYPE [PRIMARY KEY] [NOT NULL] [DEFAULT value] [REFERENCES table] [OPTIONS(...)], ..., [PRIMARY KEY (column)], [FOREIGN KEY (column) REFERENCES table]) [OPTIONS(shard_by = 'column', cluster_by = 'column', retain = '400 days', retain_by = 'column', edges = 'src, dst, w')]";
+const CREATE_FORM: &str = "CREATE TABLE [IF NOT EXISTS] name (column TYPE [PRIMARY KEY] [NOT NULL] [DEFAULT value] [REFERENCES table] [OPTIONS(...)], ..., [PRIMARY KEY (column)], [FOREIGN KEY (column) REFERENCES table]) [OPTIONS(shard_by = 'column', cluster_by = 'column', retain = '400 days', retain_by = 'column', expire_by = 'column', edges = 'src, dst, w')]";
 /// The options of a table, in `OPTIONS(...)` after its columns.
-const TABLE_OPTIONS: [&str; 5] = ["shard_by", "cluster_by", "retain", "retain_by", "edges"];
+const TABLE_OPTIONS: [&str; 6] = ["shard_by", "cluster_by", "retain", "retain_by", "expire_by", "edges"];
 const TYPES: &str = "TEXT, KEYWORD, INT, FLOAT, BOOL, TIMESTAMP, VECTOR(dimensions), SPARSE, EDGES, JSON or MEDIA, KEYWORD[] or INT[] for lists, and VECTOR(dimensions)[] for several vectors per row";
 
 /// The table a `CREATE TABLE` statement makes, and whether it says `IF NOT
@@ -367,17 +373,18 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
     let (ty, multi, dim) = column_type(ty).map_err(bad)?;
     let allowed: &[&str] = match ty {
         "text" => &["positions", "stored", "indexed", "from", "analyzer", "derive", "model"],
-        "vector" if multi => &["indexed", "dim", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor"],
+        "vector" if multi => &["indexed", "dim", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor", "embed", "model"],
         "vector" => &["stored", "indexed", "dim", "index", "m", "ef_construction", "nlist", "codes", "embed", "model"],
         "media" => &["stored", "indexed", "kind"],
         "keyword" if multi => &["stored", "indexed", "semantic_id", "codebook"],
+        "json" => &["stored", "indexed", "text", "analyzer"],
         _ => &["stored", "indexed"],
     };
     if !allowed.contains(&"semantic_id") && (opts.contains_key("semantic_id") || opts.contains_key("codebook")) {
         return Err(bad("semantic_id and codebook are options of a KEYWORD[] column".into()));
     }
     if let Some(k) = opts.keys().find(|k| !allowed.contains(&k.as_str())) {
-        let known = ["positions", "stored", "indexed", "from", "analyzer", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor", "dim", "embed", "model", "kind", "semantic_id", "codebook", "derive"];
+        let known = ["positions", "stored", "indexed", "from", "analyzer", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor", "dim", "embed", "model", "kind", "semantic_id", "codebook", "derive", "text"];
         return Err(bad(if known.contains(&k.as_str()) {
             format!("{k} is not an option of a {} column (its options: {})", ty.to_uppercase(), allowed.join(", "))
         } else {
@@ -448,7 +455,7 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
     }
     for (k, v) in opts {
         match k.as_str() {
-            "positions" | "stored" | "indexed" | "keep_f32" if !v.is_boolean() => return Err(bad(format!("{k} is true or false"))),
+            "positions" | "stored" | "indexed" | "keep_f32" | "text" if !v.is_boolean() => return Err(bad(format!("{k} is true or false"))),
             "pool" if !v.is_number() => return Err(bad("pool is a cosine similarity, such as 0.9".into())),
             "pool_factor" if !v.is_number() => return Err(bad("pool_factor is a number above 1, such as 2".into())),
             "dim" => {
@@ -735,7 +742,7 @@ mod tests {
                papers KEYWORD[] REFERENCES papers (id), both_ TEXT OPTIONS(from = 'name, topics'),
                emb VECTOR(8) OPTIONS(index = 'ivf', nlist = 4, codes = 'binary'),
                e2 VECTOR OPTIONS(embed = ARRAY['name', 'bio'], model = 'hash:16', m = 8, ef_construction = 100),
-               hidden INT OPTIONS(indexed = false), flat VECTOR(3) OPTIONS(index = 'flat'),
+               hidden INT OPTIONS(indexed = false), flat VECTOR(3) OPTIONS(index = 'flat', codes = 'rabitq4'),
                sid KEYWORD[] OPTIONS(semantic_id = 'emb', codebook = 'items-rq'),
                patches VECTOR(4)[] OPTIONS(keep_f32 = true, pool = 0.9))",
             "CREATE TABLE events (id INT PRIMARY KEY, usr KEYWORD NOT NULL, item KEYWORD REFERENCES papers, done BOOL DEFAULT FALSE,
@@ -769,7 +776,7 @@ mod tests {
                papers KEYWORD[] REFERENCES papers (id), both_ TEXT OPTIONS(from = 'name, topics'),
                emb VECTOR(8) OPTIONS(index = 'ivf', nlist = 4, codes = 'binary'),
                e2 VECTOR OPTIONS(embed = ARRAY['name'], model = 'hash:16', m = 8),
-               hidden INT OPTIONS(indexed = false), flat VECTOR(3) OPTIONS(index = 'flat'))",
+               hidden INT OPTIONS(indexed = false), flat VECTOR(3) OPTIONS(index = 'flat', codes = 'RaBitQ1'))",
             &[&p],
         )
         .unwrap();
@@ -791,6 +798,7 @@ mod tests {
         assert_eq!(f("e2").embed.as_ref().map(|e| (e.from.clone(), e.model.as_str())), Some((vec!["name".to_string()], "hash:16")));
         assert!(!f("hidden").indexed);
         assert_eq!(f("flat").ty, FieldType::Vector { dim: 3, index: VectorIndexKind::Flat });
+        assert_eq!(f("flat").codes, VectorCodes::Rabitq1);
 
         let (s, ine) = create("CREATE TABLE w (a INT, p KEYWORD, PRIMARY KEY (a), FOREIGN KEY (p) REFERENCES papers)", &[&p]).unwrap();
         assert!(!ine);
