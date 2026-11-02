@@ -321,7 +321,7 @@ function render(page) {
     const c = shardCell(s, lens);
     const el = h("button", { class: "hc " + c.tone, "aria-label": `shard ${s.n}: ${c.value}` },
       h("span", { class: "n" }, String(s.n)), c.tag ? h("em", {}, c.tag) : null,
-      big ? h("span", { class: "names" }, s.copies.map((x) => h("span", { class: copyTone(x) || "" }, x.name))) : null,
+      big ? h("span", { class: "names" }, s.copies.map((x) => h("span", { class: !x.up ? "down" : copyTone(x) || "", title: x.up ? null : "not answering" }, x.name))) : null,
       h("span", { class: "pips" }, s.copies.map((x) => h("i", { class: "pip" + (x.primary ? " p" : "") + (!x.up ? " down" : copyTone(x) ? " " + copyTone(x) : "") }))));
     tipOn(el, () => [h("div", { class: "t" }, `Shard ${s.n} · ${stText(s.st)}`), h("div", { class: "small", style: { marginBottom: "4px" } }, c.value),
       ...s.copies.map((x) => h("div", { class: "r" }, h("span", { class: "k box", style: { background: !x.up ? "var(--crit)" : copyTone(x) === "warn" ? "var(--warn)" : copyTone(x) === "crit" ? "var(--crit)" : "var(--good)" } }), h("b", {}, x.name), h("span", { class: "n" }, [x.up ? x.role : "not answering", x.p99 != null ? "p99 " + fmt.ms(x.p99) : null, x.disk != null ? "disk " + fmt.pct(x.disk, 0) : null, x.lag ? fmt.si(x.lag) + " behind" : null].filter(Boolean).join(" · "))))]);

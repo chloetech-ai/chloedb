@@ -273,7 +273,8 @@ function rederive() {
   state.fleet = deriveFleet(); bus.emit("fleet");
 }
 async function pollFleet() {
-  if (fleetMissing && Date.now() - fleetMissing < 120e3) { if (!state.paused || !state.fleet) { derivedAt = Date.now(); state.fleet = deriveFleet(); bus.emit("fleet"); } return; }
+  // Worked out here, the fleet's health is as fresh as the cluster it comes from.
+  if (fleetMissing && Date.now() - fleetMissing < 120e3) { if (fresh("cluster").ok) good("fleet"); if (!state.paused || !state.fleet) { derivedAt = Date.now(); state.fleet = deriveFleet(); bus.emit("fleet"); } return; }
   try {
     const f = await api("/v1/health/fleet", T);
     fleetMissing = 0; good("fleet");

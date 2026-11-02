@@ -258,7 +258,7 @@ export async function api(path, opts = {}) {
   catch (e) {
     clearTimeout(timer);
     if (opts.signal?.aborted && !timedOut) throw e; // the caller cancelled it
-    const why = timedOut ? `no answer in ${fmt.ms(opts.timeout)}` : "no answer (the network failed or the server is not running)";
+    const why = timedOut ? `no answer in ${fmt.ms(opts.timeout)}` : "no answer: the network failed or the server is not running";
     notAnswering(0, why, path);
     throw new ApiError(0, why, null, false);
   }
