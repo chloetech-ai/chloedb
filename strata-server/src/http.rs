@@ -3,7 +3,7 @@
 //! | route | body | answer |
 //! |---|---|---|
 //! | `GET /` | | the UI |
-//! | `GET /livez`, `/readyz` | | `{status}`: 503 when a restart is needed |
+//! | `GET /livez`, `/readyz` | | `{status}`: 503 when a restart is needed; `/readyz` also while the server drains (`--drain-ms`) |
 //! | `GET /v1/health`, `/v1/stats`, `/v1/config` | | JSON (`/v1/health`: 503 when "down" or "failing") |
 //! | `GET /v1/schema?table=name` | | a table's schema (the first table's without `table`) |
 //! | `GET /v1/tables` | | `{tables: [...]}`: every table's schema and rank profiles, the first first |
@@ -137,6 +137,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/schema", get(schema))
         .route("/v1/tables", get(tables))
         .route("/v1/tables/:table/paths", get(json_paths))
+        .route("/v1/index", get(index))
+        .route("/v1/index/reads/reset", post(reset_reads))
         .route("/v1/config", get(config))
         .route("/metrics", get(metrics))
         .route("/v1/query", post(query))
@@ -202,6 +204,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/kube", post(kube_change))
         .route("/v1/admin/kube/plan", post(kube_plan))
         .route("/v1/admin/kube/resume", post(kube_resume))
+        .route("/v1/admin/kube/upgrade", post(kube_upgrade))
         .route("/v1/admin/kube/autoscale/dismiss", post(autoscale_dismiss))
         .route("/v1/admin/autoscale/replay", post(autoscale_replay))
         .route("/v1/admin/aws", get(aws_status))
@@ -233,8 +236,9 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/ui/*file", get(ui::file))
         .route("/v1/health", get(health))
         .route("/livez", get(live))
-        .route("/readyz", get(live))
+        .route("/readyz", get(ready))
         .merge(api)
+        .layer(middleware::map_response(close_when_draining))
         .layer(middleware::from_fn_with_state(app.clone(), browsers))
         .layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))
         .layer(middleware::from_fn_with_state(app.clone(), observe))
@@ -338,7 +342,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/export" => Scope::Admin,
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
         "/v1/alerts/rules" => Scope::Admin,
-        r if r.starts_with("/v1/admin/") || r.starts_with("/v1/queries") || r.starts_with("/v1/logs") || r.starts_with("/v1/profile") => Scope::Admin,
+        // The inspector names the keys most read.
+        r if r.starts_with("/v1/admin/") || r.starts_with("/v1/queries") || r.starts_with("/v1/logs") || r.starts_with("/v1/profile") || r.starts_with("/v1/index") => Scope::Admin,
         _ => Scope::Read,
     }
 }
@@ -403,6 +408,26 @@ async fn live(State(app): State<App>) -> Response {
     }
 }
 
+/// Live, and not stopping: a server serving out its drain time
+/// ([`crate::server::draining`]) answers 503, so that a load balancer
+/// sends it no more clients.
+async fn ready(state: State<App>) -> Response {
+    if crate::server::draining() {
+        return (StatusCode::SERVICE_UNAVAILABLE, AxJson(json!({"status": "draining", "error": "the server is stopping: it ends the requests under way and takes no new ones"}))).into_response();
+    }
+    live(state).await
+}
+
+/// While the server drains, each answer closes its connection: the
+/// client's next request opens another, which a load balancer sends to a
+/// server that stays.
+async fn close_when_draining(mut r: Response) -> Response {
+    if crate::server::draining() {
+        r.headers_mut().insert(axum::http::header::CONNECTION, axum::http::HeaderValue::from_static("close"));
+    }
+    r
+}
+
 async fn stats(State(app): State<App>) -> AxJson<Json> {
     AxJson(app.svc.stats().await)
 }
@@ -420,6 +445,21 @@ async fn schema(State(app): State<App>, Query(q): Query<std::collections::HashMa
 async fn tables(State(app): State<App>) -> AxJson<Json> {
     let tables: Vec<Json> = app.svc.catalog().iter().map(|s| table_json(&app.svc, s)).collect();
     AxJson(json!({"tables": tables}))
+}
+
+/// `GET /v1/index?table=&sample=&seed=&terms=&top=`: the index
+/// inspector's statistics of a table ([`crate::inspect`]): this server's,
+/// or a coordinator's per replica, per shard and for its cluster.
+async fn index(State(app): State<App>, Query(q): Params) -> Res {
+    let a = crate::inspect::Asked::of(&json!(q))?;
+    Ok(AxJson(crate::inspect::answer(&app.svc, a).await?))
+}
+
+/// `POST /v1/index/reads/reset`: this server's read counts start again
+/// ([`crate::reads`]).
+async fn reset_reads(State(app): State<App>) -> AxJson<Json> {
+    app.svc.reads.reset();
+    AxJson(json!({"reset": true, "at_ms": crate::telemetry::now_ms()}))
 }
 
 /// `GET /v1/tables/:table/paths?field=&path=&where=`: a JSON field's
@@ -678,7 +718,7 @@ fn path_key(schema: &strata::schema::Schema, key: &str) -> Result<Json, ApiError
 async fn kv_one(State(app): State<App>, axum::extract::Path((table, key)): axum::extract::Path<(String, String)>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
     let t0 = Instant::now();
     let timeout_ms = q.get("timeout_ms").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let got = app.svc.get_rows(Some(&table), vec![strata::value::Value::Str(key.clone())], &after_of_query(&q)?, timeout_ms).await?;
+    let got = app.svc.get_rows(Some(&table), vec![strata::value::Value::Str(key.clone())], &after_of_query(&q)?, timeout_ms, true).await?;
     let took_ms = t0.elapsed().as_secs_f64() * 1e3;
     Ok(match got.rows.into_iter().next().flatten() {
         Some((row, seq_no)) => AxJson(json!({"table": got.table, "key": key, "found": true, "row": key_row(&got.columns, &row), "seq_no": seq_no, "took_ms": took_ms})).into_response(),
@@ -698,7 +738,7 @@ async fn kv_get(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         Some(Json::String(t)) => Some(t.as_str()),
         Some(_) => return Err(ApiError::bad("table is a table's name")),
     };
-    let got = app.svc.get_rows(table, keys, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
+    let got = app.svc.get_rows(table, keys, &after(&b)?, body_u64(&b, "timeout_ms"), true).await?;
     let seq_nos: Vec<Json> = got.rows.iter().map(|r| r.as_ref().map_or(Json::Null, |(_, s)| json!(s))).collect();
     let rows: Vec<Json> = got.rows.iter().map(|r| r.as_ref().map_or(Json::Null, |(row, _)| key_row(&got.columns, row))).collect();
     Ok(AxJson(json!({"table": got.table, "columns": got.columns, "rows": rows, "seq_nos": seq_nos, "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
@@ -1794,6 +1834,56 @@ async fn kube_change(State(app): State<App>, w: Option<axum::Extension<Principal
         Some(v) => format!("rolled the StrataCluster {}/{} back to version {v}: {said}", l.namespace, l.name),
         None => format!("changed the StrataCluster {}/{}: {said}", l.namespace, l.name),
     }))
+}
+
+/// `POST /v1/admin/kube/upgrade {"image"?, "plan"?, "force"?}`: rolls the
+/// cluster out to `image`, or to the newest image of the tag the upgrader
+/// follows (`status.upgrade.latest`, pinned by its digest), as a change
+/// of `spec.image` would: the image is tried on every node first, each
+/// server restarts in turn while the others serve, and the version is
+/// verified, then rolled back if it fails (`spec.rollout.onFailure`).
+/// With `plan`, nothing is changed: the plan is answered. An image the
+/// operator rolled back once is refused unless `force`.
+async fn kube_upgrade(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let l = kube_link(&app)?;
+    let now = l.get().await.map_err(|e| ApiError { status: 502, message: format!("the Kubernetes API: {e}") })?;
+    let up = &now["status"]["upgrade"];
+    let image = match b.get("image") {
+        Some(Json::String(i)) if !i.trim().is_empty() => i.trim().to_string(),
+        Some(Json::Null) | None => up["latest"]["image"].as_str().map(str::to_string).ok_or_else(|| {
+            ApiError::bad(match up["error"].as_str() {
+                Some(e) => format!("the registry could not be asked what the tag names ({e}): name the image"),
+                None => "no newer image is known: name the image, or set spec.upgrade.mode to suggest so that the operator asks the registry what its tag names".into(),
+            })
+        })?,
+        Some(_) => return Err(ApiError::bad("image is an image reference: ghcr.io/chloetech-ai/strata-server:TAG or …@sha256:DIGEST")),
+    };
+    crate::operator::upgrade::Ref::parse(&image).map_err(|e| ApiError::bad(format!("image {image}: {e}")))?;
+    if now["spec"]["image"].as_str() == Some(image.as_str()) {
+        return Err(ApiError::bad(format!("the cluster's spec names {image} already: nothing to roll out")));
+    }
+    let digest = crate::operator::upgrade::digest_of(&image);
+    let refused = up["rejected"].as_array().into_iter().flatten().find(|r| digest.is_some() && r["digest"].as_str() == digest.as_deref());
+    if let (Some(r), false) = (refused, b["force"].as_bool().unwrap_or(false)) {
+        return Err(ApiError::bad(format!("{image} was rolled back once: {}; pass force to try it again", r["why"].as_str().unwrap_or("it failed a check"))));
+    }
+    let ask = json!({"spec": {"image": image}});
+    let (patch, new, mut plan) = kube_planned(l, &ask).await?;
+    let from = now["spec"]["image"].as_str().unwrap_or_default().to_string();
+    let latest = &up["latest"];
+    if latest["image"].as_str() == Some(image.as_str()) {
+        plan["image"] = latest.clone();
+    }
+    plan["from"] = json!(from);
+    if b["plan"].as_bool().unwrap_or(false) {
+        return Ok(AxJson(plan).into_response());
+    }
+    if let Some(why) = plan["refused"].as_str() {
+        return Err(ApiError::bad(why.to_string()));
+    }
+    use crate::operator::kube::CHANGED_BY;
+    let j = l.change(&patch, &[(CHANGED_BY, format!("{} {}", who(w).name, new.version()))]).await.map_err(|e| ApiError { status: 502, message: format!("the Kubernetes API: {e}") })?;
+    Ok(audited(j, format!("upgraded the StrataCluster {}/{} from {from} to {image}", l.namespace, l.name)))
 }
 
 /// `POST /v1/admin/kube/resume`: lifts the hold a gate put on the
