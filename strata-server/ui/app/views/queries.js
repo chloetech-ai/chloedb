@@ -14,6 +14,8 @@ import {
   queryDrawer, liveDrawer, waterfall, askCancel, containDialog, containRules, containList, profileLink, rounds,
 } from "../workload.js";
 
+import { render as statementPage } from "./statement.js";
+
 export { queryDrawer, waterfall };
 
 export default { id: "queries", title: "Queries", icon: "queries", group: "Operate", keywords: "live running cancel recent latest slow statements history trace waterfall contain limit refuse throttle key client pg_stat_statements", render, onParams };
@@ -58,6 +60,8 @@ function render(page, r) {
     stop?.();
     drawTabs();
     clear(body);
+    // #/statement/<fp> lands here, on the Statements tab, while the router has no view for it.
+    if (t === "statements" && params.get("fingerprint")) { stop = statementPage(body, { params, rest: [] }); return; }
     stop = t === "live" ? live(body, params, setCount) : t === "statements" ? statementsTab(body, params, setCount) : historyTab(body, params, setCount);
   }
   reroute = show;

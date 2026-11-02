@@ -38,8 +38,8 @@ export function link(view, params = {}) {
 }
 
 /** A time: 19:42:15 today, Nov 2 19:42 another day. */
-export function when(ms) {
-  if (core.when) return core.when(ms);
+export function when(ms, o) {
+  if (core.when) return core.when(ms, o);
   if (!ms) return "–";
   const d = new Date(ms), today = new Date();
   return d.toDateString() === today.toDateString() ? fmt.time(ms) : d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
@@ -229,7 +229,7 @@ export async function statementDetail(fp, range = timeRange()) {
   }
   // An older server: its statements since it started, and the log store's queries.
   const out = { statement: null, trend: [], by_key: [], by_shard: [], slowest: [], errors: [], source: "fallback" };
-  try { const st = await statements(range); out.statement = st.statements.find((x) => x.fingerprint === fp) || null; out.windowed = st.windowed; } catch { /* left out */ }
+  try { const st = await statements(range); out.statement = st.statements.find((x) => x.fingerprint === fp) || null; out.windowed = st.windowed; out.since_ms = st.since_ms; } catch { /* left out */ }
   if (await hasLogStore()) {
     const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
     const w = `fingerprint = ${lit(fp)} AND shard = false AND ts >= ${lit(new Date(range.from).toISOString())}${range.to ? ` AND ts < ${lit(new Date(range.to).toISOString())}` : ""}`;
