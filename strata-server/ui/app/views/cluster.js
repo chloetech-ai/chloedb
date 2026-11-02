@@ -316,7 +316,9 @@ function movesInfo(m) {
   if (eta == null && rate && rowsTotal != null) eta = Math.max(0, (rowsTotal - rowsDone) / rate);
   if (eta == null && job.of && job.done && elapsed) eta = (elapsed / job.done) * (job.of - job.done);
   const held = (job.moves || []).map((x) => x.held_ms).filter((x) => x != null);
-  return { running: job.state === "running", moving, job, started, finished, rowsDone, rowsTotal, rate, eta, by: job.started_by || null, heldMs: held.length ? held.reduce((a, b) => a + b, 0) / held.length : null };
+  // An older job says no state: it runs until it says when it finished.
+  const running = job.state ? job.state === "running" : finished == null;
+  return { running, moving, job, started, finished, rowsDone, rowsTotal, rate, eta, by: job.started_by || null, heldMs: held.length ? held.reduce((a, b) => a + b, 0) / held.length : null };
 }
 /** The rows a second the last move ran at, kept in this browser. */
 function measuredRate(mi) {
@@ -2021,7 +2023,7 @@ async function run(R) {
             runChanged();
             if (job.state === "failed") throw new Error(job.error || "a move failed");
             if (job.state === "stopped") { R.stopped = true; throw new Error("stopped: the slots that moved stay where they are"); }
-            if (job.state !== "running" && !m.moving) break;
+            if (!m.running && !m.moving) break;
           } else if (!m.running && !m.moving && k > 3) break;
         }
       } else if (x.wait === "sync") {
