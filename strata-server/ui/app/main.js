@@ -1,12 +1,19 @@
-// The command center's shell: the navigation, the top bar (time range,
-// live or paused, alerts, theme, who is signed in), the router, the
-// command palette (Ctrl+K) and the keyboard shortcuts.
+// The command center's shell: the navigation (four groups and Labs), the
+// top bar (which cluster, the time range, live or paused, share, alerts,
+// who is signed in), whether the server answers, the router, the command
+// palette (Ctrl+K), which finds views, actions and the fleet's shards,
+// copies, nodes, tables, statements, alerts and keys, and the shortcuts.
 
-import { h, icon, clear, store, bus, api, setToken, hasToken, modal, toast, menu, seg, fmt } from "./core.js";
-import { state, start, setRange, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, firingAlerts } from "./data.js";
-import { VIEWS, GROUPS } from "./views/index.js";
+import { h, icon, clear, store, bus, api, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle } from "./core.js";
+import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, fresh, clusterName, environment, isCoordinator } from "./data.js";
+import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
 
 const app = document.getElementById("app");
+const byId = Object.fromEntries(VIEWS.map((v) => [v.id, v]));
+/** A nav entry's view: its own module, or its fallback's. */
+const viewOf = (e) => byId[e.id] || (e.fallback && byId[e.fallback]) || null;
+const ENTRIES = NAV.flatMap(([g, list]) => list.map((e) => ({ ...e, group: g }))).filter((e) => viewOf(e));
+const entryOf = (id) => ENTRIES.find((e) => e.id === id || (!byId[e.id] && e.fallback === id));
 
 // ---------------------------------------------------------------- theme
 const applyTheme = (t) => { if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme; bus.emit("theme"); };
@@ -14,99 +21,322 @@ const isDark = () => document.documentElement.dataset.theme ? document.documentE
 function toggleTheme() { const t = isDark() ? "light" : "dark"; applyTheme(t); store.set("theme", t); themeBtn.replaceChildren(icon(isDark() ? "sun" : "moon")); }
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => bus.emit("theme"));
 
-// ---------------------------------------------------------------- shell
+// ---------------------------------------------------------------- the cluster, in the sidebar
+const brandName = h("b", {}, location.host);
+const brandSub = h("small", {}, "connecting…");
+const brand = h("button", { class: "brand", title: "Which cluster this is, and the others you used", "aria-haspopup": "menu" },
+  h("svg", { class: "mark", viewBox: "0 0 32 32", "aria-hidden": "true" }),
+  h("div", { class: "clu" }, h("span", { class: "row nw", style: { gap: "4px" } }, brandName, icon("down", "chev")), brandSub));
+brand.querySelector(".mark").innerHTML = '<defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--s1)"/><stop offset="1" stop-color="var(--s7)"/></linearGradient></defs><rect x="2" y="2" width="28" height="28" rx="8" fill="url(#lg)"/><path d="M8 11.5 16 8l8 3.5-8 3.5z" fill="#fff" opacity=".95"/><path d="m8 16 8 3.5 8-3.5" stroke="#fff" stroke-width="2" fill="none" stroke-linejoin="round" opacity=".8"/><path d="m8 20.5 8 3.5 8-3.5" stroke="#fff" stroke-width="2" fill="none" stroke-linejoin="round" opacity=".6"/>';
+
+// Coordinators used from this browser, newest first. Each address keeps its
+// own list (storage is per address), so switching records both ends.
+const RECENT = "coordinators";
+function remember(url, name, env) {
+  const old = (store.get(RECENT, []) || []);
+  const was = old.find((x) => x.url === url);
+  if (was && was.name === (name || was.name) && Date.now() - was.at < 60e3) return;
+  const list = old.filter((x) => x.url !== url);
+  list.unshift({ url, name: name || was?.name || null, env: env || was?.env || null, at: Date.now() });
+  store.set(RECENT, list.slice(0, 12));
+}
+const hostOf = (u) => { try { return new URL(u).host; } catch { return u; } };
+const sameOrigin = (a, b) => { try { return new URL(a).origin === new URL(b).origin; } catch { return a === b; } };
+function switchTo(url) {
+  try { const u = new URL(url, location.href); remember(u.origin, null, null); location.href = u.origin + "/#/home"; }
+  catch { toast("That is not an address: " + url, "bad"); }
+}
+brand.onclick = () => {
+  const here = location.origin;
+  const coords = (state.fleet?.coordinators || []).filter((c) => c.url && !c.this && !sameOrigin(c.url, here));
+  const recent = (store.get(RECENT, []) || []).filter((x) => x.url !== here && !coords.some((c) => sameOrigin(c.url, x.url)));
+  const items = [{ label: `${clusterName() || location.host}${environment() ? " · " + environment() : ""} · here`, icon: "check", onclick: () => {} }];
+  if (coords.length) { items.push("-"); for (const c of coords) items.push({ label: `${c.name || hostOf(c.url)} · same cluster`, icon: "node", onclick: () => switchTo(c.url) }); }
+  if (recent.length) { items.push("-"); for (const r of recent.slice(0, 8)) items.push({ label: `${r.name || hostOf(r.url)}${r.env ? " · " + r.env : ""} · ${fmt.ago(r.at)}`, icon: "clock", onclick: () => switchTo(r.url) }); }
+  items.push("-", { label: "Open another coordinator…", icon: "plus", onclick: askCoordinator });
+  menu(brand, items);
+};
+function askCoordinator() {
+  const inp = h("input", { class: "input", placeholder: "https://strata.example.com or 10.0.3.7:7700", style: { width: "100%" } });
+  const ok = h("button", { class: "btn primary" }, "Open");
+  const m = modal({ title: "Open another coordinator", body: [h("p", { class: "dim", style: { margin: 0 } }, "Its command center opens in this tab. You sign in there with its own key."), inp], foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), ok] });
+  ok.onclick = () => { const v = inp.value.trim(); if (v) { m.close(); switchTo(/^https?:\/\//.test(v) ? v : "http://" + v); } };
+  inp.onkeydown = (e) => { if (e.key === "Enter") ok.onclick(); };
+}
+
+// ---------------------------------------------------------------- the navigation
 const nav = h("nav", { class: "nav", "aria-label": "Views" });
-const side = h("aside", { class: "side" },
-  h("div", { class: "brand" },
-    h("svg", { class: "mark", viewBox: "0 0 32 32", "aria-hidden": "true" }),
-    h("div", {}, "Strata", h("small", {}, "command center"))),
-  nav,
+const side = h("aside", { class: "side" }, brand, nav,
   h("div", { class: "side-foot" },
     h("button", { class: "btn ghost sm", title: "Collapse the sidebar ( [ )", onclick: () => toggleSide() }, icon("left"), h("span", {}, "Collapse"))));
-side.querySelector(".mark").innerHTML = '<defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--s1)"/><stop offset="1" stop-color="var(--s7)"/></linearGradient></defs><rect x="2" y="2" width="28" height="28" rx="8" fill="url(#lg)"/><path d="M8 11.5 16 8l8 3.5-8 3.5z" fill="#fff" opacity=".95"/><path d="m8 16 8 3.5 8-3.5" stroke="#fff" stroke-width="2" fill="none" stroke-linejoin="round" opacity=".8"/><path d="m8 20.5 8 3.5 8-3.5" stroke="#fff" stroke-width="2" fill="none" stroke-linejoin="round" opacity=".6"/>';
 
+const PINS = "labs.pinned";
+let labsOpen = store.get("labs.open", false);
+function navLink(e) {
+  const v = viewOf(e);
+  const a = h("a", { href: "#/" + e.id, dataset: { view: e.id }, title: e.title + (e.key ? ` (g then ${e.key})` : "") }, icon(e.icon || v.icon), h("span", { class: "t" }, e.title));
+  if (e.key) a.append(h("span", { class: "kb", "aria-hidden": "true" }, "g " + e.key));
+  if (e.scope && state.whoami && !can(e.scope)) { a.classList.add("gated"); a.title = `${e.title}: you can look; changing anything here ${needs(e.scope)}`; a.append(h("span", { class: "lockic" }, icon("lock"))); }
+  // The range goes along, so a view opens on the window in use.
+  a.addEventListener("click", (ev) => { if (ev.button === 0 && !ev.metaKey && !ev.ctrlKey && !ev.shiftKey) { ev.preventDefault(); location.hash = link(e.id); } });
+  return a;
+}
+function drawNav() {
+  clear(nav);
+  const pins = new Set(store.get(PINS, []));
+  for (const [g, list] of NAV) {
+    const es = list.map((e) => ({ ...e, group: g })).filter((e) => viewOf(e));
+    if (!es.length) continue;
+    if (g !== "Labs") { nav.append(h("h6", {}, g)); for (const e of es) nav.append(navLink(e)); continue; }
+    // Labs: pinned ones show; the rest behind a toggle.
+    const pinned = es.filter((e) => pins.has(e.id));
+    const box = h("div", { class: "labs" + (labsOpen ? " open" : "") });
+    const toggle = h("button", { class: "labs-toggle", "aria-expanded": String(labsOpen), title: "Tools for search engineers: ranking, recommendations, demos. Pin one to keep it in the sidebar" },
+      icon("labs"), h("span", { class: "t" }, `Labs · ${es.length} tools`), icon(labsOpen ? "down" : "right", "chev"));
+    toggle.onclick = () => { labsOpen = !labsOpen; store.set("labs.open", labsOpen); drawNav(); drawBadges(); };
+    box.append(toggle);
+    for (const e of labsOpen ? es : pinned) box.append(labItem(e, pins.has(e.id)));
+    nav.append(box);
+  }
+  markCurrent();
+}
+function labItem(e, pinned) {
+  const a = navLink(e);
+  a.classList.add("lab");
+  const pin = h("button", { class: "pin" + (pinned ? " on" : ""), title: pinned ? "Unpin: show it only when Labs is open" : "Pin: keep it in the sidebar", "aria-pressed": String(pinned) }, icon("pin"));
+  pin.onclick = (ev) => {
+    ev.preventDefault(); ev.stopPropagation();
+    const set = new Set(store.get(PINS, []));
+    if (set.has(e.id)) set.delete(e.id); else set.add(e.id);
+    store.set(PINS, [...set]); drawNav(); drawBadges();
+  };
+  a.append(pin);
+  return a;
+}
+
+// Badges: a view's own badge(), else what the shell knows.
+function shellBadge(id) {
+  if (id === "home") { const f = state.fleet; if (!f) return null; const n = (f.problems || []).length; return n ? { n, tone: f.status === "critical" ? "crit" : "warn", title: `${fmt.plural(n, "problem")} on Home` } : null; }
+  if (id === "alerts") { const fa = firingAlerts(); const n = fa.length; return n ? { n, tone: fa.some((a) => a.severity === "critical") ? "crit" : "warn", title: `${fmt.plural(n, "alert")} firing` } : null; }
+  if (id === "cluster") {
+    const c = state.cluster; if (!c?.shards) return null;
+    let down = 0, dark = 0;
+    for (const sh of c.shards) { const reps = sh.replicas || []; const up = reps.filter((r) => r.status === "ok" && r.role !== "unknown").length; down += reps.length - up; if (sh.state ? ["no_reads", "down", "no_writes"].includes(sh.state) : (up === 0 || (reps.length > 1 && up * 2 <= reps.length))) dark++; }
+    return down ? { n: down, tone: dark ? "crit" : "warn", title: `${fmt.plural(down, "copy", "copies")} not answering` } : null;
+  }
+  return null;
+}
+function drawBadges() {
+  if (state.paused && drawBadges.done) return;
+  drawBadges.done = true;
+  for (const a of nav.querySelectorAll("a[data-view]")) {
+    const e = ENTRIES.find((x) => x.id === a.dataset.view);
+    const v = e && viewOf(e);
+    let b = null;
+    try { b = v?.badge ? v.badge() : shellBadge(e?.id); } catch (err) { console.warn(err); }
+    let el = a.querySelector(".count");
+    if (!b || !b.n) { el?.remove(); continue; }
+    if (!el) { el = h("span", { class: "count" }); a.querySelector(".t").after(el); }
+    el.className = "count " + (b.tone === "crit" || b.tone === "bad" ? "" : b.tone || "");
+    el.textContent = b.n > 99 ? "99+" : String(b.n);
+    el.title = b.title || "";
+  }
+  const n = firingAlerts().length;
+  bellCount.textContent = n; bellCount.classList.toggle("hidden", !n);
+  bell.title = n ? `${fmt.plural(n, "alert")} firing` : "Alerts: nothing firing";
+}
+for (const ev of ["alerts", "fleet", "cluster"]) bus.on(ev, drawBadges);
+bus.on("whoami", () => { drawNav(); drawBadges(); });
+setInterval(drawBadges, 5000);
+
+// ---------------------------------------------------------------- the top bar
 const crumbs = h("div", { class: "crumbs" });
-const connDot = h("span", { class: "dot ok pulse" });
-const connText = h("span", {}, "connecting…");
-const rangeSeg = seg(RANGES.map(([k, m]) => [m, k]), state.range, (v) => setRange(v), { "aria-label": "Time range", title: "The time the charts show" });
+const envBadge = h("span", { class: "env hidden" });
+const searchBtn = h("button", { class: "search-btn", onclick: () => openPalette(), title: "Find a shard, copy, node, table, statement, alert, key, view or action" }, icon("search"), h("span", {}, "Shard, node, table, alert…"), h("kbd", {}, navigator.platform?.includes("Mac") ? "⌘K" : "Ctrl K"));
+const rangeSeg = seg(RANGES.map(([k, m]) => [m, k, `The last ${k.replace(/(\d)([a-z])/, "$1 $2")}`]), state.range, (v) => setRange(v), { "aria-label": "Time range" });
+const absBtn = h("button", { class: "abs" });
+absBtn.onclick = () => pickWindow();
 const zoomChip = h("button", { class: "chip hidden", "aria-pressed": "true", title: "Drag across a chart to zoom; this resets it", onclick: () => setZoom(null) }, icon("zout"), "zoomed", h("span", { class: "x" }, "×"));
-const liveBtn = h("button", { class: "btn sm", title: "Pause or resume the live view (p)", onclick: () => setPaused(!state.paused) });
+const liveBtn = h("button", { class: "btn sm live", onclick: () => setPaused(!state.paused) });
+const shareBtn = h("button", { class: "btn sm", title: "Copy a link to exactly this: the view, its selection and this window as fixed times (it opens paused) (s)", onclick: () => share() }, icon("share"), h("span", { class: "lbl" }, "Share"));
 const bell = h("a", { class: "btn ghost icon", href: "#/alerts", title: "Alerts", style: { position: "relative" } }, icon("alerts"));
-const bellCount = h("span", { class: "count hidden", style: { position: "absolute", top: "-3px", right: "-4px", fontSize: "10px", minWidth: "16px", padding: "0 4px", borderRadius: "8px", background: "var(--crit)", color: "#fff", textAlign: "center", fontWeight: 700 } });
+const bellCount = h("span", { class: "count hidden bellc" });
 bell.append(bellCount);
 const themeBtn = h("button", { class: "btn ghost icon", title: "Light or dark (t)", onclick: toggleTheme }, icon(isDark() ? "sun" : "moon"));
-const whoBtn = h("button", { class: "btn ghost sm", title: "Who you are signed in as" }, icon("user"), h("span", {}, "…"));
+const whoBtn = h("button", { class: "btn ghost sm who", title: "Who you are signed in as" }, icon("user"), h("span", {}, "…"));
 whoBtn.onclick = () => menu(whoBtn, [
   { label: "Use another key or token", icon: "access", onclick: askToken },
   { label: "Sign out of this tab", icon: "unlock", onclick: () => { setToken(null); toast("Signed out: the key is forgotten for this tab"); } },
   "-",
-  { label: "Manage API keys", icon: "lock", onclick: () => (location.hash = "#/access") },
+  { label: "Manage API keys", icon: "lock", onclick: () => (location.hash = "#/access?tab=keys") },
+  { label: "Keyboard shortcuts", icon: "keyboard", onclick: () => shortcuts() },
 ]);
-const searchBtn = h("button", { class: "search-btn", onclick: () => openPalette(), title: "Search views and actions" }, icon("search"), h("span", {}, "Search or jump to…"), h("kbd", {}, navigator.platform?.includes("Mac") ? "⌘K" : "Ctrl K"));
-const top = h("header", { class: "top" }, crumbs, h("div", { class: "sep" }), searchBtn, rangeSeg, zoomChip, liveBtn,
-  h("div", { class: "conn", title: "The server this page talks to" }, connDot, connText), bell, themeBtn, whoBtn);
+const top = h("header", { class: "top" }, crumbs, envBadge, h("div", { class: "sep" }), searchBtn, rangeSeg, absBtn, zoomChip, liveBtn, shareBtn, bell, themeBtn, whoBtn);
+// Says when the server does not answer, and that what shows is old.
+const downBar = h("div", { class: "downbar hidden", role: "alert" });
 const content = h("main", { class: "content", id: "content" });
 const shell = h("div", { class: "shell" + (store.get("side", false) ? " collapsed" : "") }, side, top, content);
+content.before(downBar);
 app.replaceWith(shell);
 
 function toggleSide() { shell.classList.toggle("collapsed"); store.set("side", shell.classList.contains("collapsed")); }
-function drawLive() { clear(liveBtn, icon(state.paused ? "play" : "pause"), state.paused ? "Resume" : "Live"); liveBtn.classList.toggle("primary", state.paused); }
-drawLive();
-bus.on("paused", drawLive);
-bus.on("range", () => { rangeSeg.set(state.range); zoomChip.classList.toggle("hidden", !state.zoom); });
 
-function drawConn() {
-  const hl = state.health;
-  if (!state.online) { connDot.className = "dot bad pulse"; connText.textContent = "offline: " + (state.error || "no answer"); return; }
-  if (!hl) return;
-  connDot.className = "dot pulse " + (hl.status === "ok" ? "ok" : hl.status === "degraded" ? "warn" : "bad");
-  const role = hl.role === "coordinator" ? `coordinator · ${fmt.plural(hl.shards?.length || 0, "shard")}` : hl.replication?.role || (hl.slots ? `shard ${hl.slots.shard} of ${hl.slots.of}` : "standalone");
-  connText.textContent = `${location.host} · ${role}`;
+function drawRange() {
+  const r = timeRange();
+  rangeSeg.set(r.fixed ? "none" : state.range);
+  absBtn.textContent = r.fixed ? span(r.from, r.to) : span(r.from, r.to);
+  absBtn.title = `${whenTitle(r.from)} to ${whenTitle(r.to)}${r.fixed ? ", fixed" : ", following now"}. Click to pick another window`;
+  absBtn.classList.toggle("fixed", r.fixed);
+  zoomChip.classList.toggle("hidden", !state.zoom);
 }
-bus.on("health", drawConn); bus.on("online", drawConn);
+bus.on("range", drawRange);
+bus.on("paused", drawRange);
+setInterval(() => { if (!state.paused && state.from == null) drawRange(); }, 30000);
+
+/** The status button: green and "Live" only while the data is fresh and the server answers. */
+function drawLive() {
+  const c = connection();
+  const f = fresh("series"), fh = fresh("health");
+  let cls, ic, text, title;
+  if (!c.ok) { cls = "down"; ic = "bad"; text = "Not answering"; title = `The server has not answered since ${when(c.since_ms)}: ${c.message}. Click to pause`; }
+  else if (state.paused) { cls = "paused"; ic = "play"; text = state.from != null ? "Fixed window" : `Paused at ${when(state.pausedAt)}`; title = "Nothing redraws while paused. Click to go live (p)"; }
+  else if ((!f.ok && !f.loading) || (!fh.ok && !fh.loading)) { cls = "stale"; ic = "clock"; text = "Stale"; title = `No fresh data: ${(!f.ok ? f.error : fh.error) || "the last answers are old"}`; }
+  else { cls = "ok"; ic = null; text = "Live"; title = "Live: the data follows now. Click to pause (p)"; }
+  const every = state.series.source === "load" ? "1 min" : (state.interval / 1000) + " s";
+  clear(liveBtn, cls === "ok" ? h("span", { class: "dot ok" }) : icon(ic), text, cls === "ok" ? h("span", { class: "fresh" }, "· " + every) : null);
+  liveBtn.className = "btn sm live " + cls;
+  liveBtn.title = title;
+}
+let downShown = false;
+function drawDown() {
+  const c = connection();
+  // A single lost answer does not show the bar: it waits for the next poll to fail too.
+  const missed = !c.ok && (Date.now() - c.since_ms > 4000 || !fresh("health").ok);
+  if (missed !== downShown) { downShown = missed; downBar.classList.toggle("hidden", !missed); document.body.classList.toggle("not-answering", missed); bus.emit("answering", !missed); }
+  if (!missed) return;
+  const lastOk = c.last_ok_ms;
+  clear(downBar, icon("bad"),
+    h("span", { class: "grow" }, h("b", {}, `Not answering since ${when(c.since_ms)}`), ` (${c.message}). `,
+      lastOk ? `What shows is from ${when(lastOk)} and greyed where it is old. ` : "Nothing has loaded yet. ",
+      "Asking again every 5 s."),
+    h("button", { class: "btn sm", onclick: () => { start(); toast("Asking again"); } }, icon("refresh"), "Ask now"));
+}
+for (const ev of ["connection", "paused", "fresh", "health", "points", "range"]) bus.on(ev, () => { drawLive(); drawDown(); });
+setInterval(() => { drawLive(); drawDown(); }, 1000);
+
 function drawWho() {
   const w = state.whoami;
   whoBtn.querySelector("span").textContent = w ? `${w.name} · ${w.scope}` : hasToken() ? "key refused" : "signed out";
 }
-bus.on("whoami", drawWho);
-function drawBell() {
-  const n = firingAlerts().length;
-  bellCount.textContent = n; bellCount.classList.toggle("hidden", !n);
-  for (const a of nav.querySelectorAll("a[data-view=alerts] .count")) a.remove();
-  if (n) nav.querySelector("a[data-view=alerts]")?.append(h("span", { class: "count" }, n));
+function drawCluster() {
+  const name = clusterName(), env = environment();
+  const c = state.cluster;
+  const coords = state.fleet?.coordinators?.length || null;
+  brandName.textContent = name || location.host;
+  const shards = c?.shards?.length;
+  brandSub.textContent = [env || null, coords > 1 ? fmt.plural(coords, "coordinator") : shards != null ? fmt.plural(shards, "shard") : state.health && !isCoordinator() ? "one server" : null].filter(Boolean).join(" · ") || (state.health ? "environment not set" : "connecting…");
+  brand.title = `${name || "This server"}${env ? " (" + env + ")" : ", environment not set"} at ${location.host}. Click for its other coordinators and the ones you used`;
+  const prod = env != null && /^prod/i.test(env);
+  envBadge.className = "env" + (env ? "" : " hidden") + (prod ? " prod" : "");
+  envBadge.textContent = env ? (prod ? "PROD" : env.toUpperCase().slice(0, 12)) : "";
+  envBadge.title = env ? `Environment: ${env}${prod ? ". Changes here reach production." : ""}` : "";
+  top.classList.toggle("prod", prod);
+  document.title = `${currentEntry?.title || "Strata"} · ${name || "Strata"}${prod ? " · PROD" : ""}`;
+  if (name || env) remember(location.origin, name, env);
 }
-bus.on("alerts", drawBell);
+bus.on("whoami", () => { drawWho(); drawCluster(); });
+for (const ev of ["cluster", "fleet", "health"]) bus.on(ev, drawCluster);
 
-// ---------------------------------------------------------------- nav
-for (const g of GROUPS) {
-  nav.append(h("h6", {}, g));
-  for (const v of VIEWS.filter((x) => x.group === g)) nav.append(h("a", { href: "#/" + v.id, dataset: { view: v.id }, title: v.title }, icon(v.icon), h("span", {}, v.title)));
+// ---------------------------------------------------------------- a window, picked
+function overnight() { const d = new Date(); d.setHours(8, 0, 0, 0); if (d > Date.now()) d.setDate(d.getDate() - 1); return [d.getTime() - 14 * 3600e3, d.getTime()]; }
+function pickWindow() {
+  const r = timeRange();
+  const loc = (ms) => new Date(ms - new Date(ms).getTimezoneOffset() * 60e3).toISOString().slice(0, 16);
+  const a = h("input", { class: "input", type: "datetime-local", value: loc(r.from) });
+  const b = h("input", { class: "input", type: "datetime-local", value: loc(r.to) });
+  const ok = h("button", { class: "btn primary" }, "Show this window");
+  const presets = h("div", { class: "row", style: { gap: "6px" } },
+    ...[["Overnight, 18:00 to 08:00", overnight],
+      ["Yesterday", () => { const d = new Date(); d.setHours(0, 0, 0, 0); return [d.getTime() - 86400e3, d.getTime()]; }],
+      ["Today so far", () => { const d = new Date(); d.setHours(0, 0, 0, 0); return [d.getTime(), Date.now()]; }]]
+      .map(([label, f]) => h("button", { class: "btn sm", onclick: () => { const [x, y] = f(); a.value = loc(x); b.value = loc(y); } }, label)));
+  let zone = "local"; try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { /* old browser */ }
+  const m = modal({
+    title: "Show a fixed window",
+    body: [h("p", { class: "dim", style: { margin: 0 } }, `Every view shows this window, paused, and a shared link opens it. Times are this browser's (${zone}). Over an hour, charts show a point a minute.`),
+      presets, h("div", { class: "row nw" }, h("label", { class: "f grow" }, "From", a), h("label", { class: "f grow" }, "To", b))],
+    foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), state.from != null ? h("button", { class: "btn", onclick: () => { m.close(); setRange(state.range); } }, "Back to live") : null, ok],
+  });
+  ok.onclick = () => {
+    const x = new Date(a.value).getTime(), y = new Date(b.value).getTime();
+    if (!(x < y)) { toast("The window ends before it starts", "bad"); return; }
+    m.close(); setWindow(x, Math.min(y, Date.now()));
+  };
+}
+
+// ---------------------------------------------------------------- share
+/** A link to this view with its params and the window as absolute times: it opens paused. */
+export function shareLink() {
+  const r = parse();
+  const p = new URLSearchParams(r.params);
+  p.delete("range"); p.delete("from"); p.delete("to");
+  const { from, to } = rangeParams({ absolute: true });
+  p.set("from", from); p.set("to", to);
+  return `${location.origin}${location.pathname}#/${[r.id, ...r.rest].map(encodeURIComponent).join("/")}?${p}`;
+}
+function share() {
+  const r = timeRange();
+  copy(shareLink(), `Link copied: ${currentEntry?.title || "this view"}, ${span(r.from, r.to)}, opens paused. It holds no key.`);
 }
 
 // ---------------------------------------------------------------- router
-let current = null, cleanup = null;
+let current = null, cleanup = null, currentEntry = null;
 function parse() {
   const raw = location.hash.replace(/^#\/?/, "");
   const [path, q] = raw.split("?");
-  const [id, ...rest] = path.split("/");
-  return { id: id || "overview", rest, params: new URLSearchParams(q || "") };
+  const [id, ...rest] = path.split("/").map((x) => { try { return decodeURIComponent(x); } catch { return x; } });
+  return { id: id || "home", rest, params: new URLSearchParams(q || "") };
+}
+function resolve(r) {
+  let id = r.id;
+  if (REDIRECTS[id]) {
+    id = REDIRECTS[id];
+    const q = r.params.toString();
+    try { history.replaceState(null, "", location.pathname + location.search + "#/" + [id, ...r.rest].map(encodeURIComponent).join("/") + (q ? "?" + q : "")); } catch { /* old browser */ }
+    r.id = id;
+  }
+  if (byId[id]) return { v: byId[id], e: entryOf(id) };
+  // A view's pages: #/alert/<id> belongs to Alerts and #/statement/<fp> to Queries until they have modules of their own.
+  if (id === "alert" && byId.alerts) { if (r.rest[0] && !r.params.get("rule")) r.params.set("rule", r.rest[0]); return { v: byId.alerts, e: entryOf("alerts") }; }
+  if (id === "statement" && byId.queries) { if (r.rest.length && !r.params.get("fingerprint")) { r.params.set("fingerprint", r.rest.join("/")); r.params.set("tab", "statements"); } return { v: byId.queries, e: entryOf("queries") }; }
+  const e = ENTRIES.find((x) => x.id === id);
+  if (e) return { v: viewOf(e), e };
+  return { v: byId.home || VIEWS[0], e: entryOf("home"), unknown: r.id };
+}
+function markCurrent() {
+  const id = currentEntry?.id;
+  for (const a of nav.querySelectorAll("a[data-view]")) { if (a.dataset.view === id) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); }
 }
 function route() {
   const r = parse();
+  const { v, e, unknown } = resolve(r);
   rangeFromUrl(r.params);
-  const v = VIEWS.find((x) => x.id === r.id) || VIEWS[0];
-  for (const a of nav.querySelectorAll("a")) a.toggleAttribute("aria-current", a.dataset.view === v.id) || a.removeAttribute("aria-current");
-  nav.querySelector(`a[data-view="${v.id}"]`)?.setAttribute("aria-current", "page");
+  currentEntry = e || { id: v.id, title: v.title, icon: v.icon };
+  markCurrent();
+  if (unknown && unknown !== "home") toast(`There is no view "${unknown}": this is Home`);
   if (current === v && v.onParams) { v.onParams(r); return; }
-  try { cleanup?.(); } catch (e) { console.error(e); }
+  try { cleanup?.(); } catch (err) { console.error(err); }
   current = v;
-  clear(crumbs, icon(v.icon), v.title, v.sub ? h("span", { class: "sub" }, "· " + v.sub) : null);
-  document.title = `${v.title} · Strata`;
+  const title = currentEntry.title || v.title;
+  clear(crumbs, icon(currentEntry.icon || v.icon), title, v.sub ? h("span", { class: "sub" }, "· " + v.sub) : null);
+  drawCluster();
   const page = h("div", { class: "page" + (v.full ? " full" : "") });
   if (v.full) page.style.cssText = "padding:0;max-width:none";
   clear(content, page);
   content.scrollTop = 0;
-  try { cleanup = v.render(page, r) || null; } catch (e) { console.error(e); page.append(h("div", { class: "error" }, "This view failed: " + e.message)); }
+  try { cleanup = v.render(page, r) || null; } catch (err) { console.error(err); page.append(h("div", { class: "error" }, "This view failed: " + err.message)); }
+  if (cleanup && typeof cleanup === "object" && typeof cleanup.stop === "function") { const o = cleanup; cleanup = () => o.stop(); }
+  if (typeof cleanup !== "function") cleanup = null;
 }
 addEventListener("hashchange", route);
 
@@ -114,107 +344,275 @@ addEventListener("hashchange", route);
 function askToken() {
   const inp = h("input", { class: "input", type: "password", placeholder: "sk_… or the server's --token", autocomplete: "off", style: { width: "100%" } });
   const save = h("button", { class: "btn primary" }, "Use it");
+  const r = parse();
+  const shared = +r.params.get("from") > 0 && +r.params.get("to") > 0;
+  const what = `${resolve(parse()).e?.title || "a view"}${shared ? `, ${span(+r.params.get("from"), +r.params.get("to"))}` : ""}`;
   const m = modal({
-    title: "Sign in to this server",
-    body: [h("p", { class: "dim", style: { margin: 0 } }, "Paste an API key (read, write or admin) or the server's token. It is kept for this tab only, and sent as a bearer token."), inp],
+    title: shared ? "Sign in to see what was shared" : "Sign in to this server",
+    body: [
+      shared ? h("p", { style: { margin: 0 } }, "This link opens ", h("b", {}, what), ` on ${clusterName() || location.host}. A link never holds a key: use your own.`) : null,
+      h("p", { class: "dim", style: { margin: 0 } }, "Paste an API key (read, write or admin) or the server's token. It is kept for this tab only, and sent as a bearer token."), inp],
     foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), save],
   });
-  const go = () => { setToken(inp.value.trim()); m.close(); refreshWho(); toast("Key saved for this tab", "ok"); };
-  save.onclick = go;
-  inp.onkeydown = (e) => { if (e.key === "Enter") go(); };
+  const ok = () => { setToken(inp.value.trim()); m.close(); refreshWho(); toast("Key saved for this tab", "ok"); };
+  save.onclick = ok;
+  inp.onkeydown = (e) => { if (e.key === "Enter") ok(); };
 }
 let asked = false;
 bus.on("unauthorized", () => { if (!document.querySelector(".modal")) { if (!asked || !hasToken()) askToken(); asked = true; } });
 
 // ---------------------------------------------------------------- palette
+const go = (hash) => () => { location.hash = hash; };
 const ACTIONS = [
-  { name: "Toggle light or dark", icon: "moon", run: toggleTheme, hint: "t" },
-  { name: "Collapse or expand the sidebar", icon: "menu", run: toggleSide, hint: "[" },
+  { name: "Share a link to this view and window", icon: "share", run: () => share(), hint: "s" },
   { name: "Pause or resume the live view", icon: "pause", run: () => setPaused(!state.paused), hint: "p" },
-  ...RANGES.map(([k, m]) => ({ name: `Show the last ${k.replace(/(\d)([a-z])/, "$1 $2")}`, icon: "clock", run: () => setRange(m) })),
-  { name: "Use another API key or token", icon: "access", run: askToken },
-  { name: "Create an API key", icon: "plus", run: () => (location.hash = "#/access?new=1") },
+  ...RANGES.map(([k, m], i) => ({ name: `Show the last ${k.replace(/(\d)([a-z])/, "$1 $2")}`, icon: "clock", run: () => setRange(m), hint: String(i + 1) })),
+  { name: "Show a fixed window (dates and times)", icon: "clock", run: () => pickWindow() },
+  { name: "What happened overnight (Timeline, 18:00 to 08:00)", icon: "timeline", run: () => { const [a, b] = overnight(); setWindow(a, b); location.hash = link("timeline"); } },
+  { name: "Add a note to the timeline", icon: "note", run: go("#/timeline?note=1"), scope: "admin" },
+  { name: "Toggle light or dark", icon: "moon", run: () => toggleTheme(), hint: "t" },
+  { name: "Collapse or expand the sidebar", icon: "menu", run: () => toggleSide(), hint: "[" },
+  { name: "Open another coordinator", icon: "node", run: () => askCoordinator() },
+  { name: "Use another API key or token", icon: "access", run: () => askToken() },
+  { name: "Create an API key", icon: "plus", run: go("#/access?tab=keys&new=1"), scope: "admin" },
   { name: "Open the raw Prometheus metrics", icon: "ext", run: () => window.open("/metrics", "_blank") },
-  { name: "Open the query console", icon: "classic", run: () => (location.hash = "#/classic") },
   { name: "Keyboard shortcuts", icon: "keyboard", run: () => shortcuts(), hint: "?" },
 ];
 export function addActions(items) { ACTIONS.push(...items); }
 
-function score(q, text) {
+// A substring scores by where it starts (a word start more); letters in order
+// ("sqlw" for SQL workbench) only count in a short name and close together,
+// so a query does not drag in every long sentence that happens to hold them.
+function score(q, text, fuzzy = true) {
   if (!q) return 1;
-  q = q.toLowerCase(); const t = text.toLowerCase();
+  q = q.toLowerCase(); const t = String(text).toLowerCase();
   const i = t.indexOf(q);
-  if (i >= 0) return 100 - i;
-  let j = 0, sc = 0;
-  for (const c of t) { if (c === q[j]) { j++; sc += 2; } if (j === q.length) return sc; }
+  if (i >= 0) return 100 - Math.min(i, 60) + (i === 0 || /[\s\-/:_.]/.test(t[i - 1]) ? 20 : 0);
+  if (!fuzzy || q.length < 3 || t.length > 40) return 0;
+  let j = 0, first = -1;
+  for (let k = 0; k < t.length; k++) {
+    if (t[k] !== q[j]) continue;
+    if (first < 0) { if (k > 0 && !/[\s\-/:_.]/.test(t[k - 1])) continue; first = k; }
+    if (++j === q.length) return k - first + 1 <= q.length * 2 + 4 ? 30 + q.length * 2 : 0;
+  }
   return 0;
 }
 function mark(text, q) {
   const i = q ? text.toLowerCase().indexOf(q.toLowerCase()) : -1;
   return i < 0 ? text : [text.slice(0, i), h("mark", {}, text.slice(i, i + q.length)), text.slice(i + q.length)];
 }
-function openPalette() {
+
+// What the palette finds besides the cluster: read when it opens, kept a minute.
+const found = { at: 0, tables: [], statements: [], keys: [] };
+async function loadFinds() {
+  if (Date.now() - found.at < 60e3) return;
+  found.at = Date.now();
+  const [t, st, k] = await Promise.allSettled([
+    api("/v1/tables", { timeout: 5000 }),
+    api("/v1/queries/stats?limit=200", { timeout: 5000 }),
+    can("admin") ? api("/v1/admin/keys", { timeout: 5000 }) : Promise.reject(new Error("not admin"))]);
+  if (t.status === "fulfilled") found.tables = (Array.isArray(t.value) ? t.value : t.value.tables || []).map((x) => typeof x === "string" ? { name: x } : { name: x.name || x.table, docs: x.docs ?? x.rows });
+  if (st.status === "fulfilled") found.statements = Array.isArray(st.value) ? st.value : st.value.statements || [];
+  found.keys = k.status === "fulfilled" ? (k.value.keys || []).filter((x) => !x.revoked_ms) : [];
+  // Keys the statements name (a read key sees them too, without the key list).
+  const seen = new Set(found.keys.map((x) => x.name));
+  const calls = new Map();
+  for (const st of found.statements) for (const x of st.keys || []) if (x.key) calls.set(x.key, (calls.get(x.key) || 0) + (x.calls || 0));
+  for (const [name, n] of calls) if (!seen.has(name)) found.keys.push({ name, id: name, calls: n, fromStats: true });
+}
+const windowText = () => { const r = timeRange(); return span(r.from, r.to); };
+
+/** Entities that match `q`, each with what to do about it. */
+function entities(q) {
+  const out = [];
+  const ql = q.toLowerCase().trim();
+  if (!ql) return out;
+  const shards = state.cluster?.shards || [];
+  // A shard: "117", "shard 117", "s117".
+  const num = ql.match(/^(?:shard\s*|s)?(\d{1,4})$/);
+  if (num) {
+    const n = +num[1];
+    const i = shards.findIndex((sh, k) => (sh.shard ?? k) === n);
+    if (i >= 0) {
+      const sh = shards[i];
+      const reps = sh.replicas || [];
+      const prim = reps.find((r) => r.role === "primary") || reps[0];
+      const L = prim?.detail?.load || {};
+      const st = sh.state || sh.status;
+      const errs = sh.call_rate != null && sh.calls ? null : null;
+      out.push({ grp: "Shard", sc: 300, icon: "shard", name: `Shard ${n}`, sub: [st && st !== "ok" ? st.replace("_", " ") : null, `${reps.filter((r) => r.status === "ok").length} of ${reps.length} copies answer`, L.p99_ms != null ? `p99 ${fmt.ms(L.p99_ms)}` : null, L.errors_s ? `${fmt.si(L.errors_s)} errors/s` : errs, prim?.version?.version ? "on " + prim.version.version : null].filter(Boolean).join(" · "), hint: "Cluster", run: go(link("cluster", { shard: n })), acts: shardActs(n, sh) });
+    }
+  }
+  // Copies: by short name, node name, URL or port.
+  shards.forEach((sh, i) => (sh.replicas || []).forEach((r, j) => {
+    const nm = copyName(r.url);
+    const s = sh.shard ?? i;
+    const hay = [nm, r.short, `s${s}-${j}`, r.url, r.node, r.name].filter(Boolean).join(" ");
+    let sc = score(ql, hay);
+    if (num && s === +num[1]) sc = 250 - j;
+    if (/^\d{2,5}$/.test(ql) && r.url && new RegExp(":" + ql + "(\\b|$)").test(r.url)) sc = 280;
+    if (sc <= 0) return;
+    out.push({ grp: "Copies", sc: Math.min(sc, 280), icon: "db", name: nm, sub: [r.role === "unknown" || (r.status && r.status !== "ok") ? "not answering" : r.role, r.zone ? "zone " + r.zone : null, r.node || hostOf(r.url)].filter(Boolean).join(" · "), title: copyTitle(r.url), hint: "Cluster", run: go(link("cluster", { shard: s, copy: nm })), acts: copyActs(nm, r, s) });
+  }));
+  // Nodes and zones.
+  const nodes = new Map(), zones = new Map();
+  shards.forEach((sh) => (sh.replicas || []).forEach((r) => { if (r.node) nodes.set(r.node, (nodes.get(r.node) || 0) + 1); if (r.zone) zones.set(r.zone, (zones.get(r.zone) || 0) + 1); }));
+  for (const [n, k] of nodes) { const sc = score(ql, n); if (sc > 0) out.push({ grp: "Nodes", sc, icon: "node", name: n, sub: fmt.plural(k, "copy", "copies"), hint: "Cluster", run: go(link("cluster", { node: n, group: "node" })), acts: [{ name: `Logs of node ${n}`, icon: "logs", hint: "Logs", run: go(link("logs", { node: n })) }, { name: `Its copies in Cluster`, icon: "cluster", hint: "Cluster", run: go(link("cluster", { node: n, group: "node" })) }] }); }
+  for (const [z, k] of zones) { const sc = score(ql, "zone " + z); if (sc > 0) out.push({ grp: "Nodes", sc: sc - 5, icon: "cloud", name: "Zone " + z, sub: fmt.plural(k, "copy", "copies"), hint: "Cluster", run: go(link("cluster", { zone: z, group: "zone" })) }); }
+  // Alerts.
+  const fa = firingAlerts();
+  for (const r of state.alerts?.rules || []) {
+    const sc = score(ql, `${r.name} ${r.id} ${r.metric || ""} ${r.description || ""}`);
+    if (sc <= 0) continue;
+    const f = fa.find((a) => a.id === r.id);
+    const st = f ? `firing for ${fmt.dur((Date.now() - (f.since_ms || Date.now())) / 1000)}` : (r.status?.state || state.alerts.states?.find((x) => x.rule === r.id)?.state || "ok");
+    out.push({ grp: "Alerts", sc: sc + (f ? 30 : 0), icon: "alerts", name: r.name, sub: st, hint: "Alerts", run: go(link("alert/" + encodeURIComponent(r.id))) });
+  }
+  // Tables.
+  for (const t of found.tables) {
+    const sc = score(ql, t.name); if (sc <= 0) continue;
+    out.push({ grp: "Tables", sc, icon: "table", name: t.name, sub: t.docs != null ? fmt.si(t.docs) + " rows" : "", hint: "Tables", run: go(link(byId.tables ? "tables" : "inspector", { table: t.name })),
+      acts: [{ name: `${t.name} in Tables and storage`, icon: "table", hint: "Tables", run: go(link(byId.tables ? "tables" : "inspector", { table: t.name })) }, { name: `Query ${t.name} in the workbench`, icon: "sql", hint: "SQL", run: go(link("sql", { table: t.name })) }, { name: `Its schema`, icon: "schema", hint: "Schema", run: go(link("schema", { table: t.name })) }] });
+  }
+  // Statements.
+  if (ql.length >= 3) for (const st of found.statements) {
+    const sql = st.sql || st.example || st.fingerprint || "";
+    const sc = score(ql, sql + " " + (st.fingerprint || "")); if (sc <= 0) continue;
+    out.push({ grp: "Statements", sc: sc - 10, icon: "queries", name: sql.length > 90 ? sql.slice(0, 88) + "…" : sql, sub: [fmt.plural(st.calls || 0, "call"), st.p99_ms != null ? "p99 " + fmt.ms(st.p99_ms) : null].filter(Boolean).join(" · "), mono: true, hint: "Statement", run: go(link("statement/" + encodeURIComponent(st.fingerprint || sql))) });
+  }
+  // Keys.
+  for (const k of found.keys) {
+    const sc = score(ql, `${k.name} ${k.id} ${k.owner || ""}`); if (sc <= 0) continue;
+    if (k.fromStats) {
+      out.push({ grp: "Keys", sc: sc - 5, icon: "key", name: k.name, sub: `${fmt.plural(k.calls, "call")} in the last 15 min (from the statements)`, hint: "Queries", run: go(link("queries", { key: k.name })),
+        acts: [{ name: `Queries from key ${k.name}`, icon: "queries", hint: "Queries", run: go(link("queries", { key: k.name })) }, { name: `Statements of key ${k.name}`, icon: "queries", hint: "Queries", run: go(link("queries", { tab: "statements", key: k.name })) }] });
+      continue;
+    }
+    out.push({ grp: "Keys", sc: sc - 5, icon: "key", name: k.name, sub: [k.scope, k.owner ? "owner " + k.owner : null, k.last_used_ms ? "used " + fmt.ago(k.last_used_ms) : "never used"].filter(Boolean).join(" · "), hint: "Access", run: go(link("access", { tab: "keys", key: k.id })),
+      acts: [{ name: `Queries from key ${k.name}`, icon: "queries", hint: "Queries", run: go(link("queries", { key: k.name })) }, { name: `The key in Access and audit`, icon: "access", hint: "Access", run: go(link("access", { tab: "keys", key: k.id })) }] });
+  }
+  // A request id.
+  if (/^[0-9a-f]{12,32}$/i.test(ql)) out.push({ grp: "Requests", sc: 260, icon: "logs", name: `Request ${ql}`, sub: "its log lines and its query", hint: "Logs", run: go(link("logs", { request: ql })) });
+  return out;
+}
+function shardActs(n, sh) {
+  const reps = sh.replicas || [];
+  const prim = reps.find((r) => r.role === "primary") || reps[0];
+  const pn = prim ? copyName(prim.url) : null;
+  const w = windowText();
+  return [
+    { name: "Its log lines, errors first", icon: "logs", hint: "Logs", run: go(link("logs", { shard: n, level: "warn" })) },
+    { name: "Its slowest queries", icon: "queries", hint: "Queries", run: go(link("queries", { shard: n, tab: "statements" })) },
+    prim ? { name: `Profile ${pn} for 30 s`, icon: "flame", hint: "Profiler", run: go(link("profile", { tab: "cpu", node: prim.url })) } : null,
+    { name: "Its events on the timeline", icon: "timeline", hint: "Timeline", run: go(link("timeline", { shard: n })) },
+    { name: `Copy a link to Cluster · shard ${n} · ${w}`, icon: "share", hint: "Share", run: () => copy(location.origin + location.pathname + link("cluster", { shard: n, ...rangeParams({ absolute: true }) }), `Link copied: shard ${n}, ${w}`) },
+  ].filter(Boolean);
+}
+function copyActs(nm, r, shard) {
+  return [
+    { name: `Logs of ${nm}`, icon: "logs", hint: "Logs", run: go(link("logs", { node: r.url })) },
+    { name: `Profile ${nm} for 30 s`, icon: "flame", hint: "Profiler", run: go(link("profile", { tab: "cpu", node: r.url })) },
+    { name: `Shard ${shard} in Cluster`, icon: "cluster", hint: "Cluster", run: go(link("cluster", { shard, copy: nm })) },
+    { name: `Copy its address (${r.url})`, icon: "copy", hint: "Copy", run: () => copy(r.url, "Address copied") },
+  ];
+}
+
+function openPalette(initial = "") {
   if (document.querySelector(".palette")) return;
-  const inp = h("input", { placeholder: "Jump to a view, run an action…", "aria-label": "Search", autocomplete: "off" });
+  const inp = h("input", { placeholder: "Shard 117, s9-2, a node, a table, an alert, a key, a view…", "aria-label": "Search", autocomplete: "off", spellcheck: "false", value: initial });
   const list = h("div", { class: "list", role: "listbox" });
   const pal = h("div", { class: "palette", role: "dialog", "aria-label": "Command palette" }, inp, list,
-    h("div", { class: "foot" }, h("span", {}, h("kbd", {}, "↑"), " ", h("kbd", {}, "↓"), " to move"), h("span", {}, h("kbd", {}, "Enter"), " to open"), h("span", {}, h("kbd", {}, "Esc"), " to close")));
+    h("div", { class: "foot" }, h("span", {}, h("kbd", {}, "↑"), " ", h("kbd", {}, "↓"), " to move"), h("span", {}, h("kbd", {}, "Enter"), " to open"), h("span", {}, h("kbd", {}, "Tab"), " for its actions"), h("span", {}, h("kbd", {}, "Esc"), " to close"),
+      h("span", { class: "sep" }), h("span", {}, "finds shards, copies, nodes, tables, statements, alerts, keys, request ids")));
   const scrim = h("div", { class: "scrim" });
   document.body.append(scrim, pal);
-  let items = [], sel = 0;
+  loadFinds().then(() => { if (pal.isConnected) draw(); }).catch(() => {});
+  let items = [], sel = 0, focus = null; // focus: the entity whose actions show
   const close = () => { pal.remove(); scrim.remove(); };
   scrim.onclick = close;
   function draw() {
     const q = inp.value.trim();
-    const views = VIEWS.map((v) => ({ name: v.title, icon: v.icon, grp: "Views", hint: v.group, run: () => (location.hash = "#/" + v.id), sc: score(q, v.title + " " + (v.keywords || "")) }));
-    const acts = ACTIONS.map((a) => ({ ...a, grp: "Actions", sc: score(q, a.name) }));
-    items = [...views, ...acts].filter((x) => x.sc > 0).sort((a, b) => (q ? b.sc - a.sc : 0));
+    if (focus) items = focus.acts.map((a) => ({ ...a, grp: focus.name }));
+    else {
+      const views = ENTRIES.map((e) => { const v = viewOf(e); return { name: e.title, icon: e.icon || v.icon, grp: "Views", hint: e.group + (e.key ? ` · g ${e.key}` : ""), run: go(link(e.id)), sc: Math.max(score(q, e.title), score(q, (v.keywords || "") + " " + e.id, false) * 0.8) * (q ? 0.9 : 1) }; });
+      const acts = ACTIONS.filter((a) => !a.scope || can(a.scope)).map((a) => ({ ...a, grp: "Actions", sc: score(q, a.name, false) * 0.8 }));
+      const ents = entities(q).sort((a, b) => b.sc - a.sc);
+      // The best match's actions come right after it ("about shard 117").
+      const best = ents[0];
+      const about = best && best.acts && best.sc >= 250 ? best.acts.map((a) => ({ ...a, grp: `About ${best.name.replace(/^Shard/, "shard")}, ${windowText()}`, sc: best.sc - 1 })) : [];
+      const order = ["Shard", "Copies", "Requests", "About", "Nodes", "Alerts", "Tables", "Statements", "Keys", "Views", "Actions"];
+      const rank = (g) => { const i = order.findIndex((o) => g.startsWith(o)); return i < 0 ? 99 : i; };
+      const all = [...ents, ...about, ...views, ...acts].filter((x) => x.sc > 0);
+      if (q) {
+        const byG = new Map();
+        for (const x of all.sort((a, b) => b.sc - a.sc)) { if (!byG.has(x.grp)) byG.set(x.grp, []); if (byG.get(x.grp).length < (x.grp === "Copies" ? 4 : 6)) byG.get(x.grp).push(x); }
+        const top = (v) => Math.max(...v.map((x) => x.sc));
+        items = [...byG.entries()].sort((a, b) => {
+          const strong = top(a[1]) >= 250 || top(b[1]) >= 250;
+          return strong ? rank(a[0]) - rank(b[0]) : (top(b[1]) - top(a[1])) || rank(a[0]) - rank(b[0]);
+        }).flatMap(([, v]) => v);
+      } else items = all;
+    }
     if (sel >= items.length) sel = Math.max(0, items.length - 1);
     clear(list);
     let grp = null;
+    if (focus) list.append(h("div", { class: "grp row nw" }, h("button", { class: "btn xs ghost", onclick: () => { focus = null; sel = 0; draw(); inp.focus(); } }, icon("left"), "Back"), "What to do: " + focus.name));
     items.forEach((it, i) => {
-      if (!q && it.grp !== grp) { grp = it.grp; list.append(h("div", { class: "grp" }, grp)); }
-      const row = h("div", { class: "it" + (i === sel ? " on" : ""), role: "option", "aria-selected": String(i === sel) }, icon(it.icon), h("span", {}, mark(it.name, q)), it.hint ? h("span", { class: "h" }, it.hint) : null);
+      if (it.grp !== grp && !focus) { grp = it.grp; list.append(h("div", { class: "grp" }, grp)); }
+      const row = h("div", { class: "it" + (i === sel ? " on" : ""), role: "option", "aria-selected": String(i === sel), title: it.title || null },
+        icon(it.icon), h("span", { class: "nm" + (it.mono ? " mono" : "") }, mark(it.name, focus ? "" : q), it.sub ? h("span", { class: "s" }, " · " + it.sub) : null),
+        it.acts && !focus ? h("span", { class: "h acts", title: "Tab for what to do about it" }, `${it.acts.length} actions ⇥`) : null,
+        it.hint ? h("span", { class: "h" }, it.hint) : null);
       row.onclick = () => { close(); it.run(); };
-      row.onmousemove = () => { if (sel !== i) { sel = i; draw(); } };
+      row.onmousemove = () => { if (sel === i) return; sel = i; list.querySelectorAll(".it").forEach((el, k) => { el.classList.toggle("on", k === i); el.setAttribute("aria-selected", String(k === i)); }); };
       list.append(row);
     });
-    if (!items.length) list.append(h("div", { class: "empty" }, "Nothing matches"));
+    if (!items.length) list.append(h("div", { class: "empty" }, q ? `Nothing matches "${q}". Shards by number (117), copies by name (s9-2) or port, nodes, zones, tables, statements, alerts and keys are found here.` : "Nothing here"));
     list.querySelector(".on")?.scrollIntoView({ block: "nearest" });
   }
-  inp.oninput = () => { sel = 0; draw(); };
+  inp.oninput = () => { sel = 0; focus = null; draw(); };
   inp.onkeydown = (e) => {
     if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(items.length - 1, sel + 1); draw(); }
     else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(0, sel - 1); draw(); }
+    else if (e.key === "Tab") { e.preventDefault(); if (focus) { if (e.shiftKey) { focus = null; sel = 0; draw(); } } else { const it = items[sel]; if (it?.acts) { focus = it; sel = 0; draw(); } } }
     else if (e.key === "Enter") { e.preventDefault(); const it = items[sel]; if (it) { close(); it.run(); } }
-    else if (e.key === "Escape") { e.preventDefault(); close(); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); if (focus) { focus = null; sel = 0; draw(); } else close(); }
   };
   draw();
   inp.focus();
 }
 
+// ---------------------------------------------------------------- shortcuts
+const GKEYS = Object.fromEntries(ENTRIES.filter((e) => e.key).map((e) => [e.key, e]));
 function shortcuts() {
-  const rows = [["Ctrl K, /", "Search views and actions"], ["g then o", "Overview"], ["g then t", "Topology"], ["g then c", "Cluster"], ["g then p", "Performance"], ["g then q", "Queries"], ["g then l", "Logs"], ["g then a", "Alerts"], ["g then k", "Access"], ["g then s", "System"], ["p", "Pause or resume"], ["t", "Light or dark"], ["[", "Collapse the sidebar"], ["Esc", "Close a panel"]];
-  modal({ title: "Keyboard shortcuts", body: h("dl", { class: "kv" }, rows.flatMap(([k, v]) => [h("dt", {}, k.split(", ").map((x, i) => [i ? " or " : "", ...x.split(" then ").map((y, j) => [j ? " then " : "", h("kbd", {}, y)])])), h("dd", {}, v)])) });
+  const rows = [
+    ["Ctrl K, /", "Find a shard, copy, node, table, statement, alert, key, view or action"],
+    ...ENTRIES.filter((e) => e.key).map((e) => [`g then ${e.key}`, `${e.title} (${e.group})`]),
+    ["1 2 3 4 5", "Show the last 15 min, 1 h, 6 h, 24 h, 7 days"],
+    ["p", "Pause or go live"], ["s", "Share: copy a link to this view and window"], ["t", "Light or dark"], ["[", "Collapse or expand the sidebar"], ["?", "These shortcuts"], ["Esc", "Close a panel, a dialog or the palette"],
+  ];
+  modal({ title: "Keyboard shortcuts", wide: true, body: h("dl", { class: "kv shortcuts" }, rows.flatMap(([k, v]) => [h("dt", {}, k.split(", ").map((x, i) => [i ? " or " : "", ...x.split(" then ").map((y, j) => [j ? " then " : "", ...y.split(" ").map((z, m) => [m ? " " : "", h("kbd", {}, z)])])])), h("dd", {}, v)])) });
 }
 
 let gPending = 0;
-const G = { o: "overview", t: "topology", c: "cluster", p: "performance", q: "queries", l: "logs", a: "alerts", k: "access", s: "system", w: "sql", b: "builder", d: "schema", i: "import", r: "relevance" };
 document.addEventListener("keydown", (e) => {
   const typing = e.target.closest?.("input,textarea,select,[contenteditable=true]");
   if ((e.key === "k" || e.key === "K") && (e.ctrlKey || e.metaKey)) { e.preventDefault(); openPalette(); return; }
   if (typing || e.ctrlKey || e.metaKey || e.altKey || document.querySelector(".modal,.palette,.drawer")) return;
-  if (gPending && Date.now() - gPending < 1200 && G[e.key]) { gPending = 0; location.hash = "#/" + G[e.key]; e.preventDefault(); return; }
+  if (gPending && Date.now() - gPending < 1200 && GKEYS[e.key]) { gPending = 0; location.hash = link(GKEYS[e.key].id); e.preventDefault(); return; }
   gPending = 0;
   if (e.key === "g") gPending = Date.now();
   else if (e.key === "/") { e.preventDefault(); openPalette(); }
   else if (e.key === "?") shortcuts();
   else if (e.key === "t") toggleTheme();
   else if (e.key === "p") setPaused(!state.paused);
+  else if (e.key === "s") share();
   else if (e.key === "[") toggleSide();
+  else if (/^[1-5]$/.test(e.key)) setRange(RANGES[+e.key - 1][1]);
 });
 
 // ---------------------------------------------------------------- start
+drawNav(); drawRange(); drawLive();
 start();
-route();
-api("/v1/health").catch(() => {});
+// Who is signed in decides what the views offer: ask that first (briefly).
+Promise.race([refreshWho(), new Promise((r) => setTimeout(r, 2500))]).then(() => { route(); drawBadges(); });
