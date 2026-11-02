@@ -912,7 +912,7 @@ function render(page, r) {
         copyTable(sh),
         h("div", {}, h("div", { class: "cc-sec" }, "Look"),
           h("div", { class: "row", style: { gap: "6px" } },
-            h("a", { class: "btn sm", href: link("logs", { node: sh.primary?.url || sh.copies[0]?.url, q: `shard ${sh.i}` }) }, icon("logs"), "Its logs"),
+            h("a", { class: "btn sm", href: typeof core.logsLink === "function" ? core.logsLink({ shard: sh.i }) : link("logs", { node: sh.primary?.url || sh.copies[0]?.url, q: `shard ${sh.i}` }) }, icon("logs"), "Its logs"),
             h("a", { class: "btn sm", href: link("queries", { tab: "statements", shard: sh.i }) }, icon("queries"), "Its statements"),
             sh.primary ? h("a", { class: "btn sm", href: link("profile", { node: sh.primary.url }) }, icon("flame"), `Profile ${cname(sh.primary)}`) : null,
             h("a", { class: "btn sm", href: link("querypath", { shard: sh.i }) }, icon("route"), "Query path"))),
@@ -1000,7 +1000,7 @@ function render(page, r) {
     items.push({ label: "Write a checkpoint", icon: "download", no: ckNo, run: () => checkpointCopy(sh, c) });
     // No Remove on a primary (finding CL-3): hand it over first.
     if (!c.primary) items.push({ label: c.down ? "Remove it from the shard…" : "Remove it from the shard…", icon: "trash", danger: true, no: remove, run: () => removeCopy(sh, c) });
-    items.push({ label: "Its logs", icon: "logs", href: link("logs", { node: c.url }) });
+    items.push({ label: "Its logs", icon: "logs", href: typeof core.logsLink === "function" ? core.logsLink({ server: c.url }) : link("logs", { node: c.url }) });
     if (!c.down) items.push({ label: "Profile it", icon: "flame", href: link("profile", { node: c.url }) });
     return items;
   }
