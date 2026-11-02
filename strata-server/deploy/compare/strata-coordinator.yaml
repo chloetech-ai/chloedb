@@ -16,9 +16,10 @@ spec:
         - --listen=0.0.0.0:7700
         - --grpc=off
         - --shards=http://strata-0.strata:7701,http://strata-1.strata:7701
-      # The benchmark's token: asked of the client, and sent to the shards.
+      # The cluster's random token (secret strata-token): asked of the
+      # client, and sent to the shards.
       env:
-        - {name: STRATA_TOKEN, value: compare}
+        - {name: STRATA_TOKEN, valueFrom: {secretKeyRef: {name: strata-token, key: token}}}
       ports:
         - {name: http, containerPort: 7700}
       readinessProbe:

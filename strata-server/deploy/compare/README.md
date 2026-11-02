@@ -76,9 +76,10 @@ Elasticsearch and Solr, 28 October 2026) are in
   searchable once its put returns, and proton flushes and compacts on its
   own (compare.sh asks it to flush before measuring its size on disk).
 - **Access**: Strata's servers listen beyond loopback only with a token,
-  so its shards, coordinator and the client share the benchmark's
-  (`STRATA_TOKEN=compare`, as Typesense gets its API key); the other
-  engines run with their security off, as their images start.
+  so its shards, coordinator and the client share a random one, made once
+  per cluster by `compare.sh` and kept in the secret `strata-token`; the
+  other engines run with their security off, as their images start
+  (Typesense needs an API key, a fixed `compare`).
 - **No result caches**: the timed runs repeat 300 queries, so Solr's
   `queryResultCache` is off and Elasticsearch's and OpenSearch's shard
   request caches are bypassed (`request_cache=false`); filter caches stay
