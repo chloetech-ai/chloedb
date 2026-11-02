@@ -1923,4 +1923,18 @@ button.ac-chip:hover { border-color: var(--text-2); }
   .ac-alltable th:nth-child(3), .ac-alltable td:nth-child(3), .ac-alltable th:nth-child(6), .ac-alltable td:nth-child(6),
   .ac-alltable th:nth-child(7), .ac-alltable td:nth-child(7), .ac-alltable th:nth-child(8), .ac-alltable td:nth-child(8) { display: none; }
 }
+/* Cloud setup */
+.ro-cnum { width: 72px; text-align: center; -moz-appearance: textfield; }
+.ro-cnum::-webkit-outer-spin-button, .ro-cnum::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.ro-casks { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
+.ro-cstart { padding: 8px 10px; border-radius: var(--r-sm); background: var(--surface-2); border: 1px solid var(--line); }
+.ro-cmore { justify-content: center; }
+@media (max-width: 560px) {
+  .cloud-controls { gap: 10px 12px; }
+  .cloud-controls > .cloud-step { flex: 1 1 140px; }
+  .cloud-controls .btn.xs { min-width: 36px; min-height: 36px; }
+  .cloud-machines > .hd { flex-wrap: wrap; }
+  .cloud-machines > .hd .tools { margin-left: 0; flex-wrap: wrap; }
+  .cloud-made-row > .row.between { flex-direction: column; align-items: flex-start; }
+}
 /* ===== end rollouts ===== */
