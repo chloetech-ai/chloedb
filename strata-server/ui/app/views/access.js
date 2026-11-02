@@ -161,7 +161,7 @@ function differs(b, a) {
   const x = b === undefined ? {} : flat(b), y = a === undefined ? {} : flat(a);
   return [...new Set([...Object.keys(x), ...Object.keys(y)])].filter((k) => x[k] !== y[k]).map((k) => [k, x[k], y[k]]);
 }
-const clip = (s, n = 80) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+const clip = (s, n = 80) => { const v = /^"[^"]*"$/.test(s) ? s.slice(1, -1) : s; return v.length > n ? v.slice(0, n - 1) + "…" : v; };
 
 // ---------------------------------------------------------------- dialogs
 /** Asks before a change: resolves false or {reason}; Cancel has the focus. */
@@ -512,7 +512,9 @@ function render(page, r) {
   function bodyOf(e) {
     const out = [];
     if (sortOf(e) === "refusal") {
-      out.push(h("div", { class: "ac-mono" }, e.status === 401 ? "no key, or a wrong, expired or revoked one" : `${e.scope ? `a ${e.scope} key` : "this key"} may not do this`));
+      const gone = e.status === 401 && revokedKeys().find((k) => k.name === e.who);
+      out.push(h("div", { class: "dim" }, gone ? `The key was revoked ${at(gone.revoked_ms)}${gone.revoked_by ? ` by ${gone.revoked_by}` : ""}.`
+        : e.status === 401 ? "No key, or a wrong, expired or revoked one." : `${e.scope ? `A ${e.scope} key` : "This key"} may not do this.`));
       return out;
     }
     if (e.before !== undefined || e.after !== undefined) {
@@ -575,6 +577,7 @@ function render(page, r) {
     { key: "detail", label: "what", render: (e) => e.detail || e.object ? h("span", { class: "small ellipsis ac-what", title: e.detail || e.object }, e.detail ? words(e.detail) : e.object) : h("span", { class: "muted" }, "–") },
     { key: "request_id", label: "request id", title: "Opens the request's log lines", render: (e) => e.request_id ? h("a", { class: "mono small", href: core.link ? core.link("logs", { request: e.request_id }) : "#/logs?request=" + encodeURIComponent(e.request_id) }, e.request_id.slice(0, 8)) : "–" },
   ], { sortKey: "ts_ms", desc: true, compact: true, max: 500, empty: empty("shield", "Nothing audited yet", "Changes, refusals and noted requests show here.") });
+  allTable.classList.add("ac-alltable");
   function drawAll() {
     const src = audit.kinds ? everything : audit.all;
     if (!src) { clear(listBox, h("div", { class: "small dim", style: { padding: "12px 0" } }, "Loading every request…")); return; }
@@ -626,8 +629,8 @@ function render(page, r) {
   function keyRow(k, rots) {
     const asOld = rots.find((x) => x.old.id === k.id), asNew = rots.find((x) => x.next.id === k.id);
     const flag = unusedAdmin(k);
-    const sub = asNew ? `successor of ${asNew.old.name}${k.owner ? " · " + k.owner : ""}`
-      : [k.owner || null, k.note || null].filter(Boolean).join(" · ") || (k.owner === undefined ? null : "no owner set");
+    const sub = asNew ? (asNew.old.name === k.name ? `the new one, made ${ago(k.created_ms)}` : `successor of ${asNew.old.name}`)
+      : k.owner ? (k.owner === k.name ? "their own" : k.owner) : k.owner === undefined ? null : "no owner set";
     const exp = !k.expires_ms ? h("span", { class: k.scope === "admin" && flag ? "ac-warn-t" : "" }, "never")
       : h("span", { class: k.expires_ms < now() ? "ac-bad-t" : expiringSoon(k) ? "ac-warn-t" : "", title: whenT(k.expires_ms) }, k.expires_ms < now() ? "expired" : until(k.expires_ms));
     const used = h("span", { class: flag ? "ac-warn-t" : "", title: k.last_used_ms ? `${whenT(k.last_used_ms)}${k.last_addr ? " · from " + k.last_addr : ""}` : "No request has used it" }, ago(k.last_used_ms));
@@ -641,11 +644,12 @@ function render(page, r) {
     ].filter(Boolean));
     if (!can("admin")) { more.disabled = true; more.title = needs("admin"); }
     return h("tr", { "data-key": k.id, class: asNew ? "ac-succ" : "" },
-      h("td", { class: "ac-kname" }, h("b", { title: `${k.prefix || `sk_${k.id}_`}… · made ${whenT(k.created_ms)}` }, k.name), sub ? h("div", { class: "small muted" }, sub) : null),
+      h("td", { class: "ac-kname" }, h("b", { title: [`${k.prefix || `sk_${k.id}_`}…`, `made ${whenT(k.created_ms)}`, k.note].filter(Boolean).join(" · ") }, k.name),
+        sub || asOld ? h("div", { class: "small muted" }, sub, sub && asOld ? " · " : "", asOld ? h("span", { class: "ac-rotating" }, "rotating") : null) : null),
       h("td", {}, h("span", { class: "ac-scope " + k.scope }, k.scope)),
       h("td", { class: "num" }, used, k.last_addr ? h("div", { class: "small muted mono" }, k.last_addr) : null),
       h("td", { class: "num" }, exp),
-      h("td", { class: "ac-kact" }, asOld ? h("span", { class: "badge accent" }, "rotating") : flag ? gateBtn(h("button", { class: "btn xs danger", onclick: () => revoke(k) }, "Revoke…"), "admin") : null, more));
+      h("td", { class: "ac-kact" }, flag ? gateBtn(h("button", { class: "btn xs danger", onclick: () => revoke(k) }, "Revoke…"), "admin") : null, more));
   }
   function tokenRow() {
     const t = tokenUsed();
