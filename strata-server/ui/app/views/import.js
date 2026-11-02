@@ -1,24 +1,27 @@
-// Import and export: drop a file (CSV, TSV, JSON Lines, JSON or a SQLite
-// database), see its first rows and the type each column reads as, load
-// it into a table that exists or one made for it, and watch it upload.
-// The database goes out as a SQLite file, and the stream sources show
-// how far each event stream has been written, with a box to send one.
+// Import and export: drop a file (CSV, TSV, JSON Lines, JSON, a SQLite
+// database or a Parquet file), see its first rows or the plan the server
+// makes of it and the type each column reads as, load it into a table that
+// exists or one made for it, and watch it upload. The database goes out as
+// a SQLite file or a Parquet file a table, and the stream sources show how
+// far each event stream has been written, with a box to send one.
 
 import { h, icon, clear, fmt, api, authHeader, toast, empty, seg, sqlBlock, dropzone, every, failure } from "../core.js";
 import { tables, cached, invalidate, table as tableOf, typeBadge, typeMeta, TYPES } from "../catalog.js";
 import { quoteName } from "../sqledit.js";
 import { grid } from "../results.js";
 
-export default { id: "import", title: "Import and export", icon: "import", group: "Data", keywords: "import upload load csv tsv json jsonl ndjson sqlite file export download stream kafka sources offsets", render };
+export default { id: "import", title: "Import and export", icon: "import", group: "Data", keywords: "import upload load csv tsv json jsonl ndjson sqlite parquet arrow spark file export download stream kafka sources offsets", render };
 
 const SQLITE = "SQLite format 3\u0000";
-const CT = { csv: "text/csv", tsv: "text/tab-separated-values", jsonl: "application/x-ndjson", json: "application/json", sqlite: "application/vnd.sqlite3" };
+const CT = { csv: "text/csv", tsv: "text/tab-separated-values", jsonl: "application/x-ndjson", json: "application/json", sqlite: "application/vnd.sqlite3", parquet: "application/vnd.apache.parquet" };
 
 /** The format of a file, from its first bytes and its name. */
 export async function sniff(file) {
   const head = await file.slice(0, 4096).text();
   if (head.startsWith(SQLITE)) return "sqlite";
+  if (head.startsWith("PAR1")) return "parquet";
   const ext = (file.name.split(".").pop() || "").toLowerCase();
+  if (ext === "parquet") return "parquet";
   if (ext === "csv" || ext === "tsv" || ext === "json") return ext;
   if (ext === "jsonl" || ext === "ndjson") return "jsonl";
   if (ext === "sqlite" || ext === "db" || ext === "sqlite3") return "sqlite";
@@ -94,13 +97,14 @@ function render(page) {
 
   // ------------------------------------------------------------ loading a file
   function start() {
-    clear(left, h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Load a file"), h("span", { class: "sub" }, "CSV, TSV, JSON Lines, JSON or a SQLite database")),
-      h("div", { class: "bd" }, dropzone({ label: "Drop a file here, or click to choose one", sub: "Its first rows show here before anything is written", accept: ".csv,.tsv,.json,.jsonl,.ndjson,.sqlite,.sqlite3,.db", multiple: false, onFiles: (fs) => open(fs[0]) }),
+    clear(left, h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Load a file"), h("span", { class: "sub" }, "CSV, TSV, JSON Lines, JSON, a SQLite database or a Parquet file")),
+      h("div", { class: "bd" }, dropzone({ label: "Drop a file here, or click to choose one", sub: "Its first rows show here before anything is written", accept: ".csv,.tsv,.json,.jsonl,.ndjson,.sqlite,.sqlite3,.db,.parquet", multiple: false, onFiles: (fs) => open(fs[0]) }),
         h("div", { class: "small muted", style: { marginTop: "10px" } }, "A column goes to the field of its name; columns the table has no field for are skipped and counted. Lists in CSV are a|b|c or JSON; vectors are JSON arrays."))));
   }
   async function open(file) {
     const format = await sniff(file);
     if (format === "sqlite") return sqlitePlan(file);
+    if (format === "parquet") return parquetPlan(file);
     let s;
     try { s = await sample(file, format); } catch (e) { toast(`${file.name}: ${e.message}`, "bad", 8000); return; }
     if (!s.objs.length) { toast(`${file.name} has no rows`, "bad"); return; }
@@ -221,12 +225,72 @@ function render(page) {
       h("div", { class: "row" }, go, progress))));
   }
 
+  // ------------------------------------------------------------ a Parquet file
+  // The server reads the file (a plan writes nothing) and says what it makes
+  // of it: the table, each column's field and type, what it leaves out.
+  async function parquetPlan(file, st = {}) {
+    clear(left, h("section", { class: "card" }, h("div", { class: "bd" }, h("div", { class: "small muted" }, `Reading ${file.name}…`))));
+    const stem = file.name.replace(/\..*$/, "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^(\d)/, "_$1") || "imported";
+    const q = (extra) => { const p = new URLSearchParams({ format: "parquet", ...extra }); if (st.table) p.set("table", st.table); if (st.key != null) p.set("key", st.key); return p; };
+    let plan;
+    try { plan = await api("/v1/import?" + q({ plan: "true" }), { body: file, type: CT.parquet }); }
+    catch (e) {
+      // A file no export wrote names no table: the file's name does.
+      if (!st.table && /\?table=/.test(e.message)) return parquetPlan(file, { ...st, table: stem });
+      toast(e.message, "bad", 9000); start(); return;
+    }
+    st.table = plan.table;
+    const progress = h("div", { class: "imp-prog hidden" }, h("div", { class: "bar" }, h("span")), h("span", { class: "small dim txt" }));
+    const go = h("button", { class: "btn primary" }, icon("import"), plan.exists ? `Import into ${plan.table}` : `Create ${plan.table} and import`);
+    go.onclick = async () => {
+      go.disabled = true;
+      try { const j = await upload("/v1/import?" + q({}), file, CT.parquet, progress); invalidate(); ts = await tables(true); done(j.table, { written: j.written, took_ms: j.took_ms, skipped_fields: j.skipped }, file); if (j.notes?.length) toast(j.notes.join(" · "), "", 9000); }
+      catch (e) { toast(e.message, "bad", 9000); go.disabled = false; }
+    };
+    const names = h("datalist", { id: "imp-pq-tables" }, ts.map((t) => h("option", { value: t.table })));
+    const name = h("input", { class: "input mono", value: plan.table, list: "imp-pq-tables", style: { width: "220px" }, onchange: (e) => parquetPlan(file, { ...st, table: e.target.value.trim() || undefined }) });
+    const fields = plan.fields || [];
+    const byField = Object.fromEntries(Object.entries(plan.columns || {}).map(([c, f]) => [f, c]));
+    for (const [p, f] of Object.entries(plan.partitions || {})) byField[f] = `${p}=… (directory)`;
+    const keySel = h("select", { class: "input", disabled: plan.exists, onchange: (e) => parquetPlan(file, { ...st, key: e.target.value }) },
+      h("option", { value: "" }, "no key"), fields.filter((f) => f.type === "keyword" || f.type === "int").map((f) => h("option", { value: f.name, selected: plan.key === f.name }, f.name)));
+    clear(left, h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Import a Parquet file")), h("div", { class: "bd stack" },
+      h("div", { class: "imp-file" }, icon("db", "lg"), h("div", { class: "grow" }, h("b", {}, file.name), h("div", { class: "small muted" }, `${fmt.bytes(file.size)} · Parquet · ${fmt.plural(plan.rows, "row")} · ${fmt.plural(Object.keys(plan.columns || {}).length, "column")} read`)), h("button", { class: "btn ghost", onclick: start }, icon("x"), "Another file")),
+      h("div", { class: "row", style: { gap: "10px" } }, h("label", { class: "small dim" }, "Into table"), name, names, plan.exists ? h("span", { class: "badge" }, "exists: its schema stands") : h("span", { class: "badge accent" }, "new table"),
+        h("span", { class: "sep" }), h("label", { class: "small dim" }, "key"), keySel),
+      h("div", { class: "tbl-wrap" }, h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "Parquet column"), h("th", {}, "field"), h("th", {}, "type"))),
+        h("tbody", {}, fields.filter((f) => byField[f.name]).map((f) => h("tr", {}, h("td", { class: "mono" }, byField[f.name]), h("td", {}, h("b", {}, f.name), plan.key === f.name ? h("span", { class: "badge", style: { marginLeft: "6px" } }, "key") : null), h("td", {}, h("span", { class: "row nw", style: { gap: "6px" } }, typeBadge(f), h("span", { class: "small" }, f.type + (f.multi ? "[]" : ""))))))))),
+      plan.skipped && Object.keys(plan.skipped).length ? h("div", { class: "small muted" }, "Left out: ", Object.entries(plan.skipped).map(([c, why]) => `${c} (${why})`).join(" · ")) : null,
+      plan.notes?.length ? h("div", { class: "small muted" }, plan.notes.join(" · ")) : null,
+      h("div", { class: "row" }, go, progress))));
+  }
+
   // ------------------------------------------------------------ export
   function exportCard() {
     const pick = new Set(cached().map((t) => t.table));
-    let fts = true, idx = true;
+    let fts = true, idx = true, format = "sqlite";
+    const download = (b, name) => {
+      const a = h("a", { href: URL.createObjectURL(b), download: name });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    };
     const go = h("button", { class: "btn primary", onclick: async () => {
       go.disabled = true;
+      // Parquet holds a table a file: one download each.
+      if (format === "parquet") {
+        try {
+          let bytes = 0;
+          for (const t of pick) {
+            const r = await api("/v1/export?" + new URLSearchParams({ format: "parquet", tables: t }), { blob: true });
+            const b = await r.blob();
+            bytes += b.size;
+            download(b, `${t}.parquet`);
+          }
+          toast(`Exported ${fmt.plural(pick.size, "Parquet file")}, ${fmt.bytes(bytes)}`, "ok");
+        } catch (e) { toast(e.message, "bad", 8000); }
+        go.disabled = false;
+        return;
+      }
       try {
         const q = new URLSearchParams();
         if (pick.size !== cached().length) q.set("tables", [...pick].join(","));
@@ -234,19 +298,29 @@ function render(page) {
         if (!idx) q.set("indexes", "false");
         const r = await api("/v1/export" + (q.toString() ? "?" + q : ""), { blob: true });
         const b = await r.blob();
-        const a = h("a", { href: URL.createObjectURL(b), download: "strata-export.sqlite" });
-        document.body.append(a); a.click(); a.remove();
-        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        download(b, "strata-export.sqlite");
         toast(`Exported ${fmt.bytes(b.size)}`, "ok");
       } catch (e) { toast(e.message, "bad", 8000); }
       go.disabled = false;
     } }, icon("download"), "Download as SQLite");
-    const card = h("section", { class: "card", id: "imp-export" }, h("div", { class: "hd" }, h("h3", {}, "Export"), h("span", { class: "sub" }, "the database as a SQLite file")),
+    const sqliteOpts = h("div", { class: "stack", style: { gap: "10px" } },
+      h("label", { class: "row nw small dim" }, h("input", { type: "checkbox", checked: true, onchange: (e) => { fts = e.target.checked; } }), "full-text tables (FTS5) for TEXT fields"),
+      h("label", { class: "row nw small dim" }, h("input", { type: "checkbox", checked: true, onchange: (e) => { idx = e.target.checked; } }), "indexes for KEYWORD and number fields"));
+    const hint = h("span", { class: "small muted" }, "Vectors go as float32 blobs, lists as JSON arrays.");
+    const sub = h("span", { class: "sub" }, "the database as a SQLite file");
+    const formatSeg = seg([["sqlite", "SQLite"], ["parquet", "Parquet"]], format, (v) => {
+      format = v;
+      sqliteOpts.classList.toggle("hidden", v === "parquet");
+      go.lastChild.textContent = v === "parquet" ? "Download as Parquet" : "Download as SQLite";
+      sub.textContent = v === "parquet" ? "a Parquet file a table, for Spark, DuckDB, polars and pandas" : "the database as a SQLite file";
+      hint.textContent = v === "parquet" ? "Vectors go as lists of float32, timestamps in UTC; each file keeps its Strata schema." : "Vectors go as float32 blobs, lists as JSON arrays.";
+    });
+    const card = h("section", { class: "card", id: "imp-export" }, h("div", { class: "hd" }, h("h3", {}, "Export"), sub),
       h("div", { class: "bd stack", style: { gap: "10px" } },
+        formatSeg,
         h("div", { class: "row", style: { gap: "6px" } }, cached().map((t) => h("button", { class: "chip", "aria-pressed": "true", onclick: (e) => { if (pick.has(t.table)) pick.delete(t.table); else pick.add(t.table); e.currentTarget.setAttribute("aria-pressed", String(pick.has(t.table))); go.disabled = !pick.size; } }, icon("table"), t.table))),
-        h("label", { class: "row nw small dim" }, h("input", { type: "checkbox", checked: true, onchange: (e) => { fts = e.target.checked; } }), "full-text tables (FTS5) for TEXT fields"),
-        h("label", { class: "row nw small dim" }, h("input", { type: "checkbox", checked: true, onchange: (e) => { idx = e.target.checked; } }), "indexes for KEYWORD and number fields"),
-        h("div", { class: "row" }, go, h("span", { class: "small muted" }, "Vectors go as JSON text, lists as JSON arrays."))));
+        sqliteOpts,
+        h("div", { class: "row" }, go, hint)));
     const old = right.querySelector("#imp-export");
     if (old) old.replaceWith(card); else right.prepend(card);
   }

@@ -89,6 +89,8 @@ __all__ = [
     "connect",
     "from_sqlite",
     "plan_sqlite",
+    "from_parquet",
+    "plan_parquet",
     "Query",
     "Expr",
     "col",
@@ -187,7 +189,8 @@ class Database(Search):
 
     def __init__(self, inner: Any):
         self._db = inner
-        #: What the last SQLite import into it did (`from_sqlite`, `import_sqlite`).
+        #: What the last SQLite or Parquet import into it did (`from_sqlite`,
+        #: `import_sqlite`, `from_parquet`, `import_parquet`).
         self.last_import: dict | None = None
 
     @classmethod
@@ -355,6 +358,49 @@ class Database(Search):
         notes}]}."""
         return json.loads(self._db.export_sqlite(os.fspath(path), _names(tables), fts, indexes, schemas))
 
+    def import_parquet(self, path: str | os.PathLike, *, table: str | None = None, schema: Any = None, key: str | None = None, blobs_base64: bool = False) -> dict:
+        """Imports a Parquet file, or a directory of them as Spark, DuckDB,
+        polars and pandas write them (part files, Hive partitions
+        `key=value/` read as columns), into one table; `path` may be an
+        `s3://` URL (an object, or every object under a prefix). The rows
+        go into `table` (by default, the table an export kept in the file,
+        else one named for the file): an existing table takes the columns
+        whose names match its fields (rows upserted by key, or bulk-loaded
+        when it is empty); a missing one is created with `schema` (see
+        `plan_parquet`) or from the columns' types and values, keyed by
+        `key` (default: a column named id; "" for none). Binary columns
+        are left out unless `blobs_base64`. Returns {table, rows, files,
+        created, bulk, skipped: {column: why}, notes}."""
+        self.last_import = json.loads(self._db.import_parquet(os.fspath(path), table, None if schema is None else _schema_json(schema), key, blobs_base64))
+        return self.last_import
+
+    def export_parquet(self, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, schemas: bool = True) -> dict:
+        """Writes the tables (all, or `tables`) to Parquet, from one
+        snapshot: to the file `path` when it ends in .parquet (one table),
+        else to a new directory of `<table>.parquet` files; `path` may be an
+        `s3://` URL. Each file is compressed with Zstandard and keeps the
+        table's Strata schema (unless not `schemas`), which `import_parquet`
+        restores; any Parquet
+        reader (pyarrow, polars, DuckDB, Spark) reads the columns: vectors
+        as fixed-size lists of float32, timestamps as UTC microseconds,
+        lists as lists, JSON, edges and sparse weights as JSON text.
+        Returns {tables: [{table, file, rows, bytes, notes}]}."""
+        return json.loads(self._db.export_parquet(os.fspath(path), _names(tables), schemas))
+
+    def import_arrow(self, data: Any, *, table: str | None = None) -> dict:
+        """Writes rows from anything that gives an Arrow stream: a pyarrow
+        Table, RecordBatch or RecordBatchReader, a polars DataFrame, a
+        DuckDB relation, a pandas DataFrame (through pyarrow), into the
+        first table or `table`. Each column fills the field of its name;
+        the others are left out. Into an empty table the rows are
+        bulk-loaded in one commit; otherwise they are upserted by key.
+        Returns {table, rows, bulk, skipped, notes}."""
+        if not hasattr(data, "__arrow_c_stream__") and type(data).__module__.startswith("pandas"):
+            import pyarrow
+
+            data = pyarrow.Table.from_pandas(data, preserve_index=False)
+        return json.loads(self._db.import_arrow(data, table))
+
     def embed(self, text: str | None = None, field: str | None = None, *, table: str | None = None, image: bytes | None = None, audio: bytes | None = None) -> list[float]:
         """The query vector of `text` by an embedded field's model (of the
         first table, or of `table`), or of `image` or `audio`, the bytes of
@@ -428,6 +474,27 @@ def plan_sqlite(sqlite_path: str | os.PathLike, *, tables: str | Iterable[str] |
     Strata table it becomes (with its `source`, `columns` and `notes`). Edit
     the plan and pass it to `from_sqlite` as `schemas`."""
     return json.loads(_strata.Database.plan_sqlite(os.fspath(sqlite_path), _names(tables), _schemas_json(schemas), blobs_base64))
+
+
+def from_parquet(parquet_path: str | os.PathLike, path: str | os.PathLike, *, table: str | None = None, schema: Any = None, key: str | None = None, blobs_base64: bool = False, directory: bool = False, models: str | os.PathLike | None = None) -> Database:
+    """Creates a database at `path` from a Parquet file or directory (or an
+    `s3://` URL), its one table made from the columns, kept by an export,
+    or given as `schema` (see `plan_parquet`). What the import did, as
+    `Database.import_parquet` returns it, is the database's
+    `last_import`."""
+    inner, report = _strata.Database.from_parquet(os.fspath(parquet_path), os.fspath(path), table, None if schema is None else _schema_json(schema), key, blobs_base64, directory, None if models is None else os.fspath(models))
+    db = Database(inner)
+    db.last_import = json.loads(report)
+    return db
+
+
+def plan_parquet(parquet_path: str | os.PathLike, *, table: str | None = None, schema: Any = None, key: str | None = None, blobs_base64: bool = False, db: "Database | None" = None) -> dict:
+    """What `from_parquet` (or, with `db`, `db.import_parquet`) would make
+    of a Parquet file or directory, without writing: the table's schema
+    with whether it `exists`, the `files` and `rows`, the `columns` read
+    and the fields they fill, the Hive `partitions`, what is `skipped` and
+    `notes`. Edit the plan and pass it back as `schema`."""
+    return json.loads(_strata.Database.plan_parquet(os.fspath(parquet_path), table, None if schema is None else _schema_json(schema), key, blobs_base64, None if db is None else db._db))
 
 
 def connect(url: str = "http://127.0.0.1:7700", *, token: str | None = None, timeout: float = 30.0) -> Client:

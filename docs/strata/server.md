@@ -156,6 +156,13 @@ strata-server import --db shop.strata shop.sqlite
 strata-server export --db shop.strata copy.sqlite
 ```
 
+Parquet files and directories of them (what Spark, DuckDB, polars and pandas write) import into one table each, created from the columns' types when missing, and `export` writes Parquet when the name ends in `.parquet` or `/`; any file may be an `s3://` URL ([Parquet and S3](parquet.md)):
+
+```sh
+strata-server import --db lake.strata s3://lake/raw/events/
+strata-server export --db lake.strata --tables events events.parquet
+```
+
 To a running server, `POST /v1/import` with the rows as the body, the format as `?format=` (or the content type) and the table as `?table=` (the first table without it):
 
 ```sh

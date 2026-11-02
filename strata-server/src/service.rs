@@ -2775,6 +2775,112 @@ impl Service {
         Ok(out.to_json())
     }
 
+    /// Imports the Parquet file `body` into one table, as
+    /// [`Self::import_sqlite`] imports a SQLite file's: into the table
+    /// `opts.table` names (else the one an export kept in the file),
+    /// created from the file's columns when missing
+    /// ([`strata::parquet::Source::plan_over`]), the rows checked before any
+    /// is written and then written through the writer (or routed to the
+    /// shards) [`IMPORT_OPS`] a request. With `plan_only`, returns the plan
+    /// ([`strata::parquet::Plan::to_json`]) and writes nothing; otherwise
+    /// what was written ([`strata::parquet::Imported::to_json`]). Rows need
+    /// a write key, and an import that creates the table an admin key.
+    #[cfg(feature = "parquet")]
+    pub async fn import_parquet(self: &Arc<Self>, who: &Principal, body: axum::body::Bytes, opts: strata::parquet::ImportOptions, plan_only: bool, timeout_ms: u64) -> Result<Json, ApiError> {
+        who.may(Scope::Write, "an import")?;
+        let catalog = self.catalog();
+        let checked = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+            let dir = tempfile::tempdir().map_err(ApiError::internal)?;
+            let path = dir.path().join("upload.parquet");
+            std::fs::write(&path, &body).map_err(ApiError::internal)?;
+            let shown = path.display().to_string();
+            let hide = |e: strata::Error| ApiError::bad(e.to_string().replace(&shown, "the uploaded file").replace("upload.parquet: ", ""));
+            let src = strata::parquet::Source::open(&path).map_err(hide)?;
+            if opts.table.is_none() && opts.schema.is_none() && src.kept_table().is_none() {
+                return Err(ApiError::bad("name the table the rows go to (?table=): the file keeps none"));
+            }
+            let plan = src.plan_over(&catalog, &opts).map_err(hide)?;
+            if !plan_only {
+                src.documents(&plan, |docs| {
+                    for d in docs {
+                        d?;
+                    }
+                    Ok(())
+                })
+                .map_err(hide)?;
+            }
+            Ok((dir, src, plan))
+        })
+        .await
+        .map_err(ApiError::internal)??;
+        let (dir, src, plan) = checked;
+        if plan_only {
+            return Ok(plan.to_json());
+        }
+        if !plan.exists {
+            who.may(Scope::Admin, &format!("an import that creates a table ({})", plan.schema.table))?;
+            keys::note(format!("Parquet import created table {}", plan.schema.table));
+            self.create_table(plan.schema.clone(), timeout_ms).await?;
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<strata::Result<Vec<Json>>>(1);
+        let p = plan.clone();
+        let reader = tokio::task::spawn_blocking(move || {
+            let _dir = dir;
+            let op = if p.schema.primary_key.is_some() { "upsert" } else { "insert" };
+            src.documents(&p, |docs| loop {
+                let chunk: strata::Result<Vec<Json>> = (&mut *docs).take(IMPORT_OPS).map(|d| d.map(|d| json!({"op": op, "table": p.schema.table, "doc": js::document_json(&p.schema, &d)}))).collect();
+                let last = chunk.as_ref().map_or(true, |c| c.len() < IMPORT_OPS);
+                if tx.blocking_send(chunk).is_err() {
+                    return Err(strata::Error::Query("stopped".into()));
+                }
+                if last {
+                    return Ok(());
+                }
+            })
+            .map(|((), nonfinite)| nonfinite)
+        });
+        let mut out = strata::parquet::Imported { table: plan.schema.table.clone(), files: plan.files, created: !plan.exists, skipped: plan.skipped.clone(), notes: plan.notes.clone(), ..Default::default() };
+        while let Some(ops) = rx.recv().await {
+            let ops = ops?;
+            if !ops.is_empty() {
+                out.rows += self.write_ops(ops, None).await?.rows;
+            }
+        }
+        if let Ok(Ok(nonfinite)) = reader.await {
+            out.notes.extend(strata::parquet::nonfinite_notes(&plan.schema, &nonfinite));
+        }
+        Ok(out.to_json())
+    }
+
+    /// Writes one table (the server's only one, or `table`) to a Parquet
+    /// file, from one snapshot ([`strata::parquet::export`]), as
+    /// [`Self::export_sqlite`] writes a SQLite file.
+    #[cfg(feature = "parquet")]
+    pub async fn export_parquet(self: &Arc<Self>, table: Option<String>, meta: bool) -> Result<(tempfile::TempDir, PathBuf, strata::parquet::Exported), ApiError> {
+        let Backend::Local(db) = &self.backend else {
+            return Err(ApiError::bad("a coordinator holds no rows: export from each shard's server, or with strata-server export"));
+        };
+        let db = db.clone();
+        tokio::task::spawn_blocking(move || {
+            let table = match table {
+                Some(t) => t,
+                None => {
+                    let all = db.catalog();
+                    match all.as_slice() {
+                        [one] => one.table.clone(),
+                        _ => return Err(ApiError::bad(format!("a Parquet file holds one table: name it (?tables=), one of {}", all.iter().map(|s| s.table.as_str()).collect::<Vec<_>>().join(", ")))),
+                    }
+                }
+            };
+            let dir = tempfile::tempdir().map_err(ApiError::internal)?;
+            let path = dir.path().join("export.parquet");
+            let r = strata::parquet::export(&db, &path, &strata::parquet::ExportOptions { tables: vec![table], meta })?;
+            Ok((dir, path, r))
+        })
+        .await
+        .map_err(ApiError::internal)?
+    }
+
     /// Creates a table, as `CREATE TABLE` does ([`Self::ddl`]): on a local
     /// database, once no write holds the writer; a primary ships it with
     /// the rows. A coordinator creates tables only through `CREATE TABLE`.

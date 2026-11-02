@@ -2233,12 +2233,13 @@ fn sqlite_files_from_and_to_the_command_line() {
     let db = dir.path().join("items.strata");
     server::import_files(&db, Some(&schema), None, dir.path(), None, false, std::slice::from_ref(&rows), Default::default()).unwrap();
     let out = dir.path().join("items.sqlite");
-    server::export_sqlite(&db, &out, &Default::default()).unwrap();
+    let out_s = out.to_str().unwrap();
+    server::export_sqlite(&db, out_s, &Default::default()).unwrap();
     assert!(strata::sqlite::is_sqlite_file(&out));
-    assert!(server::export_sqlite(&db, &out, &Default::default()).unwrap_err().contains("exists"));
+    assert!(server::export_sqlite(&db, out_s, &Default::default()).unwrap_err().contains("exists"));
     // --plan writes nothing, and is for SQLite files.
     let back = dir.path().join("back.strata");
-    let plan = || server::SqliteImport { plan: true, ..Default::default() };
+    let plan = || server::FileImport { plan: true, ..Default::default() };
     server::import_files(&back, None, None, dir.path(), None, false, std::slice::from_ref(&out), plan()).unwrap();
     assert!(!back.exists());
     assert!(server::import_files(&back, None, None, dir.path(), None, false, std::slice::from_ref(&rows), plan()).unwrap_err().contains("--plan"));
@@ -2249,6 +2250,119 @@ fn sqlite_files_from_and_to_the_command_line() {
     assert_eq!(b.snapshot().n_live_docs(), 2);
     let r = b.query("SELECT price FROM items WHERE id = 'b'", &Params::new()).unwrap();
     assert_eq!(r.rows[0][0], Value::Float(2.0));
+}
+
+#[test]
+fn parquet_files_from_and_to_the_command_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let (schema, rows) = (dir.path().join("items.json"), dir.path().join("rows.jsonl"));
+    std::fs::write(&schema, ITEMS).unwrap();
+    std::fs::write(&rows, "{\"id\": \"a\", \"title\": \"first\", \"tags\": [\"x\"]}\n{\"id\": \"b\", \"title\": \"second\", \"price\": 2}\n").unwrap();
+    let db = dir.path().join("items.strata");
+    server::import_files(&db, Some(&schema), None, dir.path(), None, false, std::slice::from_ref(&rows), Default::default()).unwrap();
+    // To a file, by its name; to a directory, by a trailing slash.
+    let out = dir.path().join("items.parquet");
+    let out_s = out.to_str().unwrap();
+    server::export_parquet(&db, out_s, &Default::default()).unwrap();
+    assert!(strata::parquet::is_parquet(&out));
+    assert!(server::export_parquet(&db, out_s, &Default::default()).unwrap_err().contains("exists"));
+    let all = format!("{}/", dir.path().join("all").display());
+    server::export_parquet(&db, &all, &Default::default()).unwrap();
+    assert!(dir.path().join("all/items.parquet").is_file());
+    // --plan writes nothing.
+    let back = dir.path().join("back.strata");
+    let plan = server::FileImport { plan: true, ..Default::default() };
+    server::import_files(&back, None, None, dir.path(), None, false, std::slice::from_ref(&out), plan).unwrap();
+    assert!(!back.exists());
+    // A new database from the file: the schema it kept, and the rows.
+    server::import_files(&back, None, None, dir.path(), None, false, std::slice::from_ref(&out), Default::default()).unwrap();
+    let (a, b) = (Db::open(&db, DbOptions::default()).unwrap(), Db::open(&back, DbOptions::default()).unwrap());
+    assert_eq!(a.schema().to_short_json(), b.schema().to_short_json());
+    assert_eq!(b.snapshot().n_live_docs(), 2);
+    let r = b.query("SELECT price FROM items WHERE id = 'b'", &Params::new()).unwrap();
+    assert_eq!(r.rows[0][0], Value::Float(2.0));
+    drop((a, b));
+    // Into another table of it, named by --table, keyed by --key; a
+    // directory reads as one table.
+    let how = server::FileImport { key: Some("title".into()), ..Default::default() };
+    let dir_in = dir.path().join("all");
+    server::import_files(&back, None, Some("copy"), dir.path(), None, false, std::slice::from_ref(&dir_in), how).unwrap();
+    let b = Db::open(&back, DbOptions::default()).unwrap();
+    assert_eq!(b.query("SELECT COUNT(*) FROM copy", &Params::new()).unwrap().rows[0][0], Value::Int(2));
+    assert_eq!(b.storage().table("copy").unwrap().to_short_json()["key"], json!("id"), "the kept schema's key stands");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn parquet_files_over_http() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = strata::Schema::from_json(ITEMS).unwrap();
+    let db = Db::create(&dir.path().join("i.strata"), schema.clone(), DbOptions { publish_snapshots: true, ..DbOptions::default() }).unwrap();
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema.clone(), agent_config("http://unused"), 16, Duration::from_secs(10));
+    svc.open_models(dir.path());
+    let base = http(Arc::new(svc), None).await;
+    let c = reqwest::Client::new();
+
+    // Files exported from another database: its items (kept schema), and
+    // its notes without the schema, so that the server makes one.
+    let src = Db::create(&dir.path().join("src.strata"), schema, DbOptions::default()).unwrap();
+    src.sql("INSERT INTO items (id, title, tags, price) VALUES ('a', 'red umbrella', ['rain'], 12.5), ('b', 'blue kettle', [], 30), ('c', 'green lamp', ['home', 'light'], 18)", &Params::new()).unwrap();
+    src.sql("CREATE TABLE notes (id INT PRIMARY KEY, item KEYWORD, body TEXT, at TIMESTAMP)", &Params::new()).unwrap();
+    src.sql("INSERT INTO notes (id, item, body, at) VALUES (1, 'a', 'keeps the rain off on the walk to the station', '2026-10-01T12:00:00Z'), (2, 'c', 'a warm light for reading in the evening', '2026-10-02T08:30:00Z')", &Params::new()).unwrap();
+    let items = dir.path().join("items.parquet");
+    strata::parquet::export(&src, &items, &strata::parquet::ExportOptions { tables: vec!["items".into()], ..Default::default() }).unwrap();
+    let notes = dir.path().join("notes.parquet");
+    strata::parquet::export(&src, &notes, &strata::parquet::ExportOptions { tables: vec!["notes".into()], meta: false }).unwrap();
+    let (items, notes) = (std::fs::read(&items).unwrap(), std::fs::read(&notes).unwrap());
+    let send = |url: String, body: Vec<u8>, ct: &'static str| {
+        let c = c.clone();
+        async move {
+            let r = c.post(url).header("content-type", ct).body(body).send().await.unwrap();
+            (r.status().as_u16(), r.json::<Json>().await.unwrap())
+        }
+    };
+
+    // The plan writes nothing; a file that keeps no table needs ?table=.
+    let (status, plan) = send(format!("{base}/v1/import?format=parquet&table=notes&plan=true"), notes.clone(), "application/vnd.apache.parquet").await;
+    assert_eq!((status, &plan["exists"], &plan["key"]), (200, &json!(false), &json!("id")), "{plan}");
+    assert_eq!(plan["fields"][2]["type"], json!("text"), "{plan}");
+    assert_eq!(plan["fields"][3]["type"], json!("timestamp"), "{plan}");
+    let (status, r) = send(format!("{base}/v1/import"), notes.clone(), "application/octet-stream").await;
+    assert_eq!(status, 400, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("?table="), "{r}");
+    // Recognised by its first bytes; the table is created.
+    let (status, r) = send(format!("{base}/v1/import?table=notes"), notes.clone(), "application/octet-stream").await;
+    assert_eq!((status, &r["written"], &r["created"]), (200, &json!(2), &json!(true)), "{r}");
+    let (_, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT id FROM notes WHERE MATCH(body, 'reading')"})).await;
+    assert_eq!(q["rows"], json!([[2]]), "{q}");
+    // The table the file kept, which the server has: upserted by key.
+    let (status, r) = send(format!("{base}/v1/import?format=parquet"), items.clone(), "application/vnd.apache.parquet").await;
+    assert_eq!((status, &r["table"], &r["written"], &r["created"]), (200, &json!("items"), &json!(3), &json!(false)), "{r}");
+    let (_, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT price FROM items WHERE id = 'a'"})).await;
+    assert_eq!(q["rows"], json!([[12.5]]), "{q}");
+
+    // What is refused: ?tables= (for SQLite), a file that is not Parquet.
+    for (url, body, why) in [("format=parquet&tables=items", items.clone(), "?table="), ("format=parquet&table=x", b"PAR1 but not really".to_vec(), "not a Parquet file")] {
+        let (status, r) = send(format!("{base}/v1/import?{url}"), body, "application/octet-stream").await;
+        assert_eq!(status, 400, "{url}: {r}");
+        assert!(r["error"].as_str().unwrap().contains(why), "{url}: {r}");
+        assert!(!r["error"].as_str().unwrap().contains("upload.parquet"), "{url}: {r}");
+    }
+
+    // The export: one table, which imports back as it was.
+    let r = c.get(format!("{base}/v1/export?format=parquet")).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 400, "two tables: name one");
+    let r = c.get(format!("{base}/v1/export?format=parquet&tables=notes")).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    assert_eq!(r.headers()["content-type"], "application/vnd.apache.parquet");
+    assert_eq!(r.headers()["content-disposition"], "attachment; filename=\"notes.parquet\"");
+    assert_eq!(r.headers()["x-strata-tables"], "notes");
+    let out = dir.path().join("out.parquet");
+    std::fs::write(&out, r.bytes().await.unwrap()).unwrap();
+    let (back, done) = strata::parquet::import_new(&out, &dir.path().join("back.strata"), DbOptions::default(), &Default::default()).unwrap();
+    assert_eq!((done.table.as_str(), done.rows), ("notes", 2));
+    assert_eq!(back.schema().to_short_json(), src.storage().table("notes").unwrap().to_short_json());
+    let r = c.get(format!("{base}/v1/export?format=parquet&tables=items,notes")).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 400);
 }
 
 // OPS-3: a replica that refused a query because too many were running was
