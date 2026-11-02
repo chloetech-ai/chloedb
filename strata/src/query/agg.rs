@@ -385,25 +385,22 @@ pub fn finish(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<V
             Expr::Output(i as u32)
         })
     });
-    let mut rows: Vec<(Vec<Part>, Vec<Acc>)> = Vec::with_capacity(groups.map.len());
-    for (k, a) in groups.map {
-        let keep = match &having {
-            None => true,
-            Some(h) => eval::holds(h, &|r| match r {
-                Ref::Output(i) => Ok(value_of(&k, &a, &columns[i as usize])),
-                r => Err(err(format!("HAVING reads {r:?}, which a group does not have"))),
-            })?,
-        };
-        if keep {
-            rows.push((k, a));
-        }
-    }
     let value_desc = matches!(q.tiebreak, Some(Tiebreak::GroupValue { desc: true }));
     // Group values in the order values have (a part's order puts a
     // negative double after a positive one, and a JSON path's values may be
-    // of several types).
+    // of several types); text and integers compared as they are.
     let by_key = |a: &[Part], b: &[Part]| {
-        let o = a.iter().zip(b).map(|(x, y)| cmp(&x.value(), &y.value())).find(|o| o.is_ne()).unwrap_or(Ordering::Equal);
+        let o = a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| match (x, y) {
+                (Part::Str(x), Part::Str(y)) => x.cmp(y),
+                (Part::Int(x), Part::Int(y)) => x.cmp(y),
+                (Part::Null, Part::Null) => Ordering::Equal,
+                (x, y) => cmp(&x.value(), &y.value()),
+            })
+            .find(|o| o.is_ne())
+            .unwrap_or(Ordering::Equal);
         if value_desc { o.reverse() } else { o }
     };
     let primary: Option<(Projection, bool)> = match &q.order {
@@ -414,16 +411,31 @@ pub fn finish(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<V
         None if !q.group_by.is_empty() => Some((Projection::Count, true)),
         _ => None,
     };
-    rows.sort_by(|(ka, aa), (kb, ab)| {
+    // Each group with the value it is ordered by, read once.
+    let mut rows: Vec<(Value, Vec<Part>, Vec<Acc>)> = Vec::with_capacity(groups.map.len());
+    for (k, a) in groups.map {
+        let keep = match &having {
+            None => true,
+            Some(h) => eval::holds(h, &|r| match r {
+                Ref::Output(i) => Ok(value_of(&k, &a, &columns[i as usize])),
+                r => Err(err(format!("HAVING reads {r:?}, which a group does not have"))),
+            })?,
+        };
+        if keep {
+            let by = primary.as_ref().map_or(Value::Null, |(p, _)| value_of(&k, &a, p));
+            rows.push((by, k, a));
+        }
+    }
+    rows.sort_by(|(va, ka, _), (vb, kb, _)| {
         let o = match &primary {
             // NULL (the group of rows without a value, an aggregate of no
             // values) last in either direction, as rows are.
-            Some((p, desc)) => match (value_of(ka, aa, p), value_of(kb, ab, p)) {
+            Some((_, desc)) => match (va, vb) {
                 (Value::Null, Value::Null) => Ordering::Equal,
                 (Value::Null, _) => Ordering::Greater,
                 (_, Value::Null) => Ordering::Less,
-                (x, y) if *desc => cmp(&x, &y).reverse(),
-                (x, y) => cmp(&x, &y),
+                (x, y) if *desc => cmp(x, y).reverse(),
+                (x, y) => cmp(x, y),
             },
             None => Ordering::Equal,
         };
@@ -433,7 +445,7 @@ pub fn finish(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<V
         .into_iter()
         .skip(q.offset)
         .take(q.limit.unwrap_or(usize::MAX))
-        .map(|(k, a)| q.projection.iter().map(|(_, p)| value_of(&k, &a, p)).collect())
+        .map(|(_, k, a)| q.projection.iter().map(|(_, p)| value_of(&k, &a, p)).collect())
         .collect())
 }
 

@@ -1535,9 +1535,11 @@ impl<'a> Lower<'a, '_> {
             let whole = left_rows > RESTRICT_ALWAYS
                 && plain(right)
                 && match self.count(right)? {
+                    // More than RESTRICT_ALWAYS values, and more than a
+                    // RESTRICT_RATIO-th of the rows.
                     Some(rows) if (left_rows as u64).saturating_mul(RESTRICT_RATIO) > rows => {
-                        let values = self.distinct_keys(&l, &held, keys)?;
-                        values > RESTRICT_ALWAYS && (values as u64).saturating_mul(RESTRICT_RATIO) > rows
+                        let cap = RESTRICT_ALWAYS.max(usize::try_from(rows / RESTRICT_RATIO).unwrap_or(usize::MAX));
+                        self.distinct_keys(&l, &held, keys, cap)? > cap
                     }
                     _ => false,
                 };
@@ -1574,12 +1576,21 @@ impl<'a> Lower<'a, '_> {
     }
 
     /// How many distinct values, NULL aside, the join keys take in the
-    /// rows of `l` (summed over the keys), which `held` holds.
-    fn distinct_keys(&mut self, l: &Rel, held: &RecordBatch, keys: &[crate::query::ir::JoinKey]) -> R<usize> {
+    /// rows of `l` (summed over the keys), which `held` holds; counted up
+    /// to one past `cap`, which is all a caller asking whether there are
+    /// more than `cap` needs.
+    fn distinct_keys(&mut self, l: &Rel, held: &RecordBatch, keys: &[crate::query::ir::JoinKey], cap: usize) -> R<usize> {
         let mut total = 0;
         for k in keys {
             let e = self.top(&k.left, &l.cols, l.plan.schema())?;
-            total += self.key_values(l, held, e)?.len();
+            let a = self.key_array(l, held, e)?;
+            total += match flat(&a).and_then(|v| firsts(&v, cap - total.min(cap)).map(|f| f.len())) {
+                Some(n) => n,
+                None => self.values_in(&a)?.len(),
+            };
+            if total > cap {
+                break;
+            }
         }
         Ok(total)
     }
@@ -1589,21 +1600,38 @@ impl<'a> Lower<'a, '_> {
     /// operators list them: a column's are read from `held`, and a
     /// multi-valued one's are each of its values.
     fn key_values(&mut self, l: &Rel, held: &RecordBatch, e: DExpr) -> R<Vec<Value>> {
-        let column = match &e {
-            DExpr::Column(c) => held.column_by_name(&c.name).cloned(),
-            _ => None,
-        };
-        let all = match column {
-            Some(a) => values_of(&a)?,
-            None => {
-                let v = self.fresh("v");
-                let plan = LogicalPlanBuilder::from(l.plan.clone()).project(vec![e.alias(&v)])?.build()?;
-                let mut vals = Vec::new();
-                for b in self.collect(plan)? {
-                    vals.extend(values_of(b.column(0))?);
-                }
-                vals
+        let a = self.key_array(l, held, e)?;
+        self.values_in(&a)
+    }
+
+    /// The values of `e` over the rows of `l`, which `held` holds: a
+    /// column's read from `held`.
+    fn key_array(&mut self, l: &Rel, held: &RecordBatch, e: DExpr) -> R<ArrayRef> {
+        if let DExpr::Column(c) = &e {
+            if let Some(a) = held.column_by_name(&c.name) {
+                return Ok(a.clone());
             }
+        }
+        let v = self.fresh("v");
+        let plan = LogicalPlanBuilder::from(l.plan.clone()).project(vec![e.alias(&v)])?.build()?;
+        let ty = plan.schema().field(0).data_type().clone();
+        let arrays: Vec<ArrayRef> = self.collect(plan)?.iter().map(|b| b.column(0).clone()).collect();
+        match arrays.len() {
+            0 => Ok(datafusion::arrow::array::new_empty_array(&ty)),
+            1 => Ok(arrays[0].clone()),
+            _ => Ok(datafusion::arrow::compute::concat(&arrays.iter().map(|a| a.as_ref()).collect::<Vec<_>>()).map_err(DataFusionError::from)?),
+        }
+    }
+
+    /// [`Lower::key_values`] of the array `a`: its distinct values found on
+    /// the array, and only those made values, where its type allows.
+    fn values_in(&mut self, a: &ArrayRef) -> R<Vec<Value>> {
+        let all = match flat(a).and_then(|v| firsts(&v, usize::MAX).map(|f| (v, f))) {
+            Some((v, f)) => {
+                let at = UInt64Array::from_iter_values(f.into_iter().map(|i| i as u64));
+                values_of(&datafusion::arrow::compute::take(v.as_ref(), &at, None).map_err(DataFusionError::from)?)?
+            }
+            None => values_of(a)?,
         };
         // A multi-valued column's values are each of its lists'.
         let each = all.into_iter().flat_map(|v| match v {
@@ -2237,6 +2265,49 @@ fn slices(batch: &RecordBatch, n: usize) -> Vec<RecordBatch> {
 /// ([`arrow::values_of`]).
 fn values_of(a: &ArrayRef) -> R<Vec<Value>> {
     Ok(arrow::values_of(a)?)
+}
+
+/// The values of `a`, a list's each of its lists' (the array its lists
+/// slice, when no NULL list holds values): what a join key matches by.
+fn flat(a: &ArrayRef) -> Option<ArrayRef> {
+    let DataType::List(_) = a.data_type() else { return Some(a.clone()) };
+    let l = a.as_list::<i32>();
+    let offsets = l.value_offsets();
+    if (0..l.len()).any(|i| l.is_null(i) && offsets[i] != offsets[i + 1]) {
+        return None;
+    }
+    let (start, end) = (offsets[0] as usize, offsets[l.len()] as usize);
+    Some(l.values().slice(start, end - start))
+}
+
+/// Where each distinct value of `a`, NULL aside, first comes, in order, up
+/// to one past `cap` of them; `None` for an array of a type not read here.
+/// Text compares as bytes and numbers by value, as the join compares them.
+fn firsts(a: &ArrayRef, cap: usize) -> Option<Vec<usize>> {
+    use datafusion::arrow::datatypes::Float64Type;
+    let mut out = Vec::new();
+    macro_rules! each {
+        ($arr:expr, $key:expr) => {{
+            let arr = $arr;
+            let mut seen = std::collections::HashSet::new();
+            for i in 0..arr.len() {
+                if arr.is_valid(i) && seen.insert($key(arr.value(i))) {
+                    out.push(i);
+                    if out.len() > cap {
+                        break;
+                    }
+                }
+            }
+        }};
+    }
+    match a.data_type() {
+        DataType::Utf8 => each!(a.as_string::<i32>(), std::convert::identity),
+        DataType::Int64 => each!(a.as_primitive::<Int64Type>(), std::convert::identity),
+        // 0.0 and -0.0 are one value.
+        DataType::Float64 => each!(a.as_primitive::<Float64Type>(), |v: f64| if v == 0.0 { 0 } else { v.to_bits() }),
+        _ => return None,
+    }
+    Some(out)
 }
 
 /// The values of the arguments, row by row.

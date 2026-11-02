@@ -1782,7 +1782,9 @@ impl<'a> Planner<'a> {
         if let Some(cond) = and(compile_all(&residual, &cols, &multi, self.params, &subs)?) {
             node = ir::Node::Filter { input: Box::new(node), cond };
         }
-        self.evaluate(s, node, &cols, &multi, &mem_order, offset, limit, srcs.len() > 1, driver_order, per)
+        let mut p = self.evaluate(s, node, &cols, &multi, &mem_order, offset, limit, srcs.len() > 1, driver_order, per)?;
+        group_first(&mut p.node, self.catalog);
+        Ok(p)
     }
 
     /// One side of a join: a leaf with its own conditions and ranking,
@@ -1858,6 +1860,173 @@ fn and(mut cs: Vec<ir::Expr>) -> Option<ir::Expr> {
         1 => cs.pop(),
         _ => Some(ir::Expr::And(cs)),
     }
+}
+
+/// Groups a join's left rows in their own scan, before the join, where the
+/// groups are the right table's rows: `GROUP BY` the right table's primary
+/// key (and other columns of its rows), aggregating the left table's
+/// fields, as in `SELECT p.id, p.title, COUNT(*) FROM reviews r JOIN
+/// products p ON r.product_id = p.id GROUP BY p.id, p.title`. A group of
+/// the join is one right row and the left rows whose key is its key,
+/// which is what the left table's group of that key aggregates; so the
+/// executor groups the left table by its join key (as `GROUP BY
+/// product_id` alone, from the key's column), the join reads a row per
+/// group rather than per row, and each group of the join, now of one row,
+/// takes its aggregates' values from it. The groups then come in the
+/// order of the left's groups rather than of their first rows, so the
+/// plan changes only when the sort above them is by the right table's
+/// key, which no two groups share: the answer is the same, row for row.
+fn group_first(node: &mut ir::Node, catalog: &[&Schema]) {
+    for n in node.inputs_mut() {
+        group_first(n, catalog);
+    }
+    let ir::Node::Sort { input, keys: sort } = node else { return };
+    let at = match input.as_mut() {
+        ir::Node::Filter { input, .. } => input.as_mut(),
+        n => n,
+    };
+    if let Some(n) = grouped_first(at, sort, catalog) {
+        *at = n;
+    }
+}
+
+/// [`group_first`] of `n`, an Aggregate under a sort by `sort`: the
+/// Aggregate over the join of the left table's groups, or `None` where
+/// it does not apply.
+fn grouped_first(n: &ir::Node, sort: &[ir::SortKey], catalog: &[&Schema]) -> Option<ir::Node> {
+    let ir::Node::Aggregate { input, keys, aggs } = n else { return None };
+    let ir::Node::Join { left, right, kind: ir::JoinKind::Inner, keys: on, on: None } = input.as_ref() else { return None };
+    let [ir::JoinKey { left: ir::Expr::Output(li), right: ir::Expr::Output(rj), left_links: false, right_links: false }] = on.as_slice() else { return None };
+    let (li, rj) = (*li as usize, *rj as usize);
+    let table = |name: &str| catalog.iter().copied().find(|t| t.table.eq_ignore_ascii_case(name));
+    // The left: a scan of a table, in no order of its own.
+    let ir::Node::Project { input: scan, columns: lcols } = left.as_ref() else { return None };
+    let ir::Node::Search(search) = scan.as_ref() else { return None };
+    if !search.order.is_empty() || !search.phases.is_empty() || search.per.is_some() {
+        return None;
+    }
+    let lt = table(&search.table)?;
+    // The right: rows of a table, each once, its key among their columns.
+    let ir::Node::Project { input: below, columns: rcols } = right.as_ref() else { return None };
+    let mut x = below.as_ref();
+    let rt = loop {
+        match x {
+            ir::Node::Limit { input, .. } | ir::Node::Filter { input, .. } => x = input,
+            ir::Node::Search(s) => break table(&s.table)?,
+            _ => return None,
+        }
+    };
+    let pk = rt.primary_key?;
+    if rcols.get(rj)?.expr != ir::Expr::Field(pk as u32) {
+        return None;
+    }
+    // One value a left row, of the key's own type, so that it equals the
+    // right's key exactly, and values that a group of the table reads.
+    let ir::Expr::Field(lf) = lcols.get(li)?.expr else { return None };
+    let plain = |f: &crate::schema::Field| f.indexed && !f.multi && f.logical.is_none() && f.media.is_none();
+    let (kf, pf) = (lt.fields.get(lf as usize)?, rt.fields.get(pk)?);
+    if !plain(kf) || pf.logical.is_some() || kf.ty != pf.ty || !matches!(kf.ty, FieldType::Keyword | FieldType::Int) {
+        return None;
+    }
+    // The groups: of values of the right's rows (or the left's key, which
+    // equals the right's), one of them the right's key, which the sort
+    // above orders by.
+    let (lw, rw) = (lcols.len(), rcols.len());
+    let mut by_key = Vec::new();
+    for (g, k) in keys.iter().enumerate() {
+        if matches!(k, ir::Expr::Output(i) if *i as usize == lw + rj || *i as usize == li) {
+            by_key.push(g as u32);
+        }
+        let mut ok = !k.has_operators();
+        k.visit(&mut |e| {
+            ok &= match e {
+                ir::Expr::Output(i) => (lw..lw + rw).contains(&(*i as usize)) || *i as usize == li,
+                ir::Expr::Lit(_)
+                | ir::Expr::Not(_)
+                | ir::Expr::And(_)
+                | ir::Expr::Or(_)
+                | ir::Expr::IsNull(_)
+                | ir::Expr::Cmp { .. }
+                | ir::Expr::Between { .. }
+                | ir::Expr::In { .. }
+                | ir::Expr::Arith { .. }
+                | ir::Expr::Neg(_)
+                | ir::Expr::Concat(_)
+                | ir::Expr::Like { .. }
+                | ir::Expr::Prefix { .. }
+                | ir::Expr::Case { .. }
+                | ir::Expr::Call { .. } => true,
+                _ => false,
+            }
+        });
+        if !ok {
+            return None;
+        }
+    }
+    if !sort.iter().any(|k| matches!(k.expr, ir::Expr::Output(g) if by_key.contains(&g))) {
+        return None;
+    }
+    // The aggregates: of rows, or of single-valued fields of the left,
+    // each once (`COUNT(*)` is both asked for and counts the group's rows).
+    let mut first: Vec<ir::Agg> = Vec::with_capacity(aggs.len());
+    let mut at = Vec::with_capacity(aggs.len());
+    for a in aggs {
+        let arg = match &a.arg {
+            None if a.func == AggFn::Count => None,
+            Some(ir::Expr::Output(i)) if (*i as usize) < lw => {
+                let ir::Expr::Field(f) = lcols[*i as usize].expr else { return None };
+                let fl = lt.fields.get(f as usize)?;
+                let typed = match a.func {
+                    AggFn::Count | AggFn::CountDistinct => matches!(fl.ty, FieldType::Keyword | FieldType::Int | FieldType::Float),
+                    AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max => matches!(fl.ty, FieldType::Int | FieldType::Float),
+                };
+                if !plain(fl) || !typed {
+                    return None;
+                }
+                Some(ir::Expr::Field(f))
+            }
+            _ => return None,
+        };
+        let agg = ir::Agg { func: a.func, arg };
+        at.push(1 + first.iter().position(|x| *x == agg).unwrap_or_else(|| {
+            first.push(agg);
+            first.len() - 1
+        }));
+    }
+    // The left table's groups: its key, then the aggregates.
+    let width = 1 + first.len();
+    let mut columns = vec![ir::Column { name: lcols[li].name.clone(), expr: ir::Expr::Output(0) }];
+    columns.extend((1..width).map(|j| ir::Column { name: format!("#{j}"), expr: ir::Expr::Output(j as u32) }));
+    let groups = ir::Node::Project {
+        input: Box::new(ir::Node::Aggregate { input: Box::new(ir::Node::Search(search.clone())), keys: vec![ir::Expr::Field(lf)], aggs: first }),
+        columns,
+    };
+    ir::Plan::new(groups.clone()).to_select(lt).ok()?;
+    let join = ir::Node::Join {
+        left: Box::new(groups),
+        right: right.clone(),
+        kind: ir::JoinKind::Inner,
+        keys: vec![ir::JoinKey { left: ir::Expr::Output(0), right: ir::Expr::Output(rj as u32), left_links: false, right_links: false }],
+        on: None,
+    };
+    // The same groups over the join's rows, one row each: its aggregates'
+    // values are the row's.
+    let keys = keys
+        .iter()
+        .map(|k| {
+            let mut k = k.clone();
+            k.visit_mut(&mut |e| {
+                if let ir::Expr::Output(i) = e {
+                    *i = if *i as usize == li { 0 } else { *i - lw as u32 + width as u32 };
+                }
+                Ok(())
+            })
+            .ok()?;
+            Some(k)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let aggs = at.into_iter().map(|j| ir::Agg { func: AggFn::Min, arg: Some(ir::Expr::Output(j as u32)) }).collect();
+    Some(ir::Node::Aggregate { input: Box::new(join), keys, aggs })
 }
 
 /// Which tables an expression names, and column lookup.
