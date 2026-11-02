@@ -994,11 +994,8 @@ pub fn spawn_sampler(svc: &Arc<Service>) {
             let Some(svc) = svc.upgrade() else { return };
             let s = svc.sample();
             if let Some(point) = svc.series.add(s) {
-                let changes = svc.alerts.check(&point);
-                if !changes.is_empty() {
-                    let svc = svc.clone();
-                    tokio::spawn(async move { svc.alerts.notify(&changes).await });
-                }
+                // alerts agent: this server's rules, and a coordinator's cluster.
+                crate::alerts::tick(&svc, &point);
             }
             let now = crate::telemetry::now_ms();
             if now / 60_000 != minute {

@@ -121,9 +121,11 @@ pub const EVENTS: &str = "events";
 pub const AUDIT: &str = "audit";
 /// The table of the served database's tables, an hour apart.
 pub const TABLE_SIZES: &str = "tables";
+/// The table of alert events ([`crate::alerts::Event`]): alerts agent.
+pub const ALERTS: &str = "alerts";
 /// The command center's tables and the days each keeps its rows: apart
 /// from [`TABLES`], and never trimmed for the store's size.
-pub const KEPT: [(&str, u64); 3] = [(EVENTS, crate::events::RETAIN_DAYS), (AUDIT, 90), (TABLE_SIZES, 30)];
+pub const KEPT: [(&str, u64); 4] = [(EVENTS, crate::events::RETAIN_DAYS), (AUDIT, 90), (TABLE_SIZES, 30), (ALERTS, crate::alerts::KEEP_DAYS)];
 
 const LOGS_SQL: &str = "CREATE TABLE logs (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, minute INT, hour INT, node KEYWORD, level KEYWORD, target KEYWORD, \
      message TEXT, fields TEXT, request_id KEYWORD, method KEYWORD, route KEYWORD, status INT, error TEXT, ms FLOAT)";
@@ -139,6 +141,8 @@ const AUDIT_SQL: &str = "CREATE TABLE audit (id INT PRIMARY KEY, ts TIMESTAMP NO
      key_name KEYWORD, method KEYWORD, route KEYWORD, status INT, client KEYWORD, addr KEYWORD, object KEYWORD, actor KEYWORD, reason TEXT, detail TEXT, \
      entry KEYWORD OPTIONS(indexed = false))";
 const TABLES_SQL: &str = "CREATE TABLE tables (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, hour INT, node KEYWORD, name KEYWORD, docs INT, bytes INT, segments INT)";
+const ALERTS_SQL: &str = "CREATE TABLE alerts (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, minute INT, hour INT, node KEYWORD, rule KEYWORD, name TEXT, severity KEYWORD, \
+     state KEYWORD, observed FLOAT, threshold FLOAT, metric KEYWORD, place TEXT, who KEYWORD, entry KEYWORD OPTIONS(indexed = false))";
 
 /// How often the writer writes what waits.
 pub const WRITE_EVERY: Duration = Duration::from_secs(1);
@@ -158,7 +162,7 @@ const RUNNING: usize = 4;
 pub fn schemas() -> &'static [Arc<Schema>] {
     static S: OnceLock<Vec<Arc<Schema>>> = OnceLock::new();
     S.get_or_init(|| {
-        [LOGS_SQL, QUERIES_SQL, LOAD_SQL, EVENTS_SQL, AUDIT_SQL, TABLES_SQL]
+        [LOGS_SQL, QUERIES_SQL, LOAD_SQL, EVENTS_SQL, AUDIT_SQL, TABLES_SQL, ALERTS_SQL]
             .iter()
             .map(|sql| match bind_command(sql, &[], &Params::new()) {
                 Ok(Command::CreateTable { schema, .. }) => Arc::new(schema),
@@ -689,6 +693,34 @@ impl LogStore {
         );
     }
 
+    /// Keeps an alert's change ([`crate::alerts::Event`]): alerts agent.
+    pub fn keep_alert(&self, e: &crate::alerts::Event) {
+        self.keep_row(
+            ALERTS,
+            e.ts_ms,
+            vec![
+                ("rule", Value::Str(e.rule.clone())),
+                ("name", Value::Str(e.name.clone())),
+                ("severity", Value::Str(e.severity.clone())),
+                ("state", Value::Str(e.state.to_string())),
+                ("observed", float(e.value)),
+                ("threshold", float(Some(e.threshold))),
+                ("metric", Value::Str(e.metric.clone())),
+                ("place", if e.where_.is_empty() { Value::Null } else { Value::Str(e.where_.join(", ")) }),
+                ("who", text(e.by.as_deref())),
+                ("entry", serde_json::to_string(e).map_or(Value::Null, Value::Str)),
+            ],
+        );
+    }
+
+    /// Rule `rule`'s alert events since `from_ms`, the newest first, as
+    /// they were kept ([`Self::keep_alert`]).
+    pub async fn alert_events(&self, rule: &str, from_ms: u64, limit: usize) -> Result<Vec<Json>, ApiError> {
+        let cond = format!("rule = '{}'", rule.replace('\'', "''"));
+        let rows = self.kept_rows(ALERTS, from_ms, crate::telemetry::now_ms(), Some(cond), limit).await?;
+        Ok(rows.into_iter().filter_map(|r| r["entry"].as_str().and_then(|e| serde_json::from_str(e).ok())).collect())
+    }
+
     /// Keeps an audited request ([`crate::keys::Entry`]).
     pub fn keep_audit(&self, e: &crate::keys::Entry) {
         self.keep_row(
@@ -1135,7 +1167,7 @@ mod tests {
 
     #[test]
     fn the_schemas_bind() {
-        assert_eq!(schemas().len(), 6);
+        assert_eq!(schemas().len(), 7);
         assert_eq!(schema_of(LOGS).primary_key.map(|k| schema_of(LOGS).fields[k].name.as_str()), Some("id"));
     }
 

@@ -63,6 +63,7 @@
 //! | `GET /v1/admin/keys`, `POST /v1/admin/keys`, `DELETE /v1/admin/keys/:id`, `POST /v1/admin/keys/:id/rotate` | `{name, scope, expires_days?, owner?, note?}`, rotate `{grace_minutes?}` | the API keys, how many were revoked, and how the last merge of keys went with each server of the cluster (`peers`, [`crate::keysync`]); a new one's secret is answered once; each key with its owner, note and last address, and the revoked ones (who revoked them, when); a rotation answers a new key of the same name and scope, the old one expiring after the grace (60 min) |
 //! | `GET /v1/admin/audit?kind=&from=&to=&who=&q=&limit=n` | | the changes, notes and refused requests, the newest first, with `kind` (change, note, refusal), who, addr, client, reason, object, before and after; older than memory holds from the log store's `audit` |
 //! | `GET /v1/alerts`, `PUT /v1/alerts/rules` | `{rules}` | the alert rules with their states and the latest changes ([`crate::alerts`]) |
+//! | `GET /v1/alerts/:rule`, `POST /v1/alerts/:rule/ack`, `POST`/`DELETE /v1/alerts/:rule/silence`, `POST /v1/alerts/:rule/notes` | `{note}`, `{minutes, reason}`, `{text}` | one alert with its events (7 days), acknowledged, silenced, noted (write scope) |
 //!
 //! Every answer carries the request's id in `x-request-id`: the one the
 //! client sent, if it is 1 to 64 letters, digits, '-', '_', '.' or ':', or
@@ -241,8 +242,13 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/keys", get(list_keys).merge(post(create_key)))
         .route("/v1/admin/keys/:id", axum::routing::delete(revoke_key))
         .route("/v1/admin/audit", get(audit_log))
+        // alerts (alerts agent)
         .route("/v1/alerts", get(alerts))
         .route("/v1/alerts/rules", put(put_alert_rules))
+        .route("/v1/alerts/:rule", get(alert))
+        .route("/v1/alerts/:rule/ack", post(ack_alert))
+        .route("/v1/alerts/:rule/silence", post(silence_alert).delete(unsilence_alert))
+        .route("/v1/alerts/:rule/notes", post(note_alert))
         // ----- core: the rebuilt command center's contract (fleet health,
         // events, time beyond an hour, versions, plans, tables)
         .route("/v1/health/fleet", get(fleet_health))
@@ -674,6 +680,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/export" => Scope::Admin,
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
         "/v1/alerts/rules" => Scope::Admin,
+        // alerts (alerts agent): acknowledging, silencing and noting write.
+        "/v1/alerts/:rule/ack" | "/v1/alerts/:rule/silence" | "/v1/alerts/:rule/notes" => Scope::Write,
         "/v1/events/notes" => Scope::Admin,
         // The inspector names the keys most read.
         r if r.starts_with("/v1/admin/") || r.starts_with("/v1/queries") || r.starts_with("/v1/logs") || r.starts_with("/v1/profile") || r.starts_with("/v1/index") => Scope::Admin,
@@ -3178,13 +3186,98 @@ async fn audit_log(State(app): State<App>, Query(q): Params) -> Res {
     Ok(AxJson(j))
 }
 
+// ----- alerts (alerts agent): rules, states, acknowledgements, silences,
+// notes, routes and backtests ([`crate::alerts`])
+
+/// The rules with their states, the latest changes and the routes.
 async fn alerts(State(app): State<App>) -> AxJson<Json> {
     AxJson(app.svc.alerts.json())
 }
 
-async fn put_alert_rules(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+/// The name a change is made by: the request's key.
+fn by(who: &Principal) -> String {
+    keys::audit_name(who)
+}
+
+/// One rule's state with its events: those in memory, and those of the
+/// last 7 days in the log store's `alerts` table.
+async fn alert(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    let mut j = app.svc.alerts.one(&id)?;
+    if let Some(store) = app.svc.log_store.clone() {
+        let since = telemetry::now_ms().saturating_sub(crate::alerts::KEEP_DAYS * 86_400_000);
+        match store.alert_events(&id, since, 500).await {
+            Ok(rows) => {
+                let mut events: Vec<Json> = j["events"].as_array().cloned().unwrap_or_default();
+                let seen: std::collections::HashSet<(u64, String)> = events.iter().map(|e| (e["ts_ms"].as_u64().unwrap_or(0), e["state"].as_str().unwrap_or("").to_string())).collect();
+                events.extend(rows.into_iter().filter(|e| !seen.contains(&(e["ts_ms"].as_u64().unwrap_or(0), e["state"].as_str().unwrap_or("").to_string()))));
+                events.sort_by(|a, b| b["ts_ms"].as_u64().cmp(&a["ts_ms"].as_u64()));
+                j["events"] = json!(events);
+                j["events_source"] = json!("log_store");
+            }
+            Err(e) => j["events_error"] = json!(e.message),
+        }
+    }
+    Ok(AxJson(j))
+}
+
+async fn put_alert_rules(State(app): State<App>, p: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let rules: Vec<crate::alerts::Rule> = serde_json::from_value(b.get("rules").cloned().ok_or_else(|| ApiError::bad("the body needs \"rules\""))?).map_err(|e| ApiError::bad(format!("bad rules: {e}")))?;
     let n = rules.len();
-    app.svc.alerts.set_rules(rules)?;
-    Ok(audited(app.svc.alerts.json(), format!("{n} alert rules")))
+    let (events, before, after) = app.svc.alerts.set_rules(rules, &by(&who(p)))?;
+    let (before, after) = crate::alerts::changed(&before, &after);
+    let what = crate::alerts::change_text(&before, &after);
+    keys::note_change(keys::Change { object: Some("alert rules".into()), before: Some(before), after: Some(after), ..Default::default() });
+    crate::alerts::deliver(&app.svc, events);
+    Ok(audited(app.svc.alerts.json(), format!("{n} alert rules: {what}")))
 }
+
+/// Notes for the audit entry what a request changed of alert `id`: its
+/// fields `fields` before and after.
+fn alert_change(id: &str, before: &Json, after: &Json, fields: &[&str]) {
+    let pick = |j: &Json| Json::Object(fields.iter().map(|k| (k.to_string(), j.get(*k).cloned().unwrap_or(Json::Null))).collect());
+    keys::note_change(keys::Change { object: Some(format!("alert {id}")), before: Some(pick(before)), after: Some(pick(after)), ..Default::default() });
+}
+
+async fn ack_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, b: Option<AxJson<Json>>) -> Res {
+    let note = b.and_then(|AxJson(b)| b.get("note").and_then(Json::as_str).map(String::from));
+    let before = app.svc.alerts.one(&id)?;
+    let e = app.svc.alerts.ack(&id, &by(&who(p)), note)?;
+    keys::note(format!("acknowledged alert {id}"));
+    crate::alerts::deliver(&app.svc, vec![e]);
+    let after = app.svc.alerts.one(&id)?;
+    alert_change(&id, &before, &after, &["state", "ack"]);
+    Ok(AxJson(after))
+}
+
+async fn silence_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+    let minutes = b.get("minutes").and_then(Json::as_u64).ok_or_else(|| ApiError::bad("the body needs \"minutes\""))?;
+    let reason = b.get("reason").and_then(Json::as_str).unwrap_or_default().to_string();
+    let before = app.svc.alerts.one(&id)?;
+    let e = app.svc.alerts.silence(&id, &by(&who(p)), minutes, &reason)?;
+    keys::note(format!("silenced alert {id} for {minutes} min: {reason}"));
+    crate::alerts::deliver(&app.svc, vec![e]);
+    let after = app.svc.alerts.one(&id)?;
+    alert_change(&id, &before, &after, &["silenced"]);
+    Ok(AxJson(after))
+}
+
+async fn unsilence_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    let before = app.svc.alerts.one(&id)?;
+    let e = app.svc.alerts.unsilence(&id, &by(&who(p)))?;
+    keys::note(format!("lifted the silence of alert {id}"));
+    crate::alerts::deliver(&app.svc, vec![e]);
+    let after = app.svc.alerts.one(&id)?;
+    alert_change(&id, &before, &after, &["silenced"]);
+    Ok(AxJson(after))
+}
+
+async fn note_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+    let text = b.get("text").and_then(Json::as_str).ok_or_else(|| ApiError::bad("the body needs \"text\""))?;
+    let e = app.svc.alerts.note(&id, &by(&who(p)), text)?;
+    keys::note(format!("noted on alert {id}: {}", crate::obs::truncate(text, 200)));
+    keys::note_change(keys::Change { object: Some(format!("alert {id}")), after: Some(json!({"note": text})), ..Default::default() });
+    crate::alerts::deliver(&app.svc, vec![e]);
+    app.svc.alerts.one(&id).map(AxJson)
+}
+
+// ----- end alerts
