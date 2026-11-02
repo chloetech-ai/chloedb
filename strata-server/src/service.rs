@@ -486,8 +486,8 @@ impl Service {
     }
 
     /// Refuses a client's write on a replica (409), and one a primary may
-    /// not apply now ([`Self::admit_write`]).
-    fn writable(&self) -> Result<(), ApiError> {
+    /// not apply now ([`Self::admit_write`]); answers who took it.
+    fn writable(&self) -> Result<Admitted, ApiError> {
         self.takes_writes()?;
         self.admit_write()
     }
@@ -500,19 +500,53 @@ impl Service {
         }
     }
 
-    /// Refuses a write a primary may not apply now ([`Primary::admit`]).
-    fn admit_write(&self) -> Result<(), ApiError> {
+    /// Refuses a write a primary may not apply now ([`Primary::admit`]);
+    /// answers who took it.
+    fn admit_write(&self) -> Result<Admitted, ApiError> {
         match &self.replication() {
-            Replication::Primary(p) => p.admit(),
-            _ => Ok(()),
+            Replication::Primary(p) => {
+                p.admit()?;
+                Ok(Admitted(Some(self.term())))
+            }
+            _ => Ok(Admitted(None)),
+        }
+    }
+
+    /// The term its database numbers writes under: a primary's (0 when
+    /// none).
+    fn term(&self) -> u64 {
+        self.local().and_then(|db| db.storage().numbering()).map_or(0, |n| n.term)
+    }
+
+    /// Who takes a write now, unasked whether it may be applied: a
+    /// statement that changes tables, and a retry of a write applied.
+    fn admitted(&self) -> Admitted {
+        match &self.replication() {
+            Replication::Primary(_) => Admitted(Some(self.term())),
+            _ => Admitted(None),
         }
     }
 
     /// Answers a committed write once the copies `--write-acks` asks for
-    /// hold it, waiting up to `timeout` ([`Primary::acknowledged`]).
-    async fn replicated(&self, w: Written, timeout: Duration) -> Result<Written, ApiError> {
-        if let (Replication::Primary(p), Some(seq)) = (&self.replication(), w.seq_no) {
-            p.acknowledged(seq, Instant::now() + timeout).await?;
+    /// hold it, waiting up to `timeout` ([`Primary::acknowledged`]), on the
+    /// primary that took it (`by`). One that stepped down since, as a
+    /// primary does when it votes for another copy in a handover
+    /// ([`Self::step_down`]), answers it in doubt (409), as it answers a
+    /// write it applied when another replaced it before its copies held it
+    /// ([`Primary::acknowledged`]): the new primary may not hold it, and
+    /// this server, a replica now, waits for no copy.
+    async fn replicated(&self, w: Written, timeout: Duration, by: Admitted) -> Result<Written, ApiError> {
+        let Some(seq) = w.seq_no else { return Ok(w) };
+        match (&self.replication(), by.0) {
+            // Taken by this primary, or on a server of its own, which was
+            // made one since.
+            (Replication::Primary(p), term) if term.is_none_or(|t| t == self.term()) => p.acknowledged(seq, Instant::now() + timeout).await?,
+            (_, Some(term)) => {
+                return Err(conflict(format!(
+                    "the write is durable on this server as sequence number {seq}, but it stopped being the primary of term {term} before it was acknowledged, and the new primary may not hold it: write to the new primary"
+                )))
+            }
+            _ => {}
         }
         Ok(w)
     }
@@ -2456,6 +2490,7 @@ impl Service {
         let r = match &self.backend {
             Backend::Local(db) => {
                 self.takes_writes()?;
+                let by = self.admitted();
                 let timeout = self.timeout_of(timeout_ms);
                 let (db, sql, params) = (db.clone(), sql.to_string(), params.clone());
                 let w = tokio::task::spawn_blocking(move || {
@@ -2468,7 +2503,7 @@ impl Service {
                 .await
                 .map_err(ApiError::internal)?;
                 match w {
-                    Ok(w) => self.replicated(w, timeout).await,
+                    Ok(w) => self.replicated(w, timeout, by).await,
                     e => e,
                 }
             }
@@ -2486,7 +2521,7 @@ impl Service {
     where
         F: FnOnce(&Db) -> strata::Result<Option<PreparedWrite>> + Send + 'static,
     {
-        self.writable()?;
+        let by = self.writable()?;
         self.backpressure(db).await?;
         let q = self.enqueue()?;
         let core = match self.embeds() {
@@ -2504,7 +2539,7 @@ impl Service {
         // The deadline bounds the wait for the writer, not the embedding.
         let deadline = Instant::now() + self.timeout_of(timeout_ms);
         let w = self.write(WriteJob::Sql(Box::new(prepared)), deadline, None, q, Moved::No).await?;
-        self.replicated(w, self.timeout_of(timeout_ms)).await
+        self.replicated(w, self.timeout_of(timeout_ms), by).await
     }
 
     /// Applies write operations (see the proto's WriteRequest) in one
@@ -2539,7 +2574,7 @@ impl Service {
                             self.metrics.replay();
                             // A retry after a write its copies did not all
                             // acknowledge waits for them again.
-                            return self.replicated(n, self.timeout).await;
+                            return self.replicated(n, self.timeout, self.admitted()).await;
                         }
                         idem::Begin::Busy => return Err(ApiError { status: 409, message: "a write with this idempotency key is still running".into() }),
                         idem::Begin::Mismatch => return Err(ApiError { status: 422, message: "this idempotency key was used for different operations".into() }),
@@ -2548,7 +2583,7 @@ impl Service {
                 let r = async {
                     // Not a retry of a write applied: a primary may refuse
                     // it before applying it.
-                    self.admit_write()?;
+                    let by = self.admit_write()?;
                     if self.embeds() || self.has_media() {
                         // Queued writes wait for a core to embed on.
                         let core = self.embedding.clone().acquire_owned().await.map_err(ApiError::internal)?;
@@ -2567,7 +2602,7 @@ impl Service {
                     for &ts in &w.stamps {
                         self.metrics.lag(now.saturating_sub(ts) as f64 / 1e6);
                     }
-                    Ok(w)
+                    Ok((w, by))
                 }
                 .await;
                 if let (Err(_), Some(k)) = (&r, &key) {
@@ -2577,8 +2612,8 @@ impl Service {
                 // Committed: a retry with its key answers it, whatever its
                 // copies say.
                 match r {
-                    Ok(w) => self.replicated(w, self.timeout).await,
-                    e => e,
+                    Ok((w, by)) => self.replicated(w, self.timeout, by).await,
+                    Err(e) => Err(e),
                 }
             }
             Backend::Cluster(c) => c.write_ops(ops, key).await,
@@ -3265,6 +3300,12 @@ pub enum SqlAnswer {
     Rows(Answer),
     Written { w: Written, took_ms: f64 },
 }
+
+/// The term of the primary that took a write ([`Service::admit_write`]),
+/// which answers it once its copies hold it ([`Service::replicated`]):
+/// `None` on a server of its own.
+#[derive(Clone, Copy, Debug)]
+struct Admitted(Option<u64>);
 
 /// What a write did: the rows it wrote and, in a database that numbers
 /// its writes (`--seq-no`), its transaction's sequence number. Through a
