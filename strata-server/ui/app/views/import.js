@@ -403,7 +403,7 @@ function render(page) {
       const tablesHit = [...new Set(ops.map((o) => o.table).filter(Boolean))];
       const sources = [...new Set(ops.map((o) => o.source?.name).filter(Boolean))];
       const ok = await confirm({ title: `Send ${fmt.plural(lines.length, "operation")}?`, ok: "Send them", reason: isProduction() ? "Why: kept with the stream" : false,
-        body: h("div", { class: "stack", style: { gap: "8px" } }, h("p", { class: "dim", style: { margin: 0 } }, `They write ${tablesHit.length ? tablesHit.join(", ") : "the first table"} on ${location.host}${isProduction() ? ", which counts as production" : ""}. There is no undo.`),
+        body: h("div", { class: "stack", style: { gap: "8px" } }, h("p", { class: "dim", style: { margin: 0 } }, `They write ${tablesHit.length ? "to " + tablesHit.join(", ") : "rows"} on ${location.host}${isProduction() ? ", which counts as production" : ""}. There is no undo.`),
           sources.length ? h("p", { class: "small", style: { margin: 0 } }, `The server keeps the offset of ${sources.join(", ")} from now on: a consumer of that source resumes from it.`) : null) });
       if (!ok) return;
       send.disabled = true; log.classList.remove("hidden"); clear(log);
