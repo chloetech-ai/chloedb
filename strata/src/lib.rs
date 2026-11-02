@@ -46,6 +46,7 @@ pub mod forward;
 pub mod graph;
 pub mod hosted;
 pub mod ingest;
+pub mod inspect;
 pub mod iostat;
 pub mod json;
 pub mod media;

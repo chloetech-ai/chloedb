@@ -182,6 +182,8 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         quiet: false,
         // A coordinator's leaf: Arrow columns for any rows.
         arrow: r.arrow.then_some(0),
+        // Set by the query itself, for a client's.
+        reads: false,
     })
 }
 
@@ -626,7 +628,9 @@ impl pb::strata_server::Strata for Grpc {
             let after = After::of(r.min_seq_no, r.min_seq_nos)?;
             let table = Some(r.table).filter(|t| !t.is_empty());
             let keys = r.keys.into_iter().map(from_pb).collect();
-            let got = svc.get_rows(table.as_deref(), keys, &after, r.timeout_ms as u64).await?;
+            // A coordinator's read names the protocol it speaks; it counts
+            // the keys itself ([`crate::reads`]).
+            let got = svc.get_rows(table.as_deref(), keys, &after, r.timeout_ms as u64, r.protocol == 0).await?;
             Ok(get_response(got))
         })
         .await

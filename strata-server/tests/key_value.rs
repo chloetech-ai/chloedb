@@ -155,7 +155,7 @@ async fn rows_by_key_from_a_server_and_a_coordinator() {
     let got = coord.query(strata_server::service::QueryReq { sql: sql.into(), ..Default::default() }).await.unwrap();
     assert!(!got.rs.stats.plan.iter().any(|l| l.starts_with("routed")), "{:?}", got.rs.stats.plan);
     // Keys of the wrong type, a table without a key, too many keys.
-    let e = coord.get_rows(Some("kv"), vec![Value::Int(3)], &After::Any, 0).await.unwrap_err();
+    let e = coord.get_rows(Some("kv"), vec![Value::Int(3)], &After::Any, 0, true).await.unwrap_err();
     assert!(e.message.contains("KEYWORD"), "{}", e.message);
     // The expirer deletes the expired rows on the server; they were none
     // to reads already.

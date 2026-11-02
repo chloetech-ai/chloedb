@@ -127,6 +127,10 @@ pub struct QueryReq {
     /// ([`Answer::arrow`]) when the coordinator puts its rows after the
     /// others' ([`strata::cluster::concatenates`]).
     pub arrow: Option<usize>,
+    /// Count the answer's rows as retrievals of their documents
+    /// ([`crate::reads`]): a client's query, which a coordinator counts by
+    /// the replica that answered each row.
+    pub reads: bool,
 }
 
 /// The writes a read must see, so that a client reads its own writes
@@ -229,6 +233,9 @@ pub struct Service {
     pub live: Arc<LiveQueries>,
     /// The latest and slow queries, and statistics per statement.
     pub query_log: QueryLog,
+    /// How often each table's documents are retrieved and its keys asked
+    /// for ([`crate::reads`]).
+    pub reads: crate::reads::Reads,
     /// Rates and gauges every few seconds ([`Self::sample`]).
     pub series: Series,
     /// When the server started.
@@ -395,6 +402,7 @@ impl Service {
             kube: None,
             live: Arc::new(LiveQueries::default()),
             query_log: QueryLog::default(),
+            reads: crate::reads::Reads::default(),
             series: Series::default(),
             started: std::time::SystemTime::now(),
             keys: Arc::new(Keys::memory()),
@@ -1857,6 +1865,10 @@ impl Service {
     /// shards.
     async fn select(self: &Arc<Self>, mut req: QueryReq, schema: Arc<Schema>, select: Select, t0: Instant, timeout: Duration) -> Result<Answer, ApiError> {
         let kind = metrics::kind(&select);
+        // A client's answer counts its rows' documents as retrieved; a
+        // shard's to a coordinator, which counts them, does not.
+        req.reads = !req.shard && !req.quiet && self.reads.on();
+        let mut served = Vec::new();
         let mut lease = 0;
         req.profile |= self.profiling.cpu_all.load(Ordering::Relaxed);
         let profiled = req.profile;
@@ -1941,7 +1953,10 @@ impl Service {
                     let reach = select.limit.unwrap_or(0).saturating_add(select.offset);
                     let r = match self.max_rows.filter(|&m| reach > m) {
                         Some(m) => Err(ApiError::bad(format!("query error: LIMIT and OFFSET reach row {reach}; a query returns at most {m} rows"))),
-                        None => c.query(&req, &schema, &select, t0 + timeout).await.map(|m| (m.rs, m.missing)),
+                        None => c.query(&req, &schema, &select, t0 + timeout).await.map(|m| {
+                            served = m.served;
+                            (m.rs, m.missing)
+                        }),
                     };
                     drop(permit);
                     r
@@ -1950,6 +1965,17 @@ impl Service {
             }
         };
         drop(live);
+        if req.reads {
+            match (&res, &self.backend) {
+                (Ok((rs, _)), Backend::Local(_)) => self.reads.retrieved(&schema.table, crate::reads::At::here(), &rs.keys),
+                (Ok(_), Backend::Cluster(_)) => {
+                    for s in served {
+                        self.reads.retrieved(&schema.table, s.at, &s.keys);
+                    }
+                }
+                _ => {}
+            }
+        }
         // A shard's answer to a coordinator is not a client's.
         let a = self.done(&req.sql, kind, t0, self.max_rows.filter(|_| !req.shard), req.shard, (profiled, req.quiet), res);
         // A lease made for a query that failed holds nothing to fetch.
@@ -2278,7 +2304,9 @@ impl Service {
     /// `SELECT *` answers it and the number of the write that last changed
     /// it, or none. A coordinator asks each key's shard. At most
     /// [`MAX_GET_KEYS`] keys.
-    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, after: &After, timeout_ms: u64) -> Result<KeyRows, ApiError> {
+    /// With `count`, a client's read, its keys count as asked for
+    /// ([`crate::reads`]).
+    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, after: &After, timeout_ms: u64, count: bool) -> Result<KeyRows, ApiError> {
         let t0 = Instant::now();
         if keys.len() > MAX_GET_KEYS {
             return Err(ApiError::bad(format!("a read by key takes at most {MAX_GET_KEYS} keys, not {}", keys.len())));
@@ -2298,6 +2326,7 @@ impl Service {
                 let Some(permit) = self.admit(timeout).await else { return Err(self.rejected("get", t0)) };
                 let db = db.clone();
                 let opts = ExecOptions { deadline: Some(deadline), ..db.exec.clone() };
+                let asked = if count && self.reads.on() { keys.clone() } else { Vec::new() };
                 let r = tokio::task::spawn_blocking(move || {
                     let columns = Db::get_columns(view.schema());
                     db.get_many_at(&view, &keys, &opts).map(|rows| KeyRows { table: view.schema().table.clone(), columns, rows: rows.into_iter().map(|r| r.map(|r| (r.row, r.seq_no))).collect() })
@@ -2305,9 +2334,20 @@ impl Service {
                 .await
                 .map_err(ApiError::internal)?;
                 drop(permit);
+                if let Ok(got) = &r {
+                    let found: Vec<bool> = got.rows.iter().map(Option::is_some).collect();
+                    self.reads.asked(&schema.table, crate::reads::At::here(), &asked, &found);
+                }
                 r.map_err(ApiError::from)
             }
-            Backend::Cluster(c) => c.get(&schema, &keys, after, deadline).await.map(|rows| KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }),
+            Backend::Cluster(c) => c.get(&schema, &keys, after, deadline).await.map(|(rows, served)| {
+                if count && self.reads.on() {
+                    for s in served {
+                        self.reads.asked(&schema.table, s.at, &s.keys, &s.found);
+                    }
+                }
+                KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }
+            }),
         };
         telemetry::record("get", t0, if r.is_ok() { "ok" } else { "error" });
         r
