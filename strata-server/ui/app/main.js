@@ -4,7 +4,7 @@
 // palette (Ctrl+K), which finds views, actions and the fleet's shards,
 // copies, nodes, tables, statements, alerts and keys, and the shortcuts.
 
-import { h, icon, clear, store, bus, api, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle } from "./core.js";
+import { h, icon, clear, store, bus, api, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow } from "./core.js";
 import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, fresh, clusterName, environment, isCoordinator } from "./data.js";
 import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
 
@@ -25,9 +25,11 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => bus.
 const brandName = h("b", {}, location.host);
 const brandSub = h("small", {}, "connecting…");
 const brand = h("button", { class: "brand", title: "Which cluster this is, and the others you used", "aria-haspopup": "menu" },
-  h("svg", { class: "mark", viewBox: "0 0 32 32", "aria-hidden": "true" }),
+  document.createElementNS("http://www.w3.org/2000/svg", "svg"),
   h("div", { class: "clu" }, h("span", { class: "row nw", style: { gap: "4px" } }, brandName, icon("down", "chev")), brandSub));
-brand.querySelector(".mark").innerHTML = '<defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--s1)"/><stop offset="1" stop-color="var(--s7)"/></linearGradient></defs><rect x="2" y="2" width="28" height="28" rx="8" fill="url(#lg)"/><path d="M8 11.5 16 8l8 3.5-8 3.5z" fill="#fff" opacity=".95"/><path d="m8 16 8 3.5 8-3.5" stroke="#fff" stroke-width="2" fill="none" stroke-linejoin="round" opacity=".8"/><path d="m8 20.5 8 3.5 8-3.5" stroke="#fff" stroke-width="2" fill="none" stroke-linejoin="round" opacity=".6"/>';
+const markSvg = brand.querySelector("svg");
+for (const [k, v] of Object.entries({ class: "mark", viewBox: "0 0 32 32", "aria-hidden": "true" })) markSvg.setAttribute(k, v);
+markSvg.innerHTML = '<defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--s1)"/><stop offset="1" stop-color="var(--s7)"/></linearGradient></defs><rect x="2" y="2" width="28" height="28" rx="8" fill="url(#lg)"/><path d="M8 11.5 16 8l8 3.5-8 3.5z" fill="#fff" opacity=".95"/><path d="m8 16 8 3.5 8-3.5" stroke="#fff" stroke-width="2" fill="none" stroke-linejoin="round" opacity=".8"/><path d="m8 20.5 8 3.5 8-3.5" stroke="#fff" stroke-width="2" fill="none" stroke-linejoin="round" opacity=".6"/>';
 
 // Coordinators used from this browser, newest first. Each address keeps its
 // own list (storage is per address), so switching records both ends.
@@ -171,15 +173,56 @@ whoBtn.onclick = () => menu(whoBtn, [
   { label: "Manage API keys", icon: "lock", onclick: () => (location.hash = "#/access?tab=keys") },
   { label: "Keyboard shortcuts", icon: "keyboard", onclick: () => shortcuts() },
 ]);
-const top = h("header", { class: "top" }, crumbs, envBadge, h("div", { class: "sep" }), searchBtn, rangeSeg, absBtn, zoomChip, liveBtn, shareBtn, bell, themeBtn, whoBtn);
+// Below 900 px: a menu button opens the navigation as a drawer, and one
+// button holds the range, the window, Share, the theme and the key.
+const navBtn = h("button", { class: "btn ghost icon hamb", "aria-label": "Views", title: "Views", "aria-expanded": "false", onclick: () => openNav(!shell.classList.contains("nav-open")) }, icon("menu"));
+const moreBtn = h("button", { class: "btn sm more", "aria-haspopup": "dialog", title: "Time range, Share, theme and key", onclick: () => moreSheet() }, icon("clock"), h("span", { class: "lbl" }, "1h"));
+const top = h("header", { class: "top" }, navBtn, crumbs, envBadge, h("div", { class: "sep" }), searchBtn, rangeSeg, absBtn, zoomChip, liveBtn, moreBtn, shareBtn, bell, themeBtn, whoBtn);
 // Says when the server does not answer, and that what shows is old.
 const downBar = h("div", { class: "downbar hidden", role: "alert" });
 const content = h("main", { class: "content", id: "content" });
-const shell = h("div", { class: "shell" + (store.get("side", false) ? " collapsed" : "") }, side, top, content);
+const navScrim = h("div", { class: "nav-scrim", onclick: () => openNav(false) });
+const shell = h("div", { class: "shell" + (store.get("side", false) && !isNarrow() ? " collapsed" : "") }, side, navScrim, top, content);
 content.before(downBar);
 app.replaceWith(shell);
 
-function toggleSide() { shell.classList.toggle("collapsed"); store.set("side", shell.classList.contains("collapsed")); }
+function toggleSide() {
+  if (isNarrow()) { openNav(!shell.classList.contains("nav-open")); return; }
+  shell.classList.toggle("collapsed"); store.set("side", shell.classList.contains("collapsed"));
+}
+/** The navigation as a drawer, below 900 px. */
+function openNav(on) {
+  shell.classList.toggle("nav-open", on);
+  navBtn.setAttribute("aria-expanded", String(on));
+  if (on) setTimeout(() => nav.querySelector("a[aria-current]")?.focus(), 0);
+}
+// Crossing 900 px: the drawer closes, and the collapsed sidebar comes back on a wide screen.
+bus.on("narrow", (narrow) => { openNav(false); shell.classList.toggle("collapsed", !narrow && store.get("side", false)); drawRange(); });
+nav.addEventListener("click", (e) => { if (e.target.closest("a[data-view]") && isNarrow()) openNav(false); });
+
+/** Below 900 px: the range, a fixed window, live or paused, Share, the theme and the key, in one sheet. */
+function moreSheet() {
+  const r = timeRange();
+  const ranges = seg(RANGES.map(([k, m]) => [m, k, `The last ${k.replace(/(\d)([a-z])/, "$1 $2")}`]), r.fixed ? "none" : state.range, (v) => { m.close(); setRange(v); }, { "aria-label": "Time range", class: "seg more-ranges" });
+  const row = (ic, label, sub, onclick) => h("button", { class: "more-row", onclick: () => { m.close(); onclick(); } }, icon(ic), h("span", { class: "grow" }, label, sub ? h("small", {}, sub) : null), icon("right", "chev"));
+  const w = state.whoami;
+  const m = modal({
+    title: "Time and sharing",
+    body: [
+      h("div", { class: "small dim" }, "Every view shows this window. ", h("b", {}, r.fixed ? `Fixed: ${span(r.from, r.to)}` : `The last ${r.label.replace(/^last /, "")}, following now`), "."),
+      ranges,
+      row("clock", "Pick a fixed window", "dates and times, or overnight", pickWindow),
+      state.zoom ? row("zout", "Reset the zoom", null, () => setZoom(null)) : null,
+      row(state.paused ? "play" : "pause", state.paused ? "Go live" : "Pause", state.paused ? "follow now again" : "nothing redraws while paused", () => setPaused(!state.paused)),
+      row("share", "Share a link to this view", "with this window as fixed times; it opens paused", share),
+      h("hr"),
+      row(isDark() ? "sun" : "moon", isDark() ? "Light theme" : "Dark theme", null, toggleTheme),
+      row("user", w ? `Signed in as ${w.name}` : hasToken() ? "The key was refused" : "Signed out", w ? `${w.scope} key · use another one` : "use a key or the server's token", askToken),
+    ],
+    foot: [h("button", { class: "btn", onclick: () => m.close() }, "Close")],
+  });
+  m.el.classList.add("more-sheet");
+}
 
 function drawRange() {
   const r = timeRange();
@@ -188,6 +231,8 @@ function drawRange() {
   absBtn.title = `${whenTitle(r.from)} to ${whenTitle(r.to)}${r.fixed ? ", fixed" : ", following now"}. Click to pick another window`;
   absBtn.classList.toggle("fixed", r.fixed);
   zoomChip.classList.toggle("hidden", !state.zoom);
+  moreBtn.querySelector(".lbl").textContent = r.fixed ? "Fixed" : (RANGES.find(([, m]) => m === state.range)?.[0] || r.label.replace(/^last /, "")) + (state.zoom ? " · zoomed" : "");
+  moreBtn.classList.toggle("fixed", r.fixed);
 }
 bus.on("range", drawRange);
 bus.on("paused", drawRange);
@@ -203,7 +248,8 @@ function drawLive() {
   else if ((!f.ok && !f.loading) || (!fh.ok && !fh.loading)) { cls = "stale"; ic = "clock"; text = "Stale"; title = `No fresh data: ${(!f.ok ? f.error : fh.error) || "the last answers are old"}`; }
   else { cls = "ok"; ic = null; text = "Live"; title = "Live: the data follows now. Click to pause (p)"; }
   const every = state.series.source === "load" ? "1 min" : (state.interval / 1000) + " s";
-  clear(liveBtn, cls === "ok" ? h("span", { class: "dot ok" }) : icon(ic), text, cls === "ok" ? h("span", { class: "fresh" }, "· " + every) : null);
+  clear(liveBtn, cls === "ok" ? h("span", { class: "dot ok" }) : icon(ic), h("span", { class: "lt" }, text), cls === "ok" ? h("span", { class: "fresh" }, "· " + every) : null);
+  liveBtn.setAttribute("aria-label", text);
   liveBtn.className = "btn sm live " + cls;
   liveBtn.title = title;
 }
@@ -318,6 +364,7 @@ function markCurrent() {
   for (const a of nav.querySelectorAll("a[data-view]")) { if (a.dataset.view === id) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); }
 }
 function route() {
+  openNav(false);
   const r = parse();
   const { v, e, unknown } = resolve(r);
   rangeFromUrl(r.params);
@@ -521,7 +568,8 @@ function openPalette(initial = "") {
   if (document.querySelector(".palette")) return;
   const inp = h("input", { placeholder: "Shard 117, s9-2, a node, a table, an alert, a key, a view…", "aria-label": "Search", autocomplete: "off", spellcheck: "false", value: initial });
   const list = h("div", { class: "list", role: "listbox" });
-  const pal = h("div", { class: "palette", role: "dialog", "aria-label": "Command palette" }, inp, list,
+  const closeBtn = h("button", { class: "btn ghost pal-close", type: "button" }, "Cancel");
+  const pal = h("div", { class: "palette", role: "dialog", "aria-label": "Command palette" }, h("div", { class: "pal-in" }, icon("search"), inp, closeBtn), list,
     h("div", { class: "foot" }, h("span", {}, h("kbd", {}, "↑"), " ", h("kbd", {}, "↓"), " to move"), h("span", {}, h("kbd", {}, "Enter"), " to open"), h("span", {}, h("kbd", {}, "Tab"), " for its actions"), h("span", {}, h("kbd", {}, "Esc"), " to close"),
       h("span", { class: "sep" }), h("span", {}, "finds shards, copies, nodes, tables, statements, alerts, keys, request ids")));
   const scrim = h("div", { class: "scrim" });
@@ -529,7 +577,7 @@ function openPalette(initial = "") {
   loadFinds().then(() => { if (pal.isConnected) draw(); }).catch(() => {});
   let items = [], sel = 0, focus = null; // focus: the entity whose actions show
   const close = () => { pal.remove(); scrim.remove(); };
-  scrim.onclick = close;
+  scrim.onclick = close; closeBtn.onclick = close;
   function draw() {
     const q = inp.value.trim();
     if (focus) items = focus.acts.map((a) => ({ ...a, grp: focus.name }));
@@ -561,7 +609,7 @@ function openPalette(initial = "") {
       if (it.grp !== grp && !focus) { grp = it.grp; list.append(h("div", { class: "grp" }, grp)); }
       const row = h("div", { class: "it" + (i === sel ? " on" : ""), role: "option", "aria-selected": String(i === sel), title: it.title || null },
         icon(it.icon), h("span", { class: "nm" + (it.mono ? " mono" : "") }, mark(it.name, focus ? "" : q), it.sub ? h("span", { class: "s" }, " · " + it.sub) : null),
-        it.acts && !focus ? h("span", { class: "h acts", title: "Tab for what to do about it" }, `${it.acts.length} actions ⇥`) : null,
+        it.acts && !focus ? h("button", { class: "h acts", type: "button", title: "What to do about it (Tab)", onclick: (ev) => { ev.stopPropagation(); focus = it; sel = 0; draw(); } }, `${it.acts.length} actions`, h("span", { class: "tabk" }, " ⇥")) : null,
         it.hint ? h("span", { class: "h" }, it.hint) : null);
       row.onclick = () => { close(); it.run(); };
       row.onmousemove = () => { if (sel === i) return; sel = i; list.querySelectorAll(".it").forEach((el, k) => { el.classList.toggle("on", k === i); el.setAttribute("aria-selected", String(k === i)); }); };
