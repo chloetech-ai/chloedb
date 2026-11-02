@@ -10,7 +10,7 @@ import { timeChart, heatmap, SERIES, sparkline } from "../charts.js";
 import { domain, visible, setZoom } from "../data.js";
 import {
   state, link, timeRange, rangeQuery, poll, isCoord, copyName, copyTitle, copyLink, shardLink, nodeLink, statements, change, split, outcomeBar, statementLink, isOwn, containDialog, can,
-  narrow, cols, sheet,
+  narrow, cols, sheet, copies as copiesOf,
 } from "../workload.js";
 
 export default { id: "performance", title: "Performance", icon: "perf", group: "Operate", keywords: "latency throughput heatmap findings advisor tuning cpu memory disk routes kinds percentiles slow copies fleet failures", render };
@@ -47,24 +47,6 @@ function figures(ps) {
 }
 
 // ---------------------------------------------------------------- every copy, from the cluster
-
-function copiesOf(c = state.cluster) {
-  const out = [];
-  for (const sh of c?.shards || []) (sh.replicas || []).forEach((r, j) => {
-    const d = r.detail || {}, ld = d.load || {}, mi = d.minute || {};
-    const cores = mi.cores || d.system?.cores || ld.cores;
-    out.push({
-      url: r.url, shard: sh.shard, j, role: r.role, status: r.status, has: !!r.detail,
-      p99: mi.p99_ms ?? ld.p99_ms, qps: mi.qps ?? ld.qps,
-      cpu: mi.busy ?? (ld.cpu != null && cores ? ld.cpu / cores : null),
-      disk: ld.disk_used_ratio ?? mi.disk_used_ratio, segments: ld.segments ?? r.segments, docs: ld.docs ?? r.docs,
-      merge_failing: !!ld.merge_failing, flush_failing: !!ld.flush_failing, failing: !!ld.failing,
-      behind: r.role === "primary" ? null : ld.replica_behind_max ?? null, out_of_sync: ld.replicas_out_of_sync, rss: ld.rss_bytes, wal: ld.wal_bytes, file: ld.file_bytes,
-      deleted: ld.deleted_docs,
-    });
-  });
-  return out;
-}
 
 // ---------------------------------------------------------------- the view
 

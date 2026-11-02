@@ -1860,4 +1860,25 @@ a.tl-tile:hover { text-decoration: none; border-color: var(--line-2); }
   .seg.wl-segwrap { flex-wrap: wrap; height: auto; }
   .seg.wl-segwrap > button { flex: 1 1 auto; }
 }
+/* the profiler's copy picker and guard rails */
+.wl-pick { margin-bottom: 14px; display: flex; flex-direction: column; gap: 6px; }
+.wl-pick-cur { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.wl-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface); font-size: 12.5px; color: var(--text); text-decoration: none; white-space: nowrap; }
+a.wl-chip:hover { border-color: var(--accent); }
+.wl-pick-box { position: relative; width: 340px; max-width: 100%; }
+.wl-pick-box .input { width: 100%; }
+.wl-pick-list { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 40; background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r-sm); box-shadow: 0 8px 24px rgba(0, 0, 0, .14); padding: 4px; max-height: 360px; overflow-y: auto; }
+.wl-pick-h { padding: 6px 8px; }
+.wl-pick-row { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; padding: 6px 8px; border: 0; background: none; border-radius: var(--r-sm); text-align: left; cursor: pointer; color: var(--text); font: inherit; }
+.wl-pick-row.hi, .wl-pick-row:hover { background: var(--accent-soft); }
+.wl-pick-name { display: flex; gap: 4px; align-items: baseline; }
+.wl-cost { line-height: 1.45; }
+.wl-warn-t { color: var(--text); font-weight: 600; }
+.wl-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.wl-note { display: flex; gap: 8px; align-items: flex-start; padding: 8px 12px; border-radius: var(--r-sm); background: var(--warn-soft); font-size: 12.5px; color: var(--text-2); }
+.wl-note .i { flex: none; margin-top: 2px; }
+@media (max-width: 900px) {
+  .wl-pick-box { width: 100%; }
+  .wl-pick-row { padding: 10px 8px; }
+}
 /* ===== end workload ===== */
