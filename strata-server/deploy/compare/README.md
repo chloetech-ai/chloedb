@@ -75,6 +75,10 @@ Elasticsearch and Solr, 28 October 2026) are in
   segment after loading. Vespa has no segments to merge: a document is
   searchable once its put returns, and proton flushes and compacts on its
   own (compare.sh asks it to flush before measuring its size on disk).
+- **Access**: Strata's servers listen beyond loopback only with a token,
+  so its shards, coordinator and the client share the benchmark's
+  (`STRATA_TOKEN=compare`, as Typesense gets its API key); the other
+  engines run with their security off, as their images start.
 - **No result caches**: the timed runs repeat 300 queries, so Solr's
   `queryResultCache` is off and Elasticsearch's and OpenSearch's shard
   request caches are bypassed (`request_cache=false`); filter caches stay

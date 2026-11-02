@@ -266,6 +266,18 @@ struct Meta {
     dim: usize,
 }
 
+/// The HTTP client of `run`, `writes` and `stream`. Strata's servers listen
+/// beyond loopback only with a token, so for Strata it sends
+/// $STRATA_TOKEN (compare.sh gives the servers and this client the same).
+fn http_client(engine: Engine, timeout_s: u64) -> Result<reqwest::Client, String> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let (Engine::Strata, Ok(t)) = (engine, std::env::var("STRATA_TOKEN")) {
+        let v = format!("Bearer {t}").parse().map_err(|_| "STRATA_TOKEN must be printable ASCII".to_string())?;
+        headers.insert(reqwest::header::AUTHORIZATION, v);
+    }
+    reqwest::Client::builder().default_headers(headers).pool_max_idle_per_host(1024).timeout(Duration::from_secs(timeout_s)).build().map_err(s)
+}
+
 fn meta(collection: &str) -> Result<Meta, String> {
     let path = data::data_dir().join(collection).join("meta.json");
     serde_json::from_reader(File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?).map_err(s)
@@ -1429,7 +1441,7 @@ async fn run(
     let queries: Vec<data::Query> = coll.queries.iter().filter(|q| !q.text.trim().is_empty()).take(n_queries).cloned().collect();
     let keys: Vec<String> = coll.docs.iter().map(|d| d[col::ID].as_str().unwrap_or("").to_string()).collect();
     let items: Vec<Arc<[f32]>> = coll.docs.iter().map(|d| Arc::from(d[col::EMB].as_vector().unwrap_or(&[]))).collect();
-    let client = reqwest::Client::builder().pool_max_idle_per_host(1024).timeout(Duration::from_secs(30)).build().map_err(s)?;
+    let client = http_client(engine, 30)?;
     let label = label.unwrap_or_else(|| engine.name().to_string());
     let (mut http, mut answers, mut query_ids, mut unavailable, mut differ) = (Vec::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
     // What analyze.py needs to score the kinds that are not about a query's text: each request's item and seen keys, or year.
@@ -1757,7 +1769,7 @@ fn marker(i: usize) -> String {
 
 #[allow(clippy::too_many_arguments)]
 async fn writes(collection: &str, engine: Engine, urls: &[String], concurrency: &[usize], seconds: f64, batch: usize, samples: usize, label: Option<String>, out: &Path) -> Result<(), String> {
-    let client = reqwest::Client::builder().pool_max_idle_per_host(1024).timeout(Duration::from_secs(60)).build().map_err(s)?;
+    let client = http_client(engine, 60)?;
     let label = label.unwrap_or_else(|| engine.name().to_string());
     let u0 = &urls[0];
     // Searchable within a second of a write, as Elasticsearch's and
@@ -2246,7 +2258,7 @@ async fn stream(
 ) -> Result<(), String> {
     use rskafka::client::{partition::UnknownTopicHandling, ClientBuilder};
     let label = label.unwrap_or_else(|| engine.name().to_string());
-    let client = reqwest::Client::builder().pool_max_idle_per_host(1024).timeout(Duration::from_secs(120)).build().map_err(s)?;
+    let client = http_client(engine, 120)?;
     let u0 = urls[0].clone();
     // Searchable within a second of a write, as for `writes`.
     let searchable = match engine {

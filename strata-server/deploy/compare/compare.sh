@@ -93,6 +93,7 @@ spec:
           $res
           env:
             - {name: STRATA_DATA, value: /beir}
+            - {name: STRATA_TOKEN, value: compare}
           volumeMounts:
             - {name: beir, mountPath: /beir, readOnly: true}
             - {name: data, mountPath: /data}
