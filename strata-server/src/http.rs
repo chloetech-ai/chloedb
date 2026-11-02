@@ -1154,9 +1154,11 @@ async fn explain(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         }
     };
     let (ir, tree) = (plan.to_json()?, json!(plan.explain(&tables)));
-    // `hits`: the top rows with the values they were ranked by.
+    // `hits`: the top rows with the values they were ranked by, for a
+    // query that ranks them (another has no values to show).
     let hits = match body_u64(&b, "hits") {
         0 => None,
+        _ if !strata::query::sql::ranks(sql) => None,
         n => {
             let sql = strata::query::sql::with_features(sql)?;
             let h = app.svc.query(QueryReq { sql, params: params.clone(), timeout_ms: body_u64(&b, "timeout_ms"), ..Default::default() }).await?;

@@ -7,7 +7,7 @@
 // for the table's own fields, history and saved queries.
 
 import { h, icon, clear, fmt, api, store, toast, copy, modal, drawer, empty, seg, sqlBlock, debounce, ApiError, failure } from "../core.js";
-import { editor, quoteName } from "../sqledit.js";
+import { editor, quoteName, typeName } from "../sqledit.js";
 import { tables, cached, invalidate, typeBadge } from "../catalog.js";
 import { grid, resultChart, planTree, segments, answerStats, exportMenu } from "../results.js";
 import { profileView } from "../profile.js";
@@ -24,19 +24,130 @@ const stripStrings = (sql) => sql.replace(/'(?:[^']|'')*'/g, "''").replace(/--[^
 /** The `:name` parameters a statement uses, in order. */
 export function paramNames(sql) { return [...new Set([...stripStrings(sql).matchAll(/(?<![:\w]):([A-Za-z_]\w*)/g)].map((m) => m[1]))]; }
 
-/** The statement the caret is in, or the selection. */
-function statementAt(text, [a, b]) {
-  if (b > a) return text.slice(a, b);
-  let start = 0, inStr = false;
+/** The statement the caret is in, or the selection, and where in the text it starts. */
+export function statementAt(text, [a, b]) {
+  if (b > a) return { sql: text.slice(a, b), start: a };
+  let start = 0, inStr = false, lastSql = "", lastStart = 0;
   for (let i = 0; i <= text.length; i++) {
     const c = text[i];
     if (c === "'") inStr = !inStr;
     if ((c === ";" && !inStr) || i === text.length) {
-      if (a <= i || i === text.length) { const s = text.slice(start, i); if (s.trim()) return s; }
+      const s = text.slice(start, i);
+      if (s.trim()) { if (a <= i || i === text.length) return { sql: s, start }; lastSql = s; lastStart = start; }
       start = i + 1;
     }
   }
-  return text.split(";").map((x) => x.trim()).filter(Boolean).pop() || "";
+  return { sql: lastSql, start: lastStart };
+}
+
+/** The (line, column) from 1 of offset `pos` in `text`. */
+function lineCol(text, pos) {
+  const before = text.slice(0, pos);
+  return [before.split("\n").length, pos - before.lastIndexOf("\n")];
+}
+
+/**
+ * Where in the statement an error is, as an offset into it: the line and
+ * column the parser gives ("at line 2, column 9"), or else the first place
+ * the statement names the word the error is about (a column, a table, a
+ * function). `null` when the error names no place.
+ */
+export function errorSpot(msg, sql) {
+  const lc = /\bline:? (\d+),? column:? (\d+)/i.exec(msg || "");
+  if (lc) {
+    const lines = sql.split("\n"), line = Math.min(+lc[1], lines.length) - 1;
+    return { at: lines.slice(0, line).reduce((a, l) => a + l.length + 1, 0) + Math.max(0, +lc[2] - 1), word: null };
+  }
+  if (/at the end of the statement/i.test(msg)) return { at: sql.replace(/\s+$/, "").length, word: null };
+  const param = /^unbound parameter :(\w+)/i.exec(msg || "");
+  if (param) { const i = sql.search(new RegExp(`:${param[1]}\\b`)); return i < 0 ? null : { at: i, word: null }; }
+  const word = wrongWord(msg) || subjectOf(msg);
+  if (!word) return null;
+  // Strings and comments blanked out, so offsets stay the statement's.
+  const blank = sql.replace(/'(?:[^']|'')*'/g, (x) => "'" + " ".repeat(x.length - 2) + "'").replace(/--[^\n]*/g, (x) => " ".repeat(x.length));
+  const m = new RegExp(`(?<![\\w.'])(?:\\w+\\.)?${word}(?![\\w'])`, "i").exec(blank);
+  return m ? { at: m.index + m[0].length - word.length, word } : null;
+}
+
+/** The name an error is about: the misspelt column, table, function or keyword, or the field searched that cannot be. */
+export function wrongWord(msg) {
+  const m = /no such (?:column|field|table)s?:?\s+"?([\w.]+?)"?(?=[\s;(,]|$)/i.exec(msg || "")
+    || /unknown (?:ranking )?function:? "?(\w+)/i.exec(msg || "")
+    || /, found "?(\w+)"? \(did you mean/i.exec(msg || "")
+    || /: (\w+) reads as a name here/i.exec(msg || "")
+    || /^(?:MATCH|bm25)\((\w+), \.\.\.\): \w+ is (?:stored but )?not indexed/i.exec(msg || "");
+  return m ? m[1].split(".").pop() : null;
+}
+
+/** The column an error is about, to mark it ("price is a FLOAT: ..."). */
+function subjectOf(msg) {
+  const m = /^(\w+) is an? (?:KEYWORD|INT|FLOAT|TEXT|BOOL|TIMESTAMP|VECTOR|JSON|SPARSE|EDGES|MEDIA)\b/.exec(msg || "")
+    || /^(?:similarity|maxsim|MATCH|bm25)\((\w+), \.\.\.\)/i.exec(msg || "");
+  return m ? m[1] : null;
+}
+
+/** The names an error's "(did you mean a, b or c?)" offers. */
+export function suggested(msg) {
+  const m = /\(did you mean ([^?]+)\?\)/i.exec(msg || "");
+  return m ? m[1].split(/,\s*|\s+or\s+/).map((x) => x.trim()).filter(Boolean) : [];
+}
+
+/** What kind of error a message is, for the heading of the error panel. */
+export function errorTitle(msg, status) {
+  if (status === 0) return "The server could not be reached";
+  if (/^SQL syntax error/i.test(msg)) return "Syntax error";
+  if (/^no such table/i.test(msg)) return "Unknown table";
+  if (/^no such (column|field)/i.test(msg)) return "Unknown column";
+  if (/^unknown (ranking )?function/i.test(msg)) return "Unknown function";
+  if (/^unbound parameter|^:\w+ is not JSON/i.test(msg)) return "A parameter needs a value";
+  if (/^duplicate primary key/i.test(msg)) return "A row with that key exists";
+  if (/^(SHOW|DESCRIBE|TRUNCATE|CREATE (INDEX|VIEW)|BEGIN|COMMIT|ROLLBACK|EXPLAIN)\b|is not a statement Strata runs|Strata runs one statement/i.test(msg)) return "Not a statement Strata runs";
+  if (/so it has no words to search/i.test(msg)) return "Not a searchable field";
+  if (/^\w+ is an? (?:KEYWORD|INT|FLOAT|TEXT|BOOL|TIMESTAMP|VECTOR|JSON)\b| takes a vector|^CAST\(/.test(msg)) return "A value of the wrong type";
+  if (status === 401 || status === 403) return "Not allowed";
+  if (status >= 500) return "The server failed";
+  return "The statement was refused";
+}
+
+/**
+ * A statement the workbench answers itself from the catalog, as other
+ * databases' shells do: SHOW TABLES, DESCRIBE t (DESC t, SHOW COLUMNS FROM
+ * t) and SHOW CREATE TABLE t. An answer like the server's, or null.
+ */
+export function localAnswer(sql, ts) {
+  const q = sql.trim().replace(/;\s*$/, "").replace(/\s+/g, " ");
+  const unquote = (n) => n.replace(/^"(.*)"$/, "$1").replace(/""/g, '"').replace(/^`(.*)`$/, "$1");
+  const table = (n) => {
+    const t = ts.find((x) => x.table === unquote(n)) || ts.find((x) => x.table.toLowerCase() === unquote(n).toLowerCase());
+    if (!t) throw new Error(`no such table: ${unquote(n)}${didYouMean(unquote(n), ts.map((x) => x.table))}; the database's tables are ${ts.map((x) => x.table).join(", ") || "none yet"}`);
+    return t;
+  };
+  const answer = (columns, rows) => ({ columns, rows, took_ms: 0, local: true });
+  if (/^SHOW (FULL )?TABLES$/i.test(q)) {
+    return answer(["table", "primary_key", "columns", "fields"], ts.map((t) => [t.table, t.short?.key ?? null, (t.short?.fields || []).length, (t.short?.fields || []).map((f) => f.name).join(", ")]));
+  }
+  let m = /^(?:DESCRIBE|DESC|SHOW (?:FULL )?(?:COLUMNS|FIELDS) (?:FROM|IN)) ("(?:[^"]|"")+"|`[^`]+`|[\w.]+)$/i.exec(q);
+  if (m) {
+    const t = table(m[1]);
+    return answer(["column", "type", "key", "indexed", "stored", "notes"], (t.short?.fields || []).map((f) => [f.name, typeName(f), f.name === t.short?.key, f.indexed !== false, stored(f), fieldNote(f)]));
+  }
+  m = /^SHOW CREATE TABLE ("(?:[^"]|"")+"|`[^`]+`|[\w.]+)$/i.exec(q);
+  if (m) { const t = table(m[1]); return answer(["table", "create_table"], [[t.table, t.sql || ""]]); }
+  return null;
+}
+const stored = (f) => f.stored ?? !(f.from || f.embed);
+function fieldNote(f) {
+  const from = (xs) => xs.join(", ");
+  if (f.embed) return `embedded by ${f.embed.model} from ${from(f.embed.from || [])}: similarity(${f.name}, :q) with text for :q searches it (the server embeds it)`;
+  if (f.from) return `made from ${from(f.from)}: MATCH(${f.name}, 'words') and bm25 search it`;
+  if (f.type === "text" && f.indexed === false) return "stored only: SELECT returns it and LIKE compares it, but MATCH and bm25 cannot search it";
+  if (f.type === "text") return `MATCH(${f.name}, 'words') and bm25 search it`;
+  if (f.multi) return "a list: a condition holds when one of its values matches";
+  return "";
+}
+function didYouMean(word, names) {
+  const near = names.map((n) => [n, levenshtein(n.toLowerCase(), word.toLowerCase())]).filter(([, d]) => d > 0 && d <= (word.length < 5 ? 1 : 2)).sort((a, b) => a[1] - b[1]);
+  return near.length ? ` (did you mean ${near.map(([n]) => n).slice(0, 3).join(" or ")}?)` : "";
 }
 
 const UPPER = new Set("select from where and or not in is null between like order by group having limit offset asc desc nulls distinct on as join left inner with exists case when then else end true false insert into values update set delete create table drop primary references explain union all".split(" "));
@@ -78,8 +189,12 @@ function levenshtein(a, b) {
 export function snippets(t) {
   const fs = t?.short?.fields || [], name = quoteName(t?.table || "t"), key = t?.short?.key;
   const of = (ty) => fs.filter((f) => f.type === ty && !f.multi);
-  const text = of("text")[0], vec = fs.find((f) => f.type === "vector" && !f.multi), kw = fs.find((f) => f.type === "keyword"), num = fs.find((f) => f.type === "int" || f.type === "float"), ts = of("timestamp")[0], edges = fs.find((f) => f.type === "edges");
-  const cols = [key, ...fs.filter((f) => f.name !== key && (f.type === "text" || f.type === "keyword") && f.indexed !== false && !f.from).slice(0, 2).map((f) => f.name)].filter(Boolean).map(quoteName).join(", ") || "*";
+  // The field MATCH and bm25 search: an indexed TEXT field, best one made
+  // from others (it covers them); a TEXT field stored but not indexed has
+  // no words to search.
+  const texts = of("text").filter((f) => f.indexed !== false);
+  const text = texts.find((f) => f.from) || texts[0], vec = fs.find((f) => f.type === "vector" && !f.multi), kw = fs.find((f) => f.type === "keyword" && f.name !== key), num = fs.find((f) => f.type === "int" || f.type === "float"), ts = of("timestamp")[0], edges = fs.find((f) => f.type === "edges");
+  const cols = [key, ...fs.filter((f) => f.name !== key && (f.type === "text" || f.type === "keyword") && stored(f)).slice(0, 2).map((f) => f.name)].filter(Boolean).map(quoteName).join(", ") || "*";
   const out = [];
   out.push(["First rows", "Every column of the first rows", `SELECT * FROM ${name} LIMIT 20;`]);
   if (text) out.push(["Search words", "Rows with the words, best first by BM25", `SELECT ${cols}, score()\nFROM ${name}\nWHERE MATCH(${quoteName(text.name)}, 'your words')\nORDER BY bm25(${quoteName(text.name)}, 'your words') DESC\nLIMIT 10;`]);
@@ -188,7 +303,11 @@ function render(page, r) {
     for (const n of paramNames(sql)) {
       const p = t.params?.[n] || { kind: "auto", value: "" };
       const v = p.value ?? "";
-      if (p.kind === "embed") out[n] = p.field ? { embed: v, field: p.field } : { embed: v };
+      if (!String(v).trim() && p.kind !== "text") throw new Error(`unbound parameter :${n}: the statement names :${n} but it has no value yet; fill it in under Parameters, below the editor`);
+      // Text for a vector: the server embeds it with the field's model.
+      const vecOf = p.kind === "auto" && !/^\s*[[{]/.test(v) ? embeddedFieldFor(sql, n) : null;
+      if (vecOf) out[n] = { embed: v, field: vecOf };
+      else if (p.kind === "embed") out[n] = p.field ? { embed: v, field: p.field } : { embed: v };
       else if (p.kind === "number") out[n] = Number(v);
       else if (p.kind === "text") out[n] = v;
       else if (p.kind === "json" || (p.kind === "auto" && /^\s*[[{]/.test(v))) { try { out[n] = JSON.parse(v); } catch (e) { throw new Error(`:${n} is not JSON: ${e.message}`); } }
@@ -197,13 +316,35 @@ function render(page, r) {
     return out;
   }
 
+  /** The embedded vector field `similarity(field, :n)` (or maxsim) compares :n with, if any. */
+  function embeddedFieldFor(sql, n) {
+    const m = new RegExp(`\\b(?:similarity|maxsim)\\s*\\(\\s*(?:"?\\w+"?\\.)?"?(\\w+)"?\\s*,\\s*:${n}\\b`, "i").exec(sql);
+    if (!m) return null;
+    const f = cached().flatMap((x) => x.short?.fields || []).find((f) => f.name === m[1] && f.type === "vector" && f.embed);
+    return f ? f.name : null;
+  }
+
   // ------------------------------------------------------------ running
   async function run(explain = false) {
     if (running) { running.abort(); return; }
-    const sql = statementAt(ed.value, ed.selection).trim().replace(/;\s*$/, "");
+    const at = statementAt(ed.value, ed.selection);
+    let sql = at.sql.trimEnd().replace(/;\s*$/, "");
+    let start = at.start + sql.length - sql.trimStart().length;
+    sql = sql.trim();
     if (!sql) { toast("Write a statement first"); return; }
+    // EXPLAIN written in the editor: the plan of the statement it explains.
+    const ex = /^EXPLAIN(?:\s+ANALYZE)?\s+(?=\S)/i.exec(sql);
+    if (ex) { explain = true; sql = sql.slice(ex[0].length); start += ex[0].length; }
+    ed.clearMarks();
+    const where = { sql, start };
+    if (!explain && /^\s*(SHOW|DESCRIBE|DESC)\s/i.test(sql)) {
+      try {
+        const local = localAnswer(sql, await tables().catch(() => cached()));
+        if (local) { last = { j: local, sql, explain: false }; remember(sql, local, null); show("results"); return; }
+      } catch (e) { remember(sql, null, e.message); showError(e.message, where); return; }
+    }
     let params;
-    try { params = buildParams(sql); } catch (e) { showError(e.message, sql); return; }
+    try { params = buildParams(sql); } catch (e) { showError(e.message, where); return; }
     running = new AbortController();
     clear(runBtn, icon("stop"), "Stop"); runBtn.classList.add("danger");
     out.classList.add("loading");
@@ -220,7 +361,7 @@ function render(page, r) {
       show(explain ? "plan" : j.written != null ? "results" : lastKind === "plan" ? "results" : lastKind);
     } catch (e) {
       if (e.name === "AbortError") { toast("Stopped waiting: the server may still finish it"); }
-      else { remember(sql, null, e.message); showError(e.message, sql, e); }
+      else { remember(sql, null, e.message); showError(e.message, where, e); }
     } finally {
       running = null; clear(runBtn, icon("play"), "Run"); runBtn.classList.remove("danger"); out.classList.remove("loading");
     }
@@ -230,23 +371,64 @@ function render(page, r) {
     hist.unshift({ sql, ts: Date.now(), ms: j?.took_ms, rows: j?.rows?.length ?? j?.written, error });
     store.set("sql.history", hist.slice(0, 100));
   }
-  function showError(msg, sql, e) {
+  // The error panel: what kind of error, the server's message whole, the
+  // statement's line with the spot marked (also in the editor), the names
+  // it may have meant as buttons that fix it, and the guide.
+  function showError(msg, where, e) {
     last = null;
-    const placed = ed.markFrom(msg);
-    const fix = h("div", { class: "row" });
-    const m = /no such (?:column|field|table)s?:?\s+"?([\w.]+)"?/i.exec(msg);
-    if (m) {
-      const word = m[1].split(".").pop();
-      const names = [...new Set(cached().flatMap((t) => [t.table, ...(t.short?.fields || []).map((f) => f.name)]))];
-      const near = names.map((n) => [n, levenshtein(n.toLowerCase(), word.toLowerCase())]).filter(([, d]) => d > 0 && d <= (word.length < 4 ? 1 : Math.max(2, Math.floor(word.length / 3)))).sort((a, b) => a[1] - b[1]).slice(0, 3);
-      for (const [n] of near) fix.append(h("button", { class: "btn sm", onclick: () => { ed.value = ed.value.replace(new RegExp(`\\b${word}\\b`, "g"), quoteName(n)); tab().sql = ed.value; save(); run(); } }, icon("wrench"), `Use ${n}`));
-    }
+    // "query error: ..." and "schema error: ...": the heading says the kind.
+    msg = String(msg || "").replace(/^(?:query|schema|sql) error: /i, "");
+    const code = e instanceof ApiError ? e.status : e?.name === "TypeError" ? 0 : null;
+    if (code === 0) msg = `No answer from the server at ${location.origin} (${msg}): it may be down or restarting, or the network dropped the request. Run the statement again in a moment.`;
+    else if (/^HTTP \d+$/.test(msg)) msg = `The server answered ${msg} without saying why${code === 502 || code === 504 ? ": a proxy in front of it could not reach it, or the statement took too long" : ""}.`;
     clear(outTabs); clear(status);
-    clear(outBody, e && e.status === 403 ? failure(e, "This statement") : h("div", { class: "stack", style: { padding: "14px" } },
+    if (e instanceof ApiError && (e.status === 401 || e.status === 403)) { clear(outBody, failure(e, "This statement")); return; }
+
+    const spot = where ? errorSpot(msg, where.sql) : null;
+    const word = wrongWord(msg);
+    let pos = null, excerpt = null;
+    if (spot) {
+      pos = where.start + spot.at;
+      const [line, col] = lineCol(ed.value, pos);
+      ed.markError(line, col);
+      const text = ed.value.split("\n")[line - 1] ?? "";
+      const len = Math.max(1, (spot.word || word) && ed.value.slice(pos, pos + (spot.word || word).length).toLowerCase() === (spot.word || word).toLowerCase() ? (spot.word || word).length : (/^\w+/.exec(text.slice(col - 1))?.[0].length || 1));
+      const gutter = String(line).length;
+      excerpt = h("pre", { class: "code wb-excerpt", "aria-label": `line ${line}, column ${col}` },
+        h("span", { class: "muted" }, `${line} │ `), text, "\n",
+        h("span", { class: "muted" }, `${" ".repeat(gutter)} │ `), h("span", { class: "wb-caret" }, " ".repeat(col - 1) + "^".repeat(len)));
+    }
+
+    // The names it may have meant: the server's own "(did you mean ...)",
+    // or names of the catalog near the word.
+    let names = suggested(msg);
+    if (!names.length && word) {
+      const all = [...new Set(cached().flatMap((t) => [t.table, ...(t.short?.fields || []).map((f) => f.name)]))];
+      names = all.map((n) => [n, levenshtein(n.toLowerCase(), word.toLowerCase())]).filter(([, d]) => d > 0 && d <= (word.length < 5 ? 1 : Math.max(2, Math.floor(word.length / 3)))).sort((a, b) => a[1] - b[1]).slice(0, 3).map(([n]) => n);
+    }
+    const fix = h("div", { class: "row" });
+    if (word) for (const n of names.slice(0, 4)) {
+      fix.append(h("button", { class: "btn sm", title: `Write ${n} in place of ${word} and run it again`, onclick: () => {
+        const v = ed.value;
+        ed.value = pos != null && v.slice(pos, pos + word.length).toLowerCase() === word.toLowerCase()
+          ? v.slice(0, pos) + (/^[A-Z]+$/.test(n) ? n : quoteName(n)) + v.slice(pos + word.length)
+          : v.replace(new RegExp(`\\b${word}\\b`, "g"), quoteName(n));
+        tab().sql = ed.value; save(); run();
+      } }, icon("wrench"), `Use ${n}`));
+    }
+
+    clear(outBody, h("div", { class: "stack wb-error", style: { padding: "14px", gap: "10px" } },
+      h("div", { class: "row", style: { gap: "8px" } }, icon("bad"), h("b", {}, errorTitle(msg, code)),
+        code ? h("span", { class: "pill", title: "the HTTP status of the answer" }, `HTTP ${code}`) : null,
+        h("span", { class: "sep" }),
+        h("button", { class: "btn ghost sm", title: "Copy the message", onclick: () => copy(msg, "Error copied") }, icon("copy"), "Copy")),
       h("div", { class: "error" }, msg),
-      placed ? h("div", { class: "small muted" }, "The editor marks where the server stopped reading.") : null,
+      excerpt,
+      excerpt ? h("div", { class: "small muted" }, "The editor marks the same place.") : null,
       fix.childElementCount ? h("div", {}, h("div", { class: "small muted", style: { marginBottom: "6px" } }, "Did you mean"), fix) : null,
-      /MATCH|bm25|similarity|syntax|expected/i.test(msg) ? h("div", { class: "small muted" }, "The query language guide has an example of every function: ", h("a", { href: "https://rkonow.github.io/strata/strata/query-language.html", target: "_blank", rel: "noopener" }, "Query language"), ".") : null));
+      h("div", { class: "small muted" }, "The query language guide shows every clause and function with an example: ",
+        h("a", { href: "https://chloetech-ai.github.io/strata/strata/query-language.html", target: "_blank", rel: "noopener" }, "Query language"),
+        ". ", h("code", {}, "SHOW TABLES"), " and ", h("code", {}, "DESCRIBE table"), " list the tables and their columns.")));
   }
 
   // ------------------------------------------------------------ the answer
@@ -254,11 +436,11 @@ function render(page, r) {
     lastKind = kind;
     if (!last) return;
     const { j, explain } = last;
-    const kinds = explain ? [["plan", "Plan"], ["profile", "Profile"], ["json", "JSON"]] : j.written != null ? [["results", "Written"], ["json", "JSON"]] : [["results", `Results ${fmt.n(j.rows?.length || 0)}`], ["chart", "Chart"], ["plan", "Plan"], ["profile", "Profile"], ["json", "JSON"]];
+    const kinds = explain ? [["plan", "Plan"], ["profile", "Profile"], ["json", "JSON"]] : j.written != null ? [["results", "Written"], ["json", "JSON"]] : j.local ? [["results", `Results ${fmt.n(j.rows.length)}`], ["json", "JSON"]] : [["results", `Results ${fmt.n(j.rows?.length || 0)}`], ["chart", "Chart"], ["plan", "Plan"], ["profile", "Profile"], ["json", "JSON"]];
     if (kind === "trace") kind = "profile";
     if (!kinds.some(([k]) => k === kind)) kind = kinds[0][0];
     clear(outTabs, kinds.map(([k, l]) => h("button", { role: "tab", "aria-selected": String(k === kind), onclick: () => show(k) }, l)));
-    clear(status, explain ? h("span", { class: "small" }, h("b", {}, j.kind), " · ", fmt.ms(j.took_ms), " · ", fmt.plural(j.rows, "row")) : answerStats(j),
+    clear(status, explain ? h("span", { class: "small" }, h("b", {}, j.kind), " · ", fmt.ms(j.took_ms), " · ", fmt.plural(j.rows, "row")) : j.local ? h("span", { class: "small muted", title: "SHOW and DESCRIBE are answered in the browser from GET /v1/tables" }, h("b", {}, fmt.plural(j.rows.length, "row")), " · from the catalog") : answerStats(j),
       j.rows?.length ? h("span", { class: "row nw", style: { gap: "2px" } }, exportMenu(j, "strata-query")) : null);
     if (kind === "results" && j.written != null) clear(outBody, h("div", { class: "stack", style: { padding: "16px" } }, h("div", { class: "banner ok" }, icon("okc", "lg"), h("div", {}, h("div", { class: "big" }, `${fmt.plural(j.written, "row")} written`), h("div", { class: "small muted" }, `in ${fmt.ms(j.took_ms)}${j.seq_no != null ? ` · sequence number ${j.seq_no}` : ""}${j.skipped ? ` · ${fmt.n(j.skipped)} skipped` : ""}`)))));
     else if (kind === "results") clear(outBody, grid(j));

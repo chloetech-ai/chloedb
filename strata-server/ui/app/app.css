@@ -478,6 +478,9 @@ details.more summary { cursor: pointer; color: var(--text-2); font-size: 13px; }
 .wb-outhd .tabs { border-bottom: 0; }
 .wb-status { display: flex; gap: 10px; align-items: center; white-space: nowrap; overflow: hidden; }
 .wb-res { flex: 1; overflow: auto; min-height: 0; }
+.wb-error .error { font-size: 13.5px; line-height: 1.5; }
+pre.wb-excerpt { white-space: pre; word-break: normal; overflow-x: auto; }
+.wb-caret { color: var(--crit-ink); font-weight: 700; }
 .lib-it { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 12px; }
 .plan-view { padding: 14px; }
 @media (max-width: 1100px) { .wb { grid-template-columns: minmax(0, 1fr); } .wb-side { display: none; } .hide-sm { display: none; } }

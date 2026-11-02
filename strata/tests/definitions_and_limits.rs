@@ -99,7 +99,7 @@ fn the_time_of_the_statement_is_a_value() {
     // A condition reads it too.
     assert_eq!(ids(&sql(&db, "SELECT id FROM c WHERE at <= CURRENT_TIMESTAMP ORDER BY id LIMIT 10")), vec![1, 2, 3, 4, 5]);
     // It is a time, not a number.
-    assert!(error(&db, "INSERT INTO c (id, n) VALUES (6, CURRENT_TIMESTAMP)").contains("does not fit"));
+    assert!(error(&db, "INSERT INTO c (id, n) VALUES (6, CURRENT_TIMESTAMP)").contains("n is an INT field: give it a number"));
 }
 
 /// Review BUG-15: `WHERE k = 1` on a KEYWORD compared with the text '1',
