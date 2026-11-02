@@ -1623,5 +1623,84 @@ a.al-goto:hover, a.al-goto:focus-visible { background: var(--surface-2); color: 
 a.al-goto > svg { color: var(--muted); flex: none; }
 .al-pat2 { white-space: normal; word-break: break-word; }
 .btn.al-warnbtn { border-color: color-mix(in srgb, var(--warn) 60%, transparent); }
-@media (max-width: 1100px) { .al-lmain, .al-lmain.al-wd { grid-template-columns: minmax(0, 1fr); } .al-facets { flex-direction: row; overflow-x: auto; } .al-facet { min-width: 180px; } .al-detail { position: static; max-height: none; } }
+@media (max-width: 1250px) and (min-width: 901px) { .al-lmain.al-wd { grid-template-columns: 170px minmax(0, 1fr) 320px; } }
+/* Phones and narrow windows (900 px and 560 px, as the shell) */
+.al-narrow-only { display: none; }
+.al-scrim { display: none; }
+.al-hubspace { display: none; }
+.al-rname { min-width: 220px; }
+@media (max-width: 900px) {
+  .al-narrow-only { display: inline; }
+  .chip.al-narrow-only { display: inline-flex; }
+  .al-wide-only { display: none; }
+  /* the firing list: one block per alert, its actions as large buttons */
+  .al-ftbl table, .al-ftbl tbody, .al-ftbl td { display: block; }
+  .al-ftbl thead { display: none; }
+  .al-ftbl tr { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; grid-template-areas: "dot name state" ". where where" ". since now" ". act act"; gap: 3px 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); align-items: start; }
+  .al-ftbl td { padding: 0 !important; border: 0 !important; text-align: left !important; }
+  .al-ftbl td.al-c-dot { grid-area: dot; padding-top: 5px !important; }
+  .al-ftbl td.al-c-name { grid-area: name; min-width: 0; }
+  .al-ftbl td.al-c-state { grid-area: state; }
+  .al-ftbl td.al-c-where { grid-area: where; }
+  .al-ftbl td.al-c-since { grid-area: since; }
+  .al-ftbl td.al-c-now { grid-area: now; text-align: right !important; }
+  .al-ftbl td.al-c-owner { display: none; }
+  .al-ftbl td.al-c-act { grid-area: act; margin-top: 6px; }
+  .al-ftbl .al-acts { justify-content: stretch !important; gap: 8px !important; }
+  .al-ftbl .al-acts .btn { flex: 1 1 0; min-height: 40px; justify-content: center; font-size: 13px; }
+  /* the rules: name, state and switch; scope and fires below */
+  .al-rtbl table, .al-rtbl tbody, .al-rtbl td { display: block; }
+  .al-rtbl thead { display: none; }
+  .al-rtbl tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name on" "scope state" "sev fires"; gap: 4px 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); align-items: center; }
+  .al-rtbl td { padding: 0 !important; border: 0 !important; text-align: left !important; }
+  .al-rtbl td.al-c-name { grid-area: name; min-width: 0; }
+  .al-rtbl .al-rname { min-width: 0; }
+  .al-rtbl .al-rname .mono { white-space: normal; }
+  .al-rtbl td.al-c-on { grid-area: on; justify-self: end; }
+  .al-rtbl td.al-c-scope { grid-area: scope; }
+  .al-rtbl td.al-c-state { grid-area: state; justify-self: end; }
+  .al-rtbl td.al-c-sev { grid-area: sev; }
+  .al-rtbl td.al-c-fires { grid-area: fires; justify-self: end; }
+  .al-rtbl td.al-c-owner, .al-rtbl td.al-c-runbook, .al-rtbl td.al-c-edit { display: none; }
+  .al-switch { min-height: 40px; }
+  .al-link { min-height: 32px; text-align: left; }
+  /* the alert page: acknowledge, silence and note in a bar at the bottom of the screen */
+  .al-hubbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; display: flex; flex-wrap: nowrap; gap: 6px; margin: 0; padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); background: var(--surface); border-top: 1px solid var(--line-2); box-shadow: 0 -8px 24px rgba(0, 0, 0, .28); }
+  .al-hubbar .btn { flex: 1 1 0; min-width: 0; min-height: 44px; justify-content: center; white-space: nowrap; overflow: hidden; }
+  .al-hubbar .btn.al-ico { flex: 0 0 44px; padding: 0; }
+  .al-hubspace { display: block; height: 76px; }
+  .al-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px; }
+  .al-row .card .hd { flex-wrap: wrap; }
+  .al-row .card .hd .tools { width: 100%; }
+  /* Logs */
+  .al-sqrow { flex-wrap: wrap; }
+  .al-sq { flex: 1 1 100%; }
+  .al-sq-in { min-width: 120px; font-size: 16px; }
+  .al-rangerow .chip { min-height: 36px; }
+  .al-lmain, .al-lmain.al-wd { grid-template-columns: minmax(0, 1fr); }
+  .al-facets { display: none; }
+  .al-lmain.al-ffo .al-facets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex-direction: initial; overflow: visible; }
+  .al-facet { min-width: 0; }
+  .al-facet .facet button { min-height: 36px; }
+  .al-lines { max-height: none; overflow: visible; }
+  .al-l { grid-template-columns: 54px 14px 52px minmax(0, 1fr); gap: 6px; min-height: 40px; align-items: center; padding: 0 10px; font-size: 11.5px; }
+  .al-l.al-lh { min-height: 26px; }
+  .al-ms, .al-lv-rest { display: none; }
+  .al-l-lv { text-align: center; }
+  .al-l-f { display: none; }
+  .al-lhead .tabs button { padding: 10px 12px; }
+  .al-scrim { position: fixed; inset: 0; z-index: 79; background: rgba(0, 0, 0, .45); }
+  .al-lmain.al-wd .al-scrim { display: block; }
+  .al-lmain.al-wd .al-detail { position: fixed; left: 0; right: 0; bottom: 0; top: auto; max-height: 86vh; z-index: 80; margin: 0; border-radius: 14px 14px 0 0; box-shadow: 0 -12px 40px rgba(0, 0, 0, .45); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .al-detail .hd .btn { min-width: 40px; min-height: 40px; justify-content: center; }
+  .al-dkv .btn.xs { min-width: 34px; min-height: 34px; }
+  a.al-goto { min-height: 44px; }
+  .al-missed { flex-wrap: wrap; }
+  .al-missed > span { white-space: normal; }
+  .al-ed-row { flex-wrap: wrap; }
+  .al-ed-row > * { flex: 1 1 140px; }
+}
+@media (max-width: 560px) {
+  .al-sqrow > .btn { flex: 1 1 0; justify-content: center; min-height: 40px; }
+}
 /* ===== end alertsui ===== */

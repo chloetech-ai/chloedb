@@ -14,6 +14,7 @@
 import { h, s, icon, clear, fmt, card, api, bus, drawer, toast, pill, seg, empty, menu, copy, showTip, hideTip, table, every, debounce, confirm, can, needs, copyName, findCopy, link, ago, when, whenTitle, ApiError } from "../core.js";
 import { state, refreshAlerts, timeRange, isCoordinator } from "../data.js";
 import { niceStep } from "../charts.js";
+import { pattern } from "./logs.js";
 
 const view = { id: "alerts", title: "Alerts", icon: "alerts", group: "Operate", keywords: "alerts rules firing incidents acknowledge silence runbook owner routes webhook notifications backtest", render, onParams, badge };
 export default view;
@@ -287,7 +288,7 @@ function render(page, r) {
       out.push(sil);
     }
     out.push(h("a", { class: "btn xs", href: alertLink(r.id) }, "Open"));
-    return h("div", { class: "row nw", style: { gap: "4px", justifyContent: "flex-end" } }, out);
+    return h("div", { class: "row nw al-acts", style: { gap: "4px", justifyContent: "flex-end" } }, out);
   }
   async function ack(r) {
     try { await api(`/v1/alerts/${encodeURIComponent(r.id)}/ack`, { body: {} }); toast(`Acknowledged: ${r.name}`, "ok"); await refreshAlerts(); }
@@ -304,15 +305,16 @@ function render(page, r) {
       return;
     }
     clear(firingBox, table([
-      { key: "sev", label: "", width: "24px", render: (r) => h("span", { class: "dot " + (m.st.get(r.id).state === "firing" ? (r.severity === "critical" ? "critical pulse" : r.severity === "warning" ? "warn" : "") : "pending"), title: m.st.get(r.id).state } ) , sortable: false },
-      { key: "name", label: "alert", render: (r) => h("div", {}, h("a", { class: "al-name", href: alertLink(r.id) }, r.name), h("div", { class: "tiny muted" }, r.builtin ? "built-in · " : "", cond(r, true))) },
-      { key: "where", label: "where", render: (r) => h("span", { class: "small" }, whereText(r, m.st.get(r.id))) },
-      { key: "since", label: "since", sort: (r) => m.st.get(r.id).since_ms, render: (r) => { const x = m.st.get(r.id); return h("span", { class: "small nowrap", title: whenTitle(x.since_ms) }, x.since_ms ? `${hm(x.since_ms)} · ${dur(Date.now() - x.since_ms)}` : "–"); } },
-      { key: "now", label: "now", render: (r) => { const x = m.st.get(r.id); return h("span", { class: "small nowrap" }, x.value == null ? "no value" : fv(r.metric, x.value)); } },
-      { key: "owner", label: "owner", render: (r) => r.owner ? h("span", { class: "small" }, r.owner) : h("span", { class: "small muted" }, "no owner") },
-      { key: "state", label: "state", sort: (r) => m.st.get(r.id).state, render: (r) => ackPill(r, m.st.get(r.id), m.fleet) },
-      { key: "act", label: "", sortable: false, render: (r) => actions(r, m.st.get(r.id)) },
+      { key: "sev", label: "", width: "24px", cls: "al-c-dot", render: (r) => h("span", { class: "dot " + (m.st.get(r.id).state === "firing" ? (r.severity === "critical" ? "critical pulse" : r.severity === "warning" ? "warn" : "") : "pending"), title: m.st.get(r.id).state } ) , sortable: false },
+      { key: "name", label: "alert", cls: "al-c-name", render: (r) => h("div", {}, h("a", { class: "al-name", href: alertLink(r.id) }, r.name), h("div", { class: "tiny muted" }, r.builtin ? "built-in · " : "", cond(r, true))) },
+      { key: "where", label: "where", cls: "al-c-where", render: (r) => h("span", { class: "small" }, whereText(r, m.st.get(r.id))) },
+      { key: "since", label: "since", cls: "al-c-since", sort: (r) => m.st.get(r.id).since_ms, render: (r) => { const x = m.st.get(r.id); return h("span", { class: "small nowrap", title: whenTitle(x.since_ms) }, x.since_ms ? `${hm(x.since_ms)} · ${dur(Date.now() - x.since_ms)}` : "–"); } },
+      { key: "now", label: "now", cls: "al-c-now", render: (r) => { const x = m.st.get(r.id); return h("span", { class: "small nowrap" }, h("span", { class: "al-narrow-only muted" }, "now "), x.value == null ? "no value" : fv(r.metric, x.value)); } },
+      { key: "owner", label: "owner", cls: "al-c-owner", render: (r) => r.owner ? h("span", { class: "small" }, r.owner) : h("span", { class: "small muted" }, "no owner") },
+      { key: "state", label: "state", cls: "al-c-state", sort: (r) => m.st.get(r.id).state, render: (r) => ackPill(r, m.st.get(r.id), m.fleet) },
+      { key: "act", label: "", cls: "al-c-act", sortable: false, render: (r) => actions(r, m.st.get(r.id)) },
     ], { rows, compact: true, onRow: (r) => { location.hash = alertLink(r.id); } }));
+    firingBox.firstElementChild?.classList.add("al-ftbl");
   }
 
   function drawRules() {
@@ -331,16 +333,17 @@ function render(page, r) {
     const adm = can("admin");
     rulesSub.textContent = `${rows.length} of ${m.rules.length} · firing first · fires over ${t.label}`;
     clear(rulesBox, table([
-      { key: "severity", label: "sev.", sort: (r) => SEVR[r.severity], render: (r) => sevBadge(r.severity) },
-      { key: "name", label: "rule", render: (r) => h("div", { style: { minWidth: "220px" } }, h("div", { class: "row nw", style: { gap: "6px" } }, h("button", { class: "al-link", title: "Edit the rule", onclick: () => editRule(r) }, r.name), r.builtin ? h("span", { class: "badge accent", title: "Built in: watches the cluster state; only its severity, on/off and route change" }, "built-in") : null), h("div", { class: "tiny muted mono" }, cond(r))) },
-      { key: "scope", label: "scope", sort: (r) => r.scope || "", render: (r) => { const [a, b] = scopeText(r); return h("div", { class: "small" }, a, h("div", { class: "tiny muted" }, b)); } },
-      { key: "owner", label: "owner", render: (r) => r.owner ? h("span", { class: "small" }, r.owner) : h("span", { class: "small muted" }, "–") },
-      { key: "runbook", label: "runbook", render: (r) => r.runbook ? h("a", { class: "small", href: r.runbook, target: "_blank", rel: "noopener", title: r.runbook }, runbookName(r.runbook), " ", icon("ext")) : h("span", { class: "small muted" }, "none") },
-      { key: "fires", label: "fires", num: true, title: `times it fired over ${t.label}`, sort: (r) => (fires[r.id] || []).length, render: (r) => h("div", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" } }, fireBars(fires[r.id] || [], t), h("b", { class: "num" }, fmt.n((fires[r.id] || []).length))) },
-      { key: "state", label: "state", sort: (r) => RANK[m.st.get(r.id).state], render: (r) => statePill(r, m.st.get(r.id)) },
-      { key: "on", label: "on", sortable: false, render: (r) => onSwitch(r, !adm, (on) => setEnabled(r, on)) },
-      { key: "edit", label: "", sortable: false, render: (r) => h("button", { class: "btn xs ghost", title: "Edit the rule", onclick: () => editRule(r) }, icon("edit")) },
+      { key: "severity", label: "sev.", cls: "al-c-sev", sort: (r) => SEVR[r.severity], render: (r) => sevBadge(r.severity) },
+      { key: "name", label: "rule", cls: "al-c-name", render: (r) => h("div", { class: "al-rname" }, h("div", { class: "row nw", style: { gap: "6px" } }, h("button", { class: "al-link", title: "Edit the rule", onclick: () => editRule(r) }, r.name), r.builtin ? h("span", { class: "badge accent", title: "Built in: watches the cluster state; only its severity, on/off and route change" }, "built-in") : null), h("div", { class: "tiny muted mono" }, cond(r))) },
+      { key: "scope", label: "scope", cls: "al-c-scope", sort: (r) => r.scope || "", render: (r) => { const [a, b] = scopeText(r); return h("div", { class: "small" }, a, h("div", { class: "tiny muted" }, b)); } },
+      { key: "owner", label: "owner", cls: "al-c-owner", render: (r) => r.owner ? h("span", { class: "small" }, r.owner) : h("span", { class: "small muted" }, "–") },
+      { key: "runbook", label: "runbook", cls: "al-c-runbook", render: (r) => r.runbook ? h("a", { class: "small", href: r.runbook, target: "_blank", rel: "noopener", title: r.runbook }, runbookName(r.runbook), " ", icon("ext")) : h("span", { class: "small muted" }, "none") },
+      { key: "fires", label: "fires", num: true, cls: "al-c-fires", title: `times it fired over ${t.label}`, sort: (r) => (fires[r.id] || []).length, render: (r) => h("div", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" } }, fireBars(fires[r.id] || [], t), h("b", { class: "num" }, fmt.n((fires[r.id] || []).length))) },
+      { key: "state", label: "state", cls: "al-c-state", sort: (r) => RANK[m.st.get(r.id).state], render: (r) => statePill(r, m.st.get(r.id)) },
+      { key: "on", label: "on", cls: "al-c-on", sortable: false, render: (r) => onSwitch(r, !adm, (on) => setEnabled(r, on)) },
+      { key: "edit", label: "", cls: "al-c-edit", sortable: false, render: (r) => h("button", { class: "btn xs ghost", title: "Edit the rule", onclick: () => editRule(r) }, icon("edit")) },
     ], { rows, compact: true, onRow: (r) => editRule(r), empty: empty("alerts", "No rule matches", "Try another filter.") }));
+    rulesBox.firstElementChild?.classList.add("al-rtbl");
   }
 
   async function setEnabled(r, on) {
@@ -371,12 +374,13 @@ function render(page, r) {
     for (const r of m.rules) { const x = m.st.get(r.id); if (x.state === "firing" && x.since_ms && !spans[r.id]) spans[r.id] = { name: r.name, sev: r.severity, list: [[x.since_ms, null]] }; }
     const rows = Object.entries(spans);
     if (!rows.length) { clear(histBox, h("div", { class: "al-quiet" }, icon("okc"), h("span", {}, `No rule fired over ${t.label}.`))); return; }
-    const W = Math.max(500, histBox.clientWidth || 1000), rh = 22, LW = 210;
+    const cw = histBox.clientWidth || 1000, small = cw < 600;
+    const W = Math.max(small ? 280 : 500, cw), rh = small ? 26 : 22, LW = small ? 112 : 210, NL = small ? 16 : 30;
     const t0 = t.from, t1 = t.to;
     const X = (v) => LW + (Math.max(t0, Math.min(t1, v)) - t0) / (t1 - t0) * (W - LW - 8);
     const svgEl = s("svg", { viewBox: `0 0 ${W} ${rows.length * rh + 20}`, style: { width: "100%", height: rows.length * rh + 20 + "px" }, role: "img", "aria-label": "When each rule fired" });
     rows.forEach(([id, sp], i) => {
-      const a = s("a", { href: alertLink(id) }, s("text", { x: 0, y: i * rh + 15, class: "al-tl-name" }, sp.name.length > 30 ? sp.name.slice(0, 29) + "…" : sp.name));
+      const a = s("a", { href: alertLink(id) }, s("text", { x: 0, y: i * rh + 15, class: "al-tl-name" }, sp.name.length > NL ? sp.name.slice(0, NL - 1) + "…" : sp.name));
       svgEl.append(a, s("rect", { x: LW, y: i * rh + 5, width: W - LW - 8, height: rh - 10, rx: 3, class: "al-tl-bg" }));
       for (const [a0, a1] of sp.list) {
         const x0 = X(a0), x1 = X(a1 ?? t1);
@@ -386,7 +390,8 @@ function render(page, r) {
         svgEl.append(bar);
       }
     });
-    for (let k = 0; k <= 5; k++) { const v = t0 + k / 5 * (t1 - t0); svgEl.append(s("text", { class: "al-ax", x: X(v), y: rows.length * rh + 15, "text-anchor": k === 0 ? "start" : k === 5 ? "end" : "middle" }, t1 - t0 > 86400e3 ? hm(v) : fmt.time(v, false))); }
+    const nt = small ? 2 : 5;
+    for (let k = 0; k <= nt; k++) { const v = t0 + k / nt * (t1 - t0); svgEl.append(s("text", { class: "al-ax", x: X(v), y: rows.length * rh + 15, "text-anchor": k === 0 ? "start" : k === nt ? "end" : "middle" }, t1 - t0 > 86400e3 ? hm(v) : fmt.time(v, false))); }
     clear(histBox, svgEl);
   }
 
@@ -436,6 +441,8 @@ function onSwitch(r, disabled, onChange) {
 function silenceMenu(anchor, r, after) {
   const until9 = () => { const d = new Date(); d.setDate(d.getDate() + (d.getHours() >= 9 ? 1 : 0)); d.setHours(9, 0, 0, 0); return Math.round((d - Date.now()) / 60e3); };
   menu(anchor, [[30, "for 30 minutes"], [60, "for 1 hour"], [240, "for 4 hours"], [until9(), "until 09:00"]].map(([min, label]) => ({ label: `Silence ${label}`, icon: "pause", onclick: () => silence(r, min, after) })));
+  const el = [...document.querySelectorAll(".menu")].pop();
+  if (el) requestAnimationFrame(() => { const b = el.getBoundingClientRect(); if (b.bottom > innerHeight - 8) el.style.top = Math.max(8, anchor.getBoundingClientRect().top - b.height - 4) + "px"; });
 }
 async function silence(r, minutes, after) {
   const until = Date.now() + minutes * 60e3;
@@ -615,7 +622,7 @@ function alertHub(page, id, r) {
   const crumbs = h("div", { class: "row small muted al-crumbs" }, h("a", { href: link("alerts") }, "Alerts"), h("span", {}, "›"), h("span", { class: "mono" }, id));
   const title = h("h1", { class: "row nw", style: { gap: "10px" } });
   const line = h("p");
-  const tools = h("div", { class: "tools" });
+  const tools = h("div", { class: "tools al-hubbar" });
   const kpis = h("div", { class: "grid g4 al-kpis" });
   const chart = alertChart(250);
   const chartNote = h("div", { class: "small muted", style: { marginTop: "6px" } });
@@ -643,7 +650,8 @@ function alertHub(page, id, r) {
       card({ title: "Affected copies", tools: h("a", { class: "btn sm ghost", href: link("cluster") }, "Cluster", icon("right")), body: copies, flush: true })),
     h("div", { class: "grid g3 al-row" },
       card({ title: "Log lines, grouped", sub: "warn and error, every server, since 5 min before it fired", tools: logsLink, body: logsBox, flush: true, cls: "span2" }),
-      card({ title: "Activity", sub: "this alert's timeline, shared with the link", body: [activity, h("div", { class: "row nw", style: { marginTop: "10px" } }, noteIn, noteBtn)] })));
+      card({ title: "Activity", sub: "this alert's timeline, shared with the link", body: [activity, h("div", { class: "row nw", style: { marginTop: "10px" } }, noteIn, noteBtn)] })),
+    h("div", { class: "al-hubspace", "aria-hidden": "true" }));
 
   const since = () => x?.since_ms && (x.state === "firing" || x.state === "pending") ? x.since_ms : lastFired() || Date.now() - 3600e3;
   const lastFired = () => { const f = (one?.events || m?.events || []).filter((e) => e.rule === id && e.what === "fired").map((e) => e.ts); return f.length ? Math.max(...f) : null; };
@@ -677,22 +685,22 @@ function alertHub(page, id, r) {
       x.since_ms && st !== "ok" ? ` · since ${when(x.since_ms)}` : "", ` · now ${x.value == null ? "no value" : fv(rule.metric, x.value)}`, h("span", { class: "al-peak" }));
     const w8 = can("write"), fleet = m.fleet;
     const ackBtn = x.ack
-      ? h("button", { class: "btn al-acked", disabled: true, title: x.ack.note || "" }, icon("check"), `Acknowledged · ${x.ack.by || "someone"} ${hm(x.ack.at_ms)}`)
+      ? h("button", { class: "btn al-acked", disabled: true, title: x.ack.note || "" }, icon("check"), h("span", { class: "al-wide-only" }, `Acknowledged · ${x.ack.by || "someone"} ${hm(x.ack.at_ms)}`), h("span", { class: "al-narrow-only" }, `Acked · ${x.ack.by || "someone"}`))
       : h("button", { class: "btn primary", disabled: !fleet || !w8 || st !== "firing", title: !fleet ? "This server cannot acknowledge alerts yet" : !w8 ? Needs("write") : st !== "firing" ? "Only a firing alert is acknowledged" : "Acknowledge: you are on it", onclick: async () => {
         try { await api(`/v1/alerts/${encodeURIComponent(id)}/ack`, { body: {} }); toast("Acknowledged", "ok"); await refreshAlerts(); load(); } catch (e) { toast(failMsg(e, "Acknowledging"), "bad"); }
-      } }, icon("check"), "Acknowledge");
+      } }, icon("check"), h("span", { class: "al-wide-only" }, "Acknowledge"), h("span", { class: "al-narrow-only" }, "Ack"));
     const silBtn = x.silent
       ? h("button", { class: "btn", disabled: !w8, title: `Silenced by ${x.silenced.by || "someone"}: ${x.silenced.reason || ""}`, onclick: async () => {
         const ok = await ask({ title: "End the silence now?", body: "Messages for this alert are sent again from now on.", ok: "End the silence" });
         if (!ok) return;
         try { await api(`/v1/alerts/${encodeURIComponent(id)}/silence`, { method: "DELETE", reason: ok.reason }); toast("Silence ended", "ok"); await refreshAlerts(); load(); } catch (e) { toast(failMsg(e, "Ending the silence"), "bad"); }
-      } }, icon("pause"), `Silenced to ${hm(x.silenced.until_ms)} · end`)
+      } }, icon("pause"), h("span", { class: "al-wide-only" }, `Silenced to ${hm(x.silenced.until_ms)} · end`), h("span", { class: "al-narrow-only" }, `To ${hm(x.silenced.until_ms)} · end`))
       : h("button", { class: "btn", disabled: !fleet || !w8, title: !fleet ? "This server cannot silence alerts yet" : !w8 ? Needs("write") : "Silence it for a while, with a reason" }, icon("pause"), "Silence", icon("down"));
     if (!x.silent) silBtn.onclick = () => silenceMenu(silBtn, rule, () => load());
     clear(tools, ackBtn, silBtn,
-      h("button", { class: "btn", disabled: !fleet || !w8, title: !fleet ? "This server keeps no notes yet" : !w8 ? Needs("write") : "Add a note to the alert's timeline", onclick: () => noteIn.focus() }, icon("edit"), "Add note"),
-      h("button", { class: "btn", title: "Copy a link to this alert at this time", onclick: () => { const t = since(); copy(location.origin + location.pathname + alertLink(id, { from: Math.round(t - 30 * 60e3), to: Math.round(x.state === "firing" ? Date.now() : t + 60 * 60e3) }), "Link copied: it opens this alert at this time"); } }, icon("link"), "Copy link"),
-      h("button", { class: "btn ghost", title: "Edit the rule", onclick: () => editRule(rule, { after: load }) }, icon("sliders"), "Edit rule"));
+      h("button", { class: "btn", disabled: !fleet || !w8, title: !fleet ? "This server keeps no notes yet" : !w8 ? Needs("write") : "Add a note to the alert's timeline", onclick: () => { noteIn.scrollIntoView({ block: "center", behavior: "smooth" }); noteIn.focus({ preventScroll: true }); } }, icon("edit"), h("span", { class: "al-wide-only" }, "Add note"), h("span", { class: "al-narrow-only" }, "Note")),
+      h("button", { class: "btn al-ico", title: "Copy a link to this alert at this time", onclick: () => { const t = since(); copy(location.origin + location.pathname + alertLink(id, { from: Math.round(t - 30 * 60e3), to: Math.round(x.state === "firing" ? Date.now() : t + 60 * 60e3) }), "Link copied: it opens this alert at this time"); } }, icon("link"), h("span", { class: "al-wide-only" }, "Copy link")),
+      h("button", { class: "btn ghost al-ico", title: "Edit the rule", onclick: () => editRule(rule, { after: load }) }, icon("sliders"), h("span", { class: "al-wide-only" }, "Edit rule")));
     noteIn.disabled = noteBtn.disabled = !fleet || !w8;
     noteIn.placeholder = !fleet ? "Notes need a newer server" : !w8 ? Needs("write") : "Add a note: what you found, what you did";
   }
@@ -897,19 +905,6 @@ function alertHub(page, id, r) {
   const offs = [bus.on("alerts", () => { if (!state.paused && rule) { m = model(state.alerts); x = { ...x, ...(m.st.get(id) || {}) }; x.silent = !!(x.silenced && (!x.silenced.until_ms || x.silenced.until_ms > Date.now())); if (!rule.enabled) x.state = "disabled"; drawHead(); drawCopies(); } })];
   const stop = every(30000, async () => { if (state.paused || !rule) return; await load(); loadChart(); loadStatements(); loadLogs(); }, false);
   return () => { offs.forEach((f) => f()); stop(); hubParams = null; };
-}
-
-/** A message as a pattern: numbers, ids, URLs and quoted text become placeholders. */
-export function pattern(message, fields) {
-  let f = fields;
-  if (typeof f === "string") { try { f = JSON.parse(f); } catch { f = null; } }
-  const extra = f && typeof f === "object" ? ["error", "status", "kind"].filter((k) => f[k] != null).map((k) => `${k}=${typeof f[k] === "string" ? f[k] : JSON.stringify(f[k])}`).join(" ") : "";
-  return `${message || ""}${extra ? " " + extra : ""}`
-    .replace(/https?:\/\/[^\s)"',]+/g, "<url>")
-    .replace(/'(?:[^']|'')*'/g, "<str>")
-    .replace(/\b[0-9a-f]{12,}\b/gi, "<id>")
-    .replace(/\b\d+(?:\.\d+)?(?:ms|s|µs)?\b/g, "<n>")
-    .replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
 // ---------------------------------------------------------------- the rule editor

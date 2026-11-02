@@ -25,8 +25,13 @@ const TONE = { alert_fired: "bad", copy_down: "bad", majority_lost: "bad", prima
 const MARK_KINDS = new Set(["rollout", "upgrade", "primary_changed", "copy_down", "copy_up", "majority_lost", "majority_back", "alert_fired", "alert_resolved", "log_level", "change", "note", "contain", "autoscale", "moves_started", "moves_finished", "shard_added", "shard_removed"]);
 
 const iso = (ms) => new Date(ms).toISOString();
+const URL_RE = /https?:\/\/[^\s)"',\\]+/g;
 const msOf = (ts) => typeof ts === "string" ? Date.parse(ts) : (ts || 0) / 1000;
 const clock = (ms) => { const d = new Date(ms); return d.toLocaleTimeString("en-GB", { hour12: false }) + "." + String(d.getMilliseconds()).padStart(3, "0"); };
+/** The time of a line; the milliseconds drop on a phone. */
+const clockEl = (ms) => { const c = clock(ms); return [c.slice(0, -4), h("span", { class: "al-ms" }, c.slice(-4))]; };
+/** A level, its first letter alone on a phone. */
+const lvEl = (lv, cls = "al-l-lv") => h("span", { class: `${cls} al-lv-${lv}`, title: lv }, lv.charAt(0), h("span", { class: "al-lv-rest" }, lv.slice(1)));
 const objects = (j) => (j.rows || []).map((r) => Object.fromEntries(j.columns.map((c, i) => [c, r[i]])));
 function parseJson(t) { if (!t || typeof t !== "string") return t || null; try { return JSON.parse(t); } catch { return t; } }
 /** Values as Rust's Debug prints them read as values (A15: `Some(0.036)` is 0.036). */
@@ -109,12 +114,14 @@ function render(page, r) {
   const list = h("div", { class: "al-lines", role: "grid", "aria-label": "Log lines, newest first" });
   const more = h("div", { class: "al-more" });
   const detail = h("aside", { class: "al-detail card hidden", "aria-label": "The line's detail" });
-  const main = h("div", { class: "al-lmain" }, facets, h("div", { class: "al-lcol" }, h("div", { class: "row nw al-lhead" }, tabs, h("span", { class: "sep" }), countNote), list, more), detail);
+  const scrim = h("div", { class: "al-scrim", onclick: () => closeDetail() });
+  const filtersBtn = h("button", { class: "chip al-narrow-only al-fbtn", "aria-pressed": "false", onclick: () => { const on = main.classList.toggle("al-ffo"); filtersBtn.setAttribute("aria-pressed", String(on)); } }, icon("filter"), "Filters");
+  const main = h("div", { class: "al-lmain" }, facets, h("div", { class: "al-lcol" }, h("div", { class: "row nw al-lhead" }, tabs, h("span", { class: "sep" }), countNote), list, more), scrim, detail);
   page.append(
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Logs"), sub),
       h("div", { class: "tools" }, storeBtn, levelBtn, h("a", { class: "btn sm ghost", href: link("queries", { tab: "history" }), title: "Finished queries, failed and slow ones, with their traces: Queries > History" }, icon("queries"), "Queries > History"))),
     h("div", { class: "row nw al-sqrow" }, bar, sqlLink, shareBtn),
-    h("div", { class: "row al-rangerow" }, alertChip, rangeNote, h("span", { class: "sep" }), liveBtn),
+    h("div", { class: "row al-rangerow" }, alertChip, rangeNote, h("span", { class: "sep" }), filtersBtn, liveBtn),
     h("section", { class: "card al-hist" }, h("div", { class: "bd" }, hist, markLegend)),
     missedLine,
     main);
@@ -134,7 +141,7 @@ function render(page, r) {
   }
   const shardNodes = (sh) => [...ctx.nodes].filter(([, n]) => String(n.shard) === String(sh)).map(([k]) => k);
   /** Copy URLs in a text, named: "shard 17 (http://…:7701)" reads "shard 17 (s17-0)". */
-  const nameUrls = (t) => String(t ?? "").replace(/https?:\/\/[^\s)"',]+/g, (u) => findCopy(u) ? copyName(u) : u);
+  const nameUrls = (t) => String(t ?? "").replace(URL_RE, (u) => { const tail = /[:;.]+$/.exec(u)?.[0] || "", b = tail ? u.slice(0, -tail.length) : u; return (findCopy(b) ? copyName(b) : b) + tail; });
 
   // ------------------------------------------------ SQL
   function where(skip) {
@@ -320,8 +327,8 @@ function render(page, r) {
     const fl = fields && typeof fields === "object" ? Object.entries(fields).slice(0, 5) : [];
     const lv = String(rw.level || "").toLowerCase();
     const el = h("div", { class: "al-l", role: "row", tabindex: "-1", dataset: { key: keyOf(rw) }, "aria-selected": "false" },
-      h("span", { class: "al-l-t", title: whenTitle(ms) }, clock(ms)),
-      h("span", { class: "al-l-lv al-lv-" + lv }, lv),
+      h("span", { class: "al-l-t", title: whenTitle(ms) }, clockEl(ms)),
+      lvEl(lv),
       h("span", { class: "al-l-s", title: rw.node + (urlOf(rw.node) ? ` · ${urlOf(rw.node)}` : "") }, nameOf(rw.node)),
       h("span", { class: "al-l-m" }, h("span", { class: "al-l-msg" }, nameUrls(rw.message)), fl.map(([k, v]) => h("span", { class: "al-l-f" }, ` ${k}=`, h("span", {}, nameUrls(plain(typeof v === "string" ? v : JSON.stringify(v)))))),
         rw.route ? h("span", { class: "al-l-f" }, ` ${rw.method || ""} ${rw.route}`) : null));
@@ -355,7 +362,7 @@ function render(page, r) {
     const url = urlOf(rw.node), cp = url ? findCopy(url) : null;
     const lv = String(rw.level || "").toLowerCase();
     // The copy a line names in its error ("shard 17 (http://…)"), as a place to go.
-    const named = [...String(`${rw.message} ${typeof fields === "object" ? JSON.stringify(fields) : fields}`).matchAll(/https?:\/\/[^\s)"',\\]+/g)].map((m) => m[0]).filter((u) => findCopy(u)).filter((u, i, a) => a.indexOf(u) === i).slice(0, 2);
+    const named = [...String(`${rw.message} ${typeof fields === "object" ? JSON.stringify(fields) : fields}`).matchAll(URL_RE)].map((m) => m[0].replace(/[:;.\\]+$/, "")).filter((u) => findCopy(u)).filter((u, i, a) => a.indexOf(u) === i).slice(0, 2);
     const kv = [];
     const add = (k, v, tok) => {
       if (v == null || v === "") return;
