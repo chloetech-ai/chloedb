@@ -73,9 +73,8 @@ function catalog(reg, kube) {
     const o = by.get(key) || { tags: [] };
     for (const k of ["digest", "revision", "created"]) if (x[k] && !o[k]) o[k] = x[k];
     if (x.image && (!o.image || x.image.includes("@"))) o.image = x.image;
-    const t = x.tag || tagOf(x.image);
-    if (t && !o.tags.includes(t)) o.tags.push(t);
-    for (const k of ["current", "newer", "tracked"]) if (x[k]) o[k] = true;
+    for (const t of [...(x.tags || []), x.tag || tagOf(x.image)]) if (t && !o.tags.includes(t)) o.tags.push(t);
+    for (const k of ["current", "newer", "tracked"]) if (x[k] === true) o[k] = true;
     by.set(key, o);
     if (x.image && x.image !== key) by.set(x.image, o);
   };
@@ -1050,7 +1049,7 @@ function render(page, r) {
     for (const x of reg.images || []) {
       const k = x.digest || x.image;
       const o = rows.get(k) || { ...x, tags: [] };
-      if (x.tag && !o.tags.includes(x.tag)) o.tags.push(x.tag);
+      for (const t of [...(x.tags || []), x.tag]) if (t && !o.tags.includes(t)) o.tags.push(t);
       for (const f of ["current", "newer", "tracked"]) o[f] = o[f] || x[f];
       if (x.tag && !HEX40.test(x.tag) && x.tag !== "latest") o.image = x.image;
       rows.set(k, o);
@@ -1078,7 +1077,9 @@ function render(page, r) {
         rejected.has(x.digest) ? h("span", { class: "ro-chip bad", title: "The operator rolled it back once" }, "rolled back once") : null,
       ];
       const cl = commitLink(v);
-      const pickBtn = readOnly ? null : x.current ? h("span", { class: "small dim" }, "runs now") : h("button", {
+      // Machines of your own: the command that fetches this very image.
+      const pull = `docker pull ${x.digest && reg.repository ? `${reg.repository}@${x.digest}` : x.image}`;
+      const pickBtn = readOnly ? h("button", { class: "btn sm", title: pull, onclick: () => copy(pull, "docker pull command copied") }, icon("copy"), "Pull command") : x.current ? h("span", { class: "small dim" }, "runs now") : h("button", {
         class: "btn sm" + (x.newer && x === list.find((y) => y.newer) ? " primary" : ""), disabled: busy || !can("admin"), title: can("admin") ? "Shows the plan first: nothing restarts yet" : NEEDS,
         // Pinned by digest, as the upgrader does: every copy runs the same bits even if a tag moves on.
         onclick: () => upgrade(x.digest && reg.repository ? `${reg.repository}@${x.digest}` : x.image),
@@ -1098,7 +1099,7 @@ function render(page, r) {
         h("div", { class: "row" }, find, only),
         h("div", { class: "small" }, curRow ? ["The cluster runs ", h("b", {}, vname({ ...curRow, track: reg.track })), curRow.created ? `, built ${clock(sec(curRow.created))} ${TZ}` : "", ". ", newer ? h("b", {}, `${plural(newer, "newer build")}.`) : "Nothing newer is published.", cmp ? [" ", h("a", { href: cmp, target: "_blank", rel: "noopener" }, "What changed since")] : null]
           : readOnly ? "Published images, newest first. Nothing here changes this cluster: its servers are restarted by hand." : "Published images, newest first."),
-        readOnly ? h("div", { class: "notice" }, "This server is not run by the Kubernetes operator: the list is for reading. Upgrade machines of your own by hand (on the right).") : null,
+        readOnly ? h("div", { class: "notice" }, "This server is not run by the Kubernetes operator: the list is for reading. Copy an image's pull command, then restart your machines with it one copy at a time.") : null,
         moving(m) ? h("div", { class: "ro-warnline" }, icon("warn"), h("span", {}, "A change is under way: picking a version replaces it, from where it is.")) : null,
         reg.error ? h("div", { class: "small dim" }, "Some answers are old: " + reg.error) : null,
         h("div", { class: "tbl-wrap", style: { maxHeight: "560px" } }, h("table", { class: "t compact ro-pk" },
