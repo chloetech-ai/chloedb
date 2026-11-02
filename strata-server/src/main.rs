@@ -314,6 +314,10 @@ struct Args {
     /// {"text": ..., "alert": {...}} (a Slack incoming webhook takes it).
     #[arg(long)]
     alert_webhook: Option<String>,
+    /// Keep only the types of queries' parameters (not their values) in
+    /// the running and finished queries, statements and the log store.
+    #[arg(long, env = "STRATA_REDACT_PARAMS")]
+    redact_params: bool,
     /// What to log: a level (error, warn, info, debug, trace), or levels
     /// per module ("info,strata=debug"). debug logs every request.
     #[arg(long, env = "STRATA_LOG", default_value = "info")]
@@ -639,6 +643,7 @@ async fn main() {
     if a.replica && a.grpc == "off" {
         fail("a replica takes its primary's writes over gRPC: --replica needs --grpc");
     }
+    strata_server::telemetry::set_redact_params(a.redact_params);
     let o = Options {
         db: a.db,
         schema: a.schema,

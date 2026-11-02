@@ -1874,7 +1874,8 @@ impl Service {
         let mut lease = 0;
         req.profile |= self.profiling.cpu_all.load(Ordering::Relaxed);
         let profiled = req.profile;
-        let live = self.live.start(&req.sql, kind, req.shard);
+        let meta = self.meta(&req);
+        let live = self.live.start(&req.sql, kind, req.shard, &meta);
         // A shard's answer to a coordinator's leaf, as Arrow columns.
         let mut arrow = Vec::new();
         let res = match &self.backend {
@@ -1979,7 +1980,6 @@ impl Service {
             }
         }
         // A shard's answer to a coordinator is not a client's.
-        let meta = self.meta(&req);
         let a = self.done(&req.sql, kind, t0, self.max_rows.filter(|_| !req.shard), req.shard, (profiled, req.quiet), &meta, res);
         // A lease made for a query that failed holds nothing to fetch.
         let made = (lease != req.snapshot).then_some(lease).filter(|_| a.is_err());
@@ -1989,11 +1989,17 @@ impl Service {
         a.map(|a| Answer { lease, arrow, ..a })
     }
 
-    /// What the query log keeps of a query besides its text: its deadline,
-    /// and whether that is the client's own.
+    /// What the query log keeps of a query besides its text: who sent it
+    /// ([`telemetry::caller`]), its parameters, its deadline, and whether
+    /// that is the client's own.
     pub fn meta(&self, req: &QueryReq) -> telemetry::Meta {
         let deadline = self.timeout_of(req.timeout_ms);
-        telemetry::Meta { deadline_ms: deadline.as_millis() as u64, client_deadline: !req.shard && req.timeout_ms > 0 && deadline < self.timeout }
+        telemetry::Meta {
+            caller: telemetry::caller(),
+            params: telemetry::params_json(&req.params),
+            deadline_ms: deadline.as_millis() as u64,
+            client_deadline: !req.shard && req.timeout_ms > 0 && deadline < self.timeout,
+        }
     }
 
     /// Counts a query's outcome, logs it if it was slow, and makes its
@@ -2043,7 +2049,7 @@ impl Service {
         let deadline = t0 + timeout;
         let req_sql = req.sql.clone();
         let meta = self.meta(&req);
-        let live = self.live.start(&req.sql, kind, req.shard);
+        let live = self.live.start(&req.sql, kind, req.shard, &meta);
         let r = LiveQueries::run(&live, self.compound_run(req, plan, catalog, t0, timeout)).await;
         drop(live);
         let res = match r {

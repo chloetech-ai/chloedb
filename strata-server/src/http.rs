@@ -297,7 +297,9 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
             if let Some(w) = &who {
                 req.extensions_mut().insert(w.clone());
             }
-            keys::noting(next.run(req)).await
+            // Who the request's queries are from ([`telemetry::Caller`]).
+            let caller = telemetry::Caller::of(&who.clone().unwrap_or_else(Principal::open), client_addr(&req), header_str(&headers, header::HeaderName::from_static("x-strata-app")), header_str(&headers, header::USER_AGENT), header_str(&headers, header::HeaderName::from_static("x-strata-client")));
+            telemetry::calling(Arc::new(caller), keys::noting(next.run(req))).await
         }
     };
     let status = res.status().as_u16();
@@ -319,6 +321,23 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
         });
     }
     res
+}
+
+/// The client's address: the first of `X-Forwarded-For` when the peer is
+/// on a private network (a proxy or load balancer in front), else the
+/// peer's.
+fn client_addr(req: &Request) -> Option<String> {
+    let peer = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip());
+    let forwarded = header_str(req.headers(), header::HeaderName::from_static("x-forwarded-for")).and_then(|f| f.split(',').next()).map(str::trim).filter(|f| f.parse::<std::net::IpAddr>().is_ok());
+    let private = |ip: &std::net::IpAddr| match ip {
+        std::net::IpAddr::V4(v) => v.is_loopback() || v.is_private() || v.is_link_local(),
+        std::net::IpAddr::V6(v) => v.is_loopback() || (v.segments()[0] & 0xfe00) == 0xfc00,
+    };
+    match (peer, forwarded) {
+        (Some(p), Some(f)) if private(&p) => Some(f.to_string()),
+        (Some(p), _) => Some(p.to_string()),
+        (None, f) => f.map(String::from),
+    }
 }
 
 /// What the audit log says a request did, set on its answer.

@@ -148,6 +148,121 @@ pub fn rpc_name<T>() -> Cow<'static, str> {
     Cow::Owned(last.strip_suffix("Response").unwrap_or(last).to_string())
 }
 
+// --------------------------------------------------------------- callers
+
+tokio::task_local! {
+    static CALLER: Arc<Caller>;
+}
+
+/// The `x-strata-client` of the command center's own requests.
+pub const COMMAND_CENTER: &str = "command-center";
+
+/// Who sent the request a query runs for: the key's name (`root token`
+/// for the server's token) and id, the client's address, its app
+/// (`x-strata-app`, else the product its user agent names), and
+/// `command-center` for the UI's own requests.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Caller {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+}
+
+impl Caller {
+    /// The caller of a request by `who`, from `addr`, with headers `app`
+    /// (`x-strata-app`), `agent` (`User-Agent`) and `client`
+    /// (`x-strata-client`).
+    pub fn of(who: &crate::keys::Principal, addr: Option<String>, app: Option<&str>, agent: Option<&str>, client: Option<&str>) -> Caller {
+        let key = match who.name.as_str() {
+            "open" if who.key.is_none() => None,
+            "token" if who.key.is_none() => Some("root token".to_string()),
+            n => Some(n.to_string()),
+        };
+        let app = app.filter(|a| !a.trim().is_empty()).or_else(|| agent.and_then(|a| a.split_whitespace().next())).map(|a| crate::obs::truncate(a.trim(), 64).into_owned());
+        Caller { key, key_id: who.key.clone(), addr, app, client: client.filter(|c| c.eq_ignore_ascii_case(COMMAND_CENTER)).map(|_| COMMAND_CENTER.to_string()) }
+    }
+
+    /// The command center's own request.
+    pub fn is_command_center(&self) -> bool {
+        self.client.as_deref() == Some(COMMAND_CENTER)
+    }
+}
+
+/// Runs `f` as a request of `caller`.
+pub async fn calling<F: Future>(caller: Arc<Caller>, f: F) -> F::Output {
+    CALLER.scope(caller, f).await
+}
+
+/// Who sent the request this task serves, if it serves one.
+pub fn caller() -> Option<Arc<Caller>> {
+    CALLER.try_with(|c| c.clone()).ok()
+}
+
+/// Keep only the types of queries' parameters (`--redact-params`).
+static REDACT_PARAMS: AtomicBool = AtomicBool::new(false);
+
+pub fn set_redact_params(on: bool) {
+    REDACT_PARAMS.store(on, Ordering::Relaxed);
+}
+
+pub fn redacts_params() -> bool {
+    REDACT_PARAMS.load(Ordering::Relaxed)
+}
+
+/// The most bytes of JSON a query's parameters are kept in.
+pub const PARAMS_BYTES: usize = 1024;
+
+/// A query's parameters as kept with it: their values as JSON (only their
+/// types with `--redact-params`), long texts and lists cut, in at most
+/// [`PARAMS_BYTES`]; `None` without parameters.
+pub fn params_json(p: &strata::query::Params) -> Option<Arc<Json>> {
+    if p.0.is_empty() {
+        return None;
+    }
+    let redact = redacts_params();
+    let mut names: Vec<&String> = p.0.keys().collect();
+    names.sort();
+    let mut out = serde_json::Map::new();
+    let mut bytes = 2;
+    for (i, name) in names.iter().enumerate() {
+        let v = crate::json::to_json(&p.0[*name]);
+        let v = match (redact, v) {
+            (true, v) => json!(type_of(&v)),
+            (false, Json::String(s)) if s.len() > 200 => json!(format!("{}...", crate::obs::truncate(&s, 200))),
+            (false, Json::Array(a)) if a.len() > 16 => json!(format!("[{} values]", a.len())),
+            (false, v) => v,
+        };
+        let add = name.len() + v.to_string().len() + 4;
+        if bytes + add > PARAMS_BYTES - 32 {
+            out.insert("...".into(), json!(format!("{} more", names.len() - i)));
+            break;
+        }
+        bytes += add;
+        out.insert((*name).clone(), v);
+    }
+    Some(Arc::new(Json::Object(out)))
+}
+
+fn type_of(v: &Json) -> String {
+    match v {
+        Json::Null => "null".into(),
+        Json::Bool(_) => "bool".into(),
+        Json::Number(n) if n.is_i64() || n.is_u64() => "int".into(),
+        Json::Number(_) => "float".into(),
+        Json::String(_) => "text".into(),
+        Json::Array(a) if a.iter().all(Json::is_number) && !a.is_empty() => format!("vector({})", a.len()),
+        Json::Array(a) => format!("list({})", a.len()),
+        Json::Object(_) => "object".into(),
+    }
+}
+
 // ---------------------------------------------------------- live queries
 
 /// A query running now.
@@ -155,7 +270,11 @@ pub struct LiveQuery {
     pub id: u64,
     pub request: Option<Arc<str>>,
     pub sql: String,
+    /// Its statement's shape ([`fingerprint`]).
+    pub fingerprint: String,
     pub kind: &'static str,
+    /// Who sent it, its parameters and deadline.
+    pub meta: Meta,
     /// Asked by a coordinator, as a shard.
     pub shard: bool,
     pub started_ms: u64,
@@ -179,10 +298,18 @@ impl LiveQuery {
 
     fn json(&self) -> Json {
         let mut j = json!({
-            "id": self.id, "sql": self.sql, "kind": self.kind, "shard": self.shard,
+            "id": self.id, "sql": self.sql, "fingerprint": self.fingerprint, "kind": self.kind, "shard": self.shard,
             "started_ms": self.started_ms, "elapsed_ms": self.t0.elapsed().as_secs_f64() * 1e3,
-            "cancelled": self.stop.load(Ordering::Relaxed),
+            "cancelled": self.stop.load(Ordering::Relaxed), "deadline_ms": self.meta.deadline_ms,
         });
+        if let Some(c) = &self.meta.caller {
+            for (k, v) in json!(c).as_object().into_iter().flatten() {
+                j[k] = v.clone();
+            }
+        }
+        if let Some(p) = &self.meta.params {
+            j["params"] = (**p).clone();
+        }
         if let Some(r) = &self.request {
             j["request_id"] = json!(r);
         }
@@ -250,13 +377,15 @@ pub fn server_failed(outcome: &str) -> bool {
 
 impl LiveQueries {
     /// Lists `sql` as running until the guard is dropped.
-    pub fn start(self: &Arc<Self>, sql: &str, kind: &'static str, shard: bool) -> Live {
+    pub fn start(self: &Arc<Self>, sql: &str, kind: &'static str, shard: bool, meta: &Meta) -> Live {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let query = Arc::new(LiveQuery {
             id,
             request: crate::obs::current(),
             sql: crate::obs::truncate(sql, 4000).into_owned(),
+            fingerprint: fingerprint(sql),
             kind,
+            meta: meta.clone(),
             shard,
             started_ms: now_ms(),
             t0: Instant::now(),
@@ -310,6 +439,10 @@ impl LiveQueries {
 /// What a query is kept with besides its text and how it ended.
 #[derive(Clone, Debug, Default)]
 pub struct Meta {
+    /// Who sent it ([`caller`]).
+    pub caller: Option<Arc<Caller>>,
+    /// Its parameters ([`params_json`]).
+    pub params: Option<Arc<Json>>,
     /// Its deadline, in milliseconds.
     pub deadline_ms: u64,
     /// The deadline is the client's own (its `timeout_ms` below the
@@ -337,6 +470,12 @@ pub struct Finished {
     pub error: Option<String>,
     /// Its deadline, in milliseconds (0: not known).
     pub deadline_ms: u64,
+    /// Who sent it: `key`, `key_id`, `addr`, `app`, `client`.
+    #[serde(flatten)]
+    pub caller: Caller,
+    /// Its parameters ([`params_json`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<Arc<Json>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<Span>,
     /// Its profile: the timed steps of its execution, from the request's
@@ -475,6 +614,8 @@ impl QueryLog {
             shard,
             error: error.map(|e| crate::obs::truncate(e, 500).into_owned()),
             deadline_ms: meta.deadline_ms,
+            caller: meta.caller.as_deref().cloned().unwrap_or_default(),
+            params: meta.params.clone(),
             trace: trace().map(|t| t.spans()).unwrap_or_default(),
             steps: stats.map(|s| s.steps.clone()).unwrap_or_default(),
             profiled,
@@ -1005,6 +1146,26 @@ mod tests {
     }
 
     #[test]
+    fn params_are_kept_capped_or_by_type() {
+        use strata::value::Value;
+        let p = strata::query::Params::new().set("q", Value::Str("x".repeat(500))).set("n", Value::Int(3)).set("v", Value::Vector(vec![0.5f32; 384].into()));
+        let j = params_json(&p).unwrap();
+        assert_eq!(j["n"], 3);
+        assert!(j["q"].as_str().unwrap().len() < 220, "{j}");
+        assert_eq!(j["v"], "[384 values]");
+        assert!(j.to_string().len() <= PARAMS_BYTES);
+        set_redact_params(true);
+        let r = params_json(&p).unwrap();
+        set_redact_params(false);
+        assert_eq!(*r, json!({"n": "int", "q": "text", "v": "vector(384)"}));
+        assert!(params_json(&strata::query::Params::new()).is_none());
+        let who = crate::keys::Principal { name: "token".into(), key: None, scope: crate::keys::Scope::Admin, root: true };
+        let c = Caller::of(&who, None, None, Some("shop-ios/7.0.0 (iPhone)"), Some("Command-Center"));
+        assert_eq!((c.key.as_deref(), c.app.as_deref(), c.client.as_deref()), (Some("root token"), Some("shop-ios/7.0.0"), Some("command-center")));
+        assert_eq!(Caller::of(&crate::keys::Principal::open(), None, Some("billing"), None, Some("curl")).key, None);
+    }
+
+    #[test]
     fn quantiles_interpolate_within_a_bucket() {
         let bounds = [1.0, 2.0, 4.0];
         assert_eq!(quantile(&bounds, &[0, 0, 0, 0], 0.5), None);
@@ -1073,7 +1234,7 @@ mod tests {
     #[tokio::test]
     async fn a_cancelled_query_ends_with_its_error() {
         let reg = Arc::new(LiveQueries::default());
-        let live = reg.start("SELECT 1", "filter", false);
+        let live = reg.start("SELECT 1", "filter", false, &Meta::default());
         assert_eq!(reg.len(), 1);
         let id = live.query.id;
         let r2 = reg.clone();

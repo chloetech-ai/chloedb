@@ -104,3 +104,89 @@ async fn points_tell_server_failures_from_the_client_s() {
     assert!(metrics.contains("outcome=\"client_deadline\"} 1"), "{metrics}");
     assert!(metrics.contains("outcome=\"client_error\"} 1"), "{metrics}");
 }
+
+async fn call(method: reqwest::Method, base: &str, path: &str, key: &str, headers: &[(&str, &str)], body: Option<Json>) -> (u16, Json) {
+    let mut r = strata_server::http_client().build().unwrap().request(method, format!("{base}{path}")).bearer_auth(key);
+    for (k, v) in headers {
+        r = r.header(*k, *v);
+    }
+    if let Some(b) = body {
+        r = r.json(&b);
+    }
+    let r = r.send().await.unwrap();
+    (r.status().as_u16(), r.json().await.unwrap_or(Json::Null))
+}
+
+/// A server with an admin key ("ops"), and a read key ("reports-batch").
+async fn keyed(svc: &Arc<Service>) -> (String, String, String) {
+    let base = http(svc.clone()).await;
+    let (status, ops) = call(reqwest::Method::POST, &base, "/v1/admin/keys", "", &[], Some(json!({"name": "ops", "scope": "admin"}))).await;
+    assert_eq!(status, 200, "{ops}");
+    let ops = ops["secret"].as_str().unwrap().to_string();
+    let (status, rb) = call(reqwest::Method::POST, &base, "/v1/admin/keys", &ops, &[], Some(json!({"name": "reports-batch", "scope": "read"}))).await;
+    assert_eq!(status, 200, "{rb}");
+    (base, ops, rb["secret"].as_str().unwrap().to_string())
+}
+
+/// Each query is kept with who sent it (the key's name and id, the
+/// client's address and app), its parameters and its deadline, running
+/// and finished, and so is it in the log store; the command center's own
+/// are tagged.
+#[tokio::test(flavor = "multi_thread")]
+async fn queries_are_kept_with_who_sent_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut svc = service(open(dir.path(), "one.strata"));
+    let store = strata_server::logstore::LogStore::open(strata_server::logstore::LogOptions { capture: false, ..strata_server::logstore::LogOptions::new(dir.path().join("one.logs"), "n1".into()) }).unwrap();
+    let keep = store.clone();
+    let _ = svc.query_log.keep.set(Box::new(move |q, slow| keep.keep_query(q, slow)));
+    svc.log_store = Some(store.clone());
+    let svc = Arc::new(svc);
+    let (base, ops, rb) = keyed(&svc).await;
+
+    let sql = "SELECT id FROM products WHERE MATCH(body, :q) AND price < :p LIMIT 5";
+    let agent = [("user-agent", "nightly-reports/2.3 (linux)")];
+    let (status, body) = call(reqwest::Method::POST, &base, "/v1/query", &rb, &agent, Some(json!({"sql": sql, "params": {"q": "laptop", "p": 500}, "timeout_ms": 2000}))).await;
+    assert_eq!(status, 200, "{body}");
+    let ui = [("x-strata-client", "command-center")];
+    let (status, _) = call(reqwest::Method::POST, &base, "/v1/query", &ops, &ui, Some(json!({"sql": "SELECT COUNT(*) FROM products"}))).await;
+    assert_eq!(status, 200);
+
+    let (_, recent) = call(reqwest::Method::GET, &base, "/v1/queries/recent?limit=2", &ops, &[], None).await;
+    let (mine, theirs) = (&recent["queries"][1], &recent["queries"][0]);
+    assert_eq!(mine["key"], "reports-batch", "{recent}");
+    assert!(mine["key_id"].as_str().is_some_and(|k| !k.is_empty()), "{mine}");
+    assert_eq!(mine["app"], "nightly-reports/2.3", "{mine}");
+    assert_eq!(mine["addr"], "127.0.0.1", "{mine}");
+    assert_eq!(mine["params"], json!({"p": 500, "q": "laptop"}), "{mine}");
+    assert_eq!(mine["deadline_ms"], 2000);
+    assert!(mine.get("client").is_none(), "{mine}");
+    assert_eq!((theirs["key"].as_str(), theirs["client"].as_str()), (Some("ops"), Some("command-center")), "{theirs}");
+
+    // A running query says who sent it too.
+    let b = base.clone();
+    let rb2 = rb.clone();
+    let run = tokio::spawn(async move { call(reqwest::Method::POST, &b, "/v1/query", &rb2, &[("x-strata-app", "billing")], Some(json!({"sql": JOIN, "timeout_ms": 60_000}))).await });
+    let id = loop {
+        let (_, live) = call(reqwest::Method::GET, &base, "/v1/queries", &ops, &[], None).await;
+        if let Some(q) = live["queries"].as_array().unwrap().iter().find(|q| q["sql"] == JOIN) {
+            assert_eq!((q["key"].as_str(), q["app"].as_str()), (Some("reports-batch"), Some("billing")), "{q}");
+            assert!(q["fingerprint"].as_str().is_some(), "{q}");
+            break q["id"].as_u64().unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    let (status, _) = call(reqwest::Method::DELETE, &base, &format!("/v1/queries/{id}"), &ops, &[], None).await;
+    assert_eq!(status, 200);
+    assert_eq!(run.await.unwrap().0, 499);
+
+    // The log store keeps them with their columns.
+    store.flush();
+    let (rs, _) = store.query("SELECT key_name, app, client, params, deadline_ms FROM queries WHERE key_name = 'reports-batch' ORDER BY ts LIMIT 5", &strata::query::Params::new(), false, Duration::from_secs(5)).await.unwrap();
+    assert_eq!(rs.rows.len(), 2, "{:?}", rs.rows);
+    assert_eq!(rs.rows[0][1], strata::Value::Str("nightly-reports/2.3".into()));
+    let params: Json = serde_json::from_str(rs.rows[0][3].as_str().unwrap()).unwrap();
+    assert_eq!(params["q"], "laptop");
+    assert_eq!(rs.rows[0][4], strata::Value::Int(2000));
+    let (rs, _) = store.query("SELECT COUNT(*) FROM queries WHERE client = 'command-center'", &strata::query::Params::new(), false, Duration::from_secs(5)).await.unwrap();
+    assert_eq!(rs.rows[0][0], strata::Value::Int(1));
+}

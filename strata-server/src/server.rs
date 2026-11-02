@@ -980,15 +980,15 @@ pub fn spawn_sampler(svc: &Arc<Service>) {
 pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access) -> std::io::Result<()> {
     let router = http::router(svc, &access);
     let Some(tls) = &access.tls else {
-        return axum::serve(listener, router).with_graceful_shutdown(shutdown()).await;
+        // Each request knows its peer's address (`ConnectInfo`).
+        return axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(shutdown()).await;
     };
     let config = auth::server_config(tls).map_err(std::io::Error::other)?;
     let acceptor = tokio_rustls::TlsAcceptor::from(config);
-    let service = hyper_util::service::TowerToHyperService::new(router);
     let stop = shutdown();
     tokio::pin!(stop);
     loop {
-        let (tcp, _) = tokio::select! {
+        let (tcp, peer) = tokio::select! {
             r = listener.accept() => match r {
                 Ok(c) => c,
                 // Out of descriptors, say: wait rather than spin.
@@ -1000,7 +1000,8 @@ pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access
             _ = &mut stop => return Ok(()),
         };
         let _ = tcp.set_nodelay(true);
-        let (acceptor, service) = (acceptor.clone(), service.clone());
+        let acceptor = acceptor.clone();
+        let service = hyper_util::service::TowerToHyperService::new(router.clone().layer(axum::Extension(axum::extract::ConnectInfo(peer))));
         tokio::spawn(async move {
             // A client that never finishes its handshake holds a task, not
             // the accept loop.
