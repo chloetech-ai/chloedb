@@ -208,12 +208,30 @@ export const shardLink = (i) => link("cluster", { shard: i });
 export async function statements(range = timeRange()) {
   const j = await api(`/v1/queries/stats?${rangeQuery(range)}&limit=1000`);
   const list = Array.isArray(j) ? j : j.statements || [];
-  const windowed = Array.isArray(j) || j.from_ms != null || list.some((x) => x.prev !== undefined || x.outcomes);
+  const windowed = Array.isArray(j) || j.from != null || j.from_ms != null || list.some((x) => x.prev !== undefined || x.outcomes);
   const out = list.map((x) => normStatement(x));
   const total = out.reduce((a, x) => a + (x.total_ms || 0), 0) || 1;
   for (const x of out) x.share = x.share ?? x.total_ms / total;
-  return { statements: out, windowed, since_ms: j.since_ms ?? null, from: range.from, to: range.to };
+  return { statements: out, windowed, since_ms: j.since_ms ?? null, from: range.from, to: range.to, ...held(j, range, windowed) };
 }
+
+/**
+ * What of the range a server holds statements for: it keeps them from
+ * `held_from_ms` (when it started, or the oldest minute it keeps), so a
+ * rate is over the held part, and the window before is only compared
+ * when it is held too. -> {held_from_ms, span_ms, partial, prevHeld}
+ */
+export function held(j, range = timeRange(), windowed = true) {
+  const to = range.to ?? Date.now();
+  const from = windowed ? range.from : (j.since_ms ?? range.from);
+  const hf = j.held_from_ms ?? (windowed ? null : j.since_ms) ?? null;
+  const start = hf != null ? Math.max(from, hf) : from;
+  const prevFrom = j.prev?.from ?? (from - (to - from));
+  return { held_from_ms: hf, span_ms: Math.max(1000, to - start), partial: hf != null && hf > from + 60e3, prevHeld: hf == null || hf <= prevFrom + 60e3 };
+}
+
+/** Whether a statement is new in its window: the server's word when it gives one. */
+export const isNewStatement = (x, windowMs) => typeof x.new === "boolean" ? x.new : !!(x.first_seen_ms && windowMs && x.first_seen_ms >= Date.now() - windowMs);
 
 /** One statement in the shape the contract gives, whichever server answered. */
 export function normStatement(x) {
@@ -247,8 +265,7 @@ export function attention(x, windowMs) {
   const ratio = sp.calls ? (sp.server + sp.client) / sp.calls : 0;
   if (sp.server && sp.server / Math.max(1, sp.calls) > 0.01) return { tag: "fails", tone: "bad", rank: 4 + ratio };
   if (sp.client && sp.client / Math.max(1, sp.calls) > 0.05) return { tag: "client errors", tone: "warn", rank: 3 + ratio };
-  const isNew = x.new || (x.first_seen_ms && windowMs && x.first_seen_ms >= Date.now() - windowMs);
-  if (isNew) return { tag: "new", tone: "info", rank: 2.5 };
+  if (isNewStatement(x, windowMs)) return { tag: "new", tone: "info", rank: 2.5 };
   const c = change(x);
   if (c?.p99X >= 2 && x.p99_ms > 20) return { tag: `slower ×${c.p99X.toFixed(1)}`, tone: "warn", rank: 2 + Math.min(0.9, c.p99X / 100) };
   return null;
@@ -260,8 +277,15 @@ export function attention(x, windowMs) {
  */
 export async function statementDetail(fp, range = timeRange()) {
   try {
-    const j = await api(`/v1/queries/stats/${encodeURIComponent(fp)}?${rangeQuery(range)}`);
-    return { ...j, statement: normStatement(j.statement || {}), source: "stats" };
+    // The statement, and from the window's list what of the range the server
+    // holds and the statement's share of all the query time (its own answer
+    // counts its share against itself).
+    const [j, w] = await Promise.all([api(`/v1/queries/stats/${encodeURIComponent(fp)}?${rangeQuery(range)}`), api(`/v1/queries/stats?${rangeQuery(range)}&limit=1000`).catch(() => null)]);
+    const statement = normStatement(j.statement || {});
+    const listed = w?.statements?.find((x) => x.fingerprint === statement.fingerprint || x.id === fp || x.fingerprint === fp);
+    if (listed?.share != null) statement.share = listed.share;
+    else if (w?.statements) { const all = w.statements.reduce((a, x) => a + (x.total_ms || 0), 0); if (all) statement.share = (statement.total_ms || 0) / all; }
+    return { ...j, statement, source: "stats", windowed: true, ...(w && !Array.isArray(w) ? held(w, range) : {}) };
   } catch (e) {
     if (e.status !== 404 && e.status !== 405) throw e;
   }
@@ -272,7 +296,7 @@ export async function statementDetail(fp, range = timeRange()) {
     const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
     const w = `fingerprint = ${lit(fp)} AND shard = false AND ts >= ${lit(new Date(range.from).toISOString())}${range.to ? ` AND ts < ${lit(new Date(range.to).toISOString())}` : ""}`;
     const cols = await queryColumns();
-    const extra = ["key", "addr", "app", "params", "client", "deadline_ms"].filter((c) => cols.has(c));
+    const extra = [cols.has("key") ? "key" : cols.has("key_name") ? "key_name AS key" : null, ...["addr", "app", "params", "client", "deadline_ms"].filter((c) => cols.has(c))].filter(Boolean);
     const [tr, sl, er, fm] = await Promise.all([
       ask(`SELECT minute, COUNT(*), AVG(ms), MAX(ms) FROM queries WHERE ${w} GROUP BY minute LIMIT 20000`).catch(() => null),
       ask(`SELECT ts, ms, outcome, request_id, sql, error, detail, id, node${extra.map((c) => ", " + c).join("")} FROM queries WHERE ${w} ORDER BY ms DESC LIMIT 12`).catch(() => null),
@@ -561,7 +585,7 @@ const MINUTES = [[15, "15 min"], [60, "1 h"], [240, "4 h"], [1440, "24 h"]];
  * to refuse new runs for a while. Focus starts on "Keep them running".
  * Resolves {reason, refuse_min} or false.
  */
-export function cancelDialog({ sql, queries, key }) {
+export function cancelDialog({ sql, queries, key, refusable = true }) {
   return new Promise((resolve) => {
     const n = queries.length;
     const keys = countBy(queries, (q) => q.key || null);
@@ -585,7 +609,7 @@ export function cancelDialog({ sql, queries, key }) {
           h("dt", {}, "Which"), h("dd", {}, `${fmt.plural(n, "query", "queries")}${vias.length && vias[0][0] ? ": " + vias.map(([v, c]) => `${c} on ${v}`).join(", ") : ""} · running ${fmt.ms(el[0])}${n > 1 ? ` to ${fmt.ms(el[el.length - 1])}` : ""}${mem ? ` · holding ${fmt.bytes(mem)} of query memory` : ""}`),
           h("dt", {}, "Who sent them"), h("dd", {}, keys.some(([k]) => k) ? keys.map(([k, c], i) => [i ? ", " : "", k ? ["API key ", h("b", { class: "mono" }, k)] : "no key", keys.length > 1 ? ` (${c})` : ""]) : h("span", { class: "muted" }, "unknown: this server does not record the key")),
           h("dt", {}, "What they get"), h("dd", {}, "HTTP 499 ", h("span", { class: "mono" }, "cancelled by an operator"), ". A client that retries sends them again.")),
-        h("label", { class: "row nw small", style: { gap: "8px" } }, refuse, oneKey ? ["Also refuse new runs of this statement from ", h("b", { class: "mono" }, oneKey), " for"] : "Also refuse new runs of this statement for", minSel, h("span", { class: "muted" }, "(they get 429)")),
+        !refusable ? null : h("label", { class: "row nw small", style: { gap: "8px" } }, refuse, oneKey ? ["Also refuse new runs of this statement from ", h("b", { class: "mono" }, oneKey), " for"] : "Also refuse new runs of this statement for", minSel, h("span", { class: "muted" }, "(they get 429)")),
         h("label", { class: "stack", style: { gap: "4px" } }, h("span", { class: "small dim" }, "Reason, for the audit log"), reason),
       ],
       foot: [keep, ok],
@@ -612,21 +636,24 @@ export async function cancelQueries({ fingerprint, key, queries, reason }) {
       return j.cancelled ?? queries.length;
     } catch (e) { if (e.status !== 404 && e.status !== 405 && e.status !== 400) throw e; }
   }
-  let n = 0;
+  let n = 0, gone = 0;
   for (const q of queries) {
-    try { await api("/v1/queries/" + encodeURIComponent(q.id), { method: "DELETE", reason }); n++; } catch (e) { if (e.status !== 404) throw e; }
+    try { await api("/v1/queries/" + encodeURIComponent(q.id), { method: "DELETE", reason }); n++; } catch (e) { if (e.status !== 404) throw e; gone++; }
   }
+  cancelQueries.gone = gone;
   return n;
 }
 
 /** Cancels after asking; then refuses the shape for a while when asked. */
 export async function askCancel({ sql, fingerprint, key, queries, onDone }) {
   if (!can("admin")) { toast("Cancelling needs an admin key", "bad"); return; }
-  const a = await cancelDialog({ sql, queries, key });
+  const a = await cancelDialog({ sql, queries, key, refusable: !!fingerprint && await canContain() });
   if (!a) return;
   try {
+    cancelQueries.gone = 0;
     const n = await cancelQueries({ fingerprint, key, queries, reason: a.reason });
-    toast(`${fmt.plural(n, "query", "queries")} cancelled: ${n === 1 ? "it answers" : "they answer"} 499`, "ok");
+    const gone = cancelQueries.gone;
+    toast(n ? `${fmt.plural(n, "query", "queries")} cancelled: ${n === 1 ? "it answers" : "they answer"} 499${gone ? `. ${gone} had already ended` : ""}` : `Nothing to cancel: ${gone === 1 ? "it had" : "they had"} already ended`, n ? "ok" : "info");
     if (a.refuse_min && fingerprint) {
       try {
         await addContain({ match: { fingerprint, ...(a.key ? { key: a.key } : {}) }, action: "refuse", expires_s: a.refuse_min * 60, reason: a.reason });
@@ -640,10 +667,16 @@ export async function askCancel({ sql, fingerprint, key, queries, onDone }) {
 export const addContain = (rule) => api("/v1/admin/contain", { body: rule, reason: rule.reason });
 
 /** The contain rules in force, or null on a server without them. */
+/** Whether the server has contain rules: null until asked, then true or false. */
+let containable = null;
 export async function containRules() {
-  try { const j = await api("/v1/admin/contain"); return Array.isArray(j) ? j : j.rules || []; }
-  catch (e) { if (e.status === 404 || e.status === 405) return null; throw e; }
+  try { const j = await api("/v1/admin/contain"); containable = true; return Array.isArray(j) ? j : j.rules || []; }
+  catch (e) { if (e.status === 404 || e.status === 405) { containable = false; return null; } throw e; }
 }
+/** Whether to offer Contain: an admin key, on a server not known to lack it. */
+export const canContainNow = () => can("admin") && containable !== false;
+/** Whether this server can contain: asks once. */
+export async function canContain() { if (containable == null) { try { await containRules(); } catch { /* unknown: offer it */ } } return containable !== false; }
 
 /**
  * Limits or refuses a statement and/or a key for a while (scenario mock 03):
@@ -651,6 +684,7 @@ export async function containRules() {
  */
 export function containDialog({ fingerprint, sql, key, keys, onDone } = {}) {
   if (!can("admin")) { toast("Containing needs an admin key", "bad"); return; }
+  if (containable === false) { toast("This server cannot contain a statement or key yet: contain rules are newer than it", "bad", 6000); return; }
   let action = "limit", scope = key ? "key" : fingerprint ? "statement" : "key", minutes = 60, conc = 2;
   const keyIn = h("input", { class: "input sm mono", value: key || "", placeholder: "key name", style: { width: "160px" }, "aria-label": "API key" });
   const concIn = h("input", { class: "input sm num", type: "number", min: 0, value: conc, style: { width: "64px" }, "aria-label": "at most running at once", oninput: () => { conc = Math.max(0, +concIn.value || 0); draw(); } });
@@ -706,7 +740,7 @@ function radio(name, on, pick, label) {
 
 /** The contain rules as a card body: what each matches, does, until when, its hits; Remove. */
 export function containList(rules, { onChange } = {}) {
-  if (rules == null) return h("div", { class: "small muted" }, "This server has no contain rules: it is older than them.");
+  if (rules == null) return h("div", { class: "small muted" }, "This server has no contain rules yet: a newer one limits or refuses a statement or a key for a while.");
   if (!rules.length) return h("div", { class: "small muted" }, "No statement or key is limited or refused now.");
   return h("div", { class: "stack", style: { gap: "6px" } }, rules.map((r) => h("div", { class: "row nw wl-rule" },
     pill(r.action === "refuse" ? "warn" : "info", r.action === "refuse" ? "refused" : `at most ${r.concurrency ?? "?"} at once`),

@@ -11,6 +11,7 @@ import { domain, visible, setZoom } from "../data.js";
 import {
   state, link, timeRange, rangeQuery, poll, isCoord, copyName, copyTitle, copyLink, shardLink, nodeLink, statements, change, split, outcomeBar, statementLink, isOwn, containDialog, can,
   narrow, cols, sheet, copies as copiesOf,
+  canContainNow, canContain,
 } from "../workload.js";
 
 export default { id: "performance", title: "Performance", icon: "perf", group: "Operate", keywords: "latency throughput heatmap findings advisor tuning cpu memory disk routes kinds percentiles slow copies fleet failures", render };
@@ -101,7 +102,7 @@ function render(page) {
 
   // ------------------------------------------------ reads
   async function loadStmts() {
-    try { stmts = await statements(timeRange()); stmtsErr = null; } catch (e) { stmts = null; stmtsErr = e; }
+    try { [stmts] = await Promise.all([statements(timeRange()), canContain()]); stmtsErr = null; } catch (e) { stmts = null; stmtsErr = e; }
     draw();
   }
   /** The window before the range, for "was" (only when the server still has it). */
@@ -169,7 +170,7 @@ function render(page) {
       kpi("p99 latency", f.p99 != null ? unit(fmt.ms(f.p99)) : "–", [was(prev?.p99, fmt.ms), f.p99Now != null && Math.abs(f.p99Now - f.p99) > 0.2 * f.p99 ? `last 5 min ${fmt.ms(f.p99Now)}` : null].filter(Boolean).join(" · ") || "mean over the range", (prev?.p99 && f.p99Now > 2 * prev.p99 && f.p99Now > 20) ? "bad" : null, "The mean of each interval's p99 over the range; the last 5 minutes' median beside it when it differs"),
       kpi("Failed on the server", sr != null ? [fmt.si(sr * 100, 2), h("small", {}, "%")] : "–", psr != null ? `was ${fmt.si(psr * 100, 2)}%` : apart.length ? "apart: " + apart.join(", ") : f.splits ? "server errors and timeouts" : "this server does not split client errors", sr > 0.01 ? "bad" : null, "Server errors and server timeouts over the queries that ended. Client errors (400) and the clients' own deadlines are counted apart."),
       kpi(slowMs ? `Slow (over ${fmt.ms(slowMs)})` : "Slow", slowMs && f.slow != null ? [fmt.si(f.slow), h("small", {}, "/s")] : "–", slowMs ? was(prev?.slow, (v) => fmt.si(v) + "/s") : "not counted: --slow-ms is not set"),
-      kpi("Refused (429)", f.refusedS != null ? [fmt.si(f.refusedS), h("small", {}, "/s")] : "–", was(prev?.refusedS, (v) => fmt.si(v) + "/s") || (f.refusedS ? "no slot free, or a contain rule" : "none")),
+      kpi("Refused (429)", f.refusedS != null ? [fmt.si(f.refusedS), h("small", {}, "/s")] : "–", was(prev?.refusedS, (v) => fmt.si(v) + "/s") || (f.refusedS ? "no slot or memory free" : "none")),
       isCoord() && busiest
         ? kpi("Busiest copy, CPU", [fmt.si(busiest.cpu * 100, 0), h("small", {}, "%")], h("span", { title: `${copyTitle(busiest.url)}\nthe median copy: ${fmt.pct(median(cs.map((c) => c.cpu)), 0)}` }, `${copyName(busiest.url)}, median ${fmt.pct(median(cs.map((c) => c.cpu)), 0)}`), busiest.cpu > 0.85 ? "warn" : null, "Each copy's CPU over its last minute, as a share of its cores")
         : kpi("CPU", f.cpu != null ? [fmt.si(f.cpu, 1), h("small", {}, " cores")] : "–", state.system?.cores ? `of ${state.system.cores}` : null));
@@ -184,7 +185,9 @@ function render(page) {
     const f15 = (t1 - (ps[0]?.t ?? t1)) > 20 * 60e3 ? figures(ps.filter((p) => p.t >= t1 - 15 * 60e3)) : null;
     const worse = (k) => f15?.queries && fAll.queries && f15[k] / f15.queries > 1.5 * (fAll[k] / fAll.queries) ? f15 : fAll;
     const winOf = (x) => x === f15 ? "the last 15 minutes" : "the range";
-    const secsOf = (x) => x === f15 ? 15 * 60 : Math.max(1, ((r.to ?? Date.now()) - r.from) / 1000);
+    // Over the time the points cover: a server that started within the range has fewer.
+    const step = (state.series?.interval_ms || 2000) / 1000;
+    const secsOf = (x) => x === f15 ? 15 * 60 : Math.max(1, ps.length ? (t1 - ps[0].t) / 1000 + step : ((r.to ?? Date.now()) - r.from) / 1000);
     const f = fAll;
     if (ps.length) read.push(`${isCoord() && (state.fleet?.coordinators || []).length > 1 ? "this coordinator's" : "the"} series (${fmt.plural(ps.length, "point")})`); else missing.push("the series");
     if (stmts) read.push(stmts.windowed ? "the statements of the range" : "the statements since the server started"); else missing.push("the statements");
@@ -216,7 +219,7 @@ function render(page) {
         const all = tops.reduce((a, y) => a + y.n, 0) || 1, t = tops[0], k = t?.x.keys?.slice().sort((a, b) => b.calls - a.calls)[0];
         out.push({ level: "warn", id: "client_errors", title: `${fmt.si(cr * 100, 1)}% of queries are client errors (400)${w === f15 ? " in the last 15 minutes" : ""}`,
           body: [`${fmt.si(w.client / secsOf(w), 0)}/s requests the server cannot run. Not a server fault: they are counted apart from the failures.`, t ? [" ", fmt.pct(t.n / all, 0), " are one statement", k ? [" from key ", h("b", { class: "mono" }, k.key)] : "", ": ", h("code", {}, trim(t.x.sql, 80)), "."] : ""],
-          rule: `client errors (400) over 1% of the queries in ${winOf(w)}`, links: [t ? ["Open the statement", statementLink(t.x.fingerprint)] : null, t && k && can("admin") ? [`Refuse it from ${k.key}…`, () => containDialog({ fingerprint: t.x.fingerprint, sql: t.x.sql, key: k.key, keys: t.x.keys?.map((y) => ({ key: y.key })) })] : null] });
+          rule: `client errors (400) over 1% of the queries in ${winOf(w)}`, links: [t ? ["Open the statement", statementLink(t.x.fingerprint)] : null, t && k && canContainNow() ? [`Refuse it from ${k.key}…`, () => containDialog({ fingerprint: t.x.fingerprint, sql: t.x.sql, key: k.key, keys: t.x.keys?.map((y) => ({ key: y.key })) })] : null] });
       }
     }
     // Client deadlines, apart.
@@ -252,6 +255,7 @@ function render(page) {
       const grew = (stmts?.statements || []).filter((x) => !isOwn(x)).map((x) => ({ x, c: change(x) })).filter((y) => y.c?.p99X >= 2).sort((a, b) => (b.x.share || 0) - (a.x.share || 0))[0];
       const sinceCopy = slowCopy ? copySince(slowCopy) : null;
       const body = [];
+      let heavyS = null;
       if (slowCopy) {
         body.push(`On shard ${slowCopy.shard}, copy `, h("b", { class: "mono", title: copyTitle(slowCopy.url) }, copyName(slowCopy.url)), ` answers at p99 ${fmt.ms(slowCopy.p99)}${sinceCopy ? ` since ${fmt.time(sinceCopy, false)}` : ""}; the fleet's median copy at ${fmt.ms(slowCopy.med)}. A search waits for the slowest shard it asks.`);
         const why = [];
@@ -263,11 +267,17 @@ function render(page) {
         if (why.length) body.push(` It has ${why.join(", ")}.`);
       }
       if (grew) body.push(" Slower most: ", h("code", {}, trim(grew.x.sql, 70)), ` (p99 ${fmt.ms(grew.x.prev.p99_ms)} → ${fmt.ms(grew.x.p99_ms)}, ${fmt.pct(grew.x.share || 0, 0)} of query time).`);
+      else {
+        // With no window before to compare with: the statement that takes the most time, when it is slow itself.
+        const heavy = (stmts?.statements || []).filter((x) => !isOwn(x) && x.p99_ms > (rise?.cur ?? 0) * 0.5).sort((a, b) => (b.share || 0) - (a.share || 0))[0];
+        if (heavy && heavy.share > 0.3) { body.push(" It takes ", h("b", {}, fmt.pct(heavy.share, 0)), " of the query time: ", h("code", {}, trim(heavy.sql, 70)), ` (p99 ${fmt.ms(heavy.p99_ms)}${heavy.keys?.[0]?.key ? `, from key ${heavy.keys[0].key}` : ""}).`); heavyS = heavy; }
+      }
       out.push({ level: rise ? "bad" : "warn", id: "p99",
         title: rise ? `p99 rose from ${fmt.ms(rise.base)} to ${fmt.ms(rise.cur)} at ${fmt.time(rise.since, false)}${slowCopy ? ", and one copy explains it" : ""}` : `Copy ${copyName(slowCopy.url)} is ${Math.round(slowCopy.p99 / slowCopy.med)}× slower than the median copy`,
         body: rise && !slowCopy ? [`The last 5 minutes' p99 is ${fmt.ms(rise.cur)}; no single copy explains it (the slowest copies are within 5× of the median).`, ...body] : body,
         rule: `${rise ? "the last 5 minutes' p99 over 2× the window before and over 20 ms" : ""}${rise && slowCopy ? "; " : ""}${slowCopy ? "a copy's p99 over 5× the fleet's median copy (each copy's last minute)" : ""}`,
-        links: [slowCopy ? [`Open ${copyName(slowCopy.url)}`, copyLink(slowCopy.url)] : null, slowCopy ? ["Its logs", link("logs", { node: copyName(slowCopy.url), level: "warn" })] : null, slowCopy ? [`CPU profile of ${copyName(slowCopy.url)}`, nodeLink(slowCopy.url)] : null, grew ? ["Open the statement", statementLink(grew.x.fingerprint)] : null] });
+        links: [slowCopy ? [`Open ${copyName(slowCopy.url)}`, copyLink(slowCopy.url)] : null, slowCopy ? ["Its logs", link("logs", { node: copyName(slowCopy.url), level: "warn" })] : null, slowCopy ? [`CPU profile of ${copyName(slowCopy.url)}`, nodeLink(slowCopy.url)] : null, grew ? ["Open the statement", statementLink(grew.x.fingerprint)] : heavyS ? ["Open the statement", statementLink(heavyS.fingerprint)] : null] });
+      if (heavyS) own.add("share:" + heavyS.fingerprint);
     } else if (withDetail.some((c) => c.p99 != null)) {
       const ok = withDetail.filter((c) => c.p99 != null), w = ok.slice().sort((a, b) => b.p99 - a.p99)[0];
       checked.push(`slowest copy ${fmt.ms(w.p99)} (median ${fmt.ms(median(ok.map((c) => c.p99)))})`);
@@ -291,9 +301,17 @@ function render(page) {
     }
     // One statement takes most of the time.
     const topS = (stmts?.statements || []).filter((x) => !isOwn(x)).sort((a, b) => (b.share || 0) - (a.share || 0))[0];
-    if (topS && topS.share > 0.4 && topS.calls > 10) out.push({ level: "info", id: "share", title: `One statement takes ${fmt.pct(topS.share, 0)} of query time`, body: [h("code", {}, trim(topS.sql, 110)), ` · ${fmt.si(topS.calls / Math.max(1, ((r.to ?? Date.now()) - r.from) / 1000))} calls/s · p99 ${fmt.ms(topS.p99_ms)}.`], rule: stmts?.windowed ? "statement statistics of the range" : "statement statistics since the server started", links: [["Open the statement", statementLink(topS.fingerprint)]] });
+    if (topS && topS.share > 0.4 && topS.calls > 10 && !own.has("share:" + topS.fingerprint)) out.push({ level: "info", id: "share", title: `One statement takes ${fmt.pct(topS.share, 0)} of query time`, body: [h("code", {}, trim(topS.sql, 110)), ` · ${fmt.si(topS.calls / Math.max(1, (stmts?.span_ms ?? ((r.to ?? Date.now()) - r.from)) / 1000))} calls/s · p99 ${fmt.ms(topS.p99_ms)}.`], rule: stmts?.windowed ? "statement statistics of the range" : "statement statistics since the server started", links: [["Open the statement", statementLink(topS.fingerprint)]] });
     // Refused.
-    if (f.refusedS > 0.1) out.push({ level: "warn", id: "refused", title: `${fmt.si(f.refusedS)}/s queries refused (429)`, body: ["No query slot was free, or a contain rule refused them. Clients see 429 and may retry."], rule: "refused over 0.1/s over the range", links: [["Contain rules in Queries", link("queries", { tab: "live" })]] });
+    if (f.refusedS > 0.1) {
+      const refusedOf = (x) => (x.outcomes?.refused || 0) + (x.outcomes?.rejected || 0);
+      const topR = (stmts?.statements || []).filter((x) => refusedOf(x) > 0).sort((a, b) => refusedOf(b) - refusedOf(a))[0];
+      out.push({ level: "warn", id: "refused", title: `${fmt.si(f.refusedS)}/s queries refused (429)`,
+        body: [`The server turned them away before running them: no query slot was free${canContainNow() ? ", the queries' memory was at its limit, or a contain rule refused them" : " or the queries' memory was at its limit"}. Clients see 429 and may retry.`,
+          topR ? [" Refused most: ", h("code", {}, trim(topR.sql, 80)), ` (${fmt.n(refusedOf(topR))} in the range).`] : ""],
+        rule: "refused over 0.1/s over the range",
+        links: [topR ? ["Open the statement", statementLink(topR.fingerprint)] : null, canContainNow() ? ["Contain rules in Queries", link("queries", { tab: "live" })] : null].filter(Boolean) });
+    }
     // Replication lag and copies down, from the fleet's checks.
     for (const c of state.fleet?.checks || []) {
       if (c.status === "ok" || own.has(c.id)) continue;
@@ -304,7 +322,7 @@ function render(page) {
     const covers = { error_ratio: /error|fail|avail/i, p99: /p99|latency|slow/i, disk: /disk/i };
     for (const p of state.fleet?.problems || []) {
       if (own.has(p.id) || out.some((x) => x.id === p.id || (covers[x.id] && covers[x.id].test(`${p.id} ${p.title}`)))) continue;
-      out.push({ level: p.severity === "critical" ? "bad" : "warn", id: p.id, title: p.title, body: [p.impact ? p.impact + ". " : "", (p.where || []).length ? `Where: ${p.where.join(", ")}.` : ""], rule: state.fleet.derived ? "worked out here from the cluster" : "the fleet's health", links: [p.next ? [p.next.text, link(p.next.view, p.next.params || {})] : null] });
+      out.push(fleetFinding(p, topS, out));
     }
     const order = { bad: 0, warn: 1, info: 2 };
     out.sort((a, b) => order[a.level] - order[b.level]);
@@ -316,6 +334,24 @@ function render(page) {
     else if (missing.length || !ps.length) bodyEl = h("div", { class: "row nw", style: { gap: "10px" } }, icon("info"), h("span", {}, `Nothing found in what could be read, but ${missing.join(" and ") || "the series"} could not be read: this is not an all-clear.`));
     else bodyEl = h("div", { class: "row nw", style: { gap: "10px" } }, h("span", { style: { color: "var(--good)" } }, icon("okc")), h("span", {}, `Nothing needs attention over the ${r.label.replace(/^last /, "last ")}. Checked: ${checked.join(", ")}.`));
     clear(findBox, card({ title: "What needs attention", sub, body: [readLine, bodyEl] }));
+  }
+  /** One of the server's own problems as a finding. Long advice goes in the text, under a short link. */
+  function fleetFinding(p, topS, out) {
+    const said = `${p.title} ${p.impact || ""}`.toLowerCase();
+    const where = (p.where || []).filter((w) => !said.includes(String(w).toLowerCase()));
+    const next = p.next?.text || "";
+    const VIEWS = { cluster: "Open Cluster", queries: "Open Queries", performance: "See the statements below", tables: "Open Tables and storage", alerts: "Open Alerts", logs: "Open Logs" };
+    const short = next.length <= 48 ? next : VIEWS[p.next?.view] || "Open it";
+    const body = [p.impact ? p.impact + ". " : "", p.why ? h("span", { class: "muted" }, p.why.replace(/^./, (c) => c.toUpperCase()) + ". ") : "", where.length ? `Where: ${where.join(", ")}. ` : "", next.length > 48 && p.next?.view !== "performance" ? `Next: ${next.replace(/\.$/, "")}.` : ""];
+    const links = [p.next && p.next.view !== "performance" ? [short, link(p.next.view, p.next.params || {})] : null];
+    // The fleet's p99 check with one statement taking most of the time: name it here, not in a finding of its own.
+    if (p.id === "p99" && topS && topS.share > 0.3) {
+      body.push(" ", h("b", {}, fmt.pct(topS.share, 0)), " of the query time is one statement: ", h("code", {}, trim(topS.sql, 80)), ` (p99 ${fmt.ms(topS.p99_ms)}${topS.keys?.[0]?.key ? `, mostly key ${topS.keys[0].key}` : ""}).`);
+      links.push(["Open the statement", statementLink(topS.fingerprint)]);
+      const i = out.findIndex((x) => x.id === "share");
+      if (i >= 0) out.splice(i, 1);
+    }
+    return { level: p.severity === "critical" ? "bad" : "warn", id: p.id, title: p.title, body, rule: state.fleet.derived ? "worked out here from the cluster" : "the fleet's health", links };
   }
   /** When a copy's p99 went over 5× the median, from /v1/load. */
   function copySince(c) {
@@ -339,8 +375,10 @@ function render(page) {
   // ------------------------------------------------ every copy by p99
   function drawCopies() {
     if (!isCoord()) { clear(copiesBox); return; }
-    const cs = copiesOf().filter((c) => c.p99 != null).sort((a, b) => b.p99 - a.p99);
-    if (!cs.length) { clear(copiesBox, card({ title: "Copies by p99", body: h("div", { class: "small muted" }, "No copy sent its figures yet.") })); return; }
+    const all = copiesOf(), cs = all.filter((c) => c.p99 != null).sort((a, b) => b.p99 - a.p99);
+    const silent = all.filter((c) => c.p99 == null);
+    const silentEl = silent.length ? h("span", { class: "wl-bad" }, `${silent.map((c) => c.name).join(", ")} ${silent.some((c) => c.status === "down") ? "down" : "sent nothing"}: not in the chart · `) : "";
+    if (!cs.length) { clear(copiesBox, card({ title: "Copies by p99", body: h("div", { class: "small muted" }, silent.length ? [silentEl, "no copy sent its figures."] : "No copy sent its figures yet.") })); return; }
     const med = median(cs.map((c) => c.p99));
     const W = 1000, H = 70, bw = Math.min(W / cs.length, 40);
     const max = Math.log10(Math.max(1.1, cs[0].p99 + 1)), y = (v) => H - 4 - (Math.log10(v + 1) / max) * (H - 8);
@@ -354,13 +392,13 @@ function render(page) {
     });
     const named = cs.slice(0, 3).map((c) => h("a", { class: "wl-link mono", href: copyLink(c.url), title: copyTitle(c.url) }, `${copyName(c.url)} ${fmt.ms(c.p99)}`));
     clear(copiesBox, card({ title: "Copies by p99", sub: "every copy of every shard, the slowest first · each copy's last minute · click one to open it", attrs: { style: { marginBottom: "14px" } }, body: [svg,
-      h("div", { class: "row small muted", style: { justifyContent: "space-between", marginTop: "6px" } }, h("span", { class: "row nw", style: { gap: "10px" } }, named), h("span", {}, `${fmt.plural(cs.length, "copy", "copies")} · median ${fmt.ms(med)} · log scale`))] }));
+      h("div", { class: "row small muted", style: { justifyContent: "space-between", marginTop: "6px" } }, h("span", { class: "row nw", style: { gap: "10px" } }, named), h("span", {}, silentEl, `${fmt.plural(cs.length, "copy", "copies")} · median ${fmt.ms(med)} · log scale`))] }));
   }
 
   // ------------------------------------------------ what got slower
   function drawSlower() {
     if (!stmts) { clear(slowerBox, stmtsErr ? card({ title: "What got slower", body: h("div", { class: "small muted" }, "The statements could not be read: " + stmtsErr.message) }) : null); return; }
-    const r = timeRange(), secs = Math.max(1, ((r.to ?? Date.now()) - r.from) / 1000);
+    const r = timeRange(), secs = Math.max(1, (stmts.span_ms ?? ((r.to ?? Date.now()) - r.from)) / 1000);
     const list = stmts.statements.filter((x) => !isOwn(x));
     if (!stmts.windowed) {
       const top = list.slice().sort((a, b) => (b.total_ms || 0) - (a.total_ms || 0)).slice(0, 6);
