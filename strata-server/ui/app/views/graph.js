@@ -11,7 +11,7 @@ import { SERIES } from "../charts.js";
 import { quoteName } from "../sqledit.js";
 import { viewport } from "./topology.js";
 
-export default { id: "graph", title: "Graph explorer", icon: "graph", group: "Explore", full: true, keywords: "graph network nodes edges links neighbours force layout pagerank ppr path reachable hops edge table co-occurrence similarity explore", render };
+export default { id: "graph", title: "Graph explorer", icon: "graph", group: "Labs", full: true, range: false, keywords: "graph network nodes edges links neighbours force layout pagerank ppr path reachable hops edge table co-occurrence similarity explore", render };
 
 const lit = (v) => typeof v === "number" ? String(v) : `'${String(v).replace(/'/g, "''")}'`;
 

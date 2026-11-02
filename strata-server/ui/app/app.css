@@ -1546,4 +1546,13 @@ button.rx-node:hover { border-color: var(--accent); box-shadow: 0 0 0 3px var(--
 .dt-sh.warn { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); color: var(--text); }
 .dt-sh.bad { background: var(--crit-soft); border-color: color-mix(in srgb, var(--crit) 50%, var(--line)); color: var(--crit-ink); }
 .ix-scope .dt-sh.sel { outline: 2px solid var(--accent); outline-offset: 0; }
+/* Labs: what a view needs before it has anything to show */
+.dt-empty { display: flex; flex-direction: column; gap: 14px; max-width: 760px; margin: 24px auto; padding: 20px 22px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); }
+.dt-empty-hd { display: flex; gap: 12px; align-items: flex-start; }
+.dt-empty-hd h3 { margin: 0 0 4px; font-size: 15px; }
+.dt-empty-hd .ic { flex: none; margin-top: 2px; color: var(--muted); }
+.dt-needs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.dt-need { display: grid; grid-template-columns: 72px 1fr; gap: 10px; align-items: start; }
+.dt-need .pill { justify-self: start; }
+.card > .dt-empty { border: 0; box-shadow: none; margin: 0; max-width: none; }
 /* ===== end data ===== */

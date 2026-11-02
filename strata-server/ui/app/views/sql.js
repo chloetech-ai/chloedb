@@ -20,7 +20,7 @@ import { profileView } from "../profile.js";
 import { state, isProduction } from "../data.js";
 import { parseStatement, runLabel, mode, askAllow, checkWrite, endWrites, writesAllowed, whereName, reach, nearNames, replaceWord } from "../sqlguard.js";
 
-export default { id: "sql", title: "SQL workbench", icon: "sql", group: "Data", full: true, keywords: "query editor sql run explain plan results chart history saved snippets parameters", render, onParams };
+export default { id: "sql", title: "SQL workbench", icon: "sql", group: "Data", full: true, range: false, keywords: "query editor sql run explain plan results chart history saved snippets parameters", render, onParams };
 
 let openSql = null;
 function onParams(r) { const q = r.params.get("q"); if (q && openSql) openSql(q, r.params.get("p")); }

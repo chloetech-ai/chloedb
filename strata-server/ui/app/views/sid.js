@@ -10,7 +10,7 @@ import { tables, table as tableOf } from "../catalog.js";
 import { SERIES } from "../charts.js";
 import { quoteName } from "../sqledit.js";
 
-export default { id: "sid", title: "Semantic IDs", icon: "sid", group: "Explore", full: true, keywords: "semantic ids codebook residual quantization rq-vae generative retrieval recommender beam search decoding prefix codes clusters sunburst", render };
+export default { id: "sid", title: "Semantic IDs", icon: "sid", group: "Labs", full: true, range: false, keywords: "semantic ids codebook residual quantization rq-vae generative retrieval recommender beam search decoding prefix codes clusters sunburst", render };
 
 const sidFields = (t) => (t?.short?.fields || []).filter((f) => f.semantic_id);
 const depth = (c) => (c ? c.split(".").length : 0);
@@ -29,7 +29,7 @@ function render(page) {
 
   tables().then(async (list) => {
     ts = list.filter((t) => sidFields(t).length);
-    if (!ts.length) { drawNone(); return; }
+    if (!ts.length) { drawNone(list); return; }
     if (!st || !tableOf(st.table) || !sidFields(tableOf(st.table)).some((f) => f.name === st.field)) st = fresh(ts[0]);
     save(); await start();
   }).catch((e) => clear(sun, failure(e, "The tables")));
@@ -40,11 +40,24 @@ function render(page) {
     const shown = (t.short.fields || []).find((x) => x.type === "text" && x.stored !== false)?.name || t.short.key;
     return { table: t.table, field: f.name, color, shown, where: "", focus: "", path: [] };
   }
-  function drawNone() {
+  /** What this view needs, what this server has of it, and a table to start from. */
+  function drawNone(all) {
     clear(top);
-    clear(sun, empty("sid", "No semantic-ID field", "A KEYWORD[] field declared as the semantic IDs of a VECTOR field, by a codebook in the models directory, holds every prefix of each row's code."),
-      h("div", { class: "rx-howto" }, sqlBlock("CREATE TABLE items (\n  id KEYWORD PRIMARY KEY,\n  title TEXT,\n  emb VECTOR(64),\n  sid KEYWORD[] OPTIONS(semantic_id = 'emb', codebook = 'items-rq')\n);"),
-        h("div", { class: "small muted" }, "Train the codebook with strata.train.codebook in Python (residual k-means, up to 4 levels of up to 256), or export an RQ-VAE's levels as safetensors.")));
+    const vecs = all.flatMap((t) => (t.short?.fields || []).filter((f) => f.type === "vector").map((f) => ({ t: t.table, f })));
+    const v = vecs[0];
+    const dims = v?.f.dims || v?.f.dim || 64;
+    const sql = `CREATE TABLE items (\n  id KEYWORD PRIMARY KEY,\n  title TEXT,\n  emb VECTOR(${dims}),\n  sid KEYWORD[] OPTIONS(semantic_id = 'emb', codebook = 'items-rq')\n);`;
+    const need = (ok, what, how) => h("li", { class: "dt-need" }, h("span", { class: "pill " + (ok ? "ok" : "warn") }, ok ? "here" : "needed"), h("div", {}, h("b", {}, what), how ? h("div", { class: "small dim" }, how) : null));
+    clear(sun, h("div", { class: "dt-empty" },
+      h("div", { class: "dt-empty-hd" }, icon("sid", "lg"), h("div", {}, h("h3", {}, "Semantic IDs need a semantic-ID field"), h("div", { class: "small dim" }, `None of the ${fmt.plural(all.length, "table")} here has one. A semantic ID is a short code per row, cut from its vector by a codebook; the view draws the codes as a tree and decodes them as /v1/sid/next does.`))),
+      h("ol", { class: "dt-needs" },
+        need(!!v, "A VECTOR field with the rows' embeddings", v ? `This server has ${vecs.slice(0, 3).map((x) => `${x.t}.${x.f.name}`).join(", ")}${vecs.length > 3 ? ` and ${vecs.length - 3} more` : ""}.` : "Add one to a table, embedded by the server or written by your own model."),
+        need(false, "A codebook in the server's models directory", "Train it with strata.train.codebook in Python (residual k-means, up to 4 levels of up to 256 codes), or export an RQ-VAE's levels as safetensors."),
+        need(false, "A KEYWORD[] field declared as the semantic IDs of that vector", "It holds every prefix of each row's code, so a prefix finds its rows with an ordinary filter.")),
+      sqlBlock(sql),
+      h("div", { class: "row", style: { gap: "8px" } },
+        h("a", { class: "btn primary", href: "#/schema?new=1" }, icon("schema"), "Design a table"),
+        h("a", { class: "btn", href: "#/sql?q=" + encodeURIComponent(sql) }, icon("sql"), "Open in the SQL workbench"))));
     cols.remove(); book.remove();
   }
 
