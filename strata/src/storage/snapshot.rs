@@ -182,9 +182,10 @@ pub(crate) fn next_mem_id() -> u64 {
 /// Where a snapshot found the live row of a primary key ([`Snapshot::find`]).
 pub enum Found<'a> {
     /// In the memtable's last chunk, not built: the document as written,
-    /// with values set in place since applied, and its sequence number (0
-    /// unnumbered).
-    Memtable { doc: Document, seq: u64 },
+    /// with values set in place since applied, its sequence number (0
+    /// unnumbered), and the segment ordinal and docID it has in the
+    /// chunk's segment once built (the last of [`Snapshot::segments`]).
+    Memtable { doc: Document, seq: u64, at: (usize, DocId) },
     /// Document `doc` of segment `seg` (an ordinal of
     /// [`Snapshot::segments`]), whose stored fields are read from `view`.
     Segment { seg: usize, doc: DocId, view: &'a SegmentView },
@@ -348,7 +349,7 @@ impl Snapshot {
                     Some(s) => crate::storage::state::mem_seq(p.updates.as_deref().unwrap_or(&Updates::default()), s, j as u32),
                     None => 0,
                 };
-                return Some(Found::Memtable { doc, seq });
+                return Some(Found::Memtable { doc, seq, at: (slot.base.segments.len(), j as DocId) });
             }
         }
         let v = &slot.base;
