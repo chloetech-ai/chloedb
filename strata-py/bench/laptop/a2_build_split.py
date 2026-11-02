@@ -53,7 +53,8 @@ def strata_build(coll: Collection, path: Path, vectors: bool) -> dict:
             d = coll.docs[i]
             row = {k: d[k] for k in COLS}
             if vectors:
-                row["emb"] = coll.vecs[i].tolist()
+                # A numpy row, as an app holds it (strata-py reads its bytes).
+                row["emb"] = coll.vecs[i]
             rows.append(row)
         db.insert(rows)
     t1 = time.perf_counter()

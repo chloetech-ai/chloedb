@@ -76,7 +76,7 @@ Rows are dicts of field name to value: `str`, `int`, `float`, `None`, `bool` for
 
 | method | what it does |
 |---|---|
-| `insert(rows)` | adds a row (a dict) or rows (any iterable of dicts) whose keys must be new; all or none are written. From 1,000 rows on, they are bulk-loaded straight into segments. |
+| `insert(rows)` | adds a row (a dict) or rows (any iterable of dicts) whose keys must be new; all or none are written. Fewer than 10,000 rows go through the write-ahead log into memory, which gathers the rows of many inserts into one segment once it holds 10,000; from 10,000 rows on, they are bulk-loaded straight into segments. A vector may be a numpy array of float32 or float64, which is read from its bytes rather than a Python float at a time. |
 | `upsert(rows)` | adds rows, replacing the rows with their keys, in transactions of 10,000 |
 | `delete(keys)` | deletes the rows with a key or keys; returns how many there were |
 | `get(key)`, `get_many(keys)` | the row with a primary key (a dict of the columns `SELECT *` gives), or `None`, read without SQL ([rows by key](server.md#rows-by-key)); `get_many` answers a list in the keys' order. Each takes `table=` |
