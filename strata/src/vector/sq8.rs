@@ -107,23 +107,39 @@ impl Sq8 {
     }
 
     /// [`Sq8::prepare`] without the float32 weights, for [`Sq8Query::dot`]
-    /// only: graph construction prepares one per insert and per neighbour
-    /// it compares candidates with.
+    /// only.
     pub fn prepare_int8(&self, q: &[f32], stride: usize) -> Sq8Query {
+        let (alpha, bias) = self.int8_params(q);
+        let mut q8 = vec![0i8; stride];
+        self.quantize_int8(q, alpha, &mut q8);
+        Sq8Query { q8, w: Vec::new(), alpha, bias }
+    }
+
+    /// The `alpha` and `bias` of `q`'s [`Sq8Query`], as [`Sq8::prepare`]
+    /// computes them. Graph construction prepares every vector many times
+    /// (once for each node whose links it is compared with), so it keeps
+    /// these per node and quantises with [`Sq8::quantize_int8`]: the bias's
+    /// float64 sum is a chain of additions as long as the vector.
+    pub fn int8_params(&self, q: &[f32]) -> (f32, f32) {
         let mut bias = 0f64;
         let mut max = 0f32;
         for j in 0..self.dim() {
             max = max.max((q[j] * self.scale[j]).abs());
             bias += q[j] as f64 * self.min[j] as f64;
         }
-        let alpha = max / 127.0;
-        let mut q8 = vec![0i8; stride];
+        (max / 127.0, bias as f32)
+    }
+
+    /// `q`'s int8 weights for `alpha` (from [`Sq8::int8_params`]) into
+    /// `out[..dim]`, with the SIMD kernel; zeros if `alpha` is 0. `out`
+    /// past `dim` is left as it is.
+    pub fn quantize_int8(&self, q: &[f32], alpha: f32, out: &mut [i8]) {
+        let dim = self.dim();
         if alpha > 0.0 {
-            for j in 0..self.dim() {
-                q8[j] = ((q[j] * self.scale[j]) / alpha).round().clamp(-127.0, 127.0) as i8;
-            }
+            kernels::quantize_i8(&q[..dim], &self.scale, alpha, &mut out[..dim]);
+        } else {
+            out[..dim].fill(0);
         }
-        Sq8Query { q8, w: Vec::new(), alpha, bias: bias as f32 }
     }
 }
 

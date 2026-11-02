@@ -162,6 +162,10 @@ class Strata:
     def delete_one(self, table: str, key: str) -> None:
         self.db.delete(key, table=table)
 
+    def get_keys(self, keys: list) -> list:
+        """Rows by primary key without SQL (`get_many`, since #210)."""
+        return self.db.get_many(keys, table="products")
+
     def optimize(self) -> None:
         self.db.optimize()
 
@@ -322,6 +326,7 @@ def make(name: str, work: Path):
 # ---------------------------------------------------------------- the queries
 
 GET_PRODUCT = "SELECT id, title, brand, price, rating, stock FROM products WHERE id = :id"
+GET_100 = "SELECT id, title, brand, price, rating, stock FROM products WHERE id IN (" + ", ".join(f":k{i}" for i in range(100)) + ")"
 USER_REVIEWS = "SELECT id, product_id, rating, ts FROM reviews WHERE user_id = :u ORDER BY ts DESC LIMIT 50"
 PAGE = "SELECT id, title, price, rating FROM products WHERE category = :c AND price BETWEEN :lo AND :hi ORDER BY rating DESC, id LIMIT 20 OFFSET {off}"
 AGG_BRAND = "SELECT brand, AVG(rating) AS avg_rating, COUNT(*) AS n FROM products WHERE brand IS NOT NULL GROUP BY brand HAVING COUNT(*) >= 20 ORDER BY n DESC, brand LIMIT 20"
@@ -403,7 +408,22 @@ def run(name: str, shop: Path, work: Path, seconds: float, limit_reviews: int | 
     }
     for t in (4,):
         rep["get"][f"product_{t}threads"] = timed_passes(lambda k: s.q(GET_PRODUCT, {"id": k}), pids, seconds, t)
-    print(f"{name}: get p50 {rep['get']['product']['p50_ms'] * 1e3:.0f} µs, user reviews p50 {rep['get']['user_reviews']['p50_ms']:.3f} ms", file=sys.stderr)
+    # 100 products by id in one statement (a cart, a page of favourites).
+    hundreds = [pids[i:i + 100] for i in range(0, len(pids), 100)]
+    rep["get"]["products_100"] = timed_passes(lambda ks: s.q(GET_100, {f"k{i}": k for i, k in enumerate(ks)}), hundreds, seconds)
+    line = f"{name}: get p50 {rep['get']['product']['p50_ms'] * 1e3:.0f} µs, 100 by id {rep['get']['products_100']['p50_ms']:.3f} ms, user reviews p50 {rep['get']['user_reviews']['p50_ms']:.3f} ms"
+    if hasattr(s, "get_keys"):
+        # The same reads by key without SQL; SQLite's sqlite3 module already
+        # reuses the prepared statement, so its SQL row is its key read.
+        rep["get"]["product_by_key"] = timed_passes(lambda k: s.get_keys([k]), pids, seconds)
+        rep["get"]["product_by_key_4threads"] = timed_passes(lambda k: s.get_keys([k]), pids, seconds, 4)
+        rep["get"]["products_100_by_key"] = timed_passes(s.get_keys, hundreds, seconds)
+        cols = ("id", "title", "brand", "price", "rating", "stock")
+        by_key = [tuple(r[c] for c in cols) for r in s.get_keys(hundreds[0]) if r is not None]
+        by_sql = s.q(GET_100, {f"k{i}": k for i, k in enumerate(hundreds[0])})
+        rep["get"]["by_key_matches_sql"] = sorted(canon(by_key), key=lambda r: r[0]) == sorted(canon(by_sql), key=lambda r: r[0])
+        line += f"; by key {rep['get']['product_by_key']['p50_ms'] * 1e3:.0f} µs, 100 by key {rep['get']['products_100_by_key']['p50_ms']:.3f} ms (same rows as SQL: {rep['get']['by_key_matches_sql']})"
+    print(line, file=sys.stderr)
 
     # answers, compared across systems by the analysis
     page_cat = max(cats, key=cats.get)
@@ -411,6 +431,7 @@ def run(name: str, shop: Path, work: Path, seconds: float, limit_reviews: int | 
     lo, hi = prices[len(prices) // 10], prices[len(prices) * 9 // 10]
     rep["answers"] = {
         "get": canon(s.q(GET_PRODUCT, {"id": pids[0]})),
+        "get_100": sorted(canon(s.q(GET_100, {f"k{i}": k for i, k in enumerate(hundreds[0])})), key=lambda r: r[0]),
         "user_reviews": canon(s.q(USER_REVIEWS, {"u": uids[0]})),
         "page_0": canon(s.q(PAGE.format(off=0), {"c": page_cat, "lo": lo, "hi": hi})),
         "agg_brand": canon(s.q(AGG_BRAND)),

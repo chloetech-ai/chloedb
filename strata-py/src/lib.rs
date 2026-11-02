@@ -4,8 +4,9 @@
 //!
 //! Rows cross the boundary as JSON-like Python values (dicts, lists,
 //! strings, numbers, None), read by the same code as files and the HTTP
-//! API ([`strata::ingest`]). Every call that reads or writes the database
-//! releases the GIL.
+//! API ([`strata::ingest`]); a row's vector given as a numpy array is read
+//! from the array's bytes instead. Every call that reads or writes the
+//! database releases the GIL.
 
 #[cfg(feature = "datafusion")]
 mod arrow;
@@ -16,7 +17,8 @@ use std::sync::{Arc, RwLock};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
+use pyo3::intern;
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use serde_json::{Map, Number, Value as Json};
 use strata::db::{Db, SqlResult};
 use strata::ingest::{self, Format};
@@ -28,6 +30,7 @@ use strata::rank_log::{Export, Log};
 use strata::schema::Schema;
 use strata::sid::{Codebook, TrainOptions};
 use strata::sqlite;
+use strata::segment::build::BuildOptions;
 use strata::storage::{DbOptions, Layout, MergePolicy};
 use strata::{FieldType, Value};
 
@@ -39,9 +42,14 @@ fn err(e: strata::Error) -> PyErr {
 
 /// Rows a write transaction carries (as `strata-server import` does).
 const BATCH: usize = ingest::IMPORT_BATCH;
-/// Inserts of at least this many rows are bulk-loaded into new segments in
-/// one commit; fewer go through the write-ahead log.
-const BULK_INSERT: usize = 1000;
+/// Inserts of at least this many rows, the memtable's size, are bulk-loaded
+/// into new segments in one commit. Fewer go through the write-ahead log
+/// into the memtable, which gathers the rows of many inserts into one
+/// segment when it fills (the insert that fills it builds it): an app
+/// inserting 2,000 rows at a time makes one segment of 10,000 rows where it
+/// made five, and the merges after them have a fifth of the segments to
+/// join.
+const BULK_INSERT: usize = 10_000;
 
 /// A Python value as JSON. Numpy arrays and scalars (anything with
 /// `tolist()`) become lists and numbers.
@@ -194,6 +202,102 @@ fn rows_json(rows: &Bound<'_, PyAny>) -> PyResult<Vec<Json>> {
     rows.try_iter()?.map(|r| to_json(&r?)).collect()
 }
 
+/// A row to write: its values as JSON, except the vectors of fields that
+/// take one ([`ingest::takes_vector`]) given as arrays ([`array_f32`]),
+/// which stay float32.
+struct Row {
+    json: Json,
+    vectors: Vec<(usize, Vec<f32>)>,
+}
+
+/// The rows of `rows` (a dict, or an iterable of them) for `schema`.
+fn rows_of(rows: &Bound<'_, PyAny>, schema: &Schema) -> PyResult<Vec<Row>> {
+    if rows.cast::<PyDict>().is_ok() {
+        return Ok(vec![row_of(rows, schema)?]);
+    }
+    rows.try_iter()?.map(|r| row_of(&r?, schema)).collect()
+}
+
+fn row_of(o: &Bound<'_, PyAny>, schema: &Schema) -> PyResult<Row> {
+    let Ok(d) = o.cast::<PyDict>() else { return Ok(Row { json: to_json(o)?, vectors: Vec::new() }) };
+    let mut m = Map::new();
+    let mut vectors = Vec::new();
+    for (k, v) in d.iter() {
+        let k = k.cast::<PyString>().map_err(|_| PyValueError::new_err(format!("keys are strings, not {}", k.repr().map(|r| r.to_string()).unwrap_or_default())))?;
+        let k = k.to_str()?;
+        if let Some(f) = schema.field_index(k).filter(|&f| ingest::takes_vector(&schema.fields[f])) {
+            if let Some(xs) = array_f32(&v)? {
+                vectors.push((f, xs));
+                continue;
+            }
+        }
+        m.insert(k.to_string(), to_json(&v)?);
+    }
+    Ok(Row { json: Json::Object(m), vectors })
+}
+
+/// `o`'s numbers if it is a one-dimensional array of float32 or float64 in
+/// this machine's byte order, by the array interface (numpy's): read from
+/// its bytes, without the Python float per number that `tolist()` makes
+/// and JSON's number after it. `None` for anything else.
+fn array_f32(o: &Bound<'_, PyAny>) -> PyResult<Option<Vec<f32>>> {
+    if o.cast::<PyList>().is_ok() || o.cast::<PyTuple>().is_ok() {
+        return Ok(None);
+    }
+    let py = o.py();
+    let Ok(ai) = o.getattr(intern!(py, "__array_interface__")) else { return Ok(None) };
+    let Ok(ai) = ai.cast::<PyDict>() else { return Ok(None) };
+    let (Some(ty), Some(shape)) = (ai.get_item("typestr")?, ai.get_item("shape")?) else { return Ok(None) };
+    let ty: String = ty.extract()?;
+    let native = if cfg!(target_endian = "little") { "<" } else { ">" };
+    let width = match ty.strip_prefix(native).or_else(|| ty.strip_prefix('=')) {
+        Some("f4") => 4,
+        Some("f8") => 8,
+        _ => return Ok(None),
+    };
+    if shape.len()? != 1 {
+        return Ok(None);
+    }
+    let bytes = o.call_method0(intern!(py, "tobytes"))?;
+    let b = bytes.cast::<PyBytes>()?.as_bytes();
+    Ok(Some(match width {
+        4 => b.chunks_exact(4).map(|c| f32::from_ne_bytes(c.try_into().expect("four bytes"))).collect(),
+        _ => b.chunks_exact(8).map(|c| f64::from_ne_bytes(c.try_into().expect("eight bytes")) as f32).collect(),
+    }))
+}
+
+/// The cores a database uses unless `threads` says otherwise: the machine's
+/// (on Linux, its cgroup's quota).
+fn threads_or_cores(threads: Option<usize>) -> PyResult<usize> {
+    match threads {
+        Some(0) => Err(PyValueError::new_err("threads: at least 1")),
+        Some(n) => Ok(n),
+        None => Ok(std::thread::available_parallelism().map_or(1, |n| n.get())),
+    }
+}
+
+/// How this module opens a database, as strata-server does: segment builds
+/// (flushes, merges) build vector indexes on `threads` cores, and the newest
+/// in-memory chunk keeps its vectors flat, since a graph over so few rows
+/// costs more to build at every write than an exact scan of them costs a
+/// query.
+fn db_options(directory: bool, threads: usize) -> DbOptions {
+    DbOptions {
+        layout: if directory { Layout::Directory } else { Layout::SingleFile },
+        build: BuildOptions::default().set("vector.threads", threads),
+        mem_build: Some(BuildOptions::default().set("vector.index", "flat")),
+        memtable_max_docs: BULK_INSERT,
+        ..DbOptions::default()
+    }
+}
+
+/// Queries search segments on up to `threads` cores: the calling thread and
+/// the process's shared pool, as its threads come free.
+fn with_threads(mut db: Db, threads: usize) -> Db {
+    db.exec.threads = threads;
+    db
+}
+
 /// A database file (or directory) opened in this process. Only one process
 /// may have a database open at a time.
 #[pyclass(frozen, module = "strata._strata")]
@@ -220,9 +324,14 @@ impl Database {
         Ok(sqlite::ImportOptions { tables: tables.unwrap_or_default(), schemas, blobs_base64 })
     }
 
-    fn documents(db: &Db, schema: &Schema, rows: &[Json]) -> strata::Result<Vec<strata::Document>> {
+    /// Documents of `rows`, the first numbered `first` in errors.
+    fn documents(db: &Db, schema: &Schema, rows: Vec<Row>, first: usize) -> strata::Result<Vec<strata::Document>> {
         let now = strata::timestamp::now();
-        let mut docs = rows.iter().enumerate().map(|(i, j)| ingest::document_at(schema, j, now).map_err(|e| strata::Error::Schema(format!("row {}: {e}", i + 1)))).collect::<strata::Result<Vec<_>>>()?;
+        let mut docs = rows
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| ingest::document_with_vectors(schema, &r.json, r.vectors, now).map_err(|e| strata::Error::Schema(format!("row {}: {e}", first + i))))
+            .collect::<strata::Result<Vec<_>>>()?;
         db.fill_in(&schema.table, &mut docs)?;
         Ok(docs)
     }
@@ -314,21 +423,24 @@ fn table_of(db: &Db, table: Option<&str>) -> strata::Result<Arc<Schema>> {
 impl Database {
     /// Creates a database at `path` with a schema (JSON text, either form).
     #[staticmethod]
-    #[pyo3(signature = (path, schema, directory = false, models = None))]
-    fn create(py: Python<'_>, path: PathBuf, schema: &str, directory: bool, models: Option<PathBuf>) -> PyResult<Self> {
+    #[pyo3(signature = (path, schema, directory = false, models = None, threads = None))]
+    fn create(py: Python<'_>, path: PathBuf, schema: &str, directory: bool, models: Option<PathBuf>, threads: Option<usize>) -> PyResult<Self> {
         let schema = Schema::from_json(schema).map_err(err)?;
-        let opts = DbOptions { layout: if directory { Layout::Directory } else { Layout::SingleFile }, ..DbOptions::default() };
+        let threads = threads_or_cores(threads)?;
+        let opts = db_options(directory, threads);
         let models = models.unwrap_or_else(strata::embed::models_dir);
         let db = py.detach(|| Db::create_in(&path, schema, opts, &models)).map_err(err)?;
-        Ok(Database::new(db, Some(models)))
+        Ok(Database::new(with_threads(db, threads), Some(models)))
     }
 
     /// Opens the database at `path`.
     #[staticmethod]
-    #[pyo3(signature = (path, models = None))]
-    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>) -> PyResult<Self> {
-        let db = py.detach(|| Db::open(&path, DbOptions::default())).map_err(err)?;
-        Ok(Database::new(db, models))
+    #[pyo3(signature = (path, models = None, threads = None))]
+    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>) -> PyResult<Self> {
+        let threads = threads_or_cores(threads)?;
+        // The layout comes from the file; the option only matters to a create.
+        let db = py.detach(|| Db::open(&path, db_options(false, threads))).map_err(err)?;
+        Ok(Database::new(with_threads(db, threads), models))
     }
 
     /// The schema of the first table, or of `table`, in its short JSON form.
@@ -447,10 +559,10 @@ impl Database {
     #[pyo3(signature = (rows, table = None))]
     fn insert(&self, py: Python<'_>, rows: &Bound<'_, PyAny>, table: Option<&str>) -> PyResult<u64> {
         let db = self.get()?;
-        let rows = rows_json(rows)?;
+        let schema = table_of(&db, table).map_err(err)?;
+        let rows = rows_of(rows, &schema)?;
         py.detach(|| -> strata::Result<u64> {
-            let schema = table_of(&db, table)?;
-            let docs = Database::documents(&db, &schema, &rows)?;
+            let docs = Database::documents(&db, &schema, rows, 1)?;
             let n = docs.len() as u64;
             if docs.len() >= BULK_INSERT {
                 db.load_into(&schema.table, docs)?;
@@ -472,19 +584,22 @@ impl Database {
     #[pyo3(signature = (rows, table = None))]
     fn upsert(&self, py: Python<'_>, rows: &Bound<'_, PyAny>, table: Option<&str>) -> PyResult<u64> {
         let db = self.get()?;
-        let rows = rows_json(rows)?;
+        let schema = table_of(&db, table).map_err(err)?;
+        let rows = rows_of(rows, &schema)?;
         py.detach(|| -> strata::Result<u64> {
-            let schema = table_of(&db, table)?;
             let mut n = 0;
-            for chunk in rows.chunks(BATCH) {
-                let docs = Database::documents(&db, &schema, chunk)?;
+            let mut rows = rows.into_iter().peekable();
+            while rows.peek().is_some() {
+                let chunk: Vec<Row> = rows.by_ref().take(BATCH).collect();
+                let len = chunk.len() as u64;
+                let docs = Database::documents(&db, &schema, chunk, n as usize + 1)?;
                 let mut t = db.storage().begin()?;
                 let mut tt = t.table(&schema.table)?;
                 for d in docs {
                     tt.upsert(d)?;
                 }
                 t.commit()?;
-                n += chunk.len() as u64;
+                n += len;
             }
             Ok(n)
         })
@@ -568,7 +683,7 @@ impl Database {
                 let kind = get("op").and_then(Json::as_str).ok_or_else(|| bad(i, "it needs \"op\""))?;
                 let s = table_of(&db, get("table").and_then(Json::as_str))?;
                 let doc = || match get("doc") {
-                    Some(d) => Ok(Database::documents(&db, &s, std::slice::from_ref(d))?.remove(0)),
+                    Some(d) => Ok(Database::documents(&db, &s, vec![Row { json: d.clone(), vectors: Vec::new() }], 1)?.remove(0)),
                     None => Err(bad(i, &format!("{kind} needs \"doc\""))),
                 };
                 let key = || {
@@ -706,7 +821,7 @@ impl Database {
     /// Creates a database at `path` from the tables of the SQLite file
     /// `sqlite_path`; returns it and what the import did as JSON.
     #[staticmethod]
-    #[pyo3(signature = (sqlite_path, path, tables = None, schemas = None, blobs_base64 = false, directory = false, models = None))]
+    #[pyo3(signature = (sqlite_path, path, tables = None, schemas = None, blobs_base64 = false, directory = false, models = None, threads = None))]
     #[allow(clippy::too_many_arguments)]
     fn from_sqlite(
         py: Python<'_>,
@@ -717,9 +832,11 @@ impl Database {
         blobs_base64: bool,
         directory: bool,
         models: Option<PathBuf>,
+        threads: Option<usize>,
     ) -> PyResult<(Self, String)> {
         let opts = Database::sqlite_options(tables, schemas, blobs_base64)?;
-        let db_opts = DbOptions { layout: if directory { Layout::Directory } else { Layout::SingleFile }, ..DbOptions::default() };
+        let threads = threads_or_cores(threads)?;
+        let db_opts = db_options(directory, threads);
         let models = models.unwrap_or_else(strata::embed::models_dir);
         let (db, embed_errors, report) = py
             .detach(|| -> strata::Result<_> {
@@ -734,7 +851,7 @@ impl Database {
                 Ok((db, embed_errors, r.to_json().to_string()))
             })
             .map_err(err)?;
-        Ok((Database { db: RwLock::new(Some(Arc::new(db))), embed_errors }, report))
+        Ok((Database { db: RwLock::new(Some(Arc::new(with_threads(db, threads)))), embed_errors }, report))
     }
 
     /// What an import of the SQLite file `sqlite_path` into a new database
@@ -872,10 +989,11 @@ impl Database {
         py.detach(|| db.train_codebook(&table, field, name, &models, &opts)).map_err(err)
     }
 
-    /// Merges small segments, as a server does in the background.
+    /// Writes the memtable's rows into segments and merges small segments,
+    /// as a server does in the background.
     fn optimize(&self, py: Python<'_>) -> PyResult<()> {
         let db = self.get()?;
-        py.detach(|| db.storage().merge(&MergePolicy::default()).map(|_| ())).map_err(err)
+        py.detach(|| db.storage().flush().and_then(|()| db.storage().merge(&MergePolicy::default())).map(|_| ())).map_err(err)
     }
 
     /// Merges small segments and closes the database (also when the last

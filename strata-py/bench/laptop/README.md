@@ -50,5 +50,6 @@ STRATA_WORK=~/bench-work $B/part_c.sh file ~/data/shop && $B/part_c.sh app && $B
 $B/part_c.sh cluster && $B/part_c.sh devloop && $B/part_c.sh compare
 ```
 
-`a2_search.py` needs a collection's workload, `strata-baselines --collections
-NAME --workload-only` (nfcorpus has none committed).
+`a2_search.py` needs a collection's workload in `strata/results/workloads/`
+(all five are committed; `strata-baselines --collections NAME --workload-only`
+makes one for another collection).
