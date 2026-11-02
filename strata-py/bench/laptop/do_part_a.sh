@@ -15,8 +15,9 @@
 #   do_part_a.sh fetch DIR   # the reports and logs into DIR
 #   do_part_a.sh down        # delete the cluster and check nothing tagged strata-bench is left
 #
-# NODE_SIZE (default g-8vcpu-32gb, $0.375 an hour at list price) is the
-# droplet the benchmark runs on; the reports name its CPU.
+# NODE_SIZE (default g-8vcpu-32gb-intel, $0.4494 an hour at list price: nyc3
+# has no plain g-8vcpu-32gb) is the droplet the benchmark runs on; the
+# reports name its CPU.
 set -euo pipefail
 
 API=https://api.digitalocean.com/v2
@@ -24,7 +25,7 @@ API=https://api.digitalocean.com/v2
 DIGITALOCEAN_TOKEN=${DIGITALOCEAN_TOKEN:-${digitalocean:-${DIGITALOCEAN:-}}}
 NAME=${NAME:-strata-bench-a}
 REGION=${REGION:-nyc3}
-NODE_SIZE=${NODE_SIZE:-g-8vcpu-32gb}
+NODE_SIZE=${NODE_SIZE:-g-8vcpu-32gb-intel}
 STATE=${STATE:-$HOME/.strata-bench-a}
 KUBECONFIG=$STATE/kubeconfig
 export KUBECONFIG
@@ -45,6 +46,7 @@ shift || true
 case "$cmd" in
 up)
     hours=${1:-14}
+    deadline=$(( $(date +%s) + hours * 3600 ))
     mkdir -p "$STATE" && chmod 700 "$STATE"
     version=$(do_api GET /kubernetes/options | python3 -c 'import json, sys; print(json.load(sys.stdin)["options"]["versions"][0]["slug"])')
     body=$(python3 - "$NAME" "$REGION" "$version" "$NODE_SIZE" <<'PY'
@@ -60,6 +62,7 @@ PY
     do_api GET "/kubernetes/clusters/$(cluster_id)/kubeconfig" >"$KUBECONFIG"
     chmod 600 "$KUBECONFIG"
     kubectl create namespace bench --dry-run=client -o yaml | kubectl apply -f -
+    echo "$deadline" >"$STATE/deadline"
     # The timer: deletes the cluster and what it made after $hours, from inside it.
     $K create secret generic do-token --from-literal=token="$DIGITALOCEAN_TOKEN" --dry-run=client -o yaml | $K apply -f - >/dev/null
     $K apply -f - <<EOF
@@ -73,7 +76,8 @@ spec:
       image: curlimages/curl:8.17.0
       env:
         - {name: TOKEN, valueFrom: {secretKeyRef: {name: do-token, key: token}}}
-      command: [sh, -c, "sleep $((hours * 3600)); curl -sS -f -X DELETE -H \"Authorization: Bearer \$TOKEN\" $API/kubernetes/clusters/$(cluster_id)/destroy_with_associated_resources/dangerous"]
+      # An absolute deadline, so a restarted pod does not start the wait over.
+      command: [sh, -c, "while [ \$(date +%s) -lt $deadline ]; do sleep 60; done; until curl -sS -f -X DELETE -H \"Authorization: Bearer \$TOKEN\" $API/kubernetes/clusters/$(cluster_id)/destroy_with_associated_resources/dangerous; do sleep 60; done"]
       resources: {requests: {cpu: 10m, memory: 16Mi}}
 EOF
     # The bench pod: the whole node, its work on the node's own SSD.
@@ -88,6 +92,8 @@ spec:
       command: [sleep, infinity]
       env:
         - {name: NODE_SIZE, value: "$NODE_SIZE"}
+      # Requests (no limits) keep the pod from being the first one evicted.
+      resources: {requests: {cpu: "6", memory: 24Gi}}
       volumeMounts:
         - {name: work, mountPath: /work}
   volumes:
@@ -95,7 +101,7 @@ spec:
       hostPath: {path: /var/lib/strata-bench, type: DirectoryOrCreate}
 EOF
     $K wait --for=condition=Ready "pod/$POD" --timeout=600s
-    echo "up: teardown in $hours h ($(date -u -d "+$hours hours" +%H:%MZ 2>/dev/null || true))"
+    echo "up: teardown at $(date -u -d "@$deadline" +%Y-%m-%dT%H:%MZ) ($hours h)"
     ;;
 push)
     in_pod "rm -rf /work/strata && mkdir -p /work/strata /work/logs"
