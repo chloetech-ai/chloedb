@@ -11,7 +11,7 @@
 // ack or backtest) the same pages show what that server has and say what
 // it cannot do.
 
-import { h, s, icon, clear, fmt, card, api, bus, drawer, toast, pill, seg, empty, menu, copy, showTip, hideTip, table, every, debounce, confirm, can, needs, copyName, findCopy, link, ago, when, whenTitle, ApiError } from "../core.js";
+import { h, s, icon, clear, fmt, card, api, bus, drawer, toast, pill, seg, empty, menu, copy, showTip, hideTip, table, every, debounce, confirm, can, needs, copyName, findCopy, link, ago, when, whenTitle, ApiError, isNarrow } from "../core.js";
 import { state, refreshAlerts, timeRange, isCoordinator } from "../data.js";
 import { niceStep } from "../charts.js";
 import { pattern } from "./logs.js";
@@ -420,7 +420,7 @@ function listView(page, r) {
   if (r.params.get("rule")) setTimeout(() => openRule(r.params.get("rule")), 60);
   else if (r.params.get("new")) setTimeout(() => editRule(null), 60);
   if (r.params.get("routes")) setTimeout(() => routesDrawer(), 60);
-  const offs = [bus.on("alerts", draw), bus.on("whoami", () => { m = null; draw(); }), bus.on("cluster", () => { if (!state.paused && m) drawSummary(); }), bus.on("range", () => { longFor = null; loadLong(); draw(); })];
+  const offs = [bus.on("alerts", draw), bus.on("whoami", () => { m = null; draw(); }), bus.on("cluster", () => { if (!state.paused && m) drawSummary(); }), bus.on("range", () => { longFor = null; loadLong(); draw(); }), bus.on("narrow", () => { if (m) drawHistory(); })];
   const stop = every(30000, () => { if (!state.paused && range().live) { longFor = null; return loadLong(); } }, false);
   return () => { offs.forEach((f) => f()); stop(); openRule = openRoutes = null; };
 }
@@ -459,7 +459,7 @@ function silenceMenu(anchor, r, after) {
   const until9 = () => { const d = new Date(); d.setDate(d.getDate() + (d.getHours() >= 9 ? 1 : 0)); d.setHours(9, 0, 0, 0); return Math.round((d - Date.now()) / 60e3); };
   menu(anchor, [[30, "for 30 minutes"], [60, "for 1 hour"], [240, "for 4 hours"], [until9(), "until 09:00"]].map(([min, label]) => ({ label: `Silence ${label}`, icon: "pause", onclick: () => silence(r, min, after) })));
   const el = [...document.querySelectorAll(".menu")].pop();
-  if (el) requestAnimationFrame(() => { const b = el.getBoundingClientRect(); if (b.bottom > innerHeight - 8) el.style.top = Math.max(8, anchor.getBoundingClientRect().top - b.height - 4) + "px"; });
+  if (el && !isNarrow()) requestAnimationFrame(() => { const b = el.getBoundingClientRect(); if (b.bottom > innerHeight - 8) el.style.top = Math.max(8, anchor.getBoundingClientRect().top - b.height - 4) + "px"; });
 }
 async function silence(r, minutes, after) {
   const until = Date.now() + minutes * 60e3;
@@ -1083,19 +1083,19 @@ function routesDrawer() {
         h("td", {}, h("div", { class: "row nw", style: { gap: "4px" } }, SEV.map((sv) => h("button", { class: "chip", "aria-pressed": String(!r.severities.length || r.severities.includes(sv)), onclick: (e) => { const on = e.currentTarget.getAttribute("aria-pressed") === "true"; const cur = r.severities.length ? r.severities : SEV.slice(); r.severities = on ? cur.filter((y) => y !== sv) : [...cur, sv]; if (r.severities.length === SEV.length) r.severities = []; draw(); } }, sv)))),
         h("td", { colspan: 2 }), h("td", {}, h("button", { class: "btn xs ghost", title: "Remove this route", onclick: () => { routes.splice(i, 1); draw(); } }, icon("x"))))
       : h("tr", {},
-        h("td", {}, h("b", {}, r.name)),
-        h("td", { class: "mono small ellipsis", style: { maxWidth: "280px" }, title: r.url || "" }, r.url ? r.url.replace(/^https?:\/\//, "").slice(0, 48) : "–"),
-        h("td", { class: "small" }, r.severities?.length ? r.severities.join(", ") : "every severity"),
-        h("td", { class: "small" }, `${fmt.n(r.sent || 0)} sent`, r.failed ? h("span", { class: "al-bad" }, ` · ${fmt.n(r.failed)} failed`) : null),
-        h("td", { class: "small" }, r.last_error && (!r.last_ok_ms || (r.last_error_ms || 0) > r.last_ok_ms) ? h("span", { class: "al-bad", title: r.last_error }, `failing: ${r.last_error.slice(0, 60)}`) : r.last_ok_ms ? h("span", { class: "al-good" }, `delivered ${ago(r.last_ok_ms)}`) : h("span", { class: "muted" }, "nothing sent yet")),
-        h("td", {}, h("button", { class: "btn xs", disabled: !can("write"), title: can("write") ? "Send a test message through this route now" : Needs("write"), onclick: async (e) => {
+        h("td", { class: "al-ro-name" }, h("b", {}, r.name)),
+        h("td", { class: "mono small ellipsis al-ro-url", style: { maxWidth: "280px" }, title: r.url || "" }, r.url ? r.url.replace(/^https?:\/\//, "").slice(0, 48) : "–"),
+        h("td", { class: "small al-ro-sev" }, r.severities?.length ? r.severities.join(", ") : "every severity"),
+        h("td", { class: "small al-ro-sent" }, `${fmt.n(r.sent || 0)} sent`, r.failed ? h("span", { class: "al-bad" }, ` · ${fmt.n(r.failed)} failed`) : null),
+        h("td", { class: "small al-ro-st" }, r.last_error && (!r.last_ok_ms || (r.last_error_ms || 0) > r.last_ok_ms) ? h("span", { class: "al-bad", title: r.last_error }, `failing: ${r.last_error.slice(0, 60)}`) : r.last_ok_ms ? h("span", { class: "al-good" }, `delivered ${ago(r.last_ok_ms)}`) : h("span", { class: "muted" }, "nothing sent yet")),
+        h("td", { class: "al-ro-test" }, h("button", { class: "btn xs", disabled: !can("write"), title: can("write") ? "Send a test message through this route now" : Needs("write"), onclick: async (e) => {
           const b = e.currentTarget; b.disabled = true;
           try { const j = await api(`/v1/alerts/routes/${encodeURIComponent(r.name)}/test`, { body: {} }); toast(j.ok === false ? `Test failed: ${j.error || j.status}` : `Test sent through ${r.name}${j.status ? ` (${j.status})` : ""}`, j.ok === false ? "bad" : "ok"); await refreshAlerts(); routes = model(state.alerts).routes.map((y) => ({ ...y, severities: y.severities || [] })); draw(); }
           catch (err) { toast(failMsg(err, "Testing the route"), "bad"); }
           b.disabled = false;
         } }, "Test"))));
     clear(body,
-      h("div", { class: "tbl-wrap" }, h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ["name", "URL", "severities", "sent", "status", ""].map((k) => h("th", {}, k)))), h("tbody", {}, rows.length ? rows : h("tr", {}, h("td", { colspan: 6 }, empty("route", "No routes", "Nobody is told when an alert fires.")))))),
+      h("div", { class: "tbl-wrap al-rotbl" }, h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ["name", "URL", "severities", "sent", "status", ""].map((k) => h("th", {}, k)))), h("tbody", {}, rows.length ? rows : h("tr", {}, h("td", { colspan: 6 }, empty("route", "No routes", "Nobody is told when an alert fires.")))))),
       h("div", { class: "row" },
         editing ? h("button", { class: "btn sm", onclick: () => { routes.push({ name: `route-${routes.length + 1}`, url: "", severities: [] }); draw(); } }, icon("plus"), "Add a route") : null,
         h("span", { class: "sep" }),

@@ -94,7 +94,7 @@ function render(page, r) {
   if (tab0 === "sql" && r.params.get("sql")) { location.replace(link("sql", { q: r.params.get("sql"), store: "logs" })); return; }
 
   const ctx = { coord: false, nodes: new Map(), store: null, has: null, missed: [] };
-  const sub = h("p");
+  const sub = h("p", { class: "al-lsub" });
   const storeBtn = h("button", { class: "btn sm", title: "Each server's log store: size, retention, writes" }, icon("db"), "stores");
   const levelBtn = h("button", { class: "btn sm", title: "What each server logs, with an expiry" }, icon("sliders"), "Log levels");
   const sqlLink = h("a", { class: "btn sm ghost", title: "Open this search as SQL in the SQL workbench" }, icon("sql"), "As SQL");
@@ -198,7 +198,7 @@ function render(page, r) {
   let alertId = r.params.get("alert") || null;
   function drawRange() {
     const t = timeRange();
-    rangeNote.textContent = `${t.fixed ? `${when(t.from)} – ${when(t.to)}` : t.label} · the top bar's range, kept in the link · times in ${tz}`;
+    clear(rangeNote, t.fixed ? `${when(t.from)} – ${when(t.to)}` : t.label, h("span", { class: "al-wide-only" }, " · the top bar's range, kept in the link"), ` · times in ${tz}`);
     liveBtn.disabled = !t.live;
     liveBtn.title = t.live ? "Add each new line at the top as it is written" : "The range is a fixed window: pick a range like 1h in the top bar to follow new lines";
     liveBtn.setAttribute("aria-pressed", String(live && t.live));
@@ -248,7 +248,7 @@ function render(page, r) {
     const max = Math.max(1, ...bins.map((b) => keys.reduce((a, k) => a + (b[k] || 0), 0)));
     const W = 1000, H = 64, bw = W / n, binMs = binMin * 60e3, tAt = (i) => (t0 + i * binMin) * 60e3;
     const X = (ms) => (ms / 60e3 - t0) / (n * binMin) * W;
-    const svgEl = s("svg", { viewBox: `0 0 ${W} ${H + 16}`, style: { width: "100%", height: H + 16 + "px", cursor: "crosshair" }, preserveAspectRatio: "none", role: "img", "aria-label": "Log lines over time, by level" });
+    const svgEl = s("svg", { viewBox: `0 0 ${W} ${H}`, style: { width: "100%", height: H + "px", cursor: "crosshair", touchAction: "pan-y" }, preserveAspectRatio: "none", role: "img", "aria-label": "Log lines over time, by level" });
     bins.forEach((b, i) => {
       let y = H;
       for (const k of keys) {
@@ -269,10 +269,7 @@ function render(page, r) {
       ln.addEventListener("pointerleave", hideTip);
       svgEl.append(ln);
     }
-    for (let k = 0; k <= 4; k++) {
-      const x = k * W / 4, at = tAt(0) + k / 4 * n * binMs;
-      svgEl.append(s("text", { x: Math.min(W - 2, Math.max(2, x)), y: H + 13, "text-anchor": k === 0 ? "start" : k === 4 ? "end" : "middle", class: "al-ax" }, when(at, { sec: false })));
-    }
+    const axis = h("div", { class: "al-hax", "aria-hidden": "true" }, [0, 1, 2, 3, 4].map((k) => h("span", { class: k % 2 ? "al-hax-odd" : "" }, when(tAt(0) + k / 4 * n * binMs, { sec: false }))));
     const selr = s("rect", { class: "selr", x: 0, y: 0, width: 0, height: H, style: { display: "none" } });
     svgEl.append(selr);
     const xOf = (e) => { const rr = svgEl.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - rr.left) / rr.width)); };
@@ -291,7 +288,7 @@ function render(page, r) {
     });
     const total = keys.reduce((a, k) => a + totals[k], 0);
     levelTotals = totals;
-    clear(hist, svgEl, h("div", { class: "legend", style: { marginTop: "4px" } },
+    clear(hist, svgEl, axis, h("div", { class: "legend", style: { marginTop: "4px" } },
       keys.map((k) => h("button", { class: "row nw al-lvkey", title: `Only ${k}`, onclick: () => setKey("level", `level:${k}`) }, h("span", { class: "k box", style: { background: LCOLOR[k] } }), k, h("b", { class: "num" }, fmt.si(totals[k])))),
       h("span", { class: "sep" }), h("span", { class: "muted" }, `a bar is ${binMin >= 60 ? fmt.plural(binMin / 60, "hour") : fmt.plural(binMin, "minute")} · drag to zoom`)));
     clear(markLegend, events.filter((e) => e.ts_ms >= t.from && e.ts_ms <= to).sort((a, b) => b.ts_ms - a.ts_ms).slice(0, 6).map((e) => h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { class: "al-mkey " + (TONE[e.kind] || "") }), `${when(e.ts_ms, { sec: false })} ${e.title || e.kind}`)));
@@ -464,7 +461,7 @@ function render(page, r) {
       clear(hist); clear(facets); countNote.textContent = "";
     }
   }
-  const linesHead = () => h("div", { class: "al-l al-lh", role: "row", "aria-hidden": "true" }, h("span", { title: `Times are in ${tz}` }, `time ${tzShort}`), h("span", {}, "level"), h("span", {}, "server"), h("span", {}, "message"));
+  const linesHead = () => h("div", { class: "al-l al-lh", role: "row", "aria-hidden": "true" }, h("span", { title: `Times are in ${tz}` }, `time ${tzShort}`), h("span", {}, "l", h("span", { class: "al-lv-rest" }, "evel")), h("span", {}, "server"), h("span", {}, "message"));
   function drawMore() {
     clear(more, rows.length && rows.length < matched ? [h("span", { class: "small muted" }, `${fmt.n(rows.length)} of ${fmt.plural(matched, "line")} shown`), h("button", { class: "btn sm", onclick: older }, icon("down"), "Older lines")] : null);
   }
@@ -533,12 +530,13 @@ function render(page, r) {
     const max = Math.max(1, ...list0.map((g) => g.n));
     countNote.textContent = `${fmt.plural(list0.length, "pattern")} in the newest ${fmt.n(sample.length)} of ${fmt.plural(matched, "line")}`;
     clear(list, list0.length ? table([
-      { key: "n", label: "lines", num: true, render: (g) => h("div", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" } }, h("div", { class: "barbox", style: { width: "56px" } }, h("div", { class: "bar", style: { width: g.n / max * 100 + "%", background: LCOLOR[g.level] } })), h("b", {}, fmt.n(g.n))) },
-      { key: "level", label: "level", render: (g) => h("span", { class: "al-l-lv al-lv-" + g.level }, g.level) },
-      { key: "p", label: "message pattern", render: (g) => h("span", { class: "mono small al-pat2", title: g.p }, nameUrls(g.p)) },
-      { key: "nodes", label: "where", sort: (g) => g.nodes.size, render: (g) => h("span", { class: "small nowrap", title: [...g.nodes].join(", ") }, [...g.nodes].sort().slice(0, 3).join(", ") + (g.nodes.size > 3 ? ` +${g.nodes.size - 3}` : "")) },
-      { key: "last", label: "last", render: (g) => h("span", { class: "small nowrap", title: `first ${when(g.first)}` }, when(g.last)) },
+      { key: "n", label: "lines", num: true, cls: "al-c-n", render: (g) => h("div", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" } }, h("div", { class: "barbox", style: { width: "56px" } }, h("div", { class: "bar", style: { width: g.n / max * 100 + "%", background: LCOLOR[g.level] } })), h("b", {}, fmt.n(g.n))) },
+      { key: "level", label: "level", cls: "al-c-lv", render: (g) => h("span", { class: "al-l-lv al-lv-" + g.level }, g.level) },
+      { key: "p", label: "message pattern", cls: "al-c-p", render: (g) => h("span", { class: "mono small al-pat2", title: g.p }, nameUrls(g.p)) },
+      { key: "nodes", label: "where", cls: "al-c-where", sort: (g) => g.nodes.size, render: (g) => h("span", { class: "small nowrap", title: [...g.nodes].join(", ") }, [...g.nodes].sort().slice(0, 3).join(", ") + (g.nodes.size > 3 ? ` +${g.nodes.size - 3}` : "")) },
+      { key: "last", label: "last", cls: "al-c-last", render: (g) => h("span", { class: "small nowrap", title: `first ${when(g.first)}` }, when(g.last)) },
     ], { rows: list0, compact: true, onRow: (g) => { const lit0 = g.p.split(/\s*<\w+>/)[0].trim(); tab = "lines"; setQ(`${tokens(q).filter((t) => !/^-?"/.test(t)).join(" ")} level:${g.level}${lit0 ? ` "${lit0.slice(0, 80).replace(/"/g, "")}"` : ""}`); } }) : empty("logs", "No lines match", "Try fewer filters or a longer range."));
+    list.firstElementChild?.classList.add("al-ptbl");
     clear(more, h("span", { class: "small muted" }, "Counts are of the sample. Click a pattern for its lines."));
   }
 
