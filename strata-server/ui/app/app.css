@@ -1172,6 +1172,18 @@ button.rx-node:hover { border-color: var(--accent); box-shadow: 0 0 0 3px var(--
 .ro-banner.held > .i { color: var(--warn); }
 .ro-banner.paused > .i { color: var(--muted); }
 .ro-banner.back { border-color: var(--serious); }
+.ro-banner.back.over { border-color: var(--good); }
+.ro-banner.back.over > .i { color: var(--good); }
+.ro-banner.failed { border-color: var(--crit); background: var(--crit-soft); }
+.ro-banner.failed > .i { color: var(--crit); }
+.ro-tag.bad { background: var(--crit-soft); color: var(--crit-ink); }
+.ro-failed { color: var(--crit-ink); overflow-wrap: anywhere; }
+.ro-img { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; word-break: break-all; }
+.ro-up-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); min-width: 0; }
+.ro-up-run { display: flex; flex-wrap: wrap; gap: 4px; }
+.ro-up-mode { flex-wrap: wrap; }
+.ro-up-mode > div:first-child { flex: 1 1 160px; }
+.ro-step-t .small { overflow-wrap: anywhere; }
 .ro-steps { display: flex; flex-direction: column; gap: 4px; }
 .ro-step { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; padding: 8px 10px; border-radius: var(--r-sm); border: 1px solid transparent; }
 .ro-step.now { border-color: var(--accent); background: var(--accent-soft); }

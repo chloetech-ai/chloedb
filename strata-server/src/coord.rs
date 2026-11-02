@@ -236,6 +236,48 @@ pub const FETCH_FROM: usize = 8;
 /// again, so that the coordinator follows a rolling upgrade or a rollback.
 const HELLO_EVERY_MS: u64 = 60_000;
 
+/// How long a write waits for its shard to take it again, asking every
+/// [`PRIMARY_ASK_EVERY`]: while no copy takes writes (a handover or an
+/// election in progress: a primary handed over by hand takes
+/// milliseconds, one elected after its primary went silent the failover
+/// delay, `--failover-after-ms`, and its election), and while its primary
+/// refuses writes it did not apply (too few copies in sync for
+/// `--write-acks`, as while one of two restarts, or a new primary
+/// waiting out the lease of the one it replaced). So that a rolling
+/// restart delays writes rather than failing them.
+pub const PRIMARY_WAIT: Duration = Duration::from_secs(10);
+const PRIMARY_ASK_EVERY: Duration = Duration::from_millis(50);
+
+/// How long a read is asked again while no copy of its shard serves it
+/// (503), and how often: a handover, a new primary waiting out the old
+/// one's lease, a shard of two copies with one restarting.
+pub const READ_WAIT: Duration = Duration::from_secs(3);
+const READ_ASK_EVERY: Duration = Duration::from_millis(100);
+
+/// Whether a primary's refusal says it did not apply the write, and the
+/// shard takes it shortly (`cores::shard::Primary::admit`): too few copies
+/// in sync, a lease to wait out, or a primary another replaced, which
+/// refuses every write from then on (the coordinator may not have heard
+/// of the new one yet). Sending it again cannot apply it twice.
+fn not_applied_yet(s: &tonic::Status) -> bool {
+    match s.code() {
+        Code::Unavailable => s.message().contains("the write was not applied") || s.message().contains("it takes writes after that"),
+        Code::FailedPrecondition => s.message().contains("another primary replaced this one, which takes no more writes"),
+        _ => false,
+    }
+}
+
+/// Whether a primary's answer says it applied the write but another
+/// primary replaced it before the copies acknowledged it
+/// (`cores::shard::Primary::acked`): the new primary may hold it or not,
+/// so it is not sent again, which could apply it twice.
+fn in_doubt(s: &tonic::Status) -> bool {
+    s.code() == Code::FailedPrecondition && s.message().contains("before it was acknowledged")
+}
+
+/// What a client is told of a write [`in_doubt`].
+pub const IN_DOUBT: &str = "the write may or may not be kept: a new primary took the shard's writes while it was being acknowledged; read it back, or send it again if applying it twice does no harm";
+
 /// How many times a request goes to the shards while the cluster map
 /// changes under it ([`Coordinator::route_again`]).
 pub(crate) const ROUTE_TRIES: u32 = 8;
@@ -704,6 +746,14 @@ fn plan_json(plan: Option<&Plan>) -> Result<Vec<u8>, ApiError> {
 /// goes to another without the replica counting as failed.
 const PASSED_OVER: &str = "strata-passed-over";
 
+/// Whether a copy that is up refused a read for now (503): a primary
+/// another replaced, or one a majority of its copies has not answered
+/// within its lease ([`crate::cores::shard`]). Asked again, it, or the
+/// primary that replaced it, answers once the copies are back.
+fn refuses_reads(s: &tonic::Status) -> bool {
+    s.code() == Code::Unavailable && s.message().contains("serves no reads")
+}
+
 /// Whether another replica may answer where this one failed: not when the
 /// request itself is wrong, nor when the replica is overloaded
 /// (`ResourceExhausted`), which would only load the next one more.
@@ -1018,12 +1068,38 @@ impl Coordinator {
         order
     }
 
+    /// [`Self::call_once`], asked again every [`READ_ASK_EVERY`] for up to
+    /// [`READ_WAIT`] (and `deadline`) while every replica of shard `i`
+    /// failed and one of them is up but serves no reads ([`refuses_reads`]):
+    /// a primary handed over, or one of a shard's two copies restarting and
+    /// the other, alone, no majority. A shard none of whose replicas
+    /// answers is not waited for, so a partial read leaves it out at once.
+    async fn call<T, F, Fut>(&self, t: &Topology, i: usize, start: usize, first: Option<usize>, deadline: Instant, f: F) -> Result<(usize, T), ApiError>
+    where
+        F: Fn(usize, Client) -> Fut,
+        Fut: Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+    {
+        let until = deadline.min(Instant::now() + READ_WAIT);
+        loop {
+            let mut refused = false;
+            match self.call_once(t, i, start, first, deadline, &f, &mut refused).await {
+                Err(e) if refused && e.status == 503 && Instant::now() + READ_ASK_EVERY < until => {
+                    self.retries.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(READ_ASK_EVERY).await
+                }
+                answer => return answer,
+            }
+        }
+    }
+
     /// Calls shard `i` with `f(replica, client)`, asking its replicas in
     /// [`Self::order`]: the next one when one fails with an error another
     /// may not have, and also when one has not answered after the hedge
     /// delay and the hedge budget allows. Returns the replica that
-    /// answered and its answer.
-    async fn call<T, F, Fut>(&self, t: &Topology, i: usize, start: usize, first: Option<usize>, deadline: Instant, f: F) -> Result<(usize, T), ApiError>
+    /// answered and its answer; `refused` is set when a replica failed
+    /// with [`refuses_reads`].
+    #[allow(clippy::too_many_arguments)]
+    async fn call_once<T, F, Fut>(&self, t: &Topology, i: usize, start: usize, first: Option<usize>, deadline: Instant, f: F, refused: &mut bool) -> Result<(usize, T), ApiError>
     where
         F: Fn(usize, Client) -> Fut,
         Fut: Future<Output = Result<tonic::Response<T>, tonic::Status>>,
@@ -1067,6 +1143,7 @@ impl Coordinator {
                         return Ok((r, answer.into_inner()));
                     }
                     Err(s) if try_elsewhere(&s) => {
+                        *refused |= refuses_reads(&s);
                         if s.metadata().get(PASSED_OVER).is_some() {
                             passed.push(r);
                         } else {
@@ -1793,20 +1870,39 @@ impl Coordinator {
     /// none is (a promotion may have moved it). `None` when no replica has
     /// a role, and every one takes every write.
     async fn primary(&self, t: &Topology, i: usize) -> Result<Option<usize>, ApiError> {
-        let find = || self.newest_primary(t, i);
-        if let Some(k) = find() {
+        if let Some(k) = self.newest_primary(t, i) {
             return Ok(Some(k));
         }
         if t.replicas[i].iter().all(|r| r.role() == pb::Role::Standalone) {
             return Ok(None);
         }
+        let deadline = Instant::now() + PRIMARY_WAIT;
+        loop {
+            self.ask_all(t, i).await;
+            if let Some(k) = self.newest_primary(t, i) {
+                return Ok(Some(k));
+            }
+            if t.replicas[i].iter().all(|r| r.role() == pb::Role::Standalone) {
+                return Ok(None);
+            }
+            if Instant::now() >= deadline {
+                return Err(ApiError {
+                    status: 503,
+                    message: format!("shard {i} has no primary answering after {} s: its replicas take writes from their primary alone, and none is one; the write was not applied", PRIMARY_WAIT.as_secs()),
+                });
+            }
+            tokio::time::sleep(PRIMARY_ASK_EVERY).await;
+        }
+    }
+
+    /// Asks each copy of shard `i` its part again (`Hello`).
+    async fn ask_all(&self, t: &Topology, i: usize) {
         let asks = t.replicas[i].iter().enumerate().map(|(k, rep)| {
             let mut c = rep.client.clone();
             rep.protocol.store(0, Ordering::Relaxed);
             async move { self.speak(t, i, k, &mut c, PROTOCOL).await }
         });
         join_all(asks).await;
-        find().map(Some).ok_or_else(|| ApiError { status: 503, message: format!("shard {i} has no primary answering: its replicas take writes from their primary alone") })
     }
 
     /// Of the replicas of shard `i`, the primary of the newest term that no
@@ -1821,19 +1917,29 @@ impl Coordinator {
     /// copy that takes the shard's writes now, if another does. A refusal
     /// (409) asks `k` again first, and the other copies only when it no
     /// longer takes writes, so that a conditional write's refusal costs
-    /// one `Hello`.
+    /// one `Hello`. While no other copy takes writes yet (its primary is
+    /// being handed over, or elected), it asks them again for up to
+    /// [`PRIMARY_WAIT`], so that a rolling restart fails no write.
     async fn moved(&self, t: &Topology, i: usize, k: usize, code: Code) -> Option<usize> {
-        let ask = |r: usize| {
-            let rep = &t.replicas[i][r];
-            let mut c = rep.client.clone();
-            rep.protocol.store(0, Ordering::Relaxed);
-            async move { self.speak(t, i, r, &mut c, PROTOCOL).await.is_ok() }
-        };
-        if code == Code::FailedPrecondition && ask(k).await && t.replicas[i][k].takes_writes() {
+        let rep = &t.replicas[i][k];
+        let mut c = rep.client.clone();
+        rep.protocol.store(0, Ordering::Relaxed);
+        if code == Code::FailedPrecondition && self.speak(t, i, k, &mut c, PROTOCOL).await.is_ok() && rep.takes_writes() {
             return None;
         }
-        join_all((0..t.replicas[i].len()).map(ask)).await;
-        self.newest_primary(t, i).filter(|&r| r != k)
+        let deadline = Instant::now() + PRIMARY_WAIT;
+        loop {
+            self.ask_all(t, i).await;
+            if let Some(m) = self.newest_primary(t, i).filter(|&r| r != k) {
+                return Some(m);
+            }
+            // It takes writes again (it came back as the primary), or
+            // none came in time.
+            if rep.takes_writes() || Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(PRIMARY_ASK_EVERY).await;
+        }
     }
 
     /// Writes to shard `i`: to its primary, or to every replica while none
@@ -1842,21 +1948,42 @@ impl Coordinator {
     /// where several replicas took the write, each numbering it its way.
     /// A primary that refuses the write as a replaced one does, or does not
     /// answer, is passed over for the copy that took its place, if any
-    /// (once).
+    /// (once), and one that refuses it unapplied for a moment is asked again
+    /// ([`PRIMARY_WAIT`]). One that applied it and was replaced before its
+    /// copies acknowledged it is answered as such ([`in_doubt`]), not sent
+    /// again: a write applied twice is worse than one refused.
     async fn write(&self, t: &Topology, i: usize, r: pb::WriteRequest, need: u32) -> Result<Wrote, ApiError> {
         let to: Vec<usize> = match self.primary(t, i).await? {
             Some(k) => vec![k],
             None => (0..t.replicas[i].len()).collect(),
         };
         let named = |(k, s): (usize, tonic::Status)| self.named(&t.replicas[i][k].url, s);
-        if let (&[k], true) = (&to[..], t.replicas[i].len() > 1) {
-            return match self.write_to(t, i, vec![k], r.clone(), need).await {
-                Err((_, s)) if matches!(s.code(), Code::FailedPrecondition | Code::Unavailable) => match self.moved(t, i, k, s.code()).await {
-                    Some(m) => self.write_to(t, i, vec![m], r, need).await.map_err(named),
-                    None => Err(named((k, s))),
-                },
-                a => a.map_err(named),
-            };
+        if let (&[first], true) = (&to[..], t.replicas[i].len() > 1) {
+            let (mut k, mut passed_over) = (first, false);
+            let deadline = Instant::now() + PRIMARY_WAIT;
+            loop {
+                match self.write_to(t, i, vec![k], r.clone(), need).await {
+                    // Refused before it was applied, for a moment: again,
+                    // to the copy that takes the writes then.
+                    Err((_, s)) if not_applied_yet(&s) && Instant::now() < deadline => {
+                        tokio::time::sleep(PRIMARY_ASK_EVERY * 2).await;
+                        if let Some(m) = self.primary(t, i).await? {
+                            k = m;
+                        }
+                    }
+                    // Applied, and maybe lost: the client decides.
+                    Err((_, s)) if in_doubt(&s) => {
+                        // The next write goes to the new primary.
+                        self.ask_all(t, i).await;
+                        return Err(ApiError { status: 409, message: format!("shard {}: {}; {IN_DOUBT}", t.replicas[i][k].url, s.message()) });
+                    }
+                    Err((_, s)) if matches!(s.code(), Code::FailedPrecondition | Code::Unavailable) && !passed_over => match self.moved(t, i, k, s.code()).await {
+                        Some(m) => (k, passed_over) = (m, true),
+                        None => return Err(named((k, s))),
+                    },
+                    a => return a.map_err(named),
+                }
+            }
         }
         self.write_to(t, i, to, r, need).await.map_err(named)
     }
@@ -2837,6 +2964,26 @@ mod tests {
         // The saved burst, then one call in twenty.
         assert!((1000 / 20..=HEDGE_BURST as usize + 1000 / 20).contains(&hedged), "{hedged}");
         assert!(!b.spend());
+    }
+
+    #[test]
+    fn a_write_refused_unapplied_is_sent_again_and_one_in_doubt_is_not() {
+        let fenced = tonic::Status::failed_precondition("a copy holds term 2, newer than this primary's (1): another primary replaced this one, which takes no more writes");
+        let doubt = tonic::Status::failed_precondition("the write is durable on this primary as sequence number 7, but a primary of term 2 replaced this one before it was acknowledged, and the new primary may not hold it: write to the new primary");
+        let lease = tonic::Status::unavailable("this primary was promoted by hand, and the primary it replaced may serve reads for 900 ms more: it takes writes after that");
+        assert!(not_applied_yet(&fenced) && not_applied_yet(&lease) && !in_doubt(&fenced));
+        assert!(in_doubt(&doubt) && !not_applied_yet(&doubt));
+    }
+
+    #[test]
+    fn a_read_is_asked_again_while_a_copy_that_is_up_serves_none() {
+        // As cores::shard words its refusals, crossing gRPC as Unavailable.
+        let lease = tonic::Status::from(ApiError { status: 503, message: "1 of this primary's 3 copies answered it within 750 ms, fewer than a majority: the others may have elected another primary, so it serves no reads; read from another copy".into() });
+        let fenced = tonic::Status::from(ApiError { status: 503, message: "a primary of term 3 replaced this one (term 2), which serves no reads: read from another copy".into() });
+        assert!(refuses_reads(&lease) && refuses_reads(&fenced));
+        // A shard whose copies are all down is not waited for.
+        assert!(!refuses_reads(&tonic::Status::unavailable("tcp connect error: connection refused")));
+        assert!(!refuses_reads(&tonic::Status::resource_exhausted("too many queries running, so it serves no reads")));
     }
 
     #[test]
