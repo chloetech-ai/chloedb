@@ -1569,9 +1569,10 @@ impl Db {
     /// the executor gives them. The memtable's newest chunk, which every
     /// write changes, is then read as written rather than built as a
     /// segment, so that a write and a read of its row after it build
-    /// nothing. `None` for any other query.
-    fn by_key(&self, snap: &Snapshot, select: &Select, opts: &ExecOptions) -> Result<Option<ResultSet>> {
-        let Some((keys, fields)) = keys_read(snap.schema(), select, opts) else { return Ok(None) };
+    /// nothing. `None` for any other query, and for one of more than
+    /// `most` keys.
+    fn by_key(&self, snap: &Snapshot, select: &Select, opts: &ExecOptions, most: usize) -> Result<Option<ResultSet>> {
+        let Some((keys, fields)) = keys_read(snap.schema(), select, opts).filter(|(k, _)| k.len() <= most) else { return Ok(None) };
         crate::query::steps::epoch();
         let t0 = std::time::Instant::now();
         let reach = select.limit.unwrap_or(0).saturating_add(select.offset);
@@ -1668,7 +1669,7 @@ impl Db {
     /// looks at, with options `opts`: by the executor, or by key when its
     /// filter only names keys ([`Db::by_key`]).
     pub fn execute(&self, snap: &Snapshot, select: &Select, opts: &ExecOptions) -> Result<ResultSet> {
-        if let Some(rs) = self.by_key(snap, select, opts)? {
+        if let Some(rs) = self.by_key(snap, select, opts, usize::MAX)? {
             return Ok(rs);
         }
         // Fixed before the first query's first step begins.
@@ -1692,7 +1693,10 @@ impl Db {
     /// are more than `over` ([`Executor::execute_arrow`]).
     #[cfg(feature = "datafusion")]
     pub fn execute_leaf(&self, snap: &Snapshot, select: &Select, opts: &ExecOptions, over: usize) -> Result<Leaf> {
-        if let Some(rs) = self.by_key(snap, select, opts)? {
+        // By key when it cannot answer more than `over` rows: a leaf of more
+        // (a join's side restricted to the other's keys) is read as
+        // columns.
+        if let Some(rs) = self.by_key(snap, select, opts, over)? {
             return Ok(Leaf::Rows(rs));
         }
         crate::query::steps::epoch();
