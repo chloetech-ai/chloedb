@@ -56,7 +56,10 @@ export function asDelimited(j, sep = ",") { return [j.columns.map((c) => csvCell
  */
 export function grid(j, { max = 1000, onRow } = {}) {
   const cols = j.columns || [];
-  const scored = (j.scores || []).some((x) => x != null && x !== 0);
+  // The score column, unless it is a returned column again (ORDER BY n
+  // gives each row's n as its score).
+  const scored = (j.scores || []).some((x) => x != null && x !== 0)
+    && !cols.some((_, k) => (j.rows || []).every((r, i) => Array.isArray(r) && Number(r[k]) === j.scores[i]));
   const order = (j.rows || []).map((_, i) => i);
   let sortCol = null, desc = false, shown = Math.min(order.length, 200);
   const widths = {};

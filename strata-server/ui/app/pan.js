@@ -10,11 +10,13 @@ export function viewport(svgEl, root, { mini } = {}) {
   const apply = () => root.setAttribute("transform", `translate(${x.toFixed(1)},${y.toFixed(1)}) scale(${k.toFixed(3)})`);
   const vp = {
     get k() { return k; },
-    fit(pad = 24) {
+    // `below`: the height kept free at the bottom (a legend over the canvas).
+    fit(pad = 24, below = 0) {
       const b = root.getBBox(); const r = svgEl.getBoundingClientRect();
       if (!b.width || !r.width) return;
-      k = clamp(Math.min((r.width - pad * 2) / b.width, (r.height - pad * 2) / b.height), 0.25, mini ? 1 : 1.4);
-      x = (r.width - b.width * k) / 2 - b.x * k; y = (r.height - b.height * k) / 2 - b.y * k; apply();
+      const hgt = Math.max(r.height - below, r.height / 2);
+      k = clamp(Math.min((r.width - pad * 2) / b.width, (hgt - pad * 2) / b.height), 0.25, mini ? 1 : 1.4);
+      x = (r.width - b.width * k) / 2 - b.x * k; y = (hgt - b.height * k) / 2 - b.y * k; apply();
     },
     zoom(f, px, py) { const r = svgEl.getBoundingClientRect(); px ??= r.width / 2; py ??= r.height / 2; const nk = clamp(k * f, 0.25, 3); x = px - (px - x) * nk / k; y = py - (py - y) * nk / k; k = nk; apply(); },
     get state() { return { k, x, y }; }, set state(v) { ({ k, x, y } = v); apply(); },

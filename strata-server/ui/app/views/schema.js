@@ -91,7 +91,7 @@ function diagram(host, bar, { openDesigner }) {
   const controls = h("div", { class: "controls" },
     h("button", { class: "btn icon sm", title: "Zoom in", onclick: () => vp?.zoom(1.25) }, icon("zin")),
     h("button", { class: "btn icon sm", title: "Zoom out", onclick: () => vp?.zoom(0.8) }, icon("zout")),
-    h("button", { class: "btn icon sm", title: "Fit", onclick: () => vp?.fit() }, icon("fit")));
+    h("button", { class: "btn icon sm", title: "Fit", onclick: () => vp?.fit(30, legend.offsetHeight + 10) }, icon("fit")));
   const legend = h("div", { class: "legend-box" }, Object.entries(KIND).filter(([k]) => k !== "edges").map(([k, v]) => h("span", { class: "row nw", style: { gap: "5px" } },
     h("span", { style: { width: "18px", borderTop: `2px ${k === "graph" ? "dashed" : "solid"} ${v.color}` } }), v.label)), h("span", { class: "muted" }, "drag tables · scroll to zoom · click for details"));
   wrap.append(canvas, controls, legend);
@@ -165,7 +165,7 @@ function diagram(host, bar, { openDesigner }) {
       for (const [n, g] of Object.entries(cards)) g.classList.toggle("hot", on && (n === name || ls.some((l) => (l.from.table === name && l.to.table === n) || (l.to.table === name && l.from.table === n))));
     }
     if (old && !fit) vp.state = old;
-    else requestAnimationFrame(() => vp.fit(30));
+    else requestAnimationFrame(() => vp.fit(30, legend.offsetHeight + 10));
   }
 
   function rowY(table, field) {

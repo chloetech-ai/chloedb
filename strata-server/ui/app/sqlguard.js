@@ -247,7 +247,22 @@ export function reach() {
   const sh = state.cluster?.shards || state.health?.shards;
   if (!sh?.length) return { shards: 1, replicas: 0, coordinator: false };
   const reps = sh.reduce((a, s) => a + Math.max(0, (s.replicas?.length || 1) - 1), 0);
-  return { shards: sh.length, replicas: reps, coordinator: true };
+  // Shards that take no writes now (no primary answers): a write fails there
+  // and the shards that take writes still do their part.
+  const noWrites = shardTrouble(sh).filter((s) => !s.writes);
+  return { shards: sh.length, replicas: reps, coordinator: true, noWrites };
+}
+/**
+ * The shards that serve no reads or take no writes now, from the cluster
+ * state: {shard, why, writes, reads, words} ("serves no reads and takes no
+ * writes").
+ */
+export function shardTrouble(sh = state.cluster?.shards || state.health?.shards || []) {
+  return sh.map((s, i) => {
+    const writes = !(s.takes_writes === false || s.state === "no_writes" || s.state === "down");
+    const reads = !(s.serves_reads === false || s.state === "no_reads" || s.state === "down");
+    return { shard: s.shard ?? i, why: s.why || "", writes, reads, words: [!reads && "serves no reads", !writes && "takes no writes"].filter(Boolean).join(" and ") };
+  }).filter((s) => !s.writes || !s.reads);
 }
 /** "prod-eu1 · production", or the host when the cluster has no name. */
 export function whereName() {
@@ -344,11 +359,21 @@ export function checkWrite({ sql, params, p, onEdit, fixesFor }) {
     const tile = (el, label, value, sub, cls = "") => clear(el, h("div", { class: "small muted" }, label), h("div", { class: "dt-tv " + cls }, value), sub ? h("div", { class: "small dim" }, sub) : null);
     const shardsWord = r.coordinator ? `${fmt.n(r.shards)} of ${fmt.n(r.shards)}` : "this server";
     const shipped = r.replicas ? `, shipped to ${fmt.plural(r.replicas, "replica")}` : "";
+    const nw = r.noWrites?.length || 0;
 
+    // A shard without a primary refuses its part; the others are not undone.
+    if (r.noWrites?.length) {
+      const names = r.noWrites.map((s) => `shard ${s.shard}`).join(", ");
+      problems.append(h("div", { class: "banner bad dt-banner" }, icon("warn"), h("div", { class: "grow" },
+        h("b", {}, r.noWrites.length > 1 ? `${names[0].toUpperCase() + names.slice(1)} take no writes now` : `Shard ${r.noWrites[0].shard} ${r.noWrites[0].words} now`),
+        h("div", { class: "small" }, r.noWrites[0].why ? `${r.noWrites[0].why.replace(/^./, (c) => c.toUpperCase())}. ` : "",
+          `If the statement reaches ${r.noWrites.length > 1 ? "them" : "it"}, it fails there, while the shards that take writes still write their rows and nothing undoes them. Wait until ${r.noWrites.length > 1 ? "they have" : "it has"} a primary, or write only keys of other shards.`),
+        h("div", { class: "small" }, h("a", { href: `#/cluster?shard=${r.noWrites[0].shard}`, title: "Cancels this write and opens the shard", onclick: () => cancel.click() }, "Open in Cluster")))));
+    }
     // What each kind of statement changes.
     if (p.kind === "UPDATE" || p.kind === "DELETE") {
       tile(rowsTile, "Rows it changes", "counting…", `SELECT COUNT(*) with the same WHERE${p.limit ? `, at most ${fmt.n(p.limit)} (LIMIT)` : ""}`);
-      tile(shardsTile, "Shards", shardsWord, r.coordinator ? `written on every primary${shipped}` : "one server");
+      tile(shardsTile, "Shards", shardsWord, r.coordinator ? (nw ? `${fmt.n(r.shards - nw)} of them take${r.shards - nw === 1 ? "s" : ""} writes now` : `written on every primary${shipped}`) : "one server", nw ? "warn" : "");
       if (p.kind === "UPDATE") {
         const fs = (p.set || []).map((n) => t?.short?.fields?.find((f) => f.name.toLowerCase() === n.toLowerCase()));
         tile(fieldsTile, "Fields set", (p.set || []).join(", ") || "–", fs.filter(Boolean).map((f) => `${f.type}${f.multi ? "[]" : ""}${f.indexed === false ? "" : " · indexed"}`).join("; ") || null);

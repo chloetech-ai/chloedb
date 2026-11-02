@@ -5,11 +5,14 @@
 // a SQLite file or a Parquet file a table, and the stream sources show how
 // far each event stream has been written, with a box to send one.
 
-import { h, icon, clear, fmt, api, authHeader, toast, empty, seg, sqlBlock, dropzone, every, failure, confirm, gate, can } from "../core.js";
+import { h, icon, clear, fmt, api, authHeader, toast, empty, seg, sqlBlock, dropzone, every, failure, confirm, gate, can, bus } from "../core.js";
 import { isProduction, isCoordinator } from "../data.js";
 import { tables, cached, invalidate, table as tableOf, typeBadge, typeMeta, TYPES } from "../catalog.js";
 import { quoteName } from "../sqledit.js";
 import { grid } from "../results.js";
+import { reach, whereName } from "../sqlguard.js";
+/** "prod-eu1 (production)", or the host when the cluster has no name. */
+const whereTo = () => { const { name, env } = whereName(); return env ? `${name} (${env})` : name; };
 
 export default { id: "import", title: "Import and export", icon: "import", group: "Data", range: false, keywords: "import upload load csv tsv json jsonl ndjson sqlite parquet arrow spark file export download stream kafka sources offsets", render };
 
@@ -90,6 +93,19 @@ export function inferType(values, fromCsv) {
   return avg > 32 || words > 3 ? { type: "text" } : { type: "keyword" };
 }
 
+/** Whether the server kept a load or a stream in its audit log, read back
+ * from it (a key that cannot read the log sees nothing). */
+function audited({ sent, reason, route }) {
+  const el = h("div", { class: "small muted row nw", style: { gap: "6px" } });
+  if (!can("admin")) return el;
+  api("/v1/admin/audit?" + new URLSearchParams({ kind: "change", limit: "30" })).then((a) => {
+    const e = (a.entries || []).find((x) => x.ts_ms >= sent - 5000 && x.route === route);
+    if (e) clear(el, icon("okc"), ` Kept in the audit log as a change by ${e.who}${e.reason ? ", with the reason" : reason ? " (without the reason)" : ""}. `, h("a", { href: "#/access" }, "Access and audit"));
+    else clear(el, icon("info"), reason ? " This server did not keep it in its audit log: the reason went with the request only." : " This server did not keep it in its audit log.");
+  }).catch(() => { /* a key that cannot read the audit log */ });
+  return el;
+}
+
 function render(page) {
   const left = h("div", { class: "stack" });
   const right = h("div", { class: "stack" });
@@ -97,6 +113,20 @@ function render(page) {
   let ts = [];
   let stopSources = null;
   tables().then((list) => { ts = list; start(); exportCard(); streamsCard(); }).catch((e) => clear(left, failure(e, "The tables")));
+  // A shard without a primary refuses the rows whose keys fall on it, while
+  // the other shards write theirs: say so above the loader and the stream.
+  const outage = h("div", { style: { marginBottom: "12px" } });
+  const drawOutage = () => {
+    const nw = reach().noWrites || [];
+    clear(outage, nw.length ? h("div", { class: "banner bad dt-banner" }, icon("warn"), h("div", { class: "grow" },
+      h("b", {}, nw.length > 1 ? `${nw.map((x) => "Shard " + x.shard).join(", ")} take no writes now` : `Shard ${nw[0].shard} ${nw[0].words} now`),
+      h("div", { class: "small" }, `${nw[0].why ? nw[0].why.replace(/^./, (c) => c.toUpperCase()) + ". " : ""}A load or a stream sent now writes the rows of the other shards and fails on the rest; nothing undoes the rows written. Load once ${nw.length > 1 ? "they have" : "it has"} a primary.`),
+      h("div", { class: "small" }, h("a", { href: `#/cluster?shard=${nw[0].shard}` }, "Open in Cluster")))) : null);
+    outage.style.display = nw.length ? "" : "none";
+  };
+  drawOutage();
+  page.prepend(outage);
+  const offCluster = bus.on("cluster", drawOutage);
 
   // ------------------------------------------------------------ loading a file
   function start() {
@@ -178,11 +208,11 @@ function render(page) {
       catch (e) { ddl = null; go.disabled = true; clear(checkBox, h("div", { class: "error small" }, e.message.replace(/^schema error: /, ""))); }
     }
     go.onclick = async () => {
-      // On production, a load into a table that exists says why (kept with the import).
+      // On production, a load into a table that exists says why (sent with the import).
       let reason;
       if (st.mode === "existing" && isProduction()) {
-        const ok = await confirm({ title: `Load ${file.name} into ${st.table}?`, ok: "Load the rows", reason: "Why: kept with the import",
-          body: h("div", { class: "stack", style: { gap: "8px" } }, h("p", { class: "dim", style: { margin: 0 } }, `${fmt.bytes(file.size)} of ${format.toUpperCase()} into ${st.table} on ${location.host}, which counts as production. Rows whose key ${st.table} holds are replaced; there is no undo.`), replaced.cloneNode(true)) });
+        const ok = await confirm({ title: `Load ${file.name} into ${st.table}?`, ok: "Load the rows", reason: "Why: sent with the import, for the audit log",
+          body: h("div", { class: "stack", style: { gap: "8px" } }, h("p", { class: "dim", style: { margin: 0 } }, `${fmt.bytes(file.size)} of ${format.toUpperCase()} into ${st.table} on ${whereTo()}, which counts as production. Rows whose key ${st.table} holds are replaced; there is no undo.`), replaced.cloneNode(true)) });
         if (!ok) return;
         reason = ok.reason;
       }
@@ -190,8 +220,9 @@ function render(page) {
       try {
         let name = st.table;
         if (st.mode === "new") { await api("/v1/sql", { body: { sql: ddl } }); invalidate(); ts = await tables(true); name = st.name; }
+        const sent = Date.now();
         const j = await upload(`/v1/import?format=${format}&table=${encodeURIComponent(name)}`, file, CT[format], progress, reason);
-        done(name, j, file);
+        done(name, j, file, { sent, reason, route: "/v1/import" });
       } catch (e) { toast(e.message, "bad", 9000); go.disabled = false; progress.classList.add("hidden"); }
     };
     clear(left, h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Load a file")), h("div", { class: "bd" }, box)));
@@ -227,10 +258,11 @@ function render(page) {
       x.send(file);
     });
   }
-  function done(name, j, file) {
+  function done(name, j, file, sentWith) {
     const skipped = j.skipped_fields && (Array.isArray(j.skipped_fields) ? j.skipped_fields : Object.keys(j.skipped_fields));
     clear(left, h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Load a file")), h("div", { class: "bd stack" },
       h("div", { class: "banner ok" }, icon("okc", "lg"), h("div", { class: "grow" }, h("div", { class: "big" }, `${fmt.plural(j.written ?? 0, "row")} written to ${name}`), h("div", { class: "small muted" }, `from ${file.name} in ${fmt.ms(j.took_ms)}${skipped?.length ? ` · columns skipped: ${skipped.join(", ")}` : ""}`))),
+      sentWith ? audited(sentWith) : null,
       h("div", { class: "row" },
         h("a", { class: "btn primary", href: "#/sql?q=" + encodeURIComponent(`SELECT * FROM ${quoteName(name)} LIMIT 20;`) }, icon("sql"), "Query it"),
         h("a", { class: "btn", href: "#/builder?table=" + encodeURIComponent(name) }, icon("builder"), "Build a query"),
@@ -402,18 +434,20 @@ function render(page) {
       try { ops = lines.map((l) => JSON.parse(l)); } catch (e) { toast(`Not a JSON line: ${e.message}`, "bad", 6000); return; }
       const tablesHit = [...new Set(ops.map((o) => o.table).filter(Boolean))];
       const sources = [...new Set(ops.map((o) => o.source?.name).filter(Boolean))];
-      const ok = await confirm({ title: `Send ${fmt.plural(lines.length, "operation")}?`, ok: "Send them", reason: isProduction() ? "Why: kept with the stream" : false,
-        body: h("div", { class: "stack", style: { gap: "8px" } }, h("p", { class: "dim", style: { margin: 0 } }, `They write ${tablesHit.length ? "to " + tablesHit.join(", ") : "rows"} on ${location.host}${isProduction() ? ", which counts as production" : ""}. There is no undo.`),
+      const ok = await confirm({ title: `Send ${fmt.plural(lines.length, "operation")}?`, ok: "Send them", reason: isProduction() ? "Why: sent with the stream, for the audit log" : false,
+        body: h("div", { class: "stack", style: { gap: "8px" } }, h("p", { class: "dim", style: { margin: 0 } }, `They write ${tablesHit.length ? "to " + tablesHit.join(", ") : "rows"} on ${whereTo()}${isProduction() ? ", which counts as production" : ""}. There is no undo.`),
           sources.length ? h("p", { class: "small", style: { margin: 0 } }, `The server keeps the offset of ${sources.join(", ")} from now on: a consumer of that source resumes from it.`) : null) });
       if (!ok) return;
       send.disabled = true; log.classList.remove("hidden"); clear(log);
       try {
         const headers = { "content-type": "application/x-ndjson", "x-strata-client": "command-center", ...authHeader() };
         if (ok.reason) headers["x-strata-reason"] = safeHeader(ok.reason);
+        const sent = Date.now();
         const r = await fetch("/v1/stream", { method: "POST", headers, body: ta.value.trim() + "\n" });
         if (!r.ok) { let m = `HTTP ${r.status}`; try { const j = await r.json(); m = j.error || m; } catch { /* not JSON */ } throw new Error(m); }
         const rd = r.body.getReader(), dec = new TextDecoder();
         for (;;) { const { value, done } = await rd.read(); if (done) break; log.append(dec.decode(value, { stream: true })); }
+        log.after(audited({ sent, reason: ok.reason, route: "/v1/stream" }));
         refresh();
       } catch (e) { log.append(String(e.message)); }
       send.disabled = !ta.value.trim();
@@ -432,5 +466,5 @@ function render(page) {
         h("details", { class: "more" }, h("summary", {}, "Send operations as a stream (NDJSON, a line each)"), ta, h("div", { class: "row", style: { marginTop: "6px" } }, send, h("span", { class: "small muted" }, "Each line is written in order; the answer streams back a line per batch.")), log))));
   }
 
-  return () => stopSources?.();
+  return () => { stopSources?.(); offCluster?.(); };
 }

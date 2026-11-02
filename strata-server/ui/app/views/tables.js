@@ -9,6 +9,7 @@
 
 import { h, s, clear, fmt, api, card, empty, failure, icon, store, bus, tipOn, hideTip, showTip, seg, ApiError, copyName, copyTitle } from "../core.js";
 import { state } from "../data.js";
+import { shardTrouble } from "../sqlguard.js";
 import { tables as catalog, table as tableOf } from "../catalog.js";
 
 export default { id: "tables", title: "Tables and storage", icon: "layers", group: "Diagnose", keywords: "tables storage size bytes rows growth growing skew skewed shard hot reads writes stale lag copies replicas disk inspector index", range: false, render, onParams };
@@ -22,6 +23,10 @@ const lagLevel = (x) => x == null ? "ok" : x.down || x.behind_s == null && x.beh
 const pctText = (v, d = 1) => v == null || !Number.isFinite(v) ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + fmt.pct(Math.abs(v), d);
 /** Seconds as "4 s", "47 min", "2 h 5 min". */
 const secs = (v) => v < 60 ? `${Math.round(v)} s` : v < 3600 ? `${Math.round(v / 60)} min` : `${Math.floor(v / 3600)} h${Math.round(v % 3600 / 60) ? ` ${Math.round(v % 3600 / 60)} min` : ""}`;
+// Under this many rows a shard (on average), a few rows make any shard look
+// skewed: such tables are not named as skewed.
+const SKEW_ROWS = 100;
+const material = (t) => (t.mean_docs || 0) >= SKEW_ROWS;
 const times = (v) => v == null || !Number.isFinite(v) ? "–" : `${v.toFixed(v >= 10 ? 0 : 2).replace(/\.?0+$/, "")}×`;
 
 /** A table's figures, from its row of /v1/index/tables, with what follows from them. */
@@ -57,9 +62,9 @@ function render(page, r) {
   const cards = h("div", { class: "dt-answers" });
   const list = h("div");
   const shardsBox = h("div"), copiesBox = h("div");
-  const shardsCard = card({ title: "Shards", sub: "largest first: outliers lead, not 192 slivers", body: shardsBox, cls: "dt-shards" });
+  const shardsCard = card({ title: "Shards", sub: "largest first, so the outliers lead", body: shardsBox, cls: "dt-shards" });
   const copiesCard = card({ title: "Copies", sub: "replication lag of every copy, problems listed", body: copiesBox, cls: "dt-copies" });
-  const listCard = card({ title: "Tables", sub: "largest growth first · click a row for its shards and copies, its name for fields, bytes and reads", body: list, flush: true, cls: "dt-list", tools: h("span", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "ix-chip exact", title: "Rows, bytes and segments are read from every segment of every primary" }, "sizes exact"), h("span", { class: "ix-chip est", title: "Reads and writes per minute are rates kept by each server" }, "rates approximate")) });
+  const listCard = card({ title: "Tables", sub: "largest growth first · click a row for its shards and copies, its name for fields, bytes and reads", body: list, flush: true, cls: "dt-list", tools: h("span", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "ix-chip exact", title: "Rows, bytes and segments are read from every segment of every primary" }, "sizes exact"), h("span", { class: "ix-chip est", title: "Reads and writes per minute are averages since each primary started, not the last minutes" }, "rates since start")) });
   page.append(
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Tables and storage"), sub),
       h("div", { class: "tools" }, stamp, h("label", { class: "small muted" }, "growth over"), growthSeg, again)),
@@ -68,7 +73,7 @@ function render(page, r) {
     card({ title: "What the numbers are", body: h("p", { class: "small dim", style: { margin: 0 } },
       "Rows and bytes: exact, from every segment of each shard's primary; one copy's bytes, and all copies' as that times the copies a shard has. ",
       "Growth: against the size the server kept a day or a week ago (it keeps one a table each hour in its log store, so a server without --log-store shows none). ",
-      "Writes and reads per minute: rates each server keeps, added up over the shards. Skew: the largest shard against the mean of all shards. ",
+      "Writes and reads per minute: what each primary counted since it started, divided by the minutes since then (so a bulk load at start counts for a long time), added up over the shards; reads count documents read. Skew: the largest shard against the mean of all shards. ",
       "Lag: how far each copy is behind its primary, in writes and in seconds, as the copies last said. ",
       "The page asks each copy once for its sizes (at most 16 at a time; the server keeps the answer 30 s) and samples no documents: the drill-down of one table does that, when it is opened.") }));
 
@@ -120,9 +125,15 @@ function render(page, r) {
     const shards = Math.max(sh.length, ...rows.map((t) => t.shards?.length || 0), 1);
     return { shards, copies, total: sh.reduce((a, x) => a + (x.replicas?.length || 1), 0) || shards * copies };
   };
+  // Copies the cluster says do not answer. /v1/index/tables lists the copies
+  // that answer and are behind; one that does not answer holds every
+  // table's rows of its shard, so it counts for each table.
+  const downCopies = () => (state.cluster?.shards || state.health?.shards || []).flatMap((sh, i) => (sh.replicas || []).map((rep, j) => ({ rep, shard: sh.shard ?? i, j })))
+    .filter(({ rep }) => rep.status && rep.status !== "ok" || rep.role === "unknown")
+    .map(({ rep, shard, j }) => ({ copy: rep.short || `s${shard}-${j}`, url: rep.url, shard, down: true, why: rep.avoided_why || rep.error || "does not answer", since: rep.down_since_ms }));
   const g = (t) => growth === "d7" ? t.g7 : t.g1;
   const gb = (t) => growth === "d7" ? t.d7 : t.d1;
-  const worstTable = () => [...rows].sort((a, b) => (b.staleList.length - a.staleList.length) || ((b.skew || 0) - (a.skew || 0)))[0]?.table;
+  const worstTable = () => [...rows].sort((a, b) => (b.staleList.length - a.staleList.length) || ((material(b) ? b.skew || 0 : 0) - (material(a) ? a.skew || 0 : 0)))[0]?.table;
   const open = (t, extra = {}) => "#/inspector?" + new URLSearchParams({ table: t, ...extra });
 
   // ------------------------------------------------------------- the four answers
@@ -140,27 +151,33 @@ function render(page, r) {
           `${gb(grow) >= 0 ? "+" : "−"}${fmt.bytes(Math.abs(gb(grow)))} in ${growth === "d7" ? "7 days" : "24 h"} on one copy (${fmt.bytes(grow.bytes)} now)${grow.writes_per_min != null ? `, ${fmt.si(grow.writes_per_min)} writes/min` : ""}.${tableOf(grow.table)?.short?.retain ? ` It keeps rows ${tableOf(grow.table).short.retain}.` : ""}`,
           link(open(grow.table), `Open ${grow.table}`), g(grow) > 0.05 ? "warn" : "");
     // Skewed.
-    const sk = [...rows].filter((t) => t.skew != null && (t.shards?.length || 0) > 1).sort((a, b) => b.skew - a.skew)[0];
-    const c2 = !sk ? ans("Is a shard skewed?", "One shard: nothing to compare", "Skew compares the shards of a cluster.")
-      : sk.skew < 1.25 ? ans("Is a shard skewed?", "No: every table is even", `The largest shard of any table is ${times(sk.skew)} the mean (${sk.table}, shard ${sk.skewShard}).`, link(open(sk.table, { shard: sk.skewShard }), `See shard ${sk.skewShard}`))
+    const cands = rows.filter((t) => t.skew != null && (t.shards?.length || 0) > 1);
+    const sk = cands.filter(material).sort((a, b) => b.skew - a.skew)[0];
+    const small = cands.filter((t) => !material(t)).length;
+    const smallNote = small ? ` ${fmt.plural(small, "table")} under ${SKEW_ROWS} rows a shard ${small === 1 ? "is" : "are"} left out: a few rows make any shard look skewed.` : "";
+    const c2 = !cands.length ? ans("Is a shard skewed?", "One shard: nothing to compare", "Skew compares the shards of a cluster.")
+      : !sk ? ans("Is a shard skewed?", "No table is large enough to tell", smallNote.trim())
+      : sk.skew < 1.25 ? ans("Is a shard skewed?", "No: every table is even", `The largest shard of any table is ${times(sk.skew)} the mean (${sk.table}, shard ${sk.skewShard}).${smallNote}`)
         : ans("Is a shard skewed?", `${sk.table}: shard ${sk.skewShard} holds ${times(sk.skew)} the mean`,
           `${fmt.si(sk.shards.find((x) => x.shard === sk.skewShard)?.docs)} rows against a mean of ${fmt.si(sk.mean_docs)}${sk.skewBytes ? `; its bytes are ${times(sk.skewBytes)} the mean` : ""}.${tableOf(sk.table)?.short?.shard_by ? ` Rows are placed by ${tableOf(sk.table).short.shard_by}: one value may hold many rows.` : ""}`,
           link(open(sk.table, { shard: sk.skewShard }), `See shard ${sk.skewShard}`), "warn");
     // Hot.
     const totalReads = rows.reduce((a, t) => a + (t.reads_per_min || 0), 0);
     const hotT = [...rows].filter((t) => t.reads_per_min != null).sort((a, b) => b.reads_per_min - a.reads_per_min)[0];
-    const c3 = !hotT || !totalReads ? ans("Is a shard hot?", "No reads counted", "Reads per minute come from each server's counts; none were counted.")
+    const c3 = !hotT || !totalReads ? ans("Is a shard hot?", "No reads counted", "Reads per minute are averaged since each primary started; none were counted yet (a server needs a minute first).")
       : hotT.hot && hotT.hotTimes > 1.5 ? ans("Is a shard hot?", `${hotT.table}: shard ${hotT.hot.shard} serves ${times(hotT.hotTimes)} the mean reads`, `${fmt.si(hotT.hot.reads_per_min)} reads/min against a mean of ${fmt.si(hotT.reads_per_min / (hotT.shards.length || 1))}. ${fmt.pct(hotT.reads_per_min / totalReads, 0)} of all reads go to ${hotT.table}.`, link(open(hotT.table, { shard: hotT.hot.shard }), `See shard ${hotT.hot.shard}`), "warn")
         : ans("Is a shard hot?", `${hotT.table} takes ${fmt.pct(hotT.reads_per_min / totalReads, 0)} of reads`, `${fmt.si(hotT.reads_per_min)} reads/min of ${fmt.si(totalReads)} over all tables.${hotT.hot ? ` Its busiest shard, ${hotT.hot.shard}, serves ${times(hotT.hotTimes)} the mean.` : " The drill-down shows its reads by shard."}`, link(open(hotT.table), `Open ${hotT.table}`));
     // Stale.
     const copies = new Map();
-    for (const t of rows) for (const x of t.staleList) { const k = x.copy; const old = copies.get(k); if (!old || (x.behind_s ?? Infinity) > (old.behind_s ?? Infinity)) copies.set(k, { ...x, table: t.table }); }
-    const st = [...copies.values()].sort((a, b) => (b.behind_s ?? Infinity) - (a.behind_s ?? Infinity));
+    for (const t of rows) for (const x of t.staleList) { const k = name(x.copy); const old = copies.get(k); if (!old || (x.behind_s ?? Infinity) > (old.behind_s ?? Infinity)) copies.set(k, { ...x, table: t.table }); }
+    for (const d of downCopies()) copies.set(name(d.copy), d);
+    const level = (x) => x.down ? 3 : lagLevel(x) === "bad" ? 2 : lagLevel(x) === "warn" ? 1 : 0;
+    const st = [...copies.values()].sort((a, b) => level(b) - level(a) || (b.behind_s ?? b.behind_txn ?? 0) - (a.behind_s ?? a.behind_txn ?? 0));
     const total = reachOf().total;
     const c4 = !st.length ? ans("Is a copy stale?", `No: all ${fmt.n(total)} copies are current`, "Every copy is under 1 s behind its primary.")
       : ans("Is a copy stale?", `${fmt.n(st.length)} of ${fmt.n(total)} copies`, [`Every other copy is under ${OK_S} s behind its primary.`,
-        h("div", { class: "dt-stale" }, st.slice(0, 3).map((x) => h("span", { class: "dt-sc " + lagLevel(x), title: copyTitle(x.copy) }, `${name(x.copy)} · ${lagText(x)}`)), st.length > 3 ? h("span", { class: "small muted" }, `and ${st.length - 3} more`) : null)],
-        h("a", { class: "btn sm", href: `#/cluster?copy=${encodeURIComponent(st[0].copy)}` }, "Open in Cluster"), st.some((x) => lagLevel(x) === "bad") ? "bad" : "warn");
+        h("div", { class: "dt-stale" }, st.slice(0, 3).map((x) => h("span", { class: "dt-sc " + lagLevel(x), title: copyTitle(x.url || x.copy) }, `${name(x.copy)} · ${lagText(x)}`)), st.length > 3 ? h("span", { class: "small muted" }, `and ${st.length - 3} more`) : null)],
+        h("a", { class: "btn sm", href: `#/cluster?copy=${encodeURIComponent(st[0].url || st[0].copy)}` }, "Open in Cluster"), st.some((x) => lagLevel(x) === "bad") ? "bad" : "warn");
     clear(cards, c1, c2, c3, c4);
   }
   const name = (c) => /^s\d+-\d+$/.test(c) ? c : copyName(c);
@@ -170,6 +187,10 @@ function render(page, r) {
   function drawList() {
     const max = Math.max(...rows.map((t) => Math.abs(g(t) ?? 0)));
     const copies = reachOf().copies;
+    // A copy that does not answer is a copy of every table on its shard:
+    // said once above the rows, not on each.
+    const downAll = downCopies();
+    const saidAbove = (x) => downAll.some((d) => d.copy === x.copy || d.url === x.copy || d.copy === name(x.copy));
     const note = (t) => { const sh = tableOf(t.table)?.short; return [sh?.retain && `keeps ${sh.retain}`, sh?.shard_by && `shard by ${sh.shard_by}`, sh?.expire_by && `expires by ${sh.expire_by}`].filter(Boolean).join(" · "); };
     const cols = [
       { key: "table", label: "Table", render: (t) => h("div", {}, h("a", { href: open(t.table), title: `Fields, bytes, freshness and reads of ${t.table}`, onclick: (e) => e.stopPropagation() }, h("b", {}, t.table)), note(t) ? h("div", { class: "tiny muted" }, note(t)) : null) },
@@ -177,15 +198,21 @@ function render(page, r) {
       { key: "bytes", label: "On disk, one copy", short: "On disk", num: true, render: (t) => h("div", {}, fmt.bytes(t.bytes), copies > 1 ? h("div", { class: "tiny muted" }, `${fmt.bytes(t.bytes * copies)} all copies`) : null) },
       { key: "g", label: growth === "d7" ? "Δ 7 d" : "Δ 24 h", num: true, sort: (t) => g(t) ?? -Infinity, render: (t) => g(t) == null ? h("span", { class: "muted", title: "No size kept that long ago" }, "–") : h("span", { class: "dt-delta" + (g(t) === max && max > 0.01 ? " top" : ""), title: `${gb(t) >= 0 ? "+" : "−"}${fmt.bytes(Math.abs(gb(t)))} on one copy` }, pctText(g(t))) },
       { key: "g7", label: growth === "d7" ? "Δ 24 h" : "Δ 7 d", num: true, sort: (t) => (growth === "d7" ? t.g1 : t.g7) ?? -Infinity, render: (t) => h("span", { class: "dim" }, pctText(growth === "d7" ? t.g1 : t.g7)) },
-      { key: "writes_per_min", label: "Writes/min", num: true, render: (t) => fmt.si(t.writes_per_min) },
-      { key: "reads_per_min", label: "Reads/min", num: true, render: (t) => fmt.si(t.reads_per_min) },
+      { key: "writes_per_min", label: "Writes/min", title: "Documents written per minute, averaged since each primary started", num: true, render: (t) => fmt.si(t.writes_per_min) },
+      { key: "reads_per_min", label: "Reads/min", title: "Documents read per minute, averaged since each primary started", num: true, render: (t) => fmt.si(t.reads_per_min) },
       { key: "segments", label: "Segments", num: true, render: (t) => fmt.n(t.segments) },
-      { key: "skew", label: "Largest shard", num: true, title: "The largest shard's rows against the mean of the shards", render: (t) => t.skew == null || (t.shards?.length || 0) < 2 ? h("span", { class: "muted" }, "–") : h("span", { class: t.skew >= 1.25 ? "dt-flag" : "", title: `shard ${t.skewShard}` }, times(t.skew), h("span", { class: "tiny muted" }, ` s${t.skewShard}`)) },
+      { key: "skew", label: "Largest shard", num: true, title: "The largest shard's rows against the mean of the shards", render: (t) => t.skew == null || (t.shards?.length || 0) < 2 ? h("span", { class: "muted" }, "–") : h("span", { class: t.skew >= 1.25 && material(t) ? "dt-flag" : "", title: `shard ${t.skewShard}${material(t) ? "" : ` · under ${SKEW_ROWS} rows a shard: not counted as skewed`}` }, times(t.skew), h("span", { class: "tiny muted" }, ` s${t.skewShard}`)) },
       { key: "lag", label: "Worst copy lag", num: true, title: "The copy furthest behind its primary, of those that answer; copies that do not answer are counted apart", sort: (t) => t.worst ? t.worst.behind_s ?? 0 : -1, render: (t) => h("span", { class: "row nw", style: { gap: "6px", justifyContent: "flex-end" } },
         t.worst ? h("span", { class: "dt-sc " + lagLevel(t.worst), title: copyTitle(t.worst.copy) }, `${name(t.worst.copy)} · ${lagText(t.worst)}`) : h("span", { class: "muted" }, "under 1 s"),
-        t.down ? h("span", { class: "dt-sc bad", title: t.staleList.filter((x) => x.down).map((x) => name(x.copy)).join(", ") + " do not answer" }, `+${t.down} down`) : null) },
+        (() => { const down = t.staleList.filter((x) => x.down && !saidAbove(x)); return down.length ? h("span", { class: "dt-sc bad", title: down.map((x) => name(x.copy)).join(", ") + (down.length === 1 ? " does" : " do") + " not answer" }, `+${down.length} down`) : null; })()) },
     ];
-    clear(list, tableEl(cols));
+    const down = downAll;
+    const trouble = shardTrouble();
+    clear(list, down.length || trouble.length ? h("div", { class: "banner bad dt-banner dt-downall" }, icon("bad"), h("div", { class: "grow small" },
+      down.length ? [h("b", {}, `${down.map((d) => d.copy).join(", ")} ${down.length === 1 ? "does" : "do"} not answer`),
+        ` · every table's copy on ${down.length === 1 ? "it" : "them"} is out of date until ${down.length === 1 ? "it is" : "they are"} back; the lag below is of the copies that answer.`] : null,
+      trouble.map((x) => h("div", {}, h("b", {}, `Shard ${x.shard} ${x.words}`), x.why ? ` · ${x.why}.` : "", ` ${!x.reads && !x.writes ? "Queries and writes" : !x.reads ? "Queries" : "Writes"} of every table that reach it fail until it is back.`)))) : null,
+      tableEl(cols));
   }
   function tableEl(cols) {
     let sortKey = store.get("tables.sort", "g"), desc = true;
@@ -292,10 +319,13 @@ function render(page, r) {
 
   // The cluster's shape (shards, copies, which answer) comes every few seconds.
   let shape = "";
+  let downSeen = "";
   const offs = [bus.on("cluster", () => {
     if (!rows || legacy || err || !rows.length) return;
     const r = reachOf(), now = `${r.shards}x${r.copies}x${r.total}`;
-    if (now !== shape) { shape = now; draw(); } else { drawCards(); drawCopies(); }
+    // Redraw what the copies' state changes, only when it changed.
+    const downNow = downCopies().map((d) => d.copy).join(",") + "|" + shardTrouble().map((x) => x.shard + x.words).join(",");
+    if (now !== shape) { shape = now; downSeen = downNow; draw(); } else if (downNow !== downSeen) { downSeen = downNow; drawCards(); drawList(); drawCopies(); } else { drawCards(); drawCopies(); }
   })];
   draw();
   load();
