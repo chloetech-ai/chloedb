@@ -403,10 +403,6 @@ async fn every_table_over_http_and_grpc() {
     assert!(status == 400 && a["error"].as_str().unwrap().contains("no such table: nope"), "{a}");
     let (_, a) = post("/v1/explain", json!({"sql": QUERIES[0].0})).await;
     assert!(a["tree"].to_string().contains("events"), "{a}");
-    // The workbench's Explain asks for the top rows' values; a query that
-    // ranks nothing has none to show, and its plan still comes back.
-    let (status, a) = post("/v1/explain", json!({"sql": "SELECT id FROM items LIMIT 5", "hits": 5})).await;
-    assert!(status == 200 && a["hits"].is_null() && a["rows"] == 5, "{a}");
     // A walk seeded by a user's history in another table.
     let (_, a) = post("/v1/query", json!({"sql": "SELECT id FROM items WHERE REACHABLE(cooc, (SELECT item FROM events WHERE usr = 'u2' ORDER BY ts DESC LIMIT 10), hops => 0, min_hops => 0) LIMIT 100"})).await;
     let (_, want) = post("/v1/query", json!({"sql": "SELECT id FROM items WHERE id IN (SELECT item FROM events WHERE usr = 'u2' ORDER BY ts DESC LIMIT 10) LIMIT 100"})).await;

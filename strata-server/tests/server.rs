@@ -2681,8 +2681,10 @@ async fn explain_gives_the_plan_ir() {
         assert!((score - bm25 * (1.0 + 0.1 * rating)).abs() < 1e-9 * score.max(1.0), "{hit}");
         assert_eq!(hit["bm25(body, 'quiet kettle') * (1 + 0.1 * coalesce(rating, 0))"], hit["score()"], "{hit}");
     }
+    // A query that ranks nothing has no values to show for its rows: its
+    // plan comes back without hits (the workbench asks for them always).
     let (status, e) = post(&c, &format!("{base}/v1/explain"), json!({ "sql": "SELECT id FROM products LIMIT 3", "hits": 3 })).await;
-    assert!(status == 400 && e["error"].as_str().unwrap().contains("ORDER BY"), "{e}");
+    assert!(status == 200 && e.get("hits").is_none() && e["rows"] == 3, "{e}");
     // POST /v1/plan runs that plan as /v1/query runs the SQL, and a write
     // plan as /v1/sql runs the statement.
     let (status, want) = post(&c, &format!("{base}/v1/query"), json!({ "sql": sql })).await;
