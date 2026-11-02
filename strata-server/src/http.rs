@@ -21,7 +21,9 @@
 //! | `POST /v1/plan` | `{plan, timeout_ms?, min_seq_no?, min_seq_nos?}` (a plan as `/v1/explain` gives it) | rows, or `{written, seq_no?, seq_nos?}` |
 //! | `POST /v1/import?format=jsonl&table=name` | rows as JSON Lines, JSON, CSV or TSV (of the first table without `table`) | `{written, skipped_fields}` |
 //! | `POST /v1/import?format=sqlite&tables=a,b&plan=true` | a SQLite file (`application/vnd.sqlite3`; recognised by its first bytes too) | `{tables, skipped, written}`, or with `plan` the plan ([`strata::sqlite`]) |
+//! | `POST /v1/import?format=parquet&table=name&key=id&plan=true` | a Parquet file (`application/vnd.apache.parquet`; recognised by its first bytes too) | `{table, rows, created, skipped, notes, written}`, or with `plan` the plan ([`strata::parquet`]) |
 //! | `GET /v1/export?tables=a,b&fts=false&indexes=false&schemas=false` | | the database as a SQLite file |
+//! | `GET /v1/export?format=parquet&tables=name` | | one table as a Parquet file, keeping its Strata schema |
 //! | `POST /v1/schema/check` | a schema, in either JSON form | `{schema, short}`, or an error |
 //! | `POST /v1/explain` | `{sql, params?, hits?}` | the bound query, its plan IR and the executor's plan; with `hits`, the top rows with their `score()` and `features()` |
 //! | `POST /v1/embed` | `{text, field?, table?}` | `{table, field, vector}`: the text's vector by an embedded field's model; `vectors`, a vector a token, for a multi-vector field's (ColBERT) |
@@ -773,7 +775,7 @@ async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
     if auth::simple_content_type(header_str(&headers, header::CONTENT_TYPE)) {
         return Err(ApiError {
             status: 415,
-            message: "send the rows with their content type (text/csv, text/tab-separated-values, application/x-ndjson, application/json, application/vnd.sqlite3 or application/octet-stream), not text/plain or a form".into(),
+            message: "send the rows with their content type (text/csv, text/tab-separated-values, application/x-ndjson, application/json, application/vnd.sqlite3, application/vnd.apache.parquet or application/octet-stream), not text/plain or a form".into(),
         });
     }
     let ct = header_str(&headers, header::CONTENT_TYPE).unwrap_or("").split(';').next().unwrap_or("").trim().to_ascii_lowercase();
@@ -784,8 +786,15 @@ async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
     if sqlite {
         return import_sqlite(&app, &who(w), &q, body).await;
     }
+    let parquet = match q.get("format") {
+        Some(f) => f.eq_ignore_ascii_case("parquet"),
+        None => matches!(ct.as_str(), "application/vnd.apache.parquet" | "application/x-parquet") || body.starts_with(b"PAR1"),
+    };
+    if parquet {
+        return import_parquet(&app, &who(w), &q, body).await;
+    }
     let format = match q.get("format") {
-        Some(f) => Some(Format::parse(f).ok_or_else(|| ApiError::bad(format!("unknown format {f:?}: jsonl, json, csv, tsv or sqlite")))?),
+        Some(f) => Some(Format::parse(f).ok_or_else(|| ApiError::bad(format!("unknown format {f:?}: jsonl, json, csv, tsv, sqlite or parquet")))?),
         None => {
             let ct = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
             let ct = ct.split(';').next().unwrap_or("").trim();
@@ -798,7 +807,7 @@ async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
             }
         }
     };
-    let format = format.ok_or_else(|| ApiError::bad("name the rows' format: ?format=jsonl, json, csv, tsv or sqlite"))?;
+    let format = format.ok_or_else(|| ApiError::bad("name the rows' format: ?format=jsonl, json, csv, tsv, sqlite or parquet"))?;
     let t0 = std::time::Instant::now();
     let (n, skipped) = app.svc.import(q.get("table").map(String::as_str), body, format).await?;
     Ok(AxJson(json!({"written": n, "skipped_fields": skipped, "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
@@ -842,17 +851,74 @@ async fn import_sqlite(app: &App, who: &Principal, q: &std::collections::HashMap
     Ok(AxJson(j))
 }
 
+/// A Parquet file's rows, into one table ([`Service::import_parquet`]):
+/// `?table=` names it (else the table an export kept in the file),
+/// `?key=` the key of a table the import creates (`""` for none),
+/// `?blobs_base64=true` keeps binary columns as base64 text, and
+/// `?plan=true` answers what the import would do and writes nothing.
+#[cfg(feature = "parquet")]
+async fn import_parquet(app: &App, who: &Principal, q: &std::collections::HashMap<String, String>, body: Bytes) -> Res {
+    if q.contains_key("tables") {
+        return Err(ApiError::bad("tables is for SQLite files: a Parquet file's rows go to one table (?table=)"));
+    }
+    let opts = strata::parquet::ImportOptions { table: q.get("table").cloned(), schema: None, key: q.get("key").cloned(), blobs_base64: flag(q, "blobs_base64", false)? };
+    let plan = flag(q, "plan", false)?;
+    let t0 = std::time::Instant::now();
+    let mut j = app.svc.import_parquet(who, body, opts, plan, 0).await?;
+    if !plan {
+        j["written"] = j["rows"].clone();
+        j["took_ms"] = json!(t0.elapsed().as_secs_f64() * 1e3);
+    }
+    Ok(AxJson(j))
+}
+
+#[cfg(not(feature = "parquet"))]
+async fn import_parquet(_: &App, _: &Principal, _: &std::collections::HashMap<String, String>, _: Bytes) -> Res {
+    Err(ApiError::bad("this server was built without Parquet (feature parquet)"))
+}
+
 /// The database as a new SQLite file ([`Service::export_sqlite`]), sent
 /// as it is read from disk: `?tables=a,b` for only those tables,
 /// `?fts=false`, `?indexes=false` and `?schemas=false` to leave out the
-/// FTS5 indexes, the B-tree indexes and the kept Strata schemas.
+/// FTS5 indexes, the B-tree indexes and the kept Strata schemas. With
+/// `?format=parquet`, one table (`?tables=`, which a database of one
+/// table may leave out) as a Parquet file ([`Service::export_parquet`]),
+/// `?schemas=false` leaving out its kept Strata schema.
 async fn export(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
-    if let Some(f) = q.get("format").filter(|f| !f.eq_ignore_ascii_case("sqlite")) {
-        return Err(ApiError::bad(format!("unknown format {f:?}: the export is a SQLite file (format=sqlite)")));
+    let format = q.get("format").map(|f| f.to_ascii_lowercase());
+    match format.as_deref() {
+        None | Some("sqlite") => {}
+        Some("parquet") => return export_parquet(&app, &q).await,
+        Some(f) => return Err(ApiError::bad(format!("unknown format {f:?}: format=sqlite or format=parquet"))),
     }
     let opts = strata::sqlite::ExportOptions { tables: tables_param(&q), fts: flag(&q, "fts", true)?, indexes: flag(&q, "indexes", true)?, meta: flag(&q, "schemas", true)? };
     let (dir, path, done) = app.svc.export_sqlite(opts).await?;
-    let file = tokio::fs::File::open(&path).await.map_err(ApiError::internal)?;
+    let name = done.tables.first().map_or("strata".into(), |t| t.table.clone());
+    let tables: Vec<String> = done.tables.iter().map(|t| t.table.clone()).collect();
+    send_file(dir, &path, "application/vnd.sqlite3", &format!("{name}.sqlite"), &tables).await
+}
+
+#[cfg(feature = "parquet")]
+async fn export_parquet(app: &App, q: &std::collections::HashMap<String, String>) -> Result<Response, ApiError> {
+    let mut tables = tables_param(q);
+    if tables.len() > 1 {
+        return Err(ApiError::bad("a Parquet file holds one table: name one (?tables=name), or export to a directory with strata-server export"));
+    }
+    let (dir, path, done) = app.svc.export_parquet(tables.pop(), flag(q, "schemas", true)?).await?;
+    let tables: Vec<String> = done.tables.iter().map(|t| t.table.clone()).collect();
+    let name = tables.first().cloned().unwrap_or_else(|| "strata".into());
+    send_file(dir, &path, "application/vnd.apache.parquet", &format!("{name}.parquet"), &tables).await
+}
+
+#[cfg(not(feature = "parquet"))]
+async fn export_parquet(_: &App, _: &std::collections::HashMap<String, String>) -> Result<Response, ApiError> {
+    Err(ApiError::bad("this server was built without Parquet (feature parquet)"))
+}
+
+/// The file `path` as the answer, read from disk as it is sent; `dir`,
+/// which holds it, goes when the last chunk is sent.
+async fn send_file(dir: tempfile::TempDir, path: &std::path::Path, content_type: &str, filename: &str, tables: &[String]) -> Result<Response, ApiError> {
+    let file = tokio::fs::File::open(path).await.map_err(ApiError::internal)?;
     let len = file.metadata().await.map_err(ApiError::internal)?.len();
     // The directory goes when the last chunk is sent.
     let chunks = futures::stream::unfold((file, Some(dir)), |(mut file, dir)| async move {
@@ -868,13 +934,11 @@ async fn export(State(app): State<App>, Query(q): Query<std::collections::HashMa
             Err(e) => Some((Err(e), (file, None))),
         }
     });
-    let name = done.tables.first().map_or("strata".into(), |t| t.table.clone());
-    let tables: Vec<&str> = done.tables.iter().map(|t| t.table.as_str()).collect();
     Ok((
         [
-            (header::CONTENT_TYPE, "application/vnd.sqlite3".to_string()),
+            (header::CONTENT_TYPE, content_type.to_string()),
             (header::CONTENT_LENGTH, len.to_string()),
-            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}.sqlite\"")),
+            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\"")),
             (header::HeaderName::from_static("x-strata-tables"), tables.join(",")),
         ],
         axum::body::Body::from_stream(chunks),

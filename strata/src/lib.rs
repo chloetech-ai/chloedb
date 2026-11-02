@@ -27,6 +27,8 @@
 //!   measurement harness; [`baselines`] (feature `baselines`): SQLite and
 //!   Tantivy behind the same interface.
 
+#[cfg(feature = "parquet")]
+pub mod arrow_rows;
 #[cfg(feature = "audio")]
 pub mod audio;
 #[cfg(feature = "baselines")]
@@ -48,6 +50,10 @@ pub mod iostat;
 pub mod json;
 pub mod media;
 pub mod metrics;
+#[cfg(feature = "s3")]
+pub mod objects;
+#[cfg(feature = "parquet")]
+pub mod parquet;
 pub mod postings;
 pub mod query;
 pub mod rank_log;

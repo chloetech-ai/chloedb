@@ -8,6 +8,7 @@ Around the library:
 
 - **[strata-server](docs/strata/server.md)** serves a database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Several servers run as shards behind a coordinator that answers like one database, and a primary ships its writes to replicas.
 - **[strata-py](docs/strata/python.md)** runs a database inside a Python process, the way `sqlite3` runs SQLite, or talks to a server with the same methods.
+- **[Parquet and S3](docs/strata/parquet.md)**: `strata-server import` reads Parquet files and directories of them as Spark writes them (Hive partitions too) into a table, `export` writes tables to Parquet that Spark, DuckDB, polars and pandas read, and either takes `s3://` URLs; from Python, `db.import_arrow` takes any Arrow table or dataframe.
 - **[SQLite in and out](docs/strata/sqlite.md)**: `strata-server import` turns a SQLite database's tables into Strata tables, and `strata-server export` writes a Strata database to a SQLite file with its keys, references, indexes and an FTS5 index over the text.
 - **[Engram](#engram-memory-for-coding-agents-built-on-strata)** is an application built on Strata: long-term memory for coding agents. It records every Claude Code session of a project into one Strata file and brings the right pieces back when a prompt needs them.
 

@@ -228,6 +228,64 @@ impl Database {
     }
 }
 
+/// A file to read: the path given, or what an `s3://` URL names, read into
+/// a temporary directory removed with this (feature `s3`).
+struct Local {
+    path: PathBuf,
+    #[cfg(feature = "s3")]
+    _held: Option<strata::objects::Input>,
+}
+
+fn local(path: &std::path::Path) -> strata::Result<Local> {
+    #[cfg(feature = "s3")]
+    if let Some(url) = path.to_str().filter(|s| strata::objects::is_url(s)) {
+        let i = strata::objects::Input::open(url)?;
+        return Ok(Local { path: i.path().to_path_buf(), _held: Some(i) });
+    }
+    Ok(Local {
+        path: path.to_path_buf(),
+        #[cfg(feature = "s3")]
+        _held: None,
+    })
+}
+
+/// A file or directory to write: the path given, or a temporary one that
+/// [`Remote::finish`] writes to an `s3://` URL (feature `s3`).
+struct Remote {
+    path: PathBuf,
+    #[cfg(feature = "s3")]
+    out: Option<strata::objects::Output>,
+}
+
+fn remote(path: &std::path::Path) -> strata::Result<Remote> {
+    #[cfg(feature = "s3")]
+    if let Some(url) = path.to_str().filter(|s| strata::objects::is_url(s)) {
+        let o = strata::objects::Output::new(url.trim_end_matches('/'))?;
+        return Ok(Remote { path: o.path().to_path_buf(), out: Some(o) });
+    }
+    Ok(Remote {
+        path: path.to_path_buf(),
+        #[cfg(feature = "s3")]
+        out: None,
+    })
+}
+
+impl Remote {
+    fn finish(self) -> strata::Result<()> {
+        #[cfg(feature = "s3")]
+        if let Some(o) = self.out {
+            o.finish()?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_options(table: Option<String>, schema: Option<&str>, key: Option<String>, blobs_base64: bool) -> PyResult<strata::parquet::ImportOptions> {
+    let schema = schema.map(Schema::from_json).transpose().map_err(err)?;
+    Ok(strata::parquet::ImportOptions { table, schema, key, blobs_base64 })
+}
+
 /// The schema of the table named `table` (any case), or of the first.
 /// One change of [`Database::alter_table_json`].
 fn alter_of(j: &serde_json::Value) -> PyResult<strata::schema::Alter> {
@@ -560,7 +618,7 @@ impl Database {
     fn import_file(&self, py: Python<'_>, path: PathBuf, format: Option<&str>, table: Option<&str>) -> PyResult<(u64, bool, Vec<String>)> {
         let db = self.get()?;
         let format = format.map(|f| Format::parse(f).ok_or_else(|| PyValueError::new_err(format!("unknown format {f:?}: jsonl, json, csv or tsv")))).transpose()?;
-        let r = py.detach(|| table_of(&db, table).and_then(|s| ingest::import_file_into(&db, &s.table, &path, format))).map_err(err)?;
+        let r = py.detach(|| local(&path).and_then(|l| table_of(&db, table).and_then(|s| ingest::import_file_into(&db, &s.table, &l.path, format)))).map_err(err)?;
         Ok((r.rows, r.bulk, r.unknown))
     }
 
@@ -570,7 +628,7 @@ impl Database {
     fn import_sqlite(&self, py: Python<'_>, path: PathBuf, tables: Option<Vec<String>>, schemas: Option<&str>, blobs_base64: bool) -> PyResult<String> {
         let db = self.get()?;
         let opts = Database::sqlite_options(tables, schemas, blobs_base64)?;
-        let r = py.detach(|| sqlite::import(&db, &path, &opts)).map_err(err)?;
+        let r = py.detach(|| local(&path).and_then(|l| sqlite::import(&db, &l.path, &opts))).map_err(err)?;
         Ok(r.to_json().to_string())
     }
 
@@ -580,8 +638,69 @@ impl Database {
     fn export_sqlite(&self, py: Python<'_>, path: PathBuf, tables: Option<Vec<String>>, fts: bool, indexes: bool, schemas: bool) -> PyResult<String> {
         let db = self.get()?;
         let opts = sqlite::ExportOptions { tables: tables.unwrap_or_default(), fts, indexes, meta: schemas };
-        let r = py.detach(|| sqlite::export(&db, &path, &opts)).map_err(err)?;
+        let r = py
+            .detach(|| {
+                let out = remote(&path)?;
+                let r = sqlite::export(&db, &out.path, &opts)?;
+                out.finish()?;
+                Ok(r)
+            })
+            .map_err(err)?;
         Ok(r.to_json().to_string())
+    }
+
+    /// Imports the Parquet file or directory `path` (or `s3://` URL) into
+    /// one table ([`strata::parquet::import`]); returns what it did as JSON.
+    #[cfg(feature = "parquet")]
+    #[pyo3(signature = (path, table = None, schema = None, key = None, blobs_base64 = false))]
+    fn import_parquet(&self, py: Python<'_>, path: PathBuf, table: Option<String>, schema: Option<&str>, key: Option<String>, blobs_base64: bool) -> PyResult<String> {
+        let db = self.get()?;
+        let opts = parquet_options(table, schema, key, blobs_base64)?;
+        let r = py.detach(|| local(&path).and_then(|l| strata::parquet::import(&db, &l.path, &opts))).map_err(err)?;
+        Ok(r.to_json().to_string())
+    }
+
+    /// Writes the tables to Parquet ([`strata::parquet::export`]): a
+    /// `.parquet` file for one table, else a directory of them; `path` may
+    /// be an `s3://` URL. Returns what it wrote as JSON.
+    #[cfg(feature = "parquet")]
+    #[pyo3(signature = (path, tables = None, schemas = true))]
+    fn export_parquet(&self, py: Python<'_>, path: PathBuf, tables: Option<Vec<String>>, schemas: bool) -> PyResult<String> {
+        let db = self.get()?;
+        let opts = strata::parquet::ExportOptions { tables: tables.unwrap_or_default(), meta: schemas };
+        let r = py
+            .detach(|| {
+                let out = remote(&path)?;
+                let r = strata::parquet::export(&db, &out.path, &opts)?;
+                out.finish()?;
+                Ok(r)
+            })
+            .map_err(err)?;
+        Ok(r.to_json().to_string())
+    }
+
+    /// Writes the rows of an Arrow stream (`__arrow_c_stream__`) into the
+    /// first table or `table`, columns filling the fields of their names
+    /// ([`strata::arrow_rows::import_batches`]); returns what it did as
+    /// JSON.
+    #[cfg(feature = "parquet")]
+    #[pyo3(signature = (data, table = None))]
+    fn import_arrow(&self, py: Python<'_>, data: &Bound<'_, PyAny>, table: Option<&str>) -> PyResult<String> {
+        use arrow_array::RecordBatchReader;
+        let db = self.get()?;
+        let reader = arrow::stream_of(data)?;
+        let table = table.map(String::from);
+        let w = py
+            .detach(move || -> strata::Result<_> {
+                let schema = table_of(&db, table.as_deref())?;
+                let arrow = reader.schema();
+                let mut batches = reader.map(|b| b.map_err(|e| strata::Error::Schema(format!("the Arrow stream: {e}"))));
+                let w = strata::arrow_rows::import_batches(&db, &schema.table, &arrow, &mut batches)?;
+                Ok((schema.table.clone(), w))
+            })
+            .map_err(err)?;
+        let (table, w) = w;
+        Ok(serde_json::json!({"table": table, "rows": w.rows, "bulk": w.bulk, "skipped": w.skipped, "notes": w.notes}).to_string())
     }
 
     /// Creates a database at `path` from the tables of the SQLite file
@@ -604,7 +723,8 @@ impl Database {
         let models = models.unwrap_or_else(strata::embed::models_dir);
         let (db, embed_errors, report) = py
             .detach(|| -> strata::Result<_> {
-                let src = sqlite::Source::open(&sqlite_path)?;
+                let l = local(&sqlite_path)?;
+                let src = sqlite::Source::open(&l.path)?;
                 let plan = src.plan(None, &opts)?;
                 let first = plan.tables.first().ok_or_else(|| strata::Error::Schema(format!("{}: no table to import", sqlite_path.display())))?;
                 let db = Db::create_in(&path, first.schema.clone(), db_opts, &models)?;
@@ -623,7 +743,57 @@ impl Database {
     #[pyo3(signature = (sqlite_path, tables = None, schemas = None, blobs_base64 = false))]
     fn plan_sqlite(py: Python<'_>, sqlite_path: PathBuf, tables: Option<Vec<String>>, schemas: Option<&str>, blobs_base64: bool) -> PyResult<String> {
         let opts = Database::sqlite_options(tables, schemas, blobs_base64)?;
-        let plan = py.detach(|| sqlite::plan(&sqlite_path, None, &opts)).map_err(err)?;
+        let plan = py.detach(|| local(&sqlite_path).and_then(|l| sqlite::plan(&l.path, None, &opts))).map_err(err)?;
+        Ok(plan.to_json().to_string())
+    }
+
+    /// Creates a database at `path` whose first table is the one the
+    /// Parquet file or directory `parquet_path` (or `s3://` URL) makes, and
+    /// loads it ([`strata::parquet::import_new`]); returns it and what the
+    /// import did as JSON.
+    #[cfg(feature = "parquet")]
+    #[staticmethod]
+    #[pyo3(signature = (parquet_path, path, table = None, schema = None, key = None, blobs_base64 = false, directory = false, models = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn from_parquet(
+        py: Python<'_>,
+        parquet_path: PathBuf,
+        path: PathBuf,
+        table: Option<String>,
+        schema: Option<&str>,
+        key: Option<String>,
+        blobs_base64: bool,
+        directory: bool,
+        models: Option<PathBuf>,
+    ) -> PyResult<(Self, String)> {
+        let opts = parquet_options(table, schema, key, blobs_base64)?;
+        let db_opts = DbOptions { layout: if directory { Layout::Directory } else { Layout::SingleFile }, ..DbOptions::default() };
+        let models = models.unwrap_or_else(strata::embed::models_dir);
+        let (db, embed_errors, report) = py
+            .detach(|| -> strata::Result<_> {
+                let l = local(&parquet_path)?;
+                let src = strata::parquet::Source::open(&l.path)?;
+                let plan = src.plan(None, &opts)?;
+                let db = Db::create_in(&path, plan.schema.clone(), db_opts, &models)?;
+                // Before the rows, so that they get their embeddings.
+                let embed_errors: Vec<(String, String)> = db.open_embedders(&models).into_iter().map(|(f, e)| (f, e.to_string())).collect();
+                let r = src.load(&db, &plan)?;
+                Ok((db, embed_errors, r.to_json().to_string()))
+            })
+            .map_err(err)?;
+        Ok((Database { db: RwLock::new(Some(Arc::new(db))), embed_errors }, report))
+    }
+
+    /// What an import of the Parquet file or directory `parquet_path` (or
+    /// `s3://` URL) would do: into this database's tables with `self`, else
+    /// into a new database ([`strata::parquet::Plan::to_json`]).
+    #[cfg(feature = "parquet")]
+    #[staticmethod]
+    #[pyo3(signature = (parquet_path, table = None, schema = None, key = None, blobs_base64 = false, db = None))]
+    fn plan_parquet(py: Python<'_>, parquet_path: PathBuf, table: Option<String>, schema: Option<&str>, key: Option<String>, blobs_base64: bool, db: Option<PyRef<'_, Database>>) -> PyResult<String> {
+        let opts = parquet_options(table, schema, key, blobs_base64)?;
+        let db = db.map(|d| d.get()).transpose()?;
+        let plan = py.detach(|| local(&parquet_path).and_then(|l| strata::parquet::plan(&l.path, db.as_deref(), &opts))).map_err(err)?;
         Ok(plan.to_json().to_string())
     }
 

@@ -21,11 +21,17 @@ arrow-array = { version = "59", default-features = false, features = ["ffi"], op
 arrow-schema = { version = "59", default-features = false, features = ["ffi"], optional = true }
 
 [features]
-default = ["datafusion"]
+default = ["datafusion", "parquet", "s3"]
 # DataFusion as the engine of joins, groups and sorts over a few thousand
 # rows or more (`strata::query::df`); the default engine picks it by size.
 # Answers as Arrow tables (`Database.query_arrow`) come with it.
 datafusion = ["strata/datafusion", "dep:arrow-array", "dep:arrow-schema"]
+# Parquet files in and out (`from_parquet`, `Database.import_parquet`,
+# `Database.export_parquet`), and rows from any Arrow source
+# (`Database.import_arrow`).
+parquet = ["datafusion", "strata/parquet"]
+# `s3://` URLs wherever a file is read or written (`strata::objects`).
+s3 = ["strata/s3"]
 # BERT embedding models (`bert`), with Apple's Accelerate on a Mac
 # (`accelerate`); Model2Vec models need neither.
 bert = ["strata/bert"]
