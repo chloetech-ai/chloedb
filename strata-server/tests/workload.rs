@@ -190,3 +190,66 @@ async fn queries_are_kept_with_who_sent_them() {
     let (rs, _) = store.query("SELECT COUNT(*) FROM queries WHERE client = 'command-center'", &strata::query::Params::new(), false, Duration::from_secs(5)).await.unwrap();
     assert_eq!(rs.rows[0][0], strata::Value::Int(1));
 }
+
+/// Statements are counted a minute at a time: a window's statements come
+/// with the window before (`prev`), their keys, and whether they are new;
+/// one statement's page has its minutes and slowest calls with who sent
+/// them.
+#[tokio::test(flavor = "multi_thread")]
+async fn statements_compare_with_the_window_before() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(service(open(dir.path(), "one.strata")));
+    let (base, ops, rb) = keyed(&svc).await;
+    let now = strata_server::telemetry::now_ms() / 60_000 * 60_000;
+    let sql = "SELECT id FROM products WHERE MATCH(body, 'laptop') LIMIT 5";
+    let fp = strata_server::telemetry::fingerprint(sql);
+    // The same statement 20 minutes ago, as the server counted it then.
+    let then = strata_server::telemetry::Finished { id: 999, ts_ms: now - 20 * 60_000, sql: sql.into(), fingerprint: fp.clone(), kind: "bm25", outcome: "ok", ms: 3.0, rows: 5, ..Default::default() };
+    svc.query_log.statements.add(&Arc::new(then));
+    for q in ["laptop", "phone"] {
+        let (status, body) = call(reqwest::Method::POST, &base, "/v1/query", &rb, &[], Some(json!({"sql": sql.replace("laptop", q)}))).await;
+        assert_eq!(status, 200, "{body}");
+    }
+    let (status, _) = call(reqwest::Method::POST, &base, "/v1/query", &rb, &[], Some(json!({"sql": "SELECT COUNT(*) FROM products"}))).await;
+    assert_eq!(status, 200);
+
+    let (from, to) = (now - 15 * 60_000, strata_server::telemetry::now_ms() + 1);
+    let (status, j) = call(reqwest::Method::GET, &base, &format!("/v1/queries/stats?from={from}&to={to}"), &ops, &[], None).await;
+    assert_eq!(status, 200, "{j}");
+    assert_eq!(j["prev"]["to"], from, "{j}");
+    let list = j["statements"].as_array().unwrap();
+    let s = list.iter().find(|s| s["fingerprint"] == fp.as_str()).expect("the statement");
+    assert_eq!(s["calls"], 2, "{s}");
+    assert_eq!(s["outcomes"], json!({"ok": 2}));
+    assert_eq!(s["prev"]["calls"], 1, "{s}");
+    assert_eq!(s["first_seen_ms"], now - 20 * 60_000);
+    assert_eq!(s["keys"][0], json!({"key": "reports-batch", "calls": 2, "total_ms": s["total_ms"], "errors": 0}));
+    assert!(s["p99_ms"].as_f64().unwrap() <= s["max_ms"].as_f64().unwrap());
+    let count = list.iter().find(|s| s["sql"] == "SELECT COUNT(*) FROM products").unwrap();
+    assert!(count["prev"].is_null(), "{count}");
+
+    // Its page, by id or by fingerprint.
+    for which in [s["id"].as_str().unwrap().to_string(), fp.clone()] {
+        let path = format!("/v1/queries/stats/{}?from={}&to={to}", urlencoding(&which), now - 30 * 60_000);
+        let (status, d) = call(reqwest::Method::GET, &base, &path, &ops, &[], None).await;
+        assert_eq!(status, 200, "{d}");
+        assert_eq!(d["statement"]["calls"], 3, "{d}");
+        assert!(d["trend"].as_array().unwrap().len() >= 2, "{d}");
+        assert!(d["slowest"].as_array().unwrap().iter().any(|c| c["id"] == 999 && c["ms"] == 3.0), "{d}");
+        assert!(d["latest"].as_array().unwrap().iter().any(|c| c["key"] == "reports-batch"), "{d}");
+    }
+    let (status, _) = call(reqwest::Method::GET, &base, "/v1/queries/stats/0000000000000000", &ops, &[], None).await;
+    assert_eq!(status, 404);
+
+    // A reset starts again, and is audited.
+    let (status, _) = call(reqwest::Method::POST, &base, "/v1/queries/stats/reset", &ops, &[], Some(json!({}))).await;
+    assert_eq!(status, 200);
+    let (_, j) = call(reqwest::Method::GET, &base, "/v1/queries/stats", &ops, &[], None).await;
+    assert_eq!(j["count"], 0, "{j}");
+    let (_, audit) = call(reqwest::Method::GET, &base, "/v1/admin/audit", &ops, &[], None).await;
+    assert!(audit.to_string().contains("reset this server's statement statistics"), "{audit}");
+}
+
+fn urlencoding(s: &str) -> String {
+    s.bytes().map(|b| if b.is_ascii_alphanumeric() { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
+}
