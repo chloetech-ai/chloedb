@@ -29,6 +29,7 @@ pub mod auth;
 pub mod coord;
 pub mod cores;
 pub mod demo;
+pub mod fleet;
 pub mod grpc;
 pub mod heap;
 pub mod http;

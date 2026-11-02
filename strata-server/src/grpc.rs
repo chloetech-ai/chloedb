@@ -281,7 +281,9 @@ fn audit(svc: &Service, who: &Principal, method: &str, status: u16, t0: Instant,
         status,
         ms: t0.elapsed().as_secs_f64() * 1e3,
         request_id: obs::current().map(|id| id.to_string()),
+        kind: (if status == 401 || status == 403 { keys::REFUSAL } else { keys::CHANGE }).into(),
         detail,
+        ..Default::default()
     });
 }
 

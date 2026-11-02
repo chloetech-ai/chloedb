@@ -160,6 +160,22 @@ pub struct Options {
     pub log_store_bytes: u64,
     /// Queries a second the log store keeps besides slow and failed ones.
     pub log_queries_per_sec: u64,
+    // ----- core (command center rebuild)
+    /// The cluster's name and environment, as people call them, and where
+    /// its command center is, for links (`--cluster-name`,
+    /// `--environment`, `--public-url`; a coordinator run by the operator
+    /// is named by its StrataCluster without one).
+    pub cluster_name: Option<String>,
+    pub environment: Option<String>,
+    pub public_url: Option<String>,
+    /// The service levels fleet health checks (`None`: 1% of queries
+    /// failing, a p99 of 250 ms).
+    pub slo_error_ratio: Option<f64>,
+    pub slo_p99_ms: Option<f64>,
+    /// Proxies whose `X-Forwarded-For` names the client.
+    pub trust_proxy: Vec<String>,
+    /// `--node-name`, when given (`node_name` is always set).
+    pub node_name_given: Option<String>,
 }
 
 /// How writes resolve MEDIA values, from `--media-fetch`,
@@ -297,6 +313,16 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         (Backend::Local(db), schema)
     };
     let mut svc = Service::new(backend, schema, agent, o.max_concurrent.max(1), timeout);
+    let given = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(String::from);
+    svc.identity = crate::service::Identity {
+        name: given(&o.cluster_name).or_else(|| o.kube_cluster.clone().filter(|_| !o.shards.is_empty())),
+        environment: given(&o.environment),
+        public_url: given(&o.public_url).map(|u| u.trim_end_matches('/').to_string()),
+    };
+    let d = crate::service::Slo::default();
+    svc.slo = crate::service::Slo { error_ratio: o.slo_error_ratio.filter(|r| *r > 0.0).unwrap_or(d.error_ratio), p99_ms: o.slo_p99_ms.filter(|r| *r > 0.0).unwrap_or(d.p99_ms) };
+    svc.place = crate::service::Place::from_env(given(&o.node_name_given));
+    svc.trusted_proxies = o.trust_proxy.iter().filter(|p| !p.trim().is_empty()).map(|p| crate::http::parse_net(p)).collect::<Result<_, _>>().map_err(|e| format!("--trust-proxy: {e}"))?;
     if let Some(path) = slots_file {
         svc.keep_slots_in(path)?;
         if let Some((m, shard)) = svc.slots() {
@@ -980,15 +1006,15 @@ pub fn spawn_sampler(svc: &Arc<Service>) {
 pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access) -> std::io::Result<()> {
     let router = http::router(svc, &access);
     let Some(tls) = &access.tls else {
-        return axum::serve(listener, router).with_graceful_shutdown(shutdown()).await;
+        // Each request knows its peer's address (the audit log's `addr`).
+        return axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(shutdown()).await;
     };
     let config = auth::server_config(tls).map_err(std::io::Error::other)?;
     let acceptor = tokio_rustls::TlsAcceptor::from(config);
-    let service = hyper_util::service::TowerToHyperService::new(router);
     let stop = shutdown();
     tokio::pin!(stop);
     loop {
-        let (tcp, _) = tokio::select! {
+        let (tcp, peer) = tokio::select! {
             r = listener.accept() => match r {
                 Ok(c) => c,
                 // Out of descriptors, say: wait rather than spin.
@@ -1000,7 +1026,8 @@ pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access
             _ = &mut stop => return Ok(()),
         };
         let _ = tcp.set_nodelay(true);
-        let (acceptor, service) = (acceptor.clone(), service.clone());
+        let service = hyper_util::service::TowerToHyperService::new(router.clone().layer(axum::Extension(axum::extract::ConnectInfo(peer))));
+        let acceptor = acceptor.clone();
         tokio::spawn(async move {
             // A client that never finishes its handshake holds a task, not
             // the accept loop.
@@ -1047,6 +1074,8 @@ pub async fn serve_grpc(svc: Arc<Service>, listener: TcpListener, access: Access
                 ms: 0.0,
                 request_id: None,
                 detail: None,
+                kind: crate::keys::REFUSAL.into(),
+                ..Default::default()
             });
             Err(tonic::Status::unauthenticated("missing or wrong token"))
         }
