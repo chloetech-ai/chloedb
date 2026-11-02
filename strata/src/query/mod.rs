@@ -27,6 +27,7 @@ pub mod ddl;
 pub mod df;
 pub mod exec;
 pub mod fusion;
+pub mod hint;
 pub mod ir;
 pub mod logical;
 pub mod memory;

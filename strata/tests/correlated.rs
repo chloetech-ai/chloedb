@@ -249,7 +249,7 @@ fn where_it_does_not_work() {
     let (db, _, _) = data(dir.path(), &mut rng);
     let p = Params::new().set("u", Value::Str("u1".into())).set("q", Value::Str("red mug".into()));
     let fails = |sql: &str, says: &str| {
-        let e = db.query(sql, &p).map(|_| ()).unwrap_err().to_string();
+        let e = db.query(sql, &p).err().unwrap_or_else(|| panic!("{sql}: accepted")).to_string();
         assert!(e.contains(says), "{sql}: {e}");
     };
     // The outer row's column must exist.
