@@ -176,6 +176,8 @@ pub struct Options {
     pub trust_proxy: Vec<String>,
     /// `--node-name`, when given (`node_name` is always set).
     pub node_name_given: Option<String>,
+    /// `--image-repository`.
+    pub image_repository: Option<String>,
 }
 
 /// How writes resolve MEDIA values, from `--media-fetch`,
@@ -322,6 +324,10 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     let d = crate::service::Slo::default();
     svc.slo = crate::service::Slo { error_ratio: o.slo_error_ratio.filter(|r| *r > 0.0).unwrap_or(d.error_ratio), p99_ms: o.slo_p99_ms.filter(|r| *r > 0.0).unwrap_or(d.p99_ms) };
     svc.place = crate::service::Place::from_env(given(&o.node_name_given));
+    if let Some(r) = given(&o.image_repository) {
+        crate::operator::upgrade::Ref::parse(&r).map_err(|e| format!("--image-repository: {e}"))?;
+        svc.image_repository = r;
+    }
     svc.trusted_proxies = o.trust_proxy.iter().filter(|p| !p.trim().is_empty()).map(|p| crate::http::parse_net(p)).collect::<Result<_, _>>().map_err(|e| format!("--trust-proxy: {e}"))?;
     if let Some(path) = slots_file {
         svc.keep_slots_in(path)?;
@@ -467,6 +473,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     spawn_maintenance(&svc);
     spawn_expirer(&svc, Duration::from_secs(5));
     spawn_sampler(&svc);
+    spawn_watch(&svc);
     tokio::spawn(svc.clone().keep_models());
     svc.start_failover();
     // The cluster's keys: a coordinator takes them from its shards before
@@ -502,6 +509,8 @@ fn open_log_store(svc: &mut Service, o: &Options) -> Result<(), String> {
     tracing::info!(path = %store.options().path.display(), node = %store.options().node, retain_s = store.options().retain.as_secs(), max_mib = store.options().max_bytes >> 20, "keeps its logs in a log store");
     let keep = store.clone();
     let _ = svc.query_log.keep.set(Box::new(move |q, slow| keep.keep_query(q, slow)));
+    let ev = store.clone();
+    svc.events.sink(move |r| ev.keep_event(r));
     svc.log_store = Some(store);
     Ok(())
 }
@@ -997,6 +1006,51 @@ pub fn spawn_sampler(svc: &Arc<Service>) {
                 if let Some((store, load)) = svc.log_store.as_ref().zip(svc.minute_load(now)) {
                     store.keep_load(load);
                 }
+            }
+        }
+    });
+}
+
+/// How often a coordinator looks at its cluster without being asked, so
+/// that events (a copy down, a new primary) and fleet health's "since"
+/// are found when they happen rather than when someone looks.
+pub const WATCH_EVERY: Duration = Duration::from_secs(5);
+
+/// Judges fleet health every [`WATCH_EVERY`], which on a coordinator
+/// surveys the cluster when its snapshot is older than
+/// [`crate::coord::SNAPSHOT_EVERY`] ([`crate::events`]); notes a job of
+/// moves that ended; and keeps each table's size in the log store an
+/// hour apart.
+pub fn spawn_watch(svc: &Arc<Service>) {
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(WATCH_EVERY);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut hour = 0;
+        let mut job: Option<String> = None;
+        loop {
+            tick.tick().await;
+            let Some(svc) = svc.upgrade() else { return };
+            if matches!(svc.backend, Backend::Cluster(_)) {
+                svc.fleet_health().await;
+            }
+            // A job of moves that ended is an event.
+            if let crate::service::Backend::Cluster(c) = &svc.backend {
+                let m = c.moves();
+                let state = m["state"].as_str().map(String::from);
+                if job.as_deref() == Some("running") && state.as_deref() != Some("running") {
+                    let s = state.as_deref().unwrap_or("done");
+                    let title = format!("A job of moves ({}) ended: {s}, {} of {} moves, {} rows", m["job"]["kind"].as_str().unwrap_or("moves"), m["done"], m["of"], m["rows_done"]);
+                    let severity = if s == "failed" { "warning" } else { "info" };
+                    svc.events.add(crate::events::Event { kind: "moves_finished".into(), severity: severity.into(), title, detail: serde_json::json!({"state": s, "error": m["job"]["error"], "rows": m["rows_done"]}), where_: serde_json::Value::Null, who: m["started_by"].as_str().map(String::from) });
+                }
+                job = state;
+            }
+            // Each table's size, an hour apart.
+            let h = crate::telemetry::now_ms() / 3_600_000;
+            if h != hour && svc.log_store.is_some() {
+                hour = h;
+                crate::inspect::keep_sizes(&svc).await;
             }
         }
     });

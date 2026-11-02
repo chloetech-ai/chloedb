@@ -237,6 +237,202 @@ impl Registry {
     }
 }
 
+// ----- core: the images a version picker offers
+
+/// The repository a server offers versions of when nothing names another
+/// (`--image-repository`).
+pub const REPOSITORY: &str = "ghcr.io/chloetech-ai/strata-server";
+
+impl Registry {
+    /// The tags of `repository` (`registry/path`), every page of them.
+    pub async fn tags(&self, repository: &str) -> Result<Vec<String>, String> {
+        let r = Ref::parse(repository)?;
+        let base = r.api();
+        let mut token = None;
+        let mut url = format!("{base}/tags/list?n=1000");
+        let mut tags = Vec::new();
+        for _ in 0..10 {
+            let a = self.get(&url, "application/json", &mut token).await?;
+            let next = a.headers().get(reqwest::header::LINK).and_then(|v| v.to_str().ok()).and_then(next_page);
+            let j: Json = a.json().await.map_err(|e| format!("{repository}: the tags: {e}"))?;
+            tags.extend(j["tags"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(str::to_string)));
+            match next {
+                Some(n) if n.starts_with('/') => {
+                    let host = base.split("/v2/").next().unwrap_or_default();
+                    url = format!("{host}{n}");
+                }
+                Some(n) => url = n,
+                None => break,
+            }
+        }
+        Ok(tags)
+    }
+}
+
+/// The next page of a `Link: <...>; rel="next"` header.
+fn next_page(link: &str) -> Option<String> {
+    link.split(',').find(|l| l.contains("rel=\"next\"")).and_then(|l| Some(l.split_once('<')?.1.split_once('>')?.0.to_string()))
+}
+
+/// Whether `tag` is a version a person picks: `latest`, a version number
+/// (`1.2.3`, `v1.2`, `1.2.3-rc.1`) or a commit (40 hex digits), not an
+/// image of one architecture (`...-amd64`) or another name.
+pub fn offered(tag: &str) -> bool {
+    if tag == "latest" {
+        return true;
+    }
+    if tag.len() == 40 && tag.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return true;
+    }
+    let v = tag.strip_prefix('v').unwrap_or(tag);
+    let (core, pre) = match v.split_once('-') {
+        Some((c, p)) => (c, Some(p)),
+        None => (v, None),
+    };
+    let parts: Vec<&str> = core.split('.').collect();
+    (1..=3).contains(&parts.len())
+        && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && pre.is_none_or(|p| !p.is_empty() && !["amd64", "arm64", "arm", "386", "ppc64le", "s390x"].contains(&p) && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.'))
+}
+
+/// One image of the picker: its tags (a commit's and `latest`, say), and
+/// what the registry says of it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Offered {
+    pub tags: Vec<String>,
+    pub image: Image,
+}
+
+impl Offered {
+    /// The tag that names it best: a version number, else a commit, else
+    /// `latest`.
+    pub fn tag(&self) -> Option<&str> {
+        let rank = |t: &str| if t == "latest" { 2 } else if t.len() == 40 && !t.contains('.') { 1 } else { 0 };
+        self.tags.iter().min_by_key(|t| rank(t)).map(String::as_str)
+    }
+}
+
+/// The images of `tags` resolved, one each (tags of one digest together),
+/// newest first: by `created`, then by tag; the ones without a time last.
+pub fn newest_first(resolved: Vec<(String, Image)>) -> Vec<Offered> {
+    let mut by: Vec<Offered> = Vec::new();
+    for (tag, image) in resolved {
+        match by.iter_mut().find(|o| o.image.digest == image.digest) {
+            Some(o) => o.tags.push(tag),
+            None => by.push(Offered { tags: vec![tag], image }),
+        }
+    }
+    for o in &mut by {
+        o.tags.sort();
+    }
+    by.sort_by(|a, b| b.image.created.cmp(&a.image.created).then_with(|| a.tag().cmp(&b.tag())));
+    by
+}
+
+/// Images resolved, each kept 10 minutes (a commit's tag names one image
+/// for good: kept a day).
+pub struct Versions {
+    resolved: tokio::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Image)>>,
+    tags: tokio::sync::Mutex<Option<(std::time::Instant, String, Vec<String>)>>,
+}
+
+/// How long a tag's image is kept, and a commit tag's.
+const KEEP: Duration = Duration::from_secs(600);
+const KEEP_COMMIT: Duration = Duration::from_secs(86_400);
+
+impl Versions {
+    pub fn get() -> &'static Versions {
+        static V: std::sync::OnceLock<Versions> = std::sync::OnceLock::new();
+        V.get_or_init(|| Versions { resolved: Default::default(), tags: Default::default() })
+    }
+
+    /// The images of `repository` the picker offers ([`offered`]), newest
+    /// first, resolved 8 at a time within 20 s: a tag not resolved in time
+    /// is left out (and named in the error).
+    pub async fn list(&self, registry: &Registry, repository: &str) -> Result<(Vec<Offered>, Option<String>), String> {
+        let tags = {
+            let mut held = self.tags.lock().await;
+            match held.as_ref() {
+                Some((at, repo, t)) if repo == repository && at.elapsed() < KEEP => t.clone(),
+                _ => {
+                    let t: Vec<String> = registry.tags(repository).await?.into_iter().filter(|t| offered(t)).collect();
+                    *held = Some((std::time::Instant::now(), repository.to_string(), t.clone()));
+                    t
+                }
+            }
+        };
+        use futures::StreamExt;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let results: Vec<(String, Result<Image, String>)> = futures::stream::iter(tags.into_iter().map(|tag| async move {
+            let key = format!("{repository}:{tag}");
+            let keep = if tag.len() == 40 { KEEP_COMMIT } else { KEEP };
+            if let Some((at, i)) = self.resolved.lock().await.get(&key) {
+                if at.elapsed() < keep {
+                    return (tag, Ok(i.clone()));
+                }
+            }
+            let r = match tokio::time::timeout_at(deadline, registry.resolve(&key)).await {
+                Ok(r) => r,
+                Err(_) => Err("not resolved within 20 s".into()),
+            };
+            if let Ok(i) = &r {
+                self.resolved.lock().await.insert(key, (std::time::Instant::now(), i.clone()));
+            }
+            (tag, r)
+        }))
+        .buffer_unordered(8)
+        .collect()
+        .await;
+        let mut failed = Vec::new();
+        let mut ok = Vec::new();
+        for (tag, r) in results {
+            match r {
+                Ok(i) => ok.push((tag, i)),
+                Err(e) => failed.push(format!("{tag}: {e}")),
+            }
+        }
+        let error = (!failed.is_empty()).then(|| format!("{} of the tags could not be resolved: {}", failed.len(), failed.into_iter().take(3).collect::<Vec<_>>().join("; ")));
+        Ok((newest_first(ok), error))
+    }
+}
+
+/// What `GET /v1/admin/kube/versions` answers: the images of
+/// `repository`, the newest `limit`, each marked `current` (the image
+/// `current` names, by digest), `newer` (built after it) and `tracked`
+/// (the one the tag `track` names).
+pub fn versions_json(repository: &str, track: &str, current: &Json, offered: &[Offered], error: Option<String>, limit: usize) -> Json {
+    let digest = current["digest"].as_str();
+    let now = offered.iter().find(|o| Some(o.image.digest.as_str()) == digest);
+    let current_created = now.and_then(|o| o.image.created.clone()).or_else(|| current["created"].as_str().map(String::from));
+    let mut cur = current.clone();
+    if let (Some(o), true) = (now, cur.is_object()) {
+        cur["revision"] = json!(o.image.revision);
+        cur["created"] = json!(o.image.created);
+        cur["tag"] = json!(o.tag());
+    }
+    let images: Vec<Json> = offered
+        .iter()
+        .take(limit)
+        .map(|o| {
+            let newer = match (&o.image.created, &current_created) {
+                (Some(a), Some(b)) => a > b,
+                _ => false,
+            };
+            json!({
+                "tag": o.tag(), "tags": o.tags, "image": o.image.image, "digest": o.image.digest, "short": short(&o.image.digest),
+                "revision": o.image.revision, "created": o.image.created,
+                "current": Some(o.image.digest.as_str()) == digest, "newer": newer, "tracked": o.tags.iter().any(|t| t == track),
+            })
+        })
+        .collect();
+    let mut j = json!({"repository": repository, "track": track, "current": cur, "images": images, "total": offered.len()});
+    if let Some(e) = error {
+        j["error"] = json!(e);
+    }
+    j
+}
+// ----- end core
+
 /// The parameters of a `Bearer` challenge.
 fn bearer(challenge: &str) -> Option<Vec<(String, String)>> {
     let rest = challenge.trim().strip_prefix("Bearer ").or_else(|| challenge.trim().strip_prefix("bearer "))?;
@@ -422,6 +618,7 @@ mod tests {
     #[test]
     fn a_bearer_challenge_is_read() {
         let p = bearer(r#"Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:chloetech-ai/strata-server:pull""#).unwrap();
+        assert_eq!(next_page(r#"</v2/x/tags/list?last=b&n=2>; rel="next""#).as_deref(), Some("/v2/x/tags/list?last=b&n=2"));
         assert_eq!(p, vec![("realm".into(), "https://ghcr.io/token".into()), ("service".into(), "ghcr.io".into()), ("scope".into(), "repository:chloetech-ai/strata-server:pull".into())]);
         assert!(bearer("Basic realm=x").is_none());
     }
@@ -464,4 +661,50 @@ mod tests {
         assert!(s.due(&u, "other", 2_000), "another tag at once");
         assert!(!s.due(&Upgrade::default(), "other", 2_000), "off");
     }
+
+    #[test]
+    fn the_picker_offers_versions_commits_and_latest_but_not_one_architecture() {
+        let c = "0123456789abcdef0123456789abcdef01234567";
+        for t in ["latest", "1.2.3", "v1.2", "v2", "1.4.0-rc.1", c] {
+            assert!(offered(t), "{t}");
+        }
+        for t in [format!("{c}-amd64"), format!("{c}-arm64"), "1.2.3-amd64".into(), "main".into(), "sha-0123".into(), "1..2".into(), "0123456789ABCDEF0123456789ABCDEF01234567".into(), "".into()] {
+            assert!(!offered(&t), "{t}");
+        }
+    }
+
+    #[test]
+    fn images_are_listed_newest_first_one_per_digest() {
+        let img = |d: char, created: Option<&str>| Image { image: format!("r@sha256:{}", d.to_string().repeat(64)), digest: format!("sha256:{}", d.to_string().repeat(64)), revision: Some(d.to_string().repeat(40)), created: created.map(String::from) };
+        let c1 = "1".repeat(40);
+        let c2 = "2".repeat(40);
+        let got = newest_first(vec![
+            (c1.clone(), img('a', Some("2026-10-01T00:00:00Z"))),
+            ("latest".into(), img('b', Some("2026-10-30T00:00:00Z"))),
+            ("unknown".into(), img('c', None)),
+            (c2.clone(), img('b', Some("2026-10-30T00:00:00Z"))),
+        ]);
+        assert_eq!(got.iter().map(|o| o.tag().unwrap()).collect::<Vec<_>>(), [c2.as_str(), c1.as_str(), "unknown"]);
+        assert_eq!(got[0].tags, vec![c2.clone(), "latest".to_string()]);
+        let current = json!({"image": "r@sha256:".to_string() + &"a".repeat(64), "digest": format!("sha256:{}", "a".repeat(64))});
+        let j = versions_json("ghcr.io/x/y", "latest", &current, &got, None, 2);
+        let images = j["images"].as_array().unwrap();
+        assert_eq!(images.len(), 2);
+        assert_eq!((images[0]["newer"].as_bool(), images[0]["tracked"].as_bool(), images[0]["current"].as_bool()), (Some(true), Some(true), Some(false)));
+        assert_eq!((images[1]["newer"].as_bool(), images[1]["current"].as_bool()), (Some(false), Some(true)));
+        assert_eq!(j["current"]["tag"], json!(c1));
+        assert_eq!(j["total"], 3);
+    }
+
+    /// The real registry (network): the repository's images, resolved.
+    #[tokio::test]
+    #[ignore = "asks ghcr.io"]
+    async fn the_public_repository_lists_its_images() {
+        let (list, error) = Versions::get().list(&Registry::new(), REPOSITORY).await.unwrap();
+        assert!(error.is_none(), "{error:?}");
+        assert!(list.iter().any(|o| o.tags.iter().any(|t| t == "latest")));
+        assert!(list.iter().all(|o| o.image.digest.starts_with("sha256:") && o.tags.iter().all(|t| offered(t))));
+        assert!(list.windows(2).all(|w| w[0].image.created >= w[1].image.created));
+    }
+
 }

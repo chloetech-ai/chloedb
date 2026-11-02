@@ -175,6 +175,23 @@ impl Cluster {
         format!("{}-s{id}", self.name)
     }
 
+    /// What a server tells of where it runs (`/v1/cluster`'s copies): its
+    /// image, pod and node, and the cluster's name and environment. Taken
+    /// at a server's next restart: the settings' hash leaves them out.
+    fn place_env(&self) -> Vec<Json> {
+        let field = |name: &str, path: &str| json!({"name": name, "valueFrom": {"fieldRef": {"fieldPath": path}}});
+        let mut env = vec![
+            json!({"name": "STRATA_IMAGE", "value": self.spec.image}),
+            field("STRATA_POD", "metadata.name"),
+            field("STRATA_NODE", "spec.nodeName"),
+            json!({"name": "STRATA_CLUSTER_NAME", "value": format!("{}/{}", self.ns, self.name)}),
+        ];
+        if let Some(e) = self.spec.environment.as_deref().filter(|e| !e.is_empty()) {
+            env.push(json!({"name": "STRATA_ENVIRONMENT", "value": e}));
+        }
+        env
+    }
+
     /// The servers' token: the cluster token when there is one (the
     /// admin token then stays with the coordinators), else the token.
     fn server_token_env(&self) -> Vec<Json> {
@@ -251,6 +268,7 @@ impl Cluster {
             // taking connections (`--drain-ms`; older servers ignore it).
             json!({"name": "STRATA_DRAIN_MS", "value": DRAIN_MS.to_string()}),
         ];
+        env.extend(self.place_env());
         if let (Some(n), Some((i, of))) = (s.demo, demo) {
             env.push(json!({"name": "STRATA_DEMO", "value": n.to_string()}));
             env.push(json!({"name": "STRATA_DEMO_SHARD", "value": format!("{i}/{of}")}));
@@ -320,6 +338,7 @@ impl Cluster {
         let mut env = self.coordinator_token_env();
         env.push(json!({"name": "STRATA_KUBE_CLUSTER", "value": format!("{}/{}", self.ns, self.name)}));
         env.push(json!({"name": "STRATA_DRAIN_MS", "value": DRAIN_MS.to_string()}));
+        env.extend(self.place_env());
         let mut container = json!({
             "name": "coordinator", "image": s.image, "args": args, "env": env,
             "ports": [{"name": "http", "containerPort": 7700}],
@@ -1236,7 +1255,7 @@ mod tests {
     fn with_a_cluster_token_the_admin_token_stays_with_the_coordinators() {
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner"}));
         let names = |env: &Json| -> Vec<(String, String)> {
-            let e = env.as_array().unwrap().iter().filter(|e| e["valueFrom"].is_object());
+            let e = env.as_array().unwrap().iter().filter(|e| e["valueFrom"]["secretKeyRef"].is_object());
             e.map(|e| (e["name"].as_str().unwrap().to_string(), e["valueFrom"]["secretKeyRef"]["name"].as_str().unwrap().to_string())).collect()
         };
         let s = c.statefulset(0, 3, Some((0, 1)));

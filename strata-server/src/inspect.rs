@@ -191,6 +191,96 @@ impl Part {
     }
 }
 
+// ----- core: every table, cheaply (`GET /v1/index/tables`)
+
+/// How long [`tables`] keeps its answer.
+pub const TABLES_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Every table's size and traffic: of this server, or on a coordinator of
+/// each shard (its primary's data) and the cluster, with how skewed the
+/// shards are, how far each copy is behind, and how much each table grew
+/// over a day and a week (the log store's hourly `tables` rows). No
+/// document is sampled; each table is one call to each copy. Kept
+/// [`TABLES_EVERY`].
+pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
+    let mut kept = svc.tables_kept.lock().await;
+    if let Some((at, j)) = kept.as_ref() {
+        if at.elapsed() < TABLES_EVERY {
+            return Ok(j.clone());
+        }
+    }
+    let now = telemetry::now_ms();
+    let names: Vec<String> = match &svc.backend {
+        Backend::Local(db) => db.catalog().iter().map(|s| s.table.clone()).collect(),
+        Backend::Cluster(_) => svc.catalog().iter().map(|s| s.table.clone()).collect(),
+    };
+    let mut out = Vec::new();
+    for t in names {
+        let a = Asked { table: Some(t.clone()), sample: 0, seed: Options::default().seed, terms: false, top: 0 };
+        let j = match answer(svc, a).await {
+            Ok(j) => j,
+            Err(e) => {
+                out.push(json!({"table": t, "error": e.message}));
+                continue;
+            }
+        };
+        let of = |scope: &Json| (scope["stats"]["docs"]["live"].as_u64().unwrap_or(0), scope["stats"]["bytes"]["total"].as_u64().unwrap_or(0), scope["stats"]["segments"].as_array().map_or(0, |s| s.len()));
+        let (docs, bytes, segments) = of(&j["cluster"]);
+        let fresh = &j["cluster"]["freshness"];
+        let minutes = now.saturating_sub(fresh["started_ms"].as_u64().unwrap_or(now)) as f64 / 60_000.0;
+        let per_min = |n: Option<u64>| n.filter(|_| minutes >= 1.0).map(|n| (n as f64 / minutes * 10.0).round() / 10.0);
+        let shards: Vec<Json> = j["shards"].as_array().into_iter().flatten().map(|s| {
+            let (d, b, _) = of(&s["scope"]);
+            json!({"shard": s["shard"], "docs": d, "bytes": b})
+        }).collect();
+        // The shard furthest over the mean, by documents.
+        let skew = (shards.len() > 1).then(|| {
+            let mean = shards.iter().filter_map(|s| s["docs"].as_f64()).sum::<f64>() / shards.len() as f64;
+            let top = shards.iter().max_by(|a, b| a["docs"].as_f64().unwrap_or(0.0).total_cmp(&b["docs"].as_f64().unwrap_or(0.0)));
+            top.map(|s| json!({"shard": s["shard"], "over_mean": if mean > 0.0 { ((s["docs"].as_f64().unwrap_or(0.0) / mean - 1.0) * 100.0).round() / 100.0 } else { 0.0 }}))
+        }).flatten();
+        let stale: Vec<Json> = j["shards"].as_array().into_iter().flatten().flat_map(|s| s["replicas"].as_array().cloned().unwrap_or_default().into_iter().map(move |r| (s["shard"].clone(), r)))
+            .filter(|(_, r)| r["behind"].as_u64().is_some_and(|b| b > 0))
+            .map(|(shard, r)| json!({"shard": shard, "copy": r["url"], "behind_txn": r["behind"]}))
+            .collect();
+        out.push(json!({
+            "table": t, "docs": docs, "bytes": bytes, "segments": segments, "shards": shards, "skew": skew,
+            "writes_per_min": per_min(fresh["writes"].as_u64()), "reads_per_min": per_min(j["cluster"]["reads"]["docs"]["total"].as_u64()),
+            "last_write_ms": fresh["last_write_ms"], "stale": stale,
+        }));
+    }
+    // Growth: the size an hourly row of the log store had a day and a week
+    // ago (this server's rows; a coordinator keeps them of the cluster).
+    if let Some(store) = &svc.log_store {
+        for (key, ago) in [("d1_bytes", 86_400_000u64), ("d7_bytes", 7 * 86_400_000)] {
+            let rows = store.kept_rows(crate::logstore::TABLE_SIZES, now.saturating_sub(ago + 3_600_000), now.saturating_sub(ago), None, 1000).await.unwrap_or_default();
+            for t in &mut out {
+                let then = rows.iter().find(|r| r["name"] == t["table"]).and_then(|r| r["bytes"].as_u64());
+                if let (Some(then), Some(b)) = (then, t["bytes"].as_u64()) {
+                    t["growth"][key] = json!(b as i64 - then as i64);
+                }
+            }
+        }
+    }
+    let j = json!({"tables": out, "at_ms": now, "cached_s": TABLES_EVERY.as_secs()});
+    *kept = Some((std::time::Instant::now(), j.clone()));
+    Ok(j)
+}
+
+/// Keeps each table's size in the log store's `tables`, an hour apart
+/// (growth for [`tables`]).
+pub async fn keep_sizes(svc: &Arc<Service>) {
+    let Some(store) = svc.log_store.clone() else { return };
+    let Ok(j) = tables(svc).await else { return };
+    let now = telemetry::now_ms();
+    for t in j["tables"].as_array().into_iter().flatten() {
+        if let (Some(name), Some(docs), Some(bytes)) = (t["table"].as_str(), t["docs"].as_u64(), t["bytes"].as_u64()) {
+            store.keep_table_size(now, name, docs, bytes, t["segments"].as_u64().unwrap_or(0));
+        }
+    }
+}
+// ----- end core
+
 /// The answer of `GET /v1/index`: this server's ([`node`]) as the
 /// `cluster` scope with no shards, or a coordinator's cluster, shards and
 /// replicas.
