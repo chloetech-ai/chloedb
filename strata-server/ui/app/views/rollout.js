@@ -286,6 +286,8 @@ function render(page, r) {
   function said(text) {
     let t = String(text || "");
     for (const u of new Set(t.match(/https?:\/\/[^\s,;)]+/g) || [])) t = t.split(u).join(nameOf(u));
+    // Images by their short name (a tag, else a commit), not their digest.
+    for (const im of new Set(t.match(/(?:[a-z0-9.-]+(?::\d+)?\/)+[a-z0-9._-]+(?::[\w.-]+|@sha256:[0-9a-f]{64})/gi) || [])) t = t.split(im).join(vname(vOf(im)));
     return t;
   }
 
