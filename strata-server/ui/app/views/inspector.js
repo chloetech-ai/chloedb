@@ -1,14 +1,21 @@
-// Index inspector: what a table holds, how big each part of it is, how
-// fresh it is, and how often its documents and keys are read, for the
-// whole cluster, one shard or one replica (GET /v1/index). A shard's data
-// is its primary's; its reads are its copies' added up. Sizes and fill
-// come from a sample of documents; documents, bytes and terms from every
-// segment; reads are approximate counts kept in memory since each server
-// started.
+// One table in depth, the drill-down of Tables and storage
+// (#/inspector?table=products&shard=42): what it holds, how big each part
+// of it is, how fresh it is, and how often its documents and keys are
+// read, for the whole cluster, one shard or one copy (GET /v1/index). A
+// shard's data is its primary's; its reads are its copies' added up. Sizes
+// and fill come from a sample of documents; documents, bytes and terms
+// from every segment; reads are approximate counts kept in memory since
+// each server started. At scale (192 shards x 3) the copies with a problem
+// come first and the rest fold into a grid of shards.
 
-import { h, s, clear, fmt, card, api, empty, failure, store, showTip, hideTip, tipOn, icon, table, confirm, toast, seg } from "../core.js";
+import { h, s, clear, fmt, card, api, empty, failure, store, showTip, hideTip, tipOn, icon, table, confirm, toast, seg, copyName, copyTitle } from "../core.js";
 
-export default { id: "inspector", title: "Index inspector", icon: "layers", group: "Data", keywords: "index inspector statistics fields documents size bytes distribution histogram freshness last write segments retrieval reads keys coverage hot shards replicas skew", render };
+export default { id: "inspector", title: "Table details", icon: "layers", group: "Diagnose", parent: "tables", nav: false, range: false, keywords: "index inspector table details statistics fields documents size bytes distribution histogram freshness last write segments retrieval reads keys coverage hot shards replicas skew", render, onParams };
+
+let reopen = null;
+function onParams(r) { reopen?.(r.params); }
+/** More shards than this and the map folds into a grid of shards, problems first. */
+const MANY = 8;
 
 // A field's color by what its index is; the store's and the rest's.
 const KIND = { text: "var(--s1)", sparse: "var(--s1)", keyword: "var(--s2)", int: "var(--s3)", float: "var(--s3)", timestamp: "var(--s3)", bool: "var(--s3)", vector: "var(--s7)", json: "var(--s4)", edges: "var(--s8)" };
@@ -25,9 +32,12 @@ const approx = () => chip("est", "approximate", "Counted in memory with bounded 
 const tip = (title, rows) => [h("div", { class: "t" }, title), ...rows.map(([k, v, c]) => h("div", { class: "r" }, c ? h("span", { class: "k box", style: { background: c } }) : null, h("span", {}, k), h("span", { class: "n" }, v)))];
 const svgBox = (w, ht, label) => s("svg", { viewBox: `0 0 ${w} ${ht}`, width: "100%", role: "img", "aria-label": label, class: "ix-svg" });
 
-function render(page) {
-  let data = null, tables = [], loading = false, err = null;
+function render(page, r) {
+  let data = null, tables = [], loading = false, err = null, lag = null;
   let scope = store.get("inspector.scope", { kind: "cluster" });
+  // A link names the table, and maybe a shard (by its number) or a copy.
+  let want = { table: r?.params?.get("table") || null, shard: r?.params?.get("shard"), copy: r?.params?.get("copy") };
+  if (want.table) store.set("inspector.table", want.table);
   let what = store.get("inspector.what", "docs");
   let sample = store.get("inspector.sample", 2000);
   const pick = h("select", { class: "select sm", "aria-label": "Table", onchange: () => { store.set("inspector.table", pick.value); scope = { kind: "cluster" }; load(); } });
@@ -45,22 +55,23 @@ function render(page) {
     card({ title: "Fields", sub: "how many documents have each, its value sizes, its index on disk", body: fields, cls: "ix-c12" }),
     card({ title: "Freshness", sub: "the last write each copy took", body: fresh, cls: "ix-c6" }),
     card({ title: "Shards compared", sub: "how documents, bytes and reads spread over the shards", body: skew, cls: "ix-c6" }),
-    card({ title: "Read at least once", tools: whatSeg, body: cover, cls: "ix-c4" }),
+    card({ title: "Read at least once", sub: "since each server started", tools: whatSeg, body: cover, cls: "ix-c4" }),
     card({ title: "How concentrated reads are", body: curve, cls: "ix-c4" }),
     card({ title: "Times each was read", body: freq, cls: "ix-c4" }),
-    card({ title: "Most retrieved documents", sub: "rows returned in query answers", tools: approx(), body: topDocs, cls: "ix-c6" }),
-    card({ title: "Most requested keys", sub: "reads by key: GET /v1/kv, MGET, Get", tools: approx(), body: topKeys, cls: "ix-c6" }));
-  const content = h("div", {}, card({ title: "Where to look", sub: "the cluster, a shard or a replica: every number below follows", body: map, attrs: { style: { marginBottom: "14px" } } }), tiles, body,
-    h("p", { class: "small muted ix-foot" }, "Documents, bytes, segments, index sizes and distinct terms are read from every segment (terms of large fields are estimated with a HyperLogLog sketch, which also merges across shards). Value sizes, fill and document sizes come from documents drawn at random from each server, weighted to its whole table; tokens per document come from every document's length norm, exact under 24 tokens and rounded down by at most 12.5% above. Reads are counted in memory since each server started or was reset: the top lists keep each table's 256 most read keys (Space-Saving, each count at most its error too high), coverage and the frequency chart come from a hash sample of keys that halves itself to stay under 4,096. A coordinator counts what each copy served through it, and each server what it answered its own clients, so nothing is counted twice."));
-  page.append(h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Index inspector"), h("p", {}, "What a table holds, how big each part of it is, how fresh it is, and how often its documents and keys are read.")),
+    card({ title: "Most retrieved documents", sub: "rows returned in query answers, since each server started", tools: approx(), body: topDocs, cls: "ix-c6" }),
+    card({ title: "Most requested keys", sub: "reads by key (GET /v1/kv, MGET, Get), since each server started", tools: approx(), body: topKeys, cls: "ix-c6" }));
+  const content = h("div", {}, card({ title: "Where to look", sub: "the cluster, a shard or a copy: every number below follows", body: map, attrs: { style: { marginBottom: "14px" } } }), tiles, body,
+    h("p", { class: "small muted ix-foot" }, "Documents, bytes, segments, index sizes and distinct terms are read from every segment (terms of large fields are estimated with a HyperLogLog sketch, which also merges across shards). Value sizes, fill and document sizes come from documents drawn at random from each server, weighted to its whole table; tokens per document come from every document's length norm, exact under 24 tokens and rounded down by at most 12.5% above. Reads are counted in memory since each server started or was reset: the top lists keep each table's 256 most read keys (Space-Saving, each count at most its error too high), coverage and the frequency chart come from a hash sample of keys that halves itself to stay under 4,096. A coordinator counts what each copy served through it, and each server what it answered its own clients, so nothing is counted twice. With several coordinators, each counts only what went through it: these reads are this coordinator's share, and Reset starts only its counts again."));
+  const title = h("h1", {}, "Table details");
+  page.append(h("div", { class: "page-head" }, h("div", {}, h("div", { class: "small" }, h("a", { href: "#/tables" }, "Tables and storage"), h("span", { class: "muted" }, " › one table")), title, h("p", {}, "What the table holds, how big each part of it is, how fresh it is, and how often its documents and keys are read. Reads are counted since each server started, not over the time range above.")),
     h("div", { class: "tools" }, stamp, h("label", { class: "small muted" }, "Table"), pick, sizes, reset, again)), content);
 
   async function loadTables() {
     try {
       tables = ((await api("/v1/tables")).tables || []).map((t) => t.table);
-      const want = store.get("inspector.table", null);
-      clear(pick, tables.map((t) => h("option", { value: t, selected: t === want }, t)));
-      if (!tables.includes(want) && tables.length) pick.value = tables[0];
+      const name = store.get("inspector.table", null);
+      clear(pick, tables.map((t) => h("option", { value: t, selected: t === name }, t)));
+      if (!tables.includes(name) && tables.length) pick.value = tables[0];
     } catch { /* the index call says why */ }
   }
 
@@ -70,9 +81,22 @@ function render(page) {
     try {
       const q = new URLSearchParams({ sample: String(sample), top: "25" });
       if (pick.value) q.set("table", pick.value);
-      data = await api("/v1/index?" + q);
+      // The copies' lag in time, where the server lists table sizes (cached there 30 s).
+      const [d, all] = await Promise.all([api("/v1/index?" + q), api("/v1/index/tables").catch(() => null)]);
+      data = d;
+      const row = (Array.isArray(all) ? all : all?.tables || []).find((x) => x.table === data.table);
+      lag = row ? new Map((row.stale || []).map((x) => [x.copy, x])) : null;
       err = null;
-      stamp.textContent = `${data.table} · computed in ${fmt.ms(data.took_ms)} at ${fmt.time(data.at_ms)}`;
+      title.textContent = data.table;
+      stamp.textContent = `computed in ${fmt.ms(data.took_ms)} at ${fmt.time(data.at_ms)}`;
+      // A link's shard or copy, once the shards are known.
+      if (want.shard != null || want.copy) {
+        const si = data.shards?.findIndex((sh) => String(sh.shard) === String(want.shard));
+        if (want.copy) {
+          for (const [i, sh] of (data.shards || []).entries()) { const ri = sh.replicas.findIndex((rep) => rep.url === want.copy || copyName(rep.url) === want.copy); if (ri >= 0) scope = { kind: "replica", s: i, r: ri }; }
+        } else if (si >= 0) scope = { kind: "shard", s: si };
+        want = {};
+      }
     } catch (e) { err = e; stamp.textContent = ""; }
     loading = false; again.disabled = false;
     draw();
@@ -91,7 +115,7 @@ function render(page) {
     if (scope.kind === "shard" && data.shards[scope.s]) return { sc: data.shards[scope.s].scope, ns: nodes().filter((n) => n.s === scope.s), name: `shard ${data.shards[scope.s].shard}` };
     if (scope.kind === "replica" && data.shards[scope.s]?.replicas[scope.r]) {
       const rep = data.shards[scope.s].replicas[scope.r];
-      return { sc: rep.scope, error: rep.error, ns: [{ s: scope.s, r: scope.r, rep }], name: rep.url };
+      return { sc: rep.scope, error: rep.error, ns: [{ s: scope.s, r: scope.r, rep }], name: copyName(rep.url) };
     }
     scope = { kind: "cluster" };
     return { sc: data.cluster, ns: nodes(), name: data.role === "server" ? "this server" : "the whole cluster" };
@@ -101,27 +125,53 @@ function render(page) {
   const button = (cls, sc, kids, label) => h("div", { class: cls + (same(sc) ? " sel" : ""), role: "button", tabindex: 0, "aria-pressed": String(same(sc)), "aria-label": label, onclick: (e) => { e.stopPropagation(); choose(sc); }, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); choose(sc); } } }, kids);
   const live = (sc) => sc?.stats?.docs?.live ?? 0;
 
+  /** A copy's state: bad (no answer), warn (behind its primary), ok. */
+  const repState = (rep) => rep.error ? "bad" : rep.behind ? "warn" : "ok";
+  const lagOf = (rep) => lag?.get(copyName(rep.url)) || lag?.get(rep.url) || null;
+  const behindText = (rep) => { const l = lagOf(rep); return `${fmt.plural(rep.behind, "write")}${l?.behind_s != null ? `, ${fmt.dur(l.behind_s)}` : ""} behind the primary`; };
+  function repCard(si, ri, rep) {
+    const rs = rep.scope?.stats;
+    const state = repState(rep);
+    const when = rep.error ? rep.error : rep.behind ? behindText(rep) : rep.scope?.freshness?.last_write_ms ? `written ${fmt.ago(rep.scope.freshness.last_write_ms)}` : "no write since it started";
+    return button("ix-rep", { kind: "replica", s: si, r: ri }, [
+      h("div", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "dot " + state }), h("b", { class: "mono", title: copyTitle(rep.url) }, copyName(rep.url)), chip(rep.takes_writes ? "prim" : "", rep.takes_writes ? "primary" : rep.role || "replica"), rep.reads_on === false ? chip("", "reads not counted") : null),
+      h("span", { class: "tiny muted ix-n" }, rs ? `${fmt.n(rs.docs.live)} docs · ${fmt.bytes(rs.bytes.total)} · ${fmt.plural(rs.segments.length, "segment")}` : "–"),
+      h("span", { class: "tiny ix-n " + (rep.error ? "ix-bad" : "muted"), title: when }, when)], copyName(rep.url));
+  }
+
   function drawMap() {
     const c = data.cluster, st = c.stats;
     const copies = nodes().length;
     const summary = st ? `${fmt.n(st.docs.live)} documents · ${fmt.bytes(st.bytes.total)} of data${c.copies_bytes > st.bytes.total ? `, ${fmt.bytes(c.copies_bytes)} with every copy` : ""}` : "no statistics";
     const top = button("ix-cluster", { kind: "cluster" }, [h("strong", {}, data.role === "server" ? "This server" : "Whole cluster"), h("span", { class: "small muted ix-n" }, data.role === "server" ? `${data.server_role || "server"} · ${summary}` : `${fmt.plural(data.shards.length, "shard")} · ${fmt.plural(copies, "copy", "copies")} · ${summary}`)], "Whole cluster");
     if (data.role === "server") { clear(map, top); return; }
-    clear(map, top, h("div", { class: "ix-shards" }, data.shards.map((sh, si) => {
-      const ss = sh.scope.stats;
-      return h("div", { class: "ix-shard" + (scope.kind === "shard" && scope.s === si ? " sel" : "") },
-        button("ix-shard-hd", { kind: "shard", s: si }, [h("strong", {}, `Shard ${sh.shard}`), h("span", { class: "small muted ix-n" }, ss ? `${fmt.n(ss.docs.live)} docs · ${fmt.bytes(ss.bytes.total)}` : "no copy answered")], `Shard ${sh.shard}`),
-        h("div", { class: "ix-reps" }, sh.replicas.map((rep, ri) => {
-          const rs = rep.scope?.stats;
-          const state = rep.error ? "bad" : rep.behind ? "warn" : "ok";
-          const when = rep.error ? rep.error : rep.behind ? `${fmt.plural(rep.behind, "write")} behind the primary` : rep.scope?.freshness?.last_write_ms ? `written ${fmt.ago(rep.scope.freshness.last_write_ms)}` : "no write since it started";
-          return button("ix-rep", { kind: "replica", s: si, r: ri }, [
-            h("div", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "dot " + state }), chip(rep.takes_writes ? "prim" : "", rep.takes_writes ? "primary" : rep.role || "replica"), rep.reads_on === false ? chip("", "reads not counted") : null),
-            h("span", { class: "ix-u mono", title: rep.url }, rep.url),
-            h("span", { class: "tiny muted ix-n" }, rs ? `${fmt.n(rs.docs.live)} docs · ${fmt.bytes(rs.bytes.total)} · ${fmt.plural(rs.segments.length, "segment")}` : "–"),
-            h("span", { class: "tiny ix-n " + (rep.error ? "ix-bad" : "muted"), title: when }, when)], rep.url);
-        })));
-    })));
+    if (data.shards.length <= MANY) {
+      clear(map, top, h("div", { class: "ix-shards" }, data.shards.map((sh, si) => {
+        const ss = sh.scope.stats;
+        return h("div", { class: "ix-shard" + (scope.kind === "shard" && scope.s === si ? " sel" : "") },
+          button("ix-shard-hd", { kind: "shard", s: si }, [h("strong", {}, `Shard ${sh.shard}`), h("span", { class: "small muted ix-n" }, ss ? `${fmt.n(ss.docs.live)} docs · ${fmt.bytes(ss.bytes.total)}` : "no copy answered")], `Shard ${sh.shard}`),
+          h("div", { class: "ix-reps" }, sh.replicas.map((rep, ri) => repCard(si, ri, rep))));
+      })));
+      return;
+    }
+    // At scale: the copies with a problem first, the shards as a grid, the
+    // copies of the shard picked; never every copy at once.
+    const probs = nodes().filter((n) => n.rep.error || n.rep.behind).sort((a, b) => (b.rep.error ? 1 : 0) - (a.rep.error ? 1 : 0) || (b.rep.behind || 0) - (a.rep.behind || 0));
+    const worst = (sh) => sh.replicas.some((x) => x.error) ? "bad" : sh.replicas.some((x) => x.behind) ? "warn" : "ok";
+    const counts = { bad: 0, warn: 0, ok: 0 };
+    for (const sh of data.shards) counts[worst(sh)]++;
+    const sel = scope.kind !== "cluster" ? scope.s : null;
+    const selShard = sel != null ? data.shards[sel] : null;
+    clear(map, top,
+      probs.length ? h("div", { class: "stack", style: { gap: "6px" } }, h("div", { class: "small" }, h("b", {}, `${fmt.plural(probs.length, "copy", "copies")} of ${fmt.n(copies)} with a problem`), h("span", { class: "muted" }, ", worst first")),
+        h("div", { class: "ix-reps" }, probs.slice(0, 8).map((n) => repCard(n.s, n.r, n.rep))), probs.length > 8 ? h("div", { class: "small muted" }, `and ${probs.length - 8} more: they are marked in the grid below`) : null)
+        : h("div", { class: "small muted" }, `All ${fmt.n(copies)} copies answered and are current.`),
+      h("div", { class: "stack", style: { gap: "6px" } },
+        h("div", { class: "small" }, h("b", {}, `${fmt.n(data.shards.length)} shards`), h("span", { class: "muted" }, ` · ${fmt.n(counts.ok)} current${counts.warn ? ` · ${fmt.n(counts.warn)} with a copy behind` : ""}${counts.bad ? ` · ${fmt.n(counts.bad)} with a copy not answering` : ""} · pick one for its copies`)),
+        h("div", { class: "dt-shardgrid", role: "group", "aria-label": "Shards" }, data.shards.map((sh, si) => button("dt-sh " + worst(sh), { kind: "shard", s: si }, String(sh.shard), `Shard ${sh.shard}`)))),
+      selShard ? h("div", { class: "ix-shard sel" },
+        button("ix-shard-hd", { kind: "shard", s: sel }, [h("strong", {}, `Shard ${selShard.shard}`), h("span", { class: "small muted ix-n" }, selShard.scope.stats ? `${fmt.n(selShard.scope.stats.docs.live)} docs · ${fmt.bytes(selShard.scope.stats.bytes.total)}` : "no copy answered")], `Shard ${selShard.shard}`),
+        h("div", { class: "ix-reps" }, selShard.replicas.map((rep, ri) => repCard(sel, ri, rep)))) : null);
   }
 
   // -------------------------------------------------------------- tiles
@@ -131,7 +181,7 @@ function render(page) {
     const counts = {};
     for (const x of st.fields) counts[GROUP[x.kind] || x.kind] = (counts[GROUP[x.kind] || x.kind] || 0) + 1;
     const keyed = st.fields.filter((x) => x.key).length;
-    const behind = Math.max(0, ...ns.map((n) => n.rep.behind || 0));
+    const late = ns.filter((n) => n.rep.behind).sort((a, b) => b.rep.behind - a.rep.behind)[0];
     const up = f.started_ms ? (data.at_ms - f.started_ms) / 60000 : 0;
     const docsTotal = st.docs.live + st.docs.deleted;
     clear(tiles,
@@ -139,8 +189,8 @@ function render(page) {
       tile("Fields", fmt.n(st.fields.length), [keyed ? `${keyed} key` : null, ...Object.entries(counts).map(([k, n]) => `${n} ${k}`)].filter(Boolean).join(" · ")),
       tile("On disk", fmt.bytes(st.bytes.total), `${fmt.plural(st.segments.length, "segment")}${sc.copies_bytes > st.bytes.total ? ` · ${fmt.bytes(sc.copies_bytes)} with every copy` : ""}${st.bytes.in_memory ? ` · ${fmt.bytes(st.bytes.in_memory)} in memory` : ""}`),
       tile("Per document", fmt.bytes(st.docs.live ? st.bytes.total / st.docs.live : 0), `index and store · ${fmt.bytes(st.doc_bytes.mean)} stored raw (sampled)`),
-      tile("Last write", f.last_write_ms ? fmt.ago(f.last_write_ms) : "none", behind ? `a copy is ${fmt.plural(behind, "write")} behind` : f.last_write_ms ? `${fmt.n(f.writes)} writes since start${up > 1 ? ` · ${fmt.si(f.writes / up)}/min` : ""}` : `since the server started${f.modified_ms ? ` · file changed ${fmt.ago(f.modified_ms)}` : ""}`, f.last_write_ms ? fmt.datetime(f.last_write_ms) : null),
-      tile("Retrieved", rd.docs.total ? fmt.pct(rd.docs.coverage ?? 0) : "–", rd.docs.total ? `of documents at least once · ${fmt.si(rd.docs.total)} retrievals, ${fmt.si(rd.keys.total)} key reads` : data.reads_on === false ? "read counting is off (--no-read-stats)" : `no reads counted yet · ${fmt.si(rd.keys.total)} key reads`));
+      tile("Last write", f.last_write_ms ? fmt.ago(f.last_write_ms) : "none", late ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); choose({ kind: "replica", s: late.s, r: late.r }); } }, `${copyName(late.rep.url)} is ${behindText(late.rep)}`) : f.last_write_ms ? `${fmt.n(f.writes)} writes since start${up > 1 ? ` · ${fmt.si(f.writes / up)}/min on average since then` : ""}` : `since the server started${f.modified_ms ? ` · file changed ${fmt.ago(f.modified_ms)}` : ""}`, f.last_write_ms ? fmt.datetime(f.last_write_ms) : null),
+      tile(h("span", { class: "row nw", style: { gap: "6px" } }, "Retrieved", approx()), rd.docs.total ? fmt.pct(rd.docs.coverage ?? 0) : "–", rd.docs.total ? `of documents at least once since each server started · ${fmt.si(rd.docs.total)} retrievals, ${fmt.si(rd.keys.total)} key reads` : data.reads_on === false ? "read counting is off (--no-read-stats)" : `no reads counted since each server started · ${fmt.si(rd.keys.total)} key reads`));
   }
 
   // ----------------------------------------------------------- treemap
@@ -251,8 +301,21 @@ function render(page) {
   }
 
   // ---------------------------------------------------------- freshness
-  function drawFresh({ sc, ns }) {
+  function drawFresh({ sc, ns: all }) {
     const f = sc.freshness, now = data.at_ms;
+    // At scale a lane a copy is thousands of pixels: the problems and the
+    // copies written longest ago, the rest summed up in a line.
+    const LANES = 12;
+    let ns = all, rest = null;
+    if (all.length > LANES) {
+      const lastOf = (n) => n.rep.scope?.freshness?.last_write_ms || 0;
+      const probs = all.filter((n) => n.rep.error || n.rep.behind);
+      const others = all.filter((n) => !n.rep.error && !n.rep.behind).sort((a, b) => lastOf(a) - lastOf(b));
+      ns = [...probs, ...others].slice(0, LANES);
+      const left = all.filter((n) => !ns.includes(n));
+      const ws = left.map(lastOf).filter(Boolean);
+      rest = left.length ? `${fmt.plural(left.length, "other copy", "other copies")}: current${ws.length ? `, last writes between ${fmt.ago(Math.min(...ws))} and ${fmt.ago(Math.max(...ws))}` : ""}.` : null;
+    }
     const ages = ns.map((n) => n.rep.scope?.freshness?.last_write_ms).filter(Boolean).map((t) => now - t);
     const SPANS = [60e3, 5 * 60e3, 15 * 60e3, 3600e3, 6 * 3600e3, 86400e3, 7 * 86400e3, 30 * 86400e3, 365 * 86400e3];
     const span = SPANS.find((x) => x >= Math.max(...ages, 1) * 1.1) || SPANS[SPANS.length - 1];
@@ -265,8 +328,9 @@ function render(page) {
     }
     ns.forEach((n, i) => {
       const y = 18 + i * lane, fr = n.rep.scope?.freshness, stx = n.rep.scope?.stats;
-      const who = n.s == null ? (n.rep.role || "server") : `shard ${data.shards[n.s].shard} · ${n.rep.takes_writes ? "primary" : n.rep.role || "replica"}`;
-      svg.append(s("text", { x: 0, y: y + 3, class: "ix-lbl" }, who), s("text", { x: 0, y: y + 16 }, n.rep.error ? "no answer" : n.rep.behind ? `${fmt.plural(n.rep.behind, "write")} behind` : stx?.seq_no != null ? `seq ${fmt.n(stx.seq_no)}` : `txn ${fmt.n(stx?.txn)}`));
+      const who = n.s == null ? (n.rep.role || "server") : `${copyName(n.rep.url)} · ${n.rep.takes_writes ? "primary" : n.rep.role || "replica"}`;
+      const l = n.rep.behind ? lagOf(n.rep) : null;
+      svg.append(s("text", { x: 0, y: y + 3, class: "ix-lbl" }, who), s("text", { x: 0, y: y + 16 }, n.rep.error ? "no answer" : n.rep.behind ? `${fmt.plural(n.rep.behind, "write")}${l?.behind_s != null ? `, ${fmt.dur(l.behind_s)}` : ""} behind` : stx?.seq_no != null ? `seq ${fmt.n(stx.seq_no)}` : `txn ${fmt.n(stx?.txn)}`));
       svg.append(s("line", { x1: X(span), x2: X(0), y1: y, y2: y, class: "ix-lane" }));
       if (fr?.modified_ms && now - fr.modified_ms <= span) svg.append(tipOn(s("circle", { cx: X(now - fr.modified_ms), cy: y, r: 4, class: "ix-file", tabindex: 0 }), () => tip("file last changed", [[fmt.datetime(fr.modified_ms), fmt.ago(fr.modified_ms)]])));
       if (fr?.last_write_ms) svg.append(tipOn(s("circle", { cx: X(now - fr.last_write_ms), cy: y, r: 6, class: n.rep.behind ? "ix-behind" : "ix-write", tabindex: 0 }), () => tip("last write", [[fmt.datetime(fr.last_write_ms), fmt.ago(fr.last_write_ms)], ["writes since start", fmt.n(fr.writes)]])));
@@ -280,32 +344,48 @@ function render(page) {
       h("span", {}, h("span", { class: "muted" }, "rows in memory "), fmt.n(sc.stats.docs.in_memory)),
       times ? h("span", {}, h("span", { class: "muted" }, `newest ${times.name} `), showValue(times, times.max)) : null,
       f.started_ms ? h("span", {}, h("span", { class: "muted" }, "counting since "), fmt.datetime(f.started_ms)) : null),
+      rest ? h("div", { class: "small muted", style: { marginTop: "4px" } }, rest) : null,
       h("div", { class: "tiny muted", style: { marginTop: "4px" } }, "Filled dots: each copy's last write; rings: when its file last changed."));
   }
 
   // ------------------------------------------------------------- shards
   function drawSkew() {
-    if (data.role === "server" || data.shards.length < 2) { clear(skew, empty("topology", data.role === "server" ? "One server" : "One shard", "Open the inspector on a coordinator over two or more shards to compare them.")); return; }
-    const per = data.shards.map((sh, i) => ({ i, name: `s${sh.shard}`, docs: sh.scope.stats?.docs.live || 0, bytes: sh.scope.stats?.bytes.total || 0, retr: sh.scope.reads.docs.total, keys: sh.scope.reads.keys.total }));
-    const rows = [["Documents", "docs", fmt.si], ["Bytes on disk", "bytes", fmt.bytes], ["Retrievals", "retr", fmt.si], ["Key reads", "keys", fmt.si]];
+    if (data.role === "server" || data.shards.length < 2) { clear(skew, empty("topology", data.role === "server" ? "One server" : "One shard", "Open a table on a coordinator over two or more shards to compare them.")); return; }
+    const per = data.shards.map((sh, i) => ({ i, name: `s${sh.shard}`, shard: sh.shard, docs: sh.scope.stats?.docs.live || 0, bytes: sh.scope.stats?.bytes.total || 0, retr: sh.scope.reads.docs.total, keys: sh.scope.reads.keys.total }));
+    const rows = [["Documents", "docs", fmt.si], ["Bytes on disk", "bytes", fmt.bytes], ["Retrievals since start", "retr", fmt.si], ["Key reads since start", "keys", fmt.si]];
+    const many = per.length > MANY;
     const W = 540, H = rows.length * 48 + 4, svg = svgBox(W, H, "Shards compared");
     rows.forEach(([name, k, f], ri) => {
       const y = 4 + ri * 48, tot = per.reduce((a, p) => a + p[k], 0);
       svg.append(s("text", { x: 0, y: y + 12, class: "ix-lbl" }, name));
       if (!tot) { svg.append(s("text", { x: W, y: y + 12, "text-anchor": "end" }, "none yet"), s("rect", { x: 0, y: y + 18, width: W, height: 18, rx: 3, class: "ix-empty" })); return; }
-      const over = Math.max(...per.map((p) => p[k])) / (tot / per.length) - 1;
-      svg.append(s("text", { x: W, y: y + 12, "text-anchor": "end" }, over > 0.005 ? `largest shard ${fmt.pct(over)} over the mean` : "even"));
+      const mean = tot / per.length;
+      const big = per.reduce((b, p) => p[k] > b[k] ? p : b);
+      const over = big[k] / mean - 1;
+      svg.append(s("text", { x: W, y: y + 12, "text-anchor": "end" }, over > 0.005 ? `largest: shard ${big.shard}, ${fmt.pct(over)} over the mean` : "even"));
+      if (many) {
+        // Largest first, one bar a shard against the mean; the outliers in color.
+        const sorted = [...per].sort((a, b) => b[k] - a[k]), bw = W / sorted.length, max = sorted[0][k] || 1;
+        svg.append(s("line", { x1: 0, x2: W, y1: y + 36 - 18 * mean / max, y2: y + 36 - 18 * mean / max, class: "dt-mean" }));
+        sorted.forEach((p, j) => {
+          const ht = Math.max(1, 18 * p[k] / max), out = Math.abs(p[k] / mean - 1) > 0.25;
+          const r = s("rect", { x: j * bw, y: y + 36 - ht, width: Math.max(0.8, bw - (bw > 3 ? 1 : 0)), height: ht, class: "dt-bar" + (p[k] / mean > 1.25 ? " hi" : p[k] / mean < 0.75 ? " lo" : ""), tabindex: out ? 0 : -1, style: { cursor: "pointer" }, onclick: () => choose({ kind: "shard", s: p.i }) });
+          tipOn(r, () => tip(`shard ${p.shard}`, [[name, f(p[k])], ["against the mean", `${(p[k] / mean).toFixed(2)}×`]]));
+          svg.append(r);
+        });
+        return;
+      }
       let x = 0;
-      per.forEach((p, j) => {
-        const w = p[k] / tot * W, dim = scope.kind !== "cluster" && scope.s !== p.i;
-        const r = s("rect", { x: x + 1, y: y + 18, width: Math.max(0, w - 2), height: 18, rx: 3, tabindex: 0, style: { fill: `var(--s${(j % 8) + 1})`, fillOpacity: dim ? 0.3 : 0.9, cursor: "pointer" }, onclick: () => choose({ kind: "shard", s: p.i }) });
-        tipOn(r, () => tip(`shard ${p.name}`, [[name, f(p[k])], ["share", fmt.pct(p[k] / tot)]]));
+      per.forEach((p) => {
+        const w = p[k] / tot * W, dim = scope.kind !== "cluster" && scope.s !== p.i, isBig = p === big && over > 0.25;
+        const r = s("rect", { x: x + 1, y: y + 18, width: Math.max(0, w - 2), height: 18, rx: 3, tabindex: 0, class: "dt-bar" + (isBig ? " hi" : ""), style: { fillOpacity: dim ? 0.3 : 0.9, cursor: "pointer" }, onclick: () => choose({ kind: "shard", s: p.i }) });
+        tipOn(r, () => tip(`shard ${p.shard}`, [[name, f(p[k])], ["share", fmt.pct(p[k] / tot)]]));
         svg.append(r);
         if (w > 80) svg.append(s("text", { x: x + 8, y: y + 31, class: "ix-on" }, `${p.name} ${f(p[k])}`));
         x += w;
       });
     });
-    clear(skew, svg);
+    clear(skew, svg, many ? h("div", { class: "tiny muted" }, `Each bar is a shard, largest first; the dashed line is the mean. Orange: over 1.25× the mean. Click a bar for that shard.`) : null);
   }
 
   // -------------------------------------------------------------- reads
@@ -363,12 +443,16 @@ function render(page) {
 
     const topTable = (r, noun2) => {
       if (!r.top?.length) return empty("eye", `No ${noun2} counted yet`);
-      return table([
+      // A count within its error says nothing ("3 ± 1"): left out.
+      const solid = r.top.filter((x) => x.count - (x.err || 0) >= 2);
+      if (!solid.length) return empty("eye", "Nothing stands out yet", `Every count is within its error (Space-Saving keeps ${fmt.n(r.top.length)} candidates): no ${noun2.replace(/s$/, "")} is read much more than the rest.`);
+      return h("div", {}, table([
         { key: "key", label: "Key", render: (x) => h("span", { class: "mono small" }, x.key) },
         { key: "count", label: "Times", num: true, render: (x) => fmt.n(x.count) },
         { key: "err", label: "Error", num: true, render: (x) => x.err ? `± ${fmt.n(x.err)}` : h("span", { class: "muted" }, "exact") },
         { key: "share", label: `Share of ${noun2}`, num: true, render: (x) => h("div", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" } }, h("div", { class: "barbox" }, h("div", { class: "bar", style: { width: Math.min(100, x.share * 100 / Math.max(1e-9, r.top[0].share)) + "%" } })), h("span", { class: "small num" }, fmt.pct(x.share, 2))) },
-      ], { rows: r.top, sortKey: "count", desc: true, compact: true, maxHeight: "360px" });
+      ], { rows: solid, sortKey: "count", desc: true, compact: true, maxHeight: "360px" }),
+      solid.length < r.top.length ? h("div", { class: "tiny muted", style: { marginTop: "6px" } }, `${fmt.n(r.top.length - solid.length)} more left out: their counts are within their error.`) : null);
     };
     clear(topDocs, topTable(sc.reads.docs, "retrievals"));
     clear(topKeys, topTable(sc.reads.keys, "key reads"), sc.reads.keys.total ? h("div", { class: "small muted", style: { marginTop: "6px" } }, `${fmt.n(sc.reads.keys.missing)} of ${fmt.n(sc.reads.keys.total)} asked for a key no row has (${fmt.pct(sc.reads.keys.missing / sc.reads.keys.total)}).`) : null);
@@ -391,6 +475,11 @@ function render(page) {
   }
 
   draw();
+  reopen = (params) => {
+    want = { table: params.get("table"), shard: params.get("shard"), copy: params.get("copy") };
+    if (want.table && tables.includes(want.table)) { pick.value = want.table; store.set("inspector.table", want.table); }
+    load();
+  };
   loadTables().then(load);
-  return () => hideTip();
+  return () => { hideTip(); reopen = null; };
 }

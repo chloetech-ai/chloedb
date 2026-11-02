@@ -5,7 +5,7 @@
 import { h } from "../core.js";
 
 export default {
-  id: "classic", title: "Query console", icon: "classic", group: "More", full: true,
+  id: "classic", title: "Query console", icon: "classic", group: "Labs", full: true, range: false,
   keywords: "builder graph sql editor agent ask schema import query language guide old",
   render(page) { page.append(h("iframe", { class: "classic", src: "/classic", title: "Query console" })); },
 };
