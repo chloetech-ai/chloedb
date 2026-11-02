@@ -243,7 +243,7 @@ Without the extra copies (`extraCopies: false`), a shard of two copies
 serves no reads and takes no writes while one of them restarts: one of
 two is not a majority, which a primary needs to serve a read and a write
 to be acknowledged. The coordinator holds such a write up to 10 s, and
-answers 503 after that.
+a read up to 3 s, and answers 503 after that.
 
 A write in flight as its shard's primary is handed over may be answered
 409, in doubt: the old primary had it, and the new one may or may not.

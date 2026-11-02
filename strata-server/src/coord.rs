@@ -248,6 +248,12 @@ const HELLO_EVERY_MS: u64 = 60_000;
 pub const PRIMARY_WAIT: Duration = Duration::from_secs(10);
 const PRIMARY_ASK_EVERY: Duration = Duration::from_millis(50);
 
+/// How long a read is asked again while no copy of its shard serves it
+/// (503), and how often: a handover, a new primary waiting out the old
+/// one's lease, a shard of two copies with one restarting.
+pub const READ_WAIT: Duration = Duration::from_secs(3);
+const READ_ASK_EVERY: Duration = Duration::from_millis(100);
+
 /// Whether a primary's refusal says it did not apply the write, and the
 /// shard takes it shortly (`cores::shard::Primary::admit`): too few copies
 /// in sync, a lease to wait out, or a primary another replaced, which
@@ -736,6 +742,14 @@ fn plan_json(plan: Option<&Plan>) -> Result<Vec<u8>, ApiError> {
 /// goes to another without the replica counting as failed.
 const PASSED_OVER: &str = "strata-passed-over";
 
+/// Whether a copy that is up refused a read for now (503): a primary
+/// another replaced, or one a majority of its copies has not answered
+/// within its lease ([`crate::cores::shard`]). Asked again, it, or the
+/// primary that replaced it, answers once the copies are back.
+fn refuses_reads(s: &tonic::Status) -> bool {
+    s.code() == Code::Unavailable && s.message().contains("serves no reads")
+}
+
 /// Whether another replica may answer where this one failed: not when the
 /// request itself is wrong, nor when the replica is overloaded
 /// (`ResourceExhausted`), which would only load the next one more.
@@ -1050,12 +1064,38 @@ impl Coordinator {
         order
     }
 
+    /// [`Self::call_once`], asked again every [`READ_ASK_EVERY`] for up to
+    /// [`READ_WAIT`] (and `deadline`) while every replica of shard `i`
+    /// failed and one of them is up but serves no reads ([`refuses_reads`]):
+    /// a primary handed over, or one of a shard's two copies restarting and
+    /// the other, alone, no majority. A shard none of whose replicas
+    /// answers is not waited for, so a partial read leaves it out at once.
+    async fn call<T, F, Fut>(&self, t: &Topology, i: usize, start: usize, first: Option<usize>, deadline: Instant, f: F) -> Result<(usize, T), ApiError>
+    where
+        F: Fn(usize, Client) -> Fut,
+        Fut: Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+    {
+        let until = deadline.min(Instant::now() + READ_WAIT);
+        loop {
+            let mut refused = false;
+            match self.call_once(t, i, start, first, deadline, &f, &mut refused).await {
+                Err(e) if refused && e.status == 503 && Instant::now() + READ_ASK_EVERY < until => {
+                    self.retries.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(READ_ASK_EVERY).await
+                }
+                answer => return answer,
+            }
+        }
+    }
+
     /// Calls shard `i` with `f(replica, client)`, asking its replicas in
     /// [`Self::order`]: the next one when one fails with an error another
     /// may not have, and also when one has not answered after the hedge
     /// delay and the hedge budget allows. Returns the replica that
-    /// answered and its answer.
-    async fn call<T, F, Fut>(&self, t: &Topology, i: usize, start: usize, first: Option<usize>, deadline: Instant, f: F) -> Result<(usize, T), ApiError>
+    /// answered and its answer; `refused` is set when a replica failed
+    /// with [`refuses_reads`].
+    #[allow(clippy::too_many_arguments)]
+    async fn call_once<T, F, Fut>(&self, t: &Topology, i: usize, start: usize, first: Option<usize>, deadline: Instant, f: F, refused: &mut bool) -> Result<(usize, T), ApiError>
     where
         F: Fn(usize, Client) -> Fut,
         Fut: Future<Output = Result<tonic::Response<T>, tonic::Status>>,
@@ -1099,6 +1139,7 @@ impl Coordinator {
                         return Ok((r, answer.into_inner()));
                     }
                     Err(s) if try_elsewhere(&s) => {
+                        *refused |= refuses_reads(&s);
                         if s.metadata().get(PASSED_OVER).is_some() {
                             passed.push(r);
                         } else {
@@ -2875,6 +2916,17 @@ mod tests {
         let lease = tonic::Status::unavailable("this primary was promoted by hand, and the primary it replaced may serve reads for 900 ms more: it takes writes after that");
         assert!(not_applied_yet(&fenced) && not_applied_yet(&lease) && !in_doubt(&fenced));
         assert!(in_doubt(&doubt) && !not_applied_yet(&doubt));
+    }
+
+    #[test]
+    fn a_read_is_asked_again_while_a_copy_that_is_up_serves_none() {
+        // As cores::shard words its refusals, crossing gRPC as Unavailable.
+        let lease = tonic::Status::from(ApiError { status: 503, message: "1 of this primary's 3 copies answered it within 750 ms, fewer than a majority: the others may have elected another primary, so it serves no reads; read from another copy".into() });
+        let fenced = tonic::Status::from(ApiError { status: 503, message: "a primary of term 3 replaced this one (term 2), which serves no reads: read from another copy".into() });
+        assert!(refuses_reads(&lease) && refuses_reads(&fenced));
+        // A shard whose copies are all down is not waited for.
+        assert!(!refuses_reads(&tonic::Status::unavailable("tcp connect error: connection refused")));
+        assert!(!refuses_reads(&tonic::Status::resource_exhausted("too many queries running, so it serves no reads")));
     }
 
     #[test]
