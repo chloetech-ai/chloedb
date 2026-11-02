@@ -1673,7 +1673,16 @@ function render(page, r) {
     const asked = new Set([...P.removes.map((x) => x.url), ...M.shards.filter((sh) => P.drops.includes(sh.i)).flatMap((sh) => sh.copies.map((c) => c.url))]);
     const extra = (sp?.removes_copies || []).filter((u) => !asked.has(u));
     if (extra.length) P.pre.unshift({ ok: false, text: `the server's plan would also remove ${extra.map((u) => cname(M.all.find((c) => c.url === u) || { id: short(u) })).join(", ")}, which you did not ask: not applied` });
-    for (const x of sp?.preflight || []) if (!P.pre.some((y) => y.text === x.text)) P.pre.push({ ok: x.ok === true ? true : x.ok === false ? false : "warn", text: x.text });
+    // The server's checks, less those this page says already. It marks some
+    // advice ok: true (a shard left with 2 copies, a copy down it leaves so):
+    // those read as warnings here.
+    for (const x of sp?.preflight || []) {
+      if (P.pre.some((y) => y.text === x.text)) continue;
+      const two = /^shard (\d+) is left with (\d+) copies/.exec(x.text || "");
+      if (two && P.pre.some((y) => y.text.startsWith(`shard ${two[1]} ends with ${two[2]} cop`))) continue;
+      const advice = x.ok === true && (/: with failover|leaves it so/.test(x.text || ""));
+      P.pre.push({ ok: advice ? "warn" : x.ok === true ? true : x.ok === false ? false : "warn", text: x.text });
+    }
     const blocked = P.pre.find((x) => x.ok === false);
     const { estimate, rows } = planTime(P);
     const changes = changeList();
