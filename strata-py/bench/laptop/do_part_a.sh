@@ -7,6 +7,7 @@
 # `down`.
 #
 #   do_part_a.sh up [HOURS]   # (token in DIGITALOCEAN_TOKEN or digitalocean)   # cluster + teardown timer + bench pod (default 14 h)
+#   do_part_a.sh extend HOURS # move the teardown timer HOURS later
 #   do_part_a.sh push        # this checkout (git archive of HEAD) into the pod
 #   do_part_a.sh setup       # Rust, the Python libraries, strata-py built in release
 #   do_part_a.sh prep        # Shop (Amazon Reviews 2023 Video Games) and the BEIR collections, embedded there
@@ -40,6 +41,27 @@ do_api() { # METHOD PATH [JSON]
 }
 cluster_id() { cat "$STATE/cluster_id"; }
 in_pod() { $K exec "$POD" -- bash -lc "$1"; }
+# The timer: a pod that deletes the cluster and what it made at DEADLINE
+# (seconds since the epoch), from inside it. An absolute deadline, so a
+# restarted pod does not start the wait over.
+timer() { # DEADLINE
+    $K apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata: {name: teardown-$1, labels: {app: teardown}}
+spec:
+  restartPolicy: OnFailure
+  containers:
+    - name: teardown
+      image: curlimages/curl:8.17.0
+      env:
+        - {name: TOKEN, valueFrom: {secretKeyRef: {name: do-token, key: token}}}
+      command: [sh, -c, "while [ \$(date +%s) -lt $1 ]; do sleep 60; done; until curl -sS -f -X DELETE -H \"Authorization: Bearer \$TOKEN\" $API/kubernetes/clusters/$(cluster_id)/destroy_with_associated_resources/dangerous; do sleep 60; done"]
+      resources: {requests: {cpu: 10m, memory: 16Mi}}
+EOF
+    $K wait --for=condition=Ready "pod/teardown-$1" --timeout=300s >/dev/null
+    echo "$1" >"$STATE/deadline"
+}
 
 cmd=${1:-}
 shift || true
@@ -62,24 +84,9 @@ PY
     do_api GET "/kubernetes/clusters/$(cluster_id)/kubeconfig" >"$KUBECONFIG"
     chmod 600 "$KUBECONFIG"
     kubectl create namespace bench --dry-run=client -o yaml | kubectl apply -f -
-    echo "$deadline" >"$STATE/deadline"
-    # The timer: deletes the cluster and what it made after $hours, from inside it.
+    # The token for the timer.
     $K create secret generic do-token --from-literal=token="$DIGITALOCEAN_TOKEN" --dry-run=client -o yaml | $K apply -f - >/dev/null
-    $K apply -f - <<EOF
-apiVersion: v1
-kind: Pod
-metadata: {name: teardown}
-spec:
-  restartPolicy: OnFailure
-  containers:
-    - name: teardown
-      image: curlimages/curl:8.17.0
-      env:
-        - {name: TOKEN, valueFrom: {secretKeyRef: {name: do-token, key: token}}}
-      # An absolute deadline, so a restarted pod does not start the wait over.
-      command: [sh, -c, "while [ \$(date +%s) -lt $deadline ]; do sleep 60; done; until curl -sS -f -X DELETE -H \"Authorization: Bearer \$TOKEN\" $API/kubernetes/clusters/$(cluster_id)/destroy_with_associated_resources/dangerous; do sleep 60; done"]
-      resources: {requests: {cpu: 10m, memory: 16Mi}}
-EOF
+    timer "$deadline"
     # The bench pod: the whole node, its work on the node's own SSD.
     $K apply -f - <<EOF
 apiVersion: v1
@@ -103,6 +110,17 @@ spec:
 EOF
     $K wait --for=condition=Ready "pod/$POD" --timeout=600s
     echo "up: teardown at $(date -u -d "@$deadline" +%Y-%m-%dT%H:%MZ) ($hours h)"
+    ;;
+extend)
+    # Moves the timer HOURS later: the new timer runs before the old one goes.
+    hours=${1:?extend HOURS}
+    old=$(cat "$STATE/deadline")
+    new=$(( old + hours * 3600 ))
+    timer "$new"
+    for p in $($K get pods -l app=teardown -o name) $($K get pod teardown -o name 2>/dev/null); do
+        [ "$p" = "pod/teardown-$new" ] || $K delete "$p" --wait=false
+    done
+    echo "teardown moved from $(date -u -d "@$old" +%Y-%m-%dT%H:%MZ) to $(date -u -d "@$new" +%Y-%m-%dT%H:%MZ)"
     ;;
 push)
     in_pod "rm -rf /work/strata && mkdir -p /work/strata /work/logs"
