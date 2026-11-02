@@ -1268,9 +1268,9 @@ function render(page, r) {
   }
 
   // ---------------------------------------------------------- polling
-  // The operator's status every 3 s; nothing redraws while the page is
-  // paused, under a limit being dragged, or a version filter being typed.
-  const holding = () => state.paused || !!page.querySelector(".ro-grip[data-drag], .ro-grip:focus, .ro-find:focus") || !!document.querySelector(".modal");
+  // The operator's status every 3 s; nothing redraws under a limit being
+  // dragged, a version filter being typed, or a dialog.
+  const holding = () => !!page.querySelector(".ro-grip[data-drag], .ro-grip:focus, .ro-find:focus") || !!document.querySelector(".modal");
   load();
   const offCluster = bus.on("cluster", () => {
     sample();
@@ -1278,8 +1278,8 @@ function render(page, r) {
     drawStatus();
     if (tab === "now") drawNow();
   });
+  // A rollout is a change the person waits on: it keeps updating while the page is paused.
   const stop = every(3000, async () => {
-    if (state.paused) return;
     const was = kube;
     try { kube = await api("/v1/kube"); kubeErr = null; } catch (e) { kubeErr = e; return; }
     if (same(was?.status, kube.status) && same(was?.spec, kube.spec)) return;
@@ -1287,7 +1287,7 @@ function render(page, r) {
     if (holding()) return;
     drawHead(); drawStatus();
     if (tab === "now") drawNow(); else if (tab === "history") drawHistory(); else if (tab === "upgrades") drawUpgrades();
-  }, false);
+  }, false, { always: true });
   const stopReg = every(10 * 60e3, () => loadVersions(), false);
   return () => { stop(); stopReg(); offCluster(); hideTip(); onTab = null; };
 }
