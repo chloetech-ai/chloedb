@@ -195,6 +195,10 @@
                     "minimum": 0,
                     "type": "integer"
                   },
+                  "environment": {
+                    "description": "What the cluster is to its people (production, staging): the command center shows it on every page.",
+                    "type": "string"
+                  },
                   "failoverAfterMs": {
                     "description": "--failover-after-ms of every server (default 3000; 0: failover by hand).",
                     "minimum": 0,

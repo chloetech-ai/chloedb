@@ -343,6 +343,10 @@ struct Args {
     /// the HTTP port).
     #[arg(long, env = "STRATA_NODE_NAME")]
     node_name: Option<String>,
+    /// The image repository whose versions the command center offers
+    /// (`GET /v1/admin/kube/versions`) when no StrataCluster names one.
+    #[arg(long, env = "STRATA_IMAGE_REPOSITORY")]
+    image_repository: Option<String>,
     /// Once told to stop (SIGTERM, Ctrl-C), serve on this many
     /// milliseconds with /readyz answering 503, so that a load balancer
     /// (a Kubernetes Service) sends no more clients before the server
@@ -740,6 +744,7 @@ async fn main() {
         slo_p99_ms: Some(a.slo_p99_ms),
         trust_proxy: a.trust_proxy.clone(),
         node_name_given: a.node_name.clone().filter(|n| !n.is_empty()),
+        image_repository: a.image_repository.clone().filter(|r| !r.trim().is_empty()),
         merger: {
             let d = strata::storage::MergerOptions::default();
             strata::storage::MergerOptions {

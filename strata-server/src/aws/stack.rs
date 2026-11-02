@@ -79,8 +79,8 @@ pub fn plan(p: &Plan, cat: &Catalog, principal_arn: &str) -> Result<Json, String
         return Err(format!("the machines are those of {}, not {}", cat.region, p.region));
     }
     let m = cat.machines.iter().find(|m| m.name == p.machine).ok_or_else(|| format!("{} is not a machine a cluster runs on in {} (the current generation, on demand, without accelerators)", p.machine, p.region))?;
-    if !(1..=100).contains(&p.nodes) {
-        return Err("nodes is 1 to 100".into());
+    if !(1..=1000).contains(&p.nodes) {
+        return Err("nodes is 1 to 1,000".into());
     }
     if !(1..=16_384).contains(&p.volume_gb) {
         return Err("volume_gb is 1 to 16,384 (a gp3 volume's size)".into());
@@ -343,7 +343,7 @@ mod tests {
         let bad = |p: Plan| plan(&p, &catalog(32.0), "arn").unwrap_err();
         assert!(bad(Plan { name: "Search!".into(), ..Plan::default() }).contains("not a cluster name"));
         assert!(bad(Plan { machine: "p5.48xlarge".into(), ..Plan::default() }).contains("not a machine a cluster runs on"));
-        assert!(bad(Plan { nodes: 0, ..Plan::default() }).contains("nodes is 1 to 100"));
+        assert!(bad(Plan { nodes: 0, ..Plan::default() }).contains("nodes is 1 to 1,000"));
         assert!(bad(Plan { region: "eu-west-1".into(), ..Plan::default() }).contains("those of us-east-1"));
         assert!(bad(Plan { cluster: json!({"replicas": 0}), ..Plan::default() }).contains("cluster: shards, replicas and coordinators are 1 or more"));
     }

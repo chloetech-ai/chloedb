@@ -109,8 +109,8 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
         return Err(format!("the sizes are those of {}, not {}", cat.region, p.region));
     }
     let m = cat.machines.iter().find(|m| m.name == p.machine).ok_or_else(|| format!("{} is not a size a DOKS node may be in {} (no GPUs, nothing legacy)", p.machine, p.region))?;
-    if !(1..=100).contains(&p.nodes) {
-        return Err("nodes is 1 to 100".into());
+    if !(1..=1000).contains(&p.nodes) {
+        return Err("nodes is 1 to 1,000".into());
     }
     if !(1..=16_384).contains(&p.volume_gb) {
         return Err("volume_gb is 1 to 16,384 (a volume's size)".into());

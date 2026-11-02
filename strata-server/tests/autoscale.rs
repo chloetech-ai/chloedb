@@ -58,7 +58,7 @@ fn minutes(store: &LogStore, shard: usize, end: u64, busy: impl Fn(u64) -> f64) 
         .flat_map(|m| {
             let ts_ms = end - (360 - m) * MIN;
             let b = busy(m);
-            (0..3).map(move |copy| Load { ts_ms: ts_ms + copy, role: if copy == 0 { "primary" } else { "replica" }.into(), shard: Some(shard), qps: 100.0, cpu: b * 4.0, cores: 4, p99_ms: Some(20.0), disk_used_ratio: Some(0.4 + m as f64 / 3600.0) })
+            (0..3).map(move |copy| Load { ts_ms: ts_ms + copy, role: if copy == 0 { "primary" } else { "replica" }.into(), shard: Some(shard), qps: 100.0, cpu: b * 4.0, cores: 4, p99_ms: Some(20.0), disk_used_ratio: Some(0.4 + m as f64 / 3600.0), ..Default::default() })
         })
         .collect();
     store.write_loads(&rows).unwrap();
@@ -115,7 +115,7 @@ async fn rules_are_replayed_on_the_servers_load_saved_and_run() {
     let mut coord = Service::new(Backend::Cluster(Arc::new(c)), schema, agent, 16, Duration::from_secs(10));
     // The coordinator's own minutes are not a shard's.
     let own = LogStore::open(LogOptions { capture: false, ..LogOptions::new(dir.path().join("coord.logs"), "coord".into()) }).unwrap();
-    own.write_loads(&[Load { ts_ms: end - 100 * MIN, role: "coordinator".into(), shard: None, qps: 1.0, cpu: 4.0, cores: 4, p99_ms: None, disk_used_ratio: Some(0.99) }]).unwrap();
+    own.write_loads(&[Load { ts_ms: end - 100 * MIN, role: "coordinator".into(), shard: None, qps: 1.0, cpu: 4.0, cores: 4, p99_ms: None, disk_used_ratio: Some(0.99), ..Default::default() }]).unwrap();
     coord.log_store = Some(own);
     let cluster = json!({"apiVersion": "strata.chloetech.ai/v1alpha1", "kind": "StrataCluster",
         "metadata": {"name": "orders", "namespace": "db", "generation": 1, "annotations": {}},

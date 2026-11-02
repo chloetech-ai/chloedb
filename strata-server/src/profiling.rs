@@ -26,6 +26,10 @@ pub enum Kind {
     Threads,
     /// A table's index statistics ([`crate::inspect::node`]).
     Index,
+    /// Not a profile: sets this server's log filter for a while
+    /// ([`crate::service::Service::set_log_level`]), so that a coordinator
+    /// sets a copy's over the same call.
+    LogFilter,
 }
 
 impl Kind {
@@ -36,6 +40,7 @@ impl Kind {
             "memory" => Kind::Memory,
             "threads" => Kind::Threads,
             "index" => Kind::Index,
+            "log_filter" => Kind::LogFilter,
             _ => return Err(ApiError::bad(format!("no profile of kind {s:?}: cpu, heap, memory, threads or index"))),
         })
     }
@@ -47,6 +52,7 @@ impl Kind {
             Kind::Memory => "memory",
             Kind::Threads => "threads",
             Kind::Index => "index",
+            Kind::LogFilter => "log_filter",
         }
     }
 
@@ -56,7 +62,7 @@ impl Kind {
     pub fn wait(self, b: &Json) -> std::time::Duration {
         let s = match self {
             Kind::Cpu | Kind::Heap => b.get("seconds").and_then(|v| v.as_f64()).filter(|s| s.is_finite() && *s > 0.0).unwrap_or(5.0).min(profiler::MAX_SECONDS.max(heap::MAX_SECONDS)),
-            Kind::Memory | Kind::Threads | Kind::Index => 0.0,
+            Kind::Memory | Kind::Threads | Kind::Index | Kind::LogFilter => 0.0,
         };
         std::time::Duration::from_secs_f64(s + 60.0)
     }
@@ -146,6 +152,11 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
         }
         Kind::Threads => Ok(Answer::Json(json!({"threads": profiler::threads(), "at_ms": telemetry::now_ms()}))),
         Kind::Index => Ok(Answer::Json(crate::inspect::node(svc, &crate::inspect::Asked::of(b)?).await?)),
+        Kind::LogFilter => {
+            let filter = b["filter"].as_str().ok_or_else(|| ApiError::bad("a log filter's body needs \"filter\""))?;
+            let expires_s = b["expires_s"].as_u64();
+            Ok(Answer::Json(svc.set_log_level(filter, expires_s, b["by"].as_str().unwrap_or("a coordinator"))?))
+        }
     }
 }
 

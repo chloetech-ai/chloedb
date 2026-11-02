@@ -22,8 +22,25 @@
 //!   `standalone`) and `shard`, `qps`, `cpu` (cores busy), `cores`, `busy`
 //!   (`cpu` over `cores`), the slowest `p99_ms` and its volume's
 //!   `disk_used_ratio`, with `step` (whole ten minutes since 1970) for
-//!   `GROUP BY`. Autoscaling replays its rules on a week of it
+//!   `GROUP BY`; and what the command center charts past the hour that
+//!   memory holds: `error_ratio` (server-side failures over queries ended),
+//!   `errors_s`, `client_errors_s`, `timeouts_s`, `rejected_s`, `p50_ms`,
+//!   `writes_s` and `mem_bytes` (a store an older server made gets these
+//!   columns). Autoscaling replays its rules on a week of it
 //!   ([`crate::operator::autoscale::replay`]).
+//!
+//! and three the command center reads, each kept its own days and never
+//! trimmed for size ([`KEPT`]):
+//!
+//! - `events`, a row per event ([`crate::events`]): `kind`, `severity`,
+//!   `title`, where (`shard`, `copy`, and all of it as JSON in `place`),
+//!   `who`, `until_ms` and `detail` (JSON); 30 days.
+//! - `audit`, a row per audited request ([`crate::keys::Entry`]): `kind`
+//!   (`change`, `refusal` or `note`), `who`, `key_name`, `method`,
+//!   `route`, `status`, `client`, `addr`, `object`, `actor`, `reason`,
+//!   `detail`, and the whole entry as JSON (`entry`); 90 days.
+//! - `tables`, a row an hour per table of the database served: its
+//!   `name`, `docs`, `bytes` and `segments`; 30 days.
 //!
 //! They are queried with SQL like any other table (`POST /v1/logs/query`):
 //!
@@ -94,13 +111,29 @@ pub const QUERIES: &str = "queries";
 pub const LOAD: &str = "load";
 /// The tables, in their order in [`schemas`].
 const TABLES: [&str; 3] = [LOGS, QUERIES, LOAD];
+/// The table of events ([`crate::events`]).
+pub const EVENTS: &str = "events";
+/// The table of audited requests ([`crate::keys::Entry`]).
+pub const AUDIT: &str = "audit";
+/// The table of the served database's tables, an hour apart.
+pub const TABLE_SIZES: &str = "tables";
+/// The command center's tables and the days each keeps its rows: apart
+/// from [`TABLES`], and never trimmed for the store's size.
+pub const KEPT: [(&str, u64); 3] = [(EVENTS, crate::events::RETAIN_DAYS), (AUDIT, 90), (TABLE_SIZES, 30)];
 
 const LOGS_SQL: &str = "CREATE TABLE logs (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, minute INT, hour INT, node KEYWORD, level KEYWORD, target KEYWORD, \
      message TEXT, fields TEXT, request_id KEYWORD, method KEYWORD, route KEYWORD, status INT, error TEXT, ms FLOAT)";
 const QUERIES_SQL: &str = "CREATE TABLE queries (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, minute INT, hour INT, node KEYWORD, request_id KEYWORD, kind KEYWORD, \
      outcome KEYWORD, shard BOOL, sql TEXT, fingerprint KEYWORD, ms FLOAT, n_rows INT, error TEXT, detail KEYWORD OPTIONS(indexed = false))";
 const LOAD_SQL: &str = "CREATE TABLE load (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, minute INT, hour INT, step INT, node KEYWORD, role KEYWORD, shard INT, \
-     qps FLOAT, cpu FLOAT, cores INT, busy FLOAT, p99_ms FLOAT, disk_used_ratio FLOAT)";
+     qps FLOAT, cpu FLOAT, cores INT, busy FLOAT, p99_ms FLOAT, disk_used_ratio FLOAT, \
+     error_ratio FLOAT, errors_s FLOAT, client_errors_s FLOAT, timeouts_s FLOAT, rejected_s FLOAT, p50_ms FLOAT, writes_s FLOAT, mem_bytes INT)";
+const EVENTS_SQL: &str = "CREATE TABLE events (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, minute INT, hour INT, node KEYWORD, kind KEYWORD, severity KEYWORD, \
+     title TEXT, shard INT, copy KEYWORD, who KEYWORD, until_ms INT, detail KEYWORD OPTIONS(indexed = false), place KEYWORD OPTIONS(indexed = false))";
+const AUDIT_SQL: &str = "CREATE TABLE audit (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, minute INT, hour INT, node KEYWORD, kind KEYWORD, who KEYWORD, \
+     key_name KEYWORD, method KEYWORD, route KEYWORD, status INT, client KEYWORD, addr KEYWORD, object KEYWORD, actor KEYWORD, reason TEXT, detail TEXT, \
+     entry KEYWORD OPTIONS(indexed = false))";
+const TABLES_SQL: &str = "CREATE TABLE tables (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, hour INT, node KEYWORD, name KEYWORD, docs INT, bytes INT, segments INT)";
 
 /// How often the writer writes what waits.
 pub const WRITE_EVERY: Duration = Duration::from_secs(1);
@@ -120,7 +153,7 @@ const RUNNING: usize = 4;
 pub fn schemas() -> &'static [Arc<Schema>] {
     static S: OnceLock<Vec<Arc<Schema>>> = OnceLock::new();
     S.get_or_init(|| {
-        [LOGS_SQL, QUERIES_SQL, LOAD_SQL]
+        [LOGS_SQL, QUERIES_SQL, LOAD_SQL, EVENTS_SQL, AUDIT_SQL, TABLES_SQL]
             .iter()
             .map(|sql| match bind_command(sql, &[], &Params::new()) {
                 Ok(Command::CreateTable { schema, .. }) => Arc::new(schema),
@@ -198,6 +231,10 @@ pub struct LogStore {
     queued: Mutex<Vec<Arc<Finished>>>,
     /// Minutes of load waiting for the writer.
     loads: Mutex<Vec<Load>>,
+    /// Rows of the command center's tables ([`KEPT`]) waiting for the
+    /// writer, and the last id written to each.
+    kept: Mutex<Vec<(&'static str, u64, Vec<(&'static str, Value)>)>>,
+    kept_last: Mutex<std::collections::HashMap<&'static str, i64>>,
     query_rate: obs::RateLimit,
     gate: Arc<Semaphore>,
     closed: AtomicBool,
@@ -246,6 +283,16 @@ fn open_db(path: &Path) -> Result<Db, String> {
             None => db.create_table((**want).clone()).map_err(at)?,
             Some(have) => {
                 let same = |f: &strata::schema::Field| have.fields.iter().any(|h| h.name == f.name && std::mem::discriminant(&h.ty) == std::mem::discriminant(&f.ty) && h.logical == f.logical);
+                // Columns a newer version added are added to an older
+                // store's table; a column of another type is another
+                // version's table.
+                let missing: Vec<&strata::schema::Field> = want.fields.iter().filter(|f| !have.fields.iter().any(|h| h.name == f.name)).collect();
+                let differ = want.fields.iter().any(|f| !missing.iter().any(|m| m.name == f.name) && !same(f));
+                if !missing.is_empty() && !differ && have.primary_key.map(|k| &have.fields[k].name) == want.primary_key.map(|k| &want.fields[k].name) {
+                    let alters: Vec<strata::schema::Alter> = missing.iter().map(|f| strata::schema::Alter::AddField(strata::schema::Field { id: strata::schema::NO_ID, ..(*f).clone() })).collect();
+                    db.alter_table(&want.table, &alters).map_err(at)?;
+                    continue;
+                }
                 if have.primary_key.map(|k| &have.fields[k].name) != want.primary_key.map(|k| &want.fields[k].name) || !want.fields.iter().all(same) {
                     return Err(format!(
                         "log store {}: its table {} is not the one this server writes (another version made it): move it aside, or pass --log-store another path",
@@ -381,6 +428,15 @@ pub struct Load {
     /// The slowest search p99 of the minute.
     pub p99_ms: Option<f64>,
     pub disk_used_ratio: Option<f64>,
+    /// Server-side failures over queries ended (none without queries).
+    pub error_ratio: Option<f64>,
+    pub errors_s: Option<f64>,
+    pub client_errors_s: Option<f64>,
+    pub timeouts_s: Option<f64>,
+    pub rejected_s: Option<f64>,
+    pub p50_ms: Option<f64>,
+    pub writes_s: Option<f64>,
+    pub mem_bytes: Option<u64>,
 }
 
 impl Load {
@@ -409,6 +465,14 @@ fn load_row(schema: &Schema, node: &str, l: &Load, last: &mut i64) -> Document {
             ("busy", float(Some(l.busy()))),
             ("p99_ms", float(l.p99_ms)),
             ("disk_used_ratio", float(l.disk_used_ratio)),
+            ("error_ratio", float(l.error_ratio)),
+            ("errors_s", float(l.errors_s)),
+            ("client_errors_s", float(l.client_errors_s)),
+            ("timeouts_s", float(l.timeouts_s)),
+            ("rejected_s", float(l.rejected_s)),
+            ("p50_ms", float(l.p50_ms)),
+            ("writes_s", float(l.writes_s)),
+            ("mem_bytes", l.mem_bytes.map_or(Value::Null, |b| Value::Int(b.min(i64::MAX as u64) as i64))),
         ],
     )
 }
@@ -428,6 +492,8 @@ impl LogStore {
             capture,
             queued: Mutex::new(Vec::new()),
             loads: Mutex::new(Vec::new()),
+            kept: Mutex::new(Vec::new()),
+            kept_last: Mutex::new(std::collections::HashMap::new()),
             query_rate: obs::RateLimit::new(opts.queries_per_sec),
             gate: Arc::new(Semaphore::new(RUNNING)),
             closed: AtomicBool::new(false),
@@ -506,6 +572,7 @@ impl LogStore {
 
     /// Writes the lines and queries waiting, a batch per transaction.
     fn write_waiting(&self, last: &mut [i64; 3]) {
+        self.write_kept();
         loop {
             let lines = if self.capture { obs::sink().take(BATCH) } else { Vec::new() };
             let queries = std::mem::take(&mut *lock(&self.queued));
@@ -575,6 +642,153 @@ impl LogStore {
         t.commit()
     }
 
+    // ----- core: the command center's tables ([`KEPT`])
+
+    /// Keeps a row of `table` (one of [`KEPT`]) of time `ts_ms` for the
+    /// writer; its `id`, `ts`, `minute`, `hour` and `node` are added.
+    fn keep_row(&self, table: &'static str, ts_ms: u64, values: Vec<(&'static str, Value)>) {
+        let mut kept = lock(&self.kept);
+        if kept.len() < QUEUED_QUERIES {
+            kept.push((table, ts_ms, values));
+        } else {
+            self.stats.failed.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Keeps an event ([`crate::events`]).
+    pub fn keep_event(&self, r: &crate::events::Recorded) {
+        let e = &r.event;
+        let json_text = |j: &Json| if j.is_null() { Value::Null } else { Value::Str(j.to_string()) };
+        self.keep_row(
+            EVENTS,
+            r.ts_ms,
+            vec![
+                ("id", Value::Int(r.id)),
+                ("kind", Value::Str(e.kind.clone())),
+                ("severity", Value::Str(e.severity.clone())),
+                ("title", Value::Str(e.title.clone())),
+                ("shard", e.where_["shard"].as_i64().map_or(Value::Null, Value::Int)),
+                ("copy", text(e.where_["copy"].as_str())),
+                ("who", text(e.who.as_deref())),
+                ("until_ms", r.until_ms.map_or(Value::Null, |t| Value::Int(t as i64))),
+                ("detail", json_text(&e.detail)),
+                ("place", json_text(&e.where_)),
+            ],
+        );
+    }
+
+    /// Keeps an audited request ([`crate::keys::Entry`]).
+    pub fn keep_audit(&self, e: &crate::keys::Entry) {
+        self.keep_row(
+            AUDIT,
+            e.ts_ms,
+            vec![
+                ("kind", Value::Str(e.kind().to_string())),
+                ("who", Value::Str(e.who.clone())),
+                ("key_name", text(e.key.as_deref())),
+                ("method", Value::Str(e.method.clone())),
+                ("route", Value::Str(e.route.clone())),
+                ("status", Value::Int(e.status as i64)),
+                ("client", text(e.client.as_deref())),
+                ("addr", text(e.addr.as_deref())),
+                ("object", text(e.object.as_deref())),
+                ("actor", text(Some(e.actor.as_str()).filter(|a| !a.is_empty()))),
+                ("reason", text(e.reason.as_deref())),
+                ("detail", text(e.detail.as_deref())),
+                ("entry", serde_json::to_string(e).map_or(Value::Null, Value::Str)),
+            ],
+        );
+    }
+
+    /// Keeps a table's size at `ts_ms`.
+    pub fn keep_table_size(&self, ts_ms: u64, name: &str, docs: u64, bytes: u64, segments: u64) {
+        let ts = ts_ms as i64 * 1000;
+        self.keep_row(
+            TABLE_SIZES,
+            ts_ms,
+            vec![
+                ("hour", Value::Int(ts.div_euclid(3_600_000_000))),
+                ("name", Value::Str(name.to_string())),
+                ("docs", Value::Int(docs as i64)),
+                ("bytes", Value::Int(bytes as i64)),
+                ("segments", Value::Int(segments as i64)),
+            ],
+        );
+    }
+
+    /// Writes the rows of the command center's tables waiting, in one
+    /// transaction.
+    fn write_kept(&self) {
+        let rows = std::mem::take(&mut *lock(&self.kept));
+        if rows.is_empty() {
+            return;
+        }
+        let n = rows.len() as u64;
+        let r = (|| -> strata::Result<()> {
+            let catalog = self.db.catalog();
+            let mut last = lock(&self.kept_last);
+            let mut t = begin(&self.db)?;
+            for (table, ts_ms, values) in rows {
+                let schema = catalog.iter().find(|s| s.table == table).ok_or_else(|| strata::Error::Query(format!("the log store has no table {table}")))?;
+                if !last.contains_key(table) {
+                    last.insert(table, max_id(&self.db, table).map_err(strata::Error::Query)?);
+                }
+                let l = last.get_mut(table).expect("just set");
+                let ts = ts_ms as i64 * 1000;
+                // A row's own id (an event's) unless one as late came first.
+                let given = values.iter().find(|(k, _)| *k == "id").and_then(|(_, v)| v.as_i64()).unwrap_or(ts);
+                let mut v = vec![
+                    ("ts", Value::Timestamp(ts)),
+                    ("minute", Value::Int(ts.div_euclid(60_000_000))),
+                    ("hour", Value::Int(ts.div_euclid(3_600_000_000))),
+                    ("node", Value::Str(self.opts.node.clone())),
+                ];
+                v.extend(values.into_iter().filter(|(k, _)| *k != "id"));
+                v.push(("id", Value::Int(next_id(l, given))));
+                t.table(table)?.insert(row(schema, v))?;
+            }
+            t.commit()
+        })();
+        match r {
+            Ok(()) => {
+                self.stats.writes.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(e) => {
+                static LIMIT: obs::RateLimit = obs::RateLimit::new(1);
+                self.stats.failed.fetch_add(n, Ordering::Relaxed);
+                if LIMIT.admit().is_some() {
+                    tracing::warn!(error = %e, rows = n, "the log store could not write events or audit rows; those rows are lost");
+                }
+                *lock(&self.stats.last_error) = Some(e.to_string());
+            }
+        }
+    }
+
+    /// The rows of `table` (one of [`KEPT`]) from `from_ms` to `to_ms`, the
+    /// newest first, `limit` at most, with `and` (SQL, of trusted text) as
+    /// a further condition; each row as JSON by column name.
+    pub async fn kept_rows(&self, table: &str, from_ms: u64, to_ms: u64, and: Option<String>, limit: usize) -> Result<Vec<Json>, ApiError> {
+        let cond = and.map_or(String::new(), |c| format!(" AND {c}"));
+        let sql = format!("SELECT * FROM {table} WHERE ts >= :from AND ts <= :to{cond} ORDER BY ts DESC LIMIT {}", limit.clamp(1, MAX_ROWS));
+        let params = Params::new().set("from", Value::Timestamp(from_ms.min(i64::MAX as u64 / 1000) as i64 * 1000)).set("to", Value::Timestamp(to_ms.min(i64::MAX as u64 / 1000) as i64 * 1000));
+        let (rs, _) = self.query(&sql, &params, false, Duration::from_secs(10)).await?;
+        Ok(rs
+            .rows
+            .iter()
+            .map(|r| {
+                let m: Map<String, Json> = rs.columns.iter().zip(r).filter(|(_, v)| !matches!(v, Value::Null))
+                    .map(|(c, v)| match v {
+                        // Times as ms, as the API has them.
+                        Value::Timestamp(t) => (format!("{c}_ms"), json!(t.div_euclid(1000))),
+                        v => (c.clone(), js::to_json(v)),
+                    })
+                    .collect();
+                Json::Object(m)
+            })
+            .collect())
+    }
+    // ----- end core
+
     /// The bytes the store takes: its live pages and its write-ahead log.
     pub fn bytes(&self) -> u64 {
         let f = self.db.storage().file_stats();
@@ -590,6 +804,12 @@ impl LogStore {
         let cut = now - self.opts.retain.as_micros().min(i64::MAX as u128) as i64;
         for t in TABLES {
             let d = self.delete_before(t, cut)?;
+            self.stats.expired.fetch_add(d, Ordering::Relaxed);
+            n += d;
+        }
+        // The command center's tables keep their own days, or longer.
+        for (t, days) in KEPT {
+            let d = self.delete_before(t, cut.min(now - (days * 86_400_000_000) as i64))?;
             self.stats.expired.fetch_add(d, Ordering::Relaxed);
             n += d;
         }
@@ -903,7 +1123,7 @@ mod tests {
 
     #[test]
     fn the_schemas_bind() {
-        assert_eq!(schemas().len(), 3);
+        assert_eq!(schemas().len(), 6);
         assert_eq!(schema_of(LOGS).primary_key.map(|k| schema_of(LOGS).fields[k].name.as_str()), Some("id"));
     }
 
@@ -1022,7 +1242,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = LogStore::open(LogOptions { capture: false, retain: Duration::from_secs(3600), ..LogOptions::new(dir.path().join("l.logs"), "s0-1".into()) }).unwrap();
         let now = crate::telemetry::now_ms();
-        let minute = |ts_ms: u64, cpu: f64| Load { ts_ms, role: "replica".into(), shard: Some(2), qps: 120.0, cpu, cores: 4, p99_ms: Some(18.0), disk_used_ratio: Some(0.41) };
+        let minute = |ts_ms: u64, cpu: f64| Load { ts_ms, role: "replica".into(), shard: Some(2), qps: 120.0, cpu, cores: 4, p99_ms: Some(18.0), disk_used_ratio: Some(0.41), ..Default::default() };
         s.keep_load(minute(now, 3.0));
         s.flush();
         s.write_loads(&[minute(now - 7_200_000, 1.0)]).unwrap();

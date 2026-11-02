@@ -246,6 +246,15 @@ async fn a_dead_primary_loses_its_role() {
     assert_eq!(primaries, 1, "{s}");
     assert_eq!(s["state"], "degraded", "{s}");
     assert!(s["why"].as_str().unwrap().contains("s0-0 down"), "{s}");
+
+    // The coordinator's events: the primary down, then another elected.
+    let (events, _) = svc.events.range(0, u64::MAX, &[], 100);
+    let down = events.iter().find(|e| e.event.kind == "copy_down").unwrap_or_else(|| panic!("{events:?}"));
+    assert_eq!((down.event.where_["copy"].as_str(), down.event.severity.as_str()), (Some("s0-0"), "warning"));
+    let new = events.iter().find(|e| e.event.kind == "primary_changed").unwrap_or_else(|| panic!("{events:?}"));
+    assert_eq!((new.event.detail["from"].as_str(), new.event.detail["automatic"].as_bool()), (Some("s0-0"), Some(true)), "{:?}", new.event);
+    assert_eq!(new.event.detail["to_url"], s["primary"]);
+    assert!(down.ts_ms <= new.ts_ms);
 }
 
 async fn listen() -> (TcpListener, String) {
@@ -266,6 +275,105 @@ async fn local(dir: &Path, tune: impl FnOnce(&mut Service)) -> (Arc<Service>, St
     let (l, url) = listen().await;
     tokio::spawn(server::serve_http(svc.clone(), l, Default::default()));
     (svc, url)
+}
+
+/// Past the hour memory holds, `/v1/timeseries?from=&to=` answers a point
+/// a minute from the log store's `load` table.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_timeseries_over_three_hours_is_a_point_a_minute_from_the_load_table() {
+    use strata_server::logstore::{Load, LogOptions, LogStore};
+    let dir = tempfile::tempdir().unwrap();
+    let store = LogStore::open(LogOptions { capture: false, ..LogOptions::new(dir.path().join("l.logs"), "n1".into()) }).unwrap();
+    let now = strata_server::telemetry::now_ms() / 60_000 * 60_000;
+    let minutes: Vec<Load> = (0..180u64)
+        .map(|m| Load {
+            ts_ms: now - (180 - m) * 60_000,
+            role: "standalone".into(),
+            qps: 10.0 + m as f64,
+            cpu: 1.5,
+            cores: 4,
+            p99_ms: Some(40.0),
+            disk_used_ratio: Some(0.5),
+            error_ratio: Some(0.001),
+            p50_ms: Some(4.0),
+            mem_bytes: Some(1 << 30),
+            ..Default::default()
+        })
+        .collect();
+    store.write_loads(&minutes).unwrap();
+    let (_svc, base) = local(dir.path(), |s| s.log_store = Some(store)).await;
+    let from = now - 3 * 3_600_000;
+    let t: Json = client().get(format!("{base}/v1/timeseries?from={from}&to={now}")).send().await.unwrap().json().await.unwrap();
+    assert_eq!((t["source"].as_str(), t["interval_ms"].as_u64()), (Some("load"), Some(60_000)), "{t}");
+    let points = t["points"].as_array().unwrap();
+    assert_eq!(points.len(), 180);
+    assert_eq!(points[0]["t"].as_u64(), Some(now - 180 * 60_000), "oldest first");
+    let p = &points[179];
+    assert_eq!((p["qps"].as_f64(), p["error_ratio"].as_f64(), p["p50_ms"].as_f64(), p["mem_bytes"].as_u64(), p["cores"].as_u64()), (Some(189.0), Some(0.001), Some(4.0), Some(1 << 30), Some(4)), "{p}");
+    assert!(p.get("timeouts_s").is_none(), "absent, not 0, when unknown");
+    // Inside memory's hour: memory's points, as before.
+    let m: Json = client().get(format!("{base}/v1/timeseries?since=0")).send().await.unwrap().json().await.unwrap();
+    assert_eq!((m["source"].as_str(), m["interval_ms"].as_u64()), (Some("memory"), Some(2000)));
+}
+
+/// On a coordinator, `PUT /v1/logs/filter?node=` sets a copy's log
+/// filter over gRPC (no new call: a kind of `Profile`), for a while: the
+/// copy says until when and by whom, then goes back on its own. A plan
+/// of a change of shape and every table's size are asked of it too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = Node::new(dir.path(), "a", 10);
+    let mut b = Node::new(dir.path(), "b", 0);
+    let (c, svc) = shard_of(&mut [&mut a, &mut b]).await;
+    let snap = fresh(&c).await;
+    assert_eq!(snap["shards"][0]["replicas"][0]["short"], "s0-0", "{snap}");
+    let (l, base) = listen().await;
+    tokio::spawn(server::serve_http(svc.clone(), l, Default::default()));
+    let copy = format!("http://127.0.0.1:{}", a.http);
+
+    let r = client().put(format!("{base}/v1/logs/filter?node=s0-0")).json(&json!({"filter": "debug", "expires_s": 2})).send().await.unwrap();
+    let status = r.status();
+    let j: Json = r.json().await.unwrap();
+    assert!(status.is_success(), "{j}");
+    assert_eq!((j["filter"].as_str(), j["previous"].as_str()), (Some("debug"), Some("info")), "{j}");
+    assert!(j["expires_ms"].as_u64().is_some() && j["set_by"].is_string(), "{j}");
+    let now: Json = client().get(format!("{copy}/v1/logs/filter")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(now["filter"], "debug", "{now}");
+    let logs: Json = client().get(format!("{copy}/v1/logs?limit=1")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(logs["filter_expires_ms"], now["expires_ms"]);
+    let t0 = Instant::now();
+    loop {
+        let now: Json = client().get(format!("{copy}/v1/logs/filter")).send().await.unwrap().json().await.unwrap();
+        if now["filter"] == "info" && now["expires_ms"].is_null() {
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(10), "the copy's filter did not go back: {now}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let r = client().put(format!("{base}/v1/logs/filter?node=s9-9")).json(&json!({"filter": "debug"})).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+    let r = client().put(format!("{base}/v1/logs/filter")).json(&json!({"filter": "debug", "expires_s": -1})).send().await.unwrap();
+    assert_eq!(r.status(), 400);
+    let changes: Json = client().get(format!("{base}/v1/admin/audit?kind=change")).send().await.unwrap().json().await.unwrap();
+    assert!(changes["entries"].as_array().unwrap().iter().any(|e| e["object"] == "log filter" && e["detail"].as_str().is_some_and(|d| d.contains("on s0-0"))), "{changes}");
+
+    // A plan changes nothing: one more copy is added, none removed.
+    let r = client().post(format!("{base}/v1/admin/plan")).json(&json!({"shards": [{"shard": 0, "copies": [a.url(), b.url(), "http://127.0.0.1:1"]}]})).send().await.unwrap();
+    let status = r.status();
+    let p: Json = r.json().await.unwrap();
+    assert!(status.is_success(), "{p}");
+    assert_eq!(p["steps"][0]["kind"], "add_copy", "{p}");
+    assert_eq!(p["removes_copies"], json!([]), "{p}");
+    assert_eq!(fresh(&c).await["shards"][0]["replicas"].as_array().unwrap().len(), 2);
+    let audit: Json = client().get(format!("{base}/v1/admin/audit")).send().await.unwrap().json().await.unwrap();
+    assert!(audit["entries"].as_array().unwrap().iter().all(|e| e["route"] != "/v1/admin/plan"), "a plan is a read: {audit}");
+
+    // Every table, cheaply: of the cluster, by shard.
+    let t: Json = client().get(format!("{base}/v1/index/tables")).send().await.unwrap().json().await.unwrap();
+    let products = t["tables"].as_array().unwrap().iter().find(|t| t["table"] == "products").cloned().unwrap_or_else(|| panic!("{t}"));
+    assert_eq!((products["docs"].as_u64(), products["shards"][0]["docs"].as_u64()), (Some(10), Some(10)), "{t}");
+    assert!(products["bytes"].as_u64().unwrap() > 0, "{t}");
 }
 
 fn client() -> reqwest::Client {
@@ -300,6 +408,33 @@ async fn the_command_centers_requests_are_tagged_and_only_changes_audited() {
     assert!(entries.iter().all(|e| e["method"] != "GET"), "reads are not audited: {entries:?}");
     let e = entries.iter().find(|e| e["route"] == "/v1/admin/checkpoint").unwrap();
     assert_eq!((e["kind"].as_str(), e["client"].as_str(), e["reason"].as_str(), e["addr"].as_str(), e["actor"].as_str()), (Some("change"), Some("command-center"), Some("before the upgrade ✓"), Some("127.0.0.1"), Some("person")), "{e}");
+
+    // A change is an event; a note is one too, and audited as a note.
+    let r = ui(client().post(format!("{base}/v1/events/notes"))).json(&json!({"text": "deploying 1.2", "where": {"shard": 0}})).send().await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let ev: Json = client().get(format!("{base}/v1/events")).send().await.unwrap().json().await.unwrap();
+    let kinds: Vec<&str> = ev["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["note", "change"], "the newest first: {ev}");
+    assert_eq!((ev["events"][0]["title"].as_str(), ev["events"][0]["where"]["shard"].as_u64()), (Some("deploying 1.2"), Some(0)));
+    assert!(ev["events"][1]["title"].as_str().unwrap().contains("/v1/admin/checkpoint"), "{ev}");
+    let notes: Json = client().get(format!("{base}/v1/events?kind=note")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(notes["events"].as_array().unwrap().len(), 1);
+    let audit: Json = client().get(format!("{base}/v1/admin/audit")).send().await.unwrap().json().await.unwrap();
+    assert!(audit["entries"].as_array().unwrap().iter().any(|e| e["kind"] == "note" && e["route"] == "/v1/events/notes"), "{audit}");
+    assert_eq!(client().post(format!("{base}/v1/events/notes")).json(&json!({"text": " "})).send().await.unwrap().status(), 400);
+
+    // A row write from the command center is a change, with its statement.
+    let r = ui(client().post(format!("{base}/v1/sql"))).header("x-strata-reason", "fix a price").json(&json!({"sql": "UPDATE products SET sold = 1 WHERE id = 'p0000001'"})).send().await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let r = client().post(format!("{base}/v1/sql")).json(&json!({"sql": "UPDATE products SET sold = 2 WHERE id = 'p0000002'"})).send().await.unwrap();
+    assert!(r.status().is_success());
+    let changes: Json = client().get(format!("{base}/v1/admin/audit?kind=change")).send().await.unwrap().json().await.unwrap();
+    let e = &changes["entries"][0];
+    assert_eq!((e["route"].as_str(), e["object"].as_str(), e["reason"].as_str(), e["after"]["rows"].as_u64()), (Some("/v1/sql"), Some("table products"), Some("fix a price"), Some(1)), "{changes}");
+    assert_eq!(changes["entries"].as_array().unwrap().iter().filter(|e| e["route"] == "/v1/sql").count(), 1, "a client's own writes are its own: {changes}");
+    assert!(changes["entries"].as_array().unwrap().iter().all(|e| e["kind"] == "change"));
+    let found: Json = client().get(format!("{base}/v1/admin/audit?q=checkpoint")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(found["entries"].as_array().unwrap().len(), 1, "{found}");
 
     let me: Json = ui(client().get(format!("{base}/v1/whoami"))).send().await.unwrap().json().await.unwrap();
     assert_eq!(me["cluster"], json!({"name": "prod/search", "environment": "production", "public_url": null}));

@@ -101,6 +101,7 @@ use crate::slots::{self, hash_shard_of, Move, SlotMap};
 use crate::{json as js, plan_pb, ApiError};
 
 mod moves;
+pub mod plan;
 pub use moves::{plan_even, MOVE_SLOTS};
 
 /// How the coordinator uses replicas and handles shards that do not answer.
