@@ -20,6 +20,8 @@ const LANES = [
   ["clients", "New client traffic", (k) => k === "new_shape"],
   ["notes", "Notes", (k) => k === "note"],
 ];
+// Lane names on a phone.
+const SHORT = { copies: "Copies", rollouts: "Rollouts", people: "People", clients: "Clients" };
 const laneOf = (k) => (LANES.find(([, , f]) => f(k)) || ["other"])[0];
 // Pairs drawn as a span: the event that ends each kind.
 const ENDS = { copy_down: "copy_up", alert_fired: "alert_resolved", majority_lost: "majority_back", moves_started: "moves_finished" };
@@ -56,13 +58,13 @@ function render(page, r0) {
   const lanes = h("div", { class: "tl-lanes" });
   const axis = h("div", { class: "tl-axis" });
   const axisSub = h("span", { class: "sub" });
-  const axisCard = h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "On one axis"), axisSub, h("div", { class: "tools" }, chips)),
+  const axisCard = h("section", { class: "card tl-axiscard" }, h("div", { class: "hd" }, h("h3", {}, "On one axis"), axisSub, h("div", { class: "tools" }, chips)),
     h("div", { class: "bd" }, h("div", { class: "tl-chartrow" }, h("div", { class: "tl-lname" }, h("b", {}, "Searches/s"), h("span", { class: "small muted" }, "and failed")), h("div", { class: "grow" }, chart)), lanes, axis));
 
   const filt = h("input", { class: "input sm", placeholder: "Filter: shard 117, nadia, v0.9.4…", oninput: () => { q = filt.value.trim().toLowerCase(); drawList(); } });
   const listBody = h("div");
   const listSub = h("span", { class: "sub" });
-  const listCard = h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Events"), listSub, h("div", { class: "tools" }, filt)), h("div", { class: "bd flush" }, listBody));
+  const listCard = h("section", { class: "card tl-listcard" }, h("div", { class: "hd" }, h("h3", {}, "Events"), listSub, h("div", { class: "tools" }, filt)), h("div", { class: "bd flush" }, listBody));
   page.append(head, filterNote, sumCard, axisCard, listCard);
 
   // ------------------------------------------------------------ reading
@@ -182,7 +184,8 @@ function render(page, r0) {
       }
       // Labels that would overlap give way (hover still shows them); one
       // near the right edge goes to the left of its dot instead.
-      const W = Math.max(300, (lanes.clientWidth || 1000) - 210);
+      const nameW = parseFloat(getComputedStyle(axisCard).getPropertyValue("--tl-name")) || 150;
+      const W = Math.max(120, (lanes.clientWidth || 1000) - nameW - 60);
       const taken = [];
       for (const p of placed) {
         const lw = (Math.min(p.n, 44) * 6.4 + 14) / W;
@@ -192,7 +195,7 @@ function render(page, r0) {
         if (a < -0.02 || blocked) p.el.classList.add("nolbl");
         else taken.push([a, b]);
       }
-      return h("div", { class: "tl-lane" }, h("div", { class: "tl-lname" }, name, mine.length ? h("span", { class: "muted" }, " " + mine.length) : null), track);
+      return h("div", { class: "tl-lane" }, h("div", { class: "tl-lname", title: name }, h("span", { class: "tl-full" }, name), h("span", { class: "tl-short" }, SHORT[id] || name), mine.length ? h("span", { class: "muted" }, " " + mine.length) : null), track);
     }));
     // The time axis under the lanes.
     const ticks = [];
@@ -218,11 +221,11 @@ function render(page, r0) {
     clear(listBody, h("div", { class: "tbl-wrap", style: { maxHeight: "520px" } }, h("table", { class: "t tl-list" },
       h("thead", {}, h("tr", {}, h("th", {}, "Time"), h("th", {}, "Kind"), h("th", {}, "What"), h("th", {}, "Who"), h("th", {}, ""))),
       h("tbody", {}, rows.slice(0, 400).map(({ e, n, first }) => h("tr", { class: e.id === focusId ? "sel" : "" },
-        h("td", { class: "mono small nowrap", title: whenTitle(e.ts_ms) }, when(e.ts_ms)),
-        h("td", {}, h("span", { class: "home-kind " + kindTone(e) }, kindName(e.kind))),
-        h("td", {}, h("div", { class: e.severity === "critical" ? "tl-strong" : "" }, e.title, n > 1 ? h("span", { class: "badge", title: `from ${when(first)}` }, ` ×${n}`) : null), detailText(e) ? h("div", { class: "small muted" }, detailText(e)) : null),
-        h("td", { class: "small" }, e.who || h("span", { class: "muted" }, "–")),
-        h("td", { class: "nowrap" }, h("a", { class: "btn xs", href: eventLink(e) }, `open at ${when(e.ts_ms, { sec: false }).slice(-5)}`))))))));
+        h("td", { class: "mono small nowrap tl-t", title: whenTitle(e.ts_ms) }, when(e.ts_ms)),
+        h("td", { class: "tl-k" }, h("span", { class: "home-kind " + kindTone(e) }, kindName(e.kind))),
+        h("td", { class: "tl-w" }, h("div", { class: e.severity === "critical" ? "tl-strong" : "" }, e.title, n > 1 ? h("span", { class: "badge", title: `from ${when(first)}` }, ` ×${n}`) : null), detailText(e) ? h("div", { class: "small muted" }, detailText(e)) : null),
+        h("td", { class: "small tl-who" }, e.who || h("span", { class: "muted" }, "–")),
+        h("td", { class: "nowrap tl-go" }, h("a", { class: "btn xs", href: eventLink(e) }, `open at ${when(e.ts_ms, { sec: false }).slice(-5)}`))))))));
   }
   const detailText = (e) => {
     const d = e.detail; if (!d || typeof d !== "object") return typeof d === "string" ? d : "";
@@ -259,7 +262,7 @@ function render(page, r0) {
   };
   if (r0.params.get("note")) setTimeout(() => addNote(), 50);
   const offs = [
-    bus.on("points", drawAxis), bus.on("range", () => { presets.set(presetNow()); load(); drawAxis(); }), bus.on("theme", drawAxis), bus.on("fleet", drawSummary),
+    bus.on("points", drawAxis), bus.on("range", () => { presets.set(presetNow()); load(); drawAxis(); }), bus.on("theme", drawAxis), bus.on("narrow", drawAxis), bus.on("fleet", drawSummary),
     every(20000, load),
   ];
   return () => { offs.forEach((f) => f()); reopen = null; };
