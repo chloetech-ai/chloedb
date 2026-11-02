@@ -2959,6 +2959,10 @@ body.cc-dragging, body.cc-dragging * { cursor: grabbing !important; user-select:
 @media (max-width: 900px) {
   .cc-changes > .hd .tools { margin-left: 0; flex: 1 1 100%; min-width: 0; overflow-x: auto; }
   .cc-changes > .hd .tools .seg { flex: 0 0 auto; }
+  /* Capacity's cards: the link goes under the title and its words. */
+  .cc-cap > .hd { flex-wrap: wrap; row-gap: 6px; }
+  .cc-cap > .hd .sub { flex: 1 1 160px; min-width: 0; }
+  .cc-cap > .hd .tools { margin-left: 0; }
 }
 /* ===== end cluster ===== */
 

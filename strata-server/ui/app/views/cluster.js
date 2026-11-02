@@ -244,7 +244,7 @@ function issues(sh) {
     if (c.copying) out.push({ sev: 0, short: "copying", long: `${cname(c)} is being sent a copy of the primary` });
     else if (c.lag != null && c.lag >= LAG_WARN) out.push({ sev: 1, short: `lag ${kn(c.lag)}`, long: `${cname(c)} is ${fmt.n(c.lag)} transactions behind its primary` });
     if (c.disk != null && c.disk >= 0.85) out.push({ sev: 1, short: `disk ${pct0(c.disk)}`, long: `${cname(c)}'s volume is ${pct0(c.disk)} full` });
-    if (c.avoided) out.push({ sev: 1, short: "avoided", long: `${cname(c)} is avoided after failures${c.avoidedWhy ? ": " + c.avoidedWhy : ""}` });
+    if (c.avoided) out.push({ sev: 1, short: "avoided", long: `the coordinator sends ${cname(c)} no searches${c.avoidedWhy ? ": " + c.avoidedWhy : " after failures"}` });
   }
   const cpu = shardValue("cpu", sh), p99 = shardValue("p99", sh);
   if (p99 != null && p99 >= slo()) out.push({ sev: 1, short: `p99 ${fmt.ms(p99)}`, long: `its slowest copy's p99 is ${fmt.ms(p99)}, over the SLO of ${fmt.ms(slo())}` });
@@ -1010,7 +1010,7 @@ function render(page, r) {
           h("td", { class: "num" + (c.lag >= LAG_WARN ? " cc-warn" : ""), title: !c.primary && !c.down && c.lag == null ? (sh.primary ? "Its primary does not report it" : "No primary to compare it with") : "" }, c.primary || c.down ? "–" : c.lag == null ? "?" : c.lag === 0 ? "0" : kn(c.lag)),
           h("td", { class: "num" + lv(L.copy(c)) }, c.down ? "–" : L.fmt(L.copy(c))),
           h("td", { style: { width: "28px" } }, copyMenuBtn(sh, c)));
-        const note = c.down ? `${c.wasPrimary ? "Was the primary. " : ""}${cap(c.error || "no answer")}${c.downSince ? " · " + sinceText(c.downSince) : ""}` : c.avoided ? `Avoided after failures${c.avoidedWhy ? ": " + c.avoidedWhy : ""}` : null;
+        const note = c.down ? `${c.wasPrimary ? "Was the primary. " : ""}${cap(c.error || "no answer")}${c.downSince ? " · " + sinceText(c.downSince) : ""}` : c.avoided ? `Sent no searches${c.avoidedWhy ? ": " + c.avoidedWhy : " after failures"}` : null;
         return note ? [tr, h("tr", { class: "cc-note" }, h("td", { colspan: 6, class: "small " + (c.down ? "cc-bad" : "cc-warn") }, note))] : [tr];
       }))));
   }
@@ -1895,7 +1895,7 @@ function render(page, r) {
     const slotsPer = M.shards.map((sh) => sh.held), rowsPer = M.shards.map((sh) => sh.rows);
     const row = (k, worst, median, note, lv) => h("tr", {}, h("td", {}, k), h("td", { class: "num" + (lv === 2 ? " cc-bad" : lv === 1 ? " cc-warn" : "") }, worst), h("td", { class: "num dim" }, median), h("td", { class: "small dim" }, note));
     const auto1 = managed() ? card({
-      title: "Autoscaling", sub: auto ? `the operator's rules: ${auto.mode === "on" ? "it acts" : auto.mode === "suggest" ? "it asks a person" : "off"}` : "no rules set",
+      cls: "cc-cap", title: "Autoscaling", sub: auto ? `the operator's rules: ${auto.mode === "on" ? "it acts" : auto.mode === "suggest" ? "it asks a person" : "off"}` : "no rules set",
       tools: h("a", { class: "btn sm", href: "#/autoscale" }, "Policies in Autoscaling", icon("right")),
       body: sg ? h("div", { class: "stack", style: { gap: "8px" } },
         h("div", { class: "cc-sg" }, icon("bolt"), h("div", {}, h("b", {}, "The rules suggest: "), patchWords(sg.patch || {}, sp), h("div", { class: "small dim" }, `${sg.text ? sg.text + " · " : ""}${clock(sg.atMs)}; it stands while its reason does.`))),
@@ -1904,11 +1904,11 @@ function render(page, r) {
           h("button", { class: "btn sm", disabled: !canAdmin(), onclick: dismissSuggestion }, "Dismiss"),
           h("button", { class: "btn sm ghost", onclick: () => { if (sg.patch?.shards != null) draft.kube.shards = sg.patch.shards; if (sg.patch?.replicas != null) draft.kube.replicas = sg.patch.replicas; tab = "map"; mode = "draft"; writeParams(); changed(); drawAll(); } }, "Open it as a draft")))
         : h("div", { class: "small dim" }, st.autoscale?.waiting || (auto ? "No rule fires now." : "Set rules in Autoscaling: they add copies when the copies are busy, remove them when they are quiet, and grow volumes."))
-    }) : card({ title: "Autoscaling", sub: "machines of your own",
+    }) : card({ cls: "cc-cap", title: "Autoscaling", sub: "machines of your own",
       tools: h("a", { class: "btn sm", href: "#/autoscale" }, "Replay rules on this load", icon("right")),
       body: h("div", { class: "small dim" }, "No autoscaler runs on machines of your own: on Kubernetes the operator runs the rules. Here the numbers below say where the room is, and a draft plans the change: add copies to busy shards, shards when the disks fill, or move slots off a hot shard.") });
     const head1 = card({
-      title: "Headroom now", sub: "the worst copy and the median, from each copy's last minute",
+      cls: "cc-cap", title: "Headroom now", sub: "the worst copy and the median, from each copy's last minute",
       body: h("table", { class: "t compact cc-head-room" }, h("thead", {}, h("tr", {}, ["", "worst", "median", ""].map((x, k) => h("th", { class: k === 1 || k === 2 ? "num" : "" }, x)))), h("tbody", {},
         row("CPU, share of cores", cpus[0] ? `${pct0(cpus[0].cpu)} ${cname(cpus[0])}` : "–", pct0(med(cpus.map((c) => c.cpu))), cpus[0] && cpus[0].cpu >= 0.7 ? "busy copies add latency: add copies to their shards" : "", level("cpu", cpus[0]?.cpu)),
         row("Disk used", disks[0] ? `${pct0(disks[0].disk)} ${cname(disks[0])}` : "–", pct0(med(disks.map((c) => c.disk))), fleetDisk?.days_to_full != null ? `full in ${fullIn(fleetDisk.days_to_full)} at the last week's growth` : "", level("disk", disks[0]?.disk)),
@@ -1918,7 +1918,7 @@ function render(page, r) {
         row("Copies a shard", fmt.n(Math.min(...M.shards.map((sh) => sh.n))), fmt.n(med(M.shards.map((sh) => sh.n))), "fewest", M.shards.some((sh) => sh.n < 3) ? 1 : 0),
         M.zonesKnown ? row("Copies a zone", "", "", [...M.zones.values()].map((z) => `${z.key || "?"}: ${fmt.n(z.copies.length)}`).join(" · ")) : null)),
     });
-    const quick = card({ title: "Plan more room", sub: "each opens a draft: nothing applies until you apply its plan",
+    const quick = card({ cls: "cc-cap", title: "Plan more room", sub: "each opens a draft: nothing applies until you apply its plan",
       body: h("div", { class: "row", style: { gap: "6px" } },
         h("button", { class: "btn sm", onclick: () => { if (managed()) draft.kube.replicas = (sp.replicas ?? 3) + 1; else for (const sh of M.shards) draft.adds.push({ id: nextId(), shard: sh.i, url: "" }); tab = "map"; mode = "draft"; writeParams(); changed(); drawAll(); } }, icon("plus"), `A copy more for every shard (${plural(M.shards.length, "server")})`),
         h("button", { class: "btn sm", onclick: () => { addShards(Math.max(1, Math.round(M.shards.length / 4))); tab = "map"; mode = "draft"; writeParams(); drawAll(); } }, icon("plus"), `${plural(Math.max(1, Math.round(M.shards.length / 4)), "shard")} more`),
@@ -1999,7 +1999,8 @@ function render(page, r) {
     if (auditErr) note.push(auditErr.status === 403 ? "The audit log needs an admin key." : `Audit: ${auditErr.message}`);
     clear(body, card({
       cls: "cc-changes", title: "Changes", sub: `this cluster's events and changes, last 7 days, newest first · times in ${zoneName()}`,
-      tools: [kindSeg, h("button", { class: "btn sm", onclick: () => { events = audit = null; eventsErr = auditErr = null; drawChanges(); } }, icon("refresh"))],
+      // Read again first: on a phone the kinds scroll sideways after it.
+      tools: [h("button", { class: "btn sm", title: "Read the changes again", "aria-label": "Read the changes again", onclick: () => { events = audit = null; eventsErr = auditErr = null; drawChanges(); } }, icon("refresh")), kindSeg],
       body: h("div", { class: "stack", style: { gap: "8px" } },
         note.length ? h("div", { class: "notice" }, note.join(" ")) : null,
         shown.length ? h("div", { class: "tbl-wrap" }, h("table", { class: "t compact cc-log" },
