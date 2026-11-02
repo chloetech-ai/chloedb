@@ -2684,7 +2684,9 @@ impl Coordinator {
     /// is given it, or the change is not made. A map no server took is not
     /// routed by (503); when a server did not answer for it, the next
     /// change gives it again before making its own, as that server may hold
-    /// it. Returns the new map and the servers that did not take it.
+    /// it, and routes by it once a server takes it, whatever comes of the
+    /// change made from it. Returns the new map and the servers that did
+    /// not take it.
     pub async fn change(&self, f: impl Fn(&SlotMap) -> Result<SlotMap, String>, first: &[String]) -> Result<(SlotMap, Vec<String>), ApiError> {
         let _one = self.changing.lock().await;
         let doubt = self.doubt.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -2748,6 +2750,11 @@ impl Coordinator {
                 }
                 core::ChangeStep::Done(r) => {
                     *self.doubt.lock().unwrap_or_else(|e| e.into_inner()) = change.in_doubt();
+                    // The map in doubt, given again and taken, is made
+                    // whatever came of the change made from it.
+                    if let (Err(_), Some(m)) = (&r, change.redone()) {
+                        self.install(m.clone())?;
+                    }
                     let (next, missed) = r?;
                     self.install(next.clone())?;
                     if !missed.is_empty() {
