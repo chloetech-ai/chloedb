@@ -286,7 +286,7 @@ function render(page, r) {
     const ranked = [...lastCount.entries()].sort((a, b) => b[1] - a[1]);
     const calls = runs.flatMap((r) => r.calls.map((c) => c.call_us / 1e3));
     const shardMed = median(calls), shardP99 = quant(calls, 0.99);
-    const waitLast = runs.map((r) => { const ts = r.calls.map((c) => c.call_us / 1e3).sort((a, b) => a - b); return ts.length > 1 ? ts[ts.length - 1] - ts[Math.floor(ts.length / 2)] : 0; });
+    const waitLast = runs.map((r) => { const ts = r.calls.map((c) => c.call_us / 1e3).sort((a, b) => a - b); return ts.length > 1 ? ts[ts.length - 1] - ts[Math.floor((ts.length - 1) / 2)] : 0; });
     const hedge = state.cluster?.hedge_ms;
 
     // The runs as a strip: click one to see it on the radar.

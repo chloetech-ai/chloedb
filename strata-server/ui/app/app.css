@@ -2543,6 +2543,8 @@ textarea.input.ro-why { font-family: inherit; }
 .wl-why-l { gap: 10px; align-items: flex-start; padding: 3px 0; }
 .wl-why-l .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; margin-top: 7px; display: inline-block; }
 .wl-ev { gap: 10px; padding: 4px 0; }
+.wl-ev > .pill:first-child { flex: none; min-width: 58px; justify-content: center; text-align: center; }
+.wl-ev > .mono { flex: none; }
 .wl-search { width: 270px; }
 .wl-clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; overflow-wrap: anywhere; }
 .wl-two { display: grid; gap: 14px; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); }
@@ -2553,10 +2555,10 @@ textarea.input.ro-why { font-family: inherit; }
   .grid.wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .wl-kpis .kpi .val { font-size: 22px; }
   .wl-stmts td.sql { max-width: 200px; }
-  .wl-ev { flex-wrap: wrap; }
+  .wl-ev, .row.nw.wl-ev { flex-wrap: wrap; }
   .wl-ev { row-gap: 4px; padding: 6px 0; border-bottom: 1px solid var(--line); }
   .wl-ev:last-child { border-bottom: 0; }
-  .wl-ev .grow { white-space: normal; min-width: 0; flex-basis: 100%; order: 3; }
+  .wl-ev .grow, .wl-ev > .grow { white-space: normal; min-width: 0; flex-basis: 100%; order: 3; }
   .wl-ev > .btn { order: 4; }
   .wl-find { padding: 10px 12px; gap: 8px; }
   .wl-find-ic { width: 22px; height: 22px; }

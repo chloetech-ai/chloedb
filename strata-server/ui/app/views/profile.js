@@ -188,7 +188,7 @@ function nodePicker(tab, node) {
     list = found.slice(0, 8);
     hi = Math.min(hi, Math.max(0, list.length - 1));
     clear(menuEl,
-      h("div", { class: "wl-pick-h small muted" }, q.trim() ? `${fmt.plural(found.length, "copy", "copies")} match${found.length > 8 ? ", the 8 busiest shown" : ""}` : "The busiest copies, by CPU over the latest minute"),
+      h("div", { class: "wl-pick-h small muted" }, q.trim() ? `${fmt.plural(found.length, "copy", "copies")} match${found.length > 8 ? ", the 8 busiest shown" : ""}` : ["The busiest copies, by CPU over the latest minute", ...((d) => d.length ? [" · ", h("span", { class: "wl-bad" }, `${d.join(", ")} down`)] : [])(copies().filter((c) => c.status === "down").map((c) => c.name))]),
       node ? h("button", { class: "wl-pick-row", role: "option", onclick: () => to(null) }, h("b", {}, "this coordinator"), h("span", { class: "small muted" }, "its own process")) : null,
       list.length ? list.map((c, i) => h("button", { class: "wl-pick-row" + (i === hi ? " hi" : ""), role: "option", "aria-selected": String(i === hi), title: copyTitle(c.url), onclick: () => to(c.url), onmouseenter: () => { hi = i; for (const [k, b] of [...menuEl.querySelectorAll(".wl-pick-row[title]")].entries()) b.classList.toggle("hi", k === i); } },
         h("span", { class: "wl-pick-name" }, h("b", { class: "mono" }, c.name), h("span", { class: "small muted" }, ` shard ${c.shard}${c.role && c.role !== "standalone" ? " · " + c.role : ""}`)),
