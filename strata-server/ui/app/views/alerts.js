@@ -63,6 +63,8 @@ const METRICS = {
   query_errors: ["Failed queries (server-side)", "n", "both"],
   client_errors_s: ["Client errors (400) a second", "/s", "both"],
   timeouts_s: ["Server timeouts a second", "/s", "both"],
+  client_deadlines_s: ["Client deadlines passed a second (its own timeout_ms)", "/s", "both"],
+  cancelled_s: ["Cancelled queries a second", "/s", "both"],
   rejected_s: ["Queries refused (429) a second", "/s", "both"],
   partial_s: ["Partial answers a second", "/s", "coordinator"],
   slow_s: ["Slow queries a second", "/s", "both"],
@@ -780,8 +782,8 @@ function alertHub(page, id, r) {
     for (const p of src) {
       if (p.t < at) continue;
       const dt = p.secs || (p.interval_ms || 2000) / 1000;
-      if (p.queries != null) { q += p.queries; bad += p.query_errors || 0; cli += p.client_errors || 0; }
-      else { q += (p.qps || 0) * dt; bad += (p.errors_s || 0) * dt; cli += (p.client_errors_s ?? p.http_4xx_s ?? 0) * dt; }
+      if (p.queries != null) { q += p.queries; bad += p.query_errors || 0; cli += (p.client_errors || 0) + (p.client_deadlines || 0); }
+      else { q += (p.qps || 0) * dt; bad += (p.errors_s || 0) * dt; cli += ((p.client_errors_s ?? p.http_4xx_s ?? 0) + (p.client_deadlines_s || 0)) * dt; }
       rej += (p.rejected_s || 0) * dt;
     }
     const shards = (state.cluster?.shards || []);
