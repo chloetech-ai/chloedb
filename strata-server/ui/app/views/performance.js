@@ -10,6 +10,7 @@ import { timeChart, heatmap, SERIES, sparkline } from "../charts.js";
 import { domain, visible, setZoom } from "../data.js";
 import {
   state, link, timeRange, rangeQuery, poll, isCoord, copyName, copyTitle, copyLink, shardLink, nodeLink, statements, change, split, outcomeBar, statementLink, isOwn, containDialog, can,
+  narrow, cols, sheet,
 } from "../workload.js";
 
 export default { id: "performance", title: "Performance", icon: "perf", group: "Operate", keywords: "latency throughput heatmap findings advisor tuning cpu memory disk routes kinds percentiles slow copies fleet failures", render };
@@ -70,7 +71,7 @@ function copiesOf(c = state.cluster) {
 function render(page) {
   let stmts = null, stmtsErr = null, prev = null, prevKey = "", load = undefined, routes = null, routesErr = null, showOwnRoutes = false;
   const scope = h("p");
-  const kpis = h("div", { class: "grid g6", style: { marginBottom: "14px" } });
+  const kpis = h("div", { class: "grid g6 wl-kpis", style: { marginBottom: "14px" } });
   const findBox = h("div", { style: { marginBottom: "14px" } });
   const brush = (a, b) => setZoom(a == null ? null : [a, b]);
   const charts = [];
@@ -98,14 +99,14 @@ function render(page) {
     charts.push(qpsC);
     clear(qpsHost, qpsC);
   }
-  const hm = heatmap({ bounds: BOUNDS, domain, height: 180, interval: state.interval });
+  let hm = heatmap({ bounds: BOUNDS, domain, height: 180, interval: state.interval }), hmInterval = state.interval;
   const hmNote = h("div", { class: "small muted", style: { display: "none", padding: "40px 0", textAlign: "center" } }, "The heatmap needs the 2 s points of the last hour: pick 1 h or less in the top bar.");
   const qpsCard = card({ title: "Queries per second, by kind", sub: "stacked", body: qpsHost });
   const hmCard = card({ title: "Latency heatmap", sub: "every query by how long it took · darker is more · brush to zoom", body: [hm, hmNote] });
 
   const copiesBox = h("div");
   const slowerBox = h("div", { style: { margin: "14px 0" } });
-  const tabs = h("div", { class: "tabs", role: "tablist", style: { marginTop: "6px" } });
+  const tabs = h("div", { class: "tabs wl-tabs-scroll", role: "tablist", style: { marginTop: "6px" } });
   const tabBody = h("div");
   let tab = store.get("perf.tab2", "queries");
 
@@ -160,6 +161,8 @@ function render(page) {
     qpsChart();
     for (const c of charts) c.update(ps);
     const hasHist = ps.some((p) => p.latency_hist);
+    // Its cells are as wide as the points' interval, which changes with the range.
+    if (state.interval !== hmInterval) { const nh = heatmap({ bounds: BOUNDS, domain, height: 180, interval: state.interval }); hm.replaceWith(nh); hm = nh; hmInterval = state.interval; }
     hm.style.display = hasHist ? "" : "none"; hmNote.style.display = hasHist ? "none" : "";
     if (hasHist) hm.update(ps);
     drawScope();
@@ -324,12 +327,13 @@ function render(page) {
     const order = { bad: 0, warn: 1, info: 2 };
     out.sort((a, b) => order[a.level] - order[b.level]);
 
-    const sub = `${fmt.plural(out.length, "finding")} · ${r.label} · read: ${read.join(", ") || "nothing"}${missing.length ? ` · could not read: ${missing.join(", ")}` : ""}`;
+    const sub = `${fmt.plural(out.length, "finding")} · ${r.label}`;
+    const readLine = h("div", { class: "small muted", style: { marginBottom: "10px" } }, `Read: ${read.join(", ") || "nothing"}.`, missing.length ? h("span", { class: "wl-bad" }, ` Could not read: ${missing.join(", ")}.`) : "", narrow() ? "" : " Each finding says which rule fired on which numbers.");
     let bodyEl;
     if (out.length) bodyEl = h("div", { class: "grid g2" }, out.map(findingEl));
     else if (missing.length || !ps.length) bodyEl = h("div", { class: "row nw", style: { gap: "10px" } }, icon("info"), h("span", {}, `Nothing found in what could be read, but ${missing.join(" and ") || "the series"} could not be read: this is not an all-clear.`));
     else bodyEl = h("div", { class: "row nw", style: { gap: "10px" } }, h("span", { style: { color: "var(--good)" } }, icon("okc")), h("span", {}, `Nothing needs attention over the ${r.label.replace(/^last /, "last ")}. Checked: ${checked.join(", ")}.`));
-    clear(findBox, card({ title: "What needs attention", sub, tools: h("span", { class: "small muted" }, "each says which rule fired on which numbers"), body: bodyEl }));
+    clear(findBox, card({ title: "What needs attention", sub, body: [readLine, bodyEl] }));
   }
   /** When a copy's p99 went over 5× the median, from /v1/load. */
   function copySince(c) {
@@ -361,7 +365,7 @@ function render(page) {
     const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", style: { width: "100%", height: H + "px", display: "block", cursor: "pointer" }, role: "img", "aria-label": "every copy's p99, slowest first" });
     cs.forEach((c, i) => {
       const bad = c.p99 > 5 * med && c.p99 > 30, warn = c.p99 > 3 * med && c.p99 > 20;
-      const r = s("rect", { x: i * bw, y: y(c.p99), width: Math.max(0.6, bw - (cs.length > 200 ? 0 : 1)), height: H - 4 - y(c.p99), fill: bad ? "var(--crit)" : warn ? "var(--warn)" : "var(--s1)", opacity: bad || warn ? 1 : 0.7 });
+      const r = s("rect", { x: i * bw, y: y(c.p99), width: Math.max(bad || warn ? 6 : 0.6, bw - (cs.length > 200 ? 0 : 1)), height: H - 4 - y(c.p99), fill: bad ? "var(--crit)" : warn ? "var(--warn)" : "var(--s1)", opacity: bad || warn ? 1 : 0.7 });
       r.append(s("title", {}, `${copyName(c.url)} · shard ${c.shard} · p99 ${fmt.ms(c.p99)}\n${c.url}`));
       r.onclick = () => { location.hash = copyLink(c.url); };
       svg.append(r);
@@ -378,31 +382,31 @@ function render(page) {
     const list = stmts.statements.filter((x) => !isOwn(x));
     if (!stmts.windowed) {
       const top = list.slice().sort((a, b) => (b.total_ms || 0) - (a.total_ms || 0)).slice(0, 6);
-      clear(slowerBox, card({ title: "Where the time goes", sub: "statements by share of query time · since the server started: a newer server compares each with the window before", flush: true, body: table([
-        { key: "sql", label: "statement", render: (x) => h("a", { class: "mono small ellipsis wl-link", style: { display: "block", maxWidth: "640px" }, href: statementLink(x.fingerprint), title: x.sql }, x.sql) },
+      clear(slowerBox, card({ title: "Where the time goes", sub: "statements by share of query time · since the server started: a newer server compares each with the window before", flush: true, body: table(cols([
+        { key: "sql", label: "statement", render: (x) => h("a", { class: "mono small ellipsis wl-link", style: { display: "block", maxWidth: narrow() ? "210px" : "640px" }, href: statementLink(x.fingerprint), title: x.sql }, x.sql) },
         { key: "share", label: "share of time", num: true, render: (x) => fmt.pct(x.share || 0, 0) },
-        { key: "calls", label: "calls", num: true, render: (x) => fmt.n(x.calls) },
+        { key: "calls", label: "calls", num: true, wide: true, render: (x) => fmt.n(x.calls) },
         { key: "p99_ms", label: "p99", num: true, render: (x) => fmt.ms(x.p99_ms) },
-        { key: "fail", label: "failed", num: true, sort: (x) => split(x.outcomes, x.calls).failed, render: (x) => outcomeBar(x.outcomes, 70) },
-      ], { rows: top, sortKey: "share", desc: true, compact: true, onRow: (x) => { location.hash = statementLink(x.fingerprint); } }) }));
+        { key: "fail", label: "failed", num: true, wide: true, sort: (x) => split(x.outcomes, x.calls).failed, render: (x) => outcomeBar(x.outcomes, 70) },
+      ]), { rows: top, sortKey: "share", desc: true, compact: true, onRow: (x) => { location.hash = statementLink(x.fingerprint); } }) }));
       return;
     }
     const rows = list.map((x) => ({ x, c: change(x) })).filter((y) => y.c && y.c.p99X >= 1.3 && y.x.p99_ms - y.x.prev.p99_ms > 2).sort((a, b) => (b.x.p99_ms - b.x.prev.p99_ms) - (a.x.p99_ms - a.x.prev.p99_ms)).slice(0, 8);
-    clear(slowerBox, card({ title: "What got slower", sub: `statements by change of p99 against the window before · ${r.label}`, flush: true, body: rows.length ? table([
-      { key: "sql", label: "statement", render: (y) => h("span", { class: "mono small ellipsis", style: { display: "block", maxWidth: "560px" }, title: y.x.sql }, y.x.sql) },
+    clear(slowerBox, card({ title: "What got slower", sub: `statements by change of p99 against the window before · ${r.label}`, flush: true, body: rows.length ? table(cols([
+      { key: "sql", label: "statement", render: (y) => h("span", { class: "mono small ellipsis", style: { display: "block", maxWidth: narrow() ? "170px" : "560px" }, title: y.x.sql }, y.x.sql) },
       { key: "now", label: "p99 now", num: true, sort: (y) => y.x.p99_ms, render: (y) => h("b", { class: y.c.p99X >= 2 ? "wl-bad" : "" }, fmt.ms(y.x.p99_ms)) },
-      { key: "before", label: "before", num: true, sort: (y) => y.x.prev.p99_ms, render: (y) => h("span", { class: "muted" }, fmt.ms(y.x.prev.p99_ms)) },
+      { key: "before", label: "before", num: true, wide: true, sort: (y) => y.x.prev.p99_ms, render: (y) => h("span", { class: "muted" }, fmt.ms(y.x.prev.p99_ms)) },
       { key: "d", label: "change", num: true, sort: (y) => y.x.p99_ms - y.x.prev.p99_ms, render: (y) => "+" + fmt.ms(y.x.p99_ms - y.x.prev.p99_ms) },
-      { key: "calls", label: "calls/s", num: true, sort: (y) => y.x.calls, render: (y) => h("span", { title: `${fmt.n(y.x.calls)} calls; ${fmt.n(y.x.prev.calls)} the window before` }, fmt.si(y.x.calls / secs)) },
-      { key: "fail", label: "failed", num: true, sort: (y) => split(y.x.outcomes, y.x.calls).failed, render: (y) => outcomeBar(y.x.outcomes, 60) },
-      { key: "verdict", label: "", sortable: false, render: (y) => h("span", { class: "small muted" }, y.c.verdict || "") },
-    ], { rows, sortKey: "d", desc: true, compact: true, onRow: (y) => { location.hash = statementLink(y.x.fingerprint); } }) : h("div", { class: "small muted", style: { padding: "12px" } }, `No statement's p99 rose by a third or more against the window before (${fmt.plural(list.length, "statement")} compared).`) }));
+      { key: "calls", label: "calls/s", num: true, wide: true, sort: (y) => y.x.calls, render: (y) => h("span", { title: `${fmt.n(y.x.calls)} calls; ${fmt.n(y.x.prev.calls)} the window before` }, fmt.si(y.x.calls / secs)) },
+      { key: "fail", label: "failed", num: true, wide: true, sort: (y) => split(y.x.outcomes, y.x.calls).failed, render: (y) => outcomeBar(y.x.outcomes, 60) },
+      { key: "verdict", label: "", sortable: false, wide: true, render: (y) => h("span", { class: "small muted" }, y.c.verdict || "") },
+    ]), { rows, sortKey: "d", desc: true, compact: true, onRow: (y) => { location.hash = statementLink(y.x.fingerprint); } }) : h("div", { class: "small muted", style: { padding: "12px" } }, `No statement's p99 rose by a third or more against the window before (${fmt.plural(list.length, "statement")} compared).`) }));
   }
 
   // ------------------------------------------------ the tabs below
   function drawTabs() {
     clear(tabs, TABS.map(([k, v]) => h("button", { role: "tab", "aria-selected": String(k === tab), onclick: () => { tab = k; store.set("perf.tab2", k); drawTabs(); drawTab(); if (k === "queries") loadRoutes(); } }, v)),
-      h("span", { class: "sep" }), h("span", { class: "small muted", style: { alignSelf: "center" } }, isCoord() ? "Writes and Resources are this coordinator's; Storage and Replication list every copy" : "This server"));
+      narrow() ? null : [h("span", { class: "sep" }), h("span", { class: "small muted", style: { alignSelf: "center" } }, isCoord() ? "Writes and Resources are this coordinator's; Storage and Replication list every copy" : "This server")]);
   }
   const sub = [];
   function drawTab() {
@@ -470,15 +474,20 @@ function render(page) {
       SC("Replicas in sync", null, { series: [{ name: "in sync", get: (p) => p.replicas_in_sync, color: SERIES[2] }, { name: "out of sync", get: (p) => p.replicas_out_of_sync, color: "var(--crit)" }] })));
   }
   /** A table of copies sorted by a figure, the top N shown. */
-  function copyTable(title, sub_, by, cols, n = 12, keep = () => true) {
+  function copyTable(title, sub_, by, colsOf, n = 12, keep = () => true) {
     const cs = copiesOf().filter(keep).filter((c) => by(c) != null).sort((a, b) => by(b) - by(a));
     const shown = cs.slice(0, n);
-    return card({ title, sub: sub_, flush: true, body: [table([
+    const acts = (c) => [h("a", { class: "btn sm", href: copyLink(c.url) }, "Open"), h("a", { class: "btn sm", href: nodeLink(c.url) }, "Profile")];
+    // On a phone: the copy and the first figure; a tap opens the rest.
+    const nar = narrow();
+    const shownCols = nar ? colsOf.slice(0, 1) : colsOf;
+    const onRow = nar ? (c) => sheet(`Copy ${copyName(c.url)}`, [["shard", c.shard], ...colsOf.map((x) => [x.label, x.render(c)]), ["address", h("span", { class: "mono small" }, c.url)]], acts(c)) : null;
+    return card({ title, sub: sub_ + (nar ? " · tap one for the rest" : ""), flush: true, body: [table(cols([
       { key: "copy", label: "copy", sort: (c) => c.shard * 10 + c.j, render: (c) => h("a", { class: "mono wl-link", href: copyLink(c.url), title: copyTitle(c.url) }, copyName(c.url)) },
       { key: "shard", label: "shard", num: true },
-      ...cols,
-      { key: "act", label: "", sortable: false, render: (c) => h("div", { class: "row nw", style: { gap: "4px" } }, h("a", { class: "btn sm", href: copyLink(c.url) }, "Open"), h("a", { class: "btn sm", href: nodeLink(c.url) }, "Profile")) },
-    ], { rows: shown, compact: true, empty: h("div", { class: "small muted" }, "No copy sent this figure.") }),
+      ...shownCols,
+      { key: "act", label: "", sortable: false, wide: true, render: (c) => h("div", { class: "row nw", style: { gap: "4px" } }, acts(c)) },
+    ]), { rows: shown, compact: true, onRow, empty: h("div", { class: "small muted" }, "No copy sent this figure.") }),
     cs.length > n ? h("div", { class: "small muted", style: { padding: "8px 12px" } }, `${fmt.plural(cs.length - n, "more copy", "more copies")}: `, h("a", { class: "wl-link", href: link("cluster") }, "all of them in Cluster")) : null] });
   }
 
@@ -492,21 +501,21 @@ function render(page) {
     const bar = (v, max, color) => h("div", { class: "row nw", style: { gap: "8px" } }, h("div", { class: "barbox" }, h("div", { class: "bar", style: { width: (max ? v / max * 100 : 0) + "%", background: color } })), h("span", { class: "num" }, fmt.ms(v)));
     const ownN = ownR.reduce((a, r) => a + r.requests, 0);
     return h("div", { class: "grid g2" },
-      card({ title: "Queries by plan kind", sub: `${isCoord() ? "this coordinator" : "this server"} · since it started`, flush: true, body: table([
+      card({ title: "Queries by plan kind", sub: `${isCoord() ? "this coordinator" : "this server"} · since it started`, flush: true, body: table(cols([
         { key: "kind", label: "kind", render: (k) => h("span", { class: "badge mono" }, k.kind) },
         { key: "queries", label: "queries", num: true, render: (k) => fmt.n(k.queries) },
-        { key: "outcomes", label: "outcomes", sort: (k) => split(k.outcomes, k.queries).failed / Math.max(1, k.queries), render: (k) => k.outcomes ? outcomeBar(k.outcomes, 80) : "–" },
-        { key: "p50_ms", label: "p50", num: true, render: (k) => fmt.ms(k.p50_ms) },
-        { key: "p99_ms", label: "p99", render: (k, i) => bar(k.p99_ms, maxK, SERIES[0]) },
-        { key: "hist", label: "latency", sortable: false, render: (k) => k.hist ? sparkline(k.hist, { width: 100, height: 22, color: SERIES[0], cls: "" }) : "" },
-      ], { rows: kinds, sortKey: "queries", desc: true, compact: true }) }),
-      card({ title: "HTTP routes", sub: `${isCoord() ? "this coordinator" : "this server"} · since it started${routes.admission_p99_ms != null ? ` · waiting for a slot: p99 ${fmt.ms(routes.admission_p99_ms)}` : ""}`, flush: true, body: [table([
+        { key: "outcomes", label: "outcomes", wide: true, sort: (k) => split(k.outcomes, k.queries).failed / Math.max(1, k.queries), render: (k) => k.outcomes ? outcomeBar(k.outcomes, 80) : "–" },
+        { key: "p50_ms", label: "p50", num: true, wide: true, render: (k) => fmt.ms(k.p50_ms) },
+        { key: "p99_ms", label: "p99", render: (k) => narrow() ? fmt.ms(k.p99_ms) : bar(k.p99_ms, maxK, SERIES[0]) },
+        { key: "hist", label: "latency", sortable: false, wide: true, render: (k) => k.hist ? sparkline(k.hist, { width: 100, height: 22, color: SERIES[0], cls: "" }) : "" },
+      ]), { rows: kinds, sortKey: "queries", desc: true, compact: true }) }),
+      card({ title: "HTTP routes", sub: `${isCoord() ? "this coordinator" : "this server"} · since it started${routes.admission_p99_ms != null ? ` · waiting for a slot: p99 ${fmt.ms(routes.admission_p99_ms)}` : ""}`, flush: true, body: [table(cols([
         { key: "route", label: "route", render: (r) => h("span", { class: "mono small" }, r.route) },
         { key: "requests", label: "requests", num: true, render: (r) => fmt.n(r.requests) },
-        { key: "client_errors", label: "4xx", num: true, render: (r) => fmt.n(r.client_errors) },
+        { key: "client_errors", label: "4xx", num: true, wide: true, render: (r) => fmt.n(r.client_errors) },
         { key: "server_errors", label: "5xx", num: true, render: (r) => r.server_errors ? h("span", { class: "wl-bad" }, fmt.n(r.server_errors)) : "0" },
-        { key: "p99_ms", label: "p99", render: (r) => bar(r.p99_ms, maxR, SERIES[0]) },
-      ], { rows: rs, sortKey: "requests", desc: true, compact: true, maxHeight: "360px" }),
+        { key: "p99_ms", label: "p99", render: (r) => narrow() ? fmt.ms(r.p99_ms) : bar(r.p99_ms, maxR, SERIES[0]) },
+      ]), { rows: rs, sortKey: "requests", desc: true, compact: true, maxHeight: "360px" }),
       ownR.length ? h("div", { class: "small muted", style: { padding: "8px 12px" } }, showOwnRoutes ? "Showing the routes the command center reads. " : `Left out: ${fmt.n(ownN)} requests to ${fmt.plural(ownR.length, "route")} the command center reads (and health probes). `, h("a", { class: "wl-link", href: "#", onclick: (e) => { e.preventDefault(); showOwnRoutes = !showOwnRoutes; drawTab(); } }, showOwnRoutes ? "Leave them out" : "Show them")) : null] }));
   }
 
@@ -515,7 +524,7 @@ function render(page) {
   draw();
   loadStmts(); loadPrev(); loadLoad(); if (tab === "queries") loadRoutes();
   const onRange = () => { kindsKey = ""; draw(); loadStmts(); loadPrev(); loadLoad(); };
-  const offs = [bus.on("points", draw), bus.on("range", onRange), bus.on("theme", draw), bus.on("cluster", draw), bus.on("fleet", draw), bus.on("system", draw),
+  const offs = [bus.on("points", draw), bus.on("range", onRange), bus.on("narrow", () => { drawTabs(); drawTab(); draw(); }), bus.on("theme", draw), bus.on("cluster", draw), bus.on("fleet", draw), bus.on("system", draw),
     poll(15000, loadStmts), poll(60000, loadLoad), poll(15000, () => tab === "queries" ? loadRoutes() : null), poll(60000, loadPrev)];
   return () => offs.forEach((f) => f());
 }

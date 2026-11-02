@@ -68,6 +68,21 @@ export const rangeQuery = (r = timeRange()) => `from=${Math.round(r.from)}&to=${
 /** True on a coordinator. */
 export const isCoord = () => (data.isCoordinator ? data.isCoordinator() : state.health?.role === "coordinator");
 
+/** True on a narrow screen (a phone): tables keep their key columns and the rest opens in a sheet. */
+export function narrow() {
+  if (core.isNarrow) { try { return !!core.isNarrow(); } catch { /* the fallback */ } }
+  return typeof matchMedia === "function" && matchMedia("(max-width: 900px)").matches;
+}
+// The shell emits "narrow" when the width crosses 900 px; until it does, so does this.
+if (!core.isNarrow && typeof matchMedia === "function") { const mq = matchMedia("(max-width: 900px)"); mq.addEventListener?.("change", () => core.bus.emit("narrow", mq.matches)); }
+/** The columns a table shows: on a narrow screen, those not marked `wide`. */
+export const cols = (list) => list.filter((c) => c && !(c.wide && narrow()));
+/** A sheet with every field of a row and its actions (a full-screen sheet on a phone). */
+export function sheet(title, rows, actions = [], sub) {
+  return drawer({ title, sub, body: h("dl", { class: "kv wl-sheet" }, rows.filter((r) => r && r[1] != null && r[1] !== "").flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])),
+    foot: actions.filter(Boolean).length ? h("div", { class: "row", style: { gap: "6px", flexWrap: "wrap" } }, actions.filter(Boolean)) : null });
+}
+
 /** Repeats `f` while the view is shown, skipping while paused. */
 export function poll(ms, f) {
   return core.every(ms, async () => { if (!paused()) await f(); });
@@ -133,7 +148,7 @@ export function whoChips(q) {
   if (q.app) out.push(h("span", { class: "badge", title: "the app (x-strata-app, or the user agent's product)" }, q.app));
   if (q.addr) out.push(h("span", { class: "badge mono", title: "the client's address" }, q.addr));
   if (q.client === "command-center") out.push(h("span", { class: "badge accent", title: "sent by the command center itself" }, "command center"));
-  return out.length ? h("span", { class: "row nw", style: { gap: "4px" } }, out) : h("span", { class: "muted", title: "This server does not record who sent a query" }, "–");
+  return out.length ? h("span", { class: "row", style: { gap: "4px", flexWrap: "wrap" } }, out) : h("span", { class: "muted", title: "This server does not record who sent a query" }, "–");
 }
 
 /** The command center's own queries (its polling, Query path, Profiler runs). */
@@ -457,7 +472,7 @@ export function queryDrawer(q) {
     ["who", whoChips(q)],
     params ? ["params", h("span", { class: "mono small" }, JSON.stringify(params))] : q.params === undefined ? null : ["params", h("span", { class: "muted" }, "none")],
     ["deadline", deadlineText(q)],
-    ["outcome", h("span", { class: "row nw" }, outcomePill(q.outcome), h("span", { class: "small dim" }, o.says))],
+    ["outcome", h("span", { class: "row", style: { gap: "6px", flexWrap: "wrap" } }, outcomePill(q.outcome), h("span", { class: "small dim" }, o.says))],
     q.node ? ["server", h("span", { class: "mono" }, q.node)] : null,
     ["statement", h("a", { href: statementLink(fp), onclick: close, class: "wl-link mono small", title: fp }, `${shortFp(fp)} › its page`)],
     ["request id", q.request_id ? h("span", { class: "row nw" }, h("span", { class: "mono" }, q.request_id), h("button", { class: "btn ghost icon sm", title: "Copy", onclick: () => copy(q.request_id) }, icon("copy")), h("a", { class: "btn ghost sm", href: link("logs", { request: q.request_id }), onclick: close }, "Its logs", icon("right"))) : "–"],
@@ -472,7 +487,7 @@ export function queryDrawer(q) {
         h("a", { class: "btn sm", href: workbenchLink(q.sql, params), title: "Open it in the SQL workbench, with its parameters", onclick: close }, icon("play"), "Open in the workbench"))),
       sqlBlock(q.sql),
       q.error ? h("div", { class: o.server ? "error" : "notice" }, q.error) : null,
-      h("dl", { class: "kv" }, kv.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])),
+      h("dl", { class: "kv wl-kv" }, kv.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])),
       card({ title: "Trace", sub: "where the time went", body: traceSummary(q, { onNav: close }) }),
       kept || fetch ? card({ title: "Profile", sub: q.cpu_ms != null ? `every step it took, with its CPU time (${fmt.ms(q.cpu_ms)})` : "every step it took", body: prof }) : null,
       q.request_id ? card({ title: "Everything this request ran", body: same }) : null,
@@ -497,7 +512,7 @@ export function liveDrawer(q, { onCancel } = {}) {
     title: `Query ${q.id}`, sub: `running for ${fmt.ms(q.elapsed_ms)}${q.node ? " on " + q.node : ""}`, wide: true,
     body: [
       sqlBlock(q.sql),
-      h("dl", { class: "kv" }, [
+      h("dl", { class: "kv wl-kv" }, [
         ["who", whoChips(q)],
         ["params", params ? h("span", { class: "mono small" }, JSON.stringify(params)) : h("span", { class: "muted" }, "none")],
         ["deadline", deadlineText(q)],
@@ -532,7 +547,7 @@ export function cancelDialog({ sql, queries, key }) {
     const oneKey = keys.length === 1 && keys[0][0] ? keys[0][0] : key || null;
     const refuse = h("input", { type: "checkbox" });
     let minutes = 15;
-    const minSel = h("select", { class: "select sm", onchange: () => { minutes = +minSel.value; } }, MINUTES.map(([v, l]) => h("option", { value: v }, l)));
+    const minSel = h("select", { class: "select sm", style: { minWidth: "84px" }, "aria-label": "for how long", onchange: () => { minutes = +minSel.value; } }, MINUTES.map(([v, l]) => h("option", { value: v }, l)));
     const ok = h("button", { class: "btn danger solid", disabled: true }, n === 1 ? "Cancel the query" : `Cancel ${fmt.n(n)} queries`);
     const keep = h("button", { class: "btn" }, n === 1 ? "Keep it running" : "Keep them running");
     reason.oninput = () => { ok.disabled = !reason.value.trim(); };
@@ -541,7 +556,7 @@ export function cancelDialog({ sql, queries, key }) {
       title: n === 1 ? "Cancel this running query?" : `Cancel ${fmt.n(n)} running queries of one statement?`,
       body: [
         sqlBlock(sql),
-        h("dl", { class: "kv" },
+        h("dl", { class: "kv wl-kv" },
           h("dt", {}, "Which"), h("dd", {}, `${fmt.plural(n, "query", "queries")}${vias.length && vias[0][0] ? ": " + vias.map(([v, c]) => `${c} on ${v}`).join(", ") : ""} · running ${fmt.ms(el[0])}${n > 1 ? ` to ${fmt.ms(el[el.length - 1])}` : ""}${mem ? ` · holding ${fmt.bytes(mem)} of query memory` : ""}`),
           h("dt", {}, "Who sent them"), h("dd", {}, keys.some(([k]) => k) ? keys.map(([k, c], i) => [i ? ", " : "", k ? ["API key ", h("b", { class: "mono" }, k)] : "no key", keys.length > 1 ? ` (${c})` : ""]) : h("span", { class: "muted" }, "unknown: this server does not record the key")),
           h("dt", {}, "What they get"), h("dd", {}, "HTTP 499 ", h("span", { class: "mono" }, "cancelled by an operator"), ". A client that retries sends them again.")),
@@ -626,7 +641,7 @@ export function containDialog({ fingerprint, sql, key, keys, onDone } = {}) {
       radio("act", action === "refuse", () => { action = "refuse"; draw(); }, h("span", {}, h("b", {}, "Refuse it"), h("div", { class: "small muted" }, "every new run answers 429 naming this rule and your reason; running ones finish"))));
     const k = keyIn.value.trim();
     clear(scopes, h("div", { class: "row", style: { gap: "10px" } },
-      fingerprint ? seg([["statement", "this statement, every key"], ["both", "this statement from one key"], ["key", "everything from one key"]], scope, (v) => { scope = v; draw(); }) : h("span", { class: "small dim" }, "Everything from the key"),
+      fingerprint ? seg([["statement", "this statement, every key"], ["both", "this statement from one key"], ["key", "everything from one key"]], scope, (v) => { scope = v; draw(); }, { class: "seg wl-segwrap" }) : h("span", { class: "small dim" }, "Everything from the key"),
       scope !== "statement" ? keyIn : null),
       keys?.length && scope !== "statement" ? h("div", { class: "row small", style: { gap: "6px", marginTop: "6px" } }, h("span", { class: "muted" }, "Its keys:"), keys.slice(0, 6).map((x) => h("button", { class: "chip", "aria-pressed": String(x.key === k), onclick: () => { keyIn.value = x.key; draw(); } }, `${x.key} ${fmt.pct(x.share ?? 0, 0)}`))) : null);
     const who = scope === "statement" ? "every client that sends this statement" : scope === "both" ? `key ${k || "…"} when it sends this statement; other keys keep running it` : `everything key ${k || "…"} sends`;

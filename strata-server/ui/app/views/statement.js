@@ -12,6 +12,7 @@ import { firingAlerts } from "../data.js";
 import {
   state, link, when, can, timeRange, rangeQuery, poll, isCoord, copyName, copyTitle, outcomeOf, outcomePill, outcomeBar, split, paramsText, paramsObj,
   shortFp, statementDetail, change, queryDrawer, askCancel, containDialog, workbenchLink, profileLink, nodeLink, copyLink, shardLink, ask, objects, msOf, parseJson, hasLogStore,
+  narrow, cols, sheet,
 } from "../workload.js";
 
 export default { id: "statement", title: "Statement", icon: "queries", group: "Operate", parent: "queries", hidden: true, nav: false, keywords: "statement fingerprint shape", render, onParams };
@@ -81,7 +82,7 @@ export function render(page, r) {
     // The figures, against the window before.
     const prev = st?.prev;
     const was = (now, then, f = fmt.ms) => then == null ? null : `was ${f(then)}`;
-    const kpis = h("div", { class: "grid g6", style: { marginBottom: "14px" } },
+    const kpis = h("div", { class: "grid g6 wl-kpis", style: { marginBottom: "14px" } },
       kpi("Calls", st ? [fmt.si(st.calls / secs), h("small", {}, "/s")] : "–", prev?.calls ? `${pctChange(st.calls, prev.calls)} vs before` : `${fmt.n(st?.calls)} ${sinceStart ? "since the server started" : "in the range"}`),
       kpi("p50", st ? fmtMs(st.p50_ms) : "–", was(st?.p50_ms, prev?.p50_ms)),
       kpi("p99", st ? fmtMs(st.p99_ms) : "–", was(st?.p99_ms, prev?.p99_ms), c?.p99X >= 2 ? "bad" : null),
@@ -114,14 +115,14 @@ export function render(page, r) {
       help.length ? [h("div", { class: "small", style: { fontWeight: 600, margin: "12px 0 6px" } }, "What would help"), h("div", { class: "row", style: { gap: "6px" } }, help)] : null] });
 
     clear(body, kpis,
-      h("div", { class: "grid", style: { gridTemplateColumns: "minmax(0,1.35fr) minmax(0,1fr)", marginBottom: "14px" } }, trendCard, whyCard),
-      whereCard(st, d), h("div", { class: "grid", style: { gridTemplateColumns: "minmax(0,0.8fr) minmax(0,1.2fr)", margin: "14px 0" } }, whoCard(st, d, secs), slowestCard(d, sql)),
+      h("div", { class: "wl-two", style: { marginBottom: "14px" } }, trendCard, whyCard),
+      whereCard(st, d), h("div", { class: "wl-two-b", style: { margin: "14px 0" } }, whoCard(st, d, secs), slowestCard(d, sql)),
       d.errors?.length ? errorsCard(d) : null,
       aroundCard(range, evs, () => { lat.update(d.trend || []); callsC.update(d.trend || []); trendCard.querySelector(".wl-evline").textContent = evs.length ? `${fmt.plural(evs.length, "event")} in the range: the dotted lines` : ""; }));
   }
   reroute = (r2) => { const nfp = fpOf(r2); if (nfp && nfp !== fp) { fp = nfp; d = null; draw(); load(); } };
   draw();
-  offs.push(poll(15000, load), bus.on("range", load));
+  offs.push(poll(15000, load), bus.on("range", load), bus.on("narrow", draw));
   return () => { offs.forEach((f) => f()); reroute = null; };
 }
 
@@ -216,22 +217,27 @@ function whereCard(st, d) {
   const top = bs.slice(0, 6), rest = bs.slice(6);
   const med = (xs, f) => { const v = xs.map(f).filter((x) => x != null).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : null; };
   const rows = top.map((x) => ({ ...x, cp: x.copy ? copyOf(x.copy) : null }));
-  const t = table([
+  const acts = (x) => [
+      h("a", { class: "btn sm", href: x.copy ? copyLink(x.copy) : shardLink(x.shard) }, "Open"),
+      x.copy ? h("a", { class: "btn sm", href: nodeLink(x.copy) }, "Profile") : null,
+      h("a", { class: "btn sm", href: link("logs", { node: x.copy ? copyName(x.copy) : null, q: x.copy ? null : `shard ${x.shard}` }) }, "Logs")];
+  const onRow = narrow() ? (x) => sheet(x.copy ? `Shard ${x.shard}, copy ${copyName(x.copy)}` : `Shard ${x.shard}`, [
+    ["p99", fmt.ms(x.p99_ms)], ["calls", fmt.n(x.calls)], ["last in the fan-out", x.last_share != null ? `${fmt.pct(x.last_share, 0)} of the calls` : null], ["failed", fmt.n(x.errors || 0)],
+    ["CPU", x.cp?.detail?.minute?.busy != null ? fmt.pct(x.cp.detail.minute.busy, 0) : null], ["segments", x.cp?.detail?.load?.segments], ["disk", x.cp?.detail?.load?.disk_used_ratio != null ? fmt.pct(x.cp.detail.load.disk_used_ratio, 0) : null],
+    ["copy", x.copy ? h("span", { class: "mono small" }, x.copy) : "every copy"]], acts(x)) : null;
+  const t = table(cols([
     { key: "shard", label: "shard", num: true },
     { key: "copy", label: "copy", render: (x) => x.copy ? h("span", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "mono", title: copyTitle(x.copy) }, copyName(x.copy)), x.cp?.role ? h("span", { class: "badge" }, x.cp.role) : null) : h("span", { class: "muted" }, "every copy") },
     { key: "p99_ms", label: "p99", num: true, render: (x) => h("b", { class: x.p99_ms > 3 * med(bs, (y) => y.p99_ms) && x.p99_ms > 20 ? "wl-bad" : "" }, fmt.ms(x.p99_ms)) },
-    { key: "calls", label: "calls", num: true, render: (x) => fmt.si(x.calls) },
-    { key: "last_share", label: "last in fan-out", num: true, render: (x) => x.last_share != null ? fmt.pct(x.last_share, 0) : "–" },
-    { key: "errors", label: "failed", num: true, render: (x) => x.errors ? h("span", { class: "wl-bad" }, fmt.n(x.errors)) : "0" },
-    { key: "cpu", label: "CPU", num: true, sort: (x) => x.cp?.detail?.minute?.busy, render: (x) => x.cp?.detail?.minute?.busy != null ? fmt.pct(x.cp.detail.minute.busy, 0) : "–" },
-    { key: "segments", label: "segments", num: true, sort: (x) => x.cp?.detail?.load?.segments, render: (x) => x.cp?.detail?.load?.segments ?? x.cp?.segments ?? "–" },
-    { key: "disk", label: "disk", num: true, sort: (x) => x.cp?.detail?.load?.disk_used_ratio, render: (x) => { const v = x.cp?.detail?.load?.disk_used_ratio; return v != null ? h("span", { class: v > 0.95 ? "wl-bad" : "" }, fmt.pct(v, 0)) : "–"; } },
-    { key: "act", label: "", sortable: false, render: (x) => h("div", { class: "row nw", style: { gap: "4px" } },
-      h("a", { class: "btn sm", href: x.copy ? copyLink(x.copy) : shardLink(x.shard) }, "Open"),
-      x.copy ? h("a", { class: "btn sm", href: nodeLink(x.copy) }, "Profile") : null,
-      h("a", { class: "btn sm", href: link("logs", { node: x.copy ? copyName(x.copy) : null, q: x.copy ? null : `shard ${x.shard}` }) }, "Logs")) },
-  ], { rows, sortKey: null, compact: true });
-  return card({ title: "Where: by shard and copy", sub: "the shards this statement waited on, the slowest first", flush: true, body: [t,
+    { key: "calls", label: "calls", num: true, wide: true, render: (x) => fmt.si(x.calls) },
+    { key: "last_share", label: "last in fan-out", num: true, wide: true, render: (x) => x.last_share != null ? fmt.pct(x.last_share, 0) : "–" },
+    { key: "errors", label: "failed", num: true, wide: true, render: (x) => x.errors ? h("span", { class: "wl-bad" }, fmt.n(x.errors)) : "0" },
+    { key: "cpu", label: "CPU", num: true, wide: true, sort: (x) => x.cp?.detail?.minute?.busy, render: (x) => x.cp?.detail?.minute?.busy != null ? fmt.pct(x.cp.detail.minute.busy, 0) : "–" },
+    { key: "segments", label: "segments", num: true, wide: true, sort: (x) => x.cp?.detail?.load?.segments, render: (x) => x.cp?.detail?.load?.segments ?? x.cp?.segments ?? "–" },
+    { key: "disk", label: "disk", num: true, wide: true, sort: (x) => x.cp?.detail?.load?.disk_used_ratio, render: (x) => { const v = x.cp?.detail?.load?.disk_used_ratio; return v != null ? h("span", { class: v > 0.95 ? "wl-bad" : "" }, fmt.pct(v, 0)) : "–"; } },
+    { key: "act", label: "", sortable: false, wide: true, render: (x) => h("div", { class: "row nw", style: { gap: "4px" } }, acts(x)) },
+  ]), { rows, sortKey: null, compact: true, onRow });
+  return card({ title: "Where: by shard and copy", sub: `the shards this statement waited on, the slowest first${narrow() ? " · tap one for the rest" : ""}`, flush: true, body: [t,
     rest.length ? h("div", { class: "small muted", style: { padding: "8px 12px" } }, `${fmt.plural(rest.length, "other shard")}: p99 ${fmt.ms(med(rest, (y) => y.p99_ms))} (median), slowest ${fmt.ms(rest[0].p99_ms)}`) : null] });
 }
 
@@ -239,14 +245,17 @@ function whoCard(st, d, secs) {
   const ks = d.by_key?.length ? d.by_key : st?.keys || [];
   if (!ks.length) return card({ title: "Who sends it", sub: "by API key", body: h("div", { class: "small muted" }, "This server does not record who sent a query. A newer one keeps the key, the app and the address of each.") });
   const tot = ks.reduce((a, k) => a + (k.calls || 0), 0) || 1;
-  return card({ title: "Who sends it", sub: "by API key", flush: true, body: table([
+  const containK = (k) => containDialog({ fingerprint: st?.fingerprint, sql: st?.sql, key: k.key, keys: ks.map((x) => ({ key: x.key, share: x.calls / tot })) });
+  const onRow = narrow() ? (k) => sheet(`Key ${k.key}`, [["share", fmt.pct(k.calls / tot, 0)], ["calls/s", fmt.si(k.calls / secs)], ["p99", fmt.ms(k.p99_ms)], ["failed", k.errors ? fmt.pct(k.errors / Math.max(1, k.calls), 1) : "0"]],
+    [h("a", { class: "btn sm", href: link("queries", { tab: "history", key: k.key }) }, "Its queries"), can("admin") ? h("button", { class: "btn sm", onclick: () => containK(k) }, "Contain…") : null]) : null;
+  return card({ title: "Who sends it", sub: "by API key", flush: true, body: table(cols([
     { key: "key", label: "key", render: (k) => h("a", { class: "mono wl-link", href: link("queries", { tab: "history", key: k.key }) }, k.key) },
     { key: "calls", label: "share", num: true, render: (k) => fmt.pct(k.calls / tot, 0) },
     { key: "rate", label: "calls/s", num: true, sort: (k) => k.calls, render: (k) => fmt.si(k.calls / secs) },
-    { key: "p99_ms", label: "p99", num: true, render: (k) => fmt.ms(k.p99_ms) },
-    { key: "errors", label: "failed", num: true, title: "Every outcome but ok: server errors, client errors and deadlines", render: (k) => k.errors ? fmt.pct(k.errors / Math.max(1, k.calls), 1) : "0" },
-    { key: "act", label: "", sortable: false, render: (k) => can("admin") ? h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: st?.fingerprint, sql: st?.sql, key: k.key, keys: ks.map((x) => ({ key: x.key, share: x.calls / tot })) }) }, "Contain…") : null },
-  ], { rows: ks, sortKey: "calls", desc: true, compact: true }) });
+    { key: "p99_ms", label: "p99", num: true, wide: true, render: (k) => fmt.ms(k.p99_ms) },
+    { key: "errors", label: "failed", num: true, wide: true, title: "Every outcome but ok: server errors, client errors and deadlines", render: (k) => k.errors ? fmt.pct(k.errors / Math.max(1, k.calls), 1) : "0" },
+    { key: "act", label: "", sortable: false, wide: true, render: (k) => can("admin") ? h("button", { class: "btn sm", onclick: () => containK(k) }, "Contain…") : null },
+  ]), { rows: ks, sortKey: "calls", desc: true, compact: true, onRow }) });
 }
 
 function slowestCard(d, sql) {
@@ -264,26 +273,26 @@ function slowestCard(d, sql) {
     } catch { /* the row itself */ }
     queryDrawer({ sql: x.sql || sql, ...x });
   };
-  return card({ title: "Slowest calls", sub: "with their parameters", flush: true, body: table([
+  return card({ title: "Slowest calls", sub: narrow() ? "tap one for its trace, parameters and profile" : "with their parameters", flush: true, body: table(cols([
     { key: "ts_ms", label: "time", render: (x) => h("span", { class: "mono small nowrap" }, when(x.ts_ms)) },
     { key: "ms", label: "took", num: true, render: (x) => h("b", {}, fmt.ms(x.ms)) },
-    { key: "node", label: "via", render: (x) => x.node ? h("span", { class: "badge" }, x.node) : "–" },
+    { key: "node", label: "via", wide: true, render: (x) => x.node ? h("span", { class: "badge" }, x.node) : "–" },
     { key: "key", label: "key", render: (x) => x.key ? h("span", { class: "mono small nowrap" }, x.key) : h("span", { class: "muted" }, "–") },
-    { key: "params", label: "params", render: (x) => h("span", { class: "mono small ellipsis", style: { maxWidth: "150px", display: "inline-block", verticalAlign: "middle" }, title: paramsText(x.params, 2000) }, paramsText(x.params, 40) || "–") },
-    { key: "waited", label: "waited on", sort: (x) => x.waited_on?.ms, render: (x) => x.waited_on ? h("span", { class: "mono small nowrap", title: (x.waited_on.copy ? copyTitle(x.waited_on.copy) + ": " : "") + "the shard the answer waited on" }, `${x.waited_on.copy ? copyName(x.waited_on.copy) : "shard " + x.waited_on.shard} ${fmt.ms(x.waited_on.ms)}`) : x.outcome && x.outcome !== "ok" ? outcomePill(x.outcome) : "–" },
-    { key: "act", label: "", sortable: false, render: (x) => h("div", { class: "row nw", style: { gap: "4px" } },
+    { key: "params", label: "params", wide: true, render: (x) => h("span", { class: "mono small ellipsis", style: { maxWidth: "150px", display: "inline-block", verticalAlign: "middle" }, title: paramsText(x.params, 2000) }, paramsText(x.params, 40) || "–") },
+    { key: "waited", label: "waited on", wide: true, sort: (x) => x.waited_on?.ms, render: (x) => x.waited_on ? h("span", { class: "mono small nowrap", title: (x.waited_on.copy ? copyTitle(x.waited_on.copy) + ": " : "") + "the shard the answer waited on" }, `${x.waited_on.copy ? copyName(x.waited_on.copy) : "shard " + x.waited_on.shard} ${fmt.ms(x.waited_on.ms)}`) : x.outcome && x.outcome !== "ok" ? outcomePill(x.outcome) : "–" },
+    { key: "act", label: "", sortable: false, wide: true, render: (x) => h("div", { class: "row nw", style: { gap: "4px" } },
       h("button", { class: "btn sm", onclick: () => open(x) }, "Trace ›"),
       h("a", { class: "btn ghost icon sm", href: profileLink(x.sql || sqlWith(sql, x), x.params), title: "Profile it again, with these parameters" }, icon("flame")),
       h("a", { class: "btn ghost icon sm", href: workbenchLink(x.sql || sqlWith(sql, x), x.params), title: "Open in the workbench, with these parameters" }, icon("sql"))) },
-  ], { rows: xs, sortKey: "ms", desc: true, compact: true, maxHeight: "330px" }) });
+  ]), { rows: xs, sortKey: "ms", desc: true, compact: true, maxHeight: narrow() ? null : "330px", onRow: (x) => open(x) }) });
 }
 
 function errorsCard(d) {
-  return card({ title: "Errors", sub: "by message", flush: true, attrs: { style: { marginBottom: "14px" } }, body: table([
+  return card({ title: "Errors", sub: "by message", flush: true, attrs: { style: { marginBottom: "14px" } }, body: table(cols([
     { key: "message", label: "message", render: (e) => h("span", { class: "mono small" }, e.message) },
     { key: "count", label: "calls", num: true, render: (e) => fmt.n(e.count) },
-    { key: "last_ms", label: "last", num: true, render: (e) => when(e.last_ms) },
-  ], { rows: d.errors, sortKey: "count", desc: true, compact: true }) });
+    { key: "last_ms", label: "last", num: true, wide: true, render: (e) => when(e.last_ms) },
+  ]), { rows: d.errors, sortKey: "count", desc: true, compact: true }) });
 }
 
 const EV_TONE = { critical: "bad", warning: "warn", info: "info" };
