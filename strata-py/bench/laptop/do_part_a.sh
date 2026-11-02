@@ -92,6 +92,7 @@ spec:
       command: [sleep, infinity]
       env:
         - {name: NODE_SIZE, value: "$NODE_SIZE"}
+        - {name: NODE_REGION, value: "$REGION"}
       # Requests (no limits) keep the pod from being the first one evicted.
       resources: {requests: {cpu: "6", memory: 24Gi}}
       volumeMounts:
@@ -136,7 +137,7 @@ prep)
         echo prep started"
     ;;
 run)
-    in_pod "set -e; . /work/venv/bin/activate; cd /work/strata
+    in_pod "set -e; . /work/venv/bin/activate; cd /work/strata; export NODE_REGION=$REGION
         B=strata-py/bench/laptop OUT=/work/out/part-a; mkdir -p \$OUT
         nohup sh -c \"python3 \$B/a1_app.py --shop /work/data/shop --work /work/w/a1 --out \$OUT \
             ; python3 \$B/a2_search.py --data /work/data/beir --collections scifact,nfcorpus,fiqa,trec-covid,quora --work /work/w/a2 --out \$OUT \
