@@ -1462,3 +1462,12 @@ button.rx-node:hover { border-color: var(--accent); box-shadow: 0 0 0 3px var(--
 .ix-key::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; background: var(--c); vertical-align: -1px; }
 .ix-spark { display: block; }
 .ix-foot { margin: 14px 2px 0; max-width: 980px; line-height: 1.5; }
+
+/* ===== shell ===== */
+/* Shared helpers: a panel whose data is old, the fields of a confirm, an action the key cannot take. */
+.stale { position: relative; }
+.stale > .bd, .stale > .hd .sub, .stale .val, .stale svg:not(.i) { opacity: .45; filter: grayscale(1); }
+.stale-age { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--text-2); background: var(--surface-3); border-radius: 999px; padding: 0 8px; white-space: nowrap; font-weight: 500; }
+.confirm-field { display: flex; flex-direction: column; gap: 5px; }
+.btn.gated, button.gated { cursor: not-allowed; }
+/* ===== end shell ===== */

@@ -165,26 +165,220 @@ export const hasToken = () => !!token;
 /** The Authorization header, for requests `api` cannot make (an upload with progress). */
 export const authHeader = () => (token ? { authorization: "Bearer " + token } : {});
 
+/**
+ * A failed call. `status` is the HTTP status, 0 when nothing answered (a
+ * network failure or a timeout). `answered` is false when the answer did
+ * not come from Strata (nothing answered, or a proxy's page that is not
+ * JSON): the server counts as not answering then.
+ */
 export class ApiError extends Error {
-  constructor(status, message, body) { super(message); this.status = status; this.body = body; }
+  constructor(status, message, body, answered = true) { super(message); this.status = status; this.body = body; this.answered = answered; }
 }
 
-/** Calls the server: api("/v1/x"), api("/v1/x", {body}), api(p, {method: "DELETE"}). */
+// Whether the server answers: every call of `api` says. A call answered by
+// Strata (any status, its JSON) means yes; a network failure, a timeout or
+// an answer that is not Strata's JSON (an ingress's 502 page) means no.
+const conn = { ok: true, since_ms: null, status: null, message: null, path: null, last_ok_ms: null, last_fail_ms: null };
+/** `{ ok, since_ms, status, message, path, last_ok_ms }`: whether the server answers, and since when it does not. */
+export const connection = () => ({ ...conn });
+function answered() {
+  conn.last_ok_ms = Date.now();
+  if (conn.ok) return;
+  Object.assign(conn, { ok: true, since_ms: null, status: null, message: null, path: null });
+  bus.emit("connection", connection());
+}
+function notAnswering(status, message, path) {
+  const now = Date.now();
+  conn.last_fail_ms = now;
+  const was = conn.ok;
+  Object.assign(conn, { ok: false, since_ms: was ? now : conn.since_ms, status, message, path });
+  bus.emit("connection", connection());
+}
+/** What an HTTP status means when it did not come from Strata. */
+function proxyWhy(status) {
+  return status === 502 ? "502 from the ingress or proxy" : status === 503 ? "503 from the ingress or proxy" : status === 504 ? "504: the ingress or proxy gave up waiting"
+    : status >= 500 ? `${status} that is not Strata's` : `an answer that is not Strata's (HTTP ${status})`;
+}
+// Header values are Latin-1: anything else in a reason goes percent-encoded.
+const headerSafe = (t) => String(t).replace(/[\r\n]+/g, " ").replace(/[^\x20-\x7e]/g, (c) => encodeURIComponent(c)).slice(0, 2000);
+
+/**
+ * Calls the server: api("/v1/x"), api("/v1/x", {body}), api(p, {method: "DELETE"}).
+ * opts: {method, body, type, signal, text, blob, reason, timeout}. `reason`
+ * goes in the `x-strata-reason` header (the audit entry keeps it); `timeout`
+ * (ms) gives up and counts as not answering. Every call says it comes from
+ * the command center (`x-strata-client`), so the server leaves the UI's own
+ * calls out of the routes and queries it shows.
+ */
 export async function api(path, opts = {}) {
-  const init = { method: opts.method || (opts.body === undefined ? "GET" : "POST"), headers: {} };
+  const init = { method: opts.method || (opts.body === undefined ? "GET" : "POST"), headers: { "x-strata-client": "command-center" } };
   if (opts.body !== undefined) {
     if (opts.body instanceof Blob || opts.body instanceof ArrayBuffer || typeof opts.body === "string") { init.body = opts.body; if (opts.type) init.headers["content-type"] = opts.type; }
     else { init.headers["content-type"] = "application/json"; init.body = JSON.stringify(opts.body); }
   }
   if (token) init.headers.authorization = "Bearer " + token;
-  if (opts.signal) init.signal = opts.signal;
-  const r = await fetch(path, init);
-  if (opts.text) { const t = await r.text(); if (!r.ok) throw new ApiError(r.status, t || "HTTP " + r.status); return t; }
-  if (opts.blob) { if (!r.ok) throw new ApiError(r.status, "HTTP " + r.status); return r; }
-  let j; try { j = await r.json(); } catch { j = {}; }
+  if (opts.reason) init.headers["x-strata-reason"] = headerSafe(opts.reason);
+  let timer = null, timedOut = false;
+  if (opts.timeout) {
+    const ac = new AbortController();
+    opts.signal?.addEventListener("abort", () => ac.abort());
+    timer = setTimeout(() => { timedOut = true; ac.abort(); }, opts.timeout);
+    init.signal = ac.signal;
+  } else if (opts.signal) init.signal = opts.signal;
+  let r;
+  try { r = await fetch(path, init); }
+  catch (e) {
+    clearTimeout(timer);
+    if (opts.signal?.aborted && !timedOut) throw e; // the caller cancelled it
+    const why = timedOut ? `no answer in ${fmt.ms(opts.timeout)}` : "no answer (the network failed or the server is not running)";
+    notAnswering(0, why, path);
+    throw new ApiError(0, why, null, false);
+  }
+  clearTimeout(timer);
+  if (opts.blob) {
+    if (r.ok) { answered(); return r; }
+    const t = await r.text().catch(() => "");
+    const j = parseJson(t);
+    if (j === undefined && r.status >= 500) { notAnswering(r.status, proxyWhy(r.status), path); throw new ApiError(r.status, proxyWhy(r.status), null, false); }
+    answered();
+    if (r.status === 401) bus.emit("unauthorized", path);
+    throw new ApiError(r.status, j?.error || "HTTP " + r.status, j || {});
+  }
+  const t = await r.text().catch(() => null);
+  if (t == null) { notAnswering(r.status || 0, "the answer was cut off", path); throw new ApiError(r.status || 0, "the answer was cut off", null, false); }
+  if (opts.text) {
+    // A page that is not Strata's error: a proxy answered for it.
+    if (!r.ok && r.status >= 500 && parseJson(t) === undefined) { notAnswering(r.status, proxyWhy(r.status), path); throw new ApiError(r.status, proxyWhy(r.status), null, false); }
+    answered();
+    if (r.status === 401) bus.emit("unauthorized", path);
+    if (!r.ok) throw new ApiError(r.status, parseJson(t)?.error || t || "HTTP " + r.status, parseJson(t) || {});
+    return t;
+  }
+  let j = t.trim() === "" ? {} : parseJson(t);
+  // Strata always answers JSON here (its errors say {"error": ...}). Anything
+  // else came from something in front of it.
+  if (j === undefined || (r.status >= 500 && !isStrataError(j))) {
+    notAnswering(r.status, proxyWhy(r.status), path);
+    throw new ApiError(r.status, proxyWhy(r.status), null, false);
+  }
+  answered();
   if (r.status === 401) bus.emit("unauthorized", path);
-  if (!r.ok) throw new ApiError(r.status, j.error || ("HTTP " + r.status), j);
+  if (!r.ok) throw new ApiError(r.status, j?.error || ("HTTP " + r.status), j);
   return j;
+}
+function parseJson(t) { try { return JSON.parse(t); } catch { return undefined; } }
+const isStrataError = (j) => !!j && typeof j === "object" && (typeof j.error === "string" || typeof j.status === "string");
+
+// ---------------------------------------------------------------- shared context
+// data.js fills this (who is signed in, the cluster, the time range, pause),
+// so that the helpers here read it without importing data.js.
+const ctx = { whoami: null, cluster: null, paused: false, rangeParams: () => ({}) };
+/** For data.js: provide({whoami, cluster, paused, rangeParams}). */
+export function provide(x) { Object.assign(ctx, x); }
+/** Whether the live view is paused (data.js `setPaused`). */
+export const isPaused = () => ctx.paused;
+
+// ---------------------------------------------------------------- scope
+const RANK = { read: 1, write: 2, admin: 3 };
+/**
+ * Whether the signed-in key may do this: can("read" | "write" | "admin").
+ * Unknown (not signed in, or whoami failed) can read only. Views hide or
+ * disable what they cannot do, with `needs(scope)` as the tooltip.
+ */
+export function can(scope) {
+  const w = ctx.whoami;
+  if (!w) return scope === "read";
+  if (w.root) return true;
+  return (RANK[w.scope] || 0) >= (RANK[scope] || 3);
+}
+/** The tooltip of an action the key cannot take: "needs an admin key". */
+export const needs = (scope) => `needs ${scope === "admin" ? "an admin" : `a ${scope}`} key`;
+/** Disables a button the key cannot use, and says why: gate(btn, "admin"). Returns the button. */
+export function gate(btn, scope) {
+  if (!can(scope)) { btn.disabled = true; btn.title = (btn.title ? btn.title + ": " : "") + needs(scope); btn.classList.add("gated"); }
+  return btn;
+}
+
+// ---------------------------------------------------------------- copies
+/** The shard and replica of a copy's URL in a /v1/cluster answer, or null. */
+export function findCopy(url, cluster = ctx.cluster) {
+  if (!url || !cluster?.shards) return null;
+  const u = String(url).replace(/\/+$/, "");
+  for (let i = 0; i < cluster.shards.length; i++) {
+    const sh = cluster.shards[i];
+    const reps = sh.replicas || [];
+    for (let j = 0; j < reps.length; j++) if (String(reps[j].url).replace(/\/+$/, "") === u) return { shard: sh.shard ?? i, copy: j, sh, rep: reps[j] };
+  }
+  return null;
+}
+const hostPort = (url) => String(url).replace(/^[a-z]+:\/\//, "").replace(/\/.*$/, "");
+/**
+ * The short name of a copy: its node name when the server has one, else
+ * "s1-0" (shard 1, copy 0); host:port for a URL the cluster does not list.
+ */
+export function copyName(url, cluster = ctx.cluster) {
+  if (!url) return "–";
+  const f = findCopy(url, cluster);
+  if (!f) return hostPort(url);
+  return f.rep.name || f.rep.short || `s${f.shard}-${f.copy}`;
+}
+/** The long form, for a tooltip: "s1-0: shard 1, copy 0, primary · node … · http://…". */
+export function copyTitle(url, cluster = ctx.cluster) {
+  if (!url) return "";
+  const f = findCopy(url, cluster);
+  if (!f) return String(url);
+  const r = f.rep;
+  const role = r.role === "unknown" ? `not answering${r.last_role ? ` (was ${r.last_role})` : ""}` : r.role;
+  return [`${copyName(url, cluster)}: shard ${f.shard}, copy ${f.copy}${role ? ", " + role : ""}`, r.node ? `node ${r.node}` : null, r.zone ? `zone ${r.zone}` : null, String(url)].filter(Boolean).join(" · ");
+}
+
+// ---------------------------------------------------------------- links
+/**
+ * A link into a view that keeps the global time range: link("logs", {node: "s1-0"})
+ * → "#/logs?node=s1-0&range=6h" (or &from=…&to=… for a fixed window).
+ * `view` may hold a path ("alert/disk-full"); null and "" params are left out;
+ * from/to given in params win over the global range.
+ */
+export function link(view, params = {}) {
+  const q = new URLSearchParams();
+  const own = Object.entries(params || {}).filter(([, v]) => v != null && v !== "");
+  for (const [k, v] of own) q.set(k, String(v));
+  if (!q.has("from") && !q.has("to") && !q.has("range")) for (const [k, v] of Object.entries(ctx.rangeParams() || {})) if (v != null) q.set(k, String(v));
+  const qs = q.toString();
+  return "#/" + String(view).replace(/^#?\/?/, "") + (qs ? "?" + qs : "");
+}
+
+// ---------------------------------------------------------------- times
+/** How long ago: "just now", "12 s ago", "4 min ago", "3 h ago", "2 d ago" ("in 5 min" ahead). */
+export const ago = (ms) => fmt.ago(ms);
+const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+/** An absolute local time: "19:42:15" today, "Nov 2 19:42" another day; "–" when unknown. */
+export function when(ms, { sec = true } = {}) {
+  if (ms == null || !Number.isFinite(+ms) || +ms <= 0) return "–";
+  const d = new Date(+ms);
+  const t = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: sec ? "2-digit" : undefined, hour12: false });
+  if (sameDay(d, new Date())) return t;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" }) + " " + t.slice(0, 5);
+}
+/** The full time with its zone, for a title: "Mon, Nov 2, 2026, 19:42:15 GMT+1 (Europe/Madrid)". */
+export function whenTitle(ms) {
+  if (ms == null || !Number.isFinite(+ms) || +ms <= 0) return "";
+  const d = new Date(+ms);
+  let zone = ""; try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { /* old browser */ }
+  return d.toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZoneName: "short" }) + (zone ? ` (${zone})` : "");
+}
+/** A <time> element showing when(ms), with the full time and zone (and how long ago) in its title. */
+export function timeEl(ms, opts = {}) {
+  return h("time", { datetime: ms ? new Date(+ms).toISOString() : null, title: ms ? `${whenTitle(ms)} · ${fmt.ago(ms)}` : null, class: opts.cls || null }, when(ms, opts));
+}
+/** A window as text: "19:12–20:12" today, "Nov 1 19:12–20:12", "Nov 1 22:00 – Nov 2 08:00". */
+export function span(from, to) {
+  if (!from || !to) return "–";
+  const a = new Date(+from), b = new Date(+to);
+  const hm = (d) => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
+  const day = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  if (sameDay(a, b)) return (sameDay(a, new Date()) ? "" : day(a) + " ") + hm(a) + "–" + hm(b);
+  return `${day(a)} ${hm(a)} – ${day(b)} ${hm(b)}`;
 }
 
 // ---------------------------------------------------------------- formats
@@ -315,16 +509,35 @@ export function modal({ title, body, foot, wide, onClose }) {
   return { close, el: m };
 }
 
-/** Asks before doing something: resolves true or false. */
-export function confirm({ title, body, ok = "Confirm", danger = false }) {
+/**
+ * Asks before doing something. Focus starts on Cancel, so Enter alone never
+ * confirms. `typed: "audit_orders"` keeps OK disabled until that text is
+ * typed; `reason: true` (or a placeholder string) asks why, required, and the
+ * answer goes in the audit entry (pass it to `api` as `opts.reason`).
+ * Resolves `false`, or `{ reason }` (truthy; reason is null when not asked).
+ */
+export function confirm({ title, body, ok = "Confirm", danger = false, typed = null, reason = false }) {
   return new Promise((resolve) => {
     let answered = false;
     const yes = h("button", { class: "btn " + (danger ? "danger solid" : "primary") }, ok);
     const no = h("button", { class: "btn" }, "Cancel");
-    const m = modal({ title, body: typeof body === "string" ? h("p", { style: { margin: 0 }, class: "dim" }, body) : body, foot: [no, yes], onClose: () => { if (!answered) resolve(false); } });
-    yes.onclick = () => { answered = true; m.close(); resolve(true); };
+    const typedIn = typed != null ? h("input", { class: "input", autocomplete: "off", spellcheck: "false", "aria-label": `Type ${typed} to confirm`, style: { width: "100%" } }) : null;
+    const reasonIn = reason ? h("textarea", { class: "input", rows: 2, placeholder: typeof reason === "string" ? reason : "Why: kept in the audit log with the change", "aria-label": "Reason", style: { width: "100%", resize: "vertical" } }) : null;
+    const ready = () => (!typedIn || typedIn.value.trim() === String(typed)) && (!reasonIn || reasonIn.value.trim().length > 0);
+    const sync = () => { yes.disabled = !ready(); };
+    const parts = [
+      typeof body === "string" ? h("p", { style: { margin: 0 }, class: "dim" }, body) : body,
+      typedIn ? h("label", { class: "confirm-field" }, h("span", { class: "small dim" }, "Type ", h("b", { class: "mono" }, String(typed)), " to confirm"), typedIn) : null,
+      reasonIn ? h("label", { class: "confirm-field" }, h("span", { class: "small dim" }, "Reason (required)"), reasonIn) : null,
+    ];
+    const m = modal({ title, body: parts, foot: [no, yes], onClose: () => { if (!answered) resolve(false); } });
+    const go = () => { if (!ready()) return; answered = true; const why = reasonIn ? reasonIn.value.trim() : null; m.close(); resolve({ reason: why }); };
+    yes.onclick = go;
     no.onclick = () => { answered = true; m.close(); resolve(false); };
-    setTimeout(() => yes.focus(), 0);
+    for (const i of [typedIn, reasonIn]) if (i) { i.oninput = sync; i.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && ready()) { e.preventDefault(); go(); } }; }
+    sync();
+    // Cancel has the focus; with a field to fill, the first field has it.
+    setTimeout(() => (typedIn || reasonIn || no).focus(), 0);
   });
 }
 
@@ -472,12 +685,17 @@ export function dropzone({ label, sub, accept, multiple = true, onFiles }) {
   return z;
 }
 
-/** Repeats `f` every `ms` while the page is visible; returns a stopper. */
-export function every(ms, f, now = true) {
-  let stopped = false, timer = null, running = false;
+/**
+ * Repeats `f` every `ms` while the page is visible; returns a stopper. While
+ * the command center is paused (`isPaused()`), ticks after the first are
+ * skipped, so a view does not redraw; `{always: true}` keeps polling (for a
+ * change under way the person is waiting on).
+ */
+export function every(ms, f, now = true, opts = {}) {
+  let stopped = false, timer = null, running = false, first = true;
   const tick = async () => {
     if (stopped) return;
-    if (!document.hidden && !running) { running = true; try { await f(); } catch (e) { console.warn(e); } running = false; }
+    if (!document.hidden && !running && (first || opts.always || !ctx.paused)) { first = false; running = true; try { await f(); } catch (e) { console.warn(e); } running = false; }
     if (!stopped) timer = setTimeout(tick, ms);
   };
   if (now) tick(); else timer = setTimeout(tick, ms);

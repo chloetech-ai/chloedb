@@ -3,7 +3,7 @@
 // command palette (Ctrl+K) and the keyboard shortcuts.
 
 import { h, icon, clear, store, bus, api, setToken, hasToken, modal, toast, menu, seg, fmt } from "./core.js";
-import { state, start, setRange, setZoom, setPaused, refreshWho } from "./data.js";
+import { state, start, setRange, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, firingAlerts } from "./data.js";
 import { VIEWS, GROUPS } from "./views/index.js";
 
 const app = document.getElementById("app");
@@ -28,7 +28,7 @@ side.querySelector(".mark").innerHTML = '<defs><linearGradient id="lg" x1="0" y1
 const crumbs = h("div", { class: "crumbs" });
 const connDot = h("span", { class: "dot ok pulse" });
 const connText = h("span", {}, "connecting…");
-const rangeSeg = seg([[5, "5m"], [15, "15m"], [30, "30m"], [60, "1h"]], state.range, (v) => setRange(v), { "aria-label": "Time range", title: "The time the charts show" });
+const rangeSeg = seg(RANGES.map(([k, m]) => [m, k]), state.range, (v) => setRange(v), { "aria-label": "Time range", title: "The time the charts show" });
 const zoomChip = h("button", { class: "chip hidden", "aria-pressed": "true", title: "Drag across a chart to zoom; this resets it", onclick: () => setZoom(null) }, icon("zout"), "zoomed", h("span", { class: "x" }, "×"));
 const liveBtn = h("button", { class: "btn sm", title: "Pause or resume the live view (p)", onclick: () => setPaused(!state.paused) });
 const bell = h("a", { class: "btn ghost icon", href: "#/alerts", title: "Alerts", style: { position: "relative" } }, icon("alerts"));
@@ -70,7 +70,7 @@ function drawWho() {
 }
 bus.on("whoami", drawWho);
 function drawBell() {
-  const n = state.alerts?.firing?.length || 0;
+  const n = firingAlerts().length;
   bellCount.textContent = n; bellCount.classList.toggle("hidden", !n);
   for (const a of nav.querySelectorAll("a[data-view=alerts] .count")) a.remove();
   if (n) nav.querySelector("a[data-view=alerts]")?.append(h("span", { class: "count" }, n));
@@ -93,6 +93,7 @@ function parse() {
 }
 function route() {
   const r = parse();
+  rangeFromUrl(r.params);
   const v = VIEWS.find((x) => x.id === r.id) || VIEWS[0];
   for (const a of nav.querySelectorAll("a")) a.toggleAttribute("aria-current", a.dataset.view === v.id) || a.removeAttribute("aria-current");
   nav.querySelector(`a[data-view="${v.id}"]`)?.setAttribute("aria-current", "page");
@@ -130,9 +131,7 @@ const ACTIONS = [
   { name: "Toggle light or dark", icon: "moon", run: toggleTheme, hint: "t" },
   { name: "Collapse or expand the sidebar", icon: "menu", run: toggleSide, hint: "[" },
   { name: "Pause or resume the live view", icon: "pause", run: () => setPaused(!state.paused), hint: "p" },
-  { name: "Show the last 5 minutes", icon: "clock", run: () => setRange(5) },
-  { name: "Show the last 15 minutes", icon: "clock", run: () => setRange(15) },
-  { name: "Show the last hour", icon: "clock", run: () => setRange(60) },
+  ...RANGES.map(([k, m]) => ({ name: `Show the last ${k.replace(/(\d)([a-z])/, "$1 $2")}`, icon: "clock", run: () => setRange(m) })),
   { name: "Use another API key or token", icon: "access", run: askToken },
   { name: "Create an API key", icon: "plus", run: () => (location.hash = "#/access?new=1") },
   { name: "Open the raw Prometheus metrics", icon: "ext", run: () => window.open("/metrics", "_blank") },
