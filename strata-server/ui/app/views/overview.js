@@ -5,7 +5,7 @@
 // ranked with their next step, error ratio and p99 with the changes of the
 // window, capacity, the coordinators side by side, and who is affected.
 
-import { h, icon, clear, fmt, card, every, api, empty, bus, seg, store, tipOn, drawer, link, when, whenTitle, span, copyName, copyTitle, copy, timeEl } from "../core.js";
+import { h, icon, clear, fmt, card, every, api, empty, bus, seg, store, tipOn, drawer, link, when, whenTitle, span, copyName, copyTitle, copy, timeEl, isPhone } from "../core.js";
 import { timeChart, sparkline, SERIES } from "../charts.js";
 import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingAlerts, clusterName, environment, rangeParams, shardState } from "../data.js";
 
@@ -284,7 +284,7 @@ function render(page) {
   }
 
   // ------------------------------------------------------------ where
-  let lastModel = null;
+  let lastModel = null, showAll = false;
   function drawWhere() {
     const m = lastModel = model();
     whereCard.classList.toggle("stale", !fresh("cluster").ok && !fresh("cluster").loading);
@@ -298,9 +298,14 @@ function render(page) {
       h("span", {}, h("i", { class: "lg" }), " fine"), h("span", {}, h("i", { class: "lg warn" }), " needs a look"), h("span", {}, h("i", { class: "lg crit" }), " hurts queries now"), h("span", {}, h("i", { class: "pip down" }), " copy down"), h("span", {}, h("i", { class: "pip p" }), " primary"),
       h("span", { class: "sep" }), h("span", {}, "click a shard: its copies, logs and profile for this window"));
     if (group === "shard") {
-      const big = m.shards.length <= 16;
-      const grid = h("div", { class: "home-heat" + (big ? " big" : "") }, m.shards.map((s) => shardEl(s, big)));
-      clear(whereBody, grid, legend, zoneCards(m));
+      // On a phone a large fleet shows the shards that need a look first; all of them on request.
+      const few = isPhone() && !showAll && m.shards.length > 24;
+      const list = few ? m.shards.filter((s) => shardCell(s, lens).tone) : m.shards;
+      const big = list.length <= 16;
+      const grid = list.length ? h("div", { class: "home-heat" + (big ? " big" : "") }, list.map((s) => shardEl(s, big))) : null;
+      const toggleAll = h("button", { class: "btn sm", onclick: () => { showAll = !showAll; drawWhere(); } }, showAll ? "Only the ones that need a look" : `Show all ${m.shards.length} shards`);
+      const note = isPhone() && m.shards.length > 24 ? h("div", { class: "row home-few small dim" }, few ? (list.length ? `${fmt.plural(list.length, "shard")} of ${m.shards.length} need a look; the others are fine.` : `All ${m.shards.length} shards are fine by this lens.`) : `All ${m.shards.length} shards.`, h("span", { class: "sep" }), toggleAll) : null;
+      clear(whereBody, note, grid, legend, zoneCards(m));
     } else {
       const groups = group === "node" ? (m.nodes.size ? m.nodes : byHost(m)) : m.zones;
       if (!groups.size) { clear(whereBody, empty("cloud", "Zones not known", "Each copy says its zone when the server runs with STRATA_ZONE set (the operator sets it on Kubernetes)."), legend); return; }
@@ -346,13 +351,13 @@ function render(page) {
     const rows = s.copies.map((x) => h("tr", {},
       h("td", {}, h("span", { class: "dot " + (x.up ? copyTone(x) === "crit" ? "bad" : copyTone(x) === "warn" ? "warn" : "ok" : "bad") }), " ", h("b", { title: copyTitle(x.url) }, x.name)),
       h("td", {}, x.up ? x.role : `not answering${x.down_since ? " since " + when(x.down_since) : ""}`), h("td", { class: "small dim" }, [x.zone ? "zone " + x.zone : null, x.node].filter(Boolean).join(" · ") || x.host),
-      h("td", { class: "num" }, x.p99 != null ? fmt.ms(x.p99) : "–"), h("td", { class: "num" }, x.disk != null ? fmt.pct(x.disk, 0) : "–"), h("td", { class: "num" }, x.lag != null ? fmt.si(x.lag) : "–"),
+      h("td", { class: "num", "data-l": "p99" }, x.p99 != null ? fmt.ms(x.p99) : "–"), h("td", { class: "num", "data-l": "disk" }, x.disk != null ? fmt.pct(x.disk, 0) : "–"), h("td", { class: "num", "data-l": "behind" }, x.lag != null ? fmt.si(x.lag) : "–"),
       h("td", {}, h("a", { class: "btn xs", href: link("logs", { node: x.url }) }, "Logs"), " ", x.up ? h("a", { class: "btn xs", href: link("profile", { tab: "cpu", node: x.url }) }, "Profile") : null)));
     const d = drawer({
       title: `Shard ${s.n}`, sub: `${stText(s.st)} · ${span(r.from, r.to)}`,
       body: [
         s.why || s.st !== "ok" ? h("div", { class: s.st === "ok" ? "notice" : ["no_reads", "no_writes", "down"].includes(s.st) ? "error" : "notice" }, s.why || `${s.copies.filter((x) => x.up).length} of ${s.copies.length} copies answer.`) : null,
-        h("div", { class: "tbl-wrap" }, h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ["Copy", "Role", "Where", "p99", "Disk", "Behind", ""].map((x, i) => h("th", { class: i >= 3 && i <= 5 ? "num" : "" }, x)))), h("tbody", {}, rows))),
+        h("div", { class: "tbl-wrap" }, h("table", { class: "t compact home-copytbl" }, h("thead", {}, h("tr", {}, ["Copy", "Role", "Where", "p99", "Disk", "Behind", ""].map((x, i) => h("th", { class: i >= 3 && i <= 5 ? "num" : "" }, x)))), h("tbody", {}, rows))),
         h("div", { class: "row" },
           h("a", { class: "btn primary", href: link("cluster", { shard: s.n }) }, icon("cluster"), "Shard " + s.n + " in Cluster"),
           h("a", { class: "btn", href: link("logs", { shard: s.n, level: "warn" }) }, icon("logs"), "Its logs, this window"),
@@ -528,7 +533,7 @@ function render(page) {
     bus.on("fleet", drawFleet), bus.on("cluster", drawCluster), bus.on("alerts", drawBanner),
     bus.on("points", () => { drawCharts(); drawKpis(); }), bus.on("range", () => { drawCharts(); drawHead(); loadEvents(); loadStats(); }),
     bus.on("fresh", () => { drawKpis(); drawWhere(); drawProblems(); chartsCard.classList.toggle("stale", !fresh("series").ok && !fresh("series").loading); }),
-    bus.on("answering", () => { drawBanner(); }), bus.on("theme", drawCharts),
+    bus.on("answering", () => { drawBanner(); }), bus.on("theme", drawCharts), bus.on("narrow", () => { drawWhere(); drawCharts(); }),
     every(15000, loadEvents), every(30000, loadStats),
   ];
   return () => offs.forEach((f) => f());
