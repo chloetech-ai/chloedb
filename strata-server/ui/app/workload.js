@@ -273,12 +273,14 @@ export async function statementDetail(fp, range = timeRange()) {
     const w = `fingerprint = ${lit(fp)} AND shard = false AND ts >= ${lit(new Date(range.from).toISOString())}${range.to ? ` AND ts < ${lit(new Date(range.to).toISOString())}` : ""}`;
     const cols = await queryColumns();
     const extra = ["key", "addr", "app", "params", "client", "deadline_ms"].filter((c) => cols.has(c));
-    const [tr, sl, er] = await Promise.all([
+    const [tr, sl, er, fm] = await Promise.all([
       ask(`SELECT minute, COUNT(*), AVG(ms), MAX(ms) FROM queries WHERE ${w} GROUP BY minute LIMIT 20000`).catch(() => null),
       ask(`SELECT ts, ms, outcome, request_id, sql, error, detail, id, node${extra.map((c) => ", " + c).join("")} FROM queries WHERE ${w} ORDER BY ms DESC LIMIT 12`).catch(() => null),
       ask(`SELECT error, COUNT(*), MAX(ts) FROM queries WHERE ${w} AND outcome != 'ok' GROUP BY error ORDER BY 2 DESC LIMIT 10`).catch(() => null),
+      ask(`SELECT minute, COUNT(*) FROM queries WHERE ${w} AND outcome != 'ok' GROUP BY minute LIMIT 20000`).catch(() => null),
     ]);
-    if (tr) out.trend = tr.rows.filter((r) => r[0] != null).map((r) => ({ t: r[0] * 60e3, calls: r[1], mean_ms: r[2], p99_ms: r[3], max: true })).sort((a, b) => a.t - b.t);
+    const failedAt = new Map((fm?.rows || []).map((r) => [r[0], r[1]]));
+    if (tr) out.trend = tr.rows.filter((r) => r[0] != null).map((r) => ({ t: r[0] * 60e3, calls: r[1], errors: fm ? failedAt.get(r[0]) || 0 : null, mean_ms: r[2], p99_ms: r[3], max: true })).sort((a, b) => a.t - b.t);
     if (sl) out.slowest = objects(sl).map((r) => { const d = parseJson(r.detail) || {}; return { ...d, ...r, ts_ms: msOf(r.ts), params: r.params ?? d.params, key: r.key ?? d.key, addr: r.addr ?? d.addr, app: r.app ?? d.app }; });
     if (er) out.errors = er.rows.filter((r) => r[0]).map((r) => ({ message: r[0], count: r[1], last_ms: msOf(r[2]) }));
     out.trendNote = "per minute from the log store: the mean and the slowest call (no p99: the store keeps a sample of the fast calls)";
