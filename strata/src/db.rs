@@ -1307,8 +1307,10 @@ impl Db {
 
     /// The text `write` will derive and the vectors it will compute, from
     /// the latest version. The rows an UPDATE or `ON CONFLICT DO UPDATE`
-    /// rewrites are read here and again under the writer lock, where only
-    /// the files and texts that changed in between go to a model. An error
+    /// rewrites are read here when what it sets may need a model
+    /// ([`sets_need_models`]), and again under the writer lock, where only
+    /// the files and texts that changed in between go to a model; rows
+    /// named by key are read by key both times ([`Db::rows_of`]). An error
     /// reading the rows (the table dropped, a sum that overflows) is left
     /// for the write to report; an image that cannot be read fails the
     /// statement.
@@ -1326,16 +1328,17 @@ impl Db {
                 Write::Insert { docs, conflict: Conflict::Skip } => not_live(&snap, pk()?, docs.clone()),
                 Write::Insert { docs, conflict: Conflict::Update(sets) } => {
                     let pk = pk()?;
-                    let (live, mut new): (Vec<Document>, Vec<Document>) = docs.iter().cloned().partition(|d| snap.lookup(&d[pk]).is_some());
-                    if !in_place(schema, sets) {
+                    let (live, mut new): (Vec<Document>, Vec<Document>) = docs.iter().cloned().partition(|d| snap.find(&d[pk]).is_some());
+                    if !in_place(schema, sets) && sets_need_models(schema, &models, &derivers, sets) {
                         new.extend(plan_sets(schema, &models, &derivers, self.conflict_rows(&snap, schema, pk, live)?, sets)?.rewrites);
                     }
                     new
                 }
-                // Numbers set in place embed nothing.
-                Write::Update { sets, .. } if in_place(schema, sets) => Vec::new(),
+                // Numbers set in place embed nothing, nor do fields no
+                // model makes, or reads from.
+                Write::Update { sets, .. } if in_place(schema, sets) || !sets_need_models(schema, &models, &derivers, sets) => Vec::new(),
                 Write::Update { select, sets } => {
-                    let rows = lacking(schema, backfill, self.execute(&snap, select, &self.exec)?.rows);
+                    let rows = lacking(schema, backfill, self.rows_of(&snap, select)?);
                     plan_sets(schema, &models, &derivers, rows.into_iter().map(|r| (r, Vec::new())).collect(), sets)?.rewrites
                 }
                 Write::Delete { .. } => Vec::new(),
@@ -1417,7 +1420,7 @@ impl Db {
                         if let Some(d) = docs.iter().find(|d| !seen.insert(Part::of(&d[pk]))) {
                             return Err(Error::Query(format!("ON CONFLICT DO UPDATE: key {:?} comes twice; a statement updates a row once", d[pk])));
                         }
-                        let (live, mut new): (Vec<Document>, Vec<Document>) = docs.into_iter().partition(|d| snap.lookup(&d[pk]).is_some());
+                        let (live, mut new): (Vec<Document>, Vec<Document>) = docs.into_iter().partition(|d| snap.find(&d[pk]).is_some());
                         derive_known(&derivers, schema, &mut new, &p.derived, &files)?;
                         embed_known(&models, schema, &mut new, &p.known, &files)?;
                         for d in new {
@@ -1431,12 +1434,12 @@ impl Db {
             }
             Write::Delete { select } => {
                 let pk = pk()?;
-                for row in self.execute(&snap, &select, &self.exec)?.rows {
+                for row in self.rows_of(&snap, &select)? {
                     n += tt.delete(&row[pk])? as u64;
                 }
             }
             Write::Update { select, sets } => {
-                let rows = lacking(schema, p.backfill, self.execute(&snap, &select, &self.exec)?.rows);
+                let rows = lacking(schema, p.backfill, self.rows_of(&snap, &select)?);
                 n += set_rows(&mut tt, schema, (&models, &derivers), rows.into_iter().map(|r| (r, Vec::new())).collect(), &sets, (&p.known, &p.derived), &files)?;
             }
         }
@@ -1452,7 +1455,7 @@ impl Db {
             return Ok(Vec::new());
         }
         let keys = live.iter().map(|d| d[pk].clone()).collect();
-        let rows = self.execute(snap, &qsql::keyed_rows(schema, keys)?, &self.exec)?.rows;
+        let rows = self.rows_of(snap, &qsql::keyed_rows(schema, keys)?)?;
         let mut by_key: HashMap<Part, Vec<Value>> = rows.into_iter().map(|r| (Part::of(&r[pk]), r)).collect();
         Ok(live.into_iter().filter_map(|d| by_key.remove(&Part::of(&d[pk])).map(|r| (r, d))).collect())
     }
@@ -1482,9 +1485,30 @@ impl Db {
         let schema = snap.schema();
         let pk = schema.primary_key.ok_or_else(|| Error::Query(format!("{} has no primary key: rows are read by key only from a table with one", schema.table)))?;
         let keys: Vec<Value> = keys.iter().map(|k| key_value(schema, pk, k)).collect::<Result<_>>()?;
-        // The fields `SELECT *` answers, and then the time rows expire at
-        // when that is not one of them.
-        let mut fields: Vec<usize> = qsql::star_fields(schema).collect();
+        let fields: Vec<usize> = qsql::star_fields(schema).collect();
+        let q = qsql::fields_select(schema, &fields);
+        let mut out = self.rows_by_key(snap, &keys, &fields, opts)?;
+        for row in out.iter_mut().flatten() {
+            q.typed(std::slice::from_mut(&mut row.row));
+        }
+        Ok(out)
+    }
+
+    /// The live rows with primary keys `keys` (each a value of the key's
+    /// type) on snapshot `snap`, of the table it looks at, in their order:
+    /// each row its values of `fields` (positions) as [`Db::execute`] of
+    /// a query of those fields gives them before typing them
+    /// ([`Select::typed`]), and the number of the write that last changed
+    /// it. `None` for a key no live row has, or whose row has expired at
+    /// `opts`' time (unless `opts.expired`). Each key is found by the
+    /// table's primary-key indexes, newest segment first, and the
+    /// memtable's newest rows as written, so that a read after each write
+    /// builds nothing ([`Snapshot::find`]).
+    fn rows_by_key(&self, snap: &Snapshot, keys: &[Value], fields: &[usize], opts: &ExecOptions) -> Result<Vec<Option<KeyRow>>> {
+        let schema = snap.schema();
+        // The fields asked for, and then the time rows expire at when that
+        // is not one of them.
+        let mut fields = fields.to_vec();
         let shown = fields.len();
         let expiry = schema.expire_field().filter(|_| !opts.expired).map(|f| {
             let at = fields.iter().position(|&x| x == f).unwrap_or_else(|| {
@@ -1507,8 +1531,8 @@ impl Db {
                 }
             }
         }
-        let q = qsql::fields_select(schema, &fields);
         if !at.is_empty() {
+            let q = qsql::fields_select(schema, &fields);
             let view = snap.found_view();
             let readers = self.readers(&view)?;
             let places: Vec<(usize, DocId)> = at.iter().map(|&(_, seg, doc, _)| (seg, doc)).collect();
@@ -1525,10 +1549,30 @@ impl Db {
                     continue;
                 }
             }
-            q.typed(std::slice::from_mut(&mut row.row));
             row.row.truncate(shown);
         }
         Ok(out)
+    }
+
+    /// The rows an UPDATE or DELETE (or `ON CONFLICT DO UPDATE`) reads,
+    /// as [`Db::execute`] answers `select` on `snap` with the database's
+    /// options. When its filter only pins the primary key to values
+    /// (`WHERE id = ?`, `WHERE id IN (...)`, [`keys_read`]), the rows are
+    /// read by key ([`Db::rows_by_key`]): the memtable's newest chunk,
+    /// which every rewrite changes, is then read as written rather than
+    /// built as a segment for each statement.
+    fn rows_of(&self, snap: &Snapshot, select: &Select) -> Result<Vec<Vec<Value>>> {
+        let opts = &self.exec;
+        let Some((keys, fields)) = keys_read(snap.schema(), select, opts) else { return Ok(self.execute(snap, select, opts)?.rows) };
+        let mut rows: Vec<Vec<Value>> = self.rows_by_key(snap, &keys, &fields, opts)?.into_iter().flatten().map(|r| r.row).collect();
+        if let Some(max) = opts.max_rows.filter(|&m| rows.len() > m) {
+            return Err(Error::Query(format!("the query matches more than {max} rows, the most a query returns; add a LIMIT")));
+        }
+        // Shards answer with the stored integers, as the executor does.
+        if !opts.shard {
+            select.typed(&mut rows);
+        }
+        Ok(rows)
     }
 
     /// The columns [`Db::get`] answers for a table of schema `schema`, in
@@ -2095,21 +2139,7 @@ fn plan_sets(schema: &Schema, models: &[Option<Arc<dyn Embedder>>], derivers: &[
             return Err(Error::Query(format!("UPDATE of non-numeric fields rewrites documents, and {} is not stored", f.name)));
         }
     }
-    // A rewrite that changes the file of a derived field makes its text
-    // again, unless it sets the text itself.
-    let remade: Vec<usize> = (0..schema.fields.len())
-        .filter(|&f| derivers[f].is_some() && !sets.iter().any(|(g, _)| *g == f))
-        .filter(|&f| sets.iter().any(|(g, _)| schema.derives_from(f) == Some(*g)))
-        .collect();
-    // A rewrite that changes a source of an embedded field (or the text
-    // made again) recomputes its vector, unless it sets the vector itself.
-    let stale: Vec<usize> = (0..schema.fields.len())
-        .filter(|&f| models[f].is_some() && !sets.iter().any(|(g, _)| *g == f))
-        .filter(|&f| {
-            let from = &schema.fields[f].embed.as_ref().expect("embedded").from;
-            sets.iter().map(|(g, _)| *g).chain(remade.iter().copied()).any(|g| from.iter().any(|s| schema.field_index(s) == Some(g)) || generated_from_set(schema, from, g))
-        })
-        .collect();
+    let (remade, stale) = cleared(schema, models, derivers, sets);
     // Expressions read generated fields, which need not be stored.
     let generated = schema.fields.iter().any(|f| !f.generated_from.is_empty()) && sets.iter().any(|(_, a)| matches!(a, Assign::Expr(_)));
     let (mut in_place, mut rewrites, mut n) = (Vec::new(), Vec::new(), 0u64);
@@ -2185,6 +2215,101 @@ fn plan_sets(schema: &Schema, models: &[Option<Arc<dyn Embedder>>], derivers: &[
     Ok(Planned { in_place, rewrites, rows: n })
 }
 
+/// The fields a rewrite setting `sets` leaves for a model to make again:
+/// the derived fields whose files it changes, unless it sets their text
+/// itself, then the embedded fields whose sources (or the text made again)
+/// it changes, unless it sets their vectors itself.
+fn cleared(schema: &Schema, models: &[Option<Arc<dyn Embedder>>], derivers: &[Option<Arc<dyn Deriver>>], sets: &[(usize, Assign)]) -> (Vec<usize>, Vec<usize>) {
+    let remade: Vec<usize> = (0..schema.fields.len())
+        .filter(|&f| derivers[f].is_some() && !sets.iter().any(|(g, _)| *g == f))
+        .filter(|&f| sets.iter().any(|(g, _)| schema.derives_from(f) == Some(*g)))
+        .collect();
+    let stale: Vec<usize> = (0..schema.fields.len())
+        .filter(|&f| models[f].is_some() && !sets.iter().any(|(g, _)| *g == f))
+        .filter(|&f| {
+            let from = &schema.fields[f].embed.as_ref().expect("embedded").from;
+            sets.iter().map(|(g, _)| *g).chain(remade.iter().copied()).any(|g| from.iter().any(|s| schema.field_index(s) == Some(g)) || generated_from_set(schema, from, g))
+        })
+        .collect();
+    (remade, stale)
+}
+
+/// Whether rows rewritten by setting `sets` may need a model: one makes
+/// a field again ([`cleared`]), or a field that one makes is set to
+/// something other than a value (NULL, an expression, the proposed
+/// row's), which may leave it for the model. Otherwise the vectors and the
+/// text the rows hold stay theirs, and nothing is computed ahead of the
+/// writer lock. A row that lacks one already still gets it under the lock.
+fn sets_need_models(schema: &Schema, models: &[Option<Arc<dyn Embedder>>], derivers: &[Option<Arc<dyn Deriver>>], sets: &[(usize, Assign)]) -> bool {
+    let (remade, stale) = cleared(schema, models, derivers, sets);
+    !remade.is_empty() || !stale.is_empty() || sets.iter().any(|(f, a)| (models[*f].is_some() || derivers[*f].is_some()) && !matches!(a, Assign::Value(v) if !matches!(v, Value::Null)))
+}
+
+/// The keys of the rows `select` reads, and the fields it reads of them
+/// (positions), when it reads rows by primary key only: each projected
+/// column a field, the filter `key = v`, `key IN (...)` or a disjunction
+/// of them, with values of the key's type, and nothing else (no order,
+/// LIMIT, OFFSET, groups, graphs, guard or rerank phases), on options that
+/// search every segment. Each key once, in the order the filter names
+/// them. `None` for any other query, which the executor runs.
+fn keys_read(schema: &Schema, select: &Select, opts: &ExecOptions) -> Option<(Vec<Value>, Vec<usize>)> {
+    use crate::query::logical::{Pred, Projection};
+    fn pinned(p: &Pred, pk: usize, out: &mut Vec<Value>) -> bool {
+        match p {
+            Pred::In { field, values } if *field == pk => {
+                out.extend(values.iter().cloned());
+                true
+            }
+            Pred::IntRange { field, lo, hi } if *field == pk && lo == hi => {
+                out.push(Value::Int(*lo));
+                true
+            }
+            Pred::False => true,
+            Pred::Or(ps) => ps.iter().all(|p| pinned(p, pk, out)),
+            _ => false,
+        }
+    }
+    let pk = schema.primary_key?;
+    let plain = select.order.is_none()
+        && select.tiebreak.is_none()
+        && select.limit.is_none()
+        && select.offset == 0
+        && select.group_by.is_empty()
+        && select.having.is_none()
+        && select.paths.is_empty()
+        && select.graphs.is_empty()
+        && select.phases.is_empty()
+        && select.guard.is_none()
+        && select.per.is_none()
+        && opts.segments.is_none();
+    if !plain {
+        return None;
+    }
+    let fields = select
+        .projection
+        .iter()
+        .map(|(_, p)| match p {
+            Projection::Field(f) => Some(*f),
+            _ => None,
+        })
+        .collect::<Option<Vec<usize>>>()?;
+    let mut keys = Vec::new();
+    if !pinned(&select.filter, pk, &mut keys) {
+        return None;
+    }
+    let typed = match schema.fields[pk].ty {
+        FieldType::Keyword => keys.iter().all(|k| matches!(k, Value::Str(_))),
+        FieldType::Int => keys.iter().all(|k| matches!(k, Value::Int(_))),
+        _ => false,
+    };
+    if !typed {
+        return None;
+    }
+    let mut seen = HashSet::new();
+    keys.retain(|k| seen.insert(Part::of(k)));
+    Some((keys, fields))
+}
+
 /// The rows an UPDATE filling in embedded field `backfill`'s vectors
 /// writes ([`Db::prepare_backfill`]): those still without one whose
 /// sources are not all empty. Every row of any other UPDATE.
@@ -2240,7 +2365,7 @@ fn set_rows(
 /// NOTHING`).
 fn not_live(snap: &Snapshot, pk: usize, mut docs: Vec<Document>) -> Vec<Document> {
     let mut seen = HashSet::new();
-    docs.retain(|d| snap.lookup(&d[pk]).is_none() && seen.insert(Part::of(&d[pk])));
+    docs.retain(|d| snap.find(&d[pk]).is_none() && seen.insert(Part::of(&d[pk])));
     docs
 }
 
