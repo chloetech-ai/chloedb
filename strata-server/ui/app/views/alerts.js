@@ -854,7 +854,7 @@ function alertHub(page, id, r) {
       const missed = (j.nodes || []).filter((n) => n.error);
       clear(logsBox, list.length ? table([
         { key: "n", label: "lines", num: true, render: (g) => h("b", {}, fmt.si(g.n)) },
-        { key: "level", label: "level", render: (g) => h("span", { class: "al-lv " + g.level }, g.level) },
+        { key: "level", label: "level", render: (g) => h("span", { class: "al-lv al-lv-" + g.level }, g.level) },
         { key: "text", label: "message pattern", render: (g) => h("a", { class: "mono small al-pat", href: link("logs", { q: `level:${g.level} "${g.text.split(" <")[0].slice(0, 60)}"`, from: Math.round(at), to }), title: g.text }, g.text) },
         { key: "nodes", label: "where", render: (g) => { const ns = [...g.nodes].map(nodeShort).sort(); return h("span", { class: "small", title: [...g.nodes].join(", ") }, ns.slice(0, 3).join(", ") + (ns.length > 3 ? ` +${ns.length - 3}` : "")); } },
       ], { rows: list, compact: true }) : h("div", { class: "small muted", style: { padding: "4px 14px 12px" } }, "No warn or error lines since it fired."),
