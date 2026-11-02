@@ -2174,6 +2174,7 @@ body.cc-dragging, body.cc-dragging * { cursor: grabbing !important; user-select:
   .cc-op { grid-template-columns: minmax(0, 1fr) auto; }
   .cc-op-ic { display: none; }
   .cc-as .as-days { overflow-x: auto; }
+  .cc-as .as-live-n { flex: 1 1 40%; min-width: 0; }
   .cc-as .as-day { flex: none !important; padding: 6px 8px; }
 }
 /* ===== end cluster ===== */

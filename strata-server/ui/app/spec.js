@@ -352,8 +352,10 @@ export function scaleWords(patch, { S, R, rows = 0, rate = ASSUMED_RATE, measure
   if (patch.storage?.size && patch.storage.size !== spec.storage?.size) out.push(`grows every volume to ${patch.storage.size}${spec.storage?.size ? ` (from ${spec.storage.size})` : ""}`);
   const added = S1 * R1 - S * R;
   const req = spec.resources?.requests || {};
-  const room = added > 0 && (req.cpu || req.memory || spec.storage?.size)
-    ? `The new servers ask the nodes for ${[req.cpu ? `${fmt.n(added * (cores(req.cpu) || 0), 1)} cores` : null, req.memory ? `${fmt.bytes(added * (quantity(req.memory) || 0))} of memory` : null].filter(Boolean).join(" and ") || "no reserved cores or memory"}${spec.storage?.size || DEFAULTS.storage.size ? `, and ${fmt.n(added)} volumes of ${patch.storage?.size || spec.storage?.size || DEFAULTS.storage.size}` : ""}.`
+  const vol = patch.storage?.size || spec.storage?.size || DEFAULTS.storage.size;
+  const asks = [req.cpu ? `${fmt.n(added * (cores(req.cpu) || 0), 1)} cores` : null, req.memory ? `${fmt.bytes(added * (quantity(req.memory) || 0))} of memory` : null].filter(Boolean);
+  const room = added > 0
+    ? (asks.length ? `The new servers ask the nodes for ${asks.join(" and ")}, and ${fmt.n(added)} volumes of ${vol}.` : `The new servers need ${fmt.n(added)} volumes of ${vol}; the spec reserves them no cores or memory, so they take what their nodes have left.`)
     : null;
   const time = copyRows ? `About ${dur(secs)} to copy ${fmt.si(copyRows)} rows${parallel ? ", every shard at once" : ""}${measured ? ", at the rate the last move ran" : ", at an assumed rate (no move measured in this browser yet)"}.` : null;
   const text = out.length ? out.join("; ").replace(/^./, (c) => c.toUpperCase()) + "." : "Changes " + Object.keys(patch).join(", ") + ".";

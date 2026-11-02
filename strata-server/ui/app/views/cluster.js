@@ -21,6 +21,7 @@
 
 import { h, s, icon, clear, fmt, card, api, every, toast, modal, pill, empty, bus, seg, store, tipOn, hideTip, ApiError, copy, debounce, confirm, can, needs, link, when, whenTitle } from "../core.js";
 import * as core from "../core.js";
+import { verifyWords } from "./system.js";
 import { state, isCoordinator, refreshCluster, fresh, staleText, isProduction } from "../data.js";
 
 /** A phone or a narrow window: the shell's isNarrow() once it has one, else the same breakpoint. */
@@ -1055,9 +1056,8 @@ function render(page, r) {
     toast(`Verifying shard ${sh.i}'s replicas against ${cname(c)}…`);
     try {
       const j = await api("/v1/admin/copies/verify", { body: { url: c.url } });
-      const rs = j.replicas || j.results || [];
-      const bad = rs.filter((x) => x.ok === false || x.differs || x.diverged);
-      toast(bad.length ? `Shard ${sh.i}: ${plural(bad.length, "replica")} differed and ${bad.length === 1 ? "is" : "are"} sent a copy` : `Shard ${sh.i}: every replica holds the primary's rows`, bad.length ? "bad" : "ok", 8000);
+      const w = verifyWords(j, (u) => cname(M.all.find((x) => x.url === u) || { id: u }));
+      toast(`Shard ${sh.i}: ${w.summary}${w.tone === "ok" ? "" : ": " + w.lines.filter((l) => l.tone !== "ok").map((l) => l.text).join("; ")}`, w.tone === "ok" ? "ok" : "bad", 10000);
     } catch (e) {
       if (e.status === 404 || e.status === 405) { unsupported.verify = true; store.set("cluster.unsupported", unsupported); toast("This server cannot verify a shard's replicas from the coordinator: a newer server can.", "bad", 8000); drawSide(); }
       else toast(`Not verified: ${e.message}`, "bad", 8000);
