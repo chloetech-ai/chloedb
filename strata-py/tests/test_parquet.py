@@ -3,7 +3,7 @@
 (`Database.import_arrow`), and `s3://` URLs, against a local S3 (moto)."""
 
 import datetime
-import os
+import json
 
 import pytest
 
@@ -42,9 +42,9 @@ def test_from_parquet_and_back(tmp_path):
     with strata.from_parquet(src, tmp_path / "events.strata") as db:
         assert db.last_import["rows"] == 3 and db.last_import["created"] and db.last_import["bulk"]
         assert db.query("SELECT id FROM events WHERE MATCH(title, 'foxes') AND kind = 'view'").scalar() == 2
-        assert db.query("SELECT id FROM events WHERE tags = 'sale' ORDER BY id").column(0) == [1, 3]
+        assert db.query("SELECT id FROM events WHERE tags = 'sale' ORDER BY id").column("id") == [1, 3]
         assert db.query("SELECT ok FROM events WHERE id = 2").scalar() is False
-        assert db.query("SELECT extra FROM events WHERE id = 3").scalar() == {"a": 3, "b": "x"}
+        assert json.loads(db.query("SELECT extra FROM events WHERE id = 3").scalar()) == {"a": 3, "b": "x"}
 
         # Out: one file, which pyarrow reads with its types and Strata reads back.
         out = tmp_path / "copy.parquet"
@@ -57,7 +57,7 @@ def test_from_parquet_and_back(tmp_path):
         assert t.schema.field("at").type == pa.timestamp("us", tz="UTC")
         assert t.schema.field("ok").type == pa.bool_()
         assert t.schema.field("tags").type == pa.list_(pa.string())
-        assert b"strata.schema" in t.schema.metadata
+        assert b"strata.schema" in pq.read_metadata(out).metadata
         assert sorted(t.column("id").to_pylist()) == [1, 2, 3]
         with strata.from_parquet(out, tmp_path / "back.strata") as back:
             assert back.schema == db.schema
@@ -182,3 +182,9 @@ def test_s3_urls(s3, tmp_path):
         assert len(db.query("SELECT id FROM events WHERE id = 7").rows) == 1
     with pytest.raises(strata.StrataError, match="no such object"):
         strata.plan_parquet("s3://lake/nothing/here")
+    # Keys are read as written: a Hive value Spark percent-encodes stays one.
+    p = tmp_path / "city.parquet"
+    pq.write_table(events(1, 2), p)
+    s3.upload_file(str(p), "lake", "raw/cities/city=S%C3%A3o%20Paulo/part-0.parquet")
+    with strata.from_parquet("s3://lake/raw/cities", tmp_path / "c.strata") as db:
+        assert db.query("SELECT city FROM cities WHERE id = 1").scalar() == "São Paulo"

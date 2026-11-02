@@ -57,6 +57,12 @@ fn store(url: &str, bucket: &str) -> Result<AmazonS3> {
     AmazonS3Builder::from_env().with_bucket_name(bucket).build().map_err(|e| failed(url, e))
 }
 
+/// `k` as a key, as it is written: object_store's `Path::from` would
+/// percent-encode characters such as `%` and `~`, naming another object.
+fn key(url: &str, k: &str) -> Result<Key> {
+    Key::parse(k).map_err(|e| failed(url, e))
+}
+
 fn failed(url: &str, e: impl std::fmt::Display) -> Error {
     Error::Io(std::io::Error::other(format!("{url}: {e}")))
 }
@@ -144,10 +150,11 @@ impl Input {
 async fn fetch(url: &str, bucket: &str, key: &str, dir: &Path) -> Result<PathBuf> {
     let s3 = Arc::new(store(url, bucket)?);
     if !key.is_empty() && !key.ends_with('/') {
-        match s3.head(&Key::from(key)).await {
+        let k = self::key(url, key)?;
+        match s3.head(&k).await {
             Ok(_) => {
                 let file = dir.join(last_segment(key, "object"));
-                download(&s3, url, key, &file).await?;
+                download(&s3, url, &k, &file).await?;
                 return Ok(file);
             }
             Err(object_store::Error::NotFound { .. }) => {}
@@ -157,7 +164,7 @@ async fn fetch(url: &str, bucket: &str, key: &str, dir: &Path) -> Result<PathBuf
     let prefix = key.trim_end_matches('/');
     let root = dir.join(last_segment(prefix, bucket));
     std::fs::create_dir_all(&root)?;
-    let under = (!prefix.is_empty()).then(|| Key::from(prefix));
+    let under = (!prefix.is_empty()).then(|| self::key(url, prefix)).transpose()?;
     let listed: Vec<_> = s3.list(under.as_ref()).try_collect().await.map_err(|e| failed(url, e))?;
     let mut files = Vec::new();
     for o in listed {
@@ -168,7 +175,7 @@ async fn fetch(url: &str, bucket: &str, key: &str, dir: &Path) -> Result<PathBuf
             continue;
         }
         let rel = relative(rel).ok_or_else(|| failed(url, format!("object {k}: a key that leaves its prefix")))?;
-        files.push((k, root.join(rel)));
+        files.push((o.location, root.join(rel)));
     }
     if files.is_empty() {
         return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{url}: no such object, and no objects under it"))));
@@ -178,12 +185,12 @@ async fn fetch(url: &str, bucket: &str, key: &str, dir: &Path) -> Result<PathBuf
     Ok(root)
 }
 
-async fn download(s3: &AmazonS3, url: &str, key: &str, file: &Path) -> Result<()> {
+async fn download(s3: &AmazonS3, url: &str, key: &Key, file: &Path) -> Result<()> {
     if let Some(d) = file.parent() {
         std::fs::create_dir_all(d)?;
     }
     let mut out = std::fs::File::create(file)?;
-    let mut body = s3.get(&Key::from(key)).await.map_err(|e| failed(url, format!("{key}: {e}")))?.into_stream();
+    let mut body = s3.get(key).await.map_err(|e| failed(url, format!("{key}: {e}")))?.into_stream();
     while let Some(chunk) = body.next().await {
         out.write_all(&chunk.map_err(|e| failed(url, format!("{key}: {e}")))?)?;
     }
@@ -257,10 +264,10 @@ impl Output {
         run(async move {
             let s3 = Arc::new(store(url, &bucket)?);
             let taken: Vec<_> = if self.path.is_dir() {
-                let under = (!base.is_empty()).then(|| Key::from(base));
+                let under = (!base.is_empty()).then(|| self::key(url, base)).transpose()?;
                 s3.list(under.as_ref()).take(1).try_collect().await.map_err(|e| failed(url, e))?
             } else {
-                match s3.head(&Key::from(base)).await {
+                match s3.head(&self::key(url, base)?).await {
                     Ok(o) => vec![o],
                     Err(object_store::Error::NotFound { .. }) => Vec::new(),
                     Err(e) => return Err(failed(url, e)),
@@ -278,7 +285,7 @@ impl Output {
 
 async fn upload(s3: &AmazonS3, url: &str, key: &str, file: &Path) -> Result<u64> {
     let size = std::fs::metadata(file)?.len();
-    let k = Key::from(key);
+    let k = self::key(url, key)?;
     if size as usize <= PART {
         s3.put(&k, PutPayload::from(std::fs::read(file)?)).await.map_err(|e| failed(url, format!("{key}: {e}")))?;
         return Ok(size);
