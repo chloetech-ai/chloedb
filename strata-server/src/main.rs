@@ -343,6 +343,11 @@ struct Args {
     /// the HTTP port).
     #[arg(long, env = "STRATA_NODE_NAME")]
     node_name: Option<String>,
+    /// Do not count how often each document is retrieved and each key
+    /// asked for (the index inspector's reads; counted in memory by
+    /// default, cheaply: see docs/strata/server.md).
+    #[arg(long)]
+    no_read_stats: bool,
 }
 
 #[derive(Subcommand)]
@@ -709,6 +714,7 @@ async fn main() {
     };
     let coordinator = !o.shards.is_empty();
     let svc = server::service(&o).await.unwrap_or_else(|e| fail(&e));
+    svc.reads.set_on(!a.no_read_stats);
     if token.is_none() && cluster.is_none() && !svc.keys.is_empty() && !svc.keys.managed() {
         tracing::warn!("this server has no token and no admin key that never expires: once its admin keys expire, only starting it with --token manages it. Make an admin key without expires_days");
     }
