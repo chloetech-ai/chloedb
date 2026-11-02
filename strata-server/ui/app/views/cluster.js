@@ -19,8 +19,12 @@
 // Capacity says what the autoscaler suggests in words; Changes lists this
 // cluster's events and the changes people and automation made.
 
-import { h, s, icon, clear, fmt, card, api, every, toast, modal, pill, empty, failure, bus, seg, store, tipOn, hideTip, menu, ApiError, copy, debounce } from "../core.js";
-import { state, isCoordinator, refreshCluster } from "../data.js";
+import { h, s, icon, clear, fmt, card, api, every, toast, modal, pill, empty, bus, seg, store, tipOn, hideTip, ApiError, copy, debounce, confirm, can, needs, link, when, whenTitle } from "../core.js";
+import * as core from "../core.js";
+import { state, isCoordinator, refreshCluster, fresh, staleText, isProduction } from "../data.js";
+
+/** A phone or a narrow window: the shell's isNarrow() once it has one, else the same breakpoint. */
+const narrow = () => (typeof core.isNarrow === "function" ? core.isNarrow() : matchMedia("(max-width: 900px)").matches);
 
 export default {
   id: "cluster", title: "Cluster", icon: "layers", group: "Operate",
@@ -57,18 +61,15 @@ function dur(secs) {
   if (hr < 48) return mm ? `${hr} h ${mm} min` : `${hr} h`;
   return `${Math.floor(hr / 24)} d ${hr % 24} h`;
 }
-/** 19:42 today, Nov 2 19:42 another day; the time zone in the title. */
-function clock(ms) {
-  if (!ms) return "–";
-  const d = new Date(ms);
-  const t = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
-  return d.toDateString() === new Date().toDateString() ? t : `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${t}`;
-}
+/** 19:42 today, Nov 2 19:42 another day (the full time and zone go in a title). */
+const clock = (ms) => when(ms, { sec: false });
 const zoneName = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
 const sinceText = (ms) => (ms ? `since ${clock(ms)} (${dur((Date.now() - ms) / 1000)})` : "");
 /** Slots as runs: [a, b) half-open, said inclusively (2,496–2,516). */
 const runsText = (rs) => (rs || []).map(([a, b]) => (b - a === 1 ? fmt.n(a) : `${fmt.n(a)}–${fmt.n(b - 1)}`)).join(", ");
 const runsCount = (rs) => (rs || []).reduce((n, [a, b]) => n + (b - a), 0);
+/** 25.4k, 3.1k, 870: transactions behind. */
+const kn = (v) => (v == null ? "–" : v >= 1000 ? (v / 1000).toFixed(v >= 1e5 ? 0 : 1).replace(/\.0$/, "") + "k" : fmt.n(v));
 const nodeLabel = (k) => (k && k.length > 18 ? "…" + k.slice(-14) : k || "–");
 
 /** A copy's name: its node name or s1-0, with the URL in a tooltip. */
@@ -165,9 +166,18 @@ function model(c) {
     raw: c, at: c?.at_ms || Date.now(), shards, all, nodes, zones, versions: vlist, mainVersion: vlist[0]?.[0] || null,
     epoch: c?.slot_epoch, changes: c?.changes || { ok: true }, name: c?.cluster?.name || null, env: c?.cluster?.environment || null,
     medCpu: median(shards.map((x) => shardValue("cpu", x))), medP99: median(shards.map((x) => shardValue("p99", x))),
-    nodesKnown: all.some((x) => x.node), zonesKnown: all.some((x) => x.zone),
+    nodesKnown: all.some((x) => x.node), zonesKnown: all.some((x) => x.zone), nodePrefix: commonPrefix([...nodes.keys()]),
     coordinators: state.fleet?.coordinators?.length || null,
   };
+}
+
+/** What every node name starts with, to a "-" or "." (ip-10-0-), when there are several. */
+function commonPrefix(keys) {
+  if (keys.length < 2) return "";
+  let p = keys[0];
+  for (const k of keys) while (p && !k.startsWith(p)) p = p.slice(0, -1);
+  const cut = Math.max(p.lastIndexOf("-"), p.lastIndexOf("."));
+  return cut >= 3 ? p.slice(0, cut + 1) : "";
 }
 
 // ---------------------------------------------------------------- lenses
@@ -179,7 +189,7 @@ const LENSES = {
   disk: { label: "Disk", title: "How full the fullest copy's volume is", copy: (c) => c.disk, fmt: pct0, warn: () => 0.8, bad: () => 0.9 },
   p99: { label: "p99", title: "The slowest copy's 99th percentile of searches, over its last minute, against the SLO", copy: (c) => c.p99, fmt: (v) => fmt.ms(v), warn: () => slo() * 0.6, bad: () => slo() },
   version: { label: "Version", title: "The version each copy runs; the one most copies run is neutral" },
-  lag: { label: "Lag", title: "Transactions a replica has still to apply from its primary", copy: (c) => (c.primary ? null : c.lag), fmt: (v) => fmt.si(v), warn: () => LAG_WARN, bad: () => LAG_BAD },
+  lag: { label: "Lag", title: "Transactions a replica has still to apply from its primary", copy: (c) => (c.primary ? null : c.lag), fmt: (v) => kn(v), warn: () => LAG_WARN, bad: () => LAG_BAD },
 };
 function shardValue(lens, sh) {
   const L = LENSES[lens];
@@ -206,14 +216,14 @@ function issues(sh) {
   for (const c of sh.copies) {
     if (c.down) continue;
     if (c.copying) out.push({ sev: 0, short: "copying", long: `${cname(c)} is being sent a copy of the primary` });
-    else if (c.lag != null && c.lag >= LAG_WARN) out.push({ sev: 1, short: `lag ${fmt.si(c.lag)}`, long: `${cname(c)} is ${fmt.n(c.lag)} transactions behind its primary` });
+    else if (c.lag != null && c.lag >= LAG_WARN) out.push({ sev: 1, short: `lag ${kn(c.lag)}`, long: `${cname(c)} is ${fmt.n(c.lag)} transactions behind its primary` });
     if (c.disk != null && c.disk >= 0.85) out.push({ sev: 1, short: `disk ${pct0(c.disk)}`, long: `${cname(c)}'s volume is ${pct0(c.disk)} full` });
     if (c.avoided) out.push({ sev: 1, short: "avoided", long: `${cname(c)} is avoided after failures${c.avoidedWhy ? ": " + c.avoidedWhy : ""}` });
-    for (const a of c.alerts?.firing || []) out.push({ sev: a.severity === "critical" ? 2 : 1, short: "alert", long: `${a.name || a.id} fires on ${cname(c)}` });
   }
   const cpu = shardValue("cpu", sh), p99 = shardValue("p99", sh);
   if (p99 != null && p99 >= slo()) out.push({ sev: 1, short: `p99 ${fmt.ms(p99)}`, long: `its slowest copy's p99 is ${fmt.ms(p99)}, over the SLO of ${fmt.ms(slo())}` });
-  else if (cpu != null && cpu >= 0.85) out.push({ sev: 1, short: `CPU ${pct0(cpu)}`, long: `its busiest copy uses ${pct0(cpu)} of its cores` });
+  if (cpu != null && cpu >= 0.85) out.push({ sev: 1, short: `CPU ${pct0(cpu)}`, long: `its busiest copy uses ${pct0(cpu)} of its cores` });
+  for (const c of sh.copies) for (const a of c.alerts?.firing || []) out.push({ sev: a.severity === "critical" ? 2 : 1, short: "alert", long: `${a.name || a.id} fires on ${cname(c)}` });
   return out.sort((a, b) => b.sev - a.sev);
 }
 const healthLevel = (sh) => Math.max(0, ...issues(sh).map((x) => x.sev));
@@ -238,13 +248,14 @@ function problems(M) {
     const c0 = down.slice().sort((a, b) => (a.downSince || Infinity) - (b.downSince || Infinity))[0];
     out.push({
       sev: 1, shards: [...new Set(down.map((c) => c.shard))], label: `${down.length === 1 ? "1 copy" : down.length + " copies"} down`,
-      text: [cname(c0), c0.node ? `node ${nodeLabel(c0.node)}` : null, c0.downSince ? sinceText(c0.downSince) : null].filter(Boolean).join(" · ") + (down.length > 1 ? ` and ${down.length - 1} more` : ""),
+      text: [cname(c0), c0.downSince ? sinceText(c0.downSince) : null].filter(Boolean).join(" ") + (down.length > 1 ? ` and ${down.length - 1} more` : ""),
+      long: c0.node ? `on node ${c0.node}${c0.error ? ": " + c0.error : ""}` : null,
       since: c0.downSince, impact: "their shards serve from the copies left, with one failure less to spare",
       next: "Bring them back, or replace them", fix: { kind: "replace", shards: [...new Set(down.map((c) => c.shard))] },
     });
   }
   const lag = M.all.filter((c) => !c.down && !c.primary && c.lag != null && c.lag >= LAG_WARN).sort((a, b) => b.lag - a.lag);
-  if (lag.length) out.push({ sev: 1, shards: lag.map((c) => c.shard), label: `${lag.length === 1 ? "1 replica" : lag.length + " replicas"} behind`, text: `${cname(lag[0])} · ${fmt.si(lag[0].lag)} transactions${lag.length > 1 ? ` and ${lag.length - 1} more` : ""}`, impact: "its reads are older, and writes that wait for every copy wait for it", next: "Look at its disk and CPU, or its logs" });
+  if (lag.length) out.push({ sev: 1, shards: lag.map((c) => c.shard), label: `${lag.length === 1 ? "1 replica" : lag.length + " replicas"} behind`, text: `${cname(lag[0])} · ${kn(lag[0].lag)} transactions${lag.length > 1 ? ` and ${lag.length - 1} more` : ""}`, impact: "its reads are older, and writes that wait for every copy wait for it", next: "Look at its disk and CPU, or its logs" });
   const fleetDisk = state.fleet?.checks?.find?.((x) => x.id === "disk");
   const full = M.all.filter((c) => c.disk != null && c.disk >= 0.85).sort((a, b) => b.disk - a.disk);
   if (full.length) out.push({ sev: 1, shards: [...new Set(full.map((c) => c.shard))], label: `Disk ${pct0(full[0].disk)}`, text: `${cname(full[0])}${fleetDisk?.days_to_full != null ? ` · full in about ${fmt.n(fleetDisk.days_to_full, 1)} days` : ""}${full.length > 1 ? ` and ${full.length - 1} more over 85%` : ""}`, impact: "a database that cannot write refuses writes", next: "Add shards so each holds less, or grow the volumes" });
@@ -314,31 +325,14 @@ function measuredRate(mi) {
 }
 
 // ---------------------------------------------------------------- dialogs
-/** Asks before doing something; `typed` must be typed first. Focus is on Cancel. */
-function ask({ title, body, ok = "Confirm", danger = false, typed = null }) {
-  return new Promise((resolve) => {
-    let answered = false;
-    const inp = typed ? h("input", { class: "input", autocomplete: "off", spellcheck: "false", "aria-label": `Type ${typed} to confirm` }) : null;
-    const yes = h("button", { class: "btn " + (danger ? "danger solid" : "primary"), disabled: !!typed }, ok);
-    const no = h("button", { class: "btn" }, "Cancel");
-    if (inp) {
-      inp.oninput = () => { yes.disabled = inp.value.trim() !== typed; };
-      inp.onkeydown = (e) => { if (e.key === "Enter" && !yes.disabled) yes.click(); };
-    }
-    const m = modal({
-      title,
-      body: [typeof body === "string" ? h("p", { class: "dim", style: { margin: 0 } }, body) : body,
-        typed ? h("label", { class: "f" }, h("span", {}, "Type ", h("b", { class: "mono" }, typed), " to confirm"), inp) : null],
-      foot: [no, yes], wide: true,
-      onClose: () => { if (!answered) resolve(false); },
-    });
-    yes.onclick = () => { answered = true; m.close(); resolve(true); };
-    no.onclick = () => { answered = true; m.close(); resolve(false); };
-    setTimeout(() => (inp || no).focus(), 0);
-  });
-}
-const canAdmin = () => !state.whoami || state.whoami.scope === "admin";
-const needsAdmin = "needs an admin key";
+/**
+ * Asks before a change: focus on Cancel, `typed` must be typed first, and on
+ * production (or an unknown environment) a reason the audit log keeps.
+ * Resolves false or {reason}.
+ */
+const ask = (o) => confirm({ reason: isProduction() ? "Why: kept in the audit log with the change" : false, ...o });
+const canAdmin = () => can("admin");
+const needsAdmin = needs("admin");
 
 // ---------------------------------------------------------------- the view
 function render(page, r) {
@@ -427,8 +421,9 @@ function render(page, r) {
   function drawStrip() {
     if (!M) { clear(stripBox); return; }
     const ps = problems(M);
-    const chips = ps.slice(0, 7).map((p) => {
-      const b = h("button", { class: "cc-chip " + (p.sev === 2 ? "crit" : p.sev === 1 ? "warn" : "info"), role: "listitem", title: [p.impact ? cap(p.impact) + "." : null, p.next ? p.next + "." : null].filter(Boolean).join(" ") },
+    const SHOW = narrow() ? 2 : 3;
+    const chips = ps.slice(0, SHOW).map((p) => {
+      const b = h("button", { class: "cc-chip " + (p.sev === 2 ? "crit" : p.sev === 1 ? "warn" : "info"), role: "listitem", title: [p.long ? cap(p.long) + "." : null, p.impact ? cap(p.impact) + "." : null, p.next ? p.next + "." : null].filter(Boolean).join(" ") },
         h("span", { class: "dot " + (p.sev === 2 ? "bad" : p.sev === 1 ? "warn" : "") }), h("b", {}, p.label), p.text ? h("span", { class: "dim" }, p.text) : null);
       b.onclick = () => {
         if (p.link) { location.hash = p.link; return; }
@@ -439,7 +434,7 @@ function render(page, r) {
     });
     const serving = M.all.filter((c) => !c.down).length;
     chips.push(h("span", { class: "cc-chip plain", role: "listitem", title: "Copies that answer the coordinator now" }, h("span", { class: "dot " + (serving === M.all.length ? "ok" : "warn") }), `${fmt.n(serving)} of ${plural(M.all.length, "copy", "copies")} serving`));
-    if (ps.length > 7) chips.push(h("span", { class: "cc-chip plain" }, `and ${ps.length - 7} more below`));
+    if (ps.length > SHOW) chips.push(h("button", { class: "cc-chip plain more", title: ps.slice(SHOW).map((p) => p.label).join("; "), onclick: () => { sel = null; mode = "live"; tab = "map"; writeParams(); drawAll(); side.scrollTop = 0; } }, `${ps.length - SHOW} more in What needs attention`));
     chips.push(changeChip());
     clear(stripBox, chips);
   }
@@ -461,11 +456,11 @@ function render(page, r) {
   const legendBox = h("div", { class: "cc-legend" });
   const attention = h("div", { class: "cc-attn" });
   const canvas = h("div", { class: "cc-canvas" });
-  const whatIfBox = h("div");
   mapCard.append(h("div", { class: "bd" }, toolbar, legendBox, attention, canvas));
-  left.append(mapCard, whatIfBox);
+  left.append(mapCard);
 
   function drawAll() {
+    if (tab !== "map") { sheet(null); bottom(null); }
     drawHead(); drawStrip();
     if (tab === "map") {
       clear(body, h("div", { class: "cc-main" + (mode === "draft" ? " drafting" : "") }, left, side));
@@ -480,12 +475,22 @@ function render(page, r) {
     if (e.key === "Enter") { const hit = matches(); if (hit.length === 1) select(hit[0]); }
     if (e.key === "Escape") { filterInp.value = ""; filter = ""; writeParams(); drawMap(); }
   });
+  let pfChip = null;
   function drawToolbar() {
     if (document.activeElement !== filterInp) filterInp.value = filter;
-    const lensSeg = seg(Object.entries(LENSES).map(([k, L]) => [k, L.label, L.title]), lens, (v) => { lens = v; store.set("cluster.lens", v); writeParams(); drawMap(); }, { "aria-label": "Colour by" });
+    const setLens = (v) => { lens = v; store.set("cluster.lens", v); writeParams(); drawMap(); if (narrow()) drawSide(); };
+    const setGroup = (v) => { group = v; writeParams(); drawMap(); };
+    if (narrow()) {
+      const pick = (label, opts, v, f) => h("label", { class: "cc-pick" }, h("span", {}, label), h("select", { class: "select sm", onchange: (e) => f(e.target.value) }, opts.map(([k, l]) => h("option", { value: k, selected: k === v }, l))));
+      pfChip = null;
+      clear(toolbar, pick("Colour", Object.entries(LENSES).map(([k, L]) => [k, L.label]), lens, setLens), pick("Group", [["shard", "Shard"], ["node", "Node"], ["zone", "Zone"]], group, setGroup), filterInp, mode === "draft" && managed() ? kubeSteppers() : null);
+      return;
+    }
+    const lensSeg = seg(Object.entries(LENSES).map(([k, L]) => [k, L.label, L.title]), lens, setLens, { "aria-label": "Colour by" });
     const groupSeg = seg([["shard", "Shard"], ["node", "Node"], ["zone", "Zone"]], group, (v) => { group = v; writeParams(); drawMap(); }, { "aria-label": "Group by" });
     const pf = h("button", { class: "chip", "aria-pressed": String(problemsFirst), title: "Put the shards that need attention first", onclick: () => { problemsFirst = !problemsFirst; store.set("cluster.problemsFirst", problemsFirst); drawToolbar(); drawMap(); } }, "Problems first");
-    const parts = [lensSeg, groupSeg, group === "shard" ? pf : null, filterInp];
+    pfChip = group === "shard" ? pf : null;
+    const parts = [lensSeg, groupSeg, filterInp];
     if (mode === "draft" && managed()) parts.push(kubeSteppers());
     clear(toolbar, parts);
   }
@@ -505,13 +510,16 @@ function render(page, r) {
   function legend() {
     const L = LENSES[lens];
     const sw = (cls, text) => h("span", { class: "row nw", style: { gap: "5px" } }, h("i", { class: "cc-sw " + cls }), text);
+    const pip = (cls, text) => h("span", { class: "row nw", style: { gap: "4px" } }, h("i", { class: "cc-pip " + cls }), text);
     let scale;
-    if (lens === "health") scale = [sw("l0", "serving"), sw("l1", "a copy down, behind, avoided, full or slow"), sw("l2", "no reads or no writes")];
-    else if (lens === "version") scale = (M?.versions || []).slice(0, 5).map(([v, n], k) => sw(k ? "v" + Math.min(k, 4) : "l0", `${v} on ${copies_(n)}`));
-    else scale = [sw("l0", `under ${L.fmt(L.warn())}`), sw("l1", `${L.fmt(L.warn())} or more`), sw("l2", `${L.fmt(L.bad())} or more${lens === "p99" ? " (the SLO)" : ""}`)];
-    const what = lens === "health" ? "copies serving of each shard" : lens === "version" ? "the version each shard's copies run" : `${L.label} of each shard's ${lens === "lag" ? "furthest replica" : lens === "disk" ? "fullest copy" : lens === "p99" ? "slowest copy" : "busiest copy"}${lens === "cpu" || lens === "p99" ? ", last minute" : ""}`;
-    return [h("span", { class: "dim" }, what), ...scale, h("span", { class: "row nw", style: { gap: "5px" } }, h("i", { class: "cc-pip p" }), "primary"), h("span", { class: "row nw", style: { gap: "5px" } }, h("i", { class: "cc-pip" }), "replica"), h("span", { class: "row nw", style: { gap: "5px" } }, h("i", { class: "cc-pip down" }), "down"),
-      mode === "draft" ? [h("span", { class: "row nw", style: { gap: "5px" } }, h("i", { class: "cc-pip new" }), "in the plan"), h("span", { class: "row nw", style: { gap: "5px" } }, h("i", { class: "cc-pip going" }), "goes")] : null];
+    if (lens === "health") scale = [sw("l1", "a copy down, behind, avoided, full or slow"), sw("l2", "no reads or no writes")];
+    else if (lens === "version") scale = (M?.versions || []).slice(0, 5).map(([v, n], k) => sw(k ? "v" + Math.min(k, 4) : "l0", `${v} · ${fmt.n(n)}`));
+    else scale = [sw("l0", `under ${L.fmt(L.warn())}`), sw("l1", `${L.fmt(L.warn())}+`), sw("l2", `${L.fmt(L.bad())}+${lens === "p99" ? " (the SLO)" : ""}`)];
+    const what = { health: "Copies answering, when one is missing", version: "The version the copies run", cpu: "CPU of the busiest copy, last minute", disk: "Disk used on the fullest copy", p99: "p99 of the slowest copy, last minute", lag: "Transactions the furthest replica is behind" }[lens];
+    return [h("b", { class: "dim", style: { fontWeight: 500 } }, what), ...scale, h("span", { class: "row nw", style: { gap: "8px" } }, pip("p", "primary"), pip("", "replica"), pip("down", "down"),
+      mode === "draft" ? [pip("new", "in the plan"), pip("going", "goes")] : null),
+      lens !== "health" ? h("span", { title: "Whatever is wrong with a shard outlines its tile under every lens" }, "outline: health") : null,
+      h("span", { class: "grow" }), pfChip];
   }
 
   // ------------------------------------------------------------ the map
@@ -528,7 +536,10 @@ function render(page, r) {
   let tileEls = new Map(); // shard -> tile, kept between polls so clicks land (finding CL-9)
   let gridEl = null;
   function drawMap() {
-    clear(legendBox, legend());
+    // Grey the map when the coordinator stopped answering, and say how old it is.
+    const fr = fresh("cluster");
+    mapCard.classList.toggle("stale", !!M && fr.ok === false);
+    clear(legendBox, legend(), M && fr.ok === false ? h("span", { class: "stale-age" }, staleText("cluster")) : null);
     if (!M) { clear(canvas, empty("layers", "Asking the shards", "")); clear(attention); return; }
     const hits = filter ? new Set(matches()) : null;
     const fate = failed.size ? fateMap() : null;
@@ -573,7 +584,7 @@ function render(page, r) {
   }
 
   function tileValue(sh) {
-    if (lens === "health") return `${sh.up}/${sh.n}`;
+    if (lens === "health") return sh.up < sh.n ? `${sh.up}/${sh.n}` : "";
     if (lens === "version") { const vs = [...new Set(sh.copies.map((c) => c.version).filter(Boolean))]; return vs.length === 1 ? vs[0] : vs.length ? "mixed" : "–"; }
     const v = shardValue(lens, sh);
     return v == null ? "–" : LENSES[lens].fmt(v);
@@ -630,13 +641,13 @@ function render(page, r) {
     const attn = problemsFirst ? M.shards.map((sh) => [sh, issues(sh)]).filter(([, is]) => is.some((x) => x.sev > 0)).sort((a, b) => b[1][0].sev - a[1][0].sev || a[0].i - b[0].i) : [];
     clear(attention, attn.length ? [
       h("div", { class: "cc-sec" }, `Needs attention · ${attn.length}`),
-      h("div", { class: "cc-attn-row" }, attn.slice(0, 8).map(([sh, is]) => {
+      h("div", { class: "cc-attn-row" }, attn.slice(0, narrow() ? 12 : 5).map(([sh, is]) => {
         const b = h("button", { class: "cc-ac " + (is[0].sev === 2 ? "crit" : "warn") + (sel === sh.i ? " sel" : ""), type: "button", title: is.map((x) => x.long).join("; "), onclick: () => select(sh.i) },
           h("span", { class: "row nw between" }, h("b", {}, `shard ${sh.i}`), h("span", { class: "cc-tp" }, pips(sh, LENSES[lens]))),
           h("span", { class: "cc-ac-why" }, is[0].short + (is.length > 1 ? ` +${is.length - 1}` : "")),
           h("span", { class: "small muted" }, lens === "health" ? `${sh.up} of ${sh.n} serving` : `${LENSES[lens].label} ${tileValue(sh)}`));
         return b;
-      }), attn.length > 8 ? h("button", { class: "cc-ac more", onclick: () => { filter = attn.map(([sh]) => "s" + sh.i).join(" "); writeParams(); drawToolbar(); drawMap(); } }, `+${attn.length - 8} more`, h("span", { class: "small muted" }, "show them")) : null),
+      }), attn.length > (narrow() ? 12 : 5) ? h("button", { class: "cc-ac more", onclick: () => { filter = attn.map(([sh]) => "s" + sh.i).join(" "); writeParams(); drawToolbar(); drawMap(); } }, `+${attn.length - (narrow() ? 12 : 5)} more`, h("span", { class: "small muted" }, "show them")) : null),
       h("div", { class: "cc-sec" }, `All ${plural(M.shards.length, "shard")}, by number`)] : []);
 
     if (!gridEl || !gridEl.isConnected) {
@@ -645,7 +656,7 @@ function render(page, r) {
       wireGrid(gridEl);
     }
     const n = M.shards.length;
-    gridEl.style.setProperty("--tile", n <= 4 ? "220px" : n <= 12 ? "120px" : n <= 48 ? "64px" : "40px");
+    gridEl.style.setProperty("--tile", n <= 4 ? (narrow() ? "100%" : "220px") : n <= 12 ? "150px" : n <= 48 ? "60px" : narrow() ? "40px" : "37px");
     gridEl.classList.toggle("big", n <= 12);
     const seen = new Set();
     for (const sh of M.shards) {
@@ -682,14 +693,14 @@ function render(page, r) {
     clear(box, sh.copies.map((c) => h("span", { class: "cc-tcr" + (c.down ? " down" : "") },
       h("i", { class: "cc-pip" + (c.primary ? " p" : "") + (c.down ? " down" : c.copying ? " copying" : "") }),
       h("span", { class: "mono" }, cname(c)),
-      h("span", { class: "muted" }, c.down ? "down" : c.primary ? "primary" : c.copying ? "copying" : c.lag ? `${fmt.si(c.lag)} behind` : "in sync"),
+      h("span", { class: "muted" }, c.down ? "down" : c.primary ? "primary" : c.copying ? "copying" : c.lag ? `${kn(c.lag)} behind` : "in sync"),
       L.copy && !c.down ? h("span", { class: "muted" }, L.fmt(L.copy(c)) ?? "") : null)));
     t.querySelector(".cc-tv").textContent = `${tileValue(sh)}${lens === "health" ? " serving" : ""}`;
     t.querySelector(".cc-tn .n").textContent = `shard ${sh.i}`;
   }
 
   function endHandle() {
-    const b = h("button", { class: "cc-t handle", type: "button", title: "Drag to add shards (or click to add one); nothing applies until you apply the plan", "aria-label": "Add a shard" }, h("span", { class: "cc-tv" }, "+ shard"), h("span", { class: "small" }, "drag"));
+    const b = h("button", { class: "cc-t handle", type: "button", title: "Drag to add shards, or click to add one. Nothing applies until you apply the plan.", "aria-label": "Add a shard" }, h("span", { class: "cc-tv" }, "+"), h("span", { class: "cc-hl" }, "shard"));
     b.addEventListener("click", () => { if (b.dataset.dragged) { delete b.dataset.dragged; return; } addShards(1); });
     b.addEventListener("pointerdown", (e) => startDrag(e, { kind: "shards", el: b }));
     return b;
@@ -727,13 +738,14 @@ function render(page, r) {
       tipOn(e, () => h("div", {}, h("b", {}, cname(c)), h("div", { class: "small" }, `shard ${c.shard} · ${c.down ? "down " + sinceText(c.downSince) : c.role}`), L.copy && !c.down ? h("div", { class: "small" }, `${L.label} ${L.copy(c) == null ? "–" : L.fmt(L.copy(c))}`) : null, h("div", { class: "small muted" }, short(c.url))));
       return e;
     };
-    const failBtn = (keys, label) => {
+    const failBtn = (keys, label, small) => {
       const on = keys.length && keys.every((k) => failed.has(k));
-      return h("button", { class: "btn xs" + (on ? " primary" : ""), title: on ? "Bring it back in the what-if" : `What if ${label} failed? Nothing is stopped.`, "aria-pressed": String(on), onclick: (e) => { e.stopPropagation(); if (on) keys.forEach((k) => failed.delete(k)); else { failed.clear(); keys.forEach((k) => failed.add(k)); } failedLabel = on ? null : label; drawMap(); drawSide(); } }, on ? "Restore" : "Fail");
+      return h("button", { class: (small ? "cc-fail" : "btn xs") + (on ? " on" : ""), title: on ? `Bring ${label} back in the what-if` : `What if ${label} failed? A what-if: nothing is stopped.`, "aria-pressed": String(!!on), onclick: (e) => { e.stopPropagation(); if (on) keys.forEach((k) => failed.delete(k)); else { failed.clear(); keys.forEach((k) => failed.add(k)); } failedLabel = on ? null : label; drawMap(); drawSide(); } }, small ? nodeShort(keys[0]) : on ? "Restore" : "Fail it");
     };
+    const nodeShort = (k) => (M.nodePrefix && k.startsWith(M.nodePrefix) ? "…" + k.slice(M.nodePrefix.length) : nodeLabel(k));
     const nodeBox = (n) => h("div", { class: "cc-node" + (n.copies.every((c) => failed.has(c.node || c.host)) ? " failed" : ""), dataset: { node: n.key } },
-      h("div", { class: "cc-node-h" }, h("span", { class: "mono ellipsis", title: n.key }, nodeLabel(n.key)), failBtn([n.key], n.known ? `node ${n.key}` : n.key)),
-      h("div", { class: "cc-cells" }, n.copies.slice().sort((a, b) => a.shard - b.shard).map(cell)));
+      h("div", { class: "cc-cells" }, n.copies.slice().sort((a, b) => a.shard - b.shard).map(cell)),
+      failBtn([n.key], n.known ? `node ${n.key}` : n.key, true));
     let content;
     const unknownNote = !M.nodesKnown ? h("div", { class: "notice", style: { marginBottom: "10px" } }, "The copies report no node (STRATA_NODE or NODE_NAME): they are grouped by the host in their URL, which on one machine is the same for all.") : null;
     if (group === "node") {
@@ -747,12 +759,12 @@ function render(page, r) {
           const keys = z.nodes.map((n) => n.key);
           const on = keys.every((k) => failed.has(k));
           return h("div", { class: "cc-zone" + (on ? " failed" : "") },
-            h("div", { class: "cc-zone-h" }, h("b", {}, z.key ? `zone ${z.key}` : "zone unknown"), h("span", { class: "small muted" }, `${plural(z.nodes.length, "node")} · ${copies_(z.copies.length)}`), h("span", { class: "grow" }), failBtn(keys, z.key ? `zone ${z.key}` : "every node")),
+            h("div", { class: "cc-zone-h" }, h("b", { class: "nowrap" }, z.key ? `zone ${z.key}` : "zone unknown"), h("span", { class: "small muted ellipsis" }, `${plural(z.nodes.length, "node")} · ${copies_(z.copies.length)}`), h("span", { class: "grow" }), failBtn(keys, z.key ? `zone ${z.key}` : "every node")),
             h("div", { class: "cc-nodes" }, z.nodes.sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true })).map(nodeBox)));
         })),
       ];
     }
-    const box = h("div", { class: "cc-domains" }, content);
+    const box = h("div", { class: "cc-domains" }, h("div", { class: "small muted", style: { marginBottom: "8px" } }, `Each square is a copy (round: a primary), on the ${group === "zone" ? "node and zone" : "node"} it reports. Click a node's name, or Fail it on a zone, to see what its failure would do: nothing is stopped.`), content);
     box.addEventListener("click", (e) => { const c = e.target.closest(".cc-cell"); if (c) { selCopy = c.dataset.url; select(+c.dataset.i); } });
     box.addEventListener("pointerdown", (e) => {
       const c = e.target.closest(".cc-cell");
@@ -762,25 +774,28 @@ function render(page, r) {
   }
 
   // ------------------------------------------------------------ what if
-  function drawWhatIf() {
-    if (!failed.size || !M) { clear(whatIfBox); return; }
+  function drawWhatIf() { /* the what-if is a card on the side */ }
+  function whatIfCard() {
+    if (!failed.size || !M) return null;
     const w = whatIf(M, failed);
     const live = M.all.filter((c) => !c.down).length;
     const share = live ? w.lost / live : 0;
     const cpus = M.all.filter((c) => !c.down && c.cpu != null).map((c) => c.cpu);
     const mean = cpus.length ? cpus.reduce((a, b) => a + b, 0) / cpus.length : null;
     const fo = kube?.spec?.failoverAfterMs;
-    const line = (n, text, cls, list) => n ? h("div", { class: "cc-wi-l " + cls }, h("b", {}, fmt.n(n)), h("span", {}, text, list.length ? h("span", { class: "muted" }, ` (${list.slice(0, 10).map((sh) => sh.i).join(", ")}${list.length > 10 ? "…" : ""})`) : null)) : null;
-    clear(whatIfBox, h("section", { class: "card cc-wi" + (w.dark.length || w.noQuorum.length || w.noWrites.length ? " bad" : "") },
-      h("div", { class: "hd" }, h("h3", {}, `If ${failedLabel || plural(failed.size, "node")} failed`), h("span", { class: "sub" }, "a what-if: nothing is stopped"), h("div", { class: "tools" }, h("button", { class: "btn sm", onclick: () => { failed.clear(); failedLabel = null; drawMap(); drawSide(); } }, "Restore"))),
+    const ids = (list) => list.length ? h("span", { class: "muted" }, ` (${list.slice(0, 8).map((sh) => sh.i).join(", ")}${list.length > 8 ? "…" : ""})`) : null;
+    const line = (list, one, many, cls) => list.length ? h("div", { class: "cc-wi-l " + cls }, h("b", {}, fmt.n(list.length)), h("span", {}, list.length === 1 ? one : many, ids(list))) : null;
+    const quiet = M.shards.length - w.dark.length - w.noQuorum.length - w.noWrites.length - w.failover.length - w.fewer.length;
+    return h("section", { class: "card cc-wi" + (w.dark.length || w.noQuorum.length || w.noWrites.length ? " bad" : "") },
+      h("div", { class: "hd" }, h("h3", {}, `If ${failedLabel || plural(failed.size, "node")} failed`), h("span", { class: "sub" }, "what-if: nothing is stopped"), h("div", { class: "tools" }, h("button", { class: "btn sm", onclick: () => { failed.clear(); failedLabel = null; drawMap(); drawSide(); } }, "Restore"))),
       h("div", { class: "bd stack", style: { gap: "6px" } },
-        line(w.dark.length, " shards would go dark: no copy left", "crit", w.dark),
-        line(w.noQuorum.length, " shards would serve no reads and take no writes: too few copies for a majority (with failover on, a primary needs a majority to serve reads)", "crit", w.noQuorum),
-        line(w.noWrites.length, " shards would take no writes: too few copies for a majority; reads go on from the copies left", "crit", w.noWrites),
-        w.already.length ? h("div", { class: "small", style: { color: "var(--crit-ink)" } }, `${plural(w.already.length, "of them is", "of them are")} already a copy short: ${w.already.slice(0, 6).map((sh) => `shard ${sh.i} (${sh.copies.filter((c) => c.down).map(cname).join(", ")} down)`).join(", ")}.`) : null,
-        line(w.failover.length, ` shards would lose their primary and fail over${fo ? ` in about ${dur(fo / 1000 + 1)}` : " in a few seconds"} (writes pause; reads go on)`, "warn", w.failover),
-        line(w.fewer.length, " shards would serve with a copy fewer", "", w.fewer),
-        h("div", { class: "small dim" }, `${plural(M.shards.length - w.dark.length - w.noQuorum.length - w.noWrites.length - w.failover.length - w.fewer.length, "other shard")} would not notice. The cluster would lose ${pct0(share)} of its serving copies${mean != null && share < 1 ? `: the others would carry their searches, at about ${pct0(Math.min(1, mean / (1 - share)))} CPU on average (${pct0(mean)} now)` : ""}.`))));
+        line(w.dark, "shard would go dark: no copy left", "shards would go dark: no copy left", "crit"),
+        line(w.noQuorum, "shard would serve no reads and take no writes: too few copies for a majority, and with failover on a primary needs one to serve reads", "shards would serve no reads and take no writes: too few copies for a majority, and with failover on a primary needs one to serve reads", "crit"),
+        line(w.noWrites, "shard would take no writes: too few copies for a majority; reads go on", "shards would take no writes: too few copies for a majority; reads go on", "crit"),
+        w.already.length ? h("div", { class: "small cc-bad" }, `${w.already.length === 1 ? "It is" : `${w.already.length} of them are`} already a copy short: ${w.already.slice(0, 4).map((sh) => `shard ${sh.i} (${sh.copies.filter((c) => c.down).map(cname).join(", ")} down)`).join(", ")}.`) : null,
+        line(w.failover, `shard would lose its primary and fail over${fo ? ` in about ${dur(fo / 1000 + 1)}` : " in a few seconds"}: writes pause, reads go on`, `shards would lose their primary and fail over${fo ? ` in about ${dur(fo / 1000 + 1)}` : " in a few seconds"}: writes pause, reads go on`, "warn"),
+        line(w.fewer, "shard would serve with a copy fewer", "shards would serve with a copy fewer", ""),
+        h("div", { class: "small dim" }, `${quiet === 1 ? "1 other shard" : `${fmt.n(quiet)} other shards`} would not notice. The cluster would lose ${pct0(share)} of its serving copies${mean != null && share < 1 && share > 0 ? `; the others would take their searches, at about ${pct0(Math.min(1, mean / (1 - share)))} CPU on average (${pct0(mean)} now)` : ""}.`)));
   }
 
   // ------------------------------------------------------------ selecting
@@ -799,10 +814,54 @@ function render(page, r) {
     const parts = [];
     const run = progressCard();
     if (run) parts.push(run);
-    if (mode === "draft") parts.push(planCard());
-    else if (sel != null && M.shards.find((x) => x.i === sel)) parts.push(shardCard(M.shards.find((x) => x.i === sel)));
-    else parts.push(attentionCard());
+    const wi = mode === "live" ? whatIfCard() : null;
+    const shardSel = mode === "live" && sel != null ? M.shards.find((x) => x.i === sel) : null;
+    if (!narrow()) {
+      if (wi) parts.push(wi);
+      if (mode === "draft") parts.push(planCard());
+      else if (shardSel) parts.push(shardCard(shardSel));
+      else if (!wi) parts.push(attentionCard());
+      clear(side, parts);
+      sheet(null); bottom(null);
+      return;
+    }
+    // A phone: what needs attention under the map; a shard, or the plan, as a
+    // full-screen sheet; the what-if and the plan's summary as a bottom sheet.
+    if (mode === "live") parts.push(attentionCard());
     clear(side, parts);
+    if (shardSel) sheet(`Shard ${shardSel.i}`, shardCard(shardSel), () => select(null));
+    else if (mode === "draft" && planOpen) sheet("Plan", planCard(), () => { planOpen = false; drawSide(); });
+    else sheet(null);
+    bottom(mode === "live" ? wi : mode === "draft" && !planOpen && tab === "map" ? planBar() : null);
+  }
+
+  // ------------------------------------------------------------ sheets (a phone)
+  let sheetEl = null, bottomEl = null, planOpen = false;
+  function sheet(title, content, onClose) {
+    if (!content) { sheetEl?.remove(); sheetEl = null; return; }
+    const keep = sheetEl?.dataset.title === title ? sheetEl.querySelector(".cc-sheet-bd")?.scrollTop || 0 : 0;
+    if (!sheetEl) { sheetEl = h("div", { class: "cc-sheet", role: "dialog", "aria-modal": "true" }); document.body.append(sheetEl); }
+    sheetEl.dataset.title = title;
+    sheetEl.setAttribute("aria-label", title);
+    const bd = h("div", { class: "cc-sheet-bd" }, content);
+    clear(sheetEl, h("div", { class: "cc-sheet-hd" }, h("button", { class: "btn ghost", onclick: onClose }, icon("left"), "Map"), h("b", {}, title)), bd);
+    bd.scrollTop = keep;
+  }
+  function bottom(content) {
+    if (!content) { bottomEl?.remove(); bottomEl = null; return; }
+    if (!bottomEl) { bottomEl = h("div", { class: "cc-bsheet" }); document.body.append(bottomEl); }
+    const keep = bottomEl.scrollTop;
+    clear(bottomEl, content);
+    bottomEl.scrollTop = keep;
+  }
+  /** The plan's summary at the bottom of a phone's screen. */
+  function planBar() {
+    const n = draftCount();
+    let sub = "Tap a shard to change it. Nothing applies until you apply the plan.";
+    if (n && !managed()) { const P = ownPlan(); sub = `${plural(P.steps.length, "step")} · about ${dur(serverPlan?.estimate_s ?? P.estimate)}${P.pre.some((x) => x.ok === false) ? " · not ready" : ""}`; }
+    else if (n) sub = Object.entries(kubePatch()).map(([k, v]) => `${k} → ${v}`).join(" · ");
+    return h("div", { class: "cc-planbar" }, h("div", { class: "grow" }, h("b", {}, n ? `Plan · ${plural(n, "change")}` : "Plan"), h("div", { class: "small dim" }, sub)),
+      h("button", { class: "btn primary", onclick: () => { planOpen = true; drawSide(); } }, n ? "Review" : "How"));
   }
 
   function attentionCard() {
@@ -813,6 +872,7 @@ function render(page, r) {
         h("div", { class: "row nw", style: { gap: "8px", alignItems: "flex-start" } }, h("span", { class: "dot " + (p.sev === 2 ? "bad" : p.sev === 1 ? "warn" : "") , style: { marginTop: "6px" } }),
           h("div", { class: "grow" },
             h("b", {}, p.label), p.text ? h("div", { class: "small dim" }, p.text) : null,
+            p.long ? h("div", { class: "small dim" }, cap(p.long) + ".") : null,
             p.impact ? h("div", { class: "small" }, cap(p.impact) + ".") : null,
             p.since && Number.isFinite(p.since) ? h("div", { class: "small muted" }, cap(sinceText(p.since))) : null,
             p.next ? h("div", { class: "small", style: { marginTop: "4px" } }, h("span", { class: "muted" }, "Next: "), p.next + ".") : null,
@@ -830,26 +890,26 @@ function render(page, r) {
     const is = issues(sh);
     const sev = is[0]?.sev || 0;
     const ver = [...new Set(sh.copies.map((c) => c.version).filter(Boolean))];
-    const link = () => { copy(location.href, "Copied a link to shard " + sh.i); };
+    const copyLink = () => { copy(location.href, "Copied a link to shard " + sh.i); };
     const why = sh.why || (is.length ? cap(is.map((x) => x.long).join("; ")) + "." : null);
     const statePill = CRIT.has(sh.state) ? pill("bad", sh.state === "down" ? "down" : sh.serves_reads === false || sh.failover !== false ? "no reads, no writes" : "no writes") : sh.state === "degraded" ? pill("warn", `${sh.up} of ${sh.n} copies`) : pill("ok", `${sh.n} of ${sh.n} copies`);
     const rowsDown = sh.copies.filter((c) => c.down);
     return h("section", { class: "card cc-shard" },
       h("div", { class: "hd" }, h("h3", {}, `Shard ${sh.i}`), statePill, h("div", { class: "tools" },
-        h("button", { class: "btn ghost icon sm", title: "Copy a link to this shard", "aria-label": "Copy a link to this shard", onclick: link }, icon("link")),
+        h("button", { class: "btn ghost icon sm", title: "Copy a link to this shard", "aria-label": "Copy a link to this shard", onclick: copyLink }, icon("link")),
         h("button", { class: "btn ghost icon sm", title: "Close", "aria-label": "Close the shard", onclick: () => select(null) }, icon("x")))),
       h("div", { class: "bd stack", style: { gap: "12px" } },
         h("div", { class: "small muted" }, [`slots ${runsText(sh.slots) || "none"} (${fmt.n(sh.held)})`, `${fmt.si(sh.rows)} rows`, ver.length ? ver.join(", ") : null].filter(Boolean).join(" · ")),
         why && sev ? h("div", { class: "cc-why " + (sev === 2 ? "crit" : "warn") }, why,
-          CRIT.has(sh.state) && rowsDown.length && sh.up ? h("div", { style: { marginTop: "6px" } }, `Removing ${rowsDown.map(cname).join(" and ")} restores it: ${sh.up} of ${sh.up} copies is a majority. Bringing ${rowsDown.length === 1 ? "it" : "them"} back does too.`) : null) : null,
+          CRIT.has(sh.state) && rowsDown.length && sh.up ? h("div", { style: { marginTop: "6px" } }, `To restore it: bring ${rowsDown.length === 1 ? cname(rowsDown[0]) : "either " + rowsDown.map(cname).join(" or ")} back, or remove ${rowsDown.length === 1 ? "it" : "both"} so ${sh.copies.filter((c) => !c.down).map(cname).join(" and ")} ${sh.up === 1 ? "serves alone (1 of 1 is a majority)" : "serve as a majority"}, then add new copies.`) : null) : null,
         shardDiagram(sh),
         copyTable(sh),
         h("div", {}, h("div", { class: "cc-sec" }, "Look"),
           h("div", { class: "row", style: { gap: "6px" } },
-            h("a", { class: "btn sm", href: `#/logs?node=${encodeURIComponent(sh.primary?.url || sh.copies[0]?.url || "")}&from=${Date.now() - 3600e3}` }, icon("logs"), "Logs, last hour"),
-            h("a", { class: "btn sm", href: `#/queries?tab=statements&shard=${sh.i}` }, icon("queries"), "Its statements"),
-            sh.primary ? h("a", { class: "btn sm", href: `#/profile?tab=cpu&node=${encodeURIComponent(sh.primary.url)}` }, icon("flame"), `Profile ${cname(sh.primary)}`) : null,
-            h("a", { class: "btn sm", href: `#/querypath?shard=${sh.i}` }, icon("route"), "Query path"))),
+            h("a", { class: "btn sm", href: link("logs", { node: sh.primary?.url || sh.copies[0]?.url, q: `shard ${sh.i}` }) }, icon("logs"), "Its logs"),
+            h("a", { class: "btn sm", href: link("queries", { tab: "statements", shard: sh.i }) }, icon("queries"), "Its statements"),
+            sh.primary ? h("a", { class: "btn sm", href: link("profile", { node: sh.primary.url }) }, icon("flame"), `Profile ${cname(sh.primary)}`) : null,
+            h("a", { class: "btn sm", href: link("querypath", { shard: sh.i }) }, icon("route"), "Query path"))),
         h("div", {}, h("div", { class: "cc-sec" }, "Change"),
           h("div", { class: "row", style: { gap: "6px" } },
             managed() ? h("span", { class: "small dim" }, "On Kubernetes the operator keeps each shard's copies: a copy that dies is started again. Change copies per shard or shards in Draft.") : [
@@ -878,7 +938,7 @@ function render(page, r) {
       svgEl.append(s("path", { d: `M${W / 2},70 C${W / 2},${y - 10} ${x + bw / 2},${y - 14} ${x + bw / 2},${y}`, class: "cc-de" + (c.down ? " down" : "") }));
       const g = s("g", { transform: `translate(${x},${y})`, class: "cc-dg", tabindex: 0, role: "button", "aria-label": `${cname(c)}, ${c.down ? "down" : c.role}` });
       const lines = [
-        c.down ? (c.downSince ? `down ${dur((Date.now() - c.downSince) / 1000)}` : "down") : c.primary ? "primary" : c.copying ? "being copied" : c.lag ? `${fmt.si(c.lag)} behind` : "in sync",
+        c.down ? (c.downSince ? `down ${dur((Date.now() - c.downSince) / 1000)}` : "down") : c.primary ? "primary" : c.copying ? "being copied" : c.lag ? `${kn(c.lag)} behind` : "in sync",
         [c.node ? nodeLabel(c.node) : null, c.zone ? "zone " + c.zone : null].filter(Boolean).join(" · ") || short(c.url),
         c.down ? (c.wasPrimary ? "was the primary" : c.error || "no answer") : `p99 ${fmt.ms(c.p99)} · CPU ${pct0(c.cpu)}`,
       ];
@@ -900,20 +960,22 @@ function render(page, r) {
 
   function copyTable(sh) {
     const rows = sh.copies.slice().sort((a, b) => (b.primary - a.primary) || (a.down - b.down) || a.k - b.k);
+    // The last column follows the lens (CPU under the CPU lens), p99 otherwise.
+    const col = LENSES[lens].copy && lens !== "lag" ? lens : "p99";
+    const L = LENSES[col];
+    const lv = (v) => { const x = level(col, v); return x === 2 ? " cc-bad" : x === 1 ? " cc-warn" : ""; };
     return h("div", { class: "tbl-wrap" }, h("table", { class: "t compact cc-copies" },
-      h("thead", {}, h("tr", {}, ["copy", "role", "node", "lag", "p99", "CPU", "disk", ""].map((x, k) => h("th", { class: k >= 3 && k <= 6 ? "num" : "" }, x)))),
+      h("thead", {}, h("tr", {}, h("th", {}, "copy"), h("th", {}, "role"), h("th", {}, "node"), h("th", { class: "num", title: "Transactions behind its primary" }, "lag"), h("th", { class: "num", title: L.title }, L.label), h("th", {}))),
       h("tbody", {}, rows.flatMap((c) => {
         const tr = h("tr", { class: selCopy === c.url ? "sel" : "" },
-          h("td", {}, cspan(c), c.version && c.version !== M.mainVersion ? h("span", { class: "badge", style: { marginLeft: "4px" } }, c.version) : null),
-          h("td", {}, c.down ? pill("bad", c.wasPrimary ? "down, was primary" : "down") : c.primary ? pill("info", "primary") : c.copying ? pill("warn", "copying") : h("span", { class: "dim" }, "replica"), c.term != null && !c.down ? h("span", { class: "small muted" }, ` t${c.term}`) : null),
-          h("td", { class: "small" }, c.node ? h("span", { title: c.node }, nodeLabel(c.node)) : h("span", { class: "muted", title: c.url }, c.host), c.zone ? h("span", { class: "muted" }, " · " + c.zone) : null),
-          h("td", { class: "num" + (c.lag >= LAG_WARN ? " cc-warn" : "") }, c.primary || c.down ? "–" : c.lag == null ? "?" : c.lag === 0 ? "0" : fmt.si(c.lag)),
-          h("td", { class: "num" + (level("p99", c.p99) === 2 ? " cc-bad" : level("p99", c.p99) === 1 ? " cc-warn" : "") }, fmt.ms(c.p99)),
-          h("td", { class: "num" + (level("cpu", c.cpu) === 2 ? " cc-bad" : level("cpu", c.cpu) === 1 ? " cc-warn" : "") }, pct0(c.cpu)),
-          h("td", { class: "num" + (level("disk", c.disk) === 2 ? " cc-bad" : level("disk", c.disk) === 1 ? " cc-warn" : "") }, pct0(c.disk)),
-          h("td", {}, copyMenuBtn(sh, c)));
-        const note = c.down ? `${c.error || "no answer"}${c.downSince ? " · " + sinceText(c.downSince) : ""}` : c.avoided ? `avoided after failures${c.avoidedWhy ? ": " + c.avoidedWhy : ""}` : null;
-        return note ? [tr, h("tr", { class: "cc-note" }, h("td", { colspan: 8, class: "small " + (c.down ? "cc-bad" : "cc-warn") }, note))] : [tr];
+          h("td", {}, cspan(c), c.version && c.version !== M.mainVersion ? h("div", { class: "small muted" }, c.version) : null),
+          h("td", {}, c.down ? h("span", { class: "cc-bad" }, "down") : c.primary ? h("b", {}, "primary") : c.copying ? h("span", { class: "cc-warn" }, "copying") : h("span", { class: "dim" }, "replica"), c.term != null && !c.down ? h("span", { class: "small muted", title: "Its term: the election it last saw" }, ` t${c.term}`) : null),
+          h("td", { class: "small", title: [c.node ? "node " + c.node : null, c.zone ? "zone " + c.zone : null, c.url].filter(Boolean).join(" · ") }, c.node ? (M.nodePrefix && c.node.startsWith(M.nodePrefix) ? "…" + c.node.slice(M.nodePrefix.length) : nodeLabel(c.node)) : h("span", { class: "muted" }, c.host), c.zone ? h("span", { class: "muted" }, " · " + c.zone) : null),
+          h("td", { class: "num" + (c.lag >= LAG_WARN ? " cc-warn" : "") }, c.primary || c.down ? "–" : c.lag == null ? "?" : c.lag === 0 ? "0" : kn(c.lag)),
+          h("td", { class: "num" + lv(L.copy(c)) }, c.down ? "–" : L.fmt(L.copy(c))),
+          h("td", { style: { width: "28px" } }, copyMenuBtn(sh, c)));
+        const note = c.down ? `${c.wasPrimary ? "Was the primary. " : ""}${cap(c.error || "no answer")}${c.downSince ? " · " + sinceText(c.downSince) : ""}` : c.avoided ? `Avoided after failures${c.avoidedWhy ? ": " + c.avoidedWhy : ""}` : null;
+        return note ? [tr, h("tr", { class: "cc-note" }, h("td", { colspan: 6, class: "small " + (c.down ? "cc-bad" : "cc-warn") }, note))] : [tr];
       }))));
   }
 
@@ -932,8 +994,8 @@ function render(page, r) {
     items.push({ label: "Write a checkpoint", icon: "download", no: ckNo, run: () => checkpointCopy(sh, c) });
     // No Remove on a primary (finding CL-3): hand it over first.
     if (!c.primary) items.push({ label: c.down ? "Remove it from the shard…" : "Remove it from the shard…", icon: "trash", danger: true, no: remove, run: () => removeCopy(sh, c) });
-    items.push({ label: "Its logs", icon: "logs", href: `#/logs?node=${encodeURIComponent(c.url)}&from=${Date.now() - 3600e3}` });
-    if (!c.down) items.push({ label: "Profile it", icon: "flame", href: `#/profile?tab=cpu&node=${encodeURIComponent(c.url)}` });
+    items.push({ label: "Its logs", icon: "logs", href: link("logs", { node: c.url }) });
+    if (!c.down) items.push({ label: "Profile it", icon: "flame", href: link("profile", { node: c.url }) });
     return items;
   }
   function copyMenuBtn(sh, c) {
@@ -969,7 +1031,7 @@ function render(page, r) {
       h("div", {}, `${cname(c)} asks the shard's copies for their votes; ${sh.primary ? cname(sh.primary) + ", the primary now," : "the primary"} grants its vote, steps down and follows it.`),
       h("div", { class: "small dim" }, "Writes to the shard pause for a moment; reads go on. It is refused while another copy holds a later transaction.")), ok: "Hand it over" });
     if (!ok) return;
-    const j = await adminCall(`${cname(c)} did not become shard ${sh.i}'s primary`, `/v1/admin/shards/${sh.i}/promote`, { body: { url: c.url } });
+    const j = await adminCall(`${cname(c)} did not become shard ${sh.i}'s primary`, `/v1/admin/shards/${sh.i}/promote`, { body: { url: c.url }, reason: ok.reason });
     if (j) toast(`${cname(c)} is shard ${sh.i}'s primary${j.term != null ? ", term " + j.term : ""}`, "ok");
   }
   async function removeCopy(sh, c) {
@@ -983,7 +1045,7 @@ function render(page, r) {
         h("div", { class: "small dim" }, `${c.down ? "The server does not answer now; if it comes back" : "The server stops receiving the shard's writes and"} keeps its database; it can join a shard again only as a new server.`)),
     });
     if (!ok) return;
-    const j = await adminCall(`${cname(c)} is still in shard ${sh.i}`, `/v1/admin/shards/${sh.i}/replicas?url=${encodeURIComponent(c.url)}`, { method: "DELETE" });
+    const j = await adminCall(`${cname(c)} is still in shard ${sh.i}`, `/v1/admin/shards/${sh.i}/replicas?url=${encodeURIComponent(c.url)}`, { method: "DELETE", reason: ok.reason });
     if (j) toast(`${cname(c)} left shard ${sh.i}`, "ok");
   }
   async function verifyCopy(sh, c) {
@@ -1040,7 +1102,7 @@ function render(page, r) {
     if (M && !managed()) {
       const has = (i) => M.shards.some((sh) => sh.i === i);
       const urls = new Set(M.all.map((c) => c.url));
-      draft.adds = draft.adds.filter((a) => has(a.shard) && (!a.replaces || urls.has(a.replaces)));
+      draft.adds = draft.adds.filter((a) => has(a.shard) && (!a.replaces || urls.has(a.replaces)) && (!a.moveOf || urls.has(a.moveOf)));
       draft.removes = draft.removes.filter((x) => has(x.shard) && urls.has(x.url));
       draft.drops = draft.drops.filter(has);
       draft.moves = draft.moves.filter((m) => has(m.from) && (has(m.to) || m.to >= M.shards.length));
@@ -1070,10 +1132,9 @@ function render(page, r) {
     if (fix.kind === "repair" || fix.kind === "replace") {
       for (const i of fix.shards || [fix.shard]) {
         const sh = M.shards.find((x) => x.i === i); if (!sh) continue;
-        for (const c of sh.copies.filter((x) => x.down)) {
-          if (fix.kind === "repair" && CRIT.has(sh.state)) { if (!draft.removes.some((x) => x.url === c.url)) draft.removes.push({ shard: i, url: c.url }); }
-          else if (!draft.adds.some((a) => a.replaces === c.url)) draft.adds.push({ id: nextId(), shard: i, url: "", replaces: c.url });
-        }
+        // Each dead copy is replaced: in a shard without a majority it leaves
+        // first (that alone restores reads and writes), then its new copy joins.
+        for (const c of sh.copies.filter((x) => x.down)) if (!draft.adds.some((a) => a.replaces === c.url)) draft.adds.push({ id: nextId(), shard: i, url: "", replaces: c.url });
       }
       sel = fix.shard ?? fix.shards?.[0] ?? sel;
     }
@@ -1081,6 +1142,24 @@ function render(page, r) {
     changed();
     drawAll();
     if (fix.kind === "slots") { const t = tileEls.get(fix.shard); if (t) openPop(fix.shard, t, "slots"); }
+  }
+
+  /**
+   * A copy to another shard or node, the tap alternative of a drag too. A
+   * server holds its shard's rows and cannot change shard: a new server joins
+   * the other shard (or the same shard on that node), and this one leaves.
+   */
+  function moveCopy(c, { shard, node }) {
+    if (c.primary) { toast(`${cname(c)} is shard ${c.shard}'s primary: hand it over first (Live, its menu), then move it`, "bad", 7000); return false; }
+    draft.adds = draft.adds.filter((a) => a.replaces !== c.url && a.moveOf !== c.url);
+    draft.removes = draft.removes.filter((x) => x.url !== c.url);
+    if (node) draft.adds.push({ id: nextId(), shard: c.shard, url: "", replaces: c.url, node });
+    else {
+      if (shard === c.shard) return false;
+      draft.adds.push({ id: nextId(), shard, url: "", node: c.node || null, moveOf: c.url });
+      draft.removes.push({ shard: c.shard, url: c.url });
+    }
+    return true;
   }
 
   // ------------------------------------------------------------ dragging
@@ -1132,14 +1211,13 @@ function render(page, r) {
         const c = M.all.find((x) => x.url === d.url); if (!c) return;
         if (c.primary) { toast(`${cname(c)} is shard ${c.shard}'s primary: hand it over first (Live, its menu), then move it`, "bad", 7000); return; }
         if (over.dataset.node) {
-          draft.adds.push({ id: nextId(), shard: c.shard, url: "", replaces: c.url, node: over.dataset.node });
+          moveCopy(c, { node: over.dataset.node });
         } else {
           const to = +over.dataset.i;
           if (to === c.shard) return;
           // A server holds its shard's rows: it cannot change shard. A new
           // server joins the other shard, and this one leaves its own.
-          draft.adds.push({ id: nextId(), shard: to, url: "", node: c.node || null });
-          if (!draft.removes.some((x) => x.url === c.url)) draft.removes.push({ shard: c.shard, url: c.url });
+          moveCopy(c, { shard: to });
         }
         changed();
       } else if (d.kind === "slots") {
@@ -1157,6 +1235,8 @@ function render(page, r) {
 
   // ------------------------------------------------------------ the shard's draft popover
   function closePop() { pop?.el.remove(); pop?.scrim?.remove(); pop = null; }
+  const popKey = (e) => { if (e.key === "Escape" && pop) { closePop(); } };
+  document.addEventListener("keydown", popKey);
   function placePop(el, anchor) {
     const r = anchor?.getBoundingClientRect?.() || { left: innerWidth / 2, right: innerWidth / 2, top: 120, bottom: 120 };
     document.body.append(el);
@@ -1182,34 +1262,51 @@ function render(page, r) {
     const adds = draft.adds.filter((a) => a.shard === i);
     const dropped = draft.drops.includes(i);
     const n = M.shards.length - draft.drops.length + draft.newShards.length;
+    const again = () => { changed(); openPop(i, tileEls.get(i)); };
     const rowsFor = (c) => {
-      const asked = draft.removes.some((x) => x.url === c.url);
+      const moved = draft.adds.find((a) => a.moveOf === c.url);
+      const asked = !moved && draft.removes.some((x) => x.url === c.url);
       const replaced = draft.adds.find((a) => a.replaces === c.url);
-      const tog = h("button", { class: "btn xs" + (asked || replaced ? " primary" : ""), disabled: c.primary && !asked, title: c.primary ? "the primary: hand it over first (Live, its menu)" : "", onclick: () => {
-        if (replaced) draft.adds = draft.adds.filter((a) => a !== replaced);
+      const tog = h("button", { class: "btn xs" + (asked || replaced || moved ? " primary" : ""), disabled: c.primary && !asked, title: c.primary ? "The primary: hand it over first (Live, its menu)" : "", onclick: () => {
+        if (moved) { draft.adds = draft.adds.filter((a) => a !== moved); draft.removes = draft.removes.filter((x) => x.url !== c.url); }
+        else if (replaced) draft.adds = draft.adds.filter((a) => a !== replaced);
         else if (asked) draft.removes = draft.removes.filter((x) => x.url !== c.url);
         else draft.removes.push({ shard: i, url: c.url });
-        changed(); openPop(i, tileEls.get(i));
-      } }, asked || replaced ? "Keep" : "Remove");
-      const rep = c.down && !asked && !replaced ? h("button", { class: "btn xs", onclick: () => { draft.adds.push({ id: nextId(), shard: i, url: "", replaces: c.url }); changed(); openPop(i, tileEls.get(i)); } }, "Replace") : null;
-      return h("tr", { class: goes.has(c.url) ? "cc-going" : "" }, h("td", {}, cspan(c)), h("td", { class: "small" }, c.down ? h("span", { class: "cc-bad" }, "down") : c.primary ? "primary" : c.lag ? `${fmt.si(c.lag)} behind` : "replica"),
-        h("td", { class: "small muted" }, replaced ? "replaced by a new copy" : asked ? "goes" : ""), h("td", { class: "row nw", style: { gap: "4px", justifyContent: "flex-end" } }, rep, tog));
+        again();
+      } }, asked || replaced || moved ? "Keep" : "Remove");
+      const rep = c.down && !asked && !replaced ? h("button", { class: "btn xs", onclick: () => { draft.adds.push({ id: nextId(), shard: i, url: "", replaces: c.url }); again(); } }, "Replace") : null;
+      return h("tr", { class: goes.has(c.url) ? "cc-going" : "" }, h("td", {}, cspan(c)), h("td", { class: "small" }, c.down ? h("span", { class: "cc-bad" }, "down") : c.primary ? "primary" : c.lag ? `${kn(c.lag)} behind` : "replica"),
+        h("td", { class: "small muted" }, moved ? `moves to shard ${moved.shard}` : replaced ? "replaced by a new copy" : asked ? "goes" : ""), h("td", { class: "row nw", style: { gap: "4px", justifyContent: "flex-end" } }, rep, tog));
     };
     const others = M.shards.filter((x) => x.i !== i);
-    const toSel = h("select", { class: "select sm" }, others.slice().sort((a, b) => (shardValue("cpu", a) ?? 0) - (shardValue("cpu", b) ?? 0)).map((x) => h("option", { value: x.i }, `shard ${x.i}${shardValue("cpu", x) != null ? ` (CPU ${pct0(shardValue("cpu", x))})` : ""}`)));
+    const byCpu = others.slice().sort((a, b) => (shardValue("cpu", a) ?? 0) - (shardValue("cpu", b) ?? 0));
+    const shardOpt = (x) => h("option", { value: "s" + x.i }, `shard ${x.i}${shardValue("cpu", x) != null ? ` (CPU ${pct0(shardValue("cpu", x))})` : ""}`);
+    const toSel = h("select", { class: "select sm", "aria-label": "To shard" }, byCpu.map((x) => h("option", { value: x.i }, `shard ${x.i}${shardValue("cpu", x) != null ? ` (CPU ${pct0(shardValue("cpu", x))})` : ""}`)));
     const even = Math.floor(SLOTS / Math.max(1, M.shards.length));
-    const cnt = h("input", { class: "input sm", type: "number", min: 1, max: Math.max(1, sh.held - 1), value: Math.max(1, Math.min(sh.held - 1, sh.held > even ? sh.held - even : Math.round(sh.held / 4))), style: { width: "80px" } });
+    const cnt = h("input", { class: "input sm", type: "number", min: 1, max: Math.max(1, sh.held - 1), value: Math.max(1, Math.min(sh.held - 1, Math.max(Math.round(sh.held / 4), sh.held - even))), style: { width: "72px" }, "aria-label": "Slots to move" });
+    // Moving a copy without a drag: to another shard, or to a node (a new server there replaces it).
+    const movable = sh.copies.filter((c) => !c.primary);
+    const copySel = h("select", { class: "select sm", "aria-label": "Copy" }, movable.map((c) => h("option", { value: c.url }, cname(c) + (c.down ? " (down)" : ""))));
+    const nodes = [...M.nodes.values()].filter((x) => x.known).sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }));
+    const whereSel = h("select", { class: "select sm", "aria-label": "Move it to" },
+      h("optgroup", { label: "Another shard" }, byCpu.map(shardOpt)),
+      nodes.length ? h("optgroup", { label: "This shard, on another node" }, nodes.map((x) => h("option", { value: "n" + x.key }, `node ${nodeLabel(x.key)}${x.zone ? " (zone " + x.zone + ")" : ""}`))) : null);
+    const rowsNote = h("div", { class: "small muted" });
+    const sayRows = () => { rowsNote.textContent = `About ${fmt.si(sh.rows * (+cnt.value || 0) / Math.max(1, sh.held))} rows go with them. Or drag this shard onto another.`; };
+    cnt.oninput = sayRows; sayRows();
     const el = h("div", { class: "cc-pop", role: "dialog", "aria-label": `Shard ${i} in the draft` },
-      h("div", { class: "row between" }, h("b", {}, `Shard ${i}`), h("span", { class: "small muted" }, `${copies_(sh.n)} · ${fmt.n(sh.held)} slots · ${fmt.si(sh.rows)} rows`), h("button", { class: "btn ghost icon sm", "aria-label": "Close", onclick: closePop }, icon("x"))),
-      h("table", { class: "cc-pop-t" }, h("tbody", {}, sh.copies.map(rowsFor), adds.map((a) => h("tr", { class: "cc-new" }, h("td", {}, h("span", { class: "cc-newname" }, "new copy")), h("td", { class: "small" }, a.replaces ? `replaces ${cname(M.all.find((c) => c.url === a.replaces) || { id: "?" })}` : ""), h("td", { class: "small muted" }, a.node ? "on " + nodeLabel(a.node) : ""), h("td", {}, h("button", { class: "btn xs", onclick: () => { draft.adds = draft.adds.filter((x) => x !== a); changed(); openPop(i, tileEls.get(i)); } }, "Drop")))))),
+      h("div", { class: "row between nw" }, h("b", {}, `Shard ${i}`), h("span", { class: "small muted grow" }, `${copies_(sh.n)} · ${fmt.n(sh.held)} slots · ${fmt.si(sh.rows)} rows`), h("button", { class: "btn ghost icon sm", "aria-label": "Close", onclick: closePop }, icon("x"))),
+      h("table", { class: "cc-pop-t" }, h("tbody", {}, sh.copies.map(rowsFor), adds.map((a) => h("tr", { class: "cc-new" }, h("td", {}, h("span", { class: "cc-newname" }, "new copy")), h("td", { class: "small" }, a.replaces ? `replaces ${cname(M.all.find((c) => c.url === a.replaces) || { id: "?" })}` : a.moveOf ? `for ${cname(M.all.find((c) => c.url === a.moveOf) || { id: "?" })}` : ""), h("td", { class: "small muted" }, a.node ? "on " + nodeLabel(a.node) : ""), h("td", {}, h("button", { class: "btn xs", onclick: () => { draft.adds = draft.adds.filter((x) => x !== a); if (a.moveOf) draft.removes = draft.removes.filter((y) => y.url !== a.moveOf); again(); } }, "Drop")))))),
       h("div", { class: "row", style: { gap: "6px" } },
-        h("button", { class: "btn sm", onclick: () => { draft.adds.push({ id: nextId(), shard: i, url: "" }); changed(); openPop(i, tileEls.get(i)); } }, icon("plus"), "Add a copy"),
-        h("button", { class: "btn sm" + (dropped ? " primary" : ""), disabled: !dropped && n <= 1, title: "Its slots move to the other shards first, then it leaves the cluster", onclick: () => { if (dropped) draft.drops = draft.drops.filter((x) => x !== i); else draft.drops.push(i); changed(); openPop(i, tileEls.get(i)); } }, dropped ? "Keep the shard" : "Remove the shard")),
+        h("button", { class: "btn sm", onclick: () => { draft.adds.push({ id: nextId(), shard: i, url: "" }); again(); } }, icon("plus"), "Add a copy"),
+        h("button", { class: "btn sm" + (dropped ? " primary" : ""), disabled: !dropped && n <= 1, title: "Its slots move to the other shards first, then it leaves the cluster", onclick: () => { if (dropped) draft.drops = draft.drops.filter((x) => x !== i); else draft.drops.push(i); again(); } }, dropped ? "Keep the shard" : "Remove the shard")),
+      movable.length ? [h("div", { class: "cc-sec", style: { marginTop: "4px" } }, "Move a copy"),
+        h("div", { class: "row cc-pop-row", style: { gap: "6px" } }, copySel, h("span", { class: "small" }, "to"), whereSel,
+          h("button", { class: "btn sm", onclick: () => { const c = M.all.find((x) => x.url === copySel.value); const w = whereSel.value; if (c && moveCopy(c, w[0] === "n" ? { node: w.slice(1) } : { shard: +w.slice(1) })) again(); } }, "Add"))] : null,
       h("div", { class: "cc-sec", style: { marginTop: "4px" } }, "Move slots from it"),
-      h("div", { class: "row nw", style: { gap: "6px" } }, cnt, h("span", { class: "small" }, `of ${fmt.n(sh.held)} slots to`), toSel,
+      h("div", { class: "row cc-pop-row", style: { gap: "6px" } }, cnt, h("span", { class: "small" }, `of ${fmt.n(sh.held)} slots to`), toSel,
         h("button", { class: "btn sm", onclick: () => { const k = Math.max(1, Math.min(sh.held - 1, +cnt.value || 1)); draft.moves.push({ id: nextId(), from: i, to: +toSel.value, count: k }); changed(); closePop(); } }, "Add")),
-      h("div", { class: "small muted" }, `About ${fmt.si(sh.rows * (+cnt.value || 0) / Math.max(1, sh.held))} rows go with them. Or drag this shard onto another.`));
-    cnt.oninput = () => { el.lastChild.textContent = `About ${fmt.si(sh.rows * (+cnt.value || 0) / Math.max(1, sh.held))} rows go with them. Or drag this shard onto another.`; };
+      rowsNote);
     const scrim = h("div", { class: "cc-pop-scrim", onclick: closePop });
     document.body.append(scrim);
     placePop(el, anchor);
@@ -1318,6 +1415,13 @@ function render(page, r) {
     for (const x of removes.filter((x) => !repairShards.includes(x.shard))) removeStep(x, false);
 
     const rowsToCopy = steps.reduce((a, x) => a + (x.rows || 0), 0);
+    /** A shard's members and the members that answer once the plan is done. */
+    function afterOf(i) {
+      const sh = shardOf(i);
+      const gone = removes.filter((y) => y.shard === i).map((y) => M.all.find((c) => c.url === y.url));
+      const added = draft.adds.filter((a) => a.shard === i).length;
+      return { n: sh.n - gone.length + added, up: sh.up - gone.filter((c) => c && !c.down).length + added };
+    }
     const estimate = steps.reduce((a, x) => a + (x.est || 0), 0);
     // Checks.
     const pre = [];
@@ -1340,14 +1444,17 @@ function render(page, r) {
       else ok(`every new server has its URL (${plural(need.length, "server")})`);
     }
     for (const x of removes) {
-      const c = M.all.find((y) => y.url === x.url), sh = shardOf(x.shard);
+      const c = M.all.find((y) => y.url === x.url);
       if (c?.primary) no(`${cname(c)} is shard ${x.shard}'s primary: hand it over first (Live, its menu)`);
-      const left = sh.n - removes.filter((y) => y.shard === x.shard).length + draft.adds.filter((a) => a.shard === x.shard).length;
-      if (left < 1) no(`shard ${x.shard} would have no copy left: remove the shard instead`);
+    }
+    for (const i of touched) {
+      const sh = shardOf(i), A = afterOf(i);
+      if (A.n < 1) no(`shard ${i} would have no copy left: remove the shard instead`);
+      else if (A.up <= A.n / 2) no(`shard ${i} would end with ${A.up} of ${A.n} copies answering, no majority: it would take no writes${sh.failover !== false ? " and serve no reads" : ""}. ${sh.copies.some((c) => c.down) ? `Replace ${sh.copies.filter((c) => c.down).map(cname).join(", ")} in the plan first.` : ""}`.trim());
     }
     for (const i of touched) {
       const sh = shardOf(i);
-      const after = sh.n - removes.filter((y) => y.shard === i).length + draft.adds.filter((a) => a.shard === i).length;
+      const after = afterOf(i).n;
       if (after === 2) warn(`shard ${i} ends with 2 copies: with failover on, losing either stops its reads and writes`);
       if (after === 1 && sh.n > 1) warn(`shard ${i} ends with 1 copy: losing its server loses the shard until it is back`);
     }
@@ -1364,11 +1471,12 @@ function render(page, r) {
     const givers = [...new Set(steps.filter((x) => x.kind === "move").map((x) => x.shard))];
     if (givers.length || steps.some((x) => x.kind === "even")) blast.push(`The shards that give slots up do extra work while they copy: ${givers.length ? givers.map((i) => "shard " + i).join(", ") : "the busiest ones"}.`);
     for (const a of draft.adds) { const sh = shardOf(a.shard); blast.push(`${sh.primary ? cname(sh.primary) : "Shard " + a.shard + "'s primary"} sends ${fmt.si(sh.rows)} rows to its new copy: it does extra work while it does.`); }
-    for (const x of removes) {
-      const c = M.all.find((y) => y.url === x.url), sh = shardOf(x.shard);
-      const after = sh.n - removes.filter((y) => y.shard === x.shard).length + draft.adds.filter((a) => a.shard === x.shard).length;
-      if (c?.down && CRIT.has(sh.state)) blast.push(`Removing ${cname(c)} lets shard ${x.shard} serve again: ${sh.up} of ${sh.up} copies is a majority.`);
-      else if (!c?.down) blast.push(`Shard ${x.shard} has one copy fewer while ${cname(c)} leaves${after <= 2 ? `; with ${copies_(after)}, one more failure there stops its writes` : ""}.`);
+    for (const i of [...new Set(removes.map((x) => x.shard))]) {
+      const sh = shardOf(i), after = afterOf(i).n;
+      const gone = removes.filter((x) => x.shard === i).map((x) => M.all.find((y) => y.url === x.url)).filter(Boolean);
+      const dead = gone.filter((c) => c.down), live = gone.filter((c) => !c.down);
+      if (dead.length && CRIT.has(sh.state)) blast.push(dead.length === sh.n - sh.up ? `Removing ${dead.map(cname).join(" and ")} first lets shard ${i} serve again (${sh.up} of ${sh.up} is a majority) before its new copies join.` : `Shard ${i} stays without a majority until its new copies are in sync.`);
+      for (const c of live) blast.push(`Shard ${i} has one copy fewer once ${cname(c)} leaves${after <= 2 ? `; with ${copies_(after)}, one more failure there stops its writes` : ""}.`);
     }
     for (const i of draft.drops) blast.push(`Shard ${i}'s rows are spread over the others: each holds more.`);
     // Before and after.
@@ -1387,9 +1495,8 @@ function render(page, r) {
       ["rows a shard, average", fmt.si(rowsNow / Math.max(1, M.shards.length)), fmt.si(rowsNow / Math.max(1, S2 - draft.drops.length))],
     ];
     for (const i of [...touched].sort((a, b) => a - b).slice(0, 4)) {
-      const sh = shardOf(i);
-      const after = sh.n - removes.filter((y) => y.shard === i).length + draft.adds.filter((a) => a.shard === i).length;
-      before.push([`copies of shard ${i}, serving`, `${sh.up} of ${sh.n}`, `${after} of ${after}`]);
+      const sh = shardOf(i), A = afterOf(i);
+      before.push([`copies of shard ${i}, answering`, `${sh.up} of ${sh.n}`, `${A.up} of ${A.n}`]);
     }
     return { steps, rowsToCopy, estimate, rate: R, pre, blast, before, removes, drops: draft.drops.slice(), need };
   }
@@ -1490,7 +1597,7 @@ function render(page, r) {
         h("div", { class: "cc-sec" }, "Before → after"),
         h("table", { class: "cc-ba" }, h("tbody", {}, P.before.map(([k, a, b]) => h("tr", {}, h("td", {}, k), h("td", { class: "num" }, a), h("td", { class: "num to" + (a !== b ? " moved" : "") }, b))))),
         h("div", { class: "cc-sec" }, `Steps, in this order · about ${dur(estimate)}`),
-        h("ol", { class: "cc-steps" }, (sp?.steps?.length ? sp.steps.map((x) => ({ text: x.text, est: null, repair: x.kind === "repair" })) : P.steps).map((x, k) => h("li", {}, h("span", { class: "k" }, k + 1), h("span", {}, x.repair ? h("span", { class: "badge", style: { marginRight: "4px" } }, "repair") : null, cap(x.text)), h("span", { class: "t" }, x.est != null ? "~" + dur(x.est) : "")))),
+        h("ol", { class: "cc-steps" }, P.steps.map((x, k) => h("li", {}, h("span", { class: "k" }, k + 1), h("span", {}, x.repair ? h("span", { class: "badge", style: { marginRight: "4px" } }, "repair") : null, cap(x.text)), h("span", { class: "t" }, x.est != null ? "~" + dur(x.est) : "")))),
         h("div", { class: "small muted" }, `${fmt.si(rows)} rows to copy, at ${fmt.n(P.rate.rate, 0)} rows a second ${P.rate.measured ? "(the last move here)" : "(assumed: no move measured yet)"}.`),
         P.blast.length || sp?.blast ? h("div", { class: "cc-blast" }, h("b", {}, "Blast radius"), sp?.blast ? h("div", {}, sp.blast) : null, P.blast.map((t) => h("div", {}, t))) : null,
         h("div", { class: "cc-sec" }, "Checked before it starts"),
@@ -1513,8 +1620,11 @@ function render(page, r) {
   function changeList() {
     const items = [];
     const nm = (u) => cname(M.all.find((c) => c.url === u) || { id: short(u) });
-    for (const a of draft.adds) items.push({ title: a.replaces ? `Replace ${nm(a.replaces)}` : `Add a copy to shard ${a.shard}`, sub: a.replaces ? `a new copy of shard ${a.shard}${a.node ? " on " + nodeLabel(a.node) : ""}, then ${nm(a.replaces)} leaves` : `a new server joins and is sent the shard's rows${a.node ? "; on " + nodeLabel(a.node) : ""}`, drop: () => { draft.adds = draft.adds.filter((x) => x !== a); } });
-    for (const x of draft.removes) items.push({ title: `Remove ${nm(x.url)}`, sub: `from shard ${x.shard}`, drop: () => { draft.removes = draft.removes.filter((y) => y !== x); } });
+    for (const a of draft.adds) {
+      if (a.moveOf) { const c = M.all.find((y) => y.url === a.moveOf); items.push({ title: `Move ${nm(a.moveOf)} to shard ${a.shard}`, sub: `a new server joins shard ${a.shard} and is sent its rows, then ${nm(a.moveOf)} leaves shard ${c?.shard ?? "?"}`, drop: () => { draft.adds = draft.adds.filter((x) => x !== a); draft.removes = draft.removes.filter((y) => y.url !== a.moveOf); } }); continue; }
+      items.push({ title: a.replaces ? `Replace ${nm(a.replaces)}` : `Add a copy to shard ${a.shard}`, sub: a.replaces ? `a new copy of shard ${a.shard}${a.node ? " on " + nodeLabel(a.node) : ""}, then ${nm(a.replaces)} leaves` : `a new server joins and is sent the shard's rows${a.node ? "; on " + nodeLabel(a.node) : ""}`, drop: () => { draft.adds = draft.adds.filter((x) => x !== a); } });
+    }
+    for (const x of draft.removes.filter((y) => !draft.adds.some((a) => a.moveOf === y.url))) items.push({ title: `Remove ${nm(x.url)}`, sub: `from shard ${x.shard}`, drop: () => { draft.removes = draft.removes.filter((y) => y !== x); } });
     if (draft.newShards.length) items.push({ title: `Add ${plural(draft.newShards.length, "shard")}`, sub: `${M.shards.length} → ${M.shards.length + draft.newShards.length}, ${draft.newShards.map((ns) => ns.servers.length).join(", ")} copies`, drop: () => { draft.newShards = []; },
       extra: h("label", { class: "row nw small", style: { gap: "6px", marginTop: "4px" } }, h("input", { type: "checkbox", checked: draft.even, onchange: (e) => { draft.even = e.target.checked; changed(); } }), "and even the slots out over them") });
     for (const i of draft.drops) items.push({ title: `Remove shard ${i}`, sub: "its slots move to the other shards first", drop: () => { draft.drops = draft.drops.filter((x) => x !== i); } });
@@ -1582,7 +1692,7 @@ function render(page, r) {
     });
     if (!ok) return;
     try {
-      kube = await api("/v1/admin/kube", { body: { spec: p } });
+      kube = await api("/v1/admin/kube", { body: { spec: p }, reason: ok.reason });
       toast("The operator has the change: it makes it a step at a time", "ok", 6000);
       draft.kube = { shards: null, replicas: null }; saveDraft();
       mode = "live"; writeParams(); drawAll();
@@ -1600,7 +1710,7 @@ function render(page, r) {
         removing ? h("div", { class: "small", style: { color: "var(--crit-ink)" } }, `Removed: ${[...P.removes.map((x) => cname(M.all.find((c) => c.url === x.url) || { id: short(x.url) })), ...P.drops.map((i) => "shard " + i)].join(", ")}, and nothing else.`) : null),
     });
     if (!ok) return;
-    startRunner(P.steps.map((x) => ({ ...x, st: "wait" })));
+    startRunner(P.steps.map((x) => ({ ...x, st: "wait" })), ok.reason);
     draft = loadDraft(); Object.assign(draft, { adds: [], removes: [], newShards: [], drops: [], moves: [] }); saveDraft();
     mode = "live"; writeParams(); drawAll();
   }
@@ -1614,7 +1724,7 @@ function render(page, r) {
       const cur = R.steps[R.at];
       return h("section", { class: "card cc-run" + (R.failed ? " bad" : "") },
         h("div", { class: "hd" }, h("h3", {}, R.done ? (R.failed ? "The plan stopped" : R.stopped ? "The plan was stopped" : "The plan is applied") : "Applying the plan"),
-          h("span", { class: "sub" }, `started ${clock(R.started)} by ${state.whoami?.name || "you"}`),
+          h("span", { class: "sub", title: whenTitle(R.started) }, `started ${clock(R.started)} from this page${R.by && R.by !== "token" ? " by " + R.by : ""}`),
           h("div", { class: "tools" }, R.done ? h("button", { class: "btn sm ghost", onclick: () => { runner = null; runChanged(); } }, "Close") : h("button", { class: "btn sm", disabled: R.stopping, onclick: stopRunner }, icon("stop"), R.stopping ? "Stopping…" : "Stop"))),
         h("div", { class: "bd stack", style: { gap: "8px" } },
           h("ol", { class: "cc-steps run" }, R.steps.map((x, k) => h("li", { class: x.st }, h("span", { class: "k" }, x.st === "ok" ? "✓" : x.st === "run" ? h("span", { class: "spin" }) : x.st === "bad" ? "✕" : k + 1), h("span", {}, cap(x.text), x.note ? h("div", { class: "small muted" }, x.note) : null, x.err ? h("div", { class: "small cc-bad" }, x.err) : null), h("span", { class: "t" }, x.took != null ? dur(x.took) : "")))),
@@ -1642,15 +1752,15 @@ function render(page, r) {
       j.error ? h("div", { class: "small cc-bad" }, j.error) : null);
   }
   async function stopMoves() {
-    const ok = await ask({ title: "Stop the moves", body: "The move under way finishes (or is given up before it flips); the others are not started. The slots that moved stay where they are.", ok: "Stop them" });
+    const ok = await ask({ title: "Stop the moves", body: "The move under way finishes (or is given up before it flips); the others are not started. The slots that moved stay where they are.", ok: "Stop them", reason: false });
     if (!ok) return;
-    try { moves = movesInfo(await api("/v1/admin/moves/stop", { body: {} })); toast("The moves stop after the one under way", "ok"); } catch (e) { toast(`Not stopped: ${e.message}`, "bad", 8000); }
+    try { moves = movesInfo(await api("/v1/admin/moves/stop", { body: {}, reason: ok.reason })); toast("The moves stop after the one under way", "ok"); } catch (e) { toast(`Not stopped: ${e.message}`, "bad", 8000); }
     drawSide();
   }
   async function finishMove() {
     const ok = await ask({ title: "Finish the move left in the cluster map", body: "A coordinator stopped while it moved slots. The move is completed if it had flipped, given up if not; nothing else changes.", ok: "Finish it" });
     if (!ok) return;
-    try { const j = await api("/v1/admin/moves/finish", { body: {} }); toast(j.finished ? `Finished: ${j.finished.was}` : "No move was left", "ok"); loadMoves(); } catch (e) { toast(`Not finished: ${e.message}`, "bad", 8000); }
+    try { const j = await api("/v1/admin/moves/finish", { body: {}, reason: ok.reason }); toast(j.finished ? `Finished: ${j.finished.was}` : "No move was left", "ok"); loadMoves(); } catch (e) { toast(`Not finished: ${e.message}`, "bad", 8000); }
   }
 
   // ------------------------------------------------------------ capacity
@@ -1703,7 +1813,7 @@ function render(page, r) {
       body: h("div", { class: "small dim" }, "No autoscaler runs on machines of your own: on Kubernetes the operator runs the rules. Here the numbers below say where the room is, and a draft plans the change: add copies to busy shards, shards when the disks fill, or move slots off a hot shard.") });
     const head1 = card({
       title: "Headroom now", sub: "the worst copy and the median, from each copy's last minute",
-      body: h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ["", "worst", "median", ""].map((x, k) => h("th", { class: k === 1 || k === 2 ? "num" : "" }, x)))), h("tbody", {},
+      body: h("table", { class: "t compact cc-head-room" }, h("thead", {}, h("tr", {}, ["", "worst", "median", ""].map((x, k) => h("th", { class: k === 1 || k === 2 ? "num" : "" }, x)))), h("tbody", {},
         row("CPU, share of cores", cpus[0] ? `${pct0(cpus[0].cpu)} ${cname(cpus[0])}` : "–", pct0(med(cpus.map((c) => c.cpu))), cpus[0] && cpus[0].cpu >= 0.7 ? "busy copies add latency: add copies to their shards" : "", level("cpu", cpus[0]?.cpu)),
         row("Disk used", disks[0] ? `${pct0(disks[0].disk)} ${cname(disks[0])}` : "–", pct0(med(disks.map((c) => c.disk))), fleetDisk?.days_to_full != null ? `full in about ${fmt.n(fleetDisk.days_to_full, 1)} days at the last week's growth` : "", level("disk", disks[0]?.disk)),
         row("p99 of a shard", p99s[0] ? `${fmt.ms(p99s[0][1])} shard ${p99s[0][0].i}` : "–", fmt.ms(med(p99s.map((x) => x[1]))), `SLO ${fmt.ms(slo())}`, level("p99", p99s[0]?.[1])),
@@ -1724,7 +1834,7 @@ function render(page, r) {
     const removing = (sg.patch?.replicas != null && sg.patch.replicas < (sp.replicas ?? 3)) || (sg.patch?.shards != null && sg.patch.shards < (sp.shards ?? 0));
     const ok = await ask({ title: "Apply the autoscaler's suggestion", body: h("div", { class: "stack", style: { gap: "6px" } }, h("div", {}, words), h("div", { class: "small dim" }, "The operator makes it a step at a time, held by its rollout gates; it is noted as yours in the audit log.")), ok: "Apply it", danger: removing, typed: removing ? kube.name : null });
     if (!ok) return;
-    try { kube = await api("/v1/admin/kube", { body: { spec: sg.patch } }); toast("Applied: the operator makes the change", "ok"); } catch (e) { toast(`Not applied: ${e.message}`, "bad", 8000); }
+    try { kube = await api("/v1/admin/kube", { body: { spec: sg.patch }, reason: ok.reason }); toast("Applied: the operator makes the change", "ok"); } catch (e) { toast(`Not applied: ${e.message}`, "bad", 8000); }
     drawCapacity();
   }
   async function dismissSuggestion() {
@@ -1734,7 +1844,7 @@ function render(page, r) {
   async function evenOut() {
     const ok = await ask({ title: "Even out the slots", body: "Slots move from the shards holding the most to those holding the fewest, up to 256 at a time, while the cluster serves. Writes to each run pause for a moment as it flips.", ok: "Move them" });
     if (!ok) return;
-    startRunner([{ kind: "even", text: "the slots even out over the shards", call: ["POST", "/v1/admin/rebalance", {}], wait: "moves", rows: 0, st: "wait" }]);
+    startRunner([{ kind: "even", text: "the slots even out over the shards", call: ["POST", "/v1/admin/rebalance", {}], wait: "moves", rows: 0, st: "wait" }], ok.reason);
     tab = "map"; writeParams(); drawAll();
   }
 
@@ -1785,7 +1895,7 @@ function render(page, r) {
         shown.length ? h("div", { class: "tbl-wrap" }, h("table", { class: "t compact cc-log" },
           h("thead", {}, h("tr", {}, ["when", "who", "what", "where"].map((x) => h("th", {}, x)))),
           h("tbody", {}, shown.slice(0, 300).map((r) => h("tr", {},
-            h("td", { class: "nowrap", title: new Date(r.t).toString() }, clock(r.t)),
+            h("td", { class: "nowrap", title: whenTitle(r.t) }, clock(r.t)),
             h("td", { class: "nowrap" }, r.who || "–", r.addr ? h("div", { class: "small muted" }, r.addr) : null),
             h("td", {}, h("span", { class: "row nw", style: { gap: "6px", alignItems: "flex-start" } }, h("span", { class: "dot " + (r.sev === "critical" ? "bad" : r.sev === "warning" ? "warn" : "") , style: { marginTop: "6px" } }), h("span", {}, r.what, r.detail ? h("div", { class: "small dim" }, r.detail) : null, r.until ? h("div", { class: "small muted" }, `until ${clock(r.until)} (${dur((r.until - r.t) / 1000)})`) : null))),
             h("td", {}, r.shard != null ? h("button", { class: "btn xs", onclick: () => select(+r.shard) }, `shard ${r.shard}`) : "")))))) : empty("clock", "Nothing changed", "No event or audited change of this cluster in the last 7 days.")),
@@ -1793,8 +1903,8 @@ function render(page, r) {
   }
 
   // ------------------------------------------------------------ runs
-  function startRunner(steps) {
-    runner = { steps, at: 0, started: Date.now(), done: false, failed: false, stopping: false, stopped: false };
+  function startRunner(steps, reason) {
+    runner = { steps, reason: reason || null, at: 0, started: Date.now(), by: state.whoami?.name || null, done: false, failed: false, stopping: false, stopped: false };
     runChanged();
     run(runner);
   }
@@ -1802,7 +1912,7 @@ function render(page, r) {
     if (!runner) return;
     runner.stopping = true; runChanged();
     const cur = runner.steps[runner.at];
-    if (cur?.wait === "moves") api("/v1/admin/moves/stop", { body: {} }).catch(() => {});
+    if (cur?.wait === "moves") api("/v1/admin/moves/stop", { body: {}, reason: runner.reason }).catch(() => {});
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -1811,9 +1921,13 @@ function render(page, r) {
     if (!isCoordinator()) return;
     M = state.cluster ? model(state.cluster) : null;
     if (M && draftCount()) { /* keep the draft to what still exists */ }
-    if (tab === "map") { drawHead(); drawStrip(); drawToolbar(); drawMap(); if (!side.contains(document.activeElement) || mode !== "draft") drawSide(); }
+    const typing = document.activeElement?.matches?.("input, select, textarea") && (side.contains(document.activeElement) || sheetEl?.contains(document.activeElement));
+    if (tab === "map") { drawHead(); drawStrip(); drawToolbar(); drawMap(); if (!typing) drawSide(); }
     else { drawHead(); drawStrip(); if (tab === "capacity" && !document.querySelector(".modal")) drawCapacity(); }
   }
+  const mq = matchMedia("(max-width: 900px)");
+  const onNarrow = () => { if (alive) { closePop(); drawAll(); } };
+  mq.addEventListener?.("change", onNarrow);
   const watcher = () => { if (alive) { drawStrip(); if (tab === "map") drawSide(); } };
   runWatchers.add(watcher);
 
@@ -1828,6 +1942,7 @@ function render(page, r) {
     bus.on("fleet", () => { if (alive && !state.paused) update(); }),
     bus.on("health", () => { if (!isCoordinator() && state.health) { /* a server that is not a coordinator */ clear(page); renderNotCoordinator(page); } }),
     bus.on("paused", () => { if (!state.paused) update(); }),
+    bus.on("narrow", onNarrow),
     every(10000, loadKube, false),
     every(30000, () => { if (tab === "changes") loadChanges(); }, false),
   ];
@@ -1836,7 +1951,9 @@ function render(page, r) {
     alive = false; active = null;
     clearTimeout(movesTimer);
     runWatchers.delete(watcher);
-    closePop(); hideTip();
+    closePop(); hideTip(); sheet(null); bottom(null);
+    document.removeEventListener("keydown", popKey);
+    mq.removeEventListener?.("change", onNarrow);
     offs.forEach((f) => f());
   };
 }
@@ -1871,8 +1988,7 @@ async function run(R) {
         for (;;) { const m = movesInfo(await api("/v1/admin/moves")); if (!m.running && !m.moving) break; x.note = "waiting for the moves under way to end"; runChanged(); await sleep(2000); if (R.stopping) throw new Error("stopped"); }
         jobStart = Date.now();
       }
-      const j = await api(path, method === "DELETE" ? { method } : { body });
-      void j;
+      await api(path, method === "DELETE" ? { method, reason: R.reason } : { body, reason: R.reason });
       if (x.wait === "moves") {
         // Done when this job is no longer running and nothing moves in the map.
         for (let k = 0; ; k++) {

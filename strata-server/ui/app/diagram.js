@@ -153,3 +153,38 @@ export function storageFlow(host, p, health, system) {
   }
   svgEl.anim.rate = rate;
 }
+
+// ---------------------------------------------------------------- the cluster, small
+/**
+ * The cluster in a card: a square per shard, neutral when every copy serves,
+ * amber when a copy is down, red when the shard has no majority or no copy.
+ * A square opens the shard on the Cluster canvas.
+ */
+export function topoMini(host, cluster) {
+  const shards = cluster?.shards || [];
+  const isDown = (r) => r.status === "down" || r.role === "unknown";
+  const W = Math.max(240, host.clientWidth || 520);
+  const n = Math.max(1, shards.length);
+  const cell = clamp(Math.floor(Math.sqrt((W * 150) / n)) - 3, 8, 40);
+  const cols = Math.max(1, Math.floor((W + 3) / (cell + 3)));
+  const rows = Math.ceil(n / cols);
+  const H = rows * (cell + 3) + 18;
+  const svgEl = s("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", height: H, role: "img", "aria-label": `${shards.length} shards` });
+  let bad = 0, warn = 0;
+  shards.forEach((sh, k) => {
+    const reps = sh.replicas || [];
+    const up = reps.filter((r) => !isDown(r)).length;
+    const lvl = up === 0 || ["down", "no_reads", "no_writes"].includes(sh.state) || up <= reps.length / 2 ? 2 : up < reps.length ? 1 : 0;
+    if (lvl === 2) bad++; else if (lvl === 1) warn++;
+    const x = (k % cols) * (cell + 3), y = Math.floor(k / cols) * (cell + 3);
+    const i = sh.shard ?? k;
+    const a = s("a", { href: `#/cluster?shard=${i}` });
+    a.append(s("rect", { x, y, width: cell, height: cell, rx: Math.min(4, cell / 4), style: { fill: lvl === 2 ? "var(--crit-soft)" : lvl === 1 ? "var(--warn-soft)" : "var(--surface-3)", stroke: lvl === 2 ? "var(--crit)" : lvl === 1 ? "var(--warn)" : "var(--line-2)" } },
+      s("title", {}, `shard ${i}: ${up} of ${reps.length} copies answer`)));
+    if (cell >= 22) a.append(s("text", { x: x + 4, y: y + 12, style: { fill: "var(--muted)", fontSize: "9.5px" } }, String(i)));
+    svgEl.append(a);
+  });
+  svgEl.append(s("text", { x: 0, y: H - 3, style: { fill: "var(--muted)", fontSize: "11px" } },
+    bad || warn ? [bad ? `${bad} without a majority` : null, warn ? `${warn} with a copy down` : null].filter(Boolean).join(" · ") : "every copy answers"));
+  host.replaceChildren(svgEl);
+}
