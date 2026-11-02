@@ -62,13 +62,15 @@ struct Node {
     http: u16,
     grpc: u16,
     child: Option<Child>,
+    /// More flags for the server.
+    args: Vec<String>,
 }
 
 impl Node {
     fn new(dir: &Path, name: &str, rows: usize) -> Node {
         let path = dir.join(format!("{name}.strata"));
         create(&path, rows);
-        Node { name: name.into(), path, log: dir.join(format!("{name}.log")), http: port(), grpc: port(), child: None }
+        Node { name: name.into(), path, log: dir.join(format!("{name}.log")), http: port(), grpc: port(), child: None, args: Vec::new() }
     }
 
     fn url(&self) -> String {
@@ -83,6 +85,7 @@ impl Node {
             .args(["--listen", &format!("127.0.0.1:{}", self.http), "--grpc", &format!("127.0.0.1:{}", self.grpc)])
             .args(["--seq-no", "--log", "info", "--failover-after-ms", &AFTER_MS.to_string(), "--log-store", "off"])
             .args(["--node-name", &format!("node-{}", self.name)])
+            .args(&self.args)
             .env("STRATA_ZONE", "zone-a")
             .env("STRATA_IMAGE", format!("ghcr.io/chloetech-ai/strata-server@sha256:{}", "a".repeat(64)))
             .stdout(Stdio::null())
@@ -325,9 +328,13 @@ async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
     let dir = tempfile::tempdir().unwrap();
     let mut a = Node::new(dir.path(), "a", 10);
     let mut b = Node::new(dir.path(), "b", 0);
+    let backups = dir.path().join("b-backups");
+    b.args = vec!["--backup-dir".into(), backups.display().to_string()];
     let (c, svc) = shard_of(&mut [&mut a, &mut b]).await;
     let snap = fresh(&c).await;
     assert_eq!(snap["shards"][0]["replicas"][0]["short"], "s0-0", "{snap}");
+    let dirs: Vec<&Json> = snap["shards"][0]["replicas"].as_array().unwrap().iter().map(|r| &r["backup_dir"]).collect();
+    assert_eq!(dirs, [&Json::Null, &json!(backups.display().to_string())], "{snap}");
     let (l, base) = listen().await;
     tokio::spawn(server::serve_http(svc.clone(), l, Default::default()));
     let copy = format!("http://127.0.0.1:{}", a.http);
@@ -374,6 +381,24 @@ async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
     let products = t["tables"].as_array().unwrap().iter().find(|t| t["table"] == "products").cloned().unwrap_or_else(|| panic!("{t}"));
     assert_eq!((products["docs"].as_u64(), products["shards"][0]["docs"].as_u64()), (Some(10), Some(10)), "{t}");
     assert!(products["bytes"].as_u64().unwrap() > 0, "{t}");
+
+    // A copy's shard verified by its primary, and a checkpoint of a copy,
+    // each audited with the copy as its object.
+    let r = client().post(format!("{base}/v1/admin/copies/verify")).json(&json!({"url": "s0-1"})).send().await.unwrap();
+    let status = r.status();
+    let v: Json = r.json().await.unwrap();
+    assert!(status.is_success(), "{v}");
+    assert_eq!((v["replicas"][0]["url"].as_str(), v["replicas"][0]["in_sync"].as_bool()), (Some(b.url().as_str()), Some(true)), "{v}");
+    let r = client().post(format!("{base}/v1/admin/copies/checkpoint")).json(&json!({"url": b.url(), "name": "before-upgrade"})).send().await.unwrap();
+    let status = r.status();
+    let k: Json = r.json().await.unwrap();
+    assert!(status.is_success(), "{k}");
+    assert!(backups.join("before-upgrade").exists() || std::fs::read_dir(&backups).unwrap().count() == 1, "{k}");
+    let r = client().post(format!("{base}/v1/admin/copies/checkpoint")).json(&json!({"url": "s0-0", "name": "x"})).send().await.unwrap();
+    assert_eq!(r.status(), 400, "s0-0 has no --backup-dir");
+    let changes: Json = client().get(format!("{base}/v1/admin/audit?kind=change")).send().await.unwrap().json().await.unwrap();
+    let objects: Vec<&str> = changes["entries"].as_array().unwrap().iter().filter(|e| e["route"].as_str().is_some_and(|r| r.starts_with("/v1/admin/copies/"))).filter_map(|e| e["object"].as_str()).collect();
+    assert_eq!(objects, ["copy s0-0", "copy s0-1", "copy s0-1"], "the newest first: {changes}");
 }
 
 fn client() -> reqwest::Client {

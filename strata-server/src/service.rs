@@ -3458,6 +3458,7 @@ impl Service {
             "capability": self.capability(),
             "place": {"name": self.place.name, "node": self.place.node, "zone": self.place.zone},
             "version": self.place.version(),
+            "backup_dir": self.backup_dir.as_ref().map(|p| p.display().to_string()),
             "cluster": self.identity.json(),
         })
     }

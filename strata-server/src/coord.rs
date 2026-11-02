@@ -2613,6 +2613,7 @@ impl Coordinator {
                     j["name"] = place["name"].clone();
                     j["node"] = place["node"].clone();
                     j["zone"] = place["zone"].clone();
+                    j["backup_dir"] = j["detail"]["backup_dir"].clone();
                     j["version"] = match &j["detail"]["version"] {
                         Json::Null => json!({"version": j["detail"]["system"]["version"]}),
                         v => v.clone(),

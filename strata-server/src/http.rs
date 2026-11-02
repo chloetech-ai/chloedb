@@ -48,6 +48,7 @@
 //! | `GET /v1/timeseries?since=ms` | | `{interval_ms, points}`: rates and gauges every few seconds, the last hour ([`crate::telemetry::Series`]) |
 //! | `GET /v1/timeseries?from=&to=` | | the same over any range: memory's points when it holds `from`, else a point a minute from the log store's `load` (`source`) |
 //! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, its skew, writes and reads a minute, growth over a day and a week, and copies behind; kept 30 s ([`crate::inspect::tables`]) |
+//! | `POST /v1/admin/copies/verify`, `POST /v1/admin/copies/checkpoint` | `{url, timeout_ms?}`, `{url, name, layout?, link_from?}` | on a coordinator, of a copy (its URL or short name): its shard's primary compares the replicas' rows with its own (`{replicas: [{url, in_sync, compared, differing_slots, first_differing_slot, seq_no, error}]}`), or the copy writes a checkpoint into its own `--backup-dir` (`{checkpoint}`) |
 //! | `POST /v1/admin/plan` | `{shards?: [{shard, copies}], add_shards?, remove_shards?, moves?}` | on own machines, the steps of a change of the cluster's shape, rows to copy, an estimate, what clients feel and what to check first; changes nothing ([`crate::coord::plan`]) |
 //! | `GET /v1/admin/kube/versions?limit=30` | | the images of the cluster's repository a person may pick, newest first, each `current`, `newer`, `tracked`; without Kubernetes too ([`crate::operator::upgrade::Versions`]) |
 //! | `GET /v1/load?from=&to=&copies=all` | | on a coordinator, each copy's load a minute from its own log store; copies that did not answer under `missing` |
@@ -250,6 +251,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/kube/versions", get(kube_versions))
         .route("/v1/admin/plan", post(admin_plan))
         .route("/v1/index/tables", get(index_tables))
+        .route("/v1/admin/copies/verify", post(copy_verify))
+        .route("/v1/admin/copies/checkpoint", post(copy_checkpoint))
         // ----- end core
         .route_layer(middleware::from_fn_with_state(app.clone(), auth));
     Router::new()
@@ -386,6 +389,76 @@ pub fn caller_of(headers: &HeaderMap, peer: Option<std::net::SocketAddr>, truste
     let client = header_text(headers, "x-strata-client").map(|c| c.to_ascii_lowercase()).filter(|c| c == keys::COMMAND_CENTER);
     let app = header_text(headers, "x-strata-app").or_else(|| header_str(headers, header::USER_AGENT).and_then(keys::product));
     keys::Caller { addr: addr.map(|a| a.to_string()), client, app, reason: header_text(headers, "x-strata-reason") }
+}
+
+/// A copy of a coordinator's cluster, by its URL or short name (`s1-0`):
+/// its shard, URL, short name, and its shard's primary.
+struct CopyOf {
+    shard: u64,
+    url: String,
+    short: String,
+    primary: Option<String>,
+}
+
+fn copy_of(snap: &Json, node: &str) -> Result<CopyOf, ApiError> {
+    for s in snap["shards"].as_array().into_iter().flatten() {
+        for r in s["replicas"].as_array().into_iter().flatten() {
+            if r["url"] == node || r["short"] == node {
+                return Ok(CopyOf {
+                    shard: s["shard"].as_u64().unwrap_or(0),
+                    url: r["url"].as_str().unwrap_or_default().to_string(),
+                    short: r["short"].as_str().unwrap_or(node).to_string(),
+                    primary: s["primary"].as_str().map(String::from),
+                });
+            }
+        }
+    }
+    Err(ApiError { status: 404, message: format!("no copy {node} in this cluster: GET /v1/cluster lists each copy's url and short name") })
+}
+
+/// Asks the copy `url` of the cluster to do `kind` (a kind of `Profile`
+/// that is not a profile), with `body`.
+async fn ask_copy(c: &crate::coord::Coordinator, url: &str, kind: crate::profiling::Kind, body: Json) -> Result<Json, ApiError> {
+    let a = crate::profiling::Asked { kind, body, folded: false, in_use: false };
+    match c.profile(url, a).await? {
+        crate::profiling::Answer::Json(j) => Ok(j),
+        crate::profiling::Answer::Folded(..) => Err(ApiError::internal("the copy answered folded lines")),
+    }
+}
+
+/// `POST /v1/admin/copies/verify {"url", "timeout_ms"?}` on a coordinator:
+/// the primary of that copy's shard compares its replicas' rows with its
+/// own (as its `POST /v1/admin/verify`), and answers
+/// `{replicas: [{url, in_sync, compared, differing_slots,
+/// first_differing_slot, seq_no, error}]}`.
+async fn copy_verify(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let c = app.svc.coordinator()?;
+    let copy = copy_of(&*c.snapshot().await, body_str(&b, "url")?)?;
+    let primary = copy.primary.clone().ok_or_else(|| ApiError { status: 409, message: format!("shard {} has no primary up to compare its copies", copy.shard) })?;
+    let by = keys::audit_name(&who(w));
+    keys::note_change(keys::Change { object: Some(format!("copy {}", copy.short)), after: Some(json!({"url": copy.url, "primary": primary})), ..Default::default() });
+    let mut body = json!({"by": by});
+    if let Some(t) = b.get("timeout_ms").and_then(Json::as_u64) {
+        body["timeout_ms"] = json!(t);
+    }
+    let j = ask_copy(c, &primary, crate::profiling::Kind::Verify, body).await?;
+    Ok(audited(j, format!("verified shard {}'s copies against its primary, for {}", copy.shard, copy.short)))
+}
+
+/// `POST /v1/admin/copies/checkpoint {"url", "name", "layout"?,
+/// "link_from"?}` on a coordinator: that copy writes a checkpoint of its
+/// database into its own `--backup-dir` (as its
+/// `POST /v1/admin/checkpoint`), and answers `{checkpoint}`.
+async fn copy_checkpoint(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let c = app.svc.coordinator()?;
+    let copy = copy_of(&*c.snapshot().await, body_str(&b, "url")?)?;
+    let name = body_str(&b, "name")?.to_string();
+    let layout = b["layout"].as_str().unwrap_or("file").to_string();
+    let by = keys::audit_name(&who(w));
+    keys::note_change(keys::Change { object: Some(format!("copy {}", copy.short)), after: Some(json!({"url": copy.url, "checkpoint": name, "layout": layout})), ..Default::default() });
+    let body = json!({"name": name, "layout": layout, "link_from": b["link_from"], "by": by});
+    let j = ask_copy(c, &copy.url, crate::profiling::Kind::Checkpoint, body).await?;
+    Ok(audited(j, format!("checkpoint {name} of {}", copy.short)))
 }
 
 /// `GET /v1/index/tables` ([`crate::inspect::tables`]).
@@ -2201,8 +2274,7 @@ async fn log_filter(State(app): State<App>, w: Option<axum::Extension<Principal>
         let crate::service::Backend::Cluster(c) = &app.svc.backend else {
             return Err(ApiError::bad("node names a copy of a coordinator's cluster; this server sets its own log filter without it"));
         };
-        let snap = c.snapshot().await;
-        let url = snap["shards"].as_array().into_iter().flatten().flat_map(|s| s["replicas"].as_array().into_iter().flatten()).find(|r| r["url"] == node.as_str() || r["short"] == node.as_str()).and_then(|r| r["url"].as_str().map(String::from)).ok_or_else(|| ApiError { status: 404, message: format!("no copy {node} in this cluster: GET /v1/cluster lists each copy's url and short name") })?;
+        let url = copy_of(&*c.snapshot().await, node)?.url;
         let a = crate::profiling::Asked { kind: crate::profiling::Kind::LogFilter, body: json!({"filter": filter, "expires_s": until, "by": by}), folded: false, in_use: false };
         let j = match c.profile(&url, a).await? {
             crate::profiling::Answer::Json(j) => j,

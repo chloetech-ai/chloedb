@@ -30,6 +30,12 @@ pub enum Kind {
     /// ([`crate::service::Service::set_log_level`]), so that a coordinator
     /// sets a copy's over the same call.
     LogFilter,
+    /// Not a profile: a primary compares its replicas' rows with its own
+    /// ([`crate::service::Service::verify_replicas`]).
+    Verify,
+    /// Not a profile: writes a checkpoint into the server's backup
+    /// directory ([`crate::service::Service::checkpoint`]).
+    Checkpoint,
 }
 
 impl Kind {
@@ -41,6 +47,8 @@ impl Kind {
             "threads" => Kind::Threads,
             "index" => Kind::Index,
             "log_filter" => Kind::LogFilter,
+            "verify" => Kind::Verify,
+            "checkpoint" => Kind::Checkpoint,
             _ => return Err(ApiError::bad(format!("no profile of kind {s:?}: cpu, heap, memory, threads or index"))),
         })
     }
@@ -53,6 +61,8 @@ impl Kind {
             Kind::Threads => "threads",
             Kind::Index => "index",
             Kind::LogFilter => "log_filter",
+            Kind::Verify => "verify",
+            Kind::Checkpoint => "checkpoint",
         }
     }
 
@@ -63,6 +73,10 @@ impl Kind {
         let s = match self {
             Kind::Cpu | Kind::Heap => b.get("seconds").and_then(|v| v.as_f64()).filter(|s| s.is_finite() && *s > 0.0).unwrap_or(5.0).min(profiler::MAX_SECONDS.max(heap::MAX_SECONDS)),
             Kind::Memory | Kind::Threads | Kind::Index | Kind::LogFilter => 0.0,
+            // The replicas' digests, waited for `timeout_ms` (60 s).
+            Kind::Verify => b.get("timeout_ms").and_then(|v| v.as_f64()).filter(|t| t.is_finite() && *t > 0.0).map_or(60.0, |t| t / 1e3).min(600.0),
+            // A checkpoint copies the database: up to 10 minutes.
+            Kind::Checkpoint => 540.0,
         };
         std::time::Duration::from_secs_f64(s + 60.0)
     }
@@ -156,6 +170,20 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
             let filter = b["filter"].as_str().ok_or_else(|| ApiError::bad("a log filter's body needs \"filter\""))?;
             let expires_s = b["expires_s"].as_u64();
             Ok(Answer::Json(svc.set_log_level(filter, expires_s, b["by"].as_str().unwrap_or("a coordinator"))?))
+        }
+        Kind::Verify => {
+            let ms = b.get("timeout_ms").and_then(|v| v.as_u64()).filter(|t| *t > 0).unwrap_or(60_000).min(600_000);
+            Ok(Answer::Json(svc.verify_replicas(std::time::Duration::from_millis(ms)).await?))
+        }
+        Kind::Checkpoint => {
+            let layout = match b["layout"].as_str().unwrap_or("file") {
+                "file" => strata::storage::Layout::SingleFile,
+                "dir" | "directory" => strata::storage::Layout::Directory,
+                other => return Err(ApiError::bad(format!("layout is \"file\" or \"dir\", not {other:?}"))),
+            };
+            let name = b["name"].as_str().filter(|n| !n.is_empty()).ok_or_else(|| ApiError::bad("a checkpoint's body needs \"name\""))?;
+            let stats = svc.checkpoint(name, layout, b["link_from"].as_str()).await?;
+            Ok(Answer::Json(json!({"checkpoint": stats})))
         }
     }
 }
