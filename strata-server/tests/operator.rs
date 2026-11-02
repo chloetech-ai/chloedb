@@ -31,14 +31,15 @@ const ROWS: usize = 300;
 /// How long a server serves on once told to stop (`--drain-ms`).
 const DRAIN_MS: u64 = 1000;
 
-/// A port of a block of 60 this process takes alone (as in
-/// tests/failover.rs).
+/// A port of a block of 200 this process takes alone (as in
+/// tests/failover.rs, larger: its tests run at once, and a rolling
+/// upgrade starts new coordinators beside the old).
 fn port() -> u16 {
     static NEXT: AtomicU32 = AtomicU32::new(0);
-    let base = 10_000 + (std::process::id() % 160) * 60;
+    let base = 10_000 + (std::process::id() % 250) * 200;
     loop {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        assert!(n < 60, "this test process took its 60 ports");
+        assert!(n < 200, "this test process took its 200 ports");
         let p = (base + n) as u16;
         if std::net::TcpListener::bind(("127.0.0.1", p)).is_ok() {
             return p;
