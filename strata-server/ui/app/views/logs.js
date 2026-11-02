@@ -636,7 +636,8 @@ function storesDrawer(j) {
 }
 
 // ---------------------------------------------------------------- log levels
-const PRESETS = [["error", "error"], ["warn", "warn"], ["info", "info"], ["debug", "debug"], ["info,strata_server=debug", "server debug"], ["trace", "trace"]];
+// Trace is not a preset (L5): it can still be typed in the field.
+const PRESETS = [["error", "error"], ["warn", "warn"], ["info", "info"], ["debug", "debug"], ["info,strata_server=debug", "server debug"]];
 const EXPIRY = [[900, "15 min"], [1800, "30 min"], [3600, "1 h"], [14400, "4 h"]];
 async function levelsDrawer(ctx) {
   const body = h("div", { class: "stack" });
