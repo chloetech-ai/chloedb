@@ -9,7 +9,7 @@ import { h, s, icon, clear, fmt, api, store, toast, copy, drawer, confirm, empty
 import { isProduction } from "../data.js";
 import { tables, invalidate, cached, table as tableOf, TYPES, typeMeta, typeBadge, links } from "../catalog.js";
 import { quoteName } from "../sqledit.js";
-import { viewport, draggable } from "./topology.js";
+import { viewport, draggable } from "../pan.js";
 import { SERIES } from "../charts.js";
 import { pathTree } from "../paths.js";
 

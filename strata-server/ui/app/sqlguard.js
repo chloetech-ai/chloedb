@@ -334,7 +334,7 @@ export function checkWrite({ sql, params, p, onEdit, fixesFor }) {
     const undoTile = h("div", { class: "dt-tile" });
     const problems = h("div", { class: "stack", style: { gap: "8px" } });
     const reason = h("input", { class: "input", style: { width: "100%" }, maxlength: 300, value: allowed?.reason || "", placeholder: prod ? "INC-4821: archive the orders moved to cold storage" : "optional here: what this write is for" });
-    const typedIn = typed ? h("input", { class: "input mono", style: { width: "100%" }, placeholder: typed, autocomplete: "off", spellcheck: "false" }) : null;
+    const typedIn = typed ? h("input", { class: "input mono", style: { width: "100%" }, placeholder: "the table's name", autocomplete: "off", autocapitalize: "off", autocorrect: "off", spellcheck: "false", "aria-label": `Type ${typed} to run it` }) : null;
     const runBtn = h("button", { class: "btn " + (noWhere || dropTable || dropColumn ? "danger solid" : "primary"), disabled: true }, icon("play"),
       r.coordinator ? `Run on ${p.kind === "DROP" || p.kind === "ALTER" || p.kind === "CREATE" ? "every shard" : fmt.plural(r.shards, "shard")}` : "Run it");
     const cancel = h("button", { class: "btn" }, "Cancel");
@@ -444,13 +444,13 @@ export function checkWrite({ sql, params, p, onEdit, fixesFor }) {
       wide: true,
       body: [
         h("div", { class: "small dim" }, `${cluster}${env ? " · " + env : ""} · ${r.coordinator ? fmt.plural(r.shards, "shard") : "one server"} · ${state.whoami ? `${state.whoami.name} · ${state.whoami.scope} key` : "key unknown"}`),
-        sqlBlock(sql.trim(), { style: { maxHeight: "22vh" } }),
+        sqlBlock(sql.trim(), { style: { maxHeight: "22vh", flex: "none", overflow: "auto" } }),
         problems,
         h("div", { class: "dt-tiles" }, rowsTile, shardsTile, fieldsTile, undoTile),
         h("div", { class: "dt-fields" },
           h("label", { class: "dt-lbl" }, prod ? "Why (required: sent with the statement, kept in the audit log with the rows and your key)" : "Why (sent with the statement and kept in the audit log)", reason),
           typedIn ? h("label", { class: "dt-lbl" }, h("span", {}, "Type ", h("b", { class: "mono" }, typed), " to run it"), typedIn) : null),
-        h("div", { class: "small muted" }, "Ctrl+Enter never skips this check. Writes from the command center are tagged so the server can tell them from client traffic."),
+        h("div", { class: "small muted dt-hint" }, "Ctrl+Enter never skips this check. Writes from the command center are tagged so the server can tell them from client traffic."),
       ],
       foot: [cancel, addWhere, h("span", { class: "sep" }), runBtn],
       onClose: () => { if (!done) { done = true; resolve(false); } },

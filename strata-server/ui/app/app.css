@@ -1911,4 +1911,19 @@ a.tl-tile:hover { text-decoration: none; border-color: var(--line-2); }
   .dt-tbl td.dt-c-lag > .row { justify-content: flex-start !important; flex-wrap: wrap; }
   .dt-strip text, .dt-bars text { font-size: 10px; }
 }
+/* Phones (below 560 px): the SQL workbench */
+@media (max-width: 560px) {
+  .dt-mode { flex-wrap: wrap; row-gap: 6px; }
+  .dt-mode .dt-where { order: 3; flex-basis: 100%; white-space: normal; }
+  .dt-mode > .btn { margin-left: auto; }
+  .wb-main { padding: 8px 10px 0; }
+  .wb-tools .kbd-hint, .wb-tools kbd { display: none; }
+  .wb-ed { max-height: 26vh; }
+  .wb-outhd { flex-wrap: wrap; padding: 0 10px; }
+  .wb-outhd .wb-status { flex-basis: 100%; order: 2; white-space: normal; flex-wrap: wrap; padding: 4px 0 8px; gap: 6px; }
+  .dt-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .dt-tile { padding: 8px 10px; }
+  .dt-fields { grid-template-columns: minmax(0, 1fr); }
+  .dt-hint { display: none; }
+}
 /* ===== end data ===== */
