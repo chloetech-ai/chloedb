@@ -105,7 +105,8 @@ export function render(page, r) {
       { name: "failed", get: (p) => p.errors, color: "var(--crit)" },
     ] });
     lat.update(d.trend || []); callsC.update(d.trend || []);
-    const trendCard = card({ title: "Latency and calls", sub: d.trendNote || `${fmt.dur(step / 1000)} points · events marked`, body: [lat, callsC, h("div", { class: "small muted wl-evline" })] });
+    const stepTxt = step >= 3600e3 ? `${fmt.si(step / 3600e3)} h` : step >= 60e3 ? `${fmt.si(step / 60e3)} min` : `${fmt.si(step / 1000)} s`;
+    const trendCard = card({ title: "Latency and calls", sub: d.trendNote || `a point every ${stepTxt} · events marked`, body: [lat, callsC, h("div", { class: "small muted wl-evline" })] });
 
     // Why it is slow, from the figures below.
     const why = whyItIs(st, d, c, slowSince);
