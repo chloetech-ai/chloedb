@@ -6,7 +6,7 @@
 # volumes and load balancers) after HOURS even if this script never runs
 # `down`.
 #
-#   DIGITALOCEAN_TOKEN=... do_part_a.sh up [HOURS]   # cluster + teardown timer + bench pod (default 14 h)
+#   do_part_a.sh up [HOURS]   # (token in DIGITALOCEAN_TOKEN or digitalocean)   # cluster + teardown timer + bench pod (default 14 h)
 #   do_part_a.sh push        # this checkout (git archive of HEAD) into the pod
 #   do_part_a.sh setup       # Rust, the Python libraries, strata-py built in release
 #   do_part_a.sh prep        # Shop (Amazon Reviews 2023 Video Games) and the BEIR collections, embedded there
@@ -20,6 +20,8 @@
 set -euo pipefail
 
 API=https://api.digitalocean.com/v2
+# The token: DIGITALOCEAN_TOKEN, or the environment's variable named digitalocean.
+DIGITALOCEAN_TOKEN=${DIGITALOCEAN_TOKEN:-${digitalocean:-${DIGITALOCEAN:-}}}
 NAME=${NAME:-strata-bench-a}
 REGION=${REGION:-nyc3}
 NODE_SIZE=${NODE_SIZE:-g-8vcpu-32gb}
