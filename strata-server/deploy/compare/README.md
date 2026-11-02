@@ -48,7 +48,11 @@ Elasticsearch and Solr, 28 October 2026) are in
   start below it, so its pods set `VESPA_IGNORE_NOT_ENOUGH_MEMORY`.
   Loading has the same budget: Elasticsearch, OpenSearch and Solr take bulk
   requests on their two data nodes and Vespa one document per request on
-  its container (from a loader pod on the third node, outside the budget),
+  its container, 64 in flight from each of the 4 loading clients (256, what
+  its container queues), a refused put sent again after a pause that grows
+  to 5 s (from a loader pod on the third node, outside the budget; with
+  every put of a 500-document batch at once, the first 1M NQ load failed
+  at 850,000 with puts refused for 20 s on end),
   and Strata builds its shards one after the other in a job of 3 CPUs and 6
   GiB on the shard's node (a shard's build holds its documents in memory;
   two at once in 3 GiB each ran out of memory).

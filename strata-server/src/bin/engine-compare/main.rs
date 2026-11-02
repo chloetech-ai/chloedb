@@ -37,6 +37,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand, ValueEnum};
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value as Json};
 use strata::data::{self, col};
@@ -83,7 +84,7 @@ enum Cmd {
         url: Vec<String>,
         #[arg(long, default_value_t = 2)]
         shards: usize,
-        /// Documents per bulk request (Vespa: documents in flight per client, each its own request).
+        /// Documents per bulk request (Vespa: documents a client takes at a time, each its own request, `VESPA_PUTS` in flight).
         #[arg(long, default_value_t = 500)]
         batch: usize,
         /// Bulk requests in flight.
@@ -601,13 +602,21 @@ fn id_path(id: &str) -> String {
     out
 }
 
+/// Vespa puts in flight at a time from one loading client.
+const VESPA_PUTS: usize = 64;
+
 /// Posts one bulk request, again after a pause while the engine pushes back.
 /// Vespa has no bulk request: its batch is one document a line (id, a tab,
-/// the document), each put on its own, all of them at once.
+/// the document), each put on its own, `VESPA_PUTS` at a time (a client's
+/// share of the 256 requests Vespa's container queues), and each again
+/// after a pause that grows to 5 s while Vespa is overloaded, for up to ten
+/// minutes: with all 500 of a batch at once from 4 clients, the 1M NQ load
+/// had puts refused for 20 s on end once the content nodes fell behind.
 async fn post_batch(engine: Engine, client: &reqwest::Client, url: &str, body: Arc<Vec<u8>>) -> Result<(), String> {
     if engine == Engine::Vespa {
         let text = std::str::from_utf8(&body).map_err(s)?;
-        let puts = text.lines().map(|line| {
+        // Owned futures (a lazy map over the lines is not Send across the await).
+        let puts: Vec<_> = text.lines().map(|line| {
             let (id, doc) = line.split_once('\t').unwrap_or((line, "{}"));
             let url = format!("{url}/document/v1/doc/doc/docid/{}?timeout=180s", id_path(id));
             let (client, doc) = (client.clone(), doc.to_string());
@@ -620,15 +629,16 @@ async fn post_batch(engine: Engine, client: &reqwest::Client, url: &str, body: A
                         Ok(r) => matches!(r.status().as_u16(), 429 | 503 | 504 | 507),
                         Err(e) => e.is_connect() || e.is_timeout(),
                     };
-                    if retry && tries < 20 {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    if retry && tries < 120 {
+                        tokio::time::sleep(Duration::from_secs(tries.min(5))).await;
                         continue;
                     }
                     return check(r, "put").await.map(|_| ());
                 }
             }
-        });
-        for r in futures::future::join_all(puts).await {
+        }).collect();
+        let mut done = futures::stream::iter(puts).buffer_unordered(VESPA_PUTS);
+        while let Some(r) = done.next().await {
             r?;
         }
         return Ok(());
