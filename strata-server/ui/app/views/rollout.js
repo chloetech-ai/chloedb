@@ -200,7 +200,8 @@ function render(page) {
     if (a.storage?.size !== b.storage?.size) stage(`Grow the volumes to ${b.storage?.size}`, "each copy's claim, in place (the storage class must allow it)", /growing|volume/, null, false);
     if (serverConfig(a) !== serverConfig(b)) {
       const of = r.copies || shards.reduce((t, x) => t + (x.replicas || []).length, 0), left = (r.stale || []).length;
-      stage(`New settings on ${plural(of, "server")}`, `replicas first, then each primary after handing it over; one at a time${spec().rollout?.soakSeconds ? `, each serving ${spec().rollout.soakSeconds} s before the next` : ""}`, /new settings|restarts with|rolling out/, of ? (of - left) / of : 0, left === 0 && !/new settings/.test(msg));
+      const extra = b.replicas < 3 && spec().rollout?.extraCopies !== false ? `${b.replicas === 2 ? "a third copy with them joins" : "two extra copies with them join"} each shard first, so that most of its copies serve while each restarts; then ` : "";
+      stage(`New settings on ${plural(of, "server")}`, `${extra}replicas first, then each primary after handing it over; one at a time${spec().rollout?.soakSeconds ? `, each serving ${spec().rollout.soakSeconds} s before the next` : ""}`, /new settings|restarts with|rolling out|leaves shard/, of ? (of - left) / of : 0, left === 0 && !/new settings|leaves shard/.test(msg));
     }
     if (restarts) {
       const v = r.verify, need = (spec().rollout?.verifySeconds ?? 60) * 1000;

@@ -220,6 +220,10 @@
                   "rollout": {
                     "description": "How changes are made: paused, or held by gates on the cluster's live numbers.",
                     "properties": {
+                      "extraCopies": {
+                        "description": "A shard of fewer than three copies takes more, with the new settings, before its copies restart, and lets them go after: most of its copies serve while each restarts (default true).",
+                        "type": "boolean"
+                      },
                       "gates": {
                         "description": "Limits on live numbers: one over its limit for holdAfterSeconds holds the change until it is resumed.",
                         "properties": {

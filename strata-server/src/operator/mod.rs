@@ -140,6 +140,13 @@ pub struct RolloutSpec {
     /// answered through the coordinators) before the version counts as
     /// rolled out; 0: not verified.
     pub verify_seconds: u64,
+    /// A shard of fewer than three copies takes more, started with the new
+    /// settings, before any of its copies restarts, and lets them go once
+    /// every one of its own runs them: of two copies, the one left while
+    /// the other restarts is not a majority, so the shard would serve no
+    /// reads and hold no writes meanwhile. Each extra copy is sent a copy
+    /// of the shard's data, once a rollout.
+    pub extra_copies: bool,
 }
 
 impl Default for RolloutSpec {
@@ -152,6 +159,7 @@ impl Default for RolloutSpec {
             on_failure: OnFailure::Rollback,
             progress_deadline_seconds: 600,
             verify_seconds: 60,
+            extra_copies: true,
         }
     }
 }
@@ -894,7 +902,7 @@ async fn step<P: Platform>(spec: &Spec, p: &P, admin: &Admin, before: &Rollout) 
         let waiting = sets.iter().filter(|s| !s.ready.contains(&0)).count();
         if waiting > 0 {
             let stale = p.stale(spec).await?;
-            if let Some(m) = restart_stuck(spec, p, &sets, |_| false, &stale).await? {
+            if let Some(m) = restart_stuck(spec, p, &sets, |_| false, |_, _| true, &stale).await? {
                 return Ok(Outcome::new(Phase::Creating, m));
             }
             return Ok(Outcome::new(Phase::Creating, format!("waiting for the first copy of {waiting} of {} shards to start", sets.len())));
@@ -973,15 +981,18 @@ async fn act<P: Platform>(
         };
     }
     let up = |url: &str| view.shards.iter().any(|s| s.servers.iter().any(|r| r.url == url && r.up));
-    if let Some(m) = restart_stuck(spec, p, sets, up, stale).await? {
+    // Not an extra copy that is about to go.
+    let keep = |id: u32, k: usize| sets.iter().any(|s| s.id == id && k < keeps(spec, p, s, view, stale));
+    if let Some(m) = restart_stuck(spec, p, sets, up, keep, stale).await? {
         r.rolled = true;
         return scaling(m);
     }
     let shard_of: HashMap<u32, usize> = view.shards.iter().enumerate().filter_map(|(i, s)| set_of_shard(p, s).map(|id| (id, i))).collect();
     let in_map: Vec<&str> = view.shards.iter().flat_map(|s| s.servers.iter().map(|r| r.url.as_str())).collect();
+    let want = |s: &Set| keeps(spec, p, s, view, stale);
     // A copy of a set that serves a shard, which joins it (again) if it is
     // not in it.
-    let kept = |id: u32, k: usize| sets.iter().any(|s| s.id == id && k < s.replicas.min(spec.replicas)) && shard_of.contains_key(&id);
+    let kept = |id: u32, k: usize| sets.iter().any(|s| s.id == id && k < s.replicas.min(want(s))) && shard_of.contains_key(&id);
     // The coordinators' list must name servers of the cluster only: one
     // that starts again on a list naming a server the cluster left out for
     // good is refused.
@@ -1048,17 +1059,19 @@ async fn act<P: Platform>(
             }
         }
     }
-    // Copies per shard.
+    // Copies per shard (and the extra copies a rollout adds, in roll(),
+    // kept until it no longer needs them).
     for set in sets {
         let Some(&i) = shard_of.get(&set.id) else { continue };
-        if set.replicas != spec.replicas {
+        let want = want(set);
+        if set.replicas < spec.replicas || set.replicas > want {
             unless_held!(format!("shard {i}: {} copies, from {}", spec.replicas, set.replicas));
         }
         if set.replicas < spec.replicas {
             p.scale_set(set.id, spec.replicas).await?;
             return scaling(format!("shard {i}: {} copies, from {}", spec.replicas, set.replicas));
         }
-        if set.replicas > spec.replicas {
+        if set.replicas > want {
             let url = p.url(set.id, set.replicas - 1);
             let servers = &view.shards[i].servers;
             match servers.iter().find(|r| r.url == url) {
@@ -1160,15 +1173,36 @@ async fn act<P: Platform>(
 /// first made to start copies with them, rather than being waited for,
 /// for ever, by the cluster being made, a new shard or a rollout. Not
 /// held by a pause or a gate: it heals.
-async fn restart_stuck<P: Platform>(spec: &Spec, p: &P, sets: &[Set], up: impl Fn(&str) -> bool, stale: &[(u32, usize)]) -> Result<Option<String>, String> {
+async fn restart_stuck<P: Platform>(spec: &Spec, p: &P, sets: &[Set], up: impl Fn(&str) -> bool, keep: impl Fn(u32, usize) -> bool, stale: &[(u32, usize)]) -> Result<Option<String>, String> {
     let ready = |id: u32, k: usize| sets.iter().any(|s| s.id == id && s.ready.contains(&k));
-    let Some(&(id, k)) = stale.iter().find(|&&(id, k)| !ready(id, k) && !up(&p.url(id, k))) else { return Ok(None) };
+    let Some(&(id, k)) = stale.iter().find(|&&(id, k)| !ready(id, k) && !up(&p.url(id, k)) && keep(id, k)) else { return Ok(None) };
     if p.configure(id, spec).await? {
         return Ok(Some(format!("set {id}: new copies start with the new settings")));
     }
     let url = p.url(id, k);
     p.restart(id, k).await?;
     Ok(Some(format!("restarting {url}, which has not started, with the new settings")))
+}
+
+/// The copies set `set` keeps now: `spec.replicas`, or three for a shard
+/// of fewer ([`RolloutSpec::extra_copies`]) while one of its own copies
+/// runs older settings, and, once it has the extra ones, until each of its
+/// own is back and in sync.
+fn keeps<P: Platform>(spec: &Spec, p: &P, set: &Set, view: &View, stale: &[(u32, usize)]) -> usize {
+    let n = spec.replicas;
+    if !spec.rollout.extra_copies || n >= 3 {
+        return n;
+    }
+    let settled = |k: usize| {
+        let url = p.url(set.id, k);
+        set.ready.contains(&k) && view.shards.iter().flat_map(|s| &s.servers).any(|r| r.url == url && r.up && r.in_sync)
+    };
+    let restarts = stale.iter().any(|&(id, k)| id == set.id && k < n);
+    if restarts || (set.replicas > n && !(0..n).all(settled)) {
+        3
+    } else {
+        n
+    }
 }
 
 /// A version that restarted servers and has not yet failed or passed its
@@ -1222,11 +1256,14 @@ async fn preflight<P: Platform>(spec: &Spec, p: &P, r: &mut Rollout, now: u64) -
 }
 
 /// New settings: each set starts its copies with them, the volumes grow,
-/// and the copies running older settings (`stale`) restart one at a time.
+/// a shard of fewer than three copies takes extra ones that run them
+/// ([`RolloutSpec::extra_copies`]), and the copies running older settings
+/// (`stale`) restart one at a time.
 /// The next restarts only once every copy is back and in sync, and the
 /// copies restarted have served `soak_seconds`; a primary is first handed
 /// to a copy of its shard in sync, one that runs the new settings if
-/// there is one. A shard of one copy cannot be handed over: its copy
+/// there is one (of the shard's own copies before an extra one). Without
+/// extra copies, a shard of one copy cannot be handed over: its copy
 /// restarts, and its writes wait for it. A copy restarted that cannot run
 /// (it exits, or its image cannot be pulled), or is not back and caught up
 /// within `progress_deadline_seconds`, fails the version.
@@ -1263,8 +1300,9 @@ async fn roll<P: Platform>(
             return Ok(Some(failed(r, "copies", format!("{} cannot run the new settings: {}", t.who, t.text), now)));
         }
     }
-    // The last restart's step, while the copy it restarted settles.
-    let restarted = r.step.clone().filter(|s| s.name.starts_with("restart "));
+    // The last restart's step (or the extra copies'), while the copy it
+    // restarted settles.
+    let restarted = r.step.clone().filter(|s| s.name.starts_with("restart ") || s.name.starts_with("add "));
     if stale.is_empty() && restarted.is_none() {
         return Ok(None);
     }
@@ -1282,8 +1320,11 @@ async fn roll<P: Platform>(
         if let Some(step) = &restarted {
             let deadline = spec.rollout.progress_deadline_seconds;
             if now.saturating_sub(step.since_ms) > deadline * 1000 {
-                let url = step.name.trim_start_matches("restart ");
-                return Ok(Some(failed(r, "copies", format!("{url} restarted with the new settings more than {deadline} s ago, and {} not back and caught up", unsettled.join(", ")), now)));
+                let what = match step.name.strip_prefix("add ") {
+                    Some(urls) => format!("{urls} started with the new settings"),
+                    None => format!("{} restarted with the new settings", step.name.trim_start_matches("restart ")),
+                };
+                return Ok(Some(failed(r, "copies", format!("{what} more than {deadline} s ago, and {} not back and caught up", unsettled.join(", ")), now)));
             }
         }
         return scaling(format!("rolling out the new settings ({} left): waiting for {} to be back and caught up", left(stale.len()), unsettled.join(", ")));
@@ -1305,6 +1346,25 @@ async fn roll<P: Platform>(
     // A replica first, so that each primary can go to a restarted copy.
     let &(id, k) = stale.iter().find(|&&(id, k)| !primary(&p.url(id, k))).unwrap_or(&stale[0]);
     let url = p.url(id, k);
+    // A shard of fewer than three copies takes more first, which start
+    // with the new settings: most of its copies serve while each of its
+    // own restarts.
+    if let Some(set) = sets.iter().find(|s| s.id == id && s.replicas < keeps(spec, p, s, view, stale)) {
+        let n = keeps(spec, p, set, view, stale);
+        let urls: Vec<String> = (set.replicas..n).map(|k| p.url(id, k)).collect();
+        let i = view.shards.iter().position(|s| s.servers.iter().any(|r| r.url == url)).map_or_else(|| format!("of set {id}"), |i| i.to_string());
+        let what = format!("shard {i}: {} {} with the new settings, so that most of its copies serve while each of its {} restarts", urls.join(" and "), if urls.len() == 1 { "starts as a third copy" } else { "start as extra copies" }, set.replicas);
+        if let Some(o) = hold.stop(&what) {
+            return Ok(Some(o));
+        }
+        if let Some(o) = preflight(spec, p, r, now).await? {
+            return Ok(Some(o));
+        }
+        p.scale_set(id, n).await?;
+        r.rolled = true;
+        r.wait(&format!("add {}", urls.join(" and ")), now);
+        return scaling(what);
+    }
     if let Some(o) = hold.stop(&format!("restarting {url} with the new settings ({} left)", left(stale.len()))) {
         return Ok(Some(o));
     }
@@ -1313,7 +1373,10 @@ async fn roll<P: Platform>(
     }
     if let Some((i, s)) = view.shards.iter().enumerate().find(|(_, s)| s.servers.iter().any(|r| r.url == url && r.takes_writes)) {
         let mut to: Vec<&Server> = s.servers.iter().filter(|o| o.url != url && o.up && o.in_sync && o.role == "replica").collect();
-        to.sort_by_key(|o| !fresh(&o.url));
+        // A restarted copy of the shard's own before an extra one, which
+        // then leaves without a handover.
+        let extra = |url: &str| p.set_of(url).is_some_and(|(_, k)| k >= spec.replicas);
+        to.sort_by_key(|o| (!fresh(&o.url), extra(&o.url)));
         if let Some(to) = to.first() {
             admin.post(&format!("/v1/admin/shards/{i}/promote"), json!({"url": to.url})).await?;
             return scaling(format!("shard {i}: handing the primary over from {url} to {}, before {url} restarts with the new settings", to.url));
@@ -1620,6 +1683,15 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
     }
     if new.server_config() != old.server_config() {
         let copies = shards * new.replicas;
+        if new.replicas < 3 && new.rollout.extra_copies {
+            let more = 3 - new.replicas;
+            steps.push(format!(
+                "each shard first takes {} with the new settings, sent a copy of its data, so that most of its copies serve while each of its {} restarts; {} once they run the new settings",
+                if more == 1 { "a third copy".to_string() } else { format!("{more} extra copies") },
+                new.replicas,
+                if more == 1 { "it goes" } else { "they go" }
+            ));
+        }
         steps.push(format!("every server restarts with the new settings, one at a time ({copies} restarts): each primary is handed to a copy already restarted first, and the next waits until every copy is back and caught up"));
     }
     if let (Some(a), Some(b)) = (from, to) {
@@ -1732,6 +1804,7 @@ pub fn crd() -> Json {
                 "onFailure": {"type": "string", "enum": ["rollback", "hold"], "description": "What a version that fails a check gets: rollback (default) restores the last version that ran everywhere; hold holds it until it is resumed."},
                 "progressDeadlineSeconds": int(10, "How long one step of a rollout (the image tried on every node, the coordinators restarting, a copy restarting and catching up, the verification) may take before the version fails (default 600)."),
                 "verifySeconds": int(0, "How long the cluster must stay healthy once every server runs a version that restarted them, before it counts as rolled out (default 60; 0: not verified)."),
+                "extraCopies": {"type": "boolean", "description": "A shard of fewer than three copies takes more, with the new settings, before its copies restart, and lets them go after: most of its copies serve while each restarts (default true)."},
             }},
             "autoscale": autoscale::schema(),
             "upgrade": upgrade::schema(),
@@ -1811,6 +1884,13 @@ mod tests {
         assert_eq!(new.token_secret, None);
         let warnings = p["warnings"].to_string();
         assert!(warnings.contains("no token") && warnings.contains("two copies a shard") && warnings.contains("deleted with its volumes"), "{warnings}");
+        // A new image on two copies a shard: a third joins each first.
+        let two: Spec = serde_json::from_value(json!({"shards": 2, "replicas": 2, "demo": 100})).unwrap();
+        let (_, new) = patched(&serde_json::to_value(&two).unwrap(), &json!({"image": "strata-server:v2"})).unwrap();
+        let steps = plan(&two, &new, 2, 2)["steps"].to_string();
+        assert!(steps.contains("each shard first takes a third copy with the new settings") && steps.contains("(4 restarts)"), "{steps}");
+        let (_, off) = patched(&serde_json::to_value(&two).unwrap(), &json!({"image": "strata-server:v2", "rollout": {"extraCopies": false}})).unwrap();
+        assert!(!plan(&two, &off, 2, 2)["steps"].to_string().contains("third copy"));
         // Pausing and gates restart nothing.
         let (_, gated) = patched(&serde_json::to_value(&old).unwrap(), &json!({"rollout": {"paused": true, "gates": {"p99Ms": 200}}})).unwrap();
         let p = plan(&old, &gated, 2, 3);

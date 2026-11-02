@@ -50,7 +50,7 @@ kubectl -n strata port-forward svc/demo 7700  # http://127.0.0.1:7700
 | `tokenSecret` | | a Secret whose key `token` every server and coordinator requires; without it they run with `--no-token`, open to whatever reaches them |
 | `clusterTokenSecret` | | a Secret whose key `token` is the cluster's own token (`--cluster-token`), which the servers and coordinators send each other and clients never hold; with it, the `tokenSecret` token goes to the coordinators alone, as the admin token (the operator's too), and may not make the calls between servers. Needs `tokenSecret` |
 | `image`, `imagePullPolicy`, `resources`, `coordinatorResources`, `args`, `coordinatorArgs` | `strata-server:dev` | the servers' image, containers and further arguments (`args` for every server, `coordinatorArgs` for every coordinator: `--hedge-ms 50`, `--partial`) |
-| `rollout` | `{holdAfterSeconds: 30, soakSeconds: 0, onFailure: rollback, progressDeadlineSeconds: 600, verifySeconds: 60}` | how a change is made: `paused`, `gates` (limits on `p99Ms`, `errorRatio`, `replicaBehind`, `diskUsedRatio`: one over its limit for `holdAfterSeconds` holds the change), `soakSeconds`, how long a restarted copy serves before the next restarts, `progressDeadlineSeconds`, how long a step of a restart may take, `verifySeconds`, how long the new version must be healthy in a row before it is ready, and `onFailure`, what a version that fails becomes: `rollback` (to the last version that ran everywhere) or `hold`. Not part of a version: changing it restarts nothing |
+| `rollout` | `{holdAfterSeconds: 30, soakSeconds: 0, onFailure: rollback, progressDeadlineSeconds: 600, verifySeconds: 60, extraCopies: true}` | how a change is made: `paused`, `gates` (limits on `p99Ms`, `errorRatio`, `replicaBehind`, `diskUsedRatio`: one over its limit for `holdAfterSeconds` holds the change), `soakSeconds`, how long a restarted copy serves before the next restarts, `progressDeadlineSeconds`, how long a step of a restart may take, `verifySeconds`, how long the new version must be healthy in a row before it is ready, and `onFailure`, what a version that fails becomes: `rollback` (to the last version that ran everywhere) or `hold`, and `extraCopies`, whether a shard of fewer than three copies takes extra ones while its copies restart. Not part of a version: changing it restarts nothing |
 | `upgrade` | `{mode: off, checkMinutes: 10}` | the upgrader: every `checkMinutes` it asks the registry which image the tag `track` names (by default the tag of `image`), and with `mode` `suggest` shows it, with `on` rolls it out, pinned by its digest, once the cluster is ready. Not part of a version ([upgrading](#upgrading-strata)) |
 | `autoscale` | `{mode: off, cooldownMinutes: 20}` | rules that change `replicas`, `shards` or `storage.size` from how busy and full the servers are: `grow` (`busyAbove`, `forMinutes`, `add`, `max`), `shrink` (`busyBelow`, `forMinutes`, `min`), `volumes` (`fullAbove`, `action`: `grow` or `addShard`), `freeze` (weekly windows in UTC, `from`/`to` like `Fri 16:00`, `allowGrow`) and `cooldownMinutes`; `mode` `on` (the operator acts), `suggest` (a person applies or dismisses) or `off`. Not part of a version: the changes it makes are ([autoscaling](../../docs/strata/server.md#autoscaling)) |
 
@@ -200,8 +200,15 @@ The operator then:
    pods are deleted once each one ran, and the nodes keep the image, so
    that no restart waits for a pull.
 2. **Restarts the coordinators**, a new one ready before an old one stops.
-3. **Restarts the copies** one at a time, as above.
-4. **Verifies the version** for `rollout.verifySeconds`: every copy up, in
+3. **Adds a third copy to each shard of two** (`rollout.extraCopies`, on
+   by default; two to a shard of one): it starts with the new image, is
+   sent a copy of the shard's data and catches up before either of the
+   shard's own copies restarts, so that a majority of the shard's copies
+   serves through each restart. It leaves, its volume deleted, once both
+   run the new image. A new image that does not run fails here, before any
+   copy of the shard's own restarts.
+4. **Restarts the copies** one at a time, as above.
+5. **Verifies the version** for `rollout.verifySeconds`: every copy up, in
    sync and ready, no pod crash-looping or restarting, the gates under
    their limits, and a `SELECT COUNT(*)` of the first table answered
    through the coordinators. The version is ready only then
@@ -228,13 +235,20 @@ failed is kept in `status.upgrade.rejected` and never rolled out again by
 the upgrader; `POST /v1/admin/kube/upgrade` refuses it too unless given
 `"force": true`.
 
-With two copies a shard, reads go on through an upgrade but a shard's
-writes wait while one of its copies restarts (a write waits for a majority
-of the copies in sync): the coordinator holds such a write up to 10 s, and
-answers 503 after that. Three copies keep writes going.
+Without the extra copies (`extraCopies: false`), a shard of two copies
+serves no reads and takes no writes while one of them restarts: one of
+two is not a majority, which a primary needs to serve a read and a write
+to be acknowledged. The coordinator holds such a write up to 10 s, and
+answers 503 after that.
+
+A write in flight as its shard's primary is handed over may be answered
+409, in doubt: the old primary had it, and the new one may or may not.
+The coordinator does not send it again (an `UPDATE ... SET n = n + 1`
+applied twice would be wrong); read it back, or send it again when that
+does no harm.
 
 `tests/operator.rs` (`a_new_version_rolls_out_under_load_and_a_bad_one_rolls_back`)
-proves it on processes: 2 shards of 3 copies and 2 coordinators behind a
+proves it on processes: 2 shards of 2 copies and 2 coordinators behind a
 Service that sends only to ready ones, four clients searching, looking up
 keys and counting rows and one writing every 20 ms while the cluster
 upgrades, then gets a version whose servers exit (rolled back to the one

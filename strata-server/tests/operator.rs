@@ -744,8 +744,9 @@ async fn a_cluster_with_its_own_token_is_made_grown_shrunk_and_healed() {
 /// A copy that cannot start with its settings (here an argument its
 /// server does not take; on Kubernetes, requests no node has room for)
 /// restarts at once with the settings that fix it, rather than being
-/// waited for: while the cluster is made, and when a rollout of a bad
-/// setting fails and is rolled back.
+/// waited for, while the cluster is made. A rollout of a bad setting
+/// fails on the third copy a shard of two takes first, and is rolled
+/// back without any copy of the shard's own restarting.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_that_cannot_start_restarts_with_the_settings_that_fix_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -768,17 +769,18 @@ async fn a_copy_that_cannot_start_restarts_with_the_settings_that_fix_it() {
     assert_eq!(run.shape().await.0, vec![2]);
     assert_eq!(run.count().await, ROWS as i64);
 
-    // The bad argument rolls out to a replica, which exits: the version
-    // fails, and goes back to the one that ran everywhere; the copy
-    // restarts with that one's settings, and the primary serves
-    // throughout.
+    // The bad argument rolls out to the third copy the shard of two takes
+    // first, which exits: the version fails before either of the shard's
+    // own copies restarts, and goes back to the one that ran everywhere;
+    // the third copy goes.
+    let pids = run.procs.pids();
     run.spec.args = bad;
     let (_, said) = run.until("rolled back", |o| o.phase == Phase::Ready && run.current().args.is_empty()).await;
-    assert!(said.iter().any(|m| m.starts_with("restarting")), "{said:?}");
+    assert!(said.iter().any(|m| m.contains("starts as a third copy with the new settings")), "{said:?}");
     let failed = said.iter().find(|m| m.starts_with("rolling back to version 2: the version failed (copies):")).unwrap_or_else(|| panic!("{said:?}"));
-    assert!(failed.contains("cannot run the new settings") && failed.contains("exit status: 2"), "{failed}");
-    assert!(said.iter().any(|m| m.contains("which has not started")), "{said:?}");
-    assert!(said.iter().any(|m| m.starts_with("verifying the version: healthy")), "{said:?}");
+    assert!(failed.contains("copy 0-2 cannot run the new settings") && failed.contains("exit status: 2"), "{failed}");
+    assert!(!said.iter().any(|m| m.starts_with("restarting")), "{said:?}");
+    assert_eq!(run.procs.pids(), pids, "none of the shard's own copies restarted");
     assert_eq!(run.shape().await.0, vec![2]);
     assert_eq!(run.count().await, ROWS as i64);
     // A failed rollback is not rolled back again: held instead.
@@ -1084,8 +1086,10 @@ impl Load {
 
 /// A new version rolls out while queries and writes come in: the image is
 /// tried first, the coordinators restart (a new one ready before an old
-/// one stops), then each copy, its primary handed over first, and the
-/// version is verified. No query or write fails, and every write is kept.
+/// one stops), each shard of two copies takes a third with the new
+/// version, then each copy restarts, its primary handed over first, the
+/// third goes, and the version is verified. No query or write fails, and
+/// every write is kept.
 /// An image whose servers exit fails at its first copy and is rolled back
 /// to the version before, still without a failed query; one that cannot
 /// be pulled is refused before any server restarts.
@@ -1095,10 +1099,10 @@ async fn a_new_version_rolls_out_under_load_and_a_bad_one_rolls_back() {
     let procs = Procs::new(dir.path(), None);
     let port = procs.coordinator_port;
     let admin = Admin::new(&format!("http://127.0.0.1:{port}"), None);
-    let spec = Spec { image: "strata-server:v1".into(), shards: 2, replicas: 3, coordinators: 2, demo: Some(ROWS), failover_after_ms: 1000, rollout: quick(), ..Spec::default() };
+    let spec = Spec { image: "strata-server:v1".into(), shards: 2, replicas: 2, coordinators: 2, demo: Some(ROWS), failover_after_ms: 1000, rollout: quick(), ..Spec::default() };
     let mut run = Run::new(procs, admin, spec);
     run.settle("made").await;
-    assert_eq!(run.shape().await.0, vec![3, 3]);
+    assert_eq!(run.shape().await.0, vec![2, 2]);
     let counted = counter(&run).await;
     let load = Load::start(port, 4);
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1108,11 +1112,22 @@ async fn a_new_version_rolls_out_under_load_and_a_bad_one_rolls_back() {
     run.spec.image = "strata-server:v2".into();
     let said = run.settle("v2").await;
     let took = t0.elapsed();
-    for step in ["restarting the coordinators with the new settings", "handing the primary over", "restarting http://", "verifying the version: healthy for 2 s in a row (6 copies back and in sync, a query through the coordinators answered)"] {
+    for step in [
+        "restarting the coordinators with the new settings",
+        "starts as a third copy with the new settings, so that most of its copies serve while each of its 2 restarts",
+        "handing the primary over",
+        "restarting http://",
+        "leaves shard",
+        "verifying the version: healthy for 2 s in a row (4 copies back and in sync, a query through the coordinators answered)",
+    ] {
         assert!(said.iter().any(|m| m.contains(step)), "{step}: {said:#?}");
     }
+    // One handover a shard: each primary goes to its own restarted copy,
+    // and the third leaves as a replica.
+    assert_eq!(said.iter().filter(|m| m.contains("handing the primary over")).count(), 2, "{said:#?}");
     assert!(run.procs.preflights.lock().unwrap().contains(&"strata-server:v2".to_string()));
-    assert_eq!(run.procs.restarts.load(Ordering::Relaxed), 6);
+    assert_eq!(run.procs.restarts.load(Ordering::Relaxed), 4);
+    assert_eq!(run.shape().await.0, vec![2, 2]);
     assert!(run.procs.stale(&run.spec).await.unwrap().is_empty());
     let (reads, writes, failed) = load.so_far();
     assert!(failed.is_empty(), "{} of {reads} reads and {writes} writes failed during the rollout:\n{}", failed.len(), failed.join("\n"));
@@ -1124,6 +1139,7 @@ async fn a_new_version_rolls_out_under_load_and_a_bad_one_rolls_back() {
     let back = said.iter().find(|m| m.starts_with("rolling back to version 2:")).unwrap_or_else(|| panic!("{said:#?}"));
     assert!(back.contains("cannot run the new settings") && back.contains("exit status: 2"), "{back}");
     assert!(run.procs.stale(&run.current()).await.unwrap().is_empty());
+    assert_eq!(run.shape().await.0, vec![2, 2]);
     let (reads, writes, failed) = load.so_far();
     assert!(failed.is_empty(), "{} of {reads} reads and {writes} writes failed:\n{}", failed.len(), failed.join("\n"));
 
@@ -1143,13 +1159,31 @@ async fn a_new_version_rolls_out_under_load_and_a_bad_one_rolls_back() {
     assert!(seen.in_doubt.len() <= 6, "{} writes in doubt:\n{}", seen.in_doubt.len(), seen.in_doubt.join("\n"));
     assert!(seen.reads > 500 && seen.writes > 100, "{seen:?}");
     // Every write acknowledged is there, once (or overwritten by one in
-    // doubt that was kept).
+    // doubt that was kept). A read may go to a replica the last writes
+    // have not reached yet (a read that must see a write names it, with
+    // min_seq_no): each is read again until it shows, for 5 s at most; a
+    // lost write never does.
+    let shows = |sql: String, ok: Box<dyn Fn(i64) -> bool>| {
+        let run = &run;
+        async move {
+            let t0 = Instant::now();
+            loop {
+                let now = run.sql(&sql).await["rows"][0][0].as_i64().unwrap();
+                if ok(now) || t0.elapsed() > Duration::from_secs(5) {
+                    return now;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    };
     for (key, v) in &seen.written {
-        let j = run.sql(&format!("SELECT sold FROM products WHERE id = '{key}'")).await;
-        let now = j["rows"][0][0].as_i64().unwrap();
-        assert!(now == *v || seen.doubted.get(key).is_some_and(|d| d.contains(&now)), "{key}: {now}, acknowledged {v}, in doubt {:?}", seen.doubted.get(key));
+        let (v, doubted) = (*v, seen.doubted.get(key).cloned().unwrap_or_default());
+        let d = doubted.clone();
+        let now = shows(format!("SELECT sold FROM products WHERE id = '{key}'"), Box::new(move |n| n == v || d.contains(&n))).await;
+        assert!(now == v || doubted.contains(&now), "{key}: {now}, acknowledged {v}, in doubt {doubted:?}");
     }
-    let n = counter(&run).await - counted;
+    let (lo, hi) = (counted + seen.added, counted + seen.added + seen.added_in_doubt);
+    let n = shows(format!("SELECT sold FROM products WHERE id = '{COUNTER}'"), Box::new(move |n| (lo..=hi).contains(&n))).await - counted;
     assert!((seen.added..=seen.added + seen.added_in_doubt).contains(&n), "{COUNTER} went up {n}: {} increments acknowledged, {} in doubt", seen.added, seen.added_in_doubt);
     println!(
         "{} reads and {} writes through three versions, none failed, {} answered in doubt; the slowest took {:.0} ms",
