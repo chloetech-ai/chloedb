@@ -219,7 +219,7 @@ memory). Writes and streams are not measured for them yet.
 | Milvus | `milvusdb/milvus:v2.6.26` (standalone, embedded etcd, local storage) | its BM25 function over the `english` analyzer | `HNSW_SQ` (SQ8) refined with FP32, refine_k 4, `ef` 64 |
 | ParadeDB | `paradedb/paradedb:0.26.4-pg17` | `pg_search`'s BM25 over its `simple` tokenizer with the English stemmer, stopwords and ASCII folding | the vectors in the same index (`vector_ip_ops`) |
 | Postgres | the same image, without `pg_search` | `ts_rank` (no IDF: not BM25) over a generated `tsvector` with a GIN index | `pgvector` HNSW, `ef_search` 64, `iterative_scan` strict_order |
-| Redis | `redis:8.8.4` (Redis Query Engine; no persistence, 5.5 GB maxmemory) | `BM25STD` with its English stemmer and Lucene's stopwords | `HNSW` `FLOAT32`, `EF_RUNTIME` 64 |
+| Redis | `redis:8.8.4` (Redis Query Engine; no persistence, 5.5 GB maxmemory) | `BM25STD` with its English stemmer and Lucene's stopwords | `HNSW` `FLOAT16` (with `FLOAT32` a million 384-dimension vectors, held in the hash and again in the index, and the text do not fit in 6 GiB: the first 1M NQ load ran out of memory at about 93%), `EF_RUNTIME` 64 |
 
 Each kind is the engine's closest native request, and its report says
 where it has none (`unavailable`) or where the request means something

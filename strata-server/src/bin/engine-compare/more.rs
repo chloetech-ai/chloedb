@@ -687,7 +687,7 @@ fn batch_req(o: Other, url: &str, rows: &[(RawDoc, Vec<f32>)], first: usize, avg
             let cmds = rows
                 .iter()
                 .map(|(r, v)| {
-                    let blob: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+                    let blob = f16_bytes(v);
                     let mut c: Vec<Vec<u8>> = vec![b"HSET".to_vec(), format!("d:{}", r.id).into_bytes()];
                     for (k, val) in [
                         ("key", r.id.clone()),
@@ -880,7 +880,7 @@ async fn setup(o: Other, c: &mut Conns, u: &str, dim: usize) -> Result<(), Strin
             args.push(&n);
             args.extend(CLASSIC_STOPWORDS.iter().copied());
             args.extend([
-                "SCHEMA", "body", "TEXT", "key", "TAG", "year", "NUMERIC", "category", "TAG", "rating", "NUMERIC", "emb", "VECTOR", "HNSW", "10", "TYPE", "FLOAT32", "DIM", &dim,
+                "SCHEMA", "body", "TEXT", "key", "TAG", "year", "NUMERIC", "category", "TAG", "rating", "NUMERIC", "emb", "VECTOR", "HNSW", "10", "TYPE", "FLOAT16", "DIM", &dim,
                 "DISTANCE_METRIC", "IP", "M", "16", "EF_CONSTRUCTION", "200",
             ]);
             c.redis(u, &args).await?;
@@ -1677,7 +1677,7 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             Some(Req::Sql { url: u.to_string(), sql })
         }
         Other::Redis => {
-            let blob: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+            let blob = f16_bytes(v);
             let cmd = |args: Vec<String>, blob: Option<Vec<u8>>| {
                 let mut c: Vec<Vec<u8>> = args.into_iter().map(String::into_bytes).collect();
                 if let Some(b) = blob {
@@ -1768,7 +1768,7 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| redis_tag(k)).collect();
-                    let blob: Vec<u8> = p.item.iter().flat_map(|x| x.to_le_bytes()).collect();
+                    let blob = f16_bytes(p.item);
                     cmd(knn(&format!("@rating:[3 +inf] -@key:{{{}}}", ids.join("|"))), Some(blob))
                 }
                 "sql aggregate" => {
@@ -2063,4 +2063,58 @@ pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, 
     std::fs::write(&path, serde_json::to_string(&report).unwrap()).map_err(s)?;
     eprintln!("wrote {}", path.display());
     Ok(())
+}
+
+/// `v` as IEEE half floats, little-endian, rounded to nearest even: Redis's
+/// FLOAT16 vectors. Everything Redis holds is in memory, and with FLOAT32 a
+/// million 384-dimension vectors (stored in the hash and again in the HNSW
+/// index) and the text do not fit in the 6 GiB the other engines get.
+fn f16_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|&x| f16_bits(x).to_le_bytes()).collect()
+}
+
+fn f16_bits(x: f32) -> u16 {
+    let b = x.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xff) as i32;
+    let man = b & 0x7f_ffff;
+    if exp == 0xff {
+        return sign | 0x7c00 | if man != 0 { 0x200 } else { 0 };
+    }
+    let e = exp - 127 + 15;
+    if e >= 0x1f {
+        return sign | 0x7c00;
+    }
+    // Keep the top bits of the mantissa (with its leading 1 for a subnormal half), rounding to nearest even.
+    let (kept, shift) = if e <= 0 {
+        if e < -10 {
+            return sign;
+        }
+        (man | 0x80_0000, (14 - e) as u32)
+    } else {
+        (man, 13)
+    };
+    let mut h = (kept >> shift) | if e > 0 { (e as u32) << 10 } else { 0 };
+    let rem = kept & ((1 << shift) - 1);
+    let half = 1 << (shift - 1);
+    if rem > half || (rem == half && h & 1 == 1) {
+        h += 1; // a carry out of the mantissa raises the exponent, as it should
+    }
+    sign | h as u16
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn half_floats_match_ieee() {
+        // From numpy's float32 -> float16.
+        let cases: [(f32, u16); 17] = [
+            (0.0, 0x0), (-0.0, 0x8000), (1.0, 0x3c00), (-1.0, 0xbc00), (0.1, 0x2e66), (0.333333, 0x3555), (-0.05, 0xaa66),
+            (65504.0, 0x7bff), (70000.0, 0x7c00), (1e-5, 0xa8), (6.1e-5, 0x3ff), (3e-8, 0x1), (1e-9, 0x0),
+            (0.00048828125, 0x1000), (1.0009765625, 0x3c01), (1.00048828125, 0x3c00), (1.00146484375, 0x3c02),
+        ];
+        for (x, want) in cases {
+            assert_eq!(super::f16_bits(x), want, "{x}");
+        }
+    }
 }
