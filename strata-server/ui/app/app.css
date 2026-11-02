@@ -1665,6 +1665,7 @@ a.tl-tile:hover { text-decoration: none; border-color: var(--line-2); }
 .tl-lname { font-size: 12.5px; color: var(--text-2); display: flex; flex-direction: column; padding-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tl-lane { display: grid; grid-template-columns: var(--tl-name) minmax(0, 1fr); align-items: center; height: 30px; }
 .tl-lane .tl-lname { flex-direction: row; gap: 4px; padding: 0; }
+.tl-lane.tall { height: auto; min-height: 30px; padding: 3px 0; }
 .tl-lname .tl-short { display: none; }
 .tl-track { position: relative; height: 22px; background: linear-gradient(var(--surface-2), var(--surface-2)) 46px 0 / calc(100% - 60px) 100% no-repeat; border-radius: 4px; }
 .tl-ev { position: absolute; top: 3px; height: 16px; display: flex; align-items: center; gap: 5px; text-decoration: none; color: var(--text-2); font-size: 11px; white-space: nowrap; min-width: 10px; transform: translateX(-5px); }
@@ -1718,6 +1719,7 @@ a.tl-tile:hover { text-decoration: none; border-color: var(--line-2); }
   .top .search-btn kbd { display: none; }
   .top .more.fixed { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
   .top .more .lbl { display: inline; }
+  .top.no-range .more .lbl { display: none; }
   .top .btn.live.ok { border-color: transparent; background: none; }
   /* Home and Timeline. */
   .home-row > .home-probcard { order: -1; }

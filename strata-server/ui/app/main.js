@@ -208,15 +208,17 @@ function moreSheet() {
   const ranges = seg(RANGES.map(([k, m]) => [m, k, `The last ${k.replace(/(\d)([a-z])/, "$1 $2")}`]), r.fixed ? "none" : state.range, (v) => { m.close(); setRange(v); }, { "aria-label": "Time range", class: "seg more-ranges" });
   const row = (ic, label, sub, onclick) => h("button", { class: "more-row", onclick: () => { m.close(); onclick(); } }, icon(ic), h("span", { class: "grow" }, label, sub ? h("small", {}, sub) : null), icon("right", "chev"));
   const w = state.whoami;
+  // A view with no time axis (range: false) has no range to pick.
+  const timed = !top.classList.contains("no-range");
   const m = modal({
-    title: "Time and sharing",
+    title: timed ? "Time and sharing" : "Sharing and settings",
     body: [
-      h("div", { class: "small dim" }, "Every view shows this window. ", h("b", {}, r.fixed ? `Fixed: ${span(r.from, r.to)}` : `The last ${r.label.replace(/^last /, "")}, following now`), "."),
-      ranges,
-      row("clock", "Pick a fixed window", "dates and times, or overnight", pickWindow),
-      state.zoom ? row("zout", "Reset the zoom", null, () => setZoom(null)) : null,
-      row(state.paused ? "play" : "pause", state.paused ? "Go live" : "Pause", state.paused ? "follow now again" : "nothing redraws while paused", () => setPaused(!state.paused)),
-      row("share", "Share a link to this view", "with this window as fixed times; it opens paused", share),
+      timed ? h("div", { class: "small dim" }, "Every view shows this window. ", h("b", {}, r.fixed ? `Fixed: ${span(r.from, r.to)}` : `The last ${r.label.replace(/^last /, "")}, following now`), ".") : null,
+      timed ? ranges : null,
+      timed ? row("clock", "Pick a fixed window", "dates and times, or overnight", pickWindow) : null,
+      timed && state.zoom ? row("zout", "Reset the zoom", null, () => setZoom(null)) : null,
+      timed ? row(state.paused ? "play" : "pause", state.paused ? "Go live" : "Pause", state.paused ? "follow now again" : "nothing redraws while paused", () => setPaused(!state.paused)) : null,
+      row("share", "Share a link to this view", timed ? "with this window as fixed times; it opens paused" : null, share),
       h("hr"),
       row(isDark() ? "sun" : "moon", isDark() ? "Light theme" : "Dark theme", null, toggleTheme),
       row("user", w ? `Signed in as ${w.name}` : hasToken() ? "The key was refused" : "Signed out", w ? `${w.scope} key · use another one` : "use a key or the server's token", askToken),
@@ -328,13 +330,12 @@ export function shareLink() {
   const r = parse();
   const p = new URLSearchParams(r.params);
   p.delete("range"); p.delete("from"); p.delete("to");
-  const { from, to } = rangeParams({ absolute: true });
-  p.set("from", from); p.set("to", to);
+  if (!top.classList.contains("no-range")) { const { from, to } = rangeParams({ absolute: true }); p.set("from", from); p.set("to", to); }
   return `${location.origin}${location.pathname}#/${[r.id, ...r.rest].map(encodeURIComponent).join("/")}?${p}`;
 }
 function share() {
   const r = timeRange();
-  copy(shareLink(), `Link copied: ${currentEntry?.title || "this view"}, ${span(r.from, r.to)}, opens paused. It holds no key.`);
+  copy(shareLink(), top.classList.contains("no-range") ? `Link copied: ${currentEntry?.title || "this view"}. It holds no key.` : `Link copied: ${currentEntry?.title || "this view"}, ${span(r.from, r.to)}, opens paused. It holds no key.`);
 }
 
 // ---------------------------------------------------------------- router
@@ -375,6 +376,7 @@ function route() {
   markCurrent();
   // A view with no time axis (the SQL workbench, Schema, Labs) hides the range and Live.
   top.classList.toggle("no-range", v.range === false);
+  moreBtn.querySelector("svg").replaceWith(icon(v.range === false ? "dots" : "clock"));
   if (unknown && unknown !== "home") toast(`There is no view "${unknown}": this is Home`);
   if (current === v && v.onParams) { v.onParams(r); return; }
   try { cleanup?.(); } catch (err) { console.error(err); }
@@ -504,7 +506,7 @@ function entities(q) {
     if (num && s === +num[1]) sc = 250 - j;
     if (/^\d{2,5}$/.test(ql) && r.url && new RegExp(":" + ql + "(\\b|$)").test(r.url)) sc = 280;
     if (sc <= 0) return;
-    out.push({ grp: "Copies", sc: Math.min(sc, 280), icon: "db", name: nm, sub: [r.role === "unknown" || (r.status && r.status !== "ok") ? "not answering" : r.role, r.zone ? "zone " + r.zone : null, r.node || hostOf(r.url)].filter(Boolean).join(" · "), title: copyTitle(r.url), hint: "Cluster", run: go(link("cluster", { shard: s, copy: nm })), acts: copyActs(nm, r, s) });
+    out.push({ grp: "Copies", sc: Math.min(sc, 280), icon: "db", name: nm, sub: [r.role === "unknown" || (r.status && r.status !== "ok") ? "not answering" : r.role, r.zone ? "zone " + r.zone : null, r.node || r.name || null, hostOf(r.url)].filter((x, k, a) => x && a.indexOf(x) === k).join(" · "), title: copyTitle(r.url), hint: "Cluster", run: go(link("cluster", { shard: s, copy: nm })), acts: copyActs(nm, r, s) });
   }));
   // Nodes and zones.
   const nodes = new Map(), zones = new Map();

@@ -238,7 +238,7 @@ function render(page) {
         f.derived ? h("div", { class: "tiny muted", title: "This server has no /v1/health/fleet: the command center works it out from /v1/cluster, /v1/health, /v1/alerts and this coordinator's points" }, "Worked out in the browser from this coordinator's view: an older server") : null),
       h("div", { class: "row home-bacts" }, acts));
   }
-  const VIEWNAME = { cluster: "Cluster", rollout: "Rollouts", logs: "Logs", queries: "Queries", performance: "Performance", autoscale: "Autoscaling", access: "Access", timeline: "Timeline", profile: "Profiler", home: "Home" };
+  const VIEWNAME = { tables: "Tables and storage", inspector: "Table details", statement: "the statement", alerts: "Alerts", system: "Settings", sql: "SQL workbench", cluster: "Cluster", rollout: "Rollouts", logs: "Logs", queries: "Queries", performance: "Performance", autoscale: "Autoscaling", access: "Access", timeline: "Timeline", profile: "Profiler", home: "Home" };
   const nextShort = (n) => n.view.startsWith("alert") ? "Open the alert" : n.params?.shard != null && n.view === "cluster" ? `Shard ${n.params.shard} in Cluster` : `Open in ${VIEWNAME[n.view] || n.view}`;
 
   // ------------------------------------------------------------ headline numbers
@@ -254,7 +254,8 @@ function render(page) {
     const out = [];
     const dark = m.shards.filter((s) => ["no_reads", "no_writes", "down"].includes(s.st));
     if (dark.length) {
-      out.push({ key: "shards", label: "Shards serving", icon: "shard", val: [String(m.shards.length - dark.length), h("small", {}, "/" + m.shards.length)], tone: "bad", sub: dark.slice(0, 3).map((s) => `shard ${s.n} ${s.st === "no_reads" ? "has no majority" : stText(s.st)}`).join(", "), why: `${fmt.plural(dark.length, "shard")} serve no reads or take no writes`, link: link("cluster", { shard: dark[0].n }) });
+      // "Fully serving": a shard that answers searches but takes no writes is not counted.
+      out.push({ key: "shards", label: "Shards fully serving", icon: "shard", val: [String(m.shards.length - dark.length), h("small", {}, "/" + m.shards.length)], tone: "bad", sub: dark.slice(0, 3).map((s) => `shard ${s.n} ${s.st === "no_reads" ? "has no majority" : stText(s.st)}`).join(", "), why: `${fmt.plural(dark.length, "shard")} serve no reads or take no writes`, link: link("cluster", { shard: dark[0].n }) });
     } else {
       out.push({ key: "qps", label: coords.length > 1 ? "Queries, fleet" : "Queries", icon: "queries", val: [fmt.si(qpsFleet), h("small", {}, "/s")], spark: ps.map((p) => p.qps), color: SERIES[0], sub: coords.length > 1 ? `${coords.length} coordinators` : "this coordinator, now", link: link("performance") });
     }
@@ -393,13 +394,15 @@ function render(page) {
         h("div", { class: "small muted" }, `As of ${when(f.at_ms)}. What changed recently is on the `, h("a", { href: link("timeline") }, "Timeline"), "."));
       return;
     }
+    const upUrls = new Set(model().shards.flatMap((s) => s.copies.filter((x) => x.up).map((x) => x.url)));
     clear(probBody, probs.slice(0, 8).map((p) => {
       const actions = [];
       if (p.next) actions.push(h("a", { class: "btn xs primary", href: link(p.next.view, p.next.params || {}), title: p.next.text }, nextShort(p.next)));
       const copyUrl = (p.where || []).map((w) => findUrl(w)).find(Boolean);
       const shardW = (p.where || []).map((w) => /^shard (\d+)$/.exec(w)).find(Boolean);
       actions.push(h("a", { class: "btn xs", href: logsLink({ ...(copyUrl ? { server: copyUrl } : shardW ? { shard: shardW[1] } : {}), level: "warn" }, p.since_ms ? { from: p.since_ms - 60e3, to: Date.now() } : {}) }, "Logs"));
-      if (copyUrl && p.id !== "copies-down") actions.push(h("a", { class: "btn xs", href: link("profile", { tab: "cpu", node: copyUrl }) }, "Profile " + copyName(copyUrl)));
+      const upCopy = copyUrl && upUrls.has(copyUrl);
+      if (upCopy && p.id !== "copies-down") actions.push(h("a", { class: "btn xs", href: link("profile", { tab: "cpu", node: copyUrl }) }, "Profile " + copyName(copyUrl)));
       return h("div", { class: "prob " + (p.severity === "critical" ? "crit" : "warn") },
         h("span", { class: "sv" }),
         h("div", { class: "grow" },

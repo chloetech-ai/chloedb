@@ -348,7 +348,8 @@ export function copyName(url, cluster = ctx.cluster) {
   if (!url) return "–";
   const f = findCopy(url, cluster);
   if (!f) return hostPort(url);
-  return f.rep.name || f.rep.short || `s${f.shard}-${f.copy}`;
+  // The server's own texts (fleet health, events) say "s1-0": the same name here; the node name goes in the title.
+  return f.rep.short || `s${f.shard}-${f.copy}`;
 }
 /** The long form, for a tooltip: "s1-0: shard 1, copy 0, primary · node … · http://…". */
 export function copyTitle(url, cluster = ctx.cluster) {
@@ -357,7 +358,7 @@ export function copyTitle(url, cluster = ctx.cluster) {
   if (!f) return String(url);
   const r = f.rep;
   const role = r.role === "unknown" ? `not answering${r.last_role ? ` (was ${r.last_role})` : ""}` : r.role;
-  return [`${copyName(url, cluster)}: shard ${f.shard}, copy ${f.copy}${role ? ", " + role : ""}`, r.node ? `node ${r.node}` : null, r.zone ? `zone ${r.zone}` : null, String(url)].filter(Boolean).join(" · ");
+  return [`${copyName(url, cluster)}: shard ${f.shard}, copy ${f.copy}${role ? ", " + role : ""}`, r.name && r.name !== r.node ? `server ${r.name}` : null, r.node ? `node ${r.node}` : null, r.zone ? `zone ${r.zone}` : null, String(url)].filter(Boolean).join(" · ");
 }
 
 // ---------------------------------------------------------------- links

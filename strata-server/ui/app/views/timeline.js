@@ -186,21 +186,39 @@ function render(page, r0) {
       // near the right edge goes to the left of its dot instead.
       const nameW = parseFloat(getComputedStyle(axisCard).getPropertyValue("--tl-name")) || 150;
       const W = Math.max(120, (lanes.clientWidth || 1000) - nameW - 60);
+      // Spans that overlap in time go on rows of their own (a copy down
+      // under the shard that lost its majority), at most three.
+      // Dots at one moment share a row: only a span keeps a row busy.
+      const rowEnd = [-1];
+      for (const p of placed) {
+        let r = rowEnd.findIndex((e) => e < p.f - 8 / W);
+        if (r < 0) r = rowEnd.length < 3 ? rowEnd.length : rowEnd.indexOf(Math.min(...rowEnd));
+        if (p.fe != null) rowEnd[r] = Math.max(rowEnd[r] ?? -1, p.fe);
+        else if (rowEnd[r] == null) rowEnd[r] = -1;
+        p.row = r;
+        p.el.style.top = (3 + r * 16) + "px";
+      }
+      const rows = Math.max(1, rowEnd.length);
+      track.style.height = (6 + rows * 16) + "px";
       const taken = [];
       for (const p of placed) {
         const lw = (Math.min(p.n, 44) * 6.4 + 14) / W;
         let a = p.fe != null ? p.fe + 6 / W : p.f + 10 / W, b = a + lw;
         if (b > 1.02) { a = p.f - lw - 4 / W; b = p.f; p.el.classList.add("left"); }
-        const blocked = taken.some(([x, y]) => a < y && b > x) || placed.some((o) => o !== p && (o.fe != null ? o.f < b && o.fe > a : o.f > a - 4 / W && o.f < b + 4 / W));
+        const same = placed.filter((o) => o !== p && o.row === p.row);
+        const blocked = taken.some(([x, y, r]) => r === p.row && a < y && b > x) || same.some((o) => (o.fe != null ? o.f < b && o.fe > a : o.f > a - 4 / W && o.f < b + 4 / W));
         if (a < -0.02 || blocked) p.el.classList.add("nolbl");
-        else taken.push([a, b]);
+        else taken.push([a, b, p.row]);
       }
-      return h("div", { class: "tl-lane" }, h("div", { class: "tl-lname", title: name }, h("span", { class: "tl-full" }, name), h("span", { class: "tl-short" }, SHORT[id] || name), mine.length ? h("span", { class: "muted" }, " " + mine.length) : null), track);
+      return h("div", { class: "tl-lane" + (rows > 1 ? " tall" : "") }, h("div", { class: "tl-lname", title: name }, h("span", { class: "tl-full" }, name), h("span", { class: "tl-short" }, SHORT[id] || name), mine.length ? h("span", { class: "muted" }, " " + mine.length) : null), track);
     }));
     // The time axis under the lanes.
     const ticks = [];
     const steps = [60e3, 300e3, 900e3, 1800e3, 3600e3, 7200e3, 3 * 3600e3, 6 * 3600e3, 12 * 3600e3, 86400e3];
-    const step = steps.find((s) => span_ / s <= 8) || 86400e3;
+    // As many ticks as fit: about one per 64 px.
+    const axisW = (lanes.clientWidth || 1000) - (parseFloat(getComputedStyle(axisCard).getPropertyValue("--tl-name")) || 150) - 60;
+    const want = Math.max(2, Math.min(8, Math.floor(axisW / 64)));
+    const step = steps.find((s) => span_ / s <= want) || 86400e3;
     const off = new Date().getTimezoneOffset() * 60e3;
     for (let t = Math.ceil((t0 - off) / step) * step + off; t <= t1; t += step) ticks.push(t);
     clear(axis, ticks.map((t) => h("span", { style: { left: x(t) } }, step >= 86400e3 ? new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : when(t, { sec: false }).slice(-5))));
@@ -231,7 +249,8 @@ function render(page, r0) {
     const d = e.detail; if (!d || typeof d !== "object") return typeof d === "string" ? d : "";
     if (e.kind === "primary_changed") return [d.from && `from ${d.from}`, d.to && `to ${d.to}`, d.term != null && `term ${d.term}`, d.automatic != null && (d.automatic ? "failover" : "handed over")].filter(Boolean).join(" · ");
     if (e.kind === "new_shape") return [d.calls != null && fmt.plural(d.calls, "call"), d.p99_ms != null && "p99 " + fmt.ms(d.p99_ms)].filter(Boolean).join(" · ");
-    const s = Object.entries(d).filter(([, v]) => v != null && typeof v !== "object").map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`).join(" · ");
+    // What the title already says is not repeated.
+    const s = Object.entries(d).filter(([, v]) => v != null && typeof v !== "object" && !String(e.title || "").includes(String(v))).map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`).join(" · ");
     return s.length > 160 ? s.slice(0, 158) + "…" : s;
   };
 
