@@ -301,3 +301,61 @@ export function lineDiff(a, b) {
   }
   return out;
 }
+
+// ------------------------------------------------------------ a change of size, in words
+/** 4 h 45 min, 22 min, 40 s. */
+export function dur(secs) {
+  if (secs == null || !Number.isFinite(secs)) return "–";
+  secs = Math.max(0, Math.round(secs));
+  if (secs < 60) return `${secs} s`;
+  const m = Math.round(secs / 60);
+  if (m < 60) return `${m} min`;
+  const hr = Math.floor(m / 60), mm = m % 60;
+  if (hr < 48) return mm ? `${hr} h ${mm} min` : `${hr} h`;
+  return `${Math.floor(hr / 24)} d ${hr % 24} h`;
+}
+/** The rows a second the last slot move ran at, as the Cluster canvas kept it in this browser, or an assumed rate. */
+export const ASSUMED_RATE = 20000;
+export function keptRate(store) {
+  const k = store?.get?.("cluster.rate", null);
+  return k?.rate ? { rate: k.rate, measured: true, at: k.at } : { rate: ASSUMED_RATE, measured: false };
+}
+/**
+ * What a StrataCluster patch of its size (shards, replicas, storage.size)
+ * does, in words, from the cluster now (`S` shards of `R` copies holding
+ * `rows`) and the spec (its servers' requests): the servers it adds or
+ * removes, the room they need, the rows it copies and how long that takes
+ * at `rate` rows a second (new copies of every shard at once; slots move
+ * one job at a time). Never rounds a count: the numbers are the patch's.
+ */
+export function scaleWords(patch, { S, R, rows = 0, rate = ASSUMED_RATE, measured = false, spec = {}, slots = 4096 }) {
+  const out = [];
+  const R1 = patch.replicas ?? R, S1 = patch.shards ?? S;
+  const per = rows / Math.max(1, S);
+  const copiesOf = (n) => (n === 1 ? "one copy" : `${fmt.n(n)} copies`);
+  let copyRows = 0, secs = 0, parallel = false;
+  if (R1 !== R) {
+    const d = R1 - R;
+    out.push(d > 0
+      ? `adds ${d === 1 ? "a copy" : fmt.n(d) + " copies"} to each of the ${fmt.n(S1)} shards: ${fmt.n(d * S1)} more servers (${fmt.n(S * R)} → ${fmt.n(S1 * R1)})`
+      : `removes ${-d === 1 ? "a copy" : fmt.n(-d) + " copies"} from each of the ${fmt.n(S)} shards: ${fmt.n(-d * S)} servers fewer (${fmt.n(S * R)} → ${fmt.n(S1 * R1)}), and their volumes`);
+    if (d > 0) { copyRows += d * S1 * per; secs += (d * per) / rate; parallel = true; }
+  }
+  if (S1 !== S) {
+    const d = S1 - S;
+    out.push(d > 0
+      ? `adds ${plural(d, "shard")} of ${copiesOf(R1)}: ${fmt.n(d * R1)} more servers; about ${fmt.n(Math.round((slots * d) / S1))} slots move to them`
+      : `removes ${plural(-d, "shard")} and their ${fmt.n(-d * R1)} servers; their slots move to the others first`);
+    const moved = (rows * Math.abs(d)) / Math.max(S, S1);
+    copyRows += moved; secs += moved / rate;
+  }
+  if (patch.storage?.size && patch.storage.size !== spec.storage?.size) out.push(`grows every volume to ${patch.storage.size}${spec.storage?.size ? ` (from ${spec.storage.size})` : ""}`);
+  const added = S1 * R1 - S * R;
+  const req = spec.resources?.requests || {};
+  const room = added > 0 && (req.cpu || req.memory || spec.storage?.size)
+    ? `The new servers ask the nodes for ${[req.cpu ? `${fmt.n(added * (cores(req.cpu) || 0), 1)} cores` : null, req.memory ? `${fmt.bytes(added * (quantity(req.memory) || 0))} of memory` : null].filter(Boolean).join(" and ") || "no reserved cores or memory"}${spec.storage?.size || DEFAULTS.storage.size ? `, and ${fmt.n(added)} volumes of ${patch.storage?.size || spec.storage?.size || DEFAULTS.storage.size}` : ""}.`
+    : null;
+  const time = copyRows ? `About ${dur(secs)} to copy ${fmt.si(copyRows)} rows${parallel ? ", every shard at once" : ""}${measured ? ", at the rate the last move ran" : ", at an assumed rate (no move measured in this browser yet)"}.` : null;
+  const text = out.length ? out.join("; ").replace(/^./, (c) => c.toUpperCase()) + "." : "Changes " + Object.keys(patch).join(", ") + ".";
+  return { text, room, time, rows: copyRows, secs, added, removing: R1 < R || S1 < S, S1, R1 };
+}
