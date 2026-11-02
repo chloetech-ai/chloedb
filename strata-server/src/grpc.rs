@@ -75,6 +75,7 @@ pub fn result_to_pb(rs: &ResultSet, took_ms: f64) -> pb::QueryResponse {
         stats_json: json_bytes(&rs.stats),
         took_ms,
         snapshot: 0,
+        arrow: Vec::new(),
     }
 }
 
@@ -95,11 +96,13 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// a read must see (`min_seq_no`), which a replica waits for, 6 keeps
 /// stream sources' offsets ([`SOURCES_PROTOCOL`]), 7 answers the next
 /// codes of semantic-ID prefixes ([`SIDNEXT_PROTOCOL`]), 8 counts the
-/// rows of a guard's levels ([`GUARD_PROTOCOL`]), and 9 keeps the cluster
+/// rows of a guard's levels ([`GUARD_PROTOCOL`]), 9 keeps the cluster
 /// map, every shard's servers, and takes `Configure` ([`CLUSTER_PROTOCOL`]),
-/// and 10 reads rows by key without SQL (`Get`, [`GET_PROTOCOL`]).
+/// 10 answers a compound query's leaf as Arrow columns
+/// ([`ARROW_PROTOCOL`]), and 11 reads rows by key without SQL (`Get`,
+/// [`GET_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 10;
+pub const PROTOCOL: u32 = 11;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -116,8 +119,12 @@ pub const GUARD_PROTOCOL: u32 = 8;
 /// server's part in replication.
 pub const CLUSTER_PROTOCOL: u32 = 9;
 
+/// The protocol whose shards answer a compound query's leaf as Arrow
+/// columns (`QueryRequest.arrow`, `QueryResponse.arrow`).
+pub const ARROW_PROTOCOL: u32 = 10;
+
 /// The protocol of `Get`, rows by primary key without SQL.
-pub const GET_PROTOCOL: u32 = 10;
+pub const GET_PROTOCOL: u32 = 11;
 
 /// What `Get` answers ([`crate::service::KeyRows`]).
 pub fn get_response(got: crate::service::KeyRows) -> pb::GetResponse {
@@ -173,6 +180,8 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         // also measures it when set to for every query.
         profile: r.profile,
         quiet: false,
+        // A coordinator's leaf: Arrow columns for any rows.
+        arrow: r.arrow.then_some(0),
     })
 }
 
@@ -336,7 +345,7 @@ impl pb::strata_server::Strata for Grpc {
         self.serve("Query", req, |svc, _who, r| async move {
             svc.check_epoch(r.epoch)?;
             let a = svc.query(query_req(r)?).await?;
-            Ok(pb::QueryResponse { snapshot: a.lease, ..result_to_pb(&a.rs, a.took_ms) })
+            Ok(pb::QueryResponse { snapshot: a.lease, arrow: a.arrow, ..result_to_pb(&a.rs, a.took_ms) })
         })
         .await
     }
