@@ -163,6 +163,25 @@ export const bus = {
   emit(ev, x) { for (const f of handlers.get(ev) || []) { try { f(x); } catch (e) { console.error(e); } } },
 };
 
+// ---------------------------------------------------------------- narrow screens
+/**
+ * The breakpoints, the same numbers as the CSS: below NARROW (900 px, a
+ * tablet or a phone on its side) the sidebar is a drawer behind a menu
+ * button, the range and Share sit in a menu, and drawers, dialogs and the
+ * palette are full-screen sheets; below PHONE (560 px, a phone) one column.
+ * In CSS: `@media (max-width: 900px)` and `@media (max-width: 560px)`.
+ * `narrow` on the bus fires when the width crosses either one (with
+ * isNarrow()); a view that lays out in JS redraws then.
+ */
+export const NARROW = 900, PHONE = 560;
+const mq = (px) => { try { return matchMedia(`(max-width: ${px}px)`); } catch { return null; } };
+const narrowMq = mq(NARROW), phoneMq = mq(PHONE);
+/** True below 900 px. */
+export const isNarrow = () => !!narrowMq?.matches;
+/** True below 560 px (a phone held upright). */
+export const isPhone = () => !!phoneMq?.matches;
+for (const q of [narrowMq, phoneMq]) q?.addEventListener?.("change", () => bus.emit("narrow", isNarrow()));
+
 // ---------------------------------------------------------------- the API
 // The token (or API key) is kept for the tab only, under the key the
 // query console reads too.
@@ -579,10 +598,20 @@ export function showTip(x, y, content) {
   tipEl.style.top = Math.max(8, top) + "px";
 }
 export function hideTip() { if (tipEl) tipEl.style.display = "none"; }
+let tapArmed = false;
+/** After a tap showed the tooltip: the next tap anywhere, or a scroll, hides it. */
+export function tapTip() {
+  if (tapArmed) return;
+  tapArmed = true;
+  const off = () => { tapArmed = false; hideTip(); removeEventListener("pointerdown", off, true); removeEventListener("scroll", off, true); };
+  setTimeout(() => { addEventListener("pointerdown", off, true); addEventListener("scroll", off, true); }, 0);
+}
 /** A tooltip on hover and focus: tipOn(el, () => nodes). */
 export function tipOn(e, content) {
-  e.addEventListener("pointermove", (ev) => showTip(ev.clientX, ev.clientY, typeof content === "function" ? content() : content));
-  e.addEventListener("pointerleave", hideTip);
+  e.addEventListener("pointermove", (ev) => { if (ev.pointerType === "mouse") showTip(ev.clientX, ev.clientY, typeof content === "function" ? content() : content); });
+  // A tap shows it too (a phone has no hover); the next tap anywhere hides it.
+  e.addEventListener("pointerdown", (ev) => { if (ev.pointerType !== "mouse") { showTip(ev.clientX, ev.clientY - 40, typeof content === "function" ? content() : content); tapTip(); } });
+  e.addEventListener("pointerleave", (ev) => { if (ev.pointerType === "mouse") hideTip(); });
   e.addEventListener("focus", () => { const r = e.getBoundingClientRect(); showTip(r.right, r.top, typeof content === "function" ? content() : content); });
   e.addEventListener("blur", hideTip);
   return e;
