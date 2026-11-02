@@ -11,10 +11,8 @@
 // ack or backtest) the same pages show what that server has and say what
 // it cannot do.
 
-import { h, s, icon, clear, fmt, card, api, bus, drawer, modal, toast, pill, seg, empty, menu, copy, showTip, hideTip, table, every, debounce, ApiError } from "../core.js";
-import * as core from "../core.js";
-import * as data from "../data.js";
-import { state, refreshAlerts } from "../data.js";
+import { h, s, icon, clear, fmt, card, api, bus, drawer, toast, pill, seg, empty, menu, copy, showTip, hideTip, table, every, debounce, confirm, can, needs, copyName, findCopy, link, ago, when, whenTitle, ApiError } from "../core.js";
+import { state, refreshAlerts, timeRange, isCoordinator } from "../data.js";
 import { niceStep } from "../charts.js";
 
 const view = { id: "alerts", title: "Alerts", icon: "alerts", group: "Operate", keywords: "alerts rules firing incidents acknowledge silence runbook owner routes webhook notifications backtest", render, onParams, badge };
@@ -23,79 +21,34 @@ export default view;
 export const alertPage = { id: "alert", title: "Alert", icon: "alerts", group: "Operate", hidden: true, nav: false, render: (page, r) => alertHub(page, r.rest?.[0] || r.params.get("rule") || "", r), onParams: (r) => hubParams?.(r) };
 
 // ---------------------------------------------------------------- helpers
-// The shared helpers (core.js, data.js) when the shell has them; plain
-// fallbacks otherwise, so the view runs on an older shell too.
-const LEVEL = { read: 1, write: 2, admin: 3 };
-const can = (need) => core.can ? core.can(need) : !state.whoami?.scope || (LEVEL[state.whoami.scope] || 0) >= LEVEL[need];
-const needs = (need) => `Needs ${need === "admin" ? "an admin" : "a write"} key`;
-const sameDay = (ms) => new Date(ms).toDateString() === new Date().toDateString();
-const when = (ms) => !ms ? "–" : core.when ? core.when(ms) : sameDay(ms) ? fmt.time(ms) : fmt.datetime(ms).replace(/:\d\d$/, "");
-const hm = (ms) => !ms ? "–" : sameDay(ms) ? fmt.time(ms, false) : fmt.datetime(ms).replace(/:\d\d$/, "");
-const ago = (ms) => core.ago ? core.ago(ms) : fmt.ago(ms);
+const Needs = (scope) => needs(scope).replace(/^n/, "N");
+/** A time without seconds: "19:42" today, "Nov 2 19:42" another day. */
+const hm = (ms) => when(ms, { sec: false });
 const dur = (ms) => fmt.dur(Math.max(0, ms) / 1000).replace(/^(\d+)m 0s$/, "$1 min").replace(/^(\d+)m (\d+)s$/, "$1 min").replace(/^(\d+)s$/, "$1 s");
-function link(viewId, params = {}) {
-  if (core.link) return core.link(viewId, params);
-  const q = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) if (v != null && v !== "") q.set(k, v);
-  const t = q.toString();
-  return "#/" + viewId + (t ? "?" + t : "");
-}
-/** A copy's short name (s1-0) from its URL. */
-function copyName(url) {
-  if (!url) return "–";
-  if (core.copyName) return core.copyName(url);
+const alertLink = (id, params) => link("alert/" + encodeURIComponent(id), params);
+/** A copy in the cluster by its URL, short name or node name: {shard, i, r, sh}. */
+function copyOf(key) {
+  const f = findCopy(key);
+  if (f) return { shard: f.shard, i: f.copy, r: f.rep, sh: f.sh };
   for (const sh of state.cluster?.shards || []) {
-    const i = (sh.replicas || []).findIndex((r) => r.url === url);
-    if (i >= 0) return sh.replicas[i].short || sh.replicas[i].name || `s${sh.shard}-${i}`;
-  }
-  return url.replace(/^https?:\/\//, "");
-}
-function copyOf(url) {
-  for (const sh of state.cluster?.shards || []) {
-    const i = (sh.replicas || []).findIndex((r) => r.url === url || r.short === url || r.name === url);
+    const i = (sh.replicas || []).findIndex((r) => r.short === key || r.name === key || r.detail?.log_store?.node === key);
     if (i >= 0) return { shard: sh.shard, i, r: sh.replicas[i], sh };
   }
   return null;
 }
-/** A server's node name (as the log store names it) as a copy's short name. */
+/** A copy's name for an entry of an alert's `where`: {copy (url), short}. */
+const whereName = (c) => findCopy(c.copy) ? copyName(c.copy) : c.short || copyName(c.copy);
+/** A server's node name (as the log store names it) as the copy's name. */
 function nodeShort(name) {
-  for (const sh of state.cluster?.shards || []) {
-    const i = (sh.replicas || []).findIndex((r) => r.name === name || r.detail?.log_store?.node === name);
-    if (i >= 0) return sh.replicas[i].short || `s${sh.shard}-${i}`;
-  }
-  return name;
+  const c = copyOf(name);
+  return c ? copyName(c.r.url) : name;
 }
-const coordinator = () => state.health?.role === "coordinator" || state.system?.backend === "coordinator" || !!state.cluster?.shards?.length;
+const coordinator = () => isCoordinator() || !!state.cluster?.shards?.length;
 const allCopies = () => (state.cluster?.shards || []).reduce((a, sh) => a + (sh.replicas?.length || 0), 0);
-const RANGE_MIN = { "5m": 5, "15m": 15, "30m": 30, "1h": 60, "6h": 360, "24h": 1440, "7d": 10080 };
-const spanText = (min) => min >= 1440 ? fmt.plural(min / 1440, "day") : min >= 60 ? fmt.plural(min / 60, "hour") : `${min} min`;
-/** The top bar's time range: {from, to, live, label}. */
-function range() {
-  if (data.timeRange) return data.timeRange();
-  const q = new URLSearchParams(location.hash.split("?")[1] || "");
-  const from = Number(q.get("from")), to = Number(q.get("to"));
-  if (from && to) return { from, to, live: false, label: `${when(from)} – ${when(to)}` };
-  const min = RANGE_MIN[q.get("range")] || state.range || 15;
-  const now = Date.now();
-  return { from: now - min * 60e3, to: now, live: true, label: `the last ${spanText(min)}` };
-}
-const newShell = () => !!core.can;
+const range = () => timeRange();
 /** Asks before a change, with a required reason: resolves {reason} or false. */
-function ask({ title, body, ok, danger, reason = true, typed }) {
-  if (newShell()) return core.confirm({ title, body, ok, danger, reason, typed });
-  return new Promise((resolve) => {
-    let done = false;
-    const why = h("input", { class: "input", placeholder: "Why (kept in the audit log)", style: { width: "100%" } });
-    const yes = h("button", { class: "btn " + (danger ? "danger solid" : "primary"), disabled: reason }, ok || "Confirm");
-    const no = h("button", { class: "btn" }, "Cancel");
-    why.oninput = () => { yes.disabled = reason && !why.value.trim(); };
-    const m = modal({ title, body: [typeof body === "string" ? h("p", { class: "dim", style: { margin: "0 0 10px" } }, body) : body, reason ? why : null], foot: [no, yes], onClose: () => { if (!done) resolve(false); } });
-    yes.onclick = () => { done = true; m.close(); resolve({ reason: why.value.trim() }); };
-    no.onclick = () => { done = true; m.close(); resolve(false); };
-    setTimeout(() => no.focus(), 0);
-  });
-}
-const failMsg = (e, what) => e instanceof ApiError && e.status === 403 ? `${what} ${needs("write").toLowerCase()}` : e instanceof ApiError && (e.status === 404 || e.status === 405) ? `${what}: this server cannot do that yet (it needs a newer strata-server)` : `${what}: ${e.message}`;
+const ask = ({ title, body, ok, danger, typed, reason = true }) => confirm({ title, body, ok, danger, typed, reason });
+const failMsg = (e, what) => e instanceof ApiError && e.status === 403 ? `${what} ${needs("write")}` : e instanceof ApiError && (e.status === 404 || e.status === 405) ? `${what}: this server cannot do that yet (it needs a newer strata-server)` : `${what}: ${e.message}`;
 const missing = (e) => e instanceof ApiError && (e.status === 404 || e.status === 405);
 
 // ---------------------------------------------------------------- metrics
@@ -208,7 +161,7 @@ function whereText(r, x) {
   const firing = all.filter((c) => stateName(c.state) === "firing");
   const w = firing.length ? firing : all.filter((c) => stateName(c.state) === "pending");
   const pend = firing.length ? all.filter((c) => stateName(c.state) === "pending").length : 0;
-  const names = w.map((c) => c.short || copyName(c.copy));
+  const names = w.map(whereName);
   const more = pend ? ` (+${pend} pending)` : "";
   if (w.length === 1) { const c = copyOf(w[0].copy || w[0].short); return `${names[0]}${c ? ` · shard ${c.shard}` : ""}${more}`; }
   if (r.scope === "each_copy") {
@@ -291,7 +244,7 @@ function render(page, r) {
     m = current = model(state.alerts);
     if (!m) { clear(firingBox, empty("alerts", "Loading the rules…")); return; }
     const adm = can("admin");
-    newBtn.disabled = !adm; newBtn.title = adm ? "" : needs("admin");
+    newBtn.disabled = !adm; newBtn.title = adm ? "" : Needs("admin");
     clear(routesBtn, icon("route"), m.fleet ? `Routes: ${m.routes.length}` : m.routes.length ? "Route: one webhook" : "Routes: none");
     const coord = coordinator();
     clear(sub, m.fleet
@@ -308,7 +261,7 @@ function render(page, r) {
     const bits = [];
     // Copies that stop reporting are themselves an alert (copy-silent); say how many report.
     const silentCopies = (state.cluster?.shards || []).flatMap((sh) => (sh.replicas || []).map((rp, i) => ({ rp, i, sh }))).filter(({ rp }) => rp.status === "down" || rp.role === "unknown");
-    if (state.cluster?.shards) bits.push(`Copies reporting: ${fmt.n(allCopies() - silentCopies.length)} of ${fmt.n(allCopies())}${silentCopies.length ? ` (${silentCopies.slice(0, 3).map(({ rp, i, sh }) => rp.short || `s${sh.shard}-${i}`).join(", ")}${silentCopies.length > 3 ? " …" : ""} silent)` : ""}`);
+    if (state.cluster?.shards) bits.push(`Copies reporting: ${fmt.n(allCopies() - silentCopies.length)} of ${fmt.n(allCopies())}${silentCopies.length ? ` (${silentCopies.slice(0, 3).map(({ rp }) => copyName(rp.url)).join(", ")}${silentCopies.length > 3 ? " …" : ""} silent)` : ""}`);
     for (const rt of m.routes.filter((x) => !x.legacy)) bits.push(rt.last_error && (!rt.last_ok_ms || rt.last_error_ms > rt.last_ok_ms) ? `route ${rt.name}: last send failed` : rt.last_ok_ms ? `route ${rt.name} delivered ${hm(rt.last_ok_ms)}` : `route ${rt.name}: nothing sent yet`);
     if (!m.routes.length) bits.push("no route: nobody is told when an alert fires");
     if (!firing.length) {
@@ -328,12 +281,12 @@ function render(page, r) {
     const out = [];
     if (m.fleet) {
       const w = can("write");
-      out.push(h("button", { class: "btn xs", disabled: !w || !!x.ack, title: !w ? needs("write") : x.ack ? `Acknowledged by ${x.ack.by}` : "Acknowledge: you are on it", onclick: () => ack(r) }, "Ack"));
-      const sil = h("button", { class: "btn xs", disabled: !w, title: w ? "Silence it for a while, with a reason" : needs("write") }, "Silence", icon("down"));
+      out.push(h("button", { class: "btn xs", disabled: !w || !!x.ack, title: !w ? Needs("write") : x.ack ? `Acknowledged by ${x.ack.by}` : "Acknowledge: you are on it", onclick: () => ack(r) }, "Ack"));
+      const sil = h("button", { class: "btn xs", disabled: !w, title: w ? "Silence it for a while, with a reason" : Needs("write") }, "Silence", icon("down"));
       sil.onclick = () => silenceMenu(sil, r, draw);
       out.push(sil);
     }
-    out.push(h("a", { class: "btn xs", href: link("alert/" + encodeURIComponent(r.id)) }, "Open"));
+    out.push(h("a", { class: "btn xs", href: alertLink(r.id) }, "Open"));
     return h("div", { class: "row nw", style: { gap: "4px", justifyContent: "flex-end" } }, out);
   }
   async function ack(r) {
@@ -345,21 +298,21 @@ function render(page, r) {
     const rows = sorted(m).filter((r) => { const x = m.st.get(r.id); return (x.state === "firing" || x.state === "pending") && !x.silent; });
     const silenced = m.rules.filter((r) => m.st.get(r.id).silent);
     clear(silencedBox, silenced.length ? h("div", { class: "al-silenced" }, icon("pause"),
-      h("span", {}, `${silenced.length} silenced: `, silenced.map((r, i) => { const x = m.st.get(r.id); return [i ? "; " : "", h("a", { href: link("alert/" + encodeURIComponent(r.id)) }, r.name), ` (${x.state === "firing" ? "firing" : x.state}) by ${x.silenced.by || "someone"} until ${hm(x.silenced.until_ms)}${x.silenced.reason ? `, "${x.silenced.reason}"` : ""}`]; }))) : null);
+      h("span", {}, `${silenced.length} silenced: `, silenced.map((r, i) => { const x = m.st.get(r.id); return [i ? "; " : "", h("a", { href: alertLink(r.id) }, r.name), ` (${x.state === "firing" ? "firing" : x.state}) by ${x.silenced.by || "someone"} until ${hm(x.silenced.until_ms)}${x.silenced.reason ? `, "${x.silenced.reason}"` : ""}`]; }))) : null);
     if (!rows.length) {
       clear(firingBox, h("div", { class: "al-quiet" }, icon("okc"), h("span", {}, "No rule is firing or pending."), m.rules.some((r) => m.st.get(r.id).state === "no_data") ? h("span", { class: "muted" }, "Rules without data are listed below: they cannot fire until their metric has a value.") : null));
       return;
     }
     clear(firingBox, table([
       { key: "sev", label: "", width: "24px", render: (r) => h("span", { class: "dot " + (m.st.get(r.id).state === "firing" ? (r.severity === "critical" ? "critical pulse" : r.severity === "warning" ? "warn" : "") : "pending"), title: m.st.get(r.id).state } ) , sortable: false },
-      { key: "name", label: "alert", render: (r) => h("div", {}, h("a", { class: "al-name", href: link("alert/" + encodeURIComponent(r.id)) }, r.name), h("div", { class: "tiny muted" }, r.builtin ? "built-in · " : "", cond(r, true))) },
+      { key: "name", label: "alert", render: (r) => h("div", {}, h("a", { class: "al-name", href: alertLink(r.id) }, r.name), h("div", { class: "tiny muted" }, r.builtin ? "built-in · " : "", cond(r, true))) },
       { key: "where", label: "where", render: (r) => h("span", { class: "small" }, whereText(r, m.st.get(r.id))) },
-      { key: "since", label: "since", sort: (r) => m.st.get(r.id).since_ms, render: (r) => { const x = m.st.get(r.id); return h("span", { class: "small nowrap", title: x.since_ms ? new Date(x.since_ms).toString() : "" }, x.since_ms ? `${hm(x.since_ms)} · ${dur(Date.now() - x.since_ms)}` : "–"); } },
+      { key: "since", label: "since", sort: (r) => m.st.get(r.id).since_ms, render: (r) => { const x = m.st.get(r.id); return h("span", { class: "small nowrap", title: whenTitle(x.since_ms) }, x.since_ms ? `${hm(x.since_ms)} · ${dur(Date.now() - x.since_ms)}` : "–"); } },
       { key: "now", label: "now", render: (r) => { const x = m.st.get(r.id); return h("span", { class: "small nowrap" }, x.value == null ? "no value" : fv(r.metric, x.value)); } },
       { key: "owner", label: "owner", render: (r) => r.owner ? h("span", { class: "small" }, r.owner) : h("span", { class: "small muted" }, "no owner") },
       { key: "state", label: "state", sort: (r) => m.st.get(r.id).state, render: (r) => ackPill(r, m.st.get(r.id), m.fleet) },
       { key: "act", label: "", sortable: false, render: (r) => actions(r, m.st.get(r.id)) },
-    ], { rows, compact: true, onRow: (r) => { location.hash = link("alert/" + encodeURIComponent(r.id)); } }));
+    ], { rows, compact: true, onRow: (r) => { location.hash = alertLink(r.id); } }));
   }
 
   function drawRules() {
@@ -423,7 +376,7 @@ function render(page, r) {
     const X = (v) => LW + (Math.max(t0, Math.min(t1, v)) - t0) / (t1 - t0) * (W - LW - 8);
     const svgEl = s("svg", { viewBox: `0 0 ${W} ${rows.length * rh + 20}`, style: { width: "100%", height: rows.length * rh + 20 + "px" }, role: "img", "aria-label": "When each rule fired" });
     rows.forEach(([id, sp], i) => {
-      const a = s("a", { href: link("alert/" + encodeURIComponent(id)) }, s("text", { x: 0, y: i * rh + 15, class: "al-tl-name" }, sp.name.length > 30 ? sp.name.slice(0, 29) + "…" : sp.name));
+      const a = s("a", { href: alertLink(id) }, s("text", { x: 0, y: i * rh + 15, class: "al-tl-name" }, sp.name.length > 30 ? sp.name.slice(0, 29) + "…" : sp.name));
       svgEl.append(a, s("rect", { x: LW, y: i * rh + 5, width: W - LW - 8, height: rh - 10, rx: 3, class: "al-tl-bg" }));
       for (const [a0, a1] of sp.list) {
         const x0 = X(a0), x1 = X(a1 ?? t1);
@@ -445,7 +398,7 @@ function render(page, r) {
   if (r.params.get("rule")) setTimeout(() => openRule(r.params.get("rule")), 60);
   else if (r.params.get("new")) setTimeout(() => editRule(null), 60);
   if (r.params.get("routes")) setTimeout(() => routesDrawer(), 60);
-  const offs = [bus.on("alerts", draw), bus.on("cluster", () => { if (!state.paused && m) drawSummary(); }), bus.on("range", () => { longFor = null; loadLong(); draw(); })];
+  const offs = [bus.on("alerts", draw), bus.on("whoami", () => { m = null; draw(); }), bus.on("cluster", () => { if (!state.paused && m) drawSummary(); }), bus.on("range", () => { longFor = null; loadLong(); draw(); })];
   const stop = every(30000, () => { if (!state.paused && range().live) { longFor = null; return loadLong(); } }, false);
   return () => { offs.forEach((f) => f()); stop(); openRule = openRoutes = null; };
 }
@@ -477,7 +430,7 @@ function onSwitch(r, disabled, onChange) {
   const inp = h("input", { type: "checkbox", checked: r.enabled, disabled, "aria-label": `${r.name}: checked or not` });
   const lbl = h("span", { class: "al-sw-l" }, r.enabled ? "on" : "off");
   inp.onchange = () => { lbl.textContent = inp.checked ? "on" : "off"; onChange(inp.checked); };
-  return h("label", { class: "al-switch" + (disabled ? " off" : ""), title: disabled ? needs("admin") : r.enabled ? "On: the rule is checked. Turn it off" : "Off: nothing checks it. Turn it on", onclick: (e) => e.stopPropagation() }, inp, h("span", { class: "al-track" }), lbl);
+  return h("label", { class: "al-switch" + (disabled ? " off" : ""), title: disabled ? Needs("admin") : r.enabled ? "On: the rule is checked. Turn it off" : "Off: nothing checks it. Turn it on", onclick: (e) => e.stopPropagation() }, inp, h("span", { class: "al-track" }), lbl);
 }
 
 function silenceMenu(anchor, r, after) {
@@ -496,7 +449,7 @@ async function saveRules(next, reason) {
   try {
     await api("/v1/alerts/rules", { method: "PUT", body: { rules: next.map(cleanRule) }, reason: reason || undefined });
     await refreshAlerts();
-  } catch (e) { toast(e instanceof ApiError && e.status === 403 ? `Changing rules: ${needs("admin").toLowerCase()}` : e.message, "bad"); throw e; }
+  } catch (e) { toast(e instanceof ApiError && e.status === 403 ? `Changing rules ${needs("admin")}` : e.message, "bad"); throw e; }
 }
 function cleanRule(x) {
   const out = { id: x.id, name: x.name, metric: x.metric, op: x.op, threshold: Number(x.threshold), for_s: Number(x.for_s) || 0, severity: x.severity, enabled: !!x.enabled, description: x.description || "" };
@@ -657,7 +610,8 @@ const WINDOWS = [["15m", "±15 min", 15 * 60e3], ["1h", "±1 h", 3600e3], ["6h",
 function alertHub(page, id, r) {
   id = decodeURIComponent(id || "");
   if (!id) { location.hash = "#/alerts"; return; }
-  let win = r?.params?.get("w") || "1h", m = null, one = null, rule = null, x = null, gen = 0, notesAt = null;
+  const fixedAtOpen = range().fixed;
+  let win = r?.params?.get("w") || (fixedAtOpen ? "range" : "1h"), m = null, one = null, rule = null, x = null, gen = 0, notesAt = null;
   const crumbs = h("div", { class: "row small muted al-crumbs" }, h("a", { href: link("alerts") }, "Alerts"), h("span", {}, "›"), h("span", { class: "mono" }, id));
   const title = h("h1", { class: "row nw", style: { gap: "10px" } });
   const line = h("p");
@@ -665,7 +619,7 @@ function alertHub(page, id, r) {
   const kpis = h("div", { class: "grid g4 al-kpis" });
   const chart = alertChart(250);
   const chartNote = h("div", { class: "small muted", style: { marginTop: "6px" } });
-  const winSeg = seg(WINDOWS.map(([k, l]) => [k, l]), win, (v) => { win = v; loadChart(); }, { "aria-label": "Time around the alert" });
+  const winSeg = seg([...(fixedAtOpen ? [["range", "the link's window"]] : []), ...WINDOWS.map(([k, l]) => [k, l])], win, (v) => { win = v; loadChart(); }, { "aria-label": "Time around the alert" });
   const chartSub = h("span", { class: "sub" });
   const blast = h("div");
   const changed = h("div");
@@ -724,7 +678,7 @@ function alertHub(page, id, r) {
     const w8 = can("write"), fleet = m.fleet;
     const ackBtn = x.ack
       ? h("button", { class: "btn al-acked", disabled: true, title: x.ack.note || "" }, icon("check"), `Acknowledged · ${x.ack.by || "someone"} ${hm(x.ack.at_ms)}`)
-      : h("button", { class: "btn primary", disabled: !fleet || !w8 || st !== "firing", title: !fleet ? "This server cannot acknowledge alerts yet" : !w8 ? needs("write") : st !== "firing" ? "Only a firing alert is acknowledged" : "Acknowledge: you are on it", onclick: async () => {
+      : h("button", { class: "btn primary", disabled: !fleet || !w8 || st !== "firing", title: !fleet ? "This server cannot acknowledge alerts yet" : !w8 ? Needs("write") : st !== "firing" ? "Only a firing alert is acknowledged" : "Acknowledge: you are on it", onclick: async () => {
         try { await api(`/v1/alerts/${encodeURIComponent(id)}/ack`, { body: {} }); toast("Acknowledged", "ok"); await refreshAlerts(); load(); } catch (e) { toast(failMsg(e, "Acknowledging"), "bad"); }
       } }, icon("check"), "Acknowledge");
     const silBtn = x.silent
@@ -733,14 +687,14 @@ function alertHub(page, id, r) {
         if (!ok) return;
         try { await api(`/v1/alerts/${encodeURIComponent(id)}/silence`, { method: "DELETE", reason: ok.reason }); toast("Silence ended", "ok"); await refreshAlerts(); load(); } catch (e) { toast(failMsg(e, "Ending the silence"), "bad"); }
       } }, icon("pause"), `Silenced to ${hm(x.silenced.until_ms)} · end`)
-      : h("button", { class: "btn", disabled: !fleet || !w8, title: !fleet ? "This server cannot silence alerts yet" : !w8 ? needs("write") : "Silence it for a while, with a reason" }, icon("pause"), "Silence", icon("down"));
+      : h("button", { class: "btn", disabled: !fleet || !w8, title: !fleet ? "This server cannot silence alerts yet" : !w8 ? Needs("write") : "Silence it for a while, with a reason" }, icon("pause"), "Silence", icon("down"));
     if (!x.silent) silBtn.onclick = () => silenceMenu(silBtn, rule, () => load());
     clear(tools, ackBtn, silBtn,
-      h("button", { class: "btn", disabled: !fleet || !w8, title: !fleet ? "This server keeps no notes yet" : !w8 ? needs("write") : "Add a note to the alert's timeline", onclick: () => noteIn.focus() }, icon("edit"), "Add note"),
-      h("button", { class: "btn", title: "Copy a link to this alert at this time", onclick: () => { const t = since(); copy(location.origin + location.pathname + link("alert/" + encodeURIComponent(id), { from: Math.round(t - 30 * 60e3), to: Math.round(x.state === "firing" ? Date.now() : t + 60 * 60e3) }), "Link copied: it opens this alert at this time"); } }, icon("link"), "Copy link"),
+      h("button", { class: "btn", disabled: !fleet || !w8, title: !fleet ? "This server keeps no notes yet" : !w8 ? Needs("write") : "Add a note to the alert's timeline", onclick: () => noteIn.focus() }, icon("edit"), "Add note"),
+      h("button", { class: "btn", title: "Copy a link to this alert at this time", onclick: () => { const t = since(); copy(location.origin + location.pathname + alertLink(id, { from: Math.round(t - 30 * 60e3), to: Math.round(x.state === "firing" ? Date.now() : t + 60 * 60e3) }), "Link copied: it opens this alert at this time"); } }, icon("link"), "Copy link"),
       h("button", { class: "btn ghost", title: "Edit the rule", onclick: () => editRule(rule, { after: load }) }, icon("sliders"), "Edit rule"));
     noteIn.disabled = noteBtn.disabled = !fleet || !w8;
-    noteIn.placeholder = !fleet ? "Notes need a newer server" : !w8 ? needs("write") : "Add a note: what you found, what you did";
+    noteIn.placeholder = !fleet ? "Notes need a newer server" : !w8 ? Needs("write") : "Add a note: what you found, what you did";
   }
 
   function drawKpis() {
@@ -765,7 +719,8 @@ function alertHub(page, id, r) {
   async function loadChart() {
     if (!rule) return;
     const now = Date.now(), at = since(), w = WINDOWS.find(([k]) => k === win)?.[2] || 3600e3;
-    const from = win === "7d" ? now - w : at - w, to = win === "7d" ? now : Math.min(now, at + w);
+    const rr = range();
+    const from = win === "range" ? rr.from : win === "7d" ? now - w : at - w, to = win === "range" ? rr.to : win === "7d" ? now : Math.min(now, at + w);
     chartSub.textContent = `${rule.metric}${rule.eval && rule.eval !== "all" ? `, ${EVAL[rule.eval]} ${dur((rule.window_s || 300) * 1000)} (red) and raw points (grey)` : ""} · ${hm(from)} – ${to >= now - 5e3 ? "now" : hm(to)}`;
     const [raw, bt, evs] = await Promise.all([
       seriesOf(rule.metric, from, to),
@@ -820,7 +775,7 @@ function alertHub(page, id, r) {
     if (!evs) { clear(changed, h("div", { class: "small muted" }, "This server keeps no event log (failovers, rollouts, changes). A newer strata-server records them at /v1/events.")); return; }
     const list = evs.filter((e) => e.ts_ms >= at - 30 * 60e3 && !e.kind?.startsWith("alert_")).sort((a, b) => b.ts_ms - a.ts_ms).slice(0, 12);
     clear(changed, list.length ? h("div", { class: "al-changes" }, list.map((e) => h("div", { class: "al-chg" },
-      h("span", { class: "al-time", title: new Date(e.ts_ms).toString() }, hm(e.ts_ms)),
+      h("span", { class: "al-time", title: whenTitle(e.ts_ms) }, hm(e.ts_ms)),
       h("div", {}, h("div", {}, h("span", { class: "al-dot " + (TONE[e.kind] || "") }), e.title || e.kind), h("div", { class: "tiny muted" }, [e.who ? `by ${e.who}` : null, e.where?.copy ? copyName(e.where.copy) : e.where?.shard != null ? `shard ${e.where.shard}` : null, e.until_ms ? `until ${hm(e.until_ms)}` : null].filter(Boolean).join(" · ")))))) : h("div", { class: "small muted" }, "Nothing changed in the 30 minutes before it fired, or since: no failover, rollout, setting or note."));
   }
 
@@ -847,12 +802,12 @@ function alertHub(page, id, r) {
     if (!rows.length && x.state !== "ok" && x.state !== "disabled") {
       // A rule of this server's own points has no copies; the copies of the shards that are not ok are the likely cause.
       const bad = (state.cluster?.shards || []).filter((sh) => (sh.state && sh.state !== "ok") || (!sh.state && sh.status && sh.status !== "ok")).slice(0, 4);
-      rows = bad.flatMap((sh) => (sh.replicas || []).map((rp, i) => ({ copy: rp.url, short: rp.short || `s${sh.shard}-${i}`, state: rp.status === "down" || rp.role === "unknown" ? "firing" : "ok", value: null, since_ms: rp.down_since_ms || null })));
+      rows = bad.flatMap((sh) => (sh.replicas || []).map((rp, i) => ({ copy: rp.url, short: copyName(rp.url), state: rp.status === "down" || rp.role === "unknown" ? "firing" : "ok", value: null, since_ms: rp.down_since_ms || null })));
       cause = rows.length > 0;
     }
     const shardsOf = new Set();
     const lines = rows.slice(0, 12).map((c) => {
-      const url = c.copy, cp = copyOf(url || c.short), name = c.short || copyName(url);
+      const url = c.copy, cp = copyOf(url || c.short), name = whereName(c);
       if (cp) shardsOf.add(cp.shard);
       const node = cp?.r?.name || cp?.r?.detail?.log_store?.node || null;
       const st = stateName(c.state);
@@ -919,7 +874,7 @@ function alertHub(page, id, r) {
     for (let i = items.length - 1; i > 0; i--) if (items[i].what === items[i - 1].what && Math.abs((items[i].ts || 0) - (items[i - 1].ts || 0)) < 2000) { items[i - 1].text ||= items[i].text; items[i - 1].value ??= items[i].value; items[i - 1].by ||= items[i].by; items.splice(i, 1); }
     const label = { fired: "Fired", resolved: "Resolved", acked: "Acknowledged", silenced: "Silenced", note: "Note", changed: "Changed" };
     clear(activity, items.length ? h("div", { class: "timeline al-activity" }, items.slice(0, 30).map((e) => h("div", { class: "ev " + (e.what === "fired" ? "firing" : e.what === "resolved" || e.what === "acked" ? "ok" : "") },
-      h("div", { class: "row nw", style: { gap: "8px" } }, h("b", {}, label[e.what] || e.what), e.by ? h("span", { class: "small dim" }, e.by) : null, h("span", { class: "sep" }), h("span", { class: "tiny muted nowrap", title: e.ts ? new Date(e.ts).toString() : "" }, when(e.ts))),
+      h("div", { class: "row nw", style: { gap: "8px" } }, h("b", {}, label[e.what] || e.what), e.by ? h("span", { class: "small dim" }, e.by) : null, h("span", { class: "sep" }), h("span", { class: "tiny muted nowrap", title: e.ts ? whenTitle(e.ts) : "" }, when(e.ts))),
       e.text ? h("div", { class: "small dim" }, e.text) : e.value != null ? h("div", { class: "small dim" }, `${rule.metric} ${fv(rule.metric, e.value)}`) : null)))
       : h("div", { class: "small muted" }, m.fleet ? "Nothing yet." : "This server keeps the last 500 changes of all rules in memory; none is this rule's."));
     notesAt = items.length;
@@ -1056,7 +1011,7 @@ function editRule(rule, opts = {}) {
   for (const el of [thr, res, forS, win]) el.oninput = run;
   metric.onchange = () => { const before = unitOf(x.metric); x.metric = metric.value; if (unitOf(x.metric) !== before) { thr.value = toInput(x.threshold); res.value = toInput(x.resolve); } run(); };
 
-  const saveBtn = h("button", { class: "btn primary", disabled: !adm, title: adm ? "" : needs("admin") }, icon("check"), isNew ? "Create rule" : "Save");
+  const saveBtn = h("button", { class: "btn primary", disabled: !adm, title: adm ? "" : Needs("admin") }, icon("check"), isNew ? "Create rule" : "Save");
   const more = h("button", { class: "btn ghost", title: "More", "aria-label": "More actions" }, icon("dots"));
   const d = drawer({
     title: isNew ? "New alert rule" : x.name,
@@ -1076,13 +1031,13 @@ function editRule(rule, opts = {}) {
   run();
   more.onclick = () => menu(more, [
     { label: "Copy as JSON", icon: "copy", onclick: () => { read(); copy(JSON.stringify(cleanRule(x), null, 2), "Rule copied as JSON"); } },
-    isNew ? null : { label: "Open its alert page", icon: "alerts", onclick: () => { d.close(); location.hash = link("alert/" + encodeURIComponent(x.id)); } },
+    isNew ? null : { label: "Open its alert page", icon: "alerts", onclick: () => { d.close(); location.hash = alertLink(x.id); } },
     !isNew && !locked && adm ? "-" : null,
     !isNew && !locked && adm ? { label: "Delete this rule", icon: "trash", danger: true, onclick: del } : null,
   ].filter(Boolean));
   async function del() {
     const st = m?.st.get(x.id)?.state;
-    const ok = await ask({ title: `Delete "${x.name}"?`, body: `The server stops checking it${st === "firing" ? " and sends a RESOLVED message (it is firing now)" : ""}. Its past events stay. To stop it for a while, turn it off or silence it instead.`, ok: "Delete", danger: true, typed: newShell() ? x.id : undefined });
+    const ok = await ask({ title: `Delete "${x.name}"?`, body: `The server stops checking it${st === "firing" ? " and sends a RESOLVED message (it is firing now)" : ""}. Its past events stay. To stop it for a while, turn it off or silence it instead.`, ok: "Delete", danger: true, typed: x.id });
     if (!ok) return;
     try { await saveRules((model(state.alerts)?.rules || []).filter((y) => y.id !== x.id), ok.reason); toast("Rule deleted", "ok"); d.close(); opts.after?.(); } catch { /* told */ }
   }
@@ -1121,7 +1076,7 @@ function routesDrawer() {
         h("td", { class: "small" }, r.severities?.length ? r.severities.join(", ") : "every severity"),
         h("td", { class: "small" }, `${fmt.n(r.sent || 0)} sent`, r.failed ? h("span", { class: "al-bad" }, ` · ${fmt.n(r.failed)} failed`) : null),
         h("td", { class: "small" }, r.last_error && (!r.last_ok_ms || (r.last_error_ms || 0) > r.last_ok_ms) ? h("span", { class: "al-bad", title: r.last_error }, `failing: ${r.last_error.slice(0, 60)}`) : r.last_ok_ms ? h("span", { class: "al-good" }, `delivered ${ago(r.last_ok_ms)}`) : h("span", { class: "muted" }, "nothing sent yet")),
-        h("td", {}, h("button", { class: "btn xs", disabled: !can("write"), title: can("write") ? "Send a test message through this route now" : needs("write"), onclick: async (e) => {
+        h("td", {}, h("button", { class: "btn xs", disabled: !can("write"), title: can("write") ? "Send a test message through this route now" : Needs("write"), onclick: async (e) => {
           const b = e.currentTarget; b.disabled = true;
           try { const j = await api(`/v1/alerts/routes/${encodeURIComponent(r.name)}/test`, { body: {} }); toast(j.ok === false ? `Test failed: ${j.error || j.status}` : `Test sent through ${r.name}${j.status ? ` (${j.status})` : ""}`, j.ok === false ? "bad" : "ok"); await refreshAlerts(); routes = model(state.alerts).routes.map((y) => ({ ...y, severities: y.severities || [] })); draw(); }
           catch (err) { toast(failMsg(err, "Testing the route"), "bad"); }
@@ -1134,7 +1089,7 @@ function routesDrawer() {
         h("span", { class: "sep" }),
         editing ? h("button", { class: "btn sm", onclick: () => { editing = false; routes = model(state.alerts).routes.map((y) => ({ ...y, severities: y.severities || [] })); draw(); } }, "Cancel") : null,
         editing ? h("button", { class: "btn sm primary", onclick: save }, icon("check"), "Save routes")
-          : h("button", { class: "btn sm", disabled: !adm, title: adm ? "" : needs("admin"), onclick: () => { editing = true; draw(); } }, icon("edit"), "Edit routes")),
+          : h("button", { class: "btn sm", disabled: !adm, title: adm ? "" : Needs("admin"), onclick: () => { editing = true; draw(); } }, icon("edit"), "Edit routes")),
       h("p", { class: "small muted" }, "A rule names its route (or uses \"default\"). A route takes the severities ticked; a message reads: [strata FIRING critical] <rule> on <cluster>/<where>: <metric> = <value> (<op> <threshold>, <eval> over <window>). <description> Runbook: <url>, and a link to the alert's page. A RESOLVED message follows when it resolves, also when its rule is edited or deleted."));
   };
   async function save() {
