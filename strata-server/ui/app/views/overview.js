@@ -535,8 +535,8 @@ function render(page) {
   const offs = [
     bus.on("fleet", drawFleet), bus.on("cluster", drawCluster), bus.on("alerts", drawBanner),
     bus.on("points", () => { drawCharts(); drawKpis(); }), bus.on("range", () => { drawCharts(); drawHead(); loadEvents(); loadStats(); }),
-    bus.on("fresh", () => { drawKpis(); drawWhere(); drawProblems(); chartsCard.classList.toggle("stale", !fresh("series").ok && !fresh("series").loading); }),
-    bus.on("answering", () => { drawBanner(); }), bus.on("theme", drawCharts), bus.on("narrow", () => { drawWhere(); drawCharts(); }),
+    bus.on("fresh", () => { drawHead(); drawKpis(); drawWhere(); drawProblems(); chartsCard.classList.toggle("stale", !fresh("series").ok && !fresh("series").loading); }),
+    bus.on("answering", () => { drawBanner(); drawHead(); }), bus.on("theme", drawCharts), bus.on("narrow", () => { drawWhere(); drawCharts(); }),
     every(15000, loadEvents), every(30000, loadStats),
   ];
   return () => offs.forEach((f) => f());

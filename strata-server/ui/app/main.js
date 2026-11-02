@@ -502,7 +502,8 @@ function entities(q) {
     const nm = copyName(r.url);
     const s = sh.shard ?? i;
     const hay = [nm, r.short, `s${s}-${j}`, r.url, r.node, r.name].filter(Boolean).join(" ");
-    let sc = score(ql, hay);
+    // A bare number names a shard or a port, not every address that holds the digit.
+    let sc = /^\d+$/.test(ql) ? 0 : score(ql, hay);
     if (num && s === +num[1]) sc = 250 - j;
     if (/^\d{2,5}$/.test(ql) && r.url && new RegExp(":" + ql + "(\\b|$)").test(r.url)) sc = 280;
     if (sc <= 0) return;

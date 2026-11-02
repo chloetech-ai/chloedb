@@ -140,7 +140,7 @@ function render(page, r0) {
     clear(sumBody,
       tile("Incidents", String(incidents.length), incidents.length ? incidents.slice(0, 2).map((e) => `${e.title.slice(0, 40)} (${when(e.ts_ms, { sec: false })}, ${durOf(e)})`).join(" · ") : "no shard lost its majority, no critical alert", incidents.length ? "crit" : "", incidents[0] ? eventLink(incidents[0]) : null),
       tile("Copies down", String(copiesDown.length), copiesDown.length ? [...new Set(copiesDown.map((e) => e.where?.copy || e.title))].slice(0, 3).join(", ") : "every copy stayed up", copiesDown.length ? "warn" : ""),
-      tile("Primaries moved", String(prim.length), prim.length ? `${auto} failover${auto === 1 ? "" : "s"} · ${prim.length - auto} handed over` : "no primary moved", auto ? "warn" : ""),
+      tile("Primaries moved", String(prim.length), prim.length ? [auto ? `${auto} failover${auto === 1 ? "" : "s"}` : null, prim.length - auto ? `${prim.length - auto} handed over` : null].filter(Boolean).join(" · ") : "no primary moved", auto ? "warn" : ""),
       tile("Rollouts", rolls.length ? String(rolls.length) : "0", rolls.length ? rolls[0].title : "no rollout", "", rolls[0] ? eventLink(rolls[0]) : null),
       tile("Changes by people", String(people.length), people.length ? who.slice(0, 3).join(", ") + (who.length > 3 ? ` +${who.length - 3}` : "") : "nobody changed anything", ""),
       tile("New client traffic", String(shapes.length), shapes.length ? shapes.slice(0, 2).map((e) => e.who ? "key " + e.who : "a new shape").join(" · ") : stats.length && !stats.some((s) => "new" in s) ? "this server does not mark new shapes" : "no new statement shape", shapes.length ? "warn" : ""),
