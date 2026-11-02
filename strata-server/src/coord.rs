@@ -75,7 +75,9 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use serde_json::{json, Value as Json};
 use strata::db::Source;
 use strata::query::agg::Part;
-use strata::query::exec::ResultSet;
+#[cfg(feature = "datafusion")]
+use strata::query::arrow::Columns;
+use strata::query::exec::{Leaf, ResultSet};
 use strata::query::paths::{Call, Paths};
 use strata::query::ir::Plan;
 use strata::query::stats::TermStats;
@@ -89,7 +91,7 @@ use tonic::transport::Channel;
 use tonic::Code;
 
 use crate::auth::Secret;
-use crate::grpc::{params_to_pb, result_from_pb, CLUSTER_PROTOCOL, GUARD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL};
+use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL};
 use crate::metrics::Family;
 use crate::pb::{self, strata_client::StrataClient};
 use crate::service::{is_mark, op_place, op_schema, op_source, After, QueryReq, Written};
@@ -566,6 +568,30 @@ pub struct Coordinator {
 pub struct Merged {
     pub rs: ResultSet,
     pub missing: Vec<String>,
+    /// With [`QueryReq::arrow`], the rows as Arrow columns, which `rs` then
+    /// does not hold.
+    #[cfg(feature = "datafusion")]
+    pub arrow: Option<Columns>,
+}
+
+impl Merged {
+    fn rows(rs: ResultSet, missing: Vec<String>) -> Merged {
+        Merged {
+            rs,
+            missing,
+            #[cfg(feature = "datafusion")]
+            arrow: None,
+        }
+    }
+
+    /// The rows, as rows or as Arrow columns: a leaf of a compound query.
+    pub fn leaf(self) -> Leaf {
+        #[cfg(feature = "datafusion")]
+        if let Some(c) = self.arrow {
+            return Leaf::Arrow(c);
+        }
+        Leaf::Rows(self.rs)
+    }
 }
 
 /// The share of calls that may be hedged: each call earns this much of a
@@ -628,6 +654,32 @@ async fn timed<T>(sent: &Sent, i: usize, r: usize, call: impl Future<Output = Re
 }
 
 /// A step of the coordinator's own that began at `t0` and ends now.
+/// The most values a query may pin its placement field to and still be
+/// routed by them ([`Coordinator::pinned_shards`]).
+const MAX_ROUTED: usize = 4096;
+
+/// The values of field `f` that every row `p` matches has one of, when
+/// `p` says: `f = v`, `f IN (...)`, a conjunction with such a condition
+/// (the fewest values of its parts), or a disjunction of them. `None`
+/// when the rows may hold any value of `f`.
+fn pinned_values(p: &strata::query::logical::Pred, f: usize) -> Option<Vec<strata::value::Value>> {
+    use strata::query::logical::Pred;
+    match p {
+        Pred::In { field, values } if *field == f => Some(values.clone()),
+        Pred::IntRange { field, lo, hi } if *field == f && lo == hi => Some(vec![strata::value::Value::Int(*lo)]),
+        Pred::False => Some(Vec::new()),
+        Pred::And(ps) => ps.iter().filter_map(|p| pinned_values(p, f)).min_by_key(Vec::len),
+        Pred::Or(ps) => {
+            let mut all = Vec::new();
+            for p in ps {
+                all.extend(pinned_values(p, f)?);
+            }
+            Some(all)
+        }
+        _ => None,
+    }
+}
+
 fn leaf_step(op: &str, detail: String, t0: Instant, rows: Option<u64>) -> Step {
     Step { op: op.into(), detail, start_us: steps::us_at(t0), us: steps::tenth(t0.elapsed().as_nanos() as f64 / 1e3), rows, ..Step::default() }
 }
@@ -1196,6 +1248,61 @@ impl Coordinator {
         Ok(sums.into_iter().map(|m| m.into_values().collect()).collect())
     }
 
+    /// Rows of table `schema` by primary key ([`GET_PROTOCOL`]): each
+    /// key asked of the shard its slot is on, all of a shard's keys in one
+    /// call, or of every shard for a table placed by shard_by, whose key
+    /// does not say where its row is. Per key, in their order, the row and
+    /// its number, or none.
+    pub async fn get(&self, schema: &Schema, keys: &[strata::value::Value], after: &After, deadline: Instant) -> Result<Vec<Option<(Vec<strata::value::Value>, u64)>>, ApiError> {
+        self.routed(|| self.get_once(schema, keys, after, deadline)).await
+    }
+
+    async fn get_once(&self, schema: &Schema, keys: &[strata::value::Value], after: &After, deadline: Instant) -> Result<Vec<Option<(Vec<strata::value::Value>, u64)>>, ApiError> {
+        let t = &self.topo();
+        let start = self.turn.fetch_add(1, Ordering::Relaxed);
+        let after = &self.after(t, after)?;
+        let n = t.replicas.len();
+        // Each shard's keys, by their positions.
+        let mut asked: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (j, k) in keys.iter().enumerate() {
+            match schema.shard_by {
+                Some(_) => asked.iter_mut().for_each(|a| a.push(j)),
+                None => asked[self.shard_of(t, k)].push(j),
+            }
+        }
+        let calls = asked.iter().enumerate().filter(|(_, a)| !a.is_empty()).map(|(i, a)| async move {
+            let pb_keys: Vec<pb::Value> = a.iter().map(|&j| crate::grpc::to_pb(&keys[j])).collect();
+            let got = self
+                .call(t, i, start, None, deadline, |r, mut c| {
+                    let pb_keys = pb_keys.clone();
+                    async move {
+                        let p = self.speak(t, i, r, &mut c, PROTOCOL).await?;
+                        if p < GET_PROTOCOL {
+                            return Err(tonic::Status::unimplemented(format!("it speaks protocol {p}, and reads by key need {GET_PROTOCOL}: upgrade it")));
+                        }
+                        let min_seq_no = after.get(i).copied().unwrap_or(0);
+                        self.reads_after(t, i, r, min_seq_no)?;
+                        c.get(pb::GetRequest { table: schema.table.clone(), keys: pb_keys, timeout_ms: ms_left(deadline), protocol: p, epoch: t.epoch(), min_seq_no, ..Default::default() }).await
+                    }
+                })
+                .await?;
+            Ok::<_, ApiError>((a, crate::grpc::rows_from_pb(got.1)))
+        });
+        let mut out = vec![None; keys.len()];
+        for r in join_all(calls).await {
+            let (a, rows) = r?;
+            if rows.len() != a.len() {
+                return Err(ApiError::internal(format!("a shard answered {} rows for {} keys", rows.len(), a.len())));
+            }
+            for (&j, row) in a.iter().zip(rows) {
+                if row.is_some() {
+                    out[j] = row;
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// The paths listing `call` asks for ([`strata::query::paths`]) over
     /// every shard, summed ([`Paths::merge`]). It travels as the SQL that
     /// asks for it, which each shard answers from its own rows: no plan
@@ -1332,6 +1439,12 @@ impl Coordinator {
         let partial = req.partial.unwrap_or(self.opts.partial);
         let protocol = t.protocol();
         let n = t.replicas.len();
+        let ranked_text = strata::cluster::scores_bm25(select);
+        // A query that pins its table's key (or shard_by field) to values
+        // asks only the shards those are on, as a write by key does: a
+        // read by key asks one. BM25 scores need every shard's statistics.
+        let asked = if ranked_text || n == 1 { None } else { self.pinned_shards(t, schema, select) };
+        let ask = |i: usize| asked.as_ref().is_none_or(|a| a.contains(&i));
         // A cross-encoder scores here, over the text of its phase's rows,
         // which the fetch round reads.
         let model = select.model_phase().is_some();
@@ -1339,10 +1452,13 @@ impl Coordinator {
             return Err(ApiError::bad("a cross-encoder over shards needs shards that fetch rows (protocol 3)"));
         }
         // Query then fetch: the query round answers the keys alone.
-        let ids = match model || (protocol >= 3 && self.opts.fetch && n > 1 && strata::cluster::fetches(select, schema) && self.fetch_pays(t, select)) {
+        let ids = match model || (protocol >= 3 && self.opts.fetch && asked.as_ref().map_or(n, |a| a.len()) > 1 && strata::cluster::fetches(select, schema) && self.fetch_pays(t, select)) {
             true => Some(strata::cluster::ids(select, schema)?),
             false => None,
         };
+        // A compound query's leaf that DataFusion runs, whose shards' rows
+        // go one after another: as Arrow columns ([`ARROW_PROTOCOL`]).
+        let arrow = cfg!(feature = "datafusion") && req.arrow.is_some() && protocol >= ARROW_PROTOCOL && ids.is_none() && strata::cluster::concatenates(select);
         let ids_plan = ids.as_ref().map(|q| Plan::of_select(schema, q));
         let none = Params::new();
         let (params, given) = match &ids_plan {
@@ -1351,7 +1467,6 @@ impl Coordinator {
         };
         let read = &Read::new(&req.sql, params, given, protocol, t.epoch(), || Ok(Plan::of_select(schema, select)))?.after(self.after(t, &req.after)?).profiled(req.profile);
         let start = self.turn.fetch_add(1, Ordering::Relaxed);
-        let ranked_text = strata::cluster::scores_bm25(select);
         // Per shard: the replica holding a lease for this query, and the lease.
         let mut leased: Vec<Option<(usize, u64)>> = vec![None; n];
         let mut failed = self.skipped(t, partial);
@@ -1383,7 +1498,7 @@ impl Coordinator {
         let leased = &leased;
         let hold = ids.is_some();
         let sent = &Sent::default();
-        let calls = (0..n).filter(|&i| failed[i].is_none()).map(|i| {
+        let calls = (0..n).filter(|&i| failed[i].is_none() && ask(i)).map(|i| {
             let stats_json = stats_json.clone();
             let first = leased[i].map(|(r, _)| r);
             async move {
@@ -1398,20 +1513,36 @@ impl Coordinator {
                         // From protocol 3, the lease is held for the fetch
                         // round, or ended once answered.
                         let (hold, release) = (hold && p >= 3, !hold && snapshot != 0 && p >= 3);
-                        timed(sent, i, r, c.query(pb::QueryRequest { timeout_ms: ms_left(deadline), shard: true, stats_json, snapshot, hold, release, ..read.request(p, i) })).await
+                        let arrow = arrow && p >= ARROW_PROTOCOL;
+                        timed(sent, i, r, c.query(pb::QueryRequest { timeout_ms: ms_left(deadline), shard: true, stats_json, snapshot, hold, release, arrow, ..read.request(p, i) })).await
                     }
                 });
                 (i, rs.await)
             }
         });
         let mut shards = Vec::new();
+        // The shards' Arrow answers, for each of `shards`.
+        #[cfg(feature = "datafusion")]
+        let mut columns: Vec<Option<Columns>> = Vec::new();
         // Per shard answering: the replica that did, and the lease it holds.
         let mut held = Vec::new();
         for (i, a) in join_all(calls).await {
             match a {
-                Ok((r, a)) => {
+                #[allow(unused_mut)]
+                Ok((r, mut a)) => {
                     held.push((i, r, a.snapshot));
-                    shards.push(self.shard_answer(t, i, r, a, sent, "query")?);
+                    #[cfg(feature = "datafusion")]
+                    let c = match a.arrow.is_empty() {
+                        true => None,
+                        false => Some(Columns::from_ipc(&std::mem::take(&mut a.arrow), a.columns.clone(), Default::default())?),
+                    };
+                    #[cfg(feature = "datafusion")]
+                    let rows = c.as_ref().map(|c| c.rows);
+                    #[cfg(not(feature = "datafusion"))]
+                    let rows = None;
+                    shards.push(self.shard_answer(t, i, r, a, sent, "query", rows)?);
+                    #[cfg(feature = "datafusion")]
+                    columns.push(c);
                 }
                 Err(e) => self.leave_out(t, partial, i, e, &mut failed)?,
             }
@@ -1420,6 +1551,26 @@ impl Coordinator {
         if shards.is_empty() {
             let e = failed.into_iter().flatten().next();
             return Err(e.unwrap_or_else(|| ApiError::internal("no shard answered")));
+        }
+        #[cfg(feature = "datafusion")]
+        if columns.iter().any(Option::is_some) {
+            let t0 = Instant::now();
+            let Some(mut c) = strata::cluster::merge_columns(select, &shards, columns)? else {
+                // A shard could not answer with columns, or the shards'
+                // columns are of different types: the rows, then.
+                let rows = QueryReq { arrow: None, ..req.clone() };
+                return Box::pin(self.query_at(t, &rows, schema, select, deadline)).await;
+            };
+            let missing = failed.iter().enumerate().filter(|(_, f)| f.is_some()).map(|(i, _)| t.shards[i].clone()).collect();
+            c.stats.steps.push(leaf_step("merge", format!("{} shard answers, as Arrow columns", held.len()), t0, Some(c.rows as u64)));
+            c.stats.steps.splice(0..0, own);
+            // Few rows are answered as rows, which the operators may take
+            // over ([`Leaf`]).
+            if c.rows <= req.arrow.unwrap_or(0) {
+                return Ok(Merged::rows(c.into_result()?, missing));
+            }
+            let rs = ResultSet { columns: c.names.clone(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() };
+            return Ok(Merged { rs, missing, arrow: Some(c) });
         }
         let mut merge_step = None;
         let mut merge = |q: &Select, shards: Vec<ResultSet>| {
@@ -1467,15 +1618,38 @@ impl Coordinator {
         // calls, inside it) last.
         rs.stats.steps.extend(merge_step);
         rs.stats.steps.splice(0..0, own);
-        Ok(Merged { rs, missing })
+        if let Some(a) = &asked {
+            rs.stats.plan.insert(0, format!("routed by key: {} of {n} shards", a.len()));
+        }
+        Ok(Merged::rows(rs, missing))
+    }
+
+    /// The shards that can hold the rows `select` matches, when its filter
+    /// pins the field that places its table's rows (the key, or shard_by)
+    /// to values: each value's shard, as writes are routed by it (one
+    /// shard at least, to answer an empty query). `None` when the filter
+    /// does not pin it, or pins more values than [`MAX_ROUTED`].
+    fn pinned_shards(&self, t: &Topology, schema: &Schema, select: &Select) -> Option<std::collections::BTreeSet<usize>> {
+        let place = schema.shard_by_field().or(schema.primary_key)?;
+        let values = pinned_values(&select.filter, place)?;
+        if values.len() > MAX_ROUTED {
+            return None;
+        }
+        let mut shards: std::collections::BTreeSet<usize> = values.iter().map(|v| self.shard_of(t, v)).collect();
+        if shards.is_empty() {
+            shards.insert(0);
+        }
+        (shards.len() < t.replicas.len()).then_some(shards)
     }
 
     /// Shard `i`'s answer `a` from replica `r`, its steps moved onto this
     /// server's clock, inside a `shard` step for the call (from sent to
     /// received, as `sent` holds it) and an `on the shard` step for the
     /// shard's own time (`took_ms`), centred in the call: what the network
-    /// took is the difference, half each way.
-    fn shard_answer(&self, t: &Topology, i: usize, r: usize, a: pb::QueryResponse, sent: &Sent, what: &str) -> Result<ResultSet, ApiError> {
+    /// took is the difference, half each way. Their rows are `rows`, an
+    /// Arrow answer's, or those of `a`.
+    #[allow(clippy::too_many_arguments)]
+    fn shard_answer(&self, t: &Topology, i: usize, r: usize, a: pb::QueryResponse, sent: &Sent, what: &str, rows: Option<usize>) -> Result<ResultSet, ApiError> {
         let took_us = a.took_ms * 1e3;
         let mut rs = result_from_pb(a)?;
         let Some((t0, t1)) = sent.lock().unwrap_or_else(|e| e.into_inner()).get(&(i, r)).copied() else { return Ok(rs) };
@@ -1483,7 +1657,7 @@ impl Coordinator {
         let start = steps::us_at(t0);
         let on_shard = start + ((call_us - took_us) / 2.0).max(0.0);
         steps::shift(&mut rs.stats.steps, on_shard);
-        let rows = Some(rs.rows.len() as u64);
+        let rows = Some(rows.unwrap_or(rs.rows.len()) as u64);
         let own = Step { op: "on the shard".into(), detail: format!("network {:.2} ms", ((call_us - took_us) / 1e3).max(0.0)), start_us: steps::tenth(on_shard), us: steps::tenth(took_us.min(call_us)), rows, ..Step::default() };
         steps::wrap(&mut rs.stats.steps, 0, own);
         let replica = &t.replicas[i][r].url;
@@ -1567,7 +1741,7 @@ impl Coordinator {
         let mut fetched = Vec::new();
         for (i, a) in join_all(calls).await {
             match a {
-                Ok((r, a)) => fetched.push(self.shard_answer(t, i, r, a, sent, "fetch")?),
+                Ok((r, a)) => fetched.push(self.shard_answer(t, i, r, a, sent, "fetch", None)?),
                 Err(e) => self.leave_out(t, partial, i, e, failed)?,
             }
         }

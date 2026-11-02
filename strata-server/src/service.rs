@@ -71,6 +71,23 @@ pub enum Backend {
     Cluster(Arc<Coordinator>),
 }
 
+/// The most expired rows one transaction of the expirer deletes
+/// ([`Service::expire_due`]).
+pub const EXPIRE_BATCH: usize = 10_000;
+
+/// The most keys one read by key takes ([`Service::get_rows`]).
+pub const MAX_GET_KEYS: usize = 10_000;
+
+/// Rows read by key ([`Service::get_rows`]): per key, in their order, the
+/// row's values (of `columns`, as `SELECT *` names them) and the number
+/// of the write that last changed it, or `None` for a key no live row has.
+#[derive(Clone, Debug)]
+pub struct KeyRows {
+    pub table: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<Option<(Vec<Value>, u64)>>,
+}
+
 /// A SELECT to run.
 #[derive(Clone, Default)]
 pub struct QueryReq {
@@ -103,6 +120,13 @@ pub struct QueryReq {
     /// statistics: a run of a CPU profile's query ([`crate::profiler`]),
     /// which runs it thousands of times. Still counted in the metrics.
     pub quiet: bool,
+    /// A leaf of a compound query that DataFusion runs: its rows as Arrow
+    /// columns when there are more than this many ([`Leaf`]), which a
+    /// coordinator asks its shards for (protocol 10,
+    /// [`crate::grpc::ARROW_PROTOCOL`]) and a shard answers
+    /// ([`Answer::arrow`]) when the coordinator puts its rows after the
+    /// others' ([`strata::cluster::concatenates`]).
+    pub arrow: Option<usize>,
 }
 
 /// The writes a read must see, so that a client reads its own writes
@@ -150,6 +174,9 @@ pub struct Answer {
     pub missing: Vec<String>,
     /// The lease on the snapshot read, with [`QueryReq::hold`]; else 0.
     pub lease: u64,
+    /// A shard's rows as an Arrow IPC stream ([`QueryReq::arrow`],
+    /// `QueryResponse.arrow`), `rs` then holding none; empty otherwise.
+    pub arrow: Vec<u8>,
 }
 
 /// An embedded VECTOR field ([`strata::Embed`]) and its model, which
@@ -1834,6 +1861,8 @@ impl Service {
         req.profile |= self.profiling.cpu_all.load(Ordering::Relaxed);
         let profiled = req.profile;
         let live = self.live.start(&req.sql, kind, req.shard);
+        // A shard's answer to a coordinator's leaf, as Arrow columns.
+        let mut arrow = Vec::new();
         let res = match &self.backend {
             Backend::Local(db) => {
                 let stats = req.stats.take().map(Arc::new);
@@ -1871,13 +1900,19 @@ impl Service {
                         ..db.exec.clone()
                     };
                     let db = db.clone();
+                    // Arrow columns for a coordinator that puts this
+                    // shard's rows after the others'.
+                    let columns = req.arrow.filter(|_| req.shard && cfg!(feature = "datafusion") && strata::cluster::concatenates(&select));
                     // The work holds the slot and the count until it ends,
                     // and stops at its next check if this future is dropped.
                     let te = Instant::now();
                     let r = tokio::task::spawn_blocking(move || {
                         let _held = (permit, running);
                         let started = Instant::now();
-                        let r = db.execute(&view, &select, &opts);
+                        let r = match columns {
+                            Some(over) => db.execute_leaf(&view, &select, &opts, over).and_then(shard_leaf),
+                            None => db.execute(&view, &select, &opts).map(|rs| (rs, Vec::new())),
+                        };
                         (r, started, Instant::now())
                     })
                     .await;
@@ -1886,8 +1921,9 @@ impl Service {
                     telemetry::record("execute", te, if matches!(r, Ok((Ok(_), ..))) { "ok" } else { "error" });
                     match r {
                         Ok((r, started, ended)) => r
-                            .map(|mut rs| {
+                            .map(|(mut rs, ipc)| {
                                 steps::around(&mut rs.stats.steps, te, started, ended, back);
+                                arrow = ipc;
                                 (rs, Vec::new())
                             })
                             .map_err(ApiError::from),
@@ -1921,7 +1957,7 @@ impl Service {
         if let Some(l) = (req.release && req.snapshot != 0).then_some(req.snapshot).or(made) {
             self.release(&[l]);
         }
-        a.map(|a| Answer { lease, ..a })
+        a.map(|a| Answer { lease, arrow, ..a })
     }
 
     /// Counts a query's outcome, logs it if it was slow, and makes its
@@ -1959,7 +1995,7 @@ impl Service {
         if !quiet {
             self.query_log.add(sql, kind, outcome, secs, rows, shard, res.as_ref().err().map(|e| e.message.as_str()), slow, res.as_ref().ok().map(|(rs, _)| &rs.stats), profiled);
         }
-        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0 })
+        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0, arrow: Vec::new() })
     }
 
     /// A compound query ([`compound`]): its plan's leaves run on one
@@ -2051,20 +2087,22 @@ impl Service {
                     // run the rest here, on this server's cores.
                     let checks = ExecOptions { deadline: Some(deadline), cancel: Some(stop.clone()), memory, profile: req.profile, engine, threads, ..ExecOptions::default() };
                     let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
-                    let rs = ops::run_on_engine(&plan, &tables, &mut |leaf, _| {
+                    let rs = ops::run_on_engine(&plan, &tables, &mut |leaf, over| {
                         checks.check()?;
                         let schema = catalog.iter().find(|t| t.table.eq_ignore_ascii_case(leaf.table())).ok_or_else(|| strata::Error::Query(format!("no such table: {}", leaf.table())))?;
                         let select = leaf.to_select(schema)?;
                         // The shards run the leaf's plan; its text names it in their logs.
                         let sql = leaf.explain(&tables).join(" / ");
-                        let step = QueryReq { sql, plan: Some(Arc::new(leaf.clone())), partial: req.partial, after: req.after.clone(), profile: req.profile, ..Default::default() };
-                        let m = rt.block_on(telemetry::within(trace.clone(), obs::scope(id.clone(), c.query(&step, schema, &select, deadline)))).map_err(|e| strata::Error::Query(e.message))?;
-                        for s in m.missing {
+                        // DataFusion takes Arrow columns past `over` rows.
+                        let arrow = (over != usize::MAX).then_some(over);
+                        let step = QueryReq { sql, plan: Some(Arc::new(leaf.clone())), partial: req.partial, after: req.after.clone(), profile: req.profile, arrow, ..Default::default() };
+                        let mut m = rt.block_on(telemetry::within(trace.clone(), obs::scope(id.clone(), c.query(&step, schema, &select, deadline)))).map_err(|e| strata::Error::Query(e.message))?;
+                        for s in std::mem::take(&mut m.missing) {
                             if !missing.contains(&s) {
                                 missing.push(s);
                             }
                         }
-                        Ok(Leaf::Rows(m.rs))
+                        Ok(m.leaf())
                     }, &checks);
                     rs.map(|rs| (rs, missing))
                 })
@@ -2215,6 +2253,64 @@ impl Service {
             }
             Backend::Cluster(c) => c.sid_next(sql, &schema, plan, params, field, prefixes, after, deadline).await,
         }
+    }
+
+    /// Deletes the rows whose `expire_by` time has passed
+    /// ([`Db::expire`]), as a server that takes writes does every few
+    /// seconds ([`crate::server::spawn_expirer`]): not a replica, which
+    /// applies its primary's deletes, nor a server that cannot write, nor
+    /// one that holds rows of slots moving here or away, which the move
+    /// copies or cleans up. Reads leave expired rows out either way; this
+    /// frees their space. Returns how many it deleted.
+    pub fn expire_due(&self) -> strata::Result<u64> {
+        let Backend::Local(db) = &self.backend else { return Ok(0) };
+        if matches!(self.replication(), Replication::Replica(_)) || self.failing().is_some() || self.moving.mask().is_some() {
+            return Ok(0);
+        }
+        if !db.catalog().iter().any(|t| t.expire_by.is_some()) {
+            return Ok(0);
+        }
+        db.expire(strata::timestamp::now(), EXPIRE_BATCH)
+    }
+
+    /// Rows of table `table` (the first without one) by primary key,
+    /// read without SQL ([`Db::get_many_at`]): per key, its live row as
+    /// `SELECT *` answers it and the number of the write that last changed
+    /// it, or none. A coordinator asks each key's shard. At most
+    /// [`MAX_GET_KEYS`] keys.
+    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, after: &After, timeout_ms: u64) -> Result<KeyRows, ApiError> {
+        let t0 = Instant::now();
+        if keys.len() > MAX_GET_KEYS {
+            return Err(ApiError::bad(format!("a read by key takes at most {MAX_GET_KEYS} keys, not {}", keys.len())));
+        }
+        let schema = match table {
+            Some(t) => self.table(t).await?,
+            None => self.first_table(),
+        };
+        let pk = schema.primary_key.ok_or_else(|| ApiError::bad(format!("{} has no primary key: rows are read by key only from a table with one", schema.table)))?;
+        let keys: Vec<Value> = keys.iter().map(|k| strata::db::key_value(&schema, pk, k)).collect::<strata::Result<_>>()?;
+        let timeout = self.timeout_of(timeout_ms);
+        let deadline = t0 + timeout;
+        let r = match &self.backend {
+            Backend::Local(db) => {
+                let snap = self.read_snapshot(db, 0, after, deadline).await?;
+                let view = snap.table(&schema.table).ok_or_else(|| ApiError::bad(format!("query error: no such table: {}", schema.table)))?;
+                let Some(permit) = self.admit(timeout).await else { return Err(self.rejected("get", t0)) };
+                let db = db.clone();
+                let opts = ExecOptions { deadline: Some(deadline), ..db.exec.clone() };
+                let r = tokio::task::spawn_blocking(move || {
+                    let columns = Db::get_columns(view.schema());
+                    db.get_many_at(&view, &keys, &opts).map(|rows| KeyRows { table: view.schema().table.clone(), columns, rows: rows.into_iter().map(|r| r.map(|r| (r.row, r.seq_no))).collect() })
+                })
+                .await
+                .map_err(ApiError::internal)?;
+                drop(permit);
+                r.map_err(ApiError::from)
+            }
+            Backend::Cluster(c) => c.get(&schema, &keys, after, deadline).await.map(|rows| KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }),
+        };
+        telemetry::record("get", t0, if r.is_ok() { "ok" } else { "error" });
+        r
     }
 
     /// The paths listing `call` asks for ([`strata::query::paths`]): of
@@ -3091,6 +3187,20 @@ pub const OLDER_THAN_SHARD: &str = "is older than this shard's";
 const FOR_READS: &str = "min_seq_no and min_seq_nos are for reads: a write sees every write before it";
 
 /// A query refused for want of a slot ([`Service::admit`]).
+/// A shard's answer to a coordinator's leaf ([`QueryReq::arrow`]): its
+/// rows, or its statistics and its rows as an Arrow IPC stream.
+fn shard_leaf(leaf: Leaf) -> strata::Result<(ResultSet, Vec<u8>)> {
+    match leaf {
+        Leaf::Rows(rs) => Ok((rs, Vec::new())),
+        #[cfg(feature = "datafusion")]
+        Leaf::Arrow(c) => {
+            let ipc = c.to_ipc()?;
+            let rs = ResultSet { columns: c.names, rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: c.stats };
+            Ok((rs, ipc))
+        }
+    }
+}
+
 fn too_many() -> ApiError {
     ApiError { status: 429, message: "too many queries running; try again".into() }
 }

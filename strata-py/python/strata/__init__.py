@@ -77,12 +77,13 @@ from .build import (
 from ._strata import StrataError
 from .client import Client
 from .ngrams import next_items
-from .result import Result
+from .result import ArrowResult, Result
 
 __all__ = [
     "Database",
     "Client",
     "Result",
+    "ArrowResult",
     "StrataError",
     "open",
     "connect",
@@ -252,6 +253,13 @@ class Database(Search):
         """Runs a SELECT."""
         return Result._of(self._db.query(sql, _params(params, kw)))
 
+    def query_arrow(self, sql: str, params: Mapping[str, Any] | None = None, **kw: Any) -> ArrowResult:
+        """Runs a SELECT: its answer as Arrow columns, which pyarrow,
+        polars and pandas read without copying (`ArrowResult`)."""
+        if not hasattr(self._db, "query_arrow"):
+            raise StrataError("this build of strata has no Arrow: build it with the feature datafusion (the default)")
+        return ArrowResult(self._db.query_arrow(sql, _params(params, kw)))
+
     def sql(self, sql: str, params: Mapping[str, Any] | None = None, **kw: Any) -> Result | int:
         """Runs any statement: a SELECT's `Result`, or the number of rows an
         INSERT, UPDATE or DELETE wrote."""
@@ -286,6 +294,21 @@ class Database(Search):
         """Inserts a row or rows, replacing the rows that have their keys,
         in transactions of 10,000 rows. Returns how many."""
         return self._db.upsert(rows, table)
+
+    def get(self, key: Any, *, table: str | None = None) -> dict | None:
+        """The row with this primary key in the first table or `table`, read
+        without SQL: a dict of the columns `SELECT *` answers, or None when
+        no live row has the key (or its `expire_by` time has passed)."""
+        return self._db.get_many([key], table)[0]
+
+    def get_many(self, keys: Iterable[Any], *, table: str | None = None) -> list[dict | None]:
+        """`get` of several keys at once, in their order."""
+        return self._db.get_many(list(keys), table)
+
+    def expire(self) -> int:
+        """Deletes the rows whose `expire_by` time has passed, in every
+        table with one; returns how many. Reads leave them out already."""
+        return self._db.expire()
 
     def delete(self, keys: Any, *, table: str | None = None) -> int:
         """Deletes the rows with this key or these keys; returns how many

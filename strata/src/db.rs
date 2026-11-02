@@ -19,7 +19,7 @@ use crate::error::{Error, Result};
 use crate::forward::{DocStore, KeywordColumn, NumericColumn};
 use crate::media::{Media, Resolver};
 use crate::query::agg::Part;
-use crate::query::exec::{ExecOptions, ExecStats, Executor, ResultSet, SegmentReaders};
+use crate::query::exec::{ExecOptions, ExecStats, Executor, Leaf, ResultSet, SegmentReaders};
 use crate::query::ir::eval::{self, Ref};
 use crate::query::ir::Plan;
 use crate::query::model::Models;
@@ -28,7 +28,7 @@ use crate::query::{bind_command, compound, ops, profile, sql as qsql, Assign, Co
 use crate::rank_log::{self, Export, Log, Logged};
 use crate::schema::{Alter, Derive, Embed, FieldType, Schema};
 use crate::segment::{DocId, SegmentFile};
-use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, Mask, SeqNo, Snapshot, TableTxn, SOURCES};
+use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, Found, Mask, SeqNo, Snapshot, TableTxn, SOURCES};
 use crate::value::{Document, Value};
 use crate::vector::VectorReader;
 
@@ -116,6 +116,27 @@ impl PreparedWrite {
     pub fn guarded(mut self, guard: impl Fn() -> Result<Option<Arc<Mask>>> + Send + Sync + 'static) -> PreparedWrite {
         self.guard = Some(Guard(Arc::new(guard)));
         self
+    }
+}
+
+/// A row read by its primary key ([`Db::get_many_at`]): the columns of
+/// [`Db::get_columns`], typed as a query's answer types them, and the sequence
+/// number of the write that last changed it (0 in a database that does
+/// not number its writes, and for rows from before it did).
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyRow {
+    pub row: Vec<Value>,
+    pub seq_no: u64,
+}
+
+/// `key` as a value of primary key `pk` of `schema`: a KEYWORD key is
+/// text, and an INT key an integer or text of one.
+pub fn key_value(schema: &Schema, pk: usize, key: &Value) -> Result<Value> {
+    let f = &schema.fields[pk];
+    match (&f.ty, key) {
+        (FieldType::Keyword, Value::Str(_)) | (FieldType::Int, Value::Int(_)) => Ok(key.clone()),
+        (FieldType::Int, Value::Str(s)) => s.trim().parse::<i64>().map(Value::Int).map_err(|_| Error::Query(format!("{s:?} is not a key of {}: its key {} is an INT", schema.table, f.name))),
+        _ => Err(Error::Query(format!("{key:?} is not a key of {}: its key {} is {}", schema.table, f.name, if f.ty == FieldType::Int { "an INT" } else { "a KEYWORD" }))),
     }
 }
 
@@ -1056,6 +1077,32 @@ impl Db {
     /// reads its own table and may hold up to
     /// [`crate::query::compound::MAX_ROWS`] rows.
     fn run_on(&self, snap: &Snapshot, plan: &Plan, opts: &ExecOptions) -> Result<ResultSet> {
+        match self.run_leaf_on(snap, plan, opts, None)? {
+            Leaf::Rows(rs) => Ok(rs),
+            #[cfg(feature = "datafusion")]
+            Leaf::Arrow(_) => unreachable!("rows asked for"),
+        }
+    }
+
+    /// [`Db::query`], its answer as Arrow columns where the executor makes
+    /// them (feature `datafusion`): a query of one table, that neither
+    /// groups nor counts, has its rows' columns read from its segments into
+    /// Arrow arrays ([`Leaf::Arrow`], [`Db::execute_leaf`]) without being
+    /// made rows first. Any other answer is its rows ([`Leaf::Rows`]).
+    #[cfg(feature = "datafusion")]
+    pub fn query_leaf(&self, sql: &str, params: &Params) -> Result<Leaf> {
+        let snap = self.snapshot();
+        if let Some(call) = crate::query::paths::Call::of_sql(sql)? {
+            return self.json_paths_at(&snap, &call, params, &self.exec).map(|p| Leaf::Rows(p.to_result()));
+        }
+        let q = qsql::parse_query(sql)?;
+        let plan = plan_of(&snap, &q, params)?;
+        self.run_leaf_on(&snap, &plan, &self.exec, Some(0))
+    }
+
+    /// [`Db::run_on`], a plan of one table's rows as Arrow columns when
+    /// there are more than `arrow` of them.
+    fn run_leaf_on(&self, snap: &Snapshot, plan: &Plan, opts: &ExecOptions, arrow: Option<usize>) -> Result<Leaf> {
         profile::check_plan(plan, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).map(|p| p.hash())))?;
         let opened;
         let plan = match plan.root.has_models() {
@@ -1070,7 +1117,11 @@ impl Db {
         let view_of = |table: &str| snap.table(table).ok_or_else(|| Error::Query(format!("no such table: {table}")));
         if !plan.root.uses_operators() {
             let view = view_of(plan.table())?;
-            return self.execute(&view, &plan.to_select(view.schema())?, opts);
+            let select = plan.to_select(view.schema())?;
+            return match arrow {
+                Some(over) => self.execute_leaf(&view, &select, opts, over),
+                None => self.execute(&view, &select, opts).map(Leaf::Rows),
+            };
         }
         let leaves = ExecOptions { max_rows: None, ..opts.clone() };
         let catalog: Vec<&Schema> = snap.schemas().collect();
@@ -1082,7 +1133,7 @@ impl Db {
         if let Some(max) = opts.max_rows.filter(|&m| rs.rows.len() > m) {
             return Err(Error::Query(format!("the query matches more than {max} rows, the most a query returns; add a LIMIT")));
         }
-        Ok(rs)
+        Ok(Leaf::Rows(rs))
     }
 
     /// Runs a plan ([`crate::query::ir`]) on the table it names: a read
@@ -1406,6 +1457,139 @@ impl Db {
         Ok(live.into_iter().filter_map(|d| by_key.remove(&Part::of(&d[pk])).map(|r| (r, d))).collect())
     }
 
+    /// The row of table `table` with primary key `key`, read without SQL:
+    /// the columns `SELECT * FROM table WHERE key = ...` answers, as it
+    /// answers them ([`Db::get_columns`]). `None` when no live row has the key, or the row
+    /// has expired ([`crate::schema::Schema::with_expire_by`]).
+    pub fn get(&self, table: &str, key: &Value) -> Result<Option<Vec<Value>>> {
+        Ok(self.get_many(table, std::slice::from_ref(key))?.pop().flatten())
+    }
+
+    /// [`Db::get`] of several keys, in their order.
+    pub fn get_many(&self, table: &str, keys: &[Value]) -> Result<Vec<Option<Vec<Value>>>> {
+        let snap = self.snapshot().table(table).ok_or_else(|| Error::Query(format!("no such table: {table}")))?;
+        Ok(self.get_many_at(&snap, keys, &self.exec)?.into_iter().map(|r| r.map(|r| r.row)).collect())
+    }
+
+    /// [`Db::get_many`] on snapshot `snap`, of the table it looks at, with
+    /// options (their `now` and `expired` decide which rows have
+    /// expired), each row with the number of the write that last changed
+    /// it. Each key is found by the table's primary-key indexes, newest
+    /// segment first, and the memtable's newest rows as written, so that a
+    /// read after each write builds nothing ([`Snapshot::find`]). An INT
+    /// key may be given as text of its digits.
+    pub fn get_many_at(&self, snap: &Snapshot, keys: &[Value], opts: &ExecOptions) -> Result<Vec<Option<KeyRow>>> {
+        let schema = snap.schema();
+        let pk = schema.primary_key.ok_or_else(|| Error::Query(format!("{} has no primary key: rows are read by key only from a table with one", schema.table)))?;
+        let keys: Vec<Value> = keys.iter().map(|k| key_value(schema, pk, k)).collect::<Result<_>>()?;
+        // The fields `SELECT *` answers, and then the time rows expire at
+        // when that is not one of them.
+        let mut fields: Vec<usize> = qsql::star_fields(schema).collect();
+        let shown = fields.len();
+        let expiry = schema.expire_field().filter(|_| !opts.expired).map(|f| {
+            let at = fields.iter().position(|&x| x == f).unwrap_or_else(|| {
+                fields.push(f);
+                fields.len() - 1
+            });
+            (at, opts.now.unwrap_or_else(crate::timestamp::now))
+        });
+        let numbered = snap.numbers_writes();
+        let mut out: Vec<Option<KeyRow>> = vec![None; keys.len()];
+        // Rows found in segments: (key's position, segment, docID, seq).
+        let mut at = Vec::new();
+        for (i, k) in keys.iter().enumerate() {
+            match snap.find(k) {
+                None => {}
+                Some(Found::Memtable { doc, seq }) => out[i] = Some(KeyRow { row: fields.iter().map(|&f| doc[f].clone()).collect(), seq_no: seq }),
+                Some(Found::Segment { seg, doc, view }) => {
+                    let seq = if numbered { Snapshot::row_seq_of(view, doc)? } else { 0 };
+                    at.push((i, seg, doc, seq));
+                }
+            }
+        }
+        let q = qsql::fields_select(schema, &fields);
+        if !at.is_empty() {
+            let view = snap.found_view();
+            let readers = self.readers(&view)?;
+            let places: Vec<(usize, DocId)> = at.iter().map(|&(_, seg, doc, _)| (seg, doc)).collect();
+            let rows = Executor::new(&view, &readers, opts).rows_at(&q, &places)?;
+            for ((i, _, _, seq), row) in at.into_iter().zip(rows) {
+                out[i] = Some(KeyRow { row, seq_no: seq });
+            }
+        }
+        for r in &mut out {
+            let Some(row) = r.as_mut() else { continue };
+            if let Some((f, now)) = expiry {
+                if matches!(row.row[f], Value::Int(t) | Value::Timestamp(t) if t <= now) {
+                    *r = None;
+                    continue;
+                }
+            }
+            q.typed(std::slice::from_mut(&mut row.row));
+            row.row.truncate(shown);
+        }
+        Ok(out)
+    }
+
+    /// The columns [`Db::get`] answers for a table of schema `schema`, in
+    /// its rows' order: those `SELECT *` answers (the stored fields but
+    /// vectors).
+    pub fn get_columns(schema: &Schema) -> Vec<String> {
+        qsql::star_fields(schema).map(|i| schema.fields[i].name.clone()).collect()
+    }
+
+    /// Deletes the rows of every table with `expire_by` that have expired
+    /// at `now` (microseconds since the epoch), at most `batch` rows a
+    /// transaction, by logged deletes: a replica applies them as it applies
+    /// any, so that its rows stay its primary's. Queries and reads by key leave expired rows out
+    /// before this deletes them; it frees their space. Returns how many it
+    /// deleted. A primary runs it now and then (strata-server does, every
+    /// few seconds); a replica, never.
+    pub fn expire(&self, now: i64, batch: usize) -> Result<u64> {
+        let batch = batch.max(1);
+        let mut total = 0;
+        let snap = self.snapshot();
+        let tables: Vec<(String, usize, usize)> = snap.schemas().filter_map(|s| Some((s.table.clone(), s.expire_field()?, s.primary_key?))).collect();
+        for (table, f, pk) in tables {
+            let opts = ExecOptions { expired: true, max_rows: None, ..self.exec.clone() };
+            loop {
+                let snap = self.snapshot().table(&table).ok_or_else(|| Error::Query(format!("no such table: {table}")))?;
+                let schema = snap.schema();
+                if schema.expire_field() != Some(f) || schema.primary_key != Some(pk) {
+                    break;
+                }
+                let q = Select {
+                    projection: vec![(schema.fields[pk].name.clone(), crate::query::logical::Projection::Field(pk))],
+                    filter: crate::query::logical::Pred::IntRange { field: f, lo: i64::MIN, hi: now },
+                    order: None,
+                    group_by: Vec::new(),
+                    paths: Vec::new(),
+                    having: None,
+                    tiebreak: None,
+                    phases: Vec::new(),
+                    limit: Some(batch),
+                    offset: 0,
+                    graphs: Vec::new(),
+                    types: vec![None],
+                    guard: None,
+                    per: None,
+                };
+                let keys: Vec<Value> = self.execute(&snap, &q, &opts)?.rows.into_iter().filter_map(|mut r| r.pop()).collect();
+                if keys.is_empty() {
+                    break;
+                }
+                let mut txn = self.storage.begin()?;
+                let n = txn.delete_expired(&table, &keys, now)?;
+                txn.commit()?;
+                total += n as u64;
+                if keys.len() < batch || n == 0 {
+                    break;
+                }
+            }
+        }
+        Ok(total)
+    }
+
     pub fn execute(&self, snap: &Snapshot, select: &Select, opts: &ExecOptions) -> Result<ResultSet> {
         // Fixed before the first query's first step begins.
         crate::query::steps::epoch();
@@ -1420,15 +1604,14 @@ impl Db {
     /// [`Db::execute`] of a compound query's leaf (without the feature
     /// `datafusion`, its rows).
     #[cfg(not(feature = "datafusion"))]
-    pub fn execute_leaf(&self, snap: &Snapshot, select: &Select, opts: &ExecOptions, _over: usize) -> Result<crate::query::exec::Leaf> {
-        self.execute(snap, select, opts).map(crate::query::exec::Leaf::Rows)
+    pub fn execute_leaf(&self, snap: &Snapshot, select: &Select, opts: &ExecOptions, _over: usize) -> Result<Leaf> {
+        self.execute(snap, select, opts).map(Leaf::Rows)
     }
 
     /// [`Db::execute`] for DataFusion: the rows as Arrow columns when there
     /// are more than `over` ([`Executor::execute_arrow`]).
     #[cfg(feature = "datafusion")]
-    pub fn execute_leaf(&self, snap: &Snapshot, select: &Select, opts: &ExecOptions, over: usize) -> Result<crate::query::exec::Leaf> {
-        use crate::query::exec::Leaf;
+    pub fn execute_leaf(&self, snap: &Snapshot, select: &Select, opts: &ExecOptions, over: usize) -> Result<Leaf> {
         crate::query::steps::epoch();
         let t0 = std::time::Instant::now();
         let readers = self.readers(snap)?;
