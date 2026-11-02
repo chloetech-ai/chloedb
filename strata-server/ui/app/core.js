@@ -376,6 +376,19 @@ export function link(view, params = {}) {
   return "#/" + String(view).replace(/^#?\/?/, "") + (qs ? "?" + qs : "");
 }
 
+/**
+ * A link to Logs with its search: logsLink({ server, shard, level, request,
+ * text }, params). `server` is a copy's URL (written as its short name), a
+ * short name or a node name; `level: "warn"` finds warn and worse. The global
+ * range goes along (`params.from`/`to` win), as with `link`.
+ * logsLink({ server: url, level: "warn" }) -> "#/logs?q=server:s1-0 level>=warn&range=6h".
+ */
+export function logsLink({ server, shard, level, request, text } = {}, params = {}) {
+  const sv = server && /^https?:\/\//.test(server) ? copyName(server) : server;
+  const q = [sv ? `server:${sv}` : null, shard != null && shard !== "" ? `shard:${shard}` : null, level ? `level>=${level}` : null, request ? `request:${request}` : null, text || null].filter(Boolean).join(" ");
+  return link("logs", { ...params, q: q || null });
+}
+
 // ---------------------------------------------------------------- times
 /** How long ago: "just now", "12 s ago", "4 min ago", "3 h ago", "2 d ago" ("in 5 min" ahead). */
 export const ago = (ms) => fmt.ago(ms);
@@ -579,7 +592,10 @@ export function menu(anchor, items) {
   scrim.onclick = close;
   const w = 200;
   m.style.left = Math.min(r.left, innerWidth - w - 8) + "px";
-  m.style.top = (r.bottom + 4) + "px";
+  // Near the bottom of the window it opens upward.
+  const ht = m.offsetHeight || items.length * 34 + 8;
+  if (r.bottom + 4 + ht > innerHeight - 8 && r.top - 4 - ht >= 8) m.style.top = (r.top - 4 - ht) + "px";
+  else m.style.top = Math.max(8, Math.min(r.bottom + 4, innerHeight - 8 - ht)) + "px";
   setTimeout(() => m.querySelector("button")?.focus(), 0);
   return close;
 }

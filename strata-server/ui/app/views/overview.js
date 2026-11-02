@@ -5,7 +5,7 @@
 // ranked with their next step, error ratio and p99 with the changes of the
 // window, capacity, the coordinators side by side, and who is affected.
 
-import { h, icon, clear, fmt, card, every, api, empty, bus, seg, store, tipOn, drawer, link, when, whenTitle, span, copyName, copyTitle, copy, timeEl, isPhone } from "../core.js";
+import { h, icon, clear, fmt, card, every, api, empty, bus, seg, store, tipOn, drawer, link, when, whenTitle, span, copyName, copyTitle, copy, timeEl, isPhone, logsLink } from "../core.js";
 import { timeChart, sparkline, SERIES } from "../charts.js";
 import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingAlerts, clusterName, environment, rangeParams, shardState } from "../data.js";
 
@@ -230,7 +230,7 @@ function render(page) {
     }
     const acts = [];
     if (top?.next && kind !== "ok" && answering) acts.push(h("a", { class: "btn sm primary", href: link(top.next.view, top.next.params || {}), title: top.next.text }, icon("right"), top.next.text.length > 42 ? nextShort(top.next) : top.next.text));
-    if (kind !== "ok" && answering) acts.push(h("a", { class: "btn sm", href: link("logs", { level: "warn", ...(since ? { from: since - 60e3, to: Date.now() } : {}) }) }, icon("logs"), since ? `Logs ${when(since - 60e3, { sec: false })}–now` : "Logs"));
+    if (kind !== "ok" && answering) acts.push(h("a", { class: "btn sm", href: logsLink({ level: "warn" }, since ? { from: since - 60e3, to: Date.now() } : {}) }, icon("logs"), since ? `Logs ${when(since - 60e3, { sec: false })}–now` : "Logs"));
     acts.push(h("button", { class: "btn sm", title: "Copy a link to Home at this window (opens paused)", onclick: () => copy(location.origin + location.pathname + link("home", rangeParams({ absolute: true })), "Link to Home at this window copied") }, icon("share"), "Copy link"));
     clear(banner,
       h("div", { class: "bic" }, icon(kind === "ok" ? "okc" : kind === "unknown" ? "info" : "warn", "lg")),
@@ -352,7 +352,7 @@ function render(page) {
       h("td", {}, h("span", { class: "dot " + (x.up ? copyTone(x) === "crit" ? "bad" : copyTone(x) === "warn" ? "warn" : "ok" : "bad") }), " ", h("b", { title: copyTitle(x.url) }, x.name)),
       h("td", {}, x.up ? x.role : `not answering${x.down_since ? " since " + when(x.down_since) : ""}`), h("td", { class: "small dim" }, [x.zone ? "zone " + x.zone : null, x.node].filter(Boolean).join(" · ") || x.host),
       h("td", { class: "num", "data-l": "p99" }, x.p99 != null ? fmt.ms(x.p99) : "–"), h("td", { class: "num", "data-l": "disk" }, x.disk != null ? fmt.pct(x.disk, 0) : "–"), h("td", { class: "num", "data-l": "behind" }, x.lag != null ? fmt.si(x.lag) : "–"),
-      h("td", {}, h("a", { class: "btn xs", href: link("logs", { node: x.url }) }, "Logs"), " ", x.up ? h("a", { class: "btn xs", href: link("profile", { tab: "cpu", node: x.url }) }, "Profile") : null)));
+      h("td", {}, h("a", { class: "btn xs", href: logsLink({ server: x.url }) }, "Logs"), " ", x.up ? h("a", { class: "btn xs", href: link("profile", { tab: "cpu", node: x.url }) }, "Profile") : null)));
     const d = drawer({
       title: `Shard ${s.n}`, sub: `${stText(s.st)} · ${span(r.from, r.to)}`,
       body: [
@@ -360,7 +360,7 @@ function render(page) {
         h("div", { class: "tbl-wrap" }, h("table", { class: "t compact home-copytbl" }, h("thead", {}, h("tr", {}, ["Copy", "Role", "Where", "p99", "Disk", "Behind", ""].map((x, i) => h("th", { class: i >= 3 && i <= 5 ? "num" : "" }, x)))), h("tbody", {}, rows))),
         h("div", { class: "row" },
           h("a", { class: "btn primary", href: link("cluster", { shard: s.n }) }, icon("cluster"), "Shard " + s.n + " in Cluster"),
-          h("a", { class: "btn", href: link("logs", { shard: s.n, level: "warn" }) }, icon("logs"), "Its logs, this window"),
+          h("a", { class: "btn", href: logsLink({ shard: s.n, level: "warn" }) }, icon("logs"), "Its logs, this window"),
           prim ? h("a", { class: "btn", href: link("profile", { tab: "cpu", node: prim.url }) }, icon("flame"), `Profile ${prim.name}`) : null,
           h("a", { class: "btn", href: link("timeline", { shard: s.n }) }, icon("timeline"), "Its events")),
       ],
@@ -398,7 +398,7 @@ function render(page) {
       if (p.next) actions.push(h("a", { class: "btn xs primary", href: link(p.next.view, p.next.params || {}), title: p.next.text }, nextShort(p.next)));
       const copyUrl = (p.where || []).map((w) => findUrl(w)).find(Boolean);
       const shardW = (p.where || []).map((w) => /^shard (\d+)$/.exec(w)).find(Boolean);
-      actions.push(h("a", { class: "btn xs", href: link("logs", { ...(copyUrl ? { node: copyUrl } : shardW ? { shard: shardW[1] } : {}), level: "warn", ...(p.since_ms ? { from: p.since_ms - 60e3, to: Date.now() } : {}) }) }, "Logs"));
+      actions.push(h("a", { class: "btn xs", href: logsLink({ ...(copyUrl ? { server: copyUrl } : shardW ? { shard: shardW[1] } : {}), level: "warn" }, p.since_ms ? { from: p.since_ms - 60e3, to: Date.now() } : {}) }, "Logs"));
       if (copyUrl && p.id !== "copies-down") actions.push(h("a", { class: "btn xs", href: link("profile", { tab: "cpu", node: copyUrl }) }, "Profile " + copyName(copyUrl)));
       return h("div", { class: "prob " + (p.severity === "critical" ? "crit" : "warn") },
         h("span", { class: "sv" }),
@@ -430,7 +430,7 @@ function render(page) {
       src.partial ? "this server keeps only its last hour" : null, "drag to zoom; the zoom goes into the links"].filter(Boolean).join(" · ");
     const q = rangeParams({ absolute: r.zoomed });
     clear(zoomLinks,
-      h("a", { class: "btn ghost sm", href: link("logs", { level: "warn", ...q }) }, r.zoomed ? "Logs for the zoom" : "Logs for the window", icon("right")),
+      h("a", { class: "btn ghost sm", href: logsLink({ level: "warn" }, q) }, r.zoomed ? "Logs for the zoom" : "Logs for the window", icon("right")),
       h("a", { class: "btn ghost sm", href: link("queries", { tab: "statements", ...q }) }, r.zoomed ? "Queries for the zoom" : "Queries for the window", icon("right")));
     drawLane();
   }
@@ -550,7 +550,7 @@ export function eventLink(e) {
   if (k === "rollout" || k === "upgrade") return link("rollout", at);
   if (k === "autoscale") return link("autoscale", at);
   if (k === "change") return link("access", { tab: "changes", q: e.title, ...at });
-  if (k === "log_level") return link("logs", at);
+  if (k === "log_level") return logsLink({ server: w.copy || w.node || null }, at);
   if (k === "contain") return link("queries", { tab: "running", ...at });
   if (k === "note") return link("timeline", { ...at, event: e.id });
   if (w.copy || w.shard != null) return link("cluster", { shard: w.shard, copy: w.copy, ...at });
