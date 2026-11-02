@@ -1494,4 +1494,15 @@ button.rx-node:hover { border-color: var(--accent); box-shadow: 0 0 0 3px var(--
 .wl-radio .input { margin: 0 2px; }
 .wl-clip { max-height: 90px; overflow: auto; }
 .wl-head-scope { max-width: 980px; }
+.wl-kpi-bad { border-color: color-mix(in srgb, var(--crit) 45%, var(--line)); }
+.wl-find { display: flex; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); min-width: 0; }
+.wl-find.bad { border-color: color-mix(in srgb, var(--crit) 40%, var(--line)); }
+.wl-find.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.wl-find-ic { flex-shrink: 0; width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; background: var(--surface-3); }
+.wl-find-t { font-weight: 600; margin-bottom: 4px; }
+.wl-find-b { line-height: 1.5; color: var(--text-2); }
+.wl-find-b code, .wl-why code { font-size: 12px; overflow-wrap: anywhere; }
+.wl-why-l { gap: 10px; align-items: flex-start; padding: 3px 0; }
+.wl-why-l .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; margin-top: 7px; display: inline-block; }
+.wl-ev { gap: 10px; padding: 4px 0; }
 /* ===== end workload ===== */
