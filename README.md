@@ -8,6 +8,7 @@ Around the library:
 
 - **[strata-server](docs/strata/server.md)** serves a database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Several servers run as shards behind a coordinator that answers like one database, and a primary ships its writes to replicas.
 - **[strata-py](docs/strata/python.md)** runs a database inside a Python process, the way `sqlite3` runs SQLite, or talks to a server with the same methods.
+- **[strata-java](docs/strata/java.md)** runs a database inside a Java process (Java 11 and later) over JNI, the way sqlite-jdbc runs SQLite: no server.
 - **[strata-js](docs/strata/javascript.md)** does the same from JavaScript: a Strata file opened inside a Node, Bun or Deno process with no server, or a `fetch` client of a server for any runtime, browsers included.
 - **[Parquet and S3](docs/strata/parquet.md)**: `strata-server import` reads Parquet files and directories of them as Spark writes them (Hive partitions too) into a table, `export` writes tables to Parquet that Spark, DuckDB, polars and pandas read, and either takes `s3://` URLs; from Python, `db.import_arrow` takes any Arrow table or dataframe.
 - **[SQLite in and out](docs/strata/sqlite.md)**: `strata-server import` turns a SQLite database's tables into Strata tables, and `strata-server export` writes a Strata database to a SQLite file with its keys, references, indexes and an FTS5 index over the text.
@@ -102,6 +103,12 @@ Strata from Python ([more](docs/strata/python.md)):
 pip install ./strata-py
 ```
 
+Strata from Java ([more](docs/strata/java.md)):
+
+```sh
+cd strata-java && mvn install    # ai.chloetech:strata:0.1.0, the native library inside the jar
+```
+
 Strata from JavaScript ([more](docs/strata/javascript.md)):
 
 ```sh
@@ -181,6 +188,7 @@ demo/run.sh --embedder hash:256 ...                           # without download
 | [`strata/`](strata/) | the database: storage engine, segments, text / structured / vector / graph indexes, SQL binder, planner and executor, baselines and benchmarks; [`src/postings/`](strata/src/postings/) holds the compressed posting lists and set algorithms, the Pyramid, Loom and Entropic designs, and their testbed (`strata-posting-bench`) |
 | [`strata-server/`](strata-server/) | Strata over HTTP JSON and gRPC: a coordinator over shards, replicas, deadlines, Prometheus metrics, a query-builder UI and an agent that answers questions with SQL ([docs](docs/strata/server.md)) |
 | [`strata-py/`](strata-py/) | Strata from Python: the database in-process (a Rust extension) or a client of strata-server, with the same methods ([docs](docs/strata/python.md)) |
+| [`strata-java/`](strata-java/) | Strata from Java: the database in-process over JNI (a Rust library and the `ai.chloetech.strata` package, built by Maven) ([docs](docs/strata/java.md)) |
 | [`strata-js/`](strata-js/) | Strata from JavaScript: the database in-process (a Node-API addon for Node, Bun and Deno) or a `fetch` client of strata-server, with the same methods ([docs](docs/strata/javascript.md)) |
 | [`engram/`](engram/) | Engram, the memory system built on Strata: hooks client, daemon, MCP server, recall and gate, distiller, live inspector (`demo/`), evaluation harnesses and results |
 | [`docs/`](docs/) | this documentation, as Markdown and as a GitHub Pages site |
@@ -192,7 +200,7 @@ Each crate also carries its own design document ([Strata](strata/DESIGN.md), [En
 ## Documentation
 
 - [Overview](docs/index.md)
-- **Strata:** [design](docs/strata/index.md) · [query language](docs/strata/query-language.md) · [graphs](docs/strata/graphs.md) · [server](docs/strata/server.md) · [Python](docs/strata/python.md) · [JavaScript](docs/strata/javascript.md) · [SQLite](docs/strata/sqlite.md) · [results](docs/strata/results.md)
+- **Strata:** [design](docs/strata/index.md) · [query language](docs/strata/query-language.md) · [graphs](docs/strata/graphs.md) · [server](docs/strata/server.md) · [Python](docs/strata/python.md) · [Java](docs/strata/java.md) · [JavaScript](docs/strata/javascript.md) · [SQLite](docs/strata/sqlite.md) · [results](docs/strata/results.md)
 - [Posting lists](docs/posting-lists.md)
 - **Engram, built on Strata:** [install on your machine](docs/engram/setup.md) · [how it works](docs/engram/index.md) · [live inspector](docs/engram/inspector.md) · [results](docs/engram/results.md) · [why Engram](docs/why/index.html)
 - [Reproducing the results](docs/reproduce.md)
