@@ -655,11 +655,24 @@ impl Fleet {
             let more = if rules.len() > 2 { format!(" and {} more", rules.len() - 2) } else { String::new() };
             let title = format!("{firing} {} firing{}: {}{more}", if firing == 1 { "alert is" } else { "alerts are" }, if critical > 0 { format!(", {critical} critical") } else { String::new() }, named.join("; "));
             let since = i.alerts.iter().filter_map(|a| a["since_ms"].as_u64()).min();
+            // NEW-workload-4: each rule with its severity and where, not "see each alert".
+            let each = |a: &Json| {
+                let at = match a["copies"].as_u64().unwrap_or(0) {
+                    0 => String::new(),
+                    1 => format!(", {}", a["where"][0].as_str().unwrap_or("1 copy")),
+                    n => format!(", {n} copies"),
+                };
+                format!("{} ({}{at})", a["name"].as_str().unwrap_or("?"), a["severity"].as_str().unwrap_or("warning"))
+            };
+            let mut impact = rules.iter().take(4).map(each).collect::<Vec<_>>().join(", ");
+            if rules.len() > 4 {
+                impact.push_str(&format!(" and {} more", rules.len() - 4));
+            }
             problems.push(Problem {
                 rank: if critical > 0 { 6 } else { 16 },
                 critical: critical > 0,
                 headline: title.clone(),
-                j: json!({"id": "alerts", "severity": severity(critical > 0), "title": title, "where": [], "since_ms": since, "impact": "See each alert for what it measures", "next": {"text": if firing == 1 { "Open the alert" } else { "Open Alerts" }, "view": if firing == 1 { format!("alert/{}", i.alerts[0]["rule"].as_str().unwrap_or("")) } else { "alerts".to_string() }, "params": {}}}),
+                j: json!({"id": "alerts", "severity": severity(critical > 0), "title": title, "where": [], "since_ms": since, "impact": impact, "next": {"text": if firing == 1 { "Open the alert" } else { "Open Alerts" }, "view": if firing == 1 { format!("alert/{}", i.alerts[0]["rule"].as_str().unwrap_or("")) } else { "alerts".to_string() }, "params": {}}}),
             });
         }
 

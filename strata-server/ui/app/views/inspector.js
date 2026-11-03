@@ -61,7 +61,7 @@ function render(page, r) {
     card({ title: "Most retrieved documents", sub: "rows returned in query answers, since each server started", tools: approx(), body: topDocs, cls: "ix-c6" }),
     card({ title: "Most requested keys", sub: "reads by key (GET /v1/kv, MGET, Get), since each server started", tools: approx(), body: topKeys, cls: "ix-c6" }));
   const content = h("div", {}, card({ title: "Where to look", sub: "the cluster, a shard or a copy: every number below follows", body: map, attrs: { style: { marginBottom: "14px" } } }), tiles, body,
-    h("p", { class: "small muted ix-foot" }, "Documents, bytes, segments, index sizes and distinct terms are read from every segment (terms of large fields are estimated with a HyperLogLog sketch, which also merges across shards). Value sizes, fill and document sizes come from documents drawn at random from each server, weighted to its whole table; tokens per document come from every document's length norm, exact under 24 tokens and rounded down by at most 12.5% above. Reads are counted in memory since each server started or was reset: the top lists keep each table's 256 most read keys (Space-Saving, each count at most its error too high), coverage and the frequency chart come from a hash sample of keys that halves itself to stay under 4,096. A coordinator counts what each copy served through it, and each server what it answered its own clients, so nothing is counted twice. With several coordinators, each counts only what went through it: these reads are this coordinator's share, and Reset starts only its counts again."));
+    h("p", { class: "small muted ix-foot" }, "Documents, bytes, segments, index sizes and distinct terms are read from every segment (terms of large fields are estimated with a HyperLogLog sketch, which also merges across shards). Value sizes, fill and document sizes come from documents drawn at random from each server, weighted to its whole table; tokens per document come from every document's length norm, exact under 24 tokens and rounded down by at most 12.5% above. Reads are counted in memory since each server started or was reset: the top lists keep each table's 256 most read keys (Space-Saving, each count at most its error too high), coverage and the frequency chart come from a hash sample of keys that halves itself to stay under 4,096. A coordinator counts what each copy served through it, and each server what it answered its own clients, so nothing is counted twice." + readsFrom()));
   const title = h("h1", {}, "Table details");
   page.append(h("div", { class: "page-head" }, h("div", {}, h("div", { class: "small" }, h("a", { class: "wl-link", href: "#/tables" }, "Tables and storage"), h("span", { class: "muted" }, " › one table")), title, h("p", {}, "What the table holds, how big each part of it is, how fresh it is, and how often its documents and keys are read. Reads are counted since each server started (Reset reads starts them again).")),
     h("div", { class: "tools" }, stamp, h("label", { class: "small muted" }, "Table"), pick, sizes, reset, again)), content);
@@ -102,9 +102,17 @@ function render(page, r) {
     draw();
   }
 
+  /** INS-3: whose reads these are, from `reads_from` (every coordinator that answered). */
+  function readsFrom() {
+    const f = Array.isArray(data?.reads_from) ? data.reads_from : [];
+    if (f.length < 2) return " Reset starts the counts again.";
+    const ok = f.filter((x) => x.ok).length;
+    return ` Reads are counted by every coordinator (${ok} of ${f.length} answered${ok < f.length ? ": " + f.filter((x) => !x.ok).map((x) => x.name || x.url).join(", ") + " did not" : ""}), and Reset starts every coordinator's counts again.`;
+  }
+
   async function resetReads() {
     const coord = data?.role === "coordinator";
-    if (!await confirm({ title: "Reset the read counts?", body: coord ? "This coordinator's counts of what each copy served through it start again from zero. Each server keeps what it answered its own clients until it is reset there." : "This server's counts of documents retrieved and keys asked for start again from zero.", ok: "Reset", danger: true })) return;
+    if (!await confirm({ title: "Reset the read counts?", body: coord ? "Every coordinator's counts of what each copy served through it start again from zero. Each server keeps what it answered its own clients until it is reset there." : "This server's counts of documents retrieved and keys asked for start again from zero.", ok: "Reset", danger: true })) return;
     try { await api("/v1/index/reads/reset", { body: {} }); toast("Read counts reset"); load(); } catch (e) { toast(e.message, "bad"); }
   }
 
