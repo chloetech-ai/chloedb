@@ -11,7 +11,7 @@ import { domain, visible, setZoom } from "../data.js";
 import {
   state, link, timeRange, rangeQuery, poll, isCoord, copyName, copyTitle, copyLink, shardLink, nodeLink, statements, change, split, outcomeBar, statementLink, isOwn, containDialog, can,
   narrow, cols, sheet, copies as copiesOf,
-  canContainNow, canContain,
+  canContainNow, canContain, containRules, when,
 } from "../workload.js";
 
 export default { id: "performance", title: "Performance", icon: "perf", group: "Operate", keywords: "latency throughput heatmap findings advisor tuning cpu memory disk routes kinds percentiles slow copies fleet failures", render };
@@ -52,7 +52,7 @@ function figures(ps) {
 // ---------------------------------------------------------------- the view
 
 function render(page) {
-  let stmts = null, stmtsErr = null, prev = null, prevKey = "", load = undefined, routes = null, routesErr = null, showOwnRoutes = false;
+  let rules = null, stmts = null, stmtsErr = null, prev = null, prevKey = "", load = undefined, routes = null, routesErr = null, showOwnRoutes = false;
   const scope = h("p");
   const kpis = h("div", { class: "grid g6 wl-kpis", style: { marginBottom: "14px" } });
   const findBox = h("div", { style: { marginBottom: "14px" } });
@@ -103,6 +103,8 @@ function render(page) {
   // ------------------------------------------------ reads
   async function loadStmts() {
     try { [stmts] = await Promise.all([statements(timeRange()), canContain()]); stmtsErr = null; } catch (e) { stmts = null; stmtsErr = e; }
+    // The contain rules in force, to tell refusals on purpose from a full server.
+    rules = canContainNow() ? await containRules().catch(() => null) : null;
     draw();
   }
   /** The window before the range, for "was" (only when the server still has it). */
@@ -170,7 +172,7 @@ function render(page) {
       kpi("p99 latency", f.p99 != null ? unit(fmt.ms(f.p99)) : "–", [was(prev?.p99, fmt.ms), f.p99Now != null && Math.abs(f.p99Now - f.p99) > 0.2 * f.p99 ? `last 5 min ${fmt.ms(f.p99Now)}` : null].filter(Boolean).join(" · ") || "mean over the range", (prev?.p99 && f.p99Now > 2 * prev.p99 && f.p99Now > 20) ? "bad" : null, "The mean of each interval's p99 over the range; the last 5 minutes' median beside it when it differs"),
       kpi("Failed on the server", sr != null ? [fmt.si(sr * 100, 2), h("small", {}, "%")] : "–", psr != null ? `was ${fmt.si(psr * 100, 2)}%` : apart.length ? "apart: " + apart.join(", ") : f.splits ? "server errors and timeouts" : "this server does not split client errors", sr > 0.01 ? "bad" : null, "Server errors and server timeouts over the queries that ended. Client errors (400) and the clients' own deadlines are counted apart."),
       kpi(slowMs ? `Slow (over ${fmt.ms(slowMs)})` : "Slow", slowMs && f.slow != null ? [fmt.si(f.slow), h("small", {}, "/s")] : "–", slowMs ? was(prev?.slow, (v) => fmt.si(v) + "/s") : "not counted: --slow-ms is not set"),
-      kpi("Refused (429)", f.refusedS != null ? [fmt.si(f.refusedS), h("small", {}, "/s")] : "–", was(prev?.refusedS, (v) => fmt.si(v) + "/s") || (f.refusedS ? "no slot or memory free" : "none")),
+      kpi("Refused (429)", f.refusedS != null ? [fmt.si(f.refusedS), h("small", {}, "/s")] : "–", was(prev?.refusedS, (v) => fmt.si(v) + "/s") || (f.refusedS ? (canContainNow() ? "no slot or memory, or a contain rule" : "no slot or memory free") : "none")),
       isCoord() && busiest
         ? kpi("Busiest copy, CPU", [fmt.si(busiest.cpu * 100, 0), h("small", {}, "%")], h("span", { title: `${copyTitle(busiest.url)}\nthe median copy: ${fmt.pct(median(cs.map((c) => c.cpu)), 0)}` }, `${copyName(busiest.url)}, median ${fmt.pct(median(cs.map((c) => c.cpu)), 0)}`), busiest.cpu > 0.85 ? "warn" : null, "Each copy's CPU over its last minute, as a share of its cores")
         : kpi("CPU", f.cpu != null ? [fmt.si(f.cpu, 1), h("small", {}, " cores")] : "–", state.system?.cores ? `of ${state.system.cores}` : null));
@@ -306,6 +308,17 @@ function render(page) {
     if (f.refusedS > 0.1) {
       const refusedOf = (x) => (x.outcomes?.refused || 0) + (x.outcomes?.rejected || 0);
       const topR = (stmts?.statements || []).filter((x) => refusedOf(x) > 0).sort((a, b) => refusedOf(b) - refusedOf(a))[0];
+      // Refusals on purpose: a contain rule turned most of them away (its count is since it was made).
+      const inRange = f.refusedS * secsOf(f);
+      const byRule = (rules || []).filter((x) => x.refused > 0).sort((a, b) => b.refused - a.refused);
+      const ruled = byRule.reduce((a, x) => a + x.refused, 0);
+      if (byRule.length && ruled >= 0.5 * inRange) {
+        const top = byRule[0];
+        out.push({ level: "info", id: "refused", title: `${fmt.si(f.refusedS)}/s queries refused (429), most by a contain rule`,
+          body: [`Rule ${top.id} ${top.action === "refuse" ? "refuses" : `lets ${top.concurrency} at once run of`} ${top.match?.fingerprint ? "a statement" : "everything"}${top.match?.key ? " from key " : ""}`, top.match?.key ? h("b", { class: "mono" }, top.match.key) : "",
+            `: ${fmt.n(top.refused)} refused since ${when(top.created_ms)}, ${top.by ? "by " + top.by + ", " : ""}“${top.reason}”. It ends ${fmt.ago(top.expires_ms)}.`, byRule.length > 1 ? ` ${fmt.plural(byRule.length - 1, "other rule")} refused ${fmt.n(ruled - top.refused)}.` : ""],
+          rule: "refused over 0.1/s over the range, and the contain rules' refusals", links: [["Contain rules in Queries", link("queries", { tab: "live" })], top.match?.fingerprint ? ["Open the statement", statementLink(top.match.fingerprint)] : null] });
+      } else
       out.push({ level: "warn", id: "refused", title: `${fmt.si(f.refusedS)}/s queries refused (429)`,
         body: [`The server turned them away before running them: no query slot was free${canContainNow() ? ", the queries' memory was at its limit, or a contain rule refused them" : " or the queries' memory was at its limit"}. Clients see 429 and may retry.`,
           topR ? [" Refused most: ", h("code", {}, trim(topR.sql, 80)), ` (${fmt.n(refusedOf(topR))} in the range).`] : ""],

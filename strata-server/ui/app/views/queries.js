@@ -44,7 +44,11 @@ function render(page, r) {
       : "This server: what runs now, the statements over the range in the top bar, and the history its log store keeps.";
   };
   drawScope();
-  const offs = [bus.on("cluster", drawScope), bus.on("health", drawScope), bus.on("narrow", () => { key = ""; drawTabs(); show(new URLSearchParams(location.hash.split("?")[1] || "")); })];
+  // A tab lays out for its width class, so it is built again when the width crosses 900 or 560 px,
+  // and only then: a browser can say a media query changed when it did not (a zoom, a full-page capture).
+  const layout = () => `${narrow()}/${typeof matchMedia === "function" && matchMedia("(max-width: 560px)").matches}`;
+  let lay = layout();
+  const offs = [bus.on("cluster", drawScope), bus.on("health", drawScope), bus.on("narrow", () => { const l = layout(); if (l === lay) return; lay = l; key = ""; drawTabs(); show(new URLSearchParams(location.hash.split("?")[1] || "")); })];
   let stop = null, tab = null, key = "";
   function drawTabs() {
     clear(tabs, TABS.map(([k, v]) => h("button", { role: "tab", "aria-selected": String(k === tab), onclick: () => { location.hash = link("queries", { tab: k }); } }, v, counts[k] != null ? h("span", { class: "n" }, counts[k]) : null)),
@@ -161,7 +165,7 @@ function live(body, params, setCount) {
     const acts = [
       fp ? h("a", { class: "btn sm", href: statementLink(fp) }, "Statement ›") : null,
       fp && canContainNow() ? h("button", { class: "btn sm", title: "Limit or refuse this statement for a while", onclick: () => containDialog({ fingerprint: fp, sql: qs[0].sql, key: keys.length === 1 ? keys[0][0] : null, keys: keys.map(([k, c]) => ({ key: k, share: c / n })), onDone: loadRules }) }, "Contain…") : null,
-      can("admin") && n > 1 ? h("button", { class: "btn sm danger", onclick: () => askCancel({ sql: qs[0].sql, fingerprint: fp, key: groupBy === "key" ? g.id : keys.length === 1 ? keys[0][0] : null, queries: qs, onDone: load }) }, `Cancel all ${fmt.n(n)}…`) : null];
+      can("admin") && n > 1 ? h("button", { class: "btn sm danger", onclick: () => askCancel({ sql: qs[0].sql, fingerprint: fp, key: groupBy === "key" ? g.id : keys.length === 1 ? keys[0][0] : null, queries: qs, onDone: () => { load(); loadRules(); } }) }, `Cancel all ${fmt.n(n)}…`) : null];
     const ind = nar ? "0" : "34px";
     return h("tr", { class: "wl-ghead" }, h("td", { colspan: span },
       nar ? [h("div", { class: "row nw", style: { gap: "8px" } }, fold, h("span", { class: "pill info" }, `${fmt.n(n)} running`)), h("div", { style: { marginTop: "6px" } }, what)]
@@ -235,7 +239,9 @@ function countKeys(qs) { const m = new Map(); for (const q of qs) if (q.key) m.s
 // ---------------------------------------------------------------- statements
 
 function statementsTab(body, params, setCount) {
-  let only = params.get("changed") === "1", own = false, filt = params.get("q") || "", data = null, err = null;
+  let only = params.get("changed") === "1", own = false, filt = params.get("q") || "", data = null, err = null, rules = null;
+  /** The contain rules that hold a statement now: by its shape, or a key that sends it. */
+  const heldBy = (x) => (rules || []).filter((r) => (r.match?.fingerprint || r.match?.key) && (!r.match.fingerprint || r.match.fingerprint === x.fingerprint) && (!r.match.key || (x.keys || []).some((k) => k.key === r.match.key)));
   const head = h("div", { class: "row", style: { gap: "10px", marginBottom: "6px" } });
   const summary = h("div", { class: "small muted", style: { marginBottom: "10px" } });
   const cards = h("div", { class: "grid g3 wl-cards", style: { marginBottom: "14px" } });
@@ -248,19 +254,25 @@ function statementsTab(body, params, setCount) {
   const perS = (n) => n / Math.max(1, (data?.span_ms ?? windowMs()) / 1000);
   const nar = narrow();
   const tbl = table(narrowCols([
-    { key: "sql", label: "statement", cls: "sql", sort: (x) => x.sql, render: (x) => { const a = x._att; const tag = a ? h("span", { class: "pill " + a.tone, style: { padding: "0 7px" } }, a.tag) : null;
-      return nar ? h("div", {}, tag, h("div", { class: "mono small wl-clamp2", title: x.sql, style: { marginTop: tag ? "3px" : 0 } }, x.sql)) : h("span", { class: "row nw", style: { gap: "6px" } }, tag, h("span", { class: "ellipsis", title: x.sql }, x.sql)); } },
+    { key: "sql", label: "statement", cls: "sql", sort: (x) => x.sql, render: (x) => { const a = x._att; const held = heldBy(x);
+      const tag = [a ? h("span", { class: "pill " + a.tone, style: { padding: "0 7px" } }, a.tag) : null,
+        held.length ? h("span", { class: "pill info", style: { padding: "0 7px" }, title: held.map((r) => `rule ${r.id}: ${r.action === "refuse" ? "refused" : `at most ${r.concurrency} at once`}${r.match?.key ? " from key " + r.match.key : ""}, ends ${fmt.ago(r.expires_ms)}: “${r.reason}”`).join("\n") }, held.some((r) => r.action === "refuse") ? "contained: refused" : "contained: limited") : null].filter(Boolean);
+      return nar ? h("div", {}, tag, h("div", { class: "mono small wl-clamp2", title: x.sql, style: { marginTop: tag.length ? "3px" : 0 } }, x.sql)) : h("span", { class: "row nw", style: { gap: "6px" } }, tag, h("span", { class: "ellipsis", title: x.sql }, x.sql)); } },
     { key: "keys", label: "keys", wide: true, sort: (x) => x.keys?.[0]?.key || "", render: (x) => x.keys?.length ? h("span", { class: "small nowrap", title: x.keys.map((k) => `${k.key}: ${fmt.n(k.calls)} calls`).join("\n") }, h("span", { class: "mono" }, x.keys[0].key), x.keys.length > 1 ? h("span", { class: "muted" }, ` +${x.keys.length - 1}`) : null) : h("span", { class: "muted" }, "–") },
     { key: "first_seen_ms", label: "since", num: true, wide: true, render: (x) => x.first_seen_ms ? h("span", { class: "nowrap small", title: fmt.datetime(x.first_seen_ms) }, when(x.first_seen_ms)) : h("span", { class: "muted" }, "–") },
     { key: "calls", label: "calls/s", num: true, render: (x) => h("span", { title: `${fmt.n(x.calls)} calls in the window` }, fmt.si(perS(x.calls))) },
     { key: "p99_ms", label: "p99", num: true, render: (x) => h("b", { class: "nowrap" }, fmt.ms(x.p99_ms)) },
     { key: "dp99", label: "vs before", num: true, wide: true, sort: (x) => change(x)?.p99X ?? 0, render: (x) => { const c = change(x); if (!c || c.p99X == null) return h("span", { class: "muted", title: data?.prevHeld ? "" : "The server does not hold the window before" }, x.prev === null && data?.windowed && isNewStatement(x, windowMs()) ? "new" : "–"); return h("span", { class: c.p99X >= 2 ? "wl-bad" : "dim", title: `p99 ${fmt.ms(x.prev.p99_ms)} in the window before · calls ×${c.callsX.toFixed(1)}` }, `×${c.p99X.toFixed(1)}`); } },
     { key: "rows_per_call", label: "rows/call", num: true, wide: true, render: (x) => fmt.si(x.rows_per_call) },
-    { key: "failed", label: "failed", num: true, wide: true, sort: (x) => split(x.outcomes, x.calls).failed, render: (x) => { const sp = split(x.outcomes, x.calls); return h("span", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" } }, sp.failed ? h("span", { class: sp.server ? "wl-bad" : "dim" }, fmt.pct(sp.failed / Math.max(1, sp.calls), 1)) : h("span", { class: "muted" }, "0"), outcomeBar(x.outcomes, 60)); } },
+    { key: "failed", label: "failed", num: true, wide: true, sort: (x) => split(x.outcomes, x.calls).failed, render: (x) => { const sp = split(x.outcomes, x.calls); return h("span", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" } }, sp.failed ? h("span", { class: sp.server / Math.max(1, sp.calls) > 0.01 ? "wl-bad" : "dim", title: [sp.server ? `${fmt.pct(sp.server / Math.max(1, sp.calls), 1)} failed on the server` : null, sp.refused ? `${fmt.pct(sp.refused / Math.max(1, sp.calls), 1)} refused (429): no slot, no memory, or a contain rule` : null, sp.client ? `${fmt.pct(sp.client / Math.max(1, sp.calls), 1)} client errors (400)` : null, sp.deadlines ? `${fmt.pct(sp.deadlines / Math.max(1, sp.calls), 1)} past the client's deadline` : null].filter(Boolean).join("\n") }, fmt.pct(sp.failed / Math.max(1, sp.calls), 1)) : h("span", { class: "muted" }, "0"), outcomeBar(x.outcomes, 60)); } },
     { key: "share", label: "share of time", num: true, wide: true, render: (x) => h("div", { class: "row nw", style: { gap: "6px", justifyContent: "flex-end" } }, h("div", { class: "barbox", style: { width: "56px" } }, h("div", { class: "bar", style: { width: Math.min(100, x.share * 100) + "%" } })), h("span", { class: "small dim num" }, fmt.pct(x.share, 0))) },
   ]), { sortKey: null, onRow: (x) => { location.hash = statementLink(x.fingerprint); }, empty: empty("queries", "No statements in this range", "Queries are grouped by shape: the same SQL with other literals.") });
   tbl.classList.add("wl-stmts");
-  body.append(h("div", { class: "row", style: { gap: "10px", marginBottom: "6px" } }, head, h("span", { class: "sep" }), onlyChip, ownChip, search), summary, note, cards, card({ body: tbl, flush: true }));
+  // Until the first answer, say it is reading: an empty table would say there is nothing.
+  const tblCard = card({ body: tbl, flush: true });
+  tblCard.style.display = "none";
+  clear(note, h("div", { class: "small muted", style: { margin: "6px 0 12px" } }, "Reading the statements of the range…"));
+  body.append(h("div", { class: "row", style: { gap: "10px", marginBottom: "6px" } }, head, h("span", { class: "sep" }), onlyChip, ownChip, search), summary, note, cards, tblCard);
 
   function draw() {
     const r = timeRange();
@@ -270,6 +282,7 @@ function statementsTab(body, params, setCount) {
       data?.windowed ? h("span", { class: "small muted" }, data.prevHeld ? `compared with the ${mins >= 120 ? fmt.plural(Math.round(mins / 60), "hour") : mins + " min"} before` : "no window before to compare with: the server does not hold it") : null);
     if (err) { clear(note, failure(err, "The statements")); clear(cards); tbl.update([]); return; }
     if (!data) return;
+    tblCard.style.display = "";
     clear(note, data.windowed ? null : h("div", { class: "banner warn", style: { marginBottom: "12px" } }, icon("warn"), h("div", { class: "grow" }, h("b", {}, "This server counts statements since it started"), h("div", { class: "small" }, `${data.since_ms ? "Since " + fmt.datetime(data.since_ms) + ", " : ""}not over the range in the top bar, and with no window before to compare with. A newer server answers for any range.`))));
     let xs = data.statements.filter((x) => own || !isOwn(x));
     const hidden = data.statements.length - xs.length;
@@ -341,6 +354,7 @@ function statementsTab(body, params, setCount) {
   }
   async function load() {
     try { [data] = await Promise.all([statements(timeRange()), canContain()]); err = null; } catch (e) { err = e; }
+    rules = canContainNow() ? await containRules().catch(() => null) : null;
     draw();
   }
   const stops = [poll(10000, load), bus.on("range", load)];

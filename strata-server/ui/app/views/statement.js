@@ -13,7 +13,7 @@ import {
   state, link, when, can, timeRange, rangeQuery, poll, isCoord, copyName, copyTitle, outcomeOf, outcomePill, outcomeBar, split, paramsText, paramsObj,
   shortFp, statementDetail, change, queryDrawer, askCancel, containDialog, workbenchLink, profileLink, nodeLink, copyLink, shardLink, ask, objects, msOf, parseJson, hasLogStore,
   narrow, cols, sheet, isNewStatement,
-  canContainNow, canContain,
+  canContainNow, canContain, containRules, containList,
 } from "../workload.js";
 
 export default { id: "statement", title: "Statement", icon: "queries", group: "Operate", parent: "queries", hidden: true, nav: false, keywords: "statement fingerprint shape", render, onParams };
@@ -32,7 +32,18 @@ function fpOf(r) {
 
 export function render(page, r) {
   let fp = fpOf(r);
-  let d = null, live = [], err = null, gen = 0;
+  let d = null, live = [], err = null, gen = 0, rules = null;
+  /** The contain rules in force, for the ones that hold this statement (an admin's view). */
+  async function loadRules() { try { rules = can("admin") ? await containRules() : null; } catch { rules = null; } }
+  /** The contain rules that hold this statement now: by its shape, or by a key that sends it. */
+  function containedNow(st, shape) {
+    const keys = new Set((st?.keys || []).map((k) => k.key));
+    const mine = (rules || []).filter((r) => (r.match?.fingerprint || r.match?.key) && (!r.match.fingerprint || r.match.fingerprint === shape) && (!r.match.key || keys.has(r.match.key)));
+    if (!mine.length) return null;
+    return h("div", { class: "card wl-contained", style: { marginBottom: "14px" } }, h("div", { class: "small", style: { marginBottom: "6px" } }, h("b", {}, "Contained now. "), "These rules turn its calls away or make them wait; each ends by itself."),
+      containList(mine, { onChange: () => loadRules().then(draw) }));
+  }
+
   const head = h("div"), body = h("div");
   page.append(head, body);
   const offs = [];
@@ -41,7 +52,8 @@ export function render(page, r) {
     const my = ++gen;
     const range = timeRange();
     try {
-      const [x, lq] = await Promise.all([statementDetail(fp, range), api("/v1/queries?group=shape").catch(() => api("/v1/queries").catch(() => ({ queries: [] }))), canContain()]);
+      // The events come with the rest, so the first drawing has them.
+      const [x, lq] = await Promise.all([statementDetail(fp, range), api("/v1/queries").catch(() => ({ queries: [] })), canContain(), eventsOf(range), loadRules()]);
       if (my !== gen) return;
       d = x; err = null;
       // The page opens by the server's id or by the shape itself: a running query carries the shape.
@@ -79,7 +91,8 @@ export function render(page, r) {
           h("a", { class: "btn sm", href: profileLink(sample ? sqlWith(sql, sample) : sql, sample?.params) }, icon("flame"), "Profile it"),
           canContainNow() ? h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: shape, sql, key: st?.keys?.length === 1 ? st.keys[0].key : null, keys: keyShares(st), onDone: load }) }, icon("shield"), "Contain…") : null,
           can("admin") && live.length ? h("button", { class: "btn sm danger", onclick: () => askCancel({ sql, fingerprint: shape, queries: live, key: null, onDone: load }) }, `Cancel ${fmt.n(live.length)} running…`) : null)),
-      sqlBlock(shape || sql, { style: { marginBottom: "14px" }, title: "The statement's shape: its literals are ? and its parameters :name" }));
+      sqlBlock(shape || sql, { style: { marginBottom: "14px" }, title: "The statement's shape: its literals are ? and its parameters :name" }),
+      containedNow(st, shape));
     if (err) { clear(body, failure(err, "This statement")); return; }
     if (!d) { clear(body, h("div", { class: "small muted" }, "Reading…")); return; }
     if (!st && !d.trend?.length && !d.slowest?.length) { clear(body, card({ body: empty("queries", "No call of this statement in this range", h("span", {}, "Try a longer range in the top bar, or ", h("a", { class: "wl-link", href: link("queries", { tab: "statements" }) }, "pick another statement"), ".")) })); return; }
@@ -152,14 +165,24 @@ function keyShares(st) { const tot = (st?.keys || []).reduce((a, k) => a + k.cal
 function sqlWith(sql, sample) { return sample?.sql || sql.replace(/\bLIMIT \?/gi, "LIMIT 10").replace(/\bOFFSET \?/gi, "OFFSET 0"); }
 
 /** The chain from symptom to cause, each line from a figure on the page. */
+/** The messages of a refused call (429): a contain rule, the queries' memory, no slot. */
+const REFUSED = /^refused by contain rule|^memory: the query needs|no query slot|too many queries/i;
+
 function whyItIs(st, d, c, slowSince) {
   const lines = [];
   if (!st) return { title: "Why", lines: [{ text: "The statement's figures are not in this range.", tone: "muted" }] };
   const sp = split(st.outcomes, st.calls);
   const prev = st.prev;
   const slow = c?.p99X >= 2;
-  const topErr = groupErrors(d.errors).sort((a, b) => b.count - a.count)[0];
+  // A refusal (429) is not a failure: its messages are left out of what fails, and said apart.
+  const refusal = (m) => REFUSED.test(m || "");
+  const topErr = groupErrors((d.errors || []).filter((e) => !refusal(e.message))).sort((a, b) => b.count - a.count)[0];
+  const topRef = groupErrors((d.errors || []).filter((e) => refusal(e.message))).sort((a, b) => b.count - a.count)[0];
   if (sp.server / Math.max(1, sp.calls) > 0.01) lines.push({ tone: "bad", text: `${fmt.pct(sp.server / sp.calls, 1)} of its calls fail on the server`, sub: topErr ? `mostly “${topErr.message}”` : null });
+  if (sp.refused / Math.max(1, sp.calls) > 0.05) {
+    const rule = /^refused by contain rule (\S+)/.exec(topRef?.message || "");
+    lines.push({ tone: rule ? "muted" : "warn", text: `${fmt.pct(sp.refused / sp.calls, 0)} of its calls were refused (429)`, sub: rule ? `mostly by contain rule ${rule[1]}: its clients are turned away on purpose` : topRef ? `mostly “${topRef.message}”` : "the server had no query slot or memory free" });
+  }
   if (sp.client / Math.max(1, sp.calls) > 0.05) lines.push({ tone: "warn", text: `${fmt.pct(sp.client / sp.calls, 0)} of its calls are client errors (400)`, sub: topErr ? `“${topErr.message}”: the client sends SQL the server cannot run; not a server fault` : "the client sends a request the server cannot run; not a server fault" });
   if (slow) lines.push({ tone: "bad", text: `p99 is ${fmt.ms(st.p99_ms)}${slowSince ? " since " + when(slowSince, { sec: false }) : ""} (${fmt.ms(prev.p99_ms)} before)`, sub: prev.p50_ms != null && st.p50_ms < prev.p50_ms * 1.5 ? "p50 has not moved: a few calls are slow, not all of them" : c.callsX < 1.5 ? "calls are flat: not more of it, each slower" : null });
   else if (prev?.p99_ms) lines.push({ tone: "muted", text: `p99 ${fmt.ms(st.p99_ms)}, ${fmt.ms(prev.p99_ms)} before`, sub: c ? `calls ×${c.callsX.toFixed(1)}` : null });

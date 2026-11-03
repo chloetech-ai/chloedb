@@ -2525,9 +2525,17 @@ textarea.input.ro-why { font-family: inherit; }
 .wl-card.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
 .wl-card .bd > div > .mono, .wl-card .bd > .mono { display: block; }
 .wl-stmts td { white-space: nowrap; }
-.wl-stmts td.sql { max-width: 560px; }
+/* The SQL gives way first, so failed and share of time fit beside the sidebar at 1440 px. */
+.wl-stmts td.sql > .row { max-width: clamp(220px, calc(100vw - 1100px), 560px); }
+.wl-stmts td.sql > .row > .ellipsis { min-width: 0; }
+.wl-refuse { gap: 6px 8px; flex-wrap: wrap; cursor: pointer; }
+.wl-refuse > input { margin: 0; }
+.wl-refuse > input + span { flex: 1 1 0; min-width: 0; }
+.wl-refuse b { white-space: nowrap; }
 .wl-rule { gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .wl-rule:last-child { border-bottom: 0; }
+.wl-rule b.mono { white-space: nowrap; }
+.wl-contained { padding: 10px 14px; border-left: 3px solid var(--warn); }
 .wl-radio input { margin-top: 3px; }
 .wl-radio .input { margin: 0 2px; }
 .wl-clip { max-height: 90px; overflow: auto; }
@@ -2555,6 +2563,10 @@ textarea.input.ro-why { font-family: inherit; }
   .grid.wl-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .wl-kpis .kpi .val { font-size: 22px; }
   .wl-stmts td.sql { max-width: 200px; }
+  /* A rule: its pill and Remove on one line, what it holds and why below, at full width. */
+  .row.nw.wl-rule { flex-wrap: wrap; row-gap: 4px; }
+  .wl-rule > .grow { order: 3; flex-basis: 100%; }
+  .wl-rule > .btn { margin-left: auto; }
   .wl-ev, .row.nw.wl-ev { flex-wrap: wrap; }
   .wl-ev { row-gap: 4px; padding: 6px 0; border-bottom: 1px solid var(--line); }
   .wl-ev:last-child { border-bottom: 0; }

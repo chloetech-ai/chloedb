@@ -175,7 +175,9 @@ export function whoChips(q) {
 }
 
 /** The command center's own queries (its polling, Query path, Profiler runs). */
-export const isOwn = (x) => x?.client === "command-center" || x?.sample?.client === "command-center";
+// A statement says whether every call of it was the command center's (command_center); its
+// sample is only its latest call, so it decides only on an older server.
+export const isOwn = (x) => typeof x?.command_center === "boolean" ? x.command_center : x?.client === "command-center" || x?.sample?.client === "command-center";
 
 /** A short id for a statement's shape (its fingerprint), for titles. */
 export function shortFp(fp) {
@@ -609,7 +611,7 @@ export function cancelDialog({ sql, queries, key, refusable = true }) {
           h("dt", {}, "Which"), h("dd", {}, `${fmt.plural(n, "query", "queries")}${vias.length && vias[0][0] ? ": " + vias.map(([v, c]) => `${c} on ${v}`).join(", ") : ""} · running ${fmt.ms(el[0])}${n > 1 ? ` to ${fmt.ms(el[el.length - 1])}` : ""}${mem ? ` · holding ${fmt.bytes(mem)} of query memory` : ""}`),
           h("dt", {}, "Who sent them"), h("dd", {}, keys.some(([k]) => k) ? keys.map(([k, c], i) => [i ? ", " : "", k ? ["API key ", h("b", { class: "mono" }, k)] : "no key", keys.length > 1 ? ` (${c})` : ""]) : h("span", { class: "muted" }, "unknown: this server does not record the key")),
           h("dt", {}, "What they get"), h("dd", {}, "HTTP 499 ", h("span", { class: "mono" }, "cancelled by an operator"), ". A client that retries sends them again.")),
-        !refusable ? null : h("label", { class: "row nw small", style: { gap: "8px" } }, refuse, oneKey ? ["Also refuse new runs of this statement from ", h("b", { class: "mono" }, oneKey), " for"] : "Also refuse new runs of this statement for", minSel, h("span", { class: "muted" }, "(they get 429)")),
+        !refusable ? null : h("label", { class: "row small wl-refuse" }, refuse, h("span", {}, oneKey ? ["Also refuse new runs of this statement from ", h("b", { class: "mono" }, oneKey), " for"] : "Also refuse new runs of this statement for"), minSel, h("span", { class: "muted" }, "(they get 429)")),
         h("label", { class: "stack", style: { gap: "4px" } }, h("span", { class: "small dim" }, "Reason, for the audit log"), reason),
       ],
       foot: [keep, ok],
@@ -649,17 +651,18 @@ export async function askCancel({ sql, fingerprint, key, queries, onDone }) {
   if (!can("admin")) { toast("Cancelling needs an admin key", "bad"); return; }
   const a = await cancelDialog({ sql, queries, key, refusable: !!fingerprint && await canContain() });
   if (!a) return;
+  // The rule first, so a client that retries at once is refused rather than started again.
+  if (a.refuse_min && fingerprint) {
+    try {
+      await addContain({ match: { fingerprint, ...(a.key ? { key: a.key } : {}) }, action: "refuse", expires_s: a.refuse_min * 60, reason: a.reason });
+      toast(`New runs are refused for ${a.refuse_min >= 60 ? fmt.plural(a.refuse_min / 60, "hour") : a.refuse_min + " min"}`, "ok");
+    } catch (e) { toast(e.status === 404 ? "This server cannot refuse a statement: it is older than contain rules" : "Not refused: " + e.message, "bad", 7000); }
+  }
   try {
     cancelQueries.gone = 0;
     const n = await cancelQueries({ fingerprint, key, queries, reason: a.reason });
     const gone = cancelQueries.gone;
     toast(n ? `${fmt.plural(n, "query", "queries")} cancelled: ${n === 1 ? "it answers" : "they answer"} 499${gone ? `. ${gone} had already ended` : ""}` : `Nothing to cancel: ${gone === 1 ? "it had" : "they had"} already ended`, n ? "ok" : "info");
-    if (a.refuse_min && fingerprint) {
-      try {
-        await addContain({ match: { fingerprint, ...(a.key ? { key: a.key } : {}) }, action: "refuse", expires_s: a.refuse_min * 60, reason: a.reason });
-        toast(`New runs are refused for ${a.refuse_min >= 60 ? fmt.plural(a.refuse_min / 60, "hour") : a.refuse_min + " min"}`, "ok");
-      } catch (e) { toast(e.status === 404 ? "This server cannot refuse a statement: it is older than contain rules" : "Not refused: " + e.message, "bad", 7000); }
-    }
   } catch (e) { toast(e.message, "bad"); }
   onDone?.();
 }
@@ -748,6 +751,9 @@ export function containList(rules, { onChange } = {}) {
       h("div", { class: "row nw", style: { gap: "6px" } }, r.match?.fingerprint ? h("a", { class: "mono small ellipsis wl-link", href: statementLink(r.match.fingerprint), title: r.match.fingerprint }, r.match.fingerprint) : h("span", { class: "small" }, "every statement"), r.match?.key ? [h("span", { class: "small muted" }, "from"), h("b", { class: "mono small" }, r.match.key)] : null),
       h("div", { class: "small muted" }, `${r.by ? "by " + r.by + " · " : ""}${r.reason ? "“" + r.reason + "” · " : ""}ends ${r.expires_ms ? fmt.ago(r.expires_ms).replace(/^in /, "in ") : "–"}${r.hits != null ? ` · ${fmt.n(r.hits)} matched` : ""}${r.refused != null ? `, ${fmt.n(r.refused)} refused` : ""}`)),
     can("admin") ? h("button", { class: "btn sm", onclick: async () => {
-      try { await api("/v1/admin/contain/" + encodeURIComponent(r.id), { method: "DELETE", reason: "removed from the command center" }); toast("Rule removed", "ok"); onChange?.(); } catch (e) { toast(e.message, "bad"); }
+      // Lifting a rule lets its clients back in at once: ask, and keep why in the audit log.
+      const ok = await core.confirm({ title: "Remove this rule?", body: `${r.match?.key ? `Key ${r.match.key}` : "Every client"} can run ${r.match?.fingerprint ? "this statement" : "everything"} again at once${r.action === "limit" ? ", with no limit" : ""}. The audit log keeps who removed it and why.`, ok: "Remove the rule", reason: true });
+      if (!ok) return;
+      try { await api("/v1/admin/contain/" + encodeURIComponent(r.id), { method: "DELETE", reason: ok.reason || "removed from the command center" }); toast("Rule removed", "ok"); onChange?.(); } catch (e) { toast(e.message, "bad"); }
     } }, "Remove") : null)));
 }
