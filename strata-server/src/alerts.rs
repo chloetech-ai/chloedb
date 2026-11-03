@@ -466,6 +466,22 @@ const HINT_MS: u64 = 30_000;
 pub const PAGER_WAIT_MS: u64 = 60_000;
 /// A coordinator not heard for this long does not send messages.
 pub const PEER_LIVE_MS: u64 = 45_000;
+/// A coordinator that does not send messages sends an alert's at once when
+/// the one that does said, this long after the alert fired here, that it
+/// does not see it: a rule over each coordinator's own traffic fires on
+/// one alone (R2-scenarios-1). The margin covers two coordinators judging
+/// the same cluster a few seconds apart.
+const NOT_SEEN_MS: u64 = 15_000;
+
+/// What another coordinator said of one alert ([`Alerts::merge`]).
+#[derive(Clone, Debug)]
+struct PeerSt {
+    state: String,
+    since_ms: u64,
+    value: Option<f64>,
+    held_by: Option<String>,
+    ack: Option<Json>,
+}
 /// A copy not heard from for this long has no data for its each_copy
 /// rules: what it last said is not what it holds now ("A copy is down"
 /// says why).
@@ -871,6 +887,9 @@ pub struct Alerts {
     copy_rules_ms: Mutex<HashMap<String, u64>>,
     /// When each critical alert was last sent again ([`Route::repeat_min`]).
     repeated: Mutex<HashMap<String, u64>>,
+    /// What each other coordinator last said of its alerts, by its URL:
+    /// when, and each rule's state there.
+    peer_states: Mutex<HashMap<String, (u64, HashMap<String, PeerSt>)>>,
     /// This server's service level objective, once given
     /// ([`Alerts::follow_slo`]): error ratio, p99 in ms.
     slo: Mutex<Option<(f64, f64)>>,
@@ -977,6 +996,7 @@ impl Alerts {
             pushed: Mutex::new(HashMap::new()),
             copy_rules_ms: Mutex::new(HashMap::new()),
             repeated: Mutex::new(HashMap::new()),
+            peer_states: Mutex::new(HashMap::new()),
             slo: Mutex::new(None),
             starting_until: if restarted { now + STARTUP_MS } else { 0 },
         })
@@ -1678,6 +1698,28 @@ impl Alerts {
     pub fn ack(&self, id: &str, by: &str, note: Option<String>) -> Result<Arc<Event>, ApiError> {
         let r = self.rule(id)?;
         let t = now_ms();
+        let live_here = lock(&self.states).get(id).is_some_and(|s| matches!(s.state, "firing" | "pending"));
+        if !live_here {
+            // It fires on another coordinator only: the acknowledgement
+            // goes to the coordinators, and the one where it fires keeps it.
+            let mut probe = json!({"rule": id, "state": "ok"});
+            Self::add_elsewhere(&mut probe, &self.live_views());
+            if probe.get("elsewhere").is_none() {
+                return Err(ApiError { status: 409, message: format!("{id} is not firing nor pending: there is nothing to acknowledge") });
+            }
+            let mut st = St::new(t);
+            st.ack = Some(Ack { by: by.into(), at_ms: t, note: note.clone() });
+            if let Some(n) = note.filter(|n| !n.trim().is_empty()) {
+                push_note(&mut st, by, t, n);
+            }
+            let mut e = Event::of(&r, "acked", &st, t);
+            (e.by, e.text) = (Some(by.into()), st.ack.as_ref().and_then(|a| a.note.clone()));
+            e.context = Some(format!("it fires on {}", probe["elsewhere"].as_array().into_iter().flatten().filter_map(|x| x["name"].as_str()).collect::<Vec<_>>().join(", ")));
+            let e = Arc::new(e);
+            self.keep(std::slice::from_ref(&e));
+            self.tell_peers(json!({"states": {id: {"ack": st.ack, "notes": st.notes}}}));
+            return Ok(e);
+        }
         let mut states = lock(&self.states);
         let st = states.get_mut(id).filter(|s| matches!(s.state, "firing" | "pending")).ok_or_else(|| ApiError { status: 409, message: format!("{id} is not firing nor pending: there is nothing to acknowledge") })?;
         st.ack = Some(Ack { by: by.into(), at_ms: t, note: note.clone() });
@@ -1828,6 +1870,12 @@ impl Alerts {
         let rules = self.rules();
         let states = lock(&self.states).clone();
         let mut out: Vec<Json> = rules.iter().map(|r| self.state_json(r, states.get(&r.id))).collect();
+        let views = self.live_views();
+        if !views.is_empty() {
+            for s in &mut out {
+                Self::add_elsewhere(s, &views);
+            }
+        }
         out.sort_by_key(|s| (state_rank(s["state"].as_str().unwrap_or("")), match s["severity"].as_str() {
             Some("critical") => 0,
             Some("warning") => 1,
@@ -1854,6 +1902,8 @@ impl Alerts {
             "firing": count("firing"), "pending": count("pending"), "no_data": count("no_data"),
             // Firing, neither silenced nor held back under their cause: the bell's count.
             "firing_shown": out.iter().filter(|s| s["state"] == "firing" && s.get("silenced").is_none() && s.get("held_by").is_none()).count(),
+            // Of those, the ones that fire on another coordinator only.
+            "firing_elsewhere": out.iter().filter(|s| s["state"] == "firing" && s.get("here").is_some()).count(),
             "routes": self.routes_json(), "file": self.file.as_ref().map(|p| p.display().to_string()), "webhook": self.webhook(),
             "state_file": self.state_file.as_ref().map(|p| p.display().to_string()),
             "coordinator": self.is_coordinator(), "cluster": {"name": id.name, "public_url": id.public_url},
@@ -1877,7 +1927,7 @@ impl Alerts {
             .filter(|s| !matches!(s["state"].as_str(), Some("ok" | "disabled" | "no_data")))
             .map(|s| {
                 let mut j = json!({"rule": s["rule"], "name": s["name"], "severity": s["severity"], "state": s["state"], "since_ms": s["since_ms"], "value": s["value"]});
-                for k in ["ack", "silenced", "held_by", "copies"] {
+                for k in ["ack", "silenced", "held_by", "copies", "here", "elsewhere"] {
                     if let Some(v) = s.get(k) {
                         j[k] = v.clone();
                     }
@@ -1886,7 +1936,7 @@ impl Alerts {
             })
             .collect();
         let mut j = json!({"brief": true, "rules": rules, "states": states});
-        for k in ["firing", "pending", "no_data", "firing_shown", "coordinator", "cluster"] {
+        for k in ["firing", "pending", "no_data", "firing_shown", "firing_elsewhere", "coordinator", "cluster"] {
             j[k] = full[k].clone();
         }
         j
@@ -1897,6 +1947,7 @@ impl Alerts {
         let r = self.rule(id)?;
         let st = lock(&self.states).get(id).cloned();
         let mut j = self.state_json(&r, st.as_ref());
+        Self::add_elsewhere(&mut j, &self.live_views());
         let events: Vec<Arc<Event>> = lock(&self.events).iter().rev().filter(|e| e.rule == id).cloned().collect();
         j["events"] = json!(events);
         j["rule_json"] = json!(r);
@@ -2015,6 +2066,62 @@ impl Alerts {
         }
     }
 
+    /// What coordinator `url` last said of its alerts, if it said so within
+    /// [`PEER_LIVE_MS`] of `t`.
+    fn view_of(&self, url: &str, t: u64) -> Option<(u64, HashMap<String, PeerSt>)> {
+        lock(&self.peer_states).get(url).filter(|(heard, _)| t.saturating_sub(*heard) <= PEER_LIVE_MS).cloned()
+    }
+
+    /// The other coordinators heard within [`PEER_LIVE_MS`]: URL, name and
+    /// what each said of its alerts.
+    fn live_views(&self) -> Vec<(String, String, HashMap<String, PeerSt>)> {
+        let t = now_ms();
+        let names: HashMap<String, String> = lock(&self.peers).iter().filter(|p| !p.this).map(|p| (p.url.clone(), p.name.clone())).collect();
+        let views = lock(&self.peer_states);
+        let mut out: Vec<_> = views
+            .iter()
+            .filter(|(url, (heard, _))| t.saturating_sub(*heard) <= PEER_LIVE_MS && names.contains_key(*url))
+            .map(|(url, (_, m))| (url.clone(), names.get(url).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| name_of(url)), m.clone()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// Rule state `s` (as [`Self::state_json`] answers it) with what the
+    /// other coordinators hold of it: an alert over a coordinator's own
+    /// traffic fires there alone, and every coordinator shows it, as
+    /// firing "on" that one (R2-scenarios-1). `here` keeps this one's own
+    /// state; `elsewhere` lists the coordinators where it fires or waits.
+    fn add_elsewhere(s: &mut Json, views: &[(String, String, HashMap<String, PeerSt>)]) {
+        let id = s["rule"].as_str().unwrap_or("").to_string();
+        let here = s["state"].as_str().unwrap_or("").to_string();
+        if matches!(here.as_str(), "firing" | "disabled") {
+            return;
+        }
+        let there: Vec<(&String, &String, &PeerSt)> = views.iter().filter_map(|(u, n, m)| m.get(&id).filter(|p| matches!(p.state.as_str(), "firing" | "pending")).map(|p| (u, n, p))).collect();
+        let Some(&(_, name, best)) = there.iter().min_by_key(|(_, _, p)| (state_rank(&p.state), p.held_by.is_some(), p.since_ms)) else { return };
+        if state_rank(&best.state) < state_rank(&here) {
+            s["here"] = json!(here);
+            s["state"] = json!(best.state);
+            s["since_ms"] = json!(best.since_ms);
+            s["value"] = json!(best.value);
+            if let Some(o) = s.as_object_mut() {
+                o.remove("held_by");
+                o.remove("held_why");
+                o.remove("held_until_ms");
+            }
+            if let Some(c) = &best.held_by {
+                (s["held_by"], s["held_why"]) = (json!(c), json!(format!("its cause fires (on {name})")));
+            }
+            if s.get("ack").is_none_or(Json::is_null) {
+                if let Some(a) = &best.ack {
+                    s["ack"] = a.clone();
+                }
+            }
+        }
+        s["elsewhere"] = json!(there.iter().map(|(u, n, p)| json!({"url": u, "name": n, "state": p.state, "since_ms": p.since_ms, "value": p.value, "held_by": p.held_by, "ack": p.ack})).collect::<Vec<_>>());
+    }
+
     /// This coordinator's URL and the URL of the one that sends the
     /// messages: the lowest URL among the coordinators heard in the last
     /// [`PEER_LIVE_MS`] (alone: itself; both empty).
@@ -2045,6 +2152,8 @@ impl Alerts {
         let cluster = self.identity().name;
         let mut out = Vec::new();
         let mut told = Vec::new();
+        // What the one that sends the messages said of its alerts.
+        let pager_view = if me == pager { None } else { self.view_of(&pager, t) };
         {
             let mut states = lock(&self.states);
             for r in rules.iter().filter(|r| r.enabled) {
@@ -2066,13 +2175,18 @@ impl Alerts {
                     }
                     let waited = t.saturating_sub(st.since_ms);
                     let mine = me == pager;
+                    // The one that sends the messages said, a while after
+                    // this fired here, that it does not see it: a rule
+                    // over this coordinator's own traffic. Sent at once.
+                    let unseen = !mine && pager_view.as_ref().is_some_and(|(heard, m)| *heard >= st.since_ms + NOT_SEEN_MS && m.get(&r.id).is_none_or(|p| !matches!(p.state.as_str(), "firing" | "pending")));
                     // Another coordinator waits from when this one could send it.
-                    if !mine && t.saturating_sub(*st.due_ms.get_or_insert(t)) < PAGER_WAIT_MS {
+                    if !mine && !unseen && t.saturating_sub(*st.due_ms.get_or_insert(t)) < PAGER_WAIT_MS {
                         continue;
                     }
                     let mut e = Event::of(r, "firing", st, t);
                     (e.ts_ms, e.episode_ms) = (st.since_ms, Some(st.since_ms));
                     e.context = match (&st.late, mine) {
+                        (_, false) if unseen => Some(format!("sent by {}: it fires on this coordinator's own traffic, and {}, which sends the messages, does not see it", name_of(&me), name_of(&pager))),
                         (_, false) => Some(format!("sent by {}: {} sends the messages but did not say it sent this within {} s", name_of(&me), name_of(&pager), PAGER_WAIT_MS / 1000)),
                         (Some(why), _) if why.starts_with("silenced") => Some(format!("firing since {}; its silence ended", clock(st.since_ms))),
                         (Some(why), _) => Some(format!("firing since {}; {why}", clock(st.since_ms))),
@@ -2121,7 +2235,10 @@ impl Alerts {
     pub fn resolutions(&self, changes: &[Arc<Event>]) -> Vec<Arc<Event>> {
         let (me, pager) = self.pager();
         if me != pager {
-            return Vec::new();
+            // What this one sent because the one that sends the messages
+            // did not see it fire ([`Self::due`]): its resolution too.
+            let Some((_, view)) = self.view_of(&pager, now_ms()) else { return Vec::new() };
+            return changes.iter().filter(|e| e.state == "resolved" && !e.silenced && e.paged_by.as_deref() == Some(me.as_str()) && view.get(&e.rule).is_none_or(|p| !matches!(p.state.as_str(), "firing" | "pending"))).cloned().collect();
         }
         changes.iter().filter(|e| e.state == "resolved" && e.paged_by.is_some() && !e.silenced).cloned().collect()
     }
@@ -2146,8 +2263,8 @@ impl Alerts {
         let each: serde_json::Map<String, Json> = states
             .iter()
             .map(|(id, st)| {
-                let mut j = json!({"state": st.state, "since_ms": st.since_ms, "cleared_ms": st.cleared_ms, "notes": st.notes});
-                for (k, v) in [("ack", json!(st.ack)), ("silenced", json!(st.silenced)), ("paged", json!(st.paged))] {
+                let mut j = json!({"state": st.state, "since_ms": st.since_ms, "cleared_ms": st.cleared_ms, "notes": st.notes, "value": st.value});
+                for (k, v) in [("ack", json!(st.ack)), ("silenced", json!(st.silenced)), ("paged", json!(st.paged)), ("held_by", json!(st.held.as_ref().map(|h| &h.0)))] {
                     if !v.is_null() {
                         j[k] = v;
                     }
@@ -2180,8 +2297,23 @@ impl Alerts {
             let routes: Vec<Route> = serde_json::from_value(routes.clone()).map_err(|e| ApiError::bad(format!("bad routes: {e}")))?;
             self.set_routes(routes)?;
         }
-        let rules = self.rules();
         let t = now_ms();
+        // A whole answer (not a change told at once): each alert's state
+        // there, which a rule over that coordinator's own traffic may hold
+        // alone.
+        if j.get("rules_ms").is_some() && !from.is_empty() {
+            let each: HashMap<String, PeerSt> = j["states"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(id, x)| {
+                    let state = x["state"].as_str()?.to_string();
+                    Some((id.clone(), PeerSt { state, since_ms: x["since_ms"].as_u64().unwrap_or(0), value: x["value"].as_f64(), held_by: x["held_by"].as_str().map(str::to_string), ack: x.get("ack").filter(|a| !a.is_null()).cloned() }))
+                })
+                .collect();
+            lock(&self.peer_states).insert(from.to_string(), (t, each));
+        }
+        let rules = self.rules();
         let mut changed = false;
         {
             let mut states = lock(&self.states);
@@ -2576,12 +2708,19 @@ pub const NOT_FILLING_H: f64 = 87_600.0;
 /// A replica behind with no write to catch up with is a day behind.
 const STUCK_S: f64 = 86_400.0;
 
+/// A point's 5xx answers a second that are the server's: a query whose
+/// client's own deadline passed answers 504 too, and is the client's
+/// (R2-shell-monitor-2), as the error ratio counts it.
+fn server_5xx_s(p: &Json) -> f64 {
+    (p["http_5xx_s"].as_f64().unwrap_or(0.0) - p["client_deadlines_s"].as_f64().unwrap_or(0.0)).max(0.0)
+}
+
 /// A point's value of `metric`, those [`DERIVED`] of others included.
 pub fn value_of(p: &Json, metric: &str) -> Option<f64> {
     match metric {
         "http_5xx_ratio" => {
             let all = p["http_s"].as_f64().filter(|a| *a > 0.0)?;
-            Some(p["http_5xx_s"].as_f64().unwrap_or(0.0) / all)
+            Some(server_5xx_s(p) / all)
         }
         "replica_behind_s" => {
             let behind = p["replica_behind_max"].as_f64()?;
@@ -2642,7 +2781,7 @@ fn window_own(r: &Rule, points: &[Arc<Json>], t: u64) -> (Option<f64>, Option<u6
                 let Some(ratio) = share(&|p| p["query_errors"].as_f64().unwrap_or(0.0), &|p| p["queries"].as_f64().unwrap_or(0.0)) else { return (None, partial) };
                 return (Some(if r.metric == "availability" { 1.0 - ratio } else { ratio }), partial);
             }
-            "http_5xx_ratio" => return (share(&|p| p["http_5xx_s"].as_f64().unwrap_or(0.0) * secs(p), &|p| p["http_s"].as_f64().unwrap_or(0.0) * secs(p)), partial),
+            "http_5xx_ratio" => return (share(&|p| server_5xx_s(p) * secs(p), &|p| p["http_s"].as_f64().unwrap_or(0.0) * secs(p)), partial),
             "replica_behind_s" => {
                 let behind: Vec<f64> = window.iter().filter_map(|p| p["replica_behind_max"].as_f64()).collect();
                 if behind.is_empty() {
@@ -3376,6 +3515,15 @@ mod tests {
     }
 
     #[test]
+    fn a_client_s_own_deadline_is_not_a_server_error() {
+        // R2-shell-monitor-2: 20 504s a second, all of them clients' own deadlines.
+        let p = json!({"http_s": 1000.0, "http_5xx_s": 20.0, "client_deadlines_s": 20.0});
+        assert_eq!(value_of(&p, "http_5xx_ratio"), Some(0.0));
+        let p = json!({"http_s": 1000.0, "http_5xx_s": 30.0, "client_deadlines_s": 20.0});
+        assert_eq!(value_of(&p, "http_5xx_ratio"), Some(0.01));
+    }
+
+    #[test]
     fn an_alert_fires_after_its_condition_held_and_resolves() {
         let a = Alerts::new(None, None).unwrap();
         a.set_rules(vec![slow("max", 2, 10)], "test").unwrap();
@@ -3787,6 +3935,66 @@ mod tests {
         let after = t + 120_000;
         assert!(e.due(after).is_empty(), "the one that sends gets its minute");
         assert_eq!(e.due(after + PAGER_WAIT_MS).len(), 1);
+    }
+
+    /// A rule over a coordinator's own traffic fires on one coordinator
+    /// alone: every coordinator shows it, as firing there; the one where
+    /// it fires pages at once when the one that sends the messages says it
+    /// does not see it, and sends its resolution; an acknowledgement given
+    /// on another coordinator reaches it (R2-scenarios-1).
+    #[test]
+    fn an_alert_on_one_coordinator_only_shows_and_pages_from_there() {
+        let t = now_ms();
+        let (xa, xb) = ("http://10.0.0.1:7700", "http://10.0.0.2:7700");
+        let mk = |me: &str, other: &str| {
+            let a = Alerts::new(None, None).unwrap();
+            a.set_coordinator(true);
+            a.set_peers(vec![peer(me, true, t), peer(other, false, t)]);
+            a.set_rules(vec![slow("max", 2, 0)], "t").unwrap();
+            a
+        };
+        let (a, b) = (mk(xa, xb), mk(xb, xa));
+        // Slow through b only, for 20 s; a's own traffic is fast.
+        let since = t - 20_000;
+        b.check(&points(&[(since - 2_000, 500.0), (since, 500.0)]), since);
+        a.check(&points(&[(t - 2_000, 5.0), (t, 5.0)]), t);
+        assert_eq!(b.one("p99").unwrap()["state"], "firing");
+        assert!(b.due(since).is_empty(), "a sends the messages: b waits for it");
+        // a says it does not see it: b pages now, not a minute later.
+        b.merge(&a.peer_state(), xa).unwrap();
+        let sent = b.due(t);
+        assert_eq!(sent.len(), 1, "sent at once");
+        assert!(sent[0].0.context.as_deref().is_some_and(|c| c.contains("does not see it")), "{:?}", sent[0].0.context);
+        // a shows it, firing on b, in its count and its brief answer.
+        a.merge(&b.peer_state(), xb).unwrap();
+        let s = a.one("p99").unwrap();
+        assert_eq!((s["state"].as_str(), s["here"].as_str(), s["elsewhere"][0]["url"].as_str()), (Some("firing"), Some("ok"), Some(xb)), "{s}");
+        let j = a.json();
+        assert_eq!((j["firing_shown"].as_u64(), j["firing_elsewhere"].as_u64()), (Some(1), Some(1)));
+        let brief = a.brief_json();
+        assert_eq!(brief["states"][0]["elsewhere"][0]["name"], xb, "{brief}");
+        // Acknowledged on a: told to b, which keeps it.
+        a.ack("p99", "ana", Some("looking".into())).unwrap();
+        let told: Vec<Json> = lock(&a.outbox).drain(..).collect();
+        assert_eq!(told.len(), 1);
+        b.merge(&told[0], xa).unwrap();
+        assert_eq!(b.one("p99").unwrap()["ack"]["by"], "ana");
+        a.merge(&b.peer_state(), xb).unwrap();
+        assert_eq!(a.one("p99").unwrap()["ack"]["by"], "ana", "a shows b's acknowledgement");
+        // Resolved on b: b sends the resolution, since a never saw it.
+        let res = b.check(&points(&[(t + 2_000, 5.0), (t + 4_000, 5.0)]), t + 4_000);
+        assert_eq!(res.iter().map(|e| e.state).collect::<Vec<_>>(), ["resolved"]);
+        assert_eq!(b.resolutions(&res).len(), 1);
+        a.merge(&b.peer_state(), xb).unwrap();
+        assert_eq!(a.one("p99").unwrap()["state"], "ok");
+        assert!(a.one("p99").unwrap().get("elsewhere").is_none());
+        // A shared alert that a sees too: b waits for a, as before.
+        let (a, b) = (mk(xa, xb), mk(xb, xa));
+        let ps = points(&[(since - 2_000, 500.0), (since, 500.0)]);
+        a.check(&ps, since);
+        b.check(&ps, since);
+        b.merge(&a.peer_state(), xa).unwrap();
+        assert!(b.due(t).is_empty(), "a sees it firing: a pages it");
     }
 
     /// The built-in rules over errors and the p99 fire where Home's SLO

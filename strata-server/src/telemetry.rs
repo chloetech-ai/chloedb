@@ -619,6 +619,8 @@ pub struct QueryLog {
     recent: Mutex<VecDeque<Arc<Finished>>>,
     slow: Mutex<VecDeque<Arc<Finished>>>,
     pub statements: Statements,
+    /// Which clients sent each key ([`KeyClients`]).
+    pub clients: KeyClients,
     /// Also hands every query that ended, and whether it was slow, here:
     /// the server's log store ([`crate::logstore::LogStore::keep_query`]).
     pub keep: std::sync::OnceLock<Keep>,
@@ -626,6 +628,125 @@ pub struct QueryLog {
 
 /// Where a [`QueryLog`] hands the queries that end.
 pub type Keep = Box<dyn Fn(&Arc<Finished>, bool) + Send + Sync>;
+
+/// Which clients sent each key, and how much, over the last
+/// [`KeyClients::KEEP_MS`]: every query a client sent with a key counts,
+/// not a sample, so a key's rotation can tell which clients still have to
+/// move (AC-4). Bounded: [`KeyClients::PER_KEY`] clients a key (the least
+/// recent go), [`KeyClients::KEYS`] keys.
+#[derive(Default)]
+pub struct KeyClients {
+    by_key: Mutex<HashMap<String, Vec<KeyClient>>>,
+}
+
+/// One client of a key ([`KeyClients`]).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct KeyClient {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
+    pub calls: u64,
+    pub failed: u64,
+    pub first_ms: u64,
+    pub last_ms: u64,
+    /// The coordinators it went through, once merged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coordinators: Vec<String>,
+}
+
+impl KeyClient {
+    fn same(&self, o: &KeyClient) -> bool {
+        (&self.app, &self.client, &self.addr) == (&o.app, &o.client, &o.addr)
+    }
+}
+
+impl KeyClients {
+    pub const KEEP_MS: u64 = 7 * 24 * 3_600_000;
+    pub const PER_KEY: usize = 32;
+    pub const KEYS: usize = 2_000;
+
+    /// A query `c` sent (`failed` or not) at `t`.
+    pub fn add(&self, c: &Caller, failed: bool, t: u64) {
+        let Some(key) = c.key_id.as_deref() else { return };
+        let mut by = lock(&self.by_key);
+        if !by.contains_key(key) && by.len() >= Self::KEYS {
+            return;
+        }
+        let list = by.entry(key.to_string()).or_default();
+        let one = KeyClient { app: c.app.clone(), client: c.client.clone(), addr: c.addr.clone(), calls: 1, failed: u64::from(failed), first_ms: t, last_ms: t, coordinators: Vec::new() };
+        match list.iter_mut().find(|x| x.same(&one)) {
+            Some(x) => {
+                x.calls += 1;
+                x.failed += u64::from(failed);
+                x.last_ms = x.last_ms.max(t);
+            }
+            None => {
+                if list.len() >= Self::PER_KEY {
+                    if let Some(i) = list.iter().enumerate().min_by_key(|(_, x)| x.last_ms).map(|(i, _)| i) {
+                        list.swap_remove(i);
+                    }
+                }
+                list.push(one);
+            }
+        }
+    }
+
+    /// Each key's clients seen since `since_ms`, the most used first.
+    pub fn json(&self, since_ms: u64) -> Json {
+        let t = now_ms();
+        let mut by = lock(&self.by_key);
+        by.retain(|_, l| {
+            l.retain(|x| t.saturating_sub(x.last_ms) <= Self::KEEP_MS);
+            !l.is_empty()
+        });
+        let keys: serde_json::Map<String, Json> = by
+            .iter()
+            .map(|(k, l)| {
+                let mut l: Vec<&KeyClient> = l.iter().filter(|x| x.last_ms >= since_ms).collect();
+                l.sort_by(|a, b| b.calls.cmp(&a.calls).then(b.last_ms.cmp(&a.last_ms)));
+                (k.clone(), json!(l))
+            })
+            .filter(|(_, l)| l.as_array().is_some_and(|a| !a.is_empty()))
+            .collect();
+        json!({"keys": keys})
+    }
+
+    /// Several coordinators' [`Self::json`] answers as one (`parts`: each
+    /// one's name and answer): a client of a key, by its app, client and
+    /// address, with its calls summed and the coordinators it went through.
+    pub fn merge(parts: &[(String, Json)]) -> Json {
+        let mut by: BTreeMap<String, Vec<KeyClient>> = BTreeMap::new();
+        for (name, j) in parts {
+            for (k, l) in j["keys"].as_object().into_iter().flatten() {
+                let list = by.entry(k.clone()).or_default();
+                for mut c in l.as_array().into_iter().flatten().filter_map(|c| serde_json::from_value::<KeyClient>(c.clone()).ok()) {
+                    match list.iter_mut().find(|x| x.same(&c)) {
+                        Some(x) => {
+                            x.calls += c.calls;
+                            x.failed += c.failed;
+                            x.first_ms = x.first_ms.min(c.first_ms);
+                            x.last_ms = x.last_ms.max(c.last_ms);
+                            if !x.coordinators.contains(name) {
+                                x.coordinators.push(name.clone());
+                            }
+                        }
+                        None => {
+                            c.coordinators = vec![name.clone()];
+                            list.push(c);
+                        }
+                    }
+                }
+            }
+        }
+        for l in by.values_mut() {
+            l.sort_by(|a, b| b.calls.cmp(&a.calls).then(b.last_ms.cmp(&a.last_ms)));
+        }
+        json!({"keys": by})
+    }
+}
 
 /// Queries [`QueryLog`] keeps of the latest, and of the slow.
 pub const RECENT: usize = 500;
@@ -636,7 +757,7 @@ pub const PLAN_LINES: usize = 400;
 
 impl Default for QueryLog {
     fn default() -> QueryLog {
-        QueryLog { next: AtomicU64::new(0), recent: Mutex::new(VecDeque::with_capacity(RECENT)), slow: Mutex::new(VecDeque::new()), statements: Statements::default(), keep: std::sync::OnceLock::new() }
+        QueryLog { next: AtomicU64::new(0), recent: Mutex::new(VecDeque::with_capacity(RECENT)), slow: Mutex::new(VecDeque::new()), statements: Statements::default(), clients: KeyClients::default(), keep: std::sync::OnceLock::new() }
     }
 }
 
@@ -670,6 +791,9 @@ impl QueryLog {
             scored: stats.map_or(0, |s| s.scored),
         });
         self.statements.add(&f);
+        if !f.shard {
+            self.clients.add(&f.caller, f.outcome != "ok", f.ts_ms);
+        }
         if let Some(keep) = self.keep.get() {
             keep(&f, slow);
         }
@@ -975,6 +1099,37 @@ impl Agg {
         OUTCOMES.iter().zip(self.outcomes).filter(|(o, _)| failed(o)).map(|(_, n)| n).sum()
     }
 
+    /// Its counts as they go to another coordinator, which merges them
+    /// ([`Statements::window_raw`]).
+    fn raw(&self) -> Json {
+        json!({
+            "calls": self.calls, "outcomes": self.outcomes.to_vec(), "total_ms": self.total_ms, "max_ms": self.max_ms, "rows": self.rows,
+            "shard_calls": self.shard_calls, "command_center": self.command_center, "hist": self.hist.to_vec(),
+            "keys": self.keys.iter().map(|k| json!([k.key, k.calls, k.total_ms, k.errors])).collect::<Vec<_>>(),
+            "errors": self.errors.iter().map(|e| json!([e.0, e.1, e.2])).collect::<Vec<_>>(),
+        })
+    }
+
+    /// What [`Agg::raw`] wrote (what it cannot read counts as nothing).
+    fn from_raw(j: &Json) -> Agg {
+        let u = |k: &str| j[k].as_u64().unwrap_or(0);
+        let f = |k: &str| j[k].as_f64().unwrap_or(0.0);
+        let mut a = Agg { calls: u("calls"), total_ms: f("total_ms"), max_ms: f("max_ms"), rows: u("rows"), shard_calls: u("shard_calls"), command_center: u("command_center"), ..Default::default() };
+        for (x, v) in a.outcomes.iter_mut().zip(j["outcomes"].as_array().into_iter().flatten()) {
+            *x = v.as_u64().unwrap_or(0);
+        }
+        for (x, v) in a.hist.iter_mut().zip(j["hist"].as_array().into_iter().flatten()) {
+            *x = v.as_u64().unwrap_or(0);
+        }
+        for k in j["keys"].as_array().into_iter().flatten() {
+            a.keys.push(KeyAgg { key: k[0].as_str().unwrap_or("-").into(), calls: k[1].as_u64().unwrap_or(0), total_ms: k[2].as_f64().unwrap_or(0.0), errors: k[3].as_u64().unwrap_or(0) });
+        }
+        for e in j["errors"].as_array().into_iter().flatten() {
+            a.errors.push((e[0].as_str().unwrap_or("").into(), e[1].as_u64().unwrap_or(0), e[2].as_u64().unwrap_or(0)));
+        }
+        a
+    }
+
     fn server_failed(&self) -> u64 {
         OUTCOMES.iter().zip(self.outcomes).filter(|(o, _)| server_failed(o)).map(|(_, n)| n).sum()
     }
@@ -1181,6 +1336,93 @@ impl Statements {
         all.sort_by(|a, b| b.1.total_ms.total_cmp(&a.1.total_ms));
         let rows: Vec<Json> = all.iter().take(limit).map(|(fp, a)| self.statement_json(&s, fp, a, before.get(*fp), (from, to), total)).collect();
         let held = s.minutes.front().map_or(self.since(), |m| m.t.max(self.since()));
+        json!({
+            "statements": rows, "count": now.len(), "from": from, "to": to, "prev": {"from": from.saturating_sub(len), "to": from},
+            "since_ms": self.since(), "held_from_ms": held, "source": "memory", "buckets_ms": STMT_BUCKETS,
+        })
+    }
+
+    /// The statements of `[from, to)` and of the window before, as counts
+    /// another coordinator merges with its own ([`Statements::window_merged`]):
+    /// `{"statements": {fingerprint: {now, before, id, sql, kind,
+    /// first_seen_ms, last_seen_ms, sample}}}`; `only` one fingerprint.
+    pub fn window_raw(&self, from: u64, to: u64, only: Option<&str>) -> Json {
+        let s = lock(&self.inner);
+        let len = to.saturating_sub(from).max(60_000);
+        let now = Self::sum(&s, from, to, only);
+        let before = Self::sum(&s, from.saturating_sub(len), from, only);
+        let total: f64 = now.values().map(|a| a.total_ms).sum();
+        let mut out = serde_json::Map::new();
+        for (fp, a) in &now {
+            let mut j = self.statement_json(&s, fp, a, None, (from, to), total);
+            let o = j.as_object_mut().expect("an object");
+            o.retain(|k, _| ["id", "sql", "kind", "first_seen_ms", "last_seen_ms", "sample"].contains(&k.as_str()));
+            o.insert("now".into(), a.raw());
+            o.insert("before".into(), before.get(fp).map_or(Json::Null, Agg::raw));
+            out.insert(fp.clone(), j);
+        }
+        json!({"statements": out, "since_ms": self.since(), "held_from_ms": s.minutes.front().map_or(self.since(), |m| m.t.max(self.since()))})
+    }
+
+    /// [`Statements::window`] with other coordinators' counts added
+    /// (`others`: each one's name and its [`Statements::window_raw`]), so
+    /// that a statement sent through any coordinator is in it, each
+    /// statement saying by how many calls each coordinator (`coordinators`).
+    pub fn window_merged(&self, from: u64, to: u64, limit: usize, others: &[(String, Json)], this: &str) -> Json {
+        let s = lock(&self.inner);
+        let len = to.saturating_sub(from).max(60_000);
+        let mut now = Self::sum(&s, from, to, None);
+        let mut before = Self::sum(&s, from.saturating_sub(len), from, None);
+        let mut by: HashMap<String, Vec<(String, u64)>> = now.iter().map(|(fp, a)| (fp.clone(), vec![(this.to_string(), a.calls)])).collect();
+        let mut info: HashMap<String, Json> = HashMap::new();
+        let mut held = s.minutes.front().map_or(self.since(), |m| m.t.max(self.since()));
+        for (name, j) in others {
+            held = held.max(j["held_from_ms"].as_u64().unwrap_or(0));
+            for (fp, x) in j["statements"].as_object().into_iter().flatten() {
+                let a = Agg::from_raw(&x["now"]);
+                by.entry(fp.clone()).or_default().push((name.clone(), a.calls));
+                now.entry(fp.clone()).or_default().merge(&a);
+                if !x["before"].is_null() {
+                    before.entry(fp.clone()).or_default().merge(&Agg::from_raw(&x["before"]));
+                }
+                // What this coordinator does not know of it, and the latest call of any.
+                let i = info.entry(fp.clone()).or_insert_with(|| x.clone());
+                for (k, pick_min) in [("first_seen_ms", true), ("last_seen_ms", false)] {
+                    if let (Some(a), Some(b)) = (i[k].as_u64(), x[k].as_u64()) {
+                        i[k] = json!(if pick_min { a.min(b) } else { a.max(b) });
+                    }
+                }
+                if x["sample"]["ts_ms"].as_u64() > i["sample"]["ts_ms"].as_u64() {
+                    i["sample"] = x["sample"].clone();
+                }
+            }
+        }
+        let total: f64 = now.values().map(|a| a.total_ms).sum();
+        let mut all: Vec<(&String, &Agg)> = now.iter().collect();
+        all.sort_by(|a, b| b.1.total_ms.total_cmp(&a.1.total_ms));
+        let rows: Vec<Json> = all
+            .iter()
+            .take(limit)
+            .map(|(fp, a)| {
+                let mut j = self.statement_json(&s, fp, a, before.get(*fp), (from, to), total);
+                if let Some(i) = info.get(*fp) {
+                    let known = s.known.contains_key(*fp);
+                    for k in ["id", "sql", "kind", "first_seen_ms", "last_seen_ms", "sample"] {
+                        let take = !known || match k {
+                            "first_seen_ms" => i[k].as_u64() < j[k].as_u64(),
+                            "last_seen_ms" => i[k].as_u64() > j[k].as_u64(),
+                            "sample" => i[k]["ts_ms"].as_u64() > j[k]["ts_ms"].as_u64(),
+                            _ => false,
+                        };
+                        if take && !i[k].is_null() {
+                            j[k] = i[k].clone();
+                        }
+                    }
+                }
+                j["coordinators"] = Json::Array(by.get(*fp).into_iter().flatten().map(|(n, c)| json!({"name": n, "calls": c})).collect());
+                j
+            })
+            .collect();
         json!({
             "statements": rows, "count": now.len(), "from": from, "to": to, "prev": {"from": from.saturating_sub(len), "to": from},
             "since_ms": self.since(), "held_from_ms": held, "source": "memory", "buckets_ms": STMT_BUCKETS,
@@ -1542,6 +1784,30 @@ pub fn disk(path: &std::path::Path) -> Option<(u64, u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every query with a key counts its client; coordinators' counts add
+    /// up, each client naming the coordinators it went through (AC-4).
+    #[test]
+    fn a_key_s_clients_are_counted_and_merged() {
+        let c = |app: &str, addr: &str| Caller { key_id: Some("k1".into()), app: Some(app.into()), addr: Some(addr.into()), ..Caller::default() };
+        let (a, b) = (KeyClients::default(), KeyClients::default());
+        let t = now_ms();
+        for _ in 0..3 {
+            a.add(&c("nightly", "10.0.0.7"), false, t);
+        }
+        a.add(&Caller::default(), false, t);
+        b.add(&c("nightly", "10.0.0.7"), true, t + 5);
+        b.add(&c("broken-app", "10.0.0.9"), true, t + 9);
+        let ja = a.json(0);
+        assert_eq!(ja["keys"]["k1"][0]["calls"], 3);
+        assert!(ja["keys"].get("-").is_none(), "no key: not counted");
+        let m = KeyClients::merge(&[("coord-a".into(), ja), ("coord-b".into(), b.json(0))]);
+        let k1 = m["keys"]["k1"].as_array().unwrap();
+        assert_eq!((k1[0]["app"].as_str(), k1[0]["calls"].as_u64(), k1[0]["failed"].as_u64()), (Some("nightly"), Some(4), Some(1)));
+        assert_eq!(k1[0]["coordinators"], json!(["coord-a", "coord-b"]));
+        assert_eq!((k1[1]["app"].as_str(), k1[1]["coordinators"].clone()), (Some("broken-app"), json!(["coord-b"])));
+        assert!(b.json(t + 10)["keys"].get("k1").is_none(), "none since then");
+    }
 
     #[test]
     fn statements_differing_in_values_share_a_fingerprint() {

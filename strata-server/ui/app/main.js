@@ -227,7 +227,7 @@ function moreSheet() {
       timed ? ranges : null,
       timed ? row("clock", "Pick a fixed window", "dates and times, or overnight", pickWindow) : null,
       timed && state.zoom ? row("zout", "Reset the zoom", null, () => setZoom(null)) : null,
-      timed ? row(state.paused ? "play" : "pause", state.paused ? "Go live" : "Pause", state.paused ? "follow now again" : "nothing redraws while paused", () => setPaused(!state.paused)) : null,
+      row(state.paused ? "play" : "pause", state.paused ? "Go live" : "Pause", state.paused ? "follow now again" : "nothing redraws while paused", () => setPaused(!state.paused)),
       row("share", "Share a link to this view", timed ? "with this window as fixed times; it opens paused" : null, share),
       h("hr"),
       row(isDark() ? "sun" : "moon", isDark() ? "Light theme" : "Dark theme", null, toggleTheme),

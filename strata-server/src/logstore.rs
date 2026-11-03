@@ -1055,11 +1055,39 @@ pub fn bind_select(catalog: &[Arc<Schema>], sql: &str, params: &Params) -> Resul
 }
 
 /// What one server answered of a cluster's query of the logs.
+/// Another coordinator's store's answer to a cluster log query, in the
+/// partial form a shard answers (`POST /v1/logs/query` with `partial`).
+pub struct PeerAnswer {
+    pub url: String,
+    pub name: String,
+    pub ms: f64,
+    pub answer: Result<ResultSet, ApiError>,
+}
+
+/// A store's answer in the partial form, for another coordinator to merge:
+/// the gRPC `QueryResponse`, base64.
+pub fn partial_json(rs: &ResultSet, took_ms: f64) -> Json {
+    use base64::Engine;
+    use prost::Message;
+    json!({"partial": base64::engine::general_purpose::STANDARD.encode(crate::grpc::result_to_pb(rs, took_ms).encode_to_vec())})
+}
+
+/// What [`partial_json`] wrote.
+pub fn from_partial_json(j: &Json) -> Result<ResultSet, ApiError> {
+    use base64::Engine;
+    use prost::Message;
+    let bad = |e: String| ApiError { status: 502, message: format!("another coordinator's log store answered what this one cannot read: {e}") };
+    let b = base64::engine::general_purpose::STANDARD.decode(j["partial"].as_str().ok_or_else(|| bad("no partial answer".into()))?).map_err(|e| bad(e.to_string()))?;
+    result_from_pb(pb::QueryResponse::decode(b.as_slice()).map_err(|e| bad(e.to_string()))?)
+}
+
 struct NodeAnswer {
     url: Option<String>,
     shard: Option<usize>,
     ms: f64,
     answer: Result<ResultSet, ApiError>,
+    /// Another coordinator's name, for its store's answer.
+    peer: Option<String>,
 }
 
 /// A query of every server's log store, on a coordinator: its own store
@@ -1067,7 +1095,7 @@ struct NodeAnswer {
 /// shard mode, merged. Answers as `POST /v1/query` does, with `nodes`:
 /// each server asked, its rows, time and error; a server that does not
 /// answer is left out of the rows.
-pub async fn cluster_query(local: Option<&Arc<LogStore>>, coord: &Coordinator, sql: &str, params: &Params, timeout: Duration) -> Result<Json, ApiError> {
+pub async fn cluster_query(local: Option<&Arc<LogStore>>, coord: &Coordinator, sql: &str, params: &Params, timeout: Duration, peers: impl std::future::Future<Output = Vec<PeerAnswer>>) -> Result<Json, ApiError> {
     let t0 = Instant::now();
     let deadline = t0 + timeout;
     let (_, select) = bind_select(schemas(), sql, params)?;
@@ -1076,7 +1104,7 @@ pub async fn cluster_query(local: Option<&Arc<LogStore>>, coord: &Coordinator, s
             Some(s) => {
                 let t = Instant::now();
                 let answer = s.query(sql, params, true, timeout).await.map(|(rs, _)| rs);
-                vec![NodeAnswer { url: None, shard: None, ms: t.elapsed().as_secs_f64() * 1e3, answer }]
+                vec![NodeAnswer { url: None, shard: None, ms: t.elapsed().as_secs_f64() * 1e3, answer, peer: None }]
             }
             None => Vec::new(),
         }
@@ -1095,11 +1123,13 @@ pub async fn cluster_query(local: Option<&Arc<LogStore>>, coord: &Coordinator, s
                 Ok(Err(s)) => Err(ApiError::from(s)),
                 Ok(Ok(a)) => result_from_pb(a.into_inner()),
             };
-            NodeAnswer { url: Some(url), shard: Some(shard), ms: t.elapsed().as_secs_f64() * 1e3, answer }
+            NodeAnswer { url: Some(url), shard: Some(shard), ms: t.elapsed().as_secs_f64() * 1e3, answer, peer: None }
         }
     }));
-    let (mut answers, theirs) = tokio::join!(mine, theirs);
+    let (mut answers, theirs, peers) = tokio::join!(mine, theirs, peers);
     answers.extend(theirs);
+    // R2-workload-1: the other coordinators' stores, as each answered.
+    answers.extend(peers.into_iter().map(|p| NodeAnswer { url: Some(p.url), shard: None, ms: p.ms, answer: p.answer, peer: Some(p.name) }));
     let mut nodes = Vec::new();
     let mut sets = Vec::new();
     let mut labels = Vec::new();
@@ -1107,6 +1137,10 @@ pub async fn cluster_query(local: Option<&Arc<LogStore>>, coord: &Coordinator, s
     for a in answers {
         let mut n = json!({"url": a.url, "shard": a.shard, "ms": a.ms});
         let label = a.url.clone().unwrap_or_else(|| local.map_or_else(|| "the coordinator".to_string(), |s| s.options().node.clone()));
+        if let Some(name) = &a.peer {
+            n["coordinator"] = json!(true);
+            n["node"] = json!(name);
+        }
         if a.url.is_none() {
             n["coordinator"] = json!(true);
             n["node"] = json!(label);

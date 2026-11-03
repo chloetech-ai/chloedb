@@ -443,10 +443,15 @@ function render(page) {
       foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), h("button", { class: "btn primary", onclick: async () => {
         // NEW-data-tools-8: on production the statement says why, as the workbench's writes do.
         let reason = null;
-        if (isProduction()) {
-          const ok = await confirm({ title: `Save rank profile ${name.value.trim() || "p"} on ${t.table}?`, body: "This cluster counts as production: every query that names the profile ranks by it, and the audit log keeps the statement with your reason.", ok: "Save it", reason: true });
+        // R2-data-tools-3: saving under a name in use replaces that profile; say so, with the old ranking.
+        const nm = name.value.trim() || "p";
+        const old = (t.profiles || []).find((x) => x.name.toLowerCase() === nm.toLowerCase());
+        if (isProduction() || old) {
+          const body = [h("p", {}, (old ? `It replaces the profile ${old.name} that ${t.table} has now: every query that names it ranks the new way from then on.` : "Every query that names the profile ranks by it.") + (isProduction() ? " This cluster counts as production, and the audit log keeps the statement with your reason." : ""))];
+          if (old) body.push(h("div", { class: "small muted" }, "Now"), sqlBlock(old.ranking), h("div", { class: "small muted", style: { marginTop: "6px" } }, "After"), sqlBlock(sqlFor()));
+          const ok = await confirm({ title: old ? `Replace rank profile ${old.name} on ${t.table}?` : `Save rank profile ${nm} on ${t.table}?`, body, ok: old ? "Replace it" : "Save it", danger: !!old, reason: isProduction() });
           if (!ok) return;
-          reason = ok.reason;
+          reason = ok.reason || null;
         }
         try { await api("/v1/sql", { body: { sql: sqlFor() }, reason }); m.close(); toast(`Rank profile ${name.value.trim()} saved`, "ok"); invalidate(); ts = await tables(true); }
         catch (err) { toast(err.message, "bad", 9000); }

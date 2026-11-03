@@ -48,6 +48,8 @@ function render(page, r) {
   const stamp = h("span", { class: "small muted" });
   const map = h("div", { class: "ix-scope" }), tiles = h("div", { class: "ix-tiles" });
   const bytes = h("div"), docs = h("div"), fields = h("div"), fresh = h("div"), skew = h("div"), cover = h("div"), curve = h("div"), freq = h("div"), topDocs = h("div"), topKeys = h("div");
+  // R2-data-tools-1: whose reads these are, drawn once the answer is in.
+  const readsTail = h("span"), partial = h("div", { class: "ix-c12", hidden: true });
   const whatSeg = h("span");
   const body = h("div", { class: "ix-grid" },
     card({ title: "Where the bytes go", sub: "each box is a field's index or its share of the doc store, on disk", tools: exact(), body: bytes, cls: "ix-c7" }),
@@ -55,13 +57,14 @@ function render(page, r) {
     card({ title: "Fields", sub: "how many documents have each, its value sizes, its index on disk", body: fields, cls: "ix-c12" }),
     card({ title: "Freshness", sub: "the last write each copy took", body: fresh, cls: "ix-c6" }),
     card({ title: "Shards compared", sub: "how documents, bytes and reads spread over the shards", body: skew, cls: "ix-c6" }),
+    partial,
     card({ title: "Read at least once", sub: "since each server started", tools: whatSeg, body: cover, cls: "ix-c4" }),
     card({ title: "How concentrated reads are", body: curve, cls: "ix-c4" }),
     card({ title: "Times each was read", body: freq, cls: "ix-c4" }),
     card({ title: "Most retrieved documents", sub: "rows returned in query answers, since each server started", tools: approx(), body: topDocs, cls: "ix-c6" }),
     card({ title: "Most requested keys", sub: "reads by key (GET /v1/kv, MGET, Get), since each server started", tools: approx(), body: topKeys, cls: "ix-c6" }));
   const content = h("div", {}, card({ title: "Where to look", sub: "the cluster, a shard or a copy: every number below follows", body: map, attrs: { style: { marginBottom: "14px" } } }), tiles, body,
-    h("p", { class: "small muted ix-foot" }, "Documents, bytes, segments, index sizes and distinct terms are read from every segment (terms of large fields are estimated with a HyperLogLog sketch, which also merges across shards). Value sizes, fill and document sizes come from documents drawn at random from each server, weighted to its whole table; tokens per document come from every document's length norm, exact under 24 tokens and rounded down by at most 12.5% above. Reads are counted in memory since each server started or was reset: the top lists keep each table's 256 most read keys (Space-Saving, each count at most its error too high), coverage and the frequency chart come from a hash sample of keys that halves itself to stay under 4,096. A coordinator counts what each copy served through it, and each server what it answered its own clients, so nothing is counted twice." + readsFrom()));
+    h("p", { class: "small muted ix-foot" }, "Documents, bytes, segments, index sizes and distinct terms are read from every segment (terms of large fields are estimated with a HyperLogLog sketch, which also merges across shards). Value sizes, fill and document sizes come from documents drawn at random from each server, weighted to its whole table; tokens per document come from every document's length norm, exact under 24 tokens and rounded down by at most 12.5% above. Reads are counted in memory since each server started or was reset: the top lists keep each table's 256 most read keys (Space-Saving, each count at most its error too high), coverage and the frequency chart come from a hash sample of keys that halves itself to stay under 4,096. A coordinator counts what each copy served through it, and each server what it answered its own clients, so nothing is counted twice.", readsTail));
   const title = h("h1", {}, "Table details");
   page.append(h("div", { class: "page-head" }, h("div", {}, h("div", { class: "small" }, h("a", { class: "wl-link", href: "#/tables" }, "Tables and storage"), h("span", { class: "muted" }, " › one table")), title, h("p", {}, "What the table holds, how big each part of it is, how fresh it is, and how often its documents and keys are read. Reads are counted since each server started (Reset reads starts them again).")),
     h("div", { class: "tools" }, stamp, h("label", { class: "small muted" }, "Table"), pick, sizes, reset, again)), content);
@@ -490,6 +493,10 @@ function render(page, r) {
       return;
     }
     body.hidden = false;
+    readsTail.textContent = readsFrom();
+    const f = Array.isArray(data.reads_from) ? data.reads_from : [], missing = f.filter((x) => !x.ok);
+    partial.hidden = !missing.length;
+    if (missing.length) clear(partial, h("div", { class: "note-warn small" }, icon("warn"), `${f.length - missing.length} of ${f.length} coordinators answered: ${missing.map((x) => x.name || x.url).join(", ")} did not, so the reads below leave out what went through ${missing.length === 1 ? "it" : "them"}.`));
     drawTiles(cur); drawBytes(cur); drawDocs(cur); drawFields(cur); drawFresh(cur); drawReads(cur);
   }
 

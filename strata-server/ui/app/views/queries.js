@@ -37,13 +37,13 @@ function render(page, r) {
       h("div", {}, h("h1", {}, "Queries"), scope),
       h("div", { class: "tools" }, h("button", { class: "btn sm", title: "Copy a link to this view, with its range and filters", onclick: () => copy(location.href, "Link copied") }, icon("link"), "Copy link"))),
     tabs, body);
-  // fleet: Running now and Contain cover every coordinator; Statements are this one's.
+  // fleet: Running now, Contain, Statements and History cover every coordinator (R2-workload-1).
   const drawScope = () => {
     const c = state.cluster, n = (c?.shards || []).reduce((a, x) => a + (x.replicas?.length || 0), 0);
     const cs = state.fleet?.coordinators || [];
     const shards = n ? ` and ${cs.length > 1 ? "their" : "its"} ${fmt.plural(c.shards.length, "shard")} (${fmt.plural(n, "copy", "copies")})` : "";
     scope.textContent = !isCoord() ? "This server: what runs now, the statements over the range in the top bar, and the history its log store keeps."
-      : cs.length > 1 ? `${fmt.plural(cs.length, "coordinator")}${shards}: Running now and Contain cover every coordinator; Statements and the history are this coordinator's (${cs.find((x) => x.this)?.name || location.host}).`
+      : cs.length > 1 ? `${fmt.plural(cs.length, "coordinator")}${shards}: Running now, Contain, Statements and the history cover every coordinator that answers; each statement says how many calls went through each.`
       : `This coordinator${shards}, the only one the shards heard from: what runs now, the statements over the range in the top bar, and the history the log stores keep.`;
   };
   drawScope();
@@ -105,15 +105,31 @@ function live(body, params, setCount) {
   let all = [], at = 0, err = null, nodes = null, missing = [];
   const shardCount = () => state.cluster?.shards?.length || 0;
 
+  /**
+   * The shards a running query waits on, from its trace's rounds: of its
+   * last step's calls over all its rounds (a retry is a round of its own),
+   * a shard that answered is not waited on, one whose calls failed is being
+   * tried again, one with no call ended is pending (R2-scenarios-5).
+   * {shards, retrying, failed}, or null when every shard answered.
+   */
+  function waits(rs) {
+    const last = rs[rs.length - 1], n = shardCount();
+    if (!last) return null;
+    const calls = rs.filter((r) => r.name === last.name).flatMap((r) => r.calls);
+    const answered = new Set(calls.filter((c) => c.outcome === "ok" || c.outcome === "outrun").map((c) => c.shard));
+    const retrying = [...new Set(calls.filter((c) => !answered.has(c.shard)).map((c) => c.shard))];
+    if (retrying.length) return { shards: retrying, retrying: true, failed: calls.filter((c) => retrying.includes(c.shard)).length };
+    if (n && answered.size < n) return { shards: (state.cluster?.shards || []).map((x) => x.shard).filter((i) => !answered.has(i)), retrying: false, failed: 0 };
+    return null;
+  }
   function waitingOn(q) {
     const rs = rounds(q.trace || []);
     if (!rs.length) return q.trace?.length ? h("span", { class: "muted" }, isCoord() ? "planning, or the coordinator" : "running here") : h("span", { class: "muted" }, "–");
     const last = rs[rs.length - 1], n = shardCount();
-    if (n && last.shards < n) {
-      const got = new Set(last.calls.map((c) => c.shard));
-      const missing = (state.cluster?.shards || []).map((x) => x.shard).filter((i) => !got.has(i));
-      return h("span", { class: "small" }, `${last.name}: `, missing.length <= 3 ? missing.map((i) => `shard ${i}`).join(", ") : `${missing.length} of ${n} shards`);
-    }
+    const w = waits(rs);
+    const names = (xs) => xs.length <= 3 ? xs.map((i) => `shard ${i}`).join(", ") : `${xs.length} of ${n || "the"} shards`;
+    if (w?.retrying) return h("span", { class: "small", title: `${fmt.plural(w.failed, "call")} to ${names(w.shards)} failed; the coordinator tries again` }, `${last.name}: `, h("b", {}, names(w.shards)), ` (trying again after ${fmt.plural(w.failed, "failed call")})`);
+    if (w) return h("span", { class: "small" }, `${last.name}: `, w.shards.length ? names(w.shards) : "all shards");
     return h("span", { class: "small muted", title: `Every shard answered its ${last.name} call: the coordinator gathers the answer` }, isCoord() ? "the coordinator (every shard answered)" : "–");
   }
   const deadline = (q) => q.deadline_ms ?? state.system?.limits?.timeout_ms ?? null;
@@ -182,9 +198,8 @@ function live(body, params, setCount) {
     if (qs.length < 3 || !shardCount()) return null;
     const m = new Map();
     for (const q of qs) {
-      const rs = rounds(q.trace || []); const last = rs[rs.length - 1]; if (!last) continue;
-      const got = new Set(last.calls.map((c) => c.shard));
-      for (const sh of state.cluster.shards) if (!got.has(sh.shard)) m.set(sh.shard, (m.get(sh.shard) || 0) + 1);
+      const w = waits(rounds(q.trace || []));
+      for (const sh of w?.shards || []) m.set(sh, (m.get(sh) || 0) + 1);
     }
     const best = [...m].sort((a, b) => b[1] - a[1])[0];
     return best && best[1] >= qs.length * 0.6 && best[1] >= 3 ? { shard: best[0], n: best[1] } : null;
@@ -289,6 +304,8 @@ function statementsTab(body, params, setCount) {
     const mins = Math.round(windowMs() / 60e3);
     clear(head, h("span", { class: "pill info" }, `${r.label || "the range"} · ${fmt.time(r.from, false)} → ${r.to && !r.live ? fmt.time(r.to, false) : "now"}`),
       data?.windowed && data.partial ? h("span", { class: "small muted", title: `The server keeps statements from ${fmt.datetime(data.held_from_ms)}: rates are over that part of the range` }, `held from ${when(data.held_from_ms)} on`) : null,
+      // R2-workload-1: a coordinator that did not answer leaves its statements out.
+      data?.coordinators?.some((c) => !c.ok) ? h("span", { class: "small", style: { color: "var(--warn)" } }, `${data.coordinators.filter((c) => !c.ok).map((c) => c.name || c.url).join(", ")} did not answer: ${data.coordinators.filter((c) => !c.ok).length === 1 ? "its" : "their"} statements are not here`) : null,
       data?.windowed ? h("span", { class: "small muted" }, data.prevHeld ? `compared with the ${mins >= 120 ? fmt.plural(Math.round(mins / 60), "hour") : mins + " min"} before` : "no window before to compare with: the server does not hold it") : null);
     if (err) { clear(note, failure(err, "The statements")); clear(cards); tbl.update([]); return; }
     if (!data) return;
@@ -354,7 +371,7 @@ function statementsTab(body, params, setCount) {
         others > 0 ? h("div", { class: "small muted", style: { marginTop: "6px" } }, `The rest: ${fmt.pct(othersFailed / Math.max(1, others), 1)} of every other statement's calls failed.`) : null,
         h("div", { class: "row", style: { gap: "6px", marginTop: "8px" } },
           h("a", { class: "btn sm", href: statementLink(x.fingerprint) }, "Open it ›"),
-          canContainNow() ? h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: x.fingerprint, sql: x.sql, key: k?.key, keys: x.keys, onDone: () => {} }) }, k ? `Refuse it from ${k.key}…` : "Refuse it…") : null,
+          canContainNow() ? h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: x.fingerprint, sql: x.sql, key: k?.key, keys: x.keys, action: "refuse", onDone: () => {} }) }, k ? `Refuse it from ${k.key}…` : "Refuse it…") : null,
           h("button", { class: "btn sm ghost", title: "A summary to send the team that owns the client", onclick: () => copy(`Statement ${x.id || shortFp(x.fingerprint)} fails: ${fmt.n(failed)} of ${fmt.n(x.calls)} calls (${fmt.pct(failed / Math.max(1, x.calls), 0)}) ${timeRange().label || ""}${k ? `, from API key ${k.key}` : ""}.\n${msg.textContent ? "Error: " + msg.textContent + "\n" : ""}SQL: ${x.sql}\n${location.origin}/${statementLink(x.fingerprint)}`, "Summary copied") }, icon("copy"), "Copy for the app team")),
         errs.length > 1 ? h("div", { class: "small muted", style: { marginTop: "8px" } }, errs.slice(1, 3).map((y) => h("div", { class: "ellipsis" }, h("a", { href: statementLink(y.fingerprint), class: "wl-link" }, `${fmt.n(split(y.outcomes, y.calls).failed)} failed`), " · ", h("span", { class: "mono" }, y.sql)))) : null);
       const m = msgCache.get(x.fingerprint);

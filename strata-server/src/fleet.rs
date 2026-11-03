@@ -65,6 +65,9 @@ pub struct Inputs<'a> {
     pub cluster: &'a Json,
     /// This server's points over the window.
     pub points: &'a [Arc<Json>],
+    /// And over the last hour (the series holds an hour): a failure that
+    /// began before the window began then (R2-scenarios-4).
+    pub history: &'a [Arc<Json>],
     pub slo_error_ratio: f64,
     pub slo_p99_ms: f64,
     /// The alerts firing here that nobody silenced, as `/v1/alerts`'
@@ -78,6 +81,9 @@ pub struct Inputs<'a> {
     /// The other coordinators' searches (fleet): the SLO checks judge the
     /// sum of every coordinator's.
     pub peers: Vec<PeerWindow>,
+    /// The coordinators the shards stopped hearing from in the last 10
+    /// minutes (R2-workload-3): `(name, url, last seen)`.
+    pub gone: Vec<(String, String, u64)>,
     pub now_ms: u64,
 }
 
@@ -426,7 +432,14 @@ impl Fleet {
             None => ratio.is_some_and(|y| y > slo),
         };
         let shown = if recent.is_some() { recent } else { ratio };
-        let run = own.last_run(slo / 2.0);
+        // The window's last run of failures, from its first failing point
+        // in the hour: an outage longer than the window began before it
+        // (R2-scenarios-4).
+        let hour = Window::of(if i.history.len() > i.points.len() { i.history } else { i.points });
+        let run = own.last_run(slo / 2.0).map(|(from, to, worst)| match hour.last_run(slo / 2.0) {
+            Some((f, t, w)) if f <= from && t >= to => (f, to, worst.max(w)),
+            _ => (from, to, worst),
+        });
         let recovered = !failing_now && ratio.is_some_and(|y| y > slo / 2.0) && recent.is_some() && run.is_some();
         let er_status = if failing_now {
             if shown.is_some_and(|x| x > slo) { "critical" } else { "warning" }
@@ -435,7 +448,7 @@ impl Fleet {
         } else {
             "ok"
         };
-        let er_since = failing_now.then(|| own.over_since(slo / 2.0)).flatten();
+        let er_since = failing_now.then(|| hour.over_since(slo / 2.0).or_else(|| own.over_since(slo / 2.0))).flatten();
         let mut er = json!({"id": "error_ratio", "status": er_status, "value": ratio, "slo": slo, "window_s": WINDOW_S, "queries": w.queries.round(), "failures": w.failures.round(),
             "recent": {"value": recent, "window_s": RECENT_S, "queries": r.queries.round(), "failures": r.failures.round()}, "coordinators": 1 + i.peers.iter().filter(|p| p.error.is_none()).count()});
         if let Some(s) = er_since {
@@ -676,6 +689,25 @@ impl Fleet {
             });
         }
 
+        // ----- a coordinator that stopped answering (R2-workload-3): its
+        // clients' queries fail or went elsewhere, and its numbers are not
+        // in these.
+        if !i.gone.is_empty() && i.coordinator.is_some() {
+            let names: Vec<String> = i.gone.iter().map(|(n, _, _)| n.clone()).collect();
+            let since = i.gone.iter().map(|(_, _, t)| *t).max();
+            let one = names.len() == 1;
+            let title = if one { format!("Coordinator {} stopped answering", names[0]) } else { format!("{} coordinators stopped answering", names.len()) };
+            let ago = since.map_or(String::new(), |t| format!(" {} ago", dur(now.saturating_sub(t))));
+            problems.push(Problem {
+                rank: 14,
+                critical: false,
+                headline: title.clone(),
+                j: json!({"id": "coordinators_gone", "severity": "warning", "title": title, "where": names, "since_ms": since,
+                    "impact": format!("The shards last heard from {}{ago}. Clients sent to {} fail or went to another coordinator, and {} searches, alerts and audit are not in these numbers", either(&names), if one { "it" } else { "them" }, if one { "its" } else { "their" }),
+                    "next": {"text": format!("Look at {}'s logs and its pod or process (killed for memory?); if it was removed on purpose, this clears 10 minutes after it was last heard from", either(&names)), "view": "logs", "params": {"q": names[0].clone()}}}),
+            });
+        }
+
         // ----- since when each problem holds, worst first; equal ones by
         // their age, then their title: the same order every look.
         let ids: std::collections::HashSet<String> = problems.iter().map(|p| p.j["id"].as_str().unwrap_or("").to_string()).collect();
@@ -741,6 +773,9 @@ impl Fleet {
             }
             coordinators.push(c);
         }
+        for (name, url, last) in &i.gone {
+            coordinators.push(json!({"url": url, "name": name, "this": false, "gone": true, "last_seen_ms": last, "error": format!("{name}: not heard from since {}", dur(now.saturating_sub(*last)))}));
+        }
         json!({
             "at_ms": now, "status": status, "headline": headline, "since_ms": since_ms, "first_signal_ms": first_signal_ms, "not_ok_since_ms": m.not_ok,
             "api": {"ok": true, "server": if i.coordinator.is_some() { "coordinator" } else { "shard" }},
@@ -799,7 +834,21 @@ mod tests {
     }
 
     fn inputs<'a>(cluster: &'a Json, points: &'a [Arc<Json>]) -> Inputs<'a> {
-        Inputs { cluster, points, slo_error_ratio: 0.01, slo_p99_ms: 250.0, alerts: Vec::new(), partial: false, coordinator: Some(json!({"url": null, "name": "c"})), peers: Vec::new(), now_ms: 10_000 }
+        Inputs { cluster, points, history: &[], slo_error_ratio: 0.01, slo_p99_ms: 250.0, alerts: Vec::new(), partial: false, coordinator: Some(json!({"url": null, "name": "c"})), peers: Vec::new(), gone: Vec::new(), now_ms: 10_000 }
+    }
+
+    #[test]
+    fn a_coordinator_that_stopped_answering_is_a_problem() {
+        let c = json!({"shards": [{"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [copy("s0-0", true), copy("s0-1", true)]}]});
+        let f = Fleet::default();
+        let mut i = inputs(&c, &[]);
+        i.gone = vec![("coordinator-b".into(), "http://b:7700".into(), 4_000)];
+        let j = f.judge(i);
+        let p = j["problems"].as_array().unwrap().iter().find(|p| p["id"] == "coordinators_gone").expect("a problem").clone();
+        assert_eq!((p["title"].as_str().unwrap(), p["since_ms"].as_u64()), ("Coordinator coordinator-b stopped answering", Some(4_000)));
+        assert!(p["impact"].as_str().unwrap().contains("6 s ago"), "{p}");
+        let b = j["coordinators"].as_array().unwrap().iter().find(|c| c["name"] == "coordinator-b").unwrap().clone();
+        assert_eq!(b["gone"], true);
     }
 
     #[test]
@@ -896,6 +945,26 @@ mod tests {
         let mut i = inputs(&c, &p);
         i.now_ms = 300_000;
         assert_eq!(Fleet::default().judge(i)["status"], "ok");
+    }
+
+    /// An outage longer than the window: its start and length come from
+    /// its first failing point in the hour, not from the window's first
+    /// (R2-scenarios-4: 6 min read "failed for 4 min" a minute after).
+    #[test]
+    fn a_failure_longer_than_the_window_says_when_it_began() {
+        let c = json!({"shards": [{"shard": 0, "state": "ok", "replicas": [copy("s0-0", true)]}]});
+        // Failing from 60 s to 436 s (6 min 16 s); the window holds 200 s to 500 s.
+        let fails = |t: u64| if (60_000..=436_000).contains(&t) { 100 } else { 0 };
+        let hour = pts(0, 500, fails);
+        let window = pts(200, 500, fails);
+        let mut i = inputs(&c, &window);
+        i.history = &hour;
+        i.now_ms = 500_000;
+        let j = Fleet::default().judge(i);
+        assert_eq!(j["headline"], "Searches failed for 6 min (100% at worst) and answer again");
+        let er = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "error_ratio").unwrap().clone();
+        assert_eq!((er["recovered"]["from_ms"].as_u64(), er["recovered"]["to_ms"].as_u64()), (Some(60_000), Some(436_000)));
+        assert_eq!(j["problems"][0]["since_ms"], 60_000);
     }
 
     #[test]

@@ -2831,6 +2831,11 @@ body.cc-dragging, body.cc-dragging * { cursor: grabbing !important; user-select:
 .cc-dg { cursor: pointer; }
 .cc-dg:focus-visible rect { stroke: var(--accent); stroke-width: 2; }
 .cc-copies td { white-space: nowrap; }
+/* R2-cluster-admin-1: the server's name under the copy's, and the ⋯ menu
+   held in view at the panel's right edge however wide the table gets. */
+.cc-copies .cc2-sname { display: block; }
+.cc-copies tr:not(.cc-note) > td:last-child, .cc-copies thead th:last-child { position: sticky; right: 0; background: var(--surface); }
+.cc-copies tr.sel > td:last-child { background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--surface); }
 .cc-copies tr.cc-note td { padding-top: 0; border-top: 0; white-space: normal; }
 .cc-copies tr:has(+ tr.cc-note) td { border-bottom: 0; }
 .cc-menu { position: fixed; z-index: 85; width: 280px; padding: 4px; }
@@ -3068,8 +3073,9 @@ body.cc-dragging, body.cc-dragging * { cursor: grabbing !important; user-select:
 /* ===== end cluster ===== */
 
 /* ===== integration ===== */
-/* Views without a time axis (range: false) show no range, window, zoom or Live. */
-.top.no-range > .seg, .top.no-range > .abs, .top.no-range > .chip, .top.no-range > .live { display: none; }
+/* Views without a time axis (range: false) show no range, window or zoom; they
+   still poll, so Live / Paused / Not answering stays (R2-shell-monitor-1). */
+.top.no-range > .seg, .top.no-range > .abs, .top.no-range > .chip { display: none; }
 /* Number headers sit over their numbers ("table.t th" would set them left). */
 table.t th.num { text-align: right; }
 /* ===== end integration ===== */

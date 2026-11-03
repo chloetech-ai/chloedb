@@ -348,8 +348,20 @@ export function firingAlerts(a = state.alerts) {
   if (Array.isArray(a.firing)) return a.firing.map((r) => ({ id: r.id, name: r.name, severity: r.severity, since_ms: r.status?.since_ms || null, value: r.status?.value ?? null, where: r.status?.where || [], ack: r.status?.ack || null, silenced: r.status?.silenced || null, description: r.description }));
   return (a.states || []).filter((x) => x.state === "firing").map((x) => {
     const r = rules.find((y) => y.id === x.rule) || {};
-    return { id: x.rule, name: r.name || x.name || x.rule, severity: r.severity || x.severity || "warning", since_ms: x.since_ms || null, value: x.value ?? null, where: x.where || [], ack: x.ack || null, silenced: x.silenced || null, held_by: x.held_by || null, description: r.description };
+    return { id: x.rule, name: r.name || x.name || x.rule, severity: r.severity || x.severity || "warning", since_ms: x.since_ms || null, value: x.value ?? null, where: x.where || [], ack: x.ack || null, silenced: x.silenced || null, held_by: x.held_by || null, description: r.description, on: firesOn(x) };
   });
+}
+
+/**
+ * The other coordinators an alert fires on when it does not fire on this
+ * one (its rule judges each coordinator's own traffic, R2-scenarios-1):
+ * "coordinator-b", or null when it fires here.
+ */
+export function firesOn(x) {
+  if (!x?.here || !Array.isArray(x.elsewhere) || !x.elsewhere.length) return null;
+  const host = (u) => { try { return new URL(u).host; } catch { return String(u || ""); } };
+  const there = x.elsewhere.filter((e) => e.state === x.state);
+  return (there.length ? there : x.elsewhere).map((e) => e.name || host(e.url)).join(", ");
 }
 
 /** The alerts firing now that nobody silenced nor a cause holds back (alerts2): the one count the bell, Alerts and Home show. */

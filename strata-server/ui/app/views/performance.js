@@ -175,12 +175,15 @@ function render(page) {
 
   // ------------------------------------------------ drawing
   function drawScope() {
-    const c = state.cluster, cs = copiesOf(c), coords = state.fleet?.coordinators || [];
+    const c = state.cluster, cs = copiesOf(c), all = state.fleet?.coordinators || [];
+    // R2-workload-3: a coordinator the shards stopped hearing from is said apart.
+    const coords = all.filter((x) => !x.gone), gone = all.filter((x) => x.gone);
+    const goneText = gone.length ? ` ${gone.map((x) => x.name || x.url).join(", ")} stopped answering ${fmt.ago ? fmt.ago(Math.max(...gone.map((x) => x.last_seen_ms || 0))) : "recently"}: what went through ${gone.length === 1 ? "it" : "them"} is not here.` : "";
     const r = timeRange();
     const ns = (c?.shards || []).map((x) => x.replicas?.length || 0), lo = Math.min(...ns), hi = Math.max(...ns);
     const per = ns.length ? (lo === hi ? ` × ${fmt.plural(lo, "copy", "copies")}` : `, ${lo}-${hi} copies`) : "";
     scope.textContent = isCoord()
-      ? `The fleet: ${coords.length > 1 ? `${fmt.plural(coords.length, "coordinator")}, ` : ""}${fmt.plural(c?.shards?.length || 0, "shard")}${per} · ${r.label}${against()}. ${coords.length > 1 ? `The charts are the queries through this coordinator (${coords.find((x) => x.this)?.name || location.host}); Home adds up ${coords.length === 2 ? "both" : "all " + coords.length}.` : state.fleet?.derived ? "The charts are the queries through this coordinator: this server does not list the others." : "Every query enters through this coordinator: the shards heard from no other in the last minute."}`
+      ? `The fleet: ${coords.length > 1 ? `${fmt.plural(coords.length, "coordinator")}, ` : ""}${fmt.plural(c?.shards?.length || 0, "shard")}${per} · ${r.label}${against()}. ${coords.length > 1 ? `The charts are the queries through this coordinator (${coords.find((x) => x.this)?.name || location.host}); Home adds up ${coords.length === 2 ? "both" : "all " + coords.length}.` : state.fleet?.derived ? "The charts are the queries through this coordinator: this server does not list the others." : gone.length ? "The charts are the queries through this coordinator, the only one answering." : "Every query enters through this coordinator: the shards heard from no other in the last minute."}${goneText}`
       : `This server · ${r.label}${against()}.`;
   }
   /** What the "was" numbers are of, or why there are none. */
@@ -297,7 +300,7 @@ function render(page) {
         const all = tops.reduce((a, y) => a + y.n, 0) || 1, t = tops[0], k = t?.x.keys?.slice().sort((a, b) => b.calls - a.calls)[0];
         out.push({ level: "warn", id: "client_errors", title: `${fmt.si(cr * 100, 1)}% of queries are client errors (400)${w === f15 ? " in the last 15 minutes" : ""}`,
           body: [`${fmt.si(w.client / secsOf(w), 0)}/s requests the server cannot run. Not a server fault: they are counted apart from the failures.`, t ? [" ", fmt.pct(t.n / all, 0), " are one statement", k ? [" from key ", h("b", { class: "mono" }, k.key)] : "", ": ", h("code", {}, trim(t.x.sql, 80)), "."] : ""],
-          rule: `client errors (400) over 1% of the queries in ${winOf(w)}`, links: [t ? ["Open the statement", statementLink(t.x.fingerprint)] : null, t && k && canContainNow() ? [`Refuse it from ${k.key}…`, () => containDialog({ fingerprint: t.x.fingerprint, sql: t.x.sql, key: k.key, keys: t.x.keys?.map((y) => ({ key: y.key })) })] : null] });
+          rule: `client errors (400) over 1% of the queries in ${winOf(w)}`, links: [t ? ["Open the statement", statementLink(t.x.fingerprint)] : null, t && k && canContainNow() ? [`Refuse it from ${k.key}…`, () => containDialog({ fingerprint: t.x.fingerprint, sql: t.x.sql, key: k.key, keys: t.x.keys?.map((y) => ({ key: y.key, calls: y.calls })), action: "refuse" })] : null] });
       }
     }
     // Client deadlines, apart.

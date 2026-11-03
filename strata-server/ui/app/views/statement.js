@@ -82,7 +82,7 @@ export function render(page, r) {
       h("div", { class: "row small muted", style: { marginBottom: "6px" } }, h("a", { class: "wl-link", href: link("queries", { tab: "live" }) }, "Queries"), " › ", h("a", { class: "wl-link", href: link("queries", { tab: "statements" }) }, "Statements"), ` › ${st?.id || shortFp(shape)}`),
       h("div", { class: "page-head" },
         h("div", {}, h("h1", {}, "Statement ", h("span", { class: "mono", style: { cursor: "copy" }, title: st?.id ? `Its id, as the API and the audit log name it. Click to copy.` : "A short id of its text. Click to copy.", onclick: () => copy(st?.id || shortFp(shape), "Id copied") }, st?.id || shortFp(shape)), " ", st?.kind ? h("span", { class: "badge mono", style: { verticalAlign: "middle" } }, st.kind) : null, " ", status ? h("span", { class: "pill " + status[0], style: { verticalAlign: "middle" } }, status[1]) : null),
-          h("p", {}, [table_ ? `Table ${table_}` : null, st?.first_seen_ms ? `first seen ${fmt.ago(st.first_seen_ms)}` : null, isCoord() ? "what this coordinator ran" : "what this server ran",
+          h("p", {}, [table_ ? `Table ${table_}` : null, st?.first_seen_ms ? `first seen ${fmt.ago(st.first_seen_ms)}` : null, isCoord() ? ((d?.coordinators?.length || 0) > 1 ? `what ${d.coordinators.filter((c) => c.ok).length === d.coordinators.length ? "every coordinator" : `${d.coordinators.filter((c) => c.ok).length} of ${d.coordinators.length} coordinators`} ran${st?.coordinators?.length ? " (" + st.coordinators.map((c) => `${c.name} ${fmt.n(c.calls)}`).join(", ") + " calls)" : ""}` : "what this coordinator ran") : "what this server ran",
             d?.source === "fallback" ? (d.windowed ? range.label : "since the server started (an older server)") : `${range.label}${d?.partial ? ` (held from ${when(d.held_from_ms)})` : ""}${st?.prev ? ", against the window before" : ""}`].filter(Boolean).join(" · "))),
         h("div", { class: "tools" },
           h("button", { class: "btn sm", onclick: () => copy(location.href, "Link copied") }, icon("link"), "Copy link"),
@@ -232,7 +232,7 @@ function helpers(st, d, sample, sql) {
   const sp = split(st.outcomes, st.calls), ks = keyShares(st), top = ks[0];
   const c = change(st), w = straggler(d);
   if (sp.client / Math.max(1, sp.calls) > 0.05) {
-    if (canContainNow()) out.push(h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: st.fingerprint, sql, keys: ks, key: top?.share > 0.8 ? top.key : null }) }, top?.share > 0.8 ? `Refuse it from ${top.key}…` : "Refuse it…"));
+    if (canContainNow()) out.push(h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: st.fingerprint, sql, keys: ks, key: top?.share > 0.8 ? top.key : null, action: "refuse" }) }, top?.share > 0.8 ? `Refuse it from ${top.key}…` : "Refuse it…"));
     const msg = d.errors?.[0]?.message;
     out.push(h("button", { class: "btn sm", title: "A summary to send the team that owns the client", onclick: () => copy(`Statement ${st.id || shortFp(st.fingerprint)} fails as a client error: ${fmt.n(sp.client)} of ${fmt.n(sp.calls)} calls ${timeRange().label || ""}${top ? `, ${fmt.pct(top.share, 0)} from API key ${top.key}` : ""}.\n${msg ? "Error: " + msg + "\n" : ""}SQL: ${st.fingerprint}\n${location.origin}/${link("statement/" + encodeURIComponent(st.fingerprint))}`, "Summary copied") }, icon("copy"), "Copy for the app team"));
   }

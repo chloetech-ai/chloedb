@@ -251,7 +251,7 @@ function render(page, r0) {
       const fa = firingNow();
       if (first && !rec) chips.push(h("span", { class: "home-chip", title: "When this problem, or what it stems from, was first seen" }, `first signal ${when(first)}`));
       if (notOk) chips.push(h("span", { class: "home-chip", title: "Something has needed a look since then (other problems first)" }, `not all right since ${when(notOk)} (${durTxt(notOk)})`));
-      for (const a of fa.slice(0, 2)) chips.push(h("a", { class: "home-chip", href: link("alert/" + encodeURIComponent(a.id)) }, `alert "${a.name}" ${a.since_ms ? "since " + when(a.since_ms) : "firing"}`));
+      for (const a of fa.slice(0, 2)) chips.push(h("a", { class: "home-chip", href: link("alert/" + encodeURIComponent(a.id)) }, `alert "${a.name}"${a.on ? " on " + a.on : ""} ${a.since_ms ? "since " + when(a.since_ms) : "firing"}`));
       const ack = fa.find((a) => a.ack);
       if (ack) chips.push(h("span", { class: "home-chip ack" }, `acked by ${ack.ack.by} ${when(ack.ack.at_ms)}`));
       else if (fa.length) chips.push(h("span", { class: "home-chip" }, "nobody has acked yet"));
@@ -597,7 +597,9 @@ function render(page, r0) {
       for (const k of st.keys || []) add(byKey, k.key, k.calls || 0, (k.errors || 0) * share);
     }
     const failing = server > 0;
-    whoSub.textContent = failing ? `share of the server's failures, by table${statsKeys ? " and by API key" : ""}, this window` : `share of the queries by table${statsKeys ? " and by API key" : ""}, this window: none failed on the server's side`;
+    // R2-shell-monitor-3: the statement stats are this coordinator's.
+    const through = (state.fleet?.coordinators?.length || 0) > 1 ? ", through this coordinator only" : "";
+    whoSub.textContent = failing ? `share of the server's failures, by table${statsKeys ? " and by API key" : ""}, this window${through}` : `share of the queries by table${statsKeys ? " and by API key" : ""}, this window${through}: none failed on the server's side${through ? " here" : ""}`;
     // A bar is the share of the window's server failures (or, with none, of its queries).
     const bars = (m, kind) => [...m.entries()].map(([k, a]) => ({ k, ...a, share: failing ? a.errors / server : a.calls / Math.max(1, calls) }))
       .sort((a, b) => failing ? (b.errors - a.errors) : (b.calls - a.calls)).slice(0, kind === "key" ? 4 : 3)

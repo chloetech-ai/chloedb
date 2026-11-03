@@ -12,7 +12,7 @@
 // it cannot do.
 
 import { h, s, icon, clear, fmt, card, api, bus, drawer, toast, pill, seg, empty, menu, copy, showTip, hideTip, table, every, debounce, confirm, can, needs, copyName, findCopy, link, ago, when, whenTitle, ApiError, isNarrow } from "../core.js";
-import { state, refreshAlerts, timeRange, isCoordinator } from "../data.js";
+import { state, refreshAlerts, timeRange, isCoordinator, firesOn } from "../data.js";
 import { niceStep } from "../charts.js";
 import { pattern } from "./logs.js";
 
@@ -235,6 +235,9 @@ function sorted(m) {
 }
 /** Where a rule fires, in words, and the copies it fires on. */
 function whereText(r, x) {
+  // It fires on another coordinator's own traffic only (R2-scenarios-1).
+  const on = firesOn(x);
+  if (on) return `on coordinator ${on}`;
   const all = x.where || [];
   const firing = all.filter((c) => stateName(c.state) === "firing");
   const w = firing.length ? firing : all.filter((c) => stateName(c.state) === "pending");
@@ -873,11 +876,13 @@ function alertHub(page, id, r) {
     const w = (x.where || []).filter((c) => c.state === "firing");
     const cause = x.held_by ? m.rules.find((y) => y.id === x.held_by) : null;
     const pg = pagerOf(m), dt = differsText(x);
-    clear(line, cond(rule), " · ", rule.scope === "each_copy" ? h("b", { class: "al-strong" }, w.length ? `on ${w.length} of ${fmt.n(Math.max((x.where || []).length, allCopies()))} copies` : `on each copy (${fmt.n(allCopies())})`) : h("b", { class: "al-strong" }, rule.metric === "key_error_ratio" && w.length ? whereText(rule, x) : scopeText(rule)[0]),
+    clear(line, cond(rule), " · ", rule.scope === "each_copy" ? h("b", { class: "al-strong" }, w.length ? `on ${w.length} of ${fmt.n(Math.max((x.where || []).length, allCopies()))} copies` : `on each copy (${fmt.n(allCopies())})`) : h("b", { class: "al-strong" }, rule.metric === "key_error_ratio" && w.length ? whereText(rule, x) : firesOn(x) ? `on coordinator ${firesOn(x)}` : scopeText(rule)[0]),
       x.since_ms && st !== "ok" ? ` · since ${when(x.since_ms)}` : "", ` · now ${x.value == null ? "no value" : fvr(rule, x.value)}`, h("span", { class: "al-peak" }),
       x.held_by && x.held_until_ms && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `, resolved. This pages at ${hm(x.held_until_ms)} if it still fires then: the ${dur(((rule.window_s || 0) + (rule.for_s || 0)) * 1000)} it judges still include the outage.`)
       : x.held_by && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Held back under its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `${/\(on [^)]*\)$/.exec(x.held_why || "")?.[0] ? " " + /\(on [^)]*\)$/.exec(x.held_why)[0] : ""}. It sends no message of its own while its cause fires, and pages if it still fires after.`) : null,
       dt ? h("div", { class: "small al-warn" }, dt) : null,
+      firesOn(x) ? h("div", { class: "small al-heldwhy" }, `It ${st === "pending" ? "waits to fire" : "fires"} on coordinator ${firesOn(x)}, on the traffic sent through it; on this coordinator it is ${stateName(x.here) === "ok" ? "fine" : stateName(x.here).replace("_", " ")}. `,
+        ...(x.elsewhere || []).filter((e) => e.url).slice(0, 2).map((e) => h("a", { href: e.url.replace(/\/$/, "") + "/#/alert/" + encodeURIComponent(rule.id), target: "_blank", rel: "noopener" }, `Open it on ${e.name || hostOf(e.url)}`, icon("ext")))) : null,
       pg && st === "firing" ? h("div", { class: "small muted" }, x.paged ? `${pagedText(x)[0].toUpperCase()}${pagedText(x).slice(1)}.` : `Not paged yet. Messages are sent by ${pg.me ? "this coordinator" : hostOf(pg.sends)}.`) : null);
     const w8 = can("write"), fleet = m.fleet;
     const ackBtn = x.ack
