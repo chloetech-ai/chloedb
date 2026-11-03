@@ -25,14 +25,15 @@
 import { h, s, icon, clear, fmt, card, api, every, toast, modal, pill, empty, bus, seg, store, tipOn, hideTip, ApiError, copy, debounce, confirm, can, needs, link, when, whenTitle } from "../core.js";
 import * as core from "../core.js";
 import { verifyWords } from "./system.js";
-import { fullIn } from "../spec.js";
-import { state, isCoordinator, refreshCluster, fresh, staleText, isProduction } from "../data.js";
+import { state, isCoordinator, refreshCluster, fresh, staleText, isProduction, firingNow, isPast } from "../data.js";
 
 /** A phone or a narrow window: the shell's isNarrow() once it has one, else the same breakpoint. */
 const narrow = () => (typeof core.isNarrow === "function" ? core.isNarrow() : matchMedia("(max-width: 900px)").matches);
 
 export default {
   id: "cluster", title: "Cluster", icon: "layers", group: "Operate",
+  // The map, the strip and the plan are now: no range picker (NEW-shell-monitor-8).
+  range: false,
   keywords: "cluster canvas fleet topology control center shards copies replicas nodes zones health cpu disk p99 version lag what if fail draft plan apply add remove promote primary drain move slots rebalance capacity autoscale changes events kubernetes operator",
   render,
   onParams: (r) => active?.onParams(r),
@@ -119,7 +120,7 @@ const nodeLabel = (k) => (k && k.length > 18 ? "…" + k.slice(-14) : k || "–"
  * events, alerts and Home say too (NEW-scenarios-7); its server's own name
  * goes beside it as a subtitle, and the URL in a tooltip.
  */
-const cname = (c) => c.id || c.name;
+const cname = (c) => (c.url && core.copyName(c.url, state.cluster)) || c.id || c.name;
 const cspan = (c, cls = "") => h("span", { class: "mono " + cls, title: [c.name && c.name !== c.id ? "server " + c.name : null, c.url].filter(Boolean).join(" · ") }, cname(c),
   c.name && c.name !== c.id ? h("span", { class: "small muted cc2-sname" }, " " + c.name) : null);
 
@@ -218,6 +219,9 @@ function model(c) {
         noReads: !down && d.capability?.serves_reads === false,
         p99: down || d.capability?.serves_reads === false ? null : mn?.p99_ms ?? l.p99_ms ?? null,
         qps: down ? null : mn?.qps ?? l.qps ?? null,
+        // The share of its searches that failed over its last 2 s, when it
+        // served one a second at least (NEW-shell-monitor-6).
+        err: down || !(l.qps >= 1) ? null : (l.errors_s || 0) / l.qps,
         window: mn ? "last minute" : "last 2 s",
         lag: primary ? 0 : down || !p ? null : f ? (f.in_sync && !f.copying ? 0 : f.behind ?? null) : null,
         inSync: primary ? true : f ? !!f.in_sync && !f.copying : null,
@@ -295,11 +299,13 @@ function commonPrefix(keys) {
 // ---------------------------------------------------------------- lenses
 /** The p99 the cluster promises, from the fleet's checks, else 250 ms. */
 const slo = () => state.fleet?.checks?.find?.((x) => x.id === "p99")?.slo_ms ?? state.cluster?.cluster?.slo_p99_ms ?? 250;
+const sloErr = () => state.fleet?.checks?.find?.((x) => x.id === "error_ratio")?.slo ?? 0.01;
 const LENSES = {
   health: { label: "Health", title: "Copies answering, and whatever is wrong with the shard: red when it serves no reads or takes no writes, amber when a copy is down, behind, avoided or full" },
   cpu: { label: "CPU", title: "The busiest copy's CPU as a share of its cores, over its last minute", copy: (c) => c.cpu, fmt: pct0, warn: () => 0.7, bad: () => 0.85 },
   disk: { label: "Disk", title: "How full the fullest copy's volume is", copy: (c) => c.disk, fmt: pct0, warn: () => 0.8, bad: () => 0.9 },
-  p99: { label: "p99", title: "The slowest copy's 99th percentile of searches, over its last minute, against the SLO", copy: (c) => c.p99, fmt: (v) => fmt.ms(v), warn: () => slo() * 0.6, bad: () => slo() },
+  p99: { label: "p99", title: "The slowest copy's 99th percentile of searches, over its last minute, against the SLO", copy: (c) => c.p99, fmt: (v) => fmt.ms(v), tile: (v) => (v >= 100 ? fmt.n(v, 0) : v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1) : v.toFixed(2)), unit: "ms", warn: () => slo() * 0.6, bad: () => slo() },
+  errors: { label: "Errors", title: "The share of searches the copy with the most failures failed, over its last 2 s, against the SLO", copy: (c) => c.err, fmt: (v) => fmt.pct(v, v > 0 && v < 0.01 ? 2 : v < 0.1 ? 1 : 0), tile: (v) => fmt.pct(v, v > 0 && v < 0.01 ? 2 : v < 0.1 ? 1 : 0), warn: () => sloErr() / 4, bad: () => sloErr() },
   version: { label: "Version", title: "The version each copy runs; the one most copies run is neutral" },
   lag: { label: "Lag", title: "Transactions a replica has still to apply from its primary", copy: (c) => (c.primary ? null : c.lag), fmt: (v) => kn(v), warn: () => LAG_WARN, bad: () => LAG_BAD },
 };
@@ -332,15 +338,35 @@ function issues(sh) {
     if (c.disk != null && c.disk >= 0.85) out.push({ sev: 1, short: `disk ${pct0(c.disk)}`, long: `${cname(c)}'s volume is ${pct0(c.disk)} full` });
     if (c.avoided) out.push({ sev: 1, short: "avoided", long: `the coordinator sends ${cname(c)} no searches${c.avoidedWhy ? ": " + c.avoidedWhy : " after failures"}` });
   }
+  const failing = sh.copies.filter((c) => c.err != null && c.err > sloErr()).sort((a, b) => b.err - a.err)[0];
+  if (failing) out.push({ sev: 2, short: `errors ${LENSES.errors.fmt(failing.err)}`, long: `${cname(failing)} failed ${LENSES.errors.fmt(failing.err)} of its searches over its last 2 s, over the SLO of ${fmt.pct(sloErr(), 1)}` });
   const cpu = shardValue("cpu", sh), p99 = shardValue("p99", sh);
   if (p99 != null && p99 >= slo()) out.push({ sev: 1, short: `p99 ${fmt.ms(p99)}`, long: `its slowest copy's p99 is ${fmt.ms(p99)}, over the SLO of ${fmt.ms(slo())}` });
   if (cpu != null && cpu >= 0.85) out.push({ sev: 1, short: `CPU ${pct0(cpu)}`, long: `its busiest copy uses ${pct0(cpu)} of its cores` });
-  for (const c of sh.copies) for (const a of c.alerts?.firing || []) out.push({ sev: a.severity === "critical" ? 2 : 1, short: "alert", long: `${a.name || a.id} fires on ${cname(c)}` });
+  for (const a of firingNow()) {
+    const on = sh.copies.filter((c) => alertOn(a, c));
+    if (on.length) out.push({ sev: a.severity === "critical" ? 2 : 1, short: "alert", long: `${a.name || a.id} fires on ${on.map(cname).join(", ")}` });
+  }
   return out.sort((a, b) => b.sev - a.sev);
 }
+/** Whether firing rule `a` fires on copy `c`: its where lists {copy, short} or names. */
+const alertOn = (a, c) => (a.where || []).some((w) => (w && typeof w === "object" ? w.copy === c.url || (!w.copy && w.short === c.id) : w === c.id || w === cname(c) || w === c.url || (c.name && w === c.name)));
 const healthLevel = (sh) => Math.max(0, ...issues(sh).map((x) => x.sev));
 
 /** Problems across the cluster, for the strip on top: worst first. */
+/** The hot shards named, by reason: a shard comes and goes only on two polls in a row. */
+const HOT = { at: null, cpu: null, p99: null, c: { shard: null, hits: 0, miss: 0, on: false }, p: { shard: null, hits: 0, miss: 0, on: false } };
+function steady(st, cand) {
+  if (st.on) {
+    if (cand === st.shard) { st.miss = 0; return st.shard; }
+    if (++st.miss < 2) return st.shard;
+    Object.assign(st, { on: false, shard: cand, hits: cand == null ? 0 : 1, miss: 0 });
+    return null;
+  }
+  if (cand != null && cand === st.shard) { if (++st.hits >= 2) { st.on = true; st.miss = 0; return cand; } return null; }
+  Object.assign(st, { shard: cand, hits: cand == null ? 0 : 1, miss: 0 });
+  return null;
+}
 function problems(M) {
   const out = [];
   const crit = M.shards.filter((sh) => CRIT.has(sh.state));
@@ -355,6 +381,9 @@ function problems(M) {
       fix: left.length ? { kind: "repair", shard: sh.i } : null,
     });
   }
+  // Searches failing on a copy: Home's first critical problem (NEW-shell-monitor-6).
+  const failing = M.all.filter((c) => c.err != null && c.err > sloErr()).sort((a, b) => b.err - a.err);
+  if (failing.length) out.push({ sev: 2, shards: [...new Set(failing.map((c) => c.shard))], label: `Searches failing on ${failing.length === 1 ? cname(failing[0]) : plural(failing.length, "copy", "copies")}`, text: `${cname(failing[0])}: ${LENSES.errors.fmt(failing[0].err)} of its searches over its last 2 s${failing.length > 1 ? ` and ${failing.length - 1} more over ${fmt.pct(sloErr(), 1)}` : ""}`, impact: "searches that need these copies fail or retry on another copy", next: "Look at its logs" });
   const down = M.all.filter((c) => c.down && !crit.some((sh) => sh.i === c.shard));
   if (down.length) {
     const c0 = down.slice().sort((a, b) => (a.downSince || Infinity) - (b.downSince || Infinity))[0];
@@ -370,7 +399,7 @@ function problems(M) {
   if (lag.length) out.push({ sev: 1, shards: lag.map((c) => c.shard), label: `${lag.length === 1 ? "1 replica" : lag.length + " replicas"} behind`, text: `${cname(lag[0])} · ${kn(lag[0].lag)} transactions${lag.length > 1 ? ` and ${lag.length - 1} more` : ""}`, impact: "its reads are older, and writes that wait for every copy wait for it", next: "Look at its disk and CPU, or its logs" });
   const fleetDisk = state.fleet?.checks?.find?.((x) => x.id === "disk");
   const full = M.all.filter((c) => c.disk != null && c.disk >= 0.85).sort((a, b) => b.disk - a.disk);
-  if (full.length) out.push({ sev: 1, shards: [...new Set(full.map((c) => c.shard))], label: `Disk ${pct0(full[0].disk)}`, text: `${cname(full[0])}${fleetDisk?.days_to_full != null ? ` · full in ${fullIn(fleetDisk.days_to_full)}` : ""}${full.length > 1 ? ` and ${full.length - 1} more over 85%` : ""}`, impact: "a database that cannot write refuses writes", next: "Add shards so each holds less, or grow the volumes" });
+  if (full.length) out.push({ sev: 1, shards: [...new Set(full.map((c) => c.shard))], label: `Disk ${pct0(full[0].disk)}`, text: `${cname(full[0])}${fleetDisk?.days_to_full != null ? ` · full in about ${fmt.fills(fleetDisk.days_to_full)}` : ""}${full.length > 1 ? ` and ${full.length - 1} more over 85%` : ""}`, impact: "a database that cannot write refuses writes", next: "Add shards so each holds less, or grow the volumes" });
   // A hot shard stands out from the others by its own load, and one shard
   // is named for each reason (NEW-cluster-admin-12): the busiest CPU, and
   // a p99 over the SLO that its own CPU explains. Slow everywhere is not
@@ -379,10 +408,13 @@ function problems(M) {
     const cpuOf = (sh) => shardValue("cpu", sh), p99Of = (sh) => shardValue("p99", sh);
     const busy = M.shards.filter((sh) => { const c = cpuOf(sh); return c != null && c >= 0.8 && M.medCpu != null && c >= 1.5 * M.medCpu; }).sort((a, b) => cpuOf(b) - cpuOf(a))[0];
     const slow = M.shards.filter((sh) => { const p = p99Of(sh), c = cpuOf(sh); return sh !== busy && p != null && p >= slo() && M.medP99 != null && p >= 2 * M.medP99 && c != null && c >= 0.2 && (M.medCpu == null || c > M.medCpu); }).sort((a, b) => p99Of(b) - p99Of(a))[0];
-    for (const [sh, why] of [[busy, "cpu"], [slow, "p99"]]) {
+    // Named once hot on two polls in a row, kept until not on two (FL-4).
+    if (HOT.at !== state.cluster) { HOT.at = state.cluster; HOT.cpu = steady(HOT.c, busy?.i ?? null); HOT.p99 = steady(HOT.p, slow?.i ?? null); }
+    const held = (i) => (i == null ? null : M.shards.find((sh) => sh.i === i) || null);
+    for (const [sh, why] of [[held(HOT.cpu), "cpu"], [held(HOT.p99), "p99"]]) {
       if (!sh) continue;
       const cpu = cpuOf(sh), p = p99Of(sh);
-      const text = why === "cpu" ? [`CPU ${pct0(cpu)}, the median shard ${pct0(M.medCpu)}`, p != null ? `p99 ${fmt.ms(p)}` : null] : [`p99 ${fmt.ms(p)}, the median shard ${fmt.ms(M.medP99)}`, `CPU ${pct0(cpu)}`];
+      const text = why === "cpu" ? [`CPU ${pct0(cpu)} on its busiest copy, the median shard ${pct0(M.medCpu)}`, p != null ? `p99 ${fmt.ms(p)} on its slowest` : null, "each copy's last minute"] : [`p99 ${fmt.ms(p)} on its slowest copy, the median shard ${fmt.ms(M.medP99)}`, `CPU ${pct0(cpu)} on its busiest`, "each copy's last minute"];
       out.push({ sev: 1, shards: [sh.i], label: `Hot shard ${sh.i}`, text: [...text, sh.slots.length ? `slots ${runsText(sh.slots)}` : null].filter(Boolean).join(" · "), impact: "a search waits for the slowest shard it asks", next: "Move some of its slots to a quieter shard (Draft: drag it onto another)", fix: { kind: "slots", shard: sh.i } });
     }
   }
@@ -391,8 +423,14 @@ function problems(M) {
   const lease = (c) => /fewer than a majority/.test(c.avoidedWhy || "") && M.shards.some((sh) => sh.i === c.shard && !sh.majority);
   const avoided = M.all.filter((c) => c.avoided && !c.down && !lease(c));
   if (avoided.length) out.push({ sev: 1, shards: avoided.map((c) => c.shard), label: `${avoided.length === 1 ? "1 copy" : avoided.length + " copies"} avoided`, text: `${cname(avoided[0])}${avoided[0].avoidedWhy ? ": " + avoided[0].avoidedWhy : " after failures"}`, impact: "the coordinators ask the other copies first", next: "Look at its logs" });
-  const firing = M.all.flatMap((c) => (c.alerts?.firing || []).map((a) => ({ c, a })));
-  if (firing.length) out.push({ sev: firing.some((x) => x.a.severity === "critical") ? 2 : 1, shards: [...new Set(firing.map((x) => x.c.shard))], label: `${plural(firing.length, "alert")} firing on copies`, text: `${firing[0].a.name || firing[0].a.id} on ${cname(firing[0].c)}`, link: "#/alerts" });
+  // Rules firing and not silenced, counted once each as the bell and Home
+  // count them, with the copies they fire on (NEW-shell-monitor-3).
+  const firing = firingNow();
+  if (firing.length) {
+    const on = (a) => M.all.filter((c) => alertOn(a, c));
+    const first = firing.find((a) => a.severity === "critical") || firing[0], where = on(first);
+    out.push({ sev: firing.some((a) => a.severity === "critical") ? 2 : 1, shards: [...new Set(firing.flatMap((a) => on(a).map((c) => c.shard)))], label: `${plural(firing.length, "alert")} firing`, text: `${first.name || first.id}${where.length ? ` on ${where.length === 1 ? cname(where[0]) : plural(where.length, "copy", "copies")}` : ""}${firing.length > 1 ? ` and ${plural(firing.length - 1, "more rule")}` : ""}`, link: "#/alerts" });
+  }
   const two = M.shards.filter((sh) => sh.n === 2);
   if (two.length) out.push({ sev: 0, shards: two.map((sh) => sh.i), label: `${plural(two.length, "shard")} of 2 copies`, text: "with failover on, losing either copy stops its reads and writes", next: "Give each a third copy" });
   const copying = M.all.filter((c) => c.copying);
@@ -578,7 +616,18 @@ function render(page, r) {
     chips.push(h("span", { class: "cc-chip plain", role: "listitem", title: "Copies that answer the coordinator now" }, h("span", { class: "dot " + (serving === M.all.length ? "ok" : "warn") }), `${fmt.n(serving)} of ${plural(M.all.length, "copy", "copies")} serving`));
     if (ps.length > SHOW) chips.push(h("button", { class: "cc-chip plain more", title: ps.slice(SHOW).map((p) => p.label).join("; "), onclick: () => { sel = null; mode = "live"; tab = "map"; writeParams(); drawAll(); side.scrollTop = 0; } }, `${ps.length - SHOW} more in What needs attention`));
     chips.push(changeChip());
+    // A link to a past window shows the cluster now: said so (NEW-shell-monitor-7).
+    if (isPast()) chips.unshift(h("span", { class: "cc-chip plain cc2-now", role: "listitem", title: "The window picked is past: the strip and the map are the cluster now" }, h("b", {}, "Now:")));
     clear(stripBox, chips);
+    markStale();
+  }
+  /** Grey the strip with the map while the coordinator does not answer (NEW-shell-monitor-15). */
+  function markStale() {
+    const stale = !!M && fresh("cluster").ok === false;
+    mapCard.classList.toggle("stale", stale);
+    stripBox.classList.toggle("cc2-stale", stale);
+    stripBox.title = stale ? `The coordinator does not answer: ${staleText("cluster")}` : "";
+    return stale;
   }
   function changeChip() {
     const mi = moves && !moves.error ? moves : null;
@@ -672,8 +721,8 @@ function render(page, r) {
     if (lens === "health") scale = [sw("l1", "a copy down, behind, avoided, full or slow"), sw("l2", "no reads or no writes")];
     else if (lens === "version") scale = (M?.versions || []).slice(0, 5).map(([v, n], k) => sw(k ? "v" + Math.min(k, 4) : "l0", `${v} · ${fmt.n(n)}`));
     else scale = [sw("l0", `under ${L.fmt(L.warn())}`), sw("l1", `${L.fmt(L.warn())}+`), sw("l2", `${L.fmt(L.bad())}+${lens === "p99" ? " (the SLO)" : ""}`)];
-    const what = { health: "Copies answering, when one is missing", version: "The version the copies run", cpu: "CPU of the busiest copy, last minute", disk: "Disk used on the fullest copy", p99: "p99 of the slowest copy, last minute", lag: "Transactions the furthest replica is behind" }[lens];
-    return [h("b", { class: "dim", style: { fontWeight: 500 } }, what), ...scale, h("span", { class: "row nw", style: { gap: "8px" } }, pip("p", "primary"), pip("", "replica"), pip("down", "down"),
+    const what = { health: "Copies answering, when one is missing", version: "The version the copies run", cpu: "CPU of the busiest copy, last minute", disk: "Disk used on the fullest copy", p99: "p99 of the slowest copy, last minute, in ms", errors: "Searches failed by the copy that fails most, last 2 s", lag: "Transactions the furthest replica is behind" }[lens];
+    return [h("b", { class: "dim", style: { fontWeight: 500 } }, isPast() ? `Now: ${what[0].toLowerCase()}${what.slice(1)}` : what), ...scale, h("span", { class: "row nw", style: { gap: "8px" } }, pip("p", "primary"), pip("", "replica"), pip("down", "down"),
       mode === "draft" ? [pip("new", "in the plan"), pip("going", "goes")] : null),
       lens !== "health" ? h("span", { title: "Whatever is wrong with a shard outlines its tile under every lens" }, "outline: health") : null,
       h("span", { class: "grow" }), pfChip];
@@ -694,9 +743,8 @@ function render(page, r) {
   let gridEl = null;
   function drawMap() {
     // Grey the map when the coordinator stopped answering, and say how old it is.
-    const fr = fresh("cluster");
-    mapCard.classList.toggle("stale", !!M && fr.ok === false);
-    clear(legendBox, legend(), M && fr.ok === false ? h("span", { class: "stale-age" }, staleText("cluster")) : null);
+    const stale = markStale();
+    clear(legendBox, legend(), stale ? h("span", { class: "stale-age" }, staleText("cluster")) : null);
     if (!M) { clear(canvas, empty("layers", "Asking the shards", "")); clear(attention); return; }
     const hits = filter ? new Set(matches()) : null;
     const fate = failed.size ? fateMap() : null;
@@ -744,7 +792,7 @@ function render(page, r) {
     if (lens === "health") return sh.up < sh.n ? `${sh.up}/${sh.n}` : "";
     if (lens === "version") { const vs = [...new Set(sh.copies.map((c) => c.version).filter(Boolean))]; return vs.length === 1 ? vs[0] : vs.length ? "mixed" : "–"; }
     const v = shardValue(lens, sh);
-    return v == null ? "–" : LENSES[lens].fmt(v);
+    return v == null ? "–" : (LENSES[lens].tile || LENSES[lens].fmt)(v);
   }
   function tileClass(sh, hits, fate) {
     const L = LENSES[lens];
@@ -1047,6 +1095,32 @@ function render(page, r) {
   }
 
   // ------------------------------------------------------------ one shard
+  // Each copy's last hour, a point a minute from its own log store (FL-6):
+  // asked when a shard opens, kept a minute.
+  let hist = null, histAt = 0, histAsk = null;
+  function loadHist(after) {
+    if (histAsk || Date.now() - histAt < 60e3) return;
+    histAsk = api("/v1/load?copies=all").then((j) => { hist = j; }, (e) => { hist = { error: plainError(e) }; })
+      .finally(() => { histAt = Date.now(); histAsk = null; after(); });
+  }
+  function histBlock(sh) {
+    loadHist(() => { if (alive && sel === sh.i && mode === "live" && !pressed()) drawSide(); });
+    const head = h("div", { class: "cc-sec" }, "Each copy, last hour");
+    if (!hist) return h("div", {}, head, h("div", { class: "small dim" }, "Asking each copy for its minutes…"));
+    if (hist.error) return h("div", {}, head, h("div", { class: "small dim" }, `Not known: ${hist.error}`));
+    const all = sh.copies.map((c) => ({ c, pts: ((hist.copies || []).find((x) => x.url === c.url)?.points || []).filter((p) => p.p99_ms != null) }));
+    const max = Math.max(1, ...all.flatMap((x) => x.pts.map((p) => p.p99_ms)));
+    const W = 120, H = 24;
+    const spark = (pts) => {
+      const t0 = pts[0].t, t1 = pts[pts.length - 1].t, x = (t) => ((t - t0) / Math.max(1, t1 - t0)) * W, y = (v) => H - 2 - (v / max) * (H - 4);
+      return s("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: "cc2-spark", "aria-hidden": "true" }, s("polyline", { points: pts.map((p) => `${x(p.t).toFixed(1)},${y(p.p99_ms).toFixed(1)}`).join(" ") }));
+    };
+    const rows = all.map(({ c, pts }) => h("div", { class: "cc2-hist-row" }, cspan(c),
+      pts.length > 1 ? spark(pts) : h("span", { class: "small dim" }, (hist.missing || []).some((x) => x.url === c.url) ? "did not answer" : "no minutes kept"),
+      pts.length ? h("span", { class: "small muted" }, `p99 ${fmt.ms(pts[pts.length - 1].p99_ms)} now, ${fmt.ms(Math.max(...pts.map((p) => p.p99_ms)))} at most`) : null));
+    return h("div", {}, head, h("div", { class: "cc2-hist" }, rows),
+      h("div", { class: "small dim cc2-hist-note" }, "Each copy's p99 a minute, one scale for the shard, from its own log store · ", h("a", { href: link("performance") }, "every copy in Performance")));
+  }
   function shardCard(sh) {
     const is = issues(sh);
     const sev = is[0]?.sev || 0;
@@ -1068,6 +1142,7 @@ function render(page, r) {
         CRIT.has(sh.state) ? critBox(sh, is) : why && sev ? h("div", { class: "cc-why " + (sev === 2 ? "crit" : "warn") }, why) : null,
         shardDiagram(sh),
         copyTable(sh),
+        histBlock(sh),
         h("div", {}, h("div", { class: "cc-sec" }, "Look"),
           h("div", { class: "row", style: { gap: "6px" } },
             h("a", { class: "btn sm", href: typeof core.logsLink === "function" ? core.logsLink({ shard: sh.i }) : link("logs", { node: sh.primary?.url || sh.copies[0]?.url, q: `shard ${sh.i}` }) }, icon("logs"), "Its logs"),
@@ -2243,7 +2318,7 @@ function render(page, r) {
       cls: "cc-cap", title: "Headroom now", sub: "the worst copy and the median, from each copy's last minute",
       body: h("table", { class: "t compact cc-head-room" }, h("thead", {}, h("tr", {}, ["", "worst", "median", ""].map((x, k) => h("th", { class: k === 1 || k === 2 ? "num" : "" }, x)))), h("tbody", {},
         row("CPU, share of cores", cpus[0] ? `${pct0(cpus[0].cpu)} ${cname(cpus[0])}` : "–", pct0(med(cpus.map((c) => c.cpu))), cpus[0] && cpus[0].cpu >= 0.7 ? "busy copies add latency: add copies to their shards" : "", level("cpu", cpus[0]?.cpu)),
-        row("Disk used", disks[0] ? `${pct0(disks[0].disk)} ${cname(disks[0])}` : "–", pct0(med(disks.map((c) => c.disk))), fleetDisk?.days_to_full != null ? `full in ${fullIn(fleetDisk.days_to_full)} at the last week's growth` : "", level("disk", disks[0]?.disk)),
+        row("Disk used", disks[0] ? `${pct0(disks[0].disk)} ${cname(disks[0])}` : "–", pct0(med(disks.map((c) => c.disk))), fleetDisk?.days_to_full != null ? `full in about ${fmt.fills(fleetDisk.days_to_full)} at the last week's growth` : "", level("disk", disks[0]?.disk)),
         row("p99 of a shard", p99s[0] ? `${fmt.ms(p99s[0][1])} shard ${p99s[0][0].i}` : "–", fmt.ms(med(p99s.map((x) => x[1]))), `SLO ${fmt.ms(slo())}`, level("p99", p99s[0]?.[1])),
         row("Slots a shard", fmt.n(Math.max(...slotsPer)), fmt.n(med(slotsPer)), Math.max(...slotsPer) - Math.min(...slotsPer) > 1 ? `uneven: ${fmt.n(Math.min(...slotsPer))} to ${fmt.n(Math.max(...slotsPer))}` : "even"),
         row("Rows a shard", fmt.si(Math.max(...rowsPer)), fmt.si(med(rowsPer)), ""),
@@ -2432,13 +2507,16 @@ function render(page, r) {
   drawAll();
   loadKube().then(() => { if (M) { changed(); } });
   let movesTimer = null;
-  const pollMoves = async () => { if (!alive) return; await Promise.all([loadMoves(), loadRun()]); if (!alive) return; movesTimer = setTimeout(pollMoves, (moves?.running || planRunning()) ? 2000 : 10000); };
+  // Every 5 s when nothing runs here: a plan or moves another coordinator
+  // starts show within one poll.
+  const pollMoves = async () => { if (!alive) return; await Promise.all([loadMoves(), loadRun()]); if (!alive) return; movesTimer = setTimeout(pollMoves, (moves?.running || planRunning()) ? 2000 : 5000); };
   pollMoves();
   const offs = [
     bus.on("cluster", () => { if (state.cluster && "plan" in state.cluster && !canAdmin()) takeRun(state.cluster.plan); else if (state.cluster?.plan?.state === "running" && !planRunning()) loadRun(); update(); }),
     bus.on("fleet", () => { if (alive && !state.paused) update(); }),
     bus.on("health", () => { if (!isCoordinator() && state.health) { /* a server that is not a coordinator */ clear(page); renderNotCoordinator(page); } }),
     bus.on("paused", () => { if (!state.paused) update(); }),
+    bus.on("fresh", () => { if (alive && M) markStale(); }),
     bus.on("narrow", onNarrow),
     every(10000, loadKube, false),
     every(30000, () => { if (tab === "changes") loadChanges(); }, false),

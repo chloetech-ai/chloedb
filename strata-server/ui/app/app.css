@@ -3087,6 +3087,14 @@ table.t th.num { text-align: right; }
   .cc-as .as-day { min-height: 40px; }
   .cc-as .as-note a, .cc-as .cc-as-own a { display: inline-block; padding: 12px 0; margin: -12px 0; }
 }
+/* The strip greys with the map while the coordinator does not answer (NEW-shell-monitor-15). */
+.cc-strip.cc2-stale .cc-chip { opacity: .5; filter: grayscale(1); }
+.cc-strip .cc2-now { border-style: dashed; }
+/* Each copy's last hour in the shard panel (FL-6). */
+.cc2-hist { display: grid; grid-template-columns: max-content 120px minmax(0, 1fr); gap: 4px 10px; align-items: center; margin-bottom: 4px; }
+.cc2-hist-row { display: contents; }
+.cc2-spark polyline { fill: none; stroke: var(--s1); stroke-width: 1.5; }
+@media (max-width: 560px) { .cc2-hist { grid-template-columns: max-content 120px; } .cc2-hist-row > .muted { grid-column: 1 / -1; margin-top: -2px; } .cc2-hist-note a { display: inline-block; padding: 12px 0; margin: -12px 0; } }
 /* ===== end cluster2 ===== */
 /* ===== fleet ===== */
 /* Charts: a pile of event markers shows its count; midnight on an axis of hours reads as a date. */
