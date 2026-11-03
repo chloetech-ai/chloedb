@@ -215,7 +215,7 @@ function render(page, r) {
     const t = timeRange();
     try {
       const j = await api(`/v1/events?from=${Math.round(t.from)}&to=${Math.round(t.to)}&limit=300`);
-      events = (j.events || []).filter((e) => MARK_KINDS.has(e.kind));
+      events = (j.events || []).filter((e) => MARK_KINDS.has(e.kind) && !(e.kind === "change" && /^\/v1\/alerts\/[^/]+\/(ack|silence|notes)$/.test(e.detail?.route || "")));
       ctx.newer = true;
     } catch (e) { events = []; if (e instanceof ApiError && (e.status === 404 || e.status === 405)) ctx.newer = false; }
   }
@@ -638,6 +638,7 @@ function storesDrawer(j) {
 // ---------------------------------------------------------------- log levels
 // Trace is not a preset (L5): it can still be typed in the field.
 const PRESETS = [["error", "error"], ["warn", "warn"], ["info", "info"], ["debug", "debug"], ["info,strata_server=debug", "server debug"]];
+const SET = {};
 const EXPIRY = [[900, "15 min"], [1800, "30 min"], [3600, "1 h"], [14400, "4 h"]];
 async function levelsDrawer(ctx) {
   const body = h("div", { class: "stack" });
@@ -645,13 +646,16 @@ async function levelsDrawer(ctx) {
   let self = null;
   try { self = await api("/v1/logs?limit=1&level=error"); } catch { /* shown below */ }
   const me = ctx.store?.store?.node;
-  const servers = [{ name: me ? `${me} (this server)` : "this server", node: me, url: null, filter: self?.filter, expires_ms: self?.filter_expires_ms ?? self?.expires_ms, default: self?.default_filter }];
-  for (const [node, n] of ctx.nodes) if (!n.self && n.url) servers.push({ name: findCopy(n.url) ? copyName(n.url) : node, node, url: n.url, shard: n.shard, down: n.down, filter: n.filter, expires_ms: n.expires_ms });
-  const perServer = !!self?.per_server || !!self?.nodes;
+  const servers = [{ name: me ? `${me} (this server)` : "this server", node: me, url: null, filter: self?.filter, expires_ms: self?.filter_expires_ms ?? self?.expires_ms, set_by: self?.filter_set_by, default: self?.default_filter }];
+  // Another server's level is not reported to the coordinator: the ones changed from this page are remembered.
+  for (const [node, n] of ctx.nodes) if (!n.self && n.url) { const k = SET[n.url]; const live = k && (!k.expires_ms || k.expires_ms > Date.now()); servers.push({ name: findCopy(n.url) ? copyName(n.url) : node, node, url: n.url, shard: n.shard, down: n.down, filter: live ? k.filter : null, expires_ms: live ? k.expires_ms : null, set_by: live ? k.set_by : null, default: k?.previous }); }
+  // A server that reports when its level expires also sets another server's (PUT ?node=).
+  const perServer = !!self && ("filter_expires_ms" in self || "filter_set_by" in self || !!self.per_server);
+  ctx.newer = self ? perServer : ctx.newer;
   const rows = servers.map((x) => h("tr", {},
     h("td", {}, h("span", { class: "mono small", title: x.url || "" }, x.name), x.shard != null ? h("span", { class: "tiny muted" }, ` shard ${x.shard}`) : null),
-    h("td", { class: "mono small" }, x.filter || (x.url ? "–" : "unknown")),
-    h("td", { class: "small" }, x.expires_ms ? `reverts at ${when(x.expires_ms, { sec: false })}${x.default ? ` to ${x.default}` : ""}` : x.filter ? "until changed back" : ""),
+    h("td", { class: "mono small", title: x.url && !x.filter ? "Not reported to this server: open the server itself to see it" : "" }, x.filter || (x.url ? "not reported" : "unknown")),
+    h("td", { class: "small" }, x.expires_ms ? `goes back at ${when(x.expires_ms, { sec: false })}${x.default ? ` to ${x.default}` : ""}${x.set_by ? ` · set by ${x.set_by}` : ""}` : x.filter ? (perServer ? "from the command line" : "until changed back") : ""),
     h("td", {}, (() => {
       const b = h("button", { class: "btn xs", onclick: () => change(x) }, "Change…");
       if (!can("admin")) { b.disabled = true; b.title = needs("admin"); }
@@ -690,7 +694,8 @@ async function levelsDrawer(ctx) {
     if (!okc) return;
     try {
       const j = await api("/v1/logs/filter" + (x.url ? "?node=" + encodeURIComponent(x.url) : ""), { method: "PUT", body: { filter: pick.filter, expires_s: pick.exp }, reason: okc.reason });
-      if (x.url && j.node && j.node !== x.url) throw new Error(`the answer came from ${j.node}, not ${x.name}`);
+      if (x.url && j.node !== x.url) throw new Error(`the answer came from ${j.node || "this server"}, not ${x.name}: nothing was changed there`);
+      if (x.url) SET[x.url] = { filter: j.filter, expires_ms: j.expires_ms, set_by: j.set_by, previous: j.previous };
       const exp0 = j.expires_ms || (j.expires_s ? Date.now() + j.expires_s * 1000 : null);
       toast(exp0 ? `${x.name} logs ${j.filter} until ${when(exp0, { sec: false })}` : `${x.name} logs ${j.filter} until it is changed back`, exp0 ? "ok" : "warn", 6000);
       d.close(); levelsDrawer(ctx);
