@@ -406,15 +406,18 @@ mod tests {
             state ^= state << 17;
             state
         };
-        let n = 2000u64;
+        // Miri walks a smaller graph at one threshold: what it checks is
+        // memory, not how much the lazy reads save.
+        let n = if cfg!(miri) { 200u64 } else { 2000 };
+        let epss: &[f64] = if cfg!(miri) { &[1e-3] } else { &[1e-3, 1e-4, 1e-6] };
         let g: Vec<Vec<(u64, f32)>> = (0..n)
             .map(|u| {
                 let deg = if u % 50 == 0 { 300 } else { 2 + next() % 20 };
                 (0..deg).map(|_| (next() % n, 1.0 + (next() % 4) as f32)).collect()
             })
             .collect();
-        for eps in [1e-3, 1e-4, 1e-6] {
-            let seeds = [(1, 1.0), (50, 0.5), (777, 2.0)];
+        for &eps in epss {
+            let seeds = [(1, 1.0), (50, 0.5), (777 % n, 2.0)];
             let mut full = W(g.clone(), false, 0);
             let mut lazy = W(g.clone(), true, 0);
             let a = ppr(&mut full, &seeds, false, 0.15, eps, u64::MAX).unwrap();
@@ -427,7 +430,7 @@ mod tests {
             assert_eq!(sa, sb, "eps {eps}");
             eprintln!("eps {eps}: {} read lazily, {} in full", lazy.2, full.2);
             assert!(lazy.2 <= 3 * full.2, "eps {eps}: {} read lazily, {} in full", lazy.2, full.2);
-            if eps == 1e-3 {
+            if eps == 1e-3 && !cfg!(miri) {
                 assert!(lazy.2 * 2 < full.2, "{} read lazily, {} in full", lazy.2, full.2);
             }
         }
