@@ -1,0 +1,47 @@
+tantivy: loaded 137260 products at 22,772/s, 4624176 reviews at 42,764/s, 1,861 MB
+tantivy: get p50 34 µs, 100 by id 3.660 ms, user reviews p50 0.087 ms
+tantivy: page@0 1.46 ms, @10000 2.31 ms, brands 43.8 ms, months 85.0 ms, join top 234.0 ms
+tantivy: insert one 116/s (p50 8.042 ms), 1000 per txn 25,755/s
+tantivy: update 99/s, counter 106/s, delete 437/s, range p50 47.2 ms
+tantivy: mixed reads 3,749/s p99 4.35 ms, writes 82/s p99 17.52 ms, 0 errors
+wrote /work/out/part-a-tantivy/a1_tantivy.json
+strata: loaded 137260 products at 23,492/s, 4624176 reviews at 37,132/s, 1,844 MB
+strata: get p50 23 µs, 100 by id 1.266 ms, user reviews p50 0.022 ms; by key 18 µs, 100 by key 1.406 ms (same rows as SQL: True)
+strata: page@0 0.87 ms, @10000 2.50 ms, brands 38.4 ms, months 619.0 ms, join top 380.6 ms
+strata: insert one 5,400/s (p50 0.175 ms), 1000 per txn 121,518/s
+strata: update 3,538/s, counter 3,744/s, delete 5,726/s, range p50 15.2 ms
+strata: mixed reads 4,057/s p99 6.66 ms, writes 3,320/s p99 0.50 ms, 0 errors
+wrote /work/out/part-a-tantivy/a1_strata.json
+tantivy  scifact: built in 0.2 s, 2.9 MB
+tantivy  bm25             p50    0.073 ms  p99    0.139 ms  nDCG 0.686
+tantivy  facet            p50    0.030 ms  p99    0.059 ms
+tantivy  bm25             cold: first 1.90 ms, p50 0.079 ms
+wrote /work/out/part-a-tantivy/a2_tantivy_scifact.json
+tantivy  nfcorpus: built in 0.2 s, 2.1 MB
+tantivy  bm25             p50    0.028 ms  p99    0.068 ms  nDCG 0.325
+tantivy  facet            p50    0.021 ms  p99    0.057 ms
+tantivy  bm25             cold: first 2.17 ms, p50 0.030 ms
+wrote /work/out/part-a-tantivy/a2_tantivy_nfcorpus.json
+tantivy  fiqa: built in 1.0 s, 19.3 MB
+tantivy  bm25             p50    0.181 ms  p99    0.395 ms  nDCG 0.253
+tantivy  facet            p50    0.058 ms  p99    0.171 ms
+tantivy  bm25             cold: first 7.20 ms, p50 0.230 ms
+wrote /work/out/part-a-tantivy/a2_tantivy_fiqa.json
+tantivy  trec-covid: built in 3.7 s, 67.8 MB
+tantivy  bm25             p50    0.853 ms  p99    1.692 ms  nDCG 0.658
+tantivy  facet            p50    0.112 ms  p99    0.680 ms
+tantivy  bm25             cold: first 10.09 ms, p50 1.535 ms
+wrote /work/out/part-a-tantivy/a2_tantivy_trec-covid.json
+tantivy  quora: built in 5.2 s, 33.2 MB
+tantivy  bm25             p50    0.241 ms  p99    0.649 ms  nDCG 0.756
+tantivy  facet            p50    0.046 ms  p99    0.163 ms
+tantivy  bm25             cold: first 6.74 ms, p50 0.428 ms
+wrote /work/out/part-a-tantivy/a2_tantivy_quora.json
+tantivy: loaded 137260 products with text and vector indexes in 2.9 s
+tantivy: insert 1/txn 108/s p50 8.20 ms; 100 2,682/s; 1000 21,163/s; 10000 53,978/s; visible {'checked': 20, 'at_once': 20, 'later': 0, 'never_within_5s': 0, 'max_s': 0.0}
+tantivy: price 96/s, counter 111/s (right True), title 98/s, vector 0/s, upsert 95/s, delete 481/s
+tantivy: stream 1000/s -> 1,000/s, commit p50 33.1 ms, lag p99 48 ms, reads 13,285/s p99 2.0 ms
+tantivy: stream 10000/s -> 10,000/s, commit p50 41.7 ms, lag p99 92 ms, reads 9,753/s p99 2.9 ms
+tantivy: stream 50000/s -> 24,737/s, commit p50 99.3 ms, lag p99 7645 ms, reads 6,360/s p99 4.2 ms
+wrote /work/out/part-a-tantivy/writes_tantivy.json
+RUN DONE
