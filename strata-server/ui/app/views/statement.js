@@ -276,7 +276,7 @@ function whereCard(st, d) {
     has.load && { key: "disk", label: "disk", num: true, wide: true, sort: (x) => x.cp?.detail?.load?.disk_used_ratio, render: (x) => { const v = x.cp?.detail?.load?.disk_used_ratio; return v != null ? h("span", { class: v > 0.95 ? "wl-bad" : "" }, fmt.pct(v, 0)) : "–"; } },
     { key: "act", label: "", sortable: false, wide: true, width: has.load ? null : "60%", render: (x) => h("div", { class: "row nw", style: { gap: "4px" } }, acts(x)) },
   ]), { rows, sortKey: null, compact: true, onRow });
-  return card({ title: has.copy ? "Where: by shard and copy" : "Where: by shard", sub: `the shards this statement waited on, the slowest first${d.by_shard_from_calls ? ` · from the ${fmt.n(d.by_shard_from_calls)} latest and slowest calls the server keeps` : ""}${narrow() ? " · tap one for the rest" : ""}`, flush: true, body: [t,
+  return card({ cls: "wl-nums", title: has.copy ? "Where: by shard and copy" : "Where: by shard", sub: `the shards this statement waited on, the slowest first${d.by_shard_from_calls ? ` · from the ${fmt.n(d.by_shard_from_calls)} latest and slowest calls the server keeps` : ""}${narrow() ? " · tap one for the rest" : ""}`, flush: true, body: [t,
     rest.length ? h("div", { class: "small muted", style: { padding: "8px 12px" } }, `${fmt.plural(rest.length, "other shard")}: p99 ${fmt.ms(med(rest, (y) => y.p99_ms))} (median), slowest ${fmt.ms(rest[0].p99_ms)}`) : null] });
 }
 
@@ -287,7 +287,7 @@ function whoCard(st, d, secs) {
   const containK = (k) => containDialog({ fingerprint: st?.fingerprint, sql: st?.sql, key: k.key, keys: ks.map((x) => ({ key: x.key, share: x.calls / tot })) });
   const onRow = narrow() ? (k) => sheet(`Key ${k.key}`, [["share", fmt.pct(k.calls / tot, 0)], ["calls/s", fmt.si(k.calls / secs)], ["p99", fmt.ms(k.p99_ms)], ["failed", k.errors ? fmt.pct(k.errors / Math.max(1, k.calls), 1) : "0"]],
     [h("a", { class: "btn sm", href: link("queries", { tab: "history", key: k.key }) }, "Its queries"), canContainNow() ? h("button", { class: "btn sm", onclick: () => containK(k) }, "Contain…") : null]) : null;
-  return card({ title: "Who sends it", sub: "by API key", flush: true, body: table(cols([
+  return card({ title: "Who sends it", sub: "by API key", flush: true, cls: "wl-nums", body: table(cols([
     { key: "key", label: "key", render: (k) => h("a", { class: "mono wl-link", href: link("queries", { tab: "history", key: k.key }) }, k.key) },
     { key: "calls", label: "share", num: true, render: (k) => fmt.pct(k.calls / tot, 0) },
     { key: "rate", label: "calls/s", num: true, sort: (k) => k.calls, render: (k) => fmt.si(k.calls / secs) },
@@ -314,7 +314,7 @@ function slowestCard(d, sql) {
   };
   // Leave out what no call has: a server that keeps no node or shard per call.
   const has = { node: xs.some((x) => x.node), app: xs.some((x) => x.app), params: xs.some((x) => x.params && Object.keys(x.params).length), wait: xs.some((x) => x.waited_on || (x.outcome && x.outcome !== "ok")) };
-  return card({ title: "Slowest calls", sub: narrow() ? "tap one for its trace, parameters and profile" : "with their parameters", flush: true, body: table(cols([
+  return card({ cls: "wl-nums", title: "Slowest calls", sub: narrow() ? "tap one for its trace, parameters and profile" : "with their parameters", flush: true, body: table(cols([
     { key: "ts_ms", label: "time", render: (x) => h("span", { class: "mono small nowrap" }, when(x.ts_ms)) },
     { key: "ms", label: "took", num: true, render: (x) => h("b", { class: "nowrap" }, fmt.ms(x.ms)) },
     has.node && { key: "node", label: "via", wide: true, render: (x) => x.node ? h("span", { class: "badge" }, x.node) : "–" },

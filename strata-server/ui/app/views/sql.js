@@ -575,7 +575,9 @@ function render(page, r) {
     // coordinator does not undo them. Say so, and offer the SELECT that
     // shows the rows as they are now.
     const p = where?.p;
-    const partial = writes && p.kind !== "CREATE" && (code === 0 || code >= 500 || /\bshard\b.*\b(connect|timed? ?out|unavailable|no primary|takes no writes)\b/i.test(msg));
+    // NEW-data-tools-5: an answer that says nothing was written is believed.
+    const nothing = /nothing was written|no rows? (was|were) (written|changed)|0 rows changed/i.test(msg);
+    const partial = writes && !nothing && p.kind !== "CREATE" && (code === 0 || code >= 500 || /\bshard\b.*\b(connect|timed? ?out|unavailable|no primary|takes no writes)\b/i.test(msg));
     const checkSql = partial && p.table ? `SELECT * FROM ${quoteName(p.table)}${p.where ? ` WHERE ${p.where}` : ""} LIMIT 200` : null;
     const partialNote = partial ? h("div", { class: "card dt-partial", role: "note" },
       h("div", { class: "row", style: { gap: "8px" } }, icon("warn"), h("b", {}, "Part of it may have been written")),

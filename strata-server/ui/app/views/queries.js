@@ -269,7 +269,7 @@ function statementsTab(body, params, setCount) {
   ]), { sortKey: null, onRow: (x) => { location.hash = statementLink(x.fingerprint); }, empty: empty("queries", "No statements in this range", "Queries are grouped by shape: the same SQL with other literals.") });
   tbl.classList.add("wl-stmts");
   // Until the first answer, say it is reading: an empty table would say there is nothing.
-  const tblCard = card({ body: tbl, flush: true });
+  const tblCard = card({ body: tbl, flush: true, cls: "wl-nums" });
   tblCard.style.display = "none";
   clear(note, h("div", { class: "small muted", style: { margin: "6px 0 12px" } }, "Reading the statements of the range…"));
   body.append(h("div", { class: "row", style: { gap: "10px", marginBottom: "6px" } }, head, h("span", { class: "sep" }), onlyChip, ownChip, search), summary, note, cards, tblCard);

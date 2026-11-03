@@ -391,7 +391,7 @@ export function checkWrite({ sql, params, p, onEdit, fixesFor }) {
       tile(undoTile, "Undo", "none", "no transaction to roll back: write the rows back to undo it");
       if (noWhere) problems.prepend(h("div", { class: "banner bad dt-banner" }, icon("warn"), h("div", { class: "grow" },
         h("b", {}, `No WHERE: this ${p.kind === "UPDATE" ? "changes" : "deletes"} every row of ${p.table}${p.limit ? ` up to the LIMIT of ${fmt.n(p.limit)}` : ""}`),
-        h("div", { class: "small" }, p.limit ? "Without WHERE, LIMIT picks the rows." : `An ${p.kind} without WHERE runs only once you type the table's name. Add a WHERE to change fewer rows.`))));
+        h("div", { class: "small" }, p.limit ? "Without WHERE, LIMIT picks the rows." : `${/^[AEIOU]/i.test(p.kind) ? "An" : "A"} ${p.kind} without WHERE runs only once you type the table's name. Add a WHERE to change fewer rows.`))));
       const countSql = `SELECT COUNT(*) FROM ${p.target || qn(p.table)}${p.where ? ` WHERE ${p.where}` : ""}`;
       countRows(countSql, params).then((c) => {
         counted = c;
