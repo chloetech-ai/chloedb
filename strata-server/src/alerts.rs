@@ -1475,8 +1475,14 @@ pub fn window_value(r: &Rule, points: &[Arc<Json>], t: u64) -> Option<f64> {
     window_of(r, points, t).0
 }
 
+/// How long a series must span before a window it does not cover yet is
+/// judged on the points there are (or half the window, when shorter), but
+/// for a rule that fires on any one point (`max` over `>`, `min` over `<`).
+const PARTIAL_MIN_MS: u64 = 30_000;
+
 /// [`window_value`], and how long the series spans (ms) when it spans
-/// less than the window.
+/// less than the window; no value while it spans less than
+/// [`PARTIAL_MIN_MS`].
 fn window_of(r: &Rule, points: &[Arc<Json>], t: u64) -> (Option<f64>, Option<u64>) {
     let w = r.window_s * 1000;
     let from = t.saturating_sub(w);
@@ -1487,6 +1493,13 @@ fn window_of(r: &Rule, points: &[Arc<Json>], t: u64) -> (Option<f64>, Option<u64
     // Nothing before the window, and its first point well into it.
     let span = t.saturating_sub(at(first));
     let partial = (start == 0 && span + (crate::telemetry::INTERVAL.as_millis() as u64) < w).then_some(span);
+    // Too few points to judge a mean or "every point" yet: a server
+    // restarted a moment ago (in a rolling upgrade, every server) would
+    // fire on its first point. A rule that fires on any one point does.
+    let any_point = matches!((r.eval.as_str(), r.op.starts_with('>')), ("max", true) | ("min", false));
+    if !any_point && partial.is_some_and(|s| s < PARTIAL_MIN_MS.min(w / 2)) {
+        return (None, partial);
+    }
     if r.eval == "mean" && matches!(r.metric.as_str(), "error_ratio" | "availability") && window.iter().any(|p| p.get("queries").is_some()) {
         let (mut q, mut e) = (0.0, 0.0);
         for p in &window {
@@ -1880,12 +1893,20 @@ mod tests {
     fn a_window_the_series_does_not_span_yet_is_evaluated_and_said_partial() {
         let a = Alerts::new(None, None).unwrap();
         a.set_rules(vec![slow("mean", 300, 0)], "t").unwrap();
-        // A server up 10 s: five points of a five-minute window.
+        // A server up 10 s: too few points to judge a five-minute window.
         let ps = points(&[(0, 20.0), (2_000, 30.0), (4_000, 20.0), (6_000, 30.0), (8_000, 20.0), (10_000, 30.0)]);
         assert!(a.check(&ps, 10_000).is_empty());
+        assert_eq!(a.one("p99").unwrap()["state"], "no_data");
+        // Every point over the threshold: still too few to say so.
+        let hot = points(&[(10_000, 200.0), (12_000, 300.0)]);
+        assert!(a.check(&hot, 12_000).is_empty());
+        // Up 40 s: judged on the points there are.
+        let ps: Vec<(u64, f64)> = (0..=20u64).map(|i| (i * 2000, if i % 2 == 0 { 20.0 } else { 30.0 })).collect();
+        assert!(a.check(&points(&ps), 40_000).is_empty());
         let s = a.one("p99").unwrap();
-        assert_eq!((s["state"].as_str(), s["value"].as_f64()), (Some("ok"), Some(25.0)), "{s}");
-        assert_eq!((s["window_partial"].as_bool(), s["window_covered_s"].as_u64()), (Some(true), Some(10)), "{s}");
+        assert_eq!(s["state"].as_str(), Some("ok"), "{s}");
+        assert!((20.0..30.0).contains(&s["value"].as_f64().unwrap()), "{s}");
+        assert_eq!((s["window_partial"].as_bool(), s["window_covered_s"].as_u64()), (Some(true), Some(40)), "{s}");
         // Once the series spans the window, it is not partial.
         let full: Vec<(u64, f64)> = (0..200u64).map(|i| (i * 2000, 20.0)).collect();
         a.check(&points(&full), 398_000);
