@@ -606,7 +606,7 @@ const MINUTES = [[15, "15 min"], [60, "1 h"], [240, "4 h"], [1440, "24 h"]];
  * to refuse new runs for a while. Focus starts on "Keep them running".
  * Resolves {reason, refuse_min} or false.
  */
-export function cancelDialog({ sql, queries, key, refusable = true }) {
+export function cancelDialog({ sql, queries, key, fingerprint = null, refusable = true }) {
   return new Promise((resolve) => {
     const n = queries.length;
     const keys = countBy(queries, (q) => q.key || null);
@@ -622,6 +622,22 @@ export function cancelDialog({ sql, queries, key, refusable = true }) {
     const keep = h("button", { class: "btn" }, n === 1 ? "Keep it running" : "Keep them running");
     reason.oninput = () => { ok.disabled = !reason.value.trim(); };
     let done = false;
+    // NEW-workload-8: queries end and start while the dialog is open; recount them every 2 s.
+    const now = h("dd", { class: "small" }, "checking…");
+    const recount = async () => {
+      try {
+        const j = await api("/v1/queries");
+        if (done) return;
+        const run = (j.queries || []).filter((q) => !q.cancelled && (fingerprint ? q.fingerprint === fingerprint && (!key || q.key === key) : queries.some((x) => x.id === q.id)));
+        const ids = new Set(queries.map((q) => q.id)), ended = queries.filter((q) => !run.some((r) => r.id === q.id)).length, started = run.filter((r) => !ids.has(r.id)).length;
+        now.textContent = !run.length ? `none running: ${n === 1 ? "it has" : "they have"} ended` : `${fmt.n(run.length)} running${ended ? `; ${fmt.n(ended)} of the ${fmt.n(n)} ${ended === 1 ? "has" : "have"} ended` : ""}${started ? `; ${fmt.n(started)} started since` : ""}`;
+        ok.textContent = !run.length ? "Nothing to cancel" : run.length === 1 ? "Cancel the query" : `Cancel ${fmt.n(run.length)} queries`;
+        ok.dataset.none = run.length ? "" : "1";
+        ok.disabled = !run.length || !reason.value.trim();
+      } catch { now.textContent = "could not be counted again"; }
+    };
+    reason.oninput = () => { ok.disabled = !reason.value.trim() || ok.dataset.none === "1"; };
+    const timer = setInterval(recount, 2000);
     const m = modal({
       title: n === 1 ? "Cancel this running query?" : `Cancel ${fmt.n(n)} running queries of one statement?`,
       body: [
@@ -629,15 +645,17 @@ export function cancelDialog({ sql, queries, key, refusable = true }) {
         h("dl", { class: "kv wl-kv" },
           h("dt", {}, "Which"), h("dd", {}, `${fmt.plural(n, "query", "queries")}${vias.length && vias[0][0] ? ": " + vias.map(([v, c]) => `${c} on ${v}`).join(", ") : ""} · running ${fmt.ms(el[0])}${n > 1 ? ` to ${fmt.ms(el[el.length - 1])}` : ""}${mem ? ` · holding ${fmt.bytes(mem)} of query memory` : ""}`),
           h("dt", {}, "Who sent them"), h("dd", {}, keys.some(([k]) => k) ? keys.map(([k, c], i) => [i ? ", " : "", k ? ["API key ", h("b", { class: "mono" }, k)] : "no key", keys.length > 1 ? ` (${c})` : ""]) : h("span", { class: "muted" }, "unknown: this server does not record the key")),
+          h("dt", {}, "Now"), now,
           h("dt", {}, "What they get"), h("dd", {}, "HTTP 499 ", h("span", { class: "mono" }, "cancelled by an operator"), ". A client that retries sends them again.")),
         !refusable ? null : h("label", { class: "row small wl-refuse" }, refuse, h("span", {}, oneKey ? ["Also refuse new runs of this statement from ", h("b", { class: "mono" }, oneKey), " for"] : "Also refuse new runs of this statement for"), minSel, h("span", { class: "muted" }, "(they get 429)")),
         h("label", { class: "stack", style: { gap: "4px" } }, h("span", { class: "small dim" }, "Reason, for the audit log"), reason),
       ],
       foot: [keep, ok],
-      onClose: () => { if (!done) resolve(false); },
+      onClose: () => { clearInterval(timer); if (!done) resolve(false); },
     });
-    keep.onclick = () => { done = true; m.close(); resolve(false); };
-    ok.onclick = () => { if (!reason.value.trim()) return; done = true; m.close(); resolve({ reason: reason.value.trim(), refuse_min: refuse.checked ? minutes : 0, key: oneKey }); };
+    recount();
+    keep.onclick = () => { done = true; clearInterval(timer); m.close(); resolve(false); };
+    ok.onclick = () => { if (!reason.value.trim()) return; done = true; clearInterval(timer); m.close(); resolve({ reason: reason.value.trim(), refuse_min: refuse.checked ? minutes : 0, key: oneKey }); };
     reason.onkeydown = (e) => { if (e.key === "Enter") e.preventDefault(); };
     setTimeout(() => keep.focus(), 0);
   });
@@ -668,7 +686,7 @@ export async function cancelQueries({ fingerprint, key, queries, reason }) {
 /** Cancels after asking; then refuses the shape for a while when asked. */
 export async function askCancel({ sql, fingerprint, key, queries, onDone }) {
   if (!can("admin")) { toast("Cancelling needs an admin key", "bad"); return; }
-  const a = await cancelDialog({ sql, queries, key, refusable: !!fingerprint && await canContain() });
+  const a = await cancelDialog({ sql, queries, key, fingerprint, refusable: !!fingerprint && await canContain() });
   if (!a) return;
   // The rule first, so a client that retries at once is refused rather than started again.
   if (a.refuse_min && fingerprint) {
