@@ -11,6 +11,9 @@
 # 2M ones, timed on the cloud container at 500K and 1M).
 # Redis keeps everything in memory (8.2 GB at 1M), so it gets a 128 GB node
 # with the same CPU limit as every one-node engine.
+# Jobs start in this order as the budget allows: of the rest, Elasticsearch
+# and OpenSearch (the engines closest to Strata at 1M) first, and Redis, on
+# the costliest node, last.
 qdrant     qdrant     one      18
 strata     strata     sharded  5
 strata-b   strata     sharded  5
@@ -19,10 +22,10 @@ meili      meili      one      9
 manticore  manticore  one      8
 vespa      vespa      sharded  8
 typesense  typesense  one      7
-redis      redis      one      7   ONE_SIZE=m-16vcpu-128gb,ONE_MEM=110Gi,REDIS_MAXMEM=100000mb
-solr       solr       sharded  7
-weaviate   weaviate   one      6
-os         os         sharded  5
 es         es         sharded  5
-paradedb   paradedb   one      5
+os         os         sharded  5
+solr       solr       sharded  7
 milvus     milvus     one      4
+weaviate   weaviate   one      6
+paradedb   paradedb   one      5
+redis      redis      one      7   ONE_SIZE=m-16vcpu-128gb,ONE_MEM=110Gi,REDIS_MAXMEM=100000mb
