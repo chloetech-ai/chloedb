@@ -44,7 +44,7 @@ use strata::data::{self, col};
 use strata::db::Db;
 use strata::metrics::{mean, percentile};
 use strata::segment::build::BuildOptions;
-use strata::storage::DbOptions;
+use strata::storage::{DbOptions, MergePolicy};
 use strata::{Document, Value, VectorCodes, VectorIndexKind};
 use strata_server::server;
 use strata_server::service::shard_of;
@@ -74,6 +74,11 @@ enum Cmd {
         /// Threads for building the vector index.
         #[arg(long, default_value_t = 2)]
         threads: usize,
+        /// Documents a segment of the load takes; a shard of more is
+        /// loaded in segments of this many and then compacted as far as
+        /// Strata's segment cap allows (2M documents a segment).
+        #[arg(long, default_value_t = 500_000)]
+        segment_docs: usize,
     },
     /// Loads the collection into Elasticsearch, OpenSearch, Solr or Vespa over HTTP and merges each shard to one segment, timed.
     Load {
@@ -327,29 +332,14 @@ fn each_doc(collection: &str, limit: Option<usize>, mut f: impl FnMut(RawDoc, Ve
     Ok(n)
 }
 
-fn build(collection: &str, shard: usize, of: usize, out: &Path, threads: usize) -> Result<(), String> {
+fn unix_s() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
+fn build(collection: &str, shard: usize, of: usize, out: &Path, threads: usize, segment_docs: usize) -> Result<(), String> {
     let t = Instant::now();
+    let started = unix_s();
     let dim = meta(collection)?.dim;
-    let mut docs: Vec<Document> = Vec::new();
-    each_doc(collection, None, |r, v| {
-        if shard_of(&Value::Str(r.id.clone()), of) == shard {
-            let body = r.body();
-            docs.push(vec![
-                Value::Str(r.id),
-                Value::Str(r.title),
-                Value::Str(r.text),
-                Value::Str(body),
-                Value::Int(r.year),
-                Value::Str(r.category),
-                Value::Float(r.rating),
-                Value::Str(r.topic),
-                Value::Vector(v.into()),
-            ]);
-        }
-        Ok(())
-    })?;
-    let read_s = t.elapsed().as_secs_f64();
-    let n = docs.len();
     for p in [out.to_path_buf(), PathBuf::from(format!("{}-wal", out.display()))] {
         if p.exists() {
             std::fs::remove_file(&p).map_err(s)?;
@@ -358,16 +348,64 @@ fn build(collection: &str, shard: usize, of: usize, out: &Path, threads: usize) 
     // As strata-server-bench builds its databases.
     let mut schema = data::beir_schema(dim, VectorIndexKind::Hnsw { m: 16, ef_construction: 200 });
     schema.fields[col::EMB].codes = VectorCodes::Sq8;
-    let opts = DbOptions { build: BuildOptions::default().set("vector.threads", threads), segment_max_docs: n.max(1), ..server::db_options(false) };
-    let t1 = Instant::now();
+    let opts = DbOptions { build: BuildOptions::default().set("vector.threads", threads), segment_max_docs: segment_docs.max(1), ..server::db_options(false) };
     let db = Db::create(out, schema, opts).map_err(s)?;
-    db.load(docs).map_err(s)?;
-    let build_s = t1.elapsed().as_secs_f64();
+    // The documents stream from the files into the load, which builds a
+    // segment of each `segment_docs` of them: holding a shard's documents
+    // and its one segment at once took ~15 KB a document (7.8 GB at 500K),
+    // more than a node has at 10M. Building a segment still holds about
+    // 12 KB a document of it (3.2 GB with segments of 200K), so 500K.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Document>(4096);
+    let coll = collection.to_string();
+    let reader = std::thread::spawn(move || {
+        each_doc(&coll, None, |r, v| {
+            if shard_of(&Value::Str(r.id.clone()), of) == shard {
+                let body = r.body();
+                let doc = vec![
+                    Value::Str(r.id),
+                    Value::Str(r.title),
+                    Value::Str(r.text),
+                    Value::Str(body),
+                    Value::Int(r.year),
+                    Value::Str(r.category),
+                    Value::Float(r.rating),
+                    Value::Str(r.topic),
+                    Value::Vector(v.into()),
+                ];
+                tx.send(doc).map_err(|_| "the load stopped".to_string())?;
+            }
+            Ok(())
+        })
+    });
+    let mut n = 0usize;
+    let loaded = db.load(rx.iter().inspect(|_| n += 1));
+    drop(rx);
+    reader.join().map_err(|_| "the reader panicked".to_string())??;
+    loaded.map_err(s)?;
+    let load_s = t.elapsed().as_secs_f64();
+    let segments_loaded = db.snapshot().segments().len();
+    // Then compacted, as `optimize` does: into segments of up to Strata's
+    // cap of 2M documents. One segment of a 5M shard would not fit: merging
+    // took 3.1 GB at 500K and over 5.2 GB at 1M, growing about 4 GB a
+    // million.
+    let t1 = Instant::now();
+    if segments_loaded > 1 {
+        db.storage().merge(&MergePolicy::compact()).map_err(s)?;
+        db.storage().vacuum().map_err(s)?;
+    }
+    let merge_s = t1.elapsed().as_secs_f64();
+    let segments = db.snapshot().segments().len();
     let file_bytes = db.storage().file_stats().file_bytes;
     drop(db);
+    // read_s is 0: the documents are read while the segments are built.
     let report = json!({
         "engine": "strata", "shard": shard, "of": of, "docs": n, "threads": threads,
-        "read_s": read_s, "build_s": build_s, "total_s": t.elapsed().as_secs_f64(), "file_bytes": file_bytes,
+        "segment_docs": segment_docs, "segments_loaded": segments_loaded, "segments": segments,
+        "read_s": 0.0, "load_s": load_s, "merge_s": merge_s, "build_s": load_s + merge_s, "total_s": t.elapsed().as_secs_f64(),
+        "file_bytes": file_bytes,
+        // Shards built at once overlap: the build's wall time is from the
+        // first start to the last end.
+        "started_unix": started, "ended_unix": unix_s(),
     });
     std::fs::write(format!("{}.build.json", out.display()), report.to_string()).map_err(s)?;
     println!("{report}");
@@ -1059,6 +1097,9 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
     let seen = p.seen;
     let year = p.year;
     match engine {
+        // A read by key goes through the key-value API, without SQL, as
+        // Meilisearch's, Milvus's and Redis's go through their own gets.
+        Engine::Strata if kind == "key lookup" => Some(("/v1/kv/get", json!({"table": "docs", "keys": [key]}))),
         Engine::Strata => {
             let mut params = serde_json::Map::new();
             if sql.contains(":t") {
@@ -1321,6 +1362,11 @@ fn with(mut a: Json, b: Json) -> Json {
 /// kind's (category, count, average rating)).
 fn answer(engine: Engine, kind: &str, j: &Json) -> Json {
     let (hits, id, score) = match engine {
+        // /v1/kv/get: {"rows": [{"id": .., ..} or null, one a key]}.
+        Engine::Strata if kind == "key lookup" => {
+            let keys: Vec<Json> = j["rows"].as_array().map(|r| r.iter().filter(|x| !x.is_null()).map(|x| x["id"].clone()).collect()).unwrap_or_default();
+            return json!({"keys": keys, "scores": [], "rows": []});
+        }
         Engine::Strata => {
             return json!({"keys": j["keys"], "scores": j["scores"], "rows": j["rows"]});
         }
@@ -2501,7 +2547,7 @@ async fn stream(
 async fn main() {
     let cli = Cli::parse();
     let r = match &cli.cmd {
-        Cmd::Build { shard, of, out, threads } => build(&cli.collection, *shard, *of, out, *threads),
+        Cmd::Build { shard, of, out, threads, segment_docs } => build(&cli.collection, *shard, *of, out, *threads, *segment_docs),
         Cmd::Load { engine, url, shards, batch, clients, limit, out } => match engine.engine() {
             Ok(e) => load(&cli.collection, e, url, *shards, *batch, *clients, *limit, out).await,
             Err(o) => more::load(&cli.collection, o, url, *batch, *clients, *limit, out).await,

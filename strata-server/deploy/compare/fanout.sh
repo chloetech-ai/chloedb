@@ -32,9 +32,19 @@
 # node more than 5% slower than the median of its size is replaced once),
 # the data copied to the nodes that read it and checked against its SHA-256
 # sums, then compare.sh's steps for its engine with three passes of `run`,
-# and loads capped at LOAD_HOURS (default 3). STATE (default
-# ~/.strata-fanout, mode 700) keeps the kubeconfig, the ledger of pools and
-# each job's log, steps and reports.
+# and loads capped at LOAD_HOURS (default 3). PASSES (default 3) is how
+# many passes of `run` each job makes. COPY_JOBS (default 0, no limit)
+# holds back new jobs while that many started ones are still copying the
+# data (the base node's disk and network are shared, so copies at once only
+# keep each other's nodes waiting, billed). STATE (default ~/.strata-fanout,
+# mode 700) keeps the kubeconfig, the ledger of pools and each job's log,
+# steps and reports.
+#
+# A job's line may end with a fifth column of KEY=VALUE settings, comma
+# separated, that hold for that job only: its node sizes (ONE_SIZE,
+# SHARDED_SIZE, CLIENT_SIZE) and compare.sh's budgets (ONE_MEM,
+# REDIS_MAXMEM, ...), e.g. a node with more memory for an engine that keeps
+# everything in it.
 set -euo pipefail
 
 API=https://api.digitalocean.com/v2
@@ -49,6 +59,8 @@ MAX_NODES=${MAX_NODES:-22}
 RETRIES=${RETRIES:-1}
 BUDGET=${BUDGET:-50}
 LOAD_HOURS=${LOAD_HOURS:-3}
+PASSES=${PASSES:-3}
+COPY_JOBS=${COPY_JOBS:-0}
 STATE=${STATE:-$HOME/.strata-fanout}
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=${FANOUT_REPO:-$(cd "$HERE/../../.." && pwd)}
@@ -161,9 +173,15 @@ EOF
 
 in_base() { $K exec base -- bash -c "$1"; }
 
-# Jobs: name, engine, shape (sharded or one), timeout in hours. Order is
-# the order they start in (longest first).
-jobs_of() { grep -v '^#' "$1" | awk 'NF >= 4 {print $1, $2, $3, $4}'; }
+# Jobs: name, engine, shape (sharded or one), timeout in hours, and its own
+# settings (KEY=VALUE,...; - for none). Order is the order they start in.
+jobs_of() { grep -v '^#' "$1" | awk 'NF >= 4 {print $1, $2, $3, $4, (NF >= 5 ? $5 : "-")}'; }
+# A job's own settings, exported into this (sub)shell.
+apply_env() { # ENVS
+    [ "$1" = - ] && return 0
+    local kv
+    for kv in ${1//,/ }; do export "${kv?}"; done
+}
 nodes_of() { [ "$1" = sharded ] && echo 3 || echo 2; }
 # The most a job's pools can cost: to its timeout, and half an hour more.
 job_cost() { # SHAPE HOURS
@@ -274,13 +292,19 @@ print("slow" if len(xs) >= 3 and line["sha256_4g_s"] > 1.05 * statistics.median(
 PY
 }
 
+# The PASSES passes of `run` for ENGINE.
+runs() { # ENGINE
+    local i
+    echo "run $1"
+    for ((i = 2; i <= PASSES; i++)); do echo "run $1 --label $1-pass$i"; done
+}
 steps_of() { # ENGINE: compare.sh's steps, one per line
     case $1 in
-    strata) printf '%s\n' "build" "up strata" "run strata" "run strata --label strata-pass2" "run strata --label strata-pass3" "writes strata" "stream strata" "down strata" ;;
-    es) printf '%s\n' "up es" "load es" "run es" "run es --label es-pass2" "run es --label es-pass3" "writes es" "stream es" "trial" \
+    strata) printf '%s\n' "build" "up strata" "$(runs strata)" "writes strata" "stream strata" "down strata" ;;
+    es) printf '%s\n' "up es" "load es" "$(runs es)" "writes es" "stream es" "trial" \
         "run es --kinds hybrid (RRF),hybrid (weighted) --paid --label es-trial" "down es" ;;
-    os | solr | vespa) printf '%s\n' "up $1" "load $1" "run $1" "run $1 --label $1-pass2" "run $1 --label $1-pass3" "writes $1" "stream $1" "down $1" ;;
-    *) printf '%s\n' "up $1" "load $1" "run $1" "run $1 --label $1-pass2" "run $1 --label $1-pass3" "down $1" ;;
+    os | solr | vespa) printf '%s\n' "up $1" "load $1" "$(runs "$1")" "writes $1" "stream $1" "down $1" ;;
+    *) printf '%s\n' "up $1" "load $1" "$(runs "$1")" "down $1" ;;
     esac
 }
 
@@ -347,6 +371,8 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
         fi
         log "$name: $n replaced by $new"
     done
+    # Its data is copied: the scheduler may start the next job (COPY_JOBS).
+    touch "$dir/ready"
     local step i=0 st rc
     while IFS= read -r step; do
         i=$((i + 1))
@@ -358,8 +384,10 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
         fi
         log "$name: step $i: compare.sh $step"
         st=$(now)
-        local cap=""
-        [[ $step == load* ]] && cap="timeout ${LOAD_HOURS}h"
+        # A load stops at LOAD_HOURS, or sooner at the job's own timeout (which
+        # the budget counts on).
+        local cap="" left=$((${hours%.*} * 3600 - ($(now) - t0)))
+        [[ $step == load* ]] && cap="timeout $((left < LOAD_HOURS * 3600 ? left : LOAD_HOURS * 3600))s"
         rc=0
         # shellcheck disable=SC2086
         (
@@ -374,7 +402,7 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
         if [ $rc != 0 ]; then
             log "$name: step $i ($step) failed ($rc)"
             if [[ $step == load* ]] && [ $rc = 124 ]; then
-                echo "load timed out after $LOAD_HOURS h" >"$dir/reason"
+                echo "load timed out after $((($(now) - st) / 60)) min (LOAD_HOURS $LOAD_HOURS, job timeout $hours h)" >"$dir/reason"
             else
                 echo "$step: exit $rc" >"$dir/reason"
             fi
@@ -504,7 +532,10 @@ up)
         hours=$(((deadline - $(now)) / 3600))
         log "cluster $(cluster_id) is there already: carrying on with it"
     else
-        do_api GET "/sizes?per_page=200" | python3 -c 'import json, sys; print(json.dumps({s["slug"]: s["price_hourly"] for s in json.load(sys.stdin)["sizes"]}))' >"$STATE/prices.json"
+        # Every page of sizes (there are more than 200).
+        for page in 1 2 3; do do_api GET "/sizes?per_page=200&page=$page"; echo; done | python3 -c '
+import json, sys
+print(json.dumps({s["slug"]: s["price_hourly"] for l in sys.stdin if l.strip() for s in json.loads(l)["sizes"]}))' >"$STATE/prices.json"
         version=$(do_api GET /kubernetes/options | jq_ 'd["options"]["versions"][0]["slug"]')
         body=$(python3 - "$NAME" "$REGION" "$version" "$BASE_SIZE" <<'PY'
 import json, sys
@@ -596,7 +627,7 @@ run)
         up=1 left=0
         # Running jobs: nodes in use; a job whose process is gone (this
         # script stopped) is retried on new pools.
-        while read -r name engine shape hours; do
+        while read -r name engine shape hours envs; do
             s=$(jstate "$name")
             case $s in
             done | failed | skipped | queued)
@@ -621,17 +652,25 @@ run)
         done < <(jobs_of "$jobs")
         # What the cluster has, so that two runs at once share MAX_NODES.
         if n=$(nodes_up 2>/dev/null) && [ -n "$n" ] && [ "$n" -gt "$up" ]; then up=$n; fi
-        while read -r name engine shape hours; do
+        # Started jobs still copying their data (COPY_JOBS).
+        copying=0
+        for d in "$STATE"/jobs/*/; do
+            n=$(basename "$d")
+            [[ $n == *.attempt* ]] && continue
+            case $(jstate "$n") in starting | running) [ -f "$d/ready" ] || copying=$((copying + 1)) ;; esac
+        done
+        while read -r name engine shape hours envs; do
             s=$(jstate "$name")
             case $s in done | failed | skipped) continue ;; esac
             left=$((left + 1))
             [ "$s" = queued ] || continue
             need=$(nodes_of "$shape")
             [ $((up + need)) -le "$MAX_NODES" ] || continue
+            [ "$COPY_JOBS" = 0 ] || [ "$copying" -lt "$COPY_JOBS" ] || continue
             mkdir -p "$STATE/jobs/$name"
             echo "$hours" >"$STATE/jobs/$name/timeout_h"
             read -r spent bound <<<"$(cost)"
-            add=$(job_cost "$shape" "$hours")
+            add=$(apply_env "$envs" && job_cost "$shape" "$hours")
             if python3 -c "import sys; sys.exit(0 if $bound + $add <= $BUDGET else 1)"; then
                 a=$(($(cat "$STATE/jobs/$name/attempts" 2>/dev/null || echo 0) + 1))
                 if [ $a -gt "$(max_attempts "$name")" ]; then setstate "$name" failed; continue; fi
@@ -639,11 +678,11 @@ run)
                 [ $a -gt 1 ] && [ -d "$STATE/jobs/$name/work" ] && mv "$STATE/jobs/$name" "$STATE/jobs/$name.attempt$((a - 1))" &&
                     mkdir -p "$STATE/jobs/$name" && echo $a >"$STATE/jobs/$name/attempts" && echo "$hours" >"$STATE/jobs/$name/timeout_h" &&
                     { cp "$STATE/jobs/$name.attempt$((a - 1))/requeued" "$STATE/jobs/$name/" 2>/dev/null || true; }
-                create_pools "$name" "$shape" "$a" || { delete_pools "$name"; continue; }
+                (apply_env "$envs" && create_pools "$name" "$shape" "$a") || { delete_pools "$name"; continue; }
                 setstate "$name" starting
-                setsid nohup "$0" _job "$name" "$engine" "$shape" "$hours" </dev/null >>"$STATE/jobs/$name/driver.log" 2>&1 &
+                (apply_env "$envs" && exec setsid nohup "$0" _job "$name" "$engine" "$shape" "$hours") </dev/null >>"$STATE/jobs/$name/driver.log" 2>&1 &
                 echo $! >"$STATE/jobs/$name/pid"
-                up=$((up + need))
+                up=$((up + need)) copying=$((copying + 1))
                 log "$name: started (attempt $a, $need nodes; $up up; spent \$$spent, at most \$$bound before it, +\$$add)"
             elif [ "$up" -le 1 ]; then
                 log "$name: skipped: \$$bound + \$$add would pass the budget of \$$BUDGET"
@@ -682,7 +721,7 @@ status)
     jobs=${1:-$HERE/fanout-jobs.tsv}
     read -r spent bound <<<"$(cost)"
     printf '%-12s %-9s %-8s %s\n' JOB STATE MINUTES STEP
-    while read -r name engine shape hours; do
+    while read -r name engine shape hours envs; do
         s=$(jstate "$name")
         d=$STATE/jobs/$name
         m=""

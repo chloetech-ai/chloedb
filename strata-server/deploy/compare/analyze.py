@@ -271,12 +271,23 @@ def main():
     print("|---|---|---|---|---|---|---|")
     builds = [load_json(rep / f"build-strata-s{i}.json") for i in (0, 1)]
     if all(builds):
-        # compare.sh builds the shards one after the other.
-        total = sum(b["total_s"] for b in builds)
+        # From the first shard's start to the last one's end: compare.sh
+        # builds them one after the other, or both at once (BUILD_PARALLEL,
+        # fanout.sh's default). Reports from before started_unix are summed,
+        # as if built one after the other.
+        if all("started_unix" in b for b in builds):
+            total = max(b["ended_unix"] for b in builds) - min(b["started_unix"] for b in builds)
+        else:
+            total = sum(b["total_s"] for b in builds)
         size = sum(b["file_bytes"] for b in builds)
         docs = sum(b["docs"] for b in builds)
         summary["load"]["strata"] = {"total_s": total, "index_bytes": size, "docs": docs, "shards": builds}
-        print(f"| Strata | {total:.0f} | read {sum(b['read_s'] for b in builds):.0f} + build {sum(b['build_s'] for b in builds):.0f} | (built) | (built as one) | {size / 1e9:.2f} | {docs:,} |")
+        if all("load_s" in b for b in builds):
+            # Read while built, in segments, then merged into one.
+            split = f"load {sum(b['load_s'] for b in builds):.0f} + merge {sum(b['merge_s'] for b in builds):.0f}"
+        else:
+            split = f"read {sum(b['read_s'] for b in builds):.0f} + build {sum(b['build_s'] for b in builds):.0f}"
+        print(f"| Strata | {total:.0f} | {split} | (built) | (built as one) | {size / 1e9:.2f} | {docs:,} |")
     for e in ["es", "os", "solr", "vespa"]:
         l = load_json(rep / f"load-{e}.json")
         if l:
@@ -526,6 +537,35 @@ def main():
                     thr = (a.get("throttled_usec", 0) - b.get("throttled_usec", 0)) / 1e6
                     summary["cpu"].setdefault(e, {}).setdefault(phase, {})[pod] = {"cpu_s": secs, "wall_s": wall, "throttled_s": thr}
                     print(f"| {NAMES[e]} | {phase} | {pod} | {secs:.0f} | {wall} | {secs / wall:.2f} | {thr:.0f} |")
+
+    # Memory of all an engine's containers, summed, from the same samples:
+    # after the load and after the timed run, and each pod's peak (the most
+    # it held at once since it started) added up.
+    mem_lines = [l for l in cpu_lines if "mem_current" in l]
+    if mem_lines:
+        print("\n## Memory of each engine's containers (cgroup memory.current, memory.stat, memory.peak; GB, all its pods)\n")
+        print("| engine | after the load | of it anonymous | after the timed run | of it anonymous | of it files (page cache) | pods' peaks added |")
+        print("|---|---|---|---|---|---|---|")
+        gb = lambda v: f"{v / 1e9:.2f}"
+        for e in ENGINES:
+            mine = [l for l in mem_lines if l.get("label", l["engine"]) == e]
+            if not mine:
+                continue
+            at = {}
+            for tag in ("load-after", "after"):
+                last = {}
+                for l in mine:
+                    if l["tag"] == tag:
+                        last[l["pod"]] = l
+                if last:
+                    at[tag] = {k: sum(l.get(f"mem_{k}", 0) for l in last.values()) for k in ("current", "anon", "file")}
+            peaks = {}
+            for l in mine:
+                peaks[l["pod"]] = max(peaks.get(l["pod"], 0), l.get("mem_peak", l["mem_current"]))
+            m = {"load": at.get("load-after"), "run": at.get("after"), "peak": sum(peaks.values())}
+            summary.setdefault("memory", {})[e] = m
+            cell = lambda d, k: gb(d[k]) if d else "–"
+            print(f"| {NAMES[e]} | {cell(m['load'], 'current')} | {cell(m['load'], 'anon')} | {cell(m['run'], 'current')} | {cell(m['run'], 'anon')} | {cell(m['run'], 'file')} | {gb(m['peak'])} |")
 
     for e in runs:
         for kind, why in runs[e].get("unavailable", {}).items():

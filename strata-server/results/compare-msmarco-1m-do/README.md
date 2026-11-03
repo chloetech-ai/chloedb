@@ -111,6 +111,14 @@ less than about 15% here are within what a second set of machines changes.
   copy of its scripts, which got the fix only after that try had started)
   and `strata-b` once (`jobs/strata-b.attempt1`); the runs here are the
   attempts after the fix.
+- **`tables.md` and `summary.json` add up Strata's two shard builds**
+  (339 s), although the two shards were built at the same time, each on its
+  own node: Strata's load took 178 s (`build-strata-s1.json`, the longer of
+  the two), and the build step in `jobs/strata/steps.tsv` 192 s with its
+  pod's start. The generated files keep the sum, since the analysis cannot
+  be run again without the collection; `analyze.py` now takes a sharded
+  build's time from its first start to its last end. The same holds for
+  `strata-b/`.
 - **Qdrant took 75 minutes to load**: it took the 1M documents in 6.5 minutes
   and spent the rest building its index (`load-qdrant.json`).
 - **The proxy between the cloud container and the cluster cut long
