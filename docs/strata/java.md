@@ -7,7 +7,7 @@ nav_order: 5.5
 # Strata from Java
 {: .no_toc }
 
-The `ai.chloetech.strata` package runs a Strata database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by Strata's native library over JNI, with no server and nothing to configure. It works on Java 11 and later.
+The `ai.chloetech.strata` package runs a Strata database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by Strata's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (`jdbc:strata:books.strata`), for code and tools that speak JDBC. It works on Java 11 and later.
 {: .fs-5 .fw-300 }
 
 1. TOC
@@ -139,6 +139,34 @@ Database copy = Database.fromSqlite("notes.sqlite", "notes.strata");   // a new 
 ```
 
 Their options are maps, with the names the [SQLite](sqlite.md) and [Parquet](parquet.md) pages give (`tables`, `schemas`, `blobsBase64`, `fts`, `indexes`, `table`, `schema`, `key`). An option a method does not take throws `IllegalArgumentException` naming those it takes, before anything is read or written. `Database.planSqlite` and `Database.planParquet` say what an import would do without doing it, and `lastImport()` what the import that made a database did.
+
+## JDBC
+
+The jar is also a JDBC driver: `jdbc:strata:PATH` opens the database at `PATH` in the process, as `jdbc:sqlite:PATH` does a SQLite file. `DriverManager` finds it by itself (the jar lists it under `META-INF/services`).
+
+```java
+import java.sql.*;
+
+try (Connection c = DriverManager.getConnection("jdbc:strata:books.strata");
+     PreparedStatement ps = c.prepareStatement("SELECT id, title, year FROM books WHERE year >= ? ORDER BY year LIMIT ?")) {
+    ps.setInt(1, 2000);
+    ps.setInt(2, 10);
+    try (ResultSet rs = ps.executeQuery()) {
+        while (rs.next()) {
+            System.out.println(rs.getString("id") + " " + rs.getString("title") + " " + rs.getInt("year"));
+        }
+    }
+}
+```
+
+Options follow a `?` in the URL or come as connection properties: `schema` (the path of a schema's JSON file, with which a database that does not exist yet is created: `jdbc:strata:books.strata?schema=books.json`), `models`, `threads`, and `readonly=true`, which refuses statements that write. A URL may also name the path as `jdbc:strata:file:books.strata`.
+
+- **Statements** are Strata's SQL ([the query language](query-language.md)), with `?` parameters numbered from 1. `setObject` takes the values the rest of the package takes: a `float[]` is a vector (`ORDER BY similarity(v, ?)`), a `List` a list. Batches (`addBatch`, `executeBatch`) run one statement after another; one that fails stops the batch with a `BatchUpdateException` that counts the ones before it, which stay written.
+- **Results** come back whole, so a result set can scroll if the statement is made with `ResultSet.TYPE_SCROLL_INSENSITIVE`; result sets are read-only. `getObject` gives an INT as `Long`, a FLOAT as `Double`, a TIMESTAMP as `java.sql.Timestamp`, a vector as `float[]` and a list as `List`; the getters convert (`getInt`, `getString`, `getObject(i, Instant.class)`, `getArray` for vectors). Times are in UTC.
+- **Transactions**: each statement commits as it runs, as it does through the rest of the package. Auto-commit is always on: `setAutoCommit(false)` throws `SQLFeatureNotSupportedException` rather than pretending a rollback could undo anything, and `commit()` and `rollback()` throw too. A tool or framework that needs transactions across statements cannot use Strata through JDBC yet.
+- **Connections share the database.** A process may have a database open once, so the connections to one file (a pool's, say) share one `Database`, which the last of them to close closes. `connection.unwrap(Database.class)` gives it, for what SQL does not do: `search`, `importParquet`, `embed`.
+- **Metadata** (`getMetaData()`) lists tables, columns with their types (KEYWORD and TEXT as `VARCHAR`, INT as `BIGINT`, FLOAT as `DOUBLE`, BOOL, TIMESTAMP, vectors and lists as `ARRAY`), keys, references and the SQL types: what database browsers ask a driver. Tables have no catalog or schema, and table and column patterns match regardless of case, as Strata's SQL names do.
+- **Errors** are `SQLException`s: a statement Strata cannot parse or plan a `SQLSyntaxErrorException`, what the driver does not do a `SQLFeatureNotSupportedException`.
 
 ## Errors
 

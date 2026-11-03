@@ -8,7 +8,7 @@ Around the library:
 
 - **[strata-server](docs/strata/server.md)** serves a database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Several servers run as shards behind a coordinator that answers like one database, and a primary ships its writes to replicas.
 - **[strata-py](docs/strata/python.md)** runs a database inside a Python process, the way `sqlite3` runs SQLite, or talks to a server with the same methods.
-- **[strata-java](docs/strata/java.md)** runs a database inside a Java process (Java 11 and later) over JNI, the way sqlite-jdbc runs SQLite: no server.
+- **[strata-java](docs/strata/java.md)** runs a database inside a Java process (Java 11 and later) over JNI, the way sqlite-jdbc runs SQLite: no server. It is a JDBC driver too: `jdbc:strata:books.strata`.
 - **[Parquet and S3](docs/strata/parquet.md)**: `strata-server import` reads Parquet files and directories of them as Spark writes them (Hive partitions too) into a table, `export` writes tables to Parquet that Spark, DuckDB, polars and pandas read, and either takes `s3://` URLs; from Python, `db.import_arrow` takes any Arrow table or dataframe.
 - **[SQLite in and out](docs/strata/sqlite.md)**: `strata-server import` turns a SQLite database's tables into Strata tables, and `strata-server export` writes a Strata database to a SQLite file with its keys, references, indexes and an FTS5 index over the text.
 - **[Engram](#engram-memory-for-coding-agents-built-on-strata)** is an application built on Strata: long-term memory for coding agents. It records every Claude Code session of a project into one Strata file and brings the right pieces back when a prompt needs them.
@@ -106,6 +106,13 @@ Strata from Java ([more](docs/strata/java.md)):
 
 ```sh
 cd strata-java && mvn install    # ai.chloetech:strata:0.1.0, the native library inside the jar
+```
+
+```java
+try (Connection c = DriverManager.getConnection("jdbc:strata:books.strata");
+     ResultSet rs = c.createStatement().executeQuery("SELECT id, title FROM books ORDER BY bm25(title, 'dragon') DESC LIMIT 5")) {
+    while (rs.next()) System.out.println(rs.getString("id") + " " + rs.getString("title"));
+}
 ```
 
 ## Engram: memory for coding agents, built on Strata
