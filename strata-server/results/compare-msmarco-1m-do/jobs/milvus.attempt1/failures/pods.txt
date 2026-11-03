@@ -1,0 +1,3 @@
+NAME                READY   STATUS    RESTARTS   AGE     IP             NODE                 NOMINATED NODE   READINESS GATES
+load-milvus-ncsjn   0/1     Error     0          4m5s    10.121.4.17    milvus-c-a1-3eeyht   <none>           <none>
+milvus-0            1/1     Running   0          4m24s   10.121.3.136   milvus-d-a1-3eeyh6   <none>           <none>

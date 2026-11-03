@@ -1,0 +1,6 @@
+1	ok	1793675842	1793675861	up typesense
+2	ok	1793675861	1793677213	load typesense
+3	ok	1793677213	1793677523	run typesense
+4	ok	1793677523	1793677833	run typesense --label typesense-pass2
+5	ok	1793677833	1793678143	run typesense --label typesense-pass3
+6	ok	1793678143	1793678149	down typesense

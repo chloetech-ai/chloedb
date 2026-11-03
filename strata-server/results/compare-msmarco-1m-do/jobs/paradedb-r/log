@@ -1,0 +1,184 @@
+service/paradedb created
+pod/paradedb-0 created
+pod/paradedb-0 condition met
+job.batch/load-paradedb created
+paradedb: index created in 0.0 s
+paradedb: 25000 documents sent, 3 s
+paradedb: 50000 documents sent, 6 s
+paradedb: 75000 documents sent, 10 s
+paradedb: 100000 documents sent, 13 s
+paradedb: 125000 documents sent, 16 s
+paradedb: 150000 documents sent, 19 s
+paradedb: 175000 documents sent, 22 s
+paradedb: 200000 documents sent, 25 s
+paradedb: 225000 documents sent, 28 s
+paradedb: 250000 documents sent, 31 s
+paradedb: 275000 documents sent, 34 s
+paradedb: 300000 documents sent, 38 s
+paradedb: 325000 documents sent, 41 s
+paradedb: 350000 documents sent, 44 s
+paradedb: 375000 documents sent, 47 s
+paradedb: 400000 documents sent, 50 s
+paradedb: 425000 documents sent, 53 s
+paradedb: 450000 documents sent, 56 s
+paradedb: 475000 documents sent, 59 s
+paradedb: 500000 documents sent, 62 s
+paradedb: 525000 documents sent, 66 s
+paradedb: 550000 documents sent, 69 s
+paradedb: 575000 documents sent, 73 s
+paradedb: 600000 documents sent, 76 s
+paradedb: 625000 documents sent, 79 s
+paradedb: 650000 documents sent, 82 s
+paradedb: 675000 documents sent, 86 s
+paradedb: 700000 documents sent, 89 s
+paradedb: 725000 documents sent, 92 s
+paradedb: 750000 documents sent, 94 s
+paradedb: 775000 documents sent, 97 s
+paradedb: 800000 documents sent, 101 s
+paradedb: 825000 documents sent, 104 s
+paradedb: 850000 documents sent, 107 s
+paradedb: 875000 documents sent, 110 s
+paradedb: 900000 documents sent, 113 s
+paradedb: 925000 documents sent, 116 s
+paradedb: 950000 documents sent, 119 s
+paradedb: 975000 documents sent, 122 s
+paradedb: 1000000 documents sent, 126 s
+paradedb: 1000000 documents (10.7 GB) sent in 125.7 s
+paradedb: primary_key_s in 3.0 s
+paradedb: search_index_s in 88.0 s
+paradedb: analyze_s in 0.6 s
+paradedb: indexed 91.7 s after the last write; 217.4 s in all
+wrote /data/compare/load-paradedb.json
+job.batch/run-paradedb created
+paradedb  bm25                     c=1         80 q/s  p50  14.870 ms  p90  16.581 ms  p99  18.610 ms  errors 0
+paradedb  bm25                     c=4        173 q/s  p50  26.696 ms  p90  35.725 ms  p99  44.252 ms  errors 0
+paradedb  bm25                     c=16       531 q/s  p50  22.578 ms  p90  64.921 ms  p99  89.960 ms  errors 0
+paradedb  bm25 + filter            c=1         67 q/s  p50  16.759 ms  p90  18.589 ms  p99  20.794 ms  errors 0
+paradedb  bm25 + filter            c=4        144 q/s  p50  31.059 ms  p90  41.759 ms  p99  47.855 ms  errors 0
+paradedb  bm25 + filter            c=16       336 q/s  p50  42.253 ms  p90  83.027 ms  p99 107.610 ms  errors 0
+paradedb  vector                   c=1         63 q/s  p50  15.648 ms  p90  18.133 ms  p99  20.531 ms  errors 0
+paradedb  vector                   c=4        128 q/s  p50  31.261 ms  p90  39.604 ms  p99  48.896 ms  errors 0
+paradedb  vector                   c=16       246 q/s  p50  63.121 ms  p90  89.461 ms  p99 114.272 ms  errors 0
+paradedb  vector + filter          c=1         37 q/s  p50  26.784 ms  p90  28.886 ms  p99  30.654 ms  errors 0
+paradedb  vector + filter          c=4         71 q/s  p50  54.788 ms  p90  69.327 ms  p99  77.866 ms  errors 0
+paradedb  vector + filter          c=16       107 q/s  p50 144.385 ms  p90 185.598 ms  p99 253.932 ms  errors 0
+paradedb  hybrid (RRF)             c=1         29 q/s  p50  35.989 ms  p90  39.099 ms  p99  40.874 ms  errors 0
+paradedb  hybrid (RRF)             c=4         57 q/s  p50  71.123 ms  p90  88.331 ms  p99 105.612 ms  errors 0
+paradedb  hybrid (RRF)             c=16        96 q/s  p50 158.637 ms  p90 214.274 ms  p99 280.651 ms  errors 0
+paradedb  hybrid (weighted)        c=1         29 q/s  p50  36.454 ms  p90  40.730 ms  p99  42.741 ms  errors 0
+paradedb  hybrid (weighted)        c=4         55 q/s  p50  74.102 ms  p90  91.876 ms  p99 109.250 ms  errors 0
+paradedb  hybrid (weighted)        c=16        98 q/s  p50 158.030 ms  p90 205.234 ms  p99 257.912 ms  errors 0
+paradedb  boosted (bm25 × decay)   c=1          1 q/s  p50 625.269 ms  p90 1301.996 ms  p99 1305.093 ms  errors 0
+paradedb  boosted (bm25 × decay)   c=4          3 q/s  p50 1120.545 ms  p90 2154.514 ms  p99 2740.146 ms  errors 0
+paradedb  boosted (bm25 × decay)   c=16         3 q/s  p50 4431.192 ms  p90 6951.454 ms  p99 8405.563 ms  errors 0
+paradedb  facet                    c=1        184 q/s  p50   4.861 ms  p90   7.008 ms  p99  14.853 ms  errors 0
+paradedb  facet                    c=4        762 q/s  p50   4.488 ms  p90   7.534 ms  p99  14.657 ms  errors 0
+paradedb  facet                    c=16       973 q/s  p50  13.606 ms  p90  29.055 ms  p99  61.956 ms  errors 0
+paradedb  key lookup               c=1       2501 q/s  p50   0.392 ms  p90   0.429 ms  p99   0.508 ms  errors 0
+paradedb  key lookup               c=4       8754 q/s  p50   0.448 ms  p90   0.522 ms  p99   0.596 ms  errors 0
+paradedb  key lookup               c=16     24377 q/s  p50   0.546 ms  p90   0.877 ms  p99   1.574 ms  errors 0
+paradedb  phrase                   c=1        223 q/s  p50   3.981 ms  p90   6.287 ms  p99  10.410 ms  errors 0
+paradedb  phrase                   c=4        900 q/s  p50   3.793 ms  p90   6.465 ms  p99  14.203 ms  errors 0
+paradedb  phrase                   c=16      1067 q/s  p50  12.648 ms  p90  26.882 ms  p99  53.908 ms  errors 0
+paradedb  typo                     c=1         15 q/s  p50  64.518 ms  p90  95.775 ms  p99 114.489 ms  errors 0
+paradedb  typo                     c=4         18 q/s  p50 195.728 ms  p90 317.680 ms  p99 593.729 ms  errors 0
+paradedb  typo                     c=16        19 q/s  p50 743.696 ms  p90 1379.932 ms  p99 2140.644 ms  errors 0
+paradedb  prefix                   c=1         57 q/s  p50  16.903 ms  p90  20.580 ms  p99  25.160 ms  errors 0
+paradedb  prefix                   c=4        103 q/s  p50  39.056 ms  p90  48.365 ms  p99  59.914 ms  errors 0
+paradedb  prefix                   c=16       204 q/s  p50  76.046 ms  p90 120.544 ms  p99 175.515 ms  errors 0
+paradedb  similar items            c=1          7 q/s  p50 134.793 ms  p90 163.171 ms  p99 185.966 ms  errors 0
+paradedb  similar items            c=4          9 q/s  p50 429.960 ms  p90 556.594 ms  p99 640.212 ms  errors 0
+paradedb  similar items            c=16        10 q/s  p50 1388.308 ms  p90 2754.191 ms  p99 2941.504 ms  errors 0
+paradedb  sql aggregate            c=1         27 q/s  p50  36.975 ms  p90  50.521 ms  p99  63.473 ms  errors 0
+paradedb  sql aggregate            c=4         91 q/s  p50  37.936 ms  p90  78.673 ms  p99 109.816 ms  errors 0
+paradedb  sql aggregate            c=16        93 q/s  p50 164.104 ms  p90 270.243 ms  p99 384.184 ms  errors 0
+wrote /data/compare/run-paradedb.json
+job.batch/run-paradedb-pass2 created
+paradedb-pass2 bm25                     c=1         74 q/s  p50  15.885 ms  p90  17.597 ms  p99  19.399 ms  errors 0
+paradedb-pass2 bm25                     c=4        160 q/s  p50  28.814 ms  p90  39.285 ms  p99  46.870 ms  errors 0
+paradedb-pass2 bm25                     c=16       499 q/s  p50  24.192 ms  p90  70.031 ms  p99  93.946 ms  errors 0
+paradedb-pass2 bm25 + filter            c=1         63 q/s  p50  17.819 ms  p90  19.693 ms  p99  21.754 ms  errors 0
+paradedb-pass2 bm25 + filter            c=4        132 q/s  p50  33.724 ms  p90  44.738 ms  p99  53.128 ms  errors 0
+paradedb-pass2 bm25 + filter            c=16       312 q/s  p50  45.647 ms  p90  87.396 ms  p99 120.417 ms  errors 0
+paradedb-pass2 vector                   c=1         61 q/s  p50  16.193 ms  p90  18.752 ms  p99  20.907 ms  errors 0
+paradedb-pass2 vector                   c=4        121 q/s  p50  33.387 ms  p90  41.674 ms  p99  48.329 ms  errors 0
+paradedb-pass2 vector                   c=16       234 q/s  p50  66.733 ms  p90  92.417 ms  p99 121.897 ms  errors 0
+paradedb-pass2 vector + filter          c=1         37 q/s  p50  27.354 ms  p90  29.267 ms  p99  32.321 ms  errors 0
+paradedb-pass2 vector + filter          c=4         67 q/s  p50  58.964 ms  p90  72.884 ms  p99  84.134 ms  errors 0
+paradedb-pass2 vector + filter          c=16       105 q/s  p50 147.987 ms  p90 191.747 ms  p99 241.348 ms  errors 0
+paradedb-pass2 hybrid (RRF)             c=1         29 q/s  p50  36.488 ms  p90  39.981 ms  p99  43.144 ms  errors 0
+paradedb-pass2 hybrid (RRF)             c=4         57 q/s  p50  72.207 ms  p90  89.568 ms  p99  99.905 ms  errors 0
+paradedb-pass2 hybrid (RRF)             c=16        98 q/s  p50 157.318 ms  p90 210.306 ms  p99 259.147 ms  errors 0
+paradedb-pass2 hybrid (weighted)        c=1         28 q/s  p50  37.192 ms  p90  41.929 ms  p99  44.319 ms  errors 0
+paradedb-pass2 hybrid (weighted)        c=4         55 q/s  p50  74.593 ms  p90  92.115 ms  p99 106.041 ms  errors 0
+paradedb-pass2 hybrid (weighted)        c=16        96 q/s  p50 164.067 ms  p90 206.809 ms  p99 246.592 ms  errors 0
+paradedb-pass2 boosted (bm25 × decay)   c=1          1 q/s  p50 628.418 ms  p90 1305.063 ms  p99 1322.364 ms  errors 0
+paradedb-pass2 boosted (bm25 × decay)   c=4          3 q/s  p50 1116.287 ms  p90 2235.072 ms  p99 2307.516 ms  errors 0
+paradedb-pass2 boosted (bm25 × decay)   c=16         3 q/s  p50 4353.268 ms  p90 6805.695 ms  p99 8170.636 ms  errors 0
+paradedb-pass2 facet                    c=1        179 q/s  p50   5.000 ms  p90   7.193 ms  p99  14.963 ms  errors 0
+paradedb-pass2 facet                    c=4        746 q/s  p50   4.671 ms  p90   7.764 ms  p99  15.125 ms  errors 0
+paradedb-pass2 facet                    c=16       999 q/s  p50  13.311 ms  p90  27.813 ms  p99  59.896 ms  errors 0
+paradedb-pass2 key lookup               c=1       2505 q/s  p50   0.394 ms  p90   0.433 ms  p99   0.509 ms  errors 0
+paradedb-pass2 key lookup               c=4       9087 q/s  p50   0.429 ms  p90   0.507 ms  p99   0.569 ms  errors 0
+paradedb-pass2 key lookup               c=16     24838 q/s  p50   0.533 ms  p90   0.862 ms  p99   1.576 ms  errors 0
+paradedb-pass2 phrase                   c=1        232 q/s  p50   3.797 ms  p90   6.055 ms  p99   9.938 ms  errors 0
+paradedb-pass2 phrase                   c=4        859 q/s  p50   3.982 ms  p90   6.847 ms  p99  15.521 ms  errors 0
+paradedb-pass2 phrase                   c=16      1075 q/s  p50  12.424 ms  p90  26.766 ms  p99  52.180 ms  errors 0
+paradedb-pass2 typo                     c=1         14 q/s  p50  68.844 ms  p90  95.952 ms  p99 119.870 ms  errors 0
+paradedb-pass2 typo                     c=4         18 q/s  p50 199.752 ms  p90 361.770 ms  p99 477.003 ms  errors 0
+paradedb-pass2 typo                     c=16        18 q/s  p50 635.921 ms  p90 1554.850 ms  p99 2146.276 ms  errors 0
+paradedb-pass2 prefix                   c=1         55 q/s  p50  17.229 ms  p90  21.775 ms  p99  25.544 ms  errors 0
+paradedb-pass2 prefix                   c=4        102 q/s  p50  39.048 ms  p90  49.645 ms  p99  59.956 ms  errors 0
+paradedb-pass2 prefix                   c=16       206 q/s  p50  75.253 ms  p90 119.778 ms  p99 183.105 ms  errors 0
+paradedb-pass2 similar items            c=1          6 q/s  p50 163.986 ms  p90 167.362 ms  p99 170.957 ms  errors 0
+paradedb-pass2 similar items            c=4          8 q/s  p50 414.800 ms  p90 586.958 ms  p99 1093.300 ms  errors 0
+paradedb-pass2 similar items            c=16        10 q/s  p50 1302.099 ms  p90 2683.718 ms  p99 2992.947 ms  errors 0
+paradedb-pass2 sql aggregate            c=1         26 q/s  p50  38.407 ms  p90  50.809 ms  p99  63.167 ms  errors 0
+paradedb-pass2 sql aggregate            c=4         83 q/s  p50  40.895 ms  p90  82.308 ms  p99 111.998 ms  errors 0
+paradedb-pass2 sql aggregate            c=16        93 q/s  p50 156.503 ms  p90 272.606 ms  p99 330.319 ms  errors 0
+wrote /data/compare/run-paradedb-pass2.json
+job.batch/run-paradedb-pass3 created
+paradedb-pass3 bm25                     c=1         73 q/s  p50  15.960 ms  p90  17.804 ms  p99  19.555 ms  errors 0
+paradedb-pass3 bm25                     c=4        158 q/s  p50  29.222 ms  p90  39.338 ms  p99  45.912 ms  errors 0
+paradedb-pass3 bm25                     c=16       502 q/s  p50  23.749 ms  p90  69.776 ms  p99  92.204 ms  errors 0
+paradedb-pass3 bm25 + filter            c=1         63 q/s  p50  17.923 ms  p90  19.619 ms  p99  22.256 ms  errors 0
+paradedb-pass3 bm25 + filter            c=4        132 q/s  p50  33.818 ms  p90  44.465 ms  p99  54.091 ms  errors 0
+paradedb-pass3 bm25 + filter            c=16       313 q/s  p50  45.370 ms  p90  87.704 ms  p99 113.158 ms  errors 0
+paradedb-pass3 vector                   c=1         58 q/s  p50  17.227 ms  p90  19.909 ms  p99  22.553 ms  errors 0
+paradedb-pass3 vector                   c=4        121 q/s  p50  33.198 ms  p90  41.677 ms  p99  47.635 ms  errors 0
+paradedb-pass3 vector                   c=16       233 q/s  p50  67.158 ms  p90  93.995 ms  p99 123.834 ms  errors 0
+paradedb-pass3 vector + filter          c=1         38 q/s  p50  26.818 ms  p90  29.080 ms  p99  30.770 ms  errors 0
+paradedb-pass3 vector + filter          c=4         69 q/s  p50  56.375 ms  p90  70.237 ms  p99  84.211 ms  errors 0
+paradedb-pass3 vector + filter          c=16       108 q/s  p50 143.500 ms  p90 189.810 ms  p99 233.112 ms  errors 0
+paradedb-pass3 hybrid (RRF)             c=1         29 q/s  p50  35.775 ms  p90  38.767 ms  p99  41.642 ms  errors 0
+paradedb-pass3 hybrid (RRF)             c=4         57 q/s  p50  71.890 ms  p90  89.206 ms  p99 101.377 ms  errors 0
+paradedb-pass3 hybrid (RRF)             c=16        99 q/s  p50 153.994 ms  p90 210.145 ms  p99 278.527 ms  errors 0
+paradedb-pass3 hybrid (weighted)        c=1         28 q/s  p50  37.244 ms  p90  41.539 ms  p99  45.153 ms  errors 0
+paradedb-pass3 hybrid (weighted)        c=4         53 q/s  p50  76.738 ms  p90  95.186 ms  p99 103.366 ms  errors 0
+paradedb-pass3 hybrid (weighted)        c=16        95 q/s  p50 163.846 ms  p90 209.018 ms  p99 252.440 ms  errors 0
+paradedb-pass3 boosted (bm25 × decay)   c=1          1 q/s  p50 637.241 ms  p90 1299.327 ms  p99 1306.873 ms  errors 0
+paradedb-pass3 boosted (bm25 × decay)   c=4          3 q/s  p50 1168.181 ms  p90 2247.346 ms  p99 2414.920 ms  errors 0
+paradedb-pass3 boosted (bm25 × decay)   c=16         3 q/s  p50 4322.283 ms  p90 6513.560 ms  p99 8492.993 ms  errors 0
+paradedb-pass3 facet                    c=1        206 q/s  p50   4.299 ms  p90   6.352 ms  p99  14.257 ms  errors 0
+paradedb-pass3 facet                    c=4        867 q/s  p50   3.892 ms  p90   6.549 ms  p99  13.877 ms  errors 0
+paradedb-pass3 facet                    c=16      1035 q/s  p50  12.815 ms  p90  28.060 ms  p99  58.962 ms  errors 0
+paradedb-pass3 key lookup               c=1       2430 q/s  p50   0.404 ms  p90   0.443 ms  p99   0.528 ms  errors 0
+paradedb-pass3 key lookup               c=4       8929 q/s  p50   0.441 ms  p90   0.516 ms  p99   0.570 ms  errors 0
+paradedb-pass3 key lookup               c=16     24334 q/s  p50   0.547 ms  p90   0.887 ms  p99   1.488 ms  errors 0
+paradedb-pass3 phrase                   c=1        224 q/s  p50   3.951 ms  p90   6.239 ms  p99  10.736 ms  errors 0
+paradedb-pass3 phrase                   c=4        862 q/s  p50   3.961 ms  p90   6.847 ms  p99  14.367 ms  errors 0
+paradedb-pass3 phrase                   c=16      1059 q/s  p50  13.121 ms  p90  26.085 ms  p99  52.047 ms  errors 0
+paradedb-pass3 typo                     c=1         14 q/s  p50  67.877 ms  p90  98.096 ms  p99 127.512 ms  errors 0
+paradedb-pass3 typo                     c=4         18 q/s  p50 199.766 ms  p90 335.056 ms  p99 653.454 ms  errors 0
+paradedb-pass3 typo                     c=16        19 q/s  p50 766.216 ms  p90 1491.120 ms  p99 2192.535 ms  errors 0
+paradedb-pass3 prefix                   c=1         55 q/s  p50  17.750 ms  p90  21.012 ms  p99  25.242 ms  errors 0
+paradedb-pass3 prefix                   c=4        101 q/s  p50  40.098 ms  p90  51.023 ms  p99  62.042 ms  errors 0
+paradedb-pass3 prefix                   c=16       199 q/s  p50  78.588 ms  p90 119.605 ms  p99 183.655 ms  errors 0
+paradedb-pass3 similar items            c=1          7 q/s  p50 139.965 ms  p90 168.222 ms  p99 170.914 ms  errors 0
+paradedb-pass3 similar items            c=4          9 q/s  p50 425.227 ms  p90 614.556 ms  p99 728.279 ms  errors 0
+paradedb-pass3 similar items            c=16        10 q/s  p50 1276.493 ms  p90 2634.465 ms  p99 3492.604 ms  errors 0
+paradedb-pass3 sql aggregate            c=1         27 q/s  p50  37.132 ms  p90  50.568 ms  p99  65.292 ms  errors 0
+paradedb-pass3 sql aggregate            c=4         84 q/s  p50  40.315 ms  p90  83.429 ms  p99 114.176 ms  errors 0
+paradedb-pass3 sql aggregate            c=16        93 q/s  p50 166.130 ms  p90 282.258 ms  p99 355.240 ms  errors 0
+wrote /data/compare/run-paradedb-pass3.json
+pod "paradedb-0" deleted from paradedb-r namespace

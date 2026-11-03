@@ -1,0 +1,165 @@
+service/weaviate created
+pod/weaviate-0 created
+pod/weaviate-0 condition met
+job.batch/load-weaviate created
+weaviate: index created in 0.3 s
+weaviate: 25000 documents sent, 10 s
+weaviate: 50000 documents sent, 21 s
+weaviate: 75000 documents sent, 33 s
+weaviate: 100000 documents sent, 45 s
+weaviate: 125000 documents sent, 59 s
+weaviate: 150000 documents sent, 71 s
+weaviate: 175000 documents sent, 84 s
+weaviate: 200000 documents sent, 97 s
+weaviate: 225000 documents sent, 108 s
+weaviate: 250000 documents sent, 120 s
+weaviate: 275000 documents sent, 132 s
+weaviate: 300000 documents sent, 144 s
+weaviate: 325000 documents sent, 157 s
+weaviate: 350000 documents sent, 170 s
+weaviate: 375000 documents sent, 183 s
+weaviate: 400000 documents sent, 194 s
+weaviate: 425000 documents sent, 206 s
+weaviate: 450000 documents sent, 219 s
+weaviate: 475000 documents sent, 234 s
+weaviate: 500000 documents sent, 249 s
+weaviate: 525000 documents sent, 263 s
+weaviate: 550000 documents sent, 276 s
+weaviate: 575000 documents sent, 289 s
+weaviate: 600000 documents sent, 302 s
+weaviate: 625000 documents sent, 315 s
+weaviate: 650000 documents sent, 330 s
+weaviate: 675000 documents sent, 344 s
+weaviate: 700000 documents sent, 356 s
+weaviate: 725000 documents sent, 370 s
+weaviate: 750000 documents sent, 384 s
+weaviate: 775000 documents sent, 397 s
+weaviate: 800000 documents sent, 411 s
+weaviate: 825000 documents sent, 424 s
+weaviate: 850000 documents sent, 440 s
+weaviate: 875000 documents sent, 454 s
+weaviate: 900000 documents sent, 468 s
+weaviate: 925000 documents sent, 483 s
+weaviate: 950000 documents sent, 498 s
+weaviate: 975000 documents sent, 512 s
+weaviate: 1000000 documents sent, 526 s
+weaviate: 1000000 documents (10.8 GB) sent in 525.6 s
+weaviate: indexed 0.0 s after the last write; 525.6 s in all
+wrote /data/compare/load-weaviate.json
+job.batch/run-weaviate created
+weaviate  bm25                     c=1        254 q/s  p50   3.281 ms  p90   6.124 ms  p99  14.056 ms  errors 0
+weaviate  bm25                     c=4        828 q/s  p50   3.813 ms  p90   8.235 ms  p99  18.963 ms  errors 0
+weaviate  bm25                     c=16       973 q/s  p50  13.161 ms  p90  31.508 ms  p99  61.528 ms  errors 0
+weaviate  bm25 + filter            c=1        219 q/s  p50   4.041 ms  p90   6.637 ms  p99  13.179 ms  errors 0
+weaviate  bm25 + filter            c=4        717 q/s  p50   4.763 ms  p90   8.739 ms  p99  17.035 ms  errors 0
+weaviate  bm25 + filter            c=16      1065 q/s  p50  12.667 ms  p90  27.296 ms  p99  49.139 ms  errors 0
+weaviate  vector                   c=1        178 q/s  p50   5.417 ms  p90   6.185 ms  p99   9.747 ms  errors 0
+weaviate  vector                   c=4        552 q/s  p50   6.817 ms  p90   8.793 ms  p99  13.120 ms  errors 0
+weaviate  vector                   c=16       714 q/s  p50  18.310 ms  p90  41.825 ms  p99  65.712 ms  errors 0
+weaviate  vector + filter          c=1        128 q/s  p50   7.680 ms  p90   8.832 ms  p99  14.019 ms  errors 0
+weaviate  vector + filter          c=4        404 q/s  p50   9.461 ms  p90  12.204 ms  p99  17.902 ms  errors 0
+weaviate  vector + filter          c=16       555 q/s  p50  24.469 ms  p90  51.087 ms  p99  79.918 ms  errors 0
+weaviate  hybrid (RRF)             c=1        114 q/s  p50   7.822 ms  p90  11.996 ms  p99  22.782 ms  errors 0
+weaviate  hybrid (RRF)             c=4        303 q/s  p50  11.402 ms  p90  19.623 ms  p99  36.249 ms  errors 0
+weaviate  hybrid (RRF)             c=16       351 q/s  p50  39.606 ms  p90  74.013 ms  p99 128.348 ms  errors 0
+weaviate  hybrid (weighted)        c=1        113 q/s  p50   7.865 ms  p90  12.062 ms  p99  21.917 ms  errors 0
+weaviate  hybrid (weighted)        c=4        310 q/s  p50  11.326 ms  p90  19.303 ms  p99  33.266 ms  errors 0
+weaviate  hybrid (weighted)        c=16       345 q/s  p50  39.819 ms  p90  77.631 ms  p99 149.474 ms  errors 0
+weaviate  boosted (bm25 × decay)   unavailable: no function scores
+weaviate  facet                    c=1         19 q/s  p50  14.677 ms  p90  99.140 ms  p99 690.748 ms  errors 0
+weaviate  facet                    c=4         37 q/s  p50  27.421 ms  p90 216.791 ms  p99 1377.654 ms  errors 0
+weaviate  facet                    c=16        40 q/s  p50 209.584 ms  p90 920.346 ms  p99 2147.400 ms  errors 0
+weaviate  key lookup               c=1       1050 q/s  p50   0.931 ms  p90   1.075 ms  p99   1.395 ms  errors 0
+weaviate  key lookup               c=4       3681 q/s  p50   1.063 ms  p90   1.292 ms  p99   1.722 ms  errors 0
+weaviate  key lookup               c=16      8183 q/s  p50   1.586 ms  p90   3.100 ms  p99   6.887 ms  errors 0
+weaviate  phrase                   unavailable: no phrase queries
+weaviate  typo                     unavailable: no fuzzy matching
+weaviate  prefix                   c=1        166 q/s  p50   5.308 ms  p90  10.027 ms  p99  16.878 ms  errors 0
+weaviate  prefix                   c=4        533 q/s  p50   6.401 ms  p90  12.695 ms  p99  23.070 ms  errors 0
+weaviate  prefix                   c=16       745 q/s  p50  18.441 ms  p90  38.658 ms  p99  71.744 ms  errors 0
+weaviate  similar items            c=1        119 q/s  p50   8.181 ms  p90   8.963 ms  p99  16.217 ms  errors 0
+weaviate  similar items            c=4        358 q/s  p50  10.620 ms  p90  13.611 ms  p99  20.709 ms  errors 0
+weaviate  similar items            c=16       483 q/s  p50  27.842 ms  p90  59.939 ms  p99  95.177 ms  errors 0
+read tcp 127.0.0.1:35462->127.0.0.1:36661: read: connection reset by peer
+error: read tcp 127.0.0.1:35462->127.0.0.1:36661: read: connection reset by peer
+weaviate  sql aggregate            c=1          0 q/s  p50 3582.324 ms  p90 3582.324 ms  p99 3582.324 ms  errors 0
+weaviate  sql aggregate            c=4          0 q/s  p50 8597.751 ms  p90 8920.631 ms  p99 8920.631 ms  errors 0
+weaviate  sql aggregate            c=16         1 q/s  p50 27221.847 ms  p90 28144.106 ms  p99 28221.445 ms  errors 0
+wrote /data/compare/run-weaviate.json
+job.batch/run-weaviate-pass2 created
+weaviate-pass2 bm25                     c=1        311 q/s  p50   2.611 ms  p90   4.994 ms  p99  12.591 ms  errors 0
+weaviate-pass2 bm25                     c=4       1092 q/s  p50   2.832 ms  p90   5.934 ms  p99  15.801 ms  errors 0
+weaviate-pass2 bm25                     c=16      1753 q/s  p50   7.560 ms  p90  16.734 ms  p99  29.615 ms  errors 0
+weaviate-pass2 bm25 + filter            c=1        241 q/s  p50   3.640 ms  p90   6.095 ms  p99  11.245 ms  errors 0
+weaviate-pass2 bm25 + filter            c=4        824 q/s  p50   4.122 ms  p90   7.470 ms  p99  15.433 ms  errors 0
+weaviate-pass2 bm25 + filter            c=16      1219 q/s  p50  11.196 ms  p90  22.909 ms  p99  40.899 ms  errors 0
+weaviate-pass2 vector                   c=1        180 q/s  p50   5.350 ms  p90   6.013 ms  p99   9.581 ms  errors 0
+weaviate-pass2 vector                   c=4        567 q/s  p50   6.596 ms  p90   8.522 ms  p99  13.507 ms  errors 0
+weaviate-pass2 vector                   c=16       764 q/s  p50  17.626 ms  p90  36.300 ms  p99  67.412 ms  errors 0
+weaviate-pass2 vector + filter          c=1        130 q/s  p50   7.599 ms  p90   8.711 ms  p99  13.444 ms  errors 0
+weaviate-pass2 vector + filter          c=4        412 q/s  p50   9.257 ms  p90  12.008 ms  p99  17.656 ms  errors 0
+weaviate-pass2 vector + filter          c=16       577 q/s  p50  23.537 ms  p90  48.944 ms  p99  82.155 ms  errors 0
+weaviate-pass2 hybrid (RRF)             c=1        112 q/s  p50   7.869 ms  p90  12.247 ms  p99  21.910 ms  errors 0
+weaviate-pass2 hybrid (RRF)             c=4        313 q/s  p50  11.166 ms  p90  18.908 ms  p99  34.032 ms  errors 0
+weaviate-pass2 hybrid (RRF)             c=16       354 q/s  p50  39.707 ms  p90  74.802 ms  p99 124.990 ms  errors 0
+weaviate-pass2 hybrid (weighted)        c=1        114 q/s  p50   7.888 ms  p90  11.945 ms  p99  22.483 ms  errors 0
+weaviate-pass2 hybrid (weighted)        c=4        309 q/s  p50  11.357 ms  p90  19.544 ms  p99  34.944 ms  errors 0
+weaviate-pass2 hybrid (weighted)        c=16       356 q/s  p50  37.989 ms  p90  77.514 ms  p99 135.245 ms  errors 0
+weaviate-pass2 boosted (bm25 × decay)   unavailable: no function scores
+weaviate-pass2 facet                    c=1         20 q/s  p50  12.602 ms  p90 102.832 ms  p99 677.065 ms  errors 0
+weaviate-pass2 facet                    c=4         37 q/s  p50  25.299 ms  p90 224.084 ms  p99 1430.252 ms  errors 0
+weaviate-pass2 facet                    c=16        40 q/s  p50 226.693 ms  p90 955.358 ms  p99 2072.070 ms  errors 0
+weaviate-pass2 key lookup               c=1       1047 q/s  p50   0.927 ms  p90   1.088 ms  p99   1.496 ms  errors 0
+weaviate-pass2 key lookup               c=4       3789 q/s  p50   1.036 ms  p90   1.252 ms  p99   1.663 ms  errors 0
+weaviate-pass2 key lookup               c=16      8252 q/s  p50   1.569 ms  p90   3.046 ms  p99   6.820 ms  errors 0
+weaviate-pass2 phrase                   unavailable: no phrase queries
+weaviate-pass2 typo                     unavailable: no fuzzy matching
+weaviate-pass2 prefix                   c=1        168 q/s  p50   5.221 ms  p90   9.834 ms  p99  16.725 ms  errors 0
+weaviate-pass2 prefix                   c=4        538 q/s  p50   6.393 ms  p90  12.502 ms  p99  22.185 ms  errors 0
+weaviate-pass2 prefix                   c=16       751 q/s  p50  18.412 ms  p90  37.838 ms  p99  64.053 ms  errors 0
+weaviate-pass2 similar items            c=1        122 q/s  p50   8.016 ms  p90   8.844 ms  p99  17.172 ms  errors 0
+weaviate-pass2 similar items            c=4        372 q/s  p50  10.157 ms  p90  12.981 ms  p99  20.623 ms  errors 0
+weaviate-pass2 similar items            c=16       492 q/s  p50  27.095 ms  p90  59.042 ms  p99 104.676 ms  errors 0
+weaviate-pass2 sql aggregate            c=1          0 q/s  p50 3310.591 ms  p90 3310.591 ms  p99 3310.591 ms  errors 0
+weaviate-pass2 sql aggregate            c=4          0 q/s  p50 8685.692 ms  p90 8776.314 ms  p99 8776.314 ms  errors 0
+weaviate-pass2 sql aggregate            c=16         1 q/s  p50 27585.345 ms  p90 27866.620 ms  p99 27968.037 ms  errors 0
+wrote /data/compare/run-weaviate-pass2.json
+job.batch/run-weaviate-pass3 created
+weaviate-pass3 bm25                     c=1        315 q/s  p50   2.577 ms  p90   5.044 ms  p99  12.470 ms  errors 0
+weaviate-pass3 bm25                     c=4       1098 q/s  p50   2.817 ms  p90   6.053 ms  p99  16.211 ms  errors 0
+weaviate-pass3 bm25                     c=16      1749 q/s  p50   7.393 ms  p90  17.064 ms  p99  32.505 ms  errors 0
+weaviate-pass3 bm25 + filter            c=1        243 q/s  p50   3.611 ms  p90   6.078 ms  p99  11.334 ms  errors 0
+weaviate-pass3 bm25 + filter            c=4        828 q/s  p50   4.119 ms  p90   7.467 ms  p99  15.020 ms  errors 0
+weaviate-pass3 bm25 + filter            c=16      1225 q/s  p50  11.142 ms  p90  23.294 ms  p99  40.945 ms  errors 0
+weaviate-pass3 vector                   c=1        183 q/s  p50   5.265 ms  p90   5.985 ms  p99   8.177 ms  errors 0
+weaviate-pass3 vector                   c=4        564 q/s  p50   6.635 ms  p90   8.652 ms  p99  13.356 ms  errors 0
+weaviate-pass3 vector                   c=16       782 q/s  p50  17.363 ms  p90  35.563 ms  p99  61.454 ms  errors 0
+weaviate-pass3 vector + filter          c=1        132 q/s  p50   7.510 ms  p90   8.550 ms  p99  12.459 ms  errors 0
+weaviate-pass3 vector + filter          c=4        412 q/s  p50   9.255 ms  p90  11.953 ms  p99  17.953 ms  errors 0
+weaviate-pass3 vector + filter          c=16       580 q/s  p50  23.162 ms  p90  49.746 ms  p99  80.477 ms  errors 0
+weaviate-pass3 hybrid (RRF)             c=1        112 q/s  p50   7.939 ms  p90  12.159 ms  p99  23.250 ms  errors 0
+weaviate-pass3 hybrid (RRF)             c=4        314 q/s  p50  11.188 ms  p90  19.613 ms  p99  32.785 ms  errors 0
+weaviate-pass3 hybrid (RRF)             c=16       353 q/s  p50  39.362 ms  p90  73.797 ms  p99 130.141 ms  errors 0
+weaviate-pass3 hybrid (weighted)        c=1        113 q/s  p50   7.931 ms  p90  12.026 ms  p99  22.650 ms  errors 0
+weaviate-pass3 hybrid (weighted)        c=4        309 q/s  p50  11.317 ms  p90  19.374 ms  p99  35.946 ms  errors 0
+weaviate-pass3 hybrid (weighted)        c=16       355 q/s  p50  40.865 ms  p90  69.705 ms  p99 112.598 ms  errors 0
+weaviate-pass3 boosted (bm25 × decay)   unavailable: no function scores
+weaviate-pass3 facet                    c=1         21 q/s  p50  13.046 ms  p90  98.212 ms  p99 656.562 ms  errors 0
+weaviate-pass3 facet                    c=4         37 q/s  p50  24.964 ms  p90 207.626 ms  p99 1374.927 ms  errors 0
+weaviate-pass3 facet                    c=16        41 q/s  p50 197.725 ms  p90 889.262 ms  p99 2087.708 ms  errors 0
+weaviate-pass3 key lookup               c=1       1070 q/s  p50   0.912 ms  p90   1.059 ms  p99   1.326 ms  errors 0
+weaviate-pass3 key lookup               c=4       3779 q/s  p50   1.034 ms  p90   1.270 ms  p99   1.699 ms  errors 0
+weaviate-pass3 key lookup               c=16      8449 q/s  p50   1.554 ms  p90   2.989 ms  p99   6.545 ms  errors 0
+weaviate-pass3 phrase                   unavailable: no phrase queries
+weaviate-pass3 typo                     unavailable: no fuzzy matching
+weaviate-pass3 prefix                   c=1        168 q/s  p50   5.283 ms  p90   9.873 ms  p99  16.502 ms  errors 0
+weaviate-pass3 prefix                   c=4        543 q/s  p50   6.332 ms  p90  12.342 ms  p99  22.436 ms  errors 0
+weaviate-pass3 prefix                   c=16       750 q/s  p50  18.209 ms  p90  38.317 ms  p99  65.778 ms  errors 0
+weaviate-pass3 similar items            c=1        124 q/s  p50   7.893 ms  p90   8.601 ms  p99  15.851 ms  errors 0
+weaviate-pass3 similar items            c=4        369 q/s  p50  10.245 ms  p90  13.123 ms  p99  20.738 ms  errors 0
+weaviate-pass3 similar items            c=16       497 q/s  p50  26.509 ms  p90  57.384 ms  p99 105.191 ms  errors 0
+weaviate-pass3 sql aggregate            c=1          0 q/s  p50 3560.102 ms  p90 3560.102 ms  p99 3560.102 ms  errors 0
+weaviate-pass3 sql aggregate            c=4          0 q/s  p50 8709.983 ms  p90 8836.614 ms  p99 8836.614 ms  errors 0
+weaviate-pass3 sql aggregate            c=16         1 q/s  p50 27758.052 ms  p90 28181.707 ms  p99 28191.004 ms  errors 0
+wrote /data/compare/run-weaviate-pass3.json
+pod "weaviate-0" deleted from weaviate namespace

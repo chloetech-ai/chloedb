@@ -1,0 +1,3 @@
+NAME             READY   STATUS        RESTARTS   AGE     IP              NODE                   NOMINATED NODE   READINESS GATES
+build-s0-qzzzw   0/1     Completed     0          2m55s   10.121.10.111   strata-b-d-a1-3eetty   <none>           <none>
+cat-87652152     1/1     Terminating   0          3s      10.121.10.42    strata-b-d-a1-3eetty   <none>           <none>
