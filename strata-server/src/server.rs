@@ -385,6 +385,8 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.audit = Audit::new(o.audit_log.clone())?;
     svc.alerts = Alerts::new(o.alerts.clone(), o.alert_webhook.clone())?;
+    // The cluster's name in alerts and route tests from the start.
+    crate::alerts::identify(&svc);
     (svc.backfill, svc.fetch_models) = (o.backfill, o.fetch_models);
     svc.open_models(&o.models);
     for m in svc.models().iter() {

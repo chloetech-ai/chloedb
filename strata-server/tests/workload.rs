@@ -330,6 +330,15 @@ async fn running_queries_are_grouped_cancelled_and_contained() {
     let (_, ev) = call(Method::GET, &base, "/v1/events?kind=contain", &ops, &[], None).await;
     let titles: Vec<&str> = ev["events"].as_array().unwrap().iter().map(|e| e["title"].as_str().unwrap()).collect();
     assert!(titles.iter().any(|t| t.starts_with(&format!("Contain rule {id} ended"))) && titles.iter().any(|t| t.starts_with(&format!("Contain rule {id} refuses"))), "{titles:?}");
+    // Its end is audited, by the server, with the rule before; the
+    // Timeline says it once (the contain event, not a change too).
+    let (_, audit) = call(Method::GET, &base, "/v1/admin/audit?kind=change", &ops, &[], None).await;
+    let object = format!("contain rule {id}");
+    let ended = audit["entries"].as_array().unwrap().iter().find(|e| e["object"] == object.as_str() && e["reason"] == "expired").unwrap_or_else(|| panic!("the end audited: {audit}"));
+    assert_eq!((ended["who"].as_str(), ended["actor"].as_str(), ended["before"]["id"].as_str(), ended["before"]["by"].as_str()), (Some("system"), Some("server"), Some(id.as_str()), Some("ops")), "{ended}");
+    assert!(ended["detail"].as_str().is_some_and(|d| d.starts_with(&format!("contain rule {id} ended"))), "{ended}");
+    let (_, changes) = call(Method::GET, &base, "/v1/events?kind=change", &ops, &[], None).await;
+    assert!(!changes["events"].as_array().unwrap().iter().any(|e| e["detail"]["object"] == object.as_str()), "said once: {changes}");
 
     // A limit of one at a time: while one holds its turn, the next waits
     // for it, and is refused when its deadline passes.
