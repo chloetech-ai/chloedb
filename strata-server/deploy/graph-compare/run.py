@@ -25,7 +25,7 @@ WARM = 20
 BATCH = 10_000
 KIND_BUDGET_S = 300  # a query kind that takes longer than this stops early
 HOPS = [("both_1", "both", 1), ("both_2", "both", 2), ("out_3", "out", 3)]
-PPR_EPS = [1e-4, 1e-5]
+PPR_EPS = [1e-4, 1e-5, 1e-6]
 
 
 def stats(xs):
@@ -168,7 +168,10 @@ class Bolt:
         if a == b:
             return 0, 0.0
         if self.mg:
-            q = f"MATCH p = (a:Paper {{id: $a}})-[:CITES *BFS ..{max_hops}]-(b:Paper {{id: $b}}) RETURN size(relationships(p))"
+            # Both ends bound first: the planner then searches from both
+            # (STShortestPath); with b matched inside the pattern it runs a
+            # one-sided BFS and filters at the end (~250 ms here).
+            q = f"MATCH (a:Paper {{id: $a}}), (b:Paper {{id: $b}}) WITH a, b MATCH p = (a)-[:CITES *BFS ..{max_hops}]-(b) RETURN size(relationships(p))"
         else:
             q = f"MATCH (a:Paper {{id: $a}}), (b:Paper {{id: $b}}) MATCH p = shortestPath((a)-[:CITES*..{max_hops}]-(b)) RETURN length(p)"
         rows, took = self.run(q, a=a, b=b)
@@ -178,9 +181,14 @@ class Bolt:
         if self.mg:
             raise NotImplementedError
         # GDS PageRank from one source node is personalized PageRank. Its
-        # stopping rule is a tolerance and an iteration cap, not eps.
+        # stopping rule is a tolerance and an iteration cap, not eps: GDS's
+        # defaults stand for the coarse setting, 100 iterations to 1e-9 for
+        # the fine one, which already finds the exact top 20. Progress logs
+        # off: on, they write about 4,000 lines a query to the container's log.
+        if eps < 1e-5:
+            raise NotImplementedError
         q = (
-            "MATCH (s:Paper {id: $s}) CALL gds.pageRank.stream('g', {sourceNodes: [s], dampingFactor: 0.85, maxIterations: $it, tolerance: $tol}) "
+            "MATCH (s:Paper {id: $s}) CALL gds.pageRank.stream('g', {sourceNodes: [s], dampingFactor: 0.85, maxIterations: $it, tolerance: $tol, logProgress: false}) "
             "YIELD nodeId, score WITH nodeId, score ORDER BY score DESC LIMIT 20 RETURN gds.util.asNode(nodeId).id"
         )
         rows, took = self.run(q, s=s, it=20 if eps >= 1e-4 else 100, tol=1e-7 if eps >= 1e-4 else 1e-9)
@@ -193,7 +201,7 @@ class Falkor:
     def __init__(self, host, port):
         import redis
 
-        self.r = redis.Redis(host=host, port=port)
+        self.r = redis.Redis(host=host, port=port, socket_timeout=900)
 
     def ping(self):
         self.r.ping()
@@ -236,7 +244,14 @@ class Falkor:
     def path(self, a, b, max_hops):
         if a == b:
             return 0, 0.0
-        rows, took = self.run(f"MATCH (a:Paper {{id: $a}}), (b:Paper {{id: $b}}) WITH a, b MATCH p = shortestPath((a)-[:CITES*..{max_hops}]-(b)) RETURN length(p)", a=a, b=b)
+        # shortestPath() is directed only in FalkorDB; algo.SPpaths takes
+        # relDirection 'both'.
+        rows, took = self.run(
+            "MATCH (a:Paper {id: $a}), (b:Paper {id: $b}) CALL algo.SPpaths({sourceNode: a, targetNode: b, relTypes: ['CITES'], "
+            f"relDirection: 'both', maxLen: {max_hops}, pathCount: 1}}) YIELD path RETURN length(path)",
+            a=a,
+            b=b,
+        )
         return (rows[0][0] if rows else None), took
 
     def ppr(self, s, eps):
@@ -308,12 +323,25 @@ class Arango:
 def timed(name, fn, args, check):
     """Runs fn over args: WARM untimed, then all timed; check(i, answer) is
     True when answer i is right."""
+    t_warm = time.perf_counter()
     for a in args[:WARM]:
-        fn(*a)
+        if time.perf_counter() - t_warm > 60:
+            break
+        try:
+            fn(*a)
+        except NotImplementedError:
+            raise
+        except Exception:
+            pass
     wall, server, wrong, t_start = [], [], [], time.perf_counter()
     for i, a in enumerate(args):
         t0 = time.perf_counter()
-        ans, took = fn(*a)
+        try:
+            ans, took = fn(*a)
+        except NotImplementedError:
+            raise
+        except Exception as x:  # counted wrong, timed to the failure
+            ans, took = f"error: {str(x)[:200]}", None
         wall.append(1000 * (time.perf_counter() - t0))
         if took is not None:
             server.append(took)

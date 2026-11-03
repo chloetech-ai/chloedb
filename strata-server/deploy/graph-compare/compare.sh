@@ -83,7 +83,7 @@ run_one() {
     local rc=0
     docker run --rm --name gc-client --network $NET --cpus 1 --memory 2g --pull never \
         -v "$HERE:/app:ro" -v "$DATA:/in:ro" -v "$OUT:/out" -v "$PYLIB:/pylib:ro" -e PYTHONPATH=/pylib \
-        --entrypoint python3 "$CLIENT_IMAGE" /app/run.py "$engine" --host "$name" --port "$port" "${args[@]}" \
+        --entrypoint python3 "$CLIENT_IMAGE" /app/run.py "$engine" --host "$name" --port "$port" ${args[@]+"${args[@]}"} \
         --data /in --out "/out/run-$engine.json" ${SKIP:+--skip "$SKIP"} 2>&1 | tee -a "$OUT/run.log" || rc=$?
     docker stats --no-stream --format '{"mem": "{{.MemUsage}}", "cpu": "{{.CPUPerc}}"}' "$name" >"$OUT/mem-$engine.json" || true
     docker exec "$name" du -sk "$data_dir" >"$OUT/disk-$engine.txt" 2>&1 || true

@@ -1,4 +1,8 @@
-"""Tables from compare.sh's reports: python analyze.py OUT > OUT/tables.md"""
+"""Tables from compare.sh's reports: python analyze.py OUT [OTHER_OUT...] > tables.md
+
+The tables are OUT's; with more passes, a last table puts every pass's
+client p50 side by side.
+"""
 
 import json
 import re
@@ -12,8 +16,9 @@ KINDS = [
     ("hops_both_2", "2 hops, both ways"),
     ("hops_out_3", "3 hops out"),
     ("path", "shortest path (≤ 10)"),
-    ("ppr_0.0001", "PPR top 20 (coarse)"),
-    ("ppr_1e-05", "PPR top 20 (fine)"),
+    ("ppr_0.0001", "PPR top 20, eps 1e-4 (GDS: defaults)"),
+    ("ppr_1e-05", "PPR top 20, eps 1e-5 (GDS: 100 iterations)"),
+    ("ppr_1e-06", "PPR top 20, eps 1e-6"),
 ]
 
 
@@ -24,7 +29,8 @@ def ms(x):
 
 
 def main():
-    out = Path(sys.argv[1])
+    dirs = [Path(x) for x in sys.argv[1:]]
+    out = dirs[0]
     runs = {e: json.load(open(out / f"run-{e}.json")) for e in ORDER if (out / f"run-{e}.json").exists()}
     print("## Load\n")
     print("| engine | nodes (s) | edges (s) | total (s) | memory after the queries | data on disk |")
@@ -72,6 +78,26 @@ def main():
             else:
                 cells.append(f"{q['done'] - q['wrong']}/{q['done']} right")
         print(f"| {label} | " + " | ".join(cells) + " |")
+    if len(dirs) > 1:
+        passes(dirs)
+
+
+def passes(dirs):
+    runs = [{e: json.load(open(d / f"run-{e}.json")) for e in ORDER if (d / f"run-{e}.json").exists()} for d in dirs]
+    engines = [e for e in ORDER if e in runs[0]]
+    print(f"\n## Client p50 in each pass ({', '.join(d.name for d in dirs)}), ms\n")
+    print("| query | " + " | ".join(NAMES[e] for e in engines) + " |")
+    print("|---|" + "---:|" * len(engines))
+    for k, label in KINDS:
+        cells = []
+        for e in engines:
+            vals = []
+            for r in runs:
+                q = r.get(e, {}).get("queries", {}).get(k)
+                vals.append("–" if not q or q.get("unavailable") or not q.get("client_ms") else ms(q["client_ms"]["p50"]))
+            cells.append(" / ".join(vals))
+        print(f"| {label} | " + " | ".join(cells) + " |")
+    print("\n| load, total (s) | " + " | ".join(" / ".join(ms(r[e]["load"]["total_s"]) if e in r else "–" for r in runs) for e in engines) + " |")
 
 
 if __name__ == "__main__":
