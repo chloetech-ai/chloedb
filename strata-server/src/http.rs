@@ -3349,8 +3349,18 @@ async fn do_validate(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<
     Ok(AxJson(j))
 }
 
-async fn routes(State(app): State<App>) -> AxJson<Json> {
-    AxJson(app.svc.metrics.routes())
+/// `GET /v1/routes`: requests by route and queries by kind since the
+/// server started, or with `from` (and `to`, ms) over that window.
+async fn routes(State(app): State<App>, Query(q): Params) -> Res {
+    if !q.contains_key("from") {
+        return Ok(AxJson(app.svc.metrics.routes()));
+    }
+    let now = telemetry::now_ms();
+    let (from, to) = (param_u64(&q, "from", 0)?, param_u64(&q, "to", now)?);
+    if to < from {
+        return Err(ApiError::bad("to comes before from"));
+    }
+    Ok(AxJson(app.svc.metrics.routes_between(from, to)))
 }
 
 async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -> AxJson<Json> {

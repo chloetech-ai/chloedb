@@ -3590,7 +3590,7 @@ impl Service {
         });
         json!({
             "health": health, "load": load, "minute": minute,
-            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores},
+            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores, "memory_limit_bytes": strata::storage::memory_limit()},
             "running": self.live.len(), "log_store": log_store,
             // core: what a coordinator's /v1/cluster shows of each copy.
             "capability": self.capability(),
