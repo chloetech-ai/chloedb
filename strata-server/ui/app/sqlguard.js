@@ -340,7 +340,7 @@ export function checkWrite({ sql, params, p, onEdit, fixesFor }) {
     const noWhere = (p.kind === "UPDATE" || p.kind === "DELETE") && !p.where;
     const dropTable = p.kind === "DROP" && p.what === "table";
     const dropColumn = p.kind === "ALTER" && (p.changes || []).some((c) => c.op === "DROP");
-    const typed = (noWhere && !p.limit) || dropTable ? (dropTable ? p.drops.join(", ") : p.table) : null;
+    let typed = (noWhere && !p.limit) || dropTable ? (dropTable ? p.drops.join(", ") : p.table) : null;
     const allowed = writesAllowed();
 
     const rowsTile = h("div", { class: "dt-tile" });
@@ -349,7 +349,9 @@ export function checkWrite({ sql, params, p, onEdit, fixesFor }) {
     const undoTile = h("div", { class: "dt-tile" });
     const problems = h("div", { class: "stack", style: { gap: "8px" } });
     const reason = h("input", { class: "input", style: { width: "100%" }, maxlength: 300, value: allowed?.reason || "", placeholder: prod ? "INC-4821: archive the orders moved to cold storage" : "optional here: what this write is for" });
-    const typedIn = typed ? h("input", { class: "input mono", style: { width: "100%" }, placeholder: "the table's name", autocomplete: "off", autocapitalize: "off", autocorrect: "off", spellcheck: "false", "aria-label": `Type ${typed} to run it` }) : null;
+    const typedField = () => h("input", { class: "input mono", style: { width: "100%" }, placeholder: "the table's name", autocomplete: "off", autocapitalize: "off", autocorrect: "off", spellcheck: "false", "aria-label": `Type ${typed} to run it` });
+    let typedIn = typed ? typedField() : null;
+    const typedBox = h("div", { class: "dt-typed" });
     const runBtn = h("button", { class: "btn " + (noWhere || dropTable || dropColumn ? "danger solid" : "primary"), disabled: true }, icon("play"),
       r.coordinator ? `Run on ${p.kind === "DROP" || p.kind === "ALTER" || p.kind === "CREATE" ? "every shard" : fmt.plural(r.shards, "shard")}` : "Run it");
     const cancel = h("button", { class: "btn" }, "Cancel");
@@ -391,11 +393,19 @@ export function checkWrite({ sql, params, p, onEdit, fixesFor }) {
       tile(undoTile, "Undo", "none", "no transaction to roll back: write the rows back to undo it");
       if (noWhere) problems.prepend(h("div", { class: "banner bad dt-banner" }, icon("warn"), h("div", { class: "grow" },
         h("b", {}, `No WHERE: this ${p.kind === "UPDATE" ? "changes" : "deletes"} every row of ${p.table}${p.limit ? ` up to the LIMIT of ${fmt.n(p.limit)}` : ""}`),
-        h("div", { class: "small" }, p.limit ? "Without WHERE, LIMIT picks the rows." : `An ${p.kind} without WHERE runs only once you type the table's name. Add a WHERE to change fewer rows.`))));
+        h("div", { class: "small" }, p.limit ? "Without WHERE, LIMIT picks the rows." : `${/^[AEIOU]/i.test(p.kind) ? "An" : "A"} ${p.kind} without WHERE runs only once you type the table's name. Add a WHERE to change fewer rows.`))));
       const countSql = `SELECT COUNT(*) FROM ${p.target || qn(p.table)}${p.where ? ` WHERE ${p.where}` : ""}`;
-      countRows(countSql, params).then((c) => {
+      // NEW-data-tools-6: the rows, not the text, ask for the typed name: every row of the table, or over 1,000.
+      const allRows = p.where || p.limit != null ? countRows(`SELECT COUNT(*) FROM ${p.target || qn(p.table)}`, {}).then((c) => c.n).catch(() => null) : Promise.resolve(null);
+      Promise.all([countRows(countSql, params), allRows]).then(([c, all]) => {
         counted = c;
         const n = p.limit != null ? Math.min(p.limit, c.n) : c.n;
+        if (!typedIn && p.table && n > 0 && (n > 1000 || (all != null && n >= all))) {
+          typed = p.table;
+          typedIn = typedField();
+          typedIn.oninput = sync;
+          clear(typedBox, h("label", { class: "dt-lbl" }, h("span", {}, "Type ", h("b", { class: "mono" }, typed), ` to run it: it ${p.kind === "UPDATE" ? "changes" : "deletes"} ${all != null && n >= all ? "every row of the table" : `${fmt.n(n)} rows`}`), typedIn));
+        }
         tile(rowsTile, "Rows it changes", fmt.n(n), `${p.where ? "" : "every row · "}counted with SELECT COUNT(*) in ${fmt.ms(c.ms)} at ${fmt.time(c.at_ms)}${p.limit != null && c.n > p.limit ? ` (${fmt.n(c.n)} match, LIMIT ${fmt.n(p.limit)})` : ""}`, noWhere || n > 1000 ? "bad" : "");
         rowsTile.title = countSql;
         if (c.shards != null && r.coordinator) tile(shardsTile, "Shards", `${fmt.n(c.shards)} of ${fmt.n(r.shards)}`, `the WHERE names keys: only the shards that hold them${shipped}`);
@@ -474,7 +484,7 @@ export function checkWrite({ sql, params, p, onEdit, fixesFor }) {
         h("div", { class: "dt-tiles" }, rowsTile, shardsTile, fieldsTile, undoTile),
         h("div", { class: "dt-fields" },
           h("label", { class: "dt-lbl" }, prod ? "Why (required: sent with the statement, kept in the audit log with the rows and your key)" : "Why (sent with the statement and kept in the audit log)", reason),
-          typedIn ? h("label", { class: "dt-lbl" }, h("span", {}, "Type ", h("b", { class: "mono" }, typed), " to run it"), typedIn) : null),
+          typedIn ? h("label", { class: "dt-lbl" }, h("span", {}, "Type ", h("b", { class: "mono" }, typed), " to run it"), typedIn) : typedBox),
         h("div", { class: "small muted dt-hint" }, "Ctrl+Enter never skips this check. Writes from the command center are tagged so the server can tell them from client traffic."),
       ],
       foot: [cancel, addWhere, h("span", { class: "sep" }), runBtn],

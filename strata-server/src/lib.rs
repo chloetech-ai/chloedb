@@ -46,6 +46,7 @@ pub mod media;
 pub mod metrics;
 pub mod obs;
 pub mod operator;
+// fleet: coordinators that know each other.
 pub mod peers;
 pub mod plan_pb;
 pub mod profiler;

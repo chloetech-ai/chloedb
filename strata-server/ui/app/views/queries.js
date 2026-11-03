@@ -12,7 +12,7 @@ import {
   state, link, when, can, timeRange, poll, paused, isCoord, copyName, OUTCOME_ORDER, outcomeOf, outcomePill, outcomeBar, split, whoChips, paramsText, isOwn,
   shortFp, statementLink, roughFp, statements, change, attention, statementDetail, ask, objects, msOf, parseJson, hasLogStore, logStore, queryColumns,
   queryDrawer, liveDrawer, waterfall, askCancel, containDialog, containRules, containList, profileLink, rounds, narrow, cols as narrowCols, sheet, isNewStatement,
-  canContainNow, canContain,
+  canContainNow, canContain, causesAndVictims,
 } from "../workload.js";
 
 import { render as statementPage } from "./statement.js";
@@ -37,11 +37,14 @@ function render(page, r) {
       h("div", {}, h("h1", {}, "Queries"), scope),
       h("div", { class: "tools" }, h("button", { class: "btn sm", title: "Copy a link to this view, with its range and filters", onclick: () => copy(location.href, "Link copied") }, icon("link"), "Copy link"))),
     tabs, body);
+  // fleet: Running now and Contain cover every coordinator; Statements are this one's.
   const drawScope = () => {
     const c = state.cluster, n = (c?.shards || []).reduce((a, x) => a + (x.replicas?.length || 0), 0);
-    scope.textContent = isCoord()
-      ? `This coordinator${n ? ` and its ${fmt.plural(c.shards.length, "shard")} (${fmt.plural(n, "copy", "copies")})` : ""}: what runs now, the statements over the range in the top bar, and the history the log stores keep.`
-      : "This server: what runs now, the statements over the range in the top bar, and the history its log store keeps.";
+    const cs = state.fleet?.coordinators || [];
+    const shards = n ? ` and ${cs.length > 1 ? "their" : "its"} ${fmt.plural(c.shards.length, "shard")} (${fmt.plural(n, "copy", "copies")})` : "";
+    scope.textContent = !isCoord() ? "This server: what runs now, the statements over the range in the top bar, and the history its log store keeps."
+      : cs.length > 1 ? `${fmt.plural(cs.length, "coordinator")}${shards}: Running now and Contain cover every coordinator; Statements and the history are this coordinator's (${cs.find((x) => x.this)?.name || location.host}).`
+      : `This coordinator${shards}, the only one the shards heard from: what runs now, the statements over the range in the top bar, and the history the log stores keep.`;
   };
   drawScope();
   // A tab lays out for its width class, so it is built again when the width crosses 900 or 560 px,
@@ -99,7 +102,7 @@ function live(body, params, setCount) {
     card({ body: tbl, flush: true }),
     h("div", { class: "small muted", style: { margin: "10px 0 14px" } }, "A cancel answers the client 499 and is written to the audit log with your name and reason. Cancelling on a coordinator stops its calls to the shards too."),
     card({ title: "Contain rules", sub: "statements and keys limited or refused for a while", tools: containBtn, body: rulesBox }));
-  let all = [], at = 0, err = null, nodes = null;
+  let all = [], at = 0, err = null, nodes = null, missing = [];
   const shardCount = () => state.cluster?.shards?.length || 0;
 
   function waitingOn(q) {
@@ -121,13 +124,13 @@ function live(body, params, setCount) {
     const act = q.cancelled ? h("span", { class: "pill info" }, "cancelling") : can("admin") ? h("button", { class: "btn sm", onclick: () => cancelOne(q) }, nar ? "Cancel…" : "Cancel query…") : null;
     if (nar) {
       const tr = h("tr", { class: "click", tabindex: 0 },
-        h("td", { style: { paddingLeft: "12px" } }, h("div", { class: "mono small" }, q.node ? `${q.node}:${q.id}` : q.id), h("div", { class: "small muted ellipsis" }, [q.key, q.app].filter(Boolean).join(" · ") || (groupBy === "none" ? q.sql : ""))),
+        h("td", { style: { paddingLeft: "12px" } }, h("div", { class: "mono small" }, q.node ? `${q.node}:${q.local_id ?? q.id}` : q.id), h("div", { class: "small muted ellipsis" }, [q.key, q.app].filter(Boolean).join(" · ") || (groupBy === "none" ? q.sql : ""))),
         h("td", {}, ran), h("td", { class: "num" }, act));
       tr.onclick = (e) => { if (!e.target.closest("button,a")) liveDrawer(q, { onCancel: cancelOne }); };
       return tr;
     }
     const tr = h("tr", { class: "click", tabindex: 0 },
-      h("td", { class: "num mono small", style: { paddingLeft: "28px" } }, q.node ? `${q.node}:${q.id}` : q.id),
+      h("td", { class: "num mono small", style: { paddingLeft: "28px" } }, q.node ? `${q.node}:${q.local_id ?? q.id}` : q.id),
       h("td", {}, q.node ? h("span", { class: "badge" }, q.node) : q.shard ? h("span", { class: "badge", title: "a shard's part of a coordinator's query" }, "coordinator") : h("span", { class: "muted small" }, "client")),
       h("td", {}, ran),
       h("td", { class: "mono small" }, q.key || h("span", { class: "muted" }, "–")),
@@ -195,7 +198,7 @@ function live(body, params, setCount) {
     setCount("live", qs.length);
     const oldest = qs.reduce((a, q) => Math.max(a, q.elapsed_ms), 0);
     clear(info, h("span", { class: "pill " + (qs.length ? "info" : "ok") }, `${fmt.n(qs.length)} running`),
-      h("span", { class: "small muted", title: state.system ? `This server takes ${state.system.limits?.max_concurrent ?? "?"} queries at once; its timeout is ${fmt.ms(state.system.limits?.timeout_ms)} unless a query asks for less` : "" }, [nodes ? `on ${fmt.plural(nodes, "coordinator")}` : isCoord() ? "on this coordinator" : "on this server",
+      h("span", { class: "small muted", title: state.system ? `This server takes ${state.system.limits?.max_concurrent ?? "?"} queries at once; its timeout is ${fmt.ms(state.system.limits?.timeout_ms)} unless a query asks for less` : "" }, [nodes ? (missing.length ? `on ${nodes - missing.length} of ${fmt.plural(nodes, "coordinator")}: ${missing.map((m) => m.name).join(", ")} did not answer` : `on ${nodes > 1 ? "all " : ""}${fmt.plural(nodes, "coordinator")}`) : isCoord() ? "on this coordinator" : "on this server",
         qs.length ? `oldest ${fmt.ms(oldest)}` : null,
         paused() ? "paused" : at ? `refreshed ${fmt.ago(at)}` : null].filter(Boolean).join(" · ")));
     if (err) { clear(tbody, h("tr", {}, h("td", { colspan: span }, failure(err, "The running queries")))); return; }
@@ -215,6 +218,7 @@ function live(body, params, setCount) {
       try { j = await api("/v1/queries?group=shape"); } catch (e) { if (e.status === 400) j = await api("/v1/queries"); else throw e; }
       all = j.queries || [];
       nodes = j.nodes ? (Array.isArray(j.nodes) ? j.nodes.length : j.nodes) : null;
+      missing = Array.isArray(j.nodes) ? j.nodes.filter((x) => x.ok === false) : [];
       at = Date.now(); err = null;
     } catch (e) { err = e; }
     draw();
@@ -225,7 +229,13 @@ function live(body, params, setCount) {
   async function loadRules() {
     try { rules = await containRules(); } catch (e) { clear(rulesBox, failure(e, "The contain rules")); return; }
     if (containBtn) containBtn.style.display = rules == null ? "none" : "";
-    clear(rulesBox, containList(rules, { onChange: loadRules }));
+    // fleet: a rule holds on every coordinator; say where one is missing or was not asked.
+    const cs = state.fleet?.coordinators || [];
+    const gaps = (rules || []).filter((r) => r.missing?.length || r.unreachable?.length);
+    const where = rules?.length && cs.length > 1 ? h("div", { class: gaps.length ? "notice warn small" : "small muted", style: { marginBottom: "8px" } },
+      gaps.length ? gaps.slice(0, 3).map((r) => `Rule ${r.id} holds on ${(r.on || []).join(", ")}${r.missing?.length ? `; missing on ${r.missing.join(", ")}` : ""}${r.unreachable?.length ? `; ${r.unreachable.join(", ")} did not answer` : ""}.`).join(" ")
+        : `Each rule holds on all ${cs.length} coordinators: a statement contained on one is refused on every one.`) : null;
+    clear(rulesBox, where, containList(rules, { onChange: loadRules }));
   }
   const stops = [poll(2000, load), poll(30000, loadStmts), poll(10000, loadRules), ticker(draw), bus.on("narrow", draw)];
   return () => stops.forEach((f) => f());
@@ -269,7 +279,7 @@ function statementsTab(body, params, setCount) {
   ]), { sortKey: null, onRow: (x) => { location.hash = statementLink(x.fingerprint); }, empty: empty("queries", "No statements in this range", "Queries are grouped by shape: the same SQL with other literals.") });
   tbl.classList.add("wl-stmts");
   // Until the first answer, say it is reading: an empty table would say there is nothing.
-  const tblCard = card({ body: tbl, flush: true });
+  const tblCard = card({ body: tbl, flush: true, cls: "wl-nums" });
   tblCard.style.display = "none";
   clear(note, h("div", { class: "small muted", style: { margin: "6px 0 12px" } }, "Reading the statements of the range…"));
   body.append(h("div", { class: "row", style: { gap: "10px", marginBottom: "6px" } }, head, h("span", { class: "sep" }), onlyChip, ownChip, search), summary, note, cards, tblCard);
@@ -288,7 +298,8 @@ function statementsTab(body, params, setCount) {
     const hidden = data.statements.length - xs.length;
     ownChip.textContent = `the command center's own${hidden && !own ? ` (${hidden} hidden)` : ""}`;
     for (const x of xs) x._att = attention(x, windowMs());
-    if (filt) xs = xs.filter((x) => x.sql.toLowerCase().includes(filt) || x.fingerprint?.toLowerCase().includes(filt) || (x.keys || []).some((k) => k.key?.toLowerCase().includes(filt)));
+    // NEW-workload-12: the statement's id (the server's, or the short one an older page showed) finds it too.
+    if (filt) xs = xs.filter((x) => x.sql.toLowerCase().includes(filt) || x.fingerprint?.toLowerCase().includes(filt) || (x.id && x.id.startsWith(filt)) || shortFp(x.fingerprint) === filt || (x.keys || []).some((k) => k.key?.toLowerCase().includes(filt)));
     const flagged = xs.filter((x) => x._att);
     // Those that need a look first, worst first; then by time spent.
     xs.sort((a, b) => (b._att?.rank || 0) - (a._att?.rank || 0) || b.total_ms - a.total_ms);
@@ -309,7 +320,12 @@ function statementsTab(body, params, setCount) {
     const errs = xs.filter((x) => { const t = split(x.outcomes, x.calls); return t.server + t.client > 0; }).sort((a, b) => { const A = split(a.outcomes, a.calls), B = split(b.outcomes, b.calls); return (B.server + B.client) - (A.server + A.client); });
     const allFailed = errs.reduce((a, x) => { const t = split(x.outcomes, x.calls); return a + t.server + t.client; }, 0);
     const news = xs.filter((x) => isNewStatement(x, windowMs())).sort((a, b) => b.total_ms - a.total_ms);
-    const grew = data.windowed ? xs.map((x) => [x, change(x)]).filter(([, c]) => c && c.dTotal > 0 && (c.p99X >= 1.5 || c.callsX >= 1.5)).sort((a, b) => b[1].dTotal - a[1].dTotal).slice(0, 3) : [];
+    // S4-3: causes (new, or more calls) before victims (slower, calls flat).
+    const cv = data.windowed ? causesAndVictims(xs, windowMs()) : { causes: [], victims: [], cause: null };
+    const grew = [...cv.causes.filter((y) => !y.c.isNew), ...cv.victims].slice(0, 3).map((y) => [y.x, y.c]);
+    // NEW-scenarios-14: a server that started after the range began (or
+    // less than a minute before) judges no statement new.
+    const cantTell = data.windowed && data.since_ms != null && data.since_ms + 60e3 >= (data.from ?? timeRange().from);
 
     const errCard = h("section", { class: "card wl-card" + (errs.length ? " bad" : "") }, h("div", { class: "hd" }, h("h3", {}, errs.length ? `Errors: ${fmt.plural(Math.min(errs.length, 99), "statement")}` : "Errors"), h("span", { class: "sub" }, "by statement and key")), h("div", { class: "bd" }));
     const eb = errCard.lastChild;
@@ -319,22 +335,34 @@ function statementsTab(body, params, setCount) {
       const others = calls - x.calls, othersFailed = allFailed - failed;
       const k = x.keys?.slice().sort((a, b) => (b.errors || 0) - (a.errors || 0))[0];
       const msg = h("span", { class: "mono small" });
+      // NEW-scenarios-20: when this key's calls began to fail (the log
+      // store keeps every failed query), not when the statement was first seen.
+      const since = h("span", { class: "badge", title: "This key's first failed call of this statement in the range, from the log store" });
+      since.style.display = "none";
+      failingSince(x.fingerprint, k?.key).then((t) => {
+        if (!t) return;
+        // A first failure in the range's first minute: it failed before the range too.
+        const all = t - timeRange().from < 60e3;
+        since.textContent = `${k ? "its calls failing" : "failing"} ${all ? "all range" : "since " + when(t)}`;
+        if (all) since.title = "Its first failed call in the range came in the range's first minute: widen the range to see when it began";
+        since.style.display = "";
+      }).catch(() => {});
       eb.append(
         h("div", { class: "mono small ellipsis", title: x.sql }, x.sql),
         h("div", { class: "small", style: { margin: "6px 0" } }, h("b", { class: t.server ? "wl-bad" : "" }, `${fmt.si(perS(failed))}/s failing, ${fmt.pct(failed / Math.max(1, x.calls), 0)} of its calls`), " · ", t.client >= t.server ? "client errors (400)" : "server errors", allFailed ? ` · ${fmt.pct(failed / allFailed, 0)} of all failures` : "", " ", msg),
-        h("div", { class: "row", style: { gap: "4px" } }, k ? h("span", { class: "badge mono" }, "key " + k.key) : null, x.first_seen_ms ? h("span", { class: "badge" }, "first " + when(x.first_seen_ms)) : null, (x.keys?.length || 0) > 1 ? h("span", { class: "badge" }, `${x.keys.length - 1} other keys`) : null),
+        h("div", { class: "row", style: { gap: "4px" } }, k ? h("span", { class: "badge mono" }, "key " + k.key) : null, since, (x.keys?.length || 0) > 1 ? h("span", { class: "badge", title: x.keys.filter((y) => y !== k).map((y) => `${y.key}: ${fmt.n(y.errors || 0)} failed of ${fmt.n(y.calls)}`).join("\n") }, fmt.plural(x.keys.length - 1, "other key")) : null),
         others > 0 ? h("div", { class: "small muted", style: { marginTop: "6px" } }, `The rest: ${fmt.pct(othersFailed / Math.max(1, others), 1)} of every other statement's calls failed.`) : null,
         h("div", { class: "row", style: { gap: "6px", marginTop: "8px" } },
           h("a", { class: "btn sm", href: statementLink(x.fingerprint) }, "Open it ›"),
           canContainNow() ? h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: x.fingerprint, sql: x.sql, key: k?.key, keys: x.keys, onDone: () => {} }) }, k ? `Refuse it from ${k.key}…` : "Refuse it…") : null,
-          h("button", { class: "btn sm ghost", title: "A summary to send the team that owns the client", onclick: () => copy(`Statement ${shortFp(x.fingerprint)} fails: ${fmt.n(failed)} of ${fmt.n(x.calls)} calls (${fmt.pct(failed / Math.max(1, x.calls), 0)}) ${timeRange().label || ""}${k ? `, from API key ${k.key}` : ""}.\n${msg.textContent ? "Error: " + msg.textContent + "\n" : ""}SQL: ${x.sql}\n${location.origin}/${statementLink(x.fingerprint)}`, "Summary copied") }, icon("copy"), "Copy for the app team")),
+          h("button", { class: "btn sm ghost", title: "A summary to send the team that owns the client", onclick: () => copy(`Statement ${x.id || shortFp(x.fingerprint)} fails: ${fmt.n(failed)} of ${fmt.n(x.calls)} calls (${fmt.pct(failed / Math.max(1, x.calls), 0)}) ${timeRange().label || ""}${k ? `, from API key ${k.key}` : ""}.\n${msg.textContent ? "Error: " + msg.textContent + "\n" : ""}SQL: ${x.sql}\n${location.origin}/${statementLink(x.fingerprint)}`, "Summary copied") }, icon("copy"), "Copy for the app team")),
         errs.length > 1 ? h("div", { class: "small muted", style: { marginTop: "8px" } }, errs.slice(1, 3).map((y) => h("div", { class: "ellipsis" }, h("a", { href: statementLink(y.fingerprint), class: "wl-link" }, `${fmt.n(split(y.outcomes, y.calls).failed)} failed`), " · ", h("span", { class: "mono" }, y.sql)))) : null);
       const m = msgCache.get(x.fingerprint);
       if (m && Date.now() - m.at < 30e3) msg.textContent = m.text;
       else statementDetail(x.fingerprint, timeRange()).then((d) => { const e = d.errors?.[0]; const text = e ? `“${e.message}”` : ""; msgCache.set(x.fingerprint, { at: Date.now(), text }); msg.textContent = text; }).catch(() => {});
     }
-    const newCard = card({ title: news.length ? `New: ${fmt.plural(news.length, "shape")}` : "New shapes", sub: data.windowed ? "first seen in this range" : "needs a newer server", cls: "wl-card" + (news.length ? " warn" : ""),
-      body: !news.length ? h("div", { class: "small muted" }, data.windowed ? "No statement was first seen in this range." : "This server does not say when a statement was first seen.") : (() => {
+    const newCard = card({ title: news.length ? `New: ${fmt.plural(news.length, "shape")}` : "New shapes", sub: !data.windowed ? "needs a newer server" : cantTell ? "can't tell for this range" : "first seen in this range", cls: "wl-card" + (news.length ? " warn" : ""),
+      body: !news.length ? h("div", { class: "small muted" }, !data.windowed ? "This server does not say when a statement was first seen." : cantTell ? `Can't tell: this server started at ${when(data.since_ms)}, after the range began or less than a minute before, so it has nothing to compare with. Pick a range that starts after ${when(data.since_ms + 60e3)}.` : "No statement was first seen in this range.") : (() => {
         const x = news[0], k = x.keys?.[0];
         return h("div", {},
           h("div", { class: "mono small ellipsis", title: x.sql }, x.sql),
@@ -343,13 +371,15 @@ function statementsTab(body, params, setCount) {
           h("div", { class: "row", style: { gap: "6px", marginTop: "8px" } },
             h("a", { class: "btn sm", href: statementLink(x.fingerprint) }, "Open it ›"),
             canContainNow() ? h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: x.fingerprint, sql: x.sql, key: k?.key, keys: x.keys }) }, k ? `Limit ${k.key}…` : "Limit it…") : null,
-            h("a", { class: "btn sm ghost", href: profileLink(x.sql, x.sample?.params) }, icon("flame"), "Profile one")),
+            h("a", { class: "btn sm ghost", href: profileLink(x.sql, x.sample?.params, x.fingerprint), title: "Open it in the Profiler: it asks before it runs" }, icon("flame"), "Profile one")),
           news.length > 1 ? h("div", { class: "small muted", style: { marginTop: "8px" } }, news.slice(1, 3).map((y) => h("div", { class: "ellipsis" }, h("a", { href: statementLink(y.fingerprint), class: "wl-link" }, when(y.first_seen_ms)), " · ", h("span", { class: "mono" }, y.sql)))) : null);
       })() });
-    const grewCard = card({ title: "Grew most", sub: data.windowed ? "by time spent, against the window before" : "needs a newer server", cls: "wl-card",
+    const victimOf = cv.cause ? (cv.cause.c.isNew ? `the new statement first seen ${when(cv.cause.x.first_seen_ms)}` : `the statement with ×${cv.cause.c.callsX.toFixed(1)} the calls`) : null;
+    const grewCard = card({ title: "Grew most", sub: data.windowed ? "by time spent, against the window before · causes first" : "needs a newer server", cls: "wl-card",
       body: !grew.length ? h("div", { class: "small muted" }, data.windowed ? "No statement grew by half or more." : "This server keeps no window before to compare with.") : h("div", { class: "stack", style: { gap: "8px" } }, grew.map(([x, c]) => h("div", {},
         h("a", { class: "mono small ellipsis wl-link", style: { display: "block" }, href: statementLink(x.fingerprint), title: x.sql }, x.sql),
-        h("div", { class: "small dim" }, `p99 ${fmt.ms(x.prev.p99_ms)} → ${fmt.ms(x.p99_ms)}, calls ×${c.callsX.toFixed(1)}`, c.verdict ? h("b", {}, ": " + c.verdict) : null)))) });
+        h("div", { class: "small dim" }, `p99 ${fmt.ms(x.prev.p99_ms)} → ${fmt.ms(x.p99_ms)}, calls ×${c.callsX.toFixed(1)}`,
+          c.callsX < 1.5 ? h("b", {}, ": slower, calls flat. Likely a victim", victimOf && cv.cause.x !== x ? [" of ", h("a", { class: "wl-link", href: statementLink(cv.cause.x.fingerprint), title: cv.cause.x.sql }, victimOf)] : ", not a cause") : c.verdict ? h("b", {}, ": " + c.verdict) : null)))) });
     clear(cards, errCard, newCard, grewCard);
   }
   async function load() {
@@ -365,10 +395,28 @@ function statementsTab(body, params, setCount) {
 
 const PRESETS = [["all", "all"], ["failed", "failed"], ["slow", "slow"], ["latest", "last 15 min"]];
 
+/** When `key`'s calls of a statement began to fail in the range (its first failed call the log store keeps), or null. */
+const sinceCache = new Map();
+async function failingSince(fp, key) {
+  if (!fp || !(await hasLogStore())) return null;
+  const r = timeRange(), ck = `${fp}|${key}|${Math.round(r.from / 60e3)}`, hit = sinceCache.get(ck);
+  if (hit && Date.now() - hit.at < 30e3) return hit.t;
+  const t = await firstFailed(fp, key, r);
+  sinceCache.set(ck, { at: Date.now(), t });
+  return t;
+}
+async function firstFailed(fp, key, r) {
+  const lit = (v) => `'${String(v).replace(/'/g, "''")}'`, cols = await queryColumns();
+  const kc = cols.has("key") ? "key" : cols.has("key_name") ? "key_name" : null;
+  const w = [`fingerprint = ${lit(fp)}`, "shard = false", "outcome != 'ok'", `ts >= ${lit(new Date(r.from).toISOString())}`, r.to && !r.live ? `ts < ${lit(new Date(r.to).toISOString())}` : null, key && kc ? `${kc} = ${lit(key)}` : null].filter(Boolean).join(" AND ");
+  const j = await ask(`SELECT ts FROM queries WHERE ${w} ORDER BY ts ASC LIMIT 1`);
+  return j.rows?.[0] ? msOf(j.rows[0][0]) : null;
+}
+
 function historyTab(body, params, setCount) {
   const f = {
     preset: params.get("preset") || "all", q: params.get("q") || "", key: params.get("key") || "", fingerprint: params.get("fingerprint") || "",
-    request: params.get("request") || "", min: params.get("min") || "", parts: false, own: false,
+    request: params.get("request") || "", min: params.get("min") || "", kind: params.get("kind") || "", parts: false, own: false,
   };
   const presetSeg = seg(PRESETS, f.preset, (v) => { f.preset = v; refresh(); }, { title: "Latest is the last 15 minutes; slow is over the slow threshold" });
   const q = h("input", { class: "input sm", placeholder: "Search the SQL", value: f.q, style: { width: "180px" }, oninput: debounce(() => { f.q = q.value.trim(); refresh(); }, 300) });
@@ -398,7 +446,7 @@ function historyTab(body, params, setCount) {
   body.append(
     h("div", { class: "row", style: { gap: "10px", marginBottom: "8px" } }, presetSeg, q, keyIn, h("span", { class: "row nw small muted", style: { gap: "6px" } }, "at least", min), parts, ownBox, asSql, h("span", { class: "sep" }), count),
     chips, note,
-    card({ title: "Queries over time", sub: "by how they ended", body: hist, attrs: { style: { marginBottom: "12px" } } }),
+    card({ title: "Queries kept, over time", sub: "by how they ended · the log store keeps every failed and slow query and a sample of the fast ones (--log-queries a second), so failures look more common here than they are", body: hist, attrs: { style: { marginBottom: "12px" } } }),
     card({ title: "Queries", sub: "newest first · click one for who sent it, its trace and profile", body: [tbl, more], flush: true }));
 
   const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
@@ -421,6 +469,7 @@ function historyTab(body, params, setCount) {
       f.preset === "slow" ? `ms >= ${slowMs()}` : null,
       f.q ? `MATCH(sql, ${lit(f.q)})` : null,
       f.request ? `request_id = ${lit(f.request)}` : null,
+      f.kind ? `kind = ${lit(f.kind)}` : null,
       f.fingerprint && skip !== "fingerprint" ? `fingerprint = ${lit(f.fingerprint)}` : null,
       f.key && keyCol() ? `${keyCol()} = ${lit(f.key)}` : null,
       f.min !== "" && Number.isFinite(+f.min) ? `ms >= ${+f.min}` : null,
@@ -437,7 +486,7 @@ function historyTab(body, params, setCount) {
     return x;
   };
   function drawChips() {
-    clear(chips, [["fingerprint", "statement"], ["request", "request"], ["key", "key"]].filter(([k]) => f[k]).map(([k, l]) => h("button", { class: "chip", "aria-pressed": "true", title: "Remove", onclick: () => pick(k)("") }, h("span", { class: "ellipsis", style: { maxWidth: "520px" } }, `${l} = ${f[k]}`), h("span", { class: "x" }, "×"))));
+    clear(chips, [["fingerprint", "statement"], ["request", "request"], ["key", "key"], ["kind", "kind"]].filter(([k]) => f[k]).map(([k, l]) => h("button", { class: "chip", "aria-pressed": "true", title: "Remove", onclick: () => pick(k)("") }, h("span", { class: "ellipsis", style: { maxWidth: "520px" } }, `${l} = ${f[k]}`), h("span", { class: "x" }, "×"))));
     chips.style.marginBottom = chips.childElementCount ? "8px" : "0";
   }
   function own(xs) { return f.own || has("client") ? xs : xs.filter((x) => !isOwn(x)); }
@@ -451,10 +500,14 @@ function historyTab(body, params, setCount) {
     clear(note, [t.clipped ? h("div", { class: "notice", style: { marginBottom: "10px" } }, "The log store keeps 7 days: the range is cut to them.") : null,
       f.key && !keyCol() ? h("div", { class: "notice", style: { marginBottom: "10px" } }, "This server's log store does not record keys yet: the key filter is not applied.") : null]);
     try {
-      const [rs, hs, by] = await Promise.all([
+      // What was served (every call, not only those kept), when no filter
+      // narrows it: the statements of the range.
+      const plain = !f.q && !f.key && !f.request && f.min === "" && !f.kind && f.preset !== "slow";
+      const [rs, hs, by, st] = await Promise.all([
         ask(rowsSql()),
         ask(`SELECT ${col}, outcome, COUNT(*) FROM queries WHERE ${where()} GROUP BY ${col}, outcome LIMIT 20000`),
         ask(`SELECT outcome, COUNT(*) FROM queries WHERE ${where()} GROUP BY outcome`),
+        plain ? statements({ from: t.from, to: t.to }).catch(() => null) : null,
       ]);
       if (my !== gen) return;
       rows = own(objects(rs).map(finished));
@@ -463,7 +516,13 @@ function historyTab(body, params, setCount) {
       if (bad.length) note.append(h("div", { class: "banner warn" }, icon("warn"), h("div", { class: "grow" }, h("b", {}, `${fmt.plural(bad.length, "server")} did not answer, so ${bad.length === 1 ? "its" : "their"} queries are missing here`), bad.map((n) => h("div", { class: "small mono" }, `${n.node || n.url}: ${n.error}`)))));
       histogram(hist, hs.rows, { unit, t });
       tbl.update(rows);
-      count.textContent = `${fmt.plural(total, "query", "queries")} · ${by.rows.map(([o, n]) => `${fmt.n(n)} ${outcomeOf(o).label}`).join(" · ")}`;
+      count.textContent = `${fmt.n(total)} kept · ${by.rows.map(([o, n]) => `${fmt.n(n)} ${outcomeOf(o).label}`).join(" · ")}`;
+      count.title = "Rows the log store kept: every failed and slow query, and at most --log-queries fast ones a second";
+      // Served: every call of the range, from the statements (this coordinator's).
+      const sv = st?.windowed ? servedOf(st.statements.filter((x) => !isOwn(x) && (!f.fingerprint || x.fingerprint === f.fingerprint || x.id === f.fingerprint))) : null;
+      if (sv?.calls) note.append(h("div", { class: "small muted", style: { marginBottom: "8px" } }, `Served ${st.partial ? `since ${when(st.held_from_ms)}` : "in the range"}: ${fmt.plural(sv.calls, "query", "queries")}`,
+        `, ${fmt.si(sv.server / sv.calls * 100, 2)}% failed on the server`, sv.client ? `, ${fmt.si(sv.client / sv.calls * 100, 2)}% client errors` : "", sv.deadline ? `, ${fmt.si(sv.deadline / sv.calls * 100, 2)}% past the client's deadline` : "",
+        `. The rows below are the ${fmt.n(total)} the log store kept${total ? ` (${fmt.pct(total / sv.calls, total / sv.calls < 0.1 ? 1 : 0)} of them)` : ""}.`));
       setCount("history", "7 days");
       drawMore();
     } catch (e) { if (my === gen) { clear(note, failure(e, "The query history")); tbl.update([]); clear(hist); } }
@@ -512,6 +571,17 @@ function historyTab(body, params, setCount) {
   (async () => { store = await hasLogStore(); if (store) cols = await queryColumns(); refresh(); })();
   const stops = [poll(5000, () => { if (!rows.length || (span().to == null && document.querySelector(".drawer") == null)) return refresh(); }), bus.on("range", () => refresh())];
   return () => stops.forEach((x) => x());
+}
+
+/** Every call of statements, by how it ended: {calls, server, client, deadline}. */
+function servedOf(list) {
+  const o = { calls: 0, server: 0, client: 0, deadline: 0 };
+  for (const x of list) {
+    const sp = split(x.outcomes, x.calls);
+    o.server += sp.server; o.client += sp.client; o.deadline += x.outcomes?.client_deadline || 0;
+    o.calls += x.calls;
+  }
+  return o;
 }
 
 /** Counts over time as stacked bars by outcome: rows of [bucket, outcome, n], buckets in minutes (or hours) since 1970. */

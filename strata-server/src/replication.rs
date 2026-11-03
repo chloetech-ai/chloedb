@@ -1212,19 +1212,32 @@ impl Follow {
     ///
     /// It asks for the term after the newest it knows or a copy told it
     /// ([`shard::Replica::heard`]).
-    pub async fn campaign(&self, copies: &[String], opts: &PrimaryOptions, handover: bool) -> Result<Elected, ApiError> {
+    ///
+    /// The copies of `first` (in a handover, those that serve as the
+    /// shard's primary) are asked for their votes before the others, while
+    /// this replica answers no call of theirs: once it voted for itself, it
+    /// would answer a call with the term it asks for, and so would a copy
+    /// that voted for it, and a primary that knows a term refuses a vote in
+    /// it. Refused, the primary is fenced and does not step down, and with
+    /// two copies the shard is left with no primary.
+    pub async fn campaign(&self, copies: &[String], opts: &PrimaryOptions, handover: bool, first: &[String]) -> Result<Elected, ApiError> {
         let c = self.core().campaign(&self.numbering()?, handover);
-        let ask = |pre: bool| self.ask(c.ask(self.db.storage().numbering().unwrap_or_default().last(), pre), copies, opts);
-        let t = c.tally(copies, ask(true).await);
+        let t = c.tally(copies, self.ask(c.ask(self.numbering()?.last(), true), copies, opts).await);
         self.core().heard(&t);
         c.pre_voted(&t)?;
-        {
+        let (before, after): (Vec<String>, Vec<String>) = copies.iter().cloned().partition(|u| first.contains(u));
+        let (req, said) = {
             let _one = self.one.lock().await;
             let n = self.numbering()?;
             let k = c.vote_self(&self.core(), &n)?;
             self.keep(k, "the vote")?;
-        }
-        let t = c.tally(copies, ask(false).await);
+            let req = c.ask(n.last(), false);
+            let said = self.ask(req.clone(), &before, opts).await;
+            (req, said)
+        };
+        let (mut said, mut rest) = (said.into_iter(), self.ask(req, &after, opts).await.into_iter());
+        let answers = copies.iter().map(|u| if first.contains(u) { said.next() } else { rest.next() }.expect("an answer from each copy")).collect();
+        let t = c.tally(copies, answers);
         self.core().heard(&t);
         let votes = t.granted;
         let e = c.voted(t)?;
@@ -1322,7 +1335,8 @@ impl Follow {
     /// copies; `opts.replicas` when `None`) voted for it
     /// ([`Self::campaign`], as a handover: a primary that serves steps
     /// down). It catches up with them first ([`Self::catch_up`]), which
-    /// stops a primary that serves taking writes until it votes. Refused
+    /// stops a primary that serves taking writes until it votes, and asks
+    /// that primary for its vote before the others. Refused
     /// (409) otherwise, unless `force`, which asks for no
     /// votes: the new primary may then not hold transactions another copy
     /// holds, which a copy of it drops, and a primary that serves still may
@@ -1353,7 +1367,7 @@ impl Follow {
         let asked = shard::promote_check(&mine, &said, force)?;
         let elected = match force {
             true => None,
-            false => Some(self.campaign(voters.as_deref().unwrap_or(&opts.replicas), &opts, true).await?),
+            false => Some(self.campaign(voters.as_deref().unwrap_or(&opts.replicas), &opts, true, &asked.primaries).await?),
         };
         match (named, &elected, &voters) {
             (false, Some(e), _) => opts.replicas = e.others.clone(),

@@ -2640,6 +2640,36 @@ a.wl-chip:hover { border-color: var(--accent); }
   .wl-pick-box { width: 100%; }
   .wl-pick-row { padding: 10px 8px; }
 }
+/* round 2 (workdata) */
+.wl-linked { margin-bottom: 14px; }
+.wl-nums td.num { white-space: nowrap; }
+.wl-bands { margin-top: 12px; }
+.wl-bands-head { gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+@media (max-width: 900px) {
+  .wl-sum { padding: 12px 0; }
+  /* A link in a sentence: a taller tap area, the same lines. */
+  .content a.wl-link:not(.btn) { padding: 13px 0; }
+  /* The SQL editor wraps (no gutter; its line marks would fall elsewhere). */
+  .ed { grid-template-columns: minmax(0, 1fr); }
+  .ed-gut, .ed-cur, .ed-err, .dt-band { display: none !important; }
+  .ed-hl, .ed-ta { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ed-ta { scrollbar-width: none; }
+}
+/* Logs on a phone: the lines first; the chart and the secondary links behind chips. */
+@media (max-width: 900px) {
+  .al-logs .card.al-hist { display: none; }
+  .al-logs.al-chart-open .card.al-hist { display: block; }
+  .al-logs.al-more-open .al-wide-only { display: inline-flex; }
+  .al-logs .al-rangerow .chip, .al-logs .al-lvkey { min-height: 40px; }
+}
+/* The SQL workbench's tables: a sheet under 1,100 px. */
+.wb-tables-btn, .wb-side-close { display: none; }
+@media (max-width: 1100px) {
+  .wb-tables-btn, .wb-side-close { display: inline-flex; }
+  .wb.side-open .wb-side { display: flex; position: fixed; inset: 52px 0 0 0; z-index: 40; border-right: 0; }
+  .wb.side-open .wb-side .fi, .wb.side-open .wb-side .tt-h { min-height: 40px; }
+}
+@media (max-width: 900px) { .qtabs button { min-height: 40px; } }
 /* ===== end workload ===== */
 /* ===== cluster ===== */
 /* The Cluster canvas: tiles per shard on an SLO scale (fine is neutral, amber
@@ -3043,3 +3073,44 @@ body.cc-dragging, body.cc-dragging * { cursor: grabbing !important; user-select:
 /* Number headers sit over their numbers ("table.t th" would set them left). */
 table.t th.num { text-align: right; }
 /* ===== end integration ===== */
+/* ===== fleet ===== */
+/* Charts: a pile of event markers shows its count; midnight on an axis of hours reads as a date. */
+.chart .ann-n { fill: #fff; font-size: 8.5px; font-weight: 700; pointer-events: none; }
+.chart .axis text.day { fill: var(--text); font-weight: 600; }
+/* Shell: the crumb names the cluster when the view's heading names the view (SH-12); a phone's search is a 40 px target. */
+.crumbs .ctitle, .crumbs .cname { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.crumbs .csep { color: var(--muted); font-weight: 400; }
+.crumbs .cname { color: var(--text-2); font-weight: 500; }
+.crumbs.titled .ctitle, .crumbs.titled .csep { display: none; }
+.crumbs.titled .cname { color: var(--text); font-weight: 600; }
+@media (max-width: 900px) {
+  .crumbs:not(.titled) .csep, .crumbs:not(.titled) .cname { display: none; }
+  .top .search-btn { min-height: 40px; }
+  a.home-chip { min-height: 40px; padding: 4px 10px; }
+  .crumbs.titled > svg { display: none; }
+  .home-evhead a, .home-who { min-height: 40px; }
+  .home-evhead a { display: inline-flex; align-items: center; }
+  .tl-ev::after { content: ""; position: absolute; left: -15px; top: -12px; width: 40px; height: 40px; }
+  .tl-chips .chip, .page-head .seg button { min-width: 40px; }
+  .tl-more { min-height: 40px; }
+  .palette .it .h.acts { min-height: 40px; min-width: 64px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+}
+/* Timeline: grouped repeats, raw fields behind "details". */
+.tl-more { margin-left: 6px; font-weight: 500; }
+.tl-list tr.tl-sub td { background: var(--surface-2); }
+.tl-details summary { cursor: pointer; display: inline-block; }
+.tl-raw { white-space: pre-wrap; word-break: break-all; margin: 4px 0 0; max-height: 220px; overflow: auto; background: var(--surface-2); border-radius: 6px; padding: 6px 8px; }
+/* Query path: each run a full-height button; the strip scrolls in its card; KPI lines wrap. */
+.qp-strip { gap: 4px; align-items: flex-end; }
+.qp-strip .qp-runs { flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; height: 60px; gap: 1px; scrollbar-width: thin; }
+.qp-strip .qp-run { flex: 1 0 6px; min-width: 6px; max-width: 18px; height: 56px; background: none; opacity: 1; display: flex; align-items: flex-end; border-radius: 0; }
+.qp-run i { display: block; width: 100%; background: var(--s1); opacity: .55; border-radius: 2px 2px 0 0; }
+.qp-run:hover i, .qp-run:focus-visible i { opacity: .85; }
+.qp-strip .qp-run.sel { background: none; }
+.qp-run.sel i { opacity: 1; background: var(--s2); }
+.qp-kpis .delta { white-space: normal; overflow: visible; text-overflow: clip; }
+@media (max-width: 900px) { .qp-strip .qp-run { flex: 0 0 16px; max-width: none; } }
+.home-lane .ev .ev-n { font-weight: 600; color: var(--text); }
+.home-lane .ev.left { border-left: 0; border-right: 2px solid var(--line-2); padding: 0 4px 0 0; text-align: right; transform: translateX(1px); }
+.home-lane .ev.left.accent { border-color: var(--accent); } .home-lane .ev.left.crit { border-color: var(--crit); } .home-lane .ev.left.warn { border-color: var(--warn); }
+/* ===== end fleet ===== */

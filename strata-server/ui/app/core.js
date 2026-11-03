@@ -456,6 +456,13 @@ export const fmt = {
   },
   pct(v, d = 1) { if (v == null || Number.isNaN(v)) return "–"; return (v * 100).toFixed(d).replace(/\.0+$/, "") + "%"; },
   rate(v) { return v == null ? "–" : fmt.si(v) + "/s"; },
+  /** How long until a disk fills, from days: minutes or hours under a day, as the server's texts say it. */
+  fills(days) {
+    if (days == null || !Number.isFinite(days)) return "–";
+    if (days < 1 / 24) return `${Math.max(1, Math.round(days * 1440))} min`;
+    if (days < 1) return `${Math.round(days * 24)} h`;
+    return days < 10 ? `${(Math.round(days * 10) / 10).toString()} days` : `${Math.round(days)} days`;
+  },
   dur(secs) {
     if (secs == null) return "–";
     const d = Math.floor(secs / 86400), hr = Math.floor(secs % 86400 / 3600), m = Math.floor(secs % 3600 / 60), sec = Math.floor(secs % 60);

@@ -811,7 +811,7 @@ pub struct Alerts {
     peers: Mutex<Vec<crate::peers::Peer>>,
     /// What to tell the other coordinators ([`peering`]).
     outbox: Mutex<Vec<Json>>,
-    outbox_ready: tokio::sync::Notify,
+    outbox_ready: Arc<tokio::sync::Notify>,
     peering: AtomicBool,
     /// Each copy's last push of the each_copy rules: when, and how it went.
     pushed: Mutex<HashMap<String, (u64, Result<(), String>)>>,
@@ -913,7 +913,7 @@ impl Alerts {
             state_file,
             peers: Mutex::new(Vec::new()),
             outbox: Mutex::new(Vec::new()),
-            outbox_ready: tokio::sync::Notify::new(),
+            outbox_ready: Arc::new(tokio::sync::Notify::new()),
             peering: AtomicBool::new(false),
             pushed: Mutex::new(HashMap::new()),
             copy_rules_ms: Mutex::new(HashMap::new()),
@@ -2788,10 +2788,11 @@ pub async fn copy_call(svc: &Arc<crate::service::Service>, b: &Json) -> Result<J
 /// How often a coordinator reads each other one's alerts whole.
 const PULL_MS: u64 = 10_000;
 
-pub(crate) fn peering(app: crate::http::App, svc: Arc<crate::service::Service>) {
+pub fn peering(svc: &Arc<crate::service::Service>) {
     if svc.alerts.peering.swap(true, Ordering::AcqRel) || tokio::runtime::Handle::try_current().is_err() {
         return;
     }
+    let weak = Arc::downgrade(svc);
     tokio::spawn(async move {
         let mut listed = 0u64;
         let mut pulled: HashMap<String, u64> = HashMap::new();
@@ -2799,13 +2800,16 @@ pub(crate) fn peering(app: crate::http::App, svc: Arc<crate::service::Service>) 
         // heard from, whatever the list says ([`Alerts::pager`]).
         let mut failing: HashMap<String, u64> = HashMap::new();
         loop {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), svc.alerts.outbox_ready.notified()).await;
+            let Some(ready) = weak.upgrade().map(|s| s.alerts.outbox_ready.clone()) else { return };
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), ready.notified()).await;
+            let Some(svc) = weak.upgrade() else { return };
+            let app = &*svc;
             if !svc.alerts.is_coordinator() {
                 continue;
             }
             let now = now_ms();
             if now.saturating_sub(listed) >= 5_000 {
-                svc.alerts.set_peers(crate::peers::coordinators(&app));
+                svc.alerts.set_peers(crate::peers::coordinators(app));
                 listed = now;
             }
             let others: Vec<crate::peers::Peer> = lock(&svc.alerts.peers).iter().filter(|p| !p.this).cloned().collect();
@@ -2818,7 +2822,7 @@ pub(crate) fn peering(app: crate::http::App, svc: Arc<crate::service::Service>) 
             };
             let ops = std::mem::take(&mut *lock(&svc.alerts.outbox));
             for op in &ops {
-                let sent = futures::future::join_all(others.iter().map(|p| crate::peers::post(&app, p, "/v1/alerts/peer", op))).await;
+                let sent = futures::future::join_all(others.iter().map(|p| crate::peers::post(app, p, "/v1/alerts/peer", op))).await;
                 for (p, r) in others.iter().zip(sent) {
                     heard(&p.url, r.is_ok());
                     if let Err(e) = r {
@@ -2831,7 +2835,7 @@ pub(crate) fn peering(app: crate::http::App, svc: Arc<crate::service::Service>) 
                     continue;
                 }
                 pulled.insert(p.url.clone(), now);
-                match crate::peers::get(&app, p, "/v1/alerts/peer").await {
+                match crate::peers::get(app, p, "/v1/alerts/peer").await {
                     Ok(j) => {
                         heard(&p.url, true);
                         match svc.alerts.merge(&j, &p.url) {
