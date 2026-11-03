@@ -632,3 +632,41 @@ async fn the_command_centers_requests_are_tagged_and_only_changes_audited() {
     let shards = f["checks"].as_array().unwrap().iter().find(|c| c["id"] == "shards").cloned().unwrap();
     assert_eq!((shards["status"].as_str(), shards["value"]["total"].as_u64()), (Some("ok"), Some(1)), "{f}");
 }
+
+/// Through a coordinator, every table's reads a minute are of the last
+/// minutes and name each shard (which shard is hot), and the drill-down of
+/// one table (`/v1/index`) measures them over the same window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_shards_reads_a_minute_are_the_last_minutes_and_the_drill_down_agrees() {
+    use strata_server::service::QueryReq;
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = Node::new(dir.path(), "a", 40);
+    let mut b = Node::new(dir.path(), "b", 10);
+    a.start().await;
+    b.start().await;
+    let c = Arc::new(Coordinator::connect(vec![a.url(), b.url()]).await.unwrap());
+    let svc = Arc::new(Service::new(Backend::Cluster(c.clone()), c.schema.clone(), agent(), 16, Duration::from_secs(10)));
+    // A look, as if a minute ago.
+    let t = strata_server::inspect::tables(&svc).await.unwrap();
+    assert!(t["tables"][0]["shards"][0].get("reads_per_min").is_some(), "{t}");
+    for look in svc.tables_counts.lock().unwrap().iter_mut() {
+        look.0 -= 60_000;
+    }
+    // Every row read, twice: shard 0 holds 40 of them, shard 1 10.
+    for _ in 0..2 {
+        svc.query(QueryReq { sql: "SELECT id FROM products LIMIT 1000".into(), ..Default::default() }).await.unwrap();
+    }
+    *svc.tables_kept.lock().await = None;
+    let t = strata_server::inspect::tables(&svc).await.unwrap();
+    let p = t["tables"].as_array().unwrap().iter().find(|t| t["table"] == "products").cloned().unwrap_or_else(|| panic!("{t}"));
+    assert_eq!(p["rate_window_s"].as_u64(), Some(60), "{t}");
+    let shard = |i: usize| p["shards"][i]["reads_per_min"].as_f64().unwrap_or_else(|| panic!("shard {i} has no reads a minute: {t}"));
+    let all = p["reads_per_min"].as_f64().unwrap();
+    assert!(all > 0.0 && (shard(0) + shard(1) - all).abs() < 0.2, "the shards add up to the table: {t}");
+    assert!(shard(0) > shard(1), "{t}");
+    // The drill-down, over the same window.
+    let d = strata_server::inspect::answer(&svc, strata_server::inspect::Asked::of(&json!({"table": "products", "sample": 0})).unwrap()).await.unwrap();
+    assert_eq!(d["rates"]["window_s"].as_u64(), Some(60), "{}", d["rates"]);
+    assert_eq!(d["rates"]["reads_per_min"].as_f64(), Some(all), "{}", d["rates"]);
+    assert_eq!(d["rates"]["shards"]["0"]["reads_per_min"].as_f64(), Some(shard(0)), "{}", d["rates"]);
+}

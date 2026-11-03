@@ -476,6 +476,8 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     spawn_expirer(&svc, Duration::from_secs(5));
     spawn_sampler(&svc);
     spawn_watch(&svc);
+    // workdata: every table's counts a minute apart (rates on a first look).
+    crate::inspect::keep_looking(&svc);
     tokio::spawn(svc.clone().keep_models());
     svc.start_failover();
     // The cluster's keys: a coordinator takes them from its shards before
