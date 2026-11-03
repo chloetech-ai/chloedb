@@ -7,7 +7,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: es
-  namespace: compare
+  namespace: __NS__
 spec:
   clusterIP: None
   # Names resolve before a node is ready: the nodes find each other by name.
@@ -21,7 +21,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: es-__I__
-  namespace: compare
+  namespace: __NS__
   labels: {app: es, engine: es}
 spec:
   hostname: es-__I__
@@ -41,7 +41,7 @@ spec:
         - {name: xpack.ml.enabled, value: "false"}
         - {name: cluster.routing.allocation.disk.threshold_enabled, value: "false"}
         # Half the pod's memory, as Elastic recommends; the rest for the page cache.
-        - {name: ES_JAVA_OPTS, value: "-Xms1536m -Xmx1536m"}
+        - {name: ES_JAVA_OPTS, value: "-Xms__HEAP__ -Xmx__HEAP__"}
       ports:
         - {name: http, containerPort: 9200}
         - {name: transport, containerPort: 9300}

@@ -6,7 +6,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: typesense
-  namespace: compare
+  namespace: __NS__
 spec:
   clusterIP: None
   publishNotReadyAddresses: true
@@ -18,7 +18,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: typesense-0
-  namespace: compare
+  namespace: __NS__
   labels: {app: typesense, engine: typesense}
 spec:
   hostname: typesense-0
@@ -28,7 +28,7 @@ spec:
     - name: typesense
       image: typesense/typesense:30.2
       imagePullPolicy: IfNotPresent
-      args: [--data-dir, /data, --api-key, compare, --thread-pool-size, "6"]
+      args: [--data-dir, /data, --api-key, compare, --thread-pool-size, "__TS_THREADS__"]
       readinessProbe:
         httpGet: {path: /health, port: api}
         periodSeconds: 2

@@ -8,7 +8,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: strata
-  namespace: compare
+  namespace: __NS__
 spec:
   clusterIP: None
   publishNotReadyAddresses: true
@@ -21,7 +21,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: strata-__I__
-  namespace: compare
+  namespace: __NS__
   labels: {app: strata-shard, engine: strata}
 spec:
   hostname: strata-__I__
@@ -29,7 +29,7 @@ spec:
   nodeName: __NODE__
   containers:
     - name: strata
-      image: strata-server:compare
+      image: __IMAGE__
       imagePullPolicy: IfNotPresent
       args: [--db, /local/__COLL__.shard__I__of2.strata, --listen, "0.0.0.0:7700", --grpc, "0.0.0.0:7701"]
       # Strata serves beyond loopback only with a token: a random one per

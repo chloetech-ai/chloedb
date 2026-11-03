@@ -19,10 +19,21 @@
 #   compare.sh run es --kinds "hybrid (RRF),hybrid (weighted)" --paid --label es-trial
 # Reports land in STRATA_WORK/compare (/data/compare in the cluster; OUT=/data/x for another).
 # COLLECTION=nq-1000k (default quora) picks the collection under STRATA_DATA for every step.
+#
+# Another cluster than kind's (fanout.sh runs every engine on DigitalOcean
+# this way): CONTEXT (the kubectl context, default kind-$CLUSTER), NS, NODES
+# (the two data nodes, space-separated), CLIENT_NODE, IMAGE (pulled, not
+# built: `image` then only makes the namespace) and the budgets below can
+# all be set in the environment. Each node needs /beir/$COLLECTION; reports
+# land on the client node's /data, and STRATA_WORK is then a directory here
+# that gets the CPU and disk lines.
 set -euo pipefail
 
 CLUSTER=${CLUSTER:-strata}
-IMAGE=strata-server:compare
+CONTEXT=${CONTEXT:-kind-$CLUSTER}
+KIND=0
+[ "$CONTEXT" = "kind-$CLUSTER" ] && KIND=1
+IMAGE=${IMAGE:-strata-server:compare}
 ES_IMAGE=elasticsearch:9.5.5
 SOLR_IMAGE=solr:10.1.0
 OS_IMAGE=opensearchproject/opensearch:3.9.0
@@ -32,36 +43,49 @@ REDPANDA_IMAGE=redpandadata/redpanda:v25.2.9
 MORE_IMAGES=(getmeili/meilisearch:v1.56.0 typesense/typesense:30.2 manticoresearch/manticore:29.9.0 qdrant/qdrant:v1.20.0
     semitechnologies/weaviate:1.39.14 milvusdb/milvus:v2.6.26 paradedb/paradedb:0.26.4-pg17 redis:8.8.4)
 MORE="meili typesense manticore qdrant weaviate milvus paradedb postgres redis"
-NS=compare
+NS=${NS:-compare}
 HERE=$(cd "$(dirname "$0")" && pwd)
-K="kubectl --context kind-$CLUSTER -n $NS"
+K="kubectl --context $CONTEXT -n $NS"
 # Data pods on the first two workers; clients (and Strata's coordinator) on the third.
-NODES=(strata-worker strata-worker2)
-CLIENT_NODE=strata-worker3
+read -r -a NODES <<<"${NODES:-strata-worker strata-worker2}"
+CLIENT_NODE=${CLIENT_NODE:-strata-worker3}
 # Every engine: 3 CPUs and 6 GiB in all. Elasticsearch and Solr: two data
 # nodes of 1.5 CPUs and 3 GiB. Strata: two shards of 1 CPU and 2.5 GiB and a
 # coordinator of 1 CPU and 1 GiB. Loading gets the whole budget
 # too: Elasticsearch and Solr on their two data nodes, Strata one shard's
 # build job at a time.
 # SHARD_CPU and COORD_CPU may be set to split Strata's 3 CPUs otherwise.
-DATA_CPU=1500m DATA_MEM=3Gi
-BUILD_CPU=3 BUILD_MEM=6Gi
-SHARD_CPU=${SHARD_CPU:-1} SHARD_MEM=2560Mi
-COORD_CPU=${COORD_CPU:-1} COORD_MEM=1Gi
+# BUILD_PARALLEL=1 builds both shards at once, each with its node's share
+# (a node then holds BUILD_CPU and BUILD_MEM, not the whole budget).
+DATA_CPU=${DATA_CPU:-1500m} DATA_MEM=${DATA_MEM:-3Gi}
+BUILD_CPU=${BUILD_CPU:-3} BUILD_MEM=${BUILD_MEM:-6Gi} BUILD_THREADS=${BUILD_THREADS:-3} BUILD_PARALLEL=${BUILD_PARALLEL:-0}
+SHARD_CPU=${SHARD_CPU:-1} SHARD_MEM=${SHARD_MEM:-2560Mi}
+COORD_CPU=${COORD_CPU:-1} COORD_MEM=${COORD_MEM:-1Gi}
 # Vespa: vespa-0 (config server, cluster controller and the container that
 # answers queries and takes documents) on the clients' node, as Strata's
 # coordinator, and a content node on each data node; 1 CPU each, 6 GiB in all.
-VESPA_CONFIG_CPU=1 VESPA_CONFIG_MEM=2304Mi VESPA_CONTAINER_HEAP=768m
-VESPA_CONTENT_CPU=1 VESPA_CONTENT_MEM=1920Mi
+VESPA_CONFIG_CPU=${VESPA_CONFIG_CPU:-1} VESPA_CONFIG_MEM=${VESPA_CONFIG_MEM:-2304Mi} VESPA_CONTAINER_HEAP=${VESPA_CONTAINER_HEAP:-768m}
+VESPA_CONTENT_CPU=${VESPA_CONTENT_CPU:-1} VESPA_CONTENT_MEM=${VESPA_CONTENT_MEM:-1920Mi}
 # The one-node engines: the whole budget in one pod, on the first data node.
-ONE_CPU=3 ONE_MEM=6Gi
+ONE_CPU=${ONE_CPU:-3} ONE_MEM=${ONE_MEM:-6Gi}
+# What the engines are told of that budget (heaps, threads, memory caps),
+# written for 3 CPUs and 6 GiB; another budget sets them to match.
+ES_HEAP=${ES_HEAP:-1536m} OS_HEAP=${OS_HEAP:-1536m} SOLR_HEAP=${SOLR_HEAP:-1g}
+ONE_THREADS=${ONE_THREADS:-3} TS_THREADS=${TS_THREADS:-6} MEILI_MEM=${MEILI_MEM:-3 GiB} REDIS_MAXMEM=${REDIS_MAXMEM:-5500mb}
+GOMEMLIMIT_ONE=${GOMEMLIMIT_ONE:-5GiB} PG_SHARED=${PG_SHARED:-1536MB} PG_CACHE=${PG_CACHE:-4GB} PG_MAINT=${PG_MAINT:-2560MB}
+PG_PAR=${PG_PAR:-2} PG_WORKERS=${PG_WORKERS:-8}
+# engine-compare load's bulk requests in flight (its default is 4).
+LOAD_CLIENTS=${LOAD_CLIENTS:-4}
 OUT=${OUT:-/data/compare}
 # The collection under STRATA_DATA (prepare_beir.py or prepare_beir_local.py), e.g. nq-1000k.
 COLLECTION=${COLLECTION:-quora}
 
 # render FILE I NODE CPU MEM [ZK|ROLE]: a manifest for node I.
 render() {
-    sed -e "s/__I__/$2/g" -e "s/__NODE__/$3/g" -e "s/__CPU__/$4/g" -e "s/__MEM__/$5/g" -e "s|__ZK__|${6:-}|g" -e "s|__ROLE__|${6:-}|g" -e "s|__COLL__|$COLLECTION|g" "$HERE/$1"
+    sed -e "s/__I__/$2/g" -e "s/__NODE__/$3/g" -e "s/__CPU__/$4/g" -e "s/__MEM__/$5/g" -e "s|__ZK__|${6:-}|g" -e "s|__ROLE__|${6:-}|g" -e "s|__COLL__|$COLLECTION|g" \
+        -e "s|__NS__|$NS|g" -e "s|__IMAGE__|$IMAGE|g" -e "s|__HEAP__|${HEAP:-}|g" -e "s|__THREADS__|$ONE_THREADS|g" -e "s|__TS_THREADS__|$TS_THREADS|g" \
+        -e "s|__MEILI_MEM__|$MEILI_MEM|g" -e "s|__REDIS_MAXMEM__|$REDIS_MAXMEM|g" -e "s|__GOMEMLIMIT__|$GOMEMLIMIT_ONE|g" -e "s|__PG_SHARED__|$PG_SHARED|g" \
+        -e "s|__PG_CACHE__|$PG_CACHE|g" -e "s|__PG_MAINT__|$PG_MAINT|g" -e "s|__PG_PAR__|$PG_PAR|g" -e "s|__PG_WORKERS__|$PG_WORKERS|g" "$HERE/$1"
 }
 
 # Strata's token: random, made once per cluster and kept in the secret
@@ -92,6 +116,7 @@ spec:
     spec:
       restartPolicy: Never
       nodeName: $node
+      tolerations: [{operator: Exists}]
       containers:
         - name: compare
           image: $IMAGE
@@ -110,13 +135,49 @@ spec:
         - name: beir
           hostPath: {path: /beir, type: Directory}
         - name: data
-          hostPath: {path: /data, type: Directory}
+          hostPath: {path: /data, type: DirectoryOrCreate}
         - name: local
           hostPath: {path: /var/local/compare, type: DirectoryOrCreate}
 EOF
     until phase=$($K get pod -l "job-name=$name" -o jsonpath='{.items[0].status.phase}' 2>/dev/null) && [ -n "$phase" ] && [ "$phase" != Pending ]; do sleep 1; done
-    $K logs -f "job/$name"
-    $K wait --for=condition=complete "job/$name" --timeout=60s >/dev/null
+    # A remote API server may cut a log followed for hours: follow it again
+    # from where it stopped until the Job has succeeded or failed.
+    local since="" s
+    while :; do
+        $K logs -f "job/$name" ${since:+--since-time="$since"} || true
+        since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        s=$($K get job "$name" -o jsonpath='{.status.succeeded}/{.status.failed}' 2>/dev/null || echo "?")
+        case $s in
+        1/*) return 0 ;;
+        */[1-9]*) echo "job $name failed" >&2; return 1 ;;
+        esac
+        sleep 5
+    done
+}
+
+# node_cat NODE PATH: a file on a node's own disk, by docker on kind and by
+# a short pod (the image already on every node) elsewhere.
+node_cat() {
+    if [ $KIND = 1 ]; then
+        docker exec "$1" cat "$2"
+        return
+    fi
+    local name="cat-$(date +%s%N | tail -c 9)"
+    $K apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Pod
+metadata: {name: $name}
+spec:
+  nodeName: $1
+  tolerations: [{operator: Exists}]
+  containers:
+    - {name: c, image: $IMAGE, imagePullPolicy: IfNotPresent, command: [sleep, "600"], volumeMounts: [{name: f, mountPath: /f, readOnly: true}]}
+  volumes:
+    - {name: f, hostPath: {path: $(dirname "$2")}}
+EOF
+    $K wait --for=condition=Ready "pod/$name" --timeout=300s >/dev/null
+    $K exec "$name" -- cat "/f/$(basename "$2")"
+    $K delete pod "$name" --wait=false >/dev/null
 }
 
 urls() {
@@ -170,6 +231,11 @@ cmd=${1:-}
 shift || true
 case "$cmd" in
 image)
+    if [ $KIND = 0 ]; then
+        # Another cluster pulls IMAGE and the engines' pinned images itself.
+        kubectl --context "$CONTEXT" create namespace "$NS" --dry-run=client -o yaml | kubectl --context "$CONTEXT" apply -f -
+        exit 0
+    fi
     docker build -f "$HERE/../Dockerfile" -t "$IMAGE" "$HERE/../../.."
     nodes=$(IFS=,; echo "${NODES[*]},$CLIENT_NODE")
     kind load docker-image "$IMAGE" --name "$CLUSTER" --nodes "$nodes"
@@ -177,16 +243,26 @@ image)
     kind load docker-image "$VESPA_IMAGE" --name "$CLUSTER" --nodes "$nodes"
     kind load docker-image "$REDPANDA_IMAGE" --name "$CLUSTER" --nodes "$CLIENT_NODE"
     kind load docker-image "${MORE_IMAGES[@]}" --name "$CLUSTER" --nodes "${NODES[0]}"
-    kubectl --context "kind-$CLUSTER" create namespace "$NS" --dry-run=client -o yaml | kubectl --context "kind-$CLUSTER" apply -f -
+    kubectl --context "$CONTEXT" create namespace "$NS" --dry-run=client -o yaml | kubectl --context "$CONTEXT" apply -f -
     ;;
 build)
     # One shard after the other, each on the node that will serve it, with
     # the engine's whole budget: a shard's build holds its documents in
     # memory, and two at once in 3 GiB each were killed for lack of memory.
-    for i in 0 1; do
-        job "build-s$i" "${NODES[$i]}" "$BUILD_CPU" "$BUILD_MEM" build --shard "$i" --of 2 --out "/local/$COLLECTION.shard${i}of2.strata" --threads 3
-        docker exec "${NODES[$i]}" cat "/var/local/compare/$COLLECTION.shard${i}of2.strata.build.json" >"${STRATA_WORK:?}/${OUT#/data/}/build-strata-s$i.json"
-    done
+    # With BUILD_PARALLEL=1 both at once, each with its node's share.
+    build_shard() {
+        job "build-s$1" "${NODES[$1]}" "$BUILD_CPU" "$BUILD_MEM" build --shard "$1" --of 2 --out "/local/$COLLECTION.shard${1}of2.strata" --threads "$BUILD_THREADS"
+        node_cat "${NODES[$1]}" "/var/local/compare/$COLLECTION.shard${1}of2.strata.build.json" >"${STRATA_WORK:?}/${OUT#/data/}/build-strata-s$1.json"
+    }
+    if [ "$BUILD_PARALLEL" = 1 ]; then
+        build_shard 0 >"${STRATA_WORK:?}/${OUT#/data/}/build-s0.log" 2>&1 &
+        b0=$!
+        build_shard 1 >"${STRATA_WORK:?}/${OUT#/data/}/build-s1.log" 2>&1 &
+        b1=$!
+        wait $b0 && wait $b1
+    else
+        for i in 0 1; do build_shard $i; done
+    fi
     ;;
 up)
     if is_more "${1:?up ENGINE}"; then
@@ -205,13 +281,13 @@ up)
         $K wait --for=condition=Ready pod/strata-0 pod/strata-1 pod/strata-coordinator --timeout=300s
         ;;
     es)
-        render es.yaml 0 "${NODES[0]}" "$DATA_CPU" "$DATA_MEM" | $K apply -f -
-        render es.yaml 1 "${NODES[1]}" "$DATA_CPU" "$DATA_MEM" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
+        HEAP=$ES_HEAP render es.yaml 0 "${NODES[0]}" "$DATA_CPU" "$DATA_MEM" | $K apply -f -
+        HEAP=$ES_HEAP render es.yaml 1 "${NODES[1]}" "$DATA_CPU" "$DATA_MEM" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
         $K wait --for=condition=Ready pod/es-0 pod/es-1 --timeout=300s
         ;;
     os)
-        render os.yaml 0 "${NODES[0]}" "$DATA_CPU" "$DATA_MEM" | $K apply -f -
-        render os.yaml 1 "${NODES[1]}" "$DATA_CPU" "$DATA_MEM" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
+        HEAP=$OS_HEAP render os.yaml 0 "${NODES[0]}" "$DATA_CPU" "$DATA_MEM" | $K apply -f -
+        HEAP=$OS_HEAP render os.yaml 1 "${NODES[1]}" "$DATA_CPU" "$DATA_MEM" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
         $K wait --for=condition=Ready pod/os-0 pod/os-1 --timeout=300s
         ;;
     vespa)
@@ -232,9 +308,9 @@ up)
         until $K exec vespa-0 -- curl -sf http://localhost:8080/state/v1/health 2>/dev/null | grep -q '"code" : "up"'; do sleep 2; done
         ;;
     solr)
-        render solr.yaml 0 "${NODES[0]}" "$DATA_CPU" "$DATA_MEM" "" | $K apply -f -
+        HEAP=$SOLR_HEAP render solr.yaml 0 "${NODES[0]}" "$DATA_CPU" "$DATA_MEM" "" | $K apply -f -
         $K wait --for=condition=Ready pod/solr-0 --timeout=300s
-        render solr.yaml 1 "${NODES[1]}" "$DATA_CPU" "$DATA_MEM" "solr-0.solr.$NS.svc.cluster.local:9983" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
+        HEAP=$SOLR_HEAP render solr.yaml 1 "${NODES[1]}" "$DATA_CPU" "$DATA_MEM" "solr-0.solr.$NS.svc.cluster.local:9983" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
         $K wait --for=condition=Ready pod/solr-1 --timeout=300s
         ;;
     esac
@@ -243,7 +319,7 @@ load)
     e=${1:?load ENGINE}
     shift
     cpu "$e" load-before
-    job "load-$e" "$CLIENT_NODE" "" "" load --engine "$e" --url "$(urls "$e")" --out "$OUT" "$@"
+    job "load-$e" "$CLIENT_NODE" "" "" load --engine "$e" --url "$(urls "$e")" --clients "$LOAD_CLIENTS" --out "$OUT" "$@"
     cpu "$e" load-after
     # The one-node engines' data directories on disk (Redis keeps everything in memory: load-redis.json has its memory).
     if is_more "$e" && [ "$e" != redis ]; then
