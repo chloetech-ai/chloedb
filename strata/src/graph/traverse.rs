@@ -50,6 +50,17 @@ pub trait Adjacency {
     /// Appends the neighbours of `n` with edge weights: along the edges'
     /// direction, or against it when `reverse`.
     fn neighbors(&mut self, n: Node, reverse: bool, out: &mut Vec<(Node, f32)>) -> Result<()>;
+    /// [`Adjacency::neighbors`], allowed to stop once the weights of the
+    /// neighbours it has appended add up to more than `enough`, in the
+    /// order `neighbors` gives them; returns whether `out` holds them all.
+    /// A walk that only needs to know whether a row's weighted degree
+    /// passes a bound (PageRank's push test) reads no further. By default,
+    /// all of them.
+    fn neighbors_upto(&mut self, n: Node, reverse: bool, enough: f64, out: &mut Vec<(Node, f32)>) -> Result<bool> {
+        let _ = enough;
+        self.neighbors(n, reverse, out)?;
+        Ok(true)
+    }
     /// Whether a traversal may continue through `n` (the `through`
     /// predicate; seeds are always expanded).
     fn passable(&mut self, _n: Node) -> bool {
@@ -214,7 +225,9 @@ pub fn ppr(adj: &mut dyn Adjacency, seeds: &[(Node, f64)], reverse: bool, alpha:
     let total: f64 = seeds.iter().map(|s| s.1.max(0.0)).sum();
     let mut p: NodeMap<f64> = node_map();
     let mut r: NodeMap<f64> = node_map();
-    let mut nbrs: NodeMap<(Vec<(Node, f32)>, f64)> = node_map();
+    // Each row's neighbours as read so far, their weighted degree, and
+    // whether that is all of them.
+    let mut nbrs: NodeMap<(Vec<(Node, f32)>, f64, bool)> = node_map();
     let mut queue: VecDeque<Node> = VecDeque::new();
     let mut queued: NodeMap<()> = node_map();
     if total <= 0.0 {
@@ -238,14 +251,35 @@ pub fn ppr(adj: &mut dyn Adjacency, seeds: &[(Node, f64)], reverse: bool, alpha:
         if ru < eps {
             continue;
         }
-        if !nbrs.contains_key(&u) {
-            let mut list = Vec::with_capacity(16);
-            adj.neighbors(u, reverse, &mut list)?;
-            adj.hold(NODE_BYTES + (list.capacity() * std::mem::size_of::<(Node, f32)>()) as u64)?;
+        // A row is pushed once ru ≥ eps · max(deg, 1). Most rows popped are
+        // not, so their neighbours are read only until their weights pass
+        // ru / eps (each neighbour read resolves a key): a degree past that
+        // already says no, whatever the rest adds. A row popped again with
+        // more residual reads again, at least twice as far, so that no row
+        // reads more than about three times its list; a row pushed reads
+        // them all.
+        for last in [false, true] {
+            let read = match nbrs.get(&u) {
+                None => None,
+                Some((_, deg, full)) if !*full && !(ru < eps * deg.max(1.0)) => nbrs.remove(&u),
+                Some(_) => break,
+            };
+            let enough = match (&read, last) {
+                (_, true) => f64::INFINITY,
+                (None, false) => ru / eps,
+                (Some((_, deg, _)), false) => (ru / eps).max(2.0 * deg),
+            };
+            let first = read.is_none();
+            let mut list = read.map_or_else(|| Vec::with_capacity(16), |(l, _, _)| l);
+            let had = if first { 0 } else { list.capacity() };
+            list.clear();
+            let full = adj.neighbors_upto(u, reverse, enough, &mut list)?;
+            let grew = (list.capacity().saturating_sub(had) * std::mem::size_of::<(Node, f32)>()) as u64;
+            adj.hold(grew + if first { NODE_BYTES } else { 0 })?;
             let deg = list.iter().map(|x| x.1 as f64).sum::<f64>();
-            nbrs.insert(u, (list, deg));
+            nbrs.insert(u, (list, deg, full));
         }
-        let (list, deg) = &nbrs[&u];
+        let (list, deg, _) = &nbrs[&u];
         if ru < eps * deg.max(1.0) {
             continue;
         }
@@ -332,6 +366,73 @@ mod tests {
     }
 
     /// Power iteration on a small graph matches forward push.
+    /// A weighted graph that reads neighbours only as far as asked
+    /// ([`Adjacency::neighbors_upto`]), counting the neighbours it reads.
+    struct W(Vec<Vec<(u64, f32)>>, bool, u64);
+    impl Adjacency for W {
+        fn neighbors(&mut self, n: Node, _reverse: bool, out: &mut Vec<(Node, f32)>) -> Result<()> {
+            self.2 += self.0[n as usize].len() as u64;
+            out.extend_from_slice(&self.0[n as usize]);
+            Ok(())
+        }
+        fn neighbors_upto(&mut self, n: Node, reverse: bool, enough: f64, out: &mut Vec<(Node, f32)>) -> Result<bool> {
+            if !self.1 {
+                self.neighbors(n, reverse, out)?;
+                return Ok(true);
+            }
+            let mut sum = 0.0;
+            for &(v, w) in &self.0[n as usize] {
+                self.2 += 1;
+                out.push((v, w));
+                sum += w as f64;
+                if sum > enough {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn ppr_reading_neighbours_as_far_as_needed_scores_the_same() {
+        // A random weighted graph with hubs, walked from a few seeds at
+        // several thresholds: the same scores, pushes and edges whether the
+        // walk reads whole lists or stops where the push test is decided,
+        // and far fewer neighbours read.
+        let mut state = 7u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let n = 2000u64;
+        let g: Vec<Vec<(u64, f32)>> = (0..n)
+            .map(|u| {
+                let deg = if u % 50 == 0 { 300 } else { 2 + next() % 20 };
+                (0..deg).map(|_| (next() % n, 1.0 + (next() % 4) as f32)).collect()
+            })
+            .collect();
+        for eps in [1e-3, 1e-4, 1e-6] {
+            let seeds = [(1, 1.0), (50, 0.5), (777, 2.0)];
+            let mut full = W(g.clone(), false, 0);
+            let mut lazy = W(g.clone(), true, 0);
+            let a = ppr(&mut full, &seeds, false, 0.15, eps, u64::MAX).unwrap();
+            let b = ppr(&mut lazy, &seeds, false, 0.15, eps, u64::MAX).unwrap();
+            assert_eq!((a.pushes, a.edges), (b.pushes, b.edges), "eps {eps}");
+            let mut sa: Vec<(u64, f64)> = a.scores.into_iter().collect();
+            let mut sb: Vec<(u64, f64)> = b.scores.into_iter().collect();
+            sa.sort_by_key(|x| x.0);
+            sb.sort_by_key(|x| x.0);
+            assert_eq!(sa, sb, "eps {eps}");
+            eprintln!("eps {eps}: {} read lazily, {} in full", lazy.2, full.2);
+            assert!(lazy.2 <= 3 * full.2, "eps {eps}: {} read lazily, {} in full", lazy.2, full.2);
+            if eps == 1e-3 {
+                assert!(lazy.2 * 2 < full.2, "{} read lazily, {} in full", lazy.2, full.2);
+            }
+        }
+    }
+
     #[test]
     fn ppr_matches_power_iteration() {
         let g = vec![vec![1, 2], vec![2], vec![0, 3], vec![0], vec![1, 3]];
