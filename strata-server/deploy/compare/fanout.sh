@@ -51,7 +51,9 @@ API=https://api.digitalocean.com/v2
 DIGITALOCEAN_TOKEN=${DIGITALOCEAN_TOKEN:-${digitalocean:-${DIGITALOCEAN:-}}}
 NAME=${NAME:-strata-fanout}
 REGION=${REGION:-sfo2}
-BASE_SIZE=${BASE_SIZE:-s-4vcpu-8gb}
+# The base node: 16 GB, as preparing 10M MS MARCO (a Parquet shard's row
+# groups of vectors at a time) took more than an 8 GB node had left.
+BASE_SIZE=${BASE_SIZE:-s-8vcpu-16gb}
 SHARDED_SIZE=${SHARDED_SIZE:-m-4vcpu-32gb}
 ONE_SIZE=${ONE_SIZE:-m-8vcpu-64gb}
 CLIENT_SIZE=${CLIENT_SIZE:-c-8}
@@ -301,8 +303,10 @@ runs() { # ENGINE
 steps_of() { # ENGINE: compare.sh's steps, one per line
     case $1 in
     strata) printf '%s\n' "build" "up strata" "$(runs strata)" "writes strata" "stream strata" "down strata" ;;
-    es) printf '%s\n' "up es" "load es" "$(runs es)" "writes es" "stream es" "trial" \
-        "run es --kinds hybrid (RRF),hybrid (weighted) --paid --label es-trial" "down es" ;;
+    # The trial licence's run before the writes, on the index as loaded (at
+    # 1M it ran after them, on segments the writes and the stream had churned).
+    es) printf '%s\n' "up es" "load es" "$(runs es)" "trial" \
+        "run es --kinds hybrid (RRF),hybrid (weighted) --paid --label es-trial" "writes es" "stream es" "down es" ;;
     os | solr | vespa) printf '%s\n' "up $1" "load $1" "$(runs "$1")" "writes $1" "stream $1" "down $1" ;;
     *) printf '%s\n' "up $1" "load $1" "$(runs "$1")" "down $1" ;;
     esac
