@@ -27,6 +27,7 @@ pub mod cloud;
 pub mod digitalocean;
 pub mod auth;
 pub mod coord;
+pub mod contain;
 pub mod cores;
 pub mod demo;
 pub mod events;

@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as Json};
@@ -149,6 +149,121 @@ async fn no_data_does_not_resolve_an_alert() {
     quiet.extend(series(t3, 150, |_| json!({"queries": 100, "query_errors": 0, "error_ratio": 0.0})));
     let changes = svc.alerts.check(&quiet, t3);
     assert!(changes.iter().any(|e| e.rule == "errors" && e.state == "resolved"), "{changes:?}");
+}
+
+/// A route takes the alerts of its severities: the message names the
+/// cluster, what fired, its value against its rule, the description, the
+/// runbook and a link; resolving (an edit of the rule too) says so; each
+/// delivery is counted, and a route can be tried.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_route_is_told_what_fired_and_resolved() {
+    let got: Arc<Mutex<Vec<Json>>> = Arc::default();
+    let keep = got.clone();
+    let hook = axum::Router::new().route(
+        "/hook/secret",
+        axum::routing::post(move |axum::Json(j): axum::Json<Json>| {
+            let keep = keep.clone();
+            async move {
+                keep.lock().unwrap().push(j);
+                "ok"
+            }
+        }),
+    );
+    let hl = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hurl = format!("http://127.0.0.1:{}", hl.local_addr().unwrap().port());
+    tokio::spawn(async move { axum::serve(hl, hook).await });
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut svc = service(dir.path());
+    svc.identity.name = Some("prod/search".into());
+    svc.identity.public_url = Some("https://cc.example.com/".into());
+    let svc = Arc::new(svc);
+    let base = http(svc.clone()).await;
+    let routes = json!({"routes": [{"name": "pager", "url": format!("{hurl}/hook/secret"), "severities": ["critical"]}, {"name": "chat", "url": format!("{hurl}/nowhere"), "severities": ["info"]}]});
+    let (status, j) = call(&base, "PUT", "/v1/alerts/routes", Some(routes)).await;
+    assert_eq!(status, 200, "{j}");
+    assert_eq!(j["routes"][0]["url"], format!("{hurl}/..."), "a webhook's path is its secret: {j}");
+    let rule = json!({"id": "slow", "name": "Slow search", "metric": "p99_ms", "op": ">", "threshold": 100.0, "eval": "mean", "window_s": 60,
+        "severity": "critical", "description": "Searches are slow.", "runbook": "https://runbook.example.com/slow"});
+    assert_eq!(call(&base, "PUT", "/v1/alerts/rules", Some(json!({"rules": [rule]}))).await.0, 200);
+
+    let t = strata_server::telemetry::now_ms();
+    let changes = svc.alerts.check(&series(t, 31, |_| json!({"p99_ms": 300.0})), t);
+    alerts::deliver(&svc, changes);
+    let wait = |n: usize| {
+        let got = got.clone();
+        async move {
+            let t0 = Instant::now();
+            while got.lock().unwrap().len() < n {
+                assert!(t0.elapsed() < Duration::from_secs(10), "{n} messages");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    };
+    wait(1).await;
+    let text = got.lock().unwrap()[0]["text"].as_str().unwrap().to_string();
+    assert_eq!(text, "[strata FIRING critical] Slow search on prod/search: p99_ms = 300 (> 100, mean over 60 s). Searches are slow. Runbook: https://runbook.example.com/slow https://cc.example.com/#/alert/slow");
+    assert_eq!(got.lock().unwrap()[0]["alert"]["rule"], "slow");
+
+    // An edit of the rule resolves what it fired, and says who edited it.
+    let mut r2 = json!({"id": "slow", "name": "Slow search", "metric": "p99_ms", "op": ">", "threshold": 200.0, "eval": "mean", "window_s": 60, "severity": "critical"});
+    r2["runbook"] = json!("https://runbook.example.com/slow");
+    let (status, j) = call(&base, "PUT", "/v1/alerts/rules", Some(json!({"rules": [r2]}))).await;
+    assert_eq!(status, 200, "{j}");
+    wait(2).await;
+    let text = got.lock().unwrap()[1]["text"].as_str().unwrap().to_string();
+    assert!(text.starts_with("[strata RESOLVED critical] Slow search on prod/search: p99_ms = 300 after "), "{text}");
+    assert!(text.contains("(the rule was edited by open)"), "{text}");
+    // The audit entry holds the rule before and after.
+    let (_, audit) = call(&base, "GET", "/v1/admin/audit", None).await;
+    let e = audit["entries"].as_array().unwrap().iter().find(|e| e["route"] == "/v1/alerts/rules").expect("audited");
+    assert_eq!(e["before"]["slow"]["threshold"], 100.0, "{e}");
+    assert_eq!(e["after"]["slow"]["threshold"], 200.0, "{e}");
+
+    let (_, a) = call(&base, "GET", "/v1/alerts", None).await;
+    let pager = a["routes"].as_array().unwrap().iter().find(|r| r["name"] == "pager").unwrap();
+    assert_eq!(pager["sent"], 2, "{pager}");
+    let (status, j) = call(&base, "POST", "/v1/alerts/routes/pager/test", Some(json!({}))).await;
+    assert_eq!((status, j["ok"].as_bool()), (200, Some(true)), "{j}");
+    let (status, j) = call(&base, "POST", "/v1/alerts/routes/chat/test", Some(json!({}))).await;
+    assert_eq!((status, j["ok"].as_bool()), (200, Some(false)), "a 404 is a failed delivery: {j}");
+    assert!(got.lock().unwrap()[2]["text"].as_str().unwrap().starts_with("[strata TEST]"));
+}
+
+/// A backtest replays a rule over the log store's minutes of load (7
+/// days at most), and says when it would have fired.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_backtest_replays_a_rule_over_the_load_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut svc = service(dir.path());
+    let store = strata_server::logstore::LogStore::open(strata_server::logstore::LogOptions { capture: false, ..strata_server::logstore::LogOptions::new(dir.path().join("a.logs"), "n1".into()) }).unwrap();
+    svc.log_store = Some(store.clone());
+    let svc = Arc::new(svc);
+    let base = http(svc.clone()).await;
+    let now = strata_server::telemetry::now_ms() / 60_000 * 60_000;
+    // Two days of minutes; an hour of slow ones a day ago.
+    let loads: Vec<strata_server::logstore::Load> = (0..2 * 1440u64)
+        .map(|m| {
+            let ts_ms = now - (2 * 1440 - m) * 60_000;
+            let slow = (1440..1500).contains(&m);
+            strata_server::logstore::Load { ts_ms, role: "standalone".into(), qps: 10.0, cores: 4, p99_ms: Some(if slow { 900.0 } else { 20.0 }), ..Default::default() }
+        })
+        .collect();
+    store.write_loads(&loads).unwrap();
+    let rule = json!({"id": "p", "name": "p", "metric": "p99_ms", "op": ">", "threshold": 500.0, "eval": "mean", "window_s": 600});
+    let (status, j) = call(&base, "POST", "/v1/alerts/backtest", Some(json!({"rule": rule, "from": now - 3 * 86_400_000, "to": now}))).await;
+    assert_eq!(status, 200, "{j}");
+    assert_eq!(j["source"], "load", "{j}");
+    let fired = j["fired"].as_array().unwrap();
+    assert_eq!(fired.len(), 1, "{j}");
+    let (from, to) = (fired[0]["from_ms"].as_u64().unwrap(), fired[0]["to_ms"].as_u64().unwrap());
+    let slow_from = now - (2 * 1440 - 1440) * 60_000;
+    assert!(from >= slow_from && from < slow_from + 600_000, "{from} {slow_from}");
+    assert!(to > slow_from + 3_600_000 - 60_000, "{to}");
+    // A metric the load rows do not hold says so.
+    let rule = json!({"id": "w", "name": "w", "metric": "write_queue", "op": ">", "threshold": 1.0});
+    let (status, j) = call(&base, "POST", "/v1/alerts/backtest", Some(json!({"rule": rule, "from": now - 86_400_000, "to": now}))).await;
+    assert_eq!(status, 400, "{j}");
 }
 
 // ---------------------------------------------------- a cluster's copies

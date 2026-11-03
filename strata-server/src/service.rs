@@ -385,6 +385,8 @@ pub struct Service {
     pub keys: Arc<Keys>,
     pub audit: Audit,
     pub alerts: Alerts,
+    /// Contain rules, applied at admission ([`crate::contain`]): alerts agent.
+    pub contain: crate::contain::Contain,
     /// The cloud view's AWS credentials and machine catalogues ([`crate::aws`]).
     pub aws: Arc<crate::aws::Aws>,
     /// The cloud view's DigitalOcean token and size catalogues
@@ -566,6 +568,7 @@ impl Service {
             keys: Arc::new(Keys::memory()),
             audit: Audit::new(None).expect("an audit log in memory"),
             alerts: Alerts::new(None, None).expect("the default alert rules"),
+            contain: Default::default(),
             aws: Arc::new(crate::aws::Aws::memory()),
             digitalocean: Arc::new(crate::digitalocean::DigitalOcean::memory()),
             clouds: Arc::new(crate::cloud::clusters::Clusters::memory()),
@@ -1947,6 +1950,8 @@ impl Service {
     /// changed since (through another coordinator, or on that shard), the
     /// coordinator asks again and plans once more.
     pub async fn query(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
+        // alerts agent: Contain rules, at admission ([`crate::contain`]).
+        let _turn = self.contained(&req).await?;
         let again = (matches!(self.backend, Backend::Cluster(_)) && req.plan.is_none() && req.sql.to_ascii_lowercase().contains("rank_profile")).then(|| req.clone());
         match (self.query_once(req).await, again) {
             (Err(e), Some(req)) if profile::is_stale(&e.message) => {
@@ -2399,6 +2404,27 @@ impl Service {
     }
 
     /// Counts a query refused for want of a slot, and says so (429).
+    /// Admits a client's query by the Contain rules ([`crate::contain`]),
+    /// or refuses it (429 naming the rule), counted and kept as refused.
+    /// A coordinator's call as a shard was admitted by the coordinator.
+    async fn contained(self: &Arc<Self>, req: &QueryReq) -> Result<Option<crate::contain::Admitted>, ApiError> {
+        if req.shard || self.contain.is_empty() {
+            return Ok(None);
+        }
+        let t0 = Instant::now();
+        let caller = telemetry::caller();
+        let (key, key_id) = (caller.as_ref().and_then(|c| c.key.as_deref()), caller.as_ref().and_then(|c| c.key_id.as_deref()));
+        match self.contain.admit(&telemetry::fingerprint(&req.sql), key, key_id, self.timeout_of(req.timeout_ms)).await {
+            Ok(a) => Ok(Some(a)),
+            Err(e) => {
+                let secs = t0.elapsed().as_secs_f64();
+                self.metrics.query("contained", "refused", secs);
+                self.query_log.add(&req.sql, "contained", "refused", secs, 0, false, Some(&e.message), false, None, false, &self.meta(req));
+                Err(e)
+            }
+        }
+    }
+
     fn rejected(&self, kind: &'static str, t0: Instant) -> ApiError {
         self.metrics.query(kind, "refused", t0.elapsed().as_secs_f64());
         too_many()
