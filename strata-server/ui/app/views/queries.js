@@ -12,7 +12,7 @@ import {
   state, link, when, can, timeRange, poll, paused, isCoord, copyName, OUTCOME_ORDER, outcomeOf, outcomePill, outcomeBar, split, whoChips, paramsText, isOwn,
   shortFp, statementLink, roughFp, statements, change, attention, statementDetail, ask, objects, msOf, parseJson, hasLogStore, logStore, queryColumns,
   queryDrawer, liveDrawer, waterfall, askCancel, containDialog, containRules, containList, profileLink, rounds, narrow, cols as narrowCols, sheet, isNewStatement,
-  canContainNow, canContain,
+  canContainNow, canContain, causesAndVictims,
 } from "../workload.js";
 
 import { render as statementPage } from "./statement.js";
@@ -309,7 +309,12 @@ function statementsTab(body, params, setCount) {
     const errs = xs.filter((x) => { const t = split(x.outcomes, x.calls); return t.server + t.client > 0; }).sort((a, b) => { const A = split(a.outcomes, a.calls), B = split(b.outcomes, b.calls); return (B.server + B.client) - (A.server + A.client); });
     const allFailed = errs.reduce((a, x) => { const t = split(x.outcomes, x.calls); return a + t.server + t.client; }, 0);
     const news = xs.filter((x) => isNewStatement(x, windowMs())).sort((a, b) => b.total_ms - a.total_ms);
-    const grew = data.windowed ? xs.map((x) => [x, change(x)]).filter(([, c]) => c && c.dTotal > 0 && (c.p99X >= 1.5 || c.callsX >= 1.5)).sort((a, b) => b[1].dTotal - a[1].dTotal).slice(0, 3) : [];
+    // S4-3: causes (new, or more calls) before victims (slower, calls flat).
+    const cv = data.windowed ? causesAndVictims(xs, windowMs()) : { causes: [], victims: [], cause: null };
+    const grew = [...cv.causes.filter((y) => !y.c.isNew), ...cv.victims].slice(0, 3).map((y) => [y.x, y.c]);
+    // NEW-scenarios-14: a server that started after the range began (or
+    // less than a minute before) judges no statement new.
+    const cantTell = data.windowed && data.since_ms != null && data.since_ms + 60e3 >= (data.from ?? timeRange().from);
 
     const errCard = h("section", { class: "card wl-card" + (errs.length ? " bad" : "") }, h("div", { class: "hd" }, h("h3", {}, errs.length ? `Errors: ${fmt.plural(Math.min(errs.length, 99), "statement")}` : "Errors"), h("span", { class: "sub" }, "by statement and key")), h("div", { class: "bd" }));
     const eb = errCard.lastChild;
@@ -319,10 +324,22 @@ function statementsTab(body, params, setCount) {
       const others = calls - x.calls, othersFailed = allFailed - failed;
       const k = x.keys?.slice().sort((a, b) => (b.errors || 0) - (a.errors || 0))[0];
       const msg = h("span", { class: "mono small" });
+      // NEW-scenarios-20: when this key's calls began to fail (the log
+      // store keeps every failed query), not when the statement was first seen.
+      const since = h("span", { class: "badge", title: "This key's first failed call of this statement in the range, from the log store" });
+      since.style.display = "none";
+      failingSince(x.fingerprint, k?.key).then((t) => {
+        if (!t) return;
+        // A first failure in the range's first minute: it failed before the range too.
+        const all = t - timeRange().from < 60e3;
+        since.textContent = `${k ? "its calls failing" : "failing"} ${all ? "all range" : "since " + when(t)}`;
+        if (all) since.title = "Its first failed call in the range came in the range's first minute: widen the range to see when it began";
+        since.style.display = "";
+      }).catch(() => {});
       eb.append(
         h("div", { class: "mono small ellipsis", title: x.sql }, x.sql),
         h("div", { class: "small", style: { margin: "6px 0" } }, h("b", { class: t.server ? "wl-bad" : "" }, `${fmt.si(perS(failed))}/s failing, ${fmt.pct(failed / Math.max(1, x.calls), 0)} of its calls`), " · ", t.client >= t.server ? "client errors (400)" : "server errors", allFailed ? ` · ${fmt.pct(failed / allFailed, 0)} of all failures` : "", " ", msg),
-        h("div", { class: "row", style: { gap: "4px" } }, k ? h("span", { class: "badge mono" }, "key " + k.key) : null, x.first_seen_ms ? h("span", { class: "badge" }, "first " + when(x.first_seen_ms)) : null, (x.keys?.length || 0) > 1 ? h("span", { class: "badge" }, `${x.keys.length - 1} other keys`) : null),
+        h("div", { class: "row", style: { gap: "4px" } }, k ? h("span", { class: "badge mono" }, "key " + k.key) : null, since, (x.keys?.length || 0) > 1 ? h("span", { class: "badge", title: x.keys.filter((y) => y !== k).map((y) => `${y.key}: ${fmt.n(y.errors || 0)} failed of ${fmt.n(y.calls)}`).join("\n") }, fmt.plural(x.keys.length - 1, "other key")) : null),
         others > 0 ? h("div", { class: "small muted", style: { marginTop: "6px" } }, `The rest: ${fmt.pct(othersFailed / Math.max(1, others), 1)} of every other statement's calls failed.`) : null,
         h("div", { class: "row", style: { gap: "6px", marginTop: "8px" } },
           h("a", { class: "btn sm", href: statementLink(x.fingerprint) }, "Open it ›"),
@@ -333,8 +350,8 @@ function statementsTab(body, params, setCount) {
       if (m && Date.now() - m.at < 30e3) msg.textContent = m.text;
       else statementDetail(x.fingerprint, timeRange()).then((d) => { const e = d.errors?.[0]; const text = e ? `“${e.message}”` : ""; msgCache.set(x.fingerprint, { at: Date.now(), text }); msg.textContent = text; }).catch(() => {});
     }
-    const newCard = card({ title: news.length ? `New: ${fmt.plural(news.length, "shape")}` : "New shapes", sub: data.windowed ? "first seen in this range" : "needs a newer server", cls: "wl-card" + (news.length ? " warn" : ""),
-      body: !news.length ? h("div", { class: "small muted" }, data.windowed ? "No statement was first seen in this range." : "This server does not say when a statement was first seen.") : (() => {
+    const newCard = card({ title: news.length ? `New: ${fmt.plural(news.length, "shape")}` : "New shapes", sub: !data.windowed ? "needs a newer server" : cantTell ? "can't tell for this range" : "first seen in this range", cls: "wl-card" + (news.length ? " warn" : ""),
+      body: !news.length ? h("div", { class: "small muted" }, !data.windowed ? "This server does not say when a statement was first seen." : cantTell ? `Can't tell: this server started at ${when(data.since_ms)}, after the range began or less than a minute before, so it has nothing to compare with. Pick a range that starts after ${when(data.since_ms + 60e3)}.` : "No statement was first seen in this range.") : (() => {
         const x = news[0], k = x.keys?.[0];
         return h("div", {},
           h("div", { class: "mono small ellipsis", title: x.sql }, x.sql),
@@ -346,10 +363,12 @@ function statementsTab(body, params, setCount) {
             h("a", { class: "btn sm ghost", href: profileLink(x.sql, x.sample?.params, x.fingerprint), title: "Open it in the Profiler: it asks before it runs" }, icon("flame"), "Profile one")),
           news.length > 1 ? h("div", { class: "small muted", style: { marginTop: "8px" } }, news.slice(1, 3).map((y) => h("div", { class: "ellipsis" }, h("a", { href: statementLink(y.fingerprint), class: "wl-link" }, when(y.first_seen_ms)), " · ", h("span", { class: "mono" }, y.sql)))) : null);
       })() });
-    const grewCard = card({ title: "Grew most", sub: data.windowed ? "by time spent, against the window before" : "needs a newer server", cls: "wl-card",
+    const victimOf = cv.cause ? (cv.cause.c.isNew ? `the new statement first seen ${when(cv.cause.x.first_seen_ms)}` : `the statement with ×${cv.cause.c.callsX.toFixed(1)} the calls`) : null;
+    const grewCard = card({ title: "Grew most", sub: data.windowed ? "by time spent, against the window before · causes first" : "needs a newer server", cls: "wl-card",
       body: !grew.length ? h("div", { class: "small muted" }, data.windowed ? "No statement grew by half or more." : "This server keeps no window before to compare with.") : h("div", { class: "stack", style: { gap: "8px" } }, grew.map(([x, c]) => h("div", {},
         h("a", { class: "mono small ellipsis wl-link", style: { display: "block" }, href: statementLink(x.fingerprint), title: x.sql }, x.sql),
-        h("div", { class: "small dim" }, `p99 ${fmt.ms(x.prev.p99_ms)} → ${fmt.ms(x.p99_ms)}, calls ×${c.callsX.toFixed(1)}`, c.verdict ? h("b", {}, ": " + c.verdict) : null)))) });
+        h("div", { class: "small dim" }, `p99 ${fmt.ms(x.prev.p99_ms)} → ${fmt.ms(x.p99_ms)}, calls ×${c.callsX.toFixed(1)}`,
+          c.callsX < 1.5 ? h("b", {}, ": slower, calls flat. Likely a victim", victimOf && cv.cause.x !== x ? [" of ", h("a", { class: "wl-link", href: statementLink(cv.cause.x.fingerprint), title: cv.cause.x.sql }, victimOf)] : ", not a cause") : c.verdict ? h("b", {}, ": " + c.verdict) : null)))) });
     clear(cards, errCard, newCard, grewCard);
   }
   async function load() {
@@ -364,6 +383,24 @@ function statementsTab(body, params, setCount) {
 // ---------------------------------------------------------------- history
 
 const PRESETS = [["all", "all"], ["failed", "failed"], ["slow", "slow"], ["latest", "last 15 min"]];
+
+/** When `key`'s calls of a statement began to fail in the range (its first failed call the log store keeps), or null. */
+const sinceCache = new Map();
+async function failingSince(fp, key) {
+  if (!fp || !(await hasLogStore())) return null;
+  const r = timeRange(), ck = `${fp}|${key}|${Math.round(r.from / 60e3)}`, hit = sinceCache.get(ck);
+  if (hit && Date.now() - hit.at < 30e3) return hit.t;
+  const t = await firstFailed(fp, key, r);
+  sinceCache.set(ck, { at: Date.now(), t });
+  return t;
+}
+async function firstFailed(fp, key, r) {
+  const lit = (v) => `'${String(v).replace(/'/g, "''")}'`, cols = await queryColumns();
+  const kc = cols.has("key") ? "key" : cols.has("key_name") ? "key_name" : null;
+  const w = [`fingerprint = ${lit(fp)}`, "shard = false", "outcome != 'ok'", `ts >= ${lit(new Date(r.from).toISOString())}`, r.to && !r.live ? `ts < ${lit(new Date(r.to).toISOString())}` : null, key && kc ? `${kc} = ${lit(key)}` : null].filter(Boolean).join(" AND ");
+  const j = await ask(`SELECT ts FROM queries WHERE ${w} ORDER BY ts ASC LIMIT 1`);
+  return j.rows?.[0] ? msOf(j.rows[0][0]) : null;
+}
 
 function historyTab(body, params, setCount) {
   const f = {

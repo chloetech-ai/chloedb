@@ -264,6 +264,22 @@ export function change(x) {
   return { callsX, p99X, verdict, dTotal: (x.total_ms || 0) - (p.total_ms || 0) };
 }
 
+/**
+ * Of the statements that took more time than in the window before: the
+ * likely causes (new, or their calls grew by half or more) and the likely
+ * victims (slower with their calls flat), each by the time they added, so
+ * that a view names a cause before a victim. -> {causes, victims, cause}
+ * of {x, c} (c: change(x), or {isNew, dTotal} for a new statement).
+ */
+export function causesAndVictims(xs, windowMs) {
+  const byD = (a, b) => b.c.dTotal - a.c.dTotal;
+  const grown = xs.map((x) => ({ x, c: change(x) })).filter((y) => y.c && y.c.dTotal > 0 && (y.c.p99X >= 1.5 || y.c.callsX >= 1.5));
+  const news = xs.filter((x) => isNewStatement(x, windowMs)).map((x) => ({ x, c: { isNew: true, dTotal: x.total_ms || 0 } }));
+  const causes = [...news, ...grown.filter((y) => y.c.callsX >= 1.5)].sort(byD);
+  const victims = grown.filter((y) => y.c.callsX < 1.5).sort(byD);
+  return { causes, victims, cause: causes[0] || null };
+}
+
 /** Why a statement needs a look, if it does: {tag, tone, rank} (higher first). */
 export function attention(x, windowMs) {
   const sp = split(x.outcomes, x.calls);
