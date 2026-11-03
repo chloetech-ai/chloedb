@@ -305,8 +305,17 @@ fn primary_of(s: &Json) -> Option<(String, String, u64)> {
 /// The event of an audited change (`kind` `change`): who did what.
 pub fn of_change(e: &crate::keys::Entry) -> Event {
     let what = e.detail.clone().unwrap_or_else(|| format!("{} {}", e.method, e.route));
-    let title = if e.status >= 400 { format!("{}: {what} (it failed: {})", e.who, e.status) } else { format!("{}: {what}", e.who) };
+    // cluster2: a failed change says why, as its answer did (AC-3).
+    let error = e.after.as_ref().and_then(|a| a["error"].as_str()).filter(|_| e.status >= 400);
+    let title = match error {
+        Some(why) => format!("{}: {what} (it failed: {why})", e.who),
+        None if e.status >= 400 => format!("{}: {what} (it failed: {})", e.who, e.status),
+        None => format!("{}: {what}", e.who),
+    };
     let mut detail = json!({"method": e.method, "route": e.route, "status": e.status, "actor": e.actor});
+    if let Some(why) = error {
+        detail["error"] = json!(why);
+    }
     for (k, v) in [("object", &e.object), ("reason", &e.reason), ("request_id", &e.request_id), ("client", &e.client)] {
         if let Some(v) = v {
             detail[k] = json!(v);
@@ -319,7 +328,8 @@ pub fn of_change(e: &crate::keys::Entry) -> Event {
             None => Json::Null,
         },
     });
-    Event { kind: "change".into(), severity: "info".into(), title, detail, where_, who: Some(e.who.clone()) }
+    let severity = if e.status >= 400 { "warning" } else { "info" };
+    Event { kind: "change".into(), severity: severity.into(), title, detail, where_, who: Some(e.who.clone()) }
 }
 
 #[cfg(test)]
@@ -395,5 +405,19 @@ mod tests {
         let j = serde_json::to_value(&*notes[0]).unwrap();
         assert_eq!(j["kind"], "note");
         assert!(j.get("where").is_none() && j.get("until_ms").is_none(), "{j}");
+    }
+
+    #[test]
+    fn a_failed_change_says_why_it_failed() {
+        let mut e: crate::keys::Entry = serde_json::from_value(json!({"ts_ms": 1, "who": "root token", "method": "POST", "route": "/v1/admin/shards/:i/replicas", "status": 503, "ms": 1.0,
+            "detail": "add http://h:1 to shard 1", "object": "shard 1", "after": {"error": "http://h:1 does not answer"}})).unwrap();
+        let ev = of_change(&e);
+        assert_eq!(ev.title, "root token: add http://h:1 to shard 1 (it failed: http://h:1 does not answer)");
+        assert_eq!((ev.severity.as_str(), &ev.detail["error"], &ev.where_), ("warning", &json!("http://h:1 does not answer"), &json!({"shard": 1})));
+        // One that answered: no error, said as done.
+        e.status = 200;
+        e.detail = Some("added http://h:1 to shard 1".into());
+        let ev = of_change(&e);
+        assert_eq!((ev.title.as_str(), ev.severity.as_str(), ev.detail.get("error")), ("root token: added http://h:1 to shard 1", "info", None));
     }
 }
