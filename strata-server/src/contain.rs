@@ -241,6 +241,13 @@ impl Contain {
     }
 
     fn insert(&self, r: Arc<Rule>) -> Result<(), ApiError> {
+        self.push(r)?;
+        self.save();
+        Ok(())
+    }
+
+    /// Adds `r` to the rules in force, without saving.
+    fn push(&self, r: Arc<Rule>) -> Result<(), ApiError> {
         let t = now_ms();
         let mut rules = lock(&self.rules);
         rules.retain(|r| r.expires_ms > t);
@@ -248,8 +255,6 @@ impl Contain {
             return Err(ApiError { status: 409, message: format!("{MAX_RULES} contain rules hold already: remove one first") });
         }
         rules.push(r);
-        drop(rules);
-        self.save();
         Ok(())
     }
 
@@ -259,25 +264,31 @@ impl Contain {
     pub fn adopt(&self, j: &Json) -> Result<Option<(Arc<Rule>, bool)>, ApiError> {
         let t = now_ms();
         let Some(r) = Self::of_json(j, t)? else { return Ok(None) };
-        if lock(&self.removed).contains_key(&r.id) {
+        // The removals stay locked until the rule is in, so a removal
+        // that comes meanwhile (another coordinator's) is not undone.
+        let removed = lock(&self.removed);
+        if removed.contains_key(&r.id) {
             return Ok(None);
         }
         if let Some(had) = lock(&self.rules).iter().find(|h| h.id == r.id) {
             return Ok(Some((had.clone(), false)));
         }
         let r = Arc::new(r);
-        self.insert(r.clone())?;
+        self.push(r.clone())?;
+        drop(removed);
+        self.save();
         Ok(Some((r, true)))
     }
 
     /// Removes rule `id`.
     pub fn remove(&self, id: &str) -> Option<Arc<Rule>> {
+        // Removals, then rules: the order adopt takes them in.
+        let mut removed = lock(&self.removed);
         let mut rules = lock(&self.rules);
         let gone = rules.iter().position(|r| r.id == id).map(|i| rules.remove(i));
         drop(rules);
         // Kept as removed even when it is not here: a sync from another
         // coordinator that still holds it does not bring it back.
-        let mut removed = lock(&self.removed);
         if id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') && (gone.is_some() || removed.len() < 1000) {
             removed.insert(id.to_string(), gone.as_ref().map_or(now_ms() + MAX_EXPIRES_S * 1000, |r| r.expires_ms));
         }

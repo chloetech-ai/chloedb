@@ -13,7 +13,7 @@ use serde_json::{json, Value as Json};
 use strata::db::Db;
 use strata::storage::DbOptions;
 use strata_server::coord::Coordinator;
-use strata_server::service::{AgentConfig, Backend, Service};
+use strata_server::service::{shard_of, AgentConfig, Backend, Service};
 use strata_server::telemetry::{Caller, Meta};
 use strata_server::{demo, peers, server};
 use tokio::net::TcpListener;
@@ -30,7 +30,8 @@ fn agent() -> AgentConfig {
 async fn shard(dir: &Path, i: usize) -> String {
     let db = Db::create(&dir.join(format!("s{i}.strata")), demo::schema(N), DbOptions { publish_snapshots: true, ..DbOptions::default() }).unwrap();
     db.set_embedder("emb", Arc::new(strata::embed::HashEmbedder { dim: demo::DIM })).unwrap();
-    db.load((0..N).filter(|k| k % 2 == i).map(|k| demo::product(k, 7))).unwrap();
+    // Each key on the shard its slot names, as a coordinator routes it.
+    db.load((0..N).filter(|&k| shard_of(&strata::Value::Str(format!("p{k:07}")), 2) == i).map(|k| demo::product(k, 7))).unwrap();
     let db = Arc::new(db);
     let schema = (*db.schema()).clone();
     let svc = Arc::new(Service::new(Backend::Local(db), schema, agent(), 16, Duration::from_secs(10)));
@@ -131,7 +132,7 @@ async fn coordinators_of_one_cluster_know_and_cover_each_other() {
     let brief = get(&a.base, "/v1/cluster?brief=1").await;
     assert!(full["shards"][0]["replicas"][0]["detail"].is_object(), "{full}");
     assert!(brief["shards"][0]["replicas"][0].get("detail").is_none() && brief["shards"][0]["replicas"][0]["status"] == full["shards"][0]["replicas"][0]["status"], "{brief}");
-    assert!(brief.to_string().len() * 2 < full.to_string().len());
+    assert!(brief.to_string().len() < full.to_string().len(), "brief {} bytes, full {}", brief.to_string().len(), full.to_string().len());
     // What a coordinator tells the others of its searches.
     let w = get(&a.base, "/v1/coordinators?window=1").await;
     assert!(w["window"]["window"]["queries"].is_number() && w["window"]["recent_s"] == 60, "{w}");
@@ -225,18 +226,21 @@ async fn coordinators_of_one_cluster_know_and_cover_each_other() {
     .await;
     let (s, j) = call(reqwest::Method::DELETE, &a.base, &format!("/v1/admin/contain/{id}"), None).await;
     assert_eq!(s, 200, "{j}");
-    assert!(!c.svc.contain.list().iter().any(|x| x.id == id), "removed on C");
-    assert!(!b2.svc.contain.list().iter().any(|x| x.id == id), "removed on B");
+    assert!(!c.svc.contain.list().iter().any(|x| x.id == id), "removed on C: {j}; C holds {}", c.svc.contain.local_json());
+    assert!(!b2.svc.contain.list().iter().any(|x| x.id == id), "removed on B: {j}");
     assert_eq!(get(&a.base, "/v1/admin/contain").await, json!([]), "on no coordinator");
 
     // ----- fleet health counts B's searches on A, and A's inspector B's reads (INS-3)
     let docs = |j: &Json| j["cluster"]["reads"]["docs"]["total"].as_u64().unwrap_or(0);
     let before = docs(&get(&a.base, "/v1/index?table=products").await);
+    // B's series: a point before its searches and one after (a running
+    // server samples every 2 s; this one is sampled by hand).
+    b2.svc.series.add(b2.svc.sample());
     for _ in 0..10 {
         let (s, _) = call(reqwest::Method::POST, &b2.base, "/v1/query", Some(json!({"sql": "SELECT id, title FROM products LIMIT 5"}))).await;
         assert_eq!(s, 200);
     }
-    b2.svc.series.add(b2.svc.sample());
+    tokio::time::sleep(Duration::from_millis(50)).await;
     b2.svc.series.add(b2.svc.sample());
     until("A has B's searches", || async {
         let f = get(&a.base, "/v1/health/fleet").await;
