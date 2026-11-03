@@ -231,6 +231,11 @@ pub struct ExecOptions {
     /// the process's shared pool ([`Pool::global`](super::pool::Pool::global)),
     /// as they come free.
     pub threads: usize,
+    /// Live rows a query's segments must hold per thread it searches them
+    /// on: a query over fewer than twice this many runs on its caller
+    /// alone, as a small table's do ([`FAN_OUT_ROWS`]; 0: a thread per
+    /// segment, up to `threads`).
+    pub fan_out_rows: usize,
     /// Fail with `Error::Timeout` once this has passed (checked between
     /// segments).
     pub deadline: Option<Instant>,
@@ -328,6 +333,7 @@ impl Default for ExecOptions {
             stats: None,
             shard: false,
             threads: 1,
+            fan_out_rows: FAN_OUT_ROWS,
             deadline: None,
             cancel: None,
             synonyms: None,
@@ -634,6 +640,13 @@ impl DocFilter for ProbeFilter {
         self.root.may_have(docs)
     }
 }
+
+/// [`ExecOptions::fan_out_rows`] by default. Waking a pool thread and
+/// taking in its result costs about what searching a few thousand rows
+/// does: in A2 of the laptop benchmark, BM25 on nfcorpus (3,633 rows in two
+/// segments) took 71 µs on one thread and 97 µs on eight, and on fiqa
+/// (57,638 rows in eight) 544 µs and 338 µs.
+pub const FAN_OUT_ROWS: usize = 16_384;
 
 /// What per-segment work records, taken into the executor afterwards (so
 /// that segments can run on several threads).
@@ -1719,14 +1732,18 @@ impl<'a> Executor<'a> {
 
     /// Runs `f` on every segment, on this thread and up to
     /// [`ExecOptions::threads`] `- 1` pool threads (largest segments first),
-    /// and returns the results in segment order with what each recorded
-    /// taken in.
+    /// one per [`ExecOptions::fan_out_rows`] live rows, and returns the results in
+    /// segment order with what each recorded taken in.
     fn per_segment<T: Send>(&mut self, f: impl Fn(&Self, &Seg<'a>, &mut Local) -> Result<T> + Sync) -> Result<Vec<T>>
     where
         Self: Sync,
     {
         let segs = self.segs.clone();
-        let threads = self.opts.threads.clamp(1, segs.len().max(1));
+        let rows: usize = segs.iter().map(|s| s.view.n_live as usize).sum();
+        let threads = match self.opts.fan_out_rows {
+            0 => self.opts.threads.clamp(1, segs.len().max(1)),
+            per => self.opts.threads.clamp(1, segs.len().max(1)).min((rows / per).max(1)),
+        };
         let mut outs: Vec<Option<(Result<T>, Local)>> = (0..segs.len()).map(|_| None).collect();
         // Each segment's work is a step, on the thread (`lane`) that ran it.
         let run = |this: &Self, s: &Seg<'a>, lane: u32| {
