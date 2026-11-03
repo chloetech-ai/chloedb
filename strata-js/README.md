@@ -1,0 +1,38 @@
+# strata-db: Strata from JavaScript
+
+Strata opened from its file inside a Node, Bun or Deno process, with no
+server, the way better-sqlite3 opens a SQLite file; or a client of a running
+strata-server from any JavaScript runtime with `fetch`. Both have the same
+methods. Documentation: [docs/strata/javascript.md](../docs/strata/javascript.md).
+
+```js
+import { open } from "strata-db";
+
+const db = await open("books.strata", {
+  schema: { table: "books", key: "id", fields: [
+    { name: "id", type: "keyword" },
+    { name: "title", type: "text" },
+    { name: "year", type: "int" },
+  ] },
+});
+await db.upsert([{ id: "b1", title: "The river and the dragon", year: 1999 }]);
+for (const row of await db.search("dragon")) console.log(row.id, row.title);
+await db.close();
+```
+
+Build (Rust and a C compiler), test, and use from an app:
+
+```sh
+npm run build                         # cargo build --release; strata.node beside index.js
+npm run build -- --profile ci && npm test
+cd ../my-app && npm install ../strata/strata-js
+```
+
+| file | what |
+|---|---|
+| `src/lib.rs` | the Node-API addon (napi-rs): one entry point per database, an operation's name and its arguments as JSON, run on libuv's thread pool |
+| `index.js`, `index.d.ts` | `Database`, `open`, `fromSqlite`, `fromParquet` and the rest, over the addon |
+| `client.js`, `client.d.ts` | `Client` and `connect`: strata-server over HTTP with `fetch`, no addon |
+| `common.js`, `common.d.ts` | what both share: `Result`, `StrataError`, `search`, the rank log, JSON with 64-bit integers |
+| `scripts/build.mjs` | builds the addon with cargo and copies it to `strata.node` |
+| `test/` | `node --test`: the database in-process, and the client against a strata-server |

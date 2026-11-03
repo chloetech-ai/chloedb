@@ -572,13 +572,64 @@ jobs:
         working-directory: strata-py
         run: cargo clippy --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
+  javascript:
+    name: JavaScript package on ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      # strata-js and strata-server build for a generic CPU: one cache on
+      # every runner.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+          workspaces: |
+            strata-js
+            strata-server
+          key: javascript
+      # The client tests run against a real server.
+      - name: Build strata-server
+        working-directory: strata-server
+        run: cargo build --release
+      - name: Build and test
+        working-directory: strata-js
+        run: |
+          node scripts/build.mjs --profile ci
+          node --test test/*.test.mjs
+      # The same addon from Bun and Deno: a file opened, written and
+      # searched in each runtime, and the client against a server.
+      - name: Bun and Deno
+        working-directory: strata-js
+        run: |
+          bun test/runtimes.mjs
+          deno run --allow-ffi --allow-read --allow-write --allow-env --allow-net --allow-run --allow-sys test/runtimes.mjs
+      - name: Clippy
+        working-directory: strata-js
+        run: cargo clippy --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+
   # The one check main requires: every job above passed, or was skipped
   # because the change touches only the documentation. A failed or
   # cancelled job fails it.
   ci-result:
     name: CI result
     if: always()
-    needs: [changes, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python]
+    needs: [changes, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python, javascript]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
