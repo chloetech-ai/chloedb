@@ -91,8 +91,11 @@ render() {
 # Strata's token: random, made once per cluster and kept in the secret
 # strata-token, which its pods and the client read (nothing fixed in the repo).
 token_secret() {
+    # Two jobs at once (BUILD_PARALLEL) may both find it missing: the one
+    # that loses the race finds the other's.
     $K get secret strata-token >/dev/null 2>&1 ||
-        $K create secret generic strata-token --from-literal=token="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" >/dev/null
+        $K create secret generic strata-token --from-literal=token="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" >/dev/null 2>&1 ||
+        $K get secret strata-token >/dev/null
 }
 
 # job NAME NODE CPU MEM ARGS...: engine-compare as a Job on NODE (CPU and
@@ -255,11 +258,17 @@ build)
         node_cat "${NODES[$1]}" "/var/local/compare/$COLLECTION.shard${1}of2.strata.build.json" >"${STRATA_WORK:?}/${OUT#/data/}/build-strata-s$1.json"
     }
     if [ "$BUILD_PARALLEL" = 1 ]; then
+        token_secret
         build_shard 0 >"${STRATA_WORK:?}/${OUT#/data/}/build-s0.log" 2>&1 &
         b0=$!
         build_shard 1 >"${STRATA_WORK:?}/${OUT#/data/}/build-s1.log" 2>&1 &
         b1=$!
-        wait $b0 && wait $b1
+        # Both are waited for, so that a failed shard does not leave the
+        # other running after this step has ended.
+        rc=0
+        wait $b0 || rc=$?
+        wait $b1 || rc=$?
+        [ $rc = 0 ] || { tail -5 "${STRATA_WORK:?}/${OUT#/data/}"/build-s[01].log >&2; exit $rc; }
     else
         for i in 0 1; do build_shard $i; done
     fi
