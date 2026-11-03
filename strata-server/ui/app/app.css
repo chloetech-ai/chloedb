@@ -3025,7 +3025,9 @@ table.t th.num { text-align: right; }
 .cc-run-hd { align-items: flex-start; }
 .cc-run-hd .tools { flex-wrap: wrap; justify-content: flex-end; }
 /* A dead primary's other issues, after its way out. */
-.cc2-why-rest { margin: 6px 0 0; padding-left: 18px; }
+.cc2-why-also { margin-top: 8px; padding-top: 6px; border-top: 1px solid color-mix(in srgb, currentColor 25%, transparent); color: var(--text-2); }
+.cc2-why-rest { margin: 2px 0 0; padding-left: 18px; }
+.cc2-why-rest li.crit { color: var(--crit); }
 /* A plan's steps in the Changes list. */
 .cc2-plan-steps { margin: 4px 0 0; padding-left: 18px; }
 .cc2-plan-steps li { margin: 1px 0; }
@@ -3039,5 +3041,21 @@ table.t th.num { text-align: right; }
 @media (max-width: 560px) {
   .top .crumbs > svg { display: none; }
   .top .crumbs .ttl { white-space: normal; line-height: 1.15; font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+}
+/* A phone: Rollouts' and Autoscaling's targets are 40 px at least, labels
+   included (NEW-cluster-admin-14). Inline links keep their line: the extra
+   is padding a negative margin takes back. */
+@media (max-width: 560px) {
+  .ro-ext { display: inline-flex; align-items: center; justify-content: center; min-width: 40px; min-height: 40px; margin: -13px -10px; }
+  .ro-only { min-height: 40px; }
+  .ro-in { padding: 12px 0; margin: -12px 0; }
+  .ro-only input { width: 18px; height: 18px; }
+  .ro-tool, .ro-cmds .btn.xs, .ro-img1 + .btn.xs { min-width: 40px; min-height: 40px; justify-content: center; }
+  .ro-map { grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); }
+  .ro-map-s { min-height: 40px; }
+  .cc-as .as-text { line-height: 2; }
+  .cc-as .as-word { display: inline-block; line-height: 20px; padding: 10px 2px; margin: -10px 0; min-width: 40px; text-align: center; }
+  .cc-as .as-day { min-height: 40px; }
+  .cc-as .as-note a, .cc-as .cc-as-own a { display: inline-block; padding: 12px 0; margin: -12px 0; }
 }
 /* ===== end cluster2 ===== */

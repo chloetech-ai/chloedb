@@ -679,7 +679,7 @@ function render(page, r) {
       title = `${imageChange ? "Upgrade " + what : "The change"} is held${nextShard != null ? ` at shard ${nextShard} of ${spec().shards}` : ""}`;
       const now = numbers(state.cluster)[r0.held.gate];
       why.push(h("span", {}, `${g ? g.label : "A gate"} went over its ${g ? g.show(r0.held.limit) : ""} limit at `, h("b", {}, at(r0.held.atMs)), ` (${ago(r0.held.atMs)})`, now != null && g ? [": ", h("b", {}, g.show(now)), " now"] : "", ". "));
-      if (b.odd && r0.held.gate === "p99Ms") why.push(h("span", {}, "It comes from one copy, ", h("a", { href: `#/cluster?shard=${b.odd.copy.shard}`, title: b.odd.copy.url }, h("b", {}, b.odd.copy.short)), ` (${ms(b.odd.copy.load.p99_ms)}, on ${vname(tgt?.v)}${b.odd.copy.up_s ? " since " + clock(Date.now() - b.odd.copy.up_s * 1000) : ""}); the other copies on ${vname(tgt?.v)} answer within ${ms(b.odd.restP99)}.`));
+      if (b.odd && r0.held.gate === "p99Ms") why.push(h("span", {}, "It comes from one copy, ", h("a", { class: "ro-in", href: `#/cluster?shard=${b.odd.copy.shard}`, title: b.odd.copy.url }, h("b", {}, b.odd.copy.short)), ` (${ms(b.odd.copy.load.p99_ms)}, on ${vname(tgt?.v)}${b.odd.copy.up_s ? " since " + clock(Date.now() - b.odd.copy.up_s * 1000) : ""}); the other copies on ${vname(tgt?.v)} answer within ${ms(b.odd.restP99)}.`));
       safe = `Nothing is restarting.${others.length && tgt ? ` Copies on ${vname(tgt.v)} and ${others.map((x) => vname(x.v)).join(", ")} serve reads and writes side by side;` : ""} staying held is safe.`;
       if (b.odd) acts.push(action({ label: `Open ${b.odd.copy.short}`, sub: "its shard, logs and profile", cls: "primary", href: `#/cluster?shard=${b.odd.copy.shard}` }));
       acts.push(rollbackAct(false));
@@ -697,7 +697,7 @@ function render(page, r) {
       tone = "failed"; badge = "Failed";
       title = `${imageChange ? vname(toV) : "The change"} failed ${r0.failed.step === "verify" ? "its verification" : "at step " + r0.failed.step}`;
       why.push(`${said(r0.failed.text)} (${clock(r0.failed.atMs)}). `);
-      if (b.odd && /p99/.test(r0.failed.text)) why.push(h("span", {}, "It comes from one copy, ", h("a", { href: `#/cluster?shard=${b.odd.copy.shard}`, title: b.odd.copy.url }, h("b", {}, b.odd.copy.short)), ` (${ms(b.odd.copy.load.p99_ms)}); the other copies on ${vname(tgt?.v)} answer within ${ms(b.odd.restP99)}. `));
+      if (b.odd && /p99/.test(r0.failed.text)) why.push(h("span", {}, "It comes from one copy, ", h("a", { class: "ro-in", href: `#/cluster?shard=${b.odd.copy.shard}`, title: b.odd.copy.url }, h("b", {}, b.odd.copy.short)), ` (${ms(b.odd.copy.load.p99_ms)}); the other copies on ${vname(tgt?.v)} answer within ${ms(b.odd.restP99)}. `));
       safe = `The operator holds it (onFailure: hold): no other copy restarts with it.${others.length ? " Both versions serve side by side until you roll back or try again." : ""}`;
       if (b.odd) acts.push(action({ label: `Open ${b.odd.copy.short}`, sub: "its shard, logs and profile", href: `#/cluster?shard=${b.odd.copy.shard}` }));
       acts.push(rollbackAct(true));
@@ -991,7 +991,7 @@ function render(page, r) {
     const cmp = imageChange ? compareLink(a, b) : null;
     const rows = [
       ["Spec", h("span", {}, prev ? `v${prev.version} → v${cur.version}` : `v${cur.version}`, h("span", { class: "dim" }, " (the operator's count of changes to the StrataCluster)"))],
-      imageChange ? ["Version", h("span", {}, vsaid(a), " → ", vsaid(b), cmp ? [" · ", h("a", { href: cmp, target: "_blank", rel: "noopener" }, "what changed")] : null)] : null,
+      imageChange ? ["Version", h("span", {}, vsaid(a), " → ", vsaid(b), cmp ? [" · ", h("a", { class: "ro-in", href: cmp, target: "_blank", rel: "noopener" }, "what changed")] : null)] : null,
       ["Fields", cur.restores ? `back to spec v${cur.restores}` : summary(prev?.spec, cur.spec, (i) => vname(vOf(i)))],
       ["Rollback", backTo() ? `possible: spec v${backTo().version} is kept` : "no earlier version to go back to"],
       imageChange ? ["Image", h("span", { class: "row nw" }, h("code", { class: "ro-img1", title: cur.spec.image }, cur.spec.image.replace(/^([^/]+\/)[^@:]*?([^/@:]+)([@:])/, "$1…/$2$3").replace(/(sha256:[0-9a-f]{12})[0-9a-f]+/, "$1…")), h("button", { class: "btn xs ghost", title: "Copy the image", onclick: () => copy(cur.spec.image, "Image copied") }, icon("copy")))] : null,
@@ -1113,7 +1113,7 @@ function render(page, r) {
     const curRow = [...rows.values()].find((x) => x.current);
     const find = h("input", { class: "input sm ro-find", placeholder: "Filter by tag or commit", value: filter.q, "aria-label": "Filter the versions" });
     find.oninput = () => { filter.q = find.value; const pos = find.selectionStart; drawUpgrades(); const n = body.querySelector(".ro-find"); n?.focus(); n?.setSelectionRange(pos, pos); };
-    const only = h("label", { class: "row nw small" }, h("input", { type: "checkbox", checked: filter.newer, onchange: (e) => { filter.newer = e.target.checked; drawUpgrades(); } }), "only newer");
+    const only = h("label", { class: "row nw small ro-only" }, h("input", { type: "checkbox", checked: filter.newer, onchange: (e) => { filter.newer = e.target.checked; drawUpgrades(); } }), "only newer");
     // A server that reports no image digest (machines of your own) says its
     // version number: the image whose tag is that number runs it.
     const runOf = (x) => runs.get(x.digest) || (x.image && runs.get(x.image)) || x.tags.map((t) => runs.get(t) || runs.get(t.replace(/^v(?=\d)/, ""))).find(Boolean) || 0;
@@ -1145,7 +1145,7 @@ function render(page, r) {
     const cmp = curRow && list.find((x) => x.newer) ? compareLink({ ...curRow }, { ...list.find((x) => x.newer) }) : null;
     return card({
       title: "Pick a version", sub: reg.repository,
-      tools: [h("button", { class: "btn sm ghost", title: "Ask the registry again", onclick: () => { reg = null; draw(); loadVersions(true); } }, icon("refresh"))],
+      tools: [h("button", { class: "btn sm ghost ro-tool", "aria-label": "Ask the registry again", title: "Ask the registry again", onclick: () => { reg = null; draw(); loadVersions(true); } }, icon("refresh"))],
       body: h("div", { class: "stack", style: { gap: "10px" } },
         h("div", { class: "row" }, find, only),
         h("div", { class: "small" }, curRow ? ["The cluster runs ", h("b", {}, vname({ ...curRow, track: reg.track })), curRow.created ? `, built ${clock(sec(curRow.created))} ${TZ}` : "", ". ", newer ? h("b", {}, `${plural(newer, "newer build")}.`) : "Nothing newer is published.", cmp ? [" ", h("a", { href: cmp, target: "_blank", rel: "noopener" }, "What changed since")] : null]
