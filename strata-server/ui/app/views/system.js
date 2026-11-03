@@ -398,6 +398,8 @@ function render(page, r) {
       // What every copy says of a flag: one value, or null when they differ or none says.
       const copies = (state.cluster?.shards || []).flatMap((sh) => sh.replicas || []).filter((r) => r.status !== "down");
       const said = (f) => { const vs = [...new Set(copies.map((r) => f(r)).filter((v) => v != null))]; return vs.length === 1 ? vs[0] : vs.length > 1 ? { mixed: vs } : null; };
+      // One value every copy says, or the first with how they differ.
+      const each = (f, words) => { const v = said(f); return v == null ? null : v.mixed ? [v.mixed[0], `the copies differ: ${v.mixed.map(words).join(", ")}`] : [v, "every copy says"]; };
       switch (st.at) {
         case "spec:failoverAfterMs": {
           const v = said((r) => r.detail?.capability?.failover_after_ms);
@@ -406,6 +408,10 @@ function render(page, r) {
         case "spec:writeAcks": return L.acks ? [L.acks, "the primaries say"] : null;
         case "args:--verify-every-s": return rep?.verify_every_s != null ? [rep.verify_every_s, "the primaries say"] : null;
         case "cargs:--hedge-ms": return state.cluster?.hedge_ms != null ? [state.cluster.hedge_ms, "this coordinator says"] : null;
+        // What each copy runs with (NEW-cluster-admin-5), from its own limits.
+        case "args:--slow-ms": return each((r) => r.detail?.limits ? r.detail.limits.slow_ms ?? 0 : null, (x) => (x ? x + " ms" : "off"));
+        case "args:--max-concurrent": return each((r) => r.detail?.limits?.max_concurrent, String);
+        case "args:--max-result-window": return each((r) => r.detail?.limits ? r.detail.limits.max_rows ?? 0 : null, (x) => (x ? fmt.n(x) : "no limit"));
         case "cargs:--timeout-ms": return y?.limits?.timeout_ms != null ? [y.limits.timeout_ms, "this coordinator says"] : null;
         case "spec:tokenSecret": return y?.auth ? [y.auth.token ? "set" : undefined, "this coordinator says"] : null;
         case "spec:clusterTokenSecret": return y?.auth ? [y.auth.cluster_token ? "set" : undefined, "this coordinator says"] : null;
@@ -432,8 +438,9 @@ function render(page, r) {
           return h("div", { class: "cc-set" },
             h("div", { class: "cc-set-l" }, h("b", {}, st.label), h("div", { class: "small dim" }, effect)),
             h("div", { class: "cc-set-r" },
-              h("b", {}, k || !TOKENS[st.at] ? shownOf(st, v) : "–"),
-              h("div", { class: "small muted" }, k ? k[1] : TOKENS[st.at] ? "as each server was started" : "the default, unless a server was started with the flag"),
+              // A value the servers say is bold; a default they do not say is marked as one.
+              k ? h("b", {}, shownOf(st, v)) : TOKENS[st.at] ? h("b", {}, "–") : h("span", { class: "muted" }, `default: ${shownOf(st, v)}`),
+              h("div", { class: "small muted" }, k ? k[1] : TOKENS[st.at] ? "as each server was started" : "the servers do not say it: this holds unless one was started with the flag"),
               h("code", { class: "cc-set-flag" }, `${f.flag} · ${f.who}`)));
         }))));
       clear(body, h("div", { class: "cc-set-main own" },
