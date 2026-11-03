@@ -3560,6 +3560,9 @@ impl Service {
             "version": self.place.version(),
             "backup_dir": self.backup_dir.as_ref().map(|p| p.display().to_string()),
             "cluster": self.identity.json(),
+            // alerts agent: the alerts firing here, and this copy's states of
+            // the each_copy rules, which a coordinator gathers.
+            "alerts": self.alerts.summary(),
         })
     }
 

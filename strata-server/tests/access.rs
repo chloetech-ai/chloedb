@@ -357,18 +357,18 @@ async fn alert_rules_fire_on_points_and_post_to_the_webhook() {
 
     let (_, a) = call(&base, "GET", "/v1/alerts", None, None).await;
     assert!(a["rules"].as_array().unwrap().iter().any(|r| r["id"] == "failing"), "{a}");
-    let rule = Rule { id: "rows".into(), name: "Many rows".into(), metric: "docs".into(), op: ">".into(), threshold: 10.0, for_s: 0, severity: "critical".into(), enabled: true, description: String::new() };
+    let rule: Rule = serde_json::from_value(json!({"id": "rows", "name": "Many rows", "metric": "docs", "op": ">", "threshold": 10.0, "severity": "critical", "eval": "max", "window_s": 1})).unwrap();
     let (status, j) = call(&base, "PUT", "/v1/alerts/rules", None, Some(json!({"rules": [rule]}))).await;
     assert_eq!(status, 200, "{j}");
     assert_eq!(call(&base, "PUT", "/v1/alerts/rules", None, Some(json!({"rules": [{"id": "x", "name": "x", "metric": "docs", "op": "~", "threshold": 1}]}))).await.0, 400);
 
     svc.series.add(svc.sample());
     let p = svc.series.add(svc.sample()).unwrap();
-    let changes = svc.alerts.check(&p);
+    let changes = svc.alerts.check(&svc.series.since(0), p["t"].as_u64().unwrap());
     assert_eq!(changes.len(), 1);
     svc.alerts.notify(&changes).await;
     let (_, a) = call(&base, "GET", "/v1/alerts", None, None).await;
-    assert_eq!(a["firing"][0]["id"], "rows", "{a}");
+    assert_eq!((a["firing"].as_u64(), a["states"][0]["rule"].as_str()), (Some(1), Some("rows")), "{a}");
     assert_eq!(a["events"][0]["state"], "firing");
     let sent = got.lock().unwrap().clone();
     assert_eq!(sent.len(), 1);
