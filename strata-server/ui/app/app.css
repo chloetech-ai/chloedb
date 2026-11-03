@@ -2064,6 +2064,30 @@ a.al-goto > svg { color: var(--muted); flex: none; }
   .al-dkv td { vertical-align: middle; }
   .al-sqrow > .btn { flex: 1 1 0; justify-content: center; min-height: 40px; }
 }
+/* alerts2: copies on an old rule, a storm under its cause, each copy's line, phones */
+.al-warn { color: color-mix(in srgb, var(--warn) 55%, var(--text)); }
+.badge.al-wbadge { background: var(--warn-soft); color: color-mix(in srgb, var(--warn) 55%, var(--text)); }
+.al-fbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
+.al-heldname { display: flex; gap: 6px; align-items: flex-start; padding-left: 6px; }
+.al-under { color: var(--muted); font-family: var(--mono); line-height: 18px; }
+.al-heldwhy { color: var(--text-2); }
+tr.al-held { box-shadow: inset 3px 0 0 var(--line-2); }
+.al-chart .al-ln.cp { stroke-width: 1.6; }
+.al-chart .al-ln.cp.c0, .tip .r .k.al-k.cp.c0 { stroke: var(--s8); background: var(--s8); }
+.al-chart .al-ln.cp.c1, .tip .r .k.al-k.cp.c1 { stroke: var(--s1); background: var(--s1); }
+.al-chart .al-ln.cp.c2, .tip .r .k.al-k.cp.c2 { stroke: var(--s4); background: var(--s4); }
+.al-chart .al-ln.cp.c3, .tip .r .k.al-k.cp.c3 { stroke: var(--s7); background: var(--s7); }
+.al-chart .al-ln.cp.c4, .tip .r .k.al-k.cp.c4 { stroke: var(--s3); background: var(--s3); }
+.al-chart .al-ln.cp.c5, .tip .r .k.al-k.cp.c5 { stroke: var(--s5); background: var(--s5); }
+.al-ed-names .select { width: 100%; max-width: 100%; text-overflow: ellipsis; }
+.al-mhint { white-space: normal; }
+@media (max-width: 900px) {
+  a.al-name, .al-link.al-rlink { display: inline-flex; align-items: center; min-height: 40px; font-size: 15px; }
+  .al-cpacts .btn.xs { min-width: 40px; min-height: 40px; justify-content: center; }
+  .al-fbar .btn { flex: 1 1 100%; min-height: 40px; justify-content: center; }
+  .al-heldname { padding-left: 0; }
+  .al-under { display: none; }
+}
 /* ===== end alertsui ===== */
 /* ===== rollouts ===== */
 /* Rollouts: the status header, the version map, the version picker. */
@@ -2314,7 +2338,7 @@ textarea.input.ro-why { font-family: inherit; }
   .ac-ktable tr.ac-token { background: var(--surface-2); }
   .ac-ktable td.ac-said::before { content: none; }
   .ac-ktable tr.ac-revoked td:nth-child(4) { display: none; }
-  .ac-kact .btn.xs { min-height: 32px; min-width: 32px; }
+  .ac-kact .btn.xs { min-height: 40px; min-width: 40px; }
   .ac-alltable th:nth-child(4), .ac-alltable td:nth-child(4) { display: none; }
   .ac-allwho { max-width: 120px; }
 }
@@ -2616,6 +2640,36 @@ a.wl-chip:hover { border-color: var(--accent); }
   .wl-pick-box { width: 100%; }
   .wl-pick-row { padding: 10px 8px; }
 }
+/* round 2 (workdata) */
+.wl-linked { margin-bottom: 14px; }
+.wl-nums td.num { white-space: nowrap; }
+.wl-bands { margin-top: 12px; }
+.wl-bands-head { gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+@media (max-width: 900px) {
+  .wl-sum { padding: 12px 0; }
+  /* A link in a sentence: a taller tap area, the same lines. */
+  .content a.wl-link:not(.btn) { padding: 13px 0; }
+  /* The SQL editor wraps (no gutter; its line marks would fall elsewhere). */
+  .ed { grid-template-columns: minmax(0, 1fr); }
+  .ed-gut, .ed-cur, .ed-err, .dt-band { display: none !important; }
+  .ed-hl, .ed-ta { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ed-ta { scrollbar-width: none; }
+}
+/* Logs on a phone: the lines first; the chart and the secondary links behind chips. */
+@media (max-width: 900px) {
+  .al-logs .card.al-hist { display: none; }
+  .al-logs.al-chart-open .card.al-hist { display: block; }
+  .al-logs.al-more-open .al-wide-only { display: inline-flex; }
+  .al-logs .al-rangerow .chip, .al-logs .al-lvkey { min-height: 40px; }
+}
+/* The SQL workbench's tables: a sheet under 1,100 px. */
+.wb-tables-btn, .wb-side-close { display: none; }
+@media (max-width: 1100px) {
+  .wb-tables-btn, .wb-side-close { display: inline-flex; }
+  .wb.side-open .wb-side { display: flex; position: fixed; inset: 52px 0 0 0; z-index: 40; border-right: 0; }
+  .wb.side-open .wb-side .fi, .wb.side-open .wb-side .tt-h { min-height: 40px; }
+}
+@media (max-width: 900px) { .qtabs button { min-height: 40px; } }
 /* ===== end workload ===== */
 /* ===== cluster ===== */
 /* The Cluster canvas: tiles per shard on an SLO scale (fine is neutral, amber
@@ -2777,6 +2831,11 @@ body.cc-dragging, body.cc-dragging * { cursor: grabbing !important; user-select:
 .cc-dg { cursor: pointer; }
 .cc-dg:focus-visible rect { stroke: var(--accent); stroke-width: 2; }
 .cc-copies td { white-space: nowrap; }
+/* R2-cluster-admin-1: the server's name under the copy's, and the ⋯ menu
+   held in view at the panel's right edge however wide the table gets. */
+.cc-copies .cc2-sname { display: block; }
+.cc-copies tr:not(.cc-note) > td:last-child, .cc-copies thead th:last-child { position: sticky; right: 0; background: var(--surface); }
+.cc-copies tr.sel > td:last-child { background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--surface); }
 .cc-copies tr.cc-note td { padding-top: 0; border-top: 0; white-space: normal; }
 .cc-copies tr:has(+ tr.cc-note) td { border-bottom: 0; }
 .cc-menu { position: fixed; z-index: 85; width: 280px; padding: 4px; }
@@ -3014,8 +3073,100 @@ body.cc-dragging, body.cc-dragging * { cursor: grabbing !important; user-select:
 /* ===== end cluster ===== */
 
 /* ===== integration ===== */
-/* Views without a time axis (range: false) show no range, window, zoom or Live. */
-.top.no-range > .seg, .top.no-range > .abs, .top.no-range > .chip, .top.no-range > .live { display: none; }
+/* Views without a time axis (range: false) show no range, window or zoom; they
+   still poll, so Live / Paused / Not answering stays (R2-shell-monitor-1). */
+.top.no-range > .seg, .top.no-range > .abs, .top.no-range > .chip { display: none; }
 /* Number headers sit over their numbers ("table.t th" would set them left). */
 table.t th.num { text-align: right; }
 /* ===== end integration ===== */
+/* ===== cluster2 ===== */
+/* A plan the coordinator stopped at a restart, or that was stopped: amber; one that failed: red. */
+.cc-run.warn { border-color: var(--warn); }
+.cc-run-hd { align-items: flex-start; }
+.cc-run-hd .tools { flex-wrap: wrap; justify-content: flex-end; }
+/* A dead primary's other issues, after its way out. */
+.cc2-why-also { margin-top: 8px; padding-top: 6px; border-top: 1px solid color-mix(in srgb, currentColor 25%, transparent); color: var(--text-2); }
+.cc2-why-rest { margin: 2px 0 0; padding-left: 18px; }
+.cc2-why-rest li.crit { color: var(--crit); }
+/* A plan's steps in the Changes list. */
+.cc2-plan-steps { margin: 4px 0 0; padding-left: 18px; }
+.cc2-plan-steps li { margin: 1px 0; }
+/* A phone: each chip of the strip is a tap target 40 px tall at least (NEW-cluster-admin-14). */
+@media (max-width: 900px) {
+  .cc-chip { min-height: 40px; padding-top: 9px; padding-bottom: 9px; }
+}
+/* On a phone the page's title takes two lines rather than being cut
+   (NEW-cluster-admin-14); fleet's block hides it where the heading names the view. */
+@media (max-width: 560px) {
+  .top .crumbs > svg { display: none; }
+  .top .crumbs .ctitle { white-space: normal; line-height: 1.15; font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+}
+/* A phone: Rollouts' and Autoscaling's targets are 40 px at least, labels
+   included (NEW-cluster-admin-14). Inline links keep their line: the extra
+   is padding a negative margin takes back. */
+@media (max-width: 560px) {
+  .ro-ext { display: inline-flex; align-items: center; justify-content: center; min-width: 40px; min-height: 40px; margin: -13px -10px; }
+  .ro-only { min-height: 40px; }
+  .ro-in { padding: 12px 0; margin: -12px 0; }
+  .ro-only input { width: 18px; height: 18px; }
+  .ro-tool, .ro-cmds .btn.xs, .ro-img1 + .btn.xs { min-width: 40px; min-height: 40px; justify-content: center; }
+  .ro-map { grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); }
+  .ro-map-s { min-height: 40px; }
+  .cc-as .as-text { line-height: 2; }
+  .cc-as .as-word { display: inline-block; line-height: 20px; padding: 10px 2px; margin: -10px 0; min-width: 40px; text-align: center; }
+  .cc-as .as-day { min-height: 40px; }
+  .cc-as .as-note a, .cc-as .cc-as-own a { display: inline-block; padding: 12px 0; margin: -12px 0; }
+}
+/* The strip greys with the map while the coordinator does not answer (NEW-shell-monitor-15). */
+.cc-strip.cc2-stale .cc-chip { opacity: .5; filter: grayscale(1); }
+.cc-strip .cc2-now { border-style: dashed; }
+/* Each copy's last hour in the shard panel (FL-6). */
+.cc2-hist { display: grid; grid-template-columns: max-content 120px minmax(0, 1fr); gap: 4px 10px; align-items: center; margin-bottom: 4px; }
+.cc2-hist-row { display: contents; }
+.cc2-spark polyline { fill: none; stroke: var(--s1); stroke-width: 1.5; }
+@media (max-width: 560px) { .cc2-hist { grid-template-columns: max-content 120px; } .cc2-hist-row > .muted { grid-column: 1 / -1; margin-top: -2px; } .cc2-hist-note a { display: inline-block; padding: 12px 0; margin: -12px 0; } }
+/* ===== end cluster2 ===== */
+/* ===== fleet ===== */
+/* Charts: a pile of event markers shows its count; midnight on an axis of hours reads as a date. */
+.chart .ann-n { fill: #fff; font-size: 8.5px; font-weight: 700; pointer-events: none; }
+.chart .axis text.day { fill: var(--text); font-weight: 600; }
+/* Shell: the crumb names the cluster when the view's heading names the view (SH-12); a phone's search is a 40 px target. */
+.crumbs .ctitle, .crumbs .cname { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.crumbs .csep { color: var(--muted); font-weight: 400; }
+.crumbs .cname { color: var(--text-2); font-weight: 500; }
+.crumbs.titled .ctitle, .crumbs.titled .csep { display: none; }
+.crumbs.titled .cname { color: var(--text); font-weight: 600; }
+@media (max-width: 900px) {
+  .crumbs:not(.titled) .csep, .crumbs:not(.titled) .cname { display: none; }
+  .top .search-btn { min-height: 40px; }
+  a.home-chip { min-height: 40px; padding: 4px 10px; }
+  .crumbs.titled > svg { display: none; }
+  .home-evhead a, .home-who { min-height: 40px; }
+  .home-evhead a { display: inline-flex; align-items: center; }
+  .tl-ev::after { content: ""; position: absolute; left: -15px; top: -12px; width: 40px; height: 40px; }
+  .tl-chips .chip, .page-head .seg button { min-width: 40px; }
+  .tl-more { min-height: 40px; }
+  .palette .it .h.acts { min-height: 40px; min-width: 64px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+}
+/* Timeline: grouped repeats, raw fields behind "details". */
+.tl-more { margin-left: 6px; font-weight: 500; }
+.tl-list tr.tl-sub td { background: var(--surface-2); }
+.tl-details summary { cursor: pointer; display: inline-block; }
+.tl-raw { white-space: pre-wrap; word-break: break-all; margin: 4px 0 0; max-height: 220px; overflow: auto; background: var(--surface-2); border-radius: 6px; padding: 6px 8px; }
+/* Query path: each run a full-height button; the strip scrolls in its card; KPI lines wrap. */
+.qp-strip { gap: 4px; align-items: flex-end; }
+.qp-strip .qp-runs { flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; height: 60px; gap: 1px; scrollbar-width: thin; }
+.qp-strip .qp-run { flex: 1 0 6px; min-width: 6px; max-width: 18px; height: 56px; background: none; opacity: 1; display: flex; align-items: flex-end; border-radius: 0; }
+.qp-run i { display: block; width: 100%; background: var(--s1); opacity: .55; border-radius: 2px 2px 0 0; }
+.qp-run:hover i, .qp-run:focus-visible i { opacity: .85; }
+.qp-strip .qp-run.sel { background: none; }
+.qp-run.sel i { opacity: 1; background: var(--s2); }
+.qp-kpis .delta { white-space: normal; overflow: visible; text-overflow: clip; }
+@media (max-width: 900px) { .qp-strip .qp-run { flex: 0 0 16px; max-width: none; } }
+.home-lane .ev .ev-n { font-weight: 600; color: var(--text); }
+.home-lane .ev.left { border-left: 0; border-right: 2px solid var(--line-2); padding: 0 4px 0 0; text-align: right; transform: translateX(1px); }
+.home-lane .ev.left.accent { border-color: var(--accent); } .home-lane .ev.left.crit { border-color: var(--crit); } .home-lane .ev.left.warn { border-color: var(--warn); }
+/* ===== end fleet ===== */
+
+/* Round 2: chart legend buttons are tap targets on a phone. */
+@media (max-width: 900px) { .legend button { min-height: 40px; padding: 0 6px; } }

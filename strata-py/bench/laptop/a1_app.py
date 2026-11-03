@@ -1,6 +1,8 @@
 """Part A1 of the laptop benchmark: Strata as an app's database in one
-file, in place of SQLite (WAL, at synchronous FULL and NORMAL) and DuckDB,
-each driven from Python as an app would use it.
+file, in place of SQLite (WAL, at synchronous FULL and NORMAL), DuckDB and
+Tantivy (a search library: the app turns each statement into its queries
+and aggregations, and joins in its own code), each driven from Python as an
+app would use it.
 
     python a1_app.py --shop SHOP_DIR --work /tmp/a1 --out RESULTS_DIR [--systems strata,sqlite-full,sqlite-normal,duckdb]
 
@@ -310,8 +312,231 @@ class Duck:
         self.root.execute("CHECKPOINT")
 
 
+class TantivyA1:
+    """Tantivy (tantivy-py) as the app's store: an index per table, every
+    column stored, the columns the queries filter on indexed (keywords with
+    the raw tokenizer) and those they sort or aggregate on fast. Title,
+    description, review text and attrs are stored only (bytes fields: no
+    index, as Strata's and SQLite's text here). The app answers each of the
+    benchmark's statements with Tantivy queries and aggregations; the joins
+    are app code (an aggregation or a user's reviews, then the products by
+    id), as an app on a search library would write them. A write is a
+    delete and an add by id, a commit (which syncs the new segment and
+    meta.json) and a reload, so that the next read sees it."""
+
+    name = "tantivy"
+    notes = {
+        "join": "app code: the reviews' aggregation or a user's reviews, then their products by id",
+        "page": "ORDER BY rating only: equal ratings come in Tantivy's order, not by id",
+        "update": "the stored row read, then deleted and added again by id, committed and reloaded",
+    }
+    TEXT = ("title", "description", "attrs", "text")
+
+    def __init__(self, path: Path) -> None:
+        import tantivy
+
+        self.t, self.path = tantivy, path
+        self.version = getattr(tantivy, "__version__", "")
+        self.lock = threading.Lock()  # one writer at a time, as Tantivy has one writer per index
+        self.ix: dict = {}
+        self.w: dict = {}
+
+    def _schema(self, table: str):
+        t = self.t
+        sb = t.SchemaBuilder()
+        kw = lambda n, fast=False: sb.add_text_field(n, stored=True, fast=fast, tokenizer_name="raw")  # noqa: E731
+        num = lambda add, n: add(n, stored=True, indexed=True, fast=True)  # noqa: E731
+        if table == "products":
+            kw("id"), kw("brand", True), kw("platform"), kw("category"), kw("rated")
+            for n in ("price", "rating"):
+                num(sb.add_float_field, n)
+            for n in ("rating_count", "stock", "year"):
+                num(sb.add_integer_field, n)
+            for n in ("title", "description", "attrs"):
+                sb.add_bytes_field(n, stored=True)
+        else:
+            kw("id"), kw("user_id"), kw("product_id", True)
+            for n in ("rating", "ts", "month", "helpful", "verified"):
+                num(sb.add_integer_field, n)
+            for n in ("title", "text"):
+                sb.add_bytes_field(n, stored=True)
+        return sb.build()
+
+    def create(self) -> None:
+        for table in ("products", "reviews"):
+            d = self.path / table
+            d.mkdir(parents=True, exist_ok=True)
+            self.ix[table] = self.t.Index(self._schema(table), path=str(d))
+
+    def files(self) -> list[Path]:
+        return [self.path]
+
+    def writer(self, table: str):
+        w = self.w.get(table)
+        if w is None:
+            w = self.w[table] = self.ix[table].writer(heap_size=512_000_000)
+        return w
+
+    def doc(self, table: str, row: dict):
+        d = {}
+        for k, v in row.items():
+            if v is None:
+                continue
+            if k in self.TEXT:
+                v = (json.dumps(v) if k == "attrs" else v).encode()
+            elif table == "products" and k in ("price", "rating"):
+                v = float(v)
+            elif isinstance(v, float) and k not in ("id", "user_id", "product_id"):
+                v = int(v)
+            d[k] = v
+        return self.t.Document(**d)
+
+    @staticmethod
+    def row(d: dict) -> dict:
+        out = {}
+        for k, v in d.items():
+            v = v[0] if v else None
+            if isinstance(v, bytes):
+                v = v.decode()
+                if k == "attrs":
+                    v = json.loads(v)
+            out[k] = v
+        return out
+
+    def commit(self, table: str) -> None:
+        self.w[table].commit()
+        self.ix[table].reload()
+
+    def insert(self, table: str, rows: list[dict]) -> None:
+        with self.lock:
+            w = self.writer(table)
+            for r in rows:
+                w.add_document(self.doc(table, r))
+            self.commit(table)
+
+    def _search(self, table: str, query, limit: int, **kw) -> list[dict]:
+        s = self.ix[table].searcher()
+        return [self.row(s.doc(a).to_dict()) for _, a in s.search(query, limit, count=False, **kw).hits]
+
+    def _term(self, table: str, field: str, value):
+        return self.t.Query.term_query(self.ix[table].schema, field, value)
+
+    def _by_ids(self, ids: list[str]) -> dict[str, dict]:
+        rows = self._search("products", self.t.Query.term_set_query(self.ix["products"].schema, "id", ids), max(1, len(ids)))
+        return {r["id"]: r for r in rows}
+
+    def _range(self, table: str, field: str, lo, hi):
+        t = self.t
+        ft = t.FieldType.Float if field == "price" else t.FieldType.Integer
+        return t.Query.range_query(self.ix[table].schema, field, ft, lo, hi)
+
+    def _agg(self, table: str, query, agg: dict) -> dict:
+        return self.ix[table].searcher().aggregate(query, agg)
+
+    def q(self, sql: str, params: dict | None = None) -> list:
+        t, p = self.t, params or {}
+        cols = lambda rows, names: [tuple(r.get(n) for n in names) for r in rows]  # noqa: E731
+        if sql == GET_PRODUCT:
+            return cols(self._search("products", self._term("products", "id", p["id"]), 1), ("id", "title", "brand", "price", "rating", "stock"))
+        if sql == GET_100:
+            return cols(self._by_ids([p[f"k{i}"] for i in range(100)]).values(), ("id", "title", "brand", "price", "rating", "stock"))
+        if sql == USER_REVIEWS:
+            return cols(self._search("reviews", self._term("reviews", "user_id", p["u"]), 50, order_by_field="ts", order=t.Order.Desc), ("id", "product_id", "rating", "ts"))
+        if sql.startswith(PAGE.split("{off}")[0]):
+            off = int(sql.rsplit("OFFSET", 1)[1])
+            query = t.Query.boolean_query([(t.Occur.Must, self._term("products", "category", p["c"])), (t.Occur.Must, self._range("products", "price", float(p["lo"]), float(p["hi"])))])
+            return cols(self._search("products", query, 20, offset=off, order_by_field="rating", order=t.Order.Desc), ("id", "title", "price", "rating"))
+        if sql == AGG_BRAND:
+            agg = {"b": {"terms": {"field": "brand", "size": 1000, "segment_size": 100000, "min_doc_count": 20}, "aggs": {"r": {"avg": {"field": "rating"}}}}}
+            bs = self._agg("products", t.Query.all_query(), agg)["b"]["buckets"]
+            return sorted([(b["key"], b["r"]["value"], b["doc_count"]) for b in bs], key=lambda r: (-r[2], r[0]))[:20]
+        if sql == AGG_MONTH:
+            agg = {"m": {"terms": {"field": "month", "size": 100000}, "aggs": {"r": {"avg": {"field": "rating"}}}}}
+            bs = self._agg("reviews", t.Query.all_query(), agg)["m"]["buckets"]
+            return sorted((int(b["key"]), b["doc_count"], b["r"]["value"]) for b in bs)
+        if sql == JOIN_TOP:
+            agg = {"p": {"terms": {"field": "product_id", "size": 100, "segment_size": 100000}}}
+            bs = sorted(((b["key"], b["doc_count"]) for b in self._agg("reviews", t.Query.all_query(), agg)["p"]["buckets"]), key=lambda r: (-r[1], r[0]))[:10]
+            prods = self._by_ids([k for k, _ in bs])
+            return [(k, prods[k]["title"], n) for k, n in bs if k in prods]
+        if sql == JOIN_USER:
+            revs = self._search("reviews", self._term("reviews", "user_id", p["u"]), 50, order_by_field="ts", order=t.Order.Desc)
+            prods = self._by_ids(sorted({r["product_id"] for r in revs}))
+            rows = [(r["product_id"], prods[r["product_id"]]["title"], r["rating"], r["ts"]) for r in revs if r["product_id"] in prods]
+            return sorted(rows, key=lambda r: (-r[3], r[0]))
+        if sql == "SELECT COUNT(*) FROM reviews WHERE ts >= 1800000000000":
+            return [(self.ix["reviews"].searcher().search(self._range("reviews", "ts", 1_800_000_000_000, 2**62), 1, count=True).count,)]
+        if sql == "SELECT rating_count FROM products WHERE id = :id":
+            return cols(self._search("products", self._term("products", "id", p["id"]), 1), ("rating_count",))
+        raise ValueError(f"tantivy: no translation of {sql!r}")
+
+    def _rewrite(self, key: str, change) -> int:
+        """The product's stored row changed by `change`, deleted and added again, in one commit."""
+        with self.lock:
+            rows = self._search("products", self._term("products", "id", key), 1)
+            if not rows:
+                return 0
+            w = self.writer("products")
+            w.delete_documents_by_term("id", key)
+            w.add_document(self.doc("products", change(rows[0])))
+            self.commit("products")
+            return 1
+
+    def x(self, sql: str, params: dict | None = None) -> int:
+        p = params or {}
+        if sql == UPDATE_PRICE:
+            return self._rewrite(p["id"], lambda r: {**r, "price": p["p"], "stock": p["s"]})
+        if sql == UPDATE_COUNTER:
+            return self._rewrite(p["id"], lambda r: {**r, "rating_count": (r.get("rating_count") or 0) + 1})
+        if sql == DELETE_RANGE:
+            with self.lock:
+                query = self._range("reviews", "ts", p["lo"], p["hi"])
+                n = self.ix["reviews"].searcher().search(query, 1, count=True).count
+                self.writer("reviews").delete_documents_by_query(query)
+                self.commit("reviews")
+                return n
+        raise ValueError(f"tantivy: no translation of {sql!r}")
+
+    def delete_one(self, table: str, key: str) -> None:
+        with self.lock:
+            self.writer(table).delete_documents_by_term("id", key)
+            self.commit(table)
+
+    def bump_stock(self, keys: list[str]) -> None:
+        """stock + 1 for 1,000 products in one commit (the footprint step)."""
+        with self.lock:
+            rows = self._by_ids(keys)
+            w = self.writer("products")
+            for k, r in rows.items():
+                w.delete_documents_by_term("id", k)
+                w.add_document(self.doc("products", {**r, "stock": (r.get("stock") or 0) + 1}))
+            self.commit("products")
+
+    def optimize(self) -> None:
+        # Wait for the merges under way and drop the files no segment uses;
+        # tantivy-py has no call that merges every segment into one.
+        with self.lock:
+            for table in list(self.w):
+                w = self.w.pop(table)
+                w.commit()
+                w.wait_merging_threads()
+                self.writer(table).garbage_collect_files()
+                self.ix[table].reload()
+
+    def close(self) -> None:
+        with self.lock:
+            for w in self.w.values():
+                w.wait_merging_threads()
+            self.w, self.ix = {}, {}
+
+    def reopen(self) -> None:
+        self.ix = {table: self.t.Index.open(str(self.path / table)) for table in ("products", "reviews")}
+
+
 def make(name: str, work: Path):
     work.mkdir(parents=True, exist_ok=True)
+    if name == "tantivy":
+        return TantivyA1(work / "shop.tantivy")
     if name == "strata":
         return Strata(work / "shop.strata")
     if name == "sqlite-full":
@@ -539,7 +764,9 @@ def run(name: str, shop: Path, work: Path, seconds: float, limit_reviews: int | 
     t0 = time.perf_counter()
     for i in range(0, len(touched), 1000):
         chunk = touched[i : i + 1000]
-        if name == "strata":
+        if hasattr(s, "bump_stock"):
+            s.bump_stock(chunk)
+        elif name == "strata":
             # One transaction of 1,000 updates, as the others do.
             s.db.sql("UPDATE products SET stock = stock + 1 WHERE id IN (" + ", ".join(f"'{k}'" for k in chunk) + ")")
         elif name == "duckdb":

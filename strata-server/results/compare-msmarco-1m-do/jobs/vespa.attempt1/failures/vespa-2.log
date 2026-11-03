@@ -1,0 +1,116 @@
+Starting config proxy using tcp/vespa-0.vespa.vespa.svc.cluster.local:19070 as config source(s)
+Waiting for config proxy to start on 'vespa-2.vespa.vespa.svc.cluster.local'
+runserver(configproxy) running with pid: 36
+config proxy started after 0s (runserver pid 36)
+Starting services for VESPA_HOSTNAME='vespa-2.vespa.vespa.svc.cluster.local'
+runserver(config-sentinel) running with pid: 131
+[2026-11-03 03:21:50.651] EVENT   -                runserver	starting/1 name="libexec/vespa/vespa-wrapper just-run-configproxy (pid 37)"
+[2026-11-03 03:21:50.719] INFO    configproxy      just-run-configproxy	JVM env:  LD_LIBRARY_PATH=/opt/vespa/lib64:/opt/vespa-deps/lib64 MALLOC_ARENA_MAX=1 VESPA_LOG_CONTROL_DIR=/opt/vespa/var/db/vespa/logcontrol VESPA_LOG_CONTROL_FILE=/opt/vespa/var/db/vespa/logcontrol/configproxy.logcontrol VESPA_LOG_TARGET=file:/opt/vespa/logs/vespa/vespa.log VESPA_SERVICE_NAME=configproxy
+[2026-11-03 03:21:50.719] INFO    configproxy      just-run-configproxy	JVM exec: [java -XX:+ExitOnOutOfMemoryError -XX:+PreserveFramePointer -XX:CompressedClassSpaceSize=32m -XX:MaxDirectMemorySize=32m -XX:ThreadStackSize=448 -XX:MaxJavaStackTraceDepth=1000 -XX:-OmitStackTraceInFastThrow -XX:ActiveProcessorCount=2 -Dproxyconfigsources=tcp/vespa-0.vespa.vespa.svc.cluster.local:19070 -Djava.io.tmpdir=/opt/vespa/var/tmp -Xms32m -Xmx64m -XX:+UseTransparentHugePages -cp /opt/vespa/lib/jars/config-proxy-jar-with-dependencies.jar com.yahoo.vespa.config.proxy.ProxyServer 19090]
+[2026-11-03 03:21:50.888] EVENT   configproxy      configproxy.com.yahoo.vespa.config.proxy.ProxyServer	started/1 name=configproxy
+[2026-11-03 03:21:50.952] INFO    configproxy      configproxy.com.yahoo.vespa.config.proxy.RpcConfigSourceClient	Could not connect to config source at tcp/vespa-0.vespa.vespa.svc.cluster.local:19070
+[2026-11-03 03:21:50.955] INFO    configproxy      configproxy.com.yahoo.vespa.config.proxy.RpcConfigSourceClient	Could not connect to any config source in set [tcp/vespa-0.vespa.vespa.svc.cluster.local:19070], please make sure config server(s) are running.
+[2026-11-03 03:21:51.144] EVENT   config-sentinel  runserver	starting/1 name="sbin/vespa-config-sentinel -c hosts/vespa-2.vespa.vespa.svc.cluster.local (pid 132)"
+[2026-11-03 03:21:51.165] EVENT   config-sentinel  sentinel.config-sentinel	started/1 name="config-sentinel"
+[2026-11-03 03:21:59.950] INFO    configproxy      configproxy.com.yahoo.vespa.config.JRTConnection	Connecting to tcp/vespa-0.vespa.vespa.svc.cluster.local:19070
+[2026-11-03 03:22:06.969] INFO    configproxy      configproxy.com.yahoo.vespa.config.proxy.DelayedResponseHandler	Timed out (timeout 15000) getting config name=cloud.config.sentinel,configId=hosts/vespa-2.vespa.vespa.svc.cluster.local, will retry
+[2026-11-03 03:22:11.188] INFO    config-sentinel  sentinel.config.frt.frtconfigagent	No response / error from config server. This is normal before an application package is deployed. (key: name=cloud.config.sentinel,configId=hosts/vespa-2.vespa.vespa.svc.cluster.local) (errcode=103, validresponse:0), trying again in 6.000000 seconds
+[2026-11-03 03:22:12.780] INFO    configproxy      configproxy.com.yahoo.vespa.config.JRTConnection	Connecting to tcp/vespa-0.vespa.vespa.svc.cluster.local:19070
+[2026-11-03 03:22:17.252] CONFIG  config-sentinel  sentinel.sentinel.config-owner	Sentinel got 4 service elements [tenant(default), application(default), instance(default)] for config generation 2
+[2026-11-03 03:22:17.252] CONFIG  config-sentinel  sentinel.sentinel.env	Booting sentinel 'hosts/vespa-2.vespa.vespa.svc.cluster.local' with [stateserver port 19098] and [rpc port 19097]
+[2026-11-03 03:22:17.252] CONFIG  config-sentinel  sentinel.sentinel.rpcserver	listening on port 19097
+[2026-11-03 03:22:17.252] CONFIG  config-sentinel  sentinel.sentinel.model-owner	Sentinel got model info [version 8.778.45] for 3 hosts [config generation 2]
+[2026-11-03 03:22:17.252] CONFIG  config-sentinel  sentinel.sentinel.connectivity	connectivity.maxBadCount = 1
+[2026-11-03 03:22:17.253] CONFIG  config-sentinel  sentinel.sentinel.connectivity	connectivity.minOkPercent = 50
+[2026-11-03 03:22:17.253] CONFIG  config-sentinel  sentinel.sentinel.connectivity	connectivity.ignore = false
+[2026-11-03 03:22:17.264] INFO    config-sentinel  sentinel.sentinel.connectivity	Connectivity check details: vespa-0.vespa.vespa.svc.cluster.local -> OK: both ways connectivity verified
+[2026-11-03 03:22:17.264] INFO    config-sentinel  sentinel.sentinel.connectivity	Connectivity check details: vespa-1.vespa.vespa.svc.cluster.local -> failed to connect
+[2026-11-03 03:22:17.264] INFO    config-sentinel  sentinel.sentinel.connectivity	Connectivity check details: vespa-2.vespa.vespa.svc.cluster.local -> OK: both ways connectivity verified
+[2026-11-03 03:22:17.264] INFO    config-sentinel  sentinel.sentinel.connectivity	Enough connectivity checks OK, proceeding with service startup
+[2026-11-03 03:22:17.265] EVENT   config-sentinel  sentinel.sentinel.service	starting/1 name="searchnode"
+[2026-11-03 03:22:17.267] EVENT   config-sentinel  sentinel.sentinel.service	starting/1 name="distributor"
+[2026-11-03 03:22:17.267] EVENT   config-sentinel  sentinel.sentinel.service	starting/1 name="metricsproxy-container"
+[2026-11-03 03:22:17.269] EVENT   config-sentinel  sentinel.sentinel.service	starting/1 name="logd"
+[2026-11-03 03:22:17.304] EVENT   logd             logdemon	started/1 name="logdemon"
+[2026-11-03 03:22:17.514] INFO    metricsproxy-container vespa-start-container-daemon	JVM env:  LD_LIBRARY_PATH=/opt/vespa/lib64:/opt/vespa-deps/lib64 MALLOC_ARENA_MAX=1 VESPA_CONFIG_ID=admin/metrics/vespa-2.vespa.vespa.svc.cluster.local VESPA_LOG_CONTROL_DIR=/opt/vespa/var/db/vespa/logcontrol VESPA_LOG_CONTROL_FILE=/opt/vespa/var/db/vespa/logcontrol/metricsproxy-container.logcontrol VESPA_LOG_TARGET=file:/opt/vespa/logs/vespa/vespa.log VESPA_SERVICE_NAME=metricsproxy-container
+[2026-11-03 03:22:17.514] INFO    metricsproxy-container vespa-start-container-daemon	JVM exec: [java -Dconfig.id=admin/metrics/vespa-2.vespa.vespa.svc.cluster.local -Djdisc.export.packages= -XX:+PreserveFramePointer -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/opt/vespa/var/crash -XX:ErrorFile=/opt/vespa/var/crash/hs_err_pid%p.log -XX:+ExitOnOutOfMemoryError -XX:MaxJavaStackTraceDepth=1000000 -XX:-OmitStackTraceInFastThrow --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/jdk.internal.loader=ALL-UNNAMED --add-opens=java.base/sun.security.ssl=ALL-UNNAMED -Djava.io.tmpdir=/opt/vespa/var/tmp -Djava.library.path=/opt/vespa/lib64:/opt/vespa-deps/lib64 -Djava.security.properties=/opt/vespa/conf/vespa/java.security.override -Djava.awt.headless=true -Dsun.rmi.dgc.client.gcInterval=3600000 -Dsun.net.client.defaultConnectTimeout=5000 -Dsun.net.client.defaultReadTimeout=60000 -Djavax.net.ssl.keyStoreType=JKS -Djdk.tls.rejectClientInitiatedRenegotiation=true -Dfile.encoding=UTF-8 -Dorg.apache.commons.logging.Log=org.apache.commons.logging.impl.Jdk14Logger -XX:ActiveProcessorCount=1 -Xms32m -Xmx256m -XX:ThreadStackSize=512 -XX:MaxDirectMemorySize=48m -XX:+UseTransparentHugePages -XX:CompressedClassSpaceSize=32m --add-modules=jdk.incubator.foreign -Djdisc.bundle.path=/opt/vespa/lib/jars -Djdisc.logger.enabled=false -Djdisc.logger.level=WARNING -Dvespa.log.control.dir=/opt/vespa/var/db/vespa/logcontrol -Djdisc.config.file=/opt/vespa/var/jdisc_container/62d6d65279c3973efc47d0febf2a7300/jdisc.properties -Djdisc.cache.path=/opt/vespa/var/jdisc_container/62d6d65279c3973efc47d0febf2a7300/bundlecache -Djdisc.logger.tag=admin/metrics/vespa-2.vespa.vespa.svc.cluster.local -cp /opt/vespa/lib/jars/jdisc_core-jar-with-dependencies.jar com.yahoo.jdisc.core.StandaloneMain file:/opt/vespa/lib/jars/container-disc-jar-with-dependencies.jar]
+[2026-11-03 03:22:17.617] WARNING metricsproxy-container stderr	WARNING: Using incubator modules: jdk.incubator.foreign
+[2026-11-03 03:22:17.905] INFO    searchnode       proton.proton.server.bootstrapconfigmanager	Filedistributorrpc config is changed
+[2026-11-03 03:22:18.877] INFO    metricsproxy-container Container.com.yahoo.container.jdisc.ConfiguredApplication	Starting jdisc at version 8.778.45
+[2026-11-03 03:22:19.062] CONFIG  searchnode       proton.translogserverapp	configure Transaction Log Server tls at port 19108\nDomainConfig {encoding={2, 3}, compression_level=3, part_limit=50000000, chunk_limit=256000}
+[2026-11-03 03:22:19.070] CONFIG  searchnode       proton.translogserverapp	configure Transaction Log Server tls at port 19108\nDomainConfig {encoding={2, 3}, compression_level=3, part_limit=50000000, chunk_limit=256000}
+[2026-11-03 03:22:19.074] INFO    searchnode       proton.proton.server.proton	Start initializing components: threads=2, configured=2
+[2026-11-03 03:22:19.074] INFO    searchnode       proton.proton.server.proton	Add document database: doctypename(doc), configid(docs/search/cluster.docs/doc)
+[2026-11-03 03:22:19.246] EVENT   searchnode       proton.proton.common.eventlogger	state/1 name="load.documentstore.start" value="{"documentsubdb":"doc.0.ready"}"
+[2026-11-03 03:22:19.252] EVENT   searchnode       proton.proton.common.eventlogger	state/1 name="load.documentstore.complete" value="{"documentsubdb":"doc.0.ready","time.elapsed.ms":5}"
+[2026-11-03 03:22:19.254] EVENT   searchnode       proton.proton.common.eventlogger	state/1 name="load.documentstore.start" value="{"documentsubdb":"doc.1.removed"}"
+[2026-11-03 03:22:19.255] EVENT   searchnode       proton.proton.common.eventlogger	state/1 name="load.documentstore.start" value="{"documentsubdb":"doc.2.notready"}"
+[2026-11-03 03:22:19.259] EVENT   searchnode       proton.proton.common.eventlogger	state/1 name="load.documentstore.complete" value="{"documentsubdb":"doc.1.removed","time.elapsed.ms":5}"
+[2026-11-03 03:22:19.260] EVENT   searchnode       proton.proton.common.eventlogger	state/1 name="load.documentstore.complete" value="{"documentsubdb":"doc.2.notready","time.elapsed.ms":4}"
+[2026-11-03 03:22:19.265] EVENT   searchnode       proton.proton.common.eventlogger	state/1 name="transactionlog.replay.start" value="{"domain":"doc","serialnum":{"first":1,"last":2}}"
+[2026-11-03 03:22:19.272] INFO    searchnode       proton.searchlib.docstore.logdatastore	Flushing. Disk bloat is now at 0 of 4728 at 0.00 percent
+[2026-11-03 03:22:19.275] INFO    searchnode       proton.searchlib.docstore.logdatastore	Flushing. Disk bloat is now at 0 of 4736 at 0.00 percent
+[2026-11-03 03:22:19.277] INFO    searchnode       proton.searchlib.docstore.logdatastore	Flushing. Disk bloat is now at 0 of 4736 at 0.00 percent
+[2026-11-03 03:22:19.278] EVENT   searchnode       proton.proton.common.eventlogger	state/1 name="transactionlog.replay.complete" value="{"domain":"doc","time.elapsed.ms":13}"
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'default' field 'id'
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'default' field 'title'
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'default' field 'text'
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'default' field 'year'
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'default' field 'category'
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'default' field 'rating'
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'default' field 'topic'
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'default' field 'rankfeatures'
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'default' field 'summaryfeatures'
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'default' field 'documentid'
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'minimal' field 'id'
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'minimal' field 'rankfeatures'
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'minimal' field 'summaryfeatures'
+[2026-11-03 03:22:19.309] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'lookup' field 'id'
+[2026-11-03 03:22:19.310] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'lookup' field 'title'
+[2026-11-03 03:22:19.310] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'lookup' field 'year'
+[2026-11-03 03:22:19.310] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'lookup' field 'rating'
+[2026-11-03 03:22:19.310] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'lookup' field 'rankfeatures'
+[2026-11-03 03:22:19.310] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'lookup' field 'summaryfeatures'
+[2026-11-03 03:22:19.310] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'attributeprefetch' field 'id'
+[2026-11-03 03:22:19.310] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'attributeprefetch' field 'year'
+[2026-11-03 03:22:19.310] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'attributeprefetch' field 'category'
+[2026-11-03 03:22:19.310] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'attributeprefetch' field 'rating'
+[2026-11-03 03:22:19.310] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'attributeprefetch' field 'topic'
+[2026-11-03 03:22:19.310] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'attributeprefetch' field 'rankfeatures'
+[2026-11-03 03:22:19.310] INFO    searchnode       proton.searchlib.docsummary.resultconfig	Reconfiguring class 'attributeprefetch' field 'summaryfeatures'
+[2026-11-03 03:22:19.311] INFO    searchnode       proton.proton.server.documentdb	DocumentDB(doc): Applied config, state=APPLY_LIVE_CONFIG, config_state=OK, saved=no, serialNum=2, 0.004s of 0.023s in write thread
+[2026-11-03 03:22:19.340] INFO    distributor      vds.slobrok.mirror	successfully connected to location broker tcp/vespa-0.vespa.vespa.svc.cluster.local:19099 (mirror initialized with 0 service names)
+[2026-11-03 03:22:19.358] INFO    searchnode       proton.proton.server.proton	Done initializing components
+[2026-11-03 03:22:19.359] INFO    searchnode       proton.proton.server.proton	Estimated maximum memory usage during transaction log replay was 0 bytes. Soft limit was 740881858 bytes
+[2026-11-03 03:22:19.359] EVENT   searchnode       proton.proton.common.eventlogger	state/1 name="flush.prune" value="{"name":"doc.2.notready.documentmetastore.flush","serialnum":{"oldestflushed":0}}"
+[2026-11-03 03:22:19.449] INFO    searchnode       proton.slobrok.register	[RPC @ tcp/vespa-2.vespa.vespa.svc.cluster.local:19103] registering docs/search/cluster.docs/1/realtimecontroller with location broker tcp/vespa-0.vespa.vespa.svc.cluster.local:19099 completed successfully
+[2026-11-03 03:22:19.740] INFO    distributor      vds.slobrok.mirror	successfully connected to location broker tcp/vespa-0.vespa.vespa.svc.cluster.local:19099 (mirror initialized with 1 service names)
+[2026-11-03 03:22:19.742] INFO    distributor      vds.slobrok.register	[RPC @ tcp/vespa-2.vespa.vespa.svc.cluster.local:19109] registering storage/cluster.docs/distributor/1/default with location broker tcp/vespa-0.vespa.vespa.svc.cluster.local:19099 completed successfully
+[2026-11-03 03:22:19.749] INFO    distributor      vds.slobrok.register	[RPC @ tcp/vespa-2.vespa.vespa.svc.cluster.local:19110] registering storage/cluster.docs/distributor/1 with location broker tcp/vespa-0.vespa.vespa.svc.cluster.local:19099 completed successfully
+[2026-11-03 03:22:20.064] INFO    distributor      vds.status	Starting status web server on port 19111.
+[2026-11-03 03:22:20.065] CONFIG  distributor      vds.status	Status pages now available on port 19111
+[2026-11-03 03:22:20.977] INFO    searchnode       proton.persistence.filestor.manager	Using maintenance operation throttling: DynamicThrottleParams(window_size_increment=10, min_window_size=10, max_window_size=2147483647, resize_rate=2, window_size_decrement_factor=1.2, window_size_backoff=0.95)
+[2026-11-03 03:22:20.978] INFO    searchnode       proton.persistence.filestor.manager	Completed listing of 0 buckets in 0.027 milliseconds
+[2026-11-03 03:22:20.979] INFO    searchnode       proton.node.server	Storage node ready. Done initializing. Giving out of sequence metric event. Config id is docs/storage/1
+[2026-11-03 03:22:20.979] EVENT   searchnode       proton.node.server	started/1 name="storagenode"
+[2026-11-03 03:22:21.748] INFO    searchnode       proton.slobrok.mirror	successfully connected to location broker tcp/vespa-0.vespa.vespa.svc.cluster.local:19099 (mirror initialized with 3 service names)
+[2026-11-03 03:22:24.641] INFO    searchnode       proton.slobrok.register	[RPC @ tcp/vespa-2.vespa.vespa.svc.cluster.local:19100] registering storage/cluster.docs/storage/1/default with location broker tcp/vespa-0.vespa.vespa.svc.cluster.local:19099 completed successfully
+[2026-11-03 03:22:24.642] INFO    searchnode       proton.slobrok.mirror	successfully connected to location broker tcp/vespa-0.vespa.vespa.svc.cluster.local:19099 (mirror initialized with 3 service names)
+[2026-11-03 03:22:24.642] INFO    searchnode       proton.slobrok.register	[RPC @ tcp/vespa-2.vespa.vespa.svc.cluster.local:19101] registering storage/cluster.docs/storage/1 with location broker tcp/vespa-0.vespa.vespa.svc.cluster.local:19099 completed successfully
+[2026-11-03 03:22:25.458] INFO    searchnode       proton.status	Starting status web server on port 19102.
+[2026-11-03 03:22:25.460] CONFIG  searchnode       proton.status	Status pages now available on port 19102
+[2026-11-03 03:22:25.461] EVENT   searchnode       proton	started/1 name="servicelayer"
+[2026-11-03 03:22:25.461] EVENT   searchnode       proton	started/1 name="proton"
+[2026-11-03 03:22:25.867] CONFIG  metricsproxy-container Container.com.yahoo.metrics.simple.MetricManager	setting up simple metrics gathering. reportPeriodSeconds=60, pointsToKeepPerMetric=100
+[2026-11-03 03:22:26.102] INFO    searchnode       proton.metrics.manager	Metrics registration changes detected. Handling changes.
+[2026-11-03 03:22:26.148] INFO    metricsproxy-container Container.com.yahoo.jdisc.http.server.jetty.JettyHttpServer	Threadpool size: min=4, max=4
+[2026-11-03 03:22:26.484] CONFIG  metricsproxy-container Container.com.yahoo.container.handler.threadpool.ContainerThreadpoolImpl	Threadpool 'default-handler-common': min=2, max=2, queue=80
+[2026-11-03 03:22:26.525] INFO    metricsproxy-container Container.com.yahoo.container.jdisc.state.StateMonitor	Changing health status code from 'initializing' to 'up'
+[2026-11-03 03:22:26.618] INFO    metricsproxy-container Container.com.yahoo.container.jdisc.ConfiguredApplication	Switching to the latest deployed set of configurations and components. Application config generation: 2
+[2026-11-03 03:22:26.624] INFO    metricsproxy-container Container.com.yahoo.container.jdisc.ConfiguredApplication	Registered name 'vespa/service/admin/metrics/vespa-2.vespa.vespa.svc.cluster.local' at tcp/vespa-2.vespa.vespa.svc.cluster.local:19094 with: [tcp/vespa-0.vespa.vespa.svc.cluster.local:19099]
+[2026-11-03 03:22:26.650] INFO    metricsproxy-container Container.com.yahoo.jrt.slobrok.api.Register	[RPC @ tcp/vespa-2.vespa.vespa.svc.cluster.local:19094] registering vespa/service/admin/metrics/vespa-2.vespa.vespa.svc.cluster.local with location broker tcp/vespa-0.vespa.vespa.svc.cluster.local:19099 completed successfully
+[2026-11-03 03:22:27.353] INFO    logd             logdemon	state server listening on port 19089
+[2026-11-03 03:23:20.854] INFO    searchnode       proton.state.manager	Transitioning from baseline state 'Down' to 'Up'  (cluster state version 2)
+[2026-11-03 03:23:20.862] INFO    distributor      vds.node.server	Distributor node ready. Done initializing. Giving out of sequence metric event. Config id is docs/distributor/1
+[2026-11-03 03:23:20.862] EVENT   distributor      vds.node.server	started/1 name="distributor"
+[2026-11-03 03:23:20.862] INFO    distributor      vds.state.manager	Transitioning from baseline state 'Down' to 'Up'  (cluster state version 2)

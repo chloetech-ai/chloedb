@@ -1,0 +1,46 @@
+service/postgres created
+pod/postgres-0 created
+pod/postgres-0 condition met
+job.batch/load-postgres created
+postgres: index created in 0.0 s
+postgres: 25000 documents sent, 4 s
+postgres: 50000 documents sent, 7 s
+postgres: 75000 documents sent, 10 s
+postgres: 100000 documents sent, 14 s
+postgres: 125000 documents sent, 17 s
+postgres: 150000 documents sent, 20 s
+postgres: 175000 documents sent, 24 s
+postgres: 200000 documents sent, 28 s
+postgres: 225000 documents sent, 31 s
+postgres: 250000 documents sent, 34 s
+postgres: 275000 documents sent, 38 s
+postgres: 300000 documents sent, 41 s
+postgres: 325000 documents sent, 44 s
+postgres: 350000 documents sent, 47 s
+postgres: 375000 documents sent, 51 s
+postgres: 400000 documents sent, 54 s
+postgres: 425000 documents sent, 57 s
+postgres: 450000 documents sent, 60 s
+postgres: 475000 documents sent, 64 s
+postgres: 500000 documents sent, 67 s
+postgres: 525000 documents sent, 70 s
+postgres: 550000 documents sent, 74 s
+postgres: 575000 documents sent, 77 s
+postgres: 600000 documents sent, 80 s
+postgres: 625000 documents sent, 83 s
+postgres: 650000 documents sent, 87 s
+postgres: 675000 documents sent, 90 s
+postgres: 700000 documents sent, 93 s
+postgres: 725000 documents sent, 97 s
+postgres: 750000 documents sent, 100 s
+postgres: 775000 documents sent, 103 s
+postgres: 800000 documents sent, 106 s
+postgres: 825000 documents sent, 109 s
+postgres: 850000 documents sent, 113 s
+postgres: 875000 documents sent, 116 s
+postgres: 900000 documents sent, 119 s
+postgres: 925000 documents sent, 122 s
+postgres: 950000 documents sent, 125 s
+postgres: 975000 documents sent, 129 s
+error: bulk: ERROR 08P01: invalid message format
+job load-postgres failed

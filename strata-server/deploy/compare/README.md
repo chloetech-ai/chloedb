@@ -53,9 +53,10 @@ Elasticsearch and Solr, 28 October 2026) are in
   to 5 s (from a loader pod on the third node, outside the budget; with
   every put of a 500-document batch at once, the first 1M NQ load failed
   at 850,000 with puts refused for 20 s on end),
-  and Strata builds its shards one after the other in a job of 3 CPUs and 6
-  GiB on the shard's node (a shard's build holds its documents in memory;
-  two at once in 3 GiB each ran out of memory).
+  and Strata builds each shard in a job on the shard's node, reading the
+  documents from the files as it builds a segment of each 500K of them
+  (`build --segment-docs`; holding a shard's documents and its one segment
+  at once took about 15 KB a document, 7.8 GB at 500K).
 - **Text analysis**: Strata's, rebuilt in the others: words are runs of
   letters and digits, lowercased and folded to ASCII, minus Lucene's classic
   English stopwords, stemmed with Snowball English (Porter 2); ranked
@@ -74,7 +75,11 @@ Elasticsearch and Solr, 28 October 2026) are in
   from disk when memory is short (Vespa warns that paged HNSW vectors are
   slow when they do not fit), with `targetHits` 10 and
   `exploreAdditionalHits` 54.
-- **One segment per shard**: Strata builds its shards as one segment each;
+- **Segments**: Strata builds its shards as one segment each
+  up to 500K documents; a bigger shard is loaded in segments of 500K and
+  then compacted as `optimize` does, into segments of up to Strata's cap of
+  2M documents (a 5M shard at 10M: 2M, 2M and 1M), since merging into one
+  would take more memory than the node has;
   Elasticsearch and OpenSearch are force-merged and Solr optimized to one
   segment after loading. Vespa has no segments to merge: a document is
   searchable once its put returns, and proton flushes and compacts on its
@@ -101,7 +106,7 @@ Elasticsearch and Solr, 28 October 2026) are in
 | hybrid (weighted) | `0.2 * minmax(bm25) + 0.8 * minmax(similarity)`, each min-max normalised over the union of their top 100 | no normalised fusion on the free licence: `match` (boost 0.2) plus `knn` (k 100, boost 0.8), raw scores summed | `{!bool should=...}` of the two, boosted the same (0.44 for BM25, since Solr's BM25 leaves out the factor k1 + 1 = 2.2 that Strata's and Elasticsearch's keep), raw scores summed |
 | boosted | `bm25(body, :t) * decay(year, 2024, 5)` | `function_score` with an `exp` decay, multiplied | `{!boost}` by `exp(ln(0.5) / 5 * abs(year - 2024))` |
 | facet | `GROUP BY category` over `MATCH(body, :w)`, top 5 | `terms` aggregation, size 5 | JSON facet, `terms`, limit 5 |
-| key lookup | `WHERE id = :k` | `term` query on `id` | `{!term f=id}` |
+| key lookup | `POST /v1/kv/get` of the key, the read by key without SQL (the 1M run of 2026-11-03 sent `WHERE id = :k` to `/v1/query`) | `term` query on `id` | `{!term f=id}` |
 | phrase | `bm25(body, '+"a b" words')`: two kept words of the query in a row are required, the rest rank | `match_phrase` in `must`, `match` in `should` | `+"a b" words` |
 | typo | `bm25(body, :x, fuzzy => 'auto')`, the query with two letters of its longest word swapped | `match` with `fuzziness: AUTO` | each word `~1` or `~2`, as `AUTO` would |
 | prefix | `WHERE MATCH(body, 'pre*')`: the first three letters of the query's last word, ranked by the words before it | `prefix` filter, `match` | `fq=body:pre*` |

@@ -1,0 +1,2 @@
+{"node": "postgres-r-d-a1-3ee6k3", "cpu": "Intel(R) Xeon(R) Platinum 8280 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 65853632, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 19.901, "sha256_1g_x_vcpus_s": 10.31, "disk_write_2g_s": 1.059, "copy_ms": 0, "time": 1793680811, "size": "m-8vcpu-64gb"}
+{"node": "postgres-r-c-a1-3ee6k8", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382188, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.098, "sha256_1g_x_vcpus_s": 11.25, "disk_write_2g_s": 2.158, "copy_ms": 55052, "time": 1793680875, "size": "c-8"}

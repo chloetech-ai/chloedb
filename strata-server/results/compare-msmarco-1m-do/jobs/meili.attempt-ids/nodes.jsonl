@@ -1,0 +1,2 @@
+{"node": "meili-d-a1-3eeyhw", "cpu": "Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz", "vcpus": 8, "mem_kb": 65853636, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 22.534, "sha256_1g_x_vcpus_s": 11.335, "disk_write_2g_s": 0.684, "copy_ms": 0, "time": 1793675585, "size": "m-8vcpu-64gb"}
+{"node": "meili-c-a1-3eeyhg", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382176, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.909, "sha256_1g_x_vcpus_s": 11.355, "disk_write_2g_s": 2.187, "copy_ms": 38804, "time": 1793675626, "size": "c-8"}

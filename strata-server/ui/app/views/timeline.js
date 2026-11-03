@@ -6,7 +6,7 @@
 
 import { h, icon, clear, fmt, every, api, bus, seg, toast, modal, can, needs, link, when, whenTitle, span, copy, card, empty, tipOn } from "../core.js";
 import { timeChart, SERIES } from "../charts.js";
-import { state, visible, domain, setZoom, setRange, setWindow, timeRange, rangeParams, fresh, firingAlerts } from "../data.js";
+import { state, visible, domain, setZoom, setRange, setWindow, timeRange, rangeParams, fresh, firingAlerts, overnight } from "../data.js";
 import { eventLink, kindName, kindTone } from "./overview.js";
 
 export default { id: "timeline", title: "Timeline", icon: "timeline", group: "Operate", keywords: "timeline events history what changed overnight failover primary copy down rollout audit changes notes incident postmortem", render, onParams };
@@ -32,7 +32,8 @@ function onParams(r) { reopen?.(r); }
 function render(page, r0) {
   let shardFilter = r0.params.get("shard"), focusId = r0.params.get("event");
   const hidden = new Set(JSON.parse(localStorage.getItem("strata.cc.tl.hidden") || "[]"));
-  let events = [], source = "events", stats = [], q = "";
+  let events = [], source = "events", stats = [], statsSince = null, q = "";
+  const open = new Set(); // grouped rows shown in full
 
   const presets = seg([["1h", "1h"], ["6h", "6h"], ["overnight", "Overnight"], ["24h", "24h"], ["7d", "7d"]], presetNow(), (v) => {
     if (v === "overnight") { const [a, b] = overnight(); setWindow(a, b); } else setRange(v);
@@ -50,16 +51,21 @@ function render(page, r0) {
   const sumBody = h("div", { class: "tl-sum" });
   const sumCard = h("section", { class: "card tl-sumcard" }, h("div", { class: "hd" }, sumTitle, sumSub, sumTools), h("div", { class: "bd" }, sumBody));
 
-  const chart = timeChart({ height: 130, label: "searches", series: [
+  const chart = timeChart({ height: 110, label: "searches", series: [
     { name: "queries/s", get: (p) => p.qps, area: true, color: SERIES[0] },
-    { name: "failed/s", get: (p) => p.errors_s ?? (p.error_ratio != null && p.qps != null ? p.error_ratio * p.qps : null), color: SERIES[7] },
   ], domain, onBrush: (a, b) => setZoom(a == null ? null : [a, b]), markers: () => [] });
+  // Failures on an axis of their own, as a share of the searches: an outage
+  // is a tall red block, not a dip in the traffic (NEW-scenarios-11).
+  const failChart = timeChart({ height: 70, label: "failed", fmt: (v) => fmt.pct(v, v < 0.01 ? 2 : 1), series: [
+    { name: "failed, share of searches", get: (p) => p.error_ratio ?? (p.qps ? (p.errors_s || 0) / p.qps : null), area: true, color: SERIES[7] },
+  ], domain, onBrush: (a, b) => setZoom(a == null ? null : [a, b]), markers: () => [], threshold: { value: 0.01, label: "SLO" }, legend: false });
   const chips = h("div", { class: "row tl-chips" });
   const lanes = h("div", { class: "tl-lanes" });
   const axis = h("div", { class: "tl-axis" });
   const axisSub = h("span", { class: "sub" });
   const axisCard = h("section", { class: "card tl-axiscard" }, h("div", { class: "hd" }, h("h3", {}, "On one axis"), axisSub, h("div", { class: "tools" }, chips)),
-    h("div", { class: "bd" }, h("div", { class: "tl-chartrow" }, h("div", { class: "tl-lname" }, h("b", {}, "Searches/s"), h("span", { class: "small muted" }, "and failed")), h("div", { class: "grow" }, chart)), lanes, axis));
+    h("div", { class: "bd" }, h("div", { class: "tl-chartrow" }, h("div", { class: "tl-lname" }, h("b", {}, "Searches/s"), h("span", { class: "small muted" }, "this coordinator")), h("div", { class: "grow" }, chart)),
+      h("div", { class: "tl-chartrow" }, h("div", { class: "tl-lname" }, h("b", {}, "Failed"), h("span", { class: "small muted" }, "share, server's side")), h("div", { class: "grow" }, failChart)), lanes, axis));
 
   const filt = h("input", { class: "input sm", placeholder: "Filter: shard 117, nadia, v0.9.4…", oninput: () => { q = filt.value.trim().toLowerCase(); drawList(); } });
   const listBody = h("div");
@@ -83,6 +89,7 @@ function render(page, r0) {
     try {
       const j = await api(`/v1/queries/stats?from=${from}&to=${to}&limit=500`, { timeout: 10000 });
       stats = (Array.isArray(j) ? j : j.statements || []);
+      statsSince = Array.isArray(j) ? null : j.since_ms ?? null;
       // New statement shapes of the window, as events on the clients' lane.
       for (const s of stats) if (s.new && s.first_seen_ms >= from && s.first_seen_ms <= to) events.push({ id: "shape-" + s.fingerprint, ts_ms: s.first_seen_ms, kind: "new_shape", severity: "info", title: `new statement shape${s.keys?.[0] ? " from key " + s.keys[0].key : ""}: ${(s.sql || s.fingerprint || "").slice(0, 90)}`, detail: { calls: s.calls, p99_ms: s.p99_ms, fingerprint: s.fingerprint }, who: s.keys?.[0]?.key });
     } catch { /* an older server, or a read key */ }
@@ -126,7 +133,7 @@ function render(page, r0) {
     const probs = state.fleet?.problems || [];
     clear(sumTools, probs.length ? h("a", { class: "home-chip warn", href: link("home") }, icon("warn"), `${fmt.plural(probs.length, "thing")} need${probs.length === 1 ? "s" : ""} a look now`) : h("span", { class: "small muted" }, "nothing needs a look now"));
     const of = (f) => evs.filter((e) => f(e.kind, e));
-    const incidents = of((k, e) => k === "majority_lost" || (k === "alert_fired" && e.severity === "critical"));
+    const incidents = incidentsOf(evs);
     const prim = of((k) => k === "primary_changed");
     const auto = prim.filter((e) => e.detail?.automatic).length;
     const rolls = of((k) => k === "rollout" || k === "upgrade");
@@ -136,27 +143,29 @@ function render(page, r0) {
     const who = [...new Set(people.map((e) => e.who))];
     const dk = (state.fleet?.checks || []).find((c) => c.id === "disk");
     const tile = (label, val, sub, tone, href) => h(href ? "a" : "div", { class: "tl-tile " + (tone || ""), href }, h("div", { class: "small dim" }, label), h("div", { class: "v" }, val), h("div", { class: "small muted", title: typeof sub === "string" ? sub : null }, sub));
-    const durOf = (e) => { const end = evs.find((x) => x.ts_ms > e.ts_ms && x.kind === ENDS[e.kind] && sameWhere(x, e)); return end ? fmt.dur((end.ts_ms - e.ts_ms) / 1000) : "still open"; };
+    // The server cannot tell "new" for a window that starts before it kept statements.
+    const blind = statsSince != null && statsSince + 60e3 > r.from;
     clear(sumBody,
-      tile("Incidents", String(incidents.length), incidents.length ? incidents.slice(0, 2).map((e) => `${e.title.slice(0, 40)} (${when(e.ts_ms, { sec: false })}, ${durOf(e)})`).join(" · ") : "no shard lost its majority, no critical alert", incidents.length ? "crit" : "", incidents[0] ? eventLink(incidents[0]) : null),
+      tile("Incidents", String(incidents.length), incidents.length ? incidents.slice(0, 2).map((x) => `${x.what} (${when(x.from, { sec: false })}, ${x.open ? "still open" : fmt.dur((x.to - x.from) / 1000).replace(/ 0s$/, "")}${x.n > 1 ? `, ${x.n} signals` : ""})`).join(" · ") : "no shard lost its majority, no critical alert", incidents.length ? "crit" : "", incidents[0] ? eventLink(incidents[0].first) : null),
       tile("Copies down", String(copiesDown.length), copiesDown.length ? [...new Set(copiesDown.map((e) => e.where?.copy || e.title))].slice(0, 3).join(", ") : "every copy stayed up", copiesDown.length ? "warn" : ""),
       tile("Primaries moved", String(prim.length), prim.length ? [auto ? `${auto} failover${auto === 1 ? "" : "s"}` : null, prim.length - auto ? `${prim.length - auto} handed over` : null].filter(Boolean).join(" · ") : "no primary moved", auto ? "warn" : ""),
       tile("Rollouts", rolls.length ? String(rolls.length) : "0", rolls.length ? rolls[0].title : "no rollout", "", rolls[0] ? eventLink(rolls[0]) : null),
       tile("Changes by people", String(people.length), people.length ? who.slice(0, 3).join(", ") + (who.length > 3 ? ` +${who.length - 3}` : "") : "nobody changed anything", ""),
-      tile("New client traffic", String(shapes.length), shapes.length ? shapes.slice(0, 2).map((e) => e.who ? "key " + e.who : "a new shape").join(" · ") : stats.length && !stats.some((s) => "new" in s) ? "this server does not mark new shapes" : "no new statement shape", shapes.length ? "warn" : ""),
-      tile("Capacity", dk?.max != null ? fmt.pct(dk.max, 0) : "–", dk?.max != null ? `fullest disk, ${dk.where || ""}${dk.days_to_full != null ? ` · full in ~${fmt.n(dk.days_to_full, 1)} days` : ""}` : "not known", dk?.max > 0.85 ? "warn" : "", link("cluster", { tab: "capacity" })),
+      tile("New client traffic", blind && !shapes.length ? "?" : String(shapes.length), shapes.length ? shapes.slice(0, 2).map((e) => e.who ? "key " + e.who : "a new shape").join(" · ") + (blind ? ` · others can't be told: this server started at ${when(statsSince, { sec: false })}` : "") : blind ? `Can't tell: this server started at ${when(statsSince, { sec: false })}, after the window began` : stats.length && !stats.some((s) => "new" in s) ? "this server does not mark new shapes" : "no new statement shape", shapes.length ? "warn" : ""),
+      tile("Capacity", dk?.max != null ? fmt.pct(dk.max, 0) : "–", dk?.max != null ? `fullest disk now, ${dk.where || ""}${dk.days_to_full != null ? ` · full in about ${fmt.fills(dk.days_to_full)}` : ""}` : "not known", dk?.max > 0.85 ? "warn" : "", link("cluster", { tab: "capacity" })),
     );
   }
-  const sameWhere = (a, b) => JSON.stringify(a.where || {}) === JSON.stringify(b.where || {});
-
   function drawAxis() {
     chart.update(visible());
+    failChart.update(visible());
     axisCard.classList.toggle("stale", !fresh("series").ok && !fresh("series").loading);
     const [t0, t1] = domain();
     const span_ = Math.max(1, t1 - t0);
     const x = (t) => `calc(46px + (100% - 60px) * ${Math.min(1, Math.max(0, (t - t0) / span_)).toFixed(5)})`;
     const evs = shown().filter((e) => (e.until_ms || e.ts_ms) >= t0 && e.ts_ms <= t1);
-    axisSub.textContent = `drag to zoom · click an event to open its view at that moment · ${state.series.source === "load" ? "a point a minute" : "a point every " + fmt.dur(state.interval / 1000)}`;
+    const vs = visible();
+    const from = vs.length && vs[0].t - Math.min(t0, timeRange().from) > 5 * 60e3 ? ` · data from ${when(vs[0].t, { sec: false })}, when this server started keeping it` : "";
+    axisSub.textContent = `drag to zoom · click an event to open its view at that moment · ${state.series.source === "load" ? "a point a minute" : "a point every " + fmt.dur(state.interval / 1000)}${from}`;
     clear(chips, LANES.map(([id, name]) => {
       const n = evs.filter((e) => laneOf(e.kind) === id).length;
       const b = h("button", { class: "chip", "aria-pressed": String(!hidden.has(id)), title: hidden.has(id) ? "Show this lane" : "Hide this lane" }, name.split(" ")[0].toLowerCase(), n ? h("span", { class: "muted" }, " " + n) : null);
@@ -178,7 +187,7 @@ function render(page, r0) {
         const until = end ? end.ts_ms : e.until_ms || (endKind ? Math.min(t1, Date.now()) : null);
         const el = h("a", { class: "tl-ev " + tone + (until ? " span" : "") + (e.id === focusId ? " focus" : ""), href: eventLink(e), style: { left: x(e.ts_ms), ...(until ? { width: `calc((100% - 60px) * ${Math.max(0.002, (Math.min(until, t1) - Math.max(e.ts_ms, t0)) / span_).toFixed(5)})` } : {}) } },
           h("i"), h("span", { class: "lbl" }, laneLabel(e, end)));
-        tipOn(el, () => [h("div", { class: "t" }, whenTitle(e.ts_ms)), h("div", {}, h("b", {}, e.title)), end ? h("div", { class: "small" }, `${end.title} at ${when(end.ts_ms)} (${fmt.dur((end.ts_ms - e.ts_ms) / 1000)})`) : endKind ? h("div", { class: "small" }, "not over at the end of the window") : null, e.who ? h("div", { class: "small muted" }, "by " + e.who) : null, h("div", { class: "small muted" }, "click: open its view at that moment")]);
+        tipOn(el, () => [h("div", { class: "t" }, whenTitle(e.ts_ms)), h("div", {}, h("b", {}, e.title)), end ? h("div", { class: "small" }, `${end.title} at ${when(end.ts_ms)} (${fmt.dur(spanSecs(e, end))})`) : endKind ? h("div", { class: "small" }, "not over at the end of the window") : null, e.who ? h("div", { class: "small muted" }, "by " + e.who) : null, h("div", { class: "small muted" }, "click: open its view at that moment")]);
         track.append(el);
         placed.push({ el, f: (Math.max(e.ts_ms, t0) - t0) / span_, fe: until ? (Math.min(until, t1) - t0) / span_ : null, n: laneLabel(e, end).length });
       }
@@ -225,32 +234,52 @@ function render(page, r0) {
   }
   const laneLabel = (e, end) => {
     const t = e.title.length > 46 ? e.title.slice(0, 44) + "…" : e.title;
-    return end ? `${t} · ${fmt.dur((end.ts_ms - e.ts_ms) / 1000)}` : t;
+    return end ? `${t} · ${fmt.dur(spanSecs(e, end))}` : t;
+  };
+  // How long it lasted: a copy that comes back says how long it was down,
+  // which is longer than the two events' distance when the coordinator saw it late.
+  // A shard's majority came back with its copies: they say how long.
+  const spanSecs = (e, end) => {
+    let s = Math.max((end.ts_ms - e.ts_ms) / 1000, +end.detail?.down_s || 0);
+    if (end.kind === "majority_back") for (const x of events) if (x.kind === "copy_up" && x.ts_ms === end.ts_ms && x.where?.shard === end.where?.shard) s = Math.max(s, +x.detail?.down_s || 0);
+    return s;
   };
 
   function drawList() {
     let evs = shown();
     if (q) evs = evs.filter((e) => `${e.title} ${e.who || ""} ${kindName(e.kind)} ${JSON.stringify(e.where || {})} ${JSON.stringify(e.detail || {})}`.toLowerCase().includes(q));
-    // Repeats of one thing in a row show once, with a count.
-    const rows = [];
-    for (const e of evs) { const p = rows[rows.length - 1]; if (p && p.e.kind === e.kind && p.e.title === e.title && p.e.who === e.who) { p.n++; p.first = e.ts_ms; } else rows.push({ e, n: 1, first: e.ts_ms }); }
+    // Repeats show once with a count: the same kind and the same words but
+    // for names and numbers ("primary of shard 3 handed over"), within 30
+    // minutes of each other (NEW-shell-monitor-16).
+    const rows = [], byKey = new Map();
+    for (const e of evs) {
+      const k = `${e.kind}|${e.who || ""}|${shapeOf(e.title)}`;
+      const p = byKey.get(k);
+      if (p && p.first - e.ts_ms < 30 * 60e3) { p.all.push(e); p.first = e.ts_ms; continue; }
+      const row = { e, all: [e], first: e.ts_ms, k };
+      byKey.set(k, row); rows.push(row);
+    }
+    const lines = rows.flatMap((r) => open.has(r.k + r.e.ts_ms) ? [r, ...r.all.slice(1).map((e) => ({ e, all: [e], first: e.ts_ms, sub: true }))] : [r]);
     listSub.textContent = `newest first · ${fmt.plural(evs.length, "event")} in the window${rows.length < evs.length ? " · repeats grouped" : ""}`;
     if (!rows.length) { clear(listBody, empty("timeline", q ? "No event matches" : "Nothing happened in this window", source === "events" ? "Copies going down or up, primaries moving, alerts, rollouts, people's changes and notes show here as they happen." : "This server keeps no events.")); return; }
     clear(listBody, h("div", { class: "tbl-wrap", style: { maxHeight: "520px" } }, h("table", { class: "t tl-list" },
       h("thead", {}, h("tr", {}, h("th", {}, "Time"), h("th", {}, "Kind"), h("th", {}, "What"), h("th", {}, "Who"), h("th", {}, ""))),
-      h("tbody", {}, rows.slice(0, 400).map(({ e, n, first }) => h("tr", { class: e.id === focusId ? "sel" : "" },
+      h("tbody", {}, lines.slice(0, 400).map((row) => { const { e, all, first, sub } = row; const n = all.length; return h("tr", { class: (e.id === focusId ? "sel" : "") + (sub ? " tl-sub" : "") },
         h("td", { class: "mono small nowrap tl-t", title: whenTitle(e.ts_ms) }, when(e.ts_ms)),
         h("td", { class: "tl-k" }, h("span", { class: "home-kind " + kindTone(e) }, kindName(e.kind))),
-        h("td", { class: "tl-w" }, h("div", { class: e.severity === "critical" ? "tl-strong" : "" }, e.title, n > 1 ? h("span", { class: "badge", title: `from ${when(first)}` }, ` ×${n}`) : null), detailText(e) ? h("div", { class: "small muted" }, detailText(e)) : null),
+        h("td", { class: "tl-w" }, h("div", { class: e.severity === "critical" ? "tl-strong" : "" }, n > 1 ? groupTitle(all) : e.title,
+          n > 1 ? h("button", { class: "btn xs ghost tl-more", "aria-expanded": String(open.has(row.k + e.ts_ms)), title: `${n} like it, from ${when(first)} to ${when(e.ts_ms)}`, onclick: () => { const id = row.k + e.ts_ms; if (open.has(id)) open.delete(id); else open.add(id); drawList(); } }, open.has(row.k + e.ts_ms) ? "hide them" : `×${n}, from ${when(first, { sec: false })}`) : null),
+          detailText(e) ? h("div", { class: "small muted" }, detailText(e)) : null,
+          rawOf(e)),
         h("td", { class: "small tl-who" }, e.who || h("span", { class: "muted" }, "–")),
-        h("td", { class: "nowrap tl-go" }, h("a", { class: "btn xs", href: eventLink(e) }, `open at ${when(e.ts_ms, { sec: false }).slice(-5)}`))))))));
+        h("td", { class: "nowrap tl-go" }, h("a", { class: "btn xs", href: eventLink(e) }, `open at ${when(e.ts_ms, { sec: false }).slice(-5)}`))); })))));
   }
   const detailText = (e) => {
     const d = e.detail; if (!d || typeof d !== "object") return typeof d === "string" ? d : "";
     if (e.kind === "primary_changed") return [d.from && `from ${d.from}`, d.to && `to ${d.to}`, d.term != null && `term ${d.term}`, d.automatic != null && (d.automatic ? "failover" : "handed over")].filter(Boolean).join(" · ");
     if (e.kind === "new_shape") return [d.calls != null && fmt.plural(d.calls, "call"), d.p99_ms != null && "p99 " + fmt.ms(d.p99_ms)].filter(Boolean).join(" · ");
-    // What the title already says is not repeated.
-    const s = Object.entries(d).filter(([, v]) => v != null && typeof v !== "object" && !String(e.title || "").includes(String(v))).map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`).join(" · ");
+    // People's words for what a person reads; the raw fields are behind "details" (NEW-scenarios-10).
+    const s = Object.entries(d).map(([k, v]) => human(k, v, e)).filter(Boolean).join(" · ");
     return s.length > 160 ? s.slice(0, 158) + "…" : s;
   };
 
@@ -287,9 +316,59 @@ function render(page, r0) {
   return () => { offs.forEach((f) => f()); reopen = null; };
 }
 
-function overnight() { const d = new Date(); d.setHours(8, 0, 0, 0); if (d > Date.now()) d.setDate(d.getDate() - 1); return [d.getTime() - 14 * 3600e3, d.getTime()]; }
+// ---------------------------------------------------------------- helpers
+/** Incidents: majority lost, critical alerts and copies down within 15 min of each other, as one. */
+export function incidentsOf(evs) {
+  const sig = evs.filter((e) => e.kind === "majority_lost" || (e.kind === "alert_fired" && e.severity === "critical") || e.kind === "copy_down").sort((a, b) => a.ts_ms - b.ts_ms);
+  const endOf = (e) => { const end = evs.find((x) => x.ts_ms >= e.ts_ms && x.kind === ENDS[e.kind] && sameWhere(x, e)); return end ? end.ts_ms : null; };
+  const out = [];
+  for (const e of sig) {
+    const end = endOf(e);
+    const last = out[out.length - 1];
+    if (last && e.ts_ms <= (last.open ? Infinity : last.to) + 15 * 60e3) {
+      last.n++; last.all.push(e);
+      if (end == null) last.open = true; else last.to = Math.max(last.to, end);
+      if (rank(e) < rank(last.first)) { last.what = whatOf(e); }
+      continue;
+    }
+    out.push({ first: e, all: [e], n: 1, from: e.ts_ms, to: end ?? e.ts_ms, open: end == null, what: whatOf(e) });
+  }
+  // Copies down alone, with nothing critical, are not an incident.
+  return out.filter((x) => x.all.some((e) => e.kind !== "copy_down")).reverse();
+}
+const rank = (e) => e.kind === "majority_lost" ? 0 : e.kind === "alert_fired" ? 1 : 2;
+const whatOf = (e) => { const t = e.title || kindName(e.kind); return t.length > 44 ? t.slice(0, 42) + "…" : t; };
+const sameWhere = (a, b) => JSON.stringify(a.where || {}) === JSON.stringify(b.where || {});
+/** A title without its names and numbers: what repeats. */
+const shapeOf = (t) => String(t || "").replace(/\bs\d+-\d+\b/g, "#").replace(/\b[\w.-]+:\d+\b/g, "#").replace(/\d+([.,]\d+)?/g, "#").replace(/"[^"]*"/g, "#");
+/** Repeats as one line: "13 like: Primary of shard 3 handed over (shard 0, shard 1, … +9)". */
+function groupTitle(all) {
+  const names = [...new Set(all.map((e) => e.where?.copy || (e.where?.shard != null ? "shard " + e.where.shard : null)).filter(Boolean))];
+  return `${all.length} like: ${all[0].title}${names.length > 1 ? ` (${names.slice(0, 4).join(", ")}${names.length > 4 ? ` +${names.length - 4}` : ""})` : ""}`;
+}
+// Fields a person does not need in the list (they stay in the details).
+const RAW = new Set(["op", "eval", "metric", "rule", "id", "ts_ms", "request_id", "fingerprint", "window_s", "for_s", "resolve", "scope", "builtin", "change", "kind", "route", "method", "status"]);
+function human(k, v, e) {
+  if (v == null || typeof v === "object" || RAW.has(k)) return null;
+  if (String(e.title || "").includes(String(v))) return null;
+  const name = k.replace(/_ms$|_s$/, "").replace(/_/g, " ");
+  if (/_ms$/.test(k) && typeof v === "number") return v > 1e12 ? `${name} ${when(v)}` : `${name} ${fmt.ms(v)}`;
+  if (/_s$/.test(k) && typeof v === "number") return `${name} ${fmt.dur(v)}`;
+  if (typeof v === "number") return `${name} ${Number.isInteger(v) ? fmt.n(v) : fmt.n(v, Math.abs(v) < 1 ? 3 : 1)}`;
+  if (typeof v === "boolean") return v ? name : null;
+  return `${name} ${String(v).length > 60 ? String(v).slice(0, 58) + "…" : v}`;
+}
+/** Every field of an event, raw, behind "details". */
+function rawOf(e) {
+  if (!e.detail && !e.where) return null;
+  const pre = h("pre", { class: "tl-raw mono small" });
+  const d = h("details", { class: "tl-details" }, h("summary", { class: "small muted" }, "details"), pre);
+  d.addEventListener("toggle", () => { if (d.open && !pre.textContent) pre.textContent = JSON.stringify({ where: e.where, detail: e.detail, who: e.who }, null, 1); });
+  return d;
+}
 function presetNow() {
   const r = timeRange();
-  if (r.fixed) { const [a, b] = overnight(); return r.from === a && r.to === b ? "overnight" : "none"; }
+  // Overnight starts at yesterday's 18:00; before 08:00 it ends now, whenever it was picked.
+  if (r.fixed) { const [a] = overnight(); return r.from === a ? "overnight" : "none"; }
   return r.range;
 }

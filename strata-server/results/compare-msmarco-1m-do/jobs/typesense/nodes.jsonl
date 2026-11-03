@@ -1,0 +1,2 @@
+{"node": "typesense-d-a1-3eeyhv", "cpu": "Intel(R) Xeon(R) Platinum 8280 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 65853624, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 20.649, "sha256_1g_x_vcpus_s": 10.407, "disk_write_2g_s": 1.343, "copy_ms": 0, "time": 1793675716, "size": "m-8vcpu-64gb"}
+{"node": "typesense-c-a1-3eeyhd", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382184, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.192, "sha256_1g_x_vcpus_s": 11.346, "disk_write_2g_s": 5.972, "copy_ms": 112387, "time": 1793675835, "size": "c-8"}

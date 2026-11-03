@@ -1,0 +1,6 @@
+1	ok	1793677041	1793677048	up weaviate
+2	ok	1793677048	1793677589	load weaviate
+3	ok	1793677589	1793678470	run weaviate
+4	ok	1793678470	1793679338	run weaviate --label weaviate-pass2
+5	ok	1793679338	1793680212	run weaviate --label weaviate-pass3
+6	ok	1793680212	1793680214	down weaviate

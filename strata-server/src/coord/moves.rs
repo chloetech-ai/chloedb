@@ -115,7 +115,8 @@ struct Job {
     /// Who started it (a key's name), when the API said.
     by: Option<String>,
     /// The rows its slots held when it started, about: each shard's rows
-    /// spread evenly over its slots (the cluster's snapshot), when known.
+    /// (of every table) spread evenly over its slots (the cluster's
+    /// snapshot), when known.
     rows_total: Option<u64>,
 }
 
@@ -181,6 +182,17 @@ impl Drop for Renewing {
 }
 
 impl Coordinator {
+    /// The rows a second the last job of moves here ran at, once it is done
+    /// and sent enough rows to say (NEW-cluster-admin-7): the rate plans
+    /// estimate moves at.
+    pub fn measured_rate(&self) -> Option<f64> {
+        let j = lock(&self.moves.job);
+        let j = j.as_ref().filter(|j| j.state == "done")?;
+        let rows = j.steps.iter().map(|s| s.rows).sum::<u64>();
+        let secs = (j.finished? - j.started) as f64 / 1e6;
+        (rows >= 1000 && secs > 0.0).then(|| rows as f64 / secs)
+    }
+
     /// The job of moves running or last run here, and the move under way
     /// in the cluster map (which another coordinator may run).
     pub fn moves(&self) -> Json {
@@ -256,7 +268,8 @@ impl Coordinator {
             let rows = |i: usize| {
                 let s = snap["shards"].as_array().and_then(|v| v.iter().find(|s| s["shard"] == i));
                 let copies = s.and_then(|s| s["replicas"].as_array());
-                let docs = copies.and_then(|c| c.iter().find(|r| r["takes_writes"] == true).or_else(|| c.iter().find(|r| r["status"] != "down"))).and_then(|r| r["docs"].as_u64()).unwrap_or(0);
+                // cluster2: the rows of every table, which the move sends.
+                let docs = copies.and_then(|c| c.iter().find(|r| r["takes_writes"] == true).or_else(|| c.iter().find(|r| r["status"] != "down"))).and_then(super::plan::copy_rows).unwrap_or(0);
                 (docs, s.and_then(|s| s["slots_held"].as_u64()).unwrap_or(0).max(1))
             };
             steps.iter().map(|st| {

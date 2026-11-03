@@ -1,0 +1,167 @@
+service/qdrant created
+pod/qdrant-0 created
+pod/qdrant-0 condition met
+job.batch/load-qdrant created
+qdrant: average body length 127.9 terms (21.2 s)
+qdrant: index created in 0.2 s
+qdrant: 25000 documents sent, 6 s
+qdrant: 50000 documents sent, 13 s
+qdrant: 75000 documents sent, 19 s
+qdrant: 100000 documents sent, 27 s
+qdrant: 125000 documents sent, 35 s
+qdrant: 150000 documents sent, 45 s
+qdrant: 175000 documents sent, 56 s
+qdrant: 200000 documents sent, 66 s
+qdrant: 225000 documents sent, 72 s
+qdrant: 250000 documents sent, 77 s
+qdrant: 275000 documents sent, 87 s
+qdrant: 300000 documents sent, 98 s
+qdrant: 325000 documents sent, 109 s
+qdrant: 350000 documents sent, 121 s
+qdrant: 375000 documents sent, 130 s
+qdrant: 400000 documents sent, 135 s
+qdrant: 425000 documents sent, 140 s
+qdrant: 450000 documents sent, 146 s
+qdrant: 475000 documents sent, 152 s
+qdrant: 500000 documents sent, 159 s
+qdrant: 525000 documents sent, 169 s
+qdrant: 550000 documents sent, 180 s
+qdrant: 575000 documents sent, 192 s
+qdrant: 600000 documents sent, 202 s
+qdrant: 625000 documents sent, 215 s
+qdrant: 650000 documents sent, 226 s
+qdrant: 675000 documents sent, 238 s
+qdrant: 700000 documents sent, 249 s
+qdrant: 725000 documents sent, 260 s
+qdrant: 750000 documents sent, 272 s
+qdrant: 775000 documents sent, 284 s
+qdrant: 800000 documents sent, 296 s
+qdrant: 825000 documents sent, 307 s
+qdrant: 850000 documents sent, 319 s
+qdrant: 875000 documents sent, 331 s
+qdrant: 900000 documents sent, 343 s
+qdrant: 925000 documents sent, 355 s
+qdrant: 950000 documents sent, 367 s
+qdrant: 975000 documents sent, 379 s
+qdrant: 1000000 documents sent, 389 s
+qdrant: 1000000 documents (13.3 GB) sent in 389.4 s
+read tcp 127.0.0.1:39758->127.0.0.1:36661: read: connection reset by peer
+error: read tcp 127.0.0.1:39758->127.0.0.1:36661: read: connection reset by peer
+qdrant: index_s in 4128.3 s
+qdrant: indexed 4128.3 s after the last write; 4517.7 s in all
+wrote /data/compare/load-qdrant.json
+job.batch/run-qdrant created
+qdrant    bm25                     c=1        564 q/s  p50   1.701 ms  p90   2.836 ms  p99   3.768 ms  errors 0
+qdrant    bm25                     c=4       1673 q/s  p50   2.313 ms  p90   3.673 ms  p99   4.944 ms  errors 0
+qdrant    bm25                     c=16      2275 q/s  p50   6.597 ms  p90   9.965 ms  p99  16.929 ms  errors 0
+qdrant    bm25 + filter            c=1        517 q/s  p50   1.831 ms  p90   2.981 ms  p99   4.257 ms  errors 0
+qdrant    bm25 + filter            c=4       1517 q/s  p50   2.507 ms  p90   3.928 ms  p99   5.688 ms  errors 0
+qdrant    bm25 + filter            c=16      2038 q/s  p50   7.332 ms  p90  11.310 ms  p99  18.355 ms  errors 0
+qdrant    vector                   c=1        517 q/s  p50   1.868 ms  p90   2.324 ms  p99   2.778 ms  errors 0
+qdrant    vector                   c=4       1320 q/s  p50   2.916 ms  p90   3.800 ms  p99   4.861 ms  errors 0
+qdrant    vector                   c=16      1694 q/s  p50   8.818 ms  p90  13.315 ms  p99  20.752 ms  errors 0
+qdrant    vector + filter          c=1        250 q/s  p50   3.877 ms  p90   4.958 ms  p99   6.056 ms  errors 0
+qdrant    vector + filter          c=4        717 q/s  p50   5.470 ms  p90   6.768 ms  p99   8.700 ms  errors 0
+qdrant    vector + filter          c=16       840 q/s  p50  18.126 ms  p90  26.134 ms  p99  31.337 ms  errors 0
+qdrant    hybrid (RRF)             c=1         97 q/s  p50   9.545 ms  p90  13.850 ms  p99  16.373 ms  errors 0
+qdrant    hybrid (RRF)             c=4        286 q/s  p50  13.334 ms  p90  18.738 ms  p99  23.165 ms  errors 0
+qdrant    hybrid (RRF)             c=16       329 q/s  p50  47.329 ms  p90  62.103 ms  p99  76.769 ms  errors 0
+qdrant    hybrid (weighted)        c=1         94 q/s  p50   9.842 ms  p90  14.136 ms  p99  16.924 ms  errors 0
+qdrant    hybrid (weighted)        c=4        281 q/s  p50  13.511 ms  p90  19.292 ms  p99  23.463 ms  errors 0
+qdrant    hybrid (weighted)        c=16       327 q/s  p50  47.385 ms  p90  63.636 ms  p99  78.815 ms  errors 0
+qdrant    boosted (bm25 × decay)   c=1        478 q/s  p50   2.024 ms  p90   3.221 ms  p99   4.147 ms  errors 0
+qdrant    boosted (bm25 × decay)   c=4       1441 q/s  p50   2.707 ms  p90   4.145 ms  p99   5.441 ms  errors 0
+qdrant    boosted (bm25 × decay)   c=16      1972 q/s  p50   7.639 ms  p90  11.850 ms  p99  18.376 ms  errors 0
+qdrant    facet                    c=1         52 q/s  p50  13.611 ms  p90  41.822 ms  p99  58.314 ms  errors 0
+qdrant    facet                    c=4         62 q/s  p50  64.071 ms  p90 115.201 ms  p99 174.007 ms  errors 0
+qdrant    facet                    c=16        62 q/s  p50 258.915 ms  p90 350.064 ms  p99 432.107 ms  errors 0
+qdrant    key lookup               c=1       2581 q/s  p50   0.379 ms  p90   0.429 ms  p99   0.546 ms  errors 0
+qdrant    key lookup               c=4       8287 q/s  p50   0.469 ms  p90   0.580 ms  p99   0.750 ms  errors 0
+qdrant    key lookup               c=16     19607 q/s  p50   0.769 ms  p90   1.101 ms  p99   1.628 ms  errors 0
+qdrant    phrase                   c=1        419 q/s  p50   1.036 ms  p90   4.805 ms  p99  21.816 ms  errors 0
+qdrant    phrase                   c=4       1233 q/s  p50   1.414 ms  p90   6.421 ms  p99  31.039 ms  errors 0
+qdrant    phrase                   c=16      1566 q/s  p50   8.158 ms  p90  18.379 ms  p99  42.780 ms  errors 0
+qdrant    typo                     unavailable: no fuzzy matching: its text index matches whole words (or prefixes, with a prefix tokenizer)
+qdrant    prefix                   unavailable: prefixes need the prefix tokenizer, an index of its own that would replace the word index the facet and phrase kinds use on the field
+qdrant    similar items            c=1        105 q/s  p50   9.656 ms  p90  11.650 ms  p99  14.008 ms  errors 0
+qdrant    similar items            c=4        324 q/s  p50  12.545 ms  p90  15.336 ms  p99  17.986 ms  errors 0
+qdrant    similar items            c=16       343 q/s  p50  45.163 ms  p90  60.563 ms  p99  68.231 ms  errors 0
+qdrant    sql aggregate            unavailable: no grouped aggregates: its facet API counts values only
+wrote /data/compare/run-qdrant.json
+job.batch/run-qdrant-pass2 created
+qdrant-pass2 bm25                     c=1        569 q/s  p50   1.680 ms  p90   2.817 ms  p99   3.712 ms  errors 0
+qdrant-pass2 bm25                     c=4       1673 q/s  p50   2.309 ms  p90   3.677 ms  p99   4.883 ms  errors 0
+qdrant-pass2 bm25                     c=16      2288 q/s  p50   6.537 ms  p90   9.879 ms  p99  16.877 ms  errors 0
+qdrant-pass2 bm25 + filter            c=1        513 q/s  p50   1.835 ms  p90   2.989 ms  p99   4.376 ms  errors 0
+qdrant-pass2 bm25 + filter            c=4       1516 q/s  p50   2.492 ms  p90   3.971 ms  p99   5.777 ms  errors 0
+qdrant-pass2 bm25 + filter            c=16      2043 q/s  p50   7.276 ms  p90  11.285 ms  p99  18.604 ms  errors 0
+qdrant-pass2 vector                   c=1        505 q/s  p50   1.895 ms  p90   2.388 ms  p99   2.837 ms  errors 0
+qdrant-pass2 vector                   c=4       1288 q/s  p50   3.003 ms  p90   3.855 ms  p99   4.903 ms  errors 0
+qdrant-pass2 vector                   c=16      1695 q/s  p50   8.758 ms  p90  13.334 ms  p99  20.625 ms  errors 0
+qdrant-pass2 vector + filter          c=1        261 q/s  p50   3.749 ms  p90   4.677 ms  p99   5.731 ms  errors 0
+qdrant-pass2 vector + filter          c=4        733 q/s  p50   5.355 ms  p90   6.625 ms  p99   8.594 ms  errors 0
+qdrant-pass2 vector + filter          c=16       849 q/s  p50  17.804 ms  p90  26.279 ms  p99  32.235 ms  errors 0
+qdrant-pass2 hybrid (RRF)             c=1         97 q/s  p50   9.616 ms  p90  13.924 ms  p99  17.010 ms  errors 0
+qdrant-pass2 hybrid (RRF)             c=4        284 q/s  p50  13.381 ms  p90  19.071 ms  p99  23.113 ms  errors 0
+qdrant-pass2 hybrid (RRF)             c=16       329 q/s  p50  47.090 ms  p90  63.363 ms  p99  76.305 ms  errors 0
+qdrant-pass2 hybrid (weighted)        c=1         94 q/s  p50   9.786 ms  p90  14.248 ms  p99  17.410 ms  errors 0
+qdrant-pass2 hybrid (weighted)        c=4        286 q/s  p50  13.281 ms  p90  18.798 ms  p99  23.282 ms  errors 0
+qdrant-pass2 hybrid (weighted)        c=16       330 q/s  p50  46.978 ms  p90  62.462 ms  p99  78.010 ms  errors 0
+qdrant-pass2 boosted (bm25 × decay)   c=1        467 q/s  p50   2.075 ms  p90   3.249 ms  p99   4.205 ms  errors 0
+qdrant-pass2 boosted (bm25 × decay)   c=4       1406 q/s  p50   2.767 ms  p90   4.228 ms  p99   5.566 ms  errors 0
+qdrant-pass2 boosted (bm25 × decay)   c=16      1987 q/s  p50   7.582 ms  p90  11.651 ms  p99  18.390 ms  errors 0
+qdrant-pass2 facet                    c=1         53 q/s  p50  13.438 ms  p90  40.722 ms  p99  54.903 ms  errors 0
+qdrant-pass2 facet                    c=4         62 q/s  p50  63.559 ms  p90 107.901 ms  p99 149.493 ms  errors 0
+qdrant-pass2 facet                    c=16        62 q/s  p50 254.857 ms  p90 345.521 ms  p99 425.445 ms  errors 0
+qdrant-pass2 key lookup               c=1       2671 q/s  p50   0.364 ms  p90   0.421 ms  p99   0.550 ms  errors 0
+qdrant-pass2 key lookup               c=4       8252 q/s  p50   0.474 ms  p90   0.556 ms  p99   0.707 ms  errors 0
+qdrant-pass2 key lookup               c=16     19069 q/s  p50   0.764 ms  p90   1.218 ms  p99   1.793 ms  errors 0
+qdrant-pass2 phrase                   c=1        415 q/s  p50   1.042 ms  p90   4.761 ms  p99  22.034 ms  errors 0
+qdrant-pass2 phrase                   c=4       1238 q/s  p50   1.421 ms  p90   6.375 ms  p99  30.892 ms  errors 0
+qdrant-pass2 phrase                   c=16      1553 q/s  p50   8.295 ms  p90  18.324 ms  p99  42.691 ms  errors 0
+qdrant-pass2 typo                     unavailable: no fuzzy matching: its text index matches whole words (or prefixes, with a prefix tokenizer)
+qdrant-pass2 prefix                   unavailable: prefixes need the prefix tokenizer, an index of its own that would replace the word index the facet and phrase kinds use on the field
+qdrant-pass2 similar items            c=1        103 q/s  p50   9.802 ms  p90  12.106 ms  p99  14.381 ms  errors 0
+qdrant-pass2 similar items            c=4        331 q/s  p50  12.250 ms  p90  14.906 ms  p99  17.844 ms  errors 0
+qdrant-pass2 similar items            c=16       357 q/s  p50  43.431 ms  p90  58.159 ms  p99  67.361 ms  errors 0
+qdrant-pass2 sql aggregate            unavailable: no grouped aggregates: its facet API counts values only
+wrote /data/compare/run-qdrant-pass2.json
+job.batch/run-qdrant-pass3 created
+qdrant-pass3 bm25                     c=1        568 q/s  p50   1.683 ms  p90   2.837 ms  p99   3.709 ms  errors 0
+qdrant-pass3 bm25                     c=4       1661 q/s  p50   2.314 ms  p90   3.734 ms  p99   5.026 ms  errors 0
+qdrant-pass3 bm25                     c=16      2276 q/s  p50   6.605 ms  p90   9.975 ms  p99  16.937 ms  errors 0
+qdrant-pass3 bm25 + filter            c=1        496 q/s  p50   1.922 ms  p90   3.061 ms  p99   4.284 ms  errors 0
+qdrant-pass3 bm25 + filter            c=4       1500 q/s  p50   2.538 ms  p90   3.961 ms  p99   6.075 ms  errors 0
+qdrant-pass3 bm25 + filter            c=16      2054 q/s  p50   7.267 ms  p90  11.157 ms  p99  18.618 ms  errors 0
+qdrant-pass3 vector                   c=1        497 q/s  p50   1.943 ms  p90   2.409 ms  p99   2.849 ms  errors 0
+qdrant-pass3 vector                   c=4       1282 q/s  p50   3.019 ms  p90   3.908 ms  p99   5.038 ms  errors 0
+qdrant-pass3 vector                   c=16      1679 q/s  p50   8.842 ms  p90  13.577 ms  p99  20.745 ms  errors 0
+qdrant-pass3 vector + filter          c=1        257 q/s  p50   3.807 ms  p90   4.729 ms  p99   5.939 ms  errors 0
+qdrant-pass3 vector + filter          c=4        715 q/s  p50   5.471 ms  p90   6.806 ms  p99   8.998 ms  errors 0
+qdrant-pass3 vector + filter          c=16       829 q/s  p50  18.253 ms  p90  26.579 ms  p99  32.511 ms  errors 0
+qdrant-pass3 hybrid (RRF)             c=1         95 q/s  p50   9.735 ms  p90  14.096 ms  p99  16.467 ms  errors 0
+qdrant-pass3 hybrid (RRF)             c=4        285 q/s  p50  13.258 ms  p90  18.872 ms  p99  23.523 ms  errors 0
+qdrant-pass3 hybrid (RRF)             c=16       331 q/s  p50  46.601 ms  p90  62.794 ms  p99  77.374 ms  errors 0
+qdrant-pass3 hybrid (weighted)        c=1         97 q/s  p50   9.553 ms  p90  13.951 ms  p99  16.604 ms  errors 0
+qdrant-pass3 hybrid (weighted)        c=4        285 q/s  p50  13.399 ms  p90  18.960 ms  p99  22.724 ms  errors 0
+qdrant-pass3 hybrid (weighted)        c=16       328 q/s  p50  47.321 ms  p90  61.976 ms  p99  77.729 ms  errors 0
+qdrant-pass3 boosted (bm25 × decay)   c=1        478 q/s  p50   2.020 ms  p90   3.174 ms  p99   4.190 ms  errors 0
+qdrant-pass3 boosted (bm25 × decay)   c=4       1418 q/s  p50   2.734 ms  p90   4.188 ms  p99   5.592 ms  errors 0
+qdrant-pass3 boosted (bm25 × decay)   c=16      1997 q/s  p50   7.535 ms  p90  11.618 ms  p99  18.527 ms  errors 0
+qdrant-pass3 facet                    c=1         52 q/s  p50  13.504 ms  p90  41.876 ms  p99  57.020 ms  errors 0
+qdrant-pass3 facet                    c=4         60 q/s  p50  63.503 ms  p90 120.525 ms  p99 173.240 ms  errors 0
+qdrant-pass3 facet                    c=16        62 q/s  p50 255.306 ms  p90 344.740 ms  p99 430.085 ms  errors 0
+qdrant-pass3 key lookup               c=1       2668 q/s  p50   0.368 ms  p90   0.423 ms  p99   0.545 ms  errors 0
+qdrant-pass3 key lookup               c=4       8606 q/s  p50   0.451 ms  p90   0.541 ms  p99   0.704 ms  errors 0
+qdrant-pass3 key lookup               c=16     19318 q/s  p50   0.781 ms  p90   1.144 ms  p99   1.686 ms  errors 0
+qdrant-pass3 phrase                   c=1        423 q/s  p50   1.025 ms  p90   4.755 ms  p99  21.250 ms  errors 0
+qdrant-pass3 phrase                   c=4       1237 q/s  p50   1.411 ms  p90   6.535 ms  p99  31.222 ms  errors 0
+qdrant-pass3 phrase                   c=16      1576 q/s  p50   8.237 ms  p90  17.663 ms  p99  41.546 ms  errors 0
+qdrant-pass3 typo                     unavailable: no fuzzy matching: its text index matches whole words (or prefixes, with a prefix tokenizer)
+qdrant-pass3 prefix                   unavailable: prefixes need the prefix tokenizer, an index of its own that would replace the word index the facet and phrase kinds use on the field
+qdrant-pass3 similar items            c=1        102 q/s  p50   9.893 ms  p90  12.282 ms  p99  15.590 ms  errors 0
+qdrant-pass3 similar items            c=4        330 q/s  p50  12.220 ms  p90  14.948 ms  p99  17.773 ms  errors 0
+qdrant-pass3 similar items            c=16       357 q/s  p50  43.831 ms  p90  57.824 ms  p99  66.969 ms  errors 0
+qdrant-pass3 sql aggregate            unavailable: no grouped aggregates: its facet API counts values only
+wrote /data/compare/run-qdrant-pass3.json
+pod "qdrant-0" deleted from qdrant namespace

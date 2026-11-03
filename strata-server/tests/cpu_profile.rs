@@ -87,6 +87,8 @@ async fn a_cpu_profile_samples_the_server_s_threads() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let (status, body) = post(&base, "/v1/profile/cpu", json!({"seconds": 0.2})).await;
     assert_eq!(status, 409, "{body}");
+    // It says who takes the first, and for how long still.
+    assert!(body.contains("a CPU profile of this server is being taken, by open, for ") && body.contains(" s more: one at a time"), "{body}");
     assert_eq!(first.await.unwrap().0, 200);
 
     // Folded lines: the thread, the frames from the root, the samples.

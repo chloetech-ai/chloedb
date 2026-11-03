@@ -80,4 +80,19 @@ async fn the_command_center_is_served_with_every_module_it_imports() {
     assert_eq!(strata_server::http_client().build().unwrap().get(format!("{base}/ui/../src/ui.rs")).send().await.unwrap().status(), 404);
     let classic = strata_server::http_client().build().unwrap().get(format!("{base}/classic")).send().await.unwrap().text().await.unwrap();
     assert!(classic.contains("Strata query console"));
+
+    // SH-11: gzip for a client that asks, of JSON and the UI's files; not
+    // for one that does not, nor for event streams.
+    let c = strata_server::http_client().build().unwrap();
+    let gz = |path: &'static str| {
+        let c = c.clone();
+        let base = base.clone();
+        async move { c.get(format!("{base}{path}")).header("accept-encoding", "gzip").send().await.unwrap() }
+    };
+    for path in ["/ui/main.js", "/v1/schema", "/v1/alerts"] {
+        let r = gz(path).await;
+        assert_eq!((r.status().as_u16(), r.headers().get("content-encoding").map(|v| v.to_str().unwrap().to_string())), (200, Some("gzip".into())), "{path}");
+    }
+    let plain = c.get(format!("{base}/ui/main.js")).send().await.unwrap();
+    assert!(plain.headers().get("content-encoding").is_none() && plain.text().await.unwrap().contains("import"));
 }

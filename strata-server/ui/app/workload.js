@@ -9,7 +9,14 @@ import * as core from "./core.js";
 import * as data from "./data.js";
 import { profileView } from "./profile.js";
 
-const { h, s, icon, clear, fmt, api, card, pill, empty, sqlBlock, copy, toast, modal, drawer, seg, showTip, hideTip, tipOn } = core;
+const { h, s, icon, clear, fmt, api, card, pill, empty, sqlBlock, copy, toast, modal, seg, showTip, hideTip, tipOn } = core;
+/** NEW-workload-9: a drawer closes when the page changes under it (Back, or a link inside it). */
+function drawer(o) {
+  const off = () => d.close();
+  const d = core.drawer({ ...o, onClose: () => { removeEventListener("hashchange", off); o.onClose?.(); } });
+  addEventListener("hashchange", off);
+  return d;
+}
 export const { state } = data;
 
 // ---------------------------------------------------------------- shell helpers, or a fallback
@@ -55,6 +62,8 @@ export function copies(c = state.cluster) {
       merge_failing: !!ld.merge_failing, flush_failing: !!ld.flush_failing, failing: !!ld.failing,
       behind: r.role === "primary" ? null : ld.replica_behind_max ?? null, out_of_sync: ld.replicas_out_of_sync, rss: ld.rss_bytes, wal: ld.wal_bytes, file: ld.file_bytes,
       deleted: ld.deleted_docs,
+      // Memory: its heap, the queries' budget and the process's limit (cgroup or RAM).
+      heap: ld.heap_bytes ?? null, qbudget: ld.query_memory_limit_bytes ?? null, memLimit: d.system?.memory_limit_bytes ?? null,
     });
   });
   return out;
@@ -109,6 +118,13 @@ export function sheet(title, rows, actions = [], sub) {
 /** Repeats `f` while the view is shown, skipping while paused. */
 export function poll(ms, f) {
   return core.every(ms, async () => { if (!paused()) await f(); });
+}
+
+/** Paused by the pause button, not by a fixed window: what is running now is "now" whatever window is picked. */
+export const livePaused = () => !!state.paused && state.from == null;
+/** Like `poll`, but a fixed window does not stop it (Running now). */
+export function livePoll(ms, f) {
+  return core.every(ms, async () => { if (!livePaused()) await f(); });
 }
 
 // ---------------------------------------------------------------- outcomes
@@ -195,7 +211,8 @@ export function roughFp(sql) {
 
 /** The workbench and the profiler, opened on a query with its parameters. */
 export const workbenchLink = (sql, params) => "#/sql?q=" + encodeURIComponent(sql) + (paramsObj(params) ? "&p=" + encodeURIComponent(JSON.stringify(paramsObj(params))) : "");
-export const profileLink = (sql, params) => "#/profile?tab=query&sql=" + encodeURIComponent(sql) + (paramsObj(params) ? "&p=" + encodeURIComponent(JSON.stringify(paramsObj(params))) : "");
+/** The profiler with a query filled in, never run on open; `fp` names its statement (its p99, its contain rules). */
+export const profileLink = (sql, params, fp) => "#/profile?tab=query&sql=" + encodeURIComponent(sql) + (paramsObj(params) ? "&p=" + encodeURIComponent(JSON.stringify(paramsObj(params))) : "") + (fp ? "&fp=" + encodeURIComponent(fp) : "");
 export const nodeLink = (url, tab = "cpu") => link("profile", { tab, node: url });
 export const copyLink = (url) => link("cluster", { copy: url });
 export const shardLink = (i) => link("cluster", { shard: i });
@@ -214,7 +231,7 @@ export async function statements(range = timeRange()) {
   const out = list.map((x) => normStatement(x));
   const total = out.reduce((a, x) => a + (x.total_ms || 0), 0) || 1;
   for (const x of out) x.share = x.share ?? x.total_ms / total;
-  return { statements: out, windowed, since_ms: j.since_ms ?? null, from: range.from, to: range.to, ...held(j, range, windowed) };
+  return { statements: out, windowed, since_ms: j.since_ms ?? null, from: range.from, to: range.to, coordinators: j.coordinators || null, ...held(j, range, windowed) };
 }
 
 /**
@@ -259,6 +276,22 @@ export function change(x) {
   if (p99X != null && p99X >= 2 && x.p99_ms > 20) verdict = callsX < 1.5 ? "slower, calls flat: likely a victim" : `slower with ${callsX.toFixed(1)}× the calls`;
   else if (callsX >= 3 && x.calls > 20) verdict = `${callsX.toFixed(1)}× the calls`;
   return { callsX, p99X, verdict, dTotal: (x.total_ms || 0) - (p.total_ms || 0) };
+}
+
+/**
+ * Of the statements that took more time than in the window before: the
+ * likely causes (new, or their calls grew by half or more) and the likely
+ * victims (slower with their calls flat), each by the time they added, so
+ * that a view names a cause before a victim. -> {causes, victims, cause}
+ * of {x, c} (c: change(x), or {isNew, dTotal} for a new statement).
+ */
+export function causesAndVictims(xs, windowMs) {
+  const byD = (a, b) => b.c.dTotal - a.c.dTotal;
+  const grown = xs.map((x) => ({ x, c: change(x) })).filter((y) => y.c && y.c.dTotal > 0 && (y.c.p99X >= 1.5 || y.c.callsX >= 1.5));
+  const news = xs.filter((x) => isNewStatement(x, windowMs)).map((x) => ({ x, c: { isNew: true, dTotal: x.total_ms || 0 } }));
+  const causes = [...news, ...grown.filter((y) => y.c.callsX >= 1.5)].sort(byD);
+  const victims = grown.filter((y) => y.c.callsX < 1.5).sort(byD);
+  return { causes, victims, cause: causes[0] || null };
 }
 
 /** Why a statement needs a look, if it does: {tag, tone, rank} (higher first). */
@@ -397,7 +430,7 @@ export function traceSummary(q, { onNav } = {}) {
     const story = [];
     if (worst.straggler) {
       story.push("The answer waited on ", h("b", {}, `shard ${worst.slow.shard}`), ", copy ", h("b", { class: "mono", title: copyTitle(worst.slow.replica) }, name), ": ",
-        h("b", { class: "wl-bad" }, fmt.ms(worst.slow.dur_us / 1000)), `, ${(worst.slow.dur_us / Math.max(1, worst.median_us)).toFixed(0)}× the median ${worst.name} call (${fmt.ms(worst.median_us / 1000)}).`,
+        h("b", { class: "wl-bad" }, fmt.ms(worst.slow.dur_us / 1000)), `, ${(worst.slow.dur_us / Math.max(1, worst.median_us)).toFixed(0)}× the median ${RPC_WORDS[worst.name]?.[0] || worst.name} call (${fmt.ms(worst.median_us / 1000)}).`,
         worst.calls.length > 1 ? ` The other ${fmt.plural(worst.calls.length - 1, "call")} had answered by ${fmt.ms((worst.restEnd_us - worst.start_us) / 1000)}.` : "");
     } else {
       story.push(`${fmt.plural(new Set(rs.flatMap((r) => r.calls.map((c) => c.shard))).size, "shard")} asked in ${fmt.plural(rs.length, "round")}; no shard held it up: the slowest call was shard ${worst.slow.shard} (`, h("span", { class: "mono", title: copyTitle(worst.slow.replica) }, name), `) at ${fmt.ms(worst.slow.dur_us / 1000)}, the median ${fmt.ms(worst.median_us / 1000)}.`);
@@ -429,11 +462,11 @@ export function traceSummary(q, { onNav } = {}) {
     const n = r.calls.length;
     const rest = r.straggler ? r.calls.filter((c) => c !== r.slow) : r.calls;
     const restEnd = r.straggler ? r.restEnd_us : r.end_us;
-    rows.push(h("div", { class: "nm" }, h("b", {}, r.name), h("span", { class: "badge" }, fmt.plural(rest.length, "shard")), r.failed ? h("span", { class: "pill bad", style: { padding: "0 6px" } }, `${r.failed} failed`) : null, r.again ? h("span", { class: "badge", title: "hedges or retries: calls asked again of another copy" }, `${r.again} again`) : null),
+    rows.push(h("div", { class: "nm" }, rpcName(r.name), h("span", { class: "badge" }, fmt.plural(rest.length, "shard")), r.failed ? h("span", { class: "pill bad", style: { padding: "0 6px" } }, `${r.failed} failed`) : null, r.again ? h("span", { class: "badge", title: "hedges or retries: calls asked again of another copy" }, `${r.again} again`) : null),
       bar(r.start_us, restEnd - r.start_us, "k-rpc" + (r.failed ? " bad" : ""), n > 1 ? `median ${fmt.ms(r.median_us / 1000)} · all done by ${fmt.ms((restEnd - r.start_us) / 1000)}` : fmt.ms(r.calls[0].dur_us / 1000), `${n} calls from ${fmt.ms(r.start_us / 1000)}`));
     if (r.straggler) {
       const c = r.slow, nm = copyName(c.replica);
-      rows.push(h("div", { class: "nm" }, h("b", {}, r.name), h("span", { class: "badge" }, `shard ${c.shard}`), h("span", { class: "badge mono wl-badbadge", title: copyTitle(c.replica) }, nm)),
+      rows.push(h("div", { class: "nm" }, rpcName(r.name), h("span", { class: "badge" }, `shard ${c.shard}`), h("span", { class: "badge mono wl-badbadge", title: copyTitle(c.replica) }, nm)),
         bar(c.start_us, c.dur_us, "k-rpc bad", fmt.ms(c.dur_us / 1000), `${nm}: ${fmt.ms(c.dur_us / 1000)} from ${fmt.ms(c.start_us / 1000)}`));
     }
   }
@@ -481,6 +514,10 @@ function callStrip(r) {
 }
 
 /** A trace as a waterfall: a lane per span, on one scale; copies by short name. */
+/** QRY-12: a call to a shard in words, with the gRPC method in its title. */
+const RPC_WORDS = { TermStats: ["term counts", "each shard's term counts, so that BM25 scores alike on every shard"], Query: ["shard's part", "the shard runs its part of the query"], Search: ["shard search", "the shard searches its rows"], Fetch: ["fetch rows", "the rows of the hits, from the shards that hold them"], Lookup: ["rows by key", "rows read by their keys"], Write: ["write", "the shard writes its rows"] };
+/** A shard call's name as a row head: in words when known. */
+const rpcName = (n) => h("b", { title: RPC_WORDS[n] ? `${RPC_WORDS[n][1]} (gRPC ${n})` : null }, RPC_WORDS[n]?.[0] || n);
 export function waterfall(spans, { byEnd = false } = {}) {
   if (!spans?.length) return h("div", { class: "small muted" }, "No trace was kept for this query.");
   const end = Math.max(...spans.map((x) => x.start_us + x.dur_us), 1);
@@ -488,8 +525,8 @@ export function waterfall(spans, { byEnd = false } = {}) {
   const rows = spans.slice().sort(byEnd ? (a, b) => (b.start_us + b.dur_us) - (a.start_us + a.dur_us) : (a, b) => a.start_us - b.start_us);
   return h("div", {},
     h("div", { class: "wf" }, rows.map((x) => [
-      h("div", { class: "nm", title: x.replica ? copyTitle(x.replica) : "" }, h("b", {}, x.name), x.shard != null ? h("span", { class: "badge" }, "shard " + x.shard) : null, x.replica ? h("span", { class: "badge mono" }, copyName(x.replica)) : null, x.again ? h("span", { class: "badge", title: "a hedge or a retry" }, "again") : null, x.outcome !== "ok" ? h("span", { class: "pill " + (x.outcome === "outrun" ? "info" : "bad"), style: { padding: "0 6px" }, title: x.outcome === "outrun" ? "another copy answered first" : null }, x.outcome) : null),
-      h("div", { class: "lane" }, h("div", { class: `seg ${kind(x.name)}${x.outcome !== "ok" && x.outcome !== "outrun" ? " bad" : ""}${x.again ? " again" : ""}`, style: { left: (x.start_us / end * 100) + "%", width: Math.max(0.4, x.dur_us / end * 100) + "%" }, title: `${x.name}: ${fmt.ms(x.dur_us / 1000)} from ${fmt.ms(x.start_us / 1000)}${x.replica ? " on " + copyName(x.replica) : ""}` },
+      h("div", { class: "nm", title: x.replica ? copyTitle(x.replica) : "" }, h("b", { title: RPC_WORDS[x.name] ? `${RPC_WORDS[x.name][1]} (gRPC ${x.name})` : null }, RPC_WORDS[x.name]?.[0] || x.name), x.shard != null ? h("span", { class: "badge" }, "shard " + x.shard) : null, x.replica ? h("span", { class: "badge mono" }, copyName(x.replica)) : null, x.again ? h("span", { class: "badge", title: "a hedge or a retry" }, "again") : null, x.outcome !== "ok" ? h("span", { class: "pill " + (x.outcome === "outrun" ? "info" : "bad"), style: { padding: "0 6px" }, title: x.outcome === "outrun" ? "another copy answered first" : null }, x.outcome) : null),
+      h("div", { class: "lane" }, h("div", { class: `seg ${kind(x.name)}${x.outcome !== "ok" && x.outcome !== "outrun" ? " bad" : ""}${x.again ? " again" : ""}`, style: { left: (x.start_us / end * 100) + "%", width: Math.max(0.4, x.dur_us / end * 100) + "%" }, title: `${RPC_WORDS[x.name]?.[0] || x.name}: ${fmt.ms(x.dur_us / 1000)} from ${fmt.ms(x.start_us / 1000)}${x.replica ? " on " + copyName(x.replica) : ""}` },
         h("span", { class: "tiny" }, fmt.ms(x.dur_us / 1000)))),
     ]),
     h("div", { class: "scale" }, [0, 0.25, 0.5, 0.75, 1].map((f) => h("span", {}, fmt.ms(end * f / 1000))))));
@@ -534,7 +571,7 @@ export function queryDrawer(q) {
     body: [
       h("div", { class: "row between" }, h("b", {}, "SQL"), h("div", { class: "row" },
         h("button", { class: "btn sm", onclick: () => copy(q.sql, "SQL copied") }, icon("copy"), "Copy"),
-        h("a", { class: "btn sm", href: profileLink(q.sql, params), title: "Run it again with its CPU time measured, with its parameters", onclick: close }, icon("flame"), "Profile it again"),
+        h("a", { class: "btn sm", href: profileLink(q.sql, params, q.fingerprint || null), title: "Open it in the Profiler with its parameters: it asks before it runs", onclick: close }, icon("flame"), "Profile it again"),
         h("a", { class: "btn sm", href: workbenchLink(q.sql, params), title: "Open it in the SQL workbench, with its parameters", onclick: close }, icon("play"), "Open in the workbench"))),
       sqlBlock(q.sql),
       q.error ? h("div", { class: o.server ? "error" : "notice" }, q.error) : null,
@@ -587,7 +624,7 @@ const MINUTES = [[15, "15 min"], [60, "1 h"], [240, "4 h"], [1440, "24 h"]];
  * to refuse new runs for a while. Focus starts on "Keep them running".
  * Resolves {reason, refuse_min} or false.
  */
-export function cancelDialog({ sql, queries, key, refusable = true }) {
+export function cancelDialog({ sql, queries, key, fingerprint = null, refusable = true }) {
   return new Promise((resolve) => {
     const n = queries.length;
     const keys = countBy(queries, (q) => q.key || null);
@@ -603,6 +640,22 @@ export function cancelDialog({ sql, queries, key, refusable = true }) {
     const keep = h("button", { class: "btn" }, n === 1 ? "Keep it running" : "Keep them running");
     reason.oninput = () => { ok.disabled = !reason.value.trim(); };
     let done = false;
+    // NEW-workload-8: queries end and start while the dialog is open; recount them every 2 s.
+    const now = h("dd", { class: "small" }, "checking…");
+    const recount = async () => {
+      try {
+        const j = await api("/v1/queries");
+        if (done) return;
+        const run = (j.queries || []).filter((q) => !q.cancelled && (fingerprint ? q.fingerprint === fingerprint && (!key || q.key === key) : queries.some((x) => x.id === q.id)));
+        const ids = new Set(queries.map((q) => q.id)), ended = queries.filter((q) => !run.some((r) => r.id === q.id)).length, started = run.filter((r) => !ids.has(r.id)).length;
+        now.textContent = !run.length ? `none running: ${n === 1 ? "it has" : "they have"} ended` : `${fmt.n(run.length)} running${ended ? `; ${fmt.n(ended)} of the ${fmt.n(n)} ${ended === 1 ? "has" : "have"} ended` : ""}${started ? `; ${fmt.n(started)} started since` : ""}`;
+        ok.textContent = !run.length ? "Nothing to cancel" : run.length === 1 ? "Cancel the query" : `Cancel ${fmt.n(run.length)} queries`;
+        ok.dataset.none = run.length ? "" : "1";
+        ok.disabled = !run.length || !reason.value.trim();
+      } catch { now.textContent = "could not be counted again"; }
+    };
+    reason.oninput = () => { ok.disabled = !reason.value.trim() || ok.dataset.none === "1"; };
+    const timer = setInterval(recount, 2000);
     const m = modal({
       title: n === 1 ? "Cancel this running query?" : `Cancel ${fmt.n(n)} running queries of one statement?`,
       body: [
@@ -610,15 +663,17 @@ export function cancelDialog({ sql, queries, key, refusable = true }) {
         h("dl", { class: "kv wl-kv" },
           h("dt", {}, "Which"), h("dd", {}, `${fmt.plural(n, "query", "queries")}${vias.length && vias[0][0] ? ": " + vias.map(([v, c]) => `${c} on ${v}`).join(", ") : ""} · running ${fmt.ms(el[0])}${n > 1 ? ` to ${fmt.ms(el[el.length - 1])}` : ""}${mem ? ` · holding ${fmt.bytes(mem)} of query memory` : ""}`),
           h("dt", {}, "Who sent them"), h("dd", {}, keys.some(([k]) => k) ? keys.map(([k, c], i) => [i ? ", " : "", k ? ["API key ", h("b", { class: "mono" }, k)] : "no key", keys.length > 1 ? ` (${c})` : ""]) : h("span", { class: "muted" }, "unknown: this server does not record the key")),
+          h("dt", {}, "Now"), now,
           h("dt", {}, "What they get"), h("dd", {}, "HTTP 499 ", h("span", { class: "mono" }, "cancelled by an operator"), ". A client that retries sends them again.")),
         !refusable ? null : h("label", { class: "row small wl-refuse" }, refuse, h("span", {}, oneKey ? ["Also refuse new runs of this statement from ", h("b", { class: "mono" }, oneKey), " for"] : "Also refuse new runs of this statement for"), minSel, h("span", { class: "muted" }, "(they get 429)")),
         h("label", { class: "stack", style: { gap: "4px" } }, h("span", { class: "small dim" }, "Reason, for the audit log"), reason),
       ],
       foot: [keep, ok],
-      onClose: () => { if (!done) resolve(false); },
+      onClose: () => { clearInterval(timer); if (!done) resolve(false); },
     });
-    keep.onclick = () => { done = true; m.close(); resolve(false); };
-    ok.onclick = () => { if (!reason.value.trim()) return; done = true; m.close(); resolve({ reason: reason.value.trim(), refuse_min: refuse.checked ? minutes : 0, key: oneKey }); };
+    recount();
+    keep.onclick = () => { done = true; clearInterval(timer); m.close(); resolve(false); };
+    ok.onclick = () => { if (!reason.value.trim()) return; done = true; clearInterval(timer); m.close(); resolve({ reason: reason.value.trim(), refuse_min: refuse.checked ? minutes : 0, key: oneKey }); };
     reason.onkeydown = (e) => { if (e.key === "Enter") e.preventDefault(); };
     setTimeout(() => keep.focus(), 0);
   });
@@ -649,7 +704,7 @@ export async function cancelQueries({ fingerprint, key, queries, reason }) {
 /** Cancels after asking; then refuses the shape for a while when asked. */
 export async function askCancel({ sql, fingerprint, key, queries, onDone }) {
   if (!can("admin")) { toast("Cancelling needs an admin key", "bad"); return; }
-  const a = await cancelDialog({ sql, queries, key, refusable: !!fingerprint && await canContain() });
+  const a = await cancelDialog({ sql, queries, key, fingerprint, refusable: !!fingerprint && await canContain() });
   if (!a) return;
   // The rule first, so a client that retries at once is refused rather than started again.
   if (a.refuse_min && fingerprint) {
@@ -685,10 +740,15 @@ export async function canContain() { if (containable == null) { try { await cont
  * Limits or refuses a statement and/or a key for a while (scenario mock 03):
  * what it does to whom, how long, and a reason; audited and an event.
  */
-export function containDialog({ fingerprint, sql, key, keys, onDone } = {}) {
+export function containDialog({ fingerprint, sql, key, keys, onDone, action: act = "limit" } = {}) {
   if (!can("admin")) { toast("Containing needs an admin key", "bad"); return; }
   if (containable === false) { toast("This server cannot contain a statement or key yet: contain rules are newer than it", "bad", 6000); return; }
-  let action = "limit", scope = key ? "key" : fingerprint ? "statement" : "key", minutes = 60, conc = 2;
+  // R2-workload-2: from a statement and a key, the statement from that key (not everything the key sends),
+  // with the action the button named.
+  let action = act === "refuse" ? "refuse" : "limit", scope = fingerprint && key ? "both" : fingerprint ? "statement" : "key", minutes = 60, conc = 2;
+  // Each key's share of the statement, from its calls when the caller gave none.
+  const callsAll = (keys || []).reduce((a, x) => a + (x.calls || 0), 0);
+  keys = (keys || []).map((x) => ({ ...x, share: x.share ?? (callsAll ? (x.calls || 0) / callsAll : null) }));
   const keyIn = h("input", { class: "input sm mono", value: key || "", placeholder: "key name", style: { width: "160px" }, "aria-label": "API key" });
   const concIn = h("input", { class: "input sm num", type: "number", min: 0, value: conc, style: { width: "64px" }, "aria-label": "at most running at once", oninput: () => { conc = Math.max(0, +concIn.value || 0); draw(); } });
   const reason = h("input", { class: "input", placeholder: "e.g. Sorting 5,000 rows a call slows search for everyone", style: { width: "100%" }, "aria-label": "Reason" });
@@ -705,9 +765,9 @@ export function containDialog({ fingerprint, sql, key, keys, onDone } = {}) {
     clear(scopes, h("div", { class: "row", style: { gap: "10px" } },
       fingerprint ? seg([["statement", "this statement, every key"], ["both", "this statement from one key"], ["key", "everything from one key"]], scope, (v) => { scope = v; draw(); }, { class: "seg wl-segwrap" }) : h("span", { class: "small dim" }, "Everything from the key"),
       scope !== "statement" ? keyIn : null),
-      keys?.length && scope !== "statement" ? h("div", { class: "row small", style: { gap: "6px", marginTop: "6px" } }, h("span", { class: "muted" }, "Its keys:"), keys.slice(0, 6).map((x) => h("button", { class: "chip", "aria-pressed": String(x.key === k), onclick: () => { keyIn.value = x.key; draw(); } }, `${x.key} ${fmt.pct(x.share ?? 0, 0)}`))) : null);
+      keys?.length && scope !== "statement" ? h("div", { class: "row small", style: { gap: "6px", marginTop: "6px" } }, h("span", { class: "muted" }, "Its keys:"), keys.slice(0, 6).map((x) => h("button", { class: "chip", "aria-pressed": String(x.key === k), onclick: () => { keyIn.value = x.key; draw(); } }, x.share == null ? x.key : `${x.key} ${fmt.pct(x.share, 0)}`))) : null);
     const who = scope === "statement" ? "every client that sends this statement" : scope === "both" ? `key ${k || "…"} when it sends this statement; other keys keep running it` : `everything key ${k || "…"} sends`;
-    clear(say, `${action === "limit" ? `At most ${conc} at once` : "Refused"} for ${MINUTES.find((x) => x[0] === minutes)?.[1]}: ${who}. It ends by itself, is written to the audit log with your reason, and shows on the Timeline.`);
+    clear(say, `${action === "limit" ? `At most ${conc} at once` : "Refused"} for ${MINUTES.find((x) => x[0] === minutes)?.[1]}: ${who}. It holds on every coordinator, ends by itself, is written to the audit log with your reason, and shows on the Timeline.`);
     ok.disabled = !reason.value.trim() || (scope !== "statement" && !k);
     ok.textContent = action === "limit" ? "Apply the limit" : "Refuse it";
   }

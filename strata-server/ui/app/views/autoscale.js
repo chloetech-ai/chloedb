@@ -219,7 +219,8 @@ function render(page) {
       body: h("div", { class: "stack", style: { gap: "8px" } },
         h("div", {}, h("b", {}, W.text)),
         W.room ? h("div", { class: "small" }, W.room) : null,
-        W.time ? h("div", { class: "small" }, W.time) : null,
+        // How long: the coordinator's estimate, the one Cluster shows too (NEW-cluster-admin-7).
+        plan?.estimate?.text ? h("div", { class: "small" }, plan.estimate.text) : W.time ? h("div", { class: "small" }, W.time) : null,
         h("div", { class: "small dim" }, `Why: ${sg.text}.`),
         (plan?.steps || []).length ? h("div", {}, h("div", { class: "small dim" }, "The operator then:"), h("ol", { class: "cc-set-steps" }, plan.steps.map((x) => h("li", {}, x.charAt(0).toUpperCase() + x.slice(1))))) : null,
         (plan?.warnings || []).length ? h("div", { class: "small cc-warn" }, "Mind: " + plan.warnings.join("; ") + ".") : null,
@@ -299,6 +300,18 @@ function render(page) {
       log.length ? h("div", { class: "as-live-log" }, log.map((e) => h("div", { class: "as-ev" }, h("span", { class: "dim" }, `${when(e.atMs)}`), h("span", {}, e.text)))) : null));
   }
 
+  /**
+   * The shape a replay starts from, as it is: shards whose copies differ
+   * are said so, with the count the replay models each at; and where the
+   * volume size came from (NEW-cluster-admin-6).
+   */
+  function shapeWords(r) {
+    const z = r.sizes || {}, c = r.copies_now || {};
+    const mixed = !r.managed && c.min != null && c.max != null && c.min !== c.max;
+    const shape = mixed ? `${plural(z.shards, "shard")} of ${c.min} to ${c.max} copies (replayed as ${z.replicas} each)` : `${copies(z.replicas)} × ${plural(z.shards, "shard")}`;
+    const vol = z.volume ? `, volumes of ${z.volume}${r.volume_from === "the copies' disks" ? " (the largest disk a copy reports)" : ""}` : "";
+    return shape + vol;
+  }
   /** What a rule did in the replay, in a line. */
   function didOf(id) {
     if (!replay) return "";
@@ -309,7 +322,14 @@ function render(page) {
     const k = made.length;
     if (id === "grow") return k ? `In the replay: ${plural(k, "time")}, up to ${copies(Math.max(...pts.map((p) => p.replicas)))}.` : "In the replay: never.";
     if (id === "shrink") return k ? `In the replay: ${plural(k, "time")}, down to ${copies(Math.min(...pts.map((p) => p.replicas)))}.` : "In the replay: never.";
-    if (id === "volumes") return k ? `In the replay: ${plural(k, "time")}.` : "In the replay: never.";
+    if (id === "volumes") {
+      // Left out (no volume size known), it did not run: "never" would say
+      // it was calm (NEW-cluster-admin-6).
+      const out = (replay.left_out || []).find((x) => /^volumes/.test(x));
+      if (out) return `Left out of the replay: ${out.replace(/^volumes: /, "")}.`;
+      const top = Math.max(...pts.map((p) => p.full ?? 0));
+      return k ? `In the replay: ${plural(k, "time")}.` : top > 0 ? `In the replay: never; the fullest volume was at most ${pct(top)}.` : "In the replay: never; no copy said how full its volume was.";
+    }
     const held = pts.filter((p) => p.waiting && (id === "freeze" ? /frozen/.test(p.waiting) : /have not passed/.test(p.waiting))).length;
     return held ? `In the replay it held a change back for ${hours((held * stepMin) / 60)}.` : "In the replay it held nothing back.";
   }
@@ -435,7 +455,7 @@ function render(page) {
 
     const chartCard = card({
       cls: "as-replay",
-      title: "Last week, replayed", sub: `${hours(kept)} of load from the servers' log stores, ${replay.managed ? "from the StrataCluster's size" : "from the cluster's size"}: ${copies(sizes.replicas)} × ${plural(sizes.shards, "shard")}`,
+      title: "Last week, replayed", sub: `${hours(kept)} of load from the servers' log stores, ${replay.managed ? "from the StrataCluster's size" : "from the cluster's size"}: ${shapeWords(replay)}`,
       tools: [h("span", { class: "small dim" }, "Compare with a fixed"), seg(options.map((n) => [n, copies(n)]), F, (v) => { fixed = v; drawReplay(); }, { "aria-label": "Compare with a fixed size" }), replaying ? h("span", { class: "small dim" }, "…") : null],
       body: h("div", { class: "stack", style: { gap: "10px" } }, kpiEl, plot, dayBtns, legend, copiesEl, diskEl),
     });

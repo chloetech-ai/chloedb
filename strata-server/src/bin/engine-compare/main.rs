@@ -44,7 +44,7 @@ use strata::data::{self, col};
 use strata::db::Db;
 use strata::metrics::{mean, percentile};
 use strata::segment::build::BuildOptions;
-use strata::storage::DbOptions;
+use strata::storage::{DbOptions, MergePolicy};
 use strata::{Document, Value, VectorCodes, VectorIndexKind};
 use strata_server::server;
 use strata_server::service::shard_of;
@@ -74,6 +74,11 @@ enum Cmd {
         /// Threads for building the vector index.
         #[arg(long, default_value_t = 2)]
         threads: usize,
+        /// Documents a segment of the load takes; a shard of more is
+        /// loaded in segments of this many and then compacted as far as
+        /// Strata's segment cap allows (2M documents a segment).
+        #[arg(long, default_value_t = 500_000)]
+        segment_docs: usize,
     },
     /// Loads the collection into Elasticsearch, OpenSearch, Solr or Vespa over HTTP and merges each shard to one segment, timed.
     Load {
@@ -327,29 +332,14 @@ fn each_doc(collection: &str, limit: Option<usize>, mut f: impl FnMut(RawDoc, Ve
     Ok(n)
 }
 
-fn build(collection: &str, shard: usize, of: usize, out: &Path, threads: usize) -> Result<(), String> {
+fn unix_s() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
+fn build(collection: &str, shard: usize, of: usize, out: &Path, threads: usize, segment_docs: usize) -> Result<(), String> {
     let t = Instant::now();
+    let started = unix_s();
     let dim = meta(collection)?.dim;
-    let mut docs: Vec<Document> = Vec::new();
-    each_doc(collection, None, |r, v| {
-        if shard_of(&Value::Str(r.id.clone()), of) == shard {
-            let body = r.body();
-            docs.push(vec![
-                Value::Str(r.id),
-                Value::Str(r.title),
-                Value::Str(r.text),
-                Value::Str(body),
-                Value::Int(r.year),
-                Value::Str(r.category),
-                Value::Float(r.rating),
-                Value::Str(r.topic),
-                Value::Vector(v.into()),
-            ]);
-        }
-        Ok(())
-    })?;
-    let read_s = t.elapsed().as_secs_f64();
-    let n = docs.len();
     for p in [out.to_path_buf(), PathBuf::from(format!("{}-wal", out.display()))] {
         if p.exists() {
             std::fs::remove_file(&p).map_err(s)?;
@@ -358,16 +348,64 @@ fn build(collection: &str, shard: usize, of: usize, out: &Path, threads: usize) 
     // As strata-server-bench builds its databases.
     let mut schema = data::beir_schema(dim, VectorIndexKind::Hnsw { m: 16, ef_construction: 200 });
     schema.fields[col::EMB].codes = VectorCodes::Sq8;
-    let opts = DbOptions { build: BuildOptions::default().set("vector.threads", threads), segment_max_docs: n.max(1), ..server::db_options(false) };
-    let t1 = Instant::now();
+    let opts = DbOptions { build: BuildOptions::default().set("vector.threads", threads), segment_max_docs: segment_docs.max(1), ..server::db_options(false) };
     let db = Db::create(out, schema, opts).map_err(s)?;
-    db.load(docs).map_err(s)?;
-    let build_s = t1.elapsed().as_secs_f64();
+    // The documents stream from the files into the load, which builds a
+    // segment of each `segment_docs` of them: holding a shard's documents
+    // and its one segment at once took ~15 KB a document (7.8 GB at 500K),
+    // more than a node has at 10M. Building a segment still holds about
+    // 12 KB a document of it (3.2 GB with segments of 200K), so 500K.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Document>(4096);
+    let coll = collection.to_string();
+    let reader = std::thread::spawn(move || {
+        each_doc(&coll, None, |r, v| {
+            if shard_of(&Value::Str(r.id.clone()), of) == shard {
+                let body = r.body();
+                let doc = vec![
+                    Value::Str(r.id),
+                    Value::Str(r.title),
+                    Value::Str(r.text),
+                    Value::Str(body),
+                    Value::Int(r.year),
+                    Value::Str(r.category),
+                    Value::Float(r.rating),
+                    Value::Str(r.topic),
+                    Value::Vector(v.into()),
+                ];
+                tx.send(doc).map_err(|_| "the load stopped".to_string())?;
+            }
+            Ok(())
+        })
+    });
+    let mut n = 0usize;
+    let loaded = db.load(rx.iter().inspect(|_| n += 1));
+    drop(rx);
+    reader.join().map_err(|_| "the reader panicked".to_string())??;
+    loaded.map_err(s)?;
+    let load_s = t.elapsed().as_secs_f64();
+    let segments_loaded = db.snapshot().segments().len();
+    // Then compacted, as `optimize` does: into segments of up to Strata's
+    // cap of 2M documents. One segment of a 5M shard would not fit: merging
+    // took 3.1 GB at 500K and over 5.2 GB at 1M, growing about 4 GB a
+    // million.
+    let t1 = Instant::now();
+    if segments_loaded > 1 {
+        db.storage().merge(&MergePolicy::compact()).map_err(s)?;
+        db.storage().vacuum().map_err(s)?;
+    }
+    let merge_s = t1.elapsed().as_secs_f64();
+    let segments = db.snapshot().segments().len();
     let file_bytes = db.storage().file_stats().file_bytes;
     drop(db);
+    // read_s is 0: the documents are read while the segments are built.
     let report = json!({
         "engine": "strata", "shard": shard, "of": of, "docs": n, "threads": threads,
-        "read_s": read_s, "build_s": build_s, "total_s": t.elapsed().as_secs_f64(), "file_bytes": file_bytes,
+        "segment_docs": segment_docs, "segments_loaded": segments_loaded, "segments": segments,
+        "read_s": 0.0, "load_s": load_s, "merge_s": merge_s, "build_s": load_s + merge_s, "total_s": t.elapsed().as_secs_f64(),
+        "file_bytes": file_bytes,
+        // Shards built at once overlap: the build's wall time is from the
+        // first start to the last end.
+        "started_unix": started, "ended_unix": unix_s(),
     });
     std::fs::write(format!("{}.build.json", out.display()), report.to_string()).map_err(s)?;
     println!("{report}");
@@ -1034,6 +1072,8 @@ fn differs(engine: Engine, kind: &str, paid: bool) -> Option<&'static str> {
 struct Probe<'a> {
     q: &'a data::Query,
     key: &'a str,
+    /// The key's row in the collection (Qdrant's point id; Manticore's id less one).
+    row: usize,
     item: &'a [f32],
     seen: &'a [String],
     year: i64,
@@ -1059,6 +1099,9 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
     let seen = p.seen;
     let year = p.year;
     match engine {
+        // A read by key goes through the key-value API, without SQL, as
+        // Meilisearch's, Milvus's and Redis's go through their own gets.
+        Engine::Strata if kind == "key lookup" => Some(("/v1/kv/get", json!({"table": "docs", "keys": [key]}))),
         Engine::Strata => {
             let mut params = serde_json::Map::new();
             if sql.contains(":t") {
@@ -1310,6 +1353,46 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
     }
 }
 
+/// A key lookup by the engine's own read by id: the path, and the body to
+/// post (None: a GET). Elasticsearch and OpenSearch: _mget; Solr: its
+/// real-time get; Vespa: /document/v1. Strata's is its key-value get, in
+/// `request`.
+fn native_get(engine: Engine, key: &str) -> Option<(String, Option<Json>)> {
+    match engine {
+        Engine::Es | Engine::Os => Some(("/quora/_mget".to_string(), Some(json!({"docs": [{"_id": key, "_source": ["title", "year", "rating"]}]})))),
+        Engine::Solr => Some((format!("/solr/quora/get?ids={}&fl=id,title,year,rating", query_escape(key)), Some(json!({})))),
+        Engine::Vespa => Some((format!("/document/v1/doc/doc/docid/{}?fieldSet=doc:id,title,year,rating&timeout=10s", id_path(key)), None)),
+        Engine::Strata => None,
+    }
+}
+
+/// Warms a kind up before it is timed: rounds of 3 s at 4 clients until
+/// two rounds in a row have a median within 10% of each other (at least 2
+/// rounds, at most 10 or `seconds` x 5). Returns each round's median. One
+/// pass of every request was not enough at 1M: the JVM engines' first
+/// timed pass was their slowest of three in most kinds.
+async fn warm_up<F, Fut>(seconds: f64, mut round: F) -> Vec<f64>
+where
+    F: FnMut(usize, f64) -> Fut,
+    Fut: std::future::Future<Output = Timed>,
+{
+    let budget = Instant::now() + Duration::from_secs_f64((seconds * 5.0).max(20.0));
+    let mut p50s: Vec<f64> = Vec::new();
+    while p50s.len() < 10 && Instant::now() < budget {
+        let t = round(4, 3.0).await;
+        if t.ms.is_empty() {
+            break;
+        }
+        p50s.push(percentile(&t.ms, 50.0));
+        if let [.., a, b] = p50s[..] {
+            if (b - a).abs() <= 0.1 * a.max(1e-9) {
+                break;
+            }
+        }
+    }
+    p50s
+}
+
 /// `a` with the keys of `b` added.
 fn with(mut a: Json, b: Json) -> Json {
     a.as_object_mut().unwrap().extend(b.as_object().cloned().unwrap_or_default());
@@ -1320,7 +1403,24 @@ fn with(mut a: Json, b: Json) -> Json {
 /// scores, and an aggregate's rows (a facet's (value, count); the SQL
 /// kind's (category, count, average rating)).
 fn answer(engine: Engine, kind: &str, j: &Json) -> Json {
+    // A read by id (native_get): Elasticsearch's and OpenSearch's _mget
+    // ({"docs": [{"_id", "found"}]}), Vespa's /document/v1 ({"fields"}).
+    // Solr's real-time get with ids answers as a search does.
+    if kind == "key lookup" {
+        if let Some(docs) = j.get("docs").and_then(|d| d.as_array()) {
+            let keys: Vec<Json> = docs.iter().filter(|d| d["found"].as_bool() == Some(true)).map(|d| d["_id"].clone()).collect();
+            return json!({"keys": keys, "scores": [], "rows": []});
+        }
+        if j.get("pathId").is_some() {
+            return json!({"keys": [j["fields"]["id"].clone()], "scores": [], "rows": []});
+        }
+    }
     let (hits, id, score) = match engine {
+        // /v1/kv/get: {"rows": [{"id": .., ..} or null, one a key]}.
+        Engine::Strata if kind == "key lookup" => {
+            let keys: Vec<Json> = j["rows"].as_array().map(|r| r.iter().filter(|x| !x.is_null()).map(|x| x["id"].clone()).collect()).unwrap_or_default();
+            return json!({"keys": keys, "scores": [], "rows": []});
+        }
         Engine::Strata => {
             return json!({"keys": j["keys"], "scores": j["scores"], "rows": j["rows"]});
         }
@@ -1407,6 +1507,18 @@ struct Timed {
 struct Req {
     url: String,
     body: Vec<u8>,
+    /// A GET (Vespa's /document/v1 read), else a POST of `body`.
+    get: bool,
+}
+
+impl Req {
+    fn send(&self, client: &reqwest::Client) -> reqwest::RequestBuilder {
+        if self.get {
+            client.get(&self.url)
+        } else {
+            client.post(&self.url).header("content-type", "application/json").body(self.body.clone())
+        }
+    }
 }
 
 /// Posts `reqs` round-robin from `concurrency` clients for `seconds`.
@@ -1422,7 +1534,7 @@ async fn drive(client: &reqwest::Client, reqs: Arc<Vec<Req>>, concurrency: usize
                 while Instant::now() < deadline {
                     let r = &reqs[next.fetch_add(1, Ordering::Relaxed) % reqs.len()];
                     let start = Instant::now();
-                    let res = client.post(&r.url).header("content-type", "application/json").body(r.body.clone()).send().await;
+                    let res = r.send(&client).send().await;
                     let err = match res {
                         Ok(res) => {
                             let ok = res.status().is_success();
@@ -1482,6 +1594,7 @@ async fn run(
     let client = http_client(engine, 30)?;
     let label = label.unwrap_or_else(|| engine.name().to_string());
     let (mut http, mut answers, mut query_ids, mut unavailable, mut differ) = (Vec::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
+    let mut warmups = BTreeMap::new();
     // What analyze.py needs to score the kinds that are not about a query's text: each request's item and seen keys, or year.
     let mut probes = BTreeMap::new();
     for &(kind, sql) in KINDS {
@@ -1490,6 +1603,7 @@ async fn run(
         }
         let mut ids = Vec::new();
         let mut reqs = Vec::new();
+        let mut fallback = Vec::new();
         let mut params = Vec::new();
         if let Some(why) = unsupported(engine, kind) {
             eprintln!("{label:<8} {kind:<24} unavailable: {why}");
@@ -1501,7 +1615,7 @@ async fn run(
             let k = (i * 7919) % keys.len();
             let it = (i * 104_729 + 13) % keys.len();
             let seen: Vec<String> = std::iter::once(it).chain((1..SEEN).map(|j| (it + j * 997) % keys.len())).map(|j| keys[j].clone()).collect();
-            let probe = Probe { q, key: &keys[k], item: &items[it], seen: &seen, year: 1990 + (i % 30) as i64, paid };
+            let probe = Probe { q, key: &keys[k], row: k, item: &items[it], seen: &seen, year: 1990 + (i % 30) as i64, paid };
             if let Some((path, body)) = request(engine, kind, sql, &probe) {
                 // Solr's /sql reads its statement from the request's parameters only, not from a JSON body.
                 let (path, body) = match body.get("stmt").and_then(|x| x.as_str()) {
@@ -1514,7 +1628,16 @@ async fn run(
                     "sql aggregate" => params.push(json!({"year": probe.year})),
                     _ => {}
                 }
-                reqs.push(Req { url: format!("{}{path}", urls[reqs.len() % urls.len()]), body: serde_json::to_vec(&body).unwrap() });
+                let url = &urls[reqs.len() % urls.len()];
+                // A key lookup by the engine's own read by id, as Strata's
+                // goes through its key-value get; its search on the id
+                // field is kept to fall back on if the read is refused.
+                if let Some((npath, nbody)) = (kind == "key lookup").then(|| native_get(engine, probe.key)).flatten() {
+                    fallback.push(Req { url: format!("{url}{path}"), body: serde_json::to_vec(&body).unwrap(), get: false });
+                    reqs.push(Req { url: format!("{url}{npath}"), body: nbody.as_ref().map_or_else(Vec::new, |b| serde_json::to_vec(b).unwrap()), get: nbody.is_none() });
+                } else {
+                    reqs.push(Req { url: format!("{url}{path}"), body: serde_json::to_vec(&body).unwrap(), get: false });
+                }
             }
         }
         if reqs.is_empty() {
@@ -1523,25 +1646,36 @@ async fn run(
             continue;
         }
         if let Some(d) = differs(engine, kind, paid) {
-            differ.insert(kind, d);
+            differ.insert(kind, d.to_string());
         }
-        // Every request once, from one client: the answers, and a warm-up.
+        // Every request once, from one client: the answers.
         let mut got = Vec::new();
         let mut failed = None;
-        for r in &reqs {
-            let res = client.post(&r.url).header("content-type", "application/json").body(r.body.clone()).send().await;
-            let (status, j) = match res {
-                Ok(res) => (res.status(), res.json::<Json>().await.unwrap_or(Json::Null)),
-                Err(e) => {
-                    failed = Some(e.to_string());
+        for attempt in 0..2 {
+            (got, failed) = (Vec::new(), None);
+            for r in &reqs {
+                let res = r.send(&client).send().await;
+                let (status, j) = match res {
+                    Ok(res) => (res.status(), res.json::<Json>().await.unwrap_or(Json::Null)),
+                    Err(e) => {
+                        failed = Some(e.to_string());
+                        break;
+                    }
+                };
+                if let Some(e) = error_of(&j).or_else(|| (!status.is_success()).then(|| format!("{status}: {j}"))) {
+                    failed = Some(e);
                     break;
                 }
-            };
-            if let Some(e) = error_of(&j).or_else(|| (!status.is_success()).then(|| format!("{status}: {j}"))) {
-                failed = Some(e);
-                break;
+                got.push(answer(engine, kind, &j));
             }
-            got.push(answer(engine, kind, &j));
+            match (&failed, attempt) {
+                (Some(e), 0) if !fallback.is_empty() => {
+                    eprintln!("{label:<8} {kind:<24} the read by id failed ({}): the search on id instead", e.chars().take(300).collect::<String>());
+                    differ.insert(kind, format!("a search on the id field: its read by id failed ({})", e.chars().take(200).collect::<String>()));
+                    reqs = std::mem::take(&mut fallback);
+                }
+                _ => break,
+            }
         }
         if let Some(e) = failed {
             // The engine cannot answer this kind (it was checked to answer the others).
@@ -1555,6 +1689,9 @@ async fn run(
             probes.insert(kind, params);
         }
         let reqs = Arc::new(reqs);
+        let warm = warm_up(seconds, |c, secs| drive(&client, reqs.clone(), c, secs)).await;
+        eprintln!("{label:<8} {kind:<24} warm-up: p50 {} ms", warm.iter().map(|x| format!("{x:.3}")).collect::<Vec<_>>().join(", "));
+        warmups.insert(kind, warm);
         for &c in concurrency {
             let t = drive(&client, reqs.clone(), c, seconds).await;
             eprintln!(
@@ -1579,7 +1716,7 @@ async fn run(
     let report = json!({
         "engine": engine.name(), "label": label, "collection": collection, "urls": urls, "queries": queries.len(),
         "params": {"seconds": seconds, "concurrency": concurrency, "candidates": CANDIDATES, "oversample": OVERSAMPLE, "hybrid_depth": DEPTH, "paid": paid},
-        "http": http, "unavailable": unavailable, "differs": differ, "query_ids": query_ids, "probes": probes, "answers": answers,
+        "http": http, "unavailable": unavailable, "differs": differ, "query_ids": query_ids, "probes": probes, "answers": answers, "warm_up_p50_ms": warmups,
     });
     std::fs::create_dir_all(out).map_err(s)?;
     let path = out.join(format!("run-{}.json", label.replace(' ', "-")));
@@ -2501,7 +2638,7 @@ async fn stream(
 async fn main() {
     let cli = Cli::parse();
     let r = match &cli.cmd {
-        Cmd::Build { shard, of, out, threads } => build(&cli.collection, *shard, *of, out, *threads),
+        Cmd::Build { shard, of, out, threads, segment_docs } => build(&cli.collection, *shard, *of, out, *threads, *segment_docs),
         Cmd::Load { engine, url, shards, batch, clients, limit, out } => match engine.engine() {
             Ok(e) => load(&cli.collection, e, url, *shards, *batch, *clients, *limit, out).await,
             Err(o) => more::load(&cli.collection, o, url, *batch, *clients, *limit, out).await,

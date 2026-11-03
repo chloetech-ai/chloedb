@@ -1,0 +1,163 @@
+configmap/milvus-config created
+service/milvus created
+pod/milvus-0 created
+pod/milvus-0 condition met
+job.batch/load-milvus created
+milvus: index created in 0.0 s
+milvus: 25000 documents sent, 4 s
+milvus: 50000 documents sent, 9 s
+milvus: 75000 documents sent, 14 s
+milvus: 100000 documents sent, 20 s
+milvus: 125000 documents sent, 28 s
+milvus: 150000 documents sent, 34 s
+milvus: 175000 documents sent, 41 s
+milvus: 200000 documents sent, 47 s
+milvus: 225000 documents sent, 54 s
+milvus: 250000 documents sent, 60 s
+milvus: 275000 documents sent, 65 s
+milvus: 300000 documents sent, 72 s
+milvus: 325000 documents sent, 79 s
+milvus: 350000 documents sent, 84 s
+milvus: 375000 documents sent, 89 s
+milvus: 400000 documents sent, 93 s
+milvus: 425000 documents sent, 98 s
+milvus: 450000 documents sent, 103 s
+milvus: 475000 documents sent, 108 s
+milvus: 500000 documents sent, 115 s
+milvus: 525000 documents sent, 121 s
+milvus: 550000 documents sent, 127 s
+milvus: 575000 documents sent, 134 s
+milvus: 600000 documents sent, 140 s
+milvus: 625000 documents sent, 145 s
+milvus: 650000 documents sent, 152 s
+milvus: 675000 documents sent, 158 s
+milvus: 700000 documents sent, 165 s
+milvus: 725000 documents sent, 172 s
+milvus: 750000 documents sent, 178 s
+milvus: 775000 documents sent, 185 s
+milvus: 800000 documents sent, 191 s
+milvus: 825000 documents sent, 197 s
+milvus: 850000 documents sent, 203 s
+milvus: 875000 documents sent, 208 s
+milvus: 900000 documents sent, 214 s
+milvus: 925000 documents sent, 218 s
+milvus: 950000 documents sent, 222 s
+milvus: 975000 documents sent, 229 s
+milvus: 1000000 documents sent, 235 s
+milvus: 1000000 documents (10.8 GB) sent in 234.7 s
+milvus: flush_s in 1.5 s
+milvus: index_s in 272.2 s
+milvus: load_s in 0.0 s
+milvus: indexed 273.7 s after the last write; 508.5 s in all
+wrote /data/compare/load-milvus.json
+job.batch/run-milvus created
+milvus    bm25                     c=1        449 q/s  p50   2.113 ms  p90   2.756 ms  p99   4.061 ms  errors 0
+milvus    bm25                     c=4       1206 q/s  p50   3.137 ms  p90   4.437 ms  p99   6.328 ms  errors 0
+milvus    bm25                     c=16      1756 q/s  p50   8.699 ms  p90  12.616 ms  p99  18.416 ms  errors 0
+milvus    bm25 + filter            c=1        354 q/s  p50   2.742 ms  p90   3.255 ms  p99   3.860 ms  errors 0
+milvus    bm25 + filter            c=4        783 q/s  p50   4.948 ms  p90   6.400 ms  p99   8.485 ms  errors 0
+milvus    bm25 + filter            c=16      1184 q/s  p50  12.955 ms  p90  18.102 ms  p99  24.485 ms  errors 0
+milvus    vector                   c=1        377 q/s  p50   2.578 ms  p90   2.971 ms  p99   3.655 ms  errors 0
+milvus    vector                   c=4        970 q/s  p50   3.949 ms  p90   5.118 ms  p99   7.066 ms  errors 0
+milvus    vector                   c=16      1391 q/s  p50  10.849 ms  p90  15.842 ms  p99  23.397 ms  errors 0
+milvus    vector + filter          c=1        305 q/s  p50   3.182 ms  p90   3.663 ms  p99   4.468 ms  errors 0
+milvus    vector + filter          c=4        705 q/s  p50   5.456 ms  p90   7.175 ms  p99   9.689 ms  errors 0
+milvus    vector + filter          c=16       915 q/s  p50  16.540 ms  p90  23.259 ms  p99  33.111 ms  errors 0
+milvus    hybrid (RRF)             c=1        180 q/s  p50   5.470 ms  p90   6.267 ms  p99   7.488 ms  errors 0
+milvus    hybrid (RRF)             c=4        341 q/s  p50  11.270 ms  p90  15.099 ms  p99  21.365 ms  errors 0
+milvus    hybrid (RRF)             c=16       384 q/s  p50  41.210 ms  p90  50.586 ms  p99  62.844 ms  errors 0
+milvus    hybrid (weighted)        c=1        181 q/s  p50   5.423 ms  p90   6.258 ms  p99   7.659 ms  errors 0
+milvus    hybrid (weighted)        c=4        341 q/s  p50  11.348 ms  p90  15.212 ms  p99  20.259 ms  errors 0
+milvus    hybrid (weighted)        c=16       385 q/s  p50  41.240 ms  p90  50.593 ms  p99  60.259 ms  errors 0
+milvus    boosted (bm25 × decay)   c=1        332 q/s  p50   2.862 ms  p90   3.643 ms  p99   5.466 ms  errors 0
+milvus    boosted (bm25 × decay)   c=4        822 q/s  p50   4.619 ms  p90   6.516 ms  p99   9.099 ms  errors 0
+milvus    boosted (bm25 × decay)   c=16      1118 q/s  p50  13.615 ms  p90  19.734 ms  p99  27.588 ms  errors 0
+milvus    facet                    unavailable: no aggregations: a query counts the rows of a filter, not of each value
+milvus    key lookup               c=1       1014 q/s  p50   0.970 ms  p90   1.057 ms  p99   1.368 ms  errors 0
+milvus    key lookup               c=4       3397 q/s  p50   1.131 ms  p90   1.393 ms  p99   1.845 ms  errors 0
+milvus    key lookup               c=16      5987 q/s  p50   2.519 ms  p90   3.625 ms  p99   5.773 ms  errors 0
+milvus    phrase                   c=1        509 q/s  p50   1.927 ms  p90   2.359 ms  p99   3.007 ms  errors 0
+milvus    phrase                   c=4       1355 q/s  p50   2.838 ms  p90   3.833 ms  p99   5.185 ms  errors 0
+milvus    phrase                   c=16      1711 q/s  p50   9.046 ms  p90  12.490 ms  p99  17.357 ms  errors 0
+milvus    typo                     unavailable: no fuzzy matching
+milvus    prefix                   unavailable: no word prefixes: TEXT_MATCH matches whole terms and LIKE a prefix of the whole string
+milvus    similar items            c=1        313 q/s  p50   3.103 ms  p90   3.523 ms  p99   4.158 ms  errors 0
+milvus    similar items            c=4        730 q/s  p50   5.262 ms  p90   6.876 ms  p99   9.241 ms  errors 0
+milvus    similar items            c=16       863 q/s  p50  17.786 ms  p90  22.917 ms  p99  31.829 ms  errors 0
+milvus    sql aggregate            unavailable: no GROUP BY
+wrote /data/compare/run-milvus.json
+job.batch/run-milvus-pass2 created
+milvus-pass2 bm25                     c=1        470 q/s  p50   2.005 ms  p90   2.642 ms  p99   3.918 ms  errors 0
+milvus-pass2 bm25                     c=4       1199 q/s  p50   3.137 ms  p90   4.504 ms  p99   6.762 ms  errors 0
+milvus-pass2 bm25                     c=16      1762 q/s  p50   8.711 ms  p90  12.600 ms  p99  17.993 ms  errors 0
+milvus-pass2 bm25 + filter            c=1        350 q/s  p50   2.779 ms  p90   3.281 ms  p99   4.032 ms  errors 0
+milvus-pass2 bm25 + filter            c=4        782 q/s  p50   4.936 ms  p90   6.458 ms  p99   8.352 ms  errors 0
+milvus-pass2 bm25 + filter            c=16      1184 q/s  p50  13.051 ms  p90  17.827 ms  p99  23.882 ms  errors 0
+milvus-pass2 vector                   c=1        388 q/s  p50   2.508 ms  p90   2.848 ms  p99   3.672 ms  errors 0
+milvus-pass2 vector                   c=4        956 q/s  p50   4.014 ms  p90   5.236 ms  p99   7.373 ms  errors 0
+milvus-pass2 vector                   c=16      1377 q/s  p50  11.064 ms  p90  15.851 ms  p99  23.903 ms  errors 0
+milvus-pass2 vector + filter          c=1        303 q/s  p50   3.198 ms  p90   3.713 ms  p99   4.689 ms  errors 0
+milvus-pass2 vector + filter          c=4        702 q/s  p50   5.485 ms  p90   7.230 ms  p99   9.827 ms  errors 0
+milvus-pass2 vector + filter          c=16       918 q/s  p50  16.492 ms  p90  23.127 ms  p99  33.248 ms  errors 0
+milvus-pass2 hybrid (RRF)             c=1        181 q/s  p50   5.424 ms  p90   6.209 ms  p99   8.280 ms  errors 0
+milvus-pass2 hybrid (RRF)             c=4        342 q/s  p50  11.166 ms  p90  15.066 ms  p99  20.350 ms  errors 0
+milvus-pass2 hybrid (RRF)             c=16       384 q/s  p50  40.706 ms  p90  51.480 ms  p99  63.070 ms  errors 0
+milvus-pass2 hybrid (weighted)        c=1        179 q/s  p50   5.465 ms  p90   6.299 ms  p99   8.496 ms  errors 0
+milvus-pass2 hybrid (weighted)        c=4        342 q/s  p50  11.262 ms  p90  14.964 ms  p99  20.672 ms  errors 0
+milvus-pass2 hybrid (weighted)        c=16       385 q/s  p50  40.704 ms  p90  50.009 ms  p99  64.350 ms  errors 0
+milvus-pass2 boosted (bm25 × decay)   c=1        332 q/s  p50   2.831 ms  p90   3.669 ms  p99   5.597 ms  errors 0
+milvus-pass2 boosted (bm25 × decay)   c=4        820 q/s  p50   4.599 ms  p90   6.561 ms  p99   9.197 ms  errors 0
+milvus-pass2 boosted (bm25 × decay)   c=16      1114 q/s  p50  13.727 ms  p90  19.762 ms  p99  26.609 ms  errors 0
+milvus-pass2 facet                    unavailable: no aggregations: a query counts the rows of a filter, not of each value
+milvus-pass2 key lookup               c=1        997 q/s  p50   0.987 ms  p90   1.075 ms  p99   1.401 ms  errors 0
+milvus-pass2 key lookup               c=4       3389 q/s  p50   1.131 ms  p90   1.408 ms  p99   1.850 ms  errors 0
+milvus-pass2 key lookup               c=16      6018 q/s  p50   2.517 ms  p90   3.593 ms  p99   5.550 ms  errors 0
+milvus-pass2 phrase                   c=1        515 q/s  p50   1.902 ms  p90   2.323 ms  p99   3.120 ms  errors 0
+milvus-pass2 phrase                   c=4       1351 q/s  p50   2.845 ms  p90   3.838 ms  p99   5.366 ms  errors 0
+milvus-pass2 phrase                   c=16      1703 q/s  p50   9.061 ms  p90  12.531 ms  p99  17.950 ms  errors 0
+milvus-pass2 typo                     unavailable: no fuzzy matching
+milvus-pass2 prefix                   unavailable: no word prefixes: TEXT_MATCH matches whole terms and LIKE a prefix of the whole string
+milvus-pass2 similar items            c=1        309 q/s  p50   3.150 ms  p90   3.617 ms  p99   4.504 ms  errors 0
+milvus-pass2 similar items            c=4        723 q/s  p50   5.312 ms  p90   6.891 ms  p99   9.744 ms  errors 0
+milvus-pass2 similar items            c=16       861 q/s  p50  17.734 ms  p90  23.223 ms  p99  32.081 ms  errors 0
+milvus-pass2 sql aggregate            unavailable: no GROUP BY
+wrote /data/compare/run-milvus-pass2.json
+job.batch/run-milvus-pass3 created
+milvus-pass3 bm25                     c=1        465 q/s  p50   2.033 ms  p90   2.649 ms  p99   3.806 ms  errors 0
+milvus-pass3 bm25                     c=4       1203 q/s  p50   3.134 ms  p90   4.475 ms  p99   6.312 ms  errors 0
+milvus-pass3 bm25                     c=16      1759 q/s  p50   8.750 ms  p90  12.566 ms  p99  17.469 ms  errors 0
+milvus-pass3 bm25 + filter            c=1        349 q/s  p50   2.788 ms  p90   3.294 ms  p99   4.073 ms  errors 0
+milvus-pass3 bm25 + filter            c=4        781 q/s  p50   4.949 ms  p90   6.442 ms  p99   8.559 ms  errors 0
+milvus-pass3 bm25 + filter            c=16      1181 q/s  p50  13.033 ms  p90  18.068 ms  p99  25.178 ms  errors 0
+milvus-pass3 vector                   c=1        384 q/s  p50   2.540 ms  p90   2.887 ms  p99   3.641 ms  errors 0
+milvus-pass3 vector                   c=4        971 q/s  p50   3.965 ms  p90   5.098 ms  p99   7.060 ms  errors 0
+milvus-pass3 vector                   c=16      1379 q/s  p50  11.012 ms  p90  15.697 ms  p99  25.033 ms  errors 0
+milvus-pass3 vector + filter          c=1        306 q/s  p50   3.181 ms  p90   3.709 ms  p99   4.529 ms  errors 0
+milvus-pass3 vector + filter          c=4        706 q/s  p50   5.436 ms  p90   7.172 ms  p99  10.109 ms  errors 0
+milvus-pass3 vector + filter          c=16       920 q/s  p50  16.591 ms  p90  22.826 ms  p99  30.705 ms  errors 0
+milvus-pass3 hybrid (RRF)             c=1        180 q/s  p50   5.458 ms  p90   6.276 ms  p99   8.031 ms  errors 0
+milvus-pass3 hybrid (RRF)             c=4        343 q/s  p50  11.192 ms  p90  15.027 ms  p99  20.549 ms  errors 0
+milvus-pass3 hybrid (RRF)             c=16       386 q/s  p50  40.558 ms  p90  50.064 ms  p99  68.504 ms  errors 0
+milvus-pass3 hybrid (weighted)        c=1        180 q/s  p50   5.423 ms  p90   6.279 ms  p99   7.901 ms  errors 0
+milvus-pass3 hybrid (weighted)        c=4        342 q/s  p50  11.261 ms  p90  15.041 ms  p99  21.398 ms  errors 0
+milvus-pass3 hybrid (weighted)        c=16       384 q/s  p50  40.891 ms  p90  50.760 ms  p99  64.548 ms  errors 0
+milvus-pass3 boosted (bm25 × decay)   c=1        336 q/s  p50   2.811 ms  p90   3.589 ms  p99   5.323 ms  errors 0
+milvus-pass3 boosted (bm25 × decay)   c=4        833 q/s  p50   4.557 ms  p90   6.456 ms  p99   9.105 ms  errors 0
+milvus-pass3 boosted (bm25 × decay)   c=16      1125 q/s  p50  13.578 ms  p90  19.629 ms  p99  27.681 ms  errors 0
+milvus-pass3 facet                    unavailable: no aggregations: a query counts the rows of a filter, not of each value
+milvus-pass3 key lookup               c=1       1032 q/s  p50   0.951 ms  p90   1.035 ms  p99   1.396 ms  errors 0
+read tcp 127.0.0.1:37926->127.0.0.1:36661: read: connection reset by peer
+error: read tcp 127.0.0.1:37926->127.0.0.1:36661: read: connection reset by peer
+milvus-pass3 key lookup               c=4       3431 q/s  p50   1.113 ms  p90   1.393 ms  p99   1.828 ms  errors 0
+milvus-pass3 key lookup               c=16      6091 q/s  p50   2.477 ms  p90   3.576 ms  p99   5.574 ms  errors 0
+milvus-pass3 phrase                   c=1        522 q/s  p50   1.860 ms  p90   2.312 ms  p99   3.108 ms  errors 0
+milvus-pass3 phrase                   c=4       1377 q/s  p50   2.804 ms  p90   3.769 ms  p99   5.071 ms  errors 0
+milvus-pass3 phrase                   c=16      1732 q/s  p50   8.908 ms  p90  12.399 ms  p99  17.193 ms  errors 0
+milvus-pass3 typo                     unavailable: no fuzzy matching
+milvus-pass3 prefix                   unavailable: no word prefixes: TEXT_MATCH matches whole terms and LIKE a prefix of the whole string
+milvus-pass3 similar items            c=1        319 q/s  p50   3.051 ms  p90   3.489 ms  p99   4.054 ms  errors 0
+milvus-pass3 similar items            c=4        732 q/s  p50   5.237 ms  p90   6.810 ms  p99   9.518 ms  errors 0
+milvus-pass3 similar items            c=16       869 q/s  p50  17.660 ms  p90  22.814 ms  p99  30.757 ms  errors 0
+milvus-pass3 sql aggregate            unavailable: no GROUP BY
+wrote /data/compare/run-milvus-pass3.json
+pod "milvus-0" deleted from milvus-r namespace

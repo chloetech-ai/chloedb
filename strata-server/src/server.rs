@@ -146,6 +146,8 @@ pub struct Options {
     pub cloud_file: Option<PathBuf>,
     /// The alert rules' file (default rules, in memory, without it).
     pub alerts: Option<PathBuf>,
+    /// A coordinator's Contain rules' file (in memory without it): fleet.
+    pub contain: Option<PathBuf>,
     /// Post alerts that fire or resolve to this URL.
     pub alert_webhook: Option<String>,
     /// The log store ([`crate::logstore`]): `None` beside the database
@@ -385,6 +387,11 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.audit = Audit::new(o.audit_log.clone())?;
     svc.alerts = Alerts::new(o.alerts.clone(), o.alert_webhook.clone())?;
+    svc.alerts.follow_slo(svc.slo.error_ratio, svc.slo.p99_ms);
+    // fleet: Contain rules kept across a restart.
+    if let Some(f) = &o.contain {
+        svc.contain = crate::contain::Contain::open(f.clone())?;
+    }
     // The cluster's name in alerts and route tests from the start.
     crate::alerts::identify(&svc);
     (svc.backfill, svc.fetch_models) = (o.backfill, o.fetch_models);
@@ -476,6 +483,8 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     spawn_expirer(&svc, Duration::from_secs(5));
     spawn_sampler(&svc);
     spawn_watch(&svc);
+    // workdata: every table's counts a minute apart (rates on a first look).
+    crate::inspect::keep_looking(&svc);
     tokio::spawn(svc.clone().keep_models());
     svc.start_failover();
     // The cluster's keys: a coordinator takes them from its shards before

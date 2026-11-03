@@ -5,18 +5,21 @@
 // that got slower; and, below, queries by kind and route, writes, this
 // server's resources and every copy's storage and replication.
 
-import { h, s, icon, clear, fmt, card, api, bus, store, table, copy } from "../core.js";
+import { h, s, icon, clear, fmt, card, api, bus, store, table, copy, seg } from "../core.js";
 import { timeChart, heatmap, SERIES, sparkline } from "../charts.js";
 import { domain, visible, setZoom } from "../data.js";
 import {
   state, link, timeRange, rangeQuery, poll, isCoord, copyName, copyTitle, copyLink, shardLink, nodeLink, statements, change, split, outcomeBar, statementLink, isOwn, containDialog, can,
   narrow, cols, sheet, copies as copiesOf,
   canContainNow, canContain, containRules, when,
+  ask, objects, hasLogStore, queryColumns, causesAndVictims,
 } from "../workload.js";
 
 export default { id: "performance", title: "Performance", icon: "perf", group: "Operate", keywords: "latency throughput heatmap findings advisor tuning cpu memory disk routes kinds percentiles slow copies fleet failures", render };
 
 const BOUNDS = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0];
+/** The slow bands one can ask about: over 100 ms, 1 s, 10 s. */
+const BANDS = [[100, "100 ms"], [1000, "1 s"], [10000, "10 s"]];
 const TABS = [["queries", "Kinds and routes"], ["writes", "Writes"], ["resources", "Resources"], ["storage", "Storage"], ["replication", "Replication"]];
 
 // ---------------------------------------------------------------- figures from the series
@@ -53,6 +56,8 @@ function figures(ps) {
 
 function render(page) {
   let rules = null, stmts = null, stmtsErr = null, prev = null, prevKey = "", load = undefined, routes = null, routesErr = null, showOwnRoutes = false;
+  // What runs here now, by statement (the memory finding names the longest).
+  let liveGroups = null;
   const scope = h("p");
   const kpis = h("div", { class: "grid g6 wl-kpis", style: { marginBottom: "14px" } });
   const findBox = h("div", { style: { marginBottom: "14px" } });
@@ -85,17 +90,29 @@ function render(page) {
   let hm = heatmap({ bounds: BOUNDS, domain, height: 180, interval: state.interval }), hmInterval = state.interval;
   const hmNote = h("div", { class: "small muted", style: { display: "none", padding: "40px 0", textAlign: "center" } }, "The heatmap needs the 2 s points of the last hour: pick 1 h or less in the top bar.");
   const qpsCard = card({ title: "Queries per second, by kind", sub: "stacked", body: qpsHost });
-  const hmCard = card({ title: "Latency heatmap", sub: "every query by how long it took · darker is more · brush to zoom", body: [hm, hmNote] });
+  // PERF-3: who filled a slow band: the statements and the copies.
+  const bandBox = h("div", { class: "wl-bands" });
+  let band = store.get("perf.band", 1000), bandsKey = "", bands = undefined;
+  const bandSeg = seg(BANDS.map(([v, l]) => [v, "over " + l]), band, (v) => { band = v; store.set("perf.band", v); bands = undefined; bandsKey = ""; drawBands(); loadBands(); },
+    { title: "The statements and copies of the queries slower than this, in the range" });
+  const hmCard = card({ title: "Latency heatmap", sub: "every query by how long it took · darker is more · below, who filled the slow bands", body: [hm, hmNote, bandBox] });
 
   const copiesBox = h("div");
   const slowerBox = h("div", { style: { margin: "14px 0" } });
   const tabs = h("div", { class: "tabs wl-tabs-scroll", role: "tablist", style: { marginTop: "6px" } });
   const tabBody = h("div");
   let tab = store.get("perf.tab2", "queries");
+  // PERF-6: what the KPIs compare with: the window before, or the same time a day or a week ago.
+  const BASES = [["before", "window before", "the window before"], ["day", "yesterday", "the same time yesterday"], ["week", "last week", "the same time last week"]];
+  let base = store.get("perf.base", "before"), prevNone = null;
+  if (!BASES.some(([k]) => k === base)) base = "before";
+  const baseWords = () => BASES.find(([k]) => k === base)[2];
+  const baseSeg = seg(BASES.map(([v, l, t]) => [v, l, `Compare the numbers with ${t}`]), base, (v) => { base = v; store.set("perf.base", v); prevKey = ""; loadPrev(); },
+    { "aria-label": "Compare with", class: "seg wl-base" });
 
   page.append(
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Performance"), scope),
-      h("div", { class: "tools" }, h("button", { class: "btn sm", onclick: () => copy(location.href, "Link copied") }, icon("link"), "Copy link"))),
+      h("div", { class: "tools" }, h("span", { class: "small dim al-wide-only" }, "Compare with"), baseSeg, h("button", { class: "btn sm", onclick: () => copy(location.href, "Link copied") }, icon("link"), "Copy link"))),
     kpis, findBox,
     h("div", { class: "grid g2", style: { marginBottom: "14px" } }, latC, failC, qpsCard, hmCard),
     copiesBox, slowerBox, tabs, tabBody);
@@ -105,40 +122,73 @@ function render(page) {
     try { [stmts] = await Promise.all([statements(timeRange()), canContain()]); stmtsErr = null; } catch (e) { stmts = null; stmtsErr = e; }
     // The contain rules in force, to tell refusals on purpose from a full server.
     rules = canContainNow() ? await containRules().catch(() => null) : null;
+    liveGroups = await api("/v1/queries?group=shape").then((j) => j.groups || null).catch(() => null);
     draw();
   }
-  /** The window before the range, for "was" (only when the server still has it). */
+  /** The window before the range, or the same window a day or a week ago, for "was" (only when the server still has it). */
   async function loadPrev() {
     const r = timeRange(), len = (r.to ?? Date.now()) - r.from;
-    const key = `${Math.round((r.from - len) / 60e3)}|${Math.round(r.from / 60e3)}`;
+    const shift = base === "day" ? 864e5 : base === "week" ? 7 * 864e5 : len;
+    const from = r.from - shift, to = from + len;
+    const key = `${base}|${Math.round(from / 60e3)}|${Math.round(to / 60e3)}`;
     if (key === prevKey) return;
     prevKey = key;
+    if (len > shift) { prev = null; prevNone = `a range longer than ${base === "day" ? "a day" : "a week"} has no ${baseWords().slice(4)}`; draw(); return; }
     try {
-      const j = await api(`/v1/timeseries?from=${Math.round(r.from - len)}&to=${Math.round(r.from)}`);
-      const ps = (j.points || []).filter((p) => p.t >= r.from - len && p.t <= r.from);
+      const j = await api(`/v1/timeseries?from=${Math.round(from)}&to=${Math.round(to)}`);
+      const ps = (j.points || []).filter((p) => p.t >= from && p.t <= to);
       const covered = ps.length > 1 ? (ps[ps.length - 1].t - ps[0].t) / len : 0;
       prev = covered >= 0.5 ? figures(ps) : null;
-    } catch { prev = null; }
-    draw();
+      prevNone = prev ? null : `${isCoord() ? "this coordinator" : "this server"} kept no points from ${baseWords()}${j.source === "memory" && !state.system?.log_store ? " (without a log store it keeps the last hour)" : ""}`;
+    } catch { prev = null; prevNone = `${baseWords()} could not be read`; }
+    if (key === prevKey) draw();
   }
   async function loadLoad() {
     if (!isCoord()) { load = null; return; }
     try { load = await api(`/v1/load?${rangeQuery()}&copies=all`); } catch (e) { load = e.status === 404 || e.status === 405 || e.status === 400 ? null : undefined; }
     draw();
   }
+  /** The statements and copies of the queries slower than the band, from the log store. */
+  async function loadBands() {
+    const r = timeRange(), key = `${band}|${Math.round(r.from / 30e3)}|${r.live ? "now" : Math.round((r.to ?? 0) / 30e3)}`;
+    if (key === bandsKey) return;
+    bandsKey = key;
+    if (!(await hasLogStore().catch(() => false))) { bands = null; drawBands(); return; }
+    const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
+    const cols = await queryColumns().catch(() => new Set());
+    const w = [`ts >= ${lit(new Date(r.from).toISOString())}`, !r.live && r.to ? `ts < ${lit(new Date(r.to).toISOString())}` : null, `ms >= ${band}`,
+      cols.has("client") ? "(client IS NULL OR client != 'command-center')" : null].filter(Boolean).join(" AND ");
+    try {
+      const [st, cp] = await Promise.all([
+        ask(`SELECT fingerprint, COUNT(*) AS n, MAX(ms) AS slowest FROM queries WHERE ${w} AND shard = false GROUP BY fingerprint ORDER BY n DESC LIMIT 8`),
+        isCoord() ? ask(`SELECT node, COUNT(*) AS n, MAX(ms) AS slowest FROM queries WHERE ${w} AND shard = true GROUP BY node ORDER BY n DESC LIMIT 8`) : null]);
+      if (key !== bandsKey) return;
+      bands = { st: objects(st), cp: cp ? objects(cp) : null };
+    } catch (e) { if (key === bandsKey) bands = { err: e }; }
+    drawBands();
+  }
   async function loadRoutes() {
-    try { routes = await api("/v1/routes"); routesErr = null; } catch (e) { routesErr = e; }
+    // Over the range; a server older than windowed routes answers since it started.
+    try { routes = await api(`/v1/routes?${rangeQuery()}`); routesErr = null; } catch (e) { routesErr = e; }
     if (tab === "queries") drawTab();
   }
 
   // ------------------------------------------------ drawing
   function drawScope() {
-    const c = state.cluster, cs = copiesOf(c), coords = state.fleet?.coordinators || [];
+    const c = state.cluster, cs = copiesOf(c), all = state.fleet?.coordinators || [];
+    // R2-workload-3: a coordinator the shards stopped hearing from is said apart.
+    const coords = all.filter((x) => !x.gone), gone = all.filter((x) => x.gone);
+    const goneText = gone.length ? ` ${gone.map((x) => x.name || x.url).join(", ")} stopped answering ${fmt.ago ? fmt.ago(Math.max(...gone.map((x) => x.last_seen_ms || 0))) : "recently"}: what went through ${gone.length === 1 ? "it" : "them"} is not here.` : "";
     const r = timeRange();
-    const per = c?.shards?.length ? Math.round(cs.length / c.shards.length) : 0;
+    const ns = (c?.shards || []).map((x) => x.replicas?.length || 0), lo = Math.min(...ns), hi = Math.max(...ns);
+    const per = ns.length ? (lo === hi ? ` × ${fmt.plural(lo, "copy", "copies")}` : `, ${lo}-${hi} copies`) : "";
     scope.textContent = isCoord()
-      ? `The fleet: ${coords.length > 1 ? `${fmt.plural(coords.length, "coordinator")}, ` : ""}${fmt.plural(c?.shards?.length || 0, "shard")}${per ? ` × ${fmt.plural(per, "copy", "copies")}` : ""} · ${r.label}${prev ? ", against the window before" : ""}. ${coords.length > 1 ? "The charts are the queries through this coordinator." : "Every query enters through this coordinator."}`
-      : `This server · ${r.label}${prev ? ", against the window before" : ""}.`;
+      ? `The fleet: ${coords.length > 1 ? `${fmt.plural(coords.length, "coordinator")}, ` : ""}${fmt.plural(c?.shards?.length || 0, "shard")}${per} · ${r.label}${against()}. ${coords.length > 1 ? `The charts are the queries through this coordinator (${coords.find((x) => x.this)?.name || location.host}); Home adds up ${coords.length === 2 ? "both" : "all " + coords.length}.` : state.fleet?.derived ? "The charts are the queries through this coordinator: this server does not list the others." : gone.length ? "The charts are the queries through this coordinator, the only one answering." : "Every query enters through this coordinator: the shards heard from no other in the last minute."}${goneText}`
+      : `This server · ${r.label}${against()}.`;
+  }
+  /** What the "was" numbers are of, or why there are none. */
+  function against() {
+    return prev ? `, against ${baseWords()}` : base !== "before" && prevNone ? `; ${prevNone}` : "";
   }
 
   function draw() {
@@ -159,22 +209,51 @@ function render(page) {
     if (tab !== "queries") drawTab();
   }
 
+  function drawBands() {
+    const r = timeRange(), label = BANDS.find(([v]) => v === band)?.[1] || fmt.ms(band), slowMs = state.system?.limits?.slow_ms ?? 200;
+    const head = h("div", { class: "row wl-bands-head" }, h("b", { class: "small" }, "Who filled the slow bands"), bandSeg, h("span", { class: "small muted" }, r.label));
+    if (bands === null) { clear(bandBox, head, h("div", { class: "small muted" }, "This server keeps no log store: start it with --log-store to see the statements and copies of the slow queries.")); return; }
+    if (bands === undefined) { clear(bandBox, head, h("div", { class: "small muted" }, "Reading the log store…")); return; }
+    if (bands.err) { clear(bandBox, head, h("div", { class: "small muted" }, `The log store did not answer: ${bands.err.message}`)); return; }
+    const n = bands.st.reduce((a, x) => a + x.n, 0);
+    const byUrl = (node) => copiesOf().find((c) => c.node === node || c.url === node);
+    const stT = table(cols([
+      { key: "fingerprint", label: "statement", render: (x) => h("div", { class: "mono small wl-clamp2", style: { maxWidth: narrow() ? "170px" : "340px" }, title: x.fingerprint }, x.fingerprint || "–") },
+      { key: "n", label: "queries", num: true, render: (x) => fmt.n(x.n) },
+      { key: "slowest", label: "slowest", num: true, render: (x) => fmt.ms(x.slowest) },
+    ]), { rows: bands.st, sortKey: "n", desc: true, compact: true, onRow: (x) => { if (x.fingerprint) location.hash = statementLink(x.fingerprint); }, empty: h("div", { class: "small muted", style: { padding: "8px 12px" } }, `No query took over ${label} in the range.`) });
+    const cpT = bands.cp ? table(cols([
+      { key: "node", label: "copy", render: (x) => { const c = byUrl(x.node); return h("span", { class: "badge mono", title: c ? copyTitle(c.url) : x.node }, c ? c.name : x.node); } },
+      { key: "n", label: "shard parts", num: true, render: (x) => fmt.n(x.n) },
+      { key: "slowest", label: "slowest", num: true, render: (x) => fmt.ms(x.slowest) },
+    ]), { rows: bands.cp, sortKey: "n", desc: true, compact: true, onRow: (x) => { const c = byUrl(x.node); if (c) location.hash = copyLink(c.url); }, empty: h("div", { class: "small muted", style: { padding: "8px 12px" } }, `No shard took over ${label} for its part.`) }) : null;
+    clear(bandBox, head,
+      h("div", { class: "grid " + (cpT ? "g2" : ""), style: { gap: "10px" } },
+        h("div", { class: "wl-nums" }, h("div", { class: "small dim", style: { margin: "2px 0 4px" } }, n ? `${fmt.plural(n, "query", "queries")} over ${label}, by statement` : "Statements"), stT),
+        cpT ? h("div", { class: "wl-nums" }, h("div", { class: "small dim", style: { margin: "2px 0 4px" } }, "Their parts on the shards, by copy"), cpT) : null),
+      h("div", { class: "small muted", style: { marginTop: "6px" } },
+        band < slowMs ? `From the log store. It keeps every query over the slow threshold (${fmt.ms(slowMs)}) and a sample of faster ones, so these counts are low. ` : `From the log store, which keeps every query over the slow threshold (${fmt.ms(slowMs)}). `,
+        h("a", { class: "wl-link", href: link("queries", { tab: "history", min: band }) }, "These queries in History ›")));
+  }
+
   function drawKpis(f) {
     const sys = state.system, slowMs = sys?.limits?.slow_ms;
     const was = (v, fm) => (prev && v != null ? `was ${fm(v)}` : null);
     const sr = f.queries ? f.server / f.queries : null, psr = prev?.queries ? prev.server / prev.queries : null;
     const cs = copiesOf().filter((c) => c.cpu != null).sort((a, b) => b.cpu - a.cpu);
     const busiest = cs[0];
+    // NEW-workload-5: the busiest and the median with the same digits.
+    const cpuD = busiest && busiest.cpu < 0.1 ? 1 : 0;
     const coords = state.fleet?.coordinators || [];
     const apart = [f.client ? `client errors ${fmt.si(f.client / Math.max(1, f.queries) * 100, 1)}%` : null, f.deadlines ? `deadlines ${fmt.si(f.deadlines / Math.max(1, f.queries) * 100, 1)}%` : null].filter(Boolean);
     clear(kpis,
-      kpi("Queries", f.qps != null ? [fmt.si(f.qps), h("small", {}, "/s")] : "–", prev?.qps ? `${pct(f.qps, prev.qps)} vs before` : coords.length > 1 ? `${fmt.si(coords.reduce((a, c) => a + (c.qps || 0), 0))}/s on ${coords.length} coordinators now` : "mean over the range"),
+      kpi("Queries", f.qps != null ? [fmt.si(f.qps), h("small", {}, "/s")] : "–", prev?.qps ? `${pct(f.qps, prev.qps)} vs ${base === "before" ? "before" : BASES.find(([k]) => k === base)[1]}` : coords.length > 1 ? `${fmt.si(coords.reduce((a, c) => a + (c.qps || 0), 0))}/s on ${coords.length} coordinators now` : "mean over the range"),
       kpi("p99 latency", f.p99 != null ? unit(fmt.ms(f.p99)) : "–", [was(prev?.p99, fmt.ms), f.p99Now != null && Math.abs(f.p99Now - f.p99) > 0.2 * f.p99 ? `last 5 min ${fmt.ms(f.p99Now)}` : null].filter(Boolean).join(" · ") || "mean over the range", (prev?.p99 && f.p99Now > 2 * prev.p99 && f.p99Now > 20) ? "bad" : null, "The mean of each interval's p99 over the range; the last 5 minutes' median beside it when it differs"),
       kpi("Failed on the server", sr != null ? [fmt.si(sr * 100, 2), h("small", {}, "%")] : "–", psr != null ? `was ${fmt.si(psr * 100, 2)}%` : apart.length ? "apart: " + apart.join(", ") : f.splits ? "server errors and timeouts" : "this server does not split client errors", sr > 0.01 ? "bad" : null, "Server errors and server timeouts over the queries that ended. Client errors (400) and the clients' own deadlines are counted apart."),
       kpi(slowMs ? `Slow (over ${fmt.ms(slowMs)})` : "Slow", slowMs && f.slow != null ? [fmt.si(f.slow), h("small", {}, "/s")] : "–", slowMs ? was(prev?.slow, (v) => fmt.si(v) + "/s") : "not counted: --slow-ms is not set"),
       kpi("Refused (429)", f.refusedS != null ? [fmt.si(f.refusedS), h("small", {}, "/s")] : "–", was(prev?.refusedS, (v) => fmt.si(v) + "/s") || (f.refusedS ? (canContainNow() ? "no slot or memory, or a contain rule" : "no slot or memory free") : "none")),
       isCoord() && busiest
-        ? kpi("Busiest copy, CPU", [fmt.si(busiest.cpu * 100, 0), h("small", {}, "%")], h("span", { title: `${copyTitle(busiest.url)}\nthe median copy: ${fmt.pct(median(cs.map((c) => c.cpu)), 0)}` }, `${copyName(busiest.url)}, median ${fmt.pct(median(cs.map((c) => c.cpu)), 0)}`), busiest.cpu > 0.85 ? "warn" : null, "Each copy's CPU over its last minute, as a share of its cores")
+        ? kpi("Busiest copy, CPU", [(busiest.cpu * 100).toFixed(cpuD), h("small", {}, "%")], h("span", { title: `${copyTitle(busiest.url)}\nthe median copy: ${(median(cs.map((c) => c.cpu)) * 100).toFixed(cpuD)}%` }, `${copyName(busiest.url)}, median ${(median(cs.map((c) => c.cpu)) * 100).toFixed(cpuD)}%`), busiest.cpu > 0.85 ? "warn" : null, "Each copy's CPU over its last minute, as a share of its cores")
         : kpi("CPU", f.cpu != null ? [fmt.si(f.cpu, 1), h("small", {}, " cores")] : "–", state.system?.cores ? `of ${state.system.cores}` : null));
   }
 
@@ -207,7 +286,7 @@ function render(page) {
         own.add("error_ratio");
         const top = (stmts?.statements || []).filter((x) => !isOwn(x)).map((x) => ({ x, n: split(x.outcomes, x.calls).server })).sort((a, b) => b.n - a.n)[0];
         const allS = (stmts?.statements || []).reduce((a, x) => a + split(x.outcomes, x.calls).server, 0) || 1;
-        out.push({ level: "bad", id: "error_ratio", title: `${fmt.si(sr * 100, 1)}% of queries fail on the server${w === f15 ? " in the last 15 minutes" : ""}${prev?.queries ? ` (${fmt.si(prev.server / prev.queries * 100, 2)}% the window before)` : ""}`,
+        out.push({ level: "bad", id: "error_ratio", title: `${fmt.si(sr * 100, 1)}% of queries fail on the server${w === f15 ? " in the last 15 minutes" : ""}${prev?.queries ? ` (${fmt.si(prev.server / prev.queries * 100, 2)}% ${baseWords()})` : ""}`,
           body: [`${fmt.si(w.server / secsOf(w), 1)}/s server errors and timeouts`, w.timeouts ? ` (${fmt.si(w.timeouts / w.server * 100, 0)}% timeouts)` : "", top?.n ? [". ", fmt.pct(top.n / allS, 0), " are one statement: ", h("code", {}, trim(top.x.sql, 90))] : "", "."],
           rule: `server errors and timeouts over 1% of the queries in ${winOf(w)}`, links: [top?.n ? ["Open the statement", statementLink(top.x.fingerprint)] : null, ["Errors in Logs", link("logs", { q: "level>=error" })]] });
       }
@@ -221,7 +300,7 @@ function render(page) {
         const all = tops.reduce((a, y) => a + y.n, 0) || 1, t = tops[0], k = t?.x.keys?.slice().sort((a, b) => b.calls - a.calls)[0];
         out.push({ level: "warn", id: "client_errors", title: `${fmt.si(cr * 100, 1)}% of queries are client errors (400)${w === f15 ? " in the last 15 minutes" : ""}`,
           body: [`${fmt.si(w.client / secsOf(w), 0)}/s requests the server cannot run. Not a server fault: they are counted apart from the failures.`, t ? [" ", fmt.pct(t.n / all, 0), " are one statement", k ? [" from key ", h("b", { class: "mono" }, k.key)] : "", ": ", h("code", {}, trim(t.x.sql, 80)), "."] : ""],
-          rule: `client errors (400) over 1% of the queries in ${winOf(w)}`, links: [t ? ["Open the statement", statementLink(t.x.fingerprint)] : null, t && k && canContainNow() ? [`Refuse it from ${k.key}…`, () => containDialog({ fingerprint: t.x.fingerprint, sql: t.x.sql, key: k.key, keys: t.x.keys?.map((y) => ({ key: y.key })) })] : null] });
+          rule: `client errors (400) over 1% of the queries in ${winOf(w)}`, links: [t ? ["Open the statement", statementLink(t.x.fingerprint)] : null, t && k && canContainNow() ? [`Refuse it from ${k.key}…`, () => containDialog({ fingerprint: t.x.fingerprint, sql: t.x.sql, key: k.key, keys: t.x.keys?.map((y) => ({ key: y.key, calls: y.calls })), action: "refuse" })] : null] });
       }
     }
     // Client deadlines, apart.
@@ -250,11 +329,14 @@ function render(page) {
         while (i > 0 && mins[i - 1].p99 > mid) i--;
         rise = { base, cur, since: mins[i].t };
       }
-      checked.push(rise ? `p99 rose` : `p99 ${fmt.ms(cur)}${base ? ` (${fmt.ms(base)} before)` : ""}`);
+      checked.push(rise ? `p99 rose` : `p99 ${fmt.ms(cur)}${base ? ` (${fmt.ms(base)} ${prev ? baseWords() : "in the range's first half"})` : ""}`);
     }
     if (slowCopy || rise) {
       own.add("p99");
       const grew = (stmts?.statements || []).filter((x) => !isOwn(x)).map((x) => ({ x, c: change(x) })).filter((y) => y.c?.p99X >= 2).sort((a, b) => (b.x.share || 0) - (a.x.share || 0))[0];
+      // S4-3: what changed (a new statement, or one with more calls) before the one that got slower.
+      const rr = timeRange(), cause = stmts?.windowed ? causesAndVictims((stmts.statements || []).filter((x) => !isOwn(x)), (rr.to ?? Date.now()) - rr.from).cause : null;
+      const causeS = cause && cause.x !== grew?.x && (cause.x.share || 0) >= 0.05 ? cause : null;
       const sinceCopy = slowCopy ? copySince(slowCopy) : null;
       const body = [];
       let heavyS = null;
@@ -268,7 +350,8 @@ function render(page) {
         if (slowCopy.cpu > 0.85) why.push(`CPU ${fmt.pct(slowCopy.cpu, 0)}`);
         if (why.length) body.push(` It has ${why.join(", ")}.`);
       }
-      if (grew) body.push(" Slower most: ", h("code", {}, trim(grew.x.sql, 70)), ` (p99 ${fmt.ms(grew.x.prev.p99_ms)} → ${fmt.ms(grew.x.p99_ms)}, ${fmt.pct(grew.x.share || 0, 0)} of query time).`);
+      if (causeS) body.push(" What changed: ", h("code", {}, trim(causeS.x.sql, 70)), causeS.c.isNew ? `, new since ${when(causeS.x.first_seen_ms)}` : `, ×${causeS.c.callsX.toFixed(1)} the calls`, `, now ${fmt.pct(causeS.x.share || 0, 0)} of query time${causeS.x.keys?.[0]?.key ? `, from key ${causeS.x.keys[0].key}` : ""}.`);
+      if (grew) body.push(" Slower most: ", h("code", {}, trim(grew.x.sql, 70)), ` (p99 ${fmt.ms(grew.x.prev.p99_ms)} → ${fmt.ms(grew.x.p99_ms)}, ${fmt.pct(grew.x.share || 0, 0)} of query time${grew.c.callsX < 1.5 ? `, calls flat: likely a victim${causeS ? " of it" : ""}` : ""}).`);
       else {
         // With no window before to compare with: the statement that takes the most time, when it is slow itself.
         const heavy = (stmts?.statements || []).filter((x) => !isOwn(x) && x.p99_ms > (rise?.cur ?? 0) * 0.5).sort((a, b) => (b.share || 0) - (a.share || 0))[0];
@@ -277,8 +360,8 @@ function render(page) {
       out.push({ level: rise ? "bad" : "warn", id: "p99",
         title: rise ? `p99 rose from ${fmt.ms(rise.base)} to ${fmt.ms(rise.cur)} at ${fmt.time(rise.since, false)}${slowCopy ? ", and one copy explains it" : ""}` : `Copy ${copyName(slowCopy.url)} is ${Math.round(slowCopy.p99 / slowCopy.med)}× slower than the median copy`,
         body: rise && !slowCopy ? [`The last 5 minutes' p99 is ${fmt.ms(rise.cur)}; no single copy explains it (the slowest copies are within 5× of the median).`, ...body] : body,
-        rule: `${rise ? "the last 5 minutes' p99 over 2× the window before and over 20 ms" : ""}${rise && slowCopy ? "; " : ""}${slowCopy ? "a copy's p99 over 5× the fleet's median copy (each copy's last minute)" : ""}`,
-        links: [slowCopy ? [`Open ${copyName(slowCopy.url)}`, copyLink(slowCopy.url)] : null, slowCopy ? ["Its logs", link("logs", { node: copyName(slowCopy.url), level: "warn" })] : null, slowCopy ? [`CPU profile of ${copyName(slowCopy.url)}`, nodeLink(slowCopy.url)] : null, grew ? ["Open the statement", statementLink(grew.x.fingerprint)] : heavyS ? ["Open the statement", statementLink(heavyS.fingerprint)] : null] });
+        rule: `${rise ? `the last 5 minutes' p99 over 2× ${prev ? baseWords() : "the range's first half"} and over 20 ms` : ""}${rise && slowCopy ? "; " : ""}${slowCopy ? "a copy's p99 over 5× the fleet's median copy (each copy's last minute)" : ""}`,
+        links: [slowCopy ? [`Open ${copyName(slowCopy.url)}`, copyLink(slowCopy.url)] : null, slowCopy ? ["Its logs", link("logs", { node: copyName(slowCopy.url), level: "warn" })] : null, slowCopy ? [`CPU profile of ${copyName(slowCopy.url)}`, nodeLink(slowCopy.url)] : null, causeS ? ["Open what changed", statementLink(causeS.x.fingerprint)] : null, grew ? [causeS ? "Open the slower one" : "Open the statement", statementLink(grew.x.fingerprint)] : heavyS ? ["Open the statement", statementLink(heavyS.fingerprint)] : null] });
       if (heavyS) own.add("share:" + heavyS.fingerprint);
     } else if (withDetail.some((c) => c.p99 != null)) {
       const ok = withDetail.filter((c) => c.p99 != null), w = ok.slice().sort((a, b) => b.p99 - a.p99)[0];
@@ -294,13 +377,17 @@ function render(page) {
         own.add("disk");
         out.push({ level: max.disk >= 0.95 ? "bad" : "warn", id: "disk",
           title: over.length === disks.length && disks.length > 1 ? `Disk ${fmt.pct(median(disks.map((c) => c.disk)), 0)} used on every copy` : `Disk over 85% on ${fmt.plural(over.length, "copy", "copies")} of ${fmt.n(disks.length)}`,
-          body: [`The fullest is `, h("b", { class: "mono", title: copyTitle(max.url) }, copyName(max.url)), ` at ${fmt.pct(max.disk, 0)}${max.merge_failing ? " (its merges fail: they need room)" : ""}. A copy whose disk fills stops taking writes.`, chk?.days_to_full != null ? ` At this rate the fullest is full in about ${fmt.si(chk.days_to_full, 1)} days.` : "", over.length > 1 && disks.length > 1 && over.length === disks.length ? " Copies that share a volume count it once each." : ""],
+          body: [`The fullest is `, h("b", { class: "mono", title: copyTitle(max.url) }, copyName(max.url)), ` at ${fmt.pct(max.disk, 0)}${max.merge_failing ? " (its merges fail: they need room)" : ""}. A copy whose disk fills stops taking writes.`, chk?.days_to_full != null ? ` At this rate the fullest is full in about ${chk.days_to_full < 2 ? fmt.plural(Math.max(1, Math.round(chk.days_to_full * 24)), "hour") : `${fmt.si(chk.days_to_full, 1)} days`}.` : "", over.length > 1 && disks.length > 1 && over.length === disks.length ? " Copies that share a volume count it once each." : ""],
           rule: "a copy's disk_used_ratio at 85% or more, now · 90% is the alert line", links: [["Copies by disk in Cluster", link("cluster", { lens: "disk" })], [`Open ${copyName(max.url)}`, copyLink(max.url)]] });
       }
     } else if (!isCoord() && ps.length) {
       const d = ps[ps.length - 1].disk_used_ratio;
       if (d != null) { checked.push(`disk ${fmt.pct(d, 0)}`); if (d >= 0.85) out.push({ level: d >= 0.95 ? "bad" : "warn", id: "disk", title: `Disk ${fmt.pct(d, 0)} used`, body: ["A server whose disk fills stops taking writes."], rule: "disk_used_ratio at 85% or more, now", links: [] }); }
     }
+    // Memory, before the kernel kills the process: resident against its
+    // limit, its heap against the queries' budget, and how fast it rises.
+    for (const m of memoryFindings(ps, withDetail)) { out.push(m.finding); }
+    checked.push(memChecked(ps, withDetail));
     // One statement takes most of the time.
     const topS = (stmts?.statements || []).filter((x) => !isOwn(x)).sort((a, b) => (b.share || 0) - (a.share || 0))[0];
     if (topS && topS.share > 0.4 && topS.calls > 10 && !own.has("share:" + topS.fingerprint)) out.push({ level: "info", id: "share", title: `One statement takes ${fmt.pct(topS.share, 0)} of query time`, body: [h("code", {}, trim(topS.sql, 110)), ` · ${fmt.si(topS.calls / Math.max(1, (stmts?.span_ms ?? ((r.to ?? Date.now()) - r.from)) / 1000))} calls/s · p99 ${fmt.ms(topS.p99_ms)}.`], rule: stmts?.windowed ? "statement statistics of the range" : "statement statistics since the server started", links: [["Open the statement", statementLink(topS.fingerprint)]] });
@@ -365,6 +452,69 @@ function render(page) {
       if (i >= 0) out.splice(i, 1);
     }
     return { level: p.severity === "critical" ? "bad" : "warn", id: p.id, title: p.title, body, rule: state.fleet.derived ? "worked out here from the cluster" : "the fleet's health", links };
+  }
+  /** This server's memory now and how fast it rose, from its points: {rss, heap, budget, limit, perMin, etaMin}. */
+  function ownMemory(ps) {
+    const pts = ps.filter((p) => p.rss_bytes != null);
+    const last = pts[pts.length - 1];
+    if (!last) return null;
+    const limit = state.system?.memory_limit_bytes ?? null, budget = last.query_memory_limit_bytes ?? state.system?.limits?.query_memory_bytes ?? null;
+    // The rise over the last 2 minutes (1 at least), while it still rises
+    // over the last 30 s: a step that already ended is not a trend.
+    const at = (ms) => pts.find((p) => p.t >= last.t - ms);
+    const old = at(120e3), late = at(30e3);
+    const mins = old ? (last.t - old.t) / 60e3 : 0;
+    const still = late && limit ? last.rss_bytes - late.rss_bytes > 0.01 * limit : false;
+    const perMin = mins >= 1 ? (last.rss_bytes - old.rss_bytes) / mins : null;
+    const etaMin = still && perMin > 0 && limit ? (limit - last.rss_bytes) / perMin : null;
+    return { rss: last.rss_bytes, heap: last.heap_bytes ?? null, peak: last.heap_peak_bytes ?? null, qmem: last.query_memory_bytes ?? null, budget, limit, perMin, etaMin };
+  }
+  /** One server's memory as a finding, or null: who, its figures, and links. */
+  function memoryFinding(who, m, { url = null, here = false } = {}) {
+    if (!m?.rss) return null;
+    const ofLimit = m.limit ? m.rss / m.limit : null;
+    const rising = m.etaMin != null && m.etaMin < 15 && ofLimit > 0.5;
+    const near = ofLimit != null && ofLimit >= 0.85, high = ofLimit != null && ofLimit >= 0.7;
+    const overBudget = m.heap != null && m.budget && m.heap > m.budget;
+    if (!near && !rising && !high && !overBudget) return null;
+    const level = near || rising ? "bad" : "warn";
+    const title = near ? `${who} uses ${fmt.pct(ofLimit, 0)} of its memory limit`
+      : rising ? `${who}'s memory rises: at this rate it reaches its limit in about ${fmt.n(Math.max(1, Math.round(m.etaMin)))} min`
+      : high ? `${who} uses ${fmt.pct(ofLimit, 0)} of its memory limit`
+      : `${who}'s heap is over what the queries may hold`;
+    const body = [`Resident ${fmt.bytes(m.rss)}${m.limit ? ` of a ${fmt.bytes(m.limit)} limit (the cgroup's, or the machine's memory)` : ""}`,
+      m.heap != null ? `, heap ${fmt.bytes(m.heap)}` : "", m.budget ? `; the queries' budget is ${fmt.bytes(m.budget)}${m.qmem != null ? ` and they hold ${fmt.bytes(m.qmem)} of it` : ""}` : "", ". ",
+      m.etaMin != null ? `It rose ${fmt.bytes(m.perMin)} a minute over the last 2 minutes, and still rises. ` : "",
+      overBudget ? "The heap holds more than the budget counts: a join's or a sort's build side is not counted against it, so the budget does not refuse the query that holds it. " : "",
+      "The kernel kills a process that passes its limit (out of memory), and every query on it fails."];
+    const links = [];
+    // What runs here now: the statement most likely to hold it.
+    const g = here ? (liveGroups || [])[0] : null;
+    if (g) {
+      body.push(" Running here now, the longest: ", g.count > 1 ? `${g.count} × ` : "", h("code", {}, trim(g.sql, 80)), `${g.key ? ` from key ${g.key}` : ""}, for ${fmt.ms(g.oldest_ms)}.`);
+      links.push(["Open the statement", statementLink(g.fingerprint)], ["Running now in Queries", link("queries", { tab: "live" })]);
+    }
+    links.push([url ? `Memory profile of ${copyName(url)}` : "Memory profile", link("profile", { tab: "memory", node: url })]);
+    if (url) links.push([`Open ${copyName(url)}`, copyLink(url)]);
+    return { level, id: "memory", title, body,
+      rule: `resident over 85% of the limit, or still rising to reach it within 15 min (the last 2 minutes' rate); a warning over 70%, or a heap over the queries' budget`, links };
+  }
+  function memoryFindings(ps, withDetail) {
+    const out = [];
+    const own = memoryFinding(isCoord() ? "This coordinator" : "This server", ownMemory(ps), { here: true });
+    if (own) out.push({ finding: own });
+    for (const c of withDetail) {
+      const f = memoryFinding(`Copy ${copyName(c.url)}`, { rss: c.rss, heap: c.heap, budget: c.qbudget, limit: c.memLimit }, { url: c.url });
+      if (f) out.push({ finding: f, c });
+    }
+    // At most three named; the rest in one line on the third.
+    return out.slice(0, 3);
+  }
+  function memChecked(ps, withDetail) {
+    const xs = [ownMemory(ps), ...withDetail.map((c) => ({ rss: c.rss, limit: c.memLimit }))].filter((m) => m?.rss && m.limit);
+    if (!xs.length) return "memory (no limit known)";
+    const top = xs.reduce((a, m) => m.rss / m.limit > a ? m.rss / m.limit : a, 0);
+    return `memory at most ${fmt.pct(top, 0)} of a limit`;
   }
   /** When a copy's p99 went over 5× the median, from /v1/load. */
   function copySince(c) {
@@ -460,14 +610,15 @@ function render(page) {
       const cores = state.system?.cores;
       const parts = [
         SC("CPU", `${who} · cores in use${cores ? `, of ${cores}` : ""}`, { series: [{ name: "cores", get: (p) => p.cpu, area: true }], threshold: cores ? { value: cores, label: "all cores" } : null }),
-        SC("Memory", `${who} · resident set and what queries and merges hold`, { fmt: fmt.bytes, series: [{ name: "resident", get: (p) => p.rss_bytes ?? p.mem_bytes, area: true, color: SERIES[6] }, { name: "query memory", get: (p) => p.query_memory_bytes, color: SERIES[3] }, { name: "merges", get: (p) => p.merge_memory_bytes, color: SERIES[2] }] }),
-        SC("Concurrency", `${who} · queries running and slots in use`, { series: [{ name: "running", get: (p) => p.running }, { name: "slots in use", get: (p) => state.system?.limits?.max_concurrent && p.slots_free != null ? state.system.limits.max_concurrent - p.slots_free : null, color: SERIES[2] }], threshold: state.system?.limits?.max_concurrent ? { value: state.system.limits.max_concurrent, label: "slots" } : null }),
+        SC("Memory", `${who} · resident, heap and what queries and merges hold${memLimits()}`, { fmt: fmt.bytes, series: [{ name: "resident", get: (p) => p.rss_bytes ?? p.mem_bytes, area: true, color: SERIES[6] }, { name: "heap", get: (p) => p.heap_bytes, color: SERIES[0] }, { name: "query memory", get: (p) => p.query_memory_bytes, color: SERIES[3] }, { name: "merges", get: (p) => p.merge_memory_bytes, color: SERIES[2] }], threshold: state.system?.memory_limit_bytes ? { value: state.system.memory_limit_bytes, label: "limit" } : null }),
+        // A coordinator's queries take no slot of their own: "running" is every query it is answering.
+        SC("Concurrency", `${who} · queries being answered and slots in use`, { series: [{ name: "queries", get: (p) => p.live ?? p.running }, { name: "slots in use", get: (p) => state.system?.limits?.max_concurrent && p.slots_free != null ? state.system.limits.max_concurrent - p.slots_free : null, color: SERIES[2] }], threshold: state.system?.limits?.max_concurrent ? { value: state.system.limits.max_concurrent, label: "slots" } : null }),
       ];
       if (isCoord()) parts.push(copyTable("Copies by CPU", "each copy's last minute, the busiest first", (c) => c.cpu, [
         { key: "cpu", label: "CPU", num: true, render: (c) => c.cpu != null ? h("span", { class: c.cpu > 0.85 ? "wl-bad" : "" }, fmt.pct(c.cpu, 0)) : "–" },
         { key: "qps", label: "q/s", num: true, render: (c) => fmt.si(c.qps) },
         { key: "p99", label: "p99", num: true, render: (c) => fmt.ms(c.p99) },
-        { key: "rss", label: "memory", num: true, render: (c) => fmt.bytes(c.rss) },
+        { key: "rss", label: "memory", num: true, render: (c) => c.rss == null ? "–" : h("span", { class: c.memLimit && c.rss / c.memLimit >= 0.85 ? "wl-bad" : "", title: c.memLimit ? `${fmt.pct(c.rss / c.memLimit, 0)} of its ${fmt.bytes(c.memLimit)} limit${c.heap != null ? ` · heap ${fmt.bytes(c.heap)}` : ""}` : "" }, fmt.bytes(c.rss)) },
       ]));
       else parts.push(SC("Disk", "used of the database's file system", { fmt: (v) => fmt.pct(v, 0), max: 1, series: [{ name: "used", get: (p) => p.disk_used_ratio, area: true, color: SERIES[1] }], threshold: { value: 0.9, label: "alert" } }));
       clear(tabBody, h("div", { class: "grid g2" }, parts));
@@ -506,6 +657,11 @@ function render(page) {
       SC("Replicas behind", "the most transactions a replica lacks", { series: [{ name: "behind", get: (p) => p.replica_behind_max, color: SERIES[3], area: true }] }),
       SC("Replicas in sync", null, { series: [{ name: "in sync", get: (p) => p.replicas_in_sync, color: SERIES[2] }, { name: "out of sync", get: (p) => p.replicas_out_of_sync, color: "var(--crit)" }] })));
   }
+  /** The limits the Memory chart is read against, in words. */
+  function memLimits() {
+    const lim = state.system?.memory_limit_bytes, b = state.system?.limits?.query_memory_bytes;
+    return [lim ? `limit ${fmt.bytes(lim)}` : null, b ? `queries' budget ${fmt.bytes(b)}` : null].filter(Boolean).map((x) => " · " + x).join("");
+  }
   /** A table of copies sorted by a figure, the top N shown. */
   function copyTable(title, sub_, by, colsOf, n = 12, keep = () => true) {
     const cs = copiesOf().filter(keep).filter((c) => by(c) != null).sort((a, b) => by(b) - by(a));
@@ -533,32 +689,43 @@ function render(page) {
     const maxK = Math.max(1e-9, ...kinds.map((k) => k.p99_ms || 0)), maxR = Math.max(1e-9, ...rs.map((k) => k.p99_ms || 0));
     const bar = (v, max, color) => h("div", { class: "row nw", style: { gap: "8px" } }, h("div", { class: "barbox" }, h("div", { class: "bar", style: { width: (max ? v / max * 100 : 0) + "%", background: color } })), h("span", { class: "num" }, fmt.ms(v)));
     const ownN = ownR.reduce((a, r) => a + r.requests, 0);
+    const who = isCoord() ? "this coordinator" : "this server";
+    const r_ = timeRange();
+    const over = routes.from_ms == null ? "since it started" : routes.held_from_ms > routes.from_ms + 60e3 ? `${r_.label}, held from ${when(routes.held_from_ms)}` : r_.label;
+    // The clients' own deadlines answer 504 too: say how many of the 5xx they are.
+    const deadlines = kinds.reduce((a, k) => a + (k.outcomes?.client_deadline || 0), 0);
+    // Red only for the server's own: the queries' 5xx beyond the clients' deadlines.
+    const q5xx = all.filter((r) => /^\/v1\/(query|sql)$/.test(r.route)).reduce((a, r) => a + (r.server_errors || 0), 0);
+    const theirs = (r) => /^\/v1\/(query|sql)$/.test(r.route) && q5xx <= deadlines;
+    const wait = routes.admission_p99_ms;
     return h("div", { class: "grid g2" },
-      card({ title: "Queries by plan kind", sub: `${isCoord() ? "this coordinator" : "this server"} · since it started`, flush: true, body: table(cols([
+      card({ title: "Queries by plan kind", sub: `${who} · ${over} · click one for its queries in History`, flush: true, cls: "wl-nums", body: table(cols([
         { key: "kind", label: "kind", render: (k) => h("span", { class: "badge mono" }, k.kind) },
         { key: "queries", label: "queries", num: true, render: (k) => fmt.n(k.queries) },
         { key: "outcomes", label: "outcomes", wide: true, sort: (k) => split(k.outcomes, k.queries).failed / Math.max(1, k.queries), render: (k) => k.outcomes ? outcomeBar(k.outcomes, 80) : "–" },
         { key: "p50_ms", label: "p50", num: true, wide: true, render: (k) => fmt.ms(k.p50_ms) },
-        { key: "p99_ms", label: "p99", render: (k) => narrow() ? fmt.ms(k.p99_ms) : bar(k.p99_ms, maxK, SERIES[0]) },
+        { key: "p99_ms", label: "p99", title: "Estimated from latency buckets (1, 2, 5, 10 ms…)", render: (k) => narrow() ? fmt.ms(k.p99_ms) : bar(k.p99_ms, maxK, SERIES[0]) },
         { key: "hist", label: "latency", sortable: false, wide: true, render: (k) => k.hist ? sparkline(k.hist, { width: 100, height: 22, color: SERIES[0], cls: "" }) : "" },
-      ]), { rows: kinds, sortKey: "queries", desc: true, compact: true }) }),
-      card({ title: "HTTP routes", sub: `${isCoord() ? "this coordinator" : "this server"} · since it started${routes.admission_p99_ms != null ? ` · waiting for a slot: p99 ${fmt.ms(routes.admission_p99_ms)}` : ""}`, flush: true, body: [table(cols([
+      ]), { rows: kinds, sortKey: "queries", desc: true, compact: true, onRow: (k) => { location.hash = link("queries", { tab: "history", kind: k.kind }); }, empty: h("div", { class: "small muted" }, `No query ended ${routes.from_ms == null ? "since it started" : "in the range"}.`) }) }),
+      card({ title: "HTTP routes", cls: "wl-nums", sub: `${who} · ${over}${wait != null ? ` · waiting for a slot: p99 ${wait <= 1 ? "under 1 ms" : fmt.ms(wait)}` : ""} · click one for its log lines`, flush: true, body: [table(cols([
         { key: "route", label: "route", render: (r) => h("span", { class: "mono small" }, r.route) },
         { key: "requests", label: "requests", num: true, render: (r) => fmt.n(r.requests) },
         { key: "client_errors", label: "4xx", num: true, wide: true, render: (r) => fmt.n(r.client_errors) },
-        { key: "server_errors", label: "5xx", num: true, render: (r) => r.server_errors ? h("span", { class: "wl-bad" }, fmt.n(r.server_errors)) : "0" },
-        { key: "p99_ms", label: "p99", render: (r) => narrow() ? fmt.ms(r.p99_ms) : bar(r.p99_ms, maxR, SERIES[0]) },
-      ]), { rows: rs, sortKey: "requests", desc: true, compact: true, maxHeight: "360px" }),
+        { key: "server_errors", label: "5xx", num: true, render: (r) => r.server_errors ? h("span", { class: theirs(r) ? "dim" : "wl-bad", title: theirs(r) ? "All of them are the clients' own deadlines (504): see the note below" : /^\/v1\/(query|sql)$/.test(r.route) && deadlines ? "504s include the clients' own deadlines: see the note below" : "" }, fmt.n(r.server_errors)) : "0" },
+        { key: "p99_ms", label: "p99", title: "Estimated from latency buckets (1, 2, 5, 10 ms…)", render: (r) => narrow() ? fmt.ms(r.p99_ms) : bar(r.p99_ms, maxR, SERIES[0]) },
+      ]), { rows: rs, sortKey: "requests", desc: true, compact: true, maxHeight: "360px", onRow: (r) => { location.hash = link("logs", { q: "route:" + r.route }); } }),
+      deadlines ? h("div", { class: "small muted", style: { padding: "8px 12px 0" } }, `${fmt.n(deadlines)} of the queries passed the client's own deadline (timeout_ms) and answered 504: they are in the 5xx of /v1/query and /v1/sql, and are not the server's failures.`) : null,
       ownR.length ? h("div", { class: "small muted", style: { padding: "8px 12px" } }, showOwnRoutes ? "Showing the routes the command center reads. " : `Left out: ${fmt.n(ownN)} requests to ${fmt.plural(ownR.length, "route")} the command center reads (and health probes). `, h("a", { class: "wl-link", href: "#", onclick: (e) => { e.preventDefault(); showOwnRoutes = !showOwnRoutes; drawTab(); } }, showOwnRoutes ? "Leave them out" : "Show them")) : null] }));
   }
 
   drawTabs();
   drawTab();
   draw();
-  loadStmts(); loadPrev(); loadLoad(); if (tab === "queries") loadRoutes();
-  const onRange = () => { kindsKey = ""; draw(); loadStmts(); loadPrev(); loadLoad(); };
+  drawBands();
+  loadStmts(); loadPrev(); loadLoad(); loadBands(); if (tab === "queries") loadRoutes();
+  const onRange = () => { kindsKey = ""; draw(); loadStmts(); loadPrev(); loadLoad(); bands = undefined; bandsKey = ""; drawBands(); loadBands(); if (tab === "queries") loadRoutes(); };
   const offs = [bus.on("points", draw), bus.on("range", onRange), bus.on("narrow", () => { drawTabs(); drawTab(); draw(); }), bus.on("theme", draw), bus.on("cluster", draw), bus.on("fleet", draw), bus.on("system", draw),
-    poll(15000, loadStmts), poll(60000, loadLoad), poll(15000, () => tab === "queries" ? loadRoutes() : null), poll(60000, loadPrev)];
+    poll(15000, loadStmts), poll(60000, loadLoad), poll(30000, loadBands), poll(15000, () => tab === "queries" ? loadRoutes() : null), poll(60000, loadPrev)];
   return () => offs.forEach((f) => f());
 }
 
