@@ -15,8 +15,7 @@
 # and OpenSearch (the engines closest to Strata at 1M) first, and Redis, on
 # the costliest node, near the end. Milvus and Typesense ran out of memory at
 # 52Gi (Typesense at 7.2M documents, Milvus building its index), so they run
-# again on Redis's 128 GB node with the same CPU limit; ParadeDB, whose
-# pgvector index builds like Postgres's (about 7 h at 10M), gets its 9 hours.
+# again on Redis's 128 GB node with the same CPU limit.
 qdrant     qdrant     one      18
 strata     strata     sharded  5
 strata-b   strata     sharded  5
@@ -29,6 +28,6 @@ os         os         sharded  5
 solr       solr       sharded  7
 weaviate   weaviate   one      6
 milvus     milvus     one      5   ONE_SIZE=m-16vcpu-128gb,ONE_MEM=110Gi
-paradedb   paradedb   one      9
+paradedb   paradedb   one      5
 redis      redis      one      7   ONE_SIZE=m-16vcpu-128gb,ONE_MEM=110Gi,REDIS_MAXMEM=100000mb
 typesense  typesense  one      8   ONE_SIZE=m-16vcpu-128gb,ONE_MEM=110Gi
