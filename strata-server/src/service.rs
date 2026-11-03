@@ -193,6 +193,10 @@ pub struct QueryReq {
     /// ([`crate::reads`]): a client's query, which a coordinator counts by
     /// the replica that answered each row.
     pub reads: bool,
+    /// `stats` are of this server's version `stats_version`
+    /// ([`Service::stats_version`]), which a coordinator kept: run only on
+    /// that version, else answer [`Answer::stale`]. 0: any version.
+    pub stats_version: u64,
 }
 
 /// The writes a read must see, so that a client reads its own writes
@@ -243,6 +247,14 @@ pub struct Answer {
     /// A shard's rows as an Arrow IPC stream ([`QueryReq::arrow`],
     /// `QueryResponse.arrow`), `rs` then holding none; empty otherwise.
     pub arrow: Vec<u8>,
+    /// The query did not run: its [`QueryReq::stats_version`] is not the
+    /// version it would read.
+    pub stale: bool,
+}
+
+/// An answer of no rows, of a query that did not run.
+fn no_rows() -> ResultSet {
+    ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() }
 }
 
 /// An embedded VECTOR field ([`strata::Embed`]) and its model, which
@@ -488,6 +500,13 @@ pub struct Service {
     pub lease_ttl: Duration,
     leases: Mutex<HashMap<u64, Lease>>,
     next_lease: AtomicU64,
+    /// Random for each run of the server: what a snapshot's statistics
+    /// version is drawn from with its txn ([`Self::stats_version`]), so
+    /// that versions from before a restart are not taken for later ones.
+    stats_nonce: u64,
+    /// Queries that did not run, sent statistics of another version
+    /// ([`QueryReq::stats_version`]).
+    stale_stats: AtomicU64,
     /// Queries allowed to run at once; the rest wait until their deadline.
     admission: Arc<Semaphore>,
     pub max_concurrent: usize,
@@ -628,6 +647,8 @@ impl Service {
             lease_ttl: Duration::from_secs(60),
             leases: Mutex::new(HashMap::new()),
             next_lease: AtomicU64::new(1),
+            stats_nonce: std::hash::BuildHasher::hash_one(&std::hash::RandomState::new(), (std::process::id(), Instant::now())),
+            stale_stats: AtomicU64::new(0),
             admission: Arc::new(Semaphore::new(max_concurrent.max(1))),
             max_concurrent: max_concurrent.max(1),
             embedding: Arc::new(Semaphore::new(cores)),
@@ -1731,6 +1752,16 @@ impl Service {
         Ok(id)
     }
 
+    /// The version of `snap`'s BM25 statistics: of its txn, which every
+    /// write, flush and merge moves on, and of this run of the server.
+    /// Never 0, which a query sends for any version.
+    pub fn stats_version(&self, snap: &Snapshot) -> u64 {
+        match self.stats_nonce ^ snap.txn() {
+            0 => 1,
+            v => v,
+        }
+    }
+
     /// The typo expansions found on lease `lease`'s snapshot so far, which
     /// the queries reading it share (a coordinator's statistics round,
     /// then its query round): `None` for no lease, or one unknown.
@@ -2165,6 +2196,8 @@ impl Service {
         req.reads = !req.shard && !req.quiet && self.reads.on();
         let mut served = Vec::new();
         let mut lease = 0;
+        // The statistics the query was sent are not of the version it reads.
+        let mut stale = false;
         req.profile |= self.profiling.cpu_all.load(Ordering::Relaxed);
         let profiled = req.profile;
         let meta = self.meta(&req);
@@ -2181,6 +2214,10 @@ impl Service {
                     let snap = self.read_snapshot(db, req.snapshot, &req.after, t0 + timeout).await?;
                     if req.after != After::Any {
                         telemetry::record("wait for writes", tw, "ok");
+                    }
+                    if req.stats_version != 0 && req.stats_version != self.stats_version(&snap) {
+                        stale = true;
+                        return Ok((no_rows(), Vec::new()));
                     }
                     let ta = Instant::now();
                     let permit = self.admit(timeout).await.ok_or_else(too_many);
@@ -2264,6 +2301,12 @@ impl Service {
             }
         };
         drop(live);
+        // Not a query that ran: the coordinator sends it again with the
+        // statistics of this version.
+        if stale {
+            self.stale_stats.fetch_add(1, Ordering::Relaxed);
+            return Ok(Answer { rs: no_rows(), took_ms: t0.elapsed().as_secs_f64() * 1e3, kind, missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: true });
+        }
         if req.reads {
             match (&res, &self.backend) {
                 (Ok((rs, _)), Backend::Local(_)) => self.reads.retrieved(&schema.table, crate::reads::At::here(), &rs.keys),
@@ -2331,7 +2374,7 @@ impl Service {
         if !quiet {
             self.query_log.add(sql, kind, outcome, secs, rows, shard, res.as_ref().err().map(|e| e.message.as_str()), slow, res.as_ref().ok().map(|(rs, _)| &rs.stats), profiled, meta);
         }
-        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0, arrow: Vec::new() })
+        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0, arrow: Vec::new(), stale: false })
     }
 
     /// A compound query ([`compound`]): its plan's leaves run on one
@@ -2507,12 +2550,13 @@ impl Service {
         self.running.load(Ordering::Relaxed)
     }
 
-    /// The statistics `sql` scores with, and a lease on the snapshot they
-    /// came from (0 from a coordinator, which sums its shards'). The lease
-    /// lasts for the query round that follows: the request's deadline
-    /// (`timeout_ms`, or the default) and a second. The snapshot holds the
-    /// writes `after` names ([`After`]).
-    pub async fn term_stats(self: &Arc<Self>, sql: &str, plan: Option<&Plan>, params: &Params, after: &After, timeout_ms: u64) -> Result<(TermStats, u64), ApiError> {
+    /// The statistics `sql` scores with, a lease on the snapshot they
+    /// came from (0 from a coordinator, which sums its shards'), and the
+    /// snapshot's statistics version ([`Self::stats_version`]; 0 from a
+    /// coordinator). The lease lasts for the query round that follows: the
+    /// request's deadline (`timeout_ms`, or the default) and a second. The
+    /// snapshot holds the writes `after` names ([`After`]).
+    pub async fn term_stats(self: &Arc<Self>, sql: &str, plan: Option<&Plan>, params: &Params, after: &After, timeout_ms: u64) -> Result<(TermStats, u64, u64), ApiError> {
         let bound = match plan {
             Some(p) => p.clone(),
             None => self.bound(|tables| compound::plan_read(sql, tables, params, &|t, n| self.rank_profile(t, n))).await?,
@@ -2529,6 +2573,7 @@ impl Service {
         match &self.backend {
             Backend::Local(db) => {
                 let snap = self.read_snapshot(db, 0, after, Instant::now() + timeout).await?;
+                let version = self.stats_version(&snap);
                 let lease = self.lease_of(snap.clone(), self.lease_ttl.min(timeout + Duration::from_secs(1)))?;
                 let view = snap.table(&schema.table).ok_or_else(|| ApiError::bad(format!("query error: no such table: {}", schema.table)))?;
                 let db = db.clone();
@@ -2536,13 +2581,13 @@ impl Service {
                 // these statistics were found with.
                 let opts = ExecOptions { synonyms: self.synonyms().or_else(|| db.exec.synonyms.clone()), expansions: self.lease_expansions(lease), ..db.exec.clone() };
                 let stats = tokio::task::spawn_blocking(move || db.term_stats_with(&view, &select, &opts)).await.map_err(ApiError::internal)??;
-                Ok((stats, lease))
+                Ok((stats, lease, version))
             }
             Backend::Cluster(c) => {
                 // A query by a rank profile reaches the shards written
                 // out, and one by a model with the model's hash.
                 let given = plan.filter(|_| !bound.root.has_models()).or((bound.root.has_profiles() || bound.root.has_models()).then_some(&bound));
-                Ok((c.term_stats(sql, &schema, given, params, after, Instant::now() + timeout).await?.0, 0))
+                Ok((c.term_stats(sql, &schema, given, params, after, Instant::now() + timeout).await?.0, 0, 0))
             }
         }
     }
@@ -3770,6 +3815,7 @@ impl Service {
                     one("strata_free_bytes", "gauge", "Bytes of the database file free for reuse (0 in the directory layout).", (f.free_pages * strata::storage::pager::PAGE) as f64),
                     one("strata_wal_bytes", "gauge", "Bytes of the write-ahead log.", f.wal_bytes as f64),
                     one("strata_snapshot_leases", "gauge", "Snapshot leases held.", self.sweep_leases() as f64),
+                    one("strata_stale_stats_total", "counter", "Queries a coordinator sent with kept BM25 statistics of an older version, answered without running.", self.stale_stats.load(Ordering::Relaxed) as f64),
                     one("strata_failing", "gauge", "1 when the database cannot write until the server restarts.", self.failing().is_some() as u8 as f64),
                     one("strata_flush_failing", "gauge", "1 while flushes fail (a full disk).", db.storage().flush_error().is_some() as u8 as f64),
                     one("strata_write_queue_requests", "gauge", "Write requests in the write path: embedding, waiting for the writer, or being applied.", w.queued.load(Ordering::Relaxed) as f64),

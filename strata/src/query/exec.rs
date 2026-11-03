@@ -4024,6 +4024,33 @@ fn merge_top(mut hits: Vec<Hit>, k: usize) -> Vec<Hit> {
     hits
 }
 
+/// The terms each BM25 input of `q` scores with, by field (as
+/// [`Executor::term_stats`] asks a database for their statistics), when
+/// they follow from the query and `schema` alone. `None` when an input
+/// widens its terms by what a database holds (typos, synonyms): only a
+/// shard finds those.
+pub fn stat_terms(q: &Select, schema: &Schema) -> Result<Option<Vec<(usize, Vec<String>)>>> {
+    let mut leaves = Vec::new();
+    bm25_leaves(q, &mut leaves);
+    let mut out = Vec::with_capacity(leaves.len());
+    for (field, text, opts) in leaves {
+        if !Expand::from_opts(opts).map_err(err)?.is_none() {
+            return Ok(None);
+        }
+        let Some(f) = schema.fields.get(field) else { return Ok(None) };
+        let (weighted, _, _) = ranked_terms(text, opts, f.text_analyzer())?;
+        // As Executor::bm25_query: each term once.
+        let mut terms: Vec<String> = Vec::with_capacity(weighted.len());
+        for (t, _) in weighted {
+            if !terms.contains(&t) {
+                terms.push(t);
+            }
+        }
+        out.push((field, terms));
+    }
+    Ok(Some(out))
+}
+
 /// The BM25 inputs of a query (its ranking, its phases' and its columns')
 /// and of the subqueries that seed its graphs.
 pub(crate) fn bm25_leaves<'q>(q: &'q Select, out: &mut Vec<(usize, &'q str, &'q Opts)>) {

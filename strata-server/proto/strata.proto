@@ -528,6 +528,11 @@ message QueryRequest {
   // answer its rows as Arrow columns (QueryResponse.arrow) where they can
   // be, and as rows otherwise.
   bool arrow = 16;
+  // Protocol 12: stats_json holds the statistics of this server's version
+  // `stats_version` (TermStatsResponse.version), which a coordinator kept:
+  // run the query only on that version, and otherwise answer stale
+  // (QueryResponse.stale) without running it. 0: any version.
+  uint64 stats_version = 17;
 }
 
 // A plan (strata::query::ir): a statement as a tree of operators over typed
@@ -1231,11 +1236,19 @@ message QueryResponse {
   // then empty. Empty when the rows are answered as rows: none, or values of
   // several types in a column.
   bytes arrow = 9;
+  // Protocol 12: the query named a stats_version that is not the version
+  // it would read: it did not run, and the answer holds nothing else.
+  bool stale = 10;
 }
 
 message TermStatsResponse {
   bytes stats_json = 1;
   uint64 snapshot = 2;
+  // Protocol 12: the version the statistics are of, which changes with
+  // every write, flush and merge, and with the server's restart (0: none
+  // to keep, as a coordinator's). A query naming it in stats_version runs
+  // only on that version.
+  uint64 version = 3;
 }
 
 // A guard's loosest level, `need`, and the rows each level from it up to

@@ -144,6 +144,12 @@ struct Args {
     /// flagged "partial" (a request's "partial" overrides it).
     #[arg(long)]
     partial: bool,
+    /// With --shards: terms whose BM25 statistics the coordinator keeps
+    /// per shard copy, as of the copy's version, so that a BM25 query whose
+    /// terms are all kept skips the statistics round (0: none kept; every
+    /// such query asks every shard first).
+    #[arg(long, default_value_t = strata_server::coord::STATS_CACHE_TERMS)]
+    stats_cache_terms: usize,
     /// With --shards: the StrataCluster (namespace/name) that runs this
     /// coordinator on Kubernetes, read and scaled through the API server as
     /// the pod's service account (the operator sets it).
@@ -707,6 +713,7 @@ async fn main() {
             hedge: std::time::Duration::from_millis(a.hedge_ms),
             shard_timeout: (a.shard_timeout_ms > 0).then(|| std::time::Duration::from_millis(a.shard_timeout_ms)),
             partial: a.partial,
+            stats_cache_terms: a.stats_cache_terms,
             token: cluster.clone().or_else(|| token.clone()),
             ca: a.shard_ca.as_ref().map(read),
             slots: a.slot_map.as_ref().map(|p| {
