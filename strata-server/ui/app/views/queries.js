@@ -37,11 +37,14 @@ function render(page, r) {
       h("div", {}, h("h1", {}, "Queries"), scope),
       h("div", { class: "tools" }, h("button", { class: "btn sm", title: "Copy a link to this view, with its range and filters", onclick: () => copy(location.href, "Link copied") }, icon("link"), "Copy link"))),
     tabs, body);
+  // fleet: Running now and Contain cover every coordinator; Statements are this one's.
   const drawScope = () => {
     const c = state.cluster, n = (c?.shards || []).reduce((a, x) => a + (x.replicas?.length || 0), 0);
-    scope.textContent = isCoord()
-      ? `This coordinator${n ? ` and its ${fmt.plural(c.shards.length, "shard")} (${fmt.plural(n, "copy", "copies")})` : ""}: what runs now, the statements over the range in the top bar, and the history the log stores keep.`
-      : "This server: what runs now, the statements over the range in the top bar, and the history its log store keeps.";
+    const cs = state.fleet?.coordinators || [];
+    const shards = n ? ` and ${cs.length > 1 ? "their" : "its"} ${fmt.plural(c.shards.length, "shard")} (${fmt.plural(n, "copy", "copies")})` : "";
+    scope.textContent = !isCoord() ? "This server: what runs now, the statements over the range in the top bar, and the history its log store keeps."
+      : cs.length > 1 ? `${fmt.plural(cs.length, "coordinator")}${shards}: Running now and Contain cover every coordinator; Statements and the history are this coordinator's (${cs.find((x) => x.this)?.name || location.host}).`
+      : `This coordinator${shards}, the only one the shards heard from: what runs now, the statements over the range in the top bar, and the history the log stores keep.`;
   };
   drawScope();
   // A tab lays out for its width class, so it is built again when the width crosses 900 or 560 px,
@@ -99,7 +102,7 @@ function live(body, params, setCount) {
     card({ body: tbl, flush: true }),
     h("div", { class: "small muted", style: { margin: "10px 0 14px" } }, "A cancel answers the client 499 and is written to the audit log with your name and reason. Cancelling on a coordinator stops its calls to the shards too."),
     card({ title: "Contain rules", sub: "statements and keys limited or refused for a while", tools: containBtn, body: rulesBox }));
-  let all = [], at = 0, err = null, nodes = null;
+  let all = [], at = 0, err = null, nodes = null, missing = [];
   const shardCount = () => state.cluster?.shards?.length || 0;
 
   function waitingOn(q) {
@@ -121,13 +124,13 @@ function live(body, params, setCount) {
     const act = q.cancelled ? h("span", { class: "pill info" }, "cancelling") : can("admin") ? h("button", { class: "btn sm", onclick: () => cancelOne(q) }, nar ? "Cancel…" : "Cancel query…") : null;
     if (nar) {
       const tr = h("tr", { class: "click", tabindex: 0 },
-        h("td", { style: { paddingLeft: "12px" } }, h("div", { class: "mono small" }, q.node ? `${q.node}:${q.id}` : q.id), h("div", { class: "small muted ellipsis" }, [q.key, q.app].filter(Boolean).join(" · ") || (groupBy === "none" ? q.sql : ""))),
+        h("td", { style: { paddingLeft: "12px" } }, h("div", { class: "mono small" }, q.node ? `${q.node}:${q.local_id ?? q.id}` : q.id), h("div", { class: "small muted ellipsis" }, [q.key, q.app].filter(Boolean).join(" · ") || (groupBy === "none" ? q.sql : ""))),
         h("td", {}, ran), h("td", { class: "num" }, act));
       tr.onclick = (e) => { if (!e.target.closest("button,a")) liveDrawer(q, { onCancel: cancelOne }); };
       return tr;
     }
     const tr = h("tr", { class: "click", tabindex: 0 },
-      h("td", { class: "num mono small", style: { paddingLeft: "28px" } }, q.node ? `${q.node}:${q.id}` : q.id),
+      h("td", { class: "num mono small", style: { paddingLeft: "28px" } }, q.node ? `${q.node}:${q.local_id ?? q.id}` : q.id),
       h("td", {}, q.node ? h("span", { class: "badge" }, q.node) : q.shard ? h("span", { class: "badge", title: "a shard's part of a coordinator's query" }, "coordinator") : h("span", { class: "muted small" }, "client")),
       h("td", {}, ran),
       h("td", { class: "mono small" }, q.key || h("span", { class: "muted" }, "–")),
@@ -195,7 +198,7 @@ function live(body, params, setCount) {
     setCount("live", qs.length);
     const oldest = qs.reduce((a, q) => Math.max(a, q.elapsed_ms), 0);
     clear(info, h("span", { class: "pill " + (qs.length ? "info" : "ok") }, `${fmt.n(qs.length)} running`),
-      h("span", { class: "small muted", title: state.system ? `This server takes ${state.system.limits?.max_concurrent ?? "?"} queries at once; its timeout is ${fmt.ms(state.system.limits?.timeout_ms)} unless a query asks for less` : "" }, [nodes ? `on ${fmt.plural(nodes, "coordinator")}` : isCoord() ? "on this coordinator" : "on this server",
+      h("span", { class: "small muted", title: state.system ? `This server takes ${state.system.limits?.max_concurrent ?? "?"} queries at once; its timeout is ${fmt.ms(state.system.limits?.timeout_ms)} unless a query asks for less` : "" }, [nodes ? (missing.length ? `on ${nodes - missing.length} of ${fmt.plural(nodes, "coordinator")}: ${missing.map((m) => m.name).join(", ")} did not answer` : `on ${nodes > 1 ? "all " : ""}${fmt.plural(nodes, "coordinator")}`) : isCoord() ? "on this coordinator" : "on this server",
         qs.length ? `oldest ${fmt.ms(oldest)}` : null,
         paused() ? "paused" : at ? `refreshed ${fmt.ago(at)}` : null].filter(Boolean).join(" · ")));
     if (err) { clear(tbody, h("tr", {}, h("td", { colspan: span }, failure(err, "The running queries")))); return; }
@@ -215,6 +218,7 @@ function live(body, params, setCount) {
       try { j = await api("/v1/queries?group=shape"); } catch (e) { if (e.status === 400) j = await api("/v1/queries"); else throw e; }
       all = j.queries || [];
       nodes = j.nodes ? (Array.isArray(j.nodes) ? j.nodes.length : j.nodes) : null;
+      missing = Array.isArray(j.nodes) ? j.nodes.filter((x) => x.ok === false) : [];
       at = Date.now(); err = null;
     } catch (e) { err = e; }
     draw();
@@ -225,7 +229,13 @@ function live(body, params, setCount) {
   async function loadRules() {
     try { rules = await containRules(); } catch (e) { clear(rulesBox, failure(e, "The contain rules")); return; }
     if (containBtn) containBtn.style.display = rules == null ? "none" : "";
-    clear(rulesBox, containList(rules, { onChange: loadRules }));
+    // fleet: a rule holds on every coordinator; say where one is missing or was not asked.
+    const cs = state.fleet?.coordinators || [];
+    const gaps = (rules || []).filter((r) => r.missing?.length || r.unreachable?.length);
+    const where = rules?.length && cs.length > 1 ? h("div", { class: gaps.length ? "notice warn small" : "small muted", style: { marginBottom: "8px" } },
+      gaps.length ? gaps.slice(0, 3).map((r) => `Rule ${r.id} holds on ${(r.on || []).join(", ")}${r.missing?.length ? `; missing on ${r.missing.join(", ")}` : ""}${r.unreachable?.length ? `; ${r.unreachable.join(", ")} did not answer` : ""}.`).join(" ")
+        : `Each rule holds on all ${cs.length} coordinators: a statement contained on one is refused on every one.`) : null;
+    clear(rulesBox, where, containList(rules, { onChange: loadRules }));
   }
   const stops = [poll(2000, load), poll(30000, loadStmts), poll(10000, loadRules), ticker(draw), bus.on("narrow", draw)];
   return () => stops.forEach((f) => f());

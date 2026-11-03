@@ -369,6 +369,8 @@ pub struct Service {
     pub trusted_proxies: Vec<(std::net::IpAddr, u8)>,
     /// Fleet health's memory ([`crate::fleet`]).
     pub fleet: crate::fleet::Fleet,
+    /// The coordinators this server knows ([`crate::peers`]).
+    pub peers: crate::peers::Peers,
     /// The repository the version picker lists (`--image-repository`).
     pub image_repository: String,
     /// The rollout the coordinator watches run: its version, when it saw
@@ -574,6 +576,7 @@ impl Service {
             place: Place::from_env(None),
             trusted_proxies: Vec::new(),
             fleet: Default::default(),
+            peers: Default::default(),
             image_repository: crate::operator::upgrade::REPOSITORY.into(),
             rollout_seen: Default::default(),
             rollout_pace_s: Default::default(),
@@ -3580,22 +3583,26 @@ impl Service {
         let now = telemetry::now_ms();
         let (cluster, partial, coordinator) = match &self.backend {
             Backend::Cluster(c) => {
-                let me = json!({"url": self.identity.public_url, "name": self.place.name.clone().or_else(|| self.place.node.clone())});
+                let me = match crate::peers::this(self) {
+                    Some(p) => json!({"url": p.url, "name": p.name}),
+                    None => json!({"url": self.identity.public_url, "name": self.place.name.clone().or_else(|| self.place.node.clone())}),
+                };
                 ((*c.snapshot().await).clone(), c.opts.partial, Some(me))
             }
             Backend::Local(_) => (crate::fleet::local_shard(&self.detail().await), false, None),
         };
         let points = self.series.since(now.saturating_sub(crate::fleet::WINDOW_S * 1000));
-        let by = self.alerts.firing();
-        let count = |sev: Option<&str>| by.iter().filter(|(k, _)| sev.is_none_or(|s| k.contains(&format!("\"{s}\"")))).map(|(_, n)| *n as u64).sum::<u64>();
+        // fleet: the alerts firing that nobody silenced, each rule once, as the bell counts them.
+        let alerts: Vec<Json> = self.alerts.json()["states"].as_array().map_or_else(Vec::new, |v| v.iter().filter(|s| s["state"] == "firing" && s["silenced"].is_null()).cloned().collect());
         self.fleet.judge(crate::fleet::Inputs {
             cluster: &cluster,
             points: &points,
             slo_error_ratio: self.slo.error_ratio,
             slo_p99_ms: self.slo.p99_ms,
-            alerts: (count(None), count(Some("critical"))),
+            alerts,
             partial,
             coordinator,
+            peers: crate::peers::windows(self),
             now_ms: now,
         })
     }
@@ -3623,6 +3630,8 @@ impl Service {
             // alerts agent: the alerts firing here, and this copy's states of
             // the each_copy rules, which a coordinator gathers.
             "alerts": self.alerts.summary(),
+            // fleet: the coordinators that named themselves here ([`crate::peers`]).
+            "coordinators": self.peers.heard_json(),
         })
     }
 

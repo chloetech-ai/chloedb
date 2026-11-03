@@ -630,6 +630,9 @@ pub struct Coordinator {
     /// which map epoch, and what it found; and who is told of each.
     snapshot: tokio::sync::Mutex<Option<(Instant, u64, Arc<Json>)>>,
     observer: std::sync::OnceLock<Box<dyn Fn(Option<&Json>, &Json) + Send + Sync>>,
+    /// What this coordinator says of itself in its surveys' calls, which
+    /// its shards keep ([`crate::peers`]).
+    pub announce: std::sync::OnceLock<Vec<(&'static str, tonic::metadata::AsciiMetadataValue)>>,
 }
 
 /// How many copies the index inspector asks at once ([`Coordinator::inspect`]).
@@ -1062,6 +1065,7 @@ impl Coordinator {
             moves: moves::Moves::default(),
             snapshot: tokio::sync::Mutex::new(None),
             observer: std::sync::OnceLock::new(),
+            announce: std::sync::OnceLock::new(),
         })
     }
 
@@ -2722,13 +2726,23 @@ impl Coordinator {
 
     async fn survey_cluster(&self) -> Json {
         let t = &self.topo();
+        // This coordinator names itself to each copy ([`crate::peers`]).
+        let me = self.announce.get();
+        let health = || {
+            let mut req = tonic::Request::new(pb::Empty {});
+            for (k, v) in me.into_iter().flatten() {
+                req.metadata_mut().insert(*k, v.clone());
+            }
+            req
+        };
         // Its part in replication said again too, as for `health`.
         let calls = t.replicas.iter().map(|rs| {
             join_all(rs.iter().map(|r| {
                 let (mut c, mut h) = (r.client.clone(), r.client.clone());
+                let req = health();
                 async move {
                     let t0 = Instant::now();
-                    let (a, said) = tokio::join!(tokio::time::timeout(Duration::from_secs(2), c.health(pb::Empty {})), tokio::time::timeout(Duration::from_secs(2), hello(&mut h)));
+                    let (a, said) = tokio::join!(tokio::time::timeout(Duration::from_secs(2), c.health(req)), tokio::time::timeout(Duration::from_secs(2), hello(&mut h)));
                     let ms = t0.elapsed().as_secs_f64() * 1e3;
                     if let Ok(Ok(said)) = said {
                         r.heard(&said);
