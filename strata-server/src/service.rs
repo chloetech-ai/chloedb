@@ -666,10 +666,10 @@ impl Service {
     fn admit_write(&self) -> Result<Admitted, ApiError> {
         match &self.replication() {
             Replication::Primary(p) => {
-                p.admit()?;
-                Ok(Admitted(Some(self.term())))
+                let f = p.admit()?;
+                Ok(Admitted(Some(self.term()), Some(f)))
             }
-            _ => Ok(Admitted(None)),
+            _ => Ok(Admitted(None, None)),
         }
     }
 
@@ -683,8 +683,8 @@ impl Service {
     /// statement that changes tables, and a retry of a write applied.
     fn admitted(&self) -> Admitted {
         match &self.replication() {
-            Replication::Primary(_) => Admitted(Some(self.term())),
-            _ => Admitted(None),
+            Replication::Primary(_) => Admitted(Some(self.term()), None),
+            _ => Admitted(None, None),
         }
     }
 
@@ -697,8 +697,12 @@ impl Service {
     /// ([`Primary::acknowledged`]): the new primary may not hold it, and
     /// this server, a replica now, waits for no copy.
     async fn replicated(&self, w: Written, timeout: Duration, by: Admitted) -> Result<Written, ApiError> {
+        // Applied: a primary asked to hand its shard over waits no more
+        // for it.
+        let Admitted(by, applied) = by;
+        drop(applied);
         let Some(seq) = w.seq_no else { return Ok(w) };
-        match (&self.replication(), by.0) {
+        match (&self.replication(), by) {
             // Taken by this primary, or on a server of its own, which was
             // made one since.
             (Replication::Primary(p), term) if term.is_none_or(|t| t == self.term()) => p.acknowledged(seq, Instant::now() + timeout).await?,
@@ -3722,9 +3726,9 @@ pub enum SqlAnswer {
 
 /// The term of the primary that took a write ([`Service::admit_write`]),
 /// which answers it once its copies hold it ([`Service::replicated`]):
-/// `None` on a server of its own.
-#[derive(Clone, Copy, Debug)]
-struct Admitted(Option<u64>);
+/// `None` on a server of its own. And the write counted as taken until it
+/// is applied or refused ([`crate::replication::Flight`]).
+struct Admitted(Option<u64>, Option<crate::replication::Flight>);
 
 /// What a write did: the rows it wrote and, in a database that numbers
 /// its writes (`--seq-no`), its transaction's sequence number. Through a
