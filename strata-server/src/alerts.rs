@@ -470,6 +470,10 @@ pub const PEER_LIVE_MS: u64 = 45_000;
 /// rules: what it last said is not what it holds now ("A copy is down"
 /// says why).
 pub const UNHEARD_MS: u64 = 60_000;
+/// A coordinator restarted (its state file was there) sends no FIRING
+/// message for this long: it first hears the other coordinators, which
+/// may have sent it while it was down.
+pub const STARTUP_MS: u64 = 20_000;
 
 impl St {
     fn new(t: u64) -> St {
@@ -867,6 +871,9 @@ pub struct Alerts {
     /// This server's service level objective, once given
     /// ([`Alerts::follow_slo`]): error ratio, p99 in ms.
     slo: Mutex<Option<(f64, f64)>>,
+    /// Until when a restarted coordinator sends no FIRING message
+    /// ([`STARTUP_MS`]); 0 for a server that starts afresh.
+    starting_until: u64,
 }
 
 /// How long a route has to take a message, its three tries included.
@@ -922,6 +929,7 @@ impl Alerts {
         // The states it had: a restart neither forgets nor sends again.
         let state_file = file.as_ref().map(|p| state_path(p));
         let now = now_ms();
+        let restarted = state_file.as_ref().is_some_and(|p| p.exists());
         let saved: Saved = match &state_file {
             Some(p) => match std::fs::read(p) {
                 Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
@@ -967,6 +975,7 @@ impl Alerts {
             copy_rules_ms: Mutex::new(HashMap::new()),
             repeated: Mutex::new(HashMap::new()),
             slo: Mutex::new(None),
+            starting_until: if restarted { now + STARTUP_MS } else { 0 },
         })
     }
 
@@ -2048,6 +2057,10 @@ impl Alerts {
                     continue;
                 }
                 if st.paged.is_none() {
+                    // Restarted: the others may have sent it meanwhile.
+                    if t < self.starting_until && self.is_coordinator() {
+                        continue;
+                    }
                     let waited = t.saturating_sub(st.since_ms);
                     let mine = me == pager;
                     // Another coordinator waits from when this one could send it.
@@ -3673,6 +3686,17 @@ mod tests {
         b.check(&ps, t + 10_000);
         assert!(b.one("p99").unwrap().get("ack").is_none());
         assert_eq!(b.due(t + 10_000).len(), 1);
+        drop(b);
+        // A restarted coordinator first hears the others: what fires
+        // meanwhile is not sent for STARTUP_MS.
+        let c = Alerts::new(Some(path), None).unwrap();
+        c.set_coordinator(true);
+        c.set_rules(vec![slow("max", 2, 0), Rule { id: "third".into(), name: "Third".into(), threshold: 1000.0, ..slow("max", 2, 0) }], "t").unwrap();
+        let t2 = now_ms();
+        c.check(&points(&[(t2 - 2_000, 2000.0), (t2, 2000.0)]), t2);
+        assert_eq!(c.one("third").unwrap()["state"], "firing");
+        assert!(c.due(t2).iter().all(|(e, _)| e.rule != "third"), "not while it starts");
+        assert!(c.due(t2 + STARTUP_MS).iter().any(|(e, _)| e.rule == "third"));
     }
 
     /// With several coordinators, the one with the lowest URL among those
