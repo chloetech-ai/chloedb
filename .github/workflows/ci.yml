@@ -572,13 +572,62 @@ jobs:
         working-directory: strata-py
         run: cargo clippy --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
+  # The Java package (strata-java): its native library, built by cargo
+  # inside mvn package, and the Java classes' tests against it on the
+  # oldest Java the package supports (11) and on the newest long-term one,
+  # which warns about native libraries loaded without
+  # --enable-native-access.
+  java:
+    name: Java package on ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # strata-java builds for a generic CPU: one cache on every runner.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+          workspaces: strata-java
+          key: java
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "11"
+          cache: maven
+      # The ci profile, as the crates' tests have.
+      - name: Build and test on Java 11
+        working-directory: strata-java
+        run: mvn -B -ntp -Dcargo.profile=ci package
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+      - name: Test on Java 25
+        working-directory: strata-java
+        run: mvn -B -ntp -Dcargo.profile=ci -Dcargo.skip=true test
+      - name: Native library's own tests
+        working-directory: strata-java
+        run: cargo test --profile ci
+      - name: Clippy
+        working-directory: strata-java
+        run: cargo clippy --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+
   # The one check main requires: every job above passed, or was skipped
   # because the change touches only the documentation. A failed or
   # cancelled job fails it.
   ci-result:
     name: CI result
     if: always()
-    needs: [changes, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python]
+    needs: [changes, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python, java]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
