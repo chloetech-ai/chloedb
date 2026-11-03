@@ -44,6 +44,9 @@ audio = ["strata/audio"]
 [profile.release]
 codegen-units = 1
 lto = "thin"
+# The addon is what an install downloads: without its symbol table it is a
+# third smaller (its exports, which Node reads, stay).
+strip = "symbols"
 
 # CI's tests: release's optimisation without its link-time optimisation and
 # single codegen unit, which take most of the time of building the addon.

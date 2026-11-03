@@ -20,7 +20,10 @@ for (const row of await db.search("dragon")) console.log(row.id, row.title);
 await db.close();
 ```
 
-Build (Rust and a C compiler), test, and use from an app:
+Prebuilt for macOS and Linux (no Rust needed): `npm install` the tarball of
+your platform from a `strata-js-v<version>` GitHub release
+([docs](../docs/strata/javascript.md#prebuilt)). Build (Rust and a C
+compiler), test, and use from an app:
 
 ```sh
 npm run build                         # cargo build --release; strata.node beside index.js
@@ -35,4 +38,5 @@ cd ../my-app && npm install ../strata/strata-js
 | `client.js`, `client.d.ts` | `Client` and `connect`: strata-server over HTTP with `fetch`, no addon |
 | `common.js`, `common.d.ts` | what both share: `Result`, `StrataError`, `search`, the rank log, JSON with 64-bit integers |
 | `scripts/build.mjs` | builds the addon with cargo and copies it to `strata.node` |
+| `scripts/pack.mjs` | packs the package with its addon for one platform (`dist/strata-db-<version>-<platform>.tgz`); `.github/workflows/js-release.yml` runs it per platform on a tag |
 | `test/` | `node --test`: the database in-process, and the client against a strata-server |

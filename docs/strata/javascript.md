@@ -15,7 +15,28 @@ The `strata-db` package opens a Strata file inside a Node, Bun or Deno process, 
 
 ## Install
 
-The package is in [`strata-js/`](https://github.com/chloetech-ai/strata/tree/main/strata-js): a Node-API addon written in Rust ([napi-rs](https://napi.rs)) and the JavaScript around it, an ES module. It needs Rust (stable) and a C compiler to build, and Node 18 or later, Bun or Deno to run.
+The package is in [`strata-js/`](https://github.com/chloetech-ai/strata/tree/main/strata-js): a Node-API addon written in Rust ([napi-rs](https://napi.rs)) and the JavaScript around it, an ES module, for Node 18 or later, Bun and Deno.
+
+### Prebuilt
+
+Each `strata-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/strata/releases) has a tarball per platform with the addon built in, which installs with no Rust and no compiler:
+
+```sh
+npm install https://github.com/chloetech-ai/strata/releases/download/strata-js-v0.1.0/strata-db-0.1.0-darwin-arm64.tgz
+```
+
+| platform | tarball |
+|---|---|
+| macOS 11+ on Apple silicon | `strata-db-<version>-darwin-arm64.tgz` |
+| macOS 11+ on Intel | `strata-db-<version>-darwin-x64.tgz` |
+| Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `strata-db-<version>-linux-x64-gnu.tgz` |
+| Linux arm64, glibc 2.35+ | `strata-db-<version>-linux-arm64-gnu.tgz` |
+
+The workflow [`js-release.yml`](https://github.com/chloetech-ai/strata/blob/main/.github/workflows/js-release.yml) builds them on a tag `strata-js-v<version>` (the version in `strata-js/package.json`), tests each one, installs it into an empty app and runs it there, then attaches them to the release; `node scripts/pack.mjs <platform>` packs one by hand. The package is not on npm yet. Windows and Alpine (musl) have no tarball: build from source there (Windows through WSL 2).
+
+### From source
+
+It needs Rust (stable) and a C compiler.
 
 ```sh
 cd strata-js
