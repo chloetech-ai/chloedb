@@ -2,7 +2,8 @@
 
     python run.py ENGINE --host H --port P --data DIR --out FILE [--token T]
 
-ENGINE: strata (an EDGES field), strata-edges (an edge table), neo4j,
+ENGINE: strata (an EDGES field), strata-edges (an edge table), the same
+queried over gRPC (strata-grpc, strata-edges-grpc), neo4j,
 memgraph, falkordb or arangodb, already running and empty (compare.sh starts each in
 Docker). One client, one query at a time, over each engine's own protocol:
 HTTP for strata-server and ArangoDB, Bolt for Neo4j and Memgraph, RESP
@@ -102,6 +103,39 @@ class Strata:
     def ppr(self, s, eps):
         j = self.sql(f"SELECT id FROM papers ORDER BY ppr({self.f}, :s, eps => {eps}) DESC LIMIT 20", s=s)
         return [r[0] for r in j["rows"]], self.took(j)
+
+
+class StrataGrpc(Strata):
+    """The same queries over strata-server's gRPC `Query` (SQL and params,
+    protobuf rows); loading still goes through HTTP's /v1/import. Needs
+    grpcio and the stubs generated from strata-server/proto/strata.proto."""
+
+    def __init__(self, host, port, grpc_port, token, edge_table):
+        import grpc
+        import strata_pb2
+        import strata_pb2_grpc
+
+        super().__init__(host, port, token, edge_table)
+        self.pb = strata_pb2
+        self.stub = strata_pb2_grpc.StrataStub(grpc.insecure_channel(f"{host}:{grpc_port}"))
+        self.md = (("authorization", f"Bearer {token}"),)
+
+    def query(self, q, **params):
+        req = self.pb.QueryRequest(sql=q, params={k: self.pb.Value(int=v) for k, v in params.items()})
+        r = self.stub.Query(req, metadata=self.md, timeout=600)
+        return [[v.int for v in row.v] for row in r.rows], r.took_ms
+
+    def hops(self, s, d, k):
+        rows, took = self.query(f"SELECT COUNT(*) FROM papers WHERE REACHABLE({self.f}, :s, hops => {k}, dir => '{d}', max_nodes => 1000000)", s=s)
+        return rows[0][0], took
+
+    def path(self, a, b, max_hops):
+        rows, took = self.query(f"SELECT id FROM papers WHERE PATH({self.f}, :a, :b, dir => 'both', max_hops => {max_hops}, max_nodes => 1000000) ORDER BY hops()", a=a, b=b)
+        return (len(rows) - 1 if rows else None), took
+
+    def ppr(self, s, eps):
+        rows, took = self.query(f"SELECT id FROM papers ORDER BY ppr({self.f}, :s, eps => {eps}) DESC LIMIT 20", s=s)
+        return [r[0] for r in rows], took
 
 
 class Bolt:
@@ -358,9 +392,10 @@ def timed(name, fn, args, check):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("engine", choices=["strata", "strata-edges", "neo4j", "memgraph", "falkordb", "arangodb"])
+    ap.add_argument("engine", choices=["strata", "strata-edges", "strata-grpc", "strata-edges-grpc", "neo4j", "memgraph", "falkordb", "arangodb"])
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, required=True)
+    ap.add_argument("--grpc-port", type=int, default=7701, help="strata-grpc engines: the gRPC port (queries); --port is HTTP (loading)")
     ap.add_argument("--token", default="")
     ap.add_argument("--data", required=True)
     ap.add_argument("--out", required=True)
@@ -374,6 +409,8 @@ def main():
     e = {
         "strata": lambda: Strata(a.host, a.port, a.token, False),
         "strata-edges": lambda: Strata(a.host, a.port, a.token, True),
+        "strata-grpc": lambda: StrataGrpc(a.host, a.port, a.grpc_port, a.token, False),
+        "strata-edges-grpc": lambda: StrataGrpc(a.host, a.port, a.grpc_port, a.token, True),
         "neo4j": lambda: Bolt(a.host, a.port, False),
         "memgraph": lambda: Bolt(a.host, a.port, True),
         "falkordb": lambda: Falkor(a.host, a.port),

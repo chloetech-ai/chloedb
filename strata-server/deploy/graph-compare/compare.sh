@@ -4,12 +4,15 @@
 # container on the same Docker network (so that the host's port forwarding,
 # about a millisecond a request on Docker Desktop, is not in the times).
 #
-#   compare.sh ENGINE...      strata strata-edges neo4j memgraph falkordb arangodb
+#   compare.sh ENGINE...      strata strata-edges strata-grpc strata-edges-grpc
+#                             neo4j memgraph falkordb arangodb
 #
 # Environment: DATA (prep.py's output), OUT (reports), CLIENT_IMAGE (any
 # image with python3), PYLIB (a directory holding httpx, neo4j and redis for
-# it), CPUS (engine, 3), MEM (engine, 6g), LOAD_GATE (wait for the host's
-# 1-minute load average to drop below it, 5), SKIP (query kinds to leave out).
+# it), PYLIB_GRPC (for strata-grpc and strata-edges-grpc: grpcio and the
+# stubs from strata-server/proto/strata.proto, built for that image), CPUS
+# (engine, 3), MEM (engine, 6g), LOAD_GATE (wait for the host's 1-minute
+# load average to drop below it, 5), SKIP (query kinds to leave out).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 : "${DATA:?prep.py output dir}" "${OUT:?reports dir}" "${CLIENT_IMAGE:?image with python3}" "${PYLIB:?client packages}"
@@ -44,16 +47,18 @@ run_one() {
     docker volume rm "$name-data" >/dev/null 2>&1 || true
     local limits=(--name "$name" --network $NET --cpus "$CPUS" --memory "$MEM" --memory-swap "$MEM" --pull never)
     case $engine in
-        strata | strata-edges)
+        strata | strata-edges | strata-grpc | strata-edges-grpc)
             port=7700 image=$STRATA_IMAGE data_dir=/data
             token=$(openssl rand -hex 16)
-            if [ "$engine" = strata ]; then
+            local grpc=off
+            case $engine in *-grpc) grpc=0.0.0.0:7701 ;; esac
+            if [ "$engine" = strata ] || [ "$engine" = strata-grpc ]; then
                 schema='{"table":"papers","key":"id","fields":[{"name":"id","type":"int"},{"name":"cites","type":"edges"}]}'
             else
                 schema='{"table":"papers","key":"id","fields":[{"name":"id","type":"int"}]}'
             fi
             docker run -d "${limits[@]}" -v "$name-data:/data" -e STRATA_TOKEN="$token" --entrypoint sh "$image" \
-                -c "echo '$schema' > /data/schema.json && exec strata-server --db /data/graph.strata --schema /data/schema.json --listen 0.0.0.0:7700 --grpc off --allow-host $name" >/dev/null
+                -c "echo '$schema' > /data/schema.json && exec strata-server --db /data/graph.strata --schema /data/schema.json --listen 0.0.0.0:7700 --grpc $grpc --allow-host $name" >/dev/null
             args=(--token "$token")
             ;;
         neo4j)
@@ -82,7 +87,7 @@ run_one() {
     docker image inspect "$image" --format '{{.Id}} {{.RepoDigests}}' >"$OUT/image-$engine.txt"
     local rc=0
     docker run --rm --name gc-client --network $NET --cpus 1 --memory 2g --pull never \
-        -v "$HERE:/app:ro" -v "$DATA:/in:ro" -v "$OUT:/out" -v "$PYLIB:/pylib:ro" -e PYTHONPATH=/pylib \
+        -v "$HERE:/app:ro" -v "$DATA:/in:ro" -v "$OUT:/out" -v "$PYLIB:/pylib:ro" ${PYLIB_GRPC:+-v "$PYLIB_GRPC:/pylib-grpc:ro"} -e PYTHONPATH=/pylib${PYLIB_GRPC:+:/pylib-grpc} \
         --entrypoint python3 "$CLIENT_IMAGE" /app/run.py "$engine" --host "$name" --port "$port" ${args[@]+"${args[@]}"} \
         --data /in --out "/out/run-$engine.json" ${SKIP:+--skip "$SKIP"} 2>&1 | tee -a "$OUT/run.log" || rc=$?
     docker stats --no-stream --format '{"mem": "{{.MemUsage}}", "cpu": "{{.CPUPerc}}"}' "$name" >"$OUT/mem-$engine.json" || true

@@ -82,12 +82,35 @@ are in `passN/neo4j-progress-logs/`. Even with `logProgress: false`, GDS
 writes a start and finish line per iteration: 72,874 lines (7.6 MB) a run,
 not committed (`logs-neo4j.txt` is the only container log left out).
 
+## The afternoon passes, with Strata over gRPC
+
+Roberto asked why Strata was queried over HTTP JSON when the other engines
+used their binary protocols, and asked for a re-run over gRPC.
+
+- The client image got grpcio 1.85.1, grpcio-tools and protobuf 7.36.2 from
+  PyPI (installed with pip inside `doable/base-python:3.12-slim`), and stubs
+  generated from `strata-server/proto/strata.proto`. The new setups
+  `strata-grpc` and `strata-edges-grpc` start the server with
+  `--grpc 0.0.0.0:7701`, load over HTTP as before, and send every query to
+  gRPC `Query` with the same SQL and protobuf `Value` params.
+- The kind cluster's containers, stopped at 07:15 UTC, had started again at
+  08:33:21 UTC, three minutes after the morning's last run. `docker events`
+  shows the start but not what caused it; nothing on the cluster was running
+  but Redpanda. They were stopped again at 16:40 UTC.
+- Passes 4 and 5 (16:40 to 16:51 UTC) ran every engine again, Strata in all
+  four setups, with GDS progress logging off. The Mac was quieter than in the
+  morning (load 2.2 to 4.6, `mediaanalysisd` idle), and every engine's
+  medians were faster than in passes 2 and 3. The README quotes pass 5.
+- `logs-neo4j.txt` is again left out of both passes (7.6 MB each).
+
 ## Files
 
-- `pass2/`, `pass3/`: `run-<engine>.json` (load, every query kind's client
-  and engine statistics, wrong answers if any), `mem-*.json` (`docker stats`
-  after the queries), `disk-*.txt` (`du -sk` of the data directory),
-  `image-*.txt`, `logs-*.txt` (container logs under 1 MB), `run.log`.
+- `pass4/`, `pass5/` (afternoon, reported) and `pass2/`, `pass3/` (morning):
+  `run-<engine>.json` (load, every query kind's client and engine
+  statistics, wrong answers if any), `mem-*.json` (`docker stats` after the
+  queries), `disk-*.txt` (`du -sk` of the data directory), `image-*.txt`,
+  `logs-*.txt` (container logs under 1 MB), `run.log`.
 - `queries.json`: the seeds and pairs. `reference.json.gz`: the exact
   answers (`prep.py`).
-- `tables.md`: `analyze.py pass3 pass2`.
+- `tables.md`: `analyze.py pass5 pass4`. `tables-morning.md`:
+  `analyze.py pass3 pass2`.

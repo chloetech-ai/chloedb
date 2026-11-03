@@ -9,8 +9,17 @@ import re
 import sys
 from pathlib import Path
 
-ORDER = ["strata", "strata-edges", "neo4j", "memgraph", "falkordb", "arangodb"]
-NAMES = {"strata": "Strata (EDGES field)", "strata-edges": "Strata (edge table)", "neo4j": "Neo4j", "memgraph": "Memgraph", "falkordb": "FalkorDB", "arangodb": "ArangoDB"}
+ORDER = ["strata", "strata-grpc", "strata-edges", "strata-edges-grpc", "neo4j", "memgraph", "falkordb", "arangodb"]
+NAMES = {
+    "strata": "Strata (EDGES field)",
+    "strata-grpc": "Strata (EDGES field, gRPC)",
+    "strata-edges": "Strata (edge table)",
+    "strata-edges-grpc": "Strata (edge table, gRPC)",
+    "neo4j": "Neo4j",
+    "memgraph": "Memgraph",
+    "falkordb": "FalkorDB",
+    "arangodb": "ArangoDB",
+}
 KINDS = [
     ("hops_both_1", "1 hop, both ways"),
     ("hops_both_2", "2 hops, both ways"),

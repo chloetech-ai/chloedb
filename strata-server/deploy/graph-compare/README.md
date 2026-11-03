@@ -12,8 +12,10 @@ python prep.py --arxiv arxiv.jsonl --out DATA
 printf '{"id": %d}\n' $(seq 0 169342) > DATA/papers-ids.ndjson   # rows for the edge-table form
 
 # Each engine alone, loaded and queried from a client container.
-DATA=DATA OUT=OUT CLIENT_IMAGE=python:3.12-slim PYLIB=DIR_WITH_httpx_neo4j_redis \
-  ./compare.sh strata strata-edges neo4j memgraph arangodb
+# Strata's -grpc setups query over gRPC: PYLIB_GRPC holds grpcio and the
+# stubs from strata-server/proto/strata.proto, built for CLIENT_IMAGE.
+DATA=DATA OUT=OUT CLIENT_IMAGE=python:3.12-slim PYLIB=DIR_WITH_httpx_neo4j_redis PYLIB_GRPC=DIR \
+  ./compare.sh strata strata-grpc strata-edges strata-edges-grpc neo4j memgraph arangodb
 SKIP=path DATA=DATA OUT=OUT CLIENT_IMAGE=... PYLIB=... ./compare.sh falkordb
 
 python analyze.py OUT > OUT/tables.md
