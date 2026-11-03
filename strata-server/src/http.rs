@@ -147,6 +147,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
     // Rows come in writes and imports; every other body is small.
     let rows = DefaultBodyLimit::max(svc.max_body);
     let app = App { svc, token: access.token.clone(), cluster: access.cluster.clone(), hosts: access.hosts.clone().map(Into::into) };
+    // alerts2: coordinators tell each other of their alerts.
+    crate::alerts::peering(app.clone(), app.svc.clone());
     let api = Router::new()
         .route("/v1/stats", get(stats))
         .route("/v1/schema", get(schema))
@@ -253,6 +255,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/alerts/routes", get(alert_routes).put(put_alert_routes))
         .route("/v1/alerts/routes/:name/test", post(test_alert_route))
         .route("/v1/alerts/backtest", post(alert_backtest))
+        // alerts2: what another coordinator holds and tells of the alerts
+        .route("/v1/alerts/peer", get(alert_peer_state).post(alert_peer_merge))
         .route("/v1/alerts/:rule", get(alert))
         .route("/v1/alerts/:rule/ack", post(ack_alert))
         .route("/v1/alerts/:rule/silence", post(silence_alert).delete(unsilence_alert))
@@ -711,6 +715,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
         "/v1/alerts/rules" => Scope::Admin,
         "/v1/alerts/routes" | "/v1/alerts/routes/:name/test" => Scope::Admin,
+        // alerts2: coordinators exchange their alerts as admins.
+        "/v1/alerts/peer" => Scope::Admin,
         // alerts (alerts agent): acknowledging, silencing and noting write.
         "/v1/alerts/:rule/ack" | "/v1/alerts/:rule/silence" | "/v1/alerts/:rule/notes" => Scope::Write,
         "/v1/events/notes" => Scope::Admin,
@@ -3513,12 +3519,40 @@ async fn alert(State(app): State<App>, axum::extract::Path(id): axum::extract::P
 async fn put_alert_rules(State(app): State<App>, p: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let rules: Vec<crate::alerts::Rule> = serde_json::from_value(b.get("rules").cloned().ok_or_else(|| ApiError::bad("the body needs \"rules\""))?).map_err(|e| ApiError::bad(format!("bad rules: {e}")))?;
     let n = rules.len();
-    let (events, before, after) = app.svc.alerts.set_rules(rules, &by(&who(p)))?;
+    let who = by(&who(p));
+    let (events, before, after) = app.svc.alerts.set_rules(rules, &who)?;
     let (before, after) = crate::alerts::changed(&before, &after);
     let what = crate::alerts::change_text(&before, &after);
     keys::note_change(keys::Change { object: Some("alert rules".into()), before: Some(before), after: Some(after), ..Default::default() });
     crate::alerts::deliver(&app.svc, events);
-    Ok(audited(app.svc.alerts.json(), format!("{n} alert rules: {what}")))
+    // alerts2: every copy runs the each_copy rules as edited here, and every
+    // coordinator has them; the answer says which copies did not take them.
+    let (rules_ms, rules_by) = app.svc.alerts.rules_version();
+    app.svc.alerts.tell_peers(json!({"rules": app.svc.alerts.rules(), "rules_ms": rules_ms, "rules_by": rules_by}));
+    let mut j = app.svc.alerts.json();
+    if app.svc.alerts.is_coordinator() {
+        j["pushed"] = crate::alerts::push_rules(&app.svc, None, &who).await;
+    }
+    Ok(audited(j, format!("{n} alert rules: {what}")))
+}
+
+/// alerts2: what this coordinator holds of its alerts, for another one to
+/// merge (rules and their version; acknowledgements, silences, notes and
+/// pages).
+async fn alert_peer_state(State(app): State<App>) -> AxJson<Json> {
+    AxJson(app.svc.alerts.peer_state())
+}
+
+/// alerts2: merges what another coordinator tells (as it answers
+/// `GET /v1/alerts/peer`, and routes); it is not told on again.
+async fn alert_peer_merge(State(app): State<App>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let from = header_text(&headers, "x-strata-peer").ok_or_else(|| ApiError::bad("only another coordinator tells this (the header x-strata-peer names it)"))?;
+    let events = app.svc.alerts.merge(&b, &from)?;
+    let n = events.len();
+    crate::alerts::deliver(&app.svc, events);
+    let what: Vec<&str> = ["rules", "routes", "states"].into_iter().filter(|k| b.get(*k).is_some()).collect();
+    // Audited, not an event: the coordinator it came from made the event.
+    Ok(audited(json!({"merged": n}), format!("alerts from coordinator {from}: {}", what.join(", "))))
 }
 
 /// Notes for the audit entry what a request changed of alert `id`: its
@@ -3581,6 +3615,8 @@ async fn put_alert_routes(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     let routes: Vec<crate::alerts::Route> = serde_json::from_value(b.get("routes").cloned().ok_or_else(|| ApiError::bad("the body needs \"routes\""))?).map_err(|e| ApiError::bad(format!("bad routes: {e}")))?;
     let before = app.svc.alerts.routes_json();
     app.svc.alerts.set_routes(routes)?;
+    // alerts2: every coordinator sends through the same routes.
+    app.svc.alerts.tell_peers(json!({"routes": app.svc.alerts.routes()}));
     let after = app.svc.alerts.routes_json();
     let names: Vec<&str> = after.iter().filter_map(|r| r["name"].as_str()).collect();
     keys::note_change(keys::Change { object: Some("alert routes".into()), before: Some(json!(before)), after: Some(json!(after)), ..Default::default() });

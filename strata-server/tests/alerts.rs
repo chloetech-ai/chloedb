@@ -213,18 +213,29 @@ async fn a_route_is_told_what_fired_and_resolved() {
     assert_eq!(text, "[strata FIRING critical] Slow search on prod/search: p99_ms = 300 (> 100, mean over 60 s). Searches are slow. Runbook: https://runbook.example.com/slow https://cc.example.com/#/alert/slow");
     assert_eq!(got.lock().unwrap()[0]["alert"]["rule"], "slow");
 
-    // An edit of the rule resolves what it fired, and says who edited it.
+    // An edit it still breaks: it stays firing, and nothing is sent.
     let mut r2 = json!({"id": "slow", "name": "Slow search", "metric": "p99_ms", "op": ">", "threshold": 200.0, "eval": "mean", "window_s": 60, "severity": "critical"});
     r2["runbook"] = json!("https://runbook.example.com/slow");
+    let (status, j) = call(&base, "PUT", "/v1/alerts/rules", Some(json!({"rules": [r2.clone()]}))).await;
+    assert_eq!(status, 200, "{j}");
+    let t = strata_server::telemetry::now_ms();
+    alerts::deliver(&svc, svc.alerts.check(&series(t, 31, |_| json!({"p99_ms": 300.0})), t));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(got.lock().unwrap().len(), 1, "no RESOLVED and FIRING again for an edit it still breaks");
+    assert_eq!(state(&call(&base, "GET", "/v1/alerts", None).await.1, "slow")["state"], "firing");
+    // An edit it passes resolves it at the next check, and says who edited it.
+    r2["threshold"] = json!(500.0);
     let (status, j) = call(&base, "PUT", "/v1/alerts/rules", Some(json!({"rules": [r2]}))).await;
     assert_eq!(status, 200, "{j}");
+    let t = strata_server::telemetry::now_ms();
+    alerts::deliver(&svc, svc.alerts.check(&series(t, 31, |_| json!({"p99_ms": 300.0})), t));
     wait(2).await;
     let text = got.lock().unwrap()[1]["text"].as_str().unwrap().to_string();
     assert!(text.starts_with("[strata RESOLVED critical] Slow search on prod/search: p99_ms = 300 after "), "{text}");
     assert!(text.contains("(the rule was edited by open)"), "{text}");
     // The audit entry holds the rule before and after.
     let (_, audit) = call(&base, "GET", "/v1/admin/audit", None).await;
-    let e = audit["entries"].as_array().unwrap().iter().find(|e| e["route"] == "/v1/alerts/rules").expect("audited");
+    let e = audit["entries"].as_array().unwrap().iter().find(|e| e["route"] == "/v1/alerts/rules" && e["before"]["slow"]["threshold"] == 100.0).expect("audited");
     assert_eq!(e["before"]["slow"]["threshold"], 100.0, "{e}");
     assert_eq!(e["after"]["slow"]["threshold"], 200.0, "{e}");
 
@@ -544,4 +555,131 @@ async fn a_failing_route_holds_up_no_other_and_the_cluster_is_named_from_the_sta
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     assert!(busy_tries.load(Ordering::Relaxed) >= 3, "three tries");
+}
+
+/// An edit of an each_copy rule on a coordinator reaches every copy
+/// (NEW-alerts-logs-1): the PUT says how many copies took it and names
+/// one that did not; until it does, the coordinator judges its value by
+/// the rule as edited, and gives it the rule once it answers again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edit_of_an_each_copy_rule_reaches_every_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    // Two shards, empty: the rule counts documents, 0 or more.
+    let mut a = Node::new(d, "a", 0);
+    let mut b = Node::new(d, "b", 0);
+    a.start().await;
+    b.start().await;
+    let c = Arc::new(Coordinator::connect(vec![a.url(), b.url()]).await.unwrap());
+    let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+    let svc = Arc::new(Service::new(Backend::Cluster(c.clone()), c.schema.clone(), agent, 16, Duration::from_secs(10)));
+    svc.alerts.set_coordinator(true);
+    let base = http(svc.clone()).await;
+    let mut rule = json!({"id": "many-docs", "name": "Many documents", "metric": "docs", "op": ">=", "threshold": 0.0, "eval": "max", "window_s": 10, "scope": "each_copy"});
+    let (status, j) = call(&base, "PUT", "/v1/alerts/rules", Some(json!({"rules": [rule.clone()]}))).await;
+    assert_eq!(status, 200, "{j}");
+    assert_eq!((j["pushed"]["copies"].as_u64(), j["pushed"]["took"].as_u64(), j["pushed"]["failed"].as_array().map(Vec::len)), (Some(2), Some(2), Some(0)), "{j}");
+    let threshold = |x: &Json| x["rules"].as_array().unwrap().iter().find(|r| r["id"] == "many-docs").map(|r| r["threshold"].clone());
+    for n in [&a, &b] {
+        let (_, x) = call(&n.base(), "GET", "/v1/alerts", None).await;
+        assert_eq!(threshold(&x), Some(json!(0.0)), "the copy has the rule: {x}");
+        assert!(x["rules"].as_array().unwrap().iter().any(|r| r["id"] == "errors"), "and keeps its own: {x}");
+    }
+    until(&svc, "both copies fire", &[&a, &b], |x| state(x, "many-docs")["state"] == "firing" && state(x, "many-docs")["copies"]["firing"] == 2).await;
+
+    // b is down when the rule is edited: the PUT names it.
+    b.kill();
+    rule["threshold"] = json!(100_000.0);
+    let (status, j) = call(&base, "PUT", "/v1/alerts/rules", Some(json!({"rules": [rule.clone()]}))).await;
+    assert_eq!(status, 200, "{j}");
+    let p = &j["pushed"];
+    assert_eq!((p["copies"].as_u64(), p["took"].as_u64()), (Some(2), Some(1)), "{j}");
+    assert_eq!((p["failed"][0]["copy"].as_str(), p["failed"][0]["short"].as_str()), (Some(b.url().as_str()), Some("s1-0")), "{j}");
+    let (_, x) = call(&a.base(), "GET", "/v1/alerts", None).await;
+    assert_eq!(threshold(&x), Some(json!(100_000.0)), "{x}");
+    // The copy that took it reports ok by the new rule; the one that did
+    // not is judged by it too: the alert resolves, and says which copy
+    // runs the old rule.
+    let ok = until(&svc, "resolved by the edit, a on the new rule", &[&a], |x| state(x, "many-docs")["state"] == "ok" && state(x, "many-docs")["copies"]["rule_differs"] == 1).await;
+    let s = state(&ok, "many-docs");
+    assert_eq!(s["copies"]["rule_differs"], 1, "{s}");
+    assert!(s["copies"]["push_failed"][0]["error"].as_str().is_some(), "{s}");
+    let (fired, _) = svc.events.range(0, u64::MAX, &["alert_resolved".to_string()], 10);
+    assert!(fired.iter().any(|e| e.event.where_["rule"] == "many-docs"), "a resolution");
+    // b is back with its defaults: the coordinator gives it the rule again.
+    b.start().await;
+    let back = until(&svc, "b took the edit", &[&a, &b], |x| state(x, "many-docs")["copies"]["rule_differs"] == 0 && state(x, "many-docs")["copies"]["ok"] == 2).await;
+    assert_eq!(state(&back, "many-docs")["state"], "ok");
+    let (_, x) = call(&b.base(), "GET", "/v1/alerts", None).await;
+    assert_eq!(threshold(&x), Some(json!(100_000.0)), "{x}");
+    let (_, audit) = call(&b.base(), "GET", "/v1/admin/audit", None).await;
+    assert!(audit["entries"].as_array().unwrap().iter().any(|e| e["detail"].as_str().is_some_and(|d| d.contains("from a coordinator"))), "the copy audits what it was given: {audit}");
+}
+
+/// A server's alert state is kept next to its rules (`alerts.state.json`):
+/// restarted, it still knows what fired, who acknowledged it and what it
+/// paged, and sends no FIRING again (NEW-alerts-logs-3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restart_keeps_what_fired_and_does_not_page_again() {
+    let got: Arc<Mutex<Vec<Json>>> = Arc::default();
+    let keep = got.clone();
+    let hook = axum::Router::new().route(
+        "/hook",
+        axum::routing::post(move |headers: axum::http::HeaderMap, axum::Json(j): axum::Json<Json>| {
+            let keep = keep.clone();
+            async move {
+                let mut j = j;
+                j["idempotency_key"] = json!(headers.get("idempotency-key").and_then(|v| v.to_str().ok()));
+                keep.lock().unwrap().push(j);
+                "ok"
+            }
+        }),
+    );
+    let hl = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hurl = format!("http://127.0.0.1:{}", hl.local_addr().unwrap().port());
+    tokio::spawn(async move { axum::serve(hl, hook).await });
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut n = Node::new(dir.path(), "a", N);
+    let file = dir.path().join("alerts.json");
+    n.args = vec!["--alerts".into(), file.display().to_string(), "--cluster-name".into(), "kept".into()];
+    n.start().await;
+    let base = n.base();
+    let (status, j) = call(&base, "PUT", "/v1/alerts/routes", Some(json!({"routes": [{"name": "oncall", "url": format!("{hurl}/hook")}]}))).await;
+    assert_eq!(status, 200, "{j}");
+    let rule = json!({"id": "docs", "name": "Docs", "metric": "docs", "op": ">", "threshold": 10.0, "eval": "max", "window_s": 10, "severity": "critical"});
+    assert_eq!(call(&base, "PUT", "/v1/alerts/rules", Some(json!({"rules": [rule]}))).await.0, 200);
+    let t0 = Instant::now();
+    while got.lock().unwrap().is_empty() {
+        assert!(t0.elapsed() < Duration::from_secs(20), "a FIRING message: {}", n.logs());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let first = got.lock().unwrap()[0].clone();
+    assert!(first["text"].as_str().unwrap().starts_with("[strata FIRING critical] Docs on kept"), "{first}");
+    let key = first["dedup_key"].as_str().expect("a key that names the alert").to_string();
+    assert!(first["idempotency_key"].as_str().is_some_and(|k| k.starts_with(&format!("{key}/firing/"))), "the same key on each try of one message: {first}");
+    assert_eq!(call(&base, "POST", "/v1/alerts/docs/ack", Some(json!({"note": "mine"}))).await.0, 200);
+    assert!(dir.path().join("alerts.state.json").exists());
+
+    n.kill();
+    n.start().await;
+    // A few checks after the restart.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let (_, a) = call(&base, "GET", "/v1/alerts", None).await;
+    let s = state(&a, "docs");
+    assert_eq!((s["state"].as_str(), s["ack"]["by"].as_str(), s["ack"]["note"].as_str()), (Some("firing"), Some("open"), Some("mine")), "{s}");
+    assert!(s["paged"]["at_ms"].as_u64().is_some(), "{s}");
+    assert_eq!(a["state_file"], dir.path().join("alerts.state.json").display().to_string(), "{a}");
+    assert_eq!(got.lock().unwrap().len(), 1, "no FIRING again after a restart: {:?}", got.lock().unwrap());
+    // An edit it passes resolves it: the RESOLVED carries the same key.
+    let rule = json!({"id": "docs", "name": "Docs", "metric": "docs", "op": ">", "threshold": 1e9, "eval": "max", "window_s": 10, "severity": "critical"});
+    assert_eq!(call(&base, "PUT", "/v1/alerts/rules", Some(json!({"rules": [rule]}))).await.0, 200);
+    let t0 = Instant::now();
+    while got.lock().unwrap().len() < 2 {
+        assert!(t0.elapsed() < Duration::from_secs(20), "a RESOLVED message: {}", n.logs());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let second = got.lock().unwrap()[1].clone();
+    assert!(second["text"].as_str().unwrap().starts_with("[strata RESOLVED critical] Docs on kept"), "{second}");
+    assert_eq!(second["dedup_key"].as_str(), Some(key.as_str()), "{second}");
 }
