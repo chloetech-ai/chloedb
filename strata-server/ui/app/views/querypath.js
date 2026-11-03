@@ -346,7 +346,7 @@ function render(page, r) {
       whatIf = card({ title: "What a lower hedge would do", sub: "an estimate from these runs: a call slower than the hedge is asked again of a copy that answers in that shard's median time",
         body: h("div", { class: "stack" },
           h("div", { class: "row", style: { gap: "10px", flexWrap: "wrap" } }, h("span", { class: "small muted" }, "Ask another copy after"), seg(opts.map((v) => [v, v === hedge ? `${fmt.ms(v)} (now)` : fmt.ms(v)]), hedgeWhatIf, (v) => { hedgeWhatIf = v; draw(); }, { class: "seg wl-segwrap" })),
-          h("div", { class: "grid g3" },
+          h("div", { class: "grid g3 qp-kpis" },
             h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "p99 now"), h("div", { class: "val" }, fmt.ms(quant(took, 0.99)))),
             h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, `p99 hedged after ${fmt.ms(hedgeWhatIf)}`), h("div", { class: "val" }, fmt.ms(quant(est, 0.99)))),
             h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "Extra calls"), h("div", { class: "val" }, fmt.pct(asked / Math.max(1, runs.length * run.calls.length), 0)), h("div", { class: "delta" }, "of the shard calls, asked twice"))),

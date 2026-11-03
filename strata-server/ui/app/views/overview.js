@@ -569,7 +569,7 @@ function render(page, r0) {
       const lo = Math.min(...ers), hi = Math.max(...ers);
       note = hi < lo * 1.5 ? `The same error ratio on all ${cs.length}: not a coordinator problem.` : `${cs.find((c) => errOf(c) === hi).name || "One coordinator"} fails more than the others: look at it first.`;
     } else if (cs.some((c) => c.error)) note = `${fmt.plural(cs.filter((c) => c.error).length, "coordinator")} did not say its numbers: the fleet's are the others'.`;
-    else note = `The fleet's numbers above add up all ${cs.length}.`;
+    else note = `The fleet's numbers above add up ${cs.length === 2 ? "both" : "all " + cs.length}.`;
     clear(coordBody, t, note ? h("div", { class: "small muted", style: { padding: "8px 14px 12px" } }, note) : null);
   }
 
