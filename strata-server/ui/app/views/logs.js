@@ -421,8 +421,14 @@ function render(page, r) {
     if (!ctx.missed.length) { clear(missedLine); return; }
     const names = ctx.missed.map((n) => n.url ? copyName(n.url) : n.node || "?");
     const det = h("div", { class: "hidden al-missed-det" }, ctx.missed.map((n) => h("div", { class: "mono small" }, `${n.url ? copyName(n.url) : n.node}${n.shard != null ? ` (shard ${n.shard})` : ""}: ${n.error}`)));
+    // L1: a server's lines are kept on it alone, so they come back with it; what the others logged about it is here now.
+    const about = ctx.missed.filter((n) => n.url).slice(0, 2).map((n) => {
+      const hostPort = n.url.replace(/^\w+:\/\//, "").replace(/\/.*$/, "");
+      return h("button", { class: "btn xs", title: `Search every other server's lines for ${hostPort}`, onclick: () => setQ(`"${hostPort}"`) }, `What the others logged about ${copyName(n.url)}`);
+    });
     clear(missedLine, h("div", { class: "al-missed" }, icon("warn"),
-      h("span", {}, h("b", {}, `${ctx.missed.length} of ${total} servers did not answer`), `: ${names.slice(0, 4).join(", ")}${names.length > 4 ? ` +${names.length - 4}` : ""}. Their lines are missing here.`),
+      h("span", {}, h("b", {}, `${ctx.missed.length} of ${total} servers did not answer`), `: ${names.slice(0, 4).join(", ")}${names.length > 4 ? ` +${names.length - 4}` : ""}. Each server keeps its own lines: theirs are missing here until they answer again.`),
+      ...about,
       h("button", { class: "btn xs ghost", onclick: (e) => { det.classList.toggle("hidden"); e.currentTarget.textContent = det.classList.contains("hidden") ? "details" : "hide"; } }, "details")), det);
   }
 
