@@ -167,7 +167,8 @@ const clip = (s, n = 80) => { const v = /^"[^"]*"$/.test(s) ? s.slice(1, -1) : s
 /** A field's path as people read it: `expires_ms` is "expires", `for_s` is "for". */
 const said = (p) => p.replace(/_(ms|s)\b/g, "");
 /** A leaf as people read it: a time for `*_ms` epochs, the rest as it is. */
-const leaf = (path, v) => (/_ms$/.test(path) && /^\d{12,}$/.test(v || "") ? `${at(+v)} ${TZ}`.trim() : /_s$/.test(path) && /^\d+(\.\d+)?$/.test(v || "") ? fmt.ms(+v * 1000) : clip(v));
+// A value said as a person would: no expiry is "never", nothing set is "none".
+const leaf = (path, v) => (v === "null" ? (/expires/.test(path) ? "never" : "none") : /_ms$/.test(path) && /^\d{12,}$/.test(v || "") ? `${at(+v)} ${TZ}`.trim() : /_s$/.test(path) && /^\d+(\.\d+)?$/.test(v || "") ? fmt.ms(+v * 1000) : clip(v));
 
 // ---------------------------------------------------------------- dialogs
 /** Asks before a change: resolves false or {reason}; Cancel has the focus. */

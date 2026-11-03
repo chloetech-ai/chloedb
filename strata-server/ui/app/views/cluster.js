@@ -102,9 +102,14 @@ const runsCount = (rs) => (rs || []).reduce((n, [a, b]) => n + (b - a), 0);
 const kn = (v) => (v == null ? "–" : v >= 1000 ? (v / 1000).toFixed(v >= 1e5 ? 0 : 1).replace(/\.0$/, "") + "k" : fmt.n(v));
 const nodeLabel = (k) => (k && k.length > 18 ? "…" + k.slice(-14) : k || "–");
 
-/** A copy's name: its node name or s1-0, with the URL in a tooltip. */
-const cname = (c) => c.name || c.id;
-const cspan = (c, cls = "") => h("span", { class: "mono " + cls, title: c.url }, cname(c));
+/**
+ * A copy's name: the cluster's short name (s1-0), which the server's texts,
+ * events, alerts and Home say too (NEW-scenarios-7); its server's own name
+ * goes beside it as a subtitle, and the URL in a tooltip.
+ */
+const cname = (c) => c.id || c.name;
+const cspan = (c, cls = "") => h("span", { class: "mono " + cls, title: [c.name && c.name !== c.id ? "server " + c.name : null, c.url].filter(Boolean).join(" · ") }, cname(c),
+  c.name && c.name !== c.id ? h("span", { class: "small muted cc2-sname" }, " " + c.name) : null);
 
 /**
  * The names copies had when they last answered, by URL: a copy that is down
@@ -544,6 +549,10 @@ function render(page, r) {
     if (mi?.running) return h("span", { class: "cc-chip info" }, h("span", { class: "spin" }), h("b", {}, "Slots moving"), h("span", { class: "dim" }, [mi.job ? `${fmt.n(mi.job.done)} of ${fmt.n(mi.job.of)} moves` : "a move under way", mi.eta != null ? `about ${dur(mi.eta)} left` : null, mi.by ? `by ${mi.by}` : null].filter(Boolean).join(" · ")));
     const ro = rollout();
     if (ro) return h("a", { class: "cc-chip info", href: "#/rollout" }, h("span", { class: "spin" }), h("b", {}, cap(ro.split(":")[0])), h("span", { class: "dim" }, ro.split(": ")[1] || ""));
+    // The last change: the plan applied last, or the job of moves that ended
+    // last, whichever is newer (a plan's moves are the plan's).
+    const planEnd = pr?.finished_ms || 0, jobEnd = mi?.finished || 0;
+    if (pr && pr.state !== "running" && planEnd >= jobEnd) return h("span", { class: "cc-chip plain", title: pr.reason ? "Reason: " + pr.reason : "" }, `No change running · last: a plan of ${plural(pr.of, "step")}, ${pr.state === "done" ? "applied" : pr.state}${planEnd ? " " + clock(planEnd) : ""}${pr.by ? " by " + pr.by : ""}`);
     if (mi?.job) return h("span", { class: "cc-chip plain", title: mi.job.error || "" }, `No change running · last: ${jobWords(mi.job)} ${mi.job.state}${mi.finished ? " " + clock(mi.finished) : ""}`);
     return h("span", { class: "cc-chip plain" }, "No change running");
   }
@@ -551,6 +560,15 @@ function render(page, r) {
 
   // ------------------------------------------------------------ layout
   const left = h("div", { class: "cc-left" }), side = h("aside", { class: "cc-side", "aria-label": "Details" });
+  // A press on the panel (or a phone's sheet) holds its redraw until the
+  // click lands (CL-9): a poll between pointerdown and click would put a new
+  // button under the pointer and the click would be lost.
+  let pressUntil = 0;
+  const pressed = () => Date.now() < pressUntil;
+  const press = (e) => { if (e.target.closest?.(".cc-side, .cc-sheet, .cc-bsheet")) pressUntil = Date.now() + 1500; };
+  const release = () => { if (pressUntil) setTimeout(() => { pressUntil = 0; }, 50); };
+  document.addEventListener("pointerdown", press, true);
+  document.addEventListener("click", release, true);
   const mapCard = h("section", { class: "card cc-map" });
   const toolbar = h("div", { class: "cc-toolbar" });
   const legendBox = h("div", { class: "cc-legend" });
@@ -1525,7 +1543,7 @@ function render(page, r) {
       const c = M.all.find((y) => y.url === x.url), sh = shardOf(x.shard);
       const left = sh.copies.filter((y) => !y.down && !removes.some((r) => r.url === y.url));
       const why = x.why !== "replaced" ? "" : first
-        ? `, before its replacement joins: ${left.length ? `${left.map(cname).join(" and ")} then ${left.length === 1 ? "serves" : "serve"} as a majority (${left.length} of ${left.length}) until the new ${plural(draft.adds.filter((a) => a.shard === x.shard).length, "copy", "copies")} join` : "the shard has no copy that answers"}`
+        ? `, before its replacement joins: ${left.length ? `${left.map(cname).join(" and ")} then ${left.length === 1 ? "serves" : "serve"} as a majority (${left.length} of ${left.length}) until ${(() => { const k = draft.adds.filter((a) => a.shard === x.shard).length; return k === 1 ? "its new copy joins" : `its ${fmt.n(k)} new copies join`; })()}` : "the shard has no copy that answers"}`
         : ", now that its replacement is in sync";
       steps.push({ kind: "remove", repair, shard: x.shard, rows: 0, est: 1, url: x.url,
         text: `${c ? cname(c) : short(x.url)} leaves shard ${x.shard}${c?.down ? " (it does not answer)" : ""}${why}`,
@@ -1755,6 +1773,8 @@ function render(page, r) {
         ...draft.newShards.map((ns, j) => ({ shard: M.shards.length + j, copies: ns.servers.map(or) })),
       ],
       add_shards: draft.newShards.length, remove_shards: draft.drops.slice(),
+      // The new shards take their share: the server counts the rows and bytes it sends each.
+      even: !!(draft.even && draft.newShards.length),
       moves: draft.moves.flatMap((m) => (picked.get(m.id) || []).map(([a, b]) => ({ slots: [a, b], to: m.to }))),
     };
     const key = JSON.stringify(want);
@@ -1834,7 +1854,7 @@ function render(page, r) {
       if (P.pre.some((y) => y.text === x.text)) continue;
       const two = /^shard (\d+) is left with (\d+) copies/.exec(x.text || "");
       if (two && P.pre.some((y) => y.text.startsWith(`shard ${two[1]} ends with ${two[2]} cop`))) continue;
-      const advice = x.ok === true && (/: with failover|leaves it so/.test(x.text || ""));
+      const advice = x.level === "warn" || (x.ok === true && !x.level && (/: with failover|leaves it so/.test(x.text || "")));
       P.pre.push({ ok: advice ? "warn" : x.ok === true ? true : x.ok === false ? false : "warn", text: x.text });
     }
     const blocked = P.pre.find((x) => x.ok === false);
@@ -1854,7 +1874,7 @@ function render(page, r) {
         diskTable(sp),
         h("div", { class: "cc-sec" }, `Steps, in this order · about ${dur(estimate)}`),
         h("ol", { class: "cc-steps" }, P.steps.map((x, k) => h("li", {}, h("span", { class: "k" }, k + 1), h("span", {}, x.repair ? h("span", { class: "badge", style: { marginRight: "4px" } }, "repair") : null, cap(x.text)), h("span", { class: "t" }, x.est != null ? "~" + dur(x.est) : "")))),
-        h("div", { class: "small muted" }, sp?.estimate_from && sp.estimate_s != null ? `${fmt.si(rows)} rows to copy. The server's estimate: ${sp.estimate_from}.` : `${fmt.si(rows)} rows to copy, at ${fmt.n(P.rate.rate, 0)} rows a second ${P.rate.measured ? "(the last move here)" : "(assumed: no move measured yet)"}.`),
+        h("div", { class: "small muted" }, sp?.estimate_from && sp.estimate_s != null ? `${fmt.si(rows)} rows to copy. The server's estimate: ${String(sp.estimate_from).replace(/\.$/, "")}.` : `${fmt.si(rows)} rows to copy, at ${fmt.n(P.rate.rate, 0)} rows a second ${P.rate.measured ? "(the last move here)" : "(assumed: no move measured yet)"}.`),
         // This page's own words when it has some (they name the shards and
         // copies); the server's summary when it has none.
         P.blast.length || sp?.blast ? h("div", { class: "cc-blast" }, h("b", {}, "Blast radius"), P.blast.length ? P.blast.map((t) => h("div", {}, t)) : h("div", {}, sp.blast)) : null,
@@ -2031,11 +2051,14 @@ function render(page, r) {
     const stateMark = (x) => (x.state === "done" ? "✓" : x.state === "running" ? h("span", { class: "spin" }) : x.state === "failed" ? "✕" : x.state === "interrupted" || x.state === "stopped" ? "!" : null);
     const cls = { done: "ok", running: "run", failed: "bad", interrupted: "bad", stopped: "wait", waiting: "wait" };
     const steps = R.steps || [];
-    return h("section", { class: "card cc-run" + (["failed", "interrupted"].includes(R.state) ? " bad" : "") },
-      h("div", { class: "hd" }, h("h3", {}, title), h("span", { class: "sub", title: whenTitle(R.started_ms) }, sub), h("div", { class: "tools" }, tools)),
+    // Which steps ended before the one it stopped at, in words.
+    const before = R.at === 0 ? "No step had ended" : R.at === 1 ? "Step 1 is done" : `Steps 1 to ${R.at} are done`;
+    // A failed step is wrong (red); a restart or a Stop is to act on (amber).
+    return h("section", { class: "card cc-run" + (R.state === "failed" ? " bad" : R.state === "interrupted" || R.state === "stopped" ? " warn" : "") },
+      h("div", { class: "hd cc-run-hd" }, h("div", { class: "grow" }, h("h3", {}, title), h("div", { class: "small muted", title: whenTitle(R.started_ms) }, sub)), h("div", { class: "tools" }, tools)),
       h("div", { class: "bd stack", style: { gap: "8px" } },
-        R.state === "interrupted" ? h("div", { class: "cc-why warn" }, `The coordinator stopped while step ${R.at + 1} ran${R.interrupted_ms ? ` (it came back at ${clock(R.interrupted_ms)})` : ""}. Steps 1 to ${R.at} are done; step ${R.at + 1} may be partly done. Resume runs it again from where it is, then the rest. Discard leaves the cluster as it is now.`) : null,
-        R.state === "failed" && R.error ? h("div", { class: "cc-why crit" }, `Step ${R.at + 1} failed: ${plainText(R.error)}. Steps 1 to ${R.at} are done. Resume runs step ${R.at + 1} again; Discard leaves the cluster as it is now.`) : null,
+        R.state === "interrupted" ? h("div", { class: "cc-why warn" }, `The coordinator stopped while step ${R.at + 1} ran${R.interrupted_ms ? ` (it came back at ${clock(R.interrupted_ms)})` : ""}. ${before}; step ${R.at + 1} may be partly done. Resume runs it again from where it is, then the rest. Discard leaves the cluster as it is now.`) : null,
+        R.state === "failed" && R.error ? h("div", { class: "cc-why crit" }, `Step ${R.at + 1} failed: ${plainText(R.error)}. ${before}. Resume runs step ${R.at + 1} again; Discard leaves the cluster as it is now.`) : null,
         h("ol", { class: "cc-steps run" }, steps.map((x, k) => h("li", { class: cls[x.state] || "wait" },
           h("span", { class: "k" }, stateMark(x) ?? k + 1),
           h("span", {}, x.repair ? h("span", { class: "badge", style: { marginRight: "4px" } }, "repair") : null, cap(x.text || x.kind),
@@ -2212,7 +2235,7 @@ function render(page, r) {
   const planOf = (d, a) => (d && (d.plan || (/^plan (p\d+)/.exec(d.object || "") || [])[1])) || (a && (a.after?.plan || (/^plan (p\d+)/.exec(a.object || "") || [])[1])) || null;
   // What the cluster says happened, which a person's change made: the two
   // are one row (finding NEW-cluster-admin-4).
-  const SHAPE = /^(shard_added|shard_removed|copy_added|copy_removed|primary_changed|moves_started)$/;
+  const SHAPE = /^(shard_added|shard_removed|copy_added|copy_removed|primary_changed|moves_started|moves_finished)$/;
   function drawChanges() {
     if (events == null && audit == null && !eventsErr && !auditErr) { clear(body, card({ body: empty("clock", "Reading the changes…", "") })); loadChanges(); return; }
     const rows = [];
@@ -2236,7 +2259,13 @@ function render(page, r) {
         const r = planRow(pid, e.ts_ms);
         // How it ended (the latest end: a plan resumed ends again), what
         // people did to it meanwhile (Stop, Resume, Discard), and its start.
-        if (d.state) { if (e.ts_ms >= (r.end || 0)) { r.end = e.ts_ms; r.ended = cap(namedUrls(what)); r.sev = e.severity === "warning" ? "warning" : "info"; } r.t = Math.max(r.t, e.ts_ms); }
+        if (d.state) {
+          // An earlier end (a restart, a Stop) stays as a note under the last.
+          const said = cap(namedUrls(what)), note = (t, x) => (r.notes ||= []).push({ t, text: `${x}, ${clock(t)}` });
+          if (e.ts_ms >= (r.end || 0)) { if (r.ended) note(r.end, r.ended); r.end = e.ts_ms; r.ended = said; r.sev = e.severity === "warning" ? "warning" : "info"; }
+          else note(e.ts_ms, said);
+          r.t = Math.max(r.t, e.ts_ms);
+        }
         else if (/\/v1\/admin\/plan\/run\//.test(d.route || "")) { (r.notes ||= []).push({ t: e.ts_ms, text: `${cap(what)}${who && who !== "–" ? ` (${who})` : ""}${d.status >= 400 ? ", which failed" : ""}, ${clock(e.ts_ms)}` }); r.t = Math.max(r.t, e.ts_ms); }
         else { r.who = who; r.rid = d.request_id || null; if (d.reason) r.reason = d.reason; r.steps = (/: (.*)$/.exec(what)?.[1] || "").split("; ").filter(Boolean).map((x) => cap(namedUrls(x))); r.count = r.steps.length; }
         continue;
@@ -2316,7 +2345,7 @@ function render(page, r) {
     M = state.cluster ? model(state.cluster) : null;
     if (M && draftCount()) { /* keep the draft to what still exists */ }
     const typing = document.activeElement?.matches?.("input, select, textarea") && (side.contains(document.activeElement) || sheetEl?.contains(document.activeElement));
-    if (tab === "map") { drawHead(); drawStrip(); drawToolbar(); drawMap(); if (!typing) drawSide(); }
+    if (tab === "map") { drawHead(); drawStrip(); drawToolbar(); drawMap(); if (!typing && !pressed()) drawSide(); }
     else { drawHead(); drawStrip(); if (tab === "capacity" && !document.querySelector(".modal")) drawCapacity(); }
   }
   const mq = matchMedia("(max-width: 900px)");
@@ -2324,7 +2353,7 @@ function render(page, r) {
   mq.addEventListener?.("change", onNarrow);
   const watcher = () => {
     if (!alive) return;
-    drawStrip(); if (tab === "map") drawSide();
+    drawStrip(); if (tab === "map" && !pressed()) drawSide();
   };
   runWatchers.add(watcher);
 
@@ -2350,6 +2379,8 @@ function render(page, r) {
     runWatchers.delete(watcher);
     closePop(); hideTip(); sheet(null); bottom(null);
     document.removeEventListener("keydown", popKey);
+    document.removeEventListener("pointerdown", press, true);
+    document.removeEventListener("click", release, true);
     mq.removeEventListener?.("change", onNarrow);
     offs.forEach((f) => f());
   };

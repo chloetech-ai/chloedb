@@ -382,7 +382,7 @@ function route() {
   try { cleanup?.(); } catch (err) { console.error(err); }
   current = v;
   const title = currentEntry.title || v.title;
-  clear(crumbs, icon(currentEntry.icon || v.icon), title, v.sub ? h("span", { class: "sub" }, "· " + v.sub) : null);
+  clear(crumbs, icon(currentEntry.icon || v.icon), h("span", { class: "ttl" }, title), v.sub ? h("span", { class: "sub" }, "· " + v.sub) : null);
   drawCluster();
   const page = h("div", { class: "page" + (v.full ? " full" : "") });
   if (v.full) page.style.cssText = "padding:0;max-width:none";
