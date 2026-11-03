@@ -476,8 +476,12 @@ async fn a_write_through_a_coordinator_says_what_each_shard_did() {
     }
 
     // A table made through one coordinator is listed by another.
-    let r = client().post(format!("{base}/v1/sql")).json(&json!({"sql": "CREATE TABLE notes (id INT PRIMARY KEY, body TEXT)"})).send().await.unwrap();
+    let r = ui(client().post(format!("{base}/v1/sql"))).json(&json!({"sql": "CREATE TABLE notes (id INT PRIMARY KEY, body TEXT)"})).send().await.unwrap();
     assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    // Its audit entry counts no rows (NEW-data-tools-12).
+    let made = audit("kind=change").await;
+    let e = made["entries"].as_array().unwrap().iter().find(|e| e["object"] == "table notes").expect("the CREATE is audited");
+    assert_eq!((e["detail"].as_str(), e["after"]["rows"].as_u64()), (Some("ran: CREATE TABLE notes (id INT PRIMARY KEY, body TEXT)"), None), "{e}");
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let t: Json = client().get(format!("{other}/v1/tables")).send().await.unwrap().json().await.unwrap();
     assert!(t["tables"].as_array().unwrap().iter().any(|t| t["table"] == "notes"), "{t}");

@@ -1069,7 +1069,12 @@ fn audit_ui(object: Option<String>, sent: &str, table: Option<&str>, rows: Optio
 /// [`audit_ui`] of a statement: its table is the one it names.
 fn audit_ui_write(statement: &str, rows: Option<u64>, shards: Option<&Json>) {
     let table = table_written(statement);
-    audit_ui(table.as_ref().map(|t| format!("table {t}")), statement, table.as_deref(), rows, shards);
+    // workdata (NEW-data-tools-12): a table's statement counts no rows.
+    let ddl = statement.split_whitespace().next().is_some_and(|w| ["CREATE", "DROP", "ALTER", "TRUNCATE"].iter().any(|k| w.eq_ignore_ascii_case(k)));
+    audit_ui(table.as_ref().map(|t| format!("table {t}")), statement, table.as_deref(), rows.filter(|_| !ddl), shards);
+    if ddl && rows.is_some() && keys::caller().is_some_and(|c| c.command_center()) {
+        keys::note(format!("ran: {}", statement.chars().take(200).collect::<String>()));
+    }
 }
 
 /// The table a statement writes: what follows INSERT INTO, UPDATE, DELETE
@@ -2175,7 +2180,7 @@ async fn cancel_queries(State(app): State<App>, Query(q): Params) -> Result<Resp
         .collect();
     keys::note_change(keys::Change { object: Some(format!("queries of {}", crate::obs::truncate(fp, 200))), before: Some(json!({"statement": fp, "key": key, "queries": was})), ..Default::default() });
     let of = key.map_or(String::new(), |k| format!(" of key {k}"));
-    Ok(audited(json!({"cancelled": ids.len(), "ids": ids}), format!("cancelled {} running queries{of}: {}", ids.len(), crate::obs::truncate(fp, 200))))
+    Ok(audited(json!({"cancelled": ids.len(), "ids": ids}), format!("cancelled {} running {}{of}: {}", ids.len(), if ids.len() == 1 { "query" } else { "queries" }, crate::obs::truncate(fp, 200))))
 }
 
 /// The Contain rules in force, the newest first.

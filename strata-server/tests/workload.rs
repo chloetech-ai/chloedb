@@ -347,6 +347,7 @@ async fn running_queries_are_grouped_cancelled_and_contained() {
     let e = audit["entries"].as_array().unwrap().iter().find(|e| e["route"] == "/v1/queries" && e["method"] == "DELETE" && e["detail"].as_str().is_some_and(|d| d.starts_with("cancelled 3"))).expect("audited");
     assert_eq!(e["reason"], "a runaway join", "{e}");
     assert_eq!(e["before"]["queries"].as_array().unwrap().len(), 3, "{e}");
+    assert!(audit["entries"].as_array().unwrap().iter().any(|e| e["detail"].as_str().is_some_and(|d| d.starts_with("cancelled 1 running query of") || d.starts_with("cancelled 1 running query:"))), "one query, said so: {audit}");
     drop((held, other));
 
     // Refused for a second: this statement from reports-batch.
