@@ -3610,6 +3610,7 @@ impl Service {
             partial,
             coordinator,
             peers: crate::peers::windows(self),
+            gone: if matches!(self.backend, Backend::Cluster(_)) { crate::peers::gone(self) } else { Vec::new() },
             now_ms: now,
         })
     }

@@ -740,10 +740,15 @@ export async function canContain() { if (containable == null) { try { await cont
  * Limits or refuses a statement and/or a key for a while (scenario mock 03):
  * what it does to whom, how long, and a reason; audited and an event.
  */
-export function containDialog({ fingerprint, sql, key, keys, onDone } = {}) {
+export function containDialog({ fingerprint, sql, key, keys, onDone, action: act = "limit" } = {}) {
   if (!can("admin")) { toast("Containing needs an admin key", "bad"); return; }
   if (containable === false) { toast("This server cannot contain a statement or key yet: contain rules are newer than it", "bad", 6000); return; }
-  let action = "limit", scope = key ? "key" : fingerprint ? "statement" : "key", minutes = 60, conc = 2;
+  // R2-workload-2: from a statement and a key, the statement from that key (not everything the key sends),
+  // with the action the button named.
+  let action = act === "refuse" ? "refuse" : "limit", scope = fingerprint && key ? "both" : fingerprint ? "statement" : "key", minutes = 60, conc = 2;
+  // Each key's share of the statement, from its calls when the caller gave none.
+  const callsAll = (keys || []).reduce((a, x) => a + (x.calls || 0), 0);
+  keys = (keys || []).map((x) => ({ ...x, share: x.share ?? (callsAll ? (x.calls || 0) / callsAll : null) }));
   const keyIn = h("input", { class: "input sm mono", value: key || "", placeholder: "key name", style: { width: "160px" }, "aria-label": "API key" });
   const concIn = h("input", { class: "input sm num", type: "number", min: 0, value: conc, style: { width: "64px" }, "aria-label": "at most running at once", oninput: () => { conc = Math.max(0, +concIn.value || 0); draw(); } });
   const reason = h("input", { class: "input", placeholder: "e.g. Sorting 5,000 rows a call slows search for everyone", style: { width: "100%" }, "aria-label": "Reason" });
@@ -760,7 +765,7 @@ export function containDialog({ fingerprint, sql, key, keys, onDone } = {}) {
     clear(scopes, h("div", { class: "row", style: { gap: "10px" } },
       fingerprint ? seg([["statement", "this statement, every key"], ["both", "this statement from one key"], ["key", "everything from one key"]], scope, (v) => { scope = v; draw(); }, { class: "seg wl-segwrap" }) : h("span", { class: "small dim" }, "Everything from the key"),
       scope !== "statement" ? keyIn : null),
-      keys?.length && scope !== "statement" ? h("div", { class: "row small", style: { gap: "6px", marginTop: "6px" } }, h("span", { class: "muted" }, "Its keys:"), keys.slice(0, 6).map((x) => h("button", { class: "chip", "aria-pressed": String(x.key === k), onclick: () => { keyIn.value = x.key; draw(); } }, `${x.key} ${fmt.pct(x.share ?? 0, 0)}`))) : null);
+      keys?.length && scope !== "statement" ? h("div", { class: "row small", style: { gap: "6px", marginTop: "6px" } }, h("span", { class: "muted" }, "Its keys:"), keys.slice(0, 6).map((x) => h("button", { class: "chip", "aria-pressed": String(x.key === k), onclick: () => { keyIn.value = x.key; draw(); } }, x.share == null ? x.key : `${x.key} ${fmt.pct(x.share, 0)}`))) : null);
     const who = scope === "statement" ? "every client that sends this statement" : scope === "both" ? `key ${k || "…"} when it sends this statement; other keys keep running it` : `everything key ${k || "…"} sends`;
     clear(say, `${action === "limit" ? `At most ${conc} at once` : "Refused"} for ${MINUTES.find((x) => x[0] === minutes)?.[1]}: ${who}. It holds on every coordinator, ends by itself, is written to the audit log with your reason, and shows on the Timeline.`);
     ok.disabled = !reason.value.trim() || (scope !== "statement" && !k);

@@ -363,13 +363,13 @@ export function checkWrite({ sql, params, p, onEdit, fixesFor }) {
     const shipped = r.replicas ? `, shipped to ${fmt.plural(r.replicas, "replica")}` : "";
     const nw = r.noWrites?.length || 0;
 
-    // A shard without a primary refuses its part; the others are not undone.
+    // A shard without a primary: the coordinator refuses the whole write up front (coord.rs `writable`).
     if (r.noWrites?.length) {
       const names = r.noWrites.map((s) => `shard ${s.shard}`).join(", ");
       problems.append(h("div", { class: "banner bad dt-banner" }, icon("warn"), h("div", { class: "grow" },
         h("b", {}, r.noWrites.length > 1 ? `${names[0].toUpperCase() + names.slice(1)} take no writes now` : `Shard ${r.noWrites[0].shard} ${r.noWrites[0].words} now`),
         h("div", { class: "small" }, r.noWrites[0].why ? `${r.noWrites[0].why.replace(/^./, (c) => c.toUpperCase())}. ` : "",
-          `If the statement reaches ${r.noWrites.length > 1 ? "them" : "it"}, it fails there, while the shards that take writes still write their rows and nothing undoes them. Wait until ${r.noWrites.length > 1 ? "they have" : "it has"} a primary, or write only keys of other shards.`),
+          `If the statement writes rows of ${r.noWrites.length > 1 ? "them" : "it"}, the coordinator refuses all of it before any shard writes, so nothing is written. Wait until ${r.noWrites.length > 1 ? "they have" : "it has"} a primary, or write only keys of other shards. A shard that fails during the write is not undone on the others: the answer then lists each shard's part.`),
         h("div", { class: "small" }, h("a", { href: `#/cluster?shard=${r.noWrites[0].shard}`, title: "Cancels this write and opens the shard", onclick: () => cancel.click() }, "Open in Cluster")))));
     }
     // What each kind of statement changes.

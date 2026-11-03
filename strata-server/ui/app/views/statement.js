@@ -232,7 +232,7 @@ function helpers(st, d, sample, sql) {
   const sp = split(st.outcomes, st.calls), ks = keyShares(st), top = ks[0];
   const c = change(st), w = straggler(d);
   if (sp.client / Math.max(1, sp.calls) > 0.05) {
-    if (canContainNow()) out.push(h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: st.fingerprint, sql, keys: ks, key: top?.share > 0.8 ? top.key : null }) }, top?.share > 0.8 ? `Refuse it from ${top.key}…` : "Refuse it…"));
+    if (canContainNow()) out.push(h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: st.fingerprint, sql, keys: ks, key: top?.share > 0.8 ? top.key : null, action: "refuse" }) }, top?.share > 0.8 ? `Refuse it from ${top.key}…` : "Refuse it…"));
     const msg = d.errors?.[0]?.message;
     out.push(h("button", { class: "btn sm", title: "A summary to send the team that owns the client", onclick: () => copy(`Statement ${st.id || shortFp(st.fingerprint)} fails as a client error: ${fmt.n(sp.client)} of ${fmt.n(sp.calls)} calls ${timeRange().label || ""}${top ? `, ${fmt.pct(top.share, 0)} from API key ${top.key}` : ""}.\n${msg ? "Error: " + msg + "\n" : ""}SQL: ${st.fingerprint}\n${location.origin}/${link("statement/" + encodeURIComponent(st.fingerprint))}`, "Summary copied") }, icon("copy"), "Copy for the app team"));
   }

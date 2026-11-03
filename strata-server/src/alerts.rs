@@ -2576,12 +2576,19 @@ pub const NOT_FILLING_H: f64 = 87_600.0;
 /// A replica behind with no write to catch up with is a day behind.
 const STUCK_S: f64 = 86_400.0;
 
+/// A point's 5xx answers a second that are the server's: a query whose
+/// client's own deadline passed answers 504 too, and is the client's
+/// (R2-shell-monitor-2), as the error ratio counts it.
+fn server_5xx_s(p: &Json) -> f64 {
+    (p["http_5xx_s"].as_f64().unwrap_or(0.0) - p["client_deadlines_s"].as_f64().unwrap_or(0.0)).max(0.0)
+}
+
 /// A point's value of `metric`, those [`DERIVED`] of others included.
 pub fn value_of(p: &Json, metric: &str) -> Option<f64> {
     match metric {
         "http_5xx_ratio" => {
             let all = p["http_s"].as_f64().filter(|a| *a > 0.0)?;
-            Some(p["http_5xx_s"].as_f64().unwrap_or(0.0) / all)
+            Some(server_5xx_s(p) / all)
         }
         "replica_behind_s" => {
             let behind = p["replica_behind_max"].as_f64()?;
@@ -2642,7 +2649,7 @@ fn window_own(r: &Rule, points: &[Arc<Json>], t: u64) -> (Option<f64>, Option<u6
                 let Some(ratio) = share(&|p| p["query_errors"].as_f64().unwrap_or(0.0), &|p| p["queries"].as_f64().unwrap_or(0.0)) else { return (None, partial) };
                 return (Some(if r.metric == "availability" { 1.0 - ratio } else { ratio }), partial);
             }
-            "http_5xx_ratio" => return (share(&|p| p["http_5xx_s"].as_f64().unwrap_or(0.0) * secs(p), &|p| p["http_s"].as_f64().unwrap_or(0.0) * secs(p)), partial),
+            "http_5xx_ratio" => return (share(&|p| server_5xx_s(p) * secs(p), &|p| p["http_s"].as_f64().unwrap_or(0.0) * secs(p)), partial),
             "replica_behind_s" => {
                 let behind: Vec<f64> = window.iter().filter_map(|p| p["replica_behind_max"].as_f64()).collect();
                 if behind.is_empty() {
@@ -3373,6 +3380,15 @@ mod tests {
 
     fn slow(eval: &str, window_s: u64, for_s: u64) -> Rule {
         Rule { eval: eval.into(), window_s, for_s, ..rule("p99", "slow", "p99_ms", ">", 100.0, "mean", 300, 0, "warning", "self", "") }
+    }
+
+    #[test]
+    fn a_client_s_own_deadline_is_not_a_server_error() {
+        // R2-shell-monitor-2: 20 504s a second, all of them clients' own deadlines.
+        let p = json!({"http_s": 1000.0, "http_5xx_s": 20.0, "client_deadlines_s": 20.0});
+        assert_eq!(value_of(&p, "http_5xx_ratio"), Some(0.0));
+        let p = json!({"http_s": 1000.0, "http_5xx_s": 30.0, "client_deadlines_s": 20.0});
+        assert_eq!(value_of(&p, "http_5xx_ratio"), Some(0.01));
     }
 
     #[test]

@@ -196,6 +196,15 @@ async fn coordinators_of_one_cluster_know_and_cover_each_other() {
     // B refuses the statement too.
     let (s, j) = call(reqwest::Method::GET, &b.base, "/v1/admin/contain?local=1", None).await;
     assert_eq!((s, j["rules"].as_array().map(Vec::len)), (200, Some(1)), "{j}");
+    // R2-data-tools-4: B's audit has the change made on A, naming A.
+    let au = get(&b.base, "/v1/admin/audit?kind=change").await;
+    let on_a = |j: &Json| j["entries"].as_array().unwrap().iter().filter(|e| e["coordinator"] == "coord-a").count();
+    assert!(on_a(&au) >= 1, "A's change in B's audit: {au}");
+    assert!(au["coordinators"].as_array().is_some_and(|c| c.len() == 2 && c.iter().all(|c| c["ok"] == true)), "{}", au["coordinators"]);
+    let ts: Vec<u64> = au["entries"].as_array().unwrap().iter().map(|e| e["ts_ms"].as_u64().unwrap()).collect();
+    assert!(ts.windows(2).all(|w| w[0] >= w[1]), "newest first: {ts:?}");
+    let mine = get(&b.base, "/v1/admin/audit?kind=change&local=1").await;
+    assert_eq!((on_a(&mine), mine.get("coordinators")), (0, None), "local=1: B's own only: {mine}");
 
     // ----- B restarts: the rule is still there, from its file
     b.task.abort();

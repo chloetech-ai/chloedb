@@ -340,6 +340,15 @@ pub fn coordinators(app: &App) -> Vec<Peer> {
     v
 }
 
+/// The coordinators not heard from for [`LIVE_MS`] but within
+/// [`KEEP_MS`]: `(name, url, last seen)`, the latest gone first.
+pub fn gone(app: &App) -> Vec<(String, String, u64)> {
+    let now = now_ms();
+    let mut v: Vec<(String, String, u64)> = all(app).into_iter().map(|(p, _)| p).filter(|p| !live(p, now) && p.last_seen_ms + KEEP_MS > now).map(|p| (p.name, p.url, p.last_seen_ms)).collect();
+    v.sort_by(|a, b| b.2.cmp(&a.2));
+    v
+}
+
 /// The other coordinators this one knows (live ones).
 pub fn others(app: &App) -> Vec<Peer> {
     coordinators(app).into_iter().filter(|p| !p.this).collect()

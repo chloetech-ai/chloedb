@@ -3068,8 +3068,9 @@ body.cc-dragging, body.cc-dragging * { cursor: grabbing !important; user-select:
 /* ===== end cluster ===== */
 
 /* ===== integration ===== */
-/* Views without a time axis (range: false) show no range, window, zoom or Live. */
-.top.no-range > .seg, .top.no-range > .abs, .top.no-range > .chip, .top.no-range > .live { display: none; }
+/* Views without a time axis (range: false) show no range, window or zoom; they
+   still poll, so Live / Paused / Not answering stays (R2-shell-monitor-1). */
+.top.no-range > .seg, .top.no-range > .abs, .top.no-range > .chip { display: none; }
 /* Number headers sit over their numbers ("table.t th" would set them left). */
 table.t th.num { text-align: right; }
 /* ===== end integration ===== */

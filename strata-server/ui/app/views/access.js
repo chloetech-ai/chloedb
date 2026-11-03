@@ -87,9 +87,13 @@ function whoSub(e) {
   const c = clientName(e.client);
   if (c) parts.push(c);
   if (e.addr) parts.push(e.addr);
+  // R2-data-tools-4: with several coordinators, the one that kept it.
+  if (e.coordinator && manyCoords) parts.push(`via ${e.coordinator}`);
   return parts.join(" · ");
 }
 
+// Whether the audit came from more than one coordinator (set at each load).
+let manyCoords = false;
 // POSTs that ask without changing anything.
 const PASSIVE = /\/(plan|check|validate|replay)(\/|$)/;
 /** "change", "refusal", "note" or "read" (a server from before kinds audits reads). */
@@ -278,13 +282,14 @@ function render(page, r) {
         // A newer server sorts them: changes here, refusals asked apart.
         let refusals = audit?.refusals || [];
         try { refusals = ((await api(qs("refusal", 500))).entries || []).filter(inWin); } catch { /* keep the last */ }
-        audit = { kinds: true, changes: es.filter((e) => sortOf(e) === "change"), refusals, reads: 0, notes: [], file: j.file };
+        audit = { kinds: true, changes: es.filter((e) => sortOf(e) === "change"), refusals, reads: 0, notes: [], file: j.file, coords: j.coordinators || null };
         if (tab === "all") loadAll();
       } else {
         const by = { change: [], refusal: [], note: [], read: [] };
         for (const e of es) (by[sortOf(e)] || by.change).push(e);
-        audit = { kinds: false, changes: by.change, refusals: by.refusal, reads: by.read.length, notes: by.note, file: j.file, all: es };
+        audit = { kinds: false, changes: by.change, refusals: by.refusal, reads: by.read.length, notes: by.note, file: j.file, all: es, coords: j.coordinators || null };
       }
+      manyCoords = (audit.coords?.length || 0) > 1;
       auditErr = null;
     } catch (e) { auditErr = e; }
   }
@@ -446,7 +451,11 @@ function render(page, r) {
       clear(hiddenBox, `${fmt.n(audit.reads)} read requests hidden (${Math.round(100 * audit.reads / Math.max(1, all))}% of what this server recorded, pages polling among them) · `,
         h("a", { href: "#", onclick: (e) => { e.preventDefault(); setTab("all"); drawTabs(); } }, "show every request"));
     } else clear(hiddenBox);
+    const cs = audit?.coords || [], missing = cs.filter((c) => !c.ok);
     clear(keptLine, !audit ? "" : [
+      cs.length > 1 ? (missing.length
+        ? h("b", { style: { color: "var(--warn)" } }, `${cs.length - missing.length} of ${cs.length} coordinators answered: ${missing.map((c) => c.name || c.url).join(", ")} did not, so what went through ${missing.length === 1 ? "it" : "them"} is missing here · `)
+        : `Every coordinator's log (${cs.length}) · `) : null,
       audit.file ? `Written to ${audit.file} on the server` : "Kept in memory only: start the server with --audit-log FILE to keep it",
       audit.kinds ? " · the latest 20,000 changes here" : ` · this server keeps its latest 2,000 requests here, reads among them`,
       win.from || win.to ? [" · only ", core.span ? core.span(win.from || 0, win.to || now()) : `${at(win.from)} – ${at(win.to)}`, " · ", h("a", { href: "#", onclick: (e) => { e.preventDefault(); win = { from: null, to: null }; setParams(); load(); } }, "show all")] : null,
@@ -602,6 +611,7 @@ function render(page, r) {
       ["when", whenT(e.ts_ms)],
       e.key ? ["key id", h("span", { class: "mono" }, e.key)] : null,
       e.addr ? ["address", h("span", { class: "mono" }, e.addr)] : null,
+      e.coordinator && manyCoords ? ["kept by", e.coordinator] : null,
       e.client ? ["client", clientName(e.client) === "UI" ? "the command center" : e.client] : null,
       e.detail && title(e) !== words(e.detail) ? ["detail", h("span", { class: "mono" }, e.detail)] : null,
       rid ? ["request id", h("a", { class: "mono", href: core.link ? core.link("logs", { request: rid }) : "#/logs?request=" + encodeURIComponent(rid) }, rid)] : null,

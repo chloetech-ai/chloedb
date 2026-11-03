@@ -597,7 +597,9 @@ function render(page, r0) {
       for (const k of st.keys || []) add(byKey, k.key, k.calls || 0, (k.errors || 0) * share);
     }
     const failing = server > 0;
-    whoSub.textContent = failing ? `share of the server's failures, by table${statsKeys ? " and by API key" : ""}, this window` : `share of the queries by table${statsKeys ? " and by API key" : ""}, this window: none failed on the server's side`;
+    // R2-shell-monitor-3: the statement stats are this coordinator's.
+    const through = (state.fleet?.coordinators?.length || 0) > 1 ? ", through this coordinator only" : "";
+    whoSub.textContent = failing ? `share of the server's failures, by table${statsKeys ? " and by API key" : ""}, this window${through}` : `share of the queries by table${statsKeys ? " and by API key" : ""}, this window${through}: none failed on the server's side${through ? " here" : ""}`;
     // A bar is the share of the window's server failures (or, with none, of its queries).
     const bars = (m, kind) => [...m.entries()].map(([k, a]) => ({ k, ...a, share: failing ? a.errors / server : a.calls / Math.max(1, calls) }))
       .sort((a, b) => failing ? (b.errors - a.errors) : (b.calls - a.calls)).slice(0, kind === "key" ? 4 : 3)

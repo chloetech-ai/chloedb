@@ -297,7 +297,7 @@ function render(page) {
         const all = tops.reduce((a, y) => a + y.n, 0) || 1, t = tops[0], k = t?.x.keys?.slice().sort((a, b) => b.calls - a.calls)[0];
         out.push({ level: "warn", id: "client_errors", title: `${fmt.si(cr * 100, 1)}% of queries are client errors (400)${w === f15 ? " in the last 15 minutes" : ""}`,
           body: [`${fmt.si(w.client / secsOf(w), 0)}/s requests the server cannot run. Not a server fault: they are counted apart from the failures.`, t ? [" ", fmt.pct(t.n / all, 0), " are one statement", k ? [" from key ", h("b", { class: "mono" }, k.key)] : "", ": ", h("code", {}, trim(t.x.sql, 80)), "."] : ""],
-          rule: `client errors (400) over 1% of the queries in ${winOf(w)}`, links: [t ? ["Open the statement", statementLink(t.x.fingerprint)] : null, t && k && canContainNow() ? [`Refuse it from ${k.key}…`, () => containDialog({ fingerprint: t.x.fingerprint, sql: t.x.sql, key: k.key, keys: t.x.keys?.map((y) => ({ key: y.key })) })] : null] });
+          rule: `client errors (400) over 1% of the queries in ${winOf(w)}`, links: [t ? ["Open the statement", statementLink(t.x.fingerprint)] : null, t && k && canContainNow() ? [`Refuse it from ${k.key}…`, () => containDialog({ fingerprint: t.x.fingerprint, sql: t.x.sql, key: k.key, keys: t.x.keys?.map((y) => ({ key: y.key, calls: y.calls })), action: "refuse" })] : null] });
       }
     }
     // Client deadlines, apart.

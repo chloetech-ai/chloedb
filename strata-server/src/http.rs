@@ -66,7 +66,7 @@
 //! | `GET /v1/events?from=&to=&kind=&limit=`, `POST /v1/events/notes` | `{text, ts_ms?, where?}` | what happened, the newest first: copies down and back, new primaries, changes, notes ([`crate::events`]) |
 //! | `GET /v1/health/fleet` | | `{status, headline, since_ms, checks, problems, coordinators}`: whether the cluster is all right and what is wrong first ([`crate::fleet`]) |
 //! | `GET /v1/admin/keys`, `POST /v1/admin/keys`, `DELETE /v1/admin/keys/:id`, `POST /v1/admin/keys/:id/rotate` | `{name, scope, expires_days?, owner?, note?}`, rotate `{grace_minutes?}` | the API keys, how many were revoked, and how the last merge of keys went with each server of the cluster (`peers`, [`crate::keysync`]); a new one's secret is answered once; each key with its owner, note and last address, and the revoked ones (who revoked them, when); a rotation answers a new key of the same name and scope, the old one expiring after the grace (60 min) |
-//! | `GET /v1/admin/audit?kind=&from=&to=&who=&q=&limit=n` | | the changes, notes and refused requests, the newest first, with `kind` (change, note, refusal), who, addr, client, reason, object, before and after; older than memory holds from the log store's `audit` |
+//! | `GET /v1/admin/audit?kind=&from=&to=&who=&q=&limit=n` | | the changes, notes and refused requests, the newest first, with `kind` (change, note, refusal), who, addr, client, reason, object, before and after; older than memory holds from the log store's `audit`; on a coordinator every coordinator's, each entry naming its `coordinator` (`coordinators` says which answered; `local=1` for this one's) |
 //! | `GET /v1/alerts`, `PUT /v1/alerts/rules` | `{rules}` | the alert rules with their states and the latest changes ([`crate::alerts`]); `brief=1`: each rule's state, and of those not ok what the bell shows; on a coordinator the PUT answers how many copies took them (`pushed`) |
 //! | `GET`/`PUT /v1/alerts/routes`, `POST /v1/alerts/routes/:name/test` | `{routes: [{name, kind, url, key, severities, repeat_min}]}` | where notifications go, each with its deliveries (sent, failed, last error); a test message (admin) |
 //! | `POST /v1/alerts/backtest` | `{rule, from, to}` | the rule replayed over memory's points, up to 7 days of the log store's load, the coordinator's events or each copy's own points: `{points, fired, source, covered_from}` |
@@ -3771,8 +3771,11 @@ async fn revoke_key(State(app): State<App>, w: Option<axum::Extension<Principal>
 
 /// `GET /v1/admin/audit?kind=change&from=&to=&who=&q=&limit=`: audited
 /// requests, the newest first; from the log store for what memory no
-/// longer holds.
-async fn audit_log(State(app): State<App>, Query(q): Params) -> Res {
+/// longer holds. On a coordinator, every coordinator's (R2-data-tools-4:
+/// each keeps its own log), each entry naming its `coordinator`, and
+/// `coordinators` saying which answered; `?local=1` (or a call from
+/// another coordinator) answers this one's only.
+async fn audit_log(State(app): State<App>, Query(q): Params, headers: HeaderMap) -> Res {
     let limit = param_u64(&q, "limit", 200)?.clamp(1, keys::AUDIT as u64) as usize;
     let to = param_u64(&q, "to", u64::MAX)?;
     let from = param_u64(&q, "from", 0)?;
@@ -3821,6 +3824,28 @@ async fn audit_log(State(app): State<App>, Query(q): Params) -> Res {
     let mut j = json!({"entries": entries, "file": app.svc.audit.path().map(|p| p.display().to_string()), "source": source, "memory_from_ms": held});
     if let Some(e) = error {
         j["error"] = json!(e);
+    }
+    let local = q.get("local").is_some_and(|v| v == "1" || v == "true") || crate::peers::from_peer(&headers).is_some();
+    if let (false, Some(me)) = (local, crate::peers::this(&app.svc)) {
+        let mut ask: Vec<String> = q.iter().filter(|(k, _)| k.as_str() != "local").map(|(k, v)| format!("{}={}", crate::peers::encode(k), crate::peers::encode(v))).collect();
+        ask.sort();
+        let answers = crate::peers::get_all(&app.svc, &format!("/v1/admin/audit?{}", ask.join("&"))).await;
+        let mut all: Vec<Json> = std::mem::take(j["entries"].as_array_mut().expect("entries"));
+        for e in &mut all {
+            e["coordinator"] = json!(me.name);
+        }
+        for (p, a) in &answers {
+            for e in a.as_ref().ok().and_then(|a| a["entries"].as_array()).into_iter().flatten() {
+                let mut e = e.clone();
+                e["coordinator"] = json!(p.name);
+                all.push(e);
+            }
+        }
+        // The newest first, over every coordinator.
+        all.sort_by(|a, b| b["ts_ms"].as_u64().cmp(&a["ts_ms"].as_u64()));
+        all.truncate(limit);
+        j["entries"] = Json::Array(all);
+        j["coordinators"] = crate::peers::reach(&app.svc, &answers);
     }
     Ok(AxJson(j))
 }

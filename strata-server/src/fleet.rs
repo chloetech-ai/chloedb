@@ -78,6 +78,9 @@ pub struct Inputs<'a> {
     /// The other coordinators' searches (fleet): the SLO checks judge the
     /// sum of every coordinator's.
     pub peers: Vec<PeerWindow>,
+    /// The coordinators the shards stopped hearing from in the last 10
+    /// minutes (R2-workload-3): `(name, url, last seen)`.
+    pub gone: Vec<(String, String, u64)>,
     pub now_ms: u64,
 }
 
@@ -676,6 +679,25 @@ impl Fleet {
             });
         }
 
+        // ----- a coordinator that stopped answering (R2-workload-3): its
+        // clients' queries fail or went elsewhere, and its numbers are not
+        // in these.
+        if !i.gone.is_empty() && i.coordinator.is_some() {
+            let names: Vec<String> = i.gone.iter().map(|(n, _, _)| n.clone()).collect();
+            let since = i.gone.iter().map(|(_, _, t)| *t).max();
+            let one = names.len() == 1;
+            let title = if one { format!("Coordinator {} stopped answering", names[0]) } else { format!("{} coordinators stopped answering", names.len()) };
+            let ago = since.map_or(String::new(), |t| format!(" {} ago", dur(now.saturating_sub(t))));
+            problems.push(Problem {
+                rank: 14,
+                critical: false,
+                headline: title.clone(),
+                j: json!({"id": "coordinators_gone", "severity": "warning", "title": title, "where": names, "since_ms": since,
+                    "impact": format!("The shards last heard from {}{ago}. Clients sent to {} fail or went to another coordinator, and {} searches, alerts and audit are not in these numbers", either(&names), if one { "it" } else { "them" }, if one { "its" } else { "their" }),
+                    "next": {"text": format!("Look at {}'s logs and its pod or process (killed for memory?); if it was removed on purpose, this clears 10 minutes after it was last heard from", either(&names)), "view": "logs", "params": {"q": names[0].clone()}}}),
+            });
+        }
+
         // ----- since when each problem holds, worst first; equal ones by
         // their age, then their title: the same order every look.
         let ids: std::collections::HashSet<String> = problems.iter().map(|p| p.j["id"].as_str().unwrap_or("").to_string()).collect();
@@ -741,6 +763,9 @@ impl Fleet {
             }
             coordinators.push(c);
         }
+        for (name, url, last) in &i.gone {
+            coordinators.push(json!({"url": url, "name": name, "this": false, "gone": true, "last_seen_ms": last, "error": format!("{name}: not heard from since {}", dur(now.saturating_sub(*last)))}));
+        }
         json!({
             "at_ms": now, "status": status, "headline": headline, "since_ms": since_ms, "first_signal_ms": first_signal_ms, "not_ok_since_ms": m.not_ok,
             "api": {"ok": true, "server": if i.coordinator.is_some() { "coordinator" } else { "shard" }},
@@ -799,7 +824,21 @@ mod tests {
     }
 
     fn inputs<'a>(cluster: &'a Json, points: &'a [Arc<Json>]) -> Inputs<'a> {
-        Inputs { cluster, points, slo_error_ratio: 0.01, slo_p99_ms: 250.0, alerts: Vec::new(), partial: false, coordinator: Some(json!({"url": null, "name": "c"})), peers: Vec::new(), now_ms: 10_000 }
+        Inputs { cluster, points, slo_error_ratio: 0.01, slo_p99_ms: 250.0, alerts: Vec::new(), partial: false, coordinator: Some(json!({"url": null, "name": "c"})), peers: Vec::new(), gone: Vec::new(), now_ms: 10_000 }
+    }
+
+    #[test]
+    fn a_coordinator_that_stopped_answering_is_a_problem() {
+        let c = json!({"shards": [{"shard": 0, "state": "ok", "failover": true, "majority": true, "replicas": [copy("s0-0", true), copy("s0-1", true)]}]});
+        let f = Fleet::default();
+        let mut i = inputs(&c, &[]);
+        i.gone = vec![("coordinator-b".into(), "http://b:7700".into(), 4_000)];
+        let j = f.judge(i);
+        let p = j["problems"].as_array().unwrap().iter().find(|p| p["id"] == "coordinators_gone").expect("a problem").clone();
+        assert_eq!((p["title"].as_str().unwrap(), p["since_ms"].as_u64()), ("Coordinator coordinator-b stopped answering", Some(4_000)));
+        assert!(p["impact"].as_str().unwrap().contains("6 s ago"), "{p}");
+        let b = j["coordinators"].as_array().unwrap().iter().find(|c| c["name"] == "coordinator-b").unwrap().clone();
+        assert_eq!(b["gone"], true);
     }
 
     #[test]
