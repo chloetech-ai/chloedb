@@ -102,6 +102,9 @@ const QUERIES: &[&str] = &[
     "WITH top AS (SELECT id, venue FROM papers ORDER BY bm25(title, 'graph') DESC LIMIT 50) SELECT v.field, COUNT(*) FROM top t JOIN venues v ON t.venue = v.id GROUP BY v.field",
     "WITH old AS (SELECT id, author, year FROM papers WHERE year < 2000) SELECT a.id, b.id FROM old a JOIN old b ON a.author = b.author WHERE a.id < b.id",
     "SELECT field, n FROM (SELECT v.field AS field, COUNT(*) AS n FROM papers p JOIN venues v ON p.venue = v.id GROUP BY v.field) AS t WHERE n > 10 ORDER BY n DESC",
+    // `*` over a WITH result: its columns, not its table's.
+    "WITH old AS (SELECT id, author FROM papers WHERE year < 2000) SELECT * FROM old o JOIN authors a ON o.author = a.id",
+    "WITH top AS (SELECT id, score() AS s FROM papers ORDER BY bm25(title, 'graph') DESC LIMIT 50) SELECT * FROM top t JOIN papers p ON p.id = t.id",
     // DISTINCT and DISTINCT ON.
     "SELECT DISTINCT v.field, a.country FROM papers p JOIN venues v ON p.venue = v.id JOIN authors a ON p.author = a.id",
     "SELECT DISTINCT p.year FROM papers p JOIN venues v ON p.venue = v.id ORDER BY p.year DESC NULLS FIRST",
