@@ -288,6 +288,7 @@ job_main() { # NAME ENGINE SHAPE TIMEOUT_H
     t0=$(now)
     ns=$name
     mkdir -p "$dir/work/compare" "$dir/failures"
+    echo "$IMAGE" >"$dir/image"
     setstate "$name" running
     log "$name: waiting for its nodes"
     local dnodes=() cnode="" pool pname psize pcount ready
@@ -674,8 +675,8 @@ status)
         d=$STATE/jobs/$name
         m=""
         [ -f "$d/pools" ] && m=$((($(now) - $(stat -c %Y "$d/pools")) / 60))
-        step=$(tail -1 "$d/steps.tsv" 2>/dev/null | awk -F'\t' '{print $1 " " $2 " " $5}')
-        last=$(grep 'step [0-9]*:' "$d/driver.log" 2>/dev/null | tail -1 | sed 's/.*: step/step/')
+        step=$(tail -1 "$d/steps.tsv" 2>/dev/null | awk -F'\t' '{print $1 " " $2 " " $5}' || true)
+        last=$(grep 'step [0-9]*:' "$d/driver.log" 2>/dev/null | tail -1 | sed 's/.*: step/step/' || true)
         printf '%-12s %-9s %-8s %s\n' "$name" "$s" "$m" "${last:-$step}"
     done < <(jobs_of "$jobs")
     echo "nodes: $(kubectl get nodes --no-headers 2>/dev/null | wc -l); spent \$$spent so far, at most \$$bound with the running jobs to their timeouts (budget \$$BUDGET)"
