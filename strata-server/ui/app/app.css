@@ -2831,6 +2831,11 @@ body.cc-dragging, body.cc-dragging * { cursor: grabbing !important; user-select:
 .cc-dg { cursor: pointer; }
 .cc-dg:focus-visible rect { stroke: var(--accent); stroke-width: 2; }
 .cc-copies td { white-space: nowrap; }
+/* R2-cluster-admin-1: the server's name under the copy's, and the ⋯ menu
+   held in view at the panel's right edge however wide the table gets. */
+.cc-copies .cc2-sname { display: block; }
+.cc-copies tr:not(.cc-note) > td:last-child, .cc-copies thead th:last-child { position: sticky; right: 0; background: var(--surface); }
+.cc-copies tr.sel > td:last-child { background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--surface); }
 .cc-copies tr.cc-note td { padding-top: 0; border-top: 0; white-space: normal; }
 .cc-copies tr:has(+ tr.cc-note) td { border-bottom: 0; }
 .cc-menu { position: fixed; z-index: 85; width: 280px; padding: 4px; }

@@ -262,4 +262,30 @@ async fn coordinators_of_one_cluster_know_and_cover_each_other() {
     let f = get(&a.base, "/v1/health/fleet").await;
     let er = f["checks"].as_array().unwrap().iter().find(|c| c["id"] == "error_ratio").unwrap().clone();
     assert!(er["queries"].as_f64().unwrap() >= 10.0 && er["coordinators"].as_u64().unwrap() >= 2, "{er}");
+
+    // ----- A's statements have what went through B, and its page too (R2-workload-1)
+    let st = get(&a.base, "/v1/queries/stats?limit=1000").await;
+    let one = st["statements"].as_array().unwrap().iter().find(|x| x["sql"].as_str().is_some_and(|q| q.contains("SELECT id, title FROM products"))).unwrap_or_else(|| panic!("B's statement on A: {st}")).clone();
+    let on_b = one["coordinators"].as_array().unwrap().iter().find(|c| c["name"] == "coord-b").map(|c| c["calls"].as_u64().unwrap());
+    assert!(on_b >= Some(10) && one["calls"].as_u64() >= on_b, "{one}");
+    assert!(st["coordinators"].as_array().unwrap().iter().all(|c| c["ok"] == true), "{}", st["coordinators"]);
+    let page = get(&a.base, &format!("/v1/queries/stats/{}", one["id"].as_str().unwrap())).await;
+    assert_eq!(page["statement"]["calls"], one["calls"], "{page}");
+    assert!(page["latest"].as_array().unwrap().iter().any(|c| c["coordinator"] == "coord-b"), "{page}");
+    let mine = get(&a.base, "/v1/queries/stats?limit=1000&local=1").await;
+    assert!(mine["statements"].as_array().unwrap().iter().all(|x| x["coordinators"].is_null()), "local=1: A's own");
+
+    // ----- B's runtime settings, read and set through A (PROF-2)
+    let sb = get(&a.base, &format!("/v1/profile/settings?coordinator={}", b2.base)).await;
+    assert_eq!(sb["coordinator"], b2.base.as_str(), "{sb}");
+    let (s, j) = call(reqwest::Method::PUT, &a.base, &format!("/v1/profile/settings?coordinator={}", b2.base), Some(json!({"slow_ms": 77}))).await;
+    assert_eq!(s, 200, "{j}");
+    assert_eq!(get(&b2.base, "/v1/profile/settings").await["slow_ms"].as_f64(), Some(77.0));
+    let (s, _) = call(reqwest::Method::GET, &a.base, "/v1/profile/settings?coordinator=http://10.9.9.9:1", None).await;
+    assert_eq!(s, 404, "not a coordinator of this cluster");
+
+    // ----- every coordinator's clients of each key (AC-4)
+    let kc = get(&a.base, "/v1/admin/keys/clients?hours=24").await;
+    assert!(kc["keys"].is_object() && kc["since_ms"].as_u64().is_some(), "{kc}");
+    assert!(kc["coordinators"].as_array().unwrap().iter().filter(|c| c["ok"] == true).count() >= 2, "{}", kc["coordinators"]);
 }

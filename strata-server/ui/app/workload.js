@@ -231,7 +231,7 @@ export async function statements(range = timeRange()) {
   const out = list.map((x) => normStatement(x));
   const total = out.reduce((a, x) => a + (x.total_ms || 0), 0) || 1;
   for (const x of out) x.share = x.share ?? x.total_ms / total;
-  return { statements: out, windowed, since_ms: j.since_ms ?? null, from: range.from, to: range.to, ...held(j, range, windowed) };
+  return { statements: out, windowed, since_ms: j.since_ms ?? null, from: range.from, to: range.to, coordinators: j.coordinators || null, ...held(j, range, windowed) };
 }
 
 /**

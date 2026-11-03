@@ -251,7 +251,7 @@ function render(page, r0) {
       const fa = firingNow();
       if (first && !rec) chips.push(h("span", { class: "home-chip", title: "When this problem, or what it stems from, was first seen" }, `first signal ${when(first)}`));
       if (notOk) chips.push(h("span", { class: "home-chip", title: "Something has needed a look since then (other problems first)" }, `not all right since ${when(notOk)} (${durTxt(notOk)})`));
-      for (const a of fa.slice(0, 2)) chips.push(h("a", { class: "home-chip", href: link("alert/" + encodeURIComponent(a.id)) }, `alert "${a.name}" ${a.since_ms ? "since " + when(a.since_ms) : "firing"}`));
+      for (const a of fa.slice(0, 2)) chips.push(h("a", { class: "home-chip", href: link("alert/" + encodeURIComponent(a.id)) }, `alert "${a.name}"${a.on ? " on " + a.on : ""} ${a.since_ms ? "since " + when(a.since_ms) : "firing"}`));
       const ack = fa.find((a) => a.ack);
       if (ack) chips.push(h("span", { class: "home-chip ack" }, `acked by ${ack.ack.by} ${when(ack.ack.at_ms)}`));
       else if (fa.length) chips.push(h("span", { class: "home-chip" }, "nobody has acked yet"));

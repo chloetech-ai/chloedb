@@ -702,21 +702,30 @@ function settingsTab(body) {
   async function drawFleet(mine) {
     const cs = copies().filter((c) => c.status !== "down");
     const down = copies().length - cs.length;
-    const rows = [{ name: "coordinator", title: host, self: true, ...mine, read: true }, ...cs.map((c) => ({ name: c.name, title: c.url, url: c.url, shard: c.shard }))];
+    // The other coordinators too (PROF-2): set through this one.
+    const coords = (state.fleet?.coordinators || []).filter((c) => !c.this && !c.gone && c.url);
+    const me = (state.fleet?.coordinators || []).find((c) => c.this);
+    const rows = [{ name: coords.length ? me?.name || "this coordinator" : "coordinator", title: host, self: true, ...mine, read: true },
+      ...coords.map((c) => ({ name: c.name || c.url, title: c.url, coord: c.url })),
+      ...cs.map((c) => ({ name: c.name, title: c.url, url: c.url, shard: c.shard }))];
     const tbody = h("tbody");
     const slowOf = (x) => x.err ? (/no profile of kind/.test(x.err) ? "older server: sets its own only" : "did not answer") : !x.read ? "reading…" : x.slow_ms == null ? "none kept" : `over ${fmt.ms(x.slow_ms)}`;
     const row = (x) => h("tr", {},
-      h("td", {}, h("span", { class: "mono small", title: x.title }, x.name), x.shard != null ? h("span", { class: "tiny muted" }, ` shard ${x.shard}`) : null),
+      h("td", {}, h("span", { class: "mono small", title: x.title }, x.name), x.shard != null ? h("span", { class: "tiny muted" }, ` shard ${x.shard}`) : x.coord || (x.self && coords.length) ? h("span", { class: "tiny muted" }, x.self ? " this coordinator" : " coordinator") : null),
       h("td", { class: "small", title: x.err || "" }, slowOf(x), x.read && x.started_slow_ms !== x.slow_ms ? h("span", { class: "tiny muted" }, ` · started ${x.started_slow_ms == null ? "none" : fmt.ms(x.started_slow_ms)}`) : null),
       h("td", { class: "small" }, x.read ? (x.cpu_all ? "every query" : "profiled only") : ""));
     const paint = () => clear(tbody, rows.map(row));
     const inp = h("input", { class: "input sm num", type: "number", min: 0, step: "any", placeholder: "off", value: mine.slow_ms ?? "", "aria-label": "Slow threshold for every server, ms", style: { width: "90px" } });
     const n = rows.length;
+    const who = `${coords.length ? `${coords.length + 1} coordinators` : "the coordinator"} and ${fmt.plural(cs.length, "copy", "copies")}`;
     const setAll = async (b) => {
-      const ok = await ask(`Change every server's runtime settings?`, `${words(b)} On ${fmt.plural(n, "server")}: the coordinator and ${fmt.plural(n - 1, "copy", "copies")}.`);
+      const ok = await ask(`Change every server's runtime settings?`, `${words(b)} On ${fmt.plural(n, "server")}: ${who}.`);
       if (!ok) return;
       const failed = [];
       try { await api("/v1/profile/settings", { method: "PUT", body: b, reason: ok.reason }); } catch (e) { failed.push(`coordinator (${e.message})`); }
+      await Promise.all(rows.filter((x) => x.coord).map(async (x) => {
+        try { await api("/v1/profile/settings?coordinator=" + encodeURIComponent(x.coord), { method: "PUT", body: b, reason: ok.reason }); } catch (e) { failed.push(`${x.name} (${e.message})`); }
+      }));
       const others = rows.filter((x) => x.url);
       for (let i = 0; i < others.length; i += 16) {
         await Promise.all(others.slice(i, i + 16).map(async (x) => {
@@ -728,12 +737,18 @@ function settingsTab(body) {
     };
     const admin = can("admin");
     const btn = (label, b, cls = "btn sm") => { const x = h("button", { class: cls, onclick: () => setAll(b()) }, label); if (!admin) { x.disabled = true; x.title = "Needs an admin key"; } return x; };
-    clear(fleet, card({ title: "Every server's settings", sub: `the coordinator and ${fmt.plural(n - 1, "copy", "copies")}${down ? ` · ${down} down, not listed` : ""} · each until it restarts`, flush: true, body: h("div", {},
+    const goneN = (state.fleet?.coordinators || []).filter((c) => c.gone).length;
+    clear(fleet, card({ title: "Every server's settings", sub: `${who}${down ? ` · ${down} down, not listed` : ""}${goneN ? ` · ${fmt.plural(goneN, "coordinator")} not answering, not listed` : ""} · each until it restarts`, flush: true, body: h("div", {},
       h("div", { class: "row", style: { gap: "8px", padding: "10px 12px", flexWrap: "wrap", alignItems: "center" } },
         h("span", { class: "small dim" }, "On every server: keep queries slower than"), h("span", { class: "row nw small dim", style: { gap: "8px" } }, inp, "ms",
           btn(`Set on ${n}`, () => ({ slow_ms: inp.value === "" ? null : Number(inp.value) }), "btn sm primary")),
         btn("CPU time for every query: on", () => ({ cpu_all: true })), btn("off", () => ({ cpu_all: false }))),
       h("div", { class: "tbl-wrap", style: { maxHeight: "50vh" } }, h("table", { class: "t compact wl-nums" }, h("thead", {}, h("tr", {}, ["server", "kept as slow", "CPU time measured"].map((k) => h("th", {}, k)))), tbody))) }));
+    paint();
+    await Promise.all(rows.filter((x) => x.coord).map(async (x) => {
+      try { Object.assign(x, await api("/v1/profile/settings?coordinator=" + encodeURIComponent(x.coord)), { read: true }); } catch (e) { x.err = e.message; }
+    }));
+    if (!fleet.isConnected) return;
     paint();
     const others = rows.filter((x) => x.url);
     for (let i = 0; i < others.length && alive; i += 16) {

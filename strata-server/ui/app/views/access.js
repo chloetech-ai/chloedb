@@ -135,6 +135,12 @@ function shortImage(ref) {
 const SQL = /^\s*(select|insert|update|delete|create|drop|alter|with|truncate|replace)\b/i;
 // [route, done, failed]
 const ROUTE_TITLES = [
+  // AC-3: a plan's own calls, refused by its checks or not.
+  [/^\/v1\/admin\/plan\/apply/, "Applied a cluster plan", "A cluster plan was refused"],
+  [/^\/v1\/admin\/plan\/run\/stop/, "Stopped the running plan", "Stopping the plan failed"],
+  [/^\/v1\/admin\/plan\/run\/resume/, "Resumed the plan", "Resuming the plan failed"],
+  [/^\/v1\/admin\/plan\/run\/discard/, "Discarded the stopped plan", "Discarding the plan failed"],
+  [/^\/v1\/admin\/plan$/, "Checked a cluster plan", "A cluster plan's checks failed"],
   [/^\/v1\/admin\/kube$/, "Changed the StrataCluster", "A change to the StrataCluster failed"],
   [/^\/v1\/admin\/kube\/resume/, "Resumed the rollout", "Resuming the rollout failed"],
   [/^\/v1\/admin\/kube\/upgrade/, "Started an upgrade", "An upgrade failed to start"],
@@ -302,12 +308,18 @@ function render(page, r) {
     try { keysJ = await api("/v1/admin/keys"); keysErr = null; }
     catch (e) { keysErr = e; }
   }
-  // The clients that send each key (AC-4): the callers of the queries this
-  // server answered last, and the audited changes, by key id.
+  // The clients that send each key (AC-4): every query of the last 24 h
+  // through every coordinator (/v1/admin/keys/clients), and the audited
+  // changes, by key id. An older server: the last queries it answered.
   let callers = null;
   async function loadCallers() {
-    try { const j = await api("/v1/queries/recent?limit=500"); callers = { qs: j.queries || [], at: Date.now() }; }
-    catch { callers = callers || { qs: [], at: Date.now(), none: true }; }
+    try {
+      const j = await api("/v1/admin/keys/clients?hours=24");
+      callers = { keys: j.keys || {}, since: j.since_ms || null, coords: j.coordinators || null, at: Date.now() };
+    } catch {
+      try { const j = await api("/v1/queries/recent?limit=500"); callers = { qs: j.queries || [], at: Date.now() }; }
+      catch { callers = callers || { qs: [], at: Date.now(), none: true }; }
+    }
   }
   /** [{label, addr, n, last}] for key `id`, most used first; `since`: the oldest query read. */
   function clientsOf(id) {
@@ -320,11 +332,26 @@ function render(page, r) {
       by.set(k, x);
     };
     for (const q of callers?.qs || []) if (q.key_id === id) add(q, q.ts_ms, "queries");
+    for (const c of callers?.keys?.[id] || []) {
+      const label = c.app || (c.client === "command-center" ? "the command center" : c.client) || "a client";
+      const k = `${label}|${c.addr || ""}`;
+      const x = by.get(k) || { label, addr: c.addr || null, queries: 0, changes: 0, last: 0, failed: 0, via: [] };
+      x.queries += c.calls || 0; x.failed = (x.failed || 0) + (c.failed || 0); x.last = Math.max(x.last, c.last_ms || 0);
+      x.via = [...new Set([...(x.via || []), ...(c.coordinators || [])])];
+      by.set(k, x);
+    }
     for (const e of [...(audit?.changes || []), ...(audit?.refusals || [])]) if (e.key === id) add({ app: e.client && e.client !== "command-center" ? e.client : null, client: e.client, addr: e.addr }, e.ts_ms, "changes");
     return [...by.values()].sort((a, b) => b.queries + b.changes - (a.queries + a.changes) || b.last - a.last);
   }
-  const callersSince = () => { const ts = (callers?.qs || []).map((q) => q.ts_ms).filter(Boolean); return ts.length ? Math.min(...ts) : null; };
-  const clientSaid = (x) => `${x.label}${x.addr ? ` from ${x.addr}` : ""} (${[x.queries ? fmt.plural(x.queries, "query", "queries") : null, x.changes ? fmt.plural(x.changes, "audited request") : null].filter(Boolean).join(", ")}, last ${ago(x.last)})`;
+  const callersSince = () => { if (callers?.keys) return callers.since; const ts = (callers?.qs || []).map((q) => q.ts_ms).filter(Boolean); return ts.length ? Math.min(...ts) : null; };
+  /** What the key's clients were read from, in words, for the clients' tooltip. */
+  const callersFrom = () => {
+    const since = callersSince();
+    if (!callers?.keys) return `the last ${fmt.n(callers?.qs?.length || 0)} queries this server answered${since ? ` (since ${whenT(since)})` : ""}`;
+    const cs = callers.coords || [], down = cs.filter((c) => !c.ok);
+    return `every query of the last 24 h${since && since > Date.now() - 24 * 3600e3 + 60e3 ? ` (counted since ${whenT(since)}, when a coordinator started)` : ""}${cs.length > 1 ? `, through ${down.length ? `${cs.length - down.length} of ${cs.length} coordinators (${down.map((c) => c.name).join(", ")} did not answer)` : `all ${cs.length} coordinators`}` : ""}`;
+  };
+  const clientSaid = (x) => `${x.label}${x.addr ? ` from ${x.addr}` : ""} (${[x.queries ? fmt.plural(x.queries, "query", "queries") : null, x.failed ? `${fmt.n(x.failed)} failed` : null, x.changes ? fmt.plural(x.changes, "audited request") : null, x.via?.length > 1 || (x.via?.length && (callers?.coords || []).length > 1) ? `via ${x.via.join(", ")}` : null].filter(Boolean).join(", ")}, last ${ago(x.last)})`;
   async function load() {
     await Promise.all([loadAudit(), loadKeys(), loadCallers()]);
     draw();
@@ -538,7 +565,7 @@ function render(page, r) {
     if (d && e.after?.plan && e.after?.step) return words((failed ? "tried to " : "") + d.replace(/^plan p\d+, step \d+ of \d+: /, "").replace(/ \(it failed: [^]*\)$/, ""));
     if (d && !failed) return words(d);
     // A cluster change that failed: what it tried (AC-3); its error is below.
-    if (d && failed && /^\/v1\/admin\/(shards|rebalance|moves|plan)/.test(e.route || "")) return words(`tried to ${d.replace(/^plan (p\d+), /, "")}`);
+    if (d && failed && /^\/v1\/admin\/(shards|rebalance|moves|plan)/.test(e.route || "") && !/^\/v1\/admin\/plan(\/apply|\/run|$)/.test(e.route || "")) return words(`tried to ${d.replace(/^plan (p\d+), /, "")}`);
     if (e.object) return failed ? `A change to ${e.object} failed` : `Changed ${e.object}`;
     const t = ROUTE_TITLES.find(([re]) => re.test(e.route || ""));
     return t ? t[failed ? 2 : 1] : `${e.method || ""} ${e.route || ""}`.trim();
@@ -718,8 +745,8 @@ function render(page, r) {
         sub || asOld ? h("div", { class: "small muted" }, sub, sub && asOld ? " · " : "", asOld ? h("span", { class: "ac-rotating" }, "rotating") : null) : null),
       h("td", {}, h("span", { class: "ac-scope " + k.scope }, k.scope)),
       h("td", { class: "num" }, used, (() => {
-        const cs = clientsOf(k.id), since = callersSince();
-        const title = `Who sent this key: the last ${fmt.n(callers?.qs.length || 0)} queries this server answered${since ? ` (since ${whenT(since)})` : ""}, and the audit log.\n` + cs.map(clientSaid).join("\n");
+        const cs = clientsOf(k.id);
+        const title = `Who sent this key: ${callersFrom()}, and the audit log.\n` + cs.map(clientSaid).join("\n");
         if (!cs.length) return k.last_addr ? h("div", { class: "small muted mono" }, k.last_addr) : null;
         return h("div", { class: "small muted ac-clients", title }, cs.length === 1 ? `${cs[0].label}${cs[0].addr ? " · " + cs[0].addr : ""}` : `${cs.length} clients: ${cs.slice(0, 2).map((x) => x.label + (x.addr ? " · " + x.addr : "")).join(", ")}${cs.length > 2 ? ", …" : ""}`);
       })()),
@@ -795,7 +822,7 @@ function render(page, r) {
           ["last used", k.last_used_ms ? `${ago(k.last_used_ms)}${k.last_addr ? ` from ${k.last_addr}` : ""}` : "never"],
           k.owner ? ["owner", k.owner] : null,
           clientsOf(k.id).length ? ["sent by", h("div", { class: "stack", style: { gap: "2px" } }, clientsOf(k.id).slice(0, 6).map((x) => h("div", {}, clientSaid(x))),
-            h("div", { class: "small muted" }, `From the last ${fmt.n(callers?.qs.length || 0)} queries this server answered and the audit log; a client quiet since then is not listed.`))] : null,
+            h("div", { class: "small muted" }, `From ${callersFrom()} and the audit log; a client quiet since then is not listed.`))] : null,
         ]),
         recent ? h("div", { class: "ro-warnline" }, icon("warn"), `It was used ${ago(k.last_used_ms)}: whatever sent it stops working.`) : null,
       ],

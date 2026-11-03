@@ -389,6 +389,11 @@ pub async fn get(app: &App, peer: &Peer, path: &str) -> Result<Json, String> {
     send(app, peer, reqwest::Method::GET, path, None).await
 }
 
+/// PUTs `body` to `path` on coordinator `peer`, as this coordinator.
+pub async fn put(app: &App, peer: &Peer, path: &str, body: &Json) -> Result<Json, String> {
+    send(app, peer, reqwest::Method::PUT, path, Some(body)).await
+}
+
 /// DELETEs `path` on coordinator `peer`, as this coordinator.
 pub async fn delete(app: &App, peer: &Peer, path: &str) -> Result<Json, String> {
     send(app, peer, reqwest::Method::DELETE, path, None).await

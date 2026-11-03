@@ -1266,7 +1266,7 @@ function render(page, r) {
     // A shard with no primary that answers and no majority cannot vote one
     // in: the way out is to force a copy that answers (NEW-cluster-admin-3).
     const lead = forceTarget(sh);
-    if (lead && !c.down) items.push({ label: `Force ${cname(c)} to be the primary…`, icon: "up", danger: true, no: managed() ? "the operator hands primaries over" : changes ? changes : !canAdmin() ? needsAdmin : null, run: () => forcePromote(sh, c) });
+    if (lead && !c.down) items.push({ label: `Force ${cname(c)} to be the primary, removing the dead ${sh.copies.filter((x) => x.down).length === 1 ? "copy" : "copies"}…`, icon: "up", danger: true, no: managed() ? "the operator hands primaries over" : changes ? changes : !canAdmin() ? needsAdmin : null, run: () => forcePromote(sh, c) });
     else if (!c.primary) items.push({ label: "Make it the primary", icon: "up", no: promote, run: () => promoteCopy(sh, c) });
     if (c.primary) items.push({ label: "Verify its replicas", icon: "okc", no: verifyNo, run: () => verifyCopy(sh, c) });
     items.push({ label: "Write a checkpoint", icon: "download", no: ckNo, run: () => checkpointCopy(sh, c) });
@@ -1327,11 +1327,20 @@ function render(page, r) {
       body: h("div", { class: "stack", style: { gap: "6px" } },
         h("div", {}, `${cname(c)} becomes the primary without a vote: ${was ? cname(was) + ", the primary," : dead.map(cname).join(" and ")} ${dead.length === 1 ? "does" : "do"} not answer, and ${sh.up} of ${sh.n} copies is no majority, so no vote can pass.`),
         h("div", { style: { color: "var(--crit-ink)" } }, `Writes ${was ? cname(was) : "the old primary"} took that ${cname(c)} had not received yet are lost${c.lag != null ? "" : ": how many is not known while it does not answer"}. If ${was ? cname(was) : "it"} comes back, it follows ${cname(c)} and drops them.`),
-        h("div", { class: "small dim" }, `Then remove ${dead.map(cname).join(" and ")} so that ${cname(c)} has a majority (${sh.up} of ${sh.up}) and serves reads and writes again, and add new copies. Plan the repair does all three in order.`)),
+        // R2-cluster-admin-2: forced alone, the shard serves no reads until the dead copies leave
+        // (no majority), so the two go as one action, as the repair plan's first steps do.
+        h("div", {}, `Then ${dead.map(cname).join(" and ")} ${dead.length === 1 ? "is" : "are"} removed from the shard, in the same action: until ${dead.length === 1 ? "it leaves" : "they leave"}, ${cname(c)} has no majority (${sh.up} of ${sh.n}) and the shard serves no reads either, so every search fails. After that ${cname(c)} serves reads and writes with ${sh.up} of ${sh.up}; add new copies next (Plan the repair adds them too).`)),
     });
     if (!ok) return;
     const j = await adminCall(`${cname(c)} did not become shard ${sh.i}'s primary`, `/v1/admin/shards/${sh.i}/promote`, { body: { url: c.url, force: true }, reason: ok.reason });
-    if (j) toast(`${cname(c)} is shard ${sh.i}'s primary (forced${j.term != null ? ", term " + j.term : ""}). Next: remove ${dead.map(cname).join(" and ")} so that it has a majority.`, "ok", 10000);
+    if (!j) return;
+    const left = [];
+    for (const d of dead) {
+      const r = await adminCall(`${cname(d)} is still in shard ${sh.i}: shard ${sh.i} serves no reads until it leaves`, `/v1/admin/shards/${sh.i}/replicas?url=${encodeURIComponent(d.url)}`, { method: "DELETE", reason: ok.reason });
+      if (r) left.push(d);
+    }
+    if (left.length === dead.length) toast(`${cname(c)} is shard ${sh.i}'s primary (forced${j.term != null ? ", term " + j.term : ""}) and ${dead.map(cname).join(" and ")} left: it serves reads and writes. Next: add copies.`, "ok", 10000);
+    else toast(`${cname(c)} is shard ${sh.i}'s primary (forced), but ${dead.filter((d) => !left.includes(d)).map(cname).join(" and ")} did not leave: remove ${dead.length - left.length === 1 ? "it" : "them"} now, or the shard serves no reads.`, "bad", 15000);
   }
   async function removeCopy(sh, c) {
     const after = sh.n - 1, upAfter = sh.up - (c.down ? 0 : 1);
