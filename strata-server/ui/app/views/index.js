@@ -79,7 +79,8 @@ export const NAV = [
     { id: "autocomplete", title: "Autocomplete", icon: "autocomplete" },
     { id: "media", title: "Media search", icon: "media" },
     { id: "graph", title: "Graph explorer", icon: "graph" },
-    { id: "classic", title: "Query console", icon: "classic" },
+    // CON-1: the old console (#/classic) is out of the nav: its tools are
+    // views here; the SQL workbench links it for its agent.
   ]],
 ];
 

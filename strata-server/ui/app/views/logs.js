@@ -18,7 +18,9 @@ export default { id: "logs", title: "Logs", icon: "logs", group: "Operate", keyw
 
 const LV = ["error", "warn", "info", "debug", "trace"];
 const LCOLOR = { error: "var(--crit)", warn: "var(--s4)", info: "var(--s1)", debug: "var(--muted)", trace: "var(--line-2)" };
-const PAGE = 200, SAMPLE = 2000;
+const PAGE = 200;
+/** L6: Patterns samples the newest lines of each group of levels apart, so that a server on debug does not crowd out the errors. */
+const BUCKETS = [{ levels: ["error", "warn"], n: 1000, name: "errors and warnings" }, { levels: ["info"], n: 600, name: "info" }, { levels: ["debug", "trace"], n: 400, name: "debug" }];
 const COLS = "ts, node, level, target, method, route, message, fields, request_id, status, ms, id";
 const KEYS = { level: "level", server: "node", node: "node", shard: "shard", route: "route", module: "target", target: "target", status: "status", request: "request_id", method: "method" };
 const TONE = { alert_fired: "bad", copy_down: "bad", majority_lost: "bad", primary_changed: "warn", contain: "warn", alert_resolved: "good", copy_up: "good", majority_back: "good" };
@@ -94,11 +96,16 @@ function render(page, r) {
   if (tab0 === "sql" && r.params.get("sql")) { location.replace(link("sql", { q: r.params.get("sql"), store: "logs" })); return; }
 
   const ctx = { coord: false, nodes: new Map(), store: null, has: null, missed: [] };
+  page.classList.add("al-logs");
   const sub = h("p", { class: "al-lsub" });
   const storeBtn = h("button", { class: "btn sm", title: "Each server's log store: size, retention, writes" }, icon("db"), "stores");
   const levelBtn = h("button", { class: "btn sm", title: "What each server logs, with an expiry" }, icon("sliders"), "Log levels");
-  const sqlLink = h("a", { class: "btn sm ghost", title: "Open this search as SQL in the SQL workbench" }, icon("sql"), "As SQL");
-  const shareBtn = h("button", { class: "btn sm ghost", title: "Copy a link to these lines: the search and this time window" }, icon("link"), "Copy link");
+  const sqlLink = h("a", { class: "btn sm ghost al-wide-only", title: "Open this search as SQL in the SQL workbench" }, icon("sql"), "As SQL");
+  const shareBtn = h("button", { class: "btn sm ghost al-wide-only", title: "Copy a link to these lines: the search and this time window" }, icon("link"), "Copy link");
+  // NEW-alerts-logs-15: on a phone the chart and the secondary links fold away, so lines come first.
+  const foldBtn = (label, cls, title) => { const b = h("button", { class: "chip al-narrow-only", "aria-pressed": "false", title, onclick: () => { const on = page.classList.toggle(cls); b.setAttribute("aria-pressed", String(on)); } }, label); return b; };
+  const chartBtn = foldBtn("Chart", "al-chart-open", "The lines by level and minute, and the events");
+  const moreBtn = foldBtn("More", "al-more-open", "As SQL, Copy link, Queries > History");
   const chips = h("div", { class: "al-sq-chips" });
   const input = h("input", { class: "al-sq-in", placeholder: "Search: words, \"a phrase\", level>=warn, server:s1-0, shard:1, route:, status:, request:", "aria-label": "Search the log lines", autocomplete: "off", spellcheck: "false" });
   const bar = h("div", { class: "al-sq", onclick: (e) => { if (e.target === bar || e.target === chips) input.focus(); } }, icon("search"), chips, input);
@@ -119,14 +126,14 @@ function render(page, r) {
   const main = h("div", { class: "al-lmain" }, facets, h("div", { class: "al-lcol" }, h("div", { class: "row nw al-lhead" }, tabs, h("span", { class: "sep" }), countNote), list, more), scrim, detail);
   page.append(
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Logs"), sub),
-      h("div", { class: "tools" }, storeBtn, levelBtn, h("a", { class: "btn sm ghost", href: link("queries", { tab: "history" }), title: "Finished queries, failed and slow ones, with their traces: Queries > History" }, icon("queries"), "Queries > History"))),
+      h("div", { class: "tools" }, storeBtn, levelBtn, h("a", { class: "btn sm ghost al-wide-only", href: link("queries", { tab: "history" }), title: "Finished queries, failed and slow ones, with their traces: Queries > History" }, icon("queries"), "Queries > History"))),
     h("div", { class: "row nw al-sqrow" }, bar, sqlLink, shareBtn),
-    h("div", { class: "row al-rangerow" }, alertChip, rangeNote, h("span", { class: "sep" }), filtersBtn, liveBtn),
+    h("div", { class: "row al-rangerow" }, alertChip, rangeNote, h("span", { class: "sep" }), filtersBtn, chartBtn, moreBtn, liveBtn),
     h("section", { class: "card al-hist" }, h("div", { class: "bd" }, hist, markLegend)),
     missedLine,
     main);
 
-  let q = "", tab = "lines", live = true, gen = 0, newest = null, oldest = null, matched = 0, rows = [], sel = null, sample = null;
+  let q = "", tab = "lines", live = true, gen = 0, newest = null, oldest = null, matched = 0, rows = [], sel = null, sample = null, buckets = [];
   const f = () => parse(q);
 
   // ------------------------------------------------ servers
@@ -414,8 +421,14 @@ function render(page, r) {
     if (!ctx.missed.length) { clear(missedLine); return; }
     const names = ctx.missed.map((n) => n.url ? copyName(n.url) : n.node || "?");
     const det = h("div", { class: "hidden al-missed-det" }, ctx.missed.map((n) => h("div", { class: "mono small" }, `${n.url ? copyName(n.url) : n.node}${n.shard != null ? ` (shard ${n.shard})` : ""}: ${n.error}`)));
+    // L1: a server's lines are kept on it alone, so they come back with it; what the others logged about it is here now.
+    const about = ctx.missed.filter((n) => n.url).slice(0, 2).map((n) => {
+      const hostPort = n.url.replace(/^\w+:\/\//, "").replace(/\/.*$/, "");
+      return h("button", { class: "btn xs", title: `Search every other server's lines for ${hostPort}`, onclick: () => setQ(`"${hostPort}"`) }, `What the others logged about ${copyName(n.url)}`);
+    });
     clear(missedLine, h("div", { class: "al-missed" }, icon("warn"),
-      h("span", {}, h("b", {}, `${ctx.missed.length} of ${total} servers did not answer`), `: ${names.slice(0, 4).join(", ")}${names.length > 4 ? ` +${names.length - 4}` : ""}. Their lines are missing here.`),
+      h("span", {}, h("b", {}, `${ctx.missed.length} of ${total} servers did not answer`), `: ${names.slice(0, 4).join(", ")}${names.length > 4 ? ` +${names.length - 4}` : ""}. Each server keeps its own lines: theirs are missing here until they answer again.`),
+      ...about,
       h("button", { class: "btn xs ghost", onclick: (e) => { det.classList.toggle("hidden"); e.currentTarget.textContent = det.classList.contains("hidden") ? "details" : "hide"; } }, "details")), det);
   }
 
@@ -430,21 +443,22 @@ function render(page, r) {
     clear(more);
     const t = timeRange(), unit = t.to - t.from > 1440 * 60e3 ? 60 : 1, col = unit === 60 ? "hour" : "minute";
     try {
-      // Four queries a refresh: the histogram (every level, which the Level facet counts too),
-      // the servers, routes by status, and the lines.
-      const [hs, nodes, rs, main0] = await Promise.all([
+      // A refresh asks every server: the histogram (every level, which the Level facet counts
+      // too), the facets, and the lines. L8: without a server filter the servers, routes and
+      // statuses are one query, and the facets of the same search are kept 30 s.
+      const [hs, facetsJ, main0] = await Promise.all([
         ask(histSql(col)),
-        ctx.coord ? ask(`SELECT node, COUNT(*) FROM logs WHERE ${where("node")} GROUP BY node ORDER BY 2 DESC LIMIT 1000`) : { rows: [] },
-        ask(`SELECT route, status, COUNT(*) FROM logs WHERE ${where()} GROUP BY route, status ORDER BY 3 DESC LIMIT 300`),
-        tab === "patterns" ? ask(`SELECT ts, node, level, message, fields FROM logs WHERE ${where()} ORDER BY ts DESC, id DESC LIMIT ${SAMPLE}`) : ask(rowsSql()),
+        facetsOf(),
+        tab === "patterns" ? askPatterns() : ask(rowsSql()),
         loadEvents(),
       ]);
       if (my !== gen) return;
+      const [nodes, rs] = facetsJ;
       drawMissed(main0.nodes);
       matched = drawHist(hs.rows || [], unit);
       const by = (i) => { const m = new Map(); for (const r0 of rs.rows || []) if (r0[i] != null) m.set(r0[i], (m.get(r0[i]) || 0) + r0[2]); return [...m].sort((a, b) => b[1] - a[1]); };
       drawFacets(Object.entries(levelTotals), nodes.rows || [], by(1), by(0));
-      if (tab === "patterns") { sample = objects(main0); drawPatterns(); return; }
+      if (tab === "patterns") { buckets = main0.buckets; sample = buckets.flatMap((b) => b.rows); drawPatterns(); return; }
       rows = objects(main0); sample = null;
       [newest, oldest] = rows.length ? [msOf(rows[0].ts), msOf(rows[rows.length - 1].ts)] : [null, null];
       clear(list, rows.length ? [linesHead(), ...rows.map(lineEl)] : empty("logs", "No lines match", q ? "Try fewer filters or a longer range." : "Nothing was logged in this range at the levels the servers keep. Requests log at debug: raise a server's level in Log levels."));
@@ -460,6 +474,31 @@ function render(page, r) {
       clear(list, e instanceof ApiError && e.status === 403 ? empty("lock", "Log lines need an admin key", e.message) : h("div", { class: "error", style: { margin: "12px" } }, e.message));
       clear(hist); clear(facets); countNote.textContent = "";
     }
+  }
+  let facetsKey = "", facetsAt = 0, facetsHeld = null;
+  /** The servers' counts and the routes' by status: [{rows: [[node, n]]}, {rows: [[route, status, n]]}]. */
+  async function facetsOf() {
+    const all = where(), others = where("node");
+    // A live range's window moves: the same search is the same for 30 s.
+    const key = (ctx.coord ? others : "") + "|" + all.replace(/ts >= '[^']*'/, "") + "|" + Math.round(timeRange().from / 30e3);
+    if (key === facetsKey && Date.now() - facetsAt < 30e3 && facetsHeld) return facetsHeld;
+    let out;
+    if (ctx.coord && others === all) {
+      const j = await ask(`SELECT node, route, status, COUNT(*) FROM logs WHERE ${all} GROUP BY node, route, status LIMIT 20000`);
+      const byNode = new Map(), byRs = new Map();
+      for (const [node, route, status, n] of j.rows || []) {
+        byNode.set(node, (byNode.get(node) || 0) + n);
+        const k = JSON.stringify([route, status]);
+        byRs.set(k, (byRs.get(k) || 0) + n);
+      }
+      out = [{ rows: [...byNode].sort((a, b) => b[1] - a[1]) }, { rows: [...byRs].map(([k, n]) => [...JSON.parse(k), n]).sort((a, b) => b[2] - a[2]).slice(0, 300) }];
+    } else {
+      out = await Promise.all([
+        ctx.coord ? ask(`SELECT node, COUNT(*) FROM logs WHERE ${others} GROUP BY node ORDER BY 2 DESC LIMIT 1000`) : { rows: [] },
+        ask(`SELECT route, status, COUNT(*) FROM logs WHERE ${all} GROUP BY route, status ORDER BY 3 DESC LIMIT 300`)]);
+    }
+    [facetsKey, facetsAt, facetsHeld] = [key, Date.now(), out];
+    return out;
   }
   const linesHead = () => h("div", { class: "al-l al-lh", role: "row", "aria-hidden": "true" }, h("span", { title: `Times are in ${tz}` }, `time ${tzShort}`), h("span", {}, "l", h("span", { class: "al-lv-rest" }, "evel")), h("span", {}, "server"), h("span", {}, "message"));
   function drawMore() {
@@ -518,26 +557,43 @@ function render(page, r) {
     } catch { /* the next refresh says what failed */ }
   }
 
+  /** L6: the newest lines of each group of levels the search allows, one query a group: {nodes, took_ms, buckets: [{levels, name, rows}]}. */
+  async function askPatterns() {
+    const lv = f().level, allowed = lv ? (lv.ge ? LV.slice(0, Math.max(0, LV.indexOf(lv.v)) + 1) : [lv.v]) : LV;
+    const bs = BUCKETS.map((b) => ({ ...b, levels: b.levels.filter((l) => allowed.includes(l)) })).filter((b) => b.levels.length);
+    const js = await Promise.all(bs.map((b) => ask(`SELECT ts, node, level, message, fields FROM logs WHERE ${where()} AND level IN (${b.levels.map(lit).join(", ")}) ORDER BY ts DESC, id DESC LIMIT ${b.n}`)));
+    return { nodes: js[0]?.nodes, took_ms: Math.max(0, ...js.map((j) => j.took_ms || 0)), buckets: bs.map((b, i) => ({ ...b, rows: objects(js[i]) })) };
+  }
   function drawPatterns() {
     const groups = new Map();
-    for (const rw of sample) {
-      const p = pattern(rw.message, rw.fields), key = rw.level + " " + p;
-      const g = groups.get(key) || { level: String(rw.level).toLowerCase(), p, n: 0, nodes: new Set(), first: Infinity, last: 0, ex: rw };
-      g.n++; g.nodes.add(nameOf(rw.node)); const ms = msOf(rw.ts); g.first = Math.min(g.first, ms); g.last = Math.max(g.last, ms);
-      groups.set(key, g);
+    let estimated = 0;
+    for (const b of buckets) {
+      // Each line of a group's sample stands for its share of that group's lines in the range.
+      const total = b.levels.reduce((a, l) => a + (levelTotals[l] || 0), 0);
+      const w = b.rows.length && total > b.rows.length ? total / b.rows.length : 1;
+      if (w > 1) estimated++;
+      for (const rw of b.rows) {
+        const p = pattern(rw.message, rw.fields), key = rw.level + " " + p;
+        const g = groups.get(key) || { level: String(rw.level).toLowerCase(), p, n: 0, est: false, nodes: new Set(), first: Infinity, last: 0, ex: rw };
+        g.n += w; g.est ||= w > 1; g.nodes.add(nameOf(rw.node)); const ms = msOf(rw.ts); g.first = Math.min(g.first, ms); g.last = Math.max(g.last, ms);
+        groups.set(key, g);
+      }
     }
     const list0 = [...groups.values()].sort((a, b) => b.n - a.n);
     const max = Math.max(1, ...list0.map((g) => g.n));
-    countNote.textContent = `${fmt.plural(list0.length, "pattern")} in the newest ${fmt.n(sample.length)} of ${fmt.plural(matched, "line")}`;
+    countNote.textContent = `${fmt.plural(list0.length, "pattern")} in ${fmt.plural(matched, "line")}${estimated ? ` · from the newest ${fmt.n(sample.length)}, sampled by level` : ""}`;
     clear(list, list0.length ? table([
-      { key: "n", label: "lines", num: true, cls: "al-c-n", render: (g) => h("div", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" } }, h("div", { class: "barbox", style: { width: "56px" } }, h("div", { class: "bar", style: { width: g.n / max * 100 + "%", background: LCOLOR[g.level] } })), h("b", {}, fmt.n(g.n))) },
+      { key: "n", label: "lines", num: true, cls: "al-c-n", render: (g) => h("div", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" }, title: g.est ? "Estimated: its level's lines in the range, shared out as in the newest of them" : "Counted" }, h("div", { class: "barbox", style: { width: "56px" } }, h("div", { class: "bar", style: { width: g.n / max * 100 + "%", background: LCOLOR[g.level] } })), h("b", {}, (g.est ? "≈" : "") + fmt.n(Math.round(g.n)))) },
       { key: "level", label: "level", cls: "al-c-lv", render: (g) => h("span", { class: "al-l-lv al-lv-" + g.level }, g.level) },
       { key: "p", label: "message pattern", cls: "al-c-p", render: (g) => h("span", { class: "mono small al-pat2", title: g.p }, nameUrls(g.p)) },
       { key: "nodes", label: "where", cls: "al-c-where", sort: (g) => g.nodes.size, render: (g) => h("span", { class: "small nowrap", title: [...g.nodes].join(", ") }, [...g.nodes].sort().slice(0, 3).join(", ") + (g.nodes.size > 3 ? ` +${g.nodes.size - 3}` : "")) },
       { key: "last", label: "last", cls: "al-c-last", render: (g) => h("span", { class: "small nowrap", title: `first ${when(g.first)}` }, when(g.last)) },
     ], { rows: list0, compact: true, onRow: (g) => { const lit0 = g.p.split(/\s*<\w+>/)[0].trim(); tab = "lines"; setQ(`${tokens(q).filter((t) => !/^-?"/.test(t)).join(" ")} level:${g.level}${lit0 ? ` "${lit0.slice(0, 80).replace(/"/g, "")}"` : ""}`); } }) : empty("logs", "No lines match", "Try fewer filters or a longer range."));
     list.firstElementChild?.classList.add("al-ptbl");
-    clear(more, h("span", { class: "small muted" }, "Counts are of the sample. Click a pattern for its lines."));
+    const short = buckets.filter((b) => b.rows.length >= b.n).map((b) => b.name);
+    clear(more, h("span", { class: "small muted" }, short.length
+      ? `Errors and warnings, info and debug are sampled apart (the newest ${BUCKETS.map((b) => fmt.n(b.n)).join(", ")} lines), so a server on debug does not crowd out the errors. A count with ≈ shares out its level's lines in the range as in that sample (${short.join(", ")}). Click a pattern for its lines.`
+      : "Every line of the range is counted. Click a pattern for its lines."));
   }
 
   // ------------------------------------------------ no store: this server's memory
@@ -647,14 +703,24 @@ async function levelsDrawer(ctx) {
   try { self = await api("/v1/logs?limit=1&level=error"); } catch { /* shown below */ }
   const me = ctx.store?.store?.node;
   const servers = [{ name: me ? `${me} (this server)` : "this server", node: me, url: null, filter: self?.filter, expires_ms: self?.filter_expires_ms ?? self?.expires_ms, set_by: self?.filter_set_by, default: self?.default_filter }];
-  // Another server's level is not reported to the coordinator: the ones changed from this page are remembered.
+  // Another server's level: what it answers (GET /v1/logs?node=, below); until then, the ones changed from this page.
   for (const [node, n] of ctx.nodes) if (!n.self && n.url) { const k = SET[n.url]; const live = k && (!k.expires_ms || k.expires_ms > Date.now()); servers.push({ name: findCopy(n.url) ? copyName(n.url) : node, node, url: n.url, shard: n.shard, down: n.down, filter: live ? k.filter : null, expires_ms: live ? k.expires_ms : null, set_by: live ? k.set_by : null, default: k?.previous }); }
   // A server that reports when its level expires also sets another server's (PUT ?node=).
   const perServer = !!self && ("filter_expires_ms" in self || "filter_set_by" in self || !!self.per_server);
   ctx.newer = self ? perServer : ctx.newer;
-  const rows = servers.map((x) => h("tr", {},
+  // L5: each other server's own level, 16 at a time; the changed ones first.
+  const others = servers.filter((x) => x.url && !x.down);
+  const changed = (x) => !!(x.expires_ms || x.set_by);
+  const find = servers.length > 12 ? h("input", { class: "input sm", placeholder: "Filter servers", style: { width: "220px" }, oninput: debounce(() => draw(), 200) }) : null;
+  const tbody = h("tbody");
+  const draw = () => {
+    const q = (find?.value || "").trim().toLowerCase();
+    const xs = servers.filter((x) => !q || x.name.toLowerCase().includes(q) || (x.node || "").toLowerCase().includes(q)).sort((a, b) => (a.url ? 1 : 0) - (b.url ? 1 : 0) || Number(changed(b)) - Number(changed(a)));
+    clear(tbody, xs.map(row));
+  };
+  const row = (x) => h("tr", {},
     h("td", {}, h("span", { class: "mono small", title: x.url || "" }, x.name), x.shard != null ? h("span", { class: "tiny muted" }, ` shard ${x.shard}`) : null),
-    h("td", { class: "mono small", title: x.url && !x.filter ? "Not reported to this server: open the server itself to see it" : "" }, x.filter || (x.url ? "not reported" : "unknown")),
+    h("td", { class: "mono small", title: x.err ? x.err : "" }, x.filter || (x.down ? "does not answer" : x.err ? "did not answer" : x.url && !x.read && perServer ? "reading…" : x.url ? "not reported" : "unknown")),
     h("td", { class: "small" }, x.expires_ms ? `goes back at ${when(x.expires_ms, { sec: false })}${x.default ? ` to ${x.default}` : ""}${x.set_by ? ` · set by ${x.set_by}` : ""}` : x.filter ? (perServer ? "from the command line" : "until changed back") : ""),
     h("td", {}, (() => {
       const b = h("button", { class: "btn xs", onclick: () => change(x) }, "Change…");
@@ -662,10 +728,24 @@ async function levelsDrawer(ctx) {
       else if (x.url && !perServer) { b.disabled = true; b.title = "This server sets only its own level: a newer strata-server sets another server's"; }
       else if (x.down) { b.disabled = true; b.title = "It does not answer"; }
       return b;
-    })())));
+    })()));
+  draw();
   clear(body,
-    h("div", { class: "tbl-wrap", style: { maxHeight: "60vh" } }, h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ["server", "logs", "until", ""].map((k) => h("th", {}, k)))), h("tbody", {}, rows))),
+    find ? h("div", { class: "row", style: { gap: "8px" } }, find, h("span", { class: "small muted" }, "changed levels first")) : null,
+    h("div", { class: "tbl-wrap", style: { maxHeight: "60vh" } }, h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ["server", "logs", "until", ""].map((k) => h("th", {}, k)))), tbody)),
     h("p", { class: "small muted" }, "A level is error, warn, info, debug or trace, or target=level pairs as in --log (info,strata_server=debug). Requests log at debug: debug on a busy server writes a line a request, so it expires. Every change is audited and shows as an event."));
+  if (perServer) {
+    for (let i = 0; i < others.length; i += 16) {
+      await Promise.all(others.slice(i, i + 16).map(async (x) => {
+        try {
+          const j = await api("/v1/logs?node=" + encodeURIComponent(x.url));
+          Object.assign(x, { filter: j.filter ?? x.filter, expires_ms: j.filter_expires_ms ?? null, set_by: j.filter_set_by ?? null, default: j.previous ?? x.default, read: true });
+        } catch (e) { x.err = e.message; }
+      }));
+      if (!body.isConnected) return;
+      draw();
+    }
+  }
   async function change(x) {
     // Expiry came with the events (one server version): an older server keeps a level until changed.
     const expiring = ctx.newer !== false;

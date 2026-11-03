@@ -51,8 +51,13 @@ export function derive(t) {
     d1, d7, g1: base(d1), g7: base(d7), worst: answering[0] || null, down: stale.length - answering.length, staleList: stale };
 }
 
+/** The window the rates are over, in words: "last 4 min", or null before the server measured one. */
+const windowWords = (s) => s == null ? null : s < 90 ? `last ${Math.round(s)} s` : `last ${Math.round(s / 60)} min`;
+
 function render(page, r) {
   let rows = null, err = null, took = null, at = null, legacy = false, pick = r.params.get("table") || store.get("tables.pick", null);
+  // The rates' window (the longest of the tables'), and how often the server looks by itself.
+  let win = null, lookEvery = 60;
   let by = store.get("tables.by", "docs");
   let growth = store.get("tables.growth", "d1");
   const stamp = h("span", { class: "small muted" });
@@ -64,7 +69,9 @@ function render(page, r) {
   const shardsBox = h("div"), copiesBox = h("div");
   const shardsCard = card({ title: "Shards", sub: "largest first, so the outliers lead", body: shardsBox, cls: "dt-shards" });
   const copiesCard = card({ title: "Copies", sub: "replication lag of every copy, problems listed", body: copiesBox, cls: "dt-copies" });
-  const listCard = card({ title: "Tables", sub: "largest growth first · click a row for its shards and copies, its name for fields, bytes and reads", body: list, flush: true, cls: "dt-list", tools: h("span", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "ix-chip exact", title: "Rows, bytes and segments are read from every segment of every primary" }, "sizes exact"), h("span", { class: "ix-chip est", title: "Reads and writes per minute are averages since each primary started, not the last minutes" }, "rates since start")) });
+  const rateChip = h("span", { class: "ix-chip est" });
+  const listCard = card({ title: "Tables", sub: "largest growth first · click a row for its shards and copies, its name for fields, bytes and reads", body: list, flush: true, cls: "dt-list", tools: h("span", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "ix-chip exact", title: "Rows, bytes and segments are read from every segment of every primary" }, "sizes exact"), rateChip) });
+  const rateNote = h("span");
   page.append(
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Tables and storage"), sub),
       h("div", { class: "tools" }, stamp, h("label", { class: "small muted" }, "growth over"), growthSeg, again)),
@@ -73,9 +80,10 @@ function render(page, r) {
     card({ title: "What the numbers are", body: h("p", { class: "small dim", style: { margin: 0 } },
       "Rows and bytes: exact, from every segment of each shard's primary; one copy's bytes, and all copies' as that times the copies a shard has. ",
       "Growth: against the size the server kept a day or a week ago (it keeps one a table each hour in its log store, so a server without --log-store shows none). ",
-      "Writes and reads per minute: what each primary counted since it started, divided by the minutes since then (so a bulk load at start counts for a long time), added up over the shards; reads count documents read. Skew: the largest shard against the mean of all shards. ",
+      rateNote,
+      "Skew: the largest shard against the mean of all shards. ",
       "Lag: how far each copy is behind its primary, in writes and in seconds, as the copies last said. ",
-      "The page asks each copy once for its sizes (at most 16 at a time; the server keeps the answer 30 s) and samples no documents: the drill-down of one table does that, when it is opened.") }));
+      "The page asks each copy once for its sizes (at most 16 at a time; the server keeps the answer 30 s) and samples no documents: the drill-down of one table does that, when it is opened. It reads them again every 30 s.") }));
 
   async function load() {
     again.disabled = true; stamp.textContent = "Reading the sizes of every table…";
@@ -83,6 +91,8 @@ function render(page, r) {
     try {
       const j = await api("/v1/index/tables");
       rows = (Array.isArray(j) ? j : j.tables || []).map(derive);
+      win = Math.max(-1, ...rows.map((t) => t.rate_window_s ?? -1)); if (win < 0) win = null;
+      lookEvery = j.look_every_s ?? 60;
       err = null; legacy = false; took = performance.now() - t0; at = Date.now();
     } catch (e) {
       if (e instanceof ApiError && (e.status === 404 || e.status === 405)) {
@@ -109,7 +119,11 @@ function render(page, r) {
       return;
     }
     shardsCard.hidden = copiesCard.hidden = false;
-    stamp.textContent = `read in ${fmt.ms(took)} at ${fmt.time(at)} · the server keeps the sizes 30 s`;
+    stamp.textContent = `read in ${fmt.ms(took)} at ${fmt.time(at)} · again every 30 s`;
+    const ww = windowWords(win);
+    rateChip.textContent = ww ? `rates: ${ww}` : "rates: not measured yet";
+    rateChip.title = ww ? `Writes and reads per minute over the ${ww}: each table's counts now against the server's look of then (it looks every ${lookEvery} s by itself, and keeps 5 minutes of looks)` : `The server measures rates against an earlier look of its own: it looks every ${lookEvery} s, so the first rates come within a minute or so of it starting`;
+    clear(rateNote, `Writes and reads per minute: ${ww ? `over the ${ww}` : "not measured yet"}, each table's counts now against the server's look of then (it looks every ${lookEvery} s by itself and measures over up to 5 minutes; a server that restarted in the window gives none until its next look). Writes are each shard's primary's; reads are documents read, by every copy, added up over the shards. `);
     if (!rows.length) { clear(cards, empty("table", "No tables yet", "Create one in Schema, or load a file in Import and export.")); clear(list); return; }
     if (!pick || !rows.some((t) => t.table === pick)) pick = worstTable();
     drawCards(); drawList(); drawShards(); drawCopies();
@@ -164,9 +178,11 @@ function render(page, r) {
     // Hot.
     const totalReads = rows.reduce((a, t) => a + (t.reads_per_min || 0), 0);
     const hotT = [...rows].filter((t) => t.reads_per_min != null).sort((a, b) => b.reads_per_min - a.reads_per_min)[0];
-    const c3 = !hotT || !totalReads ? ans("Is a shard hot?", "No reads counted", "Reads per minute are averaged since each primary started; none were counted yet (a server needs a minute first).")
-      : hotT.hot && hotT.hotTimes > 1.5 ? ans("Is a shard hot?", `${hotT.table}: shard ${hotT.hot.shard} serves ${times(hotT.hotTimes)} the mean reads`, `${fmt.si(hotT.hot.reads_per_min)} reads/min against a mean of ${fmt.si(hotT.reads_per_min / (hotT.shards.length || 1))}. ${fmt.pct(hotT.reads_per_min / totalReads, 0)} of all reads go to ${hotT.table}.`, link(open(hotT.table, { shard: hotT.hot.shard }), `See shard ${hotT.hot.shard}`), "warn")
-        : ans("Is a shard hot?", `${hotT.table} takes ${fmt.pct(hotT.reads_per_min / totalReads, 0)} of reads`, `${fmt.si(hotT.reads_per_min)} reads/min of ${fmt.si(totalReads)} over all tables.${hotT.hot ? ` Its busiest shard, ${hotT.hot.shard}, serves ${times(hotT.hotTimes)} the mean.` : " The drill-down shows its reads by shard."}`, link(open(hotT.table), `Open ${hotT.table}`));
+    const ww = windowWords(win);
+    const c3 = !hotT ? ans("Is a shard hot?", "Not measured yet", `The server measures reads a minute against its look of a minute or more ago; it looks every ${lookEvery} s by itself. This page reads again every 30 s.`)
+      : !totalReads ? ans("Is a shard hot?", "No: nothing was read", `No table's documents were read in the ${ww || "last minutes"}.`)
+      : hotT.hot && hotT.hotTimes > 1.5 ? ans("Is a shard hot?", `${hotT.table}: shard ${hotT.hot.shard} serves ${times(hotT.hotTimes)} the mean reads`, `${fmt.si(hotT.hot.reads_per_min)} reads/min against a mean of ${fmt.si(hotT.reads_per_min / (hotT.shards.length || 1))}, over the ${ww || "last minutes"}. ${fmt.pct(hotT.reads_per_min / totalReads, 0)} of all reads go to ${hotT.table}.`, link(open(hotT.table, { shard: hotT.hot.shard }), `See shard ${hotT.hot.shard}`), "warn")
+        : ans("Is a shard hot?", hotT.hot ? `No: shard ${hotT.hot.shard} is the busiest, at ${times(hotT.hotTimes)} the mean` : `${hotT.table} takes ${fmt.pct(hotT.reads_per_min / totalReads, 0)} of reads`, `${hotT.hot ? `Of ${hotT.table}, the most read table (${fmt.pct(hotT.reads_per_min / totalReads, 0)} of reads): ${fmt.si(hotT.hot.reads_per_min)} reads/min on shard ${hotT.hot.shard} against a mean of ${fmt.si(hotT.reads_per_min / (hotT.shards.length || 1))}` : `${fmt.si(hotT.reads_per_min)} reads/min of ${fmt.si(totalReads)} over all tables. The drill-down shows its reads by shard`}, over the ${ww || "last minutes"}.`, link(open(hotT.table), `Open ${hotT.table}`));
     // Stale.
     const copies = new Map();
     for (const t of rows) for (const x of t.staleList) { const k = name(x.copy); const old = copies.get(k); if (!old || (x.behind_s ?? Infinity) > (old.behind_s ?? Infinity)) copies.set(k, { ...x, table: t.table }); }
@@ -193,13 +209,13 @@ function render(page, r) {
     const saidAbove = (x) => downAll.some((d) => d.copy === x.copy || d.url === x.copy || d.copy === name(x.copy));
     const note = (t) => { const sh = tableOf(t.table)?.short; return [sh?.retain && `keeps ${sh.retain}`, sh?.shard_by && `shard by ${sh.shard_by}`, sh?.expire_by && `expires by ${sh.expire_by}`].filter(Boolean).join(" · "); };
     const cols = [
-      { key: "table", label: "Table", render: (t) => h("div", {}, h("a", { href: open(t.table), title: `Fields, bytes, freshness and reads of ${t.table}`, onclick: (e) => e.stopPropagation() }, h("b", {}, t.table)), note(t) ? h("div", { class: "tiny muted" }, note(t)) : null) },
+      { key: "table", label: "Table", render: (t) => h("div", {}, h("a", { class: "wl-link", href: open(t.table), title: `Fields, bytes, freshness and reads of ${t.table}`, onclick: (e) => e.stopPropagation() }, h("b", {}, t.table)), note(t) ? h("div", { class: "tiny muted" }, note(t)) : null) },
       { key: "docs", label: "Rows", num: true, render: (t) => fmt.si(t.docs) },
       { key: "bytes", label: "On disk, one copy", short: "On disk", num: true, render: (t) => h("div", {}, fmt.bytes(t.bytes), copies > 1 ? h("div", { class: "tiny muted" }, `${fmt.bytes(t.bytes * copies)} all copies`) : null) },
       { key: "g", label: growth === "d7" ? "Δ 7 d" : "Δ 24 h", num: true, sort: (t) => g(t) ?? -Infinity, render: (t) => g(t) == null ? h("span", { class: "muted", title: "No size kept that long ago" }, "–") : h("span", { class: "dt-delta" + (g(t) === max && max > 0.01 ? " top" : ""), title: `${gb(t) >= 0 ? "+" : "−"}${fmt.bytes(Math.abs(gb(t)))} on one copy` }, pctText(g(t))) },
       { key: "g7", label: growth === "d7" ? "Δ 24 h" : "Δ 7 d", num: true, sort: (t) => (growth === "d7" ? t.g1 : t.g7) ?? -Infinity, render: (t) => h("span", { class: "dim" }, pctText(growth === "d7" ? t.g1 : t.g7)) },
-      { key: "writes_per_min", label: "Writes/min", title: "Documents written per minute, averaged since each primary started", num: true, render: (t) => fmt.si(t.writes_per_min) },
-      { key: "reads_per_min", label: "Reads/min", title: "Documents read per minute, averaged since each primary started", num: true, render: (t) => fmt.si(t.reads_per_min) },
+      { key: "writes_per_min", label: "Writes/min", title: `Documents written per minute over the ${windowWords(win) || "last minutes (not measured yet)"}`, num: true, render: (t) => t.writes_per_min == null ? h("span", { class: "muted", title: "Not measured yet: the server needs a look of a minute ago" }, "–") : fmt.si(t.writes_per_min) },
+      { key: "reads_per_min", label: "Reads/min", title: `Documents read per minute over the ${windowWords(win) || "last minutes (not measured yet)"}`, num: true, render: (t) => t.reads_per_min == null ? h("span", { class: "muted", title: "Not measured yet: the server needs a look of a minute ago" }, "–") : fmt.si(t.reads_per_min) },
       { key: "segments", label: "Segments", num: true, render: (t) => fmt.n(t.segments) },
       { key: "skew", label: "Largest shard", num: true, title: "The largest shard's rows against the mean of the shards", render: (t) => t.skew == null || (t.shards?.length || 0) < 2 ? h("span", { class: "muted" }, "–") : h("span", { class: t.skew >= 1.25 && material(t) ? "dt-flag" : "", title: `shard ${t.skewShard}${material(t) ? "" : ` · under ${SKEW_ROWS} rows a shard: not counted as skewed`}` }, times(t.skew), h("span", { class: "tiny muted" }, ` s${t.skewShard}`)) },
       { key: "lag", label: "Worst copy lag", num: true, title: "The copy furthest behind its primary, of those that answer; copies that do not answer are counted apart", sort: (t) => t.worst ? t.worst.behind_s ?? 0 : -1, render: (t) => h("span", { class: "row nw", style: { gap: "6px", justifyContent: "flex-end" } },
@@ -329,5 +345,7 @@ function render(page, r) {
   })];
   draw();
   load();
-  return () => { hideTip(); reselect = null; offs.forEach((f) => f()); };
+  // Again every 30 s (the server keeps an answer 30 s), unless paused or hidden.
+  const again30 = setInterval(() => { if (!state.paused && !document.hidden && page.isConnected && !again.disabled) load(); }, 30e3);
+  return () => { clearInterval(again30); hideTip(); reselect = null; offs.forEach((f) => f()); };
 }

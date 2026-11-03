@@ -15,7 +15,8 @@
 // RRF once its one weight is tuned on a few graded queries; minmax() and
 // zscore() are there to compare.
 
-import { h, s, icon, clear, fmt, api, store, toast, modal, empty, seg, sqlBlock, debounce, failure, showTip, hideTip } from "../core.js";
+import { h, s, icon, clear, fmt, api, store, toast, modal, confirm, empty, seg, sqlBlock, debounce, failure, showTip, hideTip } from "../core.js";
+import { isProduction } from "../data.js";
 import { tables, table as tableOf, invalidate } from "../catalog.js";
 import { quoteName } from "../sqledit.js";
 
@@ -440,7 +441,14 @@ function render(page) {
     name.oninput = draw; draw();
     const m = modal({ title: "Keep this ranking with the table", body: [h("label", { class: "f" }, "Name", name), preview],
       foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), h("button", { class: "btn primary", onclick: async () => {
-        try { await api("/v1/sql", { body: { sql: sqlFor() } }); m.close(); toast(`Rank profile ${name.value.trim()} saved`, "ok"); invalidate(); ts = await tables(true); }
+        // NEW-data-tools-8: on production the statement says why, as the workbench's writes do.
+        let reason = null;
+        if (isProduction()) {
+          const ok = await confirm({ title: `Save rank profile ${name.value.trim() || "p"} on ${t.table}?`, body: "This cluster counts as production: every query that names the profile ranks by it, and the audit log keeps the statement with your reason.", ok: "Save it", reason: true });
+          if (!ok) return;
+          reason = ok.reason;
+        }
+        try { await api("/v1/sql", { body: { sql: sqlFor() }, reason }); m.close(); toast(`Rank profile ${name.value.trim()} saved`, "ok"); invalidate(); ts = await tables(true); }
         catch (err) { toast(err.message, "bad", 9000); }
       } }, "Save the profile")] });
   }

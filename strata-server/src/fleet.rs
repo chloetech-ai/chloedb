@@ -32,8 +32,30 @@ pub struct Fleet {
 #[derive(Default)]
 struct Memory {
     status: Option<(&'static str, u64)>,
+    /// Since when the fleet has not been all right (fleet: apart from the
+    /// headline problem's own since).
+    not_ok: Option<u64>,
     problems: HashMap<String, u64>,
     disk: HashMap<String, VecDeque<(u64, f64)>>,
+}
+
+/// The window the headline judges searches by now: the last minute (the
+/// SLO checks keep [`WINDOW_S`]), so that an outage shows within seconds
+/// and its end as soon as searches answer again.
+pub const RECENT_S: u64 = 60;
+/// The fewest failures in [`RECENT_S`] that say searches fail now (one
+/// failure in fifty searches is not an outage).
+const RECENT_FAILURES: f64 = 3.0;
+
+/// What another coordinator says of its searches ([`crate::peers`]):
+/// over [`WINDOW_S`] and [`RECENT_S`], or why it did not say.
+#[derive(Clone, Debug, Default)]
+pub struct PeerWindow {
+    pub url: String,
+    pub name: String,
+    pub window: Window,
+    pub recent: Window,
+    pub error: Option<String>,
 }
 
 /// What a judgement reads.
@@ -45,12 +67,17 @@ pub struct Inputs<'a> {
     pub points: &'a [Arc<Json>],
     pub slo_error_ratio: f64,
     pub slo_p99_ms: f64,
-    /// Alerts this server fires: all of them, and the critical ones.
-    pub alerts: (u64, u64),
+    /// The alerts firing here that nobody silenced, as `/v1/alerts`'
+    /// `states` has them (a coordinator's each_copy rules gather its
+    /// copies': each counts once, `where` naming the copies).
+    pub alerts: Vec<Json>,
     /// Whether searches leave out a shard that does not answer.
     pub partial: bool,
     /// This server, when it is a coordinator: `{"url", "name"}`.
     pub coordinator: Option<Json>,
+    /// The other coordinators' searches (fleet): the SLO checks judge the
+    /// sum of every coordinator's.
+    pub peers: Vec<PeerWindow>,
     pub now_ms: u64,
 }
 
@@ -111,7 +138,7 @@ fn pct(r: f64) -> String {
 
 /// The searches of the window: how many ended, how many failed on the
 /// server's side, the latency histogram, and the mean rate and CPU.
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Window {
     pub queries: f64,
     pub failures: f64,
@@ -147,8 +174,63 @@ impl Window {
         w
     }
 
+    /// The points of `points` from `from_ms` on.
+    pub fn since(points: &[Arc<Json>], from_ms: u64) -> Window {
+        let i = points.iter().position(|p| p["t"].as_u64().unwrap_or(0) >= from_ms).unwrap_or(points.len());
+        Window::of(&points[i..])
+    }
+
+    /// What another coordinator is sent of it (`GET /v1/coordinators?window=1`).
+    pub fn json(&self) -> Json {
+        json!({"queries": self.queries, "failures": self.failures, "hist": self.hist, "secs": self.secs, "cpu_s": self.cpu_s})
+    }
+
+    pub fn from_json(j: &Json) -> Window {
+        let f = |k: &str| j[k].as_f64().unwrap_or(0.0);
+        Window { queries: f("queries"), failures: f("failures"), hist: j["hist"].as_array().map(|h| h.iter().map(|c| c.as_u64().unwrap_or(0)).collect()).unwrap_or_default(), secs: f("secs"), cpu_s: f("cpu_s"), ratios: Vec::new() }
+    }
+
+    /// `other`'s searches added to these (another coordinator's, over the
+    /// same span): counts, CPU and histograms summed over the longer span,
+    /// so that rates add up.
+    pub fn add(&mut self, other: &Window) {
+        self.queries += other.queries;
+        self.failures += other.failures;
+        self.cpu_s += other.cpu_s;
+        self.secs = self.secs.max(other.secs);
+        self.hist.resize(self.hist.len().max(other.hist.len()), 0);
+        for (i, c) in other.hist.iter().enumerate() {
+            self.hist[i] += c;
+        }
+    }
+
     pub fn error_ratio(&self) -> Option<f64> {
         (self.queries > 0.0).then(|| self.failures / self.queries)
+    }
+
+    /// The latest run of points whose failure ratio is over `over`: its
+    /// first and last point, and how many searches of it failed. Points
+    /// without searches do not break a run.
+    fn last_run(&self, over: f64) -> Option<(u64, u64, f64)> {
+        let mut run: Option<(u64, u64, f64)> = None;
+        let mut open = false;
+        for &(t, r) in &self.ratios {
+            match r {
+                Some(r) if r > over => {
+                    match (&mut run, open) {
+                        (Some(x), true) => {
+                            x.1 = t;
+                            x.2 = x.2.max(r);
+                        }
+                        _ => run = Some((t, t, r)),
+                    }
+                    open = true;
+                }
+                Some(_) => open = false,
+                None => {}
+            }
+        }
+        run
     }
 
     pub fn qps(&self) -> Option<f64> {
@@ -180,6 +262,32 @@ impl Window {
             }
         }
         since
+    }
+}
+
+/// A span of time in words: "45 s", "6 min", "2 h 5 min".
+fn dur(ms: u64) -> String {
+    let s = ms / 1000;
+    match s {
+        0..=89 => format!("{s} s"),
+        90..=5399 => format!("{} min", (s + 30) / 60),
+        _ => {
+            let m = (s + 30) / 60;
+            if m % 60 == 0 { format!("{} h", m / 60) } else { format!("{} h {} min", m / 60, m % 60) }
+        }
+    }
+}
+
+/// How long until a disk fills, in words: hours under a day, else days.
+fn fills_in(days: f64) -> String {
+    if days < 1.0 / 24.0 {
+        format!("{} min", (days * 1440.0).round().max(1.0))
+    } else if days < 1.0 {
+        format!("{} h", (days * 24.0).round())
+    } else if days < 10.0 {
+        format!("{:.1} days", days).replace(".0 days", " days")
+    } else {
+        format!("{:.0} days", days)
     }
 }
 
@@ -297,50 +405,100 @@ impl Fleet {
         };
         checks.push(json!({"id": "shards", "status": shards_status, "value": {"down": downs, "no_reads": no_reads, "no_writes": no_writes, "degraded": degraded, "total": shards.len()}, "where": where_shards}));
 
-        // ----- the clients' searches over the window
-        let w = Window::of(i.points);
+        // ----- the clients' searches over the window: every coordinator's
+        // (fleet); the headline judges the last minute, the SLO checks the
+        // window.
+        let own = Window::of(i.points);
+        let own_recent = Window::since(i.points, now.saturating_sub(RECENT_S * 1000));
+        let (mut w, mut r) = (own.clone(), own_recent.clone());
+        for p in i.peers.iter().filter(|p| p.error.is_none()) {
+            w.add(&p.window);
+            r.add(&p.recent);
+        }
         let ratio = w.error_ratio();
+        let recent = r.error_ratio();
         let slo = i.slo_error_ratio;
-        let er_status = match ratio {
-            Some(r) if r > slo => "critical",
-            Some(r) if r > slo / 2.0 => "warning",
-            _ => "ok",
+        // Failing now: over the SLO in the last minute (a few failures at
+        // least), or still over half of it while the window is over it.
+        // Without a search in the last minute, the window says.
+        let failing_now = match recent {
+            Some(x) => (x > slo && r.failures >= RECENT_FAILURES) || (x > slo / 2.0 && ratio.is_some_and(|y| y > slo)),
+            None => ratio.is_some_and(|y| y > slo),
         };
-        let er_since = (er_status != "ok").then(|| w.over_since(slo / 2.0)).flatten();
-        let mut er = json!({"id": "error_ratio", "status": er_status, "value": ratio, "slo": slo, "window_s": WINDOW_S, "queries": w.queries.round(), "failures": w.failures.round()});
+        let shown = if recent.is_some() { recent } else { ratio };
+        let run = own.last_run(slo / 2.0);
+        let recovered = !failing_now && ratio.is_some_and(|y| y > slo / 2.0) && recent.is_some() && run.is_some();
+        let er_status = if failing_now {
+            if shown.is_some_and(|x| x > slo) { "critical" } else { "warning" }
+        } else if recovered || ratio.is_some_and(|y| y > slo / 2.0) {
+            "warning"
+        } else {
+            "ok"
+        };
+        let er_since = failing_now.then(|| own.over_since(slo / 2.0)).flatten();
+        let mut er = json!({"id": "error_ratio", "status": er_status, "value": ratio, "slo": slo, "window_s": WINDOW_S, "queries": w.queries.round(), "failures": w.failures.round(),
+            "recent": {"value": recent, "window_s": RECENT_S, "queries": r.queries.round(), "failures": r.failures.round()}, "coordinators": 1 + i.peers.iter().filter(|p| p.error.is_none()).count()});
         if let Some(s) = er_since {
             er["since_ms"] = json!(s);
         }
         if ratio.is_none() {
             er["note"] = json!("No search ended in the last 5 min");
         }
+        if let (true, Some((from, to, worst))) = (recovered, run) {
+            er["recovered"] = json!({"from_ms": from, "to_ms": to, "worst": worst});
+        }
         checks.push(er);
-        if let (Some(r), true) = (ratio, er_status != "ok") {
+        if let (true, Some(x)) = (failing_now, shown) {
             let critical = er_status == "critical";
+            let over = if recent.is_some() { "the last minute" } else { "the last 5 min" };
             problems.push(Problem {
                 rank: if critical { 3 } else { 12 },
                 critical,
-                headline: format!("Searches are failing: {} failed over the last 5 min (SLO {})", pct(r), pct(slo)),
-                j: json!({"id": "error_ratio", "severity": severity(critical), "title": format!("{} of searches failed over the last 5 min (SLO {})", pct(r), pct(slo)), "where": ["searches"], "since_ms": er_since,
-                    "impact": format!("{} of searches fail", pct(r)), "next": {"text": "See which statements fail, and on which shards", "view": "queries", "params": {"outcome": "error"}}}),
+                headline: format!("Searches are failing: {} failed over {over} (SLO {})", pct(x), pct(slo)),
+                j: json!({"id": "error_ratio", "severity": severity(critical), "title": format!("{} of searches failed over {over} (SLO {})", pct(x), pct(slo)), "where": ["searches"], "since_ms": er_since,
+                    "impact": format!("{} of searches fail", pct(x)), "next": {"text": "See which statements fail, and on which shards", "view": "queries", "params": {"outcome": "error"}}}),
+            });
+        } else if let (true, Some((from, to, worst))) = (recovered, run) {
+            // A failure that ended: when, how long, how bad; searches answer again.
+            let lasted = dur(to.saturating_sub(from) + 2000);
+            let title = format!("Searches failed for {lasted} ({} at worst) and answer again", pct(worst));
+            problems.push(Problem {
+                rank: 11,
+                critical: false,
+                headline: title.clone(),
+                j: json!({"id": "error_ratio_recovered", "severity": "warning", "title": title, "where": ["searches"], "since_ms": from, "from_ms": from, "to_ms": to, "recovered_ms": to, "worst": worst,
+                    "impact": format!("{} of searches fail now (over the last minute)", pct(recent.unwrap_or(0.0))), "next": {"text": "See what failed in that window", "view": "queries", "params": {"tab": "statements", "from": from.saturating_sub(60_000), "to": to + 60_000}}}),
             });
         }
         let p99 = w.p99_ms();
+        let p99_now = r.p99_ms();
         let slo_ms = i.slo_p99_ms;
-        let p99_status = match p99 {
+        let judged = if r.queries > 0.0 { p99_now } else { p99 };
+        let p99_status = match judged {
             Some(v) if v > slo_ms * 4.0 => "critical",
             Some(v) if v > slo_ms => "warning",
             _ => "ok",
         };
-        checks.push(json!({"id": "p99", "status": p99_status, "value_ms": p99, "slo_ms": slo_ms, "window_s": WINDOW_S}));
-        if let (Some(v), true) = (p99, p99_status != "ok") {
+        let slow_was = p99_status == "ok" && r.queries > 0.0 && p99.is_some_and(|v| v > slo_ms);
+        checks.push(json!({"id": "p99", "status": if slow_was { "warning" } else { p99_status }, "value_ms": p99, "slo_ms": slo_ms, "window_s": WINDOW_S, "recent": {"value_ms": p99_now, "window_s": RECENT_S}}));
+        if let (Some(v), true) = (judged, p99_status != "ok") {
             let critical = p99_status == "critical";
+            let over = if r.queries > 0.0 { "the last minute" } else { "the last 5 min" };
             problems.push(Problem {
                 rank: if critical { 4 } else { 13 },
                 critical,
-                headline: format!("Searches are slow: p99 {v:.0} ms over the last 5 min (SLO {slo_ms:.0} ms)"),
-                j: json!({"id": "p99", "severity": severity(critical), "title": format!("Searches are slow: p99 {v:.0} ms over the last 5 min (SLO {slo_ms:.0} ms)"), "where": ["searches"], "since_ms": null,
+                headline: format!("Searches are slow: p99 {v:.0} ms over {over} (SLO {slo_ms:.0} ms)"),
+                j: json!({"id": "p99", "severity": severity(critical), "title": format!("Searches are slow: p99 {v:.0} ms over {over} (SLO {slo_ms:.0} ms)"), "where": ["searches"], "since_ms": null,
                     "impact": format!("1 search in 100 takes over {v:.0} ms"), "next": {"text": "See the slowest statements and where their time goes", "view": "performance", "params": {}}}),
+            });
+        } else if let (true, Some(v), Some(n)) = (slow_was, p99, p99_now) {
+            let title = format!("Searches were slow (p99 {v:.0} ms over the last 5 min) and are fast again: p99 {n:.0} ms over the last minute");
+            problems.push(Problem {
+                rank: 17,
+                critical: false,
+                headline: title.clone(),
+                j: json!({"id": "p99_recovered", "severity": "warning", "title": title, "where": ["searches"], "since_ms": null,
+                    "impact": format!("p99 {n:.0} ms now (SLO {slo_ms:.0} ms)"), "next": {"text": "See where the time went", "view": "performance", "params": {}}}),
             });
         }
 
@@ -412,7 +570,11 @@ impl Fleet {
         let names: std::collections::HashSet<&String> = disks.iter().map(|d| &d.1).collect();
         m.disk.retain(|k, _| names.contains(k));
         let mut dc = json!({"id": "disk", "status": "ok"});
-        if let Some((max, name, shard)) = disks.iter().cloned().max_by(|a, b| a.0.total_cmp(&b.0)) {
+        // The fullest first (to the tenth of a percent shown), then by name:
+        // the same order every look, though disks fill by bytes between looks.
+        let tenth = |v: f64| (v * 1000.0).round() as i64;
+        disks.sort_by(|a, b| tenth(b.0).cmp(&tenth(a.0)).then_with(|| a.1.cmp(&b.1)));
+        if let Some((max, name, shard)) = disks.first().cloned() {
             let mut sorted: Vec<f64> = disks.iter().map(|d| d.0).collect();
             sorted.sort_by(f64::total_cmp);
             let median = sorted[sorted.len() / 2];
@@ -431,29 +593,42 @@ impl Fleet {
                 "ok"
             };
             let r2 = |v: f64| (v * 1000.0).round() / 1000.0;
-            dc = json!({"id": "disk", "status": status, "max": r2(max), "median": r2(median), "where": name, "days_to_full": days.map(|d| (d * 10.0).round() / 10.0)});
+            // Every copy over the warning level: one problem for all of them.
+            let over: Vec<&(f64, String, usize)> = disks.iter().filter(|d| d.0 >= 0.85).collect();
+            dc = json!({"id": "disk", "status": status, "max": r2(max), "median": r2(median), "where": name, "days_to_full": days.map(|d| (d * 10.0).round() / 10.0), "over": over.iter().map(|d| &d.1).collect::<Vec<_>>()});
             if status != "ok" {
                 let critical = status == "critical";
-                let fills = days.map_or(String::new(), |d| format!(" and fills in about {d:.1} days at the last hour's rate"));
+                let fills = days.map_or(String::new(), |d| format!(" and fills in about {} at the last hour's rate", fills_in(d)));
+                let (title, where_) = if over.len() > 1 {
+                    let lo = over.last().map_or(max, |d| d.0);
+                    let range = if pct(lo) == pct(max) { pct(max) } else { format!("{} to {}", pct(lo), pct(max)) };
+                    let mut shards: Vec<usize> = over.iter().map(|d| d.2).collect();
+                    shards.sort_unstable();
+                    shards.dedup();
+                    let mut w: Vec<String> = shards.iter().map(|s| format!("shard {s}")).collect();
+                    w.extend(over.iter().map(|d| d.1.clone()));
+                    let fullest = if pct(lo) == pct(max) { if fills.is_empty() { String::new() } else { format!("; {name}{fills}") } } else { format!("; the fullest is {name}{fills}") };
+                    (format!("{} copies' disks are {range} full{fullest}", over.len()), w)
+                } else {
+                    (format!("{name}'s disk is {} full{fills}", pct(max)), vec![format!("shard {shard}"), name.clone()])
+                };
+                let impact = if over.len() > 1 { "Writes to a shard stop when its primary's disk is full".to_string() } else { format!("Writes to shard {shard} stop when its disk is full") };
                 problems.push(Problem {
                     rank: if critical { 5 } else { 15 },
                     critical,
-                    headline: format!("{name}'s disk is {} full{fills}", pct(max)),
-                    j: json!({"id": format!("disk-{name}"), "severity": severity(critical), "title": format!("{name}'s disk is {} full{fills}", pct(max)), "where": [format!("shard {shard}"), name], "since_ms": null,
-                        "impact": format!("Writes to shard {shard} stop when its disk is full"), "next": {"text": "See which tables grow, then free space, add disk or add a shard", "view": "tables", "params": {"shard": shard}}}),
+                    headline: title.clone(),
+                    j: json!({"id": "disk", "severity": severity(critical), "title": title, "where": where_, "since_ms": null, "copies": over.len(),
+                        "impact": impact, "next": {"text": "See which tables grow, then free space, add disk or add a shard", "view": "tables", "params": {"shard": shard}}}),
                 });
             }
         }
         checks.push(dc);
 
-        // ----- alerts: this server's, and each copy's own
-        let (mut firing, mut critical) = i.alerts;
-        for (_, r) in &copies {
-            for a in r["detail"]["alerts"]["firing"].as_array().map_or(&[][..], |v| v.as_slice()) {
-                firing += 1;
-                critical += u64::from(a["severity"] == "critical");
-            }
-        }
+        // ----- alerts: the rules firing here that nobody silenced, each once
+        // (a coordinator's each_copy rule gathers its copies'), as the bell
+        // counts them.
+        let firing = i.alerts.len() as u64;
+        let critical = i.alerts.iter().filter(|a| a["severity"] == "critical").count() as u64;
         let al_status = if critical > 0 {
             "critical"
         } else if firing > 0 {
@@ -461,18 +636,48 @@ impl Fleet {
         } else {
             "ok"
         };
-        checks.push(json!({"id": "alerts", "status": al_status, "firing": firing, "critical": critical}));
+        let rules: Vec<Json> = i
+            .alerts
+            .iter()
+            .map(|a| {
+                let copies: Vec<&str> = a["where"].as_array().map_or_else(Vec::new, |w| w.iter().filter(|c| c["state"].is_null() || c["state"] == "firing").filter_map(|c| c["short"].as_str().or(c["copy"].as_str())).collect());
+                json!({"rule": a["rule"], "name": a["name"], "severity": a["severity"], "since_ms": a["since_ms"], "copies": copies.len(), "where": copies})
+            })
+            .collect();
+        checks.push(json!({"id": "alerts", "status": al_status, "firing": firing, "critical": critical, "rules": rules}));
         if firing > 0 {
-            let title = format!("{firing} {} firing{}", if firing == 1 { "alert is" } else { "alerts are" }, if critical > 0 { format!(", {critical} critical") } else { String::new() });
+            let on = |a: &Json| match a["copies"].as_u64().unwrap_or(0) {
+                0 => String::new(),
+                1 => format!(" on {}", a["where"][0].as_str().unwrap_or("1 copy")),
+                n => format!(" on {n} copies"),
+            };
+            let named: Vec<String> = rules.iter().take(2).map(|a| format!("{}{}", a["name"].as_str().unwrap_or("?"), on(a))).collect();
+            let more = if rules.len() > 2 { format!(" and {} more", rules.len() - 2) } else { String::new() };
+            let title = format!("{firing} {} firing{}: {}{more}", if firing == 1 { "alert is" } else { "alerts are" }, if critical > 0 { format!(", {critical} critical") } else { String::new() }, named.join("; "));
+            let since = i.alerts.iter().filter_map(|a| a["since_ms"].as_u64()).min();
+            // NEW-workload-4: each rule with its severity and where, not "see each alert".
+            let each = |a: &Json| {
+                let at = match a["copies"].as_u64().unwrap_or(0) {
+                    0 => String::new(),
+                    1 => format!(", {}", a["where"][0].as_str().unwrap_or("1 copy")),
+                    n => format!(", {n} copies"),
+                };
+                format!("{} ({}{at})", a["name"].as_str().unwrap_or("?"), a["severity"].as_str().unwrap_or("warning"))
+            };
+            let mut impact = rules.iter().take(4).map(each).collect::<Vec<_>>().join(", ");
+            if rules.len() > 4 {
+                impact.push_str(&format!(" and {} more", rules.len() - 4));
+            }
             problems.push(Problem {
                 rank: if critical > 0 { 6 } else { 16 },
                 critical: critical > 0,
                 headline: title.clone(),
-                j: json!({"id": "alerts", "severity": severity(critical > 0), "title": title, "where": [], "since_ms": null, "impact": "See each alert for what it measures", "next": {"text": "Open the alerts firing", "view": "alerts", "params": {}}}),
+                j: json!({"id": "alerts", "severity": severity(critical > 0), "title": title, "where": [], "since_ms": since, "impact": impact, "next": {"text": if firing == 1 { "Open the alert" } else { "Open Alerts" }, "view": if firing == 1 { format!("alert/{}", i.alerts[0]["rule"].as_str().unwrap_or("")) } else { "alerts".to_string() }, "params": {}}}),
             });
         }
 
-        // ----- since when each problem holds, worst first
+        // ----- since when each problem holds, worst first; equal ones by
+        // their age, then their title: the same order every look.
         let ids: std::collections::HashSet<String> = problems.iter().map(|p| p.j["id"].as_str().unwrap_or("").to_string()).collect();
         m.problems.retain(|k, _| ids.contains(k));
         for p in &mut problems {
@@ -481,8 +686,15 @@ impl Fleet {
             if p.j["since_ms"].is_null() {
                 p.j["since_ms"] = json!(first);
             }
+            // The first signal of a problem: when it, or what it stems from, began.
+            let since = p.j["since_ms"].as_u64().unwrap_or(now);
+            p.j["first_signal_ms"] = json!(since.min(first));
         }
-        problems.sort_by_key(|p| (!p.critical, p.rank, p.j["since_ms"].as_u64().unwrap_or(now)));
+        problems.sort_by(|a, b| {
+            (!a.critical, a.rank, a.j["since_ms"].as_u64().unwrap_or(now))
+                .cmp(&(!b.critical, b.rank, b.j["since_ms"].as_u64().unwrap_or(now)))
+                .then_with(|| a.headline.cmp(&b.headline))
+        });
 
         let status = checks.iter().fold("ok", |a, c| worst(a, c["status"].as_str().unwrap_or("ok")));
         let since = match m.status {
@@ -490,6 +702,7 @@ impl Fleet {
             _ => now,
         };
         m.status = Some((status, since));
+        m.not_ok = if status == "ok" { None } else { Some(m.not_ok.unwrap_or(now)) };
         let headline = match problems.first() {
             Some(p) => p.headline.clone(),
             None => {
@@ -505,16 +718,31 @@ impl Fleet {
                 }
             }
         };
-        let since_ms = problems.first().and_then(|p| p.j["since_ms"].as_u64()).map_or(since, |t| t.min(since));
-        let coordinators: Vec<Json> = i
+        // The headline problem's own since and first signal; how long the
+        // fleet has not been all right is said apart.
+        let since_ms = problems.first().and_then(|p| p.j["since_ms"].as_u64()).unwrap_or(since);
+        let first_signal_ms = problems.first().and_then(|p| p.j["first_signal_ms"].as_u64());
+        let mut coordinators: Vec<Json> = i
             .coordinator
             .iter()
             .map(|c| {
-                json!({"url": c["url"], "name": c["name"], "qps": w.qps(), "p99_ms": p99, "error_ratio": ratio, "cpu": w.cpu(), "this": true})
+                json!({"url": c["url"], "name": c["name"], "qps": own.qps(), "p99_ms": own.p99_ms(), "error_ratio": own.error_ratio(), "cpu": own.cpu(), "recent_error_ratio": own_recent.error_ratio(), "this": true})
             })
             .collect();
+        for p in &i.peers {
+            let mut c = json!({"url": p.url, "name": p.name, "this": false});
+            match &p.error {
+                Some(e) => c["error"] = json!(e),
+                None => {
+                    for (k, v) in [("qps", p.window.qps()), ("p99_ms", p.window.p99_ms()), ("error_ratio", p.window.error_ratio()), ("cpu", p.window.cpu()), ("recent_error_ratio", p.recent.error_ratio())] {
+                        c[k] = json!(v);
+                    }
+                }
+            }
+            coordinators.push(c);
+        }
         json!({
-            "at_ms": now, "status": status, "headline": headline, "since_ms": since_ms,
+            "at_ms": now, "status": status, "headline": headline, "since_ms": since_ms, "first_signal_ms": first_signal_ms, "not_ok_since_ms": m.not_ok,
             "api": {"ok": true, "server": if i.coordinator.is_some() { "coordinator" } else { "shard" }},
             "checks": checks,
             "problems": problems.into_iter().map(|p| p.j).collect::<Vec<_>>(),
@@ -571,7 +799,7 @@ mod tests {
     }
 
     fn inputs<'a>(cluster: &'a Json, points: &'a [Arc<Json>]) -> Inputs<'a> {
-        Inputs { cluster, points, slo_error_ratio: 0.01, slo_p99_ms: 250.0, alerts: (0, 0), partial: false, coordinator: Some(json!({"url": null, "name": "c"})), now_ms: 10_000 }
+        Inputs { cluster, points, slo_error_ratio: 0.01, slo_p99_ms: 250.0, alerts: Vec::new(), partial: false, coordinator: Some(json!({"url": null, "name": "c"})), peers: Vec::new(), now_ms: 10_000 }
     }
 
     #[test]
@@ -626,10 +854,133 @@ mod tests {
         assert_eq!(er["value"], 0.025);
         assert_eq!(er["status"], "critical");
         assert_eq!(er["since_ms"], 10_000, "since the first point of the run over half the SLO");
-        assert_eq!(j["headline"], "Searches are failing: 2.5% failed over the last 5 min (SLO 1%)");
+        assert_eq!(j["headline"], "Searches are failing: 2.5% failed over the last minute (SLO 1%)");
         assert!(j["coordinators"][0]["qps"].as_f64().unwrap() == 50.0);
         let p99 = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "p99").unwrap().clone();
         assert!(p99["value_ms"].as_f64().unwrap() <= 50.0 && p99["status"] == "ok", "{p99}");
+    }
+
+    fn pts(from_s: u64, to_s: u64, fails: impl Fn(u64) -> u64) -> Vec<Arc<Json>> {
+        (from_s / 2..to_s / 2).map(|k| Arc::new(json!({"t": k * 2000, "secs": 2.0, "queries": 100, "query_errors": fails(k * 2000), "latency_hist": [0, 0, 0, 0, 0, 100]}))).collect()
+    }
+
+    #[test]
+    fn a_failure_that_ended_says_when_and_for_how_long() {
+        let c = json!({"shards": [{"shard": 0, "state": "ok", "replicas": [copy("s0-0", true)]}]});
+        // Ten failures in a hundred from 100 s to 160 s; none in the last 4 min.
+        let p = pts(0, 300, |t| if (100_000..=160_000).contains(&t) { 10 } else { 0 });
+        let mut i = inputs(&c, &p);
+        i.now_ms = 300_000;
+        let j = Fleet::default().judge(i);
+        assert_eq!(j["status"], "warning");
+        assert_eq!(j["headline"], "Searches failed for 62 s (10% at worst) and answer again");
+        let er = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "error_ratio").unwrap().clone();
+        assert_eq!(er["recent"]["value"], 0.0);
+        assert_eq!(er["recovered"]["from_ms"], 100_000);
+        assert_eq!(er["recovered"]["to_ms"], 160_000);
+        assert!(er["since_ms"].is_null(), "not failing now: no since");
+        let pr = &j["problems"][0];
+        assert_eq!(pr["id"], "error_ratio_recovered");
+        assert_eq!(pr["since_ms"], 100_000);
+        assert_eq!(j["since_ms"], 100_000, "the headline problem's since");
+        // Failing again in the last minute: failing now, over the last minute.
+        let p = pts(0, 300, |t| if t >= 260_000 { 5 } else { 0 });
+        let mut i = inputs(&c, &p);
+        i.now_ms = 300_000;
+        let j = Fleet::default().judge(i);
+        assert_eq!(j["status"], "critical");
+        assert_eq!(j["headline"], "Searches are failing: 3.3% failed over the last minute (SLO 1%)");
+        assert_eq!(j["problems"][0]["since_ms"], 260_000);
+        // Two failures in the last minute are not an outage.
+        let p = pts(0, 300, |t| if t == 298_000 { 2 } else { 0 });
+        let mut i = inputs(&c, &p);
+        i.now_ms = 300_000;
+        assert_eq!(Fleet::default().judge(i)["status"], "ok");
+    }
+
+    #[test]
+    fn every_coordinators_searches_count() {
+        let c = json!({"shards": [{"shard": 0, "state": "ok", "replicas": [copy("s0-0", true)]}]});
+        let p = pts(0, 20, |_| 0);
+        let theirs = Window { queries: 1000.0, failures: 50.0, hist: vec![0, 0, 0, 0, 0, 1000], secs: 20.0, cpu_s: 2.0, ratios: Vec::new() };
+        let mut i = inputs(&c, &p);
+        i.peers = vec![
+            PeerWindow { url: "http://b".into(), name: "coord-b".into(), window: theirs.clone(), recent: theirs, error: None },
+            PeerWindow { url: "http://c".into(), name: "coord-c".into(), error: Some("coord-c: cannot connect".into()), ..Default::default() },
+        ];
+        let j = Fleet::default().judge(i);
+        assert_eq!(j["headline"], "Searches are failing: 2.5% failed over the last minute (SLO 1%)");
+        let er = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "error_ratio").unwrap().clone();
+        assert_eq!((er["queries"].as_f64(), er["failures"].as_f64(), er["coordinators"].as_u64()), (Some(2000.0), Some(50.0), Some(2)));
+        let cs = j["coordinators"].as_array().unwrap();
+        assert_eq!(cs.len(), 3);
+        assert_eq!((cs[0]["this"].as_bool(), cs[0]["error_ratio"].as_f64()), (Some(true), Some(0.0)));
+        assert_eq!((cs[1]["name"].as_str(), cs[1]["error_ratio"].as_f64(), cs[1]["qps"].as_f64()), (Some("coord-b"), Some(0.05), Some(50.0)));
+        assert_eq!(cs[2]["error"], "coord-c: cannot connect");
+    }
+
+    #[test]
+    fn full_disks_are_one_problem_in_the_same_order_every_look() {
+        let disk = |short: &str, v: f64| json!({"short": short, "url": format!("http://{short}"), "status": "ok", "detail": {"load": {"disk_used_ratio": v}}});
+        let c = json!({"shards": [
+            {"shard": 0, "state": "ok", "replicas": [disk("s0-0", 0.88), disk("s0-1", 0.5)]},
+            {"shard": 1, "state": "ok", "replicas": [disk("s1-0", 0.9), disk("s1-1", 0.9)]},
+        ]});
+        let f = Fleet::default();
+        let j = f.judge(inputs(&c, &[]));
+        assert_eq!(j["status"], "warning");
+        assert_eq!(j["headline"], "3 copies' disks are 88% to 90% full; the fullest is s1-0");
+        let pr = &j["problems"][0];
+        assert_eq!((pr["id"].as_str(), pr["copies"].as_u64()), (Some("disk"), Some(3)));
+        assert_eq!(pr["where"], json!(["shard 0", "shard 1", "s1-0", "s1-1", "s0-0"]));
+        let dc = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "disk").unwrap().clone();
+        assert_eq!(dc["over"], json!(["s1-0", "s1-1", "s0-0"]));
+        for _ in 0..3 {
+            assert_eq!(f.judge(inputs(&c, &[]))["headline"], j["headline"]);
+        }
+        // Disks as full to the tenth of a percent: by name, whatever bytes moved between looks.
+        for (a, b) in [(0.92001, 0.91999), (0.91999, 0.92001)] {
+            let c = json!({"shards": [{"shard": 0, "state": "ok", "replicas": [disk("s0-1", a), disk("s0-0", b)]}]});
+            let j = Fleet::default().judge(inputs(&c, &[]));
+            assert_eq!(j["headline"], "2 copies' disks are 92% full");
+            let dc = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "disk").unwrap().clone();
+            assert_eq!((dc["where"].as_str(), dc["over"].clone()), (Some("s0-0"), json!(["s0-0", "s0-1"])));
+        }
+    }
+
+    #[test]
+    fn firing_alerts_count_once_each_with_their_copies() {
+        let c = json!({"shards": [{"shard": 0, "state": "ok", "replicas": [copy("s0-0", true)]}]});
+        let mut i = inputs(&c, &[]);
+        i.alerts = vec![
+            json!({"rule": "disk", "name": "Disk filling", "severity": "critical", "state": "firing", "since_ms": 4000, "where": [{"short": "s0-0"}, {"short": "s1-0", "state": "firing"}, {"short": "s1-1", "state": "ok"}]}),
+            json!({"rule": "p99", "name": "Slow searches", "severity": "warning", "state": "firing", "since_ms": 6000, "where": []}),
+        ];
+        let j = Fleet::default().judge(i);
+        let al = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "alerts").unwrap().clone();
+        assert_eq!((al["firing"].as_u64(), al["critical"].as_u64(), al["status"].as_str()), (Some(2), Some(1), Some("critical")));
+        assert_eq!(al["rules"][0]["copies"], 2);
+        let pr = j["problems"].as_array().unwrap().iter().find(|p| p["id"] == "alerts").unwrap().clone();
+        assert_eq!(pr["title"], "2 alerts are firing, 1 critical: Disk filling on 2 copies; Slow searches");
+        assert_eq!(pr["next"]["text"], "Open Alerts");
+        assert_eq!(pr["since_ms"], 4000);
+        let mut i = inputs(&c, &[]);
+        i.alerts = vec![json!({"rule": "p99", "name": "Slow searches", "severity": "warning", "state": "firing", "since_ms": 6000, "where": [{"short": "s0-0"}]})];
+        let pr = Fleet::default().judge(i)["problems"][0].clone();
+        assert_eq!(pr["title"], "1 alert is firing: Slow searches on s0-0");
+        assert_eq!((pr["next"]["text"].as_str(), pr["next"]["view"].as_str()), (Some("Open the alert"), Some("alert/p99")));
+    }
+
+    #[test]
+    fn a_span_and_a_fill_time_read_as_words() {
+        assert_eq!(dur(45_000), "45 s");
+        assert_eq!(dur(6 * 60_000), "6 min");
+        assert_eq!(dur(125 * 60_000), "2 h 5 min");
+        assert_eq!(dur(120 * 60_000), "2 h");
+        assert_eq!(fills_in(5.0 / 24.0), "5 h");
+        assert_eq!(fills_in(20.0 / 1440.0), "20 min");
+        assert_eq!(fills_in(2.5), "2.5 days");
+        assert_eq!(fills_in(14.2), "14 days");
     }
 
     #[test]
