@@ -839,6 +839,8 @@ struct Agg {
     max_ms: f64,
     rows: u64,
     shard_calls: u64,
+    /// Calls the command center made (`x-strata-client: command-center`).
+    command_center: u64,
     hist: [u64; STMT_BUCKETS.len() + 1],
     keys: Vec<KeyAgg>,
     errors: Vec<(String, u64, u64)>,
@@ -862,6 +864,7 @@ impl Agg {
         self.max_ms = self.max_ms.max(f.ms);
         self.rows += f.rows as u64;
         self.shard_calls += f.shard as u64;
+        self.command_center += f.caller.is_command_center() as u64;
         let b = STMT_BUCKETS.iter().position(|&b| f.ms <= b).unwrap_or(STMT_BUCKETS.len());
         self.hist[b] += 1;
         let key = f.caller.key.clone().unwrap_or_else(|| "-".into());
@@ -901,6 +904,7 @@ impl Agg {
         self.max_ms = self.max_ms.max(o.max_ms);
         self.rows += o.rows;
         self.shard_calls += o.shard_calls;
+        self.command_center += o.command_center;
         for (a, b) in self.hist.iter_mut().zip(o.hist) {
             *a += b;
         }
@@ -1088,10 +1092,13 @@ impl Statements {
             "last_seen_ms": k.map(|k| k.last_seen_ms.min(to)),
             "prev": prev.map(|p| json!({"calls": p.calls, "p99_ms": p.p(0.99), "errors": p.failed(), "total_ms": p.total_ms, "mean_ms": p.total_ms / p.calls.max(1) as f64})),
             "keys": a.keys_json(),
+            // The command center's own calls of it, and all of them its own.
+            "clients": {"command-center": a.command_center},
+            "command_center": a.calls > 0 && a.command_center == a.calls,
             // New: first seen in the window, while statements were counted
             // before it.
             "new": first.is_some_and(|f| f >= from) && since + 60_000 < from,
-            "sample": latest.map(|c| json!({"ts_ms": c.ts_ms, "params": c.params, "key": c.caller.key, "app": c.caller.app})),
+            "sample": latest.map(|c| json!({"ts_ms": c.ts_ms, "params": c.params, "key": c.caller.key, "key_id": c.caller.key_id, "app": c.caller.app, "client": c.caller.client, "addr": c.caller.addr})),
         })
     }
 
@@ -1124,9 +1131,13 @@ impl Statements {
             None => return None,
         };
         let len = to.saturating_sub(from).max(60_000);
-        let a = Self::sum(&s, from, to, Some(&fp)).remove(&fp).unwrap_or_default();
+        let mut all = Self::sum(&s, from, to, None);
+        // Its share of the window's time, over every statement (as the
+        // list gives it).
+        let total: f64 = all.values().map(|a| a.total_ms).sum();
+        let a = all.remove(&fp).unwrap_or_default();
         let before = Self::sum(&s, from.saturating_sub(len), from, Some(&fp)).remove(&fp);
-        let statement = self.statement_json(&s, &fp, &a, before.as_ref(), (from, to), a.total_ms);
+        let statement = self.statement_json(&s, &fp, &a, before.as_ref(), (from, to), total);
         let lo = from / 60_000 * 60_000;
         let trend: Vec<Json> = s
             .minutes

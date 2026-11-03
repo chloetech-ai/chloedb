@@ -210,7 +210,8 @@ async fn statements_compare_with_the_window_before() {
         let (status, body) = call(reqwest::Method::POST, &base, "/v1/query", &rb, &[], Some(json!({"sql": sql.replace("laptop", q)}))).await;
         assert_eq!(status, 200, "{body}");
     }
-    let (status, _) = call(reqwest::Method::POST, &base, "/v1/query", &rb, &[], Some(json!({"sql": "SELECT COUNT(*) FROM products"}))).await;
+    let ui = [("x-strata-client", "command-center")];
+    let (status, _) = call(reqwest::Method::POST, &base, "/v1/query", &ops, &ui, Some(json!({"sql": "SELECT COUNT(*) FROM products"}))).await;
     assert_eq!(status, 200);
 
     let (from, to) = (now - 15 * 60_000, strata_server::telemetry::now_ms() + 1);
@@ -227,6 +228,10 @@ async fn statements_compare_with_the_window_before() {
     assert!(s["p99_ms"].as_f64().unwrap() <= s["max_ms"].as_f64().unwrap());
     let count = list.iter().find(|s| s["sql"] == "SELECT COUNT(*) FROM products").unwrap();
     assert!(count["prev"].is_null(), "{count}");
+    // The command center's own statement says so, and its sample whose.
+    assert_eq!((count["command_center"].as_bool(), count["sample"]["client"].as_str()), (Some(true), Some("command-center")), "{count}");
+    assert_eq!(s["command_center"], false);
+    assert_eq!(s["sample"]["key"], "reports-batch", "{s}");
 
     // Its page, by id or by fingerprint.
     for which in [s["id"].as_str().unwrap().to_string(), fp.clone()] {
@@ -234,6 +239,7 @@ async fn statements_compare_with_the_window_before() {
         let (status, d) = call(reqwest::Method::GET, &base, &path, &ops, &[], None).await;
         assert_eq!(status, 200, "{d}");
         assert_eq!(d["statement"]["calls"], 3, "{d}");
+        assert!(d["statement"]["share"].as_f64().unwrap() < 1.0, "of the window's time over every statement: {d}");
         assert!(d["trend"].as_array().unwrap().len() >= 2, "{d}");
         assert!(d["slowest"].as_array().unwrap().iter().any(|c| c["id"] == 999 && c["ms"] == 3.0), "{d}");
         assert!(d["latest"].as_array().unwrap().iter().any(|c| c["key"] == "reports-batch"), "{d}");
