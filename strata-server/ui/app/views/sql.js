@@ -324,13 +324,15 @@ function render(page, r) {
   function select(id) { active = id; ed.value = tab().sql; save(); drawTabs(); drawParams(); drawMode(); markSoon(); }
   function add(sql, name, where) { const t = { id: uid(), name: name || (where === "logs" ? "Log store" : `Query ${tabs.length + 1}`), sql, params: {}, ...(where === "logs" ? { store: "logs" } : {}) }; tabs.push(t); select(t.id); ed.focus(); return t; }
   function close(id) { const i = tabs.findIndex((t) => t.id === id); tabs.splice(i, 1); if (active === id) active = tabs[Math.max(0, i - 1)].id; select(active); }
-  // `p` is the parameters as JSON: {name: {kind, value, field}}
+  // `p` is the parameters as JSON: the query's own ({"t": "rug", "k": 3},
+  // as Queries and the Profiler send them) or the editor's ({name: {kind,
+  // value, field}}).
   // `where` is "logs" for the log store (the link Logs' "As SQL" makes).
   openSql = (sql, p, where) => {
     const logs = where === "logs";
     let t = tabs.find((x) => !x.sql.trim() && !!x.store === logs);
     if (t) { t.sql = sql; select(t.id); } else t = add(sql, null, logs ? "logs" : null);
-    if (p) { try { t.params = JSON.parse(p); save(); drawParams(); } catch { /* a link with broken parameters opens without them */ } }
+    if (p) { try { t.params = editorParams(JSON.parse(p)); save(); drawParams(); } catch { /* a link with broken parameters opens without them */ } }
     history.replaceState(null, "", "#/sql");
   };
   const onLogs = () => tab()?.store === "logs";
@@ -378,6 +380,18 @@ function render(page, r) {
   }));
 
   // ------------------------------------------------------------ parameters
+  /** A query's parameters as the editor keeps them: {name: {kind, value, field}}. */
+  function editorParams(j) {
+    const out = {};
+    for (const [n, v] of Object.entries(j || {})) {
+      if (v && typeof v === "object" && !Array.isArray(v) && "kind" in v) out[n] = v;
+      else if (v && typeof v === "object" && !Array.isArray(v) && typeof v.embed === "string") out[n] = { kind: "embed", value: v.embed, ...(v.field ? { field: v.field } : {}) };
+      else if (typeof v === "string") out[n] = { kind: "text", value: v };
+      else if (typeof v === "number") out[n] = { kind: "number", value: String(v) };
+      else out[n] = { kind: "json", value: JSON.stringify(v) };
+    }
+    return out;
+  }
   function drawParams() {
     const names = paramNames(ed.value);
     paramsBox.classList.toggle("hidden", !names.length);
