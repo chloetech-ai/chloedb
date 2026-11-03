@@ -392,7 +392,7 @@ async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
     assert!(status.is_success(), "{set}");
     assert_eq!(set["slow_ms"].as_f64(), Some(25.0), "{set}");
     let own: Json = client().get(format!("{copy}/v1/profile/settings")).send().await.unwrap().json().await.unwrap();
-    assert_eq!((own["slow_ms"].as_f64(), own["started_slow_ms"]), (Some(25.0), was["started_slow_ms"].clone()), "the copy's own: {own}");
+    assert_eq!((own["slow_ms"].as_f64(), own["started_slow_ms"].clone()), (Some(25.0), was["started_slow_ms"].clone()), "the copy's own: {own}");
     let mine: Json = client().get(format!("{base}/v1/profile/settings")).send().await.unwrap().json().await.unwrap();
     assert_ne!(mine["slow_ms"].as_f64(), Some(25.0), "the coordinator's are its own: {mine}");
     let r = client().put(format!("{base}/v1/profile/settings?node=s0-0")).json(&json!({"slow_ms": -1})).send().await.unwrap();
