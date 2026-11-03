@@ -27,6 +27,7 @@ on an otherwise idle node.
 | `part-a-1thread/`, `before-hnsw-fix/` | the same parts on the two earlier Strata builds (and A1 for SQLite 3.40.1 and DuckDB in `part-a-1thread/`) |
 | `sqlite-3.40.1/` | SQLite 3.40.1's A1 and its A2 on scifact, nfcorpus and fiqa, replaced by 3.53.1's |
 | `build-split/` | `a2_build_split.py`: Strata's A2 build with and without its vector field, beside Tantivy |
+| `part-a-tantivy/`, `part-a-tantivy-2/` | Tantivy as the app's store beside Strata, on two sfo3 nodes (2026-11-03): see "Tantivy as the app's store" below |
 
 The tables below come from
 
@@ -229,6 +230,111 @@ segment (29 for fiqa, then a merge); one `insert()` of every row builds it in
 neighbour (`Sq8::prepare_int8` and `roundf`, 29% of the build), then searches
 (14%) and dots (9.5%). The thread "Speed up Strata's index build" (PR #226)
 takes these on.
+
+## Tantivy as the app's store (sfo3, 2026-11-03)
+
+Tantivy 0.27.0 (tantivy-py) on A1 and the writes tests as well as A2's
+BM25, with Strata beside it on the same node. `a1_app.py` keeps an index per
+table with every column stored and the filtered, sorted and aggregated ones
+indexed or fast; the joins and the read of 100 rows are app code; a write
+deletes the row by id, adds the new one, commits and reloads the searcher.
+`a_writes.py` gives Tantivy the products' text and columns without vectors (it
+has no vector search), so it skips the vector update and its load builds no
+vector index where Strata's builds one. `a2_search.py` answers the facet kind
+with a terms aggregation over the matches, and both systems drop Strata's 153
+stopwords from the queries (`--stopwords strata`, the default since the
+`part-a/` run, where Tantivy kept every word).
+
+- **Machines:** two DOKS nodes `g-8vcpu-32gb-intel` in sfo3 (nyc3 no longer
+  offers that size): Intel Xeon Gold 6548N, 8 vCPU, 31 GiB, Linux 6.12, Python
+  3.12.16. `part-a-tantivy/` is A1 for both systems on the first node, with
+  Tantivy's A2 (BM25 and facet) and writes; `part-a-tantivy-2/` is A2 (BM25
+  and facet) and the writes tests for both systems on the second. Compare
+  numbers within a directory only: Strata's A1 on the first node is 1.2 to 3.8
+  times its `part-a/` numbers (the newer CPU, and #223, #225 and #230), and its
+  scifact BM25 2.4 times (76 µs against 179).
+- **Builds:** Strata, strata-py and the bench scripts at ced0ce9 (the same
+  files as main 5c5ba58); Tantivy 0.27.0, index_format v7. `SHOP_EMBED=random`: the shop's product vectors are
+  random (A1 reads none; the writes tests insert and update them).
+- **Commands:** `do_part_a.sh` with `REGION=sfo3 SHOP_EMBED=random`, then
+  `PARTS="a1 a2 writes" A1_SYSTEMS=tantivy,strata A2_SYSTEMS=tantivy
+  A2_KINDS=facet,bm25 WRITES_SYSTEMS=tantivy OUT=part-a-tantivy` on the first
+  node and `PARTS="a2 writes" A2_SYSTEMS=tantivy,strata A2_KINDS=facet,bm25
+  WRITES_SYSTEMS=tantivy,strata OUT=part-a-tantivy-2` on the second. `run.log`
+  in each directory is the run's output.
+- **Cost:** the two nodes for about 40 and 35 minutes at $0.4494 an hour,
+  under $1. Clusters `strata-bench-t` and `strata-bench-t2` were deleted at
+  09:18 and 10:13 UTC.
+
+### A1: the app (`part-a-tantivy/`; Shop, 137,260 products and 4,624,176 reviews)
+
+Reads (p50 / p99, one thread):
+
+| system | get by id (SQL) | get by key (no SQL) | get, 4 threads | 100 by id (SQL) | 100 by key | a user's reviews | page 1 | page 10,000 |
+|---|---|---|---|---|---|---|---|---|
+| strata | 23 µs / 37 µs | 18 µs / 31 µs | 69,730/s | 1.27 ms / 1.69 ms | 1.41 ms / 1.63 ms | 22 µs / 43 µs | 868 µs / 1.04 ms | 2.50 ms / 2.85 ms |
+| tantivy | 34 µs / 55 µs | - | 23,916/s | 3.66 ms / 4.14 ms | - | 87 µs / 334 µs | 1.46 ms / 1.78 ms | 2.31 ms / 2.56 ms |
+
+Loads, aggregates and joins:
+
+| system | load reviews | file | reviews by brand | reviews by month | join: top products | join: a user's |
+|---|---|---|---|---|---|---|
+| strata | 37,132/s | 1,844 MB | 38.4 ms / 42.0 ms | 619 ms / 657 ms | 381 ms / 406 ms | 351 µs / 747 µs |
+| tantivy | 42,764/s | 1,861 MB | 43.8 ms / 51.8 ms | 85.0 ms / 87.9 ms | 234 ms / 255 ms | 506 µs / 1.70 ms |
+
+Writes (one row per transaction unless noted) and a mixed run of 2 readers and 1 writer:
+
+| system | insert | insert, 1,000 per txn | update price | counter + 1 | delete by id | mixed reads | mixed writes | errors |
+|---|---|---|---|---|---|---|---|---|
+| strata | 5,400/s | 121,518/s | 3,538/s | 3,744/s | 5,726/s | 4,057/s, p99 6.66 ms | 3,320/s, p99 502 µs | 0 |
+| tantivy | 116/s | 25,755/s | 99/s | 106/s | 437/s | 3,749/s, p99 4.35 ms | 82/s, p99 17.5 ms | 0 |
+
+### A2: BM25 and facet (`part-a-tantivy-2/`)
+
+Each cell is p50 / p99 at one client, queries a second at four, then
+nDCG@10.
+
+| collection | Strata BM25 | Tantivy BM25 | Strata facet | Tantivy facet |
+|---|---|---|---|---|
+| scifact | 76 µs / 216 µs, 36,702/s · 0.690 | 73 µs / 143 µs, 13,363/s · 0.686 | 33 µs / 59 µs, 56,951/s | 30 µs / 61 µs, 22,752/s |
+| nfcorpus | 26 µs / 66 µs, 58,750/s · 0.329 | 27 µs / 68 µs, 15,142/s · 0.326 | 24 µs / 52 µs, 58,726/s | 21 µs / 57 µs, 24,824/s |
+| fiqa | 233 µs / 845 µs, 13,423/s · 0.253 | 184 µs / 404 µs, 13,632/s · 0.253 | 61 µs / 110 µs, 45,883/s | 58 µs / 173 µs, 18,239/s |
+| trec-covid | 559 µs / 2.53 ms, 5,518/s · 0.664 | 870 µs / 1.73 ms, 3,954/s · 0.659 | 120 µs / 243 µs, 29,404/s | 113 µs / 683 µs, 14,512/s |
+| quora | 148 µs / 858 µs, 16,556/s · 0.755 | 244 µs / 641 µs, 10,055/s · 0.756 | 48 µs / 295 µs, 45,275/s | 47 µs / 166 µs, 19,966/s |
+
+The facet counts are the same for every scifact and nfcorpus query and differ
+on 2 of fiqa's 300 queries, 7 of trec-covid's 50 and 6 of quora's 300, where
+the two match slightly different documents. tantivy-py makes no more queries
+at four clients than at one (scifact BM25: 13,152 and 13,363 a second), so its
+binding holds Python's lock for most of each query; the four-client numbers
+are Tantivy as a Python app uses it.
+
+### Writes, updates and streams (`part-a-tantivy-2/`; 137,260 products, with a text index and, in Strata, a vector index)
+
+Rows per second, one writer:
+
+| system | load | insert 1/txn | 100/txn | 1,000/txn | 10,000/txn | update price | update title | update vector | upsert row | delete |
+|---|---|---|---|---|---|---|---|---|---|---|
+| strata | 20.5 s | 2,906/s | 58,288/s | 11,619/s | 16,743/s | 2,793/s | 1,797/s | 1,297/s | 3,551/s | 6,439/s |
+| tantivy | 3.0 s | 90/s | 1,577/s | 19,752/s | 47,409/s | 81/s | 78/s | - | 79/s | 444/s |
+
+A stream of new rows at a target rate, with a reader running:
+
+| system | target | reached | commit p50 | lag p99 | reads |
+|---|---|---|---|---|---|
+| strata | 1,000/s | 1,000/s | 1.27 ms | 4.58 ms | 40,931/s, p99 244 µs |
+| strata | 10,000/s | 10,000/s | 5.90 ms | 168 ms | 14,972/s, p99 2.21 ms |
+| strata | 50,000/s | 48,347/s | 33.7 ms | 561 ms | 828/s, p99 85.4 ms |
+| strata | flat out | 42,424/s | 95.4 ms | 192 ms | 733/s, p99 86.5 ms |
+| tantivy | 1,000/s | 1,000/s | 38.2 ms | 136 ms | 12,690/s, p99 2.13 ms |
+| tantivy | 10,000/s | 9,831/s | 44.9 ms | 102 ms | 9,664/s, p99 2.89 ms |
+| tantivy | 50,000/s | 22,909/s | 106 ms | 8,209 ms | 6,903/s, p99 3.96 ms |
+
+At 100 rows a transaction the test's 5,000 rows do not fill Strata's 10,000-row
+memtable, so no segment is built during it; at 1,000 every tenth insert builds
+one, vector index included (p90 365 ms against a p50 of 20 ms), and at 10,000
+every insert does. Tantivy's second-node writes are 10-20% below its first
+node's (insert 1/txn 90/s against 108/s, in `part-a-tantivy/writes_tantivy.json`).
 
 ## The A3 feed: where its time goes
 
