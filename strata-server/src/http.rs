@@ -63,6 +63,8 @@
 //! | `GET /v1/admin/keys`, `POST /v1/admin/keys`, `DELETE /v1/admin/keys/:id`, `POST /v1/admin/keys/:id/rotate` | `{name, scope, expires_days?, owner?, note?}`, rotate `{grace_minutes?}` | the API keys, how many were revoked, and how the last merge of keys went with each server of the cluster (`peers`, [`crate::keysync`]); a new one's secret is answered once; each key with its owner, note and last address, and the revoked ones (who revoked them, when); a rotation answers a new key of the same name and scope, the old one expiring after the grace (60 min) |
 //! | `GET /v1/admin/audit?kind=&from=&to=&who=&q=&limit=n` | | the changes, notes and refused requests, the newest first, with `kind` (change, note, refusal), who, addr, client, reason, object, before and after; older than memory holds from the log store's `audit` |
 //! | `GET /v1/alerts`, `PUT /v1/alerts/rules` | `{rules}` | the alert rules with their states and the latest changes ([`crate::alerts`]) |
+//! | `GET`/`PUT /v1/alerts/routes`, `POST /v1/alerts/routes/:name/test` | `{routes: [{name, url, severities}]}` | where notifications go, each with its deliveries (sent, failed, last error); a test message (admin) |
+//! | `POST /v1/alerts/backtest` | `{rule, from, to}` | the rule replayed over memory's points or up to 7 days of the log store's load: `{points, fired, source}` |
 //! | `GET /v1/alerts/:rule`, `POST /v1/alerts/:rule/ack`, `POST`/`DELETE /v1/alerts/:rule/silence`, `POST /v1/alerts/:rule/notes` | `{note}`, `{minutes, reason}`, `{text}` | one alert with its events (7 days), acknowledged, silenced, noted (write scope) |
 //!
 //! Every answer carries the request's id in `x-request-id`: the one the
@@ -193,7 +195,10 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/moves/finish", post(finish_move))
         .route("/v1/agent", post(agent_run))
         .route("/v1/judge", post(judge))
-        .route("/v1/queries", get(live_queries))
+        // workload (alerts agent): grouped, and cancelled by statement
+        .route("/v1/queries", get(live_queries).delete(cancel_queries))
+        .route("/v1/admin/contain", get(contain_rules).post(add_contain))
+        .route("/v1/admin/contain/:id", axum::routing::delete(remove_contain))
         .route("/v1/queries/:id", axum::routing::delete(cancel_query))
         .route("/v1/queries/recent", get(recent_queries))
         .route("/v1/queries/slow", get(slow_queries))
@@ -245,6 +250,9 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         // alerts (alerts agent)
         .route("/v1/alerts", get(alerts))
         .route("/v1/alerts/rules", put(put_alert_rules))
+        .route("/v1/alerts/routes", get(alert_routes).put(put_alert_routes))
+        .route("/v1/alerts/routes/:name/test", post(test_alert_route))
+        .route("/v1/alerts/backtest", post(alert_backtest))
         .route("/v1/alerts/:rule", get(alert))
         .route("/v1/alerts/:rule/ack", post(ack_alert))
         .route("/v1/alerts/:rule/silence", post(silence_alert).delete(unsilence_alert))
@@ -612,6 +620,8 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
     let plan = matches!(
         route.as_str(),
         "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
+            // alerts agent: a rule replayed.
+            | "/v1/alerts/backtest"
     );
     // A read that failed (404, 405, 500) changed nothing either.
     let read = method == axum::http::Method::GET || method == axum::http::Method::HEAD || plan;
@@ -685,6 +695,7 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/export" => Scope::Admin,
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
         "/v1/alerts/rules" => Scope::Admin,
+        "/v1/alerts/routes" | "/v1/alerts/routes/:name/test" => Scope::Admin,
         // alerts (alerts agent): acknowledging, silencing and noting write.
         "/v1/alerts/:rule/ack" | "/v1/alerts/:rule/silence" | "/v1/alerts/:rule/notes" => Scope::Write,
         "/v1/events/notes" => Scope::Admin,
@@ -2114,9 +2125,69 @@ fn param_u64(q: &std::collections::HashMap<String, String>, k: &str, default: u6
     q.get(k).map_or(Ok(default), |v| v.parse().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}"))))
 }
 
-async fn live_queries(State(app): State<App>) -> AxJson<Json> {
-    AxJson(json!({"queries": app.svc.live.list(), "running": app.svc.running()}))
+async fn live_queries(State(app): State<App>, Query(q): Params) -> Res {
+    let mut j = json!({"queries": app.svc.live.list(), "running": app.svc.running()});
+    // workload (alerts agent): grouped by statement shape and key.
+    match q.get("group").map(String::as_str) {
+        None | Some("") => {}
+        Some("shape") => j["groups"] = json!(app.svc.live.groups()),
+        Some(g) => return Err(ApiError::bad(format!("group is \"shape\", not {g:?}"))),
+    }
+    Ok(AxJson(j))
 }
+
+// ----- workload (alerts agent): bulk cancel and Contain rules
+
+/// Cancels the running queries of a statement (`fingerprint`), of one key
+/// (`key`) if given; the reason comes in `x-strata-reason`. Audited.
+async fn cancel_queries(State(app): State<App>, Query(q): Params) -> Result<Response, ApiError> {
+    let fp = q.get("fingerprint").map(String::as_str).filter(|f| !f.is_empty()).ok_or_else(|| ApiError::bad("say which statement: ?fingerprint= (and &key= for one key's)"))?;
+    let key = q.get("key").map(String::as_str).filter(|k| !k.is_empty());
+    let gone = app.svc.live.cancel_matching(fp, key);
+    let ids: Vec<u64> = gone.iter().filter_map(|q| q["id"].as_u64()).collect();
+    tracing::info!(queries = ids.len(), fingerprint = %crate::obs::truncate(fp, 200), key = key.unwrap_or(""), "queries cancelled by an operator");
+    let was: Vec<Json> = gone
+        .iter()
+        .map(|q| {
+            let mut w = json!({"id": q["id"]});
+            for k in ["key", "key_id", "client", "app", "addr", "started_ms"] {
+                if !q[k].is_null() {
+                    w[k] = q[k].clone();
+                }
+            }
+            w
+        })
+        .collect();
+    keys::note_change(keys::Change { object: Some(format!("queries of {}", crate::obs::truncate(fp, 200))), before: Some(json!({"statement": fp, "key": key, "queries": was})), ..Default::default() });
+    let of = key.map_or(String::new(), |k| format!(" of key {k}"));
+    Ok(audited(json!({"cancelled": ids.len(), "ids": ids}), format!("cancelled {} running queries{of}: {}", ids.len(), crate::obs::truncate(fp, 200))))
+}
+
+/// The Contain rules in force, the newest first.
+async fn contain_rules(State(app): State<App>) -> AxJson<Json> {
+    AxJson(Json::Array(app.svc.contain.list().iter().map(|r| r.json()).collect()))
+}
+
+/// Adds a Contain rule: audited, and an event.
+async fn add_contain(State(app): State<App>, p: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let name = by(&who(p));
+    let r = app.svc.contain.add(&b, &name)?;
+    tracing::info!(rule = %r.id, by = %name, "contain rule added: it {}", r.what());
+    app.svc.events.add(crate::contain::event(&r, "added", Some(name)));
+    keys::note_change(keys::Change { object: Some(format!("contain rule {}", r.id)), after: Some(r.json()), ..Default::default() });
+    Ok(audited(r.json(), format!("contain rule {} {} for {} min: {}", r.id, r.what(), r.expires_ms.saturating_sub(r.created_ms) / 60_000, r.reason)))
+}
+
+/// Removes a Contain rule: audited, and an event.
+async fn remove_contain(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let name = by(&who(p));
+    let r = app.svc.contain.remove(&id).ok_or_else(|| ApiError { status: 404, message: format!("no contain rule {id}") })?;
+    app.svc.events.add(crate::contain::event(&r, "removed", Some(name)));
+    keys::note_change(keys::Change { object: Some(format!("contain rule {id}")), before: Some(r.json()), ..Default::default() });
+    Ok(audited(json!({"removed": r.json()}), format!("removed contain rule {id}: it {}", r.what())))
+}
+
+// ----- end workload
 
 async fn cancel_query(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<u64>) -> Result<Response, ApiError> {
     let q = app.svc.live.list().into_iter().find(|q| q["id"] == id).unwrap_or(Json::Null);
@@ -3452,6 +3523,34 @@ async fn note_alert(State(app): State<App>, p: Option<axum::Extension<Principal>
     keys::note_change(keys::Change { object: Some(format!("alert {id}")), after: Some(json!({"note": text})), ..Default::default() });
     crate::alerts::deliver(&app.svc, vec![e]);
     app.svc.alerts.one(&id).map(AxJson)
+}
+
+async fn alert_routes(State(app): State<App>) -> AxJson<Json> {
+    AxJson(json!({"routes": app.svc.alerts.routes_json()}))
+}
+
+/// Replaces the routes (a route without its `url` keeps the one it had),
+/// audited with the routes before and after (their URLs without paths).
+async fn put_alert_routes(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let routes: Vec<crate::alerts::Route> = serde_json::from_value(b.get("routes").cloned().ok_or_else(|| ApiError::bad("the body needs \"routes\""))?).map_err(|e| ApiError::bad(format!("bad routes: {e}")))?;
+    let before = app.svc.alerts.routes_json();
+    app.svc.alerts.set_routes(routes)?;
+    let after = app.svc.alerts.routes_json();
+    let names: Vec<&str> = after.iter().filter_map(|r| r["name"].as_str()).collect();
+    keys::note_change(keys::Change { object: Some("alert routes".into()), before: Some(json!(before)), after: Some(json!(after)), ..Default::default() });
+    Ok(audited(json!({"routes": app.svc.alerts.routes_json()}), format!("alert routes: {}", if names.is_empty() { "none".to_string() } else { names.join(", ") })))
+}
+
+/// Posts a test message to a route, and says how it went.
+async fn test_alert_route(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let j = app.svc.alerts.test_route(&name, &by(&who(p))).await?;
+    let ok = j["ok"] == true;
+    Ok(audited(j, format!("sent a test message to alert route {name}{}", if ok { "" } else { " (it failed)" })))
+}
+
+/// Replays a rule over up to 7 days ([`crate::alerts::backtest`]).
+async fn alert_backtest(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    crate::alerts::backtest(&app.svc, &b).await.map(AxJson)
 }
 
 // ----- end alerts

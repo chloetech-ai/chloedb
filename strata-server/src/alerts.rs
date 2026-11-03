@@ -1460,6 +1460,7 @@ fn duration(ms: u64) -> String {
 /// in a task of its own. Changes go to the events, the log store and the
 /// routes.
 pub fn tick(svc: &Arc<crate::service::Service>, point: &Json) {
+    crate::contain::sweep(svc);
     let coordinator = matches!(svc.backend, crate::service::Backend::Cluster(_));
     svc.alerts.set_coordinator(coordinator);
     let t = point["t"].as_u64().unwrap_or_else(now_ms);
