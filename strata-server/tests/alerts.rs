@@ -116,10 +116,18 @@ async fn a_mean_over_its_window_fires_where_every_point_did_not() {
     let (_, ev) = call(&base, "GET", "/v1/events", None).await;
     let kinds: Vec<&str> = ev["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
     assert!(kinds.contains(&"alert_fired") && kinds.contains(&"alert_acked") && kinds.contains(&"alert_silenced"), "{ev}");
+    // One event each: the audit entry of an acknowledgement, a silence
+    // or a note is not a change event too.
+    let count = |k: &str| kinds.iter().filter(|x| **x == k).count();
+    assert_eq!((count("alert_acked"), count("alert_silenced"), count("note")), (1, 2, 1), "{ev}");
+    assert!(!ev["events"].as_array().unwrap().iter().any(|e| e["kind"] == "change" && e["detail"]["route"].as_str().is_some_and(|r| r.starts_with("/v1/alerts/:rule"))), "{ev}");
     let (_, audit) = call(&base, "GET", "/v1/admin/audit", None).await;
     let ack = audit["entries"].as_array().unwrap().iter().find(|e| e["route"] == "/v1/alerts/:rule/ack").expect("audited");
     assert_eq!((ack["object"].as_str(), ack["detail"].as_str()), (Some("alert slow"), Some("acknowledged alert slow")), "{ack}");
     assert!(ack["before"]["ack"].is_null() && ack["after"]["ack"]["by"] == "open", "{ack}");
+    let note = audit["entries"].as_array().unwrap().iter().find(|e| e["route"] == "/v1/alerts/:rule/notes").expect("audited");
+    assert_eq!(note["kind"], "note", "{note}");
+    assert_eq!(audit["entries"].as_array().unwrap().iter().filter(|e| e["route"] == "/v1/alerts/:rule/silence").count(), 2, "{audit}");
 }
 
 /// A window without the metric is no data: a firing alert stays firing,
@@ -288,6 +296,7 @@ struct Node {
     log: PathBuf,
     http: u16,
     grpc: u16,
+    args: Vec<String>,
     child: Option<Child>,
 }
 
@@ -302,7 +311,7 @@ impl Node {
         }
         db.storage().start_seq_no().unwrap();
         drop(db);
-        Node { path, log: dir.join(format!("{name}.log")), http: port(), grpc: port(), child: None }
+        Node { path, log: dir.join(format!("{name}.log")), http: port(), grpc: port(), args: Vec::new(), child: None }
     }
 
     fn url(&self) -> String {
@@ -320,6 +329,7 @@ impl Node {
             .arg(&self.path)
             .args(["--listen", &format!("127.0.0.1:{}", self.http), "--grpc", &format!("127.0.0.1:{}", self.grpc)])
             .args(["--seq-no", "--log", "info", "--failover-after-ms", "600", "--log-store", "off"])
+            .args(&self.args)
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()
@@ -386,13 +396,15 @@ async fn a_coordinator_gathers_its_copies_and_sees_a_shard_lose_its_majority() {
     svc.alerts.set_coordinator(true);
     c.add_replica(0, &b.url(), false).await.unwrap();
 
-    // The same rule on the copies and the coordinator: many documents.
+    // The same rules on the copies and the coordinator: many documents,
+    // and replicas out of sync, which only a primary reports.
     let rule = json!({"id": "many-docs", "name": "Many documents", "metric": "docs", "op": ">", "threshold": 10.0, "eval": "max", "window_s": 10, "scope": "each_copy"});
+    let sync = json!(alerts::defaults().into_iter().find(|r| r.id == "out-of-sync").unwrap());
     for n in [&a, &b] {
-        let (status, j) = call(&n.base(), "PUT", "/v1/alerts/rules", Some(json!({"rules": [rule.clone()]}))).await;
+        let (status, j) = call(&n.base(), "PUT", "/v1/alerts/rules", Some(json!({"rules": [rule.clone(), sync.clone()]}))).await;
         assert_eq!(status, 200, "{j}");
     }
-    let rules: Vec<alerts::Rule> = vec![serde_json::from_value(rule).unwrap()];
+    let rules: Vec<alerts::Rule> = vec![serde_json::from_value(rule).unwrap(), serde_json::from_value(sync).unwrap()];
     svc.alerts.set_rules(rules, "test").unwrap();
 
     let all = until(&svc, "both copies fire many-docs", &[&a, &b], |a| {
@@ -405,7 +417,39 @@ async fn a_coordinator_gathers_its_copies_and_sees_a_shard_lose_its_majority() {
     assert_eq!(s["where"][0]["copy"], a.url().as_str());
     assert!(s["where"][0]["value"].as_f64().unwrap() >= N as f64, "{s}");
     assert_eq!(s["copies"]["firing"], 2, "{s}");
+    // Its event names both copies, in one shard.
+    let (fired, _) = svc.events.range(0, u64::MAX, &["alert_fired".to_string()], 10);
+    let w = &json!(fired.iter().find(|e| e.event.where_["rule"] == "many-docs").expect("an event of it").event.where_);
+    assert_eq!((w["shard"].as_u64(), w.get("copy"), w["copies"].as_array().map(Vec::len)), (Some(0), None, Some(2)), "{w}");
     assert_eq!(state(&all, "shard-no-majority")["state"], "ok", "{all}");
+    // The replica does not report replicas out of sync: the rule is ok
+    // on the primary, not without data.
+    let all = until(&svc, "out-of-sync is ok", &[&a, &b], |a| state(a, "out-of-sync")["state"] == "ok").await;
+    let s = state(&all, "out-of-sync");
+    assert_eq!((s["copies"]["ok"].as_u64(), s["copies"]["not_reported"].as_u64(), s["copies"]["no_data"].as_u64()), (Some(1), Some(1), Some(0)), "{s}");
+
+    // A copy's log filter, set and read through the coordinator: one
+    // event of it, which names the copy.
+    let cbase = http(svc.clone()).await;
+    let (status, j) = call(&cbase, "PUT", &format!("/v1/logs/filter?node={}", b.url()), Some(json!({"filter": "debug", "expires_s": 60}))).await;
+    assert_eq!((status, j["filter"].as_str(), j["short"].as_str()), (200, Some("debug"), Some("s0-1")), "{j}");
+    let (status, j) = call(&cbase, "GET", &format!("/v1/logs?node={}", b.url()), None).await;
+    assert_eq!(status, 200, "{j}");
+    assert_eq!((j["node"].as_str(), j["filter"].as_str(), j["filter_set_by"].as_str()), (Some(b.url().as_str()), Some("debug"), Some("open")), "{j}");
+    assert!(j["filter_expires_ms"].as_u64().is_some(), "{j}");
+    let (_, j) = call(&cbase, "GET", "/v1/logs/filter?node=s0-1", None).await;
+    assert_eq!((j["filter"].as_str(), j["node"].as_str()), (Some("debug"), Some(b.url().as_str())), "{j}");
+    let (_, j) = call(&cbase, "GET", "/v1/logs/filter?node=s9-9", None).await;
+    assert!(j["error"].as_str().is_some_and(|e| e.contains("no copy s9-9")), "{j}");
+    let (_, ev) = call(&cbase, "GET", "/v1/events", None).await;
+    let evs = ev["events"].as_array().unwrap();
+    let levels: Vec<&Json> = evs.iter().filter(|e| e["kind"] == "log_level").collect();
+    assert_eq!(levels.len(), 1, "{ev}");
+    assert_eq!((levels[0]["where"]["copy"].as_str(), levels[0]["where"]["shard"].as_u64()), (Some("s0-1"), Some(0)), "{ev}");
+    assert!(levels[0]["title"].as_str().unwrap().contains("on s0-1"), "{ev}");
+    assert!(!evs.iter().any(|e| e["kind"] == "change" && e["detail"]["route"] == "/v1/logs/filter"), "said once: {ev}");
+    let (_, audit) = call(&cbase, "GET", "/v1/admin/audit", None).await;
+    assert!(audit["entries"].as_array().unwrap().iter().any(|e| e["route"] == "/v1/logs/filter"), "and audited: {audit}");
     assert!(all["rules"].as_array().unwrap().iter().any(|r| r["id"] == "shard-no-majority" && r["builtin"] == true), "{all}");
 
     // A copy lost: one of two is no majority.
@@ -420,4 +464,84 @@ async fn a_coordinator_gathers_its_copies_and_sees_a_shard_lose_its_majority() {
     assert_eq!(state(&lost, "copy-down")["state"], "pending", "{lost}");
     let w = state(&lost, "many-docs")["where"].as_array().unwrap().clone();
     assert!(w.iter().any(|w| w["short"] == "s0-1" && w["unheard_since_ms"].as_u64().is_some()), "{w:?}");
+}
+
+/// A route that fails (busy, slow) holds up no other route's messages,
+/// which go out at once; a server names its cluster (`--cluster-name`) in
+/// alerts and route tests from the start, before any alert fired.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failing_route_holds_up_no_other_and_the_cluster_is_named_from_the_start() {
+    let got: Arc<Mutex<Vec<(Instant, Json)>>> = Arc::default();
+    let keep = got.clone();
+    let busy_tries = Arc::new(AtomicU32::new(0));
+    let tries = busy_tries.clone();
+    let hook = axum::Router::new()
+        .route(
+            "/ok",
+            axum::routing::post(move |axum::Json(j): axum::Json<Json>| {
+                let keep = keep.clone();
+                async move {
+                    keep.lock().unwrap().push((Instant::now(), j));
+                    "ok"
+                }
+            }),
+        )
+        .route(
+            "/busy",
+            axum::routing::post(move || {
+                let tries = tries.clone();
+                async move {
+                    tries.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    (axum::http::StatusCode::TOO_MANY_REQUESTS, "busy")
+                }
+            }),
+        );
+    let hl = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hurl = format!("http://127.0.0.1:{}", hl.local_addr().unwrap().port());
+    tokio::spawn(async move { axum::serve(hl, hook).await });
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut n = Node::new(dir.path(), "a", N);
+    n.args = vec!["--cluster-name".into(), "search-demo".into()];
+    n.start().await;
+    let base = n.base();
+    let (_, a) = call(&base, "GET", "/v1/alerts", None).await;
+    assert_eq!(a["cluster"]["name"], "search-demo", "{a}");
+    // The busy route first: each message used to wait for its three tries.
+    let routes = json!({"routes": [{"name": "busy", "url": format!("{hurl}/busy"), "severities": ["critical"]}, {"name": "oncall", "url": format!("{hurl}/ok"), "severities": ["critical"]}]});
+    let (status, j) = call(&base, "PUT", "/v1/alerts/routes", Some(routes)).await;
+    assert_eq!(status, 200, "{j}");
+    let (status, j) = call(&base, "POST", "/v1/alerts/routes/oncall/test", Some(json!({}))).await;
+    assert_eq!((status, j["ok"].as_bool()), (200, Some(true)), "{j}");
+    assert_eq!(j["text"], "[strata TEST] A test of route oncall on search-demo, sent by open.", "{j}");
+    got.lock().unwrap().clear();
+
+    // Three alerts that fire at once.
+    let rules: Vec<Json> = (1..=3).map(|i| json!({"id": format!("d{i}"), "name": format!("Docs {i}"), "metric": "docs", "op": ">", "threshold": 10.0, "eval": "max", "window_s": 10, "severity": "critical"})).collect();
+    let (status, j) = call(&base, "PUT", "/v1/alerts/rules", Some(json!({"rules": rules}))).await;
+    assert_eq!(status, 200, "{j}");
+    let t0 = Instant::now();
+    while got.lock().unwrap().len() < 3 {
+        assert!(t0.elapsed() < Duration::from_secs(20), "3 messages on oncall: {:?}\n{}", got.lock().unwrap(), n.logs());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let got = got.lock().unwrap().clone();
+    let spread = got[2].0.duration_since(got[0].0);
+    assert!(spread < Duration::from_millis(1500), "the busy route held them up: {spread:?}");
+    let texts: Vec<&str> = got.iter().map(|(_, j)| j["text"].as_str().unwrap()).collect();
+    assert!(texts.iter().all(|t| t.starts_with("[strata FIRING critical] Docs ") && t.contains(" on search-demo: docs = ")), "{texts:?}");
+    // The busy route was tried, and says how it failed.
+    let t1 = Instant::now();
+    loop {
+        let (_, a) = call(&base, "GET", "/v1/alerts", None).await;
+        let busy = a["routes"].as_array().unwrap().iter().find(|r| r["name"] == "busy").unwrap().clone();
+        if busy["failed"].as_u64() >= Some(1) {
+            assert!(busy["last_error"].as_str().is_some_and(|e| e.contains("429")), "{busy}");
+            break;
+        }
+        assert!(t1.elapsed() < Duration::from_secs(15), "busy failed once: {busy}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(busy_tries.load(Ordering::Relaxed) >= 3, "three tries");
 }

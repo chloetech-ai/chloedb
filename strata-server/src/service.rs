@@ -3438,10 +3438,17 @@ impl Service {
 
     /// Keeps an audit entry ([`Audit::add`]).
     pub fn audit_add(&self, e: keys::Entry) {
+        self.audit_keep(e, true);
+    }
+
+    /// Keeps an audit entry; a change is a `change` event too when
+    /// `event`, which is false when its request made its own event of it
+    /// (an alert acknowledged, a log level set: alerts agent).
+    pub fn audit_keep(&self, e: keys::Entry, event: bool) {
         if let Some(s) = &self.log_store {
             s.keep_audit(&e);
         }
-        if e.kind() == keys::CHANGE {
+        if event && e.kind() == keys::CHANGE {
             self.events.add(crate::events::of_change(&e));
         }
         self.audit.add(e);

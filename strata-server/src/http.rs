@@ -52,8 +52,8 @@
 //! | `POST /v1/admin/plan` | `{shards?: [{shard, copies}], add_shards?, remove_shards?, moves?}` | on own machines, the steps of a change of the cluster's shape, rows to copy, an estimate, what clients feel and what to check first; changes nothing ([`crate::coord::plan`]) |
 //! | `GET /v1/admin/kube/versions?limit=30` | | the images of the cluster's repository a person may pick, newest first, each `current`, `newer`, `tracked`; without Kubernetes too ([`crate::operator::upgrade::Versions`]) |
 //! | `GET /v1/load?from=&to=&copies=all` | | on a coordinator, each copy's load a minute from its own log store; copies that did not answer under `missing` |
-//! | `GET /v1/logs?after=seq&level=warn&request=id&q=text&limit=n` | | `{lines, last, filter, filter_expires_ms, filter_set_by}`: the latest log lines ([`crate::obs::ring`]) |
-//! | `GET /v1/logs/filter`, `PUT /v1/logs/filter?node=` | `{filter, expires_s?}` (as `--log`) | `{filter, expires_ms, set_by, set_ms, previous}`: what is logged, for `expires_s` (30 min by default; 0: until set again) and then the filter before; on a coordinator, `node` (a copy's URL or short name) sets that copy's |
+//! | `GET /v1/logs?after=seq&level=warn&request=id&q=text&limit=n&node=` | | `{lines, last, filter, filter_expires_ms, filter_set_by}`: the latest log lines ([`crate::obs::ring`]); on a coordinator with `node`, that copy's `{node, short, filter, filter_expires_ms, filter_set_by, filter_set_ms, previous}` (its lines are in the log store) |
+//! | `GET /v1/logs/filter?node=`, `PUT /v1/logs/filter?node=` | `{filter, expires_s?}` (as `--log`) | `{filter, expires_ms, set_by, set_ms, previous}`: what is logged, for `expires_s` (30 min by default; 0: until set again) and then the filter before; on a coordinator, `node` (a copy's URL or short name) asks or sets that copy's, answered with `node` and `short`; a change is an event (`log_level`) |
 //! | `POST /v1/logs/query` | `{sql, params?, timeout_ms?, scope?}` (SQL over tables `logs` and `queries`) | rows of the server's log store ([`crate::logstore`]); on a coordinator, of every server's merged, with `nodes`: each server's rows, time and error (`"scope": "local"`: its own store alone) |
 //! | `GET /v1/logs/store` | | `{store, schemas, nodes?}`: the log store (its path, rows, bytes, retention, what it wrote, dropped and deleted; null without one), its tables, and on a coordinator every server's |
 //! | `GET /v1/system`, `/v1/cluster`, `/v1/routes` | | the process and its limits; the cluster's copies; requests by route and queries by kind |
@@ -626,6 +626,10 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
     // A read that failed (404, 405, 500) changed nothing either.
     let read = method == axum::http::Method::GET || method == axum::http::Method::HEAD || plan;
     let caller = keys::caller().unwrap_or_default();
+    // A request that made its own event of what it did (an alert
+    // acknowledged, a log level set, a Contain rule): its audit entry is
+    // not a `change` event too, so that the Timeline says it once.
+    let evented = res.extensions().get::<Evented>().is_some();
     if refusal || detail.is_some() || (need == Scope::Admin && !read) {
         let kind = if refusal { keys::REFUSAL } else { change.kind.unwrap_or(keys::CHANGE) };
         // A refused credential that is a key known here (expired, revoked):
@@ -638,7 +642,7 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
             (Some((_, name, why)), None) => Some(format!("refused: the key {name} is {why}")),
             (_, d) => d,
         };
-        app.svc.audit_add(keys::Entry {
+        app.svc.audit_keep(keys::Entry {
             ts_ms: telemetry::now_ms(),
             who: who.as_ref().map_or_else(|| known.as_ref().map_or("unknown".into(), |k| k.1.clone()), keys::audit_name),
             key: who.as_ref().and_then(|w| w.key.clone()).or_else(|| known.as_ref().map(|k| k.0.clone())),
@@ -657,7 +661,7 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
             before: change.before,
             after: change.after,
             actor: change.actor.unwrap_or("person").into(),
-        });
+        }, !evented);
     }
     // A client's mistake (4xx), in one line at info, ten a second at most.
     if (400..500).contains(&status) {
@@ -682,6 +686,17 @@ struct Audited(String);
 fn audited(j: Json, detail: String) -> Response {
     let mut r = AxJson(j).into_response();
     r.extensions_mut().insert(Audited(detail));
+    r
+}
+
+/// On an answer: its request made its own event of what it did, which
+/// its audit entry is not ([`auth`]).
+#[derive(Clone)]
+struct Evented;
+
+/// The answer `r`, whose request made its own event.
+fn evented(mut r: Response) -> Response {
+    r.extensions_mut().insert(Evented);
     r
 }
 
@@ -2175,7 +2190,7 @@ async fn add_contain(State(app): State<App>, p: Option<axum::Extension<Principal
     tracing::info!(rule = %r.id, by = %name, "contain rule added: it {}", r.what());
     app.svc.events.add(crate::contain::event(&r, "added", Some(name)));
     keys::note_change(keys::Change { object: Some(format!("contain rule {}", r.id)), after: Some(r.json()), ..Default::default() });
-    Ok(audited(r.json(), format!("contain rule {} {} for {} min: {}", r.id, r.what(), r.expires_ms.saturating_sub(r.created_ms) / 60_000, r.reason)))
+    Ok(evented(audited(r.json(), format!("contain rule {} {} for {} min: {}", r.id, r.what(), r.expires_ms.saturating_sub(r.created_ms) / 60_000, r.reason))))
 }
 
 /// Removes a Contain rule: audited, and an event.
@@ -2184,7 +2199,7 @@ async fn remove_contain(State(app): State<App>, p: Option<axum::Extension<Princi
     let r = app.svc.contain.remove(&id).ok_or_else(|| ApiError { status: 404, message: format!("no contain rule {id}") })?;
     app.svc.events.add(crate::contain::event(&r, "removed", Some(name)));
     keys::note_change(keys::Change { object: Some(format!("contain rule {id}")), before: Some(r.json()), ..Default::default() });
-    Ok(audited(json!({"removed": r.json()}), format!("removed contain rule {id}: it {}", r.what())))
+    Ok(evented(audited(json!({"removed": r.json()}), format!("removed contain rule {id}: it {}", r.what()))))
 }
 
 // ----- end workload
@@ -2514,6 +2529,12 @@ async fn copies_load(State(app): State<App>, Query(q): Params) -> Res {
 }
 
 async fn logs(State(app): State<App>, Query(q): Params) -> Res {
+    // A copy's: its filter, until when and by whom (its lines are in the
+    // log store, `POST /v1/logs/query`).
+    if let Some(node) = q.get("node").filter(|n| !n.is_empty()) {
+        let j = copy_log_filter(&app, node).await?;
+        return Ok(AxJson(json!({"node": j["node"], "short": j["short"], "filter": j["filter"], "filter_expires_ms": j["expires_ms"], "filter_set_by": j["set_by"], "filter_set_ms": j["set_ms"], "previous": j["previous"]})));
+    }
     let (after, limit) = (param_u64(&q, "after", 0)?, param_u64(&q, "limit", 500)?.min(obs::RING_LINES as u64) as usize);
     let ring = obs::ring();
     let lines = ring.lines(after, q.get("level").map(String::as_str), q.get("request").map(String::as_str), q.get("q").map(String::as_str).filter(|t| !t.is_empty()), limit);
@@ -2521,9 +2542,26 @@ async fn logs(State(app): State<App>, Query(q): Params) -> Res {
     Ok(AxJson(json!({"lines": lines, "last": ring.last(), "filter": obs::log_filter(), "filter_expires_ms": level["expires_ms"], "filter_set_by": level["set_by"]})))
 }
 
-/// `GET /v1/logs/filter`: the log filter, until when and by whom it was set.
-async fn log_filter_now(State(app): State<App>) -> AxJson<Json> {
-    AxJson(app.svc.log_filter_json())
+/// `GET /v1/logs/filter?node=`: the log filter, until when and by whom it
+/// was set; on a coordinator, `node` (a copy's URL or short name) asks
+/// that copy's.
+async fn log_filter_now(State(app): State<App>, Query(q): Params) -> Res {
+    match q.get("node").filter(|n| !n.is_empty()) {
+        Some(node) => copy_log_filter(&app, node).await.map(AxJson),
+        None => Ok(AxJson(app.svc.log_filter_json())),
+    }
+}
+
+/// A copy's log filter (`{filter, expires_ms, set_by, set_ms, previous}`
+/// with its `node` and `short`), asked over the call that sets it.
+async fn copy_log_filter(app: &App, node: &str) -> Result<Json, ApiError> {
+    let crate::service::Backend::Cluster(c) = &app.svc.backend else {
+        return Err(ApiError::bad("node names a copy of a coordinator's cluster; this server answers its own log filter without it"));
+    };
+    let copy = copy_of(&*c.snapshot().await, node)?;
+    let mut j = ask_copy(c, &copy.url, crate::profiling::Kind::LogFilter, json!({})).await?;
+    (j["node"], j["short"]) = (json!(copy.url), json!(copy.short));
+    Ok(j)
 }
 
 /// `PUT /v1/logs/filter?node= {"filter", "expires_s"?}`: this server's
@@ -2542,16 +2580,23 @@ async fn log_filter(State(app): State<App>, w: Option<axum::Extension<Principal>
         let crate::service::Backend::Cluster(c) = &app.svc.backend else {
             return Err(ApiError::bad("node names a copy of a coordinator's cluster; this server sets its own log filter without it"));
         };
-        let url = copy_of(&*c.snapshot().await, node)?.url;
-        let a = crate::profiling::Asked { kind: crate::profiling::Kind::LogFilter, body: json!({"filter": filter, "expires_s": until, "by": by}), folded: false, in_use: false };
-        let j = match c.profile(&url, a).await? {
-            crate::profiling::Answer::Json(j) => j,
-            crate::profiling::Answer::Folded(..) => Json::Null,
-        };
-        return Ok(audited(j, format!("log filter {filter} on {node} for {} min", until.div_ceil(60))));
+        let copy = copy_of(&*c.snapshot().await, node)?;
+        let mut j = ask_copy(c, &copy.url, crate::profiling::Kind::LogFilter, json!({"filter": filter, "expires_s": until, "by": by})).await?;
+        (j["node"], j["short"]) = (json!(copy.url), json!(copy.short));
+        // The copy's own event is on its own timeline; the coordinator's
+        // says it of the copy (its `log_level`, not a change too).
+        app.svc.events.add(crate::events::Event {
+            kind: "log_level".into(),
+            severity: "info".into(),
+            title: format!("Logs at {filter} on {} for {} min", copy.short, until.div_ceil(60)),
+            detail: json!({"filter": filter, "before": j["previous"], "expires_ms": j["expires_ms"], "node": copy.url}),
+            where_: json!({"shard": copy.shard, "copy": copy.short}),
+            who: Some(by),
+        });
+        return Ok(evented(audited(j, format!("log filter {filter} on {} for {} min", copy.short, until.div_ceil(60)))));
     }
     let j = app.svc.set_log_level(filter, Some(until), &by)?;
-    Ok(audited(j, format!("log filter {filter} for {} min", until.div_ceil(60))))
+    Ok(evented(audited(j, format!("log filter {filter} for {} min", until.div_ceil(60)))))
 }
 
 /// A query of the log store: this server's, or on a coordinator every
@@ -3483,7 +3528,7 @@ fn alert_change(id: &str, before: &Json, after: &Json, fields: &[&str]) {
     keys::note_change(keys::Change { object: Some(format!("alert {id}")), before: Some(pick(before)), after: Some(pick(after)), ..Default::default() });
 }
 
-async fn ack_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, b: Option<AxJson<Json>>) -> Res {
+async fn ack_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, b: Option<AxJson<Json>>) -> Result<Response, ApiError> {
     let note = b.and_then(|AxJson(b)| b.get("note").and_then(Json::as_str).map(String::from));
     let before = app.svc.alerts.one(&id)?;
     let e = app.svc.alerts.ack(&id, &by(&who(p)), note)?;
@@ -3491,10 +3536,10 @@ async fn ack_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>
     crate::alerts::deliver(&app.svc, vec![e]);
     let after = app.svc.alerts.one(&id)?;
     alert_change(&id, &before, &after, &["state", "ack"]);
-    Ok(AxJson(after))
+    Ok(evented(AxJson(after).into_response()))
 }
 
-async fn silence_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+async fn silence_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let minutes = b.get("minutes").and_then(Json::as_u64).ok_or_else(|| ApiError::bad("the body needs \"minutes\""))?;
     let reason = b.get("reason").and_then(Json::as_str).unwrap_or_default().to_string();
     let before = app.svc.alerts.one(&id)?;
@@ -3503,26 +3548,27 @@ async fn silence_alert(State(app): State<App>, p: Option<axum::Extension<Princip
     crate::alerts::deliver(&app.svc, vec![e]);
     let after = app.svc.alerts.one(&id)?;
     alert_change(&id, &before, &after, &["silenced"]);
-    Ok(AxJson(after))
+    Ok(evented(AxJson(after).into_response()))
 }
 
-async fn unsilence_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+async fn unsilence_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
     let before = app.svc.alerts.one(&id)?;
     let e = app.svc.alerts.unsilence(&id, &by(&who(p)))?;
     keys::note(format!("lifted the silence of alert {id}"));
     crate::alerts::deliver(&app.svc, vec![e]);
     let after = app.svc.alerts.one(&id)?;
     alert_change(&id, &before, &after, &["silenced"]);
-    Ok(AxJson(after))
+    Ok(evented(AxJson(after).into_response()))
 }
 
-async fn note_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+async fn note_alert(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let text = b.get("text").and_then(Json::as_str).ok_or_else(|| ApiError::bad("the body needs \"text\""))?;
     let e = app.svc.alerts.note(&id, &by(&who(p)), text)?;
     keys::note(format!("noted on alert {id}: {}", crate::obs::truncate(text, 200)));
-    keys::note_change(keys::Change { object: Some(format!("alert {id}")), after: Some(json!({"note": text})), ..Default::default() });
+    // A note, as a note on the Timeline is ([`events_note`]).
+    keys::note_change(keys::Change { kind: Some(keys::NOTE_KIND), object: Some(format!("alert {id}")), after: Some(json!({"note": text})), ..Default::default() });
     crate::alerts::deliver(&app.svc, vec![e]);
-    app.svc.alerts.one(&id).map(AxJson)
+    Ok(evented(AxJson(app.svc.alerts.one(&id)?).into_response()))
 }
 
 async fn alert_routes(State(app): State<App>) -> AxJson<Json> {

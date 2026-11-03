@@ -28,7 +28,8 @@ pub enum Kind {
     Index,
     /// Not a profile: sets this server's log filter for a while
     /// ([`crate::service::Service::set_log_level`]), so that a coordinator
-    /// sets a copy's over the same call.
+    /// sets a copy's over the same call; without a filter, answers the
+    /// one set.
     LogFilter,
     /// Not a profile: a primary compares its replicas' rows with its own
     /// ([`crate::service::Service::verify_replicas`]).
@@ -167,7 +168,9 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
         Kind::Threads => Ok(Answer::Json(json!({"threads": profiler::threads(), "at_ms": telemetry::now_ms()}))),
         Kind::Index => Ok(Answer::Json(crate::inspect::node(svc, &crate::inspect::Asked::of(b)?).await?)),
         Kind::LogFilter => {
-            let filter = b["filter"].as_str().ok_or_else(|| ApiError::bad("a log filter's body needs \"filter\""))?;
+            // Without a filter: the one set, for a coordinator's
+            // `GET /v1/logs?node=` (alerts agent).
+            let Some(filter) = b["filter"].as_str() else { return Ok(Answer::Json(svc.log_filter_json())) };
             let expires_s = b["expires_s"].as_u64();
             Ok(Answer::Json(svc.set_log_level(filter, expires_s, b["by"].as_str().unwrap_or("a coordinator"))?))
         }

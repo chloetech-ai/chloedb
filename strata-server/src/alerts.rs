@@ -310,11 +310,19 @@ struct St {
     where_: Vec<Json>,
     /// An each_copy rule's copies, by state.
     copies: Option<Json>,
+    /// Whether this server's points carry the rule's metric at all (a
+    /// replica has no `replicas_out_of_sync`, a primary no
+    /// `serves_reads`): a coordinator does not count a copy that does not.
+    reports: bool,
+    /// While the series spans less than the window (a server just
+    /// started): how long it spans (ms). The window is evaluated over the
+    /// points there are.
+    partial_ms: Option<u64>,
 }
 
 impl St {
     fn new(t: u64) -> St {
-        St { state: "no_data", since_ms: t, value: None, no_data_since_ms: Some(t), ack: None, silenced: None, notes: Vec::new(), where_: Vec::new(), copies: None }
+        St { state: "no_data", since_ms: t, value: None, no_data_since_ms: Some(t), ack: None, silenced: None, notes: Vec::new(), where_: Vec::new(), copies: None, reports: true, partial_ms: None }
     }
 
     /// Takes the window's value `v` at `t`: returns "firing" or
@@ -412,6 +420,9 @@ pub struct Event {
 
 impl Event {
     fn of(r: &Rule, state: &'static str, st: &St, t: u64) -> Event {
+        // A firing (or resolved) alert names where it fires, not the copies
+        // without data beside it.
+        let shown: Vec<&Json> = st.where_.iter().filter(|w| !matches!(state, "firing" | "resolved") || w["state"].as_str().is_none_or(|s| s == "firing")).collect();
         Event {
             ts_ms: t,
             rule: r.id.clone(),
@@ -424,8 +435,8 @@ impl Event {
             metric: r.metric.clone(),
             eval: r.eval.clone(),
             window_s: r.window_s,
-            where_: st.where_.iter().filter_map(|w| w["short"].as_str().or_else(|| w["name"].as_str()).map(String::from)).collect(),
-            place: st.where_.iter().take(20).cloned().collect(),
+            where_: shown.iter().filter_map(|w| w["short"].as_str().or_else(|| w["name"].as_str()).map(String::from)).collect(),
+            place: shown.iter().take(20).map(|w| (*w).clone()).collect(),
             why: None,
             by: None,
             text: None,
@@ -510,6 +521,8 @@ struct CopySt {
     differs: bool,
     /// Since when it has not reported (down, or reporting no state).
     unheard_ms: Option<u64>,
+    /// Its points carry the rule's metric ([`St::reports`]).
+    reports: bool,
 }
 
 /// The cluster as the built-in rules see it: one row a check.
@@ -524,6 +537,8 @@ struct ClusterView {
     changes: VecDeque<(u64, Json)>,
 }
 
+/// How often a coordinator checks its cluster ([`tick`]).
+const CHECK_MS: u64 = 5_000;
 /// How long a primary change keeps `primary-changed` firing.
 const PRIMARY_CHANGED_MS: u64 = 600_000;
 /// A copy whose latest point is older than this is silent.
@@ -545,7 +560,13 @@ pub struct Alerts {
     pub(crate) cluster_checked: AtomicU64,
     pub(crate) cluster_running: AtomicBool,
     identity: Mutex<Identity>,
+    /// Each route's turn: its messages go one at a time, in order, and a
+    /// route that fails or does not answer holds up only its own.
+    turns: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
+
+/// How long a route has to take a message, its three tries included.
+pub const POST_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// What notifications say of where they come from.
 #[derive(Clone, Debug, Default)]
@@ -583,9 +604,10 @@ impl Alerts {
             kept.routes.retain(|r| r.name != "default");
             kept.routes.insert(0, Route { name: "default".into(), url, severities: Vec::new() });
         }
-        let http = crate::http_client().timeout(std::time::Duration::from_secs(5)).build().map_err(|e| e.to_string())?;
-        // The service's (`--cluster-name`, `--public-url`) once it runs
-        // ([`deliver`]); this machine's name until then.
+        let http = crate::http_client().timeout(std::time::Duration::from_secs(3)).build().map_err(|e| e.to_string())?;
+        // The service's (`--cluster-name`, `--public-url`), which the
+        // server sets as it starts ([`Alerts::set_identity`]); this
+        // machine's name until then.
         let identity = Identity { name: crate::logstore::hostname(), public_url: None };
         Ok(Alerts {
             rules: Mutex::new(kept.rules),
@@ -601,6 +623,7 @@ impl Alerts {
             cluster_checked: AtomicU64::new(0),
             cluster_running: AtomicBool::new(false),
             identity: Mutex::new(identity),
+            turns: Mutex::new(HashMap::new()),
         })
     }
 
@@ -706,6 +729,7 @@ impl Alerts {
         self.save(&next, &self.routes())?;
         let t = now_ms();
         let mut events = Vec::new();
+        let mut dropped: Vec<String> = Vec::new();
         {
             let mut now = lock(&self.rules);
             let mut states = lock(&self.states);
@@ -722,7 +746,7 @@ impl Alerts {
                             Some(n) if !n.enabled => "the rule was disabled",
                             Some(_) => "the rule was edited",
                         };
-                        let mut e = Event::of(old, "resolved", &st, t);
+                        let mut e = self.resolution(old, &st, t);
                         e.why = Some(why.into());
                         e.by = Some(by.to_string());
                         e.fired_ms = Some(st.since_ms);
@@ -736,10 +760,13 @@ impl Alerts {
                         states.insert(n.id.clone(), fresh);
                     }
                 }
-                lock(&self.copies).retain(|(r, _), _| r != &old.id);
+                dropped.push(old.id.clone());
             }
             *now = next.clone();
         }
+        // The copies' states of the rules changed, once `states` is let go
+        // ([`Self::gather`] takes `copies`, then `states`).
+        lock(&self.copies).retain(|(r, _), _| !dropped.contains(r));
         self.keep(&events);
         Ok((events, before, next))
     }
@@ -790,13 +817,12 @@ impl Alerts {
         {
             let mut states = lock(&self.states);
             for r in rules.iter().filter(|r| self.own(r)) {
-                let v = window_value(r, points, t);
+                let (v, partial) = window_of(r, points, t);
                 let st = states.entry(r.id.clone()).or_insert_with(|| St::new(t));
+                st.partial_ms = partial.filter(|_| v.is_some());
+                st.reports = v.is_some() || points.iter().any(|p| p.get(&r.metric).is_some_and(|v| !v.is_null()));
                 if let Some(change) = st.step(r, v, t) {
-                    let mut e = Event::of(r, change, st, t);
-                    if change == "resolved" {
-                        e.fired_ms = Some(self.fired_at(&r.id).unwrap_or(t));
-                    }
+                    let e = if change == "resolved" { self.resolution(r, st, t) } else { Event::of(r, change, st, t) };
                     changes.push(Arc::new(e));
                 }
             }
@@ -807,9 +833,23 @@ impl Alerts {
         changes
     }
 
-    /// When the alert of rule `id` last fired, from the events.
-    fn fired_at(&self, id: &str) -> Option<u64> {
-        lock(&self.events).iter().rev().find(|e| e.rule == id && e.state == "firing").map(|e| e.ts_ms)
+    /// The event of the alert of rule `id` last firing.
+    fn last_fired(&self, id: &str) -> Option<Arc<Event>> {
+        lock(&self.events).iter().rev().find(|e| e.rule == id && e.state == "firing").cloned()
+    }
+
+    /// The event of rule `r`'s alert resolved: when it fired and where,
+    /// from the event of its firing (where it fired no longer fires, so
+    /// the state no longer names it).
+    fn resolution(&self, r: &Rule, st: &St, t: u64) -> Event {
+        let mut e = Event::of(r, "resolved", st, t);
+        if let Some(f) = self.last_fired(&r.id) {
+            e.fired_ms = Some(f.ts_ms);
+            if e.where_.is_empty() {
+                (e.where_, e.place) = (f.where_.clone(), f.place.clone());
+            }
+        }
+        e
     }
 
     /// Keeps events and logs the changes.
@@ -857,9 +897,12 @@ impl Alerts {
                 let vals: Vec<(u64, f64)> = c.points.iter().filter(|(pt, _)| *pt > from && *pt <= t).filter_map(|(pt, m)| m.get(r.metric.as_str()).map(|v| (*pt, *v))).collect();
                 let v = aggregate(r, &vals);
                 let st = states.entry(r.id.clone()).or_insert_with(|| St::new(t));
+                // Checked since less than the window: over the checks there are.
+                st.partial_ms = c.points.front().map(|(pt, _)| *pt).filter(|pt| v.is_some() && *pt > from + CHECK_MS).map(|pt| t.saturating_sub(pt));
                 st.where_ = c.places.get(r.metric.as_str()).cloned().unwrap_or_default();
                 if let Some(change) = st.step(r, v, t) {
-                    changes.push(Arc::new(Event::of(r, change, st, t)));
+                    let e = if change == "resolved" { self.resolution(r, st, t) } else { Event::of(r, change, st, t) };
+                    changes.push(Arc::new(e));
                 }
             }
         }
@@ -936,7 +979,10 @@ impl Alerts {
 
     /// Gathers the copies' states of the each_copy rules from their
     /// detail (`detail.alerts.rules`): a copy that stops reporting keeps
-    /// its last state, and the rule's state is the worst copy's.
+    /// its last state, and the rule's state is the worst copy's. A copy
+    /// whose points do not carry the metric (only primaries, or only
+    /// replicas, report some) does not count, nor one without data now:
+    /// the rule has no data only when no copy has its metric.
     fn gather(&self, snap: &Json, rules: &[Rule], t: u64) -> Vec<Arc<Event>> {
         let mut changes = Vec::new();
         let mut copies = lock(&self.copies);
@@ -951,7 +997,7 @@ impl Alerts {
                     present.insert((rule.id.clone(), url.clone()));
                     let key = (rule.id.clone(), url.clone());
                     let mine = &reported[&rule.id];
-                    let e = copies.entry(key).or_insert_with(|| CopySt { state: "no_data".into(), value: None, since_ms: t, short: short.clone(), shard: i, differs: false, unheard_ms: Some(t) });
+                    let e = copies.entry(key).or_insert_with(|| CopySt { state: "no_data".into(), value: None, since_ms: t, short: short.clone(), shard: i, differs: false, unheard_ms: Some(t), reports: true });
                     e.short = short.clone();
                     match mine["state"].as_str() {
                         Some(state) => {
@@ -959,6 +1005,7 @@ impl Alerts {
                             e.value = mine["value"].as_f64();
                             e.since_ms = mine["since_ms"].as_u64().unwrap_or(t);
                             e.differs = mine["sig"].as_str().is_some_and(|s| s != rule.sig());
+                            e.reports = mine["reports"].as_bool().unwrap_or(true);
                             e.unheard_ms = None;
                         }
                         None => {
@@ -973,21 +1020,24 @@ impl Alerts {
         for rule in rules.iter().filter(|r| r.enabled && r.copies()) {
             let mine: Vec<&CopySt> = copies.iter().filter(|((r, _), _)| r == &rule.id).map(|(_, c)| c).collect();
             let urls: Vec<&String> = copies.iter().filter(|((r, _), _)| r == &rule.id).map(|((_, u), _)| u).collect();
-            let count = |s: &str| mine.iter().filter(|c| c.state == s).count();
-            let worst = mine.iter().map(|c| state_rank(&c.state)).min().unwrap_or(2);
+            let count = |s: &str| mine.iter().filter(|c| c.reports && c.state == s).count();
+            let counted: Vec<usize> = (0..mine.len()).filter(|&j| mine[j].reports && mine[j].state != "no_data").collect();
+            let worst = counted.iter().map(|&j| state_rank(&mine[j].state)).min();
             let state: &'static str = match worst {
-                0 => "firing",
-                1 => "pending",
-                3 if count("no_data") == 0 => "ok",
-                3 => "ok",
-                _ => "no_data",
+                Some(0) => "firing",
+                Some(1) => "pending",
+                Some(_) => "ok",
+                None => "no_data",
             };
             let st = states.entry(rule.id.clone()).or_insert_with(|| St::new(t));
             let was = st.state;
-            let in_state: Vec<usize> = (0..mine.len()).filter(|&j| state_rank(&mine[j].state) == worst).collect();
+            let in_state: Vec<usize> = match worst {
+                Some(w) => counted.iter().copied().filter(|&j| state_rank(&mine[j].state) == w).collect(),
+                None => Vec::new(),
+            };
             st.value = in_state.iter().filter_map(|&j| mine[j].value).reduce(|a, b| if rule.op.starts_with('>') { a.max(b) } else { a.min(b) });
             let mut place: Vec<(u8, Json)> = (0..mine.len())
-                .filter(|&j| mine[j].state != "ok" || mine[j].differs)
+                .filter(|&j| (mine[j].reports && mine[j].state != "ok") || mine[j].differs)
                 .map(|j| {
                     let c = mine[j];
                     let mut w = json!({"copy": urls[j], "short": c.short, "shard": c.shard, "state": c.state, "value": c.value, "since_ms": c.since_ms});
@@ -1002,7 +1052,10 @@ impl Alerts {
                 .collect();
             place.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1["short"].as_str().cmp(&b.1["short"].as_str())));
             st.where_ = place.into_iter().map(|(_, w)| w).collect();
-            st.copies = Some(json!({"total": mine.len(), "firing": count("firing"), "pending": count("pending"), "no_data": count("no_data"), "ok": count("ok"), "rule_differs": mine.iter().filter(|c| c.differs).count()}));
+            st.copies = Some(json!({
+                "total": mine.len(), "firing": count("firing"), "pending": count("pending"), "no_data": count("no_data"), "ok": count("ok"),
+                "not_reported": mine.iter().filter(|c| !c.reports).count(), "rule_differs": mine.iter().filter(|c| c.differs).count(),
+            }));
             if state != was {
                 st.since_ms = in_state.iter().map(|&j| mine[j].since_ms).min().unwrap_or(t);
                 st.state = state;
@@ -1016,10 +1069,7 @@ impl Alerts {
                     if c == "resolved" {
                         st.ack = None;
                     }
-                    let mut e = Event::of(rule, c, st, t);
-                    if c == "resolved" {
-                        e.fired_ms = self.fired_at(&rule.id);
-                    }
+                    let e = if c == "resolved" { self.resolution(rule, st, t) } else { Event::of(rule, c, st, t) };
                     changes.push(Arc::new(e));
                 }
             }
@@ -1123,6 +1173,12 @@ impl Alerts {
                 if let Some(n) = s.no_data_since_ms {
                     j["no_data_since_ms"] = json!(n);
                 }
+                if let Some(p) = s.partial_ms {
+                    // Evaluated over the points there are: the server has
+                    // run less than the window.
+                    j["window_partial"] = json!(true);
+                    j["window_covered_s"] = json!(p / 1000);
+                }
                 j["where"] = json!(s.where_);
                 if let Some(c) = &s.copies {
                     j["copies"] = c.clone();
@@ -1224,7 +1280,11 @@ impl Alerts {
                 _ => {}
             }
             if r.copies() && !self.is_coordinator() {
-                each.insert(r.id.clone(), json!({"state": s.state, "value": s.value, "since_ms": s.since_ms, "sig": r.sig()}));
+                let mut one = json!({"state": s.state, "value": s.value, "since_ms": s.since_ms, "sig": r.sig(), "reports": s.reports});
+                if s.partial_ms.is_some() {
+                    one["window_partial"] = json!(true);
+                }
+                each.insert(r.id.clone(), one);
             }
         }
         json!({"firing": firing, "pending": pending, "no_data": no_data, "rules": each})
@@ -1284,43 +1344,70 @@ impl Alerts {
         text
     }
 
-    /// Posts the events that notify to the routes that take them, trying
-    /// each three times, and counts what was delivered.
+    /// Posts the events that notify to the routes that take them, and
+    /// counts what was delivered. Each route takes its messages on its
+    /// own, in order: one that fails or does not answer holds up only its
+    /// own, [`POST_BUDGET`] a message at most.
     pub async fn notify(&self, changes: &[Arc<Event>]) {
+        let routes = self.routes();
+        let mut each: Vec<(Route, Vec<Json>)> = Vec::new();
         for e in changes.iter().filter(|e| e.notifies()) {
-            let routes: Vec<Route> = self.routes().into_iter().filter(|r| if e.route.is_empty() { r.takes(&e.severity) } else { r.name == e.route }).collect();
             let text = self.message(e);
-            for r in routes {
-                let _ = self.post(&r, &json!({"text": text, "alert": &**e})).await;
+            for r in routes.iter().filter(|r| if e.route.is_empty() { r.takes(&e.severity) } else { r.name == e.route }) {
+                let body = json!({"text": text, "alert": &**e});
+                match each.iter_mut().find(|(x, _)| x.name == r.name) {
+                    Some((_, bodies)) => bodies.push(body),
+                    None => each.push((r.clone(), vec![body])),
+                }
             }
         }
+        futures::future::join_all(each.into_iter().map(|(r, bodies)| async move {
+            let turn = lock(&self.turns).entry(r.name.clone()).or_default().clone();
+            let _turn = turn.lock().await;
+            for b in &bodies {
+                let _ = self.post(&r, b).await;
+            }
+        }))
+        .await;
     }
 
-    /// Posts `body` to route `r`, three times at most; counts how it went.
+    /// Posts `body` to route `r`, three times at most within
+    /// [`POST_BUDGET`]; counts how it went.
     async fn post(&self, r: &Route, body: &Json) -> Result<(), String> {
-        let mut last = String::new();
-        for attempt in 0..3 {
-            if attempt > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(500 * (1 << attempt))).await;
-            }
-            match self.http.post(&r.url).json(body).send().await.and_then(|r| r.error_for_status()) {
-                Ok(_) => {
-                    let mut d = lock(&self.deliveries);
-                    let d = d.entry(r.name.clone()).or_default();
-                    d.sent += 1;
-                    d.last_ok_ms = Some(now_ms());
-                    return Ok(());
+        let tries = async {
+            let mut last = String::new();
+            for attempt in 0..3 {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500 * (1 << attempt))).await;
                 }
-                Err(e) => last = e.without_url().to_string(),
+                match self.http.post(&r.url).json(body).send().await.and_then(|r| r.error_for_status()) {
+                    Ok(_) => return Ok(()),
+                    Err(e) => last = e.without_url().to_string(),
+                }
             }
+            Err(last)
+        };
+        let res = match tokio::time::timeout(POST_BUDGET, tries).await {
+            Ok(res) => res,
+            Err(_) => Err(format!("no answer in {} s", POST_BUDGET.as_secs())),
+        };
+        if let Err(e) = &res {
+            tracing::warn!(route = %r.name, error = %e, "could not post an alert to its route");
         }
-        tracing::warn!(route = %r.name, error = %last, "could not post an alert to its route");
         let mut d = lock(&self.deliveries);
         let d = d.entry(r.name.clone()).or_default();
-        d.failed += 1;
-        d.last_error = Some(last.clone());
-        d.last_error_ms = Some(now_ms());
-        Err(last)
+        match &res {
+            Ok(()) => {
+                d.sent += 1;
+                d.last_ok_ms = Some(now_ms());
+            }
+            Err(e) => {
+                d.failed += 1;
+                d.last_error = Some(e.clone());
+                d.last_error_ms = Some(now_ms());
+            }
+        }
+        res
     }
 
     /// Posts a test message to route `name`.
@@ -1381,19 +1468,25 @@ fn answers(r: &Json) -> bool {
 
 /// The value of rule `r`'s window ending at `t` (from `t - window_s` to
 /// `t`) over `points` (the oldest first): `None` when no point of the
-/// window has the metric, and while the series spans under half the
-/// window (a server just started). The mean of `error_ratio` and
-/// `availability` weighs each point by its queries.
+/// window has the metric. While the series spans less than the window (a
+/// server just started), over the points there are. The mean of
+/// `error_ratio` and `availability` weighs each point by its queries.
 pub fn window_value(r: &Rule, points: &[Arc<Json>], t: u64) -> Option<f64> {
+    window_of(r, points, t).0
+}
+
+/// [`window_value`], and how long the series spans (ms) when it spans
+/// less than the window.
+fn window_of(r: &Rule, points: &[Arc<Json>], t: u64) -> (Option<f64>, Option<u64>) {
     let w = r.window_s * 1000;
     let from = t.saturating_sub(w);
     let at = |p: &Json| p["t"].as_u64().unwrap_or(0);
     let start = points.partition_point(|p| at(p) < from);
     let window: Vec<&Arc<Json>> = points[start..].iter().filter(|p| at(p) <= t).collect();
-    let first = at(window.first()?);
-    if t.saturating_sub(first) < (w / 2).saturating_sub(crate::telemetry::INTERVAL.as_millis() as u64) {
-        return None;
-    }
+    let Some(first) = window.first() else { return (None, None) };
+    // Nothing before the window, and its first point well into it.
+    let span = t.saturating_sub(at(first));
+    let partial = (start == 0 && span + (crate::telemetry::INTERVAL.as_millis() as u64) < w).then_some(span);
     if r.eval == "mean" && matches!(r.metric.as_str(), "error_ratio" | "availability") && window.iter().any(|p| p.get("queries").is_some()) {
         let (mut q, mut e) = (0.0, 0.0);
         for p in &window {
@@ -1401,13 +1494,13 @@ pub fn window_value(r: &Rule, points: &[Arc<Json>], t: u64) -> Option<f64> {
             e += p["query_errors"].as_f64().unwrap_or(0.0);
         }
         if q == 0.0 {
-            return None;
+            return (None, partial);
         }
         let ratio = e / q;
-        return Some(if r.metric == "availability" { 1.0 - ratio } else { ratio });
+        return (Some(if r.metric == "availability" { 1.0 - ratio } else { ratio }), partial);
     }
     let vals: Vec<(u64, f64)> = window.iter().filter_map(|p| p.get(&r.metric).and_then(Json::as_f64).map(|v| (at(p), v))).collect();
-    aggregate(r, &vals)
+    (aggregate(r, &vals), partial)
 }
 
 /// One value of a window's `(time, value)` pairs, by the rule's `eval`.
@@ -1463,12 +1556,13 @@ pub fn tick(svc: &Arc<crate::service::Service>, point: &Json) {
     crate::contain::sweep(svc);
     let coordinator = matches!(svc.backend, crate::service::Backend::Cluster(_));
     svc.alerts.set_coordinator(coordinator);
+    identify(svc);
     let t = point["t"].as_u64().unwrap_or_else(now_ms);
     let points = svc.series.since(t.saturating_sub(MAX_WINDOW_S * 1000));
     let changes = svc.alerts.check(&points, t);
     deliver(svc, changes);
     let now = now_ms();
-    if coordinator && now.saturating_sub(svc.alerts.cluster_checked.load(Ordering::Relaxed)) >= 5_000 && !svc.alerts.cluster_running.swap(true, Ordering::AcqRel) {
+    if coordinator && now.saturating_sub(svc.alerts.cluster_checked.load(Ordering::Relaxed)) >= CHECK_MS && !svc.alerts.cluster_running.swap(true, Ordering::AcqRel) {
         let svc = svc.clone();
         tokio::spawn(async move {
             check_cluster(&svc).await;
@@ -1486,6 +1580,12 @@ pub async fn check_cluster(svc: &Arc<crate::service::Service>) {
     deliver(svc, changes);
 }
 
+/// Names the cluster in notifications as the service does
+/// (`--cluster-name`, `--public-url`).
+pub fn identify(svc: &crate::service::Service) {
+    svc.alerts.set_identity(svc.identity.name.clone(), svc.identity.public_url.clone());
+}
+
 /// Days the log store keeps alert events (its table `alerts`).
 pub const KEEP_DAYS: u64 = 7;
 
@@ -1495,7 +1595,7 @@ pub fn deliver(svc: &Arc<crate::service::Service>, changes: Vec<Arc<Event>>) {
     if changes.is_empty() {
         return;
     }
-    svc.alerts.set_identity(svc.identity.name.clone(), svc.identity.public_url.clone());
+    identify(svc);
     for e in &changes {
         svc.events.add(event_of(e));
         if let Some(store) = &svc.log_store {
@@ -1530,20 +1630,31 @@ pub fn event_of(e: &Event) -> crate::events::Event {
         "resolved" => {
             let after = e.fired_ms.map(|f| format!(" after {}", duration(e.ts_ms.saturating_sub(f)))).unwrap_or_default();
             let why = e.why.as_ref().map(|w| format!(" ({w}{})", e.by.as_ref().map(|b| format!(" by {b}")).unwrap_or_default())).unwrap_or_default();
-            format!("{} resolved{after}: {} = {value}{why}", e.name, e.metric)
+            format!("{} resolved{place}{after}: {} = {value}{why}", e.name, e.metric)
         }
         "acked" => format!("{by} acknowledged {}{text}", e.name),
         "silenced" => format!("{by} silenced {} {}", e.name, e.text.as_deref().unwrap_or_default()),
         "unsilenced" => format!("{by} lifted the silence of {}", e.name),
         _ => format!("{by} on {}{text}", e.name),
     };
+    // The copy or shard when it is one; the copies when several.
     let mut where_ = json!({"rule": e.rule});
-    if let Some(w) = e.place.first() {
-        for k in ["shard", "copy"] {
-            if !w[k].is_null() {
-                where_[k] = w[k].clone();
+    let distinct = |k: &str| {
+        let mut v: Vec<&Json> = Vec::new();
+        for x in e.place.iter().map(|w| &w[k]).filter(|x| !x.is_null()) {
+            if !v.contains(&x) {
+                v.push(x);
             }
         }
+        v
+    };
+    if let [shard] = distinct("shard")[..] {
+        where_["shard"] = shard.clone();
+    }
+    match distinct("copy")[..] {
+        [] => {}
+        [copy] => where_["copy"] = copy.clone(),
+        ref copies => where_["copies"] = json!(copies),
     }
     crate::events::Event { kind: kind.into(), severity, title, detail: serde_json::to_value(e).unwrap_or(Json::Null), where_, who: e.by.clone() }
 }
@@ -1696,7 +1807,8 @@ mod tests {
         m.set_rules(vec![mean], "t").unwrap();
         e.set_rules(vec![every], "t").unwrap();
         let (mut mf, mut ef) = (0, 0);
-        for i in 0..ps.len() {
+        // From the first full window.
+        for i in 30..ps.len() {
             let t = ps[i]["t"].as_u64().unwrap();
             mf += m.check(&ps[..=i], t).iter().filter(|e| e.state == "firing").count();
             ef += e.check(&ps[..=i], t).iter().filter(|e| e.state == "firing").count();
@@ -1759,9 +1871,72 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&json!([{"id": "x", "name": "x", "metric": "qps", "op": ">", "threshold": 1}])).unwrap()).unwrap();
         let old = Alerts::new(Some(path), None).unwrap();
         assert_eq!((old.rules()[0].eval.as_str(), old.rules()[0].window_s), ("mean", 300));
-        // A zero wait fires once the series spans half the window.
-        let fired = a.check(&[Arc::new(json!({"t": 0, "failing": 1.0})), Arc::new(json!({"t": 16_000, "failing": 1.0}))], 16_000);
+        // A zero wait fires on the points there are.
+        let fired = a.check(&[Arc::new(json!({"t": 0, "failing": 1.0}))], 0);
         assert_eq!(fired[0].rule, "failing");
+    }
+
+    #[test]
+    fn a_window_the_series_does_not_span_yet_is_evaluated_and_said_partial() {
+        let a = Alerts::new(None, None).unwrap();
+        a.set_rules(vec![slow("mean", 300, 0)], "t").unwrap();
+        // A server up 10 s: five points of a five-minute window.
+        let ps = points(&[(0, 20.0), (2_000, 30.0), (4_000, 20.0), (6_000, 30.0), (8_000, 20.0), (10_000, 30.0)]);
+        assert!(a.check(&ps, 10_000).is_empty());
+        let s = a.one("p99").unwrap();
+        assert_eq!((s["state"].as_str(), s["value"].as_f64()), (Some("ok"), Some(25.0)), "{s}");
+        assert_eq!((s["window_partial"].as_bool(), s["window_covered_s"].as_u64()), (Some(true), Some(10)), "{s}");
+        // Once the series spans the window, it is not partial.
+        let full: Vec<(u64, f64)> = (0..200u64).map(|i| (i * 2000, 20.0)).collect();
+        a.check(&points(&full), 398_000);
+        assert!(a.one("p99").unwrap().get("window_partial").is_none());
+    }
+
+    #[test]
+    fn copies_that_do_not_report_a_metric_do_not_count() {
+        let a = Alerts::new(None, None).unwrap();
+        a.set_coordinator(true);
+        let rule = defaults().into_iter().find(|r| r.id == "out-of-sync").unwrap();
+        let copy = |url: &str, role: &str, state: &str, reports: bool| json!({"url": url, "status": "ok", "role": role, "detail": {"load": {"t": 1_000}, "alerts": {"rules": {"out-of-sync": {"state": state, "value": if reports { json!(0.0) } else { Json::Null }, "since_ms": 500, "sig": rule.sig(), "reports": reports}}}}});
+        // Primaries report replicas out of sync; replicas do not.
+        let snap = |p1: &str| json!({"shards": [
+            {"shard": 0, "replicas": [copy("http://a", "primary", "ok", true), copy("http://b", "replica", "no_data", false)]},
+            {"shard": 1, "replicas": [copy("http://c", "primary", p1, true), copy("http://d", "replica", "no_data", false)]},
+        ]});
+        a.check_cluster(&snap("ok"), 1_000);
+        let s = a.one("out-of-sync").unwrap();
+        assert_eq!(s["state"], "ok", "{s}");
+        assert_eq!((s["copies"]["ok"].as_u64(), s["copies"]["not_reported"].as_u64(), s["copies"]["no_data"].as_u64()), (Some(2), Some(2), Some(0)), "{s}");
+        assert!(s["where"].as_array().unwrap().is_empty(), "{s}");
+        // A primary without data now does not count either, while one has.
+        a.check_cluster(&snap("no_data"), 2_000);
+        assert_eq!(a.one("out-of-sync").unwrap()["state"], "ok");
+        // No copy has it: no data.
+        let none = json!({"shards": [{"shard": 0, "replicas": [copy("http://a", "primary", "no_data", true), copy("http://b", "replica", "no_data", false)]}]});
+        a.check_cluster(&none, 3_000);
+        assert_eq!(a.one("out-of-sync").unwrap()["state"], "no_data");
+    }
+
+    #[test]
+    fn an_alert_on_several_copies_names_them_and_its_resolution_says_where() {
+        let a = Alerts::new(None, None).unwrap();
+        a.set_coordinator(true);
+        a.set_identity(Some("prod".into()), None);
+        let disk = defaults().into_iter().find(|r| r.id == "disk-full").unwrap();
+        let copy = |url: &str, state: &str| json!({"url": url, "status": "ok", "role": "primary", "takes_writes": true, "detail": {"load": {"t": 1_000}, "alerts": {"rules": {"disk-full": {"state": state, "value": 0.95, "since_ms": 500, "sig": disk.sig()}}}}});
+        let snap = |s: &str| json!({"shards": [{"shard": 0, "replicas": [copy("http://a", s)]}, {"shard": 1, "replicas": [copy("http://b", s)]}]});
+        let fired = a.check_cluster(&snap("firing"), 1_000).into_iter().find(|e| e.rule == "disk-full").unwrap();
+        let ev = event_of(&fired);
+        assert_eq!(ev.where_, json!({"rule": "disk-full", "copies": ["http://a", "http://b"]}), "neither one copy nor one shard: {:?}", ev.where_);
+        let resolved = a.check_cluster(&snap("ok"), 30_000).into_iter().find(|e| e.rule == "disk-full").unwrap();
+        assert_eq!((resolved.state, resolved.where_.clone()), ("resolved", vec!["s0-0".to_string(), "s1-0".to_string()]));
+        assert_eq!(resolved.fired_ms, Some(1_000));
+        assert!(a.message(&resolved).starts_with("[strata RESOLVED warning] Disk almost full on prod/s0-0,s1-0: "), "{}", a.message(&resolved));
+        assert!(event_of(&resolved).title.starts_with("Disk almost full resolved on s0-0, s1-0 after 29 s"), "{}", event_of(&resolved).title);
+        // One copy: the copy and its shard.
+        let one = json!({"shards": [{"shard": 0, "replicas": [copy("http://a", "firing")]}, {"shard": 1, "replicas": [copy("http://b", "ok")]}]});
+        let fired = a.check_cluster(&one, 40_000).into_iter().find(|e| e.rule == "disk-full").unwrap();
+        assert_eq!(event_of(&fired).where_, json!({"rule": "disk-full", "shard": 0, "copy": "http://a"}));
     }
 
     #[test]
