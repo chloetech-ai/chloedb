@@ -2303,6 +2303,7 @@ async fn put_profile_settings(State(app): State<App>, AxJson(b): AxJson<Json>) -
 /// replica URLs, over gRPC: [`crate::coord::Coordinator::profile`]).
 /// `?format=folded` (`&value=in_use`) answers folded lines to download.
 async fn profile(app: &App, kind: profiling::Kind, q: &std::collections::HashMap<String, String>, body: Json) -> Result<Response, ApiError> {
+    note_profile(kind, q.get("node").map(|n| n.trim()).filter(|n| !n.is_empty()), &body);
     let asked = profiling::Asked { kind, body, folded: q.get("format").map(String::as_str) == Some("folded"), in_use: q.get("value").map(String::as_str) == Some("in_use") };
     let answer = match q.get("node").map(|n| n.trim()).filter(|n| !n.is_empty()) {
         Some(node) => app.svc.profile_node(node, asked).await?,
@@ -2314,13 +2315,50 @@ async fn profile(app: &App, kind: profiling::Kind, q: &std::collections::HashMap
     })
 }
 
+/// workdata: what a CPU or allocation profile's audit entry says: of which
+/// server, at what rate (`hz`, or bytes between samples), for how long,
+/// and the query it ran in a loop.
+fn note_profile(kind: profiling::Kind, node: Option<&str>, b: &Json) {
+    let (what, rate) = match kind {
+        profiling::Kind::Cpu => ("CPU", json!({"hz": b["hz"].as_i64().unwrap_or(99)})),
+        profiling::Kind::Heap => ("allocation", json!({"every_bytes": b["every"].as_u64().unwrap_or(crate::heap::EVERY_DEFAULT)})),
+        _ => return,
+    };
+    let of = node.unwrap_or("this server");
+    let seconds = b["seconds"].as_f64().unwrap_or(5.0);
+    let sql = b["sql"].as_str().map(|s| obs::truncate(s, 200));
+    let clients = sql.as_ref().map(|_| b["clients"].as_u64().unwrap_or(1));
+    let mut after = json!({"node": of, "seconds": seconds, "sql": sql, "clients": clients});
+    after.as_object_mut().into_iter().for_each(|o| o.extend(rate.as_object().cloned().unwrap_or_default()));
+    let at = match (rate["hz"].as_i64(), rate["every_bytes"].as_u64()) {
+        (Some(hz), _) => format!("{hz} Hz"),
+        (_, Some(e)) => format!("a sample every {e} bytes"),
+        _ => String::new(),
+    };
+    let load = match (&sql, clients) {
+        (Some(_), Some(c)) => format!(", of a query run in a loop by {c} {}", if c == 1 { "caller" } else { "callers" }),
+        _ => String::new(),
+    };
+    keys::note_change(keys::Change { object: Some(format!("{what} profile of {of}")), after: Some(after), ..Default::default() });
+    keys::note(format!("{} {what} profile of {of}: {seconds} s at {at}{load}", if what == "CPU" { "a" } else { "an" }));
+}
+
+/// The body of a profile with who asked for it (`by`), which the server
+/// that takes it names to a second asker.
+fn profile_by(mut b: Json, w: Option<axum::Extension<Principal>>) -> Json {
+    if b.is_null() || b.is_object() {
+        b["by"] = json!(keys::audit_name(&who(w)));
+    }
+    b
+}
+
 /// A CPU profile ([`crate::profiler`]): of the whole server for `seconds`
 /// (default 5), or of `sql` run again and again by `clients` callers. It
 /// answers the profile with how busy the server was (`cores`), the samples
 /// delivered a CPU second (`rate`) and, for a query, its runs and their
 /// times.
-async fn cpu_profile(State(app): State<App>, Query(q): Params, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
-    profile(&app, profiling::Kind::Cpu, &q, b).await
+async fn cpu_profile(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Params, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    profile(&app, profiling::Kind::Cpu, &q, profile_by(b, w)).await
 }
 
 /// The heap's counts, the process's resident memory, and its threads.
@@ -2330,8 +2368,8 @@ async fn memory(State(app): State<App>, Query(q): Params) -> Result<Response, Ap
 
 /// An allocation profile ([`crate::heap::take`]), of the whole server or of a
 /// query in a loop as [`cpu_profile`].
-async fn heap_profile(State(app): State<App>, Query(q): Params, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
-    profile(&app, profiling::Kind::Heap, &q, b).await
+async fn heap_profile(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Params, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    profile(&app, profiling::Kind::Heap, &q, profile_by(b, w)).await
 }
 
 async fn threads(State(app): State<App>, Query(q): Params) -> Result<Response, ApiError> {

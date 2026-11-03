@@ -121,6 +121,7 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
                 None | Some(Json::Null) => 99,
                 Some(v) => v.as_i64().filter(|h| (1..=profiler::MAX_HZ as i64).contains(h)).ok_or_else(|| ApiError::bad(format!("hz is a whole number from 1 to {}", profiler::MAX_HZ)))? as i32,
             };
+            let _who = profiler::claim("CPU", by_of(b), seconds).map_err(busy)?;
             let mut load = Load::of(svc, b).await?;
             let (p, _) = profiler::take(hz, seconds, &mut load.during).await.map_err(refused)?;
             tracing::info!(seconds = p.seconds, hz, samples = p.samples, query = load.runs.is_some(), "CPU profile taken");
@@ -141,6 +142,7 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
                 None | Some(Json::Null) => heap::EVERY_DEFAULT,
                 Some(v) => v.as_u64().filter(|e| (heap::MIN_EVERY..=heap::MAX_EVERY).contains(e)).ok_or_else(|| ApiError::bad(format!("every is a number of bytes from {} to {}", heap::MIN_EVERY, heap::MAX_EVERY)))?,
             };
+            let _who = profiler::claim("allocation", by_of(b), seconds).map_err(busy)?;
             let mut load = Load::of(svc, b).await?;
             let (p, _) = heap::take(every, seconds, &mut load.during).await.map_err(refused)?;
             tracing::info!(seconds = p.seconds, every, samples = p.samples, query = load.runs.is_some(), "allocation profile taken");
@@ -252,6 +254,17 @@ fn seconds_of(b: &Json, max: f64) -> Result<f64, ApiError> {
         None | Some(Json::Null) => Ok(5.0),
         Some(v) => v.as_f64().filter(|s| *s > 0.0 && *s <= max).ok_or_else(|| ApiError::bad(format!("seconds is a number above 0 and at most {max}"))),
     }
+}
+
+/// Who asked for a profile: the key's name the HTTP handler or the
+/// coordinator put in its body (`by`).
+fn by_of(b: &Json) -> &str {
+    b["by"].as_str().filter(|s| !s.is_empty()).unwrap_or("a caller that gave no name")
+}
+
+/// A second profile of a kind: who takes the first, and for how long.
+fn busy(t: profiler::Taker) -> ApiError {
+    ApiError { status: 409, message: t.busy() }
 }
 
 fn refused(e: profiler::Refused) -> ApiError {

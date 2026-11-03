@@ -39,7 +39,8 @@ function render(page, r) {
     if (!TABS.some(([k]) => k === t)) t = "query";
     // On a coordinator, the CPU and Memory tabs profile any server of its
     // cluster: ?node= names it (a replica's URL), none the coordinator.
-    const n = t === "cpu" || t === "memory" ? params.get("node") || "" : "";
+    // NEW-workload-10: a copy's name (s0-1) or its node name works too.
+    const n = t === "cpu" || t === "memory" ? nodeUrl(params.get("node") || "") : "";
     if (t !== tab || n !== node) {
       tab = t; node = n; stop?.();
       clear(tabs, TABS.map(([k, v]) => h("button", { role: "tab", "aria-selected": String(k === t), onclick: () => { location.hash = link("profile", { tab: k, node: node && (k === "cpu" || k === "memory") ? node : null }); } }, v)),
@@ -53,7 +54,9 @@ function render(page, r) {
   }
   route = go;
   go(r.params);
-  return () => { stop?.(); route = null; };
+  // A copy's name resolves once the cluster is read.
+  const offCluster = bus.on("cluster", () => { const p = new URLSearchParams(location.hash.split("?")[1] || ""); const v = p.get("node"); if (v && !/^https?:\/\//.test(v) && nodeUrl(v) !== v && node !== nodeUrl(v)) go(p); });
+  return () => { stop?.(); route = null; offCluster?.(); };
 }
 
 // ---------------------------------------------------------------- run one
@@ -392,10 +395,26 @@ function sampler(body, cfg) {
       cfg.show(out, p, req);
     } catch (e) {
       if (gone) return;
-      clear(out, e.status === 409 ? empty("clock", "A profile is being taken", cfg.busy) : e.status === 501 ? empty("info", "Not available here", e.message) : h("div", { class: "error" }, e.message));
+      clear(out, e.status === 409 ? empty("clock", "A profile is being taken", busyWords(e.message, cfg.busy)) : e.status === 501 ? empty("info", "Not available here", e.message) : h("div", { class: "error" }, e.message));
     } finally { clearInterval(tick); busy = false; go.disabled = false; }
   }
   return { stop: () => { gone = true; clearInterval(tick); } };
+}
+
+/** A copy named by its URL, its short name (s0-1) or its node name, as its URL; anything else as given. */
+function nodeUrl(v) {
+  if (!v || /^https?:\/\//.test(v)) return v;
+  const c = copies().find((x) => x.name === v || x.node === v);
+  return c ? c.url : v;
+}
+
+// A second profile's refusal: the server names who takes the first and
+// for how long still; said here with the local time it ends.
+function busyWords(msg, fallback) {
+  const m = /being taken, by (.+?), for (\d+) s more/.exec(msg || "");
+  if (!m) return fallback;
+  const who = m[1] === "open" ? "Someone" : m[1] === "root token" ? "The root token" : m[1];
+  return `${who} started it. It ends in about ${m[2]} s, at ${fmt.time(Date.now() + Number(m[2]) * 1000)}. One at a time: try again then.`;
 }
 
 /** The head of a profile's answer: what it was of, downloads, the query. */

@@ -663,7 +663,10 @@ impl pb::strata_server::Strata for Grpc {
                 crate::profiling::Kind::LogFilter => format!("log filter {} from a coordinator, by {}", asked.body["filter"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
                 crate::profiling::Kind::Verify => format!("verify the replicas from a coordinator, by {}", asked.body["by"].as_str().unwrap_or("?")),
                 crate::profiling::Kind::Checkpoint => format!("checkpoint {} from a coordinator, by {}", asked.body["name"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
-                k => format!("a {} profile", k.name()),
+                k => match asked.body["by"].as_str() {
+                    Some(by) => format!("a {} profile from a coordinator, by {by}", k.name()),
+                    None => format!("a {} profile", k.name()),
+                },
             });
             Ok(pb::ProfileResponse { body: crate::profiling::take(&svc, asked).await?.bytes() })
         })
