@@ -13,6 +13,7 @@
 //! answered through this coordinator. The cluster's data is its shards'
 //! added up, with the bytes of every copy beside them.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::{json, Value as Json};
@@ -196,6 +197,13 @@ impl Part {
 /// How long [`tables`] keeps its answer.
 pub const TABLES_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The window of [`tables`]' writes and reads a minute: 5 minutes.
+pub const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Each table's writes and reads counted at a look of [`tables`], by
+/// table, and when.
+pub type Counts = std::collections::VecDeque<(u64, HashMap<String, (u64, u64)>)>;
+
 /// Every table's size and traffic: of this server, or on a coordinator of
 /// each shard (its primary's data) and the cluster, with how skewed the
 /// shards are, how far each copy is behind, and how much each table grew
@@ -210,10 +218,27 @@ pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
         }
     }
     let now = telemetry::now_ms();
-    let names: Vec<String> = match &svc.backend {
-        Backend::Local(db) => db.catalog().iter().map(|s| s.table.clone()).collect(),
-        Backend::Cluster(_) => svc.catalog().iter().map(|s| s.table.clone()).collect(),
+    let names: Vec<String> = svc.catalog_now().await.iter().map(|s| s.table.clone()).collect();
+    // On a coordinator, each copy as the cluster's snapshot knows it: its
+    // short name, and since when it does not answer.
+    let mut copies: HashMap<String, (Json, Json, bool)> = HashMap::new();
+    if let Backend::Cluster(c) = &svc.backend {
+        let snap = c.snapshot().await;
+        for r in snap["shards"].as_array().into_iter().flatten().flat_map(|s| s["replicas"].as_array().into_iter().flatten()) {
+            if let Some(u) = r["url"].as_str() {
+                copies.insert(u.to_string(), (r["short"].clone(), r["down_since_ms"].clone(), r["status"] == "down"));
+            }
+        }
+    }
+    // Writes and reads a minute over the last minutes: each table's counts
+    // now against those of the earliest look within [`RATE_WINDOW`], at
+    // least 30 s ago.
+    let then = {
+        let mut counts = svc.tables_counts.lock().unwrap_or_else(|e| e.into_inner());
+        counts.retain(|(at, _)| now.saturating_sub(*at) <= RATE_WINDOW.as_millis() as u64);
+        counts.iter().find(|(at, _)| now.saturating_sub(*at) >= 30_000).cloned()
     };
+    let mut now_counts = HashMap::new();
     let mut out = Vec::new();
     for t in names {
         let a = Asked { table: Some(t.clone()), sample: 0, seed: Options::default().seed, terms: false, top: 0 };
@@ -227,8 +252,22 @@ pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
         let of = |scope: &Json| (scope["stats"]["docs"]["live"].as_u64().unwrap_or(0), scope["stats"]["bytes"]["total"].as_u64().unwrap_or(0), scope["stats"]["segments"].as_array().map_or(0, |s| s.len()));
         let (docs, bytes, segments) = of(&j["cluster"]);
         let fresh = &j["cluster"]["freshness"];
-        let minutes = now.saturating_sub(fresh["started_ms"].as_u64().unwrap_or(now)) as f64 / 60_000.0;
-        let per_min = |n: Option<u64>| n.filter(|_| minutes >= 1.0).map(|n| (n as f64 / minutes * 10.0).round() / 10.0);
+        let (writes, reads) = (fresh["writes"].as_u64().unwrap_or(0), j["cluster"]["reads"]["docs"]["total"].as_u64().unwrap_or(0));
+        now_counts.insert(t.clone(), (writes, reads));
+        // Since the earlier look; or, servers started within the window,
+        // since they started. A count that went down (a server restarted)
+        // gives none.
+        let started = fresh["started_ms"].as_u64().unwrap_or(0);
+        let since = match &then {
+            Some((at, c)) => c.get(&t).map(|&(w, r)| (*at, w, r)),
+            None if started > 0 && now.saturating_sub(started) <= RATE_WINDOW.as_millis() as u64 => Some((started, 0, 0)),
+            None => None,
+        };
+        let window_ms = since.map(|(at, _, _)| now.saturating_sub(at)).filter(|ms| *ms >= 30_000);
+        let per_min = |n: u64, before: Option<u64>| {
+            let (Some(ms), Some(before)) = (window_ms, before) else { return None };
+            n.checked_sub(before).map(|d| (d as f64 / (ms as f64 / 60_000.0) * 10.0).round() / 10.0)
+        };
         let shards: Vec<Json> = j["shards"].as_array().into_iter().flatten().map(|s| {
             let (d, b, _) = of(&s["scope"]);
             json!({"shard": s["shard"], "docs": d, "bytes": b})
@@ -239,13 +278,23 @@ pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
             let top = shards.iter().max_by(|a, b| a["docs"].as_f64().unwrap_or(0.0).total_cmp(&b["docs"].as_f64().unwrap_or(0.0)));
             top.map(|s| json!({"shard": s["shard"], "over_mean": if mean > 0.0 { ((s["docs"].as_f64().unwrap_or(0.0) / mean - 1.0) * 100.0).round() / 100.0 } else { 0.0 }}))
         }).flatten();
-        let stale: Vec<Json> = j["shards"].as_array().into_iter().flatten().flat_map(|s| s["replicas"].as_array().cloned().unwrap_or_default().into_iter().map(move |r| (s["shard"].clone(), r)))
-            .filter(|(_, r)| r["behind"].as_u64().is_some_and(|b| b > 0))
-            .map(|(shard, r)| json!({"shard": shard, "copy": r["url"], "behind_txn": r["behind"]}))
-            .collect();
+        // Copies behind their primary, and copies that did not answer,
+        // which may be any distance behind.
+        let mut stale = Vec::new();
+        for s in j["shards"].as_array().into_iter().flatten() {
+            for r in s["replicas"].as_array().into_iter().flatten() {
+                let url = r["url"].as_str().unwrap_or_default();
+                let (short, since, down) = copies.get(url).cloned().unwrap_or((Json::Null, Json::Null, false));
+                if down || !r["error"].is_null() {
+                    stale.push(json!({"shard": s["shard"], "copy": url, "short": short, "down": true, "since_ms": since, "error": r["error"]}));
+                } else if r["behind"].as_u64().is_some_and(|b| b > 0) {
+                    stale.push(json!({"shard": s["shard"], "copy": url, "short": short, "behind_txn": r["behind"]}));
+                }
+            }
+        }
         out.push(json!({
             "table": t, "docs": docs, "bytes": bytes, "segments": segments, "shards": shards, "skew": skew,
-            "writes_per_min": per_min(fresh["writes"].as_u64()), "reads_per_min": per_min(j["cluster"]["reads"]["docs"]["total"].as_u64()),
+            "writes_per_min": per_min(writes, since.map(|s| s.1)), "reads_per_min": per_min(reads, since.map(|s| s.2)), "rate_window_s": window_ms.map(|ms| ms / 1000),
             "last_write_ms": fresh["last_write_ms"], "stale": stale,
         }));
     }
@@ -262,6 +311,7 @@ pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
             }
         }
     }
+    svc.tables_counts.lock().unwrap_or_else(|e| e.into_inner()).push_back((now, now_counts));
     let j = json!({"tables": out, "at_ms": now, "cached_s": TABLES_EVERY.as_secs()});
     *kept = Some((std::time::Instant::now(), j.clone()));
     Ok(j)

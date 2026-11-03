@@ -93,7 +93,7 @@ use strata::storage::Layout;
 
 use crate::auth::{self, Access, Secret};
 use crate::replication::Acks;
-use crate::service::{has_source, After, QueryReq, Service, SqlAnswer, Stream, Written, STREAM_OPS};
+use crate::service::{has_source, is_mark, After, QueryReq, Service, SqlAnswer, Stream, Written, STREAM_OPS};
 use crate::keys::{self, Principal, Scope};
 use crate::{agent, json as js, judge, obs, profiling, telemetry, ui, ApiError};
 
@@ -781,7 +781,7 @@ async fn schema(State(app): State<App>, Query(q): Query<std::collections::HashMa
 
 /// Every table's schema, the first first.
 async fn tables(State(app): State<App>) -> AxJson<Json> {
-    let tables: Vec<Json> = app.svc.catalog().iter().map(|s| table_json(&app.svc, s)).collect();
+    let tables: Vec<Json> = app.svc.catalog_now().await.iter().map(|s| table_json(&app.svc, s)).collect();
     AxJson(json!({"tables": tables}))
 }
 
@@ -964,40 +964,78 @@ fn answer(a: &crate::service::Answer) -> Json {
 
 /// Any statement: the service checks that the request's credential may
 /// run it ([`Service::sql`]), and audits a table's or rank profile's.
-async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let params = app.svc.params(b.get("params")).await?;
     let w = who(w);
     if let Some(log) = b.get("log") {
         let req = QueryReq { sql: body_str(&b, "sql")?.to_string(), params, timeout_ms: body_u64(&b, "timeout_ms"), after: after(&b)?, ..Default::default() };
-        return logged(&app, &w, req, log).await;
+        return logged(&app, &w, req, log).await.map(IntoResponse::into_response);
     }
-    match app.svc.sql(&w, body_str(&b, "sql")?, &params, after(&b)?, body_u64(&b, "timeout_ms")).await? {
-        SqlAnswer::Rows(a) => Ok(AxJson(answer(&a))),
-        SqlAnswer::Written { w, took_ms } => {
-            audit_ui_write(body_str(&b, "sql")?, w.rows as u64);
-            Ok(AxJson(written(w, took_ms)))
+    let statement = body_str(&b, "sql")?;
+    // A write from the command center is audited whatever its answer.
+    let writes = table_written(statement).is_some();
+    if writes {
+        audit_ui_write(statement, None, None);
+    }
+    let (r, partial) = crate::coord::with_partial(app.svc.sql(&w, statement, &params, after(&b)?, body_u64(&b, "timeout_ms"))).await;
+    match r {
+        Ok(SqlAnswer::Rows(a)) => Ok(AxJson(answer(&a)).into_response()),
+        Ok(SqlAnswer::Written { w, took_ms }) => {
+            audit_ui_write(statement, Some(w.rows as u64), None);
+            Ok(AxJson(written(w, took_ms)).into_response())
+        }
+        Err(e) => {
+            if writes {
+                audit_ui_write(statement, None, partial.as_ref());
+            }
+            Ok(write_failed(e, partial))
         }
     }
 }
 
-/// A write the command center ran (`x-strata-client: command-center`),
-/// noted for the audit log as a change: its statement (the first 2 KB),
-/// its table and the rows it wrote.
-fn audit_ui_write(statement: &str, rows: u64) {
+/// The answer of a write that failed: its error, and when it failed
+/// partway through a coordinator, what each shard did (`shards`: `{shard,
+/// short, rows}` for those that took it, `{shard, short, error}` for the
+/// others; [`crate::coord::with_partial`]).
+fn write_failed(e: ApiError, partial: Option<Json>) -> Response {
+    let Some(shards) = partial else { return e.into_response() };
+    let body = json!({"error": e.message, "partial": true, "shards": shards}).to_string();
+    let mut r = e.into_response();
+    *r.body_mut() = axum::body::Body::from(body);
+    r
+}
+
+/// A write the command center sent (`x-strata-client: command-center`),
+/// noted for the audit log as a change whatever its answer: its object
+/// (`table products`), what was sent (a statement's first 2 KB, or what
+/// the request was), its table, the rows written once known, and when it
+/// failed partway each shard's part.
+fn audit_ui(object: Option<String>, sent: &str, table: Option<&str>, rows: Option<u64>, shards: Option<&Json>) {
     if !keys::caller().is_some_and(|c| c.command_center()) {
         return;
     }
-    let mut end = statement.len().min(2048);
-    while !statement.is_char_boundary(end) {
+    let mut end = sent.len().min(2048);
+    while !sent.is_char_boundary(end) {
         end -= 1;
     }
-    let table = table_written(statement);
-    keys::note_change(keys::Change {
-        object: table.as_ref().map(|t| format!("table {t}")),
-        after: Some(json!({"statement": &statement[..end], "table": table, "rows": rows})),
-        ..Default::default()
+    let mut after = json!({"statement": &sent[..end], "table": table, "rows": rows});
+    if let Some(s) = shards {
+        after["shards"] = s.clone();
+    }
+    keys::note_change(keys::Change { object, after: Some(after), ..Default::default() });
+    let of = table.map_or(String::new(), |t| format!(" of {t}"));
+    let sent: String = sent.chars().take(200).collect();
+    keys::note(match (rows, shards) {
+        (Some(n), _) => format!("wrote {n} rows{of}: {sent}"),
+        (None, Some(_)) => format!("a write{of} that failed partway: {sent}"),
+        (None, None) => format!("a write{of}: {sent}"),
     });
-    keys::note(format!("wrote {rows} rows{}: {}", table.as_ref().map_or(String::new(), |t| format!(" of {t}")), statement.chars().take(200).collect::<String>()));
+}
+
+/// [`audit_ui`] of a statement: its table is the one it names.
+fn audit_ui_write(statement: &str, rows: Option<u64>, shards: Option<&Json>) {
+    let table = table_written(statement);
+    audit_ui(table.as_ref().map(|t| format!("table {t}")), statement, table.as_deref(), rows, shards);
 }
 
 /// The table a statement writes: what follows INSERT INTO, UPDATE, DELETE
@@ -1047,7 +1085,7 @@ async fn run_plan(State(app): State<App>, w: Option<axum::Extension<Principal>>,
 
 /// The body's `ops`, applied once per idempotency key (the body's
 /// `idempotency_key` or an `Idempotency-Key` header).
-async fn write(State(app): State<App>, headers: HeaderMap, AxJson(mut b): AxJson<Json>) -> Res {
+async fn write(State(app): State<App>, headers: HeaderMap, AxJson(mut b): AxJson<Json>) -> Result<Response, ApiError> {
     let ops = match b.get_mut("ops").map(Json::take) {
         Some(Json::Array(ops)) => ops,
         _ => return Err(ApiError::bad("the body needs an array \"ops\"")),
@@ -1062,12 +1100,29 @@ async fn write(State(app): State<App>, headers: HeaderMap, AxJson(mut b): AxJson
         return Err(ApiError::bad("an idempotency key has 1 to 256 characters"));
     }
     let t0 = std::time::Instant::now();
-    let shown = keys::caller().is_some_and(|c| c.command_center()).then(|| Json::Array(ops.clone()).to_string());
-    let w = app.svc.write_ops(ops, key).await?;
-    if let Some(ops) = shown {
-        audit_ui_write(&ops, w.rows as u64);
+    // A write from the command center is audited whatever its answer: its
+    // table is its first operation's.
+    let shown = keys::caller().is_some_and(|c| c.command_center()).then(|| {
+        let table = ops.iter().find_map(|op| op["table"].as_str().map(String::from)).unwrap_or_else(|| app.svc.first_table().table.clone());
+        (Json::Array(ops.clone()).to_string(), table)
+    });
+    let note = |rows: Option<u64>, shards: Option<&Json>| {
+        if let Some((ops, table)) = &shown {
+            audit_ui(Some(format!("table {table}")), ops, Some(table), rows, shards);
+        }
+    };
+    note(None, None);
+    let (r, partial) = crate::coord::with_partial(app.svc.write_ops(ops, key)).await;
+    match r {
+        Ok(w) => {
+            note(Some(w.rows as u64), None);
+            Ok(AxJson(written(w, t0.elapsed().as_secs_f64() * 1e3)).into_response())
+        }
+        Err(e) => {
+            note(None, partial.as_ref());
+            Ok(write_failed(e, partial))
+        }
     }
-    Ok(AxJson(written(w, t0.elapsed().as_secs_f64() * 1e3)))
 }
 
 /// The writes a read by key must see, from its query string
@@ -1195,7 +1250,40 @@ async fn kv_delete(
 /// Rows in the body, in the format `?format=` names or the content type
 /// implies. The content type must not be one a page on another site may
 /// send without asking first (text/plain, a form, or none).
-async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Query<std::collections::HashMap<String, String>>, headers: HeaderMap, body: Bytes) -> Res {
+async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Query<std::collections::HashMap<String, String>>, headers: HeaderMap, body: Bytes) -> Result<Response, ApiError> {
+    let ui = keys::caller().is_some_and(|c| c.command_center()) && !flag(&q, "plan", false).unwrap_or(false);
+    if !ui {
+        return import_rows(app, w, q, headers, body).await.map(IntoResponse::into_response);
+    }
+    // From the command center, audited whatever its answer: the table it
+    // names, else a SQLite file's tables, else the first table.
+    let (object, table) = match (q.get("table"), q.get("tables")) {
+        (Some(t), _) => (format!("table {t}"), Some(t.clone())),
+        (None, Some(t)) => (format!("tables {t}"), None),
+        (None, None) if body.starts_with(strata::sqlite::MAGIC) => ("the tables of a SQLite file".to_string(), None),
+        (None, None) => {
+            let t = app.svc.first_table().table.clone();
+            (format!("table {t}"), Some(t))
+        }
+    };
+    let sent = format!("an import of {} bytes{}", body.len(), q.get("format").map_or(String::new(), |f| format!(" of {f}")));
+    let note = |rows: Option<u64>, shards: Option<&Json>| audit_ui(Some(object.clone()), &sent, table.as_deref(), rows, shards);
+    note(None, None);
+    let (r, partial) = crate::coord::with_partial(import_rows(app, w, q, headers, body)).await;
+    match r {
+        Ok(AxJson(j)) => {
+            note(j["written"].as_u64(), None);
+            Ok(AxJson(j).into_response())
+        }
+        Err(e) => {
+            note(None, partial.as_ref());
+            Ok(write_failed(e, partial))
+        }
+    }
+}
+
+/// `POST /v1/import` ([`import`]).
+async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::collections::HashMap<String, String>, headers: HeaderMap, body: Bytes) -> Res {
     if auth::simple_content_type(header_str(&headers, header::CONTENT_TYPE)) {
         return Err(ApiError {
             status: 415,
@@ -1379,14 +1467,68 @@ async fn send_file(dir: tempfile::TempDir, path: &std::path::Path, content_type:
 /// so far. The answer ends with `{"done": true, ...}`, or with `{"error":
 /// ..., "status": .., "lines": ..}` at the first failure, nothing after
 /// the lines it counts applied.
-async fn stream(State(app): State<App>, headers: HeaderMap, body: axum::body::Body) -> Result<Response, ApiError> {
+async fn stream(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, body: axum::body::Body) -> Result<Response, ApiError> {
     if auth::simple_content_type(header_str(&headers, header::CONTENT_TYPE)) {
         return Err(ApiError { status: 415, message: "send the operations as application/x-ndjson, not text/plain or a form".into() });
     }
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Json>();
-    tokio::spawn(ndjson(app.svc.clone(), body, tx).instrument(tracing::Span::current()));
+    // From the command center, audited once it ends: what it wrote.
+    let ui = keys::caller().filter(|c| c.command_center()).map(|c| (c, who(w), obs::current().map(|id| id.to_string())));
+    let svc = app.svc.clone();
+    tokio::spawn(
+        async move {
+            let t0 = Instant::now();
+            let end = ndjson(svc.clone(), body, tx).await;
+            if let Some((caller, w, request_id)) = ui {
+                audit_ui_stream(&svc, &caller, &w, request_id, end, t0.elapsed().as_secs_f64() * 1e3);
+            }
+        }
+        .instrument(tracing::Span::current()),
+    );
     let lines = tokio_stream::wrappers::UnboundedReceiverStream::new(rx).map(|j| Ok::<_, std::convert::Infallible>(Bytes::from(format!("{j}\n"))));
     Ok(([(header::CONTENT_TYPE, "application/x-ndjson")], axum::body::Body::from_stream(lines)).into_response())
+}
+
+/// How a stream ended ([`ndjson`]): rows written, lines done, the tables
+/// its operations named, and the error it stopped at, if any.
+#[derive(Default)]
+struct StreamEnd {
+    written: u64,
+    lines: u64,
+    tables: std::collections::BTreeSet<String>,
+    error: Option<ApiError>,
+}
+
+/// The audit entry of a stream the command center sent, once it ended:
+/// the tables it wrote, its rows and lines, and how it ended.
+fn audit_ui_stream(svc: &Service, caller: &keys::Caller, w: &Principal, request_id: Option<String>, end: StreamEnd, ms: f64) {
+    let tables: Vec<String> = end.tables.into_iter().collect();
+    let list = tables.join(", ");
+    let stopped = end.error.as_ref().map_or(String::new(), |e| format!("; it stopped: {}", e.message));
+    svc.audit_add(keys::Entry {
+        ts_ms: telemetry::now_ms(),
+        who: keys::audit_name(w),
+        key: w.key.clone(),
+        scope: Some(w.scope.name()),
+        method: "POST".into(),
+        route: "/v1/stream".into(),
+        status: end.error.as_ref().map_or(200, |e| e.status),
+        ms,
+        request_id,
+        detail: Some(format!("streamed {} rows in {} lines to {}{stopped}", end.written, end.lines, if list.is_empty() { "no table" } else { list.as_str() })),
+        kind: keys::CHANGE.into(),
+        addr: caller.addr.clone(),
+        client: caller.named(),
+        reason: caller.reason.clone(),
+        object: match tables.len() {
+            0 => None,
+            1 => Some(format!("table {list}")),
+            _ => Some(format!("tables {list}")),
+        },
+        before: None,
+        after: Some(json!({"rows": end.written, "lines": end.lines, "tables": tables, "error": end.error.map(|e| e.message)})),
+        actor: "person".into(),
+    });
 }
 
 /// Lines a stream reads ahead of its writes ([`read_lines`]).
@@ -1400,13 +1542,16 @@ const STREAM_LINES: usize = 4096;
 /// acknowledged batches' successors before the answers arrive: answers
 /// wait in memory, so that a client that reads them only once it has
 /// sent everything does not stall the stream.
-async fn ndjson(svc: Arc<Service>, body: axum::body::Body, tx: tokio::sync::mpsc::UnboundedSender<Json>) {
+async fn ndjson(svc: Arc<Service>, body: axum::body::Body, tx: tokio::sync::mpsc::UnboundedSender<Json>) -> StreamEnd {
     let (ahead, mut lines) = tokio::sync::mpsc::channel(STREAM_LINES);
     tokio::spawn(read_lines(body, svc.max_body, ahead).in_current_span());
     let mut s = Stream::default();
     let mut batch: Vec<Json> = Vec::new();
     // Lines read, and lines committed.
     let (mut read, mut done) = (0u64, 0u64);
+    let mut tables = std::collections::BTreeSet::new();
+    let first_table = svc.first_table().table.clone();
+    let end = |s: &Stream, done: u64, tables: std::collections::BTreeSet<String>, error: Option<ApiError>| StreamEnd { written: s.written, lines: done, tables, error };
     while let Some(first) = lines.recv().await {
         let mut next = Some(first);
         while let Some(line) = next.take() {
@@ -1418,25 +1563,33 @@ async fn ndjson(svc: Arc<Service>, body: axum::body::Body, tx: tokio::sync::mpsc
                 Ok(ops) => ops,
                 Err(e) => {
                     // The lines before it are good.
-                    if flush(&svc, &mut s, &mut batch, read, &mut done, &tx).await {
-                        let _ = tx.send(json!({"error": e.message, "status": e.status, "lines": done}));
+                    if let Err(f) = flush(&svc, &mut s, &mut batch, read, &mut done, &tx).await {
+                        return end(&s, done, tables, Some(f));
                     }
-                    return;
+                    let _ = tx.send(json!({"error": e.message, "status": e.status, "lines": done}));
+                    return end(&s, done, tables, Some(e));
                 }
             };
             read += 1;
+            for op in &ops {
+                if !is_mark(op) {
+                    tables.insert(op["table"].as_str().map_or_else(|| first_table.clone(), String::from));
+                }
+            }
             batch.extend(ops);
             if batch.len() < STREAM_OPS {
                 next = lines.try_recv().ok();
             }
         }
-        if !flush(&svc, &mut s, &mut batch, read, &mut done, &tx).await {
-            return;
+        if let Err(f) = flush(&svc, &mut s, &mut batch, read, &mut done, &tx).await {
+            return end(&s, done, tables, Some(f));
         }
     }
-    if flush(&svc, &mut s, &mut batch, read, &mut done, &tx).await {
-        let _ = tx.send(json!({"done": true, "batches": s.batches, "lines": done, "written": s.written, "skipped": s.skipped}));
+    if let Err(f) = flush(&svc, &mut s, &mut batch, read, &mut done, &tx).await {
+        return end(&s, done, tables, Some(f));
     }
+    let _ = tx.send(json!({"done": true, "batches": s.batches, "lines": done, "written": s.written, "skipped": s.skipped}));
+    end(&s, done, tables, None)
 }
 
 /// Reads a stream's body into its lines' operations ([`line_ops`]) for
@@ -1479,12 +1632,12 @@ async fn read_lines(body: axum::body::Body, max: usize, lines: tokio::sync::mpsc
     }
 }
 
-/// Writes the stream's batch, if any, and answers it; false when it
+/// Writes the stream's batch, if any, and answers it; its error when it
 /// failed, which the answer says.
-async fn flush(svc: &Arc<Service>, s: &mut Stream, batch: &mut Vec<Json>, read: u64, done: &mut u64, tx: &tokio::sync::mpsc::UnboundedSender<Json>) -> bool {
+async fn flush(svc: &Arc<Service>, s: &mut Stream, batch: &mut Vec<Json>, read: u64, done: &mut u64, tx: &tokio::sync::mpsc::UnboundedSender<Json>) -> Result<(), ApiError> {
     if batch.is_empty() {
         *done = read;
-        return true;
+        return Ok(());
     }
     let ops = std::mem::take(batch);
     let n = ops.len();
@@ -1503,11 +1656,11 @@ async fn flush(svc: &Arc<Service>, s: &mut Stream, batch: &mut Vec<Json>, read: 
                 j["offsets"] = Json::Object(offsets.into_iter().map(|(n, o)| (n, json!(o))).collect());
             }
             let _ = tx.send(j);
-            true
+            Ok(())
         }
         Err(e) => {
             let _ = tx.send(json!({"error": e.message, "status": e.status, "lines": *done}));
-            false
+            Err(e)
         }
     }
 }
@@ -1737,7 +1890,7 @@ async fn admin_vacuum(State(app): State<App>) -> Res {
 async fn admin_verify(State(app): State<App>, body: Option<AxJson<Json>>) -> Res {
     let timeout_ms = body.as_ref().and_then(|b| b.get("timeout_ms")).and_then(|v| v.as_u64()).unwrap_or(0);
     let timeout = if timeout_ms > 0 { Duration::from_millis(timeout_ms) } else { VERIFY_WAIT };
-    Ok(AxJson(app.svc.verify_replicas(timeout).await?))
+    Ok(AxJson(app.svc.verify_fresh(timeout).await?))
 }
 
 /// Makes this replica the primary of a new term: `{"replicas": [gRPC
@@ -2771,9 +2924,22 @@ async fn autoscale_replay(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     let days = days.min(10_000.0 / (144.0 * start.shards as f64));
     let since = now.saturating_sub((days * 86_400_000.0) as u64);
     let (steps, nodes) = load_steps(&app, since).await?;
-    let mut j = replay(&rules, &steps, &start);
+    // On machines of one's own no volume size is known (no StrataCluster,
+    // none given): the rule growing volumes is left out of the replay.
+    let volume_known = spec.is_some() || given["volume"].is_string();
+    let mut replayed = rules.clone();
+    let mut left_out = Vec::new();
+    if !volume_known && replayed.volumes.as_ref().is_some_and(|v| v.action == crate::operator::autoscale::VolumeAction::Grow) {
+        replayed.volumes = None;
+        left_out.push("volumes: no volume size is known without a StrataCluster, so growing volumes is left out (name sizes.volume to replay it)");
+    }
+    let mut j = replay(&replayed, &steps, &start);
     j["rules"] = json!(rules.said());
-    j["sizes"] = json!({"replicas": start.replicas, "shards": start.shards, "volume": start.volume});
+    j["left_out"] = json!(left_out);
+    j["sizes"] = json!({"replicas": start.replicas, "shards": start.shards, "volume": if volume_known { json!(start.volume) } else { Json::Null }});
+    if !volume_known {
+        j["summary"]["end"]["volume"] = Json::Null;
+    }
     j["sinceMs"] = json!(since);
     j["days"] = json!(days);
     j["nodes"] = nodes;

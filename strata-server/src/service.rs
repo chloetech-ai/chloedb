@@ -360,6 +360,9 @@ pub struct Service {
     pub log_level: Arc<std::sync::Mutex<LogLevel>>,
     /// `GET /v1/index/tables`'s answer, and when ([`crate::inspect::tables`]).
     pub tables_kept: tokio::sync::Mutex<Option<(std::time::Instant, Json)>>,
+    /// Each table's counts at the looks of the last minutes, for its rates
+    /// ([`crate::inspect::tables`]).
+    pub tables_counts: std::sync::Mutex<crate::inspect::Counts>,
     /// What happened, in order ([`crate::events`]).
     pub events: Arc<crate::events::Events>,
     // ----- end core
@@ -551,6 +554,7 @@ impl Service {
             rollout_seen: Default::default(),
             rollout_pace_s: Default::default(),
             tables_kept: Default::default(),
+            tables_counts: Default::default(),
             log_level: Default::default(),
             events,
             kube: None,
@@ -752,6 +756,43 @@ impl Service {
             }
             Replication::None => Err(conflict("this server is not a replica (--replica): it has no rows of a primary's to compare".into())),
         }
+    }
+
+    /// [`Self::verify_replicas`], every comparison made by this call: an
+    /// answer holding one from before the call began (a replica that just
+    /// joined, say) asks again, up to twice; one still older answers
+    /// `compared: false` and why. Each says when it was made
+    /// (`compared_ms`), and the answer when it was asked (`asked_ms`).
+    pub async fn verify_fresh(&self, timeout: Duration) -> Result<Json, ApiError> {
+        let start = telemetry::now_ms();
+        let deadline = Instant::now() + timeout;
+        let made = |r: &Json, now: u64| r["ms_ago"].as_u64().map(|a| now.saturating_sub(a));
+        let mut j = Json::Null;
+        for _ in 0..3 {
+            j = self.verify_replicas(deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1))).await?;
+            let now = telemetry::now_ms();
+            let old = j["replicas"].as_array().into_iter().flatten().any(|r| r["in_sync"] == true && made(r, now).is_none_or(|at| at < start));
+            if !old || Instant::now() >= deadline {
+                break;
+            }
+        }
+        let now = telemetry::now_ms();
+        for r in j["replicas"].as_array_mut().into_iter().flatten() {
+            let at = made(r, now);
+            r["compared_ms"] = json!(at);
+            match at {
+                Some(at) if at < start => {
+                    r["compared"] = json!(false);
+                    r["why"] = json!(format!("no comparison was made in time: the last one is {} s old, from before this call", now.saturating_sub(at) / 1000));
+                }
+                None if r["compared"] != true => {
+                    r["why"] = json!(if r["in_sync"] == true { "no comparison was made in time" } else { "out of sync: a replica is compared once it is in sync" });
+                }
+                _ => {}
+            }
+        }
+        j["asked_ms"] = json!(start);
+        Ok(j)
     }
 
     /// Compares each replica's rows with this primary's now
@@ -1571,6 +1612,14 @@ impl Service {
             }
         }
         Err(ApiError::bad(format!("query error: no such table: {name}")))
+    }
+
+    /// The tables as they are now: a coordinator asks its shards again
+    /// first (at most once a second), so that a table another coordinator
+    /// created is listed ([`Self::learn_tables`]).
+    pub async fn catalog_now(&self) -> Vec<Arc<Schema>> {
+        self.learn_tables(false).await;
+        self.catalog()
     }
 
     /// A coordinator asks its shards for their tables and rank profiles

@@ -189,7 +189,13 @@ impl Events {
         let before_shards = shards(before);
         let n = |s: &Json| s["shard"].as_u64().unwrap_or(0);
         let copies = |s: &Json| s["replicas"].as_array().cloned().unwrap_or_default();
-        let place = |shard: u64, r: &Json| json!({"shard": shard, "copy": short(r)});
+        let place = |shard: u64, r: &Json| {
+            let mut j = json!({"shard": shard, "copy": short(r)});
+            if let Some(name) = name_of(r) {
+                j["name"] = json!(name);
+            }
+            j
+        };
         for s in &after_shards {
             let i = n(s);
             let Some(b) = before_shards.iter().find(|b| n(b) == i) else {
@@ -201,7 +207,7 @@ impl Events {
             for r in &now {
                 let url = &r["url"];
                 match was.iter().find(|w| w["url"] == *url) {
-                    None => out.push(Event { detail: json!({"url": url}), where_: place(i, r), ..Event::new("copy_added", "info", format!("{} was added to shard {i}", short(r))) }),
+                    None => out.push(Event { detail: json!({"url": url}), where_: place(i, r), ..Event::new("copy_added", "info", format!("{} was added to shard {i}", label(r))) }),
                     Some(w) => {
                         let (down_before, down_now) = (w["status"] == "down", r["status"] == "down");
                         if !down_before && down_now {
@@ -210,15 +216,15 @@ impl Events {
                             if let Some(e) = r["error"].as_str() {
                                 detail["error"] = json!(e);
                             }
-                            out.push(Event { detail, where_: place(i, r), ..Event::new("copy_down", "warning", format!("{} ({role} of shard {i}) does not answer", short(r))) });
+                            out.push(Event { detail, where_: place(i, r), ..Event::new("copy_down", "warning", format!("{} ({}{role} of shard {i}) does not answer", short(r), name_of(r).map_or(String::new(), |n| format!("{n}, ")))) });
                         } else if down_before && !down_now {
                             let since = w["down_since_ms"].as_u64();
                             let mut detail = json!({"url": url, "role": r["role"]});
-                            let mut title = format!("{} is back", short(r));
+                            let mut title = format!("{} is back", label(r));
                             if let Some(t) = since {
                                 let s = crate::telemetry::now_ms().saturating_sub(t) / 1000;
                                 detail["down_s"] = json!(s);
-                                title = format!("{} is back, after {s} s down", short(r));
+                                title = format!("{} is back, after {s} s down", label(r));
                             }
                             out.push(Event { detail, where_: place(i, r), ..Event::new("copy_up", "info", title) });
                         }
@@ -227,7 +233,7 @@ impl Events {
             }
             for w in &was {
                 if !now.iter().any(|r| r["url"] == w["url"]) {
-                    out.push(Event { detail: json!({"url": w["url"]}), where_: place(i, w), ..Event::new("copy_removed", "info", format!("{} was removed from shard {i}", short(w))) });
+                    out.push(Event { detail: json!({"url": w["url"]}), where_: place(i, w), ..Event::new("copy_removed", "info", format!("{} was removed from shard {i}", label(w))) });
                 }
             }
             if s["failover"] == true || b["failover"] == true {
@@ -273,6 +279,20 @@ impl Events {
 /// A copy's short name (`s1-0`), else its url.
 fn short(r: &Json) -> String {
     r["short"].as_str().or(r["url"].as_str()).unwrap_or("?").to_string()
+}
+
+/// A copy's server's name, when it said one other than its short name (a
+/// copy down keeps the one it said last).
+fn name_of(r: &Json) -> Option<&str> {
+    r["name"].as_str().filter(|n| !n.is_empty() && Some(*n) != r["short"].as_str())
+}
+
+/// A copy in a title: `s0-2 (spare-4)`, or `s0-2` without a name.
+fn label(r: &Json) -> String {
+    match name_of(r) {
+        Some(n) => format!("{} ({n})", short(r)),
+        None => short(r),
+    }
 }
 
 /// A shard's primary in a snapshot: its url, short name and term.
@@ -328,6 +348,16 @@ mod tests {
         let d = ev.diff(Some(&a), &b);
         assert_eq!(kinds(&d), ["copy_down"]);
         assert_eq!(d[0].title, "s0-0 (primary of shard 0) does not answer");
+        // With its server's name, which a copy down keeps.
+        let named = |j: &Json| {
+            let mut j = j.clone();
+            j["shards"][0]["replicas"][0]["name"] = json!("spare-4");
+            j
+        };
+        let d = Events::new().diff(Some(&named(&a)), &named(&b));
+        assert_eq!((d[0].title.as_str(), &d[0].where_["name"]), ("s0-0 (spare-4, primary of shard 0) does not answer", &json!("spare-4")));
+        let d = Events::new().diff(Some(&named(&b)), &named(&a));
+        assert_eq!(d.iter().find(|e| e.kind == "copy_up").map(|e| e.title.as_str()), Some("s0-0 (spare-4) is back"));
         let c = json!({"shards": [shard(0, "b", &[("a", false), ("b", true), ("c", true)], true)]});
         let d = ev.diff(Some(&b), &c);
         assert_eq!(kinds(&d), ["primary_changed"]);
