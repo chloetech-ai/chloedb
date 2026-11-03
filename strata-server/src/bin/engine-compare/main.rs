@@ -691,6 +691,9 @@ async fn load(collection: &str, engine: Engine, urls: &[String], shards: usize, 
         let n = each_doc(&coll, limit, |r, v| {
             match engine {
                 Engine::Vespa => {
+                    // Vespa refuses a string with a control character in it
+                    // (158 of MS MARCO's first 1M passages have one).
+                    let r = RawDoc { title: vespa_text(&r.title), text: vespa_text(&r.text), ..r };
                     body.extend_from_slice(r.id.as_bytes());
                     body.push(b'\t');
                     body.extend_from_slice(b"{\"fields\":");
@@ -959,6 +962,19 @@ fn vector_text(v: &[f32]) -> String {
     }
     out.push(']');
     out
+}
+
+/// Text as Vespa takes it: the control characters it refuses (all below
+/// U+0020 but tab, newline and carriage return) and the noncharacters
+/// become spaces.
+fn vespa_text(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\t' | '\n' | '\r' => c,
+            c if (c as u32) < 0x20 || ('\u{fdd0}'..='\u{fddf}').contains(&c) || (c as u32) & 0xfffe == 0xfffe => ' ',
+            c => c,
+        })
+        .collect()
 }
 
 /// A string as a SQL literal.

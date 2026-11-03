@@ -6,7 +6,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: qdrant
-  namespace: compare
+  namespace: __NS__
 spec:
   clusterIP: None
   publishNotReadyAddresses: true
@@ -18,7 +18,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: qdrant-0
-  namespace: compare
+  namespace: __NS__
   labels: {app: qdrant, engine: qdrant}
 spec:
   hostname: qdrant-0
@@ -31,8 +31,8 @@ spec:
       env:
         - {name: QDRANT__TELEMETRY_DISABLED, value: "true"}
         # Threads for search and for the optimizer within the pod's budget.
-        - {name: QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS, value: "3"}
-        - {name: QDRANT__STORAGE__PERFORMANCE__MAX_OPTIMIZATION_THREADS, value: "3"}
+        - {name: QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS, value: "__THREADS__"}
+        - {name: QDRANT__STORAGE__PERFORMANCE__MAX_OPTIMIZATION_THREADS, value: "__THREADS__"}
       readinessProbe:
         httpGet: {path: /readyz, port: api}
         periodSeconds: 2

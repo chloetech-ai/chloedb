@@ -6,7 +6,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: weaviate
-  namespace: compare
+  namespace: __NS__
 spec:
   clusterIP: None
   publishNotReadyAddresses: true
@@ -18,7 +18,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: weaviate-0
-  namespace: compare
+  namespace: __NS__
   labels: {app: weaviate, engine: weaviate}
 spec:
   hostname: weaviate-0
@@ -35,8 +35,8 @@ spec:
         - {name: CLUSTER_HOSTNAME, value: node1}
         - {name: DISABLE_TELEMETRY, value: "true"}
         # Go within the pod's budget.
-        - {name: GOMAXPROCS, value: "3"}
-        - {name: GOMEMLIMIT, value: 5GiB}
+        - {name: GOMAXPROCS, value: "__THREADS__"}
+        - {name: GOMEMLIMIT, value: __GOMEMLIMIT__}
       readinessProbe:
         httpGet: {path: /v1/.well-known/ready, port: api}
         periodSeconds: 2

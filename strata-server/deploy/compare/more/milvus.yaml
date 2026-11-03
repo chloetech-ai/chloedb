@@ -7,7 +7,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: milvus-config
-  namespace: compare
+  namespace: __NS__
 data:
   embedEtcd.yaml: |
     listen-client-urls: http://0.0.0.0:2379
@@ -22,7 +22,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: milvus
-  namespace: compare
+  namespace: __NS__
 spec:
   clusterIP: None
   publishNotReadyAddresses: true
@@ -35,7 +35,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: milvus-0
-  namespace: compare
+  namespace: __NS__
   labels: {app: milvus, engine: milvus}
 spec:
   hostname: milvus-0
