@@ -131,8 +131,8 @@ impl IntoResponse for ApiError {
 type Res = Result<AxJson<Json>, ApiError>;
 
 #[derive(Clone)]
-struct App {
-    svc: Arc<Service>,
+pub struct App {
+    pub svc: Arc<Service>,
     token: Option<Secret>,
     cluster: Option<Secret>,
     hosts: Option<Arc<[String]>>,
