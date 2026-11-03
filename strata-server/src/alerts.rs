@@ -242,9 +242,9 @@ pub fn defaults() -> Vec<Rule> {
         (rule("disk-full", "Disk almost full", "disk_used_ratio", ">", 0.9, "mean", 300, 0, "warning", c, "Under 10% of the copy's disk is left."), 0.88),
         (rule("disk-critical", "Disk nearly full", "disk_used_ratio", ">", 0.97, "mean", 120, 0, "critical", c, "Under 3% of the copy's disk is left: writes fail when it is full. Free space or move slots off the copy now."), 0.95),
         (rule("disk-filling", "Disk full within 12 hours", "disk_hours_to_full", "<", 12.0, "mean", 1800, 0, "warning", c, "At the rate the copy's disk filled over the last 30 minutes, it is full in under 12 hours."), 24.0),
-        (rule("p99", "Query p99 over 1 s", "p99_ms", ">", 1000.0, "mean", 300, 0, "warning", s, "The slowest 1% of queries took over a second, on average over 5 minutes."), 800.0),
+        (rule("p99", "", "p99_ms", ">", 0.0, "mean", 300, 0, "warning", s, ""), 0.0),
         (rule("p99-jump", "Query p99 doubled", "p99_ms", ">", 2.0, "mean", 300, 0, "warning", s, "The p99 of the last 5 minutes is over twice the p99 of the 5 minutes before."), 1.5),
-        (rule("errors", "Query errors over 5%", "error_ratio", ">", 0.05, "mean", 300, 0, "warning", s, "Over 5% of the queries that ended in 5 minutes failed on the server's side (errors and the server's deadline; not bad SQL nor a client's own deadline)."), 0.03),
+        (rule("errors", "", "error_ratio", ">", 0.0, "mean", 300, 0, "warning", s, ""), 0.0),
         (rule("key-failing", "A client's calls fail", "key_error_ratio", ">", 0.2, "mean", 300, 0, "warning", s, "Over 20% of one key's calls failed in 5 minutes (its own errors included: bad SQL, its own deadline), for a key with 30 calls or more. Tell the key's owner."), 0.1),
         (rule("rejected", "Queries refused (429)", "rejected_s", ">", 0.5, "mean", 300, 0, "warning", s, "Queries found no slot (--max-concurrent) or no memory before their deadline, or a Contain rule refused them."), 0.2),
         (rule("5xx", "Server errors over 1% of requests", "http_5xx_ratio", ">", 0.01, "mean", 300, 0, "warning", s, "Over 1% of the HTTP requests of 5 minutes failed on the server's side (5xx)."), 0.005),
@@ -254,12 +254,14 @@ pub fn defaults() -> Vec<Rule> {
         (rule("query-memory", "Query memory almost spent", "query_memory_ratio", ">", 0.9, "mean", 60, 0, "warning", s, "The running queries hold over 90% of --query-memory-mb; more are refused with 429."), 0.8),
         (rule("write-queue", "Writes queue up", "write_queue", ">", 512.0, "mean", 60, 0, "warning", c, "Write requests wait for the writer; at --max-queued-writes they are refused."), 256.0),
     ];
+    let slo = crate::service::Slo::default();
     v.into_iter()
         .map(|(mut r, resolve)| {
             r.resolve = Some(resolve);
             if r.id == "p99-jump" {
                 r.vs = "before".into();
             }
+            follow(&mut r, slo.error_ratio, slo.p99_ms);
             r
         })
         .collect()
@@ -278,15 +280,48 @@ pub fn builtins() -> Vec<Rule> {
         (rule("primary-changed", "A shard's primary changed", "primary_changes", ">", 0.0, "max", 10, 0, "info", s, "A shard elected another primary in the last 10 minutes; the alert resolves 10 minutes after the last change."), 0.0),
         (rule("partial-answers", "Partial answers", "partial_s", ">", 0.1, "mean", 120, 0, "warning", s, "Over 2 minutes, more than one answer in 10 seconds left out shards that did not answer."), 0.02),
         (rule("copy-silent", "A copy stopped reporting", "copies_silent", ">", 0.0, "max", 10, 0, "warning", s, "A copy answers but its own numbers are over 60 seconds old."), 0.0),
-        (rule("availability", "Searches fail", "availability", "<", 0.99, "mean", 300, 0, "critical", s, "Under 99% of the searches that ended in 5 minutes succeeded (failures on the server's side)."), 0.995),
+        (rule("availability", "Searches fail", "availability", "<", 0.0, "mean", 300, 0, "critical", s, ""), 0.0),
     ];
+    let slo = crate::service::Slo::default();
     v.into_iter()
         .map(|(mut r, resolve)| {
             r.builtin = true;
             r.resolve = Some(resolve);
+            follow(&mut r, slo.error_ratio, slo.p99_ms);
             r
         })
         .collect()
+}
+
+/// `x` as a percent with the digits it takes: 0.01 is "1%", 0.005 "0.5%".
+fn pct(x: f64) -> String {
+    let t = format!("{:.3}", x * 100.0);
+    format!("{}%", t.trim_end_matches('0').trim_end_matches('.'))
+}
+
+/// Of the default and built-in rules, those that follow the service
+/// level objective (`--slo-error-ratio`, `--slo-p99-ms`), as Home's
+/// checks do (OV-8): query errors over it, the p99 over it, searches that succeed under
+/// what it leaves. Each resolves at half its margin.
+fn follow(r: &mut Rule, error_ratio: f64, p99_ms: f64) {
+    let ms = |v: f64| if v >= 1000.0 && v % 1000.0 == 0.0 { format!("{} s", v / 1000.0) } else { format!("{v} ms") };
+    match r.id.as_str() {
+        "errors" => {
+            (r.threshold, r.resolve) = (error_ratio, Some(error_ratio / 2.0));
+            r.name = format!("Query errors over {}", pct(error_ratio));
+            r.description = format!("Over {} of the queries that ended in 5 minutes failed on the server's side (errors and the server's deadline; not bad SQL nor a client's own deadline). {} is the service level objective (--slo-error-ratio), which Home checks too.", pct(error_ratio), pct(error_ratio));
+        }
+        "p99" => {
+            (r.threshold, r.resolve) = (p99_ms, Some(p99_ms * 0.8));
+            r.name = format!("Query p99 over {}", ms(p99_ms));
+            r.description = format!("The slowest 1% of queries took over {}, on average over 5 minutes. {} is the service level objective (--slo-p99-ms), which Home checks too.", ms(p99_ms), ms(p99_ms));
+        }
+        "availability" => {
+            (r.threshold, r.resolve) = (1.0 - error_ratio, Some(1.0 - error_ratio / 2.0));
+            r.description = format!("Under {} of the searches that ended in 5 minutes succeeded (failures on the server's side): over {} failed, the service level objective (--slo-error-ratio).", pct(1.0 - error_ratio), pct(error_ratio));
+        }
+        _ => {}
+    }
 }
 
 /// Metrics a coordinator computes from its cluster's state.
@@ -819,6 +854,9 @@ pub struct Alerts {
     copy_rules_ms: Mutex<HashMap<String, u64>>,
     /// When each critical alert was last sent again ([`Route::repeat_min`]).
     repeated: Mutex<HashMap<String, u64>>,
+    /// This server's service level objective, once given
+    /// ([`Alerts::follow_slo`]): error ratio, p99 in ms.
+    slo: Mutex<Option<(f64, f64)>>,
 }
 
 /// How long a route has to take a message, its three tries included.
@@ -918,7 +956,25 @@ impl Alerts {
             pushed: Mutex::new(HashMap::new()),
             copy_rules_ms: Mutex::new(HashMap::new()),
             repeated: Mutex::new(HashMap::new()),
+            slo: Mutex::new(None),
         })
+    }
+
+    /// The rules over errors, the p99 and searches that fail follow this
+    /// server's service level objective ([`follow`]): the built-in one,
+    /// and the default ones as long as nobody changed their threshold
+    /// (the defaults before they followed it, 5% and 1 s, included).
+    pub fn follow_slo(&self, error_ratio: f64, p99_ms: f64) {
+        let slo = crate::service::Slo::default();
+        let stock = |r: &Rule| match r.id.as_str() {
+            "errors" => [slo.error_ratio, 0.05].contains(&r.threshold),
+            "p99" => [slo.p99_ms, 1000.0].contains(&r.threshold),
+            _ => false,
+        };
+        *lock(&self.slo) = Some((error_ratio, p99_ms));
+        for r in lock(&self.rules).iter_mut().filter(|r| r.builtin || stock(r)) {
+            follow(r, error_ratio, p99_ms);
+        }
     }
 
     /// Names the cluster and the command center's address in
@@ -953,11 +1009,15 @@ impl Alerts {
             }
         }
         // Built-in rules kept in a file take the definitions of this
-        // version, but for what may change.
+        // version, but for what may change, and this server's SLO.
         let defs = builtins();
+        let slo = *lock(&self.slo);
         for r in rules.iter_mut().filter(|r| r.builtin) {
             if let Some(d) = defs.iter().find(|d| d.id == r.id) {
                 *r = Rule { severity: r.severity.clone(), enabled: r.enabled, route: r.route.clone(), ..d.clone() };
+                if let Some((e, p)) = slo {
+                    follow(r, e, p);
+                }
             }
         }
         if !yes {
@@ -1771,6 +1831,35 @@ impl Alerts {
             // Who sends the messages: with several coordinators, one.
             "pager": {"this": me, "sends": pager, "coordinators": peers},
         })
+    }
+
+    /// `GET /v1/alerts?brief=1`, for the bell on views that show no
+    /// alerts: each rule's id, name, severity, metric and state, and of
+    /// those not ok their since, value, acknowledgement, silence, cause
+    /// and copies; no events, routes nor `where`. A tenth of the whole.
+    pub fn brief_json(&self) -> Json {
+        let full = self.json();
+        let rules: Vec<Json> = full["rules"].as_array().map_or(&[][..], |v| v.as_slice()).iter().map(|r| json!({"id": r["id"], "name": r["name"], "severity": r["severity"], "metric": r["metric"], "status": {"state": r["status"]["state"]}})).collect();
+        let states: Vec<Json> = full["states"]
+            .as_array()
+            .map_or(&[][..], |v| v.as_slice())
+            .iter()
+            .filter(|s| !matches!(s["state"].as_str(), Some("ok" | "disabled" | "no_data")))
+            .map(|s| {
+                let mut j = json!({"rule": s["rule"], "name": s["name"], "severity": s["severity"], "state": s["state"], "since_ms": s["since_ms"], "value": s["value"]});
+                for k in ["ack", "silenced", "held_by", "copies"] {
+                    if let Some(v) = s.get(k) {
+                        j[k] = v.clone();
+                    }
+                }
+                j
+            })
+            .collect();
+        let mut j = json!({"brief": true, "rules": rules, "states": states});
+        for k in ["firing", "pending", "no_data", "firing_shown", "coordinator", "cluster"] {
+            j[k] = full[k].clone();
+        }
+        j
     }
 
     /// One rule's state, with its events in memory, the newest first.
@@ -3608,6 +3697,44 @@ mod tests {
         let late = d.due(t + PAGER_WAIT_MS + 1_000);
         assert_eq!(late.len(), 1);
         assert!(late[0].0.context.as_deref().is_some_and(|c| c.contains("did not say it sent this")), "{:?}", late[0].0.context);
+    }
+
+    /// The built-in rules over errors and the p99 fire where Home's SLO
+    /// checks do (OV-8); the bell's brief answer has what it counts.
+    #[test]
+    fn the_slo_rules_follow_the_slo_and_the_bell_reads_a_brief_answer() {
+        let a = Alerts::new(None, None).unwrap();
+        a.set_coordinator(true);
+        let get = |id: &str| a.rules().into_iter().find(|r| r.id == id).unwrap();
+        assert_eq!((get("errors").threshold, get("errors").name.as_str()), (0.01, "Query errors over 1%"));
+        assert_eq!((get("p99").threshold, get("p99").name.as_str()), (250.0, "Query p99 over 250 ms"));
+        assert_eq!(get("availability").threshold, 0.99);
+        a.follow_slo(0.005, 2000.0);
+        assert_eq!((get("errors").threshold, get("errors").resolve, get("errors").name.as_str()), (0.005, Some(0.0025), "Query errors over 0.5%"));
+        assert_eq!(get("p99").name, "Query p99 over 2 s");
+        assert!((get("availability").threshold - 0.995).abs() < 1e-9);
+        // A server that becomes a coordinator later keeps it on its built-in rules.
+        let c = Alerts::new(None, None).unwrap();
+        c.follow_slo(0.005, 2000.0);
+        c.set_coordinator(true);
+        assert!((c.rules().into_iter().find(|r| r.id == "availability").unwrap().threshold - 0.995).abs() < 1e-9);
+        // A threshold someone chose is theirs.
+        let b = Alerts::new(None, None).unwrap();
+        let mut rules = b.rules();
+        rules.iter_mut().find(|r| r.id == "errors").unwrap().threshold = 0.03;
+        b.set_rules(rules, "ana").unwrap();
+        b.follow_slo(0.005, 2000.0);
+        assert_eq!(b.rules().into_iter().find(|r| r.id == "errors").unwrap().threshold, 0.03);
+        let t = now_ms();
+        a.check(&points(&[(t - 300_000, 3000.0), (t, 3000.0)]), t);
+        let (full, brief) = (a.json(), a.brief_json());
+        assert_eq!(brief["firing"], full["firing"]);
+        assert_eq!(brief["firing_shown"], full["firing_shown"]);
+        let s = brief["states"].as_array().unwrap();
+        assert!(s.iter().all(|x| x["state"] != "ok" && x.get("where").is_none()), "{brief}");
+        assert!(s.iter().any(|x| x["rule"] == "p99" && x["name"] == "Query p99 over 2 s" && x["severity"] == "warning"), "{brief}");
+        assert_eq!(brief["rules"].as_array().unwrap().len(), full["rules"].as_array().unwrap().len());
+        assert!(brief.to_string().len() * 3 < full.to_string().len(), "{} of {}", brief.to_string().len(), full.to_string().len());
     }
 
     /// A route that sends an unacknowledged critical again does, every

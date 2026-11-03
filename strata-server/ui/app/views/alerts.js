@@ -181,7 +181,8 @@ const sevBadge = (sv) => h("span", { class: "al-sev " + (sv || "info") }, sv || 
 // new ones {rules, states, events, firing: n, routes}. Both become one shape.
 const stateName = (x) => x === "no data" ? "no_data" : x || "ok";
 function model(j) {
-  if (!j) return null;
+  // The bell's brief answer (data.js, on other views) is not the whole.
+  if (!j || j.brief) return null;
   const fleet = Array.isArray(j.states) || Array.isArray(j.routes);
   const rules = (j.rules || []).map((r) => ({ ...r, status: undefined }));
   const st = new Map();

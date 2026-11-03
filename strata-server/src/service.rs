@@ -3592,8 +3592,9 @@ impl Service {
             Backend::Local(_) => (crate::fleet::local_shard(&self.detail().await), false, None),
         };
         let points = self.series.since(now.saturating_sub(crate::fleet::WINDOW_S * 1000));
-        // fleet: the alerts firing that nobody silenced, each rule once, as the bell counts them.
-        let alerts: Vec<Json> = self.alerts.json()["states"].as_array().map_or_else(Vec::new, |v| v.iter().filter(|s| s["state"] == "firing" && s["silenced"].is_null()).cloned().collect());
+        // fleet: the alerts firing that nobody silenced, each rule once, as the bell counts them
+        // (alerts2: nor a cause holds back).
+        let alerts: Vec<Json> = self.alerts.json()["states"].as_array().map_or_else(Vec::new, |v| v.iter().filter(|s| s["state"] == "firing" && s["silenced"].is_null() && s["held_by"].is_null()).cloned().collect());
         self.fleet.judge(crate::fleet::Inputs {
             cluster: &cluster,
             points: &points,
