@@ -257,7 +257,8 @@ function setOnline(on, error) {
 async function pollAlerts() {
   if (polls.alerts === "slow" && Date.now() - alertsAt < 15000 && state.alerts) { good("alerts"); return; }
   alertsAt = Date.now();
-  try { const a = await api("/v1/alerts", T); good("alerts"); if (state.paused) return; state.alerts = a; bus.emit("alerts"); }
+  // alerts2: for the bell alone, the brief answer (a fifth of the whole).
+  try { const a = await api(polls.alerts === "slow" ? "/v1/alerts?brief=1" : "/v1/alerts", T); good("alerts"); if (state.paused) return; state.alerts = a; bus.emit("alerts"); }
   catch (e) { if (e.status === 404) { good("alerts"); return; } bad("alerts", e); }
 }
 
@@ -273,7 +274,7 @@ export function setPolls(p) {
   polls.series = p.series !== false;
   polls.alerts = p.alerts === "slow" ? "slow" : "full";
   if (was.cluster === "brief" && polls.cluster === "full") { clusterAt = 0; pollCluster(); }
-  if (was.alerts === "slow" && polls.alerts === "full" && Date.now() - alertsAt > 4000) pollAlerts();
+  if (was.alerts === "slow" && polls.alerts === "full" && (Date.now() - alertsAt > 4000 || state.alerts?.brief)) pollAlerts();
   if (!was.series && polls.series) refreshSeries();
 }
 async function pollCluster() {
@@ -347,12 +348,12 @@ export function firingAlerts(a = state.alerts) {
   if (Array.isArray(a.firing)) return a.firing.map((r) => ({ id: r.id, name: r.name, severity: r.severity, since_ms: r.status?.since_ms || null, value: r.status?.value ?? null, where: r.status?.where || [], ack: r.status?.ack || null, silenced: r.status?.silenced || null, description: r.description }));
   return (a.states || []).filter((x) => x.state === "firing").map((x) => {
     const r = rules.find((y) => y.id === x.rule) || {};
-    return { id: x.rule, name: r.name || x.rule, severity: r.severity || "warning", since_ms: x.since_ms || null, value: x.value ?? null, where: x.where || [], ack: x.ack || null, silenced: x.silenced || null, description: r.description };
+    return { id: x.rule, name: r.name || x.name || x.rule, severity: r.severity || x.severity || "warning", since_ms: x.since_ms || null, value: x.value ?? null, where: x.where || [], ack: x.ack || null, silenced: x.silenced || null, held_by: x.held_by || null, description: r.description };
   });
 }
 
-/** The alerts firing now that nobody silenced: the one count the bell, Alerts and Home show. */
-export const firingNow = () => firingAlerts().filter((a) => !a.silenced);
+/** The alerts firing now that nobody silenced nor a cause holds back (alerts2): the one count the bell, Alerts and Home show. */
+export const firingNow = () => firingAlerts().filter((a) => !a.silenced && !a.held_by);
 
 // ---------------------------------------------------------------- the cluster's identity
 const idOf = () => state.cluster?.cluster || state.whoami?.cluster || state.health?.cluster || null;

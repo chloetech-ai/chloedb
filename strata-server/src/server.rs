@@ -387,6 +387,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.audit = Audit::new(o.audit_log.clone())?;
     svc.alerts = Alerts::new(o.alerts.clone(), o.alert_webhook.clone())?;
+    svc.alerts.follow_slo(svc.slo.error_ratio, svc.slo.p99_ms);
     // fleet: Contain rules kept across a restart.
     if let Some(f) = &o.contain {
         svc.contain = crate::contain::Contain::open(f.clone())?;

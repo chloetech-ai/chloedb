@@ -1103,6 +1103,23 @@ impl Statements {
         self.since_ms.load(Ordering::Relaxed)
     }
 
+    /// Each key's calls in the minutes of `[from, to)` and how many failed
+    /// (any way: its own errors and deadlines included); the key `-` is
+    /// calls without one (alerts agent).
+    pub fn key_calls(&self, from: u64, to: u64) -> Vec<(String, u64, u64)> {
+        let s = lock(&self.inner);
+        let mut out: Vec<(String, u64, u64)> = Vec::new();
+        for (_, a) in Self::sum(&s, from, to, None) {
+            for k in &a.keys {
+                match out.iter_mut().find(|x| x.0 == k.key) {
+                    Some(x) => (x.1, x.2) = (x.1 + k.calls, x.2 + k.errors),
+                    None => out.push((k.key.clone(), k.calls, k.errors)),
+                }
+            }
+        }
+        out
+    }
+
     /// Each statement's minutes in `[from, to)`, merged.
     fn sum(s: &Stmts, from: u64, to: u64, only: Option<&str>) -> HashMap<String, Agg> {
         let mut out: HashMap<String, Agg> = HashMap::new();
