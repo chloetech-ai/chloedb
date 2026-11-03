@@ -354,7 +354,7 @@ pub async fn answer(svc: &Arc<Service>, a: Asked) -> Result<Json, ApiError> {
             let mut asked = a.clone();
             asked.table = Some(schema.table.clone());
             let nodes = c.inspect(&asked.body()).await;
-            let through: Vec<(At, TableReads)> = svc.reads.of(&schema.table);
+            let (through, reads_from) = reads_of_every_coordinator(svc, &schema.table).await;
             let extra = |shard: &str, url: &str| through.iter().find(|(at, _)| at.shard == shard && at.replica == url).map(|(_, r)| r);
             let mut cluster: Option<Part> = None;
             let mut shards = Vec::new();
@@ -415,11 +415,36 @@ pub async fn answer(svc: &Arc<Service>, a: Asked) -> Result<Json, ApiError> {
             }
             let cluster = cluster.unwrap_or(Part { stats: None, reads: TableReads::default(), fresh: Fresh::default(), copies: 0 });
             Ok(json!({
-                "role": "coordinator", "table": schema.table, "reads_on": reads_on,
+                "role": "coordinator", "table": schema.table, "reads_on": reads_on, "reads_from": reads_from,
                 "cluster": cluster.json(a.top), "shards": shards, "sample": a.sample, "at_ms": telemetry::now_ms(), "took_ms": t0.elapsed().as_secs_f64() * 1e3,
             }))
         }
     }
+}
+
+/// Table `table`'s reads through this coordinator and every other one
+/// ([`crate::peers`], `GET /v1/index/reads`), merged by the copy that
+/// served them (INS-3); and which coordinators said theirs.
+async fn reads_of_every_coordinator(svc: &Arc<Service>, table: &str) -> (Vec<(At, TableReads)>, Json) {
+    let mut through = svc.reads.of(table);
+    let answers = crate::peers::get_all(svc, &format!("/v1/index/reads?table={}", crate::peers::encode(table))).await;
+    for (_, a) in &answers {
+        let Ok(j) = a else { continue };
+        for x in j["reads"].as_array().map_or(&[][..], |v| v.as_slice()) {
+            let (Ok(at), Ok(r)) = (serde_json::from_value::<At>(x["at"].clone()), serde_json::from_value::<TableReads>(x["reads"].clone())) else { continue };
+            match through.iter_mut().find(|(a, _)| *a == at) {
+                Some((_, t)) => t.merge(&r),
+                None => through.push((at, r)),
+            }
+        }
+    }
+    (through, crate::peers::reach(svc, &answers))
+}
+
+/// `GET /v1/index/reads?table=`: this server's reads of the table, by
+/// the copy that served them, for another coordinator to merge.
+pub fn reads_json(svc: &Service, table: &str) -> Json {
+    json!({"table": table, "reads": svc.reads.of(table).into_iter().map(|(at, r)| json!({"at": at, "reads": r})).collect::<Vec<_>>()})
 }
 
 /// A shard's replicas' answers to a coordinator's inspection.

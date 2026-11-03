@@ -671,6 +671,8 @@ impl pb::strata_server::Strata for Grpc {
     }
 
     async fn health(&self, req: Request<pb::Empty>) -> Result<Response<pb::HealthResponse>, Status> {
+        // fleet: a coordinator that names itself ([`crate::peers`]).
+        crate::peers::heard_from(&self.0, req.metadata(), req.extensions().get::<Principal>());
         self.serve("Health", req, |svc, _who, _| async move {
             let d = svc.detail().await;
             let h = &d["health"];

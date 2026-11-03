@@ -154,6 +154,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/tables/:table/paths", get(json_paths))
         .route("/v1/index", get(index))
         .route("/v1/index/reads/reset", post(reset_reads))
+        // fleet: one coordinator's reads, for the others to merge (INS-3).
+        .route("/v1/index/reads", get(index_reads))
         .route("/v1/config", get(config))
         .route("/metrics", get(metrics))
         .route("/v1/query", post(query))
@@ -260,6 +262,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         // ----- core: the rebuilt command center's contract (fleet health,
         // events, time beyond an hour, versions, plans, tables)
         .route("/v1/health/fleet", get(fleet_health))
+        // fleet: the coordinators of this cluster ([`crate::peers`]).
+        .route("/v1/coordinators", get(coordinators))
         .route("/v1/events", get(events_list))
         .route("/v1/events/notes", post(events_note))
         .route("/v1/admin/keys/:id/rotate", post(rotate_key))
@@ -485,6 +489,16 @@ async fn index_tables(State(app): State<App>) -> Res {
 /// `GET /v1/health/fleet` ([`crate::fleet`]).
 async fn fleet_health(State(app): State<App>) -> AxJson<Json> {
     AxJson(app.svc.fleet_health().await)
+}
+
+/// `GET /v1/coordinators` ([`crate::peers`]): fleet. With `window=1`,
+/// this server's searches over fleet health's windows too.
+async fn coordinators(State(app): State<App>, Query(q): Params) -> AxJson<Json> {
+    let mut j = crate::peers::json(&app.svc);
+    if q.get("window").is_some_and(|v| v == "1" || v == "true") {
+        j["window"] = crate::peers::window_json(&app.svc);
+    }
+    AxJson(j)
 }
 
 /// An event row of the log store's `events`, as `GET /v1/events` has it.
@@ -828,10 +842,22 @@ async fn index(State(app): State<App>, Query(q): Params) -> Res {
 }
 
 /// `POST /v1/index/reads/reset`: this server's read counts start again
-/// ([`crate::reads`]).
-async fn reset_reads(State(app): State<App>) -> AxJson<Json> {
+/// ([`crate::reads`]), and every other coordinator's (fleet).
+async fn reset_reads(State(app): State<App>, headers: HeaderMap) -> AxJson<Json> {
     app.svc.reads.reset();
-    AxJson(json!({"reset": true, "at_ms": crate::telemetry::now_ms()}))
+    let mut j = json!({"reset": true, "at_ms": crate::telemetry::now_ms()});
+    if crate::peers::from_peer(&headers).is_none() {
+        let answers = crate::peers::post_all(&app.svc, "/v1/index/reads/reset", &json!({})).await;
+        j["coordinators"] = crate::peers::reach(&app.svc, &answers);
+    }
+    AxJson(j)
+}
+
+/// `GET /v1/index/reads?table=`: this server's reads of a table, by the
+/// copy that served them ([`crate::inspect::reads_json`]).
+async fn index_reads(State(app): State<App>, Query(q): Params) -> Res {
+    let table = q.get("table").filter(|t| !t.is_empty()).ok_or_else(|| ApiError::bad("name the table: ?table=products"))?;
+    Ok(AxJson(crate::inspect::reads_json(&app.svc, table)))
 }
 
 /// `GET /v1/tables/:table/paths?field=&path=&where=`: a JSON field's
@@ -2140,13 +2166,20 @@ fn param_u64(q: &std::collections::HashMap<String, String>, k: &str, default: u6
     q.get(k).map_or(Ok(default), |v| v.parse().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}"))))
 }
 
-async fn live_queries(State(app): State<App>, Query(q): Params) -> Res {
+async fn live_queries(State(app): State<App>, headers: HeaderMap, Query(q): Params) -> Res {
     let mut j = json!({"queries": app.svc.live.list(), "running": app.svc.running()});
     // workload (alerts agent): grouped by statement shape and key.
-    match q.get("group").map(String::as_str) {
-        None | Some("") => {}
-        Some("shape") => j["groups"] = json!(app.svc.live.groups()),
+    let groups = match q.get("group").map(String::as_str) {
+        None | Some("") => false,
+        Some("shape") => {
+            j["groups"] = json!(app.svc.live.groups());
+            true
+        }
         Some(g) => return Err(ApiError::bad(format!("group is \"shape\", not {g:?}"))),
+    };
+    // fleet: what runs on every coordinator, unless asked for this one's.
+    if crate::peers::from_peer(&headers).is_none() && q.get("scope").map(String::as_str) != Some("local") {
+        j = crate::peers::gather_live(&app.svc, j, groups).await;
     }
     Ok(AxJson(j))
 }
@@ -2155,10 +2188,15 @@ async fn live_queries(State(app): State<App>, Query(q): Params) -> Res {
 
 /// Cancels the running queries of a statement (`fingerprint`), of one key
 /// (`key`) if given; the reason comes in `x-strata-reason`. Audited.
-async fn cancel_queries(State(app): State<App>, Query(q): Params) -> Result<Response, ApiError> {
+async fn cancel_queries(State(app): State<App>, headers: HeaderMap, Query(q): Params) -> Result<Response, ApiError> {
     let fp = q.get("fingerprint").map(String::as_str).filter(|f| !f.is_empty()).ok_or_else(|| ApiError::bad("say which statement: ?fingerprint= (and &key= for one key's)"))?;
     let key = q.get("key").map(String::as_str).filter(|k| !k.is_empty());
     let gone = app.svc.live.cancel_matching(fp, key);
+    // fleet: on every coordinator.
+    let (elsewhere, reached) = match crate::peers::from_peer(&headers) {
+        None if q.get("scope").map(String::as_str) != Some("local") => crate::peers::cancel_elsewhere(&app.svc, fp, key).await,
+        _ => (0, Json::Null),
+    };
     let ids: Vec<u64> = gone.iter().filter_map(|q| q["id"].as_u64()).collect();
     tracing::info!(queries = ids.len(), fingerprint = %crate::obs::truncate(fp, 200), key = key.unwrap_or(""), "queries cancelled by an operator");
     let was: Vec<Json> = gone
@@ -2175,36 +2213,95 @@ async fn cancel_queries(State(app): State<App>, Query(q): Params) -> Result<Resp
         .collect();
     keys::note_change(keys::Change { object: Some(format!("queries of {}", crate::obs::truncate(fp, 200))), before: Some(json!({"statement": fp, "key": key, "queries": was})), ..Default::default() });
     let of = key.map_or(String::new(), |k| format!(" of key {k}"));
-    Ok(audited(json!({"cancelled": ids.len(), "ids": ids}), format!("cancelled {} running queries{of}: {}", ids.len(), crate::obs::truncate(fp, 200))))
+    let more = if elsewhere > 0 { format!(" (and {elsewhere} on the other coordinators)") } else { String::new() };
+    Ok(audited(json!({"cancelled": ids.len() as u64 + elsewhere, "here": ids.len(), "ids": ids, "coordinators": reached}), format!("cancelled {} running queries{of}{more}: {}", ids.len(), crate::obs::truncate(fp, 200))))
 }
 
-/// The Contain rules in force, the newest first.
-async fn contain_rules(State(app): State<App>) -> AxJson<Json> {
-    AxJson(Json::Array(app.svc.contain.list().iter().map(|r| r.json()).collect()))
+/// The Contain rules in force, the newest first: of every coordinator
+/// (fleet: [`crate::contain::gathered`]), or this server's own with those
+/// removed (`?local=1`, or a call from another coordinator).
+async fn contain_rules(State(app): State<App>, headers: HeaderMap, Query(q): Params) -> AxJson<Json> {
+    if q.get("local").is_some_and(|v| v == "1" || v == "true") || crate::peers::from_peer(&headers).is_some() {
+        return AxJson(app.svc.contain.local_json());
+    }
+    AxJson(crate::contain::gathered(&app.svc).await)
 }
 
-/// Adds a Contain rule: audited, and an event.
-async fn add_contain(State(app): State<App>, p: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
-    let name = by(&who(p));
+/// Adds a Contain rule: audited, and an event. fleet: sent to every
+/// other coordinator (`coordinators` says which took it); one sent by
+/// another coordinator is taken up with its id, times and author.
+async fn add_contain(State(app): State<App>, p: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let who = who(p);
+    if let Some(from) = crate::peers::from_peer(&headers).filter(|_| who.root) {
+        let Some((r, _)) = crate::contain::adopted(&app.svc, &b, &from)? else {
+            return Ok(AxJson(json!({"ignored": "this coordinator holds no such rule: it ended, or was removed"})).into_response());
+        };
+        keys::note_change(keys::Change { object: Some(format!("contain rule {}", r.id)), after: Some(r.json()), ..Default::default() });
+        return Ok(evented(audited(r.json(), format!("contain rule {} {} (from the coordinator at {from})", r.id, r.what()))));
+    }
+    let name = by(&who);
     let r = app.svc.contain.add(&b, &name)?;
     tracing::info!(rule = %r.id, by = %name, "contain rule added: it {}", r.what());
     app.svc.events.add(crate::contain::event(&r, "added", Some(name)));
     keys::note_change(keys::Change { object: Some(format!("contain rule {}", r.id)), after: Some(r.json()), ..Default::default() });
-    Ok(evented(audited(r.json(), format!("contain rule {} {} for {} min: {}", r.id, r.what(), r.expires_ms.saturating_sub(r.created_ms) / 60_000, r.reason))))
+    let mut j = r.json();
+    j["coordinators"] = crate::contain::spread(&app.svc, &r).await;
+    Ok(evented(audited(j, format!("contain rule {} {} for {} min: {}", r.id, r.what(), r.expires_ms.saturating_sub(r.created_ms) / 60_000, r.reason))))
 }
 
-/// Removes a Contain rule: audited, and an event.
-async fn remove_contain(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
-    let name = by(&who(p));
-    let r = app.svc.contain.remove(&id).ok_or_else(|| ApiError { status: 404, message: format!("no contain rule {id}") })?;
+/// Removes a Contain rule: audited, and an event. fleet: on every
+/// coordinator; 404 when none held it.
+async fn remove_contain(State(app): State<App>, p: Option<axum::Extension<Principal>>, headers: HeaderMap, Query(q): Params, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let who = who(p);
+    let peer = crate::peers::from_peer(&headers).filter(|_| who.root);
+    // Who removed it, as the coordinator it was removed on says.
+    let name = match (&peer, q.get("by")) {
+        (Some(from), Some(b)) => format!("{b} (on {from})"),
+        _ => by(&who),
+    };
+    let here = app.svc.contain.remove(&id);
+    let (reach, elsewhere) = match &peer {
+        Some(_) => (Json::Null, false),
+        None => crate::contain::withdraw(&app.svc, &id, &name).await,
+    };
+    let Some(r) = here else {
+        if elsewhere {
+            return Ok(audited(json!({"removed": {"id": id}, "coordinators": reach}), format!("removed contain rule {id} on the other coordinators")));
+        }
+        return Err(ApiError { status: 404, message: format!("no contain rule {id}") });
+    };
     app.svc.events.add(crate::contain::event(&r, "removed", Some(name)));
     keys::note_change(keys::Change { object: Some(format!("contain rule {id}")), before: Some(r.json()), ..Default::default() });
-    Ok(evented(audited(json!({"removed": r.json()}), format!("removed contain rule {id}: it {}", r.what()))))
+    Ok(evented(audited(json!({"removed": r.json(), "coordinators": reach}), format!("removed contain rule {id}: it {}", r.what()))))
 }
 
 // ----- end workload
 
-async fn cancel_query(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<u64>) -> Result<Response, ApiError> {
+async fn cancel_query(State(app): State<App>, Query(params): Params, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    // fleet: a query of another coordinator (`<id>@<its name>`, as Running
+    // now lists it, or `?coordinator=` its URL) is cancelled there, and
+    // audited there.
+    let at = match crate::peers::query_at(&app.svc, &id) {
+        Some(Ok((p, n))) => Some((p, n)),
+        Some(Err(e)) => return Err(ApiError { status: 404, message: e }),
+        None => None,
+    };
+    let id: u64 = match &at {
+        Some((_, n)) => *n,
+        None => id.parse().map_err(|_| ApiError::bad(format!("{id} is not a query id")))?,
+    };
+    let other = match (at, params.get("coordinator").filter(|u| !u.is_empty() && Some(u.trim_end_matches('/')) != app.svc.peers.me())) {
+        (Some((p, _)), _) => Some(p),
+        (None, Some(url)) => Some(crate::peers::other_at(&app.svc, url).ok_or_else(|| ApiError { status: 404, message: format!("no coordinator at {url} is known here") })?),
+        (None, None) => None,
+    };
+    if let Some(p) = other {
+        return match crate::peers::delete(&app.svc, &p, &format!("/v1/queries/{id}")).await {
+            Ok(j) => Ok(AxJson(j).into_response()),
+            Err(e) if e.contains(": 404 ") => Err(ApiError { status: 404, message: format!("query {id} is not running on {}", p.name) }),
+            Err(e) => Err(ApiError { status: 502, message: e }),
+        };
+    }
     let q = app.svc.live.list().into_iter().find(|q| q["id"] == id).unwrap_or(Json::Null);
     match app.svc.live.cancel(id) {
         true => {
@@ -2653,8 +2750,18 @@ async fn system(State(app): State<App>) -> AxJson<Json> {
     AxJson(j)
 }
 
-async fn cluster(State(app): State<App>) -> AxJson<Json> {
-    AxJson(app.svc.cluster().await)
+async fn cluster(State(app): State<App>, Query(q): Params) -> AxJson<Json> {
+    let mut j = app.svc.cluster().await;
+    // fleet: `brief=1` leaves out each copy's detail, for a view that
+    // shows only which copies answer (and the shell's badges).
+    if q.get("brief").is_some_and(|v| v == "1" || v == "true") {
+        for r in j["shards"].as_array_mut().into_iter().flatten().flat_map(|s| s["replicas"].as_array_mut().into_iter().flatten()) {
+            if let Some(o) = r.as_object_mut() {
+                o.remove("detail");
+            }
+        }
+    }
+    AxJson(j)
 }
 
 /// `GET /v1/kube`: the `StrataCluster` that runs this coordinator on

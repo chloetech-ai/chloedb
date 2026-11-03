@@ -375,6 +375,17 @@ struct Args {
     /// (https://strata.example.com), for links in alerts' webhooks.
     #[arg(long, env = "STRATA_PUBLIC_URL")]
     public_url: Option<String>,
+    /// The address other coordinators reach this coordinator's HTTP API at
+    /// (http://10.0.0.5:7700); it names itself so to its shards, which tell
+    /// the others. Default: $STRATA_POD_IP and the --listen port, else the
+    /// --listen address.
+    #[arg(long, env = "STRATA_PEER_URL")]
+    peer_url: Option<String>,
+    /// A coordinator's Contain rules' file, which they are kept in across a
+    /// restart. Default: contain.json beside --alerts' file (in memory
+    /// without either).
+    #[arg(long, env = "STRATA_CONTAIN")]
+    contain: Option<PathBuf>,
     /// The share of queries that may fail on the server's side before
     /// fleet health says so (GET /v1/health/fleet).
     #[arg(long, default_value_t = 0.01)]
@@ -732,6 +743,7 @@ async fn main() {
         aws_file: a.aws_file,
         digitalocean_file: a.digitalocean_file,
         cloud_file: a.cloud_file,
+        contain: a.contain.clone().or_else(|| a.alerts.as_ref().map(|p| p.with_file_name("contain.json"))),
         alerts: a.alerts,
         alert_webhook: a.alert_webhook.filter(|u| !u.is_empty()),
         log_store: a.log_store.as_deref().map(|p| (p != "off").then(|| PathBuf::from(p))),
@@ -782,6 +794,11 @@ async fn main() {
     };
     let (http, ip) = bind(&a.listen).await;
     let access = Access { token: token.clone(), cluster: cluster.clone(), hosts: auth::allowed_hosts(ip, &a.allow_host), tls };
+    // fleet: a coordinator names itself to its shards, which tell the others.
+    if coordinator {
+        let at = http.local_addr().unwrap_or_else(|e| fail(&format!("listen on {}: {e}", a.listen)));
+        strata_server::peers::start(&svc, strata_server::peers::own_url(a.peer_url.as_deref(), at, access.tls.is_some()));
+    }
     let h = svc.health().await;
     tracing::info!(table = %svc.schema.table, rows = %h["docs"], segments = %h["segments"], version = env!("CARGO_PKG_VERSION"), simd = %strata::simd::describe(), "serving");
     let scheme = if access.tls.is_some() { "https" } else { "http" };
