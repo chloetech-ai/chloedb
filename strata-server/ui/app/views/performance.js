@@ -135,9 +135,10 @@ function render(page) {
   function drawScope() {
     const c = state.cluster, cs = copiesOf(c), coords = state.fleet?.coordinators || [];
     const r = timeRange();
-    const per = c?.shards?.length ? Math.round(cs.length / c.shards.length) : 0;
+    const ns = (c?.shards || []).map((x) => x.replicas?.length || 0), lo = Math.min(...ns), hi = Math.max(...ns);
+    const per = ns.length ? (lo === hi ? ` × ${fmt.plural(lo, "copy", "copies")}` : `, ${lo}-${hi} copies`) : "";
     scope.textContent = isCoord()
-      ? `The fleet: ${coords.length > 1 ? `${fmt.plural(coords.length, "coordinator")}, ` : ""}${fmt.plural(c?.shards?.length || 0, "shard")}${per ? ` × ${fmt.plural(per, "copy", "copies")}` : ""} · ${r.label}${prev ? ", against the window before" : ""}. ${coords.length > 1 ? "The charts are the queries through this coordinator." : "Every query enters through this coordinator."}`
+      ? `The fleet: ${coords.length > 1 ? `${fmt.plural(coords.length, "coordinator")}, ` : ""}${fmt.plural(c?.shards?.length || 0, "shard")}${per} · ${r.label}${prev ? ", against the window before" : ""}. ${coords.length > 1 ? `The charts are the queries through this coordinator (${coords.find((x) => x.this)?.name || location.host}); Home adds up all ${coords.length}.` : state.fleet?.derived ? "The charts are the queries through this coordinator: this server does not list the others." : "Every query enters through this coordinator: the shards heard from no other in the last minute."}`
       : `This server · ${r.label}${prev ? ", against the window before" : ""}.`;
   }
 
