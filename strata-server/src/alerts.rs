@@ -1999,9 +1999,9 @@ impl Alerts {
             if held.is_some() {
                 st.settle_ms = None;
             } else if let Some((_, why)) = st.held.clone().filter(|_| st.paged.is_none()) {
-                // Its cause resolved: its window, which still holds the
-                // outage, passes before it is sent (`held_until_ms`).
-                let window = r.window_s.min(600) * 1000;
+                // Its cause resolved: its window and its wait, which still
+                // hold the outage, pass before it is sent (`held_until_ms`).
+                let window = (r.window_s + r.for_s).min(600) * 1000;
                 if t < *st.settle_ms.get_or_insert(t + window) {
                     continue;
                 }

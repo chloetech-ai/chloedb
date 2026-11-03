@@ -442,7 +442,7 @@ function listView(page, r) {
         h("div", {}, h("a", { class: "al-name", href: alertLink(r.id) }, r.name),
           h("div", { class: "tiny muted" }, r.builtin ? "built-in · " : "", cond(r, true)),
           isHeld(r) ? h("div", { class: "tiny al-heldwhy" }, `Held back: ${x.held_why || "its cause fires"} explains it. No message of its own while it fires.`)
-            : x.held_by && x.held_until_ms ? h("div", { class: "tiny al-heldwhy" }, `Its cause, ${m.rules.find((y) => y.id === x.held_by)?.name || x.held_by}, resolved. This pages at ${hm(x.held_until_ms)} if it still fires then: its ${dur((r.window_s || 0) * 1000)} window still holds the outage.`) : null,
+            : x.held_by && x.held_until_ms ? h("div", { class: "tiny al-heldwhy" }, `Its cause, ${m.rules.find((y) => y.id === x.held_by)?.name || x.held_by}, resolved. This pages at ${hm(x.held_until_ms)} if it still fires then: the ${dur(((r.window_s || 0) + (r.for_s || 0)) * 1000)} it judges still include the outage.`) : null,
           under.get(r.id)?.length ? h("div", { class: "tiny muted" }, `Likely cause of the ${fmt.plural(under.get(r.id).length, "alert")} under it`) : null,
           differsText(x) ? h("div", { class: "tiny al-warn" }, differsText(x)) : null)); } },
       { key: "where", label: "where", cls: "al-c-where", render: (r) => { const x = m.st.get(r.id); return h("span", { class: "small" }, whereText(r, x), pagerOf(m) && x.paged ? h("div", { class: "tiny muted" }, pagedText(x)) : null); } },
@@ -875,7 +875,7 @@ function alertHub(page, id, r) {
     const pg = pagerOf(m), dt = differsText(x);
     clear(line, cond(rule), " · ", rule.scope === "each_copy" ? h("b", { class: "al-strong" }, w.length ? `on ${w.length} of ${fmt.n(Math.max((x.where || []).length, allCopies()))} copies` : `on each copy (${fmt.n(allCopies())})`) : h("b", { class: "al-strong" }, rule.metric === "key_error_ratio" && w.length ? whereText(rule, x) : scopeText(rule)[0]),
       x.since_ms && st !== "ok" ? ` · since ${when(x.since_ms)}` : "", ` · now ${x.value == null ? "no value" : fvr(rule, x.value)}`, h("span", { class: "al-peak" }),
-      x.held_by && x.held_until_ms && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `, resolved. This pages at ${hm(x.held_until_ms)} if it still fires then: its ${dur((rule.window_s || 0) * 1000)} window still holds the outage.`)
+      x.held_by && x.held_until_ms && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `, resolved. This pages at ${hm(x.held_until_ms)} if it still fires then: the ${dur(((rule.window_s || 0) + (rule.for_s || 0)) * 1000)} it judges still include the outage.`)
       : x.held_by && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Held back under its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `${/\(on [^)]*\)$/.exec(x.held_why || "")?.[0] ? " " + /\(on [^)]*\)$/.exec(x.held_why)[0] : ""}. It sends no message of its own while its cause fires, and pages if it still fires after.`) : null,
       dt ? h("div", { class: "small al-warn" }, dt) : null,
       pg && st === "firing" ? h("div", { class: "small muted" }, x.paged ? `${pagedText(x)[0].toUpperCase()}${pagedText(x).slice(1)}.` : `Not paged yet. Messages are sent by ${pg.me ? "this coordinator" : hostOf(pg.sends)}.`) : null);
