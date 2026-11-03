@@ -257,7 +257,7 @@ function setOnline(on, error) {
 async function pollAlerts() {
   if (polls.alerts === "slow" && Date.now() - alertsAt < 15000 && state.alerts) { good("alerts"); return; }
   alertsAt = Date.now();
-  // alerts2: for the bell alone, the brief answer (a tenth of the whole).
+  // alerts2: for the bell alone, the brief answer (a fifth of the whole).
   try { const a = await api(polls.alerts === "slow" ? "/v1/alerts?brief=1" : "/v1/alerts", T); good("alerts"); if (state.paused) return; state.alerts = a; bus.emit("alerts"); }
   catch (e) { if (e.status === 404) { good("alerts"); return; } bad("alerts", e); }
 }

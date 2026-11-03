@@ -448,6 +448,12 @@ struct St {
     /// Why its FIRING message goes late, once it does ([`Alerts::due`]):
     /// the cause that held it back, the silence that ended.
     late: Option<String>,
+    /// Until when it stays held after its cause resolved: its window,
+    /// which still holds the outage, passes first ([`Alerts::hold`]).
+    settle_ms: Option<u64>,
+    /// Since when it could be sent here (firing, neither held nor
+    /// silenced): another coordinator waits [`PAGER_WAIT_MS`] from then.
+    due_ms: Option<u64>,
 }
 
 /// How long after an edit a resolution is said to be the edit's.
@@ -467,7 +473,7 @@ pub const UNHEARD_MS: u64 = 60_000;
 
 impl St {
     fn new(t: u64) -> St {
-        St { state: "no_data", since_ms: t, value: None, no_data_since_ms: Some(t), ack: None, silenced: None, notes: Vec::new(), where_: Vec::new(), copies: None, reports: true, partial_ms: None, paged: None, cleared_ms: 0, held: None, edited: None, paged_before: None, paged_hint: None, late: None }
+        St { state: "no_data", since_ms: t, value: None, no_data_since_ms: Some(t), ack: None, silenced: None, notes: Vec::new(), where_: Vec::new(), copies: None, reports: true, partial_ms: None, paged: None, cleared_ms: 0, held: None, edited: None, paged_before: None, paged_hint: None, late: None, settle_ms: None, due_ms: None }
     }
 
     /// The episode ended at `t`: its acknowledgement and page go with it.
@@ -536,7 +542,7 @@ impl St {
             "ok" => "ok",
             _ => "no_data",
         };
-        St { state, since_ms: k.since_ms, value: k.value, no_data_since_ms: (state == "no_data").then_some(t), ack: k.ack, silenced: k.silenced, notes: k.notes, where_: k.where_, copies: k.copies, reports: true, partial_ms: None, paged: k.paged, cleared_ms: k.cleared_ms, held: None, edited: None, paged_before: None, paged_hint: None, late: None }
+        St { state, since_ms: k.since_ms, value: k.value, no_data_since_ms: (state == "no_data").then_some(t), ack: k.ack, silenced: k.silenced, notes: k.notes, where_: k.where_, copies: k.copies, reports: true, partial_ms: None, paged: k.paged, cleared_ms: k.cleared_ms, held: None, edited: None, paged_before: None, paged_hint: None, late: None, settle_ms: None, due_ms: None }
     }
 }
 
@@ -1277,7 +1283,7 @@ impl Alerts {
             }
             // Rules removed or disabled have no state but their notes.
             states.retain(|id, s| rules.iter().any(|r| r.enabled && &r.id == id) || !s.notes.is_empty());
-            self.hold(&rules, &mut states);
+            self.hold(&rules, &mut states, t);
         }
         self.keep(&changes);
         changes
@@ -1362,7 +1368,7 @@ impl Alerts {
             }
         }
         changes.extend(self.gather(snap, &rules, t));
-        self.hold(&rules, &mut lock(&self.states));
+        self.hold(&rules, &mut lock(&self.states), t);
         self.keep(&changes);
         changes
     }
@@ -1782,6 +1788,10 @@ impl Alerts {
                 }
                 if let Some((by, why)) = &s.held {
                     (j["held_by"], j["held_why"]) = (json!(by), json!(why));
+                    if let Some(u) = s.settle_ms {
+                        // Its cause resolved; it waits for its window.
+                        j["held_until_ms"] = json!(u);
+                    }
                 }
             }
         }
@@ -1844,7 +1854,7 @@ impl Alerts {
     /// `GET /v1/alerts?brief=1`, for the bell on views that show no
     /// alerts: each rule's id, name, severity, metric and state, and of
     /// those not ok their since, value, acknowledgement, silence, cause
-    /// and copies; no events, routes nor `where`. A tenth of the whole.
+    /// and copies; no events, routes nor `where`: a fifth of the whole.
     pub fn brief_json(&self) -> Json {
         let full = self.json();
         let rules: Vec<Json> = full["rules"].as_array().map_or(&[][..], |v| v.as_slice()).iter().map(|r| json!({"id": r["id"], "name": r["name"], "severity": r["severity"], "metric": r["metric"], "status": {"state": r["status"]["state"]}})).collect();
@@ -1939,14 +1949,19 @@ impl Alerts {
     /// coordinator's traffic rules (searches fail, errors, p99, partial
     /// answers) that are no more severe than it. A held alert shows under
     /// its cause, and its message is sent if it still fires once the cause
-    /// has resolved ([`Self::due`]).
-    fn hold(&self, rules: &[Rule], states: &mut HashMap<String, St>) {
+    /// has resolved and its own window has passed since, which held the
+    /// outage ([`Self::due`]).
+    fn hold(&self, rules: &[Rule], states: &mut HashMap<String, St>, t: u64) {
         let mut causes: Vec<(&Rule, Vec<u64>, Vec<String>)> = rules
             .iter()
             .filter(|r| r.enabled && CAUSES.contains(&r.id.as_str()))
             .filter_map(|r| {
                 let st = states.get(&r.id).filter(|s| s.state == "firing")?;
                 let firing: Vec<&Json> = st.where_.iter().filter(|w| w["state"].as_str().is_none_or(|s| s == "firing")).collect();
+                // Firing nowhere now: it resolves at its next check.
+                if firing.is_empty() {
+                    return None;
+                }
                 Some((r, firing.iter().filter_map(|w| w["shard"].as_u64()).collect(), firing.iter().filter_map(|w| w["short"].as_str().map(String::from)).collect()))
             })
             .collect();
@@ -1954,7 +1969,7 @@ impl Alerts {
         for r in rules.iter().filter(|r| r.enabled) {
             let Some(st) = states.get_mut(&r.id) else { continue };
             if !matches!(st.state, "firing" | "pending") {
-                st.held = None;
+                (st.held, st.settle_ms) = (None, None);
                 continue;
             }
             let shards: Vec<u64> = st.where_.iter().filter(|w| w["state"].as_str().is_none_or(|s| matches!(s, "firing" | "pending"))).filter_map(|w| w["shard"].as_u64()).collect();
@@ -1972,8 +1987,17 @@ impl Alerts {
                 };
                 explains.then(|| (c.id.clone(), format!("{} (on {})", c.name, if names.is_empty() { "the cluster".to_string() } else { names.join(", ") })))
             });
-            if st.held.is_some() && held.is_none() && st.paged.is_none() {
-                st.late = st.held.as_ref().map(|(_, why)| format!("held back while {why} fired"));
+            if held.is_some() {
+                st.settle_ms = None;
+            } else if let Some((_, why)) = st.held.clone().filter(|_| st.paged.is_none()) {
+                // Its cause resolved: its window, which still holds the
+                // outage, passes before it is sent (`held_until_ms`).
+                let window = r.window_s.min(600) * 1000;
+                if t < *st.settle_ms.get_or_insert(t + window) {
+                    continue;
+                }
+                st.late = Some(format!("held back while {why} fired, and still firing {} after it resolved", duration(window)));
+                st.settle_ms = None;
             }
             st.held = held;
         }
@@ -2014,17 +2038,20 @@ impl Alerts {
             for r in rules.iter().filter(|r| r.enabled) {
                 let Some(st) = states.get_mut(&r.id) else { continue };
                 if st.state != "firing" || st.held.is_some() {
+                    st.due_ms = None;
                     continue;
                 }
                 let silenced = st.silenced.as_ref().is_some_and(|s| s.until_ms > t);
                 if silenced {
                     st.late = Some(format!("silenced until {}", st.silenced.as_ref().map_or(0, |s| s.until_ms)));
+                    st.due_ms = None;
                     continue;
                 }
                 if st.paged.is_none() {
                     let waited = t.saturating_sub(st.since_ms);
                     let mine = me == pager;
-                    if !mine && waited < PAGER_WAIT_MS {
+                    // Another coordinator waits from when this one could send it.
+                    if !mine && t.saturating_sub(*st.due_ms.get_or_insert(t)) < PAGER_WAIT_MS {
                         continue;
                     }
                     let mut e = Event::of(r, "firing", st, t);
@@ -3705,6 +3732,15 @@ mod tests {
         let late = d.due(t + PAGER_WAIT_MS + 1_000);
         assert_eq!(late.len(), 1);
         assert!(late[0].0.context.as_deref().is_some_and(|c| c.contains("did not say it sent this")), "{:?}", late[0].0.context);
+        // One that could not be sent for a while (silenced here) waits a
+        // minute from when it could, not from when it fired.
+        let e = mk(xb, xa);
+        e.check(&ps, t);
+        e.silence("p99", "ana", 1, "deploying").unwrap();
+        assert!(e.due(t + 1_000).is_empty());
+        let after = t + 120_000;
+        assert!(e.due(after).is_empty(), "the one that sends gets its minute");
+        assert_eq!(e.due(after + PAGER_WAIT_MS).len(), 1);
     }
 
     /// The built-in rules over errors and the p99 fire where Home's SLO
@@ -3809,10 +3845,15 @@ mod tests {
         // The shard is whole again but the replica is still out of sync: now it pages, saying it was held.
         let back = json!({"shards": [{"shard": 0, "replicas": [copy("http://a", false)]}, {"shard": 1, "replicas": [copy("http://b", true), copy("http://c", false)]}]});
         a.check_cluster(&back, 31_000);
+        // Its window (60 s) still holds the outage: it waits for it to pass.
+        let s = a.one("out-of-sync").unwrap();
+        assert_eq!((s["held_by"].as_str(), s["held_until_ms"].as_u64()), (Some("shard-no-majority"), Some(91_000)), "{s}");
+        assert!(a.due(31_000).iter().all(|(e, _)| e.rule != "out-of-sync"));
+        a.check_cluster(&back, 91_000);
         assert!(a.one("out-of-sync").unwrap().get("held_by").is_none());
-        let due = a.due(31_000);
-        let e = &due.iter().find(|(e, _)| e.rule == "out-of-sync").expect("sent once its cause resolved").0;
-        assert!(e.context.as_deref().is_some_and(|c| c.contains("held back while")), "{:?}", e.context);
+        let due = a.due(91_000);
+        let e = &due.iter().find(|(e, _)| e.rule == "out-of-sync").expect("sent once its cause resolved and its window passed").0;
+        assert!(e.context.as_deref().is_some_and(|c| c.contains("held back while") && c.contains("60 s after it resolved")), "{:?}", e.context);
     }
 
     /// Values made of others: 5xx as a share of requests, a replica's lag

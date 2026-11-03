@@ -361,7 +361,7 @@ function listView(page, r) {
     // Copies that stop reporting are themselves an alert (copy-silent); say how many report.
     const silentCopies = (state.cluster?.shards || []).flatMap((sh) => (sh.replicas || []).map((rp, i) => ({ rp, i, sh }))).filter(({ rp }) => rp.status === "down" || rp.role === "unknown");
     if (state.cluster?.shards) bits.push(`Copies reporting: ${fmt.n(allCopies() - silentCopies.length)} of ${fmt.n(allCopies())}${silentCopies.length ? ` (${silentCopies.slice(0, 3).map(({ rp }) => copyName(rp.url)).join(", ")}${silentCopies.length > 3 ? " …" : ""} silent)` : ""}`);
-    for (const rt of m.routes.filter((x) => !x.legacy)) bits.push(rt.last_error && (!rt.last_ok_ms || rt.last_error_ms > rt.last_ok_ms) ? `route ${rt.name}: last send failed` : rt.last_ok_ms ? `route ${rt.name} delivered ${hm(rt.last_ok_ms)}` : `route ${rt.name}: nothing sent yet`);
+    for (const rt of m.routes.filter((x) => !x.legacy)) bits.push(rt.last_error && (!rt.last_ok_ms || rt.last_error_ms > rt.last_ok_ms) ? `route ${rt.name}: last send failed` : rt.last_ok_ms ? `route ${rt.name} delivered ${hm(rt.last_ok_ms)}` : `route ${rt.name}: none sent since this server started`);
     if (!m.routes.length) bits.push("no route: nobody is told when an alert fires");
     const pg = pagerOf(m);
     if (pg) bits.push(`${pg.n} coordinators; messages are sent by ${pg.me ? "this one" : hostOf(pg.sends)}`);
@@ -438,7 +438,8 @@ function listView(page, r) {
         isHeld(r) ? h("span", { class: "al-under", "aria-hidden": "true" }, "└") : null,
         h("div", {}, h("a", { class: "al-name", href: alertLink(r.id) }, r.name),
           h("div", { class: "tiny muted" }, r.builtin ? "built-in · " : "", cond(r, true)),
-          isHeld(r) ? h("div", { class: "tiny al-heldwhy" }, `Held back: ${x.held_why || "its cause fires"} explains it. No message of its own while it fires.`) : null,
+          isHeld(r) ? h("div", { class: "tiny al-heldwhy" }, `Held back: ${x.held_why || "its cause fires"} explains it. No message of its own while it fires.`)
+            : x.held_by && x.held_until_ms ? h("div", { class: "tiny al-heldwhy" }, `Its cause, ${m.rules.find((y) => y.id === x.held_by)?.name || x.held_by}, resolved. This pages at ${hm(x.held_until_ms)} if it still fires then: its ${dur((r.window_s || 0) * 1000)} window still holds the outage.`) : null,
           under.get(r.id)?.length ? h("div", { class: "tiny muted" }, `Likely cause of the ${fmt.plural(under.get(r.id).length, "alert")} under it`) : null,
           differsText(x) ? h("div", { class: "tiny al-warn" }, differsText(x)) : null)); } },
       { key: "where", label: "where", cls: "al-c-where", render: (r) => { const x = m.st.get(r.id); return h("span", { class: "small" }, whereText(r, x), pagerOf(m) && x.paged ? h("div", { class: "tiny muted" }, pagedText(x)) : null); } },
@@ -871,7 +872,8 @@ function alertHub(page, id, r) {
     const pg = pagerOf(m), dt = differsText(x);
     clear(line, cond(rule), " · ", rule.scope === "each_copy" ? h("b", { class: "al-strong" }, w.length ? `on ${w.length} of ${fmt.n(Math.max((x.where || []).length, allCopies()))} copies` : `on each copy (${fmt.n(allCopies())})`) : h("b", { class: "al-strong" }, rule.metric === "key_error_ratio" && w.length ? whereText(rule, x) : scopeText(rule)[0]),
       x.since_ms && st !== "ok" ? ` · since ${when(x.since_ms)}` : "", ` · now ${x.value == null ? "no value" : fvr(rule, x.value)}`, h("span", { class: "al-peak" }),
-      x.held_by && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Held back under its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `${/\(on [^)]*\)$/.exec(x.held_why || "")?.[0] ? " " + /\(on [^)]*\)$/.exec(x.held_why)[0] : ""}. It sends no message of its own while its cause fires, and pages if it still fires after.`) : null,
+      x.held_by && x.held_until_ms && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), ` resolved. This pages at ${hm(x.held_until_ms)} if it still fires then: its ${dur((rule.window_s || 0) * 1000)} window still holds the outage.`)
+      : x.held_by && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Held back under its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `${/\(on [^)]*\)$/.exec(x.held_why || "")?.[0] ? " " + /\(on [^)]*\)$/.exec(x.held_why)[0] : ""}. It sends no message of its own while its cause fires, and pages if it still fires after.`) : null,
       dt ? h("div", { class: "small al-warn" }, dt) : null,
       pg && st === "firing" ? h("div", { class: "small muted" }, x.paged ? `${pagedText(x)[0].toUpperCase()}${pagedText(x).slice(1)}.` : `Not paged yet. Messages are sent by ${pg.me ? "this coordinator" : hostOf(pg.sends)}.`) : null);
     const w8 = can("write"), fleet = m.fleet;
@@ -913,10 +915,10 @@ function alertHub(page, id, r) {
       kp("Owner", rule.owner || h("span", { class: "muted" }, "No owner"), rule.owner ? null : can("admin") ? h("button", { class: "al-link", onclick: ed }, "Set an owner") : "the rule names none"),
       kp("Runbook", rule.runbook ? h("a", { href: rule.runbook, target: "_blank", rel: "noopener", title: rule.runbook }, runbookName(rule.runbook), " ", icon("ext")) : h("span", { class: "muted" }, "No runbook"), rule.description ? h("span", { title: rule.description }, rule.description) : rule.runbook ? null : can("admin") ? h("button", { class: "al-link", onclick: ed }, "Add one") : null),
       kp("Notified", told.length > 1 ? told.map((rt) => rt.name).join(", ") : route ? (route.legacy ? "the webhook" : route.name) : h("span", { class: "muted" }, "Nobody"),
-        told.length > 1 ? h("span", { title: "Each route's last delivery, of any alert" }, told.map((rt, i) => [i ? " · " : "", failing(rt) ? h("span", { class: "al-bad", title: rt.last_error }, `${rt.name}: last send failed`) : rt.last_ok_ms ? `${rt.name} delivered ${hm(rt.last_ok_ms)}` : `${rt.name}: nothing sent yet`]))
+        told.length > 1 ? h("span", { title: "Each route's last delivery, of any alert" }, told.map((rt, i) => [i ? " · " : "", failing(rt) ? h("span", { class: "al-bad", title: rt.last_error }, `${rt.name}: last send failed`) : rt.last_ok_ms ? `${rt.name} delivered ${hm(rt.last_ok_ms)}` : `${rt.name}: none sent since this server started`]))
         : !route ? (rule.route ? `route ${rule.route} does not exist` : m.routes.length ? `no route takes ${rule.severity}` : "no route: add one in Routes") : route.legacy ? "--alert-webhook; delivery is not tracked by this server"
           : failing(route) ? h("span", { class: "al-bad" }, `last send failed: ${route.last_error}`)
-            : route.last_ok_ms ? h("span", { class: "al-good" }, `delivered ${when(route.last_ok_ms)} · ${fmt.n(route.sent || 0)} sent`) : "nothing sent yet"),
+            : route.last_ok_ms ? h("span", { class: "al-good" }, `delivered ${when(route.last_ok_ms)} · ${fmt.n(route.sent || 0)} sent`) : "none sent since this server started"),
       kp(`Noise${one ? " (7 days)" : " (in memory)"}`, `${fmt.plural(fired.length, "fire")} · ${fmt.plural(flaps, "flap")}`, lens.length ? `median ${dur(median(lens))} firing` : fired.length ? "still firing" : "it did not fire"));
   }
 
@@ -1324,7 +1326,7 @@ function routesDrawer() {
         h("td", { class: "mono small ellipsis al-ro-url", style: { maxWidth: "280px" }, title: r.url || "" }, r.url ? r.url.replace(/^https?:\/\//, "").slice(0, 48) : "–", provider(r) ? h("div", { class: "tiny muted", style: { fontFamily: "var(--sans)" } }, r.has_key ? "key set (not shown)" : h("span", { class: "al-bad" }, "no key")) : null),
         h("td", { class: "small al-ro-sev" }, r.severities?.length ? r.severities.join(", ") : "every severity"),
         h("td", { class: "small al-ro-sent" }, `${fmt.n(r.sent || 0)} sent`, r.failed ? h("span", { class: "al-bad" }, ` · ${fmt.n(r.failed)} failed`) : null),
-        h("td", { class: "small al-ro-st" }, r.last_error && (!r.last_ok_ms || (r.last_error_ms || 0) > r.last_ok_ms) ? h("span", { class: "al-bad", title: r.last_error }, `failing: ${r.last_error.slice(0, 60)}`) : r.last_ok_ms ? h("span", { class: "al-good" }, `delivered ${ago(r.last_ok_ms)}`) : h("span", { class: "muted" }, "nothing sent yet")),
+        h("td", { class: "small al-ro-st" }, r.last_error && (!r.last_ok_ms || (r.last_error_ms || 0) > r.last_ok_ms) ? h("span", { class: "al-bad", title: r.last_error }, `failing: ${r.last_error.slice(0, 60)}`) : r.last_ok_ms ? h("span", { class: "al-good" }, `delivered ${ago(r.last_ok_ms)}`) : h("span", { class: "muted", title: "Deliveries are counted in memory: a restart starts them again" }, "none sent since this server started")),
         h("td", { class: "al-ro-test" }, h("button", { class: "btn xs", disabled: !can("admin"), title: can("admin") ? "Send a test message through this route now" : Needs("admin"), onclick: async (e) => {
           const b = e.currentTarget; b.disabled = true;
           try { const j = await api(`/v1/alerts/routes/${encodeURIComponent(r.name)}/test`, { body: {} }); const ms = j.ms != null ? ` in ${Math.round(j.ms)} ms` : ""; toast(j.ok === false ? `Test through ${r.name} failed${ms}: ${j.error || j.status}` : `Test sent through ${r.name}${ms}${j.status ? ` (${j.status})` : ""}`, j.ok === false ? "bad" : "ok"); await refreshAlerts(); routes = model(state.alerts).routes.map((y) => ({ ...y, severities: y.severities || [] })); draw(); }
