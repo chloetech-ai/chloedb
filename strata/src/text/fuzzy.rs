@@ -45,6 +45,35 @@ pub fn weight(edits: u8, len: usize) -> f32 {
     (1.0 - edits as f32 / len.max(1) as f32).max(0.1)
 }
 
+/// A word that `fuzzy => 'auto'` takes as spelled right, and does not
+/// correct: one in at least 1 in [`KNOWN_WORD`] of the `n_docs` documents,
+/// and in 2 or more. Typos are rare words, so this skips the dictionary
+/// walk for most words of a query, and keeps them from adding the noise of
+/// their neighbours to a query spelled right.
+pub fn known(df: u64, n_docs: u64) -> bool {
+    df >= 2 && df.saturating_mul(KNOWN_WORD) >= n_docs
+}
+
+/// See [`known`].
+pub const KNOWN_WORD: u64 = 10_000;
+
+/// The chance of each edit of a typo, in [`meant`].
+pub const EDIT_CHANCE: f64 = 0.01;
+
+/// The chance that a word in `df` documents was typed for a term `edits`
+/// away in `near_df`: a noisy channel's, between the two, taking each as
+/// likely as its documents and each edit as a slip of [`EDIT_CHANCE`].
+/// A word absent from the index is a typo of each of its neighbours
+/// (chance 1); a word in as many documents as its neighbour is almost
+/// surely meant as written.
+pub fn meant(df: u64, near_df: u64, edits: u8) -> f32 {
+    let x = near_df as f64 * EDIT_CHANCE.powi(edits as i32);
+    if x <= 0.0 {
+        return 0.0;
+    }
+    (x / (x + df as f64)) as f32
+}
+
 /// Terms in byte order, read one after another, that can jump ahead: a
 /// sorted dictionary seen as an implicit trie, whose nodes are the runs of
 /// terms sharing a prefix ([`walk`]).
@@ -57,6 +86,19 @@ pub trait Sorted {
     fn next(&mut self);
     /// Moves to the first term at or after `t` (never back).
     fn seek(&mut self, t: &[u8]);
+    /// Moves past every term starting with the current term's first `len`
+    /// bytes: to the first term after them, or past the last. A walk
+    /// leaves a dead branch of the trie this way, mostly by a few terms,
+    /// so a cursor that can tell where the run ends without a seek
+    /// (front-coded blocks: an entry sharing fewer than `len` bytes with
+    /// the previous) overrides it.
+    fn skip_prefix(&mut self, len: usize) {
+        let Some(t) = self.term() else { return };
+        match past_prefix(&t[..len]) {
+            Some(after) => self.seek(&after),
+            None => skip_rest(self),
+        }
+    }
 }
 
 /// Sorted terms in a slice.
@@ -131,17 +173,187 @@ pub enum Match {
 /// prefix match goes on down while a longer prefix could have fewer
 /// edits (the row's least cell is below the best edits so far), and jumps
 /// past the run once none can.
-pub fn walk<S: Sorted>(q: &[char], k: u8, m: Match, terms: &mut S, mut hit: impl FnMut(&S, std::ops::Range<usize>, u8)) {
+///
+/// A row is `k + 1` bit masks, one per number of edits, of the prefixes
+/// of `q` within that many ([`BitRows`]) when `q` has fewer than 64
+/// letters, else its cells ([`CellRows`]).
+pub fn walk<S: Sorted>(q: &[char], k: u8, m: Match, terms: &mut S, hit: impl FnMut(&S, std::ops::Range<usize>, u8)) {
+    if q.len() < 64 {
+        walk_rows(BitRows::new(q, k), q, k, m, terms, hit)
+    } else {
+        walk_rows(CellRows::new(q, k), q, k, m, terms, hit)
+    }
+}
+
+/// The rows of the edit-distance table along a walk's path: per depth
+/// `j`, the edits from the path's first `j` letters to each prefix of the
+/// query, capped at `k + 1` (all that matters past `k`).
+trait Rows {
+    /// Keeps the rows of the path's first `depth` letters (and the empty
+    /// path's).
+    fn truncate(&mut self, depth: usize);
+    /// Adds the row of letter `c` after the path's last letter `last`
+    /// (`None` at the root): its least cell, and its edits to the whole
+    /// query.
+    fn push(&mut self, c: char, last: Option<char>) -> (u8, u8);
+    /// The edits from the path's first `depth` letters to the whole query.
+    fn whole(&self, depth: usize) -> u8;
+}
+
+/// Rows of `q.len() + 1` cells.
+struct CellRows<'q> {
+    q: &'q [char],
+    k: u8,
+    rows: Vec<u8>,
+}
+
+impl<'q> CellRows<'q> {
+    fn new(q: &'q [char], k: u8) -> Self {
+        CellRows { q, k, rows: (0..=q.len()).map(|i| i.min(k as usize + 1) as u8).collect() }
+    }
+}
+
+impl Rows for CellRows<'_> {
+    fn truncate(&mut self, depth: usize) {
+        self.rows.truncate((depth + 1) * (self.q.len() + 1));
+    }
+
+    fn push(&mut self, c: char, last: Option<char>) -> (u8, u8) {
+        let (q, n, cap) = (self.q, self.q.len(), self.k + 1);
+        let w = n + 1;
+        let rows = &mut self.rows;
+        let d = rows.len() / w - 1;
+        let (at, prev) = (rows.len(), rows.len() - w);
+        rows.push((d + 1).min(cap as usize) as u8);
+        let mut min = rows[at];
+        for i in 1..=n {
+            let mut x = (rows[prev + i] + 1).min(rows[at + i - 1] + 1).min(rows[prev + i - 1] + (q[i - 1] != c) as u8);
+            // A swap of the path's last letter and this one.
+            if i >= 2 && last == Some(q[i - 1]) && q[i - 2] == c {
+                x = x.min(rows[prev - w + i - 2] + 1);
+            }
+            let x = x.min(cap);
+            rows.push(x);
+            min = min.min(x);
+        }
+        (min, rows[at + n])
+    }
+
+    fn whole(&self, depth: usize) -> u8 {
+        let w = self.q.len() + 1;
+        self.rows[depth * w + w - 1]
+    }
+}
+
+/// Rows of a query of fewer than 64 letters as the states of its
+/// Levenshtein automaton, simulated with bit masks (Wu and Manber's
+/// shift-and, with Hyyrö's swap of neighbouring letters): per depth, for
+/// each `e` in `0..=k`, the mask of the `i` (bit `i`) whose prefix
+/// `q[..i]` is within `e` edits of the path, then the mask of the query's
+/// letters equal to the path's last letter. A letter costs `k + 1` words
+/// of shifts and ors rather than a cell per letter of the query.
+struct BitRows {
+    k: usize,
+    n: usize,
+    /// The query's positions `i` (bit `i`, from 1) whose letter `q[i - 1]`
+    /// is an ASCII byte, by byte; other letters' masks follow in `other`.
+    ascii: [u64; 128],
+    other: Vec<(char, u64)>,
+    /// Bits `0..=n`.
+    full: u64,
+    /// Per depth, `k + 2` words: the masks for 0 to `k` edits, then the
+    /// letter's mask.
+    rows: Vec<u64>,
+}
+
+impl BitRows {
+    fn new(q: &[char], k: u8) -> Self {
+        let (k, n) = (k as usize, q.len());
+        let mut ascii = [0u64; 128];
+        let mut other: Vec<(char, u64)> = Vec::new();
+        for (i, &c) in q.iter().enumerate() {
+            let bit = 1u64 << (i + 1);
+            if c.is_ascii() {
+                ascii[c as usize] |= bit;
+            } else {
+                match other.iter_mut().find(|(x, _)| *x == c) {
+                    Some((_, m)) => *m |= bit,
+                    None => other.push((c, bit)),
+                }
+            }
+        }
+        let full = if n + 1 >= 64 { u64::MAX } else { (1u64 << (n + 1)) - 1 };
+        // The empty path: q[..i] is within e edits for i <= e.
+        let mut rows: Vec<u64> = (0..=k).map(|e| if e >= n { full } else { (1u64 << (e + 1)) - 1 }).collect();
+        rows.push(0);
+        BitRows { k, n, ascii, other, full, rows }
+    }
+
+    #[inline]
+    fn mask(&self, c: char) -> u64 {
+        if c.is_ascii() {
+            self.ascii[c as usize]
+        } else {
+            self.other.iter().find(|(x, _)| *x == c).map_or(0, |x| x.1)
+        }
+    }
+
+    /// The fewest edits whose mask in `row` has a bit of `bits`, `k + 1`
+    /// for none.
+    #[inline]
+    fn least(&self, row: &[u64], bits: u64) -> u8 {
+        row[..=self.k].iter().position(|&r| r & bits != 0).unwrap_or(self.k + 1) as u8
+    }
+}
+
+impl Rows for BitRows {
+    fn truncate(&mut self, depth: usize) {
+        self.rows.truncate((depth + 1) * (self.k + 2));
+    }
+
+    fn push(&mut self, c: char, _last: Option<char>) -> (u8, u8) {
+        let (k, s) = (self.k, self.k + 2);
+        let mc = self.mask(c);
+        let at = self.rows.len();
+        let prev = at - s;
+        // A swap of the path's last letter (whose mask ends the previous
+        // row) and this one: from q[..i - 2] two letters up to q[..i],
+        // where q[i - 2] is this letter and q[i - 1] the last.
+        let swap = if prev >= s { (mc << 1) & self.rows[prev + k + 1] } else { 0 };
+        let mut lower = 0u64;
+        for e in 0..=k {
+            // A match of c with q[i - 1]; with one more edit, c deleted, c
+            // for q[i - 1], q[i - 1] inserted, or the swap.
+            let mut r = (self.rows[prev + e] << 1) & mc;
+            if e > 0 {
+                let p = self.rows[prev + e - 1];
+                r |= p | (p << 1) | (lower << 1);
+                if swap != 0 {
+                    r |= (self.rows[prev - s + e - 1] << 2) & swap;
+                }
+            }
+            r &= self.full;
+            self.rows.push(r);
+            lower = r;
+        }
+        self.rows.push(mc);
+        let row = &self.rows[at..at + k + 1];
+        (self.least(row, self.full), self.least(row, 1u64 << self.n))
+    }
+
+    fn whole(&self, depth: usize) -> u8 {
+        let at = depth * (self.k + 2);
+        self.least(&self.rows[at..at + self.k + 1], 1u64 << self.n)
+    }
+}
+
+fn walk_rows<S: Sorted, R: Rows>(mut rows: R, q: &[char], k: u8, m: Match, terms: &mut S, mut hit: impl FnMut(&S, std::ops::Range<usize>, u8)) {
     let (n, k) = (q.len(), k as usize);
-    // The path's letters, their ends in bytes, and per depth j a row of
-    // `w` cells: the edits from the path's first j letters to each prefix
-    // of `q`, capped at k + 1 (all that matters past k).
-    let w = n + 1;
     let cap = |x: usize| x.min(k + 1) as u8;
+    // The path's letters and their ends in bytes.
     let mut path: Vec<char> = Vec::new();
     let mut bytes: Vec<u8> = Vec::new();
     let mut ends: Vec<usize> = vec![0];
-    let mut rows: Vec<u8> = (0..=n).map(cap).collect();
     // Per depth j, the fewest edits from a prefix of the path's first j
     // letters to `q` (k + 1: none within k), for a prefix match.
     let mut bests: Vec<u8> = vec![cap(n)];
@@ -172,35 +384,26 @@ pub fn walk<S: Sorted>(q: &[char], k: u8, m: Match, terms: &mut S, mut hit: impl
         path.truncate(j);
         ends.truncate(j + 1);
         bests.truncate(j + 1);
-        rows.truncate((j + 1) * w);
+        rows.truncate(j);
         bytes.truncate(ends[j]);
-        let Ok(rest) = std::str::from_utf8(&t[ends[j]..]) else {
-            // Not text: no letters to match.
-            terms.next();
-            continue;
-        };
         // Past: no term starting with the path can match. Run: every term
-        // starting with it does, with these edits.
-        let (mut past, mut run) = (false, None);
-        for c in rest.chars() {
+        // starting with it does, with these edits. The letters are decoded
+        // as the walk reads them, mostly few before it jumps.
+        let (mut past, mut run, mut text) = (false, None, true);
+        let mut at = ends[j];
+        while at < t.len() {
+            let Some((c, len)) = letter(&t[at..]) else {
+                // Not text: no letters to match.
+                text = false;
+                break;
+            };
             let d = path.len();
-            let (at, prev) = (rows.len(), rows.len() - w);
-            rows.push(cap(d + 1));
-            let mut min = rows[at];
-            for i in 1..=n {
-                let mut x = (rows[prev + i] + 1).min(rows[at + i - 1] + 1).min(rows[prev + i - 1] + (q[i - 1] != c) as u8);
-                // A swap of the path's last letter and this one.
-                if d >= 1 && i >= 2 && q[i - 1] == path[d - 1] && q[i - 2] == c {
-                    x = x.min(rows[prev - w + i - 2] + 1);
-                }
-                let x = x.min(k as u8 + 1);
-                rows.push(x);
-                min = min.min(x);
-            }
-            let best = bests[d].min(rows[at + n]);
+            let (min, whole) = rows.push(c, path.last().copied());
+            let best = bests[d].min(whole);
             let min = min as usize;
             path.push(c);
-            bytes.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+            bytes.extend_from_slice(&t[at..at + len]);
+            at += len;
             ends.push(bytes.len());
             bests.push(best);
             if m == Match::Prefix && best as usize <= k && min >= best as usize {
@@ -214,10 +417,14 @@ pub fn walk<S: Sorted>(q: &[char], k: u8, m: Match, terms: &mut S, mut hit: impl
                 break;
             }
         }
+        if !text {
+            terms.next();
+            continue;
+        }
         if !past && run.is_none() {
             // The whole term was read.
             let d = match m {
-                Match::Whole => rows[path.len() * w + n],
+                Match::Whole => rows.whole(path.len()),
                 Match::Prefix => bests[path.len()],
             };
             if d as usize <= k {
@@ -227,18 +434,34 @@ pub fn walk<S: Sorted>(q: &[char], k: u8, m: Match, terms: &mut S, mut hit: impl
             terms.next();
             continue;
         }
+        // The path's bytes start the current term.
         let start = terms.pos();
-        match past_prefix(&bytes) {
-            Some(after) => terms.seek(&after),
-            None => skip_rest(terms),
-        }
+        terms.skip_prefix(bytes.len());
         if let Some(d) = run {
             hit(terms, start..terms.pos(), d);
         }
     }
 }
 
-fn skip_rest(terms: &mut impl Sorted) {
+/// The letter `b` starts with and its length in bytes, `None` when `b`
+/// does not start with one in UTF-8.
+#[inline]
+fn letter(b: &[u8]) -> Option<(char, usize)> {
+    let x = *b.first()?;
+    if x < 0x80 {
+        return Some((x as char, 1));
+    }
+    let len = match x {
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => return None,
+    };
+    let c = std::str::from_utf8(b.get(..len)?).ok()?.chars().next()?;
+    Some((c, len))
+}
+
+fn skip_rest<S: Sorted + ?Sized>(terms: &mut S) {
     while terms.term().is_some() {
         terms.next();
     }
@@ -300,6 +523,10 @@ mod tests {
                     let mut got = Vec::new();
                     walk(&q, k, Match::Whole, &mut SliceTerms::new(&terms), |_, r, d| got.push((r.start, d)));
                     assert_eq!(got, want, "{q:?} within {k}");
+                    // The rows of cells (a query of 64 letters or more) find the same.
+                    let mut cells = Vec::new();
+                    walk_rows(CellRows::new(&q, k), &q, k, Match::Whole, &mut SliceTerms::new(&terms), |_, r, d| cells.push((r.start, d)));
+                    assert_eq!(cells, want, "{q:?} within {k}, by cells");
                     // Each term with a prefix within k, and the fewest
                     // edits of its prefixes.
                     let want: Vec<(usize, u8)> = (0..terms.len())
@@ -315,7 +542,28 @@ mod tests {
                     walk(&q, k, Match::Prefix, &mut SliceTerms::new(&terms), |_, r, d| got.extend(r.map(|i| (i, d))));
                     let want = if q.is_empty() { (0..terms.len()).map(|i| (i, 0)).collect() } else { want };
                     assert_eq!(got, want, "{q:?} prefix within {k}");
+                    let mut cells = Vec::new();
+                    walk_rows(CellRows::new(&q, k), &q, k, Match::Prefix, &mut SliceTerms::new(&terms), |_, r, d| cells.extend(r.map(|i| (i, d))));
+                    assert_eq!(cells, want, "{q:?} prefix within {k}, by cells");
                 }
+            }
+        }
+        // Queries of 63 letters (the most a row of bits holds) and of 64
+        // (rows of cells), against terms near them.
+        for n in [63, 64, 70] {
+            let q: Vec<char> = (0..n).map(|i| letters[i % 5]).collect();
+            let base: String = q.iter().collect();
+            let mut terms: Vec<String> = vec![base.clone(), base[1..].to_string(), format!("{base}x"), format!("x{}", &base[2..]), base[..n - 3].to_string()];
+            let mut swapped = q.clone();
+            swapped.swap(10, 11);
+            terms.push(swapped.iter().collect());
+            terms.sort();
+            terms.dedup();
+            for k in 0..=2u8 {
+                let want: Vec<(usize, u8)> = terms.iter().enumerate().filter_map(|(i, t)| within(&q, t, k).map(|d| (i, d))).collect();
+                let mut got = Vec::new();
+                walk(&q, k, Match::Whole, &mut SliceTerms::new(&terms), |_, r, d| got.push((r.start, d)));
+                assert_eq!(got, want, "{n} letters within {k}");
             }
         }
         assert!(prefix_within(&"hwo to ins".chars().collect::<Vec<_>>(), "how to install engram", 2));
