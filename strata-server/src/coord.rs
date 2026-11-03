@@ -622,6 +622,8 @@ pub struct Coordinator {
     fetch_lost: AtomicU64,
     /// The slot moves this coordinator runs ([`moves`]).
     moves: moves::Moves,
+    /// The plan this coordinator applies ([`plan::apply`]).
+    pub(crate) plans: plan::Runs,
     /// The last survey of the cluster ([`Self::snapshot`]): when, under
     /// which map epoch, and what it found; and who is told of each.
     snapshot: tokio::sync::Mutex<Option<(Instant, u64, Arc<Json>)>>,
@@ -1056,6 +1058,7 @@ impl Coordinator {
             fetches: AtomicU64::new(0),
             fetch_lost: AtomicU64::new(0),
             moves: moves::Moves::default(),
+            plans: plan::Runs::default(),
             snapshot: tokio::sync::Mutex::new(None),
             observer: std::sync::OnceLock::new(),
         })

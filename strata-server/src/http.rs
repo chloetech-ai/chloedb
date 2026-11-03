@@ -50,6 +50,9 @@
 //! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, its skew, writes and reads a minute, growth over a day and a week, and copies behind; kept 30 s ([`crate::inspect::tables`]) |
 //! | `POST /v1/admin/copies/verify`, `POST /v1/admin/copies/checkpoint` | `{url, timeout_ms?}`, `{url, name, layout?, link_from?}` | on a coordinator, of a copy (its URL or short name): its shard's primary compares the replicas' rows with its own (`{replicas: [{url, in_sync, compared, differing_slots, first_differing_slot, seq_no, error}]}`), or the copy writes a checkpoint into its own `--backup-dir` (`{checkpoint}`) |
 //! | `POST /v1/admin/plan` | `{shards?: [{shard, copies}], add_shards?, remove_shards?, moves?}` | on own machines, the steps of a change of the cluster's shape, rows to copy, an estimate, what clients feel and what to check first; changes nothing ([`crate::coord::plan`]) |
+//! | `POST /v1/admin/plan/apply` | `{steps: [...], estimate_s?}`, or a plan's body | applies a plan on the coordinator, its steps in order, in the background; kept in a file so that a restart says where it stopped ([`crate::coord::plan::apply`]) |
+//! | `GET /v1/admin/plan/run` | – | the plan applied or last applied here, step by step (also `plan` in `/v1/cluster`) |
+//! | `POST /v1/admin/plan/run/stop`, `/resume`, `/discard` | – | stop after the step under way; apply a stopped plan again from its step; forget a stopped plan |
 //! | `GET /v1/admin/kube/versions?limit=30` | | the images of the cluster's repository a person may pick, newest first, each `current`, `newer`, `tracked`; without Kubernetes too ([`crate::operator::upgrade::Versions`]) |
 //! | `GET /v1/load?from=&to=&copies=all` | | on a coordinator, each copy's load a minute from its own log store; copies that did not answer under `missing` |
 //! | `GET /v1/logs?after=seq&level=warn&request=id&q=text&limit=n&node=` | | `{lines, last, filter, filter_expires_ms, filter_set_by}`: the latest log lines ([`crate::obs::ring`]); on a coordinator with `node`, that copy's `{node, short, filter, filter_expires_ms, filter_set_by, filter_set_ms, previous}` (its lines are in the log store) |
@@ -147,6 +150,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
     // Rows come in writes and imports; every other body is small.
     let rows = DefaultBodyLimit::max(svc.max_body);
     let app = App { svc, token: access.token.clone(), cluster: access.cluster.clone(), hosts: access.hosts.clone().map(Into::into) };
+    // cluster2: a plan a restart stopped is taken up (interrupted).
+    crate::coord::plan::start(&app.svc);
     let api = Router::new()
         .route("/v1/stats", get(stats))
         .route("/v1/schema", get(schema))
@@ -266,6 +271,12 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/load", get(copies_load))
         .route("/v1/admin/kube/versions", get(kube_versions))
         .route("/v1/admin/plan", post(admin_plan))
+        // cluster2: a plan applied on the coordinator, as a job (coord/plan.rs).
+        .route("/v1/admin/plan/apply", post(plan_apply))
+        .route("/v1/admin/plan/run", get(plan_run))
+        .route("/v1/admin/plan/run/stop", post(plan_stop))
+        .route("/v1/admin/plan/run/resume", post(plan_resume))
+        .route("/v1/admin/plan/run/discard", post(plan_discard))
         .route("/v1/index/tables", get(index_tables))
         .route("/v1/admin/copies/verify", post(copy_verify))
         .route("/v1/admin/copies/checkpoint", post(copy_checkpoint))
@@ -630,6 +641,9 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
     // acknowledged, a log level set, a Contain rule): its audit entry is
     // not a `change` event too, so that the Timeline says it once.
     let evented = res.extensions().get::<Evented>().is_some();
+    // cluster2: why a request failed (its error), kept in its entry's
+    // `after`, so that the Changes list says what went wrong.
+    let failed = (status >= 400).then(|| res.extensions().get::<ClientError>().map(|e| e.0.clone()).or_else(|| res.extensions().get::<Failure>().map(|e| e.0.clone()))).flatten();
     if refusal || detail.is_some() || (need == Scope::Admin && !read) {
         let kind = if refusal { keys::REFUSAL } else { change.kind.unwrap_or(keys::CHANGE) };
         // A refused credential that is a key known here (expired, revoked):
@@ -659,7 +673,7 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
             reason: caller.reason.clone(),
             object: change.object,
             before: change.before,
-            after: change.after,
+            after: change.after.or_else(|| failed.map(|e| json!({"error": &*e}))),
             actor: change.actor.unwrap_or("person").into(),
         }, !evented);
     }
@@ -687,6 +701,16 @@ fn audited(j: Json, detail: String) -> Response {
     let mut r = AxJson(j).into_response();
     r.extensions_mut().insert(Audited(detail));
     r
+}
+
+/// cluster2: a change that failed, said by what it tried (`what`) in
+/// the audit log and on the Timeline rather than by its route (AC-3).
+fn tried(what: String) -> impl FnOnce(ApiError) -> Response {
+    move |e| {
+        let mut r = e.into_response();
+        r.extensions_mut().insert(Audited(what));
+        r
+    }
 }
 
 /// On an answer: its request made its own event of what it did, which
@@ -1972,15 +1996,21 @@ async fn add_shard(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Re
         None | Some(Json::Null) => Acks::All,
         Some(v) => v.as_str().and_then(Acks::parse).ok_or_else(|| ApiError::bad("write_acks is all, majority or primary"))?,
     };
-    let j = app.svc.coordinator()?.add_shard(servers.clone(), acks).await?;
+    let j = match app.svc.coordinator()?.add_shard(servers.clone(), acks).await {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("add a shard served by {}", servers.join(", ")))(e)),
+    };
     let detail = format!("added shard {} served by {}", j["shard"], servers.join(", "));
     Ok(audited(j, detail))
 }
 
 /// `DELETE /v1/admin/shards/:i`: removes a shard that holds no slot.
 async fn remove_shard(State(app): State<App>, axum::extract::Path(i): axum::extract::Path<usize>) -> Result<Response, ApiError> {
-    let j = app.svc.coordinator()?.remove_shard(i).await?;
     keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
+    let j = match app.svc.coordinator()?.remove_shard(i).await {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("remove shard {i}"))(e)),
+    };
     Ok(audited(j, format!("removed shard {i}")))
 }
 
@@ -1988,7 +2018,11 @@ async fn remove_shard(State(app): State<App>, axum::extract::Path(i): axum::extr
 /// server for shard `i`, a replica of its primary.
 async fn add_replica(State(app): State<App>, axum::extract::Path(i): axum::extract::Path<usize>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let url = body_str(&b, "url")?.to_string();
-    let j = app.svc.coordinator()?.add_replica(i, &url, body_bool(&b, "force")?).await?;
+    keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
+    let j = match app.svc.coordinator()?.add_replica(i, &url, body_bool(&b, "force")?).await {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("add {url} to shard {i}"))(e)),
+    };
     keys::note_change(keys::Change { object: Some(format!("shard {i}")), after: Some(json!({"added": url})), ..Default::default() });
     Ok(audited(j, format!("added {url} to shard {i}")))
 }
@@ -2000,16 +2034,26 @@ async fn promote_in_shard(State(app): State<App>, axum::extract::Path(i): axum::
     let c = app.svc.coordinator()?;
     // The copy by its short name (`s0-1`), as the cluster names it.
     let name = copy_of(&*c.snapshot().await, &url).map_or_else(|_| url.clone(), |c| c.short);
-    let j = c.promote(i, &url, body_bool(&b, "force")?).await?;
-    keys::note_change(keys::Change { object: Some(format!("shard {i}")), after: Some(json!({"primary": url, "copy": name})), ..Default::default() });
-    Ok(audited(j, format!("made {name} the primary of shard {i}")))
+    let force = body_bool(&b, "force")?;
+    // cluster2: the votes a refusal quotes, in words (NEW-cluster-admin-3).
+    keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
+    let j = match c.promote(i, &url, force).await {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("make {name} the primary of shard {i}{}", if force { " (forced)" } else { "" }))(ApiError { message: crate::coord::plan::plain_votes(&e.message), ..e })),
+    };
+    keys::note_change(keys::Change { object: Some(format!("shard {i}")), after: Some(json!({"primary": url, "copy": name, "forced": force})), ..Default::default() });
+    Ok(audited(j, format!("made {name} the primary of shard {i}{}", if force { " (forced, asking no votes)" } else { "" })))
 }
 
 /// `DELETE /v1/admin/shards/:i/replicas?url=`: one server fewer for shard
 /// `i`.
 async fn remove_replica(State(app): State<App>, axum::extract::Path(i): axum::extract::Path<usize>, Query(q): Params) -> Result<Response, ApiError> {
     let url = q.get("url").filter(|u| !u.is_empty()).ok_or_else(|| ApiError::bad("url is the gRPC URL of the server to remove (?url=http://host:port)"))?;
-    let j = app.svc.coordinator()?.remove_replica(i, url).await?;
+    keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
+    let j = match app.svc.coordinator()?.remove_replica(i, url).await {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("remove {url} from shard {i}"))(e)),
+    };
     keys::note_change(keys::Change { object: Some(format!("shard {i}")), before: Some(json!({"removed": url})), ..Default::default() });
     Ok(audited(j, format!("removed {url} from shard {i}")))
 }
@@ -2026,22 +2070,29 @@ fn chunk(b: &Option<AxJson<Json>>) -> Result<usize, ApiError> {
 /// `POST /v1/admin/rebalance {"chunk"?}`: evens out the slots over the
 /// shards, in the background (`GET /v1/admin/moves` follows it).
 async fn rebalance(State(app): State<App>, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Result<Response, ApiError> {
-    let j = app.svc.coordinator()?.rebalance(chunk(&body)?)?;
+    let j = match app.svc.coordinator()?.rebalance(chunk(&body)?) {
+        Ok(j) => j,
+        Err(e) => return Ok(tried("even the slots out over the shards".into())(e)),
+    };
     let title = format!("Slots even out over the shards: {} moves", j["job"]["of"]);
     let j = moves_started(&app, w, j, title, None);
     let detail = format!("rebalancing: {} moves", j["job"]["of"]);
-    Ok(audited(j, detail))
+    // cluster2: its event is the moves' (NEW-scenarios-15).
+    Ok(evented(audited(j, detail)))
 }
 
 /// `POST /v1/admin/shards/:i/drain {"chunk"?}`: moves every slot of shard
 /// `i` to the others, in the background, so that it can be removed.
 async fn drain_shard(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(i): axum::extract::Path<usize>, body: Option<AxJson<Json>>) -> Result<Response, ApiError> {
-    let j = app.svc.coordinator()?.drain(i, chunk(&body)?)?;
     keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
+    let j = match app.svc.coordinator()?.drain(i, chunk(&body)?) {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("drain shard {i}"))(e)),
+    };
     let title = format!("Shard {i} drains: {} moves", j["job"]["of"]);
     let j = moves_started(&app, w, j, title, Some(i));
     let detail = format!("draining shard {i}: {} moves", j["job"]["of"]);
-    Ok(audited(j, detail))
+    Ok(evented(audited(j, detail)))
 }
 
 /// A job of moves just started: who started it, and its event.
@@ -2064,7 +2115,74 @@ fn moves_started(app: &App, w: Option<axum::Extension<Principal>>, j: Json, titl
 async fn admin_plan(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let c = app.svc.coordinator()?;
     let snap = c.snapshot().await;
-    Ok(AxJson(crate::coord::plan::plan(&snap, &b, c.moves()["running"] == true)?))
+    let mut p = crate::coord::plan::plan(&snap, &b, c.moves()["running"] == true)?;
+    // cluster2: each server the plan adds is asked whether it answers, is
+    // empty, runs the cluster's schema and has room (NEW-cluster-admin-10).
+    c.probe_new(&mut p).await;
+    Ok(AxJson(p))
+}
+
+/// The person a request is, for a plan applied on their behalf.
+fn plan_who(w: Option<axum::Extension<Principal>>) -> crate::coord::plan::Who {
+    let p = who(w);
+    let caller = keys::caller().unwrap_or_default();
+    crate::coord::plan::Who { by: keys::audit_name(&p), key: p.key.clone(), client: caller.named(), addr: caller.addr, reason: caller.reason }
+}
+
+/// `POST /v1/admin/plan/apply {"steps": [...], "estimate_s"?}`: applies a
+/// plan on this coordinator, its steps in order, in the background
+/// (`GET /v1/admin/plan/run` follows it); or, with the body of `POST
+/// /v1/admin/plan` and no steps, the plan that answers, if its checks pass.
+async fn plan_apply(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(mut b): AxJson<Json>) -> Result<Response, ApiError> {
+    if b.get("steps").is_none() {
+        let c = app.svc.coordinator()?;
+        let snap = c.snapshot().await;
+        let mut p = crate::coord::plan::plan(&snap, &b, c.moves()["running"] == true)?;
+        c.probe_new(&mut p).await;
+        if p["ok"] != true {
+            let why: Vec<&str> = p["preflight"].as_array().into_iter().flatten().filter(|x| x["ok"] == false).filter_map(|x| x["text"].as_str()).collect();
+            return Err(ApiError { status: 409, message: format!("the plan's checks fail: {}", why.join("; ")) });
+        }
+        b = json!({"steps": p["steps"], "estimate_s": p["estimate_s"]});
+    }
+    let j = crate::coord::plan::apply(&app.svc, &b, plan_who(w))?;
+    let r = &j["run"];
+    let texts: Vec<&str> = r["steps"].as_array().into_iter().flatten().filter_map(|x| x["text"].as_str()).collect();
+    keys::note_change(keys::Change { object: Some(format!("plan {}", r["id"].as_str().unwrap_or("?"))), after: Some(json!({"plan": r["id"], "steps": texts})), ..Default::default() });
+    let detail = format!("applied a plan of {} {} ({}): {}", texts.len(), if texts.len() == 1 { "step" } else { "steps" }, r["id"].as_str().unwrap_or("?"), texts.join("; "));
+    Ok(audited(j, detail.chars().take(1500).collect()))
+}
+
+/// `GET /v1/admin/plan/run`: the plan this coordinator applies or applied
+/// last, step by step.
+async fn plan_run(State(app): State<App>) -> Res {
+    app.svc.coordinator()?;
+    Ok(AxJson(crate::coord::plan::view(&app.svc)))
+}
+
+/// `POST /v1/admin/plan/run/stop`: the plan stops after its step under way.
+async fn plan_stop(State(app): State<App>) -> Result<Response, ApiError> {
+    let j = crate::coord::plan::stop(&app.svc)?;
+    keys::note_change(keys::Change { object: Some(format!("plan {}", j["run"]["id"].as_str().unwrap_or("?"))), ..Default::default() });
+    Ok(audited(j, "stopping the plan being applied".into()))
+}
+
+/// `POST /v1/admin/plan/run/resume`: applies a plan that stopped (a
+/// restart, a failed step, Stop) again from the step it stopped at.
+async fn plan_resume(State(app): State<App>, w: Option<axum::Extension<Principal>>) -> Result<Response, ApiError> {
+    let j = crate::coord::plan::resume(&app.svc, plan_who(w).by)?;
+    keys::note_change(keys::Change { object: Some(format!("plan {}", j["run"]["id"].as_str().unwrap_or("?"))), ..Default::default() });
+    let detail = format!("resumed plan {} at step {} of {}", j["run"]["id"].as_str().unwrap_or("?"), j["run"]["at"].as_u64().unwrap_or(0) + 1, j["run"]["of"]);
+    Ok(audited(j, detail))
+}
+
+/// `POST /v1/admin/plan/run/discard`: forgets a plan that stopped.
+async fn plan_discard(State(app): State<App>) -> Result<Response, ApiError> {
+    let j = crate::coord::plan::discard(&app.svc)?;
+    let d = &j["discarded"];
+    keys::note_change(keys::Change { object: Some(format!("plan {}", d["id"].as_str().unwrap_or("?"))), ..Default::default() });
+    let detail = format!("discarded plan {} ({}, {} of {} steps done)", d["id"].as_str().unwrap_or("?"), d["state"].as_str().unwrap_or("?"), d["done"], d["of"]);
+    Ok(audited(j, detail))
 }
 
 /// `GET /v1/admin/moves`: the job of moves running or last run here, and
@@ -2086,9 +2204,12 @@ async fn move_slots(State(app): State<App>, w: Option<axum::Extension<Principal>
         }
     }
     let to = b.get("to").and_then(Json::as_u64).ok_or_else(|| ApiError::bad("to is the shard the slots move to"))? as usize;
-    let j = app.svc.coordinator()?.start_move(slots.clone(), to)?;
+    let j = match app.svc.coordinator()?.start_move(slots.clone(), to) {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("move {} slots to shard {to}", slots.len()))(e)),
+    };
     let j = moves_started(&app, w, j, format!("{} slots move to shard {to}", slots.len()), Some(to));
-    Ok(audited(j, format!("moving {} slots to shard {to}", slots.len())))
+    Ok(evented(audited(j, format!("moving {} slots to shard {to}", slots.len()))))
 }
 
 /// `POST /v1/admin/moves/stop`: the job running here stops once its move
@@ -2654,7 +2775,12 @@ async fn system(State(app): State<App>) -> AxJson<Json> {
 }
 
 async fn cluster(State(app): State<App>) -> AxJson<Json> {
-    AxJson(app.svc.cluster().await)
+    let mut j = app.svc.cluster().await;
+    // cluster2: the plan being applied (or the last one), for every view.
+    if app.svc.coordinator().is_ok() {
+        j["plan"] = crate::coord::plan::view(&app.svc)["run"].clone();
+    }
+    AxJson(j)
 }
 
 /// `GET /v1/kube`: the `StrataCluster` that runs this coordinator on

@@ -115,7 +115,8 @@ struct Job {
     /// Who started it (a key's name), when the API said.
     by: Option<String>,
     /// The rows its slots held when it started, about: each shard's rows
-    /// spread evenly over its slots (the cluster's snapshot), when known.
+    /// (of every table) spread evenly over its slots (the cluster's
+    /// snapshot), when known.
     rows_total: Option<u64>,
 }
 
@@ -256,7 +257,8 @@ impl Coordinator {
             let rows = |i: usize| {
                 let s = snap["shards"].as_array().and_then(|v| v.iter().find(|s| s["shard"] == i));
                 let copies = s.and_then(|s| s["replicas"].as_array());
-                let docs = copies.and_then(|c| c.iter().find(|r| r["takes_writes"] == true).or_else(|| c.iter().find(|r| r["status"] != "down"))).and_then(|r| r["docs"].as_u64()).unwrap_or(0);
+                // cluster2: the rows of every table, which the move sends.
+                let docs = copies.and_then(|c| c.iter().find(|r| r["takes_writes"] == true).or_else(|| c.iter().find(|r| r["status"] != "down"))).and_then(super::plan::copy_rows).unwrap_or(0);
                 (docs, s.and_then(|s| s["slots_held"].as_u64()).unwrap_or(0).max(1))
             };
             steps.iter().map(|st| {
