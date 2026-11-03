@@ -88,6 +88,17 @@ is the machines, not the run, and the node check does not predict it (the
 slower Strata had the faster-checking nodes). Differences between engines of
 less than about 15% here are within what a second set of machines changes.
 
+## The first pass is not the engines' speed
+
+The JVM engines were slowest on their first pass: Elasticsearch's BM25 at
+4 clients ran at 571 q/s in it and 1,063 and 1,074 in the next two,
+OpenSearch's at 677 then 1,168 and 1,185, Solr's at 268 then 1,087 and 1,136, while
+Strata's three passes were 866 to 876 ([passes.md](passes.md)). `tables.md`
+uses the first pass, so it understates them; [rank.md](rank.md) ranks on
+the median of the three (Strata first with 226 points, Elasticsearch 269,
+OpenSearch 281). Since then each kind warms up until its median holds
+steady before it is timed (`warm_up_p50_ms` in a run's report).
+
 ## What went wrong on the way
 
 - **Engines that refused MS MARCO's text.** Five loads stopped on the data
@@ -111,6 +122,14 @@ less than about 15% here are within what a second set of machines changes.
   copy of its scripts, which got the fix only after that try had started)
   and `strata-b` once (`jobs/strata-b.attempt1`); the runs here are the
   attempts after the fix.
+- **`tables.md` and `summary.json` add up Strata's two shard builds**
+  (339 s), although the two shards were built at the same time, each on its
+  own node: Strata's load took 178 s (`build-strata-s1.json`, the longer of
+  the two), and the build step in `jobs/strata/steps.tsv` 192 s with its
+  pod's start. The generated files keep the sum, since the analysis cannot
+  be run again without the collection; `analyze.py` now takes a sharded
+  build's time from its first start to its last end. The same holds for
+  `strata-b/`.
 - **Qdrant took 75 minutes to load**: it took the 1M documents in 6.5 minutes
   and spent the rest building its index (`load-qdrant.json`).
 - **The proxy between the cloud container and the cluster cut long
@@ -127,10 +146,11 @@ less than about 15% here are within what a second set of machines changes.
 - `latency-full.md`, `summary.json`: the same numbers, every percentile.
 - `passes.md`: the three passes of every engine, kind and concurrency
   (median, lowest and highest), from `passes.py`.
+- `rank.md`: the engines ranked by the sum of their places over 47 tests,
+  each on the median of the three passes, from `rank.py`.
 - `run-*.json.gz`, `load-*.json`, `disk-*`, `build-strata-s*.json`,
-  `writes-*.json`, `stream-*.json`, `cpu.jsonl`: the first pass's reports.
-  The second and third passes' reports are not in the repository (13 MB);
-  `passes.md` has their numbers.
+  `writes-*.json`, `stream-*.json`, `cpu.jsonl`: the first pass's reports;
+  `run-*-pass2.json.gz` and `run-*-pass3.json.gz` the other two passes'.
 - `strata-b/`: the second Strata's reports and tables.
 - `jobs/<job>/`: each job's nodes and their check (`nodes.jsonl`), its steps
   with their start and end (`steps.tsv`), its log, and on failure the pods'

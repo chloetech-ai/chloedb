@@ -1351,6 +1351,21 @@ fn ts_or(t: &str) -> Option<String> {
 
 /// The request for one kind on one engine (None: the query has nothing to
 /// ask of this kind, as `request` decides for the others).
+/// A key lookup by the engine's own read by id, where `request` asks a
+/// search: Typesense's document GET, Qdrant's points by id (a point's id is
+/// its row), Weaviate's object GET (its id is the key's uuid_of).
+/// Meilisearch, Milvus, Redis, Postgres, ParadeDB and Manticore read by id
+/// in `request`.
+fn native_get(o: Other, p: &Probe, u: &str) -> Option<Req> {
+    let get = |url: String| Req::Http { method: Method::GET, url, ctype: "application/json", body: Vec::new() };
+    match o {
+        Other::Typesense => Some(get(format!("{u}/collections/docs/documents/{}?include_fields=id,title,year,rating", query_escape(p.key)))),
+        Other::Qdrant => Some(post(format!("{u}/collections/docs/points"), &json!({"ids": [p.row], "with_payload": ["key", "title", "year", "rating"]}))),
+        Other::Weaviate => Some(get(format!("{u}/v1/objects/Doc/{}", uuid_of(p.key)))),
+        _ => None,
+    }
+}
+
 fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
     let t = &p.q.text;
     let v: &[f32] = &p.q.vector;
@@ -1603,7 +1618,8 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                     sql_str(&quorum)
                 ),
                 "facet" => format!("SELECT category, COUNT(*) n FROM docs WHERE MATCH({}) GROUP BY category ORDER BY n DESC LIMIT 5", sql_str(&w)),
-                "key lookup" => format!("SELECT key, title, year, rating FROM docs WHERE key = {}", sql_str(key)),
+                // By its document id (the row's number plus one, as loaded): its own read by id.
+                "key lookup" => format!("SELECT key, title, year, rating FROM docs WHERE id = {}", p.row + 1),
                 "phrase" => {
                     let (a, b) = phrase.as_ref().unwrap();
                     text(&format!("\"{a} {b}\" MAYBE ({})", word_list(t).join(" | ")), "")
@@ -1855,6 +1871,7 @@ fn answer(o: Other, kind: &str, j: &Json) -> Json {
             "key lookup" => pairs(&arr(&j["results"]), &|h| json!(meili_key(h["id"].as_str().unwrap_or(""))), &|_| Json::Null),
             _ => pairs(&arr(&j["hits"]), &|h| json!(meili_key(h["id"].as_str().unwrap_or(""))), &|h| h["_rankingScore"].clone()),
         },
+        Other::Typesense if kind == "key lookup" && j.get("results").is_none() => json!({"keys": [j["id"].clone()], "scores": [Json::Null], "rows": []}),
         Other::Typesense => {
             let r = &j["results"][0];
             if kind == "facet" {
@@ -1867,10 +1884,13 @@ fn answer(o: Other, kind: &str, j: &Json) -> Json {
         }
         Other::Qdrant => match kind {
             "facet" => rows(arr(&j["result"]["hits"]).iter().map(|h| json!([h["value"], h["count"]])).collect()),
+            // Points by id ({"result": [...]}), or the scroll it falls back on ({"result": {"points"}}).
+            "key lookup" if j["result"].is_array() => pairs(&arr(&j["result"]), &|h| h["payload"]["key"].clone(), &|_| Json::Null),
             "key lookup" => pairs(&arr(&j["result"]["points"]), &|h| h["payload"]["key"].clone(), &|_| Json::Null),
             _ => pairs(&arr(&j["result"]["points"]), &|h| h["payload"]["key"].clone(), &|h| h["score"].clone()),
         },
         Other::Weaviate => match kind {
+            "key lookup" if j.get("properties").is_some() => json!({"keys": [j["properties"]["key"].clone()], "scores": [Json::Null], "rows": []}),
             "facet" | "sql aggregate" => {
                 let g = arr(&j["data"]["Aggregate"]["Doc"]);
                 let (n, min) = if kind == "facet" { (5, 0) } else { (10, 1000) };
@@ -2016,6 +2036,7 @@ pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, 
     let label = label.unwrap_or_else(|| o.name().to_string());
     let (mut http, mut answers, mut query_ids, mut unavailable, mut differ, mut probes) =
         (Vec::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
+    let mut warmups = BTreeMap::new();
     for &(kind, _) in KINDS {
         if !only.is_empty() && !only.iter().any(|k| k == kind) {
             continue;
@@ -2025,13 +2046,24 @@ pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, 
             unavailable.insert(kind, why.to_string());
             continue;
         }
-        let (mut ids, mut reqs, mut params) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut ids, mut reqs, mut params, mut fallback) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (i, q) in queries.iter().enumerate() {
             let k = (i * 7919) % keys.len();
             let it = (i * 104_729 + 13) % keys.len();
             let seen: Vec<String> = std::iter::once(it).chain((1..SEEN).map(|j| (it + j * 997) % keys.len())).map(|j| keys[j].clone()).collect();
-            let probe = Probe { q, key: &keys[k], item: &items[it], seen: &seen, year: 1990 + (i % 30) as i64, paid: false };
-            if let Some(r) = request(o, kind, &probe, &urls[reqs.len() % urls.len()]) {
+            let probe = Probe { q, key: &keys[k], row: k, item: &items[it], seen: &seen, year: 1990 + (i % 30) as i64, paid: false };
+            let u = &urls[reqs.len() % urls.len()];
+            if let Some(r) = request(o, kind, &probe, u) {
+                // A key lookup by the engine's own read by id where its
+                // request above is a search; the search is kept to fall
+                // back on if the read is refused.
+                let r = match (kind == "key lookup").then(|| native_get(o, &probe, u)).flatten() {
+                    Some(n) => {
+                        fallback.push(r);
+                        n
+                    }
+                    None => r,
+                };
                 ids.push(q.id.clone());
                 match kind {
                     "similar items" => params.push(json!({"item": keys[it], "seen": seen})),
@@ -2047,17 +2079,28 @@ pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, 
             continue;
         }
         if let Some(d) = differs(o, kind) {
-            differ.insert(kind, d);
+            differ.insert(kind, d.to_string());
         }
         let mut got = Vec::new();
         let mut failed = None;
-        for r in &reqs {
-            match conns.exec(r).await {
-                Ok(j) => got.push(answer(o, kind, &j)),
-                Err(e) => {
-                    failed = Some(e);
-                    break;
+        for attempt in 0..2 {
+            (got, failed) = (Vec::new(), None);
+            for r in &reqs {
+                match conns.exec(r).await {
+                    Ok(j) => got.push(answer(o, kind, &j)),
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
+                    }
                 }
+            }
+            match (&failed, attempt) {
+                (Some(e), 0) if !fallback.is_empty() => {
+                    eprintln!("{label:<9} {kind:<24} the read by id failed ({}): the search on the key instead", e.chars().take(300).collect::<String>());
+                    differ.insert(kind, format!("a search on the key field: its read by id failed ({})", e.chars().take(200).collect::<String>()));
+                    reqs = std::mem::take(&mut fallback);
+                }
+                _ => break,
             }
         }
         if let Some(e) = failed {
@@ -2071,6 +2114,9 @@ pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, 
             probes.insert(kind, params);
         }
         let reqs = Arc::new(reqs);
+        let warm = warm_up(seconds, |c, secs| drive(&conns, reqs.clone(), c, secs)).await;
+        eprintln!("{label:<9} {kind:<24} warm-up: p50 {} ms", warm.iter().map(|x| format!("{x:.3}")).collect::<Vec<_>>().join(", "));
+        warmups.insert(kind, warm);
         for &cc in concurrency {
             let t = drive(&conns, reqs.clone(), cc, seconds).await;
             eprintln!(
@@ -2095,7 +2141,7 @@ pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, 
     let report = json!({
         "engine": o.name(), "label": label, "collection": collection, "urls": urls, "queries": queries.len(),
         "params": {"seconds": seconds, "concurrency": concurrency, "candidates": CANDIDATES, "oversample": OVERSAMPLE, "hybrid_depth": DEPTH},
-        "http": http, "unavailable": unavailable, "differs": differ, "query_ids": query_ids, "probes": probes, "answers": answers,
+        "http": http, "unavailable": unavailable, "differs": differ, "query_ids": query_ids, "probes": probes, "answers": answers, "warm_up_p50_ms": warmups,
     });
     std::fs::create_dir_all(out).map_err(s)?;
     let path = out.join(format!("run-{}.json", label.replace(' ', "-")));
