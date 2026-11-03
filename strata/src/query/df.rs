@@ -1081,6 +1081,8 @@ impl<'a> Lower<'a, '_> {
         }
         let (side, pos) = (self.fresh("side"), self.fresh("pos"));
         let names: Vec<String> = l.cols.iter().map(|_| self.fresh("c")).collect();
+        // The rows are named as the left side's, as the operators name them.
+        let names_out = l.names.clone();
         let mut sides = Vec::new();
         for (i, rel) in [l, r].into_iter().enumerate() {
             let p = self.fresh("pos");
@@ -1113,7 +1115,6 @@ impl<'a> Lower<'a, '_> {
         }
         let right = plans.pop().expect("two sides");
         let plan = LogicalPlanBuilder::from(plans.pop().expect("two sides")).union(right)?.build()?;
-        let names_out = (0..names.len()).map(|i| format!("#{i}")).collect();
         let ord = vec![Ord { col: side.clone(), desc: false, nulls_first: false }, Ord { col: pos.clone(), desc: false, nulls_first: false }];
         let rel = Rel { plan, cols: names.clone(), names: names_out, key: None, score: Score::None, ord };
         let keys: Vec<DExpr> = names.iter().map(|c| col(c)).collect();
