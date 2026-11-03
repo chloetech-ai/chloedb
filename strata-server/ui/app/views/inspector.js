@@ -63,7 +63,7 @@ function render(page, r) {
   const content = h("div", {}, card({ title: "Where to look", sub: "the cluster, a shard or a copy: every number below follows", body: map, attrs: { style: { marginBottom: "14px" } } }), tiles, body,
     h("p", { class: "small muted ix-foot" }, "Documents, bytes, segments, index sizes and distinct terms are read from every segment (terms of large fields are estimated with a HyperLogLog sketch, which also merges across shards). Value sizes, fill and document sizes come from documents drawn at random from each server, weighted to its whole table; tokens per document come from every document's length norm, exact under 24 tokens and rounded down by at most 12.5% above. Reads are counted in memory since each server started or was reset: the top lists keep each table's 256 most read keys (Space-Saving, each count at most its error too high), coverage and the frequency chart come from a hash sample of keys that halves itself to stay under 4,096. A coordinator counts what each copy served through it, and each server what it answered its own clients, so nothing is counted twice. With several coordinators, each counts only what went through it: these reads are this coordinator's share, and Reset starts only its counts again."));
   const title = h("h1", {}, "Table details");
-  page.append(h("div", { class: "page-head" }, h("div", {}, h("div", { class: "small" }, h("a", { href: "#/tables" }, "Tables and storage"), h("span", { class: "muted" }, " › one table")), title, h("p", {}, "What the table holds, how big each part of it is, how fresh it is, and how often its documents and keys are read. Reads are counted since each server started (Reset reads starts them again).")),
+  page.append(h("div", { class: "page-head" }, h("div", {}, h("div", { class: "small" }, h("a", { class: "wl-link", href: "#/tables" }, "Tables and storage"), h("span", { class: "muted" }, " › one table")), title, h("p", {}, "What the table holds, how big each part of it is, how fresh it is, and how often its documents and keys are read. Reads are counted since each server started (Reset reads starts them again).")),
     h("div", { class: "tools" }, stamp, h("label", { class: "small muted" }, "Table"), pick, sizes, reset, again)), content);
 
   async function loadTables() {
@@ -111,14 +111,21 @@ function render(page, r) {
   // ------------------------------------------------------------- scopes
   const nodes = () => data.role === "server" ? [{ s: null, r: null, rep: { url: location.host, role: data.server_role, takes_writes: data.server_role !== "replica", scope: data.cluster } }]
     : data.shards.flatMap((sh, si) => sh.replicas.map((rep, ri) => ({ s: si, r: ri, rep })));
+  /** Writes and reads a minute of a scope, over the window Tables and storage uses: {w, r, win} or null (a copy, or not measured yet). */
+  function rateOf(cur) {
+    const rt = data?.rates;
+    if (!rt || rt.window_s == null || cur.kind === "replica") return null;
+    const x = cur.kind === "shard" ? rt.shards?.[String(cur.shard)] : rt;
+    return x ? { w: x.writes_per_min, r: x.reads_per_min, win: rt.window_s < 90 ? `last ${rt.window_s} s` : `last ${Math.round(rt.window_s / 60)} min` } : null;
+  }
   function current() {
-    if (scope.kind === "shard" && data.shards[scope.s]) return { sc: data.shards[scope.s].scope, ns: nodes().filter((n) => n.s === scope.s), name: `shard ${data.shards[scope.s].shard}` };
+    if (scope.kind === "shard" && data.shards[scope.s]) return { sc: data.shards[scope.s].scope, ns: nodes().filter((n) => n.s === scope.s), name: `shard ${data.shards[scope.s].shard}`, kind: "shard", shard: data.shards[scope.s].shard };
     if (scope.kind === "replica" && data.shards[scope.s]?.replicas[scope.r]) {
       const rep = data.shards[scope.s].replicas[scope.r];
-      return { sc: rep.scope, error: rep.error, ns: [{ s: scope.s, r: scope.r, rep }], name: copyName(rep.url) };
+      return { sc: rep.scope, error: rep.error, ns: [{ s: scope.s, r: scope.r, rep }], name: copyName(rep.url), kind: "replica" };
     }
     scope = { kind: "cluster" };
-    return { sc: data.cluster, ns: nodes(), name: data.role === "server" ? "this server" : "the whole cluster" };
+    return { sc: data.cluster, ns: nodes(), name: data.role === "server" ? "this server" : "the whole cluster", kind: "cluster" };
   }
   const choose = (sc) => { scope = sc; store.set("inspector.scope", sc); draw(); };
   const same = (a) => a.kind === scope.kind && a.s === scope.s && a.r === scope.r;
@@ -175,21 +182,22 @@ function render(page, r) {
   }
 
   // -------------------------------------------------------------- tiles
-  function drawTiles({ sc, ns }) {
+  function drawTiles(cur) {
+    const { sc, ns } = cur;
+    const rate = rateOf(cur);
     const st = sc.stats, f = sc.freshness, rd = sc.reads;
     const tile = (k, v, sub, t) => h("div", { class: "card kpi ix-tile", title: t }, h("div", { class: "lbl" }, k), h("div", { class: "val ix-n" }, v), h("div", { class: "small dim ix-tsub" }, sub));
     const counts = {};
     for (const x of st.fields) counts[GROUP[x.kind] || x.kind] = (counts[GROUP[x.kind] || x.kind] || 0) + 1;
     const keyed = st.fields.filter((x) => x.key).length;
     const late = ns.filter((n) => n.rep.behind).sort((a, b) => b.rep.behind - a.rep.behind)[0];
-    const up = f.started_ms ? (data.at_ms - f.started_ms) / 60000 : 0;
     const docsTotal = st.docs.live + st.docs.deleted;
     clear(tiles,
       tile("Documents", fmt.n(st.docs.live), `${fmt.n(st.docs.deleted)} deleted (${fmt.pct(docsTotal ? st.docs.deleted / docsTotal : 0)}) · ${fmt.n(st.docs.in_memory)} in memory`),
       tile("Fields", fmt.n(st.fields.length), [keyed ? `${keyed} key` : null, ...Object.entries(counts).map(([k, n]) => `${n} ${k}`)].filter(Boolean).join(" · ")),
       tile("On disk", fmt.bytes(st.bytes.total), `${fmt.plural(st.segments.length, "segment")}${sc.copies_bytes > st.bytes.total ? ` · ${fmt.bytes(sc.copies_bytes)} with every copy` : ""}${st.bytes.in_memory ? ` · ${fmt.bytes(st.bytes.in_memory)} in memory` : ""}`),
       tile("Per document", fmt.bytes(st.docs.live ? st.bytes.total / st.docs.live : 0), `index and store · ${fmt.bytes(st.doc_bytes.mean)} stored raw (sampled)`),
-      tile("Last write", f.last_write_ms ? fmt.ago(f.last_write_ms) : "none", late ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); choose({ kind: "replica", s: late.s, r: late.r }); } }, `${copyName(late.rep.url)} is ${behindText(late.rep)}`) : f.last_write_ms ? `${fmt.n(f.writes)} writes since start${up > 1 ? ` · ${fmt.si(f.writes / up)}/min on average since then` : ""}` : `since the server started${f.modified_ms ? ` · file changed ${fmt.ago(f.modified_ms)}` : ""}`, f.last_write_ms ? fmt.datetime(f.last_write_ms) : null),
+      tile("Last write", f.last_write_ms ? fmt.ago(f.last_write_ms) : "none", late ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); choose({ kind: "replica", s: late.s, r: late.r }); } }, `${copyName(late.rep.url)} is ${behindText(late.rep)}`) : f.last_write_ms ? (rate?.w != null ? `${fmt.si(rate.w)} writes/min over the ${rate.win} · ${fmt.n(f.writes)} since start` : `${fmt.n(f.writes)} writes since start${cur.kind === "replica" ? "" : " · a minute rate shows once the server measured one"}`) : `since the server started${f.modified_ms ? ` · file changed ${fmt.ago(f.modified_ms)}` : ""}`, f.last_write_ms ? fmt.datetime(f.last_write_ms) : null),
       tile(h("span", { class: "row nw", style: { gap: "6px" } }, "Retrieved", approx()), rd.docs.total ? fmt.pct(rd.docs.coverage ?? 0) : "–", rd.docs.total ? `of documents at least once since each server started · ${fmt.si(rd.docs.total)} retrievals, ${fmt.si(rd.keys.total)} key reads` : data.reads_on === false ? "read counting is off (--no-read-stats)" : `no reads counted since each server started · ${fmt.si(rd.keys.total)} key reads`));
   }
 
@@ -301,7 +309,9 @@ function render(page, r) {
   }
 
   // ---------------------------------------------------------- freshness
-  function drawFresh({ sc, ns: all }) {
+  function drawFresh(cur) {
+    const { sc, ns: all } = cur;
+    const rate = rateOf(cur);
     const f = sc.freshness, now = data.at_ms;
     // At scale a lane a copy is thousands of pixels: the problems and the
     // copies written longest ago, the rest summed up in a line.
@@ -337,10 +347,11 @@ function render(page, r) {
       else svg.append(s("text", { x: X(span / 2), y: y - 6, "text-anchor": "middle" }, n.rep.error ? n.rep.error.slice(0, 60) : "no write since the server started"));
     });
     const times = sc.stats.fields.filter((x) => isTime(x) && x.max != null).sort((a, b) => b.max - a.max)[0];
-    const up = f.started_ms ? (now - f.started_ms) / 60000 : 0;
     clear(fresh, svg, h("div", { class: "ix-facts small" },
       h("span", {}, h("span", { class: "muted" }, "last write "), f.last_write_ms ? fmt.datetime(f.last_write_ms) : "none since start"),
-      h("span", {}, h("span", { class: "muted" }, "writes since start "), fmt.n(f.writes), up > 1 ? ` (${fmt.si(f.writes / up)}/min)` : ""),
+      h("span", {}, h("span", { class: "muted" }, "writes since start "), fmt.n(f.writes)),
+      rate?.w != null ? h("span", {}, h("span", { class: "muted" }, `writes/min, ${rate.win} `), fmt.si(rate.w)) : null,
+      rate?.r != null ? h("span", {}, h("span", { class: "muted" }, `reads/min, ${rate.win} `), fmt.si(rate.r)) : null,
       h("span", {}, h("span", { class: "muted" }, "rows in memory "), fmt.n(sc.stats.docs.in_memory)),
       times ? h("span", {}, h("span", { class: "muted" }, `newest ${times.name} `), showValue(times, times.max)) : null,
       f.started_ms ? h("span", {}, h("span", { class: "muted" }, "counting since "), fmt.datetime(f.started_ms)) : null),

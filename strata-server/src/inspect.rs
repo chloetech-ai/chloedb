@@ -200,9 +200,76 @@ pub const TABLES_EVERY: std::time::Duration = std::time::Duration::from_secs(30)
 /// The window of [`tables`]' writes and reads a minute: 5 minutes.
 pub const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Each table's writes and reads counted at a look of [`tables`], by
-/// table, and when.
-pub type Counts = std::collections::VecDeque<(u64, HashMap<String, (u64, u64)>)>;
+/// A table's writes and reads counted at a look of [`tables`]: of the
+/// cluster, and of each shard by its index.
+#[derive(Clone, Debug, Default)]
+pub struct Look {
+    pub writes: u64,
+    pub reads: u64,
+    pub shards: HashMap<u64, (u64, u64)>,
+}
+
+impl Look {
+    /// The counts of an answer of [`answer`]: its cluster's and each
+    /// shard's (a shard's writes are its primary's, its reads every copy's).
+    fn of(j: &Json) -> Look {
+        let count = |scope: &Json| (scope["freshness"]["writes"].as_u64().unwrap_or(0), scope["reads"]["docs"]["total"].as_u64().unwrap_or(0));
+        let (writes, reads) = count(&j["cluster"]);
+        let shards = j["shards"].as_array().into_iter().flatten().filter_map(|s| Some((s["shard"].as_u64()?, count(&s["scope"])))).collect();
+        Look { writes, reads, shards }
+    }
+}
+
+/// Each table's counts at a look of [`tables`], by table, and when.
+pub type Counts = std::collections::VecDeque<(u64, HashMap<String, Look>)>;
+
+/// How often a server looks at its tables' counts by itself
+/// ([`keep_looking`]), so that the first look of a person has rates.
+pub const LOOK_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The earlier look rates are measured against: the earliest within
+/// [`RATE_WINDOW`] at least 30 s before `now` (older looks are dropped).
+fn earlier(svc: &Service, now: u64) -> Option<(u64, HashMap<String, Look>)> {
+    let mut counts = svc.tables_counts.lock().unwrap_or_else(|e| e.into_inner());
+    counts.retain(|(at, _)| now.saturating_sub(*at) <= RATE_WINDOW.as_millis() as u64);
+    counts.iter().find(|(at, _)| now.saturating_sub(*at) >= 30_000).cloned()
+}
+
+/// A table's writes and reads a minute, of the cluster and of each shard:
+/// its counts `now_look` against the earlier look's, or, servers started
+/// within the window, since they started (`started_ms`). None until a
+/// window of 30 s at least is held; a count that went down (a server
+/// restarted) gives none. -> {window_s, from_ms, writes_per_min,
+/// reads_per_min, shards: {index: {writes_per_min, reads_per_min}}}
+fn rates(then: Option<&(u64, HashMap<String, Look>)>, table: &str, cur: &Look, started_ms: u64, now: u64) -> Json {
+    let since: Option<(u64, Option<&Look>)> = match then {
+        Some((at, c)) => c.get(table).map(|l| (*at, Some(l))),
+        None if started_ms > 0 && now.saturating_sub(started_ms) <= RATE_WINDOW.as_millis() as u64 => Some((started_ms, None)),
+        None => None,
+    };
+    let window_ms = since.map(|(at, _)| now.saturating_sub(at)).filter(|ms| *ms >= 30_000);
+    let per_min = |n: u64, before: Option<u64>| {
+        let (Some(ms), Some(before)) = (window_ms, before) else { return None };
+        n.checked_sub(before).map(|d| (d as f64 / (ms as f64 / 60_000.0) * 10.0).round() / 10.0)
+    };
+    // From a look, its count; from the servers' start, nothing before.
+    let before = |f: &dyn Fn(&Look) -> Option<u64>| since.and_then(|(_, l)| l.map_or(Some(0), f));
+    let shards: serde_json::Map<String, Json> = cur
+        .shards
+        .iter()
+        .map(|(i, (w, r))| {
+            let b = |k: usize| before(&|l: &Look| l.shards.get(i).map(|x| if k == 0 { x.0 } else { x.1 }));
+            (i.to_string(), json!({"writes_per_min": per_min(*w, b(0)), "reads_per_min": per_min(*r, b(1))}))
+        })
+        .collect();
+    json!({
+        "window_s": window_ms.map(|ms| ms / 1000),
+        "from_ms": window_ms.and(since.map(|(at, _)| at)),
+        "writes_per_min": per_min(cur.writes, before(&|l: &Look| Some(l.writes))),
+        "reads_per_min": per_min(cur.reads, before(&|l: &Look| Some(l.reads))),
+        "shards": shards,
+    })
+}
 
 /// Every table's size and traffic: of this server, or on a coordinator of
 /// each shard (its primary's data) and the cluster, with how skewed the
@@ -233,11 +300,7 @@ pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
     // Writes and reads a minute over the last minutes: each table's counts
     // now against those of the earliest look within [`RATE_WINDOW`], at
     // least 30 s ago.
-    let then = {
-        let mut counts = svc.tables_counts.lock().unwrap_or_else(|e| e.into_inner());
-        counts.retain(|(at, _)| now.saturating_sub(*at) <= RATE_WINDOW.as_millis() as u64);
-        counts.iter().find(|(at, _)| now.saturating_sub(*at) >= 30_000).cloned()
-    };
+    let then = earlier(svc, now);
     let mut now_counts = HashMap::new();
     let mut out = Vec::new();
     for t in names {
@@ -252,25 +315,14 @@ pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
         let of = |scope: &Json| (scope["stats"]["docs"]["live"].as_u64().unwrap_or(0), scope["stats"]["bytes"]["total"].as_u64().unwrap_or(0), scope["stats"]["segments"].as_array().map_or(0, |s| s.len()));
         let (docs, bytes, segments) = of(&j["cluster"]);
         let fresh = &j["cluster"]["freshness"];
-        let (writes, reads) = (fresh["writes"].as_u64().unwrap_or(0), j["cluster"]["reads"]["docs"]["total"].as_u64().unwrap_or(0));
-        now_counts.insert(t.clone(), (writes, reads));
-        // Since the earlier look; or, servers started within the window,
-        // since they started. A count that went down (a server restarted)
-        // gives none.
-        let started = fresh["started_ms"].as_u64().unwrap_or(0);
-        let since = match &then {
-            Some((at, c)) => c.get(&t).map(|&(w, r)| (*at, w, r)),
-            None if started > 0 && now.saturating_sub(started) <= RATE_WINDOW.as_millis() as u64 => Some((started, 0, 0)),
-            None => None,
-        };
-        let window_ms = since.map(|(at, _, _)| now.saturating_sub(at)).filter(|ms| *ms >= 30_000);
-        let per_min = |n: u64, before: Option<u64>| {
-            let (Some(ms), Some(before)) = (window_ms, before) else { return None };
-            n.checked_sub(before).map(|d| (d as f64 / (ms as f64 / 60_000.0) * 10.0).round() / 10.0)
-        };
+        let look = Look::of(&j);
+        let rate = rates(then.as_ref(), &t, &look, fresh["started_ms"].as_u64().unwrap_or(0), now);
+        now_counts.insert(t.clone(), look);
+        // Each shard's size, and its writes and reads a minute.
         let shards: Vec<Json> = j["shards"].as_array().into_iter().flatten().map(|s| {
             let (d, b, _) = of(&s["scope"]);
-            json!({"shard": s["shard"], "docs": d, "bytes": b})
+            let r = &rate["shards"][s["shard"].as_u64().unwrap_or(0).to_string()];
+            json!({"shard": s["shard"], "docs": d, "bytes": b, "writes_per_min": r["writes_per_min"], "reads_per_min": r["reads_per_min"]})
         }).collect();
         // The shard furthest over the mean, by documents.
         let skew = (shards.len() > 1).then(|| {
@@ -294,7 +346,7 @@ pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
         }
         out.push(json!({
             "table": t, "docs": docs, "bytes": bytes, "segments": segments, "shards": shards, "skew": skew,
-            "writes_per_min": per_min(writes, since.map(|s| s.1)), "reads_per_min": per_min(reads, since.map(|s| s.2)), "rate_window_s": window_ms.map(|ms| ms / 1000),
+            "writes_per_min": rate["writes_per_min"], "reads_per_min": rate["reads_per_min"], "rate_window_s": rate["window_s"], "rate_from_ms": rate["from_ms"],
             "last_write_ms": fresh["last_write_ms"], "stale": stale,
         }));
     }
@@ -312,9 +364,28 @@ pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
         }
     }
     svc.tables_counts.lock().unwrap_or_else(|e| e.into_inner()).push_back((now, now_counts));
-    let j = json!({"tables": out, "at_ms": now, "cached_s": TABLES_EVERY.as_secs()});
+    // The rates' window, when there is none yet: the next look that can
+    // measure one (30 s after this one).
+    let j = json!({"tables": out, "at_ms": now, "cached_s": TABLES_EVERY.as_secs(), "rate_window_max_s": RATE_WINDOW.as_secs(), "look_every_s": LOOK_EVERY.as_secs()});
     *kept = Some((std::time::Instant::now(), j.clone()));
     Ok(j)
+}
+
+/// Looks at every table's counts each [`LOOK_EVERY`] while the service
+/// lives ([`tables`]: one call to each copy a table, no document
+/// sampled), so that a person's first look has rates over the last
+/// minutes rather than none.
+pub fn keep_looking(svc: &Arc<Service>) {
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(LOOK_EVERY);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            let Some(svc) = svc.upgrade() else { return };
+            let _ = tables(&svc).await;
+        }
+    });
 }
 
 /// Keeps each table's size in the log store's `tables`, an hour apart
@@ -341,10 +412,12 @@ pub async fn answer(svc: &Arc<Service>, a: Asked) -> Result<Json, ApiError> {
         Backend::Local(_) => {
             let n = node(svc, &a).await?;
             let part = Part::of(&n, None)?;
-            Ok(json!({
+            let mut j = json!({
                 "role": "server", "table": n["table"], "server_role": n["role"], "reads_on": reads_on,
                 "cluster": part.json(a.top), "shards": [], "sample": a.sample, "at_ms": telemetry::now_ms(), "took_ms": t0.elapsed().as_secs_f64() * 1e3,
-            }))
+            });
+            j["rates"] = rates_now(svc, &j);
+            Ok(j)
         }
         Backend::Cluster(c) => {
             let schema = match &a.table {
@@ -414,12 +487,22 @@ pub async fn answer(svc: &Arc<Service>, a: Asked) -> Result<Json, ApiError> {
                 });
             }
             let cluster = cluster.unwrap_or(Part { stats: None, reads: TableReads::default(), fresh: Fresh::default(), copies: 0 });
-            Ok(json!({
+            let mut j = json!({
                 "role": "coordinator", "table": schema.table, "reads_on": reads_on,
                 "cluster": cluster.json(a.top), "shards": shards, "sample": a.sample, "at_ms": telemetry::now_ms(), "took_ms": t0.elapsed().as_secs_f64() * 1e3,
-            }))
+            });
+            j["rates"] = rates_now(svc, &j);
+            Ok(j)
         }
     }
+}
+
+/// An answer's writes and reads a minute, over the same window as
+/// [`tables`]' (the drill-down and the list agree).
+fn rates_now(svc: &Service, j: &Json) -> Json {
+    let now = telemetry::now_ms();
+    let table = j["table"].as_str().unwrap_or_default();
+    rates(earlier(svc, now).as_ref(), table, &Look::of(j), j["cluster"]["freshness"]["started_ms"].as_u64().unwrap_or(0), now)
 }
 
 /// A shard's replicas' answers to a coordinator's inspection.

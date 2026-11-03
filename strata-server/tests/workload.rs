@@ -105,6 +105,51 @@ async fn points_tell_server_failures_from_the_client_s() {
     assert!(metrics.contains("outcome=\"client_error\"} 1"), "{metrics}");
 }
 
+/// A shard's part that runs to its client's own deadline (the coordinator
+/// says so in the call's metadata) and passes it is the client's deadline
+/// there too: counted as one and logged as a warning, not as the shard's
+/// failure (L7). Without the coordinator's word, the shard's own timeout.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shard_counts_its_client_s_deadline_as_the_client_s() {
+    // The process's lines, kept as strata-server keeps them.
+    let _ = strata_server::obs::init_logs("info", strata_server::obs::LogFormat::Text);
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(service(open(dir.path(), "part.strata")));
+    let base = http(svc.clone()).await;
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+    tokio::spawn(server::serve_grpc(svc.clone(), l, Default::default()));
+    let mut c = strata_server::pb::strata_client::StrataClient::connect(url).await.unwrap();
+    // The sample the next point counts from.
+    svc.series.add(svc.sample());
+    let part = |clients: bool| {
+        let mut r = tonic::Request::new(strata_server::pb::QueryRequest { sql: JOIN.into(), timeout_ms: 1, shard: true, ..Default::default() });
+        r.metadata_mut().insert(strata_server::obs::HEADER, (if clients { "l7-clients" } else { "l7-own" }).parse().unwrap());
+        if clients {
+            r.metadata_mut().insert(strata_server::service::CLIENT_DEADLINE, "client".parse().unwrap());
+        }
+        r
+    };
+    let e = c.query(part(true)).await.unwrap_err();
+    assert_eq!(e.code(), tonic::Code::DeadlineExceeded, "{e}");
+    let recent = get(&base, "/v1/queries/recent?limit=1").await;
+    assert_eq!(recent["queries"][0]["outcome"], "client_deadline", "{recent}");
+    let p = point(&svc);
+    assert_eq!((p["query_errors"].as_u64(), p["client_deadlines"].as_u64()), (Some(0), Some(1)), "{p}");
+    let logs = get(&base, "/v1/logs?level=warn&request=l7-clients").await;
+    let lines = logs["lines"].as_array().unwrap();
+    assert!(lines.iter().any(|l| l["level"] == "warn" && l["message"].as_str().is_some_and(|m| m.contains("the client's own deadline passed"))), "{logs}");
+    assert!(!lines.iter().any(|l| l["level"] == "error"), "{logs}");
+
+    // Without it: the shard's own timeout, a failure it logs.
+    let e = c.query(part(false)).await.unwrap_err();
+    assert_eq!(e.code(), tonic::Code::DeadlineExceeded, "{e}");
+    let recent = get(&base, "/v1/queries/recent?limit=1").await;
+    assert_eq!(recent["queries"][0]["outcome"], "timeout", "{recent}");
+    let logs = get(&base, "/v1/logs?level=error&request=l7-own").await;
+    assert!(logs["lines"].as_array().unwrap().iter().any(|l| l["level"] == "error"), "{logs}");
+}
+
 async fn call(method: reqwest::Method, base: &str, path: &str, key: &str, headers: &[(&str, &str)], body: Option<Json>) -> (u16, Json) {
     let mut r = strata_server::http_client().build().unwrap().request(method, format!("{base}{path}")).bearer_auth(key);
     for (k, v) in headers {
@@ -304,6 +349,7 @@ async fn running_queries_are_grouped_cancelled_and_contained() {
     let e = audit["entries"].as_array().unwrap().iter().find(|e| e["route"] == "/v1/queries" && e["method"] == "DELETE" && e["detail"].as_str().is_some_and(|d| d.starts_with("cancelled 3"))).expect("audited");
     assert_eq!(e["reason"], "a runaway join", "{e}");
     assert_eq!(e["before"]["queries"].as_array().unwrap().len(), 3, "{e}");
+    assert!(audit["entries"].as_array().unwrap().iter().any(|e| e["detail"].as_str().is_some_and(|d| d.starts_with("cancelled 1 running query of") || d.starts_with("cancelled 1 running query:"))), "one query, said so: {audit}");
     drop((held, other));
 
     // Refused for a second: this statement from reports-batch.

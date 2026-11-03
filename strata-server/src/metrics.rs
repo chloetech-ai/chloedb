@@ -121,11 +121,99 @@ struct Inner {
 pub struct Metrics {
     inner: Mutex<Inner>,
     started: SystemTime,
+    /// What [`Metrics::routes`] counts, a minute apart (an hour apart past
+    /// [`KEEP_MINUTES`]), so that it answers for a window.
+    kept: Mutex<std::collections::VecDeque<(u64, std::sync::Arc<Counts>)>>,
 }
 
 impl Default for Metrics {
     fn default() -> Metrics {
-        Metrics { inner: Mutex::default(), started: SystemTime::now() }
+        Metrics { inner: Mutex::default(), started: SystemTime::now(), kept: Mutex::default() }
+    }
+}
+
+/// How long the counts of [`Metrics::routes`] are kept a minute apart;
+/// an hour apart after that, up to [`KEEP_HOURS`].
+const KEEP_MINUTES: u64 = 6 * 60;
+const KEEP_HOURS: u64 = 7 * 24;
+
+/// A histogram's counts per bucket (and past every bound), sum and count.
+type Hist = (Vec<u64>, f64, u64);
+
+/// What [`Metrics::routes`] counts, at one time.
+#[derive(Clone, Default)]
+struct Counts {
+    http: BTreeMap<(String, u16), u64>,
+    http_seconds: BTreeMap<String, Hist>,
+    queries: BTreeMap<(&'static str, &'static str), u64>,
+    query_seconds: BTreeMap<&'static str, Hist>,
+    admission: Hist,
+}
+
+impl Counts {
+    fn of(m: &Inner) -> Counts {
+        let hist = |h: &Histogram| (h.counts(), h.sum, h.n);
+        Counts {
+            http: m.http.clone(),
+            http_seconds: m.http_seconds.iter().map(|(k, h)| (k.clone(), hist(h))).collect(),
+            queries: m.queries.clone(),
+            query_seconds: m.query_seconds.iter().map(|(k, h)| (*k, hist(h))).collect(),
+            admission: hist(&m.admission_seconds),
+        }
+    }
+
+    /// These counts less `base`'s (an earlier time's): what happened between.
+    fn since(&self, base: &Counts) -> Counts {
+        fn h(a: &Hist, b: Option<&Hist>) -> Hist {
+            let Some(b) = b else { return a.clone() };
+            (a.0.iter().enumerate().map(|(i, n)| n.saturating_sub(b.0.get(i).copied().unwrap_or(0))).collect(), (a.1 - b.1).max(0.0), a.2.saturating_sub(b.2))
+        }
+        Counts {
+            http: self.http.iter().map(|(k, n)| (k.clone(), n.saturating_sub(base.http.get(k).copied().unwrap_or(0)))).filter(|(_, n)| *n > 0).collect(),
+            http_seconds: self.http_seconds.iter().map(|(k, x)| (k.clone(), h(x, base.http_seconds.get(k)))).filter(|(_, x)| x.2 > 0).collect(),
+            queries: self.queries.iter().map(|(k, n)| (*k, n.saturating_sub(base.queries.get(k).copied().unwrap_or(0)))).filter(|(_, n)| *n > 0).collect(),
+            query_seconds: self.query_seconds.iter().map(|(k, x)| (*k, h(x, base.query_seconds.get(k)))).filter(|(_, x)| x.2 > 0).collect(),
+            admission: h(&self.admission, Some(&base.admission)),
+        }
+    }
+
+    /// As [`Metrics::routes`] answers.
+    fn json(&self) -> serde_json::Value {
+        use crate::telemetry::quantile;
+        let mut by: BTreeMap<&str, (u64, u64, u64)> = BTreeMap::new();
+        for ((route, status), &n) in &self.http {
+            let e = by.entry(route.as_str()).or_default();
+            e.0 += n;
+            if (400..500).contains(status) {
+                e.1 += n;
+            }
+            if *status >= 500 {
+                e.2 += n;
+            }
+        }
+        let routes: Vec<serde_json::Value> = by
+            .into_iter()
+            .map(|(route, (n, c4, c5))| {
+                let h = self.http_seconds.get(route);
+                let p99 = h.and_then(|h| quantile(&BUCKETS, &h.0, 0.99)).map(|s| s * 1e3);
+                let mean = h.map(|h| h.1 / h.2.max(1) as f64 * 1e3);
+                serde_json::json!({"route": route, "requests": n, "client_errors": c4, "server_errors": c5, "mean_ms": mean, "p99_ms": p99})
+            })
+            .collect();
+        let kinds: Vec<serde_json::Value> = self
+            .query_seconds
+            .iter()
+            .map(|(kind, h)| {
+                let by: serde_json::Map<String, serde_json::Value> = self.queries.iter().filter(|((k, _), _)| k == kind).map(|((_, o), n)| (o.to_string(), serde_json::json!(n))).collect();
+                serde_json::json!({
+                    "kind": kind, "queries": h.2, "outcomes": by, "mean_ms": h.1 / h.2.max(1) as f64 * 1e3,
+                    "p50_ms": quantile(&BUCKETS, &h.0, 0.5).map(|s| s * 1e3),
+                    "p99_ms": quantile(&BUCKETS, &h.0, 0.99).map(|s| s * 1e3),
+                    "hist": h.0,
+                })
+            })
+            .collect();
+        serde_json::json!({"http": routes, "kinds": kinds, "buckets_s": BUCKETS, "admission_p99_ms": quantile(&BUCKETS, &self.admission.0, 0.99).map(|s| s * 1e3)})
     }
 }
 
@@ -277,9 +365,33 @@ impl Metrics {
         serde_json::json!({ "queries": by_kind, "writes": m.writes, "written_docs": m.written_docs, "write_errors": write_errors, "rejected": m.rejected, "agent_runs": m.agent_runs })
     }
 
+    /// Keeps what [`Metrics::routes`] counts, once a minute (the series'
+    /// sampler calls [`Metrics::totals`] every few seconds).
+    fn keep(&self, m: &Inner) {
+        let now = crate::telemetry::now_ms();
+        let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+        if kept.back().is_some_and(|(t, _)| now / 60_000 == t / 60_000) {
+            return;
+        }
+        kept.push_back((now, std::sync::Arc::new(Counts::of(m))));
+        // Past KEEP_MINUTES, the first of each hour; past KEEP_HOURS, none.
+        let mut hour = None;
+        kept.retain(|(t, _)| {
+            let age = now.saturating_sub(*t) / 60_000;
+            if age <= KEEP_MINUTES {
+                return true;
+            }
+            let h = t / 3_600_000;
+            let first = hour != Some(h);
+            hour = Some(h);
+            first && age <= KEEP_HOURS * 60
+        });
+    }
+
     /// The counters a sample of the series takes ([`crate::telemetry::Sample`]).
     pub fn totals(&self, s: &mut crate::telemetry::Sample) {
         let m = self.inner();
+        self.keep(&m);
         for (&(kind, outcome), &n) in &m.queries {
             s.queries += n;
             *s.by_kind.entry(kind).or_default() += n;
@@ -315,6 +427,31 @@ impl Metrics {
         s.write_errors = m.write_errors.values().sum();
         s.write_hist = m.write_seconds.counts();
         s.slow = m.slow.values().sum();
+    }
+
+    /// [`Metrics::routes`] of the window `[from, to)` (ms): the counts
+    /// at its end less those at its start, as kept a minute apart (an hour
+    /// apart past 6 hours). `held_from_ms` says where the counts begin when
+    /// that is later than `from` (the server started, or kept no older).
+    pub fn routes_between(&self, from: u64, to: u64) -> serde_json::Value {
+        let now = crate::telemetry::now_ms();
+        let started = self.started.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        let current = Counts::of(&self.inner());
+        let kept: Vec<(u64, std::sync::Arc<Counts>)> = self.kept.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
+        let zero = Counts::default();
+        // The start: the latest kept at or before `from`; the server's start
+        // when it began after `from`; else the oldest kept.
+        let (held_from, base): (u64, &Counts) = match kept.iter().rev().find(|(t, _)| *t <= from) {
+            Some((t, c)) => (*t, c),
+            None if started + 60_000 >= from || kept.is_empty() => (started, &zero),
+            None => (kept[0].0, &kept[0].1),
+        };
+        let end: &Counts = if to + 30_000 >= now { &current } else { kept.iter().find(|(t, _)| *t >= to).map_or(&current, |(_, c)| c) };
+        let mut j = end.since(base).json();
+        j["from_ms"] = serde_json::json!(from);
+        j["to_ms"] = serde_json::json!(to.min(now));
+        j["held_from_ms"] = serde_json::json!(held_from.max(from));
+        j
     }
 
     /// Requests by route: how many, how many failed (4xx and 5xx), and
@@ -503,5 +640,33 @@ mod tests {
         assert!(text.contains("strata_query_admission_wait_seconds_count 0"), "{text}");
         assert!(text.contains("strata_x{table=\"a\"} 2"), "{text}");
         assert!(text.contains("process_cpu_seconds_total "), "{text}");
+    }
+
+    /// Routes and kinds over a window count only what happened in it.
+    #[test]
+    fn routes_of_a_window_count_what_happened_in_it() {
+        let m = Metrics::default();
+        m.http("/v1/query", 200, 0.01);
+        m.query("bm25", "ok", 0.01);
+        m.totals(&mut crate::telemetry::Sample::default());
+        // That minute's counts, as if 10 minutes ago.
+        let then = {
+            let mut k = m.kept.lock().unwrap();
+            k[0].0 -= 600_000;
+            k[0].0
+        };
+        m.http("/v1/query", 500, 2.0);
+        m.http("/v1/query", 200, 0.01);
+        m.query("bm25", "error", 2.0);
+        let now = crate::telemetry::now_ms();
+        let w = m.routes_between(then + 1_000, now);
+        let q = w["http"].as_array().unwrap().iter().find(|r| r["route"] == "/v1/query").cloned().unwrap();
+        assert_eq!((q["requests"].as_u64(), q["server_errors"].as_u64()), (Some(2), Some(1)), "{w}");
+        assert_eq!((w["kinds"][0]["queries"].as_u64(), w["kinds"][0]["outcomes"]["error"].as_u64(), w["kinds"][0]["outcomes"].get("ok")), (Some(1), Some(1), None), "{w}");
+        assert_eq!(w["held_from_ms"].as_u64(), Some(then + 1_000), "{w}");
+        // Before anything was kept: since the server started.
+        let all = m.routes_between(0, now);
+        assert_eq!(all["http"][0]["requests"].as_u64(), Some(3), "{all}");
+        assert_eq!(m.routes()["http"][0]["requests"].as_u64(), Some(3));
     }
 }

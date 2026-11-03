@@ -64,6 +64,28 @@ tokio::task_local! {
 pub struct Deadline {
     asked_ms: std::cell::Cell<Option<u64>>,
     passed: std::cell::Cell<bool>,
+    /// A shard's part whose deadline is the client's own, as the
+    /// coordinator says ([`CLIENT_DEADLINE`]).
+    clients: bool,
+}
+
+/// The gRPC metadata by which a coordinator says that a shard's part runs
+/// to its client's own deadline (`timeout_ms` below the server's default),
+/// so that the shard counts and logs a deadline that passes as the
+/// client's, not as its own failure.
+pub const CLIENT_DEADLINE: &str = "x-strata-deadline";
+
+impl Deadline {
+    /// A shard's part's deadline, its client's own when `clients`.
+    pub fn of_part(clients: bool) -> Deadline {
+        Deadline { clients, ..Default::default() }
+    }
+}
+
+/// Whether the shard's part being served runs to its client's own
+/// deadline ([`CLIENT_DEADLINE`]).
+pub fn part_of_clients_deadline() -> bool {
+    DEADLINE.try_with(|d| d.clients).unwrap_or(false)
 }
 
 tokio::task_local! {
@@ -2248,7 +2270,7 @@ impl Service {
             caller: telemetry::caller(),
             params: telemetry::params_json(&req.params),
             deadline_ms: deadline.as_millis() as u64,
-            client_deadline: !req.shard && req.timeout_ms > 0 && deadline < self.timeout,
+            client_deadline: (!req.shard || part_of_clients_deadline()) && req.timeout_ms > 0 && deadline < self.timeout,
         }
     }
 
@@ -3590,7 +3612,7 @@ impl Service {
         });
         json!({
             "health": health, "load": load, "minute": minute,
-            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores},
+            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores, "memory_limit_bytes": strata::storage::memory_limit()},
             "running": self.live.len(), "log_store": log_store,
             // core: what a coordinator's /v1/cluster shows of each copy.
             "capability": self.capability(),
