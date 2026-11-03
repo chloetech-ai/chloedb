@@ -1530,11 +1530,8 @@ async fn a_write_applied_as_its_primary_hands_over_is_answered_in_doubt() {
     let file = |name: &str| replication::file_of(&dir.path().join(name));
     let (pdb, r1db) = (create(dir.path(), "p.strata"), create(dir.path(), "r1.strata"));
     let (r1, u1) = replica(r1db.clone(), Some(&file("r1.strata"))).await;
-    // Two copies: r1 is elected with the primary's vote alone. No
-    // heartbeat is due meanwhile: one that met r1's vote for itself would
-    // tell the primary of term 2 before r1 asks for its vote.
-    let opts = PrimaryOptions { heartbeat: Duration::from_secs(60), ..ships_to(&[&u1], Acks::All) };
-    let p = primary(pdb.clone(), Some(&file("p.strata")), opts, Duration::from_secs(10));
+    // Two copies: r1 is elected with the primary's vote alone.
+    let p = primary(pdb.clone(), Some(&file("p.strata")), ships_to(&[&u1], Acks::All), Duration::from_secs(10));
     let up = grpc(p.clone()).await;
     p.write_ops(vec![set("p0000001", "sold", json!(1))], None).await.unwrap();
     until("the replica holds the write", || async { last(&r1db) == 1 }).await;
@@ -1631,7 +1628,7 @@ async fn a_handover_while_writes_go_on_is_granted() {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let a = to.promote(&Principal::open(), voters, Acks::All, false).await.unwrap_or_else(|e| panic!("handover {round}: {}", e.message));
         assert_eq!(a["term"], json!(round + 2), "{a}");
-        assert_eq!(from.role(), pb::Role::Replica, "handover {round}: the old primary voted, and stepped down");
+        assert_eq!(from.role(), pb::Role::Replica, "handover {round}: the old primary voted, and stepped down: {a}");
         until("the new primary's copies are in sync", || in_sync(to.clone())).await;
     }
     stop.store(true, Ordering::Relaxed);
@@ -1645,6 +1642,50 @@ async fn a_handover_while_writes_go_on_is_granted() {
             let sold = db.query(&format!("SELECT sold FROM products WHERE id = '{id}'"), &Params::new()).unwrap().rows[0][0].clone();
             assert_eq!(sold, Value::Int(i as i64), "{id}");
         }
+    }
+}
+
+/// A handover is granted however often the primary calls the candidate.
+/// The candidate keeps its vote for itself before it asks for the
+/// primary's, and a call of the primary it answered in between told the
+/// primary the new term, which a primary that knows refuses a vote in:
+/// with two copies, the shard was left with no primary (the old one
+/// fenced, the candidate not elected). So the candidate asks the primary
+/// first, and answers none of its calls until the primary voted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_handover_is_granted_while_its_primary_calls_the_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = |name: &str| replication::file_of(&dir.path().join(name));
+    let (pdb, r1db) = (create(dir.path(), "p.strata"), create(dir.path(), "r1.strata"));
+    // Either copy, as the primary, calls the other every millisecond.
+    let often = |to: &[&str]| PrimaryOptions { heartbeat: Duration::from_millis(1), ..ships_to(to, Acks::All) };
+    let r1 = {
+        let mut svc = service(r1db.clone(), Duration::from_secs(10));
+        svc.set_replication(Replication::Replica(Arc::new(Follow::open(r1db.clone(), Some(&file("r1.strata"))).unwrap())));
+        svc.promote_options = Some(often(&[]));
+        Arc::new(svc)
+    };
+    let u1 = grpc(r1.clone()).await;
+    let p = {
+        let mut svc = service(pdb.clone(), Duration::from_secs(10));
+        svc.set_replication(Replication::Primary(Primary::start(pdb.clone(), Some(&file("p.strata")), often(&[&u1])).unwrap()));
+        svc.promote_options = Some(often(&[]));
+        Arc::new(svc)
+    };
+    let up = grpc(p.clone()).await;
+    p.write_ops(vec![set("p0000001", "sold", json!(1))], None).await.unwrap();
+    until("the replica holds the write", || async { last(&r1db) == 1 }).await;
+
+    for round in 0..20u64 {
+        let (to, voter, from) = match round % 2 {
+            0 => (&r1, &up, &p),
+            _ => (&p, &u1, &r1),
+        };
+        let a = to.promote(&Principal::open(), vec![voter.clone()], Acks::All, false).await.unwrap_or_else(|e| panic!("handover {round}: {}", e.message));
+        assert_eq!(a["term"], json!(round + 2), "{a}");
+        assert_eq!(from.role(), pb::Role::Replica, "handover {round}: the old primary voted, and stepped down: {a}");
+        let w = to.write_ops(vec![set("p0000001", "sold", json!(round))], None).await.unwrap();
+        assert_eq!(w.seq_no, Some(round + 2));
     }
 }
 

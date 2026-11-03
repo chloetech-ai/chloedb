@@ -5,7 +5,7 @@
 // copies, nodes, tables, statements, alerts and keys, and the shortcuts.
 
 import { h, icon, clear, store, bus, api, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink } from "./core.js";
-import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, fresh, clusterName, environment, isCoordinator } from "./data.js";
+import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, setPolls, overnight } from "./data.js";
 import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
 
 const app = document.getElementById("app");
@@ -48,12 +48,22 @@ function switchTo(url) {
   try { const u = new URL(url, location.href); remember(u.origin, null, null); location.href = u.origin + "/#/home"; }
   catch { toast("That is not an address: " + url, "bad"); }
 }
-brand.onclick = () => {
+// The other coordinators of this cluster: those its shards heard from in
+// the last minute (GET /v1/coordinators), else those fleet health lists.
+let peers = { at: 0, list: null };
+async function otherCoordinators() {
+  if (Date.now() - peers.at > 10e3) {
+    try { const j = await api("/v1/coordinators", { timeout: 3000 }); peers = { at: Date.now(), list: j.coordinators || [] }; }
+    catch { peers = { at: Date.now(), list: null }; }
+  }
+  return peers.list || state.fleet?.coordinators || [];
+}
+brand.onclick = async () => {
   const here = location.origin;
-  const coords = (state.fleet?.coordinators || []).filter((c) => c.url && !c.this && !sameOrigin(c.url, here));
+  const coords = (await otherCoordinators()).filter((c) => c.url && !c.this && !sameOrigin(c.url, here));
   const recent = (store.get(RECENT, []) || []).filter((x) => x.url !== here && !coords.some((c) => sameOrigin(c.url, x.url)));
   const items = [{ label: `${clusterName() || location.host}${environment() ? " · " + environment() : ""} · here`, icon: "check", onclick: () => {} }];
-  if (coords.length) { items.push("-"); for (const c of coords) items.push({ label: `${c.name || hostOf(c.url)} · same cluster`, icon: "node", onclick: () => switchTo(c.url) }); }
+  if (coords.length) { items.push("-"); for (const c of coords) items.push({ label: `${c.name || hostOf(c.url)} · same cluster${c.name && c.name !== hostOf(c.url) ? " · " + hostOf(c.url) : ""}`, icon: "node", onclick: () => switchTo(c.url) }); }
   if (recent.length) { items.push("-"); for (const r of recent.slice(0, 8)) items.push({ label: `${r.name || hostOf(r.url)}${r.env ? " · " + r.env : ""} · ${fmt.ago(r.at)}`, icon: "clock", onclick: () => switchTo(r.url) }); }
   items.push("-", { label: "Open another coordinator…", icon: "plus", onclick: askCoordinator });
   menu(brand, items);
@@ -116,9 +126,9 @@ function labItem(e, pinned) {
   return a;
 }
 
-// Badges: a view's own badge(), else what the shell knows. Alerts and the
-// bell show one count: the alerts firing now that nobody silenced.
-const firingNow = () => firingAlerts().filter((a) => !a.silenced);
+// Badges: a view's own badge(), else what the shell knows. Alerts, the
+// bell and Home show one count: the alerts firing now that nobody
+// silenced (firingNow).
 function shellBadge(id) {
   if (id === "home") { const f = state.fleet; if (!f) return null; const n = (f.problems || []).length; return n ? { n, tone: f.status === "critical" ? "crit" : "warn", title: `${fmt.plural(n, "problem")} on Home` } : null; }
   if (id === "alerts") { const fa = firingNow(); const n = fa.length; return n ? { n, tone: fa.some((a) => a.severity === "critical") ? "crit" : "warn", title: `${fmt.plural(n, "alert")} firing` } : null; }
@@ -278,11 +288,25 @@ function drawWho() {
   const w = state.whoami;
   whoBtn.querySelector("span").textContent = w ? `${w.name} · ${w.scope}` : hasToken() ? "key refused" : "signed out";
 }
+/**
+ * The crumb: the view's title (a view without a heading of its own), and
+ * the cluster's name, which the sidebar shows too but a phone hides. When
+ * the view's heading names it, the crumb shows only the cluster.
+ */
+function drawCrumbs(v = current) {
+  if (!v) return;
+  const title = currentEntry?.title || v.title;
+  const name = clusterName() || location.host;
+  clear(crumbs, icon(currentEntry?.icon || v.icon), h("span", { class: "ctitle" }, title), h("span", { class: "csep", "aria-hidden": "true" }, "·"), h("span", { class: "cname", title: `${name}${environment() ? " (" + environment() + ")" : ""}` }, name), v.sub ? h("span", { class: "sub" }, "· " + v.sub) : null);
+  crumbs.title = `${title} on ${name}`;
+}
 function drawCluster() {
   const name = clusterName(), env = environment();
   const c = state.cluster;
   const coords = state.fleet?.coordinators?.length || null;
   brandName.textContent = name || location.host;
+  const cn = crumbs.querySelector(".cname");
+  if (cn && cn.textContent !== (name || location.host)) drawCrumbs();
   const shards = c?.shards?.length;
   brandSub.textContent = [env || null, coords > 1 ? fmt.plural(coords, "coordinator") : shards != null ? fmt.plural(shards, "shard") : state.health && !isCoordinator() ? "one server" : null].filter(Boolean).join(" · ") || (state.health ? "environment not set" : "connecting…");
   brand.title = `${name || "This server"}${env ? " (" + env + ")" : ", environment not set"} at ${location.host}. Click for its other coordinators and the ones you used`;
@@ -298,7 +322,6 @@ bus.on("whoami", () => { drawWho(); drawCluster(); });
 for (const ev of ["cluster", "fleet", "health"]) bus.on(ev, drawCluster);
 
 // ---------------------------------------------------------------- a window, picked
-function overnight() { const d = new Date(); d.setHours(8, 0, 0, 0); if (d > Date.now()) d.setDate(d.getDate() - 1); return [d.getTime() - 14 * 3600e3, d.getTime()]; }
 function pickWindow() {
   const r = timeRange();
   const loc = (ms) => new Date(ms - new Date(ms).getTimezoneOffset() * 60e3).toISOString().slice(0, 16);
@@ -367,6 +390,10 @@ function markCurrent() {
   const id = currentEntry?.parent || currentEntry?.id;
   for (const a of nav.querySelectorAll("a[data-view]")) { if (a.dataset.view === id) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); }
 }
+// The views that show each copy's numbers (they read the cluster's per-copy
+// detail) and the ones that show alerts; the others poll less (SH-11).
+const COPY_NUMBERS = new Set(["home", "cluster", "rollout", "system", "statement", "performance", "profile", "alerts", "autoscale"]);
+const ALERTS_SHOWN = new Set(["home", "alerts", "timeline", "logs", "statement"]);
 function route() {
   openNav(false);
   const r = parse();
@@ -376,19 +403,26 @@ function route() {
   markCurrent();
   // A view with no time axis (the SQL workbench, Schema, Labs) hides the range and Live.
   top.classList.toggle("no-range", v.range === false);
+  // What it needs polled: no series without a time axis; the cluster in
+  // full only where copies' numbers show, the alerts every 5 s only where
+  // they show (SH-11).
+  setPolls({ cluster: v.cluster || (COPY_NUMBERS.has(v.id) ? "full" : "brief"), alerts: ALERTS_SHOWN.has(v.id) ? "full" : "slow", series: v.range !== false });
   moreBtn.querySelector("svg").replaceWith(icon(v.range === false ? "dots" : "clock"));
   if (unknown && unknown !== "home") toast(`There is no view "${unknown}": this is Home`);
   if (current === v && v.onParams) { v.onParams(r); return; }
   try { cleanup?.(); } catch (err) { console.error(err); }
   current = v;
-  const title = currentEntry.title || v.title;
-  clear(crumbs, icon(currentEntry.icon || v.icon), h("span", { class: "ttl" }, title), v.sub ? h("span", { class: "sub" }, "· " + v.sub) : null);
+  drawCrumbs(v);
   drawCluster();
   const page = h("div", { class: "page" + (v.full ? " full" : "") });
   if (v.full) page.style.cssText = "padding:0;max-width:none";
   clear(content, page);
   content.scrollTop = 0;
   try { cleanup = v.render(page, r) || null; } catch (err) { console.error(err); page.append(h("div", { class: "error" }, "This view failed: " + err.message)); }
+  // A view that names itself in its own heading leaves the crumb to the cluster (SH-12).
+  const titled = () => !!page.querySelector(".page-head h1");
+  crumbs.classList.toggle("titled", titled());
+  setTimeout(() => { if (current === v) crumbs.classList.toggle("titled", titled()); }, 800);
   if (cleanup && typeof cleanup === "object" && typeof cleanup.stop === "function") { const o = cleanup; cleanup = () => o.stop(); }
   if (typeof cleanup !== "function") cleanup = null;
 }

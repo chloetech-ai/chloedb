@@ -7,7 +7,7 @@
 
 import { h, icon, clear, fmt, card, every, api, empty, bus, seg, store, tipOn, drawer, link, when, whenTitle, span, copyName, copyTitle, copy, timeEl, isPhone, logsLink } from "../core.js";
 import { timeChart, sparkline, SERIES } from "../charts.js";
-import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingAlerts, clusterName, environment, rangeParams, shardState } from "../data.js";
+import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingNow, clusterName, environment, rangeParams, rangeSince, isPast, shardState } from "../data.js";
 
 export default { id: "home", title: "Home", icon: "overview", group: "Operate", keywords: "overview home fleet health status incident banner problems slo where capacity coordinators affected dashboard morning check", render, badge };
 
@@ -25,6 +25,8 @@ const sloP99 = () => check("p99")?.slo_ms ?? SLO_P99;
 const median = (xs) => { const v = xs.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : null; };
 const pctTxt = (v) => v == null ? "–" : v < 0.001 && v > 0 ? "<0.1%" : fmt.pct(v, v < 0.1 ? 2 : 1);
 const durTxt = (ms) => ms == null ? "" : fmt.dur(Math.max(0, (Date.now() - ms) / 1000)).replace(/ 0s$/, "");
+/** A span in words: "45 s", "6 min", "2 h 5 min". */
+const durOf = (ms) => { const s = Math.round(ms / 1000); if (s < 90) return `${s} s`; const m = Math.round(s / 60); return m < 90 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`; };
 
 // ---------------------------------------------------------------- the fleet, copy by copy
 /** Every shard with its copies' numbers, from /v1/cluster. */
@@ -92,18 +94,31 @@ function shardCell(s, lens) {
 const stText = (st) => ({ ok: "serves reads and writes", degraded: "a copy is down; it still serves", no_reads: "serves no reads", no_writes: "takes no writes", down: "does not answer" })[st] || st;
 
 // ---------------------------------------------------------------- the view
-function render(page) {
+function render(page, r0) {
   const head = h("div", { class: "page-head" });
   const banner = h("div", { class: "banner home-banner" });
   const kpiRow = h("div", { class: "grid g6 home-kpis" });
   page.append(head, banner, kpiRow);
 
   // Where, and the problems.
-  let lens = store.get("home.lens", "health"), group = store.get("home.group", "shard");
+  // The lens and grouping come from the link first, so a shared link shows what its sender saw (SH-3).
+  const LENSES = ["health", "p99", "errors", "disk", "lag"], GROUPS = ["shard", "node", "zone"];
+  const fromUrl = (k, ok) => { const v = r0?.params?.get(k); return ok.includes(v) ? v : null; };
+  let lens = fromUrl("lens", LENSES) || store.get("home.lens", "health"), group = fromUrl("group", GROUPS) || store.get("home.group", "shard");
+  const writeHash = () => {
+    const raw = location.hash.replace(/^#\/?/, ""), [path, q] = raw.split("?");
+    if (path && path !== "home") return;
+    const ps = new URLSearchParams(q || "");
+    if (lens !== "health") ps.set("lens", lens); else ps.delete("lens");
+    if (group !== "shard") ps.set("group", group); else ps.delete("group");
+    const next = "#/home" + (ps.toString() ? "?" + ps : "");
+    if (next !== location.hash) { try { history.replaceState(null, "", location.pathname + location.search + next); } catch { /* old browser */ } }
+  };
+  writeHash();
   const whereBody = h("div", { class: "home-where" });
   const whereSub = h("span", { class: "sub" });
-  const lensSeg = seg([["health", "Health"], ["p99", "p99"], ["errors", "Errors"], ["disk", "Disk"], ["lag", "Lag"]], lens, (v) => { lens = v; store.set("home.lens", v); drawWhere(); }, { "aria-label": "Colour by" });
-  const groupSeg = seg([["shard", "Shard"], ["node", "Node"], ["zone", "Zone"]], group, (v) => { group = v; store.set("home.group", v); drawWhere(); }, { "aria-label": "Group by" });
+  const lensSeg = seg([["health", "Health"], ["p99", "p99"], ["errors", "Errors"], ["disk", "Disk"], ["lag", "Lag"]], lens, (v) => { lens = v; store.set("home.lens", v); writeHash(); drawWhere(); }, { "aria-label": "Colour by" });
+  const groupSeg = seg([["shard", "Shard"], ["node", "Node"], ["zone", "Zone"]], group, (v) => { group = v; store.set("home.group", v); writeHash(); drawWhere(); }, { "aria-label": "Group by" });
   const whereCard = h("section", { class: "card span2 home-wherecard" },
     h("div", { class: "hd" }, h("h3", {}, "Where"), whereSub, h("div", { class: "tools" }, lensSeg, groupSeg, h("a", { class: "btn ghost sm", href: link("cluster") }, "Cluster", icon("right")))),
     h("div", { class: "bd" }, whereBody));
@@ -173,10 +188,13 @@ function render(page) {
     const r = timeRange();
     const name = clusterName();
     const coords = state.fleet?.coordinators?.length || 0;
-    const reps = m.shards.length ? Math.round(m.total / m.shards.length) : 0;
+    // Copies a shard: one number when every shard has as many, else the range (NEW-scenarios-12).
+    const ns = m.shards.map((s) => s.copies.length);
+    const lo = Math.min(...ns), hi = Math.max(...ns);
+    const copiesTxt = lo === hi ? ` × ${lo} ${lo === 1 ? "copy" : "copies"}` : `, ${lo}-${hi} copies`;
     const parts = [
       name || location.host,
-      m.shards.length ? `${fmt.plural(m.shards.length, "shard")} × ${reps} ${reps === 1 ? "copy" : "copies"}${m.nodes.size ? ` on ${fmt.plural(m.nodes.size, "node")}` : ""}${m.zones.size ? ` in ${fmt.plural(m.zones.size, "zone")}` : ""}` : state.health ? (isCoordinator() ? "no shards listed" : "one server, not a cluster") : null,
+      m.shards.length ? `${fmt.plural(m.shards.length, "shard")}${copiesTxt}${m.nodes.size ? ` on ${fmt.plural(m.nodes.size, "node")}` : ""}${m.zones.size ? ` in ${fmt.plural(m.zones.size, "zone")}` : ""}` : state.health ? (isCoordinator() ? "no shards listed" : "one server, not a cluster") : null,
       coords > 1 ? fmt.plural(coords, "coordinator") : null,
       `numbers over ${r.fixed ? span(r.from, r.to) : r.label.replace("last ", "the last ")} unless marked`,
     ].filter(Boolean);
@@ -204,7 +222,14 @@ function render(page) {
     // The fleet said ok, a card says otherwise: say what the card says.
     if (f.status === "ok" && kind !== "ok" && kind !== "unknown") headline = kpiDefs().filter((d) => d.tone === kind).map((d) => d.why).filter(Boolean)[0] || "A headline number is over its limit";
     if (!answering) headline = "Not known: the server does not answer";
-    const since = f.since_ms || top?.since_ms || null;
+    // The headline problem's own since and first signal (NEW-shell-monitor-1); how long the
+    // fleet has not been all right is said apart, when it began earlier.
+    const since = top?.since_ms || f.since_ms || null;
+    const first = top?.first_signal_ms ?? since;
+    const notOk = f.not_ok_since_ms && since && f.not_ok_since_ms < since - 60e3 ? f.not_ok_since_ms : null;
+    const rec = top?.id === "error_ratio_recovered" ? top : null;
+    const past = isPast();
+    if (past && answering) headline = "Now: " + headline;
     const sub = [];
     if (!answering) sub.push(`What shows is from ${when(f.at_ms)}. The last answer said: ${f.headline || "ok"}.`);
     else if (kind === "ok") {
@@ -212,17 +237,20 @@ function render(page) {
       sub.push([m.shards.length ? `${m.shards.filter((s) => s.st === "ok").length} of ${m.shards.length} shards serve reads and writes` : null, m.total ? `${m.up} of ${m.total} copies answer` : null,
         check("error_ratio")?.value != null ? `error ratio ${pctTxt(check("error_ratio").value)} (SLO ${pctTxt(sloErr())})` : null,
         check("p99")?.value_ms != null ? `p99 ${fmt.ms(check("p99").value_ms)} (SLO ${fmt.ms(sloP99())})` : null,
-        firingAlerts().length ? null : "nothing firing", `checked ${when(f.at_ms)}`].filter(Boolean).join(" · "));
+        firingNow().length ? null : "nothing firing", `checked ${when(f.at_ms)}`].filter(Boolean).join(" · "));
     } else {
-      if (since) sub.push(`since ${when(since)} (${durTxt(since)})`);
+      if (rec) sub.push(`failed ${when(rec.from_ms)}–${when(rec.to_ms)}; answering again since ${when(rec.to_ms)} (${durTxt(rec.to_ms)})`);
+      else if (since) sub.push(`since ${when(since)} (${durTxt(since)})`);
       if (top?.impact) sub.push(top.impact);
       if (top?.where?.length) sub.push("where: " + top.where.join(", "));
       if (probs.length > 1) sub.push(`and ${fmt.plural(probs.length - 1, "other problem")}`);
     }
     const chips = [];
+    if (past && answering) chips.push(h("span", { class: "home-chip warn", title: "The charts and events below are of the window picked; this banner, the numbers, Where and Problems are of now" }, `now, ${when(f.at_ms)}: the window shown is ${span(timeRange().from, timeRange().to)}`));
     if (kind !== "ok" && answering) {
-      const fa = firingAlerts();
-      if (since) chips.push(h("span", { class: "home-chip" }, `first signal ${when(since)}`));
+      const fa = firingNow();
+      if (first && !rec) chips.push(h("span", { class: "home-chip", title: "When this problem, or what it stems from, was first seen" }, `first signal ${when(first)}`));
+      if (notOk) chips.push(h("span", { class: "home-chip", title: "Something has needed a look since then (other problems first)" }, `not all right since ${when(notOk)} (${durTxt(notOk)})`));
       for (const a of fa.slice(0, 2)) chips.push(h("a", { class: "home-chip", href: link("alert/" + encodeURIComponent(a.id)) }, `alert "${a.name}" ${a.since_ms ? "since " + when(a.since_ms) : "firing"}`));
       const ack = fa.find((a) => a.ack);
       if (ack) chips.push(h("span", { class: "home-chip ack" }, `acked by ${ack.ack.by} ${when(ack.ack.at_ms)}`));
@@ -230,7 +258,9 @@ function render(page) {
     }
     const acts = [];
     if (top?.next && kind !== "ok" && answering) acts.push(h("a", { class: "btn sm primary", href: link(top.next.view, top.next.params || {}), title: top.next.text }, icon("right"), top.next.text.length > 42 ? nextShort(top.next) : top.next.text));
-    if (kind !== "ok" && answering) acts.push(h("a", { class: "btn sm", href: logsLink({ level: "warn" }, since ? { from: since - 60e3, to: Date.now() } : {}) }, icon("logs"), since ? `Logs ${when(since - 60e3, { sec: false })}–now` : "Logs"));
+    // Logs since the problem began, live: a window that ends now does not pause the other views (NEW-scenarios-8).
+    const logsFrom = rec ? rec.from_ms : since;
+    if (kind !== "ok" && answering) acts.push(h("a", { class: "btn sm", href: logsLink({ level: "warn" }, logsFrom ? (rec ? { from: rec.from_ms - 60e3, to: rec.to_ms + 60e3 } : rangeSince(logsFrom - 60e3)) : {}), title: logsFrom ? `Warnings and errors from ${when(logsFrom - 60e3)}` : "Warnings and errors" }, icon("logs"), logsFrom ? (rec ? `Logs ${when(rec.from_ms - 60e3, { sec: false })}–${when(rec.to_ms + 60e3, { sec: false })}` : `Logs since ${when(logsFrom - 60e3, { sec: false })}`) : "Logs"));
     acts.push(h("button", { class: "btn sm", title: "Copy a link to Home at this window (opens paused)", onclick: () => copy(location.origin + location.pathname + link("home", rangeParams({ absolute: true })), "Link to Home at this window copied") }, icon("share"), "Copy link"));
     clear(banner,
       h("div", { class: "bic" }, icon(kind === "ok" ? "okc" : kind === "unknown" ? "info" : "warn", "lg")),
@@ -239,7 +269,7 @@ function render(page) {
       h("div", { class: "row home-bacts" }, acts));
   }
   const VIEWNAME = { tables: "Tables and storage", inspector: "Table details", statement: "the statement", alerts: "Alerts", system: "Settings", sql: "SQL workbench", cluster: "Cluster", rollout: "Rollouts", logs: "Logs", queries: "Queries", performance: "Performance", autoscale: "Autoscaling", access: "Access", timeline: "Timeline", profile: "Profiler", home: "Home" };
-  const nextShort = (n) => n.view.startsWith("alert") ? "Open the alert" : n.params?.shard != null && n.view === "cluster" ? `Shard ${n.params.shard} in Cluster` : `Open in ${VIEWNAME[n.view] || n.view}`;
+  const nextShort = (n) => n.view === "alerts" ? "Open Alerts" : n.view.startsWith("alert/") ? "Open the alert" : n.params?.shard != null && n.view === "cluster" ? `Shard ${n.params.shard} in Cluster` : `Open in ${VIEWNAME[n.view] || n.view}`;
 
   // ------------------------------------------------------------ headline numbers
   function kpiDefs() {
@@ -249,7 +279,9 @@ function render(page) {
     const f = state.fleet;
     const er = check("error_ratio"), p9 = check("p99"), cp = check("copies"), lg = check("lag"), dk = check("disk"), shc = check("shards");
     const coords = f?.coordinators || [];
-    const qpsFleet = coords.length > 1 ? coords.reduce((a, c) => a + (c.qps || 0), 0) : lastP.qps ?? coords[0]?.qps ?? null;
+    const answered = coords.filter((c) => !c.error);
+    const qpsFleet = coords.length > 1 ? answered.reduce((a, c) => a + (c.qps || 0), 0) : lastP.qps ?? coords[0]?.qps ?? null;
+    const now = isPast() ? "now · " : "";
     const tone = (st) => st === "critical" ? "bad" : st === "warning" ? "warn" : "";
     const out = [];
     const dark = m.shards.filter((s) => ["no_reads", "no_writes", "down"].includes(s.st));
@@ -257,20 +289,30 @@ function render(page) {
       // "Fully serving": a shard that answers searches but takes no writes is not counted.
       out.push({ key: "shards", label: "Shards fully serving", icon: "shard", val: [String(m.shards.length - dark.length), h("small", {}, "/" + m.shards.length)], tone: "bad", sub: dark.slice(0, 3).map((s) => `shard ${s.n} ${s.st === "no_reads" ? "has no majority" : stText(s.st)}`).join(", "), why: `${fmt.plural(dark.length, "shard")} serve no reads or take no writes`, link: link("cluster", { shard: dark[0].n }) });
     } else {
-      out.push({ key: "qps", label: coords.length > 1 ? "Queries, fleet" : "Queries", icon: "queries", val: [fmt.si(qpsFleet), h("small", {}, "/s")], spark: ps.map((p) => p.qps), color: SERIES[0], sub: coords.length > 1 ? `${coords.length} coordinators` : "this coordinator, now", link: link("performance") });
+      out.push({ key: "qps", label: coords.length > 1 ? "Queries, fleet" : "Queries", icon: "queries", val: [fmt.si(qpsFleet), h("small", {}, "/s")], spark: ps.map((p) => p.qps), color: SERIES[0],
+        sub: coords.length > 1 ? `${now}${answered.length} of ${coords.length} coordinators, over 5 min` : f?.derived ? "this coordinator, now" : `${now}its one coordinator, now`, link: link("performance") });
     }
-    const p99v = p9?.value_ms ?? lastP.p99_ms ?? null;
-    out.push({ key: "p99", label: "p99 latency", icon: "clock", val: msParts(p99v), tone: p9 ? tone(p9.status) : p99v > sloP99() ? "bad" : "", spark: ps.map((p) => p.p99_ms), color: SERIES[6], sub: `SLO ${fmt.ms(sloP99())}${p9?.window_s ? ` · over ${fmt.dur(p9.window_s)}` : ""}`, why: p99v != null ? `p99 ${fmt.ms(p99v)} is over the SLO (${fmt.ms(sloP99())})` : null, link: link("performance") });
-    const erv = er?.value ?? null;
+    // The last minute when the server says it (NEW-scenarios-2), else the window.
+    const p99Recent = p9?.recent?.value_ms != null;
+    const p99v = p99Recent ? p9.recent.value_ms : p9?.value_ms ?? lastP.p99_ms ?? null;
+    const lastMin = (w) => w ? `last ${w >= 120 ? fmt.dur(w).replace(/m 0s$/, " min") : "minute"}` : "";
+    const p99Tone = p9 ? (p9.status === "warning" && p99Recent && p99v <= sloP99() ? "" : tone(p9.status)) : p99v > sloP99() ? "bad" : "";
+    out.push({ key: "p99", label: "p99 latency", icon: "clock", val: msParts(p99v), tone: p99Tone, spark: ps.map((p) => p.p99_ms), color: SERIES[6], sub: `${now}SLO ${fmt.ms(sloP99())} · ${p99Recent ? lastMin(p9.recent.window_s) : p9?.window_s ? "over " + fmt.dur(p9.window_s).replace(/m 0s$/, " min") : ""}`, why: p99v != null ? `p99 ${fmt.ms(p99v)} is over the SLO (${fmt.ms(sloP99())})` : null, link: link("performance") });
+    const erRecent = er?.recent && er.recent.value !== undefined && (er.recent.queries ?? 1) > 0;
+    const erv = erRecent ? er.recent.value : er?.value ?? null;
     const failing = erv != null && qpsFleet ? erv * qpsFleet : null;
-    out.push({ key: "err", label: "Error ratio", icon: "warn", val: erv == null ? ["–"] : [pctTxt(erv).replace("%", ""), h("small", {}, "%")], tone: er ? tone(er.status) : "", spark: ps.map((p) => p.error_ratio ?? null), color: SERIES[7], sub: `SLO ${pctTxt(sloErr())}${failing != null && failing >= 0.1 ? ` · ${fmt.si(failing)} q/s failing` : erv == null ? " · no query ended" : ""}`, why: erv != null ? `${pctTxt(erv)} of queries fail (SLO ${pctTxt(sloErr())})` : null, link: link("queries", { tab: "statements", outcome: "error" }) });
+    // A failure that ended: the card says now's value, and when it recovered.
+    const recovered = er?.recovered;
+    const erTone = er ? (recovered && !(erv > sloErr()) ? "" : tone(er.status)) : "";
+    const erSub = recovered && !(erv > sloErr()) ? `recovered at ${when(recovered.to_ms, { sec: false })} after ${durOf(recovered.to_ms - recovered.from_ms + 2000)}, ${pctTxt(recovered.worst)} at worst` : `SLO ${pctTxt(sloErr())} · ${erRecent ? lastMin(er.recent.window_s) : "over 5 min"}${failing != null && failing >= 0.1 ? ` · ${fmt.si(failing)} q/s failing` : erv == null ? " · no query ended" : ""}`;
+    out.push({ key: "err", label: "Error ratio", icon: "warn", val: erv == null ? ["–"] : [pctTxt(erv).replace("%", ""), h("small", {}, "%")], tone: erTone, spark: ps.map((p) => p.error_ratio ?? null), color: SERIES[7], sub: now + erSub, why: erv != null ? `${pctTxt(erv)} of queries failed over the ${erRecent ? "last minute" : "last 5 min"} (SLO ${pctTxt(sloErr())})` : null, link: link("queries", { tab: "statements", outcome: "error" }) });
     const downNames = (cp?.where || m.shards.flatMap((s) => s.copies.filter((x) => !x.up).map((x) => x.name)));
     const tot = cp?.total ?? m.total, upN = cp ? cp.total - cp.down : m.up;
     out.push({ key: "copies", label: "Copies answering", icon: "db", val: tot ? [String(upN), h("small", {}, "/" + tot)] : ["–"], tone: cp ? tone(cp.status) : upN < tot ? "warn" : "", sub: downNames.length ? `${downNames.slice(0, 3).join(", ")}${downNames.length > 3 ? ` +${downNames.length - 3}` : ""} down` : tot ? "every copy answers" : "no copies listed", why: downNames.length ? `${fmt.plural(downNames.length, "copy", "copies")} do not answer` : null, link: link("cluster") });
     const lagV = lg?.max_txn ?? null;
     out.push({ key: "lag", label: "Replication lag, max", icon: "layers", val: lagV == null ? ["–"] : [fmt.si(lagV), h("small", {}, "txn")], tone: lg ? tone(lg.status) : "", sub: lagV == null ? "no replica reports one" : lagV === 0 ? "every replica in step" : `${lg.where || ""}${lg.max_s != null ? ` · reads up to ${fmt.dur(lg.max_s)} old` : ""}`, why: lagV ? `${lg.where} is ${fmt.si(lagV)} transactions behind` : null, link: link("cluster", { lens: "lag" }) });
     const dkV = dk?.max ?? null;
-    out.push({ key: "disk", label: "Fullest disk", icon: "disk", val: dkV == null ? ["–"] : [fmt.n(dkV * 100, 0), h("small", {}, "%")], tone: dk ? tone(dk.status) : "", sub: dkV == null ? "not known" : `${dk.where || ""}${dk.days_to_full != null ? ` · full in ~${fmt.n(dk.days_to_full, dk.days_to_full < 10 ? 1 : 0)} days` : ""}${dk.median != null ? ` · median ${fmt.pct(dk.median, 0)}` : ""}`, why: dkV != null ? `${dk.where}'s disk is ${fmt.pct(dkV, 0)} full` : null, link: link("cluster", { tab: "capacity" }) });
+    out.push({ key: "disk", label: "Fullest disk", icon: "disk", val: dkV == null ? ["–"] : [fmt.n(dkV * 100, 0), h("small", {}, "%")], tone: dk ? tone(dk.status) : "", sub: dkV == null ? "not known" : `${now}${dk.where || ""}${dk.over?.length > 1 ? ` and ${dk.over.length - 1} more over 85%` : ""}${dk.days_to_full != null ? ` · full in about ${fmt.fills(dk.days_to_full)}` : ""}${dk.median != null ? ` · median ${fmt.pct(dk.median, 0)}` : ""}`, why: dkV != null ? `${dk.where}'s disk is ${fmt.pct(dkV, 0)} full` : null, link: link("cluster", { tab: "capacity" }) });
     if (shc && !dark.length && shc.status !== "ok") out[0].tone = tone(shc.status);
     return out;
   }
@@ -377,7 +419,7 @@ function render(page) {
     const probs = f.problems || [];
     const restore = probs[0]?.severity === "critical" && /majority|dark|does not answer|no reads/i.test(probs[0].title);
     probTitle.textContent = restore ? "What would restore service" : "Problems";
-    probSub.textContent = probs.length ? `${probs.length}, worst first · where, since when, next step` : "";
+    probSub.textContent = probs.length ? `${probs.length}, worst first · where, since when, next step${isPast() ? " · now, not the window shown" : ""}` : "";
     if (!probs.length) {
       const m = model();
       const okRows = [
@@ -387,7 +429,7 @@ function render(page) {
         check("p99")?.value_ms != null ? `p99 ${fmt.ms(check("p99").value_ms)} (SLO ${fmt.ms(sloP99())})` : null,
         check("lag") ? `replication lag at most ${fmt.si(check("lag").max_txn || 0)} transactions` : null,
         check("disk")?.max != null ? `fullest disk ${fmt.pct(check("disk").max, 0)}` : null,
-        `${firingAlerts().length ? fmt.plural(firingAlerts().length, "alert") + " firing" : "no alert firing"}`,
+        `${firingNow().length ? fmt.plural(firingNow().length, "alert") + " firing" : "no alert firing"}`,
       ].filter(Boolean);
       clear(probBody, h("div", { class: "row nw", style: { gap: "10px" } }, h("span", { style: { color: "var(--good)" } }, icon("okc", "lg")), h("b", {}, "No problems")),
         h("ul", { class: "home-oklist" }, okRows.map((t) => h("li", {}, icon("check"), t))),
@@ -400,7 +442,8 @@ function render(page) {
       if (p.next) actions.push(h("a", { class: "btn xs primary", href: link(p.next.view, p.next.params || {}), title: p.next.text }, nextShort(p.next)));
       const copyUrl = (p.where || []).map((w) => findUrl(w)).find(Boolean);
       const shardW = (p.where || []).map((w) => /^shard (\d+)$/.exec(w)).find(Boolean);
-      actions.push(h("a", { class: "btn xs", href: logsLink({ ...(copyUrl ? { server: copyUrl } : shardW ? { shard: shardW[1] } : {}), level: "warn" }, p.since_ms ? { from: p.since_ms - 60e3, to: Date.now() } : {}) }, "Logs"));
+      const pFrom = p.from_ms ?? p.since_ms;
+      actions.push(h("a", { class: "btn xs", href: logsLink({ ...(copyUrl ? { server: copyUrl } : shardW ? { shard: shardW[1] } : {}), level: "warn" }, pFrom ? (p.to_ms ? { from: pFrom - 60e3, to: p.to_ms + 60e3 } : rangeSince(pFrom - 60e3)) : {}), title: pFrom ? `Warnings and errors from ${when(pFrom - 60e3)}` : null }, "Logs"));
       const upCopy = copyUrl && upUrls.has(copyUrl);
       if (upCopy && p.id !== "copies-down") actions.push(h("a", { class: "btn xs", href: link("profile", { tab: "cpu", node: copyUrl }) }, "Profile " + copyName(copyUrl)));
       return h("div", { class: "prob " + (p.severity === "critical" ? "crit" : "warn") },
@@ -408,7 +451,7 @@ function render(page) {
         h("div", { class: "grow" },
           h("div", { class: "pt" }, p.title),
           p.where?.length ? h("div", { class: "small dim" }, p.where.join(" · ")) : null,
-          h("div", { class: "small dim" }, [p.since_ms ? h("span", { title: whenTitle(p.since_ms) }, `since ${when(p.since_ms)} (${durTxt(p.since_ms)})`) : null, p.impact].filter(Boolean).flatMap((x, i) => i ? [" · ", x] : [x])),
+          h("div", { class: "small dim" }, [p.to_ms ? h("span", { title: whenTitle(p.from_ms) }, `${when(p.from_ms)}–${when(p.to_ms)}, answering again for ${durTxt(p.to_ms)}`) : p.since_ms ? h("span", { title: whenTitle(p.since_ms) }, `since ${when(p.since_ms)} (${durTxt(p.since_ms)})`) : null, p.impact].filter(Boolean).flatMap((x, i) => i ? [" · ", x] : [x])),
           p.next?.text ? h("div", { class: "small home-next" }, icon("right"), p.next.text) : null,
           h("div", { class: "row home-pacts" }, actions)));
     }), probs.length > 8 ? h("div", { class: "small muted" }, `and ${probs.length - 8} more`) : null);
@@ -428,7 +471,10 @@ function render(page) {
     const coords = state.fleet?.coordinators?.length || 1;
     const r = timeRange();
     const src = state.series;
-    chartsSub.textContent = [coords > 1 ? "the queries this coordinator answered (each coordinator's own are below)" : "the queries this server answered",
+    // Where the stored history begins, when the window starts before it (NEW-shell-monitor-2).
+    const [d0] = domain();
+    const from = ps.length && ps[0].t - Math.min(d0, r.zoomed ? d0 : r.from) > 5 * 60e3 ? `data from ${when(ps[0].t, { sec: false })}` : null;
+    chartsSub.textContent = [coords > 1 ? "the queries this coordinator answered (each coordinator's own are below)" : "the queries this server answered", from,
       `with the fleet's changes in ${r.zoomed ? "the zoom" : "the window"}`, src.source === "load" ? "a point a minute" : `a point every ${fmt.dur(state.interval / 1000)}`,
       src.partial ? "this server keeps only its last hour" : null, "drag to zoom; the zoom goes into the links"].filter(Boolean).join(" · ");
     const q = rangeParams({ absolute: r.zoomed });
@@ -440,12 +486,36 @@ function render(page) {
   function drawLane() {
     const [t0, t1] = domain();
     const evs = events.filter((e) => e.ts_ms >= t0 && e.ts_ms <= t1 && (e.severity !== "info" || MARK.has(e.kind)));
-    // The chart's plot starts 46 px in and ends 14 px before the edge.
-    clear(lane, evs.slice(0, 40).reverse().map((e, i) => {
-      const x = (e.ts_ms - t0) / Math.max(1, t1 - t0);
-      const el = h("a", { class: "ev " + (e.severity === "critical" ? "crit" : e.severity === "warning" ? "warn" : MARK.has(e.kind) ? "accent" : ""), href: eventLink(e), title: `${whenTitle(e.ts_ms)}\n${e.title}${e.who ? "\nby " + e.who : ""}`,
-        style: { left: `calc(46px + (100% - 60px) * ${x.toFixed(4)})`, top: (i % 3) * 15 + "px" } }, h("b", {}, when(e.ts_ms, { sec: false })), " ", e.title);
-      return el;
+    // The chart's plot starts 46 px in and ends 14 px before the edge. Events
+    // closer than 12 px are one label (as on the charts); a label takes the
+    // first of three rows with room, and what finds none is counted on the
+    // label to its left, so labels never print over each other.
+    const W = Math.max(120, (lane.clientWidth || 600) - 60);
+    const piles = [];
+    for (const e of evs.slice(0, 300).sort((a, b) => a.ts_ms - b.ts_ms)) {
+      const x = (e.ts_ms - t0) / Math.max(1, t1 - t0) * W, p = piles[piles.length - 1];
+      if (p && x - p.x < 12) p.evs.push(e); else piles.push({ x, evs: [e] });
+    }
+    const ends = [-1e9, -1e9, -1e9], shown = [];
+    for (const p of piles) {
+      const first = p.evs.find((e) => e.severity === "critical") || p.evs.find((e) => e.severity === "warning") || p.evs[0];
+      const width = Math.min(260, 40 + first.title.length * 5.6 + (p.evs.length > 1 ? 60 : 0));
+      // Near the right edge the label goes to the left of its line.
+      const left = p.x + width > W + 10 && p.x > width;
+      const x0 = left ? p.x - width : p.x;
+      const row = ends.findIndex((end) => end <= x0);
+      if (row < 0) { if (shown.length) shown[shown.length - 1].more.push(...p.evs); continue; }
+      ends[row] = x0 + width + 8;
+      shown.push({ ...p, row, first, width, left, x0, more: [] });
+    }
+    const cls = (e) => e.severity === "critical" ? "crit" : e.severity === "warning" ? "warn" : MARK.has(e.kind) ? "accent" : "";
+    clear(lane, shown.map((p) => {
+      const all = [...p.evs, ...p.more], n = all.length;
+      const lines = all.slice(0, 12).map((e) => `${whenTitle(e.ts_ms)} ${e.title}${e.who ? " (by " + e.who + ")" : ""}`);
+      return h("a", { class: "ev " + cls(p.first) + (p.left ? " left" : ""), href: n > 1 ? link("timeline", { from: Math.round(all[0].ts_ms - 5 * 60e3), to: Math.round(Math.min(Date.now(), all[n - 1].ts_ms + 5 * 60e3)) }) : eventLink(p.first),
+        title: lines.join("\n") + (n > 12 ? `\nand ${n - 12} more` : "") + (n > 1 ? "\nClick for the Timeline around them." : ""),
+        style: { left: `calc(46px + ${p.x0.toFixed(1)}px)`, top: p.row * 15 + "px", ...(p.left ? { width: p.width + "px" } : { maxWidth: p.width + "px" }) } },
+        h("b", {}, when(p.first.ts_ms, { sec: false })), " ", n > 1 ? h("span", { class: "ev-n" }, `${n} changes: `) : null, p.first.title);
     }));
     if (!evs.length) lane.append(h("div", { class: "small muted", style: { paddingLeft: "46px", paddingTop: "4px" } }, eventsFrom === "events" ? "No change in this window: no copy went down, no primary moved, nobody changed anything." : "This server keeps no events (it has no /v1/events): only alert changes show."));
   }
@@ -474,7 +544,7 @@ function render(page) {
     if (!xs.length) { clear(capBody, h("div", { class: "small muted" }, isCoordinator() || state.cluster ? "No copy reports its load." : "One server: its own numbers are on System.")); return; }
     clear(capBody,
       row("CPU", (x) => x.cpu),
-      row("Disk", (x) => x.disk, dk?.days_to_full != null ? `full in ~${fmt.n(dk.days_to_full, 1)} days` : null),
+      row("Disk", (x) => x.disk, dk?.days_to_full != null ? `full in about ${fmt.fills(dk.days_to_full)}` : null),
       row("Memory", (x) => x.mem),
       row("Query slots", (x) => x.slots));
   }
@@ -484,18 +554,22 @@ function render(page) {
     const f = state.fleet;
     const cs = f?.coordinators || [];
     if (!cs.length) { clear(coordBody, h("div", { class: "small muted", style: { padding: "0 14px 14px" } }, f ? "No coordinator listed: this server is not one." : "Checking…")); return; }
-    const t = h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ["Coordinator", "q/s", "p99", "Errors", "CPU"].map((x, i) => h("th", { class: i ? "num" : "" }, x)))),
+    // Each coordinator's own numbers over 5 min; errors over the last minute when it says (OV-4).
+    const errOf = (c) => c.recent_error_ratio ?? c.error_ratio;
+    const t = h("table", { class: "t compact home-coordtbl" }, h("thead", {}, h("tr", {}, ["Coordinator", "q/s", "p99", "Errors", "CPU"].map((x, i) => h("th", { class: i ? "num" : "" }, x)))),
       h("tbody", {}, cs.map((c) => h("tr", {},
-        h("td", {}, h("span", { class: "dot " + ((c.error_ratio ?? 0) > sloErr() || (c.p99_ms ?? 0) > sloP99() ? "bad" : "ok") }), " ", c.url && !c.this ? h("a", { href: c.url.replace(/\/$/, "") + "/#/home", title: c.url }, c.name || hostOf(c.url)) : h("span", { title: c.url || "" }, c.name || hostOf(c.url)), c.this ? h("span", { class: "muted" }, " (this)") : null),
-        h("td", { class: "num" }, fmt.si(c.qps)), h("td", { class: "num" }, c.p99_ms != null ? fmt.ms(c.p99_ms) : "–"),
-        h("td", { class: "num " + ((c.error_ratio ?? 0) > sloErr() ? "home-bad" : "") }, pctTxt(c.error_ratio)), h("td", { class: "num" }, c.cpu != null ? (c.cpu > 1.5 ? fmt.si(c.cpu) + " cores" : fmt.pct(c.cpu, 0)) : "–")))));
+        h("td", {}, h("span", { class: "dot " + (c.error ? "warn" : (errOf(c) ?? 0) > sloErr() || (c.p99_ms ?? 0) > sloP99() ? "bad" : "ok") }), " ", c.url && !c.this ? h("a", { href: c.url.replace(/\/$/, "") + "/#/home", title: `${c.url}: open its command center` }, c.name || hostOf(c.url)) : h("span", { title: c.url || "" }, c.name || hostOf(c.url)), c.this ? h("span", { class: "muted" }, " (this)") : null),
+        ...(c.error ? [h("td", { class: "small muted", colspan: 4, title: c.error }, "did not answer: " + c.error.replace(/^[^:]*: /, ""))] : [
+          h("td", { class: "num" }, fmt.si(c.qps)), h("td", { class: "num" }, c.p99_ms != null ? fmt.ms(c.p99_ms) : "–"),
+          h("td", { class: "num " + ((errOf(c) ?? 0) > sloErr() ? "home-bad" : ""), title: c.recent_error_ratio != null ? `last minute; ${pctTxt(c.error_ratio)} over 5 min` : "over 5 min" }, pctTxt(errOf(c))), h("td", { class: "num" }, c.cpu != null ? (c.cpu > 1.5 ? fmt.si(c.cpu) + " cores" : fmt.pct(c.cpu, 0)) : "–")])))));
     let note = null;
-    const ers = cs.map((c) => c.error_ratio).filter((x) => x != null);
-    if (cs.length === 1) note = f.derived ? "This server does not list the other coordinators (an older server)." : "One coordinator: its numbers are the fleet's.";
+    const ers = cs.filter((c) => !c.error).map(errOf).filter((x) => x != null);
+    if (cs.length === 1) note = f.derived ? "This server does not list the other coordinators (an older server)." : "The only coordinator the shards heard from in the last minute: its numbers are the fleet's.";
     else if (ers.length === cs.length && Math.max(...ers) > sloErr()) {
       const lo = Math.min(...ers), hi = Math.max(...ers);
-      note = hi < lo * 1.5 ? `The same error ratio on all ${cs.length}: not a coordinator problem.` : `${cs.find((c) => c.error_ratio === hi).name || "One coordinator"} fails more than the others: look at it first.`;
-    }
+      note = hi < lo * 1.5 ? `The same error ratio on all ${cs.length}: not a coordinator problem.` : `${cs.find((c) => errOf(c) === hi).name || "One coordinator"} fails more than the others: look at it first.`;
+    } else if (cs.some((c) => c.error)) note = `${fmt.plural(cs.filter((c) => c.error).length, "coordinator")} did not say its numbers: the fleet's are the others'.`;
+    else note = `The fleet's numbers above add up ${cs.length === 2 ? "both" : "all " + cs.length}.`;
     clear(coordBody, t, note ? h("div", { class: "small muted", style: { padding: "8px 14px 12px" } }, note) : null);
   }
 
@@ -503,27 +577,37 @@ function render(page) {
   function drawWho() {
     if (stats === "forbidden") { clear(whoBody, empty("lock", "Needs an admin key", "Who sends which queries is for admin keys.")); return; }
     if (!stats) { clear(whoBody, h("div", { class: "small muted" }, "Reading the statements of this window…")); return; }
+    // Failures as the SLO counts them (the server's: errors and its own
+    // deadline), apart from requests the client got wrong and the client's
+    // own deadlines (NEW-scenarios-17). A key's failures are split as its
+    // statement's are.
     const byTable = new Map(), byKey = new Map();
-    let calls = 0, errors = 0;
+    let calls = 0, server = 0, client = 0, deadline = 0;
+    const add = (m, k, c, e) => { const a = m.get(k) || { calls: 0, errors: 0 }; a.calls += c; a.errors += e; m.set(k, a); };
     for (const st of stats) {
       const c = st.calls || 0;
-      const e = st.errors ?? (st.outcomes ? (st.outcomes.error || 0) + (st.outcomes.timeout || 0) : 0);
-      calls += c; errors += e;
+      const o = st.outcomes || null;
+      const sv = o ? (o.error || 0) + (o.timeout || 0) : st.errors || 0;
+      const ce = o ? o.client_error || 0 : 0, cd = o ? o.client_deadline || 0 : 0;
+      const all = o ? Object.entries(o).filter(([k]) => k !== "ok" && k !== "partial").reduce((a, [, n]) => a + n, 0) : st.errors || 0;
+      calls += c; server += sv; client += ce; deadline += cd;
       const tb = tableOf(st.sql || st.example || st.fingerprint || "");
-      if (tb) { const a = byTable.get(tb) || { calls: 0, errors: 0 }; a.calls += c; a.errors += e; byTable.set(tb, a); }
-      for (const k of st.keys || []) { const a = byKey.get(k.key) || { calls: 0, errors: 0 }; a.calls += k.calls || 0; a.errors += k.errors || 0; byKey.set(k.key, a); }
+      if (tb) add(byTable, tb, c, sv);
+      const share = all ? sv / all : 0;
+      for (const k of st.keys || []) add(byKey, k.key, k.calls || 0, (k.errors || 0) * share);
     }
-    const failing = errors > 0;
-    whoSub.textContent = failing ? `share of the failed queries, by table${statsKeys ? " and by API key" : ""}, this window` : `share of the queries by table${statsKeys ? " and by API key" : ""}, this window: none failed`;
-    // A bar is the share of the window's failures (or, with none, of its queries).
-    const bars = (m, kind) => [...m.entries()].map(([k, a]) => ({ k, ...a, share: failing ? a.errors / errors : a.calls / Math.max(1, calls) }))
+    const failing = server > 0;
+    whoSub.textContent = failing ? `share of the server's failures, by table${statsKeys ? " and by API key" : ""}, this window` : `share of the queries by table${statsKeys ? " and by API key" : ""}, this window: none failed on the server's side`;
+    // A bar is the share of the window's server failures (or, with none, of its queries).
+    const bars = (m, kind) => [...m.entries()].map(([k, a]) => ({ k, ...a, share: failing ? a.errors / server : a.calls / Math.max(1, calls) }))
       .sort((a, b) => failing ? (b.errors - a.errors) : (b.calls - a.calls)).slice(0, kind === "key" ? 4 : 3)
-      .map((a) => h("a", { class: "home-who " + (failing && a.errors / Math.max(1, a.calls) > sloErr() ? "bad" : ""), href: kind === "key" ? link("queries", { key: a.k, tab: "statements" }) : link(byIdTables(), { table: a.k }), title: failing ? `${fmt.pct(a.share, 0)} of the failures: ${fmt.n(a.errors)} of its ${fmt.n(a.calls)} queries failed (${pctTxt(a.errors / Math.max(1, a.calls))})` : `${fmt.n(a.calls)} queries, ${fmt.pct(a.share, 0)} of all` },
+      .map((a) => h("a", { class: "home-who " + (failing && a.errors / Math.max(1, a.calls) > sloErr() ? "bad" : ""), href: kind === "key" ? link("queries", { key: a.k, tab: "statements" }) : link(byIdTables(), { table: a.k }), title: failing ? `${fmt.pct(a.share, 0)} of the server's failures: ${fmt.n(a.errors)} of its ${fmt.n(a.calls)} queries failed (${pctTxt(a.errors / Math.max(1, a.calls))})` : `${fmt.n(a.calls)} queries, ${fmt.pct(a.share, 0)} of all` },
         h("span", { class: "nm " + (kind === "key" ? "mono" : "") }, a.k), h("span", { class: "home-meter " + (failing ? "crit" : "") }, h("i", { style: { width: Math.max(1, a.share * 100) + "%" } })), h("span", { class: "num small" }, fmt.pct(a.share, a.share < 0.1 ? 1 : 0))));
+    const theirs = [client ? `${fmt.n(client)} refused as the client's mistake (4xx)` : null, deadline ? `${fmt.n(deadline)} ran past the client's own deadline` : null].filter(Boolean);
     clear(whoBody,
       byTable.size ? h("div", { class: "stack", style: { gap: "6px" } }, bars(byTable, "table")) : null,
       statsKeys ? h("div", { class: "stack", style: { gap: "6px", marginTop: "10px" } }, bars(byKey, "key")) : h("div", { class: "small muted", style: { marginTop: "10px" } }, "This server does not record which API key sent a query (an older server)."),
-      h("div", { class: "small muted", style: { marginTop: "8px" } }, calls ? `${fmt.n(errors)} of ${fmt.n(calls)} queries failed in ${timeRange().label.replace("last", "the last")}${stats.length && !statsKeys && !stats[0].prev ? " (an older server counts since it started)" : ""}.` : "No queries in this window."));
+      h("div", { class: "small muted", style: { marginTop: "8px" } }, calls ? `${fmt.n(server)} of ${fmt.n(calls)} queries failed on the server's side in ${timeRange().label.replace("last", "the last")}${theirs.length ? `; not counted: ${theirs.join(", ")}` : ""}${stats.length && !statsKeys && !stats[0].prev ? " (an older server counts since it started)" : ""}.` : "No queries in this window."));
   }
   const byIdTables = () => "tables";
   const tableOf = (sql) => { const m = /\bFROM\s+("?)([A-Za-z_][\w.]*)\1/i.exec(sql) || /\bINTO\s+([A-Za-z_][\w.]*)/i.exec(sql); return m ? (m[2] || m[1]) : null; };

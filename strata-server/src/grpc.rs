@@ -311,7 +311,10 @@ impl Grpc {
             let r = keys::Caller { addr: req.remote_addr().map(|a| a.ip().to_string()), client: md("x-strata-client"), app, reason: None };
             crate::telemetry::Caller::of(&who, Some(&r))
         };
-        let call = keys::noting(crate::service::ROUTED.scope(std::cell::Cell::new(0), f(self.0.clone(), who.clone(), req.into_inner())));
+        // A part whose deadline is its client's own (the coordinator says so):
+        // one that passes is the client's doing, counted and logged so.
+        let clients = req.metadata().get(crate::service::CLIENT_DEADLINE).is_some_and(|v| v == "client");
+        let call = keys::noting(crate::service::DEADLINE.scope(crate::service::Deadline::of_part(clients), crate::service::ROUTED.scope(std::cell::Cell::new(0), f(self.0.clone(), who.clone(), req.into_inner()))));
         let call = crate::telemetry::calling(Arc::new(caller), call);
         let (r, note) = crate::telemetry::traced(crate::telemetry::Trace::new(), obs::scope(Some(id.clone()), call)).instrument(span.clone()).await;
         let status = r.as_ref().map_or_else(|e| e.status, |_| 200);
@@ -328,7 +331,12 @@ impl Grpc {
                 ("Ok", Ok(Response::new(x)))
             }
             Err(e) => {
-                if e.status >= 500 {
+                if e.status == 504 && clients {
+                    static LIMIT: obs::RateLimit = obs::RateLimit::new(10);
+                    if let Some(held) = LIMIT.admit() {
+                        tracing::warn!(status = e.status, error = %e.message, held_back = held, "the client's own deadline passed");
+                    }
+                } else if e.status >= 500 {
                     obs::server_error(e.status, &e.message);
                 }
                 let s = Status::from(e);
@@ -663,7 +671,14 @@ impl pb::strata_server::Strata for Grpc {
                 crate::profiling::Kind::LogFilter => format!("log filter {} from a coordinator, by {}", asked.body["filter"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
                 crate::profiling::Kind::Verify => format!("verify the replicas from a coordinator, by {}", asked.body["by"].as_str().unwrap_or("?")),
                 crate::profiling::Kind::Checkpoint => format!("checkpoint {} from a coordinator, by {}", asked.body["name"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
-                k => format!("a {} profile", k.name()),
+                crate::profiling::Kind::Settings => match (asked.body.get("slow_ms"), asked.body.get("cpu_all")) {
+                    (None, None) => "profiling settings, read by a coordinator".to_string(),
+                    (slow, cpu) => format!("profiling settings from a coordinator, by {}: {}", asked.body["by"].as_str().unwrap_or("?"), [slow.map(|v| format!("slow_ms {v}")), cpu.map(|v| format!("cpu_all {v}"))].into_iter().flatten().collect::<Vec<_>>().join(", ")),
+                },
+                k => match asked.body["by"].as_str() {
+                    Some(by) => format!("a {} profile from a coordinator, by {by}", k.name()),
+                    None => format!("a {} profile", k.name()),
+                },
             });
             Ok(pb::ProfileResponse { body: crate::profiling::take(&svc, asked).await?.bytes() })
         })
@@ -671,6 +686,8 @@ impl pb::strata_server::Strata for Grpc {
     }
 
     async fn health(&self, req: Request<pb::Empty>) -> Result<Response<pb::HealthResponse>, Status> {
+        // fleet: a coordinator that names itself ([`crate::peers`]).
+        crate::peers::heard_from(&self.0, req.metadata(), req.extensions().get::<Principal>());
         self.serve("Health", req, |svc, _who, _| async move {
             let d = svc.detail().await;
             let h = &d["health"];
