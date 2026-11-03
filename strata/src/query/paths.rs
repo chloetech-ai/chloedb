@@ -388,7 +388,7 @@ impl Call {
     /// The listing `sql` asks for, if it is a `SELECT * FROM
     /// json_paths(...)`; `None` for any other statement.
     pub fn of_sql(sql_text: &str) -> Result<Option<Call>> {
-        if !sql_text.to_ascii_lowercase().contains("json_paths") {
+        if !sql_text.as_bytes().windows(10).any(|w| w.eq_ignore_ascii_case(b"json_paths")) {
             return Ok(None);
         }
         let Ok(sql::Statement::Query(q)) = super::sql::parse_one(sql_text) else { return Ok(None) };
