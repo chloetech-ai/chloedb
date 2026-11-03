@@ -59,6 +59,18 @@ function planShown() {
   const closed = store.get("cluster.planClosed", null);
   return closed === r.id || (r.finished_ms && Date.now() - r.finished_ms > 3600e3) ? null : r;
 }
+/**
+ * The plan to show from `GET /v1/admin/plan/run`: this coordinator's, else
+ * one another coordinator applies or left stopped (its `elsewhere`), marked
+ * with where it runs: Stop and Resume are there (CC-3).
+ */
+function runOf(j) {
+  const mine = j?.run || null;
+  if (mine && mine.state !== "done") return mine;
+  const other = (j?.elsewhere || []).find((x) => x.run && x.run.state !== "done");
+  if (other) return { ...other.run, elsewhere: { name: other.coordinator, url: other.url } };
+  return mine;
+}
 /** Takes the run from an answer, unless it is older than the one held. */
 function takeRun(r) {
   if (r === undefined) return;
@@ -68,7 +80,7 @@ function takeRun(r) {
   if (JSON.stringify(planRun) !== was) runChanged();
 }
 async function loadRun() {
-  try { takeRun((await api("/v1/admin/plan/run")).run); }
+  try { takeRun(runOf(await api("/v1/admin/plan/run"))); }
   catch (e) { if (e.status === 404 || e.status === 405) takeRun(state.cluster?.plan); else if (e.status === 403) takeRun(state.cluster?.plan); }
 }
 
@@ -217,6 +229,12 @@ function model(c) {
       };
     });
     const n = copies.length, up = copies.filter((x) => !x.down).length;
+    // A primary without a majority says "read from another copy" (the
+    // shard's own words): wrong when no other copy answers (NEW-scenarios-19).
+    for (const c of copies) {
+      if (!c.avoidedWhy || !/fewer than a majority/.test(c.avoidedWhy) || copies.some((x) => x !== c && !x.down)) continue;
+      c.avoidedWhy = c.avoidedWhy.replace(/: the others may have elected another primary, so it serves no reads; read from another copy\.?$/, ", so it serves no reads; no other copy answers").replace(/^(\d+) of this primary's/, "$1 of the primary's");
+    }
     const majority = sh.majority ?? up > n / 2;
     const failover = sh.failover ?? null;
     let st = sh.state || (up === 0 ? "down" : !majority ? "no_writes" : up < n ? "degraded" : "ok");
@@ -368,7 +386,10 @@ function problems(M) {
       out.push({ sev: 1, shards: [sh.i], label: `Hot shard ${sh.i}`, text: [...text, sh.slots.length ? `slots ${runsText(sh.slots)}` : null].filter(Boolean).join(" · "), impact: "a search waits for the slowest shard it asks", next: "Move some of its slots to a quieter shard (Draft: drag it onto another)", fix: { kind: "slots", shard: sh.i } });
     }
   }
-  const avoided = M.all.filter((c) => c.avoided && !c.down);
+  // A primary avoided for want of a majority is its shard serving no
+  // reads, said above already (NEW-scenarios-19).
+  const lease = (c) => /fewer than a majority/.test(c.avoidedWhy || "") && M.shards.some((sh) => sh.i === c.shard && !sh.majority);
+  const avoided = M.all.filter((c) => c.avoided && !c.down && !lease(c));
   if (avoided.length) out.push({ sev: 1, shards: avoided.map((c) => c.shard), label: `${avoided.length === 1 ? "1 copy" : avoided.length + " copies"} avoided`, text: `${cname(avoided[0])}${avoided[0].avoidedWhy ? ": " + avoided[0].avoidedWhy : " after failures"}`, impact: "the coordinators ask the other copies first", next: "Look at its logs" });
   const firing = M.all.flatMap((c) => (c.alerts?.firing || []).map((a) => ({ c, a })));
   if (firing.length) out.push({ sev: firing.some((x) => x.a.severity === "critical") ? 2 : 1, shards: [...new Set(firing.map((x) => x.c.shard))], label: `${plural(firing.length, "alert")} firing on copies`, text: `${firing[0].a.name || firing[0].a.id} on ${cname(firing[0].c)}`, link: "#/alerts" });
@@ -404,6 +425,9 @@ function whatIf(M, failed) {
 function movesInfo(m) {
   const job = m?.job || null;
   const moving = m?.moving || null;
+  // A job another coordinator runs now: shown here, stopped there.
+  const other = (m?.elsewhere || []).find((x) => x.job);
+  if (other && !(job && (job.state ? job.state === "running" : job.finished_ms == null && job.finished_us == null))) return { ...movesInfo({ job: other.job, moving }), elsewhere: { name: other.coordinator, url: other.url } };
   if (!job) return { running: !!moving, moving, job: null };
   const started = job.started_ms ?? (job.started_us ? job.started_us / 1000 : null);
   const finished = job.finished_ms ?? (job.finished_us ? job.finished_us / 1000 : null);
@@ -418,6 +442,19 @@ function movesInfo(m) {
   // An older job says no state: it runs until it says when it finished.
   const running = job.state ? job.state === "running" : finished == null;
   return { running, moving, job, started, finished, rowsDone, rowsTotal, rate, eta, by: job.started_by || null, heldMs: held.length ? held.reduce((a, b) => a + b, 0) / held.length : null };
+}
+/**
+ * How far a job of moves is, 0 to 1: by its rows, but never past the end of
+ * the move under way, so the bar is not full while moves are left (CL-6).
+ */
+function jobFrac(mi) {
+  const j = mi?.job;
+  if (!j) return 0;
+  const byMoves = j.of ? j.done / j.of : 0;
+  if (!mi.running) return j.state === "done" ? 1 : byMoves;
+  const upTo = j.of ? Math.min(1, (j.done + 0.95) / j.of) : 0.95;
+  const byRows = mi.rowsTotal ? mi.rowsDone / mi.rowsTotal : 0;
+  return Math.max(byMoves, Math.min(byRows, upTo));
 }
 /** The rows a second the last move ran at, kept in this browser. */
 function measuredRate(mi) {
@@ -450,6 +487,8 @@ function render(page, r) {
   let pop = null; // the open popover {el, shard}
   let dragging = null;
   let serverPlan = null, serverPlanFor = null, kubePlan = null, kubePlanFor = null, kubePlanErr = null;
+  // The coordinator's estimate of the autoscaler's suggestion (NEW-cluster-admin-7).
+  let sgEst = null, sgEstFor = null;
   let events = null, eventsErr = null, audit = null, auditErr = null, changeKind = "all";
   let alive = true;
   const managed = () => !!kube?.managed;
@@ -544,9 +583,9 @@ function render(page, r) {
   function changeChip() {
     const mi = moves && !moves.error ? moves : null;
     const pr = planRun;
-    if (pr?.state === "running") return h("button", { class: "cc-chip info", onclick: () => { tab = "map"; sel = null; mode = "live"; writeParams(); drawAll(); } }, h("span", { class: "spin" }), h("b", {}, "Applying a plan"), h("span", { class: "dim" }, [`step ${Math.min(pr.at + 1, pr.of)} of ${pr.of}`, pr.eta_s != null ? `about ${dur(pr.eta_s)} left` : null, pr.by ? `by ${pr.by}` : null].filter(Boolean).join(" · ")));
+    if (pr?.state === "running") return h("button", { class: "cc-chip info", onclick: () => { tab = "map"; sel = null; mode = "live"; writeParams(); drawAll(); } }, h("span", { class: "spin" }), h("b", {}, "Applying a plan"), h("span", { class: "dim" }, [`step ${Math.min(pr.at + 1, pr.of)} of ${pr.of}`, pr.eta_s != null ? `about ${dur(pr.eta_s)} left` : null, pr.by ? `by ${pr.by}` : null, pr.elsewhere ? `on ${pr.elsewhere.name}` : null].filter(Boolean).join(" · ")));
     if (pr && ["interrupted", "failed"].includes(pr.state)) return h("button", { class: "cc-chip warn", onclick: () => { tab = "map"; sel = null; mode = "live"; writeParams(); drawAll(); } }, h("span", { class: "dot warn" }), h("b", {}, pr.state === "interrupted" ? "A plan stopped at a restart" : "A plan stopped"), h("span", { class: "dim" }, `at step ${pr.at + 1} of ${pr.of}`));
-    if (mi?.running) return h("span", { class: "cc-chip info" }, h("span", { class: "spin" }), h("b", {}, "Slots moving"), h("span", { class: "dim" }, [mi.job ? `${fmt.n(mi.job.done)} of ${fmt.n(mi.job.of)} moves` : "a move under way", mi.eta != null ? `about ${dur(mi.eta)} left` : null, mi.by ? `by ${mi.by}` : null].filter(Boolean).join(" · ")));
+    if (mi?.running) return h("span", { class: "cc-chip info" }, h("span", { class: "spin" }), h("b", {}, "Slots moving"), h("span", { class: "dim" }, [mi.job ? `${fmt.n(mi.job.done)} of ${fmt.n(mi.job.of)} moves` : "a move under way", mi.eta != null ? `about ${dur(mi.eta)} left` : null, mi.by ? `by ${mi.by}` : null, mi.elsewhere ? `on ${mi.elsewhere.name}` : null].filter(Boolean).join(" · ")));
     const ro = rollout();
     if (ro) return h("a", { class: "cc-chip info", href: "#/rollout" }, h("span", { class: "spin" }), h("b", {}, cap(ro.split(":")[0])), h("span", { class: "dim" }, ro.split(": ")[1] || ""));
     // The last change: the plan applied last, or the job of moves that ended
@@ -1057,9 +1096,12 @@ function render(page, r) {
     const restore = !left.length ? `To restore it: bring ${them} back.`
       : lead ? `To restore it: bring ${them} back; or force ${cname(lead)} to be the primary, remove ${down.length === 1 ? cname(down[0]) : "the copies down"} so ${cname(lead)} ${left.length === 1 ? "serves alone (1 of 1 is a majority)" : "has a majority"}, then add new copies. Plan the repair does these in order.`
       : `To restore it: bring ${them} back, or remove ${down.length === 1 ? "it" : "them"} so ${left.map(cname).join(" and ")} ${left.length === 1 ? "serves alone (1 of 1 is a majority)" : "serve as a majority"}, then add new copies.`;
-    const rest = is.filter((x) => x.sev < 2 || !/^(down|no reads|no writes|no majority)$/.test(x.short)).filter((x) => !/^\d+ down$/.test(x.short));
+    // The rest, without what the cause says already: the primary avoided
+    // for want of a majority is the shard serving no reads.
+    const rest = is.filter((x) => x.sev < 2 || !/^(down|no reads|no writes|no majority)$/.test(x.short)).filter((x) => !/^\d+ down$/.test(x.short))
+      .filter((x) => !(x.short === "avoided" && /fewer than a majority/.test(x.long || "")));
     return h("div", { class: "cc-why crit" }, h("div", {}, cause), h("div", { style: { marginTop: "6px" } }, restore),
-      rest.length ? h("ul", { class: "cc2-why-rest" }, rest.map((x) => h("li", { class: x.sev === 2 ? "crit" : "warn" }, cap(String(x.long || x.short).replace(/\.$/, "")) + "."))) : null);
+      rest.length ? h("div", { class: "cc2-why-also" }, h("div", { class: "small" }, "Also:"), h("ul", { class: "cc2-why-rest" }, rest.map((x) => h("li", { class: x.sev === 2 ? "crit" : "warn" }, cap(String(x.long || x.short).replace(/\.$/, "")) + ".")))) : null);
   }
 
   /** The shard as Topology drew it, for one shard: coordinators, the shard, its copies, replication. */
@@ -1642,7 +1684,7 @@ function render(page, r) {
     if (mi?.running) no(`slots are moving already${mi.by ? " (started by " + mi.by + ")" : ""}: wait for them, or stop them`);
     else if (mi?.moving) no("a move was left in the cluster map by a coordinator that stopped: finish it first (Finish, above)");
     else ok("no slot moves under way");
-    if (planRunning()) no(`another plan is being applied${planRun.by ? " (by " + planRun.by + ")" : ""}: wait for it, or stop it`);
+    if (planRunning()) no(`another plan is being applied${planRun.by ? " (by " + planRun.by + ")" : ""}${planRun.elsewhere ? " on coordinator " + planRun.elsewhere.name : ""}: wait for it, or stop it`);
     else if (planRun?.state === "interrupted") no("a plan stopped when the coordinator restarted: resume it or discard it first (above)");
     const need = needUrls();
     const given = need.map((x) => (x.get() || "").trim()).filter(Boolean);
@@ -1930,7 +1972,9 @@ function render(page, r) {
     const N = kubeNumbers();
     const mi = moves && !moves.error ? moves : null;
     const R = measuredRate(mi);
-    const est = N.secs;
+    // The coordinator's estimate when it gives one (NEW-cluster-admin-7).
+    const E = kubePlan?.estimate || null;
+    const est = E ? E.estimate_s : N.secs;
     const removing = N.R1 < N.R0 || N.S1 < N.S0;
     const pre = [];
     if (ro) pre.push({ ok: "warn", text: `${ro}: the operator finishes it before it makes this change` });
@@ -1955,7 +1999,7 @@ function render(page, r) {
         h("table", { class: "cc-ba" }, h("tbody", {}, before.map(([k, a, b]) => h("tr", {}, h("td", {}, k), h("td", { class: "num" }, a), h("td", { class: "num to" + (a !== b ? " moved" : "") }, b))))),
         h("div", { class: "cc-sec" }, `The operator's steps${est > 0 ? ` · about ${dur(est)}` : ""}`),
         kubePlan ? h("ol", { class: "cc-steps" }, (kubePlan.steps || []).map((x, k) => h("li", {}, h("span", { class: "k" }, k + 1), h("span", {}, cap(x)), h("span", { class: "t" })))) : h("div", { class: "small muted" }, kubePlanErr || "Asking the coordinator…"),
-        N.rowsToCopy ? h("div", { class: "small muted" }, `${fmt.si(N.rowsToCopy)} rows to copy at ${fmt.n(R.rate, 0)} rows a second ${R.measured ? "(the rate of the last move here)" : "(assumed: no move measured yet)"}${N.perShard ? `; each shard's primary sends its ${N.R1 - N.R0 === 1 ? "new copy" : "new copies"} its ${fmt.si(N.rows / Math.max(1, M.shards.length))} rows, every shard at once: about ${dur(N.perShard)}` : ""}${N.S1 !== N.S0 ? "; slots move one run at a time" : ""}.`) : null,
+        E ? h("div", { class: "small muted" }, `${E.text} The coordinator's estimate.`) : N.rowsToCopy ? h("div", { class: "small muted" }, `${fmt.si(N.rowsToCopy)} rows to copy at ${fmt.n(R.rate, 0)} rows a second ${R.measured ? "(the rate of the last move here)" : "(assumed: no move measured yet)"}${N.perShard ? `; each shard's primary sends its ${N.R1 - N.R0 === 1 ? "new copy" : "new copies"} its ${fmt.si(N.rows / Math.max(1, M.shards.length))} rows, every shard at once: about ${dur(N.perShard)}` : ""}${N.S1 !== N.S0 ? "; slots move one run at a time" : ""}.`) : null,
         blast.length ? h("div", { class: "cc-blast" }, h("b", {}, "Blast radius"), blast.map((t) => h("div", {}, t))) : null,
         h("div", { class: "cc-sec" }, "Checked before it starts"),
         h("div", { class: "cc-chk" }, pre.map((x) => h("div", { class: x.ok === true ? "ok" : x.ok === false ? "no" : "wn" }, h("span", { class: "m" }, x.ok === true ? "✓" : x.ok === false ? "✕" : "!"), h("span", {}, cap(x.text))))),
@@ -2017,11 +2061,13 @@ function render(page, r) {
     const R = planShown();
     if (R) return runCard(R, mi);
     if (mi?.running || mi?.moving) {
+      const there = mi.elsewhere;
       return h("section", { class: "card cc-run" },
-        h("div", { class: "hd" }, h("h3", {}, mi.running ? "Slots moving" : "A move left in the cluster map"), h("span", { class: "sub" }, [mi.job && mi.running ? jobWords(mi.job) : null, mi.by ? "started by " + mi.by : null, mi.started ? "at " + clock(mi.started) : null].filter(Boolean).join(" · ")),
+        h("div", { class: "hd" }, h("h3", {}, mi.running ? (there ? `Slots moving on ${there.name}` : "Slots moving") : "A move left in the cluster map"), h("span", { class: "sub" }, [mi.job && mi.running ? jobWords(mi.job) : null, mi.by ? "started by " + mi.by : null, mi.started ? "at " + clock(mi.started) : null].filter(Boolean).join(" · ")),
           h("div", { class: "tools" },
-            mi.running && mi.job ? h("button", { class: "btn sm", disabled: !canAdmin(), title: canAdmin() ? "Stop after the move under way" : needsAdmin, onclick: stopMoves }, icon("stop"), "Stop") : null,
-            !mi.running || !mi.job ? h("button", { class: "btn sm", disabled: !canAdmin(), title: "Ends the move a stopped coordinator left: completed if it had flipped, given up if not", onclick: finishMove }, "Finish it") : null)),
+            there ? (there.url ? h("a", { class: "btn sm", href: there.url.replace(/\/$/, "") + "/#/cluster", target: "_blank", rel: "noopener", title: "Stop it there" }, `Open ${there.name}`, icon("ext")) : null)
+              : mi.running && mi.job ? h("button", { class: "btn sm", disabled: !canAdmin(), title: canAdmin() ? "Stop after the move under way" : needsAdmin, onclick: stopMoves }, icon("stop"), "Stop") : null,
+            !there && (!mi.running || !mi.job) ? h("button", { class: "btn sm", disabled: !canAdmin(), title: "Ends the move a stopped coordinator left: completed if it had flipped, given up if not", onclick: finishMove }, "Finish it") : null)),
         h("div", { class: "bd stack", style: { gap: "6px" } }, mi.job ? movesLine(mi) : h("div", { class: "small" }, `From shard ${mi.moving.from} to shard ${mi.moving.to}, ${mi.moving.state || "under way"}: no coordinator runs it now.`)));
     }
     if (ro) return h("section", { class: "card cc-run" }, h("div", { class: "hd" }, h("h3", {}, "The operator is rolling out"), h("div", { class: "tools" }, h("a", { class: "btn sm", href: link("rollout") }, "Rollouts"))), h("div", { class: "bd small" }, kube.status?.message ? cap(kube.status.message) + "." : cap(ro) + "."));
@@ -2040,14 +2086,16 @@ function render(page, r) {
     const who = [R.by && R.by !== "token" ? "by " + R.by : null, R.coordinator ? "on " + short(R.coordinator) : "on the coordinator"].filter(Boolean).join(" ");
     const sub = `started ${clock(R.started_ms)} ${who}${R.resumed ? ` · resumed ${R.resumed === 1 ? "once" : R.resumed + " times"}${R.resumed_by ? " by " + R.resumed_by : ""}` : ""}`;
     const tools = [];
-    if (running) tools.push(h("button", { class: "btn sm", disabled: R.stopping || !canAdmin(), title: canAdmin() ? "Stop after the step under way" : needsAdmin, onclick: stopRun }, icon("stop"), R.stopping ? "Stopping…" : "Stop"));
+    // A plan another coordinator applies: shown here, changed there.
+    if (R.elsewhere) tools.push(R.elsewhere.url ? h("a", { class: "btn sm", href: R.elsewhere.url.replace(/\/$/, "") + "/#/cluster", target: "_blank", rel: "noopener" }, `Open ${R.elsewhere.name || "its coordinator"}`, icon("ext")) : null);
+    else if (running) tools.push(h("button", { class: "btn sm", disabled: R.stopping || !canAdmin(), title: canAdmin() ? "Stop after the step under way" : needsAdmin, onclick: stopRun }, icon("stop"), R.stopping ? "Stopping…" : "Stop"));
     else if (R.state === "done") tools.push(h("button", { class: "btn sm ghost", onclick: () => { store.set("cluster.planClosed", R.id); runChanged(); } }, "Close"));
     else {
       tools.push(h("button", { class: "btn sm primary", disabled: !canAdmin(), title: canAdmin() ? `Run step ${R.at + 1} again, then the rest: each step first looks at what is done already` : needsAdmin, onclick: () => resumeRun(R) }, icon("play"), "Resume"));
       tools.push(h("button", { class: "btn sm ghost", disabled: !canAdmin(), title: canAdmin() ? "Forget this plan: the steps done stay done" : needsAdmin, onclick: () => discardRun(R) }, "Discard"));
     }
     const rowsLine = R.rows_total ? `Rows: ${fmt.si(Math.min(R.rows_done, R.rows_total))} of ${fmt.si(R.rows_total)} copied` : null;
-    const p99 = R.p99_before_ms != null || R.p99_now_ms != null ? `this coordinator's p99 ${R.p99_before_ms != null ? fmt.ms(R.p99_before_ms) : "–"} before, ${R.p99_now_ms != null ? fmt.ms(R.p99_now_ms) : "–"} now (last minute)` : null;
+    const p99 = R.p99_before_ms != null || R.p99_now_ms != null ? `${R.elsewhere ? R.elsewhere.name + "'s" : "this coordinator's"} p99 ${R.p99_before_ms != null ? fmt.ms(R.p99_before_ms) : "–"} before, ${R.p99_now_ms != null ? fmt.ms(R.p99_now_ms) : "–"} now (last minute)` : null;
     const stateMark = (x) => (x.state === "done" ? "✓" : x.state === "running" ? h("span", { class: "spin" }) : x.state === "failed" ? "✕" : x.state === "interrupted" || x.state === "stopped" ? "!" : null);
     const cls = { done: "ok", running: "run", failed: "bad", interrupted: "bad", stopped: "wait", waiting: "wait" };
     const steps = R.steps || [];
@@ -2064,17 +2112,24 @@ function render(page, r) {
           h("span", {}, x.repair ? h("span", { class: "badge", style: { marginRight: "4px" } }, "repair") : null, cap(x.text || x.kind),
             x.note && x.state !== "waiting" ? h("div", { class: "small muted" }, cap(x.note)) : null,
             x.error ? h("div", { class: "small cc-bad" }, cap(plainText(x.error))) : null,
-            x.state === "running" && mi?.job && /^(move|rebalance|drain)$/.test(x.kind) ? movesMeter(mi) : null),
+            x.state === "running" && /^(move|rebalance|drain)$/.test(x.kind) && jobOfStep(mi, x) ? movesMeter(mi) : null),
           h("span", { class: "t" }, x.took_s != null && x.state !== "waiting" ? dur(x.took_s) : x.est_s != null ? "~" + dur(x.est_s) : "")))),
         h("div", { class: "small muted" }, [rowsLine, running && R.eta_s != null ? `about ${dur(R.eta_s)} left` : null, R.state === "done" && R.finished_ms ? `took ${dur((R.finished_ms - R.started_ms) / 1000)}` : null, p99].filter(Boolean).join(" · ")),
-        running ? h("div", { class: "small dim" }, "It runs on the coordinator: closing this page does not stop it.") : null,
+        R.elsewhere ? h("div", { class: "small dim" }, `Coordinator ${R.elsewhere.name} applies it: stop, resume or discard it on its own Cluster page.`)
+          : running ? h("div", { class: "small dim" }, "It runs on the coordinator: closing this page does not stop it.") : null,
         R.reason ? h("div", { class: "small dim" }, `Reason: ${R.reason}`) : null));
+  }
+  /**
+   * The job of moves a running step started: one running now that started
+   * with the step, never the job before it (CL-6).
+   */
+  function jobOfStep(mi, x) {
+    if (!mi?.running || !mi.job) return false;
+    return !x.started_ms || !mi.started || mi.started >= x.started_ms - 2000;
   }
   /** A bar for the job of moves a step runs, from the job itself. */
   function movesMeter(mi) {
-    const j = mi.job;
-    const frac = mi.rowsTotal ? Math.min(1, mi.rowsDone / mi.rowsTotal) : j.of ? j.done / j.of : 0;
-    return h("div", { class: "meter", style: { marginTop: "4px" } }, h("i", { style: { width: Math.round(frac * 100) + "%" } }));
+    return h("div", { class: "meter", style: { marginTop: "4px" } }, h("i", { style: { width: Math.round(jobFrac(mi) * 100) + "%" } }));
   }
   async function stopRun() {
     const ok = await ask({ title: "Stop the plan", body: "The step under way finishes (a job of moves stops after its move under way); the steps after it are not started. What was done stays done, and the plan can be resumed.", ok: "Stop it" });
@@ -2100,11 +2155,13 @@ function render(page, r) {
   }
   function movesLine(mi) {
     const j = mi.job;
-    const frac = mi.rowsTotal ? mi.rowsDone / mi.rowsTotal : j.of ? j.done / j.of : 0;
+    // The rows are an estimate made when the job started: past it, the
+    // line says the rows copied, not "78k of 4.8k".
+    const rows = mi.rowsDone == null ? null : mi.rowsTotal && mi.rowsDone <= mi.rowsTotal ? `${fmt.si(mi.rowsDone)} of about ${fmt.si(mi.rowsTotal)} rows copied` : `${fmt.si(mi.rowsDone)} rows copied`;
     return h("div", { class: "stack", style: { gap: "4px" } },
-      h("div", { class: "meter" }, h("i", { style: { width: Math.round(Math.min(1, frac) * 100) + "%" } })),
-      h("div", { class: "small" }, [`${fmt.n(j.done)} of ${plural(j.of, "move")}`, `${fmt.n(j.slots_moved)} slots`, mi.rowsDone != null ? `${fmt.si(mi.rowsDone)}${mi.rowsTotal ? " of " + fmt.si(mi.rowsTotal) : ""} rows` : null, mi.rate ? `${fmt.si(mi.rate)} rows/s` : null, mi.eta != null && mi.running ? `about ${dur(mi.eta)} left` : null].filter(Boolean).join(" · ")),
-      j.error ? h("div", { class: "small cc-bad" }, j.error) : null);
+      h("div", { class: "meter" }, h("i", { style: { width: Math.round(jobFrac(mi) * 100) + "%" } })),
+      h("div", { class: "small" }, [`${fmt.n(j.done)} of ${plural(j.of, "move")} done`, `${fmt.n(j.slots_moved)} slots flipped`, rows, mi.rate ? `${fmt.si(mi.rate)} rows a second` : null, mi.eta != null && mi.running ? `about ${dur(mi.eta)} left` : null].filter(Boolean).join(" · ")),
+      j.error ? h("div", { class: "small cc-bad" }, plainText(j.error)) : null);
   }
   async function stopMoves() {
     const ok = await ask({ title: "Stop the moves", body: "The move under way finishes (or is given up before it flips); the others are not started. The slots that moved stay where they are.", ok: "Stop them", reason: false });
@@ -2140,10 +2197,24 @@ function render(page, r) {
       copyRows += rows * Math.abs(d) / Math.max(S, patch.shards);
     }
     if (patch.storage?.size) out.push(`grows every volume to ${patch.storage.size}`);
-    const T = M ? kubeTime(patch, sp) : null;
-    const t = T?.rows ? `; about ${dur(T.secs)} to copy ${fmt.si(T.rows)} rows${T.perShard ? ", the shards in parallel" : ""}${T.measured ? "" : " (at an assumed rate)"}` : "";
+    // How long: the coordinator's estimate, the one Autoscaling shows too;
+    // the browser's own only when the server has none (an older one).
+    const E = suggestionEstimate(patch);
+    const T = E?.none && M ? kubeTime(patch, sp) : null;
+    const t = E?.text ? " " + E.text : T?.rows ? ` About ${dur(T.secs)} to copy ${fmt.si(T.rows)} rows${T.perShard ? ", the shards in parallel" : ""}${T.measured ? "" : " (at an assumed rate)"}.` : "";
     void copyRows; void R2;
-    return out.length ? cap(out.join("; ")) + t + "." : "Changes " + Object.keys(patch).join(", ") + ".";
+    return out.length ? cap(out.join("; ")) + "." + t : "Changes " + Object.keys(patch).join(", ") + ".";
+  }
+  /** The coordinator's estimate for a suggestion's patch, asked once; null while it is asked. */
+  function suggestionEstimate(patch) {
+    const key = JSON.stringify(patch);
+    if (sgEstFor !== key) {
+      sgEstFor = key; sgEst = null;
+      api("/v1/admin/kube/plan", { body: { spec: patch } })
+        .then((j) => { if (sgEstFor === key) { sgEst = j.estimate || { none: true }; if (alive && tab === "capacity") drawTab(); } })
+        .catch(() => { if (sgEstFor === key) sgEst = { none: true }; });
+    }
+    return sgEst;
   }
   function drawCapacity() {
     if (!M) { clear(body, empty("layers", "Asking the shards", "")); return; }
@@ -2279,7 +2350,7 @@ function render(page, r) {
     for (const a of audit || []) {
       if (a.kind && a.kind !== "change") continue;
       const pid = planOf(null, a);
-      if (pid) { const r = planRow(pid, a.ts_ms); if (a.route === "/v1/admin/plan/apply" && a.method !== "PLAN" && !a.after?.step) { r.addr = r.addr || a.addr; r.reason = r.reason || a.reason; r.who = r.who || (a.who === "token" ? "root token" : a.who); } if (a.after?.step && a.status >= 400) r.sev = "warning"; continue; }
+      if (pid) { const r = planRow(pid, a.ts_ms); if (a.route === "/v1/admin/plan/apply" && a.method !== "PLAN" && !a.after?.step) { r.addr = r.addr || a.addr; r.reason = r.reason || a.reason; r.who = r.who || (a.who === "token" ? "root token" : a.who); if (Array.isArray(a.after?.steps) && a.after.steps.length) { r.steps = a.after.steps.filter(Boolean).map((x) => cap(namedUrls(String(x)))); r.count = a.after.steps.length; } } if (a.after?.step && a.status >= 400) r.sev = "warning"; continue; }
       if (a.method === "GET" || !CLUSTER_ROUTE.test(a.route || "")) continue;
       const twin = rows.find((r) => (a.request_id && r.rid === a.request_id) || (!r.rid && r.who && r.who === a.who && Math.abs(r.t - a.ts_ms) < 5000));
       if (twin) { if (a.reason && !twin.detail) twin.detail = "reason: " + a.reason; if (a.addr) twin.addr = a.addr; continue; }
