@@ -63,6 +63,8 @@
 //! | `GET /v1/admin/keys`, `POST /v1/admin/keys`, `DELETE /v1/admin/keys/:id`, `POST /v1/admin/keys/:id/rotate` | `{name, scope, expires_days?, owner?, note?}`, rotate `{grace_minutes?}` | the API keys, how many were revoked, and how the last merge of keys went with each server of the cluster (`peers`, [`crate::keysync`]); a new one's secret is answered once; each key with its owner, note and last address, and the revoked ones (who revoked them, when); a rotation answers a new key of the same name and scope, the old one expiring after the grace (60 min) |
 //! | `GET /v1/admin/audit?kind=&from=&to=&who=&q=&limit=n` | | the changes, notes and refused requests, the newest first, with `kind` (change, note, refusal), who, addr, client, reason, object, before and after; older than memory holds from the log store's `audit` |
 //! | `GET /v1/alerts`, `PUT /v1/alerts/rules` | `{rules}` | the alert rules with their states and the latest changes ([`crate::alerts`]) |
+//! | `GET`/`PUT /v1/alerts/routes`, `POST /v1/alerts/routes/:name/test` | `{routes: [{name, url, severities}]}` | where notifications go, each with its deliveries (sent, failed, last error); a test message (admin) |
+//! | `POST /v1/alerts/backtest` | `{rule, from, to}` | the rule replayed over memory's points or up to 7 days of the log store's load: `{points, fired, source}` |
 //! | `GET /v1/alerts/:rule`, `POST /v1/alerts/:rule/ack`, `POST`/`DELETE /v1/alerts/:rule/silence`, `POST /v1/alerts/:rule/notes` | `{note}`, `{minutes, reason}`, `{text}` | one alert with its events (7 days), acknowledged, silenced, noted (write scope) |
 //!
 //! Every answer carries the request's id in `x-request-id`: the one the
@@ -245,6 +247,9 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         // alerts (alerts agent)
         .route("/v1/alerts", get(alerts))
         .route("/v1/alerts/rules", put(put_alert_rules))
+        .route("/v1/alerts/routes", get(alert_routes).put(put_alert_routes))
+        .route("/v1/alerts/routes/:name/test", post(test_alert_route))
+        .route("/v1/alerts/backtest", post(alert_backtest))
         .route("/v1/alerts/:rule", get(alert))
         .route("/v1/alerts/:rule/ack", post(ack_alert))
         .route("/v1/alerts/:rule/silence", post(silence_alert).delete(unsilence_alert))
@@ -608,7 +613,7 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
     // unless something noted it.
     let refusal = status == 401 || status == 403;
     // A plan asked (`POST .../plan`) changes nothing: a read too.
-    let plan = matches!(route.as_str(), "/v1/admin/plan" | "/v1/admin/kube/plan");
+    let plan = matches!(route.as_str(), "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/alerts/backtest");
     let read = (method == axum::http::Method::GET || method == axum::http::Method::HEAD || plan) && status < 400;
     let caller = keys::caller().unwrap_or_default();
     if refusal || detail.is_some() || (need == Scope::Admin && !read) {
@@ -680,6 +685,7 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/export" => Scope::Admin,
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
         "/v1/alerts/rules" => Scope::Admin,
+        "/v1/alerts/routes" | "/v1/alerts/routes/:name/test" => Scope::Admin,
         // alerts (alerts agent): acknowledging, silencing and noting write.
         "/v1/alerts/:rule/ack" | "/v1/alerts/:rule/silence" | "/v1/alerts/:rule/notes" => Scope::Write,
         "/v1/events/notes" => Scope::Admin,
@@ -3278,6 +3284,34 @@ async fn note_alert(State(app): State<App>, p: Option<axum::Extension<Principal>
     keys::note_change(keys::Change { object: Some(format!("alert {id}")), after: Some(json!({"note": text})), ..Default::default() });
     crate::alerts::deliver(&app.svc, vec![e]);
     app.svc.alerts.one(&id).map(AxJson)
+}
+
+async fn alert_routes(State(app): State<App>) -> AxJson<Json> {
+    AxJson(json!({"routes": app.svc.alerts.routes_json()}))
+}
+
+/// Replaces the routes (a route without its `url` keeps the one it had),
+/// audited with the routes before and after (their URLs without paths).
+async fn put_alert_routes(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let routes: Vec<crate::alerts::Route> = serde_json::from_value(b.get("routes").cloned().ok_or_else(|| ApiError::bad("the body needs \"routes\""))?).map_err(|e| ApiError::bad(format!("bad routes: {e}")))?;
+    let before = app.svc.alerts.routes_json();
+    app.svc.alerts.set_routes(routes)?;
+    let after = app.svc.alerts.routes_json();
+    let names: Vec<&str> = after.iter().filter_map(|r| r["name"].as_str()).collect();
+    keys::note_change(keys::Change { object: Some("alert routes".into()), before: Some(json!(before)), after: Some(json!(after)), ..Default::default() });
+    Ok(audited(json!({"routes": app.svc.alerts.routes_json()}), format!("alert routes: {}", if names.is_empty() { "none".to_string() } else { names.join(", ") })))
+}
+
+/// Posts a test message to a route, and says how it went.
+async fn test_alert_route(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let j = app.svc.alerts.test_route(&name, &by(&who(p))).await?;
+    let ok = j["ok"] == true;
+    Ok(audited(j, format!("sent a test message to alert route {name}{}", if ok { "" } else { " (it failed)" })))
+}
+
+/// Replays a rule over up to 7 days ([`crate::alerts::backtest`]).
+async fn alert_backtest(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    crate::alerts::backtest(&app.svc, &b).await.map(AxJson)
 }
 
 // ----- end alerts
