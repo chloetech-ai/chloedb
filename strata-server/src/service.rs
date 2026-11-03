@@ -3461,7 +3461,8 @@ impl Service {
         let Backend::Local(_) = &self.backend else { return Json::Null };
         let (reads, writes): (Result<(), String>, Result<(), String>) = match self.replication() {
             Replication::None => (Ok(()), Ok(())),
-            Replication::Primary(p) => (p.readable().map_err(|e| e.message), p.admit().map_err(|e| e.message)),
+            // Whether it would take a write now: the write's flight ends at once.
+            Replication::Primary(p) => (p.readable().map_err(|e| e.message), p.admit().map(drop).map_err(|e| e.message)),
             Replication::Replica(f) => (
                 match f.serves_reads() {
                     true => Ok(()),

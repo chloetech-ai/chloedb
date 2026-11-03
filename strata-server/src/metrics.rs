@@ -396,7 +396,7 @@ impl Metrics {
             h.render(o, "strata_grpc_request_duration_seconds", &format!("method=\"{method}\""));
         }
 
-        head(o, "strata_queries_total", "counter", "Queries by kind (bm25, vector, sparse, hybrid, boosted, expression, reranked, decay, graph, column, facet, aggregate, count, filter, compound, paths, invalid) and outcome (ok, partial, error, timeout: the server's deadline, client_error: a 4xx such as bad SQL, client_deadline: the client's own timeout_ms below the server's, refused: 429, cancelled).");
+        head(o, "strata_queries_total", "counter", "Queries by kind (bm25, vector, sparse, hybrid, boosted, expression, reranked, decay, graph, column, facet, aggregate, count, filter, compound, paths, invalid) and outcome (ok, partial, error, timeout: the server's deadline, client_error: a 4xx such as bad SQL, client_deadline: the client's own deadline, below the server's, refused: 429, cancelled).");
         for (&(k, outcome), n) in &m.queries {
             let _ = writeln!(o, "strata_queries_total{{kind=\"{k}\",outcome=\"{outcome}\"}} {n}");
         }
