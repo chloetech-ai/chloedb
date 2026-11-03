@@ -18,7 +18,9 @@ export default { id: "logs", title: "Logs", icon: "logs", group: "Operate", keyw
 
 const LV = ["error", "warn", "info", "debug", "trace"];
 const LCOLOR = { error: "var(--crit)", warn: "var(--s4)", info: "var(--s1)", debug: "var(--muted)", trace: "var(--line-2)" };
-const PAGE = 200, SAMPLE = 2000;
+const PAGE = 200;
+/** L6: Patterns samples the newest lines of each group of levels apart, so that a server on debug does not crowd out the errors. */
+const BUCKETS = [{ levels: ["error", "warn"], n: 1000, name: "errors and warnings" }, { levels: ["info"], n: 600, name: "info" }, { levels: ["debug", "trace"], n: 400, name: "debug" }];
 const COLS = "ts, node, level, target, method, route, message, fields, request_id, status, ms, id";
 const KEYS = { level: "level", server: "node", node: "node", shard: "shard", route: "route", module: "target", target: "target", status: "status", request: "request_id", method: "method" };
 const TONE = { alert_fired: "bad", copy_down: "bad", majority_lost: "bad", primary_changed: "warn", contain: "warn", alert_resolved: "good", copy_up: "good", majority_back: "good" };
@@ -131,7 +133,7 @@ function render(page, r) {
     missedLine,
     main);
 
-  let q = "", tab = "lines", live = true, gen = 0, newest = null, oldest = null, matched = 0, rows = [], sel = null, sample = null;
+  let q = "", tab = "lines", live = true, gen = 0, newest = null, oldest = null, matched = 0, rows = [], sel = null, sample = null, buckets = [];
   const f = () => parse(q);
 
   // ------------------------------------------------ servers
@@ -441,7 +443,7 @@ function render(page, r) {
       const [hs, facetsJ, main0] = await Promise.all([
         ask(histSql(col)),
         facetsOf(),
-        tab === "patterns" ? ask(`SELECT ts, node, level, message, fields FROM logs WHERE ${where()} ORDER BY ts DESC, id DESC LIMIT ${SAMPLE}`) : ask(rowsSql()),
+        tab === "patterns" ? askPatterns() : ask(rowsSql()),
         loadEvents(),
       ]);
       if (my !== gen) return;
@@ -450,7 +452,7 @@ function render(page, r) {
       matched = drawHist(hs.rows || [], unit);
       const by = (i) => { const m = new Map(); for (const r0 of rs.rows || []) if (r0[i] != null) m.set(r0[i], (m.get(r0[i]) || 0) + r0[2]); return [...m].sort((a, b) => b[1] - a[1]); };
       drawFacets(Object.entries(levelTotals), nodes.rows || [], by(1), by(0));
-      if (tab === "patterns") { sample = objects(main0); drawPatterns(); return; }
+      if (tab === "patterns") { buckets = main0.buckets; sample = buckets.flatMap((b) => b.rows); drawPatterns(); return; }
       rows = objects(main0); sample = null;
       [newest, oldest] = rows.length ? [msOf(rows[0].ts), msOf(rows[rows.length - 1].ts)] : [null, null];
       clear(list, rows.length ? [linesHead(), ...rows.map(lineEl)] : empty("logs", "No lines match", q ? "Try fewer filters or a longer range." : "Nothing was logged in this range at the levels the servers keep. Requests log at debug: raise a server's level in Log levels."));
@@ -549,26 +551,43 @@ function render(page, r) {
     } catch { /* the next refresh says what failed */ }
   }
 
+  /** L6: the newest lines of each group of levels the search allows, one query a group: {nodes, took_ms, buckets: [{levels, name, rows}]}. */
+  async function askPatterns() {
+    const lv = f().level, allowed = lv ? (lv.ge ? LV.slice(0, Math.max(0, LV.indexOf(lv.v)) + 1) : [lv.v]) : LV;
+    const bs = BUCKETS.map((b) => ({ ...b, levels: b.levels.filter((l) => allowed.includes(l)) })).filter((b) => b.levels.length);
+    const js = await Promise.all(bs.map((b) => ask(`SELECT ts, node, level, message, fields FROM logs WHERE ${where()} AND level IN (${b.levels.map(lit).join(", ")}) ORDER BY ts DESC, id DESC LIMIT ${b.n}`)));
+    return { nodes: js[0]?.nodes, took_ms: Math.max(0, ...js.map((j) => j.took_ms || 0)), buckets: bs.map((b, i) => ({ ...b, rows: objects(js[i]) })) };
+  }
   function drawPatterns() {
     const groups = new Map();
-    for (const rw of sample) {
-      const p = pattern(rw.message, rw.fields), key = rw.level + " " + p;
-      const g = groups.get(key) || { level: String(rw.level).toLowerCase(), p, n: 0, nodes: new Set(), first: Infinity, last: 0, ex: rw };
-      g.n++; g.nodes.add(nameOf(rw.node)); const ms = msOf(rw.ts); g.first = Math.min(g.first, ms); g.last = Math.max(g.last, ms);
-      groups.set(key, g);
+    let estimated = 0;
+    for (const b of buckets) {
+      // Each line of a group's sample stands for its share of that group's lines in the range.
+      const total = b.levels.reduce((a, l) => a + (levelTotals[l] || 0), 0);
+      const w = b.rows.length && total > b.rows.length ? total / b.rows.length : 1;
+      if (w > 1) estimated++;
+      for (const rw of b.rows) {
+        const p = pattern(rw.message, rw.fields), key = rw.level + " " + p;
+        const g = groups.get(key) || { level: String(rw.level).toLowerCase(), p, n: 0, est: false, nodes: new Set(), first: Infinity, last: 0, ex: rw };
+        g.n += w; g.est ||= w > 1; g.nodes.add(nameOf(rw.node)); const ms = msOf(rw.ts); g.first = Math.min(g.first, ms); g.last = Math.max(g.last, ms);
+        groups.set(key, g);
+      }
     }
     const list0 = [...groups.values()].sort((a, b) => b.n - a.n);
     const max = Math.max(1, ...list0.map((g) => g.n));
-    countNote.textContent = `${fmt.plural(list0.length, "pattern")} in the newest ${fmt.n(sample.length)} of ${fmt.plural(matched, "line")}`;
+    countNote.textContent = `${fmt.plural(list0.length, "pattern")} in ${fmt.plural(matched, "line")}${estimated ? ` · from the newest ${fmt.n(sample.length)}, sampled by level` : ""}`;
     clear(list, list0.length ? table([
-      { key: "n", label: "lines", num: true, cls: "al-c-n", render: (g) => h("div", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" } }, h("div", { class: "barbox", style: { width: "56px" } }, h("div", { class: "bar", style: { width: g.n / max * 100 + "%", background: LCOLOR[g.level] } })), h("b", {}, fmt.n(g.n))) },
+      { key: "n", label: "lines", num: true, cls: "al-c-n", render: (g) => h("div", { class: "row nw", style: { gap: "8px", justifyContent: "flex-end" }, title: g.est ? "Estimated: its level's lines in the range, shared out as in the newest of them" : "Counted" }, h("div", { class: "barbox", style: { width: "56px" } }, h("div", { class: "bar", style: { width: g.n / max * 100 + "%", background: LCOLOR[g.level] } })), h("b", {}, (g.est ? "≈" : "") + fmt.n(Math.round(g.n)))) },
       { key: "level", label: "level", cls: "al-c-lv", render: (g) => h("span", { class: "al-l-lv al-lv-" + g.level }, g.level) },
       { key: "p", label: "message pattern", cls: "al-c-p", render: (g) => h("span", { class: "mono small al-pat2", title: g.p }, nameUrls(g.p)) },
       { key: "nodes", label: "where", cls: "al-c-where", sort: (g) => g.nodes.size, render: (g) => h("span", { class: "small nowrap", title: [...g.nodes].join(", ") }, [...g.nodes].sort().slice(0, 3).join(", ") + (g.nodes.size > 3 ? ` +${g.nodes.size - 3}` : "")) },
       { key: "last", label: "last", cls: "al-c-last", render: (g) => h("span", { class: "small nowrap", title: `first ${when(g.first)}` }, when(g.last)) },
     ], { rows: list0, compact: true, onRow: (g) => { const lit0 = g.p.split(/\s*<\w+>/)[0].trim(); tab = "lines"; setQ(`${tokens(q).filter((t) => !/^-?"/.test(t)).join(" ")} level:${g.level}${lit0 ? ` "${lit0.slice(0, 80).replace(/"/g, "")}"` : ""}`); } }) : empty("logs", "No lines match", "Try fewer filters or a longer range."));
     list.firstElementChild?.classList.add("al-ptbl");
-    clear(more, h("span", { class: "small muted" }, "Counts are of the sample. Click a pattern for its lines."));
+    const short = buckets.filter((b) => b.rows.length >= b.n).map((b) => b.name);
+    clear(more, h("span", { class: "small muted" }, short.length
+      ? `Errors and warnings, info and debug are sampled apart (the newest ${BUCKETS.map((b) => fmt.n(b.n)).join(", ")} lines), so a server on debug does not crowd out the errors. A count with ≈ shares out its level's lines in the range as in that sample (${short.join(", ")}). Click a pattern for its lines.`
+      : "Every line of the range is counted. Click a pattern for its lines."));
   }
 
   // ------------------------------------------------ no store: this server's memory
