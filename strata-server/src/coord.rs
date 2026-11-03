@@ -628,6 +628,9 @@ pub struct Coordinator {
     observer: std::sync::OnceLock<Box<dyn Fn(Option<&Json>, &Json) + Send + Sync>>,
 }
 
+/// How many copies the index inspector asks at once ([`Coordinator::inspect`]).
+pub const INSPECT_AT_ONCE: usize = 16;
+
 /// How old a survey of the cluster may be before a caller makes another
 /// ([`Coordinator::snapshot`]).
 pub const SNAPSHOT_EVERY: Duration = Duration::from_secs(2);
@@ -2578,7 +2581,7 @@ impl Coordinator {
     }
 
     /// Every replica's index statistics of a table
-    /// ([`crate::inspect::node`]), asked over gRPC as a profile of kind
+    /// ([`crate::inspect::node`]), at most [`INSPECT_AT_ONCE`] at a time, asked over gRPC as a profile of kind
     /// `index` with `body` ([`crate::inspect::Asked::body`]): per shard,
     /// each replica's answer or why it gave none.
     pub async fn inspect(&self, body: &Json) -> Vec<crate::inspect::ShardNodes> {
@@ -2586,8 +2589,12 @@ impl Coordinator {
         let t = &self.topo();
         let body_json = &body.to_string().into_bytes();
         let wait = crate::profiling::Kind::Index.wait(body);
+        // At most INSPECT_AT_ONCE copies sample their segments at a time:
+        // on a fleet of hundreds, all at once would load every server.
+        let at_once = &tokio::sync::Semaphore::new(INSPECT_AT_ONCE);
         let calls = t.replicas.iter().enumerate().map(|(i, rs)| async move {
             let replicas = join_all(rs.iter().map(|r| async move {
+                let _turn = at_once.acquire().await;
                 let mut c = r.client.clone();
                 let req = pb::ProfileRequest { kind: "index".into(), body_json: body_json.clone(), folded: false, in_use: false };
                 let answer = match tokio::time::timeout(wait, c.profile(req)).await {
