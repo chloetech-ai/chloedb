@@ -2618,9 +2618,34 @@ a.wl-chip:hover { border-color: var(--accent); }
 }
 /* round 2 (workdata) */
 .wl-linked { margin-bottom: 14px; }
+.wl-nums td.num { white-space: nowrap; }
+.wl-bands { margin-top: 12px; }
+.wl-bands-head { gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 @media (max-width: 900px) {
   .wl-sum { padding: 12px 0; }
+  /* A link in a sentence: a taller tap area, the same lines. */
+  .content a.wl-link:not(.btn) { padding: 13px 0; }
+  /* The SQL editor wraps (no gutter; its line marks would fall elsewhere). */
+  .ed { grid-template-columns: minmax(0, 1fr); }
+  .ed-gut, .ed-cur, .ed-err, .dt-band { display: none !important; }
+  .ed-hl, .ed-ta { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ed-ta { scrollbar-width: none; }
 }
+/* Logs on a phone: the lines first; the chart and the secondary links behind chips. */
+@media (max-width: 900px) {
+  .al-logs .card.al-hist { display: none; }
+  .al-logs.al-chart-open .card.al-hist { display: block; }
+  .al-logs.al-more-open .al-wide-only { display: inline-flex; }
+  .al-logs .al-rangerow .chip, .al-logs .al-lvkey { min-height: 40px; }
+}
+/* The SQL workbench's tables: a sheet under 1,100 px. */
+.wb-tables-btn, .wb-side-close { display: none; }
+@media (max-width: 1100px) {
+  .wb-tables-btn, .wb-side-close { display: inline-flex; }
+  .wb.side-open .wb-side { display: flex; position: fixed; inset: 52px 0 0 0; z-index: 40; border-right: 0; }
+  .wb.side-open .wb-side .fi, .wb.side-open .wb-side .tt-h { min-height: 40px; }
+}
+@media (max-width: 900px) { .qtabs button { min-height: 40px; } }
 /* ===== end workload ===== */
 /* ===== cluster ===== */
 /* The Cluster canvas: tiles per shard on an SLO scale (fine is neutral, amber
