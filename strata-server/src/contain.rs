@@ -228,11 +228,28 @@ pub fn event(r: &Rule, what: &str, who: Option<String>) -> crate::events::Event 
     crate::events::Event { kind: "contain".into(), severity: if r.action == "refuse" { "warning".into() } else { "info".into() }, title, detail: json!({"rule": r.json(), "change": what}), where_: Json::Null, who }
 }
 
-/// Ends the rules whose time passed, each an event and an audit entry.
+/// Ends the rules whose time passed, each an event and an audit entry:
+/// by `system`, with the rule before and the reason `expired` (the event
+/// says it on the Timeline, so the entry is not a change event too).
 pub fn sweep(svc: &crate::service::Service) {
     for r in svc.contain.expired() {
         tracing::info!(rule = %r.id, "contain rule ended: it {}", r.what());
         svc.events.add(event(&r, "ended", None));
+        let entry = crate::keys::Entry {
+            ts_ms: now_ms(),
+            who: "system".into(),
+            method: "EXPIRE".into(),
+            route: "/v1/admin/contain/:id".into(),
+            status: 200,
+            detail: Some(format!("contain rule {} ended: it {} (set by {}, its time over)", r.id, r.what(), r.by)),
+            kind: crate::keys::CHANGE.into(),
+            reason: Some("expired".into()),
+            object: Some(format!("contain rule {}", r.id)),
+            before: Some(r.json()),
+            actor: "server".into(),
+            ..Default::default()
+        };
+        svc.audit_keep(entry, false);
     }
 }
 
