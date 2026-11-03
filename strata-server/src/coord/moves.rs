@@ -182,6 +182,17 @@ impl Drop for Renewing {
 }
 
 impl Coordinator {
+    /// The rows a second the last job of moves here ran at, once it is done
+    /// and sent enough rows to say (NEW-cluster-admin-7): the rate plans
+    /// estimate moves at.
+    pub fn measured_rate(&self) -> Option<f64> {
+        let j = lock(&self.moves.job);
+        let j = j.as_ref().filter(|j| j.state == "done")?;
+        let rows = j.steps.iter().map(|s| s.rows).sum::<u64>();
+        let secs = (j.finished? - j.started) as f64 / 1e6;
+        (rows >= 1000 && secs > 0.0).then(|| rows as f64 / secs)
+    }
+
     /// The job of moves running or last run here, and the move under way
     /// in the cluster map (which another coordinator may run).
     pub fn moves(&self) -> Json {

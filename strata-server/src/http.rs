@@ -2115,7 +2115,7 @@ fn moves_started(app: &App, w: Option<axum::Extension<Principal>>, j: Json, titl
 async fn admin_plan(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let c = app.svc.coordinator()?;
     let snap = c.snapshot().await;
-    let mut p = crate::coord::plan::plan(&snap, &b, c.moves()["running"] == true)?;
+    let mut p = crate::coord::plan::plan_at(&snap, &b, c.moves()["running"] == true, c.measured_rate())?;
     // cluster2: each server the plan adds is asked whether it answers, is
     // empty, runs the cluster's schema and has room (NEW-cluster-admin-10).
     c.probe_new(&mut p).await;
@@ -2137,13 +2137,18 @@ async fn plan_apply(State(app): State<App>, w: Option<axum::Extension<Principal>
     if b.get("steps").is_none() {
         let c = app.svc.coordinator()?;
         let snap = c.snapshot().await;
-        let mut p = crate::coord::plan::plan(&snap, &b, c.moves()["running"] == true)?;
+        let mut p = crate::coord::plan::plan_at(&snap, &b, c.moves()["running"] == true, c.measured_rate())?;
         c.probe_new(&mut p).await;
         if p["ok"] != true {
             let why: Vec<&str> = p["preflight"].as_array().into_iter().flatten().filter(|x| x["ok"] == false).filter_map(|x| x["text"].as_str()).collect();
             return Err(ApiError { status: 409, message: format!("the plan's checks fail: {}", why.join("; ")) });
         }
         b = json!({"steps": p["steps"], "estimate_s": p["estimate_s"]});
+    }
+    // One plan at a time in the cluster: not while another coordinator
+    // applies one.
+    if let Some(why) = crate::coord::plan::busy_elsewhere(&plans_elsewhere(&app).await) {
+        return Err(ApiError { status: 409, message: why });
     }
     let j = crate::coord::plan::apply(&app.svc, &b, plan_who(w))?;
     let r = &j["run"];
@@ -2154,10 +2159,25 @@ async fn plan_apply(State(app): State<App>, w: Option<axum::Extension<Principal>
 }
 
 /// `GET /v1/admin/plan/run`: the plan this coordinator applies or applied
-/// last, step by step.
-async fn plan_run(State(app): State<App>) -> Res {
+/// last, step by step; and, under `elsewhere`, the plan each other
+/// coordinator of the cluster applies or applied, so that every
+/// coordinator's Cluster page shows it (asked of a peer, only its own).
+async fn plan_run(State(app): State<App>, headers: HeaderMap) -> Res {
     app.svc.coordinator()?;
-    Ok(AxJson(crate::coord::plan::view(&app.svc)))
+    let mut j = crate::coord::plan::view(&app.svc);
+    if !headers.contains_key("x-strata-peer") {
+        j["elsewhere"] = plans_elsewhere(&app).await;
+    }
+    Ok(AxJson(j))
+}
+
+/// The plan of each other coordinator: `[{coordinator, url, run}]`, or the
+/// `error` asking it gave.
+async fn plans_elsewhere(app: &App) -> Json {
+    let peers: Vec<crate::peers::Peer> = crate::peers::coordinators(app).into_iter().filter(|p| !p.this).collect();
+    let asks = peers.iter().map(|p| crate::peers::get(app, p, "/v1/admin/plan/run"));
+    let got = futures::future::join_all(asks).await;
+    Json::Array(peers.iter().zip(got).map(|(p, r)| crate::coord::plan::elsewhere(&p.name, &p.url, r)).collect())
 }
 
 /// `POST /v1/admin/plan/run/stop`: the plan stops after its step under way.
@@ -2186,9 +2206,21 @@ async fn plan_discard(State(app): State<App>) -> Result<Response, ApiError> {
 }
 
 /// `GET /v1/admin/moves`: the job of moves running or last run here, and
-/// the move under way in the cluster map.
-async fn moves(State(app): State<App>) -> Res {
-    Ok(AxJson(app.svc.coordinator()?.moves()))
+/// the move under way in the cluster map; under `elsewhere`, the jobs other
+/// coordinators run now (asked of a peer, only its own).
+async fn moves(State(app): State<App>, headers: HeaderMap) -> Res {
+    let mut j = app.svc.coordinator()?.moves();
+    if !headers.contains_key("x-strata-peer") {
+        j["elsewhere"] = moves_elsewhere(&app).await;
+    }
+    Ok(AxJson(j))
+}
+
+/// The jobs of moves other coordinators run now: `[{coordinator, url, job}]`.
+async fn moves_elsewhere(app: &App) -> Json {
+    let peers: Vec<crate::peers::Peer> = crate::peers::coordinators(app).into_iter().filter(|p| !p.this).collect();
+    let got = futures::future::join_all(peers.iter().map(|p| crate::peers::get(app, p, "/v1/admin/moves"))).await;
+    Json::Array(peers.iter().zip(got).filter_map(|(p, r)| r.ok().filter(|j| j["running"] == true).map(|j| json!({"coordinator": p.name, "url": p.url, "job": j["job"]}))).collect())
 }
 
 /// `POST /v1/admin/moves {"slots": [[start, end], ...], "to": shard}`:
@@ -2221,7 +2253,13 @@ async fn stop_moves(State(app): State<App>) -> Result<Response, ApiError> {
 /// `POST /v1/admin/moves/finish`: ends the move a stopped coordinator
 /// left in the cluster map (completed if it had flipped, given up if not).
 async fn finish_move(State(app): State<App>) -> Result<Response, ApiError> {
-    let j = app.svc.coordinator()?.finish_move().await?;
+    let c = app.svc.coordinator()?;
+    // Not a move another coordinator is making: finishing it would give up
+    // its copy under it.
+    if let Some(why) = crate::coord::plan::moving_elsewhere(&moves_elsewhere(&app).await) {
+        return Err(ApiError { status: 409, message: why });
+    }
+    let j = c.finish_move().await?;
     let detail = format!("finished the move left in the cluster map: {}", j["finished"]);
     Ok(audited(j, detail))
 }
@@ -2948,6 +2986,8 @@ async fn kube_planned(l: &crate::operator::kube::Link, b: &Json) -> Result<(Json
     let patch = kube_patch(b, &now)?;
     let (old, new) = crate::operator::patched(&now["spec"], &patch).map_err(ApiError::bad)?;
     let mut plan = crate::operator::plan(&old, &new, old.shards, old.replicas);
+    // cluster2: the sizes before and after, which the estimate is of.
+    plan["sizes"] = json!({"shards": [old.shards, new.shards], "replicas": [old.replicas, new.replicas]});
     if let Some(v) = b.get("rollback") {
         plan["rollback"] = v.clone();
         plan["patch"] = patch.clone();
@@ -2967,7 +3007,14 @@ fn kube_link(app: &App) -> Result<&crate::operator::kube::Link, ApiError> {
 /// operator's steps for it and what to know first; nothing is changed.
 async fn kube_plan(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let l = kube_link(&app)?;
-    let (_, _, plan) = kube_planned(l, &b).await?;
+    let (_, _, mut plan) = kube_planned(l, &b).await?;
+    // cluster2: how long it takes and the rows it copies, said once here
+    // for every view (NEW-cluster-admin-7).
+    if let Ok(c) = app.svc.coordinator() {
+        let n = |k: &str, i: usize| plan["sizes"][k][i].as_u64().unwrap_or(0) as usize;
+        let (from, to) = ((n("shards", 0), n("replicas", 0)), (n("shards", 1), n("replicas", 1)));
+        plan["estimate"] = crate::coord::plan::shape_estimate(&*c.snapshot().await, from, to, c.measured_rate());
+    }
     Ok(AxJson(plan))
 }
 
@@ -3164,10 +3211,15 @@ async fn autoscale_replay(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     let shards = cluster["shards"].as_array();
     let given = &b["sizes"];
     let n = |k: &str| given[k].as_u64().map(|v| v as usize).filter(|v| *v > 0);
+    // cluster2 (NEW-cluster-admin-6): on machines of one's own, the volume
+    // is the largest disk the copies report, so that the volumes rule
+    // replays on the levels the copies' health gives.
+    let disk = crate::coord::plan::volume_of(&cluster);
+    let copies: Vec<usize> = shards.into_iter().flatten().filter_map(|s| s["replicas"].as_array().map(Vec::len)).collect();
     let start = Sizes {
-        replicas: n("replicas").or(spec.as_ref().map(|s| s.replicas)).or_else(|| shards?.iter().filter_map(|s| s["replicas"].as_array().map(Vec::len)).max()).unwrap_or(1),
+        replicas: n("replicas").or(spec.as_ref().map(|s| s.replicas)).or_else(|| copies.iter().copied().max()).unwrap_or(1),
         shards: n("shards").or(spec.as_ref().map(|s| s.shards)).or_else(|| shards.map(Vec::len)).unwrap_or(1).max(1),
-        volume: given["volume"].as_str().map(String::from).or(spec.as_ref().map(|s| s.storage.size.clone())).unwrap_or_else(|| "10Gi".into()),
+        volume: given["volume"].as_str().map(String::from).or(spec.as_ref().map(|s| s.storage.size.clone())).or(disk.clone()).unwrap_or_else(|| "10Gi".into()),
     };
     let now = crate::telemetry::now_ms();
     // A step a shard a row: at most 10,000 rows.
@@ -3176,7 +3228,7 @@ async fn autoscale_replay(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     let (steps, nodes) = load_steps(&app, since).await?;
     // On machines of one's own no volume size is known (no StrataCluster,
     // none given): the rule growing volumes is left out of the replay.
-    let volume_known = spec.is_some() || given["volume"].is_string();
+    let volume_known = spec.is_some() || given["volume"].is_string() || disk.is_some();
     let mut replayed = rules.clone();
     let mut left_out = Vec::new();
     if !volume_known && replayed.volumes.as_ref().is_some_and(|v| v.action == crate::operator::autoscale::VolumeAction::Grow) {
@@ -3189,6 +3241,12 @@ async fn autoscale_replay(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     j["sizes"] = json!({"replicas": start.replicas, "shards": start.shards, "volume": if volume_known { json!(start.volume) } else { Json::Null }});
     if !volume_known {
         j["summary"]["end"]["volume"] = Json::Null;
+    }
+    // The copies each shard has now: a replay models every shard at
+    // `sizes.replicas`, which a view says when they differ.
+    j["copies_now"] = json!({"min": copies.iter().min(), "max": copies.iter().max()});
+    if spec.is_none() && !given["volume"].is_string() {
+        j["volume_from"] = json!(if disk.is_some() { "the copies' disks" } else { "unknown" });
     }
     j["sinceMs"] = json!(since);
     j["days"] = json!(days);

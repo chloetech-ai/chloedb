@@ -3600,6 +3600,8 @@ impl Service {
             "running": self.live.len(), "log_store": log_store,
             // core: what a coordinator's /v1/cluster shows of each copy.
             "capability": self.capability(),
+            // cluster2: the flags it runs with, for Settings (NEW-cluster-admin-5).
+            "limits": {"slow_ms": self.slow_after().map(|d| d.as_millis() as u64), "max_concurrent": self.max_concurrent, "max_rows": self.max_rows, "timeout_ms": self.timeout.as_millis() as u64},
             "place": {"name": self.place.name, "node": self.place.node, "zone": self.place.zone},
             "version": self.place.version(),
             "backup_dir": self.backup_dir.as_ref().map(|p| p.display().to_string()),

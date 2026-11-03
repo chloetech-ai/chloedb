@@ -183,12 +183,16 @@ pub fn plan_at(snap: &Json, ask: &Json, moving: bool, measured_rows_s: Option<f6
             adds.push((i, u.clone()));
         }
         let leaving: Vec<String> = have.urls.iter().filter(|u| !want.contains(u)).cloned().collect();
+        // A lone copy is the primary once a copy joins it.
+        let primary = have.primary.clone().or_else(|| (have.urls.len() == 1).then(|| have.urls[0].clone()));
         for u in &leaving {
-            if have.primary.as_deref() == Some(u.as_str()) {
-                let to = want.iter().find(|w| have.urls.contains(w) && !have.down.contains(w)).cloned();
+            if primary.as_deref() == Some(u.as_str()) {
+                // A copy it keeps that is up; else one this plan adds, which is
+                // in sync before the handover (additions run first).
+                let to = want.iter().find(|w| have.urls.contains(w) && !have.down.contains(w)).or_else(|| want.iter().find(|w| !have.urls.contains(w))).cloned();
                 match to {
                     Some(to) => handovers.push((i, u.clone(), to)),
-                    None => check(&mut preflight, "fail", format!("{} is shard {i}'s primary and no copy it keeps is up to hand over to: add the new copies first, in a plan of their own", name(i, u))),
+                    None => check(&mut preflight, "fail", format!("{} is shard {i}'s primary and no copy it keeps is up to hand over to: add a copy first", name(i, u))),
                 }
             }
             drops.push((i, u.clone()));
@@ -301,6 +305,45 @@ pub fn plan_at(snap: &Json, ask: &Json, moving: bool, measured_rows_s: Option<f6
         rows[to] += r;
     }
     let mut gone = BTreeSet::new();
+    // `"even": true`: the slots even out over every shard after the moves
+    // (new shards take their share), as `POST /v1/admin/rebalance` does.
+    if ask.get("even").and_then(Json::as_bool) == Some(true) {
+        let (mut slots, mut sent, mut to_new) = (0usize, 0.0, 0.0);
+        for (from, to, k) in even_counts(&held, &gone, None) {
+            let r = rows[from] * k as f64 / held[from].max(1) as f64;
+            *gain.entry(to).or_default() += r * per_row(from);
+            held[from] -= k;
+            held[to] += k;
+            rows[from] -= r;
+            rows[to] += r;
+            slots += k;
+            sent += r;
+            if to >= n {
+                to_new += r;
+            }
+        }
+        if slots > 0 {
+            let sent = sent.round() as u64;
+            move_rows += sent;
+            let shares = total - remove_shards.len();
+            steps.push(json!({"kind": "rebalance", "rows": sent, "text": format!("Even the slots out over {shares} shards: about {} slots and {} rows move{}, up to {MOVE_SLOTS} slots at a time", thousands(slots as f64), thousands(sent as f64), {
+                let new = if new_shards.len() == 1 { "shard" } else { "shards" };
+                let to_new = to_new.round() as u64;
+                if to_new == 0 || new_shards.is_empty() { String::new() } else if to_new == sent { format!(" to the new {new}") } else { format!(" ({} of them to the new {new})", thousands(to_new as f64)) }
+            }),
+                "call": {"method": "POST", "path": "/v1/admin/rebalance", "body": {}}, "wait": true}));
+            blast.push("writes to each run of slots that moves wait at its flip, under a second".into());
+        }
+    }
+    // A new server is sent its shard's share of the rows that move.
+    for (i, copies) in &new_shards {
+        let b = gain.get(i).map(|b| b.round() as u64);
+        for (u, bytes) in new_servers.iter_mut() {
+            if copies.contains(u) {
+                *bytes = b;
+            }
+        }
+    }
     for &i in remove_shards.iter().rev() {
         let mut drained = 0.0;
         for (from, to, k) in even_counts(&held, &gone, Some(i)) {
@@ -400,6 +443,8 @@ fn disk_checks(shards: &[Shard], gain: &HashMap<usize, f64>, removed: &BTreeSet<
     let pct = |r: f64| format!("{:.0}%", r * 100.0);
     let mut worst: Option<(String, f64)> = None;
     let mut reported = false;
+    // Copies it sends nothing that are nearly full, by how full: one line each.
+    let mut idle_full: std::collections::BTreeMap<u64, Vec<String>> = std::collections::BTreeMap::new();
     for (i, s) in shards.iter().enumerate() {
         if removed.contains(&i) {
             continue;
@@ -420,9 +465,17 @@ fn disk_checks(shards: &[Shard], gain: &HashMap<usize, f64>, removed: &BTreeSet<
                     worst = Some((name, after));
                 }
             } else if d.used >= 0.85 {
-                check(pre, "warn", format!("{name}'s disk is {} full now (the plan sends it nothing)", pct(d.used)));
+                idle_full.entry((d.used * 100.0).round() as u64).or_default().push(name);
             }
         }
+    }
+    for (p, names) in idle_full.iter().rev() {
+        let said = match names.as_slice() {
+            [one] => format!("{one}'s disk is {p}% full now (the plan sends it nothing)"),
+            [rest @ .., last] => format!("the disks of {} and {last} are {p}% full now (the plan sends them nothing)", rest.join(", ")),
+            [] => continue,
+        };
+        check(pre, "warn", said);
     }
     if !reported {
         check(pre, "warn", "the copies do not report their disks: the plan cannot check their room".into());
@@ -444,6 +497,84 @@ pub fn bytes(b: f64) -> String {
         format!("{v:.0} {}", units[k])
     } else {
         format!("{v:.1} {}", units[k])
+    }
+}
+
+/// How long changing the cluster's shape from `from` to `to` (shards,
+/// copies a shard) takes, and the rows it copies: what the operator does
+/// for a `StrataCluster` patch, estimated once here so that every view says
+/// the same (NEW-cluster-admin-7). New copies of every shard are sent their
+/// shard's rows at once, [`COPY_ROWS_S`] each; slots move one run at a
+/// time, at the rate the last moves here went (`measured_rows_s`), else
+/// [`MOVE_ROWS_S`]; and each step takes [`STEP_S`] besides.
+pub fn shape_estimate(snap: &Json, from: (usize, usize), to: (usize, usize), measured_rows_s: Option<f64>) -> Json {
+    let shards = shards_of(snap);
+    let rows: u64 = shards.iter().map(|s| s.docs).sum();
+    let biggest = shards.iter().map(|s| s.docs).max().unwrap_or(0) as f64;
+    let ((s0, r0), (s1, r1)) = (from, to);
+    let move_rate = measured_rows_s.filter(|r| *r > 0.0).unwrap_or(MOVE_ROWS_S);
+    let (mut copy, mut moved, mut secs, mut steps) = (0.0, 0.0, 0.0, 0usize);
+    if r1 > r0 {
+        // Every shard there now gains copies (a new shard's copies are
+        // sent its rows by the moves); each primary sends them one by one.
+        let d = (r1 - r0) as f64;
+        copy = d * rows as f64;
+        secs += d * biggest / COPY_ROWS_S;
+        steps += 1;
+    }
+    if s1 != s0 {
+        let d = s1.abs_diff(s0);
+        moved = rows as f64 * d as f64 / s0.max(s1).max(1) as f64;
+        secs += moved / move_rate;
+        let slots = SLOTS * d / s0.max(s1).max(1);
+        steps += d + slots.div_ceil(MOVE_SLOTS);
+    }
+    if r1 < r0 {
+        steps += 1;
+    }
+    secs += steps as f64 * STEP_S;
+    let total = (copy + moved).round();
+    let rate = if measured_rows_s.is_some() { format!("slots move at {} rows a second, the rate the last moves here ran at", thousands(move_rate)) } else { format!("slots move at about {} rows a second (no move measured here yet)", thousands(move_rate)) };
+    let text = if total > 0.0 {
+        let mut parts = Vec::new();
+        if copy > 0.0 {
+            parts.push(format!("new copies are sent their shard's rows at about {} rows a second, every shard at once", thousands(COPY_ROWS_S)));
+        }
+        if moved > 0.0 {
+            parts.push(rate.clone());
+        }
+        format!("About {} to copy {} rows: {}.", secs_words(secs), thousands(total), parts.join("; "))
+    } else if steps > 0 {
+        format!("About {}: no rows are copied.", secs_words(secs))
+    } else {
+        "Nothing changes.".into()
+    };
+    json!({
+        "rows_to_copy": total as u64, "estimate_s": secs.round(), "copy_rows_s": COPY_ROWS_S, "move_rows_s": move_rate,
+        "measured": measured_rows_s.is_some(), "text": text,
+    })
+}
+
+/// The volume of a cluster's copies, as a `StrataCluster` would name it
+/// ("252Gi"): the largest disk a copy reports in its health, for replaying
+/// the volumes rule on machines of one's own (NEW-cluster-admin-6).
+pub fn volume_of(cluster: &Json) -> Option<String> {
+    let copies = cluster["shards"].as_array().into_iter().flatten().flat_map(|s| s["replicas"].as_array().into_iter().flatten());
+    let most = copies.filter_map(|r| r["detail"]["load"]["disk_total_bytes"].as_f64()).fold(0.0, f64::max);
+    let gib = (1u64 << 30) as f64;
+    (most >= gib).then(|| format!("{}Gi", (most / gib).round()))
+}
+
+/// Seconds for people: "40 s", "6 min", "2 h 10 min".
+fn secs_words(s: f64) -> String {
+    let s = s.round().max(0.0) as u64;
+    match s {
+        0..=89 => format!("{s} s"),
+        90..=3569 => format!("{} min", (s + 30) / 60),
+        _ => {
+            let m = (s + 30) / 60;
+            if m % 60 == 0 { format!("{} h", m / 60) } else { format!("{} h {} min", m / 60, m % 60) }
+        }
     }
 }
 
@@ -707,6 +838,21 @@ fn step_of(k: usize, v: &Json) -> Result<Json, ApiError> {
         "drain" | "remove_shard" => out["shard"] = json!(shard()?),
         _ => {}
     }
+    // A step sent without its words (a call by hand) is said from its fields.
+    if out["text"] == "" {
+        let i = out["shard"].as_u64().map_or(String::new(), |i| i.to_string());
+        let u = out["url"].as_str().unwrap_or_default();
+        out["text"] = json!(match kind {
+            "add_copy" => format!("Add {u} to shard {i}"),
+            "remove_copy" => format!("Remove {u} from shard {i}"),
+            "promote" => format!("Make {u} the primary of shard {i}{}", if out["force"] == true { ", forced" } else { "" }),
+            "add_shard" => format!("Add a shard served by {}", out["servers"].as_array().into_iter().flatten().filter_map(Json::as_str).collect::<Vec<_>>().join(", ")),
+            "move" => format!("Move slots {} to shard {}", out["slots"].as_array().into_iter().flatten().map(|r| format!("{}..{}", r[0], r[1])).collect::<Vec<_>>().join(", "), out["to"]),
+            "rebalance" => "Even the slots out over the shards".to_string(),
+            "drain" => format!("Drain shard {i}: its slots move to the other shards"),
+            _ => format!("Remove shard {i}"),
+        });
+    }
     Ok(out)
 }
 
@@ -856,6 +1002,44 @@ pub fn view(svc: &Service) -> Json {
     json!({"run": run, "kept_in": kept})
 }
 
+/// What another coordinator answered of its plan (`GET /v1/admin/plan/run`
+/// asked as a peer), for the `elsewhere` list: its run, or why asking failed.
+pub fn elsewhere(name: &str, url: &str, answer: Result<Json, String>) -> Json {
+    match answer {
+        Ok(j) => json!({"coordinator": name, "url": url, "run": j["run"]}),
+        Err(e) => json!({"coordinator": name, "url": url, "run": null, "error": e}),
+    }
+}
+
+/// Why a plan may not start here: another coordinator applies one now, or
+/// one it applied stopped at a restart and waits to be resumed there.
+pub fn busy_elsewhere(elsewhere: &Json) -> Option<String> {
+    elsewhere.as_array()?.iter().find_map(|o| {
+        let r = &o["run"];
+        let at = || format!("step {} of {}", r["at"].as_u64().unwrap_or(0) + 1, r["of"].as_u64().unwrap_or(0));
+        let who = o["coordinator"].as_str().unwrap_or("another coordinator");
+        match r["state"].as_str()? {
+            "running" => Some(format!("a plan is being applied on coordinator {who} ({}): wait for it, or stop it there", at())),
+            "interrupted" => Some(format!("a plan stopped at {} when coordinator {who} restarted: resume it or discard it there first", at())),
+            _ => None,
+        }
+    })
+}
+
+/// Why the move in the cluster map may not be finished here: another
+/// coordinator runs a job of moves now (`elsewhere` of `GET
+/// /v1/admin/moves`), and is making it.
+pub fn moving_elsewhere(elsewhere: &Json) -> Option<String> {
+    let o = elsewhere.as_array()?.first()?;
+    let j = &o["job"];
+    Some(format!(
+        "coordinator {} moves slots now (move {} of {}): it finishes its own moves; stop it there if it must end",
+        o["coordinator"].as_str().unwrap_or("?"),
+        (j["done"].as_u64().unwrap_or(0) + 1).min(j["of"].as_u64().unwrap_or(1)),
+        j["of"].as_u64().unwrap_or(1)
+    ))
+}
+
 /// Starts applying a plan (`POST /v1/admin/plan/apply`): `body.steps`, in
 /// order ([`step_of`]), run in the background; `body.estimate_s` is the
 /// estimate it was shown with. Refused while a plan runs here, or one a
@@ -873,19 +1057,22 @@ pub fn apply(svc: &Arc<Service>, body: &Json, who: Who) -> Result<Json, ApiError
     if let Some(r) = lock(&c.plans.run).as_ref().filter(|r| r.state == "interrupted") {
         return Err(ApiError { status: 409, message: format!("a plan stopped at step {} of {} when this coordinator restarted: resume it or discard it first", r.at + 1, r.steps.len()) });
     }
-    // The shards each step names, by their servers now; a new shard's are
-    // those its step adds it with.
+    // The shards each step names, by their servers now and the copies the
+    // plan adds them (a shard is found by those once its old copies left);
+    // a new shard's are those its step adds it with.
     let t = c.topo();
     let n = t.replicas.len();
+    let added: Vec<(u64, String)> = steps.iter().filter(|st| st["kind"] == "add_copy").filter_map(|st| Some((st["shard"].as_u64()?, st["url"].as_str()?.to_string()))).collect();
     let mut news: Vec<Vec<String>> = Vec::new();
     let mut run_steps = Vec::new();
     for (k, st) in steps.into_iter().enumerate() {
         let servers_of = |i: u64, news: &Vec<Vec<String>>| -> Option<Vec<String>> {
-            let i = i as usize;
-            match t.replicas.get(i) {
-                Some(rs) => Some(rs.iter().map(|r| r.url.clone()).collect()),
-                None => news.get(i - n).cloned(),
-            }
+            let mut have: Vec<String> = match t.replicas.get(i as usize) {
+                Some(rs) => rs.iter().map(|r| r.url.clone()).collect(),
+                None => news.get(i as usize - n).cloned()?,
+            };
+            have.extend(added.iter().filter(|(j, u)| *j == i && !have.contains(u)).map(|(_, u)| u.clone()).collect::<Vec<_>>());
+            Some(have)
         };
         let mut rs = RunStep { step: st.clone(), state: "waiting".into(), started_ms: None, finished_ms: None, note: None, error: None, rows_done: 0, eta_s: None, servers: None, to_servers: None };
         if let Some(i) = st["shard"].as_u64() {
@@ -1055,7 +1242,7 @@ async fn run_from(svc: Arc<Service>, c: Arc<Coordinator>, from: usize, _busy: to
         summary = Some((r.id.clone(), r.at, r.steps.len(), r.by.clone(), r.reason.clone(), r.started_ms, r.steps.iter().filter(|s| s.state == "done").count()));
     });
     if let Some((id, at, n, by, reason, started, done)) = summary {
-        let took = bytes_time((now_ms().saturating_sub(started)) as f64 / 1e3);
+        let took = secs_words((now_ms().saturating_sub(started)) as f64 / 1e3);
         let (severity, title) = match outcome.0 {
             "done" => ("info", format!("Plan applied: {n} {} in {took}", if n == 1 { "step" } else { "steps" })),
             "stopped" => ("info", format!("Plan stopped when asked, after {done} of {n} steps")),
@@ -1063,16 +1250,6 @@ async fn run_from(svc: Arc<Service>, c: Arc<Coordinator>, from: usize, _busy: to
         };
         tracing::info!(plan = %id, state = outcome.0, done, of = n, "plan ended");
         svc.events.add(crate::events::Event { kind: "change".into(), severity: severity.into(), title, detail: json!({"plan": id, "state": outcome.0, "done": done, "of": n, "route": "/v1/admin/plan/apply", "reason": reason}), where_: Json::Null, who: Some(by) });
-    }
-}
-
-/// Seconds for people: 40 s, 3 min, 1 h 20 min.
-pub fn bytes_time(secs: f64) -> String {
-    let s = secs.max(0.0).round() as u64;
-    match s {
-        0..=89 => format!("{s} s"),
-        90..=5399 => format!("{} min", (s + 30) / 60),
-        _ => format!("{} h {} min", s / 3600, (s % 3600) / 60),
     }
 }
 
@@ -1266,7 +1443,16 @@ async fn wait_idle(c: &Arc<Coordinator>, k: usize, resuming: bool) -> Result<(),
             }
             return Err(Halt::Failed(ApiError { status: 409, message: "a move is left in the cluster map by a coordinator that stopped: finish it (Finish it, on Cluster), then resume the plan".into() }));
         }
-        note(c, k, if local { "waiting for the job of moves under way to end".into() } else { "waiting for the move under way in the cluster map to end".into() });
+        let mv = &m["moving"];
+        let what = format!("slots {} from shard {} to shard {}, {}", mv["slots"].as_array().into_iter().flatten().map(|r| format!("{}..{}", r[0], r[1])).collect::<Vec<_>>().join(", "), mv["from"], mv["to"], mv["state"].as_str().unwrap_or("under way"));
+        let left = 30u64.saturating_sub(t0.elapsed().as_secs());
+        note(c, k, if local {
+            "waiting for the job of moves under way to end".into()
+        } else if resuming {
+            format!("a coordinator that stopped left a move in the cluster map ({what}): this one finishes it in {left} s unless it ends first")
+        } else {
+            format!("waiting for the move in the cluster map to end ({what})")
+        });
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
@@ -1279,9 +1465,24 @@ async fn wait_job(c: &Arc<Coordinator>, k: usize) -> Result<String, Halt> {
         let (done, of) = (m["done"].as_u64().unwrap_or(0), m["of"].as_u64().unwrap_or(0));
         let rows = m["rows_done"].as_u64().unwrap_or(0);
         let slots = m["job"]["slots_moved"].as_u64().unwrap_or(0);
-        let mut words = format!("{done} of {of} {} · {} slots · {} rows", if of == 1 { "move" } else { "moves" }, thousands(slots as f64), thousands(rows as f64));
+        // CL-6: what is copied and what has flipped, said apart; the move
+        // under way counts as under way, not done.
+        let total = m["rows_total"].as_u64().filter(|t| *t > 0);
+        let mut words = if of == 0 {
+            "starting".to_string()
+        } else {
+            format!(
+                "{} · {}{} rows copied · {} slots flipped",
+                if done >= of { format!("{of} of {of} moves done") } else { format!("move {} of {of}", done + 1) },
+                thousands(rows as f64),
+                // The total is an estimate made at the start: past it, the
+                // rows copied are said alone.
+                total.filter(|t| rows <= *t).map_or(String::new(), |t| format!(" of about {}", thousands(t as f64))),
+                thousands(slots as f64)
+            )
+        };
         if let Some(r) = m["rate_rows_s"].as_f64().filter(|r| *r > 0.0) {
-            words += &format!(" · {} rows/s", thousands(r));
+            words += &format!(" · {} rows a second", thousands(r));
         }
         let eta = m["eta_s"].as_f64();
         c.plans.step(k, |s| {
@@ -1372,6 +1573,54 @@ mod tests {
     }
 
     #[test]
+    fn a_move_another_coordinator_makes_is_not_finished_here() {
+        assert_eq!(moving_elsewhere(&json!([])), None);
+        let why = moving_elsewhere(&json!([{"coordinator": "coord-b", "url": "http://b:7700", "job": {"done": 2, "of": 6, "state": "running"}}])).unwrap();
+        assert_eq!(why, "coordinator coord-b moves slots now (move 3 of 6): it finishes its own moves; stop it there if it must end");
+    }
+
+    #[test]
+    fn a_plan_on_another_coordinator_holds_this_ones_back() {
+        let running = elsewhere("coord-b", "http://b:7700", Ok(json!({"run": {"state": "running", "at": 1, "of": 3}})));
+        assert_eq!(running["coordinator"], "coord-b");
+        let failed = elsewhere("coord-c", "http://c:7700", Err("timed out".into()));
+        assert_eq!((failed["run"].is_null(), failed["error"].as_str()), (true, Some("timed out")));
+        assert_eq!(busy_elsewhere(&json!([failed.clone(), running])).as_deref(), Some("a plan is being applied on coordinator coord-b (step 2 of 3): wait for it, or stop it there"));
+        let stopped = elsewhere("coord-b", "http://b:7700", Ok(json!({"run": {"state": "interrupted", "at": 0, "of": 2}})));
+        assert!(busy_elsewhere(&json!([stopped])).unwrap().starts_with("a plan stopped at step 1 of 2 when coordinator coord-b restarted"));
+        let done = elsewhere("coord-b", "http://b:7700", Ok(json!({"run": {"state": "done", "at": 2, "of": 2}})));
+        assert_eq!(busy_elsewhere(&json!([done, failed])), None);
+    }
+
+    #[test]
+    fn the_volume_is_the_largest_disk_a_copy_reports() {
+        let mut sn = snap();
+        assert_eq!(volume_of(&sn), None, "no copy says its disk");
+        sn["shards"][0]["replicas"][1]["detail"]["load"] = json!({"disk_total_bytes": 100.0 * (1u64 << 30) as f64});
+        sn["shards"][1]["replicas"][0]["detail"]["load"] = json!({"disk_total_bytes": 250.4 * (1u64 << 30) as f64});
+        assert_eq!(volume_of(&sn).as_deref(), Some("250Gi"));
+    }
+
+    #[test]
+    fn a_shape_is_estimated_once_from_the_measured_rate() {
+        // Two shards of 6,000 rows: a copy more of each sends 12,000 rows,
+        // every shard at once (6,000 at 20,000 a second, and a step).
+        let e = shape_estimate(&snap(), (2, 3), (2, 4), None);
+        assert_eq!(e["rows_to_copy"], 12000, "{e}");
+        assert_eq!(e["estimate_s"], (6000.0 / COPY_ROWS_S + STEP_S).round(), "{e}");
+        assert_eq!(e["text"], "About 5 s to copy 12,000 rows: new copies are sent their shard's rows at about 20,000 rows a second, every shard at once.");
+        // A third shard takes a third of the rows, at the rate measured.
+        let e = shape_estimate(&snap(), (2, 3), (3, 3), Some(1000.0));
+        assert_eq!(e["rows_to_copy"], 4000, "{e}");
+        assert_eq!(e["measured"], true);
+        // 4 s of rows, the new shard and 6 runs of 256 slots, 5 s each.
+        assert_eq!(e["estimate_s"], 4.0 + 7.0 * STEP_S, "{e}");
+        assert!(e["text"].as_str().unwrap().ends_with("slots move at 1,000 rows a second, the rate the last moves here ran at."), "{e}");
+        assert_eq!(shape_estimate(&snap(), (2, 3), (2, 3), None)["text"], "Nothing changes.");
+        assert_eq!(shape_estimate(&snap(), (2, 3), (2, 2), None)["text"], "About 5 s: no rows are copied.");
+    }
+
+    #[test]
     fn a_plan_holds_only_what_was_asked() {
         // Removing shard 1 leaves shard 0's three copies alone (CC-1).
         let p = plan(&snap(), &json!({"remove_shards": [1]}), false).unwrap();
@@ -1380,6 +1629,20 @@ mod tests {
         assert_eq!(p["removes_copies"], json!(["http://h10", "http://h11"]));
         assert_eq!(p["rows_to_copy"], 6000);
         assert_eq!(p["ok"], true, "{p}");
+    }
+
+    #[test]
+    fn a_lone_copy_replaced_hands_over_to_the_new_one() {
+        let mut sn = snap();
+        sn["shards"][1]["primary"] = Json::Null;
+        sn["shards"][1]["replicas"].as_array_mut().unwrap().truncate(1);
+        let p = plan(&sn, &json!({"shards": [{"shard": 1, "copies": ["http://new"]}]}), false).unwrap();
+        let kinds: Vec<&str> = p["steps"].as_array().unwrap().iter().map(|s| s["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["add_copy", "handover", "remove_copy"], "{p}");
+        assert_eq!((p["steps"][1]["copy"].as_str(), p["steps"][1]["url"].as_str()), (Some("http://h10"), Some("http://new")), "{p}");
+        // A primary with copies it keeps hands over to one of those.
+        let p = plan(&snap(), &json!({"shards": [{"shard": 1, "copies": ["http://h11", "http://new"]}]}), false).unwrap();
+        assert_eq!(p["steps"][1]["url"], "http://h11", "{p}");
     }
 
     #[test]
@@ -1432,12 +1695,35 @@ mod tests {
         assert_eq!(d[0]["after"], 0.55, "{p}");
         let texts: Vec<&str> = p["preflight"].as_array().unwrap().iter().filter_map(|x| x["text"].as_str()).collect();
         // Shard 0's copies are 97% full: not a green check, though the plan sends them nothing.
-        assert!(texts.iter().any(|t| t.starts_with("s0-0's disk is 97% full now")), "{texts:?}");
+        assert!(texts.iter().any(|t| *t == "the disks of s0-0, s0-1 and s0-2 are 97% full now (the plan sends them nothing)"), "{texts:?}");
+        assert!(p["preflight"].as_array().unwrap().iter().any(|x| x["level"] == "warn" && x["text"].as_str().unwrap().contains("97% full now")), "{p}");
         assert!(texts.iter().any(|t| t.starts_with("the disks have room: the fullest copy the plan sends rows to ends at 55%")), "{texts:?}");
         // Moving to shard 0 does not fit: 10 GB more where 3 GB are free.
         let p = plan(&sn, &json!({"moves": [{"slots": [2048, 4096], "to": 0}]}), false).unwrap();
         assert_eq!(p["ok"], false, "{p}");
         assert!(p["preflight"].as_array().unwrap().iter().any(|x| x["ok"] == false && x["text"].as_str().unwrap().starts_with("s0-0's disk would be 98% full after the plan (97% now, about 1.0 GB more)")), "{p}");
+    }
+
+    #[test]
+    fn a_new_shard_evened_out_is_sent_its_share() {
+        let mut sn = snap();
+        for sh in sn["shards"].as_array_mut().unwrap() {
+            for r in sh["replicas"].as_array_mut().unwrap() {
+                r["detail"]["load"] = json!({"disk_total_bytes": 100e9, "disk_free_bytes": 50e9, "file_bytes": 3e9, "wal_bytes": 0});
+            }
+        }
+        let p = plan(&sn, &json!({"shards": [{"shard": 2, "copies": ["http://n1", "http://n2", "http://n3"]}], "add_shards": 1, "even": true}), false).unwrap();
+        let kinds: Vec<&str> = p["steps"].as_array().unwrap().iter().filter_map(|s| s["kind"].as_str()).collect();
+        assert_eq!(kinds, ["add_shard", "rebalance"], "{p}");
+        // A third of the slots (1,365) and of the rows move, all to the new shard.
+        let t = p["steps"][1]["text"].as_str().unwrap();
+        assert!(t.starts_with("Even the slots out over 3 shards: about 1,365 slots"), "{t}");
+        assert!(t.contains("rows move to the new shard,"), "{t}");
+        assert_eq!(p["after"].as_array().unwrap().iter().map(|a| a["slots"].as_u64().unwrap()).collect::<Vec<_>>(), [1366, 1365, 1365]);
+        // Each new server is sent its shard's bytes: a third of the files.
+        let b = p["new_servers"][0]["bytes"].as_f64().unwrap();
+        assert!((b - 2e9).abs() < 0.05e9, "{p}");
+        assert_eq!(step_of(1, &p["steps"][1]).unwrap()["kind"], "rebalance");
     }
 
     #[test]
@@ -1458,6 +1744,9 @@ mod tests {
         let s = step_of(2, &json!({"kind": "move", "shard": 0, "slots": [[0, 10], [20, 30]], "to": 1})).unwrap();
         assert_eq!(s["slots"], json!([[0, 10], [20, 30]]));
         assert_eq!(step_of(3, &json!({"kind": "even"})).unwrap()["kind"], "rebalance");
+        // A step sent without its words is said from its fields.
+        assert_eq!(step_of(0, &json!({"kind": "move", "slots": [[0, 683]], "to": 1})).unwrap()["text"], "Move slots 0..683 to shard 1");
+        assert_eq!(step_of(0, &json!({"kind": "promote", "shard": 2, "url": "http://h:1", "force": true})).unwrap()["text"], "Make http://h:1 the primary of shard 2, forced");
         assert_eq!(step_of(4, &json!({"kind": "unshard", "shard": 2})).unwrap()["kind"], "remove_shard");
         let e = step_of(5, &json!({"kind": "move", "slots": [[10, 5]], "to": 1})).unwrap_err();
         assert!(e.message.starts_with("step 6: slots"), "{}", e.message);
@@ -1476,7 +1765,8 @@ mod tests {
         assert_eq!(plain_votes(m), "http://127.0.0.1:9241: 1 of 2 copies would vote for this replica to be the primary of term 2, and it needs 2: 127.0.0.1:9239 did not answer (tcp connect error)");
         assert_eq!(plain_votes("no votes here"), "no votes here");
         assert_eq!((bytes(950.0), bytes(12_300_000.0), bytes(3.4e9)), ("950 B".into(), "12 MB".into(), "3.4 GB".into()));
-        assert_eq!((bytes_time(40.0), bytes_time(200.0), bytes_time(4000.0)), ("40 s".into(), "3 min".into(), "1 h 6 min".into()));
+        assert_eq!((secs_words(40.0), secs_words(200.0), secs_words(4000.0)), ("40 s".into(), "3 min".into(), "1 h 7 min".into()));
+        assert_eq!((secs_words(3600.0), secs_words(5400.0)), ("1 h".into(), "1 h 30 min".into()));
     }
 
     #[test]
