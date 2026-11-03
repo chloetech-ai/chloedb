@@ -486,6 +486,22 @@ async fn a_coordinator_gathers_its_copies_and_sees_a_shard_lose_its_majority() {
     assert_eq!(state(&lost, "copy-down")["state"], "pending", "{lost}");
     let w = state(&lost, "many-docs")["where"].as_array().unwrap().clone();
     assert!(w.iter().any(|w| w["short"] == "s0-1" && w["unheard_since_ms"].as_u64().is_some()), "{w:?}");
+
+    // A coordinator that starts while the shard has no majority has no
+    // event of it (its events start then); its backtest still shows the
+    // rule firing from its start, as its alert did.
+    let schema = c.schema.clone();
+    let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+    let fresh = Arc::new(Service::new(Backend::Cluster(c.clone()), schema, agent, 16, Duration::from_secs(10)));
+    fresh.alerts.set_coordinator(true);
+    let started = until(&fresh, "a fresh coordinator sees shard-no-majority", &[&a], |a| state(a, "shard-no-majority")["state"] == "firing").await;
+    let mut rule = started["rules"].as_array().unwrap().iter().find(|r| r["id"] == "shard-no-majority").unwrap().clone();
+    rule.as_object_mut().unwrap().remove("status");
+    let fbase = http(fresh.clone()).await;
+    let now = strata_server::telemetry::now_ms();
+    let (status, j) = call(&fbase, "POST", "/v1/alerts/backtest", Some(json!({"rule": rule, "from": now - 3_600_000, "to": now}))).await;
+    assert_eq!((status, j["source"].as_str()), (200, Some("events")), "{j}");
+    assert_eq!(j["fired"].as_array().map(Vec::len), Some(1), "fired from the start: {j}");
 }
 
 /// A route that fails (busy, slow) holds up no other route's messages,

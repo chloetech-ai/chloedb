@@ -474,6 +474,9 @@ pub const UNHEARD_MS: u64 = 60_000;
 /// message for this long: it first hears the other coordinators, which
 /// may have sent it while it was down.
 pub const STARTUP_MS: u64 = 20_000;
+/// How soon after a coordinator starts its first surveys are done: an
+/// alert that fired by then was already the case when it started.
+const FIRST_SURVEY_MS: u64 = 15_000;
 
 impl St {
     fn new(t: u64) -> St {
@@ -3293,6 +3296,19 @@ fn backtest_events(svc: &crate::service::Service, rule: &Rule, from: u64, to: u6
                     }
                 }
                 seeded = Some(since);
+            }
+        }
+        // A coordinator's events start at its first survey: what was
+        // already down then has no event of its own, but the alert that
+        // fired at that survey names it.
+        if seeded.is_none() {
+            let early = lock(&svc.alerts.events).iter().find(|e| e.rule == rule.id && e.state == "firing" && e.ts_ms >= held && e.ts_ms <= held + FIRST_SURVEY_MS).cloned();
+            if let Some(e) = early {
+                for name in &e.where_ {
+                    let k = name.strip_prefix("shard ").and_then(|n| n.parse::<u64>().ok()).map_or_else(|| json!(name).to_string(), |n| json!(n).to_string());
+                    open.insert(k, held);
+                }
+                seeded = Some(held);
             }
         }
     }
