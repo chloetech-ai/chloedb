@@ -829,7 +829,7 @@ impl Database {
             let mut fl = FreeList::new(META_PAGES);
             let mbytes = manifest.encode();
             let mext = Extent { page: fl.alloc(pages_for(mbytes.len())), len: mbytes.len() as u64 };
-            let (fext, fbytes) = place_freelist(&mut fl, &[]);
+            let (fext, fbytes) = place_freelist(&mut fl, &[], false);
             io::set_len(&file, fl.page_count() * PAGE)?;
             io::write_at(&file, &mbytes, mext.page * PAGE)?;
             io::write_at(&file, &fbytes, fext.page * PAGE)?;
@@ -3179,8 +3179,12 @@ impl Database {
     /// Returns space to the file system: moves segments and delete sets from
     /// the end of the file into free runs below them and truncates the free
     /// tail, committing until nothing moves (pages freed by a commit become
-    /// reusable two commits later). Space a live snapshot can still reach
-    /// stays. Returns the number of bytes the file shrank by.
+    /// reusable two commits later). If a sixteenth of the file is still free
+    /// then, in gaps too small for the segments above them, it moves those
+    /// segments to the end and back down into the one gap their old places
+    /// make: the file briefly grows by what lies above its first gap, which
+    /// is written twice. Space a live snapshot can still reach stays.
+    /// Returns the number of bytes the file shrank by.
     pub fn vacuum(&self) -> Result<u64> {
         let mut wal = self.try_writer()?;
         self.check_poisoned()?;
@@ -3209,14 +3213,32 @@ impl Database {
             return Ok(freed);
         }
         let before = lock(&self.state).meta.page_count;
-        let mut idle = 0;
+        let (mut lifted, mut wait, mut idle) = (false, 0, 0);
         while idle < 2 {
             let mut vw = VersionWriter::begin(self);
-            let moved = vw.relocate_down()?;
+            vw.meta_low = true;
+            let mut moved = 0;
+            if wait > 0 {
+                wait -= 1;
+            } else {
+                moved = vw.relocate_down()?;
+                // Nothing has fitted for a second commit running, so what
+                // earlier moves freed is reusable by now: if much of the file
+                // is still free, move everything out of the way once.
+                if moved == 0 && idle == 1 && !lifted && vw.fragmented() {
+                    moved = vw.lift_all()?;
+                    lifted = true;
+                    // The old places come free two commits on. Packing waits
+                    // for them: the extents would otherwise fill the small
+                    // runs first. The manifests of those commits go to the
+                    // front of the gap (`meta_low`), not inside it.
+                    wait = 2;
+                }
+            }
             let c = vw.commit(&mut wal)?;
             let shrank = c.meta.page_count < lock(&self.state).meta.page_count;
             self.publish(c, |_| {})?;
-            idle = if moved > 0 || shrank { 0 } else { idle + 1 };
+            idle = if moved > 0 || shrank || wait > 0 { 0 } else { idle + 1 };
         }
         Ok(before.saturating_sub(lock(&self.state).meta.page_count) * PAGE)
     }
@@ -4392,6 +4414,10 @@ struct VersionWriter<'a> {
     segments_linked: usize,
     /// Ids of the reservations this version installs.
     installs: Vec<u64>,
+    /// Puts the manifest and the freelist in the lowest free run that holds
+    /// them rather than the smallest ([`FreeList::alloc_low`]): vacuum's,
+    /// so they stay in front of the gap it packs segments into.
+    meta_low: bool,
 }
 
 impl<'a> VersionWriter<'a> {
@@ -4426,6 +4452,7 @@ impl<'a> VersionWriter<'a> {
             link: None,
             segments_linked: 0,
             installs: Vec::new(),
+            meta_low: false,
         }
     }
 
@@ -4599,16 +4626,10 @@ impl<'a> VersionWriter<'a> {
         Ok(())
     }
 
-    /// Copies extents into free runs below them, highest first. Returns how
-    /// many moved.
-    fn relocate_down(&mut self) -> Result<usize> {
-        if self.db.dir.is_some() {
-            return Ok(0);
-        }
-        let map = lock(&self.db.state).map.clone();
-        // (extent, (table, segment), what): 0 the image, 1 the delete set,
-        // 2 updates.
-        let mut extents: Vec<(Extent, (usize, usize), u8)> = Vec::new();
+    /// The extents of every segment: (extent, (table, segment), what), what
+    /// being 0 the image, 1 the delete set, 2 updates.
+    fn segment_extents(&self) -> Vec<(Extent, (usize, usize), u8)> {
+        let mut extents = Vec::new();
         for (t, table) in self.manifest.tables.iter().enumerate() {
             for (i, s) in table.segments.iter().enumerate() {
                 extents.push((s.extent, (t, i), 0));
@@ -4616,28 +4637,76 @@ impl<'a> VersionWriter<'a> {
                 extents.extend(s.updates.map(|e| (e, (t, i), 2)));
             }
         }
+        extents
+    }
+
+    /// Copies extent `e` of segment `(t, i)` to `page` (allocated) and points
+    /// the manifest at the copy; the old place is freed as of this commit.
+    fn move_extent(&mut self, map: &OwnedBytes, e: Extent, (t, i): (usize, usize), what: u8, page: u64) -> Result<()> {
+        // Copy out of the mapping first: on macOS, a pwrite whose source is
+        // a mapping of the same file can deadlock in the kernel.
+        let bytes = map[e.range()].to_vec();
+        io::write_at(&self.db.file, &bytes, page * PAGE)?;
+        self.bytes_written += e.len;
+        self.fl.defer(self.txn, e);
+        let to = Extent { page, len: e.len };
+        let s = &mut self.manifest.tables[t].segments[i];
+        if what == 2 {
+            s.updates = Some(to);
+        } else if what == 1 {
+            s.deletes = Some(to);
+        } else {
+            s.extent = to;
+        }
+        Ok(())
+    }
+
+    /// Copies extents into free runs below them, highest first. Returns how
+    /// many moved.
+    fn relocate_down(&mut self) -> Result<usize> {
+        if self.db.dir.is_some() {
+            return Ok(0);
+        }
+        let map = lock(&self.db.state).map.clone();
+        let mut extents = self.segment_extents();
         extents.sort_by_key(|&(e, _, _)| std::cmp::Reverse(e.page));
         let mut moved = 0;
-        for (e, (t, i), what) in extents {
+        for (e, at, what) in extents {
             let Some(page) = self.fl.alloc_below(e.pages(), e.page) else { continue };
-            // Copy out of the mapping first: on macOS, a pwrite whose source
-            // is a mapping of the same file can deadlock in the kernel.
-            let bytes = map[e.range()].to_vec();
-            io::write_at(&self.db.file, &bytes, page * PAGE)?;
-            self.bytes_written += e.len;
-            self.fl.defer(self.txn, e);
-            let to = Extent { page, len: e.len };
-            let s = &mut self.manifest.tables[t].segments[i];
-            if what == 2 {
-                s.updates = Some(to);
-            } else if what == 1 {
-                s.deletes = Some(to);
-            } else {
-                s.extent = to;
-            }
+            self.move_extent(&map, e, at, what, page)?;
             moved += 1;
         }
         Ok(moved)
+    }
+
+    /// Whether the free runs below the end of the file hold at least a
+    /// sixteenth of it (and 16 pages): worth [`lift_all`](Self::lift_all).
+    fn fragmented(&self) -> bool {
+        let free = self.fl.free_pages();
+        free >= 16 && free * 16 >= self.fl.page_count()
+    }
+
+    /// For when no extent fits in a free run below it although together the
+    /// runs could hold several (merging a table into one large segment
+    /// leaves the file like this: each gap is smaller than the segments
+    /// above it). Moves every extent above the lowest free run to the end of
+    /// the file, lowest first; once their old pages are reusable, the space
+    /// from that run up is one gap, and [`relocate_down`](Self::relocate_down)
+    /// packs them into it. Returns how many moved.
+    fn lift_all(&mut self) -> Result<usize> {
+        if self.db.dir.is_some() {
+            return Ok(0);
+        }
+        let Some((first, _)) = self.fl.runs().next() else { return Ok(0) };
+        let mut extents = self.segment_extents();
+        extents.retain(|(e, _, _)| e.page > first);
+        extents.sort_by_key(|&(e, _, _)| e.page);
+        let map = lock(&self.db.state).map.clone();
+        for &(e, at, what) in &extents {
+            let page = self.fl.alloc_end(e.pages());
+            self.move_extent(&map, e, at, what, page)?;
+        }
+        Ok(extents.len())
     }
 
     fn remove_segment(&mut self, id: u64) {
@@ -4701,9 +4770,17 @@ impl<'a> VersionWriter<'a> {
         self.fl.trim_tail();
         self.manifest.txn = c;
         let mbytes = self.manifest.encode();
-        let manifest = self.write(&mbytes)?;
+        let manifest = if self.meta_low {
+            let page = self.fl.alloc_low(pages_for(mbytes.len()));
+            self.grow()?;
+            io::write_at(&db.file, &mbytes, page * PAGE)?;
+            self.bytes_written += mbytes.len() as u64;
+            Extent { page, len: mbytes.len() as u64 }
+        } else {
+            self.write(&mbytes)?
+        };
         let reserved: Vec<Extent> = lock(&db.state).reserved.iter().filter(|r| !self.installs.contains(&r.id)).map(|r| r.extent).collect();
-        let (freelist, fbytes) = place_freelist(&mut self.fl, &reserved);
+        let (freelist, fbytes) = place_freelist(&mut self.fl, &reserved, self.meta_low);
         self.grow()?;
         io::write_at(&db.file, &fbytes, freelist.page * PAGE)?;
         self.bytes_written += fbytes.len() as u64;
@@ -4887,7 +4964,7 @@ fn added(schema: &Schema, i: usize, base: &Value, delta: &Value) -> Result<Value
     })
 }
 
-fn place_freelist(fl: &mut FreeList, reserved: &[Extent]) -> (Extent, Vec<u8>) {
+fn place_freelist(fl: &mut FreeList, reserved: &[Extent], low: bool) -> (Extent, Vec<u8>) {
     let on_disk = |fl: &FreeList| {
         let mut d = fl.clone();
         for &e in reserved {
@@ -4896,7 +4973,7 @@ fn place_freelist(fl: &mut FreeList, reserved: &[Extent]) -> (Extent, Vec<u8>) {
         d
     };
     let bound = if reserved.is_empty() { fl.encoded_len() } else { on_disk(fl).encoded_len() };
-    let page = fl.alloc(pages_for(bound));
+    let page = if low { fl.alloc_low(pages_for(bound)) } else { fl.alloc(pages_for(bound)) };
     let mut bytes = if reserved.is_empty() { fl.encode() } else { on_disk(fl).encode() };
     bytes.resize(bound, 0);
     (Extent { page, len: bound as u64 }, bytes)
