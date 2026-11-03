@@ -423,7 +423,7 @@ export function traceSummary(q, { onNav } = {}) {
     const story = [];
     if (worst.straggler) {
       story.push("The answer waited on ", h("b", {}, `shard ${worst.slow.shard}`), ", copy ", h("b", { class: "mono", title: copyTitle(worst.slow.replica) }, name), ": ",
-        h("b", { class: "wl-bad" }, fmt.ms(worst.slow.dur_us / 1000)), `, ${(worst.slow.dur_us / Math.max(1, worst.median_us)).toFixed(0)}× the median ${worst.name} call (${fmt.ms(worst.median_us / 1000)}).`,
+        h("b", { class: "wl-bad" }, fmt.ms(worst.slow.dur_us / 1000)), `, ${(worst.slow.dur_us / Math.max(1, worst.median_us)).toFixed(0)}× the median ${RPC_WORDS[worst.name]?.[0] || worst.name} call (${fmt.ms(worst.median_us / 1000)}).`,
         worst.calls.length > 1 ? ` The other ${fmt.plural(worst.calls.length - 1, "call")} had answered by ${fmt.ms((worst.restEnd_us - worst.start_us) / 1000)}.` : "");
     } else {
       story.push(`${fmt.plural(new Set(rs.flatMap((r) => r.calls.map((c) => c.shard))).size, "shard")} asked in ${fmt.plural(rs.length, "round")}; no shard held it up: the slowest call was shard ${worst.slow.shard} (`, h("span", { class: "mono", title: copyTitle(worst.slow.replica) }, name), `) at ${fmt.ms(worst.slow.dur_us / 1000)}, the median ${fmt.ms(worst.median_us / 1000)}.`);
@@ -455,11 +455,11 @@ export function traceSummary(q, { onNav } = {}) {
     const n = r.calls.length;
     const rest = r.straggler ? r.calls.filter((c) => c !== r.slow) : r.calls;
     const restEnd = r.straggler ? r.restEnd_us : r.end_us;
-    rows.push(h("div", { class: "nm" }, h("b", {}, r.name), h("span", { class: "badge" }, fmt.plural(rest.length, "shard")), r.failed ? h("span", { class: "pill bad", style: { padding: "0 6px" } }, `${r.failed} failed`) : null, r.again ? h("span", { class: "badge", title: "hedges or retries: calls asked again of another copy" }, `${r.again} again`) : null),
+    rows.push(h("div", { class: "nm" }, rpcName(r.name), h("span", { class: "badge" }, fmt.plural(rest.length, "shard")), r.failed ? h("span", { class: "pill bad", style: { padding: "0 6px" } }, `${r.failed} failed`) : null, r.again ? h("span", { class: "badge", title: "hedges or retries: calls asked again of another copy" }, `${r.again} again`) : null),
       bar(r.start_us, restEnd - r.start_us, "k-rpc" + (r.failed ? " bad" : ""), n > 1 ? `median ${fmt.ms(r.median_us / 1000)} · all done by ${fmt.ms((restEnd - r.start_us) / 1000)}` : fmt.ms(r.calls[0].dur_us / 1000), `${n} calls from ${fmt.ms(r.start_us / 1000)}`));
     if (r.straggler) {
       const c = r.slow, nm = copyName(c.replica);
-      rows.push(h("div", { class: "nm" }, h("b", {}, r.name), h("span", { class: "badge" }, `shard ${c.shard}`), h("span", { class: "badge mono wl-badbadge", title: copyTitle(c.replica) }, nm)),
+      rows.push(h("div", { class: "nm" }, rpcName(r.name), h("span", { class: "badge" }, `shard ${c.shard}`), h("span", { class: "badge mono wl-badbadge", title: copyTitle(c.replica) }, nm)),
         bar(c.start_us, c.dur_us, "k-rpc bad", fmt.ms(c.dur_us / 1000), `${nm}: ${fmt.ms(c.dur_us / 1000)} from ${fmt.ms(c.start_us / 1000)}`));
     }
   }
@@ -507,6 +507,10 @@ function callStrip(r) {
 }
 
 /** A trace as a waterfall: a lane per span, on one scale; copies by short name. */
+/** QRY-12: a call to a shard in words, with the gRPC method in its title. */
+const RPC_WORDS = { TermStats: ["term counts", "each shard's term counts, so that BM25 scores alike on every shard"], Query: ["shard's part", "the shard runs its part of the query"], Search: ["shard search", "the shard searches its rows"], Fetch: ["fetch rows", "the rows of the hits, from the shards that hold them"], Lookup: ["rows by key", "rows read by their keys"], Write: ["write", "the shard writes its rows"] };
+/** A shard call's name as a row head: in words when known. */
+const rpcName = (n) => h("b", { title: RPC_WORDS[n] ? `${RPC_WORDS[n][1]} (gRPC ${n})` : null }, RPC_WORDS[n]?.[0] || n);
 export function waterfall(spans, { byEnd = false } = {}) {
   if (!spans?.length) return h("div", { class: "small muted" }, "No trace was kept for this query.");
   const end = Math.max(...spans.map((x) => x.start_us + x.dur_us), 1);
@@ -514,8 +518,8 @@ export function waterfall(spans, { byEnd = false } = {}) {
   const rows = spans.slice().sort(byEnd ? (a, b) => (b.start_us + b.dur_us) - (a.start_us + a.dur_us) : (a, b) => a.start_us - b.start_us);
   return h("div", {},
     h("div", { class: "wf" }, rows.map((x) => [
-      h("div", { class: "nm", title: x.replica ? copyTitle(x.replica) : "" }, h("b", {}, x.name), x.shard != null ? h("span", { class: "badge" }, "shard " + x.shard) : null, x.replica ? h("span", { class: "badge mono" }, copyName(x.replica)) : null, x.again ? h("span", { class: "badge", title: "a hedge or a retry" }, "again") : null, x.outcome !== "ok" ? h("span", { class: "pill " + (x.outcome === "outrun" ? "info" : "bad"), style: { padding: "0 6px" }, title: x.outcome === "outrun" ? "another copy answered first" : null }, x.outcome) : null),
-      h("div", { class: "lane" }, h("div", { class: `seg ${kind(x.name)}${x.outcome !== "ok" && x.outcome !== "outrun" ? " bad" : ""}${x.again ? " again" : ""}`, style: { left: (x.start_us / end * 100) + "%", width: Math.max(0.4, x.dur_us / end * 100) + "%" }, title: `${x.name}: ${fmt.ms(x.dur_us / 1000)} from ${fmt.ms(x.start_us / 1000)}${x.replica ? " on " + copyName(x.replica) : ""}` },
+      h("div", { class: "nm", title: x.replica ? copyTitle(x.replica) : "" }, h("b", { title: RPC_WORDS[x.name] ? `${RPC_WORDS[x.name][1]} (gRPC ${x.name})` : null }, RPC_WORDS[x.name]?.[0] || x.name), x.shard != null ? h("span", { class: "badge" }, "shard " + x.shard) : null, x.replica ? h("span", { class: "badge mono" }, copyName(x.replica)) : null, x.again ? h("span", { class: "badge", title: "a hedge or a retry" }, "again") : null, x.outcome !== "ok" ? h("span", { class: "pill " + (x.outcome === "outrun" ? "info" : "bad"), style: { padding: "0 6px" }, title: x.outcome === "outrun" ? "another copy answered first" : null }, x.outcome) : null),
+      h("div", { class: "lane" }, h("div", { class: `seg ${kind(x.name)}${x.outcome !== "ok" && x.outcome !== "outrun" ? " bad" : ""}${x.again ? " again" : ""}`, style: { left: (x.start_us / end * 100) + "%", width: Math.max(0.4, x.dur_us / end * 100) + "%" }, title: `${RPC_WORDS[x.name]?.[0] || x.name}: ${fmt.ms(x.dur_us / 1000)} from ${fmt.ms(x.start_us / 1000)}${x.replica ? " on " + copyName(x.replica) : ""}` },
         h("span", { class: "tiny" }, fmt.ms(x.dur_us / 1000)))),
     ]),
     h("div", { class: "scale" }, [0, 0.25, 0.5, 0.75, 1].map((f) => h("span", {}, fmt.ms(end * f / 1000))))));
