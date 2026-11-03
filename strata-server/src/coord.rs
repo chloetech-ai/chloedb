@@ -150,6 +150,10 @@ impl tonic::service::Interceptor for Credentials {
         if let Some(id) = crate::obs::current().and_then(|id| id.parse().ok()) {
             req.metadata_mut().insert(crate::obs::HEADER, id);
         }
+        // workdata (L7): the shard's part runs to the client's own deadline.
+        if crate::service::client_deadline().is_some() {
+            req.metadata_mut().insert(crate::service::CLIENT_DEADLINE, tonic::metadata::MetadataValue::from_static("client"));
+        }
         Ok(req)
     }
 }
