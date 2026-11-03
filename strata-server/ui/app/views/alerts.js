@@ -353,7 +353,9 @@ function listView(page, r) {
 
   function drawSummary() {
     const firing = m.rules.filter((r) => { const x = m.st.get(r.id); return x.state === "firing" && !x.silent && !x.held_by; });
-    const heldN = m.rules.filter((r) => { const x = m.st.get(r.id); return x.state === "firing" && !x.silent && x.held_by; }).length;
+    const heldAll = m.rules.filter((r) => { const x = m.st.get(r.id); return x.state === "firing" && !x.silent && x.held_by; });
+    // Held under a cause that fires, or waiting out its window after the cause resolved.
+    const settleN = heldAll.filter((r) => m.st.get(r.id).held_until_ms).length, heldN = heldAll.length - settleN;
     const crit = firing.filter((r) => r.severity === "critical"), warn = firing.filter((r) => r.severity !== "critical");
     const unacked = crit.filter((r) => !m.st.get(r.id).ack);
     const noData = m.rules.filter((r) => m.st.get(r.id).state === "no_data");
@@ -365,7 +367,7 @@ function listView(page, r) {
     if (!m.routes.length) bits.push("no route: nobody is told when an alert fires");
     const pg = pagerOf(m);
     if (pg) bits.push(`${pg.n} coordinators; messages are sent by ${pg.me ? "this one" : hostOf(pg.sends)}`);
-    if (!firing.length) {
+    if (!firing.length && !heldAll.length) {
       clear(sum, h("div", { class: "banner ok" }, icon("okc", "lg"), h("div", { class: "grow" },
         h("div", { class: "big" }, "Nothing is firing"),
         h("div", { class: "small dim" }, `${fmt.plural(m.rules.length, "rule")} · ${fmt.n(m.rules.filter((r) => m.st.get(r.id).state === "ok").length)} ok${noData.length ? ` · ${fmt.n(noData.length)} without data (they cannot tell)` : ""}${bits.length ? " · " + bits.join(" · ") : ""}`))));
@@ -373,7 +375,8 @@ function listView(page, r) {
     }
     const oldest = unacked.reduce((a, r) => Math.min(a, m.st.get(r.id).since_ms || Date.now()), Date.now());
     clear(sum, h("div", { class: "banner " + (crit.length ? "bad" : "warn") }, icon("warn", "lg"), h("div", { class: "grow" },
-      h("div", { class: "big" }, [crit.length ? `${crit.length} critical` : null, warn.length ? `${warn.length} warning` : null].filter(Boolean).join(", ") + " firing" + (heldN ? `, ${heldN} more held back under their cause` : ""),
+      h("div", { class: "big" }, firing.length ? [crit.length ? `${crit.length} critical` : null, warn.length ? `${warn.length} warning` : null].filter(Boolean).join(", ") + " firing" + (heldN ? `, ${heldN} more held back under their cause` : "") + (settleN ? `, ${settleN} more waiting out their window after their cause resolved` : "")
+        : `${fmt.plural(heldAll.length, "alert")} firing, held back: ${settleN ? "waiting out their window after their cause resolved" : "under their cause"}`,
         m.fleet && unacked.length ? h("span", { style: { fontWeight: 500 } }, ` · ${fmt.plural(unacked.length, "critical alert")} not acknowledged for ${dur(Date.now() - oldest)}`) : null),
       h("div", { class: "small dim" }, bits.join(" · ")))));
   }
@@ -872,7 +875,7 @@ function alertHub(page, id, r) {
     const pg = pagerOf(m), dt = differsText(x);
     clear(line, cond(rule), " · ", rule.scope === "each_copy" ? h("b", { class: "al-strong" }, w.length ? `on ${w.length} of ${fmt.n(Math.max((x.where || []).length, allCopies()))} copies` : `on each copy (${fmt.n(allCopies())})`) : h("b", { class: "al-strong" }, rule.metric === "key_error_ratio" && w.length ? whereText(rule, x) : scopeText(rule)[0]),
       x.since_ms && st !== "ok" ? ` · since ${when(x.since_ms)}` : "", ` · now ${x.value == null ? "no value" : fvr(rule, x.value)}`, h("span", { class: "al-peak" }),
-      x.held_by && x.held_until_ms && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), ` resolved. This pages at ${hm(x.held_until_ms)} if it still fires then: its ${dur((rule.window_s || 0) * 1000)} window still holds the outage.`)
+      x.held_by && x.held_until_ms && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `, resolved. This pages at ${hm(x.held_until_ms)} if it still fires then: its ${dur((rule.window_s || 0) * 1000)} window still holds the outage.`)
       : x.held_by && (st === "firing" || st === "pending") ? h("div", { class: "small al-heldwhy" }, "Held back under its cause, ", h("a", { href: alertLink(x.held_by) }, cause?.name || x.held_by), `${/\(on [^)]*\)$/.exec(x.held_why || "")?.[0] ? " " + /\(on [^)]*\)$/.exec(x.held_why)[0] : ""}. It sends no message of its own while its cause fires, and pages if it still fires after.`) : null,
       dt ? h("div", { class: "small al-warn" }, dt) : null,
       pg && st === "firing" ? h("div", { class: "small muted" }, x.paged ? `${pagedText(x)[0].toUpperCase()}${pagedText(x).slice(1)}.` : `Not paged yet. Messages are sent by ${pg.me ? "this coordinator" : hostOf(pg.sends)}.`) : null);
@@ -918,7 +921,7 @@ function alertHub(page, id, r) {
         told.length > 1 ? h("span", { title: "Each route's last delivery, of any alert" }, told.map((rt, i) => [i ? " · " : "", failing(rt) ? h("span", { class: "al-bad", title: rt.last_error }, `${rt.name}: last send failed`) : rt.last_ok_ms ? `${rt.name} delivered ${hm(rt.last_ok_ms)}` : `${rt.name}: none sent since this server started`]))
         : !route ? (rule.route ? `route ${rule.route} does not exist` : m.routes.length ? `no route takes ${rule.severity}` : "no route: add one in Routes") : route.legacy ? "--alert-webhook; delivery is not tracked by this server"
           : failing(route) ? h("span", { class: "al-bad" }, `last send failed: ${route.last_error}`)
-            : route.last_ok_ms ? h("span", { class: "al-good" }, `delivered ${when(route.last_ok_ms)} · ${fmt.n(route.sent || 0)} sent`) : "none sent since this server started"),
+            : route.last_ok_ms ? h("span", { class: "al-good", title: `${fmt.n(route.sent || 0)} sent since this server started` }, `delivered ${when(route.last_ok_ms)}`) : "none sent since this server started"),
       kp(`Noise${one ? " (7 days)" : " (in memory)"}`, `${fmt.plural(fired.length, "fire")} · ${fmt.plural(flaps, "flap")}`, lens.length ? `median ${dur(median(lens))} firing` : fired.length ? "still firing" : "it did not fire"));
   }
 
@@ -1316,7 +1319,7 @@ function routesDrawer() {
           h("input", { class: "input sm", value: r.name, style: { width: "120px" }, "aria-label": "Route name", oninput: (e) => { r.name = e.target.value.trim(); } }),
           h("select", { class: "select sm", "aria-label": "Kind", onchange: (e) => { r.kind = e.target.value; draw(); } }, KINDS.map(([k, l]) => h("option", { value: k, selected: (r.kind || "webhook") === k }, l))))),
         h("td", {}, h("div", { class: "stack", style: { gap: "4px" } },
-          h("input", { class: "input sm mono", value: r.url || "", "aria-label": "URL", placeholder: r.shown && r.wasKind === (r.kind || "webhook") ? `${r.shown} (kept: type a URL to replace it)` : provider(r) ? `${r.kind === "pagerduty" ? "events.pagerduty.com/v2/enqueue" : "api.opsgenie.com/v2/alerts"} (leave empty)` : "https://hooks.slack.com/…", title: r.shown ? "The server shows only the start of a saved URL. Leave this empty to keep it." : "", style: { width: "100%" }, oninput: (e) => { r.url = e.target.value.trim(); } }),
+          h("input", { class: "input sm mono", value: r.url || "", "aria-label": "URL", placeholder: r.shown && r.wasKind === (r.kind || "webhook") ? `${r.shown} (kept)` : provider(r) ? `${r.kind === "pagerduty" ? "events.pagerduty.com/v2/enqueue" : "api.opsgenie.com/v2/alerts"} (leave empty)` : "https://hooks.slack.com/…", title: r.shown ? "The server shows only the start of a saved URL. Leave this empty to keep it, or type a URL to replace it." : "", style: { width: "100%" }, oninput: (e) => { r.url = e.target.value.trim(); } }),
           provider(r) ? h("input", { class: "input sm mono", type: "password", autocomplete: "off", value: r.key || "", "aria-label": r.kind === "pagerduty" ? "Routing key" : "API key", placeholder: r.has_key ? "key kept: type one to replace it" : r.kind === "pagerduty" ? "the service's integration (routing) key" : "the Opsgenie API key", oninput: (e) => { r.key = e.target.value.trim(); } }) : null,
           h("label", { class: "row nw small", style: { gap: "6px" } }, "Repeat unacked criticals every", h("input", { class: "input sm", type: "number", min: 0, max: 1440, value: r.repeat_min || 0, style: { width: "70px" }, "aria-label": "Repeat minutes", oninput: (e) => { r.repeat_min = Math.max(0, Math.min(1440, Number(e.target.value) || 0)); } }), "min (0: off)"))),
         h("td", {}, h("div", { class: "row nw", style: { gap: "4px" } }, SEV.map((sv) => h("button", { class: "chip", "aria-pressed": String(!r.severities.length || r.severities.includes(sv)), onclick: (e) => { const on = e.currentTarget.getAttribute("aria-pressed") === "true"; const cur = r.severities.length ? r.severities : SEV.slice(); r.severities = on ? cur.filter((y) => y !== sv) : [...cur, sv]; if (r.severities.length === SEV.length) r.severities = []; draw(); } }, sv)))),

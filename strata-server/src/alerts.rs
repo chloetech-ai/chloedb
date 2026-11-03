@@ -333,7 +333,7 @@ pub const CAUSES: [&str; 2] = ["shard-no-majority", "copy-down"];
 pub const REPLICA_METRICS: [&str; 5] = ["replicas_out_of_sync", "replica_behind_max", "replica_behind_s", "serves_reads", "shards_under_replicated"];
 /// Metrics of the searches a coordinator serves, which a shard's trouble
 /// explains.
-pub const TRAFFIC_METRICS: [&str; 13] = ["availability", "error_ratio", "http_5xx_ratio", "http_5xx_s", "errors_s", "timeouts_s", "p99_ms", "p95_ms", "p50_ms", "partial_s", "rejected_s", "qps", "slow_s"];
+pub const TRAFFIC_METRICS: [&str; 14] = ["availability", "error_ratio", "http_5xx_ratio", "http_5xx_s", "errors_s", "timeouts_s", "p99_ms", "p95_ms", "p50_ms", "partial_s", "rejected_s", "qps", "slow_s", "key_error_ratio"];
 
 fn sev_rank(s: &str) -> u8 {
     match s {
@@ -3831,7 +3831,8 @@ mod tests {
         let a = Alerts::new(None, None).unwrap();
         a.set_coordinator(true);
         let sync = defaults().into_iter().find(|r| r.id == "out-of-sync").unwrap();
-        a.set_rules(vec![sync.clone()], "t").unwrap();
+        let key = defaults().into_iter().find(|r| r.id == "key-failing").unwrap();
+        a.set_rules(vec![sync.clone(), key], "t").unwrap();
         let copy = |url: &str, firing: bool| json!({"url": url, "status": "ok", "role": "primary", "takes_writes": true, "detail": {"load": {"t": 1_000}, "alerts": {"rules": {"out-of-sync": {"state": if firing { "firing" } else { "ok" }, "value": if firing { 1.0 } else { 0.0 }, "since_ms": 500, "sig": sync.sig()}}}}});
         let down = json!({"shards": [{"shard": 0, "replicas": [copy("http://a", false)]}, {"shard": 1, "replicas": [copy("http://b", true), {"url": "http://c", "status": "down", "role": "replica"}]}]});
         let fired: Vec<String> = a.check_cluster(&down, 1_000).iter().filter(|e| e.state == "firing").map(|e| e.rule.clone()).collect();
@@ -3839,6 +3840,11 @@ mod tests {
         let s = a.one("out-of-sync").unwrap();
         assert_eq!(s["held_by"], "shard-no-majority", "{s}");
         assert_eq!(s["held_why"], "A shard has no majority (on shard 1)", "{s}");
+        // A key's calls fail while the shard is out: explained too.
+        let keys = |_: u64, _: u64| vec![KeyCalls { key: "app".into(), calls: 100, failed: 90, owner: None }];
+        a.check_with(&[Arc::new(json!({"t": 1_000, "qps": 1.0}))], 1_000, &keys);
+        let k = a.one("key-failing").unwrap();
+        assert_eq!((k["state"].as_str(), k["held_by"].as_str()), (Some("firing"), Some("shard-no-majority")), "{k}");
         assert_eq!(a.json()["firing_shown"], 1, "the bell counts the cause");
         let due: Vec<String> = a.due(1_000).iter().map(|(e, _)| e.rule.clone()).collect();
         assert_eq!(due, ["shard-no-majority"], "one page for the storm");
