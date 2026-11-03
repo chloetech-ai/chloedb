@@ -368,7 +368,7 @@ const PRESETS = [["all", "all"], ["failed", "failed"], ["slow", "slow"], ["lates
 function historyTab(body, params, setCount) {
   const f = {
     preset: params.get("preset") || "all", q: params.get("q") || "", key: params.get("key") || "", fingerprint: params.get("fingerprint") || "",
-    request: params.get("request") || "", min: params.get("min") || "", parts: false, own: false,
+    request: params.get("request") || "", min: params.get("min") || "", kind: params.get("kind") || "", parts: false, own: false,
   };
   const presetSeg = seg(PRESETS, f.preset, (v) => { f.preset = v; refresh(); }, { title: "Latest is the last 15 minutes; slow is over the slow threshold" });
   const q = h("input", { class: "input sm", placeholder: "Search the SQL", value: f.q, style: { width: "180px" }, oninput: debounce(() => { f.q = q.value.trim(); refresh(); }, 300) });
@@ -398,7 +398,7 @@ function historyTab(body, params, setCount) {
   body.append(
     h("div", { class: "row", style: { gap: "10px", marginBottom: "8px" } }, presetSeg, q, keyIn, h("span", { class: "row nw small muted", style: { gap: "6px" } }, "at least", min), parts, ownBox, asSql, h("span", { class: "sep" }), count),
     chips, note,
-    card({ title: "Queries over time", sub: "by how they ended", body: hist, attrs: { style: { marginBottom: "12px" } } }),
+    card({ title: "Queries kept, over time", sub: "by how they ended · the log store keeps every failed and slow query and a sample of the fast ones (--log-queries a second), so failures look more common here than they are", body: hist, attrs: { style: { marginBottom: "12px" } } }),
     card({ title: "Queries", sub: "newest first · click one for who sent it, its trace and profile", body: [tbl, more], flush: true }));
 
   const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
@@ -421,6 +421,7 @@ function historyTab(body, params, setCount) {
       f.preset === "slow" ? `ms >= ${slowMs()}` : null,
       f.q ? `MATCH(sql, ${lit(f.q)})` : null,
       f.request ? `request_id = ${lit(f.request)}` : null,
+      f.kind ? `kind = ${lit(f.kind)}` : null,
       f.fingerprint && skip !== "fingerprint" ? `fingerprint = ${lit(f.fingerprint)}` : null,
       f.key && keyCol() ? `${keyCol()} = ${lit(f.key)}` : null,
       f.min !== "" && Number.isFinite(+f.min) ? `ms >= ${+f.min}` : null,
@@ -437,7 +438,7 @@ function historyTab(body, params, setCount) {
     return x;
   };
   function drawChips() {
-    clear(chips, [["fingerprint", "statement"], ["request", "request"], ["key", "key"]].filter(([k]) => f[k]).map(([k, l]) => h("button", { class: "chip", "aria-pressed": "true", title: "Remove", onclick: () => pick(k)("") }, h("span", { class: "ellipsis", style: { maxWidth: "520px" } }, `${l} = ${f[k]}`), h("span", { class: "x" }, "×"))));
+    clear(chips, [["fingerprint", "statement"], ["request", "request"], ["key", "key"], ["kind", "kind"]].filter(([k]) => f[k]).map(([k, l]) => h("button", { class: "chip", "aria-pressed": "true", title: "Remove", onclick: () => pick(k)("") }, h("span", { class: "ellipsis", style: { maxWidth: "520px" } }, `${l} = ${f[k]}`), h("span", { class: "x" }, "×"))));
     chips.style.marginBottom = chips.childElementCount ? "8px" : "0";
   }
   function own(xs) { return f.own || has("client") ? xs : xs.filter((x) => !isOwn(x)); }
@@ -451,10 +452,14 @@ function historyTab(body, params, setCount) {
     clear(note, [t.clipped ? h("div", { class: "notice", style: { marginBottom: "10px" } }, "The log store keeps 7 days: the range is cut to them.") : null,
       f.key && !keyCol() ? h("div", { class: "notice", style: { marginBottom: "10px" } }, "This server's log store does not record keys yet: the key filter is not applied.") : null]);
     try {
-      const [rs, hs, by] = await Promise.all([
+      // What was served (every call, not only those kept), when no filter
+      // narrows it: the statements of the range.
+      const plain = !f.q && !f.key && !f.request && f.min === "" && !f.kind && f.preset !== "slow";
+      const [rs, hs, by, st] = await Promise.all([
         ask(rowsSql()),
         ask(`SELECT ${col}, outcome, COUNT(*) FROM queries WHERE ${where()} GROUP BY ${col}, outcome LIMIT 20000`),
         ask(`SELECT outcome, COUNT(*) FROM queries WHERE ${where()} GROUP BY outcome`),
+        plain ? statements({ from: t.from, to: t.to }).catch(() => null) : null,
       ]);
       if (my !== gen) return;
       rows = own(objects(rs).map(finished));
@@ -463,7 +468,13 @@ function historyTab(body, params, setCount) {
       if (bad.length) note.append(h("div", { class: "banner warn" }, icon("warn"), h("div", { class: "grow" }, h("b", {}, `${fmt.plural(bad.length, "server")} did not answer, so ${bad.length === 1 ? "its" : "their"} queries are missing here`), bad.map((n) => h("div", { class: "small mono" }, `${n.node || n.url}: ${n.error}`)))));
       histogram(hist, hs.rows, { unit, t });
       tbl.update(rows);
-      count.textContent = `${fmt.plural(total, "query", "queries")} · ${by.rows.map(([o, n]) => `${fmt.n(n)} ${outcomeOf(o).label}`).join(" · ")}`;
+      count.textContent = `${fmt.n(total)} kept · ${by.rows.map(([o, n]) => `${fmt.n(n)} ${outcomeOf(o).label}`).join(" · ")}`;
+      count.title = "Rows the log store kept: every failed and slow query, and at most --log-queries fast ones a second";
+      // Served: every call of the range, from the statements (this coordinator's).
+      const sv = st?.windowed ? servedOf(st.statements.filter((x) => !isOwn(x) && (!f.fingerprint || x.fingerprint === f.fingerprint || x.id === f.fingerprint))) : null;
+      if (sv?.calls) note.append(h("div", { class: "small muted", style: { marginBottom: "8px" } }, `Served ${st.partial ? `since ${when(st.held_from_ms)}` : "in the range"}: ${fmt.plural(sv.calls, "query", "queries")}`,
+        `, ${fmt.si(sv.server / sv.calls * 100, 2)}% failed on the server`, sv.client ? `, ${fmt.si(sv.client / sv.calls * 100, 2)}% client errors` : "", sv.deadline ? `, ${fmt.si(sv.deadline / sv.calls * 100, 2)}% past the client's deadline` : "",
+        `. The rows below are the ${fmt.n(total)} the log store kept${total ? ` (${fmt.pct(total / sv.calls, total / sv.calls < 0.1 ? 1 : 0)} of them)` : ""}.`));
       setCount("history", "7 days");
       drawMore();
     } catch (e) { if (my === gen) { clear(note, failure(e, "The query history")); tbl.update([]); clear(hist); } }
@@ -512,6 +523,17 @@ function historyTab(body, params, setCount) {
   (async () => { store = await hasLogStore(); if (store) cols = await queryColumns(); refresh(); })();
   const stops = [poll(5000, () => { if (!rows.length || (span().to == null && document.querySelector(".drawer") == null)) return refresh(); }), bus.on("range", () => refresh())];
   return () => stops.forEach((x) => x());
+}
+
+/** Every call of statements, by how it ended: {calls, server, client, deadline}. */
+function servedOf(list) {
+  const o = { calls: 0, server: 0, client: 0, deadline: 0 };
+  for (const x of list) {
+    const sp = split(x.outcomes, x.calls);
+    o.server += sp.server; o.client += sp.client; o.deadline += x.outcomes?.client_deadline || 0;
+    o.calls += x.calls;
+  }
+  return o;
 }
 
 /** Counts over time as stacked bars by outcome: rows of [bucket, outcome, n], buckets in minutes (or hours) since 1970. */
