@@ -207,6 +207,29 @@ def test_inserts_gather_in_memory_until_a_segment_fills(tmp_path):
         assert len(db) == 23_000 and db.get("r12-999")["n"] == 12 and db.get("big9999")["n"] == -1
 
 
+def test_optimize_leaves_one_segment_and_a_compact_file(tmp_path):
+    # Several bulk segments and two tables merge into one segment each;
+    # deleted rows are dropped and the file shrinks to about its live data.
+    schema = {"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "body", "type": "text"}]}
+    path = tmp_path / "o.strata"
+    with strata.open(path, schema) as db:
+        db.sql("CREATE TABLE u (id KEYWORD PRIMARY KEY, n INT)")
+        for b in range(4):
+            db.insert([{"id": f"r{b}-{i}", "body": f"batch {b} row {i} " * 4} for i in range(10_000)])
+            db.insert([{"id": f"u{b}-{i}", "n": i} for i in range(10_000)], table="u")
+        db.sql("DELETE FROM t WHERE id LIKE 'r2-%' OR id LIKE 'r3-%'")
+        before = path.stat().st_size
+        db.optimize()
+        after = path.stat().st_size
+        assert after < before
+        assert db.vacuum() == 0
+        assert len(db) == 20_000 and db.query("SELECT count(*) FROM u").scalar() == 40_000
+        plan = db.query("SELECT id FROM t WHERE MATCH(body, 'batch') ORDER BY bm25(body, 'batch') DESC LIMIT 1").stats
+        assert all(s.get("seg", 0) == 0 for s in plan.get("steps", []))
+    with strata.open(path) as db:
+        assert len(db) == 20_000 and db.get("r1-9999") is not None and db.get("r3-0") is None
+
+
 def test_search(db):
     text = db.search("dragon", mode="text", limit=5)
     assert len(text) == 5 and all("dragon" in (r["title"] + r["description"]) for r in text)

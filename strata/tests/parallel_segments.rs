@@ -37,7 +37,9 @@ fn threads_do_not_change_answers() {
     for sql in queries {
         let one = db.query_with(sql, &params, &ExecOptions::default()).unwrap();
         for threads in [2, 4, 8] {
-            let many = db.query_with(sql, &params, &ExecOptions { threads, ..ExecOptions::default() }).unwrap();
+            // fan_out_rows 0: these segments are far below the size that
+            // fans out by default, and the point is to compare threads.
+            let many = db.query_with(sql, &params, &ExecOptions { threads, fan_out_rows: 0, ..ExecOptions::default() }).unwrap();
             assert_eq!(one.rows, many.rows, "{sql} on {threads} threads");
             assert!(many.stats.plan.iter().any(|l| l.contains("threads")), "{sql}: {:?}", many.stats.plan);
         }
