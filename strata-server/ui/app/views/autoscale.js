@@ -7,11 +7,12 @@
 // waits here, to apply or dismiss), or is off. The replay reads the load
 // every server keeps a row a minute of (its log store's `load` table).
 
-import { h, s, icon, clear, fmt, card, api, toast, confirm, seg, pill, empty, tipOn, showTip, hideTip, debounce, failure } from "../core.js";
-import { state, isCoordinator } from "../data.js";
+import { h, s, icon, clear, fmt, card, api, toast, confirm, seg, pill, empty, tipOn, showTip, hideTip, debounce, failure, store, link, can, needs } from "../core.js";
+import { state, isCoordinator, isProduction } from "../data.js";
+import { live, scaleWords, keptRate } from "../spec.js";
 
 export default {
-  id: "autoscale", title: "Autoscaling", icon: "autoscale", group: "Admin",
+  id: "autoscale", title: "Autoscaling", icon: "autoscale", group: "Change",
   keywords: "autoscale autoscaling autoscaler scale up down out in grow shrink copies replicas busy cpu cores volumes disk full freeze cooldown rules replay week suggest approve kubernetes operator",
   render,
 };
@@ -76,15 +77,16 @@ const RULES = [
 function w(key, value, choices, show) { return { key, value: value?.[key], choices, show }; }
 
 function render(page) {
-  const head = h("div"), live = h("div"), main = h("div", { class: "as-main" });
+  const head = h("div"), liveBox = h("div"), main = h("div", { class: "as-main" });
   const left = h("div", { class: "as-col" }), right = h("div", { class: "as-col" });
   main.append(left, right);
-  page.append(head, live, main);
+  page.append(h("div", { class: "cc-as" }, head, liveBox, main));
 
   let kube = null;            // GET /v1/kube
   let draft = null;           // the rules being edited, as spec.autoscale (a rule switched off is null)
   let kept = {};              // a switched-off rule's settings, for when it is on again
   let from = null;            // the rules the draft was taken from
+  let baseline = null;        // the draft as it was loaded: Undo and Save show only once it differs
   let editing = null;         // "rule.key" whose choices are open
   let replay = null, replayErr = null, replaying = false;
   let fixed = null;           // copies of each shard the fixed-size cluster has
@@ -115,7 +117,7 @@ function render(page) {
     }
     return r;
   }
-  const dirty = () => !!draft && !same(draft, rulesOf(spec().autoscale));
+  const dirty = () => !!draft && !!baseline && !same(draft, baseline);
   const isOn = (id) => (id === "freeze" ? draft.freeze.length > 0 : id === "cooldown" ? true : !!draft[id]);
   const valueOf = (id) => (id === "freeze" ? draft.freeze[0] || kept.freeze || DEFAULTS.freeze : id === "cooldown" ? draft : draft[id] || kept[id] || DEFAULTS[id]);
 
@@ -125,6 +127,7 @@ function render(page) {
     const now = spec().autoscale;
     if (!draft || (!dirty() && !same(from, now))) {
       draft = starting(now);
+      baseline = JSON.parse(JSON.stringify(draft));
       from = now ?? null;
       fixed = null;
       replayNow();
@@ -168,7 +171,7 @@ function render(page) {
   }
   function setMode(m) { draft.mode = m; changed(); }
   function changed() { drawHead(); drawRules(); replaySoon(); }
-  function reset() { draft = rulesOf(spec().autoscale); if (!spec().autoscale) draft = starting(null); editing = null; changed(); }
+  function reset() { draft = JSON.parse(JSON.stringify(baseline || starting(spec().autoscale))); editing = null; changed(); }
 
   /** The patch of spec.autoscale that makes the draft. */
   function patch() { return { autoscale: { ...draft, freeze: draft.freeze } }; }
@@ -182,25 +185,52 @@ function render(page) {
       title: `Save the rules of ${kube.namespace}/${kube.name}`,
       body: h("div", { class: "stack", style: { gap: "8px" } },
         h("div", {}, m),
-        h("ol", { class: "ctl-steps" }, (plan.steps || []).map((x) => h("li", {}, x))),
+        (plan.steps || []).length ? h("ol", { class: "cc-set-steps" }, plan.steps.map((x) => h("li", {}, x.charAt(0).toUpperCase() + x.slice(1)))) : null,
+        (plan.warnings || []).length ? h("div", { class: "small cc-warn" }, "Mind: " + plan.warnings.join("; ") + ".") : null,
         replay?.summary ? h("div", { class: "small dim" }, `On the week replayed they make ${plural(replay.summary.changes, "change")}.`) : null),
       ok: draft.mode === "on" ? "Save, and let it act" : "Save",
+      reason: isProduction() ? "Why: kept in the audit log with the change" : false,
     });
     if (!ok) return;
     busy = true; drawHead();
     try {
-      kube = await api("/v1/admin/kube", { body: { spec: patch() } });
+      kube = await api("/v1/admin/kube", { body: { spec: patch() }, reason: ok.reason });
       from = kube.spec?.autoscale ?? null;
       draft = rulesOf(from);
+      baseline = JSON.parse(JSON.stringify(draft));
       toast(draft.mode === "on" ? "The operator runs the new rules" : draft.mode === "suggest" ? "The rules ask a person from now on" : "The rules are saved, and off", "ok");
     } catch (e) { toast("Not saved: " + e.message, "bad", 8000); }
     busy = false; draw();
   }
+  /** A suggestion's patch in words: the servers it adds or removes, the room they need, the rows copied and how long. */
+  function sizeWords(patch) {
+    const L = live(state.cluster), sp = spec(), r = keptRate(store);
+    return scaleWords(patch || {}, { S: sp.shards ?? L.S, R: sp.replicas ?? L.R ?? 3, rows: L.rows, rate: r.rate, measured: r.measured, spec: sp });
+  }
   async function apply(sg) {
-    const ok = await confirm({ title: "Apply the autoscaler's change", body: h("div", { class: "stack", style: { gap: "8px" } }, h("div", {}, sg.text), h("div", { class: "small dim" }, "The spec changes as below; the operator then makes it, one step at a time."), h("pre", { class: "code" }, JSON.stringify(sg.patch, null, 2))), ok: "Apply it" });
+    const W = sizeWords(sg.patch);
+    busy = true; drawLive();
+    let plan = null, planErr = null;
+    try { plan = await api("/v1/admin/kube/plan", { body: { spec: sg.patch } }); } catch (e) { planErr = e.message; }
+    busy = false; drawLive();
+    if (plan?.refused) { toast("The operator would refuse it: " + plan.refused, "bad", 8000); return; }
+    const ok = await confirm({
+      title: W.removing ? "Remove servers as the autoscaler suggests" : "Apply the autoscaler's suggestion",
+      body: h("div", { class: "stack", style: { gap: "8px" } },
+        h("div", {}, h("b", {}, W.text)),
+        W.room ? h("div", { class: "small" }, W.room) : null,
+        W.time ? h("div", { class: "small" }, W.time) : null,
+        h("div", { class: "small dim" }, `Why: ${sg.text}.`),
+        (plan?.steps || []).length ? h("div", {}, h("div", { class: "small dim" }, "The operator then:"), h("ol", { class: "cc-set-steps" }, plan.steps.map((x) => h("li", {}, x.charAt(0).toUpperCase() + x.slice(1))))) : null,
+        (plan?.warnings || []).length ? h("div", { class: "small cc-warn" }, "Mind: " + plan.warnings.join("; ") + ".") : null,
+        planErr ? h("div", { class: "small cc-warn" }, `The coordinator could not plan it (${planErr}): the operator checks it again when it applies.`) : null,
+        h("div", { class: "small dim" }, "It is noted as yours in the audit log, not the autoscaler's.")),
+      ok: W.removing ? "Remove them" : "Apply it", danger: W.removing, typed: W.removing ? kube.name : null,
+      reason: isProduction() ? "Why: kept in the audit log with the change" : false,
+    });
     if (!ok) return;
     busy = true; drawLive();
-    try { kube = await api("/v1/admin/kube", { body: { spec: sg.patch } }); toast("Applied: the operator makes the change", "ok"); }
+    try { kube = await api("/v1/admin/kube", { body: { spec: sg.patch }, reason: ok.reason }); toast("Applied: the operator makes the change", "ok"); }
     catch (e) { toast("Not applied: " + e.message, "bad", 8000); }
     busy = false; draw();
   }
@@ -219,13 +249,13 @@ function render(page) {
 
   function drawHead() {
     if (!draft) return;
-    const tools = [
+    const tools = managed() ? [
       h("span", { class: "small dim" }, "When a rule fires"),
       seg([["on", "Act", "The operator makes the change"], ["suggest", "Ask a person", "The change waits here for someone to apply it"], ["off", "Off", "Nothing changes; the week still replays"]], draft.mode, setMode, { "aria-label": "When a rule fires" }),
-    ];
+    ] : [h("span", { class: "small dim" }, "Replay only: nothing here runs the rules")];
     if (dirty()) {
       tools.push(h("button", { class: "btn sm", disabled: busy, onclick: reset }, icon("undo"), "Undo edits"));
-      tools.push(h("button", { class: "btn sm primary", disabled: busy || !managed(), title: managed() ? "Save the rules to the StrataCluster's spec" : "Only a cluster the Kubernetes operator runs keeps rules", onclick: save }, icon("check"), "Save rules"));
+      if (managed()) tools.push(h("button", { class: "btn sm primary", disabled: busy || !can("admin"), title: can("admin") ? "Save the rules to the StrataCluster's spec" : needs("admin"), onclick: save }, icon("check"), "Save rules"));
     }
     clear(head, h("div", { class: "page-head" },
       h("div", {},
@@ -237,12 +267,20 @@ function render(page) {
   /** What the operator's autoscaler says now: its reading, a suggestion waiting, why it waits, and its latest decisions. */
   function drawLive() {
     if (!managed()) {
-      clear(live, h("div", { class: "as-note" }, icon("info"),
-        h("div", {}, isCoordinator() ? "This cluster is not run by the Kubernetes operator: replay rules here on its load; they run once the operator runs it (spec.autoscale of its StrataCluster)." : "This server is not a cluster: the replay reads its own load, and rules run on a cluster the Kubernetes operator runs.")));
+      clear(liveBox, h("div", { class: "as-note" }, icon("info"),
+        isCoordinator()
+          ? h("div", { class: "cc-as-own" },
+            h("b", {}, "On machines of your own, nothing runs these rules."),
+            h("div", {}, "No operator starts or stops servers here, so no rule adds or removes a copy by itself. What the rules are for here:"),
+            h("ol", {},
+              h("li", {}, "Replay them on the cluster's own load (below): the week says when it would have needed more copies, and when fewer would have done."),
+              h("li", {}, "Plan the change yourself on ", h("a", { href: link("cluster", { tab: "capacity" }) }, "Cluster, Capacity"), ": a copy more for every shard, shards when the disks fill, or slots off a hot shard. Nothing applies until you apply its plan.")),
+            h("div", { class: "small dim" }, "On Kubernetes the operator runs them from the StrataCluster's spec.autoscale, acting or asking a person: ", h("a", { href: link("cloud") }, "Cloud setup"), " makes such a cluster."))
+          : h("div", {}, "This server is not a cluster: the replay reads its own load. Rules run on a cluster the Kubernetes operator runs.")));
       return;
     }
     const st = status(), a = spec().autoscale;
-    if (!st && !a) { clear(live); return; }
+    if (!st && !a) { clear(liveBox); return; }
     const mode = a?.mode || "off";
     const sg = st?.suggestion;
     const parts = [
@@ -253,17 +291,18 @@ function render(page) {
       h("div", { class: "row", style: { gap: "8px" } }, pill(mode === "on" ? "ok" : mode === "suggest" ? "info" : "disabled", mode === "on" ? "acting" : mode === "suggest" ? "asking a person" : "off"),
         st?.busySinceMs ? h("span", { class: "small" }, `over the limit since ${when(st.busySinceMs)} UTC`) : null,
         st?.idleSinceMs && !st?.busySinceMs ? h("span", { class: "small dim" }, `quiet since ${when(st.idleSinceMs)} UTC`) : null),
-      sg ? h("div", { class: "as-sg" }, icon("bolt"), h("div", { class: "stack", style: { gap: "6px", flex: "1 1 260px" } }, h("b", {}, "The rules suggest a change"), h("span", {}, sg.text), h("span", { class: "small dim" }, `${fmt.ago(sg.atMs)}; it stands while its reason does.`)),
-        h("div", { class: "row", style: { gap: "6px" } }, h("button", { class: "btn sm primary", disabled: busy, onclick: () => apply(sg) }, icon("check"), "Apply"), h("button", { class: "btn sm", disabled: busy, onclick: dismiss }, "Dismiss"))) : null,
+      sg ? h("div", { class: "as-sg" }, icon("bolt"), h("div", { class: "stack", style: { gap: "6px", flex: "1 1 260px" } }, h("b", {}, "The rules suggest: " + sizeWords(sg.patch).text.replace(/^./, (c) => c.toLowerCase())), h("span", {}, `Because ${sg.text}.`), h("span", { class: "small dim" }, `${fmt.ago(sg.atMs)}; it stands while its reason does.`)),
+        h("div", { class: "row", style: { gap: "6px" } }, h("button", { class: "btn sm primary", disabled: busy || !can("admin"), title: can("admin") ? "" : needs("admin"), onclick: () => apply(sg) }, icon("check"), "Apply…"), h("button", { class: "btn sm", disabled: busy || !can("admin"), onclick: dismiss }, "Dismiss"))) : null,
       st?.waiting ? h("div", { class: "small dim" }, st.waiting) : !sg ? h("div", { class: "small dim" }, "No rule fires now.") : null);
     const log = (st?.log || []).slice(-4).reverse();
-    clear(live, h("div", { class: "as-live" }, parts, say,
+    clear(liveBox, h("div", { class: "as-live" }, parts, say,
       log.length ? h("div", { class: "as-live-log" }, log.map((e) => h("div", { class: "as-ev" }, h("span", { class: "dim" }, `${when(e.atMs)}`), h("span", {}, e.text)))) : null));
   }
 
   /** What a rule did in the replay, in a line. */
   function didOf(id) {
     if (!replay) return "";
+    if ((replay.points || []).length < 2) return "Nothing to replay it on yet.";
     const ev = replay.events || [], pts = replay.points || [], stepMin = (replay.stepMs || 600e3) / MIN;
     // A change by its rule, made or (asking a person) suggested.
     const made = ev.filter((e) => e.rule === id && e.kind !== "applied");
@@ -334,7 +373,8 @@ function render(page) {
     const days = [...new Set(pts.map((p) => dayOf(p.atMs)))];
     const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, class: "as-chart", preserveAspectRatio: "none", role: "img", "aria-label": `How busy the copies would have been over ${hours(kept)}: ${sum.changes} changes` },
       days.filter((d, i) => i % 2 === 1).map((d) => s("rect", { x: x(Math.max(t0, d * 86400e3)), y: 0, width: x(Math.min(t1, (d + 1) * 86400e3)) - x(Math.max(t0, d * 86400e3)), height: H, fill: "var(--surface-2)" })),
-      bands((p) => p.frozen, "color-mix(in srgb, var(--s5) 14%, transparent)"),
+      s("defs", {}, s("pattern", { id: "as-freeze", width: 6, height: 6, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, s("rect", { width: 2, height: 6, fill: "var(--muted)", opacity: 0.22 }))),
+      bands((p) => p.frozen, "url(#as-freeze)"),
       bands((p) => p.busy > sat, "color-mix(in srgb, var(--crit) 30%, transparent)"),
       s("line", { x1: 0, x2: W, y1: y(sat), y2: y(sat), stroke: "var(--crit)", "stroke-width": 1, "stroke-dasharray": "3 3", "vector-effect": "non-scaling-stroke" }),
       s("path", { d: line(fx), fill: "none", stroke: "var(--muted)", "stroke-width": 1.5, "stroke-dasharray": "6 4", "vector-effect": "non-scaling-stroke" }),
@@ -371,7 +411,7 @@ function render(page) {
       h("span", {}, h("i", { class: "as-sw", style: { background: "var(--s1)" } }), "busy, with the rules"),
       h("span", {}, h("i", { class: "as-sw dash" }), `busy at a fixed ${copies(F)}`),
       h("span", {}, h("i", { class: "as-sw box", style: { background: "color-mix(in srgb, var(--crit) 45%, transparent)" } }), `over ${pct(sat)}`),
-      draft.freeze.length ? h("span", {}, h("i", { class: "as-sw box", style: { background: "color-mix(in srgb, var(--s5) 30%, transparent)" } }), "no changes allowed") : null,
+      draft.freeze.length ? h("span", {}, h("i", { class: "cc-as-sw" }), "frozen: no changes") : null,
       h("span", {}, "▲ ▼ ◆ a change", draft.mode === "suggest" ? ", ? asked, ✓ applied" : ""));
 
     // Copies of each shard, and the fullest volume.

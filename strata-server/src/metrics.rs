@@ -98,6 +98,9 @@ struct Inner {
     /// (kind, outcome) → count.
     queries: BTreeMap<(&'static str, &'static str), u64>,
     query_seconds: BTreeMap<&'static str, Histogram>,
+    /// The slowest query since the series' last sample, in seconds
+    /// ([`Metrics::take_query_max`]): no quantile of a point exceeds it.
+    query_max: Option<f64>,
     admission_seconds: Histogram,
     rejected: u64,
     writes: u64,
@@ -199,11 +202,20 @@ impl Metrics {
         m.grpc_seconds.entry(method).or_default().observe(secs);
     }
 
-    /// `outcome`: ok, partial, error or timeout.
+    /// `outcome` ([`crate::telemetry::OUTCOMES`]): ok, partial, error,
+    /// timeout (the server's deadline), client_error, client_deadline,
+    /// refused or cancelled.
     pub fn query(&self, kind: &'static str, outcome: &'static str, secs: f64) {
         let mut m = self.inner();
         *m.queries.entry((kind, outcome)).or_default() += 1;
         m.query_seconds.entry(kind).or_default().observe(secs);
+        m.query_max = Some(m.query_max.map_or(secs, |x| x.max(secs)));
+    }
+
+    /// The slowest query since the last call, in seconds (`None`: none
+    /// ended); the sampler takes it for each point.
+    pub fn take_query_max(&self) -> Option<f64> {
+        self.inner().query_max.take()
     }
 
     /// How long a query waited for a slot to run in.
@@ -272,9 +284,16 @@ impl Metrics {
             s.queries += n;
             *s.by_kind.entry(kind).or_default() += n;
             match outcome {
-                "error" | "timeout" => s.query_errors += n,
-                "rejected" => s.rejected += n,
+                "error" => s.query_errors += n,
+                "timeout" => {
+                    s.query_errors += n;
+                    s.timeouts += n;
+                }
+                "client_error" => s.client_errors += n,
+                "client_deadline" => s.client_deadlines += n,
+                "refused" | "rejected" => s.rejected += n,
                 "partial" => s.partial += n,
+                "cancelled" => s.cancelled += n,
                 _ => {}
             }
         }
@@ -377,7 +396,7 @@ impl Metrics {
             h.render(o, "strata_grpc_request_duration_seconds", &format!("method=\"{method}\""));
         }
 
-        head(o, "strata_queries_total", "counter", "Queries by kind (bm25, vector, sparse, hybrid, boosted, expression, reranked, decay, graph, column, facet, aggregate, count, filter, compound, paths, invalid) and outcome (ok, partial, error, timeout, rejected, cancelled).");
+        head(o, "strata_queries_total", "counter", "Queries by kind (bm25, vector, sparse, hybrid, boosted, expression, reranked, decay, graph, column, facet, aggregate, count, filter, compound, paths, invalid) and outcome (ok, partial, error, timeout: the server's deadline, client_error: a 4xx such as bad SQL, client_deadline: the client's own deadline, below the server's, refused: 429, cancelled).");
         for (&(k, outcome), n) in &m.queries {
             let _ = writeln!(o, "strata_queries_total{{kind=\"{k}\",outcome=\"{outcome}\"}} {n}");
         }

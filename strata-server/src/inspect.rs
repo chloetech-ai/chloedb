@@ -13,6 +13,7 @@
 //! answered through this coordinator. The cluster's data is its shards'
 //! added up, with the bytes of every copy beside them.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::{json, Value as Json};
@@ -190,6 +191,145 @@ impl Part {
         })
     }
 }
+
+// ----- core: every table, cheaply (`GET /v1/index/tables`)
+
+/// How long [`tables`] keeps its answer.
+pub const TABLES_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The window of [`tables`]' writes and reads a minute: 5 minutes.
+pub const RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Each table's writes and reads counted at a look of [`tables`], by
+/// table, and when.
+pub type Counts = std::collections::VecDeque<(u64, HashMap<String, (u64, u64)>)>;
+
+/// Every table's size and traffic: of this server, or on a coordinator of
+/// each shard (its primary's data) and the cluster, with how skewed the
+/// shards are, how far each copy is behind, and how much each table grew
+/// over a day and a week (the log store's hourly `tables` rows). No
+/// document is sampled; each table is one call to each copy. Kept
+/// [`TABLES_EVERY`].
+pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
+    let mut kept = svc.tables_kept.lock().await;
+    if let Some((at, j)) = kept.as_ref() {
+        if at.elapsed() < TABLES_EVERY {
+            return Ok(j.clone());
+        }
+    }
+    let now = telemetry::now_ms();
+    let names: Vec<String> = svc.catalog_now().await.iter().map(|s| s.table.clone()).collect();
+    // On a coordinator, each copy as the cluster's snapshot knows it: its
+    // short name, and since when it does not answer.
+    let mut copies: HashMap<String, (Json, Json, bool)> = HashMap::new();
+    if let Backend::Cluster(c) = &svc.backend {
+        let snap = c.snapshot().await;
+        for r in snap["shards"].as_array().into_iter().flatten().flat_map(|s| s["replicas"].as_array().into_iter().flatten()) {
+            if let Some(u) = r["url"].as_str() {
+                copies.insert(u.to_string(), (r["short"].clone(), r["down_since_ms"].clone(), r["status"] == "down"));
+            }
+        }
+    }
+    // Writes and reads a minute over the last minutes: each table's counts
+    // now against those of the earliest look within [`RATE_WINDOW`], at
+    // least 30 s ago.
+    let then = {
+        let mut counts = svc.tables_counts.lock().unwrap_or_else(|e| e.into_inner());
+        counts.retain(|(at, _)| now.saturating_sub(*at) <= RATE_WINDOW.as_millis() as u64);
+        counts.iter().find(|(at, _)| now.saturating_sub(*at) >= 30_000).cloned()
+    };
+    let mut now_counts = HashMap::new();
+    let mut out = Vec::new();
+    for t in names {
+        let a = Asked { table: Some(t.clone()), sample: 0, seed: Options::default().seed, terms: false, top: 0 };
+        let j = match answer(svc, a).await {
+            Ok(j) => j,
+            Err(e) => {
+                out.push(json!({"table": t, "error": e.message}));
+                continue;
+            }
+        };
+        let of = |scope: &Json| (scope["stats"]["docs"]["live"].as_u64().unwrap_or(0), scope["stats"]["bytes"]["total"].as_u64().unwrap_or(0), scope["stats"]["segments"].as_array().map_or(0, |s| s.len()));
+        let (docs, bytes, segments) = of(&j["cluster"]);
+        let fresh = &j["cluster"]["freshness"];
+        let (writes, reads) = (fresh["writes"].as_u64().unwrap_or(0), j["cluster"]["reads"]["docs"]["total"].as_u64().unwrap_or(0));
+        now_counts.insert(t.clone(), (writes, reads));
+        // Since the earlier look; or, servers started within the window,
+        // since they started. A count that went down (a server restarted)
+        // gives none.
+        let started = fresh["started_ms"].as_u64().unwrap_or(0);
+        let since = match &then {
+            Some((at, c)) => c.get(&t).map(|&(w, r)| (*at, w, r)),
+            None if started > 0 && now.saturating_sub(started) <= RATE_WINDOW.as_millis() as u64 => Some((started, 0, 0)),
+            None => None,
+        };
+        let window_ms = since.map(|(at, _, _)| now.saturating_sub(at)).filter(|ms| *ms >= 30_000);
+        let per_min = |n: u64, before: Option<u64>| {
+            let (Some(ms), Some(before)) = (window_ms, before) else { return None };
+            n.checked_sub(before).map(|d| (d as f64 / (ms as f64 / 60_000.0) * 10.0).round() / 10.0)
+        };
+        let shards: Vec<Json> = j["shards"].as_array().into_iter().flatten().map(|s| {
+            let (d, b, _) = of(&s["scope"]);
+            json!({"shard": s["shard"], "docs": d, "bytes": b})
+        }).collect();
+        // The shard furthest over the mean, by documents.
+        let skew = (shards.len() > 1).then(|| {
+            let mean = shards.iter().filter_map(|s| s["docs"].as_f64()).sum::<f64>() / shards.len() as f64;
+            let top = shards.iter().max_by(|a, b| a["docs"].as_f64().unwrap_or(0.0).total_cmp(&b["docs"].as_f64().unwrap_or(0.0)));
+            top.map(|s| json!({"shard": s["shard"], "over_mean": if mean > 0.0 { ((s["docs"].as_f64().unwrap_or(0.0) / mean - 1.0) * 100.0).round() / 100.0 } else { 0.0 }}))
+        }).flatten();
+        // Copies behind their primary, and copies that did not answer,
+        // which may be any distance behind.
+        let mut stale = Vec::new();
+        for s in j["shards"].as_array().into_iter().flatten() {
+            for r in s["replicas"].as_array().into_iter().flatten() {
+                let url = r["url"].as_str().unwrap_or_default();
+                let (short, since, down) = copies.get(url).cloned().unwrap_or((Json::Null, Json::Null, false));
+                if down || !r["error"].is_null() {
+                    stale.push(json!({"shard": s["shard"], "copy": url, "short": short, "down": true, "since_ms": since, "error": r["error"]}));
+                } else if r["behind"].as_u64().is_some_and(|b| b > 0) {
+                    stale.push(json!({"shard": s["shard"], "copy": url, "short": short, "behind_txn": r["behind"]}));
+                }
+            }
+        }
+        out.push(json!({
+            "table": t, "docs": docs, "bytes": bytes, "segments": segments, "shards": shards, "skew": skew,
+            "writes_per_min": per_min(writes, since.map(|s| s.1)), "reads_per_min": per_min(reads, since.map(|s| s.2)), "rate_window_s": window_ms.map(|ms| ms / 1000),
+            "last_write_ms": fresh["last_write_ms"], "stale": stale,
+        }));
+    }
+    // Growth: the size an hourly row of the log store had a day and a week
+    // ago (this server's rows; a coordinator keeps them of the cluster).
+    if let Some(store) = &svc.log_store {
+        for (key, ago) in [("d1_bytes", 86_400_000u64), ("d7_bytes", 7 * 86_400_000)] {
+            let rows = store.kept_rows(crate::logstore::TABLE_SIZES, now.saturating_sub(ago + 3_600_000), now.saturating_sub(ago), None, 1000).await.unwrap_or_default();
+            for t in &mut out {
+                let then = rows.iter().find(|r| r["name"] == t["table"]).and_then(|r| r["bytes"].as_u64());
+                if let (Some(then), Some(b)) = (then, t["bytes"].as_u64()) {
+                    t["growth"][key] = json!(b as i64 - then as i64);
+                }
+            }
+        }
+    }
+    svc.tables_counts.lock().unwrap_or_else(|e| e.into_inner()).push_back((now, now_counts));
+    let j = json!({"tables": out, "at_ms": now, "cached_s": TABLES_EVERY.as_secs()});
+    *kept = Some((std::time::Instant::now(), j.clone()));
+    Ok(j)
+}
+
+/// Keeps each table's size in the log store's `tables`, an hour apart
+/// (growth for [`tables`]).
+pub async fn keep_sizes(svc: &Arc<Service>) {
+    let Some(store) = svc.log_store.clone() else { return };
+    let Ok(j) = tables(svc).await else { return };
+    let now = telemetry::now_ms();
+    for t in j["tables"].as_array().into_iter().flatten() {
+        if let (Some(name), Some(docs), Some(bytes)) = (t["table"].as_str(), t["docs"].as_u64(), t["bytes"].as_u64()) {
+            store.keep_table_size(now, name, docs, bytes, t["segments"].as_u64().unwrap_or(0));
+        }
+    }
+}
+// ----- end core
 
 /// The answer of `GET /v1/index`: this server's ([`node`]) as the
 /// `cluster` scope with no shards, or a coordinator's cluster, shards and

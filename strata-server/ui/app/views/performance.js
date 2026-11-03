@@ -1,169 +1,574 @@
-// Performance: every rate and gauge of the series on one time axis
-// (brush any chart to zoom them all), the latency heatmap, requests by
-// route and queries by kind, and a tuning advisor that reads the numbers
-// and says what to change.
+// Performance: the fleet over the range in the top bar. What needs
+// attention, each finding with the numbers it rests on, the rule that
+// fired and links to the statement or the copy; the latency, the queries
+// and the failures stacked by cause; every copy by p99; the statements
+// that got slower; and, below, queries by kind and route, writes, this
+// server's resources and every copy's storage and replication.
 
-import { h, icon, clear, fmt, card, every, api, bus, store } from "../core.js";
+import { h, s, icon, clear, fmt, card, api, bus, store, table, copy } from "../core.js";
 import { timeChart, heatmap, SERIES, sparkline } from "../charts.js";
-import { state, domain, visible, setZoom } from "../data.js";
+import { domain, visible, setZoom } from "../data.js";
+import {
+  state, link, timeRange, rangeQuery, poll, isCoord, copyName, copyTitle, copyLink, shardLink, nodeLink, statements, change, split, outcomeBar, statementLink, isOwn, containDialog, can,
+  narrow, cols, sheet, copies as copiesOf,
+  canContainNow, canContain, containRules, when,
+} from "../workload.js";
 
-export default { id: "performance", title: "Performance", icon: "perf", group: "Monitor", keywords: "latency throughput heatmap tuning advisor cpu memory disk routes kinds percentiles", render };
+export default { id: "performance", title: "Performance", icon: "perf", group: "Operate", keywords: "latency throughput heatmap findings advisor tuning cpu memory disk routes kinds percentiles slow copies fleet failures", render };
 
 const BOUNDS = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0];
+const TABS = [["queries", "Kinds and routes"], ["writes", "Writes"], ["resources", "Resources"], ["storage", "Storage"], ["replication", "Replication"]];
 
-const SECTIONS = {
-  queries: "Queries",
-  writes: "Writes",
-  resources: "Resources",
-  storage: "Storage",
-  replication: "Replication",
-};
+// ---------------------------------------------------------------- figures from the series
+
+const stepS = (p) => p.secs || (state.series?.interval_ms || state.interval || 2000) / 1000;
+/** The time-weighted mean of a field over points, or null when no point has it. */
+function mean(ps, f) { let a = 0, w = 0; for (const p of ps) { const v = f(p); if (v == null || !Number.isFinite(v)) continue; const s_ = stepS(p); a += v * s_; w += s_; } return w ? a / w : null; }
+/** How many over the points: a rate times each point's seconds. */
+function total(ps, f) { let a = 0, any = false; for (const p of ps) { const v = f(p); if (v == null || !Number.isFinite(v)) continue; any = true; a += v * stepS(p); } return any ? a : null; }
+const median = (xs) => { const v = xs.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : null; };
+/** A stretch's p99, as the chart draws it: the median of its points' p99 (the histograms' buckets are too wide for it). */
+const p99Of = (ps) => median(ps.map((p) => p.p99_ms));
+/** The points minute by minute: [{t, p99, qps}]. */
+function minutes(ps) {
+  const m = new Map();
+  for (const p of ps) { const k = Math.floor(p.t / 60e3) * 60e3; if (!m.has(k)) m.set(k, []); m.get(k).push(p); }
+  return [...m].sort((a, b) => a[0] - b[0]).map(([t, xs]) => ({ t, p99: p99Of(xs), qps: mean(xs, (p) => p.qps) }));
+}
+/** The figures of a range of points. */
+function figures(ps) {
+  const q = total(ps, (p) => p.qps);
+  const errs = total(ps, (p) => p.errors_s), tos = total(ps, (p) => p.timeouts_s);
+  return {
+    n: ps.length, qps: mean(ps, (p) => p.qps), p99: mean(ps, (p) => p.p99_ms), p99Now: p99Of(ps.filter((p) => p.t >= (ps[ps.length - 1]?.t ?? 0) - 5 * 60e3)), p50: mean(ps, (p) => p.p50_ms),
+    queries: q, server: errs, timeouts: tos, client: total(ps, (p) => p.client_errors_s), deadlines: total(ps, (p) => p.client_deadlines_s), refused: total(ps, (p) => p.rejected_s),
+    slow: mean(ps, (p) => p.slow_s), refusedS: mean(ps, (p) => p.rejected_s), splits: ps.some((p) => p.client_errors_s != null),
+    cpu: mean(ps, (p) => p.cpu),
+  };
+}
+
+// ---------------------------------------------------------------- every copy, from the cluster
+
+// ---------------------------------------------------------------- the view
 
 function render(page) {
-  const tab = store.get("perf.tab", "queries");
-  const tabs = h("div", { class: "tabs", role: "tablist" });
-  const body = h("div");
-  page.append(
-    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Performance"), h("p", {}, "Brush across any chart to zoom them all; double-click to reset. Click a legend entry to hide a series."))),
-    h("div", { id: "advisor" }), tabs, body);
-  const advisorHost = page.querySelector("#advisor");
+  let rules = null, stmts = null, stmtsErr = null, prev = null, prevKey = "", load = undefined, routes = null, routesErr = null, showOwnRoutes = false;
+  const scope = h("p");
+  const kpis = h("div", { class: "grid g6 wl-kpis", style: { marginBottom: "14px" } });
+  const findBox = h("div", { style: { marginBottom: "14px" } });
   const brush = (a, b) => setZoom(a == null ? null : [a, b]);
-  let charts = [];
+  const charts = [];
+  const C = (title, sub, opts) => { const c = timeChart({ height: opts.height || 180, domain, onBrush: brush, ...opts }); charts.push(c); return card({ title, sub, body: c }); };
 
-  const C = (title, sub, opts, span) => {
-    const c = timeChart({ height: opts.height || 190, domain, onBrush: brush, ...opts });
-    charts.push(c);
-    return card({ title, sub, body: c, cls: span ? "spanall" : "" });
-  };
-  const kinds = () => { const k = new Set(); for (const p of state.points) for (const x of Object.keys(p.by_kind || {})) k.add(x); return [...k].sort(); };
+  const latC = C("Latency", "of the queries that ended in each interval", { fmt: fmt.ms, series: [{ name: "p50", get: (p) => p.p50_ms, color: SERIES[0] }, { name: "p95", get: (p) => p.p95_ms, color: SERIES[3] }, { name: "p99", get: (p) => p.p99_ms, color: SERIES[6] }], band: { lo: (p) => p.p50_ms, hi: (p) => p.p99_ms, name: "p50 to p99" } });
+  const failC = C("Failures per second, by cause", "red is the server's; client errors and deadlines are the clients'", { stack: true, series: [
+    { name: "server errors", get: (p) => p.errors_s == null ? null : Math.max(0, p.errors_s - (p.timeouts_s || 0)), color: "var(--crit)" },
+    { name: "server timeouts", get: (p) => p.timeouts_s, color: "var(--s8)" },
+    { name: "partial answers", get: (p) => p.partial_s, color: "var(--s5)" },
+    { name: "client errors (400)", get: (p) => p.client_errors_s, color: "var(--s4)" },
+    { name: "client deadlines", get: (p) => p.client_deadlines_s, color: "var(--s6)" },
+    { name: "refused (429)", get: (p) => p.rejected_s, color: "var(--s2)" },
+  ] });
+  const kindsList = () => { const k = new Set(); for (const p of visible()) for (const x of Object.keys(p.by_kind || {})) k.add(x); return [...k].sort(); };
+  let kindsKey = "";
+  const qpsHost = h("div");
+  let qpsC = null;
+  function qpsChart() {
+    const ks = kindsList(), key = ks.join(",");
+    if (qpsC && key === kindsKey) return;
+    kindsKey = key;
+    if (qpsC) charts.splice(charts.indexOf(qpsC), 1);
+    qpsC = timeChart({ height: 180, domain, onBrush: brush, stack: true, fmt: fmt.si, series: (ks.length ? ks : ["queries"]).map((k, i) => ({ name: k, get: (p) => ks.length ? p.by_kind?.[k] || 0 : p.qps, color: k === "invalid" ? "var(--s4)" : SERIES[i % 8] })) });
+    charts.push(qpsC);
+    clear(qpsHost, qpsC);
+  }
+  let hm = heatmap({ bounds: BOUNDS, domain, height: 180, interval: state.interval }), hmInterval = state.interval;
+  const hmNote = h("div", { class: "small muted", style: { display: "none", padding: "40px 0", textAlign: "center" } }, "The heatmap needs the 2 s points of the last hour: pick 1 h or less in the top bar.");
+  const qpsCard = card({ title: "Queries per second, by kind", sub: "stacked", body: qpsHost });
+  const hmCard = card({ title: "Latency heatmap", sub: "every query by how long it took · darker is more · brush to zoom", body: [hm, hmNote] });
 
-  function build(t) {
-    charts = [];
-    clear(tabs, Object.entries(SECTIONS).map(([k, v]) => h("button", { role: "tab", "aria-selected": String(k === t), onclick: () => { store.set("perf.tab", k); build(k); } }, v)));
-    let grid;
-    if (t === "queries") {
-      const ks = kinds();
-      const hm = heatmap({ bounds: BOUNDS, domain, height: 220, interval: state.interval });
-      charts.push(hm);
-      grid = [
-        C("Queries per second, by kind", "stacked", { stack: true, series: (ks.length ? ks : ["queries"]).map((k, i) => ({ name: k, get: (p) => ks.length ? p.by_kind?.[k] || 0 : p.qps, color: SERIES[i % 8] })) }),
-        C("Latency percentiles", "of the queries that ended in each interval", { fmt: fmt.ms, series: [{ name: "p50", get: (p) => p.p50_ms }, { name: "p95", get: (p) => p.p95_ms, color: SERIES[3] }, { name: "p99", get: (p) => p.p99_ms, color: SERIES[6] }], band: { lo: (p) => p.p50_ms, hi: (p) => p.p99_ms, name: "p50–p99" } }),
-        card({ title: "Latency heatmap", sub: "every query by how long it took · darker is more", body: hm, cls: "spanall" }),
-        C("Failures per second", "errors, refused for a slot (429), partial answers, HTTP 5xx", { series: [{ name: "errors", get: (p) => p.errors_s, color: SERIES[7] }, { name: "refused (429)", get: (p) => p.rejected_s, color: SERIES[3] }, { name: "partial", get: (p) => p.partial_s, color: SERIES[4] }, { name: "HTTP 5xx", get: (p) => p.http_5xx_s, color: SERIES[1] }] }),
-        C("Concurrency", "queries running, slots in use, pool threads waited for", { series: [{ name: "running", get: (p) => p.running }, { name: "slots in use", get: (p) => state.system && p.slots_free != null ? state.system.limits.max_concurrent - p.slots_free : null, color: SERIES[2] }, { name: "pool queued", get: (p) => p.pool_queued, color: SERIES[3] }], threshold: state.system ? { value: state.system.limits.max_concurrent, label: "max concurrent" } : null }),
-        C("Slow queries per second", state.system?.limits?.slow_ms ? `over ${state.system.limits.slow_ms} ms` : "set --slow-ms to count them", { series: [{ name: "slow", get: (p) => p.slow_s, color: SERIES[1], area: true }] }),
-        C("HTTP requests per second", "by status class", { stack: true, series: [{ name: "2xx and 3xx", get: (p) => Math.max(0, (p.http_s || 0) - (p.http_4xx_s || 0) - (p.http_5xx_s || 0)), color: SERIES[0] }, { name: "4xx", get: (p) => p.http_4xx_s, color: SERIES[3] }, { name: "5xx", get: (p) => p.http_5xx_s, color: SERIES[7] }] }),
-      ];
-    } else if (t === "writes") {
-      grid = [
-        C("Rows written per second", null, { series: [{ name: "rows/s", get: (p) => p.rows_s, area: true, color: SERIES[2] }] }),
-        C("Write requests per second", null, { series: [{ name: "writes/s", get: (p) => p.writes_s }, { name: "failed", get: (p) => p.write_errors_s, color: SERIES[7] }] }),
-        C("Write latency, p99", "from the request to the commit its acks wait for", { fmt: fmt.ms, series: [{ name: "p99", get: (p) => p.write_p99_ms, color: SERIES[6], area: true }] }),
-        C("Write queue", "writes waiting for the writer thread", { series: [{ name: "queued", get: (p) => p.write_queue, color: SERIES[3], area: true }], threshold: state.system?.limits?.max_queued_writes ? { value: state.system.limits.max_queued_writes, label: "max" } : null }),
-        C("Memtable", "rows written but not flushed", { series: [{ name: "rows", get: (p) => p.memtable_docs, color: SERIES[4], area: true }] }),
-        C("Leases", "rows reserved by a client's transaction", { series: [{ name: "leases", get: (p) => p.leases, color: SERIES[5] }] }),
-      ];
-    } else if (t === "resources") {
-      const cores = state.system?.cores;
-      grid = [
-        C("CPU", cores ? `cores in use, of ${cores}` : "cores in use", { series: [{ name: "cores", get: (p) => p.cpu, area: true }], threshold: cores ? { value: cores, label: "all cores" } : null }),
-        C("Memory", "resident set", { fmt: fmt.bytes, series: [{ name: "resident", get: (p) => p.rss_bytes, area: true, color: SERIES[6] }, { name: "query memory", get: (p) => p.query_memory_bytes, color: SERIES[3] }, { name: "merges", get: (p) => p.merge_memory_bytes, color: SERIES[2] }] }),
-        C("Disk", "used of the database's file system", { fmt: (v) => fmt.pct(v, 0), max: 1, series: [{ name: "used", get: (p) => p.disk_used_ratio, area: true, color: SERIES[1] }], threshold: { value: 0.9, label: "alert" } }),
-        C("Query memory", "of the budget the running queries share", { fmt: (v) => fmt.pct(v, 0), max: 1, series: [{ name: "used", get: (p) => p.query_memory_ratio, area: true, color: SERIES[3] }] }),
-      ];
-    } else if (t === "storage") {
-      grid = [
-        C("Rows", null, { series: [{ name: "rows", get: (p) => p.docs, area: true }, { name: "deleted, not merged", get: (p) => p.deleted_docs, color: SERIES[7] }] }),
-        C("Bytes on disk", null, { fmt: fmt.bytes, series: [{ name: "database file", get: (p) => p.file_bytes, color: SERIES[0] }, { name: "write-ahead log", get: (p) => p.wal_bytes, color: SERIES[3] }, { name: "reusable", get: (p) => p.reusable_bytes, color: SERIES[2] }] }),
-        C("Segments", "and merges running", { series: [{ name: "segments", get: (p) => p.segments }, { name: "merges", get: (p) => p.merges_running, color: SERIES[2] }] }),
-        C("Failing", "1 when the server, its flushes or merges fail", { max: 1, series: [{ name: "server", get: (p) => p.failing, color: SERIES[7] }, { name: "flushes", get: (p) => p.flush_failing, color: SERIES[1] }, { name: "merges", get: (p) => p.merge_failing, color: SERIES[3] }] }),
-      ];
-    } else {
-      grid = [
-        C("Replicas behind", "the most transactions a replica lacks", { series: [{ name: "behind", get: (p) => p.replica_behind_max, color: SERIES[3], area: true }] }),
-        C("Replicas in sync", null, { series: [{ name: "in sync", get: (p) => p.replicas_in_sync, color: SERIES[2] }, { name: "out of sync", get: (p) => p.replicas_out_of_sync, color: SERIES[7] }, { name: "replicas", get: (p) => p.replicas, color: SERIES[0], dash: "4 3" }] }),
-        C("Sequence number", "the latest transaction", { series: [{ name: "sequence", get: (p) => p.seq_no }] }),
-        C("Serves reads", "a replica: 1 when it answers reads", { max: 1, series: [{ name: "serves reads", get: (p) => p.serves_reads, color: SERIES[2] }] }),
-      ];
-    }
-    clear(body, h("div", { class: "grid g2" }, grid), h("div", { id: "routes", style: { marginTop: "14px" } }));
+  const copiesBox = h("div");
+  const slowerBox = h("div", { style: { margin: "14px 0" } });
+  const tabs = h("div", { class: "tabs wl-tabs-scroll", role: "tablist", style: { marginTop: "6px" } });
+  const tabBody = h("div");
+  let tab = store.get("perf.tab2", "queries");
+
+  page.append(
+    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Performance"), scope),
+      h("div", { class: "tools" }, h("button", { class: "btn sm", onclick: () => copy(location.href, "Link copied") }, icon("link"), "Copy link"))),
+    kpis, findBox,
+    h("div", { class: "grid g2", style: { marginBottom: "14px" } }, latC, failC, qpsCard, hmCard),
+    copiesBox, slowerBox, tabs, tabBody);
+
+  // ------------------------------------------------ reads
+  async function loadStmts() {
+    try { [stmts] = await Promise.all([statements(timeRange()), canContain()]); stmtsErr = null; } catch (e) { stmts = null; stmtsErr = e; }
+    // The contain rules in force, to tell refusals on purpose from a full server.
+    rules = canContainNow() ? await containRules().catch(() => null) : null;
     draw();
-    loadRoutes();
   }
-
-  function draw() { const ps = visible(); for (const c of charts) c.update(ps); advisor(); }
-
-  async function loadRoutes() {
-    const host = body.querySelector("#routes"); if (!host) return;
+  /** The window before the range, for "was" (only when the server still has it). */
+  async function loadPrev() {
+    const r = timeRange(), len = (r.to ?? Date.now()) - r.from;
+    const key = `${Math.round((r.from - len) / 60e3)}|${Math.round(r.from / 60e3)}`;
+    if (key === prevKey) return;
+    prevKey = key;
     try {
-      const j = await api("/v1/routes");
-      const bar = (v, max, color) => h("div", { class: "row nw", style: { gap: "8px" } }, h("div", { class: "barbox" }, h("div", { class: "bar", style: { width: (max ? v / max * 100 : 0) + "%", background: color } })), h("span", { class: "num" }, fmt.ms(v)));
-      const maxK = Math.max(1e-9, ...j.kinds.map((k) => k.p99_ms || 0));
-      const maxR = Math.max(1e-9, ...j.http.map((k) => k.p99_ms || 0));
-      clear(host, h("div", { class: "grid g2" },
-        card({ title: "Queries by plan kind", sub: "since the server started", flush: true, body: h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
-          h("thead", {}, h("tr", {}, ["kind", "queries", "mean", "p50", "p99", "latency"].map((x, i) => h("th", { class: i ? "num" : "" }, x)))),
-          h("tbody", {}, j.kinds.sort((a, b) => b.queries - a.queries).map((k, i) => h("tr", {}, h("td", {}, h("span", { class: "badge mono" }, k.kind)), h("td", { class: "num" }, fmt.n(k.queries)), h("td", { class: "num" }, fmt.ms(k.mean_ms)), h("td", { class: "num" }, fmt.ms(k.p50_ms)), h("td", {}, bar(k.p99_ms, maxK, SERIES[i % 8])),
-            h("td", {}, sparkline(k.hist, { width: 110, height: 24, color: SERIES[i % 8], cls: "" }))))))) }),
-        card({ title: "HTTP routes", sub: j.admission_p99_ms != null ? `waiting for a slot: p99 ${fmt.ms(j.admission_p99_ms)}` : null, flush: true, body: h("div", { class: "tbl-wrap", style: { maxHeight: "360px" } }, h("table", { class: "t" },
-          h("thead", {}, h("tr", {}, ["route", "requests", "4xx", "5xx", "mean", "p99"].map((x, i) => h("th", { class: i ? "num" : "" }, x)))),
-          h("tbody", {}, j.http.sort((a, b) => b.requests - a.requests).map((r) => h("tr", {}, h("td", { class: "mono small" }, r.route), h("td", { class: "num" }, fmt.n(r.requests)), h("td", { class: "num" }, fmt.n(r.client_errors)), h("td", { class: "num", style: { color: r.server_errors ? "var(--crit-ink)" : null } }, fmt.n(r.server_errors)), h("td", { class: "num" }, fmt.ms(r.mean_ms)), h("td", {}, bar(r.p99_ms, maxR, SERIES[0])))))))}),
-        j.grpc?.length ? card({ title: "gRPC calls", flush: true, cls: "spanall", body: h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
-          h("thead", {}, h("tr", {}, ["method", "calls", "failed", "mean", "p99"].map((x, i) => h("th", { class: i ? "num" : "" }, x)))),
-          h("tbody", {}, j.grpc.map((r) => h("tr", {}, h("td", { class: "mono small" }, r.method), h("td", { class: "num" }, fmt.n(r.calls)), h("td", { class: "num" }, fmt.n(r.failed)), h("td", { class: "num" }, fmt.ms(r.mean_ms)), h("td", { class: "num" }, fmt.ms(r.p99_ms))))))) }) : null));
-    } catch (e) { clear(host, h("div", { class: "error" }, e.message)); }
+      const j = await api(`/v1/timeseries?from=${Math.round(r.from - len)}&to=${Math.round(r.from)}`);
+      const ps = (j.points || []).filter((p) => p.t >= r.from - len && p.t <= r.from);
+      const covered = ps.length > 1 ? (ps[ps.length - 1].t - ps[0].t) / len : 0;
+      prev = covered >= 0.5 ? figures(ps) : null;
+    } catch { prev = null; }
+    draw();
+  }
+  async function loadLoad() {
+    if (!isCoord()) { load = null; return; }
+    try { load = await api(`/v1/load?${rangeQuery()}&copies=all`); } catch (e) { load = e.status === 404 || e.status === 405 || e.status === 400 ? null : undefined; }
+    draw();
+  }
+  async function loadRoutes() {
+    try { routes = await api("/v1/routes"); routesErr = null; } catch (e) { routesErr = e; }
+    if (tab === "queries") drawTab();
   }
 
-  let stmts = null;
-  async function loadStmts() { try { stmts = (await api("/v1/queries/stats?limit=20")).statements; } catch { stmts = null; } advisor(); }
-
-  function advisor() {
-    const tips = advise(visible(), state.system, stmts);
-    clear(advisorHost, card({ title: "Tuning advisor", sub: tips.length ? `${fmt.plural(tips.length, "suggestion")} from the range shown` : "reads the numbers below", attrs: { style: { marginBottom: "14px" } },
-      body: tips.length ? h("div", { class: "grid g2" }, tips.map((t) => h("div", { class: "advice " + t.level }, h("div", { class: "ic" }, icon(t.icon || (t.level === "bad" ? "warn" : t.level === "ok" ? "okc" : "wrench"))), h("div", {}, h("h4", {}, t.title), h("p", {}, t.body)))))
-        : h("div", { class: "row nw", style: { gap: "10px" } }, h("span", { style: { color: "var(--good)" } }, icon("okc", "lg")), h("span", { class: "dim" }, "Nothing to change: latency, errors, memory, disk and the queues look healthy over this range.")) }));
+  // ------------------------------------------------ drawing
+  function drawScope() {
+    const c = state.cluster, cs = copiesOf(c), coords = state.fleet?.coordinators || [];
+    const r = timeRange();
+    const per = c?.shards?.length ? Math.round(cs.length / c.shards.length) : 0;
+    scope.textContent = isCoord()
+      ? `The fleet: ${coords.length > 1 ? `${fmt.plural(coords.length, "coordinator")}, ` : ""}${fmt.plural(c?.shards?.length || 0, "shard")}${per ? ` × ${fmt.plural(per, "copy", "copies")}` : ""} · ${r.label}${prev ? ", against the window before" : ""}. ${coords.length > 1 ? "The charts are the queries through this coordinator." : "Every query enters through this coordinator."}`
+      : `This server · ${r.label}${prev ? ", against the window before" : ""}.`;
   }
 
-  build(tab);
-  const offs = [bus.on("points", draw), bus.on("range", draw), bus.on("theme", draw), bus.on("system", () => build(store.get("perf.tab", "queries"))), every(10000, loadRoutes, false), every(10000, loadStmts)];
+  function draw() {
+    const ps = visible();
+    qpsChart();
+    for (const c of charts) c.update(ps);
+    const hasHist = ps.some((p) => p.latency_hist);
+    // Its cells are as wide as the points' interval, which changes with the range.
+    if (state.interval !== hmInterval) { const nh = heatmap({ bounds: BOUNDS, domain, height: 180, interval: state.interval }); hm.replaceWith(nh); hm = nh; hmInterval = state.interval; }
+    hm.style.display = hasHist ? "" : "none"; hmNote.style.display = hasHist ? "none" : "";
+    if (hasHist) hm.update(ps);
+    drawScope();
+    const f = figures(ps);
+    drawKpis(f);
+    drawFindings(f, ps);
+    drawCopies();
+    drawSlower();
+    if (tab !== "queries") drawTab();
+  }
+
+  function drawKpis(f) {
+    const sys = state.system, slowMs = sys?.limits?.slow_ms;
+    const was = (v, fm) => (prev && v != null ? `was ${fm(v)}` : null);
+    const sr = f.queries ? f.server / f.queries : null, psr = prev?.queries ? prev.server / prev.queries : null;
+    const cs = copiesOf().filter((c) => c.cpu != null).sort((a, b) => b.cpu - a.cpu);
+    const busiest = cs[0];
+    const coords = state.fleet?.coordinators || [];
+    const apart = [f.client ? `client errors ${fmt.si(f.client / Math.max(1, f.queries) * 100, 1)}%` : null, f.deadlines ? `deadlines ${fmt.si(f.deadlines / Math.max(1, f.queries) * 100, 1)}%` : null].filter(Boolean);
+    clear(kpis,
+      kpi("Queries", f.qps != null ? [fmt.si(f.qps), h("small", {}, "/s")] : "–", prev?.qps ? `${pct(f.qps, prev.qps)} vs before` : coords.length > 1 ? `${fmt.si(coords.reduce((a, c) => a + (c.qps || 0), 0))}/s on ${coords.length} coordinators now` : "mean over the range"),
+      kpi("p99 latency", f.p99 != null ? unit(fmt.ms(f.p99)) : "–", [was(prev?.p99, fmt.ms), f.p99Now != null && Math.abs(f.p99Now - f.p99) > 0.2 * f.p99 ? `last 5 min ${fmt.ms(f.p99Now)}` : null].filter(Boolean).join(" · ") || "mean over the range", (prev?.p99 && f.p99Now > 2 * prev.p99 && f.p99Now > 20) ? "bad" : null, "The mean of each interval's p99 over the range; the last 5 minutes' median beside it when it differs"),
+      kpi("Failed on the server", sr != null ? [fmt.si(sr * 100, 2), h("small", {}, "%")] : "–", psr != null ? `was ${fmt.si(psr * 100, 2)}%` : apart.length ? "apart: " + apart.join(", ") : f.splits ? "server errors and timeouts" : "this server does not split client errors", sr > 0.01 ? "bad" : null, "Server errors and server timeouts over the queries that ended. Client errors (400) and the clients' own deadlines are counted apart."),
+      kpi(slowMs ? `Slow (over ${fmt.ms(slowMs)})` : "Slow", slowMs && f.slow != null ? [fmt.si(f.slow), h("small", {}, "/s")] : "–", slowMs ? was(prev?.slow, (v) => fmt.si(v) + "/s") : "not counted: --slow-ms is not set"),
+      kpi("Refused (429)", f.refusedS != null ? [fmt.si(f.refusedS), h("small", {}, "/s")] : "–", was(prev?.refusedS, (v) => fmt.si(v) + "/s") || (f.refusedS ? (canContainNow() ? "no slot or memory, or a contain rule" : "no slot or memory free") : "none")),
+      isCoord() && busiest
+        ? kpi("Busiest copy, CPU", [fmt.si(busiest.cpu * 100, 0), h("small", {}, "%")], h("span", { title: `${copyTitle(busiest.url)}\nthe median copy: ${fmt.pct(median(cs.map((c) => c.cpu)), 0)}` }, `${copyName(busiest.url)}, median ${fmt.pct(median(cs.map((c) => c.cpu)), 0)}`), busiest.cpu > 0.85 ? "warn" : null, "Each copy's CPU over its last minute, as a share of its cores")
+        : kpi("CPU", f.cpu != null ? [fmt.si(f.cpu, 1), h("small", {}, " cores")] : "–", state.system?.cores ? `of ${state.system.cores}` : null));
+  }
+
+  // ------------------------------------------------ findings
+  function drawFindings(fAll, ps) {
+    const out = [], read = [], missing = [], checked = [];
+    const r = timeRange();
+    // Failures over the range, or over its last 15 minutes when they are worse there (a range dilutes what just started).
+    const t1 = ps.length ? ps[ps.length - 1].t : Date.now();
+    const f15 = (t1 - (ps[0]?.t ?? t1)) > 20 * 60e3 ? figures(ps.filter((p) => p.t >= t1 - 15 * 60e3)) : null;
+    const worse = (k) => f15?.queries && fAll.queries && f15[k] / f15.queries > 1.5 * (fAll[k] / fAll.queries) ? f15 : fAll;
+    const winOf = (x) => x === f15 ? "the last 15 minutes" : "the range";
+    // Over the time the points cover: a server that started within the range has fewer.
+    const step = (state.series?.interval_ms || 2000) / 1000;
+    const secsOf = (x) => x === f15 ? 15 * 60 : Math.max(1, ps.length ? (t1 - ps[0].t) / 1000 + step : ((r.to ?? Date.now()) - r.from) / 1000);
+    const f = fAll;
+    if (ps.length) read.push(`${isCoord() && (state.fleet?.coordinators || []).length > 1 ? "this coordinator's" : "the"} series (${fmt.plural(ps.length, "point")})`); else missing.push("the series");
+    if (stmts) read.push(stmts.windowed ? "the statements of the range" : "the statements since the server started"); else missing.push("the statements");
+    const cs = isCoord() ? copiesOf() : [];
+    const withDetail = cs.filter((c) => c.has);
+    if (isCoord()) { if (withDetail.length) read.push(`${fmt.n(withDetail.length)} of ${fmt.n(cs.length)} copies`); else missing.push("the copies"); }
+    if (state.fleet && !state.fleet.derived) read.push("the fleet's health");
+    const own = new Set();
+
+    // Server failures.
+    if (f.queries) {
+      const w = worse("server"), sr = w.server / w.queries;
+      checked.push(`server failures ${fmt.si(sr * 100, 2)}%`);
+      if (sr > 0.01) {
+        own.add("error_ratio");
+        const top = (stmts?.statements || []).filter((x) => !isOwn(x)).map((x) => ({ x, n: split(x.outcomes, x.calls).server })).sort((a, b) => b.n - a.n)[0];
+        const allS = (stmts?.statements || []).reduce((a, x) => a + split(x.outcomes, x.calls).server, 0) || 1;
+        out.push({ level: "bad", id: "error_ratio", title: `${fmt.si(sr * 100, 1)}% of queries fail on the server${w === f15 ? " in the last 15 minutes" : ""}${prev?.queries ? ` (${fmt.si(prev.server / prev.queries * 100, 2)}% the window before)` : ""}`,
+          body: [`${fmt.si(w.server / secsOf(w), 1)}/s server errors and timeouts`, w.timeouts ? ` (${fmt.si(w.timeouts / w.server * 100, 0)}% timeouts)` : "", top?.n ? [". ", fmt.pct(top.n / allS, 0), " are one statement: ", h("code", {}, trim(top.x.sql, 90))] : "", "."],
+          rule: `server errors and timeouts over 1% of the queries in ${winOf(w)}`, links: [top?.n ? ["Open the statement", statementLink(top.x.fingerprint)] : null, ["Errors in Logs", link("logs", { q: "level>=error" })]] });
+      }
+    }
+    // Client errors, which are not the server's.
+    if (f.queries && f.client) {
+      const w = worse("client"), cr = w.client / w.queries;
+      checked.push(`client errors ${fmt.si(cr * 100, 1)}%`);
+      if (cr > 0.01) {
+        const tops = (stmts?.statements || []).map((x) => ({ x, n: split(x.outcomes, x.calls).client })).filter((y) => y.n).sort((a, b) => b.n - a.n);
+        const all = tops.reduce((a, y) => a + y.n, 0) || 1, t = tops[0], k = t?.x.keys?.slice().sort((a, b) => b.calls - a.calls)[0];
+        out.push({ level: "warn", id: "client_errors", title: `${fmt.si(cr * 100, 1)}% of queries are client errors (400)${w === f15 ? " in the last 15 minutes" : ""}`,
+          body: [`${fmt.si(w.client / secsOf(w), 0)}/s requests the server cannot run. Not a server fault: they are counted apart from the failures.`, t ? [" ", fmt.pct(t.n / all, 0), " are one statement", k ? [" from key ", h("b", { class: "mono" }, k.key)] : "", ": ", h("code", {}, trim(t.x.sql, 80)), "."] : ""],
+          rule: `client errors (400) over 1% of the queries in ${winOf(w)}`, links: [t ? ["Open the statement", statementLink(t.x.fingerprint)] : null, t && k && canContainNow() ? [`Refuse it from ${k.key}…`, () => containDialog({ fingerprint: t.x.fingerprint, sql: t.x.sql, key: k.key, keys: t.x.keys?.map((y) => ({ key: y.key })) })] : null] });
+      }
+    }
+    // Client deadlines, apart.
+    if (f.queries && f.deadlines && f.deadlines / f.queries > 0.005) {
+      const tops = (stmts?.statements || []).map((x) => ({ x, n: x.outcomes?.client_deadline || 0 })).filter((y) => y.n).sort((a, b) => b.n - a.n);
+      const k = tops[0]?.x.keys?.slice().sort((a, b) => b.calls - a.calls)[0];
+      out.push({ level: "info", id: "client_deadlines", title: `${fmt.si(f.deadlines / f.queries * 100, 1)}% of queries pass the client's own deadline`,
+        body: [`The client asked for less time than the query takes (its timeout_ms). Counted apart from the server's failures.`, k ? [" Mostly key ", h("b", { class: "mono" }, k.key), "."] : ""],
+        rule: "client deadlines over 0.5% of the queries", links: [tops[0] ? ["Open the statement", statementLink(tops[0].x.fingerprint)] : null] });
+    }
+    // p99: did it rise, and does a copy explain it?
+    const mins = minutes(ps).filter((m) => m.p99 != null);
+    const slowCopy = (() => {
+      const ok = withDetail.filter((c) => c.p99 != null);
+      if (ok.length < 3) return null;
+      const med = median(ok.map((c) => c.p99)), w = ok.slice().sort((a, b) => b.p99 - a.p99)[0];
+      return w.p99 > 5 * med && w.p99 > 30 ? { ...w, med } : null;
+    })();
+    let rise = null;
+    if (mins.length >= 6) {
+      const base = prev?.p99 ?? median(mins.slice(0, Math.floor(mins.length / 2)).map((m) => m.p99));
+      const cur = median(mins.slice(-5).map((m) => m.p99));
+      if (base && cur > 2 * base && cur > 20) {
+        const mid = (base + cur) / 2;
+        let i = mins.length - 1;
+        while (i > 0 && mins[i - 1].p99 > mid) i--;
+        rise = { base, cur, since: mins[i].t };
+      }
+      checked.push(rise ? `p99 rose` : `p99 ${fmt.ms(cur)}${base ? ` (${fmt.ms(base)} before)` : ""}`);
+    }
+    if (slowCopy || rise) {
+      own.add("p99");
+      const grew = (stmts?.statements || []).filter((x) => !isOwn(x)).map((x) => ({ x, c: change(x) })).filter((y) => y.c?.p99X >= 2).sort((a, b) => (b.x.share || 0) - (a.x.share || 0))[0];
+      const sinceCopy = slowCopy ? copySince(slowCopy) : null;
+      const body = [];
+      let heavyS = null;
+      if (slowCopy) {
+        body.push(`On shard ${slowCopy.shard}, copy `, h("b", { class: "mono", title: copyTitle(slowCopy.url) }, copyName(slowCopy.url)), ` answers at p99 ${fmt.ms(slowCopy.p99)}${sinceCopy ? ` since ${fmt.time(sinceCopy, false)}` : ""}; the fleet's median copy at ${fmt.ms(slowCopy.med)}. A search waits for the slowest shard it asks.`);
+        const why = [];
+        const medSeg = median(withDetail.map((c) => c.segments));
+        if (slowCopy.segments != null && medSeg && slowCopy.segments > 3 * medSeg) why.push(`${fmt.n(slowCopy.segments)} segments (median ${fmt.n(medSeg)})`);
+        if (slowCopy.merge_failing) why.push("its merges fail");
+        if (slowCopy.disk > 0.9) why.push(`disk ${fmt.pct(slowCopy.disk, 0)} used`);
+        if (slowCopy.cpu > 0.85) why.push(`CPU ${fmt.pct(slowCopy.cpu, 0)}`);
+        if (why.length) body.push(` It has ${why.join(", ")}.`);
+      }
+      if (grew) body.push(" Slower most: ", h("code", {}, trim(grew.x.sql, 70)), ` (p99 ${fmt.ms(grew.x.prev.p99_ms)} → ${fmt.ms(grew.x.p99_ms)}, ${fmt.pct(grew.x.share || 0, 0)} of query time).`);
+      else {
+        // With no window before to compare with: the statement that takes the most time, when it is slow itself.
+        const heavy = (stmts?.statements || []).filter((x) => !isOwn(x) && x.p99_ms > (rise?.cur ?? 0) * 0.5).sort((a, b) => (b.share || 0) - (a.share || 0))[0];
+        if (heavy && heavy.share > 0.3) { body.push(" It takes ", h("b", {}, fmt.pct(heavy.share, 0)), " of the query time: ", h("code", {}, trim(heavy.sql, 70)), ` (p99 ${fmt.ms(heavy.p99_ms)}${heavy.keys?.[0]?.key ? `, from key ${heavy.keys[0].key}` : ""}).`); heavyS = heavy; }
+      }
+      out.push({ level: rise ? "bad" : "warn", id: "p99",
+        title: rise ? `p99 rose from ${fmt.ms(rise.base)} to ${fmt.ms(rise.cur)} at ${fmt.time(rise.since, false)}${slowCopy ? ", and one copy explains it" : ""}` : `Copy ${copyName(slowCopy.url)} is ${Math.round(slowCopy.p99 / slowCopy.med)}× slower than the median copy`,
+        body: rise && !slowCopy ? [`The last 5 minutes' p99 is ${fmt.ms(rise.cur)}; no single copy explains it (the slowest copies are within 5× of the median).`, ...body] : body,
+        rule: `${rise ? "the last 5 minutes' p99 over 2× the window before and over 20 ms" : ""}${rise && slowCopy ? "; " : ""}${slowCopy ? "a copy's p99 over 5× the fleet's median copy (each copy's last minute)" : ""}`,
+        links: [slowCopy ? [`Open ${copyName(slowCopy.url)}`, copyLink(slowCopy.url)] : null, slowCopy ? ["Its logs", link("logs", { node: copyName(slowCopy.url), level: "warn" })] : null, slowCopy ? [`CPU profile of ${copyName(slowCopy.url)}`, nodeLink(slowCopy.url)] : null, grew ? ["Open the statement", statementLink(grew.x.fingerprint)] : heavyS ? ["Open the statement", statementLink(heavyS.fingerprint)] : null] });
+      if (heavyS) own.add("share:" + heavyS.fingerprint);
+    } else if (withDetail.some((c) => c.p99 != null)) {
+      const ok = withDetail.filter((c) => c.p99 != null), w = ok.slice().sort((a, b) => b.p99 - a.p99)[0];
+      checked.push(`slowest copy ${fmt.ms(w.p99)} (median ${fmt.ms(median(ok.map((c) => c.p99)))})`);
+    }
+    // Disk, every copy.
+    const disks = withDetail.filter((c) => c.disk != null);
+    if (disks.length) {
+      const max = disks.slice().sort((a, b) => b.disk - a.disk)[0], over = disks.filter((c) => c.disk >= 0.85);
+      const chk = (state.fleet?.checks || []).find((c) => c.id === "disk");
+      checked.push(`disk at most ${fmt.pct(max.disk, 0)}`);
+      if (over.length) {
+        own.add("disk");
+        out.push({ level: max.disk >= 0.95 ? "bad" : "warn", id: "disk",
+          title: over.length === disks.length && disks.length > 1 ? `Disk ${fmt.pct(median(disks.map((c) => c.disk)), 0)} used on every copy` : `Disk over 85% on ${fmt.plural(over.length, "copy", "copies")} of ${fmt.n(disks.length)}`,
+          body: [`The fullest is `, h("b", { class: "mono", title: copyTitle(max.url) }, copyName(max.url)), ` at ${fmt.pct(max.disk, 0)}${max.merge_failing ? " (its merges fail: they need room)" : ""}. A copy whose disk fills stops taking writes.`, chk?.days_to_full != null ? ` At this rate the fullest is full in about ${fmt.si(chk.days_to_full, 1)} days.` : "", over.length > 1 && disks.length > 1 && over.length === disks.length ? " Copies that share a volume count it once each." : ""],
+          rule: "a copy's disk_used_ratio at 85% or more, now · 90% is the alert line", links: [["Copies by disk in Cluster", link("cluster", { lens: "disk" })], [`Open ${copyName(max.url)}`, copyLink(max.url)]] });
+      }
+    } else if (!isCoord() && ps.length) {
+      const d = ps[ps.length - 1].disk_used_ratio;
+      if (d != null) { checked.push(`disk ${fmt.pct(d, 0)}`); if (d >= 0.85) out.push({ level: d >= 0.95 ? "bad" : "warn", id: "disk", title: `Disk ${fmt.pct(d, 0)} used`, body: ["A server whose disk fills stops taking writes."], rule: "disk_used_ratio at 85% or more, now", links: [] }); }
+    }
+    // One statement takes most of the time.
+    const topS = (stmts?.statements || []).filter((x) => !isOwn(x)).sort((a, b) => (b.share || 0) - (a.share || 0))[0];
+    if (topS && topS.share > 0.4 && topS.calls > 10 && !own.has("share:" + topS.fingerprint)) out.push({ level: "info", id: "share", title: `One statement takes ${fmt.pct(topS.share, 0)} of query time`, body: [h("code", {}, trim(topS.sql, 110)), ` · ${fmt.si(topS.calls / Math.max(1, (stmts?.span_ms ?? ((r.to ?? Date.now()) - r.from)) / 1000))} calls/s · p99 ${fmt.ms(topS.p99_ms)}.`], rule: stmts?.windowed ? "statement statistics of the range" : "statement statistics since the server started", links: [["Open the statement", statementLink(topS.fingerprint)]] });
+    // Refused.
+    if (f.refusedS > 0.1) {
+      const refusedOf = (x) => (x.outcomes?.refused || 0) + (x.outcomes?.rejected || 0);
+      const topR = (stmts?.statements || []).filter((x) => refusedOf(x) > 0).sort((a, b) => refusedOf(b) - refusedOf(a))[0];
+      // Refusals on purpose: a contain rule turned most of them away (its count is since it was made).
+      const inRange = f.refusedS * secsOf(f);
+      const byRule = (rules || []).filter((x) => x.refused > 0).sort((a, b) => b.refused - a.refused);
+      const ruled = byRule.reduce((a, x) => a + x.refused, 0);
+      if (byRule.length && ruled >= 0.5 * inRange) {
+        const top = byRule[0];
+        out.push({ level: "info", id: "refused", title: `${fmt.si(f.refusedS)}/s queries refused (429), most by a contain rule`,
+          body: [`Rule ${top.id} ${top.action === "refuse" ? "refuses" : `lets ${top.concurrency} at once run of`} ${top.match?.fingerprint ? "a statement" : "everything"}${top.match?.key ? " from key " : ""}`, top.match?.key ? h("b", { class: "mono" }, top.match.key) : "",
+            `: ${fmt.n(top.refused)} refused since ${when(top.created_ms)}, ${top.by ? "by " + top.by + ", " : ""}“${top.reason}”. It ends ${fmt.ago(top.expires_ms)}.`, byRule.length > 1 ? ` ${fmt.plural(byRule.length - 1, "other rule")} refused ${fmt.n(ruled - top.refused)}.` : ""],
+          rule: "refused over 0.1/s over the range, and the contain rules' refusals", links: [["Contain rules in Queries", link("queries", { tab: "live" })], top.match?.fingerprint ? ["Open the statement", statementLink(top.match.fingerprint)] : null] });
+      } else
+      out.push({ level: "warn", id: "refused", title: `${fmt.si(f.refusedS)}/s queries refused (429)`,
+        body: [`The server turned them away before running them: no query slot was free${canContainNow() ? ", the queries' memory was at its limit, or a contain rule refused them" : " or the queries' memory was at its limit"}. Clients see 429 and may retry.`,
+          topR ? [" Refused most: ", h("code", {}, trim(topR.sql, 80)), ` (${fmt.n(refusedOf(topR))} in the range).`] : ""],
+        rule: "refused over 0.1/s over the range",
+        links: [topR ? ["Open the statement", statementLink(topR.fingerprint)] : null, canContainNow() ? ["Contain rules in Queries", link("queries", { tab: "live" })] : null].filter(Boolean) });
+    }
+    // Replication lag and copies down, from the fleet's checks.
+    for (const c of state.fleet?.checks || []) {
+      if (c.status === "ok" || own.has(c.id)) continue;
+      if (c.id === "lag") out.push({ level: c.status === "critical" ? "bad" : "warn", id: "lag", title: `A replica is ${fmt.si(c.max_txn)} transactions behind${c.max_s != null ? ` (${fmt.si(c.max_s)} s)` : ""}`, body: [`On ${Array.isArray(c.where) ? c.where.join(", ") : c.where || "a copy"}. Reads it serves are that far behind its primary.`], rule: "the fleet's health check: lag", links: [["Copies by lag in Cluster", link("cluster", { lens: "lag" })]] });
+      if (c.id === "copies" && c.down) out.push({ level: "bad", id: "copies", title: `${fmt.plural(c.down, "copy", "copies")} of ${fmt.n(c.total)} down`, body: [`${(c.where || []).join(", ")}. Its shard answers from the other copies.`], rule: "the fleet's health check: copies", links: [["Open Cluster", link("cluster")]] });
+    }
+    // The server's own problems that no finding above covers.
+    const covers = { error_ratio: /error|fail|avail/i, p99: /p99|latency|slow/i, disk: /disk/i };
+    for (const p of state.fleet?.problems || []) {
+      if (own.has(p.id) || out.some((x) => x.id === p.id || (covers[x.id] && covers[x.id].test(`${p.id} ${p.title}`)))) continue;
+      out.push(fleetFinding(p, topS, out));
+    }
+    const order = { bad: 0, warn: 1, info: 2 };
+    out.sort((a, b) => order[a.level] - order[b.level]);
+
+    const sub = `${fmt.plural(out.length, "finding")} · ${r.label}`;
+    const readLine = h("div", { class: "small muted", style: { marginBottom: "10px" } }, `Read: ${read.join(", ") || "nothing"}.`, missing.length ? h("span", { class: "wl-bad" }, ` Could not read: ${missing.join(", ")}.`) : "", narrow() ? "" : " Each finding says which rule fired on which numbers.");
+    let bodyEl;
+    if (out.length) bodyEl = h("div", { class: "grid g2" }, out.map(findingEl));
+    else if (missing.length || !ps.length) bodyEl = h("div", { class: "row nw", style: { gap: "10px" } }, icon("info"), h("span", {}, `Nothing found in what could be read, but ${missing.join(" and ") || "the series"} could not be read: this is not an all-clear.`));
+    else bodyEl = h("div", { class: "row nw", style: { gap: "10px" } }, h("span", { style: { color: "var(--good)" } }, icon("okc")), h("span", {}, `Nothing needs attention over the ${r.label.replace(/^last /, "last ")}. Checked: ${checked.join(", ")}.`));
+    clear(findBox, card({ title: "What needs attention", sub, body: [readLine, bodyEl] }));
+  }
+  /** One of the server's own problems as a finding. Long advice goes in the text, under a short link. */
+  function fleetFinding(p, topS, out) {
+    const said = `${p.title} ${p.impact || ""}`.toLowerCase();
+    const where = (p.where || []).filter((w) => !said.includes(String(w).toLowerCase()));
+    const next = p.next?.text || "";
+    const VIEWS = { cluster: "Open Cluster", queries: "Open Queries", performance: "See the statements below", tables: "Open Tables and storage", alerts: "Open Alerts", logs: "Open Logs" };
+    const short = next.length <= 48 ? next : VIEWS[p.next?.view] || "Open it";
+    const body = [p.impact ? p.impact + ". " : "", p.why ? h("span", { class: "muted" }, p.why.replace(/^./, (c) => c.toUpperCase()) + ". ") : "", where.length ? `Where: ${where.join(", ")}. ` : "", next.length > 48 && p.next?.view !== "performance" ? `Next: ${next.replace(/\.$/, "")}.` : ""];
+    const links = [p.next && p.next.view !== "performance" ? [short, link(p.next.view, p.next.params || {})] : null];
+    // The fleet's p99 check with one statement taking most of the time: name it here, not in a finding of its own.
+    if (p.id === "p99" && topS && topS.share > 0.3) {
+      body.push(" ", h("b", {}, fmt.pct(topS.share, 0)), " of the query time is one statement: ", h("code", {}, trim(topS.sql, 80)), ` (p99 ${fmt.ms(topS.p99_ms)}${topS.keys?.[0]?.key ? `, mostly key ${topS.keys[0].key}` : ""}).`);
+      links.push(["Open the statement", statementLink(topS.fingerprint)]);
+      const i = out.findIndex((x) => x.id === "share");
+      if (i >= 0) out.splice(i, 1);
+    }
+    return { level: p.severity === "critical" ? "bad" : "warn", id: p.id, title: p.title, body, rule: state.fleet.derived ? "worked out here from the cluster" : "the fleet's health", links };
+  }
+  /** When a copy's p99 went over 5× the median, from /v1/load. */
+  function copySince(c) {
+    const x = load?.copies?.find((y) => y.url === c.url);
+    if (!x?.points?.length) return null;
+    let since = null;
+    for (const p of x.points) { if (p.p99_ms > 5 * c.med) { if (since == null) since = p.t; } else since = null; }
+    return since;
+  }
+  function findingEl(x) {
+    const tone = x.level === "bad" ? "var(--crit)" : x.level === "warn" ? "var(--warn)" : "var(--info, var(--s1))";
+    return h("div", { class: "wl-find " + x.level },
+      h("div", { class: "wl-find-ic", style: { color: tone } }, icon(x.level === "info" ? "info" : "warn")),
+      h("div", { style: { minWidth: 0 } },
+        h("div", { class: "wl-find-t" }, x.title),
+        h("div", { class: "wl-find-b" }, x.body),
+        x.rule ? h("div", { class: "small muted", style: { marginTop: "4px" } }, "Rule: " + x.rule) : null,
+        h("div", { class: "row", style: { gap: "6px", marginTop: "8px" } }, (x.links || []).filter(Boolean).map(([t, href]) => typeof href === "function" ? h("button", { class: "btn sm", onclick: href }, t) : h("a", { class: "btn sm", href }, t)))));
+  }
+
+  // ------------------------------------------------ every copy by p99
+  function drawCopies() {
+    if (!isCoord()) { clear(copiesBox); return; }
+    const all = copiesOf(), cs = all.filter((c) => c.p99 != null).sort((a, b) => b.p99 - a.p99);
+    const silent = all.filter((c) => c.p99 == null);
+    const silentEl = silent.length ? h("span", { class: "wl-bad" }, `${silent.map((c) => c.name).join(", ")} ${silent.some((c) => c.status === "down") ? "down" : "sent nothing"}: not in the chart · `) : "";
+    if (!cs.length) { clear(copiesBox, card({ title: "Copies by p99", body: h("div", { class: "small muted" }, silent.length ? [silentEl, "no copy sent its figures."] : "No copy sent its figures yet.") })); return; }
+    const med = median(cs.map((c) => c.p99));
+    const W = 1000, H = 70, bw = Math.min(W / cs.length, 40);
+    const max = Math.log10(Math.max(1.1, cs[0].p99 + 1)), y = (v) => H - 4 - (Math.log10(v + 1) / max) * (H - 8);
+    const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", style: { width: "100%", height: H + "px", display: "block", cursor: "pointer" }, role: "img", "aria-label": "every copy's p99, slowest first" });
+    cs.forEach((c, i) => {
+      const bad = c.p99 > 5 * med && c.p99 > 30, warn = c.p99 > 3 * med && c.p99 > 20;
+      const r = s("rect", { x: i * bw, y: y(c.p99), width: Math.max(bad || warn ? 6 : 0.6, bw - (cs.length > 200 ? 0 : 1)), height: H - 4 - y(c.p99), fill: bad ? "var(--crit)" : warn ? "var(--warn)" : "var(--s1)", opacity: bad || warn ? 1 : 0.7 });
+      r.append(s("title", {}, `${copyName(c.url)} · shard ${c.shard} · p99 ${fmt.ms(c.p99)}\n${c.url}`));
+      r.onclick = () => { location.hash = copyLink(c.url); };
+      svg.append(r);
+    });
+    const named = cs.slice(0, 3).map((c) => h("a", { class: "wl-link mono", href: copyLink(c.url), title: copyTitle(c.url) }, `${copyName(c.url)} ${fmt.ms(c.p99)}`));
+    clear(copiesBox, card({ title: "Copies by p99", sub: "every copy of every shard, the slowest first · each copy's last minute · click one to open it", attrs: { style: { marginBottom: "14px" } }, body: [svg,
+      h("div", { class: "row small muted", style: { justifyContent: "space-between", marginTop: "6px" } }, h("span", { class: "row nw", style: { gap: "10px" } }, named), h("span", {}, silentEl, `${fmt.plural(cs.length, "copy", "copies")} · median ${fmt.ms(med)} · log scale`))] }));
+  }
+
+  // ------------------------------------------------ what got slower
+  function drawSlower() {
+    if (!stmts) { clear(slowerBox, stmtsErr ? card({ title: "What got slower", body: h("div", { class: "small muted" }, "The statements could not be read: " + stmtsErr.message) }) : null); return; }
+    const r = timeRange(), secs = Math.max(1, (stmts.span_ms ?? ((r.to ?? Date.now()) - r.from)) / 1000);
+    const list = stmts.statements.filter((x) => !isOwn(x));
+    if (!stmts.windowed) {
+      const top = list.slice().sort((a, b) => (b.total_ms || 0) - (a.total_ms || 0)).slice(0, 6);
+      clear(slowerBox, card({ title: "Where the time goes", sub: "statements by share of query time · since the server started: a newer server compares each with the window before", flush: true, body: table(cols([
+        { key: "sql", label: "statement", render: (x) => h("a", { class: "mono small ellipsis wl-link", style: { display: "block", maxWidth: narrow() ? "210px" : "640px" }, href: statementLink(x.fingerprint), title: x.sql }, x.sql) },
+        { key: "share", label: "share of time", num: true, render: (x) => fmt.pct(x.share || 0, 0) },
+        { key: "calls", label: "calls", num: true, wide: true, render: (x) => fmt.n(x.calls) },
+        { key: "p99_ms", label: "p99", num: true, render: (x) => fmt.ms(x.p99_ms) },
+        { key: "fail", label: "failed", num: true, wide: true, sort: (x) => split(x.outcomes, x.calls).failed, render: (x) => outcomeBar(x.outcomes, 70) },
+      ]), { rows: top, sortKey: "share", desc: true, compact: true, onRow: (x) => { location.hash = statementLink(x.fingerprint); } }) }));
+      return;
+    }
+    const rows = list.map((x) => ({ x, c: change(x) })).filter((y) => y.c && y.c.p99X >= 1.3 && y.x.p99_ms - y.x.prev.p99_ms > 2).sort((a, b) => (b.x.p99_ms - b.x.prev.p99_ms) - (a.x.p99_ms - a.x.prev.p99_ms)).slice(0, 8);
+    clear(slowerBox, card({ title: "What got slower", sub: `statements by change of p99 against the window before · ${r.label}`, flush: true, body: rows.length ? table(cols([
+      { key: "sql", label: "statement", render: (y) => h("span", { class: "mono small ellipsis", style: { display: "block", maxWidth: narrow() ? "170px" : "560px" }, title: y.x.sql }, y.x.sql) },
+      { key: "now", label: "p99 now", num: true, sort: (y) => y.x.p99_ms, render: (y) => h("b", { class: y.c.p99X >= 2 ? "wl-bad" : "" }, fmt.ms(y.x.p99_ms)) },
+      { key: "before", label: "before", num: true, wide: true, sort: (y) => y.x.prev.p99_ms, render: (y) => h("span", { class: "muted" }, fmt.ms(y.x.prev.p99_ms)) },
+      { key: "d", label: "change", num: true, sort: (y) => y.x.p99_ms - y.x.prev.p99_ms, render: (y) => "+" + fmt.ms(y.x.p99_ms - y.x.prev.p99_ms) },
+      { key: "calls", label: "calls/s", num: true, wide: true, sort: (y) => y.x.calls, render: (y) => h("span", { title: `${fmt.n(y.x.calls)} calls; ${fmt.n(y.x.prev.calls)} the window before` }, fmt.si(y.x.calls / secs)) },
+      { key: "fail", label: "failed", num: true, wide: true, sort: (y) => split(y.x.outcomes, y.x.calls).failed, render: (y) => outcomeBar(y.x.outcomes, 60) },
+      { key: "verdict", label: "", sortable: false, wide: true, render: (y) => h("span", { class: "small muted" }, y.c.verdict || "") },
+    ]), { rows, sortKey: "d", desc: true, compact: true, onRow: (y) => { location.hash = statementLink(y.x.fingerprint); } }) : h("div", { class: "small muted", style: { padding: "12px" } }, `No statement's p99 rose by a third or more against the window before (${fmt.plural(list.length, "statement")} compared).`) }));
+  }
+
+  // ------------------------------------------------ the tabs below
+  function drawTabs() {
+    clear(tabs, TABS.map(([k, v]) => h("button", { role: "tab", "aria-selected": String(k === tab), onclick: () => { tab = k; store.set("perf.tab2", k); drawTabs(); drawTab(); if (k === "queries") loadRoutes(); } }, v)),
+      narrow() ? null : [h("span", { class: "sep" }), h("span", { class: "small muted", style: { alignSelf: "center" } }, isCoord() ? "Writes and Resources are this coordinator's; Storage and Replication list every copy" : "This server")]);
+  }
+  const sub = [];
+  function drawTab() {
+    sub.forEach((c) => { const i = charts.indexOf(c); if (i >= 0) charts.splice(i, 1); });
+    sub.length = 0;
+    const SC = (title, sub_, opts) => { const c = timeChart({ height: 160, domain, onBrush: brush, ...opts }); sub.push(c); charts.push(c); c.update(visible()); return card({ title, sub: sub_, body: c }); };
+    const who = isCoord() ? "this coordinator" : "this server";
+    if (tab === "queries") { clear(tabBody, routesCard()); return; }
+    if (tab === "writes") {
+      clear(tabBody, h("div", { class: "grid g2" },
+        SC("Write requests per second", who, { series: [{ name: "writes/s", get: (p) => p.writes_s }, { name: "failed", get: (p) => p.write_errors_s, color: "var(--crit)" }] }),
+        SC("Rows written per second", who, { series: [{ name: "rows/s", get: (p) => p.rows_s, area: true, color: SERIES[2] }] }),
+        SC("Write latency, p99", `${who} · from the request to the commit its acks wait for`, { fmt: fmt.ms, series: [{ name: "p99", get: (p) => p.write_p99_ms, color: SERIES[6], area: true }] }),
+        SC("Write queue", `${who} · writes waiting for the writer thread`, { series: [{ name: "queued", get: (p) => p.write_queue, color: SERIES[3], area: true }] })));
+      return;
+    }
+    if (tab === "resources") {
+      const cores = state.system?.cores;
+      const parts = [
+        SC("CPU", `${who} · cores in use${cores ? `, of ${cores}` : ""}`, { series: [{ name: "cores", get: (p) => p.cpu, area: true }], threshold: cores ? { value: cores, label: "all cores" } : null }),
+        SC("Memory", `${who} · resident set and what queries and merges hold`, { fmt: fmt.bytes, series: [{ name: "resident", get: (p) => p.rss_bytes ?? p.mem_bytes, area: true, color: SERIES[6] }, { name: "query memory", get: (p) => p.query_memory_bytes, color: SERIES[3] }, { name: "merges", get: (p) => p.merge_memory_bytes, color: SERIES[2] }] }),
+        SC("Concurrency", `${who} · queries running and slots in use`, { series: [{ name: "running", get: (p) => p.running }, { name: "slots in use", get: (p) => state.system?.limits?.max_concurrent && p.slots_free != null ? state.system.limits.max_concurrent - p.slots_free : null, color: SERIES[2] }], threshold: state.system?.limits?.max_concurrent ? { value: state.system.limits.max_concurrent, label: "slots" } : null }),
+      ];
+      if (isCoord()) parts.push(copyTable("Copies by CPU", "each copy's last minute, the busiest first", (c) => c.cpu, [
+        { key: "cpu", label: "CPU", num: true, render: (c) => c.cpu != null ? h("span", { class: c.cpu > 0.85 ? "wl-bad" : "" }, fmt.pct(c.cpu, 0)) : "–" },
+        { key: "qps", label: "q/s", num: true, render: (c) => fmt.si(c.qps) },
+        { key: "p99", label: "p99", num: true, render: (c) => fmt.ms(c.p99) },
+        { key: "rss", label: "memory", num: true, render: (c) => fmt.bytes(c.rss) },
+      ]));
+      else parts.push(SC("Disk", "used of the database's file system", { fmt: (v) => fmt.pct(v, 0), max: 1, series: [{ name: "used", get: (p) => p.disk_used_ratio, area: true, color: SERIES[1] }], threshold: { value: 0.9, label: "alert" } }));
+      clear(tabBody, h("div", { class: "grid g2" }, parts));
+      return;
+    }
+    if (tab === "storage") {
+      if (isCoord()) {
+        const cs = copiesOf(), segMed = median(cs.map((c) => c.segments));
+        clear(tabBody, copyTable("Copies by disk", "every copy, the fullest first · from each copy's latest figures", (c) => c.disk, [
+          { key: "disk", label: "disk used", num: true, render: (c) => c.disk != null ? h("span", { class: c.disk >= 0.95 ? "wl-bad" : "" }, fmt.pct(c.disk, 0)) : "–" },
+          { key: "segments", label: "segments", num: true, render: (c) => h("span", { class: segMed && c.segments > 3 * segMed ? "wl-bad" : "" }, c.segments ?? "–") },
+          { key: "merges", label: "merges", sort: (c) => c.merge_failing ? 1 : 0, render: (c) => c.merge_failing ? h("span", { class: "pill bad" }, "failing") : c.flush_failing ? h("span", { class: "pill bad" }, "flushes fail") : h("span", { class: "muted" }, "ok") },
+          { key: "docs", label: "rows", num: true, render: (c) => fmt.si(c.docs) },
+          { key: "deleted", label: "deleted", num: true, render: (c) => c.deleted != null ? fmt.si(c.deleted) : "–" },
+          { key: "file", label: "file", num: true, render: (c) => c.file != null ? fmt.bytes(c.file) : "–" },
+        ], 24));
+        return;
+      }
+      clear(tabBody, h("div", { class: "grid g2" },
+        SC("Rows", null, { series: [{ name: "rows", get: (p) => p.docs, area: true }, { name: "deleted, not merged", get: (p) => p.deleted_docs, color: SERIES[7] }] }),
+        SC("Bytes on disk", null, { fmt: fmt.bytes, series: [{ name: "database file", get: (p) => p.file_bytes, color: SERIES[0] }, { name: "write-ahead log", get: (p) => p.wal_bytes, color: SERIES[3] }, { name: "reusable", get: (p) => p.reusable_bytes, color: SERIES[2] }] }),
+        SC("Segments", "and merges running", { series: [{ name: "segments", get: (p) => p.segments }, { name: "merges", get: (p) => p.merges_running, color: SERIES[2] }] }),
+        SC("Disk", "used of the database's file system", { fmt: (v) => fmt.pct(v, 0), max: 1, series: [{ name: "used", get: (p) => p.disk_used_ratio, area: true, color: SERIES[1] }], threshold: { value: 0.9, label: "alert" } })));
+      return;
+    }
+    // replication
+    if (isCoord()) {
+      clear(tabBody, copyTable("Replicas by lag", "transactions each replica has still to apply from its primary, the furthest behind first", (c) => c.behind, [
+        { key: "behind", label: "behind", num: true, render: (c) => c.behind != null ? h("span", { class: c.behind > 10000 ? "wl-bad" : "" }, fmt.si(c.behind)) : "–" },
+        { key: "role", label: "role", render: (c) => h("span", { class: "badge" }, c.role || "–") },
+        { key: "status", label: "status", render: (c) => c.status === "ok" ? h("span", { class: "muted" }, "ok") : h("span", { class: "pill bad" }, c.status || "–") },
+      ], 24, (c) => c.role !== "primary"));
+      return;
+    }
+    clear(tabBody, h("div", { class: "grid g2" },
+      SC("Replicas behind", "the most transactions a replica lacks", { series: [{ name: "behind", get: (p) => p.replica_behind_max, color: SERIES[3], area: true }] }),
+      SC("Replicas in sync", null, { series: [{ name: "in sync", get: (p) => p.replicas_in_sync, color: SERIES[2] }, { name: "out of sync", get: (p) => p.replicas_out_of_sync, color: "var(--crit)" }] })));
+  }
+  /** A table of copies sorted by a figure, the top N shown. */
+  function copyTable(title, sub_, by, colsOf, n = 12, keep = () => true) {
+    const cs = copiesOf().filter(keep).filter((c) => by(c) != null).sort((a, b) => by(b) - by(a));
+    const shown = cs.slice(0, n);
+    const acts = (c) => [h("a", { class: "btn sm", href: copyLink(c.url) }, "Open"), h("a", { class: "btn sm", href: nodeLink(c.url) }, "Profile")];
+    // On a phone: the copy and the first figure; a tap opens the rest.
+    const nar = narrow();
+    const shownCols = nar ? colsOf.slice(0, 1) : colsOf;
+    const onRow = nar ? (c) => sheet(`Copy ${copyName(c.url)}`, [["shard", c.shard], ...colsOf.map((x) => [x.label, x.render(c)]), ["address", h("span", { class: "mono small" }, c.url)]], acts(c)) : null;
+    return card({ title, sub: sub_ + (nar ? " · tap one for the rest" : ""), flush: true, body: [table(cols([
+      { key: "copy", label: "copy", sort: (c) => c.shard * 10 + c.j, render: (c) => h("a", { class: "mono wl-link", href: copyLink(c.url), title: copyTitle(c.url) }, copyName(c.url)) },
+      { key: "shard", label: "shard", num: true },
+      ...shownCols,
+      { key: "act", label: "", sortable: false, wide: true, render: (c) => h("div", { class: "row nw", style: { gap: "4px" } }, acts(c)) },
+    ]), { rows: shown, compact: true, onRow, empty: h("div", { class: "small muted" }, "No copy sent this figure.") }),
+    cs.length > n ? h("div", { class: "small muted", style: { padding: "8px 12px" } }, `${fmt.plural(cs.length - n, "more copy", "more copies")}: `, h("a", { class: "wl-link", href: link("cluster") }, "all of them in Cluster")) : null] });
+  }
+
+  const OWN_ROUTE = /^(\/|\/ui(\/.*)?|\/favicon.*|\/v1\/(timeseries|health(\/.*)?|cluster|alerts(\/.*)?|system|whoami|events|load|routes|queries(\/.*)?|logs(\/.*)?|profile(\/.*)?))$/;
+  function routesCard() {
+    if (routesErr) return card({ title: "Kinds and routes", body: h("div", { class: "small muted" }, "Could not read the routes: " + routesErr.message) });
+    if (!routes) return card({ title: "Kinds and routes", body: h("div", { class: "small muted" }, "Reading…") });
+    const kinds = (routes.kinds || []).slice().sort((a, b) => b.queries - a.queries);
+    const all = routes.http || [], ownR = all.filter((r) => OWN_ROUTE.test(r.route)), rs = showOwnRoutes ? all : all.filter((r) => !OWN_ROUTE.test(r.route));
+    const maxK = Math.max(1e-9, ...kinds.map((k) => k.p99_ms || 0)), maxR = Math.max(1e-9, ...rs.map((k) => k.p99_ms || 0));
+    const bar = (v, max, color) => h("div", { class: "row nw", style: { gap: "8px" } }, h("div", { class: "barbox" }, h("div", { class: "bar", style: { width: (max ? v / max * 100 : 0) + "%", background: color } })), h("span", { class: "num" }, fmt.ms(v)));
+    const ownN = ownR.reduce((a, r) => a + r.requests, 0);
+    return h("div", { class: "grid g2" },
+      card({ title: "Queries by plan kind", sub: `${isCoord() ? "this coordinator" : "this server"} · since it started`, flush: true, body: table(cols([
+        { key: "kind", label: "kind", render: (k) => h("span", { class: "badge mono" }, k.kind) },
+        { key: "queries", label: "queries", num: true, render: (k) => fmt.n(k.queries) },
+        { key: "outcomes", label: "outcomes", wide: true, sort: (k) => split(k.outcomes, k.queries).failed / Math.max(1, k.queries), render: (k) => k.outcomes ? outcomeBar(k.outcomes, 80) : "–" },
+        { key: "p50_ms", label: "p50", num: true, wide: true, render: (k) => fmt.ms(k.p50_ms) },
+        { key: "p99_ms", label: "p99", render: (k) => narrow() ? fmt.ms(k.p99_ms) : bar(k.p99_ms, maxK, SERIES[0]) },
+        { key: "hist", label: "latency", sortable: false, wide: true, render: (k) => k.hist ? sparkline(k.hist, { width: 100, height: 22, color: SERIES[0], cls: "" }) : "" },
+      ]), { rows: kinds, sortKey: "queries", desc: true, compact: true }) }),
+      card({ title: "HTTP routes", sub: `${isCoord() ? "this coordinator" : "this server"} · since it started${routes.admission_p99_ms != null ? ` · waiting for a slot: p99 ${fmt.ms(routes.admission_p99_ms)}` : ""}`, flush: true, body: [table(cols([
+        { key: "route", label: "route", render: (r) => h("span", { class: "mono small" }, r.route) },
+        { key: "requests", label: "requests", num: true, render: (r) => fmt.n(r.requests) },
+        { key: "client_errors", label: "4xx", num: true, wide: true, render: (r) => fmt.n(r.client_errors) },
+        { key: "server_errors", label: "5xx", num: true, render: (r) => r.server_errors ? h("span", { class: "wl-bad" }, fmt.n(r.server_errors)) : "0" },
+        { key: "p99_ms", label: "p99", render: (r) => narrow() ? fmt.ms(r.p99_ms) : bar(r.p99_ms, maxR, SERIES[0]) },
+      ]), { rows: rs, sortKey: "requests", desc: true, compact: true, maxHeight: "360px" }),
+      ownR.length ? h("div", { class: "small muted", style: { padding: "8px 12px" } }, showOwnRoutes ? "Showing the routes the command center reads. " : `Left out: ${fmt.n(ownN)} requests to ${fmt.plural(ownR.length, "route")} the command center reads (and health probes). `, h("a", { class: "wl-link", href: "#", onclick: (e) => { e.preventDefault(); showOwnRoutes = !showOwnRoutes; drawTab(); } }, showOwnRoutes ? "Leave them out" : "Show them")) : null] }));
+  }
+
+  drawTabs();
+  drawTab();
+  draw();
+  loadStmts(); loadPrev(); loadLoad(); if (tab === "queries") loadRoutes();
+  const onRange = () => { kindsKey = ""; draw(); loadStmts(); loadPrev(); loadLoad(); };
+  const offs = [bus.on("points", draw), bus.on("range", onRange), bus.on("narrow", () => { drawTabs(); drawTab(); draw(); }), bus.on("theme", draw), bus.on("cluster", draw), bus.on("fleet", draw), bus.on("system", draw),
+    poll(15000, loadStmts), poll(60000, loadLoad), poll(15000, () => tab === "queries" ? loadRoutes() : null), poll(60000, loadPrev)];
   return () => offs.forEach((f) => f());
 }
 
-const code = (t) => h("code", {}, t);
+// ---------------------------------------------------------------- small parts
 
-/** Suggestions from a range of points, the system and the costliest statements. */
-export function advise(ps, sys, stmts) {
-  const out = [];
-  if (!ps.length || !sys) return out;
-  const avg = (f) => { const v = ps.map(f).filter((x) => x != null && Number.isFinite(x)); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
-  const max = (f) => { const v = ps.map(f).filter((x) => x != null && Number.isFinite(x)); return v.length ? Math.max(...v) : null; };
-  const p = ps[ps.length - 1];
-  const L = sys.limits || {};
-  const rejected = avg((x) => x.rejected_s);
-  const busy = L.max_concurrent && p.slots_free != null ? max((x) => L.max_concurrent - (x.slots_free ?? L.max_concurrent)) : null;
-  const cpu = avg((x) => x.cpu);
-  if (rejected > 0.01) {
-    if (cpu != null && cpu < sys.cores * 0.6) out.push({ level: "warn", icon: "gauge", title: "Queries are refused while CPU is idle", body: ["About ", fmt.rate(rejected), " answer 429 for want of a slot, but only ", fmt.si(cpu), " of ", sys.cores, " cores are busy. Raise ", code("--max-concurrent"), ` (now ${L.max_concurrent}).`] });
-    else out.push({ level: "bad", icon: "gauge", title: "The server is saturated", body: ["About ", fmt.rate(rejected), " are refused (429) and the CPU is busy. Add shards or replicas that serve reads, or find the costliest statements below."] });
-  } else if (busy != null && busy >= L.max_concurrent) out.push({ level: "warn", icon: "gauge", title: "Every query slot was in use", body: [`All ${L.max_concurrent} slots were taken at some point; the next query waits for one. If the CPU has room, raise `, code("--max-concurrent"), "."] });
-  const p99 = avg((x) => x.p99_ms), p50 = avg((x) => x.p50_ms);
-  if (p99 != null && p50 != null && p99 > 200 && p99 > p50 * 20) out.push({ level: "warn", icon: "clock", title: "A long tail of latency", body: [`p99 is ${fmt.ms(p99)} while p50 is ${fmt.ms(p50)}: a few queries cost far more than the rest. The Statements tab of Queries ranks them; a `, code("LIMIT"), ", a filter on a keyword field, or ", code("cluster_by"), " on the field they order by usually helps."] });
-  const deleted = p.deleted_docs, docs = p.docs;
-  if (docs && deleted / (docs + deleted) > 0.2) out.push({ level: "warn", icon: "trash", title: "Many deleted rows are still in segments", body: [`${fmt.pct(deleted / (docs + deleted), 0)} of the rows in segments are deleted. Queries skip them, but still read past them; merges drop them as they rewrite segments.`] });
-  if (p.file_bytes && p.reusable_bytes / p.file_bytes > 0.3) out.push({ level: "info", icon: "disk", title: "Much of the file is free space", body: [`${fmt.bytes(p.reusable_bytes)} of ${fmt.bytes(p.file_bytes)} is free for reuse. `, code("POST /v1/admin/vacuum"), " (System, Operations) returns it to the file system."] });
-  if (p.segments > 40 && !p.merges_running) out.push({ level: "info", icon: "layers", title: "Many small segments", body: [`${p.segments} segments, and no merge running. Each query reads every segment; the background merges bring the count down as rows are written.`] });
-  if (p.memtable_docs > 200000) out.push({ level: "info", icon: "mem", title: "A large memtable", body: [`${fmt.si(p.memtable_docs)} rows are not in a segment yet: a restart replays them from the log. They are written as a segment when the memtable reaches its limit.`] });
-  if (p.wal_bytes > 512 * 1024 * 1024) out.push({ level: "warn", icon: "disk", title: "The write-ahead log is large", body: [`${fmt.bytes(p.wal_bytes)} of log, which a restart replays. It empties at the next flush of the memtable.`] });
-  if (p.disk_used_ratio > 0.8) out.push({ level: p.disk_used_ratio > 0.9 ? "bad" : "warn", icon: "disk", title: "The disk is filling", body: [`${fmt.pct(p.disk_used_ratio, 0)} used, ${fmt.bytes(p.disk_free_bytes)} free. A write that finds the disk full stops the server's writes until it restarts.`] });
-  if (p.query_memory_ratio > 0.7) out.push({ level: "warn", icon: "mem", title: "Queries hold most of their memory budget", body: ["Running queries hold ", fmt.pct(p.query_memory_ratio, 0), " of ", code("--query-memory-mb"), ". Large GROUP BY and joins are the usual cause."] });
-  if (avg((x) => x.write_queue) > 0 && L.max_queued_writes && max((x) => x.write_queue) > L.max_queued_writes * 0.5) out.push({ level: "warn", icon: "import", title: "Writes queue up", body: ["The writer thread falls behind: send rows in larger batches, or use ", code("/v1/stream"), "."] });
-  if (p.replica_behind_max > 1000) out.push({ level: "warn", icon: "topology", title: "A replica is far behind", body: [`${fmt.si(p.replica_behind_max)} transactions behind. It catches up from the primary's memory, or is sent a copy when it is further behind than `, code("--ship-log-mb"), "."] });
-  if (!L.slow_ms) out.push({ level: "info", icon: "flame", title: "Slow queries are not counted", body: ["Start the server with ", code("--slow-ms 200"), " (say) to keep the slow ones and log them."] });
-  if (stmts?.length) {
-    const top = stmts[0];
-    if (top.share > 0.5 && top.calls > 10) out.push({ level: "info", icon: "queries", title: "One statement takes most of the time", body: [`${fmt.pct(top.share, 0)} of query time is one shape (${fmt.n(top.calls)} calls, mean ${fmt.ms(top.mean_ms)}): `, code(top.fingerprint.slice(0, 120))] });
-    const big = stmts.find((x) => x.rows_per_call > 5000 && x.calls > 5);
-    if (big) out.push({ level: "info", icon: "table", title: "A statement returns many rows per call", body: [`${fmt.si(big.rows_per_call)} rows per call: `, code(big.fingerprint.slice(0, 100)), ". Add a ", code("LIMIT"), " or aggregate on the server."] });
-  }
-  return out;
+function kpi(label, val, sub, tone, title) {
+  return h("div", { class: "card kpi" + (tone === "bad" ? " wl-kpi-bad" : ""), title: title || null },
+    h("div", { class: "lbl" }, label), h("div", { class: "val" }, val),
+    sub ? h("div", { class: "delta" + (tone === "bad" ? " up-bad" : ""), style: { maxWidth: "100%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, sub) : null);
 }
+const unit = (t) => { const m = /^([\d.]+) (\S+)$/.exec(t); return m ? [m[1], h("small", {}, m[2])] : t; };
+const pct = (a, b) => { const x = (a - b) / Math.max(1e-9, b); return (x >= 0 ? "+" : "−") + fmt.pct(Math.abs(x), 0); };
+const trim = (t, n) => (t || "").length > n ? t.slice(0, n - 1) + "…" : t || "";

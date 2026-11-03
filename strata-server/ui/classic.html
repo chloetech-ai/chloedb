@@ -426,7 +426,8 @@ if (token) { try { sessionStorage.setItem("strata.token", token); } catch {} }
 // A token in the address would stay in the history and in shared links.
 if (new URLSearchParams(location.search).has("token")) { try { history.replaceState(null, "", location.pathname + location.hash); } catch {} }
 async function api(path, body, method) {
-  const opts = { method: method || (body === undefined ? "GET" : "POST"), headers: {} };
+  // The command center's own requests: its changes are audited as such.
+  const opts = { method: method || (body === undefined ? "GET" : "POST"), headers: { "x-strata-client": "command-center" } };
   if (body !== undefined) { opts.headers["content-type"] = "application/json"; opts.body = JSON.stringify(body); }
   if (token) opts.headers.authorization = "Bearer " + token;
   const r = await fetch(path, opts);
@@ -891,8 +892,10 @@ async function runQuery(sql, params, facetSql, anyStatement, ctx = {}) {
   const out = $("results");
   out.replaceChildren(el("p", { class: "muted", text: "running…" }));
   try {
+    // The console only reads (the server refuses anything but a SELECT
+    // here); a write goes through the SQL workbench, which checks it first.
     const [j, facet] = await Promise.all([
-      api(anyStatement ? "/v1/sql" : "/v1/query", { sql, params }),
+      api("/v1/query", { sql, params }),
       facetSql ? api("/v1/query", { sql: facetSql }).catch((e) => ({ error: e.message })) : null,
     ]);
     remember(sql, params);
@@ -901,7 +904,19 @@ async function runQuery(sql, params, facetSql, anyStatement, ctx = {}) {
       refreshHealth(); return;
     }
     renderResult(j, facet, { ...ctx, sql });
-  } catch (e) { showError(e.message, true); }
+  } catch (e) {
+    if (anyStatement && /only SELECT is supported/.test(e.message)) return toWorkbench(sql, params);
+    showError(e.message, true);
+  }
+}
+// A statement that writes or changes the schema: the SQL workbench runs
+// it, after it says what it would change and asks for a reason.
+function toWorkbench(sql, params) {
+  let href = "/#/sql?q=" + encodeURIComponent(sql);
+  if (params && Object.keys(params).length) href += "&p=" + encodeURIComponent(JSON.stringify(params));
+  $("results").replaceChildren(el("div", { class: "card" },
+    el("p", { text: "This console only reads. Writes and schema changes go through the SQL workbench, which shows what the statement would change, on which shards, and asks for a reason before it runs." }),
+    el("a", { class: "btn", href, target: "_top", text: "Open it in the SQL workbench" })));
 }
 function cell(v, f) {
   if (v === null || v === undefined) return el("td", {}, el("span", { class: "null", text: "null" }));

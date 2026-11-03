@@ -106,11 +106,11 @@ async fn a_server_keeps_its_lines_and_queries_but_not_its_reading_of_them() {
     let j = logs_query(&base, "SELECT fingerprint, outcome, error, n_rows FROM queries ORDER BY ts DESC LIMIT 20").await;
     let rows = j["rows"].as_array().unwrap();
     assert_eq!(rows.iter().filter(|r| r[0] == "SELECT id FROM products WHERE price > ? LIMIT ?").count(), 5, "{j}");
-    assert!(rows.iter().any(|r| r[1] == "error" && r[2].as_str().unwrap_or("").contains("nope")), "{j}");
+    assert!(rows.iter().any(|r| r[1] == "client_error" && r[2].as_str().unwrap_or("").contains("nope")), "a bad column is the client's error: {j}");
     let j = logs_query(&base, "SELECT fingerprint, COUNT(*) AS n, AVG(ms) FROM queries GROUP BY fingerprint ORDER BY n DESC LIMIT 1").await;
     assert_eq!(j["rows"][0][1], 5, "{j}");
     // A join of the two tables, on one server.
-    let j = logs_query(&base, "SELECT q.sql, l.route FROM queries q JOIN logs l ON q.request_id = l.request_id WHERE q.outcome = 'error' LIMIT 5").await;
+    let j = logs_query(&base, "SELECT q.sql, l.route FROM queries q JOIN logs l ON q.request_id = l.request_id WHERE q.outcome = 'client_error' LIMIT 5").await;
     assert_eq!(j["rows"][0][1], "/v1/query", "{j}");
 
     let r = strata_server::http_client().build().unwrap().get(format!("{base}/v1/logs/store")).send().await.unwrap();

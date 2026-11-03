@@ -15,7 +15,7 @@ import { tables, table as tableOf } from "../catalog.js";
 import { xyChart, SERIES } from "../charts.js";
 import { quoteName } from "../sqledit.js";
 
-export default { id: "recsys", title: "Recsys eval", icon: "recsys", group: "Tune", full: true, keywords: "recommender recsys evaluation rank log a/b test variants ndcg hit rate mrr ctr position bias labels events clicks purchases offline metrics training export features auc", render };
+export default { id: "recsys", title: "Recsys eval", icon: "recsys", group: "Labs", full: true, range: false, keywords: "recommender recsys evaluation rank log a/b test variants ndcg hit rate mrr ctr position bias labels events clicks purchases offline metrics training export features auc", render };
 
 const LOG_COLS = ["request", "row_key", "position", "shown", "features", "variant", "label", "context", "ts"];
 export const isLog = (t) => LOG_COLS.every((c) => (t.short?.fields || []).some((f) => f.name === c));

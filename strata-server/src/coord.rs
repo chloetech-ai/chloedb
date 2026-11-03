@@ -101,6 +101,7 @@ use crate::slots::{self, hash_shard_of, Move, SlotMap};
 use crate::{json as js, plan_pb, ApiError};
 
 mod moves;
+pub mod plan;
 pub use moves::{plan_even, MOVE_SLOTS};
 
 /// How the coordinator uses replicas and handles shards that do not answer.
@@ -190,6 +191,18 @@ struct Replica {
     role: AtomicI32,
     term: AtomicU64,
     replaced: AtomicBool,
+    /// Asked last after failing (not after being outrun, nor when a
+    /// client's own deadline passed), until this time (ms after
+    /// [`Coordinator::epoch`]), and why: what `/v1/cluster` calls avoided.
+    failed_until: AtomicU64,
+    failed_why: Mutex<Option<String>>,
+    /// When it last answered `Health`, and since when it has not (ms
+    /// since 1970; 0: never, or it answers).
+    last_seen_ms: AtomicU64,
+    down_since_ms: AtomicU64,
+    /// What it last said of itself (name, node, zone, version,
+    /// backup_dir): `/v1/cluster` shows it while it does not answer.
+    known: Mutex<Json>,
 }
 
 impl Replica {
@@ -203,6 +216,11 @@ impl Replica {
             role: AtomicI32::new(0),
             term: AtomicU64::new(0),
             replaced: AtomicBool::new(false),
+            failed_until: AtomicU64::new(0),
+            failed_why: Mutex::new(None),
+            last_seen_ms: AtomicU64::new(0),
+            down_since_ms: AtomicU64::new(0),
+            known: Mutex::new(Json::Null),
         }
     }
 
@@ -520,8 +538,9 @@ pub(crate) struct Topology {
     /// Per shard: until when partial answers leave it out (ms after
     /// [`Coordinator::epoch`]), after no replica of it answered.
     skip_until: Vec<AtomicU64>,
-    /// Per shard: calls answered, failed and timed out ([`Coordinator::call`]).
-    outcomes: Vec<Arc<[AtomicU64; 3]>>,
+    /// Per shard: calls answered, failed, timed out, and cut by a client's
+    /// own deadline ([`Coordinator::call`]).
+    outcomes: Vec<Arc<[AtomicU64; 4]>>,
 }
 
 impl Topology {
@@ -603,6 +622,131 @@ pub struct Coordinator {
     fetch_lost: AtomicU64,
     /// The slot moves this coordinator runs ([`moves`]).
     moves: moves::Moves,
+    /// The last survey of the cluster ([`Self::snapshot`]): when, under
+    /// which map epoch, and what it found; and who is told of each.
+    snapshot: tokio::sync::Mutex<Option<(Instant, u64, Arc<Json>)>>,
+    observer: std::sync::OnceLock<Box<dyn Fn(Option<&Json>, &Json) + Send + Sync>>,
+}
+
+/// How many copies the index inspector asks at once ([`Coordinator::inspect`]).
+pub const INSPECT_AT_ONCE: usize = 16;
+
+/// How old a survey of the cluster may be before a caller makes another
+/// ([`Coordinator::snapshot`]).
+pub const SNAPSHOT_EVERY: Duration = Duration::from_secs(2);
+
+/// How old the cluster snapshot may be for a write to be refused by it
+/// before any shard takes it ([`Coordinator::writable`]).
+const WRITABLE_AGE: Duration = Duration::from_secs(15);
+
+tokio::task_local! {
+    /// What a write did on each shard when it failed on some after others
+    /// took it ([`with_partial`]).
+    static PARTIAL: std::cell::RefCell<Option<Json>>;
+}
+
+/// Runs `f`, and answers with it what a write through a coordinator did
+/// on each shard when it failed partway: `[{shard, short, rows}]` for the
+/// shards that took it and `[{shard, short, error}]` for the others. None
+/// when it did not fail partway.
+pub async fn with_partial<F: Future>(f: F) -> (F::Output, Option<Json>) {
+    PARTIAL
+        .scope(std::cell::RefCell::new(None), async move {
+            let out = f.await;
+            (out, PARTIAL.with(|p| p.borrow_mut().take()))
+        })
+        .await
+}
+
+/// Why a shard of `n` copies, `up` of them answering, elects no primary:
+/// an election needs a majority of its copies to vote.
+pub fn cannot_elect(n: usize, up: usize) -> String {
+    let need = n / 2 + 1;
+    match need.saturating_sub(up) {
+        1 if up == 1 => "it cannot elect a primary until a second copy answers".into(),
+        _ => format!("it cannot elect a primary until {need} of its {n} copies answer"),
+    }
+}
+
+/// What to do about [`cannot_elect`]: bring the copies `down` back, or,
+/// when they are gone for good, make one of `up` the primary by hand
+/// (forced, as no majority can vote; a copy cannot be added to a shard
+/// without a primary to follow).
+pub fn elect_by_hand(down: &[String], up: &[String]) -> String {
+    let or = |v: &[String]| match v {
+        [] => String::new(),
+        [a] => a.clone(),
+        [init @ .., last] => format!("{} or {last}", init.join(", ")),
+    };
+    let (them, is) = if down.len() == 1 { ("it", "is") } else { ("they", "are") };
+    format!("bring {} back, or, if {them} {is} gone for good, make {} the primary by hand (forced: too few copies answer to vote)", or(down), or(up))
+}
+
+/// What shard `shard` (`i`, as [`Coordinator::cluster`] lists it, with its
+/// copies) can do, from what its copies said: `state` "ok", "degraded" (a
+/// copy down, still serving), "no_reads", "no_writes" or "down", with
+/// `serves_reads`, `takes_writes`, `majority` (a majority of its copies
+/// answers), `failover` (its copies elect a primary), `primary` (the URL
+/// of the copy taking its writes, or null), `why` in a sentence, and the
+/// older `status` (ok, degraded or down).
+pub fn shard_state(i: usize, shard: &mut Json) {
+    let copies = shard["replicas"].as_array().cloned().unwrap_or_default();
+    let n = copies.len();
+    let up: Vec<&Json> = copies.iter().filter(|r| r["status"] != "down").collect();
+    let down: Vec<String> = copies.iter().filter(|r| r["status"] == "down").map(|r| r["short"].as_str().unwrap_or("?").to_string()).collect();
+    let up_names: Vec<String> = up.iter().map(|r| r["short"].as_str().unwrap_or("?").to_string()).collect();
+    let cap = |r: &Json, k: &str| r["detail"]["capability"][k].as_bool();
+    // The copy taking writes: of those answering that say they are the
+    // primary, the newest term's.
+    let primary = up.iter().filter(|r| r["takes_writes"] == true).max_by_key(|r| r["term"].as_u64().unwrap_or(0)).copied();
+    // Copies that replicate without roles each take every write.
+    let roleless = !up.is_empty() && up.iter().all(|r| r["role"] == "standalone");
+    let failover = copies.iter().any(|r| r["detail"]["capability"]["failover_after_ms"].as_u64().unwrap_or(0) > 0);
+    let majority = up.len() * 2 > n;
+    let reads = up.iter().any(|r| cap(r, "serves_reads").unwrap_or(true));
+    let writes = match primary {
+        Some(p) => cap(p, "takes_writes").unwrap_or(true),
+        None => roleless,
+    };
+    let answering = format!("{} of {n} {} {}", up.len(), if n == 1 { "copy" } else { "copies" }, if up.len() == 1 { "answers" } else { "answer" });
+    let (state, why) = if up.is_empty() {
+        ("down", format!("None of its {n} {} answers: the shard serves no reads and takes no writes", if n == 1 { "copy" } else { "copies" }))
+    } else if !reads {
+        let because = match primary {
+            Some(_) if failover && !majority => "the primary has no majority, so it serves no reads".to_string(),
+            Some(p) => p["detail"]["capability"]["no_reads"].as_str().map_or("no copy serves reads".into(), |w| format!("no copy serves reads ({w})")),
+            None if failover && !majority => format!("it has no primary, no replica serves reads, and {}: {}", cannot_elect(n, up.len()), elect_by_hand(&down, &up_names)),
+            None => "it has no primary, and no replica serves reads".into(),
+        };
+        ("no_reads", format!("{answering}: {because}"))
+    } else if !writes {
+        let because = match primary {
+            Some(p) => p["detail"]["capability"]["no_writes"].as_str().map_or("the primary takes no writes".into(), |w| format!("the primary takes no writes: {w}")),
+            // An election needs a majority of the copies to vote.
+            None if failover && !majority => format!("no copy takes writes, and {}: {}", cannot_elect(n, up.len()), elect_by_hand(&down, &up_names)),
+            None if failover => "no copy takes writes: the shard has no primary yet, and its copies are electing one".into(),
+            None => "no copy takes writes: the shard has no primary (failover is off: promote a copy)".into(),
+        };
+        ("no_writes", format!("{answering}: {because}"))
+    } else if !down.is_empty() {
+        let warn = if failover && (up.len() - 1) * 2 <= n { "; one more copy down stops its reads and writes" } else { "" };
+        ("degraded", format!("{answering} ({} down); the shard serves reads and takes writes{warn}", down.join(", ")))
+    } else {
+        ("ok", format!("{answering}"))
+    };
+    shard["state"] = json!(state);
+    shard["status"] = json!(match state {
+        "ok" => "ok",
+        "down" => "down",
+        _ => "degraded",
+    });
+    shard["serves_reads"] = json!(reads);
+    shard["takes_writes"] = json!(writes);
+    shard["majority"] = json!(majority);
+    shard["failover"] = json!(failover);
+    shard["primary"] = primary.map_or(Json::Null, |p| p["url"].clone());
+    shard["why"] = json!(why);
+    shard["shard"] = json!(i);
 }
 
 /// A query's merged answer, and the shards it lacks (with
@@ -912,6 +1056,8 @@ impl Coordinator {
             fetches: AtomicU64::new(0),
             fetch_lost: AtomicU64::new(0),
             moves: moves::Moves::default(),
+            snapshot: tokio::sync::Mutex::new(None),
+            observer: std::sync::OnceLock::new(),
         })
     }
 
@@ -989,12 +1135,12 @@ impl Coordinator {
     /// hedges, and replicas avoided now after failing or being outrun.
     pub fn metrics(&self) -> Vec<Family> {
         let t = &self.topo();
-        let outcomes = ["ok", "error", "timeout"];
+        let outcomes = ["ok", "error", "timeout", "client_deadline"];
         let calls = t.outcomes.iter().enumerate().flat_map(|(i, o)| outcomes.iter().zip(o.iter()).map(move |(name, n)| (format!("shard=\"{i}\",outcome=\"{name}\""), n.load(Ordering::Relaxed) as f64))).collect();
         let now = self.now_ms();
         let avoided = t.replicas.iter().flatten().filter(|r| r.avoid_until.load(Ordering::Relaxed) > now).count();
         vec![
-            Family { name: "strata_shard_calls_total", ty: "counter", help: "Calls to a shard (its replicas, hedges and retries together), by outcome: ok, error, timeout.", values: calls },
+            Family { name: "strata_shard_calls_total", ty: "counter", help: "Calls to a shard (its replicas, hedges and retries together), by outcome: ok, error, timeout, client_deadline (the client's own deadline, below the server's, passed).", values: calls },
             Family::one("strata_shard_retries_total", "counter", "Calls asked of another replica after one failed.", self.retries.load(Ordering::Relaxed) as f64),
             Family::one("strata_shard_hedges_total", "counter", "Calls asked of another replica too after the first had not answered within --hedge-ms.", self.hedges.load(Ordering::Relaxed) as f64),
             Family::one("strata_replicas_avoided", "gauge", "Replicas asked last for now, after they failed or were outrun.", avoided as f64),
@@ -1058,6 +1204,15 @@ impl Coordinator {
         t.replicas[i][r].avoid_until.store(self.now_ms() + self.opts.cool_off.as_millis() as u64, Ordering::Relaxed);
     }
 
+    /// Avoids replica `r` of shard `i` after it failed, `why`: what
+    /// `/v1/cluster` reports as avoided ([`Replica::failed_until`]).
+    fn failed(&self, t: &Topology, i: usize, r: usize, why: &str) {
+        self.avoid(t, i, r);
+        let rep = &t.replicas[i][r];
+        rep.failed_until.store(self.now_ms() + self.opts.cool_off.as_millis() as u64, Ordering::Relaxed);
+        *rep.failed_why.lock().unwrap_or_else(|e| e.into_inner()) = Some(why.chars().take(300).collect());
+    }
+
     /// The order to ask shard `i`'s replicas in: `first` if given, then in
     /// turn from `start`, those being avoided last.
     fn order(&self, t: &Topology, i: usize, start: usize, first: Option<usize>) -> Vec<usize> {
@@ -1105,7 +1260,8 @@ impl Coordinator {
         Fut: Future<Output = Result<tonic::Response<T>, tonic::Status>>,
     {
         let order = self.order(t, i, start, first);
-        let limit = self.opts.shard_timeout.map_or(deadline, |t| deadline.min(Instant::now() + t));
+        let started = Instant::now();
+        let limit = self.opts.shard_timeout.map_or(deadline, |t| deadline.min(started + t));
         let mut pending = FuturesUnordered::new();
         let mut asked = Vec::new();
         // Asked, but passed over without being sent the read.
@@ -1147,7 +1303,7 @@ impl Coordinator {
                         if s.metadata().get(PASSED_OVER).is_some() {
                             passed.push(r);
                         } else {
-                            self.avoid(t, i, r);
+                            self.failed(t, i, r, s.message());
                             // It may come back on another version: asked again.
                             t.replicas[i][r].protocol.store(0, Ordering::Relaxed);
                         }
@@ -1184,10 +1340,18 @@ impl Coordinator {
                     hedge_at = Instant::now() + self.opts.hedge;
                 }
                 _ = tokio::time::sleep_until(limit.into()) => {
-                    for &r in &asked {
-                        self.avoid(t, i, r);
-                    }
                     let urls: Vec<&str> = asked.iter().map(|&r| t.replicas[i][r].url.as_str()).collect();
+                    // The client's own deadline, shorter than the server's,
+                    // passed: no fault of the copies asked.
+                    if let (true, Some(ms)) = (limit >= deadline, crate::service::client_deadline()) {
+                        crate::service::deadline_passed();
+                        t.outcomes[i][3].fetch_add(1, Ordering::Relaxed);
+                        return Err(ApiError { status: 504, message: format!("the client's deadline of {ms} ms passed before shard {i} answered ({})", urls.join(", ")) });
+                    }
+                    let waited = limit.saturating_duration_since(started).as_millis();
+                    for &r in &asked {
+                        self.failed(t, i, r, &format!("no answer within {waited} ms"));
+                    }
                     t.outcomes[i][2].fetch_add(1, Ordering::Relaxed);
                     return Err(ApiError { status: 504, message: format!("shard {i} ({}): no answer in time", urls.join(", ")) });
                 }
@@ -1240,8 +1404,20 @@ impl Coordinator {
 
     fn named(&self, url: &str, s: tonic::Status) -> ApiError {
         let mut e = ApiError::from(s);
-        e.message = format!("shard {url}: {}", e.message);
+        e.message = format!("{}: {}", self.copy_name(url), e.message);
         e
+    }
+
+    /// A copy as errors name it: its short name and shard (`s1-0 (shard
+    /// 1)`), or its URL when the cluster map no longer holds it.
+    pub fn copy_name(&self, url: &str) -> String {
+        let t = self.topo();
+        for (i, rs) in t.replicas.iter().enumerate() {
+            if let Some(k) = rs.iter().position(|r| r.url == url) {
+                return format!("s{i}-{k} (shard {i})");
+            }
+        }
+        format!("copy {url}")
     }
 
     /// The statistics of shards `which`, and the replica and lease each
@@ -1527,7 +1703,7 @@ impl Coordinator {
             let now = self.now_ms();
             for (i, f) in failed.iter_mut().enumerate() {
                 if t.skip_until[i].load(Ordering::Relaxed) > now {
-                    *f = Some(ApiError { status: 503, message: format!("shard {}: no replica answered in the last second", t.shards[i]) });
+                    *f = Some(ApiError { status: 503, message: format!("shard {i}: no copy answered in the last second") });
                 }
             }
         }
@@ -1975,7 +2151,7 @@ impl Coordinator {
                     Err((_, s)) if in_doubt(&s) => {
                         // The next write goes to the new primary.
                         self.ask_all(t, i).await;
-                        return Err(ApiError { status: 409, message: format!("shard {}: {}; {IN_DOUBT}", t.replicas[i][k].url, s.message()) });
+                        return Err(ApiError { status: 409, message: format!("s{i}-{k} (shard {i}): {}; {IN_DOUBT}", s.message()) });
                     }
                     Err((_, s)) if matches!(s.code(), Code::FailedPrecondition | Code::Unavailable) && !passed_over => match self.moved(t, i, k, s.code()).await {
                         Some(m) => (k, passed_over) = (m, true),
@@ -2089,6 +2265,11 @@ impl Coordinator {
         let mut left = vec![true; slots::SLOTS];
         let mut done: Vec<(String, Wrote)> = Vec::new();
         let mut tries = 0;
+        {
+            let t = self.topo();
+            let holding: Vec<usize> = (0..t.replicas.len()).filter(|&i| t.slots.as_ref().is_none_or(|m| m.count(i) > 0)).collect();
+            self.writable(&holding).await?;
+        }
         loop {
             let t = &self.topo();
             let calls = (0..t.replicas.len()).filter_map(|i| {
@@ -2119,6 +2300,7 @@ impl Coordinator {
                 Some(async move { (i, self.write(t, i, r, need).await) })
             });
             let mut failed = None;
+            let mut errors = Vec::new();
             for (i, a) in join_all(calls).await {
                 match a {
                     Ok(w) => {
@@ -2128,6 +2310,7 @@ impl Coordinator {
                         done.push((t.replicas[i][0].url.clone(), w));
                     }
                     Err(e) => {
+                        errors.push((i, e.message.clone()));
                         failed.get_or_insert(e);
                     }
                 }
@@ -2135,7 +2318,7 @@ impl Coordinator {
             match failed {
                 None => return Ok(self.written_by(t, done)),
                 Some(e) if t.slots.is_some() && self.route_again(&e, t.epoch(), tries).await => tries += 1,
-                Some(e) => return Err(e),
+                Some(e) => return Err(self.partial(t, &done, &errors, e)),
             }
         }
     }
@@ -2218,6 +2401,7 @@ impl Coordinator {
         // by a map it left runs it by the new one.
         let mut done: Vec<String> = Vec::new();
         let mut tries = 0;
+        self.writable(&(0..self.topo().replicas.len()).collect::<Vec<_>>()).await?;
         loop {
             let t = &self.topo();
             let r = pb::WriteRequest { sql: sql.into(), params: params_to_pb(params), epoch: t.epoch(), ..Default::default() };
@@ -2256,7 +2440,7 @@ impl Coordinator {
         let (mut pending, mut done, mut round) = (ops, Vec::new(), 0);
         loop {
             let t = self.topo();
-            let (wrote, failed) = self.write_round(&t, pending, &key, round).await?;
+            let (wrote, failed, errors) = self.write_round(&t, pending, &key, round).await?;
             done.extend(wrote);
             match failed {
                 None => return Ok(self.written_by(&t, done)),
@@ -2266,7 +2450,7 @@ impl Coordinator {
                     pending.extend(marks.iter().cloned());
                     round += 1;
                 }
-                Some((e, _)) => return Err(e),
+                Some((e, _)) => return Err(self.partial(&t, &done, &errors, e)),
             }
         }
     }
@@ -2275,7 +2459,7 @@ impl Coordinator {
     /// the shards that took their operations, and the first refusal with
     /// the operations of the shards that refused them.
     #[allow(clippy::type_complexity)]
-    async fn write_round(&self, t: &Topology, ops: Vec<Json>, key: &Option<String>, round: u32) -> Result<(Vec<(String, Wrote)>, Option<(ApiError, Vec<Json>)>), ApiError> {
+    async fn write_round(&self, t: &Topology, ops: Vec<Json>, key: &Option<String>, round: u32) -> Result<(Vec<(String, Wrote)>, Option<(ApiError, Vec<Json>)>, Vec<(usize, String)>), ApiError> {
         let mut catalog = self.catalog();
         // A table created since the replicas were last asked.
         if ops.iter().any(|op| op_schema(&catalog, op).is_err()) && self.refresh(false).await {
@@ -2302,6 +2486,9 @@ impl Coordinator {
         // that the least over the shards is where a stream resumes
         // ([`Self::sources`]): each shard skips what it applied already.
         let need = if marks.is_empty() { MIN_PROTOCOL } else { SOURCES_PROTOCOL };
+        if round == 0 {
+            self.writable(&by_shard.keys().copied().collect::<Vec<_>>()).await?;
+        }
         if !marks.is_empty() {
             for i in 0..t.replicas.len() {
                 let ops = by_shard.entry(i).or_default();
@@ -2317,14 +2504,18 @@ impl Coordinator {
             async move { (i, ops, self.write(t, i, r, need).await) }
         });
         let (mut wrote, mut failed): (Vec<(String, Wrote)>, Option<(ApiError, Vec<Json>)>) = (Vec::new(), None);
+        let mut errors = Vec::new();
         for (i, ops, a) in join_all(calls).await {
+            if let Err(e) = &a {
+                errors.push((i, e.message.clone()));
+            }
             match (a, &mut failed) {
                 (Ok(w), _) => wrote.push((t.replicas[i][0].url.clone(), w)),
                 (Err(e), None) => failed = Some((e, ops.into_iter().filter(|op| !is_mark(op)).collect())),
                 (Err(_), Some((_, left))) => left.extend(ops.into_iter().filter(|op| !is_mark(op))),
             }
         }
-        Ok((wrote, failed))
+        Ok((wrote, failed, errors))
     }
 
     /// The stream sources written from through the shards, each at the
@@ -2390,7 +2581,7 @@ impl Coordinator {
     }
 
     /// Every replica's index statistics of a table
-    /// ([`crate::inspect::node`]), asked over gRPC as a profile of kind
+    /// ([`crate::inspect::node`]), at most [`INSPECT_AT_ONCE`] at a time, asked over gRPC as a profile of kind
     /// `index` with `body` ([`crate::inspect::Asked::body`]): per shard,
     /// each replica's answer or why it gave none.
     pub async fn inspect(&self, body: &Json) -> Vec<crate::inspect::ShardNodes> {
@@ -2398,8 +2589,12 @@ impl Coordinator {
         let t = &self.topo();
         let body_json = &body.to_string().into_bytes();
         let wait = crate::profiling::Kind::Index.wait(body);
+        // At most INSPECT_AT_ONCE copies sample their segments at a time:
+        // on a fleet of hundreds, all at once would load every server.
+        let at_once = &tokio::sync::Semaphore::new(INSPECT_AT_ONCE);
         let calls = t.replicas.iter().enumerate().map(|(i, rs)| async move {
             let replicas = join_all(rs.iter().map(|r| async move {
+                let _turn = at_once.acquire().await;
                 let mut c = r.client.clone();
                 let req = pb::ProfileRequest { kind: "index".into(), body_json: body_json.clone(), folded: false, in_use: false };
                 let answer = match tokio::time::timeout(wait, c.profile(req)).await {
@@ -2417,13 +2612,111 @@ impl Coordinator {
         join_all(calls).await
     }
 
-    /// "ok" when every replica answers, "degraded" when every shard still
-    /// has one, "down" when a shard has none. Documents and segments are
-    /// counted once per shard.
+    /// The cluster as [`Self::survey_cluster`] found it at most 2 s ago,
+    /// shared by every caller: one survey runs at a time, and callers that
+    /// come while it runs take its answer. A change of the cluster map
+    /// makes it look again.
+    pub async fn snapshot(&self) -> Arc<Json> {
+        self.snapshot_within(SNAPSHOT_EVERY).await
+    }
+
+    /// The last cluster snapshot, if one younger than `age` is held and no
+    /// survey holds it now: what a write is refused by, without a survey.
+    fn held_snapshot(&self, age: Duration) -> Option<Arc<Json>> {
+        let held = self.snapshot.try_lock().ok()?;
+        held.as_ref().filter(|(at, e, _)| at.elapsed() < age && *e == self.epoch()).map(|(_, _, j)| j.clone())
+    }
+
+    /// Refuses a write to shards `shards` before any of them takes it when
+    /// the last snapshot says one of them takes no writes, and a survey
+    /// taken then agrees: so that a write is not applied on some shards
+    /// only. Without a snapshot younger than [`WRITABLE_AGE`], the write
+    /// goes, and a shard that fails it says so.
+    async fn writable(&self, shards: &[usize]) -> Result<(), ApiError> {
+        let refused = |snap: &Json| {
+            snap["shards"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|s| s["takes_writes"] == false && s["shard"].as_u64().is_some_and(|i| shards.contains(&(i as usize))))
+                .map(|s| (s["shard"].as_u64().unwrap_or(0), s["why"].as_str().unwrap_or_default().to_string()))
+        };
+        let Some(snap) = self.held_snapshot(WRITABLE_AGE) else { return Ok(()) };
+        if refused(&*snap).is_none() {
+            return Ok(());
+        }
+        match refused(&*self.snapshot_within(Duration::ZERO).await) {
+            None => Ok(()),
+            Some((i, why)) => Err(ApiError { status: 503, message: format!("shard {i} takes no writes now, so nothing was written: {why}") }),
+        }
+    }
+
+    /// The error of a write that failed on some shards after others took
+    /// it: it says which took how many rows (not undone), and
+    /// [`with_partial`] answers each shard's part.
+    fn partial(&self, t: &Topology, done: &[(String, Wrote)], errors: &[(usize, String)], mut e: ApiError) -> ApiError {
+        if done.is_empty() {
+            return e;
+        }
+        let short = |i: usize, url: Option<&str>| {
+            let k = match url {
+                Some(u) => t.replicas[i].iter().position(|r| r.url == u),
+                None => t.replicas[i].iter().position(|r| r.takes_writes()),
+            };
+            format!("s{i}-{}", k.unwrap_or(0))
+        };
+        let mut shards: Vec<Json> = Vec::new();
+        let mut took = Vec::new();
+        for (url, w) in done {
+            if let Some(i) = t.replicas.iter().position(|rs| rs.iter().any(|r| &r.url == url)) {
+                shards.push(json!({"shard": i, "short": short(i, Some(url)), "rows": w.rows}));
+                took.push(format!("shard {i} ({} rows)", w.rows));
+            }
+        }
+        for (i, why) in errors {
+            shards.push(json!({"shard": i, "short": short(*i, None), "error": why}));
+        }
+        shards.sort_by_key(|s| s["shard"].as_u64());
+        let _ = PARTIAL.try_with(|p| *p.borrow_mut() = Some(json!(shards)));
+        e.message = format!("{}. {} took the write before it failed, and keep it", e.message, took.join(", "));
+        e
+    }
+
+    /// [`Self::snapshot`], at most `age` old.
+    pub async fn snapshot_within(&self, age: Duration) -> Arc<Json> {
+        let mut held = self.snapshot.lock().await;
+        let epoch = self.epoch();
+        if let Some((at, e, j)) = held.as_ref() {
+            if at.elapsed() < age && *e == epoch {
+                return j.clone();
+            }
+        }
+        let j = Arc::new(self.survey_cluster().await);
+        let before = held.as_ref().map(|(_, _, j)| j.clone());
+        *held = Some((Instant::now(), epoch, j.clone()));
+        drop(held);
+        if let Some(f) = self.observer.get() {
+            f(before.as_deref(), &j);
+        }
+        j
+    }
+
+    /// Calls `f` with the snapshot before (if any) and after each new one
+    /// ([`Self::snapshot`]): how events of copies and primaries are found.
+    pub fn observe(&self, f: impl Fn(Option<&Json>, &Json) + Send + Sync + 'static) {
+        let _ = self.observer.set(Box::new(f));
+    }
+
     /// Every replica of every shard: its role, health, latest point of
     /// rates and gauges (each server's own, from `Health`'s detail), and
-    /// how long it took to answer; and the slots each shard holds.
+    /// how long it took to answer; and the slots each shard holds. Each
+    /// shard says what it can do: serve reads, take writes, and why not
+    /// ([`shard_state`]). Through [`Self::snapshot`].
     pub async fn cluster(&self) -> Json {
+        (*self.snapshot().await).clone()
+    }
+
+    async fn survey_cluster(&self) -> Json {
         let t = &self.topo();
         // Its part in replication said again too, as for `health`.
         let calls = t.replicas.iter().map(|rs| {
@@ -2441,12 +2734,15 @@ impl Coordinator {
             }))
         });
         let now = self.now_ms();
+        let wall = crate::telemetry::now_ms();
         let mut shards = Vec::new();
+        let (mut copies, mut copies_down) = (0, 0);
         for (i, answers) in join_all(calls).await.into_iter().enumerate() {
             let replicas: Vec<Json> = t.replicas[i]
                 .iter()
                 .zip(answers)
-                .map(|(r, (a, ms))| {
+                .enumerate()
+                .map(|(k, (r, (a, ms)))| {
                     let mut j = match a {
                         Ok(Ok(h)) => {
                             let h = h.into_inner();
@@ -2456,12 +2752,65 @@ impl Coordinator {
                         Ok(Err(e)) => json!({"url": r.url, "status": "down", "error": e.message(), "rtt_ms": ms}),
                         Err(_) => json!({"url": r.url, "status": "down", "error": "no answer within 2 s", "rtt_ms": ms}),
                     };
-                    j["role"] = json!(r.role().as_str_name().to_lowercase());
+                    let up = j["status"] != "down";
+                    if up {
+                        r.last_seen_ms.store(wall, Ordering::Relaxed);
+                        r.down_since_ms.store(0, Ordering::Relaxed);
+                    } else {
+                        let _ = r.down_since_ms.compare_exchange(0, wall, Ordering::Relaxed, Ordering::Relaxed);
+                    }
+                    let role = r.role().as_str_name().to_lowercase();
+                    j["short"] = json!(format!("s{i}-{k}"));
+                    {
+                        let mut known = r.known.lock().unwrap_or_else(|e| e.into_inner());
+                        if up {
+                            let place = j["detail"]["place"].clone();
+                            let version = match &j["detail"]["version"] {
+                                Json::Null => json!({"version": j["detail"]["system"]["version"]}),
+                                v => v.clone(),
+                            };
+                            *known = json!({"name": place["name"], "node": place["node"], "zone": place["zone"], "backup_dir": j["detail"]["backup_dir"], "version": version});
+                        }
+                        // A copy that does not answer: what it said last.
+                        for f in ["name", "node", "zone", "backup_dir"] {
+                            j[f] = known[f].clone();
+                        }
+                        j["version"] = match &known["version"] {
+                            Json::Null => json!({"version": null}),
+                            v => v.clone(),
+                        };
+                    }
+                    // A copy avoided for refusing reads while it caught up,
+                    // which says it serves them now: no longer avoided.
+                    if up && j["detail"]["capability"]["serves_reads"] == true {
+                        let mut why = r.failed_why.lock().unwrap_or_else(|e| e.into_inner());
+                        if why.as_deref().is_some_and(|w| w.contains("serves no reads")) {
+                            *why = None;
+                            r.failed_until.store(0, Ordering::Relaxed);
+                            r.avoid_until.store(0, Ordering::Relaxed);
+                        }
+                    }
+                    let seen = r.last_seen_ms.load(Ordering::Relaxed);
+                    j["last_seen_ms"] = if seen > 0 { json!(seen) } else { Json::Null };
+                    if up {
+                        j["role"] = json!(role);
+                        j["takes_writes"] = json!(r.takes_writes());
+                        let cap = &j["detail"]["capability"];
+                        j["serves_reads"] = cap["serves_reads"].as_bool().map_or(json!(true), |b| json!(b));
+                    } else {
+                        // What it was is not what it is: a dead primary is
+                        // no shard's primary.
+                        j["role"] = json!("unknown");
+                        j["last_role"] = json!(role);
+                        j["takes_writes"] = json!(false);
+                        j["serves_reads"] = json!(false);
+                        j["down_since_ms"] = json!(r.down_since_ms.load(Ordering::Relaxed));
+                    }
                     j["term"] = json!(r.term.load(Ordering::Relaxed));
-                    j["takes_writes"] = json!(r.takes_writes());
                     j["protocol"] = json!(r.protocol.load(Ordering::Relaxed));
-                    if r.avoid_until.load(Ordering::Relaxed) > now {
+                    if r.failed_until.load(Ordering::Relaxed) > now {
                         j["avoided"] = json!(true);
+                        j["avoided_why"] = json!(r.failed_why.lock().unwrap_or_else(|e| e.into_inner()).clone());
                     }
                     j
                 })
@@ -2469,17 +2818,28 @@ impl Coordinator {
             let calls: Vec<u64> = t.outcomes[i].iter().map(|n| n.load(Ordering::Relaxed)).collect();
             let slots = t.slots.as_ref().map(|m| m.ranges(i));
             let slots_held = t.slots.as_ref().map_or(crate::slots::SLOTS / t.replicas.len().max(1), |m| m.count(i));
-            let up = replicas.iter().filter(|r| r["status"] != "down").count();
-            let status = if up == replicas.len() { "ok" } else if up > 0 { "degraded" } else { "down" };
-            shards.push(json!({"shard": i, "url": t.shards[i], "status": status, "replicas": replicas, "slots": slots, "slots_held": slots_held, "calls": {"ok": calls[0], "error": calls[1], "timeout": calls[2]}}));
+            copies += replicas.len();
+            copies_down += replicas.iter().filter(|r| r["status"] == "down").count();
+            let mut shard = json!({"shard": i, "url": t.shards[i], "replicas": replicas, "slots": slots, "slots_held": slots_held,
+                "calls": {"ok": calls[0], "error": calls[1], "timeout": calls[2], "client_deadline": calls[3]}});
+            shard_state(i, &mut shard);
+            shards.push(shard);
         }
-        let up = shards.iter().filter(|s| s["status"] == "ok").count();
-        let status = if up == shards.len() { "ok" } else if shards.iter().all(|s| s["status"] != "down") { "degraded" } else { "down" };
+        let count = |state: &str| shards.iter().filter(|s| s["state"] == state).count();
+        let by_state = json!({"ok": count("ok"), "degraded": count("degraded"), "no_reads": count("no_reads"), "no_writes": count("no_writes"), "down": count("down")});
+        let status = if shards.iter().all(|s| s["state"] == "ok") {
+            "ok"
+        } else if shards.iter().any(|s| s["state"] == "down" || s["state"] == "no_reads") {
+            "down"
+        } else {
+            "degraded"
+        };
         json!({
-            "role": "coordinator", "status": status, "shards": shards, "slot_epoch": t.epoch(), "slot_count": crate::slots::SLOTS,
+            "role": "coordinator", "status": status, "at_ms": wall, "shards": shards, "slot_epoch": t.epoch(), "slot_count": crate::slots::SLOTS,
             "protocol": t.protocol(), "retries": self.retries.load(Ordering::Relaxed), "hedges": self.hedges.load(Ordering::Relaxed),
             "hedge_ms": self.opts.hedge.as_millis() as u64,
             "changes": self.can_change(t),
+            "shards_by_state": by_state, "copies": {"total": copies, "down": copies_down},
         })
     }
 
@@ -2549,7 +2909,8 @@ impl Coordinator {
             let mut shard = json!({"url": t.shards[i], "status": status, "docs": d, "segments": s});
             // Two copies taking writes, each in its own term: the older
             // has not heard of the newer yet.
-            let primaries: Vec<&str> = t.replicas[i].iter().filter(|r| r.takes_writes()).map(|r| r.url.as_str()).collect();
+            // Of the copies that answer: a dead primary is no primary.
+            let primaries: Vec<&str> = t.replicas[i].iter().zip(&replicas).filter(|(r, j)| r.takes_writes() && j["status"] != "down").map(|(r, _)| r.url.as_str()).collect();
             if primaries.len() > 1 {
                 all_up = false;
                 shard["primaries"] = json!(primaries);

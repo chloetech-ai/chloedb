@@ -10,15 +10,20 @@
 // installs Strata's operator through the new cluster's API, follows its
 // copies until they answer, and deletes it (its volumes first) when asked.
 
+import * as core from "../core.js";
 import { h, s, icon, clear, fmt, card, api, toast, confirm, seg, toggle, pill, empty, table, tipOn, hideTip, debounce, copy, failure, clamp, modal } from "../core.js";
+import { state } from "../data.js";
 
 export default {
-  id: "cloud", title: "Cloud", icon: "cloud", group: "Admin",
+  id: "cloud", title: "Cloud setup", icon: "cloud", group: "Change",
   keywords: "cloud aws amazon eks digitalocean doks droplet kubernetes k8s credentials access key token region instance instances machine machines size sizes ec2 graviton price prices cost spot quota limit cloudformation template deploy",
   render, onParams,
 };
 
 let switchProvider = null;
+// Keys from the server's environment are used only once someone asks, in
+// this tab: opening the page calls no cloud (CD-1).
+const envAsked = {};
 function onParams(r) { switchProvider?.(r.params.get("provider")); }
 
 const KINDS = [
@@ -55,6 +60,8 @@ const PROVIDERS = {
     hollow: "hollow: x86-64", ringed: "the newest Graviton general and memory machines", hoursAMonth: 730,
     pick: (cat) => cat.recommended?.find((t) => t.startsWith("m")) || cat.recommended?.[0],
     check: "Check with AWS", checkTitle: "CloudFormation's own check of the template: free, and makes nothing",
+    asks: [["the regions", "ec2:DescribeRegions"], ["the machines of a region", "ec2:DescribeInstanceTypes"], ["their prices", "pricing:GetProducts, ec2:DescribeSpotPriceHistory"], ["the account's vCPU quota", "servicequotas:GetServiceQuota"]],
+    trail: "Each call is in the account's CloudTrail, made by the identity of those keys.",
   },
   digitalocean: {
     name: "DigitalOcean", k8s: "DigitalOcean Kubernetes (DOKS)", base: "/v1/admin/digitalocean", keyPath: "/token", status: (st) => st?.token,
@@ -64,6 +71,8 @@ const PROVIDERS = {
     hollow: "hollow: shared CPUs", ringed: "dedicated general and memory-optimized sizes of 2 to 8 vCPUs", hoursAMonth: 672,
     pick: (cat) => cat.recommended?.find((t) => t.startsWith("m-4vcpu")) || cat.recommended?.[0],
     check: "Check with DigitalOcean", checkTitle: "DigitalOcean's own answer, fetched now: the account, the region, the size, the version and the droplet limit. Makes nothing",
+    asks: [["the regions", "GET /v2/regions"], ["the sizes and their prices", "GET /v2/sizes, /v2/kubernetes/options"], ["the account and its droplet limit", "GET /v2/account"]],
+    trail: "Each call is made with that token, and counts against its rate limit.",
   },
 };
 
@@ -102,15 +111,23 @@ const PHASES = {
 };
 const ON_ITS_WAY = new Set(["creating", "installing", "starting", "deleting"]);
 
+/** How far a press of − or + goes: further as the number grows. */
+const stride = (v) => (v >= 1000 ? 100 : v >= 200 ? 50 : v >= 50 ? 10 : v >= 20 ? 5 : 1);
+/** A number with − and +, which may also be typed (any value from min to max). */
 function stepper(value, min, max, onChange, label, unit = "") {
-  const v = h("b", { class: "num" }, String(value) + unit);
-  const set = (x) => { x = clamp(x, min, max); if (x !== value) { value = x; v.textContent = String(x) + unit; onChange(x); } };
+  const inp = h("input", { class: "input sm num ro-cnum", type: "number", inputmode: "numeric", min, max, value: String(value), "aria-label": label });
+  const less = h("button", { class: "btn xs", type: "button", "aria-label": "fewer " + label, title: `${stride(value - 1)} fewer` }, icon("minus"));
+  const more = h("button", { class: "btn xs", type: "button", "aria-label": "more " + label, title: `${stride(value)} more` }, icon("plus"));
+  const sync = () => { inp.value = String(value); less.disabled = value <= min; more.disabled = value >= max; less.title = `${stride(value - 1)} fewer`; more.title = `${stride(value)} more`; };
+  const set = (x) => { x = clamp(Math.round(x) || min, min, max); if (x !== value) { value = x; onChange(x); } sync(); };
+  less.onclick = () => { const d = stride(value - 1); set(value % d ? value - (value % d) : value - d); };
+  more.onclick = () => { const d = stride(value); set(value - (value % d) + d); };
+  inp.onchange = () => set(+inp.value);
+  inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); set(+inp.value); } };
+  sync();
   return h("div", { class: "cloud-step" },
-    h("span", { class: "small dim" }, label),
-    h("div", { class: "row nw" },
-      h("button", { class: "btn xs", "aria-label": "fewer " + label, disabled: value <= min, onclick: () => set(value - (value > 20 && unit ? 10 : 1)) }, icon("minus")),
-      v,
-      h("button", { class: "btn xs", "aria-label": "more " + label, disabled: value >= max, onclick: () => set(value + (value >= 20 && unit ? 10 : 1)) }, icon("plus"))));
+    h("span", { class: "small dim" }, label, unit ? ` (${unit.trim()})` : ""),
+    h("div", { class: "row nw" }, less, inp, more));
 }
 
 const remembered = () => { try { return localStorage.getItem("strata.cloud") || "aws"; } catch { return "aws"; } };
@@ -125,6 +142,8 @@ function render(page, r) {
 
   let status, regions, region, cat, catErr, loadingCat, editing, filt, form, plan, planErr, checked, checking;
   let seq = 0;
+  let running = null;   // this cluster's size: {shards, replicas, coordinators}
+  let sized = false;    // the size was set by hand (or from this cluster's)
   function reset() {
     status = null; regions = null; region = null; cat = null; catErr = null; loadingCat = false; editing = false;
     filt = { kind: "all", cpu: "any", spot: false, q: "" };
@@ -135,6 +154,8 @@ function render(page, r) {
 
   const key = () => P.status(status);
   const have = () => !!key();
+  /** Whether the page may ask the cloud: a stored key, or the environment's once asked for. */
+  const may = () => have() && (key().source === "stored" || !!envAsked[prov]);
 
   switchProvider = (p) => {
     if (!PROVIDERS[p] || p === prov) return;
@@ -149,11 +170,34 @@ function render(page, r) {
     try { status = await api(P.base); } catch (e) { if (mine !== seq) return; clear(creds, failure(e, "The cloud view")); return; }
     if (mine !== seq) return;
     drawHead(); drawCreds();
-    if (have()) {
+    if (may()) {
       region = region || key().region || P.region;
       if (!regions) api(P.base + "/regions").then((x) => { if (mine === seq) { regions = x.regions; drawWhere(); } }).catch(() => { regions = null; });
       await loadCatalog(false);
     } else { cat = null; drawWhere(); drawMachines(); drawPlan(); }
+  }
+
+  /** This cluster's size, from the operator's spec or the cluster's shards; asks no cloud. */
+  async function loadRunning() {
+    let k = null;
+    try { k = await api("/v1/kube"); } catch { /* not on Kubernetes */ }
+    const sp = k?.managed ? k.spec || {} : null;
+    const c = state.cluster;
+    const shards = sp?.shards ?? c?.shards?.length;
+    const reps = sp?.replicas ?? (c?.shards?.length ? Math.max(...c.shards.map((x) => (x.replicas || []).length)) : null);
+    const coords = sp?.coordinators ?? (c?.coordinators?.length || null);
+    if (!shards || !reps) return;
+    running = { shards, replicas: reps, coordinators: coords || 1, name: k?.name || null };
+    if (!sized) useRunning(false);
+    else drawPlan();
+  }
+  /** Starts the plan from this cluster's size: its shards and copies, a node for about every 4 copies. */
+  function useRunning(byHand = true) {
+    if (!running) return;
+    form.shards = running.shards; form.replicas = running.replicas; form.coordinators = running.coordinators;
+    form.nodes = clamp(Math.max(form.replicas, Math.ceil(running.shards * running.replicas / 4)), 1, 1000);
+    if (byHand) sized = true;
+    if (cat) replan(); else drawPlan();
   }
 
   async function loadCatalog(fresh) {
@@ -175,7 +219,7 @@ function render(page, r) {
     const k = key();
     const label = !status ? null : k ? pill("ok", prov === "aws" ? (k.account ? `account ${k.account}` : "keys from the environment") : (k.account?.team ? `team ${k.account.team}` : "token from the environment")) : pill("pending", `no ${P.name} key`);
     clear(head, h("div", { class: "page-head" },
-      h("div", {}, h("h1", {}, "Cloud"), h("p", {}, `Plan a Strata cluster on ${P.k8s}: machines with their prices, where the copies go, what it costs, and what makes it.`)),
+      h("div", {}, h("h1", {}, "Cloud setup"), h("p", {}, `Plan a new Strata cluster on ${P.k8s}: machines with their prices, where the copies go, what it costs, and what makes it.`)),
       h("div", { class: "tools" },
         seg(Object.entries(PROVIDERS).map(([k, v]) => [k, v.name]), prov, (v) => { location.hash = "#/cloud?provider=" + v; }, { "aria-label": "Cloud" }),
         label)));
@@ -257,7 +301,7 @@ function render(page, r) {
       title: prov === "aws" ? "Credentials" : "Token", sub: prov === "aws" ? "an IAM user's access key" : "a personal access token",
       body: h("div", { class: "stack" }, f, h("div", { class: "small dim" }, note), extra),
     }));
-    setTimeout(() => first.focus(), 0);
+    if (!(core.isNarrow?.() || core.isPhone?.())) setTimeout(() => first.focus(), 0); // a phone would open its keyboard over the page
   }
 
   async function forget() {
@@ -277,6 +321,21 @@ function render(page, r) {
   }
 
   function drawWhere() {
+    if (have() && !may()) {
+      const k = key();
+      clear(where, card({
+        title: "Region and limits", sub: "nothing asked yet",
+        body: h("div", { class: "stack" },
+          h("div", {}, `This server has ${prov === "aws" ? "AWS keys" : "a DigitalOcean token"} in its environment (`, h("span", { class: "mono" }, prov === "aws" ? k.access_key_id : k.token), prov === "aws" && k.region ? `, ${k.region}` : "", "). Opening this page asked ", P.name, " nothing."),
+          h("div", { class: "small dim" }, `Using ${prov === "aws" ? "them" : "it"} asks ${P.name} for:`),
+          h("ul", { class: "ro-casks small" }, P.asks.map(([what, call]) => h("li", {}, what, " ", h("span", { class: "mono dim" }, `(${call})`)))),
+          h("div", { class: "small dim" }, P.trail, " Nothing is made: making a cluster asks again, with its name typed."),
+          h("div", { class: "row" },
+            h("button", { class: "btn primary", onclick: () => { envAsked[prov] = true; load(); } }, `Use the environment's ${prov === "aws" ? "keys" : "token"}`),
+            h("button", { class: "btn", onclick: () => { editing = true; drawCreds(); } }, icon("plus"), prov === "aws" ? "Save a key here" : "Save a token here"))),
+      }));
+      return;
+    }
     if (!have()) { clear(where, card({ title: "Region and limits", body: empty("cloud", `No ${P.name} key yet`, prov === "aws" ? "Save an access key to see the machines of a region, their prices and your account's quota." : "Save a token to see the sizes of a region, their prices and your account's droplet limit.") })); return; }
     const list = (regions || P.regions).map((x) => (typeof x === "string" ? { slug: x, name: x } : x));
     const sel = h("select", { class: "select", onchange: () => { region = sel.value; plan = null; checked = null; loadCatalog(false); } }, list.map((x) => h("option", { value: x.slug, selected: x.slug === region }, x.name === x.slug ? x.slug : `${x.name} (${x.slug})`)));
@@ -365,7 +424,7 @@ function render(page, r) {
   }
 
   function drawMachines() {
-    if (!have()) { clear(machines); return; }
+    if (!may()) { clear(machines); return; }
     if (catErr) { clear(machines, card({ title: "Machines", body: h("div", { class: "error" }, `${P.name}: ${catErr.message}`) })); return; }
     if (!cat) { clear(machines, card({ title: "Machines", body: h("div", { class: "small dim" }, loadingCat ? "Fetching the machines of " + region + "…" : "") })); return; }
     const list = shown();
@@ -419,18 +478,25 @@ function render(page, r) {
     drawPlan(); drawWhere();
   }, 200);
 
-  function set(k, v) { form[k] = v; replan(); }
+  function set(k, v) { form[k] = v; if (["shards", "replicas", "coordinators", "nodes"].includes(k)) sized = true; replan(); }
 
   function nodes() {
     const l = plan.layout, m = plan.machine;
     const box = h("div", { class: "cloud-nodes" });
-    for (const n of l.nodes) {
+    // A big cluster: the first nodes, and how the others look.
+    const many = l.nodes.length > 12;
+    for (const n of many ? l.nodes.slice(0, 12) : l.nodes) {
       const used = n.copies.length * l.copy_memory_gib;
       box.append(h("div", { class: "cloud-node" },
         h("div", { class: "row between small" }, h("b", {}, `node ${n.node + 1}`), h("span", { class: "dim mono" }, m.type)),
         h("div", { class: "cloud-copies" }, n.copies.map((c) => h("span", { class: "cloud-copy", style: { "--c": SHARD(c.shard) }, title: `shard ${c.shard}, copy ${c.copy + 1}${c.copy ? "" : " (a primary when the cluster starts)"}` }, `s${c.shard}`, h("small", {}, c.copy ? "r" : "p")))),
         h("div", { class: "barbox", title: `${gib(used)} of ${gib(l.allocatable_gib)} for its copies` }, h("div", { class: "bar", style: { width: clamp(used / Math.max(l.allocatable_gib, 0.1) * 100, 0, 100) + "%" } })),
         h("div", { class: "small dim" }, `${n.copies.length} ${n.copies.length === 1 ? "copy" : "copies"} · ${gib(l.copy_memory_gib)} and ${l.copy_cpu.toFixed(1)} vCPU each`)));
+    }
+    if (many) {
+      const rest = l.nodes.slice(12), counts = rest.map((n) => n.copies.length);
+      box.append(h("div", { class: "cloud-node ro-cmore" }, h("b", {}, `${fmt.n(rest.length)} more nodes`),
+        h("div", { class: "small dim" }, `${Math.min(...counts) === Math.max(...counts) ? counts[0] : `${Math.min(...counts)} to ${Math.max(...counts)}`} copies each, laid out the same way: shard by shard, a shard's copies on different nodes.`)));
     }
     return box;
   }
@@ -474,7 +540,7 @@ function render(page, r) {
   }
 
   function drawPlan() {
-    if (!have() || !cat) { clear(planEl); return; }
+    if (!may() || !cat) { clear(planEl); return; }
     const name = h("input", { class: "input sm mono", value: form.name, size: 14, onchange: () => set("name", name.value.trim()) });
     const image = h("input", { class: "input sm mono", value: form.image, placeholder: "ghcr.io/chloetech-ai/strata-server:latest", size: 34, onchange: () => set("image", image.value.trim()) });
     const version = prov === "digitalocean" ? h("select", { class: "select sm", onchange: () => set("version", version.value) },
@@ -482,18 +548,23 @@ function render(page, r) {
     const controls = h("div", { class: "cloud-controls" },
       h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Name"), h("div", { class: "row nw" }, h("span", { class: "small dim mono" }, "strata-"), name)),
       h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Machine"), h("b", { class: "mono" }, form.machine || "pick one above")),
-      stepper(form.nodes, 1, 100, (v) => set("nodes", v), "Nodes"),
-      stepper(form.shards, 1, 64, (v) => set("shards", v), "Shards"),
+      stepper(form.nodes, 1, 1000, (v) => set("nodes", v), "Nodes"),
+      stepper(form.shards, 1, 4096, (v) => set("shards", v), "Shards"),
       stepper(form.replicas, 1, 9, (v) => set("replicas", v), "Copies a shard"),
-      stepper(form.coordinators, 1, 9, (v) => set("coordinators", v), "Coordinators"),
+      stepper(form.coordinators, 1, 16, (v) => set("coordinators", v), "Coordinators"),
       stepper(form.volume_gb, 1, 16384, (v) => set("volume_gb", v), "Volume a copy", " GiB"),
       prov === "aws"
         ? h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Nodes bought"), toggle(form.spot, (v) => set("spot", v), form.spot ? "spot" : "on demand"))
         : [h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Control plane"), toggle(form.ha, (v) => set("ha", v), form.ha ? "highly available" : "standard (free)")),
           h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Kubernetes"), version)],
       h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Image"), image));
-    if (planErr) { clear(planEl, card({ title: "Plan", body: h("div", { class: "stack" }, controls, h("div", { class: "error" }, planErr.message)) })); return; }
-    if (!plan) { clear(planEl, card({ title: "Plan", body: h("div", { class: "stack" }, controls, h("div", { class: "small dim" }, "Planning…")) })); return; }
+    const same = running && form.shards === running.shards && form.replicas === running.replicas && form.coordinators === running.coordinators;
+    const start = running ? h("div", { class: "small dim ro-cstart" }, same
+      ? [`Starts from this cluster's size${running.name ? ` (${running.name})` : ""}: ${fmt.n(running.shards)} shards × ${running.replicas} copies, ${running.coordinators} ${running.coordinators === 1 ? "coordinator" : "coordinators"}, a node for about every 4 copies. `,
+        h("a", { href: "#", onclick: (e) => { e.preventDefault(); sized = true; Object.assign(form, { shards: 2, replicas: 3, coordinators: 1, nodes: 3 }); replan(); } }, "Start small instead (2 × 3 on 3 nodes)")]
+      : [`This cluster runs ${fmt.n(running.shards)} shards × ${running.replicas} copies and ${running.coordinators} ${running.coordinators === 1 ? "coordinator" : "coordinators"}. `, h("a", { href: "#", onclick: (e) => { e.preventDefault(); useRunning(); } }, "Start from its size")]) : null;
+    if (planErr) { clear(planEl, card({ title: "Plan", body: h("div", { class: "stack" }, start, controls, h("div", { class: "error" }, planErr.message)) })); return; }
+    if (!plan) { clear(planEl, card({ title: "Plan", body: h("div", { class: "stack" }, start, controls, h("div", { class: "small dim" }, "Planning…")) })); return; }
     const stack = plan.stack;
     drawCreate();
     const files = [
@@ -511,6 +582,7 @@ function render(page, r) {
       title: "Plan", sub: `${plan.stack} in ${plan.region}${plan.version ? ", Kubernetes " + plan.version : ""}`,
       tools: [h("button", { class: "btn sm", disabled: checking, onclick: check, title: P.checkTitle }, icon("check"), checking ? "Checking…" : P.check)],
       body: h("div", { class: "stack" },
+        start,
         controls,
         h("div", { class: "cloud-plan" },
           h("div", { class: "stack" },
@@ -651,5 +723,6 @@ function render(page, r) {
 
   load();
   loadMade();
+  loadRunning();
   return () => { alive = false; clearTimeout(pollT); hideTip(); switchProvider = null; };
 }

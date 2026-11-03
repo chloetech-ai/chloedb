@@ -314,6 +314,10 @@ struct Args {
     /// {"text": ..., "alert": {...}} (a Slack incoming webhook takes it).
     #[arg(long)]
     alert_webhook: Option<String>,
+    /// Keep only the types of queries' parameters (not their values) in
+    /// the running and finished queries, statements and the log store.
+    #[arg(long, env = "STRATA_REDACT_PARAMS")]
+    redact_params: bool,
     /// What to log: a level (error, warn, info, debug, trace), or levels
     /// per module ("info,strata=debug"). debug logs every request.
     #[arg(long, env = "STRATA_LOG", default_value = "info")]
@@ -343,6 +347,10 @@ struct Args {
     /// the HTTP port).
     #[arg(long, env = "STRATA_NODE_NAME")]
     node_name: Option<String>,
+    /// The image repository whose versions the command center offers
+    /// (`GET /v1/admin/kube/versions`) when no StrataCluster names one.
+    #[arg(long, env = "STRATA_IMAGE_REPOSITORY")]
+    image_repository: Option<String>,
     /// Once told to stop (SIGTERM, Ctrl-C), serve on this many
     /// milliseconds with /readyz answering 503, so that a load balancer
     /// (a Kubernetes Service) sends no more clients before the server
@@ -354,6 +362,31 @@ struct Args {
     /// default, cheaply: see docs/strata/server.md).
     #[arg(long)]
     no_read_stats: bool,
+    /// The cluster's name, as the command center shows it (default: the
+    /// StrataCluster, namespace/name, that runs a coordinator).
+    #[arg(long, env = "STRATA_CLUSTER_NAME")]
+    cluster_name: Option<String>,
+    /// The cluster's environment ("production", "staging"...): the
+    /// command center treats one starting with "prod", or none, as
+    /// production.
+    #[arg(long, env = "STRATA_ENVIRONMENT")]
+    environment: Option<String>,
+    /// Where people reach this server's command center
+    /// (https://strata.example.com), for links in alerts' webhooks.
+    #[arg(long, env = "STRATA_PUBLIC_URL")]
+    public_url: Option<String>,
+    /// The share of queries that may fail on the server's side before
+    /// fleet health says so (GET /v1/health/fleet).
+    #[arg(long, default_value_t = 0.01)]
+    slo_error_ratio: f64,
+    /// The p99 latency of queries, in ms, above which fleet health says so.
+    #[arg(long, default_value_t = 250.0)]
+    slo_p99_ms: f64,
+    /// Proxies (addresses or networks, comma-separated: 10.0.0.0/8) whose
+    /// X-Forwarded-For names the client in the audit log; others' is
+    /// ignored.
+    #[arg(long, env = "STRATA_TRUST_PROXY", value_delimiter = ',')]
+    trust_proxy: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -639,6 +672,7 @@ async fn main() {
     if a.replica && a.grpc == "off" {
         fail("a replica takes its primary's writes over gRPC: --replica needs --grpc");
     }
+    strata_server::telemetry::set_redact_params(a.redact_params);
     let o = Options {
         db: a.db,
         schema: a.schema,
@@ -708,6 +742,14 @@ async fn main() {
         log_retain: std::time::Duration::from_secs(strata::schema::Retain::parse_period(&a.log_retain).unwrap_or_else(|e| fail(&format!("--log-retain: {e}"))) as u64),
         log_store_bytes: a.log_store_mb << 20,
         log_queries_per_sec: a.log_queries,
+        cluster_name: a.cluster_name.clone(),
+        environment: a.environment.clone(),
+        public_url: a.public_url.clone(),
+        slo_error_ratio: Some(a.slo_error_ratio),
+        slo_p99_ms: Some(a.slo_p99_ms),
+        trust_proxy: a.trust_proxy.clone(),
+        node_name_given: a.node_name.clone().filter(|n| !n.is_empty()),
+        image_repository: a.image_repository.clone().filter(|r| !r.trim().is_empty()),
         merger: {
             let d = strata::storage::MergerOptions::default();
             strata::storage::MergerOptions {

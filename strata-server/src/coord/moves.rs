@@ -112,6 +112,11 @@ struct Job {
     finished: Option<i64>,
     state: &'static str,
     error: Option<String>,
+    /// Who started it (a key's name), when the API said.
+    by: Option<String>,
+    /// The rows its slots held when it started, about: each shard's rows
+    /// spread evenly over its slots (the cluster's snapshot), when known.
+    rows_total: Option<u64>,
 }
 
 impl Job {
@@ -127,11 +132,41 @@ impl Job {
             })
             .collect();
         let done = self.steps.iter().filter(|s| s.phase == "done").count();
+        // core: how far, how fast, how long left (at the pace of the moves
+        // done), and each move's end, for a caller waiting on the job.
+        let running = self.state == "running";
+        let steps: Vec<Json> = steps
+            .into_iter()
+            .zip(&self.steps)
+            .map(|(mut j, s)| {
+                j["state"] = json!(s.phase);
+                j["done"] = json!(s.phase == "done");
+                j["finished"] = json!(!running || matches!(s.phase, "done" | "failed" | "given up"));
+                j
+            })
+            .collect();
+        let rows_done = self.steps.iter().map(|s| s.rows).sum::<u64>();
+        let end = self.finished.unwrap_or_else(strata::timestamp::now);
+        let secs = (end - self.started).max(1) as f64 / 1e6;
+        let ms_done: Vec<f64> = self.steps.iter().filter(|s| s.phase == "done").filter_map(|s| s.ms).collect();
+        let rate = rows_done as f64 / secs;
+        // At the pace of the moves done; before any, at the rows' pace.
+        let eta_s = match (running, ms_done.is_empty(), self.rows_total) {
+            (false, _, _) => None,
+            (true, false, _) => {
+                let mean = ms_done.iter().sum::<f64>() / ms_done.len() as f64;
+                Some((mean * (self.steps.len() - done) as f64 / 1e3).round())
+            }
+            (true, true, Some(total)) if rate > 0.0 => Some((total.saturating_sub(rows_done) as f64 / rate).round()),
+            _ => None,
+        };
         json!({
             "kind": self.kind, "state": self.state, "moves": steps, "done": done, "of": self.steps.len(),
             "slots_moved": self.steps.iter().filter(|s| s.phase == "done").map(|s| s.slots.len()).sum::<usize>(),
-            "rows_moved": self.steps.iter().map(|s| s.rows).sum::<u64>(),
+            "rows_moved": rows_done,
             "started_us": self.started, "finished_us": self.finished, "error": self.error,
+            "started_ms": self.started.div_euclid(1000), "started_by": self.by, "rows_done": rows_done, "rows_total": self.rows_total,
+            "rate_rows_s": (rows_done as f64 / secs * 10.0).round() / 10.0, "eta_s": eta_s,
         })
     }
 }
@@ -151,7 +186,17 @@ impl Coordinator {
     pub fn moves(&self) -> Json {
         let job = lock(&self.moves.job).as_ref().map(Job::json);
         let moving = self.map().and_then(|m| m.to_json().get("moving").cloned());
-        json!({"job": job, "moving": moving})
+        // The job's moves and progress at the top too: `{moving, moves}` is
+        // what a caller waits on (moving null and every move finished).
+        let mut j = json!({"job": job, "moving": moving, "moves": [], "running": false});
+        if let Some(job) = &job {
+            j["moves"] = job["moves"].clone();
+            j["running"] = json!(job["state"] == "running");
+            for k in ["state", "started_ms", "started_by", "rows_done", "rows_total", "rate_rows_s", "eta_s", "done", "of"] {
+                j[k] = job[k].clone();
+            }
+        }
+        j
     }
 
     /// Moves `slots` (of one shard) to shard `to`, in the background.
@@ -183,6 +228,13 @@ impl Coordinator {
         self.start_job(&format!("drain shard {i}"), plan_even(&map, Some(i), chunk))
     }
 
+    /// Names who started the job just started (`started_by`).
+    pub fn moves_by(&self, by: String) {
+        if let Some(j) = lock(&self.moves.job).as_mut() {
+            j.by.get_or_insert(by);
+        }
+    }
+
     /// Asks the job running here to stop once its move under way ends.
     pub fn stop_moves(&self) -> Json {
         self.moves.stop.store(true, Ordering::Relaxed);
@@ -199,7 +251,20 @@ impl Coordinator {
         let steps: Vec<Step> = plan.into_iter().map(|(slots, from, to)| Step { from, to, slots, phase: "planned", rows: 0, rounds: 0, busy: 0, held_ms: None, ms: None, error: None }).collect();
         let state = if steps.is_empty() { "done" } else { "running" };
         let now = strata::timestamp::now();
-        *lock(&self.moves.job) = Some(Job { kind: kind.to_string(), steps, started: now, finished: (state == "done").then_some(now), state, error: None });
+        let rows_total = self.held_snapshot(Duration::from_secs(60)).map(|snap| {
+            // A shard's rows: its primary's, else its first copy up's.
+            let rows = |i: usize| {
+                let s = snap["shards"].as_array().and_then(|v| v.iter().find(|s| s["shard"] == i));
+                let copies = s.and_then(|s| s["replicas"].as_array());
+                let docs = copies.and_then(|c| c.iter().find(|r| r["takes_writes"] == true).or_else(|| c.iter().find(|r| r["status"] != "down"))).and_then(|r| r["docs"].as_u64()).unwrap_or(0);
+                (docs, s.and_then(|s| s["slots_held"].as_u64()).unwrap_or(0).max(1))
+            };
+            steps.iter().map(|st| {
+                let (docs, held) = rows(st.from);
+                docs * st.slots.len() as u64 / held
+            }).sum()
+        });
+        *lock(&self.moves.job) = Some(Job { kind: kind.to_string(), steps, started: now, finished: (state == "done").then_some(now), state, error: None, by: None, rows_total });
         self.moves.stop.store(false, Ordering::Relaxed);
         let me = self.clone();
         tokio::spawn(async move {

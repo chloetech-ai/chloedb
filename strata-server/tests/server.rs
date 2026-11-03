@@ -181,7 +181,7 @@ async fn http_answers_like_the_embedded_database() {
     assert_eq!(health["docs"], N);
     let metrics = c.get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
     assert!(metrics.contains("strata_queries_total{kind=\"bm25\",outcome=\"ok\"} 3"), "{metrics}");
-    assert!(metrics.contains("strata_queries_total{kind=\"invalid\",outcome=\"error\"} 1"), "{metrics}");
+    assert!(metrics.contains("strata_queries_total{kind=\"invalid\",outcome=\"client_error\"} 1"), "{metrics}");
     let cores = std::thread::available_parallelism().unwrap().get();
     assert!(metrics.contains(&format!("strata_query_pool_threads {cores}\n")) && metrics.contains("strata_query_pool_queued 0\n"), "{metrics}");
 }
