@@ -2338,7 +2338,7 @@ textarea.input.ro-why { font-family: inherit; }
   .ac-ktable tr.ac-token { background: var(--surface-2); }
   .ac-ktable td.ac-said::before { content: none; }
   .ac-ktable tr.ac-revoked td:nth-child(4) { display: none; }
-  .ac-kact .btn.xs { min-height: 32px; min-width: 32px; }
+  .ac-kact .btn.xs { min-height: 40px; min-width: 40px; }
   .ac-alltable th:nth-child(4), .ac-alltable td:nth-child(4) { display: none; }
   .ac-allwho { max-width: 120px; }
 }
@@ -3073,6 +3073,53 @@ body.cc-dragging, body.cc-dragging * { cursor: grabbing !important; user-select:
 /* Number headers sit over their numbers ("table.t th" would set them left). */
 table.t th.num { text-align: right; }
 /* ===== end integration ===== */
+/* ===== cluster2 ===== */
+/* A plan the coordinator stopped at a restart, or that was stopped: amber; one that failed: red. */
+.cc-run.warn { border-color: var(--warn); }
+.cc-run-hd { align-items: flex-start; }
+.cc-run-hd .tools { flex-wrap: wrap; justify-content: flex-end; }
+/* A dead primary's other issues, after its way out. */
+.cc2-why-also { margin-top: 8px; padding-top: 6px; border-top: 1px solid color-mix(in srgb, currentColor 25%, transparent); color: var(--text-2); }
+.cc2-why-rest { margin: 2px 0 0; padding-left: 18px; }
+.cc2-why-rest li.crit { color: var(--crit); }
+/* A plan's steps in the Changes list. */
+.cc2-plan-steps { margin: 4px 0 0; padding-left: 18px; }
+.cc2-plan-steps li { margin: 1px 0; }
+/* A phone: each chip of the strip is a tap target 40 px tall at least (NEW-cluster-admin-14). */
+@media (max-width: 900px) {
+  .cc-chip { min-height: 40px; padding-top: 9px; padding-bottom: 9px; }
+}
+/* On a phone the page's title takes two lines rather than being cut
+   (NEW-cluster-admin-14); fleet's block hides it where the heading names the view. */
+@media (max-width: 560px) {
+  .top .crumbs > svg { display: none; }
+  .top .crumbs .ctitle { white-space: normal; line-height: 1.15; font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+}
+/* A phone: Rollouts' and Autoscaling's targets are 40 px at least, labels
+   included (NEW-cluster-admin-14). Inline links keep their line: the extra
+   is padding a negative margin takes back. */
+@media (max-width: 560px) {
+  .ro-ext { display: inline-flex; align-items: center; justify-content: center; min-width: 40px; min-height: 40px; margin: -13px -10px; }
+  .ro-only { min-height: 40px; }
+  .ro-in { padding: 12px 0; margin: -12px 0; }
+  .ro-only input { width: 18px; height: 18px; }
+  .ro-tool, .ro-cmds .btn.xs, .ro-img1 + .btn.xs { min-width: 40px; min-height: 40px; justify-content: center; }
+  .ro-map { grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); }
+  .ro-map-s { min-height: 40px; }
+  .cc-as .as-text { line-height: 2; }
+  .cc-as .as-word { display: inline-block; line-height: 20px; padding: 10px 2px; margin: -10px 0; min-width: 40px; text-align: center; }
+  .cc-as .as-day { min-height: 40px; }
+  .cc-as .as-note a, .cc-as .cc-as-own a { display: inline-block; padding: 12px 0; margin: -12px 0; }
+}
+/* The strip greys with the map while the coordinator does not answer (NEW-shell-monitor-15). */
+.cc-strip.cc2-stale .cc-chip { opacity: .5; filter: grayscale(1); }
+.cc-strip .cc2-now { border-style: dashed; }
+/* Each copy's last hour in the shard panel (FL-6). */
+.cc2-hist { display: grid; grid-template-columns: max-content 120px minmax(0, 1fr); gap: 4px 10px; align-items: center; margin-bottom: 4px; }
+.cc2-hist-row { display: contents; }
+.cc2-spark polyline { fill: none; stroke: var(--s1); stroke-width: 1.5; }
+@media (max-width: 560px) { .cc2-hist { grid-template-columns: max-content 120px; } .cc2-hist-row > .muted { grid-column: 1 / -1; margin-top: -2px; } .cc2-hist-note a { display: inline-block; padding: 12px 0; margin: -12px 0; } }
+/* ===== end cluster2 ===== */
 /* ===== fleet ===== */
 /* Charts: a pile of event markers shows its count; midnight on an axis of hours reads as a date. */
 .chart .ann-n { fill: #fff; font-size: 8.5px; font-weight: 700; pointer-events: none; }

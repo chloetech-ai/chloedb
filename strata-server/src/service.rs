@@ -3276,6 +3276,12 @@ impl Service {
             Backend::Local(db) => {
                 let s = db.snapshot();
                 let mut h = json!({"status": "ok", "role": "shard", "docs": s.n_live_docs(), "segments": s.segments().len(), "txn": s.txn()});
+                // cluster2: the rows of every table (`docs` counts the first
+                // only), which a move or a new copy sends: plans and moves
+                // count these.
+                let tables: serde_json::Map<String, Json> = s.schemas().filter(|t| t.table != strata::storage::SOURCES).filter_map(|t| s.table(&t.table).map(|v| (t.table.clone(), json!(v.n_live_docs())))).collect();
+                h["rows"] = json!(tables.values().filter_map(Json::as_u64).sum::<u64>());
+                h["tables"] = Json::Object(tables);
                 if let Some((m, shard)) = self.slots() {
                     h["slots"] = json!({"epoch": m.epoch, "shard": shard, "of": m.shards()});
                 }
@@ -3624,6 +3630,8 @@ impl Service {
             "running": self.live.len(), "log_store": log_store,
             // core: what a coordinator's /v1/cluster shows of each copy.
             "capability": self.capability(),
+            // cluster2: the flags it runs with, for Settings (NEW-cluster-admin-5).
+            "limits": {"slow_ms": self.slow_after().map(|d| d.as_millis() as u64), "max_concurrent": self.max_concurrent, "max_rows": self.max_rows, "timeout_ms": self.timeout.as_millis() as u64},
             "place": {"name": self.place.name, "node": self.place.node, "zone": self.place.zone},
             "version": self.place.version(),
             "backup_dir": self.backup_dir.as_ref().map(|p| p.display().to_string()),
