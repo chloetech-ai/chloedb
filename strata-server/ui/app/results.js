@@ -2,11 +2,23 @@
 // details, copy and download), a chart of chosen columns, the plan as a
 // tree of operators with what ran on each segment, and the raw JSON.
 
-import { h, s, icon, clear, fmt, copy, drawer, showTip, hideTip, seg, empty } from "./core.js";
+import { h, s, icon, clear, fmt, copy, drawer, showTip, hideTip, seg, empty, when } from "./core.js";
 import { SERIES } from "./charts.js";
 
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
 const isTime = (v) => typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(v);
+// A column named like a time is a chart's axis, never a value, even when it
+// holds numbers: the log store's `minute` is minutes since 1970.
+const TIME_COL = /^(ts|t|time|minute|hour|day|bucket|date)$/i;
+/** How to read a time-like column's numbers as milliseconds, or null when they are not times. */
+function timeScale(name, values) {
+  if (!TIME_COL.test(name)) return null;
+  const v = values.find(isNum);
+  if (v == null) return null;
+  const unit = /^minute$/i.test(name) ? 60e3 : /^hour$/i.test(name) ? 3600e3 : /^day$/i.test(name) && v < 1e6 ? 86400e3
+    : v > 1e17 ? 1e-6 : v > 1e14 ? 1e-3 : v > 1e11 ? 1 : v > 1e8 ? 1e3 : null;   // ns, µs, ms, s since 1970
+  return unit == null ? null : (x) => x * unit;
+}
 
 /** A cell's value as text. */
 export function cellText(v) {
@@ -44,7 +56,10 @@ export function asDelimited(j, sep = ",") { return [j.columns.map((c) => csvCell
  */
 export function grid(j, { max = 1000, onRow } = {}) {
   const cols = j.columns || [];
-  const scored = (j.scores || []).some((x) => x != null && x !== 0);
+  // The score column, unless it is a returned column again (ORDER BY n
+  // gives each row's n as its score).
+  const scored = (j.scores || []).some((x) => x != null && x !== 0)
+    && !cols.some((_, k) => (j.rows || []).every((r, i) => Array.isArray(r) && Number(r[k]) === j.scores[i]));
   const order = (j.rows || []).map((_, i) => i);
   let sortCol = null, desc = false, shown = Math.min(order.length, 200);
   const widths = {};
@@ -130,9 +145,10 @@ export function resultChart(j) {
   const cols = j.columns || [], rows = j.rows || [];
   const numeric = cols.filter((_, ci) => rows.some((r) => isNum(r[ci])) && rows.every((r) => r[ci] == null || isNum(r[ci])));
   if (!numeric.length || !rows.length) return empty("perf", "Nothing to chart", "A chart needs a numeric column: a COUNT(*), a SUM, a price…");
-  const first = cols.find((c) => !numeric.includes(c)) ?? cols[0];
-  let x = first, ys = numeric.filter((c) => c !== x).slice(0, 1), kind = rows.some((r) => isTime(r[cols.indexOf(x)])) ? "line" : "bar";
-  if (!ys.length) ys = [numeric[0]];
+  const timeLike = cols.find((c) => TIME_COL.test(c));
+  const first = timeLike ?? cols.find((c) => !numeric.includes(c)) ?? cols[0];
+  let x = first, ys = numeric.filter((c) => c !== x && !TIME_COL.test(c)).slice(0, 1), kind = timeLike || rows.some((r) => isTime(r[cols.indexOf(x)])) ? "line" : "bar";
+  if (!ys.length) ys = [numeric.find((c) => c !== x) ?? numeric[0]];
   const xSel = h("select", { class: "select sm", onchange: () => { x = xSel.value; draw(); } }, cols.map((c) => h("option", { value: c, selected: c === x }, c)));
   const yBox = h("div", { class: "row", style: { gap: "4px" } });
   const kindSeg = seg([["bar", "Bars"], ["line", "Lines"], ["dot", "Dots"]], kind, (v) => { kind = v; draw(); });
@@ -144,15 +160,17 @@ export function resultChart(j) {
   function draw() {
     drawY();
     const xi = cols.indexOf(x), yi = ys.map((y) => cols.indexOf(y));
-    const pts = rows.slice(0, 400).map((r) => ({ x: r[xi], ys: yi.map((i) => r[i]) }));
+    const asMs = timeScale(x, rows.map((r) => r[xi]));
+    const pts = rows.slice(0, 400).map((r) => ({ x: asMs && isNum(r[xi]) ? asMs(r[xi]) : r[xi], ys: yi.map((i) => r[i]) }));
     clear(legend, ys.length > 1 ? ys.map((y, k) => h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { class: "k box", style: { background: SERIES[k], display: "inline-block" } }), y)) : null);
-    clear(plot, svgChart(pts, ys, kind, x));
+    clear(plot, svgChart(pts, ys, kind, x, asMs ? (ms) => when(ms, { sec: false }) : null));
   }
   draw();
   return h("div", {}, h("div", { class: "row", style: { marginBottom: "8px", gap: "10px" } }, h("span", { class: "small muted" }, "across"), xSel, h("span", { class: "small muted" }, "show"), yBox, h("span", { class: "sep" }), kindSeg), legend, plot);
 }
 
-function svgChart(pts, names, kind, xName) {
+function svgChart(pts, names, kind, xName, xfmt) {
+  const xText = (v) => xfmt && isNum(v) ? xfmt(v) : cellText(v);
   const W = 1000, H = 300, M = { l: 56, r: 14, t: 12, b: 46 };
   const svgEl = s("svg", { viewBox: `0 0 ${W} ${H}`, style: { width: "100%", height: H + "px" }, role: "img", "aria-label": `${names.join(", ")} by ${xName}` });
   const all = pts.flatMap((p) => p.ys).filter(isNum);
@@ -169,8 +187,8 @@ function svgChart(pts, names, kind, xName) {
   }
   svgEl.append(s("line", { x1: M.l, x2: W - M.r, y1: Y(0), y2: Y(0), style: { stroke: "var(--axis)" } }));
   const every = Math.max(1, Math.ceil(n / 14));
-  pts.forEach((p, i) => { if (i % every === 0 && !numX) svgEl.append(s("text", { x: X(i), y: H - M.b + 16, "text-anchor": "end", transform: `rotate(-30 ${X(i)} ${H - M.b + 16})`, style: { fill: "var(--muted)", fontSize: "11px" } }, cellText(p.x).slice(0, 18))); });
-  if (numX) for (let k = 0; k <= 4; k++) { const v = x0 + (x1 - x0) * k / 4; svgEl.append(s("text", { x: M.l + iw * k / 4, y: H - M.b + 16, "text-anchor": "middle", style: { fill: "var(--muted)", fontSize: "11px" } }, fmt.si(v))); }
+  pts.forEach((p, i) => { if (i % every === 0 && !numX) svgEl.append(s("text", { x: X(i), y: H - M.b + 16, "text-anchor": "end", transform: `rotate(-30 ${X(i)} ${H - M.b + 16})`, style: { fill: "var(--muted)", fontSize: "11px" } }, xText(p.x).slice(0, 18))); });
+  if (numX) for (let k = 0; k <= 4; k++) { const v = x0 + (x1 - x0) * k / 4; svgEl.append(s("text", { x: M.l + iw * k / 4, y: H - M.b + 16, "text-anchor": "middle", style: { fill: "var(--muted)", fontSize: "11px" } }, xfmt ? xfmt(v) : fmt.si(v))); }
   const group = iw / n, bw = Math.max(2, Math.min(36, (group - 4) / names.length - 2));
   names.forEach((name, k) => {
     const color = SERIES[k];
@@ -198,7 +216,7 @@ function svgChart(pts, names, kind, xName) {
       }
     }
   });
-  function tip(ev, p) { showTip(ev.clientX, ev.clientY, [h("div", { class: "t" }, `${xName}: ${cellText(p.x)}`), ...names.map((nm, k) => h("div", { class: "r" }, h("span", { class: "k box", style: { background: SERIES[k] } }), h("b", {}, isNum(p.ys[k]) ? fmt.n(p.ys[k], 3) : "–"), h("span", { class: "n" }, nm)))]); }
+  function tip(ev, p) { showTip(ev.clientX, ev.clientY, [h("div", { class: "t" }, `${xName}: ${xText(p.x)}`), ...names.map((nm, k) => h("div", { class: "r" }, h("span", { class: "k box", style: { background: SERIES[k] } }), h("b", {}, isNum(p.ys[k]) ? fmt.n(p.ys[k], 3) : "–"), h("span", { class: "n" }, nm)))]); }
   return svgEl;
 }
 

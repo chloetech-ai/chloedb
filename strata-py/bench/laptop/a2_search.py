@@ -164,7 +164,7 @@ class StrataSys(System):
             rows = []
             for i in range(start, min(start + 2000, len(coll.docs))):
                 d = coll.docs[i]
-                rows.append({**{k: d[k] for k in ("id", "title", "text", "year", "category", "rating", "topic")}, "emb": coll.vecs[i].tolist()})
+                rows.append({**{k: d[k] for k in ("id", "title", "text", "year", "category", "rating", "topic")}, "emb": coll.vecs[i]})
             db.insert(rows)
         db.optimize()
         self.db = db

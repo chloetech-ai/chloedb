@@ -194,19 +194,20 @@ class Database(Search):
         self.last_import: dict | None = None
 
     @classmethod
-    def create(cls, path: str | os.PathLike, schema: Any, *, directory: bool = False, models: str | os.PathLike | None = None) -> "Database":
+    def create(cls, path: str | os.PathLike, schema: Any, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None) -> "Database":
         """Creates a database at `path` with `schema` (a dict, JSON text, or
         the path of a JSON file; the short form or the long one).
         `directory` keeps it as a directory of segment files instead of one
         file. `models` is where embedded fields' models are (default
         $STRATA_MODELS or ~/.local/share/strata/models; see `strata-server
-        fetch-model`)."""
-        return cls(_strata.Database.create(os.fspath(path), _schema_json(schema), directory, None if models is None else os.fspath(models)))
+        fetch-model`). `threads` is how many cores vector indexes build on
+        and each query searches segments on (default: every core)."""
+        return cls(_strata.Database.create(os.fspath(path), _schema_json(schema), directory, None if models is None else os.fspath(models), threads))
 
     @classmethod
-    def open(cls, path: str | os.PathLike, *, models: str | os.PathLike | None = None) -> "Database":
-        """Opens the database at `path`."""
-        return cls(_strata.Database.open(os.fspath(path), None if models is None else os.fspath(models)))
+    def open(cls, path: str | os.PathLike, *, models: str | os.PathLike | None = None, threads: int | None = None) -> "Database":
+        """Opens the database at `path`; `threads` as `create` takes it."""
+        return cls(_strata.Database.open(os.fspath(path), None if models is None else os.fspath(models), threads))
 
     @property
     def schema(self) -> dict:
@@ -290,7 +291,9 @@ class Database(Search):
 
     def insert(self, rows: Mapping[str, Any] | Iterable[Mapping[str, Any]], *, table: str | None = None) -> int:
         """Inserts a row or rows, whose keys must be new, into the first
-        table or `table`; all or none are written. Returns how many."""
+        table or `table`; all or none are written. Returns how many. A
+        vector may be a numpy array (float32 or float64), read from its
+        bytes."""
         return self._db.insert(rows, table)
 
     def upsert(self, rows: Mapping[str, Any] | Iterable[Mapping[str, Any]], *, table: str | None = None) -> int:
@@ -424,7 +427,8 @@ class Database(Search):
         return {p: dict(cs) for p, cs in zip(prefixes, got)}
 
     def optimize(self) -> None:
-        """Merges small segments (many small writes leave many)."""
+        """Writes the rows still in memory into segments and merges small
+        segments (many small writes leave many)."""
         self._db.optimize()
 
     def close(self) -> None:
@@ -447,22 +451,23 @@ class Database(Search):
         return f"<strata.Database {self.schema['table']}: {len(self)} rows>"
 
 
-def open(path: str | os.PathLike, schema: Any = None, *, directory: bool = False, models: str | os.PathLike | None = None) -> Database:
+def open(path: str | os.PathLike, schema: Any = None, *, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None) -> Database:
     """Opens the database at `path`, creating it with `schema` if it does
-    not exist."""
+    not exist. `threads`: how many cores vector indexes build on and each
+    query searches segments on (default: every core)."""
     if os.path.exists(path):
-        return Database.open(path, models=models)
+        return Database.open(path, models=models, threads=threads)
     if schema is None:
         raise StrataError(f"{os.fspath(path)} does not exist: pass a schema to create it")
-    return Database.create(path, schema, directory=directory, models=models)
+    return Database.create(path, schema, directory=directory, models=models, threads=threads)
 
 
-def from_sqlite(sqlite_path: str | os.PathLike, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, schemas: Any = None, blobs_base64: bool = False, directory: bool = False, models: str | os.PathLike | None = None) -> Database:
+def from_sqlite(sqlite_path: str | os.PathLike, path: str | os.PathLike, *, tables: str | Iterable[str] | None = None, schemas: Any = None, blobs_base64: bool = False, directory: bool = False, models: str | os.PathLike | None = None, threads: int | None = None) -> Database:
     """Creates a database at `path` from the tables of a SQLite database
     file (all, or `tables`), with schemas made from the SQLite tables or
     given in `schemas` (see `plan_sqlite`). What the import did, as
     `Database.import_sqlite` returns it, is the database's `last_import`."""
-    inner, report = _strata.Database.from_sqlite(os.fspath(sqlite_path), os.fspath(path), _names(tables), _schemas_json(schemas), blobs_base64, directory, None if models is None else os.fspath(models))
+    inner, report = _strata.Database.from_sqlite(os.fspath(sqlite_path), os.fspath(path), _names(tables), _schemas_json(schemas), blobs_base64, directory, None if models is None else os.fspath(models), threads)
     db = Database(inner)
     db.last_import = json.loads(report)
     return db

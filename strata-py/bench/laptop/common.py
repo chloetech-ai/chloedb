@@ -132,6 +132,10 @@ def machine() -> dict:
                     break
     except Exception:  # noqa: BLE001 - best effort
         pass
+    # On a cloud node (do_part_a.sh sets these): the size it was rented as.
+    for env, key in (("NODE_SIZE", "node_size"), ("NODE_REGION", "node_region")):
+        if os.environ.get(env):
+            info[key] = os.environ[env]
     return info
 
 

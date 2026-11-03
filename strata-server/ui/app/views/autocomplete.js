@@ -4,12 +4,13 @@
 // prefix matched and how the plan read them are listed, and a measure by
 // prefix length runs the table's own values cut at one to ten characters.
 
-import { h, icon, clear, fmt, api, store, empty, seg, failure, sqlBlock, toggle, debounce } from "../core.js";
+import { h, icon, clear, fmt, api, store, empty, seg, failure, sqlBlock, toggle, debounce, confirm } from "../core.js";
+import { isProduction } from "../data.js";
 import { tables, table as tableOf } from "../catalog.js";
 import { xyChart, SERIES } from "../charts.js";
 import { quoteName } from "../sqledit.js";
 
-export default { id: "autocomplete", title: "Autocomplete", icon: "autocomplete", group: "Explore", full: true, keywords: "autocomplete typeahead suggest prefix complete search as you type typos fuzzy query completion keystroke latency", render };
+export default { id: "autocomplete", title: "Autocomplete", icon: "autocomplete", group: "Labs", full: true, range: false, keywords: "autocomplete typeahead suggest prefix complete search as you type typos fuzzy query completion keystroke latency", render };
 
 const TYPOS = [["off", "exact"], ["1", "1 typo"], ["2", "2 typos"], ["auto", "auto"]];
 const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
@@ -18,14 +19,21 @@ const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
 const kwFields = (t) => (t?.short?.fields || []).filter((f) => f.type === "keyword" && f.indexed !== false);
 const numFields = (t) => (t?.short?.fields || []).filter((f) => f.type === "int" || f.type === "float");
 
+// What a box would complete first: a table of queries completes its key
+// (the query text); any other table completes a field people type, such
+// as a brand or a name, never its key (an id like p0000001).
+const queryLog = (t) => /quer|search|sugg|complet|term/i.test(t.table) && kwFields(t).some((f) => f.name === t.short?.key);
+const typed = /name|title|brand|categor|tag|term|query|city|country|label|topic|author|genre/i;
+function fieldFor(t) {
+  if (queryLog(t)) return kwFields(t).find((f) => f.name === t.short.key);
+  const others = kwFields(t).filter((f) => f.name !== t.short?.key);
+  return others.find((f) => typed.test(f.name) && !f.multi) || others.find((f) => typed.test(f.name)) || others[0] || kwFields(t)[0];
+}
 function guess(ts) {
-  const score = (t) => {
-    const key = t.short?.key, kf = kwFields(t).find((f) => f.name === key);
-    return (kf ? 2 : 0) + (/quer|search|sugg|complet|term/i.test(t.table) ? 3 : 0) + (numFields(t).length ? 1 : 0);
-  };
+  const score = (t) => (queryLog(t) ? 4 : 0) + (kwFields(t).some((f) => f.name !== t.short?.key) ? 2 : 0) + (numFields(t).length ? 1 : 0);
   const t = ts.filter((x) => kwFields(x).length).sort((a, b) => score(b) - score(a))[0];
   if (!t) return null;
-  const f = kwFields(t).find((x) => x.name === t.short.key) || kwFields(t)[0];
+  const f = fieldFor(t);
   const n = numFields(t).find((x) => /^(n|count|clicks|hits|freq|popularity|sold|views)$/i.test(x.name)) || numFields(t)[0];
   return { table: t.table, field: f.name, order: n?.name || "", typos: "auto", exactFirst: true, k: 8, where: "" };
 }
@@ -40,7 +48,10 @@ function render(page) {
 
   tables().then((list) => {
     ts = list;
+    // A state kept from before the default changed, still on a key: guess again once.
+    if (st && !st.v && tableOf(st.table) && st.field === tableOf(st.table).short?.key && !queryLog(tableOf(st.table))) st = null;
     if (!st || !tableOf(st.table) || !kwFields(tableOf(st.table)).some((f) => f.name === st.field)) st = guess(ts);
+    if (st) st.v = 2;
     if (!st) { clear(main, empty("autocomplete", "Nothing to complete", "Autocomplete reads a KEYWORD field: a table of queries (id KEYWORD PRIMARY KEY, n INT) is the usual one.")); return; }
     save(); drawTop(); drawMain(); drawSide();
   }).catch((e) => clear(main, failure(e, "The tables")));
@@ -190,6 +201,14 @@ function render(page) {
   }
 
   async function measure() {
+    // It reads up to 30 values, then asks each of them cut at 1 to 10
+    // characters, once exact and once with typos: one query after another.
+    const modes0 = st.typos === "off" ? 1 : 2, most = 30 * 10 * modes0;
+    const ok = await confirm({ title: "Measure by prefix length?", ok: `Run up to ${fmt.n(most)} queries`,
+      body: h("div", { class: "stack", style: { gap: "8px" } },
+        h("p", { class: "dim", style: { margin: 0 } }, `It reads up to 400 values of ${st.field}, then sends up to ${fmt.n(most)} prefix queries to ${st.table} on ${location.host}, one after another (${modes0 === 1 ? "exact" : `exact and with ${st.typos === "auto" ? "auto" : st.typos} typos`}, 1 to 10 characters, 30 values).`),
+        h("p", { class: "small", style: { margin: 0 } }, isProduction() ? "This server counts as production: the queries share it with the traffic it serves, and land in its query log and slow log." : "The queries land in the server's query log and slow log like any other.")) });
+    if (!ok) return;
     const mine = ++benchRun;
     bench = { lengths: [], running: true };
     drawSide();
@@ -221,7 +240,7 @@ function render(page) {
   }
   function drawBench() {
     if (!chartBox) return;
-    if (!bench) { clear(chartBox, h("div", { class: "small muted" }, "Runs 30 of the table's values cut at each length, exact and with the typos chosen, and draws the server's median and 95th percentile per length.")); return; }
+    if (!bench) { clear(chartBox, h("div", { class: "small muted" }, "Measure asks 30 of the table's values cut at each length, exact and with the typos chosen (up to 600 queries, one at a time), and draws the server's median and 95th percentile per length.")); return; }
     if (!bench.res) { clear(chartBox, h("div", { class: "rx-wait" }, h("span", { class: "spin" }), "Measuring…")); return; }
     const series = bench.modes.flatMap((m, i) => [
       { name: (m === "off" ? "exact" : `typos ${m}`) + " p50", color: SERIES[i * 2], points: [...Array(bench.done)].map((_, k) => [k + 1, bench.res.get(`${m}:${k + 1}`)?.p50, `${fmt.si(bench.res.get(`${m}:${k + 1}`)?.rows)} rows matched (median)`]) },

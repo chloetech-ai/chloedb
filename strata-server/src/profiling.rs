@@ -173,7 +173,7 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
         }
         Kind::Verify => {
             let ms = b.get("timeout_ms").and_then(|v| v.as_u64()).filter(|t| *t > 0).unwrap_or(60_000).min(600_000);
-            Ok(Answer::Json(svc.verify_replicas(std::time::Duration::from_millis(ms)).await?))
+            Ok(Answer::Json(svc.verify_fresh(std::time::Duration::from_millis(ms)).await?))
         }
         Kind::Checkpoint => {
             let layout = match b["layout"].as_str().unwrap_or("file") {

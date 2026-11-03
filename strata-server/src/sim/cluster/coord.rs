@@ -489,6 +489,7 @@ impl Sim {
         change.forgets_doubt = self.cfg.bugs.contains(&super::Bug::GivesAnEpochTwice);
         change.keeps_untaken = self.cfg.bugs.contains(&super::Bug::RoutesByAMapNoServerTook);
         change.skips_source = self.cfg.bugs.contains(&super::Bug::ChangesAroundTheSource);
+        change.forgets_redone = self.cfg.bugs.contains(&super::Bug::ForgetsAMapGivenAgain);
         self.coords[j].changing = Some(Changing { change, f, asker });
         self.change_step(j, step);
     }
@@ -510,6 +511,11 @@ impl Sim {
             ChangeStep::Done(r) => {
                 let Some(ch) = self.coords[j].changing.take() else { return };
                 self.coords[j].doubt = ch.change.in_doubt();
+                // The map in doubt, given again and taken, is made whatever
+                // came of the change made from it.
+                if let (Err(_), Some(m)) = (&r, ch.change.redone()) {
+                    self.install(j, m.clone());
+                }
                 let r = r.map(|(m, _)| m);
                 match &r {
                     Ok(m) => {

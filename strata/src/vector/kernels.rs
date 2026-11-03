@@ -155,6 +155,45 @@ pub fn dot_u8_i8_x4(rows: [&[u8]; 4], q: &[i8]) -> [i32; 4] {
     rows.map(|r| dot_u8_i8_scalar(r, q))
 }
 
+/// `out[j] = round(x[j] · scale[j] / alpha)`, clamped to ±127, for every
+/// `j < x.len()`: the int8 weights of an SQ8 query. Rounding is half away
+/// from zero, as `f32::round`, and a NaN gives 0, so every tier gives the
+/// scalar version's bytes exactly (the product and the quotient are each
+/// rounded once, as there). `out` past `x.len()` is left as it is.
+#[inline]
+pub fn quantize_i8(x: &[f32], scale: &[f32], alpha: f32, out: &mut [i8]) {
+    let n = x.len();
+    assert!(scale.len() >= n && out.len() >= n);
+    #[cfg(target_arch = "x86_64")]
+    {
+        if simd::avx512() {
+            // SAFETY: the CPU has AVX-512; `x`, `scale` and `out` hold at
+            // least `n` elements; tails use masked loads and stores.
+            return unsafe { quantize_i8_avx512(x.as_ptr(), scale.as_ptr(), alpha, out.as_mut_ptr(), n) };
+        }
+        if simd::avx2() {
+            // SAFETY: the CPU has AVX2; `x`, `scale` and `out` hold at least
+            // `n` elements; the tail is scalar.
+            return unsafe { quantize_i8_avx2(x.as_ptr(), scale.as_ptr(), alpha, out.as_mut_ptr(), n) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: `x`, `scale` and `out` hold at least `n` elements; the tail is
+    // scalar.
+    unsafe {
+        quantize_i8_neon(x.as_ptr(), scale.as_ptr(), alpha, out.as_mut_ptr(), n)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    quantize_i8_scalar(x, scale, alpha, out)
+}
+
+/// Portable [`quantize_i8`].
+pub fn quantize_i8_scalar(x: &[f32], scale: &[f32], alpha: f32, out: &mut [i8]) {
+    for j in 0..x.len() {
+        out[j] = ((x[j] * scale[j]) / alpha).round().clamp(-127.0, 127.0) as i8;
+    }
+}
+
 /// Dot product of unsigned 8-bit codes with float32 weights.
 #[inline]
 pub fn dot_u8_f32(a: &[u8], w: &[f32]) -> f32 {
@@ -586,6 +625,65 @@ unsafe fn dot_u8_i8_x4_avx2(rows: [*const u8; 4], q: *const i8, n: usize) -> [i3
     t
 }
 
+/// One quantised weight of [`quantize_i8`], for the SIMD tiers' tails.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[inline(always)]
+unsafe fn quantize_one(x: *const f32, s: *const f32, alpha: f32, out: *mut i8, i: usize) {
+    *out.add(i) = ((*x.add(i) * *s.add(i)) / alpha).round().clamp(-127.0, 127.0) as i8;
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+unsafe fn quantize_i8_avx512(x: *const f32, s: *const f32, alpha: f32, out: *mut i8, n: usize) {
+    let (a, half, one, zero) = (_mm512_set1_ps(alpha), _mm512_set1_ps(0.5), _mm512_set1_ps(1.0), _mm512_setzero_ps());
+    let (lo, hi) = (_mm512_set1_ps(-127.0), _mm512_set1_ps(127.0));
+    let mut i = 0;
+    while i < n {
+        let m: __mmask16 = if n - i >= 16 { !0 } else { (1u16 << (n - i)) - 1 };
+        let v = _mm512_div_ps(_mm512_mul_ps(_mm512_maskz_loadu_ps(m, x.add(i)), _mm512_maskz_loadu_ps(m, s.add(i))), a);
+        // Half away from zero: truncate, then one step outwards where the
+        // fraction cut off (`v - t`, exact) is at least a half.
+        let t = _mm512_roundscale_ps::<{ _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC }>(v);
+        let out_by_one = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(_mm512_abs_ps(_mm512_sub_ps(v, t)), half);
+        let r = _mm512_mask_add_ps(t, out_by_one & _mm512_cmp_ps_mask::<_CMP_GT_OQ>(v, zero), t, one);
+        let r = _mm512_mask_sub_ps(r, out_by_one & _mm512_cmp_ps_mask::<_CMP_LT_OQ>(v, zero), r, one);
+        let r = _mm512_min_ps(_mm512_max_ps(r, lo), hi);
+        // A NaN (unordered with itself) gives 0, as `as i8` makes it.
+        let q = _mm512_maskz_cvttps_epi32(_mm512_cmp_ps_mask::<_CMP_ORD_Q>(v, v), r);
+        _mm512_mask_cvtepi32_storeu_epi8(out.add(i), m, q);
+        i += 16;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn quantize_i8_avx2(x: *const f32, s: *const f32, alpha: f32, out: *mut i8, n: usize) {
+    let (a, half, one, sign) = (_mm256_set1_ps(alpha), _mm256_set1_ps(0.5), _mm256_set1_ps(1.0), _mm256_set1_ps(-0.0));
+    let (lo, hi) = (_mm256_set1_ps(-127.0), _mm256_set1_ps(127.0));
+    // Eight weights as int32, rounded and clamped as in the AVX-512 tier.
+    let eight = |p: usize| {
+        let v = _mm256_div_ps(_mm256_mul_ps(_mm256_loadu_ps(x.add(p)), _mm256_loadu_ps(s.add(p))), a);
+        let t = _mm256_round_ps::<{ _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC }>(v);
+        let out_by_one = _mm256_cmp_ps::<_CMP_GE_OQ>(_mm256_andnot_ps(sign, _mm256_sub_ps(v, t)), half);
+        // ±1 by v's sign where rounding goes outwards, 0 elsewhere.
+        let r = _mm256_add_ps(t, _mm256_and_ps(out_by_one, _mm256_or_ps(one, _mm256_and_ps(v, sign))));
+        let r = _mm256_min_ps(_mm256_max_ps(r, lo), hi);
+        _mm256_cvttps_epi32(_mm256_and_ps(r, _mm256_cmp_ps::<_CMP_ORD_Q>(v, v)))
+    };
+    let mut i = 0;
+    while i + 32 <= n {
+        // The packs work within 128-bit lanes, leaving the 32 bytes' dwords
+        // in the order 0 2 4 6 1 3 5 7, which the permute puts back.
+        let b = _mm256_packs_epi16(_mm256_packs_epi32(eight(i), eight(i + 8)), _mm256_packs_epi32(eight(i + 16), eight(i + 24)));
+        _mm256_storeu_si256(out.add(i) as *mut __m256i, _mm256_permutevar8x32_epi32(b, _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7)));
+        i += 32;
+    }
+    while i < n {
+        quantize_one(x, s, alpha, out, i);
+        i += 1;
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn dot_f32_neon(a: *const f32, b: *const f32, n: usize) -> f32 {
@@ -745,6 +843,26 @@ unsafe fn dot_u8_f32_neon(a: *const u8, w: *const f32, n: usize) -> f32 {
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
+unsafe fn quantize_i8_neon(x: *const f32, s: *const f32, alpha: f32, out: *mut i8, n: usize) {
+    let (a, lo, hi) = (vdupq_n_f32(alpha), vdupq_n_f32(-127.0), vdupq_n_f32(127.0));
+    // `frinta` rounds half away from zero; `fmax` and `fmin` keep a NaN,
+    // which `fcvtzs` turns into 0.
+    let four = |p: usize| vcvtq_s32_f32(vminq_f32(vmaxq_f32(vrndaq_f32(vdivq_f32(vmulq_f32(vld1q_f32(x.add(p)), vld1q_f32(s.add(p))), a)), lo), hi));
+    let mut i = 0;
+    while i + 16 <= n {
+        let h0 = vcombine_s16(vqmovn_s32(four(i)), vqmovn_s32(four(i + 4)));
+        let h1 = vcombine_s16(vqmovn_s32(four(i + 8)), vqmovn_s32(four(i + 12)));
+        vst1q_s8(out.add(i), vcombine_s8(vqmovn_s16(h0), vqmovn_s16(h1)));
+        i += 16;
+    }
+    while i < n {
+        quantize_one(x, s, alpha, out, i);
+        i += 1;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
 unsafe fn dot_f32_4x4_neon(a: [*const f32; 4], b: [*const f32; 4], n: usize) -> [[f32; 4]; 4] {
     let mut s = [[vdupq_n_f32(0.0); 4]; 4];
     let mut i = 0;
@@ -855,6 +973,61 @@ mod tests {
             }
         }
         eprintln!("SIMD tier: {}, SQ8 kernel: {}", simd::describe(), sq8_kernel());
+    }
+
+    /// Inputs for the quantiser: random weights, exact halves and their
+    /// neighbours (where rounding modes differ), values past ±127, zeros of
+    /// both signs, infinities and a NaN.
+    fn quantiser_inputs(rng: &mut rand::rngs::StdRng, n: usize) -> Vec<(Vec<f32>, Vec<f32>, f32)> {
+        let random: Vec<f32> = (0..n).map(|_| rng.gen_range(-1.0..1.0)).collect();
+        let scale: Vec<f32> = (0..n).map(|_| rng.gen_range(0.0..0.02)).collect();
+        let alpha = random.iter().zip(&scale).fold(0f32, |m, (x, s)| m.max((x * s).abs())) / 127.0;
+        let halves: Vec<f32> = (0..n)
+            .map(|i| {
+                let h = (i as f32 % 280.0 - 140.0) + 0.5;
+                match i % 3 {
+                    0 => h,
+                    1 => f32::from_bits(h.to_bits() + 1),
+                    _ => f32::from_bits(h.to_bits() - 1),
+                }
+            })
+            .collect();
+        let special: Vec<f32> = (0..n).map(|i| [0.0, -0.0, f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 1e30, -1e30, 126.5, -126.5, 127.49][i % 10]).collect();
+        let ones = vec![1f32; n];
+        vec![(random, scale.clone(), alpha.max(f32::MIN_POSITIVE)), (halves, ones.clone(), 1.0), (special, ones, 1.0), (vec![1e-3; n], scale, 3e-9)]
+    }
+
+    #[test]
+    fn quantiser_matches_scalar_byte_for_byte() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(4);
+        for n in (0..200).chain([255, 256, 257, 383, 384, 385, 1023, 1024, 1025]) {
+            for (x, s, alpha) in quantiser_inputs(&mut rng, n) {
+                let mut want = vec![7i8; n + 3];
+                quantize_i8_scalar(&x, &s, alpha, &mut want);
+                let mut got = vec![7i8; n + 3];
+                quantize_i8(&x, &s, alpha, &mut got);
+                assert_eq!(got, want, "n={n} alpha={alpha}");
+                #[cfg(target_arch = "x86_64")]
+                {
+                    if simd::avx2() {
+                        let mut got = vec![7i8; n + 3];
+                        // SAFETY: the CPU has AVX2; every slice holds at least `n` elements.
+                        unsafe { quantize_i8_avx2(x.as_ptr(), s.as_ptr(), alpha, got.as_mut_ptr(), n) };
+                        assert_eq!(got, want, "avx2 n={n} alpha={alpha}");
+                    }
+                    if simd::avx512() {
+                        let mut got = vec![7i8; n + 3];
+                        // SAFETY: the CPU has AVX-512; every slice holds at least `n` elements.
+                        unsafe { quantize_i8_avx512(x.as_ptr(), s.as_ptr(), alpha, got.as_mut_ptr(), n) };
+                        assert_eq!(got, want, "avx512 n={n} alpha={alpha}");
+                    }
+                }
+            }
+        }
+        // Halves round away from zero, as `f32::round` does.
+        let mut out = [0i8; 6];
+        quantize_i8(&[0.5, -0.5, 1.5, -1.5, 2.5, -2.5], &[1.0; 6], 1.0, &mut out);
+        assert_eq!(out, [1, -1, 2, -2, 3, -3]);
     }
 
     #[test]

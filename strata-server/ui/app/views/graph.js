@@ -9,9 +9,9 @@ import { h, s, icon, clear, fmt, api, store, empty, seg, failure, sqlBlock, debo
 import { tables, table as tableOf } from "../catalog.js";
 import { SERIES } from "../charts.js";
 import { quoteName } from "../sqledit.js";
-import { viewport } from "./topology.js";
+import { viewport } from "../pan.js";
 
-export default { id: "graph", title: "Graph explorer", icon: "graph", group: "Explore", full: true, keywords: "graph network nodes edges links neighbours force layout pagerank ppr path reachable hops edge table co-occurrence similarity explore", render };
+export default { id: "graph", title: "Graph explorer", icon: "graph", group: "Labs", full: true, range: false, keywords: "graph network nodes edges links neighbours force layout pagerank ppr path reachable hops edge table co-occurrence similarity explore", render };
 
 const lit = (v) => typeof v === "number" ? String(v) : `'${String(v).replace(/'/g, "''")}'`;
 

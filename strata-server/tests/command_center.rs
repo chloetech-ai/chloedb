@@ -317,6 +317,23 @@ async fn the_timeseries_over_three_hours_is_a_point_a_minute_from_the_load_table
     // Inside memory's hour: memory's points, as before.
     let m: Json = client().get(format!("{base}/v1/timeseries?since=0")).send().await.unwrap().json().await.unwrap();
     assert_eq!((m["source"].as_str(), m["interval_ms"].as_u64()), (Some("memory"), Some(2000)));
+
+    // On machines of one's own no volume size is known: a replay of the
+    // autoscaler leaves growing volumes out rather than name sizes.
+    let r: Json = client().post(format!("{base}/v1/admin/autoscale/replay")).json(&json!({"autoscale": {"volumes": {"fullAbove": 0.4}}, "days": 1})).send().await.unwrap().json().await.unwrap();
+    assert_eq!(r["left_out"].as_array().map(Vec::len), Some(1), "{r}");
+    assert_eq!(r["sizes"]["volume"], Json::Null, "{r}");
+    assert!(!r.to_string().contains("10Gi"), "{r}");
+
+    // A log search is a POST that only reads: not audited, while a reset
+    // of the read counts is a change.
+    let r = client().post(format!("{base}/v1/logs/query")).json(&json!({"sql": "SELECT COUNT(*) AS n FROM logs"})).send().await.unwrap();
+    let (status, body) = (r.status(), r.text().await.unwrap());
+    assert!(status.is_success(), "{body}");
+    assert!(client().post(format!("{base}/v1/index/reads/reset")).send().await.unwrap().status().is_success());
+    let audit: Json = client().get(format!("{base}/v1/admin/audit")).send().await.unwrap().json().await.unwrap();
+    let routes: Vec<&str> = audit["entries"].as_array().unwrap().iter().filter_map(|e| e["route"].as_str()).collect();
+    assert!(routes.contains(&"/v1/index/reads/reset") && !routes.contains(&"/v1/logs/query"), "{routes:?}");
 }
 
 /// On a coordinator, `PUT /v1/logs/filter?node=` sets a copy's log
@@ -388,7 +405,9 @@ async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
     let status = r.status();
     let v: Json = r.json().await.unwrap();
     assert!(status.is_success(), "{v}");
-    assert_eq!((v["replicas"][0]["url"].as_str(), v["replicas"][0]["in_sync"].as_bool()), (Some(b.url().as_str()), Some(true)), "{v}");
+    assert_eq!((v["replicas"][0]["url"].as_str(), v["replicas"][0]["in_sync"].as_bool(), v["replicas"][0]["compared"].as_bool()), (Some(b.url().as_str()), Some(true), Some(true)), "{v}");
+    // Compared by this call, and it says when.
+    assert!(v["replicas"][0]["compared_ms"].as_u64().unwrap() >= v["asked_ms"].as_u64().unwrap(), "{v}");
     let r = client().post(format!("{base}/v1/admin/copies/checkpoint")).json(&json!({"url": b.url(), "name": "before-upgrade"})).send().await.unwrap();
     let status = r.status();
     let k: Json = r.json().await.unwrap();
@@ -399,6 +418,148 @@ async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
     let changes: Json = client().get(format!("{base}/v1/admin/audit?kind=change")).send().await.unwrap().json().await.unwrap();
     let objects: Vec<&str> = changes["entries"].as_array().unwrap().iter().filter(|e| e["route"].as_str().is_some_and(|r| r.starts_with("/v1/admin/copies/"))).filter_map(|e| e["object"].as_str()).collect();
     assert_eq!(objects, ["copy s0-0", "copy s0-1", "copy s0-1"], "the newest first: {changes}");
+}
+
+/// Through a coordinator: a write a shard cannot take is refused before
+/// any shard takes it; one that fails partway says what each shard did; a
+/// write from the command center is audited whatever its answer, and so
+/// are its imports and streams; a table another coordinator made is
+/// listed; a copy that does not answer keeps its name, and every table's
+/// view lists it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_through_a_coordinator_says_what_each_shard_did() {
+    use strata_server::json::document_json;
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = Node::new(dir.path(), "a", 0);
+    let mut b = Node::new(dir.path(), "b", 0);
+    a.start().await;
+    b.start().await;
+    let serve = |c: Arc<Coordinator>| async move {
+        let svc = Arc::new(Service::new(Backend::Cluster(c.clone()), c.schema.clone(), agent(), 16, Duration::from_secs(10)));
+        let (l, base) = listen().await;
+        tokio::spawn(server::serve_http(svc.clone(), l, Default::default()));
+        (svc, base)
+    };
+    let c = Arc::new(Coordinator::connect(vec![a.url(), b.url()]).await.unwrap());
+    let (svc, base) = serve(c.clone()).await;
+    let (_, other) = serve(Arc::new(Coordinator::connect(vec![a.url(), b.url()]).await.unwrap())).await;
+    let schema = c.schema.clone();
+    let doc = |i: usize| document_json(&schema, &demo::product(i, 7));
+    svc.write_ops((0..40).map(|i| json!({"op": "upsert", "doc": doc(i)})).collect(), None).await.unwrap();
+    let ui = |r: reqwest::RequestBuilder| r.header("x-strata-client", "command-center").header("x-strata-reason", "fix%20notes");
+    let audit = |q: &str| {
+        let url = format!("{base}/v1/admin/audit?{q}");
+        async move { client().get(url).send().await.unwrap().json::<Json>().await.unwrap() }
+    };
+
+    // An import and a stream from the command center are audited as its
+    // statements are.
+    let rows: String = (40..42).map(|i| doc(i).to_string() + "\n").collect();
+    let r = ui(client().post(format!("{base}/v1/import?table=products&format=jsonl"))).header("content-type", "application/x-ndjson").body(rows).send().await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let lines: String = (42..45).map(|i| json!({"op": "upsert", "doc": doc(i)}).to_string() + "\n").collect();
+    let r = ui(client().post(format!("{base}/v1/stream"))).header("content-type", "application/x-ndjson").body(lines).send().await.unwrap();
+    let answers = r.text().await.unwrap();
+    assert!(answers.contains("\"done\":true"), "{answers}");
+    let t0 = Instant::now();
+    loop {
+        let changes = audit("kind=change").await;
+        let entries = changes["entries"].as_array().unwrap();
+        let (import, stream) = (entries.iter().find(|e| e["route"] == "/v1/import"), entries.iter().find(|e| e["route"] == "/v1/stream"));
+        if let (Some(i), Some(s)) = (import, stream) {
+            assert_eq!((i["object"].as_str(), i["after"]["rows"].as_u64(), i["reason"].as_str()), (Some("table products"), Some(2), Some("fix notes")), "{i}");
+            assert_eq!((s["object"].as_str(), s["after"]["rows"].as_u64(), s["reason"].as_str(), s["client"].as_str()), (Some("table products"), Some(3), Some("fix notes"), Some("command-center")), "{s}");
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(10), "{changes}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // A table made through one coordinator is listed by another.
+    let r = client().post(format!("{base}/v1/sql")).json(&json!({"sql": "CREATE TABLE notes (id INT PRIMARY KEY, body TEXT)"})).send().await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let t: Json = client().get(format!("{other}/v1/tables")).send().await.unwrap().json().await.unwrap();
+    assert!(t["tables"].as_array().unwrap().iter().any(|t| t["table"] == "notes"), "{t}");
+
+    // Shard 1 goes down after the cluster was last seen whole: the write
+    // goes, shard 0 takes it, and the answer says so, by short name.
+    fresh(&c).await;
+    b.kill();
+    let r = ui(client().post(format!("{base}/v1/sql"))).json(&json!({"sql": "UPDATE products SET sold = 5 WHERE price >= 0"})).send().await.unwrap();
+    let status = r.status();
+    let j: Json = r.json().await.unwrap();
+    assert!(status.is_server_error(), "{status}: {j}");
+    assert_eq!(j["partial"], true, "{j}");
+    let shards = j["shards"].as_array().unwrap();
+    assert_eq!((shards[0]["short"].as_str(), shards[1]["short"].as_str()), (Some("s0-0"), Some("s1-0")), "{j}");
+    assert!(shards[0]["rows"].as_u64().unwrap() > 0 && shards[1]["error"].as_str().unwrap().contains("s1-0"), "{j}");
+    assert!(!j["error"].as_str().unwrap().starts_with("shard http"), "{j}");
+
+    // Once the cluster is seen without it, a write is refused before any
+    // shard takes it.
+    let snap = fresh(&c).await;
+    let copy = &snap["shards"][1]["replicas"][0];
+    assert_eq!((snap["shards"][1]["takes_writes"].as_bool(), copy["status"].as_str()), (Some(false), Some("down")), "{snap}");
+    assert_eq!((copy["name"].as_str(), copy["zone"].as_str()), (Some("node-b"), Some("zone-a")), "a copy down keeps what it said last: {copy}");
+    assert!(copy["version"]["digest"].is_string(), "{copy}");
+    let r = ui(client().post(format!("{base}/v1/sql"))).json(&json!({"sql": "UPDATE products SET sold = 9 WHERE price >= 0"})).send().await.unwrap();
+    assert_eq!(r.status(), 503);
+    let j: Json = r.json().await.unwrap();
+    assert!(j["error"].as_str().unwrap().starts_with("shard 1 takes no writes now, so nothing was written"), "{j}");
+    let n: Json = client().post(format!("http://127.0.0.1:{}/v1/sql", a.http)).json(&json!({"sql": "SELECT COUNT(*) FROM products WHERE sold = 9"})).send().await.unwrap().json().await.unwrap();
+    assert_eq!(n["rows"][0][0], 0, "{n}");
+
+    // Both are audited, whatever their answers.
+    let changes = audit("kind=change").await;
+    let sql: Vec<&Json> = changes["entries"].as_array().unwrap().iter().filter(|e| e["route"] == "/v1/sql" && e["object"] == "table products").collect();
+    assert_eq!(sql.len(), 2, "{changes}");
+    assert_eq!((sql[0]["status"].as_u64(), sql[0]["reason"].as_str()), (Some(503), Some("fix notes")), "the newest first: {changes}");
+    assert!(sql[1]["after"]["shards"].is_array(), "{changes}");
+
+    // Every table's view lists the copy that does not answer.
+    let t: Json = client().get(format!("{base}/v1/index/tables")).send().await.unwrap().json().await.unwrap();
+    let products = t["tables"].as_array().unwrap().iter().find(|t| t["table"] == "products").cloned().unwrap_or_else(|| panic!("{t}"));
+    let down = products["stale"].as_array().unwrap().iter().find(|s| s["short"] == "s1-0").cloned().unwrap_or_else(|| panic!("{t}"));
+    assert_eq!(down["down"], true, "{t}");
+    assert!(down["since_ms"].as_u64().is_some(), "{t}");
+}
+
+/// Every table's writes a minute are the last minutes', not an average
+/// since the server started.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tables_writes_a_minute_are_the_last_minutes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (svc, _) = local(dir.path(), |_| {}).await;
+    strata_server::inspect::tables(&svc).await.unwrap();
+    // That look, as if a minute ago; then six writes.
+    for look in svc.tables_counts.lock().unwrap().iter_mut() {
+        look.0 -= 60_000;
+    }
+    for i in 0..6 {
+        svc.write_ops(vec![json!({"op": "set", "key": format!("p{i:07}"), "field": "sold", "value": 3})], None).await.unwrap();
+    }
+    *svc.tables_kept.lock().await = None;
+    let t = strata_server::inspect::tables(&svc).await.unwrap();
+    let p = &t["tables"][0];
+    assert_eq!(p["rate_window_s"].as_u64(), Some(60), "{t}");
+    let w = p["writes_per_min"].as_f64().unwrap();
+    assert!((5.9..=6.0).contains(&w), "{t}");
+}
+
+/// A shard of two copies with failover, one of them down: no election can
+/// win, and its `why` says what to do instead.
+#[test]
+fn a_shard_with_one_of_two_copies_cannot_elect_a_primary() {
+    let mut s = json!({"replicas": [
+        {"url": "u0", "short": "s0-0", "status": "down", "role": "unknown", "takes_writes": false},
+        {"url": "u1", "short": "s0-1", "status": "ok", "role": "replica", "takes_writes": false, "detail": {"capability": {"failover_after_ms": 3000, "serves_reads": true}}},
+    ]});
+    strata_server::coord::shard_state(0, &mut s);
+    assert_eq!((s["state"].as_str(), s["takes_writes"].as_bool()), (Some("no_writes"), Some(false)), "{s}");
+    let why = s["why"].as_str().unwrap();
+    assert!(why.contains("it cannot elect a primary until a second copy answers: bring s0-0 back, or, if it is gone for good, make s0-1 the primary by hand") && !why.contains("may be under way"), "{why}");
+    assert_eq!(strata_server::coord::cannot_elect(5, 2), "it cannot elect a primary until 3 of its 5 copies answer");
 }
 
 fn client() -> reqwest::Client {

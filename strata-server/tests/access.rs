@@ -102,13 +102,13 @@ async fn keys_have_scopes_and_the_audit_log_keeps_what_they_did() {
     assert_eq!(status, 200);
     let entries = audit["entries"].as_array().unwrap();
     let find = |who: &str, route: &str, status: u64| entries.iter().any(|e| e["who"] == who && e["route"] == route && e["status"] == status);
-    assert!(find("token", "/v1/sql", 200), "{audit}");
+    assert!(find("root token", "/v1/sql", 200), "{audit}");
     assert!(entries.iter().any(|e| e["detail"].as_str().is_some_and(|d| d.starts_with("CREATE TABLE notes"))), "{audit}");
     assert!(find("dashboards", "/v1/admin/vacuum", 403), "{audit}");
     assert!(find("dashboards", "/v1/sql", 403), "{audit}");
     assert!(find("ingest", "/v1/admin/keys", 403), "{audit}");
     assert!(find("unknown", "/v1/query", 401), "{audit}");
-    assert!(find("token", "/v1/admin/keys", 200), "{audit}");
+    assert!(find("root token", "/v1/admin/keys", 200), "{audit}");
     // Plain reads and writes are not audited.
     assert!(!entries.iter().any(|e| e["route"] == "/v1/query" && e["status"] == 200), "{audit}");
 

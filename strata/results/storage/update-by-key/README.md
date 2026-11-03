@@ -22,3 +22,18 @@ named by the VM), 16 GB, Linux 6.18; `maturin build --release`; Python
 | vector (HNSW) | 21, 47.2 ms | 506, 1.46 ms |
 | upsert of the whole row | 3,045, 0.30 ms | 2,911, 0.33 ms |
 | delete | 5,595, 0.17 ms | 4,996, 0.18 ms |
+
+## Reads by key after a write
+
+`update-probe/upd3.py` (20,000 rows of a title, a description, a body
+generated from them and a price, `strata.open` without `threads=`, plus
+one line timing an UPDATE of the title then `SELECT price, title ... WHERE
+id = :id`), same machine, ms per operation for each 100 of 300:
+
+| probe | main at da65b3d | queries by key |
+|---|---|---|
+| upsert + `SELECT price ... WHERE id = :id` | 14.49, 14.72, 16.13 | 0.23, 0.22, 0.22 |
+| UPDATE title + `SELECT price, title ... WHERE id = :id` | 12.33, 13.88, 14.98 | 0.37, 0.37, 0.39 |
+| upsert + `MATCH(body, 'w1') LIMIT 1` (needs the index) | 18.42, 6.91, 6.55 | 17.69, 8.58, 7.18 |
+| UPDATE title | 1.10, 0.25, 0.25 | 0.31, 0.26, 0.27 |
+| upsert | 0.17, 0.17, 0.18 | 0.20, 0.19, 0.19 |
