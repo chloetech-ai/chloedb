@@ -700,7 +700,7 @@ function render(page) {
         { key: "queries", label: "queries", num: true, render: (k) => fmt.n(k.queries) },
         { key: "outcomes", label: "outcomes", wide: true, sort: (k) => split(k.outcomes, k.queries).failed / Math.max(1, k.queries), render: (k) => k.outcomes ? outcomeBar(k.outcomes, 80) : "–" },
         { key: "p50_ms", label: "p50", num: true, wide: true, render: (k) => fmt.ms(k.p50_ms) },
-        { key: "p99_ms", label: "p99", render: (k) => narrow() ? fmt.ms(k.p99_ms) : bar(k.p99_ms, maxK, SERIES[0]) },
+        { key: "p99_ms", label: "p99", title: "Estimated from latency buckets (1, 2, 5, 10 ms…)", render: (k) => narrow() ? fmt.ms(k.p99_ms) : bar(k.p99_ms, maxK, SERIES[0]) },
         { key: "hist", label: "latency", sortable: false, wide: true, render: (k) => k.hist ? sparkline(k.hist, { width: 100, height: 22, color: SERIES[0], cls: "" }) : "" },
       ]), { rows: kinds, sortKey: "queries", desc: true, compact: true, onRow: (k) => { location.hash = link("queries", { tab: "history", kind: k.kind }); }, empty: h("div", { class: "small muted" }, `No query ended ${routes.from_ms == null ? "since it started" : "in the range"}.`) }) }),
       card({ title: "HTTP routes", cls: "wl-nums", sub: `${who} · ${over}${wait != null ? ` · waiting for a slot: p99 ${wait <= 1 ? "under 1 ms" : fmt.ms(wait)}` : ""} · click one for its log lines`, flush: true, body: [table(cols([

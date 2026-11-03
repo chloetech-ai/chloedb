@@ -288,7 +288,8 @@ function statementsTab(body, params, setCount) {
     const hidden = data.statements.length - xs.length;
     ownChip.textContent = `the command center's own${hidden && !own ? ` (${hidden} hidden)` : ""}`;
     for (const x of xs) x._att = attention(x, windowMs());
-    if (filt) xs = xs.filter((x) => x.sql.toLowerCase().includes(filt) || x.fingerprint?.toLowerCase().includes(filt) || (x.keys || []).some((k) => k.key?.toLowerCase().includes(filt)));
+    // NEW-workload-12: the statement's id (the server's, or the short one an older page showed) finds it too.
+    if (filt) xs = xs.filter((x) => x.sql.toLowerCase().includes(filt) || x.fingerprint?.toLowerCase().includes(filt) || (x.id && x.id.startsWith(filt)) || shortFp(x.fingerprint) === filt || (x.keys || []).some((k) => k.key?.toLowerCase().includes(filt)));
     const flagged = xs.filter((x) => x._att);
     // Those that need a look first, worst first; then by time spent.
     xs.sort((a, b) => (b._att?.rank || 0) - (a._att?.rank || 0) || b.total_ms - a.total_ms);
@@ -344,7 +345,7 @@ function statementsTab(body, params, setCount) {
         h("div", { class: "row", style: { gap: "6px", marginTop: "8px" } },
           h("a", { class: "btn sm", href: statementLink(x.fingerprint) }, "Open it ›"),
           canContainNow() ? h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: x.fingerprint, sql: x.sql, key: k?.key, keys: x.keys, onDone: () => {} }) }, k ? `Refuse it from ${k.key}…` : "Refuse it…") : null,
-          h("button", { class: "btn sm ghost", title: "A summary to send the team that owns the client", onclick: () => copy(`Statement ${shortFp(x.fingerprint)} fails: ${fmt.n(failed)} of ${fmt.n(x.calls)} calls (${fmt.pct(failed / Math.max(1, x.calls), 0)}) ${timeRange().label || ""}${k ? `, from API key ${k.key}` : ""}.\n${msg.textContent ? "Error: " + msg.textContent + "\n" : ""}SQL: ${x.sql}\n${location.origin}/${statementLink(x.fingerprint)}`, "Summary copied") }, icon("copy"), "Copy for the app team")),
+          h("button", { class: "btn sm ghost", title: "A summary to send the team that owns the client", onclick: () => copy(`Statement ${x.id || shortFp(x.fingerprint)} fails: ${fmt.n(failed)} of ${fmt.n(x.calls)} calls (${fmt.pct(failed / Math.max(1, x.calls), 0)}) ${timeRange().label || ""}${k ? `, from API key ${k.key}` : ""}.\n${msg.textContent ? "Error: " + msg.textContent + "\n" : ""}SQL: ${x.sql}\n${location.origin}/${statementLink(x.fingerprint)}`, "Summary copied") }, icon("copy"), "Copy for the app team")),
         errs.length > 1 ? h("div", { class: "small muted", style: { marginTop: "8px" } }, errs.slice(1, 3).map((y) => h("div", { class: "ellipsis" }, h("a", { href: statementLink(y.fingerprint), class: "wl-link" }, `${fmt.n(split(y.outcomes, y.calls).failed)} failed`), " · ", h("span", { class: "mono" }, y.sql)))) : null);
       const m = msgCache.get(x.fingerprint);
       if (m && Date.now() - m.at < 30e3) msg.textContent = m.text;
