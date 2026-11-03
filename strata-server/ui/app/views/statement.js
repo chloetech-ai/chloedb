@@ -88,7 +88,7 @@ export function render(page, r) {
           h("button", { class: "btn sm", onclick: () => copy(location.href, "Link copied") }, icon("link"), "Copy link"),
           h("a", { class: "btn sm", href: link("queries", { tab: "history", fingerprint: shape }), title: "Every query of this shape the log store kept" }, "History of this shape"),
           h("a", { class: "btn sm", href: workbenchLink(sample ? sqlWith(sql, sample) : sql, sample?.params), title: sample ? "With the parameters of its slowest call" : "It has no parameters kept" }, icon("sql"), sample ? "Open in the workbench, with params" : "Open in the workbench"),
-          h("a", { class: "btn sm", href: profileLink(sample ? sqlWith(sql, sample) : sql, sample?.params) }, icon("flame"), "Profile it"),
+          h("a", { class: "btn sm", href: profileLink(sample ? sqlWith(sql, sample) : sql, sample?.params, shape), title: "Open it in the Profiler: it asks before it runs" }, icon("flame"), "Profile it"),
           canContainNow() ? h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: shape, sql, key: st?.keys?.length === 1 ? st.keys[0].key : null, keys: keyShares(st), onDone: load }) }, icon("shield"), "Contain…") : null,
           can("admin") && live.length ? h("button", { class: "btn sm danger", onclick: () => askCancel({ sql, fingerprint: shape, queries: live, key: null, onDone: load }) }, `Cancel ${fmt.n(live.length)} running…`) : null)),
       sqlBlock(shape || sql, { style: { marginBottom: "14px" }, title: "The statement's shape: its literals are ? and its parameters :name" }),
@@ -324,7 +324,7 @@ function slowestCard(d, sql) {
     has.wait && { key: "waited", label: "waited on", wide: true, sort: (x) => x.waited_on?.ms, render: (x) => x.waited_on ? h("span", { class: "mono small nowrap", title: (x.waited_on.copy ? copyTitle(x.waited_on.copy) + ": " : "") + "the shard the answer waited on" }, `${x.waited_on.copy ? copyName(x.waited_on.copy) : "shard " + x.waited_on.shard} ${fmt.ms(x.waited_on.ms)}`) : x.outcome && x.outcome !== "ok" ? outcomePill(x.outcome) : "–" },
     { key: "act", label: "", sortable: false, wide: true, render: (x) => h("div", { class: "row nw", style: { gap: "4px" } },
       h("button", { class: "btn sm", onclick: () => open(x) }, "Trace ›"),
-      h("a", { class: "btn ghost icon sm", href: profileLink(x.sql || sqlWith(sql, x), x.params), title: "Profile it again, with these parameters" }, icon("flame")),
+      h("a", { class: "btn ghost icon sm", href: profileLink(x.sql || sqlWith(sql, x), x.params, d.statement?.fingerprint), title: "Open it in the Profiler, with these parameters: it asks before it runs" }, icon("flame")),
       h("a", { class: "btn ghost icon sm", href: workbenchLink(x.sql || sqlWith(sql, x), x.params), title: "Open in the workbench, with these parameters" }, icon("sql"))) },
   ]), { rows: xs, sortKey: "ms", desc: true, compact: true, maxHeight: narrow() ? null : "330px", onRow: (x) => open(x) }) });
 }

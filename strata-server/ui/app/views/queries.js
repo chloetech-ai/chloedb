@@ -343,7 +343,7 @@ function statementsTab(body, params, setCount) {
           h("div", { class: "row", style: { gap: "6px", marginTop: "8px" } },
             h("a", { class: "btn sm", href: statementLink(x.fingerprint) }, "Open it ›"),
             canContainNow() ? h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: x.fingerprint, sql: x.sql, key: k?.key, keys: x.keys }) }, k ? `Limit ${k.key}…` : "Limit it…") : null,
-            h("a", { class: "btn sm ghost", href: profileLink(x.sql, x.sample?.params) }, icon("flame"), "Profile one")),
+            h("a", { class: "btn sm ghost", href: profileLink(x.sql, x.sample?.params, x.fingerprint), title: "Open it in the Profiler: it asks before it runs" }, icon("flame"), "Profile one")),
           news.length > 1 ? h("div", { class: "small muted", style: { marginTop: "8px" } }, news.slice(1, 3).map((y) => h("div", { class: "ellipsis" }, h("a", { href: statementLink(y.fingerprint), class: "wl-link" }, when(y.first_seen_ms)), " · ", h("span", { class: "mono" }, y.sql)))) : null);
       })() });
     const grewCard = card({ title: "Grew most", sub: data.windowed ? "by time spent, against the window before" : "needs a newer server", cls: "wl-card",

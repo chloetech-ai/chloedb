@@ -2616,6 +2616,11 @@ a.wl-chip:hover { border-color: var(--accent); }
   .wl-pick-box { width: 100%; }
   .wl-pick-row { padding: 10px 8px; }
 }
+/* round 2 (workdata) */
+.wl-linked { margin-bottom: 14px; }
+@media (max-width: 900px) {
+  .wl-sum { padding: 12px 0; }
+}
 /* ===== end workload ===== */
 /* ===== cluster ===== */
 /* The Cluster canvas: tiles per shard on an SLO scale (fine is neutral, amber

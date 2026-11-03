@@ -13,8 +13,8 @@ import { editor } from "../sqledit.js";
 import { tables, cached } from "../catalog.js";
 import { profileView, profileFigures, kpi } from "../profile.js";
 import { flameGraph, folded, shortName } from "../flame.js";
-import { state, link, copyName, copyTitle, copyLink, isCoord, queryDrawer, narrow, workbenchLink, profileLink, copies } from "../workload.js";
-import { isProduction } from "../data.js";
+import { state, link, copyName, copyTitle, copyLink, isCoord, queryDrawer, narrow, workbenchLink, profileLink, copies, statementLink, containRules } from "../workload.js";
+import { isProduction, clusterName, environment } from "../data.js";
 
 export default { id: "profile", title: "Profiler", icon: "flame", group: "Diagnose", keywords: "profile profiler diagnostics node explain analyze flame chart flame graph cpu sampling pprof perf folded speedscope hot functions memory heap allocations allocator leak rss threads context switches segments operators steps debug latency settings slow threshold", render, onParams };
 
@@ -72,13 +72,15 @@ function runner(body) {
     const n = isCoord() ? state.cluster?.shards?.length || 0 : 0;
     clear(runNote, n ? `Each run is a normal query that asks every shard: ${runs === 1 ? "one run" : runs + " runs"} × ${fmt.n(n)} shards = ${fmt.n(runs * n)} shard calls. Runs show in Queries.` : "Each run is a normal query: it takes a slot and shows in Queries.");
   };
-  const runsSeg = seg([[1, "once"], [5, "5 times"], [20, "20 times"]], runs, (v) => { runs = v; store.set("profile.runs", v); drawNote(); }, { title: "Run it more than once to see how its time varies; the profile shown is the median run's" });
+  const runsSeg = seg([[1, "once"], [5, "5 times"], [20, "20 times"]], runs, (v) => { runs = v; store.set("profile.runs", v); drawNote(); drawLinked?.(); }, { title: "Run it more than once to see how its time varies; the profile shown is the median run's" });
   const strip = h("div");
   const out = h("div");
-  body.append(
+  // What a link filled in, above the form: it has not run.
+  const lead = h("div");
+  body.append(lead,
     card({ body: h("div", { class: "stack" },
       h("div", { class: "wb-ed", style: { height: "150px", border: "1px solid var(--line)", borderRadius: "var(--r-sm)", overflow: "hidden" } }, ed.el),
-      h("details", { open: !!paramsText }, h("summary", { class: "small dim" }, "Parameters, as JSON (for :names in the SQL)"), params),
+      h("details", { open: !!paramsText }, h("summary", { class: "small dim wl-sum" }, "Parameters, as JSON (for :names in the SQL)"), params),
       h("div", { class: "row", style: { flexWrap: "wrap" } }, go, runsSeg, h("span", { class: "sep" }), runNote),
     ), attrs: { style: { marginBottom: "14px" } } }),
     strip, out);
@@ -87,12 +89,27 @@ function runner(body) {
   if (!sql) tables().then(() => { if (!sql && cached()[0]) { const t = cached()[0]; const f = (t.short?.fields || []).find((x) => x.type === "text" && x.indexed !== false); ed.value = f ? `SELECT * FROM ${t.table} ORDER BY bm25(${f.name}, 'search') DESC LIMIT 10` : `SELECT * FROM ${t.table} LIMIT 10`; sql = ed.value; } }).catch(() => {});
   clear(out, empty("flame", "Profile a query", "Write a SELECT and press Profile: the server runs it with its CPU time measured and answers every step it took."));
   let busy = false;
+  // A link fills the form and never runs it: the query is the link's, the
+  // key and the cluster are whoever opens it. `linked` is what we know of
+  // its statement (p99, contain rules), to ask before a slow or contained one.
+  let linked = null;
+  const drawLinked = () => clear(lead, linked ? linkCard(linked, runs, () => run()) : null);
   async function run() {
     if (busy) return;
     const text = (ed.value || "").trim().replace(/;\s*$/, "");
     if (!text) { toast("Write a query first"); return; }
     let p = {};
     if (paramsText.trim()) { try { p = JSON.parse(paramsText); } catch (e) { toast("The parameters are not JSON: " + e.message, "bad"); return; } }
+    if (linked && text === linked.sql) {
+      const risk = linkRisk(linked);
+      if (risk.length) {
+        const ok = await confirm({ title: linked.refusedAll ? "Run a statement that is refused?" : "Run this statement on " + (clusterName() || "this cluster") + "?", ok: runs === 1 ? "Run it once" : `Run it ${runs} times`,
+          body: h("div", { class: "stack" }, h("ul", { class: "wl-list" }, risk.map((x) => h("li", {}, x))),
+            h("p", { class: "small muted", style: { margin: 0 } }, `It runs ${runs === 1 ? "once" : runs + " times"} as a normal query under your key${isProduction() ? ", on production" : ""}, and shows in Queries.`)) });
+        if (!ok) return;
+      }
+    }
+    if (linked) { linked = null; drawLinked(); }
     busy = true; go.disabled = true;
     const all = [];
     try {
@@ -127,14 +144,63 @@ function runner(body) {
     }
     draw();
   }
+  /** The link's statement: filled in, not run, with what it does now. */
+  async function fromLink(text, fp) {
+    linked = { sql: text.trim().replace(/;\s*$/, ""), fp, stat: null, rules: [], refusedAll: false, read: !fp };
+    const draw = drawLinked;
+    draw();
+    if (!fp) return;
+    const to = Date.now(), from = to - 3600e3;
+    const [st, rules] = await Promise.all([
+      api(`/v1/queries/stats/${encodeURIComponent(fp)}?from=${from}&to=${to}`).catch(() => null),
+      containRules().catch(() => null)]);
+    if (!linked || linked.fp !== fp) return;
+    linked.stat = st?.statement || null;
+    const mine = state.whoami?.key ? state.whoami.name : null;
+    linked.rules = (rules || []).filter((r) => r.match?.fingerprint === fp || r.match?.fingerprint === linked.stat?.fingerprint || (!r.match?.fingerprint && r.match?.key && r.match.key === mine));
+    linked.refusedAll = linked.rules.some((r) => r.action === "refuse" && (!r.match?.key || r.match.key === mine));
+    linked.read = true;
+    draw();
+  }
   return {
     stop: () => offCluster?.(),
     open(params) {
       const q = params.get("sql"), pj = params.get("p");
       if (pj != null) { paramsText = pj; params_.value = pj; params_.closest("details")?.setAttribute("open", ""); store.set("profile.params", pj); }
-      if (q) { ed.value = q; sql = q; store.set("profile.sql", q); run(); }
+      if (q) { ed.value = q; sql = q; store.set("profile.sql", q); clear(out); fromLink(q, params.get("fp")); }
     },
   };
+}
+
+/** Why a linked statement asks before it runs: slow, contained, refused. */
+function linkRisk(l) {
+  const out = [];
+  const s = l.stat;
+  if (s && s.p99_ms >= 1000) out.push(`It is slow: p99 ${fmt.ms(Math.min(s.p99_ms, s.max_ms ?? s.p99_ms))} over its ${fmt.plural(s.calls, "call")} in the last hour, the slowest ${fmt.ms(s.max_ms)}.`);
+  for (const r of l.rules) {
+    const who = r.match?.key ? `from key ${r.match.key}` : "from every key";
+    out.push(r.action === "refuse" ? `A contain rule refuses it ${who}${r.reason ? `: "${r.reason}"` : ""}.${!r.match?.key || l.refusedAll ? " Your run will be refused too (429)." : " Your key is not refused: it runs in full."}`
+      : `A contain rule lets at most ${r.concurrency ?? "?"} run at once ${who}${r.reason ? `: "${r.reason}"` : ""}. Your runs take its turns.`);
+  }
+  return out;
+}
+
+/** The card a link opens on: the query is filled in, has not run, and what running it means. */
+function linkCard(l, runs, run) {
+  const s = l.stat, risk = linkRisk(l);
+  const where = [clusterName(), environment()].filter(Boolean).join(", ");
+  const facts = !l.fp ? null : !l.read ? h("div", { class: "small muted" }, "Reading its last hour…")
+    : s ? h("div", { class: "row small", style: { gap: "4px 16px", flexWrap: "wrap" } },
+      [["last hour", fmt.plural(s.calls, "call")], ["p99", fmt.ms(Math.min(s.p99_ms, s.max_ms ?? s.p99_ms))], ["slowest", fmt.ms(s.max_ms)], ["failed", fmt.n(s.errors || 0)]].map(([k, v]) => h("span", { class: "nowrap" }, h("span", { class: "muted" }, k + " "), h("b", {}, v))),
+      h("a", { class: "wl-link", href: statementLink(l.fp) }, "Its statement page ›"))
+    : h("div", { class: "small muted" }, "This server has no calls of it in the last hour.");
+  return h("div", { class: "banner wl-linked " + (risk.length ? "warn" : ""), style: { alignItems: "flex-start" } }, icon("info"),
+    h("div", { class: "stack grow", style: { gap: "6px", minWidth: 0 } },
+      h("b", {}, "Filled in from a link. It has not run."),
+      h("div", { class: "small dim" }, `Profile runs it ${runs === 1 ? "once" : runs + " times"} as a normal query${where ? " on " + where : ""}, under your key. Check the query and its parameters first.`),
+      facts,
+      risk.length ? h("ul", { class: "wl-list small" }, risk.map((x) => h("li", {}, x))) : null,
+      h("div", { class: "row" }, h("button", { class: "btn primary sm", onclick: run }, icon("flame"), risk.length ? "Profile it…" : "Profile it"))));
 }
 
 // ---------------------------------------------------------------- CPU and memory
