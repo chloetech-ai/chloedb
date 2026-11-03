@@ -183,6 +183,8 @@ pools_live() { # NAME
     echo $n
 }
 jstate() { cat "$STATE/jobs/$1/state" 2>/dev/null || echo queued; }
+# Nodes in every pool of the cluster, the base and another run's included.
+nodes_up() { do_api GET "/kubernetes/clusters/$(cluster_id)/node_pools" | python3 -c 'import json, sys; print(sum(p["count"] for p in json.load(sys.stdin)["node_pools"]))'; }
 # Attempts a job may make: one, RETRIES more, and one per `requeue`.
 max_attempts() { echo $((1 + RETRIES + $(cat "$STATE/jobs/$1/requeued" 2>/dev/null || echo 0))); }
 setstate() { mkdir -p "$STATE/jobs/$1" && echo "$2" >"$STATE/jobs/$1/state"; }
@@ -431,10 +433,12 @@ spec:
   volumes:
     - {name: data, hostPath: {path: /data, type: DirectoryOrCreate}}
 EOF
-    kubectl -n "$name" wait --for=condition=Ready pod/fetch --timeout=600s >/dev/null &&
+    local rc=0
+    { kubectl -n "$name" wait --for=condition=Ready pod/fetch --timeout=600s >/dev/null &&
         kubectl -n "$name" exec fetch -- tar -C /data -c compare | tar -x -C "$dir/work" &&
-        log "$name: reports fetched ($(ls "$dir/work/compare" | wc -l) files)"
+        log "$name: reports fetched ($(ls "$dir/work/compare" | wc -l) files)"; } || rc=1
     kubectl -n "$name" delete pod fetch --wait=false >/dev/null 2>&1 || true
+    return $rc
 }
 
 delete_pools() { # NAME
@@ -475,7 +479,12 @@ PY
 job() { # NAME ENGINE SHAPE TIMEOUT_H
     local rc=0
     job_main "$@" || rc=$?
-    fetch_reports "$1" || true
+    local i
+    for i in 1 2 3; do
+        fetch_reports "$1" && break
+        log "$1: fetching its reports failed (try $i of 3)"
+        sleep 30
+    done
     delete_pools "$1"
     kubectl delete namespace "$1" --wait=false >/dev/null 2>&1 || true
     if [ $rc = 0 ]; then setstate "$1" done; else setstate "$1" failed; fi
@@ -610,6 +619,8 @@ run)
                 ;;
             esac
         done < <(jobs_of "$jobs")
+        # What the cluster has, so that two runs at once share MAX_NODES.
+        if n=$(nodes_up 2>/dev/null) && [ -n "$n" ] && [ "$n" -gt "$up" ]; then up=$n; fi
         while read -r name engine shape hours; do
             s=$(jstate "$name")
             case $s in done | failed | skipped) continue ;; esac
