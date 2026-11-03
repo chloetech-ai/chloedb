@@ -12,13 +12,16 @@
 #   do_part_a.sh setup       # Rust, the Python libraries, strata-py built in release
 #   do_part_a.sh prep        # Shop (Amazon Reviews 2023 Video Games) and the BEIR collections, embedded there
 #   do_part_a.sh run         # A1, A2, writes, A3 in the background; logs in /work/logs
+#                            # (PARTS="a1 a2 writes a3" picks parts; A1_SYSTEMS, A2_SYSTEMS,
+#                            # A2_KINDS, WRITES_SYSTEMS, A3_SYSTEMS narrow them; OUT names the run)
 #   do_part_a.sh status      # the last log lines and the node's load
 #   do_part_a.sh fetch DIR   # the reports and logs into DIR
 #   do_part_a.sh down        # delete the cluster and check nothing tagged strata-bench is left
 #
 # NODE_SIZE (default g-8vcpu-32gb-intel, $0.4494 an hour at list price: nyc3
 # has no plain g-8vcpu-32gb) is the droplet the benchmark runs on; the
-# reports name its CPU.
+# reports name its CPU. SHOP_EMBED (default fastembed) is how prep makes the
+# products' vectors: random for a run of systems that use none (Tantivy).
 set -euo pipefail
 
 API=https://api.digitalocean.com/v2
@@ -27,6 +30,9 @@ DIGITALOCEAN_TOKEN=${DIGITALOCEAN_TOKEN:-${digitalocean:-${DIGITALOCEAN:-}}}
 NAME=${NAME:-strata-bench-a}
 REGION=${REGION:-nyc3}
 NODE_SIZE=${NODE_SIZE:-g-8vcpu-32gb-intel}
+SHOP_EMBED=${SHOP_EMBED:-fastembed}
+PARTS=${PARTS:-a1 a2 writes a3}
+OUT=${OUT:-part-a}
 STATE=${STATE:-$HOME/.strata-bench-a}
 KUBECONFIG=$STATE/kubeconfig
 export KUBECONFIG
@@ -148,7 +154,7 @@ prep)
         HF=https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023/resolve/main/raw
         [ -s /work/data/shop-raw/meta_Video_Games.jsonl ] || curl -sSfL -o /work/data/shop-raw/meta_Video_Games.jsonl \$HF/meta_categories/meta_Video_Games.jsonl
         [ -s /work/data/shop-raw/Video_Games.jsonl ] || curl -sSfL -o /work/data/shop-raw/Video_Games.jsonl \$HF/review_categories/Video_Games.jsonl
-        nohup sh -c 'python3 strata-py/bench/laptop/shop_prep.py --meta /work/data/shop-raw/meta_Video_Games.jsonl --reviews /work/data/shop-raw/Video_Games.jsonl --out /work/data/shop --threads 8 \
+        nohup sh -c 'python3 strata-py/bench/laptop/shop_prep.py --meta /work/data/shop-raw/meta_Video_Games.jsonl --reviews /work/data/shop-raw/Video_Games.jsonl --out /work/data/shop --threads 8 --embed $SHOP_EMBED \
             && python3 strata/scripts/prepare_beir.py /work/data/beir scifact nfcorpus fiqa trec-covid quora \
             && STRATA_DATA=/work/data/beir strata/target/release/strata-baselines --collections nfcorpus --workload-only \
             && echo PREP DONE' >/work/logs/prep.log 2>&1 &
@@ -156,12 +162,13 @@ prep)
     ;;
 run)
     in_pod "set -e; . /work/venv/bin/activate; cd /work/strata; export NODE_REGION=$REGION
-        B=strata-py/bench/laptop OUT=/work/out/part-a; mkdir -p \$OUT
-        nohup sh -c \"python3 \$B/a1_app.py --shop /work/data/shop --work /work/w/a1 --out \$OUT \
-            ; python3 \$B/a2_search.py --data /work/data/beir --collections scifact,nfcorpus,fiqa,trec-covid,quora --work /work/w/a2 --out \$OUT \
-            ; python3 \$B/a_writes.py --shop /work/data/shop --work /work/w/aw --out \$OUT \
-            ; python3 \$B/a3_recsys.py --shop /work/data/shop --work /work/w/a3 --out \$OUT \
-            ; echo RUN DONE\" >/work/logs/run.log 2>&1 &
+        B=strata-py/bench/laptop OUT=/work/out/$OUT; mkdir -p \$OUT
+        steps=''
+        case ' $PARTS ' in *' a1 '*) steps=\"\$steps python3 \$B/a1_app.py --shop /work/data/shop --work /work/w/a1 --out \$OUT ${A1_SYSTEMS:+--systems $A1_SYSTEMS};\" ;; esac
+        case ' $PARTS ' in *' a2 '*) steps=\"\$steps python3 \$B/a2_search.py --data /work/data/beir --collections scifact,nfcorpus,fiqa,trec-covid,quora --work /work/w/a2 --out \$OUT ${A2_SYSTEMS:+--systems $A2_SYSTEMS} ${A2_KINDS:+--kinds $A2_KINDS};\" ;; esac
+        case ' $PARTS ' in *' writes '*) steps=\"\$steps python3 \$B/a_writes.py --shop /work/data/shop --work /work/w/aw --out \$OUT ${WRITES_SYSTEMS:+--systems $WRITES_SYSTEMS};\" ;; esac
+        case ' $PARTS ' in *' a3 '*) steps=\"\$steps python3 \$B/a3_recsys.py --shop /work/data/shop --work /work/w/a3 --out \$OUT ${A3_SYSTEMS:+--systems $A3_SYSTEMS};\" ;; esac
+        nohup sh -c \"\$steps echo RUN DONE\" >/work/logs/run-$OUT.log 2>&1 &
         echo run started"
     ;;
 status)

@@ -9,9 +9,9 @@ queries from the file to a sharded cluster.
 | script | what | against |
 |---|---|---|
 | `shop_prep.py` | the Shop data: Amazon Reviews 2023 Video Games (137K products, 4.6M reviews), cleaned, and a bge-small-en-v1.5 vector per product | |
-| `a1_app.py` | replacing SQLite: load, open, lookups, inserts, updates, deletes, pages, aggregates, joins, 4 readers and a writer, footprint | SQLite 3 (WAL, synchronous FULL with fullfsync, and NORMAL), DuckDB |
+| `a1_app.py` | replacing SQLite: load, open, lookups, inserts, updates, deletes, pages, aggregates, joins, 4 readers and a writer, footprint | SQLite 3 (WAL, synchronous FULL with fullfsync, and NORMAL), DuckDB, Tantivy (tantivy-py; joins in app code) |
 | `a2_search.py` | full text, vector and hybrid search on BEIR, the 11 kinds of `strata/results/workloads` plus phrase, prefix, typos (whole query and one word) and weighted fusion | SQLite FTS5 + sqlite-vec, Tantivy (tantivy-py), DuckDB fts + vss, LanceDB |
-| `a_writes.py` | writes into a file with text and vector indexes: inserts of 1 to 10,000 per transaction, six kinds of update, a stream of review events at 1K, 10K, 50K a second and flat out while 4 threads query | SQLite FTS5 + sqlite-vec (FULL and NORMAL), DuckDB, LanceDB |
+| `a_writes.py` | writes into a file with text and vector indexes: inserts of 1 to 10,000 per transaction, six kinds of update, a stream of review events at 1K, 10K, 50K a second and flat out while 4 threads query | SQLite FTS5 + sqlite-vec (FULL and NORMAL), DuckDB, LanceDB, Tantivy (text only) |
 | `a3_recsys.py` | similar items (filtered, history left out) and a home feed (two sources, rules, at most 2 a brand) | LanceDB, sqlite-vec, FAISS HNSW + SQLite |
 | `part_c.py`, `part_c.sh` | the Shop's 12 app queries in the app, on one server, on a cluster of 1 then 3 shards while slots move, and from `git clone` to a 3-shard cluster | Strata's own answers in the app |
 | `common.py` | timing, the machine, BEIR collections, reports | |
