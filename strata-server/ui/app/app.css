@@ -2050,6 +2050,8 @@ a.al-goto > svg { color: var(--muted); flex: none; }
   .al-rotbl td.al-ro-st { grid-area: st; } .al-rotbl td.al-ro-sev { grid-area: sev; } .al-rotbl td.al-ro-sent { grid-area: sent; justify-self: end; }
   .al-rotbl tr:not(:has(.al-ro-name)) { display: flex; flex-direction: column; align-items: stretch; }
   .al-ed-row { flex-wrap: wrap; }
+  /* Stacked rows: no sticky hover tint after a tap. */
+  .al-rotbl table.t tbody tr:hover td, .al-ftbl table.t tbody tr:hover td, .al-rtbl table.t tbody tr:hover td, .al-ptbl table.t tbody tr:hover td { background: transparent; }
   .al-ed-row > * { flex: 1 1 140px; min-width: 0; max-width: 100%; }
 }
 @media (max-width: 560px) {

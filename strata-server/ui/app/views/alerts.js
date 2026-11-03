@@ -55,6 +55,8 @@ const range = () => timeRange();
 const ask = ({ title, body, ok, danger, typed, reason = true }) => confirm({ title, body, ok, danger, typed, reason });
 const failMsg = (e, what) => e instanceof ApiError && e.status === 403 ? `${what} ${needs("write")}` : e instanceof ApiError && (e.status === 404 || e.status === 405) ? `${what}: this server cannot do that yet (it needs a newer strata-server)` : `${what}: ${e.message}`;
 const missing = (e) => e instanceof ApiError && (e.status === 404 || e.status === 405);
+// A backtest point: the rule's evaluated value over its window (`window`), else the raw value.
+const btPoint = (p) => [p.t, p.window !== undefined ? p.window : p.value];
 
 // ---------------------------------------------------------------- metrics
 // What a rule can watch: its name, unit and where the value exists (A10).
@@ -740,7 +742,11 @@ function alertHub(page, id, r) {
   }
 
   function drawKpis() {
-    const route = m.routes.find((rt) => rt.name === (rule.route || "default")) || (m.routes.length === 1 ? m.routes[0] : null);
+    // Who is told: the rule's own route, or else every route that takes its severity (as the server sends).
+    const takes = (rt) => rt.legacy || !rt.severities?.length || rt.severities.includes(rule.severity);
+    const told = rule.route ? m.routes.filter((rt) => rt.name === rule.route) : m.routes.filter(takes);
+    const failing = (rt) => rt.last_error && (!rt.last_ok_ms || (rt.last_error_ms || 0) > rt.last_ok_ms);
+    const route = told.length === 1 ? told[0] : null;
     const evs = (one?.events || m.events).filter((e) => e.rule === id);
     const fired = evs.filter((e) => e.what === "fired").sort((a, b) => a.ts - b.ts);
     const resolved = evs.filter((e) => e.what === "resolved").sort((a, b) => a.ts - b.ts);
@@ -751,9 +757,10 @@ function alertHub(page, id, r) {
     clear(kpis,
       kp("Owner", rule.owner || h("span", { class: "muted" }, "No owner"), rule.owner ? null : can("admin") ? h("button", { class: "al-link", onclick: ed }, "Set an owner") : "the rule names none"),
       kp("Runbook", rule.runbook ? h("a", { href: rule.runbook, target: "_blank", rel: "noopener", title: rule.runbook }, runbookName(rule.runbook), " ", icon("ext")) : h("span", { class: "muted" }, "No runbook"), rule.description ? h("span", { title: rule.description }, rule.description) : rule.runbook ? null : can("admin") ? h("button", { class: "al-link", onclick: ed }, "Add one") : null),
-      kp("Notified", route ? (route.legacy ? "the webhook" : route.name) : h("span", { class: "muted" }, "Nobody"),
-        !route ? "no route: add one in Routes" : route.legacy ? "--alert-webhook; delivery is not tracked by this server"
-          : route.last_error && (!route.last_ok_ms || (route.last_error_ms || 0) > route.last_ok_ms) ? h("span", { class: "al-bad" }, `last send failed: ${route.last_error}`)
+      kp("Notified", told.length > 1 ? told.map((rt) => rt.name).join(", ") : route ? (route.legacy ? "the webhook" : route.name) : h("span", { class: "muted" }, "Nobody"),
+        told.length > 1 ? h("span", { title: "Each route's last delivery, of any alert" }, told.map((rt, i) => [i ? " · " : "", failing(rt) ? h("span", { class: "al-bad", title: rt.last_error }, `${rt.name}: last send failed`) : rt.last_ok_ms ? `${rt.name} delivered ${hm(rt.last_ok_ms)}` : `${rt.name}: nothing sent yet`]))
+        : !route ? (rule.route ? `route ${rule.route} does not exist` : m.routes.length ? `no route takes ${rule.severity}` : "no route: add one in Routes") : route.legacy ? "--alert-webhook; delivery is not tracked by this server"
+          : failing(route) ? h("span", { class: "al-bad" }, `last send failed: ${route.last_error}`)
             : route.last_ok_ms ? h("span", { class: "al-good" }, `delivered ${when(route.last_ok_ms)} · ${fmt.n(route.sent || 0)} sent`) : "nothing sent yet"),
       kp(`Noise${one ? " (7 days)" : " (in memory)"}`, `${fmt.plural(fired.length, "fire")} · ${fmt.plural(flaps, "flap")}`, lens.length ? `median ${dur(median(lens))} firing` : fired.length ? "still firing" : "it did not fire"));
   }
@@ -769,7 +776,7 @@ function alertHub(page, id, r) {
       api("/v1/alerts/backtest", { body: { rule: cleanRule(rule), from: Math.round(from), to: Math.round(to) } }).catch(() => null),
       api(`/v1/events?from=${Math.round(from)}&to=${Math.round(to)}&limit=500`).then((j) => j.events || []).catch(() => null),
     ]);
-    const ev = bt?.points ? bt.points.map((p) => [p.t, p.value]) : evaluate(raw.pts, rule);
+    const ev = bt?.points ? bt.points.map(btPoint) : evaluate(raw.pts, rule);
     const spans = bt?.fired ? bt.fired.map((f) => [f.from_ms, f.to_ms]) : firings(ev, rule);
     const markers = (evs || []).filter((e) => !dupChange(e)).map((e) => ({ t: e.ts_ms, label: nameUrls(e.title || e.kind), tone: TONE[e.kind] || "accent", prio: e.where?.rule === id ? 0 : e.kind === "change" ? 2 : 1 }));
     if (!evs) for (const e of m.events.filter((e2) => e2.rule === id)) markers.push({ t: e.ts, label: e.what === "fired" ? "fired" : "resolved", tone: e.what === "fired" ? "bad" : "good" });
@@ -984,7 +991,7 @@ function editRule(rule, opts = {}) {
   const sevSeg = seg(SEV.map((v) => [v, v]), x.severity, (v) => { x.severity = v; }, { "aria-label": "Severity" });
   const owner = h("input", { class: "input", value: x.owner || "", placeholder: "search-platform on-call", disabled: dis("owner") });
   const runbook = h("input", { class: "input", value: x.runbook || "", placeholder: "https://wiki.example.com/runbooks/errors", disabled: dis("runbook") });
-  const routeSel = h("select", { class: "select", disabled: dis("route"), "aria-label": "Route" }, h("option", { value: "" }, "default route"), (m?.routes || []).filter((rt) => !rt.legacy).map((rt) => h("option", { value: rt.name, selected: rt.name === x.route }, `${rt.name}${rt.severities?.length ? ` (${rt.severities.join(", ")})` : ""}`)));
+  const routeSel = h("select", { class: "select", disabled: dis("route"), "aria-label": "Route" }, h("option", { value: "" }, "every route that takes its severity"), (m?.routes || []).filter((rt) => !rt.legacy).map((rt) => h("option", { value: rt.name, selected: rt.name === x.route }, `${rt.name}${rt.severities?.length ? ` (${rt.severities.join(", ")})` : ""}`)));
   const desc = h("textarea", { class: "input", rows: 2, style: { fontFamily: "var(--sans)" }, disabled: dis("description") }); desc.value = x.description || "";
   const why = h("input", { class: "input sm", placeholder: "Why (kept in the audit log)", style: { width: "260px" } });
   const unitEls = [h("span", { class: "small muted" }), h("span", { class: "small muted" })];
@@ -1005,12 +1012,15 @@ function editRule(rule, opts = {}) {
   async function backtest(r, from, to) {
     try {
       const j = await api("/v1/alerts/backtest", { body: { rule: cleanRule(r), from: Math.round(from), to: Math.round(to) } });
-      return { pts: (j.points || []).map((p) => [p.t, p.value]), spans: (j.fired || []).map((f) => [f.from_ms, f.to_ms]), source: j.source, server: true, note: j.note || j.error };
+      return { pts: (j.points || []).map(btPoint), spans: (j.fired || []).map((f) => [f.from_ms, f.to_ms]), source: j.source, server: true, note: j.note || j.error };
     } catch (e) {
-      if (!missing(e) && !(e instanceof ApiError && e.status === 400)) throw e;
+      // 400: a metric the load table does not keep past the last hour; 409: no log store. Evaluate here and say why.
+      const said = e instanceof ApiError && (e.status === 400 || e.status === 409);
+      if (!missing(e) && !said) throw e;
       const raw = await seriesOf(r.metric, from, to);
       const ev = evaluate(raw.pts, r);
-      return { pts: ev, spans: firings(ev, r), source: raw.source, server: false, has: raw.has };
+      const why = !said ? null : /load table/.test(e.message) ? `The server's per-minute table does not keep ${r.metric}, so it replays it only over its last hour (since it started).` : `The server cannot backtest this: ${e.message}`;
+      return { pts: ev, spans: firings(ev, r), source: raw.source, server: false, has: raw.has, note: why && `${why} Evaluated here over ${raw.source === "load" ? "its per-minute points" : "the points in this browser's memory (up to an hour)"}.` };
     }
   }
   const run = debounce(async () => {
@@ -1034,8 +1044,9 @@ function editRule(rule, opts = {}) {
       if (!a.pts.some((p) => p[1] != null)) out.push(h("div", { class: "row nw", style: { gap: "8px" } }, icon("info"), h("span", {}, x.builtin ? `${x.metric} is counted from the cluster state, not kept as points, so it cannot be backtested here. It fires on what the coordinator sees now.` : `No values of ${x.metric} over the last ${label}${METRICS[x.metric]?.[2] === "copy" && x.scope !== "each_copy" ? ": this metric lives on the copies; evaluate it on each copy" : ""}.`)));
       else out.push(h("div", { class: "row nw", style: { gap: "8px" } }, icon(a.spans.length ? "warn" : "okc"), h("span", {}, `Over the last ${label} this rule would have fired `, h("b", {}, fmt.plural(a.spans.length, "time")), a.spans.length ? ` (median ${dur(median(lens))} firing, ${fmt.plural(flaps, "flap")} under 2 min)` : "", `. Now: ${last ? fv(x.metric, last[1]) : "no value"}.`)));
       if (b) out.push(note(`The rule as saved (${cond(saved, true)}) would have fired ${fmt.plural(b.spans.length, "time")}.`));
-      out.push(note(a.server ? `Evaluated by the server over ${a.source === "load" ? "the per-minute load table (only the metrics it holds)" : "its memory"}.` : `This server cannot backtest: evaluated here over ${a.source === "load" ? "its per-minute points" : "the points in this browser's memory (up to an hour)"}.`));
-      if (a.note) out.push(note(a.note));
+      if (!a.server && a.note) out.push(note(a.note));
+      else out.push(note(a.server ? `Evaluated by the server over ${a.source === "load" ? "the per-minute load table (only the metrics it holds)" : "its memory (the last hour, 2-s points)"}.` : `This server cannot backtest: evaluated here over ${a.source === "load" ? "its per-minute points" : "the points in this browser's memory (up to an hour)"}.`));
+      if (a.server && a.note) out.push(note(a.note));
       clear(verdict, out);
     } catch (e) { if (my === btGen) clear(verdict, h("div", { class: "error" }, e.message)); }
   }, 250);
@@ -1113,7 +1124,7 @@ function routesDrawer() {
     const rows = routes.map((r, i) => editing
       ? h("tr", {},
         h("td", {}, h("input", { class: "input sm", value: r.name, style: { width: "120px" }, oninput: (e) => { r.name = e.target.value.trim(); } })),
-        h("td", {}, h("input", { class: "input sm mono", value: r.url || "", placeholder: "https://hooks.slack.com/…", style: { width: "100%" }, oninput: (e) => { r.url = e.target.value.trim(); } })),
+        h("td", {}, h("input", { class: "input sm mono", value: r.url || "", placeholder: r.shown ? `${r.shown} (kept: type a URL to replace it)` : "https://hooks.slack.com/…", title: r.shown ? "The server shows only the start of a saved URL. Leave this empty to keep it." : "", style: { width: "100%" }, oninput: (e) => { r.url = e.target.value.trim(); } })),
         h("td", {}, h("div", { class: "row nw", style: { gap: "4px" } }, SEV.map((sv) => h("button", { class: "chip", "aria-pressed": String(!r.severities.length || r.severities.includes(sv)), onclick: (e) => { const on = e.currentTarget.getAttribute("aria-pressed") === "true"; const cur = r.severities.length ? r.severities : SEV.slice(); r.severities = on ? cur.filter((y) => y !== sv) : [...cur, sv]; if (r.severities.length === SEV.length) r.severities = []; draw(); } }, sv)))),
         h("td", { colspan: 2 }), h("td", {}, h("button", { class: "btn xs ghost", title: "Remove this route", onclick: () => { routes.splice(i, 1); draw(); } }, icon("x"))))
       : h("tr", {},
@@ -1122,9 +1133,9 @@ function routesDrawer() {
         h("td", { class: "small al-ro-sev" }, r.severities?.length ? r.severities.join(", ") : "every severity"),
         h("td", { class: "small al-ro-sent" }, `${fmt.n(r.sent || 0)} sent`, r.failed ? h("span", { class: "al-bad" }, ` · ${fmt.n(r.failed)} failed`) : null),
         h("td", { class: "small al-ro-st" }, r.last_error && (!r.last_ok_ms || (r.last_error_ms || 0) > r.last_ok_ms) ? h("span", { class: "al-bad", title: r.last_error }, `failing: ${r.last_error.slice(0, 60)}`) : r.last_ok_ms ? h("span", { class: "al-good" }, `delivered ${ago(r.last_ok_ms)}`) : h("span", { class: "muted" }, "nothing sent yet")),
-        h("td", { class: "al-ro-test" }, h("button", { class: "btn xs", disabled: !can("write"), title: can("write") ? "Send a test message through this route now" : Needs("write"), onclick: async (e) => {
+        h("td", { class: "al-ro-test" }, h("button", { class: "btn xs", disabled: !can("admin"), title: can("admin") ? "Send a test message through this route now" : Needs("admin"), onclick: async (e) => {
           const b = e.currentTarget; b.disabled = true;
-          try { const j = await api(`/v1/alerts/routes/${encodeURIComponent(r.name)}/test`, { body: {} }); toast(j.ok === false ? `Test failed: ${j.error || j.status}` : `Test sent through ${r.name}${j.status ? ` (${j.status})` : ""}`, j.ok === false ? "bad" : "ok"); await refreshAlerts(); routes = model(state.alerts).routes.map((y) => ({ ...y, severities: y.severities || [] })); draw(); }
+          try { const j = await api(`/v1/alerts/routes/${encodeURIComponent(r.name)}/test`, { body: {} }); const ms = j.ms != null ? ` in ${Math.round(j.ms)} ms` : ""; toast(j.ok === false ? `Test through ${r.name} failed${ms}: ${j.error || j.status}` : `Test sent through ${r.name}${ms}${j.status ? ` (${j.status})` : ""}`, j.ok === false ? "bad" : "ok"); await refreshAlerts(); routes = model(state.alerts).routes.map((y) => ({ ...y, severities: y.severities || [] })); draw(); }
           catch (err) { toast(failMsg(err, "Testing the route"), "bad"); }
           b.disabled = false;
         } }, "Test"))));
@@ -1135,11 +1146,13 @@ function routesDrawer() {
         h("span", { class: "sep" }),
         editing ? h("button", { class: "btn sm", onclick: () => { editing = false; routes = model(state.alerts).routes.map((y) => ({ ...y, severities: y.severities || [] })); draw(); } }, "Cancel") : null,
         editing ? h("button", { class: "btn sm primary", onclick: save }, icon("check"), "Save routes")
-          : h("button", { class: "btn sm", disabled: !adm, title: adm ? "" : Needs("admin"), onclick: () => { editing = true; draw(); } }, icon("edit"), "Edit routes")),
-      h("p", { class: "small muted" }, "A rule names its route (or uses \"default\"). A route takes the severities ticked; a message reads: [strata FIRING critical] <rule> on <cluster>/<where>: <metric> = <value> (<op> <threshold>, <eval> over <window>). <description> Runbook: <url>, and a link to the alert's page. A RESOLVED message follows when it resolves, also when its rule is edited or deleted."));
+          : h("button", { class: "btn sm", disabled: !adm, title: adm ? "" : Needs("admin"), onclick: () => { editing = true; routes = routes.map((y) => ({ ...y, shown: y.url, was: y.name, url: "" })); draw(); } }, icon("edit"), "Edit routes")),
+      h("p", { class: "small muted" }, "A rule with a route is sent only there; a rule without one goes to every route that takes its severity. A message reads: [strata FIRING critical] <rule> on <cluster>/<where>: <metric> = <value> (<op> <threshold>, <eval> over <window>). <description> Runbook: <url>, and a link to the alert's page when the server has --public-url. A RESOLVED message follows when it resolves, also when its rule is edited or deleted. The server shows only the start of each URL."));
   };
   async function save() {
-    if (routes.some((r) => !r.name || !/^https?:\/\//.test(r.url || ""))) { toast("Each route needs a name and an http(s) URL", "bad"); return; }
+    // The server shows a saved URL cut to its host ("https://hooks.slack.com/..."): sending that back would
+    // replace the real URL, so an untouched URL is sent empty, which keeps it. A renamed route needs it again.
+    if (routes.some((r) => !r.name || (r.url ? !/^https?:\/\//.test(r.url) : !r.shown || r.was !== r.name))) { toast("Each route needs a name and an http(s) URL (a renamed route needs its URL again)", "bad"); return; }
     const ok = await ask({ title: "Save the routes?", body: `${fmt.plural(routes.length, "route")}. Messages go through them from now on.`, ok: "Save" });
     if (!ok) return;
     try { await api("/v1/alerts/routes", { method: "PUT", body: { routes: routes.map((r) => ({ name: r.name, url: r.url, severities: r.severities })) }, reason: ok.reason }); toast("Routes saved", "ok"); editing = false; await refreshAlerts(); routes = model(state.alerts).routes.map((y) => ({ ...y, severities: y.severities || [] })); draw(); }
