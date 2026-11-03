@@ -281,8 +281,19 @@ async fn a_backtest_replays_a_rule_over_the_load_kept() {
     assert!(to > slow_from + 3_600_000 - 60_000, "{to}");
     // A metric the load rows do not hold says so.
     let rule = json!({"id": "w", "name": "w", "metric": "write_queue", "op": ">", "threshold": 1.0});
-    let (status, j) = call(&base, "POST", "/v1/alerts/backtest", Some(json!({"rule": rule, "from": now - 86_400_000, "to": now}))).await;
+    let (status, j) = call(&base, "POST", "/v1/alerts/backtest", Some(json!({"rule": rule.clone(), "from": now - 86_400_000, "to": now}))).await;
     assert_eq!(status, 400, "{j}");
+    // Once the server holds points of it, it replays them, and says from when.
+    let t = strata_server::telemetry::now_ms();
+    for i in 0..20u64 {
+        let mut s = strata_server::telemetry::Sample { ts_ms: t - (20 - i) * 2000, ..Default::default() };
+        s.gauges.insert("write_queue", 5.0);
+        svc.series.add(s);
+    }
+    let (status, j) = call(&base, "POST", "/v1/alerts/backtest", Some(json!({"rule": rule, "from": t - 86_400_000, "to": t}))).await;
+    assert_eq!((status, j["source"].as_str()), (200, Some("memory")), "{j}");
+    assert!(j["covered_from"].as_u64().is_some_and(|c| c >= t - 40_000), "{j}");
+    assert_eq!(j["fired"].as_array().map(Vec::len), Some(1), "{j}");
 }
 
 // ---------------------------------------------------- a cluster's copies

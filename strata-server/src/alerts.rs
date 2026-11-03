@@ -1029,7 +1029,8 @@ impl Alerts {
     /// that fired and whose rule changed, went or was disabled resolves:
     /// its events are returned, with the rules before and after.
     pub fn set_rules(&self, rules: Vec<Rule>, by: &str) -> Result<(Vec<Arc<Event>>, Vec<Rule>, Vec<Rule>), ApiError> {
-        self.set_rules_at(rules, by, now_ms())
+        // Later than the edit before, even within one millisecond.
+        self.set_rules_at(rules, by, now_ms().max(self.rules_ms.load(Ordering::Relaxed) + 1))
     }
 
     /// [`Self::set_rules`] as edited at `at_ms` (another coordinator's
@@ -1193,7 +1194,9 @@ impl Alerts {
                 let st = states.entry(r.id.clone()).or_insert_with(|| St::new(t));
                 let (v, partial) = if r.metric == "key_error_ratio" {
                     let (v, place) = key_window(r, st.state == "firing", &keys(t.saturating_sub(r.window_s * 1000), t + 1));
-                    st.where_ = place;
+                    if v.is_some() {
+                        st.where_ = place;
+                    }
                     (v, None)
                 } else {
                     window_of(r, points, t)
@@ -1870,10 +1873,10 @@ impl Alerts {
                 } else {
                     r.scope == "self" && TRAFFIC_METRICS.contains(&r.metric.as_str()) && sev_rank(&r.severity) >= sev_rank(&c.severity)
                 };
-                explains.then(|| (c.id.clone(), format!("{} fires on {}", c.name, if names.is_empty() { "the cluster".to_string() } else { names.join(", ") })))
+                explains.then(|| (c.id.clone(), format!("{} (on {})", c.name, if names.is_empty() { "the cluster".to_string() } else { names.join(", ") })))
             });
             if st.held.is_some() && held.is_none() && st.paged.is_none() {
-                st.late = st.held.as_ref().map(|(_, why)| format!("held back while {why}"));
+                st.late = st.held.as_ref().map(|(_, why)| format!("held back while {why} fired"));
             }
             st.held = held;
         }
@@ -2386,19 +2389,21 @@ pub const KEY_MIN_CALLS: u64 = 30;
 /// no data: a quiet server has no failing client), and the keys that pass
 /// the rule (that still pass it, for a firing one), the worst first.
 fn key_window(r: &Rule, firing: bool, calls: &[KeyCalls]) -> (Option<f64>, Vec<Json>) {
-    let mut worst: f64 = 0.0;
+    // No key with calls enough to judge (a server just restarted keeps no
+    // calls): no data, which resolves nothing.
+    let mut worst: Option<f64> = None;
     let mut place: Vec<(f64, Json)> = Vec::new();
     let total: u64 = calls.iter().map(|k| k.calls).sum();
     for k in calls.iter().filter(|k| k.calls >= KEY_MIN_CALLS && k.key != "-" && k.key != "(other keys)") {
         let ratio = k.failed as f64 / k.calls as f64;
-        worst = worst.max(ratio);
+        worst = Some(worst.map_or(ratio, |w| w.max(ratio)));
         if r.holds(ratio) || (firing && r.still(ratio)) {
             let share = if total > 0 { k.calls as f64 / total as f64 } else { 0.0 };
             place.push((ratio, json!({"key": k.key, "name": format!("key {}", k.key), "short": format!("key {}", k.key), "state": "firing", "value": ratio, "calls": k.calls, "failed": k.failed, "share": share, "owner": k.owner})));
         }
     }
     place.sort_by(|a, b| b.0.total_cmp(&a.0));
-    (Some(worst), place.into_iter().take(20).map(|(_, j)| j).collect())
+    (worst, place.into_iter().take(20).map(|(_, j)| j).collect())
 }
 
 /// A key's alert goes to its owner: the route named as the worst key's
@@ -2505,9 +2510,11 @@ fn window_own(r: &Rule, points: &[Arc<Json>], t: u64) -> (Option<f64>, Option<u6
         }
     }
     if r.metric == "disk_hours_to_full" {
-        // The window's slope (least squares) and its latest value.
+        // The window's slope (least squares) and its latest value, once the
+        // points span a third of the window: a server that just started
+        // (and wrote its files) is not a disk filling.
         let vals: Vec<(f64, f64)> = window.iter().filter_map(|p| p["disk_used_ratio"].as_f64().map(|v| (at(p) as f64 / 3.6e6, v))).collect();
-        if vals.len() < 3 {
+        if vals.len() < 3 || partial.is_some_and(|s| s < w / 3) {
             return (None, partial);
         }
         let n = vals.len() as f64;
@@ -2967,8 +2974,13 @@ pub async fn backtest(svc: &Arc<crate::service::Service>, b: &Json) -> Result<Js
     let lead = from.saturating_sub(rule.window_s * 1000 + rule.for_s * 1000);
     let memory = svc.series.since(0);
     let held = memory.first().and_then(|p| p["t"].as_u64());
+    // Memory when it holds the time asked, or the time asked is within
+    // the last hour (a server up a few minutes holds what there is), or
+    // the load table does not keep the metric: the answer's covered_from
+    // says from when.
+    let in_memory = |h: u64| h <= from || from.saturating_add(3_600_000) >= now || !LOAD_METRICS.contains(&rule.metric.as_str());
     let (points, source) = match held {
-        Some(h) if h <= from => (memory.into_iter().filter(|p| p["t"].as_u64().is_some_and(|t| t >= lead && t <= to)).collect::<Vec<_>>(), "memory"),
+        Some(h) if in_memory(h) => (memory.into_iter().filter(|p| p["t"].as_u64().is_some_and(|t| t >= lead && t <= to)).collect::<Vec<_>>(), "memory"),
         _ => {
             let store = svc.log_store.clone().ok_or_else(|| ApiError { status: 409, message: "memory holds the last hour, and this server keeps no log store for older points".into() })?;
             if !LOAD_METRICS.contains(&rule.metric.as_str()) {
@@ -3126,7 +3138,25 @@ fn backtest_events(svc: &crate::service::Service, rule: &Rule, from: u64, to: u6
             open.values().filter(|s| t.saturating_sub(**s) >= rule.for_s * 1000).count() as f64
         }
     };
+    // What fires now since before the events held (a restarted coordinator
+    // has its alerts from its state file, not their events): open from then.
+    let mut seeded = None;
+    if rule.metric != "primary_changes" {
+        if let Some(j) = svc.alerts.one(&rule.id).ok().filter(|j| j["state"] == "firing") {
+            let since = j["since_ms"].as_u64().unwrap_or(held);
+            if since < held {
+                for w in j["where"].as_array().into_iter().flatten() {
+                    // Events name a copy by its short name, a shard by its number.
+                    if let Some(k) = if w.get("copy").is_some() { w.get("short") } else { w.get("shard") } {
+                        open.insert(k.to_string(), since);
+                    }
+                }
+                seeded = Some(since);
+            }
+        }
+    }
     let mut times: Vec<u64> = evs.iter().map(|e| e.ts_ms).collect();
+    times.extend(seeded.map(|s| s.max(from)));
     // The ends of the wait (`for_s`) and of a change's 10 minutes.
     times.extend(evs.iter().filter(|e| kinds.contains(&e.event.kind.as_str())).map(|e| e.ts_ms + if rule.metric == "primary_changes" { PRIMARY_CHANGED_MS } else { rule.for_s * 1000 }));
     times.push(to);
@@ -3165,7 +3195,7 @@ fn backtest_events(svc: &crate::service::Service, rule: &Rule, from: u64, to: u6
     }
     json!({
         "points": points, "fired": spans.iter().filter(|(_, b)| b.is_none_or(|b| b >= from)).map(|(a, b)| json!({"from_ms": a.max(&from), "to_ms": b})).collect::<Vec<_>>(),
-        "source": "events", "from": from, "to": to, "metric": rule.metric, "covered_from": held.max(from),
+        "source": "events", "from": from, "to": to, "metric": rule.metric, "covered_from": seeded.unwrap_or(held).min(held).max(from),
         "note": "Replayed from the coordinator's events in memory (copies down and up, majority lost and back, primaries changed).",
     })
 }
@@ -3558,7 +3588,7 @@ mod tests {
         b.merge(&a.peer_state(), xa).unwrap();
         assert_eq!(b.one("p99").unwrap()["silenced"]["reason"], "deploying");
         // A merged edit of the rules: the newer one is taken.
-        a.set_rules(vec![Rule { threshold: 300.0, ..slow("max", 2, 0) }], "ana").unwrap();
+        a.set_rules_at(vec![Rule { threshold: 300.0, ..slow("max", 2, 0) }], "ana", t + 1_000).unwrap();
         b.merge(&a.peer_state(), xa).unwrap();
         assert_eq!(b.rules()[0].threshold, 300.0);
         // The pager is not heard for a while: the other one pages, and says so.
@@ -3576,6 +3606,27 @@ mod tests {
         assert!(late[0].0.context.as_deref().is_some_and(|c| c.contains("did not say it sent this")), "{:?}", late[0].0.context);
     }
 
+    /// A route that sends an unacknowledged critical again does, every
+    /// `repeat_min`, until someone acknowledges it (NEW-12).
+    #[test]
+    fn an_unacknowledged_critical_is_sent_again() {
+        let t = now_ms();
+        let a = Alerts::new(None, None).unwrap();
+        a.set_rules(vec![Rule { severity: "critical".into(), ..slow("max", 2, 0) }], "t").unwrap();
+        let rt = |name: &str, repeat_min: u64| Route { name: name.into(), url: "http://127.0.0.1:9/hook".into(), repeat_min, ..Route::default() };
+        a.set_routes(vec![rt("oncall", 1), rt("chat", 0)]).unwrap();
+        a.check(&points(&[(t - 2_000, 500.0), (t, 500.0)]), t);
+        assert_eq!(a.due(t).len(), 1, "paged once");
+        assert!(a.due(t + 30_000).is_empty(), "not again within the minute");
+        let again = a.due(t + 61_000);
+        assert_eq!(again.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>(), [Some("oncall".to_string())], "again, by the route that repeats only");
+        assert!(again[0].0.context.as_deref().is_some_and(|c| c.contains("nobody acknowledged")), "{:?}", again[0].0.context);
+        assert!(a.due(t + 90_000).is_empty());
+        assert_eq!(a.due(t + 122_000).len(), 1, "and again a minute later");
+        a.ack("p99", "ana", None).unwrap();
+        assert!(a.due(t + 600_000).is_empty(), "acknowledged: no more");
+    }
+
     /// A storm: a shard without its majority explains its replica rules,
     /// which are held back under it and page only if they still fire once
     /// it resolved (NEW-alerts-logs-4, NEW-scenarios-9).
@@ -3591,7 +3642,7 @@ mod tests {
         assert!(fired.contains(&"shard-no-majority".to_string()) && fired.contains(&"out-of-sync".to_string()), "{fired:?}");
         let s = a.one("out-of-sync").unwrap();
         assert_eq!(s["held_by"], "shard-no-majority", "{s}");
-        assert!(s["held_why"].as_str().unwrap().contains("fires on"), "{s}");
+        assert_eq!(s["held_why"], "A shard has no majority (on shard 1)", "{s}");
         assert_eq!(a.json()["firing_shown"], 1, "the bell counts the cause");
         let due: Vec<String> = a.due(1_000).iter().map(|(e, _)| e.rule.clone()).collect();
         assert_eq!(due, ["shard-no-majority"], "one page for the storm");
@@ -3641,6 +3692,9 @@ mod tests {
         assert_eq!((s["where"][0]["key"].as_str(), s["where"].as_array().map(Vec::len)), (Some("app"), Some(1)), "five calls are too few to judge: {s}");
         assert_eq!((fired[0].route.as_str(), fired[0].owner.as_str()), ("mobile-team", "Mobile team"));
         assert!(a.message(&fired[0]).contains("Owner: Mobile team."), "{}", a.message(&fired[0]));
+        // No key with calls enough (a restart forgets them): no data, still firing.
+        assert!(a.check_with(&at(&|_| json!({"qps": 1.0})), t + 2_000, &|_, _| Vec::new()).is_empty());
+        assert_eq!(a.one("key-failing").unwrap()["state"], "firing");
     }
 
     /// A value next to its threshold has the digits to differ from it, and
