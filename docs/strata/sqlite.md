@@ -1,7 +1,7 @@
 ---
 title: SQLite
 parent: Strata
-nav_order: 6
+nav_order: 7
 ---
 
 # SQLite in and out

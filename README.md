@@ -9,6 +9,7 @@ Around the library:
 - **[strata-server](docs/strata/server.md)** serves a database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Several servers run as shards behind a coordinator that answers like one database, and a primary ships its writes to replicas.
 - **[strata-py](docs/strata/python.md)** runs a database inside a Python process, the way `sqlite3` runs SQLite, or talks to a server with the same methods.
 - **[strata-java](docs/strata/java.md)** runs a database inside a Java process (Java 11 and later) over JNI, the way sqlite-jdbc runs SQLite: no server. It is a JDBC driver too: `jdbc:strata:books.strata`.
+- **[strata-js](docs/strata/javascript.md)** does the same from JavaScript: a Strata file opened inside a Node, Bun or Deno process with no server, or a `fetch` client of a server for any runtime, browsers included.
 - **[Parquet and S3](docs/strata/parquet.md)**: `strata-server import` reads Parquet files and directories of them as Spark writes them (Hive partitions too) into a table, `export` writes tables to Parquet that Spark, DuckDB, polars and pandas read, and either takes `s3://` URLs; from Python, `db.import_arrow` takes any Arrow table or dataframe.
 - **[SQLite in and out](docs/strata/sqlite.md)**: `strata-server import` turns a SQLite database's tables into Strata tables, and `strata-server export` writes a Strata database to a SQLite file with its keys, references, indexes and an FTS5 index over the text.
 - **[Engram](#engram-memory-for-coding-agents-built-on-strata)** is an application built on Strata: long-term memory for coding agents. It records every Claude Code session of a project into one Strata file and brings the right pieces back when a prompt needs them.
@@ -115,6 +116,12 @@ try (Connection c = DriverManager.getConnection("jdbc:strata:books.strata");
 }
 ```
 
+Strata from JavaScript ([more](docs/strata/javascript.md)):
+
+```sh
+cd strata-js && npm run build && cd ../my-app && npm install ../strata/strata-js
+```
+
 ## Engram: memory for coding agents, built on Strata
 
 Claude Code forgets. A long session gets compacted into a summary of about 15,000 characters, and a new session starts with almost nothing. Engram records everything a session does (prompts, answers, tool calls and their results, errors, compaction summaries) into one local Strata file per project. It brings the right pieces back on its own when a prompt needs them, and it gives the model tools to search its own history. Every question it asks is Strata SQL: recall is a BM25 search and a vector search under a filter that leaves out what the model can still see, and the model's `memory_sql` tool is Strata's SQL itself, read-only.
@@ -189,6 +196,7 @@ demo/run.sh --embedder hash:256 ...                           # without download
 | [`strata-server/`](strata-server/) | Strata over HTTP JSON and gRPC: a coordinator over shards, replicas, deadlines, Prometheus metrics, a query-builder UI and an agent that answers questions with SQL ([docs](docs/strata/server.md)) |
 | [`strata-py/`](strata-py/) | Strata from Python: the database in-process (a Rust extension) or a client of strata-server, with the same methods ([docs](docs/strata/python.md)) |
 | [`strata-java/`](strata-java/) | Strata from Java: the database in-process over JNI (a Rust library and the `ai.chloetech.strata` package, built by Maven) ([docs](docs/strata/java.md)) |
+| [`strata-js/`](strata-js/) | Strata from JavaScript: the database in-process (a Node-API addon for Node, Bun and Deno) or a `fetch` client of strata-server, with the same methods ([docs](docs/strata/javascript.md)) |
 | [`engram/`](engram/) | Engram, the memory system built on Strata: hooks client, daemon, MCP server, recall and gate, distiller, live inspector (`demo/`), evaluation harnesses and results |
 | [`docs/`](docs/) | this documentation, as Markdown and as a GitHub Pages site |
 | [`install.sh`](install.sh) | builds Engram, installs it to `~/.local/bin` and wires it into Claude Code |
@@ -199,7 +207,7 @@ Each crate also carries its own design document ([Strata](strata/DESIGN.md), [En
 ## Documentation
 
 - [Overview](docs/index.md)
-- **Strata:** [design](docs/strata/index.md) · [query language](docs/strata/query-language.md) · [graphs](docs/strata/graphs.md) · [server](docs/strata/server.md) · [Python](docs/strata/python.md) · [Java](docs/strata/java.md) · [SQLite](docs/strata/sqlite.md) · [results](docs/strata/results.md)
+- **Strata:** [design](docs/strata/index.md) · [query language](docs/strata/query-language.md) · [graphs](docs/strata/graphs.md) · [server](docs/strata/server.md) · [Python](docs/strata/python.md) · [Java](docs/strata/java.md) · [JavaScript](docs/strata/javascript.md) · [SQLite](docs/strata/sqlite.md) · [results](docs/strata/results.md)
 - [Posting lists](docs/posting-lists.md)
 - **Engram, built on Strata:** [install on your machine](docs/engram/setup.md) · [how it works](docs/engram/index.md) · [live inspector](docs/engram/inspector.md) · [results](docs/engram/results.md) · [why Engram](docs/why/index.html)
 - [Reproducing the results](docs/reproduce.md)
