@@ -102,10 +102,17 @@ function render(page) {
   const tabs = h("div", { class: "tabs wl-tabs-scroll", role: "tablist", style: { marginTop: "6px" } });
   const tabBody = h("div");
   let tab = store.get("perf.tab2", "queries");
+  // PERF-6: what the KPIs compare with: the window before, or the same time a day or a week ago.
+  const BASES = [["before", "window before", "the window before"], ["day", "yesterday", "the same time yesterday"], ["week", "last week", "the same time last week"]];
+  let base = store.get("perf.base", "before"), prevNone = null;
+  if (!BASES.some(([k]) => k === base)) base = "before";
+  const baseWords = () => BASES.find(([k]) => k === base)[2];
+  const baseSeg = seg(BASES.map(([v, l, t]) => [v, l, `Compare the numbers with ${t}`]), base, (v) => { base = v; store.set("perf.base", v); prevKey = ""; loadPrev(); },
+    { "aria-label": "Compare with", class: "seg wl-base" });
 
   page.append(
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Performance"), scope),
-      h("div", { class: "tools" }, h("button", { class: "btn sm", onclick: () => copy(location.href, "Link copied") }, icon("link"), "Copy link"))),
+      h("div", { class: "tools" }, h("span", { class: "small dim al-wide-only" }, "Compare with"), baseSeg, h("button", { class: "btn sm", onclick: () => copy(location.href, "Link copied") }, icon("link"), "Copy link"))),
     kpis, findBox,
     h("div", { class: "grid g2", style: { marginBottom: "14px" } }, latC, failC, qpsCard, hmCard),
     copiesBox, slowerBox, tabs, tabBody);
@@ -118,19 +125,23 @@ function render(page) {
     liveGroups = await api("/v1/queries?group=shape").then((j) => j.groups || null).catch(() => null);
     draw();
   }
-  /** The window before the range, for "was" (only when the server still has it). */
+  /** The window before the range, or the same window a day or a week ago, for "was" (only when the server still has it). */
   async function loadPrev() {
     const r = timeRange(), len = (r.to ?? Date.now()) - r.from;
-    const key = `${Math.round((r.from - len) / 60e3)}|${Math.round(r.from / 60e3)}`;
+    const shift = base === "day" ? 864e5 : base === "week" ? 7 * 864e5 : len;
+    const from = r.from - shift, to = from + len;
+    const key = `${base}|${Math.round(from / 60e3)}|${Math.round(to / 60e3)}`;
     if (key === prevKey) return;
     prevKey = key;
+    if (len > shift) { prev = null; prevNone = `a range longer than ${base === "day" ? "a day" : "a week"} has no ${baseWords().slice(4)}`; draw(); return; }
     try {
-      const j = await api(`/v1/timeseries?from=${Math.round(r.from - len)}&to=${Math.round(r.from)}`);
-      const ps = (j.points || []).filter((p) => p.t >= r.from - len && p.t <= r.from);
+      const j = await api(`/v1/timeseries?from=${Math.round(from)}&to=${Math.round(to)}`);
+      const ps = (j.points || []).filter((p) => p.t >= from && p.t <= to);
       const covered = ps.length > 1 ? (ps[ps.length - 1].t - ps[0].t) / len : 0;
       prev = covered >= 0.5 ? figures(ps) : null;
-    } catch { prev = null; }
-    draw();
+      prevNone = prev ? null : `${isCoord() ? "this coordinator" : "this server"} kept no points from ${baseWords()}${j.source === "memory" && !state.system?.log_store ? " (without a log store it keeps the last hour)" : ""}`;
+    } catch { prev = null; prevNone = `${baseWords()} could not be read`; }
+    if (key === prevKey) draw();
   }
   async function loadLoad() {
     if (!isCoord()) { load = null; return; }
@@ -168,8 +179,12 @@ function render(page) {
     const r = timeRange();
     const per = c?.shards?.length ? Math.round(cs.length / c.shards.length) : 0;
     scope.textContent = isCoord()
-      ? `The fleet: ${coords.length > 1 ? `${fmt.plural(coords.length, "coordinator")}, ` : ""}${fmt.plural(c?.shards?.length || 0, "shard")}${per ? ` × ${fmt.plural(per, "copy", "copies")}` : ""} · ${r.label}${prev ? ", against the window before" : ""}. ${coords.length > 1 ? "The charts are the queries through this coordinator." : "Every query enters through this coordinator."}`
-      : `This server · ${r.label}${prev ? ", against the window before" : ""}.`;
+      ? `The fleet: ${coords.length > 1 ? `${fmt.plural(coords.length, "coordinator")}, ` : ""}${fmt.plural(c?.shards?.length || 0, "shard")}${per ? ` × ${fmt.plural(per, "copy", "copies")}` : ""} · ${r.label}${against()}. ${coords.length > 1 ? "The charts are the queries through this coordinator." : "Every query enters through this coordinator."}`
+      : `This server · ${r.label}${against()}.`;
+  }
+  /** What the "was" numbers are of, or why there are none. */
+  function against() {
+    return prev ? `, against ${baseWords()}` : base !== "before" && prevNone ? `; ${prevNone}` : "";
   }
 
   function draw() {
@@ -228,7 +243,7 @@ function render(page) {
     const coords = state.fleet?.coordinators || [];
     const apart = [f.client ? `client errors ${fmt.si(f.client / Math.max(1, f.queries) * 100, 1)}%` : null, f.deadlines ? `deadlines ${fmt.si(f.deadlines / Math.max(1, f.queries) * 100, 1)}%` : null].filter(Boolean);
     clear(kpis,
-      kpi("Queries", f.qps != null ? [fmt.si(f.qps), h("small", {}, "/s")] : "–", prev?.qps ? `${pct(f.qps, prev.qps)} vs before` : coords.length > 1 ? `${fmt.si(coords.reduce((a, c) => a + (c.qps || 0), 0))}/s on ${coords.length} coordinators now` : "mean over the range"),
+      kpi("Queries", f.qps != null ? [fmt.si(f.qps), h("small", {}, "/s")] : "–", prev?.qps ? `${pct(f.qps, prev.qps)} vs ${base === "before" ? "before" : BASES.find(([k]) => k === base)[1]}` : coords.length > 1 ? `${fmt.si(coords.reduce((a, c) => a + (c.qps || 0), 0))}/s on ${coords.length} coordinators now` : "mean over the range"),
       kpi("p99 latency", f.p99 != null ? unit(fmt.ms(f.p99)) : "–", [was(prev?.p99, fmt.ms), f.p99Now != null && Math.abs(f.p99Now - f.p99) > 0.2 * f.p99 ? `last 5 min ${fmt.ms(f.p99Now)}` : null].filter(Boolean).join(" · ") || "mean over the range", (prev?.p99 && f.p99Now > 2 * prev.p99 && f.p99Now > 20) ? "bad" : null, "The mean of each interval's p99 over the range; the last 5 minutes' median beside it when it differs"),
       kpi("Failed on the server", sr != null ? [fmt.si(sr * 100, 2), h("small", {}, "%")] : "–", psr != null ? `was ${fmt.si(psr * 100, 2)}%` : apart.length ? "apart: " + apart.join(", ") : f.splits ? "server errors and timeouts" : "this server does not split client errors", sr > 0.01 ? "bad" : null, "Server errors and server timeouts over the queries that ended. Client errors (400) and the clients' own deadlines are counted apart."),
       kpi(slowMs ? `Slow (over ${fmt.ms(slowMs)})` : "Slow", slowMs && f.slow != null ? [fmt.si(f.slow), h("small", {}, "/s")] : "–", slowMs ? was(prev?.slow, (v) => fmt.si(v) + "/s") : "not counted: --slow-ms is not set"),
@@ -267,7 +282,7 @@ function render(page) {
         own.add("error_ratio");
         const top = (stmts?.statements || []).filter((x) => !isOwn(x)).map((x) => ({ x, n: split(x.outcomes, x.calls).server })).sort((a, b) => b.n - a.n)[0];
         const allS = (stmts?.statements || []).reduce((a, x) => a + split(x.outcomes, x.calls).server, 0) || 1;
-        out.push({ level: "bad", id: "error_ratio", title: `${fmt.si(sr * 100, 1)}% of queries fail on the server${w === f15 ? " in the last 15 minutes" : ""}${prev?.queries ? ` (${fmt.si(prev.server / prev.queries * 100, 2)}% the window before)` : ""}`,
+        out.push({ level: "bad", id: "error_ratio", title: `${fmt.si(sr * 100, 1)}% of queries fail on the server${w === f15 ? " in the last 15 minutes" : ""}${prev?.queries ? ` (${fmt.si(prev.server / prev.queries * 100, 2)}% ${baseWords()})` : ""}`,
           body: [`${fmt.si(w.server / secsOf(w), 1)}/s server errors and timeouts`, w.timeouts ? ` (${fmt.si(w.timeouts / w.server * 100, 0)}% timeouts)` : "", top?.n ? [". ", fmt.pct(top.n / allS, 0), " are one statement: ", h("code", {}, trim(top.x.sql, 90))] : "", "."],
           rule: `server errors and timeouts over 1% of the queries in ${winOf(w)}`, links: [top?.n ? ["Open the statement", statementLink(top.x.fingerprint)] : null, ["Errors in Logs", link("logs", { q: "level>=error" })]] });
       }
@@ -310,7 +325,7 @@ function render(page) {
         while (i > 0 && mins[i - 1].p99 > mid) i--;
         rise = { base, cur, since: mins[i].t };
       }
-      checked.push(rise ? `p99 rose` : `p99 ${fmt.ms(cur)}${base ? ` (${fmt.ms(base)} before)` : ""}`);
+      checked.push(rise ? `p99 rose` : `p99 ${fmt.ms(cur)}${base ? ` (${fmt.ms(base)} ${prev ? baseWords() : "in the range's first half"})` : ""}`);
     }
     if (slowCopy || rise) {
       own.add("p99");
@@ -341,7 +356,7 @@ function render(page) {
       out.push({ level: rise ? "bad" : "warn", id: "p99",
         title: rise ? `p99 rose from ${fmt.ms(rise.base)} to ${fmt.ms(rise.cur)} at ${fmt.time(rise.since, false)}${slowCopy ? ", and one copy explains it" : ""}` : `Copy ${copyName(slowCopy.url)} is ${Math.round(slowCopy.p99 / slowCopy.med)}× slower than the median copy`,
         body: rise && !slowCopy ? [`The last 5 minutes' p99 is ${fmt.ms(rise.cur)}; no single copy explains it (the slowest copies are within 5× of the median).`, ...body] : body,
-        rule: `${rise ? "the last 5 minutes' p99 over 2× the window before and over 20 ms" : ""}${rise && slowCopy ? "; " : ""}${slowCopy ? "a copy's p99 over 5× the fleet's median copy (each copy's last minute)" : ""}`,
+        rule: `${rise ? `the last 5 minutes' p99 over 2× ${prev ? baseWords() : "the range's first half"} and over 20 ms` : ""}${rise && slowCopy ? "; " : ""}${slowCopy ? "a copy's p99 over 5× the fleet's median copy (each copy's last minute)" : ""}`,
         links: [slowCopy ? [`Open ${copyName(slowCopy.url)}`, copyLink(slowCopy.url)] : null, slowCopy ? ["Its logs", link("logs", { node: copyName(slowCopy.url), level: "warn" })] : null, slowCopy ? [`CPU profile of ${copyName(slowCopy.url)}`, nodeLink(slowCopy.url)] : null, causeS ? ["Open what changed", statementLink(causeS.x.fingerprint)] : null, grew ? [causeS ? "Open the slower one" : "Open the statement", statementLink(grew.x.fingerprint)] : heavyS ? ["Open the statement", statementLink(heavyS.fingerprint)] : null] });
       if (heavyS) own.add("share:" + heavyS.fingerprint);
     } else if (withDetail.some((c) => c.p99 != null)) {
