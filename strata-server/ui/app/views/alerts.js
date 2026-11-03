@@ -23,6 +23,10 @@ export const alertPage = { id: "alert", title: "Alert", icon: "alerts", group: "
 
 // ---------------------------------------------------------------- helpers
 const Needs = (scope) => needs(scope).replace(/^n/, "N");
+/** The audit's "change" event of an acknowledge, silence or note: the alert's own event says it already. */
+export const dupChange = (e) => e.kind === "change" && /^\/v1\/alerts\/[^/]+\/(ack|silence|notes)$/.test(e.detail?.route || "");
+/** Copy URLs in a text, named: "shard http://…:8211: tcp connect error" reads "shard s0-0: tcp connect error". */
+const nameUrls = (t) => String(t ?? "").replace(/https?:\/\/[^\s)"',\\]+/g, (u) => { const tail = /[:;.]+$/.exec(u)?.[0] || "", b = tail ? u.slice(0, -tail.length) : u; return (findCopy(b) ? copyName(b) : b) + tail; });
 /** A time without seconds: "19:42" today, "Nov 2 19:42" another day. */
 const hm = (ms) => when(ms, { sec: false });
 const dur = (ms) => fmt.dur(Math.max(0, ms) / 1000).replace(/^(\d+)m 0s$/, "$1 min").replace(/^(\d+)m (\d+)s$/, "$1 min").replace(/^(\d+)s$/, "$1 s");
@@ -67,6 +71,11 @@ const METRICS = {
   cancelled_s: ["Cancelled queries a second", "/s", "both"],
   rejected_s: ["Queries refused (429) a second", "/s", "both"],
   partial_s: ["Partial answers a second", "/s", "coordinator"],
+  shards_no_majority: ["Shards without a majority of copies answering", "n", "coordinator"],
+  copies_down: ["Copies not answering", "n", "coordinator"],
+  shards_under_replicated: ["Shards with fewer copies answering than they have", "n", "coordinator"],
+  primary_changes: ["Primary changes (failovers)", "n", "coordinator"],
+  copies_silent: ["Copies whose alerts stopped arriving", "n", "coordinator"],
   slow_s: ["Slow queries a second", "/s", "both"],
   http_5xx_s: ["HTTP 5xx answers a second", "/s", "both"],
   http_4xx_s: ["HTTP 4xx answers a second", "/s", "both"],
@@ -149,7 +158,7 @@ function normEvent(e) {
   const what = e.state === "firing" || kind === "alert_fired" || e.what === "fired" ? "fired"
     : e.state === "resolved" || kind === "alert_resolved" || e.what === "resolved" ? "resolved"
     : kind === "alert_acked" || e.state === "acked" ? "acked" : kind === "alert_silenced" || e.state === "silenced" ? "silenced"
-    : kind === "note" || e.state === "note" ? "note" : e.state || kind || "changed";
+    : kind === "note" || kind === "alert_noted" || e.state === "note" || e.state === "noted" ? "note" : e.state || kind || "changed";
   return { ts: e.ts_ms || e.at_ms, rule: e.rule || e.where?.rule, what, severity: e.severity, value: e.value, by: e.who || e.by, text: e.detail?.text || e.text || e.note || e.reason || null, name: e.name, where: e.where, title: e.title };
 }
 function sorted(m) {
@@ -440,6 +449,8 @@ function statePill(r, x) {
   if (x.silent) return h("span", { class: "pill al-silent", title: `${x.silenced.reason || ""}` }, icon("pause"), `silenced to ${hm(x.silenced.until_ms)}`);
   if (x.state === "firing") return pill(r.severity === "info" ? "warn" : "firing", `firing ${x.since_ms ? dur(Date.now() - x.since_ms) : ""}`.trim());
   if (x.state === "pending") return pill("pending", "pending");
+  // Some copies ok, others without the metric (a primary-only or replica-only metric): say both.
+  if (x.state === "no_data" && x.copies?.ok > 0) return h("span", { class: "pill al-nodata", title: `${x.copies.ok} of ${x.copies.total} copies are ok. ${x.copies.no_data} have no ${r.metric} value: only primaries or only replicas report some metrics.` }, icon("minus"), `ok on ${x.copies.ok} · no data on ${x.copies.no_data}`);
   if (x.state === "no_data") return h("span", { class: "pill al-nodata", title: "The metric has no value here, so the rule cannot tell. It keeps its last state and never resolves on its own." }, icon("minus"), `no data${x.no_data_since_ms || x.since_ms ? " " + dur(Date.now() - (x.no_data_since_ms || x.since_ms)) : ""}`);
   return pill("ok", "ok");
 }
@@ -507,14 +518,17 @@ function alertChart(height = 240) {
     const M = { l: 52, r: 14, b: 22, t: 8 };
     const W = width - M.l - M.r;
     const X = (t) => M.l + (t - o.t0) / span * W;
-    // Marker labels in lanes along the top, so they do not overlap.
-    const lanes = [];
-    for (const k of marks) {
+    // Marker labels in lanes along the top, so they do not overlap. The
+    // alert's own events get a label first, then copies and shards, then
+    // other changes; a marker with no room left keeps only its line.
+    const lanes = [], maxLanes = width < 560 ? 2 : 4;
+    for (const k of [...marks].sort((a, b) => (a.prio ?? 1) - (b.prio ?? 1) || a.t - b.t)) {
       const w = Math.min(190, 12 + k.label.length * 6.1), x = Math.min(width - M.r - w, Math.max(M.l, X(k.t) - 4));
-      let lane = lanes.findIndex((end) => end < x - 4);
-      if (lane < 0 && lanes.length < 4) { lanes.push(0); lane = lanes.length - 1; }
+      const fits = (l) => l.every(([a, b]) => x + w < a - 4 || x > b + 4);
+      let lane = lanes.findIndex(fits);
+      if (lane < 0 && lanes.length < maxLanes) { lanes.push([]); lane = lanes.length - 1; }
       if (lane < 0) { k.lane = -1; continue; }
-      lanes[lane] = x + w; k.lane = lane; k.x = x; k.w = w;
+      lanes[lane].push([x, x + w]); k.lane = lane; k.x = x; k.w = w;
     }
     M.t = 8 + lanes.length * 17;
     const H = height - M.t - M.b;
@@ -637,9 +651,9 @@ function alertHub(page, id, r) {
   id = decodeURIComponent(id || "");
   if (!id) { location.hash = "#/alerts"; return; }
   const fixedAtOpen = range().fixed;
-  let win = r?.params?.get("w") || (fixedAtOpen ? "range" : "1h"), m = null, one = null, rule = null, x = null, gen = 0, notesAt = null;
+  let win = r?.params?.get("w") || (fixedAtOpen ? "range" : null), m = null, one = null, rule = null, x = null, gen = 0, notesAt = null;
   const crumbs = h("div", { class: "row small muted al-crumbs" }, h("a", { href: link("alerts") }, "Alerts"), h("span", {}, "›"), h("span", { class: "mono" }, id));
-  const title = h("h1", { class: "row nw", style: { gap: "10px" } });
+  const title = h("h1", { class: "row nw al-htitle", style: { gap: "10px" } });
   const line = h("p");
   const tools = h("div", { class: "tools al-hubbar" });
   const kpis = h("div", { class: "grid g4 al-kpis" });
@@ -648,7 +662,7 @@ function alertHub(page, id, r) {
   const winSeg = seg([...(fixedAtOpen ? [["range", "the link's window"]] : []), ...WINDOWS.map(([k, l]) => [k, l])], win, (v) => { win = v; loadChart(); }, { "aria-label": "Time around the alert" });
   const chartSub = h("span", { class: "sub" });
   const blast = h("div");
-  const changed = h("div");
+  const changed = h("div"), changedSub = h("span", {}, "events from 30 min before it fired");
   const stmts = h("div");
   const copies = h("div");
   const logsBox = h("div");
@@ -664,7 +678,7 @@ function alertHub(page, id, r) {
       h("section", { class: "card span2" }, h("div", { class: "hd" }, h("h3", {}, "Around the alert"), chartSub, h("div", { class: "tools" }, winSeg)), h("div", { class: "bd" }, chart, chartNote)),
       card({ title: "Blast radius", sub: "since it fired", body: blast })),
     h("div", { class: "grid g3 al-row" },
-      card({ title: "What changed", sub: "events from 30 min before it fired", body: changed }),
+      card({ title: "What changed", sub: changedSub, body: changed }),
       card({ title: "Failing statements", sub: "server failures, since it fired", tools: h("a", { class: "btn sm ghost", href: link("queries", { tab: "statements" }) }, "Queries", icon("right")), body: stmts, flush: true }),
       card({ title: "Affected copies", tools: h("a", { class: "btn sm ghost", href: link("cluster") }, "Cluster", icon("right")), body: copies, flush: true })),
     h("div", { class: "grid g3 al-row" },
@@ -689,6 +703,7 @@ function alertHub(page, id, r) {
     x = { ...(m.st.get(id) || {}), ...(fromOne?.state && typeof fromOne.state === "string" ? { ...fromOne, state: stateName(fromOne.state) } : {}) };
     x.silent = !!(x.silenced && (!x.silenced.until_ms || x.silenced.until_ms > Date.now()));
     if (!rule.enabled) x.state = "disabled";
+    if (win == null) { win = x.since_ms && Date.now() - x.since_ms < 20 * 60e3 && (x.state === "firing" || x.state === "pending") ? "15m" : "1h"; winSeg.set(win); }
     drawHead(); drawKpis(); drawCopies(); drawActivity();
   }
 
@@ -756,7 +771,7 @@ function alertHub(page, id, r) {
     ]);
     const ev = bt?.points ? bt.points.map((p) => [p.t, p.value]) : evaluate(raw.pts, rule);
     const spans = bt?.fired ? bt.fired.map((f) => [f.from_ms, f.to_ms]) : firings(ev, rule);
-    const markers = (evs || []).map((e) => ({ t: e.ts_ms, label: e.title || e.kind, tone: TONE[e.kind] || "accent" }));
+    const markers = (evs || []).filter((e) => !dupChange(e)).map((e) => ({ t: e.ts_ms, label: nameUrls(e.title || e.kind), tone: TONE[e.kind] || "accent", prio: e.where?.rule === id ? 0 : e.kind === "change" ? 2 : 1 }));
     if (!evs) for (const e of m.events.filter((e2) => e2.rule === id)) markers.push({ t: e.ts, label: e.what === "fired" ? "fired" : "resolved", tone: e.what === "fired" ? "bad" : "good" });
     const series = [];
     if (rule.eval && rule.eval !== "all" && raw.has) series.push({ name: "raw points", cls: "raw", pts: raw.pts });
@@ -768,7 +783,7 @@ function alertHub(page, id, r) {
     if (pk) pk.textContent = peak ? ` · ${rule.op.startsWith(">") ? "peak" : "lowest"} ${fv(rule.metric, peak[1])} at ${hm(peak[0])}` : "";
     const hasEval = ev.some((p) => p[1] != null);
     clear(chartNote, !hasEval
-      ? (rule.scope === "each_copy" || METRICS[rule.metric]?.[2] === "copy" ? `This server's points have no ${rule.metric}: it lives on the copies. Their values are in Affected copies.` : `No ${rule.metric} values in this time.`)
+      ? (rule.scope === "each_copy" || METRICS[rule.metric]?.[2] === "copy" ? `This server's points have no ${rule.metric}: it lives on the copies. Their values are in Affected copies.` : rule.builtin ? `${METRICS[rule.metric]?.[0] || rule.metric} is counted from the cluster state, not kept as points: the shaded span is when it fired.` : `No ${rule.metric} values in this time.`)
       : [bt?.source ? `Evaluated by the server from ${bt.source === "load" ? "the per-minute load table" : "its memory"}.` : `Evaluated here from ${raw.source === "load" ? "per-minute points" : "the 2-s points"}.`, evs ? " Markers: events of the cluster (failovers, rollouts, changes, notes)." : " Markers: this rule's own events (the server keeps no event log)."]);
     drawBlast(raw, at);
     drawChanged(evs, at);
@@ -800,10 +815,13 @@ function alertHub(page, id, r) {
 
   function drawChanged(evs, at) {
     if (!evs) { clear(changed, h("div", { class: "small muted" }, "This server keeps no event log (failovers, rollouts, changes). A newer strata-server records them at /v1/events.")); return; }
-    const list = evs.filter((e) => e.ts_ms >= at - 30 * 60e3 && !e.kind?.startsWith("alert_")).sort((a, b) => b.ts_ms - a.ts_ms).slice(0, 12);
+    // A resolved alert: what changed up to 5 min after it resolved, not since.
+    const end = x?.state === "ok" && x.since_ms > at ? x.since_ms + 5 * 60e3 : Infinity;
+    changedSub.textContent = end < Infinity ? "from 30 min before it fired to 5 min after it resolved" : "events from 30 min before it fired";
+    const list = evs.filter((e) => e.ts_ms >= at - 30 * 60e3 && e.ts_ms <= end && !e.kind?.startsWith("alert_") && !dupChange(e) && !(e.kind === "note" && e.where?.rule)).sort((a, b) => b.ts_ms - a.ts_ms).slice(0, 12);
     clear(changed, list.length ? h("div", { class: "al-changes" }, list.map((e) => h("div", { class: "al-chg" },
       h("span", { class: "al-time", title: whenTitle(e.ts_ms) }, hm(e.ts_ms)),
-      h("div", {}, h("div", {}, h("span", { class: "al-dot " + (TONE[e.kind] || "") }), e.title || e.kind), h("div", { class: "tiny muted" }, [e.who ? `by ${e.who}` : null, e.where?.copy ? copyName(e.where.copy) : e.where?.shard != null ? `shard ${e.where.shard}` : null, e.until_ms ? `until ${hm(e.until_ms)}` : null].filter(Boolean).join(" · ")))))) : h("div", { class: "small muted" }, "Nothing changed in the 30 minutes before it fired, or since: no failover, rollout, setting or note."));
+      h("div", {}, h("div", {}, h("span", { class: "al-dot " + (TONE[e.kind] || "") }), nameUrls(e.title || e.kind)), h("div", { class: "tiny muted" }, [e.who ? `by ${e.who}` : null, e.where?.copy ? copyName(e.where.copy) : e.where?.shard != null ? `shard ${e.where.shard}` : null, e.until_ms ? `until ${hm(e.until_ms)}` : null].filter(Boolean).join(" · ")))))) : h("div", { class: "small muted" }, "Nothing changed in the 30 minutes before it fired, or since: no failover, rollout, setting or note."));
   }
 
   async function loadStatements() {
@@ -832,7 +850,16 @@ function alertHub(page, id, r) {
       rows = bad.flatMap((sh) => (sh.replicas || []).map((rp, i) => ({ copy: rp.url, short: copyName(rp.url), state: rp.status === "down" || rp.role === "unknown" ? "firing" : "ok", value: null, since_ms: rp.down_since_ms || null })));
       cause = rows.length > 0;
     }
-    const shardsOf = new Set();
+    const whys = [];
+    rows = rows.flatMap((c) => {
+      if (c.why || c.error) whys.push(`${c.short || c.name || ""}: ${c.why || c.error}`);
+      if (c.copy || c.shard == null) return [c];
+      const sh = (state.cluster?.shards || []).find((y, i) => (y.shard ?? i) === c.shard);
+      if (!sh?.replicas?.length) return [c];
+      return sh.replicas.map((rp) => ({ copy: rp.url, short: copyName(rp.url), shard: c.shard, state: rp.status === "down" || rp.role === "unknown" ? "firing" : "ok", value: null, since_ms: rp.status === "down" ? (rp.down_since_ms || c.since_ms || x.since_ms) : null, viaShard: true }));
+    });
+    if (rows.some((c) => c.viaShard)) cause = true;
+    const shardsOf = new Set(rows.filter((c) => c.shard != null).map((c) => c.shard));
     const lines = rows.slice(0, 12).map((c) => {
       const url = c.copy, cp = copyOf(url || c.short), name = whereName(c);
       if (cp) shardsOf.add(cp.shard);
@@ -855,7 +882,8 @@ function alertHub(page, id, r) {
           h("a", { class: "btn sm", href: link("profile", { tab: "cpu" }) }, icon("flame"), "Profile it"),
           h("a", { class: "btn sm", href: link("queries") }, icon("queries"), "Running queries")))
       : [h("div", { class: "tbl-wrap" }, h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ["copy", "role", cause ? "state" : "value · for", ""].map((k) => h("th", {}, k)))), h("tbody", {}, lines))),
-        cause ? h("div", { class: "tiny muted", style: { padding: "6px 14px 0" } }, `The rule reads ${scopeText(rule)[0]}'s own points; these are the copies of the shards that are not ok.`) : null,
+        whys.length ? h("div", { class: "small", style: { padding: "8px 14px 0" } }, whys.slice(0, 3).map((t) => h("div", {}, nameUrls(t)))) : null,
+        cause && !whys.length ? h("div", { class: "tiny muted", style: { padding: "6px 14px 0" } }, rows.some((c) => c.viaShard) ? "The copies of the shards it fires on." : `The rule reads ${scopeText(rule)[0]}'s own points; these are the copies of the shards that are not ok.`) : null,
         rows.length > 12 ? h("div", { class: "tiny muted", style: { padding: "4px 14px" } }, `and ${rows.length - 12} more`) : null,
         h("div", { class: "row al-mitigate" }, h("span", { class: "small muted" }, "Mitigate:"),
           [...shardsOf].slice(0, 2).map((sh) => h("a", { class: "btn sm", href: link("cluster", { shard: sh }) }, `Shard ${sh} in Cluster`)),
@@ -942,7 +970,10 @@ function editRule(rule, opts = {}) {
   const metric = h("select", { class: "select", disabled: dis("metric"), "aria-label": "Metric" }, metrics.map((k) => h("option", { value: k, selected: k === x.metric }, METRICS[k] ? `${k} · ${METRICS[k][0]}${METRICS[k][2] === "copy" ? " (copies only)" : ""}` : k)));
   const scopeSeg = seg([["self", coordinator() ? "this coordinator" : "this server"], ["each_copy", `each copy (${fmt.n(allCopies())})`]], x.scope || "self", (v) => { x.scope = v; run(); }, { "aria-label": "Evaluated on" });
   const evalSeg = seg(Object.entries(EVAL).map(([k, l]) => [k, l]), x.eval || "all", (v) => { x.eval = v; run(); }, { "aria-label": "Value" });
-  const win = h("input", { class: "input", type: "number", min: 1, step: 1, value: Math.round((x.window_s || 300) / 60), style: { width: "90px" }, disabled: dis("window_s"), "aria-label": "Window in minutes" });
+  // The window keeps its seconds: a 10 s or 30 s window must not round to a minute on save.
+  const w0 = x.window_s || 300, inMin = w0 % 60 === 0;
+  const win = h("input", { class: "input", type: "number", min: 1, step: 1, value: inMin ? w0 / 60 : w0, style: { width: "80px" }, disabled: dis("window_s"), "aria-label": "Window" });
+  const winUnit = h("select", { class: "select", disabled: dis("window_s"), "aria-label": "Window unit", style: { width: "auto" } }, h("option", { value: "60", selected: inMin }, "min"), h("option", { value: "1", selected: !inMin }, "s"));
   const opSeg = seg(OPS.map((o) => [o, o]), x.op, (v) => { x.op = v; run(); }, { "aria-label": "Fires when the value is" });
   const unit = () => unitOf(x.metric) === "pct" ? "%" : unitOf(x.metric) === "ms" ? "ms" : unitOf(x.metric) === "/s" ? "/s" : "";
   const toInput = (v) => v == null || v === "" ? "" : unitOf(x.metric) === "pct" ? +(v * 100).toPrecision(6) : v;
@@ -1000,7 +1031,7 @@ function editRule(rule, opts = {}) {
       const last = [...a.pts].reverse().find((p) => p[1] != null);
       const label = span === "7d" ? "7 days" : span === "24h" ? "24 hours" : "hour";
       const out = [];
-      if (!a.pts.some((p) => p[1] != null)) out.push(h("div", { class: "row nw", style: { gap: "8px" } }, icon("info"), h("span", {}, `No values of ${x.metric} over the last ${label}${METRICS[x.metric]?.[2] === "copy" && x.scope !== "each_copy" ? ": this metric lives on the copies; evaluate it on each copy" : ""}.`)));
+      if (!a.pts.some((p) => p[1] != null)) out.push(h("div", { class: "row nw", style: { gap: "8px" } }, icon("info"), h("span", {}, x.builtin ? `${x.metric} is counted from the cluster state, not kept as points, so it cannot be backtested here. It fires on what the coordinator sees now.` : `No values of ${x.metric} over the last ${label}${METRICS[x.metric]?.[2] === "copy" && x.scope !== "each_copy" ? ": this metric lives on the copies; evaluate it on each copy" : ""}.`)));
       else out.push(h("div", { class: "row nw", style: { gap: "8px" } }, icon(a.spans.length ? "warn" : "okc"), h("span", {}, `Over the last ${label} this rule would have fired `, h("b", {}, fmt.plural(a.spans.length, "time")), a.spans.length ? ` (median ${dur(median(lens))} firing, ${fmt.plural(flaps, "flap")} under 2 min)` : "", `. Now: ${last ? fv(x.metric, last[1]) : "no value"}.`)));
       if (b) out.push(note(`The rule as saved (${cond(saved, true)}) would have fired ${fmt.plural(b.spans.length, "time")}.`));
       out.push(note(a.server ? `Evaluated by the server over ${a.source === "load" ? "the per-minute load table (only the metrics it holds)" : "its memory"}.` : `This server cannot backtest: evaluated here over ${a.source === "load" ? "its per-minute points" : "the points in this browser's memory (up to an hour)"}.`));
@@ -1015,7 +1046,7 @@ function editRule(rule, opts = {}) {
     const rv = fromInput(res.value);
     x.resolve = rv == null ? undefined : rv;
     x.for_s = Number(forS.value) || 0;
-    x.window_s = Math.max(1, Number(win.value) || 5) * 60;
+    if (!dis("window_s")) x.window_s = Math.max(1, Number(win.value) || (winUnit.value === "1" ? 300 : 5)) * Number(winUnit.value);
     x.owner = owner.value.trim() || undefined;
     x.runbook = runbook.value.trim() || undefined;
     x.route = routeSel.value || undefined;
@@ -1023,6 +1054,7 @@ function editRule(rule, opts = {}) {
     if (!fleet) { delete x.eval; delete x.window_s; delete x.resolve; delete x.scope; }
   }
   for (const el of [thr, res, forS, win]) el.oninput = run;
+  winUnit.onchange = run;
   metric.onchange = () => { const before = unitOf(x.metric); x.metric = metric.value; if (unitOf(x.metric) !== before) { thr.value = toInput(x.threshold); res.value = toInput(x.resolve); } run(); };
 
   const saveBtn = h("button", { class: "btn primary", disabled: !adm, title: adm ? "" : Needs("admin") }, icon("check"), isNew ? "Create rule" : "Save");
@@ -1034,9 +1066,9 @@ function editRule(rule, opts = {}) {
     body: [
       h("div", { class: "row between al-ed-top" }, sw, locked ? h("span", { class: "small muted" }, "Built in: only severity, on/off and route change.") : null, !fleet ? h("span", { class: "small muted" }, "This server checks each point: window, resolve, scope, owner, runbook and route need a newer strata-server.") : null),
       h("div", { class: "grid g2" }, field("Name", name), field("Metric", metric, METRICS[x.metric] ? `unit: ${unitOf(x.metric) === "pct" ? "%" : unitOf(x.metric)}` : null)),
-      h("div", { class: "row al-ed-row" }, field("Evaluated on", scopeSeg), field("Value", evalSeg), field("Window, minutes", win)),
+      h("div", { class: "row al-ed-row" }, field("Evaluated on", scopeSeg), field("Value", evalSeg), h("label", { class: "f" }, "Window", h("span", { class: "row nw", style: { gap: "4px" } }, win, winUnit))),
       h("div", { class: "row al-ed-row" }, field("Fires when the value is", opSeg), h("label", { class: "f" }, "Threshold", h("span", { class: "row nw", style: { gap: "4px" } }, thr, unitEls[0])), field("Held for, seconds", forS), field("Severity", sevSeg), h("label", { class: "f" }, "Resolves at", h("span", { class: "row nw", style: { gap: "4px" } }, res, unitEls[1]))),
-      h("section", { class: "card", style: { marginTop: "4px" } }, h("div", { class: "hd" }, btTitle, h("span", { class: "sub" }, "shaded: when it would have fired"), h("div", { class: "tools" }, spanSeg)), h("div", { class: "bd" }, btChart, verdict)),
+      h("section", { class: "card al-edbt", style: { marginTop: "4px" } }, h("div", { class: "hd" }, btTitle, h("span", { class: "sub" }, "shaded: when it would have fired"), h("div", { class: "tools" }, spanSeg)), h("div", { class: "bd" }, btChart, verdict)),
       h("div", { class: "grid g2" }, field("Owner", owner), field("Runbook", runbook)),
       h("div", { class: "grid g2" }, field("Route", routeSel, "who is told: routes are set in Routes"), field("Description (sent with the message)", desc)),
     ],

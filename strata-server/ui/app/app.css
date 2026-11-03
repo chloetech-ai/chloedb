@@ -2003,7 +2003,7 @@ a.al-goto > svg { color: var(--muted); flex: none; }
   .al-row .card .hd { flex-wrap: wrap; }
   .al-rhd { flex-wrap: wrap; }
   .al-rhd .tools { width: 100%; flex-wrap: wrap; gap: 8px; }
-  .al-rhd .seg { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .al-rhd .seg { max-width: 100%; flex-wrap: wrap; }
   .al-rhd .tools .input, .al-rhd .tools input { flex: 1 1 100%; min-height: 40px; font-size: 16px; }
   .al-row .card .hd .tools { width: 100%; }
   /* Logs */
@@ -2040,7 +2040,8 @@ a.al-goto > svg { color: var(--muted); flex: none; }
   a.al-goto { min-height: 44px; }
   .al-missed { flex-wrap: wrap; }
   .al-missed > span { white-space: normal; }
-  .al-ed-row .seg { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .al-ed-row .seg { max-width: 100%; flex-wrap: wrap; }
+  .al-ed-row > label.f:has(> .seg) { flex-basis: 100%; }
   .al-rotbl table, .al-rotbl tbody, .al-rotbl td { display: block; }
   .al-rotbl thead { display: none; }
   .al-rotbl tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name test" "url url" "st st" "sev sent"; gap: 4px 10px; padding: 10px 2px; border-bottom: 1px solid var(--line); align-items: center; }
@@ -2049,10 +2050,14 @@ a.al-goto > svg { color: var(--muted); flex: none; }
   .al-rotbl td.al-ro-st { grid-area: st; } .al-rotbl td.al-ro-sev { grid-area: sev; } .al-rotbl td.al-ro-sent { grid-area: sent; justify-self: end; }
   .al-rotbl tr:not(:has(.al-ro-name)) { display: flex; flex-direction: column; align-items: stretch; }
   .al-ed-row { flex-wrap: wrap; }
-  .al-ed-row > * { flex: 1 1 140px; }
+  .al-ed-row > * { flex: 1 1 140px; min-width: 0; max-width: 100%; }
 }
 @media (max-width: 560px) {
   .al-hax .al-hax-odd { display: none; }
+  h1.al-htitle { flex-wrap: wrap; row-gap: 4px; }
+  .al-edbt > .hd { flex-wrap: wrap; row-gap: 8px; }
+  .al-edbt > .hd h3 { flex: 1 1 100%; }
+  .al-edbt > .hd .sub { display: none; }
   .al-lsub { display: none; }
   .al-dkv td { vertical-align: middle; }
   .al-sqrow > .btn { flex: 1 1 0; justify-content: center; min-height: 40px; }
