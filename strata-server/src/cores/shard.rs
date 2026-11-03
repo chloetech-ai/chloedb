@@ -458,6 +458,8 @@ pub struct Tally {
     pub need: usize,
     /// The newest term a copy said it knows.
     pub newer: u64,
+    /// The newest last transaction a copy said it holds, as (term, number).
+    pub last: (u64, u64),
     /// What each copy answered.
     pub said: Json,
 }
@@ -473,7 +475,7 @@ impl Campaign {
     /// counted again.
     pub fn tally(&self, copies: &[String], answers: Vec<Result<pb::VoteResponse, String>>) -> Tally {
         let mut others = Vec::new();
-        let (mut granted, mut newer, mut said) = (1, 0, Vec::new());
+        let (mut granted, mut newer, mut last, mut said) = (1, 0, (0, 0), Vec::new());
         for (url, a) in copies.iter().zip(answers) {
             match a {
                 Ok(a) if a.candidate => {}
@@ -481,6 +483,7 @@ impl Campaign {
                     others.push(url.clone());
                     granted += a.granted as usize;
                     newer = newer.max(a.term);
+                    last = last.max((a.last_term, a.last_seq));
                     let mut j = json!({"url": url, "granted": a.granted, "term": a.term, "seq_no": a.last_seq});
                     if !a.reason.is_empty() {
                         j["reason"] = json!(a.reason);
@@ -494,7 +497,7 @@ impl Campaign {
             }
         }
         let need = (others.len() + 1) / 2 + 1;
-        Tally { others, granted, need, newer, said: Json::Array(said) }
+        Tally { others, granted, need, newer, last, said: Json::Array(said) }
     }
 
     fn lost(&self, round: &str, t: &Tally) -> ApiError {
@@ -800,6 +803,9 @@ pub struct Primary {
     pub progress: u64,
     /// It takes no writes before then ([`handover_hold`]).
     pub writes_from: Option<Instant>,
+    /// It takes no writes until then, as a copy asks it to hand the shard
+    /// over ([`Self::hand_over`]), unless it answered that copy's vote first.
+    pub handing_over: Option<Instant>,
     gen: u64,
 }
 
@@ -815,7 +821,7 @@ impl Primary {
         let next = Kept { role: Some(KeptRole::Primary { replicas: replicas.to_vec(), acks: opts.acks }), member: true, ..kept.clone() };
         let save = (next != kept).then_some(next);
         let kept = save.clone().unwrap_or(kept);
-        let mut p = Primary { id: kept.id.clone(), opts, peers: replicas.iter().map(|u| Peer::new(u, joining)).collect(), fenced: 0, kept, progress: 0, writes_from: None, gen: 0 };
+        let mut p = Primary { id: kept.id.clone(), opts, peers: replicas.iter().map(|u| Peer::new(u, joining)).collect(), fenced: 0, kept, progress: 0, writes_from: None, handing_over: None, gen: 0 };
         p.gen = 1;
         for peer in &mut p.peers {
             peer.owner = p.gen;
@@ -937,6 +943,31 @@ impl Primary {
         (a, Some(Kept { voted: Some((r.term, r.candidate.clone())), ..kept }))
     }
 
+    /// A copy asked whether it would vote for it in a handover (a
+    /// promotion by hand): it takes no writes until `until`, so that the
+    /// copy can catch up with it before it asks for the vote, which a copy
+    /// missing a transaction it holds is refused. False when another
+    /// primary replaced it, which takes no writes anyway.
+    pub fn hand_over(&mut self, until: Instant) -> bool {
+        if self.fenced > 0 {
+            return false;
+        }
+        self.handing_over = Some(until);
+        true
+    }
+
+    /// It answered handover vote `r`, at `n`, with `a`: it takes writes
+    /// again, unless it granted it or refused a copy only behind it, which
+    /// catches up and asks again. A vote granted, not a question, steps
+    /// it down ([`Self::gave_vote`]).
+    pub fn answered_handover(&mut self, r: &pb::VoteRequest, n: &Numbering, a: &pb::VoteResponse) {
+        let last = n.last();
+        let behind = (r.last_term, r.last_seq) < (last.term, last.seq);
+        if !r.pre || !(a.granted || behind) {
+            self.handing_over = None;
+        }
+    }
+
     /// It kept `kept`, its vote for another copy in term `term`: it steps
     /// down, as a primary the new one replaced. Returns what to keep then.
     pub fn gave_vote(&mut self, kept: Kept, term: u64, mine: u64) -> Option<Kept> {
@@ -947,8 +978,9 @@ impl Primary {
 
     /// Whether a write may be applied at term `term` at `now`: not on a
     /// primary another replaced (409), not before [`Self::writes_from`]
-    /// (503), and, unless only the primary acknowledges, while a majority
-    /// of copies is in sync (503).
+    /// nor while it hands the shard over ([`Self::hand_over`]) (503), and,
+    /// unless only the primary acknowledges, while a majority of copies is
+    /// in sync (503).
     pub fn admit(&self, term: u64, now: Instant) -> Result<(), ApiError> {
         if self.fenced > 0 {
             return Err(conflict(format!("a copy holds term {}, newer than this primary's ({term}): another primary replaced this one, which takes no more writes", self.fenced)));
@@ -958,6 +990,9 @@ impl Primary {
                 "this primary was promoted by hand, and the primary it replaced may serve reads for {} ms more: it takes writes after that",
                 (from - now).as_millis()
             )));
+        }
+        if self.handing_over.is_some_and(|until| until > now) {
+            return Err(unavailable("this primary is handing its shard over to another copy, which takes the writes once elected: the write was not applied".into()));
         }
         if self.opts.acks != Acks::Primary {
             let up = 1 + self.peers.iter().filter(|p| p.member && p.in_sync).count();
@@ -1481,5 +1516,43 @@ mod tests {
         p.writes_from = Some(t0 + Duration::from_millis(1000));
         assert_eq!(p.admit(3, t0).unwrap_err().status, 503);
         assert!(p.admit(3, t0 + Duration::from_millis(1000)).is_ok());
+    }
+
+    #[test]
+    fn a_primary_asked_to_hand_over_takes_no_writes_until_it_answers_the_vote() {
+        let opts = Opts { acks: Acks::Primary, heartbeat: Duration::from_millis(250), retry_max: Duration::from_secs(2), copy_retry: Duration::from_secs(30), lease: Duration::ZERO };
+        let (mut p, _) = Primary::new(Kept::new("p".into()), &["q".into()], opts, false);
+        let (t0, at, pause) = (Instant::now(), n(1, 5, &[(1, 1)]), Duration::from_secs(2));
+        let handover = |last: (u64, u64), pre: bool| pb::VoteRequest { handover: true, ..ask(2, "q", last, pre) };
+        assert!(p.hand_over(t0 + pause));
+        let e = p.admit(1, t0).unwrap_err();
+        assert!(e.status == 503 && e.message.contains("the write was not applied"), "{}", e.message);
+        // A copy a transaction behind would not be voted for; it catches up,
+        // and no write comes meanwhile.
+        let r = handover((1, 4), true);
+        let (a, _) = p.vote(&r, &at);
+        assert!(!a.granted && a.reason.contains("past the candidate's last"), "{}", a.reason);
+        p.answered_handover(&r, &at, &a);
+        assert!(p.admit(1, t0).is_err());
+        // Refused the vote itself: it takes writes again.
+        let r = handover((1, 4), false);
+        let (a, _) = p.vote(&r, &at);
+        assert!(!a.granted);
+        p.answered_handover(&r, &at, &a);
+        assert!(p.admit(1, t0).is_ok());
+        // Asked for a vote it would not grant for another reason: at once.
+        let r = handover((1, 5), true);
+        assert!(p.hand_over(t0 + pause));
+        let (a, _) = p.vote(&ask(1, "q", (1, 5), true), &at);
+        assert!(!a.granted);
+        p.answered_handover(&r, &at, &a);
+        assert!(p.admit(1, t0).is_ok());
+        // Asked and never voted: once the pause ran out.
+        assert!(p.hand_over(t0 + pause));
+        assert!(p.admit(1, t0).is_err());
+        assert!(p.admit(1, t0 + pause).is_ok());
+        // Replaced, it takes no writes anyway.
+        p.fenced = 2;
+        assert!(!p.hand_over(t0 + pause));
     }
 }
