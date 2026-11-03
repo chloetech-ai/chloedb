@@ -118,6 +118,94 @@ fn subqueries() {
     assert_eq!(set(&got, 0), want);
 }
 
+/// Rows in an order of their own, for answers whose order is not asked for.
+fn sorted(mut rows: Vec<Vec<Value>>) -> Vec<Vec<Value>> {
+    rows.sort_by_key(|r| format!("{r:?}"));
+    rows
+}
+
+/// `SELECT *` over a `WITH` result is the result's columns, not those of the
+/// table its rows come from, which an outer query may still name.
+#[test]
+fn star_over_with_is_its_columns() {
+    let ps = papers();
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(dir.path(), &ps);
+    let answer = |sql: &str| {
+        let r = db.query(sql, &Params::new()).unwrap_or_else(|e| panic!("{sql}: {e}"));
+        (r.columns, r.rows)
+    };
+    let names = |ns: &[&str]| ns.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+
+    // Every column of the table came back.
+    let (columns, got) = answer("WITH x AS (SELECT id FROM papers) SELECT * FROM x");
+    assert_eq!(columns, ["id"]);
+    assert!(got.iter().all(|r| r.len() == 1));
+    assert_eq!(set(&got, 0), ps.iter().map(|p| p.id.clone()).collect());
+
+    // In the WITH's order and cut, as `recent.*`, and with a column of the
+    // table named too or filtering it.
+    let mut recent: Vec<&Paper> = ps.iter().collect();
+    recent.sort_by(|a, b| b.year.cmp(&a.year).then(a.id.cmp(&b.id)));
+    let recent = &recent[..10];
+    let want: Vec<Vec<Value>> = recent.iter().map(|p| vec![Value::Str(p.id.clone()), Value::Int(p.year)]).collect();
+    let with = "WITH recent AS (SELECT id, year FROM papers ORDER BY year DESC, id LIMIT 10)";
+    assert_eq!(answer(&format!("{with} SELECT * FROM recent")), (names(&["id", "year"]), want.clone()));
+    assert_eq!(answer(&format!("{with} SELECT recent.* FROM recent LIMIT 3")), (names(&["id", "year"]), want[..3].to_vec()));
+    let (columns, got) = answer(&format!("{with} SELECT *, kind FROM recent"));
+    assert_eq!(columns, ["id", "year", "kind"]);
+    assert_eq!(strs(&got, 2), recent.iter().map(|p| p.kind.clone()).collect::<Vec<_>>());
+    let surveys: Vec<Vec<Value>> = recent.iter().zip(&want).filter(|(p, _)| p.kind == "survey").map(|(_, r)| r.clone()).collect();
+    assert_eq!(answer(&format!("{with} SELECT * FROM recent WHERE kind = 'survey'")), (names(&["id", "year"]), surveys.clone()));
+
+    // Through another WITH, a derived table, DISTINCT and UNION ALL.
+    assert_eq!(answer(&format!("{with}, again AS (SELECT * FROM recent) SELECT * FROM again")), (names(&["id", "year"]), want.clone()));
+    assert_eq!(answer(&format!("{with} SELECT * FROM (SELECT * FROM recent) AS r")), (names(&["id", "year"]), want.clone()));
+    let (columns, got) = answer(&format!("{with} SELECT DISTINCT * FROM recent"));
+    assert_eq!((columns, sorted(got)), (names(&["id", "year"]), sorted(want.clone())));
+    let others: Vec<Vec<Value>> = recent.iter().zip(&want).filter(|(p, _)| p.kind != "survey").map(|(_, r)| r.clone()).collect();
+    let (columns, got) = answer(&format!("{with} SELECT * FROM recent WHERE kind = 'survey' UNION ALL SELECT * FROM recent WHERE kind != 'survey'"));
+    assert_eq!((columns, sorted(got)), (names(&["id", "year"]), sorted([surveys, others].concat())));
+
+    // Joined: the result's columns, then the table's.
+    let join = "WITH s AS (SELECT id FROM papers WHERE year = 1995) SELECT {} FROM s JOIN papers p ON p.cites = s.id";
+    let (columns, got) = answer(&join.replace("{}", "*"));
+    assert_eq!(columns, ["s.id", "p.id", "p.title", "p.year", "p.kind", "p.cites"]);
+    assert!(!got.is_empty());
+    assert_eq!(sorted(got), sorted(answer(&join.replace("{}", "s.id, p.id, p.title, p.year, p.kind, p.cites")).1));
+    let (columns, got) = answer(&join.replace("{}", "s.*, p.id"));
+    assert_eq!(columns, ["s.id", "p.id"]);
+    assert_eq!(sorted(got), sorted(answer(&join.replace("{}", "s.id, p.id")).1));
+
+    // Reranked: `*` is the columns of the step it reads.
+    let top = "WITH top AS (SELECT id FROM papers ORDER BY bm25(title, 'graph search') DESC LIMIT 50)";
+    let rerank = format!("{top} SELECT {{}} FROM top ORDER BY bm25(title, 'graph search') * year DESC LIMIT 5");
+    let (columns, got) = answer(&rerank.replace("{}", "*"));
+    assert_eq!(columns, ["id"]);
+    assert_eq!(got, answer(&rerank.replace("{}", "id")).1);
+    let steps = "WITH a AS (SELECT id, year FROM papers ORDER BY bm25(title, 'graph search') DESC LIMIT 50), b AS (SELECT * FROM a ORDER BY bm25(title, 'vector') DESC LIMIT 20) SELECT {} FROM b ORDER BY year DESC LIMIT 5";
+    let (columns, got) = answer(&steps.replace("{}", "*"));
+    assert_eq!(columns, ["id", "year"]);
+    assert_eq!(got, answer(&steps.replace("{}", "id, year")).1);
+
+    // Columns that are not the table's, a score and a hop count, are read
+    // from the WITH's rows, by `*` or by name: here the score is under the
+    // name of a column of the table, which it is not.
+    let ranked = answer("SELECT id, score() AS s FROM papers ORDER BY bm25(title, 'graph search') DESC LIMIT 10").1;
+    for (with, names_) in [("s", ["id", "s"]), ("year", ["id", "year"])] {
+        let top = format!("WITH top AS (SELECT id, score() AS {with} FROM papers ORDER BY bm25(title, 'graph search') DESC LIMIT 10)");
+        let (columns, got) = answer(&format!("{top} SELECT * FROM top"));
+        assert_eq!((columns, sorted(got)), (names(&names_), sorted(ranked.clone())), "{top}");
+        assert_eq!(sorted(answer(&format!("{top} SELECT id, {with} FROM top")).1), sorted(ranked.clone()), "{top}");
+    }
+    let from = ps.iter().rev().find(|p| !p.cites.is_empty()).unwrap();
+    let walk = format!("SELECT id, hops() AS h FROM papers WHERE REACHABLE(cites, '{}') LIMIT 1000", from.id);
+    let (columns, got) = answer(&format!("WITH r AS ({walk}) SELECT * FROM r"));
+    assert_eq!(columns, ["id", "h"]);
+    assert!(!got.is_empty());
+    assert_eq!(sorted(got), sorted(answer(&walk).1));
+}
+
 #[test]
 fn with_and_derived_tables() {
     let ps = papers();

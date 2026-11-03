@@ -427,9 +427,16 @@ class Database(Search):
         return {p: dict(cs) for p, cs in zip(prefixes, got)}
 
     def optimize(self) -> None:
-        """Writes the rows still in memory into segments and merges small
-        segments (many small writes leave many)."""
+        """Readies a table that is done changing for queries: writes the
+        rows still in memory into segments, merges its segments into as few
+        as it can (one, up to 2,000,000 rows; a query visits each), drops
+        deleted rows, and returns the space this frees to the file system."""
         self._db.optimize()
+
+    def vacuum(self) -> int:
+        """Returns the space merges freed to the file system (they reuse it
+        otherwise); the number of bytes the file shrank by."""
+        return self._db.vacuum()
 
     def close(self) -> None:
         """Merges small segments and closes the database."""

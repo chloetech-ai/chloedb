@@ -34,7 +34,7 @@ fn queries_borrow_the_pools_threads() {
         "SELECT id, score() FROM docs WHERE year >= 2000 ORDER BY rrf(bm25(body, :t), similarity(emb, :q)) DESC LIMIT 10",
     ];
     let alone: Vec<Vec<Vec<Value>>> = queries.iter().map(|sql| db.query_with(sql, &params, &ExecOptions::default()).unwrap().rows).collect();
-    let four = ExecOptions { threads: 4, ..ExecOptions::default() };
+    let four = ExecOptions { threads: 4, fan_out_rows: 0, ..ExecOptions::default() };
     // The pool starts with the first query that asks for threads.
     db.query_with(queries[0], &params, &four).unwrap();
     let before = threads_started();
@@ -55,7 +55,7 @@ fn queries_borrow_the_pools_threads() {
             s.spawn(|| {
                 for _ in 0..20 {
                     for (sql, rows) in queries.iter().zip(&alone) {
-                        let opts = ExecOptions { threads: 8, ..ExecOptions::default() };
+                        let opts = ExecOptions { threads: 8, fan_out_rows: 0, ..ExecOptions::default() };
                         assert_eq!(&db.query_with(sql, &params, &opts).unwrap().rows, rows, "{sql}");
                     }
                 }

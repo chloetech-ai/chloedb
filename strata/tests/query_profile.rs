@@ -46,7 +46,7 @@ fn a_query_s_steps_are_its_operators_and_segments() {
     let params = Params::new().set("t", Value::Str(title)).set("q", docs[3][data::col::EMB].clone());
 
     let sql = "SELECT id, score() FROM docs WHERE year >= 1990 ORDER BY bm25(body, :t) DESC LIMIT 10";
-    let profiled = ExecOptions { threads: 4, profile: true, ..ExecOptions::default() };
+    let profiled = ExecOptions { threads: 4, fan_out_rows: 0, profile: true, ..ExecOptions::default() };
     let rs = db.query_with(sql, &params, &profiled).unwrap();
     let steps = &rs.stats.steps;
     well_formed(steps);

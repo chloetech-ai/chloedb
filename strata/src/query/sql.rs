@@ -163,6 +163,44 @@ pub(crate) fn parse_query(sql_text: &str) -> Result<Box<sql::Query>> {
     }
 }
 
+/// A SELECT as [`parse_query_cached`] keeps it.
+pub(crate) struct Parsed {
+    pub query: sql::Query,
+    /// Whether its text names `rank_profile` (else it calls none, and
+    /// planning skips looking for one: [`crate::query::profile::expand`]).
+    pub profiles: bool,
+}
+
+/// Statements [`parse_query_cached`] keeps, and the longest text it keeps
+/// one of: a statement takes its values as parameters, so an app repeats a
+/// few texts, and one that writes its values into the text (a vector
+/// literal) gains little from a cache.
+const PARSED_KEPT: usize = 1024;
+const PARSED_TEXT_MAX: usize = 4096;
+
+/// [`parse_query`], from a process-wide cache of the SELECTs parsed so far
+/// by their text: parsing takes a fifth of a small query's time (12 µs of
+/// 58 µs for BM25 on nfcorpus), and an app runs the same few statements
+/// with new parameters. A full cache is emptied; errors are not kept.
+pub(crate) fn parse_query_cached(sql_text: &str) -> Result<Arc<Parsed>> {
+    use std::sync::{OnceLock, RwLock};
+    static KEPT: OnceLock<RwLock<HashMap<String, Arc<Parsed>>>> = OnceLock::new();
+    let kept = KEPT.get_or_init(|| RwLock::new(HashMap::new()));
+    if let Some(p) = kept.read().unwrap_or_else(|e| e.into_inner()).get(sql_text) {
+        return Ok(p.clone());
+    }
+    let profiles = sql_text.as_bytes().windows(12).any(|w| w.eq_ignore_ascii_case(b"rank_profile"));
+    let p = Arc::new(Parsed { query: *parse_query(sql_text)?, profiles });
+    if sql_text.len() <= PARSED_TEXT_MAX {
+        let mut m = kept.write().unwrap_or_else(|e| e.into_inner());
+        if m.len() >= PARSED_KEPT {
+            m.clear();
+        }
+        m.insert(sql_text.to_string(), p.clone());
+    }
+    Ok(p)
+}
+
 /// Parses and binds one INSERT, UPDATE or DELETE of `schema`'s table;
 /// `None` for a SELECT.
 pub fn bind_write(sql_text: &str, schema: &Schema, params: &Params) -> Result<Option<Write>> {

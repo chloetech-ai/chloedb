@@ -9,7 +9,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: vespa
-  namespace: compare
+  namespace: __NS__
 spec:
   clusterIP: None
   # Names resolve before a node is ready: the nodes find each other by name.
@@ -23,7 +23,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: vespa-__I__
-  namespace: compare
+  namespace: __NS__
   labels: {app: vespa, engine: vespa}
 spec:
   hostname: vespa-__I__
@@ -35,7 +35,7 @@ spec:
       imagePullPolicy: IfNotPresent
       args: ["__ROLE__"]
       env:
-        - {name: VESPA_CONFIGSERVERS, value: vespa-0.vespa.compare.svc.cluster.local}
+        - {name: VESPA_CONFIGSERVERS, value: vespa-0.vespa.__NS__.svc.cluster.local}
         - {name: VESPA_IGNORE_NOT_ENOUGH_MEMORY, value: "true"}
         - {name: VESPA_CONFIGSERVER_JVMARGS, value: "-Xms128m -Xmx384m"}
         - {name: VESPA_CONFIGPROXY_JVMARGS, value: "-Xms32m -Xmx64m"}

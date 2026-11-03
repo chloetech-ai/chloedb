@@ -38,6 +38,19 @@ impl Default for MergePolicy {
     }
 }
 
+impl MergePolicy {
+    /// The policy of a table done changing (an `optimize` after a load):
+    /// its segments of up to `max_merged_docs / 2` live rows merge into as
+    /// few as `max_merged_docs` allows (one, for a table of up to that many
+    /// rows), however few there are, and a segment with any deleted rows is
+    /// rewritten without them. A query visits every segment, so fewer
+    /// answer faster; [`MergePolicy::default`] leaves up to `merge_factor -
+    /// 1` per tier, rewriting each row fewer times as the table grows.
+    pub fn compact() -> MergePolicy {
+        MergePolicy { merge_factor: usize::MAX, floor_docs: usize::MAX, max_merged_docs: MergePolicy::default().max_merged_docs, max_deleted_ratio: 0.0 }
+    }
+}
+
 /// What a merge policy sees of a segment.
 #[derive(Clone, Copy, Debug)]
 pub struct SegmentInfo {
@@ -350,7 +363,9 @@ impl MergePolicy {
         let max_tier = cands.iter().map(tier).max().unwrap_or(0);
         for t in 0..=max_tier {
             let members: Vec<&SegmentInfo> = cands.iter().filter(|s| tier(s) == t).collect();
-            if members.len() < factor {
+            // A factor of usize::MAX ([`MergePolicy::compact`]) merges any two.
+            let need = if self.merge_factor == usize::MAX { 2 } else { factor };
+            if members.len() < need {
                 continue;
             }
             let mut group = Vec::new();
@@ -430,6 +445,21 @@ mod tests {
         // A mostly deleted segment is rewritten alone; the worst one first.
         let segs = [seg(1, 6000, 1000), seg(2, 6000, 6000), seg(3, 100, 0)];
         assert_eq!(p.select(&segs), Some(vec![3]));
+    }
+
+    #[test]
+    fn compact_merges_any_two_and_drops_every_delete() {
+        let p = MergePolicy::compact();
+        // Two segments of any size up to half the cap merge, all at once.
+        assert_eq!(p.select(&[seg(1, 50, 50), seg(2, 80_000, 80_000)]), Some(vec![1, 2]));
+        let segs: Vec<SegmentInfo> = (1..=9).map(|i| seg(i, 1000 * i as u32, 1000 * i as u32)).collect();
+        assert_eq!(p.select(&segs), Some((1..=9).collect()));
+        // One segment is left as it is, unless it has deleted rows.
+        assert_eq!(p.select(&[seg(1, 5000, 5000)]), None);
+        assert_eq!(p.select(&[seg(1, 5000, 4999)]), Some(vec![1]));
+        // The merged segment stays within max_merged_docs.
+        let big = [seg(1, 900_000, 900_000), seg(2, 900_000, 900_000), seg(3, 900_000, 900_000)];
+        assert_eq!(p.select(&big), Some(vec![1, 2]));
     }
 
     #[test]

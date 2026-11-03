@@ -132,10 +132,12 @@ struct GraphAdj<'x> {
 impl<'x> GraphAdj<'x> {
     /// The neighbours of row `d` of segment `s` along the rows of edge table
     /// `et`: the targets of the rows whose source is its key, the sources of
-    /// those whose target is (by direction), with positive weights.
-    fn edge_table_neighbors(&mut self, et: &mut EdgeTable, s: usize, d: DocId, reverse: bool, out: &mut Vec<(Node, f32)>) -> Result<()> {
+    /// those whose target is (by direction), with positive weights; once
+    /// their weights add up to more than `enough`, no more of them
+    /// ([`Adjacency::neighbors_upto`]): whether it gave them all.
+    fn edge_table_neighbors(&mut self, et: &mut EdgeTable, s: usize, d: DocId, reverse: bool, enough: f64, out: &mut Vec<(Node, f32)>) -> Result<bool> {
         let snap = self.snap;
-        let (Some(_), Some(pk)) = (&self.segs[s], snap.pk(s)) else { return Ok(()) };
+        let (Some(_), Some(pk)) = (&self.segs[s], snap.pk(s)) else { return Ok(true) };
         let key = pk.key_ref(d);
         let h = key_hash(key);
         let (fwd, back) = match (self.dir, reverse) {
@@ -144,6 +146,7 @@ impl<'x> GraphAdj<'x> {
             _ => (false, true),
         };
         let mut copied = 0;
+        let mut sum = 0.0;
         for seg in et.segs.iter_mut() {
             let Some(k) = seg.reader.find(key, h) else { continue };
             for leaving in [true, false] {
@@ -181,11 +184,17 @@ impl<'x> GraphAdj<'x> {
                     };
                     if let Some(n2) = n2 {
                         out.push((n2, w));
+                        sum += w as f64;
+                        if sum > enough {
+                            self.hold(copied)?;
+                            return Ok(false);
+                        }
                     }
                 }
             }
         }
-        self.hold(copied)
+        self.hold(copied)?;
+        Ok(true)
     }
 
     /// The live row with primary key `key`.
@@ -233,16 +242,20 @@ impl Adjacency for GraphAdj<'_> {
     }
 
     fn neighbors(&mut self, n: Node, reverse: bool, out: &mut Vec<(Node, f32)>) -> Result<()> {
+        self.neighbors_upto(n, reverse, f64::INFINITY, out).map(drop)
+    }
+
+    fn neighbors_upto(&mut self, n: Node, reverse: bool, enough: f64, out: &mut Vec<(Node, f32)>) -> Result<bool> {
         self.tick.tick()?;
         let (s, d) = split(n);
         if let Some(mut et) = self.edges.take() {
-            let r = self.edge_table_neighbors(&mut et, s, d, reverse, out);
+            let r = self.edge_table_neighbors(&mut et, s, d, reverse, enough, out);
             self.edges = Some(et);
             return r;
         }
         if let Some((k, min_sim, params)) = &self.knn {
             let Some(v) = self.segs[s].as_ref().and_then(|r| r.vectors).filter(|v| v.has_vector(d)).map(|v| v.vector(d).to_vec()) else {
-                return Ok(());
+                return Ok(true);
             };
             let mut hits: Vec<(f32, Node)> = Vec::new();
             for (i, r) in self.segs.iter().enumerate() {
@@ -255,7 +268,7 @@ impl Adjacency for GraphAdj<'_> {
             }
             hits.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
             out.extend(hits.into_iter().filter(|&(sim, m)| m != n && sim as f64 >= *min_sim).take(*k).map(|(sim, m)| (m, sim.max(1e-6))));
-            return Ok(());
+            return Ok(true);
         }
         let dir = match (self.dir, reverse) {
             (Direction::Out, true) => Direction::In,
@@ -263,8 +276,9 @@ impl Adjacency for GraphAdj<'_> {
             (d, _) => d,
         };
         if self.segs[s].is_none() {
-            return Ok(());
+            return Ok(true);
         }
+        let mut sum = 0.0;
         if matches!(dir, Direction::Out | Direction::Both) {
             let me = self.segs[s].as_ref().unwrap();
             if let Some(g) = me.graph {
@@ -281,13 +295,18 @@ impl Adjacency for GraphAdj<'_> {
                         _ => self.resolve(g.target(e)),
                     };
                     if let Some(n2) = hit {
-                        out.push((n2, g.weight(e)));
+                        let w = g.weight(e);
+                        out.push((n2, w));
+                        sum += w as f64;
+                        if sum > enough {
+                            return Ok(false);
+                        }
                     }
                 }
             }
         }
         if matches!(dir, Direction::In | Direction::Both) {
-            let Some(pk) = self.snap.pk(s) else { return Ok(()) };
+            let Some(pk) = self.snap.pk(s) else { return Ok(true) };
             let key = pk.key_ref(d);
             let h = key_hash(key);
             // Find every segment's group first, so a hub's in-edges are
@@ -304,19 +323,31 @@ impl Adjacency for GraphAdj<'_> {
                 let r = self.segs[s2].as_ref().unwrap();
                 let g = r.graph.unwrap();
                 if !g.has_labels_or_weights() && r.live.is_none() {
-                    // The common case reads the grouped sources in sequence.
-                    out.extend(group.map(|i| (node(s2, g.in_source(i)), 1.0)));
+                    // The common case reads the grouped sources in sequence,
+                    // each of weight 1.
+                    for i in group {
+                        out.push((node(s2, g.in_source(i)), 1.0));
+                        sum += 1.0;
+                        if sum > enough {
+                            return Ok(false);
+                        }
+                    }
                     continue;
                 }
                 for i in group {
                     let (src, e) = (g.in_source(i), g.in_edge(i));
                     if r.label_ok(g, e) && r.live(src) {
-                        out.push((node(s2, src), g.weight(e)));
+                        let w = g.weight(e);
+                        out.push((node(s2, src), w));
+                        sum += w as f64;
+                        if sum > enough {
+                            return Ok(false);
+                        }
                     }
                 }
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn passable(&mut self, n: Node) -> bool {

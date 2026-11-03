@@ -6,7 +6,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: redis
-  namespace: compare
+  namespace: __NS__
 spec:
   clusterIP: None
   publishNotReadyAddresses: true
@@ -18,7 +18,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: redis-0
-  namespace: compare
+  namespace: __NS__
   labels: {app: redis, engine: redis}
 spec:
   hostname: redis-0
@@ -29,8 +29,8 @@ spec:
       image: redis:8.8.4
       imagePullPolicy: IfNotPresent
       # Queries may take 10 s (as Vespa's timeout here) and fail past it, not answer in part after 500 ms.
-      args: [redis-server, --save, "", --appendonly, "no", --maxmemory, "5500mb", --maxmemory-policy, noeviction,
-             --search-workers, "3", --search-timeout, "10000", --search-on-timeout, fail]
+      args: [redis-server, --save, "", --appendonly, "no", --maxmemory, "__REDIS_MAXMEM__", --maxmemory-policy, noeviction,
+             --search-workers, "__THREADS__", --search-timeout, "10000", --search-on-timeout, fail]
       readinessProbe:
         tcpSocket: {port: api}
         periodSeconds: 2

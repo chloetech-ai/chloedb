@@ -353,6 +353,61 @@ fn bulk_loads_into_a_named_table() {
     db.check().unwrap();
 }
 
+/// Merging each table into one segment leaves the file with gaps that are
+/// each smaller than a segment above them (one table's old segments freed
+/// between the others' new ones); vacuum still brings it down to its live
+/// pages, moving a segment out of the way when no gap fits.
+#[test]
+fn vacuum_after_merging_each_table_into_one_segment() {
+    for seed in 0..40u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.strata");
+        let src = Arc::new(Source::default());
+        let o = options(&src, Layout::SingleFile);
+        let db = Database::create(&path, schema("t0"), o.clone()).unwrap();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        let mut want = BTreeMap::new();
+        for t in 0..3 {
+            let name = format!("t{t}");
+            if t > 0 {
+                db.create_table(schema(&name)).unwrap();
+            }
+            // Segments of one size per table, sizes differing between tables.
+            let (segs, per) = (rng.gen_range(2..10u64), rng.gen_range(50..700u64));
+            for s in 0..segs {
+                let mut tx = db.begin().unwrap();
+                for i in s * per..(s + 1) * per {
+                    tx.table(&name).unwrap().insert(put(&src, &name, doc(i, 0))).unwrap();
+                }
+                tx.commit().unwrap();
+                db.flush().unwrap();
+            }
+            want.insert(name, (0..segs * per).collect::<BTreeSet<u64>>());
+        }
+        db.merge(&MergePolicy::compact()).unwrap();
+        let snap = db.snapshot();
+        for t in want.keys() {
+            assert_eq!(snap.table(t).unwrap().segments().len(), 1, "seed {seed}: {t}");
+        }
+        drop(snap);
+        let before = db.file_stats();
+        db.vacuum().unwrap();
+        let after = db.file_stats();
+        // What is left beyond live data: the last commit's pending frees.
+        // What is left beyond live data: the last commit's pending frees,
+        // and gaps the segments do not fit in, too few to be worth moving
+        // everything for.
+        assert!(after.pending_pages <= 8 && after.free_pages < 16.max(after.page_count / 16), "seed {seed}: {} -> {after:?}", before.file_bytes);
+        assert!(after.file_bytes <= before.file_bytes, "seed {seed}");
+        assert_eq!(state(&db), want, "seed {seed}");
+        db.check().unwrap();
+        drop(db);
+        let db = Database::open(&path, o).unwrap();
+        assert_eq!(state(&db), want, "seed {seed}: reopened");
+        db.check().unwrap();
+    }
+}
+
 /// Files written by Strata before tables (main at 6b85211, with the
 /// program in `tests/fixtures/format1/README.md`): a single file and a
 /// directory, each with two flushes, deletes, values set in place and a
