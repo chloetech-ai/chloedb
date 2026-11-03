@@ -9,7 +9,7 @@
 
 import * as core from "../core.js";
 import { h, s, icon, clear, fmt, card, api, toast, bus, every, empty, clamp, seg, modal, tipOn, hideTip, copy } from "../core.js";
-import { state } from "../data.js";
+import { state, isProduction } from "../data.js";
 
 export default {
   id: "rollout", title: "Rollouts", icon: "rollout", group: "Change",
@@ -211,6 +211,8 @@ const diffBlock = (a, b) => h("pre", { class: "ro-diff" }, (a ? lineDiff(yaml(a)
  * audit log with the change.
  */
 function ask({ title, body, ok = "Confirm", danger = false, reason = null, wide = true }) {
+  // On production every change says why, as Cluster's Apply asks (NEW-cluster-admin-13).
+  if (reason === "optional" && isProduction()) reason = "required";
   return new Promise((resolve) => {
     let answered = false;
     const yes = h("button", { class: "btn " + (danger ? "danger solid" : "primary") }, ok);
@@ -517,6 +519,7 @@ function render(page, r) {
           image ? ["To", h("span", {}, vsaid(to), ` · the version of spec v${v.version}, ${clock(v.atMs)}${v.by ? " by " + who(v.by) : ""}`)] : ["To", `spec v${v.version}: ${summary(history().find((x) => x.version === v.version - 1)?.spec, v.spec)}`],
           ["Restarts", cost.n != null ? `${plural(cost.n, "copy", "copies")}, one at a time${cost.stay ? `; the ${plural(cost.stay, "copy", "copies")} already on ${vname(to)} do not restart` : ""}` : "every copy whose settings differ, one at a time"],
           ["Takes", cost.secs != null ? `about ${span(cost.secs)}` : "about as long as the rollout took"],
+          image ? ["On disk", `the files stay as they are. ${vname(to)} opens them only if it has every feature they use (the files list them): one that ${vname(from)} wrote since the upgrade stops a copy from starting, and says which.`] : null,
           ["Gates", "hold no step of a rollback, so that it goes through while the version it leaves is unwell"],
         ]),
         (plan.steps || []).length ? h("ol", { class: "ro-ol" }, plan.steps.map((x) => h("li", {}, said(x)))) : null,
@@ -554,19 +557,28 @@ function render(page, r) {
     const r0 = spec().rollout || {};
     const cmp = compareLink(from, to);
     const refused = plan.refused;
+    // An image built before the one that runs is a downgrade, said so (NEW-cluster-admin-9).
+    const older = sec(to.created) && sec(from.created) && sec(to.created) < sec(from.created);
+    const verb = older ? "Downgrade" : "Upgrade";
+    const onFail = (r0.onFailure || "rollback") === "rollback" ? "the operator rolls the change back" : "the change is held for you";
     const ok = await ask({
-      title: `Upgrade ${kube.namespace}/${kube.name} to ${vname(to)}?`, ok: refused ? "Refused" : `Upgrade ${n != null ? plural(n, "copy", "copies") : ""}`.trim(), reason: "optional",
+      title: `${verb} ${kube.namespace}/${kube.name} to ${vname(to)}?`, ok: refused ? "Refused" : `${verb} ${n != null ? plural(n, "copy", "copies") : ""}`.trim(), reason: "optional", danger: !!older,
       body: h("div", { class: "stack" },
         h("div", { class: "ro-fromto" },
           h("div", {}, h("div", { class: "ro-k" }, "From"), vsaid(from), h("div", { class: "small dim" }, map.length ? map.map((x) => `${plural(x.count, "copy", "copies")} on ${vname(x.v)}`).join(" · ") : "")),
           h("div", { class: "ro-arrow" }, "→"),
           h("div", {}, h("div", { class: "ro-k" }, "To"), vsaid(to), h("div", { class: "small dim" }, [(to.tags || []).includes("latest") ? "the newest on latest" : null, sec(to.created) ? "built " + ago(sec(to.created)) : null].filter(Boolean).join(" · ")))),
+        older ? h("div", { class: "ro-warnline" }, icon("warn"), h("span", {}, `This goes back to an older version: ${vname(to)} was built ${span((sec(from.created) - sec(to.created)) / 1000)} before ${vname(from)}, which runs now.`)) : null,
         cmp ? h("a", { href: cmp, target: "_blank", rel: "noopener", class: "small" }, icon("ext"), ` What changed between ${vname(from)} and ${vname(to)}`) : null,
         facts([
+          // What the files on disk become (RO-6): the format stays; the features in use decide.
+          ["On disk", older
+            ? `the files stay as they are. ${vname(to)} opens them only if it has every feature they use (the files list them). A copy that lacks one does not start and says which feature; then ${onFail}.`
+            : `the files stay as they are: ${vname(to)} reads them as written, and writes a newer feature only when a change uses it.`],
           ["Restarts", n != null ? `${plural(n, "copy", "copies")}, one at a time, replicas first; each primary hands over before it restarts` : "every copy, one at a time"],
           ["Takes", secs != null ? `about ${span(secs)}${per ? ` (${Math.round(per)} s a copy, as the last rollout went)` : ""}` : "unknown: this server does not estimate it"],
           ["Queries", "keep being answered all along: copies of both versions serve side by side"],
-          ["Rollback", `possible, ${back != null ? "about " + span(back) : "as long again"}. ${(r0.onFailure || "rollback") === "rollback" ? "If a step fails, the operator rolls it back on its own." : "If a step fails, it is held for you to resume or roll back."}`],
+          ["Rollback", `possible, ${back != null ? "about " + span(back) : "as long again"}, while the data uses no feature ${vname(from)} lacks. ${(r0.onFailure || "rollback") === "rollback" ? "If a step fails, the operator rolls it back on its own." : "If a step fails, it is held for you to resume or roll back."}`],
           ["Verify", `${r0.verifySeconds ?? 60} s healthy at the end: every copy back and in sync, the gates under their limits`],
         ]),
         (plan.steps || []).length ? h("details", {}, h("summary", { class: "small" }, `The operator's ${plural(plan.steps.length, "step")}`), h("ol", { class: "ro-ol" }, plan.steps.map((x) => h("li", {}, said(x))))) : null,
@@ -576,8 +588,8 @@ function render(page, r) {
     });
     if (!ok || refused) return;
     busy = true; draw();
-    try { kube = await api("/v1/admin/kube/upgrade", { body: { image, force }, reason: ok.reason }); toast(`Upgrading to ${vname(to)}: the operator restarts one copy at a time`, "ok"); setTab("now"); }
-    catch (e) { toast("Not upgraded: " + e.message, "bad", 9000); }
+    try { kube = await api("/v1/admin/kube/upgrade", { body: { image, force }, reason: ok.reason }); toast(`${older ? "Downgrading" : "Upgrading"} to ${vname(to)}: the operator restarts one copy at a time`, "ok"); setTab("now"); }
+    catch (e) { toast(`Not ${older ? "downgraded" : "upgraded"}: ${e.message}`, "bad", 9000); }
     busy = false; draw();
   }
   async function setMode(v) {
@@ -1102,9 +1114,12 @@ function render(page, r) {
     const find = h("input", { class: "input sm ro-find", placeholder: "Filter by tag or commit", value: filter.q, "aria-label": "Filter the versions" });
     find.oninput = () => { filter.q = find.value; const pos = find.selectionStart; drawUpgrades(); const n = body.querySelector(".ro-find"); n?.focus(); n?.setSelectionRange(pos, pos); };
     const only = h("label", { class: "row nw small" }, h("input", { type: "checkbox", checked: filter.newer, onchange: (e) => { filter.newer = e.target.checked; drawUpgrades(); } }), "only newer");
+    // A server that reports no image digest (machines of your own) says its
+    // version number: the image whose tag is that number runs it.
+    const runOf = (x) => runs.get(x.digest) || (x.image && runs.get(x.image)) || x.tags.map((t) => runs.get(t) || runs.get(t.replace(/^v(?=\d)/, ""))).find(Boolean) || 0;
     const tr = (x) => {
       const v = { ...x, track: reg.track };
-      const isRun = runs.get(x.digest);
+      const isRun = runOf(x);
       const badges = [
         x.current ? h("span", { class: "ro-chip cur", title: "The image the cluster's spec names" }, "current") : null,
         isRun && !x.current ? h("span", { class: "ro-chip run" }, `${fmt.n(isRun)} copies run it`) : null,
@@ -1120,7 +1135,7 @@ function render(page, r) {
         // Pinned by digest, as the upgrader does: every copy runs the same bits even if a tag moves on.
         onclick: () => upgrade(x.digest && reg.repository ? `${reg.repository}@${x.digest}` : x.image),
       }, x.newer ? "Upgrade…" : "Go back to it…");
-      return h("tr", { class: x.current ? "cur" : "" },
+      return h("tr", { class: x.current || (readOnly && isRun) ? "cur" : "" },
         h("td", { class: "ro-pk-v" }, h("div", { class: "row nw" }, h("b", { class: "ro-vn mono" }, vname(v)), named(v) && commitOf(v) ? h("span", { class: "small dim mono" }, commitOf(v).slice(0, 7)) : null, cl ? h("a", { href: cl, target: "_blank", rel: "noopener", title: "The commit", class: "ro-ext" }, icon("ext")) : null)),
         h("td", { class: "nowrap ro-pk-d" }, x.created ? [at(sec(x.created)), h("span", { class: "small dim" }, " · " + ago(sec(x.created)))] : h("span", { class: "dim" }, "–")),
         h("td", { class: "ro-pk-b" }, h("div", { class: "row" }, badges)),
@@ -1134,6 +1149,8 @@ function render(page, r) {
       body: h("div", { class: "stack", style: { gap: "10px" } },
         h("div", { class: "row" }, find, only),
         h("div", { class: "small" }, curRow ? ["The cluster runs ", h("b", {}, vname({ ...curRow, track: reg.track })), curRow.created ? `, built ${clock(sec(curRow.created))} ${TZ}` : "", ". ", newer ? h("b", {}, `${plural(newer, "newer build")}.`) : "Nothing newer is published.", cmp ? [" ", h("a", { href: cmp, target: "_blank", rel: "noopener" }, "What changed since")] : null]
+          : map.length ? ["Your servers run ", map.map((x, i) => [i ? ", " : "", h("b", {}, vname(x.v)), ` (${plural(x.count, "copy", "copies")})`]), ". ",
+            list.some(runOf) ? "Its row is marked." : "They report no image digest and no image here has that tag, so no row is marked: start them with STRATA_IMAGE set to the image they run.", " Published images, newest first."]
           : "Published images, newest first."),
         readOnly ? h("div", { class: "notice" }, "This server is not run by the Kubernetes operator, so nothing here changes the cluster. Copy an image's pull command, then restart your machines with it one copy at a time.") : null,
         moving(m) ? h("div", { class: "ro-warnline" }, icon("warn"), h("span", {}, "A change is under way: picking a version replaces it, from where it is.")) : null,
