@@ -532,10 +532,11 @@ up)
         hours=$(((deadline - $(now)) / 3600))
         log "cluster $(cluster_id) is there already: carrying on with it"
     else
-        # Every page of sizes (there are more than 200).
+        # Every page of sizes (there are more than 200; a page past the last
+        # has no "sizes").
         for page in 1 2 3; do do_api GET "/sizes?per_page=200&page=$page"; echo; done | python3 -c '
 import json, sys
-print(json.dumps({s["slug"]: s["price_hourly"] for l in sys.stdin if l.strip() for s in json.loads(l)["sizes"]}))' >"$STATE/prices.json"
+print(json.dumps({s["slug"]: s["price_hourly"] for l in sys.stdin if l.strip() for s in json.loads(l).get("sizes", [])}))' >"$STATE/prices.json"
         version=$(do_api GET /kubernetes/options | jq_ 'd["options"]["versions"][0]["slug"]')
         body=$(python3 - "$NAME" "$REGION" "$version" "$BASE_SIZE" <<'PY'
 import json, sys
