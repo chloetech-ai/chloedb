@@ -9,7 +9,14 @@ import * as core from "./core.js";
 import * as data from "./data.js";
 import { profileView } from "./profile.js";
 
-const { h, s, icon, clear, fmt, api, card, pill, empty, sqlBlock, copy, toast, modal, drawer, seg, showTip, hideTip, tipOn } = core;
+const { h, s, icon, clear, fmt, api, card, pill, empty, sqlBlock, copy, toast, modal, seg, showTip, hideTip, tipOn } = core;
+/** NEW-workload-9: a drawer closes when the page changes under it (Back, or a link inside it). */
+function drawer(o) {
+  const off = () => d.close();
+  const d = core.drawer({ ...o, onClose: () => { removeEventListener("hashchange", off); o.onClose?.(); } });
+  addEventListener("hashchange", off);
+  return d;
+}
 export const { state } = data;
 
 // ---------------------------------------------------------------- shell helpers, or a fallback
