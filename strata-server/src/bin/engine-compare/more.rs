@@ -544,6 +544,41 @@ fn plus(obj: &Json, name: &str, raw: &str) -> String {
     out
 }
 
+/// A key as a Meilisearch document id, which takes only letters, digits,
+/// `-` and `_` (MS MARCO's keys have `.` and `#`): `_` becomes `__` and any
+/// other byte `_` and two hex digits, so that [`meili_key`] gives it back.
+fn meili_id(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    for b in key.bytes() {
+        match b {
+            b'_' => out.push_str("__"),
+            b if b.is_ascii_alphanumeric() || b == b'-' => out.push(b as char),
+            b => out.push_str(&format!("_{b:02x}")),
+        }
+    }
+    out
+}
+
+/// The key a [`meili_id`] came from.
+fn meili_key(id: &str) -> String {
+    let b = id.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'_' && i + 1 < b.len() && b[i + 1] == b'_' {
+            out.push(b'_');
+            i += 2;
+        } else if b[i] == b'_' && i + 2 < b.len() {
+            out.push(u8::from_str_radix(&id[i + 1..i + 3], 16).unwrap_or(b'?'));
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// A 64-bit hash of a key as a UUID (Weaviate's object ids).
 fn uuid_of(key: &str) -> String {
     let a = twox_hash::XxHash3_64::oneshot_with_seed(0, key.as_bytes());
@@ -583,7 +618,7 @@ fn batch_req(o: Other, url: &str, rows: &[(RawDoc, Vec<f32>)], first: usize, avg
             body.extend(lines(
                 &|_, r, v| {
                     let mut d = fields(r);
-                    d["id"] = json!(r.id);
+                    d["id"] = json!(meili_id(&r.id));
                     plus(&d, "_vectors", &format!("{{\"default\":{}}}", vector_text(v)))
                 },
                 ",",
@@ -635,12 +670,15 @@ fn batch_req(o: Other, url: &str, rows: &[(RawDoc, Vec<f32>)], first: usize, avg
                 &|_, r, v| {
                     let mut d = fields(r);
                     d["key"] = json!(r.id);
-                    // VarChar's limit, in bytes.
-                    let mut b = r.body();
-                    while b.len() > 65_535 {
-                        b.pop();
-                    }
-                    d["body"] = json!(b);
+                    // VarChar's limit, in bytes (MS MARCO has titles of 45 KB).
+                    let cut = |mut t: String| {
+                        while t.len() > 65_535 {
+                            t.pop();
+                        }
+                        t
+                    };
+                    d["title"] = json!(cut(r.title.clone()));
+                    d["body"] = json!(cut(r.body()));
                     plus(&d, "emb", &vector_text(v))
                 },
                 ",",
@@ -671,8 +709,9 @@ fn batch_req(o: Other, url: &str, rows: &[(RawDoc, Vec<f32>)], first: usize, avg
                     sql,
                     "({}, {}, {}, {}, {}, {}, {}, {})",
                     sql_str(&r.id),
-                    sql_str(&r.title),
-                    sql_str(&r.body()),
+                    // Postgres text has no NUL (6 of MS MARCO's first 1M passages have one).
+                    sql_str(&r.title.replace('\0', " ")),
+                    sql_str(&r.body().replace('\0', " ")),
                     r.year,
                     sql_str(&r.category),
                     r.rating,
@@ -823,7 +862,7 @@ async fn setup(o: Other, c: &mut Conns, u: &str, dim: usize) -> Result<(), Strin
                     "collectionName": "docs",
                     "schema": {"autoId": false, "enableDynamicField": false, "fields": [
                         {"fieldName": "key", "dataType": "VarChar", "isPrimary": true, "elementTypeParams": {"max_length": 128}},
-                        var("title", 8192),
+                        var("title", 65535),
                         {"fieldName": "body", "dataType": "VarChar", "elementTypeParams": {"max_length": 65535,
                             "enable_analyzer": true, "enable_match": true, "analyzer_params": {"type": "english"}}},
                         {"fieldName": "year", "dataType": "Int64"},
@@ -1333,7 +1372,7 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 "hybrid (RRF)" => vector(v, 0.5, t),
                 "hybrid (weighted)" => vector(v, 0.8, t),
                 "facet" => json!({"q": format!("\"{w}\""), "limit": 0, "facets": ["category"]}),
-                "key lookup" => return Some(post(format!("{u}/indexes/docs/documents/fetch"), &json!({"ids": [key], "fields": ["id", "title", "year", "rating"]}))),
+                "key lookup" => return Some(post(format!("{u}/indexes/docs/documents/fetch"), &json!({"ids": [meili_id(key)], "fields": ["id", "title", "year", "rating"]}))),
                 "phrase" => {
                     let (a, b) = phrase.as_ref().unwrap();
                     base(&format!("\"{a} {b}\" {ws}"))
@@ -1344,7 +1383,7 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                     base(&format!("{before} {pre}"))
                 }
                 "similar items" => {
-                    let ids: Vec<String> = seen.iter().map(|k| format!("'{}'", k.replace('\'', "\\'"))).collect();
+                    let ids: Vec<String> = seen.iter().map(|k| format!("'{}'", meili_id(k))).collect();
                     with(vector(p.item, 1.0, ""), json!({"filter": format!("rating >= 3 AND id NOT IN [{}]", ids.join(", "))}))
                 }
                 _ => return None,
@@ -1813,8 +1852,8 @@ fn answer(o: Other, kind: &str, j: &Json) -> Json {
                 let d = j["facetDistribution"]["category"].as_object().cloned().unwrap_or_default();
                 rows(top_groups(d.into_iter().map(|(k, c)| (json!(k), c.as_u64().unwrap_or(0), None)).collect(), 5, 0))
             }
-            "key lookup" => pairs(&arr(&j["results"]), &|h| h["id"].clone(), &|_| Json::Null),
-            _ => pairs(&arr(&j["hits"]), &|h| h["id"].clone(), &|h| h["_rankingScore"].clone()),
+            "key lookup" => pairs(&arr(&j["results"]), &|h| json!(meili_key(h["id"].as_str().unwrap_or(""))), &|_| Json::Null),
+            _ => pairs(&arr(&j["hits"]), &|h| json!(meili_key(h["id"].as_str().unwrap_or(""))), &|h| h["_rankingScore"].clone()),
         },
         Other::Typesense => {
             let r = &j["results"][0];
@@ -2116,5 +2155,20 @@ mod tests {
         for (x, want) in cases {
             assert_eq!(super::f16_bits(x), want, "{x}");
         }
+    }
+
+    #[test]
+    fn meili_ids_take_only_what_meili_accepts_and_give_the_key_back() {
+        for key in ["msmarco_v2.1_doc_00_876874568#17_1626629849", "a__b", "_", "x_", "plain-01", "é/ü 'q'", ""] {
+            let id = super::meili_id(key);
+            assert!(id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'), "{id}");
+            assert_eq!(super::meili_key(&id), key);
+        }
+        assert_eq!(super::meili_id("doc_00.1#2"), "doc__00_2e1_232");
+    }
+
+    #[test]
+    fn vespa_text_keeps_what_vespa_takes() {
+        assert_eq!(crate::vespa_text("a\u{b}b\0c\td\ne\rf\u{fffe}g\u{1fffF}h é"), "a b c\td\ne\rf g h é");
     }
 }
