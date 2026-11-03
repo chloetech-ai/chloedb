@@ -324,7 +324,11 @@ impl Grpc {
         // A part whose deadline is its client's own (the coordinator says so):
         // one that passes is the client's doing, counted and logged so.
         let clients = req.metadata().get(crate::service::CLIENT_DEADLINE).is_some_and(|v| v == "client");
-        let call = keys::noting(crate::service::DEADLINE.scope(crate::service::Deadline::of_part(clients), crate::service::ROUTED.scope(std::cell::Cell::new(0), f(self.0.clone(), who.clone(), req.into_inner()))));
+        // The call itself, on the heap: a query's future is many kilobytes,
+        // and each wrapper below would otherwise move it again (a shard's
+        // query spent an eighth of its time copying it).
+        let call = Box::pin(f(self.0.clone(), who.clone(), req.into_inner()));
+        let call = keys::noting(crate::service::DEADLINE.scope(crate::service::Deadline::of_part(clients), crate::service::ROUTED.scope(std::cell::Cell::new(0), call)));
         let call = crate::telemetry::calling(Arc::new(caller), call);
         let (r, note) = crate::telemetry::traced(crate::telemetry::Trace::new(), obs::scope(Some(id.clone()), call)).instrument(span.clone()).await;
         let status = r.as_ref().map_or_else(|e| e.status, |_| 200);
