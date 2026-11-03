@@ -120,6 +120,8 @@ async fn a_shard_counts_its_client_s_deadline_as_the_client_s() {
     let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
     tokio::spawn(server::serve_grpc(svc.clone(), l, Default::default()));
     let mut c = strata_server::pb::strata_client::StrataClient::connect(url).await.unwrap();
+    // The sample the next point counts from.
+    svc.series.add(svc.sample());
     let part = |clients: bool| {
         let mut r = tonic::Request::new(strata_server::pb::QueryRequest { sql: JOIN.into(), timeout_ms: 1, shard: true, ..Default::default() });
         r.metadata_mut().insert(strata_server::obs::HEADER, (if clients { "l7-clients" } else { "l7-own" }).parse().unwrap());

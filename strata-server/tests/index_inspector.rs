@@ -296,6 +296,8 @@ async fn each_shards_reads_a_minute_are_the_last_minutes_and_the_drill_down_agre
     // The drill-down, over the same window.
     let d = strata_server::inspect::answer(&svc, strata_server::inspect::Asked::of(&json!({"table": "products", "sample": 0})).unwrap()).await.unwrap();
     assert_eq!(d["rates"]["window_s"].as_u64(), Some(60), "{}", d["rates"]);
-    assert_eq!(d["rates"]["reads_per_min"].as_f64(), Some(all), "{}", d["rates"]);
-    assert_eq!(d["rates"]["shards"]["0"]["reads_per_min"].as_f64(), Some(shard(0)), "{}", d["rates"]);
+    // Measured a few milliseconds later: the same within a tenth of a percent.
+    let near = |a: Option<f64>, b: f64| a.is_some_and(|a| (a - b).abs() <= b * 1e-3 + 0.1);
+    assert!(near(d["rates"]["reads_per_min"].as_f64(), all), "{} against {all}", d["rates"]);
+    assert!(near(d["rates"]["shards"]["0"]["reads_per_min"].as_f64(), shard(0)), "{} against {}", d["rates"], shard(0));
 }
