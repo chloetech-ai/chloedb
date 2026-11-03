@@ -562,8 +562,15 @@ function designer(host, bar, { seed, onCreated }) {
       h("div", { class: "small muted", style: { padding: "0 4px" } }, "Once created, ALTER TABLE adds, renames and drops its columns while it holds rows (a coordinator refuses DROP COLUMN): Change columns on the table opens it in the SQL workbench. References are recorded, not enforced."));
   }
   async function go() {
+    // NEW-data-tools-8: on production a table's statement says why, as the workbench's writes do.
+    let reason = null;
+    if (isProduction()) {
+      const ok = await confirm({ title: `Create ${d.table}?`, body: "This cluster counts as production: the table is made on every shard, and the audit log keeps the statement with your reason.", ok: "Create it", reason: true });
+      if (!ok) return;
+      reason = ok.reason;
+    }
     try {
-      await api("/v1/sql", { body: { sql: checked.j.sql } });
+      await api("/v1/sql", { body: { sql: checked.j.sql }, reason });
       toast(`${d.table} created`, "ok");
       store.del("schema.draft");
       invalidate(); await tables(true);
