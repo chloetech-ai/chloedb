@@ -1,0 +1,5 @@
+NAME               READY   STATUS    RESTARTS   AGE     IP              NODE                NOMINATED NODE   READINESS GATES
+load-vespa-xls65   0/1     Error     0          5m34s   10.121.8.218    vespa-c-a1-3eeyhs   <none>           <none>
+vespa-0            1/1     Running   0          7m51s   10.121.8.160    vespa-c-a1-3eeyhs   <none>           <none>
+vespa-1            1/1     Running   0          7m50s   10.121.11.238   vespa-d-a1-3eex2b   <none>           <none>
+vespa-2            1/1     Running   0          7m49s   10.121.9.79     vespa-d-a1-3eeyhl   <none>           <none>

@@ -1,0 +1,172 @@
+service/meili created
+pod/meili-0 created
+pod/meili-0 condition met
+job.batch/load-meili created
+meili: index created in 0.6 s
+meili: 25000 documents sent, 4 s
+meili: 50000 documents sent, 8 s
+meili: 75000 documents sent, 11 s
+meili: 100000 documents sent, 15 s
+meili: 125000 documents sent, 18 s
+meili: 150000 documents sent, 22 s
+meili: 175000 documents sent, 25 s
+meili: 200000 documents sent, 28 s
+meili: 225000 documents sent, 32 s
+meili: 250000 documents sent, 35 s
+meili: 275000 documents sent, 38 s
+meili: 300000 documents sent, 42 s
+meili: 325000 documents sent, 45 s
+meili: 350000 documents sent, 49 s
+meili: 375000 documents sent, 53 s
+meili: 400000 documents sent, 56 s
+meili: 425000 documents sent, 59 s
+meili: 450000 documents sent, 62 s
+meili: 475000 documents sent, 66 s
+meili: 500000 documents sent, 68 s
+meili: 525000 documents sent, 72 s
+meili: 550000 documents sent, 75 s
+meili: 575000 documents sent, 78 s
+meili: 600000 documents sent, 82 s
+meili: 625000 documents sent, 86 s
+meili: 650000 documents sent, 89 s
+meili: 675000 documents sent, 92 s
+meili: 700000 documents sent, 96 s
+meili: 725000 documents sent, 100 s
+meili: 750000 documents sent, 103 s
+meili: 775000 documents sent, 106 s
+meili: 800000 documents sent, 109 s
+meili: 825000 documents sent, 113 s
+meili: 850000 documents sent, 116 s
+meili: 875000 documents sent, 120 s
+meili: 900000 documents sent, 123 s
+meili: 925000 documents sent, 126 s
+meili: 950000 documents sent, 130 s
+meili: 975000 documents sent, 133 s
+meili: 1000000 documents sent, 137 s
+meili: 1000000 documents (10.8 GB) sent in 136.7 s
+read tcp 127.0.0.1:45696->127.0.0.1:36661: read: connection reset by peer
+error: read tcp 127.0.0.1:45696->127.0.0.1:36661: read: connection reset by peer
+meili: index_s in 1624.5 s
+meili: indexed 1624.5 s after the last write; 1761.1 s in all
+wrote /data/compare/load-meili.json
+job.batch/run-meili created
+meili     bm25                     c=1        134 q/s  p50   6.932 ms  p90  12.250 ms  p99  18.131 ms  errors 0
+meili     bm25                     c=4        458 q/s  p50   8.021 ms  p90  14.735 ms  p99  21.796 ms  errors 0
+meili     bm25                     c=16       708 q/s  p50  20.199 ms  p90  39.920 ms  p99  58.119 ms  errors 0
+meili     bm25 + filter            c=1        101 q/s  p50   9.320 ms  p90  14.327 ms  p99  20.173 ms  errors 0
+meili     bm25 + filter            c=4        326 q/s  p50  11.488 ms  p90  18.439 ms  p99  25.469 ms  errors 0
+meili     bm25 + filter            c=16       549 q/s  p50  26.644 ms  p90  47.849 ms  p99  69.241 ms  errors 0
+meili     vector                   c=1        180 q/s  p50   5.347 ms  p90   7.128 ms  p99   8.846 ms  errors 0
+meili     vector                   c=4        567 q/s  p50   6.865 ms  p90   9.118 ms  p99  11.838 ms  errors 0
+meili     vector                   c=16      1016 q/s  p50  15.088 ms  p90  23.521 ms  p99  32.533 ms  errors 0
+meili     vector + filter          c=1         75 q/s  p50  13.186 ms  p90  16.373 ms  p99  19.450 ms  errors 0
+meili     vector + filter          c=4        258 q/s  p50  15.521 ms  p90  18.717 ms  p99  22.015 ms  errors 0
+meili     vector + filter          c=16       432 q/s  p50  36.308 ms  p90  53.707 ms  p99  70.802 ms  errors 0
+meili     hybrid (RRF)             c=1         95 q/s  p50  10.251 ms  p90  15.699 ms  p99  22.104 ms  errors 0
+meili     hybrid (RRF)             c=4        319 q/s  p50  11.983 ms  p90  19.406 ms  p99  26.421 ms  errors 0
+meili     hybrid (RRF)             c=16       499 q/s  p50  29.601 ms  p90  53.204 ms  p99  77.881 ms  errors 0
+meili     hybrid (weighted)        c=1         82 q/s  p50  11.712 ms  p90  17.680 ms  p99  22.852 ms  errors 0
+meili     hybrid (weighted)        c=4        277 q/s  p50  13.826 ms  p90  21.035 ms  p99  28.566 ms  errors 0
+meili     hybrid (weighted)        c=16       456 q/s  p50  32.987 ms  p90  55.100 ms  p99  77.629 ms  errors 0
+meili     boosted (bm25 × decay)   unavailable: no function scores: a numeric field can sort results (sort ranking rule), not multiply their relevance
+meili     facet                    c=1        258 q/s  p50   3.834 ms  p90   6.422 ms  p99   9.971 ms  errors 0
+meili     facet                    c=4        851 q/s  p50   4.556 ms  p90   7.781 ms  p99  11.835 ms  errors 0
+meili     facet                    c=16      1476 q/s  p50   9.901 ms  p90  18.929 ms  p99  28.505 ms  errors 0
+meili     key lookup               c=1       2810 q/s  p50   0.348 ms  p90   0.397 ms  p99   0.472 ms  errors 0
+meili     key lookup               c=4       9272 q/s  p50   0.417 ms  p90   0.509 ms  p99   0.655 ms  errors 0
+meili     key lookup               c=16     15927 q/s  p50   0.981 ms  p90   1.265 ms  p99   1.750 ms  errors 0
+meili     phrase                   c=1        247 q/s  p50   2.666 ms  p90   9.334 ms  p99  15.202 ms  errors 0
+meili     phrase                   c=4        838 q/s  p50   3.080 ms  p90  11.302 ms  p99  19.090 ms  errors 0
+meili     phrase                   c=16      1415 q/s  p50   8.301 ms  p90  24.941 ms  p99  44.029 ms  errors 0
+meili     typo                     c=1        130 q/s  p50   7.041 ms  p90  12.383 ms  p99  17.896 ms  errors 0
+meili     typo                     c=4        422 q/s  p50   8.723 ms  p90  15.556 ms  p99  22.973 ms  errors 0
+meili     typo                     c=16       707 q/s  p50  20.593 ms  p90  39.110 ms  p99  59.427 ms  errors 0
+meili     prefix                   c=1        148 q/s  p50   6.119 ms  p90  10.845 ms  p99  15.045 ms  errors 0
+meili     prefix                   c=4        466 q/s  p50   7.920 ms  p90  14.074 ms  p99  20.147 ms  errors 0
+meili     prefix                   c=16       775 q/s  p50  18.669 ms  p90  35.267 ms  p99  54.053 ms  errors 0
+meili     similar items            c=1         99 q/s  p50   9.957 ms  p90  12.551 ms  p99  15.149 ms  errors 0
+meili     similar items            c=4        338 q/s  p50  11.642 ms  p90  15.081 ms  p99  18.394 ms  errors 0
+meili     similar items            c=16       581 q/s  p50  26.534 ms  p90  40.529 ms  p99  54.105 ms  errors 0
+meili     sql aggregate            unavailable: no grouped aggregates: facets count values, and facet stats give a numeric field's minimum and maximum only
+wrote /data/compare/run-meili.json
+job.batch/run-meili-pass2 created
+meili-pass2 bm25                     c=1        146 q/s  p50   6.398 ms  p90  11.548 ms  p99  15.598 ms  errors 0
+meili-pass2 bm25                     c=4        447 q/s  p50   8.242 ms  p90  15.237 ms  p99  21.479 ms  errors 0
+meili-pass2 bm25                     c=16       706 q/s  p50  20.424 ms  p90  39.721 ms  p99  60.589 ms  errors 0
+meili-pass2 bm25 + filter            c=1         99 q/s  p50   9.436 ms  p90  14.525 ms  p99  20.652 ms  errors 0
+meili-pass2 bm25 + filter            c=4        330 q/s  p50  11.369 ms  p90  18.172 ms  p99  25.079 ms  errors 0
+meili-pass2 bm25 + filter            c=16       544 q/s  p50  27.498 ms  p90  47.005 ms  p99  67.187 ms  errors 0
+meili-pass2 vector                   c=1        177 q/s  p50   5.493 ms  p90   7.089 ms  p99   8.264 ms  errors 0
+meili-pass2 vector                   c=4        572 q/s  p50   6.830 ms  p90   8.973 ms  p99  11.645 ms  errors 0
+meili-pass2 vector                   c=16      1018 q/s  p50  15.208 ms  p90  23.303 ms  p99  30.932 ms  errors 0
+meili-pass2 vector + filter          c=1         73 q/s  p50  13.670 ms  p90  16.985 ms  p99  19.918 ms  errors 0
+meili-pass2 vector + filter          c=4        257 q/s  p50  15.553 ms  p90  19.079 ms  p99  23.178 ms  errors 0
+meili-pass2 vector + filter          c=16       432 q/s  p50  35.689 ms  p90  54.348 ms  p99  67.946 ms  errors 0
+meili-pass2 hybrid (RRF)             c=1         91 q/s  p50  10.746 ms  p90  16.706 ms  p99  21.789 ms  errors 0
+meili-pass2 hybrid (RRF)             c=4        300 q/s  p50  12.779 ms  p90  20.777 ms  p99  27.812 ms  errors 0
+meili-pass2 hybrid (RRF)             c=16       498 q/s  p50  29.827 ms  p90  53.179 ms  p99  76.164 ms  errors 0
+meili-pass2 hybrid (weighted)        c=1         83 q/s  p50  11.462 ms  p90  17.160 ms  p99  21.751 ms  errors 0
+meili-pass2 hybrid (weighted)        c=4        277 q/s  p50  13.956 ms  p90  20.933 ms  p99  28.798 ms  errors 0
+meili-pass2 hybrid (weighted)        c=16       456 q/s  p50  32.537 ms  p90  56.372 ms  p99  78.384 ms  errors 0
+meili-pass2 boosted (bm25 × decay)   unavailable: no function scores: a numeric field can sort results (sort ranking rule), not multiply their relevance
+meili-pass2 facet                    c=1        267 q/s  p50   3.669 ms  p90   6.222 ms  p99   9.672 ms  errors 0
+meili-pass2 facet                    c=4        854 q/s  p50   4.561 ms  p90   7.721 ms  p99  11.605 ms  errors 0
+meili-pass2 facet                    c=16      1475 q/s  p50  10.073 ms  p90  18.679 ms  p99  27.487 ms  errors 0
+meili-pass2 key lookup               c=1       2709 q/s  p50   0.363 ms  p90   0.412 ms  p99   0.504 ms  errors 0
+meili-pass2 key lookup               c=4       9193 q/s  p50   0.422 ms  p90   0.515 ms  p99   0.649 ms  errors 0
+meili-pass2 key lookup               c=16     15814 q/s  p50   0.987 ms  p90   1.295 ms  p99   1.773 ms  errors 0
+meili-pass2 phrase                   c=1        280 q/s  p50   2.136 ms  p90   8.632 ms  p99  14.274 ms  errors 0
+meili-pass2 phrase                   c=4        823 q/s  p50   3.224 ms  p90  11.405 ms  p99  18.957 ms  errors 0
+meili-pass2 phrase                   c=16      1399 q/s  p50   8.218 ms  p90  25.482 ms  p99  43.689 ms  errors 0
+meili-pass2 typo                     c=1        133 q/s  p50   7.049 ms  p90  12.241 ms  p99  16.300 ms  errors 0
+meili-pass2 typo                     c=4        413 q/s  p50   8.923 ms  p90  16.299 ms  p99  22.289 ms  errors 0
+meili-pass2 typo                     c=16       718 q/s  p50  19.977 ms  p90  38.483 ms  p99  57.931 ms  errors 0
+meili-pass2 prefix                   c=1        146 q/s  p50   6.401 ms  p90  10.699 ms  p99  15.247 ms  errors 0
+meili-pass2 prefix                   c=4        464 q/s  p50   7.904 ms  p90  14.057 ms  p99  20.459 ms  errors 0
+meili-pass2 prefix                   c=16       789 q/s  p50  18.597 ms  p90  34.780 ms  p99  52.440 ms  errors 0
+meili-pass2 similar items            c=1         99 q/s  p50   9.982 ms  p90  12.805 ms  p99  14.325 ms  errors 0
+meili-pass2 similar items            c=4        329 q/s  p50  11.974 ms  p90  15.330 ms  p99  18.909 ms  errors 0
+meili-pass2 similar items            c=16       575 q/s  p50  26.808 ms  p90  41.157 ms  p99  54.371 ms  errors 0
+meili-pass2 sql aggregate            unavailable: no grouped aggregates: facets count values, and facet stats give a numeric field's minimum and maximum only
+wrote /data/compare/run-meili-pass2.json
+job.batch/run-meili-pass3 created
+meili-pass3 bm25                     c=1        138 q/s  p50   6.832 ms  p90  11.778 ms  p99  17.022 ms  errors 0
+meili-pass3 bm25                     c=4        460 q/s  p50   8.005 ms  p90  14.789 ms  p99  21.575 ms  errors 0
+meili-pass3 bm25                     c=16       705 q/s  p50  20.425 ms  p90  39.960 ms  p99  59.889 ms  errors 0
+meili-pass3 bm25 + filter            c=1        101 q/s  p50   9.289 ms  p90  14.506 ms  p99  19.152 ms  errors 0
+meili-pass3 bm25 + filter            c=4        329 q/s  p50  11.497 ms  p90  18.242 ms  p99  24.493 ms  errors 0
+meili-pass3 bm25 + filter            c=16       544 q/s  p50  27.702 ms  p90  46.800 ms  p99  67.682 ms  errors 0
+meili-pass3 vector                   c=1        175 q/s  p50   5.538 ms  p90   7.249 ms  p99   8.477 ms  errors 0
+meili-pass3 vector                   c=4        585 q/s  p50   6.662 ms  p90   8.803 ms  p99  11.414 ms  errors 0
+meili-pass3 vector                   c=16      1004 q/s  p50  15.221 ms  p90  23.639 ms  p99  32.496 ms  errors 0
+meili-pass3 vector + filter          c=1         70 q/s  p50  14.216 ms  p90  17.584 ms  p99  20.436 ms  errors 0
+meili-pass3 vector + filter          c=4        256 q/s  p50  15.675 ms  p90  19.085 ms  p99  22.086 ms  errors 0
+meili-pass3 vector + filter          c=16       430 q/s  p50  35.945 ms  p90  55.061 ms  p99  73.592 ms  errors 0
+meili-pass3 hybrid (RRF)             c=1         90 q/s  p50  10.884 ms  p90  16.358 ms  p99  23.499 ms  errors 0
+meili-pass3 hybrid (RRF)             c=4        301 q/s  p50  12.766 ms  p90  20.914 ms  p99  27.723 ms  errors 0
+meili-pass3 hybrid (RRF)             c=16       498 q/s  p50  29.835 ms  p90  53.553 ms  p99  75.706 ms  errors 0
+meili-pass3 hybrid (weighted)        c=1         82 q/s  p50  11.849 ms  p90  17.204 ms  p99  21.742 ms  errors 0
+meili-pass3 hybrid (weighted)        c=4        275 q/s  p50  13.795 ms  p90  20.921 ms  p99  27.892 ms  errors 0
+meili-pass3 hybrid (weighted)        c=16       457 q/s  p50  32.860 ms  p90  55.472 ms  p99  78.772 ms  errors 0
+meili-pass3 boosted (bm25 × decay)   unavailable: no function scores: a numeric field can sort results (sort ranking rule), not multiply their relevance
+meili-pass3 facet                    c=1        266 q/s  p50   3.719 ms  p90   6.260 ms  p99   9.705 ms  errors 0
+meili-pass3 facet                    c=4        857 q/s  p50   4.529 ms  p90   7.690 ms  p99  11.452 ms  errors 0
+meili-pass3 facet                    c=16      1480 q/s  p50   9.940 ms  p90  18.738 ms  p99  28.204 ms  errors 0
+meili-pass3 key lookup               c=1       2797 q/s  p50   0.351 ms  p90   0.399 ms  p99   0.474 ms  errors 0
+meili-pass3 key lookup               c=4       9187 q/s  p50   0.422 ms  p90   0.518 ms  p99   0.662 ms  errors 0
+meili-pass3 key lookup               c=16     15684 q/s  p50   0.998 ms  p90   1.292 ms  p99   1.738 ms  errors 0
+meili-pass3 phrase                   c=1        259 q/s  p50   2.435 ms  p90   9.197 ms  p99  14.830 ms  errors 0
+meili-pass3 phrase                   c=4        863 q/s  p50   2.939 ms  p90  11.142 ms  p99  18.616 ms  errors 0
+meili-pass3 phrase                   c=16      1415 q/s  p50   8.211 ms  p90  25.178 ms  p99  44.043 ms  errors 0
+meili-pass3 typo                     c=1        133 q/s  p50   6.954 ms  p90  12.302 ms  p99  17.524 ms  errors 0
+meili-pass3 typo                     c=4        421 q/s  p50   8.692 ms  p90  15.839 ms  p99  22.784 ms  errors 0
+meili-pass3 typo                     c=16       713 q/s  p50  20.432 ms  p90  38.654 ms  p99  56.952 ms  errors 0
+meili-pass3 prefix                   c=1        148 q/s  p50   6.189 ms  p90  10.991 ms  p99  14.908 ms  errors 0
+meili-pass3 prefix                   c=4        462 q/s  p50   7.930 ms  p90  14.029 ms  p99  20.408 ms  errors 0
+meili-pass3 prefix                   c=16       775 q/s  p50  18.637 ms  p90  35.578 ms  p99  52.588 ms  errors 0
+meili-pass3 similar items            c=1         98 q/s  p50  10.050 ms  p90  12.583 ms  p99  15.040 ms  errors 0
+meili-pass3 similar items            c=4        332 q/s  p50  11.861 ms  p90  15.295 ms  p99  18.727 ms  errors 0
+meili-pass3 similar items            c=16       583 q/s  p50  26.363 ms  p90  40.389 ms  p99  52.923 ms  errors 0
+meili-pass3 sql aggregate            unavailable: no grouped aggregates: facets count values, and facet stats give a numeric field's minimum and maximum only
+wrote /data/compare/run-meili-pass3.json
+pod "meili-0" deleted from meili-r namespace

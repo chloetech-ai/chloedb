@@ -1,0 +1,215 @@
+service/os created
+pod/os-0 created
+pod/os-1 created
+pod/os-0 condition met
+pod/os-1 condition met
+job.batch/load-os created
+os: index created in 0.4 s
+os: 25000 documents sent, 15 s
+os: 50000 documents sent, 26 s
+os: 75000 documents sent, 38 s
+os: 100000 documents sent, 52 s
+os: 125000 documents sent, 60 s
+os: 150000 documents sent, 70 s
+os: 175000 documents sent, 80 s
+os: 200000 documents sent, 90 s
+os: 225000 documents sent, 98 s
+os: 250000 documents sent, 107 s
+os: 275000 documents sent, 118 s
+os: 300000 documents sent, 127 s
+os: 325000 documents sent, 137 s
+os: 350000 documents sent, 148 s
+os: 375000 documents sent, 158 s
+os: 400000 documents sent, 167 s
+os: 425000 documents sent, 179 s
+os: 450000 documents sent, 192 s
+os: 475000 documents sent, 201 s
+os: 500000 documents sent, 213 s
+os: 525000 documents sent, 228 s
+os: 550000 documents sent, 240 s
+os: 575000 documents sent, 256 s
+os: 600000 documents sent, 272 s
+os: 625000 documents sent, 286 s
+os: 650000 documents sent, 301 s
+os: 675000 documents sent, 313 s
+os: 700000 documents sent, 325 s
+os: 725000 documents sent, 340 s
+os: 750000 documents sent, 354 s
+os: 775000 documents sent, 367 s
+os: 800000 documents sent, 380 s
+os: 825000 documents sent, 397 s
+os: 850000 documents sent, 408 s
+os: 875000 documents sent, 421 s
+os: 900000 documents sent, 436 s
+os: 925000 documents sent, 453 s
+os: 950000 documents sent, 463 s
+os: 975000 documents sent, 481 s
+os: 1000000 documents sent, 495 s
+os: 1000000 documents (11.8 GB of JSON) sent in 495.2 s
+os: searchable after 3.8 s more, merged in 230.8 s; 729.8 s in all
+wrote /data/compare/load-os.json
+job.batch/run-os created
+os       bm25                     c=1        212 q/s  p50   4.354 ms  p90   6.454 ms  p99   9.865 ms  errors 0
+os       bm25                     c=4        677 q/s  p50   5.604 ms  p90   8.327 ms  p99  12.182 ms  errors 0
+os       bm25                     c=16      1389 q/s  p50  10.590 ms  p90  17.738 ms  p99  25.890 ms  errors 0
+os       bm25 + filter            c=1        240 q/s  p50   3.780 ms  p90   6.036 ms  p99  10.212 ms  errors 0
+os       bm25 + filter            c=4        696 q/s  p50   5.058 ms  p90   8.865 ms  p99  15.400 ms  errors 0
+os       bm25 + filter            c=16      1215 q/s  p50  11.426 ms  p90  22.325 ms  p99  37.295 ms  errors 0
+os       vector                   c=1        213 q/s  p50   4.517 ms  p90   5.840 ms  p99   8.360 ms  errors 0
+os       vector                   c=4        663 q/s  p50   5.830 ms  p90   7.969 ms  p99  10.300 ms  errors 0
+os       vector                   c=16      1102 q/s  p50  13.619 ms  p90  21.467 ms  p99  28.980 ms  errors 0
+os       vector + filter          c=1        144 q/s  p50   6.782 ms  p90   8.207 ms  p99  10.512 ms  errors 0
+os       vector + filter          c=4        385 q/s  p50   9.966 ms  p90  13.906 ms  p99  18.260 ms  errors 0
+os       vector + filter          c=16       517 q/s  p50  30.039 ms  p90  42.013 ms  p99  49.914 ms  errors 0
+os       hybrid (RRF)             c=1        126 q/s  p50   7.528 ms  p90  10.251 ms  p99  15.463 ms  errors 0
+os       hybrid (RRF)             c=4        345 q/s  p50  10.974 ms  p90  15.810 ms  p99  24.307 ms  errors 0
+os       hybrid (RRF)             c=16       424 q/s  p50  35.979 ms  p90  52.819 ms  p99  72.366 ms  errors 0
+os       hybrid (weighted)        c=1        132 q/s  p50   7.152 ms  p90   9.711 ms  p99  15.918 ms  errors 0
+os       hybrid (weighted)        c=4        364 q/s  p50  10.305 ms  p90  15.080 ms  p99  23.440 ms  errors 0
+os       hybrid (weighted)        c=16       462 q/s  p50  33.565 ms  p90  46.801 ms  p99  65.892 ms  errors 0
+os       boosted (bm25 × decay)   c=1        109 q/s  p50   7.010 ms  p90  19.509 ms  p99  32.587 ms  errors 0
+os       boosted (bm25 × decay)   c=4        267 q/s  p50  11.614 ms  p90  31.363 ms  p99  54.822 ms  errors 0
+os       boosted (bm25 × decay)   c=16       297 q/s  p50  46.280 ms  p90  90.982 ms  p99 147.374 ms  errors 0
+os       facet                    c=1        395 q/s  p50   2.249 ms  p90   3.564 ms  p99   7.135 ms  errors 0
+os       facet                    c=4       1369 q/s  p50   2.513 ms  p90   4.529 ms  p99   9.532 ms  errors 0
+os       facet                    c=16      2517 q/s  p50   5.121 ms  p90  11.579 ms  p99  22.979 ms  errors 0
+os       key lookup               c=1        515 q/s  p50   1.834 ms  p90   2.614 ms  p99   3.472 ms  errors 0
+os       key lookup               c=4       2230 q/s  p50   1.731 ms  p90   2.298 ms  p99   3.156 ms  errors 0
+os       key lookup               c=16      5107 q/s  p50   2.973 ms  p90   4.324 ms  p99   6.350 ms  errors 0
+os       phrase                   c=1        366 q/s  p50   2.587 ms  p90   3.942 ms  p99   5.650 ms  errors 0
+os       phrase                   c=4       1223 q/s  p50   3.052 ms  p90   4.888 ms  p99   7.613 ms  errors 0
+os       phrase                   c=16      2134 q/s  p50   6.831 ms  p90  12.376 ms  p99  19.795 ms  errors 0
+os       typo                     c=1         46 q/s  p50  19.404 ms  p90  35.466 ms  p99  50.558 ms  errors 0
+os       typo                     c=4        111 q/s  p50  33.575 ms  p90  57.644 ms  p99  81.868 ms  errors 0
+os       typo                     c=16       121 q/s  p50 124.939 ms  p90 185.196 ms  p99 245.595 ms  errors 0
+os       prefix                   c=1        225 q/s  p50   4.063 ms  p90   6.319 ms  p99  10.461 ms  errors 0
+os       prefix                   c=4        657 q/s  p50   5.585 ms  p90   9.194 ms  p99  14.868 ms  errors 0
+os       prefix                   c=16       961 q/s  p50  15.257 ms  p90  25.717 ms  p99  39.011 ms  errors 0
+os       similar items            c=1        124 q/s  p50   7.838 ms  p90   9.514 ms  p99  12.197 ms  errors 0
+os       similar items            c=4        320 q/s  p50  12.087 ms  p90  16.237 ms  p99  21.226 ms  errors 0
+os       similar items            c=16       395 q/s  p50  40.329 ms  p90  51.717 ms  p99  62.161 ms  errors 0
+os       sql aggregate            c=1        164 q/s  p50   5.783 ms  p90   7.406 ms  p99  10.672 ms  errors 0
+os       sql aggregate            c=4        570 q/s  p50   6.746 ms  p90   9.072 ms  p99  11.993 ms  errors 0
+os       sql aggregate            c=16       950 q/s  p50  16.254 ms  p90  27.688 ms  p99  35.140 ms  errors 0
+wrote /data/compare/run-os.json
+job.batch/run-os-pass2 created
+os-pass2 bm25                     c=1        331 q/s  p50   2.890 ms  p90   3.973 ms  p99   5.828 ms  errors 0
+os-pass2 bm25                     c=4       1168 q/s  p50   3.249 ms  p90   4.633 ms  p99   6.626 ms  errors 0
+os-pass2 bm25                     c=16      2021 q/s  p50   7.245 ms  p90  12.129 ms  p99  17.618 ms  errors 0
+os-pass2 bm25 + filter            c=1        276 q/s  p50   3.399 ms  p90   4.839 ms  p99   8.487 ms  errors 0
+os-pass2 bm25 + filter            c=4        868 q/s  p50   4.175 ms  p90   6.745 ms  p99  11.688 ms  errors 0
+os-pass2 bm25 + filter            c=16      1320 q/s  p50  10.643 ms  p90  19.704 ms  p99  35.110 ms  errors 0
+os-pass2 vector                   c=1        241 q/s  p50   4.069 ms  p90   5.069 ms  p99   6.190 ms  errors 0
+os-pass2 vector                   c=4        743 q/s  p50   5.237 ms  p90   6.899 ms  p99   8.744 ms  errors 0
+os-pass2 vector                   c=16      1179 q/s  p50  12.819 ms  p90  19.701 ms  p99  26.297 ms  errors 0
+os-pass2 vector + filter          c=1        147 q/s  p50   6.730 ms  p90   8.031 ms  p99   9.634 ms  errors 0
+os-pass2 vector + filter          c=4        397 q/s  p50   9.752 ms  p90  13.036 ms  p99  16.477 ms  errors 0
+os-pass2 vector + filter          c=16       522 q/s  p50  29.696 ms  p90  41.309 ms  p99  50.331 ms  errors 0
+os-pass2 hybrid (RRF)             c=1        134 q/s  p50   7.084 ms  p90   9.397 ms  p99  15.049 ms  errors 0
+os-pass2 hybrid (RRF)             c=4        363 q/s  p50  10.446 ms  p90  14.787 ms  p99  23.086 ms  errors 0
+os-pass2 hybrid (RRF)             c=16       459 q/s  p50  33.678 ms  p90  47.329 ms  p99  67.434 ms  errors 0
+os-pass2 hybrid (weighted)        c=1        137 q/s  p50   6.918 ms  p90   9.374 ms  p99  15.361 ms  errors 0
+os-pass2 hybrid (weighted)        c=4        367 q/s  p50  10.241 ms  p90  14.907 ms  p99  24.763 ms  errors 0
+os-pass2 hybrid (weighted)        c=16       456 q/s  p50  33.864 ms  p90  47.598 ms  p99  68.992 ms  errors 0
+os-pass2 boosted (bm25 × decay)   c=1        109 q/s  p50   7.041 ms  p90  20.428 ms  p99  33.965 ms  errors 0
+os-pass2 boosted (bm25 × decay)   c=4        264 q/s  p50  11.980 ms  p90  31.161 ms  p99  55.885 ms  errors 0
+os-pass2 boosted (bm25 × decay)   c=16       294 q/s  p50  47.841 ms  p90  91.516 ms  p99 146.758 ms  errors 0
+os-pass2 facet                    c=1        482 q/s  p50   1.906 ms  p90   2.903 ms  p99   5.532 ms  errors 0
+os-pass2 facet                    c=4       1637 q/s  p50   2.119 ms  p90   3.689 ms  p99   7.611 ms  errors 0
+os-pass2 facet                    c=16      2626 q/s  p50   5.014 ms  p90  10.836 ms  p99  21.133 ms  errors 0
+os-pass2 key lookup               c=1        542 q/s  p50   1.771 ms  p90   2.498 ms  p99   3.074 ms  errors 0
+os-pass2 key lookup               c=4       2311 q/s  p50   1.689 ms  p90   2.198 ms  p99   2.832 ms  errors 0
+os-pass2 key lookup               c=16      5060 q/s  p50   2.988 ms  p90   4.355 ms  p99   6.182 ms  errors 0
+os-pass2 phrase                   c=1        371 q/s  p50   2.593 ms  p90   3.930 ms  p99   5.591 ms  errors 0
+os-pass2 phrase                   c=4       1278 q/s  p50   2.989 ms  p90   4.724 ms  p99   6.950 ms  errors 0
+os-pass2 phrase                   c=16      2179 q/s  p50   6.686 ms  p90  12.115 ms  p99  18.913 ms  errors 0
+os-pass2 typo                     c=1         47 q/s  p50  18.761 ms  p90  33.620 ms  p99  49.824 ms  errors 0
+os-pass2 typo                     c=4        114 q/s  p50  32.400 ms  p90  55.841 ms  p99  85.586 ms  errors 0
+os-pass2 typo                     c=16       121 q/s  p50 127.372 ms  p90 178.548 ms  p99 258.580 ms  errors 0
+os-pass2 prefix                   c=1        232 q/s  p50   4.020 ms  p90   6.034 ms  p99   9.957 ms  errors 0
+os-pass2 prefix                   c=4        678 q/s  p50   5.408 ms  p90   8.743 ms  p99  14.475 ms  errors 0
+os-pass2 prefix                   c=16       969 q/s  p50  14.727 ms  p90  26.692 ms  p99  40.383 ms  errors 0
+os-pass2 similar items            c=1        134 q/s  p50   7.369 ms  p90   8.604 ms  p99   9.883 ms  errors 0
+os-pass2 similar items            c=4        333 q/s  p50  11.667 ms  p90  15.407 ms  p99  18.883 ms  errors 0
+os-pass2 similar items            c=16       401 q/s  p50  39.898 ms  p90  50.021 ms  p99  59.909 ms  errors 0
+os-pass2 sql aggregate            c=1        229 q/s  p50   4.289 ms  p90   5.226 ms  p99   6.900 ms  errors 0
+os-pass2 sql aggregate            c=4        811 q/s  p50   4.773 ms  p90   5.946 ms  p99   7.600 ms  errors 0
+read tcp 127.0.0.1:53848->127.0.0.1:36661: read: connection reset by peer
+error: read tcp 127.0.0.1:53848->127.0.0.1:36661: read: connection reset by peer
+os-pass2 sql aggregate            c=16      1169 q/s  p50  13.525 ms  p90  23.345 ms  p99  29.876 ms  errors 0
+wrote /data/compare/run-os-pass2.json
+job.batch/run-os-pass3 created
+os-pass3 bm25                     c=1        359 q/s  p50   2.622 ms  p90   3.750 ms  p99   5.446 ms  errors 0
+os-pass3 bm25                     c=4       1185 q/s  p50   3.205 ms  p90   4.578 ms  p99   6.436 ms  errors 0
+os-pass3 bm25                     c=16      2017 q/s  p50   7.236 ms  p90  12.031 ms  p99  18.451 ms  errors 0
+os-pass3 bm25 + filter            c=1        281 q/s  p50   3.314 ms  p90   4.866 ms  p99   8.753 ms  errors 0
+os-pass3 bm25 + filter            c=4        884 q/s  p50   4.132 ms  p90   6.510 ms  p99  11.279 ms  errors 0
+os-pass3 bm25 + filter            c=16      1343 q/s  p50  10.343 ms  p90  19.883 ms  p99  33.147 ms  errors 0
+os-pass3 vector                   c=1        242 q/s  p50   4.074 ms  p90   5.046 ms  p99   6.182 ms  errors 0
+os-pass3 vector                   c=4        738 q/s  p50   5.257 ms  p90   6.887 ms  p99   8.610 ms  errors 0
+os-pass3 vector                   c=16      1171 q/s  p50  12.958 ms  p90  19.658 ms  p99  26.506 ms  errors 0
+os-pass3 vector + filter          c=1        145 q/s  p50   6.803 ms  p90   8.147 ms  p99  10.358 ms  errors 0
+os-pass3 vector + filter          c=4        398 q/s  p50   9.753 ms  p90  13.282 ms  p99  16.430 ms  errors 0
+os-pass3 vector + filter          c=16       527 q/s  p50  29.767 ms  p90  40.378 ms  p99  47.425 ms  errors 0
+os-pass3 hybrid (RRF)             c=1        134 q/s  p50   7.099 ms  p90   9.478 ms  p99  15.432 ms  errors 0
+os-pass3 hybrid (RRF)             c=4        363 q/s  p50  10.364 ms  p90  14.841 ms  p99  24.498 ms  errors 0
+os-pass3 hybrid (RRF)             c=16       462 q/s  p50  32.825 ms  p90  48.753 ms  p99  67.273 ms  errors 0
+os-pass3 hybrid (weighted)        c=1        139 q/s  p50   6.866 ms  p90   9.189 ms  p99  15.057 ms  errors 0
+os-pass3 hybrid (weighted)        c=4        371 q/s  p50  10.189 ms  p90  14.597 ms  p99  22.381 ms  errors 0
+os-pass3 hybrid (weighted)        c=16       472 q/s  p50  32.463 ms  p90  46.722 ms  p99  64.417 ms  errors 0
+os-pass3 boosted (bm25 × decay)   c=1        108 q/s  p50   7.022 ms  p90  20.245 ms  p99  35.566 ms  errors 0
+os-pass3 boosted (bm25 × decay)   c=4        272 q/s  p50  11.380 ms  p90  31.007 ms  p99  56.471 ms  errors 0
+os-pass3 boosted (bm25 × decay)   c=16       296 q/s  p50  47.566 ms  p90  90.621 ms  p99 154.832 ms  errors 0
+os-pass3 facet                    c=1        473 q/s  p50   1.953 ms  p90   2.918 ms  p99   5.422 ms  errors 0
+os-pass3 facet                    c=4       1661 q/s  p50   2.105 ms  p90   3.617 ms  p99   7.393 ms  errors 0
+os-pass3 facet                    c=16      2626 q/s  p50   4.958 ms  p90  10.860 ms  p99  21.709 ms  errors 0
+os-pass3 key lookup               c=1        530 q/s  p50   1.810 ms  p90   2.561 ms  p99   3.090 ms  errors 0
+os-pass3 key lookup               c=4       2341 q/s  p50   1.672 ms  p90   2.175 ms  p99   2.765 ms  errors 0
+os-pass3 key lookup               c=16      5159 q/s  p50   2.986 ms  p90   4.308 ms  p99   5.908 ms  errors 0
+os-pass3 phrase                   c=1        373 q/s  p50   2.582 ms  p90   3.863 ms  p99   5.195 ms  errors 0
+os-pass3 phrase                   c=4       1277 q/s  p50   2.958 ms  p90   4.725 ms  p99   7.085 ms  errors 0
+os-pass3 phrase                   c=16      2159 q/s  p50   6.713 ms  p90  12.104 ms  p99  19.604 ms  errors 0
+os-pass3 typo                     c=1         48 q/s  p50  18.647 ms  p90  33.208 ms  p99  50.172 ms  errors 0
+os-pass3 typo                     c=4        115 q/s  p50  32.756 ms  p90  55.675 ms  p99  83.129 ms  errors 0
+os-pass3 typo                     c=16       121 q/s  p50 126.252 ms  p90 181.639 ms  p99 245.412 ms  errors 0
+os-pass3 prefix                   c=1        230 q/s  p50   3.882 ms  p90   5.864 ms  p99  10.006 ms  errors 0
+os-pass3 prefix                   c=4        681 q/s  p50   5.360 ms  p90   8.779 ms  p99  14.148 ms  errors 0
+os-pass3 prefix                   c=16       956 q/s  p50  14.748 ms  p90  27.024 ms  p99  42.591 ms  errors 0
+os-pass3 similar items            c=1        130 q/s  p50   7.576 ms  p90   8.934 ms  p99  11.026 ms  errors 0
+os-pass3 similar items            c=4        333 q/s  p50  11.672 ms  p90  15.348 ms  p99  19.300 ms  errors 0
+os-pass3 similar items            c=16       399 q/s  p50  39.856 ms  p90  53.235 ms  p99  63.044 ms  errors 0
+os-pass3 sql aggregate            c=1        235 q/s  p50   4.187 ms  p90   5.135 ms  p99   6.000 ms  errors 0
+os-pass3 sql aggregate            c=4        855 q/s  p50   4.549 ms  p90   5.522 ms  p99   6.889 ms  errors 0
+os-pass3 sql aggregate            c=16      1305 q/s  p50  12.258 ms  p90  18.421 ms  p99  22.106 ms  errors 0
+wrote /data/compare/run-os-pass3.json
+job.batch/writes-os created
+os       insert one     c=1        354 docs/s  p50    2.518 ms  p90    3.452 ms  p99    6.460 ms  errors 0
+os       insert one     c=4       1077 docs/s  p50    3.173 ms  p90    4.957 ms  p99    8.499 ms  errors 0
+os       insert one     c=16      2052 docs/s  p50    6.229 ms  p90   12.397 ms  p99   33.001 ms  errors 0
+os       insert batch   c=1       1335 docs/s  p50   62.334 ms  p90   77.773 ms  p99   91.080 ms  errors 0
+os       insert batch   c=4       3100 docs/s  p50  108.340 ms  p90  162.781 ms  p99  245.957 ms  errors 0
+os       insert batch   c=16      2954 docs/s  p50  503.243 ms  p90  641.660 ms  p99  715.817 ms  errors 0
+os       update one     c=1        331 docs/s  p50    2.516 ms  p90    3.929 ms  p99    7.632 ms  errors 0
+os       update one     c=4       1079 docs/s  p50    3.150 ms  p90    4.864 ms  p99    8.150 ms  errors 0
+os       update one     c=16      1960 docs/s  p50    6.658 ms  p90   12.721 ms  p99   30.408 ms  errors 0
+os       visible        written in p50 5.1 ms, found after p50 771.5 ms  p90 1012.0 ms  max 1027.1 ms
+wrote /data/compare/writes-os.json
+os       deleted 67230 written documents and put back 20000 ratings in 16.7 s
+service/redpanda created
+pod/redpanda created
+pod/redpanda condition met
+job.batch/stream-os created
+os       topic docs-os-1793677644, 4 partitions; 1000000 documents before
+os       250/s            produced 7500 in 30.0 s; written 7500 in 30.0 s (250/s); lag p50 22 ms  p90 31 ms  p99 39 ms  max 69 ms (read p50 18 ms)
+read tcp 127.0.0.1:56324->127.0.0.1:36661: read: connection reset by peer
+error: read tcp 127.0.0.1:56324->127.0.0.1:36661: read: connection reset by peer
+os       500/s            produced 15000 in 30.0 s; written 15000 in 30.0 s (499/s); lag p50 21 ms  p90 31 ms  p99 46 ms  max 78 ms (read p50 16 ms)
+os       1000/s           produced 30000 in 30.0 s; written 30000 in 30.0 s (999/s); lag p50 24 ms  p90 34 ms  p99 62 ms  max 99 ms (read p50 17 ms)
+os       2000/s           produced 60000 in 30.0 s; written 60000 in 30.1 s (1997/s); lag p50 34 ms  p90 78 ms  p99 266 ms  max 552 ms (read p50 20 ms)
+os       flat out         produced 20000 in 0.7 s; written 20000 in 6.3 s (3182/s); lag p50 2808 ms  p90 5068 ms  p99 5643 ms  max 5658 ms (read p50 2032 ms)
+os       before the crash produced 10000 in 6.3 s; written 5015 in 6.3 s (795/s); lag p50 35 ms  p90 68 ms  p99 145 ms  max 217 ms (read p50 19 ms)
+os       after the crash   resumed in 2.2 s: 104 events written a second time, 0 skipped by the server; 1142500 documents, 0 lost
+wrote /data/compare/stream-os.json
+os       deleted 142500 streamed documents in 3.1 s
+pod "os-0" deleted from os namespace
+pod "os-1" deleted from os namespace

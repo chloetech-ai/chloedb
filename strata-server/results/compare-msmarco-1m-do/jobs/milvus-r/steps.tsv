@@ -1,0 +1,6 @@
+1	ok	1793680910	1793680925	up milvus
+2	ok	1793680925	1793681448	load milvus
+3	ok	1793681448	1793681651	run milvus
+4	ok	1793681651	1793681854	run milvus --label milvus-pass2
+5	ok	1793681854	1793682057	run milvus --label milvus-pass3
+6	ok	1793682057	1793682062	down milvus

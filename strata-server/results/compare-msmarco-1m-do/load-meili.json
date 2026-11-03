@@ -1,0 +1,38 @@
+{
+  "batch": 500,
+  "clients": 8,
+  "collection": "msmarco-1000k",
+  "docs": 1000000,
+  "engine": "meili",
+  "engine_stats": {
+    "avgDocumentSize": 2198,
+    "fieldDistribution": {
+      "body": 1000000,
+      "category": 1000000,
+      "id": 1000000,
+      "rating": 1000000,
+      "title": 1000000,
+      "topic": 1000000,
+      "year": 1000000
+    },
+    "indexSize": 20729339904,
+    "isIndexing": false,
+    "numberOfDocuments": 1000000,
+    "numberOfEmbeddedDocuments": 1000000,
+    "numberOfEmbeddings": 1000000,
+    "rawDocumentDbSize": 2206072832,
+    "usedIndexSize": 12098600960
+  },
+  "index_bytes": 20731088896,
+  "ingest_s": 136.664218634,
+  "merge_s": 1624.481904794,
+  "prepare_s": 0.0,
+  "refresh_s": 0.0,
+  "request_bytes": 10777607541,
+  "searchable_docs": 1000000,
+  "setup_s": 0.634267854,
+  "steps": {
+    "index_s": 1624.480815764
+  },
+  "total_s": 1761.146146583
+}

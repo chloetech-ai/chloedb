@@ -1,0 +1,2 @@
+{"node": "weaviate-d-a1-3eejbs", "cpu": "Intel(R) Xeon(R) Platinum 8280 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 65853636, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 19.524, "sha256_1g_x_vcpus_s": 10.235, "disk_write_2g_s": 1.187, "copy_ms": 0, "time": 1793676979, "size": "m-8vcpu-64gb"}
+{"node": "weaviate-c-a1-3eejb5", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382180, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.084, "sha256_1g_x_vcpus_s": 11.267, "disk_write_2g_s": 5.002, "copy_ms": 46976, "time": 1793677035, "size": "c-8"}

@@ -1,0 +1,44 @@
+meili: index created in 0.6 s
+meili: 25000 documents sent, 4 s
+meili: 50000 documents sent, 7 s
+meili: 75000 documents sent, 10 s
+meili: 100000 documents sent, 13 s
+meili: 125000 documents sent, 17 s
+meili: 150000 documents sent, 21 s
+meili: 175000 documents sent, 25 s
+meili: 200000 documents sent, 29 s
+meili: 225000 documents sent, 32 s
+meili: 250000 documents sent, 36 s
+meili: 275000 documents sent, 39 s
+meili: 300000 documents sent, 42 s
+meili: 325000 documents sent, 46 s
+meili: 350000 documents sent, 50 s
+meili: 375000 documents sent, 53 s
+meili: 400000 documents sent, 57 s
+meili: 425000 documents sent, 60 s
+meili: 450000 documents sent, 64 s
+meili: 475000 documents sent, 67 s
+meili: 500000 documents sent, 71 s
+meili: 525000 documents sent, 74 s
+meili: 550000 documents sent, 77 s
+meili: 575000 documents sent, 80 s
+meili: 600000 documents sent, 84 s
+meili: 625000 documents sent, 87 s
+meili: 650000 documents sent, 90 s
+meili: 675000 documents sent, 93 s
+meili: 700000 documents sent, 96 s
+meili: 725000 documents sent, 99 s
+meili: 750000 documents sent, 102 s
+meili: 775000 documents sent, 106 s
+meili: 800000 documents sent, 109 s
+meili: 825000 documents sent, 113 s
+meili: 850000 documents sent, 116 s
+meili: 875000 documents sent, 120 s
+meili: 900000 documents sent, 123 s
+meili: 925000 documents sent, 127 s
+meili: 950000 documents sent, 131 s
+meili: 975000 documents sent, 135 s
+meili: 1000000 documents sent, 138 s
+meili: 1000000 documents (10.8 GB) sent in 138.1 s
+meili: index_s in 1.0 s
+error: indexing failed: {"code":"invalid_document_id","link":"https://docs.meilisearch.com/errors#invalid_document_id","message":"Document identifier `\"msmarco_v2.1_doc_00_876874568#17_1626629849\"` is invalid. A document identifier can be of type integer or string, only composed of alphanumeric characters (a-z A-Z 0-9), hyphens (-) and underscores (_), and can not be more than 511 bytes.","type":"invalid_request"}

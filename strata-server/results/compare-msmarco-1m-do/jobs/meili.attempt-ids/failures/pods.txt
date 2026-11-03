@@ -1,0 +1,3 @@
+NAME               READY   STATUS    RESTARTS   AGE     IP             NODE                NOMINATED NODE   READINESS GATES
+load-meili-tqjz5   0/1     Error     0          2m29s   10.121.2.165   meili-c-a1-3eeyhg   <none>           <none>
+meili-0            1/1     Running   0          2m39s   10.121.2.126   meili-d-a1-3eeyhw   <none>           <none>

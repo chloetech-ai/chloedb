@@ -1,0 +1,2 @@
+{"node": "milvus-d-a1-3eeyh6", "cpu": "Intel(R) Xeon(R) Platinum 8358 CPU @ 2.60GHz", "vcpus": 8, "mem_kb": 65853636, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 19.588, "sha256_1g_x_vcpus_s": 10.286, "disk_write_2g_s": 0.988, "copy_ms": 0, "time": 1793675706, "size": "m-8vcpu-64gb"}
+{"node": "milvus-c-a1-3eeyht", "cpu": "Intel(R) Xeon(R) Platinum 8280 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382176, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.056, "sha256_1g_x_vcpus_s": 10.879, "disk_write_2g_s": 1.072, "copy_ms": 106544, "time": 1793675815, "size": "c-8"}
