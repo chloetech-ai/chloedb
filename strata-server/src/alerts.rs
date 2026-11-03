@@ -2314,12 +2314,18 @@ impl Alerts {
         text
     }
 
+    /// Posts each message to the routes that take it ([`Self::notify_to`]).
+    pub async fn notify(&self, messages: &[Arc<Event>]) {
+        let all: Vec<(Arc<Event>, Option<String>)> = messages.iter().map(|e| (e.clone(), None)).collect();
+        self.notify_to(&all).await;
+    }
+
     /// Posts each message (an event, and the one route it goes to when
     /// named) to the routes that take it, and counts what was delivered.
     /// Each route takes its messages on its own, in order: one that fails
     /// or does not answer holds up only its own, [`POST_BUDGET`] a message
     /// at most.
-    pub async fn notify(&self, messages: &[(Arc<Event>, Option<String>)]) {
+    pub async fn notify_to(&self, messages: &[(Arc<Event>, Option<String>)]) {
         let routes = self.routes();
         let mut each: Vec<(Route, Vec<(Json, String)>)> = Vec::new();
         for (e, only) in messages {
@@ -2815,7 +2821,7 @@ pub fn deliver(svc: &Arc<crate::service::Service>, changes: Vec<Arc<Event>>) {
                 store.keep_alert(e);
             }
         }
-        let told: Vec<(Arc<Event>, Option<String>)> = svc.alerts.resolutions(&changes).into_iter().map(|e| (e, None)).collect();
+        let told = svc.alerts.resolutions(&changes);
         if !told.is_empty() {
             let svc = svc.clone();
             tokio::spawn(async move { svc.alerts.notify(&told).await });
@@ -2829,7 +2835,7 @@ pub fn send_due(svc: &Arc<crate::service::Service>) {
     let due = svc.alerts.due(now_ms());
     if !due.is_empty() {
         let svc = svc.clone();
-        tokio::spawn(async move { svc.alerts.notify(&due).await });
+        tokio::spawn(async move { svc.alerts.notify_to(&due).await });
     }
 }
 
