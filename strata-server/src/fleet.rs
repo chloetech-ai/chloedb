@@ -241,7 +241,13 @@ impl Fleet {
                 }
                 "no_writes" => {
                     no_writes += 1;
-                    let todo = if s["primary"].is_null() && s["failover"] == true {
+                    let elects = s["majority"] != false;
+                    let todo = if s["primary"].is_null() && s["failover"] == true && !elects {
+                        // No majority answers: no election can win.
+                        let mut t = crate::coord::elect_by_hand(&gone, &up);
+                        t[..1].make_ascii_uppercase();
+                        t
+                    } else if s["primary"].is_null() && s["failover"] == true {
                         "An election should choose a primary within seconds. If none does, bring a copy back or hand the primary over by hand".to_string()
                     } else if s["primary"].is_null() {
                         "Hand the primary over to an up-to-date copy".to_string()
@@ -249,7 +255,14 @@ impl Fleet {
                         format!("Find out why on its primary: {why}")
                     };
                     let head = if s["primary"].is_null() { format!("Writes are failing: {name} has no primary") } else { format!("Writes are failing: {name} takes no writes") };
-                    Some((2, true, head, format!("Shard {n} takes no writes"), format!("Writes to {name}'s rows fail; searches still answer"), next(todo)))
+                    let title = if s["primary"].is_null() && s["failover"] == true && !elects {
+                        // "Shard 0 cannot elect a primary or take writes until a second copy answers"
+                        let c = crate::coord::cannot_elect(copies.len(), up.len());
+                        format!("Shard {n} {}", c.trim_start_matches("it ").replacen("elect a primary", "elect a primary or take writes", 1))
+                    } else {
+                        format!("Shard {n} takes no writes")
+                    };
+                    Some((2, true, head, title, format!("Writes to {name}'s rows fail; searches still answer"), next(todo)))
                 }
                 _ => {
                     degraded += 1;
@@ -581,6 +594,27 @@ mod tests {
         assert_eq!(shards["value"], json!({"down": 0, "no_reads": 1, "no_writes": 0, "degraded": 0, "total": 2}));
         let copies = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "copies").unwrap().clone();
         assert_eq!((copies["down"].as_u64(), copies["total"].as_u64()), (Some(1), Some(4)));
+    }
+
+    /// 1 of 2 copies answering is no majority: no election can choose a
+    /// primary, so the advice is not to wait for one.
+    #[test]
+    fn a_shard_of_two_with_one_down_cannot_elect() {
+        let c = json!({"shards": [
+            {"shard": 0, "state": "no_writes", "failover": true, "majority": false, "primary": null, "why": "1 of 2 copies answers: no copy takes writes", "replicas": [copy("s0-0", false), copy("s0-1", true)]},
+        ]});
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        let p = &j["problems"][0];
+        assert_eq!(p["title"], "Shard 0 cannot elect a primary or take writes until a second copy answers");
+        let next = p["next"]["text"].as_str().unwrap();
+        assert!(next.starts_with("Bring s0-0 back, or, if it is gone for good, make s0-1 the primary by hand"), "{next}");
+        assert!(!next.contains("within seconds"), "{next}");
+        // With a majority, an election is under way.
+        let c = json!({"shards": [
+            {"shard": 0, "state": "no_writes", "failover": true, "majority": true, "primary": null, "why": "", "replicas": [copy("s0-0", false), copy("s0-1", true), copy("s0-2", true)]},
+        ]});
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        assert!(j["problems"][0]["next"]["text"].as_str().unwrap().contains("within seconds"));
     }
 
     #[test]

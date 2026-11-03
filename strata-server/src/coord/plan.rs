@@ -83,7 +83,9 @@ pub fn plan_at(snap: &Json, ask: &Json, moving: bool, measured_rows_s: Option<f6
     let mut removes: Vec<String> = Vec::new();
     let mut blast: Vec<String> = Vec::new();
     let (mut copy_rows, mut move_rows) = (0u64, 0u64);
-    let check = |pre: &mut Vec<Json>, ok: bool, text: String| pre.push(json!({"ok": ok, "text": text}));
+    // A check's level: ok, warn (advice: the plan may go on) or fail; `ok`
+    // is false for a failed one only.
+    let check = |pre: &mut Vec<Json>, level: &str, text: String| pre.push(json!({"ok": level != "fail", "level": level, "text": text}));
     let name = |i: usize, url: &str| shards.get(i).and_then(|s| s.shorts.get(url)).cloned().filter(|s| !s.is_empty()).unwrap_or_else(|| url.to_string());
     let all: HashMap<String, usize> = shards.iter().enumerate().flat_map(|(i, s)| s.urls.iter().map(move |u| (u.clone(), i))).collect();
     let remove_shards: BTreeSet<usize> = match ask.get("remove_shards") {
@@ -111,7 +113,7 @@ pub fn plan_at(snap: &Json, ask: &Json, moving: bool, measured_rows_s: Option<f6
         }
         for u in &want {
             if let Some(&j) = all.get(u).filter(|&&j| j != i) {
-                check(&mut preflight, false, format!("{u} serves shard {j} already: a server is a copy of one shard"));
+                check(&mut preflight, "fail", format!("{u} serves shard {j} already: a server is a copy of one shard"));
             }
         }
         if i >= n {
@@ -128,7 +130,7 @@ pub fn plan_at(snap: &Json, ask: &Json, moving: bool, measured_rows_s: Option<f6
                 let to = want.iter().find(|w| have.urls.contains(w) && !have.down.contains(w)).cloned();
                 match to {
                     Some(to) => handovers.push((i, u.clone(), to)),
-                    None => check(&mut preflight, false, format!("{} is shard {i}'s primary and no copy it keeps is up to hand over to: add the new copies first, in a plan of their own", name(i, u))),
+                    None => check(&mut preflight, "fail", format!("{} is shard {i}'s primary and no copy it keeps is up to hand over to: add the new copies first, in a plan of their own", name(i, u))),
                 }
             }
             drops.push((i, u.clone()));
@@ -136,10 +138,10 @@ pub fn plan_at(snap: &Json, ask: &Json, moving: bool, measured_rows_s: Option<f6
         // What the shard is left with, against what failover needs.
         let left = want.iter().filter(|u| !have.down.contains(u)).count();
         if have.failover && want.len() == 2 {
-            check(&mut preflight, true, format!("shard {i} is left with 2 copies: with failover, one down stops its reads and writes (3 keep it serving through one)"));
+            check(&mut preflight, "warn", format!("shard {i} is left with 2 copies: with failover, one down stops its reads and writes (3 keep it serving through one)"));
         }
         if left * 2 <= want.len() {
-            check(&mut preflight, false, format!("shard {i} would have {left} of {} copies up: not a majority. Bring its copies back first", want.len()));
+            check(&mut preflight, "fail", format!("shard {i} would have {left} of {} copies up: not a majority. Bring its copies back first", want.len()));
         }
     }
     let wanted_new: Vec<usize> = new_shards.iter().map(|(i, _)| *i).collect();
@@ -150,14 +152,14 @@ pub fn plan_at(snap: &Json, ask: &Json, moving: bool, measured_rows_s: Option<f6
     }
     let add_shards = ask.get("add_shards").and_then(Json::as_u64).unwrap_or(0) as usize;
     if add_shards > new_shards.len() {
-        check(&mut preflight, false, format!("{} new shard(s) have no servers: on its own machines a shard is added with its servers' URLs (name them in shards, as shard {} on)", add_shards - new_shards.len(), n + new_shards.len()));
+        check(&mut preflight, "fail", format!("{} new shard(s) have no servers: on its own machines a shard is added with its servers' URLs (name them in shards, as shard {} on)", add_shards - new_shards.len(), n + new_shards.len()));
     }
 
     // ----- shards down or short of copies
     for (i, s) in shards.iter().enumerate() {
         if !s.down.is_empty() && !named.contains(&i) && !remove_shards.contains(&i) {
             let d: Vec<String> = s.down.iter().map(|u| name(i, u)).collect();
-            check(&mut preflight, true, format!("shard {i} has {} down; the plan leaves it so", d.join(", ")));
+            check(&mut preflight, "warn", format!("shard {i} has {} down; the plan leaves it so", d.join(", ")));
         }
     }
 
@@ -213,7 +215,7 @@ pub fn plan_at(snap: &Json, ask: &Json, moving: bool, measured_rows_s: Option<f6
 
     // ----- shards removed: drained, then removed with their copies
     if !remove_shards.is_empty() && remove_shards.len() >= total {
-        check(&mut preflight, false, "the plan removes every shard: a cluster keeps one".into());
+        check(&mut preflight, "fail", "the plan removes every shard: a cluster keeps one".into());
     }
     for &i in remove_shards.iter().rev() {
         move_rows += shards[i].docs;
@@ -228,13 +230,13 @@ pub fn plan_at(snap: &Json, ask: &Json, moving: bool, measured_rows_s: Option<f6
         blast.push("the drained shards' rows move while the cluster serves; writes to each run of slots wait at its flip".into());
     }
     if moving && steps.iter().any(|s| s["wait"] == true) {
-        check(&mut preflight, false, "a job of moves runs now: wait for it, or stop it, before moving more slots".into());
+        check(&mut preflight, "fail", "a job of moves runs now: wait for it, or stop it, before moving more slots".into());
     }
     if steps.is_empty() {
-        check(&mut preflight, true, "the plan changes nothing: the cluster has this shape already".into());
+        check(&mut preflight, "ok", "the plan changes nothing: the cluster has this shape already".into());
     }
     if preflight.iter().all(|p| p["ok"] == true) && !steps.is_empty() {
-        check(&mut preflight, true, "every copy the plan keeps or adds is named once".into());
+        check(&mut preflight, "ok", "every copy the plan keeps or adds is named once".into());
     }
     let move_rate = measured_rows_s.filter(|r| *r > 0.0).unwrap_or(MOVE_ROWS_S);
     let estimate = copy_rows as f64 / COPY_ROWS_S + move_rows as f64 / move_rate + steps.len() as f64 * STEP_S;
@@ -249,15 +251,41 @@ pub fn plan_at(snap: &Json, ask: &Json, moving: bool, measured_rows_s: Option<f6
     }
     Ok(json!({
         "steps": steps, "rows_to_copy": copy_rows + move_rows, "estimate_s": estimate.round(),
-        "estimate_from": format!("{COPY_ROWS_S} rows/s to a new copy, {move_rate:.0} rows/s for moves{}, {STEP_S} s a step", if measured_rows_s.is_some() { " (measured here)" } else { "" }),
+        "estimate_from": format!(
+            "About {} rows a second to a new copy, {} rows a second for moves{}, and {STEP_S} s a step.",
+            thousands(COPY_ROWS_S),
+            thousands(move_rate),
+            if measured_rows_s.is_some() { " (as measured here)" } else { "" }
+        ),
         "blast": blast + ".", "preflight": preflight, "removes_copies": removes,
         "ok": preflight.iter().all(|p| p["ok"] == true),
     }))
 }
 
+/// A number for people: whole, with a comma every three digits.
+pub fn thousands(n: f64) -> String {
+    let digits = format!("{:.0}", n.abs());
+    let mut out = String::new();
+    for (k, c) in digits.chars().enumerate() {
+        if k > 0 && (digits.len() - k) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    if n < 0.0 && digits != "0" {
+        out.insert(0, '-');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numbers_have_commas_and_advice_is_a_warning() {
+        assert_eq!((thousands(7000.0), thousands(20_000.0), thousands(999.4), thousands(1_234_567.0)), ("7,000".into(), "20,000".into(), "999".into(), "1,234,567".into()));
+    }
 
     fn snap() -> Json {
         let copy = |i: usize, k: usize, up: bool| json!({"url": format!("http://h{i}{k}"), "short": format!("s{i}-{k}"), "status": if up { "ok" } else { "down" }, "detail": {"health": {"docs": 6000}}});
@@ -287,6 +315,11 @@ mod tests {
         assert_eq!(p["steps"][1]["call"]["body"]["url"], "http://h11");
         assert_eq!(p["removes_copies"], json!(["http://h10"]));
         assert!(p["blast"].as_str().unwrap().starts_with("Searches go on throughout; writes to shard 1 wait"), "{p}");
+        // Two copies left with failover is advice, not a failed check.
+        let warn = p["preflight"].as_array().unwrap().iter().find(|c| c["text"].as_str().unwrap().contains("left with 2 copies")).cloned().unwrap();
+        assert_eq!((warn["level"].as_str(), warn["ok"].as_bool()), (Some("warn"), Some(true)), "{p}");
+        assert_eq!(p["ok"], true, "{p}");
+        assert!(p["estimate_from"].as_str().unwrap().starts_with("About 20,000 rows a second to a new copy, 7,000 rows a second for moves"), "{p}");
     }
 
     #[test]
