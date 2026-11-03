@@ -34,7 +34,11 @@ spec:
         - {name: SOLR_MODE, value: solrcloud}
         - {name: SOLR_HOST, value: solr-__I__.solr.__NS__.svc.cluster.local}
         - {name: ZK_HOST, value: "__ZK__"}
-        - {name: SOLR_OPTS, value: "-Dsolr.zookeeper.embedded.host=0.0.0.0"}
+        # A leader forwarding updates to the other shard gives up after
+        # 15 s without progress (solr.cloud.client.stallTime), and at 10M
+        # a shard busy merging its vector graphs stalls that long: the
+        # load failed at 4.4M with "Request processing has stalled".
+        - {name: SOLR_OPTS, value: "-Dsolr.zookeeper.embedded.host=0.0.0.0 -Dsolr.cloud.client.stallTime=600000"}
         # A third of the pod's memory: its vectors are full precision, so
         # the page cache needs room for 1 GB of them per shard.
         - {name: SOLR_HEAP, value: __HEAP__}
