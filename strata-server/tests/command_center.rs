@@ -382,6 +382,24 @@ async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
     let changes: Json = client().get(format!("{base}/v1/admin/audit?kind=change")).send().await.unwrap().json().await.unwrap();
     assert!(changes["entries"].as_array().unwrap().iter().any(|e| e["object"] == "log filter" && e["detail"].as_str().is_some_and(|d| d.contains("on s0-0"))), "{changes}");
 
+    // A copy's profiling settings, read and set over the same call (PROF-2).
+    let r = client().get(format!("{base}/v1/profile/settings?node=s0-0")).send().await.unwrap();
+    let was: Json = r.json().await.unwrap();
+    assert_eq!((was["short"].as_str(), was["cpu_all"].as_bool()), (Some("s0-0"), Some(false)), "{was}");
+    let r = client().put(format!("{base}/v1/profile/settings?node=s0-0")).json(&json!({"slow_ms": 25})).send().await.unwrap();
+    let status = r.status();
+    let set: Json = r.json().await.unwrap();
+    assert!(status.is_success(), "{set}");
+    assert_eq!(set["slow_ms"].as_f64(), Some(25.0), "{set}");
+    let own: Json = client().get(format!("{copy}/v1/profile/settings")).send().await.unwrap().json().await.unwrap();
+    assert_eq!((own["slow_ms"].as_f64(), own["started_slow_ms"]), (Some(25.0), was["started_slow_ms"].clone()), "the copy's own: {own}");
+    let mine: Json = client().get(format!("{base}/v1/profile/settings")).send().await.unwrap().json().await.unwrap();
+    assert_ne!(mine["slow_ms"].as_f64(), Some(25.0), "the coordinator's are its own: {mine}");
+    let r = client().put(format!("{base}/v1/profile/settings?node=s0-0")).json(&json!({"slow_ms": -1})).send().await.unwrap();
+    assert_eq!(r.status(), 400);
+    let changes: Json = client().get(format!("{base}/v1/admin/audit?kind=change")).send().await.unwrap().json().await.unwrap();
+    assert!(changes["entries"].as_array().unwrap().iter().any(|e| e["object"] == "profiling settings of s0-0" && e["detail"] == "profiling on s0-0: slow_ms 25"), "{changes}");
+
     // A plan changes nothing: one more copy is added, none removed.
     let r = client().post(format!("{base}/v1/admin/plan")).json(&json!({"shards": [{"shard": 0, "copies": [a.url(), b.url(), "http://127.0.0.1:1"]}]})).send().await.unwrap();
     let status = r.status();

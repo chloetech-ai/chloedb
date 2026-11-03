@@ -13,7 +13,7 @@ import { editor } from "../sqledit.js";
 import { tables, cached } from "../catalog.js";
 import { profileView, profileFigures, kpi } from "../profile.js";
 import { flameGraph, folded, shortName } from "../flame.js";
-import { state, link, copyName, copyTitle, copyLink, isCoord, queryDrawer, narrow, workbenchLink, profileLink, copies, statementLink, containRules } from "../workload.js";
+import { state, link, copyName, copyTitle, copyLink, isCoord, queryDrawer, narrow, workbenchLink, profileLink, copies, statementLink, containRules, can } from "../workload.js";
 import { isProduction, clusterName, environment } from "../data.js";
 
 export default { id: "profile", title: "Profiler", icon: "flame", group: "Diagnose", keywords: "profile profiler diagnostics node explain analyze flame chart flame graph cpu sampling pprof perf folded speedscope hot functions memory heap allocations allocator leak rss threads context switches segments operators steps debug latency settings slow threshold", render, onParams };
@@ -659,22 +659,30 @@ function settingsTab(body) {
   const box = h("div", { class: "prof-set" });
   const host = location.host;
   const where = isCoord() ? "the coordinator" : "this server";
+  const keep = h("div", { class: "small muted" });
+  const fleet = h("div");
+  let alive = true;
   body.append(
-    card({ title: "This server's runtime settings", sub: `${where} (${host}) only · set while it runs; a restart goes back to its flags`, body: h("div", { class: "stack" }, box,
-      h("div", { class: "small muted" }, "A query slower than the threshold is kept as slow, with its profile. ", h("a", { href: link("queries", { tab: "history", preset: "slow" }) }, "See them in Queries > History, slow ›")),
-      isCoord() ? h("div", { class: "small muted" }, "Each copy keeps its own settings: this sets the coordinator's, which times a query across every shard.") : null) }));
+    card({ title: isCoord() ? "The coordinator's runtime settings" : "This server's runtime settings", sub: `${where} (${host}) only · set while it runs; a restart goes back to its flags`, body: h("div", { class: "stack" }, box,
+      h("div", { class: "small muted" }, "A query slower than the threshold is kept as slow, with its profile. ", h("a", { class: "wl-link", href: link("queries", { tab: "history", preset: "slow" }) }, "See them in Queries > History, slow ›")),
+      keep,
+      isCoord() ? h("div", { class: "small muted" }, "The coordinator times a query across every shard; each copy keeps its own settings, listed below.") : null) }),
+    fleet);
+  /** Asks first on production, with a reason: {reason} or null when cancelled. */
+  async function ask(title, what) {
+    if (!isProduction()) return { reason: null };
+    const ok = await confirm({ title, body: `${what} It lasts until the server restarts.`, ok: "Change it", reason: true });
+    return ok ? { reason: ok.reason } : null;
+  }
+  const words = (b) => b.slow_ms !== undefined ? (b.slow_ms == null ? "No query will be kept as slow." : `Queries over ${fmt.ms(b.slow_ms)} will be kept as slow.`) : b.cpu_all ? "Every query will have its CPU time measured (about 0.3 µs a step)." : "Only profiled queries will have their CPU time measured.";
   async function draw() {
     try {
       const s = await api("/v1/profile/settings");
       const inp = h("input", { class: "input sm num", type: "number", min: 0, step: "any", value: s.slow_ms ?? "", placeholder: "off", id: "wl-slow-ms", style: { width: "90px" } });
       const save = async (b) => {
-        let reason = null;
-        if (isProduction()) {
-          const ok = await confirm({ title: `Change ${where}'s runtime settings?`, body: `${b.slow_ms !== undefined ? (b.slow_ms == null ? "No query will be kept as slow." : `Queries over ${fmt.ms(b.slow_ms)} will be kept as slow.`) : b.cpu_all ? "Every query will have its CPU time measured (about 0.3 µs a step)." : "Only profiled queries will have their CPU time measured."} It lasts until the server restarts.`, ok: "Change it", reason: true });
-          if (!ok) return;
-          reason = ok.reason;
-        }
-        try { const r = await api("/v1/profile/settings", { method: "PUT", body: b, reason }); toast(r.slow_ms == null ? "No query is kept as slow" : `Queries over ${fmt.ms(r.slow_ms)} are kept as slow`, "ok"); draw(); }
+        const ok = await ask(`Change ${where}'s runtime settings?`, words(b));
+        if (!ok) return;
+        try { const r = await api("/v1/profile/settings", { method: "PUT", body: b, reason: ok.reason }); toast(r.slow_ms == null ? "No query is kept as slow" : `Queries over ${fmt.ms(r.slow_ms)} are kept as slow`, "ok"); draw(); }
         catch (e) { toast(e.message, "bad"); }
       };
       clear(box,
@@ -685,8 +693,57 @@ function settingsTab(body) {
         s.started_slow_ms !== s.slow_ms ? h("span", { class: "small muted" }, `started with ${s.started_slow_ms == null ? "none" : fmt.ms(s.started_slow_ms)}`) : null,
         h("span", { class: "sep" }),
         toggle(!!s.cpu_all, (v) => save({ cpu_all: v }), "Measure CPU time for every query (about 0.3 µs a step)"));
+      // PROF-2: what survives a restart.
+      keep.textContent = `To keep a threshold after a restart, start the server with --slow-ms N (this one started with ${s.started_slow_ms == null ? "none, --slow-ms 0" : `--slow-ms ${Math.round(s.started_slow_ms)}`}). Measuring every query's CPU time has no flag: it is off after a restart.`;
+      if (isCoord()) drawFleet(s);
     } catch (e) { clear(box, failure(e, "This server's runtime settings")); }
   }
+  /** PROF-2: every copy's settings, read 16 at a time, and one change for every server. */
+  async function drawFleet(mine) {
+    const cs = copies().filter((c) => c.status !== "down");
+    const down = copies().length - cs.length;
+    const rows = [{ name: "coordinator", title: host, self: true, ...mine, read: true }, ...cs.map((c) => ({ name: c.name, title: c.url, url: c.url, shard: c.shard }))];
+    const tbody = h("tbody");
+    const slowOf = (x) => x.err ? (/no profile of kind/.test(x.err) ? "older server: sets its own only" : "did not answer") : !x.read ? "reading…" : x.slow_ms == null ? "none kept" : `over ${fmt.ms(x.slow_ms)}`;
+    const row = (x) => h("tr", {},
+      h("td", {}, h("span", { class: "mono small", title: x.title }, x.name), x.shard != null ? h("span", { class: "tiny muted" }, ` shard ${x.shard}`) : null),
+      h("td", { class: "small", title: x.err || "" }, slowOf(x), x.read && x.started_slow_ms !== x.slow_ms ? h("span", { class: "tiny muted" }, ` · started ${x.started_slow_ms == null ? "none" : fmt.ms(x.started_slow_ms)}`) : null),
+      h("td", { class: "small" }, x.read ? (x.cpu_all ? "every query" : "profiled only") : ""));
+    const paint = () => clear(tbody, rows.map(row));
+    const inp = h("input", { class: "input sm num", type: "number", min: 0, step: "any", placeholder: "off", value: mine.slow_ms ?? "", "aria-label": "Slow threshold for every server, ms", style: { width: "90px" } });
+    const n = rows.length;
+    const setAll = async (b) => {
+      const ok = await ask(`Change every server's runtime settings?`, `${words(b)} On ${fmt.plural(n, "server")}: the coordinator and ${fmt.plural(n - 1, "copy", "copies")}.`);
+      if (!ok) return;
+      const failed = [];
+      try { await api("/v1/profile/settings", { method: "PUT", body: b, reason: ok.reason }); } catch (e) { failed.push(`coordinator (${e.message})`); }
+      const others = rows.filter((x) => x.url);
+      for (let i = 0; i < others.length; i += 16) {
+        await Promise.all(others.slice(i, i + 16).map(async (x) => {
+          try { await api("/v1/profile/settings?node=" + encodeURIComponent(x.url), { method: "PUT", body: b, reason: ok.reason }); } catch (e) { failed.push(`${x.name} (${e.message})`); }
+        }));
+      }
+      toast(failed.length ? `Set on ${n - failed.length} of ${n} servers. Not on: ${failed.slice(0, 3).join(", ")}${failed.length > 3 ? ` and ${failed.length - 3} more` : ""}` : `Set on all ${n} servers`, failed.length ? "bad" : "ok");
+      draw();
+    };
+    const admin = can("admin");
+    const btn = (label, b, cls = "btn sm") => { const x = h("button", { class: cls, onclick: () => setAll(b()) }, label); if (!admin) { x.disabled = true; x.title = "Needs an admin key"; } return x; };
+    clear(fleet, card({ title: "Every server's settings", sub: `the coordinator and ${fmt.plural(n - 1, "copy", "copies")}${down ? ` · ${down} down, not listed` : ""} · each until it restarts`, flush: true, body: h("div", {},
+      h("div", { class: "row", style: { gap: "8px", padding: "10px 12px", flexWrap: "wrap", alignItems: "center" } },
+        h("span", { class: "small dim" }, "On every server: keep queries slower than"), h("span", { class: "row nw small dim", style: { gap: "8px" } }, inp, "ms",
+          btn(`Set on ${n}`, () => ({ slow_ms: inp.value === "" ? null : Number(inp.value) }), "btn sm primary")),
+        btn("CPU time for every query: on", () => ({ cpu_all: true })), btn("off", () => ({ cpu_all: false }))),
+      h("div", { class: "tbl-wrap", style: { maxHeight: "50vh" } }, h("table", { class: "t compact wl-nums" }, h("thead", {}, h("tr", {}, ["server", "kept as slow", "CPU time measured"].map((k) => h("th", {}, k)))), tbody))) }));
+    paint();
+    const others = rows.filter((x) => x.url);
+    for (let i = 0; i < others.length && alive; i += 16) {
+      await Promise.all(others.slice(i, i + 16).map(async (x) => {
+        try { Object.assign(x, await api("/v1/profile/settings?node=" + encodeURIComponent(x.url)), { read: true }); } catch (e) { x.err = e.message; }
+      }));
+      if (!fleet.isConnected) return;
+      paint();
+    }
+  }
   draw();
-  return { stop: () => {} };
+  return { stop: () => { alive = false; } };
 }

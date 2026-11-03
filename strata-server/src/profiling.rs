@@ -37,6 +37,10 @@ pub enum Kind {
     /// Not a profile: writes a checkpoint into the server's backup
     /// directory ([`crate::service::Service::checkpoint`]).
     Checkpoint,
+    /// Not a profile: this server's profiling settings ([`settings_json`]),
+    /// set first from the body as [`set_settings`] when it sets any, so
+    /// that a coordinator reads and sets a copy's over the same call.
+    Settings,
 }
 
 impl Kind {
@@ -50,6 +54,7 @@ impl Kind {
             "log_filter" => Kind::LogFilter,
             "verify" => Kind::Verify,
             "checkpoint" => Kind::Checkpoint,
+            "profile_settings" => Kind::Settings,
             _ => return Err(ApiError::bad(format!("no profile of kind {s:?}: cpu, heap, memory, threads or index"))),
         })
     }
@@ -64,6 +69,7 @@ impl Kind {
             Kind::LogFilter => "log_filter",
             Kind::Verify => "verify",
             Kind::Checkpoint => "checkpoint",
+            Kind::Settings => "profile_settings",
         }
     }
 
@@ -73,7 +79,7 @@ impl Kind {
     pub fn wait(self, b: &Json) -> std::time::Duration {
         let s = match self {
             Kind::Cpu | Kind::Heap => b.get("seconds").and_then(|v| v.as_f64()).filter(|s| s.is_finite() && *s > 0.0).unwrap_or(5.0).min(profiler::MAX_SECONDS.max(heap::MAX_SECONDS)),
-            Kind::Memory | Kind::Threads | Kind::Index | Kind::LogFilter => 0.0,
+            Kind::Memory | Kind::Threads | Kind::Index | Kind::LogFilter | Kind::Settings => 0.0,
             // The replicas' digests, waited for `timeout_ms` (60 s).
             Kind::Verify => b.get("timeout_ms").and_then(|v| v.as_f64()).filter(|t| t.is_finite() && *t > 0.0).map_or(60.0, |t| t / 1e3).min(600.0),
             // A checkpoint copies the database: up to 10 minutes.
@@ -180,6 +186,13 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
             let ms = b.get("timeout_ms").and_then(|v| v.as_u64()).filter(|t| *t > 0).unwrap_or(60_000).min(600_000);
             Ok(Answer::Json(svc.verify_fresh(std::time::Duration::from_millis(ms)).await?))
         }
+        Kind::Settings => {
+            if b.get("slow_ms").is_some() || b.get("cpu_all").is_some() {
+                let did = set_settings(svc, b)?;
+                tracing::info!(settings = %did.join(", "), by = b["by"].as_str().unwrap_or("a coordinator"), "profiling settings changed");
+            }
+            Ok(Answer::Json(settings_json(svc)))
+        }
         Kind::Checkpoint => {
             let layout = match b["layout"].as_str().unwrap_or("file") {
                 "file" => strata::storage::Layout::SingleFile,
@@ -191,6 +204,49 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
             Ok(Answer::Json(json!({"checkpoint": stats})))
         }
     }
+}
+
+/// What profiling keeps now: the slow threshold (`slow_ms`, `null` for
+/// none), the one the server started with (`--slow-ms`), and whether every
+/// query's CPU time is measured.
+pub fn settings_json(svc: &Service) -> Json {
+    json!({
+        "slow_ms": svc.slow_after().map(|d| d.as_secs_f64() * 1e3),
+        "started_slow_ms": svc.slow.map(|d| d.as_secs_f64() * 1e3),
+        "cpu_all": svc.profiling.cpu_all.load(std::sync::atomic::Ordering::Relaxed),
+    })
+}
+
+/// Sets `{"slow_ms": 50}` (every query of 50 ms or longer kept among the
+/// slow ones with its profile; `null`: none, `0`: every query) and
+/// `{"cpu_all": true}` (every query's CPU time measured, step by step),
+/// either alone, until the server restarts. Answers what it did.
+pub fn set_settings(svc: &Service, b: &Json) -> Result<Vec<String>, ApiError> {
+    let slow = match b.get("slow_ms") {
+        None => None,
+        Some(Json::Null) => Some(None),
+        Some(v) => match v.as_f64() {
+            Some(ms) if ms >= 0.0 && ms.is_finite() => Some(Some(std::time::Duration::from_secs_f64(ms / 1e3))),
+            _ => return Err(ApiError::bad("slow_ms is a number of milliseconds, 0 or more, or null for no slow queries")),
+        },
+    };
+    let cpu_all = match b.get("cpu_all") {
+        None => None,
+        Some(v) => Some(v.as_bool().ok_or_else(|| ApiError::bad("cpu_all is true or false"))?),
+    };
+    if slow.is_none() && cpu_all.is_none() {
+        return Err(ApiError::bad("the body sets slow_ms (milliseconds, or null) or cpu_all (true or false)"));
+    }
+    let mut did = Vec::new();
+    if let Some(slow) = slow {
+        svc.profiling.set_slow(slow);
+        did.push(format!("slow_ms {}", slow.map_or("off".to_string(), |d| format!("{}", d.as_secs_f64() * 1e3))));
+    }
+    if let Some(on) = cpu_all {
+        svc.profiling.cpu_all.store(on, std::sync::atomic::Ordering::Relaxed);
+        did.push(format!("cpu_all {on}"));
+    }
+    Ok(did)
 }
 
 /// What a profile runs while it is taken: nothing (the whole server, as

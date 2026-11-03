@@ -2259,48 +2259,48 @@ async fn finished_query(State(app): State<App>, axum::extract::Path(id): axum::e
     }
 }
 
-/// What profiling does now: the slow threshold (`slow_ms`, `null` for
-/// none; as started with `--slow-ms` unless changed) and whether every
-/// query's CPU time is measured (`cpu_all`).
-fn profile_settings_json(app: &App) -> Json {
-    json!({
-        "slow_ms": app.svc.slow_after().map(|d| d.as_secs_f64() * 1e3),
-        "started_slow_ms": app.svc.slow.map(|d| d.as_secs_f64() * 1e3),
-        "cpu_all": app.svc.profiling.cpu_all.load(std::sync::atomic::Ordering::Relaxed),
-    })
+/// `GET /v1/profile/settings?node=`: what profiling keeps now
+/// ([`profiling::settings_json`]); on a coordinator, `node` (a copy's URL
+/// or short name) asks that copy's.
+async fn profile_settings(State(app): State<App>, Query(q): Params) -> Res {
+    match q.get("node").filter(|n| !n.is_empty()) {
+        Some(node) => copy_settings(&app, node, json!({})).await.map(|(j, _)| AxJson(j)),
+        None => Ok(AxJson(profiling::settings_json(&app.svc))),
+    }
 }
 
-async fn profile_settings(State(app): State<App>) -> AxJson<Json> {
-    AxJson(profile_settings_json(&app))
+/// A copy's profiling settings, set first from `b` when it sets any, with
+/// its `node` and `short`, over the call that profiles it.
+async fn copy_settings(app: &App, node: &str, b: Json) -> Result<(Json, String), ApiError> {
+    let crate::service::Backend::Cluster(c) = &app.svc.backend else {
+        return Err(ApiError::bad("node names a copy of a coordinator's cluster; this server answers its own settings without it"));
+    };
+    let copy = copy_of(&*c.snapshot().await, node)?;
+    let mut j = ask_copy(c, &copy.url, profiling::Kind::Settings, b).await?;
+    (j["node"], j["short"]) = (json!(copy.url), json!(copy.short));
+    Ok((j, copy.short))
 }
 
 /// `{"slow_ms": 50}` keeps every query that takes 50 ms or longer with
 /// its profile among the slow ones (`null`: none, `0`: every query);
 /// `{"cpu_all": true}` measures every query's CPU time, step by step.
-/// Either may come alone. Until the server restarts.
-async fn put_profile_settings(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
-    let mut did = Vec::new();
-    if let Some(v) = b.get("slow_ms") {
-        let slow = match v {
-            Json::Null => None,
-            v => match v.as_f64() {
-                Some(ms) if ms >= 0.0 && ms.is_finite() => Some(Duration::from_secs_f64(ms / 1e3)),
-                _ => return Err(ApiError::bad("slow_ms is a number of milliseconds, 0 or more, or null for no slow queries")),
-            },
-        };
-        app.svc.profiling.set_slow(slow);
-        did.push(format!("slow_ms {}", slow.map_or("off".to_string(), |d| format!("{}", d.as_secs_f64() * 1e3))));
+/// Either may come alone. Until the server restarts. On a coordinator,
+/// `?node=` sets a copy's (PROF-2: the command center sets every server's).
+async fn put_profile_settings(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Params, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    if let Some(node) = q.get("node").filter(|n| !n.is_empty()) {
+        let mut asked = b.clone();
+        if !asked.is_object() {
+            return Err(ApiError::bad("the body sets slow_ms (milliseconds, or null) or cpu_all (true or false)"));
+        }
+        asked["by"] = json!(keys::audit_name(&who(w)));
+        let (j, short) = copy_settings(&app, node, asked).await?;
+        keys::note_change(keys::Change { object: Some(format!("profiling settings of {short}")), after: Some(j.clone()), ..Default::default() });
+        let did = [b.get("slow_ms").map(|v| format!("slow_ms {}", if v.is_null() { "off".to_string() } else { v.to_string() })), b.get("cpu_all").map(|v| format!("cpu_all {v}"))];
+        return Ok(audited(j, format!("profiling on {short}: {}", did.into_iter().flatten().collect::<Vec<_>>().join(", "))));
     }
-    if let Some(v) = b.get("cpu_all") {
-        let on = v.as_bool().ok_or_else(|| ApiError::bad("cpu_all is true or false"))?;
-        app.svc.profiling.cpu_all.store(on, std::sync::atomic::Ordering::Relaxed);
-        did.push(format!("cpu_all {on}"));
-    }
-    if did.is_empty() {
-        return Err(ApiError::bad("the body sets slow_ms (milliseconds, or null) or cpu_all (true or false)"));
-    }
+    let did = profiling::set_settings(&app.svc, &b)?;
     tracing::info!(settings = %did.join(", "), "profiling settings changed");
-    Ok(audited(profile_settings_json(&app), format!("profiling: {}", did.join(", "))))
+    Ok(audited(profiling::settings_json(&app.svc), format!("profiling: {}", did.join(", "))))
 }
 
 /// A profile ([`profiling`]) of this server, or with `?node=` on a
