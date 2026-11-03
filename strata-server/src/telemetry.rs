@@ -423,6 +423,55 @@ impl LiveQueries {
         self.len() == 0
     }
 
+    /// The running queries by statement shape and key, the most time spent
+    /// first: each group's `count`, `oldest_ms` (the longest running, ms),
+    /// `total_ms` (their time so far) and `ids`. A coordinator's calls as
+    /// a shard are left out.
+    pub fn groups(&self) -> Vec<Json> {
+        let qs: Vec<Arc<LiveQuery>> = lock(&self.running).values().cloned().collect();
+        let mut by: BTreeMap<(String, Option<String>), Vec<&Arc<LiveQuery>>> = BTreeMap::new();
+        for q in qs.iter().filter(|q| !q.shard) {
+            by.entry((q.fingerprint.clone(), q.meta.caller.as_ref().and_then(|c| c.key.clone()))).or_default().push(q);
+        }
+        let mut out: Vec<(f64, Json)> = by
+            .into_iter()
+            .map(|((fp, key), qs)| {
+                let ms: Vec<f64> = qs.iter().map(|q| q.t0.elapsed().as_secs_f64() * 1e3).collect();
+                let total: f64 = ms.iter().sum();
+                let oldest = qs.iter().map(|q| q.started_ms).min().unwrap_or(0);
+                let mut ids: Vec<u64> = qs.iter().map(|q| q.id).collect();
+                ids.sort_unstable();
+                let j = json!({
+                    "fingerprint": fp, "sql": qs[0].sql, "key": key, "count": qs.len(), "oldest_ms": ms.iter().cloned().fold(0.0, f64::max),
+                    "oldest_started_ms": oldest, "total_ms": total, "ids": ids,
+                    "client": qs[0].meta.caller.as_ref().and_then(|c| c.client.clone()),
+                });
+                (total, j)
+            })
+            .collect();
+        out.sort_by(|a, b| b.0.total_cmp(&a.0));
+        out.into_iter().map(|(_, j)| j).collect()
+    }
+
+    /// Cancels the running queries of statement `fingerprint`, of `key`
+    /// (its name or id) when given; a coordinator's calls as a shard are
+    /// its coordinator's to cancel. Returns those cancelled, as listed.
+    pub fn cancel_matching(&self, fingerprint: &str, key: Option<&str>) -> Vec<Json> {
+        let qs: Vec<Arc<LiveQuery>> = lock(&self.running).values().filter(|q| !q.shard && q.fingerprint == fingerprint).cloned().collect();
+        let mut out = Vec::new();
+        for q in qs {
+            let c = q.meta.caller.as_deref();
+            if key.is_some_and(|k| c.is_none_or(|c| c.key.as_deref() != Some(k) && c.key_id.as_deref() != Some(k))) {
+                continue;
+            }
+            if !q.stop.swap(true, Ordering::Relaxed) {
+                q.wake.notify_waiters();
+                out.push(q.json());
+            }
+        }
+        out
+    }
+
     /// Cancels query `id`; false if it is not running.
     pub fn cancel(&self, id: u64) -> bool {
         let Some(q) = lock(&self.running).get(&id).cloned() else { return false };

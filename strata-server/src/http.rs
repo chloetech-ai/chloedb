@@ -195,7 +195,10 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/moves/finish", post(finish_move))
         .route("/v1/agent", post(agent_run))
         .route("/v1/judge", post(judge))
-        .route("/v1/queries", get(live_queries))
+        // workload (alerts agent): grouped, and cancelled by statement
+        .route("/v1/queries", get(live_queries).delete(cancel_queries))
+        .route("/v1/admin/contain", get(contain_rules).post(add_contain))
+        .route("/v1/admin/contain/:id", axum::routing::delete(remove_contain))
         .route("/v1/queries/:id", axum::routing::delete(cancel_query))
         .route("/v1/queries/recent", get(recent_queries))
         .route("/v1/queries/slow", get(slow_queries))
@@ -1959,9 +1962,69 @@ fn param_u64(q: &std::collections::HashMap<String, String>, k: &str, default: u6
     q.get(k).map_or(Ok(default), |v| v.parse().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}"))))
 }
 
-async fn live_queries(State(app): State<App>) -> AxJson<Json> {
-    AxJson(json!({"queries": app.svc.live.list(), "running": app.svc.running()}))
+async fn live_queries(State(app): State<App>, Query(q): Params) -> Res {
+    let mut j = json!({"queries": app.svc.live.list(), "running": app.svc.running()});
+    // workload (alerts agent): grouped by statement shape and key.
+    match q.get("group").map(String::as_str) {
+        None | Some("") => {}
+        Some("shape") => j["groups"] = json!(app.svc.live.groups()),
+        Some(g) => return Err(ApiError::bad(format!("group is \"shape\", not {g:?}"))),
+    }
+    Ok(AxJson(j))
 }
+
+// ----- workload (alerts agent): bulk cancel and Contain rules
+
+/// Cancels the running queries of a statement (`fingerprint`), of one key
+/// (`key`) if given; the reason comes in `x-strata-reason`. Audited.
+async fn cancel_queries(State(app): State<App>, Query(q): Params) -> Result<Response, ApiError> {
+    let fp = q.get("fingerprint").map(String::as_str).filter(|f| !f.is_empty()).ok_or_else(|| ApiError::bad("say which statement: ?fingerprint= (and &key= for one key's)"))?;
+    let key = q.get("key").map(String::as_str).filter(|k| !k.is_empty());
+    let gone = app.svc.live.cancel_matching(fp, key);
+    let ids: Vec<u64> = gone.iter().filter_map(|q| q["id"].as_u64()).collect();
+    tracing::info!(queries = ids.len(), fingerprint = %crate::obs::truncate(fp, 200), key = key.unwrap_or(""), "queries cancelled by an operator");
+    let was: Vec<Json> = gone
+        .iter()
+        .map(|q| {
+            let mut w = json!({"id": q["id"]});
+            for k in ["key", "key_id", "client", "app", "addr", "started_ms"] {
+                if !q[k].is_null() {
+                    w[k] = q[k].clone();
+                }
+            }
+            w
+        })
+        .collect();
+    keys::note_change(keys::Change { object: Some(format!("queries of {}", crate::obs::truncate(fp, 200))), before: Some(json!({"statement": fp, "key": key, "queries": was})), ..Default::default() });
+    let of = key.map_or(String::new(), |k| format!(" of key {k}"));
+    Ok(audited(json!({"cancelled": ids.len(), "ids": ids}), format!("cancelled {} running queries{of}: {}", ids.len(), crate::obs::truncate(fp, 200))))
+}
+
+/// The Contain rules in force, the newest first.
+async fn contain_rules(State(app): State<App>) -> AxJson<Json> {
+    AxJson(Json::Array(app.svc.contain.list().iter().map(|r| r.json()).collect()))
+}
+
+/// Adds a Contain rule: audited, and an event.
+async fn add_contain(State(app): State<App>, p: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let name = by(&who(p));
+    let r = app.svc.contain.add(&b, &name)?;
+    tracing::info!(rule = %r.id, by = %name, "contain rule added: it {}", r.what());
+    app.svc.events.add(crate::contain::event(&r, "added", Some(name)));
+    keys::note_change(keys::Change { object: Some(format!("contain rule {}", r.id)), after: Some(r.json()), ..Default::default() });
+    Ok(audited(r.json(), format!("contain rule {} {} for {} min: {}", r.id, r.what(), r.expires_ms.saturating_sub(r.created_ms) / 60_000, r.reason)))
+}
+
+/// Removes a Contain rule: audited, and an event.
+async fn remove_contain(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let name = by(&who(p));
+    let r = app.svc.contain.remove(&id).ok_or_else(|| ApiError { status: 404, message: format!("no contain rule {id}") })?;
+    app.svc.events.add(crate::contain::event(&r, "removed", Some(name)));
+    keys::note_change(keys::Change { object: Some(format!("contain rule {id}")), before: Some(r.json()), ..Default::default() });
+    Ok(audited(json!({"removed": r.json()}), format!("removed contain rule {id}: it {}", r.what())))
+}
+
+// ----- end workload
 
 async fn cancel_query(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<u64>) -> Result<Response, ApiError> {
     let q = app.svc.live.list().into_iter().find(|q| q["id"] == id).unwrap_or(Json::Null);

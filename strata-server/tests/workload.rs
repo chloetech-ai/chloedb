@@ -259,3 +259,92 @@ async fn statements_compare_with_the_window_before() {
 fn urlencoding(s: &str) -> String {
     s.bytes().map(|b| if b.is_ascii_alphanumeric() { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
 }
+
+/// Running queries come grouped by statement shape and key, and are
+/// cancelled together by shape and key, audited with the reason given. A
+/// Contain rule refuses a statement from a key with 429 naming the rule
+/// and its reason, until it ends; a limit lets some run at once and
+/// refuses the rest once their deadline passes waiting.
+#[tokio::test(flavor = "multi_thread")]
+async fn running_queries_are_grouped_cancelled_and_contained() {
+    use reqwest::Method;
+    use strata_server::telemetry::{Caller, Meta};
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(service(open(dir.path(), "one.strata")));
+    let (base, ops, rb) = keyed(&svc).await;
+    // Queries running, as the server lists them: three of one key, one of
+    // another.
+    let of = |key: &str| Meta { caller: Some(Arc::new(Caller { key: Some(key.into()), ..Default::default() })), ..Default::default() };
+    let held: Vec<_> = (0..3).map(|_| svc.live.start(JOIN, "sql", false, &of("reports-batch"))).collect();
+    let other = svc.live.start(JOIN, "sql", false, &of("ops"));
+    let fp = strata_server::telemetry::fingerprint(JOIN);
+    let join = urlencoding(&fp);
+    let (status, j) = call(Method::GET, &base, "/v1/queries?group=shape", &ops, &[], None).await;
+    assert_eq!(status, 200, "{j}");
+    let groups = j["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 2, "{j}");
+    let g = groups.iter().find(|g| g["key"] == "reports-batch").unwrap();
+    assert_eq!((g["fingerprint"].as_str(), g["count"].as_u64(), g["ids"].as_array().unwrap().len()), (Some(fp.as_str()), Some(3), 3), "{g}");
+    assert_eq!(call(Method::GET, &base, "/v1/queries?group=nothing", &ops, &[], None).await.0, 400);
+    assert_eq!(call(Method::DELETE, &base, "/v1/queries", &ops, &[], None).await.0, 400, "a statement must be named");
+
+    // One key's, then the rest.
+    let why = [("x-strata-reason", "a runaway join")];
+    let (status, j) = call(Method::DELETE, &base, &format!("/v1/queries?fingerprint={join}&key=reports-batch"), &ops, &why, None).await;
+    assert_eq!((status, j["cancelled"].as_u64()), (200, Some(3)), "{j}");
+    for l in &held {
+        tokio::time::timeout(Duration::from_secs(1), l.query.cancelled()).await.expect("cancelled");
+    }
+    let (_, live) = call(Method::GET, &base, "/v1/queries", &ops, &[], None).await;
+    assert!(live["queries"].as_array().unwrap().iter().any(|q| q["key"] == "ops" && q["cancelled"] == false), "{live}");
+    let (_, j) = call(Method::DELETE, &base, &format!("/v1/queries?fingerprint={join}"), &ops, &why, None).await;
+    assert_eq!(j["cancelled"], 1, "{j}");
+    tokio::time::timeout(Duration::from_secs(1), other.query.cancelled()).await.expect("cancelled");
+    let (_, audit) = call(Method::GET, &base, "/v1/admin/audit", &ops, &[], None).await;
+    let e = audit["entries"].as_array().unwrap().iter().find(|e| e["route"] == "/v1/queries" && e["method"] == "DELETE" && e["detail"].as_str().is_some_and(|d| d.starts_with("cancelled 3"))).expect("audited");
+    assert_eq!(e["reason"], "a runaway join", "{e}");
+    assert_eq!(e["before"]["queries"].as_array().unwrap().len(), 3, "{e}");
+    drop((held, other));
+
+    // Refused for a second: this statement from reports-batch.
+    let sql = "SELECT id FROM products WHERE MATCH(body, 'laptop') LIMIT 5";
+    let sfp = strata_server::telemetry::fingerprint(sql);
+    let rule = json!({"match": {"fingerprint": sfp, "key": "reports-batch"}, "action": "refuse", "expires_s": 1, "reason": "it floods the shards"});
+    let (status, r) = call(Method::POST, &base, "/v1/admin/contain", &ops, &[], Some(rule)).await;
+    assert_eq!(status, 200, "{r}");
+    let id = r["id"].as_str().unwrap().to_string();
+    let (status, j) = call(Method::POST, &base, "/v1/query", &rb, &[], Some(json!({"sql": sql}))).await;
+    assert_eq!(status, 429, "{j}");
+    let message = j["error"].as_str().unwrap();
+    assert!(message.contains(&format!("contain rule {id}")) && message.contains("it floods the shards"), "{message}");
+    assert_eq!(call(Method::POST, &base, "/v1/query", &ops, &[], Some(json!({"sql": sql}))).await.0, 200, "another key's runs");
+    let (_, rules) = call(Method::GET, &base, "/v1/admin/contain", &ops, &[], None).await;
+    assert_eq!((rules[0]["id"].as_str(), rules[0]["hits"].as_u64(), rules[0]["refused"].as_u64(), rules[0]["by"].as_str()), (Some(id.as_str()), Some(1), Some(1), Some("ops")), "{rules}");
+    let (_, recent) = call(Method::GET, &base, "/v1/queries/recent?limit=5", &ops, &[], None).await;
+    assert!(recent["queries"].as_array().unwrap().iter().any(|q| q["outcome"] == "refused" && q["key"] == "reports-batch"), "{recent}");
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    assert_eq!(call(Method::POST, &base, "/v1/query", &rb, &[], Some(json!({"sql": sql}))).await.0, 200, "the rule ended");
+    let (_, rules) = call(Method::GET, &base, "/v1/admin/contain", &ops, &[], None).await;
+    assert_eq!(rules, json!([]));
+    strata_server::contain::sweep(&svc);
+    let (_, ev) = call(Method::GET, &base, "/v1/events?kind=contain", &ops, &[], None).await;
+    let titles: Vec<&str> = ev["events"].as_array().unwrap().iter().map(|e| e["title"].as_str().unwrap()).collect();
+    assert!(titles.iter().any(|t| t.starts_with(&format!("Contain rule {id} ended"))) && titles.iter().any(|t| t.starts_with(&format!("Contain rule {id} refuses"))), "{titles:?}");
+
+    // A limit of one at a time: while one holds its turn, the next waits
+    // for it, and is refused when its deadline passes.
+    let rule = json!({"match": {"fingerprint": sfp}, "action": "limit", "concurrency": 1, "expires_s": 60, "reason": "one at a time"});
+    let (status, r) = call(Method::POST, &base, "/v1/admin/contain", &ops, &[], Some(rule)).await;
+    assert_eq!(status, 200, "{r}");
+    let turn = svc.contain.admit(&sfp, None, None, Duration::from_secs(1)).await.unwrap();
+    let (status, j) = call(Method::POST, &base, "/v1/query", &rb, &[], Some(json!({"sql": sql, "timeout_ms": 300}))).await;
+    assert_eq!(status, 429, "{j}");
+    assert!(j["error"].as_str().unwrap().contains("one at a time"), "{j}");
+    drop(turn);
+    assert_eq!(call(Method::POST, &base, "/v1/query", &rb, &[], Some(json!({"sql": sql, "timeout_ms": 300}))).await.0, 200, "its turn came");
+    let lid = r["id"].as_str().unwrap();
+    assert_eq!(call(Method::DELETE, &base, &format!("/v1/admin/contain/{lid}"), &ops, &[], None).await.0, 200);
+    assert_eq!(call(Method::DELETE, &base, &format!("/v1/admin/contain/{lid}"), &ops, &[], None).await.0, 404);
+    let (_, audit) = call(Method::GET, &base, "/v1/admin/audit", &ops, &[], None).await;
+    assert!(audit["entries"].as_array().unwrap().iter().any(|e| e["object"] == format!("contain rule {lid}") && e["before"]["action"] == "limit"), "{audit}");
+}
