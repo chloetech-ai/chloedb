@@ -637,7 +637,8 @@ run)
                 if [ $a -gt "$(max_attempts "$name")" ]; then setstate "$name" failed; continue; fi
                 echo $a >"$STATE/jobs/$name/attempts"
                 [ $a -gt 1 ] && [ -d "$STATE/jobs/$name/work" ] && mv "$STATE/jobs/$name" "$STATE/jobs/$name.attempt$((a - 1))" &&
-                    mkdir -p "$STATE/jobs/$name" && echo $a >"$STATE/jobs/$name/attempts" && echo "$hours" >"$STATE/jobs/$name/timeout_h"
+                    mkdir -p "$STATE/jobs/$name" && echo $a >"$STATE/jobs/$name/attempts" && echo "$hours" >"$STATE/jobs/$name/timeout_h" &&
+                    { cp "$STATE/jobs/$name.attempt$((a - 1))/requeued" "$STATE/jobs/$name/" 2>/dev/null || true; }
                 create_pools "$name" "$shape" "$a" || { delete_pools "$name"; continue; }
                 setstate "$name" starting
                 setsid nohup "$0" _job "$name" "$engine" "$shape" "$hours" </dev/null >>"$STATE/jobs/$name/driver.log" 2>&1 &
