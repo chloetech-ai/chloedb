@@ -11,7 +11,7 @@ use serde_json::{json, Value as Json};
 use strata::db::{Db, PreparedWrite, Source};
 use strata::embed::Embedder;
 use strata::ingest::{Format, Rows};
-use strata::query::exec::{Engine, ExecOptions, Leaf, ResultSet};
+use strata::query::exec::{Engine, ExecOptions, Expansions, Leaf, ResultSet};
 use strata::query::memory::MemoryBudget;
 use strata::query::stats::TermStats;
 use strata::query::ir::Plan;
@@ -53,6 +53,14 @@ tokio::task_local! {
     /// [`Service::check_epoch`] checked it (0: none): a read takes its
     /// version and a write checks its keys against the map then.
     pub static ROUTED: std::cell::Cell<u64>;
+}
+
+/// A snapshot kept for the queries that name its lease, until `until`,
+/// and the typo expansions they found on it.
+struct Lease {
+    snap: Snapshot,
+    until: Instant,
+    expansions: Arc<Expansions>,
 }
 
 /// The deadline a request asked for (`timeout_ms`), when shorter than the
@@ -478,7 +486,7 @@ pub struct Service {
     /// may have, in bytes; other routes take [`SMALL_BODY`].
     pub max_body: usize,
     pub lease_ttl: Duration,
-    leases: Mutex<HashMap<u64, (Snapshot, Instant)>>,
+    leases: Mutex<HashMap<u64, Lease>>,
     next_lease: AtomicU64,
     /// Queries allowed to run at once; the rest wait until their deadline.
     admission: Arc<Semaphore>,
@@ -1714,13 +1722,23 @@ impl Service {
     fn lease_of(&self, snap: Snapshot, ttl: Duration) -> Result<u64, ApiError> {
         let mut l = self.leases.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        l.retain(|_, (_, t)| *t > now);
+        l.retain(|_, x| x.until > now);
         if l.len() >= MAX_LEASES {
             return Err(ApiError { status: 429, message: format!("{MAX_LEASES} snapshot leases are held; try again when some expire") });
         }
         let id = self.next_lease.fetch_add(1, Ordering::Relaxed);
-        l.insert(id, (snap, now + ttl));
+        l.insert(id, Lease { snap, until: now + ttl, expansions: Arc::default() });
         Ok(id)
+    }
+
+    /// The typo expansions found on lease `lease`'s snapshot so far, which
+    /// the queries reading it share (a coordinator's statistics round,
+    /// then its query round): `None` for no lease, or one unknown.
+    fn lease_expansions(&self, lease: u64) -> Option<Arc<Expansions>> {
+        if lease == 0 {
+            return None;
+        }
+        self.leases.lock().unwrap_or_else(|e| e.into_inner()).get(&lease).map(|x| x.expansions.clone())
     }
 
     /// Ends `leases` before they expire, and releases the versions only
@@ -1749,7 +1767,7 @@ impl Service {
     pub fn sweep_leases(&self) -> usize {
         let mut l = self.leases.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        l.retain(|_, (_, t)| *t > now);
+        l.retain(|_, x| x.until > now);
         l.len()
     }
 
@@ -1771,7 +1789,7 @@ impl Service {
     fn leased(&self, lease: u64) -> Result<Snapshot, ApiError> {
         let l = self.leases.lock().unwrap_or_else(|e| e.into_inner());
         match l.get(&lease) {
-            Some((s, t)) if *t > Instant::now() => Ok(s.clone()),
+            Some(x) if x.until > Instant::now() => Ok(x.snap.clone()),
             _ => Err(ApiError::bad(format!("snapshot lease {lease} is unknown or expired"))),
         }
     }
@@ -2176,6 +2194,9 @@ impl Service {
                     // segments (as engram's recall does).
                     let opts = ExecOptions {
                         stats,
+                        // A query round on the lease of a statistics round
+                        // reuses its typo expansions.
+                        expansions: self.lease_expansions(req.snapshot),
                         shard: req.shard,
                         threads: (self.cores / n).max(1),
                         deadline: Some(t0 + timeout),
@@ -2511,7 +2532,9 @@ impl Service {
                 let lease = self.lease_of(snap.clone(), self.lease_ttl.min(timeout + Duration::from_secs(1)))?;
                 let view = snap.table(&schema.table).ok_or_else(|| ApiError::bad(format!("query error: no such table: {}", schema.table)))?;
                 let db = db.clone();
-                let opts = ExecOptions { synonyms: self.synonyms().or_else(|| db.exec.synonyms.clone()), ..db.exec.clone() };
+                // The query round on the lease finds the typo expansions
+                // these statistics were found with.
+                let opts = ExecOptions { synonyms: self.synonyms().or_else(|| db.exec.synonyms.clone()), expansions: self.lease_expansions(lease), ..db.exec.clone() };
                 let stats = tokio::task::spawn_blocking(move || db.term_stats_with(&view, &select, &opts)).await.map_err(ApiError::internal)??;
                 Ok((stats, lease))
             }
