@@ -251,8 +251,8 @@ pub fn builtins() -> Vec<Rule> {
     let s = "self";
     let mut v = vec![
         rule("shard-no-majority", "A shard has no majority", "shards_no_majority", ">", 0.0, "max", 10, 0, "critical", s, "Fewer than half of a shard's copies answer: with failover its primary serves no reads, so every search fails. Bring a copy back, or remove the dead one."),
-        rule("copy-down", "A copy is down", "copies_down", ">", 0.0, "min", 10, 30, "warning", s, "A copy of a shard has not answered the coordinator for 30 seconds."),
-        rule("under-replicated", "A shard is under-replicated", "shards_under_replicated", ">", 0.0, "min", 10, 60, "warning", s, "A shard has fewer copies in sync and serving than it has copies."),
+        rule("copy-down", "A copy is down", "copies_down", ">", 0.0, "max", 10, 30, "warning", s, "A copy of a shard has not answered the coordinator for 30 seconds."),
+        rule("under-replicated", "A shard is under-replicated", "shards_under_replicated", ">", 0.0, "max", 10, 60, "warning", s, "A shard has fewer copies in sync and serving than it has copies, for a minute."),
         rule("primary-changed", "A shard's primary changed", "primary_changes", ">", 0.0, "max", 10, 0, "info", s, "A shard elected another primary in the last 10 minutes; the alert resolves 10 minutes after the last change."),
         rule("partial-answers", "Partial answers", "partial_s", ">", 0.0, "min", 60, 0, "warning", s, "For a minute, some answers left out shards that did not answer."),
         rule("copy-silent", "A copy stopped reporting", "copies_silent", ">", 0.0, "max", 10, 0, "warning", s, "A copy answers but its own numbers are over 60 seconds old."),

@@ -5,13 +5,16 @@
 
 #![cfg(unix)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as Json};
 use strata::db::Db;
 use strata::storage::DbOptions;
+use strata_server::coord::Coordinator;
 use strata_server::service::{AgentConfig, Backend, Service};
 use strata_server::{alerts, demo, server};
 use tokio::net::TcpListener;
@@ -148,3 +151,158 @@ async fn no_data_does_not_resolve_an_alert() {
     assert!(changes.iter().any(|e| e.rule == "errors" && e.state == "resolved"), "{changes:?}");
 }
 
+// ---------------------------------------------------- a cluster's copies
+
+/// A port free now, of a block of 20 this test process takes alone.
+fn port() -> u16 {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let base = 21_000 + (std::process::id() % 400) * 20;
+    loop {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        assert!(n < 20, "this test process took its 20 ports");
+        let p = (base + n) as u16;
+        if std::net::TcpListener::bind(("127.0.0.1", p)).is_ok() {
+            return p;
+        }
+    }
+}
+
+/// A `strata-server` process of one database.
+struct Node {
+    path: PathBuf,
+    log: PathBuf,
+    http: u16,
+    grpc: u16,
+    child: Option<Child>,
+}
+
+impl Node {
+    fn new(dir: &Path, name: &str, rows: usize) -> Node {
+        let path = dir.join(format!("{name}.strata"));
+        let opts = DbOptions { publish_snapshots: true, ship_log_bytes: 16 << 20, ..DbOptions::default() };
+        let db = Db::create(&path, demo::schema(N), opts).unwrap();
+        if rows > 0 {
+            db.set_embedder("emb", Arc::new(strata::embed::HashEmbedder { dim: demo::DIM })).unwrap();
+            db.load((0..rows).map(|i| demo::product(i, 7))).unwrap();
+        }
+        db.storage().start_seq_no().unwrap();
+        drop(db);
+        Node { path, log: dir.join(format!("{name}.log")), http: port(), grpc: port(), child: None }
+    }
+
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.grpc)
+    }
+
+    fn base(&self) -> String {
+        format!("http://127.0.0.1:{}", self.http)
+    }
+
+    async fn start(&mut self) {
+        let log = std::fs::OpenOptions::new().create(true).append(true).open(&self.log).unwrap();
+        let child = Command::new(env!("CARGO_BIN_EXE_strata-server"))
+            .arg("--db")
+            .arg(&self.path)
+            .args(["--listen", &format!("127.0.0.1:{}", self.http), "--grpc", &format!("127.0.0.1:{}", self.grpc)])
+            .args(["--seq-no", "--log", "info", "--failover-after-ms", "600", "--log-store", "off"])
+            .stdout(Stdio::null())
+            .stderr(log)
+            .spawn()
+            .unwrap();
+        self.child = Some(child);
+        let t0 = Instant::now();
+        while strata_server::http_client().build().unwrap().get(format!("{}/v1/health", self.base())).send().await.is_err() {
+            assert!(t0.elapsed() < Duration::from_secs(30), "{} did not start: {}", self.url(), self.logs());
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    fn kill(&mut self) {
+        if let Some(mut c) = self.child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    fn logs(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+}
+
+impl Drop for Node {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// Checks the coordinator's cluster until `f` holds of its alerts.
+async fn until(svc: &Arc<Service>, what: &str, nodes: &[&Node], f: impl Fn(&Json) -> bool) -> Json {
+    let t0 = Instant::now();
+    loop {
+        alerts::check_cluster(svc).await;
+        let a = svc.alerts.json();
+        if f(&a) {
+            return a;
+        }
+        if t0.elapsed() > Duration::from_secs(40) {
+            let logs: Vec<String> = nodes.iter().map(|n| format!("--- {}\n{}", n.url(), n.logs())).collect();
+            panic!("waited 40 s for: {what}\n{a}\n{}", logs.join("\n"));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Each copy evaluates an each_copy rule on its own points and says its
+/// state in its detail; the coordinator's `/v1/alerts` gathers them, with
+/// where it fires. A shard of two copies with failover that loses one has
+/// no majority: the built-in rule fires at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coordinator_gathers_its_copies_and_sees_a_shard_lose_its_majority() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let mut a = Node::new(d, "a", N);
+    let mut b = Node::new(d, "b", 0);
+    a.start().await;
+    b.start().await;
+    let c = Arc::new(Coordinator::connect(vec![a.url()]).await.unwrap());
+    let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+    let schema = c.schema.clone();
+    let svc = Arc::new(Service::new(Backend::Cluster(c.clone()), schema, agent, 16, Duration::from_secs(10)));
+    svc.alerts.set_coordinator(true);
+    c.add_replica(0, &b.url(), false).await.unwrap();
+
+    // The same rule on the copies and the coordinator: many documents.
+    let rule = json!({"id": "many-docs", "name": "Many documents", "metric": "docs", "op": ">", "threshold": 10.0, "eval": "max", "window_s": 10, "scope": "each_copy"});
+    for n in [&a, &b] {
+        let (status, j) = call(&n.base(), "PUT", "/v1/alerts/rules", Some(json!({"rules": [rule.clone()]}))).await;
+        assert_eq!(status, 200, "{j}");
+    }
+    let rules: Vec<alerts::Rule> = vec![serde_json::from_value(rule).unwrap()];
+    svc.alerts.set_rules(rules, "test").unwrap();
+
+    let all = until(&svc, "both copies fire many-docs", &[&a, &b], |a| {
+        a["states"].as_array().unwrap().iter().any(|s| s["rule"] == "many-docs" && s["state"] == "firing" && s["where"].as_array().is_some_and(|w| w.len() == 2))
+    })
+    .await;
+    let s = state(&all, "many-docs");
+    let shorts: Vec<&str> = s["where"].as_array().unwrap().iter().map(|w| w["short"].as_str().unwrap()).collect();
+    assert_eq!(shorts, ["s0-0", "s0-1"], "{s}");
+    assert_eq!(s["where"][0]["copy"], a.url().as_str());
+    assert!(s["where"][0]["value"].as_f64().unwrap() >= N as f64, "{s}");
+    assert_eq!(s["copies"]["firing"], 2, "{s}");
+    assert_eq!(state(&all, "shard-no-majority")["state"], "ok", "{all}");
+    assert!(all["rules"].as_array().unwrap().iter().any(|r| r["id"] == "shard-no-majority" && r["builtin"] == true), "{all}");
+
+    // A copy lost: one of two is no majority.
+    b.kill();
+    let lost = until(&svc, "shard-no-majority fires", &[&a], |a| state(a, "shard-no-majority")["state"] == "firing").await;
+    let s = state(&lost, "shard-no-majority");
+    assert_eq!(s["severity"], "critical");
+    assert_eq!(s["where"][0]["shard"], 0, "{s}");
+    assert!(lost["events"].as_array().unwrap().iter().any(|e| e["rule"] == "shard-no-majority" && e["state"] == "firing"), "{lost}");
+    // The copy down is pending (it fires after 30 s), and its rule's state
+    // is the last it told.
+    assert_eq!(state(&lost, "copy-down")["state"], "pending", "{lost}");
+    let w = state(&lost, "many-docs")["where"].as_array().unwrap().clone();
+    assert!(w.iter().any(|w| w["short"] == "s0-1" && w["unheard_since_ms"].as_u64().is_some()), "{w:?}");
+}
