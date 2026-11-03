@@ -923,6 +923,23 @@ fn is_edges(schema: Option<&Schema>, column: &str) -> bool {
     schema.and_then(|s| s.field(column)).is_some_and(|f| f.ty == FieldType::Edges)
 }
 
+/// The columns of a rerank step's projection, for the `*` of the step
+/// after it: the table's `*`, and each column of the table by its name.
+/// `None` when it selects anything else (`score()`, `hops()`), whose value
+/// the step after would not read.
+fn columns_of_step(projection: &[SelectItem]) -> Option<Vec<SelectItem>> {
+    projection
+        .iter()
+        .map(|item| match item {
+            SelectItem::Wildcard(_) => Some(item.clone()),
+            SelectItem::UnnamedExpr(Expr::Identifier(id)) => Some(SelectItem::UnnamedExpr(Expr::Identifier(id.clone()))),
+            // A column under its own name, in some case (`id AS ID`).
+            SelectItem::ExprWithAlias { expr: Expr::Identifier(id), alias } if id.value.eq_ignore_ascii_case(&alias.value) => Some(SelectItem::UnnamedExpr(Expr::Identifier(alias.clone()))),
+            _ => None,
+        })
+        .collect()
+}
+
 /// An ORDER BY key: its expression, DESC, and NULLS FIRST.
 type OrderKey = (Expr, bool, bool);
 
@@ -1020,7 +1037,7 @@ impl<'a> Planner<'a> {
         }
         // Each later step: what it projects, ranks by and cuts, its
         // columns named without the `WITH` it reads.
-        let mut steps = Vec::new();
+        let mut steps: Vec<(Vec<SelectItem>, sql::OrderByExpr, Option<sql::LimitClause>)> = Vec::new();
         let reads: Vec<&sql::Query> = w.cte_tables[1..].iter().map(|c| c.query.as_ref()).chain(std::iter::once(&body)).collect();
         for (i, r) in reads.iter().enumerate() {
             let read = &w.cte_tables[i].alias.name.value;
@@ -1053,15 +1070,27 @@ impl<'a> Planner<'a> {
                 let e = unqualify(e, read);
                 alias.as_deref().map_or(e.clone(), |a| unqualify(&e, a))
             };
-            let projection = s
-                .projection
-                .iter()
-                .map(|item| match item {
-                    SelectItem::UnnamedExpr(e) => SelectItem::UnnamedExpr(plain(e)),
-                    SelectItem::ExprWithAlias { expr, alias } => SelectItem::ExprWithAlias { expr: plain(expr), alias: alias.clone() },
-                    other => other.clone(),
-                })
-                .collect();
+            // `*` (or `w.*`) is the columns of the step read, when each is a
+            // column of the table (not a score, which the step's ranking gave).
+            let before: &[SelectItem] = steps.last().map_or(&s0.projection, |(p, ..)| p);
+            let mut projection = Vec::new();
+            for item in &s.projection {
+                match item {
+                    SelectItem::Wildcard(_) => {
+                        let Some(columns) = columns_of_step(before) else { return Ok(None) };
+                        projection.extend(columns);
+                    }
+                    SelectItem::QualifiedWildcard(sql::SelectItemQualifiedWildcardKind::ObjectName(n), _)
+                        if [Some(read.as_str()), alias.as_deref()].into_iter().flatten().any(|a| a.eq_ignore_ascii_case(&super::sql::table_name(n))) =>
+                    {
+                        let Some(columns) = columns_of_step(before) else { return Ok(None) };
+                        projection.extend(columns);
+                    }
+                    SelectItem::UnnamedExpr(e) => projection.push(SelectItem::UnnamedExpr(plain(e))),
+                    SelectItem::ExprWithAlias { expr, alias } => projection.push(SelectItem::ExprWithAlias { expr: plain(expr), alias: alias.clone() }),
+                    other => projection.push(other.clone()),
+                }
+            }
             let mut o = order.clone();
             o.expr = plain(&order.expr);
             steps.push((projection, o, r.limit_clause.clone()));
@@ -1111,7 +1140,7 @@ impl<'a> Planner<'a> {
             s.group_by.is_empty()
                 && s.projection.iter().all(|(name, p)| match p {
                     Projection::Field(f) => schema.fields[*f].name.eq_ignore_ascii_case(name),
-                    Projection::Score | Projection::Hops(_) => true,
+                    Projection::Score | Projection::Hops(_) => schema.field(name).is_none(),
                     _ => false,
                 })
         };
@@ -1222,6 +1251,15 @@ impl<'a> Planner<'a> {
         }
         if s.from.len() != 1 {
             return Err(err(self.from_hint(s)));
+        }
+        if let Some((q, in_memory)) = self.with_columns(q, s) {
+            // The `WITH` results read in memory, in scope as results of no
+            // table while the query plans.
+            let mark = self.ctes.borrow().len();
+            self.ctes.borrow_mut().extend(in_memory.into_iter().map(|c| Cte { keyed: None, order: None, ..c }));
+            let r = self.body(&q);
+            self.ctes.borrow_mut().truncate(mark);
+            return r;
         }
         if !s.from[0].joins.is_empty() {
             return self.join(q, s);
@@ -1355,10 +1393,12 @@ impl<'a> Planner<'a> {
             return Err(at(err("seq_no() is a column of a SELECT on one table, not of a compound query")));
         }
         let aggregated = !select.group_by.is_empty() || select.projection.iter().any(|(_, p)| matches!(p, Projection::Count | Projection::Agg { .. }));
+        // A score or a hop count named as a column of the table would read
+        // as that column over the rows.
         let keyed = !aggregated
             && select.projection.iter().all(|(name, p)| match p {
                 Projection::Field(f) => schema.fields[*f].name.eq_ignore_ascii_case(name),
-                Projection::Score | Projection::Hops(_) => true,
+                Projection::Score | Projection::Hops(_) => schema.field(name).is_none(),
                 _ => false,
             });
         let columns = select.projection.iter().map(|(n, _)| n.clone()).collect();
@@ -1461,6 +1501,125 @@ impl<'a> Planner<'a> {
     /// A subquery of an expression over rows in memory.
     fn in_memory(&self, q: &sql::Query, kind: Sub) -> Result<ir::Expr> {
         self.subquery(q, kind, None)?.ok_or_else(|| err("a traversal's seeds name one table's rows, in its scan"))
+    }
+
+    /// A SELECT of the columns of `WITH` results that hold a table's rows,
+    /// which read as the table restricted to those rows
+    /// ([`Planner::over_rows`]): `*` (or `w.*`) is the result's columns, not
+    /// the table's, and a result whose columns are not all the table's
+    /// (`score() AS s`, `hops()`) is read in memory when the query reads
+    /// them, by `*` or by name. The query with each `*` written out, and the
+    /// results to read in memory; `None` when neither changes it.
+    fn with_columns(&self, q: &sql::Query, s: &sql::Select) -> Option<(sql::Query, Vec<Cte>)> {
+        let twj = &s.from[0];
+        let relations: Vec<&TableFactor> = std::iter::once(&twj.relation).chain(twj.joins.iter().map(|j| &j.relation)).collect();
+        // The FROM's `WITH` results of a table's rows: their alias (in
+        // lowercase), the result, and whether its columns are the table's.
+        let mut read: Vec<(String, Cte, bool)> = Vec::new();
+        for r in &relations {
+            let TableFactor::Table { name, alias, .. } = r else { continue };
+            let n = super::sql::table_name(name);
+            let Some(cte) = self.cte(&n) else { continue };
+            let Some(schema) = cte.keyed.as_deref().and_then(|t| self.table(t)) else { continue };
+            let fields = cte.columns.iter().all(|c| schema.field(c).is_some());
+            read.push((alias.as_ref().map_or(n, |a| a.name.value.clone()).to_ascii_lowercase(), cte, fields));
+        }
+        if read.is_empty() {
+            return None;
+        }
+        let star = |a: &str| {
+            s.projection.iter().any(|i| match i {
+                SelectItem::Wildcard(_) => true,
+                SelectItem::QualifiedWildcard(sql::SelectItemQualifiedWildcardKind::ObjectName(n), _) => super::sql::table_name(n).eq_ignore_ascii_case(a),
+                _ => false,
+            })
+        };
+        // The columns the query names, with the alias that qualifies them;
+        // in ORDER BY, not the names it gives its own columns.
+        let mut named: Vec<(Option<String>, String)> = Vec::new();
+        let mut name = |x: &Expr, aliases: &[&str]| match x {
+            Expr::Identifier(id) if !aliases.iter().any(|n| n.eq_ignore_ascii_case(&id.value)) => named.push((None, id.value.clone())),
+            Expr::CompoundIdentifier(ids) if ids.len() == 2 => named.push((Some(ids[0].value.to_ascii_lowercase()), ids[1].value.clone())),
+            _ => {}
+        };
+        for e in select_exprs(s) {
+            walk(e, &mut |x| name(x, &[]));
+        }
+        let given: Vec<&str> = s.projection.iter().filter_map(|i| if let SelectItem::ExprWithAlias { alias, .. } = i { Some(alias.value.as_str()) } else { None }).collect();
+        if let Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(es), .. }) = &q.order_by {
+            for o in es {
+                walk(&o.expr, &mut |x| name(x, &given));
+            }
+        }
+        let mut in_memory: Vec<Cte> = Vec::new();
+        for (a, cte, fields) in &read {
+            let schema = cte.keyed.as_deref().and_then(|t| self.table(t)).expect("a table's rows");
+            let own = |c: &str| schema.field(c).is_none() && cte.columns.iter().any(|x| x.eq_ignore_ascii_case(c));
+            let reads_own = (!fields && star(a)) || named.iter().any(|(at, c)| at.as_ref().is_none_or(|x| x == a) && own(c));
+            if reads_own && !in_memory.iter().any(|c| c.name.eq_ignore_ascii_case(&cte.name)) {
+                in_memory.push(cte.clone());
+            }
+        }
+        // The results read as the table's rows, whose `*` is written out.
+        let as_rows = |a: &str| read.iter().find(|(x, cte, _)| x == a && !in_memory.iter().any(|c| c.name.eq_ignore_ascii_case(&cte.name))).map(|(_, cte, _)| cte);
+        let joined = relations.len() > 1;
+        // Each FROM item's alias, which `*` over a join writes out.
+        let aliases: Option<Vec<String>> = relations
+            .iter()
+            .map(|r| match r {
+                TableFactor::Table { name, alias, .. } => Some(alias.as_ref().map_or_else(|| super::sql::table_name(name), |a| a.name.value.clone())),
+                TableFactor::Derived { alias: Some(a), .. } => Some(a.name.value.clone()),
+                _ => None,
+            })
+            .collect();
+        let columns = |a: &str, cte: &Cte| -> Vec<SelectItem> {
+            cte.columns
+                .iter()
+                .map(|c| match joined {
+                    // Named as `*` over a join names a table's columns.
+                    true => SelectItem::ExprWithAlias { expr: qualified(a, c), alias: sql::Ident::with_quote('"', format!("{a}.{c}")) },
+                    false => SelectItem::UnnamedExpr(Expr::Identifier(sql::Ident::new(c.clone()))),
+                })
+                .collect()
+        };
+        let mut projection = Vec::new();
+        let mut written = false;
+        for item in &s.projection {
+            match item {
+                SelectItem::Wildcard(options) if read.iter().any(|(a, ..)| as_rows(a).is_some()) => match (&aliases, joined) {
+                    (_, false) => {
+                        projection.extend(columns(&read[0].0, as_rows(&read[0].0).expect("read as rows")));
+                        written = true;
+                    }
+                    (Some(aliases), true) => {
+                        for alias in aliases {
+                            let a = alias.to_ascii_lowercase();
+                            match as_rows(&a) {
+                                Some(cte) => projection.extend(columns(&a, cte)),
+                                None => projection.push(SelectItem::QualifiedWildcard(sql::SelectItemQualifiedWildcardKind::ObjectName(sql::ObjectName::from(vec![sql::Ident::new(alias.clone())])), options.clone())),
+                            }
+                        }
+                        written = true;
+                    }
+                    // A FROM item without an alias, which planning refuses.
+                    (None, true) => projection.push(item.clone()),
+                },
+                SelectItem::QualifiedWildcard(sql::SelectItemQualifiedWildcardKind::ObjectName(n), _) if as_rows(&super::sql::table_name(n).to_ascii_lowercase()).is_some() => {
+                    let a = super::sql::table_name(n).to_ascii_lowercase();
+                    projection.extend(columns(&a, as_rows(&a).expect("read as rows")));
+                    written = true;
+                }
+                i => projection.push(i.clone()),
+            }
+        }
+        if !written && in_memory.is_empty() {
+            return None;
+        }
+        let mut q = q.clone();
+        if let sql::SetExpr::Select(s) = q.body.as_mut() {
+            s.projection = projection;
+        }
+        Some((q, in_memory))
     }
 
     /// A SELECT over the rows of a table that a `WITH` result holds: the
