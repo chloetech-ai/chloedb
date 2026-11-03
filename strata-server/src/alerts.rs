@@ -460,6 +460,10 @@ const HINT_MS: u64 = 30_000;
 pub const PAGER_WAIT_MS: u64 = 60_000;
 /// A coordinator not heard for this long does not send messages.
 pub const PEER_LIVE_MS: u64 = 45_000;
+/// A copy not heard from for this long has no data for its each_copy
+/// rules: what it last said is not what it holds now ("A copy is down"
+/// says why).
+pub const UNHEARD_MS: u64 = 60_000;
 
 impl St {
     fn new(t: u64) -> St {
@@ -1488,10 +1492,14 @@ impl Alerts {
                             e.state = judged;
                         }
                         None => {
-                            e.unheard_ms.get_or_insert(t);
-                            // Not heard, and the edit did not reach it: its
-                            // last value, by this rule.
-                            if not_pushed.contains(&url) {
+                            let since = *e.unheard_ms.get_or_insert(t);
+                            if t.saturating_sub(since) >= UNHEARD_MS {
+                                if e.state != "no_data" {
+                                    (e.state, e.since_ms) = ("no_data".into(), t);
+                                }
+                            } else if not_pushed.contains(&url) {
+                                // Not heard, and the edit did not reach it: its
+                                // last value, by this rule.
                                 e.differs = true;
                                 if let Some(v) = e.value {
                                     let judged = if rule.holds(v) || (e.state == "firing" && rule.still(v)) { "firing" } else { "ok" };
@@ -3756,6 +3764,27 @@ mod tests {
         assert_eq!(a.due(t + 122_000).len(), 1, "and again a minute later");
         a.ack("p99", "ana", None).unwrap();
         assert!(a.due(t + 600_000).is_empty(), "acknowledged: no more");
+    }
+
+    /// A copy that is down says nothing of its rules: after a minute
+    /// what it last said no longer keeps an alert firing.
+    #[test]
+    fn a_copy_down_for_a_minute_has_no_data() {
+        let a = Alerts::new(None, None).unwrap();
+        a.set_coordinator(true);
+        let disk = defaults().into_iter().find(|r| r.id == "disk-full").unwrap();
+        a.set_rules(vec![disk.clone()], "t").unwrap();
+        let copy = |url: &str, firing: bool| json!({"url": url, "status": "ok", "role": "primary", "takes_writes": true, "detail": {"load": {"t": 1_000}, "alerts": {"rules": {"disk-full": {"state": if firing { "firing" } else { "ok" }, "value": if firing { 0.95 } else { 0.5 }, "since_ms": 500, "sig": disk.sig()}}}}});
+        let down = |url: &str| json!({"url": url, "status": "down", "role": "replica"});
+        let snap = |a_up: bool| json!({"shards": [{"shard": 0, "replicas": [if a_up { copy("http://a", true) } else { down("http://a") }, copy("http://b", false), copy("http://c", false)]}]});
+        a.check_cluster(&snap(true), 1_000);
+        assert_eq!(a.one("disk-full").unwrap()["state"], "firing");
+        a.check_cluster(&snap(false), 2_000);
+        assert_eq!(a.one("disk-full").unwrap()["state"], "firing", "a missed survey changes nothing");
+        a.check_cluster(&snap(false), 2_000 + UNHEARD_MS);
+        let s = a.one("disk-full").unwrap();
+        assert_eq!(s["state"], "ok", "{s}");
+        assert_eq!(s["copies"]["no_data"], 1, "{s}");
     }
 
     /// A storm: a shard without its majority explains its replica rules,
