@@ -69,16 +69,19 @@ export KUBECONFIG
 K="kubectl -n fanout"
 FILES=http://files.fanout.svc.cluster.local:8000
 
-# Every engine's budget: about 7 CPUs and 52 GiB in all, split among its
+# Every engine's budget: 6.8 CPUs and 52 GiB in all, split among its
 # pods as compare.sh splits 3 CPUs and 6 GiB on the Mac, and what each
 # engine is told of it. A sharded engine has 2 x 4 vCPUs and 32 GB, a
-# one-node engine 8 vCPUs and 64 GB.
-export DATA_CPU=${DATA_CPU:-3500m} DATA_MEM=${DATA_MEM:-26Gi} ES_HEAP=${ES_HEAP:-13g} OS_HEAP=${OS_HEAP:-13g} SOLR_HEAP=${SOLR_HEAP:-8g}
-export BUILD_CPU=${BUILD_CPU:-3500m} BUILD_MEM=${BUILD_MEM:-26Gi} BUILD_THREADS=${BUILD_THREADS:-4} BUILD_PARALLEL=${BUILD_PARALLEL:-1}
-export SHARD_CPU=${SHARD_CPU:-3} SHARD_MEM=${SHARD_MEM:-24Gi} COORD_CPU=${COORD_CPU:-1} COORD_MEM=${COORD_MEM:-4Gi}
+# one-node engine 8 vCPUs and 64 GB. A 4-vCPU DOKS node can give pods
+# 3,890m CPU and 28 GiB, of which the cilium and do-node-agent
+# DaemonSets take 412m and 412 MiB: 3,400m and 26 GiB fit, 3,500m does
+# not (a pod bound by nodeName is then refused, not left pending).
+export DATA_CPU=${DATA_CPU:-3400m} DATA_MEM=${DATA_MEM:-26Gi} ES_HEAP=${ES_HEAP:-13g} OS_HEAP=${OS_HEAP:-13g} SOLR_HEAP=${SOLR_HEAP:-8g}
+export BUILD_CPU=${BUILD_CPU:-3400m} BUILD_MEM=${BUILD_MEM:-26Gi} BUILD_THREADS=${BUILD_THREADS:-4} BUILD_PARALLEL=${BUILD_PARALLEL:-1}
+export SHARD_CPU=${SHARD_CPU:-2900m} SHARD_MEM=${SHARD_MEM:-24Gi} COORD_CPU=${COORD_CPU:-1} COORD_MEM=${COORD_MEM:-4Gi}
 export VESPA_CONFIG_CPU=${VESPA_CONFIG_CPU:-1} VESPA_CONFIG_MEM=${VESPA_CONFIG_MEM:-6Gi} VESPA_CONTAINER_HEAP=${VESPA_CONTAINER_HEAP:-2g}
-export VESPA_CONTENT_CPU=${VESPA_CONTENT_CPU:-3} VESPA_CONTENT_MEM=${VESPA_CONTENT_MEM:-23Gi}
-export ONE_CPU=${ONE_CPU:-7} ONE_MEM=${ONE_MEM:-52Gi} ONE_THREADS=${ONE_THREADS:-7} TS_THREADS=${TS_THREADS:-14} MEILI_MEM=${MEILI_MEM:-26 GiB}
+export VESPA_CONTENT_CPU=${VESPA_CONTENT_CPU:-2900m} VESPA_CONTENT_MEM=${VESPA_CONTENT_MEM:-23Gi}
+export ONE_CPU=${ONE_CPU:-6800m} ONE_MEM=${ONE_MEM:-52Gi} ONE_THREADS=${ONE_THREADS:-7} TS_THREADS=${TS_THREADS:-14} MEILI_MEM=${MEILI_MEM:-26 GiB}
 export REDIS_MAXMEM=${REDIS_MAXMEM:-47000mb} GOMEMLIMIT_ONE=${GOMEMLIMIT_ONE:-43GiB} PG_SHARED=${PG_SHARED:-13GB} PG_CACHE=${PG_CACHE:-35GB}
 export PG_MAINT=${PG_MAINT:-21GB} PG_PAR=${PG_PAR:-6} PG_WORKERS=${PG_WORKERS:-16} LOAD_CLIENTS=${LOAD_CLIENTS:-8}
 
