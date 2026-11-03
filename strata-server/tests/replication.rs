@@ -5,7 +5,7 @@
 //! sends a shard's writes to its primary.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -1564,6 +1564,88 @@ async fn a_write_applied_as_its_primary_hands_over_is_answered_in_doubt() {
     assert_eq!(rows(&pdb), rows(&r1db), "the write answered in doubt is dropped");
     let sold = |db: &Db| db.query("SELECT sold FROM products WHERE id = 'p0000002'", &Params::new()).unwrap().rows[0][0].clone();
     assert_ne!(sold(&r1db), Value::Int(2));
+}
+
+/// A handover while writes go on is granted. Each write the primary takes
+/// reaches it a moment before it reaches the candidate, and a candidate a
+/// write behind is refused the vote; asked for once it kept its vote for
+/// itself, the refusal would leave the shard with no primary, as the
+/// primary's next call meets the candidate's term and fences it. So the
+/// primary takes no writes from the candidate's first question until its
+/// vote, and the candidate catches up with it first: the primary goes back
+/// and forth between two copies under two writers, every handover granted,
+/// and every write answered OK is kept.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_handover_while_writes_go_on_is_granted() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = |name: &str| replication::file_of(&dir.path().join(name));
+    let (pdb, r1db, r2db) = (create(dir.path(), "p.strata"), create(dir.path(), "r1.strata"), create(dir.path(), "r2.strata"));
+    let (r1, u1) = replica(r1db.clone(), Some(&file("r1.strata"))).await;
+    let (_r2, u2) = replica(r2db.clone(), Some(&file("r2.strata"))).await;
+    let p = primary(pdb.clone(), Some(&file("p.strata")), ships_to(&[&u1, &u2], Acks::All), Duration::from_secs(10));
+    let up = grpc(p.clone()).await;
+    p.write_ops(vec![set("p0000000", "sold", json!(0))], None).await.unwrap();
+    until("the replicas hold the write", || async { last(&r1db) == 1 && last(&r2db) == 1 }).await;
+
+    // Two writers, each to whichever of the two takes writes, each of its
+    // own rows; what each was answered OK last, by row.
+    let stop = Arc::new(AtomicBool::new(false));
+    let writers: Vec<_> = (0..2)
+        .map(|w| {
+            let (p, r1, stop) = (p.clone(), r1.clone(), stop.clone());
+            tokio::spawn(async move {
+                let mut kept = std::collections::BTreeMap::new();
+                let (mut ok, mut refused) = (0u64, 0u64);
+                for i in 1u64.. {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let to = if p.role() == pb::Role::Primary { &p } else { &r1 };
+                    let id = format!("p{:07}", w * 20 + i % 20);
+                    match to.write_ops(vec![set(&id, "sold", json!(i))], None).await {
+                        Ok(_) => {
+                            ok += 1;
+                            kept.insert(id, i);
+                        }
+                        Err(_) => {
+                            refused += 1;
+                            kept.remove(&id);
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                        }
+                    }
+                }
+                (kept, ok, refused)
+            })
+        })
+        .collect();
+
+    let in_sync = |s: Arc<Service>| async move {
+        let (a, b) = (follower(&s, 0).await, follower(&s, 1).await);
+        a["in_sync"] == true && b["in_sync"] == true
+    };
+    for round in 0..8 {
+        let (to, voters, from) = match round % 2 {
+            0 => (&r1, vec![up.clone(), u2.clone()], &p),
+            _ => (&p, vec![u1.clone(), u2.clone()], &r1),
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let a = to.promote(&Principal::open(), voters, Acks::All, false).await.unwrap_or_else(|e| panic!("handover {round}: {}", e.message));
+        assert_eq!(a["term"], json!(round + 2), "{a}");
+        assert_eq!(from.role(), pb::Role::Replica, "handover {round}: the old primary voted, and stepped down");
+        until("the new primary's copies are in sync", || in_sync(to.clone())).await;
+    }
+    stop.store(true, Ordering::Relaxed);
+    let db = if p.role() == pb::Role::Primary { &pdb } else { &r1db };
+    for w in writers {
+        let (kept, ok, refused) = w.await.unwrap();
+        assert!(ok > 50, "{ok} writes answered OK, {refused} refused");
+        for (id, i) in kept {
+            // A write refused may have been applied; one answered OK last
+            // for its row is what the row holds.
+            let sold = db.query(&format!("SELECT sold FROM products WHERE id = '{id}'"), &Params::new()).unwrap().rows[0][0].clone();
+            assert_eq!(sold, Value::Int(i as i64), "{id}");
+        }
+    }
 }
 
 /// A primary that a primary of a newer term replaced is fenced: it takes no
