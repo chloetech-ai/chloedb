@@ -53,6 +53,8 @@ function figures(ps) {
 
 function render(page) {
   let rules = null, stmts = null, stmtsErr = null, prev = null, prevKey = "", load = undefined, routes = null, routesErr = null, showOwnRoutes = false;
+  // What runs here now, by statement (the memory finding names the longest).
+  let liveGroups = null;
   const scope = h("p");
   const kpis = h("div", { class: "grid g6 wl-kpis", style: { marginBottom: "14px" } });
   const findBox = h("div", { style: { marginBottom: "14px" } });
@@ -105,6 +107,7 @@ function render(page) {
     try { [stmts] = await Promise.all([statements(timeRange()), canContain()]); stmtsErr = null; } catch (e) { stmts = null; stmtsErr = e; }
     // The contain rules in force, to tell refusals on purpose from a full server.
     rules = canContainNow() ? await containRules().catch(() => null) : null;
+    liveGroups = await api("/v1/queries?group=shape").then((j) => j.groups || null).catch(() => null);
     draw();
   }
   /** The window before the range, for "was" (only when the server still has it). */
@@ -301,6 +304,10 @@ function render(page) {
       const d = ps[ps.length - 1].disk_used_ratio;
       if (d != null) { checked.push(`disk ${fmt.pct(d, 0)}`); if (d >= 0.85) out.push({ level: d >= 0.95 ? "bad" : "warn", id: "disk", title: `Disk ${fmt.pct(d, 0)} used`, body: ["A server whose disk fills stops taking writes."], rule: "disk_used_ratio at 85% or more, now", links: [] }); }
     }
+    // Memory, before the kernel kills the process: resident against its
+    // limit, its heap against the queries' budget, and how fast it rises.
+    for (const m of memoryFindings(ps, withDetail)) { out.push(m.finding); }
+    checked.push(memChecked(ps, withDetail));
     // One statement takes most of the time.
     const topS = (stmts?.statements || []).filter((x) => !isOwn(x)).sort((a, b) => (b.share || 0) - (a.share || 0))[0];
     if (topS && topS.share > 0.4 && topS.calls > 10 && !own.has("share:" + topS.fingerprint)) out.push({ level: "info", id: "share", title: `One statement takes ${fmt.pct(topS.share, 0)} of query time`, body: [h("code", {}, trim(topS.sql, 110)), ` · ${fmt.si(topS.calls / Math.max(1, (stmts?.span_ms ?? ((r.to ?? Date.now()) - r.from)) / 1000))} calls/s · p99 ${fmt.ms(topS.p99_ms)}.`], rule: stmts?.windowed ? "statement statistics of the range" : "statement statistics since the server started", links: [["Open the statement", statementLink(topS.fingerprint)]] });
@@ -365,6 +372,69 @@ function render(page) {
       if (i >= 0) out.splice(i, 1);
     }
     return { level: p.severity === "critical" ? "bad" : "warn", id: p.id, title: p.title, body, rule: state.fleet.derived ? "worked out here from the cluster" : "the fleet's health", links };
+  }
+  /** This server's memory now and how fast it rose, from its points: {rss, heap, budget, limit, perMin, etaMin}. */
+  function ownMemory(ps) {
+    const pts = ps.filter((p) => p.rss_bytes != null);
+    const last = pts[pts.length - 1];
+    if (!last) return null;
+    const limit = state.system?.memory_limit_bytes ?? null, budget = last.query_memory_limit_bytes ?? state.system?.limits?.query_memory_bytes ?? null;
+    // The rise over the last 2 minutes (1 at least), while it still rises
+    // over the last 30 s: a step that already ended is not a trend.
+    const at = (ms) => pts.find((p) => p.t >= last.t - ms);
+    const old = at(120e3), late = at(30e3);
+    const mins = old ? (last.t - old.t) / 60e3 : 0;
+    const still = late && limit ? last.rss_bytes - late.rss_bytes > 0.01 * limit : false;
+    const perMin = mins >= 1 ? (last.rss_bytes - old.rss_bytes) / mins : null;
+    const etaMin = still && perMin > 0 && limit ? (limit - last.rss_bytes) / perMin : null;
+    return { rss: last.rss_bytes, heap: last.heap_bytes ?? null, peak: last.heap_peak_bytes ?? null, qmem: last.query_memory_bytes ?? null, budget, limit, perMin, etaMin };
+  }
+  /** One server's memory as a finding, or null: who, its figures, and links. */
+  function memoryFinding(who, m, { url = null, here = false } = {}) {
+    if (!m?.rss) return null;
+    const ofLimit = m.limit ? m.rss / m.limit : null;
+    const rising = m.etaMin != null && m.etaMin < 15 && ofLimit > 0.5;
+    const near = ofLimit != null && ofLimit >= 0.85, high = ofLimit != null && ofLimit >= 0.7;
+    const overBudget = m.heap != null && m.budget && m.heap > m.budget;
+    if (!near && !rising && !high && !overBudget) return null;
+    const level = near || rising ? "bad" : "warn";
+    const title = near ? `${who} uses ${fmt.pct(ofLimit, 0)} of its memory limit`
+      : rising ? `${who}'s memory rises: at this rate it reaches its limit in about ${fmt.n(Math.max(1, Math.round(m.etaMin)))} min`
+      : high ? `${who} uses ${fmt.pct(ofLimit, 0)} of its memory limit`
+      : `${who}'s heap is over what the queries may hold`;
+    const body = [`Resident ${fmt.bytes(m.rss)}${m.limit ? ` of a ${fmt.bytes(m.limit)} limit (the cgroup's, or the machine's memory)` : ""}`,
+      m.heap != null ? `, heap ${fmt.bytes(m.heap)}` : "", m.budget ? `; the queries' budget is ${fmt.bytes(m.budget)}${m.qmem != null ? ` and they hold ${fmt.bytes(m.qmem)} of it` : ""}` : "", ". ",
+      m.etaMin != null ? `It rose ${fmt.bytes(m.perMin)} a minute over the last 2 minutes, and still rises. ` : "",
+      overBudget ? "The heap holds more than the budget counts: a join's or a sort's build side is not counted against it, so the budget does not refuse the query that holds it. " : "",
+      "The kernel kills a process that passes its limit (out of memory), and every query on it fails."];
+    const links = [];
+    // What runs here now: the statement most likely to hold it.
+    const g = here ? (liveGroups || [])[0] : null;
+    if (g) {
+      body.push(" Running here now, the longest: ", g.count > 1 ? `${g.count} × ` : "", h("code", {}, trim(g.sql, 80)), `${g.key ? ` from key ${g.key}` : ""}, for ${fmt.ms(g.oldest_ms)}.`);
+      links.push(["Open the statement", statementLink(g.fingerprint)], ["Running now in Queries", link("queries", { tab: "live" })]);
+    }
+    links.push([url ? `Memory profile of ${copyName(url)}` : "Memory profile", link("profile", { tab: "memory", node: url })]);
+    if (url) links.push([`Open ${copyName(url)}`, copyLink(url)]);
+    return { level, id: "memory", title, body,
+      rule: `resident over 85% of the limit, or still rising to reach it within 15 min (the last 2 minutes' rate); a warning over 70%, or a heap over the queries' budget`, links };
+  }
+  function memoryFindings(ps, withDetail) {
+    const out = [];
+    const own = memoryFinding(isCoord() ? "This coordinator" : "This server", ownMemory(ps), { here: true });
+    if (own) out.push({ finding: own });
+    for (const c of withDetail) {
+      const f = memoryFinding(`Copy ${copyName(c.url)}`, { rss: c.rss, heap: c.heap, budget: c.qbudget, limit: c.memLimit }, { url: c.url });
+      if (f) out.push({ finding: f, c });
+    }
+    // At most three named; the rest in one line on the third.
+    return out.slice(0, 3);
+  }
+  function memChecked(ps, withDetail) {
+    const xs = [ownMemory(ps), ...withDetail.map((c) => ({ rss: c.rss, limit: c.memLimit }))].filter((m) => m?.rss && m.limit);
+    if (!xs.length) return "memory (no limit known)";
+    const top = xs.reduce((a, m) => m.rss / m.limit > a ? m.rss / m.limit : a, 0);
+    return `memory at most ${fmt.pct(top, 0)} of a limit`;
   }
   /** When a copy's p99 went over 5× the median, from /v1/load. */
   function copySince(c) {
@@ -460,14 +530,15 @@ function render(page) {
       const cores = state.system?.cores;
       const parts = [
         SC("CPU", `${who} · cores in use${cores ? `, of ${cores}` : ""}`, { series: [{ name: "cores", get: (p) => p.cpu, area: true }], threshold: cores ? { value: cores, label: "all cores" } : null }),
-        SC("Memory", `${who} · resident set and what queries and merges hold`, { fmt: fmt.bytes, series: [{ name: "resident", get: (p) => p.rss_bytes ?? p.mem_bytes, area: true, color: SERIES[6] }, { name: "query memory", get: (p) => p.query_memory_bytes, color: SERIES[3] }, { name: "merges", get: (p) => p.merge_memory_bytes, color: SERIES[2] }] }),
-        SC("Concurrency", `${who} · queries running and slots in use`, { series: [{ name: "running", get: (p) => p.running }, { name: "slots in use", get: (p) => state.system?.limits?.max_concurrent && p.slots_free != null ? state.system.limits.max_concurrent - p.slots_free : null, color: SERIES[2] }], threshold: state.system?.limits?.max_concurrent ? { value: state.system.limits.max_concurrent, label: "slots" } : null }),
+        SC("Memory", `${who} · resident, heap and what queries and merges hold${memLimits()}`, { fmt: fmt.bytes, series: [{ name: "resident", get: (p) => p.rss_bytes ?? p.mem_bytes, area: true, color: SERIES[6] }, { name: "heap", get: (p) => p.heap_bytes, color: SERIES[0] }, { name: "query memory", get: (p) => p.query_memory_bytes, color: SERIES[3] }, { name: "merges", get: (p) => p.merge_memory_bytes, color: SERIES[2] }], threshold: state.system?.memory_limit_bytes ? { value: state.system.memory_limit_bytes, label: "limit" } : null }),
+        // A coordinator's queries take no slot of their own: "running" is every query it is answering.
+        SC("Concurrency", `${who} · queries being answered and slots in use`, { series: [{ name: "queries", get: (p) => p.live ?? p.running }, { name: "slots in use", get: (p) => state.system?.limits?.max_concurrent && p.slots_free != null ? state.system.limits.max_concurrent - p.slots_free : null, color: SERIES[2] }], threshold: state.system?.limits?.max_concurrent ? { value: state.system.limits.max_concurrent, label: "slots" } : null }),
       ];
       if (isCoord()) parts.push(copyTable("Copies by CPU", "each copy's last minute, the busiest first", (c) => c.cpu, [
         { key: "cpu", label: "CPU", num: true, render: (c) => c.cpu != null ? h("span", { class: c.cpu > 0.85 ? "wl-bad" : "" }, fmt.pct(c.cpu, 0)) : "–" },
         { key: "qps", label: "q/s", num: true, render: (c) => fmt.si(c.qps) },
         { key: "p99", label: "p99", num: true, render: (c) => fmt.ms(c.p99) },
-        { key: "rss", label: "memory", num: true, render: (c) => fmt.bytes(c.rss) },
+        { key: "rss", label: "memory", num: true, render: (c) => c.rss == null ? "–" : h("span", { class: c.memLimit && c.rss / c.memLimit >= 0.85 ? "wl-bad" : "", title: c.memLimit ? `${fmt.pct(c.rss / c.memLimit, 0)} of its ${fmt.bytes(c.memLimit)} limit${c.heap != null ? ` · heap ${fmt.bytes(c.heap)}` : ""}` : "" }, fmt.bytes(c.rss)) },
       ]));
       else parts.push(SC("Disk", "used of the database's file system", { fmt: (v) => fmt.pct(v, 0), max: 1, series: [{ name: "used", get: (p) => p.disk_used_ratio, area: true, color: SERIES[1] }], threshold: { value: 0.9, label: "alert" } }));
       clear(tabBody, h("div", { class: "grid g2" }, parts));
@@ -505,6 +576,11 @@ function render(page) {
     clear(tabBody, h("div", { class: "grid g2" },
       SC("Replicas behind", "the most transactions a replica lacks", { series: [{ name: "behind", get: (p) => p.replica_behind_max, color: SERIES[3], area: true }] }),
       SC("Replicas in sync", null, { series: [{ name: "in sync", get: (p) => p.replicas_in_sync, color: SERIES[2] }, { name: "out of sync", get: (p) => p.replicas_out_of_sync, color: "var(--crit)" }] })));
+  }
+  /** The limits the Memory chart is read against, in words. */
+  function memLimits() {
+    const lim = state.system?.memory_limit_bytes, b = state.system?.limits?.query_memory_bytes;
+    return [lim ? `limit ${fmt.bytes(lim)}` : null, b ? `queries' budget ${fmt.bytes(b)}` : null].filter(Boolean).map((x) => " · " + x).join("");
   }
   /** A table of copies sorted by a figure, the top N shown. */
   function copyTable(title, sub_, by, colsOf, n = 12, keep = () => true) {

@@ -55,6 +55,8 @@ export function copies(c = state.cluster) {
       merge_failing: !!ld.merge_failing, flush_failing: !!ld.flush_failing, failing: !!ld.failing,
       behind: r.role === "primary" ? null : ld.replica_behind_max ?? null, out_of_sync: ld.replicas_out_of_sync, rss: ld.rss_bytes, wal: ld.wal_bytes, file: ld.file_bytes,
       deleted: ld.deleted_docs,
+      // Memory: its heap, the queries' budget and the process's limit (cgroup or RAM).
+      heap: ld.heap_bytes ?? null, qbudget: ld.query_memory_limit_bytes ?? null, memLimit: d.system?.memory_limit_bytes ?? null,
     });
   });
   return out;
