@@ -120,6 +120,13 @@ export function poll(ms, f) {
   return core.every(ms, async () => { if (!paused()) await f(); });
 }
 
+/** Paused by the pause button, not by a fixed window: what is running now is "now" whatever window is picked. */
+export const livePaused = () => !!state.paused && state.from == null;
+/** Like `poll`, but a fixed window does not stop it (Running now). */
+export function livePoll(ms, f) {
+  return core.every(ms, async () => { if (!livePaused()) await f(); });
+}
+
 // ---------------------------------------------------------------- outcomes
 
 /**
@@ -755,7 +762,7 @@ export function containDialog({ fingerprint, sql, key, keys, onDone } = {}) {
       scope !== "statement" ? keyIn : null),
       keys?.length && scope !== "statement" ? h("div", { class: "row small", style: { gap: "6px", marginTop: "6px" } }, h("span", { class: "muted" }, "Its keys:"), keys.slice(0, 6).map((x) => h("button", { class: "chip", "aria-pressed": String(x.key === k), onclick: () => { keyIn.value = x.key; draw(); } }, `${x.key} ${fmt.pct(x.share ?? 0, 0)}`))) : null);
     const who = scope === "statement" ? "every client that sends this statement" : scope === "both" ? `key ${k || "…"} when it sends this statement; other keys keep running it` : `everything key ${k || "…"} sends`;
-    clear(say, `${action === "limit" ? `At most ${conc} at once` : "Refused"} for ${MINUTES.find((x) => x[0] === minutes)?.[1]}: ${who}. It ends by itself, is written to the audit log with your reason, and shows on the Timeline.`);
+    clear(say, `${action === "limit" ? `At most ${conc} at once` : "Refused"} for ${MINUTES.find((x) => x[0] === minutes)?.[1]}: ${who}. It holds on every coordinator, ends by itself, is written to the audit log with your reason, and shows on the Timeline.`);
     ok.disabled = !reason.value.trim() || (scope !== "statement" && !k);
     ok.textContent = action === "limit" ? "Apply the limit" : "Refuse it";
   }

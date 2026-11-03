@@ -12,7 +12,7 @@ import {
   state, link, when, can, timeRange, poll, paused, isCoord, copyName, OUTCOME_ORDER, outcomeOf, outcomePill, outcomeBar, split, whoChips, paramsText, isOwn,
   shortFp, statementLink, roughFp, statements, change, attention, statementDetail, ask, objects, msOf, parseJson, hasLogStore, logStore, queryColumns,
   queryDrawer, liveDrawer, waterfall, askCancel, containDialog, containRules, containList, profileLink, rounds, narrow, cols as narrowCols, sheet, isNewStatement,
-  canContainNow, canContain, causesAndVictims,
+  canContainNow, canContain, causesAndVictims, livePoll, livePaused,
 } from "../workload.js";
 
 import { render as statementPage } from "./statement.js";
@@ -200,7 +200,7 @@ function live(body, params, setCount) {
     clear(info, h("span", { class: "pill " + (qs.length ? "info" : "ok") }, `${fmt.n(qs.length)} running`),
       h("span", { class: "small muted", title: state.system ? `This server takes ${state.system.limits?.max_concurrent ?? "?"} queries at once; its timeout is ${fmt.ms(state.system.limits?.timeout_ms)} unless a query asks for less` : "" }, [nodes ? (missing.length ? `on ${nodes - missing.length} of ${fmt.plural(nodes, "coordinator")}: ${missing.map((m) => m.name).join(", ")} did not answer` : `on ${nodes > 1 ? "all " : ""}${fmt.plural(nodes, "coordinator")}`) : isCoord() ? "on this coordinator" : "on this server",
         qs.length ? `oldest ${fmt.ms(oldest)}` : null,
-        paused() ? "paused" : at ? `refreshed ${fmt.ago(at)}` : null].filter(Boolean).join(" · ")));
+        livePaused() ? "paused" : at ? `refreshed ${fmt.ago(at)}${state.from != null ? ", live: a fixed window does not apply to what runs now" : ""}` : null].filter(Boolean).join(" · ")));
     if (err) { clear(tbody, h("tr", {}, h("td", { colspan: span }, failure(err, "The running queries")))); return; }
     if (!qs.length) { clear(tbody, h("tr", {}, h("td", { colspan: span }, empty("okc", "Nothing running", filt ? "No running query matches the filter." : "A query shows here while it runs: who sent it, with what, and how long it has run against its deadline.")))); return; }
     const rows = [];
@@ -237,7 +237,7 @@ function live(body, params, setCount) {
         : `Each rule holds on all ${cs.length} coordinators: a statement contained on one is refused on every one.`) : null;
     clear(rulesBox, where, containList(rules, { onChange: loadRules }));
   }
-  const stops = [poll(2000, load), poll(30000, loadStmts), poll(10000, loadRules), ticker(draw), bus.on("narrow", draw)];
+  const stops = [livePoll(2000, load), poll(30000, loadStmts), poll(10000, loadRules), ticker(draw), bus.on("narrow", draw)];
   return () => stops.forEach((f) => f());
 }
 

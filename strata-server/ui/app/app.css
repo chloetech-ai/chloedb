@@ -3114,3 +3114,6 @@ table.t th.num { text-align: right; }
 .home-lane .ev.left { border-left: 0; border-right: 2px solid var(--line-2); padding: 0 4px 0 0; text-align: right; transform: translateX(1px); }
 .home-lane .ev.left.accent { border-color: var(--accent); } .home-lane .ev.left.crit { border-color: var(--crit); } .home-lane .ev.left.warn { border-color: var(--warn); }
 /* ===== end fleet ===== */
+
+/* Round 2: chart legend buttons are tap targets on a phone. */
+@media (max-width: 900px) { .legend button { min-height: 40px; padding: 0 6px; } }

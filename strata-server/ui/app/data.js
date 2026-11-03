@@ -367,7 +367,8 @@ export const environment = () => idOf()?.environment || null;
  * "prod", and true when the environment is unknown. The PROD badge shows
  * only for a known production environment (`environment()`).
  */
-export const isProduction = () => { const e = environment(); return e == null || /^prod/i.test(e); };
+// NEW-data-tools-13: production is anything not named as a lower environment (prd, live, production-eu).
+export const isProduction = () => { const e = environment(); return e == null || !/^(dev|development|test|testing|stage|staging|qa|local|sandbox|demo)\b/i.test(e); };
 
 // ---------------------------------------------------------------- the fleet without /v1/health/fleet
 /**
