@@ -104,7 +104,7 @@ A `Result` has `columns`, `rows` (arrays in column order), `keys` (each row's pr
 | `db.write(ops)` | [write operations](server.md#http-api) in one transaction: insert, upsert, delete, and `set` and `add` of a field in place |
 | `db.get(key)`, `db.getMany(keys)` | rows by key without SQL, or null |
 | `db.addColumn(name, type, options)`, `dropColumn`, `renameColumn` | `ALTER TABLE` |
-| `db.expire()`, `db.optimize()`, `db.close()` | rows past their `expire_by`; segments merged; the database closed (`await using db = ...` closes it too) |
+| `db.expire()`, `db.optimize()`, `db.vacuum()`, `db.close()` | rows past their `expire_by`; a table that is done changing readied for queries (its segments merged into as few as can be, deleted rows dropped, the file shrunk); the space merges freed returned to the file system; the database closed (`await using db = ...` closes it too) |
 
 A row is an object of field name to value. A vector may be a `Float32Array` (read from its bytes, without a number per element in between), a `Float64Array` or an array; a TIMESTAMP a `Date` or ISO 8601 text; a list field an array or a `Set`. Values come back as strata-server answers them: TIMESTAMPs as ISO 8601 text in UTC, vectors as arrays of numbers.
 

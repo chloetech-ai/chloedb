@@ -148,6 +148,119 @@ pub fn rpc_name<T>() -> Cow<'static, str> {
     Cow::Owned(last.strip_suffix("Response").unwrap_or(last).to_string())
 }
 
+// --------------------------------------------------------------- callers
+
+tokio::task_local! {
+    static CALLER: Arc<Caller>;
+}
+
+/// The `x-strata-client` of the command center's own requests.
+pub use crate::keys::COMMAND_CENTER;
+
+/// Who sent the request a query runs for: the key's name (`root token`
+/// for the server's token) and id, the client's address, its app
+/// (`x-strata-app`, else the product its user agent names), and
+/// `command-center` for the UI's own requests.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Caller {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+}
+
+impl Caller {
+    /// The caller of a request by `who`, as the request's own
+    /// ([`crate::keys::caller`]: its address, app and client) says.
+    pub fn of(who: &crate::keys::Principal, request: Option<&crate::keys::Caller>) -> Caller {
+        let key = match who.name.as_str() {
+            "open" if who.key.is_none() => None,
+            _ => Some(crate::keys::audit_name(who)),
+        };
+        let r = request.cloned().unwrap_or_default();
+        Caller { key, key_id: who.key.clone(), addr: r.addr, app: r.app, client: r.client.filter(|c| c.eq_ignore_ascii_case(COMMAND_CENTER)).map(|_| COMMAND_CENTER.to_string()) }
+    }
+
+    /// The command center's own request.
+    pub fn is_command_center(&self) -> bool {
+        self.client.as_deref() == Some(COMMAND_CENTER)
+    }
+}
+
+/// Runs `f` as a request of `caller`.
+pub async fn calling<F: Future>(caller: Arc<Caller>, f: F) -> F::Output {
+    CALLER.scope(caller, f).await
+}
+
+/// Who sent the request this task serves, if it serves one.
+pub fn caller() -> Option<Arc<Caller>> {
+    CALLER.try_with(|c| c.clone()).ok()
+}
+
+/// Keep only the types of queries' parameters (`--redact-params`).
+static REDACT_PARAMS: AtomicBool = AtomicBool::new(false);
+
+pub fn set_redact_params(on: bool) {
+    REDACT_PARAMS.store(on, Ordering::Relaxed);
+}
+
+pub fn redacts_params() -> bool {
+    REDACT_PARAMS.load(Ordering::Relaxed)
+}
+
+/// The most bytes of JSON a query's parameters are kept in.
+pub const PARAMS_BYTES: usize = 1024;
+
+/// A query's parameters as kept with it: their values as JSON (only their
+/// types with `--redact-params`), long texts and lists cut, in at most
+/// [`PARAMS_BYTES`]; `None` without parameters.
+pub fn params_json(p: &strata::query::Params) -> Option<Arc<Json>> {
+    if p.0.is_empty() {
+        return None;
+    }
+    let redact = redacts_params();
+    let mut names: Vec<&String> = p.0.keys().collect();
+    names.sort();
+    let mut out = serde_json::Map::new();
+    let mut bytes = 2;
+    for (i, name) in names.iter().enumerate() {
+        let v = crate::json::to_json(&p.0[*name]);
+        let v = match (redact, v) {
+            (true, v) => json!(type_of(&v)),
+            (false, Json::String(s)) if s.len() > 200 => json!(format!("{}...", crate::obs::truncate(&s, 200))),
+            (false, Json::Array(a)) if a.len() > 16 => json!(format!("[{} values]", a.len())),
+            (false, v) => v,
+        };
+        let add = name.len() + v.to_string().len() + 4;
+        if bytes + add > PARAMS_BYTES - 32 {
+            out.insert("...".into(), json!(format!("{} more", names.len() - i)));
+            break;
+        }
+        bytes += add;
+        out.insert((*name).clone(), v);
+    }
+    Some(Arc::new(Json::Object(out)))
+}
+
+fn type_of(v: &Json) -> String {
+    match v {
+        Json::Null => "null".into(),
+        Json::Bool(_) => "bool".into(),
+        Json::Number(n) if n.is_i64() || n.is_u64() => "int".into(),
+        Json::Number(_) => "float".into(),
+        Json::String(_) => "text".into(),
+        Json::Array(a) if a.iter().all(Json::is_number) && !a.is_empty() => format!("vector({})", a.len()),
+        Json::Array(a) => format!("list({})", a.len()),
+        Json::Object(_) => "object".into(),
+    }
+}
+
 // ---------------------------------------------------------- live queries
 
 /// A query running now.
@@ -155,7 +268,11 @@ pub struct LiveQuery {
     pub id: u64,
     pub request: Option<Arc<str>>,
     pub sql: String,
+    /// Its statement's shape ([`fingerprint`]).
+    pub fingerprint: String,
     pub kind: &'static str,
+    /// Who sent it, its parameters and deadline.
+    pub meta: Meta,
     /// Asked by a coordinator, as a shard.
     pub shard: bool,
     pub started_ms: u64,
@@ -179,10 +296,18 @@ impl LiveQuery {
 
     fn json(&self) -> Json {
         let mut j = json!({
-            "id": self.id, "sql": self.sql, "kind": self.kind, "shard": self.shard,
+            "id": self.id, "sql": self.sql, "fingerprint": self.fingerprint, "kind": self.kind, "shard": self.shard,
             "started_ms": self.started_ms, "elapsed_ms": self.t0.elapsed().as_secs_f64() * 1e3,
-            "cancelled": self.stop.load(Ordering::Relaxed),
+            "cancelled": self.stop.load(Ordering::Relaxed), "deadline_ms": self.meta.deadline_ms,
         });
+        if let Some(c) = &self.meta.caller {
+            for (k, v) in json!(c).as_object().into_iter().flatten() {
+                j[k] = v.clone();
+            }
+        }
+        if let Some(p) = &self.meta.params {
+            j["params"] = (**p).clone();
+        }
         if let Some(r) = &self.request {
             j["request_id"] = json!(r);
         }
@@ -217,15 +342,48 @@ pub fn cancelled_error(id: u64) -> crate::ApiError {
     crate::ApiError { status: 499, message: format!("query {id} was cancelled by an operator (DELETE /v1/queries/{id})") }
 }
 
+/// How a query can end: answered (`ok`, or `partial` without some
+/// shards), failed on the server's side (`error`, or `timeout`: the
+/// server's deadline passed), the client's doing (`client_error`: a 4xx
+/// such as bad SQL; `client_deadline`: its own `timeout_ms`, below the
+/// server's default, passed), `refused` (429: no slot, no memory, or a
+/// Contain rule) or `cancelled` by an operator.
+pub const OUTCOMES: [&str; 8] = ["ok", "partial", "error", "timeout", "client_error", "client_deadline", "refused", "cancelled"];
+
+/// The outcome of a query that failed with HTTP status `status`; a
+/// deadline that passed was the client's own when `client_deadline`.
+pub fn outcome_of(status: u16, client_deadline: bool) -> &'static str {
+    match status {
+        504 if client_deadline => "client_deadline",
+        504 => "timeout",
+        429 => "refused",
+        499 => "cancelled",
+        400..=498 => "client_error",
+        _ => "error",
+    }
+}
+
+/// Whether a query that ended so failed, for whatever reason.
+pub fn failed(outcome: &str) -> bool {
+    !matches!(outcome, "ok" | "partial")
+}
+
+/// Whether a query that ended so failed on the server's side.
+pub fn server_failed(outcome: &str) -> bool {
+    matches!(outcome, "error" | "timeout")
+}
+
 impl LiveQueries {
     /// Lists `sql` as running until the guard is dropped.
-    pub fn start(self: &Arc<Self>, sql: &str, kind: &'static str, shard: bool) -> Live {
+    pub fn start(self: &Arc<Self>, sql: &str, kind: &'static str, shard: bool, meta: &Meta) -> Live {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let query = Arc::new(LiveQuery {
             id,
             request: crate::obs::current(),
             sql: crate::obs::truncate(sql, 4000).into_owned(),
+            fingerprint: fingerprint(sql),
             kind,
+            meta: meta.clone(),
             shard,
             started_ms: now_ms(),
             t0: Instant::now(),
@@ -265,6 +423,55 @@ impl LiveQueries {
         self.len() == 0
     }
 
+    /// The running queries by statement shape and key, the most time spent
+    /// first: each group's `count`, `oldest_ms` (the longest running, ms),
+    /// `total_ms` (their time so far) and `ids`. A coordinator's calls as
+    /// a shard are left out.
+    pub fn groups(&self) -> Vec<Json> {
+        let qs: Vec<Arc<LiveQuery>> = lock(&self.running).values().cloned().collect();
+        let mut by: BTreeMap<(String, Option<String>), Vec<&Arc<LiveQuery>>> = BTreeMap::new();
+        for q in qs.iter().filter(|q| !q.shard) {
+            by.entry((q.fingerprint.clone(), q.meta.caller.as_ref().and_then(|c| c.key.clone()))).or_default().push(q);
+        }
+        let mut out: Vec<(f64, Json)> = by
+            .into_iter()
+            .map(|((fp, key), qs)| {
+                let ms: Vec<f64> = qs.iter().map(|q| q.t0.elapsed().as_secs_f64() * 1e3).collect();
+                let total: f64 = ms.iter().sum();
+                let oldest = qs.iter().map(|q| q.started_ms).min().unwrap_or(0);
+                let mut ids: Vec<u64> = qs.iter().map(|q| q.id).collect();
+                ids.sort_unstable();
+                let j = json!({
+                    "fingerprint": fp, "sql": qs[0].sql, "key": key, "count": qs.len(), "oldest_ms": ms.iter().cloned().fold(0.0, f64::max),
+                    "oldest_started_ms": oldest, "total_ms": total, "ids": ids,
+                    "client": qs[0].meta.caller.as_ref().and_then(|c| c.client.clone()),
+                });
+                (total, j)
+            })
+            .collect();
+        out.sort_by(|a, b| b.0.total_cmp(&a.0));
+        out.into_iter().map(|(_, j)| j).collect()
+    }
+
+    /// Cancels the running queries of statement `fingerprint`, of `key`
+    /// (its name or id) when given; a coordinator's calls as a shard are
+    /// its coordinator's to cancel. Returns those cancelled, as listed.
+    pub fn cancel_matching(&self, fingerprint: &str, key: Option<&str>) -> Vec<Json> {
+        let qs: Vec<Arc<LiveQuery>> = lock(&self.running).values().filter(|q| !q.shard && q.fingerprint == fingerprint).cloned().collect();
+        let mut out = Vec::new();
+        for q in qs {
+            let c = q.meta.caller.as_deref();
+            if key.is_some_and(|k| c.is_none_or(|c| c.key.as_deref() != Some(k) && c.key_id.as_deref() != Some(k))) {
+                continue;
+            }
+            if !q.stop.swap(true, Ordering::Relaxed) {
+                q.wake.notify_waiters();
+                out.push(q.json());
+            }
+        }
+        out
+    }
+
     /// Cancels query `id`; false if it is not running.
     pub fn cancel(&self, id: u64) -> bool {
         let Some(q) = lock(&self.running).get(&id).cloned() else { return false };
@@ -276,8 +483,22 @@ impl LiveQueries {
 
 // ------------------------------------------------- latest and slow queries
 
+/// What a query is kept with besides its text and how it ended.
+#[derive(Clone, Debug, Default)]
+pub struct Meta {
+    /// Who sent it ([`caller`]).
+    pub caller: Option<Arc<Caller>>,
+    /// Its parameters ([`params_json`]).
+    pub params: Option<Arc<Json>>,
+    /// Its deadline, in milliseconds.
+    pub deadline_ms: u64,
+    /// The deadline is the client's own (its `timeout_ms` below the
+    /// server's default), so one that passes is `client_deadline`.
+    pub client_deadline: bool,
+}
+
 /// A query that ended.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct Finished {
     /// Its number among the queries this server ran, for
     /// `GET /v1/queries/finished/:id`.
@@ -294,6 +515,14 @@ pub struct Finished {
     pub shard: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Its deadline, in milliseconds (0: not known).
+    pub deadline_ms: u64,
+    /// Who sent it: `key`, `key_id`, `addr`, `app`, `client`.
+    #[serde(flatten)]
+    pub caller: Caller,
+    /// Its parameters ([`params_json`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<Arc<Json>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<Span>,
     /// Its profile: the timed steps of its execution, from the request's
@@ -416,9 +645,8 @@ impl QueryLog {
     /// what it ran (`stats`, its steps from the request's start) and
     /// whether its CPU time was measured (`profiled`).
     #[allow(clippy::too_many_arguments)]
-    pub fn add(&self, sql: &str, kind: &'static str, outcome: &'static str, secs: f64, rows: usize, shard: bool, error: Option<&str>, slow: bool, stats: Option<&ExecStats>, profiled: bool) {
+    pub fn add(&self, sql: &str, kind: &'static str, outcome: &'static str, secs: f64, rows: usize, shard: bool, error: Option<&str>, slow: bool, stats: Option<&ExecStats>, profiled: bool, meta: &Meta) {
         let fingerprint = fingerprint(sql);
-        self.statements.add(&fingerprint, sql, kind, outcome, secs, rows, shard);
         let f = Arc::new(Finished {
             id: self.next.fetch_add(1, Ordering::Relaxed) + 1,
             ts_ms: now_ms(),
@@ -431,6 +659,9 @@ impl QueryLog {
             rows,
             shard,
             error: error.map(|e| crate::obs::truncate(e, 500).into_owned()),
+            deadline_ms: meta.deadline_ms,
+            caller: meta.caller.as_deref().cloned().unwrap_or_default(),
+            params: meta.params.clone(),
             trace: trace().map(|t| t.spans()).unwrap_or_default(),
             steps: stats.map(|s| s.steps.clone()).unwrap_or_default(),
             profiled,
@@ -438,6 +669,7 @@ impl QueryLog {
             filter_docs: stats.map_or(0, |s| s.filter_docs),
             scored: stats.map_or(0, |s| s.scored),
         });
+        self.statements.add(&f);
         if let Some(keep) = self.keep.get() {
             keep(&f, slow);
         }
@@ -566,106 +798,452 @@ fn collapse_lists(s: &str) -> String {
     out
 }
 
-/// Statistics per statement ([`fingerprint`]).
-#[derive(Default)]
+/// Statistics per statement ([`fingerprint`]), a bucket a minute, kept
+/// for [`STATEMENT_MINUTES`]: any window of the last day reads its
+/// statements, and compares them with the window before
+/// ([`Statements::window`]). Each statement also keeps its latest calls
+/// and its slowest of the day, with who sent them and their parameters
+/// ([`Call`]).
 pub struct Statements {
-    by: Mutex<HashMap<String, Stmt>>,
+    inner: Mutex<Stmts>,
+    /// Since when it counts (the first query, or the last reset).
     since_ms: AtomicU64,
 }
 
-/// Statements kept at most; past that, a new one replaces the least
-/// called.
+impl Default for Statements {
+    fn default() -> Statements {
+        Statements { inner: Mutex::new(Stmts::default()), since_ms: AtomicU64::new(now_ms()) }
+    }
+}
+
+/// Statements known at most; past that, the one seen least recently
+/// goes.
 pub const STATEMENTS: usize = 2000;
+/// Minutes of buckets kept: a day.
+pub const STATEMENT_MINUTES: usize = 1440;
+/// Statements a minute's bucket holds at most; the rest count as one.
+const PER_MINUTE: usize = 2000;
+/// What the statements past [`PER_MINUTE`] count as.
+const OTHER: &str = "(other statements)";
+/// Keys a statement's minute counts apart at most; the rest as one.
+const KEYS: usize = 16;
+/// Error messages a statement's minute counts apart at most.
+const ERRORS: usize = 5;
+/// Calls each statement keeps: its latest, and its slowest of the day.
+const LATEST_CALLS: usize = 32;
+const SLOWEST_CALLS: usize = 16;
 
-/// Latency bounds of [`Stmt::hist`], in milliseconds.
-const STMT_BUCKETS: [f64; 12] = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 5000.0];
+/// Latency bounds of a statement's histogram, in milliseconds.
+const STMT_BUCKETS: [f64; 15] = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0, 30_000.0];
 
-#[derive(Clone)]
-struct Stmt {
+#[derive(Default)]
+struct Stmts {
+    known: HashMap<String, Known>,
+    /// The oldest first.
+    minutes: VecDeque<Minute>,
+}
+
+struct Known {
+    id: String,
     example: String,
     kind: &'static str,
+    first_seen_ms: u64,
+    last_seen_ms: u64,
+    latest: VecDeque<Arc<Call>>,
+    slowest: Vec<Arc<Call>>,
+}
+
+struct Minute {
+    t: u64,
+    by: HashMap<String, Agg>,
+}
+
+/// One call of a statement, as its page shows it.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Call {
+    /// Its number in the query log (`GET /v1/queries/finished/:id`).
+    pub id: u64,
+    pub ts_ms: u64,
+    pub ms: f64,
+    pub outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<Arc<str>>,
+    #[serde(flatten)]
+    pub caller: Caller,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<Arc<Json>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub rows: usize,
+    /// On a coordinator: each shard's part, (shard, ms, outcome).
+    #[serde(skip)]
+    shards: Vec<(usize, f64, &'static str)>,
+}
+
+#[derive(Clone, Default)]
+struct Agg {
     calls: u64,
-    errors: u64,
-    shard_calls: u64,
+    outcomes: [u64; OUTCOMES.len()],
     total_ms: f64,
     max_ms: f64,
-    min_ms: f64,
     rows: u64,
-    last_ms: u64,
+    shard_calls: u64,
+    /// Calls the command center made (`x-strata-client: command-center`).
+    command_center: u64,
     hist: [u64; STMT_BUCKETS.len() + 1],
+    keys: Vec<KeyAgg>,
+    errors: Vec<(String, u64, u64)>,
+}
+
+#[derive(Clone, Default)]
+struct KeyAgg {
+    key: String,
+    calls: u64,
+    total_ms: f64,
+    errors: u64,
+}
+
+impl Agg {
+    fn add(&mut self, f: &Finished) {
+        self.calls += 1;
+        if let Some(i) = OUTCOMES.iter().position(|o| *o == f.outcome) {
+            self.outcomes[i] += 1;
+        }
+        self.total_ms += f.ms;
+        self.max_ms = self.max_ms.max(f.ms);
+        self.rows += f.rows as u64;
+        self.shard_calls += f.shard as u64;
+        self.command_center += f.caller.is_command_center() as u64;
+        let b = STMT_BUCKETS.iter().position(|&b| f.ms <= b).unwrap_or(STMT_BUCKETS.len());
+        self.hist[b] += 1;
+        let key = f.caller.key.clone().unwrap_or_else(|| "-".into());
+        let failed = failed(f.outcome) as u64;
+        let at = match self.keys.iter().position(|k| k.key == key) {
+            Some(i) => i,
+            None if self.keys.len() < KEYS => {
+                self.keys.push(KeyAgg { key, ..Default::default() });
+                self.keys.len() - 1
+            }
+            None => match self.keys.iter().position(|k| k.key == "(other keys)") {
+                Some(i) => i,
+                None => {
+                    self.keys.push(KeyAgg { key: "(other keys)".into(), ..Default::default() });
+                    self.keys.len() - 1
+                }
+            },
+        };
+        let k = &mut self.keys[at];
+        (k.calls, k.total_ms, k.errors) = (k.calls + 1, k.total_ms + f.ms, k.errors + failed);
+        if let Some(e) = &f.error {
+            let m = crate::obs::truncate(e, 300).into_owned();
+            match self.errors.iter().position(|x| x.0 == m) {
+                Some(i) => (self.errors[i].1, self.errors[i].2) = (self.errors[i].1 + 1, f.ts_ms),
+                None if self.errors.len() < ERRORS => self.errors.push((m, 1, f.ts_ms)),
+                None => {}
+            }
+        }
+    }
+
+    fn merge(&mut self, o: &Agg) {
+        self.calls += o.calls;
+        for (a, b) in self.outcomes.iter_mut().zip(o.outcomes) {
+            *a += b;
+        }
+        self.total_ms += o.total_ms;
+        self.max_ms = self.max_ms.max(o.max_ms);
+        self.rows += o.rows;
+        self.shard_calls += o.shard_calls;
+        self.command_center += o.command_center;
+        for (a, b) in self.hist.iter_mut().zip(o.hist) {
+            *a += b;
+        }
+        for k in &o.keys {
+            match self.keys.iter_mut().find(|x| x.key == k.key) {
+                Some(x) => (x.calls, x.total_ms, x.errors) = (x.calls + k.calls, x.total_ms + k.total_ms, x.errors + k.errors),
+                None => self.keys.push(k.clone()),
+            }
+        }
+        for e in &o.errors {
+            match self.errors.iter_mut().find(|x| x.0 == e.0) {
+                Some(x) => (x.1, x.2) = (x.1 + e.1, x.2.max(e.2)),
+                None => self.errors.push(e.clone()),
+            }
+        }
+    }
+
+    fn failed(&self) -> u64 {
+        OUTCOMES.iter().zip(self.outcomes).filter(|(o, _)| failed(o)).map(|(_, n)| n).sum()
+    }
+
+    fn server_failed(&self) -> u64 {
+        OUTCOMES.iter().zip(self.outcomes).filter(|(o, _)| server_failed(o)).map(|(_, n)| n).sum()
+    }
+
+    fn p(&self, q: f64) -> Option<f64> {
+        (self.calls > 0).then(|| quantile_ms(&self.hist, q, self.max_ms))
+    }
+
+    fn outcomes_json(&self) -> Json {
+        Json::Object(OUTCOMES.iter().zip(self.outcomes).filter(|(_, n)| *n > 0).map(|(o, n)| (o.to_string(), json!(n))).collect())
+    }
+
+    fn keys_json(&self) -> Json {
+        let mut k = self.keys.clone();
+        k.sort_by(|a, b| b.total_ms.total_cmp(&a.total_ms));
+        Json::Array(k.iter().map(|k| json!({"key": k.key, "calls": k.calls, "total_ms": k.total_ms, "errors": k.errors})).collect())
+    }
+}
+
+/// A short id of a statement: 16 hex digits of its fingerprint's hash,
+/// for its page's URL.
+pub fn statement_id(fp: &str) -> String {
+    // FNV-1a: the same on every server and in every version.
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in fp.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+/// The shards a coordinator's query asked, from its trace: each shard's
+/// slowest call that was not outrun, and how it ended.
+fn shard_parts(trace: &[Span]) -> Vec<(usize, f64, &'static str)> {
+    let mut out: Vec<(usize, f64, &'static str)> = Vec::new();
+    for s in trace.iter().filter(|s| s.outcome != "outrun") {
+        let Some(i) = s.shard else { continue };
+        let ms = s.dur_us as f64 / 1e3;
+        match out.iter_mut().find(|x| x.0 == i) {
+            Some(x) if ms > x.1 => (x.1, x.2) = (ms, s.outcome),
+            Some(_) => {}
+            None => out.push((i, ms, s.outcome)),
+        }
+    }
+    out
+}
+
+/// The time window `[from, to)` a request names (ms), by default the 15
+/// minutes before now.
+pub fn window_of(from: Option<u64>, to: Option<u64>) -> (u64, u64) {
+    let to = to.filter(|&t| t > 0).unwrap_or_else(now_ms);
+    let from = from.filter(|&f| f > 0 && f < to).unwrap_or(to.saturating_sub(15 * 60_000));
+    (from, to)
 }
 
 impl Statements {
-    #[allow(clippy::too_many_arguments)]
-    fn add(&self, fp: &str, sql: &str, kind: &'static str, outcome: &'static str, secs: f64, rows: usize, shard: bool) {
-        let ms = secs * 1e3;
-        let mut by = lock(&self.by);
-        if self.since_ms.load(Ordering::Relaxed) == 0 {
-            self.since_ms.store(now_ms(), Ordering::Relaxed);
-        }
-        if !by.contains_key(fp) && by.len() >= STATEMENTS {
-            if let Some(k) = by.iter().min_by_key(|(_, s)| (s.calls, s.last_ms)).map(|(k, _)| k.clone()) {
-                by.remove(&k);
+    /// Counts a query that ended.
+    pub fn add(&self, f: &Arc<Finished>) {
+        let minute = f.ts_ms / 60_000 * 60_000;
+        let mut s = lock(&self.inner);
+        let s = &mut *s;
+        if !s.known.contains_key(&f.fingerprint) && s.known.len() >= STATEMENTS {
+            if let Some(k) = s.known.iter().min_by_key(|(_, k)| k.last_seen_ms).map(|(k, _)| k.clone()) {
+                s.known.remove(&k);
             }
         }
-        let s = by.entry(fp.to_string()).or_insert_with(|| Stmt {
-            example: crate::obs::truncate(sql, 2000).into_owned(),
-            kind,
-            calls: 0,
-            errors: 0,
-            shard_calls: 0,
-            total_ms: 0.0,
-            max_ms: 0.0,
-            min_ms: f64::INFINITY,
-            rows: 0,
-            last_ms: 0,
-            hist: [0; STMT_BUCKETS.len() + 1],
+        let k = s.known.entry(f.fingerprint.clone()).or_insert_with(|| Known {
+            id: statement_id(&f.fingerprint),
+            example: f.sql.clone(),
+            kind: f.kind,
+            first_seen_ms: f.ts_ms,
+            last_seen_ms: f.ts_ms,
+            latest: VecDeque::new(),
+            slowest: Vec::new(),
         });
-        s.calls += 1;
-        s.errors += (!matches!(outcome, "ok" | "partial")) as u64;
-        s.shard_calls += shard as u64;
-        s.total_ms += ms;
-        s.max_ms = s.max_ms.max(ms);
-        s.min_ms = s.min_ms.min(ms);
-        s.rows += rows as u64;
-        s.last_ms = now_ms();
-        let b = STMT_BUCKETS.iter().position(|&b| ms <= b).unwrap_or(STMT_BUCKETS.len());
-        s.hist[b] += 1;
+        k.last_seen_ms = k.last_seen_ms.max(f.ts_ms);
+        let call = Arc::new(Call {
+            id: f.id,
+            ts_ms: f.ts_ms,
+            ms: f.ms,
+            outcome: f.outcome,
+            request_id: f.request_id.clone(),
+            caller: f.caller.clone(),
+            params: f.params.clone(),
+            error: f.error.clone(),
+            rows: f.rows,
+            shards: shard_parts(&f.trace),
+        });
+        if k.latest.len() == LATEST_CALLS {
+            k.latest.pop_front();
+        }
+        k.latest.push_back(call.clone());
+        k.slowest.retain(|c| c.ts_ms + (STATEMENT_MINUTES as u64) * 60_000 > f.ts_ms);
+        if k.slowest.len() < SLOWEST_CALLS {
+            k.slowest.push(call);
+        } else if let Some(i) = k.slowest.iter().enumerate().min_by(|a, b| a.1.ms.total_cmp(&b.1.ms)).map(|(i, _)| i).filter(|&i| k.slowest[i].ms < f.ms) {
+            k.slowest[i] = call;
+        }
+        // The minutes stay in order: a query that ended in an earlier
+        // minute than the last counted (by a few milliseconds, on another
+        // thread) counts in its own.
+        let at = match s.minutes.iter().rposition(|m| m.t <= minute) {
+            Some(i) if s.minutes[i].t == minute => i,
+            i => {
+                let i = i.map_or(0, |i| i + 1);
+                s.minutes.insert(i, Minute { t: minute, by: HashMap::new() });
+                i
+            }
+        };
+        let newest = s.minutes.back().map_or(minute, |m| m.t);
+        let mut at = at;
+        while s.minutes.len() > STATEMENT_MINUTES || s.minutes.front().is_some_and(|m| m.t + (STATEMENT_MINUTES as u64) * 60_000 <= newest) {
+            s.minutes.pop_front();
+            if at == 0 {
+                return;
+            }
+            at -= 1;
+        }
+        let m = &mut s.minutes[at];
+        let fp = if m.by.len() >= PER_MINUTE && !m.by.contains_key(&f.fingerprint) { OTHER.to_string() } else { f.fingerprint.clone() };
+        m.by.entry(fp).or_default().add(f);
     }
 
-    /// Every statement, by total time spent, the most first.
-    pub fn list(&self, limit: usize) -> Json {
-        let by = lock(&self.by);
-        let mut all: Vec<(&String, &Stmt)> = by.iter().collect();
+    /// Since when it counts.
+    pub fn since(&self) -> u64 {
+        self.since_ms.load(Ordering::Relaxed)
+    }
+
+    /// Each statement's minutes in `[from, to)`, merged.
+    fn sum(s: &Stmts, from: u64, to: u64, only: Option<&str>) -> HashMap<String, Agg> {
+        let mut out: HashMap<String, Agg> = HashMap::new();
+        let lo = from / 60_000 * 60_000;
+        for m in s.minutes.iter().filter(|m| m.t >= lo && m.t < to) {
+            for (fp, a) in &m.by {
+                if only.is_some_and(|o| o != fp) {
+                    continue;
+                }
+                out.entry(fp.clone()).or_default().merge(a);
+            }
+        }
+        out
+    }
+
+    fn statement_json(&self, s: &Stmts, fp: &str, a: &Agg, prev: Option<&Agg>, (from, to): (u64, u64), total: f64) -> Json {
+        let k = s.known.get(fp);
+        let since = self.since();
+        let first = k.map(|k| k.first_seen_ms);
+        let latest = k.and_then(|k| k.latest.iter().rev().find(|c| c.ts_ms < to).cloned());
+        json!({
+            "id": k.map_or_else(|| statement_id(fp), |k| k.id.clone()),
+            "fingerprint": fp,
+            "sql": k.map_or(fp, |k| k.example.as_str()),
+            "kind": k.map(|k| k.kind),
+            "calls": a.calls,
+            "outcomes": a.outcomes_json(),
+            "errors": a.failed(),
+            "server_errors": a.server_failed(),
+            "total_ms": a.total_ms,
+            "mean_ms": a.total_ms / a.calls.max(1) as f64,
+            "p50_ms": a.p(0.5), "p95_ms": a.p(0.95), "p99_ms": a.p(0.99), "max_ms": a.max_ms,
+            "rows": a.rows, "rows_per_call": a.rows as f64 / a.calls.max(1) as f64, "shard_calls": a.shard_calls,
+            "share": if total > 0.0 { a.total_ms / total } else { 0.0 },
+            "first_seen_ms": first,
+            "last_seen_ms": k.map(|k| k.last_seen_ms.min(to)),
+            "prev": prev.map(|p| json!({"calls": p.calls, "p99_ms": p.p(0.99), "errors": p.failed(), "total_ms": p.total_ms, "mean_ms": p.total_ms / p.calls.max(1) as f64})),
+            "keys": a.keys_json(),
+            // The command center's own calls of it, and all of them its own.
+            "clients": {"command-center": a.command_center},
+            "command_center": a.calls > 0 && a.command_center == a.calls,
+            // New: first seen in the window, while statements were counted
+            // before it.
+            "new": first.is_some_and(|f| f >= from) && since + 60_000 < from,
+            "sample": latest.map(|c| json!({"ts_ms": c.ts_ms, "params": c.params, "key": c.caller.key, "key_id": c.caller.key_id, "app": c.caller.app, "client": c.caller.client, "addr": c.caller.addr})),
+        })
+    }
+
+    /// The statements of window `[from, to)`, by time spent, the most
+    /// first, `limit` at most; each with the window before (`prev`, as
+    /// long), its keys, and whether it is new.
+    pub fn window(&self, from: u64, to: u64, limit: usize) -> Json {
+        let s = lock(&self.inner);
+        let len = to.saturating_sub(from).max(60_000);
+        let now = Self::sum(&s, from, to, None);
+        let before = Self::sum(&s, from.saturating_sub(len), from, None);
+        let total: f64 = now.values().map(|a| a.total_ms).sum();
+        let mut all: Vec<(&String, &Agg)> = now.iter().collect();
         all.sort_by(|a, b| b.1.total_ms.total_cmp(&a.1.total_ms));
-        let total: f64 = all.iter().map(|(_, s)| s.total_ms).sum();
-        let rows: Vec<Json> = all
+        let rows: Vec<Json> = all.iter().take(limit).map(|(fp, a)| self.statement_json(&s, fp, a, before.get(*fp), (from, to), total)).collect();
+        let held = s.minutes.front().map_or(self.since(), |m| m.t.max(self.since()));
+        json!({
+            "statements": rows, "count": now.len(), "from": from, "to": to, "prev": {"from": from.saturating_sub(len), "to": from},
+            "since_ms": self.since(), "held_from_ms": held, "source": "memory", "buckets_ms": STMT_BUCKETS,
+        })
+    }
+
+    /// One statement (by its id or its fingerprint) over `[from, to)`:
+    /// its numbers, a point a minute, its keys, its shards (from its calls
+    /// kept), its slowest calls and its errors.
+    pub fn detail(&self, which: &str, from: u64, to: u64) -> Option<Json> {
+        let s = lock(&self.inner);
+        let fp = match s.known.iter().find(|(fp, k)| k.id == which || fp.as_str() == which) {
+            Some((fp, _)) => fp.clone(),
+            None => return None,
+        };
+        let len = to.saturating_sub(from).max(60_000);
+        let mut all = Self::sum(&s, from, to, None);
+        // Its share of the window's time, over every statement (as the
+        // list gives it).
+        let total: f64 = all.values().map(|a| a.total_ms).sum();
+        let a = all.remove(&fp).unwrap_or_default();
+        let before = Self::sum(&s, from.saturating_sub(len), from, Some(&fp)).remove(&fp);
+        let statement = self.statement_json(&s, &fp, &a, before.as_ref(), (from, to), total);
+        let lo = from / 60_000 * 60_000;
+        let trend: Vec<Json> = s
+            .minutes
             .iter()
-            .take(limit)
-            .map(|(fp, s)| {
-                json!({
-                    "fingerprint": fp, "example": s.example, "kind": s.kind, "calls": s.calls, "errors": s.errors, "shard_calls": s.shard_calls,
-                    "total_ms": s.total_ms, "mean_ms": s.total_ms / s.calls.max(1) as f64, "min_ms": s.min_ms, "max_ms": s.max_ms,
-                    "p50_ms": quantile_ms(&s.hist, 0.5), "p95_ms": quantile_ms(&s.hist, 0.95), "p99_ms": quantile_ms(&s.hist, 0.99),
-                    "rows": s.rows, "rows_per_call": s.rows as f64 / s.calls.max(1) as f64, "last_ms": s.last_ms,
-                    "share": if total > 0.0 { s.total_ms / total } else { 0.0 },
-                })
+            .filter(|m| m.t >= lo && m.t < to)
+            .filter_map(|m| m.by.get(&fp).map(|x| (m.t, x)))
+            .map(|(t, x)| json!({"t": t, "calls": x.calls, "p99_ms": x.p(0.99), "p50_ms": x.p(0.5), "errors": x.failed(), "mean_ms": x.total_ms / x.calls.max(1) as f64, "max_ms": x.max_ms}))
+            .collect();
+        let k = &s.known[&fp];
+        let mut calls: Vec<Arc<Call>> = k.latest.iter().chain(k.slowest.iter()).filter(|c| c.ts_ms >= from && c.ts_ms < to).cloned().collect();
+        calls.sort_by_key(|c| c.id);
+        calls.dedup_by_key(|c| c.id);
+        let mut by_shard: std::collections::BTreeMap<usize, (u64, u64, Vec<f64>)> = std::collections::BTreeMap::new();
+        for c in &calls {
+            for (shard, ms, outcome) in &c.shards {
+                let e = by_shard.entry(*shard).or_default();
+                e.0 += 1;
+                e.1 += (*outcome != "ok") as u64;
+                e.2.push(*ms);
+            }
+        }
+        let by_shard: Vec<Json> = by_shard
+            .into_iter()
+            .map(|(shard, (n, errors, mut ms))| {
+                ms.sort_by(f64::total_cmp);
+                let p99 = ms[((ms.len() as f64 * 0.99).ceil() as usize).clamp(1, ms.len()) - 1];
+                json!({"shard": shard, "calls": n, "errors": errors, "p99_ms": p99, "max_ms": ms.last(), "mean_ms": ms.iter().sum::<f64>() / n as f64})
             })
             .collect();
-        json!({"statements": rows, "count": by.len(), "since_ms": self.since_ms.load(Ordering::Relaxed), "buckets_ms": STMT_BUCKETS})
+        let mut slowest = calls.clone();
+        slowest.sort_by(|a, b| b.ms.total_cmp(&a.ms));
+        slowest.truncate(10);
+        let mut latest = calls;
+        latest.sort_by(|a, b| b.ts_ms.cmp(&a.ts_ms));
+        latest.truncate(20);
+        let mut errors = a.errors.clone();
+        errors.sort_by(|x, y| y.1.cmp(&x.1));
+        Some(json!({
+            "statement": statement, "from": from, "to": to, "trend": trend, "by_key": a.keys_json(),
+            "by_shard": by_shard, "by_shard_from_calls": latest.len().max(slowest.len()),
+            "slowest": slowest, "latest": latest,
+            "errors": errors.iter().map(|(m, n, last)| json!({"message": m, "count": n, "last_ms": last})).collect::<Vec<_>>(),
+            "source": "memory",
+        }))
     }
 
+    /// Starts counting again (this server's statements only).
     pub fn reset(&self) {
-        lock(&self.by).clear();
+        *lock(&self.inner) = Stmts::default();
         self.since_ms.store(now_ms(), Ordering::Relaxed);
     }
 }
 
 /// The `q` quantile of a histogram over [`STMT_BUCKETS`], interpolated
-/// within its bucket.
-fn quantile_ms(hist: &[u64], q: f64) -> f64 {
-    let bounds: Vec<f64> = STMT_BUCKETS.to_vec();
-    quantile(&bounds, hist, q).unwrap_or(0.0)
+/// within its bucket, and at most `max_ms`, the slowest counted.
+fn quantile_ms(hist: &[u64], q: f64, max_ms: f64) -> f64 {
+    quantile_within(&STMT_BUCKETS, hist, q, Some(max_ms)).unwrap_or(0.0)
 }
 
 /// The `q` quantile of counts per bucket (`counts[i]` at most `bounds[i]`,
@@ -690,6 +1268,25 @@ pub fn quantile(bounds: &[f64], counts: &[u64], q: f64) -> Option<f64> {
     bounds.last().copied()
 }
 
+/// The `q` quantile of counts per bucket as [`quantile`] gives it, but
+/// never above `max`, the largest value counted: one in the last bucket
+/// (past every bound) is placed between the last bound and `max`.
+pub fn quantile_within(bounds: &[f64], counts: &[u64], q: f64, max: Option<f64>) -> Option<f64> {
+    let Some(max) = max else { return quantile(bounds, counts, q) };
+    let n: u64 = counts.iter().sum();
+    if n == 0 {
+        return None;
+    }
+    let past = counts.get(bounds.len()).copied().unwrap_or(0);
+    let want = (q * n as f64).max(1.0);
+    let below = (n - past) as f64;
+    let v = match (past > 0 && want > below, bounds.last()) {
+        (true, Some(&last)) if max > last => last + (max - last) * ((want - below) / past as f64),
+        _ => quantile(bounds, counts, q)?,
+    };
+    Some(v.min(max))
+}
+
 // ------------------------------------------------------------ the series
 
 /// Cumulative counters and gauges at one moment ([`Service::sample`]):
@@ -698,12 +1295,20 @@ pub fn quantile(bounds: &[f64], counts: &[u64], q: f64) -> Option<f64> {
 pub struct Sample {
     pub at: Option<Instant>,
     pub ts_ms: u64,
-    /// Queries ended, and those that failed (error or timeout), were
-    /// refused (429) or answered partially.
+    /// Queries ended, and those that failed on the server's side (an
+    /// error, or the server's deadline passed: `timeouts` of them), were
+    /// the client's fault (a 4xx such as bad SQL), passed the client's own
+    /// deadline, were refused (429), cancelled or answered partially.
     pub queries: u64,
     pub query_errors: u64,
+    pub timeouts: u64,
+    pub client_errors: u64,
+    pub client_deadlines: u64,
     pub rejected: u64,
+    pub cancelled: u64,
     pub partial: u64,
+    /// The slowest query since the sample before, in seconds.
+    pub query_max_s: Option<f64>,
     /// Queries ended by kind.
     pub by_kind: BTreeMap<&'static str, u64>,
     /// Query latencies, every kind together: counts per
@@ -785,7 +1390,13 @@ pub fn load_of(points: &[Arc<Json>]) -> Option<(f64, f64, Option<f64>, Option<f6
     Some((mean("qps"), mean("cpu"), p99, disk))
 }
 
-/// The rates between samples `a` and `b`, and `b`'s gauges.
+/// The rates between samples `a` and `b`, and `b`'s gauges. Counts of
+/// the interval: `queries` ended, `query_errors` (failures on the
+/// server's side: errors and the server's deadline), `client_errors` and
+/// `client_deadlines`. `error_ratio` (server failures over queries) and
+/// `availability` (one minus it) are left out when no query ended: no
+/// query is no data, not none failing. No quantile exceeds `max_ms`, the
+/// slowest query of the interval.
 fn point(a: &Sample, b: &Sample) -> Json {
     let secs = match (a.at, b.at) {
         (Some(x), Some(y)) => y.saturating_duration_since(x).as_secs_f64(),
@@ -796,7 +1407,8 @@ fn point(a: &Sample, b: &Sample) -> Json {
     let delta = |x: &[u64], y: &[u64]| y.iter().enumerate().map(|(i, &v)| v.saturating_sub(x.get(i).copied().unwrap_or(0))).collect::<Vec<u64>>();
     let qh = delta(&a.query_hist, &b.query_hist);
     let wh = delta(&a.write_hist, &b.write_hist);
-    let ms = |h: &[u64], q: f64| quantile(&crate::metrics::BUCKETS, h, q).map(|s| s * 1e3);
+    let max_s = b.query_max_s.filter(|_| qh.iter().any(|&n| n > 0));
+    let ms = |h: &[u64], q: f64, max: Option<f64>| quantile_within(&crate::metrics::BUCKETS, h, q, max).map(|s| s * 1e3);
     let by_kind: serde_json::Map<String, Json> =
         b.by_kind.iter().map(|(k, &n)| (k.to_string(), json!(rate(a.by_kind.get(k).copied().unwrap_or(0), n)))).filter(|(_, v)| v.as_f64().unwrap_or(0.0) > 0.0).collect();
     let ended = b.queries.saturating_sub(a.queries);
@@ -805,20 +1417,35 @@ fn point(a: &Sample, b: &Sample) -> Json {
         "t": b.ts_ms,
         "secs": secs,
         "qps": rate(a.queries, b.queries),
+        "queries": ended,
+        "query_errors": failed,
+        "client_errors": b.client_errors.saturating_sub(a.client_errors),
+        "client_deadlines": b.client_deadlines.saturating_sub(a.client_deadlines),
         "errors_s": rate(a.query_errors, b.query_errors),
-        "error_ratio": if ended > 0 { failed as f64 / ended as f64 } else { 0.0 },
+        "timeouts_s": rate(a.timeouts, b.timeouts),
+        "client_errors_s": rate(a.client_errors, b.client_errors),
+        "client_deadlines_s": rate(a.client_deadlines, b.client_deadlines),
+        "cancelled_s": rate(a.cancelled, b.cancelled),
         "rejected_s": rate(a.rejected, b.rejected),
         "partial_s": rate(a.partial, b.partial),
-        "p50_ms": ms(&qh, 0.5), "p95_ms": ms(&qh, 0.95), "p99_ms": ms(&qh, 0.99),
+        "p50_ms": ms(&qh, 0.5, max_s), "p95_ms": ms(&qh, 0.95, max_s), "p99_ms": ms(&qh, 0.99, max_s),
         "http_s": rate(a.http, b.http), "http_4xx_s": rate(a.http_4xx, b.http_4xx), "http_5xx_s": rate(a.http_5xx, b.http_5xx),
         "writes_s": rate(a.writes, b.writes), "rows_s": rate(a.written_docs, b.written_docs), "write_errors_s": rate(a.write_errors, b.write_errors),
-        "write_p99_ms": ms(&wh, 0.99),
+        "write_p99_ms": ms(&wh, 0.99, None),
         "slow_s": rate(a.slow, b.slow),
         "cpu": ((b.cpu_s - a.cpu_s) / secs).max(0.0),
         "alloc_bytes_s": rate(a.alloc_bytes, b.alloc_bytes), "allocs_s": rate(a.allocs, b.allocs),
         "by_kind": by_kind,
         "latency_hist": qh,
     });
+    if ended > 0 {
+        let ratio = failed as f64 / ended as f64;
+        p["error_ratio"] = json!(ratio);
+        p["availability"] = json!(1.0 - ratio);
+    }
+    if let Some(m) = max_s {
+        p["max_ms"] = json!(m * 1e3);
+    }
     for (k, v) in &b.gauges {
         p[*k] = json!(v);
     }
@@ -913,6 +1540,27 @@ mod tests {
     }
 
     #[test]
+    fn params_are_kept_capped_or_by_type() {
+        use strata::value::Value;
+        let p = strata::query::Params::new().set("q", Value::Str("x".repeat(500))).set("n", Value::Int(3)).set("v", Value::Vector(vec![0.5f32; 384].into()));
+        let j = params_json(&p).unwrap();
+        assert_eq!(j["n"], 3);
+        assert!(j["q"].as_str().unwrap().len() < 220, "{j}");
+        assert_eq!(j["v"], "[384 values]");
+        assert!(j.to_string().len() <= PARAMS_BYTES);
+        set_redact_params(true);
+        let r = params_json(&p).unwrap();
+        set_redact_params(false);
+        assert_eq!(*r, json!({"n": "int", "q": "text", "v": "vector(384)"}));
+        assert!(params_json(&strata::query::Params::new()).is_none());
+        let who = crate::keys::Principal { name: "token".into(), key: None, scope: crate::keys::Scope::Admin, root: true };
+        let r = crate::keys::Caller { app: Some("shop-ios".into()), client: Some("command-center".into()), ..Default::default() };
+        let c = Caller::of(&who, Some(&r));
+        assert_eq!((c.key.as_deref(), c.app.as_deref(), c.client.as_deref()), (Some("root token"), Some("shop-ios"), Some("command-center")));
+        assert_eq!(Caller::of(&crate::keys::Principal::open(), None).key, None);
+    }
+
+    #[test]
     fn quantiles_interpolate_within_a_bucket() {
         let bounds = [1.0, 2.0, 4.0];
         assert_eq!(quantile(&bounds, &[0, 0, 0, 0], 0.5), None);
@@ -920,22 +1568,70 @@ mod tests {
         assert_eq!(quantile(&bounds, &[0, 10, 0, 0], 1.0), Some(2.0));
         assert_eq!(quantile(&bounds, &[5, 0, 5, 0], 0.75), Some(3.0));
         assert_eq!(quantile(&bounds, &[0, 0, 0, 3], 0.99), Some(4.0));
+        // Never above the slowest counted, past the last bound too.
+        assert_eq!(quantile_within(&bounds, &[0, 10, 0, 0], 1.0, Some(1.5)), Some(1.5));
+        assert_eq!(quantile_within(&bounds, &[0, 0, 0, 4], 1.0, Some(9.0)), Some(9.0));
+        assert_eq!(quantile_within(&bounds, &[0, 0, 0, 4], 0.5, Some(8.0)), Some(6.0));
+        assert_eq!(quantile_within(&bounds, &[0, 0, 0, 0], 0.5, Some(8.0)), None);
+    }
+
+    fn finished(fp: &str, ts_ms: u64, ms: f64, outcome: &'static str, key: &str) -> Arc<Finished> {
+        static ID: AtomicU64 = AtomicU64::new(0);
+        let caller = Caller { key: Some(key.into()), ..Default::default() };
+        Arc::new(Finished { id: ID.fetch_add(1, Ordering::Relaxed), ts_ms, sql: fp.to_lowercase(), fingerprint: fp.into(), kind: "bm25", outcome, ms, rows: 2, caller, ..Default::default() })
     }
 
     #[test]
     fn statements_are_ranked_by_time_spent() {
         let s = Statements::default();
+        let t = now_ms();
         for _ in 0..3 {
-            s.add("A", "a", "bm25", "ok", 0.001, 2, false);
+            s.add(&finished("A", t, 1.0, "ok", "app"));
         }
-        s.add("B", "b", "vector", "error", 0.5, 0, false);
-        let j = s.list(10);
-        assert_eq!(j["statements"][0]["fingerprint"], "B");
-        assert_eq!(j["statements"][0]["errors"], 1);
+        s.add(&finished("B", t, 500.0, "error", "app"));
+        s.add(&finished("B", t, 2.0, "client_error", "batch"));
+        let (from, to) = window_of(None, None);
+        let j = s.window(from, to + 1, 10);
+        assert_eq!(j["statements"][0]["fingerprint"], "B", "{j}");
+        assert_eq!(j["statements"][0]["errors"], 2);
+        assert_eq!(j["statements"][0]["server_errors"], 1);
+        assert_eq!(j["statements"][0]["outcomes"], json!({"error": 1, "client_error": 1}));
+        assert_eq!(j["statements"][0]["keys"][0]["key"], "app");
         assert_eq!(j["statements"][1]["calls"], 3);
         assert_eq!(j["statements"][1]["rows_per_call"], 2.0);
+        assert!(j["statements"][1]["p99_ms"].as_f64().unwrap() <= 1.0);
+        let id = j["statements"][0]["id"].as_str().unwrap().to_string();
+        assert_eq!(id, statement_id("B"));
+        let d = s.detail(&id, from, to + 1).unwrap();
+        assert_eq!(d["statement"]["calls"], 2);
+        assert_eq!(d["slowest"][0]["ms"], 500.0, "{d}");
+        assert_eq!(d["by_key"].as_array().unwrap().len(), 2);
+        assert!(s.detail("nothing", from, to).is_none());
         s.reset();
-        assert_eq!(s.list(10)["count"], 0);
+        assert_eq!(s.window(from, to + 1, 10)["count"], 0);
+    }
+
+    /// A window compares with the one before it, as long; a statement
+    /// first seen in it, while statements were counted before, is new.
+    #[test]
+    fn a_window_has_the_one_before() {
+        let s = Statements::default();
+        let t = now_ms() / 60_000 * 60_000;
+        s.since_ms.store(t - 3 * 3_600_000, Ordering::Relaxed);
+        s.add(&finished("OLD", t - 30 * 60_000, 10.0, "ok", "app"));
+        s.add(&finished("OLD", t - 5 * 60_000, 40.0, "ok", "app"));
+        s.add(&finished("NEW", t - 4 * 60_000, 1.0, "ok", "app"));
+        let j = s.window(t - 15 * 60_000, t, 10);
+        assert_eq!(j["prev"], json!({"from": t - 30 * 60_000, "to": t - 15 * 60_000}));
+        let old = j["statements"].as_array().unwrap().iter().find(|x| x["fingerprint"] == "OLD").unwrap();
+        assert_eq!(old["prev"]["calls"], 1, "{old}");
+        assert_eq!(old["new"], false);
+        assert_eq!(old["first_seen_ms"], t - 30 * 60_000);
+        let new = j["statements"].as_array().unwrap().iter().find(|x| x["fingerprint"] == "NEW").unwrap();
+        assert!(new["prev"].is_null());
+        assert_eq!(new["new"], true);
+        let d = s.detail("OLD", t - 60 * 60_000, t).unwrap();
+        assert_eq!(d["trend"].as_array().unwrap().len(), 2, "{d}");
     }
 
     #[test]
@@ -958,12 +1654,25 @@ mod tests {
         assert!(p50 > 5.0 && p50 <= 10.0, "{p50}");
         assert_eq!(series.since(0).len(), 1);
         assert!(series.since(5).is_empty());
+        assert_eq!(p["availability"], 0.9);
+        // No query ended: no ratio, rather than none failing.
+        let c = Sample { at: Some(t + Duration::from_secs(4)), ts_ms: 7, queries: 30, query_errors: 2, query_hist: b_hist(), ..Default::default() };
+        let q = series.add(c).unwrap();
+        assert_eq!(q["queries"], 0);
+        assert!(q.get("error_ratio").is_none() && q.get("availability").is_none(), "{q}");
+        assert!(q["p99_ms"].is_null());
+    }
+
+    fn b_hist() -> Vec<u64> {
+        let mut h = vec![0; 15];
+        h[3] = 20;
+        h
     }
 
     #[tokio::test]
     async fn a_cancelled_query_ends_with_its_error() {
         let reg = Arc::new(LiveQueries::default());
-        let live = reg.start("SELECT 1", "filter", false);
+        let live = reg.start("SELECT 1", "filter", false, &Meta::default());
         assert_eq!(reg.len(), 1);
         let id = live.query.id;
         let r2 = reg.clone();

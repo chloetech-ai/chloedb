@@ -786,11 +786,15 @@ fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>) -> Result<Js
             let models = models_of(a)?;
             Ok(json!(db.train_codebook(&table, a.need_str("field")?, a.need_str("name")?, &models, &train_options(a)?)?))
         }
+        // As strata-py's: the memtable written out, segments merged into
+        // as few as can be, the space freed returned to the file system.
         "optimize" => {
             db.storage().flush()?;
-            db.storage().merge(&MergePolicy::default())?;
+            db.storage().merge(&MergePolicy::compact())?;
+            db.storage().vacuum()?;
             Ok(Json::Null)
         }
+        "vacuum" => Ok(Json::from(db.storage().vacuum()?)),
         other => Err(bad(format!("no operation {other:?}"))),
     }
 }

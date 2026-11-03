@@ -1,43 +1,52 @@
-// The profiler: any query's EXPLAIN ANALYZE. Run one with its CPU time
-// measured, once or many times (each run's time, and the profile of the
-// median one); or open the profile of a query that already ran, among the
-// slow ones (under a threshold set here while the server runs) or the
-// latest. A profile is the flame chart of every step, the operator tree
-// with total and self time, CPU time and rows, the segments by thread,
-// where the time went, and on a coordinator each shard's call.
+// The profiler: diagnostics of one server. A query's EXPLAIN ANALYZE, run
+// once or many times with its parameters (each run's time, and the
+// profile of the median one); the CPU by function and the heap by where it
+// was allocated, of the coordinator or any copy (picked by its short name,
+// node or shard, with its load); its threads; and what this server keeps
+// (its runtime settings). A rate above the safe defaults asks first and
+// says what it costs. Queries that already ran are in Queries > History.
 
-import { h, icon, clear, fmt, api, store, toast, card, empty, seg, every, failure, table, pill, toggle, debounce, sqlBlock, copy, bus, shareBar } from "../core.js";
+import { h, icon, clear, fmt, api, store, toast, card, empty, seg, every, failure, table, pill, toggle, debounce, sqlBlock, copy, bus, shareBar, confirm } from "../core.js";
 import { timeChart, SERIES } from "../charts.js";
 import { visible, last, domain, setZoom } from "../data.js";
 import { editor } from "../sqledit.js";
 import { tables, cached } from "../catalog.js";
 import { profileView, profileFigures, kpi } from "../profile.js";
 import { flameGraph, folded, shortName } from "../flame.js";
+import { state, link, copyName, copyTitle, copyLink, isCoord, queryDrawer, narrow, workbenchLink, profileLink, copies } from "../workload.js";
+import { isProduction } from "../data.js";
 
-export default { id: "profile", title: "Profiler", icon: "flame", group: "Workload", keywords: "profile profiler explain analyze flame chart flame graph cpu sampling pprof perf folded speedscope hot functions memory heap allocations allocator leak rss threads context switches segments operators steps slow queries debug latency", render, onParams };
+export default { id: "profile", title: "Profiler", icon: "flame", group: "Diagnose", keywords: "profile profiler diagnostics node explain analyze flame chart flame graph cpu sampling pprof perf folded speedscope hot functions memory heap allocations allocator leak rss threads context switches segments operators steps debug latency settings slow threshold", render, onParams };
 
-const TABS = [["query", "Profile a query"], ["cpu", "CPU"], ["memory", "Memory"], ["slow", "Slow queries"], ["recent", "Latest queries"]];
-const OUTCOMES = { ok: "ok", partial: "warn", error: "bad", timeout: "bad", rejected: "warn", cancelled: "info" };
+const TABS = [["query", "Profile a query"], ["cpu", "CPU"], ["memory", "Memory"], ["settings", "What is kept"]];
+/** The old Slow and Latest tabs are Queries > History with a filter. */
+const MOVED = { slow: "slow", recent: "latest" };
 
 let route = null;
 function onParams(r) { route?.(r.params); }
 
 function render(page, r) {
-  const tabs = h("div", { class: "tabs", role: "tablist" });
+  const tabs = h("div", { class: "tabs wl-tabs-scroll", role: "tablist" });
   const body = h("div");
-  page.append(h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Profiler"), h("p", {}, "Where the time and memory go: every step of a query, on which segment, thread and shard; the server's CPU by function; its heap by where it was allocated; and its threads."))), tabs, body);
+  page.append(h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Profiler"), h("p", {}, "Diagnostics of one server: a query's steps, its CPU by function, its heap by where it was allocated, its threads. Open it from a copy in Cluster to profile that copy."))), tabs, body);
   let tab = null, node = null, stop = null, view = null;
   function go(params) {
-    const t = params.get("tab") || (params.get("id") ? "recent" : "query");
+    let t = params.get("tab") || "query";
+    if (MOVED[t]) { location.replace(link("queries", { tab: "history", preset: MOVED[t] })); return; }
+    // An old link to a query that ran: its drawer, over the query tab.
+    const id = Number(params.get("id"));
+    if (id) { api("/v1/queries/finished/" + id).then((q) => queryDrawer({ ...q, id })).catch((e) => toast(e.status === 404 ? "That query's profile is gone: Queries > History keeps 7 days of them" : e.message, "bad")); t = "query"; }
+    if (!TABS.some(([k]) => k === t)) t = "query";
     // On a coordinator, the CPU and Memory tabs profile any server of its
     // cluster: ?node= names it (a replica's URL), none the coordinator.
     const n = t === "cpu" || t === "memory" ? params.get("node") || "" : "";
     if (t !== tab || n !== node) {
       tab = t; node = n; stop?.();
-      clear(tabs, TABS.map(([k, v]) => h("button", { role: "tab", "aria-selected": String(k === t), onclick: () => { location.hash = "#/profile?tab=" + k + (node && (k === "cpu" || k === "memory") ? "&node=" + encodeURIComponent(node) : ""); } }, v)));
+      clear(tabs, TABS.map(([k, v]) => h("button", { role: "tab", "aria-selected": String(k === t), onclick: () => { location.hash = link("profile", { tab: k, node: node && (k === "cpu" || k === "memory") ? node : null }); } }, v)),
+        narrow() ? null : [h("span", { class: "sep" }), h("a", { class: "small wl-link", style: { alignSelf: "center" }, href: link("queries", { tab: "history" }) }, "Queries that ran: Queries > History ›")]);
       clear(body);
       if (t === "cpu" || t === "memory") body.append(nodePicker(t, n));
-      view = t === "query" ? runner(body) : t === "cpu" ? cpu(body, n) : t === "memory" ? memory(body, n) : ended(body, t);
+      view = t === "query" ? runner(body) : t === "cpu" ? cpu(body, n) : t === "memory" ? memory(body, n) : settingsTab(body);
       stop = view.stop;
     }
     view.open?.(params);
@@ -56,16 +65,25 @@ function runner(body) {
   const ed = editor({ value: sql, onChange: (v) => { sql = v; store.set("profile.sql", v); }, onRun: () => run(), catalog: cached, label: "SQL to profile" });
   const go = h("button", { class: "btn primary", title: "Run it with its CPU time measured (Ctrl+Enter)", onclick: () => run() }, icon("flame"), "Profile");
   const params = h("textarea", { class: "input mono", rows: 2, placeholder: '{"q": "laptop"}', style: { width: "100%" }, value: paramsText, oninput: debounce(() => { paramsText = params.value; store.set("profile.params", paramsText); }, 200) });
-  const runsSeg = seg([[1, "once"], [5, "5 times"], [20, "20 times"]], runs, (v) => { runs = v; store.set("profile.runs", v); }, { title: "Run it more than once to see how its time varies; the profile shown is the median run's" });
+  const params_ = params;
+  // On a coordinator each run asks every shard: say how many calls before running.
+  const runNote = h("span", { class: "small muted" });
+  const drawNote = () => {
+    const n = isCoord() ? state.cluster?.shards?.length || 0 : 0;
+    clear(runNote, n ? `Each run is a normal query that asks every shard: ${runs === 1 ? "one run" : runs + " runs"} × ${fmt.n(n)} shards = ${fmt.n(runs * n)} shard calls. Runs show in Queries.` : "Each run is a normal query: it takes a slot and shows in Queries.");
+  };
+  const runsSeg = seg([[1, "once"], [5, "5 times"], [20, "20 times"]], runs, (v) => { runs = v; store.set("profile.runs", v); drawNote(); }, { title: "Run it more than once to see how its time varies; the profile shown is the median run's" });
   const strip = h("div");
   const out = h("div");
   body.append(
     card({ body: h("div", { class: "stack" },
       h("div", { class: "wb-ed", style: { height: "150px", border: "1px solid var(--line)", borderRadius: "var(--r-sm)", overflow: "hidden" } }, ed.el),
       h("details", { open: !!paramsText }, h("summary", { class: "small dim" }, "Parameters, as JSON (for :names in the SQL)"), params),
-      h("div", { class: "row" }, go, runsSeg, h("span", { class: "sep" }), h("span", { class: "small muted" }, "Each run is a normal query: it takes a slot and shows in Queries.")),
+      h("div", { class: "row", style: { flexWrap: "wrap" } }, go, runsSeg, h("span", { class: "sep" }), runNote),
     ), attrs: { style: { marginBottom: "14px" } } }),
     strip, out);
+  drawNote();
+  const offCluster = bus.on("cluster", () => { if (runNote.isConnected) drawNote(); });
   if (!sql) tables().then(() => { if (!sql && cached()[0]) { const t = cached()[0]; const f = (t.short?.fields || []).find((x) => x.type === "text" && x.indexed !== false); ed.value = f ? `SELECT * FROM ${t.table} ORDER BY bm25(${f.name}, 'search') DESC LIMIT 10` : `SELECT * FROM ${t.table} LIMIT 10`; sql = ed.value; } }).catch(() => {});
   clear(out, empty("flame", "Profile a query", "Write a SELECT and press Profile: the server runs it with its CPU time measured and answers every step it took."));
   let busy = false;
@@ -103,15 +121,19 @@ function runner(body) {
       } else clear(strip);
       clear(out, h("div", { class: "stack" },
         h("div", { class: "row" }, h("span", { class: "small muted" }, all.length > 1 ? `run ${pick + 1} of ${all.length}` : "one run"), h("span", { class: "sep" }),
-          h("a", { class: "btn sm", href: "#/sql?q=" + encodeURIComponent(text) }, icon("sql"), "Open in the workbench"),
+          h("a", { class: "btn sm", href: workbenchLink(text, paramsText.trim() ? paramsText : null) }, icon("sql"), "Open in the workbench"),
           h("button", { class: "btn sm", onclick: () => copy(JSON.stringify({ sql: text, took_ms: j.took_ms, steps: j.stats?.steps, trace: j.trace, plan: j.stats?.plan }, null, 1), "Profile copied as JSON") }, icon("copy"), "Copy as JSON")),
         profileView({ steps: j.stats?.steps, steps_dropped: j.stats?.steps_dropped, trace: j.trace, took_ms: j.took_ms, roundtrip_ms: j.roundtrip_ms, plan: j.stats?.plan, rows: j.rows?.length, filter_docs: j.stats?.filter_docs, scored: j.stats?.scored, profiled: true })));
     }
     draw();
   }
   return {
-    stop: () => {},
-    open(params) { const q = params.get("sql"); if (q) { ed.value = q; sql = q; store.set("profile.sql", q); run(); } },
+    stop: () => offCluster?.(),
+    open(params) {
+      const q = params.get("sql"), pj = params.get("p");
+      if (pj != null) { paramsText = pj; params_.value = pj; params_.closest("details")?.setAttribute("open", ""); store.set("profile.params", pj); }
+      if (q) { ed.value = q; sql = q; store.set("profile.sql", q); run(); }
+    },
   };
 }
 
@@ -127,29 +149,100 @@ const CLIENTS = [[1, "1"], [4, "4"], [16, "16"]];
 /** The query string that sends a profile to a node of the cluster. */
 const onNode = (node) => node ? "?node=" + encodeURIComponent(node) : "";
 
+/** What sampling costs, measured (docs/strata/server.md, /v1/profile): a BM25 query in a loop, 4 cores. */
+const CPU_COST = { 49: "under 6%", 99: "about 6%", 499: "between 6% and 11%", 997: "about 11%" };
+const HEAP_COST = { [64 << 10]: "20% to 46%", [512 << 10]: "6% to 29%", [2 << 20]: "3% to 6%" };
+/** The rates and callers that need no confirming. */
+const SAFE = { hz: 99, every: 2 << 20, clients: 4, seconds: 10 };
+
+/** A copy's load in a few words: "CPU 62% · p99 18 ms · 210 q/s". */
+const loadWords = (c) => [c.cpu != null ? "CPU " + fmt.pct(c.cpu, 0) : null, c.p99 != null ? "p99 " + fmt.ms(c.p99) : null, c.qps != null ? fmt.n(Math.round(c.qps)) + " q/s" : null].filter(Boolean).join(" · ") || (c.status && c.status !== "ok" ? c.status : "no load read");
+
 /**
  * On a coordinator, which server of its cluster the tab profiles: the
- * coordinator itself, or any replica of any shard, which takes the
- * profile itself, asked through the coordinator. Hidden on any other server.
+ * coordinator itself, or any copy of any shard, found by its short name,
+ * node or shard, with its load. The copy takes the profile itself, asked
+ * through the coordinator. Hidden on any other server.
  */
 function nodePicker(tab, node) {
-  const el = h("div", { class: "row", style: { gap: "10px", flexWrap: "wrap", marginBottom: "14px", display: "none" } });
-  api("/v1/cluster").then((c) => {
-    if (c.role !== "coordinator") return;
-    const opts = [h("option", { value: "", selected: !node }, "this coordinator")];
-    let found = !node;
-    for (const s of c.shards || []) for (const r of s.replicas || []) {
-      const role = r.role && r.role !== "standalone" ? " · " + r.role : "";
-      found ||= r.url === node;
-      opts.push(h("option", { value: r.url, selected: r.url === node }, `shard ${s.shard} · ${r.url}${role}${r.status === "down" ? " (down)" : ""}`));
-    }
-    if (!found) opts.push(h("option", { value: node, selected: true }, node));
-    const sel = h("select", { class: "select", "aria-label": "Server to profile", onchange: () => { location.hash = "#/profile?tab=" + tab + (sel.value ? "&node=" + encodeURIComponent(sel.value) : ""); } }, opts);
-    clear(el, h("span", { class: "small dim" }, "Profile"), sel,
-      h("span", { class: "small muted" }, node ? "This server takes the profile itself; the coordinator asks it over gRPC." : "The coordinator's own process: choose a shard's server to profile it."));
+  const el = h("div", { class: "wl-pick", style: { display: "none" } });
+  const to = (url) => { location.hash = link("profile", { tab, node: url || null }); };
+  let list = [], hi = 0, open = false;
+  const input = h("input", { class: "input", type: "search", placeholder: "Find a copy: s117-0, a node, shard 117", "aria-label": "Find a copy to profile", autocomplete: "off", spellcheck: "false" });
+  const menuEl = h("div", { class: "wl-pick-list", role: "listbox", hidden: true });
+  const chip = h("div", { class: "wl-pick-cur" });
+  const say = h("div", { class: "small muted" });
+  function matches(q) {
+    const all = copies();
+    q = q.trim().toLowerCase();
+    if (!q) return all.filter((c) => c.cpu != null).sort((a, b) => b.cpu - a.cpu).slice(0, 8);
+    const num = /^(?:s|shard\s*)?(\d+)$/.exec(q);
+    const hit = (c) => (num && String(c.shard) === num[1]) || [c.name, c.url, c.node, c.zone, `s${c.shard}-${c.j}`].some((x) => x && String(x).toLowerCase().includes(q));
+    // The shard's own copies first, then by CPU.
+    const own = (c) => (num && String(c.shard) === num[1]) || (c.name || "").toLowerCase() === q ? 1 : 0;
+    return all.filter(hit).sort((a, b) => own(b) - own(a) || (b.cpu ?? -1) - (a.cpu ?? -1));
+  }
+  function drawMenu() {
+    const q = input.value;
+    const found = matches(q);
+    list = found.slice(0, 8);
+    hi = Math.min(hi, Math.max(0, list.length - 1));
+    clear(menuEl,
+      h("div", { class: "wl-pick-h small muted" }, q.trim() ? `${fmt.plural(found.length, "copy", "copies")} match${found.length > 8 ? ", the 8 busiest shown" : ""}` : ["The busiest copies, by CPU over the latest minute", ...((d) => d.length ? [" · ", h("span", { class: "wl-bad" }, `${d.join(", ")} down`)] : [])(copies().filter((c) => c.status === "down").map((c) => c.name))]),
+      node ? h("button", { class: "wl-pick-row", role: "option", onclick: () => to(null) }, h("b", {}, "this coordinator"), h("span", { class: "small muted" }, "its own process")) : null,
+      list.length ? list.map((c, i) => h("button", { class: "wl-pick-row" + (i === hi ? " hi" : ""), role: "option", "aria-selected": String(i === hi), title: copyTitle(c.url), onclick: () => to(c.url), onmouseenter: () => { hi = i; for (const [k, b] of [...menuEl.querySelectorAll(".wl-pick-row[title]")].entries()) b.classList.toggle("hi", k === i); } },
+        h("span", { class: "wl-pick-name" }, h("b", { class: "mono" }, c.name), h("span", { class: "small muted" }, ` shard ${c.shard}${c.role && c.role !== "standalone" ? " · " + c.role : ""}`)),
+        h("span", { class: "small " + (c.cpu != null && c.cpu > 0.85 ? "" : "muted") }, loadWords(c))))
+        : h("div", { class: "wl-pick-h small muted" }, "No copy matches. Try its short name, its node or a shard number."));
+    menuEl.hidden = !open;
+  }
+  const show = (v) => { open = v; drawMenu(); };
+  input.onfocus = () => show(true);
+  input.oninput = () => { hi = 0; show(true); };
+  input.onkeydown = (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); hi = Math.min(list.length - 1, hi + 1); drawMenu(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); hi = Math.max(0, hi - 1); drawMenu(); }
+    else if (e.key === "Enter" && list[hi]) { e.preventDefault(); to(list[hi].url); }
+    else if (e.key === "Escape") { show(false); input.blur(); }
+  };
+  input.onblur = () => setTimeout(() => show(false), 150);
+  function drawCur() {
+    const c = node ? copies().find((x) => x.url === node) : null;
+    clear(chip,
+      h("span", { class: "small dim" }, "Profiling"),
+      node ? h("a", { class: "wl-chip", href: copyLink(node), title: copyTitle(node) + " · open it in Cluster" }, h("b", { class: "mono" }, copyName(node)), c ? h("span", { class: "small muted" }, ` shard ${c.shard}${c.role && c.role !== "standalone" ? " · " + c.role : ""}`) : null)
+        : h("span", { class: "wl-chip" }, h("b", {}, "this coordinator")),
+      c ? h("span", { class: "small muted" }, loadWords(c)) : null,
+      node ? h("button", { class: "btn sm ghost", title: "Profile the coordinator's own process", onclick: () => to(null) }, "Back to the coordinator") : null);
+    clear(say, node ? (c ? "The copy takes the profile itself; the coordinator asks it over gRPC and shows what it answered." : "This URL is not among the cluster's copies now: the profile will fail with 404.") : "The coordinator's own process: it plans, fans out and merges. Find a copy to profile where the shard's work is done.");
+  }
+  async function start() {
+    let c = state.cluster;
+    if (!c) { try { c = await api("/v1/cluster"); state.cluster ||= c; } catch { return; } }
+    if (c.role !== "coordinator" && !node) return;
+    clear(el, h("div", { class: "row", style: { gap: "10px", flexWrap: "wrap" } }, chip, h("span", { class: "sep" }), h("div", { class: "wl-pick-box" }, input, menuEl)), say);
     el.style.display = "";
-  }).catch(() => {});
+    drawCur();
+  }
+  const off = bus.on("cluster", () => { if (el.isConnected) { drawCur(); if (open) drawMenu(); } else off?.(); });
+  start();
   return el;
+}
+
+/** What a profile at these settings costs and needs: {words, risky: [why]}. */
+function costOf(key, req) {
+  const risky = [];
+  let words;
+  if (key === "cpu") {
+    words = `Sampling at ${req.hz} Hz slows the threads it interrupts: a query in a loop ran ${CPU_COST[req.hz] || "an unknown share"} fewer times a second (measured on 4 cores).`;
+    if (req.hz > SAFE.hz) risky.push(`${req.hz} Hz is above ${SAFE.hz} Hz: ${CPU_COST[req.hz] || "more"} fewer queries a second while it runs, against about 6% at ${SAFE.hz} Hz.`);
+  } else {
+    words = `A sample every ${everyName(req.every)} walks the allocating thread's stack: a query in a loop ran ${HEAP_COST[req.every] || "an unknown share"} fewer times a second (measured on 4 cores).`;
+    if (req.every < SAFE.every) risky.push(`A sample every ${everyName(req.every)} is finer than every ${everyName(SAFE.every)}: ${HEAP_COST[req.every] || "more"} fewer queries a second while it runs, against 3% to 6%.`);
+  }
+  if (req.clients > SAFE.clients) risky.push(`${req.clients} callers run the query at once: they take ${req.clients} query slots from the server's clients for ${req.seconds} s.`);
+  if (req.seconds > SAFE.seconds && risky.length) risky.push(`It lasts ${req.seconds} s.`);
+  return { words, risky };
 }
 
 function save(name, text, type) {
@@ -176,31 +269,48 @@ function sampler(body, cfg) {
   const ed = editor({ value: sql, onChange: (v) => { sql = v; store.set(k("sql"), v); }, onRun: () => take(), catalog: cached, label: "SQL to run while profiling" });
   const qbox = h("div", { class: "stack" },
     h("div", { class: "wb-ed", style: { height: "110px", border: "1px solid var(--line)", borderRadius: "var(--r-sm)", overflow: "hidden" } }, ed.el),
-    h("div", { class: "row small dim" }, "Run by", seg(CLIENTS, clients, (v) => { clients = v; store.set(k("clients"), v); }, { title: "How many callers run it at once: 1 shows one query's work, more shows the server under load" }), "callers at once, again and again until the profile ends. Its runs are not kept among the latest queries."));
+    h("div", { class: "row small dim", style: { flexWrap: "wrap" } }, "Run by", seg(CLIENTS, clients, (v) => { clients = v; store.set(k("clients"), v); drawCost(); }, { title: "How many callers run it at once: 1 shows one query's work, more shows the server under load" }), "callers at once, again and again until the profile ends. Its runs are not kept in Queries > History."));
   const showQ = () => { qbox.style.display = what === "query" ? "" : "none"; };
   const go = h("button", { class: "btn primary", onclick: () => take() }, icon("flame"), cfg.button);
   const out = h("div");
+  const costLine = h("div", { class: "small muted wl-cost" });
+  const request = () => ({ seconds, [cfg.rate.param]: rate, ...(what === "query" ? { clients } : {}) });
+  const drawCost = () => { const c = costOf(cfg.key, request()); clear(costLine, c.risky.length ? h("span", { class: "wl-warn-t" }, "Above the safe defaults: it asks first. ") : null, c.words); };
   body.append(
     card({ body: h("div", { class: "stack" },
       h("div", { class: "row", style: { flexWrap: "wrap", gap: "14px" } },
-        seg([["server", "the whole server"], ["query", "a query in a loop"]], what, (v) => { what = v; store.set(k("what"), v); showQ(); }, { title: "Profile whatever the server is doing, or one query run again and again" }),
-        h("span", { class: "row nw small dim", style: { gap: "6px" } }, "for", seg(SECONDS, seconds, (v) => { seconds = v; store.set(k("seconds"), v); })),
-        h("span", { class: "row nw small dim", style: { gap: "6px" }, title: cfg.rate.title }, cfg.rate.label, seg(cfg.rate.options, rate, (v) => { rate = v; store.set(k("rate"), v); }))),
+        seg([["server", "the whole server"], ["query", "a query in a loop"]], what, (v) => { what = v; store.set(k("what"), v); showQ(); drawCost(); }, { title: "Profile whatever the server is doing, or one query run again and again", class: "seg wl-segwrap" }),
+        h("span", { class: "row nw small dim", style: { gap: "6px" } }, "for", seg(SECONDS, seconds, (v) => { seconds = v; store.set(k("seconds"), v); drawCost(); })),
+        h("span", { class: "row small dim", style: { gap: "6px", flexWrap: "wrap" }, title: cfg.rate.title }, cfg.rate.label, seg(cfg.rate.options, rate, (v) => { rate = v; store.set(k("rate"), v); drawCost(); }, { class: "seg wl-segwrap" }))),
       qbox,
-      h("div", { class: "row" }, go, h("span", { class: "sep" }), h("span", { class: "small muted" }, cfg.note))),
+      costLine,
+      h("div", { class: "row" }, go, h("span", { class: "sep" }), narrow() ? null : h("span", { class: "small muted" }, cfg.note))),
     attrs: { style: { marginBottom: "14px" } } }),
     out);
-  showQ();
+  showQ(); drawCost();
   if (!sql) tables().then(() => { if (!sql && cached()[0]) { const t = cached()[0]; const f = (t.short?.fields || []).find((x) => x.type === "text" && x.indexed !== false); ed.value = f ? `SELECT * FROM ${t.table} ORDER BY bm25(${f.name}, 'search') DESC LIMIT 10` : `SELECT * FROM ${t.table} LIMIT 10`; sql = ed.value; } }).catch(() => {});
   clear(out, empty("flame", ...cfg.empty));
   let busy = false, tick = null, gone = false;
   async function take() {
     if (busy) return;
-    const req = { seconds, [cfg.rate.param]: rate };
+    const req = request();
     if (what === "query") {
       const text = (ed.value || "").trim().replace(/;\s*$/, "");
       if (!text) { toast("Write a query first"); return; }
-      req.sql = text; req.clients = clients;
+      req.sql = text;
+    }
+    // Above the safe defaults, it asks first, saying what it costs; on
+    // production, with a reason the audit log keeps.
+    const c = costOf(cfg.key, req);
+    let reason = null;
+    if (c.risky.length) {
+      const where = cfg.node ? copyName(cfg.node) : isCoord() ? "the coordinator" : "this server";
+      const ok = await confirm({ title: `Profile ${where} above the safe rates?`, ok: cfg.button,
+        body: h("div", { class: "stack" }, h("ul", { class: "wl-list" }, c.risky.map((x) => h("li", {}, x))),
+          h("p", { class: "small muted", style: { margin: 0 } }, `The safe defaults: ${cfg.key === "cpu" ? SAFE.hz + " Hz" : "a sample every " + everyName(SAFE.every)}, ${SAFE.clients} callers or fewer. ${isProduction() ? "This is production: say why." : ""}`)),
+        reason: isProduction() ? "Why profile it this finely: kept in the audit log" : false });
+      if (!ok) return;
+      reason = ok.reason;
     }
     busy = true; go.disabled = true;
     const t0 = performance.now();
@@ -211,7 +321,7 @@ function sampler(body, cfg) {
       h("div", { class: "meter", style: { width: "min(420px, 90%)" } }, bar), status) }));
     tick = setInterval(() => { const el = (performance.now() - t0) / 1000; bar.style.width = Math.min(100, el / seconds * 100) + "%"; status.textContent = el < seconds ? `${Math.ceil(seconds - el)} s left` : "Reading the frames' names…"; }, 200);
     try {
-      const p = await api(cfg.endpoint + onNode(cfg.node), { body: req });
+      const p = await api(cfg.endpoint + onNode(cfg.node), { body: req, reason });
       if (gone) return;
       cfg.show(out, p, req);
     } catch (e) {
@@ -225,9 +335,9 @@ function sampler(body, cfg) {
 /** The head of a profile's answer: what it was of, downloads, the query. */
 function profileHead(p, req, what, downloads) {
   return [
-    h("div", { class: "row" }, h("span", { class: "small muted" }, `${req.sql ? "a query in a loop" : "the whole server"}${p.node ? " on " + p.node : ""} · ${fmt.n(p.seconds)} s ${what} · ${new Date().toLocaleTimeString()}`), h("span", { class: "sep" }),
+    h("div", { class: "row", style: { flexWrap: "wrap" } }, h("span", { class: "small muted", title: p.node ? copyTitle(p.node) : "" }, `${req.sql ? "a query in a loop" : "the whole server"}${p.node ? " on " + copyName(p.node) : ""} · ${fmt.n(p.seconds)} s ${what} · ${new Date().toLocaleTimeString()}`), h("span", { class: "sep" }),
       downloads,
-      req.sql ? h("a", { class: "btn sm", href: "#/profile?tab=query&sql=" + encodeURIComponent(req.sql), title: "Its steps, once" }, icon("flame"), "Profile its steps") : null),
+      req.sql ? h("a", { class: "btn sm", href: profileLink(req.sql), title: "Its steps, once" }, icon("flame"), "Profile its steps") : null),
     req.sql ? sqlBlock(req.sql) : null,
     p.runs?.error ? h("div", { class: "error" }, "A run failed, so the loop stopped: " + p.runs.error) : null,
   ];
@@ -274,19 +384,22 @@ function showCpu(out, p, req) {
   const r = p.runs;
   const top = p.threads[0];
   const few = p.rate && p.rate < p.hz * 0.6;
-  const hot = hottest(p);
+  // Under 100 samples, a function's share is noise: no hottest function.
+  const thin = total > 0 && total < 100;
+  const hot = thin ? null : hottest(p);
   clear(out, h("div", { class: "stack" },
     ...profileHead(p, req, `at ${p.hz} Hz`, [
       h("button", { class: "btn sm", title: "Folded stacks (thread;root;…;leaf samples) for flamegraph.pl, inferno or speedscope", onclick: () => save(`strata-cpu-${stamp}.folded`, folded(p), "text/plain") }, icon("download"), "Folded"),
       h("button", { class: "btn sm", onclick: () => save(`strata-cpu-${stamp}.json`, JSON.stringify(p), "application/json") }, icon("download"), "JSON")]),
-    h("div", { class: "grid g6 prof-kpis" },
+    h("div", { class: "grid g6 prof-kpis wl-kpis" },
       kpi("CPU time", fmt.ms(p.cpu_seconds * 1000), `of every thread, in ${fmt.n(p.seconds)} s`, "The process's CPU time (user and system) while the profile was taken, from the system"),
       kpi("Cores busy", p.cores.toFixed(2), `of ${fmt.n(p.seconds)} s`, "CPU seconds over wall seconds: the cores the process kept busy on average"),
       kpi("Samples", fmt.n(p.samples), `${fmt.n(Math.round(p.rate || 0))} a CPU second`, `${p.hz} asked for a CPU second; each sample stands for ${fmt.ms(per)} of CPU time`),
       kpi("Threads", fmt.n(p.threads.reduce((a, t) => a + t.count, 0)), top ? `${top.name} ${fmt.pct(top.samples / Math.max(1, total), 0)}` : null, "Threads sampled at least once; the busiest pool"),
       ...(r ? runsKpis(r, p) : [
         kpi("Stacks", fmt.n(p.stacks.length), `${fmt.n(p.names.length)} functions`),
-        hot ? kpi("Hottest function", h("span", { class: "mono", style: { fontSize: "15px" } }, shortName(hot[0])), `${fmt.pct(hot[1] / Math.max(1, total), 1)} of the samples in itself`, hot[0]) : kpi("Hottest function", "–")])),
+        hot ? kpi("Hottest function", h("span", { class: "mono", style: { fontSize: "15px" } }, shortName(hot[0])), `${fmt.pct(hot[1] / Math.max(1, total), 1)} of the samples in itself`, hot[0]) : kpi("Hottest function", "–", thin ? "too few samples to say" : null)])),
+    thin ? h("div", { class: "wl-note" }, icon("info"), h("span", {}, `Only ${fmt.plural(p.samples ?? total, "sample")}: a function's share of them is noise under about 100. Sample for longer (30 s), or while the server is busy.`)) : null,
     few ? h("div", { class: "small muted" }, `The system delivered ${fmt.n(Math.round(p.rate))} samples a CPU second of the ${p.hz} asked: its timer gives the whole process at most one a tick (250 a second on many Linux kernels). Each sample is weighed by the measured CPU time, so the times are right; fewer samples make small functions noisier, so sample for longer.`) : null,
     (p.blocked || []).includes("libc") ? h("div", { class: "small muted" }, "Samples inside the C library (malloc, memcpy, system calls) are not taken on this system: unwinding from there could deadlock before glibc 2.35. Their CPU time is spread over the rest.") : null,
     !total ? empty("info", "No samples", "No thread used the CPU while the profile was taken. Sample for longer, or while the server is busy.") : null,
@@ -300,7 +413,7 @@ function showCpu(out, p, req) {
  * are allocated, and which are still held); and the threads.
  */
 function memory(body, node) {
-  const figures = h("div", { class: "grid g6 prof-kpis", style: { marginBottom: "14px" } });
+  const figures = h("div", { class: "grid g6 prof-kpis wl-kpis", style: { marginBottom: "14px" } });
   const brush = (a, b) => setZoom(a == null ? null : [a, b]);
   // Another node's charts are drawn from its figures read every 2 s since
   // the tab opened; this server's from its series.
@@ -438,7 +551,7 @@ function showHeap(out, p, req) {
     ...profileHead(p, req, `a sample every ${everyName(p.every)}`, [
       h("button", { class: "btn sm", title: "Folded stacks of the bytes allocated, for flamegraph.pl, inferno or speedscope", onclick: () => save(`strata-heap-${stamp}.folded`, folded({ ...p, stacks: p.stacks.map((s) => ({ ...s, samples: s.bytes })) }), "text/plain") }, icon("download"), "Folded"),
       h("button", { class: "btn sm", onclick: () => save(`strata-heap-${stamp}.json`, JSON.stringify(p), "application/json") }, icon("download"), "JSON")]),
-    h("div", { class: "grid g6 prof-kpis" },
+    h("div", { class: "grid g6 prof-kpis wl-kpis" },
       kpi("Allocated", fmt.bytes(p.allocated_bytes), `${fmt.bytes(p.allocated_bytes / Math.max(0.001, p.seconds))}/s, counted`, "Bytes every thread allocated while the profile was taken, counted at each allocation"),
       kpi("Allocations", fmt.si(p.allocs), `${fmt.si(p.allocs / Math.max(0.001, p.seconds))} a second`),
       kpi("Heap", fmt.bytes(p.in_use_end), `${grow >= 0 ? "+" : "−"}${fmt.bytes(Math.abs(grow))} while profiled`, "The heap in use at the end, and how it changed from the start"),
@@ -450,71 +563,45 @@ function showHeap(out, p, req) {
   draw();
 }
 
-// ---------------------------------------------------------------- ended ones
+// ---------------------------------------------------------------- what is kept
 
-function ended(body, which) {
-  const settings = h("div", { class: "prof-set" });
-  const note = h("div", { class: "small muted" });
-  const picked = h("div", { style: { marginTop: "14px" } });
-  let sel = null;
-  const tbl = table([
-    { key: "ts_ms", label: "time", num: true, render: (q) => h("span", { class: "nowrap", title: fmt.datetime(q.ts_ms) }, fmt.time(q.ts_ms)) },
-    { key: "outcome", label: "outcome", render: (q) => pill(OUTCOMES[q.outcome] || "info", q.outcome) },
-    { key: "ms", label: "took", num: true, render: (q) => h("b", {}, fmt.ms(q.ms)) },
-    { key: "cpu_ms", label: "CPU", num: true, sort: (q) => q.cpu_ms ?? -1, render: (q) => q.cpu_ms != null ? fmt.ms(q.cpu_ms) : h("span", { class: "muted", title: "Not measured: run it with profile on, or turn on CPU time for every query" }, "–") },
-    { key: "steps_n", label: "steps", num: true, render: (q) => fmt.n(q.steps_n || 0) },
-    { key: "rows", label: "rows", num: true, render: (q) => fmt.n(q.rows) },
-    { key: "kind", label: "kind", render: (q) => h("span", { class: "badge mono" }, q.kind) },
-    { key: "sql", label: "SQL", cls: "sql", render: (q) => h("span", { title: q.sql }, q.sql) },
-  ], { sortKey: which === "slow" ? "ms" : "ts_ms", desc: true, max: 400, maxHeight: "340px", onRow: (q) => { location.hash = `#/profile?tab=${which}&id=${q.id}`; }, rowClass: (q) => q.id === sel ? "sel" : "",
-    empty: empty("flame", which === "slow" ? "No slow queries" : "No queries yet", which === "slow" ? "Set a threshold above: every query that takes longer keeps its profile here." : "Run a query and its profile shows here.") });
+/**
+ * This server's runtime settings: the slow-query threshold and CPU time
+ * for every query. They apply to the server this page talks to only, and
+ * a restart goes back to its flags.
+ */
+function settingsTab(body) {
+  const box = h("div", { class: "prof-set" });
+  const host = location.host;
+  const where = isCoord() ? "the coordinator" : "this server";
   body.append(
-    which === "slow" ? card({ title: "What is kept", sub: "set while the server runs; a restart goes back to its flags", body: settings, attrs: { style: { marginBottom: "14px" } } }) : null,
-    h("div", { class: "row", style: { marginBottom: "10px" } }, note),
-    card({ body: tbl, flush: true }),
-    picked);
-  if (which === "slow") drawSettings();
-  async function drawSettings() {
+    card({ title: "This server's runtime settings", sub: `${where} (${host}) only · set while it runs; a restart goes back to its flags`, body: h("div", { class: "stack" }, box,
+      h("div", { class: "small muted" }, "A query slower than the threshold is kept as slow, with its profile. ", h("a", { href: link("queries", { tab: "history", preset: "slow" }) }, "See them in Queries > History, slow ›")),
+      isCoord() ? h("div", { class: "small muted" }, "Each copy keeps its own settings: this sets the coordinator's, which times a query across every shard.") : null) }));
+  async function draw() {
     try {
       const s = await api("/v1/profile/settings");
-      const inp = h("input", { class: "input sm num", type: "number", min: 0, step: "any", value: s.slow_ms ?? "", placeholder: "off" });
-      const save = async (body) => {
-        try { const r = await api("/v1/profile/settings", { method: "PUT", body }); toast(r.slow_ms == null ? "No query is kept as slow" : `Queries over ${fmt.ms(r.slow_ms)} are kept as slow`, "ok"); drawSettings(); load(); }
+      const inp = h("input", { class: "input sm num", type: "number", min: 0, step: "any", value: s.slow_ms ?? "", placeholder: "off", id: "wl-slow-ms", style: { width: "90px" } });
+      const save = async (b) => {
+        let reason = null;
+        if (isProduction()) {
+          const ok = await confirm({ title: `Change ${where}'s runtime settings?`, body: `${b.slow_ms !== undefined ? (b.slow_ms == null ? "No query will be kept as slow." : `Queries over ${fmt.ms(b.slow_ms)} will be kept as slow.`) : b.cpu_all ? "Every query will have its CPU time measured (about 0.3 µs a step)." : "Only profiled queries will have their CPU time measured."} It lasts until the server restarts.`, ok: "Change it", reason: true });
+          if (!ok) return;
+          reason = ok.reason;
+        }
+        try { const r = await api("/v1/profile/settings", { method: "PUT", body: b, reason }); toast(r.slow_ms == null ? "No query is kept as slow" : `Queries over ${fmt.ms(r.slow_ms)} are kept as slow`, "ok"); draw(); }
         catch (e) { toast(e.message, "bad"); }
       };
-      clear(settings,
-        h("label", { class: "row nw small dim", style: { gap: "8px" } }, "Keep queries slower than", inp, "ms"),
-        h("button", { class: "btn sm primary", onclick: () => save({ slow_ms: inp.value === "" ? null : Number(inp.value) }) }, "Set"),
-        h("button", { class: "btn sm", title: "Keep none as slow", onclick: () => save({ slow_ms: null }) }, "Off"),
+      clear(box,
+        h("label", { class: "small dim", for: "wl-slow-ms" }, "Keep queries slower than"),
+        h("span", { class: "row nw small dim", style: { gap: "8px" } }, inp, "ms",
+          h("button", { class: "btn sm primary", onclick: () => save({ slow_ms: inp.value === "" ? null : Number(inp.value) }) }, "Set"),
+          h("button", { class: "btn sm", title: "Keep none as slow", onclick: () => save({ slow_ms: null }) }, "Off")),
         s.started_slow_ms !== s.slow_ms ? h("span", { class: "small muted" }, `started with ${s.started_slow_ms == null ? "none" : fmt.ms(s.started_slow_ms)}`) : null,
         h("span", { class: "sep" }),
         toggle(!!s.cpu_all, (v) => save({ cpu_all: v }), "Measure CPU time for every query (about 0.3 µs a step)"));
-    } catch (e) { clear(settings, failure(e, "The profiling settings")); }
+    } catch (e) { clear(box, failure(e, "This server's runtime settings")); }
   }
-  let all = [];
-  async function load() {
-    try {
-      const j = await api(`/v1/queries/${which}?limit=500`);
-      all = j.queries;
-      tbl.update(all);
-      const ms = all.map((q) => q.ms).sort((a, b) => a - b);
-      clear(note, all.length ? `${fmt.plural(all.length, "query", "queries")} · median ${fmt.ms(ms[Math.floor(ms.length / 2)])} · slowest ${fmt.ms(ms[ms.length - 1])} · ${all.filter((q) => q.cpu_ms != null).length} with CPU time · click one for its profile` : "");
-    } catch (e) { clear(body, failure(e, which === "slow" ? "The slow queries" : "The latest queries")); stopper(); }
-  }
-  async function open(id) {
-    sel = id; tbl.update(all);
-    clear(picked, h("div", { class: "small muted" }, "Reading its profile…"));
-    try {
-      const q = await api("/v1/queries/finished/" + id);
-      clear(picked, h("div", { class: "stack" },
-        h("div", { class: "row" }, pill(OUTCOMES[q.outcome] || "info", q.outcome), h("b", {}, `${fmt.ms(q.ms)} · ${q.kind}`), h("span", { class: "small muted" }, `${fmt.datetime(q.ts_ms)}${q.shard ? " · for a coordinator" : ""}`), h("span", { class: "sep" }),
-          h("a", { class: "btn sm", href: "#/profile?tab=query&sql=" + encodeURIComponent(q.sql), title: "Run it again with its CPU time measured" }, icon("flame"), "Profile it again"),
-          h("a", { class: "btn sm", href: "#/sql?q=" + encodeURIComponent(q.sql) }, icon("sql"), "Open in the workbench")),
-        sqlBlock(q.sql),
-        q.error ? h("div", { class: "error" }, q.error) : null,
-        profileView({ ...q, took_ms: q.ms })));
-    } catch (e) { clear(picked, e.status === 404 ? empty("clock", "That query's profile is gone", "The server keeps the latest 500 queries and the slowest; it ran too long ago.") : h("div", { class: "error" }, e.message)); }
-  }
-  const stopper = every(5000, load);
-  return { stop: stopper, open(params) { const id = Number(params.get("id")); if (id && id !== sel) open(id); } };
+  draw();
+  return { stop: () => {} };
 }

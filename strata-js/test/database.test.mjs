@@ -1,7 +1,7 @@
 // The database in this process: no server.
 
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
@@ -302,4 +302,32 @@ test("await using closes it", async () => {
   await db[Symbol.asyncDispose]();
   assert.ok(db.closed);
   await (await Database.open(path)).close();
+});
+
+test("optimize leaves one segment and a compact file", async () => {
+  // Several bulk segments and two tables merge into one segment each;
+  // deleted rows are dropped and the file shrinks to about its live data.
+  const path = join(tempDir(), "o.strata");
+  const schema = { table: "t", key: "id", fields: [{ name: "id", type: "keyword" }, { name: "body", type: "text" }] };
+  const db = await open(path, { schema });
+  await db.sql("CREATE TABLE u (id KEYWORD PRIMARY KEY, n INT)");
+  for (let b = 0; b < 4; b++) {
+    await db.insert(Array.from({ length: 10_000 }, (_, i) => ({ id: `r${b}-${i}`, body: `batch ${b} row ${i} `.repeat(4) })));
+    await db.insert(Array.from({ length: 10_000 }, (_, i) => ({ id: `u${b}-${i}`, n: i })), { table: "u" });
+  }
+  await db.sql("DELETE FROM t WHERE id LIKE 'r2-%' OR id LIKE 'r3-%'");
+  const before = statSync(path).size;
+  await db.optimize();
+  assert.ok(statSync(path).size < before);
+  assert.equal(await db.vacuum(), 0);
+  assert.equal(await db.count(), 20_000);
+  assert.equal((await db.query("SELECT count(*) FROM u")).scalar(), 40_000);
+  const { stats } = await db.query("SELECT id FROM t WHERE MATCH(body, 'batch') ORDER BY bm25(body, 'batch') DESC LIMIT 1");
+  assert.ok((stats.steps ?? []).every((s) => (s.seg ?? 0) === 0));
+  await db.close();
+  const again = await Database.open(path);
+  assert.equal(await again.count(), 20_000);
+  assert.notEqual(await again.get("r1-9999"), null);
+  assert.equal(await again.get("r3-0"), null);
+  await again.close();
 });

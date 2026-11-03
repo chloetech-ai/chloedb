@@ -3,7 +3,7 @@
 // that zooms, a threshold that can be dragged; a stacked area; a latency
 // heatmap; sparklines; a donut. One y axis each.
 
-import { h, s, clear, fmt, showTip, hideTip, clamp } from "./core.js";
+import { h, s, clear, fmt, showTip, hideTip, tapTip, clamp } from "./core.js";
 
 export const SERIES = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)", "var(--s7)", "var(--s8)"];
 export const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -184,7 +184,7 @@ export function timeChart(opts) {
     svgEl.append(brush, xh, dots, over);
     let b0 = null;
     const tAt = (cx) => t0 + clamp((cx - M.l) / W, 0, 1) * span;
-    over.addEventListener("pointermove", (e) => {
+    const hover = (e) => {
       const r = svgEl.getBoundingClientRect();
       const cx = (e.clientX - r.left) * (width / r.width);
       if (b0 != null) { const a = Math.min(b0, cx), b = Math.max(b0, cx); brush.setAttribute("x", a); brush.setAttribute("width", b - a); brush.style.display = ""; }
@@ -201,9 +201,13 @@ export function timeChart(opts) {
         rows.push(h("div", { class: "r" }, h("span", { class: "k", style: { background: sr.color } }), h("b", {}, raw == null ? "–" : (sr.fmt || yfmt)(raw)), h("span", { class: "n" }, sr.name)));
       });
       if (opts.band) rows.push(h("div", { class: "r" }, h("span", { class: "k box", style: { background: opts.band.color || "var(--s1)", opacity: 0.4 } }), h("b", {}, `${yfmt(opts.band.lo(p))} – ${yfmt(opts.band.hi(p))}`), h("span", { class: "n" }, opts.band.name || "range")));
-      showTip(e.clientX, e.clientY, [h("div", { class: "t" }, fmt.datetime(p.t)), ...rows, ...(opts.tipExtra ? [opts.tipExtra(p)] : [])]);
-    });
-    over.addEventListener("pointerleave", () => { if (b0 == null) { xh.style.display = "none"; dots.replaceChildren(); hideTip(); } });
+      showTip(e.clientX, e.pointerType === "mouse" ? e.clientY : e.clientY - 60, [h("div", { class: "t" }, fmt.datetime(p.t)), ...rows, ...(opts.tipExtra ? [opts.tipExtra(p)] : [])]);
+    };
+    over.addEventListener("pointermove", hover);
+    // On a phone a tap shows the values there (a drag across still zooms).
+    over.style.touchAction = "pan-y";
+    over.addEventListener("pointerdown", (e) => { if (e.pointerType !== "mouse") { hover(e); tapTip(); } });
+    over.addEventListener("pointerleave", (e) => { if (b0 == null && e.pointerType === "mouse") { xh.style.display = "none"; dots.replaceChildren(); hideTip(); } });
     if (opts.onBrush) {
       over.addEventListener("pointerdown", (e) => { const r = svgEl.getBoundingClientRect(); b0 = (e.clientX - r.left) * (width / r.width); over.setPointerCapture(e.pointerId); });
       over.addEventListener("pointerup", (e) => {
@@ -286,7 +290,7 @@ export function heatmap(opts) {
     for (const t of ticks) ax.append(s("text", { class: "axis", x: M.l + (t - t0) / span * W, y: height - 5, "text-anchor": "middle" }, fmt.time(t, span < 600e3)));
     root.geom = { W, H, rh, t0, span, rows };
   }
-  cv.addEventListener("pointermove", (e) => {
+  const hv = (e) => {
     const g = root.geom; if (!g) return;
     const r = cv.getBoundingClientRect();
     const x = e.clientX - r.left, y = e.clientY - r.top;
@@ -298,7 +302,9 @@ export function heatmap(opts) {
     const lo = row === 0 ? 0 : bounds[row - 1] * 1000, hi = bounds[row] != null ? bounds[row] * 1000 : null;
     const total = (p.latency_hist || []).reduce((a, b) => a + b, 0);
     showTip(e.clientX, e.clientY, [h("div", { class: "t" }, fmt.datetime(p.t)), h("div", { class: "r" }, h("b", {}, fmt.n(n) + " queries"), h("span", { class: "n" }, hi == null ? `over ${fmt.ms(lo)}` : `${fmt.ms(lo)} – ${fmt.ms(hi)}`)), h("div", { class: "r" }, h("span", { class: "n", style: { marginLeft: 0 } }, total ? fmt.pct(n / total) + " of the interval's " + fmt.n(total) : ""))]);
-  });
+  };
+  cv.addEventListener("pointermove", hv);
+  cv.addEventListener("pointerdown", (e) => { if (e.pointerType !== "mouse") { hv(e); tapTip(); } });
   cv.addEventListener("pointerleave", hideTip);
   const ro = new ResizeObserver(() => { if (root.isConnected) draw(); });
   ro.observe(root);

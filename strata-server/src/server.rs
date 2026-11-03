@@ -160,6 +160,24 @@ pub struct Options {
     pub log_store_bytes: u64,
     /// Queries a second the log store keeps besides slow and failed ones.
     pub log_queries_per_sec: u64,
+    // ----- core (command center rebuild)
+    /// The cluster's name and environment, as people call them, and where
+    /// its command center is, for links (`--cluster-name`,
+    /// `--environment`, `--public-url`; a coordinator run by the operator
+    /// is named by its StrataCluster without one).
+    pub cluster_name: Option<String>,
+    pub environment: Option<String>,
+    pub public_url: Option<String>,
+    /// The service levels fleet health checks (`None`: 1% of queries
+    /// failing, a p99 of 250 ms).
+    pub slo_error_ratio: Option<f64>,
+    pub slo_p99_ms: Option<f64>,
+    /// Proxies whose `X-Forwarded-For` names the client.
+    pub trust_proxy: Vec<String>,
+    /// `--node-name`, when given (`node_name` is always set).
+    pub node_name_given: Option<String>,
+    /// `--image-repository`.
+    pub image_repository: Option<String>,
 }
 
 /// How writes resolve MEDIA values, from `--media-fetch`,
@@ -297,6 +315,20 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         (Backend::Local(db), schema)
     };
     let mut svc = Service::new(backend, schema, agent, o.max_concurrent.max(1), timeout);
+    let given = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(String::from);
+    svc.identity = crate::service::Identity {
+        name: given(&o.cluster_name).or_else(|| o.kube_cluster.clone().filter(|_| !o.shards.is_empty())),
+        environment: given(&o.environment),
+        public_url: given(&o.public_url).map(|u| u.trim_end_matches('/').to_string()),
+    };
+    let d = crate::service::Slo::default();
+    svc.slo = crate::service::Slo { error_ratio: o.slo_error_ratio.filter(|r| *r > 0.0).unwrap_or(d.error_ratio), p99_ms: o.slo_p99_ms.filter(|r| *r > 0.0).unwrap_or(d.p99_ms) };
+    svc.place = crate::service::Place::from_env(given(&o.node_name_given));
+    if let Some(r) = given(&o.image_repository) {
+        crate::operator::upgrade::Ref::parse(&r).map_err(|e| format!("--image-repository: {e}"))?;
+        svc.image_repository = r;
+    }
+    svc.trusted_proxies = o.trust_proxy.iter().filter(|p| !p.trim().is_empty()).map(|p| crate::http::parse_net(p)).collect::<Result<_, _>>().map_err(|e| format!("--trust-proxy: {e}"))?;
     if let Some(path) = slots_file {
         svc.keep_slots_in(path)?;
         if let Some((m, shard)) = svc.slots() {
@@ -353,6 +385,8 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.audit = Audit::new(o.audit_log.clone())?;
     svc.alerts = Alerts::new(o.alerts.clone(), o.alert_webhook.clone())?;
+    // The cluster's name in alerts and route tests from the start.
+    crate::alerts::identify(&svc);
     (svc.backfill, svc.fetch_models) = (o.backfill, o.fetch_models);
     svc.open_models(&o.models);
     for m in svc.models().iter() {
@@ -441,6 +475,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     spawn_maintenance(&svc);
     spawn_expirer(&svc, Duration::from_secs(5));
     spawn_sampler(&svc);
+    spawn_watch(&svc);
     tokio::spawn(svc.clone().keep_models());
     svc.start_failover();
     // The cluster's keys: a coordinator takes them from its shards before
@@ -476,6 +511,8 @@ fn open_log_store(svc: &mut Service, o: &Options) -> Result<(), String> {
     tracing::info!(path = %store.options().path.display(), node = %store.options().node, retain_s = store.options().retain.as_secs(), max_mib = store.options().max_bytes >> 20, "keeps its logs in a log store");
     let keep = store.clone();
     let _ = svc.query_log.keep.set(Box::new(move |q, slow| keep.keep_query(q, slow)));
+    let ev = store.clone();
+    svc.events.sink(move |r| ev.keep_event(r));
     svc.log_store = Some(store);
     Ok(())
 }
@@ -959,11 +996,8 @@ pub fn spawn_sampler(svc: &Arc<Service>) {
             let Some(svc) = svc.upgrade() else { return };
             let s = svc.sample();
             if let Some(point) = svc.series.add(s) {
-                let changes = svc.alerts.check(&point);
-                if !changes.is_empty() {
-                    let svc = svc.clone();
-                    tokio::spawn(async move { svc.alerts.notify(&changes).await });
-                }
+                // alerts agent: this server's rules, and a coordinator's cluster.
+                crate::alerts::tick(&svc, &point);
             }
             let now = crate::telemetry::now_ms();
             if now / 60_000 != minute {
@@ -976,19 +1010,64 @@ pub fn spawn_sampler(svc: &Arc<Service>) {
     });
 }
 
+/// How often a coordinator looks at its cluster without being asked, so
+/// that events (a copy down, a new primary) and fleet health's "since"
+/// are found when they happen rather than when someone looks.
+pub const WATCH_EVERY: Duration = Duration::from_secs(5);
+
+/// Judges fleet health every [`WATCH_EVERY`], which on a coordinator
+/// surveys the cluster when its snapshot is older than
+/// [`crate::coord::SNAPSHOT_EVERY`] ([`crate::events`]); notes a job of
+/// moves that ended; and keeps each table's size in the log store an
+/// hour apart.
+pub fn spawn_watch(svc: &Arc<Service>) {
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(WATCH_EVERY);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut hour = 0;
+        let mut job: Option<String> = None;
+        loop {
+            tick.tick().await;
+            let Some(svc) = svc.upgrade() else { return };
+            if matches!(svc.backend, Backend::Cluster(_)) {
+                svc.fleet_health().await;
+            }
+            // A job of moves that ended is an event.
+            if let crate::service::Backend::Cluster(c) = &svc.backend {
+                let m = c.moves();
+                let state = m["state"].as_str().map(String::from);
+                if job.as_deref() == Some("running") && state.as_deref() != Some("running") {
+                    let s = state.as_deref().unwrap_or("done");
+                    let title = format!("A job of moves ({}) ended: {s}, {} of {} moves, {} rows", m["job"]["kind"].as_str().unwrap_or("moves"), m["done"], m["of"], m["rows_done"]);
+                    let severity = if s == "failed" { "warning" } else { "info" };
+                    svc.events.add(crate::events::Event { kind: "moves_finished".into(), severity: severity.into(), title, detail: serde_json::json!({"state": s, "error": m["job"]["error"], "rows": m["rows_done"]}), where_: serde_json::Value::Null, who: m["started_by"].as_str().map(String::from) });
+                }
+                job = state;
+            }
+            // Each table's size, an hour apart.
+            let h = crate::telemetry::now_ms() / 3_600_000;
+            if h != hour && svc.log_store.is_some() {
+                hour = h;
+                crate::inspect::keep_sizes(&svc).await;
+            }
+        }
+    });
+}
+
 /// Serves the HTTP API and UI, over TLS with `access.tls`.
 pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access) -> std::io::Result<()> {
     let router = http::router(svc, &access);
     let Some(tls) = &access.tls else {
-        return axum::serve(listener, router).with_graceful_shutdown(shutdown()).await;
+        // Each request knows its peer's address (the audit log's `addr`).
+        return axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(shutdown()).await;
     };
     let config = auth::server_config(tls).map_err(std::io::Error::other)?;
     let acceptor = tokio_rustls::TlsAcceptor::from(config);
-    let service = hyper_util::service::TowerToHyperService::new(router);
     let stop = shutdown();
     tokio::pin!(stop);
     loop {
-        let (tcp, _) = tokio::select! {
+        let (tcp, peer) = tokio::select! {
             r = listener.accept() => match r {
                 Ok(c) => c,
                 // Out of descriptors, say: wait rather than spin.
@@ -1000,7 +1079,8 @@ pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access
             _ = &mut stop => return Ok(()),
         };
         let _ = tcp.set_nodelay(true);
-        let (acceptor, service) = (acceptor.clone(), service.clone());
+        let service = hyper_util::service::TowerToHyperService::new(router.clone().layer(axum::Extension(axum::extract::ConnectInfo(peer))));
+        let acceptor = acceptor.clone();
         tokio::spawn(async move {
             // A client that never finishes its handshake holds a task, not
             // the accept loop.
@@ -1047,6 +1127,8 @@ pub async fn serve_grpc(svc: Arc<Service>, listener: TcpListener, access: Access
                 ms: 0.0,
                 request_id: None,
                 detail: None,
+                kind: crate::keys::REFUSAL.into(),
+                ..Default::default()
             });
             Err(tonic::Status::unauthenticated("missing or wrong token"))
         }

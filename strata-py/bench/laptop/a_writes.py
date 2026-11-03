@@ -42,7 +42,7 @@ from typing import Any
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import files_bytes, summary, timed_once, timed_passes, write_report  # noqa: E402
+from common import files_bytes, memory, summary, timed_once, timed_passes, write_report  # noqa: E402
 
 DIM = 384
 TICK = 0.05
@@ -781,6 +781,7 @@ def main() -> None:
         shutil.rmtree(work)
     rep = run(name, Path(a.shop), work, a.seconds, a.limit_products, [int(x) for x in a.rates.split(",") if x], a.stream_seconds, not a.no_stream)
     rep["params"] = {"seconds": a.seconds, "stream_seconds": a.stream_seconds, "stream": not a.no_stream}
+    rep["memory"] = memory()
     write_report(Path(a.out) / f"writes_{name}.json", rep)
     shutil.rmtree(work, ignore_errors=True)
 

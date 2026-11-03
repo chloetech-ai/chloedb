@@ -377,10 +377,18 @@ export class Database extends Searchable {
     return this.#call("train_codebook", { field, name, table, models: paths(models), levels, k, iterations, sample, seed });
   }
 
-  /** Writes the rows still in memory into segments and merges small
-   * segments (many small writes leave many). */
+  /** Readies a table that is done changing for queries: writes the rows
+   * still in memory into segments, merges its segments into as few as it
+   * can (one, up to 2,000,000 rows; a query visits each), drops deleted
+   * rows, and returns the space this frees to the file system. */
   async optimize() {
     await this.#call("optimize");
+  }
+
+  /** Returns the space merges freed to the file system (they reuse it
+   * otherwise): the number of bytes the file shrank by. */
+  async vacuum() {
+    return this.#call("vacuum");
   }
 
   /** Merges small segments and closes the database. Calls after it fail. */

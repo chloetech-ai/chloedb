@@ -53,6 +53,10 @@ pub const PLURAL: &str = "strataclusters";
 pub struct Spec {
     /// The strata-server image of every server.
     pub image: String,
+    /// What the cluster is to its people (`production`, `staging`): the
+    /// command center shows it on every page (`STRATA_ENVIRONMENT`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
     pub image_pull_policy: Option<String>,
     /// Shards, each holding a part of the slots.
     pub shards: usize,
@@ -301,6 +305,7 @@ impl Default for Spec {
     fn default() -> Spec {
         Spec {
             image: "strata-server:dev".into(),
+            environment: None,
             image_pull_policy: None,
             shards: 1,
             replicas: 3,
@@ -1800,6 +1805,7 @@ pub fn crd() -> Json {
         "properties": {
             "image": {"type": "string", "description": "The strata-server image of every server (default strata-server:dev)."},
             "imagePullPolicy": {"type": "string"},
+            "environment": {"type": "string", "description": "What the cluster is to its people (production, staging): the command center shows it on every page."},
             "shards": int(1, "Shards, each holding a part of the 4,096 slots (default 1)."),
             "replicas": int(1, "Copies of each shard: a primary and its replicas (default 3)."),
             "coordinators": int(1, "Coordinators behind the cluster's Service (default 1)."),

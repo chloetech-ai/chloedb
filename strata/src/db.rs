@@ -1007,8 +1007,8 @@ impl Db {
         if let Some(call) = crate::query::paths::Call::of_sql(sql)? {
             return self.json_paths_at(snap, &call, params, opts).map(|p| p.to_result());
         }
-        let q = qsql::parse_query(sql)?;
-        let plan = plan_of(snap, &q, params)?;
+        let q = qsql::parse_query_cached(sql)?;
+        let plan = plan_of_parsed(snap, &q, params)?;
         self.run_on(snap, &plan, opts)
     }
 
@@ -1095,8 +1095,8 @@ impl Db {
         if let Some(call) = crate::query::paths::Call::of_sql(sql)? {
             return self.json_paths_at(&snap, &call, params, &self.exec).map(|p| Leaf::Rows(p.to_result()));
         }
-        let q = qsql::parse_query(sql)?;
-        let plan = plan_of(&snap, &q, params)?;
+        let q = qsql::parse_query_cached(sql)?;
+        let plan = plan_of_parsed(&snap, &q, params)?;
         self.run_leaf_on(&snap, &plan, &self.exec, Some(0))
     }
 
@@ -2530,6 +2530,12 @@ impl DocumentSource for StoredSource {
 fn plan_of(snap: &Snapshot, q: &sqlparser::ast::Query, params: &Params) -> Result<Plan> {
     let catalog: Vec<&Schema> = snap.schemas().collect();
     compound::plan_read_query(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()))
+}
+
+/// [`plan_of`] of a query [`qsql::parse_query_cached`] parsed.
+fn plan_of_parsed(snap: &Snapshot, q: &qsql::Parsed, params: &Params) -> Result<Plan> {
+    let catalog: Vec<&Schema> = snap.schemas().collect();
+    compound::plan_read_parsed(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()))
 }
 
 /// Opening segments' readers takes microseconds once they are cached; a

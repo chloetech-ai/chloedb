@@ -6,11 +6,24 @@
 // same runs it estimates what a lower hedge would do to the tail. Every
 // time is the query's own steps (`stats.steps`), measured by the
 // coordinator: a `shard` step per call, with the shard's own time inside.
+// A query takes its parameters as JSON (`?sql=&p=` open it with both); the
+// view says how many shard calls the runs make before it runs them, and
+// suggests the statements the cluster serves, leaving out failing ones
+// and the command center's own.
 
-import { h, s, icon, clear, fmt, card, api, toast, empty, bus, seg, store, tipOn } from "../core.js";
-import { state, isCoordinator, refreshCluster } from "../data.js";
+import { h, s, icon, clear, fmt, card, api, toast, empty, bus, seg, store, tipOn, confirm } from "../core.js";
+import { state, isCoordinator, refreshCluster, isProduction } from "../data.js";
+import { statements, split, isOwn, paramsObj, narrow } from "../workload.js";
 
-export default { id: "querypath", title: "Query path", icon: "route", group: "Monitor", keywords: "query path fan out fan-out scatter gather tail latency straggler hedge hedging shards radar slowest shard p99", render };
+export default { id: "querypath", title: "Query path", icon: "route", group: "Diagnose", keywords: "query path fan out fan-out scatter gather tail latency straggler hedge hedging shards radar slowest shard p99 params", render, onParams };
+
+/** Shard calls above which the runs ask first, on production. */
+const ASK_ABOVE = 5000;
+/** The :names a query's SQL takes, outside its strings. */
+export const namesIn = (sql) => [...new Set([...String(sql).replace(/'(?:[^']|'')*'/g, "''").matchAll(/(?<![:\w]):([A-Za-z_]\w*)/g)].map((m) => m[1]))];
+
+let route = null;
+function onParams(r) { route?.(r.params); }
 
 const quant = (xs, q) => { if (!xs.length) return null; const a = xs.slice().sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.floor(q * a.length))]; };
 const median = (xs) => quant(xs, 0.5);
@@ -48,7 +61,7 @@ export function hedged(runs, hedge) {
   });
 }
 
-function render(page) {
+function render(page, r) {
   page.append(h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Query path"), h("p", {}, "A search is as fast as the slowest shard it asks: run one a few times and see which shard it waited for, and what hedging buys."))));
   const form = h("div"), out = h("div");
   page.append(form, out);
@@ -59,21 +72,64 @@ function render(page) {
   }
 
   let runs = [], sel = 0, running = false, stop = false, hedgeWhatIf = null, hedgesBefore = null, hedgesAfter = null;
-  const sql = h("textarea", { class: "input mono", rows: 3, style: { width: "100%" }, spellcheck: "false", "aria-label": "The query to run" });
+  const sql = h("textarea", { class: "input mono", rows: 3, style: { width: "100%" }, spellcheck: "false", "aria-label": "The query to run", oninput: () => drawCalls() });
   sql.value = store.get("qpath.sql", "");
+  const params = h("textarea", { class: "input mono", rows: 2, style: { width: "100%" }, spellcheck: "false", placeholder: '{"t": "waterproof tent"}', "aria-label": "Its parameters, as JSON", oninput: () => drawCalls() });
+  params.value = store.get("qpath.params", "");
+  const paramsBox = h("details", { open: !!params.value }, h("summary", { class: "small dim" }, "Parameters, as JSON (for :names in the SQL)"), params);
   const count = store.get("qpath.n", 20);
   let n = count;
-  const nSeg = seg([[10, "10 runs"], [20, "20"], [50, "50"], [100, "100"]], n, (v) => { n = v; store.set("qpath.n", v); });
+  const nSeg = seg([[10, "10 runs"], [20, "20"], [50, "50"], [100, "100"]], n, (v) => { n = v; store.set("qpath.n", v); drawCalls(); });
   const go = h("button", { class: "btn primary" }, icon("play"), "Run it");
-  const recent = h("div", { class: "row", style: { gap: "6px" } });
+  const recent = h("div", { class: "row", style: { gap: "6px", flexWrap: "wrap" } });
   const status = h("span", { class: "small muted" });
+  const callsLine = h("div", { class: "small muted" });
+  const shardCount = () => state.cluster?.shards?.length || 0;
+  /** Before it runs: how many shard calls the runs make, and what the SQL still needs. */
+  function drawCalls() {
+    const k = shardCount();
+    const given = paramsObj(params.value.trim() || "{}") || {};
+    const missing = namesIn(sql.value).filter((x) => given[x] == null || given[x] === "");
+    if (missing.length) paramsBox.open = true;
+    clear(callsLine,
+      k ? h("span", {}, `${fmt.n(n)} runs × ${fmt.n(k)} shards = `, h("b", {}, `${fmt.n(n * k)} shard calls`), `, one run after the other${n * k > ASK_ABOVE && isProduction() ? ". On production it asks first." : "."}`) : null,
+      missing.length ? h("span", {}, ` It needs a value for ${missing.map((x) => ":" + x).join(", ")}.`) : null);
+  }
+  /** Put a query (and its parameters) in the form. */
+  function setQuery(text, p) {
+    sql.value = text;
+    params.value = p == null ? "" : typeof p === "string" ? p : JSON.stringify(p);
+    if (!params.value) { const need = namesIn(text); if (need.length) params.value = JSON.stringify(Object.fromEntries(need.map((x) => [x, ""]))); }
+    paramsBox.open = !!params.value;
+    drawCalls();
+  }
 
   async function suggest() {
-    const picks = [];
+    const picks = []; // {sql, params, why}
+    const has = (t) => picks.some((x) => x.sql === t);
+    // The statements the cluster serves over the range, the most time first,
+    // leaving out failing ones and the command center's own.
     try {
-      const r = await api("/v1/queries/recent");
-      for (const q of r.queries || r || []) { const t = (q.sql || "").trim(); if (t && /^select/i.test(t) && !picks.includes(t)) picks.push(t); if (picks.length >= 4) break; }
-    } catch { /* no admin key: the table's own query */ }
+      const st = await statements();
+      for (const x of st.statements.slice().sort((a, b) => (b.share || 0) - (a.share || 0))) {
+        const text = String(x.example || x.sample?.sql || (/\?/.test(x.sql || "") ? "" : x.sql) || "").trim();
+        if (!text || !/^select/i.test(text) || isOwn(x) || x.kind === "invalid" || has(text)) continue;
+        const sp = split(x.outcomes, x.calls);
+        if ((sp.server + sp.client) / Math.max(1, sp.calls) > 0.05) continue;
+        picks.push({ sql: text, params: paramsObj(x.sample?.params ?? x.params), why: `${x.kind ? x.kind + " · " : ""}${fmt.pct(x.share || 0, 0)} of the query time` });
+        if (picks.length >= 4) break;
+      }
+    } catch { /* an older server or no admin key: the latest queries */ }
+    if (picks.length < 2) {
+      try {
+        const r = await api("/v1/queries/recent");
+        for (const q of r.queries || r || []) {
+          const t = (q.sql || "").trim();
+          if (t && /^select/i.test(t) && q.outcome === "ok" && !isOwn(q) && !/\bFROM\s+(queries|logs)\b/i.test(t) && !has(t)) picks.push({ sql: t, params: paramsObj(q.params), why: "ran lately" });
+          if (picks.length >= 4) break;
+        }
+      } catch { /* no admin key: the table's own query */ }
+    }
     if (picks.length < 2) {
       // A search of the first table's first indexed text, for two words of its first row.
       try {
@@ -90,26 +146,38 @@ function render(page) {
               if (v?.length) words = v.slice(0, 2).join(" ");
             } catch { /* the plain word then */ }
           }
-          picks.push(`SELECT ${t.primary_key || "*"} FROM ${t.table} ORDER BY bm25(${searched.name}, '${words.replace(/'/g, "''")}') DESC LIMIT 10`);
-        } else if (t) picks.push(`SELECT * FROM ${t.table} LIMIT 10`);
+          picks.push({ sql: `SELECT ${t.primary_key || "*"} FROM ${t.table} ORDER BY bm25(${searched.name}, '${words.replace(/'/g, "''")}') DESC LIMIT 10`, params: null, why: "a search of " + t.table });
+        } else if (t) picks.push({ sql: `SELECT * FROM ${t.table} LIMIT 10`, params: null, why: t.table });
       } catch { /* nothing to offer */ }
     }
-    if (!sql.value && picks[0]) sql.value = picks[0];
-    clear(recent, picks.length ? h("span", { class: "small muted" }, "Try:") : null, picks.map((p) => h("button", { class: "chip", title: p, onclick: () => { sql.value = p; } }, p.length > 60 ? p.slice(0, 57) + "…" : p)));
+    if (!sql.value && picks[0]) setQuery(picks[0].sql, picks[0].params);
+    const cut = narrow() ? 38 : 60;
+    clear(recent, picks.length ? h("span", { class: "small muted" }, "Try:") : null, picks.map((p) => h("button", { class: "chip", title: `${p.sql}${p.params ? "\n" + JSON.stringify(p.params) : ""}\n${p.why}`, onclick: () => setQuery(p.sql, p.params) }, p.sql.length > cut ? p.sql.slice(0, cut - 3) + "…" : p.sql)));
   }
 
   go.onclick = async () => {
     if (running) { stop = true; return; }
     const text = sql.value.trim();
     if (!text) { sql.focus(); return; }
+    let p = {};
+    if (params.value.trim()) { p = paramsObj(params.value.trim()); if (!p || typeof p !== "object") { toast("The parameters are not a JSON object", "bad"); paramsBox.open = true; params.focus(); return; } }
+    const missing = namesIn(text).filter((x) => p[x] == null || p[x] === "");
+    if (missing.length) { toast(`Give a value for ${missing.map((x) => ":" + x).join(", ")} in the parameters`, "bad"); paramsBox.open = true; params.focus(); return; }
+    const total = n * shardCount();
+    if (total > ASK_ABOVE && isProduction()) {
+      const ok = await confirm({ title: `Make ${fmt.n(total)} shard calls?`, ok: "Run it", reason: "Why: kept in the audit log with the queries",
+        body: `${fmt.n(n)} runs × ${fmt.n(shardCount())} shards. They run one after the other, each a normal query that takes a slot on the coordinator and on every shard. This is production.` });
+      if (!ok) return;
+    }
     store.set("qpath.sql", text);
+    store.set("qpath.params", params.value.trim());
     running = true; stop = false; runs = []; sel = 0; hedgeWhatIf = null;
     clear(go, icon("stop"), "Stop");
     hedgesBefore = state.cluster?.hedges ?? null;
     try {
       for (let k = 0; k < n && !stop; k++) {
         const t0 = performance.now();
-        const j = await api("/v1/query", { body: { sql: text } });
+        const j = await api("/v1/query", { body: Object.keys(p).length ? { sql: text, params: p } : { sql: text } });
         runs.push(parseRun(j, performance.now() - t0));
         sel = runs.length - 1;
         status.textContent = `run ${runs.length} of ${n}`;
@@ -127,8 +195,17 @@ function render(page) {
   };
 
   clear(form, card({ title: "The query", sub: "it runs one after the other, so each run sees the cluster alone", attrs: { style: { marginBottom: "14px" } },
-    body: h("div", { class: "stack" }, sql, recent, h("div", { class: "row", style: { gap: "10px" } }, nSeg, go, status)) }));
+    body: h("div", { class: "stack" }, sql, paramsBox, recent, callsLine, h("div", { class: "row", style: { gap: "10px", flexWrap: "wrap" } }, nSeg, go, status)) }));
+  // ?sql= and ?p= put a query in the form, from a statement or the workbench.
+  function open(ps) {
+    const q = ps?.get("sql");
+    if (q) setQuery(q, ps.get("p"));
+  }
+  open(r?.params);
+  drawCalls();
   suggest();
+  route = open;
+  const offCluster = bus.on("cluster", () => { if (callsLine.isConnected) drawCalls(); });
 
   // ---------------------------------------------------------------- drawing
   function radar(run, shards) {
@@ -146,11 +223,12 @@ function render(page) {
       const x = cx + Math.cos(a) * len, y = cy + Math.sin(a) * len;
       const isLast = c === last;
       const g = s("g", { tabindex: 0 });
-      g.append(s("line", { x1: cx, y1: cy, x2: cx + Math.cos(a) * R, y2: cy + Math.sin(a) * R, stroke: "var(--line)", "stroke-width": 1 }),
-        s("line", { x1: cx, y1: cy, x2: x, y2: y, stroke: isLast ? "var(--s2)" : "var(--s1)", "stroke-width": isLast ? 3.5 : 2.5, "stroke-linecap": "round" }),
+      const thin = shards > 32 && !isLast;
+      g.append(s("line", { x1: cx, y1: cy, x2: cx + Math.cos(a) * R, y2: cy + Math.sin(a) * R, stroke: "var(--line)", "stroke-width": thin ? 0.5 : 1 }),
+        s("line", { x1: cx, y1: cy, x2: x, y2: y, stroke: isLast ? "var(--s2)" : "var(--s1)", "stroke-width": isLast ? 3.5 : thin ? 1 : 2.5, "stroke-linecap": "round" }),
         own != null ? s("line", { x1: cx + Math.cos(a) * (len - own) / 2, y1: cy + Math.sin(a) * (len - own) / 2, x2: cx + Math.cos(a) * (len + own) / 2, y2: cy + Math.sin(a) * (len + own) / 2, stroke: isLast ? "var(--s4)" : "var(--s3)", "stroke-width": 6, "stroke-linecap": "round", opacity: 0.85 }) : null,
-        s("circle", { cx: x, cy: y, r: isLast ? 6 : 4.5, fill: isLast ? "var(--s2)" : "var(--s1)" }),
-        s("text", { x: cx + Math.cos(a) * (R + 14), y: cy + Math.sin(a) * (R + 14) + 4, "text-anchor": "middle", style: { fontSize: "10.5px", fill: isLast ? "var(--text)" : "var(--muted)", fontWeight: isLast ? 700 : 400 } }, String(c.shard)));
+        s("circle", { cx: x, cy: y, r: isLast ? 6 : thin ? 1.8 : 4.5, fill: isLast ? "var(--s2)" : "var(--s1)" }),
+        shards <= 32 || isLast ? s("text", { x: cx + Math.cos(a) * (R + 14), y: cy + Math.sin(a) * (R + 14) + 4, "text-anchor": "middle", style: { fontSize: "10.5px", fill: isLast ? "var(--text)" : "var(--muted)", fontWeight: isLast ? 700 : 400 } }, String(c.shard)) : null);
       tipOn(g, () => h("div", {}, h("b", {}, `Shard ${c.shard}${isLast ? ", the last to answer" : ""}`), h("div", { class: "small" }, `the call ${fmt.ms(c.call_us / 1e3)}${c.own_us != null ? `, of which on the shard ${fmt.ms(c.own_us / 1e3)}` : ""}${c.rounds > 1 ? ` in ${c.rounds} rounds` : ""}`), c.replica ? h("div", { class: "small mono" }, c.replica) : null));
       svg.append(g);
     });
@@ -161,11 +239,17 @@ function render(page) {
   }
 
   function spread(shards) {
-    const ids = [...new Set(runs.flatMap((r) => r.calls.map((c) => c.shard)))].sort((a, b) => a - b);
+    let ids = [...new Set(runs.flatMap((r) => r.calls.map((c) => c.shard)))].sort((a, b) => a - b);
+    // On a big fleet, the 24 shards with the slowest p99 over the runs.
+    const KEEP = 24, of = ids.length;
+    if (of > KEEP) {
+      const p99s = new Map(ids.map((id) => [id, quant(runs.map((r) => r.calls.find((c) => c.shard === id)?.call_us).filter((v) => v != null), 0.99) || 0]));
+      ids = ids.slice().sort((a, b) => p99s.get(b) - p99s.get(a)).slice(0, KEEP).sort((a, b) => a - b);
+    }
     const all = runs.flatMap((r) => r.calls.map((c) => c.call_us / 1e3));
     const hi = Math.max(1, ...all) * 1.05;
     const hedge = state.cluster?.hedge_ms;
-    const W = 640, row = 18, padL = 54, H = ids.length * row + 26;
+    const W = narrow() ? 380 : 640, row = 18, padL = 54, H = ids.length * row + 26;
     const X = (v) => padL + (v / hi) * (W - padL - 34);
     const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", role: "img", "aria-label": "Each shard's call times over the runs" });
     for (const t of [0.25, 0.5, 0.75, 1]) { const x = X(hi * t); svg.append(s("line", { x1: x, y1: 0, x2: x, y2: H - 18, stroke: "var(--grid)" }), s("text", { x, y: H - 4, "text-anchor": "middle", style: { fontSize: "10px", fill: "var(--muted)" } }, fmt.ms(hi * t))); }
@@ -185,7 +269,7 @@ function render(page) {
         svg.append(s("circle", { cx: X(c.call_us / 1e3), cy: y, r: ri === sel ? 4.5 : 3, fill: lastOfRun ? "var(--s2)" : "var(--s1)", opacity: ri === sel ? 1 : 0.55, stroke: ri === sel ? "var(--text)" : "none" }));
       }
     });
-    return h("div", {}, svg, h("div", { class: "row small muted", style: { gap: "14px" } },
+    return h("div", {}, of > KEEP ? h("div", { class: "small muted", style: { marginBottom: "6px" } }, `The ${KEEP} shards with the slowest p99 over these runs, of ${fmt.n(of)}.`) : null, svg, h("div", { class: "row small muted", style: { gap: "14px", flexWrap: "wrap" } },
       h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { style: { width: "8px", height: "8px", borderRadius: "50%", background: "var(--s2)" } }), "the run's last shard"),
       h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { style: { width: "2px", height: "12px", background: "var(--text-2)" } }), "median"),
       h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { style: { width: "2px", height: "12px", background: "var(--s2)" } }), "p99"),
@@ -202,7 +286,7 @@ function render(page) {
     const ranked = [...lastCount.entries()].sort((a, b) => b[1] - a[1]);
     const calls = runs.flatMap((r) => r.calls.map((c) => c.call_us / 1e3));
     const shardMed = median(calls), shardP99 = quant(calls, 0.99);
-    const waitLast = runs.map((r) => { const ts = r.calls.map((c) => c.call_us / 1e3).sort((a, b) => a - b); return ts.length > 1 ? ts[ts.length - 1] - ts[Math.floor(ts.length / 2)] : 0; });
+    const waitLast = runs.map((r) => { const ts = r.calls.map((c) => c.call_us / 1e3).sort((a, b) => a - b); return ts.length > 1 ? ts[ts.length - 1] - ts[Math.floor((ts.length - 1) / 2)] : 0; });
     const hedge = state.cluster?.hedge_ms;
 
     // The runs as a strip: click one to see it on the radar.
@@ -219,12 +303,13 @@ function render(page) {
       // The delays worth trying: below the slowest call, and the one now.
       const top = Math.max(...calls);
       const opts = [hedge, ...[100, 50, 20, 10, 5, 2, 1].filter((v) => v < top && v !== hedge)].filter((v) => v != null).slice(0, 6);
-      if (hedgeWhatIf == null || !opts.includes(hedgeWhatIf)) hedgeWhatIf = opts.filter((v) => v < shardP99).sort((a, b) => b - a)[0] ?? opts[0];
+      // To start: the lowest delay above one shard's p99, so about one call in a hundred is asked twice.
+      if (hedgeWhatIf == null || !opts.includes(hedgeWhatIf)) hedgeWhatIf = opts.filter((v) => v >= shardP99).sort((a, b) => a - b)[0] ?? opts[0];
       const est = hedged(runs, hedgeWhatIf);
       const asked = runs.reduce((a, r) => a + r.calls.filter((c) => c.call_us / 1e3 > hedgeWhatIf).length, 0);
       whatIf = card({ title: "What a lower hedge would do", sub: "an estimate from these runs: a call slower than the hedge is asked again of a copy that answers in that shard's median time",
         body: h("div", { class: "stack" },
-          h("div", { class: "row", style: { gap: "10px" } }, h("span", { class: "small muted" }, "Ask another copy after"), seg(opts.map((v) => [v, v === hedge ? `${fmt.ms(v)} (now)` : fmt.ms(v)]), hedgeWhatIf, (v) => { hedgeWhatIf = v; draw(); })),
+          h("div", { class: "row", style: { gap: "10px", flexWrap: "wrap" } }, h("span", { class: "small muted" }, "Ask another copy after"), seg(opts.map((v) => [v, v === hedge ? `${fmt.ms(v)} (now)` : fmt.ms(v)]), hedgeWhatIf, (v) => { hedgeWhatIf = v; draw(); }, { class: "seg wl-segwrap" })),
           h("div", { class: "grid g3" },
             h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "p99 now"), h("div", { class: "val" }, fmt.ms(quant(took, 0.99)))),
             h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, `p99 hedged after ${fmt.ms(hedgeWhatIf)}`), h("div", { class: "val" }, fmt.ms(quant(est, 0.99)))),
@@ -233,7 +318,7 @@ function render(page) {
     }
 
     clear(out,
-      h("div", { class: "grid g4", style: { marginBottom: "14px" } },
+      h("div", { class: "grid g4 wl-kpis", style: { marginBottom: "14px" } },
         card({ body: h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "The query, p50 / p99"), h("div", { class: "val" }, `${fmt.ms(median(took))}`, h("small", {}, ` / ${fmt.ms(quant(took, 0.99))}`)), h("div", { class: "delta" }, `over ${fmt.plural(runs.length, "run")}`)) }),
         card({ body: h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "One shard, p50 / p99"), h("div", { class: "val" }, fmt.ms(shardMed), h("small", {}, ` / ${fmt.ms(shardP99)}`)), h("div", { class: "delta" }, `${fmt.plural(shards, "shard")} asked each time`)) }),
         card({ body: h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "Waiting for the last"), h("div", { class: "val" }, fmt.ms(median(waitLast))), h("div", { class: "delta" }, "after the median shard answered")) }),
@@ -246,5 +331,5 @@ function render(page) {
           whatIf)));
   }
 
-  return () => { stop = true; };
+  return () => { stop = true; route = null; offCluster?.(); };
 }

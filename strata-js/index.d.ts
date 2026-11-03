@@ -82,8 +82,13 @@ export declare class Database extends Searchable {
   sidNext(prefixes: Iterable<string>, options: { field: string; where?: string; params?: Params; table?: string }): Promise<Record<string, Record<string, number>>>;
   trainCodebook(field: string, name: string, options?: { table?: string; models?: Path; levels?: number; k?: number; iterations?: number; sample?: number; seed?: number }): Promise<string>;
 
-  /** Writes the rows in memory into segments and merges small segments. */
+  /** Writes the rows in memory into segments, merges them into as few as
+   * it can, drops deleted rows and returns the freed space to the file
+   * system. */
   optimize(): Promise<void>;
+  /** Returns the space merges freed to the file system: the bytes the file
+   * shrank by. */
+  vacuum(): Promise<number>;
   /** Merges small segments and closes the database. */
   close(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;

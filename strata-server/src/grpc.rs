@@ -281,7 +281,9 @@ fn audit(svc: &Service, who: &Principal, method: &str, status: u16, t0: Instant,
         status,
         ms: t0.elapsed().as_secs_f64() * 1e3,
         request_id: obs::current().map(|id| id.to_string()),
+        kind: (if status == 401 || status == 403 { keys::REFUSAL } else { keys::CHANGE }).into(),
         detail,
+        ..Default::default()
     });
 }
 
@@ -302,7 +304,15 @@ impl Grpc {
             obs::scope(Some(id.clone()), async { audit(&self.0, &who, method, e.status, t0, None) }).await;
             return Err(Status::from(e));
         }
+        // Who the call's queries are from ([`crate::telemetry::Caller`]).
+        let caller = {
+            let md = |k: &str| req.metadata().get(k).and_then(|v| v.to_str().ok()).map(String::from);
+            let app = md("x-strata-app").or_else(|| md("user-agent").as_deref().and_then(keys::product));
+            let r = keys::Caller { addr: req.remote_addr().map(|a| a.ip().to_string()), client: md("x-strata-client"), app, reason: None };
+            crate::telemetry::Caller::of(&who, Some(&r))
+        };
         let call = keys::noting(crate::service::ROUTED.scope(std::cell::Cell::new(0), f(self.0.clone(), who.clone(), req.into_inner())));
+        let call = crate::telemetry::calling(Arc::new(caller), call);
         let (r, note) = crate::telemetry::traced(crate::telemetry::Trace::new(), obs::scope(Some(id.clone()), call)).instrument(span.clone()).await;
         let status = r.as_ref().map_or_else(|e| e.status, |_| 200);
         obs::scope(Some(id.clone()), async { audit(&self.0, &who, method, status, t0, note) }).await;
@@ -649,7 +659,12 @@ impl pb::strata_server::Strata for Grpc {
             let body: serde_json::Value = if r.body_json.is_empty() { serde_json::Value::Null } else { serde_json::from_slice(&r.body_json).map_err(|e| ApiError::bad(format!("bad profile body: {e}")))? };
             let asked = crate::profiling::Asked { kind: crate::profiling::Kind::of(&r.kind)?, body, folded: r.folded, in_use: r.in_use };
             // Audited as an admin's request over HTTP is.
-            keys::note(format!("a {} profile", asked.kind.name()));
+            keys::note(match asked.kind {
+                crate::profiling::Kind::LogFilter => format!("log filter {} from a coordinator, by {}", asked.body["filter"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
+                crate::profiling::Kind::Verify => format!("verify the replicas from a coordinator, by {}", asked.body["by"].as_str().unwrap_or("?")),
+                crate::profiling::Kind::Checkpoint => format!("checkpoint {} from a coordinator, by {}", asked.body["name"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
+                k => format!("a {} profile", k.name()),
+            });
             Ok(pb::ProfileResponse { body: crate::profiling::take(&svc, asked).await?.bytes() })
         })
         .await
