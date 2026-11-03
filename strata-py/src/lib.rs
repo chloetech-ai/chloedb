@@ -989,11 +989,23 @@ impl Database {
         py.detach(|| db.train_codebook(&table, field, name, &models, &opts)).map_err(err)
     }
 
-    /// Writes the memtable's rows into segments and merges small segments,
-    /// as a server does in the background.
+    /// Writes the memtable's rows into segments, merges them into as few
+    /// as it can ([`MergePolicy::compact`]) and vacuums the file.
     fn optimize(&self, py: Python<'_>) -> PyResult<()> {
         let db = self.get()?;
-        py.detach(|| db.storage().flush().and_then(|()| db.storage().merge(&MergePolicy::default())).map(|_| ())).map_err(err)
+        py.detach(|| {
+            db.storage().flush()?;
+            db.storage().merge(&MergePolicy::compact())?;
+            db.storage().vacuum().map(drop)
+        })
+        .map_err(err)
+    }
+
+    /// Returns the space merges freed to the file system; the bytes the
+    /// file shrank by.
+    fn vacuum(&self, py: Python<'_>) -> PyResult<u64> {
+        let db = self.get()?;
+        py.detach(|| db.storage().vacuum()).map_err(err)
     }
 
     /// Merges small segments and closes the database (also when the last

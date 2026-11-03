@@ -62,6 +62,27 @@ impl FreeList {
         start
     }
 
+    /// First-fit allocation: the lowest free run that holds `pages`, else
+    /// the end of the file.
+    pub fn alloc_low(&mut self, pages: u64) -> u64 {
+        debug_assert!(pages > 0);
+        if let Some((&start, &len)) = self.runs.iter().find(|&(_, &l)| l >= pages) {
+            self.take(start, len, pages);
+            return start;
+        }
+        let start = self.page_count;
+        self.page_count += pages;
+        start
+    }
+
+    /// Allocates at the end of the file, past every free run: to move an
+    /// extent out of the way of the runs below it.
+    pub fn alloc_end(&mut self, pages: u64) -> u64 {
+        let start = self.page_count;
+        self.page_count += pages;
+        start
+    }
+
     /// Best-fit allocation restricted to pages below `limit` (to move an
     /// extent towards the start of the file); `None` if nothing fits.
     pub fn alloc_below(&mut self, pages: u64, limit: u64) -> Option<u64> {
