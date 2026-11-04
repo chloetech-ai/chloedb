@@ -1,0 +1,4 @@
+strata-new-b-d-a1 m-4vcpu-32gb strata-new-b-d-a1-3el0a0 strata-new-b-d-a1-3el0a1
+strata-new-b-c-a1 c-8 strata-new-b-c-a1-3el06f
+strata-new-b-d-a1 m-4vcpu-32gb strata-new-b-d-a1-3el00d (replaces strata-new-b-d-a1-3el0a0)
+strata-new-b-d-a1 m-4vcpu-32gb strata-new-b-d-a1-3el1mc (replaces strata-new-b-d-a1-3el0a1)

@@ -1,0 +1,19 @@
+1	ok	1793762797	1793763010	build
+2	ok	1793763010	1793763015	IMAGE=ghcr.io/chloetech-ai/strata-server:055f6bf72d82812b98b30df5088dfd7295fecc0e up strata
+3	ok	1793763015	1793763131	run strata --label strata-a --kinds bm25,bm25 + filter,phrase,prefix
+4	ok	1793763131	1793763133	down strata
+5	ok	1793763133	1793763145	IMAGE=ghcr.io/chloetech-ai/strata-server:bf640522bf3207225b134297ebc82b50267eafa2 up strata
+6	ok	1793763145	1793763263	run strata --label strata-b --kinds bm25,bm25 + filter,phrase,prefix
+7	ok	1793763263	1793763267	down strata
+8	ok	1793763267	1793763277	IMAGE=ghcr.io/chloetech-ai/strata-server:bf640522bf3207225b134297ebc82b50267eafa2 up strata
+9	ok	1793763277	1793763401	run strata --label strata-b-pass2 --kinds bm25,bm25 + filter,phrase,prefix
+10	ok	1793763401	1793763403	down strata
+11	ok	1793763403	1793763407	IMAGE=ghcr.io/chloetech-ai/strata-server:055f6bf72d82812b98b30df5088dfd7295fecc0e up strata
+12	ok	1793763407	1793763525	run strata --label strata-a-pass2 --kinds bm25,bm25 + filter,phrase,prefix
+13	ok	1793763525	1793763526	down strata
+14	ok	1793763526	1793763531	IMAGE=ghcr.io/chloetech-ai/strata-server:055f6bf72d82812b98b30df5088dfd7295fecc0e up strata
+15	ok	1793763531	1793763647	run strata --label strata-a-pass3 --kinds bm25,bm25 + filter,phrase,prefix
+16	ok	1793763647	1793763650	down strata
+17	ok	1793763650	1793763654	IMAGE=ghcr.io/chloetech-ai/strata-server:bf640522bf3207225b134297ebc82b50267eafa2 up strata
+18	ok	1793763654	1793763777	run strata --label strata-b-pass3 --kinds bm25,bm25 + filter,phrase,prefix
+19	ok	1793763777	1793763780	down strata
