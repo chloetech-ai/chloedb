@@ -1,0 +1,4 @@
+NAME              READY   STATUS    RESTARTS   AGE   IP             NODE               NOMINATED NODE   READINESS GATES
+load-solr-xtr4p   0/1     Error     0          50m   10.150.2.86    solr-c-a1-3ea0ia   <none>           <none>
+solr-0            1/1     Running   0          51m   10.150.0.140   solr-d-a1-3ea0ig   <none>           <none>
+solr-1            1/1     Running   0          51m   10.150.3.186   solr-d-a1-3ea0iw   <none>           <none>

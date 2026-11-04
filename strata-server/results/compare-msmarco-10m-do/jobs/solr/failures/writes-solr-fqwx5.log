@@ -1,0 +1,31 @@
+error: config: 500 Internal Server Error: {
+  "responseHeader":{
+    "status":500,
+    "QTime":30008
+  },
+  "errorMessages":["1 out of 3 the property overlay to be of version 1 within 30 seconds! Failed cores: [http://10.150.17.4:8983/solr/quora_shard2_replica_n1/]\n"],
+  "WARNING":"This response format is experimental.  It is likely to change in the future.",
+  "error":{
+    "metadata":{
+      "error-class":"org.apache.solr.common.SolrException",
+      "root-error-class":"org.apache.solr.common.SolrException"
+    },
+    "errorClass":"org.apache.solr.common.SolrException",
+    "msg":"1 out of 3 the property overlay to be of version 1 within 30 seconds! Failed cores: [http://10.150.17.4:8983/solr/quora_shard2_replica_n1/]",
+    "trace":{
+      "stackTrace":[
+        "org.apache.solr.handler.SolrConfigHandler.waitForAllReplicasState(SolrConfigHandler.java:919)",
+        "org.apache.solr.handler.SolrConfigHandler$Command.handleCommands(SolrConfigHandler.java:615)",
+        "org.apache.solr.handler.SolrConfigHandler$Command.handlePOST(SolrConfigHandler.java:431)",
+        "org.apache.solr.handler.SolrConfigHandler.handleRequestBody(SolrConfigHandler.java:151)",
+        "org.apache.solr.handler.RequestHandlerBase.handleRequest(RequestHandlerBase.java:251)",
+        "org.apache.solr.core.SolrCore.execute(SolrCore.java:2893)",
+        "org.apache.solr.servlet.HttpSolrCall.executeCoreRequest(HttpSolrCall.java:726)",
+        "org.apache.solr.servlet.HttpSolrCall.call(HttpSolrCall.java:518)",
+        "org.apache.solr.servlet.SolrServlet.dispatch(SolrServlet.java:114)",
+        "org.apache.solr.servlet.SolrServlet.service(SolrServlet.java:90)",
+        "jakarta.servlet.http.HttpServlet.service(HttpServlet.java:723)",
+        "org.eclipse.jetty.ee10.servlet.ServletHolder$NotAsync.service(ServletHolder.java:1396)",
+        "org.eclipse.jetty.ee10.servlet.ServletHolder.handle(ServletHolder.java:753)",
+        "org.eclipse.jetty.ee10.servlet.ServletHandler$ChainEnd.doFilter(ServletHandler.java:1624)",
+        "org.apache.

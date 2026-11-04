@@ -1,0 +1,6 @@
+job.batch/build-s0 created
+read tcp 127.0.0.1:42000->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:42000->127.0.0.1:36447: read: connection reset by peer
+read tcp 127.0.0.1:56602->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:56602->127.0.0.1:36447: read: connection reset by peer
+{"build_s":3841.5321577289997,"docs":5001544,"ended_unix":1793702760.7672846,"engine":"strata","file_bytes":24470888448,"load_s":2074.827196538,"merge_s":1766.704961191,"of":2,"read_s":0.0,"segment_docs":500000,"segments":3,"segments_loaded":11,"shard":0,"started_unix":1793698919.2173457,"threads":4,"total_s":3841.549936701}

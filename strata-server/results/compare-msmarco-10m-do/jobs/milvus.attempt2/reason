@@ -1,0 +1,1 @@
+load milvus: exit 1; milvus-0 OOMKilled with a 52Gi limit after all 10M documents were sent, while building its index (failures/describe.txt); not retried, a second run would hit the same limit

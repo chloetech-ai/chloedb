@@ -1,0 +1,468 @@
+service/postgres created
+pod/postgres-0 created
+pod/postgres-0 condition met
+job.batch/load-postgres created
+postgres: index created in 0.0 s
+postgres: 25000 documents sent, 3 s
+postgres: 50000 documents sent, 7 s
+postgres: 75000 documents sent, 10 s
+postgres: 100000 documents sent, 13 s
+postgres: 125000 documents sent, 17 s
+postgres: 150000 documents sent, 21 s
+postgres: 175000 documents sent, 25 s
+postgres: 200000 documents sent, 29 s
+postgres: 225000 documents sent, 31 s
+postgres: 250000 documents sent, 34 s
+postgres: 275000 documents sent, 37 s
+postgres: 300000 documents sent, 41 s
+postgres: 325000 documents sent, 44 s
+postgres: 350000 documents sent, 47 s
+postgres: 375000 documents sent, 51 s
+postgres: 400000 documents sent, 54 s
+postgres: 425000 documents sent, 57 s
+postgres: 450000 documents sent, 61 s
+postgres: 475000 documents sent, 64 s
+postgres: 500000 documents sent, 68 s
+postgres: 525000 documents sent, 72 s
+postgres: 550000 documents sent, 75 s
+postgres: 575000 documents sent, 79 s
+postgres: 600000 documents sent, 82 s
+postgres: 625000 documents sent, 86 s
+postgres: 650000 documents sent, 89 s
+postgres: 675000 documents sent, 93 s
+postgres: 700000 documents sent, 96 s
+postgres: 725000 documents sent, 100 s
+postgres: 750000 documents sent, 104 s
+postgres: 775000 documents sent, 107 s
+postgres: 800000 documents sent, 110 s
+postgres: 825000 documents sent, 113 s
+postgres: 850000 documents sent, 117 s
+postgres: 875000 documents sent, 121 s
+postgres: 900000 documents sent, 124 s
+postgres: 925000 documents sent, 127 s
+postgres: 950000 documents sent, 130 s
+postgres: 975000 documents sent, 133 s
+postgres: 1000000 documents sent, 137 s
+postgres: 1025000 documents sent, 140 s
+postgres: 1050000 documents sent, 143 s
+postgres: 1075000 documents sent, 147 s
+postgres: 1100000 documents sent, 149 s
+postgres: 1125000 documents sent, 152 s
+postgres: 1150000 documents sent, 155 s
+postgres: 1175000 documents sent, 158 s
+postgres: 1200000 documents sent, 162 s
+postgres: 1225000 documents sent, 165 s
+postgres: 1250000 documents sent, 168 s
+postgres: 1275000 documents sent, 171 s
+postgres: 1300000 documents sent, 174 s
+postgres: 1325000 documents sent, 177 s
+postgres: 1350000 documents sent, 181 s
+postgres: 1375000 documents sent, 184 s
+postgres: 1400000 documents sent, 187 s
+postgres: 1425000 documents sent, 190 s
+postgres: 1450000 documents sent, 194 s
+postgres: 1475000 documents sent, 197 s
+postgres: 1500000 documents sent, 200 s
+postgres: 1525000 documents sent, 203 s
+postgres: 1550000 documents sent, 206 s
+postgres: 1575000 documents sent, 209 s
+postgres: 1600000 documents sent, 212 s
+postgres: 1625000 documents sent, 215 s
+postgres: 1650000 documents sent, 218 s
+postgres: 1675000 documents sent, 221 s
+postgres: 1700000 documents sent, 225 s
+postgres: 1725000 documents sent, 228 s
+postgres: 1750000 documents sent, 232 s
+postgres: 1775000 documents sent, 235 s
+postgres: 1800000 documents sent, 238 s
+read tcp 127.0.0.1:50898->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:50898->127.0.0.1:36447: read: connection reset by peer
+postgres: 1825000 documents sent, 241 s
+postgres: 1850000 documents sent, 244 s
+postgres: 1875000 documents sent, 247 s
+postgres: 1900000 documents sent, 251 s
+postgres: 1925000 documents sent, 254 s
+postgres: 1950000 documents sent, 257 s
+postgres: 1975000 documents sent, 261 s
+postgres: 2000000 documents sent, 264 s
+postgres: 2025000 documents sent, 267 s
+postgres: 2050000 documents sent, 270 s
+postgres: 2075000 documents sent, 273 s
+postgres: 2100000 documents sent, 276 s
+postgres: 2125000 documents sent, 279 s
+postgres: 2150000 documents sent, 282 s
+postgres: 2175000 documents sent, 285 s
+postgres: 2200000 documents sent, 288 s
+postgres: 2225000 documents sent, 292 s
+postgres: 2250000 documents sent, 295 s
+postgres: 2275000 documents sent, 297 s
+postgres: 2300000 documents sent, 301 s
+postgres: 2325000 documents sent, 305 s
+postgres: 2350000 documents sent, 308 s
+postgres: 2375000 documents sent, 310 s
+postgres: 2400000 documents sent, 313 s
+postgres: 2425000 documents sent, 316 s
+postgres: 2450000 documents sent, 320 s
+postgres: 2475000 documents sent, 323 s
+postgres: 2500000 documents sent, 326 s
+postgres: 2525000 documents sent, 330 s
+postgres: 2550000 documents sent, 334 s
+postgres: 2575000 documents sent, 337 s
+postgres: 2600000 documents sent, 340 s
+postgres: 2625000 documents sent, 343 s
+postgres: 2650000 documents sent, 347 s
+postgres: 2675000 documents sent, 350 s
+postgres: 2700000 documents sent, 355 s
+postgres: 2725000 documents sent, 358 s
+postgres: 2750000 documents sent, 363 s
+postgres: 2775000 documents sent, 366 s
+postgres: 2800000 documents sent, 369 s
+postgres: 2825000 documents sent, 372 s
+postgres: 2850000 documents sent, 376 s
+postgres: 2875000 documents sent, 379 s
+postgres: 2900000 documents sent, 382 s
+postgres: 2925000 documents sent, 386 s
+postgres: 2950000 documents sent, 389 s
+postgres: 2975000 documents sent, 394 s
+postgres: 3000000 documents sent, 396 s
+postgres: 3025000 documents sent, 400 s
+postgres: 3050000 documents sent, 403 s
+postgres: 3075000 documents sent, 406 s
+postgres: 3100000 documents sent, 411 s
+postgres: 3125000 documents sent, 414 s
+postgres: 3150000 documents sent, 418 s
+postgres: 3175000 documents sent, 421 s
+postgres: 3200000 documents sent, 424 s
+postgres: 3225000 documents sent, 427 s
+postgres: 3250000 documents sent, 430 s
+postgres: 3275000 documents sent, 434 s
+postgres: 3300000 documents sent, 437 s
+postgres: 3325000 documents sent, 440 s
+postgres: 3350000 documents sent, 443 s
+postgres: 3375000 documents sent, 448 s
+postgres: 3400000 documents sent, 452 s
+postgres: 3425000 documents sent, 454 s
+postgres: 3450000 documents sent, 458 s
+postgres: 3475000 documents sent, 461 s
+postgres: 3500000 documents sent, 464 s
+postgres: 3525000 documents sent, 470 s
+postgres: 3550000 documents sent, 473 s
+postgres: 3575000 documents sent, 476 s
+postgres: 3600000 documents sent, 479 s
+postgres: 3625000 documents sent, 483 s
+postgres: 3650000 documents sent, 486 s
+postgres: 3675000 documents sent, 489 s
+postgres: 3700000 documents sent, 492 s
+postgres: 3725000 documents sent, 496 s
+postgres: 3750000 documents sent, 499 s
+postgres: 3775000 documents sent, 506 s
+postgres: 3800000 documents sent, 509 s
+postgres: 3825000 documents sent, 511 s
+postgres: 3850000 documents sent, 515 s
+postgres: 3875000 documents sent, 519 s
+postgres: 3900000 documents sent, 523 s
+postgres: 3925000 documents sent, 525 s
+postgres: 3950000 documents sent, 528 s
+postgres: 3975000 documents sent, 532 s
+postgres: 4000000 documents sent, 535 s
+postgres: 4025000 documents sent, 539 s
+postgres: 4050000 documents sent, 542 s
+postgres: 4075000 documents sent, 545 s
+postgres: 4100000 documents sent, 548 s
+postgres: 4125000 documents sent, 551 s
+postgres: 4150000 documents sent, 554 s
+postgres: 4175000 documents sent, 557 s
+postgres: 4200000 documents sent, 560 s
+postgres: 4225000 documents sent, 564 s
+postgres: 4250000 documents sent, 568 s
+postgres: 4275000 documents sent, 575 s
+postgres: 4300000 documents sent, 578 s
+postgres: 4325000 documents sent, 581 s
+postgres: 4350000 documents sent, 584 s
+postgres: 4375000 documents sent, 588 s
+postgres: 4400000 documents sent, 591 s
+postgres: 4425000 documents sent, 594 s
+postgres: 4450000 documents sent, 598 s
+postgres: 4475000 documents sent, 601 s
+postgres: 4500000 documents sent, 604 s
+postgres: 4525000 documents sent, 607 s
+postgres: 4550000 documents sent, 611 s
+postgres: 4575000 documents sent, 614 s
+postgres: 4600000 documents sent, 617 s
+postgres: 4625000 documents sent, 621 s
+postgres: 4650000 documents sent, 624 s
+postgres: 4675000 documents sent, 627 s
+postgres: 4700000 documents sent, 630 s
+postgres: 4725000 documents sent, 633 s
+postgres: 4750000 documents sent, 636 s
+postgres: 4775000 documents sent, 641 s
+postgres: 4800000 documents sent, 647 s
+postgres: 4825000 documents sent, 650 s
+postgres: 4850000 documents sent, 653 s
+postgres: 4875000 documents sent, 657 s
+postgres: 4900000 documents sent, 660 s
+postgres: 4925000 documents sent, 663 s
+postgres: 4950000 documents sent, 666 s
+postgres: 4975000 documents sent, 669 s
+postgres: 5000000 documents sent, 675 s
+postgres: 5025000 documents sent, 679 s
+postgres: 5050000 documents sent, 682 s
+postgres: 5075000 documents sent, 685 s
+postgres: 5100000 documents sent, 688 s
+postgres: 5125000 documents sent, 691 s
+postgres: 5150000 documents sent, 695 s
+postgres: 5175000 documents sent, 698 s
+postgres: 5200000 documents sent, 702 s
+postgres: 5225000 documents sent, 705 s
+postgres: 5250000 documents sent, 708 s
+postgres: 5275000 documents sent, 715 s
+postgres: 5300000 documents sent, 718 s
+postgres: 5325000 documents sent, 721 s
+postgres: 5350000 documents sent, 724 s
+postgres: 5375000 documents sent, 727 s
+postgres: 5400000 documents sent, 732 s
+postgres: 5425000 documents sent, 734 s
+postgres: 5450000 documents sent, 738 s
+postgres: 5475000 documents sent, 741 s
+postgres: 5500000 documents sent, 744 s
+postgres: 5525000 documents sent, 748 s
+postgres: 5550000 documents sent, 751 s
+postgres: 5575000 documents sent, 754 s
+postgres: 5600000 documents sent, 757 s
+postgres: 5625000 documents sent, 761 s
+postgres: 5650000 documents sent, 764 s
+postgres: 5675000 documents sent, 768 s
+postgres: 5700000 documents sent, 771 s
+postgres: 5725000 documents sent, 774 s
+postgres: 5750000 documents sent, 778 s
+postgres: 5775000 documents sent, 783 s
+postgres: 5800000 documents sent, 789 s
+postgres: 5825000 documents sent, 791 s
+postgres: 5850000 documents sent, 795 s
+postgres: 5875000 documents sent, 798 s
+postgres: 5900000 documents sent, 802 s
+postgres: 5925000 documents sent, 805 s
+postgres: 5950000 documents sent, 809 s
+postgres: 5975000 documents sent, 812 s
+postgres: 6000000 documents sent, 817 s
+postgres: 6025000 documents sent, 820 s
+postgres: 6050000 documents sent, 823 s
+postgres: 6075000 documents sent, 826 s
+postgres: 6100000 documents sent, 829 s
+postgres: 6125000 documents sent, 832 s
+postgres: 6150000 documents sent, 836 s
+postgres: 6175000 documents sent, 839 s
+read tcp 127.0.0.1:53132->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:53132->127.0.0.1:36447: read: connection reset by peer
+postgres: 6200000 documents sent, 842 s
+postgres: 6225000 documents sent, 845 s
+postgres: 6250000 documents sent, 849 s
+postgres: 6275000 documents sent, 856 s
+postgres: 6300000 documents sent, 862 s
+postgres: 6325000 documents sent, 864 s
+postgres: 6350000 documents sent, 868 s
+postgres: 6375000 documents sent, 873 s
+postgres: 6400000 documents sent, 876 s
+postgres: 6425000 documents sent, 879 s
+postgres: 6450000 documents sent, 882 s
+postgres: 6475000 documents sent, 886 s
+postgres: 6500000 documents sent, 889 s
+postgres: 6525000 documents sent, 895 s
+postgres: 6550000 documents sent, 898 s
+postgres: 6575000 documents sent, 901 s
+postgres: 6600000 documents sent, 904 s
+postgres: 6625000 documents sent, 908 s
+postgres: 6650000 documents sent, 911 s
+postgres: 6675000 documents sent, 914 s
+postgres: 6700000 documents sent, 917 s
+postgres: 6725000 documents sent, 923 s
+postgres: 6750000 documents sent, 927 s
+postgres: 6775000 documents sent, 934 s
+postgres: 6800000 documents sent, 937 s
+postgres: 6825000 documents sent, 940 s
+postgres: 6850000 documents sent, 944 s
+postgres: 6875000 documents sent, 947 s
+postgres: 6900000 documents sent, 951 s
+postgres: 6925000 documents sent, 954 s
+postgres: 6950000 documents sent, 958 s
+postgres: 6975000 documents sent, 962 s
+postgres: 7000000 documents sent, 965 s
+postgres: 7025000 documents sent, 970 s
+postgres: 7050000 documents sent, 973 s
+postgres: 7075000 documents sent, 976 s
+postgres: 7100000 documents sent, 979 s
+postgres: 7125000 documents sent, 982 s
+postgres: 7150000 documents sent, 985 s
+postgres: 7175000 documents sent, 988 s
+postgres: 7200000 documents sent, 994 s
+postgres: 7225000 documents sent, 998 s
+postgres: 7250000 documents sent, 1000 s
+postgres: 7275000 documents sent, 1007 s
+postgres: 7300000 documents sent, 1010 s
+postgres: 7325000 documents sent, 1013 s
+postgres: 7350000 documents sent, 1016 s
+postgres: 7375000 documents sent, 1019 s
+postgres: 7400000 documents sent, 1022 s
+postgres: 7425000 documents sent, 1025 s
+postgres: 7450000 documents sent, 1029 s
+postgres: 7475000 documents sent, 1032 s
+postgres: 7500000 documents sent, 1035 s
+postgres: 7525000 documents sent, 1039 s
+postgres: 7550000 documents sent, 1043 s
+postgres: 7575000 documents sent, 1045 s
+postgres: 7600000 documents sent, 1049 s
+postgres: 7625000 documents sent, 1052 s
+postgres: 7650000 documents sent, 1057 s
+postgres: 7675000 documents sent, 1067 s
+postgres: 7700000 documents sent, 1069 s
+postgres: 7725000 documents sent, 1073 s
+postgres: 7750000 documents sent, 1076 s
+postgres: 7775000 documents sent, 1080 s
+postgres: 7800000 documents sent, 1083 s
+postgres: 7825000 documents sent, 1086 s
+postgres: 7850000 documents sent, 1089 s
+postgres: 7875000 documents sent, 1093 s
+postgres: 7900000 documents sent, 1096 s
+postgres: 7925000 documents sent, 1100 s
+postgres: 7950000 documents sent, 1103 s
+postgres: 7975000 documents sent, 1106 s
+postgres: 8000000 documents sent, 1109 s
+postgres: 8025000 documents sent, 1112 s
+postgres: 8050000 documents sent, 1117 s
+postgres: 8075000 documents sent, 1119 s
+postgres: 8100000 documents sent, 1127 s
+postgres: 8125000 documents sent, 1132 s
+postgres: 8150000 documents sent, 1135 s
+postgres: 8175000 documents sent, 1138 s
+postgres: 8200000 documents sent, 1141 s
+postgres: 8225000 documents sent, 1144 s
+postgres: 8250000 documents sent, 1147 s
+postgres: 8275000 documents sent, 1151 s
+postgres: 8300000 documents sent, 1156 s
+postgres: 8325000 documents sent, 1158 s
+postgres: 8350000 documents sent, 1164 s
+postgres: 8375000 documents sent, 1168 s
+postgres: 8400000 documents sent, 1172 s
+postgres: 8425000 documents sent, 1175 s
+postgres: 8450000 documents sent, 1179 s
+postgres: 8475000 documents sent, 1182 s
+postgres: 8500000 documents sent, 1193 s
+postgres: 8525000 documents sent, 1196 s
+postgres: 8550000 documents sent, 1198 s
+postgres: 8575000 documents sent, 1203 s
+postgres: 8600000 documents sent, 1206 s
+postgres: 8625000 documents sent, 1209 s
+postgres: 8650000 documents sent, 1212 s
+postgres: 8675000 documents sent, 1215 s
+postgres: 8700000 documents sent, 1218 s
+postgres: 8725000 documents sent, 1221 s
+postgres: 8750000 documents sent, 1226 s
+postgres: 8775000 documents sent, 1231 s
+postgres: 8800000 documents sent, 1233 s
+postgres: 8825000 documents sent, 1245 s
+postgres: 8850000 documents sent, 1247 s
+postgres: 8875000 documents sent, 1253 s
+postgres: 8900000 documents sent, 1256 s
+postgres: 8925000 documents sent, 1259 s
+postgres: 8950000 documents sent, 1262 s
+postgres: 8975000 documents sent, 1265 s
+postgres: 9000000 documents sent, 1268 s
+postgres: 9025000 documents sent, 1271 s
+read tcp 127.0.0.1:43936->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:43936->127.0.0.1:36447: read: connection reset by peer
+postgres: 9050000 documents sent, 1276 s
+postgres: 9075000 documents sent, 1282 s
+postgres: 9100000 documents sent, 1285 s
+postgres: 9125000 documents sent, 1288 s
+postgres: 9150000 documents sent, 1291 s
+postgres: 9175000 documents sent, 1297 s
+postgres: 9200000 documents sent, 1300 s
+postgres: 9225000 documents sent, 1303 s
+postgres: 9250000 documents sent, 1310 s
+postgres: 9275000 documents sent, 1314 s
+postgres: 9300000 documents sent, 1319 s
+postgres: 9325000 documents sent, 1322 s
+postgres: 9350000 documents sent, 1324 s
+postgres: 9375000 documents sent, 1327 s
+postgres: 9400000 documents sent, 1330 s
+postgres: 9425000 documents sent, 1333 s
+postgres: 9450000 documents sent, 1337 s
+postgres: 9475000 documents sent, 1340 s
+postgres: 9500000 documents sent, 1343 s
+postgres: 9525000 documents sent, 1347 s
+postgres: 9550000 documents sent, 1350 s
+postgres: 9575000 documents sent, 1359 s
+postgres: 9600000 documents sent, 1363 s
+postgres: 9625000 documents sent, 1366 s
+postgres: 9650000 documents sent, 1371 s
+postgres: 9675000 documents sent, 1374 s
+postgres: 9700000 documents sent, 1379 s
+postgres: 9725000 documents sent, 1384 s
+postgres: 9750000 documents sent, 1390 s
+postgres: 9775000 documents sent, 1396 s
+postgres: 9800000 documents sent, 1399 s
+postgres: 9825000 documents sent, 1402 s
+postgres: 9850000 documents sent, 1405 s
+postgres: 9875000 documents sent, 1408 s
+postgres: 9900000 documents sent, 1411 s
+postgres: 9925000 documents sent, 1414 s
+postgres: 9950000 documents sent, 1417 s
+postgres: 9975000 documents sent, 1420 s
+postgres: 10000000 documents sent, 1426 s
+postgres: 10000000 documents (106.9 GB) sent in 1425.6 s
+postgres: primary_key_s in 61.6 s
+postgres: gin_index_s in 1080.3 s
+read tcp 127.0.0.1:34874->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:34874->127.0.0.1:36447: read: connection reset by peer
+read tcp 127.0.0.1:40784->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:40784->127.0.0.1:36447: read: connection reset by peer
+read tcp 127.0.0.1:55444->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:55444->127.0.0.1:36447: read: connection reset by peer
+unexpected EOF
+error: unexpected EOF
+http2: server sent GOAWAY and closed the connection; LastStreamID=5, ErrCode=NO_ERROR, debug=""
+error: http2: server sent GOAWAY and closed the connection; LastStreamID=5, ErrCode=NO_ERROR, debug=""
+unexpected EOF
+error: unexpected EOF
+unexpected EOF
+error: unexpected EOF
+read tcp 127.0.0.1:53256->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:53256->127.0.0.1:36447: read: connection reset by peer
+postgres: hnsw_index_s in 27085.3 s
+postgres: analyze_s in 100.4 s
+postgres: indexed 28327.6 s after the last write; 29753.3 s in all
+wrote /data/compare/load-postgres.json
+job.batch/run-postgres created
+postgres  bm25                     unavailable: ERROR 57014: canceling statement due to statement timeout
+postgres  bm25 + filter            unavailable: ERROR 57014: canceling statement due to statement timeout
+postgres  vector                   warm-up: p50 3.913, 3.801 ms
+postgres  vector                   c=1        292 q/s  p50   3.162 ms  p90   4.732 ms  p99   7.118 ms  errors 0
+postgres  vector                   c=4       1052 q/s  p50   3.479 ms  p90   5.293 ms  p99   8.600 ms  errors 0
+postgres  vector                   c=16      1309 q/s  p50  10.249 ms  p90  22.527 ms  p99  36.886 ms  errors 0
+postgres  vector + filter          warm-up: p50 4.222, 4.170 ms
+postgres  vector + filter          c=1        242 q/s  p50   3.693 ms  p90   5.587 ms  p99   9.409 ms  errors 0
+postgres  vector + filter          c=4        939 q/s  p50   3.817 ms  p90   5.928 ms  p99   9.778 ms  errors 0
+postgres  vector + filter          c=16      1105 q/s  p50  10.705 ms  p90  26.626 ms  p99  51.313 ms  errors 0
+postgres  hybrid (RRF)             unavailable: ERROR 57014: canceling statement due to statement timeout
+postgres  hybrid (weighted)        unavailable: ERROR 57014: canceling statement due to statement timeout
+postgres  boosted (bm25 × decay)   unavailable: ERROR 57014: canceling statement due to statement timeout
+postgres  facet                    unavailable: ERROR 57014: canceling statement due to statement timeout
+postgres  key lookup               warm-up: p50 0.413, 0.413 ms
+postgres  key lookup               c=1       2607 q/s  p50   0.370 ms  p90   0.432 ms  p99   0.580 ms  errors 0
+postgres  key lookup               c=4       9319 q/s  p50   0.429 ms  p90   0.484 ms  p99   0.564 ms  errors 0
+postgres  key lookup               c=16     28476 q/s  p50   0.477 ms  p90   0.722 ms  p99   1.592 ms  errors 0
+postgres  phrase                   unavailable: ERROR 57014: canceling statement due to statement timeout
+postgres  typo                     unavailable: no fuzzy matching in full-text search (pg_trgm compares whole strings, not the words of a tsvector)
+postgres  prefix                   unavailable: ERROR 57014: canceling statement due to statement timeout
+postgres  similar items            warm-up: p50 3.419, 3.488 ms
+postgres  similar items            c=1        300 q/s  p50   3.120 ms  p90   4.363 ms  p99   6.757 ms  errors 0
+postgres  similar items            c=4       1143 q/s  p50   3.253 ms  p90   4.679 ms  p99   7.459 ms  errors 0
+postgres  similar items            c=16      1427 q/s  p50   9.460 ms  p90  20.139 ms  p99  33.710 ms  errors 0
+read tcp 127.0.0.1:57536->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:57536->127.0.0.1:36447: read: connection reset by peer
+postgres  sql aggregate            warm-up: p50 8353.444, 8475.320 ms
+postgres  sql aggregate            c=1          0 q/s  p50 2380.299 ms  p90 2676.976 ms  p99 2676.976 ms  errors 0
+postgres  sql aggregate            c=4          0 q/s  p50 8316.250 ms  p90 13483.113 ms  p99 13483.113 ms  errors 0
+postgres  sql aggregate            c=16         0 q/s  p50 11282.847 ms  p90 17064.542 ms  p99 17064.542 ms  errors 13
+  first error: ERROR 57014: canceling statement due to statement timeout
+wrote /data/compare/run-postgres.json

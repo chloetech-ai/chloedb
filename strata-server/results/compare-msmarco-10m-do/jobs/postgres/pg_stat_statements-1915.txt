@@ -1,0 +1,13 @@
+ calls |   mean_exec_time   |  min_exec_time  |  max_exec_time  | stddev_exec_time  |                                                                                                    q                                                                                                     
+-------+--------------------+-----------------+-----------------+-------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+     1 |    27085272.032926 | 27085272.032926 | 27085272.032926 |                 0 | CREATE INDEX docs_emb ON docs USING hnsw (emb vector_ip_ops) WITH (m = 16, ef_construction = 200)
+   127 | 28439.056698842523 |        6.228139 |    75841.216308 | 24739.87344538492 | SELECT key, ts_rank(tsv, to_tsquery($1, $2)) s FROM docs WHERE tsv @@ to_tsquery($3, $4) ORDER BY s DESC LIMIT $5
+     1 |      1080246.06153 |   1080246.06153 |   1080246.06153 |                 0 | CREATE INDEX docs_tsv ON docs USING gin (tsv)
+     1 |      100403.450257 |   100403.450257 |   100403.450257 |                 0 | VACUUM ANALYZE docs
+     1 |       61614.414213 |    61614.414213 |    61614.414213 |                 0 | ALTER TABLE docs ADD PRIMARY KEY (key)
+   118 | 240.94026622033897 |       80.322744 |     3489.731435 | 331.2821913369936 | INSERT INTO docs (key, title, body, year, category, rating, topic, emb) VALUES ($1, $2, $3, $4, $5, $6, $7, $8),($9, $10, $11, $12, $13, $14, $15, $16),($17, $18, $19, $20, $21, $22, $23, $24),($25, $
+     1 |       19289.852649 |    19289.852649 |    19289.852649 |                 0 | select calls, round(mean_exec_time::numeric,$1), left(regexp_replace(query, $2, $3, $4), $5) from pg_stat_statements order by total_exec_time desc limit $6
+     1 |        4037.483506 |     4037.483506 |     4037.483506 |                 0 | INSERT INTO docs (key, title, body, year, category, rating, topic, emb) VALUES ($1, $2, $3, $4, $5, $6, $7, $8),($9, $10, $11, $12, $13, $14, $15, $16),($17, $18, $19, $20, $21, $22, $23, $24),($25, $
+(8 rows)
+
+19:09:21

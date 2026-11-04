@@ -1,0 +1,2 @@
+{"node": "paradedb-d-a1-3et9wc", "cpu": "Intel(R) Xeon(R) Platinum 8280 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 65853636, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 20.338, "sha256_1g_x_vcpus_s": 10.139, "disk_write_2g_s": 1.072, "copy_ms": 0, "time": 1793740133, "size": "m3-8vcpu-64gb"}
+{"node": "paradedb-c-a1-3et9w7", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382188, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 20.834, "sha256_1g_x_vcpus_s": 11.383, "disk_write_2g_s": 2.2, "copy_ms": 409971, "time": 1793740551, "size": "c-8"}
