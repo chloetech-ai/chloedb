@@ -6,13 +6,18 @@
 Nothing here is typed by hand: each value is read from a run's committed
 results and only rounded. The reports it reads:
 
-  cloud-10m  strata-server/results/compare-msmarco-10m-do/  (fanout.sh, one pass)
-  cloud-1m   strata-server/results/compare-msmarco-1m-do/   (fanout.sh, three passes)
+  cloud-10m      strata-server/results/compare-msmarco-10m-do/  (fanout.sh, one pass, every engine on its own nodes)
+  cloud-10m-h2h  strata-server/results/compare-msmarco-same-nodes-do/10m/  (Strata, Elasticsearch and
+                 OpenSearch on the same nodes on latest main, three passes)
+  cloud-1m       strata-server/results/compare-msmarco-same-nodes-do/1m/   (14 engines on latest main,
+                 each lane's engines on the same nodes, three passes)
+  cloud-1m-first strata-server/results/compare-msmarco-1m-do/   (the first 1M run, three passes)
   laptop     strata-server/results/compare-nq-mac/          (compare.sh on kind, one pass)
   embedded   strata/results/laptop-2026-11/part-a-do/       (Part A, no server)
   graph      strata-server/results/graph-compare-mac/README.md
   bm25-load  strata-server/results/bm25-stats-cache-container/
   bm25-do    strata-server/results/bm25-do-1m/ (the same before and after on DigitalOcean)
+  strata-1m-since  Strata's own medians in cloud-1m-first and cloud-1m, kind by kind
 
 A results directory that is not on this checkout is read from the git ref
 named for it below (a branch whose pull request is still open), and the page
@@ -558,12 +563,31 @@ def bm25_load(src):
     return rows
 
 
+# ----------------------------------------------------------------- Strata, then and now
+
+PASSES = ["", "-pass2", "-pass3"]
+
+
+def since(before, after, rows):
+    """Strata's medians in two runs, (kind, clients) by (kind, clients): q/s and p50 at those clients."""
+    B, A = medians(before, "strata", PASSES), medians(after, "strata", PASSES)
+    out = []
+    for k, c in rows:
+        b, a = B.get((k, c)), A.get((k, c))
+        if b and a:
+            out.append({"kind": k, "clients": c, "before": r3(b["qps"]), "after": r3(a["qps"]),
+                        "p50_before": r3(b["p50_ms"]), "p50_after": r3(a["p50_ms"])})
+    return out
+
+
 # ----------------------------------------------------------------- main
 
 def main():
     runs, reports, suites, missing = {}, {}, [], []
-    c10 = Source("strata-server/results/compare-msmarco-10m-do", "origin/claude/project-thread-w00pet")
-    c1 = Source("strata-server/results/compare-msmarco-1m-do")
+    c10 = Source("strata-server/results/compare-msmarco-10m-do")
+    c10h = Source("strata-server/results/compare-msmarco-same-nodes-do/10m")
+    c1 = Source("strata-server/results/compare-msmarco-same-nodes-do/1m")
+    c1f = Source("strata-server/results/compare-msmarco-1m-do")
     mac = Source("strata-server/results/compare-nq-mac")
     pa = Source("strata/results/laptop-2026-11/part-a-do")
     gr = Source("strata-server/results/graph-compare-mac", "origin/claude/graph-compare-mac")
@@ -578,9 +602,16 @@ def main():
                                        lanes={"milvus": "128 GB node, not ranked", "redis": "128 GB node, not ranked"})
     else:
         missing.append("cloud-10m")
-    reports["cloud-1m"] = cluster(c1, "cloud-1m")
+    reports["cloud-10m-h2h"] = cluster(c10h, "cloud-10m-h2h")
+    # Milvus from its run alone on a fresh node: last in its lane it was still
+    # compacting during its first two passes (the run's README)
+    reports["cloud-1m"] = cluster(c1, "cloud-1m", lanes={"milvus": "2.6.26, run alone on a fresh node"})
+    reports["cloud-1m-first"] = cluster(c1f, "cloud-1m-first")
+    reports["strata-1m-since"] = {"id": "strata-1m-since", "type": "ab", "source": c1.url(), "rows": since(c1f, c1, [
+        ("bm25", 1), ("bm25", 16), ("bm25 + filter", 16), ("phrase", 16), ("prefix", 16),
+        ("typo", 1), ("typo", 16), ("boosted (bm25 × decay)", 16), ("hybrid (RRF)", 16), ("sql aggregate", 1)])}
     reports["laptop"] = cluster(mac, "laptop", extra_runs={"solr": "solr+sql"})
-    for rid, src in [("cloud-10m", c10), ("cloud-1m", c1), ("laptop", mac)]:
+    for rid, src in [("cloud-10m", c10), ("cloud-10m-h2h", c10h), ("cloud-1m", c1), ("cloud-1m-first", c1f), ("laptop", mac)]:
         if rid in reports:
             reports[rid]["source"] = src.url()
     charts, machine, machine_t = part_a(pa)

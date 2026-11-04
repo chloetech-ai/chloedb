@@ -349,7 +349,7 @@
     if (!rep) return pending(el);
     var h = '<div class="table-wrap"><table class="data"><thead><tr><th scope="col">kind</th><th scope="col" class="num">clients</th><th scope="col" class="num">q/s before</th><th scope="col" class="num">q/s after</th><th scope="col" class="num">change</th><th scope="col" class="num">median before</th><th scope="col" class="num">median after</th></tr></thead><tbody>';
     rep.rows.forEach(function (r) {
-      h += '<tr><th scope="row">' + esc(kindName(R["cloud-1m"] || { kinds: [] }, r.kind)) + '</th><td class="n">' + r.clients + '</td><td class="n">' + fmt(r.before) + '</td><td class="n"><b>' + fmt(r.after) + '</b></td><td class="n">+' + Math.round((r.after / r.before - 1) * 100) + '%</td><td class="n">' + fmt(r.p50_before) + ' ms</td><td class="n">' + fmt(r.p50_after) + " ms</td></tr>";
+      h += '<tr><th scope="row">' + esc(kindName(R["cloud-1m"] || { kinds: [] }, r.kind)) + '</th><td class="n">' + r.clients + '</td><td class="n">' + fmt(r.before) + '</td><td class="n"><b>' + fmt(r.after) + '</b></td><td class="n">' + (r.after >= r.before ? "+" : "−") + Math.abs(Math.round((r.after / r.before - 1) * 100)) + '%</td><td class="n">' + fmt(r.p50_before) + ' ms</td><td class="n">' + fmt(r.p50_after) + " ms</td></tr>";
     });
     h += "</tbody></table></div>";
     el.innerHTML = h;
@@ -375,8 +375,8 @@
   }
 
   /* ----------------------------------------------- overall, as a tile */
-  var LABELS = { "cloud-10m": "10M passages · DigitalOcean", "cloud-1m": "1M passages · DigitalOcean", laptop: "1M passages · laptop cluster" };
-  var CHIPS = { "cloud-10m": "at 10M documents in the cloud", "cloud-1m": "at 1M in the cloud", laptop: "on a laptop's cluster" };
+  var LABELS = { "cloud-10m": "10M passages · DigitalOcean", "cloud-10m-h2h": "10M · latest main, same nodes", "cloud-1m": "1M passages · DigitalOcean", "cloud-1m-first": "1M · first run", laptop: "1M passages · laptop cluster" };
+  var CHIPS = { "cloud-10m": "at 10M documents in the cloud", "cloud-10m-h2h": "at 10M against Elasticsearch and OpenSearch on the same nodes", "cloud-1m": "at 1M in the cloud", "cloud-1m-first": "in the first 1M run", laptop: "on a laptop's cluster" };
   function renderOverall(el) {
     var id = el.getAttribute("data-overall"), rep = R[id], mode = el.getAttribute("data-mode") || "line";
     if (!rep) {
