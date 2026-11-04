@@ -2,6 +2,7 @@
 //! snapshot, segment by segment, following the planner's choices, and
 //! merges the per-segment results.
 
+mod agg_columns;
 mod graph;
 
 use std::collections::HashMap;
@@ -2871,6 +2872,9 @@ impl<'a> Executor<'a> {
     /// Groups and aggregates, document by document (anything beyond a
     /// facet's counts).
     fn aggregate(&mut self, q: &Select, needed: &[Projection]) -> Result<agg::Groups> {
+        if let Some(plan) = agg_columns::plan(self.schema, q, needed) {
+            return self.aggregate_columns(q, needed, &plan);
+        }
         let mut cols: Vec<Col> = q.group_by.clone();
         for p in needed {
             if let Projection::Agg { of, .. } = p {

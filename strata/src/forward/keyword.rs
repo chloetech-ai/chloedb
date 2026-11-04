@@ -546,6 +546,14 @@ impl KeywordColumn {
         self.codes.get(d).map(|c| c as u32)
     }
 
+    /// Writes the value codes of block `b`'s documents to `out` (`out[j]`
+    /// for document `BLOCK * b + j`) and returns the mask of those with a
+    /// value (bit `j % 64` of word `j / 64`): a single-valued field's codes,
+    /// as [`Self::code_of_doc`] reads them one by one.
+    pub fn block_codes_of(&self, b: usize, out: &mut [i64; BLOCK]) -> [u64; 2] {
+        self.codes.block_keys(b, out)
+    }
+
     /// The value of document `d`.
     pub fn value_of_doc(&self, d: DocId) -> Option<&str> {
         self.code_of_doc(d).map(|c| self.value(c))
