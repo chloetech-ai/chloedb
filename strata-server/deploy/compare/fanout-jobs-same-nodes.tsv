@@ -1,0 +1,14 @@
+# fanout.sh's jobs for the rerun on one set of nodes per lane (11-04): each
+# lane's engines run one after another on the same nodes, so that the gap
+# between two engines is not the gap between two machines (Strata's own
+# image on separate nodes differed by up to 39% at 1M). Strata runs first
+# and again last in each lane with sharded engines (strata-first,
+# strata-last): the second time is the drift of the nodes over the hours.
+#   PASSES=3 COPY_JOBS=0 BUDGET=100 IMAGE=ghcr.io/chloetech-ai/strata-server:<sha> \
+#   fanout.sh run fanout-jobs-same-nodes.tsv
+# The timeouts are the step times of the 1M and 10M runs summed (three
+# passes each) with about 40% more. The 10M lane uses the 10M run's
+# bigger-disk nodes, and loads up to 5 hours (OpenSearch took 162 minutes).
+h2h-10m     strata-first+es+os+strata-last                                         sharded  14  COLLECTION=msmarco-10000k,SHARDED_SIZE=m3-4vcpu-32gb,LOAD_HOURS=5
+one-1m      qdrant+meili+postgres+redis+weaviate+manticore+paradedb+typesense+milvus  one      12
+sharded-1m  strata-first+es+os+solr+vespa+strata-last                              sharded  7
