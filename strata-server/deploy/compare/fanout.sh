@@ -45,6 +45,11 @@
 # SHARDED_SIZE, CLIENT_SIZE) and compare.sh's budgets (ONE_MEM,
 # REDIS_MAXMEM, ...), e.g. a node with more memory for an engine that keeps
 # everything in it.
+#
+# The engine strata-ab runs two Strata images on the same nodes, IMAGE and
+# the job's IMAGE_B, passes alternating, for a before and after that the
+# nodes cannot sway (KINDS in the environment picks the kinds):
+#   strata-ab  strata-ab  sharded  1  IMAGE_B=ghcr.io/chloetech-ai/strata-server:<sha>
 set -euo pipefail
 
 API=https://api.digitalocean.com/v2
@@ -307,6 +312,24 @@ steps_of() { # ENGINE: compare.sh's steps, one per line
     # 1M it ran after them, on segments the writes and the stream had churned).
     es) printf '%s\n' "up es" "load es" "$(runs es)" "trial" \
         "run es --kinds hybrid (RRF),hybrid (weighted) --paid --label es-trial" "writes es" "stream es" "down es" ;;
+    # Two Strata images on the same nodes, so that the nodes cannot make the
+    # difference: IMAGE's runs labelled strata-a, IMAGE_B's (the job's fifth
+    # column) strata-b, PASSES of each, their order swapped every pass (a b,
+    # b a, a b, ...), on shard files built once by IMAGE. KINDS (comma
+    # separated, in the environment of `fanout.sh run`) picks the kinds.
+    strata-ab)
+        local i x img sfx
+        echo build
+        for ((i = 1; i <= PASSES; i++)); do
+            sfx=""
+            [ "$i" = 1 ] || sfx=-pass$i
+            for x in $([ $((i % 2)) = 1 ] && echo a b || echo b a); do
+                img=$IMAGE
+                [ "$x" = a ] || img=${IMAGE_B:?strata-ab needs IMAGE_B}
+                printf '%s\n' "IMAGE=$img up strata" "run strata --label strata-$x$sfx${KINDS:+ --kinds $KINDS}" "down strata"
+            done
+        done
+        ;;
     os | solr | vespa) printf '%s\n' "up $1" "load $1" "$(runs "$1")" "writes $1" "stream $1" "down $1" ;;
     *) printf '%s\n' "up $1" "load $1" "$(runs "$1")" "down $1" ;;
     esac
@@ -343,7 +366,7 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
     for n in "${uniq[@]}"; do
         [ -s "$dir/setup-$n.json" ] && continue
         copy=0
-        [ "$n" = "$cnode" ] || [ "$engine" = strata ] && copy=1
+        [ "$n" = "$cnode" ] || [[ $engine == strata* ]] && copy=1
         size=$CLIENT_SIZE
         [ "$n" = "$cnode" ] || { [ "$shape" = sharded ] && size=$SHARDED_SIZE || size=$ONE_SIZE; }
         (
@@ -365,7 +388,7 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
         log "$name: node $n is more than 5% slower than the median of $size: replacing it"
         new=$(replace_node "$name" "$n") || { log "$name: could not replace $n: kept"; continue; }
         copy=0
-        [ "$n" = "$cnode" ] || [ "$engine" = strata ] && copy=1
+        [ "$n" = "$cnode" ] || [[ $engine == strata* ]] && copy=1
         line=$(node_pod "$ns" "setup-$(echo "$new" | tail -c 6)" "$new" "$IMAGE" "$(setup_script "$new" "$copy")" </dev/null | tail -1)
         line=$(python3 -c 'import json, sys; d = json.loads(sys.argv[1]); d["size"] = sys.argv[2]; d["replaced"] = sys.argv[3]; print(json.dumps(d))' "$line" "$size" "$n")
         echo "$line" >"$dir/setup-$new.json"
@@ -393,13 +416,22 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
         local cap="" left=$((${hours%.*} * 3600 - ($(now) - t0)))
         [[ $step == load* ]] && cap="timeout $((left < LOAD_HOURS * 3600 ? left : LOAD_HOURS * 3600))s"
         rc=0
+        # A step may start with IMAGE=REF, its own image (strata-ab), and its
+        # --kinds runs to the next option as one argument (kinds have spaces).
+        local s=$step simage=$IMAGE kinds rest
+        if [[ $s == IMAGE=* ]]; then
+            simage=${s%% *} s=${s#* }
+            simage=${simage#IMAGE=}
+        fi
         # shellcheck disable=SC2086
         (
-            export CONTEXT NS=$ns NODES="${dnodes[*]}" CLIENT_NODE=$cnode IMAGE COLLECTION STRATA_WORK=$dir/work STRATA_DATA=$STATE/data
-            if [[ $step == *"--kinds hybrid"* ]]; then
-                $cap "$HERE/compare.sh" run es --kinds "hybrid (RRF),hybrid (weighted)" --paid --label es-trial
+            export CONTEXT NS=$ns NODES="${dnodes[*]}" CLIENT_NODE=$cnode IMAGE=$simage COLLECTION STRATA_WORK=$dir/work STRATA_DATA=$STATE/data
+            if [[ $s == *" --kinds "* ]]; then
+                rest=${s#* --kinds }
+                kinds=${rest%% --*}
+                $cap "$HERE/compare.sh" ${s%% --kinds *} --kinds "$kinds" ${rest#"$kinds"}
             else
-                $cap "$HERE/compare.sh" $step
+                $cap "$HERE/compare.sh" $s
             fi
         ) </dev/null >>"$dir/log" 2>&1 || rc=$?
         printf '%s\t%s\t%s\t%s\t%s\n' "$i" "$([ $rc = 0 ] && echo ok || echo "fail:$rc")" "$st" "$(now)" "$step" >>"$dir/steps.tsv"

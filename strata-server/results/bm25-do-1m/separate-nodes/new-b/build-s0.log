@@ -1,0 +1,2 @@
+job.batch/build-s0 created
+{"build_s":198.788470837,"docs":500477,"ended_unix":1793760668.178059,"engine":"strata","file_bytes":2458509312,"load_s":169.269085811,"merge_s":29.519385026,"of":2,"read_s":0.0,"segment_docs":500000,"segments":1,"segments_loaded":2,"shard":0,"started_unix":1793760469.3876238,"threads":4,"total_s":198.790426065}
