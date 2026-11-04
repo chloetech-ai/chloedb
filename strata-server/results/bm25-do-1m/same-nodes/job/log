@@ -1,0 +1,174 @@
+service/strata created
+pod/strata-0 created
+pod/strata-1 created
+pod/strata-coordinator created
+service/strata-coordinator created
+pod/strata-0 condition met
+pod/strata-1 condition met
+pod/strata-coordinator condition met
+job.batch/run-strata-a created
+strata-a bm25                     warm-up: p50 2.421, 2.518 ms
+strata-a bm25                     c=1        557 q/s  p50   1.594 ms  p90   2.469 ms  p99   5.058 ms  errors 0
+strata-a bm25                     c=4       1423 q/s  p50   2.544 ms  p90   4.045 ms  p99   7.081 ms  errors 0
+strata-a bm25                     c=16      1787 q/s  p50   8.528 ms  p90  11.598 ms  p99  16.252 ms  errors 0
+strata-a bm25 + filter            warm-up: p50 3.299, 3.171 ms
+strata-a bm25 + filter            c=1        440 q/s  p50   2.025 ms  p90   3.413 ms  p99   6.037 ms  errors 0
+strata-a bm25 + filter            c=4       1118 q/s  p50   3.214 ms  p90   5.506 ms  p99   8.976 ms  errors 0
+strata-a bm25 + filter            c=16      1681 q/s  p50   8.648 ms  p90  13.955 ms  p99  21.626 ms  errors 0
+strata-a phrase                   warm-up: p50 2.747, 2.543 ms
+strata-a phrase                   c=1        621 q/s  p50   1.440 ms  p90   2.176 ms  p99   3.709 ms  errors 0
+strata-a phrase                   c=4       1510 q/s  p50   2.462 ms  p90   3.614 ms  p99   5.683 ms  errors 0
+strata-a phrase                   c=16      1831 q/s  p50   8.562 ms  p90  11.157 ms  p99  14.287 ms  errors 0
+strata-a prefix                   warm-up: p50 3.880, 3.904 ms
+strata-a prefix                   c=1        355 q/s  p50   2.601 ms  p90   4.039 ms  p99   6.485 ms  errors 0
+strata-a prefix                   c=4        942 q/s  p50   3.910 ms  p90   6.435 ms  p99   9.579 ms  errors 0
+strata-a prefix                   c=16      1306 q/s  p50  10.686 ms  p90  19.647 ms  p99  31.260 ms  errors 0
+wrote /data/compare/run-strata-a.json
+pod "strata-0" deleted from strata-ab namespace
+pod "strata-1" deleted from strata-ab namespace
+pod "strata-coordinator" deleted from strata-ab namespace
+service/strata unchanged
+pod/strata-0 created
+pod/strata-1 created
+pod/strata-coordinator created
+service/strata-coordinator unchanged
+pod/strata-0 condition met
+pod/strata-1 condition met
+pod/strata-coordinator condition met
+job.batch/run-strata-b created
+strata-b bm25                     warm-up: p50 3.838, 3.767 ms
+strata-b bm25                     c=1        393 q/s  p50   2.348 ms  p90   3.233 ms  p99   5.752 ms  errors 0
+strata-b bm25                     c=4       1013 q/s  p50   3.704 ms  p90   5.266 ms  p99   8.299 ms  errors 0
+strata-b bm25                     c=16      1461 q/s  p50  10.579 ms  p90  13.793 ms  p99  17.896 ms  errors 0
+strata-b bm25 + filter            warm-up: p50 4.740, 4.598 ms
+strata-b bm25 + filter            c=1        313 q/s  p50   2.947 ms  p90   4.339 ms  p99   6.556 ms  errors 0
+strata-b bm25 + filter            c=4        811 q/s  p50   4.627 ms  p90   6.888 ms  p99  10.068 ms  errors 0
+strata-b bm25 + filter            c=16      1202 q/s  p50  12.731 ms  p90  17.770 ms  p99  24.184 ms  errors 0
+strata-b phrase                   warm-up: p50 3.815, 3.619 ms
+strata-b phrase                   c=1        412 q/s  p50   2.272 ms  p90   3.065 ms  p99   4.454 ms  errors 0
+strata-b phrase                   c=4       1026 q/s  p50   3.735 ms  p90   4.988 ms  p99   6.791 ms  errors 0
+strata-b phrase                   c=16      1387 q/s  p50  11.262 ms  p90  14.100 ms  p99  16.920 ms  errors 0
+strata-b prefix                   warm-up: p50 5.380, 5.307 ms
+strata-b prefix                   c=1        282 q/s  p50   3.308 ms  p90   4.802 ms  p99   7.238 ms  errors 0
+strata-b prefix                   c=4        704 q/s  p50   5.359 ms  p90   8.065 ms  p99  11.230 ms  errors 0
+strata-b prefix                   c=16      1073 q/s  p50  13.960 ms  p90  21.286 ms  p99  29.948 ms  errors 0
+wrote /data/compare/run-strata-b.json
+pod "strata-0" deleted from strata-ab namespace
+pod "strata-1" deleted from strata-ab namespace
+pod "strata-coordinator" deleted from strata-ab namespace
+service/strata unchanged
+pod/strata-0 created
+pod/strata-1 created
+pod/strata-coordinator created
+service/strata-coordinator unchanged
+pod/strata-0 condition met
+pod/strata-1 condition met
+pod/strata-coordinator condition met
+job.batch/run-strata-b-pass2 created
+strata-b-pass2 bm25                     warm-up: p50 3.916, 3.967 ms
+strata-b-pass2 bm25                     c=1        387 q/s  p50   2.398 ms  p90   3.257 ms  p99   5.550 ms  errors 0
+strata-b-pass2 bm25                     c=4        930 q/s  p50   4.096 ms  p90   5.661 ms  p99   8.393 ms  errors 0
+strata-b-pass2 bm25                     c=16      1375 q/s  p50  11.378 ms  p90  14.673 ms  p99  19.339 ms  errors 0
+strata-b-pass2 bm25 + filter            warm-up: p50 4.625, 5.126, 4.569, 4.716 ms
+strata-b-pass2 bm25 + filter            c=1        320 q/s  p50   2.899 ms  p90   4.310 ms  p99   6.811 ms  errors 0
+strata-b-pass2 bm25 + filter            c=4        788 q/s  p50   4.777 ms  p90   7.078 ms  p99  10.672 ms  errors 0
+strata-b-pass2 bm25 + filter            c=16      1198 q/s  p50  12.716 ms  p90  17.573 ms  p99  25.190 ms  errors 0
+strata-b-pass2 phrase                   warm-up: p50 3.481, 3.435 ms
+strata-b-pass2 phrase                   c=1        409 q/s  p50   2.283 ms  p90   3.069 ms  p99   4.497 ms  errors 0
+strata-b-pass2 phrase                   c=4        987 q/s  p50   3.902 ms  p90   5.192 ms  p99   6.944 ms  errors 0
+strata-b-pass2 phrase                   c=16      1459 q/s  p50  10.660 ms  p90  13.718 ms  p99  16.794 ms  errors 0
+strata-b-pass2 prefix                   warm-up: p50 5.360, 5.410 ms
+strata-b-pass2 prefix                   c=1        279 q/s  p50   3.377 ms  p90   4.780 ms  p99   7.100 ms  errors 0
+strata-b-pass2 prefix                   c=4        704 q/s  p50   5.320 ms  p90   8.016 ms  p99  11.277 ms  errors 0
+strata-b-pass2 prefix                   c=16      1045 q/s  p50  14.562 ms  p90  20.983 ms  p99  29.182 ms  errors 0
+wrote /data/compare/run-strata-b-pass2.json
+pod "strata-0" deleted from strata-ab namespace
+pod "strata-1" deleted from strata-ab namespace
+pod "strata-coordinator" deleted from strata-ab namespace
+service/strata unchanged
+pod/strata-0 created
+pod/strata-1 created
+pod/strata-coordinator created
+service/strata-coordinator unchanged
+pod/strata-0 condition met
+pod/strata-1 condition met
+pod/strata-coordinator condition met
+job.batch/run-strata-a-pass2 created
+strata-a-pass2 bm25                     warm-up: p50 2.635, 2.769 ms
+strata-a-pass2 bm25                     c=1        565 q/s  p50   1.573 ms  p90   2.428 ms  p99   4.979 ms  errors 0
+strata-a-pass2 bm25                     c=4       1358 q/s  p50   2.717 ms  p90   4.160 ms  p99   6.965 ms  errors 0
+strata-a-pass2 bm25                     c=16      1577 q/s  p50   9.855 ms  p90  13.427 ms  p99  17.859 ms  errors 0
+strata-a-pass2 bm25 + filter            warm-up: p50 3.414, 3.179 ms
+strata-a-pass2 bm25 + filter            c=1        438 q/s  p50   2.039 ms  p90   3.442 ms  p99   5.928 ms  errors 0
+strata-a-pass2 bm25 + filter            c=4       1107 q/s  p50   3.216 ms  p90   5.607 ms  p99   8.953 ms  errors 0
+strata-a-pass2 bm25 + filter            c=16      1620 q/s  p50   9.049 ms  p90  14.283 ms  p99  22.309 ms  errors 0
+strata-a-pass2 phrase                   warm-up: p50 2.559, 2.305 ms
+strata-a-pass2 phrase                   c=1        615 q/s  p50   1.466 ms  p90   2.189 ms  p99   3.643 ms  errors 0
+strata-a-pass2 phrase                   c=4       1526 q/s  p50   2.444 ms  p90   3.588 ms  p99   5.462 ms  errors 0
+strata-a-pass2 phrase                   c=16      1886 q/s  p50   8.259 ms  p90  10.831 ms  p99  14.186 ms  errors 0
+strata-a-pass2 prefix                   warm-up: p50 3.915, 3.835 ms
+strata-a-pass2 prefix                   c=1        357 q/s  p50   2.600 ms  p90   3.995 ms  p99   6.507 ms  errors 0
+strata-a-pass2 prefix                   c=4        949 q/s  p50   3.882 ms  p90   6.386 ms  p99   9.675 ms  errors 0
+strata-a-pass2 prefix                   c=16      1298 q/s  p50  10.640 ms  p90  20.310 ms  p99  36.331 ms  errors 0
+wrote /data/compare/run-strata-a-pass2.json
+pod "strata-0" deleted from strata-ab namespace
+pod "strata-1" deleted from strata-ab namespace
+pod "strata-coordinator" deleted from strata-ab namespace
+service/strata unchanged
+pod/strata-0 created
+pod/strata-1 created
+pod/strata-coordinator created
+service/strata-coordinator unchanged
+pod/strata-0 condition met
+pod/strata-1 condition met
+pod/strata-coordinator condition met
+job.batch/run-strata-a-pass3 created
+strata-a-pass3 bm25                     warm-up: p50 2.565, 2.534 ms
+strata-a-pass3 bm25                     c=1        568 q/s  p50   1.559 ms  p90   2.458 ms  p99   4.960 ms  errors 0
+strata-a-pass3 bm25                     c=4       1444 q/s  p50   2.515 ms  p90   3.941 ms  p99   6.985 ms  errors 0
+strata-a-pass3 bm25                     c=16      1848 q/s  p50   8.338 ms  p90  10.883 ms  p99  15.048 ms  errors 0
+strata-a-pass3 bm25 + filter            warm-up: p50 3.414, 3.292 ms
+strata-a-pass3 bm25 + filter            c=1        438 q/s  p50   2.031 ms  p90   3.436 ms  p99   5.728 ms  errors 0
+strata-a-pass3 bm25 + filter            c=4       1093 q/s  p50   3.284 ms  p90   5.615 ms  p99   9.030 ms  errors 0
+strata-a-pass3 bm25 + filter            c=16      1573 q/s  p50   9.531 ms  p90  14.381 ms  p99  22.140 ms  errors 0
+strata-a-pass3 phrase                   warm-up: p50 2.602, 2.526 ms
+strata-a-pass3 phrase                   c=1        624 q/s  p50   1.444 ms  p90   2.150 ms  p99   3.589 ms  errors 0
+strata-a-pass3 phrase                   c=4       1462 q/s  p50   2.585 ms  p90   3.687 ms  p99   5.663 ms  errors 0
+strata-a-pass3 phrase                   c=16      1969 q/s  p50   7.828 ms  p90  10.481 ms  p99  13.512 ms  errors 0
+strata-a-pass3 prefix                   warm-up: p50 3.878, 3.821 ms
+strata-a-pass3 prefix                   c=1        354 q/s  p50   2.611 ms  p90   4.039 ms  p99   6.400 ms  errors 0
+strata-a-pass3 prefix                   c=4        948 q/s  p50   3.894 ms  p90   6.400 ms  p99   9.891 ms  errors 0
+strata-a-pass3 prefix                   c=16      1276 q/s  p50  10.829 ms  p90  21.160 ms  p99  33.634 ms  errors 0
+wrote /data/compare/run-strata-a-pass3.json
+pod "strata-0" deleted from strata-ab namespace
+pod "strata-1" deleted from strata-ab namespace
+pod "strata-coordinator" deleted from strata-ab namespace
+service/strata unchanged
+pod/strata-0 created
+pod/strata-1 created
+pod/strata-coordinator created
+service/strata-coordinator unchanged
+pod/strata-0 condition met
+pod/strata-1 condition met
+pod/strata-coordinator condition met
+job.batch/run-strata-b-pass3 created
+strata-b-pass3 bm25                     warm-up: p50 4.161, 3.976 ms
+strata-b-pass3 bm25                     c=1        394 q/s  p50   2.340 ms  p90   3.218 ms  p99   5.700 ms  errors 0
+strata-b-pass3 bm25                     c=4        956 q/s  p50   3.944 ms  p90   5.488 ms  p99   8.626 ms  errors 0
+strata-b-pass3 bm25                     c=16      1273 q/s  p50  12.175 ms  p90  15.764 ms  p99  19.682 ms  errors 0
+strata-b-pass3 bm25 + filter            warm-up: p50 5.061, 4.732 ms
+strata-b-pass3 bm25 + filter            c=1        311 q/s  p50   2.974 ms  p90   4.376 ms  p99   6.852 ms  errors 0
+strata-b-pass3 bm25 + filter            c=4        749 q/s  p50   5.039 ms  p90   7.439 ms  p99  10.276 ms  errors 0
+strata-b-pass3 bm25 + filter            c=16      1223 q/s  p50  12.258 ms  p90  17.900 ms  p99  25.975 ms  errors 0
+strata-b-pass3 phrase                   warm-up: p50 3.610, 4.135, 3.666, 3.657 ms
+strata-b-pass3 phrase                   c=1        410 q/s  p50   2.293 ms  p90   3.016 ms  p99   4.441 ms  errors 0
+strata-b-pass3 phrase                   c=4       1048 q/s  p50   3.639 ms  p90   4.891 ms  p99   6.549 ms  errors 0
+strata-b-pass3 phrase                   c=16      1367 q/s  p50  11.335 ms  p90  14.649 ms  p99  17.894 ms  errors 0
+strata-b-pass3 prefix                   warm-up: p50 5.407, 5.286 ms
+strata-b-pass3 prefix                   c=1        280 q/s  p50   3.348 ms  p90   4.801 ms  p99   7.095 ms  errors 0
+strata-b-pass3 prefix                   c=4        696 q/s  p50   5.401 ms  p90   8.136 ms  p99  11.268 ms  errors 0
+strata-b-pass3 prefix                   c=16      1054 q/s  p50  14.445 ms  p90  20.811 ms  p99  28.295 ms  errors 0
+wrote /data/compare/run-strata-b-pass3.json
+pod "strata-0" deleted from strata-ab namespace
+pod "strata-1" deleted from strata-ab namespace
+pod "strata-coordinator" deleted from strata-ab namespace

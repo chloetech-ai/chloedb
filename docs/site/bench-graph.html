@@ -8,47 +8,44 @@
 <meta name="description" content="Strata against Neo4j, Memgraph, FalkorDB and ArangoDB on the ogbn-arxiv citation graph: neighbours, multi-hop expansions, shortest paths and personalized PageRank, with exact answers checked, load time, memory and disk.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
+<div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
 <header class="top gutter"><div class="wrap">
-  <a class="mark" href="index.html"><i><b></b><b></b><b></b></i>Strata</a>
+  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a>
   <nav class="nav" aria-label="Site">
     <a href="features.html">Features</a>
-    <a href="under-the-hood.html">Under the hood</a>
+    <a href="scale.html">Laptop to cloud</a>
     <a href="command-center.html">Command center</a>
-    <a href="compare.html">Compare</a>
     <a href="benchmarks.html" aria-current="page">Benchmarks</a>
-    <a href="examples.html">Queries</a>
     <a href="use-cases.html">Use cases</a>
-    <a href="scale.html">Small to big</a>
   </nav>
-  <div class="top-links"><a href="../">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a></div>
+  <div class="top-links"><a href="../">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
 </div></header>
-<div class="sample-banner gutter"><div class="wrap"><b>Sample</b><span>A draft of the Strata site for review. Every number in these benchmark pages is read from the raw results committed with each run, by <code>docs/site/scripts/bench_data.py</code>, and names the machine it came from.</span></div></div>
 
 <main>
-<div class="gutter"><div class="wrap page-head">
+<div class="gutter head-band"><div class="wrap page-head">
     <nav class="subnav" aria-label="Benchmark pages"><a href="benchmarks.html">Overview</a><a href="bench-10m.html">10M, cloud</a><a href="bench-1m.html">1M, cloud</a><a href="bench-laptop.html">1M, laptop cluster</a><a href="bench-embedded.html">No server</a><a href="bench-graph.html" aria-current="page">Graph</a><a href="bench-method.html">How we test</a></nav>
     <span class="eyebrow">Graph · arXiv citations · MacBook Air · 3 November 2026</span>
-    <h1>Graphs beside your rows, against four graph databases</h1>
-    <p class="lede">Strata keeps a graph as an <code>EDGES</code> field of a table's rows, or as an edge table, and walks it inside SQL. Here both layouts run against Neo4j, Memgraph, FalkorDB and ArangoDB on the ogbn-arxiv citation graph: 169,343 papers and 1,166,243 citations, 200 queries of each kind from one client, each engine alone in the same Docker VM with 3 CPUs and 6 GB. Every engine's neighbour and path answers matched an exact reference.</p>
-    <p class="verdict"><b>Strata's two layouts place first and second</b> over 16 tests: 31 and 46 points, then Memgraph 60, Neo4j 67, FalkorDB 70 and ArangoDB 80. Without the six PageRank tests, which only Strata and Neo4j can run, it is close: Strata 21, Memgraph 24.</p>
+    <h1>Graphs in your tables, against four graph databases</h1>
+    <p class="lede">Strata keeps edges in a table's rows, or in an edge table, and walks them inside SQL. Both layouts ran against Neo4j, Memgraph, FalkorDB and ArangoDB on a citation graph of 169,343 papers and 1.17M citations. Every engine's answers matched an exact reference.</p>
+    <p class="verdict"><b>Strata's two layouts place first and second</b> over 16 tests: 31 and 46 points, then Memgraph 60 and Neo4j 67. Without PageRank, which only Strata and Neo4j run, it is close: Strata 21, Memgraph 24.</p>
     <dl class="atglance">
-      <div><dt>Machine</dt><dd>MacBook Air, Apple M2, 24 GB, macOS 26.0.1; Docker Desktop VM with 4 CPUs and 8.7 GiB</dd></div>
-      <div><dt>Budget</dt><dd>Each engine <code>--cpus 3 --memory 6g</code>, no swap; the client 1 CPU and 2 GB</dd></div>
-      <div><dt>Engines</dt><dd>Neo4j 2026.10.1 with Graph Data Science, Memgraph 3.14.0 (MAGE), FalkorDB 4.22.3, ArangoDB 3.12.4.3, Strata from <code>main</code></dd></div>
-      <div><dt>Queries</dt><dd>200 seeds and 200 pairs per kind, one at a time, after 20 untimed; client time from send to the whole answer; two passes, the second reported</dd></div>
+      <div><dt>Machine</dt><dd>MacBook Air M2, 24 GB; Docker VM with 4 CPUs</dd></div>
+      <div><dt>Budget</dt><dd>3 CPUs and 6 GB per engine, alone in the VM</dd></div>
+      <div><dt>Engines</dt><dd>Neo4j 2026.10 with GDS, Memgraph 3.14, FalkorDB 4.22, ArangoDB 3.12</dd></div>
+      <div><dt>Queries</dt><dd>200 per kind from one client, after warm-up; the second of two passes</dd></div>
     </dl>
-    <div class="note"><b>One laptop</b><span>The engines and the client share the VM's 4 CPUs on a fanless MacBook Air, so the numbers compare the engines with each other, not what any of them does on a server. Sub-millisecond medians moved by up to a third between earlier passes, less than either Strata's lead on shortest paths or its deficit on short hops.</span></div>
+    <div class="note"><b>One laptop</b><span>This compares the engines with each other, not with a server. Sub-millisecond medians moved by up to a third between passes.</span></div>
   </div></div>
 
   <section class="gutter" id="rank"><div class="wrap block">
     <div class="block-head">
       <span class="eyebrow">Overall</span>
       <h2>Summed places over 16 tests</h2>
-      <p>Client median and 95th percentile on six kinds of query, PageRank's recall at two settings, load time and memory, with Strata queried over gRPC. Each of Strata's layouts is ranked as a setup of its own, and a test a setup cannot run counts as last place (6th).</p>
+      <p>Median and 95th percentile on six kinds, PageRank recall, load time and memory. Each Strata layout is ranked on its own; a test a setup cannot run counts as last.</p>
     </div>
     <div data-graph-rank></div>
   </div></section>
@@ -57,7 +54,7 @@
     <div class="block-head">
       <span class="eyebrow">Latency</span>
       <h2>Short hops: the in-memory stores. Paths and PageRank: Strata</h2>
-      <p>Memgraph and FalkorDB answer one to three hops in about half Strata's time at the median. Strata's shortest path is the fastest at the median and the 95th percentile, and so is its two-hop expansion at the 95th, where an average of 2,821 papers comes back. Its personalized PageRank takes 1.42 ms against Neo4j's 93.1, but it is an approximation: see how exact, below.</p>
+      <p>Memgraph and FalkorDB answer one to three hops in about half Strata's time. Strata is fastest on shortest paths, and on two-hop expansion at the 95th percentile. Its PageRank takes 1.42 ms against Neo4j's 93.1, as an approximation (below).</p>
     </div>
     <div class="grid">
       <div data-chart="graph-p50"></div>
@@ -69,7 +66,7 @@
     <div class="block-head">
       <span class="eyebrow">How exact</span>
       <h2>PageRank trades exactness for speed</h2>
-      <p>These are different algorithms. Strata computes personalized PageRank by local push, which touches only the seed's neighbourhood, to a tolerance (eps); Neo4j's Graph Data Science runs power iteration over the whole graph. Against the exact top 20 Neo4j is closer at every setting, and no Strata setting reaches its 0.99: Strata's finest gets 0.955 in 52.6 ms, where Neo4j's coarsest gets 0.988 in 93.1 ms.</p>
+      <p>Strata pushes from the seed's neighbourhood to a tolerance; Neo4j iterates over the whole graph. Neo4j is closer to the exact top 20 at every setting: Strata's finest gets 0.955 in 52.6 ms, Neo4j's coarsest 0.988 in 93.1 ms.</p>
     </div>
     <div data-chart="graph-ppr-recall"></div>
   </div></section>
@@ -78,7 +75,7 @@
     <div class="block-head">
       <span class="eyebrow">Load and footprint</span>
       <h2>Loaded in about a second, with the least memory and disk</h2>
-      <p>The field layout keeps each paper's citations in its row, so it writes one row a paper. Stored one row a citation, as the other engines store their edges, Strata's edge table loads in 6.22 s against Memgraph's 6.96.</p>
+      <p>The field layout writes one row a paper. As one row a citation, like the others, Strata loads in 6.22 s against Memgraph's 6.96.</p>
     </div>
     <div data-chart="graph-load"></div>
   </div></section>
@@ -90,19 +87,19 @@
       <p>This run's results are on a branch whose pull request is not merged yet.</p>
     </div>
     <ul class="files">
-      <li><a href="https://github.com/chloetech-ai/strata/blob/claude/graph-compare-mac/strata-server/results/graph-compare-mac/README.md">README.md</a>: the setup, each engine's schema, every table and both passes</li>
-      <li><a href="https://github.com/chloetech-ai/strata/tree/claude/graph-compare-mac/strata-server/results/graph-compare-mac">The directory</a>: raw reports per engine and pass, and NOTES.md on what went wrong on the way</li>
+      <li><a href="https://github.com/chloetech-ai/strata/blob/claude/graph-compare-mac/strata-server/results/graph-compare-mac/README.md">README.md</a>: setup, schemas and every table</li>
+      <li><a href="https://github.com/chloetech-ai/strata/tree/claude/graph-compare-mac/strata-server/results/graph-compare-mac">The directory</a>: raw reports per engine and pass</li>
       <li><a href="https://github.com/chloetech-ai/strata/tree/claude/graph-compare-mac/strata-server/deploy/graph-compare">deploy/graph-compare/</a>: <code>prep.py</code> (data and exact answers), <code>run.py</code> (queries) and <code>compare.sh</code></li>
     </ul>
   </div></section>
 </main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div><h4>Strata</h4><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>This site</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compare</a></li><li><a href="benchmarks.html">Benchmarks</a></li><li><a href="examples.html">Queries and examples</a></li><li><a href="use-cases.html">Use cases and demos</a></li><li><a href="scale.html">Small to big</a></li></ul></div>
-  <div><h4>Benchmarks</h4><ul><li><a href="bench-10m.html">10M documents, cloud</a></li><li><a href="bench-1m.html">1M documents, cloud</a></li><li><a href="bench-laptop.html">1M documents, laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
-  <div><h4>Documentation</h4><ul><li><a href="../strata/">Design</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li><li><a href="../strata/python.html">Python</a></li><li><a href="../strata/results.html">Results</a></li></ul></div>
-  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../engram/">Engram</a></li><li><a href="../reproduce.html">Reproducing the results</a></li></ul></div>
+  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
+  <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="../strata/">Documentation</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../engram/">Engram</a></li><li><a href="../reproduce.html">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="assets/bench-data.js"></script>
 <script src="assets/site.js"></script>
