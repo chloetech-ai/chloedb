@@ -8,33 +8,30 @@
 <meta name="description" content="Strata against thirteen search engines and databases at 1M and 10M documents, against SQLite, DuckDB, LanceDB and Tantivy inside an app, and against four graph databases. First overall when every kind of query is needed, with every loss shown and every raw result linked.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
+<div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
 <header class="top gutter"><div class="wrap">
-  <a class="mark" href="index.html"><i><b></b><b></b><b></b></i>Strata</a>
+  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a>
   <nav class="nav" aria-label="Site">
     <a href="features.html">Features</a>
-    <a href="under-the-hood.html">Under the hood</a>
+    <a href="scale.html">Laptop to cloud</a>
     <a href="command-center.html">Command center</a>
-    <a href="compare.html">Compare</a>
     <a href="benchmarks.html" aria-current="page">Benchmarks</a>
-    <a href="examples.html">Queries</a>
     <a href="use-cases.html">Use cases</a>
-    <a href="scale.html">Small to big</a>
   </nav>
-  <div class="top-links"><a href="../">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a></div>
+  <div class="top-links"><a href="../">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
 </div></header>
-<div class="sample-banner gutter"><div class="wrap"><b>Sample</b><span>A draft of the Strata site for review. Every number in these benchmark pages is read from the raw results committed with each run, by <code>docs/site/scripts/bench_data.py</code>, and names the machine it came from.</span></div></div>
 
 <main>
-<div class="gutter"><div class="wrap page-head">
-    <nav class="subnav" aria-label="Benchmark pages"><a href="benchmarks.html" aria-current="page">Overview</a><a href="bench-10m.html">10M, cloud</a><a href="bench-1m.html">1M, cloud</a><a href="bench-laptop.html">1M, laptop cluster</a><a href="bench-embedded.html">No server</a><a href="bench-graph.html">Graph</a><a href="bench-method.html">How we test</a></nav>
+  <div class="gutter head-band"><div class="wrap page-head">
+    <nav class="subnav" aria-label="Benchmark pages"><a href="benchmarks.html" aria-current="page">Overview</a><a href="bench-10m.html">10M, cloud</a><a href="bench-1m.html">1M, cloud</a><a href="bench-laptop.html">1M, laptop</a><a href="bench-embedded.html">No server</a><a href="bench-graph.html">Graph</a><a href="bench-method.html">How we test</a></nav>
     <span class="eyebrow">Benchmarks</span>
     <h1>First overall when one system has to do it all</h1>
-    <p class="lede">Applications rarely need one kind of query. They need full text, filters, facets, key lookups, SQL, vectors and the fusion of text and vectors, over data that keeps changing. So we test all of them at once: Strata against thirteen search engines and databases on fourteen kinds of query, at 1M and 10M documents, on a laptop and in the cloud; against SQLite, DuckDB, LanceDB and Tantivy inside an app; and against four graph databases. Strata finishes first overall in each of these comparisons. It is not the fastest at everything, and this page says where it is not.</p>
-    <p class="updated">Updated 4 November 2026 · measured, never edited · raw results linked from every page</p>
+    <p class="lede">Applications need full text, filters, SQL, vectors and hybrids together. We test all of them at once, against thirteen search engines and databases. Strata is not the fastest at everything, and this page shows where.</p>
+    <p class="updated">Updated 4 November 2026 · measured, never edited</p>
   </div></div>
 
   <section class="gutter" id="results"><div class="wrap block">
@@ -42,96 +39,90 @@
       <a href="bench-10m.html" data-overall="cloud-10m" data-mode="tile"></a>
       <a href="bench-1m.html" data-overall="cloud-1m" data-mode="tile"></a>
       <a href="bench-laptop.html" data-overall="laptop" data-mode="tile"></a>
-      <a href="bench-embedded.html"><span class="eyebrow">No server · inside an app</span><span class="v">1.9× to 23×</span><p>Faster hybrid search than SQLite, DuckDB or LanceDB on every BEIR collection tested, with nDCG@10 within 0.02 of the best; 1.9× is Strata held to one thread.</p></a>
-      <a href="bench-graph.html"><span class="eyebrow">Graph · arXiv citations</span><span class="v">1st of 5</span><p>Against Neo4j, Memgraph, FalkorDB and ArangoDB over 16 tests: Strata 31 points, Memgraph 60, Neo4j 67.</p></a>
-      <a href="bench-10m.html#writes"><span class="eyebrow">Fresh writes · DigitalOcean</span><span class="v">8.2 ms</span><p>From a write to a search that finds it, at the median, at 10M: Vespa 10.0 ms, OpenSearch 641, Elasticsearch 796. At 1M, 5.7 ms.</p></a>
+      <a href="bench-embedded.html"><span class="eyebrow">No server · inside an app</span><span class="v">1.9× to 23×</span><p>Faster hybrid search than SQLite, DuckDB or LanceDB on every BEIR collection tested.</p></a>
+      <a href="bench-graph.html"><span class="eyebrow">Graph · arXiv citations</span><span class="v">1st of 5</span><p>Against Neo4j, Memgraph, FalkorDB and ArangoDB: Strata 31 points, Memgraph 60.</p></a>
+      <a href="bench-10m.html#writes"><span class="eyebrow">Fresh writes · 10M</span><span class="v">8.2 ms</span><p>From a write to a search that finds it, at the median. Vespa 10.0 ms, OpenSearch 641.</p></a>
     </div>
   </div></section>
 
   <section class="gutter" id="scoreboard"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">At a glance</span>
       <h2>Strata's place on every kind of query</h2>
-      <p>Each column is one comparison; each cell is Strata's place on one kind of query among the engines in it. The pattern repeats: first or close to it on vectors, hybrids, filtered vectors and facets; mid-table to near the top on full text; behind the specialists on typo-tolerant search, SQL aggregates and key lookups. No other engine is in the top half as often.</p>
+      <p>First or close to it on vectors, hybrids and facets. Behind the specialists on typos, SQL aggregates and key lookups.</p>
     </div>
     <div data-scoreboard></div>
   </div></section>
 
   <section class="gutter" id="losses"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">Where Strata loses</span>
       <h2>Where another system is clearly faster</h2>
-      <p>Each report lists its losses beside its wins. These are the large ones, and what is being done about each.</p>
+      <p>The large losses, and what is being done about each.</p>
     </div>
     <div class="losses">
-      <div class="loss"><div><h3>Typo-tolerant search</h3><div class="nums">10M, cloud · median 824 ms<br>Elasticsearch 32.7, OpenSearch 45.3<br>1M, cloud · 120 ms, Typesense 6.54</div></div>
-        <p>A misspelt word was expanded against the whole term dictionary, and a cluster walked it twice. <span class="fix">Since fixed on <code>main</code> (#242): a faster walk and a frequency-aware <code>'auto'</code> cut a coordinator's median typed query from 112 to 15.8 ms on a Xeon VM. Neither cloud run had it, and the engines have not been compared again with it.</span></p></div>
-      <div class="loss"><div><h3>SQL aggregates</h3><div class="nums">10M, cloud · 4,274 ms<br>OpenSearch 4.86, Elasticsearch 7.75<br>1M, cloud · 178 ms, OpenSearch 4.29<br>No server · 881 ms, DuckDB 10.1</div></div>
-        <p>A <code>GROUP BY</code> with <code>HAVING</code> over a filtered table: Strata's largest loss, and it grows with the data. Elasticsearch and OpenSearch answer it from doc-value aggregations, DuckDB with its vectorised column engine. Inside an app Strata's aggregates are 2 to 4 times faster than SQLite's and 11 to 87 times slower than DuckDB's. Not fixed yet.</p></div>
-      <div class="loss"><div><h3>BM25 under load</h3><div class="nums">10M, cloud · 16 clients 493 q/s<br>OpenSearch 777, Elasticsearch 608<br>1M, cloud · 1,128 q/s, Qdrant 2,276</div></div>
-        <p>Every BM25 query through a coordinator took two rounds to the shards: term statistics, then the query. At one client Strata is level with OpenSearch at 10M (4.36 against 4.32 ms). <span class="fix">Fixed after both runs (#245): the coordinator keeps each shard version's statistics, +51% at 16 clients in a container (1,026 to 1,547 q/s), same answers. A cloud re-run is in progress.</span></p></div>
-      <div class="loss"><div><h3>Key lookups</h3><div class="nums">10M, cloud · 0.86 ms, 5th of 9<br>Postgres 0.37, Weaviate 0.39<br>1M, cloud · 1.30 ms, 10th of 14</div></div>
-        <p>At 10M every engine used its own read by id, Strata its key API, and Postgres, Weaviate, ParadeDB and Qdrant answered in about half Strata's time. The 1M run sent Strata's lookup as SQL through the query planner. Inside an app a read by key takes 21 µs, and SQLite's read by row id 8 µs.</p></div>
-      <div class="loss"><div><h3>Vector recall at the shared settings</h3><div class="nums">10M, cloud · recall@10 0.795<br>Qdrant 0.941, Postgres 0.826<br>1M, cloud · 0.801, Qdrant 0.901</div></div>
-        <p>Every engine gets HNSW with m 16, ef_construction 200 and a search list of 64. Strata scores 8-bit codes and re-scores the best 40 with full vectors, so its vector speeds are measured at this recall: read the two together. Inside an app, at its defaults, Strata's similar-items recall is 0.996.</p></div>
-      <div class="loss"><div><h3>Single-row writes inside an app</h3><div class="nums">No server · one row a commit 4,022/s<br>SQLite 5,128 (FULL), 11,091 (NORMAL)</div></div>
-        <p>SQLite is faster at one durable row a commit and at updating one row's price. Batches turn it around: at 1,000 rows a commit Strata takes 95,670 rows a second to SQLite's 18,905. Updating indexed text or a vector was the worst case, 60 title updates a second to SQLite's 735 (FULL). <span class="fix">Keyed updates (#223) since raised it to 1,797 a second, measured on a newer CPU where SQLite was not run again.</span></p></div>
-      <div class="loss"><div><h3>A feed through a graph walk, and one-hop neighbours</h3><div class="nums">No server · feed 125 ms, LanceDB 28.3<br>Graph · 1 hop 0.35 ms, Memgraph 0.18</div></div>
-        <p>The feed's personalized PageRank over a 3.7M-edge table is 108 of its 113 ms, spent resolving keys and neighbours. In-memory graph stores answer one and two hops in about half Strata's time; Strata leads on paths and PageRank.</p></div>
+      <div class="loss"><div><h3>Typo-tolerant search</h3><div class="nums">10M · 824 ms; Elasticsearch 32.7</div></div>
+        <p>A misspelt word was expanded against the whole dictionary. <span class="fix">Fixed on <code>main</code> after the runs (#242); not compared again yet.</span></p></div>
+      <div class="loss"><div><h3>SQL aggregates</h3><div class="nums">10M · 4,274 ms; OpenSearch 4.86</div></div>
+        <p>A <code>GROUP BY</code> with <code>HAVING</code> over a filtered table. Strata's largest loss, and it grows with the data. Not fixed yet.</p></div>
+      <div class="loss"><div><h3>BM25 at 16 clients</h3><div class="nums">10M · 493 q/s; OpenSearch 777</div></div>
+        <p>Each query through a coordinator took two rounds to the shards. <span class="fix">Fixed after the runs (#245): 30% more queries a second on the same DigitalOcean nodes.</span></p></div>
+      <div class="loss"><div><h3>Key lookups</h3><div class="nums">10M · 0.86 ms, 5th of 9; Postgres 0.37</div></div>
+        <p>Postgres, Weaviate, ParadeDB and Qdrant read a row by id in about half Strata's time.</p></div>
+      <div class="loss"><div><h3>Vector recall at shared settings</h3><div class="nums">10M · recall@10 0.795; Qdrant 0.941</div></div>
+        <p>Strata scores 8-bit codes and re-scores the best 40, so read its vector speeds with this recall.</p></div>
+      <div class="loss"><div><h3>Single-row writes in an app</h3><div class="nums">One row a commit 4,022/s; SQLite 5,128</div></div>
+        <p>SQLite wins one row a commit; batches turn it around, 95,670 rows a second to SQLite's 18,905.</p></div>
     </div>
   </div></section>
 
   <section class="gutter" id="reports"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">Every report</span>
-      <h2>Six reports, each with its setup, its losses and its raw data</h2>
+      <h2>Every report</h2>
+      <p>Each has its setup, its wins, its losses and its raw data.</p>
     </div>
     <div class="reports">
-      <a class="report" href="bench-10m.html"><span class="eyebrow">Cluster · 10M passages · DigitalOcean</span><h3>Fourteen engines at 10M</h3><p class="res" data-overall="cloud-10m"></p><p class="small muted">MS MARCO v2.1, 768-dimension Arctic vectors. Each engine on two 4-vCPU, 32 GB machines of its own, or one 8-vCPU, 64 GB machine; one pass.</p><span class="more">Read the report →</span></a>
-      <a class="report" href="bench-1m.html"><span class="eyebrow">Cluster · 1M passages · DigitalOcean</span><h3>Fourteen engines at 1M</h3><p class="res" data-overall="cloud-1m"></p><p class="small muted">The same machines and data at 1M, three passes, plus writes, freshness and streams for the five engines that shard.</p><span class="more">Read the report →</span></a>
-      <a class="report" href="bench-laptop.html"><span class="eyebrow">Cluster · 1M passages · laptop</span><h3>Fourteen engines on one laptop</h3><p class="res" data-overall="laptop"></p><p class="small muted">BEIR NQ with nDCG@10 from its judgments, on a kind cluster inside a MacBook Air: 3 CPUs and 6 GiB per engine.</p><span class="more">Read the report →</span></a>
-      <a class="report" href="bench-embedded.html"><span class="eyebrow">No server · one file in an app</span><h3>Against SQLite, DuckDB, LanceDB and Tantivy</h3><p class="res"><b>First on search, hybrids and recommendations</b>; behind SQLite on single-row work and DuckDB on aggregates.</p><p class="small muted">A shop of 137,260 products and 4.6M reviews, five BEIR collections, writes and streams, on one 8-vCPU DigitalOcean node.</p><span class="more">Read the report →</span></a>
-      <a class="report" href="bench-graph.html"><span class="eyebrow">Graph · 169,343 papers</span><h3>Against four graph databases</h3><p class="res"><b>1st of 5</b> over 16 tests: Strata 31, Memgraph 60, Neo4j 67, FalkorDB 70, ArangoDB 80.</p><p class="small muted">The ogbn-arxiv citation graph: hops, shortest paths and personalized PageRank, in Docker on a MacBook Air.</p><span class="more">Read the report →</span></a>
-      <a class="report" href="bench-method.html"><span class="eyebrow">Method</span><h3>How we test, and what we audited</h3><p class="res">Equal budgets, answers checked beside speed, medians over passes, and a fairness audit of our own runs.</p><p class="small muted">The query kinds, the ranking rule, what is left out and why, and how to run it all yourself.</p><span class="more">Read the method →</span></a>
+      <a class="report" href="bench-10m.html"><span class="eyebrow">10M passages · cloud</span><h3>Fourteen engines at 10M</h3><p class="res" data-overall="cloud-10m" data-mode="chip"></p><p class="small muted">MS MARCO on DigitalOcean, equal machines per engine, one pass.</p><span class="more">Read the report →</span></a>
+      <a class="report" href="bench-1m.html"><span class="eyebrow">1M passages · cloud</span><h3>Fourteen engines at 1M</h3><p class="res" data-overall="cloud-1m" data-mode="chip"></p><p class="small muted">The same machines at 1M, three passes, plus writes and streams.</p><span class="more">Read the report →</span></a>
+      <a class="report" href="bench-laptop.html"><span class="eyebrow">1M passages · laptop</span><h3>Fourteen engines on one laptop</h3><p class="res" data-overall="laptop" data-mode="chip"></p><p class="small muted">BEIR NQ with judged answers, on a cluster inside a MacBook Air.</p><span class="more">Read the report →</span></a>
+      <a class="report" href="bench-embedded.html"><span class="eyebrow">No server</span><h3>Against SQLite, DuckDB, LanceDB and Tantivy</h3><p class="res"><b>First on search, hybrids and recommendations</b></p><p class="small muted">One file in an app: reads, writes, search and feeds.</p><span class="more">Read the report →</span></a>
+      <a class="report" href="bench-graph.html"><span class="eyebrow">Graph</span><h3>Against four graph databases</h3><p class="res"><b>1st of 5</b> over 16 tests</p><p class="small muted">Hops, shortest paths and PageRank on 169,343 papers.</p><span class="more">Read the report →</span></a>
+      <a class="report" href="bench-method.html"><span class="eyebrow">Method</span><h3>How we test</h3><p class="res">Equal budgets, checked answers, medians, and an audit of our own runs.</p><p class="small muted">And how to run every benchmark yourself.</p><span class="more">Read the method →</span></a>
     </div>
   </div></section>
 
   <section class="gutter" id="principles"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">Principles</span>
       <h2>How we keep it fair</h2>
     </div>
     <div class="principles">
-      <div><b>The same resources</b><p>Every engine gets the same CPUs and memory as Kubernetes limits, on machines of its own, with the same data, text analysis and vectors.</p></div>
-      <div><b>Answers checked beside speed</b><p>Recall@10 against an exact search, and nDCG@10 where the collection has judgments. A fast wrong answer does not win.</p></div>
-      <div><b>Medians, not the best run</b><p>Three passes at 1M, and the median of each test. The cold first pass alone is not used: it penalises engines on the JVM.</p></div>
-      <div><b>Every gap shown</b><p>A kind an engine cannot run is marked and counts as last place. Paid features run on trial licences say so. Failed runs are reported, not dropped.</p></div>
-      <div><b>Load left out of the ranking</b><p>Strata's cluster shards were built offline from local files while the others took their documents over HTTP, so load times are shown but never ranked.</p></div>
-      <div><b>Open and reproducible</b><p>The scripts, settings, images, the data's SHA-256 sums and every raw report are in the repository, with the machine each number came from.</p></div>
+      <div><b>The same resources</b><p>Same CPUs, memory, data and vectors for every engine, on machines of its own.</p></div>
+      <div><b>Answers checked</b><p>Recall@10 against exact search, and nDCG@10 where there are judgments.</p></div>
+      <div><b>Medians, not the best run</b><p>The median of three passes where there were three.</p></div>
+      <div><b>Every gap shown</b><p>A kind an engine cannot run counts as last place, and failed runs are reported.</p></div>
+      <div><b>Load not ranked</b><p>Strata's shards were built offline, so load times are shown but not ranked.</p></div>
+      <div><b>Reproducible</b><p>Scripts, settings, data hashes and raw results are all in the repository.</p></div>
     </div>
   </div></section>
 
   <section class="gutter" id="faq"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">Questions</span>
-      <h2>Frequently asked</h2>
+      <h2>Questions</h2>
     </div>
     <div class="faq">
-      <details><summary>Are we biased?</summary><p>Probably, yes. We build Strata, we chose the query kinds and we wrote every engine's queries. To keep that in check, each engine runs at its defaults plus the tuning its own documentation recommends, every setting and request is in <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/deploy/compare/README.md">the method</a>, and we audited our own runs and changed how we report them (<a href="bench-method.html#audit">what we found</a>). If you know a better configuration for any engine, open an issue or a pull request and we will run it again.</p></details>
-      <details><summary>Why rank by summed places instead of average speed?</summary><p>Latencies differ by a thousand times between kinds of query, so an average of speeds is decided by the slowest kind. Places weigh every test the same: each engine is 1st, 2nd and so on per test, and the places add up. The <a href="bench-1m.html#places">per-kind tables</a> show every place and value, so any other weighting can be read off them.</p></details>
-      <details><summary>Doesn't counting a missing kind as last favour Strata?</summary><p>It favours breadth, which is what a mixed workload needs, and it matters. At 1M in the cloud, on only the seven kinds every engine runs, Milvus is first, Qdrant second and Strata third; on the average place over only the tests each engine ran, Milvus, which runs 10 of the 14 kinds, leads. At 10M, Postgres, which answered 18 of the 45 tests, comes first under both rules. Each report shows its ranking under these rules beside the main one.</p></details>
-      <details><summary>Why are only nine engines ranked at 10M?</summary><p>Five did not run at the 1M run's 52 GiB: Typesense and Milvus ran out of memory, Meilisearch and Manticore were still loading after nine and eight hours, and Redis keeps everything in memory. Milvus and Redis then ran on a 128 GB machine with the same CPUs; <a href="bench-10m.html#big">their numbers</a> are shown beside the others but not ranked, since they had twice the memory. <a href="bench-10m.html#failed">What did not finish</a> has the details.</p></details>
-      <details><summary>Can I run it myself?</summary><p>Yes. Each report links its scripts and raw results, and <a href="bench-method.html#reproduce">How we test</a> has the commands, for one laptop or a cloud account.</p></details>
+      <details><summary>Are we biased?</summary><p>Probably. We build Strata and wrote every engine's queries. Each engine runs at its defaults plus the tuning its documentation recommends, every setting is in <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/deploy/compare/README.md">the method</a>, and we <a href="bench-method.html#audit">audited our own runs</a>. If you know a better configuration, open an issue and we will run it again.</p></details>
+      <details><summary>Why sum places instead of averaging speeds?</summary><p>Latencies differ a thousandfold between kinds of query, so an average is decided by the slowest kind. Places weigh every test the same.</p></details>
+      <details><summary>Doesn't counting a missing kind as last favour Strata?</summary><p>It favours breadth, which a mixed workload needs. On only the kinds every engine runs, Milvus leads at 1M and Postgres at 10M. Each report shows its ranking under five rules.</p></details>
+      <details><summary>Why only nine engines at 10M?</summary><p>Five did not run in 52 GiB. Milvus and Redis then ran with twice the memory: <a href="bench-10m.html#big">shown, not ranked</a>.</p></details>
+      <details><summary>Can I run it myself?</summary><p>Yes: <a href="bench-method.html#reproduce">How we test</a> has the commands for a laptop or a cloud account.</p></details>
     </div>
   </div></section>
 </main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div><h4>Strata</h4><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
-  <div><h4>This site</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compare</a></li><li><a href="benchmarks.html">Benchmarks</a></li><li><a href="examples.html">Queries and examples</a></li><li><a href="use-cases.html">Use cases and demos</a></li><li><a href="scale.html">Small to big</a></li></ul></div>
-  <div><h4>Benchmarks</h4><ul><li><a href="bench-10m.html">10M documents, cloud</a></li><li><a href="bench-1m.html">1M documents, cloud</a></li><li><a href="bench-laptop.html">1M documents, laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
-  <div><h4>Documentation</h4><ul><li><a href="../strata/">Design</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li><li><a href="../strata/python.html">Python</a></li><li><a href="../strata/results.html">Results</a></li></ul></div>
-  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../engram/">Engram</a></li><li><a href="../reproduce.html">Reproducing the results</a></li></ul></div>
+  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
+  <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="../strata/">Documentation</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../engram/">Engram</a></li><li><a href="../reproduce.html">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="assets/bench-data.js"></script>
 <script src="assets/site.js"></script>

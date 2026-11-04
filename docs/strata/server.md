@@ -1155,7 +1155,7 @@ A local database merges its segments on merger threads as writes add them ([how 
 
 The navigation has four groups for running a fleet, **Operate**, **Diagnose**, **Change** and **Data**, and **Labs**, the tools for search engineers, collapsed (pin one to keep it in the sidebar).
 
-![Home: a coordinator over two shards, each with a replica](../assets/img/strata-command-center.png)
+![Home: a coordinator over two shards of two copies, all serving, with queries, latency and disks against their limits](../assets/img/strata-command-center-home.png)
 
 **Operate**
 
@@ -1174,7 +1174,7 @@ The navigation has four groups for running a fleet, **Operate**, **Diagnose**, *
 - **Query path** (a coordinator) runs a query, with its parameters, 10 to 100 times, one after the other, says first how many shard calls that makes, and takes each run's steps apart: a radar with the coordinator in the middle and a spoke per shard as long as its call (the shard's own time thickened inside it), each shard's call times over the runs against the coordinator's hedge (`--hedge-ms`), and which shard was the last to answer how often, which tells a slow shard from chance. From the same runs it estimates the p99 if the coordinator asked another copy sooner, and how many calls that would send twice.
 - **Tables and storage** (`#/tables`) answers four questions for every table at once: which is growing, which shard is skewed, which shard is hot, which copy is stale. Sizes come from [`GET /v1/index/tables`](#the-index-inspector); a row opens its shards against the mean and its copies' lag, and the table's name opens **Table details** (`#/inspector?table=`): how many documents and fields it has, how its bytes split between each field's index, the doc store and the rest (a treemap), the size of its documents and of each field's values (histograms and percentiles), each field's fill, tokens, distinct terms and range, how fresh each copy is, how the shards compare, and how often its documents are retrieved and its keys asked for. Click the cluster, a shard or a replica in the map at its top and every number follows ([below](#the-index-inspector)).
 
-![Query path: twenty runs of a search over four shards, the run's radar, each shard's times and the last to answer](../assets/img/strata-command-center-querypath.png)
+![Query path: twenty runs of a search over two shards, the run's radar, each shard's times and the last to answer](../assets/img/strata-command-center-querypath.png)
 
 **Change**
 
@@ -1184,9 +1184,9 @@ The navigation has four groups for running a fleet, **Operate**, **Diagnose**, *
 - **Settings** edits, on Kubernetes, every fleet-wide setting of the StrataCluster's spec, each saying what it does at its value, when it makes the cluster less safe, where its value comes from and what applying it takes (a restart of every server, one at a time, of the coordinators, or nothing). The coordinator plans the change, and one **Apply**, with a reason, hands it to the operator, whose progress then shows. On machines of your own it shows the flags the cluster reports and how to change one, a server at a time. **Upkeep** says how the replicas compare (copies that differ, copies never compared), runs **Compare every shard now**, and shows the fullest disks against 80% and 90%. **This coordinator** shows its process, limits, configuration and the `/metrics` text. A server that is not in a cluster keeps its operations (check, vacuum, checkpoint, compare the replicas, a snapshot lease, reset statistics), each answering in words.
 - **Cloud setup** plans a cluster on [Amazon EKS](#on-aws) or [DigitalOcean Kubernetes](#on-digitalocean), picked at its top (and in the address, `#/cloud?provider=digitalocean`), starting from the running cluster's size. Save an AWS access key or a DigitalOcean token (checked with the cloud, then shown only masked); when the keys come from the server's environment it asks the cloud nothing on open and says what using them would call. The view reads the region's machines with their prices and the account's limit: AWS's vCPU quotas, or DigitalOcean's droplet limit. The machines are a chart of memory against price an hour (coloured by what each is for; on AWS, on demand or spot, Graviton filled and x86-64 hollow; on DigitalOcean, shared CPUs hollow; the suggested ones ringed) and a table to sort and filter; pick one, then the nodes (1 to 1,000), shards, copies of each, coordinators and each copy's volume (on DigitalOcean also the control plane and the Kubernetes version), and see where every copy goes, each copy's share of a node's memory and CPU, the cost an hour, a day and a month line by line, and whether the account's limit allows it. **Check with AWS** has CloudFormation check the template, and **Check with DigitalOcean** asks DigitalOcean again for the account, the region, the size, the version and the droplet limit. **Create it** makes the cluster after its name is typed again (and not while the account's limit is too small). **Clusters made here** follows each one: where it is (the stack or cluster, Strata, the copies, ready), the cost so far, its last step and what happened before it, the StrataCluster's status, why it failed, the commands that open its command center, and **Delete**, also after typing its name. The files that make the cluster yourself (the template, or DOKS's request) and the operator's and the cluster's manifests also download, with the commands that make the cluster and delete it.
 
-![Rollout: a new image held by its p99 gate after five of twelve restarts, with its steps, timeline, gates and versions (a sample status: no pods run here)](../assets/img/strata-command-center-rollout.png)
+![Rollouts on machines of your own: the version every copy runs, and the steps that upgrade one copy at a time](../assets/img/strata-command-center-rollout.png)
 
-![Autoscaling: the rules as sentences, and a sample week replayed on them against three copies a shard (a stand-in StrataCluster with synthetic load)](../assets/img/strata-command-center-autoscale.png)
+![Autoscaling: the rules as sentences, each setting a word to click, on machines of your own where nothing runs them](../assets/img/strata-command-center-autoscale.png)
 
 ![Cloud, on DigitalOcean: the sizes of nyc3 by memory and price, a plan of four m-4vcpu-32gb nodes, where its copies go, what it costs, and DigitalOcean's answer that it would take the cluster (token replaced)](../assets/img/strata-command-center-cloud.png)
 
@@ -1198,17 +1198,17 @@ The navigation has four groups for running a fleet, **Operate**, **Diagnose**, *
 - **Schema** draws every table as a card with its fields, linked by references (crow's feet), edge tables and `EDGES` fields, and inside each card the vectors embedded from text, generated and derived text and semantic IDs. Drag the cards, hover one to see its links, click it for its fields, links, models, rank profiles and `CREATE TABLE`, and for each `JSON` field the tree of [its paths](query-language.md#which-paths-a-field-holds-json_paths) (the share of rows holding each, its types, its range or values; click one to facet it or query its rows), and query, template or drop it. **Design a table** builds a new one by dragging types into it, with each type's options, table options (`shard_by`, `cluster_by`, `retain`, `edges`) and templates; the server checks it as you go and shows the statement that creates it.
 - **Import and export** loads a CSV, TSV, JSON Lines or JSON file into a table or a new table made for it: the first rows show with the type each column reads as and the field it goes to, before anything is written, and the upload shows its progress. A SQLite file shows its import plan first, table by table. The database (or some tables) downloads as a SQLite file, and the stream sources show each one's last offset, with a box that sends operations to `/v1/stream`.
 
-![Logs: every server's lines kept in Strata, a shard's outage and its return, by level, server and module](../assets/img/strata-command-center-logs.png)
+![Logs: every server's lines kept in Strata, by level, shard and server](../assets/img/strata-command-center-logs.png)
 
-![The SQL workbench: completion, the answer with scores, the plan](../assets/img/strata-command-center-sql.png)
+![The SQL workbench: a count by brand over a search, its answer, and the tables and snippets beside it](../assets/img/strata-command-center-sql.png)
 
-![The profiler: a ranked query's steps as a flame chart beside its trace, segments on two threads, and the operator tree with self and CPU time](../assets/img/strata-command-center-profiler.png)
+![The profiler: a ranked query's time, CPU and rows, and its steps as a flame chart with each shard's call](../assets/img/strata-command-center-profiler.png)
 
 ![A CPU profile: a ranked query run in a loop by four callers for 5 s, its CPU time and runs, and the flame graph of every thread's stacks by pool](../assets/img/strata-command-center-cpu.png)
 
-![Memory: the heap and resident memory over time, an allocation profile of a ranked query run in a loop, and the flame graph of where its bytes were allocated](../assets/img/strata-command-center-memory.png)
+![Memory: an allocation profile of the whole server over 5 s, and the flame graph of where its bytes were allocated](../assets/img/strata-command-center-memory.png)
 
-![The schema: tables, references, an edge table and embedded vectors](../assets/img/strata-command-center-schema.png)
+![The schema: a table's fields and the vector embedded from its text](../assets/img/strata-command-center-schema.png)
 
 **Labs**
 
@@ -1221,17 +1221,17 @@ The navigation has four groups for running a fleet, **Operate**, **Diagnose**, *
 - **Graph explorer** draws rows as nodes and their links as edges (an edge table, an `EDGES` field, or a vector field's nearest rows), laid out by forces: drag a node to pin it, scroll to zoom. Search to add nodes, open one to add its neighbours (`REACHABLE`), rank the graph from it with personalized PageRank (`ppr`), and shift-click another, or type its key, for the shortest path (`PATH`); colour and size follow fields, and each walk shows its SQL.
 - **Query console** is the earlier UI, below (`#/classic`).
 
-![The query builder: a hybrid search with filters and a boost, the SQL it writes and the rows each stage kept](../assets/img/strata-command-center-builder.png)
+![The query builder: the stages to drag blocks onto, the SQL it writes, and the rows each stage kept](../assets/img/strata-command-center-builder.png)
 
-![The relevance lab: BM25 against a weighted hybrid, graded rows and how they moved](../assets/img/strata-command-center-relevance.png)
+![The relevance lab: BM25 against a weighted hybrid, and where each row moved](../assets/img/strata-command-center-relevance.png)
 
 ![Recsys eval: two variants of a ranking against the events that followed, by position, feature and segment](../assets/img/strata-command-center-recsys.png)
 
 ![Semantic IDs: a codebook's first two levels as a sunburst, coloured by category, and the rows of a code](../assets/img/strata-command-center-sid.png)
 
-![Autocomplete: completions with typos as you type, each keystroke's latency, and latency by prefix length](../assets/img/strata-command-center-autocomplete.png)
+![Autocomplete: a brand completed as it is typed, and each keystroke's latency](../assets/img/strata-command-center-autocomplete.png)
 
-![The graph explorer: an "also viewed" edge table, PageRank from a node and the shortest path to another](../assets/img/strata-command-center-graph.png)
+![The graph explorer: products linked to their nearest vectors, coloured by brand](../assets/img/strata-command-center-graph.png)
 
 One time range applies to every view and is kept in the link: 15 minutes to 7 days, or a fixed window (past the last hour the series come from the log store's minutes). Views without a time axis (the SQL workbench, Schema, Labs) hide it. **Share** copies a link that opens the same view and window, paused; it never holds a key. When the API does not answer, the top bar says so and since when, and every panel says how old its data is. `Ctrl K` (`⌘K`) finds a shard, a copy (`s9-2`), a node, a table, a statement, an alert, a key or a view, and what to do about it; `g` then a letter goes to a view, and `?` lists the shortcuts. On a phone the navigation is behind the menu button and panels open full screen. The page follows the system's light or dark theme unless you choose one.
 

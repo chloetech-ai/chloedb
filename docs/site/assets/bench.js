@@ -15,6 +15,8 @@
  *   data-num="cloud-1m:p50:strata:bm25" one number, inline
  *   data-overall="cloud-1m"     Strata's overall place (data-mode="tile" or "line")
  *   data-variants="cloud-1m"    the ranking under other rules
+ *   data-rank-mini="cloud-10m"  the top few by summed places, and Strata (data-top)
+ *   data-engine-names="a,b"     the engines the reports measured (data-also adds names)
  */
 (function () {
   "use strict";
@@ -102,7 +104,7 @@
       h += '<div class="rb-row' + (self ? " self" : "") + '" role="row"><span class="rb-pl" role="cell">' + (i + 1) + '</span><span class="rb-name" role="cell">' + esc(engineName(rep, r.e)) + '</span><span class="rb-bar" role="cell"><i style="width:' + w.toFixed(1) + '%"></i><b>' + r.points + '</b></span><span class="rb-own" role="cell">' + r.half + ' <span class="muted">of ' + rep.tests + '</span></span><span class="rb-own" role="cell">' + fmt(r.own, 2) + (r.cant ? ' <span class="muted">on ' + r.ran + " tests; no result on " + r.cant + (r.cant === 1 ? " kind" : " kinds") + "</span>" : ' <span class="muted">on all ' + rep.tests + "</span>") + "</span></div>";
     });
     h += "</div>";
-    h += '<p class="small muted">' + rep.tests + " tests: each of 14 query kinds at three measures (median and 99th-percentile latency at 1 client, queries a second at 4 clients) and recall@10 on the three vector kinds" + (rep.passes > 1 ? ", each on the median of " + rep.passes + " passes" : ", one pass after warm-up") + ". An engine takes its place on each test (1st, 2nd and so on) and the places add up, so " + best + " points is the best total here and an engine second on every test would score " + (rep.tests * 2) + ". A kind an engine cannot run, or did not answer, counts as last place (" + n + "): that rewards breadth, which is the point of a mixed workload. The last two columns show how often each engine finished in the top half (" + Math.floor(n / 2) + " or better), and its average place on only the tests it ran. " + srcLink(rep) + "</p>";
+    h += '<p class="small muted">' + rep.tests + " tests: 14 kinds at three measures, plus recall on the vector kinds" + (rep.passes > 1 ? ", medians of " + rep.passes + " passes" : ", one pass") + ". Places add up, so fewer points is better (" + best + " is the best here); a kind an engine cannot run counts as last (" + n + "). <a href=\"bench-method.html#ranking\">How the ranking works</a>. " + srcLink(rep) + "</p>";
     el.innerHTML = h;
   }
 
@@ -308,7 +310,7 @@
       h += "</tr>";
     });
     h += "</tbody></table></div>";
-    h += '<p class="small muted">Inserts and updates at 16 clients; searchable after: the median from a write to the first search that finds it; the stream rates are documents a second; best in each column bold.</p>';
+    h += '<p class="small muted">Inserts and updates at 16 clients; searchable after is the median from a write to the first search that finds it; streams in documents a second; best in bold.</p>';
     el.innerHTML = h;
   }
 
@@ -392,6 +394,38 @@
     else el.innerHTML = "<b>" + head + "</b> on summed places over " + rep.tests + " tests (" + passes + "): " + top + ".";
   }
 
+  /* ------------------------------------------------------ short ranking */
+  // The top few engines by summed places, and Strata wherever it lands.
+  function renderRankMini(el) {
+    var rep = R[el.getAttribute("data-rank-mini")];
+    if (!rep) { el.innerHTML = '<p class="rmini-cap">Results pending.</p>'; return; }
+    var top = parseInt(el.getAttribute("data-top") || "5", 10);
+    var max = rep.rank[rep.rank.length - 1].points;
+    var h = '<ol class="rmini" aria-label="Engines by summed places, fewest points first">';
+    rep.rank.forEach(function (r, i) {
+      if (i >= top && r.e !== "strata") return;
+      var w = Math.max(4, (r.points / max) * 100);
+      h += '<li class="' + (r.e === "strata" ? "self" : "") + '"><span class="p">' + (i + 1) + '</span><span>' + esc(engineName(rep, r.e)) + '</span><span class="bar"><i style="width:' + w.toFixed(1) + '%"></i></span><span class="v">' + r.points + "</span></li>";
+    });
+    h += "</ol>";
+    h += '<p class="rmini-cap">Summed places over ' + rep.tests + " tests, fewer points is better. " + rep.ranked.length + " engines ranked.</p>";
+    el.innerHTML = h;
+  }
+
+  /* ----------------------------------------------- the engines measured */
+  function renderEngineNames(el) {
+    var seen = {}, names = [];
+    el.getAttribute("data-engine-names").split(",").forEach(function (id) {
+      var rep = R[id];
+      ((rep && rep.engines) || []).forEach(function (e) {
+        if (e.id === "strata" || seen[e.name]) return;
+        seen[e.name] = 1; names.push(e.name);
+      });
+    });
+    (el.getAttribute("data-also") || "").split(",").forEach(function (n) { n = n.trim(); if (n && !seen[n]) { seen[n] = 1; names.push(n); } });
+    el.innerHTML = names.map(function (n) { return "<span>" + esc(n) + "</span>"; }).join("");
+  }
+
   /* ------------------------------------------------------- one number */
   function renderV(el) {
     var p = el.getAttribute("data-num").split(":");
@@ -416,6 +450,8 @@
     document.querySelectorAll("[data-ab]").forEach(renderAB);
     document.querySelectorAll("[data-num]").forEach(renderV);
     document.querySelectorAll("[data-overall]").forEach(renderOverall);
+    document.querySelectorAll("[data-rank-mini]").forEach(renderRankMini);
+    document.querySelectorAll("[data-engine-names]").forEach(renderEngineNames);
     document.querySelectorAll("[data-variants]").forEach(renderVariants);
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
