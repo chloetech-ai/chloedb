@@ -120,14 +120,17 @@ fn run(db: &Db, sql: &str, params: &Params, opts: &ExecOptions) -> ResultSet {
     db.execute(&snap, &select, opts).unwrap_or_else(|e| panic!("{sql}: {e}"))
 }
 
-/// The coordinator's rounds over `shards`.
-fn sharded(shards: &[Db], sql: &str, params: &Params) -> ResultSet {
+/// The coordinator's rounds over `shards`, which answer a rank-safe
+/// boost with its inputs' top rows as well when `boost_inputs`
+/// ([`ExecOptions::boost_inputs`]); and the rows the shards sent.
+fn sharded_with(shards: &[Db], sql: &str, params: &Params, boost_inputs: bool) -> (ResultSet, usize) {
     let snaps: Vec<_> = shards.iter().map(|d| d.snapshot()).collect();
     let select = bind(sql, snaps[0].schema(), params).unwrap_or_else(|e| panic!("{sql}: {e}"));
     let parts: Vec<TermStats> = shards.iter().zip(&snaps).map(|(d, s)| d.term_stats(s, &select).unwrap()).collect();
-    let opts = ExecOptions { stats: Some(Arc::new(TermStats::sum(&parts))), shard: true, ..ExecOptions::default() };
-    let answers = shards.iter().zip(&snaps).map(|(d, s)| d.execute(s, &select, &opts).unwrap_or_else(|e| panic!("{sql}: {e}"))).collect();
-    cluster::merge(&select, answers).unwrap_or_else(|e| panic!("{sql}: {e}"))
+    let opts = ExecOptions { stats: Some(Arc::new(TermStats::sum(&parts))), shard: true, boost_inputs, ..ExecOptions::default() };
+    let answers: Vec<ResultSet> = shards.iter().zip(&snaps).map(|(d, s)| d.execute(s, &select, &opts).unwrap_or_else(|e| panic!("{sql}: {e}"))).collect();
+    let sent = answers.iter().map(|a| a.rows.len()).sum();
+    (cluster::merge(&select, answers).unwrap_or_else(|e| panic!("{sql}: {e}")), sent)
 }
 
 /// The same rows with the same scores, bit for bit, in the same order.
@@ -221,7 +224,9 @@ fn the_top_k_is_scoring_every_matching_row() {
 
 /// A split collection answers rank-safe boosts as one database, and a
 /// coordinator from before them (taking each shard's top `depth` of BM25)
-/// still gets what it fused before.
+/// still gets what it fused before. Shards that leave the inputs' top rows
+/// out, for a coordinator that fuses from the boost's rows alone, give the
+/// same answer from fewer rows.
 #[test]
 fn shards_rank_like_one_database() {
     let docs = docs();
@@ -232,6 +237,8 @@ fn shards_rank_like_one_database() {
         .map(|&k| (0..k).map(|i| corpus(dir.path(), &format!("s{k}-{i}.strata"), &docs[i * N / k..(i + 1) * N / k], SEG)).collect())
         .collect();
     let mut rng = StdRng::seed_from_u64(31);
+    // Runs of the shapes in which leaving the inputs' rows out sent fewer.
+    let mut fewer = 0usize;
     for qi in 0..60 {
         let expr = match SHAPES.get(qi) {
             Some(s) => s.to_string(),
@@ -243,9 +250,20 @@ fn shards_rank_like_one_database() {
         let sql = sql(&expr, "", filter, tail);
         let want = whole.query(&sql, &params).unwrap_or_else(|e| panic!("{sql}: {e}"));
         for shards in &splits {
-            same(&format!("{sql} on {} shards", shards.len()), &want, &sharded(shards, &sql, &params));
+            let (with, sent_with) = sharded_with(shards, &sql, &params, true);
+            same(&format!("{sql} on {} shards", shards.len()), &want, &with);
+            let (alone, sent_alone) = sharded_with(shards, &sql, &params, false);
+            same(&format!("{sql} on {} shards, without the inputs' top rows", shards.len()), &want, &alone);
+            assert!(sent_alone <= sent_with, "{sql}: {sent_alone} rows sent alone, {sent_with} with the inputs'");
+            if qi < SHAPES.len() {
+                fewer += (sent_alone < sent_with) as usize;
+            }
         }
     }
+    // In the rest the boost's own rows already held the inputs' top rows:
+    // few matches, or a bound that kept every match.
+    let runs = SHAPES.len() * splits.len();
+    assert!(fewer * 2 >= runs, "only {fewer} of {runs} runs of the shapes sent fewer rows");
 }
 
 /// A rank-safe boost changes which rows are candidates, so its answer can
