@@ -1,0 +1,3 @@
+NAME                  READY   STATUS    RESTARTS   AGE     IP              NODE                   NOMINATED NODE   READINESS GATES
+load-postgres-4d5df   0/1     Error     0          2m21s   10.121.13.246   postgres-c-a1-3eeob2   <none>           <none>
+postgres-0            1/1     Running   0          2m43s   10.121.13.113   postgres-d-a1-3eeobt   <none>           <none>

@@ -1,0 +1,38 @@
+configmap/milvus-config created
+service/milvus created
+pod/milvus-0 created
+pod/milvus-0 condition met
+job.batch/load-milvus created
+milvus: index created in 0.1 s
+milvus: 25000 documents sent, 6 s
+milvus: 50000 documents sent, 11 s
+milvus: 75000 documents sent, 18 s
+milvus: 100000 documents sent, 27 s
+milvus: 125000 documents sent, 36 s
+milvus: 150000 documents sent, 44 s
+milvus: 175000 documents sent, 53 s
+milvus: 200000 documents sent, 61 s
+milvus: 225000 documents sent, 70 s
+milvus: 250000 documents sent, 77 s
+milvus: 275000 documents sent, 86 s
+milvus: 300000 documents sent, 94 s
+milvus: 325000 documents sent, 103 s
+milvus: 350000 documents sent, 112 s
+milvus: 375000 documents sent, 120 s
+milvus: 400000 documents sent, 126 s
+milvus: 425000 documents sent, 135 s
+milvus: 450000 documents sent, 143 s
+milvus: 475000 documents sent, 152 s
+milvus: 500000 documents sent, 159 s
+milvus: 525000 documents sent, 166 s
+milvus: 550000 documents sent, 172 s
+milvus: 575000 documents sent, 179 s
+milvus: 600000 documents sent, 185 s
+milvus: 625000 documents sent, 192 s
+milvus: 650000 documents sent, 198 s
+milvus: 675000 documents sent, 205 s
+milvus: 700000 documents sent, 211 s
+milvus: 725000 documents sent, 217 s
+milvus: 750000 documents sent, 223 s
+milvus: 775000 documents sent, 230 s
+job load-milvus failed

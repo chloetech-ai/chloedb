@@ -1,7 +1,8 @@
 """Part A of the laptop benchmark, writes: inserts, updates and a stream of
 events into one file that has text and vector indexes, Strata against
 SQLite (FTS5 + sqlite-vec, at synchronous FULL and NORMAL), DuckDB (vss
-HNSW; its fts index does not follow writes) and LanceDB.
+HNSW; its fts index does not follow writes), LanceDB and Tantivy (text
+only: no vector update or nearest-neighbour check).
 
     python a_writes.py --shop SHOP_DIR --work /tmp/aw --out RESULTS_DIR [--systems ...]
 
@@ -549,9 +550,159 @@ class LanceW:
         pass
 
 
+class TantivyW:
+    """Tantivy (tantivy-py): the products' text (title and description, as
+    body, stemmed) and their columns, no vectors. Every write is a delete
+    and an add by id, a commit (which syncs the new segment and meta.json)
+    and a reload, so that the next read sees it."""
+
+    name = "tantivy"
+    vectors = False
+    notes = {
+        "vectors": "Tantivy has no vector search: the vector update and the nearest-neighbour check are not run, and inserts and upserts carry no vector",
+        "update": "the stored row read, then deleted and added again by id, committed and reloaded",
+    }
+
+    def __init__(self, work: Path) -> None:
+        import tantivy
+
+        self.t, self.path = tantivy, work / "w.tantivy"
+        self.lock = threading.Lock()  # Tantivy has one writer per index
+        self.ix: dict = {}
+        self.w: dict = {}
+
+    def files(self):
+        return [self.path]
+
+    def _open(self, name: str, fields) -> None:
+        sb = self.t.SchemaBuilder()
+        for kind, n, kw in fields:
+            getattr(sb, kind)(n, **kw)
+        d = self.path / name
+        d.mkdir(parents=True, exist_ok=True)
+        self.ix[name] = self.t.Index(sb.build(), path=str(d))
+        self.w[name] = self.ix[name].writer(heap_size=256_000_000)
+
+    def _commit(self, name: str) -> None:
+        self.w[name].commit()
+        self.ix[name].reload()
+
+    def _doc(self, r: dict):
+        d = {k: v for k, v in r.items() if v is not None and k not in ("title", "description")}
+        d["title"], d["description"] = (r.get("title") or "").encode(), (r.get("description") or "").encode()
+        d["body"] = f"{r.get('title') or ''} {r.get('description') or ''}"
+        if "price" in d:
+            d["price"] = float(d["price"])
+        return self.t.Document(**d)
+
+    def _row(self, d: dict) -> dict:
+        out = {}
+        for k, v in d.items():
+            v = v[0] if v else None
+            out[k] = v.decode() if isinstance(v, bytes) else v
+        return out
+
+    def _find(self, name: str, field: str, value, limit: int = 1, **kw) -> list[dict]:
+        s = self.ix[name].searcher()
+        q = self.t.Query.term_query(self.ix[name].schema, field, value)
+        return [self._row(s.doc(a).to_dict()) for _, a in s.search(q, limit, count=False, **kw).hits]
+
+    def create(self, rows, vecs) -> None:
+        raw = {"stored": True, "tokenizer_name": "raw"}
+        num = {"stored": True, "indexed": True, "fast": True}
+        self._open("products", [
+            ("add_text_field", "id", raw), ("add_bytes_field", "title", {"stored": True}), ("add_bytes_field", "description", {"stored": True}),
+            ("add_text_field", "body", {"tokenizer_name": "en_stem", "index_option": "freq"}),
+            ("add_text_field", "brand", raw), ("add_text_field", "category", raw),
+            ("add_float_field", "price", num), ("add_integer_field", "stock", num), ("add_integer_field", "rating_count", num),
+        ])
+        for i in range(0, len(rows), 10_000):
+            self.insert(rows[i : i + 10_000], vecs[i : i + 10_000])
+        w = self.w.pop("products")
+        w.wait_merging_threads()
+        self.w["products"] = self.ix["products"].writer(heap_size=256_000_000)
+
+    def insert(self, rows, vecs) -> None:
+        with self.lock:
+            for r in rows:
+                self.w["products"].add_document(self._doc(r))
+            self._commit("products")
+
+    def _rewrite(self, key, change) -> None:
+        with self.lock:
+            rows = self._find("products", "id", key)
+            if rows:
+                self.w["products"].delete_documents_by_term("id", key)
+                self.w["products"].add_document(self._doc(change(rows[0])))
+                self._commit("products")
+
+    def set(self, key, **cols) -> None:
+        self._rewrite(key, lambda r: {**r, **cols})
+
+    def incr(self, key) -> None:
+        self._rewrite(key, lambda r: {**r, "rating_count": (r.get("rating_count") or 0) + 1})
+
+    def vector(self, key, v) -> None:
+        raise NotImplementedError("no vectors")
+
+    def upsert(self, row, v) -> None:
+        with self.lock:
+            self.w["products"].delete_documents_by_term("id", row["id"])
+            self.w["products"].add_document(self._doc(row))
+            self._commit("products")
+
+    def delete(self, key) -> None:
+        with self.lock:
+            self.w["products"].delete_documents_by_term("id", key)
+            self._commit("products")
+
+    def by_word(self, w):
+        s = self.ix["products"].searcher()
+        return [s.doc(a)["id"][0] for _, a in s.search(self.ix["products"].parse_query(w, ["body"]), 10, count=False).hits]
+
+    def nearest(self, v):
+        raise NotImplementedError("no vectors")
+
+    def get(self, key):
+        rows = self._find("products", "id", key)
+        return tuple(rows[0].get(k) for k in ("id", "title", "price", "stock", "rating_count")) if rows else None
+
+    def ev_create(self, seed) -> None:
+        raw = {"stored": True, "tokenizer_name": "raw"}
+        self._open("events", [
+            ("add_text_field", "id", raw), ("add_text_field", "user_id", raw), ("add_text_field", "product_id", raw),
+            ("add_integer_field", "rating", {"stored": True}), ("add_text_field", "text", {"stored": True, "tokenizer_name": "en_stem", "index_option": "freq"}),
+            ("add_integer_field", "ts", {"stored": True, "indexed": True, "fast": True}),
+        ])
+        self.ev_insert(seed)
+
+    def ev_insert(self, rows) -> None:
+        with self.lock:
+            for r in rows:
+                self.w["events"].add_document(self.t.Document(**r))
+            self._commit("events")
+
+    def ev_latest(self, p):
+        return [r["id"] for r in self._find("events", "product_id", p, 10, order_by_field="ts", order=self.t.Order.Desc)]
+
+    def ev_word(self, w):
+        s = self.ix["events"].searcher()
+        return [s.doc(a)["id"][0] for _, a in s.search(self.ix["events"].parse_query(w, ["text"]), 10, count=False).hits]
+
+    def ev_count(self) -> int:
+        return self.ix["events"].searcher().num_docs
+
+    def close(self) -> None:
+        with self.lock:
+            for w in self.w.values():
+                w.wait_merging_threads()
+            self.w = {}
+
+
 def make(name: str, work: Path):
     work.mkdir(parents=True, exist_ok=True)
     return {
+        "tantivy": lambda: TantivyW(work),
         "strata": lambda: StrataW(work),
         "sqlite-full": lambda: SqliteW(work, "FULL"),
         "sqlite-normal": lambda: SqliteW(work, "NORMAL"),
@@ -585,6 +736,7 @@ def run(name: str, shop: Path, work: Path, seconds: float, limit: int | None, ra
     rows, vecs = load_products(shop, limit)
     rng = random.Random(3)
     rep: dict[str, Any] = {"system": name, "products": len(rows), "notes": getattr(s, "notes", {})}
+    has_vec = getattr(s, "vectors", True)
     t0 = time.perf_counter()
     s.create(rows, vecs)
     rep["load"] = {"seconds": time.perf_counter() - t0, "bytes": files_bytes(s.files())}
@@ -622,7 +774,7 @@ def run(name: str, shop: Path, work: Path, seconds: float, limit: int | None, ra
         r, v = fresh(1)
         s.insert(r, v)
         w = marker(int(r[0]["id"][1:]))
-        lags.append(visible(lambda: r[0]["id"] in s.by_word(w) and s.nearest(v[0]) == r[0]["id"]))
+        lags.append(visible(lambda: r[0]["id"] in s.by_word(w) and (not has_vec or s.nearest(v[0]) == r[0]["id"])))
     ins["visible"] = vis_summary(lags)
     rep["insert"] = ins
     print(f"{name}: insert 1/txn {ins['1']['rows_per_s']:,.0f}/s p50 {ins['1']['p50_ms']:.2f} ms; 100 {ins['100']['rows_per_s']:,.0f}/s; 1000 {ins['1000']['rows_per_s']:,.0f}/s; 10000 {ins['10000']['rows_per_s']:,.0f}/s; visible {ins['visible']}", file=sys.stderr)
@@ -646,15 +798,16 @@ def run(name: str, shop: Path, work: Path, seconds: float, limit: int | None, ra
         s.set(k, title="retitled " + w)
         lags.append(visible(lambda: k in s.by_word(w)))
     up["title"]["visible"] = vis_summary(lags)
-    vkeys = keys[1020:2000]
-    x = timed_once(lambda k: s.vector(k, fresh_vec(rng)), vkeys, seconds)
-    up["vector"] = {**x, "rows_per_s": 1e3 / x["mean_ms"]}
-    lags = []
-    for k in keys[2000:2020]:
-        v = fresh_vec(rng)
-        s.vector(k, v)
-        lags.append(visible(lambda: s.nearest(v) == k))
-    up["vector"]["visible"] = vis_summary(lags)
+    if has_vec:
+        vkeys = keys[1020:2000]
+        x = timed_once(lambda k: s.vector(k, fresh_vec(rng)), vkeys, seconds)
+        up["vector"] = {**x, "rows_per_s": 1e3 / x["mean_ms"]}
+        lags = []
+        for k in keys[2000:2020]:
+            v = fresh_vec(rng)
+            s.vector(k, v)
+            lags.append(visible(lambda: s.nearest(v) == k))
+        up["vector"]["visible"] = vis_summary(lags)
     by_id = {r["id"]: r for r in rows}
     x = timed_once(lambda k: s.upsert({**by_id[k], "price": round(rng.uniform(5, 80), 2)}, fresh_vec(rng)), keys[2020:2500], seconds)
     up["upsert"] = {**x, "rows_per_s": 1e3 / x["mean_ms"]}
@@ -670,7 +823,7 @@ def run(name: str, shop: Path, work: Path, seconds: float, limit: int | None, ra
     if errs:
         print(f"{name}: ERRORS {errs}", file=sys.stderr)
     print(
-        f"{name}: price {up['price_stock']['rows_per_s']:,.0f}/s, counter {up['counter']['rows_per_s']:,.0f}/s (right {up['counter']['counted_right']}), title {up['title']['rows_per_s']:,.0f}/s, vector {up['vector']['rows_per_s']:,.0f}/s, upsert {up['upsert']['rows_per_s']:,.0f}/s, delete {up['delete']['rows_per_s']:,.0f}/s",
+        f"{name}: price {up['price_stock']['rows_per_s']:,.0f}/s, counter {up['counter']['rows_per_s']:,.0f}/s (right {up['counter']['counted_right']}), title {up['title']['rows_per_s']:,.0f}/s, vector {up['vector']['rows_per_s'] if has_vec else 0:,.0f}/s, upsert {up['upsert']['rows_per_s']:,.0f}/s, delete {up['delete']['rows_per_s']:,.0f}/s",
         file=sys.stderr,
     )
 

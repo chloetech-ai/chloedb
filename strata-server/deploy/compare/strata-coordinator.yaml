@@ -16,6 +16,9 @@ spec:
         - --listen=0.0.0.0:7700
         - --grpc=off
         - --shards=http://strata-0.strata:7701,http://strata-1.strata:7701
+        # The 30 s engine-compare's client waits for every engine, not the
+        # default of 5 s (strata.yaml).
+        - --timeout-ms=30000
       # The cluster's random token (secret strata-token): asked of the
       # client, and sent to the shards.
       env:

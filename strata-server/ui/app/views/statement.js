@@ -79,16 +79,16 @@ export function render(page, r) {
     const sample = d?.slowest?.find((x) => x.params) || (st?.sample?.params ? st.sample : null);
     const table_ = tableOf(sql);
     clear(head,
-      h("div", { class: "row small muted", style: { marginBottom: "6px" } }, h("a", { class: "wl-link", href: link("queries", { tab: "live" }) }, "Queries"), " › ", h("a", { class: "wl-link", href: link("queries", { tab: "statements" }) }, "Statements"), ` › ${shortFp(shape)}`),
+      h("div", { class: "row small muted", style: { marginBottom: "6px" } }, h("a", { class: "wl-link", href: link("queries", { tab: "live" }) }, "Queries"), " › ", h("a", { class: "wl-link", href: link("queries", { tab: "statements" }) }, "Statements"), ` › ${st?.id || shortFp(shape)}`),
       h("div", { class: "page-head" },
-        h("div", {}, h("h1", {}, `Statement ${shortFp(shape)} `, st?.kind ? h("span", { class: "badge mono", style: { verticalAlign: "middle" } }, st.kind) : null, " ", status ? h("span", { class: "pill " + status[0], style: { verticalAlign: "middle" } }, status[1]) : null),
-          h("p", {}, [table_ ? `Table ${table_}` : null, st?.first_seen_ms ? `first seen ${fmt.ago(st.first_seen_ms)}` : null, isCoord() ? "what this coordinator ran" : "what this server ran",
+        h("div", {}, h("h1", {}, "Statement ", h("span", { class: "mono", style: { cursor: "copy" }, title: st?.id ? `Its id, as the API and the audit log name it. Click to copy.` : "A short id of its text. Click to copy.", onclick: () => copy(st?.id || shortFp(shape), "Id copied") }, st?.id || shortFp(shape)), " ", st?.kind ? h("span", { class: "badge mono", style: { verticalAlign: "middle" } }, st.kind) : null, " ", status ? h("span", { class: "pill " + status[0], style: { verticalAlign: "middle" } }, status[1]) : null),
+          h("p", {}, [table_ ? `Table ${table_}` : null, st?.first_seen_ms ? `first seen ${fmt.ago(st.first_seen_ms)}` : null, isCoord() ? ((d?.coordinators?.length || 0) > 1 ? `what ${d.coordinators.filter((c) => c.ok).length === d.coordinators.length ? "every coordinator" : `${d.coordinators.filter((c) => c.ok).length} of ${d.coordinators.length} coordinators`} ran${st?.coordinators?.length ? " (" + st.coordinators.map((c) => `${c.name} ${fmt.n(c.calls)}`).join(", ") + " calls)" : ""}` : "what this coordinator ran") : "what this server ran",
             d?.source === "fallback" ? (d.windowed ? range.label : "since the server started (an older server)") : `${range.label}${d?.partial ? ` (held from ${when(d.held_from_ms)})` : ""}${st?.prev ? ", against the window before" : ""}`].filter(Boolean).join(" · "))),
         h("div", { class: "tools" },
           h("button", { class: "btn sm", onclick: () => copy(location.href, "Link copied") }, icon("link"), "Copy link"),
           h("a", { class: "btn sm", href: link("queries", { tab: "history", fingerprint: shape }), title: "Every query of this shape the log store kept" }, "History of this shape"),
           h("a", { class: "btn sm", href: workbenchLink(sample ? sqlWith(sql, sample) : sql, sample?.params), title: sample ? "With the parameters of its slowest call" : "It has no parameters kept" }, icon("sql"), sample ? "Open in the workbench, with params" : "Open in the workbench"),
-          h("a", { class: "btn sm", href: profileLink(sample ? sqlWith(sql, sample) : sql, sample?.params) }, icon("flame"), "Profile it"),
+          h("a", { class: "btn sm", href: profileLink(sample ? sqlWith(sql, sample) : sql, sample?.params, shape), title: "Open it in the Profiler: it asks before it runs" }, icon("flame"), "Profile it"),
           canContainNow() ? h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: shape, sql, key: st?.keys?.length === 1 ? st.keys[0].key : null, keys: keyShares(st), onDone: load }) }, icon("shield"), "Contain…") : null,
           can("admin") && live.length ? h("button", { class: "btn sm danger", onclick: () => askCancel({ sql, fingerprint: shape, queries: live, key: null, onDone: load }) }, `Cancel ${fmt.n(live.length)} running…`) : null)),
       sqlBlock(shape || sql, { style: { marginBottom: "14px" }, title: "The statement's shape: its literals are ? and its parameters :name" }),
@@ -232,9 +232,9 @@ function helpers(st, d, sample, sql) {
   const sp = split(st.outcomes, st.calls), ks = keyShares(st), top = ks[0];
   const c = change(st), w = straggler(d);
   if (sp.client / Math.max(1, sp.calls) > 0.05) {
-    if (canContainNow()) out.push(h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: st.fingerprint, sql, keys: ks, key: top?.share > 0.8 ? top.key : null }) }, top?.share > 0.8 ? `Refuse it from ${top.key}…` : "Refuse it…"));
+    if (canContainNow()) out.push(h("button", { class: "btn sm", onclick: () => containDialog({ fingerprint: st.fingerprint, sql, keys: ks, key: top?.share > 0.8 ? top.key : null, action: "refuse" }) }, top?.share > 0.8 ? `Refuse it from ${top.key}…` : "Refuse it…"));
     const msg = d.errors?.[0]?.message;
-    out.push(h("button", { class: "btn sm", title: "A summary to send the team that owns the client", onclick: () => copy(`Statement ${shortFp(st.fingerprint)} fails as a client error: ${fmt.n(sp.client)} of ${fmt.n(sp.calls)} calls ${timeRange().label || ""}${top ? `, ${fmt.pct(top.share, 0)} from API key ${top.key}` : ""}.\n${msg ? "Error: " + msg + "\n" : ""}SQL: ${st.fingerprint}\n${location.origin}/${link("statement/" + encodeURIComponent(st.fingerprint))}`, "Summary copied") }, icon("copy"), "Copy for the app team"));
+    out.push(h("button", { class: "btn sm", title: "A summary to send the team that owns the client", onclick: () => copy(`Statement ${st.id || shortFp(st.fingerprint)} fails as a client error: ${fmt.n(sp.client)} of ${fmt.n(sp.calls)} calls ${timeRange().label || ""}${top ? `, ${fmt.pct(top.share, 0)} from API key ${top.key}` : ""}.\n${msg ? "Error: " + msg + "\n" : ""}SQL: ${st.fingerprint}\n${location.origin}/${link("statement/" + encodeURIComponent(st.fingerprint))}`, "Summary copied") }, icon("copy"), "Copy for the app team"));
   }
   if (w?.copy) {
     out.push(h("a", { class: "btn sm", href: copyLink(w.copy), title: copyTitle(w.copy) }, `Open ${copyName(w.copy)} in Cluster`));
@@ -276,7 +276,7 @@ function whereCard(st, d) {
     has.load && { key: "disk", label: "disk", num: true, wide: true, sort: (x) => x.cp?.detail?.load?.disk_used_ratio, render: (x) => { const v = x.cp?.detail?.load?.disk_used_ratio; return v != null ? h("span", { class: v > 0.95 ? "wl-bad" : "" }, fmt.pct(v, 0)) : "–"; } },
     { key: "act", label: "", sortable: false, wide: true, width: has.load ? null : "60%", render: (x) => h("div", { class: "row nw", style: { gap: "4px" } }, acts(x)) },
   ]), { rows, sortKey: null, compact: true, onRow });
-  return card({ title: has.copy ? "Where: by shard and copy" : "Where: by shard", sub: `the shards this statement waited on, the slowest first${d.by_shard_from_calls ? ` · from the ${fmt.n(d.by_shard_from_calls)} latest and slowest calls the server keeps` : ""}${narrow() ? " · tap one for the rest" : ""}`, flush: true, body: [t,
+  return card({ cls: "wl-nums", title: has.copy ? "Where: by shard and copy" : "Where: by shard", sub: `the shards this statement waited on, the slowest first${d.by_shard_from_calls ? ` · from the ${fmt.n(d.by_shard_from_calls)} latest and slowest calls the server keeps` : ""}${narrow() ? " · tap one for the rest" : ""}`, flush: true, body: [t,
     rest.length ? h("div", { class: "small muted", style: { padding: "8px 12px" } }, `${fmt.plural(rest.length, "other shard")}: p99 ${fmt.ms(med(rest, (y) => y.p99_ms))} (median), slowest ${fmt.ms(rest[0].p99_ms)}`) : null] });
 }
 
@@ -287,7 +287,7 @@ function whoCard(st, d, secs) {
   const containK = (k) => containDialog({ fingerprint: st?.fingerprint, sql: st?.sql, key: k.key, keys: ks.map((x) => ({ key: x.key, share: x.calls / tot })) });
   const onRow = narrow() ? (k) => sheet(`Key ${k.key}`, [["share", fmt.pct(k.calls / tot, 0)], ["calls/s", fmt.si(k.calls / secs)], ["p99", fmt.ms(k.p99_ms)], ["failed", k.errors ? fmt.pct(k.errors / Math.max(1, k.calls), 1) : "0"]],
     [h("a", { class: "btn sm", href: link("queries", { tab: "history", key: k.key }) }, "Its queries"), canContainNow() ? h("button", { class: "btn sm", onclick: () => containK(k) }, "Contain…") : null]) : null;
-  return card({ title: "Who sends it", sub: "by API key", flush: true, body: table(cols([
+  return card({ title: "Who sends it", sub: "by API key", flush: true, cls: "wl-nums", body: table(cols([
     { key: "key", label: "key", render: (k) => h("a", { class: "mono wl-link", href: link("queries", { tab: "history", key: k.key }) }, k.key) },
     { key: "calls", label: "share", num: true, render: (k) => fmt.pct(k.calls / tot, 0) },
     { key: "rate", label: "calls/s", num: true, sort: (k) => k.calls, render: (k) => fmt.si(k.calls / secs) },
@@ -314,7 +314,7 @@ function slowestCard(d, sql) {
   };
   // Leave out what no call has: a server that keeps no node or shard per call.
   const has = { node: xs.some((x) => x.node), app: xs.some((x) => x.app), params: xs.some((x) => x.params && Object.keys(x.params).length), wait: xs.some((x) => x.waited_on || (x.outcome && x.outcome !== "ok")) };
-  return card({ title: "Slowest calls", sub: narrow() ? "tap one for its trace, parameters and profile" : "with their parameters", flush: true, body: table(cols([
+  return card({ cls: "wl-nums", title: "Slowest calls", sub: narrow() ? "tap one for its trace, parameters and profile" : "with their parameters", flush: true, body: table(cols([
     { key: "ts_ms", label: "time", render: (x) => h("span", { class: "mono small nowrap" }, when(x.ts_ms)) },
     { key: "ms", label: "took", num: true, render: (x) => h("b", { class: "nowrap" }, fmt.ms(x.ms)) },
     has.node && { key: "node", label: "via", wide: true, render: (x) => x.node ? h("span", { class: "badge" }, x.node) : "–" },
@@ -324,7 +324,7 @@ function slowestCard(d, sql) {
     has.wait && { key: "waited", label: "waited on", wide: true, sort: (x) => x.waited_on?.ms, render: (x) => x.waited_on ? h("span", { class: "mono small nowrap", title: (x.waited_on.copy ? copyTitle(x.waited_on.copy) + ": " : "") + "the shard the answer waited on" }, `${x.waited_on.copy ? copyName(x.waited_on.copy) : "shard " + x.waited_on.shard} ${fmt.ms(x.waited_on.ms)}`) : x.outcome && x.outcome !== "ok" ? outcomePill(x.outcome) : "–" },
     { key: "act", label: "", sortable: false, wide: true, render: (x) => h("div", { class: "row nw", style: { gap: "4px" } },
       h("button", { class: "btn sm", onclick: () => open(x) }, "Trace ›"),
-      h("a", { class: "btn ghost icon sm", href: profileLink(x.sql || sqlWith(sql, x), x.params), title: "Profile it again, with these parameters" }, icon("flame")),
+      h("a", { class: "btn ghost icon sm", href: profileLink(x.sql || sqlWith(sql, x), x.params, d.statement?.fingerprint), title: "Open it in the Profiler, with these parameters: it asks before it runs" }, icon("flame")),
       h("a", { class: "btn ghost icon sm", href: workbenchLink(x.sql || sqlWith(sql, x), x.params), title: "Open in the workbench, with these parameters" }, icon("sql"))) },
   ]), { rows: xs, sortKey: "ms", desc: true, compact: true, maxHeight: narrow() ? null : "330px", onRow: (x) => open(x) }) });
 }

@@ -8,198 +8,141 @@
 <meta name="description" content="Every Strata server serves its own console: 26 views to watch a cluster, profile a query, build queries and tables, tune rankings and change the cluster by drawing it.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
+<div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
 <header class="top gutter"><div class="wrap">
-  <a class="mark" href="index.html"><i><b></b><b></b><b></b></i>Strata</a>
+  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a>
   <nav class="nav" aria-label="Site">
     <a href="features.html">Features</a>
+    <a href="scale.html">Laptop to cloud</a>
     <a href="command-center.html" aria-current="page">Command center</a>
-    <a href="compare.html">Compare</a>
     <a href="benchmarks.html">Benchmarks</a>
-    <a href="examples.html">Queries</a>
     <a href="use-cases.html">Use cases</a>
-    <a href="scale.html">Small to big</a>
   </nav>
-  <div class="top-links"><a href="../">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a></div>
+  <div class="top-links"><a href="../">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
 </div></header>
-<div class="sample-banner gutter"><div class="wrap"><b>Sample</b><span>A draft for review. Screenshots are of demo servers and, where a caption says so, of stand-ins for a cloud or a Kubernetes operator. Cells with a dashed outline have not yet been checked against that project's documentation.</span></div></div>
 
 <main>
-  <div class="gutter"><div class="wrap page-head">
+  <div class="gutter head-band"><div class="wrap page-head">
     <span class="eyebrow">Command center</span>
     <h1>The console is part of the server</h1>
-    <p class="lede">Every <code>strata-server</code> answers <code>GET /</code> with the command center: 26 views to watch a cluster, take a slow query apart, build queries and tables, tune what people see, and change the cluster by drawing it. It is the same on a laptop's file and on a cluster in the cloud, and there is nothing else to install.</p>
-    <nav class="toc" aria-label="Sections">
-      <a href="#watch">Watch it run</a><a href="#profile">Profile</a><a href="#build">Build</a><a href="#tune">Tune</a><a href="#grow">Change and grow</a><a href="#others">Beside the others</a><a href="#try">Try it</a>
-    </nav>
+    <p class="lede">Open any strata-server's address to watch a cluster, take a slow query apart, build queries and tune ranking. Nothing else to install, on a laptop or in the cloud.</p>
+    <div class="actions"><a class="btn primary" href="#try">Open it in a minute</a><a class="btn" href="../strata/server.html#the-ui">Every view, documented</a></div>
   </div></div>
 
-  <section class="gutter"><div class="wrap block" style="border-top:0; padding-top:0">
-    <div class="facts">
-      <div class="fact"><b>Served at <code>/</code></b><p>Compiled into the server binary, with no second service, plugin or licence tier, and no CDN, so it works offline.</p></div>
-      <div class="fact"><b>One server or a cluster</b><p>A single server shows its storage and where writes go; a coordinator shows every shard and copy, from kind on a laptop to EKS.</p></div>
-      <div class="fact"><b>Drawn, not filled in</b><p>Drag the cluster's shape, an alert's threshold on its chart, a rollout gate's limit, blocks into a query, tables in the schema.</p></div>
-      <div class="fact"><b>Every click is an API call</b><p>It reads the same API as any client, and changes only what the key it signs in with is allowed to.</p></div>
+  <section class="gutter"><div class="wrap block">
+    <div class="caps">
+      <div class="cap"><h3>Served at <code>/</code></h3><p>Compiled into the server. No second service, plugin or licence tier, and it works offline.</p></div>
+      <div class="cap"><h3>One server or a cluster</h3><p>The same views on a laptop's file and on a sharded cluster in the cloud.</p></div>
+      <div class="cap"><h3>Every click is an API call</h3><p>It reads the same API as any client, and does only what its key allows.</p></div>
     </div>
   </div></section>
 
-  <!-- watch -->
-  <section class="gutter" id="watch"><div class="wrap block">
-    <div class="cc-job">
-      <div class="cc-copy">
-        <span class="eyebrow">Watch it run</span>
-        <h2>See the cluster, not a list of nodes</h2>
-        <ul class="views">
-          <li><b>Topology</b> draws the coordinator and every copy, with calls a second on the links and each replica's lag. Drag, pan and zoom; click a copy to promote it or checkpoint it.</li>
-          <li><b>Fleet</b> colours every shard by one measure. Fail machines in a what-if and see which shards keep serving, fail over or go dark, with nothing stopped.</li>
-          <li><b>Query path</b> runs one query 10 to 100 times, draws each shard's call on a radar, and estimates the p99 a sooner hedge would give.</li>
-          <li><b>Overview</b>, <b>Performance</b> and <b>Alerts</b> chart the cluster over any range, zoomed together; drag an alert's threshold and see how often it would have fired.</li>
-          <li><b>Queries</b> and <b>Logs</b>: cancel a running query, open one as a waterfall across shards, and search every server's logs with SQL.</li>
-        </ul>
+  <section class="gutter" id="operate"><div class="wrap block">
+    <div class="block-head center">
+      <span class="eyebrow">Operate</span>
+      <h2>Is the fleet serving? The answer comes first.</h2>
+      <p>Health against the SLO, every shard on one map, and what changed before it went wrong.</p>
+    </div>
+    <div class="showcase" data-tabs>
+      <div class="tablist" role="tablist">
+        <button type="button" data-tab="home">Home</button>
+        <button type="button" data-tab="cluster">Cluster</button>
+        <button type="button" data-tab="perf">Performance</button>
+        <button type="button" data-tab="timeline">Timeline</button>
+        <button type="button" data-tab="logs">Logs</button>
+        <button type="button" data-tab="alerts">Alerts</button>
       </div>
-      <div class="cc-shots">
-        <figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/topology</span></div><img src="../assets/img/strata-command-center-topology.png" alt="Topology: the coordinator, two shards and their replicas, calls per second on each link" loading="lazy"><figcaption>Topology: the coordinator, two shards and their replicas, calls a second on each link</figcaption></figure>
-        <div class="thumbs">
-          <figure class="shot"><img src="../assets/img/strata-command-center-fleet.png" alt="Fleet: four shards of three copies on three machines, one machine failed in a what-if" loading="lazy"><figcaption>Fleet, with a machine failed in a what-if</figcaption></figure>
-          <figure class="shot"><img src="../assets/img/strata-command-center-querypath.png" alt="Query path: twenty runs of a search over four shards on a radar" loading="lazy"><figcaption>Query path: which shard was last, and why</figcaption></figure>
-          <figure class="shot"><img src="../assets/img/strata-command-center.png" alt="Overview of a coordinator over two shards: traffic, latency and health" loading="lazy"><figcaption>Overview</figcaption></figure>
-          <figure class="shot"><img src="../assets/img/strata-command-center-logs.png" alt="Logs: every server's lines kept in Strata, a shard's outage and its return" loading="lazy"><figcaption>Logs, kept in Strata and searched with SQL</figcaption></figure>
-        </div>
-      </div>
+      <div data-panel="home"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/home</span></div><img class="zoomable" src="../assets/img/strata-command-center-home.png" alt="Home: two shards of two copies serving, with queries, latency, errors, lag and disk against their limits" loading="lazy"></figure><p>Whether every shard serves reads and takes writes, and the numbers behind it.</p></div>
+      <div data-panel="cluster"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/cluster</span></div><img class="zoomable" src="../assets/img/strata-command-center-topology.png" alt="Cluster: every shard as a tile and every copy in it, coloured by health" loading="lazy"></figure><p>Every shard and copy on one canvas. Draft a change by dragging, and apply its plan.</p></div>
+      <div data-panel="perf"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/performance</span></div><img class="zoomable" src="../assets/img/strata-command-center-performance.png" alt="Performance: latency, failures by cause and queries a second by kind" loading="lazy"></figure><p>Latency, failures by cause and queries by kind, compared with the window before.</p></div>
+      <div data-panel="timeline"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/timeline</span></div><img class="zoomable" src="../assets/img/strata-command-center-timeline.png" alt="Timeline: what changed in the fleet on one time axis" loading="lazy"></figure><p>Alerts, failovers, rollouts and people's changes on one time axis.</p></div>
+      <div data-panel="logs"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/logs</span></div><img class="zoomable" src="../assets/img/strata-command-center-logs.png" alt="Logs: every server's lines kept in Strata, by level, shard and server" loading="lazy"></figure><p>Every server's logs, kept in Strata and searched from one bar.</p></div>
+      <div data-panel="alerts"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/alerts</span></div><img class="zoomable" src="../assets/img/strata-command-center-alerts.png" alt="Alerts: what fires first, then every rule with its scope and history" loading="lazy"></figure><p>What is firing first, then every rule, backtested before you save it.</p></div>
     </div>
   </div></section>
 
-  <!-- profile -->
-  <section class="gutter" id="profile"><div class="wrap block">
-    <div class="cc-job">
-      <div class="cc-copy">
-        <span class="eyebrow">Profile</span>
-        <h2>Flame graphs for any query, on any node</h2>
-        <ul class="views">
-          <li><b>Profiler</b>: a flame chart of every step beside the request's trace, segments searched side by side on their threads, the operator tree with self and CPU time, and on a coordinator each shard's call split into the network and the shard's own time.</li>
-          <li><b>CPU</b> samples every thread of the server for 1 to 30 seconds, while its clients run or while a query runs in a loop, and draws what they ran by thread pool.</li>
-          <li><b>Memory</b> shows the heap over time and where a query's bytes were allocated.</li>
-        </ul>
+  <section class="gutter" id="diagnose"><div class="wrap block">
+    <div class="block-head center">
+      <span class="eyebrow">Diagnose</span>
+      <h2>Take a slow query apart</h2>
+      <p>Flame graphs for any query on any server, and which shard a search waited for.</p>
+    </div>
+    <div class="showcase" data-tabs>
+      <div class="tablist" role="tablist">
+        <button type="button" data-tab="profile">Profiler</button>
+        <button type="button" data-tab="cpu">CPU</button>
+        <button type="button" data-tab="qpath">Query path</button>
+        <button type="button" data-tab="tables">Tables and storage</button>
       </div>
-      <div class="cc-shots">
-        <figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/profile</span></div><img src="../assets/img/strata-command-center-profiler.png" alt="The profiler: a ranked query's steps as a flame chart beside its trace, and the operator tree with self and CPU time" loading="lazy"><figcaption>A ranked query's steps as a flame chart beside its trace, and the operator tree with self and CPU time</figcaption></figure>
-        <div class="thumbs">
-          <figure class="shot"><img src="../assets/img/strata-command-center-cpu.png" alt="A CPU flame graph of a ranked query run in a loop by four callers" loading="lazy"><figcaption>CPU: every thread's stacks, by pool</figcaption></figure>
-          <figure class="shot"><img src="../assets/img/strata-command-center-memory.png" alt="Memory: heap over time and an allocation flame graph" loading="lazy"><figcaption>Memory: where a query's bytes went</figcaption></figure>
-        </div>
-      </div>
+      <div data-panel="profile"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/profile</span></div><img class="zoomable" src="../assets/img/strata-command-center-profiler.png" alt="Profiler: a ranked query's time, CPU and rows, and its steps as a flame chart" loading="lazy"></figure><p>Every step of a query as a flame chart, with each shard's call.</p></div>
+      <div data-panel="cpu"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/profile</span></div><img class="zoomable" src="../assets/img/strata-command-center-cpu.png" alt="A CPU profile: a query run in a loop by four callers, and the flame graph of every thread" loading="lazy"></figure><p>Sample every thread for a few seconds; memory is profiled the same way.</p></div>
+      <div data-panel="qpath"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/querypath</span></div><img class="zoomable" src="../assets/img/strata-command-center-querypath.png" alt="Query path: twenty runs of a search, each shard's times and the last to answer" loading="lazy"></figure><p>Run a search 10 to 100 times and see which shard it waited for.</p></div>
+      <div data-panel="tables"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/tables</span></div><img class="zoomable" src="../assets/img/strata-command-center-tables.png" alt="Tables and storage: growth, skew, hot shards and stale copies" loading="lazy"></figure><p>Which table grows, which shard is skewed or hot, which copy is stale.</p></div>
     </div>
   </div></section>
 
-  <!-- build -->
   <section class="gutter" id="build"><div class="wrap block">
-    <div class="cc-job">
-      <div class="cc-copy">
-        <span class="eyebrow">Build</span>
-        <h2>Write queries and tables with the database helping</h2>
-        <ul class="views">
-          <li><b>Query builder</b>: drag words, filters, boosts and groups into stages. The SQL is written and run as you build, and each link counts the rows its stage kept.</li>
-          <li><b>SQL workbench</b> completes tables, fields and a JSON field's keys with their share of rows, shows the plan of each segment, draws scores as bars and charts the answer.</li>
-          <li><b>Schema</b> draws tables as cards linked by references and edges. Design a new table by dragging types into it, checked by the server as you go.</li>
-          <li><b>Import and export</b> previews a CSV, JSON Lines or SQLite file with the type of each column before anything is written.</li>
-        </ul>
+    <div class="block-head center">
+      <span class="eyebrow">Build and tune</span>
+      <h2>Write queries, and tune what people see</h2>
+      <p>A workbench and a query builder for SQL, and labs for ranking and search.</p>
+    </div>
+    <div class="showcase" data-tabs>
+      <div class="tablist" role="tablist">
+        <button type="button" data-tab="sql">SQL workbench</button>
+        <button type="button" data-tab="builder">Query builder</button>
+        <button type="button" data-tab="relevance">Relevance lab</button>
+        <button type="button" data-tab="schema">Schema</button>
+        <button type="button" data-tab="graph">Graph explorer</button>
+        <button type="button" data-tab="auto">Autocomplete</button>
       </div>
-      <div class="cc-shots">
-        <figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/builder</span></div><img src="../assets/img/strata-command-center-builder.png" alt="The query builder: a hybrid search with filters and a boost, the SQL it writes and the rows each stage kept" loading="lazy"><figcaption>A hybrid search built from blocks, the SQL it writes, and the rows each stage kept</figcaption></figure>
-        <div class="thumbs">
-          <figure class="shot"><img src="../assets/img/strata-command-center-sql.png" alt="The SQL workbench: completion, the answer with scores, the plan" loading="lazy"><figcaption>SQL workbench: completion, scores, the plan</figcaption></figure>
-          <figure class="shot"><img src="../assets/img/strata-command-center-schema.png" alt="The schema: tables, references, an edge table and embedded vectors" loading="lazy"><figcaption>Schema, drawn and designed by dragging</figcaption></figure>
-        </div>
-      </div>
+      <div data-panel="sql"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/sql</span></div><img class="zoomable" src="../assets/img/strata-command-center-sql.png" alt="SQL workbench: a count by brand over a search, and its answer" loading="lazy"></figure><p>Completion, plans and charts. Read-only on production until someone allows writes.</p></div>
+      <div data-panel="builder"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/builder</span></div><img class="zoomable" src="../assets/img/strata-command-center-builder.png" alt="Query builder: stages to drag blocks onto, the SQL it writes and the rows each stage kept" loading="lazy"></figure><p>Drag words, filters and boosts into stages; the SQL is written as you build.</p></div>
+      <div data-panel="relevance"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/relevance</span></div><img class="zoomable" src="../assets/img/strata-command-center-relevance.png" alt="Relevance lab: BM25 against a weighted hybrid, and where each row moved" loading="lazy"></figure><p>Two rankings side by side. Grade rows, or let Claude grade them, and keep the winner.</p></div>
+      <div data-panel="schema"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/schema</span></div><img class="zoomable" src="../assets/img/strata-command-center-schema.png" alt="Schema: a table's fields and the vector embedded from its text" loading="lazy"></figure><p>Tables drawn with their links. Design a new one by dragging types into it.</p></div>
+      <div data-panel="graph"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/graph</span></div><img class="zoomable" src="../assets/img/strata-command-center-graph.png" alt="Graph explorer: products linked to their nearest vectors, coloured by brand" loading="lazy"></figure><p>Walk edges, rank by PageRank and find paths, with the SQL for each step.</p></div>
+      <div data-panel="auto"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/autocomplete</span></div><img class="zoomable" src="../assets/img/strata-command-center-autocomplete.png" alt="Autocomplete: a brand completed as it is typed, and each keystroke's latency" loading="lazy"></figure><p>Completions with typos, timed keystroke by keystroke.</p></div>
     </div>
   </div></section>
 
-  <!-- tune -->
-  <section class="gutter" id="tune"><div class="wrap block">
-    <div class="cc-job">
-      <div class="cc-copy">
-        <span class="eyebrow">Tune</span>
-        <h2>Tune what people see, with the evidence beside it</h2>
-        <ul class="views">
-          <li><b>Relevance lab</b> runs two rankings side by side, with lines showing where each row moved. Grade the rows, or have Claude grade them, compare nDCG, tune a hybrid's weight, and keep the winner with its table as a rank profile.</li>
-          <li><b>Recsys eval</b> measures logged rankings against what users did next: nDCG, hit rate, the lift of one variant over another and whether it is significant, and which side of an interleaving users preferred.</li>
-          <li><b>Semantic IDs</b>, <b>Autocomplete</b>, <b>Media search</b> and <b>Graph explorer</b>: a codebook as a sunburst, completions timed keystroke by keystroke, images found by a sentence, and graph walks with their SQL.</li>
-        </ul>
+  <section class="gutter" id="change"><div class="wrap block">
+    <div class="split2 even">
+      <div>
+        <span class="eyebrow">Change</span>
+        <h2>Change the cluster safely</h2>
+        <p class="lede">Rollouts pick a published version and restart one copy at a time behind health gates. Autoscaling rules read as sentences. Cloud setup prices and creates a cluster on EKS or DigitalOcean.</p>
       </div>
-      <div class="cc-shots">
-        <figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/relevance</span></div><img src="../assets/img/strata-command-center-relevance.png" alt="The relevance lab: BM25 against a weighted hybrid, graded rows and how they moved" loading="lazy"><figcaption>BM25 against a weighted hybrid: graded rows, and where each one moved</figcaption></figure>
-        <div class="thumbs">
-          <figure class="shot"><img src="../assets/img/strata-command-center-recsys.png" alt="Recsys eval: two variants of a ranking against the events that followed" loading="lazy"><figcaption>Recsys eval, by position, feature and segment</figcaption></figure>
-          <figure class="shot"><img src="../assets/img/strata-command-center-sid.png" alt="Semantic IDs: a codebook drawn as a sunburst" loading="lazy"><figcaption>Semantic IDs as a sunburst</figcaption></figure>
-          <figure class="shot"><img src="../assets/img/strata-command-center-autocomplete.png" alt="Autocomplete with each keystroke's time" loading="lazy"><figcaption>Autocomplete, timed by keystroke</figcaption></figure>
-          <figure class="shot"><img src="../assets/img/strata-command-center-graph.png" alt="Graph explorer walking edges from a row" loading="lazy"><figcaption>Graph explorer</figcaption></figure>
-        </div>
-      </div>
+      <figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/rollout</span></div><img class="zoomable" src="../assets/img/strata-command-center-rollout.png" alt="Rollouts: the version every copy runs, and the steps to upgrade one copy at a time" loading="lazy"></figure>
     </div>
   </div></section>
 
-  <!-- grow -->
-  <section class="gutter" id="grow"><div class="wrap block">
-    <div class="cc-job">
-      <div class="cc-copy">
-        <span class="eyebrow">Change and grow</span>
-        <h2>Change the cluster by drawing it</h2>
-        <ul class="views">
-          <li><b>Control center</b>: drag the shape's handles for more shards and copies, or say it in a sentence ("add 2 shards", "survive losing a server"). The guardrails it crosses, its effect on the last minute of load and the operator's plan come before Apply.</li>
-          <li><b>Rollout</b> measures each step on the cluster, draws its health gates as live charts with limits to drag, and keeps every version with its diff and a rollback.</li>
-          <li><b>Autoscaling</b> writes the rules as sentences and replays the last week of load on them before they are saved.</li>
-          <li><b>Cloud</b> charts a cloud's machines by memory and price, costs the plan line by line, and then makes, follows and deletes the cluster on EKS or DigitalOcean.</li>
-        </ul>
-      </div>
-      <div class="cc-shots">
-        <figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/control</span></div><img src="../assets/img/strata-command-center-control.png" alt="Control center: a draft that adds two shards, hedges sooner and grows the volumes, with its plan, estimates and spec diff" loading="lazy"><figcaption>A draft that adds two shards, hedges sooner and grows the volumes, with its plan, estimates and spec diff</figcaption></figure>
-        <div class="thumbs">
-          <figure class="shot"><img src="../assets/img/strata-command-center-rollout.png" alt="A rollout held by its p99 gate, with its steps, timeline and versions" loading="lazy"><figcaption>Rollout held by its latency gate (a sample status)</figcaption></figure>
-          <figure class="shot"><img src="../assets/img/strata-command-center-autoscale.png" alt="Autoscaling rules as sentences, and a week replayed on them" loading="lazy"><figcaption>Autoscaling, replayed on a week (synthetic load)</figcaption></figure>
-          <figure class="shot"><img src="../assets/img/strata-command-center-cloud.png" alt="Cloud view on DigitalOcean: machines by memory and price, a plan and its cost" loading="lazy"><figcaption>Cloud: a plan on DigitalOcean with its cost</figcaption></figure>
-          <figure class="shot"><img src="../assets/img/strata-command-center-cloud-clusters.png" alt="Clusters made from the page, one on its way on AWS and one ready on DigitalOcean" loading="lazy"><figcaption>Clusters made from the page (stand-ins for the clouds)</figcaption></figure>
-        </div>
-      </div>
-    </div>
-  </div></section>
-
-  <!-- others -->
   <section class="gutter" id="others"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">Beside the others</span>
       <h2>What the others ship for this</h2>
-      <p>Elasticsearch and OpenSearch leave the console to a second product, Kibana or OpenSearch Dashboards, run and secured beside the cluster. Solr and Qdrant serve a smaller console of their own, and Milvus has Attu as a separate service. The rows below are the jobs above.</p>
+      <p>Elasticsearch and OpenSearch leave the console to a second product, Kibana or OpenSearch Dashboards. Milvus has Attu as a separate service.</p>
     </div>
     <div data-matrix data-section="Command center and operations" data-systems="strata,elastic,opensearch,solr,vespa,qdrant,milvus"></div>
-    <p class="small muted">The whole comparison, every system and every capability, is on <a href="compare.html">Compare</a>.</p>
   </div></section>
 
-  <!-- try -->
-  <section class="gutter" id="try"><div class="wrap block">
-    <div class="split">
-      <div class="block-head">
-        <span class="eyebrow">Try it</span>
-        <h2>Open it on your laptop in a minute</h2>
-        <p>The demo fills a database with sample products and serves it. Behind a coordinator, on kind or in the cloud, the same pages show every shard and replica.</p>
-        <p class="small muted">Every view is described in the <a href="../strata/server.html#the-ui">server documentation</a>.</p>
-      </div>
-<pre data-lang="sh" data-title="on the laptop">strata-server --demo 20000 --db products.strata   # sample products at localhost:7700
-open http://localhost:7700/                        # the command center
-
-# a cluster the operator runs, on kind or in the cloud
-kubectl -n strata port-forward svc/demo 7700:7700</pre>
-    </div>
+  <section class="gutter band-night" id="try"><div class="wrap cta">
+    <h2>Open it on your laptop in a minute</h2>
+    <p class="lede" style="color:var(--night-dim)">The demo fills a database with sample products and serves it.</p>
+<pre>strata-server --demo 20000 --db products.strata
+open http://localhost:7700/</pre>
+    <div class="center-row"><a class="btn primary lg" href="../strata/server.html#the-ui">Every view, documented</a><a class="btn on-night lg" href="scale.html">Run it as a cluster</a></div>
   </div></section>
 </main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div><h4>Strata</h4><p>A search database with SQL, from one file to a cluster. Apache-2.0.</p></div>
-  <div><h4>This site</h4><ul><li><a href="features.html">Features</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compare</a></li><li><a href="benchmarks.html">Benchmarks</a></li><li><a href="examples.html">Queries and examples</a></li><li><a href="use-cases.html">Use cases and demos</a></li><li><a href="scale.html">Small to big</a></li></ul></div>
-  <div><h4>Documentation</h4><ul><li><a href="../strata/">Design</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li><li><a href="../strata/python.html">Python</a></li><li><a href="../strata/results.html">Results</a></li></ul></div>
-  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../engram/">Engram</a></li><li><a href="../reproduce.html">Reproducing the results</a></li></ul></div>
+  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
+  <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="../strata/">Documentation</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../engram/">Engram</a></li><li><a href="../reproduce.html">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="assets/compare-data.js"></script>
 <script src="assets/site.js"></script>

@@ -1,0 +1,144 @@
+Name:             load-meili-rhw9j
+Namespace:        meili
+Priority:         0
+Service Account:  default
+Node:             meili-c-a1-3eato0/10.120.0.17
+Start Time:       Tue, 03 Nov 2026 09:55:40 +0000
+Labels:           batch.kubernetes.io/controller-uid=97f37e9c-3662-47dd-940a-7a4a39119538
+                  batch.kubernetes.io/job-name=load-meili
+                  controller-uid=97f37e9c-3662-47dd-940a-7a4a39119538
+                  job-name=load-meili
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Running
+IP:               10.150.6.159
+IPs:
+  IP:           10.150.6.159
+Controlled By:  Job/load-meili
+Containers:
+  compare:
+    Container ID:  containerd://58d3907948445d95d6b2d0e23be2188a010fed527274461ca94dfb5b6518212f
+    Image:         ghcr.io/chloetech-ai/strata-server:f64dbb459febab46154e465ca2c87f0dc9b183a5
+    Image ID:      ghcr.io/chloetech-ai/strata-server@sha256:be4d5bb6c8cf56f774c644c1238b6f5a4b4e768bb1127c5bbafa51d76e932738
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      load
+      --engine
+      meili
+      --url
+      http://meili-0.meili:7700
+      --clients
+      8
+      --out
+      /data/compare
+      --collection
+      msmarco-10000k
+    State:          Running
+      Started:      Tue, 03 Nov 2026 09:55:41 +0000
+    Ready:          True
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:   /beir
+      STRATA_TOKEN:  <set to the key 'token' in secret 'strata-token'>  Optional: true
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-br57t (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-br57t:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             meili-0
+Namespace:        meili
+Priority:         0
+Service Account:  default
+Node:             meili-d-a1-3eatod/10.120.0.18
+Start Time:       Tue, 03 Nov 2026 09:55:29 +0000
+Labels:           app=meili
+                  engine=meili
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Running
+IP:               10.150.6.60
+IPs:
+  IP:  10.150.6.60
+Containers:
+  meili:
+    Container ID:   containerd://f0d31f7b8659b33ca3ef83da827be96f0a9665795081165d4ee6cadd5c4568d3
+    Image:          getmeili/meilisearch:v1.56.0
+    Image ID:       docker.io/getmeili/meilisearch@sha256:1f578fa865f8251894b3bf38d6668d6209a3f451f8f65ab953e129d4c1db5ef4
+    Port:           7700/TCP (api)
+    Host Port:      0/TCP (api)
+    State:          Running
+      Started:      Tue, 03 Nov 2026 09:55:36 +0000
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     6800m
+      memory:  52Gi
+    Requests:
+      cpu:      6800m
+      memory:   52Gi
+    Readiness:  http-get http://:api/health delay=0s timeout=1s period=2s successThreshold=1 failureThreshold=3
+    Environment:
+      MEILI_ENV:                                       development
+      MEILI_NO_ANALYTICS:                              true
+      MEILI_MAX_INDEXING_THREADS:                      7
+      MEILI_MAX_INDEXING_MEMORY:                       26 GiB
+      MEILI_EXPERIMENTAL_MAX_NUMBER_OF_BATCHED_TASKS:  100
+    Mounts:
+      /meili_data from data (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-vpkc8 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  data:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  kube-api-access-vpkc8:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s

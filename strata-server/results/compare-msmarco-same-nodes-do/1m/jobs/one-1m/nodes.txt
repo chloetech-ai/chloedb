@@ -1,0 +1,2 @@
+one-1m-d-a1 m-8vcpu-64gb one-1m-d-a1-3e2yd3
+one-1m-c-a1 c-8 one-1m-c-a1-3e2yd7

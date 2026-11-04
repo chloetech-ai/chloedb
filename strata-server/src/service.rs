@@ -11,7 +11,7 @@ use serde_json::{json, Value as Json};
 use strata::db::{Db, PreparedWrite, Source};
 use strata::embed::Embedder;
 use strata::ingest::{Format, Rows};
-use strata::query::exec::{Engine, ExecOptions, Leaf, ResultSet};
+use strata::query::exec::{Engine, ExecOptions, Expansions, Leaf, ResultSet};
 use strata::query::memory::MemoryBudget;
 use strata::query::stats::TermStats;
 use strata::query::ir::Plan;
@@ -55,6 +55,14 @@ tokio::task_local! {
     pub static ROUTED: std::cell::Cell<u64>;
 }
 
+/// A snapshot kept for the queries that name its lease, until `until`,
+/// and the typo expansions they found on it.
+struct Lease {
+    snap: Snapshot,
+    until: Instant,
+    expansions: Arc<Expansions>,
+}
+
 /// The deadline a request asked for (`timeout_ms`), when shorter than the
 /// server's default, and whether it passed while a shard was asked: a
 /// coordinator then neither avoids the copies it asked nor counts their
@@ -64,6 +72,28 @@ tokio::task_local! {
 pub struct Deadline {
     asked_ms: std::cell::Cell<Option<u64>>,
     passed: std::cell::Cell<bool>,
+    /// A shard's part whose deadline is the client's own, as the
+    /// coordinator says ([`CLIENT_DEADLINE`]).
+    clients: bool,
+}
+
+/// The gRPC metadata by which a coordinator says that a shard's part runs
+/// to its client's own deadline (`timeout_ms` below the server's default),
+/// so that the shard counts and logs a deadline that passes as the
+/// client's, not as its own failure.
+pub const CLIENT_DEADLINE: &str = "x-strata-deadline";
+
+impl Deadline {
+    /// A shard's part's deadline, its client's own when `clients`.
+    pub fn of_part(clients: bool) -> Deadline {
+        Deadline { clients, ..Default::default() }
+    }
+}
+
+/// Whether the shard's part being served runs to its client's own
+/// deadline ([`CLIENT_DEADLINE`]).
+pub fn part_of_clients_deadline() -> bool {
+    DEADLINE.try_with(|d| d.clients).unwrap_or(false)
 }
 
 tokio::task_local! {
@@ -163,6 +193,10 @@ pub struct QueryReq {
     /// ([`crate::reads`]): a client's query, which a coordinator counts by
     /// the replica that answered each row.
     pub reads: bool,
+    /// `stats` are of this server's version `stats_version`
+    /// ([`Service::stats_version`]), which a coordinator kept: run only on
+    /// that version, else answer [`Answer::stale`]. 0: any version.
+    pub stats_version: u64,
 }
 
 /// The writes a read must see, so that a client reads its own writes
@@ -213,6 +247,14 @@ pub struct Answer {
     /// A shard's rows as an Arrow IPC stream ([`QueryReq::arrow`],
     /// `QueryResponse.arrow`), `rs` then holding none; empty otherwise.
     pub arrow: Vec<u8>,
+    /// The query did not run: its [`QueryReq::stats_version`] is not the
+    /// version it would read.
+    pub stale: bool,
+}
+
+/// An answer of no rows, of a query that did not run.
+fn no_rows() -> ResultSet {
+    ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() }
 }
 
 /// An embedded VECTOR field ([`strata::Embed`]) and its model, which
@@ -347,6 +389,8 @@ pub struct Service {
     pub trusted_proxies: Vec<(std::net::IpAddr, u8)>,
     /// Fleet health's memory ([`crate::fleet`]).
     pub fleet: crate::fleet::Fleet,
+    /// The coordinators this server knows ([`crate::peers`]).
+    pub peers: crate::peers::Peers,
     /// The repository the version picker lists (`--image-repository`).
     pub image_repository: String,
     /// The rollout the coordinator watches run: its version, when it saw
@@ -454,8 +498,15 @@ pub struct Service {
     /// may have, in bytes; other routes take [`SMALL_BODY`].
     pub max_body: usize,
     pub lease_ttl: Duration,
-    leases: Mutex<HashMap<u64, (Snapshot, Instant)>>,
+    leases: Mutex<HashMap<u64, Lease>>,
     next_lease: AtomicU64,
+    /// Random for each run of the server: what a snapshot's statistics
+    /// version is drawn from with its txn ([`Self::stats_version`]), so
+    /// that versions from before a restart are not taken for later ones.
+    stats_nonce: u64,
+    /// Queries that did not run, sent statistics of another version
+    /// ([`QueryReq::stats_version`]).
+    stale_stats: AtomicU64,
     /// Queries allowed to run at once; the rest wait until their deadline.
     admission: Arc<Semaphore>,
     pub max_concurrent: usize,
@@ -552,6 +603,7 @@ impl Service {
             place: Place::from_env(None),
             trusted_proxies: Vec::new(),
             fleet: Default::default(),
+            peers: Default::default(),
             image_repository: crate::operator::upgrade::REPOSITORY.into(),
             rollout_seen: Default::default(),
             rollout_pace_s: Default::default(),
@@ -595,6 +647,8 @@ impl Service {
             lease_ttl: Duration::from_secs(60),
             leases: Mutex::new(HashMap::new()),
             next_lease: AtomicU64::new(1),
+            stats_nonce: std::hash::BuildHasher::hash_one(&std::hash::RandomState::new(), (std::process::id(), Instant::now())),
+            stale_stats: AtomicU64::new(0),
             admission: Arc::new(Semaphore::new(max_concurrent.max(1))),
             max_concurrent: max_concurrent.max(1),
             embedding: Arc::new(Semaphore::new(cores)),
@@ -1689,13 +1743,33 @@ impl Service {
     fn lease_of(&self, snap: Snapshot, ttl: Duration) -> Result<u64, ApiError> {
         let mut l = self.leases.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        l.retain(|_, (_, t)| *t > now);
+        l.retain(|_, x| x.until > now);
         if l.len() >= MAX_LEASES {
             return Err(ApiError { status: 429, message: format!("{MAX_LEASES} snapshot leases are held; try again when some expire") });
         }
         let id = self.next_lease.fetch_add(1, Ordering::Relaxed);
-        l.insert(id, (snap, now + ttl));
+        l.insert(id, Lease { snap, until: now + ttl, expansions: Arc::default() });
         Ok(id)
+    }
+
+    /// The version of `snap`'s BM25 statistics: of its txn, which every
+    /// write, flush and merge moves on, and of this run of the server.
+    /// Never 0, which a query sends for any version.
+    pub fn stats_version(&self, snap: &Snapshot) -> u64 {
+        match self.stats_nonce ^ snap.txn() {
+            0 => 1,
+            v => v,
+        }
+    }
+
+    /// The typo expansions found on lease `lease`'s snapshot so far, which
+    /// the queries reading it share (a coordinator's statistics round,
+    /// then its query round): `None` for no lease, or one unknown.
+    fn lease_expansions(&self, lease: u64) -> Option<Arc<Expansions>> {
+        if lease == 0 {
+            return None;
+        }
+        self.leases.lock().unwrap_or_else(|e| e.into_inner()).get(&lease).map(|x| x.expansions.clone())
     }
 
     /// Ends `leases` before they expire, and releases the versions only
@@ -1724,7 +1798,7 @@ impl Service {
     pub fn sweep_leases(&self) -> usize {
         let mut l = self.leases.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        l.retain(|_, (_, t)| *t > now);
+        l.retain(|_, x| x.until > now);
         l.len()
     }
 
@@ -1746,7 +1820,7 @@ impl Service {
     fn leased(&self, lease: u64) -> Result<Snapshot, ApiError> {
         let l = self.leases.lock().unwrap_or_else(|e| e.into_inner());
         match l.get(&lease) {
-            Some((s, t)) if *t > Instant::now() => Ok(s.clone()),
+            Some(x) if x.until > Instant::now() => Ok(x.snap.clone()),
             _ => Err(ApiError::bad(format!("snapshot lease {lease} is unknown or expired"))),
         }
     }
@@ -2122,6 +2196,8 @@ impl Service {
         req.reads = !req.shard && !req.quiet && self.reads.on();
         let mut served = Vec::new();
         let mut lease = 0;
+        // The statistics the query was sent are not of the version it reads.
+        let mut stale = false;
         req.profile |= self.profiling.cpu_all.load(Ordering::Relaxed);
         let profiled = req.profile;
         let meta = self.meta(&req);
@@ -2139,6 +2215,10 @@ impl Service {
                     if req.after != After::Any {
                         telemetry::record("wait for writes", tw, "ok");
                     }
+                    if req.stats_version != 0 && req.stats_version != self.stats_version(&snap) {
+                        stale = true;
+                        return Ok((no_rows(), Vec::new()));
+                    }
                     let ta = Instant::now();
                     let permit = self.admit(timeout).await.ok_or_else(too_many);
                     telemetry::record("admission", ta, if permit.is_ok() { "ok" } else { "rejected" });
@@ -2151,6 +2231,9 @@ impl Service {
                     // segments (as engram's recall does).
                     let opts = ExecOptions {
                         stats,
+                        // A query round on the lease of a statistics round
+                        // reuses its typo expansions.
+                        expansions: self.lease_expansions(req.snapshot),
                         shard: req.shard,
                         threads: (self.cores / n).max(1),
                         deadline: Some(t0 + timeout),
@@ -2218,6 +2301,12 @@ impl Service {
             }
         };
         drop(live);
+        // Not a query that ran: the coordinator sends it again with the
+        // statistics of this version.
+        if stale {
+            self.stale_stats.fetch_add(1, Ordering::Relaxed);
+            return Ok(Answer { rs: no_rows(), took_ms: t0.elapsed().as_secs_f64() * 1e3, kind, missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: true });
+        }
         if req.reads {
             match (&res, &self.backend) {
                 (Ok((rs, _)), Backend::Local(_)) => self.reads.retrieved(&schema.table, crate::reads::At::here(), &rs.keys),
@@ -2248,7 +2337,7 @@ impl Service {
             caller: telemetry::caller(),
             params: telemetry::params_json(&req.params),
             deadline_ms: deadline.as_millis() as u64,
-            client_deadline: !req.shard && req.timeout_ms > 0 && deadline < self.timeout,
+            client_deadline: (!req.shard || part_of_clients_deadline()) && req.timeout_ms > 0 && deadline < self.timeout,
         }
     }
 
@@ -2285,7 +2374,7 @@ impl Service {
         if !quiet {
             self.query_log.add(sql, kind, outcome, secs, rows, shard, res.as_ref().err().map(|e| e.message.as_str()), slow, res.as_ref().ok().map(|(rs, _)| &rs.stats), profiled, meta);
         }
-        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0, arrow: Vec::new() })
+        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0, arrow: Vec::new(), stale: false })
     }
 
     /// A compound query ([`compound`]): its plan's leaves run on one
@@ -2461,12 +2550,13 @@ impl Service {
         self.running.load(Ordering::Relaxed)
     }
 
-    /// The statistics `sql` scores with, and a lease on the snapshot they
-    /// came from (0 from a coordinator, which sums its shards'). The lease
-    /// lasts for the query round that follows: the request's deadline
-    /// (`timeout_ms`, or the default) and a second. The snapshot holds the
-    /// writes `after` names ([`After`]).
-    pub async fn term_stats(self: &Arc<Self>, sql: &str, plan: Option<&Plan>, params: &Params, after: &After, timeout_ms: u64) -> Result<(TermStats, u64), ApiError> {
+    /// The statistics `sql` scores with, a lease on the snapshot they
+    /// came from (0 from a coordinator, which sums its shards'), and the
+    /// snapshot's statistics version ([`Self::stats_version`]; 0 from a
+    /// coordinator). The lease lasts for the query round that follows: the
+    /// request's deadline (`timeout_ms`, or the default) and a second. The
+    /// snapshot holds the writes `after` names ([`After`]).
+    pub async fn term_stats(self: &Arc<Self>, sql: &str, plan: Option<&Plan>, params: &Params, after: &After, timeout_ms: u64) -> Result<(TermStats, u64, u64), ApiError> {
         let bound = match plan {
             Some(p) => p.clone(),
             None => self.bound(|tables| compound::plan_read(sql, tables, params, &|t, n| self.rank_profile(t, n))).await?,
@@ -2483,18 +2573,21 @@ impl Service {
         match &self.backend {
             Backend::Local(db) => {
                 let snap = self.read_snapshot(db, 0, after, Instant::now() + timeout).await?;
+                let version = self.stats_version(&snap);
                 let lease = self.lease_of(snap.clone(), self.lease_ttl.min(timeout + Duration::from_secs(1)))?;
                 let view = snap.table(&schema.table).ok_or_else(|| ApiError::bad(format!("query error: no such table: {}", schema.table)))?;
                 let db = db.clone();
-                let opts = ExecOptions { synonyms: self.synonyms().or_else(|| db.exec.synonyms.clone()), ..db.exec.clone() };
+                // The query round on the lease finds the typo expansions
+                // these statistics were found with.
+                let opts = ExecOptions { synonyms: self.synonyms().or_else(|| db.exec.synonyms.clone()), expansions: self.lease_expansions(lease), ..db.exec.clone() };
                 let stats = tokio::task::spawn_blocking(move || db.term_stats_with(&view, &select, &opts)).await.map_err(ApiError::internal)??;
-                Ok((stats, lease))
+                Ok((stats, lease, version))
             }
             Backend::Cluster(c) => {
                 // A query by a rank profile reaches the shards written
                 // out, and one by a model with the model's hash.
                 let given = plan.filter(|_| !bound.root.has_models()).or((bound.root.has_profiles() || bound.root.has_models()).then_some(&bound));
-                Ok((c.term_stats(sql, &schema, given, params, after, Instant::now() + timeout).await?.0, 0))
+                Ok((c.term_stats(sql, &schema, given, params, after, Instant::now() + timeout).await?.0, 0, 0))
             }
         }
     }
@@ -3251,6 +3344,12 @@ impl Service {
             Backend::Local(db) => {
                 let s = db.snapshot();
                 let mut h = json!({"status": "ok", "role": "shard", "docs": s.n_live_docs(), "segments": s.segments().len(), "txn": s.txn()});
+                // cluster2: the rows of every table (`docs` counts the first
+                // only), which a move or a new copy sends: plans and moves
+                // count these.
+                let tables: serde_json::Map<String, Json> = s.schemas().filter(|t| t.table != strata::storage::SOURCES).filter_map(|t| s.table(&t.table).map(|v| (t.table.clone(), json!(v.n_live_docs())))).collect();
+                h["rows"] = json!(tables.values().filter_map(Json::as_u64).sum::<u64>());
+                h["tables"] = Json::Object(tables);
                 if let Some((m, shard)) = self.slots() {
                     h["slots"] = json!({"epoch": m.epoch, "shard": shard, "of": m.shards()});
                 }
@@ -3558,22 +3657,31 @@ impl Service {
         let now = telemetry::now_ms();
         let (cluster, partial, coordinator) = match &self.backend {
             Backend::Cluster(c) => {
-                let me = json!({"url": self.identity.public_url, "name": self.place.name.clone().or_else(|| self.place.node.clone())});
+                let me = match crate::peers::this(self) {
+                    Some(p) => json!({"url": p.url, "name": p.name}),
+                    None => json!({"url": self.identity.public_url, "name": self.place.name.clone().or_else(|| self.place.node.clone())}),
+                };
                 ((*c.snapshot().await).clone(), c.opts.partial, Some(me))
             }
             Backend::Local(_) => (crate::fleet::local_shard(&self.detail().await), false, None),
         };
-        let points = self.series.since(now.saturating_sub(crate::fleet::WINDOW_S * 1000));
-        let by = self.alerts.firing();
-        let count = |sev: Option<&str>| by.iter().filter(|(k, _)| sev.is_none_or(|s| k.contains(&format!("\"{s}\"")))).map(|(_, n)| *n as u64).sum::<u64>();
+        let history = self.series.since(now.saturating_sub(3_600_000));
+        let from = now.saturating_sub(crate::fleet::WINDOW_S * 1000);
+        let points: Vec<Arc<Json>> = history.iter().filter(|p| p["t"].as_u64().unwrap_or(0) > from).cloned().collect();
+        // fleet: the alerts firing that nobody silenced, each rule once, as the bell counts them
+        // (alerts2: nor a cause holds back).
+        let alerts: Vec<Json> = self.alerts.json()["states"].as_array().map_or_else(Vec::new, |v| v.iter().filter(|s| s["state"] == "firing" && s["silenced"].is_null() && s["held_by"].is_null()).cloned().collect());
         self.fleet.judge(crate::fleet::Inputs {
             cluster: &cluster,
             points: &points,
+            history: &history,
             slo_error_ratio: self.slo.error_ratio,
             slo_p99_ms: self.slo.p99_ms,
-            alerts: (count(None), count(Some("critical"))),
+            alerts,
             partial,
             coordinator,
+            peers: crate::peers::windows(self),
+            gone: if matches!(self.backend, Backend::Cluster(_)) { crate::peers::gone(self) } else { Vec::new() },
             now_ms: now,
         })
     }
@@ -3590,10 +3698,12 @@ impl Service {
         });
         json!({
             "health": health, "load": load, "minute": minute,
-            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores},
+            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores, "memory_limit_bytes": strata::storage::memory_limit()},
             "running": self.live.len(), "log_store": log_store,
             // core: what a coordinator's /v1/cluster shows of each copy.
             "capability": self.capability(),
+            // cluster2: the flags it runs with, for Settings (NEW-cluster-admin-5).
+            "limits": {"slow_ms": self.slow_after().map(|d| d.as_millis() as u64), "max_concurrent": self.max_concurrent, "max_rows": self.max_rows, "timeout_ms": self.timeout.as_millis() as u64},
             "place": {"name": self.place.name, "node": self.place.node, "zone": self.place.zone},
             "version": self.place.version(),
             "backup_dir": self.backup_dir.as_ref().map(|p| p.display().to_string()),
@@ -3601,6 +3711,8 @@ impl Service {
             // alerts agent: the alerts firing here, and this copy's states of
             // the each_copy rules, which a coordinator gathers.
             "alerts": self.alerts.summary(),
+            // fleet: the coordinators that named themselves here ([`crate::peers`]).
+            "coordinators": self.peers.heard_json(),
         })
     }
 
@@ -3703,6 +3815,7 @@ impl Service {
                     one("strata_free_bytes", "gauge", "Bytes of the database file free for reuse (0 in the directory layout).", (f.free_pages * strata::storage::pager::PAGE) as f64),
                     one("strata_wal_bytes", "gauge", "Bytes of the write-ahead log.", f.wal_bytes as f64),
                     one("strata_snapshot_leases", "gauge", "Snapshot leases held.", self.sweep_leases() as f64),
+                    one("strata_stale_stats_total", "counter", "Queries a coordinator sent with kept BM25 statistics of an older version, answered without running.", self.stale_stats.load(Ordering::Relaxed) as f64),
                     one("strata_failing", "gauge", "1 when the database cannot write until the server restarts.", self.failing().is_some() as u8 as f64),
                     one("strata_flush_failing", "gauge", "1 while flushes fail (a full disk).", db.storage().flush_error().is_some() as u8 as f64),
                     one("strata_write_queue_requests", "gauge", "Write requests in the write path: embedding, waiting for the writer, or being applied.", w.queued.load(Ordering::Relaxed) as f64),

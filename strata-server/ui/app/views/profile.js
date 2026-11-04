@@ -13,8 +13,8 @@ import { editor } from "../sqledit.js";
 import { tables, cached } from "../catalog.js";
 import { profileView, profileFigures, kpi } from "../profile.js";
 import { flameGraph, folded, shortName } from "../flame.js";
-import { state, link, copyName, copyTitle, copyLink, isCoord, queryDrawer, narrow, workbenchLink, profileLink, copies } from "../workload.js";
-import { isProduction } from "../data.js";
+import { state, link, copyName, copyTitle, copyLink, isCoord, queryDrawer, narrow, workbenchLink, profileLink, copies, statementLink, containRules, can } from "../workload.js";
+import { isProduction, clusterName, environment } from "../data.js";
 
 export default { id: "profile", title: "Profiler", icon: "flame", group: "Diagnose", keywords: "profile profiler diagnostics node explain analyze flame chart flame graph cpu sampling pprof perf folded speedscope hot functions memory heap allocations allocator leak rss threads context switches segments operators steps debug latency settings slow threshold", render, onParams };
 
@@ -39,7 +39,8 @@ function render(page, r) {
     if (!TABS.some(([k]) => k === t)) t = "query";
     // On a coordinator, the CPU and Memory tabs profile any server of its
     // cluster: ?node= names it (a replica's URL), none the coordinator.
-    const n = t === "cpu" || t === "memory" ? params.get("node") || "" : "";
+    // NEW-workload-10: a copy's name (s0-1) or its node name works too.
+    const n = t === "cpu" || t === "memory" ? nodeUrl(params.get("node") || "") : "";
     if (t !== tab || n !== node) {
       tab = t; node = n; stop?.();
       clear(tabs, TABS.map(([k, v]) => h("button", { role: "tab", "aria-selected": String(k === t), onclick: () => { location.hash = link("profile", { tab: k, node: node && (k === "cpu" || k === "memory") ? node : null }); } }, v)),
@@ -53,7 +54,9 @@ function render(page, r) {
   }
   route = go;
   go(r.params);
-  return () => { stop?.(); route = null; };
+  // A copy's name resolves once the cluster is read.
+  const offCluster = bus.on("cluster", () => { const p = new URLSearchParams(location.hash.split("?")[1] || ""); const v = p.get("node"); if (v && !/^https?:\/\//.test(v) && nodeUrl(v) !== v && node !== nodeUrl(v)) go(p); });
+  return () => { stop?.(); route = null; offCluster?.(); };
 }
 
 // ---------------------------------------------------------------- run one
@@ -72,13 +75,15 @@ function runner(body) {
     const n = isCoord() ? state.cluster?.shards?.length || 0 : 0;
     clear(runNote, n ? `Each run is a normal query that asks every shard: ${runs === 1 ? "one run" : runs + " runs"} × ${fmt.n(n)} shards = ${fmt.n(runs * n)} shard calls. Runs show in Queries.` : "Each run is a normal query: it takes a slot and shows in Queries.");
   };
-  const runsSeg = seg([[1, "once"], [5, "5 times"], [20, "20 times"]], runs, (v) => { runs = v; store.set("profile.runs", v); drawNote(); }, { title: "Run it more than once to see how its time varies; the profile shown is the median run's" });
+  const runsSeg = seg([[1, "once"], [5, "5 times"], [20, "20 times"]], runs, (v) => { runs = v; store.set("profile.runs", v); drawNote(); drawLinked?.(); }, { title: "Run it more than once to see how its time varies; the profile shown is the median run's" });
   const strip = h("div");
   const out = h("div");
-  body.append(
+  // What a link filled in, above the form: it has not run.
+  const lead = h("div");
+  body.append(lead,
     card({ body: h("div", { class: "stack" },
       h("div", { class: "wb-ed", style: { height: "150px", border: "1px solid var(--line)", borderRadius: "var(--r-sm)", overflow: "hidden" } }, ed.el),
-      h("details", { open: !!paramsText }, h("summary", { class: "small dim" }, "Parameters, as JSON (for :names in the SQL)"), params),
+      h("details", { open: !!paramsText }, h("summary", { class: "small dim wl-sum" }, "Parameters, as JSON (for :names in the SQL)"), params),
       h("div", { class: "row", style: { flexWrap: "wrap" } }, go, runsSeg, h("span", { class: "sep" }), runNote),
     ), attrs: { style: { marginBottom: "14px" } } }),
     strip, out);
@@ -87,12 +92,27 @@ function runner(body) {
   if (!sql) tables().then(() => { if (!sql && cached()[0]) { const t = cached()[0]; const f = (t.short?.fields || []).find((x) => x.type === "text" && x.indexed !== false); ed.value = f ? `SELECT * FROM ${t.table} ORDER BY bm25(${f.name}, 'search') DESC LIMIT 10` : `SELECT * FROM ${t.table} LIMIT 10`; sql = ed.value; } }).catch(() => {});
   clear(out, empty("flame", "Profile a query", "Write a SELECT and press Profile: the server runs it with its CPU time measured and answers every step it took."));
   let busy = false;
+  // A link fills the form and never runs it: the query is the link's, the
+  // key and the cluster are whoever opens it. `linked` is what we know of
+  // its statement (p99, contain rules), to ask before a slow or contained one.
+  let linked = null;
+  const drawLinked = () => clear(lead, linked ? linkCard(linked, runs, () => run()) : null);
   async function run() {
     if (busy) return;
     const text = (ed.value || "").trim().replace(/;\s*$/, "");
     if (!text) { toast("Write a query first"); return; }
     let p = {};
     if (paramsText.trim()) { try { p = JSON.parse(paramsText); } catch (e) { toast("The parameters are not JSON: " + e.message, "bad"); return; } }
+    if (linked && text === linked.sql) {
+      const risk = linkRisk(linked);
+      if (risk.length) {
+        const ok = await confirm({ title: linked.refusedAll ? "Run a statement that is refused?" : "Run this statement on " + (clusterName() || "this cluster") + "?", ok: runs === 1 ? "Run it once" : `Run it ${runs} times`,
+          body: h("div", { class: "stack" }, h("ul", { class: "wl-list" }, risk.map((x) => h("li", {}, x))),
+            h("p", { class: "small muted", style: { margin: 0 } }, `It runs ${runs === 1 ? "once" : runs + " times"} as a normal query under your key${isProduction() ? ", on production" : ""}, and shows in Queries.`)) });
+        if (!ok) return;
+      }
+    }
+    if (linked) { linked = null; drawLinked(); }
     busy = true; go.disabled = true;
     const all = [];
     try {
@@ -127,14 +147,63 @@ function runner(body) {
     }
     draw();
   }
+  /** The link's statement: filled in, not run, with what it does now. */
+  async function fromLink(text, fp) {
+    linked = { sql: text.trim().replace(/;\s*$/, ""), fp, stat: null, rules: [], refusedAll: false, read: !fp };
+    const draw = drawLinked;
+    draw();
+    if (!fp) return;
+    const to = Date.now(), from = to - 3600e3;
+    const [st, rules] = await Promise.all([
+      api(`/v1/queries/stats/${encodeURIComponent(fp)}?from=${from}&to=${to}`).catch(() => null),
+      containRules().catch(() => null)]);
+    if (!linked || linked.fp !== fp) return;
+    linked.stat = st?.statement || null;
+    const mine = state.whoami?.key ? state.whoami.name : null;
+    linked.rules = (rules || []).filter((r) => r.match?.fingerprint === fp || r.match?.fingerprint === linked.stat?.fingerprint || (!r.match?.fingerprint && r.match?.key && r.match.key === mine));
+    linked.refusedAll = linked.rules.some((r) => r.action === "refuse" && (!r.match?.key || r.match.key === mine));
+    linked.read = true;
+    draw();
+  }
   return {
     stop: () => offCluster?.(),
     open(params) {
       const q = params.get("sql"), pj = params.get("p");
       if (pj != null) { paramsText = pj; params_.value = pj; params_.closest("details")?.setAttribute("open", ""); store.set("profile.params", pj); }
-      if (q) { ed.value = q; sql = q; store.set("profile.sql", q); run(); }
+      if (q) { ed.value = q; sql = q; store.set("profile.sql", q); clear(out); fromLink(q, params.get("fp")); }
     },
   };
+}
+
+/** Why a linked statement asks before it runs: slow, contained, refused. */
+function linkRisk(l) {
+  const out = [];
+  const s = l.stat;
+  if (s && s.p99_ms >= 1000) out.push(`It is slow: p99 ${fmt.ms(Math.min(s.p99_ms, s.max_ms ?? s.p99_ms))} over its ${fmt.plural(s.calls, "call")} in the last hour, the slowest ${fmt.ms(s.max_ms)}.`);
+  for (const r of l.rules) {
+    const who = r.match?.key ? `from key ${r.match.key}` : "from every key";
+    out.push(r.action === "refuse" ? `A contain rule refuses it ${who}${r.reason ? `: "${r.reason}"` : ""}.${!r.match?.key || l.refusedAll ? " Your run will be refused too (429)." : " Your key is not refused: it runs in full."}`
+      : `A contain rule lets at most ${r.concurrency ?? "?"} run at once ${who}${r.reason ? `: "${r.reason}"` : ""}. Your runs take its turns.`);
+  }
+  return out;
+}
+
+/** The card a link opens on: the query is filled in, has not run, and what running it means. */
+function linkCard(l, runs, run) {
+  const s = l.stat, risk = linkRisk(l);
+  const where = [clusterName(), environment()].filter(Boolean).join(", ");
+  const facts = !l.fp ? null : !l.read ? h("div", { class: "small muted" }, "Reading its last hour…")
+    : s ? h("div", { class: "row small", style: { gap: "4px 16px", flexWrap: "wrap" } },
+      [["last hour", fmt.plural(s.calls, "call")], ["p99", fmt.ms(Math.min(s.p99_ms, s.max_ms ?? s.p99_ms))], ["slowest", fmt.ms(s.max_ms)], ["failed", fmt.n(s.errors || 0)]].map(([k, v]) => h("span", { class: "nowrap" }, h("span", { class: "muted" }, k + " "), h("b", {}, v))),
+      h("a", { class: "wl-link", href: statementLink(l.fp) }, "Its statement page ›"))
+    : h("div", { class: "small muted" }, "This server has no calls of it in the last hour.");
+  return h("div", { class: "banner wl-linked " + (risk.length ? "warn" : ""), style: { alignItems: "flex-start" } }, icon("info"),
+    h("div", { class: "stack grow", style: { gap: "6px", minWidth: 0 } },
+      h("b", {}, "Filled in from a link. It has not run."),
+      h("div", { class: "small dim" }, `Profile runs it ${runs === 1 ? "once" : runs + " times"} as a normal query${where ? " on " + where : ""}, under your key. Check the query and its parameters first.`),
+      facts,
+      risk.length ? h("ul", { class: "wl-list small" }, risk.map((x) => h("li", {}, x))) : null,
+      h("div", { class: "row" }, h("button", { class: "btn primary sm", onclick: run }, icon("flame"), risk.length ? "Profile it…" : "Profile it"))));
 }
 
 // ---------------------------------------------------------------- CPU and memory
@@ -326,10 +395,26 @@ function sampler(body, cfg) {
       cfg.show(out, p, req);
     } catch (e) {
       if (gone) return;
-      clear(out, e.status === 409 ? empty("clock", "A profile is being taken", cfg.busy) : e.status === 501 ? empty("info", "Not available here", e.message) : h("div", { class: "error" }, e.message));
+      clear(out, e.status === 409 ? empty("clock", "A profile is being taken", busyWords(e.message, cfg.busy)) : e.status === 501 ? empty("info", "Not available here", e.message) : h("div", { class: "error" }, e.message));
     } finally { clearInterval(tick); busy = false; go.disabled = false; }
   }
   return { stop: () => { gone = true; clearInterval(tick); } };
+}
+
+/** A copy named by its URL, its short name (s0-1) or its node name, as its URL; anything else as given. */
+function nodeUrl(v) {
+  if (!v || /^https?:\/\//.test(v)) return v;
+  const c = copies().find((x) => x.name === v || x.node === v);
+  return c ? c.url : v;
+}
+
+// A second profile's refusal: the server names who takes the first and
+// for how long still; said here with the local time it ends.
+function busyWords(msg, fallback) {
+  const m = /being taken, by (.+?), for (\d+) s more/.exec(msg || "");
+  if (!m) return fallback;
+  const who = m[1] === "open" ? "Someone" : m[1] === "root token" ? "The root token" : m[1];
+  return `${who} started it. It ends in about ${m[2]} s, at ${fmt.time(Date.now() + Number(m[2]) * 1000)}. One at a time: try again then.`;
 }
 
 /** The head of a profile's answer: what it was of, downloads, the query. */
@@ -574,22 +659,30 @@ function settingsTab(body) {
   const box = h("div", { class: "prof-set" });
   const host = location.host;
   const where = isCoord() ? "the coordinator" : "this server";
+  const keep = h("div", { class: "small muted" });
+  const fleet = h("div");
+  let alive = true;
   body.append(
-    card({ title: "This server's runtime settings", sub: `${where} (${host}) only · set while it runs; a restart goes back to its flags`, body: h("div", { class: "stack" }, box,
-      h("div", { class: "small muted" }, "A query slower than the threshold is kept as slow, with its profile. ", h("a", { href: link("queries", { tab: "history", preset: "slow" }) }, "See them in Queries > History, slow ›")),
-      isCoord() ? h("div", { class: "small muted" }, "Each copy keeps its own settings: this sets the coordinator's, which times a query across every shard.") : null) }));
+    card({ title: isCoord() ? "The coordinator's runtime settings" : "This server's runtime settings", sub: `${where} (${host}) only · set while it runs; a restart goes back to its flags`, body: h("div", { class: "stack" }, box,
+      h("div", { class: "small muted" }, "A query slower than the threshold is kept as slow, with its profile. ", h("a", { class: "wl-link", href: link("queries", { tab: "history", preset: "slow" }) }, "See them in Queries > History, slow ›")),
+      keep,
+      isCoord() ? h("div", { class: "small muted" }, "The coordinator times a query across every shard; each copy keeps its own settings, listed below.") : null) }),
+    fleet);
+  /** Asks first on production, with a reason: {reason} or null when cancelled. */
+  async function ask(title, what) {
+    if (!isProduction()) return { reason: null };
+    const ok = await confirm({ title, body: `${what} It lasts until the server restarts.`, ok: "Change it", reason: true });
+    return ok ? { reason: ok.reason } : null;
+  }
+  const words = (b) => b.slow_ms !== undefined ? (b.slow_ms == null ? "No query will be kept as slow." : `Queries over ${fmt.ms(b.slow_ms)} will be kept as slow.`) : b.cpu_all ? "Every query will have its CPU time measured (about 0.3 µs a step)." : "Only profiled queries will have their CPU time measured.";
   async function draw() {
     try {
       const s = await api("/v1/profile/settings");
       const inp = h("input", { class: "input sm num", type: "number", min: 0, step: "any", value: s.slow_ms ?? "", placeholder: "off", id: "wl-slow-ms", style: { width: "90px" } });
       const save = async (b) => {
-        let reason = null;
-        if (isProduction()) {
-          const ok = await confirm({ title: `Change ${where}'s runtime settings?`, body: `${b.slow_ms !== undefined ? (b.slow_ms == null ? "No query will be kept as slow." : `Queries over ${fmt.ms(b.slow_ms)} will be kept as slow.`) : b.cpu_all ? "Every query will have its CPU time measured (about 0.3 µs a step)." : "Only profiled queries will have their CPU time measured."} It lasts until the server restarts.`, ok: "Change it", reason: true });
-          if (!ok) return;
-          reason = ok.reason;
-        }
-        try { const r = await api("/v1/profile/settings", { method: "PUT", body: b, reason }); toast(r.slow_ms == null ? "No query is kept as slow" : `Queries over ${fmt.ms(r.slow_ms)} are kept as slow`, "ok"); draw(); }
+        const ok = await ask(`Change ${where}'s runtime settings?`, words(b));
+        if (!ok) return;
+        try { const r = await api("/v1/profile/settings", { method: "PUT", body: b, reason: ok.reason }); toast(r.slow_ms == null ? "No query is kept as slow" : `Queries over ${fmt.ms(r.slow_ms)} are kept as slow`, "ok"); draw(); }
         catch (e) { toast(e.message, "bad"); }
       };
       clear(box,
@@ -600,8 +693,72 @@ function settingsTab(body) {
         s.started_slow_ms !== s.slow_ms ? h("span", { class: "small muted" }, `started with ${s.started_slow_ms == null ? "none" : fmt.ms(s.started_slow_ms)}`) : null,
         h("span", { class: "sep" }),
         toggle(!!s.cpu_all, (v) => save({ cpu_all: v }), "Measure CPU time for every query (about 0.3 µs a step)"));
+      // PROF-2: what survives a restart.
+      keep.textContent = `To keep a threshold after a restart, start the server with --slow-ms N (this one started with ${s.started_slow_ms == null ? "none, --slow-ms 0" : `--slow-ms ${Math.round(s.started_slow_ms)}`}). Measuring every query's CPU time has no flag: it is off after a restart.`;
+      if (isCoord()) drawFleet(s);
     } catch (e) { clear(box, failure(e, "This server's runtime settings")); }
   }
+  /** PROF-2: every copy's settings, read 16 at a time, and one change for every server. */
+  async function drawFleet(mine) {
+    const cs = copies().filter((c) => c.status !== "down");
+    const down = copies().length - cs.length;
+    // The other coordinators too (PROF-2): set through this one.
+    const coords = (state.fleet?.coordinators || []).filter((c) => !c.this && !c.gone && c.url);
+    const me = (state.fleet?.coordinators || []).find((c) => c.this);
+    const rows = [{ name: coords.length ? me?.name || "this coordinator" : "coordinator", title: host, self: true, ...mine, read: true },
+      ...coords.map((c) => ({ name: c.name || c.url, title: c.url, coord: c.url })),
+      ...cs.map((c) => ({ name: c.name, title: c.url, url: c.url, shard: c.shard }))];
+    const tbody = h("tbody");
+    const slowOf = (x) => x.err ? (/no profile of kind/.test(x.err) ? "older server: sets its own only" : "did not answer") : !x.read ? "reading…" : x.slow_ms == null ? "none kept" : `over ${fmt.ms(x.slow_ms)}`;
+    const row = (x) => h("tr", {},
+      h("td", {}, h("span", { class: "mono small", title: x.title }, x.name), x.shard != null ? h("span", { class: "tiny muted" }, ` shard ${x.shard}`) : x.coord || (x.self && coords.length) ? h("span", { class: "tiny muted" }, x.self ? " this coordinator" : " coordinator") : null),
+      h("td", { class: "small", title: x.err || "" }, slowOf(x), x.read && x.started_slow_ms !== x.slow_ms ? h("span", { class: "tiny muted" }, ` · started ${x.started_slow_ms == null ? "none" : fmt.ms(x.started_slow_ms)}`) : null),
+      h("td", { class: "small" }, x.read ? (x.cpu_all ? "every query" : "profiled only") : ""));
+    const paint = () => clear(tbody, rows.map(row));
+    const inp = h("input", { class: "input sm num", type: "number", min: 0, step: "any", placeholder: "off", value: mine.slow_ms ?? "", "aria-label": "Slow threshold for every server, ms", style: { width: "90px" } });
+    const n = rows.length;
+    const who = `${coords.length ? `${coords.length + 1} coordinators` : "the coordinator"} and ${fmt.plural(cs.length, "copy", "copies")}`;
+    const setAll = async (b) => {
+      const ok = await ask(`Change every server's runtime settings?`, `${words(b)} On ${fmt.plural(n, "server")}: ${who}.`);
+      if (!ok) return;
+      const failed = [];
+      try { await api("/v1/profile/settings", { method: "PUT", body: b, reason: ok.reason }); } catch (e) { failed.push(`coordinator (${e.message})`); }
+      await Promise.all(rows.filter((x) => x.coord).map(async (x) => {
+        try { await api("/v1/profile/settings?coordinator=" + encodeURIComponent(x.coord), { method: "PUT", body: b, reason: ok.reason }); } catch (e) { failed.push(`${x.name} (${e.message})`); }
+      }));
+      const others = rows.filter((x) => x.url);
+      for (let i = 0; i < others.length; i += 16) {
+        await Promise.all(others.slice(i, i + 16).map(async (x) => {
+          try { await api("/v1/profile/settings?node=" + encodeURIComponent(x.url), { method: "PUT", body: b, reason: ok.reason }); } catch (e) { failed.push(`${x.name} (${e.message})`); }
+        }));
+      }
+      toast(failed.length ? `Set on ${n - failed.length} of ${n} servers. Not on: ${failed.slice(0, 3).join(", ")}${failed.length > 3 ? ` and ${failed.length - 3} more` : ""}` : `Set on all ${n} servers`, failed.length ? "bad" : "ok");
+      draw();
+    };
+    const admin = can("admin");
+    const btn = (label, b, cls = "btn sm") => { const x = h("button", { class: cls, onclick: () => setAll(b()) }, label); if (!admin) { x.disabled = true; x.title = "Needs an admin key"; } return x; };
+    const goneN = (state.fleet?.coordinators || []).filter((c) => c.gone).length;
+    clear(fleet, card({ title: "Every server's settings", sub: `${who}${down ? ` · ${down} down, not listed` : ""}${goneN ? ` · ${fmt.plural(goneN, "coordinator")} not answering, not listed` : ""} · each until it restarts`, flush: true, body: h("div", {},
+      h("div", { class: "row", style: { gap: "8px", padding: "10px 12px", flexWrap: "wrap", alignItems: "center" } },
+        h("span", { class: "small dim" }, "On every server: keep queries slower than"), h("span", { class: "row nw small dim", style: { gap: "8px" } }, inp, "ms",
+          btn(`Set on ${n}`, () => ({ slow_ms: inp.value === "" ? null : Number(inp.value) }), "btn sm primary")),
+        btn("CPU time for every query: on", () => ({ cpu_all: true })), btn("off", () => ({ cpu_all: false }))),
+      h("div", { class: "tbl-wrap", style: { maxHeight: "50vh" } }, h("table", { class: "t compact wl-nums" }, h("thead", {}, h("tr", {}, ["server", "kept as slow", "CPU time measured"].map((k) => h("th", {}, k)))), tbody))) }));
+    paint();
+    await Promise.all(rows.filter((x) => x.coord).map(async (x) => {
+      try { Object.assign(x, await api("/v1/profile/settings?coordinator=" + encodeURIComponent(x.coord)), { read: true }); } catch (e) { x.err = e.message; }
+    }));
+    if (!fleet.isConnected) return;
+    paint();
+    const others = rows.filter((x) => x.url);
+    for (let i = 0; i < others.length && alive; i += 16) {
+      await Promise.all(others.slice(i, i + 16).map(async (x) => {
+        try { Object.assign(x, await api("/v1/profile/settings?node=" + encodeURIComponent(x.url)), { read: true }); } catch (e) { x.err = e.message; }
+      }));
+      if (!fleet.isConnected) return;
+      paint();
+    }
+  }
   draw();
-  return { stop: () => {} };
+  return { stop: () => { alive = false; } };
 }

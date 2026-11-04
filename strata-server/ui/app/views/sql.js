@@ -306,8 +306,14 @@ function render(page, r) {
     h("span", { class: "small muted hide-sm" }, h("kbd", {}, "Ctrl"), " ", h("kbd", {}, "Enter"), " run · ", h("kbd", {}, "Ctrl"), " ", h("kbd", {}, "Space"), " complete"),
     h("button", { class: "btn ghost icon", title: "Copy a link to this query", onclick: () => copy(location.origin + "/#/sql?q=" + encodeURIComponent(ed.value), "Link copied") }, icon("link")),
     h("button", { class: "btn ghost icon", title: "Save this query", onclick: saveQuery }, icon("plus")),
-    h("button", { class: "btn ghost", title: "Saved queries and history", onclick: library }, icon("clock"), "Library"));
-  page.append(h("div", { class: "wb" }, side, h("div", { class: "wb-main" }, tabBar, modeBar, tools, edWrap, paramsBox, splitter, out)));
+    h("button", { class: "btn ghost", title: "Saved queries and history", onclick: library }, icon("clock"), "Library"),
+    // NEW-data-tools-9: under 1,100 px the sidebar is a sheet this opens.
+    h("button", { class: "btn ghost wb-tables-btn", title: "The tables, their fields and snippets", onclick: () => sideOpen(true) }, icon("table"), "Tables"));
+  const wbEl = h("div", { class: "wb" }, side, h("div", { class: "wb-main" }, tabBar, modeBar, tools, edWrap, paramsBox, splitter, out));
+  const sideOpen = (on) => wbEl.classList.toggle("side-open", on);
+  // On a narrow screen a pick from the sheet closes it.
+  side.addEventListener("click", (e) => { if (e.target.closest(".fi, .snip, .tt-h .btn") && matchMedia("(max-width: 1100px)").matches) sideOpen(false); });
+  page.append(wbEl);
   out.append(h("div", { class: "row between wb-outhd" }, outTabs, status), outBody);
 
   // ------------------------------------------------------------ tabs
@@ -324,13 +330,15 @@ function render(page, r) {
   function select(id) { active = id; ed.value = tab().sql; save(); drawTabs(); drawParams(); drawMode(); markSoon(); }
   function add(sql, name, where) { const t = { id: uid(), name: name || (where === "logs" ? "Log store" : `Query ${tabs.length + 1}`), sql, params: {}, ...(where === "logs" ? { store: "logs" } : {}) }; tabs.push(t); select(t.id); ed.focus(); return t; }
   function close(id) { const i = tabs.findIndex((t) => t.id === id); tabs.splice(i, 1); if (active === id) active = tabs[Math.max(0, i - 1)].id; select(active); }
-  // `p` is the parameters as JSON: {name: {kind, value, field}}
+  // `p` is the parameters as JSON: the query's own ({"t": "rug", "k": 3},
+  // as Queries and the Profiler send them) or the editor's ({name: {kind,
+  // value, field}}).
   // `where` is "logs" for the log store (the link Logs' "As SQL" makes).
   openSql = (sql, p, where) => {
     const logs = where === "logs";
     let t = tabs.find((x) => !x.sql.trim() && !!x.store === logs);
     if (t) { t.sql = sql; select(t.id); } else t = add(sql, null, logs ? "logs" : null);
-    if (p) { try { t.params = JSON.parse(p); save(); drawParams(); } catch { /* a link with broken parameters opens without them */ } }
+    if (p) { try { t.params = editorParams(JSON.parse(p)); save(); drawParams(); } catch { /* a link with broken parameters opens without them */ } }
     history.replaceState(null, "", "#/sql");
   };
   const onLogs = () => tab()?.store === "logs";
@@ -378,6 +386,18 @@ function render(page, r) {
   }));
 
   // ------------------------------------------------------------ parameters
+  /** A query's parameters as the editor keeps them: {name: {kind, value, field}}. */
+  function editorParams(j) {
+    const out = {};
+    for (const [n, v] of Object.entries(j || {})) {
+      if (v && typeof v === "object" && !Array.isArray(v) && "kind" in v) out[n] = v;
+      else if (v && typeof v === "object" && !Array.isArray(v) && typeof v.embed === "string") out[n] = { kind: "embed", value: v.embed, ...(v.field ? { field: v.field } : {}) };
+      else if (typeof v === "string") out[n] = { kind: "text", value: v };
+      else if (typeof v === "number") out[n] = { kind: "number", value: String(v) };
+      else out[n] = { kind: "json", value: JSON.stringify(v) };
+    }
+    return out;
+  }
   function drawParams() {
     const names = paramNames(ed.value);
     paramsBox.classList.toggle("hidden", !names.length);
@@ -555,7 +575,9 @@ function render(page, r) {
     // coordinator does not undo them. Say so, and offer the SELECT that
     // shows the rows as they are now.
     const p = where?.p;
-    const partial = writes && p.kind !== "CREATE" && (code === 0 || code >= 500 || /\bshard\b.*\b(connect|timed? ?out|unavailable|no primary|takes no writes)\b/i.test(msg));
+    // NEW-data-tools-5: an answer that says nothing was written is believed.
+    const nothing = /nothing was written|no rows? (was|were) (written|changed)|0 rows changed/i.test(msg);
+    const partial = writes && !nothing && p.kind !== "CREATE" && (code === 0 || code >= 500 || /\bshard\b.*\b(connect|timed? ?out|unavailable|no primary|takes no writes)\b/i.test(msg));
     const checkSql = partial && p.table ? `SELECT * FROM ${quoteName(p.table)}${p.where ? ` WHERE ${p.where}` : ""} LIMIT 200` : null;
     const partialNote = partial ? h("div", { class: "card dt-partial", role: "note" },
       h("div", { class: "row", style: { gap: "8px" } }, icon("warn"), h("b", {}, "Part of it may have been written")),
@@ -575,12 +597,13 @@ function render(page, r) {
       h("div", { class: "error" }, msg),
       partialNote,
       excerpt,
-      excerpt ? h("div", { class: "small muted" }, "The editor marks the same place.") : null,
+      excerpt && !matchMedia("(max-width: 900px)").matches ? h("div", { class: "small muted" }, "The editor marks the same place.") : null,
       fix.childElementCount ? h("div", {}, h("div", { class: "small muted", style: { marginBottom: "6px" } }, "Did you mean"), fix) : null,
       fix.childElementCount ? fixNote : null,
       h("div", { class: "small muted" }, "The query language guide shows every clause and function with an example: ",
         h("a", { href: "https://chloetech-ai.github.io/strata/strata/query-language.html", target: "_blank", rel: "noopener" }, "Query language"),
-        ". ", h("code", {}, "SHOW TABLES"), " and ", h("code", {}, "DESCRIBE table"), " list the tables and their columns.")));
+        ". ", h("code", {}, "SHOW TABLES"), " and ", h("code", {}, "DESCRIBE table"), " list the tables and their columns. ",
+        "The old query console's agent writes SQL from a question in English: ", h("a", { class: "wl-link", href: "#/classic" }, "Query console ›"))));
   }
 
   // ------------------------------------------------------------ the answer
@@ -691,7 +714,8 @@ function render(page, r) {
     const ts = cached();
     const q = filter.value.toLowerCase();
     const first = ts.find((t) => open.has(t.table)) || ts[0];
-    clear(side, h("div", { class: "wb-sh" }, h("b", {}, "Tables"), h("span", { class: "sep" }), h("button", { class: "btn ghost icon sm", title: "Read the tables again", onclick: () => tables(true).then(drawSide) }, icon("refresh"))), filter,
+    clear(side, h("div", { class: "wb-sh" }, h("b", {}, "Tables"), h("span", { class: "sep" }), h("button", { class: "btn ghost icon sm", title: "Read the tables again", onclick: () => tables(true).then(drawSide) }, icon("refresh")),
+      h("button", { class: "btn ghost sm wb-side-close", title: "Back to the editor", onclick: () => sideOpen(false) }, icon("x"), "Close")), filter,
       h("div", { class: "tree" }, ts.map((t) => {
         const fs = (t.short?.fields || []).filter((f) => !q || f.name.toLowerCase().includes(q) || t.table.toLowerCase().includes(q));
         if (q && !fs.length) return null;
@@ -708,7 +732,7 @@ function render(page, r) {
   }
 
   drawTabs(); drawParams(); drawMode();
-  clear(outBody, empty("sql", "Run a query to see its answer", "Ctrl+Enter runs the statement at the caret; Ctrl+Shift+Enter explains it. A write waits for a check of the rows it changes."));
+  clear(outBody, empty("sql", "Run a query to see its answer", matchMedia("(hover: none)").matches ? "Run runs the statement the cursor is in; Explain shows its plan. A write waits for a check of the rows it changes." : "Ctrl+Enter runs the statement at the caret; Ctrl+Shift+Enter explains it. A write waits for a check of the rows it changes."));
   tables().then(() => { drawSide(); drawParams(); if (!tab().sql.trim() && cached()[0]) { ed.value = `SELECT * FROM ${quoteName(cached()[0].table)} LIMIT 20;`; tab().sql = ed.value; save(); } }).catch((e) => clear(side, failure(e, "The tables")));
   if (r.params.get("q")) openSql(r.params.get("q"), r.params.get("p"), r.params.get("store"));
   setTimeout(() => { ed.focus(); mark(); }, 50);

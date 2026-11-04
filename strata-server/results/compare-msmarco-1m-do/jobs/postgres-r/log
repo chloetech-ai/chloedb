@@ -1,0 +1,181 @@
+service/postgres created
+pod/postgres-0 created
+pod/postgres-0 condition met
+job.batch/load-postgres created
+postgres: index created in 0.0 s
+postgres: 25000 documents sent, 5 s
+postgres: 50000 documents sent, 9 s
+postgres: 75000 documents sent, 13 s
+postgres: 100000 documents sent, 17 s
+postgres: 125000 documents sent, 20 s
+postgres: 150000 documents sent, 24 s
+postgres: 175000 documents sent, 28 s
+postgres: 200000 documents sent, 32 s
+postgres: 225000 documents sent, 36 s
+postgres: 250000 documents sent, 39 s
+postgres: 275000 documents sent, 43 s
+postgres: 300000 documents sent, 47 s
+postgres: 325000 documents sent, 51 s
+postgres: 350000 documents sent, 55 s
+postgres: 375000 documents sent, 59 s
+postgres: 400000 documents sent, 62 s
+postgres: 425000 documents sent, 66 s
+postgres: 450000 documents sent, 69 s
+postgres: 475000 documents sent, 73 s
+postgres: 500000 documents sent, 77 s
+postgres: 525000 documents sent, 81 s
+postgres: 550000 documents sent, 84 s
+postgres: 575000 documents sent, 87 s
+postgres: 600000 documents sent, 91 s
+postgres: 625000 documents sent, 95 s
+postgres: 650000 documents sent, 98 s
+postgres: 675000 documents sent, 102 s
+postgres: 700000 documents sent, 106 s
+postgres: 725000 documents sent, 110 s
+postgres: 750000 documents sent, 114 s
+postgres: 775000 documents sent, 118 s
+postgres: 800000 documents sent, 122 s
+postgres: 825000 documents sent, 126 s
+postgres: 850000 documents sent, 130 s
+postgres: 875000 documents sent, 134 s
+postgres: 900000 documents sent, 138 s
+postgres: 925000 documents sent, 141 s
+postgres: 950000 documents sent, 145 s
+postgres: 975000 documents sent, 149 s
+postgres: 1000000 documents sent, 152 s
+postgres: 1000000 documents (10.7 GB) sent in 152.4 s
+postgres: primary_key_s in 3.7 s
+postgres: gin_index_s in 54.4 s
+read tcp 127.0.0.1:58134->127.0.0.1:36661: read: connection reset by peer
+error: read tcp 127.0.0.1:58134->127.0.0.1:36661: read: connection reset by peer
+postgres: hnsw_index_s in 1025.7 s
+postgres: analyze_s in 0.8 s
+postgres: indexed 1084.6 s after the last write; 1237.0 s in all
+wrote /data/compare/load-postgres.json
+job.batch/run-postgres created
+postgres  bm25                     c=1          4 q/s  p50 237.256 ms  p90 825.003 ms  p99 873.393 ms  errors 0
+postgres  bm25                     c=4          4 q/s  p50 603.348 ms  p90 1952.487 ms  p99 3774.811 ms  errors 0
+postgres  bm25                     c=16         5 q/s  p50 1366.866 ms  p90 8498.138 ms  p99 9990.653 ms  errors 0
+postgres  bm25 + filter            c=1          6 q/s  p50 103.454 ms  p90 704.340 ms  p99 733.362 ms  errors 0
+postgres  bm25 + filter            c=4          7 q/s  p50 271.144 ms  p90 1754.565 ms  p99 3678.229 ms  errors 0
+postgres  bm25 + filter            c=16         7 q/s  p50 947.144 ms  p90 6982.700 ms  p99 8674.360 ms  errors 0
+postgres  vector                   c=1        318 q/s  p50   3.029 ms  p90   4.057 ms  p99   5.760 ms  errors 0
+postgres  vector                   c=4       1231 q/s  p50   3.090 ms  p90   4.316 ms  p99   6.404 ms  errors 0
+postgres  vector                   c=16      1617 q/s  p50   7.955 ms  p90  19.871 ms  p99  33.352 ms  errors 0
+postgres  vector + filter          c=1        289 q/s  p50   3.165 ms  p90   4.849 ms  p99   7.995 ms  errors 0
+postgres  vector + filter          c=4       1142 q/s  p50   3.198 ms  p90   4.926 ms  p99   8.088 ms  errors 0
+postgres  vector + filter          c=16      1407 q/s  p50   8.889 ms  p90  22.964 ms  p99  40.239 ms  errors 0
+postgres  hybrid (RRF)             c=1          4 q/s  p50 216.358 ms  p90 820.122 ms  p99 887.722 ms  errors 0
+postgres  hybrid (RRF)             c=4          5 q/s  p50 630.586 ms  p90 1935.648 ms  p99 2508.032 ms  errors 0
+postgres  hybrid (RRF)             c=16         5 q/s  p50 1492.102 ms  p90 6615.634 ms  p99 8651.003 ms  errors 0
+postgres  hybrid (weighted)        c=1          4 q/s  p50 216.401 ms  p90 826.618 ms  p99 887.490 ms  errors 0
+postgres  hybrid (weighted)        c=4          5 q/s  p50 568.212 ms  p90 1850.875 ms  p99 5649.942 ms  errors 0
+postgres  hybrid (weighted)        c=16         5 q/s  p50 1475.967 ms  p90 4964.322 ms  p99 7171.774 ms  errors 0
+postgres  boosted (bm25 × decay)   c=1          4 q/s  p50 243.294 ms  p90 423.035 ms  p99 1162.589 ms  errors 0
+postgres  boosted (bm25 × decay)   c=4          3 q/s  p50 842.254 ms  p90 2228.338 ms  p99 5680.912 ms  errors 0
+postgres  boosted (bm25 × decay)   c=16         3 q/s  p50 1881.801 ms  p90 8199.219 ms  p99 12707.606 ms  errors 0
+postgres  facet                    c=1         48 q/s  p50   5.051 ms  p90  53.579 ms  p99 131.843 ms  errors 0
+postgres  facet                    c=4        123 q/s  p50   6.475 ms  p90  71.317 ms  p99 280.006 ms  errors 0
+postgres  facet                    c=16       135 q/s  p50  25.623 ms  p90 318.775 ms  p99 755.718 ms  errors 0
+postgres  key lookup               c=1       4499 q/s  p50   0.216 ms  p90   0.251 ms  p99   0.315 ms  errors 0
+postgres  key lookup               c=4      14892 q/s  p50   0.270 ms  p90   0.326 ms  p99   0.391 ms  errors 0
+postgres  key lookup               c=16     33028 q/s  p50   0.400 ms  p90   0.639 ms  p99   1.470 ms  errors 0
+postgres  phrase                   c=1        100 q/s  p50   4.067 ms  p90  22.168 ms  p99  88.870 ms  errors 0
+postgres  phrase                   c=4        380 q/s  p50   4.353 ms  p90  23.460 ms  p99  85.769 ms  errors 0
+postgres  phrase                   c=16       390 q/s  p50  15.242 ms  p90  93.069 ms  p99 341.610 ms  errors 0
+postgres  typo                     unavailable: no fuzzy matching in full-text search (pg_trgm compares whole strings, not the words of a tsvector)
+postgres  prefix                   c=1          3 q/s  p50 264.509 ms  p90 573.847 ms  p99 910.027 ms  errors 0
+postgres  prefix                   c=4          7 q/s  p50 416.618 ms  p90 947.561 ms  p99 1913.177 ms  errors 0
+postgres  prefix                   c=16         6 q/s  p50 1827.813 ms  p90 4283.287 ms  p99 6809.418 ms  errors 0
+postgres  similar items            c=1        361 q/s  p50   2.652 ms  p90   3.515 ms  p99   5.098 ms  errors 0
+postgres  similar items            c=4       1387 q/s  p50   2.770 ms  p90   3.689 ms  p99   5.335 ms  errors 0
+postgres  similar items            c=16      1786 q/s  p50   7.488 ms  p90  16.984 ms  p99  28.653 ms  errors 0
+postgres  sql aggregate            c=1          5 q/s  p50 198.267 ms  p90 214.285 ms  p99 258.135 ms  errors 0
+postgres  sql aggregate            c=4          6 q/s  p50 598.331 ms  p90 872.342 ms  p99 2465.831 ms  errors 0
+postgres  sql aggregate            c=16         7 q/s  p50 2220.118 ms  p90 4310.752 ms  p99 4896.099 ms  errors 0
+wrote /data/compare/run-postgres.json
+job.batch/run-postgres-pass2 created
+postgres-pass2 bm25                     c=1          4 q/s  p50 238.571 ms  p90 806.213 ms  p99 863.697 ms  errors 0
+postgres-pass2 bm25                     c=4          5 q/s  p50 606.578 ms  p90 1874.336 ms  p99 2343.844 ms  errors 0
+postgres-pass2 bm25                     c=16         5 q/s  p50 1415.734 ms  p90 6421.065 ms  p99 9091.124 ms  errors 0
+postgres-pass2 bm25 + filter            c=1          6 q/s  p50 105.209 ms  p90 698.500 ms  p99 729.975 ms  errors 0
+postgres-pass2 bm25 + filter            c=4          6 q/s  p50 290.928 ms  p90 1677.421 ms  p99 3556.092 ms  errors 0
+postgres-pass2 bm25 + filter            c=16         7 q/s  p50 1023.112 ms  p90 5775.956 ms  p99 10941.041 ms  errors 0
+postgres-pass2 vector                   c=1        320 q/s  p50   3.011 ms  p90   3.987 ms  p99   5.767 ms  errors 0
+postgres-pass2 vector                   c=4       1252 q/s  p50   3.059 ms  p90   4.141 ms  p99   6.034 ms  errors 0
+postgres-pass2 vector                   c=16      1611 q/s  p50   8.057 ms  p90  19.609 ms  p99  34.090 ms  errors 0
+postgres-pass2 vector + filter          c=1        289 q/s  p50   3.200 ms  p90   4.803 ms  p99   7.936 ms  errors 0
+postgres-pass2 vector + filter          c=4       1117 q/s  p50   3.285 ms  p90   4.994 ms  p99   8.057 ms  errors 0
+postgres-pass2 vector + filter          c=16      1442 q/s  p50   8.928 ms  p90  21.420 ms  p99  36.815 ms  errors 0
+postgres-pass2 hybrid (RRF)             c=1          4 q/s  p50 215.663 ms  p90 827.944 ms  p99 865.641 ms  errors 0
+postgres-pass2 hybrid (RRF)             c=4          5 q/s  p50 576.533 ms  p90 1863.093 ms  p99 4264.854 ms  errors 0
+postgres-pass2 hybrid (RRF)             c=16         5 q/s  p50 1844.889 ms  p90 5165.295 ms  p99 6928.414 ms  errors 0
+postgres-pass2 hybrid (weighted)        c=1          4 q/s  p50 216.699 ms  p90 860.917 ms  p99 883.381 ms  errors 0
+postgres-pass2 hybrid (weighted)        c=4          4 q/s  p50 589.929 ms  p90 1892.499 ms  p99 5859.849 ms  errors 0
+postgres-pass2 hybrid (weighted)        c=16         5 q/s  p50 1532.920 ms  p90 5195.766 ms  p99 7015.148 ms  errors 0
+postgres-pass2 boosted (bm25 × decay)   c=1          4 q/s  p50 255.263 ms  p90 441.556 ms  p99 1162.953 ms  errors 0
+postgres-pass2 boosted (bm25 × decay)   c=4          4 q/s  p50 818.593 ms  p90 2582.991 ms  p99 2902.239 ms  errors 0
+postgres-pass2 boosted (bm25 × decay)   c=16         3 q/s  p50 2398.225 ms  p90 7530.979 ms  p99 11909.903 ms  errors 0
+postgres-pass2 facet                    c=1         47 q/s  p50   5.273 ms  p90  54.838 ms  p99 138.715 ms  errors 0
+postgres-pass2 facet                    c=4        123 q/s  p50   5.941 ms  p90  72.355 ms  p99 288.325 ms  errors 0
+postgres-pass2 facet                    c=16       135 q/s  p50  23.920 ms  p90 282.159 ms  p99 845.590 ms  errors 0
+postgres-pass2 key lookup               c=1       4661 q/s  p50   0.209 ms  p90   0.245 ms  p99   0.302 ms  errors 0
+postgres-pass2 key lookup               c=4      16085 q/s  p50   0.240 ms  p90   0.307 ms  p99   0.367 ms  errors 0
+postgres-pass2 key lookup               c=16     32908 q/s  p50   0.400 ms  p90   0.649 ms  p99   1.587 ms  errors 0
+postgres-pass2 phrase                   c=1        100 q/s  p50   4.031 ms  p90  22.015 ms  p99  88.748 ms  errors 0
+postgres-pass2 phrase                   c=4        376 q/s  p50   4.355 ms  p90  23.791 ms  p99  89.017 ms  errors 0
+postgres-pass2 phrase                   c=16       392 q/s  p50  12.907 ms  p90  92.424 ms  p99 367.687 ms  errors 0
+postgres-pass2 typo                     unavailable: no fuzzy matching in full-text search (pg_trgm compares whole strings, not the words of a tsvector)
+postgres-pass2 prefix                   c=1          3 q/s  p50 257.365 ms  p90 551.796 ms  p99 907.707 ms  errors 0
+postgres-pass2 prefix                   c=4          7 q/s  p50 395.327 ms  p90 961.833 ms  p99 1776.576 ms  errors 0
+postgres-pass2 prefix                   c=16         6 q/s  p50 1815.632 ms  p90 3858.714 ms  p99 6788.568 ms  errors 0
+postgres-pass2 similar items            c=1        353 q/s  p50   2.702 ms  p90   3.606 ms  p99   5.263 ms  errors 0
+postgres-pass2 similar items            c=4       1369 q/s  p50   2.774 ms  p90   3.738 ms  p99   6.096 ms  errors 0
+postgres-pass2 similar items            c=16      1776 q/s  p50   7.448 ms  p90  17.461 ms  p99  29.544 ms  errors 0
+postgres-pass2 sql aggregate            c=1          5 q/s  p50 196.988 ms  p90 215.015 ms  p99 255.971 ms  errors 0
+postgres-pass2 sql aggregate            c=4          6 q/s  p50 588.843 ms  p90 810.043 ms  p99 2366.896 ms  errors 0
+postgres-pass2 sql aggregate            c=16         6 q/s  p50 2215.057 ms  p90 4476.174 ms  p99 4982.638 ms  errors 0
+wrote /data/compare/run-postgres-pass2.json
+job.batch/run-postgres-pass3 created
+postgres-pass3 bm25                     c=1          4 q/s  p50 250.592 ms  p90 805.879 ms  p99 856.217 ms  errors 0
+postgres-pass3 bm25                     c=4          5 q/s  p50 635.161 ms  p90 1814.950 ms  p99 2497.784 ms  errors 0
+postgres-pass3 bm25                     c=16         5 q/s  p50 1488.497 ms  p90 6403.389 ms  p99 9859.776 ms  errors 0
+postgres-pass3 bm25 + filter            c=1          6 q/s  p50 111.613 ms  p90 689.201 ms  p99 727.735 ms  errors 0
+postgres-pass3 bm25 + filter            c=4          7 q/s  p50 269.070 ms  p90 1645.040 ms  p99 2059.018 ms  errors 0
+postgres-pass3 bm25 + filter            c=16         7 q/s  p50 835.304 ms  p90 6596.407 ms  p99 9658.321 ms  errors 0
+postgres-pass3 vector                   c=1        319 q/s  p50   3.002 ms  p90   4.009 ms  p99   5.547 ms  errors 0
+postgres-pass3 vector                   c=4       1257 q/s  p50   3.037 ms  p90   4.096 ms  p99   6.303 ms  errors 0
+postgres-pass3 vector                   c=16      1622 q/s  p50   8.168 ms  p90  18.657 ms  p99  30.953 ms  errors 0
+postgres-pass3 vector + filter          c=1        288 q/s  p50   3.212 ms  p90   4.807 ms  p99   7.992 ms  errors 0
+postgres-pass3 vector + filter          c=4       1128 q/s  p50   3.247 ms  p90   4.930 ms  p99   8.479 ms  errors 0
+postgres-pass3 vector + filter          c=16      1436 q/s  p50   8.856 ms  p90  21.858 ms  p99  37.761 ms  errors 0
+postgres-pass3 hybrid (RRF)             c=1          4 q/s  p50 211.683 ms  p90 844.117 ms  p99 875.423 ms  errors 0
+postgres-pass3 hybrid (RRF)             c=4          5 q/s  p50 630.502 ms  p90 1752.064 ms  p99 2263.815 ms  errors 0
+postgres-pass3 hybrid (RRF)             c=16         5 q/s  p50 1588.447 ms  p90 5810.914 ms  p99 8205.284 ms  errors 0
+postgres-pass3 hybrid (weighted)        c=1          4 q/s  p50 218.792 ms  p90 831.872 ms  p99 875.339 ms  errors 0
+postgres-pass3 hybrid (weighted)        c=4          5 q/s  p50 554.687 ms  p90 1891.733 ms  p99 4594.187 ms  errors 0
+postgres-pass3 hybrid (weighted)        c=16         5 q/s  p50 1460.008 ms  p90 4674.624 ms  p99 11359.545 ms  errors 0
+postgres-pass3 boosted (bm25 × decay)   c=1          4 q/s  p50 243.350 ms  p90 427.544 ms  p99 1162.060 ms  errors 0
+postgres-pass3 boosted (bm25 × decay)   c=4          3 q/s  p50 904.789 ms  p90 1640.497 ms  p99 5699.709 ms  errors 0
+postgres-pass3 boosted (bm25 × decay)   c=16         3 q/s  p50 2252.085 ms  p90 7102.908 ms  p99 12077.607 ms  errors 0
+postgres-pass3 facet                    c=1         49 q/s  p50   5.110 ms  p90  52.473 ms  p99 133.327 ms  errors 0
+postgres-pass3 facet                    c=4        121 q/s  p50   6.800 ms  p90  79.798 ms  p99 314.739 ms  errors 0
+postgres-pass3 facet                    c=16       137 q/s  p50  23.485 ms  p90 301.198 ms  p99 848.500 ms  errors 0
+postgres-pass3 key lookup               c=1       4510 q/s  p50   0.216 ms  p90   0.252 ms  p99   0.307 ms  errors 0
+postgres-pass3 key lookup               c=4      16356 q/s  p50   0.230 ms  p90   0.308 ms  p99   0.364 ms  errors 0
+postgres-pass3 key lookup               c=16     33310 q/s  p50   0.398 ms  p90   0.645 ms  p99   1.426 ms  errors 0
+postgres-pass3 phrase                   c=1        101 q/s  p50   4.032 ms  p90  21.852 ms  p99  88.203 ms  errors 0
+postgres-pass3 phrase                   c=4        359 q/s  p50   4.557 ms  p90  25.306 ms  p99  94.674 ms  errors 0
+postgres-pass3 phrase                   c=16       387 q/s  p50  14.271 ms  p90  91.938 ms  p99 343.370 ms  errors 0
+postgres-pass3 typo                     unavailable: no fuzzy matching in full-text search (pg_trgm compares whole strings, not the words of a tsvector)
+postgres-pass3 prefix                   c=1          3 q/s  p50 262.910 ms  p90 546.628 ms  p99 897.609 ms  errors 0
+postgres-pass3 prefix                   c=4          8 q/s  p50 403.442 ms  p90 1181.990 ms  p99 1594.915 ms  errors 0
+postgres-pass3 prefix                   c=16         6 q/s  p50 1867.453 ms  p90 3857.487 ms  p99 6113.432 ms  errors 0
+postgres-pass3 similar items            c=1        353 q/s  p50   2.734 ms  p90   3.584 ms  p99   4.953 ms  errors 0
+postgres-pass3 similar items            c=4       1377 q/s  p50   2.789 ms  p90   3.724 ms  p99   5.421 ms  errors 0
+postgres-pass3 similar items            c=16      1832 q/s  p50   7.204 ms  p90  16.571 ms  p99  29.328 ms  errors 0
+postgres-pass3 sql aggregate            c=1          5 q/s  p50 196.467 ms  p90 216.538 ms  p99 269.870 ms  errors 0
+postgres-pass3 sql aggregate            c=4          6 q/s  p50 590.870 ms  p90 1088.223 ms  p99 1242.304 ms  errors 0
+postgres-pass3 sql aggregate            c=16         7 q/s  p50 2273.953 ms  p90 3821.317 ms  p99 4680.865 ms  errors 0
+wrote /data/compare/run-postgres-pass3.json
+pod "postgres-0" deleted from postgres-r namespace

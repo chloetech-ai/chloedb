@@ -76,6 +76,7 @@ pub fn result_to_pb(rs: &ResultSet, took_ms: f64) -> pb::QueryResponse {
         took_ms,
         snapshot: 0,
         arrow: Vec::new(),
+        stale: false,
     }
 }
 
@@ -99,10 +100,11 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// rows of a guard's levels ([`GUARD_PROTOCOL`]), 9 keeps the cluster
 /// map, every shard's servers, and takes `Configure` ([`CLUSTER_PROTOCOL`]),
 /// 10 answers a compound query's leaf as Arrow columns
-/// ([`ARROW_PROTOCOL`]), and 11 reads rows by key without SQL (`Get`,
-/// [`GET_PROTOCOL`]).
+/// ([`ARROW_PROTOCOL`]), 11 reads rows by key without SQL (`Get`,
+/// [`GET_PROTOCOL`]), and 12 names the version BM25 statistics came from,
+/// so that a coordinator can keep them ([`STATS_VERSION_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 11;
+pub const PROTOCOL: u32 = 12;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -125,6 +127,13 @@ pub const ARROW_PROTOCOL: u32 = 10;
 
 /// The protocol of `Get`, rows by primary key without SQL.
 pub const GET_PROTOCOL: u32 = 11;
+
+/// The protocol whose `TermStats` answers the version of the statistics
+/// (`TermStatsResponse.version`) and whose queries run only on that
+/// version when they name it (`QueryRequest.stats_version`, else
+/// `QueryResponse.stale`): what a coordinator's cache of term statistics
+/// needs ([`crate::coord::StatsCache`]).
+pub const STATS_VERSION_PROTOCOL: u32 = 12;
 
 /// What `Get` answers ([`crate::service::KeyRows`]).
 pub fn get_response(got: crate::service::KeyRows) -> pb::GetResponse {
@@ -184,6 +193,7 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         arrow: r.arrow.then_some(0),
         // Set by the query itself, for a client's.
         reads: false,
+        stats_version: r.stats_version,
     })
 }
 
@@ -311,7 +321,14 @@ impl Grpc {
             let r = keys::Caller { addr: req.remote_addr().map(|a| a.ip().to_string()), client: md("x-strata-client"), app, reason: None };
             crate::telemetry::Caller::of(&who, Some(&r))
         };
-        let call = keys::noting(crate::service::ROUTED.scope(std::cell::Cell::new(0), f(self.0.clone(), who.clone(), req.into_inner())));
+        // A part whose deadline is its client's own (the coordinator says so):
+        // one that passes is the client's doing, counted and logged so.
+        let clients = req.metadata().get(crate::service::CLIENT_DEADLINE).is_some_and(|v| v == "client");
+        // The call itself, on the heap: a query's future is many kilobytes,
+        // and each wrapper below would otherwise move it again (a shard's
+        // query spent an eighth of its time copying it).
+        let call = Box::pin(f(self.0.clone(), who.clone(), req.into_inner()));
+        let call = keys::noting(crate::service::DEADLINE.scope(crate::service::Deadline::of_part(clients), crate::service::ROUTED.scope(std::cell::Cell::new(0), call)));
         let call = crate::telemetry::calling(Arc::new(caller), call);
         let (r, note) = crate::telemetry::traced(crate::telemetry::Trace::new(), obs::scope(Some(id.clone()), call)).instrument(span.clone()).await;
         let status = r.as_ref().map_or_else(|e| e.status, |_| 200);
@@ -328,7 +345,12 @@ impl Grpc {
                 ("Ok", Ok(Response::new(x)))
             }
             Err(e) => {
-                if e.status >= 500 {
+                if e.status == 504 && clients {
+                    static LIMIT: obs::RateLimit = obs::RateLimit::new(10);
+                    if let Some(held) = LIMIT.admit() {
+                        tracing::warn!(status = e.status, error = %e.message, held_back = held, "the client's own deadline passed");
+                    }
+                } else if e.status >= 500 {
                     obs::server_error(e.status, &e.message);
                 }
                 let s = Status::from(e);
@@ -357,7 +379,7 @@ impl pb::strata_server::Strata for Grpc {
         self.serve("Query", req, |svc, _who, r| async move {
             svc.check_epoch(r.epoch)?;
             let a = svc.query(query_req(r)?).await?;
-            Ok(pb::QueryResponse { snapshot: a.lease, arrow: a.arrow, ..result_to_pb(&a.rs, a.took_ms) })
+            Ok(pb::QueryResponse { snapshot: a.lease, arrow: a.arrow, stale: a.stale, ..result_to_pb(&a.rs, a.took_ms) })
         })
         .await
     }
@@ -376,8 +398,8 @@ impl pb::strata_server::Strata for Grpc {
             svc.check_epoch(r.epoch)?;
             let plan = request_plan(r.protocol, r.plan, &r.plan_json)?;
             let after = After::of(r.min_seq_no, r.min_seq_nos)?;
-            let (stats, snapshot) = svc.term_stats(&r.sql, plan.as_ref(), &params_from_pb(r.params), &after, r.timeout_ms as u64).await?;
-            Ok(pb::TermStatsResponse { stats_json: json_bytes(&stats), snapshot })
+            let (stats, snapshot, version) = svc.term_stats(&r.sql, plan.as_ref(), &params_from_pb(r.params), &after, r.timeout_ms as u64).await?;
+            Ok(pb::TermStatsResponse { stats_json: json_bytes(&stats), snapshot, version })
         })
         .await
     }
@@ -663,7 +685,15 @@ impl pb::strata_server::Strata for Grpc {
                 crate::profiling::Kind::LogFilter => format!("log filter {} from a coordinator, by {}", asked.body["filter"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
                 crate::profiling::Kind::Verify => format!("verify the replicas from a coordinator, by {}", asked.body["by"].as_str().unwrap_or("?")),
                 crate::profiling::Kind::Checkpoint => format!("checkpoint {} from a coordinator, by {}", asked.body["name"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
-                k => format!("a {} profile", k.name()),
+                crate::profiling::Kind::Alerts => format!("alerts {} from a coordinator, by {}", asked.body["op"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
+                crate::profiling::Kind::Settings => match (asked.body.get("slow_ms"), asked.body.get("cpu_all")) {
+                    (None, None) => "profiling settings, read by a coordinator".to_string(),
+                    (slow, cpu) => format!("profiling settings from a coordinator, by {}: {}", asked.body["by"].as_str().unwrap_or("?"), [slow.map(|v| format!("slow_ms {v}")), cpu.map(|v| format!("cpu_all {v}"))].into_iter().flatten().collect::<Vec<_>>().join(", ")),
+                },
+                k => match asked.body["by"].as_str() {
+                    Some(by) => format!("a {} profile from a coordinator, by {by}", k.name()),
+                    None => format!("a {} profile", k.name()),
+                },
             });
             Ok(pb::ProfileResponse { body: crate::profiling::take(&svc, asked).await?.bytes() })
         })
@@ -671,6 +701,8 @@ impl pb::strata_server::Strata for Grpc {
     }
 
     async fn health(&self, req: Request<pb::Empty>) -> Result<Response<pb::HealthResponse>, Status> {
+        // fleet: a coordinator that names itself ([`crate::peers`]).
+        crate::peers::heard_from(&self.0, req.metadata(), req.extensions().get::<Principal>());
         self.serve("Health", req, |svc, _who, _| async move {
             let d = svc.detail().await;
             let h = &d["health"];

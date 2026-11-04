@@ -15,7 +15,8 @@ import { h, s, icon, clear, fmt, card, api, toast, empty, bus, seg, store, tipOn
 import { state, isCoordinator, refreshCluster, isProduction } from "../data.js";
 import { statements, split, isOwn, paramsObj, narrow } from "../workload.js";
 
-export default { id: "querypath", title: "Query path", icon: "route", group: "Diagnose", keywords: "query path fan out fan-out scatter gather tail latency straggler hedge hedging shards radar slowest shard p99 params", render, onParams };
+// No time range: the runs are now (NEW-shell-monitor-8). The cluster in full, for its hedges.
+export default { id: "querypath", title: "Query path", icon: "route", group: "Diagnose", keywords: "query path fan out fan-out scatter gather tail latency straggler hedge hedging shards radar slowest shard p99 params", render, onParams, range: false, cluster: "full" };
 
 /** Shard calls above which the runs ask first, on production. */
 const ASK_ABOVE = 5000;
@@ -72,6 +73,9 @@ function render(page, r) {
   }
 
   let runs = [], sel = 0, running = false, stop = false, hedgeWhatIf = null, hedgesBefore = null, hedgesAfter = null;
+  // The shard a link points at (Cluster's "Query path" from a shard): marked on every chart (NEW-shell-monitor-10).
+  let mark = r?.params?.get("shard") != null && r.params.get("shard") !== "" ? Number(r.params.get("shard")) : null;
+  const markNote = h("div");
   const sql = h("textarea", { class: "input mono", rows: 3, style: { width: "100%" }, spellcheck: "false", "aria-label": "The query to run", oninput: () => drawCalls() });
   sql.value = store.get("qpath.sql", "");
   const params = h("textarea", { class: "input mono", rows: 2, style: { width: "100%" }, spellcheck: "false", placeholder: '{"t": "waterproof tent"}', "aria-label": "Its parameters, as JSON", oninput: () => drawCalls() });
@@ -102,7 +106,21 @@ function render(page, r) {
     if (!params.value) { const need = namesIn(text); if (need.length) params.value = JSON.stringify(Object.fromEntries(need.map((x) => [x, ""]))); }
     paramsBox.open = !!params.value;
     drawCalls();
+    writeHash();
   }
+  /** The query, its parameters and the marked shard in the link, so Share and a reload keep them (SH-3). */
+  function writeHash() {
+    const raw = location.hash.replace(/^#\/?/, ""), [path, q] = raw.split("?");
+    if (!path.startsWith("querypath")) return;
+    const ps = new URLSearchParams(q || "");
+    const set = (k, v) => { if (v) ps.set(k, v); else ps.delete(k); };
+    set("sql", sql.value.trim().length <= 4000 ? sql.value.trim() : "");
+    set("p", params.value.trim().length <= 2000 && !/^\{\s*\}$/.test(params.value.trim()) ? params.value.trim() : "");
+    set("shard", mark != null ? String(mark) : "");
+    const next = "#/" + path + (ps.toString() ? "?" + ps : "");
+    if (next !== location.hash) { try { history.replaceState(null, "", location.pathname + location.search + next); } catch { /* old browser */ } }
+  }
+  sql.addEventListener("change", writeHash); params.addEventListener("change", writeHash);
 
   async function suggest() {
     const picks = []; // {sql, params, why}
@@ -171,6 +189,7 @@ function render(page, r) {
     }
     store.set("qpath.sql", text);
     store.set("qpath.params", params.value.trim());
+    writeHash();
     running = true; stop = false; runs = []; sel = 0; hedgeWhatIf = null;
     clear(go, icon("stop"), "Stop");
     hedgesBefore = state.cluster?.hedges ?? null;
@@ -194,13 +213,20 @@ function render(page, r) {
     draw();
   };
 
-  clear(form, card({ title: "The query", sub: "it runs one after the other, so each run sees the cluster alone", attrs: { style: { marginBottom: "14px" } },
+  clear(form, markNote, card({ title: "The query", sub: "it runs one after the other, so each run sees the cluster alone", attrs: { style: { marginBottom: "14px" } },
     body: h("div", { class: "stack" }, sql, paramsBox, recent, callsLine, h("div", { class: "row", style: { gap: "10px", flexWrap: "wrap" } }, nSeg, go, status)) }));
-  // ?sql= and ?p= put a query in the form, from a statement or the workbench.
+  function drawMark() {
+    clear(markNote, mark != null ? h("div", { class: "notice row nw", style: { marginBottom: "14px" } }, icon("shard"), h("span", { class: "grow" }, `Shard ${mark} is marked on every chart: the runs show whether the query waits for it.`), h("button", { class: "btn xs", onclick: () => { mark = null; drawMark(); writeHash(); draw(); } }, "Unmark")) : null);
+  }
+  // ?sql= and ?p= put a query in the form, from a statement or the workbench; ?shard= marks a shard.
   function open(ps) {
     const q = ps?.get("sql");
-    if (q) setQuery(q, ps.get("p"));
+    if (q && q !== sql.value) setQuery(q, ps.get("p"));
+    const m = ps?.get("shard");
+    const next = m != null && m !== "" ? Number(m) : null;
+    if (next !== mark) { mark = next; drawMark(); draw(); }
   }
+  drawMark();
   open(r?.params);
   drawCalls();
   suggest();
@@ -222,13 +248,15 @@ function render(page, r) {
       const len = (R * c.call_us) / scale, own = c.own_us != null ? (R * c.own_us) / scale : null;
       const x = cx + Math.cos(a) * len, y = cy + Math.sin(a) * len;
       const isLast = c === last;
+      const marked = c.shard === mark;
       const g = s("g", { tabindex: 0 });
-      const thin = shards > 32 && !isLast;
+      const thin = shards > 32 && !isLast && !marked;
       g.append(s("line", { x1: cx, y1: cy, x2: cx + Math.cos(a) * R, y2: cy + Math.sin(a) * R, stroke: "var(--line)", "stroke-width": thin ? 0.5 : 1 }),
         s("line", { x1: cx, y1: cy, x2: x, y2: y, stroke: isLast ? "var(--s2)" : "var(--s1)", "stroke-width": isLast ? 3.5 : thin ? 1 : 2.5, "stroke-linecap": "round" }),
         own != null ? s("line", { x1: cx + Math.cos(a) * (len - own) / 2, y1: cy + Math.sin(a) * (len - own) / 2, x2: cx + Math.cos(a) * (len + own) / 2, y2: cy + Math.sin(a) * (len + own) / 2, stroke: isLast ? "var(--s4)" : "var(--s3)", "stroke-width": 6, "stroke-linecap": "round", opacity: 0.85 }) : null,
         s("circle", { cx: x, cy: y, r: isLast ? 6 : thin ? 1.8 : 4.5, fill: isLast ? "var(--s2)" : "var(--s1)" }),
-        shards <= 32 || isLast ? s("text", { x: cx + Math.cos(a) * (R + 14), y: cy + Math.sin(a) * (R + 14) + 4, "text-anchor": "middle", style: { fontSize: "10.5px", fill: isLast ? "var(--text)" : "var(--muted)", fontWeight: isLast ? 700 : 400 } }, String(c.shard)) : null);
+        marked ? s("circle", { cx: x, cy: y, r: 9, fill: "none", stroke: "var(--accent)", "stroke-width": 2 }) : null,
+        shards <= 32 || isLast || marked ? s("text", { x: cx + Math.cos(a) * (R + 14), y: cy + Math.sin(a) * (R + 14) + 4, "text-anchor": "middle", style: { fontSize: "10.5px", fill: isLast || marked ? "var(--text)" : "var(--muted)", fontWeight: isLast || marked ? 700 : 400 } }, marked ? `${c.shard} ◂` : String(c.shard)) : null);
       tipOn(g, () => h("div", {}, h("b", {}, `Shard ${c.shard}${isLast ? ", the last to answer" : ""}`), h("div", { class: "small" }, `the call ${fmt.ms(c.call_us / 1e3)}${c.own_us != null ? `, of which on the shard ${fmt.ms(c.own_us / 1e3)}` : ""}${c.rounds > 1 ? ` in ${c.rounds} rounds` : ""}`), c.replica ? h("div", { class: "small mono" }, c.replica) : null));
       svg.append(g);
     });
@@ -240,11 +268,13 @@ function render(page, r) {
 
   function spread(shards) {
     let ids = [...new Set(runs.flatMap((r) => r.calls.map((c) => c.shard)))].sort((a, b) => a - b);
-    // On a big fleet, the 24 shards with the slowest p99 over the runs.
+    // On a big fleet, the 24 shards with the slowest p99 over the runs,
+    // slowest first (NEW-shell-monitor-9), and the marked one.
     const KEEP = 24, of = ids.length;
     if (of > KEEP) {
       const p99s = new Map(ids.map((id) => [id, quant(runs.map((r) => r.calls.find((c) => c.shard === id)?.call_us).filter((v) => v != null), 0.99) || 0]));
-      ids = ids.slice().sort((a, b) => p99s.get(b) - p99s.get(a)).slice(0, KEEP).sort((a, b) => a - b);
+      ids = ids.slice().sort((a, b) => p99s.get(b) - p99s.get(a)).slice(0, KEEP);
+      if (mark != null && p99s.has(mark) && !ids.includes(mark)) ids.push(mark);
     }
     const all = runs.flatMap((r) => r.calls.map((c) => c.call_us / 1e3));
     const hi = Math.max(1, ...all) * 1.05;
@@ -260,7 +290,8 @@ function render(page, r) {
       const y = k * row + 10;
       const xs = runs.map((r, ri) => [r.calls.find((c) => c.shard === id), ri]).filter(([c]) => c);
       const times = xs.map(([c]) => c.call_us / 1e3);
-      svg.append(s("text", { x: padL - 8, y: y + 4, "text-anchor": "end", style: { fontSize: "10.5px", fill: "var(--muted)" } }, "shard " + id));
+      if (id === mark) svg.append(s("rect", { x: 0, y: y - 9, width: W, height: 18, fill: "var(--accent-soft)" }));
+      svg.append(s("text", { x: padL - 8, y: y + 4, "text-anchor": "end", style: { fontSize: "10.5px", fill: id === mark ? "var(--text)" : "var(--muted)", fontWeight: id === mark ? 700 : 400 } }, "shard " + id));
       const p50 = median(times), p99 = quant(times, 0.99);
       if (p50 != null) svg.append(s("line", { x1: X(p50), y1: y - 6, x2: X(p50), y2: y + 6, stroke: "var(--text-2)", "stroke-width": 2 }));
       if (p99 != null) svg.append(s("line", { x1: X(p99), y1: y - 6, x2: X(p99), y2: y + 6, stroke: "var(--s2)", "stroke-width": 2 }));
@@ -269,7 +300,7 @@ function render(page, r) {
         svg.append(s("circle", { cx: X(c.call_us / 1e3), cy: y, r: ri === sel ? 4.5 : 3, fill: lastOfRun ? "var(--s2)" : "var(--s1)", opacity: ri === sel ? 1 : 0.55, stroke: ri === sel ? "var(--text)" : "none" }));
       }
     });
-    return h("div", {}, of > KEEP ? h("div", { class: "small muted", style: { marginBottom: "6px" } }, `The ${KEEP} shards with the slowest p99 over these runs, of ${fmt.n(of)}.`) : null, svg, h("div", { class: "row small muted", style: { gap: "14px", flexWrap: "wrap" } },
+    return h("div", {}, of > KEEP ? h("div", { class: "small muted", style: { marginBottom: "6px" } }, `The ${KEEP} shards with the slowest p99 over these runs, of ${fmt.n(of)}, slowest first${mark != null && ids.includes(mark) ? `; shard ${mark} marked` : ""}.`) : null, svg, h("div", { class: "row small muted", style: { gap: "14px", flexWrap: "wrap" } },
       h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { style: { width: "8px", height: "8px", borderRadius: "50%", background: "var(--s2)" } }), "the run's last shard"),
       h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { style: { width: "2px", height: "12px", background: "var(--text-2)" } }), "median"),
       h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { style: { width: "2px", height: "12px", background: "var(--s2)" } }), "p99"),
@@ -291,7 +322,12 @@ function render(page, r) {
 
     // The runs as a strip: click one to see it on the radar.
     const hi = Math.max(...took);
-    const strip = h("div", { class: "qp-runs", role: "group", "aria-label": "The runs" }, runs.map((r, k) => h("button", { class: "qp-run" + (k === sel ? " sel" : ""), style: { height: Math.max(8, (r.took_ms / hi) * 54) + "px" }, title: `run ${k + 1}: ${fmt.ms(r.took_ms)}`, "aria-label": `Run ${k + 1}, ${fmt.ms(r.took_ms)}`, onclick: () => { sel = k; draw(); } })));
+    // Each run a full-height button (an easy tap) with its bar inside; the strip scrolls in its card, never the page.
+    const step = (d) => { sel = Math.max(0, Math.min(runs.length - 1, sel + d)); draw(); };
+    const strip = h("div", { class: "qp-strip row nw" },
+      h("button", { class: "btn icon sm", "aria-label": "The run before", disabled: sel === 0, onclick: () => step(-1) }, icon("left")),
+      h("div", { class: "qp-runs", role: "group", "aria-label": "The runs" }, runs.map((r, k) => h("button", { class: "qp-run" + (k === sel ? " sel" : ""), title: `run ${k + 1}: ${fmt.ms(r.took_ms)}`, "aria-label": `Run ${k + 1}, ${fmt.ms(r.took_ms)}`, onclick: () => { sel = k; draw(); } }, h("i", { style: { height: Math.max(6, (r.took_ms / hi) * 50) + "px" } })))),
+      h("button", { class: "btn icon sm", "aria-label": "The run after", disabled: sel >= runs.length - 1, onclick: () => step(1) }, icon("right")));
 
     const slowestCall = run.calls.reduce((a, c) => (c.call_us > (a?.call_us ?? -1) ? c : a), null);
     const net = slowestCall && slowestCall.own_us != null ? slowestCall.call_us - slowestCall.own_us : null;
@@ -310,15 +346,16 @@ function render(page, r) {
       whatIf = card({ title: "What a lower hedge would do", sub: "an estimate from these runs: a call slower than the hedge is asked again of a copy that answers in that shard's median time",
         body: h("div", { class: "stack" },
           h("div", { class: "row", style: { gap: "10px", flexWrap: "wrap" } }, h("span", { class: "small muted" }, "Ask another copy after"), seg(opts.map((v) => [v, v === hedge ? `${fmt.ms(v)} (now)` : fmt.ms(v)]), hedgeWhatIf, (v) => { hedgeWhatIf = v; draw(); }, { class: "seg wl-segwrap" })),
-          h("div", { class: "grid g3" },
+          h("div", { class: "grid g3 qp-kpis" },
             h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "p99 now"), h("div", { class: "val" }, fmt.ms(quant(took, 0.99)))),
             h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, `p99 hedged after ${fmt.ms(hedgeWhatIf)}`), h("div", { class: "val" }, fmt.ms(quant(est, 0.99)))),
             h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "Extra calls"), h("div", { class: "val" }, fmt.pct(asked / Math.max(1, runs.length * run.calls.length), 0)), h("div", { class: "delta" }, "of the shard calls, asked twice"))),
           h("div", { class: "small muted" }, hedge != null ? `The coordinator hedges after ${fmt.ms(hedge)} now (strata-server --hedge-ms). ${hedgesBefore != null && hedgesAfter != null ? `It hedged ${fmt.plural(Math.max(0, hedgesAfter - hedgesBefore), "time")} during these runs.` : ""}` : "")) });
     }
 
+    const keepScroll = out.querySelector(".qp-runs")?.scrollLeft;
     clear(out,
-      h("div", { class: "grid g4 wl-kpis", style: { marginBottom: "14px" } },
+      h("div", { class: "grid g4 wl-kpis qp-kpis", style: { marginBottom: "14px" } },
         card({ body: h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "The query, p50 / p99"), h("div", { class: "val" }, `${fmt.ms(median(took))}`, h("small", {}, ` / ${fmt.ms(quant(took, 0.99))}`)), h("div", { class: "delta" }, `over ${fmt.plural(runs.length, "run")}`)) }),
         card({ body: h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "One shard, p50 / p99"), h("div", { class: "val" }, fmt.ms(shardMed), h("small", {}, ` / ${fmt.ms(shardP99)}`)), h("div", { class: "delta" }, `${fmt.plural(shards, "shard")} asked each time`)) }),
         card({ body: h("div", { class: "kpi", style: { padding: 0 } }, h("div", { class: "lbl" }, "Waiting for the last"), h("div", { class: "val" }, fmt.ms(median(waitLast))), h("div", { class: "delta" }, "after the median shard answered")) }),
@@ -329,6 +366,11 @@ function render(page, r) {
           card({ title: "Each shard, over the runs", sub: "a dot per run; the selected run outlined", body: spread(shards) }),
           card({ title: "The last to answer", sub: "how often each shard was the one the query waited for", body: h("div", { class: "stack", style: { gap: "4px" } }, ranked.slice(0, 8).map(([id, k]) => h("div", { class: "row nw small", style: { gap: "8px" } }, h("span", { style: { width: "64px" } }, "shard " + id), h("div", { class: "grow", style: { height: "8px", background: "var(--surface-3)", borderRadius: "4px", overflow: "hidden" } }, h("div", { style: { width: (k / runs.length) * 100 + "%", height: "100%", background: "var(--s2)" } })), h("span", { class: "num", style: { width: "40px" } }, fmt.pct(k / runs.length, 0))))) }),
           whatIf)));
+    // The selected run stays in view in a strip that scrolls.
+    const rs = out.querySelector(".qp-runs");
+    const b = rs?.querySelector(".sel");
+    if (rs && keepScroll != null) rs.scrollLeft = keepScroll;
+    if (rs && b && (b.offsetLeft < rs.scrollLeft || b.offsetLeft + b.offsetWidth > rs.scrollLeft + rs.clientWidth)) rs.scrollLeft = b.offsetLeft - rs.clientWidth / 2;
   }
 
   return () => { stop = true; route = null; offCluster?.(); };

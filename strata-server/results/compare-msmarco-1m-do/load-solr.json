@@ -1,0 +1,63 @@
+{
+  "batch": 500,
+  "clients": 8,
+  "collection": "msmarco-1000k",
+  "cores": [
+    {
+      "core": "quora_shard1_replica_n2",
+      "index": {
+        "current": true,
+        "deletedDocs": 0,
+        "directory": "NRTCachingDirectory(MMapDirectory@/var/solr/data/quora_shard1_replica_n2/data/index lockFactory=org.apache.lucene.store.NativeFSLockFactory@591381ad; maxCacheMB=48.0 maxMergeSizeMB=4.0)",
+        "hasDeletions": false,
+        "lastModified": "2026-11-03T03:41:43.398Z",
+        "maxDoc": 500275,
+        "numDocs": 500275,
+        "segmentCount": 1,
+        "segmentsFile": "segments_12",
+        "segmentsFileSizeInBytes": 224,
+        "size": "1.92 GB",
+        "sizeInBytes": 2056797408,
+        "userData": {
+          "commitCommandVer": "1880806249754263552",
+          "commitTimeMSec": "1793677303398"
+        },
+        "version": 1178
+      }
+    },
+    {
+      "core": "quora_shard2_replica_n1",
+      "index": {
+        "current": false,
+        "deletedDocs": 0,
+        "directory": "NRTCachingDirectory(MMapDirectory@/var/solr/data/quora_shard2_replica_n1/data/index lockFactory=org.apache.lucene.store.NativeFSLockFactory@6002fc55; maxCacheMB=48.0 maxMergeSizeMB=4.0)",
+        "hasDeletions": false,
+        "lastModified": "2026-11-03T03:30:14.185Z",
+        "maxDoc": 499725,
+        "numDocs": 499725,
+        "segmentCount": 66,
+        "segmentsFile": "segments_11",
+        "segmentsFileSizeInBytes": 5683,
+        "size": "6.61 GB",
+        "sizeInBytes": 7098472248,
+        "userData": {
+          "commitCommandVer": "1880806248190836736",
+          "commitTimeMSec": "1793676614185"
+        },
+        "version": 1227
+      }
+    }
+  ],
+  "docs": 1000000,
+  "engine": "solr",
+  "index_bytes": 9155269656,
+  "indexed_docs": 1000000,
+  "ingest_s": 526.987120428,
+  "json_bytes": 11755131809,
+  "merge_s": 689.232933522,
+  "refresh_s": 1.497049264,
+  "searchable_docs": 1000000,
+  "segments": 67,
+  "setup_s": 4.752092023,
+  "total_s": 1217.717129462
+}

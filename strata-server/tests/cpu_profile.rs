@@ -63,9 +63,22 @@ async fn a_cpu_profile_samples_the_server_s_threads() {
         assert!((s["thread"].as_u64().unwrap() as usize) < threads.len());
         assert!(s["frames"].as_array().unwrap().iter().all(|f| (f.as_u64().unwrap() as usize) < names.len()));
     }
-    // The executor's frames are named (the binary keeps its symbols).
+    // The executor's frames are named (the binary keeps its symbols), and
+    // on Linux most samples are in them. macOS's timer signal does not
+    // reach the thread spending the CPU time: a query of the demo's 4,000
+    // rows runs on its caller's thread alone (strata's FAN_OUT_ROWS), and
+    // on a macOS CI runner none of 534 samples were in it, nearly all in
+    // pthread's functions, where Linux (the cloud container) gives it more
+    // than half. There the frames are only checked named.
     let strata: u64 = stacks.iter().filter(|s| s["frames"].as_array().unwrap().iter().any(|f| { let n = names[f.as_u64().unwrap() as usize]; n.starts_with("strata::") || n.starts_with("<strata::") })).map(|s| s["samples"].as_u64().unwrap()).sum();
-    assert!(strata * 4 >= samples, "{strata} of {samples} samples in strata: {:?}", &names[..names.len().min(40)]);
+    let mut top: Vec<&Json> = stacks.iter().collect();
+    top.sort_by_key(|s| std::cmp::Reverse(s["samples"].as_u64().unwrap()));
+    let leaves: Vec<String> = top.iter().take(12).map(|s| format!("{} x{} on {}", s["frames"].as_array().unwrap().last().map_or("-", |f| names[f.as_u64().unwrap() as usize]), s["samples"], threads[s["thread"].as_u64().unwrap() as usize]["name"])).collect();
+    if cfg!(target_os = "linux") {
+        assert!(strata * 4 >= samples, "{strata} of {samples} samples in strata; threads {}; runs {}; cores {}; most sampled leaves {leaves:?}", p["threads"], p["runs"], p["cores"]);
+    } else {
+        assert!(names.iter().any(|n| n.contains("tokio::")), "no Rust frames named: {:?}; most sampled leaves {leaves:?}", &names[..names.len().min(40)]);
+    }
     // A hash is "::h" and 16 hex digits at the end, as `profiler::clean`
     // takes it off; "::h1::role::Server>" (hyper) is the same length.
     assert!(!names.iter().any(|n| n.rfind("::h").is_some_and(|i| n.len() - i == 19 && n[i + 3..].bytes().all(|b| b.is_ascii_hexdigit()))), "hashes left: {names:?}");
@@ -87,6 +100,8 @@ async fn a_cpu_profile_samples_the_server_s_threads() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let (status, body) = post(&base, "/v1/profile/cpu", json!({"seconds": 0.2})).await;
     assert_eq!(status, 409, "{body}");
+    // It says who takes the first, and for how long still.
+    assert!(body.contains("a CPU profile of this server is being taken, by open, for ") && body.contains(" s more: one at a time"), "{body}");
     assert_eq!(first.await.unwrap().0, 200);
 
     // Folded lines: the thread, the frames from the root, the samples.

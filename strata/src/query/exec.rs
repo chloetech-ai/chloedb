@@ -16,7 +16,7 @@ use crate::forward::{self, DocStore, KeyRange, KeywordColumn, NumericColumn, Ran
 use crate::graph::GraphReader;
 use crate::query::agg;
 use crate::query::memory::{Charge, MemoryBudget};
-use crate::query::logical::{Col, Decay, Expand, GuardSite, OrderBy, Opts, PathCol, PathTest, Phase, Pred, Projection, Score, Select, Tiebreak, Vectors, MAX_QUERY_VECTORS, CROSS_ENCODER_FIRST};
+use crate::query::logical::{Col, Decay, Expand, Fuzzy, GuardSite, OrderBy, Opts, PathCol, PathTest, Phase, Pred, Projection, Score, Select, Tiebreak, Vectors, MAX_QUERY_VECTORS, CROSS_ENCODER_FIRST};
 use crate::query::plan::{CostModel, Estimator, FilterMode, Planner, VectorStrategy};
 use crate::query::rank::{Interval, Rank};
 use crate::query::stats::{FieldStats, TermStats};
@@ -221,6 +221,12 @@ pub struct ExecOptions {
     /// of it ([`crate::query::stats`]). Terms missing from it use local
     /// counts.
     pub stats: Option<Arc<TermStats>>,
+    /// The typo expansions of a query run as several on one snapshot (a
+    /// shard's statistics round for a coordinator, then the query round
+    /// on the snapshot it leased), shared so that each typo-tolerant word
+    /// walks the dictionaries once ([`Expansions`]). `None`: the query's
+    /// own.
+    pub expansions: Option<Arc<Expansions>>,
     /// Answer as one shard of a larger collection, for a coordinator to
     /// merge ([`crate::cluster::merge`]): OFFSET is folded into LIMIT,
     /// facets and counts return every group, and fused scores return every
@@ -331,6 +337,7 @@ impl Default for ExecOptions {
             rank_safe: true,
             column_blocks: true,
             stats: None,
+            expansions: None,
             shard: false,
             threads: 1,
             fan_out_rows: FAN_OUT_ROWS,
@@ -691,6 +698,16 @@ pub struct Executor<'a> {
 /// time in its `expire_by` field `f`, or with a later one.
 pub fn unexpired(f: usize, now: i64) -> Pred {
     Pred::Or(vec![Pred::Not(Box::new(Pred::Present { field: f })), Pred::IntRange { field: f, lo: now.saturating_add(1), hi: i64::MAX }])
+}
+
+/// The indexed terms near typo-tolerant words that several queries on
+/// one snapshot share ([`ExecOptions::expansions`]): by table, field, word
+/// and edits, the terms of every segment within those edits, with their
+/// document counts and distances. Valid only for the snapshot it was
+/// filled on.
+#[derive(Debug, Default)]
+pub struct Expansions {
+    near: Mutex<HashMap<(String, usize, String, u8), Arc<Vec<(String, u64, u8)>>>>,
 }
 
 /// Searches with their synonyms and typos resolved to indexed terms.
@@ -2596,6 +2613,13 @@ impl<'a> Executor<'a> {
         if let Some(v) = self.expanded.lock().unwrap_or_else(|e| e.into_inner()).near.get(&key) {
             return Ok(v.clone());
         }
+        let shared = self.opts.expansions.as_ref().map(|x| (x, (self.schema.table.clone(), field, term.to_string(), edits)));
+        if let Some((x, k)) = &shared {
+            if let Some(v) = x.near.lock().unwrap_or_else(|e| e.into_inner()).get(k).cloned() {
+                self.expanded.lock().unwrap_or_else(|e| e.into_inner()).near.insert(key, v.clone());
+                return Ok(v);
+            }
+        }
         let mut found: HashMap<String, (u64, u8)> = HashMap::new();
         for s in self.stat_segs() {
             for (t, info, d) in self.text(s, field)?.fuzzy_terms(term, edits) {
@@ -2605,6 +2629,9 @@ impl<'a> Executor<'a> {
         let mut v: Vec<(String, u64, u8)> = found.into_iter().map(|(t, (df, d))| (t, df, d)).collect();
         v.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
         let v = Arc::new(v);
+        if let Some((x, k)) = shared {
+            x.near.lock().unwrap_or_else(|e| e.into_inner()).insert(k, v.clone());
+        }
         self.expanded.lock().unwrap_or_else(|e| e.into_inner()).near.insert(key, v.clone());
         Ok(v)
     }
@@ -2644,7 +2671,10 @@ impl<'a> Executor<'a> {
     /// without one), then its synonyms' and its typo-tolerant words'
     /// nearest indexed terms (`1 − edits / length`), each times the
     /// highest weight its word is written with: repeating a word does not
-    /// weigh its expansions more.
+    /// weigh its expansions more. With `fuzzy => 'auto'` a word in enough
+    /// documents gets no typo neighbours ([`text::fuzzy::known`]), and
+    /// another only those in more documents than it, each also times the
+    /// chance it was meant ([`text::fuzzy::meant`]).
     fn bm25_terms(&self, field: usize, text: &str, opts: &Opts) -> Result<Vec<(String, f32)>> {
         Ok(self.bm25_query(field, text, opts)?.terms)
     }
@@ -2703,15 +2733,38 @@ impl<'a> Executor<'a> {
             }
         }
         if let Some(fz) = expand.fuzzy {
-            for b in 0..n_base {
-                let (t, w) = (out.terms[b].0.clone(), top[b]);
+            // `'auto'` corrects typos ([`text::fuzzy::known`],
+            // [`text::fuzzy::meant`]): it leaves a word in enough documents
+            // as it is, and adds only neighbours in more documents than the
+            // word, each weighted by the chance it was meant. The choice
+            // goes by this snapshot's counts, so that a shard adds the same
+            // terms in a coordinator's statistics round and in its query;
+            // the chances by the collection's where they were sent.
+            let auto = fz == Fuzzy::Auto;
+            let names: Vec<String> = out.terms[..n_base].iter().map(|(t, _)| t.clone()).collect();
+            let local = if auto { Some(self.local_stats(field, &names)?) } else { None };
+            let sent = self.opts.stats.as_ref().and_then(|s| s.fields.get(&self.schema.fields[field].name));
+            for (b, t) in names.iter().enumerate() {
+                let w = top[b];
                 let len = t.chars().count();
                 let e = fz.edits(len);
                 if e == 0 {
                     continue;
                 }
-                for (near, _, d) in self.near_terms(field, &t, e)?.iter().filter(|x| x.2 > 0).take(MAX_FUZZY_TERMS) {
-                    add(near, w * text::fuzzy::weight(*d, len), Some(b), &mut out);
+                let df = local.as_ref().map_or(0, |st| st.df.get(t).copied().unwrap_or(0));
+                if let Some(st) = &local {
+                    if text::fuzzy::known(df, st.n_docs) {
+                        continue;
+                    }
+                }
+                let near = self.near_terms(field, t, e)?;
+                for (n, ndf, d) in near.iter().filter(|x| x.2 > 0 && (!auto || x.1 > df)).take(MAX_FUZZY_TERMS) {
+                    let mut x = w * text::fuzzy::weight(*d, len);
+                    if auto {
+                        let (df, ndf) = sent.and_then(|g| Some((*g.df.get(t)?, *g.df.get(n)?))).unwrap_or((df, *ndf));
+                        x *= text::fuzzy::meant(df, ndf, *d);
+                    }
+                    add(n, x, Some(b), &mut out);
                 }
             }
         }
@@ -3969,6 +4022,33 @@ fn merge_top(mut hits: Vec<Hit>, k: usize) -> Vec<Hit> {
     hits.sort_by(|a, b| b.score.total_cmp(&a.score).then((a.seg, a.doc).cmp(&(b.seg, b.doc))));
     hits.truncate(k);
     hits
+}
+
+/// The terms each BM25 input of `q` scores with, by field (as
+/// [`Executor::term_stats`] asks a database for their statistics), when
+/// they follow from the query and `schema` alone. `None` when an input
+/// widens its terms by what a database holds (typos, synonyms): only a
+/// shard finds those.
+pub fn stat_terms(q: &Select, schema: &Schema) -> Result<Option<Vec<(usize, Vec<String>)>>> {
+    let mut leaves = Vec::new();
+    bm25_leaves(q, &mut leaves);
+    let mut out = Vec::with_capacity(leaves.len());
+    for (field, text, opts) in leaves {
+        if !Expand::from_opts(opts).map_err(err)?.is_none() {
+            return Ok(None);
+        }
+        let Some(f) = schema.fields.get(field) else { return Ok(None) };
+        let (weighted, _, _) = ranked_terms(text, opts, f.text_analyzer())?;
+        // As Executor::bm25_query: each term once.
+        let mut terms: Vec<String> = Vec::with_capacity(weighted.len());
+        for (t, _) in weighted {
+            if !terms.contains(&t) {
+                terms.push(t);
+            }
+        }
+        out.push((field, terms));
+    }
+    Ok(Some(out))
 }
 
 /// The BM25 inputs of a query (its ranking, its phases' and its columns')

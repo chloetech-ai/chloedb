@@ -1,0 +1,35 @@
+05:01:48 h2h-10m: waiting for its nodes
+05:03:07 h2h-10m: nodes h2h-10m-d-a1-3e2yv0 h2h-10m-d-a1-3e2yv1 and h2h-10m-c-a1-3e2ydn
+05:17:35 h2h-10m: step 1: compare.sh build
+06:25:25 h2h-10m: step 2: compare.sh up strata
+06:25:44 h2h-10m: step 3: compare.sh run strata
+06:42:20 h2h-10m: step 4: compare.sh run strata --label strata-pass2
+06:58:59 h2h-10m: step 5: compare.sh run strata --label strata-pass3
+07:15:29 h2h-10m: step 6: compare.sh down strata
+07:15:30 h2h-10m: step 7: compare.sh up es
+07:16:47 h2h-10m: step 8: compare.sh load es
+09:50:05 h2h-10m: step 9: compare.sh run es
+09:58:07 h2h-10m: step 10: compare.sh run es --label es-pass2
+10:05:00 h2h-10m: step 11: compare.sh run es --label es-pass3
+10:12:05 h2h-10m: step 12: compare.sh trial
+10:12:07 h2h-10m: step 13: compare.sh run es --kinds hybrid (RRF),hybrid (weighted) --paid --label es-trial
+10:13:31 h2h-10m: step 14: compare.sh writes es
+10:15:15 h2h-10m: step 15: compare.sh stream es
+10:18:01 h2h-10m: step 16: compare.sh down es
+10:18:07 h2h-10m: step 17: compare.sh up os
+10:19:24 h2h-10m: step 18: compare.sh load os
+13:39:18 h2h-10m: step 19: compare.sh run os
+13:47:36 h2h-10m: step 20: compare.sh run os --label os-pass2
+13:54:39 h2h-10m: step 21: compare.sh run os --label os-pass3
+14:01:37 h2h-10m: step 22: compare.sh writes os
+14:03:24 h2h-10m: step 23: compare.sh stream os
+14:06:01 h2h-10m: step 24: compare.sh down os
+14:06:06 h2h-10m: step 25: compare.sh up strata
+14:06:12 h2h-10m: step 26: compare.sh run strata --label strata-b
+14:22:17 h2h-10m: step 27: compare.sh run strata --label strata-b-pass2
+14:38:29 h2h-10m: step 28: compare.sh run strata --label strata-b-pass3
+14:54:41 h2h-10m: step 29: compare.sh writes strata
+14:55:54 h2h-10m: step 30: compare.sh stream strata
+14:58:32 h2h-10m: step 31: compare.sh down strata
+14:58:39 h2h-10m: reports fetched (26 files)
+14:58:40 h2h-10m: done after 35812 s

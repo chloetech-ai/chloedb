@@ -335,29 +335,12 @@ progress { width: 100%; accent-color: var(--accent); }
     <section id="tab-data" class="hidden">
       <div class="card">
         <div class="row" style="justify-content:space-between"><h2 style="margin:0">Import rows</h2><span class="hint" id="dInto"></span></div>
-        <p class="small muted" style="margin:6px 0 10px">JSON Lines (an object per line), a JSON array of objects, or CSV or TSV with a header row. Columns go to the fields of the same name, and columns the schema lacks are skipped and listed. A row whose key is already here replaces that row. In CSV an empty cell is empty, a list is <code>a|b|c</code> or a JSON array, and a vector is a JSON array. Embedded vector fields are computed from their source fields by the server's model. Up to 256 MB a file; for more, use <code>strata-server import</code> while the server is stopped.</p>
-        <div class="row">
-          <div class="grow"><label class="lbl" for="dFile">File</label><input id="dFile" type="file" accept=".jsonl,.ndjson,.json,.csv,.tsv,.tab"></div>
-          <div style="width:160px"><label class="lbl" for="dFormat">format</label><select id="dFormat"><option value="">from the file name</option><option value="jsonl">JSON Lines</option><option value="json">JSON array</option><option value="csv">CSV</option><option value="tsv">TSV</option></select></div>
-          <div><label class="lbl">&nbsp;</label><button class="btn primary" id="dImport" disabled>Import</button></div>
-        </div>
-        <details class="sec"><summary>Or paste rows</summary>
-          <textarea id="dPaste" rows="5" spellcheck="false"></textarea>
-          <div class="row" style="margin-top:6px"><button class="btn" id="dPasteImport">Import pasted rows</button><span class="hint">as JSON Lines, a JSON array, or CSV with a header row</span></div>
-        </details>
-        <div id="dOut" style="margin-top:10px"></div>
+        <p class="small muted" style="margin:6px 0 10px">This console only reads. Files, pasted rows, SQLite and Parquet are imported in the command center's Import and export, which shows which rows an import replaces before it runs, asks for a reason on production, and keeps it in the audit log.</p>
+        <a class="btn primary" href="/#/import" target="_top">Open Import and export</a>
       </div>
       <div class="card">
-        <h2 style="margin:0">SQLite</h2>
-        <p class="small muted" style="margin:6px 0 10px">Import a SQLite database: each of its tables goes into the table of its name here, which is created from SQLite's declarations and values when this database lacks it (types, the key, references, NOT NULL and DEFAULT), and its rows replace the rows with their keys. <b>Preview</b> shows each table's schema and what does not carry over, and writes nothing. Up to 256 MB a file; for more, use <code>strata-server import</code> while the server is stopped.</p>
-        <div class="row">
-          <div class="grow"><label class="lbl" for="qFile">SQLite file</label><input id="qFile" type="file" accept=".sqlite,.sqlite3,.db,.db3,.s3db,.sl3"></div>
-          <div style="width:200px"><label class="lbl" for="qTables">tables <span class="muted">(empty: all)</span></label><input id="qTables" type="text" spellcheck="false" placeholder="orders, customers"></div>
-          <div><label class="lbl">&nbsp;</label><span class="row" style="gap:6px"><button class="btn" id="qPlan" disabled>Preview</button><button class="btn primary" id="qImport" disabled>Import</button></span></div>
-        </div>
-        <div class="row"><label class="small" title="SQLite BLOB columns are left out otherwise: Strata keeps no bytes"><input type="checkbox" id="qBlobs"> keep BLOB columns, as base64 text</label></div>
-        <div id="qOut" style="margin-top:10px"></div>
-        <p class="small muted" style="margin:16px 0 10px">Export writes this database to a SQLite file that any SQLite program reads: the rows, keys, references, an index on each filterable field, an FTS5 index over each table's text, and the Strata schemas, which an import here restores. Vector indexes, analyzers and Strata's ranking have no SQLite form and stay behind; the vectors go as <code>F32_BLOB</code> columns.</p>
+        <h2 style="margin:0">SQLite export</h2>
+        <p class="small muted" style="margin:6px 0 10px">Export writes this database to a SQLite file that any SQLite program reads: the rows, keys, references, an index on each filterable field, an FTS5 index over each table's text, and the Strata schemas, which an import here restores. Vector indexes, analyzers and Strata's ranking have no SQLite form and stay behind; the vectors go as <code>F32_BLOB</code> columns.</p>
         <div class="row">
           <div style="width:200px"><label class="lbl" for="xTables">tables <span class="muted">(empty: all)</span></label><input id="xTables" type="text" spellcheck="false"></div>
           <div><label class="lbl">&nbsp;</label><span class="row" style="gap:12px">
@@ -1305,7 +1288,7 @@ function helpSections(x) {
   if (tf) sec.push({ id: "text", title: "Text search", intro: `MATCH(field, '...') keeps the rows that match; bm25(field, '...') ranks them. Both take typo and synonym options.`, ex: [
     { t: "Boolean search", d: `Words are ANDed. Uppercase OR, AND and NOT (or a leading -) combine them, with parentheses.`, sql: `SELECT ${show} FROM ${T}\nWHERE MATCH(${tf}, '(${w1} OR ${w2}) -${w3}')\nLIMIT 20` },
     { t: "Phrases and prefixes", d: `"Quoted words" must appear together; pre* matches every word that starts with pre.`, sql: `SELECT ${show} FROM ${T}\nWHERE MATCH(${tf}, '"${x.phrase}" OR ${w2.slice(0, 4)}*')\nLIMIT 20` },
-    { t: "Typos", d: `word~ also matches words an edit or two away (word~1, word~2 to choose). fuzzy => 'auto' does it for every word, in MATCH and bm25: 1 edit for words of 3 to 5 letters, 2 for longer ones.`, sql: `SELECT ${show}, score() FROM ${T}\nORDER BY bm25(${tf}, '${x.typo}', fuzzy => 'auto') DESC\nLIMIT 10` },
+    { t: "Typos", d: `word~ also matches words an edit or two away (word~1, word~2 to choose). fuzzy => 'auto' does it for every word in MATCH, and in bm25 for the words that look like typos (rare words with more common neighbours): 1 edit for words of 3 to 5 letters, 2 for longer ones.`, sql: `SELECT ${show}, score() FROM ${T}\nORDER BY bm25(${tf}, '${x.typo}', fuzzy => 'auto') DESC\nLIMIT 10` },
     { t: "Synonyms", d: `synonyms => 1 also searches what the synonym list (below) says is the same: "laptop, notebook" or "tv => television".`, sql: `SELECT ${show}, score() FROM ${T}\nORDER BY bm25(${tf}, '${w1}', synonyms => 1) DESC\nLIMIT 10`, needs: "synonyms" },
     { t: "Some of the words", d: `(a b c)@2 matches rows with at least 2 of a, b and c; min => 2 (or '75%') asks that of a whole MATCH or bm25 text.`, sql: `SELECT ${show}, score() FROM ${T}\nWHERE MATCH(${tf}, '(${w1} ${w2} ${w3})@2')\nORDER BY bm25(${tf}, '${w1} ${w2} ${w3}', min => 2) DESC\nLIMIT 10` },
     { t: "As many words as fit", d: `With max_rows, bm25 (or MATCH, or AT_LEAST) asks for all its words first and for fewer, down to min, while the rows stay within max_rows; min_rows asks for fewer while there are too few. The plan says which level ran.`, sql: `SELECT ${show}, score() FROM ${T}\nORDER BY bm25(${tf}, '${w1} ${w2} ${w3}', min => 1, max_rows => 50) DESC\nLIMIT 10` },
@@ -1529,112 +1512,8 @@ function renderData() {
 }
 $("dCopySchema").onclick = () => { try { navigator.clipboard.writeText(JSON.stringify(shortOrdered(S.short), null, 2)); } catch {} };
 
-// Sends rows to /v1/import, showing the upload's progress.
-function importRows(body, format, label) {
-  const out = $("dOut"), bar = el("progress", { max: 1, value: 0 }), what = el("div", { class: "small muted", text: `Sending ${label}…` });
-  out.replaceChildren(what, bar);
-  $("dImport").disabled = $("dPasteImport").disabled = true;
-  const finish = (kids) => { out.replaceChildren(...kids); $("dImport").disabled = !$("dFile").files.length; $("dPasteImport").disabled = false; };
-  const x = new XMLHttpRequest();
-  x.open("POST", "/v1/import?format=" + format);
-  // The server refuses text/plain, which pages on other sites can send.
-  x.setRequestHeader("content-type", { csv: "text/csv", tsv: "text/tab-separated-values", json: "application/json" }[format] || "application/x-ndjson");
-  if (token) x.setRequestHeader("authorization", "Bearer " + token);
-  x.upload.onprogress = (e) => { if (e.lengthComputable) { bar.max = e.total; bar.value = e.loaded; } };
-  x.upload.onload = () => { what.textContent = `Writing ${label}…`; bar.removeAttribute("value"); };
-  x.onload = () => {
-    let j = {}; try { j = JSON.parse(x.responseText); } catch {}
-    if (x.status === 401) $("tokenBox").classList.remove("hidden");
-    if (x.status < 200 || x.status >= 300) {
-      const why = j.error || (x.status === 413 ? "The file is over the server's 256 MB limit: load it with strata-server import." : `HTTP ${x.status}`);
-      return finish([el("div", { class: "error", text: why })]);
-    }
-    const kids = [el("div", { class: "ok-msg", text: `${label}: ${plural(j.written, "row")} written in ${(j.took_ms / 1000).toFixed(1)} s.` })];
-    if (j.skipped_fields && j.skipped_fields.length) kids.push(el("div", { class: "note", style: "margin-top:6px", text: "Skipped columns the schema lacks: " + j.skipped_fields.join(", ") }));
-    finish(kids);
-    refreshHealth();
-  };
-  x.onerror = () => finish([el("div", { class: "error", text: "The upload failed: the connection closed." })]);
-  x.send(body);
-}
-$("dFile").onchange = () => { $("dImport").disabled = !$("dFile").files.length; };
-$("dImport").onclick = () => {
-  const f = $("dFile").files[0]; if (!f) return;
-  const format = $("dFormat").value || formatOf(f.name);
-  if (!format) { $("dOut").replaceChildren(el("div", { class: "error", text: `Choose the format of ${f.name}.` })); return; }
-  importRows(f, format, f.name);
-};
-$("dPasteImport").onclick = () => {
-  const t = $("dPaste").value.trim(); if (!t) return;
-  const format = t.startsWith("[") ? "json" : t.startsWith("{") ? "jsonl" : t.split("\n")[0].includes("\t") ? "tsv" : "csv";
-  importRows(t, format, "The pasted rows");
-};
-
-// ---- SQLite in and out -------------------------------------------------------
+// ---- SQLite out -------------------------------------------------------
 const tablesParam = (id) => $(id).value.split(",").map((t) => t.trim()).filter(Boolean).join(",");
-// What a plan says of a field: its type, and the options that matter here.
-function planField(f, key) {
-  const what = [f.type + (f.multi ? " list" : "") + (f.dim ? ` ${f.dim}` : "")];
-  if (f.name === key) what.push("key");
-  if (f.references) what.push("→ " + f.references);
-  if (f.not_null) what.push("not null");
-  if (f.default !== undefined) what.push("default " + JSON.stringify(f.default));
-  if (f.analyzer) what.push(f.analyzer);
-  return el("tr", {}, el("td", { class: "key", style: "width:35%", text: f.name }), el("td", { text: what.join(", ") }));
-}
-function renderPlan(j) {
-  const kids = [];
-  for (const t of j.tables) {
-    const head = el("div", { class: "row", style: "gap:6px;margin:10px 0 4px" }, el("b", { text: t.table }), t.source !== t.table ? el("span", { class: "small muted", text: "from " + t.source }) : null,
-      el("span", { class: "badge" + (t.exists ? "" : " pk"), text: t.exists ? "exists: its schema is kept" : "new" }));
-    const fields = t.exists ? Object.entries(t.columns).map(([c, f]) => el("tr", {}, el("td", { class: "key", style: "width:35%", text: c }), el("td", { text: "→ " + f })))
-      : t.fields.map((f) => planField(f, t.key));
-    kids.push(head, el("div", { class: "table-wrap", style: "max-height:240px" }, el("table", {}, el("tbody", {}, ...fields))));
-    if (t.notes && t.notes.length) kids.push(el("div", { class: "note", style: "margin-top:6px" }, ...t.notes.map((n) => el("div", { text: n }))));
-  }
-  const skipped = Object.entries(j.skipped || {});
-  if (skipped.length) kids.push(el("div", { class: "small muted", style: "margin-top:8px" }, "Left out: ", ...skipped.map(([n, why], i) => el("span", {}, i ? "; " : "", el("code", { text: n }), ", " + why))));
-  return kids;
-}
-// Sends the SQLite file to /v1/import, for its plan or to import it.
-function sendSqlite(plan) {
-  const f = $("qFile").files[0]; if (!f) return;
-  const out = $("qOut"), bar = el("progress", { max: 1, value: 0 }), what = el("div", { class: "small muted", text: `Sending ${f.name}…` });
-  out.replaceChildren(what, bar);
-  $("qPlan").disabled = $("qImport").disabled = true;
-  const finish = (kids) => { out.replaceChildren(...kids); $("qPlan").disabled = $("qImport").disabled = !$("qFile").files.length; };
-  const q = new URLSearchParams({ format: "sqlite" });
-  if (plan) q.set("plan", "true");
-  if (tablesParam("qTables")) q.set("tables", tablesParam("qTables"));
-  if ($("qBlobs").checked) q.set("blobs_base64", "true");
-  const x = new XMLHttpRequest();
-  x.open("POST", "/v1/import?" + q);
-  x.setRequestHeader("content-type", "application/vnd.sqlite3");
-  if (token) x.setRequestHeader("authorization", "Bearer " + token);
-  x.upload.onprogress = (e) => { if (e.lengthComputable) { bar.max = e.total; bar.value = e.loaded; } };
-  x.upload.onload = () => { what.textContent = plan ? `Reading ${f.name}…` : `Writing ${f.name}…`; bar.removeAttribute("value"); };
-  x.onload = () => {
-    let j = {}; try { j = JSON.parse(x.responseText); } catch {}
-    if (x.status === 401) $("tokenBox").classList.remove("hidden");
-    if (x.status < 200 || x.status >= 300) {
-      const why = j.error || (x.status === 413 ? "The file is over the server's 256 MB limit: load it with strata-server import." : `HTTP ${x.status}`);
-      return finish([el("div", { class: "error", text: why })]);
-    }
-    if (plan) return finish([el("div", { class: "small muted", text: `What importing ${f.name} would do (nothing is written yet):` }), ...renderPlan(j)]);
-    const kids = [el("div", { class: "ok-msg", text: `${f.name}: ${plural(j.written, "row")} written in ${(j.took_ms / 1000).toFixed(1)} s.` })];
-    for (const t of j.tables) {
-      kids.push(el("div", { class: "small", style: "margin-top:6px" }, el("b", { text: t.table }), `: ${plural(t.rows, "row")}${t.created ? ", a new table" : ""}`));
-      if (t.notes.length) kids.push(el("div", { class: "note", style: "margin-top:4px" }, ...t.notes.map((n) => el("div", { text: n }))));
-    }
-    finish(kids);
-    refreshHealth();
-  };
-  x.onerror = () => finish([el("div", { class: "error", text: "The upload failed: the connection closed." })]);
-  x.send(f);
-}
-$("qFile").onchange = () => { $("qPlan").disabled = $("qImport").disabled = !$("qFile").files.length; $("qOut").replaceChildren(); };
-$("qPlan").onclick = () => sendSqlite(true);
-$("qImport").onclick = () => sendSqlite(false);
 $("xExport").onclick = async () => {
   const out = $("xOut"), btn = $("xExport");
   const q = new URLSearchParams();

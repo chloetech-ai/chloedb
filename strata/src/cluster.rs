@@ -243,6 +243,18 @@ pub fn scores_bm25(q: &Select) -> bool {
     !leaves.is_empty()
 }
 
+/// The terms of `q`'s BM25 inputs, by field name, when they follow from
+/// the query and `schema` alone, so that a coordinator can sum statistics
+/// it kept of them ([`crate::query::exec::stat_terms`]); `None` when only
+/// a shard can find them (typos, synonyms) or `q` scores no BM25.
+pub fn stat_terms(q: &Select, schema: &Schema) -> Result<Option<Vec<(String, Vec<String>)>>> {
+    let Some(leaves) = crate::query::exec::stat_terms(q, schema)? else { return Ok(None) };
+    if leaves.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(leaves.into_iter().map(|(f, terms)| (schema.fields[f].name.clone(), terms)).collect()))
+}
+
 /// Whether a fetch phase reads less than one round would: `q` returns a
 /// page of rows (not groups or counts, and with a LIMIT, as a query
 /// without one keeps every shard's rows) and selects a column besides the

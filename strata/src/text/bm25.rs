@@ -833,19 +833,13 @@ impl Query<'_> {
             if filter.is_none_or(|f| f.contains(d)) {
                 let norm = self.norms[d as usize];
                 let mut s = 0.0f64;
-                for (i, x) in docs.iter_mut().enumerate() {
-                    if *x == d {
-                        s += sc[i].score(&self.k, norm) as f64;
-                        *x = sc[i].cur.next();
-                    }
-                }
+                for_each_on(&mut docs, 0, d, |i, x| {
+                    s += sc[i].score(&self.k, norm) as f64;
+                    *x = sc[i].cur.next();
+                });
                 top.insert(d, f.value(d, s as f32));
             } else {
-                for (i, x) in docs.iter_mut().enumerate() {
-                    if *x == d {
-                        *x = sc[i].cur.next();
-                    }
-                }
+                for_each_on(&mut docs, 0, d, |i, x| *x = sc[i].cur.next());
             }
         }
     }
@@ -865,6 +859,8 @@ impl Query<'_> {
         let mut docs: Vec<DocId> = sc.iter().map(|s| s.cur.doc()).collect();
         // Lists [0, ne) are non-essential.
         let mut ne = 0;
+        // Buckets of scores and the documents they hold, for windows.
+        let mut window: Option<(Vec<f64>, Vec<u64>)> = None;
         loop {
             let theta = f.cut(top.threshold());
             while ne < n && ub[ne] <= theta {
@@ -877,22 +873,67 @@ impl Query<'_> {
             if d == END {
                 break;
             }
-            if filter.is_some_and(|f| !f.contains(d)) {
+            if n - ne >= WINDOW_LISTS {
+                // Many essential lists (typo-tolerant words bring up to 50
+                // each): their scores for the documents of a window are
+                // summed list by list into buckets, rather than finding
+                // each candidate across every list; each candidate is then
+                // finished with the non-essential lists, as below.
+                let w = window.get_or_insert_with(|| (vec![0f64; WINDOW], vec![0u64; WINDOW / 64]));
+                let (acc, seen) = (&mut w.0, &mut w.1);
+                let hi = d.saturating_add(WINDOW as DocId);
                 for i in ne..n {
-                    if docs[i] == d {
-                        docs[i] = sc[i].cur.next();
+                    let mut x = docs[i];
+                    while x < hi {
+                        let j = (x - d) as usize;
+                        acc[j] += sc[i].score(&self.k, self.norms[x as usize]) as f64;
+                        seen[j >> 6] |= 1 << (j & 63);
+                        x = sc[i].cur.next();
+                    }
+                    docs[i] = x;
+                }
+                for b in 0..WINDOW / 64 {
+                    let mut m = std::mem::take(&mut seen[b]);
+                    while m != 0 {
+                        let j = b * 64 + m.trailing_zeros() as usize;
+                        m &= m - 1;
+                        let mut s = std::mem::take(&mut acc[j]);
+                        let x = d + j as DocId;
+                        if filter.is_some_and(|f| !f.contains(x)) {
+                            continue;
+                        }
+                        let theta = f.cut(top.threshold());
+                        let norm = self.norms[x as usize];
+                        let mut alive = true;
+                        for i in (0..ne).rev() {
+                            if s as f32 + ub[i] <= theta {
+                                alive = false;
+                                break;
+                            }
+                            if docs[i] < x {
+                                docs[i] = sc[i].cur.seek(x);
+                            }
+                            if docs[i] == x {
+                                s += sc[i].score(&self.k, norm) as f64;
+                            }
+                        }
+                        if alive {
+                            top.insert(x, f.value(x, s as f32));
+                        }
                     }
                 }
                 continue;
             }
+            if filter.is_some_and(|f| !f.contains(d)) {
+                for_each_on(&mut docs, ne, d, |i, x| *x = sc[i].cur.next());
+                continue;
+            }
             let norm = self.norms[d as usize];
             let mut s = 0.0f64;
-            for i in ne..n {
-                if docs[i] == d {
-                    s += sc[i].score(&self.k, norm) as f64;
-                    docs[i] = sc[i].cur.next();
-                }
-            }
+            for_each_on(&mut docs, ne, d, |i, x| {
+                s += sc[i].score(&self.k, norm) as f64;
+                *x = sc[i].cur.next();
+            });
             let mut alive = true;
             for i in (0..ne).rev() {
                 if s as f32 + ub[i] <= theta {
@@ -998,6 +1039,44 @@ impl Query<'_> {
                 bubble(&mut order, p, |i| docs[i]);
             }
         }
+    }
+}
+
+/// MaxScore sums the essential lists' scores window by window when they
+/// are at least this many ([`Query::max_score`]).
+const WINDOW_LISTS: usize = 16;
+
+/// Documents per window (a multiple of 64).
+const WINDOW: usize = 4096;
+
+/// Calls `f(i, &mut docs[i])` for every list `i` from `from` on whose
+/// current docID is `d`, in increasing `i` (so scores add up in the same
+/// order). A query of many lists (a typo-tolerant word brings up to 50)
+/// has a candidate on few of them: the lists are compared with `d` 16 at
+/// a time into a mask, which the compiler turns into vector compares,
+/// rather than tested one by one.
+#[inline]
+fn for_each_on(docs: &mut [DocId], from: usize, d: DocId, mut f: impl FnMut(usize, &mut DocId)) {
+    const W: usize = 16;
+    let mut i = from;
+    while i < docs.len() {
+        let chunk = &docs[i..docs.len().min(i + W)];
+        let mut m = 0u32;
+        if let Ok(c) = <&[DocId; W]>::try_from(chunk) {
+            for (j, &x) in c.iter().enumerate() {
+                m |= ((x == d) as u32) << j;
+            }
+        } else {
+            for (j, &x) in chunk.iter().enumerate() {
+                m |= ((x == d) as u32) << j;
+            }
+        }
+        while m != 0 {
+            let j = i + m.trailing_zeros() as usize;
+            f(j, &mut docs[j]);
+            m &= m - 1;
+        }
+        i += W;
     }
 }
 

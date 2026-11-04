@@ -14,7 +14,10 @@
 // rate the last move ran, blast radius, checks, what would be removed), and
 // one Apply runs it, with a typed confirmation when a copy goes. On
 // Kubernetes the plan is one StrataCluster patch; on machines of your own,
-// admin calls one at a time. A plan holds only what was asked.
+// the coordinator runs its steps one at a time as a job of its own
+// (POST /v1/admin/plan/apply): it goes on when the browser closes, every
+// browser and every view sees it, and a restart says where it stopped,
+// with Resume and Discard. A plan holds only what was asked.
 //
 // Capacity says what the autoscaler suggests in words; Changes lists this
 // cluster's events and the changes people and automation made.
@@ -22,14 +25,15 @@
 import { h, s, icon, clear, fmt, card, api, every, toast, modal, pill, empty, bus, seg, store, tipOn, hideTip, ApiError, copy, debounce, confirm, can, needs, link, when, whenTitle } from "../core.js";
 import * as core from "../core.js";
 import { verifyWords } from "./system.js";
-import { fullIn } from "../spec.js";
-import { state, isCoordinator, refreshCluster, fresh, staleText, isProduction } from "../data.js";
+import { state, isCoordinator, refreshCluster, fresh, staleText, isProduction, firingNow, isPast } from "../data.js";
 
 /** A phone or a narrow window: the shell's isNarrow() once it has one, else the same breakpoint. */
 const narrow = () => (typeof core.isNarrow === "function" ? core.isNarrow() : matchMedia("(max-width: 900px)").matches);
 
 export default {
   id: "cluster", title: "Cluster", icon: "layers", group: "Operate",
+  // The map, the strip and the plan are now: no range picker (NEW-shell-monitor-8).
+  range: false,
   keywords: "cluster canvas fleet topology control center shards copies replicas nodes zones health cpu disk p99 version lag what if fail draft plan apply add remove promote primary drain move slots rebalance capacity autoscale changes events kubernetes operator",
   render,
   onParams: (r) => active?.onParams(r),
@@ -41,9 +45,45 @@ const ASSUMED_RATE = 20000; // rows a second, until a move has been measured
 const CRIT = new Set(["down", "no_reads", "no_writes"]);
 
 let active = null; // the view on screen, for onParams
-let runner = null; // the plan being applied: it goes on when the view is left
+// The plan the coordinator applies, or applied last (GET /v1/admin/plan/run,
+// or `plan` in /v1/cluster): it runs on the server, not in this page.
+let planRun = null;
 const runWatchers = new Set();
 const runChanged = () => runWatchers.forEach((f) => { try { f(); } catch (e) { console.error(e); } });
+/** Whether a plan runs on the coordinator now. */
+const planRunning = () => planRun?.state === "running";
+/** A plan to show: running, stopped partway (until resumed or discarded), or done and not closed in this browser. */
+function planShown() {
+  const r = planRun;
+  if (!r) return null;
+  if (r.state !== "done") return r;
+  const closed = store.get("cluster.planClosed", null);
+  return closed === r.id || (r.finished_ms && Date.now() - r.finished_ms > 3600e3) ? null : r;
+}
+/**
+ * The plan to show from `GET /v1/admin/plan/run`: this coordinator's, else
+ * one another coordinator applies or left stopped (its `elsewhere`), marked
+ * with where it runs: Stop and Resume are there (CC-3).
+ */
+function runOf(j) {
+  const mine = j?.run || null;
+  if (mine && mine.state !== "done") return mine;
+  const other = (j?.elsewhere || []).find((x) => x.run && x.run.state !== "done");
+  if (other) return { ...other.run, elsewhere: { name: other.coordinator, url: other.url } };
+  return mine;
+}
+/** Takes the run from an answer, unless it is older than the one held. */
+function takeRun(r) {
+  if (r === undefined) return;
+  if (r && planRun && r.id === planRun.id && (r.at < planRun.at && r.state === planRun.state)) return;
+  const was = JSON.stringify(planRun);
+  planRun = r || null;
+  if (JSON.stringify(planRun) !== was) runChanged();
+}
+async function loadRun() {
+  try { takeRun(runOf(await api("/v1/admin/plan/run"))); }
+  catch (e) { if (e.status === 404 || e.status === 405) takeRun(state.cluster?.plan); else if (e.status === 403) takeRun(state.cluster?.plan); }
+}
 
 // ---------------------------------------------------------------- words
 const short = (url) => (url || "").replace(/^https?:\/\//, "");
@@ -75,9 +115,14 @@ const runsCount = (rs) => (rs || []).reduce((n, [a, b]) => n + (b - a), 0);
 const kn = (v) => (v == null ? "–" : v >= 1000 ? (v / 1000).toFixed(v >= 1e5 ? 0 : 1).replace(/\.0$/, "") + "k" : fmt.n(v));
 const nodeLabel = (k) => (k && k.length > 18 ? "…" + k.slice(-14) : k || "–");
 
-/** A copy's name: its node name or s1-0, with the URL in a tooltip. */
-const cname = (c) => c.name || c.id;
-const cspan = (c, cls = "") => h("span", { class: "mono " + cls, title: c.url }, cname(c));
+/**
+ * A copy's name: the cluster's short name (s1-0), which the server's texts,
+ * events, alerts and Home say too (NEW-scenarios-7); its server's own name
+ * goes beside it as a subtitle, and the URL in a tooltip.
+ */
+const cname = (c) => (c.url && core.copyName(c.url, state.cluster)) || c.id || c.name;
+const cspan = (c, cls = "") => h("span", { class: "mono " + cls, title: [c.name && c.name !== c.id ? "server " + c.name : null, c.url].filter(Boolean).join(" · ") }, cname(c),
+  c.name && c.name !== c.id ? h("span", { class: "small muted cc2-sname" }, " " + c.name) : null);
 
 /**
  * The names copies had when they last answered, by URL: a copy that is down
@@ -97,6 +142,38 @@ function keepNames(c) {
  * a change can still show the cluster before it.
  */
 function refreshSoon() { refreshCluster(); setTimeout(() => refreshCluster(), 2500); }
+/**
+ * The copy to make a shard's primary by force: one that answers, of the
+ * latest term and transaction, when no copy that answers is the primary and
+ * too few answer to elect one (a dead primary, no majority).
+ */
+function forceTarget(sh) {
+  if (sh.primary || !sh.up || !CRIT.has(sh.state) || sh.majority) return null;
+  return sh.copies.filter((c) => !c.down).sort((a, b) => (b.term || 0) - (a.term || 0) || (b.txn || 0) - (a.txn || 0))[0] || null;
+}
+/**
+ * The moves the server's drain or rebalance makes, by counts of slots only:
+ * [from, to, slots], at most 256 each, leaving every shard but `empty` and
+ * those `gone` an even share (the remainder to those holding most).
+ */
+function evenCounts(held, gone, empty) {
+  const ids = [...held.keys()];
+  const count = new Map(held);
+  const takers = ids.filter((i) => i !== empty && !gone.has(i)).sort((a, b) => count.get(b) - count.get(a) || a - b);
+  if (!takers.length) return [];
+  const target = new Map(ids.map((i) => [i, 0]));
+  takers.forEach((i, k) => target.set(i, Math.floor(SLOTS / takers.length) + (k < SLOTS % takers.length ? 1 : 0)));
+  const out = [];
+  for (let guard = 0; guard < 100000; guard++) {
+    const pick = (f) => ids.filter(f).sort((a, b) => Math.abs(count.get(b) - target.get(b)) - Math.abs(count.get(a) - target.get(a)) || a - b)[0];
+    const d = pick((i) => count.get(i) > target.get(i)), r = pick((i) => count.get(i) < target.get(i));
+    if (d == null || r == null) break;
+    const k = Math.min(count.get(d) - target.get(d), target.get(r) - count.get(r), 256);
+    count.set(d, count.get(d) - k); count.set(r, count.get(r) + k);
+    out.push([d, r, k]);
+  }
+  return out;
+}
 /** Whether a shard serves no reads: as the server says, else what failover implies. */
 const noReads = (sh) => sh.state === "down" || sh.state === "no_reads" || (sh.state === "no_writes" && (sh.serves_reads != null ? sh.serves_reads === false : sh.failover !== false));
 
@@ -130,14 +207,21 @@ function model(c) {
         wasPrimary: down && (r.last_role === "primary" || !!r.takes_writes),
         downSince: r.down_since_ms || null, lastSeen: r.last_seen_ms || null, error: r.error || null,
         term: r.term ?? d.health?.replication?.term ?? null, txn: r.txn ?? null,
-        docs: r.docs ?? null, rtt: r.rtt_ms ?? null,
+        // Rows of every table (NEW-cluster-admin-1); docs counts the first only.
+        docs: d.health?.rows ?? r.docs ?? null, rtt: r.rtt_ms ?? null,
         avoided: !!r.avoided, avoidedWhy: r.avoided_why || null,
         version: r.version?.version || d.system?.version || null, image: r.version?.image || null, digest: r.version?.digest || null,
         cores, cpu,
         disk: down ? null : l.disk_used_ratio ?? mn?.disk_used_ratio ?? null,
         diskFree: l.disk_free_bytes ?? null,
-        p99: down ? null : mn?.p99_ms ?? l.p99_ms ?? null,
+        // A copy that refuses every read (a primary without a majority) has
+        // no p99 worth showing: its last searches were refusals (S2-5).
+        noReads: !down && d.capability?.serves_reads === false,
+        p99: down || d.capability?.serves_reads === false ? null : mn?.p99_ms ?? l.p99_ms ?? null,
         qps: down ? null : mn?.qps ?? l.qps ?? null,
+        // The share of its searches that failed over its last 2 s, when it
+        // served one a second at least (NEW-shell-monitor-6).
+        err: down || !(l.qps >= 1) ? null : (l.errors_s || 0) / l.qps,
         window: mn ? "last minute" : "last 2 s",
         lag: primary ? 0 : down || !p ? null : f ? (f.in_sync && !f.copying ? 0 : f.behind ?? null) : null,
         inSync: primary ? true : f ? !!f.in_sync && !f.copying : null,
@@ -149,6 +233,12 @@ function model(c) {
       };
     });
     const n = copies.length, up = copies.filter((x) => !x.down).length;
+    // A primary without a majority says "read from another copy" (the
+    // shard's own words): wrong when no other copy answers (NEW-scenarios-19).
+    for (const c of copies) {
+      if (!c.avoidedWhy || !/fewer than a majority/.test(c.avoidedWhy) || copies.some((x) => x !== c && !x.down)) continue;
+      c.avoidedWhy = c.avoidedWhy.replace(/: the others may have elected another primary, so it serves no reads; read from another copy\.?$/, ", so it serves no reads; no other copy answers").replace(/^(\d+) of this primary's/, "$1 of the primary's");
+    }
     const majority = sh.majority ?? up > n / 2;
     const failover = sh.failover ?? null;
     let st = sh.state || (up === 0 ? "down" : !majority ? "no_writes" : up < n ? "degraded" : "ok");
@@ -209,11 +299,13 @@ function commonPrefix(keys) {
 // ---------------------------------------------------------------- lenses
 /** The p99 the cluster promises, from the fleet's checks, else 250 ms. */
 const slo = () => state.fleet?.checks?.find?.((x) => x.id === "p99")?.slo_ms ?? state.cluster?.cluster?.slo_p99_ms ?? 250;
+const sloErr = () => state.fleet?.checks?.find?.((x) => x.id === "error_ratio")?.slo ?? 0.01;
 const LENSES = {
   health: { label: "Health", title: "Copies answering, and whatever is wrong with the shard: red when it serves no reads or takes no writes, amber when a copy is down, behind, avoided or full" },
   cpu: { label: "CPU", title: "The busiest copy's CPU as a share of its cores, over its last minute", copy: (c) => c.cpu, fmt: pct0, warn: () => 0.7, bad: () => 0.85 },
   disk: { label: "Disk", title: "How full the fullest copy's volume is", copy: (c) => c.disk, fmt: pct0, warn: () => 0.8, bad: () => 0.9 },
-  p99: { label: "p99", title: "The slowest copy's 99th percentile of searches, over its last minute, against the SLO", copy: (c) => c.p99, fmt: (v) => fmt.ms(v), warn: () => slo() * 0.6, bad: () => slo() },
+  p99: { label: "p99", title: "The slowest copy's 99th percentile of searches, over its last minute, against the SLO", copy: (c) => c.p99, fmt: (v) => fmt.ms(v), tile: (v) => (v >= 100 ? fmt.n(v, 0) : v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1) : v.toFixed(2)), unit: "ms", warn: () => slo() * 0.6, bad: () => slo() },
+  errors: { label: "Errors", title: "The share of searches the copy with the most failures failed, over its last 2 s, against the SLO", copy: (c) => c.err, fmt: (v) => fmt.pct(v, v > 0 && v < 0.01 ? 2 : v < 0.1 ? 1 : 0), tile: (v) => fmt.pct(v, v > 0 && v < 0.01 ? 2 : v < 0.1 ? 1 : 0), warn: () => sloErr() / 4, bad: () => sloErr() },
   version: { label: "Version", title: "The version each copy runs; the one most copies run is neutral" },
   lag: { label: "Lag", title: "Transactions a replica has still to apply from its primary", copy: (c) => (c.primary ? null : c.lag), fmt: (v) => kn(v), warn: () => LAG_WARN, bad: () => LAG_BAD },
 };
@@ -246,15 +338,35 @@ function issues(sh) {
     if (c.disk != null && c.disk >= 0.85) out.push({ sev: 1, short: `disk ${pct0(c.disk)}`, long: `${cname(c)}'s volume is ${pct0(c.disk)} full` });
     if (c.avoided) out.push({ sev: 1, short: "avoided", long: `the coordinator sends ${cname(c)} no searches${c.avoidedWhy ? ": " + c.avoidedWhy : " after failures"}` });
   }
+  const failing = sh.copies.filter((c) => c.err != null && c.err > sloErr()).sort((a, b) => b.err - a.err)[0];
+  if (failing) out.push({ sev: 2, short: `errors ${LENSES.errors.fmt(failing.err)}`, long: `${cname(failing)} failed ${LENSES.errors.fmt(failing.err)} of its searches over its last 2 s, over the SLO of ${fmt.pct(sloErr(), 1)}` });
   const cpu = shardValue("cpu", sh), p99 = shardValue("p99", sh);
   if (p99 != null && p99 >= slo()) out.push({ sev: 1, short: `p99 ${fmt.ms(p99)}`, long: `its slowest copy's p99 is ${fmt.ms(p99)}, over the SLO of ${fmt.ms(slo())}` });
   if (cpu != null && cpu >= 0.85) out.push({ sev: 1, short: `CPU ${pct0(cpu)}`, long: `its busiest copy uses ${pct0(cpu)} of its cores` });
-  for (const c of sh.copies) for (const a of c.alerts?.firing || []) out.push({ sev: a.severity === "critical" ? 2 : 1, short: "alert", long: `${a.name || a.id} fires on ${cname(c)}` });
+  for (const a of firingNow()) {
+    const on = sh.copies.filter((c) => alertOn(a, c));
+    if (on.length) out.push({ sev: a.severity === "critical" ? 2 : 1, short: "alert", long: `${a.name || a.id} fires on ${on.map(cname).join(", ")}` });
+  }
   return out.sort((a, b) => b.sev - a.sev);
 }
+/** Whether firing rule `a` fires on copy `c`: its where lists {copy, short} or names. */
+const alertOn = (a, c) => (a.where || []).some((w) => (w && typeof w === "object" ? w.copy === c.url || (!w.copy && w.short === c.id) : w === c.id || w === cname(c) || w === c.url || (c.name && w === c.name)));
 const healthLevel = (sh) => Math.max(0, ...issues(sh).map((x) => x.sev));
 
 /** Problems across the cluster, for the strip on top: worst first. */
+/** The hot shards named, by reason: a shard comes and goes only on two polls in a row. */
+const HOT = { at: null, cpu: null, p99: null, c: { shard: null, hits: 0, miss: 0, on: false }, p: { shard: null, hits: 0, miss: 0, on: false } };
+function steady(st, cand) {
+  if (st.on) {
+    if (cand === st.shard) { st.miss = 0; return st.shard; }
+    if (++st.miss < 2) return st.shard;
+    Object.assign(st, { on: false, shard: cand, hits: cand == null ? 0 : 1, miss: 0 });
+    return null;
+  }
+  if (cand != null && cand === st.shard) { if (++st.hits >= 2) { st.on = true; st.miss = 0; return cand; } return null; }
+  Object.assign(st, { shard: cand, hits: cand == null ? 0 : 1, miss: 0 });
+  return null;
+}
 function problems(M) {
   const out = [];
   const crit = M.shards.filter((sh) => CRIT.has(sh.state));
@@ -269,6 +381,9 @@ function problems(M) {
       fix: left.length ? { kind: "repair", shard: sh.i } : null,
     });
   }
+  // Searches failing on a copy: Home's first critical problem (NEW-shell-monitor-6).
+  const failing = M.all.filter((c) => c.err != null && c.err > sloErr()).sort((a, b) => b.err - a.err);
+  if (failing.length) out.push({ sev: 2, shards: [...new Set(failing.map((c) => c.shard))], label: `Searches failing on ${failing.length === 1 ? cname(failing[0]) : plural(failing.length, "copy", "copies")}`, text: `${cname(failing[0])}: ${LENSES.errors.fmt(failing[0].err)} of its searches over its last 2 s${failing.length > 1 ? ` and ${failing.length - 1} more over ${fmt.pct(sloErr(), 1)}` : ""}`, impact: "searches that need these copies fail or retry on another copy", next: "Look at its logs" });
   const down = M.all.filter((c) => c.down && !crit.some((sh) => sh.i === c.shard));
   if (down.length) {
     const c0 = down.slice().sort((a, b) => (a.downSince || Infinity) - (b.downSince || Infinity))[0];
@@ -284,19 +399,38 @@ function problems(M) {
   if (lag.length) out.push({ sev: 1, shards: lag.map((c) => c.shard), label: `${lag.length === 1 ? "1 replica" : lag.length + " replicas"} behind`, text: `${cname(lag[0])} · ${kn(lag[0].lag)} transactions${lag.length > 1 ? ` and ${lag.length - 1} more` : ""}`, impact: "its reads are older, and writes that wait for every copy wait for it", next: "Look at its disk and CPU, or its logs" });
   const fleetDisk = state.fleet?.checks?.find?.((x) => x.id === "disk");
   const full = M.all.filter((c) => c.disk != null && c.disk >= 0.85).sort((a, b) => b.disk - a.disk);
-  if (full.length) out.push({ sev: 1, shards: [...new Set(full.map((c) => c.shard))], label: `Disk ${pct0(full[0].disk)}`, text: `${cname(full[0])}${fleetDisk?.days_to_full != null ? ` · full in ${fullIn(fleetDisk.days_to_full)}` : ""}${full.length > 1 ? ` and ${full.length - 1} more over 85%` : ""}`, impact: "a database that cannot write refuses writes", next: "Add shards so each holds less, or grow the volumes" });
-  const hot = M.shards.filter((sh) => {
-    const cpu = shardValue("cpu", sh), p = shardValue("p99", sh);
-    return (p != null && p >= slo()) || (cpu != null && cpu >= 0.8 && M.medCpu != null && cpu >= 1.5 * M.medCpu);
-  }).sort((a, b) => (shardValue("cpu", b) || 0) - (shardValue("cpu", a) || 0));
-  for (const sh of hot.slice(0, 2)) {
-    const cpu = shardValue("cpu", sh), p = shardValue("p99", sh);
-    out.push({ sev: 1, shards: [sh.i], label: `Hot shard ${sh.i}`, text: [cpu != null ? `CPU ${pct0(cpu)}` : null, p != null ? `p99 ${fmt.ms(p)}` : null, sh.slots.length ? `slots ${runsText(sh.slots)}` : null].filter(Boolean).join(" · "), impact: "a search waits for the slowest shard it asks", next: "Move some of its slots to a quieter shard (Draft: drag it onto another)", fix: { kind: "slots", shard: sh.i } });
+  if (full.length) out.push({ sev: 1, shards: [...new Set(full.map((c) => c.shard))], label: `Disk ${pct0(full[0].disk)}`, text: `${cname(full[0])}${full.length > 1 ? ` and ${full.length - 1} more over 85%` : ""}${fleetDisk?.days_to_full != null ? ` · the fullest fills in about ${fmt.fills(fleetDisk.days_to_full)}` : ""}`, impact: "a database that cannot write refuses writes", next: "Add shards so each holds less, or grow the volumes" });
+  // A hot shard stands out from the others by its own load, and one shard
+  // is named for each reason (NEW-cluster-admin-12): the busiest CPU, and
+  // a p99 over the SLO that its own CPU explains. Slow everywhere is not
+  // one shard's slots.
+  if (M.shards.length > 1) {
+    const cpuOf = (sh) => shardValue("cpu", sh), p99Of = (sh) => shardValue("p99", sh);
+    const busy = M.shards.filter((sh) => { const c = cpuOf(sh); return c != null && c >= 0.8 && M.medCpu != null && c >= 1.5 * M.medCpu; }).sort((a, b) => cpuOf(b) - cpuOf(a))[0];
+    const slow = M.shards.filter((sh) => { const p = p99Of(sh), c = cpuOf(sh); return sh !== busy && p != null && p >= slo() && M.medP99 != null && p >= 2 * M.medP99 && c != null && c >= 0.2 && (M.medCpu == null || c > M.medCpu); }).sort((a, b) => p99Of(b) - p99Of(a))[0];
+    // Named once hot on two polls in a row, kept until not on two (FL-4).
+    if (HOT.at !== state.cluster) { HOT.at = state.cluster; HOT.cpu = steady(HOT.c, busy?.i ?? null); HOT.p99 = steady(HOT.p, slow?.i ?? null); }
+    const held = (i) => (i == null ? null : M.shards.find((sh) => sh.i === i) || null);
+    for (const [sh, why] of [[held(HOT.cpu), "cpu"], [held(HOT.p99), "p99"]]) {
+      if (!sh) continue;
+      const cpu = cpuOf(sh), p = p99Of(sh);
+      const text = why === "cpu" ? [`CPU ${pct0(cpu)} on its busiest copy, the median shard ${pct0(M.medCpu)}`, p != null ? `p99 ${fmt.ms(p)} on its slowest` : null, "each copy's last minute"] : [`p99 ${fmt.ms(p)} on its slowest copy, the median shard ${fmt.ms(M.medP99)}`, `CPU ${pct0(cpu)} on its busiest`, "each copy's last minute"];
+      out.push({ sev: 1, shards: [sh.i], label: `Hot shard ${sh.i}`, text: [...text, sh.slots.length ? `slots ${runsText(sh.slots)}` : null].filter(Boolean).join(" · "), impact: "a search waits for the slowest shard it asks", next: "Move some of its slots to a quieter shard (Draft: drag it onto another)", fix: { kind: "slots", shard: sh.i } });
+    }
   }
-  const avoided = M.all.filter((c) => c.avoided && !c.down);
+  // A primary avoided for want of a majority is its shard serving no
+  // reads, said above already (NEW-scenarios-19).
+  const lease = (c) => /fewer than a majority/.test(c.avoidedWhy || "") && M.shards.some((sh) => sh.i === c.shard && !sh.majority);
+  const avoided = M.all.filter((c) => c.avoided && !c.down && !lease(c));
   if (avoided.length) out.push({ sev: 1, shards: avoided.map((c) => c.shard), label: `${avoided.length === 1 ? "1 copy" : avoided.length + " copies"} avoided`, text: `${cname(avoided[0])}${avoided[0].avoidedWhy ? ": " + avoided[0].avoidedWhy : " after failures"}`, impact: "the coordinators ask the other copies first", next: "Look at its logs" });
-  const firing = M.all.flatMap((c) => (c.alerts?.firing || []).map((a) => ({ c, a })));
-  if (firing.length) out.push({ sev: firing.some((x) => x.a.severity === "critical") ? 2 : 1, shards: [...new Set(firing.map((x) => x.c.shard))], label: `${plural(firing.length, "alert")} firing on copies`, text: `${firing[0].a.name || firing[0].a.id} on ${cname(firing[0].c)}`, link: "#/alerts" });
+  // Rules firing and not silenced, counted once each as the bell and Home
+  // count them, with the copies they fire on (NEW-shell-monitor-3).
+  const firing = firingNow();
+  if (firing.length) {
+    const on = (a) => M.all.filter((c) => alertOn(a, c));
+    const first = firing.find((a) => a.severity === "critical") || firing[0], where = on(first);
+    out.push({ sev: firing.some((a) => a.severity === "critical") ? 2 : 1, shards: [...new Set(firing.flatMap((a) => on(a).map((c) => c.shard)))], label: `${plural(firing.length, "alert")} firing`, text: `${first.name || first.id}${where.length ? ` on ${where.length === 1 ? cname(where[0]) : plural(where.length, "copy", "copies")}` : ""}${firing.length > 1 ? ` and ${plural(firing.length - 1, "more rule")}` : ""}`, link: "#/alerts" });
+  }
   const two = M.shards.filter((sh) => sh.n === 2);
   if (two.length) out.push({ sev: 0, shards: two.map((sh) => sh.i), label: `${plural(two.length, "shard")} of 2 copies`, text: "with failover on, losing either copy stops its reads and writes", next: "Give each a third copy" });
   const copying = M.all.filter((c) => c.copying);
@@ -329,6 +463,9 @@ function whatIf(M, failed) {
 function movesInfo(m) {
   const job = m?.job || null;
   const moving = m?.moving || null;
+  // A job another coordinator runs now: shown here, stopped there.
+  const other = (m?.elsewhere || []).find((x) => x.job);
+  if (other && !(job && (job.state ? job.state === "running" : job.finished_ms == null && job.finished_us == null))) return { ...movesInfo({ job: other.job, moving }), elsewhere: { name: other.coordinator, url: other.url } };
   if (!job) return { running: !!moving, moving, job: null };
   const started = job.started_ms ?? (job.started_us ? job.started_us / 1000 : null);
   const finished = job.finished_ms ?? (job.finished_us ? job.finished_us / 1000 : null);
@@ -343,6 +480,19 @@ function movesInfo(m) {
   // An older job says no state: it runs until it says when it finished.
   const running = job.state ? job.state === "running" : finished == null;
   return { running, moving, job, started, finished, rowsDone, rowsTotal, rate, eta, by: job.started_by || null, heldMs: held.length ? held.reduce((a, b) => a + b, 0) / held.length : null };
+}
+/**
+ * How far a job of moves is, 0 to 1: by its rows, but never past the end of
+ * the move under way, so the bar is not full while moves are left (CL-6).
+ */
+function jobFrac(mi) {
+  const j = mi?.job;
+  if (!j) return 0;
+  const byMoves = j.of ? j.done / j.of : 0;
+  if (!mi.running) return j.state === "done" ? 1 : byMoves;
+  const upTo = j.of ? Math.min(1, (j.done + 0.95) / j.of) : 0.95;
+  const byRows = mi.rowsTotal ? mi.rowsDone / mi.rowsTotal : 0;
+  return Math.max(byMoves, Math.min(byRows, upTo));
 }
 /** The rows a second the last move ran at, kept in this browser. */
 function measuredRate(mi) {
@@ -375,6 +525,8 @@ function render(page, r) {
   let pop = null; // the open popover {el, shard}
   let dragging = null;
   let serverPlan = null, serverPlanFor = null, kubePlan = null, kubePlanFor = null, kubePlanErr = null;
+  // The coordinator's estimate of the autoscaler's suggestion (NEW-cluster-admin-7).
+  let sgEst = null, sgEstFor = null;
   let events = null, eventsErr = null, audit = null, auditErr = null, changeKind = "all";
   let alive = true;
   const managed = () => !!kube?.managed;
@@ -464,14 +616,31 @@ function render(page, r) {
     chips.push(h("span", { class: "cc-chip plain", role: "listitem", title: "Copies that answer the coordinator now" }, h("span", { class: "dot " + (serving === M.all.length ? "ok" : "warn") }), `${fmt.n(serving)} of ${plural(M.all.length, "copy", "copies")} serving`));
     if (ps.length > SHOW) chips.push(h("button", { class: "cc-chip plain more", title: ps.slice(SHOW).map((p) => p.label).join("; "), onclick: () => { sel = null; mode = "live"; tab = "map"; writeParams(); drawAll(); side.scrollTop = 0; } }, `${ps.length - SHOW} more in What needs attention`));
     chips.push(changeChip());
+    // A link to a past window shows the cluster now: said so (NEW-shell-monitor-7).
+    if (isPast()) chips.unshift(h("span", { class: "cc-chip plain cc2-now", role: "listitem", title: "The window picked is past: the strip and the map are the cluster now" }, h("b", {}, "Now:")));
     clear(stripBox, chips);
+    markStale();
+  }
+  /** Grey the strip with the map while the coordinator does not answer (NEW-shell-monitor-15). */
+  function markStale() {
+    const stale = !!M && fresh("cluster").ok === false;
+    mapCard.classList.toggle("stale", stale);
+    stripBox.classList.toggle("cc2-stale", stale);
+    stripBox.title = stale ? `The coordinator does not answer: ${staleText("cluster")}` : "";
+    return stale;
   }
   function changeChip() {
     const mi = moves && !moves.error ? moves : null;
-    if (runner && !runner.done) return h("button", { class: "cc-chip info", onclick: () => { tab = "map"; drawAll(); } }, h("span", { class: "spin" }), h("b", {}, "Applying a plan"), h("span", { class: "dim" }, `step ${Math.min(runner.at + 1, runner.steps.length)} of ${runner.steps.length}`));
-    if (mi?.running) return h("span", { class: "cc-chip info" }, h("span", { class: "spin" }), h("b", {}, "Slots moving"), h("span", { class: "dim" }, [mi.job ? `${fmt.n(mi.job.done)} of ${fmt.n(mi.job.of)} moves` : "a move under way", mi.eta != null ? `about ${dur(mi.eta)} left` : null, mi.by ? `by ${mi.by}` : null].filter(Boolean).join(" · ")));
+    const pr = planRun;
+    if (pr?.state === "running") return h("button", { class: "cc-chip info", onclick: () => { tab = "map"; sel = null; mode = "live"; writeParams(); drawAll(); } }, h("span", { class: "spin" }), h("b", {}, "Applying a plan"), h("span", { class: "dim" }, [`step ${Math.min(pr.at + 1, pr.of)} of ${pr.of}`, pr.eta_s != null ? `about ${dur(pr.eta_s)} left` : null, pr.by ? `by ${pr.by}` : null, pr.elsewhere ? `on ${pr.elsewhere.name}` : null].filter(Boolean).join(" · ")));
+    if (pr && ["interrupted", "failed"].includes(pr.state)) return h("button", { class: "cc-chip warn", onclick: () => { tab = "map"; sel = null; mode = "live"; writeParams(); drawAll(); } }, h("span", { class: "dot warn" }), h("b", {}, pr.state === "interrupted" ? "A plan stopped at a restart" : "A plan stopped"), h("span", { class: "dim" }, `at step ${pr.at + 1} of ${pr.of}`));
+    if (mi?.running) return h("span", { class: "cc-chip info" }, h("span", { class: "spin" }), h("b", {}, "Slots moving"), h("span", { class: "dim" }, [mi.job ? `${fmt.n(mi.job.done)} of ${fmt.n(mi.job.of)} moves` : "a move under way", mi.eta != null ? `about ${dur(mi.eta)} left` : null, mi.by ? `by ${mi.by}` : null, mi.elsewhere ? `on ${mi.elsewhere.name}` : null].filter(Boolean).join(" · ")));
     const ro = rollout();
     if (ro) return h("a", { class: "cc-chip info", href: "#/rollout" }, h("span", { class: "spin" }), h("b", {}, cap(ro.split(":")[0])), h("span", { class: "dim" }, ro.split(": ")[1] || ""));
+    // The last change: the plan applied last, or the job of moves that ended
+    // last, whichever is newer (a plan's moves are the plan's).
+    const planEnd = pr?.finished_ms || 0, jobEnd = mi?.finished || 0;
+    if (pr && pr.state !== "running" && planEnd >= jobEnd) return h("span", { class: "cc-chip plain", title: pr.reason ? "Reason: " + pr.reason : "" }, `No change running · last: a plan of ${plural(pr.of, "step")}, ${pr.state === "done" ? "applied" : pr.state}${planEnd ? " " + clock(planEnd) : ""}${pr.by ? " by " + pr.by : ""}`);
     if (mi?.job) return h("span", { class: "cc-chip plain", title: mi.job.error || "" }, `No change running · last: ${jobWords(mi.job)} ${mi.job.state}${mi.finished ? " " + clock(mi.finished) : ""}`);
     return h("span", { class: "cc-chip plain" }, "No change running");
   }
@@ -479,6 +648,15 @@ function render(page, r) {
 
   // ------------------------------------------------------------ layout
   const left = h("div", { class: "cc-left" }), side = h("aside", { class: "cc-side", "aria-label": "Details" });
+  // A press on the panel (or a phone's sheet) holds its redraw until the
+  // click lands (CL-9): a poll between pointerdown and click would put a new
+  // button under the pointer and the click would be lost.
+  let pressUntil = 0;
+  const pressed = () => Date.now() < pressUntil;
+  const press = (e) => { if (e.target.closest?.(".cc-side, .cc-sheet, .cc-bsheet")) pressUntil = Date.now() + 1500; };
+  const release = () => { if (pressUntil) setTimeout(() => { pressUntil = 0; }, 50); };
+  document.addEventListener("pointerdown", press, true);
+  document.addEventListener("click", release, true);
   const mapCard = h("section", { class: "card cc-map" });
   const toolbar = h("div", { class: "cc-toolbar" });
   const legendBox = h("div", { class: "cc-legend" });
@@ -543,8 +721,8 @@ function render(page, r) {
     if (lens === "health") scale = [sw("l1", "a copy down, behind, avoided, full or slow"), sw("l2", "no reads or no writes")];
     else if (lens === "version") scale = (M?.versions || []).slice(0, 5).map(([v, n], k) => sw(k ? "v" + Math.min(k, 4) : "l0", `${v} · ${fmt.n(n)}`));
     else scale = [sw("l0", `under ${L.fmt(L.warn())}`), sw("l1", `${L.fmt(L.warn())}+`), sw("l2", `${L.fmt(L.bad())}+${lens === "p99" ? " (the SLO)" : ""}`)];
-    const what = { health: "Copies answering, when one is missing", version: "The version the copies run", cpu: "CPU of the busiest copy, last minute", disk: "Disk used on the fullest copy", p99: "p99 of the slowest copy, last minute", lag: "Transactions the furthest replica is behind" }[lens];
-    return [h("b", { class: "dim", style: { fontWeight: 500 } }, what), ...scale, h("span", { class: "row nw", style: { gap: "8px" } }, pip("p", "primary"), pip("", "replica"), pip("down", "down"),
+    const what = { health: "Copies answering, when one is missing", version: "The version the copies run", cpu: "CPU of the busiest copy, last minute", disk: "Disk used on the fullest copy", p99: "p99 of the slowest copy, last minute, in ms", errors: "Searches failed by the copy that fails most, last 2 s", lag: "Transactions the furthest replica is behind" }[lens];
+    return [h("b", { class: "dim", style: { fontWeight: 500 } }, isPast() ? `Now: ${what[0].toLowerCase()}${what.slice(1)}` : what), ...scale, h("span", { class: "row nw", style: { gap: "8px" } }, pip("p", "primary"), pip("", "replica"), pip("down", "down"),
       mode === "draft" ? [pip("new", "in the plan"), pip("going", "goes")] : null),
       lens !== "health" ? h("span", { title: "Whatever is wrong with a shard outlines its tile under every lens" }, "outline: health") : null,
       h("span", { class: "grow" }), pfChip];
@@ -565,9 +743,8 @@ function render(page, r) {
   let gridEl = null;
   function drawMap() {
     // Grey the map when the coordinator stopped answering, and say how old it is.
-    const fr = fresh("cluster");
-    mapCard.classList.toggle("stale", !!M && fr.ok === false);
-    clear(legendBox, legend(), M && fr.ok === false ? h("span", { class: "stale-age" }, staleText("cluster")) : null);
+    const stale = markStale();
+    clear(legendBox, legend(), stale ? h("span", { class: "stale-age" }, staleText("cluster")) : null);
     if (!M) { clear(canvas, empty("layers", "Asking the shards", "")); clear(attention); return; }
     const hits = filter ? new Set(matches()) : null;
     const fate = failed.size ? fateMap() : null;
@@ -615,7 +792,7 @@ function render(page, r) {
     if (lens === "health") return sh.up < sh.n ? `${sh.up}/${sh.n}` : "";
     if (lens === "version") { const vs = [...new Set(sh.copies.map((c) => c.version).filter(Boolean))]; return vs.length === 1 ? vs[0] : vs.length ? "mixed" : "–"; }
     const v = shardValue(lens, sh);
-    return v == null ? "–" : LENSES[lens].fmt(v);
+    return v == null ? "–" : (LENSES[lens].tile || LENSES[lens].fmt)(v);
   }
   function tileClass(sh, hits, fate) {
     const L = LENSES[lens];
@@ -918,6 +1095,32 @@ function render(page, r) {
   }
 
   // ------------------------------------------------------------ one shard
+  // Each copy's last hour, a point a minute from its own log store (FL-6):
+  // asked when a shard opens, kept a minute.
+  let hist = null, histAt = 0, histAsk = null;
+  function loadHist(after) {
+    if (histAsk || Date.now() - histAt < 60e3) return;
+    histAsk = api("/v1/load?copies=all").then((j) => { hist = j; }, (e) => { hist = { error: plainError(e) }; })
+      .finally(() => { histAt = Date.now(); histAsk = null; after(); });
+  }
+  function histBlock(sh) {
+    loadHist(() => { if (alive && sel === sh.i && mode === "live" && !pressed()) drawSide(); });
+    const head = h("div", { class: "cc-sec" }, "Each copy, last hour");
+    if (!hist) return h("div", {}, head, h("div", { class: "small dim" }, "Asking each copy for its minutes…"));
+    if (hist.error) return h("div", {}, head, h("div", { class: "small dim" }, `Not known: ${hist.error}`));
+    const all = sh.copies.map((c) => ({ c, pts: ((hist.copies || []).find((x) => x.url === c.url)?.points || []).filter((p) => p.p99_ms != null) }));
+    const max = Math.max(1, ...all.flatMap((x) => x.pts.map((p) => p.p99_ms)));
+    const W = 120, H = 24;
+    const spark = (pts) => {
+      const t0 = pts[0].t, t1 = pts[pts.length - 1].t, x = (t) => ((t - t0) / Math.max(1, t1 - t0)) * W, y = (v) => H - 2 - (v / max) * (H - 4);
+      return s("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: "cc2-spark", "aria-hidden": "true" }, s("polyline", { points: pts.map((p) => `${x(p.t).toFixed(1)},${y(p.p99_ms).toFixed(1)}`).join(" ") }));
+    };
+    const rows = all.map(({ c, pts }) => h("div", { class: "cc2-hist-row" }, cspan(c),
+      pts.length > 1 ? spark(pts) : h("span", { class: "small dim" }, (hist.missing || []).some((x) => x.url === c.url) ? "did not answer" : "no minutes kept"),
+      pts.length ? h("span", { class: "small muted" }, `p99 ${fmt.ms(pts[pts.length - 1].p99_ms)} now, ${fmt.ms(Math.max(...pts.map((p) => p.p99_ms)))} at most`) : null));
+    return h("div", {}, head, h("div", { class: "cc2-hist" }, rows),
+      h("div", { class: "small dim cc2-hist-note" }, "Each copy's p99 a minute, one scale for the shard, from its own log store · ", h("a", { href: link("performance") }, "every copy in Performance")));
+  }
   function shardCard(sh) {
     const is = issues(sh);
     const sev = is[0]?.sev || 0;
@@ -936,10 +1139,10 @@ function render(page, r) {
         h("button", { class: "btn ghost icon sm", title: "Close", "aria-label": "Close the shard", onclick: () => select(null) }, icon("x")))),
       h("div", { class: "bd stack", style: { gap: "12px" } },
         h("div", { class: "small muted" }, [`slots ${runsText(sh.slots) || "none"} (${fmt.n(sh.held)})`, `${fmt.si(sh.rows)} rows`, ver.length ? ver.join(", ") : null].filter(Boolean).join(" · ")),
-        why && sev ? h("div", { class: "cc-why " + (sev === 2 ? "crit" : "warn") }, why,
-          CRIT.has(sh.state) && rowsDown.length && sh.up ? h("div", { style: { marginTop: "6px" } }, `To restore it: bring ${rowsDown.length === 1 ? cname(rowsDown[0]) : "either " + rowsDown.map(cname).join(" or ")} back, or remove ${rowsDown.length === 1 ? "it" : "both"} so ${sh.copies.filter((c) => !c.down).map(cname).join(" and ")} ${sh.up === 1 ? "serves alone (1 of 1 is a majority)" : "serve as a majority"}, then add new copies.`) : null) : null,
+        CRIT.has(sh.state) ? critBox(sh, is) : why && sev ? h("div", { class: "cc-why " + (sev === 2 ? "crit" : "warn") }, why) : null,
         shardDiagram(sh),
         copyTable(sh),
+        histBlock(sh),
         h("div", {}, h("div", { class: "cc-sec" }, "Look"),
           h("div", { class: "row", style: { gap: "6px" } },
             h("a", { class: "btn sm", href: typeof core.logsLink === "function" ? core.logsLink({ shard: sh.i }) : link("logs", { node: sh.primary?.url || sh.copies[0]?.url, q: `shard ${sh.i}` }) }, icon("logs"), "Its logs"),
@@ -951,6 +1154,29 @@ function render(page, r) {
             managed() ? h("span", { class: "small dim" }, "On Kubernetes the operator keeps each shard's copies: a copy that dies is started again. Change copies per shard or shards in Draft.") : [
               rowsDown.length ? h("button", { class: "btn sm", onclick: () => planFix({ kind: CRIT.has(sh.state) ? "repair" : "replace", shard: sh.i, shards: [sh.i] }) }, icon("wrench"), CRIT.has(sh.state) ? "Plan the repair…" : `Replace ${rowsDown.map(cname).join(", ")}…`) : null,
               h("button", { class: "btn sm", onclick: () => { mode = "draft"; writeParams(); drawAll(); openPop(sh.i, tileEls.get(sh.i)); } }, icon("sliders"), "Plan a change…")]))));
+  }
+
+  /**
+   * Why a shard serves no reads or takes no writes, in order: the cause in
+   * one sentence, then how to restore it, then whatever else is wrong (a
+   * disk, an alert) as rows of their own (finding NEW-scenarios-19).
+   */
+  function critBox(sh, is) {
+    const down = sh.copies.filter((c) => c.down), left = sh.copies.filter((c) => !c.down);
+    const lead = forceTarget(sh);
+    const wasP = down.find((c) => c.wasPrimary);
+    const cause = sh.state === "down" ? `None of its ${copies_(sh.n)} answers: searches that need shard ${sh.i} fail, and it takes no writes.`
+      : `${sh.up} of ${sh.n} copies ${sh.up === 1 ? "answers" : "answer"}, no majority: shard ${sh.i} ${noReads(sh) ? "serves no reads and takes no writes" : "takes no writes"}${wasP && !sh.primary ? `, and ${cname(wasP)}, its primary, is down` : ""}.`;
+    const them = down.length === 1 ? cname(down[0]) : "either " + down.map(cname).join(" or ");
+    const restore = !left.length ? `To restore it: bring ${them} back.`
+      : lead ? `To restore it: bring ${them} back; or force ${cname(lead)} to be the primary, remove ${down.length === 1 ? cname(down[0]) : "the copies down"} so ${cname(lead)} ${left.length === 1 ? "serves alone (1 of 1 is a majority)" : "has a majority"}, then add new copies. Plan the repair does these in order.`
+      : `To restore it: bring ${them} back, or remove ${down.length === 1 ? "it" : "them"} so ${left.map(cname).join(" and ")} ${left.length === 1 ? "serves alone (1 of 1 is a majority)" : "serve as a majority"}, then add new copies.`;
+    // The rest, without what the cause says already: the primary avoided
+    // for want of a majority is the shard serving no reads.
+    const rest = is.filter((x) => x.sev < 2 || !/^(down|no reads|no writes|no majority)$/.test(x.short)).filter((x) => !/^\d+ down$/.test(x.short))
+      .filter((x) => !(x.short === "avoided" && /fewer than a majority/.test(x.long || "")));
+    return h("div", { class: "cc-why crit" }, h("div", {}, cause), h("div", { style: { marginTop: "6px" } }, restore),
+      rest.length ? h("div", { class: "cc2-why-also" }, h("div", { class: "small" }, "Also:"), h("ul", { class: "cc2-why-rest" }, rest.map((x) => h("li", { class: x.sev === 2 ? "crit" : "warn" }, cap(String(x.long || x.short).replace(/\.$/, "")) + ".")))) : null);
   }
 
   /** The shard as Topology drew it, for one shard: coordinators, the shard, its copies, replication. */
@@ -976,7 +1202,7 @@ function render(page, r) {
       const lines = [
         c.down ? (c.downSince ? `down ${dur((Date.now() - c.downSince) / 1000)}` : "down") : c.primary ? "primary" : c.copying ? "being copied" : c.lag ? `${kn(c.lag)} behind` : "in sync",
         [c.node ? nodeLabel(c.node) : null, c.zone ? "zone " + c.zone : null].filter(Boolean).join(" · ") || short(c.url),
-        c.down ? (c.wasPrimary ? "was the primary" : c.error || "no answer") : `p99 ${fmt.ms(c.p99)} · CPU ${pct0(c.cpu)}`,
+        c.down ? (c.wasPrimary ? "was the primary" : c.error || "no answer") : c.noReads ? `serves no reads · CPU ${pct0(c.cpu)}` : `p99 ${fmt.ms(c.p99)} · CPU ${pct0(c.cpu)}`,
       ];
       g.append(s("rect", { width: bw, height: bh, rx: 8, class: cls }),
         s("text", { x: 8, y: 15, class: "cc-dt b" }, cname(c)),
@@ -994,7 +1220,19 @@ function render(page, r) {
     return h("div", { class: "cc-dia-box" }, svgEl, h("div", { class: "small muted" }, "searches reach one copy of each shard; the primary ships each write to its replicas (the arcs)"));
   }
 
+  // The copy table of the shard shown, kept between polls (CL-9): a row
+  // whose cells did not change stays the same element, so a click lands.
+  let copyKeep = null;
   function copyTable(sh) {
+    const fresh = buildCopyTable(sh);
+    const old = copyKeep?.i === sh.i ? copyKeep.wrap : null;
+    if (!old || old.querySelector("thead")?.outerHTML !== fresh.querySelector("thead").outerHTML) { copyKeep = { i: sh.i, wrap: fresh }; return fresh; }
+    const ob = old.querySelector("tbody"), os = [...ob.children], ns = [...fresh.querySelector("tbody").children];
+    ns.forEach((n, k) => { const o = os[k]; if (!o) ob.append(n); else if (o.outerHTML !== n.outerHTML) o.replaceWith(n); });
+    os.slice(ns.length).forEach((o) => o.remove());
+    return old;
+  }
+  function buildCopyTable(sh) {
     const rows = sh.copies.slice().sort((a, b) => (b.primary - a.primary) || (a.down - b.down) || a.k - b.k);
     // The last column follows the lens (CPU under the CPU lens), p99 otherwise.
     const col = LENSES[lens].copy && lens !== "lag" ? lens : "p99";
@@ -1008,7 +1246,7 @@ function render(page, r) {
           h("td", {}, c.down ? h("span", { class: "cc-bad" }, "down") : c.primary ? h("b", {}, "primary") : c.copying ? h("span", { class: "cc-warn" }, "copying") : h("span", { class: "dim" }, "replica"), c.term != null && !c.down ? h("span", { class: "small muted", title: "Its term: the election it last saw" }, ` t${c.term}`) : null),
           h("td", { class: "small", title: [c.node ? "node " + c.node : null, c.zone ? "zone " + c.zone : null, c.url].filter(Boolean).join(" · ") }, c.node ? (M.nodePrefix && c.node.startsWith(M.nodePrefix) ? "…" + c.node.slice(M.nodePrefix.length) : nodeLabel(c.node)) : h("span", { class: "muted" }, c.host), c.zone ? h("span", { class: "muted" }, " · " + c.zone) : null),
           h("td", { class: "num" + (c.lag >= LAG_WARN ? " cc-warn" : ""), title: !c.primary && !c.down && c.lag == null ? (sh.primary ? "Its primary does not report it" : "No primary to compare it with") : "" }, c.primary || c.down ? "–" : c.lag == null ? "?" : c.lag === 0 ? "0" : kn(c.lag)),
-          h("td", { class: "num" + lv(L.copy(c)) }, c.down ? "–" : L.fmt(L.copy(c))),
+          h("td", { class: "num" + lv(L.copy(c)), title: c.noReads && col === "p99" ? "It serves no reads: no p99" : "" }, c.down || (c.noReads && col === "p99") ? "–" : L.fmt(L.copy(c))),
           h("td", { style: { width: "28px" } }, copyMenuBtn(sh, c)));
         const note = c.down ? `${c.wasPrimary ? "Was the primary. " : ""}${cap(c.error || "no answer")}${c.downSince ? " · " + sinceText(c.downSince) : ""}` : c.avoided ? `Sent no searches${c.avoidedWhy ? ": " + c.avoidedWhy : " after failures"}` : null;
         return note ? [tr, h("tr", { class: "cc-note" }, h("td", { colspan: 6, class: "small " + (c.down ? "cc-bad" : "cc-warn") }, note))] : [tr];
@@ -1025,11 +1263,18 @@ function render(page, r) {
     const verifyNo = !c.primary ? null : unsupported.verify ? "this server cannot run it from the coordinator (a newer server can)" : sh.n < 2 ? "the shard has no replica" : !canAdmin() ? needsAdmin : null;
     const ckNo = c.down ? "it does not answer" : c.backupDir === false ? "its server has no --backup-dir" : unsupported.checkpoint ? "this server cannot run it from the coordinator (a newer server can)" : !canAdmin() ? needsAdmin : null;
     const items = [];
-    if (!c.primary) items.push({ label: "Make it the primary", icon: "up", no: promote, run: () => promoteCopy(sh, c) });
+    // A shard with no primary that answers and no majority cannot vote one
+    // in: the way out is to force a copy that answers (NEW-cluster-admin-3).
+    const lead = forceTarget(sh);
+    if (lead && !c.down) items.push({ label: `Force ${cname(c)} to be the primary, removing the dead ${sh.copies.filter((x) => x.down).length === 1 ? "copy" : "copies"}…`, icon: "up", danger: true, no: managed() ? "the operator hands primaries over" : changes ? changes : !canAdmin() ? needsAdmin : null, run: () => forcePromote(sh, c) });
+    else if (!c.primary) items.push({ label: "Make it the primary", icon: "up", no: promote, run: () => promoteCopy(sh, c) });
     if (c.primary) items.push({ label: "Verify its replicas", icon: "okc", no: verifyNo, run: () => verifyCopy(sh, c) });
     items.push({ label: "Write a checkpoint", icon: "download", no: ckNo, run: () => checkpointCopy(sh, c) });
     // No Remove on a primary (finding CL-3): hand it over first.
-    if (!c.primary) items.push({ label: c.down ? "Remove it from the shard…" : "Remove it from the shard…", icon: "trash", danger: true, no: remove, run: () => removeCopy(sh, c) });
+    // A dead primary is still the primary to the server, which refuses to
+    // remove it: another copy becomes the primary first.
+    const deadLead = c.down && c.wasPrimary && !sh.primary ? (lead ? `it was the primary: force ${cname(lead)} to be the primary first (its menu)` : "it was the primary and no other copy answers to take over") : null;
+    if (!c.primary) items.push({ label: "Remove it from the shard…", icon: "trash", danger: true, no: deadLead || remove, run: () => removeCopy(sh, c) });
     items.push({ label: "Its logs", icon: "logs", href: typeof core.logsLink === "function" ? core.logsLink({ server: c.url }) : link("logs", { node: c.url }) });
     if (!c.down) items.push({ label: "Profile it", icon: "flame", href: link("profile", { node: c.url }) });
     return items;
@@ -1037,6 +1282,9 @@ function render(page, r) {
   function copyMenuBtn(sh, c) {
     const b = h("button", { class: "btn ghost icon sm", "aria-label": `What to do with ${cname(c)}`, title: "Operate this copy" }, icon("dots"));
     b.onclick = () => {
+      // The shard and copy as they are now: a kept row was drawn earlier.
+      const S = M?.shards.find((x) => x.i === sh.i) || sh, C = S.copies.find((x) => x.url === c.url) || c;
+      sh = S; c = C;
       const items = copyActions(sh, c);
       const m = h("div", { class: "menu cc-menu", role: "menu", "aria-label": `${cname(c)}, shard ${sh.i}` }, h("div", { class: "cc-menu-hd" }, h("b", { class: "mono", style: { color: "var(--text)" } }, cname(c)), ` · shard ${sh.i} · ${c.down ? "down" : c.role}`), items.map((it) => it.href
         ? h("a", { class: "cc-mi", href: it.href, role: "menuitem" }, icon(it.icon), h("span", {}, it.label))
@@ -1057,18 +1305,42 @@ function render(page, r) {
   async function adminCall(what, path, opts) {
     try { const j = await api(path, opts); refreshSoon(); return j; }
     catch (e) {
-      // A failure says what failed first (finding CL-2).
-      toast(`Not done: ${what}. ${e instanceof ApiError && e.status === 403 ? "It needs an admin key." : e.message}`, "bad", 9000);
+      // A failure says what failed first (finding CL-2), in words (NEW-cluster-admin-3).
+      toast(`Not done: ${what}. ${cap(plainError(e))}${/vote|majority/.test(e.message) && /promote/.test(path) ? ". With too few copies answering, force a copy instead (its menu)" : ""}.`.replace(/\.\.$/, "."), "bad", 10000);
       return null;
     }
   }
   async function promoteCopy(sh, c) {
     const ok = await ask({ title: `Make ${cname(c)} shard ${sh.i}'s primary`, body: h("div", { class: "stack", style: { gap: "6px" } },
-      h("div", {}, `${cname(c)} asks the shard's copies for their votes; ${sh.primary ? cname(sh.primary) + ", the primary now," : "the primary"} grants its vote, steps down and follows it.`),
+      h("div", {}, sh.primary ? `${cname(c)} asks the shard's copies for their votes; ${cname(sh.primary)}, the primary now, grants its vote, steps down and follows it.` : `${cname(c)} asks the shard's copies for their votes: it needs ${Math.floor(sh.n / 2) + 1} of ${sh.n}, and ${sh.up} answer. No copy that answers is the primary now.`),
       h("div", { class: "small dim" }, "Writes to the shard pause for a moment; reads go on. It is refused while another copy holds a later transaction.")), ok: "Hand it over" });
     if (!ok) return;
     const j = await adminCall(`${cname(c)} did not become shard ${sh.i}'s primary`, `/v1/admin/shards/${sh.i}/promote`, { body: { url: c.url }, reason: ok.reason });
     if (j) toast(`${cname(c)} is shard ${sh.i}'s primary${j.term != null ? ", term " + j.term : ""}`, "ok");
+  }
+  /** Makes a copy the primary without a vote: the way out of a dead primary with no majority. */
+  async function forcePromote(sh, c) {
+    const dead = sh.copies.filter((x) => x.down);
+    const was = dead.find((x) => x.wasPrimary);
+    const ok = await confirm({
+      title: `Force ${cname(c)} to be shard ${sh.i}'s primary`, danger: true, ok: "Force it", typed: cname(c), reason: "Why: kept in the audit log with the change",
+      body: h("div", { class: "stack", style: { gap: "6px" } },
+        h("div", {}, `${cname(c)} becomes the primary without a vote: ${was ? cname(was) + ", the primary," : dead.map(cname).join(" and ")} ${dead.length === 1 ? "does" : "do"} not answer, and ${sh.up} of ${sh.n} copies is no majority, so no vote can pass.`),
+        h("div", { style: { color: "var(--crit-ink)" } }, `Writes ${was ? cname(was) : "the old primary"} took that ${cname(c)} had not received yet are lost${c.lag != null ? "" : ": how many is not known while it does not answer"}. If ${was ? cname(was) : "it"} comes back, it follows ${cname(c)} and drops them.`),
+        // R2-cluster-admin-2: forced alone, the shard serves no reads until the dead copies leave
+        // (no majority), so the two go as one action, as the repair plan's first steps do.
+        h("div", {}, `Then ${dead.map(cname).join(" and ")} ${dead.length === 1 ? "is" : "are"} removed from the shard, in the same action: until ${dead.length === 1 ? "it leaves" : "they leave"}, ${cname(c)} has no majority (${sh.up} of ${sh.n}) and the shard serves no reads either, so every search fails. After that ${cname(c)} serves reads and writes with ${sh.up} of ${sh.up}; add new copies next (Plan the repair adds them too).`)),
+    });
+    if (!ok) return;
+    const j = await adminCall(`${cname(c)} did not become shard ${sh.i}'s primary`, `/v1/admin/shards/${sh.i}/promote`, { body: { url: c.url, force: true }, reason: ok.reason });
+    if (!j) return;
+    const left = [];
+    for (const d of dead) {
+      const r = await adminCall(`${cname(d)} is still in shard ${sh.i}: shard ${sh.i} serves no reads until it leaves`, `/v1/admin/shards/${sh.i}/replicas?url=${encodeURIComponent(d.url)}`, { method: "DELETE", reason: ok.reason });
+      if (r) left.push(d);
+    }
+    if (left.length === dead.length) toast(`${cname(c)} is shard ${sh.i}'s primary (forced${j.term != null ? ", term " + j.term : ""}) and ${dead.map(cname).join(" and ")} left: it serves reads and writes. Next: add copies.`, "ok", 10000);
+    else toast(`${cname(c)} is shard ${sh.i}'s primary (forced), but ${dead.filter((d) => !left.includes(d)).map(cname).join(" and ")} did not leave: remove ${dead.length - left.length === 1 ? "it" : "them"} now, or the shard serves no reads.`, "bad", 15000);
   }
   async function removeCopy(sh, c) {
     const after = sh.n - 1, upAfter = sh.up - (c.down ? 0 : 1);
@@ -1391,12 +1663,17 @@ function render(page, r) {
         text: `${a.url ? short(a.url) : "a new server"} joins shard ${a.shard} and is sent its ${fmt.si(sh.rows)} rows by ${sh.primary ? cname(sh.primary) : "its primary"}${a.replaces ? `, to replace ${cname(M.all.find((c) => c.url === a.replaces) || { id: "?" })}` : ""}; the next step waits until it is in sync`,
         call: a.url ? ["POST", `/v1/admin/shards/${a.shard}/replicas`, { url: a.url }] : null, wait: "sync" });
     };
-    const removeStep = (x, repair) => {
+    // `first`: it leaves before its replacement joins (a shard without a
+    // majority), so the words do not say the replacement is in sync.
+    const removeStep = (x, repair, first) => {
       const c = M.all.find((y) => y.url === x.url), sh = shardOf(x.shard);
+      const left = sh.copies.filter((y) => !y.down && !removes.some((r) => r.url === y.url));
+      const why = x.why !== "replaced" ? "" : first
+        ? `, before its replacement joins: ${left.length ? `${left.map(cname).join(" and ")} then ${left.length === 1 ? "serves" : "serve"} as a majority (${left.length} of ${left.length}) until ${(() => { const k = draft.adds.filter((a) => a.shard === x.shard).length; return k === 1 ? "its new copy joins" : `its ${fmt.n(k)} new copies join`; })()}` : "the shard has no copy that answers"}`
+        : ", now that its replacement is in sync";
       steps.push({ kind: "remove", repair, shard: x.shard, rows: 0, est: 1, url: x.url,
-        text: `${c ? cname(c) : short(x.url)} leaves shard ${x.shard}${c?.down ? " (it does not answer)" : ""}${x.why === "replaced" ? ", now that its replacement is in sync" : ""}`,
+        text: `${c ? cname(c) : short(x.url)} leaves shard ${x.shard}${c?.down ? " (it does not answer)" : ""}${why}`,
         call: ["DELETE", `/v1/admin/shards/${x.shard}/replicas?url=${encodeURIComponent(x.url)}`] });
-      void sh;
     };
     // 1. Repairs first: a shard without a majority loses its dead copies
     // first (that alone restores it); one that still serves gets its new
@@ -1405,7 +1682,17 @@ function render(page, r) {
       const sh = shardOf(i);
       const rm = removes.filter((x) => x.shard === i);
       const deadRm = rm.filter((x) => M.all.find((c) => c.url === x.url)?.down);
-      if (CRIT.has(sh.state)) { deadRm.forEach((x) => removeStep(x, true)); draft.adds.filter((a) => a.shard === i).forEach(addStep); rm.filter((x) => !deadRm.includes(x)).forEach((x) => removeStep(x, true)); }
+      if (CRIT.has(sh.state)) {
+        // A dead primary with no majority left: no vote can elect another,
+        // and the server keeps the dead one as the primary, so a copy that
+        // answers is made the primary by force first (NEW-cluster-admin-3).
+        const lead = forceTarget(sh);
+        const deadPrimary = deadRm.map((x) => M.all.find((c) => c.url === x.url)).find((c) => c?.wasPrimary);
+        if (lead && deadRm.length) steps.push({ kind: "promote", force: true, repair: true, shard: i, url: lead.url, rows: 0, est: 3,
+          text: `${cname(lead)} is forced to be shard ${i}'s primary, asking no votes: ${deadPrimary ? cname(deadPrimary) + ", the primary," : "its primary"} does not answer and ${sh.up} of ${sh.n} is no majority`,
+          call: ["POST", `/v1/admin/shards/${i}/promote`, { url: lead.url, force: true }] });
+        deadRm.forEach((x) => removeStep(x, true, true)); draft.adds.filter((a) => a.shard === i).forEach(addStep); rm.filter((x) => !deadRm.includes(x)).forEach((x) => removeStep(x, true));
+      }
       else { draft.adds.filter((a) => a.shard === i).forEach(addStep); rm.forEach((x) => removeStep(x, true)); }
     }
     // 2. New copies elsewhere.
@@ -1438,15 +1725,25 @@ function render(page, r) {
         call: ["POST", "/v1/admin/rebalance", {}], wait: "moves" });
     }
     // 6. Shards that leave: the highest first (the shards after one move
-    // down a place when it goes); each is drained, then removed.
-    // The slots a drained shard gives up are spread over the shards that stay (about evenly).
-    const stay = [...held.keys()].filter((k) => !draft.drops.includes(k));
-    const drained = draft.drops.reduce((a, i) => a + (held.get(i) || 0), 0);
-    if (drained && stay.length) for (const k of stay) held.set(k, held.get(k) + drained / stay.length);
+    // down a place when it goes); each is drained, then removed. A drain
+    // evens every shard that stays out too, as the server's does (finding
+    // NEW-cluster-admin-11): their slots and rows after come from that.
+    const rowsOf = new Map(M.shards.map((sh) => [sh.i, sh.rows]));
+    for (const m of draft.moves) { const r = (shardOf(m.from)?.rows || 0) * (m.count / Math.max(1, shardOf(m.from)?.held || 1)); rowsOf.set(m.from, (rowsOf.get(m.from) || 0) - r); rowsOf.set(m.to, (rowsOf.get(m.to) || 0) + r); }
+    const gone = new Set();
     for (const i of draft.drops.slice().sort((a, b) => b - a)) {
       const sh = shardOf(i);
-      steps.push({ kind: "drain", shard: i, rows: sh.rows, est: est(sh.rows) + Math.ceil(sh.held / 256),
-        text: `shard ${i} drains: its ${fmt.n(held.get(i))} slots and about ${fmt.si(sh.rows)} rows move to the other shards`,
+      const slots0 = held.get(i) || 0, rows0 = rowsOf.get(i) || 0;
+      let moved = 0, rows = 0;
+      for (const [from, to, k] of evenCounts(held, gone, i)) {
+        const r = (rowsOf.get(from) || 0) * k / Math.max(1, held.get(from));
+        held.set(from, held.get(from) - k); held.set(to, held.get(to) + k);
+        rowsOf.set(from, rowsOf.get(from) - r); rowsOf.set(to, rowsOf.get(to) + r);
+        moved += k; rows += r;
+      }
+      gone.add(i);
+      steps.push({ kind: "drain", shard: i, rows, est: est(rows) + Math.ceil(moved / 256),
+        text: `shard ${i} drains: its ${fmt.n(slots0)} slots and about ${fmt.si(rows0)} rows move to the other shards${rows - rows0 > 1 ? `, which even out among themselves too (about ${fmt.si(rows - rows0)} rows more)` : ""}`,
         call: ["POST", `/v1/admin/shards/${i}/drain`, {}], wait: "moves" });
       steps.push({ kind: "unshard", shard: i, rows: 0, est: 2,
         text: `shard ${i} leaves the cluster; its servers (${sh.copies.map(cname).join(", ")}) keep their databases until you stop them`,
@@ -1471,7 +1768,8 @@ function render(page, r) {
     if (mi?.running) no(`slots are moving already${mi.by ? " (started by " + mi.by + ")" : ""}: wait for them, or stop them`);
     else if (mi?.moving) no("a move was left in the cluster map by a coordinator that stopped: finish it first (Finish, above)");
     else ok("no slot moves under way");
-    if (runner && !runner.done) no("another plan is being applied from this page");
+    if (planRunning()) no(`another plan is being applied${planRun.by ? " (by " + planRun.by + ")" : ""}${planRun.elsewhere ? " on coordinator " + planRun.elsewhere.name : ""}: wait for it, or stop it`);
+    else if (planRun?.state === "interrupted") no("a plan stopped when the coordinator restarted: resume it or discard it first (above)");
     const need = needUrls();
     const given = need.map((x) => (x.get() || "").trim()).filter(Boolean);
     const bad = given.filter((u) => !URL_RE.test(u));
@@ -1601,6 +1899,8 @@ function render(page, r) {
         ...draft.newShards.map((ns, j) => ({ shard: M.shards.length + j, copies: ns.servers.map(or) })),
       ],
       add_shards: draft.newShards.length, remove_shards: draft.drops.slice(),
+      // The new shards take their share: the server counts the rows and bytes it sends each.
+      even: !!(draft.even && draft.newShards.length),
       moves: draft.moves.flatMap((m) => (picked.get(m.id) || []).map(([a, b]) => ({ slots: [a, b], to: m.to }))),
     };
     const key = JSON.stringify(want);
@@ -1680,7 +1980,7 @@ function render(page, r) {
       if (P.pre.some((y) => y.text === x.text)) continue;
       const two = /^shard (\d+) is left with (\d+) copies/.exec(x.text || "");
       if (two && P.pre.some((y) => y.text.startsWith(`shard ${two[1]} ends with ${two[2]} cop`))) continue;
-      const advice = x.ok === true && (/: with failover|leaves it so/.test(x.text || ""));
+      const advice = x.level === "warn" || (x.ok === true && !x.level && (/: with failover|leaves it so/.test(x.text || "")));
       P.pre.push({ ok: advice ? "warn" : x.ok === true ? true : x.ok === false ? false : "warn", text: x.text });
     }
     const blocked = P.pre.find((x) => x.ok === false);
@@ -1697,9 +1997,10 @@ function render(page, r) {
         urlBox,
         h("div", { class: "cc-sec" }, "Before → after"),
         h("table", { class: "cc-ba" }, h("tbody", {}, P.before.map(([k, a, b]) => h("tr", {}, h("td", {}, k), h("td", { class: "num" }, a), h("td", { class: "num to" + (a !== b ? " moved" : "") }, b))))),
+        diskTable(sp),
         h("div", { class: "cc-sec" }, `Steps, in this order · about ${dur(estimate)}`),
         h("ol", { class: "cc-steps" }, P.steps.map((x, k) => h("li", {}, h("span", { class: "k" }, k + 1), h("span", {}, x.repair ? h("span", { class: "badge", style: { marginRight: "4px" } }, "repair") : null, cap(x.text)), h("span", { class: "t" }, x.est != null ? "~" + dur(x.est) : "")))),
-        h("div", { class: "small muted" }, sp?.estimate_from && sp.estimate_s != null ? `${fmt.si(rows)} rows to copy. The server's estimate: ${sp.estimate_from}.` : `${fmt.si(rows)} rows to copy, at ${fmt.n(P.rate.rate, 0)} rows a second ${P.rate.measured ? "(the last move here)" : "(assumed: no move measured yet)"}.`),
+        h("div", { class: "small muted" }, sp?.estimate_from && sp.estimate_s != null ? `${fmt.si(rows)} rows to copy. The server's estimate: ${String(sp.estimate_from).replace(/\.$/, "")}.` : `${fmt.si(rows)} rows to copy, at ${fmt.n(P.rate.rate, 0)} rows a second ${P.rate.measured ? "(the last move here)" : "(assumed: no move measured yet)"}.`),
         // This page's own words when it has some (they name the shards and
         // copies); the server's summary when it has none.
         P.blast.length || sp?.blast ? h("div", { class: "cc-blast" }, h("b", {}, "Blast radius"), P.blast.length ? P.blast.map((t) => h("div", {}, t)) : h("div", {}, sp.blast)) : null,
@@ -1710,9 +2011,18 @@ function render(page, r) {
           ? h("div", { class: "small" }, [...P.removes.map((x) => `${cname(M.all.find((c) => c.url === x.url) || { id: short(x.url) })} from shard ${x.shard} (${x.why === "replaced" ? "replaced" : "you asked"})`), ...P.drops.map((i) => `shard ${i} (you asked)`)].join("; ") + ". Nothing else.")
           : h("div", { class: "small dim" }, "Nothing is removed.")),
       h("div", { class: "ft" },
-        h("button", { class: "btn sm", title: "The admin calls this plan makes, as curl commands", onclick: () => copy(P.steps.map((x) => x.call ? `curl -sf -H "authorization: Bearer $STRATA_TOKEN" -X ${x.call[0]} ${location.origin}${x.call[1]}${x.call[2] ? ` -d '${JSON.stringify(x.call[2])}'` : ""}` : `# ${x.text}`).join("\n"), "Copied the calls") }, icon("copy"), "Copy as calls"),
+        h("button", { class: "btn sm", title: "The call that applies this plan on the coordinator, as a curl command", onclick: () => copy(`curl -sf -H "authorization: Bearer $STRATA_TOKEN" -H "content-type: application/json" -H "x-strata-reason: ..." -X POST ${location.origin}/v1/admin/plan/apply -d '${JSON.stringify({ steps: P.steps.map(serverStep) }).replace(/'/g, "'\\''")}'`, "Copied the call") }, icon("copy"), "Copy as a call"),
         h("span", { class: "grow" }),
         h("button", { class: "btn primary", disabled: !!blocked, title: blocked ? cap(blocked.text) : "", onclick: () => applyOwn(P) }, `Apply ${plural(P.steps.length, "step")}…`)));
+  }
+  /** The volumes the plan sends rows to, now and after, from the server's plan (finding CC-5). */
+  function diskTable(sp) {
+    const ds = (sp?.disks || []).slice().sort((a, b) => b.after - a.after);
+    if (!ds.length) return null;
+    const nm = (d) => { const c = M.all.find((x) => x.url === d.url); return c ? cname(c) : d.copy || short(d.url); };
+    return [h("div", { class: "cc-sec" }, "Disks it sends rows to · fullest first"),
+      h("table", { class: "cc-ba" }, h("tbody", {}, ds.slice(0, 6).map((d) => h("tr", {}, h("td", {}, nm(d), h("span", { class: "small muted" }, ` · +${fmt.bytes(d.adds_bytes || 0)}`)), h("td", { class: "num" + (d.now >= 0.85 ? " cc-warn" : "") }, pct0(d.now)), h("td", { class: "num to moved" + (d.after >= 0.95 ? " cc-bad" : d.after >= 0.85 ? " cc-warn" : "") }, pct0(d.after)))))),
+      ds.length > 6 ? h("div", { class: "small muted" }, `and ${plural(ds.length - 6, "copy", "copies")} more, each under ${pct0(ds[6].after)} after`) : null];
   }
   function drawSideKeepFocus() {
     const a = document.activeElement, idx = a && side.contains(a) ? [...side.querySelectorAll("input")].indexOf(a) : -1;
@@ -1746,7 +2056,9 @@ function render(page, r) {
     const N = kubeNumbers();
     const mi = moves && !moves.error ? moves : null;
     const R = measuredRate(mi);
-    const est = N.secs;
+    // The coordinator's estimate when it gives one (NEW-cluster-admin-7).
+    const E = kubePlan?.estimate || null;
+    const est = E ? E.estimate_s : N.secs;
     const removing = N.R1 < N.R0 || N.S1 < N.S0;
     const pre = [];
     if (ro) pre.push({ ok: "warn", text: `${ro}: the operator finishes it before it makes this change` });
@@ -1771,7 +2083,7 @@ function render(page, r) {
         h("table", { class: "cc-ba" }, h("tbody", {}, before.map(([k, a, b]) => h("tr", {}, h("td", {}, k), h("td", { class: "num" }, a), h("td", { class: "num to" + (a !== b ? " moved" : "") }, b))))),
         h("div", { class: "cc-sec" }, `The operator's steps${est > 0 ? ` · about ${dur(est)}` : ""}`),
         kubePlan ? h("ol", { class: "cc-steps" }, (kubePlan.steps || []).map((x, k) => h("li", {}, h("span", { class: "k" }, k + 1), h("span", {}, cap(x)), h("span", { class: "t" })))) : h("div", { class: "small muted" }, kubePlanErr || "Asking the coordinator…"),
-        N.rowsToCopy ? h("div", { class: "small muted" }, `${fmt.si(N.rowsToCopy)} rows to copy at ${fmt.n(R.rate, 0)} rows a second ${R.measured ? "(the rate of the last move here)" : "(assumed: no move measured yet)"}${N.perShard ? `; each shard's primary sends its ${N.R1 - N.R0 === 1 ? "new copy" : "new copies"} its ${fmt.si(N.rows / Math.max(1, M.shards.length))} rows, every shard at once: about ${dur(N.perShard)}` : ""}${N.S1 !== N.S0 ? "; slots move one run at a time" : ""}.`) : null,
+        E ? h("div", { class: "small muted" }, `${E.text} The coordinator's estimate.`) : N.rowsToCopy ? h("div", { class: "small muted" }, `${fmt.si(N.rowsToCopy)} rows to copy at ${fmt.n(R.rate, 0)} rows a second ${R.measured ? "(the rate of the last move here)" : "(assumed: no move measured yet)"}${N.perShard ? `; each shard's primary sends its ${N.R1 - N.R0 === 1 ? "new copy" : "new copies"} its ${fmt.si(N.rows / Math.max(1, M.shards.length))} rows, every shard at once: about ${dur(N.perShard)}` : ""}${N.S1 !== N.S0 ? "; slots move one run at a time" : ""}.`) : null,
         blast.length ? h("div", { class: "cc-blast" }, h("b", {}, "Blast radius"), blast.map((t) => h("div", {}, t))) : null,
         h("div", { class: "cc-sec" }, "Checked before it starts"),
         h("div", { class: "cc-chk" }, pre.map((x) => h("div", { class: x.ok === true ? "ok" : x.ok === false ? "no" : "wn" }, h("span", { class: "m" }, x.ok === true ? "✓" : x.ok === false ? "✕" : "!"), h("span", {}, cap(x.text))))),
@@ -1809,50 +2121,131 @@ function render(page, r) {
       title: `Apply ${plural(P.steps.length, "step")} to the cluster`, danger: !!removing, ok: "Apply", typed,
       body: h("div", { class: "stack", style: { gap: "8px" } },
         h("ol", { class: "cc-steps plain" }, P.steps.map((x) => h("li", {}, cap(x.text)))),
-        h("div", { class: "small dim" }, `About ${dur(planTime(P).estimate)}; ${fmt.si(planTime(P).rows)} rows to copy. The steps run one at a time from this page: keep it open. Stop halts after the step under way.`),
+        h("div", { class: "small dim" }, `About ${dur(planTime(P).estimate)}; ${fmt.si(planTime(P).rows)} rows to copy. The coordinator runs the steps one at a time: you can close this page, and every browser sees how it goes. Stop halts after the step under way.`),
+        P.steps.some((x) => x.kind === "promote" && x.force) ? h("div", { class: "small", style: { color: "var(--crit-ink)" } }, "It forces a copy to be its shard's primary without a vote: writes the dead primary took that this copy had not received are lost.") : null,
         removing ? h("div", { class: "small", style: { color: "var(--crit-ink)" } }, `Removed: ${[...P.removes.map((x) => cname(M.all.find((c) => c.url === x.url) || { id: short(x.url) })), ...P.drops.map((i) => "shard " + i)].join(", ")}, and nothing else.`) : null),
     });
     if (!ok) return;
-    startRunner(P.steps.map((x) => ({ ...x, st: "wait" })), ok.reason);
+    try {
+      const j = await api("/v1/admin/plan/apply", { body: { steps: P.steps.map(serverStep), estimate_s: Math.round(planTime(P).estimate) }, reason: ok.reason });
+      takeRun(j.run);
+    } catch (e) {
+      toast(`Not applied: ${plainError(e)}`, "bad", 10000);
+      return;
+    }
+    store.set("cluster.planClosed", null);
     draft = loadDraft(); Object.assign(draft, { adds: [], removes: [], newShards: [], drops: [], moves: [] }); saveDraft();
-    mode = "live"; writeParams(); drawAll();
+    mode = "live"; sel = null; writeParams(); drawAll();
   }
 
   // ------------------------------------------------------------ progress
   function progressCard() {
     const mi = moves && !moves.error ? moves : null;
     const ro = rollout();
-    if (runner) {
-      const R = runner;
-      const cur = R.steps[R.at];
-      return h("section", { class: "card cc-run" + (R.failed ? " bad" : "") },
-        h("div", { class: "hd" }, h("h3", {}, R.done ? (R.failed ? "The plan stopped" : R.stopped ? "The plan was stopped" : "The plan is applied") : "Applying the plan"),
-          h("span", { class: "sub", title: whenTitle(R.started) }, `started ${clock(R.started)} from this page${R.by && R.by !== "token" ? " by " + R.by : ""}`),
-          h("div", { class: "tools" }, R.done ? h("button", { class: "btn sm ghost", onclick: () => { runner = null; runChanged(); } }, "Close") : h("button", { class: "btn sm", disabled: R.stopping, onclick: stopRunner }, icon("stop"), R.stopping ? "Stopping…" : "Stop"))),
-        h("div", { class: "bd stack", style: { gap: "8px" } },
-          h("ol", { class: "cc-steps run" }, R.steps.map((x, k) => h("li", { class: x.st }, h("span", { class: "k" }, x.st === "ok" ? "✓" : x.st === "run" ? h("span", { class: "spin" }) : x.st === "bad" ? "✕" : k + 1), h("span", {}, cap(x.text), x.note ? h("div", { class: "small muted" }, x.note) : null, x.err ? h("div", { class: "small cc-bad" }, x.err) : null), h("span", { class: "t" }, x.took != null ? dur(x.took) : "")))),
-          cur && !R.done && cur.wait === "moves" && mi?.job ? movesLine(mi) : null,
-          R.done ? null : h("div", { class: "small muted" }, `Rows: ${fmt.si(R.steps.slice(0, R.at).reduce((a, x) => a + (x.rows || 0), 0))} of ${fmt.si(R.steps.reduce((a, x) => a + (x.rows || 0), 0))} copied${R.etaS != null ? ` · about ${dur(R.etaS)} left` : ""}`)));
-    }
+    const R = planShown();
+    if (R) return runCard(R, mi);
     if (mi?.running || mi?.moving) {
+      const there = mi.elsewhere;
       return h("section", { class: "card cc-run" },
-        h("div", { class: "hd" }, h("h3", {}, mi.running ? "Slots moving" : "A move left in the cluster map"), h("span", { class: "sub" }, [mi.job && mi.running ? jobWords(mi.job) : null, mi.by ? "started by " + mi.by : null, mi.started ? "at " + clock(mi.started) : null].filter(Boolean).join(" · ")),
+        h("div", { class: "hd" }, h("h3", {}, mi.running ? (there ? `Slots moving on ${there.name}` : "Slots moving") : "A move left in the cluster map"), h("span", { class: "sub" }, [mi.job && mi.running ? jobWords(mi.job) : null, mi.by ? "started by " + mi.by : null, mi.started ? "at " + clock(mi.started) : null].filter(Boolean).join(" · ")),
           h("div", { class: "tools" },
-            mi.running && mi.job ? h("button", { class: "btn sm", disabled: !canAdmin(), title: canAdmin() ? "Stop after the move under way" : needsAdmin, onclick: stopMoves }, icon("stop"), "Stop") : null,
-            !mi.running || !mi.job ? h("button", { class: "btn sm", disabled: !canAdmin(), title: "Ends the move a stopped coordinator left: completed if it had flipped, given up if not", onclick: finishMove }, "Finish it") : null)),
+            there ? (there.url ? h("a", { class: "btn sm", href: there.url.replace(/\/$/, "") + "/#/cluster", target: "_blank", rel: "noopener", title: "Stop it there" }, `Open ${there.name}`, icon("ext")) : null)
+              : mi.running && mi.job ? h("button", { class: "btn sm", disabled: !canAdmin(), title: canAdmin() ? "Stop after the move under way" : needsAdmin, onclick: stopMoves }, icon("stop"), "Stop") : null,
+            !there && (!mi.running || !mi.job) ? h("button", { class: "btn sm", disabled: !canAdmin(), title: "Ends the move a stopped coordinator left: completed if it had flipped, given up if not", onclick: finishMove }, "Finish it") : null)),
         h("div", { class: "bd stack", style: { gap: "6px" } }, mi.job ? movesLine(mi) : h("div", { class: "small" }, `From shard ${mi.moving.from} to shard ${mi.moving.to}, ${mi.moving.state || "under way"}: no coordinator runs it now.`)));
     }
     if (ro) return h("section", { class: "card cc-run" }, h("div", { class: "hd" }, h("h3", {}, "The operator is rolling out"), h("div", { class: "tools" }, h("a", { class: "btn sm", href: link("rollout") }, "Rollouts"))), h("div", { class: "bd small" }, kube.status?.message ? cap(kube.status.message) + "." : cap(ro) + "."));
     if (managed() && kube.status?.phase && !["Ready"].includes(kube.status.phase)) return h("section", { class: "card cc-run" + (kube.status.phase === "Failed" ? " bad" : "") }, h("div", { class: "hd" }, h("h3", {}, `The operator: ${kube.status.phase}`)), h("div", { class: "bd small" }, kube.status.message || ""));
     return null;
   }
+  /** The plan the coordinator applies: its steps, how far, what is left, and what to do when it stopped. */
+  function runCard(R, mi) {
+    const running = R.state === "running";
+    const stoppedAt = R.steps?.[R.at];
+    const title = running ? (R.stopping ? "Stopping the plan" : "Applying the plan")
+      : R.state === "done" ? "The plan is applied"
+      : R.state === "interrupted" ? `The plan stopped at step ${R.at + 1} of ${R.of}: the coordinator restarted`
+      : R.state === "stopped" ? `The plan was stopped after ${R.done} of ${R.of} steps`
+      : `The plan stopped at step ${R.at + 1} of ${R.of}`;
+    const who = [R.by && R.by !== "token" ? "by " + R.by : null, R.coordinator ? "on " + short(R.coordinator) : "on the coordinator"].filter(Boolean).join(" ");
+    const sub = `started ${clock(R.started_ms)} ${who}${R.resumed ? ` · resumed ${R.resumed === 1 ? "once" : R.resumed + " times"}${R.resumed_by ? " by " + R.resumed_by : ""}` : ""}`;
+    const tools = [];
+    // A plan another coordinator applies: shown here, changed there.
+    if (R.elsewhere) tools.push(R.elsewhere.url ? h("a", { class: "btn sm", href: R.elsewhere.url.replace(/\/$/, "") + "/#/cluster", target: "_blank", rel: "noopener" }, `Open ${R.elsewhere.name || "its coordinator"}`, icon("ext")) : null);
+    else if (running) tools.push(h("button", { class: "btn sm", disabled: R.stopping || !canAdmin(), title: canAdmin() ? "Stop after the step under way" : needsAdmin, onclick: stopRun }, icon("stop"), R.stopping ? "Stopping…" : "Stop"));
+    else if (R.state === "done") tools.push(h("button", { class: "btn sm ghost", onclick: () => { store.set("cluster.planClosed", R.id); runChanged(); } }, "Close"));
+    else {
+      tools.push(h("button", { class: "btn sm primary", disabled: !canAdmin(), title: canAdmin() ? `Run step ${R.at + 1} again, then the rest: each step first looks at what is done already` : needsAdmin, onclick: () => resumeRun(R) }, icon("play"), "Resume"));
+      tools.push(h("button", { class: "btn sm ghost", disabled: !canAdmin(), title: canAdmin() ? "Forget this plan: the steps done stay done" : needsAdmin, onclick: () => discardRun(R) }, "Discard"));
+    }
+    const rowsLine = R.rows_total ? `Rows: ${fmt.si(Math.min(R.rows_done, R.rows_total))} of ${fmt.si(R.rows_total)} copied` : null;
+    const p99 = R.p99_before_ms != null || R.p99_now_ms != null ? `${R.elsewhere ? R.elsewhere.name + "'s" : "this coordinator's"} p99 ${R.p99_before_ms != null ? fmt.ms(R.p99_before_ms) : "–"} before, ${R.p99_now_ms != null ? fmt.ms(R.p99_now_ms) : "–"} now (last minute)` : null;
+    const stateMark = (x) => (x.state === "done" ? "✓" : x.state === "running" ? h("span", { class: "spin" }) : x.state === "failed" ? "✕" : x.state === "interrupted" || x.state === "stopped" ? "!" : null);
+    const cls = { done: "ok", running: "run", failed: "bad", interrupted: "bad", stopped: "wait", waiting: "wait" };
+    const steps = R.steps || [];
+    // Which steps ended before the one it stopped at, in words.
+    const before = R.at === 0 ? "No step had ended" : R.at === 1 ? "Step 1 is done" : `Steps 1 to ${R.at} are done`;
+    // A failed step is wrong (red); a restart or a Stop is to act on (amber).
+    return h("section", { class: "card cc-run" + (R.state === "failed" ? " bad" : R.state === "interrupted" || R.state === "stopped" ? " warn" : "") },
+      h("div", { class: "hd cc-run-hd" }, h("div", { class: "grow" }, h("h3", {}, title), h("div", { class: "small muted", title: whenTitle(R.started_ms) }, sub)), h("div", { class: "tools" }, tools)),
+      h("div", { class: "bd stack", style: { gap: "8px" } },
+        R.state === "interrupted" ? h("div", { class: "cc-why warn" }, `The coordinator stopped while step ${R.at + 1} ran${R.interrupted_ms ? ` (it came back at ${clock(R.interrupted_ms)})` : ""}. ${before}; step ${R.at + 1} may be partly done. Resume runs it again from where it is, then the rest. Discard leaves the cluster as it is now.`) : null,
+        R.state === "failed" && R.error ? h("div", { class: "cc-why crit" }, `Step ${R.at + 1} failed: ${plainText(R.error)}. ${before}. Resume runs step ${R.at + 1} again; Discard leaves the cluster as it is now.`) : null,
+        h("ol", { class: "cc-steps run" }, steps.map((x, k) => h("li", { class: cls[x.state] || "wait" },
+          h("span", { class: "k" }, stateMark(x) ?? k + 1),
+          h("span", {}, x.repair ? h("span", { class: "badge", style: { marginRight: "4px" } }, "repair") : null, cap(x.text || x.kind),
+            x.note && x.state !== "waiting" ? h("div", { class: "small muted" }, cap(x.note)) : null,
+            x.error ? h("div", { class: "small cc-bad" }, cap(plainText(x.error))) : null,
+            x.state === "running" && /^(move|rebalance|drain)$/.test(x.kind) && jobOfStep(mi, x) ? movesMeter(mi) : null),
+          h("span", { class: "t" }, x.took_s != null && x.state !== "waiting" ? dur(x.took_s) : x.est_s != null ? "~" + dur(x.est_s) : "")))),
+        h("div", { class: "small muted" }, [rowsLine, running && R.eta_s != null ? `about ${dur(R.eta_s)} left` : null, R.state === "done" && R.finished_ms ? `took ${dur((R.finished_ms - R.started_ms) / 1000)}` : null, p99].filter(Boolean).join(" · ")),
+        R.elsewhere ? h("div", { class: "small dim" }, `Coordinator ${R.elsewhere.name} applies it: stop, resume or discard it on its own Cluster page.`)
+          : running ? h("div", { class: "small dim" }, "It runs on the coordinator: closing this page does not stop it.") : null,
+        R.reason ? h("div", { class: "small dim" }, `Reason: ${R.reason}`) : null));
+  }
+  /**
+   * The job of moves a running step started: one running now that started
+   * with the step, never the job before it (CL-6).
+   */
+  function jobOfStep(mi, x) {
+    if (!mi?.running || !mi.job) return false;
+    return !x.started_ms || !mi.started || mi.started >= x.started_ms - 2000;
+  }
+  /** A bar for the job of moves a step runs, from the job itself. */
+  function movesMeter(mi) {
+    return h("div", { class: "meter", style: { marginTop: "4px" } }, h("i", { style: { width: Math.round(jobFrac(mi) * 100) + "%" } }));
+  }
+  async function stopRun() {
+    const ok = await ask({ title: "Stop the plan", body: "The step under way finishes (a job of moves stops after its move under way); the steps after it are not started. What was done stays done, and the plan can be resumed.", ok: "Stop it" });
+    if (!ok) return;
+    try { takeRun((await api("/v1/admin/plan/run/stop", { body: {}, reason: ok.reason })).run); toast("The plan stops after the step under way", "ok"); }
+    catch (e) { toast(`Not stopped: ${plainError(e)}`, "bad", 8000); }
+  }
+  async function resumeRun(R) {
+    const x = R.steps?.[R.at];
+    const ok = await ask({ title: `Resume the plan at step ${R.at + 1} of ${R.of}`, ok: "Resume",
+      body: h("div", { class: "stack", style: { gap: "6px" } }, h("div", {}, `Step ${R.at + 1}: ${cap(x?.text || x?.kind || "")}.`),
+        h("div", { class: "small dim" }, "Each step first looks at what is done already: a copy that joined is not added again, a shard removed is not removed twice, a move left in the cluster map is finished first."),
+        h("div", { class: "small dim" }, `Then the ${plural(Math.max(0, R.of - R.at - 1), "step")} after it.`)) });
+    if (!ok) return;
+    try { takeRun((await api("/v1/admin/plan/run/resume", { body: {}, reason: ok.reason })).run); toast("The plan goes on", "ok"); }
+    catch (e) { toast(`Not resumed: ${plainError(e)}`, "bad", 9000); }
+  }
+  async function discardRun(R) {
+    const ok = await ask({ title: "Discard the plan", body: `Steps 1 to ${R.done} are done and stay so; the other ${plural(R.of - R.done, "step")} will not run. The cluster stays as it is now: look at it before you plan again.`, ok: "Discard", danger: true });
+    if (!ok) return;
+    try { await api("/v1/admin/plan/run/discard", { body: {}, reason: ok.reason }); takeRun(null); toast("The plan is discarded", "ok"); }
+    catch (e) { toast(`Not discarded: ${plainError(e)}`, "bad", 8000); }
+  }
   function movesLine(mi) {
     const j = mi.job;
-    const frac = mi.rowsTotal ? mi.rowsDone / mi.rowsTotal : j.of ? j.done / j.of : 0;
+    // The rows are an estimate made when the job started: past it, the
+    // line says the rows copied, not "78k of 4.8k".
+    const rows = mi.rowsDone == null ? null : mi.rowsTotal && mi.rowsDone <= mi.rowsTotal ? `${fmt.si(mi.rowsDone)} of about ${fmt.si(mi.rowsTotal)} rows copied` : `${fmt.si(mi.rowsDone)} rows copied`;
     return h("div", { class: "stack", style: { gap: "4px" } },
-      h("div", { class: "meter" }, h("i", { style: { width: Math.round(Math.min(1, frac) * 100) + "%" } })),
-      h("div", { class: "small" }, [`${fmt.n(j.done)} of ${plural(j.of, "move")}`, `${fmt.n(j.slots_moved)} slots`, mi.rowsDone != null ? `${fmt.si(mi.rowsDone)}${mi.rowsTotal ? " of " + fmt.si(mi.rowsTotal) : ""} rows` : null, mi.rate ? `${fmt.si(mi.rate)} rows/s` : null, mi.eta != null && mi.running ? `about ${dur(mi.eta)} left` : null].filter(Boolean).join(" · ")),
-      j.error ? h("div", { class: "small cc-bad" }, j.error) : null);
+      h("div", { class: "meter" }, h("i", { style: { width: Math.round(jobFrac(mi) * 100) + "%" } })),
+      h("div", { class: "small" }, [`${fmt.n(j.done)} of ${plural(j.of, "move")} done`, `${fmt.n(j.slots_moved)} slots flipped`, rows, mi.rate ? `${fmt.si(mi.rate)} rows a second` : null, mi.eta != null && mi.running ? `about ${dur(mi.eta)} left` : null].filter(Boolean).join(" · ")),
+      j.error ? h("div", { class: "small cc-bad" }, plainText(j.error)) : null);
   }
   async function stopMoves() {
     const ok = await ask({ title: "Stop the moves", body: "The move under way finishes (or is given up before it flips); the others are not started. The slots that moved stay where they are.", ok: "Stop them", reason: false });
@@ -1888,10 +2281,24 @@ function render(page, r) {
       copyRows += rows * Math.abs(d) / Math.max(S, patch.shards);
     }
     if (patch.storage?.size) out.push(`grows every volume to ${patch.storage.size}`);
-    const T = M ? kubeTime(patch, sp) : null;
-    const t = T?.rows ? `; about ${dur(T.secs)} to copy ${fmt.si(T.rows)} rows${T.perShard ? ", the shards in parallel" : ""}${T.measured ? "" : " (at an assumed rate)"}` : "";
+    // How long: the coordinator's estimate, the one Autoscaling shows too;
+    // the browser's own only when the server has none (an older one).
+    const E = suggestionEstimate(patch);
+    const T = E?.none && M ? kubeTime(patch, sp) : null;
+    const t = E?.text ? " " + E.text : T?.rows ? ` About ${dur(T.secs)} to copy ${fmt.si(T.rows)} rows${T.perShard ? ", the shards in parallel" : ""}${T.measured ? "" : " (at an assumed rate)"}.` : "";
     void copyRows; void R2;
-    return out.length ? cap(out.join("; ")) + t + "." : "Changes " + Object.keys(patch).join(", ") + ".";
+    return out.length ? cap(out.join("; ")) + "." + t : "Changes " + Object.keys(patch).join(", ") + ".";
+  }
+  /** The coordinator's estimate for a suggestion's patch, asked once; null while it is asked. */
+  function suggestionEstimate(patch) {
+    const key = JSON.stringify(patch);
+    if (sgEstFor !== key) {
+      sgEstFor = key; sgEst = null;
+      api("/v1/admin/kube/plan", { body: { spec: patch } })
+        .then((j) => { if (sgEstFor === key) { sgEst = j.estimate || { none: true }; if (alive && tab === "capacity") drawTab(); } })
+        .catch(() => { if (sgEstFor === key) sgEst = { none: true }; });
+    }
+    return sgEst;
   }
   function drawCapacity() {
     if (!M) { clear(body, empty("layers", "Asking the shards", "")); return; }
@@ -1920,7 +2327,7 @@ function render(page, r) {
       cls: "cc-cap", title: "Headroom now", sub: "the worst copy and the median, from each copy's last minute",
       body: h("table", { class: "t compact cc-head-room" }, h("thead", {}, h("tr", {}, ["", "worst", "median", ""].map((x, k) => h("th", { class: k === 1 || k === 2 ? "num" : "" }, x)))), h("tbody", {},
         row("CPU, share of cores", cpus[0] ? `${pct0(cpus[0].cpu)} ${cname(cpus[0])}` : "–", pct0(med(cpus.map((c) => c.cpu))), cpus[0] && cpus[0].cpu >= 0.7 ? "busy copies add latency: add copies to their shards" : "", level("cpu", cpus[0]?.cpu)),
-        row("Disk used", disks[0] ? `${pct0(disks[0].disk)} ${cname(disks[0])}` : "–", pct0(med(disks.map((c) => c.disk))), fleetDisk?.days_to_full != null ? `full in ${fullIn(fleetDisk.days_to_full)} at the last week's growth` : "", level("disk", disks[0]?.disk)),
+        row("Disk used", disks[0] ? `${pct0(disks[0].disk)} ${cname(disks[0])}` : "–", pct0(med(disks.map((c) => c.disk))), fleetDisk?.days_to_full != null ? `full in about ${fmt.fills(fleetDisk.days_to_full)} at the last week's growth` : "", level("disk", disks[0]?.disk)),
         row("p99 of a shard", p99s[0] ? `${fmt.ms(p99s[0][1])} shard ${p99s[0][0].i}` : "–", fmt.ms(med(p99s.map((x) => x[1]))), `SLO ${fmt.ms(slo())}`, level("p99", p99s[0]?.[1])),
         row("Slots a shard", fmt.n(Math.max(...slotsPer)), fmt.n(med(slotsPer)), Math.max(...slotsPer) - Math.min(...slotsPer) > 1 ? `uneven: ${fmt.n(Math.min(...slotsPer))} to ${fmt.n(Math.max(...slotsPer))}` : "even"),
         row("Rows a shard", fmt.si(Math.max(...rowsPer)), fmt.si(med(rowsPer)), ""),
@@ -1949,7 +2356,9 @@ function render(page, r) {
   async function evenOut() {
     const ok = await ask({ title: "Even out the slots", body: "Slots move from the shards holding the most to those holding the fewest, up to 256 at a time, while the cluster serves. Writes to each run pause for a moment as it flips.", ok: "Move them" });
     if (!ok) return;
-    startRunner([{ kind: "even", text: "the slots even out over the shards", call: ["POST", "/v1/admin/rebalance", {}], wait: "moves", rows: 0, st: "wait" }], ok.reason);
+    try { takeRun((await api("/v1/admin/plan/apply", { body: { steps: [{ kind: "rebalance", text: "The slots even out over the shards" }] }, reason: ok.reason })).run); }
+    catch (e) { toast(`Not started: ${plainError(e)}`, "bad", 9000); return; }
+    store.set("cluster.planClosed", null);
     tab = "map"; writeParams(); drawAll();
   }
 
@@ -1973,41 +2382,94 @@ function render(page, r) {
   const CLUSTER_ROUTE = /^\/v1\/admin\/(shards|moves|rebalance|kube(?!\/plan)|promote|copies|autoscale(?!\/replay))/;
   /** The shard a change was of: its object ("copy s0-1", "shard 2") or its route. */
   const shardOfChange = (object, route) => { const m = /^copy s(\d+)-|^shard (\d+)/.exec(object || "") || /\/shards\/(\d+)/.exec(route || ""); return m ? +(m[1] ?? m[2]) : null; };
+  /** A text with each copy's URL given as its name (a copy this page knows) or host:port. */
+  function namedUrls(t) {
+    return String(t ?? "").replace(/https?:\/\/[^\s,;)]+/g, (u) => { const c = M?.all.find((x) => x.url === u.replace(/[.]$/, "")); return c ? cname(c) : short(u); });
+  }
+  /** The plan a change belongs to: its id, from the event or its audit entry. */
+  const planOf = (d, a) => (d && (d.plan || (/^plan (p\d+)/.exec(d.object || "") || [])[1])) || (a && (a.after?.plan || (/^plan (p\d+)/.exec(a.object || "") || [])[1])) || null;
+  // What the cluster says happened, which a person's change made: the two
+  // are one row (finding NEW-cluster-admin-4).
+  const SHAPE = /^(shard_added|shard_removed|copy_added|copy_removed|primary_changed|moves_started|moves_finished)$/;
   function drawChanges() {
     if (events == null && audit == null && !eventsErr && !auditErr) { clear(body, card({ body: empty("clock", "Reading the changes…", "") })); loadChanges(); return; }
     const rows = [];
+    const plans = new Map();
+    const planRow = (id, t) => {
+      if (!plans.has(id)) { const r = { t, kind: "change", sev: "info", who: null, what: `A plan (${id})`, steps: [], shard: null, plan: id, start: t, end: null }; plans.set(id, r); rows.push(r); }
+      const r = plans.get(id);
+      if (t < r.start) r.start = t;
+      return r;
+    };
     for (const e of events || []) {
       if (!/^(copy_|primary_|majority_|shard_|moves_|rollout|autoscale|upgrade|change|note|contain)/.test(e.kind)) continue;
       const d = e.detail && typeof e.detail === "object" ? e.detail : {};
-      if (e.kind === "change" && e.where?.shard == null && e.where?.copy == null && !CLUSTER_ROUTE.test(d.route || "")) continue;
+      if (e.kind === "change" && e.where?.shard == null && e.where?.copy == null && !CLUSTER_ROUTE.test(d.route || "") && !planOf(d)) continue;
       const who = e.who || (/^(copy_|primary_|majority_|shard_|moves_)/.test(e.kind) ? "the cluster" : e.kind === "rollout" || e.kind === "upgrade" ? "operator" : e.kind === "autoscale" ? "autoscaler" : "–");
       // A change's title starts with who made it, which has its own column.
       const what = e.who && String(e.title || "").startsWith(e.who + ": ") ? cap(e.title.slice(e.who.length + 2)) : e.title;
-      rows.push({ t: e.ts_ms, kind: e.kind, sev: d.status >= 400 ? "warning" : e.severity, who, what, rid: d.request_id || null,
-        detail: typeof e.detail === "string" ? e.detail : d.text || null,
-        shard: e.where?.shard ?? shardOfChange(d.object, d.route), until: e.until_ms });
+      const pid = e.kind === "change" || e.kind === "moves_started" ? planOf(d) : null;
+      if (pid && e.kind === "change") {
+        // A plan is one row: who applied it and why, how it ended, its steps.
+        const r = planRow(pid, e.ts_ms);
+        // How it ended (the latest end: a plan resumed ends again), what
+        // people did to it meanwhile (Stop, Resume, Discard), and its start.
+        if (d.state) {
+          // An earlier end (a restart, a Stop) stays as a note under the last.
+          const said = cap(namedUrls(what)), note = (t, x) => (r.notes ||= []).push({ t, text: `${x}, ${clock(t)}` });
+          if (e.ts_ms >= (r.end || 0)) { if (r.ended) note(r.end, r.ended); r.end = e.ts_ms; r.ended = said; r.sev = e.severity === "warning" ? "warning" : "info"; }
+          else note(e.ts_ms, said);
+          r.t = Math.max(r.t, e.ts_ms);
+        }
+        else if (/\/v1\/admin\/plan\/run\//.test(d.route || "")) { (r.notes ||= []).push({ t: e.ts_ms, text: `${cap(what)}${who && who !== "–" ? ` (${who})` : ""}${d.status >= 400 ? ", which failed" : ""}, ${clock(e.ts_ms)}` }); r.t = Math.max(r.t, e.ts_ms); }
+        else { r.who = who; r.rid = d.request_id || null; if (d.reason) r.reason = d.reason; r.steps = (/: (.*)$/.exec(what)?.[1] || "").split("; ").filter(Boolean).map((x) => cap(namedUrls(x))); r.count = r.steps.length; }
+        continue;
+      }
+      rows.push({ t: e.ts_ms, kind: e.kind, sev: d.status >= 400 ? "warning" : e.severity, who, what: namedUrls(what), rid: d.request_id || null,
+        detail: typeof e.detail === "string" ? e.detail : d.text ? namedUrls(d.text) : d.reason ? "reason: " + d.reason : null,
+        shard: e.where?.shard ?? shardOfChange(d.object, d.route), until: e.until_ms, plan: pid || (d.plan === true ? "?" : null) });
     }
     // Audited changes the events do not hold already (an older server has no
     // events), and each one's reason and address for those they do.
     for (const a of audit || []) {
       if (a.kind && a.kind !== "change") continue;
+      const pid = planOf(null, a);
+      if (pid) { const r = planRow(pid, a.ts_ms); if (a.route === "/v1/admin/plan/apply" && a.method !== "PLAN" && !a.after?.step) { r.addr = r.addr || a.addr; r.reason = r.reason || a.reason; r.who = r.who || (a.who === "token" ? "root token" : a.who); if (Array.isArray(a.after?.steps) && a.after.steps.length) { r.steps = a.after.steps.filter(Boolean).map((x) => cap(namedUrls(String(x)))); r.count = a.after.steps.length; } } if (a.after?.step && a.status >= 400) r.sev = "warning"; continue; }
       if (a.method === "GET" || !CLUSTER_ROUTE.test(a.route || "")) continue;
       const twin = rows.find((r) => (a.request_id && r.rid === a.request_id) || (!r.rid && r.who && r.who === a.who && Math.abs(r.t - a.ts_ms) < 5000));
       if (twin) { if (a.reason && !twin.detail) twin.detail = "reason: " + a.reason; if (a.addr) twin.addr = a.addr; continue; }
       if (!a.kind && a.status >= 400) continue;
-      rows.push({ t: a.ts_ms, kind: "change", sev: a.status >= 400 ? "warning" : "info", who: a.actor && a.actor !== "person" ? a.actor : a.who === "token" ? "root token" : a.who,
-        what: cap(a.detail || `${a.method} ${a.route}`) + (a.status >= 400 ? ` (it failed: ${a.status})` : ""), detail: a.reason ? "reason: " + a.reason : null,
-        shard: shardOfChange(a.object, a.route) ?? (/shard (\d+)/.exec(a.detail || "") ? +/shard (\d+)/.exec(a.detail)[1] : null), addr: a.addr });
+      // A failed change says why it failed, in words, not its route (AC-3).
+      const failed = a.status >= 400;
+      const err = a.after?.error || a.error || null;
+      rows.push({ t: a.ts_ms, kind: "change", sev: failed ? "warning" : "info", who: a.actor && a.actor !== "person" ? a.actor : a.who === "token" ? "root token" : a.who,
+        what: cap(namedUrls(a.detail || routeWords(a))) + (failed ? ` (it failed${err ? ": " + plainText(err) : ` with ${a.status}`})` : ""), detail: a.reason ? "reason: " + a.reason : null,
+        shard: shardOfChange(a.object, a.route) ?? (/shard (\d+)/.exec(a.detail || "") ? +/shard (\d+)/.exec(a.detail)[1] : null), addr: a.addr, rid: a.request_id || null });
     }
-    rows.sort((a, b) => b.t - a.t);
+    // Fold the cluster's own event of a person's change into it: the same
+    // shard, within 20 s; and every shape event inside a plan into the plan.
+    const people = rows.filter((r) => r.kind === "change" && !r.plan);
+    for (const ev of rows.filter((r) => SHAPE.test(r.kind))) {
+      const p = [...plans.values()].find((x) => ev.t >= x.start - 2000 && ev.t <= (x.end ?? Date.now()) + 5000);
+      if (p) { (p.seen ||= []).push(ev.what); ev.drop = true; continue; }
+      const c = people.find((r) => !r.folded && Math.abs(r.t - ev.t) < 20000 && (r.shard == null || ev.shard == null || r.shard === ev.shard) && r.who !== "the cluster");
+      if (c) { c.folded = true; c.what = cap(ev.what) + (c.what && c.what !== ev.what ? "" : ""); c.kind = ev.kind; c.drop = false; ev.drop = true; c.shard = c.shard ?? ev.shard; }
+    }
+    for (const r of plans.values()) {
+      r.what = r.ended ? `${r.ended}${r.count ? "" : ""}` : `A plan of ${plural(r.count || 0, "step")} is being applied`;
+      r.detail = [r.reason ? "reason: " + r.reason : null, ...(r.notes || []).sort((a, b) => a.t - b.t).map((x) => x.text)].filter(Boolean).join(" · ") || null;
+      r.list = r.steps;
+    }
+    const all = rows.filter((r) => !r.drop);
+    all.sort((a, b) => b.t - a.t);
     const K = KINDS[changeKind];
-    const shown = rows.filter((r) => !K[1] || K[1].test(r.kind));
+    const shown = all.filter((r) => !K[1] || K[1].test(r.kind) || (r.plan && changeKind === "shape"));
     const kindSeg = seg(Object.entries(KINDS).map(([k, [l]]) => [k, l]), changeKind, (v) => { changeKind = v; drawChanges(); }, { "aria-label": "Which changes" });
     const note = [];
     if (eventsErr) note.push(eventsErr.status === 404 ? "This server keeps no events: copies going down and primaries changing show here on a newer server. These are the audited changes." : `Events: ${eventsErr.message}`);
     if (auditErr) note.push(auditErr.status === 403 ? "The audit log needs an admin key." : `Audit: ${auditErr.message}`);
     clear(body, card({
-      cls: "cc-changes", title: "Changes", sub: `this cluster's events and changes, last 7 days, newest first · times in ${zoneName()}`,
+      cls: "cc-changes", title: "Changes", sub: `this cluster's events and changes, last 7 days, newest first · one row a change · times in ${zoneName()}`,
       // Read again first: on a phone the kinds scroll sideways after it.
       tools: [h("button", { class: "btn sm", title: "Read the changes again", "aria-label": "Read the changes again", onclick: () => { events = audit = null; eventsErr = auditErr = null; drawChanges(); } }, icon("refresh")), kindSeg],
       body: h("div", { class: "stack", style: { gap: "8px" } },
@@ -2017,22 +2479,18 @@ function render(page, r) {
           h("tbody", {}, shown.slice(0, 300).map((r) => h("tr", {},
             h("td", { class: "nowrap", title: whenTitle(r.t) }, clock(r.t)),
             h("td", { class: "nowrap" }, r.who || "–", r.addr ? h("div", { class: "small muted" }, r.addr) : null),
-            h("td", {}, h("span", { class: "row nw", style: { gap: "6px", alignItems: "flex-start" } }, h("span", { class: "dot " + (r.sev === "critical" ? "bad" : r.sev === "warning" ? "warn" : "") , style: { marginTop: "6px" } }), h("span", {}, r.what, r.detail ? h("div", { class: "small dim" }, r.detail) : null, r.until ? h("div", { class: "small muted" }, `until ${clock(r.until)} (${dur((r.until - r.t) / 1000)})`) : null))),
+            h("td", {}, h("span", { class: "row nw", style: { gap: "6px", alignItems: "flex-start" } }, h("span", { class: "dot " + (r.sev === "critical" ? "bad" : r.sev === "warning" ? "warn" : ""), style: { marginTop: "6px" } }),
+              h("span", {}, r.what, r.detail ? h("div", { class: "small dim" }, r.detail) : null,
+                r.list?.length ? h("ol", { class: "cc2-plan-steps small dim" }, r.list.map((x) => h("li", {}, x))) : null,
+                r.until ? h("div", { class: "small muted" }, `until ${clock(r.until)} (${dur((r.until - r.t) / 1000)})`) : null))),
             h("td", {}, r.shard != null ? h("button", { class: "btn xs", onclick: () => select(+r.shard) }, `shard ${r.shard}`) : "")))))) : empty("clock", "Nothing changed", "No event or audited change of this cluster in the last 7 days.")),
     }));
   }
-
-  // ------------------------------------------------------------ runs
-  function startRunner(steps, reason) {
-    runner = { steps, reason: reason || null, at: 0, started: Date.now(), by: state.whoami?.name || null, done: false, failed: false, stopping: false, stopped: false };
-    runChanged();
-    run(runner);
-  }
-  function stopRunner() {
-    if (!runner) return;
-    runner.stopping = true; runChanged();
-    const cur = runner.steps[runner.at];
-    if (cur?.wait === "moves") api("/v1/admin/moves/stop", { body: {}, reason: runner.reason }).catch(() => {});
+  /** A route said in words, for an audit entry that has no detail. */
+  function routeWords(a) {
+    const m = /\/v1\/admin\/shards\/(\d+)\/(replicas|promote|drain)/.exec(a.route || "") || [];
+    const what = { replicas: a.method === "DELETE" ? "remove a copy from shard" : "add a copy to shard", promote: "make a copy shard's primary in shard", drain: "drain shard" }[m[2]];
+    return what ? `${what} ${m[1] ?? "?"}` : /\/v1\/admin\/shards$/.test(a.route || "") ? "add a shard" : /\/v1\/admin\/moves/.test(a.route || "") ? "move slots" : `${a.method} ${a.route}`;
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -2042,7 +2500,7 @@ function render(page, r) {
     M = state.cluster ? model(state.cluster) : null;
     if (M && draftCount()) { /* keep the draft to what still exists */ }
     const typing = document.activeElement?.matches?.("input, select, textarea") && (side.contains(document.activeElement) || sheetEl?.contains(document.activeElement));
-    if (tab === "map") { drawHead(); drawStrip(); drawToolbar(); drawMap(); if (!typing) drawSide(); }
+    if (tab === "map") { drawHead(); drawStrip(); drawToolbar(); drawMap(); if (!typing && !pressed()) drawSide(); }
     else { drawHead(); drawStrip(); if (tab === "capacity" && !document.querySelector(".modal")) drawCapacity(); }
   }
   const mq = matchMedia("(max-width: 900px)");
@@ -2050,9 +2508,7 @@ function render(page, r) {
   mq.addEventListener?.("change", onNarrow);
   const watcher = () => {
     if (!alive) return;
-    // Once a plan ends, read the moves again so the strip says the last job.
-    if (runner?.done && !runner.movesRead) { runner.movesRead = true; loadMoves(); }
-    drawStrip(); if (tab === "map") drawSide();
+    drawStrip(); if (tab === "map" && !pressed()) drawSide();
   };
   runWatchers.add(watcher);
 
@@ -2060,13 +2516,16 @@ function render(page, r) {
   drawAll();
   loadKube().then(() => { if (M) { changed(); } });
   let movesTimer = null;
-  const pollMoves = async () => { if (!alive) return; await loadMoves(); movesTimer = setTimeout(pollMoves, (moves?.running || runner && !runner.done) ? 2500 : 15000); };
+  // Every 5 s when nothing runs here: a plan or moves another coordinator
+  // starts show within one poll.
+  const pollMoves = async () => { if (!alive) return; await Promise.all([loadMoves(), loadRun()]); if (!alive) return; movesTimer = setTimeout(pollMoves, (moves?.running || planRunning()) ? 2000 : 5000); };
   pollMoves();
   const offs = [
-    bus.on("cluster", update),
+    bus.on("cluster", () => { if (state.cluster && "plan" in state.cluster && !canAdmin()) takeRun(state.cluster.plan); else if (state.cluster?.plan?.state === "running" && !planRunning()) loadRun(); update(); }),
     bus.on("fleet", () => { if (alive && !state.paused) update(); }),
     bus.on("health", () => { if (!isCoordinator() && state.health) { /* a server that is not a coordinator */ clear(page); renderNotCoordinator(page); } }),
     bus.on("paused", () => { if (!state.paused) update(); }),
+    bus.on("fresh", () => { if (alive && M) markStale(); }),
     bus.on("narrow", onNarrow),
     every(10000, loadKube, false),
     every(30000, () => { if (tab === "changes") loadChanges(); }, false),
@@ -2078,6 +2537,8 @@ function render(page, r) {
     runWatchers.delete(watcher);
     closePop(); hideTip(); sheet(null); bottom(null);
     document.removeEventListener("keydown", popKey);
+    document.removeEventListener("pointerdown", press, true);
+    document.removeEventListener("click", release, true);
     mq.removeEventListener?.("change", onNarrow);
     offs.forEach((f) => f());
   };
@@ -2097,70 +2558,37 @@ function readParams(params) {
 }
 
 // ---------------------------------------------------------------- applying a plan
-/** Runs the steps one at a time; waits for moves and copies properly (finding CC-6). */
-async function run(R) {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  for (; R.at < R.steps.length; R.at++) {
-    const x = R.steps[R.at];
-    if (R.stopping) { R.stopped = true; break; }
-    x.st = "run"; const t0 = Date.now(); runChanged();
-    try {
-      const [method, path, body] = x.call || [];
-      if (!method) throw new Error("this step has no call: a server's URL is missing");
-      let jobStart = null;
-      if (x.wait === "moves") {
-        // A job of moves started elsewhere first: wait for it.
-        for (;;) { const m = movesInfo(await api("/v1/admin/moves")); if (!m.running && !m.moving) break; x.note = "waiting for the moves under way to end"; runChanged(); await sleep(2000); if (R.stopping) throw new Error("stopped"); }
-        jobStart = Date.now();
-      }
-      await api(path, method === "DELETE" ? { method, reason: R.reason } : { body, reason: R.reason });
-      if (x.wait === "moves") {
-        // Done when this job is no longer running and nothing moves in the map.
-        for (let k = 0; ; k++) {
-          await sleep(k < 3 ? 700 : 1500);
-          const m = movesInfo(await api("/v1/admin/moves"));
-          const job = m.job;
-          const ours = job && (!m.started || m.started >= jobStart - 5000);
-          if (ours) {
-            x.note = `${fmt.n(job.done)} of ${plural(job.of, "move")} · ${fmt.n(job.slots_moved)} slots${m.rowsDone != null ? ` · ${fmt.si(m.rowsDone)} rows` : ""}${m.rate ? ` · ${fmt.si(m.rate)} rows/s` : ""}${m.eta != null ? ` · about ${dur(m.eta)} left` : ""}`;
-            R.etaS = m.eta;
-            runChanged();
-            if (job.state === "failed") throw new Error(job.error || "a move failed");
-            if (job.state === "stopped") { R.stopped = true; throw new Error("stopped: the slots that moved stay where they are"); }
-            if (!m.running && !m.moving) break;
-          } else if (!m.running && !m.moving && k > 3) break;
-        }
-      } else if (x.wait === "sync") {
-        // The new copy serves once it has caught up with its primary.
-        for (let k = 0; ; k++) {
-          await sleep(2000);
-          await refreshCluster();
-          const M = model(state.cluster);
-          const c = M.all.find((y) => y.url === x.url);
-          if (c && c.inSync && !c.copying) break;
-          const sh = M.shards.find((s2) => s2.i === x.shard);
-          x.note = c ? (c.copying ? `being sent the shard's rows (${fmt.si(sh?.rows)})` : c.lag != null ? `${fmt.n(c.lag)} transactions behind` : "joining") : "joining";
-          R.etaS = x.rows ? Math.max(0, x.rows / measuredRate(null).rate - (Date.now() - t0) / 1000) : null;
-          runChanged();
-          if (R.stopping) { x.note = "still being copied: it goes on, but the plan stops here"; throw new Error("stopped"); }
-        }
-      }
-      x.st = "ok"; x.took = (Date.now() - t0) / 1000; x.note = null;
-      refreshSoon();
-    } catch (e) {
-      x.st = "bad"; x.err = e.message === "stopped" ? "Stopped here." : (e instanceof ApiError ? `${e.message}` : e.message); x.took = (Date.now() - t0) / 1000;
-      if (e.message !== "stopped" && !R.stopped) R.failed = true; else R.stopped = true;
-      R.done = true; runChanged();
-      toast(R.failed ? `The plan stopped at step ${R.at + 1}: ${x.err}` : "The plan stopped", R.failed ? "bad" : "info", 9000);
-      refreshCluster();
-      return;
-    }
+/** A step of this page's plan as the coordinator runs it (POST /v1/admin/plan/apply). */
+function serverStep(x) {
+  const base = { text: cap(x.text), rows: x.rows ? Math.round(x.rows) : 0, est_s: x.est != null ? Math.round(x.est) : null, repair: !!x.repair };
+  switch (x.kind) {
+    case "add": return { ...base, kind: "add_copy", shard: x.shard, url: x.url };
+    case "remove": return { ...base, kind: "remove_copy", shard: x.shard, url: x.url };
+    case "promote": return { ...base, kind: "promote", shard: x.shard, url: x.url, force: !!x.force };
+    case "shard": return { ...base, kind: "add_shard", servers: x.servers };
+    case "move": return { ...base, kind: "move", shard: x.shard, slots: x.slots, to: x.to };
+    case "even": return { ...base, kind: "rebalance" };
+    case "drain": return { ...base, kind: "drain", shard: x.shard };
+    case "unshard": return { ...base, kind: "remove_shard", shard: x.shard };
+    default: return { ...base, kind: x.kind };
   }
-  R.done = true; R.etaS = null;
-  runChanged();
-  if (!R.stopped) toast("The plan is applied", "ok", 6000);
-  refreshSoon();
 }
+/**
+ * An error in plain words: votes or other JSON a server quoted become
+ * sentences (finding NEW-cluster-admin-3), and URLs lose their scheme.
+ */
+function plainText(t) {
+  let m = String(t || "");
+  const at = m.indexOf("[{");
+  if (at >= 0) {
+    try {
+      const votes = JSON.parse(m.slice(at));
+      if (Array.isArray(votes)) m = m.slice(0, at).replace(/[:\s]+$/, "") + ": " + votes.map((v) => `${short(v.url || "a copy")} ${v.granted ? "voted for it" : v.error ? `did not answer (${String(v.error).replace(/^Unavailable: /, "")})` : "voted against it"}`).join("; ");
+    } catch { /* not JSON after all */ }
+  }
+  return m.replace(/https?:\/\//g, "").replace(/\s*\{[^{}]*"error"[^{}]*\}/g, "");
+}
+const plainError = (e) => (e instanceof ApiError && e.status === 403 ? "it needs an admin key" : plainText(e?.message || String(e)));
 
 // ---------------------------------------------------------------- not a coordinator
 /** A server that is not a coordinator: what it is, and how to make a cluster. */

@@ -220,12 +220,17 @@ is_more() {
 }
 
 # cpu ENGINE TAG [LABEL]: each of the engine's containers' CPU time so far
-# (cgroup cpu.stat), one JSON line per pod in $STRATA_WORK/compare/cpu.jsonl
-# (for another OUT, the directory of that name). LABEL names the run, as
-# engine-compare's --label does (the engine's name if none).
+# (cgroup cpu.stat) and memory (memory.current and memory.peak, and of the
+# current its anonymous and file pages from memory.stat, as mem_*), one JSON
+# line per pod in $STRATA_WORK/compare/cpu.jsonl (for another OUT, the
+# directory of that name). LABEL names the run, as engine-compare's --label
+# does (the engine's name if none).
 cpu() {
     for pod in $($K get pods -l "engine=$1" -o jsonpath='{.items[*].metadata.name}'); do
-        stat=$($K exec "$pod" -- cat /sys/fs/cgroup/cpu.stat | awk '{printf "\"%s\": %s, ", $1, $2}')
+        stat=$({ $K exec "$pod" -- cat /sys/fs/cgroup/cpu.stat /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.peak /sys/fs/cgroup/memory.stat 2>/dev/null || true; } |
+            awk 'NF == 1 { n++; printf "\"%s\": %s, ", (n == 1 ? "mem_current" : "mem_peak"), $1; next }
+                 n == 0 { printf "\"%s\": %s, ", $1, $2; next }
+                 $1 == "anon" || $1 == "file" { printf "\"mem_%s\": %s, ", $1, $2 }')
         echo "{\"engine\": \"$1\", \"label\": \"${3:-$1}\", \"tag\": \"$2\", \"pod\": \"$pod\", ${stat}\"time\": $(date +%s)}" >>"${STRATA_WORK:?set STRATA_WORK}/${OUT#/data/}/cpu.jsonl"
     done
 }
@@ -250,7 +255,7 @@ image)
     ;;
 build)
     # One shard after the other, each on the node that will serve it, with
-    # the engine's whole budget: a shard's build holds its documents in
+    # the engine's whole budget: a shard's build holds a segment's documents in
     # memory, and two at once in 3 GiB each were killed for lack of memory.
     # With BUILD_PARALLEL=1 both at once, each with its node's share.
     build_shard() {

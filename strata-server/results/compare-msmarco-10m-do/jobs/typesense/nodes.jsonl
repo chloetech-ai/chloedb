@@ -1,0 +1,2 @@
+{"node": "typesense-d-a1-3eal9v", "cpu": "Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz", "vcpus": 8, "mem_kb": 65853636, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.965, "sha256_1g_x_vcpus_s": 11.584, "disk_write_2g_s": 0.645, "copy_ms": 0, "time": 1793699836, "size": "m3-8vcpu-64gb"}
+{"node": "typesense-c-a1-3eal90", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382184, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.398, "sha256_1g_x_vcpus_s": 11.584, "disk_write_2g_s": 2.274, "copy_ms": 437501, "time": 1793700275, "size": "c-8"}

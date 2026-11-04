@@ -48,6 +48,20 @@ export function timeRange() {
   const key = rangeKey(state.range);
   return { from: to - state.range * 60e3, to, live: !state.paused, label: "last " + (key || state.range + "m").replace(/(\d)([a-z])/, "$1 $2"), range: key, fixed: false, zoomed: false };
 }
+/**
+ * The shortest live range that covers `t` (epoch ms): {range: "15m"} etc.,
+ * or a fixed window from `t` to now when it is older than the longest. A
+ * link "since T" stays live: it does not pause the views it carries into.
+ */
+export function rangeSince(t) {
+  const back = (Date.now() - t) / 60e3;
+  const r = RANGES.find(([, m]) => m >= back);
+  return r ? { range: r[0] } : { from: Math.round(t), to: Date.now() };
+}
+/** Last night, 18:00 to 08:00; before 08:00, yesterday 18:00 to now (the night still going). */
+export function overnight() { const d = new Date(); d.setHours(8, 0, 0, 0); return d > Date.now() ? [d.getTime() - 14 * 3600e3, Date.now()] : [d.getTime() - 14 * 3600e3, d.getTime()]; }
+/** Whether the window shown ended a while ago (a past window, not now). */
+export const isPast = () => { const r = timeRange(); return r.fixed && r.to < Date.now() - 90e3; };
 /** The range as URL params: {range: "6h"}, {from, to}, or {} for the default. Zoom counts as a window. */
 export function rangeParams({ absolute = false } = {}) {
   const r = timeRange();
@@ -177,7 +191,7 @@ const seriesKey = () => state.from != null ? `w${state.from}-${state.to}` : stat
 let seriesLoadedKey = null, seriesBusy = false;
 
 async function pollSeries() {
-  if (seriesBusy) return;
+  if (seriesBusy || !polls.series) { if (!polls.series) good("series"); return; }
   seriesBusy = true;
   try { await readSeries(); good("series"); }
   catch (e) { bad("series", e); bus.emit("fresh"); throw e; }
@@ -241,13 +255,34 @@ function setOnline(on, error) {
 }
 
 async function pollAlerts() {
-  try { const a = await api("/v1/alerts", T); good("alerts"); if (state.paused) return; state.alerts = a; bus.emit("alerts"); }
+  if (polls.alerts === "slow" && Date.now() - alertsAt < 15000 && state.alerts) { good("alerts"); return; }
+  alertsAt = Date.now();
+  // alerts2: for the bell alone, the brief answer (a fifth of the whole).
+  try { const a = await api(polls.alerts === "slow" ? "/v1/alerts?brief=1" : "/v1/alerts", T); good("alerts"); if (state.paused) return; state.alerts = a; bus.emit("alerts"); }
   catch (e) { if (e.status === 404) { good("alerts"); return; } bad("alerts", e); }
 }
 
+// What the view in use needs polled (SH-11): its cluster in full (each
+// copy's detail) or brief (which copies answer, for the badges, every
+// 15 s), and the series or not. main.js sets it on every route.
+// The alerts too: every 5 s where they show, every 15 s for the bell elsewhere.
+const polls = { cluster: "full", series: true, alerts: "full" };
+let clusterAt = 0, alertsAt = 0;
+export function setPolls(p) {
+  const was = { ...polls };
+  polls.cluster = p.cluster === "brief" ? "brief" : "full";
+  polls.series = p.series !== false;
+  polls.alerts = p.alerts === "slow" ? "slow" : "full";
+  if (was.cluster === "brief" && polls.cluster === "full") { clusterAt = 0; pollCluster(); }
+  if (was.alerts === "slow" && polls.alerts === "full" && (Date.now() - alertsAt > 4000 || state.alerts?.brief)) pollAlerts();
+  if (!was.series && polls.series) refreshSeries();
+}
 async function pollCluster() {
+  const brief = polls.cluster === "brief";
+  if (brief && Date.now() - clusterAt < 15000 && state.cluster) { good("cluster"); return; }
+  clusterAt = Date.now();
   let c;
-  try { c = await api("/v1/cluster", T); }
+  try { c = await api(brief ? "/v1/cluster?brief=1" : "/v1/cluster", T); }
   catch (e) { if (e.status === 404 || e.status === 400) { good("cluster"); return; } bad("cluster", e); bus.emit("fresh"); return; }
   good("cluster");
   if (state.paused && state.cluster) return;
@@ -313,9 +348,24 @@ export function firingAlerts(a = state.alerts) {
   if (Array.isArray(a.firing)) return a.firing.map((r) => ({ id: r.id, name: r.name, severity: r.severity, since_ms: r.status?.since_ms || null, value: r.status?.value ?? null, where: r.status?.where || [], ack: r.status?.ack || null, silenced: r.status?.silenced || null, description: r.description }));
   return (a.states || []).filter((x) => x.state === "firing").map((x) => {
     const r = rules.find((y) => y.id === x.rule) || {};
-    return { id: x.rule, name: r.name || x.rule, severity: r.severity || "warning", since_ms: x.since_ms || null, value: x.value ?? null, where: x.where || [], ack: x.ack || null, silenced: x.silenced || null, description: r.description };
+    return { id: x.rule, name: r.name || x.name || x.rule, severity: r.severity || x.severity || "warning", since_ms: x.since_ms || null, value: x.value ?? null, where: x.where || [], ack: x.ack || null, silenced: x.silenced || null, held_by: x.held_by || null, description: r.description, on: firesOn(x) };
   });
 }
+
+/**
+ * The other coordinators an alert fires on when it does not fire on this
+ * one (its rule judges each coordinator's own traffic, R2-scenarios-1):
+ * "coordinator-b", or null when it fires here.
+ */
+export function firesOn(x) {
+  if (!x?.here || !Array.isArray(x.elsewhere) || !x.elsewhere.length) return null;
+  const host = (u) => { try { return new URL(u).host; } catch { return String(u || ""); } };
+  const there = x.elsewhere.filter((e) => e.state === x.state);
+  return (there.length ? there : x.elsewhere).map((e) => e.name || host(e.url)).join(", ");
+}
+
+/** The alerts firing now that nobody silenced nor a cause holds back (alerts2): the one count the bell, Alerts and Home show. */
+export const firingNow = () => firingAlerts().filter((a) => !a.silenced && !a.held_by);
 
 // ---------------------------------------------------------------- the cluster's identity
 const idOf = () => state.cluster?.cluster || state.whoami?.cluster || state.health?.cluster || null;
@@ -329,7 +379,8 @@ export const environment = () => idOf()?.environment || null;
  * "prod", and true when the environment is unknown. The PROD badge shows
  * only for a known production environment (`environment()`).
  */
-export const isProduction = () => { const e = environment(); return e == null || /^prod/i.test(e); };
+// NEW-data-tools-13: production is anything not named as a lower environment (prd, live, production-eu).
+export const isProduction = () => { const e = environment(); return e == null || !/^(dev|development|test|testing|stage|staging|qa|local|sandbox|demo)\b/i.test(e); };
 
 // ---------------------------------------------------------------- the fleet without /v1/health/fleet
 /**

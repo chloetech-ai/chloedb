@@ -34,37 +34,44 @@
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
 //! | `POST /v1/judge` | `{query, keys, table?, fields?, model?, api_key?}` | `{grades: [{key, grade, error?}], model, usage}`: each row graded 0 to 3 for the query by a Claude model ([`crate::judge`]) |
-//! | `GET /v1/queries` | | `{queries, running}`: the queries running now, the longest first, each with its trace so far |
-//! | `DELETE /v1/queries/:id` | | `{cancelled}`: the query stops at its next check and answers 499 |
+//! | `GET /v1/queries` | | `{queries, running}`: the queries running now, the longest first, each with its trace so far; on a coordinator, every coordinator's (another's ids are `id@name`, with `local_id` and `nodes`: who answered) |
+//! | `DELETE /v1/queries/:id` | | `{cancelled}`: the query stops at its next check and answers 499; an `id@name` is cancelled on that coordinator |
 //! | `GET /v1/queries/recent?since=ms&limit=n`, `/v1/queries/slow?limit=n` | | `{queries}`: the latest that ended (or the slow ones), the newest first, each with its trace |
 //! | `GET /v1/queries/request/:id` | | `{queries}`: those a request (its `x-request-id`) ran |
 //! | `GET /v1/queries/finished/:id` | | one ended query with its whole profile: trace, steps ([`strata::query::steps`]) and plan lines (the lists give each without them, unless `full=true`) |
-//! | `GET /v1/profile/settings`, `PUT /v1/profile/settings` | `{slow_ms?, cpu_all?}` | the slow threshold (until restarted) and whether every query's CPU time is measured |
+//! | `GET /v1/profile/settings`, `PUT /v1/profile/settings` | `{slow_ms?, cpu_all?}` | the slow threshold (until restarted) and whether every query's CPU time is measured; on a coordinator `?node=` a copy's, `?coordinator=` (URL or name) another coordinator's |
 //! | `POST /v1/profile/cpu?format=folded&node=` | `{seconds?, hz?, sql?, params?, clients?}` | a CPU profile ([`crate::profiler`]) of the whole server for `seconds`, or of `sql` run again and again for that long by `clients` callers at once (1 to 64): every thread's stacks, sampled `hz` times a CPU second; `format=folded` answers folded lines (flamegraph.pl, speedscope); 409 while another is taken |
 //! | `GET /v1/profile/memory?node=` | | the heap ([`crate::heap`]: bytes in use and their peak, bytes allocated, allocations and frees), the resident memory and its peak, and the threads |
 //! | `POST /v1/profile/heap?format=folded&value=in_use&node=` | `{seconds?, every?, sql?, params?, clients?}` | an allocation profile ([`crate::heap::take`]): about one allocation in every `every` bytes (default 2 MiB) a thread allocates, sampled for `seconds`, with its stack; by stack, the bytes allocated and those still in use at the end; a query in a loop as for a CPU profile |
 //! | `GET /v1/profile/threads?node=` | | each thread of the process: its name, state, CPU time and context switches (Linux); on a coordinator, each of these four with `node` (a replica URL of `/v1/cluster`) is that server's, asked over gRPC (`Profile`) |
-//! | `GET /v1/queries/stats?from=&to=&limit=n`, `GET /v1/queries/stats/:fingerprint`, `POST /v1/queries/stats/reset` | | statistics per statement shape over a window of the last day, by time spent ([`crate::telemetry::Statements`]) |
+//! | `GET /v1/queries/stats?from=&to=&limit=n`, `GET /v1/queries/stats/:fingerprint`, `POST /v1/queries/stats/reset` | | statistics per statement shape over a window of the last day, by time spent ([`crate::telemetry::Statements`]); on a coordinator every coordinator's, merged by shape, each saying its `coordinators`' calls (`local=1`: this one's; `raw=1`: the counts another coordinator merges) |
 //! | `GET /v1/timeseries?since=ms` | | `{interval_ms, points}`: rates and gauges every few seconds, the last hour ([`crate::telemetry::Series`]) |
 //! | `GET /v1/timeseries?from=&to=` | | the same over any range: memory's points when it holds `from`, else a point a minute from the log store's `load` (`source`) |
+//! | `GET /v1/index/reads?table=` | | this server's read counts of a table (a coordinator's own, which the others merge into `/v1/index`'s `reads_from`) |
 //! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, its skew, writes and reads a minute, growth over a day and a week, and copies behind; kept 30 s ([`crate::inspect::tables`]) |
 //! | `POST /v1/admin/copies/verify`, `POST /v1/admin/copies/checkpoint` | `{url, timeout_ms?}`, `{url, name, layout?, link_from?}` | on a coordinator, of a copy (its URL or short name): its shard's primary compares the replicas' rows with its own (`{replicas: [{url, in_sync, compared, differing_slots, first_differing_slot, seq_no, error}]}`), or the copy writes a checkpoint into its own `--backup-dir` (`{checkpoint}`) |
 //! | `POST /v1/admin/plan` | `{shards?: [{shard, copies}], add_shards?, remove_shards?, moves?}` | on own machines, the steps of a change of the cluster's shape, rows to copy, an estimate, what clients feel and what to check first; changes nothing ([`crate::coord::plan`]) |
+//! | `POST /v1/admin/plan/apply` | `{steps: [...], estimate_s?}`, or a plan's body | applies a plan on the coordinator, its steps in order, in the background; kept in a file so that a restart says where it stopped ([`crate::coord::plan::apply`]) |
+//! | `GET /v1/admin/plan/run` | – | the plan applied or last applied here, step by step (also `plan` in `/v1/cluster`) |
+//! | `POST /v1/admin/plan/run/stop`, `/resume`, `/discard` | – | stop after the step under way; apply a stopped plan again from its step; forget a stopped plan |
 //! | `GET /v1/admin/kube/versions?limit=30` | | the images of the cluster's repository a person may pick, newest first, each `current`, `newer`, `tracked`; without Kubernetes too ([`crate::operator::upgrade::Versions`]) |
 //! | `GET /v1/load?from=&to=&copies=all` | | on a coordinator, each copy's load a minute from its own log store; copies that did not answer under `missing` |
 //! | `GET /v1/logs?after=seq&level=warn&request=id&q=text&limit=n&node=` | | `{lines, last, filter, filter_expires_ms, filter_set_by}`: the latest log lines ([`crate::obs::ring`]); on a coordinator with `node`, that copy's `{node, short, filter, filter_expires_ms, filter_set_by, filter_set_ms, previous}` (its lines are in the log store) |
 //! | `GET /v1/logs/filter?node=`, `PUT /v1/logs/filter?node=` | `{filter, expires_s?}` (as `--log`) | `{filter, expires_ms, set_by, set_ms, previous}`: what is logged, for `expires_s` (30 min by default; 0: until set again) and then the filter before; on a coordinator, `node` (a copy's URL or short name) asks or sets that copy's, answered with `node` and `short`; a change is an event (`log_level`) |
-//! | `POST /v1/logs/query` | `{sql, params?, timeout_ms?, scope?}` (SQL over tables `logs` and `queries`) | rows of the server's log store ([`crate::logstore`]); on a coordinator, of every server's merged, with `nodes`: each server's rows, time and error (`"scope": "local"`: its own store alone) |
+//! | `POST /v1/logs/query` | `{sql, params?, timeout_ms?, scope?}` (SQL over tables `logs` and `queries`) | rows of the server's log store ([`crate::logstore`]); on a coordinator, of every server's merged, the other coordinators' stores too, with `nodes`: each server's rows, time and error (`"scope": "local"`: its own store alone; with `"partial": true`, in the form another coordinator merges) |
 //! | `GET /v1/logs/store` | | `{store, schemas, nodes?}`: the log store (its path, rows, bytes, retention, what it wrote, dropped and deleted; null without one), its tables, and on a coordinator every server's |
-//! | `GET /v1/system`, `/v1/cluster`, `/v1/routes` | | the process and its limits; the cluster's copies; requests by route and queries by kind |
+//! | `GET /v1/system`, `/v1/cluster?brief=1`, `/v1/routes` | | the process and its limits; the cluster's copies (`brief=1`: without each copy's `detail`); requests by route and queries by kind |
+//! | `GET /v1/coordinators?window=1` | | `{coordinators: [{url, name, this, last_seen_ms, version}], gone, live_ms}`: this cluster's coordinators, from what the shards heard ([`crate::peers`]); `window=1` adds this one's last minute and 5 minutes of searches |
 //! | `GET /v1/whoami` | | `{name, key, scope, root, cluster, caller}`: who the request's credential is ([`crate::keys`]) |
 //! | `GET /v1/events?from=&to=&kind=&limit=`, `POST /v1/events/notes` | `{text, ts_ms?, where?}` | what happened, the newest first: copies down and back, new primaries, changes, notes ([`crate::events`]) |
 //! | `GET /v1/health/fleet` | | `{status, headline, since_ms, checks, problems, coordinators}`: whether the cluster is all right and what is wrong first ([`crate::fleet`]) |
 //! | `GET /v1/admin/keys`, `POST /v1/admin/keys`, `DELETE /v1/admin/keys/:id`, `POST /v1/admin/keys/:id/rotate` | `{name, scope, expires_days?, owner?, note?}`, rotate `{grace_minutes?}` | the API keys, how many were revoked, and how the last merge of keys went with each server of the cluster (`peers`, [`crate::keysync`]); a new one's secret is answered once; each key with its owner, note and last address, and the revoked ones (who revoked them, when); a rotation answers a new key of the same name and scope, the old one expiring after the grace (60 min) |
-//! | `GET /v1/admin/audit?kind=&from=&to=&who=&q=&limit=n` | | the changes, notes and refused requests, the newest first, with `kind` (change, note, refusal), who, addr, client, reason, object, before and after; older than memory holds from the log store's `audit` |
-//! | `GET /v1/alerts`, `PUT /v1/alerts/rules` | `{rules}` | the alert rules with their states and the latest changes ([`crate::alerts`]) |
-//! | `GET`/`PUT /v1/alerts/routes`, `POST /v1/alerts/routes/:name/test` | `{routes: [{name, url, severities}]}` | where notifications go, each with its deliveries (sent, failed, last error); a test message (admin) |
-//! | `POST /v1/alerts/backtest` | `{rule, from, to}` | the rule replayed over memory's points or up to 7 days of the log store's load: `{points, fired, source}` |
+//! | `GET /v1/admin/keys/clients?hours=24` | | which clients sent each key over the last `hours` (1 to 168): by key id, each client's app, client, address, calls, failed calls, first and last; every query counts, not a sample; on a coordinator every coordinator's summed, each client naming the `coordinators` it went through (`coordinators` says which answered; `local=1` for this one's); `since_ms`: from when every coordinator counted |
+//! | `GET /v1/admin/audit?kind=&from=&to=&who=&q=&limit=n` | | the changes, notes and refused requests, the newest first, with `kind` (change, note, refusal), who, addr, client, reason, object, before and after; older than memory holds from the log store's `audit`; on a coordinator every coordinator's, each entry naming its `coordinator` (`coordinators` says which answered; `local=1` for this one's) |
+//! | `GET /v1/alerts`, `PUT /v1/alerts/rules` | `{rules}` | the alert rules with their states and the latest changes ([`crate::alerts`]); `brief=1`: each rule's state, and of those not ok what the bell shows; on a coordinator the PUT answers how many copies took them (`pushed`) |
+//! | `GET`/`PUT /v1/alerts/routes`, `POST /v1/alerts/routes/:name/test` | `{routes: [{name, kind, url, key, severities, repeat_min}]}` | where notifications go, each with its deliveries (sent, failed, last error); a test message (admin) |
+//! | `POST /v1/alerts/backtest` | `{rule, from, to}` | the rule replayed over memory's points, up to 7 days of the log store's load, the coordinator's events or each copy's own points: `{points, fired, source, covered_from}` |
+//! | `GET`/`POST /v1/alerts/peer` | what a coordinator holds | coordinators tell each other their rules, routes, acknowledgements, silences, notes and pages (admin, with `x-strata-peer`) |
 //! | `GET /v1/alerts/:rule`, `POST /v1/alerts/:rule/ack`, `POST`/`DELETE /v1/alerts/:rule/silence`, `POST /v1/alerts/:rule/notes` | `{note}`, `{minutes, reason}`, `{text}` | one alert with its events (7 days), acknowledged, silenced, noted (write scope) |
 //!
 //! Every answer carries the request's id in `x-request-id`: the one the
@@ -147,6 +154,10 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
     // Rows come in writes and imports; every other body is small.
     let rows = DefaultBodyLimit::max(svc.max_body);
     let app = App { svc, token: access.token.clone(), cluster: access.cluster.clone(), hosts: access.hosts.clone().map(Into::into) };
+    // alerts2: coordinators tell each other of their alerts.
+    crate::alerts::peering(&app.svc);
+    // cluster2: a plan a restart stopped is taken up (interrupted).
+    crate::coord::plan::start(&app.svc);
     let api = Router::new()
         .route("/v1/stats", get(stats))
         .route("/v1/schema", get(schema))
@@ -154,6 +165,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/tables/:table/paths", get(json_paths))
         .route("/v1/index", get(index))
         .route("/v1/index/reads/reset", post(reset_reads))
+        // fleet: one coordinator's reads, for the others to merge (INS-3).
+        .route("/v1/index/reads", get(index_reads))
         .route("/v1/config", get(config))
         .route("/metrics", get(metrics))
         .route("/v1/query", post(query))
@@ -245,6 +258,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/routes", get(routes))
         .route("/v1/whoami", get(whoami))
         .route("/v1/admin/keys", get(list_keys).merge(post(create_key)))
+        .route("/v1/admin/keys/clients", get(key_clients))
         .route("/v1/admin/keys/:id", axum::routing::delete(revoke_key))
         .route("/v1/admin/audit", get(audit_log))
         // alerts (alerts agent)
@@ -253,6 +267,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/alerts/routes", get(alert_routes).put(put_alert_routes))
         .route("/v1/alerts/routes/:name/test", post(test_alert_route))
         .route("/v1/alerts/backtest", post(alert_backtest))
+        // alerts2: what another coordinator holds and tells of the alerts
+        .route("/v1/alerts/peer", get(alert_peer_state).post(alert_peer_merge))
         .route("/v1/alerts/:rule", get(alert))
         .route("/v1/alerts/:rule/ack", post(ack_alert))
         .route("/v1/alerts/:rule/silence", post(silence_alert).delete(unsilence_alert))
@@ -260,12 +276,20 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         // ----- core: the rebuilt command center's contract (fleet health,
         // events, time beyond an hour, versions, plans, tables)
         .route("/v1/health/fleet", get(fleet_health))
+        // fleet: the coordinators of this cluster ([`crate::peers`]).
+        .route("/v1/coordinators", get(coordinators))
         .route("/v1/events", get(events_list))
         .route("/v1/events/notes", post(events_note))
         .route("/v1/admin/keys/:id/rotate", post(rotate_key))
         .route("/v1/load", get(copies_load))
         .route("/v1/admin/kube/versions", get(kube_versions))
         .route("/v1/admin/plan", post(admin_plan))
+        // cluster2: a plan applied on the coordinator, as a job (coord/plan.rs).
+        .route("/v1/admin/plan/apply", post(plan_apply))
+        .route("/v1/admin/plan/run", get(plan_run))
+        .route("/v1/admin/plan/run/stop", post(plan_stop))
+        .route("/v1/admin/plan/run/resume", post(plan_resume))
+        .route("/v1/admin/plan/run/discard", post(plan_discard))
         .route("/v1/index/tables", get(index_tables))
         .route("/v1/admin/copies/verify", post(copy_verify))
         .route("/v1/admin/copies/checkpoint", post(copy_checkpoint))
@@ -279,11 +303,24 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/livez", get(live))
         .route("/readyz", get(ready))
         .merge(api)
+        .layer(compression())
         .layer(middleware::map_response(close_when_draining))
         .layer(middleware::from_fn_with_state(app.clone(), browsers))
         .layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))
         .layer(middleware::from_fn_with_state(app.clone(), observe))
         .with_state(app)
+}
+
+/// gzip for a client that asks for it (`Accept-Encoding: gzip`), of JSON
+/// answers and the UI's pages, scripts and styles (SH-11: a full
+/// `/v1/cluster` is about 5.5 KB a copy, a tenth of that compressed).
+/// Not of event streams, NDJSON, downloads or answers under 1 KB.
+fn compression() -> tower_http::compression::CompressionLayer<impl tower_http::compression::Predicate + Clone> {
+    use tower_http::compression::predicate::{Predicate, SizeAbove};
+    let text = |_: axum::http::StatusCode, _: axum::http::Version, h: &HeaderMap, _: &axum::http::Extensions| {
+        h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|t| ["application/json", "text/javascript", "application/javascript", "text/css", "text/html"].iter().any(|k| t.starts_with(k)))
+    };
+    tower_http::compression::CompressionLayer::new().gzip(true).compress_when(SizeAbove::new(1024).and(text))
 }
 
 /// Gives the request its id (answered in `x-request-id`), serves it in a
@@ -487,6 +524,16 @@ async fn fleet_health(State(app): State<App>) -> AxJson<Json> {
     AxJson(app.svc.fleet_health().await)
 }
 
+/// `GET /v1/coordinators` ([`crate::peers`]): fleet. With `window=1`,
+/// this server's searches over fleet health's windows too.
+async fn coordinators(State(app): State<App>, Query(q): Params) -> AxJson<Json> {
+    let mut j = crate::peers::json(&app.svc);
+    if q.get("window").is_some_and(|v| v == "1" || v == "true") {
+        j["window"] = crate::peers::window_json(&app.svc);
+    }
+    AxJson(j)
+}
+
 /// An event row of the log store's `events`, as `GET /v1/events` has it.
 fn event_of_row(r: &Json) -> Json {
     let parsed = |k: &str| r[k].as_str().and_then(|t| serde_json::from_str::<Json>(t).ok());
@@ -624,12 +671,18 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
             | "/v1/alerts/backtest"
     );
     // A read that failed (404, 405, 500) changed nothing either.
-    let read = method == axum::http::Method::GET || method == axum::http::Method::HEAD || plan;
+    // Coordinators telling each other their alerts: a sync between
+    // servers, which the coordinator it came from audited as its change.
+    let sync = route == "/v1/alerts/peer";
+    let read = method == axum::http::Method::GET || method == axum::http::Method::HEAD || plan || sync;
     let caller = keys::caller().unwrap_or_default();
     // A request that made its own event of what it did (an alert
     // acknowledged, a log level set, a Contain rule): its audit entry is
     // not a `change` event too, so that the Timeline says it once.
     let evented = res.extensions().get::<Evented>().is_some();
+    // cluster2: why a request failed (its error), kept in its entry's
+    // `after`, so that the Changes list says what went wrong.
+    let failed = (status >= 400).then(|| res.extensions().get::<ClientError>().map(|e| e.0.clone()).or_else(|| res.extensions().get::<Failure>().map(|e| e.0.clone()))).flatten();
     if refusal || detail.is_some() || (need == Scope::Admin && !read) {
         let kind = if refusal { keys::REFUSAL } else { change.kind.unwrap_or(keys::CHANGE) };
         // A refused credential that is a key known here (expired, revoked):
@@ -659,7 +712,7 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
             reason: caller.reason.clone(),
             object: change.object,
             before: change.before,
-            after: change.after,
+            after: change.after.or_else(|| failed.map(|e| json!({"error": &*e}))),
             actor: change.actor.unwrap_or("person").into(),
         }, !evented);
     }
@@ -689,6 +742,16 @@ fn audited(j: Json, detail: String) -> Response {
     r
 }
 
+/// cluster2: a change that failed, said by what it tried (`what`) in
+/// the audit log and on the Timeline rather than by its route (AC-3).
+fn tried(what: String) -> impl FnOnce(ApiError) -> Response {
+    move |e| {
+        let mut r = e.into_response();
+        r.extensions_mut().insert(Audited(what));
+        r
+    }
+}
+
 /// On an answer: its request made its own event of what it did, which
 /// its audit entry is not ([`auth`]).
 #[derive(Clone)]
@@ -711,6 +774,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
         "/v1/alerts/rules" => Scope::Admin,
         "/v1/alerts/routes" | "/v1/alerts/routes/:name/test" => Scope::Admin,
+        // alerts2: coordinators exchange their alerts as admins.
+        "/v1/alerts/peer" => Scope::Admin,
         // alerts (alerts agent): acknowledging, silencing and noting write.
         "/v1/alerts/:rule/ack" | "/v1/alerts/:rule/silence" | "/v1/alerts/:rule/notes" => Scope::Write,
         "/v1/events/notes" => Scope::Admin,
@@ -828,10 +893,22 @@ async fn index(State(app): State<App>, Query(q): Params) -> Res {
 }
 
 /// `POST /v1/index/reads/reset`: this server's read counts start again
-/// ([`crate::reads`]).
-async fn reset_reads(State(app): State<App>) -> AxJson<Json> {
+/// ([`crate::reads`]), and every other coordinator's (fleet).
+async fn reset_reads(State(app): State<App>, headers: HeaderMap) -> AxJson<Json> {
     app.svc.reads.reset();
-    AxJson(json!({"reset": true, "at_ms": crate::telemetry::now_ms()}))
+    let mut j = json!({"reset": true, "at_ms": crate::telemetry::now_ms()});
+    if crate::peers::from_peer(&headers).is_none() {
+        let answers = crate::peers::post_all(&app.svc, "/v1/index/reads/reset", &json!({})).await;
+        j["coordinators"] = crate::peers::reach(&app.svc, &answers);
+    }
+    AxJson(j)
+}
+
+/// `GET /v1/index/reads?table=`: this server's reads of a table, by the
+/// copy that served them ([`crate::inspect::reads_json`]).
+async fn index_reads(State(app): State<App>, Query(q): Params) -> Res {
+    let table = q.get("table").filter(|t| !t.is_empty()).ok_or_else(|| ApiError::bad("name the table: ?table=products"))?;
+    Ok(AxJson(crate::inspect::reads_json(&app.svc, table)))
 }
 
 /// `GET /v1/tables/:table/paths?field=&path=&where=`: a JSON field's
@@ -1069,7 +1146,12 @@ fn audit_ui(object: Option<String>, sent: &str, table: Option<&str>, rows: Optio
 /// [`audit_ui`] of a statement: its table is the one it names.
 fn audit_ui_write(statement: &str, rows: Option<u64>, shards: Option<&Json>) {
     let table = table_written(statement);
-    audit_ui(table.as_ref().map(|t| format!("table {t}")), statement, table.as_deref(), rows, shards);
+    // workdata (NEW-data-tools-12): a table's statement counts no rows.
+    let ddl = statement.split_whitespace().next().is_some_and(|w| ["CREATE", "DROP", "ALTER", "TRUNCATE"].iter().any(|k| w.eq_ignore_ascii_case(k)));
+    audit_ui(table.as_ref().map(|t| format!("table {t}")), statement, table.as_deref(), rows.filter(|_| !ddl), shards);
+    if ddl && rows.is_some() && keys::caller().is_some_and(|c| c.command_center()) {
+        keys::note(format!("ran: {}", statement.chars().take(200).collect::<String>()));
+    }
 }
 
 /// The table a statement writes: what follows INSERT INTO, UPDATE, DELETE
@@ -1891,8 +1973,8 @@ async fn sid_next(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 
 async fn term_stats(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let params = app.svc.params(b.get("params")).await?;
-    let (stats, snapshot) = app.svc.term_stats(body_str(&b, "sql")?, None, &params, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
-    Ok(AxJson(json!({"stats": stats, "snapshot": snapshot})))
+    let (stats, snapshot, version) = app.svc.term_stats(body_str(&b, "sql")?, None, &params, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
+    Ok(AxJson(json!({"stats": stats, "snapshot": snapshot, "version": version})))
 }
 
 async fn snapshot(State(app): State<App>) -> Res {
@@ -1972,15 +2054,21 @@ async fn add_shard(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Re
         None | Some(Json::Null) => Acks::All,
         Some(v) => v.as_str().and_then(Acks::parse).ok_or_else(|| ApiError::bad("write_acks is all, majority or primary"))?,
     };
-    let j = app.svc.coordinator()?.add_shard(servers.clone(), acks).await?;
+    let j = match app.svc.coordinator()?.add_shard(servers.clone(), acks).await {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("add a shard served by {}", servers.join(", ")))(e)),
+    };
     let detail = format!("added shard {} served by {}", j["shard"], servers.join(", "));
     Ok(audited(j, detail))
 }
 
 /// `DELETE /v1/admin/shards/:i`: removes a shard that holds no slot.
 async fn remove_shard(State(app): State<App>, axum::extract::Path(i): axum::extract::Path<usize>) -> Result<Response, ApiError> {
-    let j = app.svc.coordinator()?.remove_shard(i).await?;
     keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
+    let j = match app.svc.coordinator()?.remove_shard(i).await {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("remove shard {i}"))(e)),
+    };
     Ok(audited(j, format!("removed shard {i}")))
 }
 
@@ -1988,7 +2076,11 @@ async fn remove_shard(State(app): State<App>, axum::extract::Path(i): axum::extr
 /// server for shard `i`, a replica of its primary.
 async fn add_replica(State(app): State<App>, axum::extract::Path(i): axum::extract::Path<usize>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let url = body_str(&b, "url")?.to_string();
-    let j = app.svc.coordinator()?.add_replica(i, &url, body_bool(&b, "force")?).await?;
+    keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
+    let j = match app.svc.coordinator()?.add_replica(i, &url, body_bool(&b, "force")?).await {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("add {url} to shard {i}"))(e)),
+    };
     keys::note_change(keys::Change { object: Some(format!("shard {i}")), after: Some(json!({"added": url})), ..Default::default() });
     Ok(audited(j, format!("added {url} to shard {i}")))
 }
@@ -2000,16 +2092,26 @@ async fn promote_in_shard(State(app): State<App>, axum::extract::Path(i): axum::
     let c = app.svc.coordinator()?;
     // The copy by its short name (`s0-1`), as the cluster names it.
     let name = copy_of(&*c.snapshot().await, &url).map_or_else(|_| url.clone(), |c| c.short);
-    let j = c.promote(i, &url, body_bool(&b, "force")?).await?;
-    keys::note_change(keys::Change { object: Some(format!("shard {i}")), after: Some(json!({"primary": url, "copy": name})), ..Default::default() });
-    Ok(audited(j, format!("made {name} the primary of shard {i}")))
+    let force = body_bool(&b, "force")?;
+    // cluster2: the votes a refusal quotes, in words (NEW-cluster-admin-3).
+    keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
+    let j = match c.promote(i, &url, force).await {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("make {name} the primary of shard {i}{}", if force { " (forced)" } else { "" }))(ApiError { message: crate::coord::plan::plain_votes(&e.message), ..e })),
+    };
+    keys::note_change(keys::Change { object: Some(format!("shard {i}")), after: Some(json!({"primary": url, "copy": name, "forced": force})), ..Default::default() });
+    Ok(audited(j, format!("made {name} the primary of shard {i}{}", if force { " (forced, asking no votes)" } else { "" })))
 }
 
 /// `DELETE /v1/admin/shards/:i/replicas?url=`: one server fewer for shard
 /// `i`.
 async fn remove_replica(State(app): State<App>, axum::extract::Path(i): axum::extract::Path<usize>, Query(q): Params) -> Result<Response, ApiError> {
     let url = q.get("url").filter(|u| !u.is_empty()).ok_or_else(|| ApiError::bad("url is the gRPC URL of the server to remove (?url=http://host:port)"))?;
-    let j = app.svc.coordinator()?.remove_replica(i, url).await?;
+    keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
+    let j = match app.svc.coordinator()?.remove_replica(i, url).await {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("remove {url} from shard {i}"))(e)),
+    };
     keys::note_change(keys::Change { object: Some(format!("shard {i}")), before: Some(json!({"removed": url})), ..Default::default() });
     Ok(audited(j, format!("removed {url} from shard {i}")))
 }
@@ -2026,22 +2128,29 @@ fn chunk(b: &Option<AxJson<Json>>) -> Result<usize, ApiError> {
 /// `POST /v1/admin/rebalance {"chunk"?}`: evens out the slots over the
 /// shards, in the background (`GET /v1/admin/moves` follows it).
 async fn rebalance(State(app): State<App>, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Result<Response, ApiError> {
-    let j = app.svc.coordinator()?.rebalance(chunk(&body)?)?;
+    let j = match app.svc.coordinator()?.rebalance(chunk(&body)?) {
+        Ok(j) => j,
+        Err(e) => return Ok(tried("even the slots out over the shards".into())(e)),
+    };
     let title = format!("Slots even out over the shards: {} moves", j["job"]["of"]);
     let j = moves_started(&app, w, j, title, None);
     let detail = format!("rebalancing: {} moves", j["job"]["of"]);
-    Ok(audited(j, detail))
+    // cluster2: its event is the moves' (NEW-scenarios-15).
+    Ok(evented(audited(j, detail)))
 }
 
 /// `POST /v1/admin/shards/:i/drain {"chunk"?}`: moves every slot of shard
 /// `i` to the others, in the background, so that it can be removed.
 async fn drain_shard(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(i): axum::extract::Path<usize>, body: Option<AxJson<Json>>) -> Result<Response, ApiError> {
-    let j = app.svc.coordinator()?.drain(i, chunk(&body)?)?;
     keys::note_change(keys::Change { object: Some(format!("shard {i}")), ..Default::default() });
+    let j = match app.svc.coordinator()?.drain(i, chunk(&body)?) {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("drain shard {i}"))(e)),
+    };
     let title = format!("Shard {i} drains: {} moves", j["job"]["of"]);
     let j = moves_started(&app, w, j, title, Some(i));
     let detail = format!("draining shard {i}: {} moves", j["job"]["of"]);
-    Ok(audited(j, detail))
+    Ok(evented(audited(j, detail)))
 }
 
 /// A job of moves just started: who started it, and its event.
@@ -2064,13 +2173,109 @@ fn moves_started(app: &App, w: Option<axum::Extension<Principal>>, j: Json, titl
 async fn admin_plan(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let c = app.svc.coordinator()?;
     let snap = c.snapshot().await;
-    Ok(AxJson(crate::coord::plan::plan(&snap, &b, c.moves()["running"] == true)?))
+    let mut p = crate::coord::plan::plan_at(&snap, &b, c.moves()["running"] == true, c.measured_rate())?;
+    // cluster2: each server the plan adds is asked whether it answers, is
+    // empty, runs the cluster's schema and has room (NEW-cluster-admin-10).
+    c.probe_new(&mut p).await;
+    Ok(AxJson(p))
+}
+
+/// The person a request is, for a plan applied on their behalf.
+fn plan_who(w: Option<axum::Extension<Principal>>) -> crate::coord::plan::Who {
+    let p = who(w);
+    let caller = keys::caller().unwrap_or_default();
+    crate::coord::plan::Who { by: keys::audit_name(&p), key: p.key.clone(), client: caller.named(), addr: caller.addr, reason: caller.reason }
+}
+
+/// `POST /v1/admin/plan/apply {"steps": [...], "estimate_s"?}`: applies a
+/// plan on this coordinator, its steps in order, in the background
+/// (`GET /v1/admin/plan/run` follows it); or, with the body of `POST
+/// /v1/admin/plan` and no steps, the plan that answers, if its checks pass.
+async fn plan_apply(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(mut b): AxJson<Json>) -> Result<Response, ApiError> {
+    if b.get("steps").is_none() {
+        let c = app.svc.coordinator()?;
+        let snap = c.snapshot().await;
+        let mut p = crate::coord::plan::plan_at(&snap, &b, c.moves()["running"] == true, c.measured_rate())?;
+        c.probe_new(&mut p).await;
+        if p["ok"] != true {
+            let why: Vec<&str> = p["preflight"].as_array().into_iter().flatten().filter(|x| x["ok"] == false).filter_map(|x| x["text"].as_str()).collect();
+            return Err(ApiError { status: 409, message: format!("the plan's checks fail: {}", why.join("; ")) });
+        }
+        b = json!({"steps": p["steps"], "estimate_s": p["estimate_s"]});
+    }
+    // One plan at a time in the cluster: not while another coordinator
+    // applies one.
+    if let Some(why) = crate::coord::plan::busy_elsewhere(&plans_elsewhere(&app).await) {
+        return Err(ApiError { status: 409, message: why });
+    }
+    let j = crate::coord::plan::apply(&app.svc, &b, plan_who(w))?;
+    let r = &j["run"];
+    let texts: Vec<&str> = r["steps"].as_array().into_iter().flatten().filter_map(|x| x["text"].as_str()).collect();
+    keys::note_change(keys::Change { object: Some(format!("plan {}", r["id"].as_str().unwrap_or("?"))), after: Some(json!({"plan": r["id"], "steps": texts})), ..Default::default() });
+    let detail = format!("applied a plan of {} {} ({}): {}", texts.len(), if texts.len() == 1 { "step" } else { "steps" }, r["id"].as_str().unwrap_or("?"), texts.join("; "));
+    Ok(audited(j, detail.chars().take(1500).collect()))
+}
+
+/// `GET /v1/admin/plan/run`: the plan this coordinator applies or applied
+/// last, step by step; and, under `elsewhere`, the plan each other
+/// coordinator of the cluster applies or applied, so that every
+/// coordinator's Cluster page shows it (asked of a peer, only its own).
+async fn plan_run(State(app): State<App>, headers: HeaderMap) -> Res {
+    app.svc.coordinator()?;
+    let mut j = crate::coord::plan::view(&app.svc);
+    if crate::peers::from_peer(&headers).is_none() {
+        j["elsewhere"] = plans_elsewhere(&app).await;
+    }
+    Ok(AxJson(j))
+}
+
+/// The plan of each other coordinator: `[{coordinator, url, run}]`, or the
+/// `error` asking it gave.
+async fn plans_elsewhere(app: &App) -> Json {
+    let got = crate::peers::get_all(&app.svc, "/v1/admin/plan/run").await;
+    Json::Array(got.into_iter().map(|(p, r)| crate::coord::plan::elsewhere(&p.name, &p.url, r)).collect())
+}
+
+/// `POST /v1/admin/plan/run/stop`: the plan stops after its step under way.
+async fn plan_stop(State(app): State<App>) -> Result<Response, ApiError> {
+    let j = crate::coord::plan::stop(&app.svc)?;
+    keys::note_change(keys::Change { object: Some(format!("plan {}", j["run"]["id"].as_str().unwrap_or("?"))), ..Default::default() });
+    Ok(audited(j, "stopping the plan being applied".into()))
+}
+
+/// `POST /v1/admin/plan/run/resume`: applies a plan that stopped (a
+/// restart, a failed step, Stop) again from the step it stopped at.
+async fn plan_resume(State(app): State<App>, w: Option<axum::Extension<Principal>>) -> Result<Response, ApiError> {
+    let j = crate::coord::plan::resume(&app.svc, plan_who(w).by)?;
+    keys::note_change(keys::Change { object: Some(format!("plan {}", j["run"]["id"].as_str().unwrap_or("?"))), ..Default::default() });
+    let detail = format!("resumed plan {} at step {} of {}", j["run"]["id"].as_str().unwrap_or("?"), j["run"]["at"].as_u64().unwrap_or(0) + 1, j["run"]["of"]);
+    Ok(audited(j, detail))
+}
+
+/// `POST /v1/admin/plan/run/discard`: forgets a plan that stopped.
+async fn plan_discard(State(app): State<App>) -> Result<Response, ApiError> {
+    let j = crate::coord::plan::discard(&app.svc)?;
+    let d = &j["discarded"];
+    keys::note_change(keys::Change { object: Some(format!("plan {}", d["id"].as_str().unwrap_or("?"))), ..Default::default() });
+    let detail = format!("discarded plan {} ({}, {} of {} steps done)", d["id"].as_str().unwrap_or("?"), d["state"].as_str().unwrap_or("?"), d["done"], d["of"]);
+    Ok(audited(j, detail))
 }
 
 /// `GET /v1/admin/moves`: the job of moves running or last run here, and
-/// the move under way in the cluster map.
-async fn moves(State(app): State<App>) -> Res {
-    Ok(AxJson(app.svc.coordinator()?.moves()))
+/// the move under way in the cluster map; under `elsewhere`, the jobs other
+/// coordinators run now (asked of a peer, only its own).
+async fn moves(State(app): State<App>, headers: HeaderMap) -> Res {
+    let mut j = app.svc.coordinator()?.moves();
+    if crate::peers::from_peer(&headers).is_none() {
+        j["elsewhere"] = moves_elsewhere(&app).await;
+    }
+    Ok(AxJson(j))
+}
+
+/// The jobs of moves other coordinators run now: `[{coordinator, url, job}]`.
+async fn moves_elsewhere(app: &App) -> Json {
+    let got = crate::peers::get_all(&app.svc, "/v1/admin/moves").await;
+    Json::Array(got.into_iter().filter_map(|(p, r)| r.ok().filter(|j| j["running"] == true).map(|j| json!({"coordinator": p.name, "url": p.url, "job": j["job"]}))).collect())
 }
 
 /// `POST /v1/admin/moves {"slots": [[start, end], ...], "to": shard}`:
@@ -2086,9 +2291,12 @@ async fn move_slots(State(app): State<App>, w: Option<axum::Extension<Principal>
         }
     }
     let to = b.get("to").and_then(Json::as_u64).ok_or_else(|| ApiError::bad("to is the shard the slots move to"))? as usize;
-    let j = app.svc.coordinator()?.start_move(slots.clone(), to)?;
+    let j = match app.svc.coordinator()?.start_move(slots.clone(), to) {
+        Ok(j) => j,
+        Err(e) => return Ok(tried(format!("move {} slots to shard {to}", slots.len()))(e)),
+    };
     let j = moves_started(&app, w, j, format!("{} slots move to shard {to}", slots.len()), Some(to));
-    Ok(audited(j, format!("moving {} slots to shard {to}", slots.len())))
+    Ok(evented(audited(j, format!("moving {} slots to shard {to}", slots.len()))))
 }
 
 /// `POST /v1/admin/moves/stop`: the job running here stops once its move
@@ -2100,7 +2308,13 @@ async fn stop_moves(State(app): State<App>) -> Result<Response, ApiError> {
 /// `POST /v1/admin/moves/finish`: ends the move a stopped coordinator
 /// left in the cluster map (completed if it had flipped, given up if not).
 async fn finish_move(State(app): State<App>) -> Result<Response, ApiError> {
-    let j = app.svc.coordinator()?.finish_move().await?;
+    let c = app.svc.coordinator()?;
+    // Not a move another coordinator is making: finishing it would give up
+    // its copy under it.
+    if let Some(why) = crate::coord::plan::moving_elsewhere(&moves_elsewhere(&app).await) {
+        return Err(ApiError { status: 409, message: why });
+    }
+    let j = c.finish_move().await?;
     let detail = format!("finished the move left in the cluster map: {}", j["finished"]);
     Ok(audited(j, detail))
 }
@@ -2140,13 +2354,20 @@ fn param_u64(q: &std::collections::HashMap<String, String>, k: &str, default: u6
     q.get(k).map_or(Ok(default), |v| v.parse().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}"))))
 }
 
-async fn live_queries(State(app): State<App>, Query(q): Params) -> Res {
+async fn live_queries(State(app): State<App>, headers: HeaderMap, Query(q): Params) -> Res {
     let mut j = json!({"queries": app.svc.live.list(), "running": app.svc.running()});
     // workload (alerts agent): grouped by statement shape and key.
-    match q.get("group").map(String::as_str) {
-        None | Some("") => {}
-        Some("shape") => j["groups"] = json!(app.svc.live.groups()),
+    let groups = match q.get("group").map(String::as_str) {
+        None | Some("") => false,
+        Some("shape") => {
+            j["groups"] = json!(app.svc.live.groups());
+            true
+        }
         Some(g) => return Err(ApiError::bad(format!("group is \"shape\", not {g:?}"))),
+    };
+    // fleet: what runs on every coordinator, unless asked for this one's.
+    if crate::peers::from_peer(&headers).is_none() && q.get("scope").map(String::as_str) != Some("local") {
+        j = crate::peers::gather_live(&app.svc, j, groups).await;
     }
     Ok(AxJson(j))
 }
@@ -2155,10 +2376,15 @@ async fn live_queries(State(app): State<App>, Query(q): Params) -> Res {
 
 /// Cancels the running queries of a statement (`fingerprint`), of one key
 /// (`key`) if given; the reason comes in `x-strata-reason`. Audited.
-async fn cancel_queries(State(app): State<App>, Query(q): Params) -> Result<Response, ApiError> {
+async fn cancel_queries(State(app): State<App>, headers: HeaderMap, Query(q): Params) -> Result<Response, ApiError> {
     let fp = q.get("fingerprint").map(String::as_str).filter(|f| !f.is_empty()).ok_or_else(|| ApiError::bad("say which statement: ?fingerprint= (and &key= for one key's)"))?;
     let key = q.get("key").map(String::as_str).filter(|k| !k.is_empty());
     let gone = app.svc.live.cancel_matching(fp, key);
+    // fleet: on every coordinator.
+    let (elsewhere, reached) = match crate::peers::from_peer(&headers) {
+        None if q.get("scope").map(String::as_str) != Some("local") => crate::peers::cancel_elsewhere(&app.svc, fp, key).await,
+        _ => (0, Json::Null),
+    };
     let ids: Vec<u64> = gone.iter().filter_map(|q| q["id"].as_u64()).collect();
     tracing::info!(queries = ids.len(), fingerprint = %crate::obs::truncate(fp, 200), key = key.unwrap_or(""), "queries cancelled by an operator");
     let was: Vec<Json> = gone
@@ -2175,36 +2401,95 @@ async fn cancel_queries(State(app): State<App>, Query(q): Params) -> Result<Resp
         .collect();
     keys::note_change(keys::Change { object: Some(format!("queries of {}", crate::obs::truncate(fp, 200))), before: Some(json!({"statement": fp, "key": key, "queries": was})), ..Default::default() });
     let of = key.map_or(String::new(), |k| format!(" of key {k}"));
-    Ok(audited(json!({"cancelled": ids.len(), "ids": ids}), format!("cancelled {} running queries{of}: {}", ids.len(), crate::obs::truncate(fp, 200))))
+    let more = if elsewhere > 0 { format!(" (and {elsewhere} on the other coordinators)") } else { String::new() };
+    Ok(audited(json!({"cancelled": ids.len() as u64 + elsewhere, "here": ids.len(), "ids": ids, "coordinators": reached}), format!("cancelled {} running {}{of}{more}: {}", ids.len(), if ids.len() == 1 { "query" } else { "queries" }, crate::obs::truncate(fp, 200))))
 }
 
-/// The Contain rules in force, the newest first.
-async fn contain_rules(State(app): State<App>) -> AxJson<Json> {
-    AxJson(Json::Array(app.svc.contain.list().iter().map(|r| r.json()).collect()))
+/// The Contain rules in force, the newest first: of every coordinator
+/// (fleet: [`crate::contain::gathered`]), or this server's own with those
+/// removed (`?local=1`, or a call from another coordinator).
+async fn contain_rules(State(app): State<App>, headers: HeaderMap, Query(q): Params) -> AxJson<Json> {
+    if q.get("local").is_some_and(|v| v == "1" || v == "true") || crate::peers::from_peer(&headers).is_some() {
+        return AxJson(app.svc.contain.local_json());
+    }
+    AxJson(crate::contain::gathered(&app.svc).await)
 }
 
-/// Adds a Contain rule: audited, and an event.
-async fn add_contain(State(app): State<App>, p: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
-    let name = by(&who(p));
+/// Adds a Contain rule: audited, and an event. fleet: sent to every
+/// other coordinator (`coordinators` says which took it); one sent by
+/// another coordinator is taken up with its id, times and author.
+async fn add_contain(State(app): State<App>, p: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let who = who(p);
+    if let Some(from) = crate::peers::from_peer(&headers).filter(|_| who.root) {
+        let Some((r, _)) = crate::contain::adopted(&app.svc, &b, &from)? else {
+            return Ok(AxJson(json!({"ignored": "this coordinator holds no such rule: it ended, or was removed"})).into_response());
+        };
+        keys::note_change(keys::Change { object: Some(format!("contain rule {}", r.id)), after: Some(r.json()), ..Default::default() });
+        return Ok(evented(audited(r.json(), format!("contain rule {} {} (from the coordinator at {from})", r.id, r.what()))));
+    }
+    let name = by(&who);
     let r = app.svc.contain.add(&b, &name)?;
     tracing::info!(rule = %r.id, by = %name, "contain rule added: it {}", r.what());
     app.svc.events.add(crate::contain::event(&r, "added", Some(name)));
     keys::note_change(keys::Change { object: Some(format!("contain rule {}", r.id)), after: Some(r.json()), ..Default::default() });
-    Ok(evented(audited(r.json(), format!("contain rule {} {} for {} min: {}", r.id, r.what(), r.expires_ms.saturating_sub(r.created_ms) / 60_000, r.reason))))
+    let mut j = r.json();
+    j["coordinators"] = crate::contain::spread(&app.svc, &r).await;
+    Ok(evented(audited(j, format!("contain rule {} {} for {} min: {}", r.id, r.what(), r.expires_ms.saturating_sub(r.created_ms) / 60_000, r.reason))))
 }
 
-/// Removes a Contain rule: audited, and an event.
-async fn remove_contain(State(app): State<App>, p: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
-    let name = by(&who(p));
-    let r = app.svc.contain.remove(&id).ok_or_else(|| ApiError { status: 404, message: format!("no contain rule {id}") })?;
+/// Removes a Contain rule: audited, and an event. fleet: on every
+/// coordinator; 404 when none held it.
+async fn remove_contain(State(app): State<App>, p: Option<axum::Extension<Principal>>, headers: HeaderMap, Query(q): Params, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let who = who(p);
+    let peer = crate::peers::from_peer(&headers).filter(|_| who.root);
+    // Who removed it, as the coordinator it was removed on says.
+    let name = match (&peer, q.get("by")) {
+        (Some(from), Some(b)) => format!("{b} (on {from})"),
+        _ => by(&who),
+    };
+    let here = app.svc.contain.remove(&id);
+    let (reach, elsewhere) = match &peer {
+        Some(_) => (Json::Null, false),
+        None => crate::contain::withdraw(&app.svc, &id, &name).await,
+    };
+    let Some(r) = here else {
+        if elsewhere {
+            return Ok(audited(json!({"removed": {"id": id}, "coordinators": reach}), format!("removed contain rule {id} on the other coordinators")));
+        }
+        return Err(ApiError { status: 404, message: format!("no contain rule {id}") });
+    };
     app.svc.events.add(crate::contain::event(&r, "removed", Some(name)));
     keys::note_change(keys::Change { object: Some(format!("contain rule {id}")), before: Some(r.json()), ..Default::default() });
-    Ok(evented(audited(json!({"removed": r.json()}), format!("removed contain rule {id}: it {}", r.what()))))
+    Ok(evented(audited(json!({"removed": r.json(), "coordinators": reach}), format!("removed contain rule {id}: it {}", r.what()))))
 }
 
 // ----- end workload
 
-async fn cancel_query(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<u64>) -> Result<Response, ApiError> {
+async fn cancel_query(State(app): State<App>, Query(params): Params, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    // fleet: a query of another coordinator (`<id>@<its name>`, as Running
+    // now lists it, or `?coordinator=` its URL) is cancelled there, and
+    // audited there.
+    let at = match crate::peers::query_at(&app.svc, &id) {
+        Some(Ok((p, n))) => Some((p, n)),
+        Some(Err(e)) => return Err(ApiError { status: 404, message: e }),
+        None => None,
+    };
+    let id: u64 = match &at {
+        Some((_, n)) => *n,
+        None => id.parse().map_err(|_| ApiError::bad(format!("{id} is not a query id")))?,
+    };
+    let other = match (at, params.get("coordinator").filter(|u| !u.is_empty() && Some(u.trim_end_matches('/')) != app.svc.peers.me())) {
+        (Some((p, _)), _) => Some(p),
+        (None, Some(url)) => Some(crate::peers::other_at(&app.svc, url).ok_or_else(|| ApiError { status: 404, message: format!("no coordinator at {url} is known here") })?),
+        (None, None) => None,
+    };
+    if let Some(p) = other {
+        return match crate::peers::delete(&app.svc, &p, &format!("/v1/queries/{id}")).await {
+            Ok(j) => Ok(AxJson(j).into_response()),
+            Err(e) if e.contains(": 404 ") => Err(ApiError { status: 404, message: format!("query {id} is not running on {}", p.name) }),
+            Err(e) => Err(ApiError { status: 502, message: e }),
+        };
+    }
     let q = app.svc.live.list().into_iter().find(|q| q["id"] == id).unwrap_or(Json::Null);
     match app.svc.live.cancel(id) {
         true => {
@@ -2254,48 +2539,75 @@ async fn finished_query(State(app): State<App>, axum::extract::Path(id): axum::e
     }
 }
 
-/// What profiling does now: the slow threshold (`slow_ms`, `null` for
-/// none; as started with `--slow-ms` unless changed) and whether every
-/// query's CPU time is measured (`cpu_all`).
-fn profile_settings_json(app: &App) -> Json {
-    json!({
-        "slow_ms": app.svc.slow_after().map(|d| d.as_secs_f64() * 1e3),
-        "started_slow_ms": app.svc.slow.map(|d| d.as_secs_f64() * 1e3),
-        "cpu_all": app.svc.profiling.cpu_all.load(std::sync::atomic::Ordering::Relaxed),
-    })
+/// `GET /v1/profile/settings?node=`: what profiling keeps now
+/// ([`profiling::settings_json`]); on a coordinator, `node` (a copy's URL
+/// or short name) asks that copy's.
+async fn profile_settings(State(app): State<App>, Query(q): Params) -> Res {
+    if let Some(peer) = settings_peer(&app, &q)? {
+        // PROF-2: another coordinator's.
+        let mut j = crate::peers::get(&app.svc, &peer, "/v1/profile/settings").await.map_err(|e| ApiError { status: 502, message: e })?;
+        (j["coordinator"], j["name"]) = (json!(peer.url), json!(peer.name));
+        return Ok(AxJson(j));
+    }
+    match q.get("node").filter(|n| !n.is_empty()) {
+        Some(node) => copy_settings(&app, node, json!({})).await.map(|(j, _)| AxJson(j)),
+        None => Ok(AxJson(profiling::settings_json(&app.svc))),
+    }
 }
 
-async fn profile_settings(State(app): State<App>) -> AxJson<Json> {
-    AxJson(profile_settings_json(&app))
+/// The other coordinator `?coordinator=` names (its URL or name), if any.
+fn settings_peer(app: &App, q: &std::collections::HashMap<String, String>) -> Result<Option<crate::peers::Peer>, ApiError> {
+    let Some(c) = q.get("coordinator").map(|c| c.trim().trim_end_matches('/')).filter(|c| !c.is_empty()) else { return Ok(None) };
+    crate::peers::others(&app.svc)
+        .into_iter()
+        .find(|p| p.url.trim_end_matches('/') == c || p.name == c)
+        .map(Some)
+        .ok_or_else(|| ApiError { status: 404, message: format!("no other coordinator {c:?} answers now (GET /v1/coordinators lists them)") })
+}
+
+/// A copy's profiling settings, set first from `b` when it sets any, with
+/// its `node` and `short`, over the call that profiles it.
+async fn copy_settings(app: &App, node: &str, b: Json) -> Result<(Json, String), ApiError> {
+    let crate::service::Backend::Cluster(c) = &app.svc.backend else {
+        return Err(ApiError::bad("node names a copy of a coordinator's cluster; this server answers its own settings without it"));
+    };
+    let copy = copy_of(&*c.snapshot().await, node)?;
+    let mut j = ask_copy(c, &copy.url, profiling::Kind::Settings, b).await?;
+    (j["node"], j["short"]) = (json!(copy.url), json!(copy.short));
+    Ok((j, copy.short))
 }
 
 /// `{"slow_ms": 50}` keeps every query that takes 50 ms or longer with
 /// its profile among the slow ones (`null`: none, `0`: every query);
 /// `{"cpu_all": true}` measures every query's CPU time, step by step.
-/// Either may come alone. Until the server restarts.
-async fn put_profile_settings(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
-    let mut did = Vec::new();
-    if let Some(v) = b.get("slow_ms") {
-        let slow = match v {
-            Json::Null => None,
-            v => match v.as_f64() {
-                Some(ms) if ms >= 0.0 && ms.is_finite() => Some(Duration::from_secs_f64(ms / 1e3)),
-                _ => return Err(ApiError::bad("slow_ms is a number of milliseconds, 0 or more, or null for no slow queries")),
-            },
-        };
-        app.svc.profiling.set_slow(slow);
-        did.push(format!("slow_ms {}", slow.map_or("off".to_string(), |d| format!("{}", d.as_secs_f64() * 1e3))));
+/// Either may come alone. Until the server restarts. On a coordinator,
+/// `?node=` sets a copy's, `?coordinator=` another coordinator's (PROF-2:
+/// the command center sets every server's).
+async fn put_profile_settings(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Params, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    if let Some(peer) = settings_peer(&app, &q)? {
+        // PROF-2: another coordinator's, set there (and audited there too).
+        if !b.is_object() {
+            return Err(ApiError::bad("the body sets slow_ms (milliseconds, or null) or cpu_all (true or false)"));
+        }
+        let mut j = crate::peers::put(&app.svc, &peer, "/v1/profile/settings", &b).await.map_err(|e| ApiError { status: 502, message: e })?;
+        (j["coordinator"], j["name"]) = (json!(peer.url), json!(peer.name));
+        let did = [b.get("slow_ms").map(|v| format!("slow_ms {}", if v.is_null() { "off".to_string() } else { v.to_string() })), b.get("cpu_all").map(|v| format!("cpu_all {v}"))];
+        return Ok(audited(j, format!("profiling on coordinator {}: {}", peer.name, did.into_iter().flatten().collect::<Vec<_>>().join(", "))));
     }
-    if let Some(v) = b.get("cpu_all") {
-        let on = v.as_bool().ok_or_else(|| ApiError::bad("cpu_all is true or false"))?;
-        app.svc.profiling.cpu_all.store(on, std::sync::atomic::Ordering::Relaxed);
-        did.push(format!("cpu_all {on}"));
+    if let Some(node) = q.get("node").filter(|n| !n.is_empty()) {
+        let mut asked = b.clone();
+        if !asked.is_object() {
+            return Err(ApiError::bad("the body sets slow_ms (milliseconds, or null) or cpu_all (true or false)"));
+        }
+        asked["by"] = json!(keys::audit_name(&who(w)));
+        let (j, short) = copy_settings(&app, node, asked).await?;
+        keys::note_change(keys::Change { object: Some(format!("profiling settings of {short}")), after: Some(j.clone()), ..Default::default() });
+        let did = [b.get("slow_ms").map(|v| format!("slow_ms {}", if v.is_null() { "off".to_string() } else { v.to_string() })), b.get("cpu_all").map(|v| format!("cpu_all {v}"))];
+        return Ok(audited(j, format!("profiling on {short}: {}", did.into_iter().flatten().collect::<Vec<_>>().join(", "))));
     }
-    if did.is_empty() {
-        return Err(ApiError::bad("the body sets slow_ms (milliseconds, or null) or cpu_all (true or false)"));
-    }
+    let did = profiling::set_settings(&app.svc, &b)?;
     tracing::info!(settings = %did.join(", "), "profiling settings changed");
-    Ok(audited(profile_settings_json(&app), format!("profiling: {}", did.join(", "))))
+    Ok(audited(profiling::settings_json(&app.svc), format!("profiling: {}", did.join(", "))))
 }
 
 /// A profile ([`profiling`]) of this server, or with `?node=` on a
@@ -2303,6 +2615,7 @@ async fn put_profile_settings(State(app): State<App>, AxJson(b): AxJson<Json>) -
 /// replica URLs, over gRPC: [`crate::coord::Coordinator::profile`]).
 /// `?format=folded` (`&value=in_use`) answers folded lines to download.
 async fn profile(app: &App, kind: profiling::Kind, q: &std::collections::HashMap<String, String>, body: Json) -> Result<Response, ApiError> {
+    note_profile(kind, q.get("node").map(|n| n.trim()).filter(|n| !n.is_empty()), &body);
     let asked = profiling::Asked { kind, body, folded: q.get("format").map(String::as_str) == Some("folded"), in_use: q.get("value").map(String::as_str) == Some("in_use") };
     let answer = match q.get("node").map(|n| n.trim()).filter(|n| !n.is_empty()) {
         Some(node) => app.svc.profile_node(node, asked).await?,
@@ -2314,13 +2627,50 @@ async fn profile(app: &App, kind: profiling::Kind, q: &std::collections::HashMap
     })
 }
 
+/// workdata: what a CPU or allocation profile's audit entry says: of which
+/// server, at what rate (`hz`, or bytes between samples), for how long,
+/// and the query it ran in a loop.
+fn note_profile(kind: profiling::Kind, node: Option<&str>, b: &Json) {
+    let (what, rate) = match kind {
+        profiling::Kind::Cpu => ("CPU", json!({"hz": b["hz"].as_i64().unwrap_or(99)})),
+        profiling::Kind::Heap => ("allocation", json!({"every_bytes": b["every"].as_u64().unwrap_or(crate::heap::EVERY_DEFAULT)})),
+        _ => return,
+    };
+    let of = node.unwrap_or("this server");
+    let seconds = b["seconds"].as_f64().unwrap_or(5.0);
+    let sql = b["sql"].as_str().map(|s| obs::truncate(s, 200));
+    let clients = sql.as_ref().map(|_| b["clients"].as_u64().unwrap_or(1));
+    let mut after = json!({"node": of, "seconds": seconds, "sql": sql, "clients": clients});
+    after.as_object_mut().into_iter().for_each(|o| o.extend(rate.as_object().cloned().unwrap_or_default()));
+    let at = match (rate["hz"].as_i64(), rate["every_bytes"].as_u64()) {
+        (Some(hz), _) => format!("{hz} Hz"),
+        (_, Some(e)) => format!("a sample every {e} bytes"),
+        _ => String::new(),
+    };
+    let load = match (&sql, clients) {
+        (Some(_), Some(c)) => format!(", of a query run in a loop by {c} {}", if c == 1 { "caller" } else { "callers" }),
+        _ => String::new(),
+    };
+    keys::note_change(keys::Change { object: Some(format!("{what} profile of {of}")), after: Some(after), ..Default::default() });
+    keys::note(format!("{} {what} profile of {of}: {seconds} s at {at}{load}", if what == "CPU" { "a" } else { "an" }));
+}
+
+/// The body of a profile with who asked for it (`by`), which the server
+/// that takes it names to a second asker.
+fn profile_by(mut b: Json, w: Option<axum::Extension<Principal>>) -> Json {
+    if b.is_null() || b.is_object() {
+        b["by"] = json!(keys::audit_name(&who(w)));
+    }
+    b
+}
+
 /// A CPU profile ([`crate::profiler`]): of the whole server for `seconds`
 /// (default 5), or of `sql` run again and again by `clients` callers. It
 /// answers the profile with how busy the server was (`cores`), the samples
 /// delivered a CPU second (`rate`) and, for a query, its runs and their
 /// times.
-async fn cpu_profile(State(app): State<App>, Query(q): Params, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
-    profile(&app, profiling::Kind::Cpu, &q, b).await
+async fn cpu_profile(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Params, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    profile(&app, profiling::Kind::Cpu, &q, profile_by(b, w)).await
 }
 
 /// The heap's counts, the process's resident memory, and its threads.
@@ -2330,8 +2680,8 @@ async fn memory(State(app): State<App>, Query(q): Params) -> Result<Response, Ap
 
 /// An allocation profile ([`crate::heap::take`]), of the whole server or of a
 /// query in a loop as [`cpu_profile`].
-async fn heap_profile(State(app): State<App>, Query(q): Params, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
-    profile(&app, profiling::Kind::Heap, &q, b).await
+async fn heap_profile(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Params, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    profile(&app, profiling::Kind::Heap, &q, profile_by(b, w)).await
 }
 
 async fn threads(State(app): State<App>, Query(q): Params) -> Result<Response, ApiError> {
@@ -2353,16 +2703,130 @@ fn window_param(q: &std::collections::HashMap<String, String>) -> Result<(u64, u
 
 /// The statements of a window, by time spent, each with the window before
 /// (`prev`), its keys and whether it is new ([`telemetry::Statements`]).
-async fn query_stats(State(app): State<App>, Query(q): Params) -> Res {
+async fn query_stats(State(app): State<App>, Query(q): Params, headers: HeaderMap) -> Res {
     let (from, to) = window_param(&q)?;
-    Ok(AxJson(app.svc.query_log.statements.window(from, to, param_u64(&q, "limit", 200)? as usize)))
+    let limit = param_u64(&q, "limit", 200)? as usize;
+    let st = &app.svc.query_log.statements;
+    // R2-workload-1: another coordinator asks for this one's counts, to merge.
+    if q.get("raw").is_some_and(|v| v == "1" || v == "true") {
+        return Ok(AxJson(st.window_raw(from, to, q.get("fingerprint").map(String::as_str))));
+    }
+    let local = q.get("local").is_some_and(|v| v == "1" || v == "true") || crate::peers::from_peer(&headers).is_some();
+    let Some(me) = crate::peers::this(&app.svc).filter(|_| !local) else { return Ok(AxJson(st.window(from, to, limit))) };
+    // Every coordinator's statements, merged by shape: what a client sent
+    // through any of them is here, each saying how many calls each took.
+    let answers = crate::peers::get_all(&app.svc, &format!("/v1/queries/stats?from={from}&to={to}&raw=1")).await;
+    let others: Vec<(String, Json)> = answers.iter().filter_map(|(p, a)| a.as_ref().ok().map(|j| (p.name.clone(), j.clone()))).collect();
+    let mut j = st.window_merged(from, to, limit, &others, &me.name);
+    j["coordinators"] = crate::peers::reach(&app.svc, &answers);
+    Ok(AxJson(j))
 }
 
 /// One statement (by its id or fingerprint) over a window: a point a
 /// minute, its keys, shards, slowest calls and errors.
-async fn query_stat(State(app): State<App>, axum::extract::Path(which): axum::extract::Path<String>, Query(q): Params) -> Res {
+async fn query_stat(State(app): State<App>, axum::extract::Path(which): axum::extract::Path<String>, Query(q): Params, headers: HeaderMap) -> Res {
     let (from, to) = window_param(&q)?;
-    app.svc.query_log.statements.detail(&which, from, to).map(AxJson).ok_or_else(|| ApiError { status: 404, message: format!("no statement {which:?} in the last day") })
+    let st = &app.svc.query_log.statements;
+    let mine = st.detail(&which, from, to);
+    let missing = || ApiError { status: 404, message: format!("no statement {which:?} in the last day") };
+    let local = q.get("local").is_some_and(|v| v == "1" || v == "true") || crate::peers::from_peer(&headers).is_some();
+    let Some(me) = crate::peers::this(&app.svc).filter(|_| !local) else { return mine.map(AxJson).ok_or_else(missing) };
+    // R2-workload-1: what every coordinator ran of it.
+    let path = format!("/v1/queries/stats/{}?from={from}&to={to}&local=1", crate::peers::encode(&which));
+    // A coordinator that did not run it answers 404: it has none, not an error.
+    let answers: Vec<_> = crate::peers::get_all(&app.svc, &path).await.into_iter().map(|(p, a)| (p, a.or_else(|e| if e.contains(": 404 ") { Ok(Json::Null) } else { Err(e) }))).collect();
+    let theirs: Vec<(String, Json)> = answers.iter().filter_map(|(p, a)| a.as_ref().ok().filter(|j| !j.is_null()).map(|j| (p.name.clone(), j.clone()))).collect();
+    let mut parts: Vec<(String, Json)> = mine.into_iter().map(|j| (me.name.clone(), j)).collect();
+    parts.extend(theirs);
+    let Some(fp) = parts.first().and_then(|(_, j)| j["statement"]["fingerprint"].as_str().map(String::from)) else { return Err(missing()) };
+    let raws = crate::peers::get_all(&app.svc, &format!("/v1/queries/stats?from={from}&to={to}&raw=1&fingerprint={}", crate::peers::encode(&fp))).await;
+    let others: Vec<(String, Json)> = raws.iter().filter_map(|(p, a)| a.as_ref().ok().map(|j| (p.name.clone(), j.clone()))).collect();
+    let merged = st.window_merged(from, to, usize::MAX, &others, &me.name);
+    let mut j = merged_detail(&parts);
+    if let Some(s) = merged["statements"].as_array().into_iter().flatten().find(|s| s["fingerprint"] == fp.as_str()) {
+        j["by_key"] = s["keys"].clone();
+        j["statement"] = s.clone();
+    }
+    j["coordinators"] = crate::peers::reach(&app.svc, &answers);
+    Ok(AxJson(j))
+}
+
+/// Statement pages of several coordinators as one (`parts`: each one's
+/// name and page): the trend a minute summed, the shards' calls summed,
+/// the slowest and latest calls of all (each naming its coordinator), and
+/// the errors by message.
+fn merged_detail(parts: &[(String, Json)]) -> Json {
+    let mut j = parts.first().map(|(_, j)| j.clone()).unwrap_or_else(|| json!({}));
+    if let [(name, _)] = parts {
+        // One coordinator ran it: its page, each call naming it.
+        for k in ["slowest", "latest"] {
+            for c in j[k].as_array_mut().into_iter().flatten() {
+                c["coordinator"] = json!(name);
+            }
+        }
+        return j;
+    }
+    let f = |x: &Json, k: &str| x[k].as_f64().unwrap_or(0.0);
+    // The trend: calls and errors added, the slowest of each minute kept.
+    let mut trend: std::collections::BTreeMap<u64, Json> = std::collections::BTreeMap::new();
+    let mut shards: std::collections::BTreeMap<u64, Json> = std::collections::BTreeMap::new();
+    let (mut slowest, mut latest, mut errors) = (Vec::new(), Vec::new(), Vec::<Json>::new());
+    for (name, d) in parts {
+        for p in d["trend"].as_array().into_iter().flatten() {
+            let Some(t) = p["t"].as_u64() else { continue };
+            let e = trend.entry(t).or_insert_with(|| json!({"t": t, "calls": 0, "errors": 0, "mean_ms": 0.0, "max_ms": 0.0, "p99_ms": null, "p50_ms": null}));
+            let (c0, c1) = (f(e, "calls"), f(p, "calls"));
+            e["mean_ms"] = json!(if c0 + c1 > 0.0 { (f(e, "mean_ms") * c0 + f(p, "mean_ms") * c1) / (c0 + c1) } else { 0.0 });
+            e["calls"] = json!(c0 as u64 + c1 as u64);
+            e["errors"] = json!(e["errors"].as_u64().unwrap_or(0) + p["errors"].as_u64().unwrap_or(0));
+            for k in ["max_ms", "p99_ms", "p50_ms"] {
+                if p[k].is_number() && (e[k].is_null() || f(p, k) > f(e, k)) {
+                    e[k] = p[k].clone();
+                }
+            }
+        }
+        for sh in d["by_shard"].as_array().into_iter().flatten() {
+            let Some(i) = sh["shard"].as_u64() else { continue };
+            let e = shards.entry(i).or_insert_with(|| json!({"shard": i, "calls": 0, "errors": 0, "mean_ms": 0.0, "p99_ms": 0.0, "max_ms": 0.0}));
+            let (c0, c1) = (f(e, "calls"), f(sh, "calls"));
+            e["mean_ms"] = json!(if c0 + c1 > 0.0 { (f(e, "mean_ms") * c0 + f(sh, "mean_ms") * c1) / (c0 + c1) } else { 0.0 });
+            e["calls"] = json!(c0 as u64 + c1 as u64);
+            e["errors"] = json!(e["errors"].as_u64().unwrap_or(0) + sh["errors"].as_u64().unwrap_or(0));
+            for k in ["p99_ms", "max_ms"] {
+                if f(sh, k) > f(e, k) {
+                    e[k] = sh[k].clone();
+                }
+            }
+        }
+        let tag = |c: &Json| {
+            let mut c = c.clone();
+            c["coordinator"] = json!(name);
+            c
+        };
+        slowest.extend(d["slowest"].as_array().into_iter().flatten().map(tag));
+        latest.extend(d["latest"].as_array().into_iter().flatten().map(tag));
+        for e in d["errors"].as_array().into_iter().flatten() {
+            match errors.iter_mut().find(|x| x["message"] == e["message"]) {
+                Some(x) => {
+                    x["count"] = json!(x["count"].as_u64().unwrap_or(0) + e["count"].as_u64().unwrap_or(0));
+                    x["last_ms"] = json!(x["last_ms"].as_u64().max(e["last_ms"].as_u64()));
+                }
+                None => errors.push(e.clone()),
+            }
+        }
+    }
+    slowest.sort_by(|a, b| f(b, "ms").total_cmp(&f(a, "ms")));
+    slowest.truncate(10);
+    latest.sort_by(|a, b| b["ts_ms"].as_u64().cmp(&a["ts_ms"].as_u64()));
+    latest.truncate(20);
+    errors.sort_by(|a, b| b["count"].as_u64().cmp(&a["count"].as_u64()));
+    j["trend"] = json!(trend.into_values().collect::<Vec<_>>());
+    j["by_shard"] = json!(shards.into_values().collect::<Vec<_>>());
+    j["by_shard_from_calls"] = json!(latest.len().max(slowest.len()));
+    j["slowest"] = json!(slowest);
+    j["latest"] = json!(latest);
+    j["errors"] = json!(errors);
+    j
 }
 
 /// Starts this server's statement counts again (audited; a coordinator's
@@ -2612,8 +3076,44 @@ async fn log_query(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         Some(other) => return Err(ApiError::bad(format!("scope is \"cluster\" or \"local\", not {other:?}"))),
     };
     let store = app.svc.log_store.as_ref();
+    // R2-workload-1: another coordinator asks for this one's store's part of
+    // its cluster query, in the form a shard answers.
+    let partial = local && b.get("partial").and_then(Json::as_bool) == Some(true);
     match &app.svc.backend {
-        crate::service::Backend::Cluster(c) if !local => Ok(AxJson(crate::logstore::cluster_query(store, c, sql, &params, timeout).await?)),
+        crate::service::Backend::Cluster(c) if !local => {
+            // The other coordinators' stores too: their own lines, and the
+            // queries their clients sent.
+            let ask = json!({"sql": sql, "params": b.get("params").cloned().unwrap_or(Json::Null), "timeout_ms": timeout.as_millis() as u64, "scope": "local", "partial": true});
+            let svc = app.svc.clone();
+            let peers = async move {
+                let peers = crate::peers::others(&svc);
+                let answers = futures::future::join_all(peers.iter().map(|p| {
+                    let (svc, ask) = (svc.clone(), ask.clone());
+                    async move {
+                        let t = std::time::Instant::now();
+                        let a = crate::peers::post(&svc, p, "/v1/logs/query", &ask).await;
+                        (t.elapsed().as_secs_f64() * 1e3, a)
+                    }
+                }))
+                .await;
+                peers
+                    .into_iter()
+                    .zip(answers)
+                    .map(|(p, (ms, a))| crate::logstore::PeerAnswer {
+                        url: p.url.clone(),
+                        name: p.name.clone(),
+                        ms,
+                        answer: a.map_err(|e| ApiError { status: 502, message: e }).and_then(|j| crate::logstore::from_partial_json(&j)),
+                    })
+                    .collect::<Vec<_>>()
+            };
+            Ok(AxJson(crate::logstore::cluster_query(store, c, sql, &params, timeout, peers).await?))
+        }
+        _ if partial => {
+            let store = store.ok_or_else(crate::logstore::none_here)?;
+            let (rs, took_ms) = store.query(sql, &params, true, timeout).await?;
+            Ok(AxJson(crate::logstore::partial_json(&rs, took_ms)))
+        }
         _ => {
             let store = store.ok_or_else(crate::logstore::none_here)?;
             let (rs, took_ms) = store.query(sql, &params, false, timeout).await?;
@@ -2653,8 +3153,22 @@ async fn system(State(app): State<App>) -> AxJson<Json> {
     AxJson(j)
 }
 
-async fn cluster(State(app): State<App>) -> AxJson<Json> {
-    AxJson(app.svc.cluster().await)
+async fn cluster(State(app): State<App>, Query(q): Params) -> AxJson<Json> {
+    let mut j = app.svc.cluster().await;
+    // fleet: `brief=1` leaves out each copy's detail, for a view that
+    // shows only which copies answer (and the shell's badges).
+    if q.get("brief").is_some_and(|v| v == "1" || v == "true") {
+        for r in j["shards"].as_array_mut().into_iter().flatten().flat_map(|s| s["replicas"].as_array_mut().into_iter().flatten()) {
+            if let Some(o) = r.as_object_mut() {
+                o.remove("detail");
+            }
+        }
+    }
+    // cluster2: the plan being applied (or the last one), for every view.
+    if app.svc.coordinator().is_ok() {
+        j["plan"] = crate::coord::plan::view(&app.svc)["run"].clone();
+    }
+    AxJson(j)
 }
 
 /// `GET /v1/kube`: the `StrataCluster` that runs this coordinator on
@@ -2822,6 +3336,8 @@ async fn kube_planned(l: &crate::operator::kube::Link, b: &Json) -> Result<(Json
     let patch = kube_patch(b, &now)?;
     let (old, new) = crate::operator::patched(&now["spec"], &patch).map_err(ApiError::bad)?;
     let mut plan = crate::operator::plan(&old, &new, old.shards, old.replicas);
+    // cluster2: the sizes before and after, which the estimate is of.
+    plan["sizes"] = json!({"shards": [old.shards, new.shards], "replicas": [old.replicas, new.replicas]});
     if let Some(v) = b.get("rollback") {
         plan["rollback"] = v.clone();
         plan["patch"] = patch.clone();
@@ -2841,7 +3357,14 @@ fn kube_link(app: &App) -> Result<&crate::operator::kube::Link, ApiError> {
 /// operator's steps for it and what to know first; nothing is changed.
 async fn kube_plan(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let l = kube_link(&app)?;
-    let (_, _, plan) = kube_planned(l, &b).await?;
+    let (_, _, mut plan) = kube_planned(l, &b).await?;
+    // cluster2: how long it takes and the rows it copies, said once here
+    // for every view (NEW-cluster-admin-7).
+    if let Ok(c) = app.svc.coordinator() {
+        let n = |k: &str, i: usize| plan["sizes"][k][i].as_u64().unwrap_or(0) as usize;
+        let (from, to) = ((n("shards", 0), n("replicas", 0)), (n("shards", 1), n("replicas", 1)));
+        plan["estimate"] = crate::coord::plan::shape_estimate(&*c.snapshot().await, from, to, c.measured_rate());
+    }
     Ok(AxJson(plan))
 }
 
@@ -2988,7 +3511,7 @@ async fn load_steps(app: &App, since_ms: u64) -> Result<(Vec<crate::operator::au
     let timeout = app.svc.timeout_of(0);
     let store = app.svc.log_store.as_ref();
     let j = match &app.svc.backend {
-        crate::service::Backend::Cluster(c) => crate::logstore::cluster_query(store, c, sql, &params, timeout).await?,
+        crate::service::Backend::Cluster(c) => crate::logstore::cluster_query(store, c, sql, &params, timeout, async { Vec::new() }).await?,
         _ => {
             let store = store.ok_or_else(crate::logstore::none_here)?;
             let (rs, ms) = store.query(sql, &params, false, timeout).await?;
@@ -3038,10 +3561,15 @@ async fn autoscale_replay(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     let shards = cluster["shards"].as_array();
     let given = &b["sizes"];
     let n = |k: &str| given[k].as_u64().map(|v| v as usize).filter(|v| *v > 0);
+    // cluster2 (NEW-cluster-admin-6): on machines of one's own, the volume
+    // is the largest disk the copies report, so that the volumes rule
+    // replays on the levels the copies' health gives.
+    let disk = crate::coord::plan::volume_of(&cluster);
+    let copies: Vec<usize> = shards.into_iter().flatten().filter_map(|s| s["replicas"].as_array().map(Vec::len)).collect();
     let start = Sizes {
-        replicas: n("replicas").or(spec.as_ref().map(|s| s.replicas)).or_else(|| shards?.iter().filter_map(|s| s["replicas"].as_array().map(Vec::len)).max()).unwrap_or(1),
+        replicas: n("replicas").or(spec.as_ref().map(|s| s.replicas)).or_else(|| copies.iter().copied().max()).unwrap_or(1),
         shards: n("shards").or(spec.as_ref().map(|s| s.shards)).or_else(|| shards.map(Vec::len)).unwrap_or(1).max(1),
-        volume: given["volume"].as_str().map(String::from).or(spec.as_ref().map(|s| s.storage.size.clone())).unwrap_or_else(|| "10Gi".into()),
+        volume: given["volume"].as_str().map(String::from).or(spec.as_ref().map(|s| s.storage.size.clone())).or(disk.clone()).unwrap_or_else(|| "10Gi".into()),
     };
     let now = crate::telemetry::now_ms();
     // A step a shard a row: at most 10,000 rows.
@@ -3050,7 +3578,7 @@ async fn autoscale_replay(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     let (steps, nodes) = load_steps(&app, since).await?;
     // On machines of one's own no volume size is known (no StrataCluster,
     // none given): the rule growing volumes is left out of the replay.
-    let volume_known = spec.is_some() || given["volume"].is_string();
+    let volume_known = spec.is_some() || given["volume"].is_string() || disk.is_some();
     let mut replayed = rules.clone();
     let mut left_out = Vec::new();
     if !volume_known && replayed.volumes.as_ref().is_some_and(|v| v.action == crate::operator::autoscale::VolumeAction::Grow) {
@@ -3063,6 +3591,12 @@ async fn autoscale_replay(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     j["sizes"] = json!({"replicas": start.replicas, "shards": start.shards, "volume": if volume_known { json!(start.volume) } else { Json::Null }});
     if !volume_known {
         j["summary"]["end"]["volume"] = Json::Null;
+    }
+    // The copies each shard has now: a replay models every shard at
+    // `sizes.replicas`, which a view says when they differ.
+    j["copies_now"] = json!({"min": copies.iter().min(), "max": copies.iter().max()});
+    if spec.is_none() && !given["volume"].is_string() {
+        j["volume_from"] = json!(if disk.is_some() { "the copies' disks" } else { "unknown" });
     }
     j["sinceMs"] = json!(since);
     j["days"] = json!(days);
@@ -3349,8 +3883,18 @@ async fn do_validate(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<
     Ok(AxJson(j))
 }
 
-async fn routes(State(app): State<App>) -> AxJson<Json> {
-    AxJson(app.svc.metrics.routes())
+/// `GET /v1/routes`: requests by route and queries by kind since the
+/// server started, or with `from` (and `to`, ms) over that window.
+async fn routes(State(app): State<App>, Query(q): Params) -> Res {
+    if !q.contains_key("from") {
+        return Ok(AxJson(app.svc.metrics.routes()));
+    }
+    let now = telemetry::now_ms();
+    let (from, to) = (param_u64(&q, "from", 0)?, param_u64(&q, "to", now)?);
+    if to < from {
+        return Err(ApiError::bad("to comes before from"));
+    }
+    Ok(AxJson(app.svc.metrics.routes_between(from, to)))
 }
 
 async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -> AxJson<Json> {
@@ -3420,10 +3964,37 @@ async fn revoke_key(State(app): State<App>, w: Option<axum::Extension<Principal>
     }
 }
 
+/// `GET /v1/admin/keys/clients?hours=24`: which clients sent each key
+/// over the last hours, every coordinator's (AC-4): a rotation's "move
+/// the clients" says which.
+async fn key_clients(State(app): State<App>, Query(q): Params, headers: HeaderMap) -> Res {
+    let hours = param_u64(&q, "hours", 24)?.clamp(1, 168);
+    let now = telemetry::now_ms();
+    let since = now.saturating_sub(hours * 3_600_000);
+    let started = now.saturating_sub(app.svc.started.elapsed().map_or(0, |d| d.as_millis() as u64));
+    let mut mine = app.svc.query_log.clients.json(since);
+    mine["since_ms"] = json!(since.max(started));
+    mine["hours"] = json!(hours);
+    let local = q.get("local").is_some_and(|v| v == "1" || v == "true") || crate::peers::from_peer(&headers).is_some();
+    let Some(me) = crate::peers::this(&app.svc).filter(|_| !local) else { return Ok(AxJson(mine)) };
+    let answers = crate::peers::get_all(&app.svc, &format!("/v1/admin/keys/clients?hours={hours}&local=1")).await;
+    let mut parts = vec![(me.name.clone(), mine)];
+    parts.extend(answers.iter().filter_map(|(p, a)| a.as_ref().ok().map(|j| (p.name.clone(), j.clone()))));
+    let mut j = telemetry::KeyClients::merge(&parts);
+    // From when every coordinator that answered counted.
+    j["since_ms"] = json!(parts.iter().filter_map(|(_, j)| j["since_ms"].as_u64()).max());
+    j["hours"] = json!(hours);
+    j["coordinators"] = crate::peers::reach(&app.svc, &answers);
+    Ok(AxJson(j))
+}
+
 /// `GET /v1/admin/audit?kind=change&from=&to=&who=&q=&limit=`: audited
 /// requests, the newest first; from the log store for what memory no
-/// longer holds.
-async fn audit_log(State(app): State<App>, Query(q): Params) -> Res {
+/// longer holds. On a coordinator, every coordinator's (R2-data-tools-4:
+/// each keeps its own log), each entry naming its `coordinator`, and
+/// `coordinators` saying which answered; `?local=1` (or a call from
+/// another coordinator) answers this one's only.
+async fn audit_log(State(app): State<App>, Query(q): Params, headers: HeaderMap) -> Res {
     let limit = param_u64(&q, "limit", 200)?.clamp(1, keys::AUDIT as u64) as usize;
     let to = param_u64(&q, "to", u64::MAX)?;
     let from = param_u64(&q, "from", 0)?;
@@ -3473,6 +4044,28 @@ async fn audit_log(State(app): State<App>, Query(q): Params) -> Res {
     if let Some(e) = error {
         j["error"] = json!(e);
     }
+    let local = q.get("local").is_some_and(|v| v == "1" || v == "true") || crate::peers::from_peer(&headers).is_some();
+    if let (false, Some(me)) = (local, crate::peers::this(&app.svc)) {
+        let mut ask: Vec<String> = q.iter().filter(|(k, _)| k.as_str() != "local").map(|(k, v)| format!("{}={}", crate::peers::encode(k), crate::peers::encode(v))).collect();
+        ask.sort();
+        let answers = crate::peers::get_all(&app.svc, &format!("/v1/admin/audit?{}", ask.join("&"))).await;
+        let mut all: Vec<Json> = std::mem::take(j["entries"].as_array_mut().expect("entries"));
+        for e in &mut all {
+            e["coordinator"] = json!(me.name);
+        }
+        for (p, a) in &answers {
+            for e in a.as_ref().ok().and_then(|a| a["entries"].as_array()).into_iter().flatten() {
+                let mut e = e.clone();
+                e["coordinator"] = json!(p.name);
+                all.push(e);
+            }
+        }
+        // The newest first, over every coordinator.
+        all.sort_by(|a, b| b["ts_ms"].as_u64().cmp(&a["ts_ms"].as_u64()));
+        all.truncate(limit);
+        j["entries"] = Json::Array(all);
+        j["coordinators"] = crate::peers::reach(&app.svc, &answers);
+    }
     Ok(AxJson(j))
 }
 
@@ -3480,7 +4073,11 @@ async fn audit_log(State(app): State<App>, Query(q): Params) -> Res {
 // notes, routes and backtests ([`crate::alerts`])
 
 /// The rules with their states, the latest changes and the routes.
-async fn alerts(State(app): State<App>) -> AxJson<Json> {
+async fn alerts(State(app): State<App>, Query(q): Params) -> AxJson<Json> {
+    // alerts2: `?brief=1` for the bell.
+    if q.get("brief").is_some_and(|v| v == "1" || v == "true") {
+        return AxJson(app.svc.alerts.brief_json());
+    }
     AxJson(app.svc.alerts.json())
 }
 
@@ -3513,12 +4110,40 @@ async fn alert(State(app): State<App>, axum::extract::Path(id): axum::extract::P
 async fn put_alert_rules(State(app): State<App>, p: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let rules: Vec<crate::alerts::Rule> = serde_json::from_value(b.get("rules").cloned().ok_or_else(|| ApiError::bad("the body needs \"rules\""))?).map_err(|e| ApiError::bad(format!("bad rules: {e}")))?;
     let n = rules.len();
-    let (events, before, after) = app.svc.alerts.set_rules(rules, &by(&who(p)))?;
+    let who = by(&who(p));
+    let (events, before, after) = app.svc.alerts.set_rules(rules, &who)?;
     let (before, after) = crate::alerts::changed(&before, &after);
     let what = crate::alerts::change_text(&before, &after);
     keys::note_change(keys::Change { object: Some("alert rules".into()), before: Some(before), after: Some(after), ..Default::default() });
     crate::alerts::deliver(&app.svc, events);
-    Ok(audited(app.svc.alerts.json(), format!("{n} alert rules: {what}")))
+    // alerts2: every copy runs the each_copy rules as edited here, and every
+    // coordinator has them; the answer says which copies did not take them.
+    let (rules_ms, rules_by) = app.svc.alerts.rules_version();
+    app.svc.alerts.tell_peers(json!({"rules": app.svc.alerts.rules(), "rules_ms": rules_ms, "rules_by": rules_by}));
+    let mut j = app.svc.alerts.json();
+    if app.svc.alerts.is_coordinator() {
+        j["pushed"] = crate::alerts::push_rules(&app.svc, None, &who).await;
+    }
+    Ok(audited(j, format!("{n} alert rules: {what}")))
+}
+
+/// alerts2: what this coordinator holds of its alerts, for another one to
+/// merge (rules and their version; acknowledgements, silences, notes and
+/// pages).
+async fn alert_peer_state(State(app): State<App>) -> AxJson<Json> {
+    AxJson(app.svc.alerts.peer_state())
+}
+
+/// alerts2: merges what another coordinator tells (as it answers
+/// `GET /v1/alerts/peer`, and routes); it is not told on again.
+async fn alert_peer_merge(State(app): State<App>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let from = crate::peers::from_peer(&headers).ok_or_else(|| ApiError::bad("only another coordinator tells this (the header x-strata-peer names it)"))?;
+    let events = app.svc.alerts.merge(&b, &from)?;
+    let n = events.len();
+    crate::alerts::deliver(&app.svc, events);
+    // Not audited (R2-scenarios-10): the coordinator it came from audited
+    // the person's change, and every coordinator's audit log is merged.
+    Ok(AxJson(json!({"merged": n})).into_response())
 }
 
 /// Notes for the audit entry what a request changed of alert `id`: its
@@ -3581,6 +4206,8 @@ async fn put_alert_routes(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     let routes: Vec<crate::alerts::Route> = serde_json::from_value(b.get("routes").cloned().ok_or_else(|| ApiError::bad("the body needs \"routes\""))?).map_err(|e| ApiError::bad(format!("bad routes: {e}")))?;
     let before = app.svc.alerts.routes_json();
     app.svc.alerts.set_routes(routes)?;
+    // alerts2: every coordinator sends through the same routes.
+    app.svc.alerts.tell_peers(json!({"routes": app.svc.alerts.routes()}));
     let after = app.svc.alerts.routes_json();
     let names: Vec<&str> = after.iter().filter_map(|r| r["name"].as_str()).collect();
     keys::note_change(keys::Change { object: Some("alert routes".into()), before: Some(json!(before)), after: Some(json!(after)), ..Default::default() });

@@ -1,0 +1,3 @@
+{"node": "es-d-a1-3e6bj5", "cpu": "Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz", "vcpus": 4, "mem_kb": 32873752, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 23.089, "sha256_1g_x_vcpus_s": 11.494, "disk_write_2g_s": 0.643, "copy_ms": 0, "time": 1793713200, "size": "m3-4vcpu-32gb"}
+
+{"node": "es-c-a1-3e6bjk", "cpu": "Intel(R) Xeon(R) Platinum 8280 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382180, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 19.889, "sha256_1g_x_vcpus_s": 10.003, "disk_write_2g_s": 1.08, "copy_ms": 386116, "time": 1793713581, "size": "c-8"}

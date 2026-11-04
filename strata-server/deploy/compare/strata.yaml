@@ -31,7 +31,10 @@ spec:
     - name: strata
       image: __IMAGE__
       imagePullPolicy: IfNotPresent
-      args: [--db, /local/__COLL__.shard__I__of2.strata, --listen, "0.0.0.0:7700", --grpc, "0.0.0.0:7701"]
+      # A 30 s deadline, the time engine-compare's client waits for every
+      # engine: the default of 5 s turned a cold first vector query at 10M
+      # into "no answer in time", which drops the kind from the run.
+      args: [--db, /local/__COLL__.shard__I__of2.strata, --listen, "0.0.0.0:7700", --grpc, "0.0.0.0:7701", --timeout-ms, "30000"]
       # Strata serves beyond loopback only with a token: a random one per
       # cluster, which compare.sh keeps in the secret strata-token and gives
       # the coordinator and the client too.

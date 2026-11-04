@@ -1,0 +1,6 @@
+1	ok	1793675811	1793675818	up qdrant
+2	ok	1793675818	1793680371	load qdrant
+3	ok	1793680372	1793680608	run qdrant
+4	ok	1793680608	1793680839	run qdrant --label qdrant-pass2
+5	ok	1793680839	1793681069	run qdrant --label qdrant-pass3
+6	ok	1793681069	1793681071	down qdrant

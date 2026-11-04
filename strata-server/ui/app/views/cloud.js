@@ -114,6 +114,15 @@ const ON_ITS_WAY = new Set(["creating", "installing", "starting", "deleting"]);
 /** How far a press of − or + goes: further as the number grows. */
 const stride = (v) => (v >= 1000 ? 100 : v >= 200 ? 50 : v >= 50 ? 10 : v >= 20 ? 5 : 1);
 /** A number with − and +, which may also be typed (any value from min to max). */
+/** A Kubernetes quantity ("500Gi", "1Ti", "200G") in GiB, or null. */
+function quantityGib(q) {
+  const m = /^\s*([\d.]+)\s*(Ki|Mi|Gi|Ti|Pi|K|M|G|T|P)?\s*$/.exec(String(q ?? ""));
+  if (!m) return null;
+  const n = +m[1], u = m[2] || "";
+  const bytes = n * ({ Ki: 2 ** 10, Mi: 2 ** 20, Gi: 2 ** 30, Ti: 2 ** 40, Pi: 2 ** 50, K: 1e3, M: 1e6, G: 1e9, T: 1e12, P: 1e15 }[u] || 1);
+  const g = Math.round(bytes / 2 ** 30);
+  return g >= 1 ? g : null;
+}
 function stepper(value, min, max, onChange, label, unit = "") {
   const inp = h("input", { class: "input sm num ro-cnum", type: "number", inputmode: "numeric", min, max, value: String(value), "aria-label": label });
   const less = h("button", { class: "btn xs", type: "button", "aria-label": "fewer " + label, title: `${stride(value - 1)} fewer` }, icon("minus"));
@@ -187,7 +196,11 @@ function render(page, r) {
     const reps = sp?.replicas ?? (c?.shards?.length ? Math.max(...c.shards.map((x) => (x.replicas || []).length)) : null);
     const coords = sp?.coordinators ?? (c?.coordinators?.length || null);
     if (!shards || !reps) return;
-    running = { shards, replicas: reps, coordinators: coords || 1, name: k?.name || null };
+    // The volume a copy has (NEW-cluster-admin-8): the spec's size, else the
+    // largest disk a copy reports; the plan's cost starts from it.
+    const disks = (c?.shards || []).flatMap((x) => x.replicas || []).map((r) => r.detail?.load?.disk_total_bytes).filter((b) => b > 0);
+    const volume = quantityGib(sp?.storage?.size) ?? (disks.length ? Math.round(Math.max(...disks) / 2 ** 30) : null);
+    running = { shards, replicas: reps, coordinators: coords || 1, name: k?.name || null, volume_gb: volume, volumeFrom: sp?.storage?.size ? `spec.storage.size ${sp.storage.size}` : volume ? "the largest disk a copy reports" : null };
     if (!sized) useRunning(false);
     else drawPlan();
   }
@@ -195,6 +208,7 @@ function render(page, r) {
   function useRunning(byHand = true) {
     if (!running) return;
     form.shards = running.shards; form.replicas = running.replicas; form.coordinators = running.coordinators;
+    if (running.volume_gb) form.volume_gb = clamp(running.volume_gb, 1, 16384);
     form.nodes = clamp(Math.max(form.replicas, Math.ceil(running.shards * running.replicas / 4)), 1, 1000);
     if (byHand) sized = true;
     if (cat) replan(); else drawPlan();
@@ -558,11 +572,12 @@ function render(page, r) {
         : [h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Control plane"), toggle(form.ha, (v) => set("ha", v), form.ha ? "highly available" : "standard (free)")),
           h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Kubernetes"), version)],
       h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Image"), image));
-    const same = running && form.shards === running.shards && form.replicas === running.replicas && form.coordinators === running.coordinators;
+    const same = running && form.shards === running.shards && form.replicas === running.replicas && form.coordinators === running.coordinators && (!running.volume_gb || form.volume_gb === running.volume_gb);
+    const vol = running?.volume_gb ? `, volumes of ${fmt.n(running.volume_gb)} GiB (${running.volumeFrom})` : "";
     const start = running ? h("div", { class: "small dim ro-cstart" }, same
-      ? [`Starts from this cluster's size${running.name ? ` (${running.name})` : ""}: ${fmt.n(running.shards)} shards × ${running.replicas} copies, ${running.coordinators} ${running.coordinators === 1 ? "coordinator" : "coordinators"}, a node for about every 4 copies. `,
-        h("a", { href: "#", onclick: (e) => { e.preventDefault(); sized = true; Object.assign(form, { shards: 2, replicas: 3, coordinators: 1, nodes: 3 }); replan(); } }, "Start small instead (2 × 3 on 3 nodes)")]
-      : [`This cluster runs ${fmt.n(running.shards)} shards × ${running.replicas} copies and ${running.coordinators} ${running.coordinators === 1 ? "coordinator" : "coordinators"}. `, h("a", { href: "#", onclick: (e) => { e.preventDefault(); useRunning(); } }, "Start from its size")]) : null;
+      ? [`Starts from this cluster's size${running.name ? ` (${running.name})` : ""}: ${fmt.n(running.shards)} shards × ${running.replicas} copies, ${running.coordinators} ${running.coordinators === 1 ? "coordinator" : "coordinators"}${vol}, a node for about every 4 copies. `,
+        h("a", { href: "#", onclick: (e) => { e.preventDefault(); sized = true; Object.assign(form, { shards: 2, replicas: 3, coordinators: 1, nodes: 3, volume_gb: 10 }); replan(); } }, "Start small instead (2 × 3 on 3 nodes, 10 GiB volumes)")]
+      : [`This cluster runs ${fmt.n(running.shards)} shards × ${running.replicas} copies and ${running.coordinators} ${running.coordinators === 1 ? "coordinator" : "coordinators"}${vol}. `, h("a", { href: "#", onclick: (e) => { e.preventDefault(); useRunning(); } }, "Start from its size")]) : null;
     if (planErr) { clear(planEl, card({ title: "Plan", body: h("div", { class: "stack" }, start, controls, h("div", { class: "error" }, planErr.message)) })); return; }
     if (!plan) { clear(planEl, card({ title: "Plan", body: h("div", { class: "stack" }, start, controls, h("div", { class: "small dim" }, "Planning…")) })); return; }
     const stack = plan.stack;

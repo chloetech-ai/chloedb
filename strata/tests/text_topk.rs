@@ -28,7 +28,10 @@ fn queries(texts: &[String], naive: &Naive, n: usize, seed: u64) -> Vec<Vec<Stri
     let vocab: Vec<&String> = naive.index.keys().collect();
     (0..n)
         .map(|_| {
-            let mut q: Vec<String> = match rng.gen_range(0..3) {
+            let mut q: Vec<String> = match rng.gen_range(0..4) {
+                // Many words (a typo-tolerant word brings up to 50 more):
+                // MaxScore sums them window by window.
+                3 if rng.gen_bool(0.5) => (0..rng.gen_range(16..=60)).map(|_| vocab.choose(&mut rng).unwrap().to_string()).collect(),
                 // Terms of a document (they co-occur).
                 0 => {
                     let toks = analyze(&texts[rng.gen_range(0..texts.len())]);
@@ -141,6 +144,46 @@ fn ties_kept_alike() {
                         let plain = r.top_k(&q, &stats, p, k, filter, algo);
                         assert_eq!(plain.len(), k.min(all.len()));
                         assert!(plain.iter().all(|&(d, s)| want.binary_search(&(d, s.to_bits())).is_ok()), "{algo:?} k={k} {q:?}: top_k scores");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Queries of many lists, over few words that tie heavily: MaxScore's
+/// windows (at 16 essential lists or more) give each document the score
+/// scoring every match gives it, bit for bit, and keep the same ties, with
+/// and without filters.
+#[test]
+fn many_lists_rank_alike() {
+    let mut rng = StdRng::seed_from_u64(23);
+    // Longer than a window, with words of every frequency.
+    let texts: Vec<String> = (0..20_000)
+        .map(|_| (0..rng.gen_range(1..8)).map(|_| format!("w{}", (rng.gen::<f64>().powi(2) * 80.0) as u32)).collect::<Vec<_>>().join(" "))
+        .collect();
+    let n = texts.len() as u32;
+    let half = DocSet::from_sorted((0..n).filter(|d| d % 2 == 0).collect(), n);
+    let sparse = DocSet::from_sorted((0..n).filter(|_| rng.gen_bool(0.01)).collect(), n);
+    for (format, min_df) in configs() {
+        let seg = build(&texts, format, min_df, false);
+        let r = TextFieldReader::open(&seg, "body").unwrap();
+        for qi in 0..30 {
+            let q: Vec<String> = (0..rng.gen_range(16..=60)).map(|_| format!("w{}", rng.gen_range(0..90))).collect();
+            let stats = r.stats(&q);
+            let p = Bm25Params::default();
+            for filter in [None, Some(&half as &dyn DocFilter), Some(&sparse as &dyn DocFilter), Some(&Every(3) as &dyn DocFilter)] {
+                let all = r.top_k(&q, &stats, p, n as usize, filter, TopKAlgo::Exhaustive);
+                for k in [1, 10, 100] {
+                    let mut want: Vec<(u32, u32)> = match all.get(k - 1) {
+                        Some(&(_, cut)) => all.iter().filter(|x| x.1 >= cut).map(|&(d, s)| (d, s.to_bits())).collect(),
+                        None => all.iter().map(|&(d, s)| (d, s.to_bits())).collect(),
+                    };
+                    want.sort();
+                    for algo in ALGOS {
+                        let mut got: Vec<(u32, u32)> = r.top_k_ties(&q, &stats, p, k, filter, algo).iter().map(|&(d, s)| (d, s.to_bits())).collect();
+                        got.sort();
+                        assert_eq!(got, want, "{format:?}/{min_df} {algo:?} k={k} query {qi} filter {}", filter.map_or(0, |f| f.cardinality()));
                     }
                 }
             }

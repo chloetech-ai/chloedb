@@ -1,0 +1,17 @@
+cache-p1 bm25                     warm-up: p50 3.501, 3.331 ms
+cache-p1 bm25                     c=1        533 q/s  p50   1.657 ms  p90   2.620 ms  p99   5.344 ms  errors 0
+cache-p1 bm25                     c=4       1025 q/s  p50   3.424 ms  p90   6.093 ms  p99  11.574 ms  errors 0
+cache-p1 bm25                     c=16      1199 q/s  p50  12.212 ms  p90  19.914 ms  p99  30.863 ms  errors 0
+cache-p1 bm25 + filter            warm-up: p50 4.977, 4.949 ms
+cache-p1 bm25 + filter            c=1        399 q/s  p50   2.157 ms  p90   3.823 ms  p99   6.933 ms  errors 0
+cache-p1 bm25 + filter            c=4        691 q/s  p50   5.135 ms  p90   9.030 ms  p99  18.271 ms  errors 0
+cache-p1 bm25 + filter            c=16       775 q/s  p50  19.162 ms  p90  31.151 ms  p99  44.965 ms  errors 0
+cache-p1 phrase                   warm-up: p50 3.058, 3.024 ms
+cache-p1 phrase                   c=1        576 q/s  p50   1.517 ms  p90   2.447 ms  p99   5.565 ms  errors 0
+cache-p1 phrase                   c=4       1194 q/s  p50   3.023 ms  p90   5.189 ms  p99   8.575 ms  errors 0
+cache-p1 phrase                   c=16      1417 q/s  p50  10.758 ms  p90  16.341 ms  p99  23.704 ms  errors 0
+cache-p1 prefix                   warm-up: p50 6.431, 6.148 ms
+cache-p1 prefix                   c=1        367 q/s  p50   2.454 ms  p90   4.039 ms  p99   6.710 ms  errors 0
+cache-p1 prefix                   c=4        597 q/s  p50   6.038 ms  p90  10.355 ms  p99  19.106 ms  errors 0
+cache-p1 prefix                   c=16       629 q/s  p50  23.889 ms  p90  38.650 ms  p99  54.678 ms  errors 0
+wrote /home/user/bm25-data/ab1/run-cache-p1.json

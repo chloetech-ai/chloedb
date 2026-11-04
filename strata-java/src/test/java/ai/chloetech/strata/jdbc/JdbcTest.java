@@ -310,6 +310,22 @@ class JdbcTest {
     }
 
     @Test
+    void aFileMadeInALinkedDirectoryIsOneDatabase() throws Exception {
+        // As on macOS, whose temporary directories are under /var, a link
+        // to /private/var: the connection that made the file named it
+        // through the link, the next ones by the file's real path.
+        Path real = Files.createDirectory(dir.resolve("real"));
+        Path linked = Files.createSymbolicLink(dir.resolve("linked"), real);
+        String made = "jdbc:strata:" + linked.resolve("made.strata");
+        try (Connection first = DriverManager.getConnection(made + "?schema=" + schema);
+                Connection again = DriverManager.getConnection(made);
+                Connection byItsRealPath = DriverManager.getConnection("jdbc:strata:" + real.resolve("made.strata"))) {
+            assertSame(first.unwrap(Database.class), again.unwrap(Database.class));
+            assertSame(first.unwrap(Database.class), byItsRealPath.unwrap(Database.class));
+        }
+    }
+
+    @Test
     void theDatabaseBehindTheConnection() throws Exception {
         assertTrue(conn.isWrapperFor(Database.class));
         Database db = conn.unwrap(Database.class);

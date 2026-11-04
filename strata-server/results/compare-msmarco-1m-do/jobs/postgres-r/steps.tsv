@@ -1,0 +1,6 @@
+1	ok	1793680883	1793680903	up postgres
+2	ok	1793680903	1793682156	load postgres
+3	ok	1793682156	1793683052	run postgres
+4	ok	1793683052	1793683938	run postgres --label postgres-pass2
+5	ok	1793683938	1793684828	run postgres --label postgres-pass3
+6	ok	1793684828	1793684832	down postgres

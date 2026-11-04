@@ -1,0 +1,17 @@
+cache-p3 bm25                     warm-up: p50 4.058, 3.855 ms
+cache-p3 bm25                     c=1        437 q/s  p50   1.950 ms  p90   3.241 ms  p99   7.140 ms  errors 0
+cache-p3 bm25                     c=4        970 q/s  p50   3.671 ms  p90   6.501 ms  p99  11.313 ms  errors 0
+cache-p3 bm25                     c=16      1223 q/s  p50  12.321 ms  p90  19.292 ms  p99  27.296 ms  errors 0
+cache-p3 bm25 + filter            warm-up: p50 5.133, 5.298 ms
+cache-p3 bm25 + filter            c=1        362 q/s  p50   2.442 ms  p90   4.187 ms  p99   7.047 ms  errors 0
+cache-p3 bm25 + filter            c=4        707 q/s  p50   4.996 ms  p90   8.884 ms  p99  18.850 ms  errors 0
+cache-p3 bm25 + filter            c=16       800 q/s  p50  18.630 ms  p90  30.076 ms  p99  46.582 ms  errors 0
+cache-p3 phrase                   warm-up: p50 3.161, 3.168 ms
+cache-p3 phrase                   c=1        491 q/s  p50   1.808 ms  p90   2.844 ms  p99   6.292 ms  errors 0
+cache-p3 phrase                   c=4        886 q/s  p50   3.771 ms  p90   8.146 ms  p99  12.463 ms  errors 0
+cache-p3 phrase                   c=16      1342 q/s  p50  11.457 ms  p90  17.159 ms  p99  24.932 ms  errors 0
+cache-p3 prefix                   warm-up: p50 6.647, 6.945 ms
+cache-p3 prefix                   c=1        342 q/s  p50   2.596 ms  p90   4.142 ms  p99   7.028 ms  errors 0
+cache-p3 prefix                   c=4        550 q/s  p50   6.376 ms  p90  11.194 ms  p99  23.789 ms  errors 0
+cache-p3 prefix                   c=16       604 q/s  p50  24.795 ms  p90  40.214 ms  p99  63.607 ms  errors 0
+wrote /home/user/bm25-data/ab2/run-cache-p3.json

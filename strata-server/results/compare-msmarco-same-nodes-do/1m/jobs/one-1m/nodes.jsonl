@@ -1,0 +1,2 @@
+{"node": "one-1m-d-a1-3e2yd3", "cpu": "Intel(R) Xeon(R) Platinum 8280 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 65853636, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 20.248, "sha256_1g_x_vcpus_s": 10.361, "disk_write_2g_s": 1.793, "copy_ms": 0, "time": 1793768617, "size": "m-8vcpu-64gb"}
+{"node": "one-1m-c-a1-3e2yd7", "cpu": "Intel(R) Xeon(R) Platinum 8280 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382184, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 20.04, "sha256_1g_x_vcpus_s": 10.231, "disk_write_2g_s": 1.121, "copy_ms": 66268, "time": 1793768683, "size": "c-8"}

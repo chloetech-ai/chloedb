@@ -497,7 +497,12 @@ class TantivySys(System):
             hits = self.searcher.search(query, 10, count=False, order_by_field="rating", order=t.Order.Desc).hits
             return [self.searcher.doc(addr)["id"][0] for _, addr in hits]
         if kind == "facet":
-            raise Unsupported("tantivy-py has no terms aggregation over a query's matches (Tantivy's Rust API does)")
+            # A terms aggregation over the matches (Searcher.aggregate, in
+            # tantivy-py since 0.22), every category asked for so that the
+            # counts are exact, then ordered as the others' SQL orders them.
+            query = t.Query.boolean_query([(t.Occur.Must, self.index.parse_query(w, ["body"])) for w in q["words"]])
+            agg = self.searcher.aggregate(query, {"c": {"terms": {"field": "category", "size": 1000, "segment_size": 1000}}})
+            return sorted(((b["key"], b["doc_count"]) for b in agg["c"]["buckets"]), key=lambda r: (-r[1], r[0]))[:5]
         if kind == "phrase":
             a, b = q["phrase"]
             query = t.Query.boolean_query([(t.Occur.Must, self.index.parse_query(f'"{a} {b}"', ["body"])), (t.Occur.Should, self._text(q["text"]))])

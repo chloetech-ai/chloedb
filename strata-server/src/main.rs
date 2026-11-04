@@ -144,6 +144,12 @@ struct Args {
     /// flagged "partial" (a request's "partial" overrides it).
     #[arg(long)]
     partial: bool,
+    /// With --shards: terms whose BM25 statistics the coordinator keeps
+    /// per shard copy, as of the copy's version, so that a BM25 query whose
+    /// terms are all kept skips the statistics round (0: none kept; every
+    /// such query asks every shard first).
+    #[arg(long, default_value_t = strata_server::coord::STATS_CACHE_TERMS)]
+    stats_cache_terms: usize,
     /// With --shards: the StrataCluster (namespace/name) that runs this
     /// coordinator on Kubernetes, read and scaled through the API server as
     /// the pod's service account (the operator sets it).
@@ -375,6 +381,17 @@ struct Args {
     /// (https://strata.example.com), for links in alerts' webhooks.
     #[arg(long, env = "STRATA_PUBLIC_URL")]
     public_url: Option<String>,
+    /// The address other coordinators reach this coordinator's HTTP API at
+    /// (http://10.0.0.5:7700); it names itself so to its shards, which tell
+    /// the others. Default: $STRATA_POD_IP and the --listen port, else the
+    /// --listen address.
+    #[arg(long, env = "STRATA_PEER_URL")]
+    peer_url: Option<String>,
+    /// A coordinator's Contain rules' file, which they are kept in across a
+    /// restart. Default: contain.json beside --alerts' file (in memory
+    /// without either).
+    #[arg(long, env = "STRATA_CONTAIN")]
+    contain: Option<PathBuf>,
     /// The share of queries that may fail on the server's side before
     /// fleet health says so (GET /v1/health/fleet).
     #[arg(long, default_value_t = 0.01)]
@@ -696,6 +713,7 @@ async fn main() {
             hedge: std::time::Duration::from_millis(a.hedge_ms),
             shard_timeout: (a.shard_timeout_ms > 0).then(|| std::time::Duration::from_millis(a.shard_timeout_ms)),
             partial: a.partial,
+            stats_cache_terms: a.stats_cache_terms,
             token: cluster.clone().or_else(|| token.clone()),
             ca: a.shard_ca.as_ref().map(read),
             slots: a.slot_map.as_ref().map(|p| {
@@ -732,6 +750,7 @@ async fn main() {
         aws_file: a.aws_file,
         digitalocean_file: a.digitalocean_file,
         cloud_file: a.cloud_file,
+        contain: a.contain.clone().or_else(|| a.alerts.as_ref().map(|p| p.with_file_name("contain.json"))),
         alerts: a.alerts,
         alert_webhook: a.alert_webhook.filter(|u| !u.is_empty()),
         log_store: a.log_store.as_deref().map(|p| (p != "off").then(|| PathBuf::from(p))),
@@ -782,6 +801,11 @@ async fn main() {
     };
     let (http, ip) = bind(&a.listen).await;
     let access = Access { token: token.clone(), cluster: cluster.clone(), hosts: auth::allowed_hosts(ip, &a.allow_host), tls };
+    // fleet: a coordinator names itself to its shards, which tell the others.
+    if coordinator {
+        let at = http.local_addr().unwrap_or_else(|e| fail(&format!("listen on {}: {e}", a.listen)));
+        strata_server::peers::start(&svc, strata_server::peers::own_url(a.peer_url.as_deref(), at, access.tls.is_some()));
+    }
     let h = svc.health().await;
     tracing::info!(table = %svc.schema.table, rows = %h["docs"], segments = %h["segments"], version = env!("CARGO_PKG_VERSION"), simd = %strata::simd::describe(), "serving");
     let scheme = if access.tls.is_some() { "https" } else { "http" };

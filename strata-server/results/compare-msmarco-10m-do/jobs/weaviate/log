@@ -1,0 +1,456 @@
+service/weaviate created
+pod/weaviate-0 created
+pod/weaviate-0 condition met
+job.batch/load-weaviate created
+weaviate: index created in 0.3 s
+weaviate: 25000 documents sent, 12 s
+weaviate: 50000 documents sent, 25 s
+weaviate: 75000 documents sent, 38 s
+weaviate: 100000 documents sent, 52 s
+weaviate: 125000 documents sent, 67 s
+weaviate: 150000 documents sent, 81 s
+weaviate: 175000 documents sent, 96 s
+weaviate: 200000 documents sent, 111 s
+weaviate: 225000 documents sent, 125 s
+weaviate: 250000 documents sent, 137 s
+weaviate: 275000 documents sent, 151 s
+weaviate: 300000 documents sent, 166 s
+weaviate: 325000 documents sent, 180 s
+weaviate: 350000 documents sent, 196 s
+weaviate: 375000 documents sent, 211 s
+weaviate: 400000 documents sent, 223 s
+weaviate: 425000 documents sent, 236 s
+weaviate: 450000 documents sent, 251 s
+weaviate: 475000 documents sent, 268 s
+weaviate: 500000 documents sent, 285 s
+weaviate: 525000 documents sent, 302 s
+weaviate: 550000 documents sent, 316 s
+weaviate: 575000 documents sent, 331 s
+weaviate: 600000 documents sent, 347 s
+weaviate: 625000 documents sent, 361 s
+weaviate: 650000 documents sent, 378 s
+weaviate: 675000 documents sent, 393 s
+weaviate: 700000 documents sent, 407 s
+weaviate: 725000 documents sent, 423 s
+weaviate: 750000 documents sent, 440 s
+weaviate: 775000 documents sent, 455 s
+weaviate: 800000 documents sent, 470 s
+weaviate: 825000 documents sent, 485 s
+weaviate: 850000 documents sent, 503 s
+weaviate: 875000 documents sent, 519 s
+weaviate: 900000 documents sent, 535 s
+weaviate: 925000 documents sent, 552 s
+weaviate: 950000 documents sent, 568 s
+weaviate: 975000 documents sent, 585 s
+weaviate: 1000000 documents sent, 601 s
+weaviate: 1025000 documents sent, 617 s
+weaviate: 1050000 documents sent, 635 s
+weaviate: 1075000 documents sent, 652 s
+weaviate: 1100000 documents sent, 668 s
+weaviate: 1125000 documents sent, 683 s
+weaviate: 1150000 documents sent, 698 s
+weaviate: 1175000 documents sent, 713 s
+weaviate: 1200000 documents sent, 731 s
+weaviate: 1225000 documents sent, 748 s
+weaviate: 1250000 documents sent, 763 s
+weaviate: 1275000 documents sent, 778 s
+weaviate: 1300000 documents sent, 794 s
+weaviate: 1325000 documents sent, 811 s
+weaviate: 1350000 documents sent, 828 s
+weaviate: 1375000 documents sent, 844 s
+weaviate: 1400000 documents sent, 863 s
+weaviate: 1425000 documents sent, 880 s
+weaviate: 1450000 documents sent, 898 s
+weaviate: 1475000 documents sent, 915 s
+weaviate: 1500000 documents sent, 932 s
+weaviate: 1525000 documents sent, 949 s
+weaviate: 1550000 documents sent, 966 s
+weaviate: 1575000 documents sent, 985 s
+weaviate: 1600000 documents sent, 1002 s
+weaviate: 1625000 documents sent, 1017 s
+weaviate: 1650000 documents sent, 1033 s
+weaviate: 1675000 documents sent, 1049 s
+weaviate: 1700000 documents sent, 1066 s
+weaviate: 1725000 documents sent, 1082 s
+weaviate: 1750000 documents sent, 1100 s
+weaviate: 1775000 documents sent, 1117 s
+weaviate: 1800000 documents sent, 1133 s
+weaviate: 1825000 documents sent, 1150 s
+weaviate: 1850000 documents sent, 1168 s
+weaviate: 1875000 documents sent, 1185 s
+weaviate: 1900000 documents sent, 1203 s
+weaviate: 1925000 documents sent, 1227 s
+weaviate: 1950000 documents sent, 1246 s
+weaviate: 1975000 documents sent, 1266 s
+weaviate: 2000000 documents sent, 1286 s
+weaviate: 2025000 documents sent, 1306 s
+weaviate: 2050000 documents sent, 1325 s
+weaviate: 2075000 documents sent, 1347 s
+weaviate: 2100000 documents sent, 1365 s
+weaviate: 2125000 documents sent, 1382 s
+weaviate: 2150000 documents sent, 1400 s
+weaviate: 2175000 documents sent, 1418 s
+weaviate: 2200000 documents sent, 1436 s
+weaviate: 2225000 documents sent, 1454 s
+weaviate: 2250000 documents sent, 1474 s
+weaviate: 2275000 documents sent, 1491 s
+weaviate: 2300000 documents sent, 1508 s
+weaviate: 2325000 documents sent, 1525 s
+weaviate: 2350000 documents sent, 1542 s
+weaviate: 2375000 documents sent, 1555 s
+weaviate: 2400000 documents sent, 1572 s
+weaviate: 2425000 documents sent, 1590 s
+weaviate: 2450000 documents sent, 1608 s
+weaviate: 2475000 documents sent, 1624 s
+weaviate: 2500000 documents sent, 1641 s
+weaviate: 2525000 documents sent, 1657 s
+weaviate: 2550000 documents sent, 1674 s
+weaviate: 2575000 documents sent, 1690 s
+weaviate: 2600000 documents sent, 1708 s
+weaviate: 2625000 documents sent, 1728 s
+weaviate: 2650000 documents sent, 1744 s
+weaviate: 2675000 documents sent, 1761 s
+weaviate: 2700000 documents sent, 1778 s
+weaviate: 2725000 documents sent, 1794 s
+weaviate: 2750000 documents sent, 1810 s
+weaviate: 2775000 documents sent, 1827 s
+weaviate: 2800000 documents sent, 1846 s
+weaviate: 2825000 documents sent, 1863 s
+weaviate: 2850000 documents sent, 1878 s
+weaviate: 2875000 documents sent, 1896 s
+weaviate: 2900000 documents sent, 1914 s
+weaviate: 2925000 documents sent, 1931 s
+weaviate: 2950000 documents sent, 1950 s
+weaviate: 2975000 documents sent, 1968 s
+weaviate: 3000000 documents sent, 1985 s
+weaviate: 3025000 documents sent, 2001 s
+weaviate: 3050000 documents sent, 2017 s
+weaviate: 3075000 documents sent, 2033 s
+weaviate: 3100000 documents sent, 2049 s
+weaviate: 3125000 documents sent, 2066 s
+weaviate: 3150000 documents sent, 2085 s
+weaviate: 3175000 documents sent, 2104 s
+weaviate: 3200000 documents sent, 2122 s
+weaviate: 3225000 documents sent, 2139 s
+weaviate: 3250000 documents sent, 2156 s
+weaviate: 3275000 documents sent, 2173 s
+weaviate: 3300000 documents sent, 2190 s
+weaviate: 3325000 documents sent, 2208 s
+weaviate: 3350000 documents sent, 2225 s
+weaviate: 3375000 documents sent, 2243 s
+weaviate: 3400000 documents sent, 2261 s
+weaviate: 3425000 documents sent, 2278 s
+weaviate: 3450000 documents sent, 2295 s
+weaviate: 3475000 documents sent, 2314 s
+weaviate: 3500000 documents sent, 2333 s
+weaviate: 3525000 documents sent, 2351 s
+weaviate: 3550000 documents sent, 2368 s
+weaviate: 3575000 documents sent, 2385 s
+weaviate: 3600000 documents sent, 2403 s
+weaviate: 3625000 documents sent, 2420 s
+weaviate: 3650000 documents sent, 2438 s
+weaviate: 3675000 documents sent, 2456 s
+weaviate: 3700000 documents sent, 2473 s
+weaviate: 3725000 documents sent, 2491 s
+weaviate: 3750000 documents sent, 2508 s
+weaviate: 3775000 documents sent, 2525 s
+weaviate: 3800000 documents sent, 2545 s
+weaviate: 3825000 documents sent, 2562 s
+weaviate: 3850000 documents sent, 2583 s
+weaviate: 3875000 documents sent, 2604 s
+weaviate: 3900000 documents sent, 2623 s
+weaviate: 3925000 documents sent, 2643 s
+weaviate: 3950000 documents sent, 2661 s
+weaviate: 3975000 documents sent, 2679 s
+weaviate: 4000000 documents sent, 2698 s
+weaviate: 4025000 documents sent, 2717 s
+weaviate: 4050000 documents sent, 2738 s
+weaviate: 4075000 documents sent, 2756 s
+weaviate: 4100000 documents sent, 2775 s
+weaviate: 4125000 documents sent, 2794 s
+weaviate: 4150000 documents sent, 2812 s
+weaviate: 4175000 documents sent, 2833 s
+weaviate: 4200000 documents sent, 2854 s
+weaviate: 4225000 documents sent, 2872 s
+weaviate: 4250000 documents sent, 2890 s
+weaviate: 4275000 documents sent, 2909 s
+weaviate: 4300000 documents sent, 2927 s
+weaviate: 4325000 documents sent, 2946 s
+weaviate: 4350000 documents sent, 2965 s
+weaviate: 4375000 documents sent, 2984 s
+weaviate: 4400000 documents sent, 3002 s
+weaviate: 4425000 documents sent, 3021 s
+weaviate: 4450000 documents sent, 3039 s
+weaviate: 4475000 documents sent, 3057 s
+weaviate: 4500000 documents sent, 3073 s
+weaviate: 4525000 documents sent, 3090 s
+weaviate: 4550000 documents sent, 3109 s
+weaviate: 4575000 documents sent, 3129 s
+weaviate: 4600000 documents sent, 3147 s
+weaviate: 4625000 documents sent, 3164 s
+weaviate: 4650000 documents sent, 3182 s
+weaviate: 4675000 documents sent, 3202 s
+weaviate: 4700000 documents sent, 3220 s
+weaviate: 4725000 documents sent, 3238 s
+weaviate: 4750000 documents sent, 3256 s
+weaviate: 4775000 documents sent, 3274 s
+read tcp 127.0.0.1:56170->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:56170->127.0.0.1:36447: read: connection reset by peer
+weaviate: 4800000 documents sent, 3292 s
+weaviate: 4825000 documents sent, 3310 s
+weaviate: 4850000 documents sent, 3329 s
+weaviate: 4875000 documents sent, 3351 s
+weaviate: 4900000 documents sent, 3370 s
+weaviate: 4925000 documents sent, 3387 s
+weaviate: 4950000 documents sent, 3405 s
+weaviate: 4975000 documents sent, 3422 s
+weaviate: 5000000 documents sent, 3441 s
+weaviate: 5025000 documents sent, 3459 s
+weaviate: 5050000 documents sent, 3477 s
+weaviate: 5075000 documents sent, 3497 s
+weaviate: 5100000 documents sent, 3515 s
+weaviate: 5125000 documents sent, 3533 s
+weaviate: 5150000 documents sent, 3549 s
+weaviate: 5175000 documents sent, 3567 s
+weaviate: 5200000 documents sent, 3588 s
+weaviate: 5225000 documents sent, 3609 s
+weaviate: 5250000 documents sent, 3628 s
+weaviate: 5275000 documents sent, 3646 s
+weaviate: 5300000 documents sent, 3664 s
+weaviate: 5325000 documents sent, 3683 s
+weaviate: 5350000 documents sent, 3701 s
+weaviate: 5375000 documents sent, 3719 s
+weaviate: 5400000 documents sent, 3737 s
+weaviate: 5425000 documents sent, 3754 s
+weaviate: 5450000 documents sent, 3772 s
+weaviate: 5475000 documents sent, 3790 s
+weaviate: 5500000 documents sent, 3807 s
+weaviate: 5525000 documents sent, 3826 s
+weaviate: 5550000 documents sent, 3847 s
+weaviate: 5575000 documents sent, 3866 s
+weaviate: 5600000 documents sent, 3882 s
+weaviate: 5625000 documents sent, 3899 s
+weaviate: 5650000 documents sent, 3914 s
+weaviate: 5675000 documents sent, 3930 s
+weaviate: 5700000 documents sent, 3948 s
+weaviate: 5725000 documents sent, 3966 s
+weaviate: 5750000 documents sent, 3982 s
+weaviate: 5775000 documents sent, 4000 s
+weaviate: 5800000 documents sent, 4018 s
+weaviate: 5825000 documents sent, 4035 s
+weaviate: 5850000 documents sent, 4053 s
+weaviate: 5875000 documents sent, 4072 s
+weaviate: 5900000 documents sent, 4095 s
+weaviate: 5925000 documents sent, 4116 s
+weaviate: 5950000 documents sent, 4136 s
+weaviate: 5975000 documents sent, 4155 s
+weaviate: 6000000 documents sent, 4174 s
+weaviate: 6025000 documents sent, 4194 s
+weaviate: 6050000 documents sent, 4213 s
+weaviate: 6075000 documents sent, 4231 s
+weaviate: 6100000 documents sent, 4250 s
+weaviate: 6125000 documents sent, 4268 s
+weaviate: 6150000 documents sent, 4287 s
+weaviate: 6175000 documents sent, 4305 s
+weaviate: 6200000 documents sent, 4325 s
+weaviate: 6225000 documents sent, 4347 s
+weaviate: 6250000 documents sent, 4367 s
+read tcp 127.0.0.1:45606->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:45606->127.0.0.1:36447: read: connection reset by peer
+weaviate: 6275000 documents sent, 4388 s
+weaviate: 6300000 documents sent, 4408 s
+weaviate: 6325000 documents sent, 4427 s
+weaviate: 6350000 documents sent, 4445 s
+weaviate: 6375000 documents sent, 4464 s
+weaviate: 6400000 documents sent, 4483 s
+weaviate: 6425000 documents sent, 4501 s
+weaviate: 6450000 documents sent, 4520 s
+weaviate: 6475000 documents sent, 4538 s
+weaviate: 6500000 documents sent, 4556 s
+weaviate: 6525000 documents sent, 4575 s
+weaviate: 6550000 documents sent, 4593 s
+weaviate: 6575000 documents sent, 4613 s
+weaviate: 6600000 documents sent, 4632 s
+weaviate: 6625000 documents sent, 4653 s
+weaviate: 6650000 documents sent, 4670 s
+weaviate: 6675000 documents sent, 4688 s
+weaviate: 6700000 documents sent, 4707 s
+weaviate: 6725000 documents sent, 4725 s
+weaviate: 6750000 documents sent, 4743 s
+weaviate: 6775000 documents sent, 4763 s
+weaviate: 6800000 documents sent, 4783 s
+weaviate: 6825000 documents sent, 4801 s
+weaviate: 6850000 documents sent, 4820 s
+weaviate: 6875000 documents sent, 4839 s
+weaviate: 6900000 documents sent, 4857 s
+weaviate: 6925000 documents sent, 4877 s
+weaviate: 6950000 documents sent, 4899 s
+weaviate: 6975000 documents sent, 4920 s
+weaviate: 7000000 documents sent, 4939 s
+weaviate: 7025000 documents sent, 4957 s
+weaviate: 7050000 documents sent, 4975 s
+weaviate: 7075000 documents sent, 4991 s
+weaviate: 7100000 documents sent, 5010 s
+weaviate: 7125000 documents sent, 5026 s
+weaviate: 7150000 documents sent, 5043 s
+weaviate: 7175000 documents sent, 5059 s
+weaviate: 7200000 documents sent, 5074 s
+weaviate: 7225000 documents sent, 5091 s
+weaviate: 7250000 documents sent, 5105 s
+weaviate: 7275000 documents sent, 5121 s
+weaviate: 7300000 documents sent, 5137 s
+weaviate: 7325000 documents sent, 5153 s
+weaviate: 7350000 documents sent, 5166 s
+weaviate: 7375000 documents sent, 5181 s
+weaviate: 7400000 documents sent, 5197 s
+weaviate: 7425000 documents sent, 5212 s
+weaviate: 7450000 documents sent, 5228 s
+weaviate: 7475000 documents sent, 5246 s
+weaviate: 7500000 documents sent, 5263 s
+weaviate: 7525000 documents sent, 5279 s
+weaviate: 7550000 documents sent, 5293 s
+weaviate: 7575000 documents sent, 5309 s
+weaviate: 7600000 documents sent, 5324 s
+weaviate: 7625000 documents sent, 5339 s
+weaviate: 7650000 documents sent, 5354 s
+weaviate: 7675000 documents sent, 5370 s
+weaviate: 7700000 documents sent, 5387 s
+weaviate: 7725000 documents sent, 5402 s
+weaviate: 7750000 documents sent, 5417 s
+weaviate: 7775000 documents sent, 5432 s
+weaviate: 7800000 documents sent, 5447 s
+weaviate: 7825000 documents sent, 5462 s
+weaviate: 7850000 documents sent, 5479 s
+weaviate: 7875000 documents sent, 5495 s
+weaviate: 7900000 documents sent, 5509 s
+weaviate: 7925000 documents sent, 5526 s
+weaviate: 7950000 documents sent, 5540 s
+weaviate: 7975000 documents sent, 5556 s
+weaviate: 8000000 documents sent, 5574 s
+weaviate: 8025000 documents sent, 5591 s
+weaviate: 8050000 documents sent, 5610 s
+weaviate: 8075000 documents sent, 5627 s
+weaviate: 8100000 documents sent, 5646 s
+weaviate: 8125000 documents sent, 5666 s
+weaviate: 8150000 documents sent, 5684 s
+weaviate: 8175000 documents sent, 5701 s
+weaviate: 8200000 documents sent, 5719 s
+weaviate: 8225000 documents sent, 5739 s
+weaviate: 8250000 documents sent, 5756 s
+weaviate: 8275000 documents sent, 5773 s
+weaviate: 8300000 documents sent, 5794 s
+weaviate: 8325000 documents sent, 5813 s
+weaviate: 8350000 documents sent, 5830 s
+weaviate: 8375000 documents sent, 5850 s
+weaviate: 8400000 documents sent, 5867 s
+weaviate: 8425000 documents sent, 5884 s
+weaviate: 8450000 documents sent, 5902 s
+weaviate: 8475000 documents sent, 5923 s
+weaviate: 8500000 documents sent, 5944 s
+weaviate: 8525000 documents sent, 5966 s
+weaviate: 8550000 documents sent, 5987 s
+weaviate: 8575000 documents sent, 6008 s
+weaviate: 8600000 documents sent, 6027 s
+weaviate: 8625000 documents sent, 6048 s
+weaviate: 8650000 documents sent, 6067 s
+weaviate: 8675000 documents sent, 6084 s
+weaviate: 8700000 documents sent, 6104 s
+weaviate: 8725000 documents sent, 6124 s
+weaviate: 8750000 documents sent, 6143 s
+weaviate: 8775000 documents sent, 6163 s
+weaviate: 8800000 documents sent, 6179 s
+weaviate: 8825000 documents sent, 6200 s
+weaviate: 8850000 documents sent, 6219 s
+weaviate: 8875000 documents sent, 6238 s
+weaviate: 8900000 documents sent, 6255 s
+weaviate: 8925000 documents sent, 6275 s
+weaviate: 8950000 documents sent, 6292 s
+weaviate: 8975000 documents sent, 6313 s
+weaviate: 9000000 documents sent, 6333 s
+weaviate: 9025000 documents sent, 6355 s
+weaviate: 9050000 documents sent, 6376 s
+weaviate: 9075000 documents sent, 6396 s
+weaviate: 9100000 documents sent, 6414 s
+weaviate: 9125000 documents sent, 6433 s
+weaviate: 9150000 documents sent, 6453 s
+weaviate: 9175000 documents sent, 6471 s
+weaviate: 9200000 documents sent, 6490 s
+weaviate: 9225000 documents sent, 6508 s
+weaviate: 9250000 documents sent, 6529 s
+weaviate: 9275000 documents sent, 6547 s
+weaviate: 9300000 documents sent, 6566 s
+weaviate: 9325000 documents sent, 6585 s
+weaviate: 9350000 documents sent, 6602 s
+weaviate: 9375000 documents sent, 6625 s
+weaviate: 9400000 documents sent, 6643 s
+weaviate: 9425000 documents sent, 6662 s
+weaviate: 9450000 documents sent, 6679 s
+weaviate: 9475000 documents sent, 6696 s
+weaviate: 9500000 documents sent, 6711 s
+weaviate: 9525000 documents sent, 6729 s
+weaviate: 9550000 documents sent, 6741 s
+weaviate: 9575000 documents sent, 6758 s
+weaviate: 9600000 documents sent, 6777 s
+weaviate: 9625000 documents sent, 6798 s
+weaviate: 9650000 documents sent, 6818 s
+weaviate: 9675000 documents sent, 6839 s
+weaviate: 9700000 documents sent, 6859 s
+weaviate: 9725000 documents sent, 6878 s
+weaviate: 9750000 documents sent, 6897 s
+weaviate: 9775000 documents sent, 6913 s
+weaviate: 9800000 documents sent, 6933 s
+weaviate: 9825000 documents sent, 6952 s
+weaviate: 9850000 documents sent, 6971 s
+weaviate: 9875000 documents sent, 6990 s
+weaviate: 9900000 documents sent, 7008 s
+weaviate: 9925000 documents sent, 7028 s
+weaviate: 9950000 documents sent, 7047 s
+weaviate: 9975000 documents sent, 7067 s
+weaviate: 10000000 documents sent, 7083 s
+weaviate: 10000000 documents (108.3 GB) sent in 7083.5 s
+weaviate: indexed 0.0 s after the last write; 7083.5 s in all
+wrote /data/compare/load-weaviate.json
+job.batch/run-weaviate created
+weaviate  bm25                     warm-up: p50 14.445, 14.851 ms
+weaviate  bm25                     c=1         96 q/s  p50   7.512 ms  p90  16.296 ms  p99  60.294 ms  errors 0
+weaviate  bm25                     c=4        245 q/s  p50  12.218 ms  p90  27.620 ms  p99  81.420 ms  errors 0
+weaviate  bm25                     c=16       276 q/s  p50  50.480 ms  p90 100.975 ms  p99 198.847 ms  errors 0
+weaviate  bm25 + filter            warm-up: p50 30.332, 41.177, 20.394, 26.276, 30.046, 20.029, 34.086, 24.793, 22.638 ms
+weaviate  bm25 + filter            c=1         60 q/s  p50  13.847 ms  p90  28.124 ms  p99  53.258 ms  errors 0
+weaviate  bm25 + filter            c=4        121 q/s  p50  27.046 ms  p90  57.235 ms  p99 103.115 ms  errors 0
+weaviate  bm25 + filter            c=16       147 q/s  p50  95.834 ms  p90 175.883 ms  p99 266.031 ms  errors 0
+weaviate  vector                   warm-up: p50 8.227, 8.885 ms
+weaviate  vector                   c=1        112 q/s  p50   7.553 ms  p90  14.072 ms  p99  23.347 ms  errors 0
+weaviate  vector                   c=4        448 q/s  p50   8.919 ms  p90  10.818 ms  p99  14.175 ms  errors 0
+weaviate  vector                   c=16       473 q/s  p50  30.427 ms  p90  59.311 ms  p99  93.741 ms  errors 0
+weaviate  vector + filter          warm-up: p50 17.944, 24.094, 21.283, 16.528, 17.648 ms
+weaviate  vector + filter          c=1         65 q/s  p50  14.169 ms  p90  21.679 ms  p99  31.682 ms  errors 0
+weaviate  vector + filter          c=4        186 q/s  p50  19.877 ms  p90  30.680 ms  p99  37.930 ms  errors 0
+weaviate  vector + filter          c=16       289 q/s  p50  49.018 ms  p90  88.614 ms  p99 151.323 ms  errors 0
+weaviate  hybrid (RRF)             warm-up: p50 28.585, 31.206 ms
+weaviate  hybrid (RRF)             c=1         40 q/s  p50  18.420 ms  p90  44.250 ms  p99  94.715 ms  errors 0
+weaviate  hybrid (RRF)             c=4        109 q/s  p50  31.139 ms  p90  57.013 ms  p99 117.954 ms  errors 0
+weaviate  hybrid (RRF)             c=16        88 q/s  p50 136.767 ms  p90 328.386 ms  p99 726.272 ms  errors 0
+weaviate  hybrid (weighted)        warm-up: p50 31.251, 29.931 ms
+weaviate  hybrid (weighted)        c=1         49 q/s  p50  16.517 ms  p90  29.359 ms  p99  92.366 ms  errors 0
+weaviate  hybrid (weighted)        c=4        101 q/s  p50  30.884 ms  p90  68.679 ms  p99 163.833 ms  errors 0
+weaviate  hybrid (weighted)        c=16       106 q/s  p50 122.885 ms  p90 249.448 ms  p99 716.177 ms  errors 0
+weaviate  boosted (bm25 × decay)   unavailable: no function scores
+weaviate  facet                    unavailable: error sending request for url (http://weaviate-0.weaviate:8080/v1/graphql)
+weaviate  key lookup               warm-up: p50 0.362, 0.368 ms
+weaviate  key lookup               c=1       2426 q/s  p50   0.390 ms  p90   0.545 ms  p99   0.676 ms  errors 0
+weaviate  key lookup               c=4      10966 q/s  p50   0.352 ms  p90   0.444 ms  p99   0.588 ms  errors 0
+weaviate  key lookup               c=16     27203 q/s  p50   0.533 ms  p90   0.855 ms  p99   1.450 ms  errors 0
+weaviate  phrase                   unavailable: no phrase queries
+weaviate  typo                     unavailable: no fuzzy matching
+weaviate  prefix                   warm-up: p50 48.258, 54.509, 40.755, 45.945, 79.947, 40.409, 39.562 ms
+weaviate  prefix                   c=1         24 q/s  p50  35.303 ms  p90  77.787 ms  p99 172.458 ms  errors 0
+weaviate  prefix                   c=4         71 q/s  p50  45.044 ms  p90 102.614 ms  p99 218.115 ms  errors 0
+weaviate  prefix                   c=16        87 q/s  p50 118.944 ms  p90 354.315 ms  p99 928.927 ms  errors 0
+weaviate  similar items            warm-up: p50 16.705, 17.241 ms
+weaviate  similar items            c=1         65 q/s  p50  13.607 ms  p90  20.558 ms  p99  30.016 ms  errors 0
+weaviate  similar items            c=4        210 q/s  p50  17.355 ms  p90  28.276 ms  p99  33.758 ms  errors 0
+weaviate  similar items            c=16       251 q/s  p50  56.106 ms  p90 103.613 ms  p99 163.100 ms  errors 0
+weaviate  sql aggregate            unavailable: error sending request for url (http://weaviate-0.weaviate:8080/v1/graphql)
+wrote /data/compare/run-weaviate.json
+pod "weaviate-0" deleted from weaviate namespace

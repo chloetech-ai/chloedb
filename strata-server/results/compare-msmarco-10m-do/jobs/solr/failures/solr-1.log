@@ -1,0 +1,300 @@
+2026-11-03 22:27:21.135 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:21.135 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:21.237 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:21.237 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:21.238 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:21.340 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:21.340 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:21.340 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:21.442 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:21.446 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=4
+2026-11-03 22:27:21.446 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:21.548 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:21.548 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:21.548 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:21.650 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:21.650 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:21.651 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:21.752 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:21.753 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:21.753 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:21.855 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:21.855 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:21.855 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:21.957 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:21.957 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:21.957 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:22.058 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:22.058 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:22.059 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:22.160 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:22.160 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:22.160 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:22.262 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:22.262 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:22.262 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:22.364 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:22.365 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:22.365 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:22.467 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:22.467 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:22.467 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:22.569 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:22.569 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:22.569 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:22.671 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:22.671 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:22.671 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:22.773 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:22.773 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:22.773 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:22.875 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:22.875 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:22.875 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:22.977 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:22.977 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:22.978 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:23.079 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:23.079 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:23.081 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:23.181 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:23.181 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:23.181 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:23.283 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:23.283 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:23.283 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:23.384 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:23.385 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:23.385 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:23.486 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:23.486 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:23.487 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:23.588 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:23.589 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:23.589 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:23.690 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:23.690 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:23.691 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:23.792 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:23.792 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:23.793 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:23.894 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:23.895 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:23.895 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:23.996 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:23.996 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:23.996 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:24.098 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:24.098 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:24.098 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:24.200 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:24.200 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:24.200 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:24.302 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:24.302 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:24.302 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:24.404 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:24.404 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:24.404 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:24.506 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:24.506 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:24.506 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:24.608 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:24.608 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:24.608 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:24.710 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:24.710 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:24.710 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:24.811 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:24.812 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:24.813 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:24.914 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:24.914 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:24.914 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:25.016 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:25.016 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:25.018 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:25.118 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:25.118 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:25.119 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:25.220 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:25.220 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:25.221 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:25.323 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:25.323 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:25.323 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:25.425 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:25.425 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:25.426 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:25.459 INFO  (qtp1818339587-1165-null-59132) [ t:null-59132] o.a.s.s.HttpSolrCall [admin] path=/admin/info/health params={} status=0 QTime=0
+2026-11-03 22:27:25.527 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:25.527 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:25.527 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:25.629 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:25.629 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:25.629 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:25.731 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:25.732 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:25.732 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:25.833 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:25.834 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:25.834 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:25.936 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:25.936 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:25.936 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:26.038 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:26.038 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:26.038 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:26.140 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:26.140 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:26.140 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:26.242 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:26.242 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:26.242 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:26.345 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:26.345 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:26.345 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:26.447 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:26.447 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:26.447 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:26.549 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:26.549 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:26.550 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:26.651 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:26.652 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:26.652 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:26.753 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:26.754 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:26.754 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:26.856 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:26.857 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:26.857 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:26.958 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:26.959 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:26.959 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:27.060 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:27.061 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:27.061 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:27.162 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:27.163 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:27.163 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:27.264 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:27.265 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:27.265 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:27.367 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:27.367 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:27.367 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:27.469 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:27.469 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:27.469 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:27.571 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:27.571 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:27.571 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:27.672 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:27.673 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:27.673 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:27.775 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:27.775 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:27.775 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:27.877 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:27.877 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:27.877 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:27.979 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:27.980 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:27.980 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:28.081 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:28.081 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:28.081 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:28.183 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:28.183 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:28.183 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:28.285 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:28.285 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:28.285 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:28.387 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:28.387 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:28.387 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:28.489 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:28.489 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:28.489 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:28.591 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:28.591 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:28.591 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:28.693 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:28.693 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:28.693 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:28.794 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:28.795 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:28.795 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:28.897 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:28.897 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:28.897 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:28.998 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:28.999 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:28.999 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:29.100 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:29.100 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:29.101 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:29.202 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:29.203 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:29.203 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:29.305 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:29.305 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:29.305 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:29.407 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:29.408 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:29.408 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:29.509 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:29.510 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:29.510 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:29.611 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:29.612 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:29.612 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:29.714 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:29.714 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:29.714 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:29.816 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:29.816 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:29.816 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:29.918 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:29.918 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:29.918 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:30.020 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:30.020 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:30.020 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:30.122 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:30.122 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:30.122 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:30.224 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:30.224 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:30.224 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:30.326 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:30.326 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:30.326 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:30.427 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:30.427 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:30.427 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:30.462 INFO  (qtp1818339587-1274-null-59133) [ t:null-59133] o.a.s.s.HttpSolrCall [admin] path=/admin/info/health params={} status=0 QTime=0
+2026-11-03 22:27:30.529 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:30.529 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:30.529 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:30.631 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:30.631 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:30.631 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:30.733 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:30.734 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:30.734 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:30.836 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:30.836 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:30.836 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:30.938 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:30.938 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:30.939 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:31.040 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:31.041 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:31.041 INFO  (qtp1818339587-1165-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:31.142 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.h.SolrConfigHandler expecting overlay version 1 but my version is 0
+2026-11-03 22:27:31.143 INFO  (qtp1818339587-909-null-59059) [c:quora s:shard2 r:core_node3 x:quora_shard2_replica_n1 t:null-59059] o.a.s.c.S.Request path=/config/znodeVersion params={overlay=1&wt=javabin} status=0 QTime=0
+2026-11-03 22:27:31.143 INFO  (SolrConfigHandler-refreshconf) [] o.a.s.h.SolrConfigHandler Another reload is in progress . Not doing anything
+2026-11-03 22:27:35.459 INFO  (qtp1818339587-1165-null-59134) [ t:null-59134] o.a.s.s.HttpSolrCall [admin] path=/admin/info/health params={} status=0 QTime=0
+2026-11-03 22:27:40.462 INFO  (qtp1818339587-1274-null-59135) [ t:null-59135] o.a.s.s.HttpSolrCall [admin] path=/admin/info/health params={} status=0 QTime=0

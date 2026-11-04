@@ -9,7 +9,7 @@
 
 import * as core from "../core.js";
 import { h, icon, clear, fmt, card, api, every, toast, modal, seg, empty, table, copy, failure, bus, setToken, menu } from "../core.js";
-import { state, refreshWho } from "../data.js";
+import { state, refreshWho, isProduction } from "../data.js";
 
 export default {
   id: "access", title: "Access and audit", icon: "access", group: "Change",
@@ -87,9 +87,13 @@ function whoSub(e) {
   const c = clientName(e.client);
   if (c) parts.push(c);
   if (e.addr) parts.push(e.addr);
+  // R2-data-tools-4: with several coordinators, the one that kept it.
+  if (e.coordinator && manyCoords) parts.push(`via ${e.coordinator}`);
   return parts.join(" · ");
 }
 
+// Whether the audit came from more than one coordinator (set at each load).
+let manyCoords = false;
 // POSTs that ask without changing anything.
 const PASSIVE = /\/(plan|check|validate|replay)(\/|$)/;
 /** "change", "refusal", "note" or "read" (a server from before kinds audits reads). */
@@ -131,6 +135,12 @@ function shortImage(ref) {
 const SQL = /^\s*(select|insert|update|delete|create|drop|alter|with|truncate|replace)\b/i;
 // [route, done, failed]
 const ROUTE_TITLES = [
+  // AC-3: a plan's own calls, refused by its checks or not.
+  [/^\/v1\/admin\/plan\/apply/, "Applied a cluster plan", "A cluster plan was refused"],
+  [/^\/v1\/admin\/plan\/run\/stop/, "Stopped the running plan", "Stopping the plan failed"],
+  [/^\/v1\/admin\/plan\/run\/resume/, "Resumed the plan", "Resuming the plan failed"],
+  [/^\/v1\/admin\/plan\/run\/discard/, "Discarded the stopped plan", "Discarding the plan failed"],
+  [/^\/v1\/admin\/plan$/, "Checked a cluster plan", "A cluster plan's checks failed"],
   [/^\/v1\/admin\/kube$/, "Changed the StrataCluster", "A change to the StrataCluster failed"],
   [/^\/v1\/admin\/kube\/resume/, "Resumed the rollout", "Resuming the rollout failed"],
   [/^\/v1\/admin\/kube\/upgrade/, "Started an upgrade", "An upgrade failed to start"],
@@ -167,11 +177,14 @@ const clip = (s, n = 80) => { const v = /^"[^"]*"$/.test(s) ? s.slice(1, -1) : s
 /** A field's path as people read it: `expires_ms` is "expires", `for_s` is "for". */
 const said = (p) => p.replace(/_(ms|s)\b/g, "");
 /** A leaf as people read it: a time for `*_ms` epochs, the rest as it is. */
-const leaf = (path, v) => (/_ms$/.test(path) && /^\d{12,}$/.test(v || "") ? `${at(+v)} ${TZ}`.trim() : /_s$/.test(path) && /^\d+(\.\d+)?$/.test(v || "") ? fmt.ms(+v * 1000) : clip(v));
+// A value said as a person would: no expiry is "never", nothing set is "none".
+const leaf = (path, v) => (v === "null" ? (/expires/.test(path) ? "never" : "none") : /_ms$/.test(path) && /^\d{12,}$/.test(v || "") ? `${at(+v)} ${TZ}`.trim() : /_s$/.test(path) && /^\d+(\.\d+)?$/.test(v || "") ? fmt.ms(+v * 1000) : clip(v));
 
 // ---------------------------------------------------------------- dialogs
 /** Asks before a change: resolves false or {reason}; Cancel has the focus. */
 function ask({ title, body, ok = "Confirm", danger = false, reason = null, wide = true }) {
+  // On production every change says why, as Cluster's Apply asks (NEW-cluster-admin-13).
+  if (reason === "optional" && isProduction()) reason = "required";
   return new Promise((resolve) => {
     let answered = false;
     const yes = h("button", { class: "btn " + (danger ? "danger solid" : "primary") }, ok);
@@ -275,13 +288,14 @@ function render(page, r) {
         // A newer server sorts them: changes here, refusals asked apart.
         let refusals = audit?.refusals || [];
         try { refusals = ((await api(qs("refusal", 500))).entries || []).filter(inWin); } catch { /* keep the last */ }
-        audit = { kinds: true, changes: es.filter((e) => sortOf(e) === "change"), refusals, reads: 0, notes: [], file: j.file };
+        audit = { kinds: true, changes: es.filter((e) => sortOf(e) === "change"), refusals, reads: 0, notes: [], file: j.file, coords: j.coordinators || null };
         if (tab === "all") loadAll();
       } else {
         const by = { change: [], refusal: [], note: [], read: [] };
         for (const e of es) (by[sortOf(e)] || by.change).push(e);
-        audit = { kinds: false, changes: by.change, refusals: by.refusal, reads: by.read.length, notes: by.note, file: j.file, all: es };
+        audit = { kinds: false, changes: by.change, refusals: by.refusal, reads: by.read.length, notes: by.note, file: j.file, all: es, coords: j.coordinators || null };
       }
+      manyCoords = (audit.coords?.length || 0) > 1;
       auditErr = null;
     } catch (e) { auditErr = e; }
   }
@@ -294,8 +308,52 @@ function render(page, r) {
     try { keysJ = await api("/v1/admin/keys"); keysErr = null; }
     catch (e) { keysErr = e; }
   }
+  // The clients that send each key (AC-4): every query of the last 24 h
+  // through every coordinator (/v1/admin/keys/clients), and the audited
+  // changes, by key id. An older server: the last queries it answered.
+  let callers = null;
+  async function loadCallers() {
+    try {
+      const j = await api("/v1/admin/keys/clients?hours=24");
+      callers = { keys: j.keys || {}, since: j.since_ms || null, coords: j.coordinators || null, at: Date.now() };
+    } catch {
+      try { const j = await api("/v1/queries/recent?limit=500"); callers = { qs: j.queries || [], at: Date.now() }; }
+      catch { callers = callers || { qs: [], at: Date.now(), none: true }; }
+    }
+  }
+  /** [{label, addr, n, last}] for key `id`, most used first; `since`: the oldest query read. */
+  function clientsOf(id) {
+    const by = new Map();
+    const add = (c, ts, what) => {
+      const label = c.app || (c.client === "command-center" ? "the command center" : c.client) || "a client";
+      const k = `${label}|${c.addr || ""}`;
+      const x = by.get(k) || { label, addr: c.addr || null, queries: 0, changes: 0, last: 0 };
+      x[what]++; x.last = Math.max(x.last, ts || 0);
+      by.set(k, x);
+    };
+    for (const q of callers?.qs || []) if (q.key_id === id) add(q, q.ts_ms, "queries");
+    for (const c of callers?.keys?.[id] || []) {
+      const label = c.app || (c.client === "command-center" ? "the command center" : c.client) || "a client";
+      const k = `${label}|${c.addr || ""}`;
+      const x = by.get(k) || { label, addr: c.addr || null, queries: 0, changes: 0, last: 0, failed: 0, via: [] };
+      x.queries += c.calls || 0; x.failed = (x.failed || 0) + (c.failed || 0); x.last = Math.max(x.last, c.last_ms || 0);
+      x.via = [...new Set([...(x.via || []), ...(c.coordinators || [])])];
+      by.set(k, x);
+    }
+    for (const e of [...(audit?.changes || []), ...(audit?.refusals || [])]) if (e.key === id) add({ app: e.client && e.client !== "command-center" ? e.client : null, client: e.client, addr: e.addr }, e.ts_ms, "changes");
+    return [...by.values()].sort((a, b) => b.queries + b.changes - (a.queries + a.changes) || b.last - a.last);
+  }
+  const callersSince = () => { if (callers?.keys) return callers.since; const ts = (callers?.qs || []).map((q) => q.ts_ms).filter(Boolean); return ts.length ? Math.min(...ts) : null; };
+  /** What the key's clients were read from, in words, for the clients' tooltip. */
+  const callersFrom = () => {
+    const since = callersSince();
+    if (!callers?.keys) return `the last ${fmt.n(callers?.qs?.length || 0)} queries this server answered${since ? ` (since ${whenT(since)})` : ""}`;
+    const cs = callers.coords || [], down = cs.filter((c) => !c.ok);
+    return `every query of the last 24 h${since && since > Date.now() - 24 * 3600e3 + 60e3 ? ` (counted since ${whenT(since)}, when a coordinator started)` : ""}${cs.length > 1 ? `, through ${down.length ? `${cs.length - down.length} of ${cs.length} coordinators (${down.map((c) => c.name).join(", ")} did not answer)` : `all ${cs.length} coordinators`}` : ""}`;
+  };
+  const clientSaid = (x) => `${x.label}${x.addr ? ` from ${x.addr}` : ""} (${[x.queries ? fmt.plural(x.queries, "query", "queries") : null, x.failed ? `${fmt.n(x.failed)} failed` : null, x.changes ? fmt.plural(x.changes, "audited request") : null, x.via?.length > 1 || (x.via?.length && (callers?.coords || []).length > 1) ? `via ${x.via.join(", ")}` : null].filter(Boolean).join(", ")}, last ${ago(x.last)})`;
   async function load() {
-    await Promise.all([loadAudit(), loadKeys()]);
+    await Promise.all([loadAudit(), loadKeys(), loadCallers()]);
     draw();
   }
 
@@ -420,7 +478,11 @@ function render(page, r) {
       clear(hiddenBox, `${fmt.n(audit.reads)} read requests hidden (${Math.round(100 * audit.reads / Math.max(1, all))}% of what this server recorded, pages polling among them) · `,
         h("a", { href: "#", onclick: (e) => { e.preventDefault(); setTab("all"); drawTabs(); } }, "show every request"));
     } else clear(hiddenBox);
+    const cs = audit?.coords || [], missing = cs.filter((c) => !c.ok);
     clear(keptLine, !audit ? "" : [
+      cs.length > 1 ? (missing.length
+        ? h("b", { style: { color: "var(--warn)" } }, `${cs.length - missing.length} of ${cs.length} coordinators answered: ${missing.map((c) => c.name || c.url).join(", ")} did not, so what went through ${missing.length === 1 ? "it" : "them"} is missing here · `)
+        : `Every coordinator's log (${cs.length}) · `) : null,
       audit.file ? `Written to ${audit.file} on the server` : "Kept in memory only: start the server with --audit-log FILE to keep it",
       audit.kinds ? " · the latest 20,000 changes here" : ` · this server keeps its latest 2,000 requests here, reads among them`,
       win.from || win.to ? [" · only ", core.span ? core.span(win.from || 0, win.to || now()) : `${at(win.from)} – ${at(win.to)}`, " · ", h("a", { href: "#", onclick: (e) => { e.preventDefault(); win = { from: null, to: null }; setParams(); load(); } }, "show all")] : null,
@@ -499,7 +561,11 @@ function render(page, r) {
     if (sortOf(e) === "refusal") return `${e.method || ""} ${e.route || ""}`.trim() || "a request";
     const d = e.detail || "", failed = e.status >= 400;
     if (d && (SQL.test(d) || /^\/v1\/(sql|query)/.test(e.route || ""))) return failed ? "A statement failed" : e.object ? `Ran SQL on ${e.object}` : "Ran SQL";
+    // A step of a plan the coordinator applied: what it did; its plan is below.
+    if (d && e.after?.plan && e.after?.step) return words((failed ? "tried to " : "") + d.replace(/^plan p\d+, step \d+ of \d+: /, "").replace(/ \(it failed: [^]*\)$/, ""));
     if (d && !failed) return words(d);
+    // A cluster change that failed: what it tried (AC-3); its error is below.
+    if (d && failed && /^\/v1\/admin\/(shards|rebalance|moves|plan)/.test(e.route || "") && !/^\/v1\/admin\/plan(\/apply|\/run|$)/.test(e.route || "")) return words(`tried to ${d.replace(/^plan (p\d+), /, "")}`);
     if (e.object) return failed ? `A change to ${e.object} failed` : `Changed ${e.object}`;
     const t = ROUTE_TITLES.find(([re]) => re.test(e.route || ""));
     return t ? t[failed ? 2 : 1] : `${e.method || ""} ${e.route || ""}`.trim();
@@ -532,7 +598,15 @@ function render(page, r) {
         : e.status === 401 ? "No key, or a wrong, expired or revoked one." : `${e.scope ? `A ${e.scope} key` : "This key"} may not do this.`));
       return out;
     }
-    if (e.before === undefined && e.after && typeof e.after === "object" && !Array.isArray(e.after)) {
+    const err = e.status >= 400 && typeof e.after?.error === "string" ? e.after.error : null;
+    if (e.after?.plan && e.after?.step) {
+      // A step of a plan the coordinator applied, and how it ended.
+      out.push(h("div", { class: "ac-mono" }, `step ${e.after.step} of ${e.after.of} of plan ${e.after.plan}`));
+      if (err) out.push(h("div", { class: "ac-mono ac-bad-t" }, words(err)));
+    } else if (err && Object.keys(e.after).length === 1) {
+      // Why a change failed, as its answer said.
+      out.push(h("div", { class: "ac-mono ac-bad-t" }, words(err)));
+    } else if (e.before === undefined && e.after && typeof e.after === "object" && !Array.isArray(e.after)) {
       // Something made: what it was made with, on one line.
       const f = flat(e.after);
       out.push(h("div", { class: "ac-mono" }, Object.entries(f).filter(([k]) => k !== "id").map(([k, v], i) => [i ? " · " : "", h("span", { class: "muted" }, said(k) + " "), leaf(k, v)])));
@@ -564,6 +638,7 @@ function render(page, r) {
       ["when", whenT(e.ts_ms)],
       e.key ? ["key id", h("span", { class: "mono" }, e.key)] : null,
       e.addr ? ["address", h("span", { class: "mono" }, e.addr)] : null,
+      e.coordinator && manyCoords ? ["kept by", e.coordinator] : null,
       e.client ? ["client", clientName(e.client) === "UI" ? "the command center" : e.client] : null,
       e.detail && title(e) !== words(e.detail) ? ["detail", h("span", { class: "mono" }, e.detail)] : null,
       rid ? ["request id", h("a", { class: "mono", href: core.link ? core.link("logs", { request: rid }) : "#/logs?request=" + encodeURIComponent(rid) }, rid)] : null,
@@ -669,7 +744,12 @@ function render(page, r) {
       h("td", { class: "ac-kname" }, h("b", { title: [`${k.prefix || `sk_${k.id}_`}…`, `made ${whenT(k.created_ms)}`, k.note].filter(Boolean).join(" · ") }, k.name),
         sub || asOld ? h("div", { class: "small muted" }, sub, sub && asOld ? " · " : "", asOld ? h("span", { class: "ac-rotating" }, "rotating") : null) : null),
       h("td", {}, h("span", { class: "ac-scope " + k.scope }, k.scope)),
-      h("td", { class: "num" }, used, k.last_addr ? h("div", { class: "small muted mono" }, k.last_addr) : null),
+      h("td", { class: "num" }, used, (() => {
+        const cs = clientsOf(k.id);
+        const title = `Who sent this key: ${callersFrom()}, and the audit log.\n` + cs.map(clientSaid).join("\n");
+        if (!cs.length) return k.last_addr ? h("div", { class: "small muted mono" }, k.last_addr) : null;
+        return h("div", { class: "small muted ac-clients", title }, cs.length === 1 ? `${cs[0].label}${cs[0].addr ? " · " + cs[0].addr : ""}` : `${cs.length} clients: ${cs.slice(0, 2).map((x) => x.label + (x.addr ? " · " + x.addr : "")).join(", ")}${cs.length > 2 ? ", …" : ""}`);
+      })()),
       h("td", { class: "num" }, exp),
       h("td", { class: "ac-kact" }, flag ? gateBtn(h("button", { class: "btn xs danger", onclick: () => revoke(k) }, "Revoke…"), "admin") : null, more));
   }
@@ -741,6 +821,8 @@ function render(page, r) {
           ["scope", k.scope],
           ["last used", k.last_used_ms ? `${ago(k.last_used_ms)}${k.last_addr ? ` from ${k.last_addr}` : ""}` : "never"],
           k.owner ? ["owner", k.owner] : null,
+          clientsOf(k.id).length ? ["sent by", h("div", { class: "stack", style: { gap: "2px" } }, clientsOf(k.id).slice(0, 6).map((x) => h("div", {}, clientSaid(x))),
+            h("div", { class: "small muted" }, `From ${callersFrom()} and the audit log; a client quiet since then is not listed.`))] : null,
         ]),
         recent ? h("div", { class: "ro-warnline" }, icon("warn"), `It was used ${ago(k.last_used_ms)}: whatever sent it stops working.`) : null,
       ],
@@ -867,7 +949,7 @@ function render(page, r) {
   // Changes are rare: every 15 s is enough, and a paused page stays still.
   const stop = every(15000, async () => {
     if (document.querySelector(".modal")) return;
-    await Promise.all([loadAudit(), loadKeys()]);
+    await Promise.all([loadAudit(), loadKeys(), loadCallers()]);
     drawHead(); drawChips(); drawTabs();
     if (!changesCard.contains(document.activeElement) || document.activeElement === search) drawList();
     drawKeys(); drawRotations();

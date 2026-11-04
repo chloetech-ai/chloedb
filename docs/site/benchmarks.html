@@ -5,112 +5,127 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="claude:viewport-fit-sides" content="cover">
 <title>Benchmarks · Strata</title>
-<meta name="description" content="Strata measured on one laptop: as an app's database against SQLite and DuckDB, as a search box against FTS5, Tantivy and LanceDB, as a recommender, and as a cluster on Kubernetes against Elasticsearch, OpenSearch, Solr and Vespa.">
+<meta name="description" content="Strata against thirteen search engines and databases at 1M and 10M documents, against SQLite, DuckDB, LanceDB and Tantivy inside an app, and against four graph databases. First overall when every kind of query is needed, with every loss shown and every raw result linked.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
+<div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
 <header class="top gutter"><div class="wrap">
-  <a class="mark" href="index.html"><i><b></b><b></b><b></b></i>Strata</a>
+  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a>
   <nav class="nav" aria-label="Site">
     <a href="features.html">Features</a>
+    <a href="scale.html">Laptop to cloud</a>
     <a href="command-center.html">Command center</a>
-    <a href="compare.html">Compare</a>
     <a href="benchmarks.html" aria-current="page">Benchmarks</a>
-    <a href="examples.html">Queries</a>
     <a href="use-cases.html">Use cases</a>
-    <a href="scale.html">Small to big</a>
   </nav>
-  <div class="top-links"><a href="../">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a></div>
+  <div class="top-links"><a href="../">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
 </div></header>
-<div class="sample-banner gutter"><div class="wrap"><b>Sample</b><span>Hatched cells are placeholders with no value. Cells tagged "earlier run" were measured before the laptop benchmark and will be replaced by it.</span></div></div>
 
 <main>
-  <div class="gutter"><div class="wrap page-head">
+  <div class="gutter head-band"><div class="wrap page-head">
+    <nav class="subnav" aria-label="Benchmark pages"><a href="benchmarks.html" aria-current="page">Overview</a><a href="bench-10m.html">10M, cloud</a><a href="bench-1m.html">1M, cloud</a><a href="bench-laptop.html">1M, laptop</a><a href="bench-embedded.html">No server</a><a href="bench-graph.html">Graph</a><a href="bench-method.html">How we test</a></nav>
     <span class="eyebrow">Benchmarks</span>
-    <h1>Measured on one laptop, against the tools each job uses today</h1>
-    <p class="lede">Three ways Strata gets used: as one file inside an app, as a cluster on Kubernetes, and as the path between the two. Every system gets the same data, the same text analysis and the same vectors, and quality is reported beside speed, so nothing wins by answering worse.</p>
-    <div class="legend">
-      <span><span class="tag measured">Measured</span> the laptop benchmark</span>
-      <span><span class="tag earlier">Earlier run</span> measured before it, to be re-run</span>
-      <span><span class="tag placeholder">Placeholder</span> nothing measured yet</span>
-    </div>
-    <nav class="toc" aria-label="Parts">
-      <a href="#part-a">A · One file in an app</a><a href="#part-b">B · A cluster on Kubernetes</a><a href="#part-c">C · Small to big</a><a href="#method">Method</a>
-    </nav>
+    <h1>First overall when one system has to do it all</h1>
+    <p class="lede">Applications need full text, filters, SQL, vectors and hybrids together. We test all of them at once, against thirteen search engines and databases. Strata is not the fastest at everything, and this page shows where.</p>
+    <p class="updated">Updated 4 November 2026 · measured, never edited</p>
   </div></div>
 
-  <section class="gutter" id="part-a"><div class="wrap block">
-    <div class="block-head">
-      <span class="eyebrow">Part A</span>
-      <h2>One file in an app</h2>
-      <p>A shop app whose database, search box and recommendations live in one file, measured as native processes on the laptop, one system at a time, warm and cold.</p>
+  <section class="gutter" id="results"><div class="wrap block">
+    <div class="proofstrip">
+      <a href="bench-10m.html" data-overall="cloud-10m" data-mode="tile"></a>
+      <a href="bench-1m.html" data-overall="cloud-1m" data-mode="tile"></a>
+      <a href="bench-laptop.html" data-overall="laptop" data-mode="tile"></a>
+      <a href="bench-embedded.html"><span class="eyebrow">No server · inside an app</span><span class="v">1.9× to 23×</span><p>Faster hybrid search than SQLite, DuckDB or LanceDB on every BEIR collection tested.</p></a>
+      <a href="bench-graph.html"><span class="eyebrow">Graph · arXiv citations</span><span class="v">1st of 5</span><p>Against Neo4j, Memgraph, FalkorDB and ArangoDB: Strata 31 points, Memgraph 60.</p></a>
+      <a href="bench-10m.html#writes"><span class="eyebrow">Fresh writes · 10M</span><span class="v">8.2 ms</span><p>From a write to a search that finds it, at the median. Vespa 10.0 ms, OpenSearch 641.</p></a>
     </div>
-    <div class="suite" data-suite="a1"></div>
-  </div></section>
-  <section class="gutter"><div class="wrap block"><div class="suite" data-suite="a2"></div></div></section>
-  <section class="gutter"><div class="wrap block"><div class="suite" data-suite="a3"></div></div></section>
-
-  <section class="gutter" id="part-b"><div class="wrap block">
-    <div class="block-head">
-      <span class="eyebrow">Part B</span>
-      <h2>A cluster on Kubernetes, on the laptop</h2>
-      <p>kind with three workers in Docker: two shards per engine on two workers, the client on the third, 3 CPUs and 6 GiB per engine as Kubernetes limits. Every node shares the laptop's CPUs, so the numbers compare the engines with each other, not with what any of them does on real machines.</p>
-    </div>
-    <div class="suite" data-suite="b" data-no-head></div>
   </div></section>
 
-  <section class="gutter" id="part-c"><div class="wrap block">
+  <section class="gutter" id="scoreboard"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">Part C</span>
-      <h2>Small to big, with the same answers</h2>
-      <p>The shop's file and twelve of its queries, run at four stages. Each answer is checked against the first stage row by row, so the progression is shown to keep the results as well as the SQL.</p>
+      <h2>Strata's place on every kind of query</h2>
+      <p>First or close to it on vectors, hybrids and facets. Behind the specialists on typos, SQL aggregates and key lookups.</p>
     </div>
-    <div data-stages></div>
-    <div class="actions"><a class="btn" href="scale.html">What each stage is</a></div>
+    <div data-scoreboard></div>
   </div></section>
 
-  <section class="gutter" id="method"><div class="wrap block">
+  <section class="gutter" id="losses"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">Method</span>
-      <h2>How the numbers are taken</h2>
+      <h2>Where another system is clearly faster</h2>
+      <p>The large losses, and what is being done about each.</p>
     </div>
-    <div class="grid cols-2">
-      <div class="prose">
-        <h3>The machine</h3>
-        <p>A MacBook Air with an Apple M2 (4 performance and 4 efficiency cores), 24 GB, macOS 26.0.1, with no fan. Part A runs native processes; Part B runs in Docker Desktop's VM (4 CPUs, 8.7 GB) with kind.</p>
-        <h3>The rules</h3>
-        <ul>
-          <li>Power adapter in, Low Power Mode off, <code>caffeinate</code> on, other apps closed.</li>
-          <li>Each measurement runs three times in rotating order with a rest between systems, and the median run is reported. The laptop's thermal state is logged before each.</li>
-          <li>The same data, analysis (Snowball English with Lucene's stopwords) and vectors for every system. HNSW uses m 16 and ef_construction 200, and every system returns the top 10.</li>
-          <li>Each system at its defaults plus the tuning its own documentation recommends; the settings are committed with the results.</li>
-        </ul>
-      </div>
-      <div class="prose">
-        <h3>Reading the charts</h3>
-        <ul>
-          <li>Rows are kinds of query; columns are systems. Strata's bars are blue, every other system's grey.</li>
-          <li>Unless a chart says log scale, bars are scaled within their row, so each row compares the systems on that kind.</li>
-          <li>The best value in a row is bold. A star marks a value with a note, such as a raw-score sum standing in for normalised fusion.</li>
-          <li>"Not supported" means the system cannot run the kind. "App code" means it was run the way an app would write it.</li>
-        </ul>
-        <h3>Where the numbers live</h3>
-        <p>The site reads every number from <code>assets/bench-data.js</code>. The runs write <code>strata/results/laptop-2026-11/</code> and <code>strata-server/results/laptop-2026-11/</code>, each naming the machine; numbers are measured, never edited.</p>
-      </div>
+    <div class="losses">
+      <div class="loss"><div><h3>Typo-tolerant search</h3><div class="nums">10M · 81 ms on latest main; Elasticsearch 38</div></div>
+        <p>A misspelt word was expanded against the whole dictionary. <span class="fix">#242 made it six to ten times faster (824 to 81 ms at 10M, 120 to 19.6 at 1M), but at 10M Elasticsearch and OpenSearch are still about twice as fast, and at 1M Typesense and Meilisearch take 6 ms.</span></p></div>
+      <div class="loss"><div><h3>SQL aggregates</h3><div class="nums">10M · 2,894 ms on latest main; OpenSearch 4.08</div></div>
+        <p>A <code>GROUP BY</code> with <code>HAVING</code> over a filtered table. Strata's largest loss, and it grows with the data. Not fixed yet.</p></div>
+      <div class="loss"><div><h3>BM25 at 16 clients</h3><div class="nums">10M · 470 q/s on latest main; OpenSearch 896</div></div>
+        <p>A query through a coordinator took two rounds to the shards. <span class="fix">#245 made it one: at 1M Strata now serves 1,962 q/s, second to Qdrant's 2,471. At 10M the shards are what waits.</span></p></div>
+      <div class="loss"><div><h3>Key lookups</h3><div class="nums">10M · 0.86 ms, 5th of 9; Postgres 0.37</div></div>
+        <p>Postgres, Weaviate, ParadeDB and Qdrant read a row by id in about half Strata's time.</p></div>
+      <div class="loss"><div><h3>Vector recall at shared settings</h3><div class="nums">10M · recall@10 0.795; Qdrant 0.941</div></div>
+        <p>Strata scores 8-bit codes and re-scores the best 40, so read its vector speeds with this recall.</p></div>
+      <div class="loss"><div><h3>Single-row writes in an app</h3><div class="nums">One row a commit 4,022/s; SQLite 5,128</div></div>
+        <p>SQLite wins one row a commit; batches turn it around, 95,670 rows a second to SQLite's 18,905.</p></div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="reports"><div class="wrap block">
+    <div class="block-head">
+      <h2>Every report</h2>
+      <p>Each has its setup, its wins, its losses and its raw data.</p>
+    </div>
+    <div class="reports">
+      <a class="report" href="bench-10m.html"><span class="eyebrow">10M passages · cloud</span><h3>Fourteen engines at 10M</h3><p class="res" data-overall="cloud-10m" data-mode="chip"></p><p class="small muted">MS MARCO on DigitalOcean, equal machines per engine, one pass, and a head-to-head on latest main.</p><span class="more">Read the report →</span></a>
+      <a class="report" href="bench-1m.html"><span class="eyebrow">1M passages · cloud</span><h3>Fourteen engines at 1M</h3><p class="res" data-overall="cloud-1m" data-mode="chip"></p><p class="small muted">Latest main, each lane's engines on the same machines, three passes, plus writes and streams.</p><span class="more">Read the report →</span></a>
+      <a class="report" href="bench-laptop.html"><span class="eyebrow">1M passages · laptop</span><h3>Fourteen engines on one laptop</h3><p class="res" data-overall="laptop" data-mode="chip"></p><p class="small muted">BEIR NQ with judged answers, on a cluster inside a MacBook Air.</p><span class="more">Read the report →</span></a>
+      <a class="report" href="bench-embedded.html"><span class="eyebrow">No server</span><h3>Against SQLite, DuckDB, LanceDB and Tantivy</h3><p class="res"><b>First on search, hybrids and recommendations</b></p><p class="small muted">One file in an app: reads, writes, search and feeds.</p><span class="more">Read the report →</span></a>
+      <a class="report" href="bench-graph.html"><span class="eyebrow">Graph</span><h3>Against four graph databases</h3><p class="res"><b>1st of 5</b> over 16 tests</p><p class="small muted">Hops, shortest paths and PageRank on 169,343 papers.</p><span class="more">Read the report →</span></a>
+      <a class="report" href="bench-method.html"><span class="eyebrow">Method</span><h3>How we test</h3><p class="res">Equal budgets, checked answers, medians, and an audit of our own runs.</p><p class="small muted">And how to run every benchmark yourself.</p><span class="more">Read the method →</span></a>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="principles"><div class="wrap block">
+    <div class="block-head">
+      <h2>How we keep it fair</h2>
+    </div>
+    <div class="principles">
+      <div><b>The same resources</b><p>Same CPUs, memory, data and vectors for every engine. In the latest runs, engines take turns on the same machines.</p></div>
+      <div><b>Answers checked</b><p>Recall@10 against exact search, and nDCG@10 where there are judgments.</p></div>
+      <div><b>Medians, not the best run</b><p>The median of three passes where there were three.</p></div>
+      <div><b>Every gap shown</b><p>A kind an engine cannot run counts as last place, and failed runs are reported.</p></div>
+      <div><b>Load not ranked</b><p>Strata's shards were built offline, so load times are shown but not ranked.</p></div>
+      <div><b>Reproducible</b><p>Scripts, settings, data hashes and raw results are all in the repository.</p></div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="faq"><div class="wrap block">
+    <div class="block-head">
+      <h2>Questions</h2>
+    </div>
+    <div class="faq">
+      <details><summary>Are we biased?</summary><p>Probably. We build Strata and wrote every engine's queries. Each engine runs at its defaults plus the tuning its documentation recommends, every setting is in <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/deploy/compare/README.md">the method</a>, and we <a href="bench-method.html#audit">audited our own runs</a>. If you know a better configuration, open an issue and we will run it again.</p></details>
+      <details><summary>Why sum places instead of averaging speeds?</summary><p>Latencies differ a thousandfold between kinds of query, so an average is decided by the slowest kind. Places weigh every test the same.</p></details>
+      <details><summary>Doesn't counting a missing kind as last favour Strata?</summary><p>It favours breadth, which a mixed workload needs. At 1M on latest main, Strata also leads on the seven kinds every engine runs; at 10M, on the older build, Postgres leads on the four every engine answered. Each report shows its ranking under five rules.</p></details>
+      <details><summary>Why only nine engines at 10M?</summary><p>Five did not run in 52 GiB. Milvus and Redis then ran with twice the memory: <a href="bench-10m.html#big">shown, not ranked</a>.</p></details>
+      <details><summary>Can I run it myself?</summary><p>Yes: <a href="bench-method.html#reproduce">How we test</a> has the commands for a laptop or a cloud account.</p></details>
     </div>
   </div></section>
 </main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div><h4>Strata</h4><p>A search database with SQL, from one file to a cluster. Apache-2.0.</p></div>
-  <div><h4>This site</h4><ul><li><a href="features.html">Features</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compare</a></li><li><a href="benchmarks.html">Benchmarks</a></li><li><a href="examples.html">Queries and examples</a></li><li><a href="use-cases.html">Use cases and demos</a></li><li><a href="scale.html">Small to big</a></li></ul></div>
-  <div><h4>Documentation</h4><ul><li><a href="../strata/">Design</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li><li><a href="../strata/python.html">Python</a></li><li><a href="../strata/results.html">Results</a></li></ul></div>
-  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../engram/">Engram</a></li><li><a href="../reproduce.html">Reproducing the results</a></li></ul></div>
+  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
+  <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="../strata/">Documentation</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../engram/">Engram</a></li><li><a href="../reproduce.html">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="assets/bench-data.js"></script>
 <script src="assets/site.js"></script>
+<script src="assets/bench.js"></script>
 </body>
 </html>

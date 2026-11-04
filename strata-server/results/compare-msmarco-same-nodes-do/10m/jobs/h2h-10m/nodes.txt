@@ -1,0 +1,2 @@
+h2h-10m-d-a1 m3-4vcpu-32gb h2h-10m-d-a1-3e2yv0 h2h-10m-d-a1-3e2yv1
+h2h-10m-c-a1 c-8 h2h-10m-c-a1-3e2ydn

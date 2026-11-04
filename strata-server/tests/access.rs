@@ -97,6 +97,11 @@ async fn keys_have_scopes_and_the_audit_log_keeps_what_they_did() {
     assert_eq!(call(&base, "POST", "/v1/profile/heap", w, Some(json!({"seconds": 0.1}))).await.0, 403);
     // The token may do it all; a table's statement is audited.
     assert_eq!(call(&base, "POST", "/v1/sql", root, Some(create)).await.0, 200);
+    // A profile's entry says of which server, at what rate, for how long
+    // (taken or not: 501 where the system cannot sample).
+    let sql = "SELECT id FROM products LIMIT 1";
+    assert!([200, 501].contains(&call(&base, "POST", "/v1/profile/cpu", root, Some(json!({"seconds": 0.2, "hz": 199, "sql": sql, "clients": 2}))).await.0));
+    assert!([200, 501].contains(&call(&base, "POST", "/v1/profile/heap", root, Some(json!({"seconds": 0.2}))).await.0));
 
     let (status, audit) = call(&base, "GET", "/v1/admin/audit", root, None).await;
     assert_eq!(status, 200);
@@ -111,6 +116,12 @@ async fn keys_have_scopes_and_the_audit_log_keeps_what_they_did() {
     assert!(find("root token", "/v1/admin/keys", 200), "{audit}");
     // Plain reads and writes are not audited.
     assert!(!entries.iter().any(|e| e["route"] == "/v1/query" && e["status"] == 200), "{audit}");
+    let cpu = entries.iter().find(|e| e["route"] == "/v1/profile/cpu" && e["who"] == "root token").expect("the CPU profile is audited");
+    assert_eq!(cpu["detail"], "a CPU profile of this server: 0.2 s at 199 Hz, of a query run in a loop by 2 callers", "{cpu}");
+    assert_eq!(cpu["object"], "CPU profile of this server", "{cpu}");
+    assert_eq!(cpu["after"], json!({"node": "this server", "seconds": 0.2, "hz": 199, "sql": sql, "clients": 2}), "{cpu}");
+    let heap = entries.iter().find(|e| e["route"] == "/v1/profile/heap" && e["who"] == "root token").expect("the allocation profile is audited");
+    assert_eq!(heap["detail"], format!("an allocation profile of this server: 0.2 s at a sample every {} bytes", 2 << 20), "{heap}");
 
     // The keys, without secrets; revoked, a key is refused.
     let (_, keys) = call(&base, "GET", "/v1/admin/keys", root, None).await;
