@@ -65,7 +65,10 @@ async fn a_cpu_profile_samples_the_server_s_threads() {
     }
     // The executor's frames are named (the binary keeps its symbols).
     let strata: u64 = stacks.iter().filter(|s| s["frames"].as_array().unwrap().iter().any(|f| { let n = names[f.as_u64().unwrap() as usize]; n.starts_with("strata::") || n.starts_with("<strata::") })).map(|s| s["samples"].as_u64().unwrap()).sum();
-    assert!(strata * 4 >= samples, "{strata} of {samples} samples in strata: {:?}", &names[..names.len().min(40)]);
+    let mut top: Vec<&Json> = stacks.iter().collect();
+    top.sort_by_key(|s| std::cmp::Reverse(s["samples"].as_u64().unwrap()));
+    let leaves: Vec<String> = top.iter().take(12).map(|s| format!("{} x{} on {}", s["frames"].as_array().unwrap().last().map_or("-", |f| names[f.as_u64().unwrap() as usize]), s["samples"], threads[s["thread"].as_u64().unwrap() as usize]["name"])).collect();
+    assert!(strata * 4 >= samples, "{strata} of {samples} samples in strata; threads {}; runs {}; cores {}; most sampled leaves {leaves:?}", p["threads"], p["runs"], p["cores"]);
     // A hash is "::h" and 16 hex digits at the end, as `profiler::clean`
     // takes it off; "::h1::role::Server>" (hyper) is the same length.
     assert!(!names.iter().any(|n| n.rfind("::h").is_some_and(|i| n.len() - i == 19 && n[i + 3..].bytes().all(|b| b.is_ascii_hexdigit()))), "hashes left: {names:?}");

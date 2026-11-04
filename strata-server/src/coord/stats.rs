@@ -113,9 +113,14 @@ impl StatsCache {
     /// statistics round would answer them, and their version: `None`
     /// unless every term is kept, or while the copy is passed over.
     pub fn get(&self, url: &str, table: &str, terms: &[(String, Vec<String>)]) -> Option<(TermStats, u64)> {
+        self.get_at(url, table, terms, Instant::now())
+    }
+
+    /// [`StatsCache::get`] at `now`.
+    fn get_at(&self, url: &str, table: &str, terms: &[(String, Vec<String>)], now: Instant) -> Option<(TermStats, u64)> {
         let copies = self.copies.lock().unwrap_or_else(|e| e.into_inner());
         let k = copies.get(url)?;
-        if k.version == 0 || k.cool_until.is_some_and(|t| Instant::now() < t) {
+        if k.version == 0 || k.cool_until.is_some_and(|t| now < t) {
             return None;
         }
         let mut out = TermStats::default();
@@ -138,13 +143,17 @@ impl StatsCache {
     /// each time it moved on again within a second). Answers of a version
     /// already dropped change nothing more.
     pub fn stale(&self, url: &str, version: u64) {
+        self.stale_at(url, version, Instant::now())
+    }
+
+    /// [`StatsCache::stale`] at `now`.
+    fn stale_at(&self, url: &str, version: u64, now: Instant) {
         self.stale.fetch_add(1, Ordering::Relaxed);
         let mut copies = self.copies.lock().unwrap_or_else(|e| e.into_inner());
         let Some(k) = copies.get_mut(url) else { return };
         if k.version != version {
             return;
         }
-        let now = Instant::now();
         let again = k.cool_until.is_some_and(|t| now < t + COOL_UP_TO);
         k.cool = if again { (k.cool * 2).clamp(COOL_FROM, COOL_UP_TO) } else { COOL_FROM };
         k.cool_until = Some(now + k.cool);
@@ -194,25 +203,41 @@ mod tests {
 
     #[test]
     fn a_stale_copy_is_passed_over_for_a_while() {
+        // At times given rather than slept to: a loaded runner (macOS on
+        // CI) oversleeps a cool-down of milliseconds.
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let cat = terms(&["cat"]);
         let c = StatsCache::new(100);
         c.keep("a", 7, "docs", &stats(100, &[("cat", 3)]));
-        c.stale("a", 7);
-        assert!(c.get("a", "docs", &terms(&["cat"])).is_none());
+        c.stale_at("a", 7, at(0));
+        assert!(c.get_at("a", "docs", &cat, at(0)).is_none());
         c.keep("a", 8, "docs", &stats(100, &[("cat", 3)]));
         // Kept again, but passed over until the cool-down ends.
-        assert!(c.get("a", "docs", &terms(&["cat"])).is_none());
-        std::thread::sleep(COOL_FROM + Duration::from_millis(5));
-        assert_eq!(c.get("a", "docs", &terms(&["cat"])).unwrap().1, 8);
+        assert!(c.get_at("a", "docs", &cat, at(9)).is_none());
+        assert_eq!(c.get_at("a", "docs", &cat, at(10)).unwrap().1, 8);
         // A stale answer of a dropped version changes nothing.
-        c.stale("a", 7);
-        assert_eq!(c.get("a", "docs", &terms(&["cat"])).unwrap().1, 8);
+        c.stale_at("a", 7, at(15));
+        assert_eq!(c.get_at("a", "docs", &cat, at(15)).unwrap().1, 8);
         // Moving on again within a second doubles the wait.
-        c.stale("a", 8);
+        c.stale_at("a", 8, at(15));
         c.keep("a", 9, "docs", &stats(100, &[("cat", 3)]));
-        std::thread::sleep(COOL_FROM + Duration::from_millis(5));
-        assert!(c.get("a", "docs", &terms(&["cat"])).is_none());
-        std::thread::sleep(COOL_FROM);
-        assert_eq!(c.get("a", "docs", &terms(&["cat"])).unwrap().1, 9);
+        assert!(c.get_at("a", "docs", &cat, at(34)).is_none());
+        assert_eq!(c.get_at("a", "docs", &cat, at(35)).unwrap().1, 9);
+        // Up to a second.
+        let mut now = 35;
+        for (v, wait) in (9..).zip([40, 80, 160, 320, 640, 1000, 1000]) {
+            c.stale_at("a", v, at(now));
+            c.keep("a", v + 1, "docs", &stats(100, &[("cat", 3)]));
+            assert!(c.get_at("a", "docs", &cat, at(now + wait - 1)).is_none(), "{wait} ms");
+            assert_eq!(c.get_at("a", "docs", &cat, at(now + wait)).unwrap().1, v + 1);
+            now += wait;
+        }
+        // A copy that kept its version for a second after its wait ended
+        // starts from the first wait again.
+        c.stale_at("a", 16, at(now + 1000));
+        c.keep("a", 17, "docs", &stats(100, &[("cat", 3)]));
+        assert_eq!(c.get_at("a", "docs", &cat, at(now + 1010)).unwrap().1, 17);
     }
 
     #[test]
