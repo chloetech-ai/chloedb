@@ -1,0 +1,3 @@
+NAME               READY   STATUS    RESTARTS   AGE   IP             NODE                NOMINATED NODE   READINESS GATES
+load-meili-rhw9j   1/1     Running   0          8h    10.150.6.159   meili-c-a1-3eato0   <none>           <none>
+meili-0            1/1     Running   0          8h    10.150.6.60    meili-d-a1-3eatod   <none>           <none>

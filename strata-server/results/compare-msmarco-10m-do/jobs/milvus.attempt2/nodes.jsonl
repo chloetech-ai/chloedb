@@ -1,0 +1,2 @@
+{"node": "milvus-d-a1-3e6aor", "cpu": "Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz", "vcpus": 8, "mem_kb": 65853640, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.819, "sha256_1g_x_vcpus_s": 11.419, "disk_write_2g_s": 0.645, "copy_ms": 0, "time": 1793715109, "size": "m3-8vcpu-64gb"}
+{"node": "milvus-c-a1-3e6aob", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382184, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 20.947, "sha256_1g_x_vcpus_s": 11.427, "disk_write_2g_s": 2.11, "copy_ms": 411421, "time": 1793715522, "size": "c-8"}

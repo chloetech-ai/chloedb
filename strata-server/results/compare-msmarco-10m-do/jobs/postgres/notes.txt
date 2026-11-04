@@ -1,0 +1,1 @@
+19:09:22 statement_timeout 20s set (BM25 probe queries averaged 28.4 s, 127 of 300 done in 67 min; the job is past its 9 h timeout)

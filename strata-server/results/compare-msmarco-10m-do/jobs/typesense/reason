@@ -1,0 +1,1 @@
+load typesense: exit 1; typesense-0 OOMKilled at 7.2M documents with a 52Gi limit (failures/describe.txt). Its rerun on m-16vcpu-128gb (8 h) did not fit the $90 budget: at most $87.68 with Redis running, plus $11.25; skipped.
