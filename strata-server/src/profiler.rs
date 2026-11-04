@@ -7,6 +7,12 @@
 //! ([`CpuProfile`]), or folded lines (`thread;root;...;leaf count`) that
 //! flamegraph.pl, inferno and speedscope read ([`CpuProfile::folded`]).
 //!
+//! Linux interrupts the thread that spent the CPU time; macOS does not. A
+//! BM25 query run in a loop on one thread (tests/cpu_profile.rs) got none
+//! of 534 samples on a macOS CI runner, nearly all of them in pthread's
+//! functions, where Linux gives it more than half (the cloud container):
+//! a profile taken on macOS shows little of where the time goes.
+//!
 //! One profile is taken at a time: the timer is the process's. Sampling
 //! slows the threads it interrupts: in a 4-core cloud container, a BM25
 //! query run in a loop by one caller ran 6% fewer times a second sampled
