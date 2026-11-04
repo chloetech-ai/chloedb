@@ -105,7 +105,7 @@
     <div class="grid cols-2">
       <div class="prose">
         <h3>What changes the order</h3>
-        <p>Strata stays first at 16 clients and with gaps under 15% as ties. It is not first on only the kinds every engine runs, nor on average place (Milvus at 1M, Postgres at 10M). Its lead is breadth.</p>
+        <p>Strata stays first at 16 clients and with gaps under 15% as ties. At 1M on latest main it is also first on only the kinds every engine runs and on average place; in the first 1M run Milvus led on both, and at 10M, on the older build, Postgres does.</p>
       </div>
       <div class="prose">
         <h3>Where to check it</h3>
@@ -129,12 +129,13 @@
         <tr><th scope="row">Throughput at 4 clients is short of saturation; at 16 Strata out-serves the three Lucene engines on fewer kinds</th><td>16-client throughput on every table; the ranking with it</td></tr>
         <tr><th scope="row">Vector speed is compared at a fixed search list, not at matched recall; Elasticsearch's and OpenSearch's recall at 1M (0.72, 0.59) is far below theirs on NQ</th><td>Recall beside every vector speed. The outliers are not explained yet</td></tr>
         <tr><th scope="row">Without a server, Strata searched a query's segments on up to 8 threads, the others on one</th><td>A one-thread Strata column on every search chart</td></tr>
-        <tr><th scope="row">Key lookups took different paths at 1M: Strata's SQL, the others a search on id</th><td>At 10M every engine used its own read by id</td></tr>
+        <tr><th scope="row">Key lookups took different paths at 1M: Strata's SQL, the others a search on id</th><td>At 10M and in the 1M rerun every engine used its own read by id</td></tr>
         <tr><th scope="row">Strata's updates set one column; the Lucene engines re-index the document</th><td>Said beside the results</td></tr>
         <tr><th scope="row">PageRank compares a local push with power iteration over the whole graph</th><td>Recall beside every PageRank time</td></tr>
         <tr><th scope="row">Thread pools larger than the CPU limit throttled Vespa (408 s), Postgres (136 s) and Typesense (52 s), against Strata's 18 s</th><td>Open: it hurts their tails</td></tr>
         <tr><th scope="row">Strata's coordinator shares the client's node, so its first hop does not cross the network</th><td>Open</td></tr>
-        <tr><th scope="row">DigitalOcean handed out four Xeon models; the same engine on other nodes moved 12% at the median</th><td>Open: treat gaps under 15% as ties</td></tr>
+        <tr><th scope="row">DigitalOcean handed out four Xeon models; the same engine on other nodes moved 12% at the median, and Strata's same image up to 39% on BM25 at 16 clients</th><td>Since 4 November each lane's engines take turns on the same nodes, with Strata first and again last: 1.4% apart at the median at 1M, 3.4% at 10M</td></tr>
+          <tr><th scope="row">Last in its lane, Milvus was still compacting during its first two passes, 2 to 3 times slower than alone</th><td>Its 1M numbers come from a run alone on a fresh node</td></tr>
         <tr><th scope="row">A slow kind is timed on fewer queries in its 6 seconds (Strata's typo kind on its first 48)</th><td>Open</td></tr>
         <tr><th scope="row">The graph run is on a fanless laptop, in a fixed order</th><td>Said on the graph page</td></tr>
       </tbody>
@@ -147,8 +148,8 @@
       <h2>Every number names where it came from</h2>
     </div>
     <dl class="atglance">
-      <div><dt>Cloud, 1M</dt><dd>DigitalOcean Kubernetes, 4- and 8-vCPU nodes; Xeon Platinum 8168, 8280, 8358 and Gold 6248</dd></div>
-      <div><dt>Cloud, 10M</dt><dd>The same layout on m3 nodes; Xeon Platinum 8168, 8280, Gold 6248, 5318Y. Milvus and Redis on 128 GB</dd></div>
+      <div><dt>Cloud, 1M</dt><dd>DigitalOcean Kubernetes. The rerun: two 4-vCPU nodes (Xeon Platinum 8280, 8168) for the engines that shard, one 8-vCPU node (8280) for the rest, Milvus alone on another (8358). The first run: 4- and 8-vCPU nodes; Xeon Platinum 8168, 8280, 8358 and Gold 6248</dd></div>
+      <div><dt>Cloud, 10M</dt><dd>The same layout on m3 nodes; Xeon Platinum 8168, 8280, Gold 6248, 5318Y. Milvus and Redis on 128 GB. The head-to-head on latest main: two m3 nodes (8168, 8280)</dd></div>
       <div><dt>Laptop cluster</dt><dd>MacBook Air M2, 24 GB; kind in Docker Desktop, 4 CPUs</dd></div>
       <div><dt>No server</dt><dd>DigitalOcean 8 vCPU: Xeon Platinum 8358; Xeon Gold 6548N for Tantivy</dd></div>
       <div><dt>Graph</dt><dd>MacBook Air M2; 3 CPUs and 6 GB per engine</dd></div>

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="claude:viewport-fit-sides" content="cover">
 <title>10M passages on DigitalOcean · Strata benchmarks</title>
-<meta name="description" content="Strata and thirteen other engines on DigitalOcean at 10M MS MARCO passages with the 1M run's budget: fourteen kinds of query at 1, 4 and 16 clients, recall beside speed, writes, freshness and streams, and the engines that did not finish at equal resources.">
+<meta name="description" content="Strata and thirteen other engines on DigitalOcean at 10M MS MARCO passages with the 1M run's budget: fourteen kinds of query at 1, 4 and 16 clients, recall beside speed, writes, freshness and streams, the engines that did not finish at equal resources, and a head-to-head with Elasticsearch and OpenSearch on latest main.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
@@ -32,7 +32,7 @@
     <h1>Ten times the data, the same budget</h1>
     <p class="lede">The 1M run with ten times the data. Every engine had its own DigitalOcean machines with 6.8 CPUs and 52 GiB, and nine of the fourteen finished.</p>
     <p class="verdict" data-overall="cloud-10m"></p>
-    <p>Strata is fastest on 11 of the 45 tests, more than any other engine, and in the top half on 34. It also has the two worst results of the run: a SQL aggregate (4.3 s) and typo search (824 ms).</p>
+    <p>Strata is fastest on 11 of the 45 tests, more than any other engine, and in the top half on 34. It also has the two worst results of the run: a SQL aggregate (4.3 s) and typo search (824 ms). On latest main, head to head on the same machines, it stays first against Elasticsearch and OpenSearch (<a href="#latest">below</a>).</p>
     <dl class="atglance">
       <div><dt>Data</dt><dd>The first 10M MS MARCO v2.1 passages, with their Arctic Embed M v1.5 vectors (768 dimensions)</dd></div>
       <div><dt>Machines</dt><dd>DigitalOcean sfo2, Xeon Platinum and Gold; 6.8 CPUs and 52 GiB per engine</dd></div>
@@ -41,9 +41,22 @@
       <div><dt>Noise</dt><dd>A second Strata differed by 4.5% at the median: read gaps under 10% as ties</dd></div>
       <div><dt>Cost</dt><dd>$83.07 at list price, failed attempts included</dd></div>
     </dl>
-    <nav class="toc" aria-label="Sections"><a href="#rank">Overall</a><a href="#places">Every kind</a><a href="#explore">One kind at a time</a><a href="#big">128 GB machine</a><a href="#writes">Writes</a><a href="#load">Load</a><a href="#behind">Behind</a><a href="#failed">Did not finish</a><a href="#files">Raw data</a></nav>
+    <nav class="toc" aria-label="Sections"><a href="#latest">Latest main</a><a href="#rank">Overall</a><a href="#places">Every kind</a><a href="#explore">One kind at a time</a><a href="#big">128 GB machine</a><a href="#writes">Writes</a><a href="#load">Load</a><a href="#behind">Behind</a><a href="#failed">Did not finish</a><a href="#files">Raw data</a></nav>
   </div></div>
 
+  <section class="gutter" id="latest"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Latest main · the same machines · 4 November 2026</span>
+      <h2>Head to head with Elasticsearch and OpenSearch</h2>
+      <p>Strata on latest main (image <code>055f6bf</code>, with #242 and #245), Elasticsearch and OpenSearch took turns on the same two 4-vCPU machines, three passes each. Strata ran first and again last, 3.4% apart at the median. Of the three, it is fastest on 31 of the 45 tests. OpenSearch serves 1.9 times its BM25 queries a second at 16 clients, and both are faster on typos and SQL aggregates.</p>
+    </div>
+    <p class="verdict" data-overall="cloud-10m-h2h"></p>
+    <div data-rank="cloud-10m-h2h"></div>
+    <div data-pick="cloud-10m-h2h" data-metric="p50" data-title="Median latency at 1 client, ms, lower is better" data-engines="strata,os,es" data-kinds="bm25|phrase|vector|similar items|hybrid (RRF)|typo|sql aggregate"></div>
+    <div data-pick="cloud-10m-h2h" data-metric="qps16" data-title="Queries a second at 16 clients, higher is better" data-engines="strata,os,es" data-kinds="bm25|bm25 + filter|phrase|vector|key lookup"></div>
+    <div data-writes="cloud-10m-h2h"></div>
+    <p class="small muted">Raw data: <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/compare-msmarco-same-nodes-do/README.md">README.md</a> and <a href="https://github.com/chloetech-ai/strata/tree/main/strata-server/results/compare-msmarco-same-nodes-do/10m">the directory</a>. The rest of this page is the full run of 3 November, on the older build.</p>
+  </div></section>
   <section class="gutter" id="rank"><div class="wrap block">
     <div class="block-head">
       <span class="eyebrow">Overall</span>
@@ -111,11 +124,11 @@
     <div data-pick="cloud-10m" data-metric="p50" data-title="Median latency at 1 client, ms, lower is better" data-engines="strata,os,es,solr,paradedb,postgres,qdrant,weaviate" data-kinds="sql aggregate|typo|key lookup|bm25 + filter"></div>
     <div data-pick="cloud-10m" data-metric="recall" data-title="Recall@10 at the shared settings, higher is better" data-engines="strata,os,es,solr,paradedb,postgres,qdrant,weaviate" data-kinds="vector|vector + filter|similar items"></div>
     <ul class="gaps">
-      <li><b>SQL aggregates.</b> 4.3 s, up from 178 ms at 1M; Elasticsearch and OpenSearch take under 8 ms. Not fixed yet.</li>
-      <li><b>Typo search.</b> 824 ms on this build. #242 has since cut a coordinator's median from 112 to 15.8 ms on a Xeon VM; not re-run at 10M.</li>
+      <li><b>SQL aggregates.</b> 4.3 s, up from 178 ms at 1M; Elasticsearch and OpenSearch take under 8 ms. 2.9 s on latest main. Not fixed yet.</li>
+      <li><b>Typo search.</b> 824 ms on this build. 81 ms on latest main with #242, still about twice Elasticsearch's 38 and OpenSearch's 45.</li>
       <li><b>Key lookups.</b> 0.86 ms, about twice Postgres, Weaviate, ParadeDB and Qdrant.</li>
       <li><b>Vector recall.</b> 0.795 at the shared settings, against Qdrant's 0.941 and Postgres's 0.826.</li>
-      <li><b>BM25 at 16 clients.</b> 493 queries a second against OpenSearch's 777 and Elasticsearch's 608, without the statistics cache (#245).</li>
+      <li><b>BM25 at 16 clients.</b> 493 queries a second against OpenSearch's 777 and Elasticsearch's 608, without the statistics cache (#245). With it on latest main, 470 against OpenSearch's 896 on the same machines: at 10M the shards are what waits (p90 76 ms, median 19).</li>
     </ul>
   </div></section>
 
