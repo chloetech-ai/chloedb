@@ -1,0 +1,2 @@
+strata-new-d-a1 m-4vcpu-32gb strata-new-d-a1-3eli29 strata-new-d-a1-3elipn
+strata-new-c-a1 c-8 strata-new-c-a1-3elipc
