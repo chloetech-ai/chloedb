@@ -111,10 +111,10 @@
   <section class="gutter" id="since"><div class="wrap block">
     <div class="block-head">
       <span class="eyebrow">Since this run</span>
-      <h2>BM25 through a coordinator, 51% faster at 16 clients</h2>
-      <p>The coordinator now caches each shard version's term statistics (#245), so a BM25 query takes one round instead of two. Measured before and after in one 4-core container (Xeon), with the same answers; not yet re-run on DigitalOcean.</p>
+      <h2>BM25 through a coordinator, 30% faster at 16 clients</h2>
+      <p>The coordinator now caches each shard version's term statistics (#245), so a BM25 query takes one round instead of two. Re-run with this run's setup on DigitalOcean, both builds on the same nodes, medians of three passes each, with the same answers (<a href="https://github.com/chloetech-ai/strata/tree/main/strata-server/results/bm25-do-1m">results</a>). In one 4-core container it measured +51% (<a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/bm25-stats-cache-container/README.md">results</a>).</p>
     </div>
-    <div data-ab="bm25-load"></div>
+    <div data-ab="bm25-do"></div>
   </div></section>
 
   <section class="gutter" id="files"><div class="wrap block">
@@ -128,7 +128,8 @@
       <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/compare-msmarco-1m-do/rank.md">rank.md</a>: the ranking as <code>rank.py</code> computes it, load included</li>
       <li><a href="https://github.com/chloetech-ai/strata/tree/main/strata-server/results/compare-msmarco-1m-do">The directory</a>: raw results per engine and pass</li>
       <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/deploy/compare/README.md">The method</a>: budgets, settings and every engine's request</li>
-      <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/bm25-stats-cache-container/README.md">BM25 under load</a>: the before and after of #245</li>
+      <li><a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/bm25-stats-cache-container/README.md">BM25 under load</a>: the before and after of #245 in a container</li>
+      <li><a href="https://github.com/chloetech-ai/strata/tree/main/strata-server/results/bm25-do-1m/README.md">BM25 on DigitalOcean</a>: the same, on this run's nodes</li>
     </ul>
   </div></section>
 </main>

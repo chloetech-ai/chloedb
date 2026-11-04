@@ -12,6 +12,7 @@ results and only rounded. The reports it reads:
   embedded   strata/results/laptop-2026-11/part-a-do/       (Part A, no server)
   graph      strata-server/results/graph-compare-mac/README.md
   bm25-load  strata-server/results/bm25-stats-cache-container/
+  bm25-do    strata-server/results/bm25-do-1m/ (the same before and after on DigitalOcean)
 
 A results directory that is not on this checkout is read from the git ref
 named for it below (a branch whose pull request is still open), and the page
@@ -567,6 +568,7 @@ def main():
     pa = Source("strata/results/laptop-2026-11/part-a-do")
     gr = Source("strata-server/results/graph-compare-mac", "origin/claude/graph-compare-mac")
     bl = Source("strata-server/results/bm25-stats-cache-container")
+    bd = Source("strata-server/results/bm25-do-1m")
 
     if c10.ok:
         ranked = ["strata", "os", "es", "solr", "vespa", "qdrant", "weaviate", "paradedb", "postgres"]
@@ -595,6 +597,10 @@ def main():
     else:
         missing.append("graph")
     reports["bm25-load"] = {"id": "bm25-load", "type": "ab", "rows": bm25_load(bl), "source": bl.url()}
+    if bd.ok:
+        reports["bm25-do"] = {"id": "bm25-do", "type": "ab", "rows": bm25_load(bd), "source": bd.url()}
+    else:
+        missing.append("bm25-do")
 
     data = {
         "generated_by": "docs/site/scripts/bench_data.py",

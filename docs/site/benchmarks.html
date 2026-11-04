@@ -64,7 +64,7 @@
       <div class="loss"><div><h3>SQL aggregates</h3><div class="nums">10M · 4,274 ms; OpenSearch 4.86</div></div>
         <p>A <code>GROUP BY</code> with <code>HAVING</code> over a filtered table. Strata's largest loss, and it grows with the data. Not fixed yet.</p></div>
       <div class="loss"><div><h3>BM25 at 16 clients</h3><div class="nums">10M · 493 q/s; OpenSearch 777</div></div>
-        <p>Each query through a coordinator took two rounds to the shards. <span class="fix">Fixed after the runs (#245): 51% more queries a second in a container.</span></p></div>
+        <p>Each query through a coordinator took two rounds to the shards. <span class="fix">Fixed after the runs (#245): 30% more queries a second on the same DigitalOcean nodes.</span></p></div>
       <div class="loss"><div><h3>Key lookups</h3><div class="nums">10M · 0.86 ms, 5th of 9; Postgres 0.37</div></div>
         <p>Postgres, Weaviate, ParadeDB and Qdrant read a row by id in about half Strata's time.</p></div>
       <div class="loss"><div><h3>Vector recall at shared settings</h3><div class="nums">10M · recall@10 0.795; Qdrant 0.941</div></div>
