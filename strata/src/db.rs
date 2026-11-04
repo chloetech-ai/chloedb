@@ -228,7 +228,7 @@ impl Db {
         Db {
             storage: Arc::new(storage),
             readers: RwLock::new(HashMap::new()),
-            exec: ExecOptions::default(),
+            exec: ExecOptions { filter_cache: Some(Arc::new(crate::query::exec::FilterCache::new(crate::query::exec::FILTER_CACHE_BYTES))), ..ExecOptions::default() },
             embedders: RwLock::new(Vec::new()),
             derivers: RwLock::new(Vec::new()),
             models: RwLock::new(None),
