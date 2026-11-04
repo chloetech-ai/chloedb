@@ -1973,8 +1973,8 @@ async fn sid_next(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 
 async fn term_stats(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let params = app.svc.params(b.get("params")).await?;
-    let (stats, snapshot) = app.svc.term_stats(body_str(&b, "sql")?, None, &params, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
-    Ok(AxJson(json!({"stats": stats, "snapshot": snapshot})))
+    let (stats, snapshot, version) = app.svc.term_stats(body_str(&b, "sql")?, None, &params, &after(&b)?, body_u64(&b, "timeout_ms")).await?;
+    Ok(AxJson(json!({"stats": stats, "snapshot": snapshot, "version": version})))
 }
 
 async fn snapshot(State(app): State<App>) -> Res {

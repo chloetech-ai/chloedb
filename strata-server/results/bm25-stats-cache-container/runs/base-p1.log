@@ -1,0 +1,17 @@
+base-p1  bm25                     warm-up: p50 4.686, 4.540 ms
+base-p1  bm25                     c=1        445 q/s  p50   2.027 ms  p90   3.045 ms  p99   5.761 ms  errors 0
+base-p1  bm25                     c=4        834 q/s  p50   4.360 ms  p90   7.053 ms  p99  12.164 ms  errors 0
+base-p1  bm25                     c=16      1022 q/s  p50  14.743 ms  p90  21.749 ms  p99  31.803 ms  errors 0
+base-p1  bm25 + filter            warm-up: p50 6.053, 6.231 ms
+base-p1  bm25 + filter            c=1        349 q/s  p50   2.567 ms  p90   4.080 ms  p99   7.388 ms  errors 0
+base-p1  bm25 + filter            c=4        585 q/s  p50   6.294 ms  p90  10.066 ms  p99  18.187 ms  errors 0
+base-p1  bm25 + filter            c=16       669 q/s  p50  22.638 ms  p90  33.291 ms  p99  45.904 ms  errors 0
+base-p1  phrase                   warm-up: p50 3.925, 3.873 ms
+base-p1  phrase                   c=1        425 q/s  p50   2.112 ms  p90   3.135 ms  p99   7.122 ms  errors 0
+base-p1  phrase                   c=4        918 q/s  p50   3.924 ms  p90   6.320 ms  p99  11.418 ms  errors 0
+base-p1  phrase                   c=16      1183 q/s  p50  13.080 ms  p90  18.561 ms  p99  24.780 ms  errors 0
+base-p1  prefix                   warm-up: p50 7.253, 7.623 ms
+base-p1  prefix                   c=1        305 q/s  p50   3.012 ms  p90   4.652 ms  p99   7.510 ms  errors 0
+base-p1  prefix                   c=4        509 q/s  p50   7.395 ms  p90  11.206 ms  p99  17.988 ms  errors 0
+base-p1  prefix                   c=16       575 q/s  p50  26.333 ms  p90  38.087 ms  p99  54.274 ms  errors 0
+wrote /home/user/bm25-data/ab1/run-base-p1.json
