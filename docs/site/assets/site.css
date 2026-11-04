@@ -665,3 +665,9 @@ a.report:hover { border-color: var(--ink-3); text-decoration: none; }
 [data-pick] { display: grid; gap: 8px; }
 [data-pick] + [data-pick] { margin-top: 16px; }
 .sub [data-variants] { margin-top: 10px; }
+
+/* the home page's proof line under the hero's buttons */
+.hero-proof { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 20px; font-size: 0.88rem; color: var(--ink-2); }
+.hero-proof a { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--ink-3); padding-bottom: 1px; }
+.hero-proof a:hover { color: var(--ink); border-bottom-color: var(--accent); }
+.hero-proof b { color: var(--accent); font-weight: 650; }

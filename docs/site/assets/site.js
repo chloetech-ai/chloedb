@@ -279,43 +279,6 @@
     h += "</div>";
     return h;
   }
-  function renderSuite(el) {
-    var id = el.getAttribute("data-suite");
-    var suite = BENCH && BENCH.suites.filter(function (s) { return s.id === id; })[0];
-    if (!suite) return;
-    var h = "";
-    if (!el.hasAttribute("data-no-head")) {
-      h += '<div class="suite-head"><span class="eyebrow">Part ' + esc(suite.part) + " · " + esc(suite.id.toUpperCase()) + "</span><h3>" + esc(suite.title) + '</h3><p class="muted">' + esc(suite.lede) + "</p>";
-      h += '<p class="small muted"><b>Data:</b> ' + esc(suite.dataset) + "</p>";
-      if (suite.plan) h += '<details><summary class="small">What the laptop benchmark measures</summary><ul class="plan">' + suite.plan.map(function (p) { return "<li>" + esc(p) + "</li>"; }).join("") + "</ul></details>";
-      h += "</div>";
-    }
-    h += '<div class="grid">' + suite.charts.map(renderChart).join("") + "</div>";
-    el.innerHTML = h;
-  }
-  function renderHeadlines(el) {
-    if (!BENCH || !BENCH.headlines) return;
-    var n = parseInt(el.getAttribute("data-headlines"), 10) || BENCH.headlines.length;
-    el.innerHTML = BENCH.headlines.slice(0, n).map(function (s) {
-      var run = s.run && BENCH.runs[s.run];
-      var ph = s.status === "placeholder";
-      return '<div class="stat' + (ph ? " ph" : "") + '"><span class="v">' + (ph ? "pending" : esc(s.value)) + "</span><p>" + esc(s.text) + '</p><span class="meta"><span class="tag ' + esc(s.status) + '">' + esc(s.status === "earlier" && run ? run.label : STATUS_LABEL[s.status]) + "</span>" + (run ? '<span data-tip="' + esc(run.machine) + '" tabindex="0">' + esc(run.machine.split(";")[0].split(":")[0]) + "</span>" : "<span>laptop benchmark</span>") + "</span></div>";
-    }).join("");
-  }
-  function renderStages(el) {
-    var st = BENCH && BENCH.stages;
-    if (!st) return;
-    var h = '<div class="table-wrap"><table class="data"><thead><tr><th>stage</th>' + st.metrics.map(function (m) { return "<th>" + esc(m) + "</th>"; }).join("") + "</tr></thead><tbody>";
-    st.rows.forEach(function (r) {
-      h += '<tr><th scope="row"><b>' + esc(r.stage) + '</b><br><span class="small muted">' + esc(r.detail) + "</span></th>";
-      r.values.forEach(function (v) {
-        h += v == null ? '<td><span class="tag placeholder">placeholder</span></td>' : '<td class="n">' + esc(v) + "</td>";
-      });
-      h += "</tr>";
-    });
-    h += "</tbody></table></div>";
-    el.innerHTML = h;
-  }
 
   /* ---------------------------------------------------------- matrix */
   var CMP = window.STRATA_COMPARE || null;
@@ -380,10 +343,7 @@
   function boot() {
     $$("pre[data-lang]").forEach(wrapCode);
     $$("[data-tabs]").forEach(initTabs);
-    $$("[data-suite]").forEach(renderSuite);
     $$("[data-chart]").forEach(function (el) { var c = findChart(el.getAttribute("data-chart")); if (c) el.innerHTML = renderChart(c); });
-    $$("[data-headlines]").forEach(renderHeadlines);
-    $$("[data-stages]").forEach(renderStages);
     $$("[data-matrix]").forEach(renderMatrix);
     initLightbox();
   }

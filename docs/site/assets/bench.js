@@ -374,9 +374,11 @@
 
   /* ----------------------------------------------- overall, as a tile */
   var LABELS = { "cloud-10m": "10M passages · DigitalOcean", "cloud-1m": "1M passages · DigitalOcean", laptop: "1M passages · laptop cluster" };
+  var CHIPS = { "cloud-10m": "at 10M documents in the cloud", "cloud-1m": "at 1M in the cloud", laptop: "on a laptop's cluster" };
   function renderOverall(el) {
     var id = el.getAttribute("data-overall"), rep = R[id], mode = el.getAttribute("data-mode") || "line";
     if (!rep) {
+      if (mode === "chip") { el.innerHTML = '<b>Pending</b> ' + esc(CHIPS[id] || id); return; }
       el.innerHTML = mode === "tile" ? '<span class="eyebrow">' + esc(LABELS[id] || id) + '</span><span class="v pend">Pending</span><p>The run has finished; this fills in when its raw results are committed.</p>' : '<span class="pend">Results pending: this fills in when the run\'s raw results are committed.</span>';
       return;
     }
@@ -385,7 +387,8 @@
     var top = rep.rank.slice(0, 3).map(function (r) { return esc(engineName(rep, r.e)) + " " + r.points; }).join(", ");
     var passes = rep.passes > 1 ? "medians of " + rep.passes + " passes" : "one pass";
     var head = ord(pos) + " of " + rep.ranked.length;
-    if (mode === "tile") el.innerHTML = '<span class="eyebrow">' + esc(LABELS[id] || id) + '</span><span class="v">' + head + "</span><p>Summed places on " + rep.tests + " tests, " + passes + ": " + top + ".</p>";
+    if (mode === "chip") el.innerHTML = "<b>" + head + "</b> " + esc(CHIPS[id] || LABELS[id] || id);
+    else if (mode === "tile") el.innerHTML = '<span class="eyebrow">' + esc(LABELS[id] || id) + '</span><span class="v">' + head + "</span><p>Summed places on " + rep.tests + " tests, " + passes + ": " + top + ".</p>";
     else el.innerHTML = "<b>" + head + "</b> on summed places over " + rep.tests + " tests (" + passes + "): " + top + ".";
   }
 
