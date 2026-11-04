@@ -1,0 +1,17 @@
+base-p3  bm25                     warm-up: p50 4.558, 4.552 ms
+base-p3  bm25                     c=1        405 q/s  p50   2.179 ms  p90   3.353 ms  p99   6.477 ms  errors 0
+base-p3  bm25                     c=4        824 q/s  p50   4.377 ms  p90   7.160 ms  p99  12.193 ms  errors 0
+base-p3  bm25                     c=16       997 q/s  p50  15.200 ms  p90  22.318 ms  p99  31.245 ms  errors 0
+base-p3  bm25 + filter            warm-up: p50 6.107, 6.209 ms
+base-p3  bm25 + filter            c=1        318 q/s  p50   2.812 ms  p90   4.474 ms  p99   7.996 ms  errors 0
+base-p3  bm25 + filter            c=4        602 q/s  p50   6.117 ms  p90   9.739 ms  p99  16.952 ms  errors 0
+base-p3  bm25 + filter            c=16       710 q/s  p50  21.259 ms  p90  30.828 ms  p99  47.416 ms  errors 0
+base-p3  phrase                   warm-up: p50 4.111, 4.017 ms
+base-p3  phrase                   c=1        420 q/s  p50   2.156 ms  p90   3.110 ms  p99   6.657 ms  errors 0
+base-p3  phrase                   c=4        940 q/s  p50   3.881 ms  p90   6.164 ms  p99  10.395 ms  errors 0
+base-p3  phrase                   c=16      1178 q/s  p50  13.078 ms  p90  18.646 ms  p99  25.360 ms  errors 0
+base-p3  prefix                   warm-up: p50 7.856, 8.201 ms
+base-p3  prefix                   c=1        289 q/s  p50   3.194 ms  p90   4.906 ms  p99   7.942 ms  errors 0
+base-p3  prefix                   c=4        491 q/s  p50   7.548 ms  p90  11.652 ms  p99  20.039 ms  errors 0
+base-p3  prefix                   c=16       565 q/s  p50  27.236 ms  p90  38.325 ms  p99  53.232 ms  errors 0
+wrote /home/user/bm25-data/ab1/run-base-p3.json

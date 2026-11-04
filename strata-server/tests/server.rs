@@ -922,6 +922,9 @@ struct Recording {
     /// `Hello` and `Write` calls, answered or not.
     hellos: AtomicUsize,
     writes: AtomicUsize,
+    /// `TermStats` calls, and queries answered stale (protocol 12).
+    stats_rounds: AtomicUsize,
+    stale: AtomicUsize,
 }
 
 impl Recording {
@@ -937,6 +940,9 @@ impl Recording {
         let q = r.get_mut();
         self.seen.lock().unwrap().push(Seen { protocol: q.protocol, typed: q.plan.is_some(), hold: q.hold, release: q.release, epoch: q.epoch, min_seq_no: q.min_seq_no });
         let v = self.version.load(Ordering::Relaxed);
+        if v < 12 {
+            q.stats_version = 0;
+        }
         if v < 5 {
             q.min_seq_no = 0;
         }
@@ -971,6 +977,9 @@ impl pb::strata_server::Strata for Recording {
         let r = self.read(r)?;
         let hold = r.get_ref().hold;
         let a = self.inner.query(r).await?;
+        if a.get_ref().stale {
+            self.stale.fetch_add(1, Ordering::Relaxed);
+        }
         let write = self.after_hold.lock().unwrap().take_if(|_| hold);
         if let Some(sql) = write {
             self.inner.0.sql(&Principal::open(), &sql, &Params::new(), After::Any, 0).await.unwrap();
@@ -978,7 +987,12 @@ impl pb::strata_server::Strata for Recording {
         Ok(a)
     }
     async fn term_stats(&self, r: tonic::Request<pb::QueryRequest>) -> Result<tonic::Response<pb::TermStatsResponse>, tonic::Status> {
-        self.inner.term_stats(self.read(r)?).await
+        self.stats_rounds.fetch_add(1, Ordering::Relaxed);
+        let mut a = self.inner.term_stats(self.read(r)?).await?;
+        if self.version.load(Ordering::Relaxed) < 12 {
+            a.get_mut().version = 0;
+        }
+        Ok(a)
     }
     async fn write(&self, r: tonic::Request<pb::WriteRequest>) -> Result<tonic::Response<pb::WriteResponse>, tonic::Status> {
         self.writes.fetch_add(1, Ordering::Relaxed);
@@ -1110,6 +1124,8 @@ async fn recording_of(svc: Arc<Service>, version: u32) -> (String, Arc<Recording
         delay: std::sync::Mutex::new(Duration::ZERO),
         hellos: AtomicUsize::new(0),
         writes: AtomicUsize::new(0),
+        stats_rounds: AtomicUsize::new(0),
+        stale: AtomicUsize::new(0),
     });
     let svc = pb::strata_server::StrataServer::from_arc(shard.clone()).max_decoding_message_size(256 << 20);
     tokio::spawn(tonic::transport::Server::builder().add_service(svc).serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(l)));
@@ -1126,6 +1142,92 @@ async fn leases_end(shards: &[Arc<Recording>]) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("leases held: {:?}", shards.iter().map(|s| s.leases()).collect::<Vec<_>>());
+}
+
+/// A BM25 query whose terms the coordinator has seen skips the statistics
+/// round: it is sent the statistics kept of each shard's version and
+/// answers as one database would. After a write, the shard that took it
+/// answers stale, and the query runs again with a round, scoring with the
+/// write counted; then the new version's statistics are kept. A query with
+/// typos keeps its round, as do shards of protocol 11, which cannot tell
+/// their versions apart; and so does every query with no terms kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bm25_statistics_kept_by_the_coordinator() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = |i: usize| Value::Str(format!("p{i:07}"));
+    let whole = service(create(dir.path(), "whole.strata", |_| true), "http://unused");
+    let mut urls = Vec::new();
+    let mut shards = Vec::new();
+    for s in 0..2 {
+        let (url, shard) = recording(create(dir.path(), &format!("s{s}.strata"), |i| shard_of(&key(i), 2) == s), strata_server::grpc::PROTOCOL).await;
+        urls.push(url);
+        shards.push(shard);
+    }
+    let coord = cluster(Coordinator::connect(urls.clone()).await.unwrap());
+    let rounds = || shards.iter().map(|s| s.stats_rounds.load(Ordering::Relaxed)).collect::<Vec<_>>();
+    let stale = || shards.iter().map(|s| s.stale.load(Ordering::Relaxed)).collect::<Vec<_>>();
+    let check = |svc: Arc<Service>, sql: &'static str| {
+        let whole = whole.clone();
+        async move {
+            let want = whole.query(QueryReq { sql: sql.into(), ..Default::default() }).await.unwrap();
+            let got = svc.query(QueryReq { sql: sql.into(), ..Default::default() }).await.unwrap_or_else(|e| panic!("{sql}: {}", e.message));
+            same(sql, &js::result(&want.rs, 0.0), &js::result(&got.rs, 0.0));
+            got
+        }
+    };
+    let sql = "SELECT id, title, score() FROM products ORDER BY bm25(body, 'waterproof hiking boots') DESC LIMIT 10";
+    check(coord.clone(), sql).await;
+    assert_eq!(rounds(), [1, 1]);
+    let got = check(coord.clone(), sql).await;
+    assert_eq!(rounds(), [1, 1], "the second query was sent the kept statistics");
+    assert!(got.rs.stats.steps.iter().any(|s| s.op == "term statistics" && s.detail.contains("kept")), "{:?}", got.rs.stats.steps);
+    // Its words in another query, with a filter: kept too.
+    check(coord.clone(), "SELECT id, score() FROM products WHERE price < 150 ORDER BY bm25(body, 'boots waterproof') DESC LIMIT 5").await;
+    assert_eq!(rounds(), [1, 1]);
+    // A new word: a round.
+    check(coord.clone(), "SELECT id, score() FROM products ORDER BY bm25(body, 'hiking kettle') DESC LIMIT 5").await;
+    assert_eq!(rounds(), [2, 2]);
+
+    // A write on one shard: it answers stale, and the query runs again.
+    let id = (0..).map(|i| format!("w{i}")).find(|id| shard_of(&Value::Str(id.clone()), 2) == 0).unwrap();
+    let insert = format!("INSERT INTO products (id, title, category, price, sold) VALUES ('{id}', 'Waterproof hiking boots, waterproof', 'outdoor', 10.0, 0)");
+    for svc in [&coord, &whole] {
+        svc.sql(&Principal::open(), &insert, &Params::new(), After::Any, 0).await.unwrap();
+    }
+    let got = check(coord.clone(), sql).await;
+    assert_eq!(stale(), [1, 0]);
+    assert_eq!(rounds(), [3, 3]);
+    assert!(got.rs.rows.iter().any(|r| r[0] == Value::Str(id.clone())), "the new row is found: {:?}", got.rs.rows);
+    assert!(got.rs.stats.plan.iter().any(|l| l.contains("older version on shard 0")), "{:?}", got.rs.stats.plan);
+    // Waits out the stale shard's pause; then the new version's are kept.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    check(coord.clone(), sql).await;
+    assert_eq!((rounds(), stale()), (vec![3, 3], vec![1, 0]));
+    let m = coord.prometheus().await;
+    for line in ["strata_stats_cache_total{outcome=\"hit\"} 4", "strata_stats_cache_total{outcome=\"miss\"} 2", "strata_stats_cache_total{outcome=\"stale\"} 1"] {
+        assert!(m.contains(line), "{line}: {m}");
+    }
+
+    // Typos: only a shard finds the terms, so every such query has a round.
+    for _ in 0..2 {
+        check(coord.clone(), "SELECT id, score() FROM products ORDER BY bm25(body, 'waterprof boots', fuzzy => 'auto') DESC LIMIT 5").await;
+    }
+    assert_eq!(rounds(), [5, 5]);
+    // Off: a round each time.
+    let off = cluster(Coordinator::connect_with(urls.clone(), CoordOptions { stats_cache_terms: 0, ..Default::default() }).await.unwrap());
+    for _ in 0..2 {
+        check(off.clone(), sql).await;
+    }
+    assert_eq!(rounds(), [7, 7]);
+    // Shards of protocol 11 answer no version: a round each time.
+    for s in &shards {
+        s.version.store(11, Ordering::Relaxed);
+    }
+    let old = cluster(Coordinator::connect(urls).await.unwrap());
+    for _ in 0..2 {
+        check(old.clone(), sql).await;
+    }
+    assert_eq!(rounds(), [9, 9]);
 }
 
 /// A coordinator asks each shard the protocol versions it speaks and
@@ -1178,8 +1280,8 @@ async fn shards_speak_the_oldest_protocol_among_them() {
             leases_end(&seen).await;
         }
         // Statistics alone, as a coordinator in front of this one asks.
-        let (stats, _) = coord.term_stats("SELECT id FROM products ORDER BY bm25(body, 'waterproof') DESC LIMIT 3", None, &Params::new(), &After::Any, 0).await.unwrap();
-        let (local, _) = service(create(dir.path(), &format!("r{round}w.strata"), |_| true), "http://unused").term_stats("SELECT id FROM products ORDER BY bm25(body, 'waterproof') DESC LIMIT 3", None, &Params::new(), &After::Any, 0).await.unwrap();
+        let (stats, _, _) = coord.term_stats("SELECT id FROM products ORDER BY bm25(body, 'waterproof') DESC LIMIT 3", None, &Params::new(), &After::Any, 0).await.unwrap();
+        let (local, _, _) = service(create(dir.path(), &format!("r{round}w.strata"), |_| true), "http://unused").term_stats("SELECT id FROM products ORDER BY bm25(body, 'waterproof') DESC LIMIT 3", None, &Params::new(), &After::Any, 0).await.unwrap();
         assert_eq!(serde_json::to_value(&stats).unwrap(), serde_json::to_value(&local).unwrap());
         // Every read reached every shard in the protocol spoken, typed from
         // 2, and pages were fetched from 3.
@@ -2424,7 +2526,7 @@ async fn snapshot_leases_end_with_their_query() {
     let dir = tempfile::tempdir().unwrap();
     let svc = service(create(dir.path(), "db.strata", |_| true), "http://unused");
     let sql = "SELECT id FROM products ORDER BY bm25(body, 'waterproof hiking boots') DESC LIMIT 5";
-    let (_, lease) = svc.term_stats(sql, None, &Params::new(), &After::Any, 200).await.unwrap();
+    let (_, lease, _) = svc.term_stats(sql, None, &Params::new(), &After::Any, 200).await.unwrap();
     let q = |snapshot| QueryReq { sql: sql.into(), snapshot, ..Default::default() };
     svc.query(q(lease)).await.unwrap();
     assert_eq!(svc.sweep_leases(), 1);

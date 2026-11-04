@@ -91,7 +91,7 @@ use tonic::transport::Channel;
 use tonic::Code;
 
 use crate::auth::Secret;
-use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL};
+use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL};
 use crate::metrics::Family;
 use crate::pb::{self, strata_client::StrataClient};
 use crate::service::{is_mark, op_place, op_schema, op_source, After, QueryReq, Written};
@@ -102,6 +102,8 @@ use crate::{json as js, plan_pb, ApiError};
 
 mod moves;
 pub mod plan;
+mod stats;
+pub use stats::{StatsCache, STATS_CACHE_TERMS};
 pub use moves::{plan_even, MOVE_SLOTS};
 
 /// How the coordinator uses replicas and handles shards that do not answer.
@@ -128,11 +130,24 @@ pub struct CoordOptions {
     /// The slot map to route writes by and give the shards (`None`: the
     /// shards holding equal runs of slots, [`SlotMap::even`], epoch 1).
     pub slots: Option<SlotMap>,
+    /// Terms whose BM25 statistics are kept per shard copy
+    /// ([`StatsCache`]); 0 keeps none.
+    pub stats_cache_terms: usize,
 }
 
 impl Default for CoordOptions {
     fn default() -> CoordOptions {
-        CoordOptions { hedge: Duration::from_millis(100), cool_off: Duration::from_secs(5), shard_timeout: None, partial: false, token: None, ca: None, fetch: true, slots: None }
+        CoordOptions {
+            hedge: Duration::from_millis(100),
+            cool_off: Duration::from_secs(5),
+            shard_timeout: None,
+            partial: false,
+            token: None,
+            ca: None,
+            fetch: true,
+            slots: None,
+            stats_cache_terms: STATS_CACHE_TERMS,
+        }
     }
 }
 
@@ -624,6 +639,8 @@ pub struct Coordinator {
     /// no fetch found.
     fetches: AtomicU64,
     fetch_lost: AtomicU64,
+    /// The BM25 statistics kept of the shards' copies ([`StatsCache`]).
+    stats: StatsCache,
     /// The slot moves this coordinator runs ([`moves`]).
     moves: moves::Moves,
     /// The plan this coordinator applies ([`plan::apply`]).
@@ -1046,6 +1063,7 @@ impl Coordinator {
                 }
             }
         }
+        let stats_cache_terms = opts.stats_cache_terms;
         Ok(Coordinator {
             topo: RwLock::new(Arc::new(topo)),
             changing: tokio::sync::Mutex::new(()),
@@ -1064,6 +1082,7 @@ impl Coordinator {
             hedge_budget: HedgeBudget::new(),
             fetches: AtomicU64::new(0),
             fetch_lost: AtomicU64::new(0),
+            stats: StatsCache::new(stats_cache_terms),
             moves: moves::Moves::default(),
             plans: plan::Runs::default(),
             snapshot: tokio::sync::Mutex::new(None),
@@ -1159,6 +1178,13 @@ impl Coordinator {
             Family::one("strata_slot_epoch", "gauge", "The epoch of the slot map writes are routed by; 0 while they go by the hash before slots.", t.epoch() as f64),
             Family::one("strata_fetch_queries_total", "counter", "Queries answered by query then fetch.", self.fetches.load(Ordering::Relaxed) as f64),
             Family::one("strata_fetch_lost_rows_total", "counter", "Rows of query-then-fetch pages that no fetch found: their shard did not answer the fetch (partial answers), or another replica did, without them.", self.fetch_lost.load(Ordering::Relaxed) as f64),
+            Family {
+                name: "strata_stats_cache_total",
+                ty: "counter",
+                help: "BM25 queries over shards by where their statistics came from: hit (kept by the coordinator, no statistics round), miss (a statistics round), stale (a copy had moved on: sent again with a round).",
+                values: [("hit", &self.stats.hits), ("miss", &self.stats.misses), ("stale", &self.stats.stale)].iter().map(|(o, n)| (format!("outcome=\"{o}\""), n.load(Ordering::Relaxed) as f64)).collect(),
+            },
+            Family::one("strata_stats_cache_terms", "gauge", "Terms whose BM25 statistics the coordinator keeps, over every shard copy (--stats-cache-terms each).", self.stats.terms() as f64),
         ]
     }
 
@@ -1431,9 +1457,10 @@ impl Coordinator {
         format!("copy {url}")
     }
 
-    /// The statistics of shards `which`, and the replica and lease each
-    /// came from. A lease lasts until `deadline` and a second.
-    async fn shard_stats(&self, t: &Topology, read: &Read, protocol: u32, which: Vec<usize>, start: usize, deadline: Instant) -> Vec<(usize, Result<(TermStats, usize, u64), ApiError>)> {
+    /// The statistics of shards `which`, and the replica, lease and
+    /// statistics version (0 before [`STATS_VERSION_PROTOCOL`]) each came
+    /// from. A lease lasts until `deadline` and a second.
+    async fn shard_stats(&self, t: &Topology, read: &Read, protocol: u32, which: Vec<usize>, start: usize, deadline: Instant) -> Vec<(usize, Result<(TermStats, usize, u64, u64), ApiError>)> {
         let calls = which.into_iter().map(|i| {
             async move {
                 let a = self
@@ -1445,7 +1472,7 @@ impl Coordinator {
                     .await;
                 let a = a.and_then(|(r, a)| {
                     let s: TermStats = serde_json::from_slice(&a.stats_json).map_err(ApiError::internal)?;
-                    Ok((s, r, a.snapshot))
+                    Ok((s, r, a.snapshot, a.version))
                 });
                 (i, a)
             }
@@ -1467,7 +1494,7 @@ impl Coordinator {
         let protocol = t.protocol();
         let read = Read::new(sql, params, plan, protocol, t.epoch(), || Plan::bind(sql, schema, params))?.after(self.after(t, after)?);
         for (_, a) in self.shard_stats(t, &read, protocol, (0..t.replicas.len()).collect(), start, deadline).await {
-            let (s, _, lease) = a?;
+            let (s, _, lease, _) = a?;
             sum.add(&s);
             leases.push(lease);
         }
@@ -1723,6 +1750,13 @@ impl Coordinator {
 
     /// [`Self::query`] of a query without a guard.
     async fn query_at(&self, t: &Topology, req: &QueryReq, schema: &Schema, select: &Select, deadline: Instant) -> Result<Merged, ApiError> {
+        self.query_kept(t, req, schema, select, deadline, true).await
+    }
+
+    /// [`Self::query_at`], scoring BM25 with the statistics kept of the
+    /// shards' copies where they hold the query's terms, with `kept`
+    /// ([`StatsCache`]), and with a statistics round otherwise.
+    async fn query_kept(&self, t: &Topology, req: &QueryReq, schema: &Schema, select: &Select, deadline: Instant, kept: bool) -> Result<Merged, ApiError> {
         if select.projection.iter().any(|(_, p)| *p == Projection::SeqNo) && !(0..t.replicas.len()).all(|i| self.numbered_alike(t, i)) {
             return Err(ApiError::bad(ONE_REPLICA));
         }
@@ -1764,23 +1798,44 @@ impl Coordinator {
         // ([`strata::query::steps`]), each shard's call with the shard's own
         // steps inside it.
         let mut own: Vec<Step> = Vec::new();
+        // Per shard: the replica whose kept statistics the query is sent,
+        // and their version, which it runs only on.
+        let mut versions: Vec<Option<(usize, u64)>> = vec![None; n];
         let stats = match &req.stats {
             Some(s) => Some(s.clone()),
             None if ranked_text && n > 1 => {
                 let t0 = Instant::now();
-                let mut sum = TermStats::default();
-                let which = (0..n).filter(|&i| failed[i].is_none()).collect();
-                for (i, a) in self.shard_stats(t, read, protocol, which, start, deadline).await {
-                    match a {
-                        Ok((s, r, lease)) => {
-                            sum.add(&s);
-                            leased[i] = Some((r, lease));
+                let terms = match kept && self.stats.on() && protocol >= STATS_VERSION_PROTOCOL {
+                    true => strata::cluster::stat_terms(select, schema)?,
+                    false => None,
+                };
+                match terms.as_ref().and_then(|terms| self.kept_stats(t, &schema.table, terms, start, &failed)) {
+                    Some((sum, v)) => {
+                        self.stats.hits.fetch_add(1, Ordering::Relaxed);
+                        versions = v;
+                        own.push(leaf_step("term statistics", format!("BM25 statistics of {n} shards, kept by the coordinator"), t0, None));
+                        Some(sum)
+                    }
+                    None => {
+                        if terms.is_some() {
+                            self.stats.misses.fetch_add(1, Ordering::Relaxed);
                         }
-                        Err(e) => self.leave_out(t, partial, i, e, &mut failed)?,
+                        let mut sum = TermStats::default();
+                        let which = (0..n).filter(|&i| failed[i].is_none()).collect();
+                        for (i, a) in self.shard_stats(t, read, protocol, which, start, deadline).await {
+                            match a {
+                                Ok((s, r, lease, version)) => {
+                                    self.stats.keep(&t.replicas[i][r].url, version, &schema.table, &s);
+                                    sum.add(&s);
+                                    leased[i] = Some((r, lease));
+                                }
+                                Err(e) => self.leave_out(t, partial, i, e, &mut failed)?,
+                            }
+                        }
+                        own.push(leaf_step("term statistics", format!("BM25 statistics summed over {n} shards"), t0, None));
+                        Some(sum)
                     }
                 }
-                own.push(leaf_step("term statistics", format!("BM25 statistics summed over {n} shards"), t0, None));
-                Some(sum)
             }
             None => None,
         };
@@ -1788,23 +1843,32 @@ impl Coordinator {
         let leased = &leased;
         let hold = ids.is_some();
         let sent = &Sent::default();
+        let versions = &versions;
         let calls = (0..n).filter(|&i| failed[i].is_none() && ask(i)).map(|i| {
             let stats_json = stats_json.clone();
-            let first = leased[i].map(|(r, _)| r);
+            let first = leased[i].map(|(r, _)| r).or(versions[i].map(|(r, _)| r));
             async move {
                 let rs = self.call(t, i, start, first, deadline, |r, mut c| {
                     let stats_json = stats_json.clone();
                     // The lease holds on the replica that granted it; another
                     // replica scores from its latest version.
                     let snapshot = leased[i].filter(|(lr, _)| *lr == r).map_or(0, |(_, l)| l);
+                    // Kept statistics are of one replica's version, which
+                    // another never has: it answers stale.
+                    let stats_version = versions[i].map_or(0, |(_, v)| v);
                     async move {
                         let p = self.speak(t, i, r, &mut c, protocol).await?;
                         self.reads_after(t, i, r, read.min(i))?;
+                        // One that cannot tell its versions apart is not
+                        // sent statistics kept of a version.
+                        if stats_version != 0 && p < STATS_VERSION_PROTOCOL {
+                            return Ok(tonic::Response::new(pb::QueryResponse { stale: true, ..Default::default() }));
+                        }
                         // From protocol 3, the lease is held for the fetch
                         // round, or ended once answered.
                         let (hold, release) = (hold && p >= 3, !hold && snapshot != 0 && p >= 3);
                         let arrow = arrow && p >= ARROW_PROTOCOL;
-                        timed(sent, i, r, c.query(pb::QueryRequest { timeout_ms: ms_left(deadline), shard: true, stats_json, snapshot, hold, release, arrow, ..read.request(p, i) })).await
+                        timed(sent, i, r, c.query(pb::QueryRequest { timeout_ms: ms_left(deadline), shard: true, stats_json, snapshot, hold, release, arrow, stats_version, ..read.request(p, i) })).await
                     }
                 });
                 (i, rs.await)
@@ -1816,8 +1880,11 @@ impl Coordinator {
         let mut columns: Vec<Option<Columns>> = Vec::new();
         // Per shard answering: the replica that did, and the lease it holds.
         let mut held = Vec::new();
+        // Shards whose replica had moved on from the kept statistics.
+        let mut stale = Vec::new();
         for (i, a) in join_all(calls).await {
             match a {
+                Ok((r, a)) if a.stale => stale.push((i, r)),
                 #[allow(unused_mut)]
                 Ok((r, mut a)) => {
                     held.push((i, r, a.snapshot));
@@ -1838,6 +1905,23 @@ impl Coordinator {
             }
         }
 
+        // Sent again with a statistics round, which keeps the new version's;
+        // the leases the others took for a fetch are ended.
+        if !stale.is_empty() {
+            for &(i, r) in &stale {
+                match versions[i] {
+                    Some((kr, v)) if kr == r => self.stats.stale(&t.replicas[i][r].url, v),
+                    _ => {
+                        self.stats.stale.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+            self.release(t, held.iter().map(|&(i, r, lease)| (i, r, lease)));
+            let mut again = Box::pin(self.query_kept(t, req, schema, select, deadline, false)).await?;
+            let which: Vec<String> = stale.iter().map(|(i, _)| i.to_string()).collect();
+            again.rs.stats.plan.insert(0, format!("term statistics: those kept were of an older version on shard {}: sent again with a statistics round", which.join(", ")));
+            return Ok(again);
+        }
         if shards.is_empty() {
             let e = failed.into_iter().flatten().next();
             return Err(e.unwrap_or_else(|| ApiError::internal("no shard answered")));
@@ -1849,7 +1933,7 @@ impl Coordinator {
                 // A shard could not answer with columns, or the shards'
                 // columns are of different types: the rows, then.
                 let rows = QueryReq { arrow: None, ..req.clone() };
-                return Box::pin(self.query_at(t, &rows, schema, select, deadline)).await;
+                return Box::pin(self.query_kept(t, &rows, schema, select, deadline, kept)).await;
             };
             let missing = failed.iter().enumerate().filter(|(_, f)| f.is_some()).map(|(i, _)| t.shards[i].clone()).collect();
             c.stats.steps.push(leaf_step("merge", format!("{} shard answers, as Arrow columns", held.len()), t0, Some(c.rows as u64)));
@@ -1915,6 +1999,31 @@ impl Coordinator {
         }
         let served = if req.reads { served(t, &held, &owner, &rs.keys) } else { Vec::new() };
         Ok(Merged { served, ..Merged::rows(rs, missing) })
+    }
+
+    /// The statistics of `terms` (by field) in `table` kept of a replica
+    /// of every shard not `failed`, summed, and per shard the replica they
+    /// are of and its version: `None` unless every shard has one keeping
+    /// all of them. The replica a read would ask first is preferred.
+    fn kept_stats(&self, t: &Topology, table: &str, terms: &[(String, Vec<String>)], start: usize, failed: &[Option<ApiError>]) -> Option<(TermStats, Vec<Option<(usize, u64)>>)> {
+        let mut sum = TermStats::default();
+        let mut versions = vec![None; t.replicas.len()];
+        for (i, v) in versions.iter_mut().enumerate().filter(|(i, _)| failed[*i].is_none()) {
+            let (r, (s, version)) = self.order(t, i, start, None).into_iter().find_map(|r| Some((r, self.stats.get(&t.replicas[i][r].url, table, terms)?)))?;
+            sum.add(&s);
+            *v = Some((r, version));
+        }
+        Some((sum, versions))
+    }
+
+    /// Ends `leases` (shard, replica, lease; 0 for none) without waiting.
+    fn release(&self, t: &Topology, leases: impl IntoIterator<Item = (usize, usize, u64)>) {
+        for (i, r, lease) in leases {
+            if lease != 0 {
+                let mut c = t.replicas[i][r].client.clone();
+                tokio::spawn(async move { tokio::time::timeout(Duration::from_secs(5), c.release(pb::ReleaseRequest { snapshots: vec![lease] })).await });
+            }
+        }
     }
 
     /// The shards that can hold the rows `select` matches, when its filter
@@ -2009,9 +2118,8 @@ impl Coordinator {
                 let q = strata::cluster::fetch(select, schema, std::mem::take(&mut keys[i]))?;
                 let plan = Plan::of_select(schema, &q);
                 reads.push((i, r, lease, Read::new(sql, &Params::new(), Some(&plan), protocol, t.epoch(), || Ok(plan.clone()))?.after(query.after.clone()).profiled(query.profile)));
-            } else if lease != 0 {
-                let mut c = t.replicas[i][r].client.clone();
-                tokio::spawn(async move { tokio::time::timeout(Duration::from_secs(5), c.release(pb::ReleaseRequest { snapshots: vec![lease] })).await });
+            } else {
+                self.release(t, [(i, r, lease)]);
             }
         }
         let sent = &Sent::default();

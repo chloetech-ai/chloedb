@@ -1,0 +1,17 @@
+grpc-p2  bm25                     warm-up: p50 2.906, 3.130 ms
+grpc-p2  bm25                     c=1        607 q/s  p50   1.439 ms  p90   2.384 ms  p99   4.678 ms  errors 0
+grpc-p2  bm25                     c=4       1151 q/s  p50   2.973 ms  p90   5.611 ms  p99  10.364 ms  errors 0
+grpc-p2  bm25                     c=16      1547 q/s  p50   9.139 ms  p90  15.560 ms  p99  29.058 ms  errors 0
+grpc-p2  bm25 + filter            warm-up: p50 4.539, 4.401 ms
+grpc-p2  bm25 + filter            c=1        415 q/s  p50   2.093 ms  p90   3.720 ms  p99   6.723 ms  errors 0
+grpc-p2  bm25 + filter            c=4        760 q/s  p50   4.628 ms  p90   8.411 ms  p99  16.912 ms  errors 0
+grpc-p2  bm25 + filter            c=16       937 q/s  p50  14.324 ms  p90  28.912 ms  p99  51.178 ms  errors 0
+grpc-p2  phrase                   warm-up: p50 2.917, 3.203 ms
+grpc-p2  phrase                   c=1        555 q/s  p50   1.572 ms  p90   2.625 ms  p99   5.187 ms  errors 0
+grpc-p2  phrase                   c=4       1204 q/s  p50   2.886 ms  p90   5.291 ms  p99   9.649 ms  errors 0
+grpc-p2  phrase                   c=16      1710 q/s  p50   8.634 ms  p90  13.505 ms  p99  21.374 ms  errors 0
+grpc-p2  prefix                   warm-up: p50 5.604, 5.734 ms
+grpc-p2  prefix                   c=1        354 q/s  p50   2.529 ms  p90   4.244 ms  p99   7.159 ms  errors 0
+grpc-p2  prefix                   c=4        595 q/s  p50   5.892 ms  p90  10.942 ms  p99  22.838 ms  errors 0
+grpc-p2  prefix                   c=16       735 q/s  p50  17.320 ms  p90  41.653 ms  p99  61.538 ms  errors 0
+wrote /home/user/bm25-data/ab3/run-grpc-p2.json
