@@ -1,0 +1,123 @@
+{
+  "collection": "msmarco-1000k",
+  "engine": "vespa",
+  "label": "vespa",
+  "params": {
+    "batch": 500,
+    "flat": 20000,
+    "rates": [
+      250,
+      500,
+      1000,
+      2000
+    ],
+    "restart": 10000,
+    "seconds": 30.0,
+    "written_means": "searchable (a put is visible when it returns)"
+  },
+  "partitions": 4,
+  "phases": [
+    {
+      "fetch_lag_p50_ms": 18.869140625,
+      "fetch_lag_p99_ms": 32.79833984375,
+      "kept_up": true,
+      "lag_max_ms": 65.47265625,
+      "lag_p50_ms": 25.57470703125,
+      "lag_p90_ms": 35.181640625,
+      "lag_p99_ms": 41.33837890625,
+      "phase": "250/s",
+      "produce_s": 30.027045143,
+      "produced": 7500,
+      "rate": 250.0,
+      "seconds": 30.027045817,
+      "skipped": 0,
+      "written": 7500,
+      "written_per_s": 249.7748211964904
+    },
+    {
+      "fetch_lag_p50_ms": 18.227294921875,
+      "fetch_lag_p99_ms": 31.789794921875,
+      "kept_up": true,
+      "lag_max_ms": 60.483154296875,
+      "lag_p50_ms": 28.089599609375,
+      "lag_p90_ms": 37.939697265625,
+      "lag_p99_ms": 44.3486328125,
+      "phase": "500/s",
+      "produce_s": 30.034130891,
+      "produced": 15000,
+      "rate": 500.0,
+      "seconds": 30.034131654,
+      "skipped": 0,
+      "written": 15000,
+      "written_per_s": 499.43178556994417
+    },
+    {
+      "fetch_lag_p50_ms": 2696.611083984375,
+      "fetch_lag_p99_ms": 7522.625244140625,
+      "kept_up": false,
+      "lag_max_ms": 10108.80029296875,
+      "lag_p50_ms": 5405.7626953125,
+      "lag_p90_ms": 8479.373291015625,
+      "lag_p99_ms": 9691.711669921875,
+      "phase": "1000/s",
+      "produce_s": 30.017737923,
+      "produced": 30000,
+      "rate": 1000.0,
+      "seconds": 38.332186442,
+      "skipped": 0,
+      "written": 30000,
+      "written_per_s": 782.6321111474468
+    },
+    {
+      "fetch_lag_p50_ms": 10421.530029296875,
+      "fetch_lag_p99_ms": 20736.780517578125,
+      "kept_up": false,
+      "lag_max_ms": 24214.163818359375,
+      "lag_p50_ms": 13122.66845703125,
+      "lag_p90_ms": 23002.78466796875,
+      "lag_p99_ms": 24131.9736328125,
+      "phase": "flat out",
+      "produce_s": 0.700240517,
+      "produced": 20000,
+      "rate": null,
+      "seconds": 24.926303106,
+      "skipped": 0,
+      "written": 20000,
+      "written_per_s": 802.3652731393533
+    },
+    {
+      "fetch_lag_p50_ms": 18.292236328125,
+      "fetch_lag_p99_ms": 31.68994140625,
+      "kept_up": true,
+      "lag_max_ms": 51.182861328125,
+      "lag_p50_ms": 25.7744140625,
+      "lag_p90_ms": 34.91796875,
+      "lag_p99_ms": 40.646240234375,
+      "phase": "before the crash",
+      "produce_s": 24.943486119,
+      "produced": 10000,
+      "rate": 401.1826365696767,
+      "seconds": 24.943487604,
+      "skipped": 0,
+      "written": 5004,
+      "written_per_s": 200.61348595043884
+    }
+  ],
+  "restart": {
+    "crash_after": 5000,
+    "documents_after": 1082500,
+    "documents_before": 1000000,
+    "events": 10000,
+    "expected": 1082500,
+    "how": "the consumer resumes after the offsets it committed, every second, as Kafka's consumers do",
+    "lost": 0,
+    "rate": 401.1826365696767,
+    "resumed_written": 5136,
+    "skipped_by_server": 0,
+    "written_again": 140
+  },
+  "topic": "docs-vespa-1793780403",
+  "urls": [
+    "http://vespa-0.vespa:8080"
+  ]
+}

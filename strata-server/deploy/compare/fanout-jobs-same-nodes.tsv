@@ -12,3 +12,9 @@
 h2h-10m     strata-first+es+os+strata-last                                         sharded  14  COLLECTION=msmarco-10000k,SHARDED_SIZE=m3-4vcpu-32gb,LOAD_HOURS=5
 one-1m      qdrant+meili+postgres+redis+weaviate+manticore+paradedb+typesense+milvus  one      12
 sharded-1m  strata-first+es+os+solr+vespa+strata-last                              sharded  7
+# Added once one-1m was done: Milvus there ran 2 to 3 times slower than in
+# the first 1M run, the others did not. Alone on a fresh node it ran as in the
+# first run: in the lane it was still compacting during its first two passes
+# (the lane's files are gone with each pod, an emptyDir), so the 1M results
+# take Milvus from this job.
+milvus-solo milvus                                                                 one      2

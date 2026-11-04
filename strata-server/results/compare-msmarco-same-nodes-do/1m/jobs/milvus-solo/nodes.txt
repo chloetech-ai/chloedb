@@ -1,0 +1,2 @@
+milvus-solo-d-a1 m-8vcpu-64gb milvus-solo-d-a1-3epkvs
+milvus-solo-c-a1 c-8 milvus-solo-c-a1-3epkvk

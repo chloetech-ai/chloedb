@@ -463,13 +463,6 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
         local cap="" left=$((${hours%.*} * 3600 - ($(now) - t0)))
         [[ $step == load* ]] && cap="timeout $((left < LOAD_HOURS * 3600 ? left : LOAD_HOURS * 3600))s"
         rc=0
-        # A step may start with IMAGE=REF, its own image (strata-ab), and its
-        # --kinds runs to the next option as one argument (kinds have spaces).
-        local s=$step simage=$IMAGE kinds rest
-        if [[ $s == IMAGE=* ]]; then
-            simage=${s%% *} s=${s#* }
-            simage=${simage#IMAGE=}
-        fi
         # shellcheck disable=SC2086
         (
             export CONTEXT NS=$ns NODES="${dnodes[*]}" CLIENT_NODE=$cnode IMAGE=$simage COLLECTION STRATA_WORK=$dir/work STRATA_DATA=$STATE/data

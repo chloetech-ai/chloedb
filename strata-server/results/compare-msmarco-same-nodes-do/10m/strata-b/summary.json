@@ -1,0 +1,735 @@
+{
+ "engines": [
+  "strata"
+ ],
+ "load": {
+  "strata": {
+   "total_s": 4055.8822910785675,
+   "index_bytes": 48925380608,
+   "docs": 10000000,
+   "shards": [
+    {
+     "build_s": 3652.4943541149996,
+     "docs": 5001544,
+     "ended_unix": 1793773113.0799947,
+     "engine": "strata",
+     "file_bytes": 24470888448,
+     "load_s": 1921.806812291,
+     "merge_s": 1730.687541824,
+     "of": 2,
+     "read_s": 0.0,
+     "segment_docs": 500000,
+     "segments": 3,
+     "segments_loaded": 11,
+     "shard": 0,
+     "started_unix": 1793769460.5666168,
+     "threads": 4,
+     "total_s": 3652.513376441
+    },
+    {
+     "build_s": 4055.856272601,
+     "docs": 4998456,
+     "ended_unix": 1793773514.819188,
+     "engine": "strata",
+     "file_bytes": 24454492160,
+     "load_s": 1997.510630142,
+     "merge_s": 2058.345642459,
+     "of": 2,
+     "read_s": 0.0,
+     "segment_docs": 500000,
+     "segments": 3,
+     "segments_loaded": 10,
+     "shard": 1,
+     "started_unix": 1793769458.936897,
+     "threads": 4,
+     "total_s": 4055.88228974
+    }
+   ]
+  }
+ },
+ "http": {
+  "strata": [
+   {
+    "concurrency": 1,
+    "errors": 0,
+    "first_error": null,
+    "kind": "bm25",
+    "max_ms": 36.622082,
+    "mean_ms": 3.9574496141161,
+    "p50_ms": 2.736399,
+    "p90_ms": 7.434586,
+    "p95_ms": 10.804146000000001,
+    "p999_ms": 30.417832999999998,
+    "p99_ms": 22.317603,
+    "qps": 252.66305345867067,
+    "requests": 1516
+   },
+   {
+    "concurrency": 4,
+    "errors": 0,
+    "first_error": null,
+    "kind": "bm25",
+    "max_ms": 75.73931,
+    "mean_ms": 7.539531940733779,
+    "p50_ms": 4.996615,
+    "p90_ms": 15.469742,
+    "p95_ms": 22.951916999999998,
+    "p999_ms": 65.242283,
+    "p99_ms": 42.28221,
+    "qps": 529.6519005419674,
+    "requests": 3189
+   },
+   {
+    "concurrency": 16,
+    "errors": 0,
+    "first_error": null,
+    "kind": "bm25",
+    "max_ms": 353.141268,
+    "mean_ms": 31.11572804755746,
+    "p50_ms": 17.560250999999997,
+    "p90_ms": 69.906937,
+    "p95_ms": 100.499128,
+    "p999_ms": 329.327335,
+    "p99_ms": 204.403574,
+    "qps": 512.6719566490034,
+    "requests": 3091
+   },
+   {
+    "concurrency": 1,
+    "errors": 0,
+    "first_error": null,
+    "kind": "bm25 + filter",
+    "max_ms": 45.497591,
+    "mean_ms": 7.672827769820964,
+    "p50_ms": 6.1000309999999995,
+    "p90_ms": 14.971807,
+    "p95_ms": 19.216168,
+    "p999_ms": 39.743995,
+    "p99_ms": 28.411669,
+    "qps": 130.32289008230043,
+    "requests": 782
+   },
+   {
+    "concurrency": 4,
+    "errors": 0,
+    "first_error": null,
+    "kind": "bm25 + filter",
+    "max_ms": 100.212917,
+    "mean_ms": 16.191556511111127,
+    "p50_ms": 12.081484,
+    "p90_ms": 33.578905,
+    "p95_ms": 46.054828,
+    "p999_ms": 93.507563,
+    "p99_ms": 68.435735,
+    "qps": 246.28800474264523,
+    "requests": 1485
+   },
+   {
+    "concurrency": 16,
+    "errors": 0,
+    "first_error": null,
+    "kind": "bm25 + filter",
+    "max_ms": 547.266971,
+    "mean_ms": 67.77413695713297,
+    "p50_ms": 45.600839,
+    "p90_ms": 153.21579699999998,
+    "p95_ms": 213.39993099999998,
+    "p999_ms": 544.590668,
+    "p99_ms": 327.12977,
+    "qps": 234.2265808425579,
+    "requests": 1423
+   },
+   {
+    "concurrency": 1,
+    "errors": 0,
+    "first_error": null,
+    "kind": "vector + filter",
+    "max_ms": 7.037607,
+    "mean_ms": 2.939948497305241,
+    "p50_ms": 2.881471,
+    "p90_ms": 3.424514,
+    "p95_ms": 3.605637,
+    "p999_ms": 6.630184,
+    "p99_ms": 4.165182,
+    "qps": 340.1134593170911,
+    "requests": 2041
+   },
+   {
+    "concurrency": 4,
+    "errors": 0,
+    "first_error": null,
+    "kind": "vector + filter",
+    "max_ms": 15.665709999999999,
+    "mean_ms": 5.308663462184879,
+    "p50_ms": 5.102009,
+    "p90_ms": 6.972805,
+    "p95_ms": 7.657203,
+    "p999_ms": 11.179661000000001,
+    "p99_ms": 9.323793,
+    "qps": 753.2779052127316,
+    "requests": 4522
+   },
+   {
+    "concurrency": 16,
+    "errors": 0,
+    "first_error": null,
+    "kind": "vector + filter",
+    "max_ms": 69.560911,
+    "mean_ms": 19.13776857717592,
+    "p50_ms": 17.459298,
+    "p90_ms": 30.886481,
+    "p95_ms": 35.901316,
+    "p999_ms": 63.37401400000001,
+    "p99_ms": 47.462106,
+    "qps": 835.145320907808,
+    "requests": 5021
+   },
+   {
+    "concurrency": 1,
+    "errors": 0,
+    "first_error": null,
+    "kind": "hybrid (RRF)",
+    "max_ms": 57.701689,
+    "mean_ms": 9.39972201877934,
+    "p50_ms": 7.786446,
+    "p90_ms": 14.764293,
+    "p95_ms": 19.304732,
+    "p999_ms": 54.727364,
+    "p99_ms": 37.530333,
+    "qps": 106.38049072058787,
+    "requests": 639
+   },
+   {
+    "concurrency": 4,
+    "errors": 0,
+    "first_error": null,
+    "kind": "hybrid (RRF)",
+    "max_ms": 126.570912,
+    "mean_ms": 17.78133750922508,
+    "p50_ms": 13.695101,
+    "p90_ms": 31.332492000000002,
+    "p95_ms": 41.958718999999995,
+    "p999_ms": 124.985282,
+    "p99_ms": 71.57885,
+    "qps": 224.54034645203026,
+    "requests": 1355
+   },
+   {
+    "concurrency": 16,
+    "errors": 0,
+    "first_error": null,
+    "kind": "hybrid (RRF)",
+    "max_ms": 584.8219740000001,
+    "mean_ms": 75.68825320751768,
+    "p50_ms": 58.475151000000004,
+    "p90_ms": 147.16933500000002,
+    "p95_ms": 191.486411,
+    "p999_ms": 577.1905,
+    "p99_ms": 388.458504,
+    "qps": 210.29953199154969,
+    "requests": 1277
+   },
+   {
+    "concurrency": 1,
+    "errors": 0,
+    "first_error": null,
+    "kind": "hybrid (weighted)",
+    "max_ms": 59.578632999999996,
+    "mean_ms": 9.405546548589339,
+    "p50_ms": 7.6916340000000005,
+    "p90_ms": 14.724262999999999,
+    "p95_ms": 18.759005,
+    "p999_ms": 58.464628,
+    "p99_ms": 39.984123000000004,
+    "qps": 106.31309872581515,
+    "requests": 638
+   },
+   {
+    "concurrency": 4,
+    "errors": 0,
+    "first_error": null,
+    "kind": "hybrid (weighted)",
+    "max_ms": 120.767405,
+    "mean_ms": 17.73021850589969,
+    "p50_ms": 14.108544,
+    "p90_ms": 30.080541,
+    "p95_ms": 40.312575,
+    "p999_ms": 115.43761099999999,
+    "p99_ms": 77.677707,
+    "qps": 225.18762891060737,
+    "requests": 1356
+   },
+   {
+    "concurrency": 16,
+    "errors": 0,
+    "first_error": null,
+    "kind": "hybrid (weighted)",
+    "max_ms": 638.320781,
+    "mean_ms": 75.06976538473515,
+    "p50_ms": 56.342244,
+    "p90_ms": 143.831285,
+    "p95_ms": 197.074669,
+    "p999_ms": 582.468685,
+    "p99_ms": 377.203943,
+    "qps": 212.22999676879994,
+    "requests": 1284
+   },
+   {
+    "concurrency": 1,
+    "errors": 0,
+    "first_error": null,
+    "kind": "boosted (bm25 \u00d7 decay)",
+    "max_ms": 143.93335,
+    "mean_ms": 15.751717748031504,
+    "p50_ms": 12.141413,
+    "p90_ms": 29.253595999999998,
+    "p95_ms": 41.879868,
+    "p999_ms": 143.93335,
+    "p99_ms": 61.048827,
+    "qps": 63.482348806976965,
+    "requests": 381
+   },
+   {
+    "concurrency": 4,
+    "errors": 0,
+    "first_error": null,
+    "kind": "boosted (bm25 \u00d7 decay)",
+    "max_ms": 454.45266200000003,
+    "mean_ms": 36.15853396860985,
+    "p50_ms": 26.625977,
+    "p90_ms": 67.486877,
+    "p95_ms": 98.57376599999999,
+    "p999_ms": 425.914059,
+    "p99_ms": 166.856119,
+    "qps": 110.35033788405833,
+    "requests": 669
+   },
+   {
+    "concurrency": 16,
+    "errors": 0,
+    "first_error": null,
+    "kind": "boosted (bm25 \u00d7 decay)",
+    "max_ms": 1757.8099840000002,
+    "mean_ms": 159.9862788421054,
+    "p50_ms": 108.623671,
+    "p90_ms": 361.416268,
+    "p95_ms": 506.95284799999996,
+    "p999_ms": 1085.847943,
+    "p99_ms": 843.497979,
+    "qps": 96.42157539136635,
+    "requests": 608
+   },
+   {
+    "concurrency": 1,
+    "errors": 0,
+    "first_error": null,
+    "kind": "facet",
+    "max_ms": 16.343659,
+    "mean_ms": 3.0271728420787047,
+    "p50_ms": 2.158882,
+    "p90_ms": 5.552366,
+    "p95_ms": 7.26783,
+    "p999_ms": 12.617773,
+    "p99_ms": 10.897227,
+    "qps": 330.30881649173807,
+    "requests": 1982
+   },
+   {
+    "concurrency": 4,
+    "errors": 0,
+    "first_error": null,
+    "kind": "facet",
+    "max_ms": 25.856139,
+    "mean_ms": 4.589210922606533,
+    "p50_ms": 3.509965,
+    "p90_ms": 8.840610999999999,
+    "p95_ms": 10.640552,
+    "p999_ms": 21.010303,
+    "p99_ms": 15.581614,
+    "qps": 871.3574832990997,
+    "requests": 5233
+   },
+   {
+    "concurrency": 16,
+    "errors": 0,
+    "first_error": null,
+    "kind": "facet",
+    "max_ms": 77.465811,
+    "mean_ms": 13.956032799593704,
+    "p50_ms": 10.197417999999999,
+    "p90_ms": 27.618265,
+    "p95_ms": 34.990871999999996,
+    "p999_ms": 68.710308,
+    "p99_ms": 50.152347,
+    "qps": 1142.9021128815439,
+    "requests": 6891
+   },
+   {
+    "concurrency": 1,
+    "errors": 0,
+    "first_error": null,
+    "kind": "key lookup",
+    "max_ms": 8.469185000000001,
+    "mean_ms": 0.8062277552748267,
+    "p50_ms": 0.773919,
+    "p90_ms": 0.8973530000000001,
+    "p95_ms": 1.017498,
+    "p999_ms": 3.9574659999999997,
+    "p99_ms": 1.276891,
+    "qps": 1240.0706262968365,
+    "requests": 7441
+   },
+   {
+    "concurrency": 4,
+    "errors": 0,
+    "first_error": null,
+    "kind": "key lookup",
+    "max_ms": 4.3807469999999995,
+    "mean_ms": 0.9151663366385746,
+    "p50_ms": 0.880997,
+    "p90_ms": 1.118776,
+    "p95_ms": 1.2123760000000001,
+    "p999_ms": 2.3896859999999998,
+    "p99_ms": 1.494476,
+    "qps": 4369.767123564374,
+    "requests": 26221
+   },
+   {
+    "concurrency": 16,
+    "errors": 0,
+    "first_error": null,
+    "kind": "key lookup",
+    "max_ms": 6.763422,
+    "mean_ms": 2.3914066919244763,
+    "p50_ms": 2.305171,
+    "p90_ms": 3.0366690000000003,
+    "p95_ms": 3.307442,
+    "p999_ms": 4.732778,
+    "p99_ms": 3.872669,
+    "qps": 6688.9424166528615,
+    "requests": 40146
+   },
+   {
+    "concurrency": 1,
+    "errors": 0,
+    "first_error": null,
+    "kind": "phrase",
+    "max_ms": 45.017347,
+    "mean_ms": 3.777907766519824,
+    "p50_ms": 2.394335,
+    "p90_ms": 7.40415,
+    "p95_ms": 10.345816000000001,
+    "p999_ms": 41.446906999999996,
+    "p99_ms": 16.035402,
+    "qps": 264.6759866794769,
+    "requests": 1589
+   },
+   {
+    "concurrency": 4,
+    "errors": 0,
+    "first_error": null,
+    "kind": "phrase",
+    "max_ms": 92.60942299999999,
+    "mean_ms": 7.098922742831794,
+    "p50_ms": 4.488385999999999,
+    "p90_ms": 15.193553999999999,
+    "p95_ms": 21.861047000000003,
+    "p999_ms": 84.349535,
+    "p99_ms": 34.528651,
+    "qps": 563.0086586123444,
+    "requests": 3383
+   },
+   {
+    "concurrency": 16,
+    "errors": 0,
+    "first_error": null,
+    "kind": "phrase",
+    "max_ms": 395.700725,
+    "mean_ms": 25.887206638486415,
+    "p50_ms": 13.649382999999998,
+    "p90_ms": 61.014062,
+    "p95_ms": 87.09967,
+    "p999_ms": 333.133163,
+    "p99_ms": 139.90778500000002,
+    "qps": 613.9749893471756,
+    "requests": 3726
+   },
+   {
+    "concurrency": 1,
+    "errors": 0,
+    "first_error": null,
+    "kind": "typo",
+    "max_ms": 169.626699,
+    "mean_ms": 77.57591596153848,
+    "p50_ms": 80.04419,
+    "p90_ms": 104.63355100000001,
+    "p95_ms": 111.734769,
+    "p999_ms": 169.626699,
+    "p99_ms": 147.417533,
+    "qps": 12.89034842727151,
+    "requests": 78
+   },
+   {
+    "concurrency": 4,
+    "errors": 0,
+    "first_error": null,
+    "kind": "typo",
+    "max_ms": 330.755007,
+    "mean_ms": 155.5193479551283,
+    "p50_ms": 153.950706,
+    "p90_ms": 236.258506,
+    "p95_ms": 271.296341,
+    "p999_ms": 330.755007,
+    "p99_ms": 313.89677700000004,
+    "qps": 25.634116345010423,
+    "requests": 156
+   },
+   {
+    "concurrency": 16,
+    "errors": 0,
+    "first_error": null,
+    "kind": "typo",
+    "max_ms": 1847.8989800000002,
+    "mean_ms": 638.4307927806456,
+    "p50_ms": 621.3140179999999,
+    "p90_ms": 1017.035806,
+    "p95_ms": 1161.288517,
+    "p999_ms": 1847.8989800000002,
+    "p99_ms": 1359.241049,
+    "qps": 24.321506934107838,
+    "requests": 155
+   },
+   {
+    "concurrency": 1,
+    "errors": 0,
+    "first_error": null,
+    "kind": "prefix",
+    "max_ms": 42.884645,
+    "mean_ms": 10.321883773195875,
+    "p50_ms": 8.635102999999999,
+    "p90_ms": 17.875163,
+    "p95_ms": 24.078457,
+    "p999_ms": 38.673418,
+    "p99_ms": 33.857445999999996,
+    "qps": 96.87610884184032,
+    "requests": 582
+   },
+   {
+    "concurrency": 4,
+    "errors": 0,
+    "first_error": null,
+    "kind": "prefix",
+    "max_ms": 88.407768,
+    "mean_ms": 22.778605340586587,
+    "p50_ms": 18.760286,
+    "p90_ms": 40.92236,
+    "p95_ms": 56.362094,
+    "p999_ms": 85.26618699999999,
+    "p99_ms": 76.025225,
+    "qps": 175.10026333847114,
+    "requests": 1057
+   },
+   {
+    "concurrency": 16,
+    "errors": 0,
+    "first_error": null,
+    "kind": "prefix",
+    "max_ms": 537.1928740000001,
+    "mean_ms": 98.98119526974368,
+    "p50_ms": 77.87045300000001,
+    "p90_ms": 196.667281,
+    "p95_ms": 277.359597,
+    "p999_ms": 481.619598,
+    "p99_ms": 405.97592399999996,
+    "qps": 160.79219737032258,
+    "requests": 975
+   },
+   {
+    "concurrency": 1,
+    "errors": 0,
+    "first_error": null,
+    "kind": "similar items",
+    "max_ms": 9.389823999999999,
+    "mean_ms": 3.6455518633049784,
+    "p50_ms": 3.579008,
+    "p90_ms": 4.245357,
+    "p95_ms": 4.466559,
+    "p999_ms": 7.63216,
+    "p99_ms": 5.760605,
+    "qps": 274.2826451690857,
+    "requests": 1646
+   },
+   {
+    "concurrency": 4,
+    "errors": 0,
+    "first_error": null,
+    "kind": "similar items",
+    "max_ms": 21.362762,
+    "mean_ms": 6.794736102179455,
+    "p50_ms": 6.524126,
+    "p90_ms": 8.779649000000001,
+    "p95_ms": 9.47625,
+    "p999_ms": 14.683955000000001,
+    "p99_ms": 11.752758,
+    "qps": 588.4148347562023,
+    "requests": 3533
+   },
+   {
+    "concurrency": 16,
+    "errors": 0,
+    "first_error": null,
+    "kind": "similar items",
+    "max_ms": 80.394644,
+    "mean_ms": 24.888801818205316,
+    "p50_ms": 23.275966,
+    "p90_ms": 39.500192000000006,
+    "p95_ms": 45.763290999999995,
+    "p999_ms": 63.911677,
+    "p99_ms": 55.544222999999995,
+    "qps": 641.9187441624529,
+    "requests": 3867
+   },
+   {
+    "concurrency": 1,
+    "errors": 0,
+    "first_error": null,
+    "kind": "sql aggregate",
+    "max_ms": 3793.872217,
+    "mean_ms": 3599.8247395,
+    "p50_ms": 3793.872217,
+    "p90_ms": 3793.872217,
+    "p95_ms": 3793.872217,
+    "p999_ms": 3793.872217,
+    "p99_ms": 3793.872217,
+    "qps": 0.277789343961514,
+    "requests": 2
+   },
+   {
+    "concurrency": 4,
+    "errors": 0,
+    "first_error": null,
+    "kind": "sql aggregate",
+    "max_ms": 6288.92773,
+    "mean_ms": 5112.506769142857,
+    "p50_ms": 5621.006034999999,
+    "p90_ms": 5980.180139,
+    "p95_ms": 6288.92773,
+    "p999_ms": 6288.92773,
+    "p99_ms": 6288.92773,
+    "qps": 0.6772080504822465,
+    "requests": 7
+   },
+   {
+    "concurrency": 16,
+    "errors": 0,
+    "first_error": null,
+    "kind": "sql aggregate",
+    "max_ms": 19725.694564,
+    "mean_ms": 18309.011269625,
+    "p50_ms": 18513.492655000002,
+    "p90_ms": 19603.916733,
+    "p95_ms": 19603.916733,
+    "p999_ms": 19725.694564,
+    "p99_ms": 19725.694564,
+    "qps": 0.8111179480479528,
+    "requests": 16
+   }
+  ]
+ },
+ "quality": {
+  "strata": {
+   "bm25": {
+    "n": 300,
+    "ndcg_at_10": null
+   },
+   "bm25 + filter": {
+    "n": 300,
+    "ndcg_at_10": null
+   },
+   "phrase": {
+    "n": 236,
+    "ndcg_at_10": null
+   },
+   "typo": {
+    "n": 271,
+    "ndcg_at_10": null
+   },
+   "prefix": {
+    "n": 223,
+    "ndcg_at_10": null
+   },
+   "vector + filter": {
+    "n": 300,
+    "ndcg_at_10": null
+   },
+   "hybrid (RRF)": {
+    "n": 300,
+    "ndcg_at_10": null
+   },
+   "hybrid (weighted)": {
+    "n": 300,
+    "ndcg_at_10": null
+   },
+   "boosted (bm25 \u00d7 decay)": {
+    "n": 300,
+    "ndcg_at_10": null
+   },
+   "similar items": {
+    "n": 300,
+    "recall_at_10": 0.9683333333333334
+   },
+   "facet": {
+    "n": 300
+   },
+   "key lookup": {
+    "n": 300
+   },
+   "sql aggregate": {
+    "n": 300,
+    "true_answers": 300,
+    "of": 300
+   }
+  }
+ },
+ "unavailable": {
+  "strata": {
+   "vector": "error sending request for url (http://strata-coordinator:7700/v1/query)"
+  }
+ },
+ "differs": {
+  "strata": {}
+ },
+ "cpu": {
+  "strata": {
+   "timed run": {
+    "strata-0": {
+     "cpu_s": 1351.338995,
+     "wall_s": 962,
+     "throttled_s": 75.904055
+    },
+    "strata-1": {
+     "cpu_s": 1118.437289,
+     "wall_s": 962,
+     "throttled_s": 14.38663
+    },
+    "strata-coordinator": {
+     "cpu_s": 98.707599,
+     "wall_s": 962,
+     "throttled_s": 0.00066
+    }
+   }
+  }
+ },
+ "reruns": {},
+ "memory": {
+  "strata": {
+   "load": null,
+   "run": {
+    "current": 48663273472,
+    "anon": 1406525440,
+    "file": 47107665920
+   },
+   "peak": 48724770816
+  }
+ }
+}
