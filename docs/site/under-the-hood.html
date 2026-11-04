@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Under the hood · Strata</title>
+<meta name="description" content="Why Strata is fast and flexible: one memory-mapped file read in place, posting lists and columns laid out for the CPU, top-k loops that skip what cannot rank, 8-bit and RaBitQ vector codes, and a planner that decides per segment from exact counts.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="index.html"><i><b></b><b></b><b></b></i>Strata</a>
+  <nav class="nav" aria-label="Site">
+    <a href="features.html">Features</a>
+    <a href="under-the-hood.html" aria-current="page">Under the hood</a>
+    <a href="command-center.html">Command center</a>
+    <a href="compare.html">Compare</a>
+    <a href="benchmarks.html">Benchmarks</a>
+    <a href="examples.html">Queries</a>
+    <a href="use-cases.html">Use cases</a>
+    <a href="scale.html">Small to big</a>
+  </nav>
+  <div class="top-links"><a href="../">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a></div>
+</div></header>
+<div class="sample-banner gutter"><div class="wrap"><b>Sample</b><span>A draft of the Strata site for review. Every number on this page is measured and names its machine; each mechanism links to the code that implements it on <code>main</code> as of 3 November 2026.</span></div></div>
+
+<main>
+  <div class="gutter"><div class="wrap page-head">
+    <span class="eyebrow">Under the hood</span>
+    <h1>Why Strata is fast, and why it bends</h1>
+    <p class="lede">Strata does less work per query by construction. Every index is read in place from one memory-mapped file. Posting lists, columns and vector codes are laid out for the CPU's words and SIMD units. Top-k loops carry exact bounds and skip what cannot rank. A planner decides, per segment and from exact counts, which index answers each part of a statement. This page walks through those structures and algorithms, links each one to its code, and quotes only measured numbers.</p>
+    <nav class="toc" aria-label="Sections">
+      <a href="#short">The short answer</a><a href="#path">A query's path</a><a href="#storage">Storage</a><a href="#text">Full text</a><a href="#columns">Columns and keys</a><a href="#vectors">Vectors</a><a href="#planner">The planner</a><a href="#datafusion">Large plans</a><a href="#cluster">The cluster</a><a href="#writes">Writes and merges</a><a href="#flexible">Why it bends</a><a href="#measured">End to end</a><a href="#gaps">Not fast yet</a>
+    </nav>
+    <div class="note"><b>Reading the numbers</b><span>Each figure names its machine: <b>M2</b> is a MacBook Air (Apple M2, 24 GB, macOS 26.0.1); <b>Xeon VM</b> is a 4-core cloud container (Intel Xeon at 2.10 or 2.80 GHz, Linux); <b>DigitalOcean</b> is the 1M-passage comparison on Kubernetes. They come from <a href="../strata/results.html">Strata's results</a>, the <a href="../strata/index.html">design document</a>, the <a href="../posting-lists.html">posting-list study</a> and the <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/compare-msmarco-1m-do/README.md">engine comparison</a>, each of which has the commands and the raw results.</span></div>
+  </div></div>
+
+  <section class="gutter" id="short"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">The short answer</span>
+      <h2>Four habits, applied to every index</h2>
+    </div>
+    <div class="facts">
+      <div class="fact"><b>Read in place, never deserialise</b><p>Opening maps the file and reads its manifest. Every index is a view of bytes in the mapping, aligned so the CPU can use them where they lie, and the kernel is told which sections are read at random.</p></div>
+      <div class="fact"><b>Compress for the CPU, not only the disk</b><p>Long posting lists keep their dense parts as bitmaps on a shared word grid, so AND and OR work 64 documents at a time. Columns are bit-packed in SIMD lanes. Vectors are scored as 8-bit codes with integer dot-product instructions.</p></div>
+      <div class="fact"><b>Skip what cannot make the top k</b><p>Exact score bounds per list and per block, zone maps per block and per 4,096 rows, error bounds per vector code, and Bloom filters per segment let each loop skip work it can prove useless.</p></div>
+      <div class="fact"><b>Plan per segment from exact counts</b><p>Document frequencies, list lengths and histogram buckets are exact, not sampled. A vector filter's selectivity is measured near the query, where it matters, before the plan is chosen.</p></div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="path"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">A query's path</span>
+      <h2>From SQL to rows in six steps</h2>
+      <p>Every statement takes the same path, in one process or on each shard of a cluster. Planning happens per segment, so a small fresh segment and a large merged one can answer the same statement in different ways.</p>
+    </div>
+    <ol class="pipe">
+      <li><span class="k">1 · Parse</span><b>Parse once</b><p>SQL with search functions, read by <code>sqlparser</code> and a <code>MATCH</code> grammar. A <code>SELECT</code> seen before, with new parameters, skips parsing.</p><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/sql.rs">query/sql.rs</a></li>
+      <li><span class="k">2 · Bind</span><b>One tree, one scorer</b><p><code>WHERE</code> becomes a tree of text, column, vector and graph leaves; <code>ORDER BY</code> becomes one scorer.</p><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/logical.rs">query/logical.rs</a></li>
+      <li><span class="k">3 · Graphs</span><b>Walk first</b><p>Traversals run across segments before planning, and leave each segment an exact set of rows.</p><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/graph/traverse.rs">graph/traverse.rs</a></li>
+      <li><span class="k">4 · Plan</span><b>Per segment</b><p>From exact counts, each segment picks how to apply each filter and which index ranks.</p><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/plan.rs">query/plan.rs</a></li>
+      <li><span class="k">5 · Run</span><b>Zero-copy operators</b><p>Operators read views of the segment's sections, and can search segments on threads borrowed from one pool the process shares.</p><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/pool.rs">query/pool.rs</a></li>
+      <li><span class="k">6 · Merge</span><b>Merge, fuse, join</b><p>Per-segment top-k lists merge; fusions rescore their union exactly; joins and groups over many rows go to DataFusion.</p><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/exec.rs">query/exec.rs</a></li>
+    </ol>
+  </div></section>
+
+  <section class="gutter" id="storage"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Storage</span>
+      <h2>One file of immutable segments, read in place</h2>
+      <p>B-trees updated in place do not suit compressed posting lists, bit-packed columns or vector graphs: the best encodings are chosen per whole list. So every index lives in immutable segments, written once and merged in the background, as Lucene, Tantivy and SQLite's own FTS5 store theirs. Strata uses that design for the whole table, in one file of 4 KiB pages plus a write-ahead log.</p>
+    </div>
+    <div class="filemap" aria-label="The layout of a Strata file and of one of its segments">
+      <div class="fm-label">The file</div>
+      <div class="fm-row">
+        <span class="meta">meta slot 0</span><span class="meta">meta slot 1</span><span class="seg open">segment</span><span class="seg">segment</span><span>manifest</span><span>delete sets</span><span>free list</span><span class="seg grow">segment …</span>
+      </div>
+      <div class="fm-label">One segment: a header, a directory of named sections, then the sections</div>
+      <div class="sections">
+        <span style="--c: var(--fam-text)">text.body.dict<em class="r">random</em></span>
+        <span style="--c: var(--fam-text)">text.body.post<em>read-ahead</em></span>
+        <span style="--c: var(--fam-text)">text.body.pos<em>read-ahead</em></span>
+        <span style="--c: var(--fam-text)">text.body.norms<em>read-ahead</em></span>
+        <span style="--c: var(--fam-cols)">col.price<em>read-ahead</em></span>
+        <span style="--c: var(--fam-cols)">range.price<em>read-ahead</em></span>
+        <span style="--c: var(--fam-cols)">kw.brand.codes<em>read-ahead</em></span>
+        <span style="--c: var(--fam-cols)">kw.brand.post<em>read-ahead</em></span>
+        <span style="--c: var(--fam-vec)">vec.emb.sq8<em class="r">random</em></span>
+        <span style="--c: var(--fam-vec)">vec.emb.hnsw<em class="r">random</em></span>
+        <span style="--c: var(--fam-vec)">vec.emb.f32<em class="r">random</em></span>
+        <span style="--c: var(--fam-graph)">graph.bought_with<em class="r">random</em></span>
+        <span>store.data<em class="r">random</em></span>
+        <span>pk<em class="r">random</em></span>
+      </div>
+      <div class="fm-key"><span><em class="r">random</em> advised <code>MADV_RANDOM</code>: a cold fault reads one page</span><span><em>read-ahead</em> read a run at a time, so the kernel reads ahead</span><span>Sections are 64-byte aligned, and page-aligned once larger than a page.</span></div>
+    </div>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>Commits by shadow paging</h4>
+        <p>A commit writes new extents, syncs them, then writes the other meta slot (transaction id, manifest location, CRC32) and syncs it. Nothing reachable from a valid slot is ever overwritten, as in LMDB, so there is no rollback journal: a torn meta write fails its checksum and the other slot still names the last whole state. Small transactions append to the WAL instead and sync once per commit.</p>
+        <p class="proof"><b>Measured</b>A durable one-row commit takes 4.1 ms at the median, nearly all of it macOS's <code>F_FULLFSYNC</code>; with 1,000 rows a transaction the WAL takes 98,000 rows a second.<span class="on">M2 · <a href="../strata/results.html#transactions-and-storage">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/pager.rs">storage/pager.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/wal.rs">storage/wal.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Sections the CPU uses where they lie</h4>
+        <p>A segment is a directory of named sections, each with its offset, length and CRC32. Sections start on 64-byte boundaries, and on page boundaries once they pass 4 KiB, so a <code>&amp;[u64]</code> view taken straight from the mapping is aligned and nothing is copied or decoded to open an index. Readers open per field, so a query touches only the headers of the fields it uses, and a section's checksum is checked the first time a query reads it.</p>
+        <p class="proof"><b>Measured</b>Opening a database cold takes 6.8 ms with 10 segments and 40 ms with 100.<span class="on">M2 · <a href="../strata/results.html#transactions-and-storage">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/segment/mod.rs">segment/mod.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>A page-cache hint per section</h4>
+        <p>The sections read at random positions (dictionaries, the HNSW graph and its codes, float32 rows for reranking, the doc store, the key index, graph edges) are advised <code>MADV_RANDOM</code>, so a cold page fault reads one page instead of the kernel's read-around. Postings, document lengths, columns and IVF clusters, which are read a run at a time, keep read-ahead. An HNSW search also prefetches each hop's neighbours before it scores them.</p>
+        <p class="proof"><b>Measured</b>A cold HNSW query on Quora reads 9,672 pages (136 ms) with the kernel's default, 4,836 pages (113 ms) with the graph and codes advised random, and takes 28 ms with each hop's neighbours prefetched.<span class="on">M2, 16 KiB pages · <a href="../strata/results.html#vector-indexes">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/segment/mod.rs">segment/mod.rs · random_access</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/hnsw.rs">vector/hnsw.rs · prefetch</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Snapshots by reference count</h4>
+        <p>A snapshot is an immutable version of the manifest: its segments, their delete sets and the collection's statistics. Readers pin one, and the writer publishes the next, so a reader never waits for the writer and always sees one consistent version, across every table of the file.</p>
+        <p class="proof"><b>Measured</b>Taking a snapshot costs at most 0.13 µs.<span class="on">M2 · <a href="../strata/results.html#summary">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/snapshot.rs">storage/snapshot.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>New rows searchable at once, indexed when asked</h4>
+        <p>Committed rows go to a memtable of 1,024-row chunks. A full chunk is built once as a small in-memory segment; the last one is built only when a query needs its indexes, at most once per change, and shared by every snapshot of that change. So a commit indexes nothing, queries see it at once, and the memtable needs no index code of its own: it is read by the same operators as any segment.</p>
+        <p class="proof"><b>Measured</b>The first query after a write rebuilds the last chunk with every index of the table in 17 to 20 ms, against 169 ms for an unchunked memtable of 10,000 rows.<span class="on">M2 · <a href="../strata/results.html#transactions-and-storage">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/state.rs">storage/state.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/db.rs">storage/db.rs · memtable_chunk_docs</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="text"><div class="wrap block">
+    <div class="fam-head"><h2>Full text</h2><span class="fam text">dictionary, Loom lists, MaxScore</span></div>
+    <p class="lede">A text query spends its time in three places: finding its terms, walking their posting lists, and scoring. Each has a structure built for it.</p>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>A front-coded dictionary walked as a trie</h4>
+        <p>Terms are sorted in front-coded blocks of 32 under a sparse in-memory index of each block's first term. A typo-tolerant word walks the dictionary as a trie and skips every run of terms whose start is already too many edits away: inside a block it passes terms by their stored lengths alone, and each letter's row of edits is computed for up to 63 letters at once in a machine word (Wu and Manber's bit-parallel matching, with Hyyrö's swap of two letters).</p>
+        <p class="proof"><b>Measured</b>Looking up a typed word among ORCAS's 797,472 terms takes 1.4 ms at the median with one edit and 7.8 ms with two, against 77 and 106 ms testing every term.<span class="on">Xeon VM, 2.10 GHz, one thread · <a href="../strata/query-language.html#typos-and-synonyms">typos</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/text/dict.rs">text/dict.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/text/fuzzy.rs">text/fuzzy.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Loom: posting lists on a shared word grid</h4>
+        <p>Lists of terms in 512 or more documents are Loom lists, a design from Strata's own <a href="../posting-lists.html">posting-list study</a>. A dynamic program cuts each list into partitions, each a bitmap, an Elias-Fano sequence or a run, and leans toward bitmaps (λ = 5/4). Bit <i>i</i> of any list's bitmap is docID 64⌊<i>b</i>/64⌋ + <i>i</i>, so two lists' bitmaps AND and OR word by word. A conjunction decodes the shortest list 256 candidates at a time and lets every other list, rarest first, filter that batch in place. Shorter lists use SIMD BP128 blocks.</p>
+        <p class="proof"><b>Measured</b>Against BP128 for every list, conjunctions are 7.6 to 11 times faster (21 against 230 µs on TREC-COVID) and the index 2 to 4% smaller. In the study, Loom is the size of partitioned Elias-Fano with 2.4 to 3.0 times faster AND and 3.8 to 7.7 times faster OR.<span class="on">M2 · <a href="../strata/results.html#posting-formats-and-top-k">results</a>, <a href="../posting-lists.html#loom">the study</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/postings/codecs/loom/mod.rs">postings/codecs/loom</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/text/postings.rs">text/postings.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Exact bounds, then MaxScore</h4>
+        <p>Every list starts with its impact frontier, the Pareto-optimal (term frequency, length) pairs of its postings: since BM25 grows with one and falls with the other, the list's best score under any parameters is the best over a handful of pairs. A block table gives each 128 postings its largest frequency and shortest length, a bound for Block-Max WAND. MaxScore, the default, lets lists whose bounds cannot lift a row past the threshold only confirm others' candidates. In a Loom list a frequency is read in O(1) from the cursor's rank, and a row's length is one byte.</p>
+        <p class="proof"><b>Measured</b>MaxScore is 1.9 to 2.6 times faster than Block-Max WAND on BEIR's queries. Warm BM25 top 10 is 1.7 to 3.2 times faster than Tantivy 0.26 on four BEIR collections (0.391 against 0.681 ms on TREC-COVID), one thread and one segment each.<span class="on">M2 · <a href="../strata/results.html#query-latency">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/text/bm25.rs">text/bm25.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/text/postings.rs">text/postings.rs · frontier</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Many lists at once</h4>
+        <p>A typo-tolerant word can bring up to 50 lists. Their current docIDs are compared with a candidate 16 at a time into a mask, which compiles to vector compares, and with 16 or more essential lists MaxScore adds up scores a window of 4,096 documents at a time before it consults the others. A shard reuses a snapshot's typo expansions between a coordinator's two rounds, and <code>fuzzy => 'auto'</code> corrects only words rare enough to be typos, weighted by a noisy channel.</p>
+        <p class="proof"><b>Measured</b>Through a coordinator over two shards of 1M MS MARCO passages, the median typed query fell from 112 to 15.8 ms, and four clients went from 17.7 to 137 queries a second.<span class="on">Xeon VM, 2.10 GHz · <a href="../strata/query-language.html#typos-and-synonyms">typos</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/text/bm25.rs">text/bm25.rs · for_each_on</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/text/fuzzy.rs">text/fuzzy.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>A filter drives or is probed</h4>
+        <p>A filtered BM25 query either walks the filter's members and scores each by seeking the lists, or runs the query and skips candidates outside the filter. The choice is a fitted cost: drive when members × terms × 1.8 (0.9 for Block-Max WAND) is below the total length of the query's lists, constants fitted over selectivities from 0.01% to 30%.</p>
+        <p class="proof"><b>Measured</b>Filtered BM25 is 3.1 to 4.0 times faster than Tantivy's.<span class="on">M2 · <a href="../strata/results.html#query-latency">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/text/bm25.rs">text/bm25.rs · drive_cost</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>The same score in every segment and shard</h4>
+        <p>BM25 uses statistics summed over the snapshot's segments, Lucene's idf and a document count of the rows that have the field, so a row scores the same whichever segment holds it. A coordinator sums its shards' term statistics the same way. A relevance gate in CI holds nDCG@10 and recall on three BEIR collections within 0.002 of committed numbers.</p>
+        <p class="proof"><b>Measured</b>Strata's BM25 is within 0.018 nDCG@10 of Tantivy's and SQLite FTS5's on four BEIR collections, so its speed is not bought with worse answers.<span class="on">M2 · <a href="../strata/results.html#ranking-quality">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/stats.rs">query/stats.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/tests/fixtures/relevance_gate.json">tests/fixtures/relevance_gate.json</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="columns"><div class="wrap block">
+    <div class="fam-head"><h2>Columns and keys</h2><span class="fam cols">bit-packed blocks, zone maps, Pyramid lists</span></div>
+    <p class="lede">Structured fields are stored twice, each copy for a different question: a column answers "what is row <i>d</i>'s value" in O(1), and a list per value or per range answers "which rows have it" as a set operation.</p>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>Columns in 128-row blocks</h4>
+        <p>Numbers (as order-preserving keys) and keyword codes are cut into blocks of 128 rows, each stored frame-of-reference: the block's minimum, then every key minus it in the fewest bits, in the four-lane SIMD layout of BitPacker4x. A block's payload is exactly 128 × width bits, so offsets are a prefix sum and reading one row is two loads and a shift. Zone maps keep each block's and each 32-block superblock's minimum and maximum, so a range over clustered values, such as a timestamp, accepts or skips 4,096 rows per check.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/forward/blocks.rs">forward/blocks.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>A list per keyword value</h4>
+        <p>Every keyword value also keeps a docID list, so equality and <code>IN</code> are set operations. Values in 64 or more rows use Pyramid, the study's speed-first design: each 65,536-docID chunk split into 256-docID blocks, each a bitmap or a few bytes, so a membership test is O(1) at any density. A per-row check reads the code column against a bitset of accepted codes instead.</p>
+        <p class="proof"><b>Measured</b>In the study, Pyramid unites lists faster than Roaring on the clustered collection (0.355 against 0.384 ms) at 24 to 33% less space.<span class="on">M2 · <a href="../posting-lists.html#pyramid">the study</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/forward/keyword.rs">forward/keyword.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/tree/main/strata/src/postings/codecs/pyramid">postings/codecs/pyramid</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Ranges from a histogram that also estimates</h4>
+        <p>Every numeric field keeps an equi-depth histogram of 64 buckets, and each bucket is a docID list. A range is the union of the buckets it covers, plus its two boundary buckets filtered through the column. The same histogram gives the planner its selectivity, and the planner chooses per segment between this and a zone-map scan of the column.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/forward/numeric.rs">forward/numeric.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/forward/range.rs">forward/range.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Facets two ways</h4>
+        <p><code>GROUP BY</code> a keyword reads the codes of the result's rows when the result is small, and intersects the result with each value's Pyramid list, counting only, when it is large and the values are few.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/forward/keyword.rs">forward/keyword.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>A read by key in a cache line</h4>
+        <p>Each segment's key index is sorted 64-bit key hashes paired with docIDs, under a radix directory of the hashes' top bits (about four entries a slot), with each hash beside its docID: a lookup is one directory read and a short scan, and a cold one touches a constant number of pages. A segment of more than 4,096 keys also gets a split-block Bloom filter (12 bits a key) in memory, built on its first lookup, since a read probes segments newest first and most of them lack the key.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/pk.rs">storage/pk.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Rows in compressed blocks, read for the page</h4>
+        <p>Stored fields live in LZ4 blocks of 16 KiB, so fetching a row decompresses one block. Through a coordinator, a deep page or a fused score is answered by query then fetch: shards rank and send keys and scores, and only the shards holding the page's rows read their columns.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/forward/store.rs">forward/store.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/cluster.rs">cluster.rs · fetch</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="vectors"><div class="wrap block">
+    <div class="fam-head"><h2>Vectors</h2><span class="fam vec">SQ8 and RaBitQ codes, HNSW, IVF</span></div>
+    <p class="lede">A vector search is mostly dot products and memory reads. Strata makes the dot products integer ones and reads float32 rows only for the candidates that can still change the answer.</p>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>Two copies of every vector</h4>
+        <p>Each vector field keeps float32 rows for exact reranking and 8-bit codes for scanning, each dimension mapped onto 0 to 255 by its own range. The query's weights are quantised to int8 once, so scoring a row is an integer dot product: AVX-512 VNNI's <code>vpdpbusd</code> (64 byte products an instruction) on x86-64, <code>usdot</code> (16) on Apple silicon, four rows per query load. The kernel is picked at run time from the CPU's features, with a scalar twin as the reference in tests.</p>
+        <p class="proof"><b>Measured</b>A 1,024-dimension code scores in 14 ns with <code>usdot</code> (9.8 ns four at a time), against 70 ns in float32. Scoring the codes alone finds 99.8% of the exact top 10; float32 reranking settles the rest.<span class="on">M2 · <a href="../strata/results.html#vector-indexes">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/sq8.rs">vector/sq8.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/kernels.rs">vector/kernels.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>HNSW built and searched on codes</h4>
+        <p>The graph is built on the 8-bit codes, as it is searched, so each comparison reads a byte per dimension instead of four. Searches walk fixed-degree adjacency lists in the mapped segment and rerank 40 candidates in float32 by default.</p>
+        <p class="proof"><b>Measured</b>On Quora (522,931 vectors, 1,024 dimensions) HNSW reaches recall@10 0.990 at 0.086 ms. TREC-COVID's 171,332 vectors build in 36.6 s on codes, against 82.0 s on float32 rows, with recall@10 within 0.014 at every ef.<span class="on">M2 for the search · Xeon VM, one run, for the build · <a href="../strata/index.html#merges">design</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/hnsw.rs">vector/hnsw.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Merges that keep the graph</h4>
+        <p>A merge keeps the graph of its largest input that lost no rows, nodes, levels and links, and joins the other inputs' graphs to it, as Lucene 9.9 and 10.2 do: a set of nodes that covers the rest is inserted as usual, and every other node searches the bottom layer from its old neighbours, with half the beam.</p>
+        <p class="proof"><b>Measured</b>Merging four segments of 25,000 TREC-COVID vectors takes 12.2 to 12.3 s, against 37.9 s from scratch, at recall@10 0.987 to 0.989 against 0.992 to 0.993 (ef 64).<span class="on">Xeon VM, four threads · <a href="../strata/index.html#merges">design</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/hnsw.rs">vector/hnsw.rs · join sets</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>IVF: one read per cluster</h4>
+        <p>IVF clusters are stored back to back, each its ascending docIDs then its code rows, 64-byte aligned, so probing a cluster is one sequential read. A filter is applied by intersecting the cluster's docID list with the filter's, the same operation as a text conjunction.</p>
+        <p class="proof"><b>Measured</b>A cold IVF query on Quora takes 26 ms with read-ahead, and 10 ms with prefetching.<span class="on">M2 · <a href="../strata/results.html#vector-indexes">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/ivf.rs">vector/ivf.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>RaBitQ: skip the float reads that cannot matter</h4>
+        <p>A field can keep RaBitQ codes of 1, 2 or 4 bits a dimension instead: each row centred, turned by a fixed random rotation that spreads its energy evenly, and rounded to the grid, with two floats a row. They give an unbiased estimate of the dot product and a bound on its error, and a search reads a candidate's float32 row only if its estimate plus that bound reaches the k-th exact score found so far.</p>
+        <p class="proof"><b>Measured</b>On FiQA (57,638 vectors, 1,024 dimensions), 2-bit codes under HNSW read 28 float32 rows a query where binary codes read 320, at recall@10 0.996 against 0.997, in 0.49 against 0.83 ms.<span class="on">Xeon VM, 2.80 GHz, one thread · <a href="../strata/results.html#compressed-vectors">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/rabitq.rs">vector/rabitq.rs</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="planner"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">The planner</span>
+      <h2>Decided per segment, from exact counts</h2>
+      <p>No fixed strategy wins every query. A filter can be cheap to list and costly to check or the reverse, and a vector filter that keeps 10% of the table may keep almost none of the rows near the query. The planner works per segment, from statistics the indexes answer exactly, and shows what it chose in <code>EXPLAIN</code>.</p>
+    </div>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>Materialise or probe</h4>
+        <p>Each predicate is either materialised, a docID set built from postings at a cost that follows the lists, or probed, a check of each candidate against its column at a cost that follows the candidates. Estimates come from exact document frequencies, list lengths and histogram buckets; conjunctions assume independence and disjunctions use inclusion and exclusion.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/plan.rs">query/plan.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Filtered vectors, measured near the query</h4>
+        <p>A filtered vector search can scan the filter's rows exactly, search IVF with the filter intersected in, walk HNSW with the filter inside, or search wider and filter after. When the global selectivity leaves the choice open, the planner runs a 32-result unfiltered search and uses the share of it that passes the filter; if that finds at most one match, a 160-result sample tells a selective filter from one whose rows lie far from the query.</p>
+        <p class="proof"><b>Measured</b>Over 300 filtered vector queries, 2.7 times faster than the best fixed strategy on TREC-COVID (121 against 325 ms in total) and 6.1 times on Quora (179 against 1,089 ms), at recall@10 0.991 to 0.998 and 1.0 to 1.6 times an oracle's time.<span class="on">M2 · <a href="../strata/results.html#filtered-vector-search-and-the-planner">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/exec.rs">query/exec.rs · local_selectivity</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/cost.rs">vector/cost.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Hybrid ranking as one plan</h4>
+        <p>A fused ranking takes each input's top 100 under the same filter, rescores the union exactly with every input, and fuses them by RRF or by a weighted sum of normalised scores. Graph walks run first and hand the planner exact sets, so a vector search over a few hundred reachable rows becomes an exact scan.</p>
+        <p class="proof"><b>Measured</b>The top-100 fusion takes 0.2 to 0.8 ms and recovers 89 to 95% of the exact fused top 10, where computing it over every row takes 0.9 to 62 ms.<span class="on">M2 · <a href="../strata/results.html#hybrid-ranking">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/rank.rs">query/rank.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/fusion.rs">query/fusion.rs</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="datafusion"><div class="wrap block">
+    <div class="split">
+      <div class="block-head">
+        <span class="eyebrow">Large plans</span>
+        <h2>Search stays Strata's; joins and groups move to DataFusion</h2>
+        <p>Each leaf of a plan (search, filter, ranking, a group over one table) runs on Strata's executor, so every index stays in use. When the leaves read more than 4,096 rows, the nodes above them (joins, <code>WITH</code>, <code>DISTINCT</code>, groups, sorts and windows) become one Apache DataFusion plan over Arrow batches, on the query's threads, and sorts and groups spill to disk past the query's memory budget. Hidden columns keep Strata's row order, and a plan DataFusion cannot express exactly falls back to Strata's operators with the reason.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/df.rs">query/df.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/ops.rs">query/ops.rs</a></div>
+      </div>
+      <div class="stats">
+        <div class="stat"><span class="v">60 ms</span><p>A join with a group over two 100,000-row tables on DataFusion, against 285 ms on Strata's row-at-a-time operators.</p><span class="meta">Xeon VM, 2.10 GHz · <a href="../strata/query-language.html#subqueries-with-and-joins">engines</a></span></div>
+        <div class="stat"><span class="v">1.2 ms</span><p>The same join over two 100-row tables with the default engine, between the operators' 0.6 ms and DataFusion's 2.9 ms.</p><span class="meta">Xeon VM, 2.10 GHz · <a href="../strata/query-language.html#subqueries-with-and-joins">engines</a></span></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="cluster"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">The cluster</span>
+      <h2>Shards that answer like one database</h2>
+      <p>A shard is the same database file a program opens, served by strata-server. A coordinator routes, merges and hedges, and its answers match one database's: the same scores, the same order, the same facet counts.</p>
+    </div>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>4,096 slots under an epoch</h4>
+        <p>A primary key hashes (xxh3 over a typed encoding, so the integer 5 and the text '5' differ) to one of 4,096 slots, and a slot map assigns slots to shards under an epoch. Shards refuse requests from an older map and writes for slots they do not hold, so moving slots while serving is a new map with a higher epoch. A read by key, or a query that pins its key, goes to one shard.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata-server/src/slots.rs">strata-server/src/slots.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>BM25 in two rounds, scored as one</h4>
+        <p>A BM25 query first asks every shard for its query terms' statistics, each answering from a snapshot it holds for the next round, and sums them. The query then runs on every shard with those sums, so each scores as the unsplit collection would, and the answers merge by score, ties by key. Other queries take one round; fused scores merge from each input's raw scores and are normalised over the merged candidates.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata-server/src/coord.rs">strata-server/src/coord.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/cluster.rs">strata/src/cluster.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Hedged reads</h4>
+        <p>A read goes to one replica of each shard, in turn. When one has not answered within the hedge delay the next is asked too, and the first answer wins, with hedges held to a share of calls. A replica that refuses because it is full is not relieved by loading its sibling, and one that failed or was outrun is asked last for a while.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata-server/src/coord.rs">strata-server/src/coord.rs · hedge</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="writes"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Writes and merges</span>
+      <h2>Background work that stays out of the way</h2>
+      <p>Reads are fast when segments are few and large, so merging matters; it must not stall writes or exhaust memory while it runs.</p>
+    </div>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>Flushes and merges without the lock</h4>
+        <p>A flusher thread seals the memtable and its log and builds segments while writes go on; it holds the writer lock only to seal and to install. Merges, tiered by size, build their segment with no lock held, write it into reserved space, and take the lock only for a commit that carries over the deletes made meanwhile. Up to half the cores (at most four) merge at once, within half the machine's or the container's memory.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/db.rs">storage/db.rs · spawn_flusher, spawn_merger</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Merges that stream</h4>
+        <p>A merge decodes its inputs in batches of about 32 MB of image while another thread decodes the next, keeps what must see every row in compact form, and streams the image out a megabyte at a time. Past 64 MB of input it also writes its growing sections to unnamed temporary files. The bytes are the same as a build of every row at once.</p>
+        <p class="proof"><b>Measured</b>The 2M-passage merge of the scale probe (4.5 GB of image) peaks at 4.0 to 4.1 GB of heap instead of 7.6 GB.<span class="on">Xeon VM, four threads · <a href="../strata/index.html#merges">design</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/merge.rs">storage/merge.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/segment/spill.rs">segment/spill.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Parallel builds, identical bytes</h4>
+        <p>A segment of 1,024 rows or more builds on up to eight threads: fields at once, longest first; a text field analysed in runs, one per thread; its posting lists encoded in ranges of terms. The image is byte for byte that of a one-thread build.</p>
+        <p class="proof"><b>Measured</b>A TREC-COVID text segment (171,332 documents, 192 MB of text) builds in 2.9 to 3.2 s on four threads, against 9.0 to 9.7 s on one.<span class="on">Xeon VM · <a href="../strata/index.html#segments">design</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/segment/build.rs">segment/build.rs</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="flexible"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Why it bends</span>
+      <h2>Flexible because the pieces compose</h2>
+      <p>The same structures that make a query fast let one statement mix them, and let a table change shape without being rewritten.</p>
+    </div>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>Four index families over the same rows</h4>
+        <p>A table's text, columns, vectors and graph edges are indexed together, in the same transaction. Any <code>WHERE</code> mixes their leaves and any <code>ORDER BY</code> fuses their scores, because the planner treats each as a set or a ranking with a known cost. <a href="examples.html">See the queries</a>.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/logical.rs">query/logical.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Fields named by id on disk</h4>
+        <p>A field is stored under an id, never by its position or name. <code>ALTER TABLE</code> adds a field under a new id, which older segments read as its default; drops one by leaving its id out; and renames one under the same id. No segment is rewritten, on one database, its replicas or a cluster.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/manifest.rs">storage/manifest.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/ddl.rs">query/ddl.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Fields that fill themselves</h4>
+        <p>A text field can be generated from others and indexed without being stored; a vector field can name the model that embeds it from other columns as rows are written; a JSON field indexes every key by path, and its strings as text if asked.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/schema.rs">schema.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/json.rs">json.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/embed.rs">embed.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Ranking is an expression</h4>
+        <p>Any arithmetic of scores and columns, <code>decay()</code> by time or distance, LightGBM and XGBoost models scored bit for bit, cross-encoders, and rerank phases in a <code>WITH</code>, kept as versioned rank profiles beside the table.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/rank.rs">query/rank.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/model.rs">query/model.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Two engines, one answer</h4>
+        <p>Small results stay on Strata's operators, large ones go to DataFusion's batches, and both return the same rows in the same order. Where they would differ, the plan stays on the operators.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/df.rs">query/df.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>The same file at every size</h4>
+        <p>The segment a program maps is the segment a server or a shard serves, so the file format, the SQL, the schema and the Python methods stay the same from a laptop to a cluster. <a href="scale.html">From a file to a cluster</a>.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata-server/src/coord.rs">strata-server/src/coord.rs</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="measured"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">End to end</span>
+      <h2>What it adds up to on a cluster</h2>
+      <p>Strata and the three Lucene engines on the same machines: two DigitalOcean nodes of 4 vCPUs and 32 GB each (Intel Xeon Platinum 8168 and 8280), 6.8 CPUs per engine, MS MARCO v2.1's first million passages with 768-dimension Arctic Embed vectors, measured on 3 November 2026. Each value is the median of three passes; the best of each row is bold.</p>
+    </div>
+    <div class="sub">
+      <h3>Median latency at one client, ms</h3>
+      <!-- generated from passes.md and tables.md by the median of three passes -->
+      <div class="table-wrap"><table class="data e2e"><thead>
+        <tr><th scope="col">kind</th><th scope="col" class="self">Strata</th><th scope="col">Elasticsearch</th><th scope="col">OpenSearch</th><th scope="col">Solr</th></tr></thead><tbody>
+        <tr><th scope="row">Vector top 10</th><td class="n self"><b>2.21</b><span class="rc">recall 0.801</span></td><td class="n">3.70<span class="rc">recall 0.718</span></td><td class="n">4.07<span class="rc">recall 0.592</span></td><td class="n">4.28<span class="rc">recall 0.845</span></td></tr>
+        <tr><th scope="row">Vector top 10 with a filter</th><td class="n self"><b>2.52</b><span class="rc">recall 0.828</span></td><td class="n">4.29<span class="rc">recall 0.680</span></td><td class="n">6.78<span class="rc">recall 0.735</span></td><td class="n">7.34<span class="rc">recall 0.947</span></td></tr>
+        <tr><th scope="row">Similar items</th><td class="n self"><b>2.75</b><span class="rc">recall 0.992</span></td><td class="n">6.94<span class="rc">recall 0.938</span></td><td class="n">7.58<span class="rc">recall 0.920</span></td><td class="n">8.54<span class="rc">recall 0.998</span></td></tr>
+        <tr><th scope="row">Hybrid, RRF</th><td class="n self"><b>5.77</b></td><td class="n na">trial licence only</td><td class="n">7.10</td><td class="n">7.44</td></tr>
+        <tr><th scope="row">Hybrid, weighted</th><td class="n self">5.93</td><td class="n"><b>5.79</b></td><td class="n">6.92</td><td class="n">9.16</td></tr>
+        <tr><th scope="row">BM25 × recency decay</th><td class="n self"><b>5.56</b></td><td class="n">6.94</td><td class="n">7.02</td><td class="n">7.87</td></tr>
+        <tr><th scope="row">Read by key</th><td class="n self"><b>1.30</b></td><td class="n">1.79</td><td class="n">1.81</td><td class="n">2.18</td></tr>
+        <tr><th scope="row">Facet counts</th><td class="n self">1.95</td><td class="n"><b>1.90</b></td><td class="n">1.95</td><td class="n">2.62</td></tr>
+        <tr><th scope="row">Phrase</th><td class="n self">2.75</td><td class="n">2.58</td><td class="n">2.59</td><td class="n"><b>1.91</b></td></tr>
+        <tr><th scope="row">BM25 top 10</th><td class="n self">2.96</td><td class="n">2.74</td><td class="n">2.89</td><td class="n"><b>2.43</b></td></tr>
+        <tr><th scope="row">Prefix</th><td class="n self">4.04</td><td class="n">3.48</td><td class="n">4.02</td><td class="n"><b>2.26</b></td></tr>
+      </tbody></table></div>
+      <p class="small muted">Recall@10 is against an exact search of the same million vectors. Each engine ran its vector index at its own defaults, so their recall differs and the latencies compare different trade-offs: Solr's higher recall costs it time. Differences under about 15% are within what a second set of machines changed for the same engine. Loading is left out, since Strata's shards were built offline from local files while the others took their rows over HTTP. Source: <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/compare-msmarco-1m-do/passes.md">passes.md</a> and <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/compare-msmarco-1m-do/tables.md">tables.md</a>, with the method in the <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/compare-msmarco-1m-do/README.md">run's README</a>.</p>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="gaps"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Not fast yet</span>
+      <h2>Where the same run shows Strata behind</h2>
+      <p>The same machines and passes as above. These are the next things to work on, not footnotes.</p>
+    </div>
+    <div class="grid cols-2 gap-tables">
+      <div class="sub">
+        <h3>Median latency at one client, ms</h3>
+        <!-- generated from passes.md and tables.md by the median of three passes -->
+      <div class="table-wrap"><table class="data e2e"><thead>
+        <tr><th scope="col">kind</th><th scope="col" class="self">Strata</th><th scope="col">Elasticsearch</th><th scope="col">OpenSearch</th><th scope="col">Solr</th></tr></thead><tbody>
+        <tr><th scope="row">Typo-tolerant BM25</th><td class="n self">119.6</td><td class="n"><b>14.06</b></td><td class="n">18.76</td><td class="n">17.49</td></tr>
+        <tr><th scope="row">SQL aggregate</th><td class="n self">178.2</td><td class="n">5.72</td><td class="n"><b>4.29</b></td><td class="n">64.22</td></tr>
+      </tbody></table></div>
+      </div>
+      <div class="sub">
+        <h3>Queries a second at 16 clients</h3>
+        <!-- generated from passes.md and tables.md by the median of three passes -->
+      <div class="table-wrap"><table class="data e2e"><thead>
+        <tr><th scope="col">kind</th><th scope="col" class="self">Strata</th><th scope="col">Elasticsearch</th><th scope="col">OpenSearch</th><th scope="col">Solr</th></tr></thead><tbody>
+        <tr><th scope="row">BM25 top 10</th><td class="n self">1,128</td><td class="n">1,874</td><td class="n"><b>2,017</b></td><td class="n">1,563</td></tr>
+        <tr><th scope="row">Vector top 10</th><td class="n self">1,201</td><td class="n"><b>1,378</b></td><td class="n">1,171</td><td class="n">687</td></tr>
+        <tr><th scope="row">Facet counts</th><td class="n self">1,365</td><td class="n"><b>2,910</b></td><td class="n">2,626</td><td class="n">1,341</td></tr>
+        <tr><th scope="row">Read by key</th><td class="n self">2,720</td><td class="n">4,600</td><td class="n"><b>5,107</b></td><td class="n">2,278</td></tr>
+      </tbody></table></div>
+      </div>
+    </div>
+    <ul class="gaps">
+      <li><b>Typo-tolerant BM25.</b> <span>The run used a build from before the faster typo walk and the frequency-aware <code>'auto'</code>, which since cut a coordinator's median typed query from 112 to 15.8 ms on a Xeon VM (above); the comparison has not been run again with it.</span></li>
+      <li><b>BM25 under load.</b> <span>Every BM25 query through a coordinator took two rounds, statistics then query. Since #245 the coordinator keeps each shard version's term statistics and skips the first round while no shard has changed: 1,026 to 1,547 queries a second at 16 clients in a 4-core container, the same answers (<a href="bench-1m.html#since">before and after</a>). Neither cloud run had it.</span></li>
+      <li><b>SQL aggregates through a coordinator.</b> <span><code>SELECT category, COUNT(*), AVG(rating) … WHERE year &gt;= :y GROUP BY category HAVING COUNT(*) &gt; 1000</code> took 178 ms where Elasticsearch and OpenSearch took 4 to 6, and 4.3 s at 10M against their 5 to 8 ms (<a href="bench-10m.html#behind">the 10M run</a>).</span></li>
+      <li><b>Builds.</b> <span>Building the HNSW graph is most of a load: 146 s of Quora's 153.1 s on an M2 with four threads. IVF builds that table in 60.1 s.</span></li>
+      <li><b>Cold filters and small facets.</b> <span>Cold structured filters are 1.4 to 3.4 times slower than Tantivy's, since a range touches buckets, boundary blocks, zone maps and the key index on different pages; Tantivy counts facets 1.1 to 2.1 times faster on three of four BEIR collections (M2).</span></li>
+    </ul>
+    <div class="actions"><a class="btn primary" href="benchmarks.html">All the benchmarks</a><a class="btn" href="benchmarks.html#losses">Every loss, every run</a><a class="btn" href="../strata/index.html">The design document</a><a class="btn" href="../posting-lists.html">The posting-list study</a></div>
+  </div></section>
+</main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div><h4>Strata</h4><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>This site</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compare</a></li><li><a href="benchmarks.html">Benchmarks</a></li><li><a href="examples.html">Queries and examples</a></li><li><a href="use-cases.html">Use cases and demos</a></li><li><a href="scale.html">Small to big</a></li></ul></div>
+  <div><h4>Benchmarks</h4><ul><li><a href="bench-10m.html">10M documents, cloud</a></li><li><a href="bench-1m.html">1M documents, cloud</a></li><li><a href="bench-laptop.html">1M documents, laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
+  <div><h4>Documentation</h4><ul><li><a href="../strata/">Design</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li><li><a href="../strata/python.html">Python</a></li><li><a href="../strata/results.html">Results</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../engram/">Engram</a></li><li><a href="../reproduce.html">Reproducing the results</a></li></ul></div>
+</div></footer>
+<script src="assets/site.js"></script>
+</body>
+</html>
