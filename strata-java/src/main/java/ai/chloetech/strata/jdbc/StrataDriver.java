@@ -103,9 +103,7 @@ public final class StrataDriver implements Driver {
         Path path = Paths.get(rest).toAbsolutePath().normalize();
         // One file by any name (a link, another spelling) is one database.
         try {
-            if (Files.exists(path)) {
-                path = path.toRealPath();
-            }
+            path = realPath(path);
         } catch (java.io.IOException e) {
             throw new SQLException("cannot read " + path + ": " + e.getMessage(), "08001", e);
         }
@@ -126,6 +124,21 @@ public final class StrataDriver implements Driver {
         StrataConnection c = new StrataConnection(db, url);
         c.setReadOnly(Boolean.parseBoolean(options.get("readonly")));
         return c;
+    }
+
+    /**
+     * The file's real path, links resolved; for a file not made yet, its
+     * directory's real path and its name. A file a connection creates is
+     * then named as the next connection names it once it exists, also
+     * through a linked directory (on macOS the temporary directories are
+     * under /var, a link to /private/var).
+     */
+    static Path realPath(Path path) throws java.io.IOException {
+        if (Files.exists(path)) {
+            return path.toRealPath();
+        }
+        Path parent = path.getParent();
+        return parent == null ? path : realPath(parent).resolve(path.getFileName());
     }
 
     private static String decode(String s) {
