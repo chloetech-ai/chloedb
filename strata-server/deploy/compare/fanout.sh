@@ -50,6 +50,17 @@
 # the job's IMAGE_B, passes alternating, for a before and after that the
 # nodes cannot sway (KINDS in the environment picks the kinds):
 #   strata-ab  strata-ab  sharded  1  IMAGE_B=ghcr.io/chloetech-ai/strata-server:<sha>
+# Engines joined by + run one after another on the same nodes, each with its
+# own steps (engines of the job's one shape):
+#   same-nodes  strata+es+os+solr+vespa  sharded  5
+# In such a list strata-first and strata-last split Strata's steps around
+# the others: strata-first builds and runs its passes; strata-last runs them
+# again on the same shard files, labelled strata-b (the drift of the nodes
+# over the hours between), then Strata's writes and stream, which change the
+# shards. An engine whose step fails in such a list has its other steps
+# skipped (its down still runs) and the next engine goes on; its failures
+# are in the job's reason and failures/<engine>/, and the job ends done.
+#   same-nodes-1m  strata-first+es+os+solr+vespa+strata-last  sharded  7
 set -euo pipefail
 
 API=https://api.digitalocean.com/v2
@@ -299,15 +310,31 @@ print("slow" if len(xs) >= 3 and line["sha256_4g_s"] > 1.05 * statistics.median(
 PY
 }
 
-# The PASSES passes of `run` for ENGINE.
-runs() { # ENGINE
-    local i
-    echo "run $1"
-    for ((i = 2; i <= PASSES; i++)); do echo "run $1 --label $1-pass$i"; done
+# The PASSES passes of `run` for ENGINE (labelled LABEL, default ENGINE).
+runs() { # ENGINE [LABEL]
+    local i l=${2:-$1}
+    [ "$l" = "$1" ] && echo "run $1" || echo "run $1 --label $l"
+    for ((i = 2; i <= PASSES; i++)); do echo "run $1 --label $l-pass$i"; done
+}
+# The engine a step is for: compare.sh's argument after the command.
+step_engine() { # STEP (without IMAGE=)
+    local c e
+    read -r c e _ <<<"$1"
+    case $c in build) echo strata ;; trial) echo es ;; *) echo "$e" ;; esac
 }
 steps_of() { # ENGINE: compare.sh's steps, one per line
     case $1 in
+    # Engines joined by + (strata+es+os) run one after another on the same
+    # nodes, each with its own steps, so that the nodes cannot make the
+    # difference between them.
+    *+*)
+        local e
+        for e in ${1//+/ }; do steps_of "$e"; done
+        ;;
     strata) printf '%s\n' "build" "up strata" "$(runs strata)" "writes strata" "stream strata" "down strata" ;;
+    # Strata's steps split around the other engines of a + list (above).
+    strata-first) printf '%s\n' "build" "up strata" "$(runs strata)" "down strata" ;;
+    strata-last) printf '%s\n' "up strata" "$(runs strata strata-b)" "writes strata" "stream strata" "down strata" ;;
     # The trial licence's run before the writes, on the index as loaded (at
     # 1M it ran after them, on segments the writes and the stream had churned).
     es) printf '%s\n' "up es" "load es" "$(runs es)" "trial" \
@@ -366,7 +393,7 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
     for n in "${uniq[@]}"; do
         [ -s "$dir/setup-$n.json" ] && continue
         copy=0
-        [ "$n" = "$cnode" ] || [[ $engine == strata* ]] && copy=1
+        [ "$n" = "$cnode" ] || [[ +$engine+ == *+strata* ]] && copy=1
         size=$CLIENT_SIZE
         [ "$n" = "$cnode" ] || { [ "$shape" = sharded ] && size=$SHARDED_SIZE || size=$ONE_SIZE; }
         (
@@ -388,7 +415,7 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
         log "$name: node $n is more than 5% slower than the median of $size: replacing it"
         new=$(replace_node "$name" "$n") || { log "$name: could not replace $n: kept"; continue; }
         copy=0
-        [ "$n" = "$cnode" ] || [[ $engine == strata* ]] && copy=1
+        [ "$n" = "$cnode" ] || [[ +$engine+ == *+strata* ]] && copy=1
         line=$(node_pod "$ns" "setup-$(echo "$new" | tail -c 6)" "$new" "$IMAGE" "$(setup_script "$new" "$copy")" </dev/null | tail -1)
         line=$(python3 -c 'import json, sys; d = json.loads(sys.argv[1]); d["size"] = sys.argv[2]; d["replaced"] = sys.argv[3]; print(json.dumps(d))' "$line" "$size" "$n")
         echo "$line" >"$dir/setup-$new.json"
@@ -400,14 +427,34 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
     done
     # Its data is copied: the scheduler may start the next job (COPY_JOBS).
     touch "$dir/ready"
-    local step i=0 st rc
+    local step i=0 st rc multi=0 skip=" " se why fdir
+    [[ $engine == *+* ]] && multi=1
+    # A + list taken up again: the engines that failed before stay skipped.
+    if [ $multi = 1 ] && [ -f "$dir/steps.tsv" ]; then
+        local res prev
+        while IFS=$'\t' read -r _ res _ _ prev; do
+            [[ $res == fail:* ]] && skip+="$(step_engine "${prev#IMAGE=* }") "
+        done <"$dir/steps.tsv"
+    fi
     while IFS= read -r step; do
         i=$((i + 1))
-        grep -qP "^$i\tok\t" "$dir/steps.tsv" 2>/dev/null && continue
+        grep -qP "^$i\t(ok|skipped)\t" "$dir/steps.tsv" 2>/dev/null && continue
         if [ $(($(now) - t0)) -gt $((${hours%.*} * 3600)) ]; then
             log "$name: past its timeout of $hours h before step $i ($step)"
-            echo "timeout before: $step" >"$dir/reason"
+            echo "timeout before: $step" >>"$dir/reason"
             return 1
+        fi
+        # A step may start with IMAGE=REF, its own image (strata-ab), and its
+        # --kinds runs to the next option as one argument (kinds have spaces).
+        local s=$step simage=$IMAGE kinds rest
+        if [[ $s == IMAGE=* ]]; then
+            simage=${s%% *} s=${s#* }
+            simage=${simage#IMAGE=}
+        fi
+        se=$(step_engine "$s")
+        if [[ $skip == *" $se "* ]] && [[ $s != down* ]]; then
+            printf '%s\t%s\t%s\t%s\t%s\n' "$i" skipped "$(now)" "$(now)" "$step" >>"$dir/steps.tsv"
+            continue
         fi
         log "$name: step $i: compare.sh $step"
         st=$(now)
@@ -416,13 +463,6 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
         local cap="" left=$((${hours%.*} * 3600 - ($(now) - t0)))
         [[ $step == load* ]] && cap="timeout $((left < LOAD_HOURS * 3600 ? left : LOAD_HOURS * 3600))s"
         rc=0
-        # A step may start with IMAGE=REF, its own image (strata-ab), and its
-        # --kinds runs to the next option as one argument (kinds have spaces).
-        local s=$step simage=$IMAGE kinds rest
-        if [[ $s == IMAGE=* ]]; then
-            simage=${s%% *} s=${s#* }
-            simage=${simage#IMAGE=}
-        fi
         # shellcheck disable=SC2086
         (
             export CONTEXT NS=$ns NODES="${dnodes[*]}" CLIENT_NODE=$cnode IMAGE=$simage COLLECTION STRATA_WORK=$dir/work STRATA_DATA=$STATE/data
@@ -437,16 +477,25 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
         printf '%s\t%s\t%s\t%s\t%s\n' "$i" "$([ $rc = 0 ] && echo ok || echo "fail:$rc")" "$st" "$(now)" "$step" >>"$dir/steps.tsv"
         if [ $rc != 0 ]; then
             log "$name: step $i ($step) failed ($rc)"
-            if [[ $step == load* ]] && [ $rc = 124 ]; then
-                echo "load timed out after $((($(now) - st) / 60)) min (LOAD_HOURS $LOAD_HOURS, job timeout $hours h)" >"$dir/reason"
+            if [[ $s == load* ]] && [ $rc = 124 ]; then
+                why="load timed out after $((($(now) - st) / 60)) min (LOAD_HOURS $LOAD_HOURS, job timeout $hours h)"
             else
-                echo "$step: exit $rc" >"$dir/reason"
+                why="$step: exit $rc"
             fi
-            kubectl -n "$ns" get pods -o wide >"$dir/failures/pods.txt" 2>&1 || true
-            kubectl -n "$ns" describe pods >"$dir/failures/describe.txt" 2>&1 || true
+            fdir=$dir/failures
+            [ $multi = 1 ] && fdir=$dir/failures/$se && mkdir -p "$fdir"
+            kubectl -n "$ns" get pods -o wide >"$fdir/pods.txt" 2>&1 || true
+            kubectl -n "$ns" describe pods >"$fdir/describe.txt" 2>&1 || true
             for p in $(kubectl -n "$ns" get pods -o name 2>/dev/null); do
-                kubectl -n "$ns" logs "$p" --all-containers --tail=300 >"$dir/failures/$(basename "$p").log" 2>&1 || true
+                kubectl -n "$ns" logs "$p" --all-containers --tail=300 >"$fdir/$(basename "$p").log" 2>&1 || true
             done
+            if [ $multi = 1 ]; then
+                echo "$why" >>"$dir/reason"
+                skip+="$se "
+                log "$name: $se's other steps are skipped (its down runs); the next engine goes on"
+                continue
+            fi
+            echo "$why" >"$dir/reason"
             return 1
         fi
     done < <(steps_of "$engine")

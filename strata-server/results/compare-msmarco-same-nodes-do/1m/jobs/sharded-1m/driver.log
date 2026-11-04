@@ -1,0 +1,51 @@
+05:01:52 sharded-1m: waiting for its nodes
+05:03:11 sharded-1m: nodes sharded-1m-d-a1-3e2ydj sharded-1m-d-a1-3e2ydo and sharded-1m-c-a1-3e2yd2
+05:05:59 sharded-1m: step 1: compare.sh build
+05:09:25 sharded-1m: step 2: compare.sh up strata
+05:09:31 sharded-1m: step 3: compare.sh run strata
+05:16:36 sharded-1m: step 4: compare.sh run strata --label strata-pass2
+05:23:47 sharded-1m: step 5: compare.sh run strata --label strata-pass3
+05:30:58 sharded-1m: step 6: compare.sh down strata
+05:31:00 sharded-1m: step 7: compare.sh up es
+05:32:15 sharded-1m: step 8: compare.sh load es
+05:42:16 sharded-1m: step 9: compare.sh run es
+05:48:53 sharded-1m: step 10: compare.sh run es --label es-pass2
+05:54:42 sharded-1m: step 11: compare.sh run es --label es-pass3
+06:00:32 sharded-1m: step 12: compare.sh trial
+06:00:33 sharded-1m: step 13: compare.sh run es --kinds hybrid (RRF),hybrid (weighted) --paid --label es-trial
+06:01:48 sharded-1m: step 14: compare.sh writes es
+06:03:33 sharded-1m: step 15: compare.sh stream es
+06:06:17 sharded-1m: step 16: compare.sh down es
+06:06:21 sharded-1m: step 17: compare.sh up os
+06:07:31 sharded-1m: step 18: compare.sh load os
+06:21:06 sharded-1m: step 19: compare.sh run os
+06:28:05 sharded-1m: step 20: compare.sh run os --label os-pass2
+06:34:25 sharded-1m: step 21: compare.sh run os --label os-pass3
+06:40:44 sharded-1m: step 22: compare.sh writes os
+06:42:35 sharded-1m: step 23: compare.sh stream os
+06:45:13 sharded-1m: step 24: compare.sh down os
+06:45:16 sharded-1m: step 25: compare.sh up solr
+06:45:54 sharded-1m: step 26: compare.sh load solr
+07:04:41 sharded-1m: step 27: compare.sh run solr
+07:12:24 sharded-1m: step 28: compare.sh run solr --label solr-pass2
+07:19:13 sharded-1m: step 29: compare.sh run solr --label solr-pass3
+07:25:54 sharded-1m: step 30: compare.sh writes solr
+07:27:48 sharded-1m: step 31: compare.sh stream solr
+07:30:23 sharded-1m: step 32: compare.sh down solr
+07:30:54 sharded-1m: step 33: compare.sh up vespa
+07:33:13 sharded-1m: step 34: compare.sh load vespa
+07:59:44 sharded-1m: step 35: compare.sh run vespa
+08:06:10 sharded-1m: step 36: compare.sh run vespa --label vespa-pass2
+08:12:20 sharded-1m: step 37: compare.sh run vespa --label vespa-pass3
+08:18:24 sharded-1m: step 38: compare.sh writes vespa
+08:19:57 sharded-1m: step 39: compare.sh stream vespa
+08:23:25 sharded-1m: step 40: compare.sh down vespa
+08:23:30 sharded-1m: step 41: compare.sh up strata
+08:23:35 sharded-1m: step 42: compare.sh run strata --label strata-b
+08:30:53 sharded-1m: step 43: compare.sh run strata --label strata-b-pass2
+08:38:01 sharded-1m: step 44: compare.sh run strata --label strata-b-pass3
+08:45:09 sharded-1m: step 45: compare.sh writes strata
+08:46:21 sharded-1m: step 46: compare.sh stream strata
+08:48:56 sharded-1m: step 47: compare.sh down strata
+08:49:03 sharded-1m: reports fetched (39 files)
+08:49:05 sharded-1m: done after 13633 s
