@@ -1,0 +1,474 @@
+service/paradedb created
+pod/paradedb-0 created
+pod/paradedb-0 condition met
+job.batch/load-paradedb created
+paradedb: index created in 0.0 s
+paradedb: 25000 documents sent, 3 s
+paradedb: 50000 documents sent, 6 s
+paradedb: 75000 documents sent, 10 s
+paradedb: 100000 documents sent, 13 s
+paradedb: 125000 documents sent, 16 s
+paradedb: 150000 documents sent, 19 s
+paradedb: 175000 documents sent, 22 s
+paradedb: 200000 documents sent, 25 s
+paradedb: 225000 documents sent, 28 s
+paradedb: 250000 documents sent, 31 s
+paradedb: 275000 documents sent, 34 s
+paradedb: 300000 documents sent, 37 s
+paradedb: 325000 documents sent, 40 s
+paradedb: 350000 documents sent, 43 s
+paradedb: 375000 documents sent, 46 s
+paradedb: 400000 documents sent, 49 s
+paradedb: 425000 documents sent, 52 s
+paradedb: 450000 documents sent, 55 s
+paradedb: 475000 documents sent, 57 s
+paradedb: 500000 documents sent, 60 s
+paradedb: 525000 documents sent, 63 s
+paradedb: 550000 documents sent, 67 s
+paradedb: 575000 documents sent, 70 s
+paradedb: 600000 documents sent, 73 s
+paradedb: 625000 documents sent, 76 s
+paradedb: 650000 documents sent, 79 s
+paradedb: 675000 documents sent, 82 s
+paradedb: 700000 documents sent, 86 s
+paradedb: 725000 documents sent, 89 s
+paradedb: 750000 documents sent, 92 s
+paradedb: 775000 documents sent, 95 s
+paradedb: 800000 documents sent, 98 s
+paradedb: 825000 documents sent, 101 s
+paradedb: 850000 documents sent, 104 s
+paradedb: 875000 documents sent, 107 s
+paradedb: 900000 documents sent, 110 s
+paradedb: 925000 documents sent, 112 s
+paradedb: 950000 documents sent, 115 s
+paradedb: 975000 documents sent, 119 s
+paradedb: 1000000 documents sent, 122 s
+paradedb: 1025000 documents sent, 125 s
+paradedb: 1050000 documents sent, 128 s
+paradedb: 1075000 documents sent, 131 s
+paradedb: 1100000 documents sent, 134 s
+paradedb: 1125000 documents sent, 137 s
+paradedb: 1150000 documents sent, 140 s
+paradedb: 1175000 documents sent, 143 s
+paradedb: 1200000 documents sent, 147 s
+paradedb: 1225000 documents sent, 150 s
+paradedb: 1250000 documents sent, 153 s
+paradedb: 1275000 documents sent, 156 s
+paradedb: 1300000 documents sent, 159 s
+paradedb: 1325000 documents sent, 162 s
+paradedb: 1350000 documents sent, 165 s
+paradedb: 1375000 documents sent, 169 s
+paradedb: 1400000 documents sent, 172 s
+paradedb: 1425000 documents sent, 175 s
+paradedb: 1450000 documents sent, 178 s
+paradedb: 1475000 documents sent, 181 s
+paradedb: 1500000 documents sent, 184 s
+paradedb: 1525000 documents sent, 187 s
+paradedb: 1550000 documents sent, 190 s
+paradedb: 1575000 documents sent, 193 s
+paradedb: 1600000 documents sent, 196 s
+paradedb: 1625000 documents sent, 199 s
+paradedb: 1650000 documents sent, 202 s
+paradedb: 1675000 documents sent, 205 s
+paradedb: 1700000 documents sent, 208 s
+paradedb: 1725000 documents sent, 211 s
+paradedb: 1750000 documents sent, 214 s
+paradedb: 1775000 documents sent, 217 s
+paradedb: 1800000 documents sent, 220 s
+paradedb: 1825000 documents sent, 223 s
+paradedb: 1850000 documents sent, 226 s
+paradedb: 1875000 documents sent, 229 s
+paradedb: 1900000 documents sent, 232 s
+paradedb: 1925000 documents sent, 236 s
+paradedb: 1950000 documents sent, 239 s
+paradedb: 1975000 documents sent, 242 s
+paradedb: 2000000 documents sent, 245 s
+paradedb: 2025000 documents sent, 249 s
+paradedb: 2050000 documents sent, 252 s
+paradedb: 2075000 documents sent, 255 s
+paradedb: 2100000 documents sent, 258 s
+paradedb: 2125000 documents sent, 261 s
+paradedb: 2150000 documents sent, 264 s
+paradedb: 2175000 documents sent, 267 s
+paradedb: 2200000 documents sent, 270 s
+paradedb: 2225000 documents sent, 274 s
+paradedb: 2250000 documents sent, 277 s
+paradedb: 2275000 documents sent, 280 s
+paradedb: 2300000 documents sent, 283 s
+paradedb: 2325000 documents sent, 286 s
+paradedb: 2350000 documents sent, 290 s
+paradedb: 2375000 documents sent, 293 s
+paradedb: 2400000 documents sent, 296 s
+paradedb: 2425000 documents sent, 300 s
+paradedb: 2450000 documents sent, 302 s
+paradedb: 2475000 documents sent, 305 s
+paradedb: 2500000 documents sent, 308 s
+paradedb: 2525000 documents sent, 312 s
+paradedb: 2550000 documents sent, 315 s
+paradedb: 2575000 documents sent, 318 s
+paradedb: 2600000 documents sent, 322 s
+paradedb: 2625000 documents sent, 325 s
+paradedb: 2650000 documents sent, 328 s
+paradedb: 2675000 documents sent, 331 s
+paradedb: 2700000 documents sent, 334 s
+paradedb: 2725000 documents sent, 337 s
+paradedb: 2750000 documents sent, 340 s
+paradedb: 2775000 documents sent, 344 s
+paradedb: 2800000 documents sent, 347 s
+paradedb: 2825000 documents sent, 350 s
+paradedb: 2850000 documents sent, 353 s
+paradedb: 2875000 documents sent, 357 s
+paradedb: 2900000 documents sent, 360 s
+paradedb: 2925000 documents sent, 363 s
+paradedb: 2950000 documents sent, 366 s
+paradedb: 2975000 documents sent, 369 s
+paradedb: 3000000 documents sent, 372 s
+paradedb: 3025000 documents sent, 375 s
+paradedb: 3050000 documents sent, 378 s
+paradedb: 3075000 documents sent, 382 s
+paradedb: 3100000 documents sent, 385 s
+paradedb: 3125000 documents sent, 388 s
+paradedb: 3150000 documents sent, 392 s
+paradedb: 3175000 documents sent, 395 s
+paradedb: 3200000 documents sent, 398 s
+paradedb: 3225000 documents sent, 400 s
+paradedb: 3250000 documents sent, 404 s
+paradedb: 3275000 documents sent, 407 s
+paradedb: 3300000 documents sent, 410 s
+paradedb: 3325000 documents sent, 413 s
+paradedb: 3350000 documents sent, 416 s
+paradedb: 3375000 documents sent, 419 s
+paradedb: 3400000 documents sent, 422 s
+paradedb: 3425000 documents sent, 424 s
+paradedb: 3450000 documents sent, 427 s
+paradedb: 3475000 documents sent, 430 s
+paradedb: 3500000 documents sent, 433 s
+paradedb: 3525000 documents sent, 436 s
+paradedb: 3550000 documents sent, 439 s
+paradedb: 3575000 documents sent, 442 s
+paradedb: 3600000 documents sent, 445 s
+paradedb: 3625000 documents sent, 448 s
+paradedb: 3650000 documents sent, 450 s
+paradedb: 3675000 documents sent, 453 s
+paradedb: 3700000 documents sent, 456 s
+paradedb: 3725000 documents sent, 458 s
+paradedb: 3750000 documents sent, 461 s
+paradedb: 3775000 documents sent, 464 s
+paradedb: 3800000 documents sent, 466 s
+paradedb: 3825000 documents sent, 470 s
+paradedb: 3850000 documents sent, 473 s
+paradedb: 3875000 documents sent, 475 s
+paradedb: 3900000 documents sent, 478 s
+paradedb: 3925000 documents sent, 481 s
+paradedb: 3950000 documents sent, 484 s
+paradedb: 3975000 documents sent, 487 s
+paradedb: 4000000 documents sent, 490 s
+paradedb: 4025000 documents sent, 493 s
+paradedb: 4050000 documents sent, 496 s
+paradedb: 4075000 documents sent, 499 s
+paradedb: 4100000 documents sent, 502 s
+paradedb: 4125000 documents sent, 504 s
+paradedb: 4150000 documents sent, 508 s
+paradedb: 4175000 documents sent, 511 s
+paradedb: 4200000 documents sent, 514 s
+paradedb: 4225000 documents sent, 517 s
+paradedb: 4250000 documents sent, 519 s
+paradedb: 4275000 documents sent, 522 s
+paradedb: 4300000 documents sent, 525 s
+paradedb: 4325000 documents sent, 528 s
+paradedb: 4350000 documents sent, 531 s
+paradedb: 4375000 documents sent, 534 s
+paradedb: 4400000 documents sent, 536 s
+paradedb: 4425000 documents sent, 539 s
+paradedb: 4450000 documents sent, 542 s
+paradedb: 4475000 documents sent, 545 s
+paradedb: 4500000 documents sent, 548 s
+paradedb: 4525000 documents sent, 551 s
+paradedb: 4550000 documents sent, 554 s
+paradedb: 4575000 documents sent, 557 s
+paradedb: 4600000 documents sent, 560 s
+paradedb: 4625000 documents sent, 564 s
+paradedb: 4650000 documents sent, 567 s
+paradedb: 4675000 documents sent, 570 s
+paradedb: 4700000 documents sent, 573 s
+paradedb: 4725000 documents sent, 576 s
+paradedb: 4750000 documents sent, 579 s
+paradedb: 4775000 documents sent, 582 s
+paradedb: 4800000 documents sent, 584 s
+paradedb: 4825000 documents sent, 587 s
+paradedb: 4850000 documents sent, 590 s
+paradedb: 4875000 documents sent, 592 s
+paradedb: 4900000 documents sent, 595 s
+paradedb: 4925000 documents sent, 598 s
+paradedb: 4950000 documents sent, 602 s
+paradedb: 4975000 documents sent, 605 s
+paradedb: 5000000 documents sent, 608 s
+paradedb: 5025000 documents sent, 611 s
+paradedb: 5050000 documents sent, 614 s
+paradedb: 5075000 documents sent, 617 s
+paradedb: 5100000 documents sent, 620 s
+paradedb: 5125000 documents sent, 622 s
+paradedb: 5150000 documents sent, 625 s
+paradedb: 5175000 documents sent, 628 s
+paradedb: 5200000 documents sent, 631 s
+paradedb: 5225000 documents sent, 634 s
+paradedb: 5250000 documents sent, 637 s
+paradedb: 5275000 documents sent, 640 s
+paradedb: 5300000 documents sent, 643 s
+paradedb: 5325000 documents sent, 646 s
+paradedb: 5350000 documents sent, 648 s
+paradedb: 5375000 documents sent, 651 s
+paradedb: 5400000 documents sent, 654 s
+paradedb: 5425000 documents sent, 657 s
+paradedb: 5450000 documents sent, 660 s
+paradedb: 5475000 documents sent, 663 s
+paradedb: 5500000 documents sent, 666 s
+paradedb: 5525000 documents sent, 668 s
+paradedb: 5550000 documents sent, 671 s
+paradedb: 5575000 documents sent, 675 s
+paradedb: 5600000 documents sent, 678 s
+paradedb: 5625000 documents sent, 680 s
+paradedb: 5650000 documents sent, 684 s
+paradedb: 5675000 documents sent, 687 s
+paradedb: 5700000 documents sent, 690 s
+paradedb: 5725000 documents sent, 693 s
+paradedb: 5750000 documents sent, 696 s
+paradedb: 5775000 documents sent, 700 s
+paradedb: 5800000 documents sent, 702 s
+paradedb: 5825000 documents sent, 705 s
+paradedb: 5850000 documents sent, 708 s
+paradedb: 5875000 documents sent, 712 s
+paradedb: 5900000 documents sent, 714 s
+paradedb: 5925000 documents sent, 717 s
+paradedb: 5950000 documents sent, 720 s
+paradedb: 5975000 documents sent, 723 s
+paradedb: 6000000 documents sent, 726 s
+paradedb: 6025000 documents sent, 729 s
+paradedb: 6050000 documents sent, 732 s
+paradedb: 6075000 documents sent, 735 s
+paradedb: 6100000 documents sent, 739 s
+paradedb: 6125000 documents sent, 742 s
+paradedb: 6150000 documents sent, 745 s
+paradedb: 6175000 documents sent, 748 s
+paradedb: 6200000 documents sent, 751 s
+paradedb: 6225000 documents sent, 754 s
+paradedb: 6250000 documents sent, 757 s
+paradedb: 6275000 documents sent, 760 s
+paradedb: 6300000 documents sent, 764 s
+paradedb: 6325000 documents sent, 767 s
+paradedb: 6350000 documents sent, 771 s
+paradedb: 6375000 documents sent, 774 s
+paradedb: 6400000 documents sent, 777 s
+paradedb: 6425000 documents sent, 780 s
+paradedb: 6450000 documents sent, 783 s
+paradedb: 6475000 documents sent, 786 s
+paradedb: 6500000 documents sent, 790 s
+paradedb: 6525000 documents sent, 793 s
+paradedb: 6550000 documents sent, 796 s
+paradedb: 6575000 documents sent, 799 s
+paradedb: 6600000 documents sent, 803 s
+paradedb: 6625000 documents sent, 806 s
+paradedb: 6650000 documents sent, 809 s
+paradedb: 6675000 documents sent, 812 s
+paradedb: 6700000 documents sent, 815 s
+paradedb: 6725000 documents sent, 818 s
+paradedb: 6750000 documents sent, 822 s
+paradedb: 6775000 documents sent, 825 s
+paradedb: 6800000 documents sent, 828 s
+paradedb: 6825000 documents sent, 831 s
+paradedb: 6850000 documents sent, 833 s
+paradedb: 6875000 documents sent, 836 s
+paradedb: 6900000 documents sent, 839 s
+paradedb: 6925000 documents sent, 842 s
+paradedb: 6950000 documents sent, 846 s
+paradedb: 6975000 documents sent, 849 s
+paradedb: 7000000 documents sent, 852 s
+paradedb: 7025000 documents sent, 855 s
+paradedb: 7050000 documents sent, 858 s
+paradedb: 7075000 documents sent, 861 s
+paradedb: 7100000 documents sent, 864 s
+paradedb: 7125000 documents sent, 867 s
+paradedb: 7150000 documents sent, 869 s
+paradedb: 7175000 documents sent, 872 s
+paradedb: 7200000 documents sent, 875 s
+paradedb: 7225000 documents sent, 878 s
+paradedb: 7250000 documents sent, 880 s
+paradedb: 7275000 documents sent, 883 s
+paradedb: 7300000 documents sent, 886 s
+paradedb: 7325000 documents sent, 889 s
+paradedb: 7350000 documents sent, 892 s
+paradedb: 7375000 documents sent, 895 s
+paradedb: 7400000 documents sent, 898 s
+paradedb: 7425000 documents sent, 900 s
+paradedb: 7450000 documents sent, 903 s
+paradedb: 7475000 documents sent, 906 s
+paradedb: 7500000 documents sent, 909 s
+paradedb: 7525000 documents sent, 912 s
+paradedb: 7550000 documents sent, 914 s
+paradedb: 7575000 documents sent, 917 s
+paradedb: 7600000 documents sent, 920 s
+paradedb: 7625000 documents sent, 923 s
+paradedb: 7650000 documents sent, 925 s
+paradedb: 7675000 documents sent, 928 s
+paradedb: 7700000 documents sent, 931 s
+paradedb: 7725000 documents sent, 934 s
+paradedb: 7750000 documents sent, 937 s
+paradedb: 7775000 documents sent, 939 s
+paradedb: 7800000 documents sent, 942 s
+paradedb: 7825000 documents sent, 945 s
+paradedb: 7850000 documents sent, 948 s
+paradedb: 7875000 documents sent, 952 s
+paradedb: 7900000 documents sent, 955 s
+paradedb: 7925000 documents sent, 958 s
+paradedb: 7950000 documents sent, 961 s
+paradedb: 7975000 documents sent, 963 s
+paradedb: 8000000 documents sent, 967 s
+paradedb: 8025000 documents sent, 970 s
+paradedb: 8050000 documents sent, 973 s
+paradedb: 8075000 documents sent, 976 s
+paradedb: 8100000 documents sent, 979 s
+paradedb: 8125000 documents sent, 982 s
+paradedb: 8150000 documents sent, 985 s
+paradedb: 8175000 documents sent, 988 s
+paradedb: 8200000 documents sent, 992 s
+paradedb: 8225000 documents sent, 995 s
+paradedb: 8250000 documents sent, 998 s
+paradedb: 8275000 documents sent, 1001 s
+paradedb: 8300000 documents sent, 1005 s
+paradedb: 8325000 documents sent, 1007 s
+paradedb: 8350000 documents sent, 1010 s
+paradedb: 8375000 documents sent, 1014 s
+paradedb: 8400000 documents sent, 1017 s
+paradedb: 8425000 documents sent, 1020 s
+paradedb: 8450000 documents sent, 1023 s
+paradedb: 8475000 documents sent, 1026 s
+paradedb: 8500000 documents sent, 1028 s
+paradedb: 8525000 documents sent, 1031 s
+paradedb: 8550000 documents sent, 1034 s
+paradedb: 8575000 documents sent, 1037 s
+paradedb: 8600000 documents sent, 1040 s
+paradedb: 8625000 documents sent, 1043 s
+paradedb: 8650000 documents sent, 1046 s
+paradedb: 8675000 documents sent, 1049 s
+paradedb: 8700000 documents sent, 1052 s
+paradedb: 8725000 documents sent, 1055 s
+paradedb: 8750000 documents sent, 1058 s
+paradedb: 8775000 documents sent, 1061 s
+paradedb: 8800000 documents sent, 1063 s
+paradedb: 8825000 documents sent, 1066 s
+paradedb: 8850000 documents sent, 1069 s
+paradedb: 8875000 documents sent, 1072 s
+paradedb: 8900000 documents sent, 1075 s
+paradedb: 8925000 documents sent, 1078 s
+paradedb: 8950000 documents sent, 1081 s
+paradedb: 8975000 documents sent, 1084 s
+paradedb: 9000000 documents sent, 1086 s
+paradedb: 9025000 documents sent, 1089 s
+paradedb: 9050000 documents sent, 1092 s
+paradedb: 9075000 documents sent, 1095 s
+paradedb: 9100000 documents sent, 1098 s
+paradedb: 9125000 documents sent, 1101 s
+paradedb: 9150000 documents sent, 1104 s
+paradedb: 9175000 documents sent, 1107 s
+paradedb: 9200000 documents sent, 1110 s
+paradedb: 9225000 documents sent, 1113 s
+paradedb: 9250000 documents sent, 1116 s
+paradedb: 9275000 documents sent, 1119 s
+paradedb: 9300000 documents sent, 1122 s
+paradedb: 9325000 documents sent, 1125 s
+paradedb: 9350000 documents sent, 1128 s
+paradedb: 9375000 documents sent, 1131 s
+paradedb: 9400000 documents sent, 1134 s
+paradedb: 9425000 documents sent, 1138 s
+paradedb: 9450000 documents sent, 1141 s
+paradedb: 9475000 documents sent, 1144 s
+paradedb: 9500000 documents sent, 1147 s
+paradedb: 9525000 documents sent, 1151 s
+paradedb: 9550000 documents sent, 1154 s
+paradedb: 9575000 documents sent, 1157 s
+paradedb: 9600000 documents sent, 1161 s
+paradedb: 9625000 documents sent, 1164 s
+paradedb: 9650000 documents sent, 1167 s
+paradedb: 9675000 documents sent, 1170 s
+paradedb: 9700000 documents sent, 1173 s
+paradedb: 9725000 documents sent, 1176 s
+paradedb: 9750000 documents sent, 1179 s
+paradedb: 9775000 documents sent, 1182 s
+paradedb: 9800000 documents sent, 1185 s
+paradedb: 9825000 documents sent, 1188 s
+paradedb: 9850000 documents sent, 1191 s
+paradedb: 9875000 documents sent, 1194 s
+paradedb: 9900000 documents sent, 1197 s
+paradedb: 9925000 documents sent, 1200 s
+paradedb: 9950000 documents sent, 1203 s
+paradedb: 9975000 documents sent, 1206 s
+paradedb: 10000000 documents sent, 1209 s
+paradedb: 10000000 documents (106.9 GB) sent in 1209.2 s
+paradedb: primary_key_s in 38.4 s
+read tcp 127.0.0.1:52028->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:52028->127.0.0.1:36447: read: connection reset by peer
+paradedb: search_index_s in 1299.6 s
+paradedb: analyze_s in 24.1 s
+paradedb: indexed 1362.2 s after the last write; 2571.4 s in all
+wrote /data/compare/load-paradedb.json
+job.batch/run-paradedb created
+paradedb  bm25                     warm-up: p50 37.153, 37.193 ms
+paradedb  bm25                     c=1         58 q/s  p50  16.396 ms  p90  20.971 ms  p99  31.541 ms  errors 0
+paradedb  bm25                     c=4        110 q/s  p50  36.500 ms  p90  48.458 ms  p99  69.259 ms  errors 0
+paradedb  bm25                     c=16       252 q/s  p50  59.451 ms  p90 105.360 ms  p99 193.538 ms  errors 0
+paradedb  bm25 + filter            warm-up: p50 59.471, 56.597 ms
+paradedb  bm25 + filter            c=1         36 q/s  p50  27.040 ms  p90  35.388 ms  p99  42.549 ms  errors 0
+paradedb  bm25 + filter            c=4         65 q/s  p50  58.595 ms  p90  82.895 ms  p99 115.691 ms  errors 0
+paradedb  bm25 + filter            c=16        98 q/s  p50 145.277 ms  p90 232.835 ms  p99 485.827 ms  errors 0
+paradedb  vector                   warm-up: p50 77.746, 78.210 ms
+paradedb  vector                   c=1         30 q/s  p50  32.264 ms  p90  38.182 ms  p99  43.094 ms  errors 0
+paradedb  vector                   c=4         53 q/s  p50  74.181 ms  p90  93.117 ms  p99 106.042 ms  errors 0
+paradedb  vector                   c=16        72 q/s  p50 203.580 ms  p90 304.957 ms  p99 444.387 ms  errors 0
+paradedb  vector + filter          warm-up: p50 221.783, 220.775 ms
+paradedb  vector + filter          c=1         12 q/s  p50  79.901 ms  p90  88.790 ms  p99  92.113 ms  errors 0
+paradedb  vector + filter          c=4         17 q/s  p50 226.081 ms  p90 303.083 ms  p99 366.679 ms  errors 0
+paradedb  vector + filter          c=16        20 q/s  p50 739.743 ms  p90 1246.274 ms  p99 1409.115 ms  errors 0
+paradedb  hybrid (RRF)             warm-up: p50 163.436, 155.431 ms
+paradedb  hybrid (RRF)             c=1         16 q/s  p50  61.458 ms  p90  75.486 ms  p99 126.314 ms  errors 0
+paradedb  hybrid (RRF)             c=4         24 q/s  p50 160.062 ms  p90 215.488 ms  p99 361.056 ms  errors 0
+paradedb  hybrid (RRF)             c=16        32 q/s  p50 462.393 ms  p90 732.028 ms  p99 1093.752 ms  errors 0
+paradedb  hybrid (weighted)        warm-up: p50 162.225, 171.132 ms
+paradedb  hybrid (weighted)        c=1         15 q/s  p50  66.565 ms  p90  76.954 ms  p99  95.258 ms  errors 0
+paradedb  hybrid (weighted)        c=4         24 q/s  p50 165.903 ms  p90 203.938 ms  p99 247.786 ms  errors 0
+paradedb  hybrid (weighted)        c=16        31 q/s  p50 465.836 ms  p90 726.156 ms  p99 942.767 ms  errors 0
+read tcp 127.0.0.1:41158->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:41158->127.0.0.1:36447: read: connection reset by peer
+paradedb  boosted (bm25 × decay)   warm-up: p50 6524.694, 6604.913 ms
+paradedb  boosted (bm25 × decay)   c=1          0 q/s  p50 6187.228 ms  p90 6187.228 ms  p99 6187.228 ms  errors 0
+paradedb  boosted (bm25 × decay)   c=4          0 q/s  p50 6503.113 ms  p90 15524.468 ms  p99 15524.468 ms  errors 0
+paradedb  boosted (bm25 × decay)   c=16         0 q/s  p50 36347.376 ms  p90 49713.564 ms  p99 52559.698 ms  errors 0
+paradedb  facet                    warm-up: p50 18.163, 16.697 ms
+paradedb  facet                    c=1         49 q/s  p50  12.153 ms  p90  60.802 ms  p99 118.908 ms  errors 0
+paradedb  facet                    c=4         96 q/s  p50  15.902 ms  p90 128.316 ms  p99 301.473 ms  errors 0
+paradedb  facet                    c=16        86 q/s  p50  50.801 ms  p90 311.230 ms  p99 3485.218 ms  errors 0
+paradedb  key lookup               warm-up: p50 0.447, 0.476 ms
+paradedb  key lookup               c=1       2231 q/s  p50   0.405 ms  p90   0.577 ms  p99   0.896 ms  errors 0
+paradedb  key lookup               c=4       8618 q/s  p50   0.456 ms  p90   0.538 ms  p99   0.599 ms  errors 0
+paradedb  key lookup               c=16     22173 q/s  p50   0.581 ms  p90   1.061 ms  p99   1.912 ms  errors 0
+paradedb  phrase                   warm-up: p50 9.552, 10.041 ms
+paradedb  phrase                   c=1         86 q/s  p50   7.120 ms  p90  25.243 ms  p99  57.352 ms  errors 0
+paradedb  phrase                   c=4        212 q/s  p50  10.226 ms  p90  46.237 ms  p99  97.215 ms  errors 0
+paradedb  phrase                   c=16       245 q/s  p50  37.709 ms  p90 145.768 ms  p99 382.188 ms  errors 0
+paradedb  typo                     warm-up: p50 723.634, 709.568 ms
+paradedb  typo                     c=1          5 q/s  p50 206.357 ms  p90 276.809 ms  p99 325.732 ms  errors 0
+paradedb  typo                     c=4          5 q/s  p50 697.952 ms  p90 1126.083 ms  p99 2341.296 ms  errors 0
+paradedb  typo                     c=16         5 q/s  p50 2243.803 ms  p90 6329.888 ms  p99 7059.290 ms  errors 0
+paradedb  prefix                   warm-up: p50 119.660, 118.905 ms
+paradedb  prefix                   c=1         20 q/s  p50  45.197 ms  p90  76.110 ms  p99 111.998 ms  errors 0
+paradedb  prefix                   c=4         29 q/s  p50 117.317 ms  p90 200.766 ms  p99 402.086 ms  errors 0
+paradedb  prefix                   c=16        35 q/s  p50 364.598 ms  p90 902.063 ms  p99 1437.416 ms  errors 0
+paradedb  similar items            warm-up: p50 3286.498, 3792.760, 3511.344 ms
+paradedb  similar items            c=1          1 q/s  p50 1153.724 ms  p90 1168.002 ms  p99 1168.002 ms  errors 0
+paradedb  similar items            c=4          1 q/s  p50 3352.996 ms  p90 4032.690 ms  p99 6927.476 ms  errors 0
+paradedb  similar items            c=16         1 q/s  p50 14652.353 ms  p90 15635.887 ms  p99 15685.605 ms  errors 0
+paradedb  sql aggregate            warm-up: p50 721.412, 997.097, 994.342 ms
+paradedb  sql aggregate            c=1          5 q/s  p50 196.715 ms  p90 268.571 ms  p99 282.337 ms  errors 0
+paradedb  sql aggregate            c=4          4 q/s  p50 825.052 ms  p90 1366.286 ms  p99 2859.518 ms  errors 0
+paradedb  sql aggregate            c=16         6 q/s  p50 2175.737 ms  p90 3964.276 ms  p99 6709.683 ms  errors 0
+wrote /data/compare/run-paradedb.json
+pod "paradedb-0" deleted from paradedb namespace

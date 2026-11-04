@@ -1,0 +1,6 @@
+NAME                READY   STATUS      RESTARTS   AGE     IP              NODE               NOMINATED NODE   READINESS GATES
+load-solr-4lknh     0/1     Completed   0          5h42m   10.150.17.164   solr-c-a2-3et3jk   <none>           <none>
+run-solr-kf2nr      0/1     Completed   0          84m     10.150.17.202   solr-c-a2-3et3jk   <none>           <none>
+solr-0              1/1     Running     0          5h43m   10.150.16.237   solr-d-a2-3et3j5   <none>           <none>
+solr-1              1/1     Running     0          5h43m   10.150.17.4     solr-d-a2-3et3js   <none>           <none>
+writes-solr-fqwx5   0/1     Error       0          39s     10.150.17.137   solr-c-a2-3et3jk   <none>           <none>

@@ -1,0 +1,519 @@
+service/solr created
+pod/solr-0 created
+pod/solr-0 condition met
+pod/solr-1 created
+pod/solr-1 condition met
+job.batch/load-solr created
+solr: index created in 4.5 s
+solr: 25000 documents sent, 15 s
+solr: 50000 documents sent, 29 s
+solr: 75000 documents sent, 41 s
+solr: 100000 documents sent, 52 s
+solr: 125000 documents sent, 63 s
+solr: 150000 documents sent, 77 s
+solr: 175000 documents sent, 91 s
+solr: 200000 documents sent, 102 s
+solr: 225000 documents sent, 114 s
+solr: 250000 documents sent, 125 s
+solr: 275000 documents sent, 137 s
+solr: 300000 documents sent, 147 s
+solr: 325000 documents sent, 159 s
+solr: 350000 documents sent, 172 s
+solr: 375000 documents sent, 184 s
+solr: 400000 documents sent, 200 s
+solr: 425000 documents sent, 211 s
+solr: 450000 documents sent, 224 s
+solr: 475000 documents sent, 239 s
+solr: 500000 documents sent, 252 s
+solr: 525000 documents sent, 265 s
+solr: 550000 documents sent, 279 s
+solr: 575000 documents sent, 292 s
+solr: 600000 documents sent, 304 s
+solr: 625000 documents sent, 319 s
+solr: 650000 documents sent, 335 s
+solr: 675000 documents sent, 348 s
+solr: 700000 documents sent, 364 s
+solr: 725000 documents sent, 377 s
+solr: 750000 documents sent, 393 s
+solr: 775000 documents sent, 407 s
+solr: 800000 documents sent, 422 s
+solr: 825000 documents sent, 439 s
+solr: 850000 documents sent, 454 s
+solr: 875000 documents sent, 471 s
+solr: 900000 documents sent, 486 s
+solr: 925000 documents sent, 503 s
+solr: 950000 documents sent, 522 s
+solr: 975000 documents sent, 546 s
+solr: 1000000 documents sent, 565 s
+solr: 1025000 documents sent, 580 s
+solr: 1050000 documents sent, 598 s
+solr: 1075000 documents sent, 617 s
+solr: 1100000 documents sent, 634 s
+solr: 1125000 documents sent, 650 s
+solr: 1150000 documents sent, 665 s
+solr: 1175000 documents sent, 681 s
+solr: 1200000 documents sent, 696 s
+solr: 1225000 documents sent, 715 s
+solr: 1250000 documents sent, 734 s
+solr: 1275000 documents sent, 756 s
+solr: 1300000 documents sent, 771 s
+solr: 1325000 documents sent, 789 s
+solr: 1350000 documents sent, 806 s
+solr: 1375000 documents sent, 826 s
+solr: 1400000 documents sent, 879 s
+solr: 1425000 documents sent, 894 s
+solr: 1450000 documents sent, 910 s
+solr: 1475000 documents sent, 924 s
+solr: 1500000 documents sent, 942 s
+solr: 1525000 documents sent, 955 s
+solr: 1550000 documents sent, 969 s
+solr: 1575000 documents sent, 982 s
+solr: 1600000 documents sent, 998 s
+solr: 1625000 documents sent, 1016 s
+solr: 1650000 documents sent, 1032 s
+solr: 1675000 documents sent, 1052 s
+solr: 1700000 documents sent, 1066 s
+solr: 1725000 documents sent, 1084 s
+solr: 1750000 documents sent, 1103 s
+solr: 1775000 documents sent, 1115 s
+solr: 1800000 documents sent, 1132 s
+solr: 1825000 documents sent, 1145 s
+solr: 1850000 documents sent, 1160 s
+solr: 1875000 documents sent, 1180 s
+solr: 1900000 documents sent, 1192 s
+solr: 1925000 documents sent, 1207 s
+solr: 1950000 documents sent, 1221 s
+solr: 1975000 documents sent, 1237 s
+solr: 2000000 documents sent, 1256 s
+solr: 2025000 documents sent, 1269 s
+solr: 2050000 documents sent, 1283 s
+solr: 2075000 documents sent, 1298 s
+solr: 2100000 documents sent, 1311 s
+solr: 2125000 documents sent, 1337 s
+solr: 2150000 documents sent, 1349 s
+solr: 2175000 documents sent, 1365 s
+solr: 2200000 documents sent, 1380 s
+solr: 2225000 documents sent, 1396 s
+solr: 2250000 documents sent, 1411 s
+solr: 2275000 documents sent, 1430 s
+solr: 2300000 documents sent, 1446 s
+solr: 2325000 documents sent, 1466 s
+solr: 2350000 documents sent, 1480 s
+solr: 2375000 documents sent, 1494 s
+solr: 2400000 documents sent, 1507 s
+solr: 2425000 documents sent, 1522 s
+solr: 2450000 documents sent, 1537 s
+solr: 2475000 documents sent, 1578 s
+solr: 2500000 documents sent, 1592 s
+solr: 2525000 documents sent, 1612 s
+solr: 2550000 documents sent, 1628 s
+solr: 2575000 documents sent, 1672 s
+solr: 2600000 documents sent, 1687 s
+solr: 2625000 documents sent, 1698 s
+solr: 2650000 documents sent, 1712 s
+solr: 2675000 documents sent, 1727 s
+solr: 2700000 documents sent, 1741 s
+solr: 2725000 documents sent, 1756 s
+solr: 2750000 documents sent, 1772 s
+solr: 2775000 documents sent, 1787 s
+solr: 2800000 documents sent, 1804 s
+solr: 2825000 documents sent, 1819 s
+solr: 2850000 documents sent, 1833 s
+solr: 2875000 documents sent, 1850 s
+solr: 2900000 documents sent, 1866 s
+solr: 2925000 documents sent, 1882 s
+solr: 2950000 documents sent, 1902 s
+solr: 2975000 documents sent, 1917 s
+solr: 3000000 documents sent, 1933 s
+solr: 3025000 documents sent, 1952 s
+solr: 3050000 documents sent, 1967 s
+solr: 3075000 documents sent, 1983 s
+solr: 3100000 documents sent, 2002 s
+solr: 3125000 documents sent, 2023 s
+solr: 3150000 documents sent, 2048 s
+solr: 3175000 documents sent, 2069 s
+solr: 3200000 documents sent, 2094 s
+solr: 3225000 documents sent, 2107 s
+solr: 3250000 documents sent, 2120 s
+solr: 3275000 documents sent, 2137 s
+solr: 3300000 documents sent, 2151 s
+solr: 3325000 documents sent, 2171 s
+solr: 3350000 documents sent, 2185 s
+solr: 3375000 documents sent, 2199 s
+solr: 3400000 documents sent, 2214 s
+solr: 3425000 documents sent, 2230 s
+solr: 3450000 documents sent, 2245 s
+solr: 3475000 documents sent, 2263 s
+solr: 3500000 documents sent, 2281 s
+solr: 3525000 documents sent, 2300 s
+solr: 3550000 documents sent, 2326 s
+solr: 3575000 documents sent, 2355 s
+solr: 3600000 documents sent, 2367 s
+solr: 3625000 documents sent, 2380 s
+solr: 3650000 documents sent, 2394 s
+solr: 3675000 documents sent, 2411 s
+solr: 3700000 documents sent, 2428 s
+solr: 3725000 documents sent, 2447 s
+solr: 3750000 documents sent, 2467 s
+solr: 3775000 documents sent, 2502 s
+solr: 3800000 documents sent, 2516 s
+solr: 3825000 documents sent, 2530 s
+solr: 3850000 documents sent, 2544 s
+solr: 3875000 documents sent, 2559 s
+solr: 3900000 documents sent, 2573 s
+solr: 3925000 documents sent, 2589 s
+solr: 3950000 documents sent, 2603 s
+solr: 3975000 documents sent, 2619 s
+solr: 4000000 documents sent, 2633 s
+solr: 4025000 documents sent, 2648 s
+solr: 4050000 documents sent, 2667 s
+solr: 4075000 documents sent, 2685 s
+solr: 4100000 documents sent, 2699 s
+solr: 4125000 documents sent, 2717 s
+solr: 4150000 documents sent, 2734 s
+solr: 4175000 documents sent, 2751 s
+solr: 4200000 documents sent, 2769 s
+solr: 4225000 documents sent, 2790 s
+solr: 4250000 documents sent, 2811 s
+solr: 4275000 documents sent, 2829 s
+solr: 4300000 documents sent, 2847 s
+solr: 4325000 documents sent, 2868 s
+solr: 4350000 documents sent, 2890 s
+solr: 4375000 documents sent, 2944 s
+solr: 4400000 documents sent, 2960 s
+solr: 4425000 documents sent, 2974 s
+solr: 4450000 documents sent, 2997 s
+solr: 4475000 documents sent, 3013 s
+solr: 4500000 documents sent, 3027 s
+solr: 4525000 documents sent, 3040 s
+solr: 4550000 documents sent, 3059 s
+solr: 4575000 documents sent, 3074 s
+solr: 4600000 documents sent, 3138 s
+solr: 4625000 documents sent, 3151 s
+solr: 4650000 documents sent, 3163 s
+solr: 4675000 documents sent, 3178 s
+solr: 4700000 documents sent, 3190 s
+solr: 4725000 documents sent, 3204 s
+solr: 4750000 documents sent, 3219 s
+solr: 4775000 documents sent, 3237 s
+solr: 4800000 documents sent, 3259 s
+solr: 4825000 documents sent, 3275 s
+solr: 4850000 documents sent, 3295 s
+solr: 4875000 documents sent, 3320 s
+solr: 4900000 documents sent, 3341 s
+solr: 4925000 documents sent, 3357 s
+solr: 4950000 documents sent, 3380 s
+solr: 4975000 documents sent, 3396 s
+solr: 5000000 documents sent, 3409 s
+solr: 5025000 documents sent, 3438 s
+solr: 5050000 documents sent, 3454 s
+solr: 5075000 documents sent, 3471 s
+solr: 5100000 documents sent, 3491 s
+solr: 5125000 documents sent, 3507 s
+solr: 5150000 documents sent, 3520 s
+solr: 5175000 documents sent, 3538 s
+solr: 5200000 documents sent, 3559 s
+solr: 5225000 documents sent, 3584 s
+solr: 5250000 documents sent, 3606 s
+solr: 5275000 documents sent, 3619 s
+solr: 5300000 documents sent, 3637 s
+solr: 5325000 documents sent, 3685 s
+solr: 5350000 documents sent, 3704 s
+solr: 5375000 documents sent, 3723 s
+solr: 5400000 documents sent, 3747 s
+solr: 5425000 documents sent, 3766 s
+solr: 5450000 documents sent, 3780 s
+solr: 5475000 documents sent, 3794 s
+solr: 5500000 documents sent, 3809 s
+solr: 5525000 documents sent, 3824 s
+solr: 5550000 documents sent, 3841 s
+solr: 5575000 documents sent, 3860 s
+solr: 5600000 documents sent, 3881 s
+solr: 5625000 documents sent, 3900 s
+solr: 5650000 documents sent, 3915 s
+solr: 5675000 documents sent, 3933 s
+solr: 5700000 documents sent, 3946 s
+solr: 5725000 documents sent, 3961 s
+solr: 5750000 documents sent, 3976 s
+solr: 5775000 documents sent, 3990 s
+solr: 5800000 documents sent, 4026 s
+solr: 5825000 documents sent, 4037 s
+solr: 5850000 documents sent, 4052 s
+solr: 5875000 documents sent, 4068 s
+solr: 5900000 documents sent, 4085 s
+solr: 5925000 documents sent, 4102 s
+solr: 5950000 documents sent, 4116 s
+solr: 5975000 documents sent, 4147 s
+read tcp 127.0.0.1:40218->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:40218->127.0.0.1:36447: read: connection reset by peer
+solr: 6000000 documents sent, 4162 s
+solr: 6025000 documents sent, 4197 s
+solr: 6050000 documents sent, 4211 s
+solr: 6075000 documents sent, 4228 s
+solr: 6100000 documents sent, 4267 s
+solr: 6125000 documents sent, 4278 s
+solr: 6150000 documents sent, 4294 s
+solr: 6175000 documents sent, 4312 s
+solr: 6200000 documents sent, 4329 s
+solr: 6225000 documents sent, 4371 s
+solr: 6250000 documents sent, 4387 s
+solr: 6275000 documents sent, 4402 s
+solr: 6300000 documents sent, 4419 s
+solr: 6325000 documents sent, 4442 s
+solr: 6350000 documents sent, 4467 s
+solr: 6375000 documents sent, 4482 s
+solr: 6400000 documents sent, 4500 s
+solr: 6425000 documents sent, 4514 s
+solr: 6450000 documents sent, 4533 s
+solr: 6475000 documents sent, 4551 s
+solr: 6500000 documents sent, 4576 s
+solr: 6525000 documents sent, 4592 s
+solr: 6550000 documents sent, 4611 s
+solr: 6575000 documents sent, 4631 s
+solr: 6600000 documents sent, 4653 s
+solr: 6625000 documents sent, 4665 s
+solr: 6650000 documents sent, 4679 s
+solr: 6675000 documents sent, 4693 s
+solr: 6700000 documents sent, 4709 s
+solr: 6725000 documents sent, 4722 s
+solr: 6750000 documents sent, 4762 s
+solr: 6775000 documents sent, 4775 s
+solr: 6800000 documents sent, 4790 s
+solr: 6825000 documents sent, 4809 s
+solr: 6850000 documents sent, 4824 s
+solr: 6875000 documents sent, 4839 s
+solr: 6900000 documents sent, 4859 s
+solr: 6925000 documents sent, 4888 s
+solr: 6950000 documents sent, 4905 s
+solr: 6975000 documents sent, 4932 s
+solr: 7000000 documents sent, 4959 s
+solr: 7025000 documents sent, 4995 s
+solr: 7050000 documents sent, 5035 s
+solr: 7075000 documents sent, 5075 s
+solr: 7100000 documents sent, 5112 s
+solr: 7125000 documents sent, 5153 s
+solr: 7150000 documents sent, 5174 s
+solr: 7175000 documents sent, 5191 s
+solr: 7200000 documents sent, 5210 s
+solr: 7225000 documents sent, 5232 s
+solr: 7250000 documents sent, 5255 s
+solr: 7275000 documents sent, 5276 s
+solr: 7300000 documents sent, 5294 s
+solr: 7325000 documents sent, 5309 s
+solr: 7350000 documents sent, 5322 s
+solr: 7375000 documents sent, 5340 s
+solr: 7400000 documents sent, 5354 s
+solr: 7425000 documents sent, 5367 s
+solr: 7450000 documents sent, 5383 s
+solr: 7475000 documents sent, 5396 s
+solr: 7500000 documents sent, 5409 s
+solr: 7525000 documents sent, 5423 s
+solr: 7550000 documents sent, 5441 s
+solr: 7575000 documents sent, 5456 s
+solr: 7600000 documents sent, 5466 s
+solr: 7625000 documents sent, 5480 s
+solr: 7650000 documents sent, 5493 s
+solr: 7675000 documents sent, 5509 s
+solr: 7700000 documents sent, 5522 s
+solr: 7725000 documents sent, 5546 s
+solr: 7750000 documents sent, 5563 s
+solr: 7775000 documents sent, 5590 s
+solr: 7800000 documents sent, 5603 s
+solr: 7825000 documents sent, 5618 s
+solr: 7850000 documents sent, 5642 s
+solr: 7875000 documents sent, 5655 s
+solr: 7900000 documents sent, 5671 s
+solr: 7925000 documents sent, 5687 s
+solr: 7950000 documents sent, 5704 s
+solr: 7975000 documents sent, 5723 s
+solr: 8000000 documents sent, 5739 s
+solr: 8025000 documents sent, 5757 s
+solr: 8050000 documents sent, 5772 s
+solr: 8075000 documents sent, 5792 s
+solr: 8100000 documents sent, 5809 s
+solr: 8125000 documents sent, 5826 s
+solr: 8150000 documents sent, 5845 s
+solr: 8175000 documents sent, 5866 s
+solr: 8200000 documents sent, 5882 s
+solr: 8225000 documents sent, 5900 s
+solr: 8250000 documents sent, 5946 s
+solr: 8275000 documents sent, 5960 s
+solr: 8300000 documents sent, 5992 s
+solr: 8325000 documents sent, 6004 s
+solr: 8350000 documents sent, 6019 s
+solr: 8375000 documents sent, 6035 s
+solr: 8400000 documents sent, 6051 s
+solr: 8425000 documents sent, 6065 s
+solr: 8450000 documents sent, 6081 s
+solr: 8475000 documents sent, 6098 s
+solr: 8500000 documents sent, 6113 s
+solr: 8525000 documents sent, 6132 s
+solr: 8550000 documents sent, 6188 s
+solr: 8575000 documents sent, 6201 s
+solr: 8600000 documents sent, 6218 s
+solr: 8625000 documents sent, 6236 s
+solr: 8650000 documents sent, 6265 s
+solr: 8675000 documents sent, 6281 s
+solr: 8700000 documents sent, 6296 s
+solr: 8725000 documents sent, 6314 s
+solr: 8750000 documents sent, 6333 s
+solr: 8775000 documents sent, 6350 s
+solr: 8800000 documents sent, 6371 s
+solr: 8825000 documents sent, 6394 s
+solr: 8850000 documents sent, 6419 s
+solr: 8875000 documents sent, 6443 s
+solr: 8900000 documents sent, 6465 s
+solr: 8925000 documents sent, 6485 s
+solr: 8950000 documents sent, 6499 s
+solr: 8975000 documents sent, 6517 s
+solr: 9000000 documents sent, 6540 s
+solr: 9025000 documents sent, 6554 s
+solr: 9050000 documents sent, 6571 s
+solr: 9075000 documents sent, 6589 s
+solr: 9100000 documents sent, 6609 s
+solr: 9125000 documents sent, 6628 s
+solr: 9150000 documents sent, 6664 s
+solr: 9175000 documents sent, 6682 s
+solr: 9200000 documents sent, 6699 s
+solr: 9225000 documents sent, 6721 s
+solr: 9250000 documents sent, 6739 s
+solr: 9275000 documents sent, 6759 s
+solr: 9300000 documents sent, 6780 s
+solr: 9325000 documents sent, 6800 s
+solr: 9350000 documents sent, 6825 s
+solr: 9375000 documents sent, 6843 s
+solr: 9400000 documents sent, 6903 s
+solr: 9425000 documents sent, 6918 s
+solr: 9450000 documents sent, 6932 s
+solr: 9475000 documents sent, 6945 s
+solr: 9500000 documents sent, 6959 s
+solr: 9525000 documents sent, 6973 s
+solr: 9550000 documents sent, 6983 s
+solr: 9575000 documents sent, 6995 s
+solr: 9600000 documents sent, 7008 s
+solr: 9625000 documents sent, 7022 s
+solr: 9650000 documents sent, 7037 s
+solr: 9675000 documents sent, 7052 s
+solr: 9700000 documents sent, 7068 s
+solr: 9725000 documents sent, 7086 s
+solr: 9750000 documents sent, 7099 s
+solr: 9775000 documents sent, 7115 s
+solr: 9800000 documents sent, 7128 s
+solr: 9825000 documents sent, 7143 s
+solr: 9850000 documents sent, 7161 s
+solr: 9875000 documents sent, 7212 s
+solr: 9900000 documents sent, 7229 s
+solr: 9925000 documents sent, 7285 s
+solr: 9950000 documents sent, 7300 s
+solr: 9975000 documents sent, 7316 s
+solr: 10000000 documents sent, 7335 s
+solr: 10000000 documents (117.7 GB of JSON) sent in 7347.6 s
+read tcp 127.0.0.1:59356->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:59356->127.0.0.1:36447: read: connection reset by peer
+read tcp 127.0.0.1:55778->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:55778->127.0.0.1:36447: read: connection reset by peer
+read tcp 127.0.0.1:45034->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:45034->127.0.0.1:36447: read: connection reset by peer
+read tcp 127.0.0.1:53870->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:53870->127.0.0.1:36447: read: connection reset by peer
+unexpected EOF
+error: unexpected EOF
+read tcp 127.0.0.1:56674->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:56674->127.0.0.1:36447: read: connection reset by peer
+unexpected EOF
+error: unexpected EOF
+solr: searchable after 4.4 s more, merged in 8145.7 s; 15497.7 s in all
+wrote /data/compare/load-solr.json
+job.batch/run-solr created
+solr     bm25                     warm-up: p50 27.286, 18.732, 17.963 ms
+solr     bm25                     c=1         89 q/s  p50   9.996 ms  p90  18.288 ms  p99  35.558 ms  errors 0
+solr     bm25                     c=4        205 q/s  p50  15.460 ms  p90  33.197 ms  p99  77.764 ms  errors 0
+solr     bm25                     c=16       299 q/s  p50  41.144 ms  p90 101.817 ms  p99 228.343 ms  errors 0
+solr     bm25 + filter            warm-up: p50 18.881, 25.659, 32.511, 20.013, 16.878, 16.278 ms
+solr     bm25 + filter            c=1         86 q/s  p50   9.867 ms  p90  18.820 ms  p99  44.492 ms  errors 0
+solr     bm25 + filter            c=4        202 q/s  p50  15.838 ms  p90  34.374 ms  p99  89.113 ms  errors 0
+solr     bm25 + filter            c=16       260 q/s  p50  46.931 ms  p90 120.022 ms  p99 269.224 ms  errors 0
+solr     vector                   warm-up: p50 2041.526, 1094.060, 64.286, 56.300, 52.517 ms
+solr     vector                   c=1         12 q/s  p50  35.463 ms  p90 344.207 ms  p99 600.792 ms  errors 0
+solr     vector                   c=4         18 q/s  p50  59.428 ms  p90 552.376 ms  p99 698.162 ms  errors 0
+solr     vector                   c=16        44 q/s  p50 254.078 ms  p90 745.440 ms  p99 1072.957 ms  errors 0
+solr     vector + filter          warm-up: p50 3897.797, 4423.953, 1556.317, 199.203, 186.562 ms
+solr     vector + filter          c=1          5 q/s  p50 113.955 ms  p90 349.997 ms  p99 1421.981 ms  errors 0
+solr     vector + filter          c=4          7 q/s  p50 171.852 ms  p90 1477.979 ms  p99 1939.735 ms  errors 0
+solr     vector + filter          c=16        16 q/s  p50 718.253 ms  p90 2105.235 ms  p99 2670.761 ms  errors 0
+solr     hybrid (RRF)             warm-up: p50 2357.048, 1657.701, 139.423, 110.051, 110.711 ms
+solr     hybrid (RRF)             c=1          9 q/s  p50  71.539 ms  p90 116.510 ms  p99 802.610 ms  errors 0
+solr     hybrid (RRF)             c=4         11 q/s  p50 143.242 ms  p90 979.151 ms  p99 1219.351 ms  errors 0
+solr     hybrid (RRF)             c=16        19 q/s  p50 640.607 ms  p90 1670.744 ms  p99 2046.732 ms  errors 0
+read tcp 127.0.0.1:34874->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:34874->127.0.0.1:36447: read: connection reset by peer
+solr     hybrid (weighted)        warm-up: p50 2492.531, 1730.701, 170.734, 151.370, 176.903, 133.570, 151.483, 133.069 ms
+solr     hybrid (weighted)        c=1         10 q/s  p50  85.353 ms  p90 176.971 ms  p99 230.667 ms  errors 0
+solr     hybrid (weighted)        c=4         13 q/s  p50 159.485 ms  p90 1089.482 ms  p99 1423.255 ms  errors 0
+solr     hybrid (weighted)        c=16        17 q/s  p50 637.163 ms  p90 1960.284 ms  p99 2457.742 ms  errors 0
+solr     boosted (bm25 × decay)   warm-up: p50 112.278, 107.466 ms
+solr     boosted (bm25 × decay)   c=1         12 q/s  p50  65.665 ms  p90 216.988 ms  p99 263.660 ms  errors 0
+solr     boosted (bm25 × decay)   c=4         24 q/s  p50 130.358 ms  p90 408.909 ms  p99 637.775 ms  errors 0
+solr     boosted (bm25 × decay)   c=16        29 q/s  p50 332.427 ms  p90 1146.424 ms  p99 2330.264 ms  errors 0
+solr     facet                    warm-up: p50 14.802, 14.986 ms
+solr     facet                    c=1         70 q/s  p50   8.029 ms  p90  30.143 ms  p99  81.217 ms  errors 0
+solr     facet                    c=4        163 q/s  p50  13.179 ms  p90  56.375 ms  p99 168.836 ms  errors 0
+solr     facet                    c=16       202 q/s  p50  39.416 ms  p90 180.244 ms  p99 648.226 ms  errors 0
+solr     key lookup               warm-up: p50 1.816, 1.717 ms
+solr     key lookup               c=1        581 q/s  p50   1.679 ms  p90   2.229 ms  p99   2.803 ms  errors 0
+solr     key lookup               c=4       2417 q/s  p50   1.552 ms  p90   2.291 ms  p99   3.280 ms  errors 0
+solr     key lookup               c=16      4516 q/s  p50   3.119 ms  p90   5.864 ms  p99   9.702 ms  errors 0
+solr     phrase                   warm-up: p50 16.141, 15.770 ms
+solr     phrase                   c=1         90 q/s  p50   8.873 ms  p90  18.737 ms  p99  36.140 ms  errors 0
+solr     phrase                   c=4        203 q/s  p50  15.034 ms  p90  36.674 ms  p99  67.934 ms  errors 0
+solr     phrase                   c=16       244 q/s  p50  48.630 ms  p90 134.674 ms  p99 274.055 ms  errors 0
+solr     typo                     warm-up: p50 479.242, 523.956 ms
+solr     typo                     c=1          4 q/s  p50 245.718 ms  p90 338.306 ms  p99 480.245 ms  errors 0
+solr     typo                     c=4          8 q/s  p50 460.742 ms  p90 844.296 ms  p99 1240.835 ms  errors 0
+solr     typo                     c=16         9 q/s  p50 1611.575 ms  p90 2799.404 ms  p99 3354.583 ms  errors 0
+solr     prefix                   warm-up: p50 12.803, 12.246 ms
+solr     prefix                   c=1        115 q/s  p50   7.409 ms  p90  14.366 ms  p99  26.688 ms  errors 0
+solr     prefix                   c=4        266 q/s  p50  12.469 ms  p90  25.619 ms  p99  56.441 ms  errors 0
+solr     prefix                   c=16       359 q/s  p50  35.797 ms  p90  85.820 ms  p99 184.592 ms  errors 0
+solr     similar items            warm-up: p50 4594.590, 2745.290, 138.034, 146.263 ms
+solr     similar items            c=1          4 q/s  p50  93.383 ms  p90 590.571 ms  p99 1898.938 ms  errors 0
+solr     similar items            c=4          7 q/s  p50 147.921 ms  p90 1337.803 ms  p99 1657.537 ms  errors 0
+solr     similar items            c=16        17 q/s  p50 664.497 ms  p90 2183.303 ms  p99 2402.017 ms  errors 0
+solr     sql aggregate            warm-up: p50 1084.110, 1266.634, 1224.448 ms
+solr     sql aggregate            c=1          2 q/s  p50 571.449 ms  p90 653.047 ms  p99 653.671 ms  errors 0
+solr     sql aggregate            c=4          4 q/s  p50 1018.059 ms  p90 1428.590 ms  p99 1965.235 ms  errors 0
+solr     sql aggregate            c=16         5 q/s  p50 2810.674 ms  p90 4024.624 ms  p99 5153.507 ms  errors 0
+wrote /data/compare/run-solr.json
+job.batch/writes-solr created
+error: config: 500 Internal Server Error: {
+  "responseHeader":{
+    "status":500,
+    "QTime":30008
+  },
+  "errorMessages":["1 out of 3 the property overlay to be of version 1 within 30 seconds! Failed cores: [http://10.150.17.4:8983/solr/quora_shard2_replica_n1/]\n"],
+  "WARNING":"This response format is experimental.  It is likely to change in the future.",
+  "error":{
+    "metadata":{
+      "error-class":"org.apache.solr.common.SolrException",
+      "root-error-class":"org.apache.solr.common.SolrException"
+    },
+    "errorClass":"org.apache.solr.common.SolrException",
+    "msg":"1 out of 3 the property overlay to be of version 1 within 30 seconds! Failed cores: [http://10.150.17.4:8983/solr/quora_shard2_replica_n1/]",
+    "trace":{
+      "stackTrace":[
+        "org.apache.solr.handler.SolrConfigHandler.waitForAllReplicasState(SolrConfigHandler.java:919)",
+        "org.apache.solr.handler.SolrConfigHandler$Command.handleCommands(SolrConfigHandler.java:615)",
+        "org.apache.solr.handler.SolrConfigHandler$Command.handlePOST(SolrConfigHandler.java:431)",
+        "org.apache.solr.handler.SolrConfigHandler.handleRequestBody(SolrConfigHandler.java:151)",
+        "org.apache.solr.handler.RequestHandlerBase.handleRequest(RequestHandlerBase.java:251)",
+        "org.apache.solr.core.SolrCore.execute(SolrCore.java:2893)",
+        "org.apache.solr.servlet.HttpSolrCall.executeCoreRequest(HttpSolrCall.java:726)",
+        "org.apache.solr.servlet.HttpSolrCall.call(HttpSolrCall.java:518)",
+        "org.apache.solr.servlet.SolrServlet.dispatch(SolrServlet.java:114)",
+        "org.apache.solr.servlet.SolrServlet.service(SolrServlet.java:90)",
+        "jakarta.servlet.http.HttpServlet.service(HttpServlet.java:723)",
+        "org.eclipse.jetty.ee10.servlet.ServletHolder$NotAsync.service(ServletHolder.java:1396)",
+        "org.eclipse.jetty.ee10.servlet.ServletHolder.handle(ServletHolder.java:753)",
+        "org.eclipse.jetty.ee10.servlet.ServletHandler$ChainEnd.doFilter(ServletHandler.java:1624)",
+        "org.apache.
+job writes-solr failed

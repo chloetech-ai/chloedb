@@ -1,0 +1,3 @@
+NAME                   READY   STATUS    RESTARTS   AGE     IP             NODE                    NOMINATED NODE   READINESS GATES
+load-manticore-lzz6n   1/1     Running   0          7h46m   10.150.7.34    manticore-c-a1-3eatoz   <none>           <none>
+manticore-0            1/1     Running   0          7h47m   10.150.5.153   manticore-d-a1-3eato1   <none>           <none>

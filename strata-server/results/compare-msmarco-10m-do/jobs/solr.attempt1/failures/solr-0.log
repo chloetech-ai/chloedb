@@ -1,0 +1,300 @@
+Request processing has stalled for 21477ms with 100 remaining elements in the queue.
+Request processing has stalled for 21577ms with 100 remaining elements in the queue.
+Request processing has stalled for 21678ms with 100 remaining elements in the queue.
+Request processing has stalled for 21779ms with 100 remaining elements in the queue.
+Request processing has stalled for 21880ms with 100 remaining elements in the queue.
+Request processing has stalled for 21997ms with 100 remaining elements in the queue.
+Request processing has stalled for 22097ms with 100 remaining elements in the queue.
+Request processing has stalled for 22198ms with 100 remaining elements in the queue.
+Request processing has stalled for 22299ms with 100 remaining elements in the queue.
+Request processing has stalled for 22399ms with 100 remaining elements in the queue.
+Request processing has stalled for 22503ms with 100 remaining elements in the queue.
+Request processing has stalled for 22603ms with 100 remaining elements in the queue.
+Request processing has stalled for 22704ms with 100 remaining elements in the queue.
+Request processing has stalled for 22807ms with 100 remaining elements in the queue.
+Request processing has stalled for 22908ms with 100 remaining elements in the queue.
+Request processing has stalled for 23010ms with 100 remaining elements in the queue.
+Request processing has stalled for 23113ms with 100 remaining elements in the queue.
+Request processing has stalled for 23218ms with 100 remaining elements in the queue.
+Request processing has stalled for 23325ms with 100 remaining elements in the queue.
+Request processing has stalled for 23438ms with 100 remaining elements in the queue.
+Request processing has stalled for 23541ms with 100 remaining elements in the queue.
+Request processing has stalled for 23642ms with 100 remaining elements in the queue.
+Request processing has stalled for 23743ms with 100 remaining elements in the queue.
+Request processing has stalled for 23845ms with 100 remaining elements in the queue.
+Request processing has stalled for 23948ms with 100 remaining elements in the queue.
+Request processing has stalled for 24052ms with 100 remaining elements in the queue.
+Request processing has stalled for 24162ms with 100 remaining elements in the queue.
+Request processing has stalled for 24263ms with 100 remaining elements in the queue.
+Request processing has stalled for 24365ms with 100 remaining elements in the queue.
+Request processing has stalled for 24468ms with 100 remaining elements in the queue.
+Request processing has stalled for 24571ms with 100 remaining elements in the queue.
+Request processing has stalled for 24694ms with 100 remaining elements in the queue.
+Request processing has stalled for 24794ms with 100 remaining elements in the queue.
+Request processing has stalled for 24895ms with 100 remaining elements in the queue.
+Request processing has stalled for 24996ms with 100 remaining elements in the queue.
+Request processing has stalled for 25104ms with 100 remaining elements in the queue.
+Request processing has stalled for 25209ms with 100 remaining elements in the queue.
+Request processing has stalled for 25310ms with 100 remaining elements in the queue.
+Request processing has stalled for 25411ms with 100 remaining elements in the queue.
+Request processing has stalled for 25512ms with 100 remaining elements in the queue.
+Request processing has stalled for 25617ms with 100 remaining elements in the queue.
+Request processing has stalled for 25718ms with 100 remaining elements in the queue.
+Request processing has stalled for 25820ms with 100 remaining elements in the queue.
+Request processing has stalled for 25920ms with 100 remaining elements in the queue.
+Request processing has stalled for 26023ms with 100 remaining elements in the queue.
+Request processing has stalled for 26124ms with 100 remaining elements in the queue.
+Request processing has stalled for 26227ms with 100 remaining elements in the queue.
+Request processing has stalled for 26327ms with 100 remaining elements in the queue.
+Request processing has stalled for 26428ms with 100 remaining elements in the queue.
+Request processing has stalled for 26533ms with 100 remaining elements in the queue.
+Request processing has stalled for 26635ms with 100 remaining elements in the queue.
+Request processing has stalled for 26739ms with 100 remaining elements in the queue.
+Request processing has stalled for 26839ms with 100 remaining elements in the queue.
+Request processing has stalled for 26949ms with 100 remaining elements in the queue.
+Request processing has stalled for 27054ms with 100 remaining elements in the queue.
+Request processing has stalled for 27155ms with 100 remaining elements in the queue.
+Request processing has stalled for 27258ms with 100 remaining elements in the queue.
+Request processing has stalled for 27363ms with 100 remaining elements in the queue.
+Request processing has stalled for 27468ms with 100 remaining elements in the queue.
+Request processing has stalled for 27570ms with 100 remaining elements in the queue.
+Request processing has stalled for 27681ms with 100 remaining elements in the queue.
+Request processing has stalled for 27797ms with 100 remaining elements in the queue.
+Request processing has stalled for 27898ms with 100 remaining elements in the queue.
+Request processing has stalled for 27998ms with 100 remaining elements in the queue.
+Request processing has stalled for 28100ms with 100 remaining elements in the queue.
+Request processing has stalled for 28202ms with 100 remaining elements in the queue.
+Request processing has stalled for 28302ms with 100 remaining elements in the queue.
+	at org.apache.solr.update.processor.DistributedZkUpdateProcessor.doDistribFinish(DistributedZkUpdateProcessor.java:1367)
+	at org.apache.solr.update.processor.DistributedUpdateProcessor.finish(DistributedUpdateProcessor.java:1199)
+	at org.apache.solr.update.processor.LogUpdateProcessorFactory$LogUpdateProcessor.finish(LogUpdateProcessorFactory.java:197)
+	at org.apache.solr.handler.ContentStreamHandlerBase.handleRequestBody(ContentStreamHandlerBase.java:109)
+	at org.apache.solr.handler.RequestHandlerBase.handleRequest(RequestHandlerBase.java:251)
+	at org.apache.solr.core.SolrCore.execute(SolrCore.java:2893)
+	at org.apache.solr.servlet.HttpSolrCall.executeCoreRequest(HttpSolrCall.java:726)
+	at org.apache.solr.servlet.HttpSolrCall.call(HttpSolrCall.java:518)
+	at org.apache.solr.servlet.SolrServlet.dispatch(SolrServlet.java:114)
+	at org.apache.solr.servlet.SolrServlet.service(SolrServlet.java:90)
+	at jakarta.servlet.http.HttpServlet.service(HttpServlet.java:723)
+	at org.eclipse.jetty.ee10.servlet.ServletHolder$NotAsync.service(ServletHolder.java:1396)
+	at org.eclipse.jetty.ee10.servlet.ServletHolder.handle(ServletHolder.java:753)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler$ChainEnd.doFilter(ServletHandler.java:1624)
+	at org.apache.solr.servlet.AuthenticationFilter.doFilter(AuthenticationFilter.java:79)
+	at jakarta.servlet.http.HttpFilter.doFilter(HttpFilter.java:97)
+	at org.eclipse.jetty.ee10.servlet.FilterHolder.doFilter(FilterHolder.java:205)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler$Chain.doFilter(ServletHandler.java:1596)
+	at org.apache.solr.servlet.TracingFilter.doFilter(TracingFilter.java:55)
+	at jakarta.servlet.http.HttpFilter.doFilter(HttpFilter.java:97)
+	at org.eclipse.jetty.ee10.servlet.FilterHolder.doFilter(FilterHolder.java:205)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler$Chain.doFilter(ServletHandler.java:1596)
+	at org.apache.solr.servlet.RateLimitFilter.doFilter(RateLimitFilter.java:50)
+	at jakarta.servlet.http.HttpFilter.doFilter(HttpFilter.java:97)
+	at org.eclipse.jetty.ee10.servlet.FilterHolder.doFilter(FilterHolder.java:205)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler$Chain.doFilter(ServletHandler.java:1596)
+	at org.apache.solr.servlet.RequiredSolrRequestFilter.doFilter(RequiredSolrRequestFilter.java:79)
+	at jakarta.servlet.http.HttpFilter.doFilter(HttpFilter.java:97)
+	at org.eclipse.jetty.ee10.servlet.FilterHolder.doFilter(FilterHolder.java:208)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler$Chain.doFilter(ServletHandler.java:1596)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler$MappedServlet.handle(ServletHandler.java:1557)
+	at org.eclipse.jetty.ee10.servlet.ServletChannel.dispatch(ServletChannel.java:828)
+	at org.eclipse.jetty.ee10.servlet.ServletChannel.handle(ServletChannel.java:438)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler.handle(ServletHandler.java:470)
+	at org.eclipse.jetty.security.SecurityHandler.handle(SecurityHandler.java:575)
+	at org.eclipse.jetty.ee10.servlet.SessionHandler.handle(SessionHandler.java:717)
+	at org.eclipse.jetty.server.handler.ContextHandler.handle(ContextHandler.java:1102)
+	at org.eclipse.jetty.server.handler.ContextHandlerCollection.handle(ContextHandlerCollection.java:151)
+	at org.eclipse.jetty.server.Handler$Wrapper.handle(Handler.java:740)
+	at org.eclipse.jetty.server.handler.ConditionalHandler.nextHandler(ConditionalHandler.java:421)
+	at org.eclipse.jetty.server.handler.InetAccessHandler.onConditionsMet(InetAccessHandler.java:50)
+	at org.eclipse.jetty.server.handler.ConditionalHandler.handle(ConditionalHandler.java:378)
+	at org.eclipse.jetty.server.Handler$Sequence.handle(Handler.java:805)
+	at org.eclipse.jetty.rewrite.handler.RewriteHandler$LastRuleHandler.handle(RewriteHandler.java:159)
+	at org.eclipse.jetty.rewrite.handler.Rule$Handler.handle(Rule.java:108)
+	at org.eclipse.jetty.rewrite.handler.HeaderPatternRule$1.handle(HeaderPatternRule.java:89)
+	at org.eclipse.jetty.rewrite.handler.Rule$Handler.handle(Rule.java:108)
+	at org.eclipse.jetty.rewrite.handler.HeaderPatternRule$1.handle(HeaderPatternRule.java:89)
+	at org.eclipse.jetty.rewrite.handler.Rule$Handler.handle(Rule.java:108)
+	at org.eclipse.jetty.rewrite.handler.HeaderPatternRule$1.handle(HeaderPatternRule.java:89)
+	at org.eclipse.jetty.rewrite.handler.Rule$Handler.handle(Rule.java:108)
+	at org.eclipse.jetty.rewrite.handler.HeaderPatternRule$1.handle(HeaderPatternRule.java:89)
+	at org.eclipse.jetty.rewrite.handler.Rule$Handler.handle(Rule.java:108)
+	at org.eclipse.jetty.rewrite.handler.RewriteHandler.handle(RewriteHandler.java:143)
+	at org.eclipse.jetty.server.handler.gzip.GzipHandler.handle(GzipHandler.java:613)
+	at org.eclipse.jetty.server.Server.handle(Server.java:182)
+	at org.eclipse.jetty.server.internal.HttpChannelState$HandlerInvoker.run(HttpChannelState.java:721)
+	at org.eclipse.jetty.server.internal.HttpConnection.onFillable(HttpConnection.java:416)
+	at org.eclipse.jetty.io.AbstractConnection$ReadCallback.succeeded(AbstractConnection.java:323)
+	at org.eclipse.jetty.io.FillInterest.fillable(FillInterest.java:105)
+	at org.eclipse.jetty.io.SelectableChannelEndPoint$1.run(SelectableChannelEndPoint.java:53)
+	at org.eclipse.jetty.util.thread.strategy.AdaptiveExecutionStrategy.runTask(AdaptiveExecutionStrategy.java:492)
+	at org.eclipse.jetty.util.thread.strategy.AdaptiveExecutionStrategy.epcRunTask(AdaptiveExecutionStrategy.java:428)
+	at org.eclipse.jetty.util.thread.strategy.AdaptiveExecutionStrategy.consumeTask(AdaptiveExecutionStrategy.java:401)
+	at org.eclipse.jetty.util.thread.strategy.AdaptiveExecutionStrategy.tryProduce(AdaptiveExecutionStrategy.java:255)
+	at org.eclipse.jetty.util.thread.strategy.AdaptiveExecutionStrategy.run(AdaptiveExecutionStrategy.java:204)
+	at org.eclipse.jetty.util.thread.ReservedThreadExecutor$ReservedThread.run(ReservedThreadExecutor.java:311)
+	at org.eclipse.jetty.util.thread.QueuedThreadPool.runJob(QueuedThreadPool.java:981)
+	at org.eclipse.jetty.util.thread.QueuedThreadPool$Runner.doRunJob(QueuedThreadPool.java:1212)
+	at org.eclipse.jetty.util.thread.QueuedThreadPool$Runner.run(QueuedThreadPool.java:1166)
+	at java.base/java.lang.Thread.run(Unknown Source)
+2026-11-03 12:21:24.859 INFO  (qtp1818339587-511-null-5034) [c:quora s:shard2 r:core_node4 x:quora_shard2_replica_n2 t:null-5034] o.a.s.c.S.Request path=/update params={} status=500 QTime=29313
+2026-11-03 12:21:24.860 ERROR (qtp1818339587-511-null-5034) [c:quora s:shard2 r:core_node4 x:quora_shard2_replica_n2 t:null-5034] o.a.s.s.HttpSolrCall 500 Exception
+org.apache.solr.update.processor.DistributedUpdateProcessor$DistributedUpdatesAsyncException: 81 Async exceptions during distributed update: 
+Request processing has stalled for 20043ms with 100 remaining elements in the queue.
+Request processing has stalled for 20144ms with 100 remaining elements in the queue.
+Request processing has stalled for 20244ms with 100 remaining elements in the queue.
+Request processing has stalled for 20345ms with 100 remaining elements in the queue.
+Request processing has stalled for 20447ms with 100 remaining elements in the queue.
+Request processing has stalled for 20552ms with 100 remaining elements in the queue.
+Request processing has stalled for 20654ms with 100 remaining elements in the queue.
+Request processing has stalled for 20758ms with 100 remaining elements in the queue.
+Request processing has stalled for 20860ms with 100 remaining elements in the queue.
+Request processing has stalled for 20961ms with 100 remaining elements in the queue.
+Request processing has stalled for 21062ms with 100 remaining elements in the queue.
+Request processing has stalled for 21164ms with 100 remaining elements in the queue.
+Request processing has stalled for 21266ms with 100 remaining elements in the queue.
+Request processing has stalled for 21371ms with 100 remaining elements in the queue.
+Request processing has stalled for 21477ms with 100 remaining elements in the queue.
+Request processing has stalled for 21577ms with 100 remaining elements in the queue.
+Request processing has stalled for 21678ms with 100 remaining elements in the queue.
+Request processing has stalled for 21779ms with 100 remaining elements in the queue.
+Request processing has stalled for 21880ms with 100 remaining elements in the queue.
+Request processing has stalled for 21997ms with 100 remaining elements in the queue.
+Request processing has stalled for 22097ms with 100 remaining elements in the queue.
+Request processing has stalled for 22198ms with 100 remaining elements in the queue.
+Request processing has stalled for 22299ms with 100 remaining elements in the queue.
+Request processing has stalled for 22399ms with 100 remaining elements in the queue.
+Request processing has stalled for 22503ms with 100 remaining elements in the queue.
+Request processing has stalled for 22603ms with 100 remaining elements in the queue.
+Request processing has stalled for 22704ms with 100 remaining elements in the queue.
+Request processing has stalled for 22807ms with 100 remaining elements in the queue.
+Request processing has stalled for 22908ms with 100 remaining elements in the queue.
+Request processing has stalled for 23010ms with 100 remaining elements in the queue.
+Request processing has stalled for 23113ms with 100 remaining elements in the queue.
+Request processing has stalled for 23218ms with 100 remaining elements in the queue.
+Request processing has stalled for 23325ms with 100 remaining elements in the queue.
+Request processing has stalled for 23438ms with 100 remaining elements in the queue.
+Request processing has stalled for 23541ms with 100 remaining elements in the queue.
+Request processing has stalled for 23642ms with 100 remaining elements in the queue.
+Request processing has stalled for 23743ms with 100 remaining elements in the queue.
+Request processing has stalled for 23845ms with 100 remaining elements in the queue.
+Request processing has stalled for 23948ms with 100 remaining elements in the queue.
+Request processing has stalled for 24052ms with 100 remaining elements in the queue.
+Request processing has stalled for 24162ms with 100 remaining elements in the queue.
+Request processing has stalled for 24263ms with 100 remaining elements in the queue.
+Request processing has stalled for 24365ms with 100 remaining elements in the queue.
+Request processing has stalled for 24468ms with 100 remaining elements in the queue.
+Request processing has stalled for 24571ms with 100 remaining elements in the queue.
+Request processing has stalled for 24694ms with 100 remaining elements in the queue.
+Request processing has stalled for 24794ms with 100 remaining elements in the queue.
+Request processing has stalled for 24895ms with 100 remaining elements in the queue.
+Request processing has stalled for 24996ms with 100 remaining elements in the queue.
+Request processing has stalled for 25104ms with 100 remaining elements in the queue.
+Request processing has stalled for 25209ms with 100 remaining elements in the queue.
+Request processing has stalled for 25310ms with 100 remaining elements in the queue.
+Request processing has stalled for 25411ms with 100 remaining elements in the queue.
+Request processing has stalled for 25512ms with 100 remaining elements in the queue.
+Request processing has stalled for 25617ms with 100 remaining elements in the queue.
+Request processing has stalled for 25718ms with 100 remaining elements in the queue.
+Request processing has stalled for 25820ms with 100 remaining elements in the queue.
+Request processing has stalled for 25920ms with 100 remaining elements in the queue.
+Request processing has stalled for 26023ms with 100 remaining elements in the queue.
+Request processing has stalled for 26124ms with 100 remaining elements in the queue.
+Request processing has stalled for 26227ms with 100 remaining elements in the queue.
+Request processing has stalled for 26327ms with 100 remaining elements in the queue.
+Request processing has stalled for 26428ms with 100 remaining elements in the queue.
+Request processing has stalled for 26533ms with 100 remaining elements in the queue.
+Request processing has stalled for 26635ms with 100 remaining elements in the queue.
+Request processing has stalled for 26739ms with 100 remaining elements in the queue.
+Request processing has stalled for 26839ms with 100 remaining elements in the queue.
+Request processing has stalled for 26949ms with 100 remaining elements in the queue.
+Request processing has stalled for 27054ms with 100 remaining elements in the queue.
+Request processing has stalled for 27155ms with 100 remaining elements in the queue.
+Request processing has stalled for 27258ms with 100 remaining elements in the queue.
+Request processing has stalled for 27363ms with 100 remaining elements in the queue.
+Request processing has stalled for 27468ms with 100 remaining elements in the queue.
+Request processing has stalled for 27570ms with 100 remaining elements in the queue.
+Request processing has stalled for 27681ms with 100 remaining elements in the queue.
+Request processing has stalled for 27797ms with 100 remaining elements in the queue.
+Request processing has stalled for 27898ms with 100 remaining elements in the queue.
+Request processing has stalled for 27998ms with 100 remaining elements in the queue.
+Request processing has stalled for 28100ms with 100 remaining elements in the queue.
+Request processing has stalled for 28202ms with 100 remaining elements in the queue.
+Request processing has stalled for 28302ms with 100 remaining elements in the queue.
+	at org.apache.solr.update.processor.DistributedZkUpdateProcessor.doDistribFinish(DistributedZkUpdateProcessor.java:1367)
+	at org.apache.solr.update.processor.DistributedUpdateProcessor.finish(DistributedUpdateProcessor.java:1199)
+	at org.apache.solr.update.processor.LogUpdateProcessorFactory$LogUpdateProcessor.finish(LogUpdateProcessorFactory.java:197)
+	at org.apache.solr.handler.ContentStreamHandlerBase.handleRequestBody(ContentStreamHandlerBase.java:109)
+	at org.apache.solr.handler.RequestHandlerBase.handleRequest(RequestHandlerBase.java:251)
+	at org.apache.solr.core.SolrCore.execute(SolrCore.java:2893)
+	at org.apache.solr.servlet.HttpSolrCall.executeCoreRequest(HttpSolrCall.java:726)
+	at org.apache.solr.servlet.HttpSolrCall.call(HttpSolrCall.java:518)
+	at org.apache.solr.servlet.SolrServlet.dispatch(SolrServlet.java:114)
+	at org.apache.solr.servlet.SolrServlet.service(SolrServlet.java:90)
+	at jakarta.servlet.http.HttpServlet.service(HttpServlet.java:723)
+	at org.eclipse.jetty.ee10.servlet.ServletHolder$NotAsync.service(ServletHolder.java:1396)
+	at org.eclipse.jetty.ee10.servlet.ServletHolder.handle(ServletHolder.java:753)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler$ChainEnd.doFilter(ServletHandler.java:1624)
+	at org.apache.solr.servlet.AuthenticationFilter.doFilter(AuthenticationFilter.java:79)
+	at jakarta.servlet.http.HttpFilter.doFilter(HttpFilter.java:97)
+	at org.eclipse.jetty.ee10.servlet.FilterHolder.doFilter(FilterHolder.java:205)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler$Chain.doFilter(ServletHandler.java:1596)
+	at org.apache.solr.servlet.TracingFilter.doFilter(TracingFilter.java:55)
+	at jakarta.servlet.http.HttpFilter.doFilter(HttpFilter.java:97)
+	at org.eclipse.jetty.ee10.servlet.FilterHolder.doFilter(FilterHolder.java:205)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler$Chain.doFilter(ServletHandler.java:1596)
+	at org.apache.solr.servlet.RateLimitFilter.doFilter(RateLimitFilter.java:50)
+	at jakarta.servlet.http.HttpFilter.doFilter(HttpFilter.java:97)
+	at org.eclipse.jetty.ee10.servlet.FilterHolder.doFilter(FilterHolder.java:205)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler$Chain.doFilter(ServletHandler.java:1596)
+	at org.apache.solr.servlet.RequiredSolrRequestFilter.doFilter(RequiredSolrRequestFilter.java:79)
+	at jakarta.servlet.http.HttpFilter.doFilter(HttpFilter.java:97)
+	at org.eclipse.jetty.ee10.servlet.FilterHolder.doFilter(FilterHolder.java:208)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler$Chain.doFilter(ServletHandler.java:1596)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler$MappedServlet.handle(ServletHandler.java:1557)
+	at org.eclipse.jetty.ee10.servlet.ServletChannel.dispatch(ServletChannel.java:828)
+	at org.eclipse.jetty.ee10.servlet.ServletChannel.handle(ServletChannel.java:438)
+	at org.eclipse.jetty.ee10.servlet.ServletHandler.handle(ServletHandler.java:470)
+	at org.eclipse.jetty.security.SecurityHandler.handle(SecurityHandler.java:575)
+	at org.eclipse.jetty.ee10.servlet.SessionHandler.handle(SessionHandler.java:717)
+	at org.eclipse.jetty.server.handler.ContextHandler.handle(ContextHandler.java:1102)
+	at org.eclipse.jetty.server.handler.ContextHandlerCollection.handle(ContextHandlerCollection.java:151)
+	at org.eclipse.jetty.server.Handler$Wrapper.handle(Handler.java:740)
+	at org.eclipse.jetty.server.handler.ConditionalHandler.nextHandler(ConditionalHandler.java:421)
+	at org.eclipse.jetty.server.handler.InetAccessHandler.onConditionsMet(InetAccessHandler.java:50)
+	at org.eclipse.jetty.server.handler.ConditionalHandler.handle(ConditionalHandler.java:378)
+	at org.eclipse.jetty.server.Handler$Sequence.handle(Handler.java:805)
+	at org.eclipse.jetty.rewrite.handler.RewriteHandler$LastRuleHandler.handle(RewriteHandler.java:159)
+	at org.eclipse.jetty.rewrite.handler.Rule$Handler.handle(Rule.java:108)
+	at org.eclipse.jetty.rewrite.handler.HeaderPatternRule$1.handle(HeaderPatternRule.java:89)
+	at org.eclipse.jetty.rewrite.handler.Rule$Handler.handle(Rule.java:108)
+	at org.eclipse.jetty.rewrite.handler.HeaderPatternRule$1.handle(HeaderPatternRule.java:89)
+	at org.eclipse.jetty.rewrite.handler.Rule$Handler.handle(Rule.java:108)
+	at org.eclipse.jetty.rewrite.handler.HeaderPatternRule$1.handle(HeaderPatternRule.java:89)
+	at org.eclipse.jetty.rewrite.handler.Rule$Handler.handle(Rule.java:108)
+	at org.eclipse.jetty.rewrite.handler.HeaderPatternRule$1.handle(HeaderPatternRule.java:89)
+	at org.eclipse.jetty.rewrite.handler.Rule$Handler.handle(Rule.java:108)
+	at org.eclipse.jetty.rewrite.handler.RewriteHandler.handle(RewriteHandler.java:143)
+	at org.eclipse.jetty.server.handler.gzip.GzipHandler.handle(GzipHandler.java:613)
+	at org.eclipse.jetty.server.Server.handle(Server.java:182)
+	at org.eclipse.jetty.server.internal.HttpChannelState$HandlerInvoker.run(HttpChannelState.java:721)
+	at org.eclipse.jetty.server.internal.HttpConnection.onFillable(HttpConnection.java:416)
+	at org.eclipse.jetty.io.AbstractConnection$ReadCallback.succeeded(AbstractConnection.java:323)
+	at org.eclipse.jetty.io.FillInterest.fillable(FillInterest.java:105)
+	at org.eclipse.jetty.io.SelectableChannelEndPoint$1.run(SelectableChannelEndPoint.java:53)
+	at org.eclipse.jetty.util.thread.strategy.AdaptiveExecutionStrategy.runTask(AdaptiveExecutionStrategy.java:492)
+	at org.eclipse.jetty.util.thread.strategy.AdaptiveExecutionStrategy.epcRunTask(AdaptiveExecutionStrategy.java:428)
+	at org.eclipse.jetty.util.thread.strategy.AdaptiveExecutionStrategy.consumeTask(AdaptiveExecutionStrategy.java:401)
+	at org.eclipse.jetty.util.thread.strategy.AdaptiveExecutionStrategy.tryProduce(AdaptiveExecutionStrategy.java:255)
+	at org.eclipse.jetty.util.thread.strategy.AdaptiveExecutionStrategy.run(AdaptiveExecutionStrategy.java:204)
+	at org.eclipse.jetty.util.thread.ReservedThreadExecutor$ReservedThread.run(ReservedThreadExecutor.java:311)
+	at org.eclipse.jetty.util.thread.QueuedThreadPool.runJob(QueuedThreadPool.java:981)
+	at org.eclipse.jetty.util.thread.QueuedThreadPool$Runner.doRunJob(QueuedThreadPool.java:1212)
+	at org.eclipse.jetty.util.thread.QueuedThreadPool$Runner.run(QueuedThreadPool.java:1166)
+	at java.base/java.lang.Thread.run(Unknown Source)
+2026-11-03 12:21:25.395 INFO  (qtp1818339587-130-null-5044) [c:quora s:shard2 r:core_node4 x:quora_shard2_replica_n2 t:null-5044] o.a.s.u.p.LogUpdateProcessorFactory path=/update params={}{add=[msmarco_v2.1_doc_02_627883153#1_1097202927, msmarco_v2.1_doc_02_627883153#2_1097203908, msmarco_v2.1_doc_02_627883153#3_1097204876, msmarco_v2.1_doc_02_627883153#4_1097205933 (1880839667929055232), msmarco_v2.1_doc_02_627885971#0_1097207213 (1880839667930103808), msmarco_v2.1_doc_02_627885971#1_1097208529 (1880839667930103809), msmarco_v2.1_doc_02_627885971#2_1097210296 (1880839667931152384), msmarco_v2.1_doc_02_627888574#0_1097211911, msmarco_v2.1_doc_02_627890299#0_1097213685, msmarco_v2.1_doc_02_627891868#0_1097215302 (1880839667936395264), ... (500 adds)]} 0 815
+2026-11-03 12:21:25.400 INFO  (qtp1818339587-35-null-5040) [c:quora s:shard2 r:core_node4 x:quora_shard2_replica_n2 t:null-5040] o.a.s.u.p.LogUpdateProcessorFactory path=/update params={}{add=[msmarco_v2.1_doc_02_626390424#15_1094601951 (1880839658049372161), msmarco_v2.1_doc_02_626390424#16_1094603737 (1880839658055663616), msmarco_v2.1_doc_02_626390424#17_1094605475, msmarco_v2.1_doc_02_626406469#0_1094606419, msmarco_v2.1_doc_02_626406469#1_1094607675 (1880839658061955072), msmarco_v2.1_doc_02_626406469#2_1094608532, msmarco_v2.1_doc_02_626406469#3_1094609167 (1880839658063003648), msmarco_v2.1_doc_02_626406469#4_1094610095 (1880839658063003649), msmarco_v2.1_doc_02_626406469#5_1094611079 (1880839658064052224), msmarco_v2.1_doc_02_626406469#6_1094611774, ... (500 adds)]} 0 10242
+2026-11-03 12:21:25.856 INFO  (qtp1818339587-166-null-5043) [c:quora s:shard2 r:core_node4 x:quora_shard2_replica_n2 t:null-5043] o.a.s.u.p.LogUpdateProcessorFactory path=/update params={}{add=[msmarco_v2.1_doc_02_627435876#16_1096376550, msmarco_v2.1_doc_02_627435876#17_1096378170, msmarco_v2.1_doc_02_627435876#18_1096379779 (1880839666440077312), msmarco_v2.1_doc_02_627435876#19_1096381233, msmarco_v2.1_doc_02_627435876#20_1096382668, msmarco_v2.1_doc_02_627435876#21_1096384035, msmarco_v2.1_doc_02_627435876#22_1096385348, msmarco_v2.1_doc_02_627444880#0_1096386589 (1880839666447417344), msmarco_v2.1_doc_02_627444880#1_1096387960 (1880839666448465920), msmarco_v2.1_doc_02_627444880#2_1096389379, ... (500 adds)]} 0 2703
+2026-11-03 12:21:26.072 INFO  (qtp1818339587-151-null-5038) [c:quora s:shard2 r:core_node4 x:quora_shard2_replica_n2 t:null-5038] o.a.s.u.p.LogUpdateProcessorFactory path=/update params={}{add=[msmarco_v2.1_doc_02_625963332#13_1093803078, msmarco_v2.1_doc_02_625963332#14_1093804397 (1880839651089973248), msmarco_v2.1_doc_02_625963332#15_1093805507 (1880839651096264704), msmarco_v2.1_doc_02_625963332#16_1093806709 (1880839651101507584), msmarco_v2.1_doc_02_626023620#0_1093807640, msmarco_v2.1_doc_02_626023620#1_1093809032 (1880839651101507585), msmarco_v2.1_doc_02_626023620#2_1093809869, msmarco_v2.1_doc_02_626023620#3_1093810719, msmarco_v2.1_doc_02_626023620#4_1093811639, msmarco_v2.1_doc_02_626023620#5_1093812765, ... (500 adds)]} 0 17550
+2026-11-03 12:21:26.422 INFO  (qtp1818339587-145-null-5045) [c:quora s:shard2 r:core_node4 x:quora_shard2_replica_n2 t:null-5045] o.a.s.u.p.LogUpdateProcessorFactory path=/update params={}{add=[msmarco_v2.1_doc_02_628206984#3_1097916396, msmarco_v2.1_doc_02_628206984#4_1097918070 (1880839668158693376), msmarco_v2.1_doc_02_628206984#5_1097919839, msmarco_v2.1_doc_02_628206984#6_1097921433, msmarco_v2.1_doc_02_628206984#7_1097922793, msmarco_v2.1_doc_02_628206984#8_1097923879, msmarco_v2.1_doc_02_628206984#9_1097924773, msmarco_v2.1_doc_02_628206984#10_1097925671 (1880839668168130560), msmarco_v2.1_doc_02_628212508#0_1097926374 (1880839668168130561), msmarco_v2.1_doc_02_628212508#1_1097928472 (1880839668180713474), ... (500 adds)]} 0 1644
+2026-11-03 12:21:28.124 INFO  (qtp1818339587-389-null-5046) [ t:null-5046] o.a.s.s.HttpSolrCall [admin] path=/admin/info/health params={} status=0 QTime=0
+2026-11-03 12:21:33.125 INFO  (qtp1818339587-34-null-5047) [ t:null-5047] o.a.s.s.HttpSolrCall [admin] path=/admin/info/health params={} status=0 QTime=0

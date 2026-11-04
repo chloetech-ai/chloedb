@@ -10,10 +10,14 @@
 # their 5 hours allow a build of about 2 hours (500K segments compacted to
 # 2M ones, timed on the cloud container at 500K and 1M).
 # Redis keeps everything in memory (8.2 GB at 1M), so it gets a 128 GB node
-# with the same CPU limit as every one-node engine.
+# with the same CPU limit as every one-node engine; its 5 hours are its 1M
+# load (404 s) times 11, with room for the HNSW build growing faster than
+# that, and keep it inside the $90 the run was raised to.
 # Jobs start in this order as the budget allows: of the rest, Elasticsearch
 # and OpenSearch (the engines closest to Strata at 1M) first, and Redis, on
-# the costliest node, last.
+# the costliest node, near the end. Milvus and Typesense ran out of memory at
+# 52Gi (Typesense at 7.2M documents, Milvus building its index), so they run
+# again on Redis's 128 GB node with the same CPU limit.
 qdrant     qdrant     one      18
 strata     strata     sharded  5
 strata-b   strata     sharded  5
@@ -21,11 +25,11 @@ postgres   postgres   one      9
 meili      meili      one      9
 manticore  manticore  one      8
 vespa      vespa      sharded  8
-typesense  typesense  one      7
 es         es         sharded  5
 os         os         sharded  5
 solr       solr       sharded  7
-milvus     milvus     one      4
 weaviate   weaviate   one      6
+milvus     milvus     one      5   ONE_SIZE=m-16vcpu-128gb,ONE_MEM=110Gi
 paradedb   paradedb   one      5
-redis      redis      one      7   ONE_SIZE=m-16vcpu-128gb,ONE_MEM=110Gi,REDIS_MAXMEM=100000mb
+redis      redis      one      5   ONE_SIZE=m-16vcpu-128gb,ONE_MEM=110Gi,REDIS_MAXMEM=100000mb
+typesense  typesense  one      8   ONE_SIZE=m-16vcpu-128gb,ONE_MEM=110Gi

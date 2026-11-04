@@ -1,0 +1,507 @@
+service/es created
+pod/es-0 created
+pod/es-1 created
+pod/es-0 condition met
+pod/es-1 condition met
+job.batch/load-es created
+es: index created in 0.3 s
+es: 25000 documents sent, 16 s
+es: 50000 documents sent, 27 s
+es: 75000 documents sent, 39 s
+es: 100000 documents sent, 49 s
+es: 125000 documents sent, 57 s
+es: 150000 documents sent, 72 s
+es: 175000 documents sent, 79 s
+es: 200000 documents sent, 90 s
+es: 225000 documents sent, 98 s
+es: 250000 documents sent, 106 s
+es: 275000 documents sent, 115 s
+es: 300000 documents sent, 128 s
+es: 325000 documents sent, 137 s
+es: 350000 documents sent, 150 s
+es: 375000 documents sent, 161 s
+es: 400000 documents sent, 168 s
+es: 425000 documents sent, 177 s
+es: 450000 documents sent, 190 s
+es: 475000 documents sent, 202 s
+es: 500000 documents sent, 214 s
+es: 525000 documents sent, 228 s
+es: 550000 documents sent, 243 s
+es: 575000 documents sent, 253 s
+es: 600000 documents sent, 263 s
+es: 625000 documents sent, 273 s
+es: 650000 documents sent, 286 s
+es: 675000 documents sent, 301 s
+es: 700000 documents sent, 310 s
+es: 725000 documents sent, 320 s
+es: 750000 documents sent, 329 s
+es: 775000 documents sent, 339 s
+es: 800000 documents sent, 354 s
+es: 825000 documents sent, 365 s
+es: 850000 documents sent, 376 s
+es: 875000 documents sent, 387 s
+es: 900000 documents sent, 401 s
+es: 925000 documents sent, 414 s
+es: 950000 documents sent, 426 s
+es: 975000 documents sent, 435 s
+es: 1000000 documents sent, 445 s
+es: 1025000 documents sent, 454 s
+es: 1050000 documents sent, 462 s
+es: 1075000 documents sent, 475 s
+es: 1100000 documents sent, 488 s
+es: 1125000 documents sent, 501 s
+es: 1150000 documents sent, 510 s
+es: 1175000 documents sent, 523 s
+es: 1200000 documents sent, 536 s
+es: 1225000 documents sent, 549 s
+es: 1250000 documents sent, 562 s
+es: 1275000 documents sent, 575 s
+es: 1300000 documents sent, 591 s
+es: 1325000 documents sent, 600 s
+es: 1350000 documents sent, 614 s
+es: 1375000 documents sent, 627 s
+es: 1400000 documents sent, 642 s
+es: 1425000 documents sent, 656 s
+es: 1450000 documents sent, 666 s
+es: 1475000 documents sent, 676 s
+es: 1500000 documents sent, 687 s
+es: 1525000 documents sent, 699 s
+es: 1550000 documents sent, 710 s
+es: 1575000 documents sent, 724 s
+es: 1600000 documents sent, 735 s
+es: 1625000 documents sent, 747 s
+es: 1650000 documents sent, 761 s
+es: 1675000 documents sent, 770 s
+es: 1700000 documents sent, 779 s
+es: 1725000 documents sent, 790 s
+es: 1750000 documents sent, 800 s
+es: 1775000 documents sent, 813 s
+es: 1800000 documents sent, 827 s
+es: 1825000 documents sent, 836 s
+es: 1850000 documents sent, 849 s
+es: 1875000 documents sent, 860 s
+es: 1900000 documents sent, 870 s
+es: 1925000 documents sent, 881 s
+es: 1950000 documents sent, 892 s
+es: 1975000 documents sent, 903 s
+es: 2000000 documents sent, 913 s
+es: 2025000 documents sent, 924 s
+es: 2050000 documents sent, 936 s
+es: 2075000 documents sent, 950 s
+es: 2100000 documents sent, 961 s
+es: 2125000 documents sent, 973 s
+es: 2150000 documents sent, 985 s
+es: 2175000 documents sent, 997 s
+es: 2200000 documents sent, 1013 s
+es: 2225000 documents sent, 1026 s
+es: 2250000 documents sent, 1037 s
+es: 2275000 documents sent, 1048 s
+es: 2300000 documents sent, 1059 s
+es: 2325000 documents sent, 1073 s
+es: 2350000 documents sent, 1086 s
+es: 2375000 documents sent, 1097 s
+es: 2400000 documents sent, 1105 s
+es: 2425000 documents sent, 1114 s
+es: 2450000 documents sent, 1124 s
+es: 2475000 documents sent, 1135 s
+es: 2500000 documents sent, 1146 s
+es: 2525000 documents sent, 1163 s
+es: 2550000 documents sent, 1171 s
+es: 2575000 documents sent, 1183 s
+es: 2600000 documents sent, 1199 s
+es: 2625000 documents sent, 1215 s
+es: 2650000 documents sent, 1227 s
+es: 2675000 documents sent, 1235 s
+es: 2700000 documents sent, 1245 s
+es: 2725000 documents sent, 1257 s
+es: 2750000 documents sent, 1268 s
+es: 2775000 documents sent, 1279 s
+es: 2800000 documents sent, 1291 s
+es: 2825000 documents sent, 1301 s
+es: 2850000 documents sent, 1311 s
+es: 2875000 documents sent, 1321 s
+es: 2900000 documents sent, 1331 s
+es: 2925000 documents sent, 1341 s
+es: 2950000 documents sent, 1354 s
+es: 2975000 documents sent, 1363 s
+es: 3000000 documents sent, 1373 s
+es: 3025000 documents sent, 1382 s
+es: 3050000 documents sent, 1393 s
+es: 3075000 documents sent, 1404 s
+es: 3100000 documents sent, 1415 s
+es: 3125000 documents sent, 1424 s
+es: 3150000 documents sent, 1435 s
+es: 3175000 documents sent, 1449 s
+es: 3200000 documents sent, 1461 s
+es: 3225000 documents sent, 1474 s
+es: 3250000 documents sent, 1483 s
+es: 3275000 documents sent, 1494 s
+es: 3300000 documents sent, 1505 s
+es: 3325000 documents sent, 1519 s
+es: 3350000 documents sent, 1528 s
+es: 3375000 documents sent, 1539 s
+es: 3400000 documents sent, 1548 s
+es: 3425000 documents sent, 1561 s
+es: 3450000 documents sent, 1572 s
+es: 3475000 documents sent, 1586 s
+es: 3500000 documents sent, 1602 s
+es: 3525000 documents sent, 1614 s
+es: 3550000 documents sent, 1625 s
+es: 3575000 documents sent, 1637 s
+es: 3600000 documents sent, 1650 s
+es: 3625000 documents sent, 1663 s
+es: 3650000 documents sent, 1674 s
+es: 3675000 documents sent, 1685 s
+es: 3700000 documents sent, 1696 s
+es: 3725000 documents sent, 1710 s
+es: 3750000 documents sent, 1722 s
+es: 3775000 documents sent, 1735 s
+es: 3800000 documents sent, 1744 s
+es: 3825000 documents sent, 1757 s
+es: 3850000 documents sent, 1772 s
+es: 3875000 documents sent, 1785 s
+es: 3900000 documents sent, 1799 s
+es: 3925000 documents sent, 1816 s
+es: 3950000 documents sent, 1829 s
+es: 3975000 documents sent, 1841 s
+es: 4000000 documents sent, 1853 s
+es: 4025000 documents sent, 1863 s
+es: 4050000 documents sent, 1879 s
+es: 4075000 documents sent, 1893 s
+es: 4100000 documents sent, 1905 s
+es: 4125000 documents sent, 1919 s
+es: 4150000 documents sent, 1936 s
+es: 4175000 documents sent, 1950 s
+es: 4200000 documents sent, 1963 s
+es: 4225000 documents sent, 1975 s
+es: 4250000 documents sent, 1990 s
+es: 4275000 documents sent, 2005 s
+es: 4300000 documents sent, 2021 s
+es: 4325000 documents sent, 2033 s
+es: 4350000 documents sent, 2049 s
+es: 4375000 documents sent, 2062 s
+es: 4400000 documents sent, 2076 s
+es: 4425000 documents sent, 2087 s
+es: 4450000 documents sent, 2102 s
+es: 4475000 documents sent, 2117 s
+es: 4500000 documents sent, 2128 s
+es: 4525000 documents sent, 2139 s
+es: 4550000 documents sent, 2149 s
+es: 4575000 documents sent, 2163 s
+es: 4600000 documents sent, 2177 s
+es: 4625000 documents sent, 2188 s
+es: 4650000 documents sent, 2202 s
+es: 4675000 documents sent, 2218 s
+es: 4700000 documents sent, 2231 s
+es: 4725000 documents sent, 2242 s
+es: 4750000 documents sent, 2257 s
+es: 4775000 documents sent, 2271 s
+es: 4800000 documents sent, 2286 s
+es: 4825000 documents sent, 2299 s
+es: 4850000 documents sent, 2312 s
+es: 4875000 documents sent, 2326 s
+es: 4900000 documents sent, 2346 s
+es: 4925000 documents sent, 2356 s
+es: 4950000 documents sent, 2371 s
+es: 4975000 documents sent, 2385 s
+es: 5000000 documents sent, 2398 s
+es: 5025000 documents sent, 2410 s
+es: 5050000 documents sent, 2421 s
+es: 5075000 documents sent, 2433 s
+es: 5100000 documents sent, 2448 s
+es: 5125000 documents sent, 2463 s
+es: 5150000 documents sent, 2475 s
+es: 5175000 documents sent, 2485 s
+es: 5200000 documents sent, 2497 s
+es: 5225000 documents sent, 2513 s
+es: 5250000 documents sent, 2529 s
+es: 5275000 documents sent, 2540 s
+es: 5300000 documents sent, 2555 s
+es: 5325000 documents sent, 2570 s
+es: 5350000 documents sent, 2586 s
+es: 5375000 documents sent, 2597 s
+es: 5400000 documents sent, 2606 s
+es: 5425000 documents sent, 2617 s
+es: 5450000 documents sent, 2626 s
+es: 5475000 documents sent, 2638 s
+es: 5500000 documents sent, 2661 s
+es: 5525000 documents sent, 2668 s
+es: 5550000 documents sent, 2681 s
+es: 5575000 documents sent, 2692 s
+es: 5600000 documents sent, 2703 s
+es: 5625000 documents sent, 2714 s
+es: 5650000 documents sent, 2724 s
+es: 5675000 documents sent, 2733 s
+es: 5700000 documents sent, 2745 s
+es: 5725000 documents sent, 2757 s
+es: 5750000 documents sent, 2768 s
+es: 5775000 documents sent, 2782 s
+es: 5800000 documents sent, 2790 s
+es: 5825000 documents sent, 2802 s
+es: 5850000 documents sent, 2815 s
+es: 5875000 documents sent, 2830 s
+es: 5900000 documents sent, 2844 s
+es: 5925000 documents sent, 2854 s
+es: 5950000 documents sent, 2867 s
+es: 5975000 documents sent, 2880 s
+es: 6000000 documents sent, 2899 s
+es: 6025000 documents sent, 2906 s
+es: 6050000 documents sent, 2917 s
+es: 6075000 documents sent, 2929 s
+es: 6100000 documents sent, 2940 s
+es: 6125000 documents sent, 2960 s
+es: 6150000 documents sent, 2970 s
+es: 6175000 documents sent, 2983 s
+es: 6200000 documents sent, 2994 s
+es: 6225000 documents sent, 3007 s
+es: 6250000 documents sent, 3022 s
+es: 6275000 documents sent, 3031 s
+es: 6300000 documents sent, 3041 s
+es: 6325000 documents sent, 3052 s
+es: 6350000 documents sent, 3063 s
+es: 6375000 documents sent, 3078 s
+es: 6400000 documents sent, 3093 s
+es: 6425000 documents sent, 3106 s
+es: 6450000 documents sent, 3122 s
+es: 6475000 documents sent, 3137 s
+es: 6500000 documents sent, 3151 s
+es: 6525000 documents sent, 3161 s
+es: 6550000 documents sent, 3171 s
+es: 6575000 documents sent, 3183 s
+es: 6600000 documents sent, 3194 s
+es: 6625000 documents sent, 3209 s
+es: 6650000 documents sent, 3219 s
+es: 6675000 documents sent, 3232 s
+es: 6700000 documents sent, 3244 s
+es: 6725000 documents sent, 3258 s
+es: 6750000 documents sent, 3273 s
+es: 6775000 documents sent, 3284 s
+es: 6800000 documents sent, 3299 s
+es: 6825000 documents sent, 3316 s
+es: 6850000 documents sent, 3323 s
+es: 6875000 documents sent, 3336 s
+es: 6900000 documents sent, 3352 s
+es: 6925000 documents sent, 3366 s
+es: 6950000 documents sent, 3379 s
+es: 6975000 documents sent, 3391 s
+es: 7000000 documents sent, 3404 s
+es: 7025000 documents sent, 3417 s
+es: 7050000 documents sent, 3431 s
+es: 7075000 documents sent, 3442 s
+es: 7100000 documents sent, 3451 s
+es: 7125000 documents sent, 3462 s
+es: 7150000 documents sent, 3472 s
+es: 7175000 documents sent, 3483 s
+es: 7200000 documents sent, 3496 s
+es: 7225000 documents sent, 3504 s
+es: 7250000 documents sent, 3514 s
+es: 7275000 documents sent, 3526 s
+es: 7300000 documents sent, 3537 s
+es: 7325000 documents sent, 3549 s
+es: 7350000 documents sent, 3561 s
+es: 7375000 documents sent, 3568 s
+es: 7400000 documents sent, 3576 s
+es: 7425000 documents sent, 3585 s
+es: 7450000 documents sent, 3593 s
+es: 7475000 documents sent, 3602 s
+es: 7500000 documents sent, 3611 s
+es: 7525000 documents sent, 3618 s
+es: 7550000 documents sent, 3626 s
+es: 7575000 documents sent, 3634 s
+es: 7600000 documents sent, 3644 s
+es: 7625000 documents sent, 3655 s
+es: 7650000 documents sent, 3665 s
+es: 7675000 documents sent, 3675 s
+es: 7700000 documents sent, 3683 s
+es: 7725000 documents sent, 3692 s
+es: 7750000 documents sent, 3702 s
+es: 7775000 documents sent, 3711 s
+es: 7800000 documents sent, 3721 s
+es: 7825000 documents sent, 3734 s
+es: 7850000 documents sent, 3745 s
+es: 7875000 documents sent, 3755 s
+es: 7900000 documents sent, 3765 s
+es: 7925000 documents sent, 3776 s
+es: 7950000 documents sent, 3788 s
+es: 7975000 documents sent, 3798 s
+es: 8000000 documents sent, 3808 s
+es: 8025000 documents sent, 3820 s
+es: 8050000 documents sent, 3831 s
+es: 8075000 documents sent, 3846 s
+es: 8100000 documents sent, 3859 s
+es: 8125000 documents sent, 3874 s
+es: 8150000 documents sent, 3886 s
+es: 8175000 documents sent, 3897 s
+es: 8200000 documents sent, 3914 s
+es: 8225000 documents sent, 3927 s
+es: 8250000 documents sent, 3941 s
+es: 8275000 documents sent, 3957 s
+es: 8300000 documents sent, 3969 s
+es: 8325000 documents sent, 3981 s
+es: 8350000 documents sent, 3995 s
+es: 8375000 documents sent, 4009 s
+es: 8400000 documents sent, 4021 s
+es: 8425000 documents sent, 4034 s
+es: 8450000 documents sent, 4046 s
+es: 8475000 documents sent, 4058 s
+es: 8500000 documents sent, 4071 s
+es: 8525000 documents sent, 4085 s
+es: 8550000 documents sent, 4098 s
+es: 8575000 documents sent, 4113 s
+es: 8600000 documents sent, 4127 s
+es: 8625000 documents sent, 4143 s
+es: 8650000 documents sent, 4156 s
+es: 8675000 documents sent, 4165 s
+es: 8700000 documents sent, 4176 s
+es: 8725000 documents sent, 4190 s
+es: 8750000 documents sent, 4204 s
+es: 8775000 documents sent, 4219 s
+es: 8800000 documents sent, 4231 s
+es: 8825000 documents sent, 4243 s
+es: 8850000 documents sent, 4260 s
+es: 8875000 documents sent, 4274 s
+es: 8900000 documents sent, 4289 s
+es: 8925000 documents sent, 4305 s
+es: 8950000 documents sent, 4319 s
+es: 8975000 documents sent, 4335 s
+es: 9000000 documents sent, 4348 s
+es: 9025000 documents sent, 4363 s
+es: 9050000 documents sent, 4378 s
+es: 9075000 documents sent, 4393 s
+es: 9100000 documents sent, 4403 s
+es: 9125000 documents sent, 4416 s
+es: 9150000 documents sent, 4431 s
+es: 9175000 documents sent, 4445 s
+es: 9200000 documents sent, 4458 s
+es: 9225000 documents sent, 4473 s
+es: 9250000 documents sent, 4487 s
+es: 9275000 documents sent, 4499 s
+es: 9300000 documents sent, 4513 s
+es: 9325000 documents sent, 4525 s
+es: 9350000 documents sent, 4538 s
+es: 9375000 documents sent, 4549 s
+es: 9400000 documents sent, 4562 s
+es: 9425000 documents sent, 4575 s
+es: 9450000 documents sent, 4589 s
+es: 9475000 documents sent, 4602 s
+es: 9500000 documents sent, 4617 s
+es: 9525000 documents sent, 4630 s
+es: 9550000 documents sent, 4644 s
+es: 9575000 documents sent, 4658 s
+es: 9600000 documents sent, 4668 s
+es: 9625000 documents sent, 4682 s
+es: 9650000 documents sent, 4701 s
+es: 9675000 documents sent, 4718 s
+es: 9700000 documents sent, 4729 s
+es: 9725000 documents sent, 4744 s
+es: 9750000 documents sent, 4756 s
+es: 9775000 documents sent, 4770 s
+es: 9800000 documents sent, 4782 s
+es: 9825000 documents sent, 4796 s
+es: 9850000 documents sent, 4811 s
+es: 9875000 documents sent, 4826 s
+es: 9900000 documents sent, 4839 s
+es: 9925000 documents sent, 4853 s
+es: 9950000 documents sent, 4867 s
+es: 9975000 documents sent, 4879 s
+es: 10000000 documents sent, 4894 s
+es: 10000000 documents (118.3 GB of JSON) sent in 4894.2 s
+unexpected EOF
+error: unexpected EOF
+es: searchable after 3.9 s more, merged in 3270.9 s; 8168.9 s in all
+wrote /data/compare/load-es.json
+job.batch/run-es created
+es       bm25                     warm-up: p50 14.157, 11.241, 8.756, 8.799 ms
+es       bm25                     c=1        155 q/s  p50   5.389 ms  p90   9.594 ms  p99  20.316 ms  errors 0
+es       bm25                     c=4        423 q/s  p50   8.087 ms  p90  15.503 ms  p99  31.016 ms  errors 0
+es       bm25                     c=16       608 q/s  p50  23.430 ms  p90  42.211 ms  p99  77.429 ms  errors 0
+es       bm25 + filter            warm-up: p50 12.705, 11.838 ms
+es       bm25 + filter            c=1        112 q/s  p50   6.709 ms  p90  14.691 ms  p99  49.826 ms  errors 0
+es       bm25 + filter            c=4        291 q/s  p50  10.749 ms  p90  22.617 ms  p99  70.567 ms  errors 0
+es       bm25 + filter            c=16       372 q/s  p50  35.338 ms  p90  68.313 ms  p99 187.391 ms  errors 0
+es       vector                   warm-up: p50 7.962, 6.433, 6.020 ms
+es       vector                   c=1        222 q/s  p50   4.377 ms  p90   5.272 ms  p99   7.394 ms  errors 0
+es       vector                   c=4        695 q/s  p50   5.430 ms  p90   6.787 ms  p99   8.536 ms  errors 0
+es       vector                   c=16      1150 q/s  p50  12.727 ms  p90  19.592 ms  p99  27.543 ms  errors 0
+es       vector + filter          warm-up: p50 7.901, 8.549 ms
+es       vector + filter          c=1         93 q/s  p50   5.409 ms  p90   6.490 ms  p99 177.323 ms  errors 0
+es       vector + filter          c=4        285 q/s  p50   7.583 ms  p90  10.596 ms  p99 245.195 ms  errors 0
+es       vector + filter          c=16       459 q/s  p50  22.086 ms  p90  35.003 ms  p99 462.617 ms  errors 0
+es       hybrid (RRF)             unavailable: {"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","root_cause":[{"license.expired.feature":"Reciprocal Rank Fusion (RRF)","reason":"current license is non-compliant for [Reciprocal Rank Fusion (RRF)]","type":"secu
+es       hybrid (weighted)        warm-up: p50 27.417, 26.414 ms
+es       hybrid (weighted)        c=1         38 q/s  p50  16.131 ms  p90  56.517 ms  p99 122.909 ms  errors 0
+es       hybrid (weighted)        c=4         93 q/s  p50  26.635 ms  p90  91.065 ms  p99 211.684 ms  errors 0
+es       hybrid (weighted)        c=16        98 q/s  p50 132.687 ms  p90 293.229 ms  p99 550.586 ms  errors 0
+es       boosted (bm25 × decay)   warm-up: p50 71.366, 67.305 ms
+es       boosted (bm25 × decay)   c=1         17 q/s  p50  46.568 ms  p90 130.159 ms  p99 203.941 ms  errors 0
+es       boosted (bm25 × decay)   c=4         39 q/s  p50  67.883 ms  p90 248.908 ms  p99 429.563 ms  errors 0
+es       boosted (bm25 × decay)   c=16        38 q/s  p50 352.231 ms  p90 694.912 ms  p99 1104.734 ms  errors 0
+es       facet                    warm-up: p50 7.785, 6.862, 6.320 ms
+es       facet                    c=1        189 q/s  p50   3.921 ms  p90   9.595 ms  p99  24.586 ms  errors 0
+es       facet                    c=4        499 q/s  p50   6.047 ms  p90  14.898 ms  p99  39.559 ms  errors 0
+es       facet                    c=16       615 q/s  p50  21.035 ms  p90  45.687 ms  p99 110.080 ms  errors 0
+es       key lookup               warm-up: p50 1.315, 1.211 ms
+es       key lookup               c=1        934 q/s  p50   1.070 ms  p90   1.461 ms  p99   1.786 ms  errors 0
+es       key lookup               c=4       3789 q/s  p50   1.059 ms  p90   1.448 ms  p99   1.819 ms  errors 0
+es       key lookup               c=16      9620 q/s  p50   1.545 ms  p90   2.395 ms  p99   3.478 ms  errors 0
+es       phrase                   warm-up: p50 10.660, 9.578, 8.771 ms
+es       phrase                   c=1        141 q/s  p50   5.000 ms  p90  13.218 ms  p99  26.145 ms  errors 0
+es       phrase                   c=4        353 q/s  p50   8.527 ms  p90  22.168 ms  p99  39.768 ms  errors 0
+es       phrase                   c=16       440 q/s  p50  29.991 ms  p90  65.704 ms  p99 126.525 ms  errors 0
+es       typo                     warm-up: p50 56.158, 54.672 ms
+es       typo                     c=1         28 q/s  p50  32.748 ms  p90  57.609 ms  p99  93.359 ms  errors 0
+es       typo                     c=4         66 q/s  p50  54.927 ms  p90  98.137 ms  p99 143.874 ms  errors 0
+es       typo                     c=16        65 q/s  p50 233.673 ms  p90 351.747 ms  p99 501.318 ms  errors 0
+es       prefix                   warm-up: p50 15.777, 14.576 ms
+es       prefix                   c=1         92 q/s  p50   8.281 ms  p90  19.661 ms  p99  48.037 ms  errors 0
+es       prefix                   c=4        220 q/s  p50  14.816 ms  p90  30.726 ms  p99  74.382 ms  errors 0
+es       prefix                   c=16       258 q/s  p50  52.051 ms  p90  95.894 ms  p99 214.964 ms  errors 0
+es       similar items            warm-up: p50 56.547, 55.807 ms
+es       similar items            c=1         31 q/s  p50  29.914 ms  p90  31.638 ms  p99  34.923 ms  errors 0
+es       similar items            c=4         64 q/s  p50  54.462 ms  p90  64.227 ms  p99 442.982 ms  errors 0
+es       similar items            c=16        66 q/s  p50 234.720 ms  p90 299.529 ms  p99 604.139 ms  errors 0
+es       sql aggregate            warm-up: p50 14.688, 13.550 ms
+es       sql aggregate            c=1        125 q/s  p50   7.748 ms  p90   9.276 ms  p99  12.315 ms  errors 0
+es       sql aggregate            c=4        432 q/s  p50   8.752 ms  p90  11.418 ms  p99  14.837 ms  errors 0
+es       sql aggregate            c=16       802 q/s  p50  19.033 ms  p90  27.588 ms  p99  36.978 ms  errors 0
+wrote /data/compare/run-es.json
+{"acknowledged":true,"trial_was_started":true,"type":"trial"}
+job.batch/run-es-trial created
+es-trial hybrid (RRF)             warm-up: p50 22.003, 22.035 ms
+es-trial hybrid (RRF)             c=1         74 q/s  p50  12.374 ms  p90  18.338 ms  p99  34.522 ms  errors 0
+es-trial hybrid (RRF)             c=4        183 q/s  p50  19.991 ms  p90  31.419 ms  p99  54.921 ms  errors 0
+es-trial hybrid (RRF)             c=16       235 q/s  p50  63.626 ms  p90  95.159 ms  p99 158.857 ms  errors 0
+es-trial hybrid (weighted)        warm-up: p50 46.820, 47.798 ms
+es-trial hybrid (weighted)        c=1         26 q/s  p50  31.998 ms  p90  79.929 ms  p99 109.227 ms  errors 0
+es-trial hybrid (weighted)        c=4         48 q/s  p50  63.749 ms  p90 166.892 ms  p99 301.098 ms  errors 0
+es-trial hybrid (weighted)        c=16        62 q/s  p50 230.806 ms  p90 398.027 ms  p99 617.371 ms  errors 0
+wrote /data/compare/run-es-trial.json
+job.batch/writes-es created
+es       insert one     c=1        275 docs/s  p50    3.206 ms  p90    4.357 ms  p99    9.002 ms  errors 0
+es       insert one     c=4        919 docs/s  p50    3.807 ms  p90    6.114 ms  p99   10.793 ms  errors 0
+es       insert one     c=16      2292 docs/s  p50    5.693 ms  p90    9.964 ms  p99   22.258 ms  errors 0
+es       insert batch   c=1       1550 docs/s  p50   44.751 ms  p90   62.530 ms  p99  303.980 ms  errors 0
+es       insert batch   c=4       3438 docs/s  p50   79.527 ms  p90  144.086 ms  p99  435.486 ms  errors 0
+es       insert batch   c=16      3790 docs/s  p50  336.590 ms  p90  525.428 ms  p99 1057.506 ms  errors 0
+es       update one     c=1        238 docs/s  p50    3.573 ms  p90    5.284 ms  p99   12.694 ms  errors 0
+es       update one     c=4        856 docs/s  p50    3.947 ms  p90    5.934 ms  p99   10.993 ms  errors 0
+es       update one     c=16      1797 docs/s  p50    6.716 ms  p90   14.677 ms  p99   38.365 ms  errors 0
+es       visible        written in p50 5.9 ms, found after p50 796.3 ms  p90 1023.0 ms  max 1057.1 ms
+wrote /data/compare/writes-es.json
+es       deleted 77830 written documents and put back 17376 ratings in 13.5 s
+service/redpanda created
+pod/redpanda created
+pod/redpanda condition met
+job.batch/stream-es created
+es       topic docs-es-1793722506, 4 partitions; 10000000 documents before
+es       250/s            produced 7500 in 30.0 s; written 7500 in 30.0 s (250/s); lag p50 22 ms  p90 32 ms  p99 57 ms  max 183 ms (read p50 18 ms)
+es       500/s            produced 15000 in 30.0 s; written 15000 in 30.0 s (500/s); lag p50 22 ms  p90 32 ms  p99 57 ms  max 148 ms (read p50 16 ms)
+es       1000/s           produced 30000 in 30.0 s; written 30000 in 30.0 s (999/s); lag p50 27 ms  p90 40 ms  p99 86 ms  max 164 ms (read p50 18 ms)
+es       2000/s           produced 60000 in 30.0 s; written 60000 in 30.0 s (1998/s); lag p50 34 ms  p90 85 ms  p99 244 ms  max 515 ms (read p50 20 ms)
+es       flat out         produced 20000 in 0.9 s; written 20000 in 5.8 s (3424/s); lag p50 2403 ms  p90 4195 ms  p99 4873 ms  max 4955 ms (read p50 1700 ms)
+es       before the crash produced 10000 in 5.9 s; written 5009 in 5.9 s (855/s); lag p50 31 ms  p90 46 ms  p99 114 ms  max 153 ms (read p50 19 ms)
+es       after the crash   resumed in 2.5 s: 1532 events written a second time, 0 skipped by the server; 10142500 documents, 0 lost
+wrote /data/compare/stream-es.json
+es       deleted 142500 streamed documents in 2.7 s
+pod "es-0" deleted from es namespace
+pod "es-1" deleted from es namespace

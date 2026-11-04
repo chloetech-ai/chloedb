@@ -1,0 +1,23 @@
+{
+  "batch": 500,
+  "clients": 8,
+  "collection": "msmarco-10000k",
+  "docs": 10000000,
+  "engine": "paradedb",
+  "index_bytes": 118290407424,
+  "indexes_bytes": 65111851008,
+  "ingest_s": 1209.18424601,
+  "merge_s": 1362.206772538,
+  "prepare_s": 0.0,
+  "refresh_s": 0.0,
+  "request_bytes": 106879016099,
+  "searchable_docs": 10000000,
+  "setup_s": 0.018954568,
+  "steps": {
+    "analyze_s": 24.138077183,
+    "primary_key_s": 38.431954241,
+    "search_index_s": 1299.63664115
+  },
+  "table_bytes": 11625136128,
+  "total_s": 2571.391037821
+}

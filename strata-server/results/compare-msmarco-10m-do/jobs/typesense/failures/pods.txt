@@ -1,0 +1,3 @@
+NAME                   READY   STATUS    RESTARTS     AGE     IP             NODE                    NOMINATED NODE   READINESS GATES
+load-typesense-dkmh8   0/1     Error     0            3h32m   10.150.9.146   typesense-c-a1-3eal90   <none>           <none>
+typesense-0            0/1     Running   1 (9s ago)   3h32m   10.150.9.34    typesense-d-a1-3eal9v   <none>           <none>

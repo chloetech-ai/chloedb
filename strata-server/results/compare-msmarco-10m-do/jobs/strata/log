@@ -1,0 +1,96 @@
+service/strata created
+pod/strata-0 created
+pod/strata-1 created
+pod/strata-coordinator created
+service/strata-coordinator created
+pod/strata-0 condition met
+pod/strata-1 condition met
+pod/strata-coordinator condition met
+job.batch/run-strata created
+strata   bm25                     warm-up: p50 7.639, 7.263 ms
+strata   bm25                     c=1        187 q/s  p50   4.356 ms  p90   8.704 ms  p99  20.085 ms  errors 0
+strata   bm25                     c=4        430 q/s  p50   7.328 ms  p90  15.569 ms  p99  39.218 ms  errors 0
+strata   bm25                     c=16       493 q/s  p50  26.163 ms  p90  56.265 ms  p99 144.212 ms  errors 0
+strata   bm25 + filter            warm-up: p50 16.329, 16.132 ms
+strata   bm25 + filter            c=1         96 q/s  p50   8.928 ms  p90  18.968 ms  p99  32.592 ms  errors 0
+strata   bm25 + filter            c=4        204 q/s  p50  15.901 ms  p90  36.593 ms  p99  63.210 ms  errors 0
+strata   bm25 + filter            c=16       223 q/s  p50  55.384 ms  p90 142.599 ms  p99 261.404 ms  errors 0
+strata   vector                   warm-up: p50 4.345, 4.174 ms
+strata   vector                   c=1        360 q/s  p50   2.728 ms  p90   3.130 ms  p99   4.087 ms  errors 0
+strata   vector                   c=4        916 q/s  p50   4.198 ms  p90   5.606 ms  p99   7.236 ms  errors 0
+strata   vector                   c=16      1223 q/s  p50  12.557 ms  p90  17.684 ms  p99  24.844 ms  errors 0
+strata   vector + filter          warm-up: p50 6.345, 6.344 ms
+strata   vector + filter          c=1        263 q/s  p50   3.734 ms  p90   4.341 ms  p99   5.654 ms  errors 0
+strata   vector + filter          c=4        600 q/s  p50   6.450 ms  p90   8.718 ms  p99  10.833 ms  errors 0
+strata   vector + filter          c=16       733 q/s  p50  20.352 ms  p90  33.433 ms  p99  45.939 ms  errors 0
+strata   hybrid (RRF)             warm-up: p50 16.991, 16.399 ms
+strata   hybrid (RRF)             c=1         91 q/s  p50   9.573 ms  p90  16.065 ms  p99  35.047 ms  errors 0
+strata   hybrid (RRF)             c=4        204 q/s  p50  16.472 ms  p90  29.977 ms  p99  67.497 ms  errors 0
+strata   hybrid (RRF)             c=16       221 q/s  p50  61.380 ms  p90 116.404 ms  p99 313.020 ms  errors 0
+strata   hybrid (weighted)        warm-up: p50 16.721, 16.828 ms
+strata   hybrid (weighted)        c=1         90 q/s  p50   9.670 ms  p90  16.207 ms  p99  33.953 ms  errors 0
+strata   hybrid (weighted)        c=4        197 q/s  p50  17.368 ms  p90  31.227 ms  p99  70.942 ms  errors 0
+strata   hybrid (weighted)        c=16       219 q/s  p50  61.963 ms  p90 122.966 ms  p99 264.506 ms  errors 0
+strata   boosted (bm25 × decay)   warm-up: p50 30.682, 29.775 ms
+strata   boosted (bm25 × decay)   c=1         53 q/s  p50  15.485 ms  p90  31.847 ms  p99  73.018 ms  errors 0
+strata   boosted (bm25 × decay)   c=4        102 q/s  p50  30.256 ms  p90  71.447 ms  p99 144.424 ms  errors 0
+strata   boosted (bm25 × decay)   c=16       101 q/s  p50 113.491 ms  p90 300.549 ms  p99 743.379 ms  errors 0
+strata   facet                    warm-up: p50 4.861, 4.972 ms
+strata   facet                    c=1        249 q/s  p50   3.290 ms  p90   6.734 ms  p99  12.380 ms  errors 0
+strata   facet                    c=4        692 q/s  p50   4.782 ms  p90  10.240 ms  p99  16.958 ms  errors 0
+strata   facet                    c=16       962 q/s  p50  14.183 ms  p90  28.393 ms  p99  47.055 ms  errors 0
+strata   key lookup               warm-up: p50 0.975, 1.039 ms
+strata   key lookup               c=1       1144 q/s  p50   0.858 ms  p90   0.956 ms  p99   1.245 ms  errors 0
+strata   key lookup               c=4       3375 q/s  p50   1.152 ms  p90   1.513 ms  p99   1.859 ms  errors 0
+strata   key lookup               c=16      5009 q/s  p50   3.048 ms  p90   4.256 ms  p99   5.141 ms  errors 0
+strata   phrase                   warm-up: p50 6.627, 6.462 ms
+strata   phrase                   c=1        190 q/s  p50   3.820 ms  p90   9.086 ms  p99  18.222 ms  errors 0
+strata   phrase                   c=4        431 q/s  p50   6.561 ms  p90  17.975 ms  p99  38.419 ms  errors 0
+strata   phrase                   c=16       530 q/s  p50  23.163 ms  p90  56.089 ms  p99 114.621 ms  errors 0
+strata   typo                     warm-up: p50 1755.563, 1778.329 ms
+strata   typo                     c=1          1 q/s  p50 823.819 ms  p90 1050.255 ms  p99 1746.487 ms  errors 0
+strata   typo                     c=4          2 q/s  p50 1686.559 ms  p90 2692.945 ms  p99 3244.853 ms  errors 0
+strata   typo                     c=16         3 q/s  p50 5524.391 ms  p90 8725.486 ms  p99 9200.988 ms  errors 0
+strata   prefix                   warm-up: p50 23.058, 22.304 ms
+strata   prefix                   c=1         81 q/s  p50  10.663 ms  p90  20.984 ms  p99  35.767 ms  errors 0
+strata   prefix                   c=4        154 q/s  p50  22.041 ms  p90  44.049 ms  p99  78.799 ms  errors 0
+strata   prefix                   c=16       150 q/s  p50  90.947 ms  p90 196.397 ms  p99 377.758 ms  errors 0
+strata   similar items            warm-up: p50 8.168, 8.036 ms
+strata   similar items            c=1        211 q/s  p50   4.646 ms  p90   5.400 ms  p99   6.837 ms  errors 0
+strata   similar items            c=4        468 q/s  p50   8.253 ms  p90  10.929 ms  p99  14.307 ms  errors 0
+strata   similar items            c=16       521 q/s  p50  29.444 ms  p90  45.507 ms  p99  60.710 ms  errors 0
+strata   sql aggregate            warm-up: p50 6135.012, 6961.176, 6184.153, 7542.974, 6160.272 ms
+strata   sql aggregate            c=1          0 q/s  p50 4274.123 ms  p90 4274.123 ms  p99 4274.123 ms  errors 0
+strata   sql aggregate            c=4          1 q/s  p50 6170.860 ms  p90 7946.266 ms  p99 7946.266 ms  errors 0
+strata   sql aggregate            c=16         1 q/s  p50 19370.351 ms  p90 20114.351 ms  p99 20161.085 ms  errors 0
+wrote /data/compare/run-strata.json
+job.batch/writes-strata created
+strata   insert one     c=1        257 docs/s  p50    3.560 ms  p90    4.105 ms  p99    6.902 ms  errors 0
+strata   insert one     c=4        920 docs/s  p50    3.562 ms  p90    4.890 ms  p99    7.760 ms  errors 0
+strata   insert one     c=16      2148 docs/s  p50    6.084 ms  p90    8.008 ms  p99   71.303 ms  errors 0
+strata   insert batch   c=1       1754 docs/s  p50   34.368 ms  p90   94.365 ms  p99  198.021 ms  errors 0
+strata   insert batch   c=4       3348 docs/s  p50   96.017 ms  p90  178.167 ms  p99  355.304 ms  errors 0
+strata   insert batch   c=16      3841 docs/s  p50  384.678 ms  p90  649.106 ms  p99  687.373 ms  errors 0
+strata   update one     c=1        322 docs/s  p50    2.984 ms  p90    3.538 ms  p99    5.517 ms  errors 0
+strata   update one     c=4       1135 docs/s  p50    3.042 ms  p90    4.308 ms  p99    8.209 ms  errors 0
+strata   update one     c=16      3927 docs/s  p50    3.959 ms  p90    5.011 ms  p99    6.510 ms  errors 0
+strata   visible        written in p50 3.9 ms, found after p50 8.2 ms  p90 10.0 ms  max 112.6 ms
+wrote /data/compare/writes-strata.json
+strata   deleted 74330 written documents and put back 20000 ratings in 1.7 s
+service/redpanda created
+pod/redpanda created
+pod/redpanda condition met
+job.batch/stream-strata created
+strata   topic docs-strata-1793715954, 4 partitions; 10000000 documents before
+strata   250/s            produced 7500 in 30.0 s; written 7500 in 30.1 s (249/s); lag p50 78 ms  p90 98 ms  p99 118 ms  max 158 ms (read p50 34 ms)
+strata   500/s            produced 15000 in 30.0 s; written 15000 in 30.1 s (498/s); lag p50 78 ms  p90 98 ms  p99 149 ms  max 228 ms (read p50 32 ms)
+strata   1000/s           produced 30000 in 30.0 s; written 30000 in 30.1 s (998/s); lag p50 79 ms  p90 105 ms  p99 233 ms  max 439 ms (read p50 33 ms)
+strata   2000/s           produced 60000 in 30.0 s; written 60000 in 30.1 s (1994/s); lag p50 91 ms  p90 202 ms  p99 402 ms  max 572 ms (read p50 40 ms)
+strata   flat out         produced 20000 in 0.8 s; written 20000 in 5.9 s (3372/s); lag p50 2687 ms  p90 4847 ms  p99 5153 ms  max 5172 ms (read p50 1456 ms)
+strata   before the crash produced 10000 in 6.0 s; written 5070 in 6.0 s (852/s); lag p50 82 ms  p90 115 ms  p99 155 ms  max 171 ms (read p50 36 ms)
+strata   after the crash   resumed in 2.1 s: 0 events written a second time, 0 skipped by the server; 10142500 documents, 0 lost
+wrote /data/compare/stream-strata.json
+strata   deleted 142500 streamed documents in 3.2 s
+pod "strata-0" deleted from strata namespace
+pod "strata-1" deleted from strata namespace
+pod "strata-coordinator" deleted from strata namespace

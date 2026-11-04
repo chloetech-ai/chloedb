@@ -1,0 +1,474 @@
+service/redis created
+pod/redis-0 created
+pod/redis-0 condition met
+job.batch/load-redis created
+redis: index created in 0.0 s
+redis: 25000 documents sent, 5 s
+redis: 50000 documents sent, 10 s
+redis: 75000 documents sent, 16 s
+redis: 100000 documents sent, 22 s
+redis: 125000 documents sent, 29 s
+redis: 150000 documents sent, 35 s
+redis: 175000 documents sent, 41 s
+redis: 200000 documents sent, 48 s
+redis: 225000 documents sent, 53 s
+redis: 250000 documents sent, 57 s
+redis: 275000 documents sent, 63 s
+redis: 300000 documents sent, 69 s
+redis: 325000 documents sent, 75 s
+redis: 350000 documents sent, 82 s
+redis: 375000 documents sent, 88 s
+redis: 400000 documents sent, 92 s
+redis: 425000 documents sent, 98 s
+redis: 450000 documents sent, 105 s
+redis: 475000 documents sent, 113 s
+redis: 500000 documents sent, 121 s
+redis: 525000 documents sent, 127 s
+redis: 550000 documents sent, 133 s
+redis: 575000 documents sent, 140 s
+redis: 600000 documents sent, 146 s
+redis: 625000 documents sent, 152 s
+redis: 650000 documents sent, 159 s
+redis: 675000 documents sent, 165 s
+redis: 700000 documents sent, 170 s
+redis: 725000 documents sent, 176 s
+redis: 750000 documents sent, 184 s
+redis: 775000 documents sent, 191 s
+redis: 800000 documents sent, 198 s
+redis: 825000 documents sent, 204 s
+redis: 850000 documents sent, 211 s
+redis: 875000 documents sent, 218 s
+redis: 900000 documents sent, 225 s
+redis: 925000 documents sent, 232 s
+redis: 950000 documents sent, 239 s
+redis: 975000 documents sent, 246 s
+redis: 1000000 documents sent, 254 s
+redis: 1025000 documents sent, 261 s
+redis: 1050000 documents sent, 269 s
+redis: 1075000 documents sent, 280 s
+redis: 1100000 documents sent, 287 s
+redis: 1125000 documents sent, 294 s
+redis: 1150000 documents sent, 301 s
+redis: 1175000 documents sent, 309 s
+redis: 1200000 documents sent, 316 s
+redis: 1225000 documents sent, 323 s
+redis: 1250000 documents sent, 330 s
+redis: 1275000 documents sent, 337 s
+redis: 1300000 documents sent, 344 s
+redis: 1325000 documents sent, 352 s
+redis: 1350000 documents sent, 359 s
+redis: 1375000 documents sent, 367 s
+redis: 1400000 documents sent, 374 s
+redis: 1425000 documents sent, 382 s
+redis: 1450000 documents sent, 390 s
+redis: 1475000 documents sent, 398 s
+redis: 1500000 documents sent, 406 s
+redis: 1525000 documents sent, 415 s
+redis: 1550000 documents sent, 423 s
+redis: 1575000 documents sent, 431 s
+redis: 1600000 documents sent, 439 s
+redis: 1625000 documents sent, 447 s
+redis: 1650000 documents sent, 454 s
+redis: 1675000 documents sent, 462 s
+redis: 1700000 documents sent, 470 s
+redis: 1725000 documents sent, 478 s
+redis: 1750000 documents sent, 485 s
+redis: 1775000 documents sent, 493 s
+redis: 1800000 documents sent, 501 s
+redis: 1825000 documents sent, 509 s
+redis: 1850000 documents sent, 517 s
+redis: 1875000 documents sent, 524 s
+redis: 1900000 documents sent, 533 s
+redis: 1925000 documents sent, 543 s
+redis: 1950000 documents sent, 552 s
+redis: 1975000 documents sent, 562 s
+redis: 2000000 documents sent, 571 s
+redis: 2025000 documents sent, 581 s
+redis: 2050000 documents sent, 590 s
+redis: 2075000 documents sent, 600 s
+redis: 2100000 documents sent, 607 s
+redis: 2125000 documents sent, 616 s
+redis: 2150000 documents sent, 625 s
+redis: 2175000 documents sent, 637 s
+redis: 2200000 documents sent, 650 s
+redis: 2225000 documents sent, 658 s
+redis: 2250000 documents sent, 666 s
+redis: 2275000 documents sent, 674 s
+redis: 2300000 documents sent, 683 s
+redis: 2325000 documents sent, 691 s
+redis: 2350000 documents sent, 699 s
+redis: 2375000 documents sent, 705 s
+redis: 2400000 documents sent, 712 s
+redis: 2425000 documents sent, 720 s
+redis: 2450000 documents sent, 727 s
+redis: 2475000 documents sent, 735 s
+redis: 2500000 documents sent, 743 s
+redis: 2525000 documents sent, 751 s
+redis: 2550000 documents sent, 761 s
+redis: 2575000 documents sent, 769 s
+redis: 2600000 documents sent, 777 s
+redis: 2625000 documents sent, 786 s
+redis: 2650000 documents sent, 795 s
+redis: 2675000 documents sent, 803 s
+redis: 2700000 documents sent, 812 s
+redis: 2725000 documents sent, 820 s
+redis: 2750000 documents sent, 829 s
+redis: 2775000 documents sent, 836 s
+redis: 2800000 documents sent, 845 s
+redis: 2825000 documents sent, 853 s
+redis: 2850000 documents sent, 861 s
+redis: 2875000 documents sent, 870 s
+redis: 2900000 documents sent, 878 s
+redis: 2925000 documents sent, 889 s
+redis: 2950000 documents sent, 898 s
+redis: 2975000 documents sent, 906 s
+redis: 3000000 documents sent, 914 s
+redis: 3025000 documents sent, 922 s
+redis: 3050000 documents sent, 930 s
+redis: 3075000 documents sent, 938 s
+redis: 3100000 documents sent, 946 s
+redis: 3125000 documents sent, 955 s
+redis: 3150000 documents sent, 964 s
+redis: 3175000 documents sent, 973 s
+redis: 3200000 documents sent, 982 s
+redis: 3225000 documents sent, 992 s
+redis: 3250000 documents sent, 1001 s
+redis: 3275000 documents sent, 1011 s
+read tcp 127.0.0.1:45474->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:45474->127.0.0.1:36447: read: connection reset by peer
+redis: 3300000 documents sent, 1020 s
+redis: 3325000 documents sent, 1030 s
+redis: 3350000 documents sent, 1038 s
+redis: 3375000 documents sent, 1048 s
+redis: 3400000 documents sent, 1057 s
+redis: 3425000 documents sent, 1066 s
+redis: 3450000 documents sent, 1075 s
+redis: 3475000 documents sent, 1085 s
+redis: 3500000 documents sent, 1094 s
+redis: 3525000 documents sent, 1105 s
+redis: 3550000 documents sent, 1114 s
+redis: 3575000 documents sent, 1123 s
+redis: 3600000 documents sent, 1133 s
+redis: 3625000 documents sent, 1143 s
+redis: 3650000 documents sent, 1152 s
+redis: 3675000 documents sent, 1162 s
+redis: 3700000 documents sent, 1171 s
+redis: 3725000 documents sent, 1182 s
+redis: 3750000 documents sent, 1192 s
+redis: 3775000 documents sent, 1202 s
+redis: 3800000 documents sent, 1212 s
+redis: 3825000 documents sent, 1220 s
+redis: 3850000 documents sent, 1231 s
+redis: 3875000 documents sent, 1241 s
+redis: 3900000 documents sent, 1252 s
+redis: 3925000 documents sent, 1262 s
+redis: 3950000 documents sent, 1272 s
+redis: 3975000 documents sent, 1282 s
+redis: 4000000 documents sent, 1292 s
+redis: 4025000 documents sent, 1302 s
+redis: 4050000 documents sent, 1312 s
+redis: 4075000 documents sent, 1323 s
+redis: 4100000 documents sent, 1333 s
+redis: 4125000 documents sent, 1343 s
+redis: 4150000 documents sent, 1353 s
+redis: 4175000 documents sent, 1363 s
+redis: 4200000 documents sent, 1374 s
+redis: 4225000 documents sent, 1384 s
+redis: 4250000 documents sent, 1394 s
+redis: 4275000 documents sent, 1404 s
+redis: 4300000 documents sent, 1415 s
+redis: 4325000 documents sent, 1426 s
+redis: 4350000 documents sent, 1438 s
+redis: 4375000 documents sent, 1448 s
+redis: 4400000 documents sent, 1459 s
+redis: 4425000 documents sent, 1470 s
+redis: 4450000 documents sent, 1481 s
+redis: 4475000 documents sent, 1492 s
+redis: 4500000 documents sent, 1499 s
+redis: 4525000 documents sent, 1506 s
+redis: 4550000 documents sent, 1515 s
+redis: 4575000 documents sent, 1525 s
+redis: 4600000 documents sent, 1536 s
+redis: 4625000 documents sent, 1547 s
+redis: 4650000 documents sent, 1557 s
+redis: 4675000 documents sent, 1568 s
+redis: 4700000 documents sent, 1579 s
+redis: 4725000 documents sent, 1590 s
+redis: 4750000 documents sent, 1601 s
+redis: 4775000 documents sent, 1612 s
+redis: 4800000 documents sent, 1622 s
+redis: 4825000 documents sent, 1633 s
+redis: 4850000 documents sent, 1643 s
+redis: 4875000 documents sent, 1655 s
+redis: 4900000 documents sent, 1666 s
+redis: 4925000 documents sent, 1676 s
+redis: 4950000 documents sent, 1687 s
+redis: 4975000 documents sent, 1698 s
+redis: 5000000 documents sent, 1709 s
+redis: 5025000 documents sent, 1719 s
+redis: 5050000 documents sent, 1731 s
+redis: 5075000 documents sent, 1744 s
+redis: 5100000 documents sent, 1762 s
+redis: 5125000 documents sent, 1777 s
+redis: 5150000 documents sent, 1790 s
+redis: 5175000 documents sent, 1801 s
+redis: 5200000 documents sent, 1812 s
+redis: 5225000 documents sent, 1823 s
+redis: 5250000 documents sent, 1831 s
+redis: 5275000 documents sent, 1842 s
+redis: 5300000 documents sent, 1852 s
+redis: 5325000 documents sent, 1863 s
+redis: 5350000 documents sent, 1874 s
+redis: 5375000 documents sent, 1884 s
+redis: 5400000 documents sent, 1895 s
+redis: 5425000 documents sent, 1905 s
+redis: 5450000 documents sent, 1916 s
+redis: 5475000 documents sent, 1926 s
+redis: 5500000 documents sent, 1937 s
+redis: 5525000 documents sent, 1948 s
+redis: 5550000 documents sent, 1958 s
+redis: 5575000 documents sent, 1968 s
+redis: 5600000 documents sent, 1976 s
+redis: 5625000 documents sent, 1986 s
+redis: 5650000 documents sent, 1995 s
+redis: 5675000 documents sent, 2004 s
+redis: 5700000 documents sent, 2016 s
+redis: 5725000 documents sent, 2026 s
+redis: 5750000 documents sent, 2037 s
+redis: 5775000 documents sent, 2048 s
+redis: 5800000 documents sent, 2059 s
+redis: 5825000 documents sent, 2070 s
+redis: 5850000 documents sent, 2080 s
+redis: 5875000 documents sent, 2092 s
+redis: 5900000 documents sent, 2103 s
+redis: 5925000 documents sent, 2114 s
+redis: 5950000 documents sent, 2125 s
+redis: 5975000 documents sent, 2136 s
+redis: 6000000 documents sent, 2148 s
+redis: 6025000 documents sent, 2159 s
+redis: 6050000 documents sent, 2171 s
+redis: 6075000 documents sent, 2182 s
+read tcp 127.0.0.1:42526->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:42526->127.0.0.1:36447: read: connection reset by peer
+redis: 6100000 documents sent, 2193 s
+redis: 6125000 documents sent, 2204 s
+redis: 6150000 documents sent, 2216 s
+redis: 6175000 documents sent, 2227 s
+redis: 6200000 documents sent, 2238 s
+redis: 6225000 documents sent, 2249 s
+redis: 6250000 documents sent, 2261 s
+redis: 6275000 documents sent, 2272 s
+redis: 6300000 documents sent, 2284 s
+redis: 6325000 documents sent, 2295 s
+redis: 6350000 documents sent, 2306 s
+redis: 6375000 documents sent, 2318 s
+redis: 6400000 documents sent, 2329 s
+redis: 6425000 documents sent, 2341 s
+redis: 6450000 documents sent, 2353 s
+redis: 6475000 documents sent, 2364 s
+redis: 6500000 documents sent, 2376 s
+redis: 6525000 documents sent, 2388 s
+redis: 6550000 documents sent, 2399 s
+redis: 6575000 documents sent, 2411 s
+redis: 6600000 documents sent, 2423 s
+redis: 6625000 documents sent, 2435 s
+redis: 6650000 documents sent, 2446 s
+redis: 6675000 documents sent, 2458 s
+redis: 6700000 documents sent, 2470 s
+redis: 6725000 documents sent, 2481 s
+redis: 6750000 documents sent, 2492 s
+redis: 6775000 documents sent, 2504 s
+redis: 6800000 documents sent, 2517 s
+redis: 6825000 documents sent, 2529 s
+redis: 6850000 documents sent, 2541 s
+redis: 6875000 documents sent, 2554 s
+redis: 6900000 documents sent, 2566 s
+redis: 6925000 documents sent, 2577 s
+redis: 6950000 documents sent, 2590 s
+redis: 6975000 documents sent, 2602 s
+redis: 7000000 documents sent, 2616 s
+redis: 7025000 documents sent, 2628 s
+redis: 7050000 documents sent, 2640 s
+redis: 7075000 documents sent, 2652 s
+redis: 7100000 documents sent, 2664 s
+redis: 7125000 documents sent, 2676 s
+redis: 7150000 documents sent, 2686 s
+redis: 7175000 documents sent, 2695 s
+redis: 7200000 documents sent, 2705 s
+redis: 7225000 documents sent, 2715 s
+redis: 7250000 documents sent, 2724 s
+redis: 7275000 documents sent, 2733 s
+redis: 7300000 documents sent, 2743 s
+redis: 7325000 documents sent, 2753 s
+redis: 7350000 documents sent, 2762 s
+redis: 7375000 documents sent, 2771 s
+redis: 7400000 documents sent, 2781 s
+redis: 7425000 documents sent, 2790 s
+redis: 7450000 documents sent, 2799 s
+redis: 7475000 documents sent, 2809 s
+redis: 7500000 documents sent, 2819 s
+redis: 7525000 documents sent, 2828 s
+redis: 7550000 documents sent, 2838 s
+redis: 7575000 documents sent, 2848 s
+redis: 7600000 documents sent, 2858 s
+redis: 7625000 documents sent, 2868 s
+redis: 7650000 documents sent, 2877 s
+redis: 7675000 documents sent, 2886 s
+redis: 7700000 documents sent, 2896 s
+redis: 7725000 documents sent, 2906 s
+redis: 7750000 documents sent, 2916 s
+redis: 7775000 documents sent, 2925 s
+redis: 7800000 documents sent, 2935 s
+redis: 7825000 documents sent, 2944 s
+redis: 7850000 documents sent, 2954 s
+redis: 7875000 documents sent, 2963 s
+redis: 7900000 documents sent, 2973 s
+redis: 7925000 documents sent, 2983 s
+redis: 7950000 documents sent, 2993 s
+redis: 7975000 documents sent, 3003 s
+redis: 8000000 documents sent, 3013 s
+redis: 8025000 documents sent, 3022 s
+redis: 8050000 documents sent, 3032 s
+redis: 8075000 documents sent, 3042 s
+redis: 8100000 documents sent, 3053 s
+redis: 8125000 documents sent, 3066 s
+redis: 8150000 documents sent, 3079 s
+redis: 8175000 documents sent, 3093 s
+redis: 8200000 documents sent, 3105 s
+redis: 8225000 documents sent, 3118 s
+redis: 8250000 documents sent, 3129 s
+redis: 8275000 documents sent, 3141 s
+redis: 8300000 documents sent, 3155 s
+redis: 8325000 documents sent, 3166 s
+redis: 8350000 documents sent, 3178 s
+redis: 8375000 documents sent, 3191 s
+redis: 8400000 documents sent, 3206 s
+redis: 8425000 documents sent, 3216 s
+redis: 8450000 documents sent, 3229 s
+redis: 8475000 documents sent, 3242 s
+redis: 8500000 documents sent, 3255 s
+redis: 8525000 documents sent, 3269 s
+redis: 8550000 documents sent, 3284 s
+redis: 8575000 documents sent, 3299 s
+redis: 8600000 documents sent, 3312 s
+redis: 8625000 documents sent, 3326 s
+redis: 8650000 documents sent, 3339 s
+redis: 8675000 documents sent, 3352 s
+redis: 8700000 documents sent, 3364 s
+redis: 8725000 documents sent, 3377 s
+redis: 8750000 documents sent, 3390 s
+redis: 8775000 documents sent, 3404 s
+redis: 8800000 documents sent, 3416 s
+redis: 8825000 documents sent, 3430 s
+redis: 8850000 documents sent, 3445 s
+redis: 8875000 documents sent, 3458 s
+redis: 8900000 documents sent, 3471 s
+redis: 8925000 documents sent, 3485 s
+redis: 8950000 documents sent, 3499 s
+redis: 8975000 documents sent, 3513 s
+redis: 9000000 documents sent, 3528 s
+redis: 9025000 documents sent, 3541 s
+redis: 9050000 documents sent, 3555 s
+redis: 9075000 documents sent, 3567 s
+redis: 9100000 documents sent, 3581 s
+redis: 9125000 documents sent, 3594 s
+redis: 9150000 documents sent, 3609 s
+redis: 9175000 documents sent, 3623 s
+redis: 9200000 documents sent, 3637 s
+redis: 9225000 documents sent, 3651 s
+redis: 9250000 documents sent, 3665 s
+redis: 9275000 documents sent, 3679 s
+redis: 9300000 documents sent, 3693 s
+redis: 9325000 documents sent, 3707 s
+redis: 9350000 documents sent, 3719 s
+redis: 9375000 documents sent, 3733 s
+redis: 9400000 documents sent, 3748 s
+redis: 9425000 documents sent, 3762 s
+redis: 9450000 documents sent, 3776 s
+redis: 9475000 documents sent, 3788 s
+redis: 9500000 documents sent, 3802 s
+redis: 9525000 documents sent, 3814 s
+redis: 9550000 documents sent, 3823 s
+redis: 9575000 documents sent, 3835 s
+redis: 9600000 documents sent, 3848 s
+redis: 9625000 documents sent, 3862 s
+redis: 9650000 documents sent, 3876 s
+redis: 9675000 documents sent, 3890 s
+redis: 9700000 documents sent, 3905 s
+redis: 9725000 documents sent, 3919 s
+redis: 9750000 documents sent, 3933 s
+redis: 9775000 documents sent, 3948 s
+redis: 9800000 documents sent, 3963 s
+redis: 9825000 documents sent, 3978 s
+redis: 9850000 documents sent, 3993 s
+redis: 9875000 documents sent, 4008 s
+redis: 9900000 documents sent, 4021 s
+redis: 9925000 documents sent, 4036 s
+redis: 9950000 documents sent, 4051 s
+redis: 9975000 documents sent, 4065 s
+redis: 10000000 documents sent, 4078 s
+redis: 10000000 documents (27.7 GB) sent in 4078.4 s
+redis: index_s in 0.0 s
+redis: indexed 0.0 s after the last write; 4078.4 s in all
+wrote /data/compare/load-redis.json
+job.batch/run-redis created
+redis     bm25                     warm-up: p50 2237.838, 2235.487 ms
+redis     bm25                     c=1          1 q/s  p50 1437.962 ms  p90 2777.443 ms  p99 2777.443 ms  errors 0
+redis     bm25                     c=4          2 q/s  p50 2227.868 ms  p90 3389.201 ms  p99 4130.225 ms  errors 0
+redis     bm25                     c=16         3 q/s  p50 4612.124 ms  p90 6425.414 ms  p99 7636.971 ms  errors 0
+redis     bm25 + filter            warm-up: p50 1181.170, 1171.799 ms
+redis     bm25 + filter            c=1          1 q/s  p50 839.820 ms  p90 1482.120 ms  p99 1515.482 ms  errors 0
+redis     bm25 + filter            c=4          3 q/s  p50 1228.793 ms  p90 1917.651 ms  p99 2199.585 ms  errors 0
+redis     bm25 + filter            c=16         5 q/s  p50 2761.120 ms  p90 3736.066 ms  p99 4091.656 ms  errors 0
+redis     vector                   warm-up: p50 1.255, 1.170 ms
+redis     vector                   c=1        817 q/s  p50   1.186 ms  p90   1.614 ms  p99   2.077 ms  errors 0
+redis     vector                   c=4       3336 q/s  p50   1.183 ms  p90   1.511 ms  p99   1.931 ms  errors 0
+redis     vector                   c=16      6885 q/s  p50   2.248 ms  p90   2.947 ms  p99   4.214 ms  errors 0
+redis     vector + filter          warm-up: p50 3.700, 3.713 ms
+redis     vector + filter          c=1        238 q/s  p50   3.996 ms  p90   6.019 ms  p99   7.750 ms  errors 0
+redis     vector + filter          c=4       1000 q/s  p50   3.723 ms  p90   5.875 ms  p99   7.553 ms  errors 0
+redis     vector + filter          c=16      1978 q/s  p50   7.312 ms  p90  11.107 ms  p99  19.405 ms  errors 0
+redis     hybrid (RRF)             warm-up: p50 2227.538, 2278.136 ms
+redis     hybrid (RRF)             c=1          1 q/s  p50 1428.970 ms  p90 2805.603 ms  p99 2805.603 ms  errors 0
+redis     hybrid (RRF)             c=4          2 q/s  p50 2320.103 ms  p90 3516.995 ms  p99 4179.463 ms  errors 0
+redis     hybrid (RRF)             c=16         1 q/s  p50 5583.462 ms  p90 9411.744 ms  p99 10015.718 ms  errors 9
+  first error: SEARCH_TIMEOUT Timeout limit was reached
+read tcp 127.0.0.1:45254->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:45254->127.0.0.1:36447: read: connection reset by peer
+redis     hybrid (weighted)        warm-up: p50 2233.113, 2223.447 ms
+redis     hybrid (weighted)        c=1          1 q/s  p50 1427.188 ms  p90 2840.319 ms  p99 2840.319 ms  errors 0
+redis     hybrid (weighted)        c=4          2 q/s  p50 2241.492 ms  p90 3409.685 ms  p99 4094.003 ms  errors 0
+redis     hybrid (weighted)        c=16         1 q/s  p50 5672.002 ms  p90 9719.192 ms  p99 9946.803 ms  errors 9
+  first error: SEARCH_TIMEOUT Timeout limit was reached
+redis     boosted (bm25 × decay)   unavailable: SEARCH_TIMEOUT Timeout limit was reached
+redis     facet                    warm-up: p50 1858.595, 2374.483, 3166.538, 3146.016 ms
+redis     facet                    c=1          1 q/s  p50 1019.560 ms  p90 1670.232 ms  p99 1980.252 ms  errors 0
+redis     facet                    c=4          2 q/s  p50 1820.612 ms  p90 3379.412 ms  p99 3635.997 ms  errors 0
+redis     facet                    c=16         3 q/s  p50 5403.018 ms  p90 7254.118 ms  p99 7581.214 ms  errors 0
+redis     key lookup               warm-up: p50 0.219, 0.207 ms
+redis     key lookup               c=1       4751 q/s  p50   0.204 ms  p90   0.227 ms  p99   0.322 ms  errors 0
+redis     key lookup               c=4      18290 q/s  p50   0.214 ms  p90   0.240 ms  p99   0.292 ms  errors 0
+redis     key lookup               c=16     62354 q/s  p50   0.249 ms  p90   0.298 ms  p99   0.379 ms  errors 0
+redis     phrase                   warm-up: p50 2.889, 2.840 ms
+redis     phrase                   c=1        146 q/s  p50   2.897 ms  p90  17.978 ms  p99  49.179 ms  errors 0
+redis     phrase                   c=4        550 q/s  p50   2.951 ms  p90  20.239 ms  p99  54.830 ms  errors 0
+redis     phrase                   c=16      1035 q/s  p50  11.480 ms  p90  31.674 ms  p99  63.538 ms  errors 0
+unexpected EOF
+error: unexpected EOF
+--- the rest of run-redis's log since 2026-11-04T01:48:31Z (followed again by finish-redis.sh)
+redis     typo                     warm-up: p50 2619.612, 2652.136 ms
+redis     typo                     c=1          1 q/s  p50 1527.227 ms  p90 3445.395 ms  p99 3445.395 ms  errors 0
+redis     typo                     c=4          1 q/s  p50 3368.500 ms  p90 5105.306 ms  p99 5856.108 ms  errors 0
+redis     typo                     c=16         2 q/s  p50 5843.542 ms  p90 8606.235 ms  p99 9820.898 ms  errors 2
+  first error: SEARCH_TIMEOUT Timeout limit was reached
+redis     prefix                   warm-up: p50 22.724, 24.313 ms
+redis     prefix                   c=1          5 q/s  p50  30.148 ms  p90 256.667 ms  p99 3341.310 ms  errors 0
+redis     prefix                   c=4         27 q/s  p50  22.478 ms  p90 183.804 ms  p99 2415.373 ms  errors 0
+redis     prefix                   c=16        55 q/s  p50 146.992 ms  p90 413.401 ms  p99 1368.942 ms  errors 0
+redis     similar items            warm-up: p50 3.804, 3.668 ms
+redis     similar items            c=1        234 q/s  p50   4.001 ms  p90   6.508 ms  p99   8.864 ms  errors 0
+redis     similar items            c=4        994 q/s  p50   3.722 ms  p90   6.264 ms  p99   8.687 ms  errors 0
+redis     similar items            c=16      1961 q/s  p50   7.414 ms  p90  12.279 ms  p99  17.611 ms  errors 0
+redis     sql aggregate            unavailable: SEARCH_TIMEOUT Timeout limit was reached
+wrote /data/compare/run-redis.json
+pod "redis-0" deleted from redis namespace

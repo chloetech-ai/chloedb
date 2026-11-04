@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rank the engines of a fanout.sh run by the sum of their places.
 
-    python3 rank.py REPORTS_DIR > rank.md
+    python3 rank.py [--without ENGINE,...] [--no-load] REPORTS_DIR > rank.md
 
 The tests are each query kind at three measures (p50 and p99 at 1 client,
 queries a second at 4 clients), recall@10 for the kinds with an exact answer,
@@ -10,6 +10,10 @@ and load time and index size. Each measure is the median of the passes
 an engine's place. An engine that cannot run a kind takes last place on it.
 Elasticsearch's kinds that need its paid licence come from its trial run
 (run-es-trial.json). Recall, load time and size come from summary.json.
+
+--without leaves engines out of the ranking (say, ones that ran on bigger
+nodes than the rest), and --no-load leaves out the load time and size tests
+(say, when one engine's load was an offline build and the others' were not).
 """
 import gzip
 import json
@@ -49,9 +53,19 @@ def load_seconds(l):
 
 
 def main():
-    d = Path(sys.argv[1])
+    args = sys.argv[1:]
+    without, with_load = set(), True
+    while args and args[0].startswith("--"):
+        flag = args.pop(0)
+        if flag == "--without":
+            without = set(args.pop(0).split(","))
+        elif flag == "--no-load":
+            with_load = False
+        else:
+            sys.exit(f"rank.py: unknown option {flag}")
+    d = Path(args[0])
     s = json.loads((d / "summary.json").read_text())
-    engines = [e for e in s["engines"] if e != "es-trial"]
+    engines = [e for e in s["engines"] if e != "es-trial" and e not in without]
     H = {e: medians(d, e) for e in engines + ["es-trial"]}
 
     def get(e, k, c):
@@ -66,9 +80,10 @@ def main():
     for k in RECALL:
         tests.append((k, "recall", {e: Q[e][k]["recall_at_10"] for e in engines
                                     if (Q.get(e, {}).get(k) or {}).get("recall_at_10") is not None}, True))
-    tests.append(("load", "time", {e: load_seconds(L[e]) for e in engines if e in L}, False))
-    tests.append(("load", "size", {e: L[e].get("index_bytes") or L[e].get("memory_bytes") for e in engines
-                                   if e in L and (L[e].get("index_bytes") or L[e].get("memory_bytes"))}, False))
+    if with_load:
+        tests.append(("load", "time", {e: load_seconds(L[e]) for e in engines if e in L}, False))
+        tests.append(("load", "size", {e: L[e].get("index_bytes") or L[e].get("memory_bytes") for e in engines
+                                       if e in L and (L[e].get("index_bytes") or L[e].get("memory_bytes"))}, False))
     n = len(engines)
     score = dict.fromkeys(engines, 0)
     ran = dict.fromkeys(engines, 0)
