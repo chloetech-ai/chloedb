@@ -148,7 +148,7 @@
     if (typeof cell === "string" && cell.indexOf("skip:") === 0) return { kind: "skip", why: cell.slice(5) };
     var o = typeof cell === "number" ? { v: cell } : cell;
     if (o.v == null) return { kind: "ph", status: "placeholder" };
-    return { kind: "v", v: o.v, p90: o.p90, p99: o.p99, note: o.note, status: o.s || row.s || col.status || chart.status || "measured" };
+    return { kind: "v", v: o.v, p90: o.p90, p99: o.p99, note: o.note, q: o.q, status: o.s || row.s || col.status || chart.status || "measured" };
   }
   function findChart(id) {
     if (!BENCH) return null;
@@ -188,7 +188,7 @@
       var rowMax = nums.length ? Math.max.apply(null, nums) : 1;
       var better = row.better || chart.better;
       var best = nums.length > 1 ? (better === "higher" ? Math.max.apply(null, nums) : Math.min.apply(null, nums)) : null;
-      var unit = row.unit != null ? row.unit : "";
+      var unit = row.unit != null ? row.unit : (chart.unit || "");
       var digits = row.digits != null ? row.digits : chart.digits;
       h += '<tr><th scope="row">' + esc(row.label) + (row.better && row.better !== chart.better ? '<small class="dir">' + (row.better === "higher" ? "higher is better" : "lower is better") + "</small>" : "") + "</th>";
       r.forEach(function (c, ci) {
@@ -217,8 +217,9 @@
         var tipText = "<b>" + who + "</b> · " + esc(row.label) + "<br>" + esc(val) + (chart.unit && !unit ? " " + esc(chart.unit) : "");
         if (c.p90 != null) tipText += " · p90 " + esc(fmt(c.p90)) + " · p99 " + esc(fmt(c.p99));
         if (c.note) tipText += "<br>" + esc(c.note);
+        if (c.q) tipText += "<br>" + esc(c.q);
         tipText += "<br>" + esc(c.status === "earlier" && run ? run.label : STATUS_LABEL[c.status] || "");
-        h += '<td><div class="' + cls + '" tabindex="0" data-tip="' + esc(tipText) + '"><span class="val' + (c.v === best ? " best" : "") + '">' + esc(val) + (c.note ? " *" : "") + '</span><span class="bar" style="width:' + pct.toFixed(1) + '%"></span></div></td>';
+        h += '<td><div class="' + cls + '" tabindex="0" data-tip="' + esc(tipText) + '"><span class="val' + (c.v === best ? " best" : "") + '">' + esc(val) + (c.note ? " *" : "") + '</span><span class="bar" style="width:' + pct.toFixed(1) + '%"></span>' + (c.q ? '<span class="q">' + esc(c.q) + "</span>" : "") + "</div></td>";
       });
       h += "</tr>";
     });
@@ -232,7 +233,7 @@
     if (chart.note || run) {
       h += '<div class="chart-foot">';
       if (chart.note) h += "<span>" + esc(chart.note) + "</span>";
-      if (run) h += "<span>" + esc(run.machine) + ". Source: <code>" + esc(run.source) + "</code></span>";
+      if (run) h += "<span>" + esc(run.machine) + ". Source: " + (run.url ? '<a href="' + esc(run.url) + '"><code>' + esc(run.source) + "</code></a>" : "<code>" + esc(run.source) + "</code>") + "</span>";
       h += "</div>";
     }
     h += "</div>";
@@ -272,7 +273,7 @@
     if (chart.note || run) {
       h += '<div class="chart-foot">';
       if (chart.note) h += "<span>" + esc(chart.note) + "</span>";
-      if (run) h += "<span>" + esc(run.machine) + ". Source: <code>" + esc(run.source) + "</code></span>";
+      if (run) h += "<span>" + esc(run.machine) + ". Source: " + (run.url ? '<a href="' + esc(run.url) + '"><code>' + esc(run.source) + "</code></a>" : "<code>" + esc(run.source) + "</code>") + "</span>";
       h += "</div>";
     }
     h += "</div>";
@@ -293,7 +294,7 @@
     el.innerHTML = h;
   }
   function renderHeadlines(el) {
-    if (!BENCH) return;
+    if (!BENCH || !BENCH.headlines) return;
     var n = parseInt(el.getAttribute("data-headlines"), 10) || BENCH.headlines.length;
     el.innerHTML = BENCH.headlines.slice(0, n).map(function (s) {
       var run = s.run && BENCH.runs[s.run];
