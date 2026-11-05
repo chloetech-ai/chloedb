@@ -2,13 +2,15 @@
 //! (`query/exec/agg_columns.rs`): on a table of several segments and a
 //! memtable, with NULLs, deleted rows and values written in place, every
 //! group and aggregate is the one a plain fold over the rows gives, sums
-//! of FLOAT values to the bit (they are added in the rows' order), for
-//! keyword, INT and FLOAT groups, one group field or several, and none.
+//! of FLOAT values to the bit (exact sums, rounded once), for keyword, INT
+//! and FLOAT groups, one group field or several, and none; on one thread
+//! or several, and whatever size the segments are.
 
 use std::collections::BTreeMap;
 
 use rand::{Rng, SeedableRng};
 use strata::db::Db;
+use strata::query::exec::ExecOptions;
 use strata::query::Params;
 use strata::storage::DbOptions;
 use strata::value::Value;
@@ -52,13 +54,14 @@ fn row(rng: &mut rand::rngs::StdRng, i: usize) -> Vec<Value> {
     vec![Value::Str(format!("r{i:05}")), cat, year, n, w, x, big]
 }
 
-/// The table: most rows in segments of 400, the rest in the memtable, a
-/// tenth deleted, and `n`, `w` and `year` of some rows written in place.
-/// Returns the database and the rows it holds, in the order they are read.
-fn open(dir: &std::path::Path, in_place: bool) -> (Db, Vec<Vec<Value>>) {
+/// The table: most rows in segments of `seg` rows, the rest in the
+/// memtable, a tenth deleted, and `n`, `w` and `year` of some rows written
+/// in place. Returns the database and the rows it holds, in the order they
+/// are read.
+fn open(dir: &std::path::Path, in_place: bool, seg: usize) -> (Db, Vec<Vec<Value>>) {
     let mut rng = rand::rngs::StdRng::seed_from_u64(11);
     let mut rows: Vec<Vec<Value>> = (0..ROWS).map(|i| row(&mut rng, i)).collect();
-    let opts = DbOptions { segment_max_docs: 400, sync: false, ..DbOptions::default() };
+    let opts = DbOptions { segment_max_docs: seg, sync: false, ..DbOptions::default() };
     let db = Db::create(&dir.join("t.strata"), schema(), opts).unwrap();
     db.load(rows[..2600].iter().cloned()).unwrap();
     let mut t = db.storage().begin().unwrap();
@@ -102,10 +105,7 @@ fn fold(rows: &[&Vec<Value>]) -> Vec<Value> {
             let s: i128 = vals.iter().map(|v| v.as_i64().unwrap() as i128).sum();
             (i64::try_from(s).map_or(Value::Float(s as f64), Value::Int), Value::Float(s as f64 / vals.len() as f64))
         } else {
-            let mut s = 0.0;
-            for v in &vals {
-                s += v.as_f64().unwrap();
-            }
+            let s = fsum(vals.iter().map(|v| v.as_f64().unwrap()));
             (Value::Float(s), Value::Float(s / vals.len() as f64))
         };
         out.push(sum);
@@ -115,6 +115,49 @@ fn fold(rows: &[&Vec<Value>]) -> Vec<Value> {
         out.push(vals.iter().copied().max_by(|a, b| num(a).partial_cmp(&num(b)).unwrap()).cloned().unwrap_or(Value::Null));
     }
     out
+}
+
+/// The exact sum of `xs` rounded once: Python's `math.fsum` (Shewchuk's
+/// partials, then a correctly rounded total).
+fn fsum(xs: impl Iterator<Item = f64>) -> f64 {
+    let mut partials: Vec<f64> = Vec::new();
+    for mut x in xs {
+        let mut i = 0;
+        for j in 0..partials.len() {
+            let mut y = partials[j];
+            if x.abs() < y.abs() {
+                std::mem::swap(&mut x, &mut y);
+            }
+            let hi = x + y;
+            let lo = y - (hi - x);
+            if lo != 0.0 {
+                partials[i] = lo;
+                i += 1;
+            }
+            x = hi;
+        }
+        partials.truncate(i);
+        partials.push(x);
+    }
+    let Some(mut n) = partials.len().checked_sub(1) else { return 0.0 };
+    let (mut hi, mut lo) = (partials[n], 0.0);
+    while n > 0 {
+        n -= 1;
+        let x = hi;
+        hi = x + partials[n];
+        lo = partials[n] - (hi - x);
+        if lo != 0.0 {
+            break;
+        }
+    }
+    if n > 0 && ((lo < 0.0 && partials[n - 1] < 0.0) || (lo > 0.0 && partials[n - 1] > 0.0)) {
+        let y = lo * 2.0;
+        let x = hi + y;
+        if y == x - hi {
+            hi = x;
+        }
+    }
+    hi
 }
 
 const AGGS: &str = "COUNT(*), COUNT(n), SUM(n), AVG(n), MIN(n), MAX(n), COUNT(w), SUM(w), AVG(w), MIN(w), MAX(w), \
@@ -131,12 +174,12 @@ fn want(rows: &[Vec<Value>], fields: &[usize], keep: impl Fn(&Vec<Value>) -> boo
     groups.into_iter().map(|(k, (key, rs))| (k, key.into_iter().chain(fold(&rs)).collect())).collect()
 }
 
-fn got(db: &Db, sql: &str, n_keys: usize) -> BTreeMap<String, Vec<Value>> {
-    let rs = db.query(sql, &Params::new()).unwrap_or_else(|e| panic!("{sql}: {e}"));
+fn got(db: &Db, sql: &str, n_keys: usize, opts: &ExecOptions) -> BTreeMap<String, Vec<Value>> {
+    let rs = db.query_with(sql, &Params::new(), opts).unwrap_or_else(|e| panic!("{sql}: {e}"));
     rs.rows.into_iter().map(|r| (format!("{:?}", &r[..n_keys]), r)).collect()
 }
 
-fn check(db: &Db, rows: &[Vec<Value>], what: &str) {
+fn check(db: &Db, rows: &[Vec<Value>], what: &str, opts: &ExecOptions) {
     let cases: Vec<(String, Vec<usize>, Box<dyn Fn(&Vec<Value>) -> bool>)> = vec![
         (format!("SELECT cat, {AGGS} FROM t GROUP BY cat"), vec![CAT], Box::new(|_| true)),
         (format!("SELECT year, {AGGS} FROM t WHERE year >= 2000 GROUP BY year"), vec![YEAR], Box::new(|r| r[YEAR].as_i64().is_some_and(|y| y >= 2000))),
@@ -154,7 +197,7 @@ fn check(db: &Db, rows: &[Vec<Value>], what: &str) {
             // One group of no rows.
             w.insert("[]".into(), fold(&[]));
         }
-        let g = got(db, sql, fields.len());
+        let g = got(db, sql, fields.len(), opts);
         assert_eq!(g.len(), w.len(), "{what}: {sql}: groups");
         for (k, want_row) in &w {
             let got_row = g.get(k).unwrap_or_else(|| panic!("{what}: {sql}: no group {k}"));
@@ -163,7 +206,7 @@ fn check(db: &Db, rows: &[Vec<Value>], what: &str) {
     }
     // HAVING, an order by an aggregate, and LIMIT over the same groups.
     let sql = "SELECT cat, COUNT(*) AS c, AVG(w) FROM t WHERE year >= 1995 GROUP BY cat HAVING COUNT(*) > 100 ORDER BY 2 DESC, cat LIMIT 4";
-    let rs = db.query(sql, &Params::new()).unwrap();
+    let rs = db.query_with(sql, &Params::new(), opts).unwrap();
     let mut w: Vec<Vec<Value>> = want(rows, &[CAT], |r| r[YEAR].as_i64().is_some_and(|y| y >= 1995))
         .into_values()
         .filter(|r| r[1].as_i64().unwrap() > 100)
@@ -180,15 +223,39 @@ fn check(db: &Db, rows: &[Vec<Value>], what: &str) {
 fn groups_from_the_columns_are_the_rows_groups() {
     for in_place in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let (db, rows) = open(dir.path(), in_place);
-        check(&db, &rows, if in_place { "values written in place" } else { "plain" });
+        let (db, rows) = open(dir.path(), in_place, 400);
+        check(&db, &rows, if in_place { "values written in place" } else { "plain" }, &ExecOptions::default());
+    }
+}
+
+/// Segments grouped on several threads and merged, or on one; and the
+/// same rows in segments of other sizes: the same groups, in the same
+/// order, and the same bits (a FLOAT sum is exact, so no order of adding
+/// changes it).
+#[test]
+fn threads_and_segment_sizes_do_not_change_the_answer() {
+    let sql = format!("SELECT cat, year, {AGGS} FROM t WHERE w < 8 GROUP BY cat, year");
+    let mut first: Option<Vec<Vec<Value>>> = None;
+    for seg in [150, 400, 3000] {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, rows) = open(dir.path(), true, seg);
+        for threads in [1, 2, 4] {
+            let opts = ExecOptions { threads, fan_out_rows: 0, ..ExecOptions::default() };
+            let what = format!("segments of {seg}, {threads} threads");
+            check(&db, &rows, &what, &opts);
+            let rs = db.query_with(&sql, &Params::new(), &opts).unwrap();
+            match &first {
+                None => first = Some(rs.rows),
+                Some(f) => assert_eq!(&rs.rows, f, "{what}: rows and their order"),
+            }
+        }
     }
 }
 
 #[test]
 fn a_query_the_columns_do_not_answer_goes_row_by_row() {
     let dir = tempfile::tempdir().unwrap();
-    let (db, _) = open(dir.path(), false);
+    let (db, _) = open(dir.path(), false, 400);
     for sql in ["SELECT cat, COUNT(DISTINCT year) FROM t GROUP BY cat", "SELECT cat, MAX(id) FROM t GROUP BY cat"] {
         let rs = db.query(sql, &Params::new()).unwrap();
         assert!(!rs.stats.plan.join("\n").contains("from the columns"), "{sql}");
@@ -198,8 +265,8 @@ fn a_query_the_columns_do_not_answer_goes_row_by_row() {
 #[test]
 fn the_columns_count_groups_against_the_query_s_cap() {
     let dir = tempfile::tempdir().unwrap();
-    let (db, _) = open(dir.path(), false);
-    let opts = strata::query::exec::ExecOptions { max_groups: Some(50), ..Default::default() };
+    let (db, _) = open(dir.path(), false, 400);
+    let opts = ExecOptions { max_groups: Some(50), ..Default::default() };
     let e = db.query_with("SELECT n, COUNT(*) FROM t GROUP BY n", &Params::new(), &opts).unwrap_err();
     assert!(e.to_string().contains("more than 50 groups"), "{e}");
 }
