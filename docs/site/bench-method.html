@@ -89,7 +89,7 @@
     <ul class="gaps">
       <li><b>Latency</b>: median and 99th percentile at one client, measured at the client.</li>
       <li><b>Throughput</b>: queries a second at 4 and 16 clients, 6 s per cell over 300 queries, after warm-up.</li>
-      <li><b>Passes</b>: the median of three at 1M (the cold first pass alone would favour Strata). One pass at 10M after a longer warm-up; a second Strata landed within 4.5%.</li>
+      <li><b>Passes</b>: the median of three at 1M (the cold first pass alone would favour Strata). One pass in the 10M run after a longer warm-up, where a second Strata landed within 4.5%; three in its head-to-head on latest main.</li>
       <li><b>Quality</b>: recall@10 against exact vector search, and nDCG@10 where the collection has judgments.</li>
       <li><b>Writes</b>: inserts and updates at 16 clients, and time until a write is searchable.</li>
       <li><b>Streams</b>: a Redpanda topic at rising rates, then a consumer crash; duplicates and losses counted.</li>
