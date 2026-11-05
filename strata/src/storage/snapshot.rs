@@ -497,7 +497,7 @@ impl Snapshot {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => e.insert(crate::forward::DocStore::open(&view.segments[s].file, &view.schema)?),
             };
-            Ok(store.get_fields(d, &[f]).pop().unwrap_or(Value::Null))
+            Ok(store.get_fields(d, &[f])?.pop().unwrap_or(Value::Null))
         };
         let mut out = Vec::new();
         for (s, d) in prev.covered(mask, None)? {
@@ -614,7 +614,7 @@ impl Mask {
             let pk = pk.ok_or_else(|| Error::Corrupt(format!("table {}: segment {} has no primary-key index", schema.table, seg.id)))?;
             docs.extend((0..n).filter(|&d| (self.hide)(schema, &pk.key(d))));
         } else {
-            let values = crate::forward::DocStore::open(&seg.file, schema)?.field_values(place);
+            let values = crate::forward::DocStore::open(&seg.file, schema)?.field_values(place)?;
             docs.extend((0..n).filter(|&d| (self.hide)(schema, &values[d as usize])));
         }
         let h = (!docs.is_empty()).then(|| Arc::new(crate::segment::DocSet::from_sorted(docs, n)));

@@ -3718,7 +3718,7 @@ impl Database {
         Ok(if field.indexed && matches!(field.ty, FieldType::Int | FieldType::Float) {
             crate::forward::NumericColumn::open(&h.file, &field.key())?.get(d)
         } else {
-            crate::forward::DocStore::open(&h.file, &t.schema)?.get_fields(d, &[f]).pop().unwrap_or(Value::Null)
+            crate::forward::DocStore::open(&h.file, &t.schema)?.get_fields(d, &[f])?.pop().unwrap_or(Value::Null)
         })
     }
 

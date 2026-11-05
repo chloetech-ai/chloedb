@@ -423,6 +423,25 @@ impl SegmentFile {
         self.section(name)?.ok_or_else(|| corrupt(format!("missing section {name}")))
     }
 
+    /// The bytes of section `name`, if the segment has one, not checked
+    /// against its crc32: for a section whose parts carry checksums of
+    /// their own, which its reader checks part by part as it reads them
+    /// (the doc store's blocks, `store.crc`), so that the first read of a
+    /// row does not read the whole section. [`verify_sections`]
+    /// (Self::verify_sections) still checks it whole.
+    pub fn section_unchecked(&self, name: &str) -> Option<OwnedBytes> {
+        match self.sections.get(name) {
+            Some(s) => Some(self.bytes.slice(s.offset..s.offset + s.len)),
+            None => self.overlay.as_ref().and_then(|o| o.section_unchecked(name)),
+        }
+    }
+
+    /// Whether sections are checked as they are first read
+    /// ([`checked_on_read`](Self::checked_on_read)).
+    pub fn checks_on_read(&self) -> bool {
+        self.checked.is_some()
+    }
+
     /// Whether the segment has section `name` (without reading it).
     pub fn has(&self, name: &str) -> bool {
         self.sections.contains_key(name) || self.overlay.as_ref().is_some_and(|o| o.has(name))
