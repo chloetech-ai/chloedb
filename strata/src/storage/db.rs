@@ -3722,6 +3722,38 @@ impl Database {
         })
     }
 
+    /// Every field of the live row with this key, as a merge reads it
+    /// ([`DocumentSource`]), with the values written in place; `None` when
+    /// no row has the key.
+    fn live_doc(&self, t: &TableRef, key: &Value) -> Result<Option<Document>> {
+        let st = lock(&self.state);
+        let (h, d) = match st.find_live(t.pos, key) {
+            None => return Ok(None),
+            Some(Loc::Mem(i)) => {
+                let mem = &st.tables[t.pos].mem;
+                let mut doc = mem.chunks[i as usize / mem.chunk][i as usize % mem.chunk].clone();
+                mem.updates.apply(i, &mut doc);
+                return Ok(Some(doc));
+            }
+            Some(Loc::Disk(id, d)) => (st.handle(id).cloned().expect("segment of a live key"), d),
+        };
+        // Values written in place since the segment's own were saved.
+        let pending: Vec<(usize, Value)> = match st.pending_updates.get(&h.meta.id) {
+            Some((_, u)) => (0..t.schema.fields.len()).filter_map(|f| Some((f, u.get(f, d)?.clone()))).collect(),
+            None => Vec::new(),
+        };
+        drop(st);
+        let source = self.opts.doc_source.as_ref().ok_or_else(|| Error::Schema("writing a row again needs DbOptions::doc_source".into()))?;
+        let mut doc = source.documents(&t.schema, &h.file, &[d])?.pop().ok_or_else(|| corrupt(format!("segment {} has no document {d}", h.meta.id)))?;
+        if let Some(u) = &h.updates {
+            u.apply(d, &mut doc);
+        }
+        for (f, v) in pending {
+            doc[f] = v;
+        }
+        Ok(Some(doc))
+    }
+
     /// Commits `ops` as one transaction; returns its sequence number when
     /// the database numbers its writes.
     fn commit_ops(&self, wal: &mut Wal, ops: Vec<(u32, Op)>) -> Result<Option<u64>> {
@@ -4038,10 +4070,14 @@ impl<'a> WriteTxn<'a> {
         st.find_live(t.pos, key).map(|loc| st.seq_at(t.pos, loc)).transpose()
     }
 
-    /// Sets a numeric field of the live document with this primary key in
+    /// Sets a single-valued field of the live document with this primary
+    /// key. A number (INT, FLOAT, and so BOOL and TIMESTAMP) is set in
     /// place, without rewriting the document: its text and vectors stay as
-    /// they are. The field must be a single-valued INT or FLOAT. False if no
-    /// document has the key.
+    /// they are. Any other field (a keyword, a text, a JSON value) writes
+    /// the document again with the value, keeping its vectors, so a field
+    /// that a model embeds or another field is derived from is refused (an
+    /// UPDATE or an upsert makes those again). False if no document has
+    /// the key.
     pub fn set(&mut self, key: &Value, field: &str, value: Value) -> Result<bool> {
         let t = self.db.first_table();
         self.set_in(&t, key, field, value)
@@ -4162,7 +4198,7 @@ impl<'a> WriteTxn<'a> {
             (FieldType::Float, Value::Float(x)) if !x.is_finite() => return Err(Error::Schema(format!("bad value for {field}: {x} (FLOAT values are finite)"))),
             (FieldType::Float, v @ (Value::Float(_) | Value::Null)) => v,
             (FieldType::Int | FieldType::Float, v) => return Err(Error::Schema(format!("bad value for {field}: {} (it takes a number)", crate::query::hint::sql_value(&v)))),
-            _ => return Err(Error::Schema(format!("{field} is not a numeric field; only INT and FLOAT are set in place"))),
+            (_, v) => return self.set_by_rewrite(t, &k, key, i, v),
         };
         if self.drop_expired(t, &k, key)? || !self.is_live(t, &k, key) {
             return Ok(false);
@@ -4175,6 +4211,45 @@ impl<'a> WriteTxn<'a> {
             }
         }
         self.ops.push((t.id, Op::Set { key: key.clone(), field: i as u16, value }));
+        Ok(true)
+    }
+
+    /// [`WriteTxn::set`] of field `i`, which is not a number (a keyword, a
+    /// text, ...): the live row with key `k` written again with the value,
+    /// as an UPDATE writes it. The row's vectors are kept, so a field that
+    /// a model embeds or a field is derived from is refused: an UPDATE or
+    /// an upsert, which make them again, changes it.
+    fn set_by_rewrite(&mut self, t: &TableRef, k: &Key, key: &Value, i: usize, value: Value) -> Result<bool> {
+        let s = &t.schema;
+        let name = &s.fields[i].name;
+        let reads = |from: &[String]| from.iter().filter_map(|x| s.field_index(x)).any(|g| g == i || s.fields[g].generated_from.iter().any(|y| s.field_index(y) == Some(i)));
+        if let Some(e) = s.fields.iter().find(|e| e.embed.as_ref().is_some_and(|m| reads(&m.from))) {
+            return Err(Error::Schema(format!("{name} is what {} embeds, which a set would leave stale: change it with UPDATE or an upsert, which embed it again", e.name)));
+        }
+        if let Some(g) = (0..s.fields.len()).find(|&g| s.derives_from(g) == Some(i)) {
+            return Err(Error::Schema(format!("{} is derived from {name}, which a set would leave stale: change it with UPDATE or an upsert", s.fields[g].name)));
+        }
+        if let Some(f) = s.unrebuildable() {
+            return Err(Error::Schema(format!("setting {name}, which is not a number, writes the row again, and {} is neither stored nor generated", f.name)));
+        }
+        if self.drop_expired(t, k, key)? || !self.is_live(t, k, key) {
+            return Ok(false);
+        }
+        let keys = self.keys(t.id);
+        let mut doc = match (keys.touched.get(k), keys.written.get(k)) {
+            (Some(true), Some(d)) => (**d).clone(),
+            _ => {
+                let set: Vec<(usize, Value)> = keys.sets.iter().filter(|((sk, _), _)| sk == k).map(|((_, f), v)| (*f, v.clone())).collect();
+                let Some(mut doc) = self.db.live_doc(t, key)? else { return Ok(false) };
+                for (f, v) in set {
+                    doc[f] = v;
+                }
+                doc
+            }
+        };
+        doc[i] = value;
+        s.fill_generated(&mut doc);
+        self.upsert_as(t, doc, Pooling::Fields(&[i]))?;
         Ok(true)
     }
 

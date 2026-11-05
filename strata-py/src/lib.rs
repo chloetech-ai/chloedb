@@ -668,9 +668,10 @@ impl Database {
     }
 
     /// Applies write operations as strata-server's /v1/write takes them, in
-    /// one transaction: insert, upsert and delete, and set and add of a
-    /// numeric field in place (an add with a "doc" inserts it when no row
-    /// has its key). Returns the rows written.
+    /// one transaction: insert, upsert and delete, set of a field (a
+    /// number in place, another by writing the row again), and add to a
+    /// number in place (an add with a "doc" inserts it when no row has its
+    /// key). Returns the rows written.
     fn write(&self, py: Python<'_>, ops: &Bound<'_, PyAny>) -> PyResult<u64> {
         let db = self.get()?;
         let ops = rows_json(ops)?;
