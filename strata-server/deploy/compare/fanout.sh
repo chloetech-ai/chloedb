@@ -88,8 +88,10 @@ REPO=${FANOUT_REPO:-$(cd "$HERE/../../.." && pwd)}
 case ${1:-} in
 up | prep | run)
     if [ -z "${FANOUT_COPY:-}" ]; then
-        copy=$STATE/code-$(date +%Y%m%dT%H%M%S)
-        mkdir -p "$STATE" && chmod 700 "$STATE" && cp -r "$HERE" "$copy"
+        # mktemp: two calls in the same second (a run and a prep started
+        # together) must not share a copy, or the second cp fails.
+        mkdir -p "$STATE" && chmod 700 "$STATE"
+        copy=$(mktemp -d "$STATE/code-$(date +%Y%m%dT%H%M%S)-XXXX") && cp -r "$HERE/." "$copy"
         FANOUT_COPY=$copy FANOUT_REPO=$REPO exec "$copy/fanout.sh" "$@"
     fi
     ;;
