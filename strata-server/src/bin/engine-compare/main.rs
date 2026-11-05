@@ -50,6 +50,7 @@ use strata_server::server;
 use strata_server::service::shard_of;
 
 mod more;
+mod sim;
 #[cfg(test)]
 mod snapshot;
 
@@ -152,6 +153,23 @@ enum Cmd {
         /// Names the run in the report (`--out/writes-<label>.json`).
         #[arg(long)]
         label: Option<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Plans a schedule of requests from a profile (deploy/compare/profiles)
+    /// and a seed, for `replay`: the same profile, seed and collection make
+    /// the same file, byte for byte. Prints what the schedule holds.
+    Plan {
+        #[arg(long)]
+        profile: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        #[arg(long, value_enum, default_value = "day")]
+        shape: sim::ShapeArg,
+        /// With `--shape day`: requests a second at the day's peak.
+        #[arg(long)]
+        rate: Option<f64>,
+        /// The schedule file (gzip-compressed JSON lines).
         #[arg(long)]
         out: PathBuf,
     },
@@ -2720,6 +2738,7 @@ async fn main() {
             Ok(e) => writes(&cli.collection, e, url, concurrency, *seconds, *batch, *samples, label.clone(), out).await,
             Err(o) => Err(format!("writes are not measured for {} yet", o.name())),
         },
+        Cmd::Plan { profile, seed, shape, rate, out } => sim::shape(*shape, *rate).and_then(|sh| sim::plan(&cli.collection, profile, *seed, sh, out)).map(|_| ()),
         Cmd::Stream { engine, url, brokers, partitions, rates, seconds, flat, restart, batch, label, out } => match engine.engine() {
             Ok(e) => stream(&cli.collection, e, url, brokers, *partitions, rates, *seconds, *flat, *restart, *batch, label.clone(), out).await,
             Err(o) => Err(format!("streams are not measured for {} yet", o.name())),

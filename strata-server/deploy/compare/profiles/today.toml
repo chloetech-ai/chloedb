@@ -1,0 +1,40 @@
+# Today: run's workload, for `replay --shape closed`. Each kind's first 300
+# queries in order, keys and items by run's strides over the first 20,000
+# documents, run's filters, each kind closed-loop at 1, 4 and 16 clients
+# after a warm-up. Replaying it must give run's numbers (and its requests,
+# byte for byte) before any other profile is trusted.
+name = "today"
+description = "run's 14 kinds, closed loop, as engine-compare run sends them"
+
+[mix]
+"bm25" = 1
+"bm25 + filter" = 1
+"vector" = 1
+"vector + filter" = 1
+"hybrid (RRF)" = 1
+"hybrid (weighted)" = 1
+"boosted (bm25 × decay)" = 1
+"facet" = 1
+"key lookup" = 1
+"phrase" = 1
+"typo" = 1
+"prefix" = 1
+"similar items" = 1
+"sql aggregate" = 1
+
+[queries]
+source = "collection"
+order = "cycle"
+head = 300
+tail_share = 0.0
+drift_every_s = 0.0
+
+[docs]
+pick = "legacy"
+
+[filters]
+mode = "fixed"
+
+[traffic.closed]
+concurrency = [1, 4, 16]
+seconds = 6.0
