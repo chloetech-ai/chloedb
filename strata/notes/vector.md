@@ -165,6 +165,8 @@ A field that is not `indexed` stores the forward vectors only (flat).
 | `vec.<f>.ivf` | clusters back to back, 64-byte aligned: docIDs (u32, ascending), pad, code rows |
 | `vec.<f>.hnsw` | layer 0: `n × 2M` u32, padded with `u32::MAX` (128 bytes per node at M = 16) |
 | `vec.<f>.hnsw_upper` | per upper level: sorted node ids, `n_l × M` links |
+| `vec.<f>.part<i>.docs` | a [partition](#partitions)'s rows: its `n_i` docIDs (u32, ascending) |
+| `vec.<f>.part<i>.hnsw`, `vec.<f>.part<i>.hnsw_upper` | the partition's graph, as `hnsw` and `hnsw_upper`, over its local ids `0..n_i`, which `part<i>.docs` maps to the segment's rows (the codes are the field's, not copied) |
 
 Opening parses the JSON header, the `sq8p` and `ivf_dir` arrays as views,
 and checks the IVF offsets (`nlist` entries); no per-vector array is copied
@@ -656,6 +658,79 @@ rounds; one thread, the 4-core cloud container, Intel Xeon @ 2.10 GHz):
 The sample's cost over a forced post-filter fell from 44 to 25 µs at 20%.
 The in-filter traverse at 20% (241 µs, recall 0.951) stays dearer than the
 deeper post-filter.
+
+### Partitions
+
+A filter that keeps a fifth of the rows leaves an HNSW search two plans:
+walk the graph testing every row it reaches, or fetch five times the
+candidates and drop the rest (the post-filter). A field partitioned by the
+filter's column (`OPTIONS(partition_by = 'rating', partition_bounds = '1, 2,
+3, 4')`, `schema::VectorPartition`) gives a third: each segment keeps,
+besides the field's graph of every row, a graph per partition of its rows
+(`vec.<f>.part<i>.*` above), and a filter that limits the column walks only
+the partitions it can match. A partition whose every row passes the
+condition on the column is walked with no test at all, so the benchmark's
+`rating >= 4` costs what an unfiltered search of a 200K-row graph costs.
+
+- **Keys.** An `INT` or `FLOAT` column splits by `bounds` (bucket = the
+  number of bounds ≤ the value: below 1, [1, 2), ..., 4 and up); a
+  `KEYWORD` column splits by value, the segment's
+  `schema::MAX_VALUE_PARTITIONS` (64) most frequent values
+  (`PartitionsInfo::complete` is false when values were left out, and a
+  filter on one of them uses the plans without partitions). Rows with no
+  value are only in the field's graph. The column must be stored, since
+  merges read the keys back from the stored values, indexed and
+  single-valued.
+- **Build.** `FieldIndexBuilder::partition_key` hands the builder each row's
+  key; `finish` groups the rows and builds one `hnsw::build` per group over
+  local ids `0..n_i`, reading rows and codes through the group's docID list
+  (`Rows::map`, `BuildCodes::map`), so no vector or code is copied. Merges
+  build the partitions again from scratch; they do not start from the
+  inputs' partition graphs as the field's graph does.
+- **Search.** `VectorReader::search_parts` walks each picked partition's
+  graph with `ef' = max(ef, R)` (capped at its rows), maps local ids to
+  docIDs through `Codes::map`, merges the candidates and re-ranks the best
+  `R` together.
+- **Planner** (`Executor::partition_pick`, `partition_search`). The first
+  top-level conjunct on the column picks the partitions: a range (`>=`,
+  `<`, `BETWEEN`), an integer range, `=` or `IN`. The walk tests nothing
+  when the partitions guarantee that conjunct and it is the whole filter,
+  else the rest of the filter by probing (never a materialised set: the
+  per-segment filter cache is keyed by the whole predicate), else the whole
+  filter. Unless forced (`strategy => 'partition'`), it sums the cost
+  model's HNSW estimate over the partitions (filtered by the tested share
+  when there is a test) and keeps the plan without partitions when that
+  predicts less. Another forced strategy, a session strategy, or
+  `ExecOptions::vector_partitions = false` leaves them alone. Partitions
+  that cannot hold a match return no rows for the segment.
+
+msmarco-1000k (the engine comparison's first 1M MS MARCO passages, 768-d
+Arctic Embed M v1.5 vectors, its ratings, the first 300 dev queries), built
+as `engine-compare build` builds Strata (one segment, HNSW m 16,
+ef_construction 200, SQ8 codes), `examples/vector_partitions.rs`; recall@10
+against the exact top 10 by dot product, mean µs over 300 queries, one
+query thread, best of two passes, two runs (both shown where they differ);
+the 4-core cloud container, Intel Xeon @ 2.10 GHz
+(`results/vector/partitions-msmarco-1000000x768.json`):
+
+| filter | Auto without partitions | Auto with them | partitions, ef 128 |
+|---|---|---|---|
+| none | 0.876, 152–192 µs (HNSW) | the same plan | – |
+| rating ≥ 4 (20%) | 0.961, 364–438 µs (post-filter) | 0.963, 176–184 µs (`filter none`) | 0.984, 340 µs |
+| rating ≥ 4.5 (10%) | 0.982, 674–777 µs (post-filter) | 0.982, 383–385 µs | 0.992, 655–660 µs |
+| rating ≥ 4.9 (2%) | 0.999, 1.6–2.2 ms (pre-filter) | 0.995, 1.09–1.16 ms | 0.999, 1.6–1.9 ms |
+
+Alternated three times on the partitioned file, the benchmark's query took
+469–561 µs without partitions and 201–237 µs with them. The post-filter
+needs ef 512 for 0.987 at 20% (804–878 µs), where partitions get 0.984 in
+340 µs. At 2% the planner trades recall for time: the partition walk at its
+default ef finds 0.995 where the pre-filter scan is exact, and matches the
+scan's 0.999 only at ef 128, in about the scan's time. Unfiltered queries do
+not touch the partitions (0.876 is the duplicate-passage cap; see the
+explainer). Costs: the build took 320 s instead of 179 s (4 threads), the
+file grew from 4.04 to 4.17 GB (partition graphs 128 MB + upper levels
+4.5 MB + docIDs 4 MB, as much again as the field's graph), and the build's
+peak memory from 10.4 to 10.7 GB.
 
 ### Cost model
 

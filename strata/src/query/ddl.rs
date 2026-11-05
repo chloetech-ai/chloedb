@@ -374,7 +374,7 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
     let allowed: &[&str] = match ty {
         "text" => &["positions", "stored", "indexed", "from", "analyzer", "derive", "model"],
         "vector" if multi => &["indexed", "dim", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor", "embed", "model"],
-        "vector" => &["stored", "indexed", "dim", "index", "m", "ef_construction", "nlist", "codes", "embed", "model"],
+        "vector" => &["stored", "indexed", "dim", "index", "m", "ef_construction", "nlist", "codes", "embed", "model", "partition_by", "partition_bounds"],
         "media" => &["stored", "indexed", "kind"],
         "keyword" if multi => &["stored", "indexed", "semantic_id", "codebook"],
         "json" => &["stored", "indexed", "text", "analyzer"],
@@ -384,7 +384,7 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
         return Err(bad("semantic_id and codebook are options of a KEYWORD[] column".into()));
     }
     if let Some(k) = opts.keys().find(|k| !allowed.contains(&k.as_str())) {
-        let known = ["positions", "stored", "indexed", "from", "analyzer", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor", "dim", "embed", "model", "kind", "semantic_id", "codebook", "derive", "text"];
+        let known = ["positions", "stored", "indexed", "from", "analyzer", "index", "m", "ef_construction", "nlist", "codes", "keep_f32", "pool", "pool_factor", "dim", "embed", "model", "kind", "semantic_id", "codebook", "derive", "text", "partition_by", "partition_bounds"];
         return Err(bad(if known.contains(&k.as_str()) {
             format!("{k} is not an option of a {} column (its options: {})", ty.to_uppercase(), allowed.join(", "))
         } else {
@@ -445,6 +445,21 @@ fn field(name: &str, ty: &DataType, mut opts: Map<String, J>) -> Result<J> {
     }
     if let Some(from) = opts.remove("from") {
         f.insert("from".into(), json!(names(&from).map_err(|m| bad(format!("from {m}")))?));
+    }
+    match (opts.remove("partition_by"), opts.remove("partition_bounds")) {
+        (None, None) => {}
+        (Some(J::String(by)), bounds) => {
+            let bounds: Vec<f64> = match bounds {
+                None => Vec::new(),
+                Some(J::String(b)) => b.split(',').map(|x| x.trim().parse::<f64>().map_err(|_| bad(format!("partition_bounds: {x:?} is not a number")))).collect::<Result<_>>()?,
+                Some(J::Array(xs)) => xs.iter().map(|x| x.as_f64().ok_or_else(|| bad(format!("partition_bounds: {x} is not a number")))).collect::<Result<_>>()?,
+                Some(J::Number(n)) => vec![n.as_f64().unwrap_or(f64::NAN)],
+                Some(other) => return Err(bad(format!("partition_bounds lists numbers, such as '1, 2, 3, 4', not {other}"))),
+            };
+            f.insert("partition".into(), json!({"by": by, "bounds": bounds}));
+        }
+        (Some(_), _) => return Err(bad("partition_by names a column, such as 'rating'".into())),
+        (None, Some(_)) => return Err(bad("partition_bounds goes with partition_by".into())),
     }
     match (opts.remove("semantic_id"), opts.remove("codebook")) {
         (None, None) => {}
@@ -649,6 +664,14 @@ fn column_sql(f: &J, key: Option<&str>) -> String {
                 opts.push(format!("semantic_id = {}", value_sql(&o["from"])));
                 opts.push(format!("codebook = {}", value_sql(&o["codebook"])));
             }
+            ("partition", J::Object(o)) => {
+                opts.push(format!("partition_by = {}", value_sql(&o["by"])));
+                if let Some(b) = o.get("bounds").and_then(J::as_array).filter(|b| !b.is_empty()) {
+                    // f64's Display writes 4 for 4.0, as the option was likely written.
+                    let list: Vec<String> = b.iter().map(|x| x.as_f64().map_or_else(|| x.to_string(), |f| f.to_string())).collect();
+                    opts.push(format!("partition_bounds = {}", lit(&list.join(", "))));
+                }
+            }
             ("from", v) => opts.push(format!("from = {}", list_sql(v))),
             (k, v) => opts.push(format!("{k} = {}", value_sql(v))),
         }
@@ -753,6 +776,9 @@ mod tests {
             "CREATE TABLE cooc (id KEYWORD PRIMARY KEY, src KEYWORD NOT NULL REFERENCES papers, dst KEYWORD NOT NULL REFERENCES papers, w FLOAT DEFAULT 0) OPTIONS(edges = 'src, dst, w')",
             "CREATE TABLE \"select\" (\"order\" INT PRIMARY KEY, \"doc no\" KEYWORD, \"say \"\"hi\"\"\" TEXT, \"Mixed\" FLOAT, name TEXT, \"a,b\" TEXT, c TEXT OPTIONS(from = ARRAY['a,b', 'name']))",
             "CREATE TABLE log (line TEXT)",
+            "CREATE TABLE items (id KEYWORD PRIMARY KEY, rating FLOAT, n INT, cat KEYWORD,
+               emb VECTOR(8) OPTIONS(partition_by = 'rating', partition_bounds = '1, 2.5, 4'), e2 VECTOR(8) OPTIONS(m = 8, partition_by = 'cat'),
+               e3 VECTOR(8) OPTIONS(partition_by = 'n', partition_bounds = ARRAY[10, 20]))",
         ] {
             let (s, _) = create(text, &[&p]).unwrap();
             let sql = create_sql(&s);
@@ -764,6 +790,23 @@ mod tests {
         // A column a line, defaults left out, names quoted only where needed.
         let (s, _) = create("CREATE TABLE \"order\" (id KEYWORD PRIMARY KEY, name TEXT, \"from\" INT NOT NULL)", &[]).unwrap();
         assert_eq!(create_sql(&s), "CREATE TABLE \"order\" (\n  id KEYWORD PRIMARY KEY,\n  name TEXT,\n  \"from\" INT NOT NULL\n);");
+    }
+
+    #[test]
+    fn partition_options_are_checked() {
+        let bad = |cols: &str| match create(&format!("CREATE TABLE t (id KEYWORD PRIMARY KEY, rating FLOAT, cat KEYWORD, tags KEYWORD[], {cols})"), &[]) {
+            Ok(_) => panic!("{cols}: expected an error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_by = 'rating')").contains("needs partition_bounds"));
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_by = 'cat', partition_bounds = '1')").contains("without partition_bounds"));
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_by = 'rating', partition_bounds = '2, 1')").contains("increase"));
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_by = 'rating', partition_bounds = 'x')").contains("not a number"));
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_by = 'nope')").contains("names no column"));
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_by = 'tags')").contains("single-valued"));
+        assert!(bad("emb VECTOR(8) OPTIONS(index = 'ivf', nlist = 4, partition_by = 'cat')").contains("index = 'hnsw'"));
+        assert!(bad("emb VECTOR(8) OPTIONS(partition_bounds = '1')").contains("goes with partition_by"));
+        assert!(bad("emb VECTOR(8)[] OPTIONS(partition_by = 'cat')").contains("not an option"));
     }
 
     #[test]

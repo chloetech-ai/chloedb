@@ -545,7 +545,8 @@ pub fn value_bytes(v: &Value) -> Option<(u64, Option<u64>)> {
 
 /// The field a section belongs to, as its position in `schema`, and the
 /// section's part (`text.post`, `kw.dict`, `col.hist`, `vec.ivf`): the
-/// name's component and its last part. `None` for a section of no field
+/// name's component and its last part (`vec.part.hnsw` for the graphs of
+/// a VECTOR field's partitions). `None` for a section of no field
 /// (the doc store, the primary key index, ...).
 fn section_field(schema: &Schema, name: &str) -> Option<(usize, String)> {
     let mut parts = name.split('.');
@@ -555,7 +556,10 @@ fn section_field(schema: &Schema, name: &str) -> Option<(usize, String)> {
         Some(id) => schema.position_of(id)?,
         None => schema.fields.iter().position(|f| f.name == key)?,
     };
-    let part = match parts.last() {
+    let rest: Vec<&str> = parts.collect();
+    let part = match rest.last() {
+        // A VECTOR field's partitions (`vec.<field>.part3.hnsw`), together.
+        Some(last) if rest.len() > 1 && rest[0].strip_prefix("part").is_some_and(|i| i.parse::<u32>().is_ok()) => format!("{comp}.part.{last}"),
         Some(last) => format!("{comp}.{last}"),
         None => comp.to_string(),
     };
