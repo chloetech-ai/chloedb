@@ -1372,8 +1372,13 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
     let w = if kind == "facet" { match_word(t)? } else { String::new() };
     let phrase = if kind == "phrase" { Some(phrase_of(t)?) } else { None };
     let typo = if kind == "typo" { Some(typo_of(t)?) } else { None };
-    let prefix = if kind == "prefix" { Some(prefix_of(t)?) } else { None };
+    let prefix = if kind == "prefix" { Some(prefix_of(t, p.knobs.prefix_len)?) } else { None };
     let (key, seen, year) = (p.key, p.seen, p.year);
+    // The filters' values: `run`'s are year >= 2010 and c00 to c03, rating >= 4, and rating >= 3 for similar items.
+    let f = p.knobs;
+    let cats = f.cat_names();
+    let quoted = |sep: &str| cats.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(sep);
+    let sql_cats = cats.iter().map(|c| sql_str(c)).collect::<Vec<_>>().join(", ");
     let ws = words(t);
     match o {
         Other::Meili => {
@@ -1381,9 +1386,9 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             let vector = |vec: &[f32], ratio: f64, q: &str| with(base(q), json!({"vector": vec.to_vec(), "hybrid": {"embedder": "default", "semanticRatio": ratio}}));
             let body = match kind {
                 "bm25" => base(t),
-                "bm25 + filter" => with(base(t), json!({"filter": "year >= 2010 AND category IN [c00, c01, c02, c03]"})),
+                "bm25 + filter" => with(base(t), json!({"filter": format!("year >= {} AND category IN [{}]", f.year_min, cats.join(", "))})),
                 "vector" => vector(v, 1.0, ""),
-                "vector + filter" => with(vector(v, 1.0, ""), json!({"filter": "rating >= 4"})),
+                "vector + filter" => with(vector(v, 1.0, ""), json!({"filter": format!("rating >= {}", f.rating_min)})),
                 "hybrid (RRF)" => vector(v, 0.5, t),
                 "hybrid (weighted)" => vector(v, 0.8, t),
                 "facet" => json!({"q": format!("\"{w}\""), "limit": 0, "facets": ["category"]}),
@@ -1399,7 +1404,7 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| format!("'{}'", meili_id(k))).collect();
-                    with(vector(p.item, 1.0, ""), json!({"filter": format!("rating >= 3 AND id NOT IN [{}]", ids.join(", "))}))
+                    with(vector(p.item, 1.0, ""), json!({"filter": format!("rating >= {} AND id NOT IN [{}]", f.similar_rating, ids.join(", "))}))
                 }
                 _ => return None,
             };
@@ -1411,9 +1416,9 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             let vector = |vec: &[f32]| json!({"collection": "docs", "q": "*", "per_page": 10, "include_fields": "id", "vector_query": vq(vec, 10, &format!(", ef:{CANDIDATES}"))});
             let s = match kind {
                 "bm25" => text(t),
-                "bm25 + filter" => with(text(t), json!({"filter_by": "year:>=2010 && category:[c00,c01,c02,c03]"})),
+                "bm25 + filter" => with(text(t), json!({"filter_by": format!("year:>={} && category:[{}]", f.year_min, cats.join(","))})),
                 "vector" => vector(v),
-                "vector + filter" => with(vector(v), json!({"filter_by": "rating:>=4"})),
+                "vector + filter" => with(vector(v), json!({"filter_by": format!("rating:>={}", f.rating_min)})),
                 "hybrid (RRF)" => with(text(t), json!({"vector_query": vq(v, DEPTH, ", alpha:0.5")})),
                 "hybrid (weighted)" => with(text(t), json!({"vector_query": vq(v, DEPTH, ", alpha:0.8")})),
                 "facet" => json!({"collection": "docs", "q": w, "query_by": "body", "per_page": 0, "prefix": false, "num_typos": 0, "drop_tokens_threshold": 0,
@@ -1430,7 +1435,7 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| format!("`{k}`")).collect();
-                    with(vector(p.item), json!({"filter_by": format!("rating:>=3 && id:!=[{}]", ids.join(","))}))
+                    with(vector(p.item), json!({"filter_by": format!("rating:>={} && id:!=[{}]", f.similar_rating, ids.join(","))}))
                 }
                 _ => return None,
             };
@@ -1462,9 +1467,9 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             };
             let body = match kind {
                 "bm25" => text(None)?,
-                "bm25 + filter" => text(Some(json!({"must": [{"key": "year", "range": {"gte": 2010}}, {"key": "category", "match": {"any": ["c00", "c01", "c02", "c03"]}}]})))?,
+                "bm25 + filter" => text(Some(json!({"must": [{"key": "year", "range": {"gte": f.year_min}}, {"key": "category", "match": {"any": cats}}]})))?,
                 "vector" => vector(v, None),
-                "vector + filter" => vector(v, Some(json!({"must": [{"key": "rating", "range": {"gte": 4}}]}))),
+                "vector + filter" => vector(v, Some(json!({"must": [{"key": "rating", "range": {"gte": json_num(f.rating_min)}}]}))),
                 "hybrid (RRF)" => json!({"prefetch": prefetch()?, "query": {"rrf": {"k": 60}}, "limit": 10, "with_payload": ["key"]}),
                 "hybrid (weighted)" => json!({"prefetch": prefetch()?, "query": {"fusion": "dbsf"}, "limit": 10, "with_payload": ["key"]}),
                 "boosted (bm25 × decay)" => json!({
@@ -1490,7 +1495,7 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 }
                 "similar items" => vector(
                     p.item,
-                    Some(json!({"must": [{"key": "rating", "range": {"gte": 3}}], "must_not": [{"key": "key", "match": {"any": seen}}]})),
+                    Some(json!({"must": [{"key": "rating", "range": {"gte": json_num(f.similar_rating)}}], "must_not": [{"key": "key", "match": {"any": seen}}]})),
                 ),
                 _ => return None,
             };
@@ -1507,14 +1512,16 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 "bm25" => get(format!("limit: 10, {}", bm25(t)), score),
                 "bm25 + filter" => get(
                     format!(
-                        "limit: 10, {}, where: {{operator: And, operands: [{{path: [\"year\"], operator: GreaterThanEqual, valueInt: 2010}}, \
-                         {{path: [\"category\"], operator: ContainsAny, valueText: [\"c00\", \"c01\", \"c02\", \"c03\"]}}]}}",
-                        bm25(t)
+                        "limit: 10, {}, where: {{operator: And, operands: [{{path: [\"year\"], operator: GreaterThanEqual, valueInt: {}}}, \
+                         {{path: [\"category\"], operator: ContainsAny, valueText: [{}]}}]}}",
+                        bm25(t),
+                        f.year_min,
+                        quoted(", ")
                     ),
                     score,
                 ),
                 "vector" => get(format!("limit: 10, {}", near(v)), dist),
-                "vector + filter" => get(format!("limit: 10, {}, where: {{path: [\"rating\"], operator: GreaterThanEqual, valueNumber: 4}}", near(v)), dist),
+                "vector + filter" => get(format!("limit: 10, {}, where: {{path: [\"rating\"], operator: GreaterThanEqual, valueNumber: {}}}", near(v), f.rating_min), dist),
                 "hybrid (RRF)" | "hybrid (weighted)" => {
                     let (alpha, fusion) = if kind == "hybrid (RRF)" { (0.5, "rankedFusion") } else { (0.8, "relativeScoreFusion") };
                     get(format!("limit: 10, hybrid: {{query: {}, vector: {}, alpha: {alpha}, fusionType: {fusion}, properties: [\"body\"]}}", lit(t), vector_text(v)), score)
@@ -1532,8 +1539,9 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                     let not: Vec<String> = seen.iter().map(|k| format!("{{path: [\"key\"], operator: NotEqual, valueText: {}}}", lit(k))).collect();
                     get(
                         format!(
-                            "limit: 10, {}, where: {{operator: And, operands: [{{path: [\"rating\"], operator: GreaterThanEqual, valueNumber: 3}}, {}]}}",
+                            "limit: 10, {}, where: {{operator: And, operands: [{{path: [\"rating\"], operator: GreaterThanEqual, valueNumber: {}}}, {}]}}",
                             near(p.item),
+                            f.similar_rating,
                             not.join(", ")
                         ),
                         dist,
@@ -1562,9 +1570,9 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             let at = |path: &str, b: Json| Some(post(format!("{u}/v2/vectordb/entities/{path}"), &b));
             match kind {
                 "bm25" => at("search", search(json!(t), "sparse", None, 10)),
-                "bm25 + filter" => at("search", search(json!(t), "sparse", Some("year >= 2010 and category in [\"c00\", \"c01\", \"c02\", \"c03\"]".into()), 10)),
+                "bm25 + filter" => at("search", search(json!(t), "sparse", Some(format!("year >= {} and category in [{}]", f.year_min, quoted(", "))), 10)),
                 "vector" => at("search", search(json!(v.to_vec()), "emb", None, 10)),
-                "vector + filter" => at("search", search(json!(v.to_vec()), "emb", Some("rating >= 4".into()), 10)),
+                "vector + filter" => at("search", search(json!(v.to_vec()), "emb", Some(format!("rating >= {}", f.rating_min)), 10)),
                 "hybrid (RRF)" | "hybrid (weighted)" => {
                     let rerank = if kind == "hybrid (RRF)" {
                         json!({"strategy": "rrf", "params": {"k": 60}})
@@ -1591,7 +1599,7 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| quote(k)).collect();
-                    at("search", search(json!(p.item.to_vec()), "emb", Some(format!("rating >= 3 and key not in [{}]", ids.join(", "))), 10))
+                    at("search", search(json!(p.item.to_vec()), "emb", Some(format!("rating >= {} and key not in [{}]", f.similar_rating, ids.join(", "))), 10))
                 }
                 _ => None,
             }
@@ -1605,9 +1613,9 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             let knn = |vec: &[f32], k: usize| format!("knn(emb, {k}, {}, {{ef={}, rescore=1, oversampling={}.0}})", manticore_vec(vec), CANDIDATES.max(k), OVERSAMPLE);
             let sql = match kind {
                 "bm25" => text(&quorum, ""),
-                "bm25 + filter" => text(&quorum, " AND year >= 2010 AND category IN ('c00', 'c01', 'c02', 'c03')"),
+                "bm25 + filter" => text(&quorum, &format!(" AND year >= {} AND category IN ({sql_cats})", f.year_min)),
                 "vector" => format!("SELECT key, knn_dist() d FROM docs WHERE {} LIMIT 10", knn(v, 10)),
-                "vector + filter" => format!("SELECT key, knn_dist() d FROM docs WHERE {} AND rating >= 4 LIMIT 10", knn(v, 10)),
+                "vector + filter" => format!("SELECT key, knn_dist() d FROM docs WHERE {} AND rating >= {} LIMIT 10", knn(v, 10), f.rating_min),
                 "hybrid (RRF)" => format!(
                     "SELECT key, hybrid_score() s FROM docs WHERE MATCH({}) AND {} LIMIT 10 OPTION fusion_method='rrf', rank_constant=60, window_size={DEPTH}, {options}",
                     sql_str(&quorum),
@@ -1635,7 +1643,7 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| sql_str(k)).collect();
-                    format!("SELECT key, knn_dist() d FROM docs WHERE {} AND rating >= 3 AND key NOT IN ({}) LIMIT 10", knn(p.item, 10), ids.join(", "))
+                    format!("SELECT key, knn_dist() d FROM docs WHERE {} AND rating >= {} AND key NOT IN ({}) LIMIT 10", knn(p.item, 10), f.similar_rating, ids.join(", "))
                 }
                 "sql aggregate" => {
                     format!("SELECT category, COUNT(*) n, AVG(rating) r FROM docs WHERE year >= {year} GROUP BY category HAVING n > 1000 ORDER BY n DESC LIMIT 10")
@@ -1659,7 +1667,7 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             let text = |filter: &str, extra_match: &str| format!("SELECT key, {score} s FROM docs WHERE {matches}{extra_match}{filter} ORDER BY s DESC LIMIT 10");
             let sql = match kind {
                 "bm25" => text("", ""),
-                "bm25 + filter" => text(" AND year >= 2010 AND category IN ('c00', 'c01', 'c02', 'c03')", ""),
+                "bm25 + filter" => text(&format!(" AND year >= {} AND category IN ({sql_cats})", f.year_min), ""),
                 "vector" => {
                     if pdb {
                         format!("SELECT key, emb <#> {qv} d FROM docs WHERE key @@@ pdb.all() ORDER BY emb <#> {qv} LIMIT 10")
@@ -1667,7 +1675,7 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                         format!("SELECT key, emb <#> {qv} d FROM docs ORDER BY emb <#> {qv} LIMIT 10")
                     }
                 }
-                "vector + filter" => vector(&qv, "rating >= 4"),
+                "vector + filter" => vector(&qv, &format!("rating >= {}", f.rating_min)),
                 "hybrid (RRF)" => format!(
                     "WITH t AS (SELECT key, row_number() OVER (ORDER BY s DESC, key) r FROM (SELECT key, {score} s FROM docs WHERE {matches} ORDER BY s DESC LIMIT {DEPTH}) x), \
                      v AS (SELECT key, row_number() OVER (ORDER BY d, key) r FROM (SELECT key, emb <#> {qv} d FROM docs {} ORDER BY emb <#> {qv} LIMIT {DEPTH}) y) \
@@ -1722,7 +1730,7 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| sql_str(k)).collect();
-                    vector(&pg_vec(p.item), &format!("rating >= 3 AND key NOT IN ({})", ids.join(", ")))
+                    vector(&pg_vec(p.item), &format!("rating >= {} AND key NOT IN ({})", f.similar_rating, ids.join(", ")))
                 }
                 "sql aggregate" => format!(
                     "SELECT category, COUNT(*) n, AVG(rating)::float8 r FROM docs WHERE year >= {year} GROUP BY category HAVING COUNT(*) > 1000 ORDER BY n DESC LIMIT 10"
@@ -1760,9 +1768,9 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             };
             match kind {
                 "bm25" => cmd(search(redis_or(t)?), None),
-                "bm25 + filter" => cmd(search(format!("{} @year:[2010 +inf] @category:{{c00|c01|c02|c03}}", redis_or(t)?)), None),
+                "bm25 + filter" => cmd(search(format!("{} @year:[{} +inf] @category:{{{}}}", redis_or(t)?, f.year_min, cats.join("|"))), None),
                 "vector" => cmd(knn("*"), Some(blob)),
-                "vector + filter" => cmd(knn("@rating:[4 +inf]"), Some(blob)),
+                "vector + filter" => cmd(knn(&format!("@rating:[{} +inf]", f.rating_min)), Some(blob)),
                 "hybrid (RRF)" | "hybrid (weighted)" => {
                     let mut x = a(&["FT.HYBRID", "idx", "SEARCH"]);
                     x.push(redis_or(t)?);
@@ -1824,7 +1832,7 @@ pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| redis_tag(k)).collect();
                     let blob = f16_bytes(p.item);
-                    cmd(knn(&format!("@rating:[3 +inf] -@key:{{{}}}", ids.join("|"))), Some(blob))
+                    cmd(knn(&format!("@rating:[{} +inf] -@key:{{{}}}", f.similar_rating, ids.join("|"))), Some(blob))
                 }
                 "sql aggregate" => {
                     let mut x = a(&["FT.AGGREGATE", "idx"]);
@@ -2051,7 +2059,7 @@ pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, 
             let k = (i * 7919) % keys.len();
             let it = (i * 104_729 + 13) % keys.len();
             let seen: Vec<String> = std::iter::once(it).chain((1..SEEN).map(|j| (it + j * 997) % keys.len())).map(|j| keys[j].clone()).collect();
-            let probe = Probe { q, key: &keys[k], row: k, item: &items[it], seen: &seen, year: 1990 + (i % 30) as i64, paid: false };
+            let probe = Probe { q, key: &keys[k], row: k, item: &items[it], seen: &seen, year: 1990 + (i % 30) as i64, paid: false, knobs: Knobs::default() };
             let u = &urls[reqs.len() % urls.len()];
             if let Some(r) = request(o, kind, &probe, u) {
                 // A key lookup by the engine's own read by id where its

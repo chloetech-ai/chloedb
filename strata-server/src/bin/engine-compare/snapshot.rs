@@ -78,3 +78,42 @@ fn requests_match_the_snapshot() {
         );
     }
 }
+
+/// Filters and prefixes other than `run`'s reach every engine's request:
+/// each filtered kind names the new values and none of the old ones.
+#[test]
+fn knobs_reach_every_engine() {
+    let q = probe_query();
+    let seen = vec!["d7".to_string(), "d9".to_string(), "d11".to_string()];
+    let item = [0.25f32, 0.25, -0.5, 0.75];
+    let base = Probe::new(&q, "d42", 41, &item, &seen, 2001, false);
+    let knobs = Knobs { year_min: 2017, cats: (1 << 5) | (1 << 41), rating_min: 4.25, similar_rating: 2.75, prefix_len: 2 };
+    let was = render_all(&base);
+    let now = render_all(&Probe { knobs, ..base.clone() });
+    for (engine, kinds) in now.as_object().unwrap() {
+        // Manticore's SQL is form-encoded: its spaces and commas decoded, so that `LIMIT%2010` is not taken for 2010.
+        let text = |kind: &str| kinds[kind]["request"].to_string().replace("%20", " ").replace("%2C", ",");
+        let old = |kind: &str| was[engine][kind]["request"].to_string().replace("%20", " ").replace("%2C", ",");
+        if kinds["bm25 + filter"]["unsupported"].is_null() && !kinds["bm25 + filter"]["request"].is_null() {
+            let t = text("bm25 + filter");
+            assert!(t.contains("2017") && t.contains("c05") && t.contains("c41"), "{engine}: bm25 + filter: {t}");
+            assert!(!t.contains("2010") && !t.contains("c00") && !t.contains("c03"), "{engine}: bm25 + filter still has run's filter: {t}");
+        }
+        if !kinds["vector + filter"]["request"].is_null() {
+            let t = text("vector + filter");
+            assert!(t.contains("4.25"), "{engine}: vector + filter: {t}");
+        }
+        if !kinds["similar items"]["request"].is_null() {
+            let t = text("similar items");
+            assert!(t.contains("2.75"), "{engine}: similar items: {t}");
+        }
+        // The probe's last word is "night": 2 letters, "ni", where run sends "nig".
+        if !kinds["prefix"]["request"].is_null() {
+            let (t, o) = (text("prefix"), old("prefix"));
+            assert!(t != o && t.contains("ni") && !t.contains("nig"), "{engine}: prefix: {t}");
+        }
+        for kind in ["bm25", "vector", "hybrid (RRF)", "key lookup", "sql aggregate"] {
+            assert_eq!(text(kind), old(kind), "{engine}: {kind} has no filter of the knobs, so it stays as it was");
+        }
+    }
+}
