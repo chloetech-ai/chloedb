@@ -129,6 +129,18 @@ fn sharded_with(shards: &[Db], sql: &str, params: &Params, boost_inputs: bool) -
     let parts: Vec<TermStats> = shards.iter().zip(&snaps).map(|(d, s)| d.term_stats(s, &select).unwrap()).collect();
     let opts = ExecOptions { stats: Some(Arc::new(TermStats::sum(&parts))), shard: true, boost_inputs, ..ExecOptions::default() };
     let answers: Vec<ResultSet> = shards.iter().zip(&snaps).map(|(d, s)| d.execute(s, &select, &opts).unwrap_or_else(|e| panic!("{sql}: {e}"))).collect();
+    // For a coordinator that fuses from the boost's rows alone, a shard
+    // sends its own top LIMIT + OFFSET, and past those only rows tied with
+    // the last of them.
+    if let (false, Some(l)) = (boost_inputs, select.limit) {
+        let want = l + select.offset;
+        for (i, a) in answers.iter().enumerate() {
+            if a.scores.len() > want && want > 0 {
+                let kth = a.scores[want - 1];
+                assert!(a.scores[want..].iter().all(|s| s.total_cmp(&kth).is_eq()), "{sql}: shard {i} sent {} rows past its top {want} that do not tie the last", a.scores.len() - want);
+            }
+        }
+    }
     let sent = answers.iter().map(|a| a.rows.len()).sum();
     (cluster::merge(&select, answers).unwrap_or_else(|e| panic!("{sql}: {e}")), sent)
 }
@@ -226,7 +238,8 @@ fn the_top_k_is_scoring_every_matching_row() {
 /// coordinator from before them (taking each shard's top `depth` of BM25)
 /// still gets what it fused before. Shards that leave the inputs' top rows
 /// out, for a coordinator that fuses from the boost's rows alone, give the
-/// same answer from fewer rows.
+/// same answer from fewer rows: each its own top k over its segments, and
+/// the rows tied with its k-th.
 #[test]
 fn shards_rank_like_one_database() {
     let docs = docs();

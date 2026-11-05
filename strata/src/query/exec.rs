@@ -3478,6 +3478,22 @@ impl<'a> Executor<'a> {
             Vec::new()
         };
         let mut hits: Vec<Hit> = rank.eval(cands.len(), &values, &ranks, if shard { cands.len() } else { k }).into_iter().map(|(i, score)| Hit { seg: cands[i].0, doc: cands[i].1, score }).collect();
+        // A shard's rank-safe boost for a coordinator that fuses from the
+        // boost's rows alone: each segment found its own top k, so the
+        // shard sends its top k over all of them, and every row tied with
+        // the k-th (the coordinator orders ties by key, over all shards).
+        // No row of the cluster's top k is left out: each is in its own
+        // shard's.
+        let cut = shard && driver.is_some() && !for_coordinator;
+        let found = hits.len();
+        if cut {
+            let k = self.rows_at_most(k);
+            let keep = match k.checked_sub(1).and_then(|l| hits.get(l)) {
+                Some(kth) => k + hits[k..].iter().take_while(|h| h.score.total_cmp(&kth.score).is_eq()).count(),
+                None => hits.len().min(k),
+            };
+            hits.truncate(keep);
+        }
         self.order_sorted_ties(&mut hits);
         let generating = rank.generates.iter().filter(|g| **g).count();
         let from = match driver {
@@ -3488,6 +3504,9 @@ impl<'a> Executor<'a> {
         // For one release: `+` between scores meant min-max fusion before.
         let raw = if rank.adds_raw_scores() { " (+ adds raw scores; minmax() normalises them, as a sum of scores did before ranking expressions)" } else { "" };
         self.stats.plan.push(format!("fused {}: {} candidates from {from}{raw}", rank.explain(&self.schema), cands.len()));
+        if cut && hits.len() < found {
+            self.stats.plan.push(format!("shard sends its top {} of the {found} its segments found (ties at the cut kept)", hits.len()));
+        }
         if shard {
             let ranked = ranks
                 .iter()
