@@ -1862,13 +1862,15 @@ impl<'a> Executor<'a> {
             }
             (r, l)
         };
+        // Largest segments first: a ranked query's best so far lets the
+        // later ones skip more (`Found`).
+        let mut order: Vec<usize> = (0..segs.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(segs[i].view.n_live));
         if threads == 1 {
-            for (i, s) in segs.iter().enumerate() {
-                outs[i] = Some(run(self, s, 0));
+            for &i in &order {
+                outs[i] = Some(run(self, &segs[i], 0));
             }
         } else {
-            let mut order: Vec<usize> = (0..segs.len()).collect();
-            order.sort_by_key(|&i| std::cmp::Reverse(segs[i].view.n_live));
             let next = std::sync::atomic::AtomicUsize::new(0);
             let slots: Vec<std::sync::Mutex<Option<(Result<T>, Local)>>> = (0..segs.len()).map(|_| std::sync::Mutex::new(None)).collect();
             let this = &*self;
@@ -3137,6 +3139,9 @@ impl<'a> Executor<'a> {
             self.stats.plan.push(format!("bm25 expanded with {} terms: {}", added.len(), added.join(", ")));
         }
         let (params, algo) = self.bm25_params(opts)?;
+        // The best `k` scores of the segments searched so far: a segment
+        // searched after them skips what cannot reach their `k`-th.
+        let found = (cap.is_none() && k > 0).then(|| Found::new(k));
         let per = self.per_segment(|ex, s, l| {
             let t = ex.text(s, field)?;
             // Block-Max WAND fully scores a fraction of the postings it meets.
@@ -3149,8 +3154,16 @@ impl<'a> Executor<'a> {
                 }
             };
             let f = ex.seg_filter_l(s, p, mode, l)?;
+            // Exact in `f32`: the floor is one of the segments' scores.
+            let floor = found.as_ref().map_or(f32::NEG_INFINITY, |x| x.floor() as f32);
             let hits = match cap {
-                None => t.top_k_weighted(terms, &stats, params, k, f.as_dyn(), algo, ties),
+                None => {
+                    let hits = t.top_k_weighted_above(terms, &stats, params, k, f.as_dyn(), algo, ties, floor);
+                    if let Some(found) = &found {
+                        found.add(hits.iter().map(|h| h.1 as f64));
+                    }
+                    hits
+                }
                 Some(g) if g.int => {
                     let col = ex.numeric(s, g.field)?.col();
                     t.top_k_capped(terms, &stats, params, k, g.per, &|d: DocId| ex.int_value(s, g.field, col, d).map(|v| v as u64), f.as_dyn(), algo)
@@ -3160,7 +3173,11 @@ impl<'a> Executor<'a> {
                     t.top_k_capped(terms, &stats, params, k, g.per, &|d: DocId| col.code_of_doc(d).map(u64::from), f.as_dyn(), algo)
                 }
             };
-            l.plan.push(format!("seg {}: bm25 {algo:?}, filter {mode:?}", s.ord));
+            if floor > f32::NEG_INFINITY {
+                l.plan.push(format!("seg {}: bm25 {algo:?}, filter {mode:?}, above {floor}", s.ord));
+            } else {
+                l.plan.push(format!("seg {}: bm25 {algo:?}, filter {mode:?}", s.ord));
+            }
             Ok(hits.into_iter().map(|(doc, sc)| Hit { seg: s.ord, doc, score: sc as f64 }).collect::<Vec<_>>())
         })?;
         let mut hits = merge_top(per.concat(), usize::MAX);
@@ -3500,6 +3517,9 @@ impl<'a> Executor<'a> {
             return Ok(Vec::new());
         }
         let p = &with_filter(p, &filter);
+        // As in `bm25_rows`: segments searched later skip what cannot
+        // reach the `k`-th value found before them.
+        let found = (k > 0).then(|| Found::new(k));
         let per = self.per_segment(|ex, s, l| {
             let t = ex.text(s, field)?;
             let candidates = terms.iter().map(|(w, _)| t.doc_freq(w) as f64).sum::<f64>() * 0.3;
@@ -3512,12 +3532,17 @@ impl<'a> Executor<'a> {
             };
             let f = ex.seg_filter_l(s, p, mode, l)?;
             let mut boost = ex.row_boost(s, rank, text)?;
+            let floor = found.as_ref().map_or(f64::NEG_INFINITY, Found::floor);
             let (hits, ran) = match &bm25 {
-                Some((stats, params)) => t.top_k_boosted(&terms, stats, *params, k, f.as_dyn(), algo, &mut boost),
-                None => t.top_k_dot_boosted(&terms, k, f.as_dyn(), algo, &mut boost),
+                Some((stats, params)) => t.top_k_boosted_above(&terms, stats, *params, k, f.as_dyn(), algo, &mut boost, floor),
+                None => t.top_k_dot_boosted_above(&terms, k, f.as_dyn(), algo, &mut boost, floor),
             };
+            if let Some(found) = &found {
+                found.add(hits.iter().map(|h| h.1));
+            }
             let how = if ran == algo { String::new() } else { " (its bound does not narrow with the text score: every match scored)".to_string() };
-            l.plan.push(format!("seg {}: {} {ran:?} ranks by the expression{how}, filter {mode:?}", s.ord, if bm25.is_some() { "bm25" } else { "sparse" }));
+            let above = if floor > f64::NEG_INFINITY { format!(", above {floor}") } else { String::new() };
+            l.plan.push(format!("seg {}: {} {ran:?} ranks by the expression{how}, filter {mode:?}{above}", s.ord, if bm25.is_some() { "bm25" } else { "sparse" }));
             Ok(hits.into_iter().map(|(d, _)| (s.ord, d)).collect::<Vec<_>>())
         })?;
         let mut cands = per.concat();
@@ -4146,6 +4171,39 @@ fn decay_box(decay: &Decay, b: Interval) -> Interval {
     }
     // Widened for exp, which need not be exactly monotone.
     Interval::new(0.0, top + top.abs() * 1e-12 + f64::MIN_POSITIVE, false)
+}
+
+/// The best `k` scores the segments of one ranked query found so far,
+/// shared by the threads that search them: a segment searched later starts
+/// at the `k`-th ([`TextFieldReader::top_k_weighted_above`]), as Lucene
+/// shares the minimum competitive score between segments.
+struct Found {
+    k: usize,
+    best: Mutex<Vec<f64>>,
+}
+
+impl Found {
+    fn new(k: usize) -> Found {
+        Found { k, best: Mutex::new(Vec::new()) }
+    }
+
+    /// The `k`-th best score so far; minus infinity until `k` are found.
+    fn floor(&self) -> f64 {
+        let best = self.best.lock().unwrap_or_else(|e| e.into_inner());
+        if best.len() < self.k {
+            f64::NEG_INFINITY
+        } else {
+            best[self.k - 1]
+        }
+    }
+
+    /// Takes in the scores of a segment's hits.
+    fn add(&self, scores: impl Iterator<Item = f64>) {
+        let mut best = self.best.lock().unwrap_or_else(|e| e.into_inner());
+        best.extend(scores.filter(|s| !s.is_nan()));
+        best.sort_unstable_by(|a, b| b.total_cmp(a));
+        best.truncate(self.k);
+    }
 }
 
 fn merge_top(mut hits: Vec<Hit>, k: usize) -> Vec<Hit> {
