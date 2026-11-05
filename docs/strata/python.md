@@ -15,7 +15,28 @@ The `strata` package runs a Strata database inside a Python process, the way `sq
 
 ## Install
 
-The package is in [`strata-py/`](https://github.com/rkonow/strata/tree/main/strata-py): a Rust extension built with [maturin](https://www.maturin.rs), for CPython 3.10 and later. It needs Rust (stable) and a C compiler.
+The package is in [`strata-py/`](https://github.com/chloetech-ai/strata/tree/main/strata-py): a Rust extension built with [maturin](https://www.maturin.rs), for CPython 3.10 and later.
+
+### Prebuilt
+
+Each `strata-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/strata/releases) has a wheel per platform, built for CPython's stable ABI (one wheel serves Python 3.10 and later), which installs with no Rust and no compiler. Given the release's assets page, pip picks the wheel for its machine:
+
+```sh
+pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0
+```
+
+| platform | wheel |
+|---|---|
+| macOS 11+ on Apple silicon | `strata_db-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
+| macOS 11+ on Intel | `strata_db-<version>-cp310-abi3-macosx_11_0_x86_64.whl` |
+| Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `strata_db-<version>-cp310-abi3-manylinux_2_35_x86_64.whl` |
+| Linux aarch64, glibc 2.35+ | `strata_db-<version>-cp310-abi3-manylinux_2_35_aarch64.whl` |
+
+The workflow [`py-release.yml`](https://github.com/chloetech-ai/strata/blob/main/.github/workflows/py-release.yml) builds them on a tag `strata-py-v<version>` (the version in `strata-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
+
+### From source
+
+It needs Rust (stable) and a C compiler; the build takes about 12 minutes on 4 cores.
 
 ```sh
 pip install ./strata-py                    # from the repository's root: builds and installs a wheel
