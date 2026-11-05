@@ -147,7 +147,7 @@ async fn query(svc: &Arc<Service>, s: &str) -> Json {
 
 /// Queries of every table, and across them: those whose order is total
 /// (`true`) answer in the same order, the others with the same rows.
-const QUERIES: [(&str, bool); 29] = [
+const QUERIES: [(&str, bool); 31] = [
     ("SELECT item, action, ts FROM events WHERE usr = 'u3' ORDER BY ts DESC, id LIMIT 50", true),
     ("SELECT COUNT(*) FROM events", true),
     ("SELECT usr, COUNT(*) FROM events GROUP BY usr LIMIT 100", false),
@@ -173,6 +173,10 @@ const QUERIES: [(&str, bool); 29] = [
     ("SELECT usr, id, ts FROM events ORDER BY ts DESC, id MAX 2 PER usr LIMIT 20", true),
     ("SELECT item, id, ts FROM events WHERE action = 'buy' ORDER BY ts DESC, id MAX 3 PER item LIMIT 15 OFFSET 2", true),
     ("SELECT id, cat, score() FROM items WHERE MATCH(title, 'kettle rope') ORDER BY bm25(title, 'kettle rope') DESC MAX 2 PER cat LIMIT 8", true),
+    // A rank-safe boost, each shard sending its own top k: capped, and
+    // past an OFFSET.
+    ("SELECT id, cat, score() FROM items ORDER BY bm25(title, 'kettle rope') * (1 + price / 1000) DESC MAX 2 PER cat LIMIT 8", true),
+    ("SELECT id, score() FROM items ORDER BY bm25(title, 'kettle rope') * (1 + price / 1000) DESC LIMIT 10 OFFSET 3", true),
     ("SELECT e.id, e.ts, i.cat FROM events e JOIN items i ON e.item = i.id ORDER BY e.ts DESC, e.id MAX 2 PER i.cat LIMIT 12", true),
     // Window functions over the shards' rows, groups and joins.
     ("SELECT id, usr, ROW_NUMBER() OVER (PARTITION BY usr ORDER BY ts DESC, id) AS r, COUNT(*) OVER (PARTITION BY action) FROM events QUALIFY r <= 2 ORDER BY usr, r", true),
