@@ -528,6 +528,10 @@ impl Merger {
         lock(&self.wake).closed = true;
         self.cv.notify_all();
     }
+
+    fn closed(&self) -> bool {
+        lock(&self.wake).closed
+    }
 }
 
 /// A table's rows as a flush or a bulk load writes them to segments:
@@ -620,7 +624,9 @@ fn merger(db: Weak<Database>, m: Arc<Merger>) {
         }
         let Some(db) = db.upgrade() else { return };
         let mut failed = false;
-        while let Some(claim) = db.next_merge(&m) {
+        // A merger stopped ([`Database::stop_merger`]) finishes the merge it
+        // runs and starts no other.
+        while let Some(claim) = (!m.closed()).then(|| db.next_merge(&m)).flatten() {
             let mut stats = MergeStats::default();
             let t0 = Instant::now();
             let r = db.merge_claimed(&claim, m.pacer.as_ref(), &mut stats);
@@ -2572,6 +2578,25 @@ impl Database {
         for i in 0..opts.threads.max(1) {
             let (db, m) = (Arc::downgrade(self), m.clone());
             threads.push(std::thread::Builder::new().name(format!("strata-merger-{i}")).spawn(move || merger(db, m)).expect("spawn a merger thread"));
+        }
+    }
+
+    /// Stops the merger [`Database::spawn_merger`] started: a merge running
+    /// finishes, none starts after it, and this returns once the merger's
+    /// threads have ended, so that the database closes when its last
+    /// reference goes rather than when a merge does. Calls to
+    /// [`Database::merge`] still merge; the merger does not start again.
+    pub fn stop_merger(&self) {
+        if let Some(m) = self.merger.get() {
+            m.close();
+        }
+        let threads = std::mem::take(&mut *lock(&self.merger_threads));
+        for h in threads {
+            // A merger thread that holds the last reference closes the
+            // database on its own thread, and so may call this.
+            if h.thread().id() != std::thread::current().id() {
+                let _ = h.join();
+            }
         }
     }
 

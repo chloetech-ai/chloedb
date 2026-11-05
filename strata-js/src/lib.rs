@@ -33,7 +33,7 @@ use strata::schema::Schema;
 use strata::segment::build::BuildOptions;
 use strata::sid::{Codebook, TrainOptions};
 use strata::sqlite;
-use strata::storage::{DbOptions, Layout, MergePolicy};
+use strata::storage::{DbOptions, Layout, MergerOptions};
 use strata::{Error, FieldType, Result, Value};
 
 /// Rows a write transaction of an upsert carries (as `strata-server
@@ -359,6 +359,9 @@ fn open_db(op: &str, a: &Args) -> Result<Opened> {
         }
         other => return Err(bad(format!("no way to open a database called {other:?}"))),
     };
+    // Segments merge in the background as writes add them, one merge at a
+    // time, as a server's do (as strata-py's).
+    db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });
     Ok(Opened { db: with_threads(db, threads), embed_errors, last_import })
 }
 
@@ -773,9 +776,7 @@ fn dispatch(db: &Db, op: &str, mut a: Args, vectors: Vec<Vec<f32>>) -> Result<Js
         // As strata-py's: the memtable written out, segments merged into
         // as few as can be, the space freed returned to the file system.
         "optimize" => {
-            db.storage().flush()?;
-            db.storage().merge(&MergePolicy::compact())?;
-            db.storage().vacuum()?;
+            db.optimize()?;
             Ok(Json::Null)
         }
         "vacuum" => Ok(Json::from(db.storage().vacuum()?)),
@@ -927,7 +928,10 @@ impl NativeDatabase {
             return Ok(job(move || {
                 let db = held.write().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(db) = db {
-                    db.storage().merge(&MergePolicy::default())?;
+                    // Small segments merged, and the space merges freed
+                    // returned to the file system when it is an eighth of
+                    // the file or more.
+                    db.close()?;
                 }
                 Ok(Json::Null)
             }));

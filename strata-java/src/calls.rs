@@ -23,7 +23,7 @@ use strata::schema::Schema;
 use strata::segment::build::BuildOptions;
 use strata::sid::TrainOptions;
 use strata::sqlite;
-use strata::storage::{DbOptions, Layout, MergePolicy};
+use strata::storage::{DbOptions, Layout, MergerOptions};
 use strata::{FieldType, Value};
 
 use crate::codec::{Writer, V};
@@ -77,6 +77,9 @@ pub struct Handle {
 impl Handle {
     fn new(db: Db, models: &Path) -> Handle {
         let embed_errors = db.open_embedders(models).into_iter().map(|(f, e)| (f, e.to_string())).collect();
+        // Segments merge in the background as writes add them, one merge
+        // at a time, as a server's do (as strata-py's).
+        db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });
         Handle { db: RwLock::new(Some(Arc::new(db))), embed_errors }
     }
 
@@ -692,10 +695,12 @@ fn call_static(method: &str, a: &mut Args) -> R<Vec<u8>> {
 
 fn call_on(h: &Handle, method: &str, a: &mut Args) -> R<Vec<u8>> {
     if method == "close" {
-        // Merges small segments first, as a server does when it stops.
+        // Merges small segments first, as a server does when it stops, and
+        // returns the space merges freed to the file system when it is an
+        // eighth of the file or more.
         let db = h.db.write().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(db) = db {
-            db.storage().merge(&MergePolicy::default())?;
+            db.close()?;
         }
         return Ok(null());
     }
@@ -953,9 +958,10 @@ fn call_on(h: &Handle, method: &str, a: &mut Args) -> R<Vec<u8>> {
             w.str(&db.train_codebook(&table, &field, &name, &models, &opts)?);
             w.b
         }
+        // As strata-py's: the memtable written out, segments merged into
+        // as few as can be, the space freed returned to the file system.
         "optimize" => {
-            db.storage().flush()?;
-            db.storage().merge(&MergePolicy::default())?;
+            db.optimize()?;
             null()
         }
         other => return arg(format!("no such call: {other}")),
