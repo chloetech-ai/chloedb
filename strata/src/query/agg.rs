@@ -370,7 +370,7 @@ pub fn finish(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<V
     }
     let value_of = |key: &[Part], accs: &[Acc], p: &Projection| -> Value {
         match p {
-            Projection::Field(_) | Projection::Path(_) => q.group_by.iter().position(|g| g.projection() == *p).map_or(Value::Null, |i| key[i].value()),
+            Projection::Field(_) | Projection::Path(_) | Projection::Time(_) => q.group_by.iter().position(|g| g.projection() == *p).map_or(Value::Null, |i| key[i].value()),
             _ => needed.iter().position(|n| n == p).map_or(Value::Null, |i| accs[i].value()),
         }
     };
@@ -389,19 +389,23 @@ pub fn finish(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<V
     // Group values in the order values have (a part's order puts a
     // negative double after a positive one, and a JSON path's values may be
     // of several types); text and integers compared as they are.
+    // The group without a value (NULL) last in either direction, as rows
+    // without one are.
     let by_key = |a: &[Part], b: &[Part]| {
-        let o = a
-            .iter()
-            .zip(b)
-            .map(|(x, y)| match (x, y) {
+        for (x, y) in a.iter().zip(b) {
+            let o = match (x, y) {
+                (Part::Null, Part::Null) => continue,
+                (Part::Null, _) => return Ordering::Greater,
+                (_, Part::Null) => return Ordering::Less,
                 (Part::Str(x), Part::Str(y)) => x.cmp(y),
                 (Part::Int(x), Part::Int(y)) => x.cmp(y),
-                (Part::Null, Part::Null) => Ordering::Equal,
                 (x, y) => cmp(&x.value(), &y.value()),
-            })
-            .find(|o| o.is_ne())
-            .unwrap_or(Ordering::Equal);
-        if value_desc { o.reverse() } else { o }
+            };
+            if o.is_ne() {
+                return if value_desc { o.reverse() } else { o };
+            }
+        }
+        Ordering::Equal
     };
     let primary: Option<(Projection, bool)> = match &q.order {
         Some(OrderBy::Count { desc }) => Some((Projection::Count, *desc)),

@@ -1672,6 +1672,7 @@ impl Db {
                     order: None,
                     group_by: Vec::new(),
                     paths: Vec::new(),
+                    times: Vec::new(),
                     having: None,
                     tiebreak: None,
                     phases: Vec::new(),

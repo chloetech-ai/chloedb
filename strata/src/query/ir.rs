@@ -66,9 +66,9 @@ pub(crate) use fuse::paths as fuse_paths;
 pub const VERSION: u32 = 1;
 
 /// The plan features this version of Strata reads.
-pub const FEATURES: [&str; 26] = [
+pub const FEATURES: [&str; 27] = [
     OPERATORS, SEQ_NO, RANK_EXPRESSIONS, SEMANTIC_ID, RANK_PHASES, RANK_FEATURES, MAXSIM, RANK_PROFILES, RANK_MODELS, DISTINCT_ON, EDGE_TABLE, RANKED, TEXT_OPERATORS, PREFIX, CORRELATED, PREFIX_EDITS, MIN_MATCH, AT_LEAST, GUARD, PER_CAP, ENCODE,
-    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS,
+    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES,
 ];
 
 /// The feature of a plan with operators over rows in memory: a join,
@@ -184,6 +184,10 @@ pub const JSON: &str = "json";
 /// order, which the executor reads from the field's terms
 /// ([`crate::json::PathValues`]).
 pub const JSON_COLUMNS: &str = "json_columns";
+
+/// The feature of a plan that computes with the parts of times
+/// ([`Func::DateTrunc`], [`Func::DatePart`], [`Func::Strftime`]).
+pub const DATES: &str = "dates";
 
 /// A statement as a tree of operators ([module docs](self)).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -757,6 +761,20 @@ pub enum Func {
     /// comparison with a value of the type reads. A Search's filter on it
     /// reads the field's terms. Needs [`JSON`].
     JsonExtract,
+    /// `date_trunc(unit, t)`: the start of the second, minute, hour, day,
+    /// week (from Monday), month, quarter or year (`args[0]`, text) that
+    /// the TIMESTAMP `args[1]` is in, in UTC ([`crate::timestamp::trunc`]).
+    /// Needs [`DATES`].
+    DateTrunc,
+    /// `date_part(part, t)` and `EXTRACT(part FROM t)`: a part of the
+    /// TIMESTAMP `args[1]` (`args[0]`, text: `'year'`, `'month'`, `'dow'`,
+    /// ...; [`crate::timestamp::part`]), an INT, or a FLOAT for `second`
+    /// and `epoch`. Needs [`DATES`].
+    DatePart,
+    /// `strftime(format, t)`: the TIMESTAMP `args[1]` written by the `%`
+    /// directives of `args[0]`, as SQLite's ([`crate::timestamp::strftime`]).
+    /// Needs [`DATES`].
+    Strftime,
 }
 
 impl Func {
@@ -782,6 +800,9 @@ impl Func {
             Func::SidAt => "sid_at",
             Func::CountTrue => "count_true",
             Func::JsonExtract => "json_extract",
+            Func::DateTrunc => "date_trunc",
+            Func::DatePart => "date_part",
+            Func::Strftime => "strftime",
         }
     }
 
@@ -810,7 +831,7 @@ impl Func {
         let ok = match self {
             Func::Lower | Func::Upper | Func::Length | Func::Abs | Func::Ln | Func::Exp | Func::Sqrt | Func::Sigmoid => n == 1,
             Func::Round | Func::Log => n == 1 || n == 2,
-            Func::Pow | Func::Dot | Func::SidAt => n == 2,
+            Func::Pow | Func::Dot | Func::SidAt | Func::DateTrunc | Func::DatePart | Func::Strftime => n == 2,
             Func::Clamp => n == 3,
             Func::Coalesce | Func::Least | Func::Greatest | Func::CountTrue => n >= 1,
             Func::JsonExtract => n == 2 || n == 3,
@@ -823,6 +844,9 @@ impl Func {
             (_, Func::Clamp) => Err("three arguments: a value, its least and its greatest"),
             (_, Func::Coalesce | Func::Least | Func::Greatest | Func::CountTrue) => Err("at least one argument"),
             (_, Func::JsonExtract) => Err("two or three arguments: a JSON field, a path, and a type"),
+            (_, Func::DateTrunc) => Err("two arguments: a unit ('day', 'week', 'month', ...) and a TIMESTAMP"),
+            (_, Func::DatePart) => Err("two arguments: a part ('year', 'month', 'dow', ...) and a TIMESTAMP"),
+            (_, Func::Strftime) => Err("two arguments: a format ('%Y-%m-%d') and a TIMESTAMP"),
             _ => Err("one argument"),
         }
     }
@@ -840,7 +864,7 @@ impl Func {
         }
         let x = args.first().copied().unwrap_or(f64::NAN);
         let r = match self {
-            Func::Lower | Func::Upper | Func::Length | Func::Dot | Func::SidAt | Func::JsonExtract => f64::NAN,
+            Func::Lower | Func::Upper | Func::Length | Func::Dot | Func::SidAt | Func::JsonExtract | Func::DateTrunc | Func::DatePart | Func::Strftime => f64::NAN,
             Func::Abs => x.abs(),
             Func::Round => {
                 let d = args.get(1).map_or(0.0, |d| d.clamp(-30.0, 30.0).trunc());
@@ -2016,11 +2040,15 @@ impl Plan {
         if root.ranks_by_expression() {
             features.push(RANK_EXPRESSIONS.to_string());
         }
-        let (mut sid_at, mut json) = (false, false);
+        let (mut sid_at, mut json, mut dates) = (false, false, false);
         root.visit_exprs(&mut |e| {
             sid_at |= matches!(e, Expr::Call { func: Func::SidAt, .. });
             json |= matches!(e, Expr::Call { func: Func::JsonExtract, .. });
+            dates |= matches!(e, Expr::Call { func: Func::DateTrunc | Func::DatePart | Func::Strftime, .. });
         });
+        if dates {
+            features.push(DATES.to_string());
+        }
         if sid_at {
             features.push(SEMANTIC_ID.to_string());
         }

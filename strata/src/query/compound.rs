@@ -732,7 +732,7 @@ fn select_exprs(s: &sql::Select) -> Vec<&Expr> {
 pub(crate) fn walk(e: &Expr, f: &mut dyn FnMut(&Expr)) {
     f(e);
     match e {
-        Expr::Nested(x) | Expr::UnaryOp { expr: x, .. } | Expr::IsNull(x) | Expr::IsNotNull(x) | Expr::Cast { expr: x, .. } => walk(x, f),
+        Expr::Nested(x) | Expr::UnaryOp { expr: x, .. } | Expr::IsNull(x) | Expr::IsNotNull(x) | Expr::Cast { expr: x, .. } | Expr::Extract { expr: x, .. } => walk(x, f),
         Expr::BinaryOp { left, right, .. } => {
             walk(left, f);
             walk(right, f);
@@ -2548,7 +2548,7 @@ pub(crate) fn query_mut(q: &mut sql::Query, f: &mut dyn FnMut(&mut Expr)) {
 fn walk_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
     f(e);
     match e {
-        Expr::Nested(x) | Expr::UnaryOp { expr: x, .. } | Expr::IsNull(x) | Expr::IsNotNull(x) | Expr::Cast { expr: x, .. } => walk_mut(x, f),
+        Expr::Nested(x) | Expr::UnaryOp { expr: x, .. } | Expr::IsNull(x) | Expr::IsNotNull(x) | Expr::Cast { expr: x, .. } | Expr::Extract { expr: x, .. } => walk_mut(x, f),
         Expr::BinaryOp { left, right, .. } => {
             walk_mut(left, f);
             walk_mut(right, f);
@@ -2946,6 +2946,9 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 "sid_at" => Func::SidAt,
                 "count_true" => Func::CountTrue,
                 "json_extract" => Func::JsonExtract,
+                "date_trunc" => Func::DateTrunc,
+                "date_part" => Func::DatePart,
+                "strftime" => Func::Strftime,
                 n if Func::numeric(n).is_some() => Func::numeric(n).expect("a numeric function"),
                 n if NATIVE.contains(&n) => {
                     return Err(err(format!("{}(...) works on one table's scan, in its WHERE or ORDER BY (in a join, on that table's column: a.body), not on values of rows", n.to_uppercase())))
@@ -2986,29 +2989,41 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
         Expr::Overlay { .. } => return Err(err(unknown_function("replace"))),
         Expr::Ceil { .. } => return Err(err(unknown_function("ceil"))),
         Expr::Floor { .. } => return Err(err(unknown_function("floor"))),
+        // EXTRACT(part FROM t) is date_part('part', t).
         Expr::Extract { field, expr, .. } => {
-            return Err(err(format!(
-                "EXTRACT({field} FROM {expr}): Strata has no date parts yet; compare the time with a range instead ({expr} >= '2026-01-01' AND {expr} < '2027-01-01')"
-            )))
+            let part = extract_part(field);
+            ir::Expr::Call { func: Func::DatePart, args: vec![ir::Expr::Lit(Value::Str(part)), go(expr)?] }
         }
         e => return Err(err(format!("{e} is not something Strata computes for a row: {}", ROW_EXPRESSIONS))),
     })
 }
 
 /// What the row evaluator computes, for an error about what it does not.
-const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp and dot";
+const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part and strftime";
+
+/// The part `EXTRACT(part FROM t)` names, as `date_part` takes it.
+pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
+    match field {
+        sql::DateTimeField::Custom(id) => id.value.to_ascii_lowercase(),
+        sql::DateTimeField::Week(_) | sql::DateTimeField::IsoWeek => "week".into(),
+        sql::DateTimeField::DayOfWeek => "dow".into(),
+        sql::DateTimeField::DayOfYear => "doy".into(),
+        f => f.to_string().to_ascii_lowercase(),
+    }
+}
 
 /// Why a function is not one the row evaluator knows: the one meant, if
 /// the name is near one, or what there is.
 fn unknown_function(n: &str) -> String {
-    const ROW_FUNCTIONS: [&str; 16] =
-        ["lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot"];
+    const ROW_FUNCTIONS: [&str; 19] = [
+        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime",
+    ];
     let hint = match n {
         "substr" | "substring" | "left" | "right" | "trim" | "ltrim" | "rtrim" | "replace" | "concat" | "position" | "instr" | "strpos" | "split_part" | "reverse" => {
             "; to match part of a text, use LIKE '%part%' (ILIKE ignores case) or PREFIX(field, 'start'); to join texts, use ||"
         }
-        "date_trunc" | "date_part" | "extract" | "strftime" | "date" | "year" | "month" | "day" | "to_char" | "datediff" | "date_add" | "date_sub" => {
-            "; Strata has no date functions yet: compare the time with a range (at >= '2026-01-01' AND at < '2026-02-01')"
+        "date" | "year" | "month" | "day" | "hour" | "week" | "to_char" | "datepart" | "datetrunc" | "date_format" | "datediff" | "date_add" | "date_sub" | "dayofweek" | "weekday" => {
+            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + n or at - n, n in microseconds"
         }
         "random" | "rand" => "; ORDER BY random() is not supported: Strata orders by columns and scores",
         "ifnull" | "nvl" | "isnull" => "; coalesce(x, y) gives x, or y where x is NULL",

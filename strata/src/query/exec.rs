@@ -16,7 +16,7 @@ use crate::forward::{self, DocStore, KeyRange, KeywordColumn, NumericColumn, Ran
 use crate::graph::GraphReader;
 use crate::query::agg;
 use crate::query::memory::{Charge, MemoryBudget};
-use crate::query::logical::{Col, Decay, Expand, Fuzzy, GuardSite, OrderBy, Opts, PathCol, PathTest, Phase, Pred, Projection, Score, Select, Tiebreak, Vectors, MAX_QUERY_VECTORS, CROSS_ENCODER_FIRST};
+use crate::query::logical::{Col, Decay, Expand, Fuzzy, GuardSite, OrderBy, Opts, PathCol, PathTest, Phase, Pred, Projection, Score, Select, Tiebreak, TimeOf, Vectors, MAX_QUERY_VECTORS, CROSS_ENCODER_FIRST};
 use crate::query::plan::{CostModel, Estimator, FilterMode, Planner, VectorStrategy};
 use crate::query::rank::{Interval, Rank};
 use crate::query::stats::{FieldStats, TermStats};
@@ -2786,7 +2786,11 @@ impl<'a> Executor<'a> {
     /// Whether facets can count a column's values: a keyword column's, or
     /// a path's, from its terms.
     fn facet_field(&self, c: Col) -> bool {
-        let Col::Field(field) = c else { return true };
+        let field = match c {
+            Col::Field(f) => f,
+            Col::Path(_) => return true,
+            Col::Time(_) => return false,
+        };
         let f = &self.schema.fields[field];
         f.ty == FieldType::Keyword || (f.ty == FieldType::Int && f.multi)
     }
@@ -2796,6 +2800,11 @@ impl<'a> Executor<'a> {
         match c {
             Col::Field(f) => self.field_name(f).to_string(),
             Col::Path(p) => q.paths.get(p).map_or("?".into(), |pc| format!("{}.{}", self.field_name(pc.field), pc.path)),
+            Col::Time(t) => q.times.get(t).map_or("?".into(), |tc| match &tc.of {
+                TimeOf::Trunc(u) => format!("date_trunc('{}', {})", u.name(), self.field_name(tc.field)),
+                TimeOf::Part(p) => format!("date_part('{}', {})", p.name(), self.field_name(tc.field)),
+                TimeOf::Format(f) => format!("strftime({}, {})", crate::query::hint::sql_value(&Value::Str(f.clone())), self.field_name(tc.field)),
+            }),
         }
     }
 
@@ -2850,10 +2859,23 @@ impl<'a> Executor<'a> {
     /// over the segment's rows): each of a list's, the distinct ones for a
     /// group (`key`), as the operators' aggregate reads them.
     #[allow(clippy::too_many_arguments)]
-    fn col_values(&self, s: &Seg<'a>, c: Col, d: DocId, multi: &HashMap<usize, HashMap<DocId, Vec<u32>>>, paths: &HashMap<usize, crate::json::PathValues>, key: bool, out: &mut Vec<Value>) -> Result<()> {
+    #[allow(clippy::too_many_arguments)]
+    fn col_values(&self, s: &Seg<'a>, q: &Select, c: Col, d: DocId, multi: &HashMap<usize, HashMap<DocId, Vec<u32>>>, paths: &HashMap<usize, crate::json::PathValues>, key: bool, out: &mut Vec<Value>) -> Result<()> {
         let p = match c {
             Col::Field(f) => return self.agg_values(s, f, d, multi, out),
             Col::Path(p) => p,
+            // The function of the field's time; none without one.
+            Col::Time(t) => {
+                let tc = &q.times[t];
+                self.agg_values(s, tc.field, d, multi, out)?;
+                for v in out.iter_mut() {
+                    if let Value::Int(m) | Value::Timestamp(m) = *v {
+                        *v = tc.value(m);
+                    }
+                }
+                out.retain(|v| !matches!(v, Value::Null));
+                return Ok(());
+            }
         };
         out.clear();
         match paths.get(&p).map(|pv| pv.get(d)) {
@@ -2900,6 +2922,8 @@ impl<'a> Executor<'a> {
                         paths.insert(p, pv);
                         continue;
                     }
+                    // A TIMESTAMP field of one value.
+                    Col::Time(_) => continue,
                 };
                 if self.schema.fields[f].multi {
                     let kw = self.keyword(s, f)?;
@@ -2919,7 +2943,7 @@ impl<'a> Executor<'a> {
                 // group values.
                 let mut keys: Vec<Vec<agg::Part>> = vec![Vec::new()];
                 for &g in &q.group_by {
-                    self.col_values(s, g, d, &multi, &paths, true, &mut gv)?;
+                    self.col_values(s, q, g, d, &multi, &paths, true, &mut gv)?;
                     if gv.is_empty() {
                         gv.push(Value::Null);
                     }
@@ -2930,7 +2954,7 @@ impl<'a> Executor<'a> {
                     for (a, p) in accs.iter_mut().zip(needed) {
                         match p {
                             Projection::Agg { of, .. } => {
-                                self.col_values(s, *of, d, &multi, &paths, false, &mut vals)?;
+                                self.col_values(s, q, *of, d, &multi, &paths, false, &mut vals)?;
                                 for v in &vals {
                                     let more = a.add(v);
                                     if more > 0 {
@@ -3783,6 +3807,7 @@ impl<'a> Executor<'a> {
                 let j = p.stored.iter().position(|x| *x == pc.field);
                 crate::json::extract(j.and_then(|j| fetched.get(j)).unwrap_or(&Value::Null), &pc.path, pc.kind)?
             }
+            Projection::Time(_) => return Err(err("a part of a time is a column of groups (GROUP BY date_trunc('day', at)); of rows, the row evaluator computes it")),
         }))
     }
 

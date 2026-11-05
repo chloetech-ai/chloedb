@@ -1,12 +1,15 @@
-//! Paths of JSON fields that the executor reads itself.
+//! Paths of JSON fields, and parts of times, that the executor reads
+//! itself.
 //!
 //! The planner of compound queries reads a path outside `WHERE` (`GROUP BY
 //! attrs.color`, `AVG(attrs.price)`, `ORDER BY attrs.price`) with
 //! operators: a leaf returns each row's object, and `json_extract` above it
 //! parses them one by one. The executor reads those paths from the field's
-//! terms instead ([`crate::json::PathValues`]), so [`paths`] moves the
-//! operators over such a leaf into it when the executor runs them as they
-//! would:
+//! terms instead ([`crate::json::PathValues`]), and groups by a part of a
+//! TIMESTAMP field's times (`GROUP BY date_trunc('day', at)`) from the
+//! field's column, so [`paths`] moves the operators over such a leaf into
+//! it when the executor runs them as they would (a group by a time, as
+//! the first shape, not the order of the second):
 //!
 //! * `Aggregate` of fields and paths over `Project` of fields over a
 //!   `Search` becomes `Aggregate` over the `Search`, under a `Project` of
@@ -54,17 +57,38 @@ fn raises(n: &Node, schema: &Schema) -> bool {
     raise::select_of(n, schema).is_ok()
 }
 
+/// What a column of a leaf reads ([`column`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Read {
+    Field,
+    Path,
+    /// A part of a TIMESTAMP field's times.
+    Time,
+}
+
 /// What `e`, an expression of the rows of a `Project` of `cols`, reads of
-/// the rows of the Search below: a field the Project passes on, or a path
-/// of an indexed JSON field it passes on (`json_extract(field, path [,
-/// type])`), and whether it is a path. None for any other expression.
-fn column(e: &Expr, cols: &[Column], schema: &Schema) -> Option<(Expr, bool)> {
+/// the rows of the Search below: a field the Project passes on, a path of
+/// an indexed JSON field it passes on (`json_extract(field, path [,
+/// type])`), or a part of the times of an indexed TIMESTAMP field of one
+/// value it passes on (`date_trunc(unit, field)`, `date_part(part,
+/// field)`, `strftime(format, field)`, the first given as text), and which
+/// of those it is. None for any other expression.
+fn column(e: &Expr, cols: &[Column], schema: &Schema) -> Option<(Expr, Read)> {
     let field = |i: u32| match cols.get(i as usize)?.expr {
         Expr::Field(f) => Some(f),
         _ => None,
     };
     match e {
-        Expr::Output(i) => Some((Expr::Field(field(*i)?), false)),
+        Expr::Output(i) => Some((Expr::Field(field(*i)?), Read::Field)),
+        Expr::Call { func: func @ (Func::DateTrunc | Func::DatePart | Func::Strftime), args } => {
+            let [how @ Expr::Lit(Value::Str(_)), Expr::Output(i)] = args.as_slice() else { return None };
+            let f = field(*i)?;
+            let fld = schema.fields.get(f as usize)?;
+            if fld.logical != Some(crate::schema::Logical::Timestamp) || fld.multi || !fld.indexed {
+                return None;
+            }
+            Some((Expr::Call { func: *func, args: vec![how.clone(), Expr::Field(f)] }, Read::Time))
+        }
         Expr::Call { func: Func::JsonExtract, args } => {
             let (Some(Expr::Output(i)), rest) = (args.first(), &args[1.min(args.len())..]) else { return None };
             if rest.is_empty() || rest.len() > 2 || !rest.iter().all(|a| matches!(a, Expr::Lit(Value::Str(_)))) {
@@ -76,7 +100,7 @@ fn column(e: &Expr, cols: &[Column], schema: &Schema) -> Option<(Expr, bool)> {
                 return None;
             }
             let args = std::iter::once(Expr::Field(f)).chain(rest.iter().cloned()).collect();
-            Some((Expr::Call { func: Func::JsonExtract, args }, true))
+            Some((Expr::Call { func: Func::JsonExtract, args }, Read::Path))
         }
         _ => None,
     }
@@ -108,8 +132,8 @@ fn aggregate(n: &Node, catalog: &[&Schema]) -> Option<Node> {
     let schema = table(catalog, s)?;
     let mut any_path = false;
     let mut read = |e: &Expr| {
-        let (x, path) = column(e, cols, schema)?;
-        any_path |= path;
+        let (x, read) = column(e, cols, schema)?;
+        any_path |= read != Read::Field;
         groupable(schema, &x).then_some(x)
     };
     let keys2 = keys.iter().map(&mut read).collect::<Option<Vec<_>>>()?;
@@ -173,7 +197,7 @@ fn ordered(n: &Node, catalog: &[&Schema]) -> Option<Node> {
         return None;
     }
     let schema = table(catalog, s)?;
-    let (first, true) = column(&keys[0].expr, cols, schema)? else { return None };
+    let (first, Read::Path) = column(&keys[0].expr, cols, schema)? else { return None };
     let mut order = vec![SortKey { expr: first.clone(), ..keys[0].clone() }];
     if let Some(k) = keys.get(1) {
         let (e, _) = column(&k.expr, cols, schema)?;
