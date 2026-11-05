@@ -10,7 +10,7 @@
 //! every allocation. Index data a query reads is mapped from the file and
 //! not counted.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
@@ -79,6 +79,9 @@ struct Held {
     /// Bytes reserved from the budget; raised under `grow`.
     reserved: AtomicU64,
     grow: Mutex<()>,
+    /// Whether the query was refused: it trips the budget once, however
+    /// many of its threads (segments run in parallel) are refused.
+    refused: AtomicBool,
 }
 
 impl Drop for Held {
@@ -90,7 +93,7 @@ impl Drop for Held {
 impl Charge {
     /// A query's count against `budget`, or none.
     pub fn new(budget: Option<Arc<MemoryBudget>>) -> Charge {
-        Charge(budget.map(|budget| Arc::new(Held { budget, counted: AtomicU64::new(0), reserved: AtomicU64::new(0), grow: Mutex::new(()) })))
+        Charge(budget.map(|budget| Arc::new(Held { budget, counted: AtomicU64::new(0), reserved: AtomicU64::new(0), grow: Mutex::new(()), refused: AtomicBool::new(false) })))
     }
 
     /// Bytes this query has counted.
@@ -139,10 +142,12 @@ impl Charge {
     }
 
     /// The error of a query refused with `counted` bytes counted, counted
-    /// as a trip of the budget.
+    /// as a trip of the budget the first time the query is refused.
     pub fn refuse(&self, counted: u64) -> Error {
         let Some(h) = &self.0 else { return Error::Memory("the query needs more memory than queries may hold".into()) };
-        h.budget.trips.fetch_add(1, Ordering::Relaxed);
+        if !h.refused.swap(true, Ordering::Relaxed) {
+            h.budget.trips.fetch_add(1, Ordering::Relaxed);
+        }
         let mb = |b: u64| b.div_ceil(1 << 20);
         Error::Memory(format!(
             "the query needs more than the {} MiB the server lets queries hold at once ({} MiB of them in use, {} MiB by this query); add conditions or a LIMIT, or try again",
@@ -232,6 +237,10 @@ mod tests {
         let e = second.add(2 << 20).unwrap_err();
         assert!(matches!(e, Error::Memory(_)), "{e}");
         assert!(e.to_string().contains("10 MiB"), "{e}");
+        assert_eq!(b.trips(), 1);
+        // The same query refused again (another of its segments' threads)
+        // is still one trip.
+        second.clone().add(2 << 20).unwrap_err();
         assert_eq!(b.trips(), 1);
         // A clone holds the query's count until the last one goes.
         let clone = first.clone();
