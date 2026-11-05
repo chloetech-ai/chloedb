@@ -264,7 +264,7 @@
       <h2>Where Strata is behind</h2>
     </div>
     <ul class="gaps">
-      <li><b>SQL aggregates through a coordinator.</b> <span>184 ms at 1M and 2.9 s at 10M on latest main, where Elasticsearch and OpenSearch take a few ms (<a href="bench-10m.html#latest">10M</a>). Reading the groups from the columns (#252, in review) took the same query on 5M rows from 722 to 27 ms in a container.</span></li>
+      <li><b>SQL aggregates through a coordinator.</b> <span>184 ms at 1M and 2.9 s at 10M on latest main, where Elasticsearch and OpenSearch take a few ms (<a href="bench-10m.html#latest">10M</a>), likely from a request cache the runs left on for SQL. Reading the groups from the columns (#252, in review) took the same query on 5M rows from 722 to 27 ms in a container.</span></li>
       <li><b>Typo search.</b> <span>The faster typo walk (#242) took the cloud medians from 120 to 19.6 ms at 1M and from 824 to 81 ms at 10M. Typesense and Meilisearch still take 6 ms at 1M, and Elasticsearch 38 at 10M (<a href="bench-10m.html#latest">10M</a>).</span></li>
       <li><b>BM25 under load.</b> <span>Caching the statistics (#245) made a query one round to the shards instead of two: at 16 clients Strata now serves 1,962 queries a second at 1M, second to Qdrant (<a href="bench-1m.html#since">before and after</a>). At 10M it serves 470 to OpenSearch's 896, waiting on its shards. Starting each segment at the scores the earlier ones found (#258, in review) gave 46% more queries a second on one thread in a container.</span></li>
       <li><b>Builds.</b> <span>The HNSW graph is 146 s of Quora's 153.1 s load on an M2.</span></li>

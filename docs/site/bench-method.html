@@ -75,7 +75,7 @@
       <div><b>Equal budgets, enforced</b><p>Kubernetes limits: 6.8 CPUs per engine in the cloud, 3 CPUs and 6 GiB on the laptop. Each engine is told its budget.</p></div>
       <div><b>The same text analysis</b><p>Folding, English stopwords, Snowball stemming, BM25 k1 1.2 and b 0.75 everywhere. The Lucene engines' top 10s share 93 to 96% of Strata's.</p></div>
       <div><b>The same vector settings</b><p>HNSW m 16, ef_construction 200, 64 candidates, 8-bit codes re-scored where supported.</p></div>
-      <div><b>No result caches</b><p>Query caches off in Solr, Elasticsearch and OpenSearch. Every answer is recorded and checked.</p></div>
+      <div><b>No result caches</b><p>Query caches off in Solr, Elasticsearch and OpenSearch, except on Elasticsearch's and OpenSearch's SQL aggregate (<a href="#audit">our audit</a>). Every answer is recorded and checked.</p></div>
       <div><b>Pinned versions</b><p>Images pinned by tag, Strata by commit, data by SHA-256.</p></div>
       <div><b>Defaults plus documented tuning</b><p>What each engine's own docs recommend, committed beside the results.</p></div>
     </div>
@@ -138,6 +138,7 @@
           <tr><th scope="row">Last in its lane, Milvus was still compacting during its first two passes, 2 to 3 times slower than alone</th><td>Its 1M numbers come from a run alone on a fresh node</td></tr>
         <tr><th scope="row">A slow kind is timed on fewer queries in its 6 seconds (Strata's typo kind on its first 48)</th><td>Open</td></tr>
         <tr><th scope="row">The graph run is on a fanless laptop, in a fixed order</th><td>Said on the graph page</td></tr>
+        <tr><th scope="row">Elasticsearch's and OpenSearch's SQL aggregate went through their SQL endpoints, where the shard request cache stayed on; its 300 queries repeat 30 years, so their times are likely cached answers</th><td>Open: said beside every SQL aggregate gap; the next run turns the cache off for the whole index</td></tr>
       </tbody>
     </table></div>
   </div></section>
