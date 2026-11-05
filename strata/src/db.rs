@@ -2565,9 +2565,11 @@ impl DocumentSource for StoredSource {
             }
         }
         let mut out = Vec::with_capacity(docs.len());
+        // Documents in docID order: each block decompressed once.
+        let mut cache = crate::forward::StoreCache::default();
         for &d in docs {
             let mut doc = match &store {
-                Some(s) => s.get(d),
+                Some(s) => s.get_cached(d, &mut cache)?,
                 None => vec![Value::Null; schema.fields.len()],
             };
             for (i, v) in &vectors {

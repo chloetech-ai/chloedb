@@ -85,7 +85,10 @@ fn cells<T>(n: usize) -> Vec<OnceLock<T>> {
 
 /// Row `d`'s stored value of JSON field `field` (NULL without a doc store).
 fn object(store: Option<&DocStore>, field: usize, d: DocId, cache: &mut forward::StoreCache) -> Result<Value> {
-    Ok(store.and_then(|st| st.get_fields_cached(d, &[field], cache).pop()).unwrap_or(Value::Null))
+    Ok(match store {
+        Some(st) => st.get_fields_cached(d, &[field], cache)?.pop().unwrap_or(Value::Null),
+        None => Value::Null,
+    })
 }
 
 fn opened<'r, T>(cell: &'r OnceLock<Opened<T>>, open: impl FnOnce() -> Result<Option<T>>) -> Result<Option<&'r T>> {
@@ -159,7 +162,7 @@ impl SegmentReaders {
             if col.needs_values() {
                 // Multi-valued fields are stored.
                 let store = self.store()?.ok_or_else(|| crate::error::corrupt(format!("keyword column {}: no stored values to repair it from", f.name)))?;
-                let mut values = store.field_values(field);
+                let mut values = store.field_values(field)?;
                 if f.ty == FieldType::Json {
                     for v in values.iter_mut() {
                         *v = Value::List(crate::json::terms(v)?.into_iter().map(Value::Str).collect());
@@ -3746,7 +3749,10 @@ impl<'a> Executor<'a> {
             let store = s.r.store()?;
             for i in range {
                 let d = cands[i].1;
-                let mut stored = store.map(|st| st.get_fields(d, fields)).unwrap_or_default();
+                let mut stored = match store {
+                    Some(st) => st.get_fields(d, fields)?,
+                    None => Vec::new(),
+                };
                 stored.resize(fields.len(), Value::Null);
                 let values = fields.iter().zip(stored).map(|(&f, v)| match self.updates(s, f).and_then(|u| u.get(f, d)) {
                     Some(u) => u.clone(),
@@ -3930,7 +3936,7 @@ impl<'a> Executor<'a> {
     /// The stored fields of hit `h` that the projection reads.
     fn fetch(&self, p: &mut Projecting, s: &Seg<'a>, h: &Hit) -> Result<Vec<Value>> {
         Ok(match (s.r.store()?, p.stored.is_empty()) {
-            (Some(store), false) => store.get_fields_cached(h.doc, &p.stored, p.blocks.entry(h.seg).or_default()),
+            (Some(store), false) => store.get_fields_cached(h.doc, &p.stored, p.blocks.entry(h.seg).or_default())?,
             _ => Vec::new(),
         })
     }
