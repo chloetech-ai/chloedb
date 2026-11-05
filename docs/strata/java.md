@@ -90,7 +90,7 @@ A row is a map of field name to value, and a query's answer gives values back as
 
 `null` is NULL. Maps keep their order where it matters (`LinkedHashMap`); `Map.of` takes no null, so a row with a NULL field is a `HashMap` or a `LinkedHashMap`. A value of another type throws `IllegalArgumentException` before anything is written.
 
-`insert` writes rows whose keys must be new, all or none: 10,000 rows or more are bulk-loaded into new segments in one commit, fewer go through the write-ahead log. `upsert` inserts or replaces rows by key, `delete` takes a key or a collection of them, and `get` and `getMany` read rows by key without SQL (`null` for a key no row has). `write` takes the operations strata-server's `/v1/write` takes (`insert`, `upsert`, `delete`, `set` and `add` of a numeric field in place) and applies them in one transaction.
+`insert` writes rows whose keys must be new, all or none: 10,000 rows or more are bulk-loaded into new segments in one commit, fewer go through the write-ahead log. `upsert` inserts or replaces rows by key, `delete` takes a key or a collection of them, and `get` and `getMany` read rows by key without SQL (`null` for a key no row has). `write` takes the operations strata-server's `/v1/write` takes (`insert`, `upsert`, `delete`, `set` of a field, a number in place and another by writing the row again, and `add` to a number in place) and applies them in one transaction.
 
 ## Queries
 
