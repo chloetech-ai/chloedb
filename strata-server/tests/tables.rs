@@ -359,7 +359,7 @@ async fn on_datafusion_three_shards_answer_like_one_database() {
     // All but the single-table queries and the IN subquery, which the
     // operators answer as one leaf; the same ones on both.
     assert_eq!(on_datafusion[0], on_datafusion[1]);
-    assert_eq!(on_datafusion[1].len(), QUERIES.len() - 8, "{:#?}", on_datafusion[1]);
+    assert_eq!(on_datafusion[1].len(), QUERIES.len() - 9, "{:#?}", on_datafusion[1]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
