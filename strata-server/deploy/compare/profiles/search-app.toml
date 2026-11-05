@@ -1,0 +1,104 @@
+# A search box in an app: people type, look at results, add a filter,
+# open a result, look at similar ones. Starting values from the plan
+# (https://claude.ai/artifact/71tPffs11dFdBqsEmqpppu), to be fitted to the
+# query pool (scripts/fit_traffic.py) before a ranked round.
+name = "search-app"
+description = "an app's search box: typing, Zipf head and one-off tail, filters, sessions, a 3:1 day with bursts and a flash crowd, light writes"
+
+# What a session sets out to do (prefixes come from typing, typos from typo_share).
+[mix]
+"bm25" = 30
+"bm25 + filter" = 15
+"hybrid (RRF)" = 12
+"boosted (bm25 × decay)" = 5
+"phrase" = 3
+"facet" = 7
+"vector" = 5
+"key lookup" = 15
+"similar items" = 6
+"sql aggregate" = 2
+
+[queries]
+source = "pool"
+order = "zipf"
+head = 100000
+# ORCAS's click log (scripts/fit_traffic.py zipf, 18.8M lines) fits 0.35,
+# with 34% of lines a query seen once; but a line there is a distinct
+# clicked document, not a search, which flattens the head. The plan's 0.8
+# and 0.5 stay until a log of searches is fitted.
+zipf_s = 0.8
+tail_share = 0.5
+drift_every_s = 300.0
+drift_share = 0.02
+# Cucerzan and Brill: 10 to 15% of web queries are misspelt.
+typo_share = 0.12
+typos = "fuzzy"
+
+[docs]
+pick = "popular"
+zipf_s = 1.0
+
+[filters]
+mode = "drawn"
+min_selectivity = 0.0001
+max_selectivity = 0.5
+
+[sessions]
+follow_up = 0.45
+refine = 1.0
+open = 2.0
+similar = 0.5
+think_median_s = 6.0
+think_sigma = 1.0
+typing = true
+key_gap_median_ms = 180.0
+key_gap_sigma = 0.5
+pause_ms = 350.0
+
+[traffic]
+day_s = 2880.0
+# A regional app's day. Wikipedia's hourly views, 2026-10-01 to 10-07, UTC
+# (scripts/fit_traffic.py day): en 1.6:1 peaking at 0.83 (a world-wide
+# audience flattens the day), de 6.0:1 at 0.67, ja 3.6:1 at 0.39; 3:1 lies
+# between one country's day and the world's.
+peak_to_trough = 3.0
+humps = 1
+peak_at = 0.67
+warmup_s = 120.0
+
+[traffic.bursts]
+factor = 2.0
+busy_s = 10.0
+calm_s = 60.0
+
+[[traffic.flash]]
+at_s = 1800.0
+for_s = 120.0
+factor = 3.0
+queries = 200
+
+[traffic.ramp]
+start = 50.0
+factor = 1.25
+step_s = 60.0
+steps = 30
+
+[writes]
+share = 0.02
+insert = 0.3
+update = 0.65
+delete = 0.05
+batch_median = 1.0
+batch_sigma = 0.0
+batch_max = 1
+mark_every = 20
+
+[[writes.jobs]]
+at_s = 1500.0
+docs = 20000
+batch = 500
+clients = 2
+
+[slo]
+p99_ms = 100.0
+errors = 0.001

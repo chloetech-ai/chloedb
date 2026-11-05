@@ -4,6 +4,7 @@ the engine comparison (strata-server/deploy/compare) at a size BEIR has no
 collection for.
 
 Usage: python3 scripts/prepare_msmarco_compare.py OUT_DIR [--docs N] [--queries Q] [--model DIR]
+           [--attrs v1|v2] [--categories independent|correlated|anti] [--heldout SHARE]
        (needs pyarrow, numpy, onnxruntime, tokenizers; curl on PATH)
 
 OUT_DIR/msmarco-<N/1000>k/ gets docs.jsonl, doc_vecs.f32, queries.jsonl,
@@ -20,6 +21,19 @@ prepare_beir.py draws them; topic is the k-means cluster (32, trained on the
 first 50,000 vectors) of the vector. Each 65,536 rows draw from a generator
 of their own, so the first N passages are the same whatever N: the 1M
 collection is the start of the 10M one.
+
+--attrs v2 (for engine-compare's traffic simulator) draws them as a
+catalogue's are: years growing 8% a year (more recent documents, more of
+them), ratings skewed high (5 x Beta(4, 1.3), as reviews are), and the
+category tied to the topic: `correlated` (default) gives 80% of a topic's
+documents one of its four home categories (c<2t> to c<2t+3>, the first
+most often), `anti` keeps every document out of its topic's home
+categories (a filter on them drops the documents nearest a query of the
+topic), `independent` is v1's Zipf over 64. --heldout SHARE keeps every
+1/SHARE-th passage out of the collection, in heldout.jsonl and
+heldout_vecs.f32 (the documents a replay's inserts write). Either names the
+directory msmarco-<N/1000>k-<attrs>[-h<percent>]; v1 without held-out
+documents is the collection as before, row for row.
 
 The queries are the first Q (default 1,000) MS MARCO v2 passage dev queries,
 embedded here with the same model (embed_queries.py: its query prefix, the
@@ -62,14 +76,45 @@ def attrs(block, rows):
     return years, cats, ratings
 
 
+def attrs_v2(block, rows):
+    """v2: year, a global category draw, two draws for the topic's home category, rating, of a block of rows."""
+    rng = np.random.default_rng([20261105, block])
+    span = np.arange(1990, 2025)
+    w = 1.08 ** (span - 1990)
+    years = rng.choice(span, size=rows, p=w / w.sum())
+    zipf = 1.0 / np.arange(1, 65)
+    cats = rng.choice(64, size=rows, p=zipf / zipf.sum())
+    u = rng.random(rows)
+    home = rng.choice(4, size=rows, p=[0.5, 0.25, 0.15, 0.1])
+    ratings = np.round(5.0 * rng.beta(4.0, 1.3, size=rows), 2)
+    return years, cats, u, home, ratings
+
+
+def category(mode, topic, cat, u, home):
+    """The category of a row of topic `topic` (0..31) under --categories `mode`."""
+    homes = [(2 * topic + j) % 64 for j in range(4)]
+    if mode == "correlated":
+        return homes[home] if u < 0.8 else cat
+    if mode == "anti":
+        return (cat + 8) % 64 if cat in homes else cat
+    return cat
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("--docs", type=int, default=1_000_000)
     ap.add_argument("--queries", type=int, default=1000)
     ap.add_argument("--model", help="a directory with model.onnx and tokenizer.json (downloaded into OUT_DIR/raw if not given)")
+    ap.add_argument("--attrs", choices=["v1", "v2"], default="v1")
+    ap.add_argument("--categories", choices=["independent", "correlated", "anti"], default="correlated")
+    ap.add_argument("--heldout", type=float, default=0.0, help="the share of passages kept out for inserts (0.05: every 20th)")
     a = ap.parse_args()
-    d = os.path.join(a.out, f"msmarco-{a.docs // 1000}k")
+    every = round(1 / a.heldout) if a.heldout > 0 else 0
+    name = f"msmarco-{a.docs // 1000}k"
+    if a.attrs == "v2" or every:
+        name += f"-{a.attrs}" + (f"-h{round(100 / every)}" if every else "")
+    d = os.path.join(a.out, name)
     raw = os.path.join(a.out, "raw")
     os.makedirs(d, exist_ok=True)
     os.makedirs(raw, exist_ok=True)
@@ -78,7 +123,10 @@ def main():
     idx = tar_index(raw)
     docs = open(os.path.join(d, "docs.jsonl"), "w")
     vecs = open(os.path.join(d, "doc_vecs.f32"), "wb")
-    n, shard, cents, shards = 0, 0, None, []
+    held = open(os.path.join(d, "heldout.jsonl"), "w") if every else None
+    held_vecs = open(os.path.join(d, "heldout_vecs.f32"), "wb") if every else None
+    # n: documents written; p: passages read (attributes are drawn by passage, so held-out ones keep theirs).
+    n, p, nh, shard, cents, shards = 0, 0, 0, 0, None, []
     while n < a.docs:
         pq_path = os.path.join(raw, f"{shard:02d}.parquet")
         text_path = os.path.join(raw, f"text_{shard:02d}.json.gz")
@@ -90,33 +138,53 @@ def main():
             first = next(pf.iter_batches(batch_size=50_000, columns=["embedding"]))
             cents = kmeans(cut(first.column(0), DIM), 32)
         text = gzip.open(text_path, "rt", encoding="utf-8")
-        start = n
+        start, start_p = n, p
         # Batches of BLOCK rows, so that a block's attributes come from its generator.
         for b in pf.iter_batches(batch_size=BLOCK, columns=["doc_id", "embedding"]):
-            take = min(len(b), a.docs - n)
-            ids = b.column(0).to_pylist()[:take]
-            x = cut(b.column(1), DIM)[:take]
+            ids = b.column(0).to_pylist()
+            x = cut(b.column(1), DIM)
             topics = np.argmax(x @ cents.T, axis=1)
-            # Blocks are counted over the whole collection; a shard ends mid-block.
-            years, cats, ratings = np.empty(take, np.int64), np.empty(take, np.int64), np.empty(take)
+            rows = len(ids)
+            # Blocks are counted over the passages read; a shard ends mid-block.
+            years, cats, ratings = np.empty(rows, np.int64), np.empty(rows, np.int64), np.empty(rows)
+            u, home = np.zeros(rows), np.zeros(rows, np.int64)
             i = 0
-            while i < take:
-                blk, at = divmod(n + i, BLOCK)
-                m = min(take - i, BLOCK - at)
-                y, c, r = attrs(blk, BLOCK)
-                years[i:i + m], cats[i:i + m], ratings[i:i + m] = y[at:at + m], c[at:at + m], r[at:at + m]
+            while i < rows:
+                blk, at = divmod(p + i, BLOCK)
+                m = min(rows - i, BLOCK - at)
+                if a.attrs == "v1":
+                    y, c, r = attrs(blk, BLOCK)
+                    years[i:i + m], cats[i:i + m], ratings[i:i + m] = y[at:at + m], c[at:at + m], r[at:at + m]
+                else:
+                    y, c, uu, hh, r = attrs_v2(blk, BLOCK)
+                    years[i:i + m], cats[i:i + m], ratings[i:i + m] = y[at:at + m], c[at:at + m], r[at:at + m]
+                    u[i:i + m], home[i:i + m] = uu[at:at + m], hh[at:at + m]
                 i += m
+            keep, out = [], []
             for j, pid in enumerate(ids):
-                p = json.loads(text.readline())
-                if p["docid"] != pid:
-                    raise SystemExit(f"shard {shard}: row {n + j - start}: vector id {pid} but text id {p['docid']}")
-                docs.write(json.dumps({
-                    "id": pid, "title": p.get("title") or "", "text": p.get("segment") or "",
-                    "year": int(years[j]), "category": f"c{int(cats[j]):02d}",
+                if n >= a.docs:
+                    break
+                t = json.loads(text.readline())
+                if t["docid"] != pid:
+                    raise SystemExit(f"shard {shard}: row {p - start_p}: vector id {pid} but text id {t['docid']}")
+                cat = int(cats[j]) if a.attrs == "v1" else category(a.categories, int(topics[j]), int(cats[j]), u[j], int(home[j]))
+                line = json.dumps({
+                    "id": pid, "title": t.get("title") or "", "text": t.get("segment") or "",
+                    "year": int(years[j]), "category": f"c{cat:02d}",
                     "rating": float(ratings[j]), "topic": f"t{int(topics[j]):02d}",
-                }) + "\n")
-            vecs.write(x.astype("<f4").tobytes())
-            n += take
+                }) + "\n"
+                if every and p % every == every - 1:
+                    held.write(line)
+                    out.append(j)
+                    nh += 1
+                else:
+                    docs.write(line)
+                    keep.append(j)
+                    n += 1
+                p += 1
+            vecs.write(x[keep].astype("<f4").tobytes())
+            if out:
+                held_vecs.write(x[out].astype("<f4").tobytes())
             if n >= a.docs:
                 break
         shards.append({"shard": shard, "rows": n - start})
@@ -126,6 +194,9 @@ def main():
         shard += 1
     docs.close()
     vecs.close()
+    if every:
+        held.close()
+        held_vecs.close()
 
     from embed_queries import PREFIX, Model  # needs onnxruntime and tokenizers: only now
 
@@ -152,7 +223,8 @@ def main():
     with open(os.path.join(d, "qrels.tsv"), "w") as f:
         f.write("query-id\tcorpus-id\tscore\n")
     json.dump({"docs": n, "queries": len(qids), "dim": DIM, "source": "msmarco-v2.1 segmented + snowflake-arctic-embed-m-v1.5",
-               "shards": shards}, open(os.path.join(d, "meta.json"), "w"))
+               "shards": shards, "attrs": a.attrs, "categories": a.categories if a.attrs == "v2" else "independent", "heldout": nh},
+              open(os.path.join(d, "meta.json"), "w"))
     print(f"   {n} passages, {len(qids)} queries, dim {DIM}, in {d} ({time.time() - t0:.0f} s)", flush=True)
 
 
