@@ -3075,6 +3075,8 @@ impl<'a> Executor<'a> {
         let per = self.per_segment(|ex, s, l| {
             let vr = ex.vector(s, field)?;
             let has_index = vr.index_kind() != "flat";
+            // The selectivity sample's search, which a post-filter goes on from.
+            let mut sample = vector::Sample::default();
             let (strategy, mode) = {
                 let est = SegEst { ex, s, params: Some((field, base.clone())), local_sel: None };
                 let planner = ex.planner(&est);
@@ -3091,7 +3093,7 @@ impl<'a> Executor<'a> {
                         // An index strategy chosen on the global selectivity is
                         // re-checked against the selectivity near the query.
                         if st != VectorStrategy::PreFilter && has_index && *p != Pred::True {
-                            if let Some(ls) = ex.local_selectivity(s, vr, q, p, &base, global, l)? {
+                            if let Some(ls) = ex.local_selectivity(s, vr, q, p, &base, global, &mut sample, l)? {
                                 let est = SegEst { ex, s, params: Some((field, base.clone())), local_sel: Some(ls) };
                                 (st, mode, _) = ex.planner(&est).vector_plan(field, p, k, has_index);
                                 l.plan.push(format!("seg {}: selectivity {global:.4} global, {ls:.4} near the query", s.ord));
@@ -3104,7 +3106,7 @@ impl<'a> Executor<'a> {
             let f = ex.seg_filter_l(s, p, if *p == Pred::True { FilterMode::None } else { mode }, l)?;
             let mut sp = base.clone();
             sp.strategy = to_vector_strategy(strategy, vr.index_kind(), f.as_dyn().is_some());
-            let out = vr.search(q, k, &sp, f.as_dyn());
+            let out = vr.search_from(q, k, &sp, f.as_dyn(), Some(&mut sample));
             l.scored += out.stats.candidates as u64;
             l.plan.push(format!("seg {}: vector {:?} ({:?} ran), filter {mode:?}", s.ord, strategy, out.stats.strategy));
             Ok(out.hits.into_iter().map(|h| Hit { seg: s.ord, doc: h.doc, score: h.score as f64 }).collect::<Vec<_>>())
@@ -3224,13 +3226,14 @@ impl<'a> Executor<'a> {
 
     /// The fraction of the query's nearest neighbours that pass the filter,
     /// from a cheap unfiltered index search (32 results, 160 when the first
-    /// sample holds at most one match). A filter correlated
+    /// sample holds at most one match), kept in `sample` for a post-filter
+    /// search to go on from. A filter correlated
     /// with the query, or anti-correlated, has a local selectivity far from
     /// its global one, and the local one decides how far an index search
     /// must go to collect k matches. Only measured when the global
     /// selectivity leaves the choice open.
     #[allow(clippy::too_many_arguments)]
-    fn local_selectivity(&self, s: &Seg<'a>, vr: &VectorReader, q: &[f32], p: &Pred, base: &SearchParams, global: f64, l: &mut Local) -> Result<Option<f64>> {
+    fn local_selectivity(&self, s: &Seg<'a>, vr: &VectorReader, q: &[f32], p: &Pred, base: &SearchParams, global: f64, sample: &mut vector::Sample, l: &mut Local) -> Result<Option<f64>> {
         if !(0.0005..0.6).contains(&global) {
             return Ok(None);
         }
@@ -3239,23 +3242,20 @@ impl<'a> Executor<'a> {
             self.planner(&est).estimate(p).probeable
         };
         let f = self.seg_filter_l(s, p, if probeable { FilterMode::Probe } else { FilterMode::Materialize }, l)?;
-        let sample = |m: usize| {
+        let mut take = |m: usize| {
             let mut sp = base.clone();
-            sp.strategy = to_vector_strategy(VectorStrategy::InIndex, vr.index_kind(), false);
-            sp.ef = m;
-            sp.rerank = 0;
             sp.nprobe = sp.nprobe.min(if m > 32 { 8 } else { 4 });
-            let out = vr.search(q, m, &sp, None);
-            let pass = out.hits.iter().filter(|h| f.as_dyn().is_none_or(|f| f.contains(h.doc))).count();
-            (pass, out.hits.len())
+            let docs = vr.sample(q, m, &sp, sample);
+            let pass = docs.iter().filter(|&&d| f.as_dyn().is_none_or(|f| f.contains(d))).count();
+            (pass, docs.len())
         };
         // 32 neighbours resolve selectivities down to a few per cent. When
         // they hold almost no matches, a 160-neighbour sample tells a filter
         // that is merely selective from one whose members lie far from the
         // query, where an index search would wander for tens of ms.
-        let (mut pass, mut m) = sample(32);
+        let (mut pass, mut m) = take(32);
         if pass <= 1 && global > 0.02 {
-            (pass, m) = sample(160);
+            (pass, m) = take(160);
         }
         Ok(Some((pass as f64 + 0.5) / (m as f64 + 1.0)))
     }
