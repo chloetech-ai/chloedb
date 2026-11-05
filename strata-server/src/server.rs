@@ -212,6 +212,10 @@ pub fn db_options(directory: bool) -> DbOptions {
         build: build_options(),
         mem_build: Some(BuildOptions::default().set("vector.index", "flat")),
         layout: if directory { Layout::Directory } else { Layout::SingleFile },
+        // The writer thread retries a busy write until each request's
+        // deadline, and refuses one whose deadline passed: it does not
+        // wait inside Strata past it.
+        write_wait: Duration::ZERO,
         ..DbOptions::default()
     }
 }

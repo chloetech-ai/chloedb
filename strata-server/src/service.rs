@@ -8,7 +8,7 @@ use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as Json};
-use strata::db::{Db, PreparedWrite, Source};
+use strata::db::{Db, Footprints, PreparedWrite, Source};
 use strata::embed::Embedder;
 use strata::ingest::{Format, Rows};
 use strata::query::exec::{Engine, ExecOptions, Expansions, Leaf, ResultSet};
@@ -4170,36 +4170,47 @@ impl Drop for Cancel {
     }
 }
 
-/// Operations one shared transaction takes at most.
-const GROUP_OPS: usize = 4096;
+/// Operations one shared transaction takes at most (an SQL write counts
+/// its rows or keys, [`PreparedWrite::weight`]).
+const GROUP_OPS: usize = strata::db::GROUP_OPS;
 
 /// The writer of a local database: one thread applying write requests in
-/// the order they arrive. Requests of operations that wait together share
-/// one transaction, so one commit and one disk flush serve them all (group
+/// the order they arrive. Requests that wait together share one
+/// transaction, so one commit and one disk flush serve them all (group
 /// commit); if one of them fails, each runs again alone, so that only it
-/// fails. SQL writes find their rows by reading the database, which does
-/// not show a transaction's own changes, so they commit alone. A group
-/// that panics is answered with errors and the writer goes on.
+/// fails. Operations (`/v1/write`) group with operations. SQL writes find
+/// their rows by reading the database, which does not show a
+/// transaction's own changes, so they group with SQL writes that touch
+/// other rows ([`Footprints`]): an INSERT, or an UPDATE or DELETE by key,
+/// of keys no other in the group has. A group that panics is answered
+/// with errors and the writer goes on.
 fn writer(db: &Db, rx: mpsc::Receiver<Queued>, state: &WriterState) {
     let _alive = Alive(state);
     let mut next = None;
     loop {
         let Some(first) = next.take().or_else(|| rx.recv().ok()) else { return };
+        let mut n = first.weight();
+        let mut prints = Footprints::default();
+        if let WriteJob::Sql(p) = &first.job {
+            prints.admit(p);
+        }
+        let ops = matches!(first.job, WriteJob::Ops(_));
         let mut group = vec![first];
-        if matches!(group[0].job, WriteJob::Ops(_)) {
-            let mut n = group[0].ops().len();
-            while n < GROUP_OPS {
-                match rx.try_recv() {
-                    Ok(q) if matches!(q.job, WriteJob::Ops(_)) => {
-                        n += q.ops().len();
-                        group.push(q);
-                    }
-                    Ok(q) => {
-                        next = Some(q);
-                        break;
-                    }
-                    Err(_) => break,
+        while n < GROUP_OPS {
+            match rx.try_recv() {
+                Ok(q) if ops && matches!(q.job, WriteJob::Ops(_)) => {
+                    n += q.weight();
+                    group.push(q);
                 }
+                Ok(q) if matches!(&q.job, WriteJob::Sql(p) if !ops && n + p.weight() <= GROUP_OPS && prints.admit(p)) => {
+                    n += q.weight();
+                    group.push(q);
+                }
+                Ok(q) => {
+                    next = Some(q);
+                    break;
+                }
+                Err(_) => break,
             }
         }
         // The requests a panic leaves unanswered are answered as they drop.
@@ -4221,9 +4232,21 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
         q.answer(Err(ApiError { status: 503, message: "the deadline passed while waiting for the writer".into() }));
     }
     let Some(deadline) = group.iter().map(|q| q.deadline).max() else { return };
-    if let [Queued { job: WriteJob::Sql(p), .. }] = &group[..] {
-        let r = wait_for_writer(deadline, || db.write_prepared_seq(p).map(|(rows, seq_no)| Written { rows, seq_no, ..Default::default() }).map_err(ApiError::from));
-        group.into_iter().next().expect("one").answer(r);
+    let sql: Vec<&PreparedWrite> = group.iter().filter_map(|q| q.sql()).collect();
+    if !sql.is_empty() {
+        let alone = |p: &PreparedWrite, deadline: Instant| wait_for_writer(deadline, || db.write_prepared_seq(p).map(|(rows, seq_no)| Written { rows, seq_no, ..Default::default() }).map_err(ApiError::from));
+        let answers: Vec<Result<Written, ApiError>> = match &sql[..] {
+            [p] => vec![alone(p, deadline)],
+            _ => match wait_for_writer(deadline, || db.write_prepared_group(&sql).map_err(ApiError::from)) {
+                Ok((rows, seq_no)) => rows.into_iter().map(|rows| Ok(Written { rows, seq_no, ..Default::default() })).collect(),
+                // A failed commit wrote nothing: each runs again alone.
+                Err(_) => group.iter().zip(&sql).map(|(q, p)| alone(p, q.deadline)).collect(),
+            },
+        };
+        drop(sql);
+        for (q, r) in group.into_iter().zip(answers) {
+            q.answer(r);
+        }
         return;
     }
     let requests: Vec<&[Json]> = group.iter().map(|q| q.ops()).collect();
@@ -4252,6 +4275,21 @@ impl Queued {
         match &self.job {
             WriteJob::Ops(ops) => ops,
             WriteJob::Sql(..) => &[],
+        }
+    }
+
+    fn sql(&self) -> Option<&PreparedWrite> {
+        match &self.job {
+            WriteJob::Ops(..) => None,
+            WriteJob::Sql(p) => Some(p),
+        }
+    }
+
+    /// How much of a group it takes ([`GROUP_OPS`]).
+    fn weight(&self) -> usize {
+        match &self.job {
+            WriteJob::Ops(ops) => ops.len(),
+            WriteJob::Sql(p) => p.weight(),
         }
     }
 }

@@ -28,9 +28,12 @@ use crate::query::{bind_command, compound, ops, profile, sql as qsql, Assign, Co
 use crate::rank_log::{self, Export, Log, Logged};
 use crate::schema::{Alter, Derive, Embed, FieldType, Schema};
 use crate::segment::{DocId, SegmentFile};
-use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, Found, Mask, SeqNo, Snapshot, TableTxn, SOURCES};
+use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, Found, Mask, SeqNo, Snapshot, TableTxn, WriteTxn, SOURCES};
 use crate::value::{Document, Value};
 use crate::vector::VectorReader;
+
+mod writes;
+pub use writes::{Footprints, WriteOp, WriteStats, GROUP_OPS};
 
 /// What [`Db::sql`] returns.
 #[derive(Debug)]
@@ -176,6 +179,8 @@ pub struct Db {
     ranking: Models,
     /// How writes resolve MEDIA values ([`Db::set_media_resolver`]).
     media: RwLock<Arc<Resolver>>,
+    /// Writes waiting for their turn, which share commits ([`Db::write_ops`]).
+    writes: writes::Writes,
 }
 
 /// The model of an embedded VECTOR field, and the field it was set for: it
@@ -234,6 +239,7 @@ impl Db {
             models: RwLock::new(None),
             media: RwLock::new(Arc::new(Resolver::default())),
             ranking: Models::default(),
+            writes: writes::Writes::default(),
         }
     }
 
@@ -1144,7 +1150,7 @@ impl Db {
     /// binder checks SQL.
     pub fn run(&self, plan: &Plan) -> Result<SqlResult> {
         match plan.is_write() {
-            true => self.write_prepared(&self.prepare_plan(plan)?).map(SqlResult::Written),
+            true => self.write_queued(writes::Job::Sql(self.prepare_plan(plan)?)).map(|(n, _)| SqlResult::Written(n)),
             false => self.run_at(&self.snapshot(), plan, &self.exec).map(SqlResult::Rows),
         }
     }
@@ -1237,7 +1243,7 @@ impl Db {
             Command::Write { table, write } => {
                 let schema = catalog.iter().find(|t| t.table == table).expect("bound to a table of the catalog");
                 let write = Plan::of_write(schema, &write).to_write(schema)?;
-                self.write_prepared(&self.prepare(schema.clone(), write)?).map(SqlResult::Written)
+                self.write_queued(writes::Job::Sql(self.prepare(schema.clone(), write)?)).map(|(n, _)| SqlResult::Written(n))
             }
         }
     }
@@ -1354,18 +1360,45 @@ impl Db {
     /// returns the number of documents written. The rows an UPDATE or
     /// DELETE changes are read under the writer lock, so no other write
     /// lands between; vectors computed ahead are used where their source
-    /// texts did not change. It can run again after an error (a busy
+    /// texts did not change. Threads writing at once share commits, as
+    /// [`Db::write_ops`] says. It can run again after an error (a busy
     /// writer).
     pub fn write_prepared(&self, p: &PreparedWrite) -> Result<u64> {
-        Ok(self.write_prepared_seq(p)?.0)
+        Ok(self.write_queued(writes::Job::Sql(p.clone()))?.0)
     }
 
-    /// [`Db::write_prepared`], also returning the transaction's sequence
+    /// [`Db::write_prepared`] in a transaction of its own, not shared with
+    /// other threads' writes, also returning the transaction's sequence
     /// number in a database that numbers its writes (none if it wrote
-    /// nothing).
+    /// nothing): for a caller that orders and groups its writes itself,
+    /// as strata-server's writer thread does.
     pub fn write_prepared_seq(&self, p: &PreparedWrite) -> Result<(u64, Option<u64>)> {
-        let schema = &*p.schema;
         let mut t = self.storage.begin()?;
+        let n = self.write_prepared_in(&mut t, p)?;
+        Ok((n, t.commit_seq()?))
+    }
+
+    /// Runs writes [`Db::prepare_write`] bound in one transaction, one
+    /// commit for all, and returns the rows each wrote and the
+    /// transaction's sequence number. They must be writes that can share
+    /// one ([`Footprints::admit`]: no two touch the same rows), else none
+    /// runs. If one fails, none is written, and each can run again alone.
+    pub fn write_prepared_group(&self, ps: &[&PreparedWrite]) -> Result<(Vec<u64>, Option<u64>)> {
+        let mut prints = Footprints::default();
+        if !ps.iter().all(|p| prints.admit(p)) {
+            return Err(Error::Query("these writes cannot share a transaction: two of them may touch the same rows".into()));
+        }
+        let mut t = self.storage.begin()?;
+        let rows = ps.iter().map(|p| self.write_prepared_in(&mut t, p)).collect::<Result<Vec<u64>>>()?;
+        Ok((rows, t.commit_seq()?))
+    }
+
+    /// Runs a write in transaction `t`, which holds the writer lock. It
+    /// finds its rows in the last committed snapshot, which does not show
+    /// `t`'s own changes: writes sharing `t` must not touch the same rows
+    /// ([`Footprints`]).
+    fn write_prepared_in(&self, t: &mut WriteTxn<'_>, p: &PreparedWrite) -> Result<u64> {
+        let schema = &*p.schema;
         let mut tt = t.table(&schema.table)?;
         if tt.schema() != schema {
             return Err(Error::Query(format!("table {} was altered, or dropped and created again, while the statement ran; run it again", schema.table)));
@@ -1443,9 +1476,7 @@ impl Db {
                 n += set_rows(&mut tt, schema, (&models, &derivers), rows.into_iter().map(|r| (r, Vec::new())).collect(), &sets, (&p.known, &p.derived), &files)?;
             }
         }
-        drop(tt);
-        let seq = t.commit_seq()?;
-        Ok((n, seq))
+        Ok(n)
     }
 
     /// The live rows of the documents an INSERT proposed (`live`), every

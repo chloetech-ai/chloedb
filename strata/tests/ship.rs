@@ -213,7 +213,9 @@ fn a_replica_holds_what_its_primary_wrote() {
 #[test]
 fn a_replica_applies_only_what_follows() {
     let dir = tempfile::tempdir().unwrap();
-    let opts = options(Layout::SingleFile);
+    // A batch fails at once while a write holds the writer, as in
+    // strata-server (`write_wait` 0), whose replication retries it.
+    let opts = DbOptions { write_wait: std::time::Duration::ZERO, ..options(Layout::SingleFile) };
     let primary = Db::create(&dir.path().join("p.strata"), schema(), opts.clone()).unwrap();
     let replica = Db::create(&dir.path().join("r.strata"), schema(), opts.clone()).unwrap();
     assert!(replica.storage().apply_shipped(SeqNo::default(), &[]).unwrap_err().to_string().contains("does not number its writes"));

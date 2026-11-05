@@ -172,6 +172,22 @@ test("many calls at once", async () => {
   await db.close();
 });
 
+test("many writes at once wait for each other and share commits", async () => {
+  const db = await booksDb(4);
+  // Calls run on the thread pool: none fails as busy, no increment is lost.
+  const writes = Array.from({ length: 64 }, (_, i) => [
+    db.insert({ ...book(1000 + i) }),
+    db.write([{ op: "add", key: `b000${i % 4}`, field: "year", value: 1 }]),
+    db.sql("UPDATE books SET rating = rating + 1 WHERE id = 'b0000'"),
+  ]).flat();
+  await Promise.all(writes);
+  assert.equal(await db.count(), 4 + 64);
+  const years = await db.query("SELECT SUM(year) FROM books WHERE id IN ('b0000', 'b0001', 'b0002', 'b0003')");
+  assert.equal(years.scalar(), [0, 1, 2, 3].reduce((s, k) => s + book(k).year, 0) + 64);
+  assert.equal((await db.get("b0000")).rating, book(0).rating + 64);
+  await db.close();
+});
+
 test("errors are StrataErrors with the database's message", async () => {
   const db = await booksDb(1);
   await assert.rejects(db.query("SELEC nothing"), (e) => e instanceof StrataError && e.message.length > 0);
