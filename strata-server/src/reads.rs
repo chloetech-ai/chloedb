@@ -73,6 +73,27 @@ pub struct Counts {
     pub level: u32,
     /// The sampled keys' hashes and their exact counts.
     pub sample: HashMap<u64, u64>,
+    /// Where [`Counts::add`] finds the least read key of a full summary.
+    #[serde(skip)]
+    least: Least,
+}
+
+/// Keys of a full summary that held its least count when it was last
+/// scanned for it. Counts only grow, and a key that comes in takes more,
+/// so while one of them still holds that count it is a least read key; a
+/// scan is needed only once none does, which on keys read about evenly
+/// (lookups by key over a large table) is about once every [`TOP`]
+/// replacements rather than on each. A cache: not part of the counts.
+#[derive(Clone, Debug, Default)]
+struct Least {
+    count: u64,
+    keys: Vec<String>,
+}
+
+impl PartialEq for Least {
+    fn eq(&self, _: &Least) -> bool {
+        true
+    }
 }
 
 impl Counts {
@@ -95,9 +116,7 @@ impl Counts {
             None => {
                 // Space-Saving: the new key takes the least read one's
                 // place and count, which is then its error.
-                let (k, &(c, _)) = self.top.iter().min_by_key(|(_, (c, _))| *c).expect("a full summary");
-                let k = k.clone();
-                self.top.remove(&k);
+                let c = self.evict_least();
                 self.top.insert(key.to_string(), (c + 1, c));
             }
         }
@@ -105,6 +124,20 @@ impl Counts {
         if h & Self::mask(self.level) == 0 {
             *self.sample.entry(h).or_default() += 1;
             self.trim();
+        }
+    }
+
+    /// Takes a least read key out of a full summary and returns its count.
+    fn evict_least(&mut self) -> u64 {
+        loop {
+            while let Some(k) = self.least.keys.pop() {
+                if self.top.get(&k).is_some_and(|e| e.0 == self.least.count) {
+                    self.top.remove(&k);
+                    return self.least.count;
+                }
+            }
+            let c = self.top.values().map(|v| v.0).min().expect("a full summary");
+            self.least = Least { count: c, keys: self.top.iter().filter(|(_, v)| v.0 == c).map(|(k, _)| k.clone()).collect() };
         }
     }
 
@@ -151,6 +184,7 @@ impl Counts {
             top = v.into_iter().collect();
         }
         self.top = top;
+        self.least = Least::default();
         self.level = self.level.max(o.level);
         let m = Self::mask(self.level);
         self.sample.retain(|h, _| h & m == 0);
@@ -349,6 +383,64 @@ mod tests {
         assert!((d / 5000.0 - 1.0).abs() < 0.15, "{d}");
         assert!((s["coverage"].as_f64().unwrap() - 0.5).abs() < 0.08, "{s}");
         assert_eq!(s["top"][0]["key"], "doc0");
+    }
+
+    #[test]
+    fn keys_read_evenly_keep_space_saving_bounds() {
+        // Lookups spread over many more keys than the summary holds: nearly
+        // every read replaces a key, the case the cached least keys serve.
+        let mut c = Counts::default();
+        let mut truth: HashMap<String, u64> = HashMap::new();
+        let mut x = 7u64;
+        let n = 200_000u64;
+        for i in 0..n {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            // A few keys read often among 50,000 read rarely.
+            let k = if i % 10 == 0 { format!("hot{}", (x >> 33) % 8) } else { format!("k{}", (x >> 33) % 50_000) };
+            c.add(&k);
+            *truth.entry(k).or_default() += 1;
+        }
+        assert_eq!(c.top.len(), TOP);
+        // Space-Saving: the counts sum to the reads, each key's count is at
+        // least its reads and at most its error above them, and every key
+        // read more than n / TOP times is kept.
+        assert_eq!(c.top.values().map(|v| v.0).sum::<u64>(), n);
+        for (k, &(count, err)) in &c.top {
+            let t = truth[k];
+            assert!(count >= t && count - err <= t, "{k}: {count} - {err} vs {t}");
+        }
+        for (k, &t) in &truth {
+            if t > n / TOP as u64 {
+                assert!(c.top.contains_key(k), "{k} ({t} reads) is missing");
+            }
+        }
+        for h in 0..8 {
+            assert!(c.top.contains_key(&format!("hot{h}")));
+        }
+        // A copy read back counts on as the original does.
+        let j = serde_json::to_string(&c).unwrap();
+        let mut back: Counts = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, c);
+        for i in 0..1000 {
+            back.add(&format!("new{i}"));
+        }
+        assert_eq!(back.top.values().map(|v| v.0).sum::<u64>(), n + 1000);
+    }
+
+    /// `add`'s time on keys read about evenly, each read replacing a key
+    /// (`cargo test --profile ci --lib time_even_reads -- --ignored --nocapture`).
+    #[test]
+    #[ignore = "timing only"]
+    fn time_even_reads() {
+        let mut c = Counts::default();
+        let keys: Vec<String> = (0..1_000_000u64).map(|i| format!("doc{}", i.wrapping_mul(2654435761) % 1_000_000)).collect();
+        let t = std::time::Instant::now();
+        for _ in 0..3 {
+            for k in &keys {
+                c.add(k);
+            }
+        }
+        eprintln!("3M adds over 1M keys: {:.1} ns each", t.elapsed().as_nanos() as f64 / 3e6);
     }
 
     #[test]
