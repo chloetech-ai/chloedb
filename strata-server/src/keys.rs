@@ -590,19 +590,22 @@ tokio::task_local! {
 
 /// Runs `f`, a request, with room for what the audit log is to say of it
 /// ([`note`]): its output, and that note.
-pub async fn noting<F: std::future::Future>(f: F) -> (F::Output, Option<String>) {
-    let (out, note, _) = noting_change(f).await;
-    (out, note)
+pub fn noting<F: std::future::Future>(f: F) -> impl std::future::Future<Output = (F::Output, Option<String>)> {
+    use futures::FutureExt;
+    noting_change(f).map(|(out, note, _)| (out, note))
 }
 
 /// [`noting`], with what the request changed ([`note_change`]).
-pub async fn noting_change<F: std::future::Future>(f: F) -> (F::Output, Option<String>, Change) {
-    NOTE.scope(std::cell::RefCell::new((None, Change::default())), async move {
-        let out = f.await;
-        let (note, change) = NOTE.with(|n| std::mem::take(&mut *n.borrow_mut()));
-        (out, note, change)
-    })
-    .await
+pub fn noting_change<F: std::future::Future>(f: F) -> impl std::future::Future<Output = (F::Output, Option<String>, Change)> {
+    use futures::FutureExt;
+    // The note is taken as `f` ends, while the scope still holds it.
+    NOTE.scope(
+        std::cell::RefCell::new((None, Change::default())),
+        f.map(|out| {
+            let (note, change) = NOTE.with(|n| std::mem::take(&mut *n.borrow_mut()));
+            (out, note, change)
+        }),
+    )
 }
 
 /// Says what the request being served changed, for its audit entry: the
@@ -665,8 +668,8 @@ tokio::task_local! {
 }
 
 /// Runs `f`, a request, as `caller`'s ([`caller`]).
-pub async fn calling<F: std::future::Future>(caller: Caller, f: F) -> F::Output {
-    CALLER.scope(caller, f).await
+pub fn calling<F: std::future::Future>(caller: Caller, f: F) -> impl std::future::Future<Output = F::Output> {
+    CALLER.scope(caller, f)
 }
 
 /// Who is calling in the request being served (`None` outside one).

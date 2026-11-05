@@ -319,7 +319,7 @@ impl Grpc {
             let md = |k: &str| req.metadata().get(k).and_then(|v| v.to_str().ok()).map(String::from);
             let app = md("x-strata-app").or_else(|| md("user-agent").as_deref().and_then(keys::product));
             let r = keys::Caller { addr: req.remote_addr().map(|a| a.ip().to_string()), client: md("x-strata-client"), app, reason: None };
-            crate::telemetry::Caller::of(&who, Some(&r))
+            crate::telemetry::Caller::of(&who, Some(r))
         };
         // A part whose deadline is its client's own (the coordinator says so):
         // one that passes is the client's doing, counted and logged so.

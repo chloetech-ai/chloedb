@@ -84,8 +84,8 @@ impl Trace {
 pub const MAX_SPANS: usize = 512;
 
 /// Runs `f` with `trace` as its request's trace.
-pub async fn traced<F: Future>(trace: Arc<Trace>, f: F) -> F::Output {
-    TRACE.scope(trace, f).await
+pub fn traced<F: Future>(trace: Arc<Trace>, f: F) -> impl Future<Output = F::Output> {
+    TRACE.scope(trace, f)
 }
 
 /// The trace of the request this task serves, if any.
@@ -95,10 +95,10 @@ pub fn trace() -> Option<Arc<Trace>> {
 
 /// Runs `f` in `trace` if there is one (a task that a request's work
 /// moved to: a blocking thread's `block_on`).
-pub async fn within<F: Future>(trace: Option<Arc<Trace>>, f: F) -> F::Output {
+pub fn within<F: Future>(trace: Option<Arc<Trace>>, f: F) -> impl Future<Output = F::Output> {
     match trace {
-        Some(t) => TRACE.scope(t, f).await,
-        None => f.await,
+        Some(t) => futures::future::Either::Left(TRACE.scope(t, f)),
+        None => futures::future::Either::Right(f),
     }
 }
 
@@ -108,8 +108,8 @@ pub fn record(name: impl Into<Cow<'static, str>>, t0: Instant, outcome: &'static
 }
 
 /// A call to replica `replica` of shard `shard`.
-pub fn record_call(name: Cow<'static, str>, shard: usize, replica: &str, t0: Instant, outcome: &'static str, again: bool) {
-    record_at(name, Some(shard), Some(replica.to_string()), t0, outcome, again);
+pub fn record_call(name: Cow<'static, str>, shard: usize, replica: String, t0: Instant, outcome: &'static str, again: bool) {
+    record_at(name, Some(shard), Some(replica), t0, outcome, again);
 }
 
 fn record_at(name: Cow<'static, str>, shard: Option<usize>, replica: Option<String>, t0: Instant, outcome: &'static str, again: bool) {
@@ -135,8 +135,8 @@ pub struct CallSpan {
 
 impl Drop for CallSpan {
     fn drop(&mut self) {
-        let name = std::mem::take(&mut self.name);
-        record_call(name, self.shard, &self.replica, self.t0, self.outcome.unwrap_or("outrun"), self.again);
+        let (name, replica) = (std::mem::take(&mut self.name), std::mem::take(&mut self.replica));
+        record_call(name, self.shard, replica, self.t0, self.outcome.unwrap_or("outrun"), self.again);
     }
 }
 
@@ -145,7 +145,7 @@ pub fn rpc_name<T>() -> Cow<'static, str> {
     let full = std::any::type_name::<T>();
     let last = full.rsplit("::").next().unwrap_or(full);
     let last = last.split('<').next().unwrap_or(last);
-    Cow::Owned(last.strip_suffix("Response").unwrap_or(last).to_string())
+    Cow::Borrowed(last.strip_suffix("Response").unwrap_or(last))
 }
 
 // --------------------------------------------------------------- callers
@@ -178,12 +178,12 @@ pub struct Caller {
 impl Caller {
     /// The caller of a request by `who`, as the request's own
     /// ([`crate::keys::caller`]: its address, app and client) says.
-    pub fn of(who: &crate::keys::Principal, request: Option<&crate::keys::Caller>) -> Caller {
+    pub fn of(who: &crate::keys::Principal, request: Option<crate::keys::Caller>) -> Caller {
         let key = match who.name.as_str() {
             "open" if who.key.is_none() => None,
             _ => Some(crate::keys::audit_name(who)),
         };
-        let r = request.cloned().unwrap_or_default();
+        let r = request.unwrap_or_default();
         Caller { key, key_id: who.key.clone(), addr: r.addr, app: r.app, client: r.client.filter(|c| c.eq_ignore_ascii_case(COMMAND_CENTER)).map(|_| COMMAND_CENTER.to_string()) }
     }
 
@@ -194,8 +194,8 @@ impl Caller {
 }
 
 /// Runs `f` as a request of `caller`.
-pub async fn calling<F: Future>(caller: Arc<Caller>, f: F) -> F::Output {
-    CALLER.scope(caller, f).await
+pub fn calling<F: Future>(caller: Arc<Caller>, f: F) -> impl Future<Output = F::Output> {
+    CALLER.scope(caller, f)
 }
 
 /// Who sent the request this task serves, if it serves one.
@@ -1838,7 +1838,7 @@ mod tests {
         assert!(params_json(&strata::query::Params::new()).is_none());
         let who = crate::keys::Principal { name: "token".into(), key: None, scope: crate::keys::Scope::Admin, root: true };
         let r = crate::keys::Caller { app: Some("shop-ios".into()), client: Some("command-center".into()), ..Default::default() };
-        let c = Caller::of(&who, Some(&r));
+        let c = Caller::of(&who, Some(r));
         assert_eq!((c.key.as_deref(), c.app.as_deref(), c.client.as_deref()), (Some("root token"), Some("shop-ios"), Some("command-center")));
         assert_eq!(Caller::of(&crate::keys::Principal::open(), None).key, None);
     }
