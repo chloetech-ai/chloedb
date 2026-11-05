@@ -151,6 +151,15 @@ pub struct DbOptions {
     /// end: the same image, built without holding it in memory, for a
     /// second write of its bytes. 0: every merge does.
     pub merge_spill_bytes: u64,
+    /// How long a write ([`Database::begin`], a flush, a bulk load, a
+    /// change of tables) waits for the writer lock while another write
+    /// holds it, before it fails with `Busy`. Threads of one process that
+    /// write at once then take turns instead of failing; [`crate::db::Db`]'s
+    /// writes also share commits ([`crate::db::Db::write_ops`]). A
+    /// background flush or merge holding the lock to install is waited for
+    /// however long this is. 0: a write fails at once, as strata-server
+    /// wants (its writer retries until each request's deadline).
+    pub write_wait: Duration,
 }
 
 /// How a database is laid out on disk.
@@ -196,6 +205,7 @@ impl Default for DbOptions {
             ship_log_bytes: 0,
             open_old: false,
             merge_spill_bytes: 64 << 20,
+            write_wait: Duration::from_secs(5),
         }
     }
 }
@@ -1946,8 +1956,9 @@ impl Database {
         &self.opts
     }
 
-    /// Starts the write transaction; `Error::Busy` while another one (or a
-    /// flush, bulk load or merge commit) is in progress.
+    /// Starts the write transaction, waiting up to
+    /// [`DbOptions::write_wait`] while another one (or a flush, bulk load
+    /// or merge commit) is in progress; `Error::Busy` after that.
     pub fn begin(&self) -> Result<WriteTxn<'_>> {
         self.wait_for_flusher();
         let wal = self.try_writer()?;
@@ -3459,12 +3470,14 @@ impl Database {
         }
     }
 
-    /// The writer lock, or `Busy` when another write holds it. A background
-    /// flush holds it only to seal or install, briefly: that is waited for.
+    /// The writer lock, waiting up to [`DbOptions::write_wait`] while
+    /// another write holds it, then `Busy`. A background flush holds it
+    /// only to seal or install, briefly: that is waited for however long.
     /// While one waits for the lock, so does this, for a few milliseconds,
     /// in case the lock is being handed to the flush.
     fn try_writer(&self) -> Result<MutexGuard<'_, Wal>> {
         let t0 = Instant::now();
+        let mut nap = Duration::from_micros(50);
         loop {
             match self.writer.try_lock() {
                 Ok(g) => return Ok(g),
@@ -3472,12 +3485,16 @@ impl Database {
                 Err(TryLockError::WouldBlock) => {
                     let holding = self.background_holding.load(Ordering::Acquire) > 0;
                     let waiting = self.background_waiting.load(Ordering::Acquire) > 0;
-                    if !holding && !(waiting && t0.elapsed() < Duration::from_millis(5)) {
+                    let waited = t0.elapsed();
+                    if !holding && !(waiting && waited < Duration::from_millis(5)) && waited >= self.opts.write_wait {
                         return Err(Error::Busy("another write is in progress".into()));
                     }
                 }
             }
-            std::thread::sleep(Duration::from_micros(100));
+            std::thread::sleep(nap);
+            // A write holding the lock long (a vacuum, a large transaction)
+            // is not polled hard.
+            nap = (nap * 2).min(Duration::from_millis(2));
         }
     }
 

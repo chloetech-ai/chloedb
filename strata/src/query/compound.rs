@@ -271,6 +271,111 @@ fn joins_mut(q: &mut sql::Query, f: &mut dyn FnMut(&mut Expr)) {
     }
 }
 
+/// Names the columns of each `WITH` result and derived table in `q` as SQL
+/// names them: a column of a table in its FROM, written without an alias
+/// as `s.item`, is the column `item` (as PostgreSQL and SQLite name it),
+/// so the query reading it says `ls.item`. One whose name another of its
+/// columns has too keeps `s.item`, and so does a column of the answer
+/// itself, where the qualifier tells a join's sides apart.
+pub(crate) fn bare_column_names(q: &mut sql::Query) {
+    if let Some(w) = &mut q.with {
+        for cte in &mut w.cte_tables {
+            if cte.alias.columns.is_empty() {
+                name_bare(&mut cte.query);
+            }
+            bare_column_names(&mut cte.query);
+        }
+    }
+    let mut inner = |q: &mut sql::Query| bare_column_names(q);
+    match q.body.as_mut() {
+        sql::SetExpr::Select(s) => derived_tables(s, &mut inner),
+        sql::SetExpr::Query(sq) => bare_column_names(sq),
+        sql::SetExpr::SetOperation { left, right, .. } => {
+            for side in [left, right] {
+                if let sql::SetExpr::Select(s) = side.as_mut() {
+                    derived_tables(s, &mut inner);
+                }
+            }
+        }
+        _ => {}
+    }
+    query_mut(q, &mut |e| {
+        if let Expr::Subquery(sq) | Expr::Exists { subquery: sq, .. } | Expr::InSubquery { subquery: sq, .. } = e {
+            bare_column_names(sq);
+        }
+    });
+}
+
+/// Each derived table of `s`'s FROM, its columns named by
+/// [`bare_column_names`] (unless its alias names them), then `f` of it.
+fn derived_tables(s: &mut sql::Select, f: &mut dyn FnMut(&mut sql::Query)) {
+    for t in &mut s.from {
+        for r in std::iter::once(&mut t.relation).chain(t.joins.iter_mut().map(|j| &mut j.relation)) {
+            if let TableFactor::Derived { subquery, alias, .. } = r {
+                if alias.as_ref().is_none_or(|a| a.columns.is_empty()) {
+                    name_bare(subquery);
+                }
+                f(subquery);
+            }
+        }
+    }
+}
+
+/// [`bare_column_names`] of one query's columns: those of its SELECT, or
+/// of a set operation's first SELECT, which names its columns.
+fn name_bare(q: &mut sql::Query) {
+    let mut body = q.body.as_mut();
+    loop {
+        match body {
+            sql::SetExpr::SetOperation { left, .. } => body = left.as_mut(),
+            sql::SetExpr::Select(s) => break name_bare_select(s),
+            // A query in parentheses names its own.
+            _ => break,
+        }
+    }
+}
+
+fn name_bare_select(s: &mut sql::Select) {
+    let joined = s.from.len() > 1 || s.from.iter().any(|t| !t.joins.is_empty());
+    // Over one table, `*` gives its columns by their own names, which a
+    // column named here might be too.
+    if !joined && s.projection.iter().any(|i| matches!(i, SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..))) {
+        return;
+    }
+    let mut tables: Vec<String> = Vec::new();
+    for t in &s.from {
+        for r in std::iter::once(&t.relation).chain(t.joins.iter().map(|j| &j.relation)) {
+            match r {
+                TableFactor::Table { name, alias, .. } => {
+                    tables.push(super::sql::table_name(name).to_ascii_lowercase());
+                    tables.extend(alias.iter().map(|a| a.name.value.to_ascii_lowercase()));
+                }
+                TableFactor::Derived { alias: Some(a), .. } => tables.push(a.name.value.to_ascii_lowercase()),
+                _ => {}
+            }
+        }
+    }
+    // The column a select item would be named by its column's own name.
+    let bare = |item: &SelectItem| match item {
+        SelectItem::UnnamedExpr(Expr::CompoundIdentifier(ids)) if ids.len() == 2 && tables.contains(&ids[0].value.to_ascii_lowercase()) => Some(ids[1].clone()),
+        _ => None,
+    };
+    let name = |item: &SelectItem| match item {
+        SelectItem::UnnamedExpr(e) => bare(item).map_or_else(|| super::sql::name_of(e), |id| id.value),
+        SelectItem::ExprWithAlias { alias, .. } => alias.value.clone(),
+        _ => String::new(),
+    };
+    let names: Vec<String> = s.projection.iter().map(|i| name(i).to_ascii_lowercase()).collect();
+    for item in s.projection.iter_mut() {
+        let Some(id) = bare(item) else { continue };
+        if names.iter().filter(|n| **n == id.value.to_ascii_lowercase()).count() > 1 {
+            continue;
+        }
+        let SelectItem::UnnamedExpr(e) = item else { continue };
+        *item = SelectItem::ExprWithAlias { expr: e.clone(), alias: id };
+    }
+}
+
 /// Writes each `OVER w` and `OVER (w ORDER BY ..)` of `q`, and of the
 /// queries inside it, out as the window it names (`WINDOW w AS (..)`), as
 /// PostgreSQL does: `OVER (w ..)` takes `w`'s partition and adds an order
@@ -766,6 +871,7 @@ pub(crate) fn plan_query(q: &sql::Query, catalog: &[&Schema], params: &Params) -
 /// fields outside WHERE from the field's terms ([`ir::fuse_paths`]).
 fn plan_query_fused(q: &sql::Query, catalog: &[&Schema], params: &Params, fuse: bool) -> Result<ir::Plan> {
     let mut q = q.clone();
+    bare_column_names(&mut q);
     json_paths(&mut q, catalog)?;
     inline_windows(&mut q)?;
     let p = Planner { catalog, params, ctes: RefCell::new(Vec::new()), outer: RefCell::new(None) };

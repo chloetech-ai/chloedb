@@ -255,6 +255,49 @@ fn with_and_derived_tables() {
     assert!(db.query("WITH RECURSIVE r AS (SELECT id FROM papers) SELECT id FROM r", &Params::new()).is_err());
 }
 
+/// A column qualified inside a WITH or a derived table (`s.id`) is named
+/// by its own name (`id`), as SQL names it, so the query reading it says
+/// `l.id`; one whose name another column has too keeps its qualifier.
+#[test]
+fn qualified_columns_of_a_with_are_named_by_their_own_names() {
+    let ps = papers();
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(dir.path(), &ps);
+    let answer = |sql: &str| {
+        let r = db.query(sql, &Params::new()).unwrap_or_else(|e| panic!("{sql}: {e}"));
+        (r.columns, r.rows)
+    };
+    let surveys: BTreeSet<String> = ps.iter().filter(|p| p.kind == "survey").map(|p| p.id.clone()).collect();
+
+    // A WITH of a table's rows, and a derived table.
+    let (columns, got) = answer("WITH x AS (SELECT p.id, p.year FROM papers p WHERE p.kind = 'survey') SELECT * FROM x");
+    assert_eq!(columns, ["id", "year"]);
+    assert_eq!(set(&got, 0), surveys);
+    assert_eq!(set(&answer("WITH x AS (SELECT p.id FROM papers p WHERE p.kind = 'survey') SELECT x.id FROM x").1, 0), surveys);
+    assert_eq!(set(&answer("SELECT t.id FROM (SELECT p.id, p.kind FROM papers p) AS t WHERE t.kind = 'survey'").1, 0), surveys);
+
+    // The newest paper of each kind, joined back to its table by the
+    // WITH's alias (the price tracker's last snapshot of each item).
+    let mut newest: BTreeMap<&str, &Paper> = BTreeMap::new();
+    for p in &ps {
+        let best = newest.entry(&p.kind).or_insert(p);
+        if (p.year, std::cmp::Reverse(&p.id)) > (best.year, std::cmp::Reverse(&best.id)) {
+            *best = p;
+        }
+    }
+    let want: Vec<Vec<Value>> = newest.values().map(|p| vec![Value::Str(p.id.clone()), Value::Str(p.kind.clone())]).collect();
+    let last = "WITH last AS (SELECT s.id, s.kind, ROW_NUMBER() OVER (PARTITION BY s.kind ORDER BY s.year DESC, s.id) AS rn FROM papers s) \
+                SELECT ls.id, p.kind FROM last ls JOIN papers p ON ls.id = p.id WHERE ls.rn = 1 ORDER BY p.kind";
+    assert_eq!(answer(last).1, want);
+
+    // Two columns of one name keep their tables' names.
+    let (columns, got) = answer("WITH j AS (SELECT s.id, p.id FROM papers s JOIN papers p ON p.id = s.id WHERE s.kind = 'survey') SELECT * FROM j");
+    assert_eq!(columns, ["s.id", "p.id"]);
+    assert_eq!(set(&got, 1), surveys);
+    // A column of the answer itself keeps its table's name.
+    assert_eq!(answer("SELECT s.id, p.year FROM papers s JOIN papers p ON p.id = s.id LIMIT 1").0, ["s.id", "p.year"]);
+}
+
 #[test]
 fn joins() {
     let ps = papers();
