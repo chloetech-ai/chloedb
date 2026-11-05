@@ -304,8 +304,26 @@ first collection holds:
 - `strata/scripts/fit_traffic.py` fits a profile's values to data: `zipf` to
   a query log (ORCAS's clicks), `day` to Wikipedia's hourly page views.
 
-The nine one-node engines replay a profile's reads; their writes are
-counted as skipped for now.
+The nine one-node engines replay writes too, each through its own API:
+
+| engine | insert | rating update | delete |
+|---|---|---|---|
+| Meilisearch | add documents (a task) | add or update with the rating only | delete a batch of ids |
+| Typesense | import, upsert | `PATCH` of the document | delete by `filter_by=id:[…]` |
+| Qdrant | upsert points (`wait=true`) | set the payload's rating | delete points |
+| Weaviate | batch of objects | `PATCH` of the object | delete each object |
+| Milvus | insert | upsert of the whole document (no partial update) | delete by `key in […]` |
+| Manticore | bulk `replace` | `/update` of the attribute | `DELETE … WHERE id IN (…)` |
+| ParadeDB, Postgres | `INSERT` | `UPDATE … SET rating` | `DELETE … WHERE key IN (…)` |
+| Redis | `HSET` | `HSET` of the rating | `DEL` |
+
+Qdrant and Manticore number their documents: a loaded one by its row, a
+replay's own from its key, above every row. The freshness prober searches
+for the marked word with the engine's bm25 request and waits for the new
+document's key in the answer (Meilisearch and Typesense forgive typos, so
+another marked document can match the word too). After the reset, the
+report's `reset.searchable_docs_after` is the number of documents the engine
+says it holds, which should be the collection's again.
 
 ## Nine more engines, on one node
 

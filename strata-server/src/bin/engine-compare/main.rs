@@ -180,7 +180,7 @@ enum Cmd {
     /// kind, overall and by 10 s window, judges a ramp's steps against the
     /// profile's SLO (stopping after two misses), times how soon marked
     /// writes are found, then deletes what the schedule wrote and puts back
-    /// the ratings it changed. Writes for the nine one-node engines come later.
+    /// the ratings it changed.
     Replay {
         #[arg(long, value_enum)]
         engine: Which,

@@ -11,8 +11,9 @@
 //! directory on disk. `run` times the kinds and records the answers as `run`
 //! does for the others, in the same report. Each kind is the engine's
 //! closest native request: `unavailable` and `differs` say where it has
-//! none or where it means something else. Writes and streams are not
-//! measured for these engines yet.
+//! none or where it means something else. `replay` sends them a schedule's
+//! writes too ([`insert_req`], [`rating_req`], [`delete_reqs`]); `writes`
+//! and streams are not measured for these engines yet.
 //!
 //! Postgres and Redis are spoken to over their own protocols (the simple
 //! query protocol, with trust authentication, and RESP2), each in a few
@@ -600,16 +601,18 @@ fn manticore_vec(v: &[f32]) -> String {
     format!("({})", &t[1..t.len() - 1])
 }
 
-/// The documents of rows `first..` as the engine's bulk request.
-fn batch_req(o: Other, url: &str, rows: &[(RawDoc, Vec<f32>)], first: usize, avgdl: f64) -> Req {
+/// Documents as the engine's bulk request; `ids(i, doc)` numbers the i-th
+/// for Qdrant and Manticore (a loaded document's row; [`new_id`] for one a
+/// replay inserts).
+fn batch_req(o: Other, url: &str, rows: &[(RawDoc, Vec<f32>)], ids: &dyn Fn(usize, &RawDoc) -> u64, avgdl: f64) -> Req {
     let fields = |r: &RawDoc| json!({"title": r.title, "body": r.body(), "year": r.year, "category": r.category, "rating": r.rating, "topic": r.topic});
-    let lines = |f: &dyn Fn(usize, &RawDoc, &[f32]) -> String, sep: &str| -> Vec<u8> {
+    let lines = |f: &dyn Fn(u64, &RawDoc, &[f32]) -> String, sep: &str| -> Vec<u8> {
         let mut out = Vec::new();
         for (i, (r, v)) in rows.iter().enumerate() {
             if i > 0 {
                 out.extend_from_slice(sep.as_bytes());
             }
-            out.extend_from_slice(f(first + i, r, v).as_bytes());
+            out.extend_from_slice(f(ids(i, r), r, v).as_bytes());
         }
         out
     };
@@ -1169,7 +1172,7 @@ pub async fn load(collection: &str, o: Other, urls: &[String], batch: usize, cli
     let producer = std::thread::spawn(move || -> Result<(usize, u64), String> {
         let (mut rows, mut first, mut bytes, mut sent) = (Vec::new(), 0usize, 0u64, 0usize);
         let mut flush = |rows: &mut Vec<(RawDoc, Vec<f32>)>, first: usize| -> Result<(), String> {
-            let r = batch_req(o, &us[sent % us.len()], rows, first, avgdl);
+            let r = batch_req(o, &us[sent % us.len()], rows, &|i, _| (first + i) as u64, avgdl);
             sent += 1;
             bytes += r.bytes() as u64;
             rows.clear();
@@ -1238,6 +1241,129 @@ pub async fn load(collection: &str, o: Other, urls: &[String], batch: usize, cli
     std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).map_err(s)?;
     eprintln!("wrote {}", path.display());
     Ok(())
+}
+
+// --- A replay's writes ----------------------------------------------------
+
+/// The number Qdrant and Manticore know a document a replay inserts by
+/// (Manticore's id is one more, as for a loaded row): from its key,
+/// `sim<6 hex>[w]-<n>` (`engine-compare plan`), above every row of a
+/// collection and below 2^53, so that any JSON reader keeps it exact.
+/// Another key gets a hash, above those.
+pub(crate) fn new_id(key: &str) -> u64 {
+    let parsed = key.strip_prefix("sim").and_then(|rest| {
+        let (p, n) = rest.rsplit_once('-')?;
+        let warm = match p.len() {
+            6 => 0,
+            7 if p.ends_with('w') => 1,
+            _ => return None,
+        };
+        let h = u64::from_str_radix(&p[..6], 16).ok()?;
+        let n: u64 = n.parse().ok()?;
+        (n < 1 << 28).then_some((warm << 48) | ((h & 0xF_FFFF) << 28) | n)
+    });
+    match parsed {
+        Some(x) => (1 << 50) | x,
+        None => (1 << 51) | (twox_hash::XxHash3_64::oneshot(key.as_bytes()) & ((1 << 50) - 1)),
+    }
+}
+
+/// New documents (each `RawDoc`'s id its key) as the engine's bulk request;
+/// `avgdl` is the collection's, for Qdrant's BM25 weights.
+pub(crate) fn insert_req(o: Other, url: &str, docs: &[(RawDoc, Vec<f32>)], avgdl: f64) -> Req {
+    batch_req(o, url, docs, &|_, r| new_id(&r.id), avgdl)
+}
+
+/// A document's rating set to `rating` (a replay's update, or putting it
+/// back). The document is `key`, at `row` of the collection; Milvus has no
+/// partial update and is sent the whole document (`doc`) again, as
+/// `writes` sends Elasticsearch, OpenSearch and Solr.
+pub(crate) fn rating_req(o: Other, url: &str, key: &str, row: u64, rating: f64, doc: Option<&(RawDoc, Vec<f32>)>) -> Result<Req, String> {
+    let http = |method: Method, url: String, body: Json| Req::Http { method, url, ctype: "application/json", body: serde_json::to_vec(&body).unwrap() };
+    Ok(match o {
+        // Adds or updates: the fields given change, the others stay.
+        Other::Meili => http(Method::PUT, format!("{url}/indexes/docs/documents?primaryKey=id"), json!([{"id": meili_id(key), "rating": rating}])),
+        Other::Typesense => http(Method::PATCH, format!("{url}/collections/docs/documents/{}", id_path(key)), json!({"rating": rating})),
+        Other::Qdrant => http(Method::POST, format!("{url}/collections/docs/points/payload?wait=true"), json!({"payload": {"rating": rating}, "points": [row]})),
+        Other::Weaviate => http(Method::PATCH, format!("{url}/v1/objects/Doc/{}", uuid_of(key)), json!({"class": "Doc", "properties": {"rating": rating}})),
+        Other::Milvus => {
+            let (r, v) = doc.ok_or("Milvus updates a whole document, and none was given")?;
+            let mut r = r.clone();
+            r.id = key.to_string();
+            r.rating = rating;
+            match batch_req(o, url, &[(r, v.clone())], &|_, _| row, 1.0) {
+                Req::Http { method, url, ctype, body } => Req::Http { method, url: url.replace("/entities/insert", "/entities/upsert"), ctype, body },
+                other => other,
+            }
+        }
+        // An attribute changed in place.
+        Other::Manticore => post(format!("{url}/update"), &json!({"table": "docs", "id": row + 1, "doc": {"rating": rating}})),
+        Other::Paradedb | Other::Postgres => Req::Sql { url: url.to_string(), sql: format!("UPDATE docs SET rating = {rating} WHERE key = {}", sql_str(key)) },
+        Other::Redis => Req::Redis {
+            url: url.to_string(),
+            cmds: vec![vec![b"HSET".to_vec(), format!("d:{key}").into_bytes(), b"rating".to_vec(), rating.to_string().into_bytes()]],
+        },
+    })
+}
+
+/// Documents a replay inserted, deleted (keys as [`insert_req`] wrote
+/// them), as the requests to send one after the other.
+pub(crate) fn delete_reqs(o: Other, url: &str, keys: &[String]) -> Vec<Req> {
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let none = |method: Method, url: String| Req::Http { method, url, ctype: "application/json", body: Vec::new() };
+    match o {
+        Other::Meili => vec![post(format!("{url}/indexes/docs/documents/delete-batch"), &json!(keys.iter().map(|k| meili_id(k)).collect::<Vec<_>>()))],
+        Other::Typesense => {
+            let ids: Vec<String> = keys.iter().map(|k| format!("`{k}`")).collect();
+            vec![none(Method::DELETE, format!("{url}/collections/docs/documents?filter_by={}", query_escape(&format!("id:[{}]", ids.join(",")))))]
+        }
+        Other::Qdrant => vec![post(format!("{url}/collections/docs/points/delete?wait=true"), &json!({"points": keys.iter().map(|k| new_id(k)).collect::<Vec<_>>()}))],
+        Other::Weaviate => keys.iter().map(|k| none(Method::DELETE, format!("{url}/v1/objects/Doc/{}", uuid_of(k)))).collect(),
+        Other::Milvus => vec![post(format!("{url}/v2/vectordb/entities/delete"), &json!({"collectionName": "docs", "filter": format!("key in {}", json!(keys))}))],
+        Other::Manticore => {
+            let ids: Vec<String> = keys.iter().map(|k| (new_id(k) + 1).to_string()).collect();
+            vec![manticore_sql(url, &format!("DELETE FROM docs WHERE id IN ({})", ids.join(",")))]
+        }
+        Other::Paradedb | Other::Postgres => {
+            let keys: Vec<String> = keys.iter().map(|k| sql_str(k)).collect();
+            vec![Req::Sql { url: url.to_string(), sql: format!("DELETE FROM docs WHERE key IN ({})", keys.join(", ")) }]
+        }
+        Other::Redis => {
+            let mut del = vec![b"DEL".to_vec()];
+            del.extend(keys.iter().map(|k| format!("d:{k}").into_bytes()));
+            vec![Req::Redis { url: url.to_string(), cmds: vec![del] }]
+        }
+    }
+}
+
+/// Whether an answer to a bm25 request holds the document `key` (a replay's
+/// prober: Meilisearch and Typesense forgive typos, so another marked
+/// document can match the word too).
+pub(crate) fn finds(o: Other, j: &Json, key: &str) -> bool {
+    answer(o, "bm25", j)["keys"].as_array().is_some_and(|ks| ks.iter().any(|k| k.as_str() == Some(key)))
+}
+
+/// How many documents the engine says it holds, asked every half second
+/// for up to 30 s until it says `expect` (Meilisearch writes in tasks, and
+/// Milvus counts with a bounded staleness).
+pub(crate) async fn searchable_docs(o: Other, url: &str, expect: u64) -> Result<Option<u64>, String> {
+    let mut c = Conns::new(o, Duration::from_secs(60))?;
+    let t = Instant::now();
+    loop {
+        let n = stats(o, &mut c, url).await?["searchable_docs"].as_u64();
+        if n == Some(expect) || t.elapsed() > Duration::from_secs(30) {
+            return Ok(n);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// The collection's average body length in terms, which Qdrant's BM25
+/// weights of a replay's new documents need (as `load` gave the loaded ones).
+pub(crate) fn avgdl(collection: &str) -> Result<f64, String> {
+    avg_len(collection, None)
 }
 
 // --- Query kinds -----------------------------------------------------------
@@ -2220,6 +2346,74 @@ mod tests {
             assert_eq!(super::meili_key(&id), key);
         }
         assert_eq!(super::meili_id("doc_00.1#2"), "doc__00_2e1_232");
+    }
+
+    #[test]
+    fn new_ids_are_apart_from_rows_and_exact_in_json() {
+        use super::new_id;
+        let a: Vec<u64> = (0..1000).map(|n| new_id(&format!("sim00ab12-{n}"))).collect();
+        let mut b = a.clone();
+        b.sort_unstable();
+        b.dedup();
+        assert_eq!(b.len(), a.len());
+        // Other schedules, the warm-up, and keys of another shape each get ids of their own.
+        assert_ne!(new_id("sim00ab12-5"), new_id("sim00ab13-5"));
+        assert_ne!(new_id("sim00ab12-5"), new_id("sim00ab12w-5"));
+        for k in ["sim00ab12-5", "simffffffw-268435455", "sim00ab12-268435456", "msmarco_v2.1_doc_00_1#2", "simxyz-1"] {
+            let id = new_id(k);
+            assert!(id >= 1 << 50 && id < 1 << 53, "{k}: {id}");
+        }
+        assert_eq!(new_id("sim00ab12-7"), new_id("sim00ab12-7"));
+    }
+
+    #[test]
+    fn replayed_writes_name_each_engine_s_document() {
+        use super::*;
+        let doc = RawDoc { id: "k#1".into(), title: "t".into(), text: "x".into(), year: 2001, category: "c01".into(), rating: 2.5, topic: "t01".into() };
+        let pair = (doc, vec![0.5f32, 0.5]);
+        let url = "http://e";
+        let what = |r: &Req| match r {
+            Req::Http { method, url, body, .. } => format!("{method} {url} {}", String::from_utf8_lossy(body)),
+            Req::Sql { sql, .. } => sql.clone(),
+            Req::Redis { cmds, .. } => cmds.iter().map(|c| c.iter().map(|a| String::from_utf8_lossy(a).into_owned()).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("; "),
+        };
+        let keys = vec!["sim000001-3".to_string(), "sim000001-4".to_string()];
+        let id3 = new_id(&keys[0]);
+        for o in [Other::Meili, Other::Typesense, Other::Manticore, Other::Qdrant, Other::Weaviate, Other::Milvus, Other::Paradedb, Other::Postgres, Other::Redis] {
+            let up = what(&rating_req(o, url, "k#1", 7, 4.25, Some(&pair)).unwrap());
+            let del: Vec<String> = delete_reqs(o, url, &keys).iter().map(|r| what(r)).collect();
+            let all = del.join(" | ");
+            let want_up = match o {
+                Other::Meili => "PUT http://e/indexes/docs/documents?primaryKey=id [{\"id\":\"k_231\",\"rating\":4.25}]".to_string(),
+                Other::Typesense => "PATCH http://e/collections/docs/documents/k%231 {\"rating\":4.25}".to_string(),
+                Other::Qdrant => "POST http://e/collections/docs/points/payload?wait=true {\"payload\":{\"rating\":4.25},\"points\":[7]}".to_string(),
+                Other::Weaviate => format!("PATCH http://e/v1/objects/Doc/{} {{\"class\":\"Doc\",\"properties\":{{\"rating\":4.25}}}}", uuid_of("k#1")),
+                Other::Manticore => "POST http://e/update {\"doc\":{\"rating\":4.25},\"id\":8,\"table\":\"docs\"}".to_string(),
+                Other::Paradedb | Other::Postgres => "UPDATE docs SET rating = 4.25 WHERE key = 'k#1'".to_string(),
+                Other::Redis => "HSET d:k#1 rating 4.25".to_string(),
+                Other::Milvus => String::new(),
+            };
+            if o == Other::Milvus {
+                assert!(up.starts_with("POST http://e/v2/vectordb/entities/upsert ") && up.contains("\"key\":\"k#1\"") && up.contains("\"rating\":4.25") && up.contains("\"emb\":[0.5,0.5]"), "{up}");
+            } else {
+                assert_eq!(up, want_up, "{o:?}");
+            }
+            let names_both = match o {
+                Other::Qdrant => all.contains(&format!("[{id3},{}]", id3 + 1)),
+                Other::Manticore => all.contains(&format!("IN%20%28{}%2C{}%29", id3 + 1, id3 + 2)),
+                Other::Weaviate => del.len() == 2 && all.contains(&uuid_of(&keys[1])),
+                Other::Typesense => all.contains("filter_by=id%3A%5B%60sim000001-3%60%2C%60sim000001-4%60%5D"),
+                Other::Redis => all == "DEL d:sim000001-3 d:sim000001-4",
+                _ => all.contains("sim000001-3") && all.contains("sim000001-4"),
+            };
+            assert!(names_both, "{o:?}: {all}");
+            assert!(delete_reqs(o, url, &[]).is_empty());
+        }
+        // A replay's insert numbers its documents by key, not by row.
+        let mut d = pair.clone();
+        d.0.id = keys[0].clone();
+        assert!(what(&insert_req(Other::Qdrant, url, &[d.clone()], 10.0)).contains(&format!("\"id\":{id3}")));
+        assert!(what(&insert_req(Other::Manticore, url, &[d], 10.0)).contains(&format!("\"id\":{}", id3 + 1)));
     }
 
     #[test]
