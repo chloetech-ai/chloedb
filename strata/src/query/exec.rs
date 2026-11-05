@@ -2620,13 +2620,8 @@ impl<'a> Executor<'a> {
                 return Ok(v);
             }
         }
-        let mut found: HashMap<String, (u64, u8)> = HashMap::new();
-        for s in self.stat_segs() {
-            for (t, info, d) in self.text(s, field)?.fuzzy_terms(term, edits) {
-                found.entry(t).or_insert((0, d)).0 += info.df as u64;
-            }
-        }
-        let mut v: Vec<(String, u64, u8)> = found.into_iter().map(|(t, (df, d))| (t, df, d)).collect();
+        let fields = self.stat_segs().iter().map(|s| self.text(s, field)).collect::<Result<Vec<_>>>()?;
+        let mut v = TextFieldReader::fuzzy_across(&fields, term, edits);
         v.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
         let v = Arc::new(v);
         if let Some((x, k)) = shared {
