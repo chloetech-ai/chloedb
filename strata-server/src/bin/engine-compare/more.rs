@@ -64,6 +64,7 @@ const B: f64 = 0.75;
 
 /// One request: HTTP, a SQL statement (Postgres), or Redis commands sent
 /// together (the answer is the last one's).
+#[derive(Clone)]
 pub enum Req {
     Http { method: Method, url: String, ctype: &'static str, body: Vec<u8> },
     Sql { url: String, sql: String },
@@ -96,7 +97,7 @@ fn io(e: impl std::fmt::Display) -> Fault {
 
 /// A client's connections: HTTP (pooled), and one Postgres or Redis
 /// connection per URL, opened when first used.
-struct Conns {
+pub(crate) struct Conns {
     other: Other,
     http: reqwest::Client,
     pg: HashMap<String, Pg>,
@@ -104,7 +105,7 @@ struct Conns {
 }
 
 impl Conns {
-    fn new(other: Other, timeout: Duration) -> Result<Conns, String> {
+    pub(crate) fn new(other: Other, timeout: Duration) -> Result<Conns, String> {
         let mut h = reqwest::header::HeaderMap::new();
         if other == Other::Typesense {
             h.insert("x-typesense-api-key", reqwest::header::HeaderValue::from_static(TYPESENSE_KEY));
@@ -113,11 +114,11 @@ impl Conns {
         Ok(Conns { other, http, pg: HashMap::new(), redis: HashMap::new() })
     }
 
-    fn fork(&self) -> Conns {
+    pub(crate) fn fork(&self) -> Conns {
         Conns { other: self.other, http: self.http.clone(), pg: HashMap::new(), redis: HashMap::new() }
     }
 
-    async fn exec(&mut self, r: &Req) -> Result<Json, String> {
+    pub(crate) async fn exec(&mut self, r: &Req) -> Result<Json, String> {
         match r {
             Req::Http { method, url, ctype, body } => {
                 let res = self.http.request(method.clone(), url).header("content-type", *ctype).body(body.clone()).send().await.map_err(s)?;
@@ -1266,7 +1267,7 @@ pub(crate) fn unsupported(o: Other, kind: &str) -> Option<&'static str> {
 }
 
 /// What a kind means on an engine, where that is not what it means on Strata.
-fn differs(o: Other, kind: &str) -> Option<&'static str> {
+pub(crate) fn differs(o: Other, kind: &str) -> Option<&'static str> {
     use Other::*;
     let text_kind = matches!(kind, "bm25" | "bm25 + filter" | "phrase" | "typo" | "prefix");
     Some(match (o, kind) {
@@ -1994,7 +1995,7 @@ fn answer(o: Other, kind: &str, j: &Json) -> Json {
 
 /// Sends `reqs` round-robin from `concurrency` clients for `seconds`, each
 /// client with its own connections.
-async fn drive(conns: &Conns, reqs: Arc<Vec<Req>>, concurrency: usize, seconds: f64) -> Timed {
+pub(crate) async fn drive(conns: &Conns, reqs: Arc<Vec<Req>>, concurrency: usize, seconds: f64) -> Timed {
     let next = Arc::new(AtomicUsize::new(0));
     let deadline = Instant::now() + Duration::from_secs_f64(seconds);
     let t0 = Instant::now();

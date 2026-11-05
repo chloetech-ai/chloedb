@@ -50,6 +50,7 @@ use strata_server::server;
 use strata_server::service::shard_of;
 
 mod more;
+mod replay;
 mod sim;
 #[cfg(test)]
 mod snapshot;
@@ -170,6 +171,50 @@ enum Cmd {
         #[arg(long)]
         rate: Option<f64>,
         /// The schedule file (gzip-compressed JSON lines).
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Sends a schedule to an engine as an open loop: each request at its
+    /// planned time, its latency from that time; sessions' follow-ups a
+    /// think time after the step before is answered. Records latencies by
+    /// kind, overall and by 10 s window, judges a ramp's steps against the
+    /// profile's SLO (stopping after two misses), times how soon marked
+    /// writes are found, then deletes what the schedule wrote and puts back
+    /// the ratings it changed. Writes for the nine one-node engines come later.
+    Replay {
+        #[arg(long, value_enum)]
+        engine: Which,
+        /// The engine's endpoints, comma-separated (Strata: its coordinator); requests go round-robin.
+        #[arg(long, value_delimiter = ',', required = true)]
+        url: Vec<String>,
+        /// A schedule from `plan`; without one, --profile (with --seed, --shape, --rate) is planned into --out first.
+        #[arg(long)]
+        schedule: Option<PathBuf>,
+        #[arg(long)]
+        profile: Option<PathBuf>,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        #[arg(long, value_enum, default_value = "day")]
+        shape: sim::ShapeArg,
+        #[arg(long)]
+        rate: Option<f64>,
+        /// Requests in flight at most (default 512; Postgres, ParadeDB and Redis 64, a connection each); one waiting for a slot waits on the clock.
+        #[arg(long)]
+        max_inflight: Option<usize>,
+        /// ranked: result caches off (Elasticsearch's and OpenSearch's request cache off by request); shipped: as each engine ships.
+        #[arg(long, value_enum, default_value = "ranked")]
+        cache_mode: replay::CacheMode,
+        #[arg(long)]
+        paid: bool,
+        /// Only the first SECONDS of the timed schedule (a quick check).
+        #[arg(long)]
+        seconds: Option<f64>,
+        /// Leave what the schedule wrote in the index.
+        #[arg(long)]
+        no_reset: bool,
+        /// Names the run in the report (`--out/replay-<label>.json`).
+        #[arg(long)]
+        label: Option<String>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -1151,6 +1196,7 @@ struct Probe<'a> {
 }
 
 impl<'a> Probe<'a> {
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn new(q: &'a data::Query, key: &'a str, row: usize, item: &'a [f32], seen: &'a [String], year: i64, paid: bool) -> Probe<'a> {
         Probe { q, key, row, item, seen, year, paid, knobs: Knobs::default() }
@@ -1817,6 +1863,8 @@ async fn run(
 enum WriteReq {
     One { url: String, put: bool, body: Vec<u8> },
     Many(Vec<(String, Vec<u8>)>),
+    /// Vespa's deletes: one request a document, all sent at once.
+    Deletes(Vec<String>),
 }
 
 /// What a write's answer says went wrong, if anything.
@@ -1849,6 +1897,10 @@ async fn send_write(client: &reqwest::Client, w: &WriteReq) -> Option<String> {
         WriteReq::Many(reqs) => {
             // As loading does: each put again a second later while Vespa is overloaded.
             let all = reqs.iter().map(|(url, body)| async move { vespa_retry(|| client.post(url).header("content-type", "application/json").body(body.clone())).await });
+            futures::future::join_all(all).await.into_iter().flatten().next()
+        }
+        WriteReq::Deletes(urls) => {
+            let all = urls.iter().map(|url| async move { vespa_retry(|| client.delete(url)).await });
             futures::future::join_all(all).await.into_iter().flatten().next()
         }
     }
@@ -2039,20 +2091,7 @@ async fn writes(collection: &str, engine: Engine, urls: &[String], concurrency: 
     let client = http_client(engine, 60)?;
     let label = label.unwrap_or_else(|| engine.name().to_string());
     let u0 = &urls[0];
-    // Searchable within a second of a write, as Elasticsearch's and
-    // OpenSearch's default refresh is (loading turned it off); Solr's soft
-    // commits the same. Strata and Vespa make a write searchable when it returns.
-    let nrt = match engine {
-        Engine::Es | Engine::Os => {
-            check(client.put(format!("{u0}/quora/_settings")).json(&json!({"index": {"refresh_interval": "1s"}})).send().await, "settings").await?;
-            "refresh_interval 1s (the default; loading turned it off)"
-        }
-        Engine::Solr => {
-            check(client.post(format!("{u0}/solr/quora/config")).json(&json!({"set-property": {"updateHandler.autoSoftCommit.maxTime": 1000}})).send().await, "config").await?;
-            "autoSoftCommit.maxTime 1000 ms (as Elasticsearch's 1 s refresh; loading turned it off)"
-        }
-        Engine::Strata | Engine::Vespa => "searchable when the write returns",
-    };
+    let nrt = searchable_soon(engine, &client, u0).await?;
     // The documents written: the first 20,000, each under a new key.
     let mut docs = Vec::new();
     each_doc(collection, Some(20_000), |r, v| {
@@ -2150,6 +2189,24 @@ async fn writes(collection: &str, engine: Engine, urls: &[String], concurrency: 
     restore(engine, &client, u0, &new_keys, &touched.iter().map(|&i| &docs[i]).collect::<Vec<_>>()).await?;
     eprintln!("{label:<8} deleted {} written documents and put back {} ratings in {:.1} s", new_keys.len(), touched.len(), t_clean.elapsed().as_secs_f64());
     Ok(())
+}
+
+/// Makes writes searchable within a second, as Elasticsearch's and
+/// OpenSearch's default refresh is (loading turned it off); Solr's soft
+/// commits the same. Strata and Vespa make a write searchable when it
+/// returns. Says what it set.
+async fn searchable_soon(engine: Engine, client: &reqwest::Client, u0: &str) -> Result<&'static str, String> {
+    Ok(match engine {
+        Engine::Es | Engine::Os => {
+            check(client.put(format!("{u0}/quora/_settings")).json(&json!({"index": {"refresh_interval": "1s"}})).send().await, "settings").await?;
+            "refresh_interval 1s (the default; loading turned it off)"
+        }
+        Engine::Solr => {
+            check(client.post(format!("{u0}/solr/quora/config")).json(&json!({"set-property": {"updateHandler.autoSoftCommit.maxTime": 1000}})).send().await, "config").await?;
+            "autoSoftCommit.maxTime 1000 ms (as Elasticsearch's 1 s refresh; loading turned it off)"
+        }
+        Engine::Strata | Engine::Vespa => "searchable when the write returns",
+    })
 }
 
 /// Sends a request to Vespa again, a second later, while it is overloaded
@@ -2739,6 +2796,26 @@ async fn main() {
             Err(o) => Err(format!("writes are not measured for {} yet", o.name())),
         },
         Cmd::Plan { profile, seed, shape, rate, out } => sim::shape(*shape, *rate).and_then(|sh| sim::plan(&cli.collection, profile, *seed, sh, out)).map(|_| ()),
+        Cmd::Replay { engine, url, schedule, profile, seed, shape, rate, max_inflight, cache_mode, paid, seconds, no_reset, label, out } => {
+            let target = match engine.engine() {
+                Ok(e) => replay::Target::Main(e),
+                Err(o) => replay::Target::More(o),
+            };
+            let opts = replay::Opts { max_inflight: *max_inflight, cache_mode: *cache_mode, paid: *paid, seconds: *seconds, label: label.clone(), reset: !*no_reset, out: out.clone() };
+            let path = match (schedule, profile) {
+                (Some(p), _) => Ok(p.clone()),
+                (None, Some(prof)) => {
+                    let name = prof.file_stem().map_or("profile".into(), |n| n.to_string_lossy().to_string());
+                    let path = out.join(format!("schedule-{name}-{seed}.jsonl.gz"));
+                    sim::shape(*shape, *rate).and_then(|sh| sim::plan(&cli.collection, prof, *seed, sh, &path)).map(|_| path)
+                }
+                (None, None) => Err("replay needs --schedule, or --profile to plan one".to_string()),
+            };
+            match path {
+                Ok(p) => replay::replay(&cli.collection, target, url, &p, &opts).await,
+                Err(e) => Err(e),
+            }
+        }
         Cmd::Stream { engine, url, brokers, partitions, rates, seconds, flat, restart, batch, label, out } => match engine.engine() {
             Ok(e) => stream(&cli.collection, e, url, brokers, *partitions, rates, *seconds, *flat, *restart, *batch, label.clone(), out).await,
             Err(o) => Err(format!("streams are not measured for {} yet", o.name())),

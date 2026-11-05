@@ -12,7 +12,7 @@ fn probe_query() -> data::Query {
 }
 
 /// A request of the nine one-node engines as JSON: HTTP (method, URL, body), SQL, or Redis commands (each argument as text, or hex where it is not UTF-8).
-fn more_req(r: &more::Req) -> Json {
+pub(crate) fn more_req(r: &more::Req) -> Json {
     match r {
         more::Req::Http { method, url, ctype, body } => {
             let body = serde_json::from_slice::<Json>(body).unwrap_or_else(|_| Json::String(String::from_utf8_lossy(body).into_owned()));

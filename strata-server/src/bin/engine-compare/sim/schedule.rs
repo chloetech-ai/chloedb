@@ -32,16 +32,6 @@ pub enum Shape {
     Closed,
 }
 
-impl Shape {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Shape::Day { .. } => "day",
-            Shape::Ramp => "ramp",
-            Shape::Closed => "closed",
-        }
-    }
-}
-
 /// A span of the timed schedule at one rate (a ramp's step; a day is one).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Step {

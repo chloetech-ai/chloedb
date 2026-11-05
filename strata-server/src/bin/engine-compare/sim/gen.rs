@@ -504,6 +504,8 @@ pub struct Planner<'a> {
     marks: usize,
     pub stats: Stats,
     sel: BTreeMap<&'static str, Vec<f64>>,
+    /// Sessions take no step planned after this (the end of their part of the schedule).
+    pub horizon: f64,
 }
 
 impl<'a> Planner<'a> {
@@ -577,6 +579,7 @@ impl<'a> Planner<'a> {
             marks: 0,
             stats: Stats::default(),
             sel: BTreeMap::new(),
+            horizon: f64::INFINITY,
         })
     }
 
@@ -735,6 +738,9 @@ impl<'a> Planner<'a> {
             let w: Vec<f64> = weights.iter().zip(can).map(|(w, c)| if c { *w } else { 0.0 }).collect();
             let Ok(pick) = WeightedIndex::new(&w) else { break };
             let think = self.think.draw(rng);
+            if prev_t + think / 1e3 > self.horizon {
+                break;
+            }
             let mut e = Entry { t: prev_t + think / 1e3, think_ms: Some((think * 1e3).round() / 1e3), warm: self.warm, ..Entry::default() };
             match pick.sample(rng) {
                 0 => {
@@ -967,6 +973,7 @@ pub fn plan(p: &Profile, profile_sha256: &str, c: &Catalog, seed: u64, shape: Sh
     let mut w = Writer::create(out, &header)?;
     let mut tally = Tally { stats: Stats::default(), windows: Vec::new(), per_step: vec![0; steps.len()], steps: steps.clone(), warmup };
     let mut timed = Planner::new(p, c, &sh, seed, false)?;
+    timed.horizon = warmup + end_s;
 
     if shape == Shape::Closed {
         // run's requests: each kind, the head's queries in order, keys and items by run's strides.
@@ -991,6 +998,7 @@ pub fn plan(p: &Profile, profile_sha256: &str, c: &Catalog, seed: u64, shape: Sh
         // The warm-up: the first step's rate, reads alone, from a planner of its own.
         if warmup > 0.0 {
             let mut warm = Planner::new(p, c, &sh, splitmix(seed ^ 0x3a4d), true)?;
+            warm.horizon = warmup;
             let rate0 = match &shape {
                 Shape::Day { rate } => rate * day_shape(0.0, p.traffic.peak_to_trough, p.traffic.humps, p.traffic.peak_at),
                 _ => steps[0].rate,
@@ -1122,7 +1130,10 @@ pub fn summary(plan: &Plan) -> String {
     for (k, n) in &s.by_kind {
         out += &format!("  {k:<24} {n:>9}  {:>5.1}%\n", 100.0 * *n as f64 / s.requests.max(1) as f64);
     }
-    out += &format!(
+    if plan.header.shape == Shape::Closed {
+        out += &format!("{} queries, each kind's in turn (run's closed loop)\n", s.distinct_queries);
+    } else {
+        out += &format!(
         "sessions {} ({} with follow-ups), {:.2} reads a session; queries drawn {}, distinct {}, first-time {:.1}%, top query {:.2}%, tail {} (wrapped {}); typos {}; flash {}\n",
         s.sessions,
         s.waiting_sessions,
@@ -1136,6 +1147,7 @@ pub fn summary(plan: &Plan) -> String {
         s.typos,
         s.flash_requests
     );
+    }
     if !s.writes.is_empty() {
         out += &format!("writes {:?}, {} documents inserted, {} marked\n", s.writes, s.docs_inserted, s.marks);
     }
