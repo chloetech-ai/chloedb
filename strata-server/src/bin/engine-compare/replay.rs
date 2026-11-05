@@ -13,7 +13,7 @@
 //! the end, what the schedule wrote is deleted and the ratings it changed
 //! put back.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::FileExt;
@@ -29,7 +29,7 @@ use tokio::sync::{mpsc, Semaphore};
 use crate::more::{self, Other};
 use crate::sim::schedule::{Entry, Header, Op, Reader, Shape, Write};
 use crate::{
-    data, differs, engine_doc, error_of, found, http_client, id_path, native_get, query_escape, request, restore, s, searchable_soon, send_write, strata_doc,
+    data, differs, engine_doc, error_of, found, http_client, id_path, native_get, query_escape, request, restore, s, searchable_soon, send_write, strata_doc, Knobs,
     unsupported, warm_up, Engine, Probe, RawDoc, Timed, WriteReq, KINDS,
 };
 use strata::metrics::{mean, percentile};
@@ -159,6 +159,8 @@ enum Rendered {
     Main(crate::Req),
     More(more::Req),
     Write(WriteReq),
+    /// A one-node engine's write: its requests, one after the other.
+    MoreWrite(Vec<more::Req>),
 }
 
 /// At most `n` requests in flight, each with an executor of its own (one
@@ -190,6 +192,16 @@ impl Slots {
                 Some(e) => Err(e),
             },
             (Exec::More(c), Rendered::More(req)) => c.exec(req).await,
+            (Exec::More(c), Rendered::MoreWrite(reqs)) => {
+                let mut last = Ok(Json::Null);
+                for r in reqs {
+                    last = c.exec(r).await;
+                    if last.is_err() {
+                        break;
+                    }
+                }
+                last
+            }
             _ => Err("a request for another kind of engine".into()),
         };
         self.pool.lock().unwrap().push(exec);
@@ -249,6 +261,7 @@ struct Rec {
     visible: Vec<(f64, f64)>,
     visible_failed: u64,
     inserted: Vec<String>,
+    deleted: HashSet<String>,
     updated: BTreeSet<u64>,
 }
 
@@ -261,6 +274,8 @@ struct Ctx {
     dvecs: Vectors,
     docs: Option<DocRows>,
     inserts: Option<DocRows>,
+    /// Qdrant's BM25 weights of new documents need the collection's average length.
+    avgdl: f64,
     client: reqwest::Client,
     cache_mode: CacheMode,
     paid: bool,
@@ -361,7 +376,7 @@ fn render(ctx: &Ctx, e: &Entry) -> Result<Option<Rendered>, String> {
     if let Some(w) = &e.w {
         return match ctx.target {
             Target::Main(engine) => write_request(ctx, engine, w).map(|r| Some(Rendered::Write(r))),
-            Target::More(_) => Ok(None),
+            Target::More(other) => more_write(ctx, other, w).map(|r| Some(Rendered::MoreWrite(r))),
         };
     }
     let o = owned(ctx, e)?;
@@ -377,23 +392,53 @@ fn render(ctx: &Ctx, e: &Entry) -> Result<Option<Rendered>, String> {
     })
 }
 
+/// An insert's documents: copies of rows of the insert source under the
+/// write's keys, the first with the mark in its title, if any.
+fn new_docs(ctx: &Ctx, w: &Write) -> Result<Vec<(RawDoc, Vec<f32>, String)>, String> {
+    let src = ctx.inserts.as_ref().ok_or("no documents to insert from")?;
+    let mut docs = Vec::with_capacity(w.keys.len());
+    for (i, (key, row)) in w.keys.iter().zip(&w.rows).enumerate() {
+        let (mut r, v) = src.doc(*row)?;
+        if i == 0 {
+            if let Some(m) = &w.mark {
+                r.title = format!("{m} {}", r.title);
+            }
+        }
+        docs.push((r, v, key.clone()));
+    }
+    Ok(docs)
+}
+
+/// A write of the schedule as a one-node engine's requests.
+fn more_write(ctx: &Ctx, o: Other, w: &Write) -> Result<Vec<more::Req>, String> {
+    let url = ctx.url();
+    Ok(match w.op {
+        Op::Insert => {
+            let docs: Vec<(RawDoc, Vec<f32>)> = new_docs(ctx, w)?
+                .into_iter()
+                .map(|(mut r, v, k)| {
+                    r.id = k;
+                    (r, v)
+                })
+                .collect();
+            vec![more::insert_req(o, url, &docs, ctx.avgdl)]
+        }
+        Op::Update => {
+            let row = w.rows[0];
+            let doc = if o == Other::Milvus { Some(ctx.docs.as_ref().ok_or("no documents to update from")?.doc(row)?) } else { None };
+            vec![more::rating_req(o, url, &w.keys[0], row, w.rating.unwrap_or(0.0), doc.as_ref())?]
+        }
+        Op::Delete => more::delete_reqs(o, url, &w.keys),
+    })
+}
+
 /// A write of the schedule as the engine's request.
 fn write_request(ctx: &Ctx, engine: Engine, w: &Write) -> Result<WriteReq, String> {
     let url = ctx.url();
     let one = |u: String, body: String| WriteReq::One { url: u, put: false, body: body.into_bytes() };
     match w.op {
         Op::Insert => {
-            let src = ctx.inserts.as_ref().ok_or("no documents to insert from")?;
-            let mut docs = Vec::with_capacity(w.keys.len());
-            for (i, (key, row)) in w.keys.iter().zip(&w.rows).enumerate() {
-                let (mut r, v) = src.doc(*row)?;
-                if i == 0 {
-                    if let Some(m) = &w.mark {
-                        r.title = format!("{m} {}", r.title);
-                    }
-                }
-                docs.push((r, v, key.clone()));
-            }
+            let docs = new_docs(ctx, w)?;
             Ok(match engine {
                 Engine::Strata => {
                     let ops: Vec<Json> = docs.iter().map(|(r, v, k)| json!({"op": "insert", "doc": strata_doc(r, k, v)})).collect();
@@ -466,7 +511,7 @@ async fn one(ctx: Arc<Ctx>, e: Entry, intended: Instant) -> Instant {
         ctx.step_inflight[i].fetch_add(1, Ordering::Relaxed);
     }
     let label = label_of(&e);
-    let blocked = ctx.unavailable.lock().unwrap().contains_key(&e.k) || (e.w.is_some() && matches!(ctx.target, Target::More(_)));
+    let blocked = ctx.unavailable.lock().unwrap().contains_key(&e.k);
     let rendered = if blocked { Ok(None) } else { render(&ctx, &e) };
     let outcome = match rendered {
         Ok(Some(r)) => {
@@ -540,19 +585,28 @@ async fn one(ctx: Arc<Ctx>, e: Entry, intended: Instant) -> Instant {
                 match w.op {
                     Op::Insert => rec.inserted.extend(w.keys.iter().cloned()),
                     Op::Update => rec.updated.extend(w.rows.iter().copied()),
-                    Op::Delete => {}
+                    Op::Delete => rec.deleted.extend(w.keys.iter().cloned()),
                 }
             }
         }
     }
     // A marked document: how soon a search finds it.
-    if let (Some(w), Target::Main(engine), Some((sent, at, Ok(_)))) = (&e.w, ctx.target, &outcome) {
-        if let Some(mark) = w.mark.clone() {
+    if let (Some(w), Some((sent, at, Ok(_)))) = (&e.w, &outcome) {
+        if let (Some(mark), Some(key)) = (w.mark.clone(), w.keys.first().cloned()) {
             let (ctx, sent, acked) = (ctx.clone(), *sent, *at);
             tokio::spawn(async move {
                 let u = ctx.urls[0].clone();
+                let mut conns = match ctx.target {
+                    Target::More(o) => more::Conns::new(o, Duration::from_secs(30)).ok(),
+                    Target::Main(_) => None,
+                };
                 loop {
-                    if let Ok(true) = found(engine, &ctx.client, &u, &mark).await {
+                    let hit = match (ctx.target, conns.as_mut()) {
+                        (Target::Main(engine), _) => found(engine, &ctx.client, &u, &mark).await,
+                        (Target::More(o), Some(c)) => more_found(&ctx, o, c, &u, &mark, &key).await,
+                        (Target::More(_), None) => Err("no connection".into()),
+                    };
+                    if let Ok(true) = hit {
                         let now = Instant::now();
                         ctx.rec.lock().unwrap().visible.push(((now - sent).as_secs_f64() * 1e3, (now - acked).as_secs_f64() * 1e3));
                         break;
@@ -567,6 +621,14 @@ async fn one(ctx: Arc<Ctx>, e: Entry, intended: Instant) -> Instant {
         }
     }
     done
+}
+
+/// Whether a one-node engine's bm25 search for `word` finds the document `key`.
+async fn more_found(ctx: &Ctx, o: Other, c: &mut more::Conns, url: &str, word: &str, key: &str) -> Result<bool, String> {
+    let q = data::Query { id: String::new(), text: word.to_string(), vector: Arc::from(vec![0.0; ctx.header.dim]) };
+    let p = Probe { q: &q, key: "", row: 0, item: &[], seen: &[], year: 2000, paid: false, knobs: Knobs::default() };
+    let r = more::request(o, "bm25", &p, url).ok_or("no bm25 request")?;
+    Ok(more::finds(o, &c.exec(&r).await?, key))
 }
 
 /// What the dispatcher hands a session: a step it sent at its time, or a
@@ -840,13 +902,19 @@ pub async fn replay_in(dir: &Path, collection: &str, target: Target, urls: &[Str
         Target::More(_) => reqwest::Client::builder().timeout(Duration::from_secs(30)).build().map_err(s)?,
     };
     let has_writes = header.profile.writes.share > 0.0 || !header.profile.writes.jobs.is_empty();
-    let (docs, inserts) = if has_writes && matches!(target, Target::Main(_)) {
+    let (docs, inserts) = if has_writes {
         eprintln!("indexing the documents for writes ...");
         let docs = DocRows::open(&dir.join("docs.jsonl"), &dir.join("doc_vecs.f32"), header.dim)?;
         let inserts = if header.inserts_from == "heldout" { DocRows::open(&dir.join("heldout.jsonl"), &dir.join("heldout_vecs.f32"), header.dim)? } else { DocRows::open(&dir.join("docs.jsonl"), &dir.join("doc_vecs.f32"), header.dim)? };
         (Some(docs), Some(inserts))
     } else {
         (None, None)
+    };
+    let avgdl = if has_writes && matches!(target, Target::More(Other::Qdrant)) {
+        eprintln!("qdrant: the collection's average body length, for new documents' BM25 weights ...");
+        more::avgdl(collection)?
+    } else {
+        1.0
     };
     let pg_like = matches!(target, Target::More(Other::Postgres | Other::Paradedb | Other::Redis));
     let n_slots = opts.max_inflight.unwrap_or(if pg_like { 64 } else { 512 }).max(1);
@@ -867,6 +935,7 @@ pub async fn replay_in(dir: &Path, collection: &str, target: Target, urls: &[Str
         dvecs: Vectors::open(&dir.join("doc_vecs.f32"), header.dim)?,
         docs,
         inserts,
+        avgdl,
         client: engine_client.clone(),
         cache_mode: opts.cache_mode,
         paid: opts.paid,
@@ -1021,6 +1090,7 @@ pub async fn replay_in(dir: &Path, collection: &str, target: Target, urls: &[Str
             "windows": windows,
         })
     };
+    let mut report = report;
     let path = opts.out.join(format!("replay-{}.json", label.replace(' ', "-")));
     std::fs::write(&path, serde_json::to_string(&report).unwrap()).map_err(s)?;
     let reads = &report["reads"];
@@ -1042,16 +1112,59 @@ pub async fn replay_in(dir: &Path, collection: &str, target: Target, urls: &[Str
 
     // Put the index back: delete what the schedule wrote, give changed documents their ratings again.
     if opts.reset {
-        if let (Target::Main(engine), Some(docs)) = (target, &ctx.docs) {
+        if let Some(docs) = &ctx.docs {
+            // What the schedule inserted and has not deleted itself.
             let (keys, rows) = {
                 let rec = ctx.rec.lock().unwrap();
-                (rec.inserted.clone(), rec.updated.iter().copied().collect::<Vec<_>>())
+                (rec.inserted.iter().filter(|k| !rec.deleted.contains(*k)).cloned().collect::<Vec<_>>(), rec.updated.iter().copied().collect::<Vec<_>>())
             };
             let originals: Vec<(RawDoc, Vec<f32>)> = rows.iter().map(|&r| docs.doc(r)).collect::<Result<_, _>>()?;
             let t = Instant::now();
-            restore(engine, &engine_client, &urls[0], &keys, &originals.iter().collect::<Vec<_>>()).await?;
-            eprintln!("{label}: deleted {} written documents and put back {} ratings in {:.1} s", keys.len(), originals.len(), t.elapsed().as_secs_f64());
+            let after = match target {
+                Target::Main(engine) => {
+                    restore(engine, &engine_client, &urls[0], &keys, &originals.iter().collect::<Vec<_>>()).await?;
+                    None
+                }
+                Target::More(o) => {
+                    more_restore(o, &urls[0], &keys, &rows, &originals).await?;
+                    more::searchable_docs(o, &urls[0], header.docs as u64).await?
+                }
+            };
+            let reset_s = t.elapsed().as_secs_f64();
+            eprintln!("{label}: deleted {} written documents and put back {} ratings in {reset_s:.1} s", keys.len(), originals.len());
+            if let Some(n) = after.filter(|&n| n != header.docs as u64) {
+                eprintln!("warning: {n} documents searchable after the reset, {} loaded", header.docs);
+            }
+            report["reset"] = json!({"deleted": keys.len(), "ratings": originals.len(), "seconds": reset_s, "searchable_docs_after": after});
+            std::fs::write(&path, serde_json::to_string(&report).unwrap()).map_err(s)?;
         }
+    }
+    Ok(())
+}
+
+/// A one-node engine put back: the documents a replay inserted deleted (500
+/// a request), the ratings it changed written back, 16 requests at a time.
+async fn more_restore(o: Other, url: &str, keys: &[String], rows: &[u64], originals: &[(RawDoc, Vec<f32>)]) -> Result<(), String> {
+    let mut reqs: Vec<Vec<more::Req>> = keys.chunks(500).map(|c| more::delete_reqs(o, url, c)).collect();
+    for (row, doc) in rows.iter().zip(originals) {
+        reqs.push(vec![more::rating_req(o, url, &doc.0.id, *row, doc.0.rating, Some(doc))?]);
+    }
+    let conns = more::Conns::new(o, Duration::from_secs(300))?;
+    let queue = Arc::new(Mutex::new(reqs));
+    let mut tasks = Vec::new();
+    for _ in 0..16 {
+        let (queue, mut c) = (queue.clone(), conns.fork());
+        tasks.push(tokio::spawn(async move {
+            loop {
+                let Some(batch) = queue.lock().unwrap().pop() else { return Ok::<(), String>(()) };
+                for r in &batch {
+                    c.exec(r).await.map_err(|e| format!("putting the index back: {e}"))?;
+                }
+            }
+        }));
+    }
+    for t in tasks {
+        t.await.map_err(s)??;
     }
     Ok(())
 }
@@ -1145,7 +1258,6 @@ async fn closed(ctx: &Ctx, schedule: &Path, label: &str, opts: &Opts) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Knobs;
 
     #[test]
     fn shipped_mode_drops_the_request_cache_switch() {
