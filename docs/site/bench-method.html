@@ -138,7 +138,7 @@
           <tr><th scope="row">Last in its lane, Milvus was still compacting during its first two passes, 2 to 3 times slower than alone</th><td>Its 1M numbers come from a run alone on a fresh node</td></tr>
         <tr><th scope="row">A slow kind is timed on fewer queries in its 6 seconds (Strata's typo kind on its first 48)</th><td>Open</td></tr>
         <tr><th scope="row">The graph run is on a fanless laptop, in a fixed order</th><td>Said on the graph page</td></tr>
-        <tr><th scope="row">Elasticsearch's and OpenSearch's SQL aggregate went through their SQL endpoints, where the shard request cache stayed on; its 300 queries repeat 30 years, so their times are likely cached answers</th><td>Open: said beside every SQL aggregate gap; the next run turns the cache off for the whole index</td></tr>
+        <tr><th scope="row">Elasticsearch's and OpenSearch's SQL aggregate went through their SQL endpoints, where the shard request cache stayed on; its 300 queries repeat 30 years, so their times are likely cached answers</th><td>Open: said beside every SQL aggregate gap. From <a href="https://github.com/chloetech-ai/strata/pull/262">#262</a> (in review) the harness turns the cache off for the whole index and records every engine's result-cache hits with the results</td></tr>
       </tbody>
     </table></div>
   </div></section>
