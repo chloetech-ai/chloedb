@@ -1589,7 +1589,15 @@ impl Coordinator {
         let mut out = vec![None; keys.len()];
         // Per key, the shard and replica it counts as read from.
         let mut by: Vec<Option<(usize, usize)>> = vec![None; keys.len()];
-        for r in join_all(calls).await {
+        let parts = match asked.iter().filter(|a| !a.is_empty()).count() {
+            // One shard's keys (one key, say): no futures to join.
+            1 => {
+                let mut calls = calls;
+                vec![calls.next().expect("one shard asked").await]
+            }
+            _ => join_all(calls).await,
+        };
+        for r in parts {
             let (i, r, a, rows) = r?;
             if rows.len() != a.len() {
                 return Err(ApiError::internal(format!("a shard answered {} rows for {} keys", rows.len(), a.len())));
