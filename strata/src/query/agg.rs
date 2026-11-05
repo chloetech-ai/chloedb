@@ -19,7 +19,7 @@ use crate::query::logical::{AggFn, Col, Having, OrderBy, Projection, Select, Tie
 use crate::value::Value;
 
 pub mod exact;
-pub use exact::ExactSum;
+pub use exact::{near_units, ExactSum, NEAR_EVERY};
 
 fn err(m: impl Into<String>) -> Error {
     Error::Query(m.into())

@@ -11,6 +11,13 @@
 //! A sum holds a window of six chunks in place (a column's values sit
 //! within a few chunks of each other) and moves to all 67 chunks on the
 //! heap once its values need more.
+//!
+//! Most columns' values lie between 2^-12 and 2^42 (ratings, prices,
+//! counts as floats): each of those is a 53-bit integer times 2^-64 times
+//! a shift of at most 53 bits, which a 128-bit integer adds exactly with
+//! room for 2^20 of them. A sum adds such values there, a shift and an add
+//! each, and moves the integer into the chunks every 2^20 values and when
+//! it is read or merged.
 
 /// Bits per chunk: chunk `i` is worth 2^(32 i - 1074).
 const CHUNK: u32 = 32;
@@ -22,6 +29,20 @@ const WINDOW: usize = 6;
 /// Additions between carries: each adds less than 2^32 to a chunk, so a
 /// chunk stays far within 63 bits.
 const CARRY_EVERY: u32 = 1 << 30;
+/// The exponent field of the lowest values [`ExactSum::near`] holds: its
+/// unit, 2^-64, is their lowest bit (2^(1011 - 1075)).
+const NEAR_EXP: u32 = 1011;
+/// How many exponents from [`NEAR_EXP`] it holds: a value of the highest
+/// is below 2^42, a 53-bit integer shifted by 53.
+const NEAR_EXPS: u32 = 54;
+/// Values [`ExactSum::near`] takes before it moves into the chunks: each
+/// is below 2^106, so the integer stays below 2^126.
+pub const NEAR_EVERY: u32 = 1 << 20;
+/// The chunk holding 2^-64, the unit of [`ExactSum::near`] (bit 1010 is
+/// its bit 18, as bit 1074, the unit of integers, is chunk 33's).
+const NEAR_CHUNK: usize = 31;
+/// The chunk holding 1, the unit of [`ExactSum::add_int`].
+const INT_CHUNK: usize = 33;
 
 #[derive(Clone, Debug, Default)]
 pub struct ExactSum {
@@ -33,6 +54,10 @@ pub struct ExactSum {
     wide: Option<Box<[i64; CHUNKS]>>,
     /// Additions since the chunks were last carried.
     adds: u32,
+    /// The values between 2^-12 and 2^42 added since it last moved into
+    /// the chunks, in units of 2^-64, and how many.
+    near: i128,
+    near_adds: u32,
     nan: bool,
     pos_inf: bool,
     neg_inf: bool,
@@ -46,6 +71,28 @@ impl ExactSum {
     /// Adds `x` exactly.
     #[inline]
     pub fn add(&mut self, x: f64) {
+        match near_units(x) {
+            Some(v) => {
+                self.near += v;
+                self.near_adds += 1;
+                if self.near_adds == NEAR_EVERY {
+                    self.flush_near();
+                }
+            }
+            None => self.add_far(x),
+        }
+    }
+
+    /// Adds `units` times 2^-64 exactly: a sum of up to [`NEAR_EVERY`]
+    /// values' [`near_units`], kept apart from the sum by a caller that
+    /// adds many values to many sums.
+    pub fn add_near(&mut self, units: i128) {
+        self.add_fixed(units, NEAR_CHUNK);
+    }
+
+    /// [`Self::add`] for a value outside [`Self::near`]'s range.
+    #[inline(never)]
+    fn add_far(&mut self, x: f64) {
         let bits = x.to_bits();
         let neg = bits >> 63 == 1;
         let exp = ((bits >> 52) & 0x7ff) as usize;
@@ -74,10 +121,22 @@ impl ExactSum {
 
     /// Adds the integer `x` exactly.
     pub fn add_int(&mut self, x: i128) {
+        self.add_fixed(x, INT_CHUNK);
+    }
+
+    /// Moves [`Self::near`] into the chunks.
+    fn flush_near(&mut self) {
+        let near = std::mem::take(&mut self.near);
+        self.near_adds = 0;
+        self.add_fixed(near, NEAR_CHUNK);
+    }
+
+    /// Adds `x` times the unit at bit 18 of chunk `at` (1 at chunk 33,
+    /// 2^-64 at chunk 31).
+    fn add_fixed(&mut self, x: i128, at: usize) {
         if x == 0 {
             return;
         }
-        // 1 is bit 1074: chunk 33, bit 18.
         let m = x.unsigned_abs();
         let mut cs = [0i64; 5];
         for (k, c) in cs.iter_mut().enumerate() {
@@ -88,7 +147,7 @@ impl ExactSum {
                 *c = -*c;
             }
         }
-        self.add_chunks(33, &cs);
+        self.add_chunks(at, &cs);
         self.counted();
     }
 
@@ -98,6 +157,8 @@ impl ExactSum {
         self.pos_inf |= other.pos_inf;
         self.neg_inf |= other.neg_inf;
         let mut o = other.clone();
+        o.flush_near();
+        self.flush_near();
         o.carry();
         self.carry();
         for (i, c) in o.chunks() {
@@ -120,9 +181,18 @@ impl ExactSum {
         if self.neg_inf {
             return f64::NEG_INFINITY;
         }
+        let flushed;
+        let this = if self.near_adds > 0 {
+            let mut s = self.clone();
+            s.flush_near();
+            flushed = s;
+            &flushed
+        } else {
+            self
+        };
         // Every chunk, one more for what carries out of the top.
         let mut a = [0i64; CHUNKS + 1];
-        for (i, c) in self.chunks() {
+        for (i, c) in this.chunks() {
             a[i] = c;
         }
         carry_all(&mut a);
@@ -242,6 +312,21 @@ impl ExactSum {
             cs[k + 1] += c;
         }
     }
+}
+
+/// `x` in units of 2^-64 when it lies between 2^-12 and 2^42 (its every
+/// bit is a multiple of 2^-64, and it is below 2^106 of them), else `None`.
+#[inline(always)]
+pub fn near_units(x: f64) -> Option<i128> {
+    let bits = x.to_bits();
+    let shift = (((bits >> 52) & 0x7ff) as u32).wrapping_sub(NEAR_EXP);
+    if shift >= NEAR_EXPS {
+        return None;
+    }
+    let v = (((bits & ((1 << 52) - 1)) | 1 << 52) as i128) << shift;
+    // Negated when the sign bit is set, without a branch.
+    let sign = (bits as i64 >> 63) as i128;
+    Some((v ^ sign) - sign)
 }
 
 /// Carries every chunk into the next, up to the last.
@@ -439,6 +524,27 @@ mod tests {
             }
             assert_eq!(total.value().to_bits(), want.to_bits(), "round {round} merged");
         }
+    }
+
+    /// More values than the 128-bit integer takes at once, at the top and
+    /// the bottom of its range, and values on both sides of it.
+    #[test]
+    fn near_values_move_into_the_chunks_exactly() {
+        // The highest double below 2^42 and the lowest of 2^-12's exponent
+        // with an odd last bit: in units of 2^-64, 2^106 - 2^54 and 2^52 + 1.
+        let (big, small) = (2f64.powi(42) - 2f64.powi(-10), 2f64.powi(-12) * (1.0 + f64::EPSILON));
+        let n = 2 * NEAR_EVERY as usize + 7;
+        let mut s = ExactSum::new();
+        for i in 0..n {
+            s.add(if i % 2 == 0 { big } else { -small });
+        }
+        let (nb, ns) = (n.div_ceil(2) as i128, (n / 2) as i128);
+        let mut units = ExactSum::new();
+        units.add_int(nb * ((1 << 106) - (1 << 54)) - ns * ((1 << 52) + 1));
+        assert_eq!(s.value(), units.value() / 2f64.powi(64));
+        // Just outside the range on both sides, with values inside.
+        let xs = [2f64.powi(42), 2f64.powi(-13) * 1.5, -big, small, 1e-300, 3.0, -2f64.powi(42)];
+        assert_eq!(sum(&xs).to_bits(), fsum(&xs).to_bits());
     }
 
     #[test]

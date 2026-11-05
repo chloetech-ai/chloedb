@@ -173,7 +173,10 @@ enum Sink {
     /// `SUM` or `AVG` of an INT field: the exact sum and the values.
     Int { avg: bool, isum: Vec<i128>, n: Vec<i64> },
     /// `SUM` or `AVG` of a FLOAT field: the exact sum and the values.
-    Float { avg: bool, sum: Vec<ExactSum>, n: Vec<i64> },
+    /// Values between 2^-12 and 2^42 are added as integers of 2^-64 apart
+    /// from it ([`agg::near_units`]), `pending` of them since they were
+    /// last moved into it.
+    Float { avg: bool, sum: Vec<ExactSum>, near: Vec<i128>, pending: u32, n: Vec<i64> },
     /// `MIN` and `MAX`, and any aggregate of a field written in place:
     /// the row-by-row aggregate's accumulators.
     Accs(Vec<Acc>),
@@ -185,7 +188,7 @@ impl Sink {
         match p {
             Projection::Count => Sink::Count(Vec::new()),
             Projection::Agg { func: AggFn::Count, .. } if typed => Sink::Count(Vec::new()),
-            Projection::Agg { func: f @ (AggFn::Sum | AggFn::Avg), .. } if typed && float => Sink::Float { avg: *f == AggFn::Avg, sum: Vec::new(), n: Vec::new() },
+            Projection::Agg { func: f @ (AggFn::Sum | AggFn::Avg), .. } if typed && float => Sink::Float { avg: *f == AggFn::Avg, sum: Vec::new(), near: Vec::new(), pending: 0, n: Vec::new() },
             Projection::Agg { func: f @ (AggFn::Sum | AggFn::Avg), .. } if typed => Sink::Int { avg: *f == AggFn::Avg, isum: Vec::new(), n: Vec::new() },
             _ => Sink::Accs(Vec::new()),
         }
@@ -198,11 +201,22 @@ impl Sink {
                 isum.push(0);
                 n.push(0);
             }
-            Sink::Float { sum, n, .. } => {
+            Sink::Float { sum, near, n, .. } => {
                 sum.push(ExactSum::new());
+                near.push(0);
                 n.push(0);
             }
             Sink::Accs(a) => a.push(Acc::new(p)),
+        }
+    }
+
+    /// Moves a FLOAT sink's integers into its sums.
+    fn flush(&mut self) {
+        if let Sink::Float { sum, near, pending, .. } = self {
+            for (s, v) in sum.iter_mut().zip(near.iter_mut()) {
+                s.add_near(std::mem::take(v));
+            }
+            *pending = 0;
         }
     }
 
@@ -229,7 +243,7 @@ impl Sink {
             Sink::Count(c) => Acc::Count(c[g]),
             Sink::Int { avg: true, isum, n } => Acc::Avg { sum: ExactSum::new(), isum: isum[g], n: n[g] },
             Sink::Int { avg: false, isum, n } => Acc::Sum { sum: ExactSum::new(), isum: isum[g], int: true, any: n[g] > 0 },
-            Sink::Float { avg: true, sum, n } => Acc::Avg { sum: std::mem::take(&mut sum[g]), isum: 0, n: n[g] },
+            Sink::Float { avg: true, sum, n, .. } => Acc::Avg { sum: std::mem::take(&mut sum[g]), isum: 0, n: n[g] },
             Sink::Float { avg: false, n, .. } if n[g] == 0 => Acc::Sum { sum: ExactSum::new(), isum: 0, int: true, any: false },
             Sink::Float { avg: false, sum, .. } => Acc::Sum { sum: std::mem::take(&mut sum[g]), isum: 0, int: false, any: true },
             Sink::Accs(a) => std::mem::replace(&mut a[g], Acc::Count(0)),
@@ -261,6 +275,7 @@ impl<'a> Executor<'a> {
         })?;
         let mut all = new();
         for mut part in per {
+            part.sinks.iter_mut().for_each(Sink::flush);
             for (h, key) in std::mem::take(&mut part.keys).into_iter().enumerate() {
                 let g = match all.index.get(&key) {
                     Some(&g) => g,
@@ -420,11 +435,20 @@ impl<'a> Executor<'a> {
                             n[g] += 1;
                         }
                     }
-                    (Sink::Float { sum, n, .. }, Some((_, col, _))) => {
-                        let kind = col.kind();
-                        for (j, g) in rows.filter(|&(j, _)| has(i, j)) {
-                            sum[g].add(kind.decode(block[i][j]));
-                            n[g] += 1;
+                    (Sink::Float { sum, near, pending, n, .. }, Some((_, col, _))) => {
+                        let (vals, rows) = (&block[i], rows.filter(|&(j, _)| has(i, j)));
+                        match col.kind() {
+                            NumericKind::Decimal(s) => add_floats(|k| NumericKind::Decimal(s).decode(k), vals, rows, sum, near, n),
+                            NumericKind::FloatBits => add_floats(|k| NumericKind::FloatBits.decode(k), vals, rows, sum, near, n),
+                            NumericKind::Int => add_floats(|k| k as f64, vals, rows, sum, near, n),
+                        }
+                        // A block adds at most BLOCK to any group's integer.
+                        *pending += k as u32;
+                        if *pending > agg::NEAR_EVERY - BLOCK as u32 {
+                            for (s, v) in sum.iter_mut().zip(near.iter_mut()) {
+                                s.add_near(std::mem::take(v));
+                            }
+                            *pending = 0;
                         }
                     }
                     (Sink::Accs(accs), Some((f, col, u))) => {
@@ -471,5 +495,21 @@ impl<'a> Executor<'a> {
             s.push(p);
         }
         Ok(g)
+    }
+}
+
+/// Adds a block's values of a FLOAT column to their groups' sums: those in
+/// [`agg::near_units`]'s range as integers, the rest to the exact sums. A
+/// function of its own, once for each kind of column, so that the slices are
+/// known apart and stay in registers and the decoding is not a match per row.
+#[inline(never)]
+fn add_floats(decode: impl Fn(i64) -> f64, vals: &[i64; BLOCK], rows: impl Iterator<Item = (usize, usize)>, sum: &mut [ExactSum], near: &mut [i128], n: &mut [i64]) {
+    for (j, g) in rows {
+        let x = decode(vals[j]);
+        match agg::near_units(x) {
+            Some(v) => near[g] += v,
+            None => sum[g].add(x),
+        }
+        n[g] += 1;
     }
 }
