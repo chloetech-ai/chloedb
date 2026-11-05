@@ -89,10 +89,21 @@ Elasticsearch and Solr, 28 October 2026) are in
   per cluster by `compare.sh` and kept in the secret `strata-token`; the
   other engines run with their security off, as their images start
   (Typesense needs an API key, a fixed `compare`).
-- **No result caches**: the timed runs repeat 300 queries, so Solr's
-  `queryResultCache` is off and Elasticsearch's and OpenSearch's shard
-  request caches are bypassed (`request_cache=false`); filter caches stay
-  on everywhere. Vespa keeps no result cache by default.
+- **No result caches**: the timed runs repeat 300 queries, so no engine
+  may answer a repeat from a cache of answers. Solr's `queryResultCache`
+  is off (size 0); Elasticsearch's and OpenSearch's shard request caches
+  are off for the index while it is timed
+  (`index.requests.cache.enable: false`, which also covers their SQL
+  endpoints); Manticore's query cache is off (`SET GLOBAL
+  qcache_max_bytes=0`; it keeps queries slower than 3 s). Vespa, the
+  other engines and Strata keep no result cache by default (Typesense
+  only when a request asks with `use_cache`, which these do not). Page
+  caches and filter caches stay on everywhere. Each `run-*.json` keeps
+  the caches' counters from before and after the timed runs
+  (`result_cache`), so a report can show that none answered. Runs
+  before 5 November 2026 only passed `request_cache=false` on
+  Elasticsearch's and OpenSearch's `_search` and left Manticore's cache
+  on, so their SQL aggregates could be answered from the request cache.
 
 ## The query kinds
 
