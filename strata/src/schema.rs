@@ -164,6 +164,14 @@ impl VectorPartition {
     }
 }
 
+/// The feature of a database with field ids whose table has a primary
+/// key: its segments' key index keeps a 32-bit fingerprint of each key's
+/// hash and reads a KEYWORD key from the key field's keyword column
+/// ([`crate::storage::pk`]), a layout that versions of Strata from before
+/// it cannot read, so they refuse the database by name. A database written
+/// before field ids keeps the layout those versions read.
+pub const COMPACT_KEYS: &str = "compact_keys";
+
 /// The feature of a database with a table whose rows expire at a time
 /// they hold ([`Schema::with_expire_by`]): versions of Strata from before
 /// it would show expired rows, so they refuse the database by name.
@@ -1482,7 +1490,9 @@ impl Schema {
     /// [`JSON_TEXT`] and [`RABITQ`], and
     /// its options `shard_by`, `cluster_by`, `retain` and `edge_table`
     /// ([`Schema::with_shard_by`], [`Schema::with_cluster_by`],
-    /// [`Schema::with_retain`], [`Schema::with_edges`]).
+    /// [`Schema::with_retain`], [`Schema::with_edges`]), [`EXPIRE_BY`], and
+    /// [`COMPACT_KEYS`] for a primary key (unless the table comes from a
+    /// database written before field ids).
     pub fn features(&self) -> impl Iterator<Item = String> + '_ {
         let fields = self.fields.iter().flat_map(|f| {
             let named = [
@@ -1507,6 +1517,7 @@ impl Schema {
             self.retain.as_ref().map(|_| "retain"),
             self.edges.as_ref().map(|_| "edge_table"),
             self.expire_by.as_ref().map(|_| EXPIRE_BY),
+            (self.primary_key.is_some() && !self.is_legacy()).then_some(COMPACT_KEYS),
         ];
         fields.chain(options.into_iter().flatten().map(String::from))
     }
