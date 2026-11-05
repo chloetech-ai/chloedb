@@ -1,8 +1,11 @@
 //! `GROUP BY` and aggregates read from the columns: each segment's rows
 //! find their group by a keyword column's value code or a numeric
 //! column's value, without making a group's values for every row, and add
-//! into the group's accumulators in the order the row-by-row aggregate
-//! adds them (so sums round alike).
+//! into the group's accumulators. Segments are grouped on their own
+//! threads ([`Executor::per_segment`]) and their groups merged in segment
+//! order, so the groups come out in the order one pass first sees them;
+//! FLOAT sums are exact ([`agg::ExactSum`]), so merging them gives the
+//! bits one pass gives.
 //!
 //! It answers a query whose groups are single-valued keyword, INT or
 //! FLOAT fields and whose aggregates are `COUNT(*)`, or `COUNT`, `SUM`,
@@ -13,10 +16,10 @@
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
-use super::Executor;
+use super::{Executor, Local, Seg};
 use crate::error::Result;
 use crate::forward::{KeywordColumn, NumericColumn, NumericKind, BLOCK};
-use crate::query::agg::{self, Acc, Part};
+use crate::query::agg::{self, Acc, ExactSum, Part};
 use crate::query::logical::{AggFn, Col, Projection, Select};
 use crate::schema::FieldType;
 use crate::segment::{DocId, DocSet};
@@ -163,14 +166,14 @@ type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
 const DENSE_KEYS: i64 = 1 << 16;
 
 /// Each needed aggregate's states, one per group (by its index in
-/// [`All`]), each added to in the order the row-by-row aggregate adds.
+/// [`All`]).
 enum Sink {
     /// `COUNT(*)` (rows) or `COUNT(f)` (rows with a value).
     Count(Vec<i64>),
     /// `SUM` or `AVG` of an INT field: the exact sum and the values.
     Int { avg: bool, isum: Vec<i128>, n: Vec<i64> },
-    /// `SUM` or `AVG` of a FLOAT field: the sum and the values.
-    Float { avg: bool, sum: Vec<f64>, n: Vec<i64> },
+    /// `SUM` or `AVG` of a FLOAT field: the exact sum and the values.
+    Float { avg: bool, sum: Vec<ExactSum>, n: Vec<i64> },
     /// `MIN` and `MAX`, and any aggregate of a field written in place:
     /// the row-by-row aggregate's accumulators.
     Accs(Vec<Acc>),
@@ -196,10 +199,27 @@ impl Sink {
                 n.push(0);
             }
             Sink::Float { sum, n, .. } => {
-                sum.push(0.0);
+                sum.push(ExactSum::new());
                 n.push(0);
             }
             Sink::Accs(a) => a.push(Acc::new(p)),
+        }
+    }
+
+    /// Adds group `h` of `other` (a later segment's) into group `g`.
+    fn absorb(&mut self, g: usize, other: &mut Sink, h: usize) {
+        match (self, other) {
+            (Sink::Count(c), Sink::Count(d)) => c[g] += d[h],
+            (Sink::Int { isum, n, .. }, Sink::Int { isum: i2, n: n2, .. }) => {
+                isum[g] += i2[h];
+                n[g] += n2[h];
+            }
+            (Sink::Float { sum, n, .. }, Sink::Float { sum: s2, n: n2, .. }) => {
+                sum[g].merge(&s2[h]);
+                n[g] += n2[h];
+            }
+            (Sink::Accs(a), Sink::Accs(b)) => a[g].absorb(std::mem::replace(&mut b[h], Acc::Count(0))),
+            _ => unreachable!("segments' sinks differ"),
         }
     }
 
@@ -207,18 +227,18 @@ impl Sink {
     fn acc(&mut self, g: usize) -> Acc {
         match self {
             Sink::Count(c) => Acc::Count(c[g]),
-            Sink::Int { avg: true, isum, n } => Acc::Avg { sum: 0.0, isum: isum[g], n: n[g] },
-            Sink::Int { avg: false, isum, n } => Acc::Sum { sum: 0.0, isum: isum[g], int: true, any: n[g] > 0 },
-            Sink::Float { avg: true, sum, n } => Acc::Avg { sum: sum[g], isum: 0, n: n[g] },
-            Sink::Float { avg: false, n, .. } if n[g] == 0 => Acc::Sum { sum: 0.0, isum: 0, int: true, any: false },
-            Sink::Float { avg: false, sum, .. } => Acc::Sum { sum: sum[g], isum: 0, int: false, any: true },
+            Sink::Int { avg: true, isum, n } => Acc::Avg { sum: ExactSum::new(), isum: isum[g], n: n[g] },
+            Sink::Int { avg: false, isum, n } => Acc::Sum { sum: ExactSum::new(), isum: isum[g], int: true, any: n[g] > 0 },
+            Sink::Float { avg: true, sum, n } => Acc::Avg { sum: std::mem::take(&mut sum[g]), isum: 0, n: n[g] },
+            Sink::Float { avg: false, n, .. } if n[g] == 0 => Acc::Sum { sum: ExactSum::new(), isum: 0, int: true, any: false },
+            Sink::Float { avg: false, sum, .. } => Acc::Sum { sum: std::mem::take(&mut sum[g]), isum: 0, int: false, any: true },
             Sink::Accs(a) => std::mem::replace(&mut a[g], Acc::Count(0)),
         }
     }
 }
 
-/// Every group of the query, in the order first seen, where each group's
-/// key is, and the aggregates' states.
+/// Groups in the order first seen, where each group's key is, and the
+/// aggregates' states: one segment's, or the query's.
 struct All {
     keys: Vec<Vec<Part>>,
     index: HashMap<Vec<Part>, u32>,
@@ -226,174 +246,202 @@ struct All {
 }
 
 impl<'a> Executor<'a> {
-    /// The groups and aggregates of [`plan`]'s query, read from the columns.
+    /// The groups and aggregates of [`plan`]'s query, read from the columns:
+    /// each segment on its own thread, merged in segment order.
     pub(super) fn aggregate_columns(&mut self, q: &Select, needed: &[Projection], plan: &Plan) -> Result<agg::Groups> {
-        let segs = self.segs.clone();
         // Values written in place may be of another type than the column's:
         // their aggregates add them as values, as the row-by-row one does.
-        let typed = !segs.iter().any(|s| plan.aggs.iter().flatten().any(|&f| self.updates(s, f).is_some()));
-        let sinks = needed.iter().zip(&plan.aggs).map(|(p, &f)| Sink::new(p, f, self.schema, typed)).collect();
-        let mut all = All { keys: Vec::new(), index: HashMap::new(), sinks };
-        let mut tick = self.ticker();
-        for s in segs.iter() {
-            self.check_deadline()?;
-            let m = self.mark();
-            let set = self.filter_set(s, &q.filter)?;
-            self.stats.plan.push(format!("seg {}: aggregate {} rows into groups of {} from the columns", s.ord, set.len(), q.group_by.len()));
-            let keys: Vec<Key> = plan
-                .groups
-                .iter()
-                .map(|&f| match self.schema.fields[f].ty {
-                    FieldType::Keyword => self.keyword(s, f).map(Key::Codes),
-                    _ => self.numeric(s, f).map(|n| Key::Num(n.col(), self.updates(s, f))),
-                })
-                .collect::<Result<_>>()?;
-            let aggs: Vec<Option<(usize, &NumericColumn, Option<&Updates>)>> = plan
-                .aggs
-                .iter()
-                .map(|a| match *a {
-                    None => Ok(None),
-                    Some(f) => self.numeric(s, f).map(|n| Some((f, n.col(), self.updates(s, f)))),
-                })
-                .collect::<Result<_>>()?;
-            // One keyword field: the group of each value code, and of rows
-            // without a value; one numeric field of a few thousand keys (none
-            // written in place): of each key from the smallest; else by the
-            // key's bits.
-            let (mut by_code, base): (Vec<u32>, Option<i64>) = match keys.as_slice() {
-                [Key::Codes(kw)] => (vec![u32::MAX; kw.n_values() + 1], None),
-                [Key::Num(col, None)] => match col.key_bounds() {
-                    Some((lo, hi)) if hi.checked_sub(lo).is_some_and(|w| w < DENSE_KEYS) => (vec![u32::MAX; (hi - lo) as usize + 2], Some(lo)),
-                    None => (vec![u32::MAX; 1], Some(0)),
-                    _ => (Vec::new(), None),
-                },
-                _ => (Vec::new(), None),
-            };
-            let mut by_bits: FxMap<[(u8, u64); 4], u32> = FxMap::default();
-            // Block by block of 128 rows: each column's block is unpacked
-            // once, then each aggregate adds the block's rows in order.
-            let n_cols = keys.len() + aggs.len();
-            let mut block = vec![[0i64; BLOCK]; n_cols];
-            let mut masks = vec![[0u64; 2]; n_cols];
-            let (mut pos, mut gs) = ([0u8; BLOCK], [0u32; BLOCK]);
-            let mut err = None;
-            each_block(&set, |b, rows| {
-                if let Err(e) = tick.tick() {
-                    err = Some(e);
-                    return false;
-                }
-                for (i, k) in keys.iter().enumerate() {
-                    masks[i] = match k {
-                        Key::Codes(kw) => kw.block_codes_of(b, &mut block[i]),
-                        Key::Num(col, _) => col.block_keys_of(b, &mut block[i]),
-                    };
-                }
-                for (i, a) in aggs.iter().enumerate() {
-                    if let Some((_, col, _)) = a {
-                        masks[keys.len() + i] = col.block_keys_of(b, &mut block[keys.len() + i]);
+        let typed = !self.segs.iter().any(|s| plan.aggs.iter().flatten().any(|&f| self.updates(s, f).is_some()));
+        let schema = self.schema;
+        let new = || All { keys: Vec::new(), index: HashMap::new(), sinks: needed.iter().zip(&plan.aggs).map(|(p, &f)| Sink::new(p, f, schema, typed)).collect() };
+        let per = self.per_segment(|ex, s, l| {
+            let mut part = new();
+            ex.aggregate_segment(s, q, needed, plan, &mut part, l)?;
+            Ok(part)
+        })?;
+        let mut all = new();
+        for mut part in per {
+            for (h, key) in std::mem::take(&mut part.keys).into_iter().enumerate() {
+                let g = match all.index.get(&key) {
+                    Some(&g) => g,
+                    None => {
+                        if let Some(max) = self.opts.max_groups.filter(|&m| all.keys.len() >= m) {
+                            return Err(agg::too_many_groups(max));
+                        }
+                        let g = all.keys.len() as u32;
+                        all.index.insert(key.clone(), g);
+                        all.keys.push(key);
+                        for (s, p) in all.sinks.iter_mut().zip(needed) {
+                            s.push(p);
+                        }
+                        g
                     }
+                };
+                for (s, o) in all.sinks.iter_mut().zip(part.sinks.iter_mut()) {
+                    s.absorb(g as usize, o, h);
                 }
-                let mut k = 0;
-                for (w, &bits) in rows.iter().enumerate() {
-                    let mut x = bits;
-                    while x != 0 {
-                        pos[k] = (w * 64 + x.trailing_zeros() as usize) as u8;
-                        k += 1;
-                        x &= x - 1;
-                    }
-                }
-                let has = |i: usize, j: usize| masks[i][j / 64] >> (j % 64) & 1 == 1;
-                // Each row's group.
-                for t in 0..k {
-                    let j = pos[t] as usize;
-                    let d = (b * BLOCK + j) as DocId;
-                    let g = match keys.as_slice() {
-                        [_] if !by_code.is_empty() => {
-                            let c = match (has(0, j), base) {
-                                (false, _) => by_code.len() - 1,
-                                (true, None) => block[0][j] as usize,
-                                (true, Some(lo)) => (block[0][j] - lo) as usize,
-                            };
-                            match by_code[c] {
-                                u32::MAX => match self.group_of(&mut all, needed, &keys, d, plan) {
-                                    Ok(g) => {
-                                        by_code[c] = g;
-                                        g
-                                    }
-                                    Err(e) => {
-                                        err = Some(e);
-                                        return false;
-                                    }
-                                },
-                                g => g,
-                            }
-                        }
-                        _ => {
-                            let mut key = [(0u8, 0u64); 4];
-                            for (i, kc) in keys.iter().enumerate() {
-                                key[i] = match kc {
-                                    Key::Codes(_) => if has(i, j) { (5, block[i][j] as u64) } else { (0, 0) },
-                                    Key::Num(col, u) => bits(&value(col, *u, plan.groups[i], d, has(i, j).then_some(block[i][j]))),
-                                };
-                            }
-                            match by_bits.get(&key) {
-                                Some(&g) => g,
-                                None => match self.group_of(&mut all, needed, &keys, d, plan) {
-                                    Ok(g) => {
-                                        by_bits.insert(key, g);
-                                        g
-                                    }
-                                    Err(e) => {
-                                        err = Some(e);
-                                        return false;
-                                    }
-                                },
-                            }
-                        }
-                    };
-                    gs[t] = g;
-                }
-                // Each aggregate over the block's rows, in order.
-                for (i, (sink, a)) in all.sinks.iter_mut().zip(&aggs).enumerate() {
-                    let i = keys.len() + i;
-                    let rows = pos[..k].iter().zip(&gs[..k]).map(|(&j, &g)| (j as usize, g as usize));
-                    match (sink, a) {
-                        (Sink::Count(c), None) => rows.for_each(|(_, g)| c[g] += 1),
-                        (Sink::Count(c), Some(_)) => rows.for_each(|(j, g)| c[g] += has(i, j) as i64),
-                        (Sink::Int { isum, n, .. }, Some(_)) => {
-                            for (j, g) in rows.filter(|&(j, _)| has(i, j)) {
-                                isum[g] += block[i][j] as i128;
-                                n[g] += 1;
-                            }
-                        }
-                        (Sink::Float { sum, n, .. }, Some((_, col, _))) => {
-                            let kind = col.kind();
-                            for (j, g) in rows.filter(|&(j, _)| has(i, j)) {
-                                sum[g] += kind.decode(block[i][j]);
-                                n[g] += 1;
-                            }
-                        }
-                        (Sink::Accs(accs), Some((f, col, u))) => {
-                            for (j, g) in rows {
-                                accs[g].add(&value(col, *u, *f, (b * BLOCK + j) as DocId, has(i, j).then_some(block[i][j])));
-                            }
-                        }
-                        (Sink::Accs(accs), None) => rows.for_each(|(_, g)| accs[g].add_row()),
-                        (Sink::Int { .. } | Sink::Float { .. }, None) => {}
-                    }
-                }
-                true
-            });
-            if let Some(e) = err {
-                return Err(e);
             }
-            self.seg_step(m, s, Some(set.len() as u64));
         }
         let mut groups = agg::Groups::limited(self.opts.max_groups);
         groups.charge = self.charge.clone();
         let mut sinks = all.sinks;
         groups.map = all.keys.into_iter().enumerate().map(|(g, k)| (k, sinks.iter_mut().map(|s| s.acc(g)).collect())).collect();
         Ok(groups)
+    }
+
+    /// Segment `s`'s groups and aggregates, into `all`.
+    fn aggregate_segment(&self, s: &Seg<'a>, q: &Select, needed: &[Projection], plan: &Plan, all: &mut All, l: &mut Local) -> Result<()> {
+        let mut tick = self.ticker();
+        let set = self.filter_set_l(s, &q.filter, l)?;
+        l.plan.push(format!("seg {}: aggregate {} rows into groups of {} from the columns", s.ord, set.len(), q.group_by.len()));
+        let keys: Vec<Key> = plan
+            .groups
+            .iter()
+            .map(|&f| match self.schema.fields[f].ty {
+                FieldType::Keyword => self.keyword(s, f).map(Key::Codes),
+                _ => self.numeric(s, f).map(|n| Key::Num(n.col(), self.updates(s, f))),
+            })
+            .collect::<Result<_>>()?;
+        let aggs: Vec<Option<(usize, &NumericColumn, Option<&Updates>)>> = plan
+            .aggs
+            .iter()
+            .map(|a| match *a {
+                None => Ok(None),
+                Some(f) => self.numeric(s, f).map(|n| Some((f, n.col(), self.updates(s, f)))),
+            })
+            .collect::<Result<_>>()?;
+        // One keyword field: the group of each value code, and of rows
+        // without a value; one numeric field of a few thousand keys (none
+        // written in place): of each key from the smallest; else by the
+        // key's bits.
+        let (mut by_code, base): (Vec<u32>, Option<i64>) = match keys.as_slice() {
+            [Key::Codes(kw)] => (vec![u32::MAX; kw.n_values() + 1], None),
+            [Key::Num(col, None)] => match col.key_bounds() {
+                Some((lo, hi)) if hi.checked_sub(lo).is_some_and(|w| w < DENSE_KEYS) => (vec![u32::MAX; (hi - lo) as usize + 2], Some(lo)),
+                None => (vec![u32::MAX; 1], Some(0)),
+                _ => (Vec::new(), None),
+            },
+            _ => (Vec::new(), None),
+        };
+        let mut by_bits: FxMap<[(u8, u64); 4], u32> = FxMap::default();
+        // Block by block of 128 rows: each column's block is unpacked
+        // once, then each aggregate adds the block's rows.
+        let n_cols = keys.len() + aggs.len();
+        let mut block = vec![[0i64; BLOCK]; n_cols];
+        let mut masks = vec![[0u64; 2]; n_cols];
+        let (mut pos, mut gs) = ([0u8; BLOCK], [0u32; BLOCK]);
+        let mut err = None;
+        each_block(&set, |b, rows| {
+            if let Err(e) = tick.tick() {
+                err = Some(e);
+                return false;
+            }
+            for (i, k) in keys.iter().enumerate() {
+                masks[i] = match k {
+                    Key::Codes(kw) => kw.block_codes_of(b, &mut block[i]),
+                    Key::Num(col, _) => col.block_keys_of(b, &mut block[i]),
+                };
+            }
+            for (i, a) in aggs.iter().enumerate() {
+                if let Some((_, col, _)) = a {
+                    masks[keys.len() + i] = col.block_keys_of(b, &mut block[keys.len() + i]);
+                }
+            }
+            let mut k = 0;
+            for (w, &bits) in rows.iter().enumerate() {
+                let mut x = bits;
+                while x != 0 {
+                    pos[k] = (w * 64 + x.trailing_zeros() as usize) as u8;
+                    k += 1;
+                    x &= x - 1;
+                }
+            }
+            let has = |i: usize, j: usize| masks[i][j / 64] >> (j % 64) & 1 == 1;
+            // Each row's group.
+            for t in 0..k {
+                let j = pos[t] as usize;
+                let d = (b * BLOCK + j) as DocId;
+                let g = match keys.as_slice() {
+                    [_] if !by_code.is_empty() => {
+                        let c = match (has(0, j), base) {
+                            (false, _) => by_code.len() - 1,
+                            (true, None) => block[0][j] as usize,
+                            (true, Some(lo)) => (block[0][j] - lo) as usize,
+                        };
+                        match by_code[c] {
+                            u32::MAX => match self.group_of(all, needed, &keys, d, plan) {
+                                Ok(g) => {
+                                    by_code[c] = g;
+                                    g
+                                }
+                                Err(e) => {
+                                    err = Some(e);
+                                    return false;
+                                }
+                            },
+                            g => g,
+                        }
+                    }
+                    _ => {
+                        let mut key = [(0u8, 0u64); 4];
+                        for (i, kc) in keys.iter().enumerate() {
+                            key[i] = match kc {
+                                Key::Codes(_) => if has(i, j) { (5, block[i][j] as u64) } else { (0, 0) },
+                                Key::Num(col, u) => bits(&value(col, *u, plan.groups[i], d, has(i, j).then_some(block[i][j]))),
+                            };
+                        }
+                        match by_bits.get(&key) {
+                            Some(&g) => g,
+                            None => match self.group_of(all, needed, &keys, d, plan) {
+                                Ok(g) => {
+                                    by_bits.insert(key, g);
+                                    g
+                                }
+                                Err(e) => {
+                                    err = Some(e);
+                                    return false;
+                                }
+                            },
+                        }
+                    }
+                };
+                gs[t] = g;
+            }
+            // Each aggregate over the block's rows.
+            for (i, (sink, a)) in all.sinks.iter_mut().zip(&aggs).enumerate() {
+                let i = keys.len() + i;
+                let rows = pos[..k].iter().zip(&gs[..k]).map(|(&j, &g)| (j as usize, g as usize));
+                match (sink, a) {
+                    (Sink::Count(c), None) => rows.for_each(|(_, g)| c[g] += 1),
+                    (Sink::Count(c), Some(_)) => rows.for_each(|(j, g)| c[g] += has(i, j) as i64),
+                    (Sink::Int { isum, n, .. }, Some(_)) => {
+                        for (j, g) in rows.filter(|&(j, _)| has(i, j)) {
+                            isum[g] += block[i][j] as i128;
+                            n[g] += 1;
+                        }
+                    }
+                    (Sink::Float { sum, n, .. }, Some((_, col, _))) => {
+                        let kind = col.kind();
+                        for (j, g) in rows.filter(|&(j, _)| has(i, j)) {
+                            sum[g].add(kind.decode(block[i][j]));
+                            n[g] += 1;
+                        }
+                    }
+                    (Sink::Accs(accs), Some((f, col, u))) => {
+                        for (j, g) in rows {
+                            accs[g].add(&value(col, *u, *f, (b * BLOCK + j) as DocId, has(i, j).then_some(block[i][j])));
+                        }
+                    }
+                    (Sink::Accs(accs), None) => rows.for_each(|(_, g)| accs[g].add_row()),
+                    (Sink::Int { .. } | Sink::Float { .. }, None) => {}
+                }
+            }
+            true
+        });
+        match err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// The group of document `d` (its first row in this segment with these

@@ -793,7 +793,7 @@ SELECT COUNT(*), SUM(clicks), AVG(rating) FROM docs WHERE MATCH(body, 'india');
 - **`HAVING`** filters groups by their aggregates, written out or by alias, with comparisons, `BETWEEN`, `AND`, `OR` and `NOT`, in three-valued logic: an aggregate of no values (`AVG(rating)` of a group without ratings) is `NULL`, so neither `AVG(rating) < 3` nor `NOT (AVG(rating) < 3)` keeps that group.
 - **`ORDER BY`** a group column, an aggregate or a position, with a tie-break; without one, the largest groups come first. `LIMIT` and `OFFSET` apply to groups.
 
-A coordinator over shards merges partial aggregates (sums and counts for `AVG`, the distinct values for `COUNT(DISTINCT)`), so the answers are the same as on one server.
+A `SUM` or `AVG` of `FLOAT` values is exact: the values are added without rounding and the total is rounded once, so it does not depend on the order rows are read in. A database groups its segments on several threads and merges them, and the answer is the same bits as on one thread. A coordinator over shards merges partial aggregates (sums and counts for `AVG`, the distinct values for `COUNT(DISTINCT)`), so the answers are the same as on one server, except that each shard sends its `FLOAT` sum rounded once, so a sum over shards can differ from one server's in its last bit.
 
 ## Subqueries, WITH and joins
 
