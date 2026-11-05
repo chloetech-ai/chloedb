@@ -197,6 +197,11 @@ pub struct QueryReq {
     /// ([`Service::stats_version`]), which a coordinator kept: run only on
     /// that version, else answer [`Answer::stale`]. 0: any version.
     pub stats_version: u64,
+    /// From a coordinator that fuses a rank-safe boost from the rows each
+    /// shard's bound found alone ([`crate::grpc::BOOSTS_PROTOCOL`]): the
+    /// shard leaves out the boost's inputs' top rows
+    /// ([`ExecOptions::boost_inputs`]). False answers them, for any other.
+    pub boosts_alone: bool,
 }
 
 /// The writes a read must see, so that a client reads its own writes
@@ -2245,6 +2250,7 @@ impl Service {
                         max_groups: self.max_groups,
                         memory: self.query_memory.clone(),
                         profile: req.profile,
+                        boost_inputs: db.exec.boost_inputs && !req.boosts_alone,
                         ..db.exec.clone()
                     };
                     let db = db.clone();

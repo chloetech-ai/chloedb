@@ -215,6 +215,13 @@ pub struct ExecOptions {
     /// the text score's top `depth` rows as candidates, as other
     /// expressions do (for comparisons).
     pub rank_safe: bool,
+    /// In shard mode, a rank-safe boost also answers with the top `depth`
+    /// rows of each input that generates candidates: what a coordinator
+    /// from before rank-safe boosts fuses from. A later one fuses the
+    /// boost from the rows its bound found alone, and does not read them
+    /// (strata-server leaves them out for coordinators of shard protocol
+    /// 10 and later). On by default.
+    pub boost_inputs: bool,
     /// Find a LIMIT's rows by a numeric column (`ORDER BY clicks DESC
     /// LIMIT 10`) by reading the column's blocks best first and stopping
     /// at the first that cannot reach them. False reads every matching
@@ -343,6 +350,7 @@ impl Default for ExecOptions {
             bm25_algo: TopKAlgo::MaxScore,
             fusion_depth: 100,
             rank_safe: true,
+            boost_inputs: true,
             column_blocks: true,
             stats: None,
             expansions: None,
@@ -3417,12 +3425,13 @@ impl<'a> Executor<'a> {
         let driver = rank.driver().filter(|_| self.opts.rank_safe);
         // Each generating leaf's top rows: the candidates, and the rankings
         // RRF and a coordinator read. A shard answers a driven expression
-        // with them too, for a coordinator from before rank-safe boosts to
-        // fuse as it did.
+        // with them too when asked to (`boost_inputs`), for a coordinator
+        // from before rank-safe boosts to fuse as it did.
         let mut lists: Vec<Vec<(usize, DocId)>> = Vec::with_capacity(rank.leaves.len());
         let rankings = rank.reads_rankings();
+        let for_coordinator = shard && (driver.is_none() || self.opts.boost_inputs);
         for (s, &generates) in rank.leaves.iter().zip(&rank.generates) {
-            let read = generates && (shard || rankings || (!rank.exact && driver.is_none()));
+            let read = generates && (for_coordinator || rankings || (!rank.exact && driver.is_none()));
             lists.push(if read { self.input_top(s, p, depth, false)?.into_iter().map(|h| (h.seg, h.doc)).collect() } else { Vec::new() });
         }
         let m = self.mark();
