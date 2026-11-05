@@ -829,11 +829,11 @@ pub async fn replay_in(dir: &Path, collection: &str, target: Target, urls: &[Str
     if meta.docs != header.docs {
         return Err(format!("the schedule was planned on {} documents; {collection} has {}", header.docs, meta.docs));
     }
-    let (qtexts, qvecs) = match header.source {
-        crate::sim::profile::Source::Collection => (dir.join("queries.jsonl"), dir.join("query_vecs.f32")),
-        crate::sim::profile::Source::Pool => (dir.join("pool_queries.jsonl"), dir.join("pool_vecs.f32")),
+    // The schedule carries each query's text; its vector is read from the source's file.
+    let qvecs = match header.source {
+        crate::sim::profile::Source::Collection => dir.join("query_vecs.f32"),
+        crate::sim::profile::Source::Pool => dir.join("pool_vecs.f32"),
     };
-    let _ = qtexts;
     let label = opts.label.clone().unwrap_or_else(|| target.name().to_string());
     let engine_client = match target {
         Target::Main(e) => http_client(e, 30)?,

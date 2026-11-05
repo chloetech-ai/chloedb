@@ -26,5 +26,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates iproute2 curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/ /usr/local/bin/
+# engine-compare's traffic profiles (engine-compare plan/replay --profile).
+COPY strata-server/deploy/compare/profiles /usr/local/share/engine-compare/profiles
 EXPOSE 7700 7701
 ENTRYPOINT ["strata-server"]

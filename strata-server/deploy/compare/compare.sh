@@ -12,6 +12,7 @@
 #   compare.sh run ENGINE [ARGS]      # time the query kinds and record answers; CPU use around it
 #   compare.sh writes ENGINE [ARGS]   # time writes, updates and how soon a write is found (after run: it changes the index, then puts it back)
 #   compare.sh stream ENGINE [ARGS]   # stream documents through Redpanda into it: rates, flat out, a consumer crash (after run)
+#   compare.sh replay ENGINE PROFILE [ARGS]  # replay a traffic profile's schedule into it, open loop (after run: its writes are put back)
 #   compare.sh trial                  # Elasticsearch: start the 30-day trial licence (hybrid retrievers)
 #   compare.sh down ENGINE            # stop it (Strata's shard files stay on the nodes)
 #
@@ -390,6 +391,32 @@ stream)
     cpu "$e" stream-before
     job "stream-$e" "$CLIENT_NODE" "" "" stream --engine "$e" --url "$(urls "$e")" --brokers redpanda.redpanda:9092 --out "$OUT" "$@"
     cpu "$e" stream-after
+    ;;
+replay)
+    # PROFILE is a name under deploy/compare/profiles (in the image) or a
+    # path under /data. The schedule is planned in the Job, beside the
+    # report (OUT/schedule-PROFILE-SEED.jsonl.gz), and kept.
+    e=${1:?replay ENGINE PROFILE}
+    p=${2:?replay ENGINE PROFILE}
+    shift 2
+    case $p in
+    */*) ;;
+    *) p=/usr/local/share/engine-compare/profiles/${p%.toml}.toml ;;
+    esac
+    label="" prev=""
+    for a in "$@"; do
+        [ "$prev" = --label ] && label=$a
+        prev=$a
+    done
+    # Without --label, the run is ENGINE-PROFILE.
+    if [ -z "$label" ]; then
+        label=$e-$(basename "${p%.toml}")
+        set -- "$@" --label "$label"
+    fi
+    cpu "$e" replay-before "$label"
+    jl=$(echo "$label" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '-')
+    job "replay-$jl" "$CLIENT_NODE" "" "" replay --engine "$e" --url "$(urls "$e")" --profile "$p" --out "$OUT" "$@"
+    cpu "$e" replay-after "$label"
     ;;
 trial)
     $K exec es-0 -- curl -sf -X POST 'http://localhost:9200/_license/start_trial?acknowledge=true'

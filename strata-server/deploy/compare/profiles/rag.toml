@@ -44,6 +44,8 @@ typing = false
 
 [traffic]
 day_s = 2880.0
+# As in search-app.toml, between one country's day and the world's (its
+# comments give the Wikipedia fits).
 peak_to_trough = 3.0
 humps = 1
 peak_at = 0.67

@@ -22,6 +22,10 @@ description = "an app's search box: typing, Zipf head and one-off tail, filters,
 source = "pool"
 order = "zipf"
 head = 100000
+# ORCAS's click log (scripts/fit_traffic.py zipf, 18.8M lines) fits 0.35,
+# with 34% of lines a query seen once; but a line there is a distinct
+# clicked document, not a search, which flattens the head. The plan's 0.8
+# and 0.5 stay until a log of searches is fitted.
 zipf_s = 0.8
 tail_share = 0.5
 drift_every_s = 300.0
@@ -53,6 +57,10 @@ pause_ms = 350.0
 
 [traffic]
 day_s = 2880.0
+# A regional app's day. Wikipedia's hourly views, 2026-10-01 to 10-07, UTC
+# (scripts/fit_traffic.py day): en 1.6:1 peaking at 0.83 (a world-wide
+# audience flattens the day), de 6.0:1 at 0.67, ja 3.6:1 at 0.39; 3:1 lies
+# between one country's day and the world's.
 peak_to_trough = 3.0
 humps = 1
 peak_at = 0.67
