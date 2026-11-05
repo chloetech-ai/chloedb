@@ -230,6 +230,30 @@ def test_optimize_leaves_one_segment_and_a_compact_file(tmp_path):
         assert len(db) == 20_000 and db.get("r1-9999") is not None and db.get("r3-0") is None
 
 
+def test_a_table_rewritten_crawl_after_crawl_closes_near_its_size(tmp_path):
+    # A price tracker's writes: each crawl adds a snapshot of every item and
+    # rewrites every listing whole. Segments merge in the background as the
+    # crawls add them, and close() gives back the space merges freed: the
+    # file it leaves is about what optimize() makes of it, and it opens
+    # again at once.
+    schema = {"table": "listings", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "title", "type": "text"}, {"name": "status", "type": "keyword"}, {"name": "total", "type": "float"}]}
+    path = tmp_path / "c.strata"
+    crawls, items = 60, 1_000
+    with strata.open(path, schema) as db:
+        db.sql("CREATE TABLE snapshots (item KEYWORD NOT NULL, ts TIMESTAMP NOT NULL, total FLOAT) OPTIONS(cluster_by = 'item')")
+        for c in range(crawls):
+            ts = f"2026-09-{1 + c // 6:02d}T{c % 6 * 4:02d}:00:00Z"
+            db.insert([{"item": f"v{i}", "ts": ts, "total": (i * 31 + c * 7) % 500 + 0.5} for i in range(items)], table="snapshots")
+            db.upsert([{"id": f"v{i}", "title": f"vintage camera lens {i}, boxed and tested", "status": "ACTIVE", "total": (i * 31 + c * 7) % 500 + 0.5} for i in range(items)])
+    closed = path.stat().st_size
+    with strata.open(path) as db:
+        assert len(db) == items and db.query("SELECT count(*) FROM snapshots").scalar() == crawls * items
+        assert db.get("v7")["total"] == (7 * 31 + (crawls - 1) * 7) % 500 + 0.5
+        db.optimize()
+        optimized = path.stat().st_size
+    assert closed < optimized * 3 // 2, (closed, optimized)
+
+
 def test_search(db):
     text = db.search("dragon", mode="text", limit=5)
     assert len(text) == 5 and all("dragon" in (r["title"] + r["description"]) for r in text)

@@ -89,7 +89,7 @@ export declare class Database extends Searchable {
   /** Returns the space merges freed to the file system: the bytes the file
    * shrank by. */
   vacuum(): Promise<number>;
-  /** Merges small segments and closes the database. */
+  /** Merges small segments, returns the space merges freed to the file system when it is an eighth of the file or more, and closes the database. */
   close(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;
 }

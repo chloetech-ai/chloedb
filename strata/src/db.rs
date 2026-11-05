@@ -28,7 +28,7 @@ use crate::query::{bind_command, compound, ops, profile, sql as qsql, Assign, Co
 use crate::rank_log::{self, Export, Log, Logged};
 use crate::schema::{Alter, Derive, Embed, FieldType, Schema};
 use crate::segment::{DocId, SegmentFile};
-use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, Found, Mask, SeqNo, Snapshot, TableTxn, SOURCES};
+use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, Found, Mask, MergePolicy, MergeStats, SeqNo, Snapshot, TableTxn, SOURCES};
 use crate::value::{Document, Value};
 use crate::vector::VectorReader;
 
@@ -249,6 +249,42 @@ impl Db {
     /// Merges in the background from now on ([`Database::spawn_merger`]).
     pub fn spawn_merger(&self, opts: crate::storage::MergerOptions) {
         self.storage.spawn_merger(opts);
+    }
+
+    /// Readies the database for queries once its tables are done changing
+    /// (`optimize` in Python, JavaScript and Java): writes the rows in
+    /// memory into segments, merges each table's segments into as few as
+    /// [`MergePolicy::compact`] allows, without their deleted rows, and
+    /// returns the space this frees to the file system
+    /// ([`Database::vacuum`]).
+    pub fn optimize(&self) -> Result<MergeStats> {
+        self.storage.flush()?;
+        let stats = self.storage.merge(&MergePolicy::compact())?;
+        self.storage.vacuum()?;
+        Ok(stats)
+    }
+
+    /// What a program that embeds the database runs before it lets go of it
+    /// (`close` in Python, JavaScript and Java): stops the background
+    /// merger ([`Database::stop_merger`], waiting for a merge it runs),
+    /// merges small segments as the merger would ([`MergePolicy::default`]),
+    /// then, when an eighth of the file or more is free, returns that space
+    /// to the file system ([`Database::vacuum`]). The free space is what
+    /// merges freed: later writes would reuse it, but a program that writes
+    /// for a while and stops would leave it in the file. Rows still in
+    /// memory stay in the write-ahead log, which the next open reads. The
+    /// database still answers and takes writes after it, without merging
+    /// in the background. Returns the bytes the file shrank by.
+    pub fn close(&self) -> Result<u64> {
+        self.storage.stop_merger();
+        self.storage.merge(&MergePolicy::default())?;
+        let st = self.storage.file_stats();
+        // A database of the directory layout has no pages: its vacuum
+        // removes only files a crash left behind.
+        if st.page_count > 0 && (st.free_pages + st.pending_pages) * 8 < st.page_count {
+            return Ok(0);
+        }
+        self.storage.vacuum()
     }
 
     /// The schema of the database's first table, which the methods here

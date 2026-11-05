@@ -391,7 +391,9 @@ export class Database extends Searchable {
     return this.#call("vacuum");
   }
 
-  /** Merges small segments and closes the database. Calls after it fail. */
+  /** Merges small segments, returns the space merges freed to the file
+   * system when it is an eighth of the file or more, and closes the
+   * database. Calls after it fail. */
   async close() {
     await this.#call("close");
   }

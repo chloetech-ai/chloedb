@@ -31,7 +31,7 @@ use strata::schema::Schema;
 use strata::sid::{Codebook, TrainOptions};
 use strata::sqlite;
 use strata::segment::build::BuildOptions;
-use strata::storage::{DbOptions, Layout, MergePolicy};
+use strata::storage::{DbOptions, Layout, MergerOptions};
 use strata::{FieldType, Value};
 
 create_exception!(_strata, StrataError, PyException, "An error from the database: a bad schema, query, value or file.");
@@ -312,6 +312,15 @@ impl Database {
     fn new(db: Db, models: Option<PathBuf>) -> Self {
         let models = models.unwrap_or_else(strata::embed::models_dir);
         let embed_errors = db.open_embedders(&models).into_iter().map(|(f, e)| (f, e.to_string())).collect();
+        Database::of(db, embed_errors)
+    }
+
+    /// The database `db`, merging its segments in the background as writes
+    /// add them (one merge at a time), as a server does: without it a
+    /// table that is written to for a long time collects segments, each a
+    /// query visits, and the rows its updates and deletes replaced.
+    fn of(db: Db, embed_errors: Vec<(String, String)>) -> Self {
+        db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });
         Database { db: RwLock::new(Some(Arc::new(db))), embed_errors }
     }
 
@@ -851,7 +860,7 @@ impl Database {
                 Ok((db, embed_errors, r.to_json().to_string()))
             })
             .map_err(err)?;
-        Ok((Database { db: RwLock::new(Some(Arc::new(with_threads(db, threads)))), embed_errors }, report))
+        Ok((Database::of(with_threads(db, threads), embed_errors), report))
     }
 
     /// What an import of the SQLite file `sqlite_path` into a new database
@@ -898,7 +907,7 @@ impl Database {
                 Ok((db, embed_errors, r.to_json().to_string()))
             })
             .map_err(err)?;
-        Ok((Database { db: RwLock::new(Some(Arc::new(db))), embed_errors }, report))
+        Ok((Database::of(db, embed_errors), report))
     }
 
     /// What an import of the Parquet file or directory `parquet_path` (or
@@ -990,15 +999,10 @@ impl Database {
     }
 
     /// Writes the memtable's rows into segments, merges them into as few
-    /// as it can ([`MergePolicy::compact`]) and vacuums the file.
+    /// as it can and vacuums the file ([`Db::optimize`]).
     fn optimize(&self, py: Python<'_>) -> PyResult<()> {
         let db = self.get()?;
-        py.detach(|| {
-            db.storage().flush()?;
-            db.storage().merge(&MergePolicy::compact())?;
-            db.storage().vacuum().map(drop)
-        })
-        .map_err(err)
+        py.detach(|| db.optimize().map(drop)).map_err(err)
     }
 
     /// Returns the space merges freed to the file system; the bytes the
@@ -1008,12 +1012,14 @@ impl Database {
         py.detach(|| db.storage().vacuum()).map_err(err)
     }
 
-    /// Merges small segments and closes the database (also when the last
-    /// reference to it goes).
+    /// Merges small segments, gives the file system back the space merges
+    /// freed when it is an eighth of the file or more ([`Db::close`]), and
+    /// closes the database. It also closes when the last reference to it
+    /// goes, without the merge.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let db = self.db.write().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(db) = db {
-            py.detach(|| db.storage().merge(&MergePolicy::default()).map(|_| ())).map_err(err)?;
+            py.detach(|| db.close().map(drop)).map_err(err)?;
         }
         Ok(())
     }
