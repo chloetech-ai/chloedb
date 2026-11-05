@@ -50,6 +50,8 @@ use strata_server::server;
 use strata_server::service::shard_of;
 
 mod more;
+#[cfg(test)]
+mod snapshot;
 
 #[derive(Parser)]
 #[command(about = "Strata, Elasticsearch, OpenSearch, Solr and Vespa on the same BEIR collection")]
@@ -1069,6 +1071,7 @@ fn differs(engine: Engine, kind: &str, paid: bool) -> Option<&'static str> {
 
 /// What one request of a kind is about: the query, and for the kinds that
 /// need them a key, an item's vector and the items seen with it, and a year.
+#[derive(Clone)]
 struct Probe<'a> {
     q: &'a data::Query,
     key: &'a str,
@@ -1079,6 +1082,13 @@ struct Probe<'a> {
     year: i64,
     /// Elasticsearch on a paid (or trial) licence.
     paid: bool,
+}
+
+impl<'a> Probe<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn new(q: &'a data::Query, key: &'a str, row: usize, item: &'a [f32], seen: &'a [String], year: i64, paid: bool) -> Probe<'a> {
+        Probe { q, key, row, item, seen, year, paid }
+    }
 }
 
 /// The request for one kind on one engine: the path under the engine's URL

@@ -1242,7 +1242,7 @@ pub async fn load(collection: &str, o: Other, urls: &[String], batch: usize, cli
 // --- Query kinds -----------------------------------------------------------
 
 /// Why an engine cannot answer a kind at all (nothing is sent).
-fn unsupported(o: Other, kind: &str) -> Option<&'static str> {
+pub(crate) fn unsupported(o: Other, kind: &str) -> Option<&'static str> {
     use Other::*;
     Some(match (o, kind) {
         (Meili, "boosted (bm25 × decay)") => "no function scores: a numeric field can sort results (sort ranking rule), not multiply their relevance",
@@ -1356,7 +1356,7 @@ fn ts_or(t: &str) -> Option<String> {
 /// its row), Weaviate's object GET (its id is the key's uuid_of).
 /// Meilisearch, Milvus, Redis, Postgres, ParadeDB and Manticore read by id
 /// in `request`.
-fn native_get(o: Other, p: &Probe, u: &str) -> Option<Req> {
+pub(crate) fn native_get(o: Other, p: &Probe, u: &str) -> Option<Req> {
     let get = |url: String| Req::Http { method: Method::GET, url, ctype: "application/json", body: Vec::new() };
     match o {
         Other::Typesense => Some(get(format!("{u}/collections/docs/documents/{}?include_fields=id,title,year,rating", query_escape(p.key)))),
@@ -1366,7 +1366,7 @@ fn native_get(o: Other, p: &Probe, u: &str) -> Option<Req> {
     }
 }
 
-fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
+pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
     let t = &p.q.text;
     let v: &[f32] = &p.q.vector;
     let w = if kind == "facet" { match_word(t)? } else { String::new() };
