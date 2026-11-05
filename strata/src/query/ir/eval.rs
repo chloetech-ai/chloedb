@@ -452,6 +452,7 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
             let r = func.eval_f64(&xs);
             Ok(if r.is_nan() { Value::Null } else { Value::Float(r) })
         }
+        Func::DateTrunc | Func::DatePart | Func::Strftime => dates(func, &one, args.get(1).unwrap_or(&Value::Null)),
         // With the kernel similarity() uses, so the two agree to the bit.
         Func::Dot => match (vector(&one)?, vector(args.get(1).unwrap_or(&Value::Null))?) {
             (Some(a), Some(b)) if a.len() == b.len() => Ok(Some(crate::vector::kernels::dot_f32(&a, &b) as f64).filter(|d| d.is_finite()).map_or(Value::Null, Value::Float)),
@@ -459,6 +460,40 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
             _ => Ok(Value::Null),
         },
     }
+}
+
+/// `date_trunc(unit, t)`, `date_part(part, t)` and `strftime(format, t)`
+/// ([`crate::timestamp`]): `how` names the unit, part or format, and `t`
+/// is a TIMESTAMP, or ISO 8601 text of one; NULL either way gives NULL.
+fn dates(func: Func, how: &Value, t: &Value) -> Result<Value> {
+    use crate::timestamp as ts;
+    let micros = match t {
+        Value::Null => return Ok(Value::Null),
+        Value::Timestamp(m) => *m,
+        Value::Str(s) => ts::parse(s).ok_or_else(|| err(format!("{}: {} is not a time (ISO 8601: '2026-11-05' or '2026-11-05T07:30:00Z')", func.name(), sv(t))))?,
+        v => return Err(err(format!("{} takes a TIMESTAMP, not {}", func.name(), sv(v)))),
+    };
+    let how = match how {
+        Value::Null => return Ok(Value::Null),
+        Value::Str(s) => s,
+        v => return Err(err(format!("{}'s first argument is text, not {}", func.name(), sv(v)))),
+    };
+    Ok(match func {
+        Func::DateTrunc => {
+            let names = || ts::Unit::ALL.map(|u| format!("'{}'", u.name())).join(", ");
+            let unit = ts::Unit::parse(how).ok_or_else(|| err(format!("date_trunc has no unit {how:?}: it cuts to {}", names())))?;
+            Value::Timestamp(ts::trunc(micros, unit).ok_or_else(|| err(format!("date_trunc('{}', {}): the start is outside the times a TIMESTAMP holds", unit.name(), sv(t))))?)
+        }
+        Func::DatePart => {
+            let names = || ts::Part::ALL.map(|p| format!("'{}'", p.name())).join(", ");
+            let part = ts::Part::parse(how).ok_or_else(|| err(format!("date_part and EXTRACT have no part {how:?}: they read {}", names())))?;
+            match ts::part(micros, part) {
+                ts::PartValue::Int(x) => Value::Int(x),
+                ts::PartValue::Float(x) => Value::Float(x),
+            }
+        }
+        _ => Value::Str(ts::strftime(how, micros).map_err(err)?),
+    })
 }
 
 /// A vector argument: a vector, or a list of numbers as a parameter

@@ -109,6 +109,233 @@ pub fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros() as i64)
 }
 
+/// What `date_trunc` cuts a time to: the start of its second, minute,
+/// hour, day, week (from Monday, as ISO 8601 and PostgreSQL start one),
+/// month, quarter or year, in UTC.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Unit {
+    Second,
+    Minute,
+    Hour,
+    Day,
+    Week,
+    Month,
+    Quarter,
+    Year,
+}
+
+impl Unit {
+    pub const ALL: [Unit; 8] = [Unit::Second, Unit::Minute, Unit::Hour, Unit::Day, Unit::Week, Unit::Month, Unit::Quarter, Unit::Year];
+
+    /// The unit `name` names, in any case and singular or plural (`'day'`,
+    /// `'DAYS'`).
+    pub fn parse(name: &str) -> Option<Unit> {
+        let n = name.trim().to_ascii_lowercase();
+        let n = n.strip_suffix('s').unwrap_or(&n);
+        Unit::ALL.into_iter().find(|u| u.name() == n)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Unit::Second => "second",
+            Unit::Minute => "minute",
+            Unit::Hour => "hour",
+            Unit::Day => "day",
+            Unit::Week => "week",
+            Unit::Month => "month",
+            Unit::Quarter => "quarter",
+            Unit::Year => "year",
+        }
+    }
+}
+
+/// The start of the `unit` that `micros` is in (`date_trunc`), or `None`
+/// for a time so near the ends of the integers that its start is not one.
+pub fn trunc(micros: i64, unit: Unit) -> Option<i64> {
+    let within = |n: i64| micros.checked_sub(micros.rem_euclid(n));
+    let days = micros.div_euclid(MICROS_PER_DAY);
+    let (y, m, _) = civil_from_days(days);
+    let start = match unit {
+        Unit::Second => return within(1_000_000),
+        Unit::Minute => return within(60_000_000),
+        Unit::Hour => return within(3_600_000_000),
+        Unit::Day => days,
+        Unit::Week => days - weekday(days),
+        Unit::Month => days_from_civil(y, m, 1),
+        Unit::Quarter => days_from_civil(y, (m - 1) / 3 * 3 + 1, 1),
+        Unit::Year => days_from_civil(y, 1, 1),
+    };
+    start.checked_mul(MICROS_PER_DAY)
+}
+
+/// A part of a time that `EXTRACT` and `date_part` read, in UTC, as
+/// PostgreSQL names them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Part {
+    Year,
+    /// The ISO 8601 week-numbering year, which the week (`Week`) is of.
+    IsoYear,
+    /// 1 to 4.
+    Quarter,
+    /// 1 to 12.
+    Month,
+    /// The ISO 8601 week, 1 to 53: weeks start on Monday, and week 1 holds
+    /// the year's first Thursday.
+    Week,
+    /// The day of the month, 1 to 31.
+    Day,
+    /// The day of the year, 1 to 366.
+    Doy,
+    /// The day of the week, Sunday 0 to Saturday 6.
+    Dow,
+    /// The day of the week, Monday 1 to Sunday 7.
+    IsoDow,
+    Hour,
+    Minute,
+    /// The seconds with their fraction (a FLOAT): 0 to 59.999999.
+    Second,
+    /// Seconds since 1970-01-01T00:00:00Z, with their fraction (a FLOAT).
+    Epoch,
+}
+
+impl Part {
+    pub const ALL: [Part; 13] = [
+        Part::Year,
+        Part::IsoYear,
+        Part::Quarter,
+        Part::Month,
+        Part::Week,
+        Part::Day,
+        Part::Doy,
+        Part::Dow,
+        Part::IsoDow,
+        Part::Hour,
+        Part::Minute,
+        Part::Second,
+        Part::Epoch,
+    ];
+
+    /// The part `name` names, in any case and singular or plural
+    /// (`'month'`, `'HOURS'`).
+    pub fn parse(name: &str) -> Option<Part> {
+        let n = name.trim().to_ascii_lowercase();
+        let find = |n: &str| Part::ALL.into_iter().find(|p| p.name() == n);
+        find(&n).or_else(|| find(n.strip_suffix('s')?))
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Part::Year => "year",
+            Part::IsoYear => "isoyear",
+            Part::Quarter => "quarter",
+            Part::Month => "month",
+            Part::Week => "week",
+            Part::Day => "day",
+            Part::Doy => "doy",
+            Part::Dow => "dow",
+            Part::IsoDow => "isodow",
+            Part::Hour => "hour",
+            Part::Minute => "minute",
+            Part::Second => "second",
+            Part::Epoch => "epoch",
+        }
+    }
+
+    /// Whether the part is a FLOAT (seconds with their fraction); the
+    /// others are INT.
+    pub fn is_float(self) -> bool {
+        matches!(self, Part::Second | Part::Epoch)
+    }
+}
+
+/// Part `part` of the time `micros`: an `i64`, or for [`Part::is_float`]
+/// an `f64`'s bits as [`PartValue::Float`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PartValue {
+    Int(i64),
+    Float(f64),
+}
+
+pub fn part(micros: i64, part: Part) -> PartValue {
+    let days = micros.div_euclid(MICROS_PER_DAY);
+    let rest = micros.rem_euclid(MICROS_PER_DAY);
+    let (y, m, d) = civil_from_days(days);
+    PartValue::Int(match part {
+        Part::Year => y,
+        Part::IsoYear => iso_week(days).0,
+        Part::Quarter => (m - 1) / 3 + 1,
+        Part::Month => m,
+        Part::Week => iso_week(days).1,
+        Part::Day => d,
+        Part::Doy => days - days_from_civil(y, 1, 1) + 1,
+        Part::Dow => (weekday(days) + 1) % 7,
+        Part::IsoDow => weekday(days) + 1,
+        Part::Hour => rest / 3_600_000_000,
+        Part::Minute => rest / 60_000_000 % 60,
+        Part::Second => return PartValue::Float((rest % 60_000_000) as f64 / 1e6),
+        Part::Epoch => return PartValue::Float(micros as f64 / 1e6),
+    })
+}
+
+/// The day of the week of `days` after 1970-01-01, a Thursday: Monday 0
+/// to Sunday 6.
+fn weekday(days: i64) -> i64 {
+    (days + 3).rem_euclid(7)
+}
+
+/// The ISO 8601 year and week of the day `days` after 1970-01-01: its
+/// week's Thursday's year, and that Thursday's week of it.
+fn iso_week(days: i64) -> (i64, i64) {
+    let thursday = days - weekday(days) + 3;
+    let (y, _, _) = civil_from_days(thursday);
+    (y, (thursday - days_from_civil(y, 1, 1)) / 7 + 1)
+}
+
+/// `strftime`'s directives, as SQLite's: what [`strftime`] writes.
+pub const DIRECTIVES: &str = "%Y year, %m month 01-12, %d day 01-31, %H hour 00-23, %M minute, %S second, %f seconds with milliseconds (SS.SSS), %j day of the year 001-366, %w day of the week 0-6 from Sunday, %u day of the week 1-7 from Monday, %W week of the year 00-53 from the first Monday, %V ISO week 01-53, %G its year, %s seconds since 1970, %F %Y-%m-%d, %T %H:%M:%S, %% a %";
+
+/// The time `micros` written by `format`'s `%` directives (SQLite's
+/// `strftime`, in UTC), or what is wrong with `format`.
+pub fn strftime(format: &str, micros: i64) -> Result<String, String> {
+    let days = micros.div_euclid(MICROS_PER_DAY);
+    let rest = micros.rem_euclid(MICROS_PER_DAY);
+    let (y, m, d) = civil_from_days(days);
+    let (h, min, s) = (rest / 3_600_000_000, rest / 60_000_000 % 60, rest / 1_000_000 % 60);
+    let year = |y: i64| if (0..=9999).contains(&y) { format!("{y:04}") } else { format!("{y:+05}") };
+    let doy = days - days_from_civil(y, 1, 1);
+    let mut out = String::with_capacity(format.len() + 8);
+    let mut chars = format.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        use std::fmt::Write;
+        let _ = match chars.next() {
+            Some('Y') => write!(out, "{}", year(y)),
+            Some('m') => write!(out, "{m:02}"),
+            Some('d') => write!(out, "{d:02}"),
+            Some('H') => write!(out, "{h:02}"),
+            Some('M') => write!(out, "{min:02}"),
+            Some('S') => write!(out, "{s:02}"),
+            Some('f') => write!(out, "{s:02}.{:03}", rest % 1_000_000 / 1000),
+            Some('j') => write!(out, "{:03}", doy + 1),
+            Some('w') => write!(out, "{}", (weekday(days) + 1) % 7),
+            Some('u') => write!(out, "{}", weekday(days) + 1),
+            Some('W') => write!(out, "{:02}", (doy + 7 - weekday(days)) / 7),
+            Some('V') => write!(out, "{:02}", iso_week(days).1),
+            Some('G') => write!(out, "{}", year(iso_week(days).0)),
+            Some('s') => write!(out, "{}", micros.div_euclid(1_000_000)),
+            Some('F') => write!(out, "{}-{m:02}-{d:02}", year(y)),
+            Some('T') => write!(out, "{h:02}:{min:02}:{s:02}"),
+            Some('%') => write!(out, "%"),
+            Some(x) => return Err(format!("strftime has no %{x}: it writes {DIRECTIVES}")),
+            None => return Err(format!("strftime's format ends in a lone %: write %% for a %; it writes {DIRECTIVES}")),
+        };
+    }
+    Ok(out)
+}
+
 struct Cursor<'a> {
     s: &'a [u8],
     at: usize,
@@ -223,6 +450,64 @@ mod tests {
         }
         assert_eq!(parse("2000-02-29"), Some(11_016 * DAY));
         assert_eq!(parse("2024-02-29").map(format).as_deref(), Some("2024-02-29T00:00:00Z"));
+    }
+
+    #[test]
+    fn truncates_to_units() {
+        let t = parse("2026-11-05T07:31:52.123456Z").unwrap();
+        let cut = |u: &str| format(trunc(t, Unit::parse(u).unwrap()).unwrap());
+        assert_eq!(cut("second"), "2026-11-05T07:31:52Z");
+        assert_eq!(cut("MINUTES"), "2026-11-05T07:31:00Z");
+        assert_eq!(cut("hour"), "2026-11-05T07:00:00Z");
+        assert_eq!(cut("day"), "2026-11-05T00:00:00Z");
+        // 2026-11-05 is a Thursday: its week starts on Monday the 2nd.
+        assert_eq!(cut("week"), "2026-11-02T00:00:00Z");
+        assert_eq!(cut("month"), "2026-11-01T00:00:00Z");
+        assert_eq!(cut("quarter"), "2026-10-01T00:00:00Z");
+        assert_eq!(cut("years"), "2026-01-01T00:00:00Z");
+        // Before 1970, and a Monday is its own week's start.
+        assert_eq!(format(trunc(parse("1969-12-31T23:59:59.5Z").unwrap(), Unit::Day).unwrap()), "1969-12-31T00:00:00Z");
+        assert_eq!(format(trunc(parse("1969-12-29T12:00Z").unwrap(), Unit::Week).unwrap()), "1969-12-29T00:00:00Z");
+        assert_eq!(format(trunc(parse("2024-02-29T12:00Z").unwrap(), Unit::Quarter).unwrap()), "2024-01-01T00:00:00Z");
+        assert_eq!(Unit::parse("fortnight"), None);
+        assert_eq!(trunc(i64::MIN, Unit::Day), None);
+        assert_eq!(trunc(i64::MIN, Unit::Second), None);
+        assert!(trunc(i64::MAX, Unit::Second).is_some());
+    }
+
+    #[test]
+    fn parts_of_times() {
+        let t = parse("2026-11-05T07:31:52.25Z").unwrap();
+        let p = |name: &str| part(t, Part::parse(name).unwrap());
+        for (name, want) in [("year", 2026), ("isoyear", 2026), ("quarter", 4), ("month", 11), ("week", 45), ("day", 5), ("doy", 309), ("dow", 4), ("isodow", 4), ("hour", 7), ("minute", 31)] {
+            assert_eq!(p(name), PartValue::Int(want), "{name}");
+        }
+        assert_eq!(p("SECONDS"), PartValue::Float(52.25));
+        assert_eq!(p("epoch"), PartValue::Float(t as f64 / 1e6));
+        assert_eq!(Part::parse("days"), Some(Part::Day));
+        assert_eq!(Part::parse("century"), None);
+        // ISO weeks at the year's ends: 2021-01-03 (a Sunday) is in 2020's
+        // week 53, and 2024-12-30 (a Monday) in 2025's week 1.
+        let at = |d: &str| parse(d).unwrap();
+        assert_eq!((part(at("2021-01-03"), Part::IsoYear), part(at("2021-01-03"), Part::Week)), (PartValue::Int(2020), PartValue::Int(53)));
+        assert_eq!((part(at("2024-12-30"), Part::IsoYear), part(at("2024-12-30"), Part::Week)), (PartValue::Int(2025), PartValue::Int(1)));
+        assert_eq!(part(at("2026-11-08"), Part::Dow), PartValue::Int(0));
+        assert_eq!(part(at("2026-11-08"), Part::IsoDow), PartValue::Int(7));
+        assert_eq!(part(at("1969-12-31T23:00Z"), Part::Hour), PartValue::Int(23));
+    }
+
+    #[test]
+    fn strftime_as_sqlite() {
+        let t = parse("2026-11-05T07:31:52.25Z").unwrap();
+        assert_eq!(strftime("%Y-%m-%d %H:%M:%S", t).unwrap(), "2026-11-05 07:31:52");
+        assert_eq!(strftime("%F %T, %f", t).unwrap(), "2026-11-05 07:31:52, 52.250");
+        assert_eq!(strftime("%j %w %u %W %V %G %s 100%%", t).unwrap(), "309 4 4 44 45 2026 1793863912 100%");
+        assert_eq!(strftime("%Y-%m", parse("1969-12-31T23:59Z").unwrap()).unwrap(), "1969-12");
+        // Week of the year from the first Monday: 2026-01-01 is a Thursday.
+        assert_eq!(strftime("%W", parse("2026-01-04").unwrap()).unwrap(), "00");
+        assert_eq!(strftime("%W", parse("2026-01-05").unwrap()).unwrap(), "01");
+        assert!(strftime("%Q", t).unwrap_err().contains("no %Q"));
+        assert!(strftime("50%", t).unwrap_err().contains("lone %"));
     }
 
     #[test]

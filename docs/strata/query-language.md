@@ -102,7 +102,7 @@ A `KEYWORD` compares with text: `k = 1` is an error that points to `k = '1'`, as
 
 A `BOOL` is `TRUE` or `FALSE`; a write also takes 1 and 0 and the text `'true'`, `'false'`, `'t'`, `'f'`, `'1'` and `'0'`, and refuses anything else. A field named alone is a condition (`WHERE done AND NOT archived`), with `NULL` neither true nor false: `NOT done` and `done != TRUE` leave out the rows without a value, `done IS NOT TRUE` takes them in. `SUM(done)` counts the trues, and answers come back as booleans.
 
-A `TIMESTAMP` is a moment, kept to the microsecond in UTC and written as ISO 8601 text: a date (`'2026-10-01'`, midnight UTC) or a date and time (`'2026-10-01T12:30:00Z'`, `'2026-10-01 14:30:05.25+02:00'`), with an offset or none (UTC). A number is refused, so seconds are not mistaken for microseconds. Comparisons, `BETWEEN`, `IN`, `ORDER BY`, `MIN`, `MAX` and `COUNT` work on it (`SUM` and `AVG` do not), and answers are ISO 8601 text in UTC, such as `2026-10-01T12:30:05.250Z`. In `decay(at, origin, scale)` on a `TIMESTAMP`, the origin is a time or `now()`, and the scale and offset are seconds: `decay(published, now(), 2592000)` halves a row's weight for each 30 days of age. A database whose tables use `BOOL` or `TIMESTAMP` is written in [file format 3](index.md#wal-memtable-and-snapshots), which versions of Strata before these types refuse.
+A `TIMESTAMP` is a moment, kept to the microsecond in UTC and written as ISO 8601 text: a date (`'2026-10-01'`, midnight UTC) or a date and time (`'2026-10-01T12:30:00Z'`, `'2026-10-01 14:30:05.25+02:00'`), with an offset or none (UTC). A number is refused, so seconds are not mistaken for microseconds. Comparisons, `BETWEEN`, `IN`, `ORDER BY`, `MIN`, `MAX` and `COUNT` work on it (`SUM` and `AVG` do not), and answers are ISO 8601 text in UTC, such as `2026-10-01T12:30:05.250Z`. In `decay(at, origin, scale)` on a `TIMESTAMP`, the origin is a time or `now()`, and the scale and offset are seconds: `decay(published, now(), 2592000)` halves a row's weight for each 30 days of age. `date_trunc`, `EXTRACT` and `strftime` take [parts of times](#parts-of-times-date_trunc-extract-and-strftime), for `GROUP BY` a day, a week or a month. A database whose tables use `BOOL` or `TIMESTAMP` is written in [file format 3](index.md#wal-memtable-and-snapshots), which versions of Strata before these types refuse.
 
 `KEYWORD` and `INT` fields may be multi-valued (`"multi": true` in the schema): a row holds a list, such as `ARRAY['red', 'blue']`, and a filter matches a row if any of its values matches. A facet counts each distinct value once per row.
 
@@ -111,6 +111,27 @@ A `KEYWORD[]` field may hold the [semantic ID](server.md#semantic-ids) of a vect
 A `SPARSE` value is a JSON object of terms and non-negative weights, `{"tok": 1.25, "##en": 0.4}`, as a learned sparse model (SPLADE, BGE-M3's sparse output, OpenSearch's neural sparse models) writes it. Terms are taken as given, not analysed, and weights are stored in steps of 1/1024.
 
 A `MEDIA` value names a file, `{"uri": "https://cdn.example.com/a.png", "sha256": "…", "mime": "image/png", "bytes": 48213, "width": 640, "height": 480}`, and a write may give only its URI, `'https://cdn.example.com/a.png'`, or its bytes, `'{"data": "<base64>"}'`, for the server to fill in ([media fields](server.md#media-fields)). Its index holds the hash: `image = '9f86d0…'` finds the rows of that file. `OPTIONS(kind = 'image')` takes only images (`'audio'`, `'video'`, `'pdf'`), whose vectors a `VECTOR` field can hold: `emb VECTOR OPTIONS(embed = 'image', model = 'siglip-base-patch16-224')` ([vectors of images](server.md#vectors-of-images)), `sound_emb VECTOR OPTIONS(embed = 'recording', model = 'clap-htsat-unfused')` ([vectors of sound](server.md#vectors-of-sound)), and whose captions or transcripts a `TEXT` field can: `caption TEXT OPTIONS(derive = 'image', model = 'blip-image-captioning-base')`, `transcript TEXT OPTIONS(derive = 'recording', model = 'whisper-small')` ([text from media](server.md#text-from-media)).
+
+### Parts of times: `date_trunc`, `EXTRACT` and `strftime`
+
+```sql
+SELECT date_trunc('day', at) AS day, COUNT(*), AVG(price), MIN(price) FROM snapshots GROUP BY day ORDER BY day;
+SELECT EXTRACT(dow FROM at) AS dow, AVG(price) FROM snapshots WHERE item = 'i42' GROUP BY dow;
+SELECT strftime('%Y-%m', at) AS month, SUM(price) FROM sales GROUP BY month;
+
+-- A moving average of daily prices: groups by day in a WITH, a window over them.
+WITH daily AS (SELECT item, date_trunc('day', at) AS day, AVG(price) AS px FROM snapshots GROUP BY item, day)
+SELECT item, day, px, AVG(px) OVER (PARTITION BY item ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS ma7
+FROM daily;
+```
+
+- **`date_trunc(unit, t)`** is the time cut to the start of its `second`, `minute`, `hour`, `day`, `week` (from Monday, as ISO 8601 and PostgreSQL count weeks), `month`, `quarter` or `year`, a `TIMESTAMP`. The unit is text in any case, and a plural (`'days'`) is taken too.
+- **`date_part(part, t)`**, and **`EXTRACT(part FROM t)`** which is the same function, is a number: `year`, `isoyear`, `quarter` (1 to 4), `month` (1 to 12), `week` (the ISO week, 1 to 53), `day` (of the month), `doy` (of the year, 1 to 366), `dow` (0 for Sunday to 6 for Saturday, as PostgreSQL counts), `isodow` (1 for Monday to 7 for Sunday), `hour`, `minute`, and as a `FLOAT`, `second` (with its fraction) and `epoch` (seconds since 1970).
+- **`strftime(format, t)`** is text, written as SQLite's `strftime` writes it: `%Y` year, `%m` month 01-12, `%d` day 01-31, `%H` hour 00-23, `%M` minute, `%S` second, `%f` seconds with milliseconds (`SS.SSS`), `%j` day of the year 001-366, `%w` day of the week 0-6 from Sunday, `%u` 1-7 from Monday, `%W` week of the year 00-53 from the first Monday, `%V` the ISO week 01-53 and `%G` its year, `%s` seconds since 1970, `%F` for `%Y-%m-%d`, `%T` for `%H:%M:%S`, and `%%` for a `%`.
+
+All three read times in UTC. A `NULL` time gives `NULL`, text is read as a time (`date_trunc('month', '2026-11-05')`), and any other value is an error, as are a unit, part or directive they do not have (the message lists the ones they do).
+
+A **`GROUP BY` of one of them over a `TIMESTAMP` field of the table** (indexed, one value per row) runs in the executor, as a `GROUP BY` of a column does: it reads the field's column, has no limit on the number of rows, and over shards each shard groups its own rows and the coordinator merges the groups. The rows without a time form the group `NULL`. Anywhere else, in `SELECT`, `WHERE` and over joined or derived rows, they are computed row by row; in `WHERE` they are a [condition the indexes cannot answer](#statement-shape), so a range of times is faster written on the field (`at >= '2026-11-01' AND at < '2026-12-01'`) than as `EXTRACT(month FROM at) = 11`. A plan that uses them needs the plan feature `dates`, which shards of a version without these functions refuse.
 
 
 ### JSON fields: keys no schema names
@@ -788,7 +809,7 @@ GROUP BY category, topic HAVING n > 20 ORDER BY AVG(rating) DESC LIMIT 10;
 SELECT COUNT(*), SUM(clicks), AVG(rating) FROM docs WHERE MATCH(body, 'india');
 ```
 
-- **`GROUP BY`** takes one or more indexed `KEYWORD`, `INT` or `FLOAT` columns, by name, position or alias. A multi-valued column puts a row in one group per value, over one table, joined rows or derived rows alike, and so does `SELECT DISTINCT`, which is `GROUP BY` its columns. The rows without a value form the group `NULL`, as in SQL, and `SELECT DISTINCT` lists `NULL` once.
+- **`GROUP BY`** takes one or more indexed `KEYWORD`, `INT` or `FLOAT` columns, or [parts of times](#parts-of-times-date_trunc-extract-and-strftime) of a `TIMESTAMP` column (`date_trunc('day', at)`), by name, position or alias. A multi-valued column puts a row in one group per value, over one table, joined rows or derived rows alike, and so does `SELECT DISTINCT`, which is `GROUP BY` its columns. The rows without a value form the group `NULL`, as in SQL, and `SELECT DISTINCT` lists `NULL` once.
 - **Aggregates** are `COUNT(*)`, `COUNT(f)`, `COUNT(DISTINCT f)`, `SUM(f)` and `AVG(f)` over numeric columns, and `MIN(f)` and `MAX(f)` over numeric or keyword columns. Every selected column is a group column or inside an aggregate. Without `GROUP BY` they summarize every row that passes `WHERE`, in one row (`COUNT(*)` 0 and the others `NULL` when none does).
 - **`HAVING`** filters groups by their aggregates, written out or by alias, with comparisons, `BETWEEN`, `AND`, `OR` and `NOT`, in three-valued logic: an aggregate of no values (`AVG(rating)` of a group without ratings) is `NULL`, so neither `AVG(rating) < 3` nor `NOT (AVG(rating) < 3)` keeps that group.
 - **`ORDER BY`** a group column, an aggregate or a position, with a tie-break; without one, the largest groups come first. `LIMIT` and `OFFSET` apply to groups.

@@ -358,6 +358,9 @@ fn expr(e: &Expr) -> E {
                 Func::SidAt => pb::Func::SidAt,
                 Func::CountTrue => pb::Func::CountTrue,
                 Func::JsonExtract => pb::Func::JsonExtract,
+                Func::DateTrunc => pb::Func::DateTrunc,
+                Func::DatePart => pb::Func::DatePart,
+                Func::Strftime => pb::Func::Strftime,
             } as i32,
             args: args.iter().map(ex).collect(),
         }),
@@ -715,6 +718,9 @@ fn from_expr(e: E) -> Result<Expr, ApiError> {
                 pb::Func::SidAt => Func::SidAt,
                 pb::Func::CountTrue => Func::CountTrue,
                 pb::Func::JsonExtract => Func::JsonExtract,
+                pb::Func::DateTrunc => Func::DateTrunc,
+                pb::Func::DatePart => Func::DatePart,
+                pb::Func::Strftime => Func::Strftime,
             };
             Expr::Call { func, args: from_exprs(c.args)? }
         }
