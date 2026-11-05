@@ -4,6 +4,9 @@
 
 mod agg_columns;
 mod graph;
+mod filter_cache;
+
+pub use filter_cache::{FilterCache, FILTER_CACHE_BYTES};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -228,6 +231,10 @@ pub struct ExecOptions {
     /// walks the dictionaries once ([`Expansions`]). `None`: the query's
     /// own.
     pub expansions: Option<Arc<Expansions>>,
+    /// Filters kept between queries, by segment ([`FilterCache`]): a
+    /// database's queries share its own ([`crate::db::Db::exec`]); `None`
+    /// keeps none.
+    pub filter_cache: Option<Arc<FilterCache>>,
     /// Answer as one shard of a larger collection, for a coordinator to
     /// merge ([`crate::cluster::merge`]): OFFSET is folded into LIMIT,
     /// facets and counts return every group, and fused scores return every
@@ -339,6 +346,7 @@ impl Default for ExecOptions {
             column_blocks: true,
             stats: None,
             expansions: None,
+            filter_cache: None,
             shard: false,
             threads: 1,
             fan_out_rows: FAN_OUT_ROWS,
@@ -648,6 +656,27 @@ impl DocFilter for ProbeFilter {
         self.root.may_have(docs)
     }
 }
+
+/// A kept filter ([`FilterCache`]) checked per document; deleted
+/// documents are checked apart ([`ProbeFilter::live`]), so it is not a
+/// set of the segment's live documents to enumerate.
+struct KeptSet(Arc<DocSet>);
+
+impl DocFilter for KeptSet {
+    fn contains(&self, d: DocId) -> bool {
+        self.0.contains(d)
+    }
+    fn cardinality(&self) -> usize {
+        self.0.len()
+    }
+    fn may_have(&self, docs: std::ops::Range<DocId>) -> bool {
+        DocFilter::may_have(self.0.as_ref(), docs)
+    }
+}
+
+/// The longest predicate the filter cache keeps, written out (a long IN
+/// list is seldom repeated).
+const MAX_CACHE_KEY: usize = 4096;
 
 /// [`ExecOptions::fan_out_rows`] by default. Waking a pool thread and
 /// taking in its result costs about what searching a few thousand rows
@@ -1698,6 +1727,16 @@ impl<'a> Executor<'a> {
         }
         match mode {
             FilterMode::Probe => {
+                // A kept filter is a bit to test rather than columns to
+                // read for each candidate.
+                if let Some((set, found)) = self.kept(s, p)? {
+                    l.plan.push(format!("seg {}: filter {}, {} docs", s.ord, if found { "from the cache" } else { "kept in the cache" }, set.len()));
+                    let card = set.len();
+                    return Ok(match &s.view.live {
+                        None => SegFilter::Set(set),
+                        Some(lv) => SegFilter::Probe(ProbeFilter { root: ProbeNode::Leaf(Box::new(KeptSet(set))), live: Some(lv.clone()), card }),
+                    });
+                }
                 let root = self.compile_probe(s, p)?;
                 let card = {
                     let est = SegEst { ex: self, s, params: None, local_sel: None };
@@ -1722,18 +1761,67 @@ impl<'a> Executor<'a> {
             return Ok(set.clone());
         }
         let t0 = Instant::now();
-        let mut set = self.materialize(s, p)?;
-        if let Some(live) = &s.view.live {
-            set = DocSet::from_sorted(set.iter().filter(|&d| live.contains(d)).collect(), s.r.n_docs);
-        }
+        let (base, how) = match self.kept(s, p)? {
+            Some((set, true)) => (set, " (from the cache)"),
+            Some((set, false)) => (set, " (kept in the cache)"),
+            None => (Arc::new(self.materialize(s, p)?), ""),
+        };
+        let set = match &s.view.live {
+            Some(live) => Arc::new(DocSet::from_sorted(base.iter().filter(|&d| live.contains(d)).collect(), s.r.n_docs)),
+            None => base,
+        };
         l.filter_docs += set.len() as u64;
-        l.plan.push(format!("seg {}: filter materialised, {} docs", s.ord, set.len()));
+        l.plan.push(format!("seg {}: filter materialised, {} docs{how}", s.ord, set.len()));
         let step = Step { op: "filter".into(), detail: "materialised".into(), start_us: steps::us_at(t0), us: steps::tenth(t0.elapsed().as_nanos() as f64 / 1e3), rows: Some(set.len() as u64), seg: Some(s.ord as u32), ..Step::default() };
         let at = l.steps.len();
         steps::wrap(&mut l.steps, at, step);
-        let set = Arc::new(set);
         l.sets.push((s.ord, set.clone()));
         Ok(set)
+    }
+
+    /// Segment `s`'s documents of `p`, deletes not taken out, from the
+    /// filter cache ([`ExecOptions::filter_cache`]), and whether they were
+    /// found there; or made now and kept, when the segment sees `p` again.
+    /// `None`: the cache does not have them, or does not keep `p`.
+    fn kept(&self, s: &Seg<'a>, p: &Pred) -> Result<Option<(Arc<DocSet>, bool)>> {
+        let Some(cache) = &self.opts.filter_cache else { return Ok(None) };
+        let Some(key) = self.cache_key(s, p) else { return Ok(None) };
+        match cache.look(&s.r, &key) {
+            filter_cache::Look::Kept(set) => Ok(Some((set, true))),
+            filter_cache::Look::Keep => {
+                let set = Arc::new(self.materialize(s, p)?);
+                cache.keep(&s.r, &key, set.clone());
+                Ok(Some((set, false)))
+            }
+            filter_cache::Look::No => Ok(None),
+        }
+    }
+
+    /// What the filter cache keeps `p` of segment `s` by: the predicate
+    /// written out. `None` for a segment in memory (rebuilt as rows come)
+    /// and for a predicate that reads more than the segment's own rows
+    /// ([`Self::own_rows`]).
+    fn cache_key(&self, s: &Seg<'a>, p: &Pred) -> Option<String> {
+        if s.view.in_memory || matches!(p, Pred::True | Pred::False) || !self.own_rows(s, p) {
+            return None;
+        }
+        Some(format!("{p:?}")).filter(|k| k.len() <= MAX_CACHE_KEY)
+    }
+
+    /// Whether `p`'s documents in segment `s` depend on its rows alone: no
+    /// field with values written in place (which change under the same
+    /// readers), typo or synonym expansions (worked out over every
+    /// segment), graphs, subqueries or JSON paths.
+    fn own_rows(&self, s: &Seg<'a>, p: &Pred) -> bool {
+        match p {
+            Pred::True | Pred::False => true,
+            Pred::Range { field, .. } | Pred::IntRange { field, .. } | Pred::In { field, .. } | Pred::Present { field } => self.updates(s, *field).is_none(),
+            Pred::Prefix { edits, .. } => *edits == 0,
+            Pred::Match { query, expand, .. } => expand.is_none() && !query.contains('~'),
+            Pred::And(cs) | Pred::Or(cs) | Pred::AtLeast { items: cs, .. } => cs.iter().all(|c| self.own_rows(s, c)),
+            Pred::Not(c) => self.own_rows(s, c),
+            Pred::Path { .. } | Pred::Graph { .. } | Pred::Sub(_) => false,
+        }
     }
 
     /// Takes in what per-segment work recorded.
@@ -1880,7 +1968,10 @@ impl<'a> Executor<'a> {
                 let mut acc: Option<DocSet> = None;
                 for (_, c) in ests {
                     acc = Some(match acc {
-                        None => self.materialize(s, c)?,
+                        None => match self.kept(s, c)? {
+                            Some((set, _)) => DocSet::clone(&set),
+                            None => self.materialize(s, c)?,
+                        },
                         Some(a) if a.is_empty() => return Ok(a),
                         Some(a) => {
                             let e = planner.estimate(c);
@@ -1997,9 +2088,19 @@ impl<'a> Executor<'a> {
                 let planner = self.planner(&est);
                 let mut ordered: Vec<(f64, &Pred)> = cs.iter().map(|c| (planner.estimate(c).card, c)).collect();
                 ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
-                ProbeNode::And(ordered.into_iter().map(|(_, c)| self.compile_probe(s, c)).collect::<Result<_>>()?)
+                ProbeNode::And(ordered.into_iter().map(|(_, c)| self.probe_kept(s, c)).collect::<Result<_>>()?)
             }
         })
+    }
+
+    /// A conjunct's probe: its kept documents when the filter cache has
+    /// them (a fixed filter beside one that changes with every query),
+    /// else its own probe.
+    fn probe_kept(&self, s: &Seg<'a>, c: &Pred) -> Result<ProbeNode> {
+        match self.kept(s, c)? {
+            Some((set, _)) => Ok(ProbeNode::Leaf(Box::new(KeptSet(set)))),
+            None => self.compile_probe(s, c),
+        }
     }
 
     // ---- unranked --------------------------------------------------------
