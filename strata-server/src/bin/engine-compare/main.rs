@@ -585,6 +585,46 @@ async fn check(r: reqwest::Result<reqwest::Response>, what: &str) -> Result<Json
     Ok(serde_json::from_str(&text).unwrap_or(Json::Null))
 }
 
+/// The engine's result cache counters, read before and after the timed
+/// runs so a report can show that no answer came from one: the shard
+/// request cache's (Elasticsearch, OpenSearch), and Solr's
+/// `queryResultCache` size and each node's counters. Null where the engine keeps none (Strata, Vespa) or
+/// the counters could not be read.
+async fn result_cache(engine: Engine, client: &reqwest::Client, urls: &[String]) -> Json {
+    match engine {
+        Engine::Es | Engine::Os => match check(client.get(format!("{}/quora/_stats/request_cache", urls[0])).send().await, "request cache stats").await {
+            Ok(j) => j["_all"]["total"]["request_cache"].clone(),
+            Err(e) => json!({"error": e}),
+        },
+        Engine::Solr => {
+            // The size the timed runs leave it (0, set at load), and each
+            // node's counters for the cores it holds: JSON, or the lines of
+            // Prometheus text that name the cache.
+            let size = match check(client.get(format!("{}/solr/quora/config/overlay", urls[0])).send().await, "config overlay").await {
+                Ok(j) => j["overlay"]["props"]["query"]["queryResultCache"].clone(),
+                Err(e) => json!({"error": e}),
+            };
+            let mut nodes = serde_json::Map::new();
+            for u in urls {
+                let r = client.get(format!("{u}/solr/admin/metrics?group=core&prefix=CACHE.searcher.queryResultCache&wt=json")).send().await;
+                let v = match r {
+                    Ok(r) => {
+                        let text = r.text().await.unwrap_or_default();
+                        match serde_json::from_str::<Json>(&text) {
+                            Ok(j) => j["metrics"].clone(),
+                            Err(_) => json!(text.lines().filter(|l| l.contains("queryResultCache")).take(40).collect::<Vec<_>>()),
+                        }
+                    }
+                    Err(e) => json!({"error": e.to_string()}),
+                };
+                nodes.insert(u.clone(), v);
+            }
+            json!({"queryResultCache": size, "nodes": nodes})
+        }
+        Engine::Strata | Engine::Vespa => Json::Null,
+    }
+}
+
 /// Creates the empty index (Elasticsearch) or collection (Solr), dropping
 /// one a previous run left.
 async fn setup(engine: Engine, client: &reqwest::Client, url: &str, shards: usize, dim: usize) -> Result<(), String> {
@@ -1725,6 +1765,14 @@ async fn run(
     let keys: Vec<String> = coll.docs.iter().map(|d| d[col::ID].as_str().unwrap_or("").to_string()).collect();
     let items: Vec<Arc<[f32]>> = coll.docs.iter().map(|d| Arc::from(d[col::EMB].as_vector().unwrap_or(&[]))).collect();
     let client = http_client(engine, 30)?;
+    // The shard request cache answers a repeated size-0 search from memory,
+    // and the SQL endpoints take no `request_cache=false` (the SQL
+    // aggregate's 30 years repeat 10 times in 300 queries): off for the
+    // whole index while it is timed.
+    if matches!(engine, Engine::Es | Engine::Os) {
+        check(client.put(format!("{}/quora/_settings", urls[0])).json(&json!({"index": {"requests.cache.enable": false}})).send().await, "settings").await?;
+    }
+    let cache_before = result_cache(engine, &client, urls).await;
     let label = label.unwrap_or_else(|| engine.name().to_string());
     let (mut http, mut answers, mut query_ids, mut unavailable, mut differ) = (Vec::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
     let mut warmups = BTreeMap::new();
@@ -1846,10 +1894,13 @@ async fn run(
             }));
         }
     }
+    let cache = json!({"before": cache_before, "after": result_cache(engine, &client, urls).await});
+    eprintln!("{label:<8} result cache: {cache}");
     let report = json!({
         "engine": engine.name(), "label": label, "collection": collection, "urls": urls, "queries": queries.len(),
         "params": {"seconds": seconds, "concurrency": concurrency, "candidates": CANDIDATES, "oversample": OVERSAMPLE, "hybrid_depth": DEPTH, "paid": paid},
         "http": http, "unavailable": unavailable, "differs": differ, "query_ids": query_ids, "probes": probes, "answers": answers, "warm_up_p50_ms": warmups,
+        "result_cache": cache,
     });
     std::fs::create_dir_all(out).map_err(s)?;
     let path = out.join(format!("run-{}.json", label.replace(' ', "-")));

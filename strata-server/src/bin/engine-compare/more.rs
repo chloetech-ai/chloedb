@@ -2161,6 +2161,27 @@ pub(crate) async fn drive(conns: &Conns, reqs: Arc<Vec<Req>>, concurrency: usize
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The engine's result cache counters, read before and after the timed
+/// runs: Manticore's `qcache_*` status (its size limit, cached queries and
+/// hits). Null for the engines that keep no result cache, or none unless a
+/// request asks (Typesense's `use_cache`, which the requests here leave off).
+async fn result_cache(o: Other, conns: &mut Conns, urls: &[String]) -> Json {
+    match o {
+        Other::Manticore => {
+            let mut nodes = serde_json::Map::new();
+            for u in urls {
+                let v = match conns.sql(u, "SHOW STATUS LIKE 'qcache%'").await {
+                    Ok(j) => j[0]["data"].clone(),
+                    Err(e) => json!({"error": e}),
+                };
+                nodes.insert(u.clone(), v);
+            }
+            Json::Object(nodes)
+        }
+        _ => Json::Null,
+    }
+}
+
 pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, concurrency: &[usize], seconds: f64, label: Option<String>, only: &[String], out: &Path) -> Result<(), String> {
     // As the others' run: the first queries with text, keys and items of the first 20,000 documents.
     let coll = data::load(collection, Some(20_000)).map_err(s)?;
@@ -2169,6 +2190,15 @@ pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, 
     let items: Vec<Arc<[f32]>> = coll.docs.iter().map(|d| Arc::from(d[col::EMB].as_vector().unwrap_or(&[]))).collect();
     let mut conns = Conns::new(o, Duration::from_secs(30))?;
     let label = label.unwrap_or_else(|| o.name().to_string());
+    // Manticore's query cache keeps the result sets of queries slower than
+    // qcache_thresh_msec (3 s by default) and answers their repeats from
+    // memory: off while timed, as every engine's result cache.
+    if o == Other::Manticore {
+        for u in urls {
+            conns.sql(u, "SET GLOBAL qcache_max_bytes=0").await.map_err(|e| format!("query cache off: {e}"))?;
+        }
+    }
+    let cache_before = result_cache(o, &mut conns, urls).await;
     let (mut http, mut answers, mut query_ids, mut unavailable, mut differ, mut probes) =
         (Vec::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
     let mut warmups = BTreeMap::new();
@@ -2273,10 +2303,13 @@ pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, 
             }));
         }
     }
+    let cache = json!({"before": cache_before, "after": result_cache(o, &mut conns, urls).await});
+    eprintln!("{label:<9} result cache: {cache}");
     let report = json!({
         "engine": o.name(), "label": label, "collection": collection, "urls": urls, "queries": queries.len(),
         "params": {"seconds": seconds, "concurrency": concurrency, "candidates": CANDIDATES, "oversample": OVERSAMPLE, "hybrid_depth": DEPTH},
         "http": http, "unavailable": unavailable, "differs": differ, "query_ids": query_ids, "probes": probes, "answers": answers, "warm_up_p50_ms": warmups,
+        "result_cache": cache,
     });
     std::fs::create_dir_all(out).map_err(s)?;
     let path = out.join(format!("run-{}.json", label.replace(' ', "-")));
