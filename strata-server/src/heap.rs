@@ -2,7 +2,10 @@
 //! where.
 //!
 //! [`Counting`] is the server's global allocator (the binary's
-//! `#[global_allocator]`): the system's, counting as it goes.
+//! `#[global_allocator]`): mimalloc, counting as it goes. Its free
+//! lists per thread cost a server under many clients less than glibc's
+//! arenas did. It is set to give freed memory back to the system at once
+//! ([`configure`]), where glibc kept small blocks until `malloc_trim`.
 //! - Each allocation and free adds to or takes from one of 64 counters of
 //!   the bytes in use, picked by thread so that threads seldom share one.
 //!   Their sum is the heap in use ([`stats`]); [`watch`] keeps its peak,
@@ -20,7 +23,9 @@
 //! In a binary without the allocator (a program of its own that uses this
 //! crate), nothing is counted and [`installed`] says so.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, Layout};
+
+use mimalloc::MiMalloc;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::future::Future;
@@ -32,17 +37,18 @@ use serde::Serialize;
 
 use crate::profiler::{clean, pool_name, Refused};
 
-/// The system's allocator, counting: see the module's documentation.
+/// mimalloc, counting: see the module's documentation.
 pub struct Counting;
 
-// SAFETY: every call goes to the system's allocator with the same
+// SAFETY: every call goes to mimalloc with the same
 // arguments; the counting around it neither allocates through this
 // allocator in a way that recurses without bound (a thread records a
 // sample with `busy` set, so allocations it makes then are only counted)
 // nor touches the memory it hands out.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        let p = System.alloc(l);
+        configure();
+        let p = MiMalloc.alloc(l);
         if !p.is_null() {
             allocated(p, l.size());
         }
@@ -50,7 +56,8 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
-        let p = System.alloc_zeroed(l);
+        configure();
+        let p = MiMalloc.alloc_zeroed(l);
         if !p.is_null() {
             allocated(p, l.size());
         }
@@ -59,16 +66,49 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
         freed(p, l.size());
-        System.dealloc(p, l)
+        MiMalloc.dealloc(p, l)
     }
 
     unsafe fn realloc(&self, p: *mut u8, l: Layout, new_size: usize) -> *mut u8 {
-        let q = System.realloc(p, l, new_size);
+        let q = MiMalloc.realloc(p, l, new_size);
         if !q.is_null() {
             freed(p, l.size());
             allocated(q, new_size);
         }
         q
+    }
+}
+
+/// mimalloc's `mi_option_arena_eager_commit` and `mi_option_purge_delay`
+/// (mimalloc.h; the bindings do not name them).
+const ARENA_EAGER_COMMIT: libmimalloc_sys::mi_option_t = 4;
+const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+static CONFIGURED: AtomicBool = AtomicBool::new(false);
+
+/// Sets mimalloc's defaults before its first allocation, so that the
+/// server holds no more memory than it did on glibc's allocator:
+/// - its arenas (1 GiB each) are committed as they are used, not when
+///   they are reserved: committed up front, their pages became huge pages
+///   (2 MiB) as they were touched;
+/// - what is freed goes back to the system at once, as glibc unmaps a
+///   large block, not after a second: under load the second's worth of
+///   freed blocks was a few hundred MB.
+///
+/// With mimalloc's defaults, a 1M-row shard held 360 to 460 MB after a
+/// round of searches, with peaks to 880; with these, 300 to 310 and
+/// peaks to 311, as on glibc. `MIMALLOC_ARENA_EAGER_COMMIT` and
+/// `MIMALLOC_PURGE_DELAY` in the environment still set them.
+#[inline]
+fn configure() {
+    if !CONFIGURED.load(Ordering::Relaxed) {
+        CONFIGURED.store(true, Ordering::Relaxed);
+        // SAFETY: sets options' default values, which mimalloc reads when
+        // it reserves an arena and frees pages; the first allocation is
+        // made on the one thread there is then, before any arena.
+        unsafe {
+            libmimalloc_sys::mi_option_set_default(ARENA_EAGER_COMMIT, 0);
+            libmimalloc_sys::mi_option_set_default(PURGE_DELAY, 0);
+        }
     }
 }
 

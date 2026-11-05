@@ -239,10 +239,16 @@ async fn sample<T>(hz: i32, seconds: f64, during: impl Future<Output = T>) -> Re
 /// library holds freed. The CPU sampler's table of stacks (`pprof`'s,
 /// 16,384 places of 128 frames, about 70 MB) is made the first time a
 /// profile is taken and kept by the process; each profile that ends makes
-/// a new one and frees the old, which glibc would otherwise keep,
-/// resident, for later allocations.
+/// a new one and frees the old, which the allocator would otherwise
+/// keep, resident, for later allocations: mimalloc's collect gives back
+/// what it holds freed (`heap`), and glibc's trim what C code freed.
 pub(crate) fn release() {
     backtrace::clear_symbol_cache();
+    // SAFETY: mi_collect only frees what mimalloc holds unused, and takes
+    // no lock any caller holds.
+    unsafe {
+        libmimalloc_sys::mi_collect(true);
+    }
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     // SAFETY: malloc_trim takes the allocator's own locks, and is called
     // outside any of its functions.
