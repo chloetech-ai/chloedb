@@ -20,7 +20,7 @@ use pyo3::prelude::*;
 use pyo3::intern;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use serde_json::{Map, Number, Value as Json};
-use strata::db::{Db, SqlResult};
+use strata::db::{Db, SqlResult, WriteOp};
 use strata::ingest::{self, Format};
 use strata::query::ir::Plan;
 use strata::query::sql::{ident, quoted};
@@ -567,12 +567,8 @@ impl Database {
             if docs.len() >= BULK_INSERT {
                 db.load_into(&schema.table, docs)?;
             } else {
-                let mut t = db.storage().begin()?;
-                let mut tt = t.table(&schema.table)?;
-                for d in docs {
-                    tt.insert(d)?;
-                }
-                t.commit()?;
+                // Threads inserting at once share commits.
+                db.write_ops(docs.into_iter().map(|doc| WriteOp::Insert { table: schema.table.clone(), doc }).collect())?;
             }
             Ok(n)
         })
@@ -593,12 +589,7 @@ impl Database {
                 let chunk: Vec<Row> = rows.by_ref().take(BATCH).collect();
                 let len = chunk.len() as u64;
                 let docs = Database::documents(&db, &schema, chunk, n as usize + 1)?;
-                let mut t = db.storage().begin()?;
-                let mut tt = t.table(&schema.table)?;
-                for d in docs {
-                    tt.upsert(d)?;
-                }
-                t.commit()?;
+                db.write_ops(docs.into_iter().map(|doc| WriteOp::Upsert { table: schema.table.clone(), doc }).collect())?;
                 n += len;
             }
             Ok(n)
@@ -615,14 +606,8 @@ impl Database {
         py.detach(|| -> strata::Result<u64> {
             let s = table_of(&db, table)?;
             let pk = s.primary_key.ok_or_else(|| strata::Error::Query("deleting by key needs a primary key".into()))?;
-            let mut t = db.storage().begin()?;
-            let mut tt = t.table(&s.table)?;
-            let mut n = 0;
-            for k in &keys {
-                n += tt.delete(&ingest::value(&s, pk, k)?)? as u64;
-            }
-            t.commit()?;
-            Ok(n)
+            let ops = keys.iter().map(|k| Ok(WriteOp::Delete { table: s.table.clone(), key: ingest::value(&s, pk, k)? })).collect::<strata::Result<Vec<_>>>()?;
+            db.write_ops(ops)
         })
         .map_err(err)
     }
@@ -676,12 +661,14 @@ impl Database {
         let ops = rows_json(ops)?;
         py.detach(|| -> strata::Result<u64> {
             let bad = |i: usize, m: &str| strata::Error::Query(format!("operation {}: {m}", i + 1));
-            let mut t = db.storage().begin()?;
-            let mut n = 0;
+            // Read before the write starts: threads writing at once share
+            // its commit.
+            let mut write = Vec::with_capacity(ops.len());
             for (i, op) in ops.iter().enumerate() {
                 let get = |k: &str| op.get(k).filter(|v| !v.is_null());
                 let kind = get("op").and_then(Json::as_str).ok_or_else(|| bad(i, "it needs \"op\""))?;
                 let s = table_of(&db, get("table").and_then(Json::as_str))?;
+                let table = s.table.clone();
                 let doc = || match get("doc") {
                     Some(d) => Ok(Database::documents(&db, &s, vec![Row { json: d.clone(), vectors: Vec::new() }], 1)?.remove(0)),
                     None => Err(bad(i, &format!("{kind} needs \"doc\""))),
@@ -690,16 +677,15 @@ impl Database {
                     let pk = s.primary_key.ok_or_else(|| bad(i, "writing by key needs a primary key"))?;
                     ingest::value(&s, pk, get("key").ok_or_else(|| bad(i, &format!("{kind} needs \"key\"")))?)
                 };
-                let field = || get("field").and_then(Json::as_str).ok_or_else(|| bad(i, &format!("{kind} needs \"field\"")));
-                let mut tt = t.table(&s.table)?;
-                let wrote = match kind {
-                    "insert" => tt.insert(doc()?).map(|_| true)?,
-                    "upsert" => tt.upsert(doc()?).map(|_| true)?,
-                    "delete" => tt.delete(&key()?)?,
+                let field = || get("field").and_then(Json::as_str).map(str::to_string).ok_or_else(|| bad(i, &format!("{kind} needs \"field\"")));
+                write.push(match kind {
+                    "insert" => WriteOp::Insert { table, doc: doc()? },
+                    "upsert" => WriteOp::Upsert { table, doc: doc()? },
+                    "delete" => WriteOp::Delete { table, key: key()? },
                     "set" => {
                         let f = field()?;
-                        let fi = s.field_index(f).ok_or_else(|| bad(i, &format!("no field {f}")))?;
-                        tt.set(&key()?, f, ingest::value(&s, fi, get("value").unwrap_or(&Json::Null))?)?
+                        let fi = s.field_index(&f).ok_or_else(|| bad(i, &format!("no field {f}")))?;
+                        WriteOp::Set { table, key: key()?, value: ingest::value(&s, fi, get("value").unwrap_or(&Json::Null))?, field: f }
                     }
                     "add" => {
                         let delta = match get("value") {
@@ -712,17 +698,15 @@ impl Database {
                             if get("key").is_some() && Some(&key()?) != s.primary_key.map(|pk| &d[pk]) {
                                 return Err(bad(i, "add's key and its doc's key differ: give one"));
                             }
-                            tt.add_or_insert(d, field()?, &delta).map(|_| true)?
+                            WriteOp::AddOrInsert { table, doc: d, field: field()?, delta }
                         } else {
-                            tt.add(&key()?, field()?, &delta)?
+                            WriteOp::Add { table, key: key()?, field: field()?, delta }
                         }
                     }
                     other => return Err(bad(i, &format!("unknown op {other:?}"))),
-                };
-                n += wrote as u64;
+                });
             }
-            t.commit()?;
-            Ok(n)
+            db.write_ops(write)
         })
         .map_err(err)
     }

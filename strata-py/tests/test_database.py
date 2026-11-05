@@ -290,6 +290,33 @@ def test_threads_and_close(tmp_path, db):
         db.query("SELECT id FROM books")
 
 
+def test_threads_write_at_once(tmp_path):
+    # Threads that write at once wait for each other and share commits;
+    # none fails as busy, and no increment is lost.
+    schema = {"table": "c", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "n", "type": "int"}]}
+    with strata.Database.create(tmp_path / "w.strata", schema) as db:
+        db.insert([{"id": f"k{k}", "n": 0} for k in range(4)])
+        errors = []
+
+        def work(t):
+            try:
+                for i in range(50):
+                    db.insert({"id": f"t{t}-{i}", "n": 0})
+                    db.write([{"op": "add", "key": f"k{i % 4}", "field": "n", "value": 1}])
+                    assert db.sql("UPDATE c SET n = n + 1 WHERE id = :k", k="k0") == 1
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=work, args=(t,)) for t in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors, errors
+        assert len(db) == 4 + 8 * 50
+        assert db.sql("SELECT SUM(n) FROM c").scalar() == 2 * 8 * 50
+
+
 TASKS = {
     "table": "tasks",
     "key": "id",

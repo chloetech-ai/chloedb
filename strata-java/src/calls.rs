@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use serde_json::{Map, Value as Json};
-use strata::db::{Db, SqlResult};
+use strata::db::{Db, SqlResult, WriteOp};
 use strata::ingest::{self, Format};
 use strata::query::exec::ResultSet;
 use strata::query::ir::Plan;
@@ -803,12 +803,8 @@ fn call_on(h: &Handle, method: &str, a: &mut Args) -> R<Vec<u8>> {
             if docs.len() >= BULK_INSERT {
                 db.load_into(&s.table, docs)?;
             } else {
-                let mut t = db.storage().begin()?;
-                let mut tt = t.table(&s.table)?;
-                for d in docs {
-                    tt.insert(d)?;
-                }
-                t.commit()?;
+                // Threads inserting at once share commits.
+                db.write_ops(docs.into_iter().map(|doc| WriteOp::Insert { table: s.table.clone(), doc }).collect())?;
             }
             int(n)
         }
@@ -822,12 +818,7 @@ fn call_on(h: &Handle, method: &str, a: &mut Args) -> R<Vec<u8>> {
                 let chunk: Vec<Row> = rows.by_ref().take(BATCH).collect();
                 let len = chunk.len() as u64;
                 let docs = documents(db, &s, chunk, n as usize + 1)?;
-                let mut t = db.storage().begin()?;
-                let mut tt = t.table(&s.table)?;
-                for d in docs {
-                    tt.upsert(d)?;
-                }
-                t.commit()?;
+                db.write_ops(docs.into_iter().map(|doc| WriteOp::Upsert { table: s.table.clone(), doc }).collect())?;
                 n += len;
             }
             int(n)
@@ -837,14 +828,8 @@ fn call_on(h: &Handle, method: &str, a: &mut Args) -> R<Vec<u8>> {
             let keys = a.list("keys")?;
             let s = table_of(db, table.as_deref())?;
             let pk = s.primary_key.ok_or_else(|| strata::Error::Query("deleting by key needs a primary key".into()))?;
-            let mut t = db.storage().begin()?;
-            let mut tt = t.table(&s.table)?;
-            let mut n = 0;
-            for k in &keys {
-                n += tt.delete(&ingest::value(&s, pk, &key_json(k)?)?)? as u64;
-            }
-            t.commit()?;
-            int(n)
+            let ops = keys.iter().map(|k| Ok(WriteOp::Delete { table: s.table.clone(), key: ingest::value(&s, pk, &key_json(k)?)? })).collect::<R<Vec<_>>>()?;
+            int(db.write_ops(ops)?)
         }
         "getMany" => {
             let table = a.opt_str("table")?;
@@ -1020,12 +1005,14 @@ fn embed(db: &Db, text: Option<String>, field: Option<String>, table: Option<Str
 fn write(db: &Db, ops: Vec<V>) -> R<u64> {
     let ops = ops.iter().map(|o| o.to_json().map_err(Fail::Arg)).collect::<R<Vec<_>>>()?;
     let bad = |i: usize, m: &str| strata::Error::Query(format!("operation {}: {m}", i + 1));
-    let mut t = db.storage().begin()?;
-    let mut n = 0;
+    // Read before the write starts: threads writing at once share its
+    // commit.
+    let mut write = Vec::with_capacity(ops.len());
     for (i, op) in ops.iter().enumerate() {
         let get = |k: &str| op.get(k).filter(|v| !v.is_null());
         let kind = get("op").and_then(Json::as_str).ok_or_else(|| bad(i, "it needs \"op\""))?;
         let s = table_of(db, get("table").and_then(Json::as_str))?;
+        let table = s.table.clone();
         let doc = || match get("doc") {
             Some(d) => Ok(documents(db, &s, vec![Row { json: d.clone(), vectors: Vec::new() }], 1)?.remove(0)),
             None => Err(bad(i, &format!("{kind} needs \"doc\""))),
@@ -1034,16 +1021,15 @@ fn write(db: &Db, ops: Vec<V>) -> R<u64> {
             let pk = s.primary_key.ok_or_else(|| bad(i, "writing by key needs a primary key"))?;
             ingest::value(&s, pk, get("key").ok_or_else(|| bad(i, &format!("{kind} needs \"key\"")))?)
         };
-        let field = || get("field").and_then(Json::as_str).ok_or_else(|| bad(i, &format!("{kind} needs \"field\"")));
-        let mut tt = t.table(&s.table)?;
-        let wrote = match kind {
-            "insert" => tt.insert(doc()?).map(|_| true)?,
-            "upsert" => tt.upsert(doc()?).map(|_| true)?,
-            "delete" => tt.delete(&key()?)?,
+        let field = || get("field").and_then(Json::as_str).map(str::to_string).ok_or_else(|| bad(i, &format!("{kind} needs \"field\"")));
+        write.push(match kind {
+            "insert" => WriteOp::Insert { table, doc: doc()? },
+            "upsert" => WriteOp::Upsert { table, doc: doc()? },
+            "delete" => WriteOp::Delete { table, key: key()? },
             "set" => {
                 let f = field()?;
-                let fi = s.field_index(f).ok_or_else(|| bad(i, &format!("no field {f}")))?;
-                tt.set(&key()?, f, ingest::value(&s, fi, get("value").unwrap_or(&Json::Null))?)?
+                let fi = s.field_index(&f).ok_or_else(|| bad(i, &format!("no field {f}")))?;
+                WriteOp::Set { table, key: key()?, value: ingest::value(&s, fi, get("value").unwrap_or(&Json::Null))?, field: f }
             }
             "add" => {
                 let delta = match get("value") {
@@ -1056,17 +1042,15 @@ fn write(db: &Db, ops: Vec<V>) -> R<u64> {
                     if get("key").is_some() && Some(&key()?) != s.primary_key.map(|pk| &d[pk]) {
                         return Err(bad(i, "add's key and its doc's key differ: give one").into());
                     }
-                    tt.add_or_insert(d, field()?, &delta).map(|_| true)?
+                    WriteOp::AddOrInsert { table, doc: d, field: field()?, delta }
                 } else {
-                    tt.add(&key()?, field()?, &delta)?
+                    WriteOp::Add { table, key: key()?, field: field()?, delta }
                 }
             }
             other => return Err(bad(i, &format!("unknown op {other:?}")).into()),
-        };
-        n += wrote as u64;
+        });
     }
-    t.commit()?;
-    Ok(n)
+    Ok(db.write_ops(write)?)
 }
 
 #[cfg(test)]

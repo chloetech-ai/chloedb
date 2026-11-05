@@ -70,7 +70,7 @@ try (Database db = Database.open("books.strata")) {
 
 `Database.create` takes the schema as a map (the [short form](server.md#schemas) or the long one), JSON text, or the path of a JSON file. `Database.open` opens a database the file already holds. Both take `new Database.Options()`: `.directory(true)` keeps a new database as a directory of segment files, `.models(dir)` says where embedding models are, `.threads(n)` how many cores queries and index builds use (the machine's by default).
 
-Only one process may have a database open at a time; another gets a `StrataException` saying the database is busy. To share one, serve it with [strata-server](server.md). Within the process, one `Database` is safe to use from many threads at once: queries run in parallel, and a call into the library does not hold the JVM. Close it when done, with `close()` or try-with-resources (which also merges small segments); one left open is closed when the garbage collector finds it.
+Only one process may have a database open at a time; another gets a `StrataException` saying the database is busy. To share one, serve it with [strata-server](server.md). Within the process, one `Database` is safe to use from many threads at once: queries run in parallel, writes made at once wait for each other and share commits (one disk flush for all those waiting, none failing as busy), and a call into the library does not hold the JVM. Close it when done, with `close()` or try-with-resources (which also merges small segments); one left open is closed when the garbage collector finds it.
 
 ## Rows and values
 
