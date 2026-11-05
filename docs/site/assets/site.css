@@ -794,7 +794,8 @@ a.cap:hover { border-color: var(--rule-2); box-shadow: var(--shadow); text-decor
 
 /* laptop to cloud */
 .deploy { display: grid; gap: 20px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-@media (max-width: 900px) { .deploy { grid-template-columns: minmax(0, 1fr); } }
+.deploy.pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 900px) { .deploy, .deploy.pair { grid-template-columns: minmax(0, 1fr); } }
 .dcard { background: var(--panel); color: var(--ink); border-radius: 14px; border-top: 5px solid var(--c, var(--accent)); padding: 24px; display: grid; gap: 12px; align-content: start; min-width: 0; }
 .dcard .eyebrow { color: var(--ink-3); }
 .dcard h3 { color: var(--ink) !important; font-size: 1.3rem; }
@@ -850,10 +851,6 @@ a.lang:hover { border-color: var(--rule-2); box-shadow: var(--shadow); text-deco
 
 /* centered heads and a centered row of actions under a block */
 .center-row { display: flex; flex-wrap: wrap; gap: 12px 20px; justify-content: center; align-items: center; }
-.engram { display: grid; gap: 40px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; }
-.engram > div { display: grid; gap: 16px; justify-items: start; }
-.engram p { color: var(--ink-2); }
-@media (max-width: 900px) { .engram { grid-template-columns: minmax(0, 1fr); } }
 
 /* night versions of a few components used on night bands */
 .band-night .tablist button { background: transparent; color: var(--night-dim); border-color: var(--night-rule); }
