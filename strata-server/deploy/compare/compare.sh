@@ -56,12 +56,19 @@ CLIENT_NODE=${CLIENT_NODE:-strata-worker3}
 # too: Elasticsearch and Solr on their two data nodes, Strata one shard's
 # build job at a time.
 # SHARD_CPU and COORD_CPU may be set to split Strata's 3 CPUs otherwise.
+# STRATA_COORD=shards runs a coordinator in each shard's pod instead, as
+# Elasticsearch and OpenSearch coordinate on their data nodes: each pod
+# then has a data node's DATA_CPU and DATA_MEM (strata-coordinating.yaml),
+# the client sends its requests to both coordinators, and Strata has
+# nothing on the clients' node.
 # BUILD_PARALLEL=1 builds both shards at once, each with its node's share
 # (a node then holds BUILD_CPU and BUILD_MEM, not the whole budget).
 DATA_CPU=${DATA_CPU:-1500m} DATA_MEM=${DATA_MEM:-3Gi}
 BUILD_CPU=${BUILD_CPU:-3} BUILD_MEM=${BUILD_MEM:-6Gi} BUILD_THREADS=${BUILD_THREADS:-3} BUILD_PARALLEL=${BUILD_PARALLEL:-0}
 SHARD_CPU=${SHARD_CPU:-1} SHARD_MEM=${SHARD_MEM:-2560Mi}
 COORD_CPU=${COORD_CPU:-1} COORD_MEM=${COORD_MEM:-1Gi}
+STRATA_COORD=${STRATA_COORD:-pod}
+case $STRATA_COORD in pod | shards) ;; *) echo "STRATA_COORD is pod (its own pod, the default) or shards (one in each shard's pod)" >&2 && exit 2 ;; esac
 # Vespa: vespa-0 (config server, cluster controller and the container that
 # answers queries and takes documents) on the clients' node, as Strata's
 # coordinator, and a content node on each data node; 1 CPU each, 6 GiB in all.
@@ -186,7 +193,13 @@ EOF
 
 urls() {
     case $1 in
-    strata) echo http://strata-coordinator:7700 ;;
+    strata)
+        if [ "$STRATA_COORD" = shards ]; then
+            echo http://strata-0.strata:7710,http://strata-1.strata:7710
+        else
+            echo http://strata-coordinator:7700
+        fi
+        ;;
     es) echo http://es-0.es:9200,http://es-1.es:9200 ;;
     os) echo http://os-0.os:9200,http://os-1.os:9200 ;;
     vespa) echo http://vespa-0.vespa:8080 ;;
@@ -290,10 +303,16 @@ up)
     case $1 in
     strata)
         token_secret
-        render strata.yaml 0 "${NODES[0]}" "$SHARD_CPU" "$SHARD_MEM" | $K apply -f -
-        render strata.yaml 1 "${NODES[1]}" "$SHARD_CPU" "$SHARD_MEM" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
-        render strata-coordinator.yaml c "$CLIENT_NODE" "$COORD_CPU" "$COORD_MEM" | $K apply -f -
-        $K wait --for=condition=Ready pod/strata-0 pod/strata-1 pod/strata-coordinator --timeout=300s
+        if [ "$STRATA_COORD" = shards ]; then
+            render strata-coordinating.yaml 0 "${NODES[0]}" "$DATA_CPU" "$DATA_MEM" | $K apply -f -
+            render strata-coordinating.yaml 1 "${NODES[1]}" "$DATA_CPU" "$DATA_MEM" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
+            $K wait --for=condition=Ready pod/strata-0 pod/strata-1 --timeout=300s
+        else
+            render strata.yaml 0 "${NODES[0]}" "$SHARD_CPU" "$SHARD_MEM" | $K apply -f -
+            render strata.yaml 1 "${NODES[1]}" "$SHARD_CPU" "$SHARD_MEM" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
+            render strata-coordinator.yaml c "$CLIENT_NODE" "$COORD_CPU" "$COORD_MEM" | $K apply -f -
+            $K wait --for=condition=Ready pod/strata-0 pod/strata-1 pod/strata-coordinator --timeout=300s
+        fi
         ;;
     es)
         HEAP=$ES_HEAP render es.yaml 0 "${NODES[0]}" "$DATA_CPU" "$DATA_MEM" | $K apply -f -

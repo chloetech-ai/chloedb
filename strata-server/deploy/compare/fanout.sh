@@ -44,7 +44,8 @@
 # separated, that hold for that job only: its node sizes (ONE_SIZE,
 # SHARDED_SIZE, CLIENT_SIZE) and compare.sh's budgets (ONE_MEM,
 # REDIS_MAXMEM, ...), e.g. a node with more memory for an engine that keeps
-# everything in it.
+# everything in it, or STRATA_COORD=shards for Strata's coordinators in its
+# shards' pods (compare.sh), each with a data node's DATA_CPU and DATA_MEM.
 #
 # The engine strata-ab runs two Strata images on the same nodes, IMAGE and
 # the job's IMAGE_B, passes alternating, for a before and after that the

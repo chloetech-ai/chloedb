@@ -17,6 +17,7 @@ Elasticsearch and Solr, 28 October 2026) are in
 | `es.yaml`, `os.yaml`, `solr.yaml` | two data nodes of Elasticsearch 9.5.5, OpenSearch 3.9.0 or Solr 10.1.0 (SolrCloud, ZooKeeper embedded in `solr-0`) |
 | `vespa.yaml`, `vespa/` | Vespa 8.778.45: `vespa-0` (config server, cluster controller and the container that answers queries) and two content nodes; `vespa/package.sh` writes the application package (`services-cluster.xml`, `schemas/doc.sd`, the stopword lists); `vespa/services.xml` is the same application on one node, for trying it in Docker |
 | `strata.yaml`, `strata-coordinator.yaml` | two Strata shards and their coordinator |
+| `strata-coordinating.yaml` | two Strata shards each with a coordinator in its pod (`STRATA_COORD=shards`) |
 | `redpanda.yaml` | one Redpanda broker for the stream test |
 | `more/*.yaml` | the nine one-node engines (`postgres.yaml` is ParadeDB's and Postgres's, as `paradedb-0` or `postgres-0`) |
 | `analyze.py` | scores the answers and prints the tables |
@@ -41,7 +42,12 @@ Elasticsearch and Solr, 28 October 2026) are in
   1 GB for Solr, whose full-precision vectors need the page cache); Strata
   has two shards of 1 CPU and 2.5 GiB and a coordinator of 1 CPU and 1 GiB,
   since its shards do not also coordinate (`SHARD_CPU` and `COORD_CPU`
-  split it otherwise; the results compare 1.25 + 1.25 + 0.5 too). Vespa is
+  split it otherwise; the results compare 1.25 + 1.25 + 0.5 too).
+  `STRATA_COORD=shards` runs a coordinator in each shard's pod instead, as
+  Elasticsearch and OpenSearch coordinate on their data nodes: each pod
+  then has a data node's CPU and memory (`DATA_CPU`, `DATA_MEM`), shared
+  by its shard and its coordinator, the client sends its requests to both
+  coordinators, and Strata has nothing on the clients' node. Vespa is
   split as Strata is, since its content nodes do not answer queries either:
   `vespa-0` on the clients' node (config server, cluster controller and the
   container, 1 CPU and 2.25 GiB, container heap 768 MB) and two content
@@ -413,6 +419,8 @@ $C up vespa;     $C load vespa; $C run vespa; $C writes vespa; $C stream vespa; 
 python3 strata-server/deploy/compare/analyze.py $STRATA_WORK/compare $STRATA_DATA/quora
 # Strata at another split of its 3 CPUs, kept beside the default run:
 SHARD_CPU=1250m COORD_CPU=500m $C up strata; $C run strata --label strata-coord500m; $C down strata
+# Or a coordinator in each shard's pod, with a data node's budget each:
+STRATA_COORD=shards $C up strata; STRATA_COORD=shards $C run strata --label strata-coord-in-shards; $C down strata
 # The nine one-node engines, one at a time:
 for e in meili typesense manticore qdrant weaviate milvus paradedb postgres redis; do
     $C up $e; $C load $e; $C run $e; $C down $e
