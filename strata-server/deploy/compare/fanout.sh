@@ -65,7 +65,8 @@
 # EFS in the fifth column (values separated by /) sweeps the HNSW
 # candidates (ef, num_candidates, topK; the runs' default is 64): after its
 # PASSES passes of `run`, each engine runs PASSES more per value, labelled
-# ENGINE-efN, with only the kinds that search vectors (EF_KINDS):
+# ENGINE-efN, with only the kinds that search vectors (EF_KINDS); ef.py
+# reports recall and latency per value:
 #   ef-sweep  strata+qdrant  sharded  5  EFS=128/256
 set -euo pipefail
 
