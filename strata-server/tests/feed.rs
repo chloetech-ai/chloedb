@@ -99,7 +99,7 @@ async fn lines_until(chunks: &mut tonic::Streaming<pb::FeedChunk>, from: u64, up
 
 /// The transactions of shard `i`'s feed from 1 to its last.
 async fn feed_of(c: &Coordinator, i: usize, upto: u64) -> Vec<Json> {
-    let mut s = c.feed(i, 1, 0).await.unwrap();
+    let mut s = c.feed(i, 1, 0, false).await.unwrap();
     let lines = lines_until(&mut s, 1, upto).await;
     assert!(lines[0]["feed"]["from"] == 1, "{}", lines[0]);
     let txns: Vec<Json> = lines.into_iter().filter(|l| l.get("seq").is_some()).collect();
@@ -302,13 +302,13 @@ async fn the_feed_goes_on_from_a_new_primary() {
     }
     let before = last(&s0);
     let term = s0.local_db().unwrap().storage().numbering().unwrap().term;
-    let mut old = a.feed(0, 1, 0).await.unwrap();
+    let mut old = a.feed(0, 1, 0, false).await.unwrap();
     let lines = lines_until(&mut old, 1, before).await;
     assert_eq!(lines.iter().filter(|l| l.get("seq").is_some()).count() as u64, before);
     assert!(lines.iter().any(|l| l["last"].as_u64().is_some()), "it says how far it reaches: {lines:?}");
 
     // A replica serves no feed.
-    let e = r0.feed(1, None).await.unwrap_err();
+    let e = r0.feed(1, None, false).await.unwrap_err();
     assert_eq!(e.status, 409, "{}", e.message);
 
     a.promote(0, &u_r0, false).await.unwrap();
@@ -337,7 +337,7 @@ async fn the_feed_goes_on_from_a_new_primary() {
     assert!(after >= before + 10);
 
     // On from the transaction after the last read, under its term: no gap.
-    let mut s = a.feed(0, before + 1, term).await.unwrap();
+    let mut s = a.feed(0, before + 1, term, false).await.unwrap();
     let lines = lines_until(&mut s, before + 1, after).await;
     assert_eq!(lines[0]["feed"]["from"], before + 1, "{}", lines[0]);
     let seqs: Vec<u64> = lines.iter().filter_map(|l| l["seq"].as_u64()).collect();
@@ -347,11 +347,11 @@ async fn the_feed_goes_on_from_a_new_primary() {
     assert!(lines.iter().filter_map(|l| l["term"].as_u64()).all(|t| t >= term));
 
     // A reader whose last transaction has another term diverged.
-    let mut s = a.feed(0, before + 1, term + 7).await.unwrap();
+    let mut s = a.feed(0, before + 1, term + 7, false).await.unwrap();
     let first = lines_until(&mut s, before + 1, 0).await;
     assert_eq!(first[0]["diverged"]["seq"], after, "{first:?}");
     // So did one ahead of the shard.
-    let mut s = a.feed(0, after + 5, 0).await.unwrap();
+    let mut s = a.feed(0, after + 5, 0, false).await.unwrap();
     assert!(lines_until(&mut s, after + 5, 0).await[0].get("diverged").is_some());
 }
 
@@ -429,5 +429,5 @@ async fn a_feed_key_reads_the_feed_alone() {
     assert_eq!(call("GET", "/v1/feed?shard=2", &feed_key, None).await.unwrap().status(), 400);
     let plain = Db::create(&d.join("b.strata"), demo::schema(N), DbOptions::default()).unwrap();
     let plain = Service::new(Backend::Local(Arc::new(plain)), demo::schema(N), agent(), 16, Duration::from_secs(10));
-    assert_eq!(Arc::new(plain).feed(1, None).await.unwrap_err().status, 409);
+    assert_eq!(Arc::new(plain).feed(1, None, false).await.unwrap_err().status, 409);
 }
