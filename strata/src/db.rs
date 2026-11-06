@@ -1565,12 +1565,42 @@ impl Db {
     /// read after each write builds nothing ([`Snapshot::find`]). An INT
     /// key may be given as text of its digits.
     pub fn get_many_at(&self, snap: &Snapshot, keys: &[Value], opts: &ExecOptions) -> Result<Vec<Option<KeyRow>>> {
+        let fields: Vec<usize> = qsql::star_fields(snap.schema()).collect();
+        self.get_fields_at(snap, keys, &fields, opts)
+    }
+
+    /// [`Db::get_many_at`] of the columns named `columns` alone, in that
+    /// order: each one of those [`Db::get_columns`] lists. A read of a few
+    /// columns of many rows (a ranker's features) leaves the rest unread:
+    /// the doc store's blocks are not decompressed at all when every
+    /// column asked for is a single-valued KEYWORD, INT or FLOAT, which
+    /// their columns answer.
+    pub fn get_columns_at(&self, snap: &Snapshot, keys: &[Value], columns: &[String], opts: &ExecOptions) -> Result<Vec<Option<KeyRow>>> {
+        let fields = Self::key_read_fields(snap.schema(), columns)?;
+        self.get_fields_at(snap, keys, &fields, opts)
+    }
+
+    /// The positions of the columns named `columns` (any case) of a table
+    /// of schema `schema`, as a read by key answers them
+    /// ([`Db::get_columns_at`]).
+    pub fn key_read_fields(schema: &Schema, columns: &[String]) -> Result<Vec<usize>> {
+        columns
+            .iter()
+            .map(|c| {
+                schema.field_index(c).filter(|&i| qsql::star_fields(schema).any(|s| s == i)).ok_or_else(|| {
+                    let names: Vec<String> = Self::get_columns(schema);
+                    Error::Query(format!("{c:?} is not a column a read by key of {} answers; those are {}", schema.table, names.join(", ")))
+                })
+            })
+            .collect()
+    }
+
+    fn get_fields_at(&self, snap: &Snapshot, keys: &[Value], fields: &[usize], opts: &ExecOptions) -> Result<Vec<Option<KeyRow>>> {
         let schema = snap.schema();
         let pk = schema.primary_key.ok_or_else(|| Error::Query(format!("{} has no primary key: rows are read by key only from a table with one", schema.table)))?;
         let keys: Vec<Value> = keys.iter().map(|k| key_value(schema, pk, k)).collect::<Result<_>>()?;
-        let fields: Vec<usize> = qsql::star_fields(schema).collect();
-        let q = qsql::fields_select(schema, &fields);
-        let mut out = self.rows_by_key(snap, &keys, &fields, opts)?;
+        let q = qsql::fields_select(schema, fields);
+        let mut out = self.rows_by_key(snap, &keys, fields, opts)?;
         for row in out.iter_mut().flatten() {
             q.typed(std::slice::from_mut(&mut row.row));
         }
@@ -1622,6 +1652,11 @@ impl Db {
             }
         }
         if !at.is_empty() {
+            // Read in the order of the segments' docIDs, whatever the keys'
+            // order: the doc store keeps one decompressed block a segment,
+            // so rows of the same block are then decompressed once rather
+            // than once each.
+            at.sort_unstable_by_key(|&(_, seg, doc, _)| (seg, doc));
             let q = qsql::fields_select(schema, &fields);
             let view = snap.found_view();
             let readers = self.readers(&view)?;

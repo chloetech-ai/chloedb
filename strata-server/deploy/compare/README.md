@@ -419,7 +419,7 @@ users in turn:
 |---|---|---|
 | r1 user to items | the 500 nearest tracks in the user's region, minus the (up to) 500 they played | `WHERE regions = :r AND id NOT IN (...) ORDER BY similarity(emb, :u, ef => 1000, rerank => 1000) DESC LIMIT 500` |
 | r2 candidates (RRF) | three sources under r1's filters, 1,000 deep: nearest the user, nearest their last track, most popular; fused by RRF (k 60), the best 1,000 | `rrf(similarity(emb, :u), similarity(emb, :l), pop, depth => 1000)` |
-| r3 features | the twelve features of 1,000 tracks by key | `POST /v1/kv/get` |
+| r3 features | the twelve features of 1,000 tracks by key | `POST /v1/kv/get` with `columns` (the twelve) |
 | r4 GBDT rerank | those 1,000 by the ranker; the best 50 | a rerank phase: `WITH c AS (... ORDER BY ranked(:c) ...) SELECT ... ORDER BY gbdt('ranker', ..., dot(emb, :u))` |
 | r5 diversify | r1's ranking with at most 2 tracks an artist; the best 20 | `... MAX 2 PER artist LIMIT 20` |
 | r6 events while serving | r1 while plays are written one a request at `--event-rate`, and how soon a play is in a query of the user's last 5 | `/v1/write`, then `SELECT id FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 5` |

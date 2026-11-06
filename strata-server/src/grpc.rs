@@ -673,7 +673,7 @@ impl pb::strata_server::Strata for Grpc {
             let keys = r.keys.into_iter().map(from_pb).collect();
             // A coordinator's read names the protocol it speaks; it counts
             // the keys itself ([`crate::reads`]).
-            let got = svc.get_rows(table.as_deref(), keys, &after, r.timeout_ms as u64, r.protocol == 0).await?;
+            let got = svc.get_rows(table.as_deref(), keys, None, &after, r.timeout_ms as u64, r.protocol == 0).await?;
             Ok(get_response(got))
         })
         .await

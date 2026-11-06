@@ -225,13 +225,17 @@ class Client(Search):
                 return None
             raise
 
-    def get_many(self, keys: Iterable[Any], *, table: str | None = None) -> list[dict | None]:
+    def get_many(self, keys: Iterable[Any], *, table: str | None = None, columns: Iterable[str] | None = None) -> list[dict | None]:
         """`get` of several keys (POST /v1/kv/get), 10,000 a request, in
-        their order."""
+        their order; with `columns`, each row of those columns alone (a
+        ranker's features, say), which reads no other."""
         keys = list(keys)
+        body: dict[str, Any] = {"table": self._table(table)}
+        if columns is not None:
+            body["columns"] = list(columns)
         out: list[dict | None] = []
         for i in range(0, len(keys), GET_BATCH):
-            out += self._call("POST", "/v1/kv/get", {"table": self._table(table), "keys": keys[i : i + GET_BATCH]})["rows"]
+            out += self._call("POST", "/v1/kv/get", {**body, "keys": keys[i : i + GET_BATCH]})["rows"]
         return out
 
     def put(self, key: Any, row: Mapping[str, Any], *, table: str | None = None, if_seq_no: int | None = None) -> int:

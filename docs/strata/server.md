@@ -468,7 +468,7 @@ Every request and answer is JSON. Every answer carries the request's id in an `x
 | `POST /v1/rank_log/export` | `{table?, since?, until?, events?: {table, user, item, time, action?}, history?, window?, grades?}` | NDJSON: one record per logged row, with its context's history and its label as of its time ([exporting the log](query-language.md#exporting-the-log-for-training)), or `{error, status}` at a failure; a coordinator refuses it (400) |
 | `POST /v1/rank_log/interleaving` | the export's body | `{pairs: [{variants, requests, acted, wins, ties, delta, p}], took_ms}`: which of two [interleaved rankings](query-language.md#interleaving-two-rankings) the users preferred; a coordinator refuses it (400) |
 | `GET /v1/kv/TABLE/KEY?min_seq_no=n` | | `{table, key, found, row, seq_no}`: the row with that primary key, read without SQL ([rows by key](#rows-by-key)); 404 with `found: false` when no live row has it |
-| `POST /v1/kv/get` | `{keys, table?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{table, columns, rows, seq_nos, took_ms}`: per key, in their order, its row as an object (`null` for none) and its sequence number |
+| `POST /v1/kv/get` | `{keys, table?, columns?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{table, columns, rows, seq_nos, took_ms}`: per key, in their order, its row as an object (`null` for none) and its sequence number; of `columns` alone when given |
 | `PUT /v1/kv/TABLE/KEY?if_seq_no=n` | the row's fields as an object (the key may be left out) | `{written, seq_no?}`: the row, written in place of any with that key |
 | `DELETE /v1/kv/TABLE/KEY?if_seq_no=n&routing=v` | | `{deleted, written, seq_no?}` |
 | `POST /v1/write` | `{ops: [...], idempotency_key?}` | `{written, skipped?, seq_no?, seq_nos?}` ([conditional writes](#conditional-writes); `skipped` for [stream events](#streams) written already; `seq_nos` from a coordinator) |
@@ -554,7 +554,11 @@ curl -s localhost:7700/v1/kv/sessions/s1
 # {"table": "sessions", "key": "s1", "found": true, "row": {"id": "s1", "usr": "u7", "until": "2026-11-02T12:00:00Z"}, "seq_no": 41, "took_ms": 0.1}
 curl -s localhost:7700/v1/kv/get -d '{"table": "sessions", "keys": ["s1", "s2"]}'
 # {"table": "sessions", "columns": ["id", "usr", "until"], "rows": [{"id": "s1", ...}, null], "seq_nos": [41, null], "took_ms": 0.1}
+curl -s localhost:7700/v1/kv/get -d '{"table": "sessions", "keys": ["s1", "s2"], "columns": ["usr"]}'
+# {"table": "sessions", "columns": ["usr"], "rows": [{"usr": "u7"}, null], ...}
 ```
+
+`columns` reads only the columns named, as a ranker reading a few features of a thousand candidates wants: when each of them is a single-valued `KEYWORD`, `INT` or `FLOAT`, the rows are read from those columns and the doc store is not touched. A coordinator reads the shards' whole rows and keeps the columns.
 
 A read by key probes each segment's key index, newest first, and reads the rows the memtable holds as they were written: it parses no SQL and builds nothing, so a read after each write costs what any read does. Segments of more than 4,096 keys keep a Bloom filter of their keys in memory (built from the key index on the first lookup; nothing on disk changes), so a segment that lacks the key mostly answers from one cache line. A write commits without indexing the memtable's newest chunk, which a query that needs its indexes builds first, once per change. A row whose [`expire_by`](query-language.md#tables) time has passed is none.
 

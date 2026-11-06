@@ -869,7 +869,7 @@ fn plan(e: Eng, kind: &str, a: &Ask, u: &str) -> Option<Plan> {
                     format!("SELECT id FROM items WHERE {filter} ORDER BY rrf({}, {}, pop, depth => {R2_DEPTH}) DESC LIMIT {R2_K}", sim("u", 2 * R2_DEPTH), sim("l", 2 * R2_DEPTH)),
                     p,
                 ),
-                "r3" => post(format!("{u}/v1/kv/get"), &json!({"table": "items", "keys": a.cands})),
+                "r3" => post(format!("{u}/v1/kv/get"), &json!({"table": "items", "keys": a.cands, "columns": FEATURES})),
                 // A rerank phase over the candidates in their order: `ORDER BY gbdt(…, similarity(emb, :u))`
                 // on its own would rank only similarity's top 100 of them.
                 "r4" => strata_sql(

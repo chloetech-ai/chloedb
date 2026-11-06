@@ -303,13 +303,18 @@ export class Client extends Searchable {
     }
   }
 
-  /** `get` of several keys, 10,000 a request, in their order. */
-  async getMany(keys, { table } = {}) {
+  /**
+   * `get` of several keys, 10,000 a request, in their order; with
+   * `columns`, each row of those columns alone (a ranker's features, say),
+   * which reads no other.
+   */
+  async getMany(keys, { table, columns } = {}) {
     const list = [...keys];
-    const t = await this.#table(table);
+    const body = { table: await this.#table(table) };
+    if (columns !== undefined) body.columns = [...columns];
     const out = [];
     for (let i = 0; i < list.length; i += GET_BATCH) {
-      out.push(...(await this._call("POST", "/v1/kv/get", { table: t, keys: list.slice(i, i + GET_BATCH) })).rows);
+      out.push(...(await this._call("POST", "/v1/kv/get", { ...body, keys: list.slice(i, i + GET_BATCH) })).rows);
     }
     return out;
   }

@@ -2710,10 +2710,12 @@ impl Service {
     /// read without SQL ([`Db::get_many_at`]): per key, its live row as
     /// `SELECT *` answers it and the number of the write that last changed
     /// it, or none. A coordinator asks each key's shard. At most
-    /// [`MAX_GET_KEYS`] keys.
+    /// [`MAX_GET_KEYS`] keys. With `columns`, of those columns alone, in
+    /// that order ([`Db::get_columns_at`]); a coordinator reads the
+    /// shards' whole rows and keeps those columns.
     /// With `count`, a client's read, its keys count as asked for
     /// ([`crate::reads`]).
-    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, after: &After, timeout_ms: u64, count: bool) -> Result<KeyRows, ApiError> {
+    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, columns: Option<Vec<String>>, after: &After, timeout_ms: u64, count: bool) -> Result<KeyRows, ApiError> {
         let t0 = Instant::now();
         if keys.len() > MAX_GET_KEYS {
             return Err(ApiError::bad(format!("a read by key takes at most {MAX_GET_KEYS} keys, not {}", keys.len())));
@@ -2724,6 +2726,9 @@ impl Service {
         };
         let pk = schema.primary_key.ok_or_else(|| ApiError::bad(format!("{} has no primary key: rows are read by key only from a table with one", schema.table)))?;
         let keys: Vec<Value> = keys.iter().map(|k| strata::db::key_value(&schema, pk, k)).collect::<strata::Result<_>>()?;
+        if let Some(c) = &columns {
+            Db::key_read_fields(&schema, c)?;
+        }
         let timeout = self.timeout_of(timeout_ms);
         let deadline = t0 + timeout;
         let r = match &self.backend {
@@ -2735,8 +2740,12 @@ impl Service {
                 let opts = ExecOptions { deadline: Some(deadline), ..db.exec.clone() };
                 let asked = if count && self.reads.on() { keys.clone() } else { Vec::new() };
                 let r = tokio::task::spawn_blocking(move || {
-                    let columns = Db::get_columns(view.schema());
-                    db.get_many_at(&view, &keys, &opts).map(|rows| KeyRows { table: view.schema().table.clone(), columns, rows: rows.into_iter().map(|r| r.map(|r| (r.row, r.seq_no))).collect() })
+                    let s = view.schema();
+                    let (names, rows) = match &columns {
+                        None => (Db::get_columns(s), db.get_many_at(&view, &keys, &opts)),
+                        Some(c) => (Db::key_read_fields(s, c)?.into_iter().map(|i| s.fields[i].name.clone()).collect(), db.get_columns_at(&view, &keys, c, &opts)),
+                    };
+                    rows.map(|rows| KeyRows { table: s.table.clone(), columns: names, rows: rows.into_iter().map(|r| r.map(|r| (r.row, r.seq_no))).collect() })
                 })
                 .await
                 .map_err(ApiError::internal)?;
@@ -2753,8 +2762,19 @@ impl Service {
                         self.reads.asked(&schema.table, s.at, &s.keys, &s.found);
                     }
                 }
-                KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }
-            }),
+                match &columns {
+                    None => Ok(KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }),
+                    Some(c) => {
+                        // The shards answer every column `SELECT *` does.
+                        let star: Vec<usize> = strata::query::sql::star_fields(&schema).collect();
+                        let fields = Db::key_read_fields(&schema, c)?;
+                        let at: Vec<usize> = fields.iter().map(|f| star.iter().position(|s| s == f).expect("a column of a read by key")).collect();
+                        let rows = rows.into_iter().map(|r| r.map(|(row, n)| (at.iter().map(|&j| row.get(j).cloned().unwrap_or(Value::Null)).collect(), n))).collect();
+                        Ok(KeyRows { table: schema.table.clone(), columns: fields.iter().map(|&i| schema.fields[i].name.clone()).collect(), rows })
+                    }
+                }
+            })
+            .and_then(|r: Result<KeyRows, ApiError>| r),
         };
         telemetry::record("get", t0, if r.is_ok() { "ok" } else { "error" });
         r

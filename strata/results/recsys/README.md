@@ -132,6 +132,8 @@ items were merged into one segment before the runs. Where an engine has no
 request for a kind's whole job the client does the rest (each report's
 `differs` says what): r4 outside Strata and Vespa reads the features (r3's
 request) and scores the trees in the client with Strata's own evaluator.
+Every engine's r3 asks for the twelve features alone (Strata's
+`/v1/kv/get` with `columns`).
 The reports are in [`serving/`](serving/); [`serving_tables.py`](serving_tables.py)
 writes these tables from them.
 
@@ -139,106 +141,128 @@ writes these tables from them.
 
 | engine | score | p50 / p99 at 1, ms | req/s at 4 | req/s at 16 | p99 at 16, ms |
 |---|---|---|---|---|---|
-| Strata | 0.978 | 4.9 / 8.8 | 614 | 737 | 39.8 |
-| Elasticsearch | 0.917 | 12.4 / 17.0 | 235 | 285 | 94.1 |
-| OpenSearch | 0.975 | 23.4 / 36.9 | 121 | 122 | 210 |
-| Vespa | 0.985 | 9.7 / 19.1 | 280 | 351 | 82.0 |
-| Qdrant | 0.984 | 4.9 / 8.3 | 482 | 601 | 42.8 |
-| Milvus | 0.978 | 6.8 / 12.9 | 374 | 392 | 73.3 |
-| Redis | 0.988 | 7.2 / 12.5 | 496 | 622 | 47.6 |
-| Postgres | 0.980 | 10.9 / 18.4 | 279 | 204 | 191 |
+| Strata | 0.979 | 5.0 / 7.3 | 587 | 712 | 42.4 |
+| Elasticsearch | 0.912 | 11.9 / 19.9 | 244 | 281 | 94.2 |
+| OpenSearch | 0.976 | 25.6 / 37.5 | 110 | 109 | 258 |
+| Vespa | 0.985 | 9.5 / 15.4 | 301 | 383 | 78.0 |
+| Qdrant | 0.984 | 4.6 / 7.1 | 490 | 610 | 49.9 |
+| Milvus | 0.978 | 6.5 / 11.9 | 453 | 479 | 57.6 |
+| Redis | 0.988 | 6.3 / 9.7 | 572 | 700 | 40.7 |
+| Postgres | 0.980 | 10.8 / 17.1 | 310 | 283 | 140 |
 
 **r2 candidates (RRF)** (recall@1000 of the exact answer)
 
 | engine | score | p50 / p99 at 1, ms | req/s at 4 | req/s at 16 | p99 at 16, ms |
 |---|---|---|---|---|---|
-| Strata | 0.998 | 12.7 / 19.0 | 235 | 260 | 111 |
-| Elasticsearch | 0.985 | 20.9 / 31.7 | 99 | 103 | 197 |
-| OpenSearch | 0.997 | 105 / 133 | 25 | 25 | 1022 |
-| Vespa | 0.998 | 18.5 / 27.7 | 88 | 96 | 268 |
-| Qdrant | 0.998 | 13.5 / 19.2 | 166 | 190 | 139 |
-| Milvus | 0.998 | 13.6 / 26.8 | 145 | 164 | 149 |
-| Redis | 0.999 | 21.2 / 31.2 | 109 | 109 | 202 |
-| Postgres | 0.993 | 48.8 / 72.2 | 64 | 57 | 510 |
+| Strata | 0.998 | 12.9 / 19.4 | 232 | 267 | 114 |
+| Elasticsearch | 0.985 | 20.8 / 30.5 | 97 | 102 | 216 |
+| OpenSearch | 0.997 | 115 / 135 | 23 | 23 | 1077 |
+| Vespa | 0.998 | 17.6 / 25.6 | 88 | 99 | 265 |
+| Qdrant | 0.998 | 12.9 / 18.1 | 203 | 217 | 104 |
+| Milvus | 0.998 | 12.1 / 22.4 | 158 | 177 | 142 |
+| Redis | 0.999 | 15.2 / 21.4 | 127 | 119 | 179 |
+| Postgres | 0.993 | 42.6 / 60.9 | 73 | 65 | 386 |
 
 **r3 features** (rows_found of the exact answer)
 
 | engine | score | p50 / p99 at 1, ms | req/s at 4 | req/s at 16 | p99 at 16, ms |
 |---|---|---|---|---|---|
-| Strata | 1.000 | 23.6 / 40.0 | 126 | 156 | 186 |
-| Elasticsearch | 1.000 | 51.8 / 81.5 | 59 | 58 | 455 |
-| OpenSearch | 1.000 | 56.1 / 80.3 | 51 | 48 | 410 |
-| Vespa | 1.000 | 18.3 / 32.7 | 99 | 151 | 213 |
-| Qdrant | 1.000 | 12.9 / 18.4 | 223 | 266 | 110 |
-| Milvus | 1.000 | 16.8 / 41.5 | 143 | 167 | 193 |
-| Redis | 1.000 | 6.4 / 9.8 | 254 | 271 | 78.7 |
-| Postgres | 1.000 | 7.6 / 14.0 | 371 | 413 | 83.6 |
+| Strata | 1.000 | 7.0 / 9.9 | 385 | 568 | 50.3 |
+| Elasticsearch | 1.000 | 54.6 / 80.9 | 56 | 59 | 437 |
+| OpenSearch | 1.000 | 61.2 / 79.3 | 47 | 48 | 376 |
+| Vespa | 1.000 | 16.4 / 21.7 | 165 | 191 | 143 |
+| Qdrant | 1.000 | 13.2 / 19.2 | 243 | 292 | 95.5 |
+| Milvus | 1.000 | 15.4 / 33.0 | 163 | 175 | 203 |
+| Redis | 1.000 | 6.5 / 10.2 | 259 | 295 | 73.7 |
+| Postgres | 1.000 | 7.2 / 11.0 | 389 | 425 | 83.5 |
 
 **r4 GBDT rerank** (precision@50 of the exact answer)
 
 | engine | score | p50 / p99 at 1, ms | req/s at 4 | req/s at 16 | p99 at 16, ms |
 |---|---|---|---|---|---|
-| Strata | 1.000 | 18.3 / 24.7 | 155 | 172 | 164 |
-| Elasticsearch | 1.000 | 62.1 / 78.6 | 52 | 57 | 450 |
-| OpenSearch | 1.000 | 67.0 / 91.5 | 47 | 48 | 387 |
-| Vespa | 1.000 | 7.7 / 13.1 | 330 | 374 | 84.7 |
-| Qdrant | 1.000 | 23.1 / 31.0 | 112 | 164 | 166 |
-| Milvus | 1.000 | 27.8 / 50.8 | 104 | 118 | 257 |
-| Redis | 1.000 | 16.3 / 22.9 | 165 | 213 | 132 |
-| Postgres | 1.000 | 18.6 / 25.4 | 170 | 207 | 132 |
+| Strata | 1.000 | 13.6 / 20.8 | 191 | 223 | 128 |
+| Elasticsearch | 1.000 | 61.7 / 81.6 | 53 | 59 | 412 |
+| OpenSearch | 1.000 | 69.0 / 96.1 | 45 | 45 | 443 |
+| Vespa | 1.000 | 7.4 / 11.0 | 358 | 398 | 77.2 |
+| Qdrant | 1.000 | 22.3 / 28.3 | 122 | 176 | 151 |
+| Milvus | 1.000 | 24.2 / 40.9 | 119 | 140 | 210 |
+| Redis | 1.000 | 14.7 / 19.5 | 177 | 235 | 118 |
+| Postgres | 1.000 | 16.2 / 21.5 | 192 | 224 | 128 |
 
 **r5 diversify** (recall@20 of the exact answer)
 
 | engine | score | p50 / p99 at 1, ms | req/s at 4 | req/s at 16 | p99 at 16, ms |
 |---|---|---|---|---|---|
-| Strata | 0.980 | 5.8 / 10.1 | 553 | 686 | 48.9 |
-| Elasticsearch | 0.960 | 8.3 / 15.1 | 152 | 156 | 137 |
-| OpenSearch | 0.980 | 15.6 / 28.0 | 80 | 84 | 233 |
-| Vespa | 0.988 | 5.7 / 8.9 | 469 | 572 | 59.7 |
-| Qdrant | 0.995 | 19.1 / 27.7 | 117 | 127 | 161 |
-| Milvus | 0.989 | 5.7 / 10.2 | 495 | 564 | 52.1 |
-| Redis | 0.990 | 4.8 / 7.6 | 645 | 769 | 35.6 |
-| Postgres | 0.982 | 6.1 / 10.6 | 524 | 489 | 79.7 |
+| Strata | 0.984 | 5.8 / 8.7 | 534 | 661 | 49.5 |
+| Elasticsearch | 0.955 | 8.6 / 14.7 | 154 | 153 | 148 |
+| OpenSearch | 0.981 | 15.5 / 26.8 | 76 | 84 | 258 |
+| Vespa | 0.988 | 5.6 / 8.6 | 483 | 590 | 55.4 |
+| Qdrant | 0.996 | 18.4 / 25.0 | 124 | 134 | 149 |
+| Milvus | 0.989 | 5.0 / 6.9 | 571 | 610 | 48.2 |
+| Redis | 0.990 | 4.4 / 6.4 | 734 | 886 | 31.6 |
+| Postgres | 0.983 | 5.3 / 7.7 | 604 | 550 | 74.8 |
 
 **r6 events while serving** (recall@500 of the exact answer)
 
 | engine | score | r1 p50 / p99 at 1, ms | r1 p99 at 16, ms | write p99 at 16, ms | play visible at 16, p50 / p99, ms |
 |---|---|---|---|---|---|
-| Strata | 0.978 | 5.2 / 8.0 | 44.0 | 41.1 | 20.9 / 37.1 |
-| Elasticsearch | 0.917 | 10.1 / 17.3 | 109 | 36.5 | 703 / 1092 |
-| OpenSearch | 0.975 | 22.7 / 32.8 | 260 | 33.2 | 689 / 1201 |
-| Vespa | 0.985 | 8.1 / 12.8 | 82.6 | 41.0 | 22.0 / 84.0 |
-| Qdrant | 0.984 | 4.8 / 8.4 | 60.6 | 41.9 | 27.7 / 35.2 |
-| Milvus | 0.978 | 7.3 / 12.5 | 92.4 | 48.0 | 201 / 307 |
-| Redis | 0.988 | 7.0 / 10.4 | 41.7 | 17.2 | 23.1 / 32.8 |
-| Postgres | 0.980 | 12.1 / 22.8 | 153 | 45.8 | 1.1 / 12.4 |
+| Strata | 0.979 | 5.3 / 7.7 | 49.9 | 48.2 | 21.2 / 41.4 |
+| Elasticsearch | 0.912 | 10.5 / 18.4 | 93.9 | 34.6 | 672 / 1171 |
+| OpenSearch | 0.976 | 22.5 / 32.4 | 223 | 38.3 | 728 / 1254 |
+| Vespa | 0.985 | 8.6 / 13.3 | 86.0 | 39.2 | 21.6 / 39.4 |
+| Qdrant | 0.984 | 4.6 / 7.3 | 45.9 | 37.8 | 24.6 / 39.9 |
+| Milvus | 0.978 | 6.0 / 10.6 | 65.5 | 29.8 | 151 / 238 |
+| Redis | 0.988 | 6.2 / 8.8 | 39.7 | 20.3 | 15.6 / 23.7 |
+| Postgres | 0.980 | 10.3 / 15.0 | 130 | 52.6 | 1.1 / 21.4 |
 
 ### What it says
 
 - **Strata's retrieval kinds are as fast as the fastest engine's, at a
-  recall in the others' range.** r1 at 4.9 ms p50 (Qdrant 4.9, Milvus 6.8,
-  Redis 7.2, Vespa 9.7) and the most requests a second at 16 clients (737;
-  Redis 622, Qdrant 601), recall 0.978 (the others 0.975 to 0.988,
-  Elasticsearch 0.917). r2 at 12.7 ms and 260 a second, recall 0.998,
-  against 13.5 to 105 ms for the others (Milvus, Redis and Vespa fuse in the
-  client). r5 is level in time with Redis, Vespa, Milvus and Postgres (4.8
-  to 6.1 ms), at recall 0.980 against their 0.982 to 0.990.
-- **Reading features by key is where Strata is slowest**: 1,000 rows of
-  twelve numbers take 23.6 ms by `/v1/kv/get`, three to four times Redis's
-  pipelined `HMGET` (6.4 ms) and Postgres's `WHERE id = ANY` (7.6 ms), and
-  twice Qdrant's (12.9 ms). Only Elasticsearch and OpenSearch are slower.
-- **Vespa ranks 1,000 candidates by the trees 2.4 times as fast** (r4,
-  7.7 ms p50 and 374 a second at 16 against Strata's 18.3 ms and 172): its
-  rank profile evaluates the LightGBM model where the features are, and
-  Strata's rerank phase over the same 1,000 costs what reading them and
-  scoring in the client costs Redis and Postgres (16.3 and 18.6 ms).
-- **A play is visible in 21 ms at p50 and 37 ms at p99** (24 polled plays)
-  with 16 clients reading, as on Vespa, Qdrant and Redis; on Postgres at
-  once (1 ms); on Elasticsearch and OpenSearch after their 1 s refresh
-  (~0.7 s); on Milvus at its Bounded consistency (0.2 s).
+  recall in the others' range.** r1 at 5.0 ms p50 (Qdrant 4.6, Redis 6.3,
+  Milvus 6.5, Vespa 9.5) and the most requests a second at 16 clients (712;
+  Redis 700, Qdrant 610), recall 0.979 (the others 0.976 to 0.988,
+  Elasticsearch 0.912). r2 at 12.9 ms and the most a second at 16 (267;
+  Qdrant 217), recall 0.998, where the others take 12.1 to 115 ms (Milvus,
+  Redis and Vespa fuse in the client). r5 is level with Vespa, Postgres,
+  Milvus and Redis (5.8 ms against 4.4 to 5.6), at recall 0.984 against
+  their 0.983 to 0.990.
+- **Reading features by key is level with Redis and Postgres, and serves
+  the most at 16 clients**: 1,000 rows of twelve features in 7.0 ms p50
+  (Redis's pipelined `HMGET` 6.5, Postgres's `WHERE id = ANY` 7.2, Qdrant
+  13.2, Vespa 16.4) and 568 a second at 16 (Postgres 425, Redis 295).
+  Before this change it was Strata's slowest kind, at 23.6 ms and 156 a
+  second: a read by key decompressed a block of the doc store for every key,
+  and read all sixteen columns where the others ask for the twelve.
+- **Vespa ranks 1,000 candidates by the trees 1.8 times as fast** (r4,
+  7.4 ms p50 and 398 a second at 16, against Strata's 13.6 ms and 223): its
+  rank profile evaluates the model where the features are. Strata's walk of
+  the trees is three times as fast as it was (r4 was 18.3 ms), and is about
+  half of what r4 takes now; parsing the request's 1,000 keys is another
+  seventh (profiled on a 20,000-track set). Redis and Postgres score in the client with the same evaluator
+  (14.7 and 16.2 ms, from 16.3 and 18.6).
+- **A play is visible in 21 ms at p50 and 41 ms at p99** with 16 clients
+  reading, as on Vespa (22 / 39) and Qdrant (25 / 40), behind Redis (16 /
+  24); on Postgres at once (1 ms); on Milvus at its Bounded consistency
+  (0.15 s); on Elasticsearch and OpenSearch after their 1 s refresh
+  (~0.7 s).
 - **The search breadth decides Strata's recall here.** With its default
   (ef 64, raised to the limit) it had 0.961 at r1 and 0.947 at r5; the
-  harness now asks it for the others' ef.
+  harness asks it for the others' ef.
+
+### Before and after the read-by-key and tree fixes
+
+The first run of these kinds (in the same container, 2026-11-06, before
+`columns` and the new tree walk) had Strata at:
+
+| kind | then: p50 at 1, ms | then: req/s at 16 | now: p50 at 1, ms | now: req/s at 16 |
+|---|---|---|---|---|
+| r3 features | 23.6 | 156 | 7.0 | 568 |
+| r4 GBDT rerank | 18.3 | 172 | 13.6 | 223 |
+
+and the other kinds within a few percent of where they are now. Profiles of
+the r3 server then put half its CPU in decompressing doc store blocks and
+11% in writing JSON; of r4, 73% in walking the trees, one row at a time, a
+mispredicted branch at every other step.
 
 ## Running it
 

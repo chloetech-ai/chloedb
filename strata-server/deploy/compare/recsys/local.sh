@@ -93,7 +93,8 @@ down() {
             while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
             rm -f "$OUT/strata.pid"
         fi ;;
-    *) docker rm -f "rs-$1" >/dev/null 2>&1 || true ;;
+    # With its volumes, which would otherwise fill the disk run by run.
+    *) docker rm -f -v "rs-$1" >/dev/null 2>&1 || true ;;
     esac
 }
 
