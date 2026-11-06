@@ -43,6 +43,7 @@ use serde_json::{json, Value as Json};
 use strata::data::{self, col};
 use strata::db::Db;
 use strata::metrics::{mean, percentile};
+use strata::schema::VectorPartition;
 use strata::segment::build::BuildOptions;
 use strata::storage::{DbOptions, MergePolicy};
 use strata::{Document, Value, VectorCodes, VectorIndexKind};
@@ -410,9 +411,13 @@ fn build(collection: &str, shard: usize, of: usize, out: &Path, threads: usize, 
             std::fs::remove_file(&p).map_err(s)?;
         }
     }
-    // As strata-server-bench builds its databases.
+    // As strata-server-bench builds its databases, with the vectors
+    // partitioned by rating: a graph per range (below 1, 1 to 2, ..., 4 and
+    // up) besides the graph of every row, which the filtered kinds
+    // (`rating >= 4`, `rating >= 3`) walk instead (README, "Vectors").
     let mut schema = data::beir_schema(dim, VectorIndexKind::Hnsw { m: 16, ef_construction: 200 });
     schema.fields[col::EMB].codes = VectorCodes::Sq8;
+    schema.fields[col::EMB].partition = Some(VectorPartition { by: "rating".into(), bounds: vec![1.0, 2.0, 3.0, 4.0] });
     let opts = DbOptions { build: BuildOptions::default().set("vector.threads", threads), segment_max_docs: segment_docs.max(1), ..server::db_options(false) };
     let db = Db::create(out, schema, opts).map_err(s)?;
     // The documents stream from the files into the load, which builds a

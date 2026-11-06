@@ -124,6 +124,46 @@ pub const JSON_TEXT: &str = "json_text";
 /// segments.
 pub const RABITQ: &str = "rabitq";
 
+/// The feature of a database with a VECTOR field partitioned by a column
+/// ([`Field::partition`]): its segments hold a graph per value of the
+/// column besides the field's graph, which versions of Strata from before
+/// it would not keep through a merge, so they refuse the database by name.
+pub const VECTOR_PARTITION: &str = "vector_partition";
+
+/// The most partitions a segment builds for a KEYWORD partition key
+/// ([`VectorPartition`]): the most frequent values get one each, and a
+/// filter on another value searches the field's own graph.
+pub const MAX_VALUE_PARTITIONS: usize = 64;
+
+/// What a VECTOR field is partitioned by (`OPTIONS(partition_by = 'rating',
+/// partition_bounds = '1, 2, 3, 4')`): each segment keeps, besides the
+/// field's HNSW graph of every row, one graph per partition of the rows, and
+/// a search whose filter limits column `by` to some partitions walks only
+/// their graphs ([`crate::vector::VectorReader::search_parts`]). A filter
+/// that holds for every row of a partition needs no test inside it, so it
+/// costs what an unfiltered search of that partition costs.
+///
+/// A KEYWORD column partitions by value (up to [`MAX_VALUE_PARTITIONS`] per
+/// segment); an INT or FLOAT column by the ranges between `bounds`, which
+/// increase: `[1, 2, 3, 4]` makes `< 1`, `[1, 2)`, `[2, 3)`, `[3, 4)` and
+/// `>= 4`. Rows whose column is NULL are in the field's graph only.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VectorPartition {
+    /// A stored, single-valued KEYWORD, INT or FLOAT column of the table.
+    pub by: String,
+    /// The bounds of an INT or FLOAT column's ranges; empty for KEYWORD.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bounds: Vec<f64>,
+}
+
+impl VectorPartition {
+    /// The range a numeric value falls in: the number of bounds at or
+    /// below it.
+    pub fn bucket(&self, v: f64) -> usize {
+        self.bounds.partition_point(|&b| b <= v)
+    }
+}
+
 /// The feature of a database with a table whose rows expire at a time
 /// they hold ([`Schema::with_expire_by`]): versions of Strata from before
 /// it would show expired rows, so they refuse the database by name.
@@ -291,6 +331,10 @@ pub struct Field {
     /// that would find those sections missing refuse it by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added: Option<Added>,
+    /// A VECTOR field's partitions ([`VectorPartition`]): makes the
+    /// database format 3 (feature [`VECTOR_PARTITION`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<VectorPartition>,
     /// A JSON field whose string values are also indexed as text
     /// (`OPTIONS(text = true)`): one text index over the strings of each
     /// row's object, so `MATCH(attrs, ...)` and `bm25(attrs, ...)` search
@@ -414,6 +458,7 @@ impl Field {
             semantic_id: None,
             derive: None,
             added: None,
+            partition: None,
             text: false,
         }
     }
@@ -911,7 +956,13 @@ impl Schema {
             if f.name.eq_ignore_ascii_case(name) {
                 continue;
             }
-            let names = f.generated_from.iter().chain(f.embed.iter().flat_map(|e| e.from.iter())).chain(f.derive.iter().map(|d| &d.from)).chain(f.semantic_id.iter().map(|s| &s.from));
+            let names = f
+                .generated_from
+                .iter()
+                .chain(f.embed.iter().flat_map(|e| e.from.iter()))
+                .chain(f.derive.iter().map(|d| &d.from))
+                .chain(f.semantic_id.iter().map(|s| &s.from))
+                .chain(f.partition.iter().map(|p| &p.by));
             if names.into_iter().any(|n| same(n)) {
                 return Some(format!("column {}", f.name));
             }
@@ -978,6 +1029,30 @@ impl Schema {
             }
             if f.multi && (!matches!(f.ty, FieldType::Keyword | FieldType::Int) || !f.stored || s.primary_key == Some(i)) {
                 return Err(Error::Schema(format!("multi-valued field {} must be a stored KEYWORD or INT, or a VECTOR, and not the primary key", f.name)));
+            }
+        }
+        for f in s.fields.iter() {
+            let Some(p) = &f.partition else { continue };
+            let bad = |m: String| Err(Error::Schema(format!("field {}: {m}", f.name)));
+            if !matches!(f.ty, FieldType::Vector { index: crate::schema::VectorIndexKind::Hnsw { .. }, .. }) || f.multi || !f.indexed {
+                return bad("partition_by is an option of an indexed one-vector field with index = 'hnsw'".into());
+            }
+            let Some(key) = s.field(&p.by) else { return bad(format!("partition_by names no column: {}", p.by)) };
+            if key.multi || !key.stored || key.logical.is_some() || !key.indexed {
+                return bad(format!("partition_by: {} must be a stored, indexed, single-valued KEYWORD, INT or FLOAT column", key.name));
+            }
+            match key.ty {
+                FieldType::Keyword if p.bounds.is_empty() => {}
+                FieldType::Keyword => return bad(format!("partition_by: {} is a KEYWORD column, partitioned by value without partition_bounds", key.name)),
+                FieldType::Int | FieldType::Float => {
+                    if p.bounds.is_empty() || p.bounds.len() > MAX_VALUE_PARTITIONS - 1 {
+                        return bad(format!("partition_by: the {} column {} needs partition_bounds, 1 to {} increasing numbers", type_name(&key.ty), key.name, MAX_VALUE_PARTITIONS - 1));
+                    }
+                    if !p.bounds.windows(2).all(|w| w[0] < w[1]) || p.bounds.iter().any(|b| !b.is_finite()) {
+                        return bad("partition_bounds must be finite and increase".into());
+                    }
+                }
+                _ => return bad(format!("partition_by: {} must be a KEYWORD, INT or FLOAT column", key.name)),
             }
         }
         for f in s.fields.iter() {
@@ -1398,6 +1473,7 @@ impl Schema {
                 (f.ty == FieldType::Json).then_some(JSON),
                 (f.ty == FieldType::Json && f.text).then_some(JSON_TEXT),
                 f.codes.rabitq_bits().map(|_| RABITQ),
+                f.partition.as_ref().map(|_| VECTOR_PARTITION),
             ];
             named.into_iter().flatten().map(String::from).chain(f.analyzer.and_then(Analyzer::feature))
         });
@@ -1828,6 +1904,9 @@ impl Schema {
                 if let Some(d) = &f.derive {
                     m.insert("derive".into(), json!({"from": d.from, "model": d.model}));
                 }
+                if let Some(p) = &f.partition {
+                    m.insert("partition".into(), serde_json::to_value(p).expect("serialises"));
+                }
                 if let Some(a) = f.analyzer {
                     // Version 1 by its name alone, as short_field reads it.
                     m.insert("analyzer".into(), if a.version() == 1 { json!(a.name()) } else { json!(a) });
@@ -1881,7 +1960,7 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
     use serde_json::Value as J;
     let name = j.get("name").and_then(J::as_str).ok_or_else(|| Error::Schema(format!("a field needs a \"name\": {j}")))?;
     let bad = |m: &str| Error::Schema(format!("field {name}: {m}"));
-    let known = ["name", "type", "stored", "indexed", "multi", "positions", "from", "dim", "index", "codes", "keep_f32", "pool", "pool_factor", "embed", "references", "not_null", "default", "analyzer", "kind", "semantic_id", "derive", "text"];
+    let known = ["name", "type", "stored", "indexed", "multi", "positions", "from", "dim", "index", "codes", "keep_f32", "pool", "pool_factor", "embed", "references", "not_null", "default", "analyzer", "kind", "semantic_id", "derive", "text", "partition"];
     if let Some(k) = j.as_object().into_iter().flat_map(|o| o.keys()).find(|k| !known.contains(&k.as_str())) {
         return Err(bad(&format!("unknown option {k:?} (known: {})", known.join(", "))));
     }
@@ -1998,6 +2077,10 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
     match j.get("derive") {
         None | Some(J::Null) => {}
         Some(d) => f.derive = Some(serde_json::from_value(d.clone()).map_err(|e| bad(&format!("derive is {{\"from\": media field, \"model\": name}}: {e}")))?),
+    }
+    match j.get("partition") {
+        None | Some(J::Null) => {}
+        Some(p) => f.partition = Some(serde_json::from_value(p.clone()).map_err(|e| bad(&format!("partition is {{\"by\": column, \"bounds\": [numbers]}}: {e}")))?),
     }
     match j.get("embed") {
         None | Some(J::Null) => {}

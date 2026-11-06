@@ -149,7 +149,7 @@ function render(page) {
     // Where the rows go is asked, never assumed: the table that shares the
     // most columns is offered first.
     const fits = best && overlap(best) >= Math.max(1, s.cols.length / 2);
-    const st = { mode: null, suggest: fits ? best.table : null, fit: fits ? overlap(best) : 0, table: best?.table, name: file.name.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^(\d)/, "t_$1") || "imported", key: keyGuess?.name, cols };
+    const st = { mode: null, suggest: fits ? best.table : null, fit: fits ? overlap(best) : 0, table: best?.table, name: file.name.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^(\d)/, "t_$1") || "imported", key: keyGuess?.name, cols, shardBy: null, clusterBy: null };
     drawLoad(file, format, s, st);
   }
   function drawLoad(file, format, s, st) {
@@ -166,13 +166,35 @@ function render(page) {
       const f = st.mode === "existing" ? fieldOf(c) : null;
       const typeSel = h("select", { class: "select sm", onchange: (e) => { c.type = e.target.value; if (!["keyword", "int"].includes(c.type)) delete c.multi; if (c.type === "vector" && !c.dim) c.dim = 384; check(); drawLoad(file, format, s, st); } }, Object.entries(TYPES).map(([k, v]) => h("option", { value: k, selected: k === c.type }, v.label)));
       return h("tr", {},
-        h("td", {}, st.mode === "new" ? h("input", { type: "checkbox", checked: c.use, title: "Make a field of it", onchange: (e) => { c.use = e.target.checked; check(); } }) : null),
+        h("td", {}, st.mode === "new" ? h("input", { type: "checkbox", checked: c.use, title: "Make a field of it", onchange: (e) => { c.use = e.target.checked; if (!c.use && (st.shardBy === c.name || st.clusterBy === c.name)) drawLoad(file, format, s, st); else check(); } }) : null),
         h("td", { class: "mono" }, c.name),
         h("td", {}, h("span", { class: "row nw", style: { gap: "6px" } }, typeBadge(c), typeMeta(c).label + (c.multi ? "[]" : "") + (c.dim ? `(${c.dim})` : ""))),
         st.mode === "existing"
           ? h("td", {}, f ? h("span", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "pill ok" }, icon("okc"), f.name), h("span", { class: "small muted" }, typeMeta(f).label + (f.multi ? "[]" : ""))) : h("span", { class: "pill warn" }, icon("warn"), "skipped"))
-          : st.mode === "new" ? h("td", {}, h("span", { class: "row nw", style: { gap: "8px" } }, typeSel, (c.type === "keyword" || c.type === "int") && !c.multi ? h("label", { class: "row nw small dim", style: { gap: "4px" } }, h("input", { type: "radio", name: "imp-key", checked: st.key === c.name, onchange: () => { st.key = c.name; check(); } }), "key") : null)) : h("td", {}));
+          : st.mode === "new" ? h("td", {}, h("span", { class: "row nw", style: { gap: "8px" } }, typeSel, (c.type === "keyword" || c.type === "int") && !c.multi ? h("label", { class: "row nw small dim", style: { gap: "4px" } }, h("input", { type: "radio", name: "imp-key", checked: st.key === c.name, onchange: () => { st.key = c.name; if (st.shardBy === c.name) drawLoad(file, format, s, st); else check(); } }), "key") : null)) : h("td", {}));
     });
+    // Where a new table's rows live (shard_by) and in what order each
+    // segment keeps them (cluster_by): what the trial had to write in SQL.
+    const shardable = (c) => c.use && (c.type === "keyword" || c.type === "int") && !c.multi && c.name !== st.key;
+    const clusterable = (c) => c.use && (c.type === "keyword" || c.type === "int" || c.type === "timestamp") && !c.multi;
+    if (st.shardBy && !st.cols.some((c) => c.name === st.shardBy && shardable(c))) st.shardBy = null;
+    if (st.clusterBy && !st.cols.some((c) => c.name === st.clusterBy && clusterable(c))) st.clusterBy = null;
+    const emptyIn = (name) => s.objs.filter((o) => o[name] == null || o[name] === "").length;
+    const shardSel = h("select", { class: "select sm", "aria-label": "Shard by", onchange: (e) => { st.shardBy = e.target.value || null; if (st.shardBy && !st.clusterBy) st.clusterBy = st.shardBy; drawLoad(file, format, s, st); } },
+      h("option", { value: "", selected: !st.shardBy }, st.key ? `the key, ${st.key}` : "the row's id"),
+      st.cols.filter(shardable).map((c) => h("option", { value: c.name, selected: st.shardBy === c.name }, c.name)));
+    const clusterSel = h("select", { class: "select sm", "aria-label": "Order each segment by", onchange: (e) => { st.clusterBy = e.target.value || null; drawLoad(file, format, s, st); } },
+      h("option", { value: "", selected: !st.clusterBy }, "the order rows come in"),
+      st.cols.filter(clusterable).map((c) => h("option", { value: c.name, selected: st.clusterBy === c.name }, c.name)));
+    const shardEmpty = st.shardBy ? emptyIn(st.shardBy) : 0;
+    const placeRow = st.mode === "new" ? h("div", { class: "stack", style: { gap: "6px" } },
+      h("div", { class: "row", style: { gap: "16px" } },
+        h("label", { class: "row nw small dim", style: { gap: "6px" } }, "Shard by", shardSel),
+        h("label", { class: "row nw small dim", style: { gap: "6px" } }, "Order each segment by", clusterSel)),
+      h("div", { class: "small muted" }, st.shardBy
+        ? `Rows with the same ${st.shardBy} live on one shard, so reading or joining one ${st.shardBy}'s rows asks one shard. ${st.shardBy} becomes NOT NULL.`
+        : `Rows are spread over the shards by ${st.key ? "their key" : "their id"}. Pick a column you look rows up or join by (a user, an item) to keep its rows on one shard.`),
+      shardEmpty ? h("div", { class: "error small" }, `${fmt.plural(shardEmpty, "row")} of the ${fmt.n(s.objs.length)} read here ${shardEmpty === 1 ? "has" : "have"} no ${st.shardBy}: a row needs one to be placed, and is refused without it.`) : null) : null;
     const missing = st.mode === "existing" && target ? (target.short.fields || []).filter((f) => !s.cols.includes(f.name) && !f.embed && !f.from && !f.derive && f.name !== target.short.key) : [];
     const keyMissing = st.mode === "existing" && target?.short?.key && !s.cols.includes(target.short.key);
     const checkBox = h("div");
@@ -202,9 +224,11 @@ function render(page) {
       if (!st.mode) { ddl = null; clear(checkBox); go.disabled = true; go.title = "Pick where the rows go first"; return; }
       go.title = "";
       if (st.mode !== "new") { ddl = null; clear(checkBox); go.disabled = !target || !can("write"); return; }
-      const short = { table: st.name, key: st.key, fields: st.cols.filter((c) => c.use).map((c) => ({ name: c.name, type: c.type, ...(c.multi ? { multi: true } : {}), ...(c.type === "vector" ? { dim: c.dim || 384 } : {}) })) };
+      const short = { table: st.name, key: st.key, fields: st.cols.filter((c) => c.use).map((c) => ({ name: c.name, type: c.type, ...(c.multi ? { multi: true } : {}), ...(c.type === "vector" ? { dim: c.dim || 384 } : {}), ...(c.name === st.shardBy ? { not_null: true } : {}) })) };
       if (!short.key) delete short.key;
-      try { const j = await api("/v1/schema/check", { body: short }); ddl = j.sql; clear(checkBox, h("details", { class: "more" }, h("summary", {}, "The table it makes"), sqlBlock(ddl))); go.disabled = ts.some((t) => t.table === st.name); if (go.disabled) checkBox.prepend(h("div", { class: "error small" }, `${st.name} exists: pick it above, or name the new table something else.`)); }
+      if (st.shardBy) short.shard_by = st.shardBy;
+      if (st.clusterBy) short.cluster_by = st.clusterBy;
+      try { const j = await api("/v1/schema/check", { body: short }); ddl = j.sql; clear(checkBox, h("details", { class: "more" }, h("summary", {}, "The table it makes"), sqlBlock(ddl))); go.disabled = ts.some((t) => t.table === st.name) || shardEmpty > 0; if (go.disabled) checkBox.prepend(h("div", { class: "error small" }, `${st.name} exists: pick it above, or name the new table something else.`)); }
       catch (e) { ddl = null; go.disabled = true; clear(checkBox, h("div", { class: "error small" }, e.message.replace(/^schema error: /, ""))); }
     }
     go.onclick = async () => {
@@ -233,6 +257,7 @@ function render(page) {
         keyMissing ? h("span", { class: "error small", style: { marginLeft: "6px" } }, `The file has no ${target.short.key} column, the key: rows without one are refused.`) : null,
         missing.length ? h("span", { class: "muted" }, ` ${missing.map((f) => f.name).join(", ")} stay empty.`) : null) : null,
       h("div", { class: "tbl-wrap" }, h("table", { class: "t imp-map" }, h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "column"), h("th", {}, "reads as"), h("th", {}, st.mode === "existing" ? "goes to" : st.mode === "new" ? "the field" : ""))), h("tbody", {}, mapRows))),
+      placeRow,
       checkBox,
       replaced,
       h("div", { class: "row" }, go, !st.mode ? h("span", { class: "small muted" }, "Pick where the rows go first") : null, progress),
