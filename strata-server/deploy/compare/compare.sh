@@ -47,28 +47,28 @@ MORE="meili typesense manticore qdrant weaviate milvus paradedb postgres redis"
 NS=${NS:-compare}
 HERE=$(cd "$(dirname "$0")" && pwd)
 K="kubectl --context $CONTEXT -n $NS"
-# Data pods on the first two workers; clients (and Strata's coordinator) on the third.
+# Data pods on the first two workers; clients on the third.
 read -r -a NODES <<<"${NODES:-strata-worker strata-worker2}"
 CLIENT_NODE=${CLIENT_NODE:-strata-worker3}
-# Every engine: 3 CPUs and 6 GiB in all. Elasticsearch and Solr: two data
-# nodes of 1.5 CPUs and 3 GiB. Strata: two shards of 1 CPU and 2.5 GiB and a
-# coordinator of 1 CPU and 1 GiB. Loading gets the whole budget
-# too: Elasticsearch and Solr on their two data nodes, Strata one shard's
-# build job at a time.
-# SHARD_CPU and COORD_CPU may be set to split Strata's 3 CPUs otherwise.
-# STRATA_COORD=shards runs a coordinator in each shard's pod instead, as
-# Elasticsearch and OpenSearch coordinate on their data nodes: each pod
-# then has a data node's DATA_CPU and DATA_MEM (strata-coordinating.yaml),
-# the client sends its requests to both coordinators, and Strata has
-# nothing on the clients' node.
+# Every engine: 3 CPUs and 6 GiB in all. Elasticsearch, OpenSearch and
+# Solr: two data nodes of 1.5 CPUs and 3 GiB, which also coordinate.
+# Strata: as they, two pods of a data node's DATA_CPU and DATA_MEM, each
+# with a shard and a coordinator over both shards (strata-coordinating.yaml);
+# the client sends its requests to both coordinators. Loading gets the
+# whole budget too: Elasticsearch and Solr on their two data nodes, Strata
+# one shard's build job at a time.
+# STRATA_COORD=pod runs Strata as the runs before 6 November 2026 did
+# instead: two shards of SHARD_CPU and SHARD_MEM (1 CPU and 2.5 GiB) and a
+# coordinator of COORD_CPU and COORD_MEM (1 CPU and 1 GiB) in a pod of its
+# own on the clients' node (strata.yaml, strata-coordinator.yaml).
 # BUILD_PARALLEL=1 builds both shards at once, each with its node's share
 # (a node then holds BUILD_CPU and BUILD_MEM, not the whole budget).
 DATA_CPU=${DATA_CPU:-1500m} DATA_MEM=${DATA_MEM:-3Gi}
 BUILD_CPU=${BUILD_CPU:-3} BUILD_MEM=${BUILD_MEM:-6Gi} BUILD_THREADS=${BUILD_THREADS:-3} BUILD_PARALLEL=${BUILD_PARALLEL:-0}
 SHARD_CPU=${SHARD_CPU:-1} SHARD_MEM=${SHARD_MEM:-2560Mi}
 COORD_CPU=${COORD_CPU:-1} COORD_MEM=${COORD_MEM:-1Gi}
-STRATA_COORD=${STRATA_COORD:-pod}
-case $STRATA_COORD in pod | shards) ;; *) echo "STRATA_COORD is pod (its own pod, the default) or shards (one in each shard's pod)" >&2 && exit 2 ;; esac
+STRATA_COORD=${STRATA_COORD:-shards}
+case $STRATA_COORD in pod | shards) ;; *) echo "STRATA_COORD is shards (a coordinator in each shard's pod, the default) or pod (one in its own pod)" >&2 && exit 2 ;; esac
 # Vespa: vespa-0 (config server, cluster controller and the container that
 # answers queries and takes documents) on the clients' node, as Strata's
 # coordinator, and a content node on each data node; 1 CPU each, 6 GiB in all.

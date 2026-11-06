@@ -3,7 +3,8 @@
 # must run on the node that built it). With the coordinator below, the
 # shards and the coordinator together have the same CPU and memory as the
 # other engines' two data pods (strata-coordinator.yaml). compare.sh
-# writes strata-0 and strata-1 from this file.
+# writes strata-0 and strata-1 from this file when STRATA_COORD=pod (by
+# default, from strata-coordinating.yaml).
 apiVersion: v1
 kind: Service
 metadata:

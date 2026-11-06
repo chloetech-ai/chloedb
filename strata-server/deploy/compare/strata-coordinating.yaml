@@ -4,8 +4,8 @@
 # container's CPU and memory, which are another engine's data pod's
 # (DATA_CPU, DATA_MEM), so Strata then has nothing on the clients' node;
 # the client sends its requests round-robin to both coordinators (port
-# 7710). compare.sh writes strata-0 and strata-1 from this file when
-# STRATA_COORD=shards.
+# 7710). compare.sh writes strata-0 and strata-1 from this file (unless
+# STRATA_COORD=pod).
 apiVersion: v1
 kind: Service
 metadata:
