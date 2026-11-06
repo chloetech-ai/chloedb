@@ -37,8 +37,11 @@
 //! * `Hnsw`: a graph walk; with a filter, non-members are traversed but not
 //!   collected.
 //! * `PreFilter`: only the filter's members (exact up to SQ8 ties).
-//! * `PostFilter`: an unfiltered index search for `k·margin/selectivity`
-//!   candidates, then the filter; retried with 4× more if short.
+//! * `PostFilter`: an unfiltered index search for `max(rerank, k·margin)/
+//!   selectivity` candidates (so that as many members are re-ranked as an
+//!   unfiltered search re-ranks rows), then the filter; retried with 4× more
+//!   if short. Over HNSW it can go on from the planner's selectivity sample
+//!   ([`Sample`]).
 //! * `Auto`: the cheapest by the [`CostModel`].
 
 pub mod bits;
@@ -253,6 +256,15 @@ pub struct SearchStats {
 pub struct SearchOutput {
     pub hits: Vec<Hit>,
     pub stats: SearchStats,
+}
+
+/// An unfiltered index search of one query, kept open: [`VectorReader::sample`]
+/// widens it, and a post-filter search of the same query over HNSW
+/// ([`VectorReader::search_from`]) goes on from it instead of walking the
+/// graph again from the top.
+#[derive(Default)]
+pub struct Sample {
+    walk: hnsw::Walk,
 }
 
 /// How an in-filter HNSW search moves through non-members (see
@@ -671,6 +683,36 @@ impl VectorReader {
 
     /// The top-`k` documents by similarity to `query`, best first.
     pub fn search(&self, query: &[f32], k: usize, params: &SearchParams, filter: Option<&dyn DocFilter>) -> SearchOutput {
+        self.search_from(query, k, params, filter, None)
+    }
+
+    /// The documents of the `m` nearest neighbours of `query` by code score
+    /// (not re-ranked), from an unfiltered index search that `sample` keeps:
+    /// called again with a larger `m`, an HNSW walk goes on where it stopped.
+    /// Without HNSW it is a plain index search of `m` (`params`' `nprobe`).
+    pub fn sample(&self, query: &[f32], m: usize, params: &SearchParams, sample: &mut Sample) -> Vec<DocId> {
+        assert_eq!(query.len(), self.info.dim, "query dimension");
+        let m = m.min(self.shape.n);
+        match &self.hnsw {
+            Some(h) if self.info.index == "hnsw" && self.multi.is_none() && m > 0 => {
+                let qc = self.quant.prepare(query, self.info.stride_u8);
+                let mut stats = SearchStats::default();
+                let mut c = h.walk(&mut sample.walk, &self.code_rows(), &qc, m, None, false, self.io_hints, &mut stats);
+                c.truncate(m);
+                c.into_iter().map(|(_, d)| d).collect()
+            }
+            _ => {
+                let strategy = if self.info.index == "ivf" { Strategy::Ivf } else { Strategy::Flat };
+                let sp = SearchParams { strategy, rerank: 0, ef: m, ..params.clone() };
+                self.search(query, m, &sp, None).hits.into_iter().map(|h| h.doc).collect()
+            }
+        }
+    }
+
+    /// [`Self::search`], going on from `sample` (an unfiltered search of the
+    /// same `query`, [`Self::sample`]) when the strategy is a post-filter
+    /// over HNSW, rather than walking the graph again.
+    pub fn search_from(&self, query: &[f32], k: usize, params: &SearchParams, filter: Option<&dyn DocFilter>, sample: Option<&mut Sample>) -> SearchOutput {
         assert_eq!(query.len(), self.info.dim, "query dimension");
         // No search returns more rows than the segment holds, and every
         // size derived from k (heaps, rerank pools) stays within it.
@@ -713,7 +755,7 @@ impl VectorReader {
             Strategy::PreFilter => self.scan(&qc, r, members, &mut stats),
             Strategy::Ivf => self.ivf.as_ref().expect("planned").search(&qc, &qf, r, params.nprobe, members.map(|m| (m, s)), self.io_hints, &mut stats),
             Strategy::Hnsw => self.hnsw_search(&qc, params.ef.max(r), r, members, &mut stats),
-            Strategy::PostFilter => self.post_filter(&qc, &qf, k, r, params, members.expect("filtered"), s, &mut stats),
+            Strategy::PostFilter => self.post_filter(&qc, &qf, k, r, params, members.expect("filtered"), s, sample, &mut stats),
             Strategy::Auto => unreachable!("planned"),
         };
         stats.candidates = cands.len();
@@ -811,22 +853,29 @@ impl VectorReader {
         c
     }
 
-    /// Unfiltered search for `k·margin/s` candidates, then the filter; the
-    /// candidate count grows 4× until `k` members survive or every document
-    /// was a candidate. An HNSW walk goes on from where it stopped instead of
-    /// starting over (pgvector's iterative scan).
+    /// Unfiltered search for enough candidates that `r` members (the re-rank
+    /// depth an unfiltered search keeps) are expected among them, and at
+    /// least `k·margin`: `max(r, k·margin)/s`; then the filter. The candidate
+    /// count grows 4× until `k` members survive or every document was a
+    /// candidate. An HNSW walk goes on from where it stopped instead of
+    /// starting over (pgvector's iterative scan), and starts from `sample`'s
+    /// walk when there is one.
     #[allow(clippy::too_many_arguments)]
-    fn post_filter(&self, q: &QueryCode, qf: &[f32], k: usize, r: usize, p: &SearchParams, m: Members, s: f64, stats: &mut SearchStats) -> Vec<(i32, DocId)> {
+    fn post_filter(&self, q: &QueryCode, qf: &[f32], k: usize, r: usize, p: &SearchParams, m: Members, s: f64, sample: Option<&mut Sample>, stats: &mut SearchStats) -> Vec<(i32, DocId)> {
         let n = self.shape.n;
         // Binary codes order candidates more loosely: keep as many members
         // as they rescore.
         let k = k * self.oversample();
-        let mut kp = ((k as f64 * self.cost.post_margin / s).ceil() as usize).max(r).min(n);
-        let mut walk = hnsw::Walk::default();
+        let mut kp = cost::post_filter_candidates(k, r, self.cost.post_margin, s, n);
+        let mut own = hnsw::Walk::default();
+        let walk = match sample {
+            Some(x) => &mut x.walk,
+            None => &mut own,
+        };
         loop {
             let cands = match self.info.index.as_str() {
                 "hnsw" => {
-                    let mut c = self.hnsw.as_ref().expect("hnsw").walk(&mut walk, &self.code_rows(), q, p.ef.max(kp), None, false, self.io_hints, stats);
+                    let mut c = self.hnsw.as_ref().expect("hnsw").walk(walk, &self.code_rows(), q, p.ef.max(kp), None, false, self.io_hints, stats);
                     c.truncate(kp);
                     c
                 }

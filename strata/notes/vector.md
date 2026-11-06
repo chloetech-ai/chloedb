@@ -556,7 +556,8 @@ well with plain read-around.
 * **Ivf** in-filter: the per-cluster rule above; cost ∝ `nprobe/√s` clusters
   of docID checks plus the members' codes.
 * **Hnsw** in-filter: traverse (default) or two-hop, above.
-* **PostFilter**: an unfiltered index search for `k·2/s` candidates (HNSW
+* **PostFilter**: an unfiltered index search for `max(R, 2k)/s` candidates
+  (until 2026-11 `2k/s`; see "Post-filter depth" below) (HNSW
   `ef`, IVF `nprobe` scaled by the same factor, flat: the whole scan), then
   the filter, retried with 4× the candidates if fewer than k members
   survive. Filters correlated *away* from the query need retries (TREC-COVID
@@ -628,6 +629,34 @@ same cells and left out: they give two-hop's recall exactly (topic 1%:
 failing, so the guard always looks two hops out. The planner's choice is
 unchanged: pre-filter below ~3%, post-filter above.
 
+**Post-filter depth (2026-11).** The post-filter fetched `2k/s` candidates,
+so about `2k` members reached the float32 re-rank: 20 at `k` = 10, half the
+40 rows an unfiltered search re-ranks. On the engine comparison's
+`rating >= 4` (a random 20%) that left Strata's recall@10 at 0.83 (1M and
+10M), below engines that re-rank their full candidate list. It now fetches
+`max(rerank, 2k)/s` candidates (`cost::post_filter_candidates`, which the
+cost model shares), so a filtered search re-ranks as many rows as an
+unfiltered one. And the planner's selectivity sample (an unfiltered walk to
+the query's 32 nearest neighbours, `Executor::local_selectivity`) was
+thrown away, the post-filter walking the graph again from the top; the
+sample's walk is now kept (`VectorReader::sample`, `vector::Sample`) and the
+post-filter widens it (`VectorReader::search_from`), and the sample no
+longer re-ranks its 32 rows in float32. One 300,000-row segment of
+`data::synthetic` (128 dimensions, HNSW M 16, ef 64, rerank 40), 300
+queries, recall@10 against an exact filtered search, mean µs (best of three
+rounds; one thread, the 4-core cloud container, Intel Xeon @ 2.10 GHz):
+
+| filter | Auto before | Auto after | post-filter alone, before → after |
+|---|---|---|---|
+| rating ≥ 3 (40%) | 117 µs, 0.724 | 124 µs, 0.815 | 76 → 98 µs |
+| rating ≥ 4 (20%) | 156 µs, 0.816 | 199 µs, 0.909 | 112 → 174 µs |
+| rating ≥ 4.5 (10%) | 254 µs, 0.892 | 357 µs, 0.958 | 194 → 306 µs |
+| rating ≥ 4.9 (2%) | 160 µs, 1.000 (pre-filter) | 142 µs, 1.000 (pre-filter) | – |
+
+The sample's cost over a forced post-filter fell from 44 to 25 µs at 20%.
+The in-filter traverse at 20% (241 µs, recall 0.951) stays dearer than the
+deeper post-filter.
+
 ### Cost model
 
 `estimate_cost` = Σ predicted operation counts × ns per operation:
@@ -638,7 +667,7 @@ unchanged: pre-filter below ~3%, post-filter above.
 | PreFilter | s·n codes gathered, min(R, s·n) re-ranks |
 | Ivf | nlist centroids; p = max(nprobe, R/avg) clusters, p·avg codes scanned (filtered: p = max(nprobe/√s, R/(s·avg)), p·avg docID checks, p·avg·s codes gathered) |
 | Hnsw | (9.0·ef' + 252)·M/16 codes gathered, 0.99·ef' + 2.5 expansions, ef' = max(ef, R); filtered (traverse): both ÷ s, capped at n |
-| PostFilter | the native search for k' = max(R, 2k/s) candidates, plus k' checks |
+| PostFilter | the native search for k' = max(R, 2k)/s candidates, plus k' checks |
 
 The per-operation costs are a non-negative least-squares fit (relative
 error) of measured latency on measured counts (`Work::from_stats`) over the
