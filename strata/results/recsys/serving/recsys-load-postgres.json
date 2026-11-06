@@ -1,0 +1,16 @@
+{
+  "at": 1793948153.6522927,
+  "batch": 500,
+  "clients": 4,
+  "dim": 64,
+  "engine": "postgres",
+  "items": 100000,
+  "items_per_s": 4903.619542272725,
+  "ready_s": 18.658301967,
+  "shards": 1,
+  "steps": {
+    "analyze_s": 0.663193554,
+    "hnsw_index_s": 17.994935517000002
+  },
+  "write_s": 1.734797281
+}

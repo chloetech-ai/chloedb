@@ -395,6 +395,86 @@ Postgres and Redis are spoken to over their own protocols (the simple query
 protocol, with trust authentication, and RESP2), a few lines each in
 `more.rs`, so the client needs no library for them.
 
+## Recommender kinds
+
+`engine-compare recsys-load` and `recsys-run` (`src/bin/engine-compare/recsys.rs`)
+time what a recommender asks of its store, on Strata, Elasticsearch,
+OpenSearch, Vespa, Qdrant, Milvus, Redis and Postgres (pgvector). The data
+is `strata/results/recsys/serving_data.py`'s, made from Yambda-50M: the
+most played tracks, each with the vector the sequence model learned (64
+numbers), its artist, the regions it may be played in (synthetic: Yambda
+has none), a popularity and twelve ranking features; users with their
+vector at the start of the test day, their region and the tracks they
+played; and a LightGBM ranker of 300 trees over the features and the
+user-track dot product (`f12`). Each kind is sent for each of `--users`
+users in turn:
+
+| kind | what | Strata |
+|---|---|---|
+| r1 user to items | the 500 nearest tracks in the user's region, minus the (up to) 500 they played | `WHERE regions = :r AND id NOT IN (...) ORDER BY similarity(emb, :u, ef => 1000, rerank => 1000) DESC LIMIT 500` |
+| r2 candidates (RRF) | three sources under r1's filters, 1,000 deep: nearest the user, nearest their last track, most popular; fused by RRF (k 60), the best 1,000 | `rrf(similarity(emb, :u), similarity(emb, :l), pop, depth => 1000)` |
+| r3 features | the twelve features of 1,000 tracks by key | `POST /v1/kv/get` |
+| r4 GBDT rerank | those 1,000 by the ranker; the best 50 | a rerank phase: `WITH c AS (... ORDER BY ranked(:c) ...) SELECT ... ORDER BY gbdt('ranker', ..., dot(emb, :u))` |
+| r5 diversify | r1's ranking with at most 2 tracks an artist; the best 20 | `... MAX 2 PER artist LIMIT 20` |
+| r6 events while serving | r1 while plays are written one a request at `--event-rate`, and how soon a play is in a query of the user's last 5 | `/v1/write`, then `SELECT id FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 5` |
+
+`run` sends each kind once and scores the answers against exact ones it
+computes from the same data (recall for r1, r2 and r5, rows found for r3,
+and for r4 the share of the answer in the model's own top 50, ties
+counted), then times them closed-loop at each `--concurrency` after a
+2-second warm-up. Where an engine has no request that does a kind's whole
+job, the client does the rest and the report says so (`differs`):
+
+| engine | r2 | r4 | r5 |
+|---|---|---|---|
+| Elasticsearch | the `rrf` retriever (two `knn`, one `function_score` of pop), on the trial licence | `_mget`, the trees scored in the client | the `knn` query, 200, collapsed by artist, `inner_hits` 2 |
+| OpenSearch | a `hybrid` query through a search pipeline's `score-ranker-processor`, rrf, k 60 | `_mget`, scored in the client | `knn` 200 collapsed by artist, `inner_hits` 2 |
+| Vespa | three queries at once (two `nearestNeighbor`, one of the region `order by pop desc`), fused in the client | `lightgbm("ranker.json")` in a rank profile | `nearestNeighbor` 200 grouped by artist |
+| Qdrant | the query API's `prefetch` (two vectors, one `order_by` pop) with `rrf` k 60 | points by id, scored in the client | `query/groups` by artist, group size 2 |
+| Milvus | the two vector searches at once, fused in the client with the region's most popular, which the client keeps (Milvus ranks by vectors only) | entities by id, scored in the client | a search of 200 grouped by artist, group size 2 |
+| Redis | three `FT.SEARCH` at once (two KNN, one `SORTBY pop`), fused in the client | 1,000 pipelined `HMGET`, scored in the client | KNN 200 with the artist, capped in the client |
+| Postgres | one SQL statement: three subqueries ranked by `row_number()`, summed as RRF | `WHERE id = ANY(...)`, scored in the client | the nearest 200 in a subquery, `row_number()` over each artist |
+
+The client scores the trees with Strata's own GBDT evaluator, so a
+client-side r4 costs what Strata's trees cost plus the read. Vectors are
+each engine's HNSW of full-precision floats (m 16, ef_construction 200, dot
+product), searched with 1,000 candidates for r1 and twice the depth for the
+others (pgvector's `ef_search` at most 1,000); Strata walks its graph over
+its 8-bit codes, as it always does, with the same `ef` and every candidate
+re-scored with the floats (`similarity(emb, :u, ef => 1000, rerank =>
+1000)`), and its database is merged into one segment after the load, as
+Elasticsearch's and OpenSearch's are. Qdrant indexes a segment
+once it holds 10 MB of vectors (its default `indexing_threshold`), and
+searches smaller segments exactly: at 100,000 tracks of 64 numbers it
+indexed 81,500 in one of its two segments (`recsys-load` records it). Vespa's
+package is `vespa-recsys/` (`package.sh` adds the ranker); Strata's server
+starts with `recsys/strata-items.json` as its schema and the serving data
+as its `--models`.
+
+Four things each engine's documentation leaves easy to miss.
+Elasticsearch's `rrf` retriever needs a paid or trial licence, so
+`local.sh` starts it on the 30-day trial. Elasticsearch's collapse runs its
+`inner_hits` as the request's `query` within each group, so r5 sends the
+`knn` query; with a top-level `knn` the inner hits are any two tracks of
+the artist. Milvus serves a collection created with its indexes from
+growing segments through an interim index until the sealed segments are
+handed over, a fraction of the HNSW's recall (0.35 at r1 in a test), so
+`recsys-load` releases and loads each collection once the index is built.
+Vespa's `range(pop)` with a `hitLimit` takes the most popular before the
+query's filters, and a query that matches the whole region computes
+`closeness` for every document it matches, not only for the neighbours, so
+no one query keeps the region's 1,000 most popular beside the two
+neighbour lists; r2 sends three.
+
+On one machine, one engine at a time in Docker (each capped at `CPUS` and
+`MEM`; Strata's server runs outside Docker, on the first `CPUS` cores):
+
+```bash
+python3 strata/results/recsys/serving_data.py --work ~/data/yambda/work --data ~/data/yambda --out ~/data/recsys-100k --items 100000
+(cd strata-server && cargo build --profile ci --bins)
+DATA=~/data/recsys-100k OUT=~/data/recsys-out strata-server/deploy/compare/recsys/local.sh strata es os vespa qdrant milvus redis postgres
+```
+
 ## Running it
 
 With the cluster of `../kind-test.sh up` (its `/data` and `/beir`

@@ -1,0 +1,20 @@
+{
+  "at": 1793949757.9514735,
+  "batch": 500,
+  "clients": 4,
+  "dim": 64,
+  "engine": "strata",
+  "items": 100000,
+  "items_per_s": 14330.168072052618,
+  "ready_s": 0.006101513,
+  "shards": 1,
+  "steps": {
+    "optimize": {
+      "merge_s": 6.730830969,
+      "segments": 1,
+      "segments_before": 19
+    },
+    "segments": 19
+  },
+  "write_s": 6.972183703
+}

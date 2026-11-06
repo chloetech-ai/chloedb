@@ -1,0 +1,19 @@
+{
+  "at": 1793947559.9898546,
+  "batch": 500,
+  "clients": 4,
+  "dim": 64,
+  "engine": "qdrant",
+  "items": 100000,
+  "items_per_s": 5087.8479071422835,
+  "ready_s": 17.054593878,
+  "shards": 1,
+  "steps": {
+    "index": {
+      "indexed_vectors": 81500,
+      "segments": 2
+    },
+    "index_s": 17.05451835
+  },
+  "write_s": 2.600081699
+}

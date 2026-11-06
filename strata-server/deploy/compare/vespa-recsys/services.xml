@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- The recommender kinds' package (recsys.rs): one node holding the
+     container and the content cluster `recsys` of tracks and plays. -->
+<services version="1.0">
+    <container id="default" version="1.0">
+        <search/>
+        <document-api/>
+    </container>
+    <content id="recsys" version="1.0">
+        <min-redundancy>1</min-redundancy>
+        <tuning>
+            <resource-limits>
+                <disk>0.98</disk>
+                <memory>0.9</memory>
+            </resource-limits>
+        </tuning>
+        <documents>
+            <document type="item" mode="index"/>
+            <document type="event" mode="index"/>
+        </documents>
+        <nodes>
+            <node hostalias="node1" distribution-key="0"/>
+        </nodes>
+    </content>
+</services>

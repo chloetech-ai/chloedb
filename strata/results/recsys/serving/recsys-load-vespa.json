@@ -1,0 +1,13 @@
+{
+  "at": 1793947364.5076427,
+  "batch": 500,
+  "clients": 64,
+  "dim": 64,
+  "engine": "vespa",
+  "items": 100000,
+  "items_per_s": 1881.7923683183678,
+  "ready_s": 2.389e-6,
+  "shards": 1,
+  "steps": {},
+  "write_s": 53.140823179
+}

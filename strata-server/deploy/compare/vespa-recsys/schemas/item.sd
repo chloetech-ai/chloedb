@@ -1,0 +1,158 @@
+# The tracks of engine-compare's recommender kinds (recsys.rs): the key,
+# artist, regions and popularity as attributes for filters, grouping and
+# ranking, the twelve ranking features as attributes, and the learned
+# vectors in an HNSW index of m 16, ef_construction 200, by dot product.
+schema item {
+    document item {
+        field id type string {
+            indexing: summary | attribute
+            attribute: fast-search
+            match: word
+            rank: filter
+        }
+        field artist type string {
+            indexing: summary | attribute
+            attribute: fast-search
+            match: word
+            rank: filter
+        }
+        field regions type array<string> {
+            indexing: attribute
+            attribute: fast-search
+            match: word
+            rank: filter
+        }
+        field pop type float {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field f00 type float {
+            indexing: summary | attribute
+        }
+        field f01 type float {
+            indexing: summary | attribute
+        }
+        field f02 type float {
+            indexing: summary | attribute
+        }
+        field f03 type float {
+            indexing: summary | attribute
+        }
+        field f04 type float {
+            indexing: summary | attribute
+        }
+        field f05 type float {
+            indexing: summary | attribute
+        }
+        field f06 type float {
+            indexing: summary | attribute
+        }
+        field f07 type float {
+            indexing: summary | attribute
+        }
+        field f08 type float {
+            indexing: summary | attribute
+        }
+        field f09 type float {
+            indexing: summary | attribute
+        }
+        field f10 type float {
+            indexing: summary | attribute
+        }
+        field f11 type float {
+            indexing: summary | attribute
+        }
+        field emb type tensor<float>(x[64]) {
+            indexing: attribute | index
+            attribute {
+                distance-metric: dotproduct
+            }
+            index {
+                hnsw {
+                    max-links-per-node: 16
+                    neighbors-to-explore-at-insert: 200
+                }
+            }
+        }
+    }
+
+    document-summary minimal {
+        summary id {}
+    }
+
+    document-summary features {
+        summary id {}
+        summary f00 {}
+        summary f01 {}
+        summary f02 {}
+        summary f03 {}
+        summary f04 {}
+        summary f05 {}
+        summary f06 {}
+        summary f07 {}
+        summary f08 {}
+        summary f09 {}
+        summary f10 {}
+        summary f11 {}
+    }
+
+    # r1, r5, r6: the nearest tracks to the user's vector.
+    rank-profile near {
+        inputs {
+            query(u) tensor<float>(x[64])
+        }
+        first-phase {
+            expression: closeness(field, emb)
+        }
+    }
+
+    # r4: LightGBM's model (models/ranker.json, from the serving data's
+    # ranker/gbdt.json) over the twelve features and the dot product (f12).
+    rank-profile gbdt {
+        inputs {
+            query(u) tensor<float>(x[64])
+        }
+        function f00() {
+            expression: attribute(f00)
+        }
+        function f01() {
+            expression: attribute(f01)
+        }
+        function f02() {
+            expression: attribute(f02)
+        }
+        function f03() {
+            expression: attribute(f03)
+        }
+        function f04() {
+            expression: attribute(f04)
+        }
+        function f05() {
+            expression: attribute(f05)
+        }
+        function f06() {
+            expression: attribute(f06)
+        }
+        function f07() {
+            expression: attribute(f07)
+        }
+        function f08() {
+            expression: attribute(f08)
+        }
+        function f09() {
+            expression: attribute(f09)
+        }
+        function f10() {
+            expression: attribute(f10)
+        }
+        function f11() {
+            expression: attribute(f11)
+        }
+        function f12() {
+            expression: sum(query(u) * attribute(emb))
+        }
+        first-phase {
+            expression: lightgbm("ranker.json")
+        }
+    }
+}
