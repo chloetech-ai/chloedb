@@ -6,11 +6,12 @@
 use std::sync::Arc;
 
 use strata::db::Db;
-use strata::query::exec::{ExecOptions, FilterCache};
+use strata::query::exec::{ExecOptions, FilterCache, FILTER_CACHE_BYTES};
 use strata::query::plan::FilterMode;
 use strata::query::Params;
 use strata::storage::{DbOptions, MergePolicy};
 use strata::value::Value;
+use strata::schema::VectorIndexKind;
 use strata::{Field, FieldType, Schema};
 
 const WORDS: [&str; 12] = ["alpha", "beta", "gamma", "delta", "alder", "alpine", "bravo", "charlie", "almond", "echo", "foxtrot", "golf"];
@@ -181,4 +182,57 @@ fn the_cache_keeps_to_its_limit() {
     }
     assert!(small.is_empty());
     assert!((1..=5).contains(&made), "{made} sets made to be refused");
+}
+
+/// A list of the table's keys is a request's own (the items a user has
+/// seen): kept, it would be a set of nearly every row for each request.
+/// What is fixed beside it is kept, and another list keeps nothing more.
+#[test]
+fn a_list_of_keys_is_not_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(dir.path());
+    for mode in [FilterMode::Probe, FilterMode::Materialize] {
+        let cache = Arc::new(FilterCache::new(FILTER_CACHE_BYTES));
+        let opts = ExecOptions { filter_cache: Some(cache.clone()), filter_mode: Some(mode), ..db.exec.clone() };
+        let plain = ExecOptions { filter_cache: None, ..opts.clone() };
+        let run = |a: usize| {
+            let sql = format!("SELECT id, score() FROM t WHERE year >= 2005 AND id NOT IN ('r{a:05}', 'r{:05}') ORDER BY bm25(body, 'gamma alpine') DESC, id LIMIT 10", a + 7);
+            for _ in 0..3 {
+                assert_eq!(db.query_with(&sql, &Params::new(), &opts).unwrap().rows, db.query_with(&sql, &Params::new(), &plain).unwrap().rows, "{mode:?}: {sql}");
+            }
+        };
+        run(3);
+        let kept = (cache.len(), cache.bytes());
+        assert!(kept.0 > 0, "{mode:?}: the fixed filter is kept");
+        for a in [11, 19, 23] {
+            run(a);
+        }
+        assert_eq!((cache.len(), cache.bytes()), kept, "{mode:?}: other lists of keys keep nothing more");
+    }
+}
+
+/// A vector search looks at its filter twice, once to sample how many rows
+/// near the query pass it: still one sight, so one query keeps nothing.
+#[test]
+fn one_query_is_one_sight() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = Schema::new(
+        "v",
+        vec![Field::new("id", FieldType::Keyword), Field::new("n", FieldType::Int), Field::new("emb", FieldType::Vector { dim: 8, index: VectorIndexKind::Hnsw { m: 8, ef_construction: 32 } })],
+        Some("id"),
+    )
+    .unwrap();
+    let mut db = Db::create(&dir.path().join("v.strata"), schema, DbOptions { sync: false, ..DbOptions::default() }).unwrap();
+    let vec_of = |i: usize| -> Arc<[f32]> { (0..8).map(|j| (((i * 31 + j * 17) % 97) as f32 / 97.0) - 0.5).collect::<Vec<f32>>().into() };
+    db.load((0..20_000).map(|i| vec![Value::Str(format!("v{i:05}")), Value::Int((i % 100) as i64), Value::Vector(vec_of(i * 7 + 3))])).unwrap();
+    let cache = Arc::new(FilterCache::new(FILTER_CACHE_BYTES));
+    db.exec.filter_cache = Some(cache.clone());
+    let sql = "SELECT id FROM v WHERE n < 40 ORDER BY similarity(emb, :q) DESC LIMIT 10";
+    let params = Params::new().set("q", Value::Vector(vec_of(5)));
+    let first = db.query(sql, &params).unwrap();
+    assert!(first.stats.plan.iter().any(|l| l.contains("near the query")), "the search samples its filter: {:?}", first.stats.plan);
+    assert!(cache.is_empty(), "one query keeps nothing: {:?}", first.stats.plan);
+    let second = db.query(sql, &params).unwrap();
+    assert_eq!(second.rows, first.rows);
+    assert!(!cache.is_empty(), "the second query keeps its filter: {:?}", second.stats.plan);
 }
