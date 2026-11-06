@@ -643,6 +643,8 @@ def main():
         reports["cloud-10m"] = cluster(c10, "cloud-10m", ranked=ranked, take=take10,
                                        lanes={"milvus": "128 GB node, not ranked", "redis": "128 GB node, not ranked"} | (
                                            {"strata": "6 Nov", "es": "9.5.5, 5 Nov", "os": "3.9.0, 5 Nov"} if take10 else {}))
+        if take10:
+            reports["cloud-10m"]["passes_note"] = "medians of 3 passes for Strata, Elasticsearch and OpenSearch, one pass for the rest"
     else:
         missing.append("cloud-10m")
     if r10.ok:

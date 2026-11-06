@@ -264,9 +264,9 @@
       <h2>Where Strata is behind</h2>
     </div>
     <ul class="gaps">
-      <li><b>SQL aggregates through a coordinator.</b> <span>184 ms at 1M and 2.9 s at 10M on latest main, where Elasticsearch and OpenSearch take a few ms (<a href="bench-10m.html#latest">10M</a>), likely from a request cache the runs left on for SQL. Reading the groups from the columns (#252, in review) took the same query on 5M rows from 722 to 27 ms in a container.</span></li>
-      <li><b>Typo search.</b> <span>The faster typo walk (#242) took the cloud medians from 120 to 19.6 ms at 1M and from 824 to 81 ms at 10M. Typesense and Meilisearch still take 6 ms at 1M, and Elasticsearch 38 at 10M (<a href="bench-10m.html#latest">10M</a>).</span></li>
-      <li><b>BM25 under load.</b> <span>Caching the statistics (#245) made a query one round to the shards instead of two: at 16 clients Strata now serves 1,962 queries a second at 1M, second to Qdrant (<a href="bench-1m.html#since">before and after</a>). At 10M it serves 470 to OpenSearch's 896, waiting on its shards. Starting each segment at the scores the earlier ones found (#258, in review) gave 46% more queries a second on one thread in a container.</span></li>
+      <li><b>Key lookups through a coordinator.</b> <span>1.02 ms at 10M, where Postgres, Weaviate, ParadeDB and Qdrant read a row in 0.37 to 0.47 ms (<a href="bench-10m.html#behind">10M</a>). Most of it is the hop through a coordinator, not the read. At 16 clients Strata serves 9,159 a second, OpenSearch 12,620.</span></li>
+      <li><b>Typo search.</b> <span>The typo walk (#242, then #266's in-memory term table) took the cloud medians from 120 to 13.2 ms at 1M and from 824 to 43.9 ms at 10M. Typesense and Meilisearch take about 6 ms at 1M, and Elasticsearch 34.6 at 10M (<a href="bench-10m.html#behind">10M</a>).</span></li>
+      <li><b>BM25 under load.</b> <span>At 10M and 16 clients Strata serves 604 queries a second, Elasticsearch 683 and OpenSearch 720 (on other nodes of the same type). Moving the coordinators into the shard pods (#287) added 3%: what waits is the shards' own scoring.</span></li>
       <li><b>Builds.</b> <span>The HNSW graph is 146 s of Quora's 153.1 s load on an M2.</span></li>
       <li><b>Cold filters and small facets.</b> <span>Tantivy is 1.4 to 3.4× faster on cold range filters, and 1.1 to 2.1× on facets in three of four BEIR collections (M2).</span></li>
     </ul>

@@ -57,7 +57,7 @@ flowchart LR
 
 | | Result | Where |
 |---|---|---|
-| Against 13 search engines and databases, 14 kinds of query (MS MARCO 1M on DigitalOcean, latest main) | **First** on places summed over 45 tests: 156 points, Elasticsearch 284, Solr 287, OpenSearch 292; head to head at 10M, 67 against OpenSearch's 83 and Elasticsearch's 120. Behind on typo search, SQL aggregates and key lookups | [Benchmarks](https://chloetech-ai.github.io/strata/site/benchmarks.html) |
+| Against 13 search engines and databases, 14 kinds of query (MS MARCO 1M on DigitalOcean, main of 6 November) | **First** on places summed over 45 tests: 137 points, Solr 288, Elasticsearch 292, Qdrant 300; at 10M, 88 against OpenSearch's 180 and Elasticsearch's 186. Behind on typo search and key lookups | [Benchmarks](https://chloetech-ai.github.io/strata/site/benchmarks.html) |
 | Strata vs Tantivy, warm BM25 top-10 | **1.7–3.2× faster**; conjunctions 2.7–4.1× faster; 24 of 28 text and filter comparisons won | [Strata results](docs/strata/results.md#query-latency) |
 | Strata vector top-10 (HNSW, 1,024-d) | **0.05–0.10 ms**, recall@10 0.99 on Quora; SQLite's scan takes 7.7 ms to 0.7 s | [Strata results](docs/strata/results.md#vector-indexes) |
 | Filtered vector search planner | **1.8–6.1× faster** than the best fixed strategy, recall@10 0.991–0.998 | [Strata results](docs/strata/results.md#filtered-vector-search-and-the-planner) |

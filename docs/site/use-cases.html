@@ -65,7 +65,7 @@ ORDER BY rrf(
   <section class="gutter" id="sessions"><div class="wrap block">
     <div class="uc2">
       <div><span class="ico cols"><svg viewBox="0 0 24 24"><rect x="4" y="9" width="16" height="11" rx="2"/><path d="M8 9V7a4 4 0 0 1 8 0v2"/></svg></span><h2>Sessions, carts and caches</h2><p>Rows read by key on every request, in the same database, each with its own time to live.</p>
-        <dl class="kv"><dt>Replaces</dt><dd>A key-value store or cache beside the database</dd><dt>Measured</dt><dd>21 µs a read inside an app; 0.86 ms through a coordinator at 10M (<a href="bench-10m.html#behind">behind Postgres</a>)</dd></dl></div>
+        <dl class="kv"><dt>Replaces</dt><dd>A key-value store or cache beside the database</dd><dt>Measured</dt><dd>21 µs a read inside an app; 1.02 ms through a coordinator at 10M (<a href="bench-10m.html#behind">behind Postgres</a>)</dd></dl></div>
       <pre data-lang="sh">curl -s -X PUT localhost:7700/v1/kv/sessions/s1 \
   -d '{"usr": "u7", "until": "2026-11-02T12:00:00Z"}'
 curl -s localhost:7700/v1/kv/sessions/s1
