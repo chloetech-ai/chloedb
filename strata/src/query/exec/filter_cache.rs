@@ -3,10 +3,12 @@
 //! page's fixed filters, a prefix being typed), as Elasticsearch's node
 //! query cache and Solr's filter cache keep theirs.
 //!
-//! A filter is kept the second time a segment sees it, so that a filter
-//! used once (a key, a time that moves) takes no room, and the least
-//! recently used go first once the cache holds its limit in bytes. Only a
-//! filter that reads nothing but the segment's own data is kept
+//! A filter is kept the second time a segment sees it, in a second query
+//! (a query that looks at it twice, as a vector search sampling its
+//! filter does, sees it once), so that a filter used once (a time that
+//! moves) takes no room, and the least recently used go first once the
+//! cache holds its limit in bytes. Only a filter that reads nothing but
+//! the segment's own data, and no list of the table's keys, is kept
 //! ([`super::Executor::cache_key`]); deletes are checked apart, and a
 //! field with values written in place is never part of one, so a kept set
 //! stays true for as long as its segment's readers live.
@@ -44,7 +46,8 @@ type Key = (usize, String);
 #[derive(Default)]
 struct Inner {
     kept: HashMap<Key, Kept>,
-    seen: HashMap<Key, u32>,
+    /// Times seen, and the last query that saw it.
+    seen: HashMap<Key, (u32, u64)>,
     bytes: usize,
     clock: u64,
     hits: u64,
@@ -120,8 +123,9 @@ impl FilterCache {
     }
 
     /// The filter `filter` of the segment `readers` read, as kept; else
-    /// whether to keep it now, counting this time it was seen.
-    pub(super) fn look(&self, readers: &Arc<SegmentReaders>, filter: &str) -> Look {
+    /// whether to keep it now, counting this time it was seen unless query
+    /// `query` saw it already.
+    pub(super) fn look(&self, readers: &Arc<SegmentReaders>, filter: &str, query: u64) -> Look {
         if self.limit == 0 {
             return Look::No;
         }
@@ -143,11 +147,14 @@ impl FilterCache {
         if i.seen.len() >= SEEN && !i.seen.contains_key(&key) {
             i.seen.clear();
         }
-        let n = i.seen.entry(key.clone()).or_insert(0);
+        let (n, by) = i.seen.entry(key.clone()).or_insert((0, 0));
         if *n == TOO_BIG {
             return Look::No;
         }
-        *n += 1;
+        if *by != query {
+            *n += 1;
+            *by = query;
+        }
         if *n >= KEEP_AT {
             i.seen.remove(&key);
             return Look::Keep;
@@ -165,7 +172,7 @@ impl FilterCache {
         let mut i = self.lock();
         if bytes > self.limit / 4 {
             if i.seen.len() < SEEN {
-                i.seen.insert(key, TOO_BIG);
+                i.seen.insert(key, (TOO_BIG, 0));
             }
             return;
         }

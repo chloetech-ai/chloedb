@@ -739,7 +739,13 @@ pub struct Executor<'a> {
     charge: Charge,
     /// What times the query's steps.
     clock: Clock,
+    /// This query among the database's, for the filter cache to count a
+    /// query that looks at a filter twice as one sight of it.
+    query: u64,
 }
+
+/// The last [`Executor::query`] handed out.
+static QUERIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The rows of a table that have not expired at `now`: those without a
 /// time in its `expire_by` field `f`, or with a later one.
@@ -901,6 +907,7 @@ impl<'a> Executor<'a> {
             expanded: Mutex::new(Expanded::default()),
             charge: Charge::new(opts.memory.clone()),
             clock: Clock::new(opts.profile),
+            query: QUERIES.fetch_add(1, Ordering::Relaxed) + 1,
         }
     }
 
@@ -1803,7 +1810,7 @@ impl<'a> Executor<'a> {
     fn kept(&self, s: &Seg<'a>, p: &Pred) -> Result<Option<(Arc<DocSet>, bool)>> {
         let Some(cache) = &self.opts.filter_cache else { return Ok(None) };
         let Some(key) = self.cache_key(s, p) else { return Ok(None) };
-        match cache.look(&s.r, &key) {
+        match cache.look(&s.r, &key, self.query) {
             filter_cache::Look::Kept(set) => Ok(Some((set, true))),
             filter_cache::Look::Keep => {
                 let set = Arc::new(self.materialize(s, p)?);
@@ -1815,14 +1822,33 @@ impl<'a> Executor<'a> {
     }
 
     /// What the filter cache keeps `p` of segment `s` by: the predicate
-    /// written out. `None` for a segment in memory (rebuilt as rows come)
-    /// and for a predicate that reads more than the segment's own rows
-    /// ([`Self::own_rows`]).
+    /// written out. `None` for a segment in memory (rebuilt as rows come),
+    /// for a predicate that reads more than the segment's own rows
+    /// ([`Self::own_rows`]) and for one that tests a list of the table's
+    /// keys ([`Self::key_list`]).
     fn cache_key(&self, s: &Seg<'a>, p: &Pred) -> Option<String> {
-        if s.view.in_memory || matches!(p, Pred::True | Pred::False) || !self.own_rows(s, p) {
+        if s.view.in_memory || matches!(p, Pred::True | Pred::False) || !self.own_rows(s, p) || self.key_list(p) {
             return None;
         }
         Some(format!("{p:?}")).filter(|k| k.len() <= MAX_CACHE_KEY)
+    }
+
+    /// Whether `p` tests the table's own keys (`id IN (...)`, `id NOT IN
+    /// (...)`, `id = ...`): a request's own list (the items a user has seen,
+    /// a page of results), seldom asked again, and tested on a candidate by
+    /// looking its key up among a few. Kept, it would be a set of a row or
+    /// two, or under NOT of nearly every row of the segment, made by reading
+    /// a whole column where the query tested a few hundred rows; and a few
+    /// hundred such requests going round would push each other out of the
+    /// cache before any came back. A fixed condition beside it is kept on
+    /// its own ([`Self::probe_kept`]).
+    fn key_list(&self, p: &Pred) -> bool {
+        match p {
+            Pred::In { field, .. } => self.schema.primary_key == Some(*field),
+            Pred::Not(c) => self.key_list(c),
+            Pred::And(cs) | Pred::Or(cs) | Pred::AtLeast { items: cs, .. } => cs.iter().any(|c| self.key_list(c)),
+            _ => false,
+        }
     }
 
     /// Whether `p`'s documents in segment `s` depend on its rows alone: no
