@@ -1,0 +1,115 @@
+name: strata-server release
+
+# Prebuilt strata-server, so that running it needs no Rust, no C compiler
+# and no 15-minute first build: one archive per platform, holding the
+# server binary, attached to a GitHub release.
+#
+# A tag strata-server-v<version> (strata-server/Cargo.toml's version)
+# builds and tests every platform and attaches the archives and their
+# SHA-256 sums to the tag's release; a run started by hand does the same
+# and keeps them as the run's artifacts. A change to this workflow builds
+# every platform as a release does, without releasing.
+#
+# The image (image.yml) is the other way to run it without building:
+# docker run ghcr.io/chloetech-ai/strata-server.
+on:
+  push:
+    tags: ["strata-server-v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/server-release.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Built on glibc 2.35: it runs on that and later (Debian 12,
+          # Ubuntu 22.04, RHEL 10 and newer), as the strata-py wheels do.
+          - { platform: linux-x86_64, os: ubuntu-22.04 }
+          - { platform: linux-aarch64, os: ubuntu-22.04-arm }
+          - { platform: macos-arm64, os: macos-latest }
+          - { platform: macos-x86_64, os: macos-15-intel }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      # macOS 11 and later run it.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The tag names Cargo.toml's version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: test "strata-server-v$(sed -n 's/^version = "\(.*\)"/\1/p' strata-server/Cargo.toml | head -1)" = "$GITHUB_REF_NAME"
+      - name: Build
+        working-directory: strata-server
+        run: cargo build --release --bin strata-server
+      # The binary starts on a new database, takes a table and a row, and
+      # answers a query, from outside the checkout.
+      - name: Run it
+        shell: bash
+        run: |
+          bin="$GITHUB_WORKSPACE/strata-server/target/release/strata-server"
+          cd "$RUNNER_TEMP"
+          "$bin" --version
+          "$bin" --db try.strata --demo 20 --listen 127.0.0.1:7790 --grpc 127.0.0.1:7791 > server.log 2>&1 &
+          pid=$!
+          for _ in $(seq 1 60); do curl -sf http://127.0.0.1:7790/livez > /dev/null && break; sleep 1; done
+          curl -sf http://127.0.0.1:7790/v1/sql -H 'content-type: application/json' -d '{"sql": "CREATE TABLE notes (id KEYWORD PRIMARY KEY, body TEXT)"}'
+          curl -sf http://127.0.0.1:7790/v1/write -H 'content-type: application/json' -d '{"ops": [{"op": "upsert", "table": "notes", "doc": {"id": "a", "body": "rivers and mountains"}}]}'
+          rows=$(curl -sf http://127.0.0.1:7790/v1/query -H 'content-type: application/json' -d '{"sql": "SELECT id FROM notes WHERE MATCH(body, '"'"'rivers'"'"')"}')
+          echo "$rows"
+          kill "$pid"
+          echo "$rows" | grep -q '"a"' || { cat server.log; exit 1; }
+      - name: Package
+        shell: bash
+        run: |
+          name="strata-server-${{ matrix.platform }}"
+          mkdir -p "dist/$name"
+          cp strata-server/target/release/strata-server "dist/$name/"
+          cp LICENSE* "dist/$name/" 2>/dev/null || true
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strata-server-${{ matrix.platform }}
+          path: dist/strata-server-*.tar.gz*
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: strata-server-*
+          path: dist
+          merge-multiple: true
+      - name: Attach the archives to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -la dist
+          if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" --title "strata-server ${TAG#strata-server-v}" --notes "Prebuilt strata-server, no Rust needed. Download the archive for your machine, unpack it and run \`./strata-server --db my.strata\` (a new database starts with no tables; add \`--demo 20000\` for the demo catalogue), then open http://127.0.0.1:7700. Platforms: Linux x86_64 and aarch64 (glibc 2.35 or later), macOS arm64 and x86_64 (macOS 11 or later). Each archive has a .sha256 beside it."
+          fi
+          gh release upload "$TAG" dist/* --repo "$REPO" --clobber

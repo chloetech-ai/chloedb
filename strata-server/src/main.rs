@@ -29,7 +29,7 @@ use strata_server::obs;
 use strata_server::server::{self, Options};
 
 #[derive(Parser)]
-#[command(about = "Strata over HTTP JSON and gRPC, with a query UI and an agent", args_conflicts_with_subcommands = true)]
+#[command(version, about = "Strata over HTTP JSON and gRPC, with a query UI and an agent", args_conflicts_with_subcommands = true)]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
