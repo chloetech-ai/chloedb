@@ -48,7 +48,7 @@ pub struct Plan {
     /// Each copy's volume (gp3), GiB.
     pub volume_gb: u32,
     /// The StrataCluster's spec, in part: what is left out is filled in
-    /// (`shards`, `replicas`, `coordinators`, `demo` 10,000, the image,
+    /// (`shards`, `replicas`, `coordinators`, no demo rows, the image,
     /// the volume's size and class, each copy's share of a node).
     pub cluster: Json,
 }
@@ -78,7 +78,17 @@ pub fn plan(p: &Plan, cat: &Catalog, principal_arn: &str) -> Result<Json, String
     if p.region != cat.region {
         return Err(format!("the machines are those of {}, not {}", cat.region, p.region));
     }
-    let m = cat.machines.iter().find(|m| m.name == p.machine).ok_or_else(|| format!("{} is not a machine a cluster runs on in {} (the current generation, on demand, without accelerators)", p.machine, p.region))?;
+    let m = if p.machine == crate::cloud::SMALLEST {
+        // The cheapest type that gives each copy the floor and runs the
+        // pods a node gets (EKS's VPC CNI caps them by type).
+        let types: Vec<_> = cat.machines.iter().filter(|m| if p.spot { m.spot_hour.is_some() } else { m.usd_hour.is_some() }).collect();
+        let offer: Vec<(f64, Node)> = types.iter().map(|m| (if p.spot { m.spot_hour } else { m.usd_hour }.unwrap_or(f64::MAX), Node { vcpu: m.vcpu, alloc_gib: allocatable_gib(m), system_cpu: SYSTEM_CPU })).collect();
+        let pods_fit = |i: &usize| fit(&p.cluster, p.nodes, &offer[*i].1, p.volume_gb, "gp3").is_ok_and(|f| f.per_node + NODE_PODS + (SYSTEM_PODS + f.coordinators + 1).div_ceil(p.nodes.max(1)) <= types[*i].max_pods);
+        let i = crate::cloud::by_price_with_floor(&p.cluster, p.nodes, &offer, p.volume_gb, "gp3").into_iter().find(pods_fit);
+        types[i.ok_or_else(|| format!("no machine in {} gives each copy {} GiB and {} CPU on {} nodes: more nodes, or fewer copies", p.region, crate::cloud::COPY_FLOOR_GIB, crate::cloud::COPY_FLOOR_CPU, p.nodes))?]
+    } else {
+        cat.machines.iter().find(|m| m.name == p.machine).ok_or_else(|| format!("{} is not a machine a cluster runs on in {} (the current generation, on demand, without accelerators)", p.machine, p.region))?
+    };
     if !(1..=1000).contains(&p.nodes) {
         return Err("nodes is 1 to 1,000".into());
     }
@@ -155,7 +165,7 @@ pub fn plan(p: &Plan, cat: &Catalog, principal_arn: &str) -> Result<Json, String
         "warnings": warnings,
         "manifests": {"operator": operator_yaml(&image)?, "cluster": cluster_yaml("A Strata cluster on EKS, from strata-server's cloud view", &objects)},
         "objects": objects,
-        "commands": commands,
+        "commands": crate::cloud::with_token_secret(&f.cluster, &commands),
         "teardown": teardown,
         "cluster": f.cluster,
         "template": template(p, m, principal_arn),
@@ -338,6 +348,20 @@ mod tests {
         }
         assert_eq!(j["cost"]["lines"][0]["what"], "2 × m8g.medium (spot, latest price)");
         assert_eq!(j["template"]["Resources"]["Nodes"]["Properties"]["CapacityType"], "SPOT");
+
+        // The smallest machine: m8g.medium's one vCPU leaves a copy less
+        // than half of one beside what the node runs, so m8g.large, on
+        // demand and on spot; the larger r8g only when a large starves.
+        let smallest = |nodes: u32, cluster: Json, spot: bool| {
+            let j = plan(&Plan { machine: crate::cloud::SMALLEST.into(), nodes, cluster, spot, ..Plan::default() }, &catalog(32.0), "arn").unwrap();
+            assert!(!j["warnings"].to_string().contains("each copy"), "{}", j["warnings"]);
+            j["template"]["Resources"]["Nodes"]["Properties"]["InstanceTypes"][0].as_str().unwrap().to_string()
+        };
+        assert_eq!(smallest(3, json!({}), false), "m8g.large");
+        assert_eq!(smallest(3, json!({}), true), "m8g.large");
+        assert_eq!(smallest(1, json!({"shards": 1, "replicas": 1}), false), "m8g.large");
+        assert_eq!(smallest(3, json!({"shards": 4, "replicas": 3}), false), "r8g.xlarge");
+        assert!(plan(&Plan { machine: crate::cloud::SMALLEST.into(), nodes: 1, cluster: json!({"shards": 64, "replicas": 2}), ..Plan::default() }, &catalog(32.0), "arn").unwrap_err().contains("no machine in us-east-1 gives each copy"));
 
         // What cannot be planned.
         let bad = |p: Plan| plan(&p, &catalog(32.0), "arn").unwrap_err();

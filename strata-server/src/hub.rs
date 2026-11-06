@@ -17,6 +17,14 @@
 //! Plain HTTP is refused beyond loopback unless the connection says it
 //! allows it (`allow_plain`), since the key and the rows then cross the
 //! network readable.
+//!
+//! A cluster this server made from the Cloud view is reached another way:
+//! through its Kubernetes API, with the cloud's credentials this server
+//! already holds, to the coordinators' Service (the API server's service
+//! proxy). Nothing is exposed and nothing is installed: no public address,
+//! no kubectl, no port-forward ([`ViaKube`], [`Hub::adopt`]). The API server
+//! takes `Authorization` for itself, so the cluster's key goes in
+//! [`VIA_PROXY_AUTH`].
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -27,7 +35,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
 
+use crate::operator::kube::Kube;
 use crate::ApiError;
+
+/// The header a cluster's key goes in on a call through its Kubernetes
+/// API, whose server keeps `Authorization` (its own credential) and does
+/// not pass it on; strata-server reads it when `Authorization` is absent.
+pub const VIA_PROXY_AUTH: &str = "x-strata-authorization";
+
+/// How long a forwarded call through a Kubernetes API may take, its
+/// answer streamed (an export, a log tail).
+const KUBE_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// The service name the keychains keep the keys under.
 const SERVICE: &str = "strata-hub";
@@ -70,6 +88,53 @@ pub struct Connection {
     pub last_ok_ms: Option<u64>,
     #[serde(default)]
     pub last_error: Option<String>,
+    /// Through a Kubernetes API, for a cluster made here (`urls` is then
+    /// empty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kube: Option<ViaKube>,
+    /// Without a key: the cluster takes calls without one (made before
+    /// clusters had tokens), and its Kubernetes API is what lets the hub
+    /// in.
+    #[serde(default)]
+    pub keyless: bool,
+}
+
+/// How the hub reaches a cluster it made from the Cloud view: through that
+/// cluster's Kubernetes API, with its cloud's credentials, to the
+/// coordinators' Service.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ViaKube {
+    /// Its id among the clusters made here
+    /// ([`crate::cloud::clusters::Made`]).
+    pub made: String,
+    /// `aws` or `digitalocean`.
+    pub provider: String,
+    /// The cloud's cluster (`strata-<name>`) and where it is.
+    pub cluster: String,
+    pub region: String,
+    pub namespace: String,
+    /// The StrataCluster, whose Service is in front of its coordinators.
+    pub service: String,
+}
+
+impl ViaKube {
+    /// The API server's path to the coordinators' Service.
+    pub fn proxy(&self) -> String {
+        format!("/api/v1/namespaces/{}/services/http:{}:7700/proxy", self.namespace, self.service)
+    }
+
+    /// What it is, in words.
+    pub fn describe(&self) -> String {
+        let cloud = if self.provider == "aws" { "EKS" } else { "DigitalOcean" };
+        format!("{}'s Kubernetes API ({cloud}, {})", self.cluster, self.region)
+    }
+}
+
+/// What a Kubernetes API server answered for itself (a `Status`), not the
+/// cluster behind it: its message.
+fn kube_status(body: &[u8]) -> Option<String> {
+    let j: Json = serde_json::from_slice(body).ok()?;
+    (j["kind"] == "Status").then(|| j["message"].as_str().unwrap_or("no message").to_string())
 }
 
 impl Connection {
@@ -501,8 +566,10 @@ impl Hub {
             added_by: by.to_string(),
             last_ok_ms: None,
             last_error: None,
+            kube: None,
+            keyless: false,
         };
-        let who = self.whoami(&c, key).await?;
+        let who = self.whoami(&c, Some(key), None).await?;
         let c = Connection { cluster: who["cluster"].clone(), key: key_view(&who), last_ok_ms: Some(crate::operator::now_ms()), ..c };
         self.keys.set(&c.name, key).map_err(|e| ApiError::internal(format!("keeping the key: {e}")))?;
         let mut list = self.lock();
@@ -516,7 +583,26 @@ impl Hub {
 
     /// `/v1/whoami` at the connection, with `key`: refused unless it
     /// answers as Strata and takes the key.
-    async fn whoami(&self, c: &Connection, key: &str) -> Result<Json, ApiError> {
+    async fn whoami(&self, c: &Connection, key: Option<&str>, kube: Option<&Kube>) -> Result<Json, ApiError> {
+        if let Some(v) = &c.kube {
+            let k = kube.ok_or_else(|| no_kube(&c.name))?;
+            let mut rb = k.request(reqwest::Method::GET, &format!("{}/v1/whoami", v.proxy()), CHECK_TIMEOUT).header("x-strata-client", "hub");
+            if let Some(key) = key {
+                rb = rb.header(VIA_PROXY_AUTH, format!("Bearer {key}"));
+            }
+            let r = rb.send().await.map_err(|e| ApiError { status: 502, message: format!("{} does not answer: {}", v.describe(), error_text(&e)) })?;
+            let status = r.status().as_u16();
+            let body = r.bytes().await.map_err(|e| ApiError { status: 502, message: format!("{}: {e}", v.describe()) })?;
+            if let Some(m) = kube_status(&body).filter(|_| status >= 400) {
+                return Err(ApiError { status: 502, message: format!("{} ({status}): {m}", v.describe()) });
+            }
+            return match status {
+                200..=299 => serde_json::from_slice::<Json>(&body).ok().filter(|j| j.get("scope").is_some()).ok_or_else(|| ApiError { status: 502, message: format!("{} did not answer as Strata does", c.name) }),
+                401 | 403 => Err(ApiError { status: 409, message: format!("{} refused the key ({status}): check it, and that it has not expired", c.name) }),
+                s => Err(ApiError { status: 502, message: format!("{} answered {s} through {}", c.name, v.describe()) }),
+            };
+        }
+        let key = key.unwrap_or_default();
         let cl = match &c.pin {
             Some(p) => pinned_client(Some(p.clone()), Some(CHECK_TIMEOUT)).map_err(ApiError::internal)?.0,
             None => crate::http_client().timeout(CHECK_TIMEOUT).build().map_err(|e| ApiError::internal(e.to_string()))?,
@@ -542,12 +628,100 @@ impl Hub {
         Err(ApiError { status: 502, message: last })
     }
 
+    /// The key kept for a connection; none for one without
+    /// ([`Connection::keyless`]).
+    fn key_of(&self, c: &Connection) -> Result<Option<String>, ApiError> {
+        if c.keyless {
+            return Ok(None);
+        }
+        self.keys.get(&c.name).map(Some).map_err(ApiError::internal)
+    }
+
+    /// Makes the cluster made here that `via` names a connection of this
+    /// book, through its Kubernetes API `k`: the cluster's token is read
+    /// from its Secret there, makes a key of this hub's own (admin, named
+    /// `hub <device>`, so that it can be revoked alone and the cluster's
+    /// audit names this hub), and only that key is kept. A cluster without
+    /// a token is kept without a key. A cluster in the book already is
+    /// checked again, not added twice.
+    pub async fn adopt(&self, via: ViaKube, name: Option<String>, color: Option<String>, k: &Kube, by: &str) -> Result<Connection, ApiError> {
+        if let Some(c) = self.list().into_iter().find(|c| c.kube.as_ref().is_some_and(|v| v.made == via.made)) {
+            return self.check(&c.name, Some(k)).await;
+        }
+        let name = name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| via.service.clone());
+        check_name(&name)?;
+        if self.get(&name).is_some() {
+            return Err(ApiError { status: 409, message: format!("{name} is in the book already: pick another name") });
+        }
+        let gone = |e: String| ApiError { status: 502, message: format!("{}: {e}", via.describe()) };
+        let sc = k.get(&format!("/apis/strata.chloetech.ai/v1alpha1/namespaces/{}/strataclusters/{}", via.namespace, via.service)).await.map_err(gone)?;
+        let sc = sc.ok_or_else(|| ApiError { status: 404, message: format!("{} has no StrataCluster {}/{}", via.cluster, via.namespace, via.service) })?;
+        let root = match sc["spec"]["tokenSecret"].as_str() {
+            Some(secret) => {
+                let sec = k.get(&format!("/api/v1/namespaces/{}/secrets/{secret}", via.namespace)).await.map_err(gone)?;
+                let b64 = sec.as_ref().and_then(|s| s["data"]["token"].as_str()).ok_or_else(|| ApiError { status: 502, message: format!("{} has no token in its Secret {secret}", via.cluster) })?;
+                use base64::Engine;
+                let t = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| ApiError { status: 502, message: format!("the Secret {secret}: {e}") })?;
+                Some(String::from_utf8(t).map_err(|_| ApiError { status: 502, message: format!("the Secret {secret} is not a token") })?.trim().to_string())
+            }
+            None => None,
+        };
+        let c = Connection {
+            name: name.clone(),
+            color: color.filter(|c| c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit())).unwrap_or_else(|| COLORS[self.lock().len() % COLORS.len()].to_string()),
+            urls: Vec::new(),
+            pin: None,
+            allow_plain: false,
+            cluster: Json::Null,
+            key: Json::Null,
+            added_ms: crate::operator::now_ms(),
+            added_by: by.to_string(),
+            last_ok_ms: None,
+            last_error: None,
+            kube: Some(via.clone()),
+            keyless: root.is_none(),
+        };
+        let key = match &root {
+            Some(root) => {
+                let body = json!({"name": format!("hub {}", self.device), "scope": "admin", "owner": by, "note": format!("the command center of {} reaches this cluster with it, through its Kubernetes API", self.device)});
+                let r = k
+                    .request(reqwest::Method::POST, &format!("{}/v1/admin/keys", via.proxy()), CHECK_TIMEOUT)
+                    .header(VIA_PROXY_AUTH, format!("Bearer {root}"))
+                    .header("x-strata-via", format!("hub {}", self.device))
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| ApiError { status: 502, message: format!("{} does not answer: {}", via.describe(), error_text(&e)) })?;
+                let status = r.status().as_u16();
+                let b = r.bytes().await.unwrap_or_default();
+                if !(200..300).contains(&status) {
+                    let why = kube_status(&b).or_else(|| serde_json::from_slice::<Json>(&b).ok().and_then(|j| j["error"].as_str().map(String::from))).unwrap_or_else(|| format!("{status}"));
+                    return Err(ApiError { status: 502, message: format!("{name} did not make a key for this hub: {why}") });
+                }
+                let j: Json = serde_json::from_slice(&b).map_err(|e| ApiError { status: 502, message: format!("{name}: {e}") })?;
+                Some(j["secret"].as_str().ok_or_else(|| ApiError { status: 502, message: format!("{name} made no key") })?.to_string())
+            }
+            None => None,
+        };
+        let who = self.whoami(&c, key.as_deref(), Some(k)).await?;
+        let c = Connection { cluster: who["cluster"].clone(), key: key_view(&who), last_ok_ms: Some(crate::operator::now_ms()), ..c };
+        if let Some(key) = &key {
+            self.keys.set(&c.name, key).map_err(|e| ApiError::internal(format!("keeping the key: {e}")))?;
+        }
+        let mut list = self.lock();
+        list.retain(|o| o.name != c.name);
+        list.push(c.clone());
+        self.save(&list).map_err(ApiError::internal)?;
+        drop(list);
+        Ok(c)
+    }
+
     /// Asks the connection again who its key is, and notes when it
     /// answered.
-    pub async fn check(&self, name: &str) -> Result<Connection, ApiError> {
+    pub async fn check(&self, name: &str, kube: Option<&Kube>) -> Result<Connection, ApiError> {
         let c = self.get(name).ok_or_else(|| not_found(name))?;
-        let key = self.keys.get(name).map_err(ApiError::internal)?;
-        let r = self.whoami(&c, &key).await;
+        let key = self.key_of(&c)?;
+        let r = self.whoami(&c, key.as_deref(), kube).await;
         let mut list = self.lock();
         let Some(e) = list.iter_mut().find(|o| o.name == name) else { return Err(not_found(name)) };
         match &r {
@@ -565,15 +739,16 @@ impl Hub {
     }
 
     /// Changes a connection's color or key (a new key is checked first).
-    pub async fn update(&self, name: &str, b: &Json) -> Result<Connection, ApiError> {
+    pub async fn update(&self, name: &str, b: &Json, kube: Option<&Kube>) -> Result<Connection, ApiError> {
         let c = self.get(name).ok_or_else(|| not_found(name))?;
         if let Some(k) = b.get("key").and_then(Json::as_str).map(str::trim).filter(|k| !k.is_empty()) {
-            let who = self.whoami(&c, k).await?;
+            let who = self.whoami(&c, Some(k), kube).await?;
             self.keys.set(name, k).map_err(|e| ApiError::internal(format!("keeping the key: {e}")))?;
             let mut list = self.lock();
             if let Some(e) = list.iter_mut().find(|o| o.name == name) {
                 e.key = key_view(&who);
                 e.cluster = who["cluster"].clone();
+                e.keyless = false;
             }
             self.save(&list).map_err(ApiError::internal)?;
         }
@@ -599,7 +774,9 @@ impl Hub {
         let c = list.remove(i);
         self.save(&list).map_err(ApiError::internal)?;
         drop(list);
-        self.keys.remove(name).map_err(ApiError::internal)?;
+        if !c.keyless {
+            self.keys.remove(name).map_err(ApiError::internal)?;
+        }
         self.clients.lock().unwrap_or_else(|e| e.into_inner()).remove(name);
         Ok(c)
     }
@@ -626,9 +803,34 @@ impl Hub {
     /// caller's credential: the answer as the cluster gave it, but a
     /// refused key, which is answered 502 so that the page asks for no
     /// login of this hub's.
-    pub async fn forward(&self, name: &str, method: reqwest::Method, path: &str, headers: &axum::http::HeaderMap, body: reqwest::Body) -> Result<axum::response::Response, ApiError> {
+    pub async fn forward(&self, name: &str, method: reqwest::Method, path: &str, headers: &axum::http::HeaderMap, body: reqwest::Body, kube: Option<&Kube>) -> Result<axum::response::Response, ApiError> {
         let c = self.get(name).ok_or_else(|| not_found(name))?;
-        let key = self.keys.get(name).map_err(ApiError::internal)?;
+        let key = self.key_of(&c)?;
+        if let Some(v) = &c.kube {
+            let k = kube.ok_or_else(|| no_kube(name))?;
+            let mut rb = k.request(method, &format!("{}{path}", v.proxy()), KUBE_TIMEOUT).header("x-strata-via", format!("hub {}", self.device));
+            if let Some(key) = &key {
+                rb = rb.header(VIA_PROXY_AUTH, format!("Bearer {key}"));
+            }
+            for (k, val) in headers {
+                if PASSED.iter().any(|p| k.as_str().eq_ignore_ascii_case(p)) {
+                    rb = rb.header(k.as_str(), val.as_bytes());
+                }
+            }
+            return match rb.body(body).send().await {
+                Ok(r) => {
+                    let out = answer_kube(name, v, r).await;
+                    self.noted(name, &if out.status().as_u16() == 502 { Err(format!("{name}: refused or not answering through {}", v.describe())) } else { Ok(()) });
+                    Ok(out)
+                }
+                Err(e) => {
+                    let m = format!("{} does not answer: {}", v.describe(), error_text(&e));
+                    self.noted(name, &Err(m.clone()));
+                    Err(ApiError { status: 502, message: m })
+                }
+            };
+        }
+        let key = key.unwrap_or_default();
         let cl = self.client(&c)?;
         // A call with a body goes to the first address only; one without
         // tries the next when an address does not answer.
@@ -685,6 +887,36 @@ fn answer(name: &str, r: reqwest::Response) -> axum::response::Response {
         }
     }
     out.body(axum::body::Body::from_stream(r.bytes_stream())).unwrap_or_else(|e| ApiError::internal(e.to_string()).into_response())
+}
+
+/// The answer of a call through a Kubernetes API: the cluster's, but what
+/// the API server says for itself (its own refusal, no copy behind the
+/// Service) and a refused key, which answer 502 with what went wrong.
+async fn answer_kube(name: &str, v: &ViaKube, r: reqwest::Response) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let status = r.status().as_u16();
+    if status < 400 {
+        return answer(name, r);
+    }
+    let headers = r.headers().clone();
+    let body = r.bytes().await.unwrap_or_default();
+    if let Some(m) = kube_status(&body) {
+        return ApiError { status: 502, message: format!("{} ({status}): {m}", v.describe()) }.into_response();
+    }
+    if status == 401 || status == 403 {
+        return ApiError { status: 502, message: format!("{name} refused this hub's key ({status}): it may have expired or been revoked; open it again from Cloud setup") }.into_response();
+    }
+    let mut out = axum::response::Response::builder().status(status);
+    for (k, val) in &headers {
+        if RETURNED.iter().any(|p| k.as_str().eq_ignore_ascii_case(p)) {
+            out = out.header(k.as_str(), val.as_bytes());
+        }
+    }
+    out.body(axum::body::Body::from(body)).unwrap_or_else(|e| ApiError::internal(e.to_string()).into_response())
+}
+
+fn no_kube(name: &str) -> ApiError {
+    ApiError::internal(format!("{name} is reached through a Kubernetes API, and no client of it was given"))
 }
 
 /// What the book keeps of a key, from `/v1/whoami`: never its secret.

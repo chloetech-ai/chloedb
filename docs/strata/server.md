@@ -963,13 +963,18 @@ Prices are DigitalOcean's: a node costs its size's hourly price up to its monthl
 
 | route | what |
 |---|---|
-| `GET /v1/admin/cloud/clusters` | the clusters made from this server, newest first. Each has its phase (`creating`, `installing`, `starting`, `ready`, `deleting`, `deleted`, `failed`), the cloud's progress, the last 60 steps it went through, the StrataCluster's status and a line summing it up, the cost so far at the planned price, why it failed, and, once Strata runs, the commands that open its command center (`kubectl -n strata port-forward svc/<name> 7700:7700`) |
-| `POST /v1/admin/cloud/clusters` | `{"provider": "aws" \| "digitalocean", "plan": {the plan's body}, "confirm": "<the cluster's name>"}`: planned again from a fresh catalogue, then made; 202. A 409 when the account's quota or droplet limit is too small, or when the cloud, or this server, already has a cluster of that name. A 400 unless `confirm` is the cluster's name |
+| `GET /v1/admin/cloud/clusters` | the clusters made from this server, newest first. Each has its phase (`creating`, `installing`, `starting`, `ready`, `deleting`, `deleted`, `failed`), the cloud's progress, the last 60 steps it went through, the StrataCluster's status and a line summing it up, the cost so far at the planned price, why it failed, when it deletes itself and what it will have cost by then, the hub connection that opens it (`connection`), and, once Strata runs, the commands that reach it with kubectl (`kubectl -n strata port-forward svc/<name> 7700:7700`) |
+| `POST /v1/admin/cloud/clusters` | `{"provider": "aws" \| "digitalocean", "plan": {the plan's body}, "confirm": "<the cluster's name>", "delete_after_hours"?, "bring"?}`: planned again from a fresh catalogue, then made; 202. `delete_after_hours` (above 0, at most 720) has it delete itself that long after it was asked for; `bring` names tables of this server it copies in once it is ready. A 409 when the account's quota or droplet limit is too small, or when the cloud, or this server, already has a cluster of that name. A 400 unless `confirm` is the cluster's name |
+| `POST /v1/admin/cloud/clusters/{id}/expiry` | `{"hours": n \| null}`: it deletes itself `n` hours from now, or no longer deletes itself; audited |
 | `GET /v1/admin/cloud/clusters/{id}` | one of them |
 | `POST /v1/admin/cloud/clusters/{id}/delete` | `{"confirm": "<the cluster's name>"}`: deletes it; 202 |
 | `DELETE /v1/admin/cloud/clusters/{id}` | takes it off the list, once it is deleted or failed before the cloud made anything; a 409 while it may still be billed |
 
 ![The Cloud view's Clusters made here card: a cluster on AWS on its way, its stack 7 of 19 resources made, and one on DigitalOcean ready, with every step it went through (against stand-ins for the clouds)](../assets/img/strata-command-center-cloud-clusters.png)
+
+A plan whose `machine` is `"smallest"` gets the cheapest machine whose nodes give each copy at least 1 GiB of memory and half a CPU (on EKS, also room for the pods a node runs), and says which in its `machine`; the view starts there, and **Create it** sends the machine it showed. A plan's StrataCluster has a token unless it says otherwise (`tokenSecret: strata-token`): installing it makes that Secret in the namespace `strata` with a random token when it is not there, and the plan's commands make it too. It has no demo rows unless the plan asks (`cluster.demo`), so the cluster starts with no tables. The cloud's cluster is tagged with who asked for it (on DigitalOcean `strata-owner:<name>`, on AWS the stack's `strata.chloetech.ai/owner`). When it deletes itself is not a tag: that time can move, and a tag left behind would tell a cleanup script to delete a cluster someone kept. This server deletes it, as **Delete** would, when its time comes, or as soon as it runs again if it was off then.
+
+**Open its command center** opens a cluster made here once Strata runs on it, with nothing to install: this server reaches the cluster through its Kubernetes API (the API server's service proxy, to the coordinators' Service) with the cloud credentials it holds, so the cluster needs no public address and no `kubectl`. The first time, it reads the cluster's token from its Secret, makes a key of its own there with it (`hub <device>`, admin), keeps that key and not the token, and adds the cluster to its [connections](#many-clusters-from-one-command-center) (`POST /v1/admin/hub/adopt {"made": "<id>"}`). The API server takes the `Authorization` header for itself, so the key travels in `X-Strata-Authorization: Bearer <key>`, which strata-server reads when a request has no `Authorization`.
 
 What the server does, in order:
 
@@ -988,6 +993,27 @@ The view's read-only keys are not enough to make a cluster:
 - **On DigitalOcean**, the token must be able to create, read and delete Kubernetes clusters and the volumes they make.
 
 The nodes pull the plan's image (`ghcr.io/chloetech-ai/strata-server:latest` unless changed), so it must be one they can reach. The repository's `Image` workflow (`.github/workflows/image.yml`) publishes it: each push to `main` that changes Strata or the server builds it for x86-64 and arm64 (Graviton) and tags it `latest` and the commit's sha, and a run started by hand publishes its branch under its sha. The nodes pull it without credentials once the package is public (the package's settings on GitHub, once, after its first publish); for a private one, give the cluster an image pull secret, or name an image of your own in the plan.
+
+### Many clusters from one command center
+
+A strata-server, typically the one on your laptop, is a **hub**: its command center reaches other clusters as well as its own. Its **Connections** view keeps a book of them, each an address and an API key of that cluster, and opens each one's command center at `/c/<name>/`, where every call goes through the hub, which adds that cluster's key. The browser never holds a cluster's key. The hub keeps the keys in the macOS Keychain or the Secret Service (`secret-tool`) where there is one, else in `<db>.hub-keys.json`, readable by its owner only; the book itself, `<db>.hub.json` (`--hub-file`), holds no secret. Each forwarded call names the hub in `x-strata-via: hub <device>` (`--hub-device`, else `$USER@<host>`), so the cluster's audit log shows where it came from.
+
+Adding a connection checks its address, its certificate and its key (`/v1/whoami` with it), and keeps nothing it refused. A certificate signed by a public authority is checked as any HTTPS call is; a self-signed one is shown by its SHA-256 and pinned once trusted, and a later certificate that differs is refused. Plain HTTP beyond loopback is refused unless the connection allows it (`allow_plain`). A key the cluster stops taking answers 502, saying so, rather than asking the page for a login. A cluster made from the [Cloud view](#making-it-from-the-view) is reached through its Kubernetes API instead, with no address of its own.
+
+| route | what |
+|---|---|
+| `GET /v1/admin/hub` | who this hub is, where it keeps the keys, and its connections (their keys' scope and expiry, never a key) |
+| `POST /v1/admin/hub/connections` | `{"name", "url", "key", "color"?, "trust"?, "allow_plain"?}`: adds one; a 409 with `needs_trust` and the fingerprint for a self-signed certificate not yet trusted |
+| `POST /v1/admin/hub/connections/{name}` | `{"key"}`: a new key, checked with the cluster first |
+| `DELETE /v1/admin/hub/connections/{name}` | takes it out of the book and its key off this machine (the key still works on its cluster until it expires or is revoked there) |
+| `POST /v1/admin/hub/connections/{name}/check` | asks the cluster who the key is |
+| `POST /v1/admin/hub/adopt` | `{"made": "<id>"}`: a cluster made from the Cloud view, in the book through its Kubernetes API |
+| `POST /v1/admin/hub/copy` | `{"from", "to", "tables": [...]}`: copies tables once, `""` naming this server and anything else a connection |
+| `/c/{name}/v1/...` | the call, to that cluster, with its key; only Strata's API and its health |
+
+A **copy** is one SQLite file: the source's export of the tables, with their rows and their kept Strata schemas (fields, key, shard and cluster keys), sent into the target's import, which makes the tables it lacks and writes each row by its key into those it has. Run again, it writes the same rows again; it keeps no offset and does not follow later writes. The source must hold the rows: this server, or a connection that is one server (a cluster's coordinators hold none). The target takes the file whole, so it is at most its `--max-body-mb`. A cluster made from the Cloud view can **bring** tables of this server the same way once every copy answers (`bring` when it is made); the result is on its steps.
+
+The **All clusters** view lists this server and every connection with its health, rows, tables and key, and what differs between them: each table's `CREATE TABLE`, the synonym rules and the alert rules, compared with the one picked. **Apply** makes a missing table (with no rows), replaces the synonyms, or sets the alert rule as on the reference, on the clusters that differ, production last; a table that differs is shown, not changed. **Revoke this hub's keys** revokes, on each cluster, the key this hub holds there and empties the book, for a device that is leaving.
 
 ## Deadlines, admission and metrics
 
