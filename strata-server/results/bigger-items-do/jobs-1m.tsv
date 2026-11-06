@@ -1,0 +1,4 @@
+# The bigger items rerun (11-05): main before this thread's merges (6d02ba6, IMAGE_B,
+# labelled strata-b) against main after them (18fb4bc, IMAGE, strata-a), passes
+# alternating on the same nodes as Elasticsearch and OpenSearch.
+ab-1m   strata-ab+es+os  sharded  7   IMAGE_B=ghcr.io/chloetech-ai/strata-server:6d02ba6544b92f60f8b36c108d9ccbaceca7f9db
