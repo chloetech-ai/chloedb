@@ -353,7 +353,7 @@ struct V1 {
 
 /// The features this version of Strata reads, besides its analyzers'
 /// ([`known_feature`]).
-pub const FEATURES: &[&str] = &[crate::schema::ADDED_FIELDS, "bool", "cluster_by", "default", "derive", "edge_table", crate::schema::EXPIRE_BY, FIELD_IDS, crate::schema::JSON, crate::schema::JSON_TEXT, "media", "multi_vector", "not_null", RANK_PROFILES, crate::schema::RABITQ, "retain", "semantic_id", "seq_no", "shard_by", "sources", "timestamp", crate::schema::VECTOR_PARTITION];
+pub const FEATURES: &[&str] = &[crate::schema::ADDED_FIELDS, "bool", "cluster_by", crate::schema::COMPACT_KEYS, "default", "derive", "edge_table", crate::schema::EXPIRE_BY, FIELD_IDS, crate::schema::JSON, crate::schema::JSON_TEXT, "media", "multi_vector", "not_null", RANK_PROFILES, crate::schema::RABITQ, "retain", "semantic_id", "seq_no", "shard_by", "sources", "timestamp", crate::schema::VECTOR_PARTITION];
 
 /// The feature of a database whose fields have ids
 /// ([`crate::schema::Field::id`]): every database this version creates.
@@ -458,7 +458,7 @@ pub fn read(path: &std::path::Path) -> Result<Manifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{Field, FieldType};
+    use crate::schema::{Field, FieldType, COMPACT_KEYS};
 
     /// A table as a version from before field ids wrote it, which these
     /// tests use to check the formats such a database stays in (1, 2 and 3
@@ -671,8 +671,9 @@ mod tests {
     }
 
     /// A database of this version names each field by its id: format 3,
-    /// feature `field_ids`, each table's ids and the next to give in its
-    /// schema. Ids that clash, a table without them (or with them, in a
+    /// feature `field_ids` (and `compact_keys` for a table with a primary
+    /// key, which a table from before field ids does not need), each
+    /// table's ids and the next to give in its schema. Ids that clash, a table without them (or with them, in a
     /// manifest that does not require them) are damage.
     #[test]
     fn field_ids_are_format_3() {
@@ -681,15 +682,18 @@ mod tests {
         m.tables.push(TableMeta { id: 1, schema: ids("authors"), segments: vec![segment(1)], profiles: Vec::new() });
         m.next_table_id = 2;
         assert!(!m.is_legacy());
-        assert_eq!((m.format(), m.features()), (3, strings(&[FIELD_IDS])));
+        assert_eq!((m.format(), m.features()), (3, strings(&[COMPACT_KEYS, FIELD_IDS])));
         let text = String::from_utf8(m.encode()).unwrap();
-        assert!(text.starts_with(r#"{"format":3,"features":{"required":["field_ids"]},"#), "{text}");
+        assert!(text.starts_with(r#"{"format":3,"features":{"required":["compact_keys","field_ids"]},"#), "{text}");
         assert!(text.contains(r#""fields":[{"id":0,"name":"id","#) && text.contains(r#"{"id":1,"name":"body","#) && text.contains(r#""next_field_id":2"#), "{text}");
         assert_eq!(Manifest::decode(text.as_bytes()).unwrap(), m);
         // With other features, sorted.
         m.tables[1].schema = typed("tasks").with_new_ids().unwrap();
-        assert_eq!(m.features(), ["bool", "field_ids", "timestamp"]);
+        assert_eq!(m.features(), ["bool", "compact_keys", "field_ids", "timestamp"]);
         assert_eq!(Manifest::decode(&m.encode()).unwrap(), m);
+        // Without a primary key, no compact keys.
+        let keyless = Schema::new("logs", vec![Field::new("body", FieldType::Text { positions: true })], None).unwrap().with_new_ids().unwrap();
+        assert_eq!(Manifest::new(keyless).features(), [FIELD_IDS]);
 
         let corrupt = |text: String, why: &str| {
             let e = Manifest::decode(text.as_bytes()).unwrap_err();
@@ -700,7 +704,7 @@ mod tests {
         corrupt(text.replacen(r#""next_field_id":2"#, r#""next_field_id":1"#, 1), "next field id");
         corrupt(text.replacen(r#""next_field_id":2"#, r#""next_field_id":70000"#, 1), "past the most");
         corrupt(text.replacen(r#"{"id":1,"name":"body""#, r#"{"name":"body""#, 1), "next field id");
-        corrupt(text.replacen(r#"["field_ids"]"#, "[]", 1), "does not require feature field_ids");
+        corrupt(text.replacen(r#"["compact_keys","field_ids"]"#, r#"["compact_keys"]"#, 1), "does not require feature field_ids");
         let mixed = Manifest { tables: vec![m.tables[0].clone(), TableMeta { id: 1, schema: schema("authors"), segments: Vec::new(), profiles: Vec::new() }], ..m.clone() };
         corrupt(String::from_utf8(mixed.encode()).unwrap(), "table authors has no field ids");
         // A legacy manifest that names the feature is damage as well.
