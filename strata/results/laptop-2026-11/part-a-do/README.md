@@ -445,6 +445,13 @@ November build:
   main reads faster than before (34,036 and 8,781 a second against 19,018
   and 7,278).
 
+One more, in A2's single run: the medians got faster on every kind and
+collection, but on the three larger collections some 99th percentiles got
+slower. Main over the 2 November build, p99 at one thread: BM25 1.48 (fiqa),
+1.22 (trec-covid) and 1.63 (quora); filtered hybrid 1.26, 1.08 and 1.78;
+filtered vector 1.15, 1.08 and 1.99; on quora also phrase 1.33 and prefix
+1.36. On scifact and nfcorpus every p99 is faster.
+
 Cost: the node from 08:51 to 12:12 UTC, $1.51 at list price ($1.80 in
 whole hours). The cluster `strata-bench-a` was deleted at 12:12.
 
