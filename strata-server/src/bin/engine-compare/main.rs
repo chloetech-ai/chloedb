@@ -131,7 +131,8 @@ enum Cmd {
         paid: bool,
         /// HNSW candidates per vector search (ef, num_candidates, topK) for
         /// every engine; the default is the benchmark's 64. Give the run a
-        /// `--label` per value for a sweep.
+        /// `--label` per value for a sweep. Weaviate's ef is set when its
+        /// collection is made, at `load`, so this does not reach it.
         #[arg(long, default_value_t = CANDIDATES)]
         candidates: usize,
         #[arg(long)]
@@ -1518,7 +1519,7 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
                 }
                 "vector" | "vector + filter" => {
                     let filter = if kind == "vector + filter" { format!(" and rating >= {}", f.rating_min) } else { String::new() };
-                    json!({"yql": format!("select * from doc where {}{filter}", nn("v", 10, candidates() - 10)), "ranking": "vector", "input.query(v)": v.to_vec()})
+                    json!({"yql": format!("select * from doc where {}{filter}", nn("v", 10, candidates().saturating_sub(10))), "ranking": "vector", "input.query(v)": v.to_vec()})
                 }
                 "hybrid (RRF)" | "hybrid (weighted)" => json!({
                     "yql": format!("select * from doc where userQuery() or ({{targetHits:{DEPTH}}}nearestNeighbor(emb, v))"),
@@ -1536,7 +1537,7 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| yql_str(k)).collect();
-                    json!({"yql": format!("select * from doc where {} and rating >= {} and !(id in ({}))", nn("i", 10, candidates() - 10), f.similar_rating, ids.join(", ")),
+                    json!({"yql": format!("select * from doc where {} and rating >= {} and !(id in ({}))", nn("i", 10, candidates().saturating_sub(10)), f.similar_rating, ids.join(", ")),
                         "ranking": "similar", "input.query(i)": p.item.to_vec()})
                 }
                 "sql aggregate" => json!({
