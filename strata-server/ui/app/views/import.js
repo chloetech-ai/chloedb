@@ -5,7 +5,7 @@
 // a SQLite file or a Parquet file a table, and the stream sources show how
 // far each event stream has been written, with a box to send one.
 
-import { h, icon, clear, fmt, api, authHeader, toast, empty, seg, sqlBlock, dropzone, every, failure, confirm, gate, can, bus } from "../core.js";
+import { h, icon, clear, fmt, api, at, authHeader, toast, empty, seg, sqlBlock, dropzone, every, failure, confirm, gate, can, bus } from "../core.js";
 import { isProduction, isCoordinator } from "../data.js";
 import { tables, cached, invalidate, table as tableOf, typeBadge, typeMeta, TYPES } from "../catalog.js";
 import { quoteName } from "../sqledit.js";
@@ -268,7 +268,7 @@ function render(page) {
   function upload(url, file, type, progress, reason) {
     return new Promise((resolve, reject) => {
       const x = new XMLHttpRequest();
-      x.open("POST", url);
+      x.open("POST", at(url));
       x.setRequestHeader("content-type", type);
       for (const [k, v] of Object.entries(authHeader())) x.setRequestHeader(k, v);
       x.setRequestHeader("x-strata-client", "command-center");
@@ -468,7 +468,7 @@ function render(page) {
         const headers = { "content-type": "application/x-ndjson", "x-strata-client": "command-center", ...authHeader() };
         if (ok.reason) headers["x-strata-reason"] = safeHeader(ok.reason);
         const sent = Date.now();
-        const r = await fetch("/v1/stream", { method: "POST", headers, body: ta.value.trim() + "\n" });
+        const r = await fetch(at("/v1/stream"), { method: "POST", headers, body: ta.value.trim() + "\n" });
         if (!r.ok) { let m = `HTTP ${r.status}`; try { const j = await r.json(); m = j.error || m; } catch { /* not JSON */ } throw new Error(m); }
         const rd = r.body.getReader(), dec = new TextDecoder();
         for (;;) { const { value, done } = await rd.read(); if (done) break; log.append(dec.decode(value, { stream: true })); }

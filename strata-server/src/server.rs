@@ -147,6 +147,10 @@ pub struct Options {
     /// The clusters the cloud view made (default: `<db>.cloud.json` beside
     /// a database; in memory on a coordinator without it).
     pub cloud_file: Option<PathBuf>,
+    /// The hub's book of connections to other clusters ([`crate::hub`]).
+    pub hub_file: Option<PathBuf>,
+    /// Who this hub's calls to other clusters say they come from.
+    pub hub_device: Option<String>,
     /// The alert rules' file (default rules, in memory, without it).
     pub alerts: Option<PathBuf>,
     /// A coordinator's Contain rules' file (in memory without it): fleet.
@@ -394,6 +398,11 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         if svc.clouds.list().iter().any(|m| !matches!(m.phase, crate::cloud::clusters::Phase::Deleted | crate::cloud::clusters::Phase::Failed)) {
             svc.clouds.start(svc.aws.clone(), svc.digitalocean.clone());
         }
+    }
+    let hub = o.hub_file.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::hub::Hub::file_of));
+    if let Some(file) = hub {
+        let secrets = crate::hub::Secrets::detect(Some(crate::hub::Hub::keys_file_of(&file)));
+        svc.hub = Arc::new(crate::hub::Hub::open(file, secrets, o.hub_device.clone())?);
     }
     let keys = o.keys.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(Keys::file_of));
     if let Some(file) = keys {

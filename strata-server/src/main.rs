@@ -318,6 +318,17 @@ struct Args {
     /// without it). No secrets: the clouds' keys stay in their own files.
     #[arg(long)]
     cloud_file: Option<PathBuf>,
+    /// The book of connections to other clusters that this server's command
+    /// center reaches (default: DB.hub.json beside --db). Their keys are
+    /// kept in the macOS Keychain or the Secret Service where there is one,
+    /// else in DB.hub-keys.json (mode 600); STRATA_HUB_SECRETS=file keeps
+    /// them in the file anyway.
+    #[arg(long)]
+    hub_file: Option<PathBuf>,
+    /// Who this hub's calls to other clusters say they come from (default:
+    /// $USER@host), in each cluster's audit log.
+    #[arg(long)]
+    hub_device: Option<String>,
     /// The alert rules' file, JSON (created when the rules are first
     /// edited; default rules in memory without it).
     #[arg(long)]
@@ -757,6 +768,8 @@ async fn main() {
         aws_file: a.aws_file,
         digitalocean_file: a.digitalocean_file,
         cloud_file: a.cloud_file,
+        hub_file: a.hub_file,
+        hub_device: a.hub_device,
         contain: a.contain.clone().or_else(|| a.alerts.as_ref().map(|p| p.with_file_name("contain.json"))),
         alerts: a.alerts,
         alert_webhook: a.alert_webhook.filter(|u| !u.is_empty()),

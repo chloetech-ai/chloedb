@@ -3170,3 +3170,13 @@ table.t th.num { text-align: right; }
 
 /* Round 2: chart legend buttons are tap targets on a phone. */
 @media (max-width: 900px) { .legend button { min-height: 40px; padding: 0 6px; } }
+
+/* The hub (views/connections.js): a connection's color, and on its page
+   (/c/<name>) a stripe of it along the top edge. */
+.conn-dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; vertical-align: middle; }
+.conn-dot.lg { width: 22px; height: 22px; border-radius: 6px; border: 0; cursor: pointer; padding: 0; }
+.conn-dot.lg.on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text); }
+.menu button .conn-dot { margin-right: 2px; }
+html.via-hub::before { content: ""; position: fixed; left: 0; right: 0; top: 0; height: 3px; background: var(--conn, var(--s1)); z-index: 200; pointer-events: none; }
+.conn-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(280px, 2fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .conn-grid { grid-template-columns: minmax(0, 1fr); } }
