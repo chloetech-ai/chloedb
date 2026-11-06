@@ -648,6 +648,8 @@ message Agg {
   AggFn func = 1;
   // Absent: COUNT(*).
   Expr arg = 2;
+  // A percentile's fraction, from 0 to 1 (plan feature "percentiles").
+  double fraction = 3;
 }
 
 enum AggFn {
@@ -657,6 +659,10 @@ enum AggFn {
   AGG_FN_MIN = 3;
   AGG_FN_MAX = 4;
   AGG_FN_COUNT_DISTINCT = 5;
+  // PERCENTILE_CONT and PERCENTILE_DISC of Agg.fraction (plan feature
+  // "percentiles"); an aggregate of groups only, not of a window.
+  AGG_FN_PERCENTILE_CONT = 6;
+  AGG_FN_PERCENTILE_DISC = 7;
 }
 
 message Filter {

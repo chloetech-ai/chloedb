@@ -45,7 +45,7 @@ use crate::query::ir::eval;
 use crate::query::ir::{self, ArithOp, CmpOp, Func, When};
 use crate::query::ops;
 use crate::query::sql::{CastTo, Sub, Subs};
-use crate::query::logical::{OrderBy, Phase, Select};
+use crate::query::logical::{Fraction, OrderBy, Phase, Select};
 use crate::query::rank::Rank;
 use crate::query::{AggFn, Params, Projection};
 use crate::schema::{FieldType, Schema};
@@ -64,7 +64,11 @@ fn err(m: impl Into<String>) -> Error {
 const NATIVE: [&str; 14] = ["match", "bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "reachable", "path", "hops", "score", "now", "near"];
 /// Score functions, which order a side's scan.
 const SCORES: [&str; 8] = ["bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "hops"];
-const AGGREGATES: [&str; 5] = ["count", "sum", "avg", "min", "max"];
+pub(crate) const AGGREGATES: [&str; 8] = ["count", "sum", "avg", "min", "max", "median", "percentile_cont", "percentile_disc"];
+/// The percentiles among the aggregates: `MEDIAN(x)`, and `PERCENTILE_CONT(x,
+/// p)` as `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` parses
+/// ([`super::parse`]), and `PERCENTILE_DISC` alike.
+pub(crate) const PERCENTILES: [&str; 3] = ["median", "percentile_cont", "percentile_disc"];
 /// Functions whose value a ranking computes (a score, a graph's, a model's,
 /// a set function's, a row's sequence number), not the row evaluator.
 const RANKING: [&str; 18] = [
@@ -2254,7 +2258,7 @@ fn grouped_first(n: &ir::Node, sort: &[ir::SortKey], catalog: &[&Schema]) -> Opt
                 let fl = lt.fields.get(f as usize)?;
                 let typed = match a.func {
                     AggFn::Count | AggFn::CountDistinct => matches!(fl.ty, FieldType::Keyword | FieldType::Int | FieldType::Float),
-                    AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max => matches!(fl.ty, FieldType::Int | FieldType::Float),
+                    AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_) => matches!(fl.ty, FieldType::Int | FieldType::Float),
                 };
                 if !plain(fl) || !typed {
                     return None;
@@ -3047,8 +3051,9 @@ struct AggCall {
     arg: Option<Expr>,
 }
 
-fn agg_calls(exprs: &[&Expr]) -> Result<Vec<AggCall>> {
+fn agg_calls(exprs: &[&Expr], params: &Params) -> Result<Vec<AggCall>> {
     let mut out: Vec<AggCall> = Vec::new();
+    let mut failed = None;
     for e in exprs {
         walk(e, &mut |x| {
             let Expr::Function(f) = x else { return };
@@ -3066,14 +3071,43 @@ fn agg_calls(exprs: &[&Expr]) -> Result<Vec<AggCall>> {
                     "sum" => AggFn::Sum,
                     "avg" => AggFn::Avg,
                     "min" => AggFn::Min,
-                    _ => AggFn::Max,
+                    "max" => AggFn::Max,
+                    _ => match percentile(f, &name, distinct, params) {
+                        Ok(func) => func,
+                        Err(e) => {
+                            failed.get_or_insert(e);
+                            return;
+                        }
+                    },
                 };
                 (Some(func), func_args(f).first().map(|a| (*a).clone()))
             };
             out.push(AggCall { text: x.to_string(), func, arg });
         });
     }
-    Ok(out)
+    failed.map_or(Ok(out), Err)
+}
+
+/// The percentile a call of one of [`PERCENTILES`] computes: `MEDIAN(x)`,
+/// or `PERCENTILE_CONT(x, p)` and the others with a constant fraction p
+/// from 0 to 1.
+fn percentile(f: &sql::Function, name: &str, distinct: bool, params: &Params) -> Result<AggFn> {
+    let upper = name.to_uppercase();
+    if distinct {
+        return Err(err("DISTINCT works in COUNT only"));
+    }
+    let args = func_args(f);
+    let p = match (name, args.as_slice()) {
+        ("median", [_]) => 0.5,
+        ("median", _) => return Err(err("MEDIAN takes one value: MEDIAN(price)")),
+        (_, [_, p]) => match compile(p, params, &|_| None, &[]).and_then(|e| value(&e)) {
+            Ok(v) => v.as_f64().filter(|_| matches!(v, Value::Int(_) | Value::Float(_))).ok_or_else(|| err(format!("{upper}: the fraction is a number from 0 to 1, not {p}")))?,
+            Err(_) => return Err(err(format!("{upper}: the fraction is a constant from 0 to 1, not {p}"))),
+        },
+        _ => return Err(err(format!("{upper}(p) WITHIN GROUP (ORDER BY x): p, from 0 to 1, of one value of each row"))),
+    };
+    let p = Fraction::new(p).ok_or_else(|| err(format!("{upper}: the fraction is from 0 to 1, not {p}")))?;
+    Ok(if name == "percentile_disc" { AggFn::PercentileDisc(p) } else { AggFn::PercentileCont(p) })
 }
 
 /// A window function's call: its text (how other expressions name it) and
@@ -3324,7 +3358,7 @@ impl Planner<'_> {
         item_exprs.extend(s.having.iter());
         item_exprs.extend(order.iter().map(|o| &o.0));
         item_exprs.extend(qualify.iter());
-        let calls = agg_calls(&item_exprs)?;
+        let calls = agg_calls(&item_exprs, params)?;
         let windows = window_calls(&item_exprs)?;
         let grouped = !group_exprs.is_empty() || !calls.is_empty();
         // The window functions over the rows (or the groups) as `slot`

@@ -806,6 +806,57 @@ pub enum AggFn {
     Min,
     Max,
     CountDistinct,
+    /// `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY f)` and `MEDIAN(f)` (p =
+    /// 0.5): the value at fraction p of the way from the least value to
+    /// the greatest, interpolated between the two values around it, a
+    /// FLOAT. Needs [`crate::query::ir::PERCENTILES`].
+    PercentileCont(Fraction),
+    /// `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY f)`: the least value that
+    /// at least fraction p of the values are at most, one of the values.
+    /// Needs [`crate::query::ir::PERCENTILES`].
+    PercentileDisc(Fraction),
+}
+
+impl AggFn {
+    /// A percentile's fraction and whether it interpolates.
+    pub fn percentile(self) -> Option<(f64, bool)> {
+        match self {
+            AggFn::PercentileCont(p) => Some((p.get(), true)),
+            AggFn::PercentileDisc(p) => Some((p.get(), false)),
+            _ => None,
+        }
+    }
+}
+
+/// A fraction from 0 to 1, of a percentile ([`AggFn::PercentileCont`]),
+/// held as its double's bits so that functions compare equal by value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "f64", into = "f64")]
+pub struct Fraction(u64);
+
+impl Fraction {
+    /// `p`, if it is from 0 to 1.
+    pub fn new(p: f64) -> Option<Fraction> {
+        // -0.0 is 0.0, so that the two are one function.
+        (0.0..=1.0).contains(&p).then(|| Fraction((p + 0.0).to_bits()))
+    }
+
+    pub fn get(self) -> f64 {
+        f64::from_bits(self.0)
+    }
+}
+
+impl TryFrom<f64> for Fraction {
+    type Error = String;
+    fn try_from(p: f64) -> std::result::Result<Fraction, String> {
+        Fraction::new(p).ok_or_else(|| format!("a percentile's fraction is from 0 to 1, not {p}"))
+    }
+}
+
+impl From<Fraction> for f64 {
+    fn from(p: Fraction) -> f64 {
+        p.get()
+    }
 }
 
 /// A `HAVING` condition on a group's aggregates or group values.

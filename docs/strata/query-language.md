@@ -807,14 +807,24 @@ FROM docs WHERE year >= 2000
 GROUP BY category, topic HAVING n > 20 ORDER BY AVG(rating) DESC LIMIT 10;
 
 SELECT COUNT(*), SUM(clicks), AVG(rating) FROM docs WHERE MATCH(body, 'india');
+
+SELECT item, MEDIAN(price), PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY price) AS p90
+FROM snapshots GROUP BY item HAVING MEDIAN(price) > 100 ORDER BY p90 DESC;
 ```
 
 - **`GROUP BY`** takes one or more indexed `KEYWORD`, `INT` or `FLOAT` columns, or [parts of times](#parts-of-times-date_trunc-extract-and-strftime) of a `TIMESTAMP` column (`date_trunc('day', at)`), by name, position or alias. A multi-valued column puts a row in one group per value, over one table, joined rows or derived rows alike, and so does `SELECT DISTINCT`, which is `GROUP BY` its columns. The rows without a value form the group `NULL`, as in SQL, and `SELECT DISTINCT` lists `NULL` once.
-- **Aggregates** are `COUNT(*)`, `COUNT(f)`, `COUNT(DISTINCT f)`, `SUM(f)` and `AVG(f)` over numeric columns, and `MIN(f)` and `MAX(f)` over numeric or keyword columns. Every selected column is a group column or inside an aggregate. Without `GROUP BY` they summarize every row that passes `WHERE`, in one row (`COUNT(*)` 0 and the others `NULL` when none does).
+- **Aggregates** are `COUNT(*)`, `COUNT(f)`, `COUNT(DISTINCT f)`, `SUM(f)` and `AVG(f)` over numeric columns, `MIN(f)` and `MAX(f)` over numeric or keyword columns, and the [percentiles](#percentiles) of numeric columns. Every selected column is a group column or inside an aggregate. Without `GROUP BY` they summarize every row that passes `WHERE`, in one row (`COUNT(*)` 0 and the others `NULL` when none does).
 - **`HAVING`** filters groups by their aggregates, written out or by alias, with comparisons, `BETWEEN`, `AND`, `OR` and `NOT`, in three-valued logic: an aggregate of no values (`AVG(rating)` of a group without ratings) is `NULL`, so neither `AVG(rating) < 3` nor `NOT (AVG(rating) < 3)` keeps that group.
 - **`ORDER BY`** a group column, an aggregate or a position, with a tie-break; without one, the largest groups come first. `LIMIT` and `OFFSET` apply to groups.
 
 A `SUM` or `AVG` of `FLOAT` values is exact: the values are added without rounding and the total is rounded once, so it does not depend on the order rows are read in. A database groups its segments on several threads and merges them, and the answer is the same bits as on one thread. A coordinator over shards merges partial aggregates (sums and counts for `AVG`, the distinct values for `COUNT(DISTINCT)`), so the answers are the same as on one server, except that each shard sends its `FLOAT` sum rounded once, so a sum over shards can differ from one server's in its last bit.
+
+### Percentiles
+
+`PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY f)` is the value a fraction `p` (0 to 1) of the way from the group's least value of `f` to its greatest, interpolated between the two values around that position, a `FLOAT`; `MEDIAN(f)` is `PERCENTILE_CONT(0.5)`. `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY f)` is the least value that at least a fraction `p` of the values are at most: one of the values, of `f`'s type (a `TIMESTAMP`'s times too). The answers are PostgreSQL's: of `n` values in order, `PERCENTILE_DISC(p)` is the one at position ⌈p·n⌉ (counting from 1, the first for `p` = 0), and `PERCENTILE_CONT(p)` the one at position p·(n − 1) counting from 0, interpolated in doubles. `NULL`s are left out, and a group without values gives `NULL`. A column without an alias is named as the call reads, `PERCENTILE_CONT(price, 0.9)`.
+
+- **Of columns and expressions.** Over one table they take indexed `INT` and `FLOAT` columns, read from the columns as the other aggregates are; over joined or derived rows, any numeric expression (`MEDIAN(s.price * 1.2)`). `p` is a constant or a parameter (`:p`); the order is ascending (`ORDER BY f DESC` is an error: write `1 - p`). They are aggregates of groups, not window functions.
+- **Exact, so they hold the values.** A group keeps each of its values (8 bytes each, counted against the [query's memory budget](server.md#limits)) and orders them once when it is read: a median over 5 million rows holds 40 MB. A shard sends a group's values to the coordinator as runs of equal values, so prices that repeat travel once with their count, and the coordinator's answer is one server's. Plans with a percentile carry the plan feature `percentiles`, which a version of Strata from before them refuses by name.
 
 ## Subqueries, WITH and joins
 

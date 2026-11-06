@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use strata::query::ir::{Agg, ArithOp, Bound, CmpOp, Column, Cte, Expr, Frame, FrameUnits, Func, Graph, GraphKind, Guard, GuardSite, JoinKey, JoinKind, KeyValue, Node, NormKind, OnConflict, Phase, Plan, ProfileRef, Search, Set, SetOp, SortKey, When, WindowFn, WindowFunc};
-use strata::query::{AggFn, Decay, DecayShape, Direction, Expand, Fuzzy};
+use strata::query::{AggFn, Decay, DecayShape, Direction, Expand, Fraction, Fuzzy};
 use strata::text::query::Need;
 use strata::value::Value;
 
@@ -105,7 +105,7 @@ fn node(n: &Node) -> pb::Node {
         Node::Aggregate { input, keys, aggs } => N::Aggregate(Box::new(pb::Aggregate {
             input: boxed(input),
             keys: keys.iter().map(ex).collect(),
-            aggs: aggs.iter().map(|a| pb::Agg { func: agg_fn(a.func) as i32, arg: a.arg.as_ref().map(ex) }).collect(),
+            aggs: aggs.iter().map(|a| pb::Agg { func: agg_fn(a.func) as i32, arg: a.arg.as_ref().map(ex), fraction: a.func.percentile().map_or(0.0, |(p, _)| p) }).collect(),
         })),
         Node::Filter { input, cond } => N::Filter(Box::new(pb::Filter { input: boxed(input), cond: bex(cond) })),
         Node::Sort { input, keys } => N::Sort(Box::new(pb::Sort { input: boxed(input), keys: keys.iter().map(sort_key).collect() })),
@@ -219,7 +219,7 @@ fn from_window_fn(f: pb::WindowFn) -> Result<WindowFn, ApiError> {
         Kind::FirstValue => WindowFunc::FirstValue(arg(f.arg)?),
         Kind::LastValue => WindowFunc::LastValue(arg(f.arg)?),
         Kind::NthValue => WindowFunc::NthValue { arg: arg(f.arg)?, n: f.n },
-        Kind::Aggregate => WindowFunc::Agg(Agg { func: from_agg_fn(f.agg)?, arg: f.arg.map(|e| from_ex(Some(e))).transpose()? }),
+        Kind::Aggregate => WindowFunc::Agg(Agg { func: from_agg_fn(f.agg, None)?, arg: f.arg.map(|e| from_ex(Some(e))).transpose()? }),
     };
     let frame = f
         .frame
@@ -241,7 +241,13 @@ fn from_window_fn(f: pb::WindowFn) -> Result<WindowFn, ApiError> {
     Ok(WindowFn { func, partition: from_exprs(f.partition)?, order: f.order.into_iter().map(from_sort_key).collect::<Result<_, _>>()?, frame })
 }
 
-fn from_agg_fn(n: i32) -> Result<AggFn, ApiError> {
+/// An aggregate function; `fraction` is an Aggregate's percentile's (a
+/// window computes none).
+fn from_agg_fn(n: i32, fraction: Option<f64>) -> Result<AggFn, ApiError> {
+    let fraction = || match fraction {
+        Some(p) => Fraction::new(p).ok_or_else(|| bad(format!("a percentile's fraction is from 0 to 1, not {p}"))),
+        None => Err(bad("a window function computes no percentile")),
+    };
     Ok(match en::<pb::AggFn>(n, "aggregate")? {
         pb::AggFn::Count => AggFn::Count,
         pb::AggFn::Sum => AggFn::Sum,
@@ -249,6 +255,8 @@ fn from_agg_fn(n: i32) -> Result<AggFn, ApiError> {
         pb::AggFn::Min => AggFn::Min,
         pb::AggFn::Max => AggFn::Max,
         pb::AggFn::CountDistinct => AggFn::CountDistinct,
+        pb::AggFn::PercentileCont => AggFn::PercentileCont(fraction()?),
+        pb::AggFn::PercentileDisc => AggFn::PercentileDisc(fraction()?),
     })
 }
 
@@ -260,6 +268,8 @@ fn agg_fn(f: AggFn) -> pb::AggFn {
         AggFn::Min => pb::AggFn::Min,
         AggFn::Max => pb::AggFn::Max,
         AggFn::CountDistinct => pb::AggFn::CountDistinct,
+        AggFn::PercentileCont(_) => pb::AggFn::PercentileCont,
+        AggFn::PercentileDisc(_) => pb::AggFn::PercentileDisc,
     }
 }
 
@@ -530,7 +540,7 @@ fn from_node_in(n: pb::Node) -> Result<Node, ApiError> {
             let aggs = a
                 .aggs
                 .into_iter()
-                .map(|g| Ok(Agg { func: from_agg_fn(g.func)?, arg: g.arg.map(|e| from_ex(Some(e))).transpose()? }))
+                .map(|g| Ok(Agg { func: from_agg_fn(g.func, Some(g.fraction))?, arg: g.arg.map(|e| from_ex(Some(e))).transpose()? }))
                 .collect::<Result<_, ApiError>>()?;
             Node::Aggregate { input: from_bnode(a.input)?, keys: from_exprs(a.keys)?, aggs }
         }

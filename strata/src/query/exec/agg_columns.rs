@@ -9,7 +9,8 @@
 //!
 //! It answers a query whose groups are single-valued keyword, INT or
 //! FLOAT fields and whose aggregates are `COUNT(*)`, or `COUNT`, `SUM`,
-//! `AVG`, `MIN` and `MAX` of single-valued INT or FLOAT fields; anything
+//! `AVG`, `MIN`, `MAX` and percentiles of single-valued INT or FLOAT
+//! fields; anything
 //! else (paths, multi-valued fields, `COUNT(DISTINCT)`, aggregates of
 //! keyword fields) goes row by row ([`Executor::aggregate`]).
 
@@ -54,7 +55,9 @@ pub(super) fn plan(schema: &crate::schema::Schema, q: &Select, needed: &[Project
     for p in needed {
         match p {
             Projection::Count => aggs.push(None),
-            Projection::Agg { func: AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max, of: Col::Field(f) } if single(*f, &[FieldType::Int, FieldType::Float]) => aggs.push(Some(*f)),
+            Projection::Agg { func: AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_), of: Col::Field(f) } if single(*f, &[FieldType::Int, FieldType::Float]) => {
+                aggs.push(Some(*f))
+            }
             _ => return None,
         }
     }
@@ -177,8 +180,8 @@ enum Sink {
     /// from it ([`agg::near_units`]), `pending` of them since they were
     /// last moved into it.
     Float { avg: bool, sum: Vec<ExactSum>, near: Vec<i128>, pending: u32, n: Vec<i64> },
-    /// `MIN` and `MAX`, and any aggregate of a field written in place:
-    /// the row-by-row aggregate's accumulators.
+    /// `MIN`, `MAX`, percentiles, and any aggregate of a field written in
+    /// place: the row-by-row aggregate's accumulators.
     Accs(Vec<Acc>),
 }
 
@@ -452,8 +455,16 @@ impl<'a> Executor<'a> {
                         }
                     }
                     (Sink::Accs(accs), Some((f, col, u))) => {
+                        // A percentile holds its values.
+                        let mut more = 0;
                         for (j, g) in rows {
-                            accs[g].add(&value(col, *u, *f, (b * BLOCK + j) as DocId, has(i, j).then_some(block[i][j])));
+                            more += accs[g].add(&value(col, *u, *f, (b * BLOCK + j) as DocId, has(i, j).then_some(block[i][j])));
+                        }
+                        if more > 0 {
+                            if let Err(e) = self.charge.add(more) {
+                                err = Some(e);
+                                return false;
+                            }
                         }
                     }
                     (Sink::Accs(accs), None) => rows.for_each(|(_, g)| accs[g].add_row()),

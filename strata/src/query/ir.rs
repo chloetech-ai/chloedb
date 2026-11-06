@@ -66,9 +66,9 @@ pub(crate) use fuse::paths as fuse_paths;
 pub const VERSION: u32 = 1;
 
 /// The plan features this version of Strata reads.
-pub const FEATURES: [&str; 27] = [
+pub const FEATURES: [&str; 28] = [
     OPERATORS, SEQ_NO, RANK_EXPRESSIONS, SEMANTIC_ID, RANK_PHASES, RANK_FEATURES, MAXSIM, RANK_PROFILES, RANK_MODELS, DISTINCT_ON, EDGE_TABLE, RANKED, TEXT_OPERATORS, PREFIX, CORRELATED, PREFIX_EDITS, MIN_MATCH, AT_LEAST, GUARD, PER_CAP, ENCODE,
-    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES,
+    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES,
 ];
 
 /// The feature of a plan with operators over rows in memory: a join,
@@ -188,6 +188,10 @@ pub const JSON_COLUMNS: &str = "json_columns";
 /// The feature of a plan that computes with the parts of times
 /// ([`Func::DateTrunc`], [`Func::DatePart`], [`Func::Strftime`]).
 pub const DATES: &str = "dates";
+
+/// The feature of a plan with a percentile ([`AggFn::PercentileCont`],
+/// [`AggFn::PercentileDisc`]), which a Strata from before them cannot read.
+pub const PERCENTILES: &str = "percentiles";
 
 /// A statement as a tree of operators ([module docs](self)).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1286,6 +1290,12 @@ impl Node {
         matches!(self, Node::Window { .. }) || self.inputs().into_iter().any(Node::has_windows)
     }
 
+    /// Whether the node or one below it (outside subqueries) computes a
+    /// percentile ([`PERCENTILES`]).
+    fn has_percentiles(&self) -> bool {
+        matches!(self, Node::Aggregate { aggs, .. } if aggs.iter().any(|a| a.func.percentile().is_some())) || self.inputs().into_iter().any(Node::has_percentiles)
+    }
+
     /// Whether the node or one below it (outside subqueries) is a
     /// [`Node::SetOp`].
     fn has_set_ops(&self) -> bool {
@@ -2111,6 +2121,15 @@ impl Plan {
         });
         if window {
             features.push(WINDOW.to_string());
+        }
+        let mut percentiles = root.has_percentiles();
+        root.visit_exprs(&mut |e| {
+            if let Expr::Subquery(n) | Expr::Values(n) | Expr::Keys(n) | Expr::Exists(n) | Expr::Scalar(n) | Expr::Encode { rows: n, .. } = e {
+                percentiles |= n.has_percentiles();
+            }
+        });
+        if percentiles {
+            features.push(PERCENTILES.to_string());
         }
         let mut set_ops = root.has_set_ops();
         root.visit_exprs(&mut |e| {

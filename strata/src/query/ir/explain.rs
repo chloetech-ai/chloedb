@@ -270,6 +270,8 @@ impl<'a> Text<'a> {
             AggFn::Avg => format!("AVG({arg})"),
             AggFn::Min => format!("MIN({arg})"),
             AggFn::Max => format!("MAX({arg})"),
+            AggFn::PercentileCont(p) => format!("PERCENTILE_CONT({}) WITHIN GROUP (ORDER BY {arg})", p.get()),
+            AggFn::PercentileDisc(p) => format!("PERCENTILE_DISC({}) WITHIN GROUP (ORDER BY {arg})", p.get()),
         }
     }
 
