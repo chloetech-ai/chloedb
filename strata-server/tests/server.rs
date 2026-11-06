@@ -757,6 +757,10 @@ impl pb::strata_server::Strata for Stuck {
     async fn export_slots(&self, _: tonic::Request<pb::ExportSlotsRequest>) -> Result<tonic::Response<Self::ExportSlotsStream>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
+    type FeedStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::FeedChunk, tonic::Status>> + Send>>;
+    async fn feed(&self, _: tonic::Request<pb::FeedRequest>) -> Result<tonic::Response<Self::FeedStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
     async fn freeze_slots(&self, _: tonic::Request<pb::FreezeRequest>) -> Result<tonic::Response<pb::FreezeResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
@@ -836,6 +840,10 @@ impl pb::strata_server::Strata for Overloaded {
     }
     type ExportSlotsStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::ExportSlotsChunk, tonic::Status>> + Send>>;
     async fn export_slots(&self, _: tonic::Request<pb::ExportSlotsRequest>) -> Result<tonic::Response<Self::ExportSlotsStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
+    type FeedStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::FeedChunk, tonic::Status>> + Send>>;
+    async fn feed(&self, _: tonic::Request<pb::FeedRequest>) -> Result<tonic::Response<Self::FeedStream>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
     async fn freeze_slots(&self, _: tonic::Request<pb::FreezeRequest>) -> Result<tonic::Response<pb::FreezeResponse>, tonic::Status> {
@@ -1153,6 +1161,11 @@ impl pb::strata_server::Strata for Recording {
     async fn export_slots(&self, r: tonic::Request<pb::ExportSlotsRequest>) -> Result<tonic::Response<Self::ExportSlotsStream>, tonic::Status> {
         self.up()?;
         self.inner.export_slots(r).await
+    }
+    type FeedStream = <strata_server::grpc::Grpc as pb::strata_server::Strata>::FeedStream;
+    async fn feed(&self, r: tonic::Request<pb::FeedRequest>) -> Result<tonic::Response<Self::FeedStream>, tonic::Status> {
+        self.up()?;
+        self.inner.feed(r).await
     }
     async fn freeze_slots(&self, r: tonic::Request<pb::FreezeRequest>) -> Result<tonic::Response<pb::FreezeResponse>, tonic::Status> {
         self.up()?;

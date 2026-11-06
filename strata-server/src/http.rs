@@ -180,6 +180,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         // A stream's body has no end set.
         .route("/v1/stream", post(stream).layer(DefaultBodyLimit::disable()))
         .route("/v1/sources", get(sources))
+        .route("/v1/feed", get(feed))
         .route("/v1/sources/*name", get(source))
         .route("/v1/schema/check", post(schema_check))
         .route("/v1/explain", post(explain))
@@ -804,6 +805,8 @@ fn evented(mut r: Response) -> Response {
 fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
     use axum::http::Method;
     match route {
+        // All a feed key may read: the feed, and whether it is up.
+        "/v1/feed" | "/v1/health" | "/v1/whoami" => Scope::Feed,
         "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" => Scope::Write,
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
         "/v1/export" => Scope::Admin,
@@ -1062,6 +1065,41 @@ async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json) -> Res {
     }
     j["logged"] = l;
     Ok(AxJson(j))
+}
+
+/// `GET /v1/feed?from=n&after_term=t` (a coordinator: `&shard=i`): the
+/// changes of the server's numbered transactions from `from` on (default
+/// 1), or of shard `i`'s through its primary, as NDJSON that goes on as
+/// they are written ([`crate::service::Service::feed`]). `after_term` is
+/// the term of transaction `from - 1` as the reader holds it. A failure
+/// after the answer started ends it with `{"error": ..., "status": ..}`.
+async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
+    let num = |k: &str| -> Result<Option<u64>, ApiError> { q.get(k).map(|v| v.parse::<u64>().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}")))).transpose() };
+    let (from, after) = (num("from")?.unwrap_or(1), num("after_term")?.filter(|&t| t > 0));
+    let shard = num("shard")?;
+    let ndjson = |body: axum::body::Body| ([(header::CONTENT_TYPE, "application/x-ndjson")], body).into_response();
+    if let Ok(c) = app.svc.coordinator() {
+        let shard = shard.ok_or_else(|| ApiError::bad("a cluster's feed is each shard's: name one (?shard=0 for the first)"))?;
+        let chunks = c.feed(shard as usize, from, after.unwrap_or(0)).await?;
+        let lines = chunks.map(|c| {
+            Ok::<_, std::convert::Infallible>(match c {
+                Ok(c) => Bytes::from(c.lines),
+                Err(s) => {
+                    let e = ApiError::from(s);
+                    Bytes::from(format!("{}\n", json!({"error": e.message, "status": e.status})))
+                }
+            })
+        });
+        return Ok(ndjson(axum::body::Body::from_stream(lines)));
+    }
+    // A shard's own server serves its own feed.
+    let own = app.svc.slots().map_or(0, |(_, s)| s as u64);
+    if shard.is_some_and(|s| s != own) {
+        return Err(ApiError::bad(format!("this server holds shard {own} alone: ask its coordinator for shard {}", shard.unwrap_or(0))));
+    }
+    let rx = app.svc.feed(from, after).await?;
+    let lines = tokio_stream::wrappers::ReceiverStream::new(rx).map(|v| Ok::<_, std::convert::Infallible>(Bytes::from(v)));
+    Ok(ndjson(axum::body::Body::from_stream(lines)))
 }
 
 /// The records of a log table ([`strata::rank_log::export`]) as NDJSON,
@@ -4186,11 +4224,11 @@ async fn rotate_key(State(app): State<App>, w: Option<axum::Extension<Principal>
     Ok(audited(json!({"key": key.json(), "secret": secret, "old": old.json()}), detail))
 }
 
-/// `{"name": ..., "scope": "read" | "write" | "admin", "expires_days": n}`:
-/// a new key; its secret is in this answer only.
+/// `{"name": ..., "scope": "feed" | "read" | "write" | "admin",
+/// "expires_days": n}`: a new key; its secret is in this answer only.
 async fn create_key(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let name = body_str(&b, "name")?;
-    let scope = Scope::parse(b.get("scope").and_then(|v| v.as_str()).unwrap_or("read")).ok_or_else(|| ApiError::bad("scope is read, write or admin"))?;
+    let scope = Scope::parse(b.get("scope").and_then(|v| v.as_str()).unwrap_or("read")).ok_or_else(|| ApiError::bad("scope is feed, read, write or admin"))?;
     let expires = match b.get("expires_days") {
         None | Some(Json::Null) => None,
         Some(v) => Some(telemetry::now_ms() + v.as_f64().filter(|d| *d > 0.0).ok_or_else(|| ApiError::bad("expires_days is a number of days above 0"))?.mul_add(86_400_000.0, 0.0) as u64),

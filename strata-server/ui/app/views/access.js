@@ -207,21 +207,23 @@ const facts = (rows) => h("dl", { class: "ro-facts" }, rows.filter(Boolean).flat
 const missing = (e) => (e?.status === 404 || e?.status === 405) && !e?.body?.error;
 
 const SCOPES = [
-  ["read", "Read", "queries, search, schema, stats, the series and alerts"],
+  ["feed", "Feed", "the feed alone, for another cluster to follow this one, and health"],
+  ["read", "Read", "queries, search, schema, stats, the series and alerts, and the feed"],
   ["write", "Write", "also writes, imports, streams, the agent, INSERT, UPDATE and DELETE"],
   ["admin", "Admin", "also DDL, keys, the audit log, alert rules, checkpoints, vacuum, export, others' queries and the logs"],
 ];
 const MATRIX = [
-  ["Run queries, search, explain", 1, 1, 1],
-  ["Read the schema, stats, series, alerts, cluster", 1, 1, 1],
-  ["Write rows, import files, stream", 0, 1, 1],
-  ["INSERT, UPDATE, DELETE", 0, 1, 1],
-  ["Ask the agent", 0, 1, 1],
-  ["CREATE, DROP (DDL), over HTTP and gRPC", 0, 0, 1],
-  ["See and cancel others' queries; read the logs", 0, 0, 1],
-  ["Checkpoint, vacuum, verify, promote, roll out", 0, 0, 1],
-  ["Export the database", 0, 0, 1],
-  ["Manage keys and alert rules; read the audit log", 0, 0, 1],
+  ["Read the feed (a cluster following this one)", 1, 1, 1, 1],
+  ["Run queries, search, explain", 0, 1, 1, 1],
+  ["Read the schema, stats, series, alerts, cluster", 0, 1, 1, 1],
+  ["Write rows, import files, stream", 0, 0, 1, 1],
+  ["INSERT, UPDATE, DELETE", 0, 0, 1, 1],
+  ["Ask the agent", 0, 0, 1, 1],
+  ["CREATE, DROP (DDL), over HTTP and gRPC", 0, 0, 0, 1],
+  ["See and cancel others' queries; read the logs", 0, 0, 0, 1],
+  ["Checkpoint, vacuum, verify, promote, roll out", 0, 0, 0, 1],
+  ["Export the database", 0, 0, 0, 1],
+  ["Manage keys and alert rules; read the audit log", 0, 0, 0, 1],
 ];
 const SUCCESSOR = /^(\d{4}-\d{2}(-\d+)?|v?\d+|new)$/;
 
@@ -804,7 +806,7 @@ function render(page, r) {
   function scopesCard() {
     return h("details", { class: "card ac-scopes" }, h("summary", { class: "hd" }, h("h3", {}, "What each scope may do")),
       h("div", { class: "bd flush" }, h("div", { class: "tbl-wrap" }, h("table", { class: "t compact" },
-        h("thead", {}, h("tr", {}, h("th", {}, ""), ...["read", "write", "admin"].map((x) => h("th", { style: { textAlign: "center" } }, x)))),
+        h("thead", {}, h("tr", {}, h("th", {}, ""), ...["feed", "read", "write", "admin"].map((x) => h("th", { style: { textAlign: "center" } }, x)))),
         h("tbody", {}, MATRIX.map(([what, ...on]) => h("tr", {}, h("td", { class: "small" }, what), on.map((x) => h("td", { style: { textAlign: "center", color: x ? "var(--good)" : "var(--line-2)" } }, x ? icon("check") : "·")))))))));
   }
 

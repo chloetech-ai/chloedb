@@ -91,7 +91,7 @@ use tonic::transport::Channel;
 use tonic::Code;
 
 use crate::auth::Secret;
-use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL};
+use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL};
 use crate::metrics::Family;
 use crate::pb::{self, strata_client::StrataClient};
 use crate::service::{is_mark, op_place, op_schema, op_source, After, QueryReq, Written};
@@ -2651,6 +2651,25 @@ impl Coordinator {
     /// have is left out (its first batch did not reach that shard), so a
     /// stream of it starts over. Any replica may answer: one behind its
     /// primary has an older offset, which only means more to skip.
+    /// Shard `i`'s feed from transaction `from` on, read from its primary
+    /// ([`FEED_PROTOCOL`], [`crate::service::Service::feed`]): its chunks
+    /// as they come. `after_term` is the term of transaction `from - 1` as
+    /// the reader holds it (0: not checked).
+    pub async fn feed(&self, i: usize, from: u64, after_term: u64) -> Result<tonic::Streaming<pb::FeedChunk>, ApiError> {
+        let t = &self.topo();
+        if i >= t.replicas.len() {
+            return Err(ApiError::bad(format!("no shard {i}: the cluster has shards 0 to {}", t.replicas.len() - 1)));
+        }
+        let k = self.primary(t, i).await?.unwrap_or(0);
+        let rep = &t.replicas[i][k];
+        let mut c = rep.client.clone();
+        let p = self.speak(t, i, k, &mut c, PROTOCOL).await.map_err(|s| self.named(&rep.url, s))?;
+        if p < FEED_PROTOCOL {
+            return Err(ApiError { status: 501, message: format!("{}: it speaks protocol {p}, and a shard's feed needs {FEED_PROTOCOL}: upgrade it", self.copy_name(&rep.url)) });
+        }
+        c.feed(pb::FeedRequest { from, after_term }).await.map(|r| r.into_inner()).map_err(|s| self.named(&rep.url, s))
+    }
+
     pub async fn sources(&self) -> Result<Vec<Source>, ApiError> {
         let t = &self.topo();
         let deadline = Instant::now() + Duration::from_secs(30);
