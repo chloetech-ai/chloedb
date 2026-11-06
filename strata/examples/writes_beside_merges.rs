@@ -11,10 +11,18 @@
 //!
 //! ```text
 //! writes_beside_merges DIR [ROWS] [--no-merger] [--threads N] [--nice N]
+//!     [--stream] [--rates 1000,10000,50000] [--publish] [--flusher] [--bulk N]
 //! ```
 //!
 //! `--nice` sets the merger's nice value ([`MergerOptions::nice`]; 0 runs
-//! merges at the priority of the writes and reads).
+//! merges at the priority of the writes and reads). `--stream` runs only
+//! the stream, at the `--rates` given. `--publish` has the writer build
+//! each version's snapshot ([`DbOptions::publish_snapshots`]) and
+//! `--flusher` flushes the memtable in the background
+//! ([`Db::spawn_flusher`]), both as strata-server does. `--bulk N`
+//! bulk-loads stream inserts of N rows or more into segments of their own
+//! (default 10,000, the memtable's size, as strata-py; it was 1,000 until
+//! 2 November).
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -73,6 +81,11 @@ fn main() {
     let dir = std::path::PathBuf::from(&a[1]);
     let rows: usize = a.get(2).filter(|x| !x.starts_with("--")).map_or(137_260, |x| x.parse().unwrap());
     let merger = !a.iter().any(|x| x == "--no-merger");
+    let stream_only = a.iter().any(|x| x == "--stream");
+    let publish = a.iter().any(|x| x == "--publish");
+    let flusher = a.iter().any(|x| x == "--flusher");
+    let bulk: usize = a.iter().position(|x| x == "--bulk").map_or(10_000, |i| a[i + 1].parse().unwrap());
+    let rates: Vec<usize> = a.iter().position(|x| x == "--rates").map_or(vec![1000, 10_000, 50_000], |i| a[i + 1].split(',').map(|r| r.parse().unwrap()).collect());
     let nice: i32 = a.iter().position(|x| x == "--nice").map_or(strata::storage::MERGE_NICE, |i| a[i + 1].parse().unwrap());
     let threads: usize = a.iter().position(|x| x == "--threads").map_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()), |i| a[i + 1].parse().unwrap());
     let schema = Schema::from_json(
@@ -96,6 +109,7 @@ fn main() {
         build: BuildOptions::default().set("vector.threads", threads),
         mem_build: Some(BuildOptions::default().set("vector.index", "flat")),
         memtable_max_docs: 10_000,
+        publish_snapshots: publish,
         ..DbOptions::default()
     };
     let _ = std::fs::remove_dir_all(&dir);
@@ -107,12 +121,15 @@ fn main() {
     let centres: Vec<Vec<f32>> = (0..50).map(|_| (0..DIM).map(|_| rng.gen_range(-1.0f32..1.0)).collect()).collect();
     let mut g = Gen { rng, centres, next: 0 };
     let t = Instant::now();
-    while g.next < rows {
+    while g.next < rows && !stream_only {
         let docs = g.docs(&schema, (rows - g.next).min(10_000));
         db.load_into("products", docs).unwrap();
     }
     db.optimize().unwrap();
-    println!("{rows} rows loaded and optimized in {:.1} s; {threads} threads; merger {}", t.elapsed().as_secs_f64(), if merger { format!("on, nice {nice}") } else { "off".into() });
+    println!("{rows} rows loaded and optimized in {:.1} s; {threads} threads; merger {}; publish_snapshots {publish}; flusher {flusher}; bulk loads from {bulk} rows", if stream_only { 0.0 } else { t.elapsed().as_secs_f64() }, if merger { format!("on, nice {nice}") } else { "off".into() });
+    if flusher {
+        db.spawn_flusher();
+    }
     if merger {
         db.spawn_merger(MergerOptions { threads: 1, nice, ..MergerOptions::default() });
     }
@@ -126,7 +143,8 @@ fn main() {
     // As a_writes.py with --seconds 5: 1 row a transaction for 5 s, then
     // 100 and 1,000 rows (up to 50 transactions in 5 s), then three of
     // 10,000.
-    for (n, times) in [(1usize, usize::MAX), (100, 50), (1000, 50), (10_000, 3)] {
+    let phases: &[(usize, usize)] = if stream_only { &[] } else { &[(1, usize::MAX), (100, 50), (1000, 50), (10_000, 3)] };
+    for &(n, times) in phases {
         let (mut lat, t0) = (Vec::new(), Instant::now());
         for _ in 0..times {
             let docs = g.docs(&schema, n);
@@ -142,7 +160,7 @@ fn main() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(2);
     let keys: Vec<String> = (0..3000).map(|_| format!("p{}", rng.gen_range(0..rows))).collect();
     let sql = "UPDATE products SET price = :price, stock = :stock WHERE id = :id";
-    for pass in 0..3 {
+    for pass in 0..if stream_only { 0 } else { 3 } {
         let (mut lat, t0, mut merging) = (Vec::new(), Instant::now(), 0);
         for k in &keys {
             merging += (db.storage().merge_status().running > 0) as usize;
@@ -174,14 +192,14 @@ fn main() {
             .collect()
     };
     let ev_insert = |docs: Vec<strata::Document>| {
-        if docs.len() >= 10_000 {
+        if docs.len() >= bulk {
             db.load_into("events", docs).unwrap();
         } else {
             db.write_ops(docs.into_iter().map(|doc| WriteOp::Insert { table: "events".into(), doc }).collect()).unwrap();
         }
     };
     ev_insert(ev_rows(&mut rng, 10_000));
-    for rate in [1000usize, 10_000, 50_000] {
+    for rate in rates {
         let stop = std::sync::atomic::AtomicBool::new(false);
         let (written, wall, mut reads) = std::thread::scope(|sc| {
             let readers: Vec<_> = (0..4u64)
