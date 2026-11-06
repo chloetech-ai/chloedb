@@ -292,7 +292,7 @@
                     "type": "object"
                   },
                   "schema": {
-                    "description": "The first table's schema, as strata-server --schema takes it.",
+                    "description": "The first table's schema, as strata-server --schema takes it. Without it and without demo, the cluster starts with no tables.",
                     "type": "object",
                     "x-kubernetes-preserve-unknown-fields": true
                   },

@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! strata-server --demo 20000 --db products.strata      # a demo catalogue, UI at http://127.0.0.1:7700
-//! strata-server --db my.strata                         # an existing database
+//! strata-server --db my.strata                         # an existing database, or a new one with no tables yet
 //! STRATA_TOKEN=... strata-server --db my.strata --listen 0.0.0.0:7700   # beyond loopback: a token
 //! strata-server --shards http://a:7701,http://b:7701   # a coordinator over shard servers
 //! strata-server --shards 'http://a0:7701|http://a1:7701,http://b0:7701|http://b1:7701'   # two replicas each
@@ -29,11 +29,12 @@ use strata_server::obs;
 use strata_server::server::{self, Options};
 
 #[derive(Parser)]
-#[command(about = "Strata over HTTP JSON and gRPC, with a query UI and an agent", args_conflicts_with_subcommands = true)]
+#[command(version, about = "Strata over HTTP JSON and gRPC, with a query UI and an agent", args_conflicts_with_subcommands = true)]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
-    /// The database to serve (created if missing, with --schema or --demo).
+    /// The database to serve. Created if missing: with --schema's table or
+    /// --demo's, else with no tables (CREATE TABLE and imports add them).
     #[arg(long)]
     db: Option<PathBuf>,
     /// Schema of a new database, as JSON.
@@ -317,6 +318,17 @@ struct Args {
     /// without it). No secrets: the clouds' keys stay in their own files.
     #[arg(long)]
     cloud_file: Option<PathBuf>,
+    /// The book of connections to other clusters that this server's command
+    /// center reaches (default: DB.hub.json beside --db). Their keys are
+    /// kept in the macOS Keychain or the Secret Service where there is one,
+    /// else in DB.hub-keys.json (mode 600); STRATA_HUB_SECRETS=file keeps
+    /// them in the file anyway.
+    #[arg(long)]
+    hub_file: Option<PathBuf>,
+    /// Who this hub's calls to other clusters say they come from (default:
+    /// $USER@host), in each cluster's audit log.
+    #[arg(long)]
+    hub_device: Option<String>,
     /// The alert rules' file, JSON (created when the rules are first
     /// edited; default rules in memory without it).
     #[arg(long)]
@@ -756,6 +768,8 @@ async fn main() {
         aws_file: a.aws_file,
         digitalocean_file: a.digitalocean_file,
         cloud_file: a.cloud_file,
+        hub_file: a.hub_file,
+        hub_device: a.hub_device,
         contain: a.contain.clone().or_else(|| a.alerts.as_ref().map(|p| p.with_file_name("contain.json"))),
         alerts: a.alerts,
         alert_webhook: a.alert_webhook.filter(|u| !u.is_empty()),

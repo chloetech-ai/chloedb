@@ -23,6 +23,7 @@ import autoscale from "./autoscale.js";
 import access from "./access.js";
 import system from "./system.js";
 import cloud from "./cloud.js";
+import connections from "./connections.js";
 import sql from "./sql.js";
 import schema from "./schema.js";
 import importer from "./import.js";
@@ -35,7 +36,7 @@ import media from "./media.js";
 import graph from "./graph.js";
 import classic from "./classic.js";
 
-export const VIEWS = [home, timeline, alerts, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, access, system, cloud, sql, schema, importer, builder, relevance, recsys, sid, autocomplete, media, graph, classic];
+export const VIEWS = [home, timeline, alerts, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, access, system, cloud, connections, sql, schema, importer, builder, relevance, recsys, sid, autocomplete, media, graph, classic];
 
 export const GROUPS = ["Operate", "Diagnose", "Change", "Data", "Labs"];
 
@@ -65,6 +66,7 @@ export const NAV = [
     { id: "access", title: "Access and audit", icon: "access", key: "k", scope: "admin" },
     { id: "system", title: "Settings", icon: "system", key: "s", scope: "admin" },
     { id: "cloud", title: "Cloud setup", icon: "cloud", scope: "admin" },
+    { id: "connections", title: "Connections", icon: "key", scope: "admin" },
   ]],
   ["Data", [
     { id: "sql", title: "SQL workbench", icon: "sql", key: "w" },

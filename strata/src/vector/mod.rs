@@ -15,7 +15,13 @@
 //! | `vec.<f>.present` | bitset of documents with a vector (only if some lack one) |
 //!
 //! plus the sections of its index: IVF (`ivf_centroids`, `ivf_dir`, `ivf`) or
-//! HNSW (`hnsw`, `hnsw_upper`); see [`ivf`] and [`hnsw`] for the layouts.
+//! HNSW (`hnsw`, `hnsw_upper`); see [`ivf`] and [`hnsw`] for the layouts. A
+//! partitioned HNSW field ([`crate::schema::VectorPartition`]) also has, for
+//! each partition `i` the header lists ([`PartitionsInfo`]), its rows'
+//! docIDs (`part<i>.docs`, u32) and a graph over them numbered from 0
+//! (`part<i>.hnsw`, `part<i>.hnsw_upper`), which scores the field's codes
+//! through the docIDs: a partition costs its links and docIDs, not a copy of
+//! its vectors.
 //! [`VectorReader`] views all of them in place. A multi-vector field
 //! (`VECTOR(d)[]`) has the same sections over its vectors rather than its
 //! rows, and maps between the two ([`multi`]).
@@ -142,6 +148,47 @@ pub struct VectorInfo {
     /// one-vector field, with `keep_f32` for a multi-vector one.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub f32: bool,
+    /// A partitioned field's graphs per partition
+    /// ([`crate::schema::VectorPartition`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partitions: Option<PartitionsInfo>,
+}
+
+/// The partitions of a segment's graph ([`VectorInfo::partitions`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PartitionsInfo {
+    /// The bounds of a numeric key's ranges when the segment was built;
+    /// empty for a KEYWORD key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bounds: Vec<f64>,
+    /// Whether every row with a vector and a key is in a partition: false
+    /// when a KEYWORD key had more values than
+    /// [`crate::schema::MAX_VALUE_PARTITIONS`], and only the most frequent
+    /// got one.
+    pub complete: bool,
+    /// The partitions with rows, by key.
+    pub parts: Vec<PartInfo>,
+}
+
+/// One partition's key, rows and graph.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PartInfo {
+    /// A numeric key's range: `bounds[bucket - 1] <= key < bounds[bucket]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<usize>,
+    /// A KEYWORD key's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Rows (all with a vector).
+    pub n: usize,
+    pub entry: u32,
+    pub max_level: usize,
+}
+
+/// A partition's rows and graph, viewed in place.
+struct Part {
+    docs: Slice<u32>,
+    graph: HnswView,
 }
 
 fn is_sq8(c: &VectorCodes) -> bool {
@@ -247,6 +294,9 @@ pub struct SearchStats {
     pub filter_checks: usize,
     /// Post-filter searches repeated with more candidates.
     pub retries: usize,
+    /// Partition graphs walked instead of the field's graph
+    /// ([`VectorReader::search_parts`]).
+    pub partitions: usize,
     /// The cost model's prediction for the chosen strategy (µs).
     pub estimated_us: f64,
 }
@@ -282,19 +332,27 @@ pub enum HnswFilterMode {
     TwoHop,
 }
 
-/// Code rows by docID.
+/// Code rows by docID, or with `map`, by a partition's row numbers (row
+/// `i` is document `map[i]`).
 pub(crate) struct Codes<'a> {
     data: &'a [u8],
     stride: usize,
+    map: Option<&'a [u32]>,
 }
 
 impl<'a> Codes<'a> {
     #[inline]
     pub fn row(&self, d: DocId) -> &'a [u8] {
-        &self.data[d as usize * self.stride..(d as usize + 1) * self.stride]
+        let d = self.doc(d) as usize;
+        &self.data[d * self.stride..(d + 1) * self.stride]
+    }
+    /// The document of row `d`.
+    #[inline]
+    pub fn doc(&self, d: u32) -> DocId {
+        self.map.map_or(d, |m| m[d as usize])
     }
     pub fn n(&self) -> usize {
-        self.data.len() / self.stride
+        self.map.map_or(self.data.len() / self.stride, |m| m.len())
     }
     pub fn stride(&self) -> usize {
         self.stride
@@ -342,6 +400,9 @@ pub struct VectorReader {
     present: Option<Slice<u64>>,
     ivf: Option<IvfView>,
     hnsw: Option<HnswView>,
+    /// A partitioned field's graphs per partition, in
+    /// [`PartitionsInfo::parts`] order.
+    parts: Vec<Part>,
     shape: IndexShape,
     cost: CostModel,
     io_hints: bool,
@@ -378,6 +439,7 @@ pub(crate) fn absent_meta(field: &Field, n_docs: usize) -> Result<Vec<u8>> {
         max_level: None,
         rows: None,
         f32: true,
+        partitions: None,
     };
     serde_json::to_vec(&info).map_err(|e| Error::Schema(e.to_string()))
 }
@@ -464,8 +526,21 @@ impl VectorReader {
             }
             other => return Err(corrupt(format!("unknown vector index {other}"))),
         }
+        let mut parts = Vec::new();
+        if let Some(p) = &info.partitions {
+            let m = info.m.filter(|_| hnsw.is_some()).ok_or_else(|| corrupt(format!("vector field {field}: partitions without a graph")))?;
+            for (i, pi) in p.parts.iter().enumerate() {
+                let part = |x: &str| section(field, &format!("part{i}.{x}"));
+                let docs: Slice<u32> = Slice::view(seg.require(&part("docs"))?).map_err(corrupt)?;
+                if docs.len() != pi.n || docs.iter().any(|&d| d as usize >= n) || !docs.windows(2).all(|w| w[0] < w[1]) {
+                    return Err(corrupt(format!("vector field {field}: bad rows of partition {i}")));
+                }
+                let graph = HnswView::open(m, pi.entry, seg.require(&part("hnsw"))?, seg.require(&part("hnsw_upper"))?, pi.n)?;
+                parts.push(Part { docs, graph });
+            }
+        }
         let shape = IndexShape { n: n - info.missing, kind: info.index.clone(), nlist: info.nlist.unwrap_or(1), hnsw_m: info.m.unwrap_or(16) };
-        Ok(VectorReader { info, vectors, codes, quant, rescore, multi, present, ivf, hnsw, shape, cost: CostModel::default(), io_hints: false, hnsw_filter: HnswFilterMode::Traverse, absent: false })
+        Ok(VectorReader { info, vectors, codes, quant, rescore, multi, present, ivf, hnsw, parts, shape, cost: CostModel::default(), io_hints: false, hnsw_filter: HnswFilterMode::Traverse, absent: false })
     }
 
     /// The reader of an [`absent_meta`] header: no row has a vector.
@@ -486,6 +561,7 @@ impl VectorReader {
             present: Some(Slice::Owned(vec![0u64; info.n.div_ceil(64)])),
             ivf: None,
             hnsw: None,
+            parts: Vec::new(),
             shape,
             cost: CostModel::default(),
             io_hints: false,
@@ -625,7 +701,7 @@ impl VectorReader {
     pub fn codes(&self, doc: DocId) -> &[u8] {
         match self.absent {
             true => &self.codes,
-            false => Codes { data: &self.codes, stride: self.info.stride_u8 }.row(doc),
+            false => Codes { data: &self.codes, stride: self.info.stride_u8, map: None }.row(doc),
         }
     }
 
@@ -661,6 +737,7 @@ impl VectorReader {
             && self.present.as_ref().is_none_or(|p| matches!(p, Slice::Shared { .. }))
             && self.ivf.as_ref().is_none_or(|v| v.is_shared())
             && self.hnsw.as_ref().is_none_or(|v| v.is_shared())
+            && self.parts.iter().all(|p| matches!(p.docs, Slice::Shared { .. }) && p.graph.is_shared())
     }
 
     /// Predicted latency in microseconds of `strategy` for a top-`k` search
@@ -763,6 +840,58 @@ impl VectorReader {
         SearchOutput { hits, stats }
     }
 
+    /// The partitions of this segment's graph (a partitioned field's,
+    /// [`crate::schema::VectorPartition`]), or none.
+    pub fn partitions(&self) -> Option<&PartitionsInfo> {
+        self.info.partitions.as_ref()
+    }
+
+    /// [`Self::search`] over partitions `parts` (positions in
+    /// [`PartitionsInfo::parts`]) only: each one's graph is walked with
+    /// `params`' `ef` (at least the re-rank depth), testing `filter` inside
+    /// it, and the best candidates of all of them are re-ranked together.
+    /// A partition whose rows all pass the query's filter needs none: the
+    /// walk then costs what an unfiltered search of the partition costs.
+    pub fn search_parts(&self, query: &[f32], k: usize, params: &SearchParams, parts: &[usize], filter: Option<&dyn DocFilter>) -> SearchOutput {
+        assert_eq!(query.len(), self.info.dim, "query dimension");
+        let total: usize = parts.iter().map(|&i| self.parts[i].docs.len()).sum();
+        let k = k.min(total);
+        let card = filter.map(|f| f.cardinality());
+        let mut stats = SearchStats { strategy: Strategy::Hnsw, partitions: parts.len(), ..Default::default() };
+        if k == 0 || card == Some(0) {
+            return SearchOutput { hits: Vec::new(), stats };
+        }
+        let qc = self.quant.prepare(query, self.info.stride_u8);
+        let r = params.rerank.max(k) * self.oversample();
+        let members = filter.map(Members::of);
+        // Walks test far more documents than a sparse filter has members.
+        let bits: Vec<u64>;
+        let members = match members {
+            Some(Members::Sorted(docs)) => {
+                let mut b = vec![0u64; self.info.n.div_ceil(64)];
+                for &d in docs {
+                    b[d as usize / 64] |= 1 << (d % 64);
+                }
+                bits = b;
+                Some(Members::Bits(&bits))
+            }
+            m => m,
+        };
+        let mut cands: Vec<(i32, DocId)> = Vec::new();
+        for &i in parts {
+            let p = &self.parts[i];
+            let codes = Codes { data: &self.codes, stride: self.info.stride_u8, map: Some(&p.docs) };
+            let ef = params.ef.max(r).min(p.docs.len());
+            let c = p.graph.search(&codes, &qc, ef, members, false, self.io_hints, &mut stats);
+            cands.extend(c.into_iter().map(|(s, d)| (s, p.docs[d as usize])));
+        }
+        cands.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        cands.truncate(r);
+        stats.candidates = cands.len();
+        let hits = self.rerank(query, &qc, &cands, k, &mut stats);
+        SearchOutput { hits, stats }
+    }
+
     /// Exact top-`k` by float32 over every document with a vector (or the
     /// filter's members): the reference for recall.
     pub fn exact(&self, query: &[f32], k: usize, filter: Option<&dyn DocFilter>) -> Vec<Hit> {
@@ -783,7 +912,7 @@ impl VectorReader {
     }
 
     fn code_rows(&self) -> Codes<'_> {
-        Codes { data: &self.codes, stride: self.info.stride_u8 }
+        Codes { data: &self.codes, stride: self.info.stride_u8, map: None }
     }
 
     /// Code scan of every document, or of a filter's members.

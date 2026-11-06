@@ -21,11 +21,21 @@ target/release/strata-server --demo 20000 --db products.strata   # a demo catalo
 # open http://127.0.0.1:7700
 ```
 
+Or without building it, from the image every merge to main publishes (`linux/amd64` and `linux/arm64`). Beyond the container's own loopback the server needs a token, which the command center then asks for:
+
+```sh
+docker run -p 127.0.0.1:7700:7700 -e STRATA_TOKEN=pick-a-secret -v strata:/data \
+  ghcr.io/chloetech-ai/strata-server:latest --db /data/my.strata --listen 0.0.0.0:7700
+# open http://127.0.0.1:7700; add --demo 20000 for the demo catalogue
+```
+
+A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'s, or with neither as a database with no tables yet, which `CREATE TABLE` and the [loads](#loading-rows) fill. Until its first table exists it lists none, and a write that names no table is refused; then that table is the one requests naming none go to, as a database's first table is. (Such a database keeps an empty first table named `_placeholder`, which listings, exports and writes leave alone; an older version of Strata opens the file and lists it.)
+
 `--demo N` creates a product catalogue of *N* rows (titles, descriptions, brands, categories, tags, prices, ratings, sales and a 64-dimension vector) to try things on. Its `emb` field is declared as the `hash:64` model's embedding of the title and description ([below](#embedded-vector-fields)): hashed bags of words, not a learned model, so "similar" means "shares words".
 
 | flag | default | effect |
 |---|---|---|
-| `--db PATH` | | the database to serve; created if missing, with `--schema` or `--demo` |
+| `--db PATH` | | the database to serve; created if missing, with `--schema` or `--demo`, else with no tables |
 | `--schema FILE` | | the schema of a new database, as JSON (below) |
 | `--directory` | off | create the new database as a directory of segment files instead of one file |
 | `--wal-drop-damaged` | off | open a database whose write-ahead log was damaged after it was durable, dropping the transactions from the damage on (the log is copied to `<log>.damaged` first); without it the server refuses to start on one |
@@ -133,6 +143,7 @@ A database starts with one table, whose schema is set when the database is creat
 | `dim` | `vector` | the model's, for a known `embed` model | the number of dimensions |
 | `index` | `vector` | `"hnsw"` (m 16, ef_construction 200) | `"flat"` (an exact scan), `{"hnsw": {"m": 32, "ef_construction": 400}}` or `{"ivf": {"nlist": 1024}}` |
 | `codes` | `vector` | `"sq8"` (a byte a dimension) | `"binary"`: a bit a dimension, 1/32 of the vectors, rescored; `"rabitq1"`, `"rabitq2"` or `"rabitq4"`: RaBitQ codes of that many bits a dimension, whose error bounds skip rescoring rows that cannot rank ([results](results.md#compressed-vectors)); RaBitQ makes the database format 3 |
+| `partition` | one-vector `vector` with `"hnsw"` | | `{"by": "rating", "bounds": [1, 2, 3, 4]}`: one more graph per range of a stored, indexed `int` or `float` column (below 1, 1 to 2, ..., 4 and up), or `{"by": "category"}`: per value of a `keyword` column (a segment's 64 most frequent), walked instead of the field's graph by a search whose `WHERE` limits that column ([partitions](query-language.md#vector-partitions)); makes the database format 3 |
 | `kind` | `media` | any | `"image"`, `"audio"`, `"video"` or `"pdf"`: the files the field takes |
 | `embed` | `vector` | | `{"from": [fields], "model": name}`: the vectors are that model's embedding of those fields ([below](#embedded-vector-fields)) |
 | `not_null` | all but the key | false | a write must give the field a value (`NOT NULL`) |

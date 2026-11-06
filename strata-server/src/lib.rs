@@ -34,6 +34,7 @@ pub mod events;
 pub mod fleet;
 pub mod grpc;
 pub mod heap;
+pub mod hub;
 pub mod http;
 pub mod idem;
 pub mod inspect;

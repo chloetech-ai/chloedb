@@ -221,6 +221,21 @@ impl Db {
         Ok(db)
     }
 
+    /// A new database with no tables of its own: its first table is the
+    /// placeholder ([`Schema::placeholder`]), and `CREATE TABLE`
+    /// ([`Db::create_table`]) adds the tables it holds.
+    pub fn create_empty(path: &Path, opts: DbOptions) -> Result<Db> {
+        Db::create(path, Schema::placeholder(), opts)
+    }
+
+    /// The table a write or a read that names no table goes to: the first
+    /// table, or in a database made with no tables
+    /// ([`Db::create_empty`]) the first one created after its
+    /// placeholder; `None` while it has none.
+    pub fn default_table(&self) -> Option<Arc<Schema>> {
+        default_table(&self.catalog())
+    }
+
     /// Opens a database; the codebooks of its semantic-ID fields come from
     /// the default models directory, or from [`Db::open_embedders`]'s.
     pub fn open(path: &Path, opts: DbOptions) -> Result<Db> {
@@ -300,7 +315,8 @@ impl Db {
     }
 
     /// The schemas of the database's tables, the first one first
-    /// ([`Database::tables`]).
+    /// ([`Database::tables`]), the placeholder of a database made with no
+    /// tables among them ([`Db::create_empty`]).
     pub fn catalog(&self) -> Vec<Arc<Schema>> {
         self.storage.tables()
     }
@@ -2615,4 +2631,12 @@ fn opened_step(stats: &mut crate::query::exec::ExecStats, t0: std::time::Instant
         let step = crate::query::steps::Step { op: "open readers".into(), detail: format!("{segments} segments"), start_us: crate::query::steps::us_at(t0), us: crate::query::steps::tenth(opened.as_nanos() as f64 / 1e3), ..Default::default() };
         stats.steps.insert(0, step);
     }
+}
+
+/// The table of `catalog` (a database's tables, the first first) that a
+/// write or a read naming no table goes to ([`Db::default_table`]): the
+/// first table that is not the placeholder of a database made with no
+/// tables, if any.
+pub fn default_table(catalog: &[Arc<Schema>]) -> Option<Arc<Schema>> {
+    catalog.iter().find(|t| !t.is_placeholder()).cloned()
 }

@@ -32,19 +32,23 @@ use crate::vector::bits::Bits;
 use crate::vector::codes::Quantiser;
 use crate::vector::rabitq::{self, Rabitq};
 use crate::vector::sq8::Sq8;
-use crate::vector::{section, VectorInfo};
+use crate::vector::{section, PartInfo, PartitionsInfo, VectorInfo};
 
-/// Float32 rows of `stride` floats (the first `dim` hold the vector).
+/// Float32 rows of `stride` floats (the first `dim` hold the vector): row
+/// `i` of `data`, or with `map`, row `map[i]` (a partition's rows, numbered
+/// from 0; `n` is then `map.len()`).
 pub(crate) struct Rows<'a> {
     pub data: &'a [f32],
     pub dim: usize,
     pub stride: usize,
     pub n: usize,
+    pub map: Option<&'a [u32]>,
 }
 
 impl Rows<'_> {
     #[inline]
     pub fn row(&self, i: usize) -> &[f32] {
+        let i = self.map.map_or(i, |m| m[i] as usize);
         &self.data[i * self.stride..(i + 1) * self.stride]
     }
 }
@@ -127,6 +131,68 @@ pub(crate) struct VectorBuilder {
     /// A multi-vector field's row offsets (`n` counts vectors), and whether
     /// it keeps its float32 vectors.
     multi: Option<(Vec<u32>, bool)>,
+    /// A partitioned field's rows' partition keys so far.
+    partition: Option<PartitionKeys>,
+}
+
+/// Each row's partition ([`crate::schema::VectorPartition`]): the range of
+/// a numeric key, or the number of a KEYWORD key's value, [`NO_PART`] for
+/// NULL.
+struct PartitionKeys {
+    bounds: Vec<f64>,
+    keys: Vec<u32>,
+    values: Vec<String>,
+    numbers: std::collections::HashMap<String, u32>,
+}
+
+const NO_PART: u32 = u32::MAX;
+
+impl PartitionKeys {
+    fn push(&mut self, field: &str, doc: DocId, key: &Value) -> Result<()> {
+        if doc as usize != self.keys.len() {
+            return Err(Error::Schema(format!("vector field {field}: partition key of document {doc} out of order")));
+        }
+        let k = match (key, self.bounds.is_empty()) {
+            (Value::Null, _) => NO_PART,
+            (Value::Str(s), true) => match self.numbers.get(s) {
+                Some(&k) => k,
+                None => {
+                    let k = self.values.len() as u32;
+                    self.values.push(s.clone());
+                    self.numbers.insert(s.clone(), k);
+                    k
+                }
+            },
+            (Value::Int(x), false) => self.bounds.partition_point(|&b| b <= *x as f64) as u32,
+            (Value::Float(x), false) => self.bounds.partition_point(|&b| b <= *x) as u32,
+            _ => return Err(Error::Schema(format!("vector field {field}: bad partition key {key:?} for document {doc}"))),
+        };
+        self.keys.push(k);
+        Ok(())
+    }
+
+    /// The partitions to build, each with its rows (those with a vector)
+    /// in docID order, and whether every row with a key is in one: a
+    /// KEYWORD key's most frequent values only, up to
+    /// [`crate::schema::MAX_VALUE_PARTITIONS`].
+    fn groups(&self, present: &dyn Fn(u32) -> bool) -> (Vec<(u32, Vec<u32>)>, bool) {
+        let count = if self.bounds.is_empty() { self.values.len() } else { self.bounds.len() + 1 };
+        let mut groups: Vec<(u32, Vec<u32>)> = (0..count as u32).map(|k| (k, Vec::new())).collect();
+        for (d, &k) in self.keys.iter().enumerate() {
+            if k != NO_PART && present(d as u32) {
+                groups[k as usize].1.push(d as u32);
+            }
+        }
+        groups.retain(|g| !g.1.is_empty());
+        let mut complete = true;
+        if groups.len() > crate::schema::MAX_VALUE_PARTITIONS {
+            groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(&b.0)));
+            groups.truncate(crate::schema::MAX_VALUE_PARTITIONS);
+            groups.sort_by_key(|g| g.0);
+            complete = false;
+        }
+        (groups, complete)
+    }
 }
 
 impl VectorBuilder {
@@ -184,6 +250,7 @@ impl VectorBuilder {
             n: 0,
             missing: 0,
             multi: field.is_multi_vector().then(|| (vec![0], field.keep_f32)),
+            partition: field.partition.as_ref().map(|p| PartitionKeys { bounds: p.bounds.clone(), keys: Vec::new(), values: Vec::new(), numbers: Default::default() }),
         })
     }
 }
@@ -256,6 +323,13 @@ impl FieldIndexBuilder for VectorBuilder {
         Ok(())
     }
 
+    fn partition_key(&mut self, doc: DocId, key: &Value) -> Result<()> {
+        match &mut self.partition {
+            Some(p) => p.push(&self.field, doc, key),
+            None => Ok(()),
+        }
+    }
+
     fn spill_to(&mut self, spill: &Arc<Spill>) -> Result<()> {
         if self.rows.len() == 0 {
             self.rows = RowBuf::Spill(spill.stream()?, Vec::new());
@@ -264,7 +338,7 @@ impl FieldIndexBuilder for VectorBuilder {
     }
 
     fn finish(self: Box<Self>, out: &mut SegmentWriter) -> Result<()> {
-        let VectorBuilder { field, dim, stride, kind, codes: code_kind, hnsw_max_docs, threads, seed, start, mut rows, present, n, missing, multi } = *self;
+        let VectorBuilder { field, dim, stride, kind, codes: code_kind, hnsw_max_docs, threads, seed, start, mut rows, present, n, missing, multi, partition } = *self;
         let code_stride = code_kind.stride(dim);
         let is_present = |d: u32| present[d as usize / 64] >> (d % 64) & 1 == 1;
         let ids: Vec<u32> = (0..n as u32).filter(|&d| is_present(d)).collect();
@@ -290,7 +364,7 @@ impl FieldIndexBuilder for VectorBuilder {
         // aligned middle part, and we require it to be everything.
         let (head, data, tail) = unsafe { bytes.align_to::<f32>() };
         assert!(head.is_empty() && tail.is_empty(), "allocator returned a misaligned vector buffer");
-        let view = Rows { data, dim, stride, n };
+        let view = Rows { data, dim, stride, n, map: None };
 
         let present_rows = ids.iter().map(|&d| &view.row(d as usize)[..dim]);
         let quant = match code_kind {
@@ -318,6 +392,7 @@ impl FieldIndexBuilder for VectorBuilder {
             max_level: None,
             rows: multi.as_ref().map(|(o, _)| o.len() - 1),
             f32: multi.as_ref().is_none_or(|&(_, keep)| keep),
+            partitions: None,
         };
         let mut index_sections: Vec<(String, Vec<u8>)> = Vec::new();
         match kind {
@@ -337,7 +412,7 @@ impl FieldIndexBuilder for VectorBuilder {
                 let graphs: Vec<((HnswView, usize), u32)> = start.iter().filter_map(|(seg, base)| Some((start_graph(seg, &field, dim)?, *base))).collect();
                 let starts: Vec<hnsw::StartGraph> = graphs.iter().map(|((g, n), base)| hnsw::StartGraph { view: g, base: *base, n: *n }).collect();
                 let on = match &quant {
-                    Quantiser::Sq8(sq8) if !f32 => Some(hnsw::BuildCodes { sq8, codes: &codes, stride: code_stride }),
+                    Quantiser::Sq8(sq8) if !f32 => Some(hnsw::BuildCodes { sq8, codes: &codes, stride: code_stride, map: None }),
                     _ => None,
                 };
                 let g = hnsw::build(&view, &is_present, &HnswConfig { m, ef_construction, threads, seed }, &starts, on.as_ref());
@@ -348,6 +423,35 @@ impl FieldIndexBuilder for VectorBuilder {
                 info.max_level = Some(g.max_level);
                 index_sections.push((section(&field, "hnsw_upper"), g.upper_bytes()));
                 index_sections.push((section(&field, "hnsw"), g.layer0_bytes()));
+                // A graph per partition, over its rows numbered from 0 and
+                // scoring the field's codes through the partition's docIDs.
+                if let Some(keys) = partition.as_ref().filter(|_| multi.is_none()) {
+                    if keys.keys.len() != n {
+                        return Err(Error::Schema(format!("vector field {field}: partition keys of {} documents, not {n}", keys.keys.len())));
+                    }
+                    let (groups, complete) = keys.groups(&is_present);
+                    let mut parts = Vec::with_capacity(groups.len());
+                    for (i, (k, docs)) in groups.iter().enumerate() {
+                        let rows = Rows { data, dim, stride, n: docs.len(), map: Some(docs) };
+                        let on = match &quant {
+                            Quantiser::Sq8(sq8) if !f32 => Some(hnsw::BuildCodes { sq8, codes: &codes, stride: code_stride, map: Some(docs) }),
+                            _ => None,
+                        };
+                        let g = hnsw::build(&rows, &|_| true, &HnswConfig { m, ef_construction, threads, seed: seed ^ (*k as u64 + 1) }, &[], on.as_ref());
+                        parts.push(PartInfo {
+                            bucket: (!keys.bounds.is_empty()).then_some(*k as usize),
+                            value: keys.bounds.is_empty().then(|| keys.values[*k as usize].clone()),
+                            n: docs.len(),
+                            entry: g.entry,
+                            max_level: g.max_level,
+                        });
+                        let part = |x: &str| section(&field, &format!("part{i}.{x}"));
+                        index_sections.push((part("docs"), docs.iter().flat_map(|d| d.to_le_bytes()).collect()));
+                        index_sections.push((part("hnsw_upper"), g.upper_bytes()));
+                        index_sections.push((part("hnsw"), g.layer0_bytes()));
+                    }
+                    info.partitions = Some(PartitionsInfo { bounds: keys.bounds.clone(), complete, parts });
+                }
             }
         }
 

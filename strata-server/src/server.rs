@@ -147,6 +147,10 @@ pub struct Options {
     /// The clusters the cloud view made (default: `<db>.cloud.json` beside
     /// a database; in memory on a coordinator without it).
     pub cloud_file: Option<PathBuf>,
+    /// The hub's book of connections to other clusters ([`crate::hub`]).
+    pub hub_file: Option<PathBuf>,
+    /// Who this hub's calls to other clusters say they come from.
+    pub hub_device: Option<String>,
     /// The alert rules' file (default rules, in memory, without it).
     pub alerts: Option<PathBuf>,
     /// A coordinator's Contain rules' file (in memory without it): fleet.
@@ -301,7 +305,10 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
             fill = o.copy_from.clone().map(Fill::Copy);
             Db::create_in(&path, schema, DbOptions { ship_log_bytes, ..db_options(o.directory) }, &o.models).map_err(|e| e.to_string())?
         } else {
-            return Err(format!("{} does not exist: pass --schema FILE or --demo N to create it", path.display()));
+            // No schema: a database with no tables yet, which CREATE TABLE
+            // and the imports that create tables fill.
+            tracing::info!(db = %path.display(), "creating the database with no tables: create one with CREATE TABLE or an import");
+            Db::create_empty(&path, DbOptions { ship_log_bytes, ..db_options(o.directory) }).map_err(|e| e.to_string())?
         };
         for (field, why) in db.open_codebooks(&o.models) {
             tracing::warn!(field = %field, error = %why, "cannot give this field semantic IDs: writes must carry them");
@@ -391,6 +398,11 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         if svc.clouds.list().iter().any(|m| !matches!(m.phase, crate::cloud::clusters::Phase::Deleted | crate::cloud::clusters::Phase::Failed)) {
             svc.clouds.start(svc.aws.clone(), svc.digitalocean.clone());
         }
+    }
+    let hub = o.hub_file.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::hub::Hub::file_of));
+    if let Some(file) = hub {
+        let secrets = crate::hub::Secrets::detect(Some(crate::hub::Hub::keys_file_of(&file)));
+        svc.hub = Arc::new(crate::hub::Hub::open(file, secrets, o.hub_device.clone())?);
     }
     let keys = o.keys.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(Keys::file_of));
     if let Some(file) = keys {

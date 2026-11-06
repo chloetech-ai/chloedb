@@ -252,6 +252,12 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/digitalocean/machines", get(do_machines))
         .route("/v1/admin/digitalocean/plan", post(do_plan))
         .route("/v1/admin/digitalocean/validate", post(do_validate))
+        // The hub: connections to other clusters, and calls forwarded to them.
+        .route("/v1/admin/hub", get(hub_view))
+        .route("/v1/admin/hub/connections", post(hub_add))
+        .route("/v1/admin/hub/connections/:name", post(hub_update).delete(hub_remove))
+        .route("/v1/admin/hub/connections/:name/check", post(hub_check))
+        .route("/c/:name/*rest", axum::routing::any(hub_forward))
         .route("/v1/admin/cloud/clusters", get(cloud_list).post(cloud_create))
         .route("/v1/admin/cloud/clusters/:id", get(cloud_one).merge(axum::routing::delete(cloud_forget)))
         .route("/v1/admin/cloud/clusters/:id/delete", post(cloud_delete))
@@ -302,6 +308,9 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/health", get(health))
         .route("/livez", get(live))
         .route("/readyz", get(ready))
+        // The command center of a connection of the hub's book: the same
+        // page, whose calls go to /c/<name>/v1/...
+        .route("/c/:name", get(ui::index))
         .merge(api)
         // One stack, outermost first, put on each route once: each layer
         // put on its own wraps the routes in another boxed service, and
@@ -800,6 +809,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/alerts/:rule/ack" | "/v1/alerts/:rule/silence" | "/v1/alerts/:rule/notes" => Scope::Write,
         "/v1/events/notes" => Scope::Admin,
         // The inspector names the keys most read.
+        // The hub's calls to other clusters carry their keys: its owner's.
+        r if r.starts_with("/c/") => Scope::Admin,
         r if r.starts_with("/v1/admin/") || r.starts_with("/v1/queries") || r.starts_with("/v1/logs") || r.starts_with("/v1/profile") || r.starts_with("/v1/index") => Scope::Admin,
         _ => Scope::Read,
     }
@@ -891,14 +902,14 @@ async fn stats(State(app): State<App>) -> AxJson<Json> {
 async fn schema(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
     let s = match q.get("table") {
         Some(t) => app.svc.table(t).await?,
-        None => app.svc.first_table(),
+        None => app.svc.default_table()?,
     };
     Ok(AxJson(table_json(&app.svc, &s)))
 }
 
 /// Every table's schema, the first first.
 async fn tables(State(app): State<App>) -> AxJson<Json> {
-    let tables: Vec<Json> = app.svc.catalog_now().await.iter().map(|s| table_json(&app.svc, s)).collect();
+    let tables: Vec<Json> = app.svc.tables_listed().await.iter().map(|s| table_json(&app.svc, s)).collect();
     AxJson(json!({"tables": tables}))
 }
 
@@ -1237,7 +1248,7 @@ async fn write(State(app): State<App>, headers: HeaderMap, AxJson(mut b): AxJson
     // A write from the command center is audited whatever its answer: its
     // table is its first operation's.
     let shown = keys::caller().is_some_and(|c| c.command_center()).then(|| {
-        let table = ops.iter().find_map(|op| op["table"].as_str().map(String::from)).unwrap_or_else(|| app.svc.first_table().table.clone());
+        let table = ops.iter().find_map(|op| op["table"].as_str().map(String::from)).unwrap_or_else(|| app.svc.default_table().map_or_else(|_| app.svc.first_table().table.clone(), |t| t.table.clone()));
         (Json::Array(ops.clone()).to_string(), table)
     });
     let note = |rows: Option<u64>, shards: Option<&Json>| {
@@ -1447,7 +1458,7 @@ async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
         (None, Some(t)) => (format!("tables {t}"), None),
         (None, None) if body.starts_with(strata::sqlite::MAGIC) => ("the tables of a SQLite file".to_string(), None),
         (None, None) => {
-            let t = app.svc.first_table().table.clone();
+            let t = app.svc.default_table().map_or_else(|_| app.svc.first_table().table.clone(), |t| t.table.clone());
             (format!("table {t}"), Some(t))
         }
     };
@@ -1735,7 +1746,7 @@ async fn ndjson(svc: Arc<Service>, body: axum::body::Body, tx: tokio::sync::mpsc
     // Lines read, and lines committed.
     let (mut read, mut done) = (0u64, 0u64);
     let mut tables = std::collections::BTreeSet::new();
-    let first_table = svc.first_table().table.clone();
+    let first_table = svc.default_table().map_or_else(|_| svc.first_table().table.clone(), |t| t.table.clone());
     let end = |s: &Stream, done: u64, tables: std::collections::BTreeSet<String>, error: Option<ApiError>| StreamEnd { written: s.written, lines: done, tables, error };
     while let Some(first) = lines.recv().await {
         let mut next = Some(first);
@@ -3752,6 +3763,64 @@ async fn aws_validate(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result
         Err(e) => json!({"ok": false, "error": e}),
     };
     Ok(AxJson(j))
+}
+
+/// The hub's book ([`crate::hub`]): who this hub is, where it keeps the
+/// keys, and its connections (no key among them).
+async fn hub_view(State(app): State<App>) -> AxJson<Json> {
+    AxJson(app.svc.hub.view())
+}
+
+/// `POST /v1/admin/hub/connections {name, url, key, color?, trust?,
+/// allow_plain?, replace?}`: adds a connection once its address answers
+/// and takes the key. 409 with `needs_trust` and the certificate's
+/// fingerprint for a self-signed certificate not yet trusted.
+async fn hub_add(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let a: crate::hub::Add = serde_json::from_value(b).map_err(|e| ApiError::bad(format!("a connection is {{name, url, key, color?, trust?, allow_plain?}}: {e}")))?;
+    let by = keys::audit_name(&who(w));
+    match app.svc.hub.add(a, &by).await? {
+        crate::hub::Added::Done(c) => {
+            tracing::info!(connection = %c.name, urls = %c.urls.join(","), by = %by, "hub connection added");
+            keys::note_change(keys::Change { object: Some(format!("connection {}", c.name)), after: Some(json!({"urls": c.urls, "pin": c.pin, "key": c.key})), ..Default::default() });
+            Ok((StatusCode::CREATED, AxJson(c.view())).into_response())
+        }
+        crate::hub::Added::NeedsTrust { url, fingerprint } => Ok((
+            StatusCode::CONFLICT,
+            AxJson(json!({"error": format!("{url}'s certificate is not signed by an authority this machine knows: compare its SHA-256 with the cluster's own, then trust it"), "needs_trust": true, "fingerprint": fingerprint, "url": url})),
+        )
+            .into_response()),
+    }
+}
+
+/// `POST /v1/admin/hub/connections/:name {color?, key?}`.
+async fn hub_update(State(app): State<App>, axum::extract::Path(name): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Result<AxJson<Json>, ApiError> {
+    let c = app.svc.hub.update(&name, &b).await?;
+    keys::note_change(keys::Change { object: Some(format!("connection {name}")), after: Some(json!({"color": b.get("color"), "key": b.get("key").map(|_| &c.key)})), ..Default::default() });
+    Ok(AxJson(c.view()))
+}
+
+async fn hub_remove(State(app): State<App>, axum::extract::Path(name): axum::extract::Path<String>) -> Result<AxJson<Json>, ApiError> {
+    let c = app.svc.hub.remove(&name)?;
+    keys::note_change(keys::Change { object: Some(format!("connection {name}")), before: Some(json!({"urls": c.urls})), ..Default::default() });
+    Ok(AxJson(json!({"removed": name, "note": "its key still works on the cluster until it expires or is revoked there"})))
+}
+
+async fn hub_check(State(app): State<App>, axum::extract::Path(name): axum::extract::Path<String>) -> Result<AxJson<Json>, ApiError> {
+    Ok(AxJson(app.svc.hub.check(&name).await?.view()))
+}
+
+/// `/c/:name/<path>`: the call, to the connection `name` with its key
+/// ([`crate::hub::Hub::forward`]). Strata's API and its health only.
+async fn hub_forward(State(app): State<App>, axum::extract::Path((name, rest)): axum::extract::Path<(String, String)>, req: Request) -> Result<Response, ApiError> {
+    let rest = rest.trim_start_matches('/');
+    if !(rest.starts_with("v1/") || matches!(rest, "livez" | "readyz" | "metrics")) {
+        return Err(ApiError { status: 404, message: format!("/c/{name}/ forwards Strata's API (/v1/...), not /{rest}") });
+    }
+    let path = format!("/{rest}{}", req.uri().query().map(|q| format!("?{q}")).unwrap_or_default());
+    let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).map_err(|_| ApiError::bad("an HTTP method the hub does not forward"))?;
+    let headers = req.headers().clone();
+    let body = reqwest::Body::wrap_stream(req.into_body().into_data_stream());
+    app.svc.hub.forward(&name, method, &path, &headers, body).await
 }
 
 /// The clusters the cloud view made ([`crate::cloud::clusters`]), the

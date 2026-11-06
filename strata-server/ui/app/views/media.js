@@ -6,7 +6,7 @@
 // in two dimensions (their two main directions), with the query and its
 // hits marked on it. Files are read through /v1/media by their hash.
 
-import { h, s, icon, clear, fmt, api, store, empty, seg, failure, drawer, sqlBlock, debounce, authHeader, showTip, hideTip, toast, copy } from "../core.js";
+import { at, h, s, icon, clear, fmt, api, store, empty, seg, failure, drawer, sqlBlock, debounce, authHeader, showTip, hideTip, toast, copy } from "../core.js";
 import { tables, table as tableOf } from "../catalog.js";
 import { SERIES } from "../charts.js";
 import { quoteName } from "../sqledit.js";
@@ -36,7 +36,7 @@ function fileUrl(sha) {
   const p = new Promise((resolve) => {
     const go = () => {
       inflight++;
-      fetch("/v1/media/" + sha, { headers: authHeader() }).then((r) => r.ok ? r.blob() : null).then((b) => resolve(b ? URL.createObjectURL(b) : null)).catch(() => resolve(null))
+      fetch(at("/v1/media/" + sha), { headers: authHeader() }).then((r) => r.ok ? r.blob() : null).then((b) => resolve(b ? URL.createObjectURL(b) : null)).catch(() => resolve(null))
         .finally(() => { inflight--; waiting.shift()?.(); });
     };
     if (inflight < 6) go(); else waiting.push(go);

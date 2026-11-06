@@ -83,7 +83,7 @@ pub async fn node(svc: &Arc<Service>, a: &Asked) -> Result<Json, ApiError> {
     };
     let schema = match &a.table {
         Some(t) => svc.table(t).await?,
-        None => svc.first_table(),
+        None => svc.default_table()?,
     };
     let name = schema.table.clone();
     let opts = Options { sample: a.sample, seed: a.seed, terms: a.terms };
@@ -285,7 +285,7 @@ pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
         }
     }
     let now = telemetry::now_ms();
-    let names: Vec<String> = svc.catalog_now().await.iter().map(|s| s.table.clone()).collect();
+    let names: Vec<String> = svc.tables_listed().await.iter().map(|s| s.table.clone()).collect();
     // On a coordinator, each copy as the cluster's snapshot knows it: its
     // short name, and since when it does not answer.
     let mut copies: HashMap<String, (Json, Json, bool)> = HashMap::new();
@@ -422,7 +422,7 @@ pub async fn answer(svc: &Arc<Service>, a: Asked) -> Result<Json, ApiError> {
         Backend::Cluster(c) => {
             let schema = match &a.table {
                 Some(t) => svc.table(t).await?,
-                None => svc.first_table(),
+                None => svc.default_table()?,
             };
             let mut asked = a.clone();
             asked.table = Some(schema.table.clone());
