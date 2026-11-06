@@ -16,7 +16,85 @@ compare engines with each other, not with a production cluster.
   Redis and Postgres (pgvector), over 100,000 tracks made by
   [`serving_data.py`](serving_data.py) from the quality track's model.
 
-QUALITY_SECTION
+## Quality: next-day listens on Yambda-50M
+
+[`yambda.py`](yambda.py) follows the dataset paper's protocol (its
+docstring has the details): Listen+ events (at least half the track
+played), train on everything up to 30 minutes before the last day, test on
+that day for the users seen in training, tune on the day before. Here that
+is 29,280,230 training listens of 629,298 tracks, and
+157,695 targets of 4,599 test users. Every source
+answers 100 tracks for each test user (filled with DecayPop's when it has
+fewer). Recall@k is the paper's (hits over all of a user's targets);
+`recall@100` divides by min(targets, 100) instead. The baselines are written
+here from the paper's descriptions, and their hours were chosen on the day
+before over the paper's grids.
+
+The sequence model (`strata.train.sequence`: two layers of causal attention,
+width 64, item vectors learned with it, in-batch negatives, temperature
+0.05, batch 64, each user's last 1,000 listens) started from an SVD of the
+user-track play counts; from random vectors it stayed at chance after an
+epoch. It ran 5 epochs in its 80 minutes on the CPU, its held-out recall@10
+still rising (0.006, 0.012, 0.018, 0.023, 0.026: [`quality/train.json`](quality/train.json)),
+so its rows are a floor.
+
+| source | NDCG@10 | NDCG@100 | Recall@10 | Recall@100 | recall@100 (of min(n, 100)) | HR@10 | Coverage@100 | query p50 / p99, ms |
+|---|---|---|---|---|---|---|---|---|
+| MostPop | 0.0174 | 0.0231 | 0.0064 | 0.0321 | 0.0327 | 0.093 | 0.0002 | – |
+| DecayPop (2 h) | 0.0256 | 0.0345 | 0.0122 | 0.0479 | 0.0486 | 0.144 | 0.0002 | – |
+| ItemKNN (2 h) | 0.1152 | 0.1279 | 0.0486 | 0.1360 | 0.1385 | 0.380 | 0.1719 | – |
+| history (720 h): a user's own tracks by plays | 0.1854 | 0.2297 | 0.0915 | 0.2664 | 0.2702 | 0.452 | 0.1681 | – |
+| Strata `pop` (DecayPop as a column) | 0.0256 | 0.0345 | 0.0122 | 0.0479 | 0.0486 | 0.144 | 0.0002 | 0.7 / 2.2 |
+| Strata `history` (`GROUP BY` over their events) | 0.1854 | 0.2297 | 0.0915 | 0.2663 | 0.2702 | 0.451 | 0.1681 | 3.5 / 12.1 |
+| Strata `encode` (the sequence model) | 0.0799 | 0.0978 | 0.0378 | 0.1173 | 0.1189 | 0.308 | 0.1766 | 4.1 / 53.3 |
+| Strata `next_items` (counted transitions) | 0.0658 | 0.0693 | 0.0316 | 0.0726 | 0.0735 | 0.258 | 0.1203 | 2.6 / 32.1 |
+| Strata `ppr` (PageRank over what came next) | 0.1188 | 0.1122 | 0.0608 | 0.1063 | 0.1074 | 0.341 | 0.2014 | 433.9 / 617.6 |
+| Strata `fused`: `rrf(history, encode, ppr)` | 0.1655 | 0.1993 | 0.0834 | 0.2325 | 0.2351 | 0.447 | 0.1868 | 437.0 / 617.2 |
+
+Published on the same split:
+
+| model (the paper's Table 6, Yambda-50M Listen+) | NDCG@10 | NDCG@100 | Recall@10 | Recall@100 | Coverage@100 |
+|---|---|---|---|---|---|
+| MostPop | 0.0186 | 0.0249 | 0.0064 | 0.0321 | 0.0002 |
+| DecayPop | 0.0260 | 0.0323 | 0.0122 | 0.0479 | 0.0002 |
+| ItemKNN | 0.0781 | 0.0934 | 0.0373 | 0.1297 | 0.0874 |
+| iALS | 0.0407 | 0.0642 | 0.0128 | 0.0808 | 0.0156 |
+| BPR | 0.0389 | 0.0641 | 0.0139 | 0.0836 | 0.0999 |
+| SASRec | 0.0748 | 0.0764 | 0.0325 | 0.1026 | 0.0310 |
+
+[`quality/baselines.json`](quality/baselines.json) has every validation-day
+run of the grids, and [`quality/strata.json`](quality/strata.json) Strata's
+sources. Query times are of the embedded database (strata-py) on the test
+day, one query at a time.
+
+### What it says
+
+- **The protocol reproduces the paper.** MostPop's and DecayPop's Recall@10
+  and Recall@100 equal Table 6's to four digits (0.0064 and 0.0321, 0.0122
+  and 0.0479). NDCG is within 0.0004 to 0.0022 of it: the paper's ideal
+  ranking may count repeated targets differently. ItemKNN is above the
+  paper's (Recall@100 0.1360 against 0.1297, NDCG@10 0.1152 against 0.0781).
+  Its best decay sat at the grid's edge (2 hours), so a longer grid may do
+  better still.
+- **Strata's `encode` is above published SASRec on every column**, after 80
+  minutes on 4 CPU cores and still improving: NDCG@10 0.0799 against 0.0748,
+  Recall@10 0.0378 against 0.0325, Recall@100 0.1173 against 0.1026,
+  Coverage@100 0.1766 against 0.0310. It is still below this ItemKNN
+  (0.1152, 0.0486, 0.1360).
+- **Re-listening decides this task.** A user's own most played tracks
+  (`history`, one `GROUP BY` at 3.5 ms) has twice the Recall@100 of
+  anything in Table 6 (0.2663). 68% of a test day's listens are of tracks
+  the user played before, which the paper's protocol keeps as targets. A
+  next-day benchmark that leaves `history` out understates what a
+  recommender gets right.
+- **`ppr` is the best source after `history` at the top** (NDCG@10 0.1188,
+  above ItemKNN's 0.1152) **but takes 434 ms** at p50 and 618 ms at p99,
+  too slow to serve: the next step is item neighbours computed ahead and
+  served from a table.
+- **Fusing by plain RRF loses to `history` alone** (NDCG@10 0.1655 against
+  0.1854, Recall@100 0.2325 against 0.2663; HR@100 0.756 against 0.728):
+  equal weights let two weaker lists push repeats down. Weights or a
+  learned blend, chosen on the validation day, are the next step there.
 
 ## Serving: r1 to r6 on eight engines
 
@@ -27,8 +105,8 @@ they may be played in (5 regions, each track in each with probability 0.8,
 standing for licensing), and 300 users with their vector at the start of the
 test day, their region and the up to 500 tracks they played. It trained a
 LightGBM ranker (300 trees) over the twelve features and the user-track dot
-product. Each kind (deploy/compare/README.md, "Recommender kinds", has the
-requests) was sent once for each user and scored against an exact answer the
+product. Each kind ([the requests](../../../strata-server/deploy/compare/README.md#recommender-kinds))
+was sent once for each user and scored against an exact answer the
 client computed from the same data, then timed closed-loop for 6 s at 1, 4
 and 16 clients after a 2 s warm-up:
 
@@ -166,11 +244,14 @@ writes these tables from them.
 
 ```bash
 python3 -m venv ~/data/venv && . ~/data/venv/bin/activate
-pip install polars pyarrow numpy scipy lightgbm huggingface_hub
+pip install polars pyarrow numpy scipy lightgbm
 (cd strata-py && pip install maturin && maturin develop --release)
-# Yambda-50M's flat files into ~/data/yambda/flat/50m (listens, likes, dislikes, multi_event, embeddings, artist_item_mapping)
+Y=https://huggingface.co/datasets/yandex/yambda/resolve/main
+mkdir -p ~/data/yambda/flat/50m
+for f in listens likes dislikes; do curl -fL -o ~/data/yambda/flat/50m/$f.parquet $Y/flat/50m/$f.parquet; done
+curl -fL -o ~/data/yambda/artist_item_mapping.parquet $Y/artist_item_mapping.parquet
 cd strata/results/recsys
-python yambda.py prep  --data ~/data/yambda --work ~/data/yambda/work    # split, baselines (about 40 min)
+python yambda.py prep  --data ~/data/yambda --work ~/data/yambda/work    # split and baselines (18 min here)
 python yambda.py train --data ~/data/yambda --work ~/data/yambda/work --minutes 80
 python yambda.py load  --data ~/data/yambda --work ~/data/yambda/work
 python yambda.py eval  --data ~/data/yambda --work ~/data/yambda/work
