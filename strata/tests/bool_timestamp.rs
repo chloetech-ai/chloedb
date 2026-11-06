@@ -120,15 +120,15 @@ fn through_sql(layout: Layout) {
     let path = dir.path().join("t.strata");
     let opts = || DbOptions { layout, sync: false, ..DbOptions::default() };
     let db = Db::create(&path, papers(), opts()).unwrap();
-    assert_eq!((format_on_disk(&path), required(&path)), (3, vec!["field_ids".to_string()]));
+    assert_eq!((format_on_disk(&path), required(&path)), (3, vec!["compact_keys".to_string(), "field_ids".to_string()]));
 
     // Neither type can be a key, and DATE points to TIMESTAMP.
     assert!(fails(&db, "CREATE TABLE z (id BOOL PRIMARY KEY)").contains("primary key"));
     assert!(fails(&db, "CREATE TABLE z (id KEYWORD PRIMARY KEY, d DATE)").contains("TIMESTAMP"));
-    assert_eq!(required(&path), ["field_ids"]);
+    assert_eq!(required(&path), ["compact_keys", "field_ids"]);
 
     written(&db, "CREATE TABLE tasks (id KEYWORD PRIMARY KEY, title TEXT, done BOOL, due TIMESTAMP, n INT)");
-    assert_eq!(required(&path), ["bool", "field_ids", "timestamp"]);
+    assert_eq!(required(&path), ["bool", "compact_keys", "field_ids", "timestamp"]);
     let n = written(
         &db,
         "INSERT INTO tasks (id, title, done, due, n) VALUES \
@@ -241,7 +241,7 @@ fn through_sql(layout: Layout) {
     // Once no table uses them, the database needs field ids alone (as a
     // database from before field ids went back to an older format).
     written(&db, "DROP TABLE tasks");
-    assert_eq!(required(&path), ["field_ids"]);
+    assert_eq!(required(&path), ["compact_keys", "field_ids"]);
     if layout == Layout::SingleFile {
         let slots = meta_slots(&path);
         assert!(slots.iter().all(|m| m.is_some_and(|m| m.format == 3)), "{slots:?}");
@@ -249,7 +249,7 @@ fn through_sql(layout: Layout) {
     drop(db);
     let db = Db::open(&path, opts()).unwrap();
     assert_eq!(db.catalog().len(), 1);
-    assert_eq!(required(&path), ["field_ids"]);
+    assert_eq!(required(&path), ["compact_keys", "field_ids"]);
 }
 
 #[test]
@@ -407,7 +407,7 @@ fn an_unknown_feature_is_refused_by_name() {
     let mut cur: serde_json::Value = serde_json::from_slice(&std::fs::read(path.join("CURRENT")).unwrap()).unwrap();
     let name = cur["manifest"].as_str().unwrap().to_string();
     let mut manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(path.join(&name)).unwrap()).unwrap();
-    assert_eq!(manifest["features"]["required"], serde_json::json!(["bool", "field_ids", "timestamp"]));
+    assert_eq!(manifest["features"]["required"], serde_json::json!(["bool", "compact_keys", "field_ids", "timestamp"]));
     let mut rewrite = |m: &serde_json::Value| {
         let bytes = serde_json::to_vec(m).unwrap();
         std::fs::write(path.join(&name), &bytes).unwrap();

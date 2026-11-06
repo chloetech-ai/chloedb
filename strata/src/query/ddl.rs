@@ -906,7 +906,7 @@ mod tests {
         assert_eq!(f.derive, Some(crate::schema::Derive { from: "image".into(), model: "blip-image-captioning-base".into() }));
         assert!(f.stored && matches!(f.ty, FieldType::Text { .. }));
         assert_eq!(s.derives_from(2), Some(1));
-        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "derive"]);
+        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "derive", "compact_keys"]);
         assert_eq!(s.to_short_json()["fields"][2], serde_json::json!({"name": "caption", "type": "text", "derive": {"from": "image", "model": "blip-image-captioning-base"}}));
         assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
         assert_eq!(serde_json::from_str::<Schema>(&serde_json::to_string(&s).unwrap()).unwrap(), s);
@@ -932,7 +932,7 @@ mod tests {
         assert_eq!((f("image").media, f("any_file").media, f("scan").media), (Some(MediaKind::Image), Some(MediaKind::Any), Some(MediaKind::Pdf)));
         assert!(f("image").ty == FieldType::Keyword && f("image").stored && f("image").indexed && !f("scan").indexed);
         assert_eq!(f("image").type_name(), "MEDIA");
-        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "media", "media"]);
+        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "media", "media", "compact_keys"]);
         assert_eq!(s.to_short_json()["fields"][1], serde_json::json!({"name": "image", "type": "media", "kind": "image"}));
         assert_eq!(s.to_short_json()["fields"][2], serde_json::json!({"name": "any_file", "type": "media"}));
         assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
@@ -959,7 +959,7 @@ mod tests {
         let (s, _) = create("CREATE TABLE events (id INT PRIMARY KEY, usr KEYWORD NOT NULL, ts INT) OPTIONS(shard_by = 'USR')", &[]).unwrap();
         assert_eq!(s.shard_by.as_deref(), Some("usr"));
         assert_eq!(s.shard_by_field(), Some(1));
-        assert_eq!(s.features().collect::<Vec<_>>(), ["not_null", "shard_by"]);
+        assert_eq!(s.features().collect::<Vec<_>>(), ["not_null", "shard_by", "compact_keys"]);
         assert_eq!(s.to_short_json()["shard_by"], "usr");
         assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
         assert_eq!(serde_json::from_str::<Schema>(&serde_json::to_string(&s).unwrap()).unwrap(), s);
