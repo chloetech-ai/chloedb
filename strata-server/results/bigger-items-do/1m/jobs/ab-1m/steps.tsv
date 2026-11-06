@@ -1,0 +1,37 @@
+1	ok	1793904837	1793905063	build
+2	ok	1793905063	1793905069	IMAGE=ghcr.io/chloetech-ai/strata-server:18fb4bc4ba69b1d0abf4adaca2be0fa9e1ad8bb4 up strata
+3	ok	1793905069	1793905438	run strata --label strata-a
+4	ok	1793905438	1793905440	down strata
+5	ok	1793905440	1793905451	IMAGE=ghcr.io/chloetech-ai/strata-server:6d02ba6544b92f60f8b36c108d9ccbaceca7f9db up strata
+6	ok	1793905451	1793905874	run strata --label strata-b
+7	ok	1793905874	1793905876	down strata
+8	ok	1793905876	1793905882	IMAGE=ghcr.io/chloetech-ai/strata-server:6d02ba6544b92f60f8b36c108d9ccbaceca7f9db up strata
+9	ok	1793905882	1793906302	run strata --label strata-b-pass2
+10	ok	1793906302	1793906303	down strata
+11	ok	1793906303	1793906309	IMAGE=ghcr.io/chloetech-ai/strata-server:18fb4bc4ba69b1d0abf4adaca2be0fa9e1ad8bb4 up strata
+12	ok	1793906309	1793906677	run strata --label strata-a-pass2
+13	ok	1793906678	1793906679	down strata
+14	ok	1793906679	1793906684	IMAGE=ghcr.io/chloetech-ai/strata-server:18fb4bc4ba69b1d0abf4adaca2be0fa9e1ad8bb4 up strata
+15	ok	1793906684	1793907065	run strata --label strata-a-pass3
+16	ok	1793907065	1793907067	down strata
+17	ok	1793907067	1793907071	IMAGE=ghcr.io/chloetech-ai/strata-server:6d02ba6544b92f60f8b36c108d9ccbaceca7f9db up strata
+18	ok	1793907071	1793907506	run strata --label strata-b-pass3
+19	ok	1793907506	1793907508	down strata
+20	ok	1793907508	1793907576	up es
+21	ok	1793907576	1793908273	load es
+22	ok	1793908273	1793908687	run es
+23	ok	1793908687	1793909050	run es --label es-pass2
+24	ok	1793909050	1793909413	run es --label es-pass3
+25	ok	1793909413	1793909414	trial
+26	ok	1793909414	1793909485	run es --kinds hybrid (RRF),hybrid (weighted) --paid --label es-trial
+27	ok	1793909485	1793909591	writes es
+28	ok	1793909591	1793909756	stream es
+29	ok	1793909756	1793909761	down es
+30	ok	1793909761	1793909821	up os
+31	ok	1793909821	1793910708	load os
+32	ok	1793910708	1793911145	run os
+33	ok	1793911145	1793911541	run os --label os-pass2
+34	ok	1793911541	1793911934	run os --label os-pass3
+35	ok	1793911934	1793912041	writes os
+36	ok	1793912041	1793912200	stream os
+37	ok	1793912200	1793912202	down os

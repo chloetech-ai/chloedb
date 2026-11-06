@@ -1,0 +1,2 @@
+# As jobs-1m.tsv, at 10M on the 10M run's bigger-disk nodes.
+ab-10m  strata-ab+es+os  sharded  14  COLLECTION=msmarco-10000k,SHARDED_SIZE=m3-4vcpu-32gb,LOAD_HOURS=5,IMAGE_B=ghcr.io/chloetech-ai/strata-server:6d02ba6544b92f60f8b36c108d9ccbaceca7f9db

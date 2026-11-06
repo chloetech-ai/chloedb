@@ -16,7 +16,8 @@ Elasticsearch and Solr, 28 October 2026) are in
 | `compare.sh` | builds and loads the image, starts and stops each engine, loads it, runs the client |
 | `es.yaml`, `os.yaml`, `solr.yaml` | two data nodes of Elasticsearch 9.5.5, OpenSearch 3.9.0 or Solr 10.1.0 (SolrCloud, ZooKeeper embedded in `solr-0`) |
 | `vespa.yaml`, `vespa/` | Vespa 8.778.45: `vespa-0` (config server, cluster controller and the container that answers queries) and two content nodes; `vespa/package.sh` writes the application package (`services-cluster.xml`, `schemas/doc.sd`, the stopword lists); `vespa/services.xml` is the same application on one node, for trying it in Docker |
-| `strata.yaml`, `strata-coordinator.yaml` | two Strata shards and their coordinator |
+| `strata-coordinating.yaml` | two Strata shards, each with a coordinator in its pod |
+| `strata.yaml`, `strata-coordinator.yaml` | two Strata shards and a coordinator in a pod of its own (`STRATA_COORD=pod`, as before 6 November 2026) |
 | `redpanda.yaml` | one Redpanda broker for the stream test |
 | `more/*.yaml` | the nine one-node engines (`postgres.yaml` is ParadeDB's and Postgres's, as `paradedb-0` or `postgres-0`) |
 | `analyze.py` | scores the answers and prints the tables |
@@ -38,11 +39,16 @@ Elasticsearch and Solr, 28 October 2026) are in
 - **CPU and memory**: 3 CPUs and 6 GiB per engine, as Kubernetes limits:
   Elasticsearch, OpenSearch and Solr have two data nodes of 1.5 CPUs and 3
   GiB (heap 1.5 GB for Elasticsearch and OpenSearch, as Elastic recommends;
-  1 GB for Solr, whose full-precision vectors need the page cache); Strata
-  has two shards of 1 CPU and 2.5 GiB and a coordinator of 1 CPU and 1 GiB,
-  since its shards do not also coordinate (`SHARD_CPU` and `COORD_CPU`
-  split it otherwise; the results compare 1.25 + 1.25 + 0.5 too). Vespa is
-  split as Strata is, since its content nodes do not answer queries either:
+  1 GB for Solr, whose full-precision vectors need the page cache); and
+  as their data nodes also coordinate, Strata has two pods of a data
+  node's CPU and memory (`DATA_CPU`, `DATA_MEM`), each with a shard and a
+  coordinator over both shards, and the client sends its requests to both
+  coordinators. Runs before 6 November 2026 gave Strata two shards of 1
+  CPU and 2.5 GiB and a coordinator of 1 CPU and 1 GiB in a pod of its own
+  on the clients' node, where it sat mostly idle while the shards ran
+  short of CPU; `STRATA_COORD=pod` runs that split again (`SHARD_CPU` and
+  `COORD_CPU` change it; those results compare 1.25 + 1.25 + 0.5 too). Vespa is
+  split that way, since its content nodes do not answer queries:
   `vespa-0` on the clients' node (config server, cluster controller and the
   container, 1 CPU and 2.25 GiB, container heap 768 MB) and two content
   nodes of 1 CPU and 1.875 GiB. Vespa asks for 4 GB per node and refuses to
@@ -491,8 +497,12 @@ $C up os;        $C load os;   $C run os;     $C writes os;    $C stream os;    
 $C up solr;      $C load solr; $C run solr;   $C writes solr;  $C stream solr;  $C down solr
 $C up vespa;     $C load vespa; $C run vespa; $C writes vespa; $C stream vespa; $C down vespa
 python3 strata-server/deploy/compare/analyze.py $STRATA_WORK/compare $STRATA_DATA/quora
-# Strata at another split of its 3 CPUs, kept beside the default run:
+# Strata with its coordinator in a pod of its own, as before 6 November
+# 2026, at the old split and another, kept beside the default run:
+export STRATA_COORD=pod
+$C up strata; $C run strata --label strata-coord-pod; $C down strata
 SHARD_CPU=1250m COORD_CPU=500m $C up strata; $C run strata --label strata-coord500m; $C down strata
+unset STRATA_COORD
 # The nine one-node engines, one at a time:
 for e in meili typesense manticore qdrant weaviate milvus paradedb postgres redis; do
     $C up $e; $C load $e; $C run $e; $C down $e

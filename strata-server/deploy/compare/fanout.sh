@@ -7,7 +7,7 @@
 # after HOURS even if this script never runs `down`) and, per job, its own
 # pools: two SHARDED_SIZE nodes (Strata, Elasticsearch, OpenSearch, Solr,
 # Vespa) or one ONE_SIZE node (the nine one-node engines), and a CLIENT_SIZE
-# node for the client, Redpanda, Strata's coordinator and Vespa's container.
+# node for the client, Redpanda and Vespa's container.
 # A job's pools are labelled and tainted for it, and deleted as soon as its
 # reports are back. Everything is tagged strata-bench; nothing else in the
 # account is touched.
@@ -44,7 +44,8 @@
 # separated, that hold for that job only: its node sizes (ONE_SIZE,
 # SHARDED_SIZE, CLIENT_SIZE) and compare.sh's budgets (ONE_MEM,
 # REDIS_MAXMEM, ...), e.g. a node with more memory for an engine that keeps
-# everything in it.
+# everything in it, or STRATA_COORD=pod for Strata's coordinator in a pod
+# of its own on the client node (compare.sh), as before 6 November 2026.
 #
 # The engine strata-ab runs two Strata images on the same nodes, IMAGE and
 # the job's IMAGE_B, passes alternating, for a before and after that the
@@ -110,6 +111,7 @@ FILES=http://files.fanout.svc.cluster.local:8000
 # not (a pod bound by nodeName is then refused, not left pending).
 export DATA_CPU=${DATA_CPU:-3400m} DATA_MEM=${DATA_MEM:-26Gi} ES_HEAP=${ES_HEAP:-13g} OS_HEAP=${OS_HEAP:-13g} SOLR_HEAP=${SOLR_HEAP:-8g}
 export BUILD_CPU=${BUILD_CPU:-3400m} BUILD_MEM=${BUILD_MEM:-26Gi} BUILD_THREADS=${BUILD_THREADS:-4} BUILD_PARALLEL=${BUILD_PARALLEL:-1}
+# Strata's pods have DATA_CPU and DATA_MEM; these split it only with STRATA_COORD=pod.
 export SHARD_CPU=${SHARD_CPU:-2900m} SHARD_MEM=${SHARD_MEM:-24Gi} COORD_CPU=${COORD_CPU:-1} COORD_MEM=${COORD_MEM:-4Gi}
 export VESPA_CONFIG_CPU=${VESPA_CONFIG_CPU:-1} VESPA_CONFIG_MEM=${VESPA_CONFIG_MEM:-6Gi} VESPA_CONTAINER_HEAP=${VESPA_CONTAINER_HEAP:-2g}
 export VESPA_CONTENT_CPU=${VESPA_CONTENT_CPU:-2900m} VESPA_CONTENT_MEM=${VESPA_CONTENT_MEM:-23Gi}
