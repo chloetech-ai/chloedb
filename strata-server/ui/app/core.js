@@ -319,9 +319,9 @@ export function provide(x) { Object.assign(ctx, x); }
 export const isPaused = () => ctx.paused;
 
 // ---------------------------------------------------------------- scope
-const RANK = { read: 1, write: 2, admin: 3 };
+const RANK = { feed: 1, read: 2, write: 3, admin: 4 };
 /**
- * Whether the signed-in key may do this: can("read" | "write" | "admin").
+ * Whether the signed-in key may do this: can("feed" | "read" | "write" | "admin").
  * Unknown (not signed in, or whoami failed) can read only. Views hide or
  * disable what they cannot do, with `needs(scope)` as the tooltip.
  */
@@ -329,7 +329,7 @@ export function can(scope) {
   const w = ctx.whoami;
   if (!w) return scope === "read";
   if (w.root) return true;
-  return (RANK[w.scope] || 0) >= (RANK[scope] || 3);
+  return (RANK[w.scope] || 0) >= (RANK[scope] || RANK.admin);
 }
 /** The tooltip of an action the key cannot take: "needs an admin key". */
 export const needs = (scope) => `needs ${scope === "admin" ? "an admin" : `a ${scope}`} key`;

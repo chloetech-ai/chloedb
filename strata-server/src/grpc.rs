@@ -101,10 +101,11 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// map, every shard's servers, and takes `Configure` ([`CLUSTER_PROTOCOL`]),
 /// 10 answers a compound query's leaf as Arrow columns
 /// ([`ARROW_PROTOCOL`]), 11 reads rows by key without SQL (`Get`,
-/// [`GET_PROTOCOL`]), and 12 names the version BM25 statistics came from,
-/// so that a coordinator can keep them ([`STATS_VERSION_PROTOCOL`]).
+/// [`GET_PROTOCOL`]), 12 names the version BM25 statistics came from,
+/// so that a coordinator can keep them ([`STATS_VERSION_PROTOCOL`]), and
+/// 13 answers a shard's feed (`Feed`, [`FEED_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 12;
+pub const PROTOCOL: u32 = 13;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -134,6 +135,13 @@ pub const GET_PROTOCOL: u32 = 11;
 /// `QueryResponse.stale`): what a coordinator's cache of term statistics
 /// needs ([`crate::coord::StatsCache`]).
 pub const STATS_VERSION_PROTOCOL: u32 = 12;
+
+/// The protocol of `Feed`, a shard's changes for another cluster to follow
+/// ([`crate::service::Service::feed`]).
+pub const FEED_PROTOCOL: u32 = 13;
+
+/// The most bytes of a feed one `FeedChunk` carries.
+const FEED_CHUNK: usize = 1 << 20;
 
 /// The first protocol all of whose coordinators fuse a rank-safe boost
 /// (`bm25(body, :t) * decay(year, 2015, 3)`) from the rows each shard's
@@ -266,7 +274,7 @@ pub fn code_name(c: tonic::Code) -> &'static str {
 /// Every method is named, so that a new one must say what it needs.
 fn method_scope(method: &str) -> Option<Scope> {
     match method {
-        "Replicate" | "Restore" | "Verify" | "Vote" | "Slots" | "Configure" | "ExportSlots" | "FreezeSlots" | "CleanupSlots" | "Write (moved)" | "Keys" => None,
+        "Replicate" | "Restore" | "Verify" | "Vote" | "Slots" | "Configure" | "ExportSlots" | "FreezeSlots" | "CleanupSlots" | "Write (moved)" | "Keys" | "Feed" => None,
         "Write" | "WriteStream" => Some(Scope::Write),
         "Logs" | "Profile" => Some(Scope::Admin),
         "Query" | "TermStats" | "GuardCounts" | "SidNext" | "Sources" | "Schema" | "Hello" | "Release" | "Health" | "Get" => Some(Scope::Read),
@@ -622,6 +630,14 @@ impl pb::strata_server::Strata for Grpc {
             .await?
             .into_inner();
         Ok(Response::new(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx).map(|c| c.map_err(Status::from)))))
+    }
+
+    type FeedStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::FeedChunk, Status>> + Send>>;
+
+    async fn feed(&self, req: Request<pb::FeedRequest>) -> Result<Response<Self::FeedStream>, Status> {
+        let rx = self.serve("Feed", req, |svc, _who, r| async move { svc.feed(r.from, (r.after_term > 0).then_some(r.after_term)).await }).await?.into_inner();
+        let chunks = tokio_stream::wrappers::ReceiverStream::new(rx).flat_map(|lines| futures::stream::iter(lines.chunks(FEED_CHUNK).map(|c| Ok(pb::FeedChunk { lines: c.to_vec() })).collect::<Vec<_>>()));
+        Ok(Response::new(Box::pin(chunks)))
     }
 
     async fn freeze_slots(&self, req: Request<pb::FreezeRequest>) -> Result<Response<pb::FreezeResponse>, Status> {

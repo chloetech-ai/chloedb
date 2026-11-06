@@ -65,6 +65,10 @@ use crate::ApiError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
+    /// The feed alone, for another cluster to follow this one
+    /// (`/v1/feed`), and whether the server is up (`/v1/health`,
+    /// `/v1/whoami`): every row, as it is written, but no query.
+    Feed,
     Read,
     Write,
     Admin,
@@ -73,6 +77,7 @@ pub enum Scope {
 impl Scope {
     pub fn parse(s: &str) -> Option<Scope> {
         match s.to_ascii_lowercase().as_str() {
+            "feed" => Some(Scope::Feed),
             "read" => Some(Scope::Read),
             "write" => Some(Scope::Write),
             "admin" => Some(Scope::Admin),
@@ -82,6 +87,7 @@ impl Scope {
 
     pub fn name(self) -> &'static str {
         match self {
+            Scope::Feed => "feed",
             Scope::Read => "read",
             Scope::Write => "write",
             Scope::Admin => "admin",

@@ -1502,6 +1502,17 @@ impl Database {
         st.ship.read(from, st.seq, max_bytes)
     }
 
+    /// [`Database::log_from`], with what the log is read against, under
+    /// one lock: the tables (by id, `_sources` among them once made) and
+    /// the numbering as of the log's last transaction. `None` in a
+    /// database that does not number its writes.
+    pub(crate) fn log_with_tables(&self, from: u64, max_bytes: usize) -> Option<(Vec<(u32, Arc<Schema>)>, Numbering, LogRead)> {
+        let st = lock(&self.state);
+        let n = st.manifest.seq_no.clone().map(|n| Numbering { seq: st.seq, ..n })?;
+        let tables = st.tables.iter().map(|t| (t.id, t.schema.clone())).collect();
+        Some((tables, n, st.ship.read(from, st.seq, max_bytes)))
+    }
+
     /// Whether it keeps a ship log ([`DbOptions::ship_log_bytes`]).
     pub fn keeps_ship_log(&self) -> bool {
         self.opts.ship_log_bytes > 0
@@ -4059,6 +4070,18 @@ impl<'a> WriteTxn<'a> {
             return Err(Error::Schema(format!("the database has no {SOURCES} table yet: Database::ensure_sources makes it")));
         }
         self.table(SOURCES)?.upsert(vec![Value::Str(name.to_string()), Value::Int(offset), Value::Timestamp(now)])
+    }
+
+    /// Logs `offset` as source `name`'s in this transaction, as
+    /// [`WriteTxn::set_source`] does, without keeping it: the row is
+    /// written and deleted again, so that `_sources` is left as it was and
+    /// only a reader of the log ([`crate::storage::feed`]) finds it. A mark
+    /// a server puts on a transaction of its own. The database needs the
+    /// table first ([`Database::ensure_sources`]).
+    pub fn mark_source(&mut self, name: &str, offset: i64, now: i64) -> Result<()> {
+        self.set_source(name, offset, now)?;
+        self.table(SOURCES)?.delete(&Value::Str(name.to_string()))?;
+        Ok(())
     }
 
     /// Inserts a document; its primary key must not be live.
