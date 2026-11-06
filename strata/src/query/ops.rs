@@ -1306,18 +1306,19 @@ impl<'a> Ops<'a, '_> {
                         groups.len() - 1
                     }
                 };
+                // A percentile holds its values.
+                let mut more = 0;
                 for (acc, arg) in groups[g].1.iter_mut().zip(&args) {
                     match arg {
                         None => acc.add_row(),
                         Some(a) => match value(a, r)? {
-                            Value::List(xs) => xs.iter().for_each(|x| {
-                                acc.add(x);
-                            }),
-                            v => {
-                                acc.add(&v);
-                            }
+                            Value::List(xs) => xs.iter().for_each(|x| more += acc.add(x)),
+                            v => more += acc.add(&v),
                         },
                     }
+                }
+                if more > 0 {
+                    self.charge.add(more)?;
                 }
                 let Some(k) = (0..pick.len()).rev().find(|&k| pick[k] + 1 < each[k].len()) else { break };
                 pick[k] += 1;
@@ -1328,7 +1329,13 @@ impl<'a> Ops<'a, '_> {
         if groups.is_empty() && keys.is_empty() {
             groups.push((Vec::new(), new_accs()));
         }
-        let out = groups.into_iter().map(|(vals, accs)| vals.into_iter().chain(accs.iter().map(Acc::value)).collect()).collect();
+        let out = groups
+            .into_iter()
+            .map(|(vals, mut accs)| {
+                accs.iter_mut().for_each(Acc::settle);
+                vals.into_iter().chain(accs.iter().map(Acc::value)).collect()
+            })
+            .collect();
         Ok(Rows { columns: (0..keys.len() + aggs.len()).map(|i| format!("#{i}")).collect(), rows: out, keys: None, scores: None })
     }
 

@@ -28,7 +28,7 @@ pub const PER_CAP: &str = "__max_per";
 pub fn parse(sql_text: &str) -> Result<Vec<Statement>> {
     let dialect = GenericDialect {};
     let located = Tokenizer::new(&dialect, sql_text).tokenize_with_location().map_err(|e| Error::Query(format!("SQL syntax error: {e}")))?;
-    let tokens = per_caps(located);
+    let tokens = within_groups(per_caps(located))?;
     let plain: Vec<Token> = tokens.iter().map(|t| t.token.clone()).collect();
     check_depth(&plain)?;
     Parser::new(&dialect).with_tokens_with_locations(tokens).parse_statements().map_err(|e| Error::Query(syntax_error(&e.to_string(), sql_text)))
@@ -206,6 +206,85 @@ fn per_caps(located: Vec<TokenWithSpan>) -> Vec<TokenWithSpan> {
     out
 }
 
+/// `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` (and `PERCENTILE_DISC`)
+/// as the call `PERCENTILE_CONT(x, p)` it means, so that every reader of
+/// calls finds the column among the arguments. An ascending order is the
+/// only one: `DESC` is refused.
+fn within_groups(located: Vec<TokenWithSpan>) -> Result<Vec<TokenWithSpan>> {
+    let word = |t: &Token, w: &str| matches!(t, Token::Word(x) if x.quote_style.is_none() && x.value.eq_ignore_ascii_case(w));
+    let n = located.len();
+    let tok = |i: usize| &located[i].token;
+    // The next token from `i` that is not whitespace.
+    let next = |i: usize| (i..n).find(|&j| !matches!(tok(j), Token::Whitespace(_)));
+    // The parenthesis closing the one at `i`.
+    let close = |i: usize| {
+        let mut depth = 0usize;
+        for j in i..n {
+            match tok(j) {
+                Token::LParen => depth += 1,
+                Token::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(j);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    };
+    let mut out: Vec<TokenWithSpan> = Vec::with_capacity(n);
+    let mut i = 0;
+    while i < n {
+        let call = word(tok(i), "PERCENTILE_CONT") || word(tok(i), "PERCENTILE_DISC");
+        let open = if call { next(i + 1).filter(|&j| *tok(j) == Token::LParen) } else { None };
+        // `name ( p ) WITHIN GROUP ( ORDER BY x )`
+        let parts = open.and_then(|a| {
+            let a_end = close(a)?;
+            let within = next(a_end + 1).filter(|&j| word(tok(j), "WITHIN"))?;
+            let group = next(within + 1).filter(|&j| word(tok(j), "GROUP"))?;
+            let g = next(group + 1).filter(|&j| *tok(j) == Token::LParen)?;
+            let order = next(g + 1).filter(|&j| word(tok(j), "ORDER"))?;
+            let by = next(order + 1).filter(|&j| word(tok(j), "BY"))?;
+            let g_end = close(g)?;
+            Some((a, a_end, by, g_end))
+        });
+        let Some((a, a_end, by, g_end)) = parts else {
+            out.push(located[i].clone());
+            i += 1;
+            continue;
+        };
+        // The column, without a trailing ASC or NULLS FIRST or LAST (the
+        // values leave NULLs out); DESC is refused.
+        let trim = |mut e: usize| {
+            while e > by + 1 && matches!(tok(e - 1), Token::Whitespace(_)) {
+                e -= 1;
+            }
+            e
+        };
+        let mut x_end = trim(g_end);
+        if x_end > by + 2 && (word(tok(x_end - 1), "FIRST") || word(tok(x_end - 1), "LAST")) {
+            let nulls = trim(x_end - 1);
+            if nulls > by + 1 && word(tok(nulls - 1), "NULLS") {
+                x_end = trim(nulls - 1);
+            }
+        }
+        if x_end > by + 1 && word(tok(x_end - 1), "DESC") {
+            let name = tok(i).to_string().to_uppercase();
+            return Err(Error::Query(format!("{name}(p) WITHIN GROUP (ORDER BY x DESC): percentiles order ascending only; write {name}(1 - p) WITHIN GROUP (ORDER BY x)")));
+        }
+        if x_end > by + 1 && word(tok(x_end - 1), "ASC") {
+            x_end = trim(x_end - 1);
+        }
+        out.extend(located[i..=a].iter().cloned());
+        out.extend(located[by + 1..x_end].iter().cloned());
+        out.push(TokenWithSpan { token: Token::Comma, span: located[a].span });
+        out.extend(located[a + 1..=a_end].iter().cloned());
+        i = g_end + 1;
+    }
+    Ok(out)
+}
+
 /// `sql` printed from a parsed statement, its [`PER_CAP`] calls written
 /// back as `MAX k PER field`.
 pub fn unparse_per_caps(sql: &str) -> String {
@@ -328,6 +407,18 @@ mod tests {
         for q in ["SELECT id FROM t ORDER BY n DESC MAX 2 PER venue LIMIT 20", "SELECT id FROM t WHERE id IN (SELECT id FROM t ORDER BY n MAX 3 PER a.v) LIMIT 5"] {
             assert_eq!(unparse_per_caps(&as_sql(q)), q);
         }
+    }
+
+    #[test]
+    fn within_group_parses_as_the_column_and_fraction() {
+        let one = |q: &str| parse(q).unwrap().remove(0).to_string();
+        assert_eq!(one("SELECT percentile_cont(0.25) WITHIN GROUP (ORDER BY price) FROM t"), "SELECT percentile_cont(price, 0.25) FROM t");
+        assert_eq!(one("SELECT PERCENTILE_DISC((0.5)) within group (order by t.price ASC) AS p FROM t GROUP BY item"), "SELECT PERCENTILE_DISC(t.price, (0.5)) AS p FROM t GROUP BY item");
+        assert_eq!(one("SELECT percentile_cont(:p) WITHIN GROUP (ORDER BY price * 2 ASC NULLS FIRST) FROM t"), "SELECT percentile_cont(price * 2, :p) FROM t");
+        // The two-argument call, and a column named so, stay as written.
+        assert_eq!(one("SELECT percentile_disc(price, 0.5), percentile_cont FROM t"), "SELECT percentile_disc(price, 0.5), percentile_cont FROM t");
+        let e = parse("SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY price DESC) FROM t").unwrap_err().to_string();
+        assert!(e.contains("ascending only"), "{e}");
     }
 
     #[test]
