@@ -82,6 +82,11 @@ pub trait FieldIndexBuilder: Send {
     fn add(&mut self, doc: DocId, value: &Value) -> Result<()>;
     /// Writes this field's sections.
     fn finish(self: Box<Self>, out: &mut SegmentWriter) -> Result<()>;
+    /// The value of a partitioned VECTOR field's partition key for document
+    /// `doc` ([`crate::schema::VectorPartition`]), after its own value.
+    fn partition_key(&mut self, _doc: DocId, _key: &Value) -> Result<()> {
+        Ok(())
+    }
     /// Keeps what grows with every document added (a vector field's
     /// float32 rows) in `spill` instead of in memory, where the builder
     /// can; called before the first document. A builder that cannot

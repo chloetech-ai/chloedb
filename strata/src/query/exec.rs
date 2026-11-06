@@ -230,6 +230,11 @@ pub struct ExecOptions {
     /// at the first that cannot reach them. False reads every matching
     /// row (for comparisons).
     pub column_blocks: bool,
+    /// Search a VECTOR field's partitions ([`crate::schema::VectorPartition`])
+    /// where a filter limits its key and the cost model expects them to be
+    /// faster. False plans as if the field had none (for comparisons);
+    /// `strategy => 'partition'` still uses them.
+    pub vector_partitions: bool,
     /// Collection statistics to score BM25 with instead of this database's
     /// own, so that a shard of a larger collection scores like the whole
     /// of it ([`crate::query::stats`]). Terms missing from it use local
@@ -355,6 +360,7 @@ impl Default for ExecOptions {
             rank_safe: true,
             boost_inputs: true,
             column_blocks: true,
+            vector_partitions: true,
             stats: None,
             expansions: None,
             filter_cache: None,
@@ -3215,7 +3221,16 @@ impl<'a> Executor<'a> {
             return Err(err(crate::query::sql::multi_similarity(&self.schema.fields[field].name)));
         }
         let base = self.search_params(opts);
-        let forced = match opts.get("strategy").and_then(|v| v.as_str()) {
+        let strategy_opt = opts.get("strategy").and_then(|v| v.as_str());
+        // Partitions are weighed when nothing is forced, and used wherever
+        // they apply when asked for.
+        let parts_opt = match strategy_opt {
+            Some("partition") => Some(true),
+            None | Some("auto") if self.opts.vector.is_none() && self.opts.vector_partitions => Some(false),
+            _ => None,
+        };
+        let forced = match strategy_opt {
+            Some("partition") => None,
             Some("prefilter") => Some(VectorStrategy::PreFilter),
             Some("postfilter") => Some(VectorStrategy::PostFilter),
             Some("index") | Some("ivf") | Some("hnsw") => Some(VectorStrategy::InIndex),
@@ -3227,6 +3242,13 @@ impl<'a> Executor<'a> {
         let per = self.per_segment(|ex, s, l| {
             let vr = ex.vector(s, field)?;
             let has_index = vr.index_kind() != "flat";
+            if let Some(must) = parts_opt {
+                if let Some(pick) = ex.partition_pick(field, vr, p) {
+                    if let Some(hits) = ex.partition_search(s, vr, field, q, &base, k, p, pick, must, l)? {
+                        return Ok(hits);
+                    }
+                }
+            }
             // The selectivity sample's search, which a post-filter goes on from.
             let mut sample = vector::Sample::default();
             let (strategy, mode) = {
@@ -3264,6 +3286,148 @@ impl<'a> Executor<'a> {
             Ok(out.hits.into_iter().map(|h| Hit { seg: s.ord, doc: h.doc, score: h.score as f64 }).collect::<Vec<_>>())
         })?;
         Ok(merge_top(per.concat(), k))
+    }
+
+    /// The partitions of segment reader `vr`'s graph of partitioned field
+    /// `field` ([`crate::schema::VectorPartition`]) that a search under `p`
+    /// needs, when `p` limits the partition key: a top-level condition of
+    /// `p` on the key (a range of a numeric key, values of a KEYWORD one)
+    /// names the partitions whose rows can pass it. None when `p` does not
+    /// limit the key, or limits it to values without a partition here.
+    fn partition_pick(&self, field: usize, vr: &VectorReader, p: &Pred) -> Option<PartPick> {
+        let part = self.schema.fields[field].partition.as_ref()?;
+        let info = vr.partitions()?;
+        let key = self.schema.field_index(&part.by)?;
+        if info.bounds != part.bounds {
+            return None;
+        }
+        let conjuncts: &[Pred] = match p {
+            Pred::And(cs) => cs,
+            p => std::slice::from_ref(p),
+        };
+        // The first condition on the key decides; the others stay a filter.
+        let at = conjuncts.iter().position(|c| match c {
+            Pred::Range { field: f, .. } | Pred::IntRange { field: f, .. } | Pred::In { field: f, .. } => *f == key,
+            _ => false,
+        })?;
+        let bound = |b: Option<usize>, lo: bool| -> f64 {
+            let b = b.unwrap_or(0);
+            match lo {
+                true if b == 0 => f64::NEG_INFINITY,
+                true => info.bounds[b - 1],
+                false if b == info.bounds.len() => f64::INFINITY,
+                false => info.bounds[b],
+            }
+        };
+        // (meets, covers) of each partition: some of its rows can pass the
+        // condition, every one of them does.
+        let test = |pi: &vector::PartInfo| -> (bool, bool) {
+            let (lo_b, hi_b) = (bound(pi.bucket, true), bound(pi.bucket, false));
+            match &conjuncts[at] {
+                Pred::Range { lo, hi, .. } if pi.bucket.is_some() => (*lo < hi_b && *hi >= lo_b, *lo <= lo_b && *hi >= hi_b.next_down()),
+                Pred::IntRange { lo, hi, .. } if pi.bucket.is_some() => {
+                    // The integers of [lo_b, hi_b).
+                    let first = if lo_b.is_finite() { lo_b.ceil() as i64 } else { i64::MIN };
+                    let last = if hi_b.is_finite() { hi_b.ceil() as i64 - 1 } else { i64::MAX };
+                    (*lo <= last && *hi >= first, *lo <= first && *hi >= last)
+                }
+                Pred::In { values, .. } => match &pi.value {
+                    Some(v) => (values.iter().any(|x| x.as_str() == Some(v)), true),
+                    None => {
+                        let meets = values.iter().any(|x| match x {
+                            Value::Int(i) => (lo_b..hi_b).contains(&(*i as f64)),
+                            Value::Float(f) => (lo_b..hi_b).contains(f),
+                            _ => false,
+                        });
+                        (meets, false)
+                    }
+                },
+                _ => (false, false),
+            }
+        };
+        let mut pick = PartPick { parts: Vec::new(), covered: true, rest: Pred::True, rows: 0 };
+        for (i, pi) in info.parts.iter().enumerate() {
+            let (meets, covers) = test(pi);
+            if meets {
+                pick.parts.push(i);
+                pick.covered &= covers;
+                pick.rows += pi.n;
+            }
+        }
+        // A KEYWORD value without a partition may still have rows here.
+        if !info.complete {
+            let Pred::In { values, .. } = &conjuncts[at] else { return None };
+            if !values.iter().all(|x| info.parts.iter().any(|pi| pi.value.as_deref() == x.as_str())) {
+                return None;
+            }
+        }
+        let rest: Vec<Pred> = conjuncts.iter().enumerate().filter(|&(i, _)| i != at).map(|(_, c)| c.clone()).collect();
+        pick.rest = match rest.len() {
+            0 => Pred::True,
+            1 => rest.into_iter().next().unwrap(),
+            _ => Pred::And(rest),
+        };
+        Some(pick)
+    }
+
+    /// A search of segment `s` over the partitions `pick` names, when the
+    /// cost model expects it to be cheaper than the plan without them (or
+    /// `must`): the rows of `pick`'s partitions are walked, testing what of
+    /// `p` the partitions do not already guarantee. None when the plan
+    /// without partitions is cheaper.
+    #[allow(clippy::too_many_arguments)]
+    fn partition_search(&self, s: &Seg<'a>, vr: &VectorReader, field: usize, q: &[f32], base: &SearchParams, k: usize, p: &Pred, pick: PartPick, must: bool, l: &mut Local) -> Result<Option<Vec<Hit>>> {
+        if pick.parts.is_empty() {
+            l.plan.push(format!("seg {}: vector partitions: none can hold a match", s.ord));
+            return Ok(Some(Vec::new()));
+        }
+        // What the walk tests: nothing when the partitions guarantee the
+        // condition on the key and nothing else is asked (deleted rows
+        // aside), the rest of the filter when it can be probed, else all of it.
+        let est = SegEst { ex: self, s, params: Some((field, base.clone())), local_sel: None };
+        let planner = self.planner(&est);
+        let (test, mode) = match (&pick.rest, pick.covered) {
+            (Pred::True, true) => (Pred::True, FilterMode::None),
+            (rest, true) if planner.estimate(rest).probeable => (rest.clone(), FilterMode::Probe),
+            _ => {
+                let e = planner.estimate(p);
+                (p.clone(), if e.probeable { FilterMode::Probe } else { FilterMode::Materialize })
+            }
+        };
+        if !must {
+            let n = est.n_docs().max(1.0);
+            // The tested filter's share of the partitions' rows, taken as
+            // independent of the partitions unless it is the whole filter.
+            let share = match (&test, pick.covered) {
+                (Pred::True, _) => None,
+                (t, true) => Some(planner.estimate(t).card / n),
+                (_, false) => Some((planner.estimate(p).card / pick.rows as f64).min(1.0)),
+            };
+            let info = vr.partitions().expect("picked");
+            let m = vr.shape().hnsw_m;
+            let cost: f64 = pick
+                .parts
+                .iter()
+                .map(|&i| {
+                    let rows = info.parts[i].n;
+                    let shape = vector::IndexShape { n: rows, kind: "hnsw".into(), nlist: 1, hnsw_m: m };
+                    let card = share.map(|x| ((x * rows as f64).ceil() as usize).max(1));
+                    vr.cost_model().estimate(&shape, vector::Strategy::Hnsw, k, card, base)
+                })
+                .sum();
+            let (_, _, plain) = planner.vector_plan(field, p, k, true);
+            if cost >= plain {
+                l.plan.push(format!("seg {}: vector partitions predicted {cost:.0} µs, plan without them {plain:.0} µs", s.ord));
+                return Ok(None);
+            }
+        }
+        let f = self.seg_filter_l(s, &test, mode, l)?;
+        let out = vr.search_parts(q, k, base, &pick.parts, f.as_dyn());
+        l.scored += out.stats.candidates as u64;
+        let info = vr.partitions().expect("picked");
+        let names: Vec<String> = pick.parts.iter().map(|&i| info.parts[i].value.clone().unwrap_or_else(|| format!("range {}", info.parts[i].bucket.unwrap_or(0)))).collect();
+        l.plan.push(format!("seg {}: vector partitions {} ({} of {} rows), filter {}", s.ord, names.join(", "), pick.rows, vr.n_docs(), if test == Pred::True { "none".to_string() } else { format!("{mode:?}") }));
+        Ok(Some(out.hits.into_iter().map(|h| Hit { seg: s.ord, doc: h.doc, score: h.score as f64 }).collect()))
     }
 
     /// Top-`k` by `maxsim`: the union of each query vector's top `k` by
@@ -4631,4 +4795,18 @@ fn value_keys(col: &NumericColumn, v: &Value) -> Option<KeyRange> {
         Value::Int(x) => col.int_key_range(*x, *x),
         v => v.as_f64().and_then(|x| col.key_range(x, x)),
     }
+}
+
+/// The partitions of a segment a filtered vector search can walk instead of
+/// the field's whole graph ([`Executor::partition_pick`]).
+struct PartPick {
+    /// Positions in the segment's [`vector::PartitionsInfo::parts`].
+    parts: Vec<usize>,
+    /// Whether every row of those partitions passes the filter's condition
+    /// on the key.
+    covered: bool,
+    /// The filter without that condition.
+    rest: Pred,
+    /// The partitions' rows.
+    rows: usize,
 }

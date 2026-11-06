@@ -155,6 +155,9 @@ pub struct SegmentBuild<'a> {
     added: usize,
     /// The field of each slot, and the slot (taken when written).
     fields: Vec<usize>,
+    /// The partition key's field of each slot of a partitioned VECTOR
+    /// field ([`crate::schema::VectorPartition`]).
+    part_keys: Vec<Option<usize>>,
     slots: Vec<Mutex<Option<Slot>>>,
     store: Mutex<Option<StoreBuilder>>,
     /// Every document's primary key so far, for the key index and EDGES
@@ -200,6 +203,7 @@ impl<'a> SegmentBuild<'a> {
                 slots.push(Mutex::new(Some(slot)));
             }
         }
+        let part_keys = fields.iter().map(|&i| schema.fields[i].partition.as_ref().and_then(|p| schema.field_index(&p.by))).chain(std::iter::repeat(None)).take(fields.len() + 1).collect();
         if let (Some(b), Some((src, ..))) = (crate::graph::edge_table::builder(schema), schema.edge_fields()) {
             fields.push(src);
             slots.push(Mutex::new(Some(Slot::Edges(b))));
@@ -209,7 +213,7 @@ impl<'a> SegmentBuild<'a> {
             Some(pk) => KeyList::new(&schema.fields[pk].ty)?,
             None => KeyList::of(false),
         };
-        Ok(SegmentBuild { schema, opts, threads, n_docs, added: 0, fields, slots, store, keys, spill: None })
+        Ok(SegmentBuild { schema, opts, threads, n_docs, added: 0, fields, part_keys, slots, store, keys, spill: None })
     }
 
     /// Writes each section to `spill` as it is finished, and what grows
@@ -302,7 +306,7 @@ impl<'a> SegmentBuild<'a> {
         if last {
             tasks.push(Task::Keys);
         }
-        let (fields, slots, store, keys, spill) = (&self.fields, &self.slots, &self.store, &self.keys, &self.spill);
+        let (fields, part_keys, slots, store, keys, spill) = (&self.fields, &self.part_keys, &self.slots, &self.store, &self.keys, &self.spill);
         let run = |task: Task| -> Result<Option<SegmentWriter>> {
             let t = Instant::now();
             let mut out = Self::writer(spill, n_docs);
@@ -314,6 +318,9 @@ impl<'a> SegmentBuild<'a> {
                         Slot::Index(b) => {
                             for (d, doc) in docs.iter().enumerate() {
                                 b.add((base + d) as DocId, &doc[i])?;
+                                if let Some(k) = part_keys[j] {
+                                    b.partition_key((base + d) as DocId, &doc[k])?;
+                                }
                             }
                         }
                         Slot::Graph(b) => {

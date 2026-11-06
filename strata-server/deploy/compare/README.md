@@ -76,6 +76,17 @@ Elasticsearch and Solr, 28 October 2026) are in
   from disk when memory is short (Vespa warns that paged HNSW vectors are
   slow when they do not fit), with `targetHits` 10 and
   `exploreAdditionalHits` 54.
+- **Filtered vectors**: Strata's vector field is partitioned by `rating`
+  (`partition_by = 'rating', partition_bounds = '1, 2, 3, 4'`). Besides
+  its graph of every row, each segment keeps a graph for each range of
+  ratings, over the same codes. `vector + filter` (`rating >= 4`) and
+  `similar items` (`rating >= 3`) walk the graphs of the ranges they
+  cover, and test nothing in a range whose every row passes. Like an
+  index on a column a workload filters by, this is a schema choice made
+  for these two kinds. The other engines search their one graph with the
+  filter applied during the search: Qdrant with a `float` payload index
+  on `rating`, Weaviate with a range index, Milvus with an `STL_SORT`
+  index. Runs before 6 November 2026 built Strata without the partitions.
 - **Segments**: Strata builds its shards as one segment each
   up to 500K documents; a bigger shard is loaded in segments of 500K and
   then compacted as `optimize` does, into segments of up to Strata's cap of
