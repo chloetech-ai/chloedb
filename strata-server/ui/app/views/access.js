@@ -365,7 +365,7 @@ function render(page, r) {
   function names() {
     const m = {};
     for (const e of audit?.changes || []) {
-      const x = /created key (.+?) \(([0-9a-f]{8,}), (read|write|admin)\)/.exec(e.detail || "");
+      const x = /created key (.+?) \(([0-9a-f]{8,}), (feed|read|write|admin)\)/.exec(e.detail || "");
       if (x) m[x[2]] = x[1];
     }
     for (const k of keysJ?.keys || []) m[k.id] = k.name;
@@ -377,7 +377,7 @@ function render(page, r) {
     if (listed.length || !audit || audit.kinds) return listed;
     const made = {}, gone = [];
     for (const e of audit.changes) {
-      const c = /created key (.+?) \(([0-9a-f]{8,}), (read|write|admin)\)/.exec(e.detail || "");
+      const c = /created key (.+?) \(([0-9a-f]{8,}), (feed|read|write|admin)\)/.exec(e.detail || "");
       if (c && e.status < 400) made[c[2]] = { name: c[1], scope: c[3], created_ms: e.ts_ms, created_by: whoName(e) };
       const v = /revoked key ([0-9a-f]{8,})/.exec(e.detail || "");
       if (v && e.status < 400) gone.push({ id: v[1], revoked_ms: e.ts_ms, revoked_by: e.who });
@@ -575,7 +575,7 @@ function render(page, r) {
   /** A detail made readable: names for key ids and copies, short versions. */
   function words(d) {
     const ns = names();
-    let s = d.replace(/\(([0-9a-f]{16}), (read|write|admin)\)/g, "($2)")
+    let s = d.replace(/\(([0-9a-f]{16}), (feed|read|write|admin)\)/g, "($2)")
       .replace(/\bkey ([0-9a-f]{16})\b/g, (m, id) => `key ${ns[id] || id.slice(0, 8)}`)
       .replace(/https?:\/\/[^\s,;)]+/g, (u) => (core.copyName ? core.copyName(u) : u))
       .replace(/(?:[a-z0-9.-]+(?::\d+)?\/)+[a-z0-9._-]+(?::[\w.-]+|@sha256:[0-9a-f]{64})/gi, shortImage);

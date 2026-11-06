@@ -291,7 +291,7 @@ struct Args {
     slow_ms: u64,
     /// The API keys' file (default: DB.keys.json beside --db; a
     /// coordinator keeps its keys in memory without it, and takes them
-    /// from its shards when it starts). Keys have scopes (read, write,
+    /// from its shards when it starts). Keys have scopes (feed, read, write,
     /// admin), are made in the UI or with POST /v1/admin/keys, and are
     /// passed on to the cluster's other servers.
     #[arg(long)]
