@@ -891,14 +891,14 @@ async fn stats(State(app): State<App>) -> AxJson<Json> {
 async fn schema(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
     let s = match q.get("table") {
         Some(t) => app.svc.table(t).await?,
-        None => app.svc.first_table(),
+        None => app.svc.default_table()?,
     };
     Ok(AxJson(table_json(&app.svc, &s)))
 }
 
 /// Every table's schema, the first first.
 async fn tables(State(app): State<App>) -> AxJson<Json> {
-    let tables: Vec<Json> = app.svc.catalog_now().await.iter().map(|s| table_json(&app.svc, s)).collect();
+    let tables: Vec<Json> = app.svc.tables_listed().await.iter().map(|s| table_json(&app.svc, s)).collect();
     AxJson(json!({"tables": tables}))
 }
 
@@ -1237,7 +1237,7 @@ async fn write(State(app): State<App>, headers: HeaderMap, AxJson(mut b): AxJson
     // A write from the command center is audited whatever its answer: its
     // table is its first operation's.
     let shown = keys::caller().is_some_and(|c| c.command_center()).then(|| {
-        let table = ops.iter().find_map(|op| op["table"].as_str().map(String::from)).unwrap_or_else(|| app.svc.first_table().table.clone());
+        let table = ops.iter().find_map(|op| op["table"].as_str().map(String::from)).unwrap_or_else(|| app.svc.default_table().map_or_else(|_| app.svc.first_table().table.clone(), |t| t.table.clone()));
         (Json::Array(ops.clone()).to_string(), table)
     });
     let note = |rows: Option<u64>, shards: Option<&Json>| {
@@ -1447,7 +1447,7 @@ async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
         (None, Some(t)) => (format!("tables {t}"), None),
         (None, None) if body.starts_with(strata::sqlite::MAGIC) => ("the tables of a SQLite file".to_string(), None),
         (None, None) => {
-            let t = app.svc.first_table().table.clone();
+            let t = app.svc.default_table().map_or_else(|_| app.svc.first_table().table.clone(), |t| t.table.clone());
             (format!("table {t}"), Some(t))
         }
     };
@@ -1735,7 +1735,7 @@ async fn ndjson(svc: Arc<Service>, body: axum::body::Body, tx: tokio::sync::mpsc
     // Lines read, and lines committed.
     let (mut read, mut done) = (0u64, 0u64);
     let mut tables = std::collections::BTreeSet::new();
-    let first_table = svc.first_table().table.clone();
+    let first_table = svc.default_table().map_or_else(|_| svc.first_table().table.clone(), |t| t.table.clone());
     let end = |s: &Stream, done: u64, tables: std::collections::BTreeSet<String>, error: Option<ApiError>| StreamEnd { written: s.written, lines: done, tables, error };
     while let Some(first) = lines.recv().await {
         let mut next = Some(first);

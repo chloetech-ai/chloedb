@@ -75,7 +75,7 @@ pub struct Fit {
 
 /// Fills in `cluster` (a StrataCluster's spec, in part) for `nodes` of
 /// `node`: the shards (2), copies of each (3), coordinators (1), the image,
-/// 10,000 demo rows without a schema, each copy's volume of `volume_gb`
+/// each copy's volume of `volume_gb`
 /// in `storage_class`, and each copy's requests, a little under its share
 /// of the busiest node. `Err` when the spec is not one the operator takes.
 pub fn fit(cluster: &Json, nodes: u32, node: &Node, volume_gb: u32, storage_class: &str) -> Result<Fit, String> {
@@ -112,9 +112,6 @@ pub fn fit(cluster: &Json, nodes: u32, node: &Node, volume_gb: u32, storage_clas
     o.entry("replicas").or_insert(json!(replicas));
     o.entry("coordinators").or_insert(json!(coordinators));
     o.entry("image").or_insert(json!(IMAGE));
-    if !o.contains_key("schema") {
-        o.entry("demo").or_insert(json!(10_000));
-    }
     let storage = o.entry("storage").or_insert(json!({}));
     if let Some(s) = storage.as_object_mut() {
         s.entry("size").or_insert(json!(format!("{volume_gb}Gi")));
@@ -224,7 +221,8 @@ mod tests {
         let without = fit(&json!({"shards": 4, "replicas": 2, "rollout": {"extraCopies": false}}), 4, &Node { vcpu: 8, alloc_gib: 57.5, system_cpu: 0.5 }, 50, "do-block-storage").unwrap();
         assert!((without.copy_cpu - (8.0 - 0.5 - 0.4) / 2.0).abs() < 1e-9);
         assert_eq!(f.cluster["storage"], json!({"size": "50Gi", "storageClassName": "do-block-storage"}));
-        assert_eq!((f.cluster["demo"].as_u64(), f.cluster["image"].as_str()), (Some(10_000), Some(IMAGE)));
+        // No demo rows unless asked: the cluster starts with no tables.
+        assert_eq!((f.cluster.get("demo"), f.cluster["image"].as_str()), (None, Some(IMAGE)));
         assert_eq!(f.warnings(4), Vec::<String>::new());
         // What was given is kept.
         let f = fit(&json!({"replicas": 1, "demo": 50, "storage": {"size": "5Gi"}}), 2, &Node { vcpu: 2, alloc_gib: 1.0, system_cpu: 0.25 }, 10, "gp3").unwrap();

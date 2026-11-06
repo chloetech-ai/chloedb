@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! strata-server --demo 20000 --db products.strata      # a demo catalogue, UI at http://127.0.0.1:7700
-//! strata-server --db my.strata                         # an existing database
+//! strata-server --db my.strata                         # an existing database, or a new one with no tables yet
 //! STRATA_TOKEN=... strata-server --db my.strata --listen 0.0.0.0:7700   # beyond loopback: a token
 //! strata-server --shards http://a:7701,http://b:7701   # a coordinator over shard servers
 //! strata-server --shards 'http://a0:7701|http://a1:7701,http://b0:7701|http://b1:7701'   # two replicas each
@@ -33,7 +33,8 @@ use strata_server::server::{self, Options};
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
-    /// The database to serve (created if missing, with --schema or --demo).
+    /// The database to serve. Created if missing: with --schema's table or
+    /// --demo's, else with no tables (CREATE TABLE and imports add them).
     #[arg(long)]
     db: Option<PathBuf>,
     /// Schema of a new database, as JSON.

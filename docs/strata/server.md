@@ -21,11 +21,21 @@ target/release/strata-server --demo 20000 --db products.strata   # a demo catalo
 # open http://127.0.0.1:7700
 ```
 
+Or without building it, from the image every merge to main publishes (`linux/amd64` and `linux/arm64`). Beyond the container's own loopback the server needs a token, which the command center then asks for:
+
+```sh
+docker run -p 127.0.0.1:7700:7700 -e STRATA_TOKEN=pick-a-secret -v strata:/data \
+  ghcr.io/chloetech-ai/strata-server:latest --db /data/my.strata --listen 0.0.0.0:7700
+# open http://127.0.0.1:7700; add --demo 20000 for the demo catalogue
+```
+
+A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'s, or with neither as a database with no tables yet, which `CREATE TABLE` and the [loads](#loading-rows) fill. Until its first table exists it lists none, and a write that names no table is refused; then that table is the one requests naming none go to, as a database's first table is. (Such a database keeps an empty first table named `_placeholder`, which listings, exports and writes leave alone; an older version of Strata opens the file and lists it.)
+
 `--demo N` creates a product catalogue of *N* rows (titles, descriptions, brands, categories, tags, prices, ratings, sales and a 64-dimension vector) to try things on. Its `emb` field is declared as the `hash:64` model's embedding of the title and description ([below](#embedded-vector-fields)): hashed bags of words, not a learned model, so "similar" means "shares words".
 
 | flag | default | effect |
 |---|---|---|
-| `--db PATH` | | the database to serve; created if missing, with `--schema` or `--demo` |
+| `--db PATH` | | the database to serve; created if missing, with `--schema` or `--demo`, else with no tables |
 | `--schema FILE` | | the schema of a new database, as JSON (below) |
 | `--directory` | off | create the new database as a directory of segment files instead of one file |
 | `--wal-drop-damaged` | off | open a database whose write-ahead log was damaged after it was durable, dropping the transactions from the damage on (the log is copied to `<log>.damaged` first); without it the server refuses to start on one |

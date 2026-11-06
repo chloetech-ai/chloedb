@@ -401,17 +401,22 @@ impl Spec {
         }
         match (&self.schema, self.demo) {
             (Some(_), Some(_)) => Err("give a schema or demo, not both".into()),
-            (None, None) => Err("give the first table's schema, or demo (a number of demo products)".into()),
+            // No tables yet: the servers start with the placeholder
+            // (strata-server --db on a new path), and CREATE TABLE fills them.
+            (None, None) => Ok(()),
             (Some(s), None) => strata::schema::Schema::from_json_value(s).map(|_| ()).map_err(|e| format!("schema: {e}")),
             (None, Some(_)) => Ok(()),
         }
     }
 
-    /// The schema every server is created with, as JSON.
+    /// The schema every server is created with, as JSON: the spec's, the
+    /// demo's, or with neither the placeholder of a database with no tables
+    /// ([`strata::schema::Schema::placeholder`]).
     pub fn schema_json(&self) -> String {
         match (&self.schema, self.demo) {
             (Some(s), _) => s.to_string(),
-            (None, n) => serde_json::to_string(&crate::demo::schema(n.unwrap_or(0))).expect("a schema serialises"),
+            (None, Some(n)) => serde_json::to_string(&crate::demo::schema(n)).expect("a schema serialises"),
+            (None, None) => serde_json::to_string(&strata::schema::Schema::placeholder()).expect("a schema serialises"),
         }
     }
 }
@@ -1813,7 +1818,7 @@ pub fn crd() -> Json {
                 "size": {"type": "string", "description": "Each copy's volume (default 10Gi)."},
                 "storageClassName": {"type": "string"},
             }},
-            "schema": free("The first table's schema, as strata-server --schema takes it."),
+            "schema": free("The first table's schema, as strata-server --schema takes it. Without it and without demo, the cluster starts with no tables."),
             "demo": int(0, "Instead of a schema: this many demo products, split over the shards the cluster starts with."),
             "failoverAfterMs": int(0, "--failover-after-ms of every server (default 3000; 0: failover by hand)."),
             "writeAcks": {"type": "string", "enum": ["all", "majority", "primary"], "description": "--write-acks of every primary (default all)."},
@@ -1880,7 +1885,10 @@ mod tests {
         s.check().unwrap();
         let bad = |j: Json| serde_json::from_value::<Spec>(j).unwrap().check().unwrap_err();
         assert!(bad(json!({"shards": 0, "demo": 1})).contains("1 or more"));
-        assert!(bad(json!({})).contains("give the first table's schema"));
+        // Neither a schema nor demo: no tables yet, the placeholder first.
+        let empty: Spec = serde_json::from_value(json!({})).unwrap();
+        empty.check().unwrap();
+        assert!(strata::schema::Schema::from_json(&empty.schema_json()).unwrap().is_placeholder());
         assert!(bad(json!({"writeAcks": "most", "demo": 1})).contains("writeAcks"));
         assert!(bad(json!({"schema": {"table": "t"}})).contains("schema:"));
         assert!(bad(json!({"demo": 1, "clusterTokenSecret": "c"})).contains("needs tokenSecret"));
