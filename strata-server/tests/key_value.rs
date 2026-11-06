@@ -76,6 +76,18 @@ async fn check(client: &reqwest::Client, url: &str, n: usize, gone: &[usize]) {
             assert_eq!(r["n"], json!(i * 10));
         }
     }
+    // The columns asked for alone, in their order, named as the table
+    // names them.
+    let some: Json = client.post(format!("{url}/v1/kv/get")).json(&json!({"table": "kv", "keys": keys, "columns": ["N", "id"]})).send().await.unwrap().json().await.unwrap();
+    assert_eq!(some["columns"], json!(["n", "id"]), "{some}");
+    for (i, r) in some["rows"].as_array().unwrap().iter().enumerate() {
+        let want = i < n && !gone.contains(&i);
+        assert_eq!(r, &if want { json!({"id": key(i), "n": i * 10}) } else { Json::Null }, "key {}", key(i));
+    }
+    for bad in [json!(["n", "nope"]), json!("n"), json!([1])] {
+        let r = client.post(format!("{url}/v1/kv/get")).json(&json!({"table": "kv", "keys": [key(0)], "columns": bad})).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 400, "columns {bad}");
+    }
     for i in [0, 1, n - 1, n + 1] {
         let r = client.get(format!("{url}/v1/kv/kv/{}", key(i))).send().await.unwrap();
         let found = i < n && !gone.contains(&i);
@@ -155,7 +167,7 @@ async fn rows_by_key_from_a_server_and_a_coordinator() {
     let got = coord.query(strata_server::service::QueryReq { sql: sql.into(), ..Default::default() }).await.unwrap();
     assert!(!got.rs.stats.plan.iter().any(|l| l.starts_with("routed")), "{:?}", got.rs.stats.plan);
     // Keys of the wrong type, a table without a key, too many keys.
-    let e = coord.get_rows(Some("kv"), vec![Value::Int(3)], &After::Any, 0, true).await.unwrap_err();
+    let e = coord.get_rows(Some("kv"), vec![Value::Int(3)], None, &After::Any, 0, true).await.unwrap_err();
     assert!(e.message.contains("KEYWORD"), "{}", e.message);
     // The expirer deletes the expired rows on the server; they were none
     // to reads already.
