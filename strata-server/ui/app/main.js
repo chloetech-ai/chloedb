@@ -4,7 +4,7 @@
 // palette (Ctrl+K), which finds views, actions and the fleet's shards,
 // copies, nodes, tables, statements, alerts and keys, and the shortcuts.
 
-import { h, icon, clear, store, bus, api, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink } from "./core.js";
+import { h, icon, clear, store, bus, api, at, connectionName, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink } from "./core.js";
 import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, setPolls, overnight } from "./data.js";
 import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
 
@@ -58,7 +58,38 @@ async function otherCoordinators() {
   }
   return peers.list || state.fleet?.coordinators || [];
 }
+// The hub's book (GET /v1/admin/hub): the clusters this server's command
+// center reaches. Read once a minute at most; a server whose key is not an
+// admin's, or a coordinator, has none to show.
+let book = { at: 0, list: [] };
+async function hubBook() {
+  if (Date.now() - book.at > 60e3) {
+    try { const j = await api("/v1/admin/hub", { hub: true, timeout: 3000 }); book = { at: Date.now(), list: j.connections || [] }; }
+    catch { book = { at: Date.now(), list: [] }; }
+  }
+  return book.list;
+}
+const openConnection = (name) => { location.href = name ? `/c/${name}#/home` : "/#/home"; };
+// On a connection's page: its color on the top edge and the brand, and
+// its name in the tab's title.
+if (connectionName) {
+  document.documentElement.classList.add("via-hub");
+  hubBook().then((list) => {
+    const c = list.find((x) => x.name === connectionName);
+    if (c?.color) document.documentElement.style.setProperty("--conn", c.color);
+  });
+}
 brand.onclick = async () => {
+  const conns = await hubBook();
+  if (conns.length || connectionName) {
+    const items = [];
+    items.push({ label: `This hub · ${location.host}`, icon: connectionName ? "left" : "check", onclick: () => connectionName && openConnection(null) });
+    items.push("-");
+    for (const c of conns) items.push({ label: `${c.name}${c.environment ? " · " + c.environment : ""}${c.last_error ? " · not answering" : ""}`, icon: c.name === connectionName ? "check" : "cluster", color: c.color, onclick: () => c.name !== connectionName && openConnection(c.name) });
+    items.push("-", { label: "Connections and keys…", icon: "key", onclick: () => { location.href = "/#/connections"; } });
+    menu(brand, items);
+    return;
+  }
   const here = location.origin;
   const coords = (await otherCoordinators()).filter((c) => c.url && !c.this && !sameOrigin(c.url, here));
   const recent = (store.get(RECENT, []) || []).filter((x) => x.url !== here && !coords.some((c) => sameOrigin(c.url, x.url)));
@@ -304,12 +335,12 @@ function drawCluster() {
   const name = clusterName(), env = environment();
   const c = state.cluster;
   const coords = state.fleet?.coordinators?.length || null;
-  brandName.textContent = name || location.host;
+  brandName.textContent = connectionName || name || location.host;
   const cn = crumbs.querySelector(".cname");
   if (cn && cn.textContent !== (name || location.host)) drawCrumbs();
   const shards = c?.shards?.length;
   brandSub.textContent = [env || null, coords > 1 ? fmt.plural(coords, "coordinator") : shards != null ? fmt.plural(shards, "shard") : state.health && !isCoordinator() ? "one server" : null].filter(Boolean).join(" · ") || (state.health ? "environment not set" : "connecting…");
-  brand.title = `${name || "This server"}${env ? " (" + env + ")" : ", environment not set"} at ${location.host}. Click for its other coordinators and the ones you used`;
+  brand.title = connectionName ? `${connectionName}: ${name || "a cluster"}${env ? " (" + env + ")" : ""}, through this hub (${location.host}), which adds its key to every call. Click for the other connections` : `${name || "This server"}${env ? " (" + env + ")" : ", environment not set"} at ${location.host}. Click for its other coordinators and the ones you used`;
   const prod = env != null && /^prod/i.test(env);
   envBadge.className = "env" + (env ? "" : " hidden") + (prod ? " prod" : "");
   envBadge.textContent = env ? (prod ? "PROD" : env.toUpperCase().slice(0, 12)) : "";
@@ -463,7 +494,7 @@ const ACTIONS = [
   { name: "Open another coordinator", icon: "node", run: () => askCoordinator() },
   { name: "Use another API key or token", icon: "access", run: () => askToken() },
   { name: "Create an API key", icon: "plus", run: go("#/access?tab=keys&new=1"), scope: "admin" },
-  { name: "Open the raw Prometheus metrics", icon: "ext", run: () => window.open("/metrics", "_blank") },
+  { name: "Open the raw Prometheus metrics", icon: "ext", run: () => window.open(at("/metrics"), "_blank") },
   { name: "Keyboard shortcuts", icon: "keyboard", run: () => shortcuts(), hint: "?" },
 ];
 export function addActions(items) { ACTIONS.push(...items); }

@@ -10,7 +10,7 @@
 // of their own, and their clicks credit each team: which ranking the users
 // preferred, request by request, with a sign test of the wins.
 
-import { h, s, icon, clear, fmt, api, store, toast, empty, seg, failure, drawer, authHeader, sqlBlock, copy, showTip, hideTip, ApiError } from "../core.js";
+import { at, h, s, icon, clear, fmt, api, store, toast, empty, seg, failure, drawer, authHeader, sqlBlock, copy, showTip, hideTip, ApiError } from "../core.js";
 import { tables, table as tableOf } from "../catalog.js";
 import { xyChart, SERIES } from "../charts.js";
 import { quoteName } from "../sqledit.js";
@@ -258,7 +258,7 @@ function render(page) {
 
   async function download() {
     try {
-      const r = await fetch("/v1/rank_log/export", { method: "POST", headers: { "content-type": "application/json", ...authHeader() }, body: JSON.stringify(exportBody()) });
+      const r = await fetch(at("/v1/rank_log/export"), { method: "POST", headers: { "content-type": "application/json", ...authHeader() }, body: JSON.stringify(exportBody()) });
       if (!r.ok) throw new ApiError(r.status, (await r.json().catch(() => ({}))).error || "HTTP " + r.status);
       const blob = await r.blob();
       const a = h("a", { href: URL.createObjectURL(blob), download: `${st.log}.ndjson` }); document.body.append(a); a.click(); a.remove();
@@ -275,7 +275,7 @@ function render(page) {
     drawFlow(null, "Reading the log…");
     if (!out) clear(body, h("div", { class: "rx-wait" }, h("span", { class: "spin" }), "Reading the log and the events…"));
     try {
-      const r = await fetch("/v1/rank_log/export", { method: "POST", headers: { "content-type": "application/json", ...authHeader() }, body: JSON.stringify(exportBody()), signal: ab.signal });
+      const r = await fetch(at("/v1/rank_log/export"), { method: "POST", headers: { "content-type": "application/json", ...authHeader() }, body: JSON.stringify(exportBody()), signal: ab.signal });
       if (!r.ok) throw new ApiError(r.status, (await r.json().catch(() => ({}))).error || "HTTP " + r.status);
       const rd = r.body.getReader(), dec = new TextDecoder();
       let buf = "", last = 0;

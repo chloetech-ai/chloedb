@@ -183,6 +183,16 @@ export const isPhone = () => !!phoneMq?.matches;
 for (const q of [narrowMq, phoneMq]) q?.addEventListener?.("change", () => bus.emit("narrow", isNarrow()));
 
 // ---------------------------------------------------------------- the API
+// The hub (strata-server's crate::hub): at /c/<name>, the page is the
+// command center of that connection of this server's book, and its calls
+// go to /c/<name>/v1/..., which the server forwards with that cluster's key.
+const hubMatch = location.pathname.match(/^\/c\/([a-z0-9][a-z0-9-]{0,39})\/?$/);
+/** The hub connection this page works on, or null on the server's own cluster. */
+export const connectionName = hubMatch ? hubMatch[1] : null;
+const BASE = connectionName ? "/c/" + connectionName : "";
+/** A path of the server as this page calls it: through the hub on a connection. */
+export const at = (p) => (BASE && typeof p === "string" && /^\/(v1\/|livez|readyz|metrics)/.test(p) ? BASE + p : p);
+
 // The token (or API key) is kept for the tab only, under the key the
 // query console reads too.
 let token = new URLSearchParams(location.search).get("token") || (() => { try { return sessionStorage.getItem("strata.token"); } catch { return null; } })();
@@ -232,7 +242,9 @@ const headerSafe = (t) => String(t).replace(/[\r\n]+/g, " ").replace(/[^\x20-\x7
 
 /**
  * Calls the server: api("/v1/x"), api("/v1/x", {body}), api(p, {method: "DELETE"}).
- * opts: {method, body, type, signal, text, blob, reason, timeout}. `reason`
+ * On a hub connection's page the call goes to that cluster; `hub: true`
+ * calls the hub itself (its book of connections).
+ * opts: {method, body, type, signal, text, blob, reason, timeout, hub}. `reason`
  * goes in the `x-strata-reason` header (the audit entry keeps it); `timeout`
  * (ms) gives up and counts as not answering. Every call says it comes from
  * the command center (`x-strata-client`), so the server leaves the UI's own
@@ -254,7 +266,7 @@ export async function api(path, opts = {}) {
     init.signal = ac.signal;
   } else if (opts.signal) init.signal = opts.signal;
   let r;
-  try { r = await fetch(path, init); }
+  try { r = await fetch(opts.hub ? path : at(path), init); }
   catch (e) {
     clearTimeout(timer);
     if (opts.signal?.aborted && !timedOut) throw e; // the caller cancelled it
@@ -594,7 +606,7 @@ export function confirm({ title, body, ok = "Confirm", danger = false, typed = n
 export function menu(anchor, items) {
   const r = anchor.getBoundingClientRect();
   const m = h("div", { class: "menu", role: "menu" }, items.map((it) => it === "-" ? h("hr") :
-    h("button", { role: "menuitem", class: it.danger ? "danger" : "", onclick: () => { close(); it.onclick?.(); } }, it.icon ? icon(it.icon) : null, it.label)));
+    h("button", { role: "menuitem", class: it.danger ? "danger" : "", onclick: () => { close(); it.onclick?.(); } }, it.color ? h("span", { class: "conn-dot", style: { background: it.color } }) : it.icon ? icon(it.icon) : null, it.label)));
   const scrim = h("div", { style: { position: "fixed", inset: 0, zIndex: 84 } });
   const close = layer([scrim, m]);
   scrim.onclick = close;
