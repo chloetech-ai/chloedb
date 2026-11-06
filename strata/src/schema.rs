@@ -796,6 +796,30 @@ impl Alter {
     }
 }
 
+/// The name of the table a database made with no tables holds first
+/// ([`Schema::placeholder`]). A database always has a first table, the one
+/// it was created with; a server started on a new path without a schema
+/// creates its database with this one, which holds no rows, and the
+/// tables people create come after it. Listings and exports leave it out,
+/// and a write that names no table goes to the first table created after
+/// it. It is an ordinary table on disk: a version of Strata from before it
+/// opens such a database and lists it.
+pub const PLACEHOLDER_TABLE: &str = "_placeholder";
+
+impl Schema {
+    /// The first table of a database made with no tables
+    /// ([`PLACEHOLDER_TABLE`]): a key and nothing else.
+    pub fn placeholder() -> Schema {
+        Schema::from_json(&format!(r#"{{"table": "{PLACEHOLDER_TABLE}", "key": "id", "fields": [{{"name": "id", "type": "keyword"}}]}}"#)).expect("the placeholder schema is valid")
+    }
+
+    /// Whether this is the first table of a database made with no tables
+    /// ([`PLACEHOLDER_TABLE`]).
+    pub fn is_placeholder(&self) -> bool {
+        self.table.eq_ignore_ascii_case(PLACEHOLDER_TABLE)
+    }
+}
+
 impl Schema {
     /// This table with `alter` made, checked as [`Schema::new`] checks a
     /// table. Fields keep their ids; an added one gets the next

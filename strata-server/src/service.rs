@@ -1463,7 +1463,7 @@ impl Service {
         let now = strata::timestamp::now();
         let t0 = Instant::now();
         let mut n = 0;
-        let first = db.schema().table.clone();
+        let first = strata::db::default_table(&db.catalog()).map_or_else(|| db.schema().table.clone(), |t| t.table.clone());
         for schema in db.catalog() {
             let wanted: Vec<usize> = models.iter().filter(|m| m.model.is_ok() && m.table.eq_ignore_ascii_case(&schema.table)).filter_map(|m| schema.field_index(&m.field)).collect();
             let media: Vec<usize> = (0..schema.fields.len()).filter(|&f| schema.fields[f].media.is_some()).collect();
@@ -1663,6 +1663,24 @@ impl Service {
     /// the server started with, before any ALTER TABLE.
     pub fn first_table(&self) -> Arc<Schema> {
         self.catalog().into_iter().next().unwrap_or_else(|| Arc::new(self.schema.clone()))
+    }
+
+    /// The table a request that names none reads or writes: the first
+    /// table, or on a database made with no tables (`strata-server --db`
+    /// on a new path, [`strata::db::Db::create_empty`]) the first one made
+    /// after its placeholder. An error while there is none.
+    pub fn default_table(&self) -> Result<Arc<Schema>, ApiError> {
+        let first = self.first_table();
+        if !first.is_placeholder() {
+            return Ok(first);
+        }
+        strata::db::default_table(&self.catalog()).ok_or_else(|| ApiError::bad(NO_TABLES))
+    }
+
+    /// The tables people made, the first first: [`Self::catalog_now`]
+    /// without the placeholder of a database made with no tables.
+    pub async fn tables_listed(&self) -> Vec<Arc<Schema>> {
+        self.catalog_now().await.into_iter().filter(|t| !t.is_placeholder()).collect()
     }
 
     /// The table named `name` (any case). A coordinator that does not know
@@ -2698,7 +2716,7 @@ impl Service {
         }
         let schema = match table {
             Some(t) => self.table(t).await?,
-            None => self.first_table(),
+            None => self.default_table()?,
         };
         let pk = schema.primary_key.ok_or_else(|| ApiError::bad(format!("{} has no primary key: rows are read by key only from a table with one", schema.table)))?;
         let keys: Vec<Value> = keys.iter().map(|k| strata::db::key_value(&schema, pk, k)).collect::<strata::Result<_>>()?;
@@ -3063,10 +3081,10 @@ impl Service {
     pub async fn import(self: &Arc<Self>, table: Option<&str>, body: axum::body::Bytes, format: Format) -> Result<(u64, Vec<String>), ApiError> {
         let schema = match table {
             Some(t) => self.table(t).await?,
-            None => self.first_table(),
+            None => self.default_table()?,
         };
         // Rows of the first table name none, as before there were tables.
-        let named = table.map(|_| schema.table.clone());
+        let named = (table.is_some() || self.first_table().is_placeholder()).then(|| schema.table.clone());
         let (tx, mut rx) = tokio::sync::mpsc::channel::<strata::Result<Vec<Json>>>(1);
         let reader = tokio::task::spawn_blocking(move || -> strata::Result<Vec<String>> {
             let mut check = Rows::new(&schema, std::io::Cursor::new(body.clone()), format)?;
@@ -4012,10 +4030,29 @@ fn op_table<'a>(op: &'a Json, first: &'a str) -> Result<&'a str, ApiError> {
 /// The table of `catalog` (the database's tables, the first first) that an
 /// operation writes ([`op_table`]).
 pub fn op_schema<'a>(catalog: &'a [Arc<Schema>], op: &Json) -> Result<&'a Arc<Schema>, ApiError> {
-    let first = catalog.first().ok_or_else(|| ApiError::internal("a database without tables"))?;
+    let first = op_default(catalog)?;
     let name = op_table(op, &first.table)?;
-    catalog.iter().find(|t| t.table.eq_ignore_ascii_case(name)).ok_or_else(|| ApiError::bad(format!("query error: no such table: {name}")))
+    let t = catalog.iter().find(|t| t.table.eq_ignore_ascii_case(name)).ok_or_else(|| ApiError::bad(format!("query error: no such table: {name}")))?;
+    if t.is_placeholder() {
+        return Err(ApiError::bad(NO_TABLES));
+    }
+    Ok(t)
 }
+
+/// The table of `catalog` an operation that names none writes: the first,
+/// or on a database made with no tables the first made after its
+/// placeholder ([`Service::default_table`]).
+fn op_default(catalog: &[Arc<Schema>]) -> Result<&Arc<Schema>, ApiError> {
+    let first = catalog.first().ok_or_else(|| ApiError::internal("a database without tables"))?;
+    if !first.is_placeholder() {
+        return Ok(first);
+    }
+    Ok(catalog.iter().find(|t| !t.is_placeholder()).unwrap_or(first))
+}
+
+/// What a request that names no table is told on a database made with no
+/// tables, before its first ([`Service::default_table`]).
+pub const NO_TABLES: &str = "this database has no tables yet: create one (CREATE TABLE, POST /v1/tables, or an import that creates it), then name it";
 
 /// What places the row an operation writes on a shard: its key, or for a
 /// table placed by a column ([`Schema::with_shard_by`]) that column's

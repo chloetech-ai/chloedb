@@ -301,7 +301,10 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
             fill = o.copy_from.clone().map(Fill::Copy);
             Db::create_in(&path, schema, DbOptions { ship_log_bytes, ..db_options(o.directory) }, &o.models).map_err(|e| e.to_string())?
         } else {
-            return Err(format!("{} does not exist: pass --schema FILE or --demo N to create it", path.display()));
+            // No schema: a database with no tables yet, which CREATE TABLE
+            // and the imports that create tables fill.
+            tracing::info!(db = %path.display(), "creating the database with no tables: create one with CREATE TABLE or an import");
+            Db::create_empty(&path, DbOptions { ship_log_bytes, ..db_options(o.directory) }).map_err(|e| e.to_string())?
         };
         for (field, why) in db.open_codebooks(&o.models) {
             tracing::warn!(field = %field, error = %why, "cannot give this field semantic IDs: writes must carry them");

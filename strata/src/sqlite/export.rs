@@ -74,7 +74,7 @@ pub fn export(db: &Db, path: &Path, opts: &ExportOptions) -> Result<Exported> {
     let all: Vec<&Schema> = snap.schemas().collect();
     let mut tables: Vec<&Schema> = Vec::new();
     if opts.tables.is_empty() {
-        tables = all.clone();
+        tables = all.iter().copied().filter(|s| !s.is_placeholder()).collect();
     } else {
         for name in &opts.tables {
             let s = all.iter().find(|s| s.table.eq_ignore_ascii_case(name)).ok_or_else(|| Error::Schema(format!("no table {name}")))?;

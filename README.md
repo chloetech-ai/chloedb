@@ -80,7 +80,7 @@ All numbers come from the experiments in this repository; [Reproducing the resul
 Everything is built from source and needs Rust (stable) and a C compiler.
 
 ```sh
-git clone https://github.com/rkonow/strata && cd strata
+git clone https://github.com/chloetech-ai/strata && cd strata
 ```
 
 Strata from its shell, which prints the plan it chose:
@@ -95,6 +95,13 @@ Strata as a server, with a query builder and an agent in the browser:
 ```sh
 cd strata-server && cargo build --release
 target/release/strata-server --demo 20000 --db products.strata   # http://127.0.0.1:7700
+```
+
+Or the same server without building it, from the published image (a new `--db` starts with no tables; add `--demo 20000` for the demo catalogue):
+
+```sh
+docker run -p 127.0.0.1:7700:7700 -e STRATA_TOKEN=pick-a-secret -v strata:/data \
+  ghcr.io/chloetech-ai/strata-server:latest --db /data/my.strata --listen 0.0.0.0:7700
 ```
 
 Strata from Python ([more](docs/strata/python.md)):
@@ -128,7 +135,7 @@ Claude Code forgets. A long session gets compacted into a summary of about 15,00
 
 🧭 **Why Engram, in two pages:** where it wins, where it loses, how it searches and what it saves on coding sessions, with a cost calculator: [`docs/why/`](docs/why/index.html), live at [rkonow.github.io/strata/why/](https://rkonow.github.io/strata/why/).
 
-🚀 **Try it:** `git clone https://github.com/rkonow/strata && cd strata && ./install.sh` sets Engram up for every Claude Code session on a Mac or Linux machine ([install Engram](#install-engram)). To have a coding agent do it, tell it: *"Clone https://github.com/rkonow/strata and set Engram up for my Claude Code by following its AGENTS.md."* [`AGENTS.md`](AGENTS.md) gives an agent the steps, the checks and what to ask you first.
+🚀 **Try it:** `git clone https://github.com/chloetech-ai/strata && cd strata && ./install.sh` sets Engram up for every Claude Code session on a Mac or Linux machine ([install Engram](#install-engram)). To have a coding agent do it, tell it: *"Clone https://github.com/rkonow/strata and set Engram up for my Claude Code by following its AGENTS.md."* [`AGENTS.md`](AGENTS.md) gives an agent the steps, the checks and what to ask you first.
 
 ![A new Claude Code session answers from Engram's memory: the storage decision, its reason, and the receipt-printer constraint, all stated in an earlier session](docs/assets/img/inspector-new-session.png)
 
@@ -157,7 +164,7 @@ flowchart LR
 Requirements: macOS or Linux (WSL 2 on Windows), Rust (stable), a C compiler, and the [Claude Code](https://claude.com/claude-code) CLI, logged in (`claude auth status`).
 
 ```sh
-git clone https://github.com/rkonow/strata && cd strata
+git clone https://github.com/chloetech-ai/strata && cd strata
 ./install.sh                          # every Claude Code session on this machine
 ./install.sh --project ~/code/app     # ... or one project
 ```

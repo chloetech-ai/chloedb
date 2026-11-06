@@ -33,7 +33,7 @@ const tip = (title, rows) => [h("div", { class: "t" }, title), ...rows.map(([k, 
 const svgBox = (w, ht, label) => s("svg", { viewBox: `0 0 ${w} ${ht}`, width: "100%", role: "img", "aria-label": label, class: "ix-svg" });
 
 function render(page, r) {
-  let data = null, tables = [], loading = false, err = null, lag = null;
+  let data = null, tables = [], listed = false, loading = false, err = null, lag = null;
   let scope = store.get("inspector.scope", { kind: "cluster" });
   // A link names the table, and maybe a shard (by its number) or a copy.
   let want = { table: r?.params?.get("table") || null, shard: r?.params?.get("shard"), copy: r?.params?.get("copy") };
@@ -72,6 +72,7 @@ function render(page, r) {
   async function loadTables() {
     try {
       tables = ((await api("/v1/tables")).tables || []).map((t) => t.table);
+      listed = true;
       const name = store.get("inspector.table", null);
       clear(pick, tables.map((t) => h("option", { value: t, selected: t === name }, t)));
       if (!tables.includes(name) && tables.length) pick.value = tables[0];
@@ -506,6 +507,10 @@ function render(page, r) {
     if (want.table && tables.includes(want.table)) { pick.value = want.table; store.set("inspector.table", want.table); }
     load();
   };
-  loadTables().then(load);
+  // A database with no tables yet: nothing to inspect until one is made.
+  loadTables().then(() => {
+    if (listed && !tables.length) { clear(content, empty("table", "No tables yet", "Import a file or create a table first.", h("a", { class: "btn primary", href: "#/import" }, icon("import"), "Import"))); stamp.textContent = ""; return; }
+    load();
+  });
   return () => { hideTip(); reopen = null; };
 }
