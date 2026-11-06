@@ -377,15 +377,18 @@ def part_a(src):
         ]})
     # A2: one chart per kind, rows = collections, columns = systems
     colls = ["scifact", "nfcorpus", "fiqa", "trec-covid", "quora"]
-    a2sys = ss + ["sqlite", "tantivy", "duckdb", "lancedb"]
+    a2sys = ss + ["strata-1t", "sqlite", "tantivy", "duckdb", "lancedb"]
     a2 = {(s, c): j(f"part-a/a2_{s}_{c}.json") for s in a2sys if not s.startswith("strata") for c in colls}
+    a2.update({("strata-1t", c): j(f"part-a-1thread/a2_strata_{c}.json") for c in colls})
     for c in colls:
         a2[("strata", c)], a2[("strata-was", c)] = sj("a2", f"_{c}")
-    a2cols = scols + [{"name": "SQLite", "ver": "FTS5, sqlite-vec (exact)"}, {"name": "Tantivy", "ver": "0.27"},
+    a2cols = scols + [{"name": "Strata", "ver": "1 thread, older build", "self": True},
+                      {"name": "SQLite", "ver": "FTS5, sqlite-vec (exact)"}, {"name": "Tantivy", "ver": "0.27"},
                       {"name": "DuckDB", "ver": "fts, vss"}, {"name": "LanceDB", "ver": "defaults"}]
-    a2note = ("Strata searches a query's segments on up to 8 threads by default. SQLite's vectors are sqlite-vec's exact "
-              "scan (it has no ANN index); LanceDB is at its default search settings." + (
-                  " Both Strata columns ran on 6 November on one node, the others on 2 November on another of the same "
+    a2note = ("Strata searches a query's segments on up to 8 threads by default; its one-thread column is the older build "
+              "128459b, not run on quora. SQLite's vectors are sqlite-vec's exact scan (it has no ANN index); LanceDB is "
+              "at its default search settings." + (
+                  " Strata on main and its 2 November build ran on 6 November on one node, the rest on 2 November on another of the same "
                   "type, on which the 2 November build was about 5% slower at search." if was else ""))
     ndocs = {c: a2[("strata", c)]["n_docs"] for c in colls}
 
@@ -634,11 +637,20 @@ def main():
         ranked = ["strata", "os", "es", "solr", "vespa", "qdrant", "weaviate", "paradedb", "postgres"]
         # Milvus (out of memory at 52 GiB) and Redis (all in memory) ran on a 128 GB
         # node with the same CPUs: shown, never ranked (the run's README)
-        reports["cloud-10m"] = cluster(c10, "cloud-10m", ranked=ranked,
-                                       lanes={"milvus": "128 GB node, not ranked", "redis": "128 GB node, not ranked"})
+        # Strata from the 6 November rerun, Elasticsearch and OpenSearch from 5
+        # November's (result caches off, #262); the others did not change
+        take10 = {"strata": r10, "es": bi10, "os": bi10} if r10.ok else {}
+        reports["cloud-10m"] = cluster(c10, "cloud-10m", ranked=ranked, take=take10,
+                                       lanes={"milvus": "128 GB node, not ranked", "redis": "128 GB node, not ranked"} | (
+                                           {"strata": "6 Nov", "es": "9.5.5, 5 Nov", "os": "3.9.0, 5 Nov"} if take10 else {}))
     else:
         missing.append("cloud-10m")
-    reports["cloud-10m-h2h"] = cluster(c10h, "cloud-10m-h2h")
+    if r10.ok:
+        # 5 November's head to head with Strata from 6 November's rerun
+        reports["cloud-10m-h2h"] = cluster(bi10, "cloud-10m-h2h", take={"strata": r10}, lanes={"strata": "6 Nov", "es": "5 Nov", "os": "5 Nov"})
+        c10h = bi10
+    else:
+        reports["cloud-10m-h2h"] = cluster(c10h, "cloud-10m-h2h")
     # Milvus from its run alone on a fresh node: last in its lane it was still
     # compacting during its first two passes (the run's README)
     # Engines whose code or settings changed since that run, from the runs that

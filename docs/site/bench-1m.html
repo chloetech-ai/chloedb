@@ -81,7 +81,7 @@
     <div class="block-head">
       <span class="eyebrow">Writes and streams</span>
       <h2>Searchable in 8 ms, and a stream written once</h2>
-      <p>Strata and Vespa make a write searchable when it returns (7.6 and 8.6 ms); Elasticsearch, OpenSearch and Solr refresh every second. Single inserts are about as fast as the Lucene engines'. Updates are more than twice as fast, because Strata sets one column in place. After a consumer crash, Strata resumes exactly, since offsets commit with the rows; the others write some events twice. None lost any.</p>
+      <p>Strata and Vespa make a write searchable when it returns (7.6 and 8.6 ms); Elasticsearch, OpenSearch and Solr refresh every second. Single inserts are about as fast as Elasticsearch's and OpenSearch's, and Solr's are faster up to four clients. At 16 clients Strata's updates are more than twice as fast as any other's, because it sets one column in place. From one client, Strata's writes are slower than on 4 November (287 inserts a second against 417, 285 updates against 547): other nodes, and a coordinator now across the network; the run did not separate the two. After a consumer crash, Strata resumes exactly, since offsets commit with the rows; the others write some events twice. None lost any.</p>
     </div>
     <div data-writes="cloud-1m"></div>
   </div></section>

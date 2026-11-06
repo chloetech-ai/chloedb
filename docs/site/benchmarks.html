@@ -31,7 +31,7 @@
     <span class="eyebrow">Benchmarks</span>
     <h1>First overall when one system has to do it all</h1>
     <p class="lede">Applications need full text, filters, SQL, vectors and hybrids together. We test all of them at once, against thirteen search engines and databases. Strata is not the fastest at everything, and this page shows where.</p>
-    <p class="updated">Updated 5 November 2026 · measured, never edited</p>
+    <p class="updated">Updated 6 November 2026 · measured, never edited</p>
   </div></div>
 
   <section class="gutter" id="results"><div class="wrap block">
@@ -39,7 +39,7 @@
       <a href="bench-10m.html" data-overall="cloud-10m" data-mode="tile"></a>
       <a href="bench-1m.html" data-overall="cloud-1m" data-mode="tile"></a>
       <a href="bench-laptop.html" data-overall="laptop" data-mode="tile"></a>
-      <a href="bench-embedded.html"><span class="eyebrow">No server · inside an app</span><span class="v">1.9× to 23×</span><p>Faster hybrid search than SQLite, DuckDB or LanceDB on every BEIR collection tested.</p></a>
+      <a href="bench-embedded.html"><span class="eyebrow">No server · inside an app</span><span class="v">4.8× to 33×</span><p>Faster hybrid search than SQLite, DuckDB or LanceDB on every BEIR collection tested.</p></a>
       <a href="bench-graph.html"><span class="eyebrow">Graph · arXiv citations</span><span class="v">1st of 5</span><p>Against Neo4j, Memgraph, FalkorDB and ArangoDB: Strata 31 points, Memgraph 60.</p></a>
       <a href="bench-10m.html#writes"><span class="eyebrow">Fresh writes · 10M</span><span class="v">8.2 ms</span><p>From a write to a search that finds it, at the median. Vespa 10.0 ms, OpenSearch 641.</p></a>
     </div>
@@ -69,28 +69,29 @@
         <p>Postgres, Weaviate, ParadeDB and Qdrant read a row by id in about half Strata's time. Most of Strata's time is the hop through its coordinator, not the read. Not fixed yet.</p></div>
       <div class="loss"><div><h3>Vector recall at shared settings</h3><div class="nums">10M · recall@10 0.795; Qdrant 0.941</div></div>
         <p>Strata scores 8-bit codes and re-scores the best 40, so read its vector speeds with this recall.</p></div>
-      <div class="loss"><div><h3>Single-row writes in an app</h3><div class="nums">One row a commit 4,022/s; SQLite 5,128</div></div>
-        <p>SQLite wins one row a commit; batches turn it around, 95,670 rows a second to SQLite's 18,905.</p></div>
+      <div class="loss"><div><h3>Indexed price updates in an app</h3><div class="nums">571/s on main; SQLite 7,670</div></div>
+        <p>Updating a row's price while it carries a text and a vector index is 2.4 times slower than on Strata's 2 November build (1,389 a second) and 13 times slower than SQLite. Found by this rerun, in both of its writes runs; not fixed yet. Without the indexes the same update got faster (3,276 a second).</p></div>
     </div>
   </div></section>
 
   <section class="gutter" id="since"><div class="wrap block">
     <div class="block-head">
-      <h2>Fixes measured since the last run</h2>
-      <p>Five pull requests, in review, each timed against main on one machine. These are micro-benchmarks: no ranking on these pages includes them, and the cluster numbers change only with a rerun.</p>
+      <h2>The fixes, measured on the cluster</h2>
+      <p>The pull requests merged on 5 November, timed at 10M on DigitalOcean: the image before them and the image after, serving the same shard files on the same nodes, three passes each. Every ranking on these pages includes them.</p>
     </div>
     <div class="table-wrap"><table class="data">
-      <thead><tr><th scope="col">fix</th><th scope="col">for</th><th scope="col">measured</th><th scope="col" class="num">main</th><th scope="col" class="num">with the fix</th></tr></thead>
+      <thead><tr><th scope="col">fix</th><th scope="col">measured at 10M</th><th scope="col" class="num">before</th><th scope="col" class="num">after</th><th scope="col" class="num">Elasticsearch</th></tr></thead>
       <tbody>
-        <tr><th scope="row"><a href="https://github.com/chloetech-ai/strata/pull/252">#252</a> groups read from the columns</th><td>SQL aggregates</td><td>the benchmark's aggregate, median</td><td class="n">722 ms</td><td class="n">27.0 ms</td></tr>
-        <tr><th scope="row" rowspan="2"><a href="https://github.com/chloetech-ai/strata/pull/253">#253</a> filters kept per segment</th><td rowspan="2">BM25 + filter, prefix</td><td>BM25 + filter, median</td><td class="n">3.60 ms</td><td class="n">1.35 ms</td></tr>
-        <tr><td>prefix, median</td><td class="n">3.56 ms</td><td class="n">2.49 ms</td></tr>
-        <tr><th scope="row"><a href="https://github.com/chloetech-ai/strata/pull/258">#258</a> each segment starts at the scores found so far</th><td>BM25 under load</td><td>BM25, q/s at 4 clients, one thread a query</td><td class="n">1,904</td><td class="n">2,789</td></tr>
-        <tr><th scope="row"><a href="https://github.com/chloetech-ai/strata/pull/260">#260</a> shards skip rows only old coordinators read</th><td>BM25 × recency</td><td>q/s at 4 clients, one thread a query</td><td class="n">401</td><td class="n">593</td></tr>
-        <tr><th scope="row"><a href="https://github.com/chloetech-ai/strata/pull/259">#259</a> read counts without a scan</th><td>the coordinator's time</td><td>each of 3M reads counted over 1M keys</td><td class="n">1.9 µs</td><td class="n">0.2 µs</td></tr>
+        <tr><th scope="row"><a href="https://github.com/chloetech-ai/strata/pull/252">#252</a>, <a href="https://github.com/chloetech-ai/strata/pull/264">#264</a> groups read from the columns, in parallel</th><td>SQL aggregate, median</td><td class="n">2,727 ms</td><td class="n">43.5 ms</td><td class="n">552 ms</td></tr>
+        <tr><th scope="row" rowspan="2"><a href="https://github.com/chloetech-ai/strata/pull/253">#253</a> filters kept per segment</th><td>BM25 + filter, q/s at 16 clients</td><td class="n">219</td><td class="n">502</td><td class="n">435</td></tr>
+        <tr><td>prefix, q/s at 16 clients</td><td class="n">147</td><td class="n">295</td><td class="n">298</td></tr>
+        <tr><th scope="row"><a href="https://github.com/chloetech-ai/strata/pull/258">#258</a> each segment starts at the scores found so far</th><td>BM25, q/s at 16 clients</td><td class="n">482</td><td class="n">591</td><td class="n">683</td></tr>
+        <tr><th scope="row"><a href="https://github.com/chloetech-ai/strata/pull/260">#260</a>, <a href="https://github.com/chloetech-ai/strata/pull/265">#265</a> a shard sends its own top k for boosts</th><td>BM25 × recency, q/s at 16 clients</td><td class="n">93</td><td class="n">200</td><td class="n">42</td></tr>
+        <tr><th scope="row"><a href="https://github.com/chloetech-ai/strata/pull/266">#266</a> typos walk an in-memory table of terms</th><td>typo, median</td><td class="n">83.3 ms</td><td class="n">48.8 ms</td><td class="n">34.6 ms</td></tr>
+        <tr><th scope="row"><a href="https://github.com/chloetech-ai/strata/pull/259">#259</a>, <a href="https://github.com/chloetech-ai/strata/pull/274">#274</a> less work per request in the coordinator</th><td>key lookups, q/s at 16 clients</td><td class="n">5,595</td><td class="n">6,756</td><td class="n">9,050</td></tr>
       </tbody>
     </table></div>
-    <p class="small muted">All in a 4-core cloud container (Xeon at 2.1 GHz). Except #259's, on the first 5M MS MARCO passages with the benchmark's columns, as one database in shard mode, with the benchmark's SQL. Each number is from its pull request's description.</p>
+    <p class="small muted">Images 6d02ba6 and 18fb4bc, on two m3-4vcpu-32gb nodes (Xeon Platinum 8168), 5 and 6 November; Elasticsearch on the same nodes with its result caches off (<a href="https://github.com/chloetech-ai/strata/pull/262">#262</a>). Medians of three passes. Raw data: <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/bigger-items-do/README.md">bigger-items-do</a>. Strata on main of 6 November adds a coordinator in each shard's pod (<a href="https://github.com/chloetech-ai/strata/pull/287">#287</a>) and a vector graph per rating (<a href="https://github.com/chloetech-ai/strata/pull/278">#278</a>): <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/rerun-1106-do/README.md">its rerun</a>.</p>
   </div></section>
   <section class="gutter" id="reports"><div class="wrap block">
     <div class="block-head">

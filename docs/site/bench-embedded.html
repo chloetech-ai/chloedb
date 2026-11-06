@@ -47,7 +47,7 @@
     <div class="block-head">
       <span class="eyebrow">Search</span>
       <h2>Hybrid search fastest on every collection</h2>
-      <p>Hybrid search is 4.8 to 33× faster than the next system, with nDCG@10 within 0.02 of the best. Vectors are 18 to 24× faster at recall@10 0.977 to 0.997. BM25 is now fastest on all five collections, though on the two smallest its 1.1× lead over Tantivy is inside the node's margin. On the same node, main's medians are 1.04 to 2.8× faster than its 2 November build's on these kinds; its 99th percentile got slower on the three larger collections, for BM25 (1.2 to 1.6×) and filtered hybrid (up to 1.8× on quora). Under each bar: nDCG@10, or recall@10 for vectors.</p>
+      <p>Hybrid search is 4.8 to 33× faster than the next system (1.9 to 17× held to one thread, an older build), with nDCG@10 within 0.02 of the best. Vectors are 18 to 24× faster at recall@10 0.977 to 0.997. BM25 is now fastest on all five collections, though on the two smallest its 1.1× lead over Tantivy is inside the node's margin. On the same node, main's medians are 1.04 to 2.8× faster than its 2 November build's on these kinds; its 99th percentile got slower on the three larger collections, for BM25 (1.2 to 1.6×) and filtered hybrid (up to 1.8× on quora). Under each bar: nDCG@10, or recall@10 for vectors.</p>
     </div>
     <div class="grid">
       <div data-chart="emb-a2-hybrid"></div>
@@ -56,7 +56,7 @@
       <div data-chart="emb-a2-bm25"></div>
       <div data-chart="emb-a2-filtered-hybrid"></div>
     </div>
-    <p class="small muted">Tantivy kept stopwords the others dropped, which is most of its nDCG lead on quora; with the same stopwords they tie (<a href="#tantivy">below</a>). The others ran on 2 November's node, where the 2 November build searched about 5% slower than in its column here.</p>
+    <p class="small muted">Tantivy kept stopwords the others dropped, which is most of its nDCG lead on quora; with the same stopwords they tie (<a href="#tantivy">below</a>). The others, and the one-thread column, ran on 2 November's node, where the 2 November build searched about 5% slower than in its column here.</p>
   </div></section>
 
   <section class="gutter" id="app"><div class="wrap block">
