@@ -283,10 +283,14 @@ fn db_options() -> DbOptions {
 /// store an older server made gets the ones it lacks).
 fn open_db(path: &Path) -> Result<Db, String> {
     let at = |e: strata::Error| format!("log store {}: {e}", path.display());
-    let db = match path.exists() {
+    let mut db = match path.exists() {
         true => Db::open(path, db_options()).map_err(at)?,
         false => Db::create(path, (**schema_of(LOGS)).clone(), db_options()).map_err(at)?,
     };
+    // Log searches follow a time that moves, over segments that come and
+    // go: the served database keeps filters (`--filter-cache-mb`), this
+    // one does not.
+    db.exec.filter_cache = None;
     for want in schemas() {
         match db.catalog().into_iter().find(|t| t.table == want.table) {
             None => db.create_table((**want).clone()).map_err(at)?,

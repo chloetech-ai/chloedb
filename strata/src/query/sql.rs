@@ -559,7 +559,7 @@ pub(crate) fn keyed_rows(schema: &Schema, keys: Vec<Value>) -> Result<Select> {
     let projection = every_field(schema);
     let types = projection_types(schema, &projection);
     let filter = if keys.is_empty() { Pred::False } else { Pred::In { field: pk, values: keys } };
-    Ok(Select { projection, filter, order: None, group_by: Vec::new(), paths: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types, guard: None, per: None })
+    Ok(Select { projection, filter, order: None, group_by: Vec::new(), paths: Vec::new(), times: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types, guard: None, per: None })
 }
 
 /// The fields `SELECT *` answers, by position: the stored ones but
@@ -574,7 +574,7 @@ pub fn star_fields(schema: &Schema) -> impl Iterator<Item = usize> + '_ {
 pub(crate) fn fields_select(schema: &Schema, fields: &[usize]) -> Select {
     let projection: Vec<(String, Projection)> = fields.iter().map(|&i| (schema.fields[i].name.clone(), Projection::Field(i))).collect();
     let types = projection_types(schema, &projection);
-    Select { projection, filter: Pred::False, order: None, group_by: Vec::new(), paths: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types, guard: None, per: None }
+    Select { projection, filter: Pred::False, order: None, group_by: Vec::new(), paths: Vec::new(), times: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types, guard: None, per: None }
 }
 
 fn every_field(schema: &Schema) -> Vec<(String, Projection)> {
@@ -1169,7 +1169,7 @@ impl<'a> Binder<'a> {
         let graphs = self.graphs.take();
         let types = projection_types(self.schema, &projection);
         let group_by = group_by.into_iter().map(Col::Field).collect();
-        Ok(Select { projection, filter, order, group_by, paths: Vec::new(), having, tiebreak, phases: Vec::new(), limit, offset, graphs, types, guard, per: None })
+        Ok(Select { projection, filter, order, group_by, paths: Vec::new(), times: Vec::new(), having, tiebreak, phases: Vec::new(), limit, offset, graphs, types, guard, per: None })
     }
 
     /// The graph predicate `hops()` refers to: the first REACHABLE or PATH.
@@ -1692,6 +1692,7 @@ impl<'a> Binder<'a> {
                 Projection::Feature(s) => Ok(OrderBy::Score { score: s.clone(), desc, nulls_first: false }),
                 Projection::Path(p) => Ok(OrderBy::Path { path: *p, desc, nulls_first: false }),
                 Projection::Count | Projection::Agg { .. } => Err(err("ORDER BY an aggregate needs GROUP BY")),
+                Projection::Time(_) => Err(err("ORDER BY a part of a time orders groups by it")),
             };
         }
         // `ORDER BY hops()` is nearest first; ranking is always best first.

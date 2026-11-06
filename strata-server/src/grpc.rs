@@ -135,6 +135,16 @@ pub const GET_PROTOCOL: u32 = 11;
 /// needs ([`crate::coord::StatsCache`]).
 pub const STATS_VERSION_PROTOCOL: u32 = 12;
 
+/// The first protocol all of whose coordinators fuse a rank-safe boost
+/// (`bm25(body, :t) * decay(year, 2015, 3)`) from the rows each shard's
+/// bound found alone ([`strata::cluster::merge`]): rank-safe boosts came
+/// while protocol 9 was the newest, so a coordinator of 10 or later has
+/// them, and a shard answers it without the boost's inputs' top rows,
+/// which only an older coordinator fuses from
+/// ([`strata::query::exec::ExecOptions::boost_inputs`]). Not a protocol of
+/// its own: nothing new goes on the wire.
+pub const BOOSTS_PROTOCOL: u32 = ARROW_PROTOCOL;
+
 /// What `Get` answers ([`crate::service::KeyRows`]).
 pub fn get_response(got: crate::service::KeyRows) -> pb::GetResponse {
     let rows = got
@@ -194,6 +204,7 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         // Set by the query itself, for a client's.
         reads: false,
         stats_version: r.stats_version,
+        boosts_alone: r.shard && r.protocol >= BOOSTS_PROTOCOL,
     })
 }
 
@@ -319,7 +330,7 @@ impl Grpc {
             let md = |k: &str| req.metadata().get(k).and_then(|v| v.to_str().ok()).map(String::from);
             let app = md("x-strata-app").or_else(|| md("user-agent").as_deref().and_then(keys::product));
             let r = keys::Caller { addr: req.remote_addr().map(|a| a.ip().to_string()), client: md("x-strata-client"), app, reason: None };
-            crate::telemetry::Caller::of(&who, Some(&r))
+            crate::telemetry::Caller::of(&who, Some(r))
         };
         // A part whose deadline is its client's own (the coordinator says so):
         // one that passes is the client's doing, counted and logged so.

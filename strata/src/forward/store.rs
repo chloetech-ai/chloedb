@@ -12,7 +12,13 @@
 //! Sections: `store.index` (the stored fields, by id
 //! ([`crate::schema::Field::id`]), and their types, then per block its
 //! first docID, its byte offset in `store.data` and its uncompressed size)
-//! and `store.data` (the compressed blocks). A reader finds each field of
+//! and `store.data` (the compressed blocks), and `store.crc`: the crc32 of
+//! each compressed block, which a reader checking sections as it reads them
+//! ([`SegmentFile::checked_on_read`]) checks a block at a time, as it
+//! decompresses the block, instead of reading the whole of `store.data` the
+//! first time it reads a row. (A segment written before `store.crc` is
+//! checked as a whole, as other sections are; a reader from before it
+//! passes the section over.) A reader finds each field of
 //! its schema among the index's by id, so the columns a row holds need not
 //! be the schema's in its order, and a column whose field the schema no
 //! longer has is passed over. (A database written before field ids wrote
@@ -30,6 +36,9 @@ use crate::value::{Document, Value};
 pub const DEFAULT_BLOCK: usize = 16 * 1024;
 
 const VERSION: u64 = 1;
+
+/// The version of `store.crc`.
+const CRC_VERSION: u64 = 1;
 
 /// How a stored field is encoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,7 +181,7 @@ impl StoreBuilder {
             target: super::usize_option(opts, "forward.store_block", DEFAULT_BLOCK)?,
             ids: fields.iter().map(|&(i, _)| schema.id_of(i)).collect(),
             fields,
-            blocks: Blocks { first: Vec::new(), offs: vec![0], raw_len: Vec::new(), data: Data::Mem(Vec::new()), rows: Vec::new(), lens: Vec::new() },
+            blocks: Blocks { first: Vec::new(), offs: vec![0], raw_len: Vec::new(), crcs: Vec::new(), data: Data::Mem(Vec::new()), rows: Vec::new(), lens: Vec::new() },
             n: 0,
             block_start: 0,
         })
@@ -200,7 +209,7 @@ impl StoreBuilder {
         Ok(())
     }
 
-    /// Writes `store.index` and `store.data`.
+    /// Writes `store.index`, `store.data` and `store.crc`.
     pub fn finish(mut self, out: &mut SegmentWriter) {
         let b = &mut self.blocks;
         if !b.lens.is_empty() {
@@ -215,6 +224,10 @@ impl StoreBuilder {
         w.array(&b.offs);
         w.array(&b.raw_len);
         out.put("store.index", w.finish());
+        let mut w = ByteWriter::new();
+        w.u64(CRC_VERSION);
+        w.array(&b.crcs);
+        out.put("store.crc", w.finish());
         match std::mem::replace(&mut b.data, Data::Mem(Vec::new())) {
             Data::Mem(v) => out.put("store.data", v),
             Data::Spill(s) => match s.finish() {
@@ -252,6 +265,8 @@ struct Blocks {
     first: Vec<u32>,
     offs: Vec<u64>,
     raw_len: Vec<u32>,
+    /// The crc32 of each compressed block.
+    crcs: Vec<u32>,
     data: Data,
     /// Rows of the open block and their lengths.
     rows: Vec<u8>,
@@ -267,13 +282,19 @@ impl Blocks {
             put_varint(&mut block, l as u64);
         }
         block.extend_from_slice(&self.rows);
-        self.data.extend_from_slice(&lz4_flex::block::compress(&block));
+        let compressed = lz4_flex::block::compress(&block);
+        self.crcs.push(crc32fast::hash(&compressed));
+        self.data.extend_from_slice(&compressed);
         self.first.push(first_doc as u32);
         self.offs.push(self.data.len() as u64);
         self.raw_len.push(block.len() as u32);
         self.rows.clear();
         self.lens.clear();
     }
+}
+
+fn bad_block(b: usize) -> Error {
+    corrupt(format!("corrupt doc store block {b}"))
 }
 
 /// The last block [`DocStore::get_fields_cached`] decompressed, and where
@@ -300,6 +321,10 @@ pub struct DocStore {
     first: Slice<u32>,
     offs: Slice<u64>,
     raw_len: Slice<u32>,
+    /// The crc32 of each block, checked as the block is decompressed: when
+    /// the segment checks sections as they are read and has `store.crc`
+    /// (`data` is then not checked as a whole).
+    crcs: Option<Slice<u32>>,
     data: OwnedBytes,
 }
 
@@ -318,7 +343,26 @@ impl DocStore {
         let first: Slice<u32> = r.array().map_err(corrupt)?;
         let offs: Slice<u64> = r.array().map_err(corrupt)?;
         let raw_len: Slice<u32> = r.array().map_err(corrupt)?;
-        let data = seg.require("store.data")?;
+        // Blocks with checksums of their own are checked one by one as they
+        // are read; without, `store.data` is checked whole on this first
+        // read (when the segment checks sections at all).
+        let crcs = if seg.checks_on_read() && seg.has("store.crc") {
+            let mut r = ByteReader::new(seg.require("store.crc")?);
+            if r.u64().map_err(corrupt)? != CRC_VERSION {
+                return Err(corrupt("bad doc store checksums version"));
+            }
+            let crcs: Slice<u32> = r.array().map_err(corrupt)?;
+            if crcs.len() != first.len() {
+                return Err(corrupt("bad doc store checksums"));
+            }
+            Some(crcs)
+        } else {
+            None
+        };
+        let data = match crcs {
+            Some(_) => seg.section_unchecked("store.data").ok_or_else(|| corrupt("missing section store.data"))?,
+            None => seg.require("store.data")?,
+        };
         let mismatch = || Error::Schema("doc store fields do not match the schema".into());
         if idx.len() != kinds.len() {
             return Err(corrupt("bad doc store index"));
@@ -357,7 +401,7 @@ impl DocStore {
         {
             return Err(corrupt("bad doc store index"));
         }
-        Ok(DocStore { n, n_fields: schema.fields.len(), fields, fills, first, offs, raw_len, data })
+        Ok(DocStore { n, n_fields: schema.fields.len(), fields, fills, first, offs, raw_len, crcs, data })
     }
 
     /// Number of documents.
@@ -380,45 +424,57 @@ impl DocStore {
     }
 
     /// Document `d` with every schema field: stored values, `Null` for
-    /// fields that are not stored (and vectors).
+    /// fields that are not stored (and vectors); an error if its block is
+    /// corrupt or fails its checksum.
     ///
     /// # Panics
-    /// If `d` is out of range or the block is corrupt.
-    pub fn get(&self, d: DocId) -> Document {
+    /// If `d` is out of range.
+    pub fn get(&self, d: DocId) -> Result<Document> {
+        self.get_cached(d, &mut StoreCache::default())
+    }
+
+    /// [`Self::get`], keeping the decompressed block in `cache` as
+    /// [`Self::get_fields_cached`] does: documents read in docID order (as
+    /// a merge reads them) decompress and check each block once.
+    ///
+    /// # Panics
+    /// As for [`Self::get`].
+    pub fn get_cached(&self, d: DocId, cache: &mut StoreCache) -> Result<Document> {
         let mut doc = vec![Value::Null; self.n_fields];
         let want: Vec<usize> = self.fields.iter().map(|&(i, _)| i).filter(|&i| i != GONE).collect();
-        for (i, v) in want.iter().zip(self.get_fields(d, &want)) {
+        for (i, v) in want.iter().zip(self.get_fields_cached(d, &want, cache)?) {
             doc[*i] = v;
         }
         for (i, v) in &self.fills {
             doc[*i] = v.clone();
         }
-        doc
+        Ok(doc)
     }
 
     /// The values of schema fields `fields` of document `d`, in that order
-    /// (`Null` for fields that are not stored).
+    /// (`Null` for fields that are not stored); errors as for
+    /// [`DocStore::get`].
     ///
     /// # Panics
-    /// As for [`DocStore::get`].
-    pub fn get_fields(&self, d: DocId, fields: &[usize]) -> Vec<Value> {
+    /// If `d` is out of range.
+    pub fn get_fields(&self, d: DocId, fields: &[usize]) -> Result<Vec<Value>> {
         assert!((d as usize) < self.n, "document {d} out of range");
         let b = self.first.partition_point(|&f| f <= d) - 1;
-        let block = self.decompress(b);
-        self.decode(&block, (d - self.first[b]) as usize, fields).unwrap_or_else(|| panic!("corrupt doc store block {b}"))
+        let block = self.decompress(b)?;
+        self.decode(&block, (d - self.first[b]) as usize, fields).ok_or_else(|| bad_block(b))
     }
 
     /// [`Self::get_fields`], keeping the decompressed block in `cache` for
     /// the next call: documents read in docID order decompress each block
     /// once, where `get_fields` decompresses a block a document (a block
-    /// holds hundreds of small rows).
+    /// holds hundreds of small rows). Errors as for [`DocStore::get`].
     ///
     /// # Panics
-    /// If `d` is out of range or its block is corrupt.
-    pub fn get_fields_cached(&self, d: DocId, fields: &[usize], cache: &mut StoreCache) -> Vec<Value> {
-        let b = self.load(d, cache);
+    /// If `d` is out of range.
+    pub fn get_fields_cached(&self, d: DocId, fields: &[usize], cache: &mut StoreCache) -> Result<Vec<Value>> {
+        let b = self.load(d, cache)?;
         let row = cache.rows.get((d - self.first[b]) as usize).and_then(|&(a, z)| self.decode_row(&cache.data[a..z], fields));
-        row.unwrap_or_else(|| panic!("corrupt doc store block {b}"))
+        row.ok_or_else(|| bad_block(b))
     }
 
     /// The bytes document `d`'s row takes before compression: its stored
@@ -427,19 +483,19 @@ impl DocStore {
     ///
     /// # Panics
     /// As for [`Self::get_fields_cached`].
-    pub fn row_len_cached(&self, d: DocId, cache: &mut StoreCache) -> usize {
-        let b = self.load(d, cache);
-        cache.rows.get((d - self.first[b]) as usize).map(|&(a, z)| z - a).unwrap_or_else(|| panic!("corrupt doc store block {b}"))
+    pub fn row_len_cached(&self, d: DocId, cache: &mut StoreCache) -> Result<usize> {
+        let b = self.load(d, cache)?;
+        cache.rows.get((d - self.first[b]) as usize).map(|&(a, z)| z - a).ok_or_else(|| bad_block(b))
     }
 
     /// Decompresses the block of document `d` into `cache`, unless it is
     /// there, and returns the block's number.
-    fn load(&self, d: DocId, cache: &mut StoreCache) -> usize {
+    fn load(&self, d: DocId, cache: &mut StoreCache) -> Result<usize> {
         assert!((d as usize) < self.n, "document {d} out of range");
         let b = self.first.partition_point(|&f| f <= d) - 1;
         if cache.block != Some(b) {
             cache.block = None;
-            cache.data = self.decompress(b);
+            cache.data = self.decompress(b)?;
             cache.rows.clear();
             let parsed = (|| {
                 let mut pos = 0;
@@ -452,18 +508,26 @@ impl DocStore {
                 }
                 Some(())
             })();
-            parsed.unwrap_or_else(|| panic!("corrupt doc store block {b}"));
+            parsed.ok_or_else(|| bad_block(b))?;
             cache.block = Some(b);
         }
-        b
+        Ok(b)
     }
 
-    fn decompress(&self, b: usize) -> Vec<u8> {
-        let src = &self.data[self.offs[b] as usize..self.offs[b + 1] as usize];
+    /// Block `b`, decompressed, checked against its crc32 first if the
+    /// store has one.
+    fn decompress(&self, b: usize) -> Result<Vec<u8>> {
+        let (a, z) = (self.offs[b] as usize, self.offs[b + 1] as usize);
+        let src = self.data.get(a..z).ok_or_else(|| bad_block(b))?;
+        if let Some(crcs) = &self.crcs {
+            if crc32fast::hash(src) != crcs[b] {
+                return Err(corrupt(format!("doc store block {b} fails its checksum")));
+            }
+        }
         let mut out = vec![0u8; self.raw_len[b] as usize];
         match lz4_flex::block::decompress_into(src, &mut out) {
-            Ok(n) if n == out.len() => out,
-            _ => panic!("corrupt doc store block {b}"),
+            Ok(n) if n == out.len() => Ok(out),
+            _ => Err(bad_block(b)),
         }
     }
 
@@ -491,14 +555,11 @@ impl DocStore {
     }
 
     /// Field `field` of every document, in docID order, decompressing each
-    /// block once.
-    ///
-    /// # Panics
-    /// If a block is corrupt.
-    pub fn field_values(&self, field: usize) -> Vec<Value> {
+    /// block once; an error if a block is corrupt or fails its checksum.
+    pub fn field_values(&self, field: usize) -> Result<Vec<Value>> {
         let mut out = Vec::with_capacity(self.n);
         for b in 0..self.n_blocks() {
-            let block = self.decompress(b);
+            let block = self.decompress(b)?;
             let rows = (|| {
                 let mut pos = 0;
                 let n_rows = get_varint(&block, &mut pos)? as usize;
@@ -510,10 +571,12 @@ impl DocStore {
                 }
                 Some(())
             })();
-            rows.unwrap_or_else(|| panic!("corrupt doc store block {b}"));
+            rows.ok_or_else(|| bad_block(b))?;
         }
-        assert_eq!(out.len(), self.n, "corrupt doc store: blocks hold {} rows for {} documents", out.len(), self.n);
-        out
+        if out.len() != self.n {
+            return Err(corrupt(format!("corrupt doc store: blocks hold {} rows for {} documents", out.len(), self.n)));
+        }
+        Ok(out)
     }
 
     /// A row, projected on `fields`.
@@ -593,6 +656,52 @@ impl DocStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::Field;
+
+    /// The sections of a doc store of `n` documents in small blocks, with
+    /// `store.crc` as `crc` makes it from the one written.
+    fn store_with(n: usize, crc: impl Fn(Vec<u32>) -> Vec<u32>) -> (Schema, SegmentFile) {
+        let schema = Schema::new("t", vec![Field::new("id", FieldType::Keyword), Field::new("n", FieldType::Int)], Some("id")).unwrap();
+        let docs: Vec<Document> = (0..n).map(|d| vec![Value::Str(format!("doc-{d}")), Value::Int(d as i64)]).collect();
+        let mut out = SegmentWriter::new(n);
+        build(&schema, &docs, &BuildOptions::default().set("forward.store_block", 256), &mut out).unwrap();
+        let seg = SegmentFile::from_vec(out.finish()).unwrap();
+        let mut r = ByteReader::new(seg.require("store.crc").unwrap());
+        assert_eq!(r.u64().unwrap(), CRC_VERSION);
+        let crcs: Slice<u32> = r.array().unwrap();
+        let mut w = ByteWriter::new();
+        w.u64(CRC_VERSION);
+        w.array(&crc(crcs.to_vec()));
+        let mut out = SegmentWriter::new(n);
+        for name in ["store.index", "store.data"] {
+            out.put(name, seg.require(name).unwrap().to_vec());
+        }
+        out.put("store.crc", w.finish());
+        (schema, SegmentFile::from_vec(out.finish()).unwrap().checked_on_read())
+    }
+
+    #[test]
+    fn block_checksums_cover_every_block() {
+        let (schema, seg) = store_with(300, |c| c);
+        let store = DocStore::open(&seg, &schema).unwrap();
+        assert!(store.n_blocks() > 5 && store.crcs.is_some());
+        assert_eq!(store.get(299).unwrap()[1], Value::Int(299));
+        let (schema, seg) = store_with(300, |mut c| {
+            c.pop();
+            c
+        });
+        let e = DocStore::open(&seg, &schema).unwrap_err().to_string();
+        assert!(e.contains("bad doc store checksums"), "{e}");
+        // A wrong checksum fails its block alone.
+        let (schema, seg) = store_with(300, |mut c| {
+            c[2] ^= 1;
+            c
+        });
+        let store = DocStore::open(&seg, &schema).unwrap();
+        assert_eq!(store.get(0).unwrap()[1], Value::Int(0));
+        let d = store.first[2];
+        assert!(store.get(d).unwrap_err().to_string().contains("doc store block 2 fails its checksum"));
+    }
 
     #[test]
     fn varints_and_zigzag() {

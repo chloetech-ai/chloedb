@@ -70,7 +70,7 @@ try (Database db = Database.open("books.strata")) {
 
 `Database.create` takes the schema as a map (the [short form](server.md#schemas) or the long one), JSON text, or the path of a JSON file. `Database.open` opens a database the file already holds. Both take `new Database.Options()`: `.directory(true)` keeps a new database as a directory of segment files, `.models(dir)` says where embedding models are, `.threads(n)` how many cores queries and index builds use (the machine's by default).
 
-Only one process may have a database open at a time; another gets a `StrataException` saying the database is busy. To share one, serve it with [strata-server](server.md). Within the process, one `Database` is safe to use from many threads at once: queries run in parallel, and a call into the library does not hold the JVM. Close it when done, with `close()` or try-with-resources (which also merges small segments); one left open is closed when the garbage collector finds it.
+Only one process may have a database open at a time; another gets a `StrataException` saying the database is busy. To share one, serve it with [strata-server](server.md). Within the process, one `Database` is safe to use from many threads at once: queries run in parallel, writes made at once wait for each other and share commits (one disk flush for all those waiting, none failing as busy), and a call into the library does not hold the JVM. Segments merge in the background as writes add them, one merge at a time. Close the database when done, with `close()` or try-with-resources, which also merges small segments and gives the file system back the space merges freed when it is an eighth of the file or more; one left open is closed when the garbage collector finds it.
 
 ## Rows and values
 
@@ -90,7 +90,7 @@ A row is a map of field name to value, and a query's answer gives values back as
 
 `null` is NULL. Maps keep their order where it matters (`LinkedHashMap`); `Map.of` takes no null, so a row with a NULL field is a `HashMap` or a `LinkedHashMap`. A value of another type throws `IllegalArgumentException` before anything is written.
 
-`insert` writes rows whose keys must be new, all or none: 10,000 rows or more are bulk-loaded into new segments in one commit, fewer go through the write-ahead log. `upsert` inserts or replaces rows by key, `delete` takes a key or a collection of them, and `get` and `getMany` read rows by key without SQL (`null` for a key no row has). `write` takes the operations strata-server's `/v1/write` takes (`insert`, `upsert`, `delete`, `set` and `add` of a numeric field in place) and applies them in one transaction.
+`insert` writes rows whose keys must be new, all or none: 10,000 rows or more are bulk-loaded into new segments in one commit, fewer go through the write-ahead log. `upsert` inserts or replaces rows by key, `delete` takes a key or a collection of them, and `get` and `getMany` read rows by key without SQL (`null` for a key no row has). `write` takes the operations strata-server's `/v1/write` takes (`insert`, `upsert`, `delete`, `set` of a field, a number in place and another by writing the row again, and `add` to a number in place) and applies them in one transaction.
 
 ## Queries
 

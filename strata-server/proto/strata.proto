@@ -1097,6 +1097,11 @@ enum Func {
   // json_extract(field, 'path' [, 'string' | 'number' | 'bool']): the
   // values at a path of a JSON field (plan feature "json").
   FUNC_JSON_EXTRACT = 18;
+  // date_trunc('unit', t), date_part('part', t) and strftime('format', t)
+  // of a TIMESTAMP (plan feature "dates").
+  FUNC_DATE_TRUNC = 19;
+  FUNC_DATE_PART = 20;
+  FUNC_STRFTIME = 21;
 }
 
 message Match {

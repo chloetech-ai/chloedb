@@ -267,6 +267,33 @@ class DatabaseTest {
     }
 
     @Test
+    void threadsWriteAtOnce() throws Exception {
+        // Threads that write at once wait for each other and share commits:
+        // none fails as busy, and no increment is lost.
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        List<Future<?>> work = new ArrayList<>();
+        long year0 = (Long) db.query("SELECT year FROM books WHERE id = 'b0000'").scalar();
+        for (int t = 0; t < 8; t++) {
+            int th = t;
+            work.add(pool.submit(() -> {
+                for (int i = 0; i < 25; i++) {
+                    assertEquals(1, db.insert(book(10_000 + th * 100 + i)));
+                    assertEquals(1, db.write(Collections.singletonList(map("op", "add", "key", "b0000", "field", "year", "value", 1))));
+                    assertEquals(1, db.execute("UPDATE books SET rating = rating + 1 WHERE id = 'b0001'"));
+                }
+                return null;
+            }));
+        }
+        for (Future<?> f : work) {
+            f.get(60, TimeUnit.SECONDS);
+        }
+        pool.shutdown();
+        assertEquals(200 + 8 * 25, db.count());
+        assertEquals(year0 + 8 * 25, db.query("SELECT year FROM books WHERE id = 'b0000'").scalar());
+        assertEquals(1.1 + 8 * 25, (Double) db.query("SELECT rating FROM books WHERE id = 'b0001'").scalar(), 1e-9);
+    }
+
+    @Test
     void threadsAndClose() throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(4);
         List<Future<?>> work = new ArrayList<>();

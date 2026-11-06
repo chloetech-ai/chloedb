@@ -783,8 +783,8 @@ fn sample(snap: &Snapshot, opts: &Options, out: &mut TableStats, fields: &mut [F
         for &d in &docs {
             out.sample.docs += 1;
             if let Some(store) = &store {
-                let values = store.get_fields_cached(d, &stored, &mut cache);
-                let len = store.row_len_cached(d, &mut cache) as u64;
+                let values = store.get_fields_cached(d, &stored, &mut cache)?;
+                let len = store.row_len_cached(d, &mut cache)? as u64;
                 out.doc_bytes.add(len, w);
                 row_raw += len as f64 * w;
                 for (&i, v) in stored.iter().zip(&values) {

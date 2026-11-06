@@ -11,8 +11,9 @@
 //! directory on disk. `run` times the kinds and records the answers as `run`
 //! does for the others, in the same report. Each kind is the engine's
 //! closest native request: `unavailable` and `differs` say where it has
-//! none or where it means something else. Writes and streams are not
-//! measured for these engines yet.
+//! none or where it means something else. `replay` sends them a schedule's
+//! writes too ([`insert_req`], [`rating_req`], [`delete_reqs`]); `writes`
+//! and streams are not measured for these engines yet.
 //!
 //! Postgres and Redis are spoken to over their own protocols (the simple
 //! query protocol, with trust authentication, and RESP2), each in a few
@@ -64,6 +65,7 @@ const B: f64 = 0.75;
 
 /// One request: HTTP, a SQL statement (Postgres), or Redis commands sent
 /// together (the answer is the last one's).
+#[derive(Clone)]
 pub enum Req {
     Http { method: Method, url: String, ctype: &'static str, body: Vec<u8> },
     Sql { url: String, sql: String },
@@ -96,7 +98,7 @@ fn io(e: impl std::fmt::Display) -> Fault {
 
 /// A client's connections: HTTP (pooled), and one Postgres or Redis
 /// connection per URL, opened when first used.
-struct Conns {
+pub(crate) struct Conns {
     other: Other,
     http: reqwest::Client,
     pg: HashMap<String, Pg>,
@@ -104,7 +106,7 @@ struct Conns {
 }
 
 impl Conns {
-    fn new(other: Other, timeout: Duration) -> Result<Conns, String> {
+    pub(crate) fn new(other: Other, timeout: Duration) -> Result<Conns, String> {
         let mut h = reqwest::header::HeaderMap::new();
         if other == Other::Typesense {
             h.insert("x-typesense-api-key", reqwest::header::HeaderValue::from_static(TYPESENSE_KEY));
@@ -113,11 +115,11 @@ impl Conns {
         Ok(Conns { other, http, pg: HashMap::new(), redis: HashMap::new() })
     }
 
-    fn fork(&self) -> Conns {
+    pub(crate) fn fork(&self) -> Conns {
         Conns { other: self.other, http: self.http.clone(), pg: HashMap::new(), redis: HashMap::new() }
     }
 
-    async fn exec(&mut self, r: &Req) -> Result<Json, String> {
+    pub(crate) async fn exec(&mut self, r: &Req) -> Result<Json, String> {
         match r {
             Req::Http { method, url, ctype, body } => {
                 let res = self.http.request(method.clone(), url).header("content-type", *ctype).body(body.clone()).send().await.map_err(s)?;
@@ -599,16 +601,18 @@ fn manticore_vec(v: &[f32]) -> String {
     format!("({})", &t[1..t.len() - 1])
 }
 
-/// The documents of rows `first..` as the engine's bulk request.
-fn batch_req(o: Other, url: &str, rows: &[(RawDoc, Vec<f32>)], first: usize, avgdl: f64) -> Req {
+/// Documents as the engine's bulk request; `ids(i, doc)` numbers the i-th
+/// for Qdrant and Manticore (a loaded document's row; [`new_id`] for one a
+/// replay inserts).
+fn batch_req(o: Other, url: &str, rows: &[(RawDoc, Vec<f32>)], ids: &dyn Fn(usize, &RawDoc) -> u64, avgdl: f64) -> Req {
     let fields = |r: &RawDoc| json!({"title": r.title, "body": r.body(), "year": r.year, "category": r.category, "rating": r.rating, "topic": r.topic});
-    let lines = |f: &dyn Fn(usize, &RawDoc, &[f32]) -> String, sep: &str| -> Vec<u8> {
+    let lines = |f: &dyn Fn(u64, &RawDoc, &[f32]) -> String, sep: &str| -> Vec<u8> {
         let mut out = Vec::new();
         for (i, (r, v)) in rows.iter().enumerate() {
             if i > 0 {
                 out.extend_from_slice(sep.as_bytes());
             }
-            out.extend_from_slice(f(first + i, r, v).as_bytes());
+            out.extend_from_slice(f(ids(i, r), r, v).as_bytes());
         }
         out
     };
@@ -1168,7 +1172,7 @@ pub async fn load(collection: &str, o: Other, urls: &[String], batch: usize, cli
     let producer = std::thread::spawn(move || -> Result<(usize, u64), String> {
         let (mut rows, mut first, mut bytes, mut sent) = (Vec::new(), 0usize, 0u64, 0usize);
         let mut flush = |rows: &mut Vec<(RawDoc, Vec<f32>)>, first: usize| -> Result<(), String> {
-            let r = batch_req(o, &us[sent % us.len()], rows, first, avgdl);
+            let r = batch_req(o, &us[sent % us.len()], rows, &|i, _| (first + i) as u64, avgdl);
             sent += 1;
             bytes += r.bytes() as u64;
             rows.clear();
@@ -1239,10 +1243,133 @@ pub async fn load(collection: &str, o: Other, urls: &[String], batch: usize, cli
     Ok(())
 }
 
+// --- A replay's writes ----------------------------------------------------
+
+/// The number Qdrant and Manticore know a document a replay inserts by
+/// (Manticore's id is one more, as for a loaded row): from its key,
+/// `sim<6 hex>[w]-<n>` (`engine-compare plan`), above every row of a
+/// collection and below 2^53, so that any JSON reader keeps it exact.
+/// Another key gets a hash, above those.
+pub(crate) fn new_id(key: &str) -> u64 {
+    let parsed = key.strip_prefix("sim").and_then(|rest| {
+        let (p, n) = rest.rsplit_once('-')?;
+        let warm = match p.len() {
+            6 => 0,
+            7 if p.ends_with('w') => 1,
+            _ => return None,
+        };
+        let h = u64::from_str_radix(&p[..6], 16).ok()?;
+        let n: u64 = n.parse().ok()?;
+        (n < 1 << 28).then_some((warm << 48) | ((h & 0xF_FFFF) << 28) | n)
+    });
+    match parsed {
+        Some(x) => (1 << 50) | x,
+        None => (1 << 51) | (twox_hash::XxHash3_64::oneshot(key.as_bytes()) & ((1 << 50) - 1)),
+    }
+}
+
+/// New documents (each `RawDoc`'s id its key) as the engine's bulk request;
+/// `avgdl` is the collection's, for Qdrant's BM25 weights.
+pub(crate) fn insert_req(o: Other, url: &str, docs: &[(RawDoc, Vec<f32>)], avgdl: f64) -> Req {
+    batch_req(o, url, docs, &|_, r| new_id(&r.id), avgdl)
+}
+
+/// A document's rating set to `rating` (a replay's update, or putting it
+/// back). The document is `key`, at `row` of the collection; Milvus has no
+/// partial update and is sent the whole document (`doc`) again, as
+/// `writes` sends Elasticsearch, OpenSearch and Solr.
+pub(crate) fn rating_req(o: Other, url: &str, key: &str, row: u64, rating: f64, doc: Option<&(RawDoc, Vec<f32>)>) -> Result<Req, String> {
+    let http = |method: Method, url: String, body: Json| Req::Http { method, url, ctype: "application/json", body: serde_json::to_vec(&body).unwrap() };
+    Ok(match o {
+        // Adds or updates: the fields given change, the others stay.
+        Other::Meili => http(Method::PUT, format!("{url}/indexes/docs/documents?primaryKey=id"), json!([{"id": meili_id(key), "rating": rating}])),
+        Other::Typesense => http(Method::PATCH, format!("{url}/collections/docs/documents/{}", id_path(key)), json!({"rating": rating})),
+        Other::Qdrant => http(Method::POST, format!("{url}/collections/docs/points/payload?wait=true"), json!({"payload": {"rating": rating}, "points": [row]})),
+        Other::Weaviate => http(Method::PATCH, format!("{url}/v1/objects/Doc/{}", uuid_of(key)), json!({"class": "Doc", "properties": {"rating": rating}})),
+        Other::Milvus => {
+            let (r, v) = doc.ok_or("Milvus updates a whole document, and none was given")?;
+            let mut r = r.clone();
+            r.id = key.to_string();
+            r.rating = rating;
+            match batch_req(o, url, &[(r, v.clone())], &|_, _| row, 1.0) {
+                Req::Http { method, url, ctype, body } => Req::Http { method, url: url.replace("/entities/insert", "/entities/upsert"), ctype, body },
+                other => other,
+            }
+        }
+        // An attribute changed in place.
+        Other::Manticore => post(format!("{url}/update"), &json!({"table": "docs", "id": row + 1, "doc": {"rating": rating}})),
+        Other::Paradedb | Other::Postgres => Req::Sql { url: url.to_string(), sql: format!("UPDATE docs SET rating = {rating} WHERE key = {}", sql_str(key)) },
+        Other::Redis => Req::Redis {
+            url: url.to_string(),
+            cmds: vec![vec![b"HSET".to_vec(), format!("d:{key}").into_bytes(), b"rating".to_vec(), rating.to_string().into_bytes()]],
+        },
+    })
+}
+
+/// Documents a replay inserted, deleted (keys as [`insert_req`] wrote
+/// them), as the requests to send one after the other.
+pub(crate) fn delete_reqs(o: Other, url: &str, keys: &[String]) -> Vec<Req> {
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let none = |method: Method, url: String| Req::Http { method, url, ctype: "application/json", body: Vec::new() };
+    match o {
+        Other::Meili => vec![post(format!("{url}/indexes/docs/documents/delete-batch"), &json!(keys.iter().map(|k| meili_id(k)).collect::<Vec<_>>()))],
+        Other::Typesense => {
+            let ids: Vec<String> = keys.iter().map(|k| format!("`{k}`")).collect();
+            vec![none(Method::DELETE, format!("{url}/collections/docs/documents?filter_by={}", query_escape(&format!("id:[{}]", ids.join(",")))))]
+        }
+        Other::Qdrant => vec![post(format!("{url}/collections/docs/points/delete?wait=true"), &json!({"points": keys.iter().map(|k| new_id(k)).collect::<Vec<_>>()}))],
+        Other::Weaviate => keys.iter().map(|k| none(Method::DELETE, format!("{url}/v1/objects/Doc/{}", uuid_of(k)))).collect(),
+        Other::Milvus => vec![post(format!("{url}/v2/vectordb/entities/delete"), &json!({"collectionName": "docs", "filter": format!("key in {}", json!(keys))}))],
+        Other::Manticore => {
+            let ids: Vec<String> = keys.iter().map(|k| (new_id(k) + 1).to_string()).collect();
+            vec![manticore_sql(url, &format!("DELETE FROM docs WHERE id IN ({})", ids.join(",")))]
+        }
+        Other::Paradedb | Other::Postgres => {
+            let keys: Vec<String> = keys.iter().map(|k| sql_str(k)).collect();
+            vec![Req::Sql { url: url.to_string(), sql: format!("DELETE FROM docs WHERE key IN ({})", keys.join(", ")) }]
+        }
+        Other::Redis => {
+            let mut del = vec![b"DEL".to_vec()];
+            del.extend(keys.iter().map(|k| format!("d:{k}").into_bytes()));
+            vec![Req::Redis { url: url.to_string(), cmds: vec![del] }]
+        }
+    }
+}
+
+/// Whether an answer to a bm25 request holds the document `key` (a replay's
+/// prober: Meilisearch and Typesense forgive typos, so another marked
+/// document can match the word too).
+pub(crate) fn finds(o: Other, j: &Json, key: &str) -> bool {
+    answer(o, "bm25", j)["keys"].as_array().is_some_and(|ks| ks.iter().any(|k| k.as_str() == Some(key)))
+}
+
+/// How many documents the engine says it holds, asked every half second
+/// for up to 30 s until it says `expect` (Meilisearch writes in tasks, and
+/// Milvus counts with a bounded staleness).
+pub(crate) async fn searchable_docs(o: Other, url: &str, expect: u64) -> Result<Option<u64>, String> {
+    let mut c = Conns::new(o, Duration::from_secs(60))?;
+    let t = Instant::now();
+    loop {
+        let n = stats(o, &mut c, url).await?["searchable_docs"].as_u64();
+        if n == Some(expect) || t.elapsed() > Duration::from_secs(30) {
+            return Ok(n);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// The collection's average body length in terms, which Qdrant's BM25
+/// weights of a replay's new documents need (as `load` gave the loaded ones).
+pub(crate) fn avgdl(collection: &str) -> Result<f64, String> {
+    avg_len(collection, None)
+}
+
 // --- Query kinds -----------------------------------------------------------
 
 /// Why an engine cannot answer a kind at all (nothing is sent).
-fn unsupported(o: Other, kind: &str) -> Option<&'static str> {
+pub(crate) fn unsupported(o: Other, kind: &str) -> Option<&'static str> {
     use Other::*;
     Some(match (o, kind) {
         (Meili, "boosted (bm25 × decay)") => "no function scores: a numeric field can sort results (sort ranking rule), not multiply their relevance",
@@ -1266,7 +1393,7 @@ fn unsupported(o: Other, kind: &str) -> Option<&'static str> {
 }
 
 /// What a kind means on an engine, where that is not what it means on Strata.
-fn differs(o: Other, kind: &str) -> Option<&'static str> {
+pub(crate) fn differs(o: Other, kind: &str) -> Option<&'static str> {
     use Other::*;
     let text_kind = matches!(kind, "bm25" | "bm25 + filter" | "phrase" | "typo" | "prefix");
     Some(match (o, kind) {
@@ -1356,7 +1483,7 @@ fn ts_or(t: &str) -> Option<String> {
 /// its row), Weaviate's object GET (its id is the key's uuid_of).
 /// Meilisearch, Milvus, Redis, Postgres, ParadeDB and Manticore read by id
 /// in `request`.
-fn native_get(o: Other, p: &Probe, u: &str) -> Option<Req> {
+pub(crate) fn native_get(o: Other, p: &Probe, u: &str) -> Option<Req> {
     let get = |url: String| Req::Http { method: Method::GET, url, ctype: "application/json", body: Vec::new() };
     match o {
         Other::Typesense => Some(get(format!("{u}/collections/docs/documents/{}?include_fields=id,title,year,rating", query_escape(p.key)))),
@@ -1366,14 +1493,19 @@ fn native_get(o: Other, p: &Probe, u: &str) -> Option<Req> {
     }
 }
 
-fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
+pub(crate) fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
     let t = &p.q.text;
     let v: &[f32] = &p.q.vector;
     let w = if kind == "facet" { match_word(t)? } else { String::new() };
     let phrase = if kind == "phrase" { Some(phrase_of(t)?) } else { None };
     let typo = if kind == "typo" { Some(typo_of(t)?) } else { None };
-    let prefix = if kind == "prefix" { Some(prefix_of(t)?) } else { None };
+    let prefix = if kind == "prefix" { Some(prefix_of(t, p.knobs.prefix_len)?) } else { None };
     let (key, seen, year) = (p.key, p.seen, p.year);
+    // The filters' values: `run`'s are year >= 2010 and c00 to c03, rating >= 4, and rating >= 3 for similar items.
+    let f = p.knobs;
+    let cats = f.cat_names();
+    let quoted = |sep: &str| cats.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(sep);
+    let sql_cats = cats.iter().map(|c| sql_str(c)).collect::<Vec<_>>().join(", ");
     let ws = words(t);
     match o {
         Other::Meili => {
@@ -1381,9 +1513,9 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             let vector = |vec: &[f32], ratio: f64, q: &str| with(base(q), json!({"vector": vec.to_vec(), "hybrid": {"embedder": "default", "semanticRatio": ratio}}));
             let body = match kind {
                 "bm25" => base(t),
-                "bm25 + filter" => with(base(t), json!({"filter": "year >= 2010 AND category IN [c00, c01, c02, c03]"})),
+                "bm25 + filter" => with(base(t), json!({"filter": format!("year >= {} AND category IN [{}]", f.year_min, cats.join(", "))})),
                 "vector" => vector(v, 1.0, ""),
-                "vector + filter" => with(vector(v, 1.0, ""), json!({"filter": "rating >= 4"})),
+                "vector + filter" => with(vector(v, 1.0, ""), json!({"filter": format!("rating >= {}", f.rating_min)})),
                 "hybrid (RRF)" => vector(v, 0.5, t),
                 "hybrid (weighted)" => vector(v, 0.8, t),
                 "facet" => json!({"q": format!("\"{w}\""), "limit": 0, "facets": ["category"]}),
@@ -1399,7 +1531,7 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| format!("'{}'", meili_id(k))).collect();
-                    with(vector(p.item, 1.0, ""), json!({"filter": format!("rating >= 3 AND id NOT IN [{}]", ids.join(", "))}))
+                    with(vector(p.item, 1.0, ""), json!({"filter": format!("rating >= {} AND id NOT IN [{}]", f.similar_rating, ids.join(", "))}))
                 }
                 _ => return None,
             };
@@ -1411,9 +1543,9 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             let vector = |vec: &[f32]| json!({"collection": "docs", "q": "*", "per_page": 10, "include_fields": "id", "vector_query": vq(vec, 10, &format!(", ef:{CANDIDATES}"))});
             let s = match kind {
                 "bm25" => text(t),
-                "bm25 + filter" => with(text(t), json!({"filter_by": "year:>=2010 && category:[c00,c01,c02,c03]"})),
+                "bm25 + filter" => with(text(t), json!({"filter_by": format!("year:>={} && category:[{}]", f.year_min, cats.join(","))})),
                 "vector" => vector(v),
-                "vector + filter" => with(vector(v), json!({"filter_by": "rating:>=4"})),
+                "vector + filter" => with(vector(v), json!({"filter_by": format!("rating:>={}", f.rating_min)})),
                 "hybrid (RRF)" => with(text(t), json!({"vector_query": vq(v, DEPTH, ", alpha:0.5")})),
                 "hybrid (weighted)" => with(text(t), json!({"vector_query": vq(v, DEPTH, ", alpha:0.8")})),
                 "facet" => json!({"collection": "docs", "q": w, "query_by": "body", "per_page": 0, "prefix": false, "num_typos": 0, "drop_tokens_threshold": 0,
@@ -1430,7 +1562,7 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| format!("`{k}`")).collect();
-                    with(vector(p.item), json!({"filter_by": format!("rating:>=3 && id:!=[{}]", ids.join(","))}))
+                    with(vector(p.item), json!({"filter_by": format!("rating:>={} && id:!=[{}]", f.similar_rating, ids.join(","))}))
                 }
                 _ => return None,
             };
@@ -1462,9 +1594,9 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             };
             let body = match kind {
                 "bm25" => text(None)?,
-                "bm25 + filter" => text(Some(json!({"must": [{"key": "year", "range": {"gte": 2010}}, {"key": "category", "match": {"any": ["c00", "c01", "c02", "c03"]}}]})))?,
+                "bm25 + filter" => text(Some(json!({"must": [{"key": "year", "range": {"gte": f.year_min}}, {"key": "category", "match": {"any": cats}}]})))?,
                 "vector" => vector(v, None),
-                "vector + filter" => vector(v, Some(json!({"must": [{"key": "rating", "range": {"gte": 4}}]}))),
+                "vector + filter" => vector(v, Some(json!({"must": [{"key": "rating", "range": {"gte": json_num(f.rating_min)}}]}))),
                 "hybrid (RRF)" => json!({"prefetch": prefetch()?, "query": {"rrf": {"k": 60}}, "limit": 10, "with_payload": ["key"]}),
                 "hybrid (weighted)" => json!({"prefetch": prefetch()?, "query": {"fusion": "dbsf"}, "limit": 10, "with_payload": ["key"]}),
                 "boosted (bm25 × decay)" => json!({
@@ -1490,7 +1622,7 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 }
                 "similar items" => vector(
                     p.item,
-                    Some(json!({"must": [{"key": "rating", "range": {"gte": 3}}], "must_not": [{"key": "key", "match": {"any": seen}}]})),
+                    Some(json!({"must": [{"key": "rating", "range": {"gte": json_num(f.similar_rating)}}], "must_not": [{"key": "key", "match": {"any": seen}}]})),
                 ),
                 _ => return None,
             };
@@ -1507,14 +1639,16 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 "bm25" => get(format!("limit: 10, {}", bm25(t)), score),
                 "bm25 + filter" => get(
                     format!(
-                        "limit: 10, {}, where: {{operator: And, operands: [{{path: [\"year\"], operator: GreaterThanEqual, valueInt: 2010}}, \
-                         {{path: [\"category\"], operator: ContainsAny, valueText: [\"c00\", \"c01\", \"c02\", \"c03\"]}}]}}",
-                        bm25(t)
+                        "limit: 10, {}, where: {{operator: And, operands: [{{path: [\"year\"], operator: GreaterThanEqual, valueInt: {}}}, \
+                         {{path: [\"category\"], operator: ContainsAny, valueText: [{}]}}]}}",
+                        bm25(t),
+                        f.year_min,
+                        quoted(", ")
                     ),
                     score,
                 ),
                 "vector" => get(format!("limit: 10, {}", near(v)), dist),
-                "vector + filter" => get(format!("limit: 10, {}, where: {{path: [\"rating\"], operator: GreaterThanEqual, valueNumber: 4}}", near(v)), dist),
+                "vector + filter" => get(format!("limit: 10, {}, where: {{path: [\"rating\"], operator: GreaterThanEqual, valueNumber: {}}}", near(v), f.rating_min), dist),
                 "hybrid (RRF)" | "hybrid (weighted)" => {
                     let (alpha, fusion) = if kind == "hybrid (RRF)" { (0.5, "rankedFusion") } else { (0.8, "relativeScoreFusion") };
                     get(format!("limit: 10, hybrid: {{query: {}, vector: {}, alpha: {alpha}, fusionType: {fusion}, properties: [\"body\"]}}", lit(t), vector_text(v)), score)
@@ -1532,8 +1666,9 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                     let not: Vec<String> = seen.iter().map(|k| format!("{{path: [\"key\"], operator: NotEqual, valueText: {}}}", lit(k))).collect();
                     get(
                         format!(
-                            "limit: 10, {}, where: {{operator: And, operands: [{{path: [\"rating\"], operator: GreaterThanEqual, valueNumber: 3}}, {}]}}",
+                            "limit: 10, {}, where: {{operator: And, operands: [{{path: [\"rating\"], operator: GreaterThanEqual, valueNumber: {}}}, {}]}}",
                             near(p.item),
+                            f.similar_rating,
                             not.join(", ")
                         ),
                         dist,
@@ -1562,9 +1697,9 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             let at = |path: &str, b: Json| Some(post(format!("{u}/v2/vectordb/entities/{path}"), &b));
             match kind {
                 "bm25" => at("search", search(json!(t), "sparse", None, 10)),
-                "bm25 + filter" => at("search", search(json!(t), "sparse", Some("year >= 2010 and category in [\"c00\", \"c01\", \"c02\", \"c03\"]".into()), 10)),
+                "bm25 + filter" => at("search", search(json!(t), "sparse", Some(format!("year >= {} and category in [{}]", f.year_min, quoted(", "))), 10)),
                 "vector" => at("search", search(json!(v.to_vec()), "emb", None, 10)),
-                "vector + filter" => at("search", search(json!(v.to_vec()), "emb", Some("rating >= 4".into()), 10)),
+                "vector + filter" => at("search", search(json!(v.to_vec()), "emb", Some(format!("rating >= {}", f.rating_min)), 10)),
                 "hybrid (RRF)" | "hybrid (weighted)" => {
                     let rerank = if kind == "hybrid (RRF)" {
                         json!({"strategy": "rrf", "params": {"k": 60}})
@@ -1591,7 +1726,7 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| quote(k)).collect();
-                    at("search", search(json!(p.item.to_vec()), "emb", Some(format!("rating >= 3 and key not in [{}]", ids.join(", "))), 10))
+                    at("search", search(json!(p.item.to_vec()), "emb", Some(format!("rating >= {} and key not in [{}]", f.similar_rating, ids.join(", "))), 10))
                 }
                 _ => None,
             }
@@ -1605,9 +1740,9 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             let knn = |vec: &[f32], k: usize| format!("knn(emb, {k}, {}, {{ef={}, rescore=1, oversampling={}.0}})", manticore_vec(vec), CANDIDATES.max(k), OVERSAMPLE);
             let sql = match kind {
                 "bm25" => text(&quorum, ""),
-                "bm25 + filter" => text(&quorum, " AND year >= 2010 AND category IN ('c00', 'c01', 'c02', 'c03')"),
+                "bm25 + filter" => text(&quorum, &format!(" AND year >= {} AND category IN ({sql_cats})", f.year_min)),
                 "vector" => format!("SELECT key, knn_dist() d FROM docs WHERE {} LIMIT 10", knn(v, 10)),
-                "vector + filter" => format!("SELECT key, knn_dist() d FROM docs WHERE {} AND rating >= 4 LIMIT 10", knn(v, 10)),
+                "vector + filter" => format!("SELECT key, knn_dist() d FROM docs WHERE {} AND rating >= {} LIMIT 10", knn(v, 10), f.rating_min),
                 "hybrid (RRF)" => format!(
                     "SELECT key, hybrid_score() s FROM docs WHERE MATCH({}) AND {} LIMIT 10 OPTION fusion_method='rrf', rank_constant=60, window_size={DEPTH}, {options}",
                     sql_str(&quorum),
@@ -1635,7 +1770,7 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| sql_str(k)).collect();
-                    format!("SELECT key, knn_dist() d FROM docs WHERE {} AND rating >= 3 AND key NOT IN ({}) LIMIT 10", knn(p.item, 10), ids.join(", "))
+                    format!("SELECT key, knn_dist() d FROM docs WHERE {} AND rating >= {} AND key NOT IN ({}) LIMIT 10", knn(p.item, 10), f.similar_rating, ids.join(", "))
                 }
                 "sql aggregate" => {
                     format!("SELECT category, COUNT(*) n, AVG(rating) r FROM docs WHERE year >= {year} GROUP BY category HAVING n > 1000 ORDER BY n DESC LIMIT 10")
@@ -1659,7 +1794,7 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             let text = |filter: &str, extra_match: &str| format!("SELECT key, {score} s FROM docs WHERE {matches}{extra_match}{filter} ORDER BY s DESC LIMIT 10");
             let sql = match kind {
                 "bm25" => text("", ""),
-                "bm25 + filter" => text(" AND year >= 2010 AND category IN ('c00', 'c01', 'c02', 'c03')", ""),
+                "bm25 + filter" => text(&format!(" AND year >= {} AND category IN ({sql_cats})", f.year_min), ""),
                 "vector" => {
                     if pdb {
                         format!("SELECT key, emb <#> {qv} d FROM docs WHERE key @@@ pdb.all() ORDER BY emb <#> {qv} LIMIT 10")
@@ -1667,7 +1802,7 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                         format!("SELECT key, emb <#> {qv} d FROM docs ORDER BY emb <#> {qv} LIMIT 10")
                     }
                 }
-                "vector + filter" => vector(&qv, "rating >= 4"),
+                "vector + filter" => vector(&qv, &format!("rating >= {}", f.rating_min)),
                 "hybrid (RRF)" => format!(
                     "WITH t AS (SELECT key, row_number() OVER (ORDER BY s DESC, key) r FROM (SELECT key, {score} s FROM docs WHERE {matches} ORDER BY s DESC LIMIT {DEPTH}) x), \
                      v AS (SELECT key, row_number() OVER (ORDER BY d, key) r FROM (SELECT key, emb <#> {qv} d FROM docs {} ORDER BY emb <#> {qv} LIMIT {DEPTH}) y) \
@@ -1722,7 +1857,7 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| sql_str(k)).collect();
-                    vector(&pg_vec(p.item), &format!("rating >= 3 AND key NOT IN ({})", ids.join(", ")))
+                    vector(&pg_vec(p.item), &format!("rating >= {} AND key NOT IN ({})", f.similar_rating, ids.join(", ")))
                 }
                 "sql aggregate" => format!(
                     "SELECT category, COUNT(*) n, AVG(rating)::float8 r FROM docs WHERE year >= {year} GROUP BY category HAVING COUNT(*) > 1000 ORDER BY n DESC LIMIT 10"
@@ -1760,9 +1895,9 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
             };
             match kind {
                 "bm25" => cmd(search(redis_or(t)?), None),
-                "bm25 + filter" => cmd(search(format!("{} @year:[2010 +inf] @category:{{c00|c01|c02|c03}}", redis_or(t)?)), None),
+                "bm25 + filter" => cmd(search(format!("{} @year:[{} +inf] @category:{{{}}}", redis_or(t)?, f.year_min, cats.join("|"))), None),
                 "vector" => cmd(knn("*"), Some(blob)),
-                "vector + filter" => cmd(knn("@rating:[4 +inf]"), Some(blob)),
+                "vector + filter" => cmd(knn(&format!("@rating:[{} +inf]", f.rating_min)), Some(blob)),
                 "hybrid (RRF)" | "hybrid (weighted)" => {
                     let mut x = a(&["FT.HYBRID", "idx", "SEARCH"]);
                     x.push(redis_or(t)?);
@@ -1824,7 +1959,7 @@ fn request(o: Other, kind: &str, p: &Probe, u: &str) -> Option<Req> {
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| redis_tag(k)).collect();
                     let blob = f16_bytes(p.item);
-                    cmd(knn(&format!("@rating:[3 +inf] -@key:{{{}}}", ids.join("|"))), Some(blob))
+                    cmd(knn(&format!("@rating:[{} +inf] -@key:{{{}}}", f.similar_rating, ids.join("|"))), Some(blob))
                 }
                 "sql aggregate" => {
                     let mut x = a(&["FT.AGGREGATE", "idx"]);
@@ -1986,7 +2121,7 @@ fn answer(o: Other, kind: &str, j: &Json) -> Json {
 
 /// Sends `reqs` round-robin from `concurrency` clients for `seconds`, each
 /// client with its own connections.
-async fn drive(conns: &Conns, reqs: Arc<Vec<Req>>, concurrency: usize, seconds: f64) -> Timed {
+pub(crate) async fn drive(conns: &Conns, reqs: Arc<Vec<Req>>, concurrency: usize, seconds: f64) -> Timed {
     let next = Arc::new(AtomicUsize::new(0));
     let deadline = Instant::now() + Duration::from_secs_f64(seconds);
     let t0 = Instant::now();
@@ -2026,6 +2161,27 @@ async fn drive(conns: &Conns, reqs: Arc<Vec<Req>>, concurrency: usize, seconds: 
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The engine's result cache counters, read before and after the timed
+/// runs: Manticore's `qcache_*` status (its size limit, cached queries and
+/// hits). Null for the engines that keep no result cache, or none unless a
+/// request asks (Typesense's `use_cache`, which the requests here leave off).
+async fn result_cache(o: Other, conns: &mut Conns, urls: &[String]) -> Json {
+    match o {
+        Other::Manticore => {
+            let mut nodes = serde_json::Map::new();
+            for u in urls {
+                let v = match conns.sql(u, "SHOW STATUS LIKE 'qcache%'").await {
+                    Ok(j) => j[0]["data"].clone(),
+                    Err(e) => json!({"error": e}),
+                };
+                nodes.insert(u.clone(), v);
+            }
+            Json::Object(nodes)
+        }
+        _ => Json::Null,
+    }
+}
+
 pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, concurrency: &[usize], seconds: f64, label: Option<String>, only: &[String], out: &Path) -> Result<(), String> {
     // As the others' run: the first queries with text, keys and items of the first 20,000 documents.
     let coll = data::load(collection, Some(20_000)).map_err(s)?;
@@ -2034,6 +2190,15 @@ pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, 
     let items: Vec<Arc<[f32]>> = coll.docs.iter().map(|d| Arc::from(d[col::EMB].as_vector().unwrap_or(&[]))).collect();
     let mut conns = Conns::new(o, Duration::from_secs(30))?;
     let label = label.unwrap_or_else(|| o.name().to_string());
+    // Manticore's query cache keeps the result sets of queries slower than
+    // qcache_thresh_msec (3 s by default) and answers their repeats from
+    // memory: off while timed, as every engine's result cache.
+    if o == Other::Manticore {
+        for u in urls {
+            conns.sql(u, "SET GLOBAL qcache_max_bytes=0").await.map_err(|e| format!("query cache off: {e}"))?;
+        }
+    }
+    let cache_before = result_cache(o, &mut conns, urls).await;
     let (mut http, mut answers, mut query_ids, mut unavailable, mut differ, mut probes) =
         (Vec::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
     let mut warmups = BTreeMap::new();
@@ -2051,7 +2216,7 @@ pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, 
             let k = (i * 7919) % keys.len();
             let it = (i * 104_729 + 13) % keys.len();
             let seen: Vec<String> = std::iter::once(it).chain((1..SEEN).map(|j| (it + j * 997) % keys.len())).map(|j| keys[j].clone()).collect();
-            let probe = Probe { q, key: &keys[k], row: k, item: &items[it], seen: &seen, year: 1990 + (i % 30) as i64, paid: false };
+            let probe = Probe { q, key: &keys[k], row: k, item: &items[it], seen: &seen, year: 1990 + (i % 30) as i64, paid: false, knobs: Knobs::default() };
             let u = &urls[reqs.len() % urls.len()];
             if let Some(r) = request(o, kind, &probe, u) {
                 // A key lookup by the engine's own read by id where its
@@ -2138,10 +2303,13 @@ pub async fn run(collection: &str, o: Other, urls: &[String], n_queries: usize, 
             }));
         }
     }
+    let cache = json!({"before": cache_before, "after": result_cache(o, &mut conns, urls).await});
+    eprintln!("{label:<9} result cache: {cache}");
     let report = json!({
         "engine": o.name(), "label": label, "collection": collection, "urls": urls, "queries": queries.len(),
         "params": {"seconds": seconds, "concurrency": concurrency, "candidates": CANDIDATES, "oversample": OVERSAMPLE, "hybrid_depth": DEPTH},
         "http": http, "unavailable": unavailable, "differs": differ, "query_ids": query_ids, "probes": probes, "answers": answers, "warm_up_p50_ms": warmups,
+        "result_cache": cache,
     });
     std::fs::create_dir_all(out).map_err(s)?;
     let path = out.join(format!("run-{}.json", label.replace(' ', "-")));
@@ -2211,6 +2379,74 @@ mod tests {
             assert_eq!(super::meili_key(&id), key);
         }
         assert_eq!(super::meili_id("doc_00.1#2"), "doc__00_2e1_232");
+    }
+
+    #[test]
+    fn new_ids_are_apart_from_rows_and_exact_in_json() {
+        use super::new_id;
+        let a: Vec<u64> = (0..1000).map(|n| new_id(&format!("sim00ab12-{n}"))).collect();
+        let mut b = a.clone();
+        b.sort_unstable();
+        b.dedup();
+        assert_eq!(b.len(), a.len());
+        // Other schedules, the warm-up, and keys of another shape each get ids of their own.
+        assert_ne!(new_id("sim00ab12-5"), new_id("sim00ab13-5"));
+        assert_ne!(new_id("sim00ab12-5"), new_id("sim00ab12w-5"));
+        for k in ["sim00ab12-5", "simffffffw-268435455", "sim00ab12-268435456", "msmarco_v2.1_doc_00_1#2", "simxyz-1"] {
+            let id = new_id(k);
+            assert!(id >= 1 << 50 && id < 1 << 53, "{k}: {id}");
+        }
+        assert_eq!(new_id("sim00ab12-7"), new_id("sim00ab12-7"));
+    }
+
+    #[test]
+    fn replayed_writes_name_each_engine_s_document() {
+        use super::*;
+        let doc = RawDoc { id: "k#1".into(), title: "t".into(), text: "x".into(), year: 2001, category: "c01".into(), rating: 2.5, topic: "t01".into() };
+        let pair = (doc, vec![0.5f32, 0.5]);
+        let url = "http://e";
+        let what = |r: &Req| match r {
+            Req::Http { method, url, body, .. } => format!("{method} {url} {}", String::from_utf8_lossy(body)),
+            Req::Sql { sql, .. } => sql.clone(),
+            Req::Redis { cmds, .. } => cmds.iter().map(|c| c.iter().map(|a| String::from_utf8_lossy(a).into_owned()).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("; "),
+        };
+        let keys = vec!["sim000001-3".to_string(), "sim000001-4".to_string()];
+        let id3 = new_id(&keys[0]);
+        for o in [Other::Meili, Other::Typesense, Other::Manticore, Other::Qdrant, Other::Weaviate, Other::Milvus, Other::Paradedb, Other::Postgres, Other::Redis] {
+            let up = what(&rating_req(o, url, "k#1", 7, 4.25, Some(&pair)).unwrap());
+            let del: Vec<String> = delete_reqs(o, url, &keys).iter().map(|r| what(r)).collect();
+            let all = del.join(" | ");
+            let want_up = match o {
+                Other::Meili => "PUT http://e/indexes/docs/documents?primaryKey=id [{\"id\":\"k_231\",\"rating\":4.25}]".to_string(),
+                Other::Typesense => "PATCH http://e/collections/docs/documents/k%231 {\"rating\":4.25}".to_string(),
+                Other::Qdrant => "POST http://e/collections/docs/points/payload?wait=true {\"payload\":{\"rating\":4.25},\"points\":[7]}".to_string(),
+                Other::Weaviate => format!("PATCH http://e/v1/objects/Doc/{} {{\"class\":\"Doc\",\"properties\":{{\"rating\":4.25}}}}", uuid_of("k#1")),
+                Other::Manticore => "POST http://e/update {\"doc\":{\"rating\":4.25},\"id\":8,\"table\":\"docs\"}".to_string(),
+                Other::Paradedb | Other::Postgres => "UPDATE docs SET rating = 4.25 WHERE key = 'k#1'".to_string(),
+                Other::Redis => "HSET d:k#1 rating 4.25".to_string(),
+                Other::Milvus => String::new(),
+            };
+            if o == Other::Milvus {
+                assert!(up.starts_with("POST http://e/v2/vectordb/entities/upsert ") && up.contains("\"key\":\"k#1\"") && up.contains("\"rating\":4.25") && up.contains("\"emb\":[0.5,0.5]"), "{up}");
+            } else {
+                assert_eq!(up, want_up, "{o:?}");
+            }
+            let names_both = match o {
+                Other::Qdrant => all.contains(&format!("[{id3},{}]", id3 + 1)),
+                Other::Manticore => all.contains(&format!("IN%20%28{}%2C{}%29", id3 + 1, id3 + 2)),
+                Other::Weaviate => del.len() == 2 && all.contains(&uuid_of(&keys[1])),
+                Other::Typesense => all.contains("filter_by=id%3A%5B%60sim000001-3%60%2C%60sim000001-4%60%5D"),
+                Other::Redis => all == "DEL d:sim000001-3 d:sim000001-4",
+                _ => all.contains("sim000001-3") && all.contains("sim000001-4"),
+            };
+            assert!(names_both, "{o:?}: {all}");
+            assert!(delete_reqs(o, url, &[]).is_empty());
+        }
+        // A replay's insert numbers its documents by key, not by row.
+        let mut d = pair.clone();
+        d.0.id = keys[0].clone();
+        assert!(what(&insert_req(Other::Qdrant, url, &[d.clone()], 10.0)).contains(&format!("\"id\":{id3}")));
+        assert!(what(&insert_req(Other::Manticore, url, &[d], 10.0)).contains(&format!("\"id\":{}", id3 + 1)));
     }
 
     #[test]

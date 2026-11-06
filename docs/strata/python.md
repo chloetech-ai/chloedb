@@ -15,7 +15,28 @@ The `strata` package runs a Strata database inside a Python process, the way `sq
 
 ## Install
 
-The package is in [`strata-py/`](https://github.com/rkonow/strata/tree/main/strata-py): a Rust extension built with [maturin](https://www.maturin.rs), for CPython 3.10 and later. It needs Rust (stable) and a C compiler.
+The package is in [`strata-py/`](https://github.com/chloetech-ai/strata/tree/main/strata-py): a Rust extension built with [maturin](https://www.maturin.rs), for CPython 3.10 and later.
+
+### Prebuilt
+
+Each `strata-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/strata/releases) has a wheel per platform, built for CPython's stable ABI (one wheel serves Python 3.10 and later), which installs with no Rust and no compiler. Given the release's assets page, pip picks the wheel for its machine:
+
+```sh
+pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0
+```
+
+| platform | wheel |
+|---|---|
+| macOS 11+ on Apple silicon | `strata_db-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
+| macOS 11+ on Intel | `strata_db-<version>-cp310-abi3-macosx_11_0_x86_64.whl` |
+| Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `strata_db-<version>-cp310-abi3-manylinux_2_35_x86_64.whl` |
+| Linux aarch64, glibc 2.35+ | `strata_db-<version>-cp310-abi3-manylinux_2_35_aarch64.whl` |
+
+The workflow [`py-release.yml`](https://github.com/chloetech-ai/strata/blob/main/.github/workflows/py-release.yml) builds them on a tag `strata-py-v<version>` (the version in `strata-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
+
+### From source
+
+It needs Rust (stable) and a C compiler; the build takes about 12 minutes on 4 cores.
 
 ```sh
 pip install ./strata-py                    # from the repository's root: builds and installs a wheel
@@ -68,7 +89,7 @@ db.close()
 
 A database written by a version of Strata from before [field ids](index.md#wal-memtable-and-snapshots) does not open: `strata.upgrade(path)` copies it into this version's format in its place, keeps the old one as `<path>.before-field-ids`, and returns `(old_path, tables, rows)`, or `None` when the database needs no upgrade. Nothing may have it open meanwhile.
 
-A database file can be open in one process at a time. Within that process, threads can query at once: every call releases the GIL while it runs. To share a database between processes, serve it with `strata-server` and use the client below. A `with` block, or `close()`, merges the small segments that writes left and closes the file.
+A database file can be open in one process at a time. Within that process, threads can query at once: every call releases the GIL while it runs. Threads can write at once too: a write waits while another holds the writer, and the writes that wait share the next commit (one disk flush for all of them), so none fails as busy. To share a database between processes, serve it with `strata-server` and use the client below. Segments are merged in the background as writes add them, one merge at a time, as a server merges them, so a table written to for weeks stays in a few segments without the rows its updates replaced. A `with` block, or `close()`, merges the small segments that writes left, gives the file system back the space merges freed when it is an eighth of the file or more, and closes the file. `optimize()` goes further, for a table that is done changing: one segment, up to 2,000,000 rows.
 
 ## Writing
 
@@ -84,7 +105,7 @@ Rows are dicts of field name to value: `str`, `int`, `float`, `None`, `bool` for
 | `sql("UPDATE ...")` | `INSERT`, `UPDATE` and `DELETE` statements; returns the rows written. It also runs `CREATE TABLE`, `ALTER TABLE` and `DROP TABLE` ([tables](query-language.md#tables)) and `CREATE` and `DROP RANK PROFILE` ([rank profiles](query-language.md#rank-profiles-a-ranking-kept-with-its-table)), which return 0, and writes any table |
 | `add_column(name, type, **options)`, `drop_column(name)`, `rename_column(old, new)` | change a table's columns while it holds rows, as [`ALTER TABLE`](query-language.md#changing-a-tables-columns) does: `options` are the field's, in the short form of a schema (`db.add_column("price", "float", default=0.0)`, `db.add_column("emb", "vector", embed=["title"], model="potion-retrieval-32M")`); rows written before a column was added read its default, or `None`. Each takes `table=`. In-process only: through the client, send `ALTER TABLE` with `sql` |
 | `import_file(path, format=None)` | loads a JSON Lines, JSON, CSV or TSV file ([how files are read](server.md#loading-rows)); returns `{rows, bulk, skipped_fields}` |
-| `write(ops)` | applies write operations in one transaction, as the server's `/v1/write` takes them: `insert`, `upsert` and `delete`, and `set` or `add` of a numeric field in place (`{"op": "add", "key": k, "field": "n", "value": 1}`; with a `doc` instead of a `key`, an `add` inserts the row when no row has its key); each names its `table` or writes the first; returns the rows written |
+| `write(ops)` | applies write operations in one transaction, as the server's `/v1/write` takes them: `insert`, `upsert` and `delete`, `set` of a field (`{"op": "set", "key": k, "field": "status", "value": "SOLD"}`: a number in place, another by writing the row again with the value), and `add` to a number in place (`{"op": "add", "key": k, "field": "n", "value": 1}`; with a `doc` instead of a `key`, an `add` inserts the row when no row has its key); each names its `table` or writes the first; returns the rows written |
 | `import_sqlite(path, tables=None, schemas=None)` | imports a SQLite database's tables, each into the table of its name, created when missing ([SQLite in and out](sqlite.md)); returns what it did and what did not carry over |
 | `export_sqlite(path, tables=None, fts=True, indexes=True)` | writes the tables to a new SQLite file, with indexes, an FTS5 index over the text and the Strata schemas |
 | `import_parquet(path, table=None, schema=None, key=None)` | imports a Parquet file or a directory of them (Spark's part files, Hive partitions) into one table, created from the columns when missing ([Parquet and S3](parquet.md)); returns what it did |

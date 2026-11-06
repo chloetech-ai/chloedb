@@ -439,7 +439,10 @@ class Database(Search):
         return self._db.vacuum()
 
     def close(self) -> None:
-        """Merges small segments and closes the database."""
+        """Merges small segments, gives the file system back the space that
+        merges freed when it is an eighth of the file or more, and closes
+        the database. (Segments are merged in the background as writes add
+        them, so a table written to for a long time stays in few segments.)"""
         self._db.close()
 
     @property

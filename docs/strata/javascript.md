@@ -76,7 +76,7 @@ await db.close();
 
 `open(path, {schema})` opens the file, or creates it with the schema when it does not exist; `Database.create(path, schema)` and `Database.open(path)` do one or the other. A schema is an object, JSON text or the path of a JSON file, in the [short form or the long one](server.md#schemas). `directory: true` keeps a database as a directory of segment files, `models` is where embedded fields' models are (`$STRATA_MODELS`, else `~/.local/share/strata/models`; `strata-server fetch-model` fetches them), and `threads` how many cores index builds and each query use (every core by default).
 
-Every call answers a promise and runs on a worker thread of Node's pool, so queries and writes leave the event loop free and many run at once. One process at a time may have a database open (a second one gets "busy: the database is open elsewhere"): serve it with strata-server to share it.
+Every call answers a promise and runs on a worker thread of Node's pool, so queries and writes leave the event loop free and many run at once. Writes made at once wait for each other and share commits (one disk flush for all those waiting), so none fails as busy. One process at a time may have a database open (a second one gets "busy: the database is open elsewhere"): serve it with strata-server to share it.
 
 ### Querying
 
@@ -101,10 +101,10 @@ A `Result` has `columns`, `rows` (arrays in column order), `keys` (each row's pr
 | `db.insert(rows, {table})` | rows whose keys are new; all or none are written. 10,000 rows or more are bulk-loaded into new segments in one commit |
 | `db.upsert(rows, {table})` | rows, replacing the rows with their keys, in transactions of 10,000 |
 | `db.delete(keys, {table})` | the rows with these keys |
-| `db.write(ops)` | [write operations](server.md#http-api) in one transaction: insert, upsert, delete, and `set` and `add` of a field in place |
+| `db.write(ops)` | [write operations](server.md#http-api) in one transaction: insert, upsert, delete, `set` of a field (a number in place, another by writing the row again) and `add` to a number in place |
 | `db.get(key)`, `db.getMany(keys)` | rows by key without SQL, or null |
 | `db.addColumn(name, type, options)`, `dropColumn`, `renameColumn` | `ALTER TABLE` |
-| `db.expire()`, `db.optimize()`, `db.vacuum()`, `db.close()` | rows past their `expire_by`; a table that is done changing readied for queries (its segments merged into as few as can be, deleted rows dropped, the file shrunk); the space merges freed returned to the file system; the database closed (`await using db = ...` closes it too) |
+| `db.expire()`, `db.optimize()`, `db.vacuum()`, `db.close()` | rows past their `expire_by`; a table that is done changing readied for queries (its segments merged into as few as can be, deleted rows dropped, the file shrunk); the space merges freed returned to the file system; the database closed, after merging small segments and returning the space merges freed when it is an eighth of the file or more (`await using db = ...` closes it too). Segments merge in the background as writes add them, one merge at a time |
 
 A row is an object of field name to value. A vector may be a `Float32Array` (read from its bytes, without a number per element in between), a `Float64Array` or an array; a TIMESTAMP a `Date` or ISO 8601 text; a list field an array or a `Set`. Values come back as strata-server answers them: TIMESTAMPs as ISO 8601 text in UTC, vectors as arrays of numbers.
 

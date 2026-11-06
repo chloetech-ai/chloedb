@@ -20,7 +20,8 @@ Elasticsearch and Solr, 28 October 2026) are in
 | `redpanda.yaml` | one Redpanda broker for the stream test |
 | `more/*.yaml` | the nine one-node engines (`postgres.yaml` is ParadeDB's and Postgres's, as `paradedb-0` or `postgres-0`) |
 | `analyze.py` | scores the answers and prints the tables |
-| `../../src/bin/engine-compare/` | the client: `build` (a Strata shard), `load` (the other engines) and `run` (time the kinds and record the answers); `more.rs` speaks to the nine one-node engines |
+| `profiles/*.toml` | traffic profiles for the [traffic simulator](#traffic-simulator) (copied into the image) |
+| `../../src/bin/engine-compare/` | the client: `build` (a Strata shard), `load` (the other engines), `run` (time the kinds and record the answers), `plan` and `replay` (the traffic simulator, `sim/` and `replay.rs`); `more.rs` speaks to the nine one-node engines |
 
 ## What is the same for every engine
 
@@ -89,10 +90,21 @@ Elasticsearch and Solr, 28 October 2026) are in
   per cluster by `compare.sh` and kept in the secret `strata-token`; the
   other engines run with their security off, as their images start
   (Typesense needs an API key, a fixed `compare`).
-- **No result caches**: the timed runs repeat 300 queries, so Solr's
-  `queryResultCache` is off and Elasticsearch's and OpenSearch's shard
-  request caches are bypassed (`request_cache=false`); filter caches stay
-  on everywhere. Vespa keeps no result cache by default.
+- **No result caches**: the timed runs repeat 300 queries, so no engine
+  may answer a repeat from a cache of answers. Solr's `queryResultCache`
+  is off (size 0); Elasticsearch's and OpenSearch's shard request caches
+  are off for the index while it is timed
+  (`index.requests.cache.enable: false`, which also covers their SQL
+  endpoints); Manticore's query cache is off (`SET GLOBAL
+  qcache_max_bytes=0`; it keeps queries slower than 3 s). Vespa, the
+  other engines and Strata keep no result cache by default (Typesense
+  only when a request asks with `use_cache`, which these do not). Page
+  caches and filter caches stay on everywhere. Each `run-*.json` keeps
+  the caches' counters from before and after the timed runs
+  (`result_cache`), so a report can show that none answered. Runs
+  before 5 November 2026 only passed `request_cache=false` on
+  Elasticsearch's and OpenSearch's `_search` and left Manticore's cache
+  on, so their SQL aggregates could be answered from the request cache.
 
 ## The query kinds
 
@@ -202,6 +214,127 @@ the time it was due.
   documents lost (none should be).
 
 Afterwards the streamed documents are deleted and the topic too.
+
+## Traffic simulator
+
+`run` asks each kind's queries in turn, as fast as a fixed number of
+clients can: a closed loop, which measures each engine at its best and
+cannot say what a user would wait at a given load. The traffic simulator
+sends a planned stream of requests instead, at the times it was planned for,
+whatever the engine's answers: an open loop, so a slow answer delays nothing
+behind it, and requests that would have queued are counted from when they
+were due (as wrk2 does, against coordinated omission). It comes in two
+steps, so that every engine gets the same requests at the same times:
+
+```bash
+B=strata-server/target/release/engine-compare    # or the image's engine-compare
+P=strata-server/deploy/compare/profiles
+$B --collection msmarco-1000k-v2-h5 plan --profile $P/search-app.toml --seed 1 --rate 200 --out search-app-1.jsonl.gz
+$B --collection msmarco-1000k-v2-h5 replay --engine strata --url http://127.0.0.1:7700 --schedule search-app-1.jsonl.gz --out reports
+# In the cluster: plans in the Job, then replays (PROFILE is a name under profiles/ or a path under /data).
+$C replay strata search-app --rate 200;  $C replay es search-app --rate 200
+$C replay strata search-app --shape ramp --label strata-ramp
+```
+
+**A profile** (`profiles/*.toml`, every value checked when it is read) holds
+the distributions:
+
+| section | what it draws |
+|---|---|
+| `mix` | the share of each kind of `KINDS` a session sets out to ask |
+| `queries` | the collection's queries or a larger pool (`source = "pool"`); a Zipf head (`head`, `zipf_s`) that drifts (`drift_share` of it replaced every `drift_every_s`), a tail of queries asked once (`tail_share`), misspellings (`typo_share`: Strata's typo kind under `typos = "fuzzy"`, the text misspelt for every engine under `"plain"`) |
+| `docs` | which documents key lookups and similar items ask for: Zipf over the collection (`popular`; `doc_popularity.f32` beside it, if present, gives the weights) or `run`'s strides (`legacy`) |
+| `filters` | `run`'s fixed filters, or `drawn`: a target share of documents (log-uniform between `min_selectivity` and `max_selectivity`) met by a year and categories, or a rating, from the collection's own counts |
+| `sessions` | follow-ups (`follow_up`, the weights of refine, open and similar), think times (log-normal), and typing: one prefix request a keystroke, a log-normal gap apart, before the query |
+| `traffic` | the day (`day_s` long, `peak_to_trough`, `humps`, `peak_at`), bursts (a two-state Markov process: `factor` times the rate for spells of `busy_s` every `calm_s`), flash crowds (a few queries, `factor` times the rate, for `for_s`), the warm-up, the ramp's steps, the closed loop's concurrencies |
+| `writes` | their share of requests, inserts, updates and deletes among them, batch sizes, `jobs` (bulk loads of `docs` in batches, beside the traffic), and every `mark_every`-th insert carrying a word no other document has |
+| `slo` | the p99 a step must hold and the share of errors it may have |
+
+`today.toml` is `run` again (the collection's queries in order, `run`'s
+filters and documents): `replay --shape closed` with it sends the requests
+`run` sends, at the same concurrencies, which a test checks for all 14
+engines. `search-app.toml` is a search box in an app (typing, filters,
+sessions, a 3:1 day with bursts and a flash crowd, 2% writes and a bulk
+job); `rag.toml` is retrieval for a model (vector and hybrid, longer
+thinking, no typing, 5% writes and an ingest job). Their starting values
+and where they came from are in their comments.
+
+**Shapes**: `--shape day --rate R` (R requests a second at the day's peak),
+`--shape ramp` (the profile's steps of rising rates; a step holds when at
+most 1% of its reads are over the SLO's p99, counting requests still in
+flight at its end as late, and its errors stay under the SLO's share; two
+steps that do not hold end the replay, and the report's
+`capacity_at_slo` is the rate of the last step that held), `--shape closed`
+(`run`'s loop). A warm-up (`warmup_s`, head queries only, no writes, planned
+by a generator of its own so that it never shifts the timed requests) goes
+first and is left out of every number.
+
+**The schedule** is gzip-compressed JSON lines: a header (the profile, its
+SHA-256, the seed, the collection, the steps), one line a request (its time,
+kind, query, filters, session, write), and a trailer with what the plan
+measured of itself (requests by kind, Zipf head share, first-time queries,
+selectivity quantiles, peak rate). It names no engine: `replay` turns each
+line into each engine's request as it sends it. The same profile, seed and
+collection make the same file, byte for byte; its hash (`zcat FILE |
+sha256sum`) goes into every report replayed from it.
+
+**The report** (`OUT/replay-LABEL.json`) gives, for each kind, the response
+time (from when the request was due) and the service time (from when it was
+sent), from HDR histograms; the same by 10 s window, with whether the window
+held the SLO; each ramp step's verdict; how soon a marked write was found (a
+search for its word every 5 ms, up to 60 s); the driver's own lag behind the
+schedule; and errors. A dispatcher thread sleeps until a request's time and
+spins for the last 200 µs, so the driver's lag stays well under a
+millisecond, and a test serving 4 ms answers one at a time at 75% load checks
+the measured wait against M/D/1's. Afterwards the documents the schedule
+inserted are deleted and the ratings it changed written back (`--no-reset`
+keeps them).
+
+**Caches**: `--cache-mode ranked` (the default) sends requests as `run` does,
+with Elasticsearch's and OpenSearch's request cache off by request, so a
+repeated head query is not answered from a cache of results that one engine
+has and another has not; `shipped` sends them as each engine ships, for the
+numbers a user of its defaults would see. Page and filter caches stay on in
+both. Two result caches are as shipped in both modes until `run` turns them
+off too: Elasticsearch's and OpenSearch's SQL endpoints (the SQL aggregate)
+and Manticore's query cache. Report the mode with every number.
+
+**Data**: a profile can ask for more than `prepare_msmarco_compare.py`'s
+first collection holds:
+
+- `--attrs v2` draws the fields as a catalogue's are (years growing, ratings
+  skewed high, the category tied to the topic, or kept away from it with
+  `--categories anti`); `--heldout 0.05` keeps every 20th passage out, in
+  `heldout.jsonl` and `heldout_vecs.f32`, for inserts of documents no engine
+  has seen (without them, inserts copy loaded documents under new keys).
+  Either goes into a directory of its own (`msmarco-1000k-v2-h5`); the
+  default collection is the one before, row for row.
+- `strata/scripts/prepare_query_pool.py COLLECTION_DIR --n 1000000` writes a
+  pool of queries beside it (ORCAS's and MS MARCO's train queries, without
+  the collection's own, embedded with the same model) for `source = "pool"`.
+- `strata/scripts/fit_traffic.py` fits a profile's values to data: `zipf` to
+  a query log (ORCAS's clicks), `day` to Wikipedia's hourly page views.
+
+The nine one-node engines replay writes too, each through its own API:
+
+| engine | insert | rating update | delete |
+|---|---|---|---|
+| Meilisearch | add documents (a task) | add or update with the rating only | delete a batch of ids |
+| Typesense | import, upsert | `PATCH` of the document | delete by `filter_by=id:[…]` |
+| Qdrant | upsert points (`wait=true`) | set the payload's rating | delete points |
+| Weaviate | batch of objects | `PATCH` of the object | delete each object |
+| Milvus | insert | upsert of the whole document (no partial update) | delete by `key in […]` |
+| Manticore | bulk `replace` | `/update` of the attribute | `DELETE … WHERE id IN (…)` |
+| ParadeDB, Postgres | `INSERT` | `UPDATE … SET rating` | `DELETE … WHERE key IN (…)` |
+| Redis | `HSET` | `HSET` of the rating | `DEL` |
+
+Qdrant and Manticore number their documents: a loaded one by its row, a
+replay's own from its key, above every row. The freshness prober searches
+for the marked word with the engine's bm25 request and waits for the new
+document's key in the answer (Meilisearch and Typesense forgive typos, so
+another marked document can match the word too). After the reset, the
+report's `reset.searchable_docs_after` is the number of documents the engine
+says it holds, which should be the collection's again.
 
 ## Nine more engines, on one node
 

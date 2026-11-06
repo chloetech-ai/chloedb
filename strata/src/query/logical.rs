@@ -819,12 +819,14 @@ pub enum Having {
     Not(Box<Having>),
 }
 
-/// A column a SELECT groups by or aggregates: a field, or a path of a JSON
-/// field ([`Select::paths`]).
+/// A column a SELECT groups by or aggregates: a field, a path of a JSON
+/// field ([`Select::paths`]), or a part of a TIMESTAMP field's times
+/// ([`Select::times`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Col {
     Field(usize),
     Path(usize),
+    Time(usize),
 }
 
 impl Col {
@@ -833,6 +835,7 @@ impl Col {
         match self {
             Col::Field(f) => Projection::Field(f),
             Col::Path(p) => Projection::Path(p),
+            Col::Time(t) => Projection::Time(t),
         }
     }
 
@@ -840,7 +843,48 @@ impl Col {
     pub fn field(self) -> Option<usize> {
         match self {
             Col::Field(f) => Some(f),
-            Col::Path(_) => None,
+            Col::Path(_) | Col::Time(_) => None,
+        }
+    }
+}
+
+/// A TIMESTAMP field's times as a column a SELECT groups by
+/// (`date_trunc('day', at)`, `EXTRACT(dow FROM at)`, `strftime('%Y-%m',
+/// at)`): what the function gives of each row's value, which the
+/// executor reads from the field's column.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimeCol {
+    pub field: usize,
+    pub of: TimeOf,
+}
+
+/// What a [`TimeCol`] gives of a time.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TimeOf {
+    /// `date_trunc`: the start of the unit the time is in, a TIMESTAMP.
+    Trunc(crate::timestamp::Unit),
+    /// `date_part` and `EXTRACT`: an INT, or a FLOAT for seconds.
+    Part(crate::timestamp::Part),
+    /// `strftime`: text.
+    Format(String),
+}
+
+impl TimeCol {
+    /// The column's value of a time (microseconds since 1970), as the row
+    /// evaluator's function gives it, but a TIMESTAMP as its integer (the
+    /// answer's type gives it as a TIMESTAMP, [`Select::types`]); NULL for
+    /// a time whose start is not one.
+    pub fn value(&self, micros: i64) -> crate::value::Value {
+        use crate::timestamp as ts;
+        use crate::value::Value;
+        match &self.of {
+            TimeOf::Trunc(u) => ts::trunc(micros, *u).map_or(Value::Null, Value::Int),
+            TimeOf::Part(p) => match ts::part(micros, *p) {
+                ts::PartValue::Int(x) => Value::Int(x),
+                ts::PartValue::Float(x) => Value::Float(x),
+            },
+            // The format was checked when the column was made.
+            TimeOf::Format(f) => ts::strftime(f, micros).map_or(Value::Null, Value::Str),
         }
     }
 }
@@ -861,6 +905,9 @@ pub enum Projection {
     Field(usize),
     /// A path's value ([`Select::paths`]).
     Path(usize),
+    /// A part of a TIMESTAMP field's time ([`Select::times`]), as a group's
+    /// value.
+    Time(usize),
     /// The ORDER BY score (`score()`), or the fused score for hybrids.
     Score,
     /// `COUNT(*)`: of the whole result, or per group.
@@ -964,6 +1011,9 @@ pub struct Select {
     /// The paths of JSON fields the query reads as columns, which
     /// [`Col::Path`], [`Projection::Path`] and [`OrderBy::Path`] index.
     pub paths: Vec<PathCol>,
+    /// The parts of TIMESTAMP fields' times the query groups by, which
+    /// [`Col::Time`] and [`Projection::Time`] index.
+    pub times: Vec<TimeCol>,
     /// Which groups to keep.
     pub having: Option<Having>,
     /// Secondary order for rows that tie on the primary one.

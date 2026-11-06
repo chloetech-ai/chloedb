@@ -488,8 +488,8 @@ fn store(seg: &SegmentFile, schema: &Schema, tmp: &Path, reps: usize, rng: &mut 
     let queries: Vec<Vec<u32>> = (0..50).map(|_| (0..10).map(|_| rng.gen_range(0..n)).collect()).collect();
     let fields = [f::ID, f::TITLE];
     let mem = DocStore::open(seg, schema).unwrap();
-    let warm = time_n(reps, 1, || queries.iter().map(|q| q.iter().map(|&d| mem.get(d).len()).sum::<usize>()).sum::<usize>());
-    let warm_proj = time_n(reps, 1, || queries.iter().map(|q| q.iter().map(|&d| mem.get_fields(d, &fields).len()).sum::<usize>()).sum::<usize>());
+    let warm = time_n(reps, 1, || queries.iter().map(|q| q.iter().map(|&d| mem.get(d).unwrap().len()).sum::<usize>()).sum::<usize>());
+    let warm_proj = time_n(reps, 1, || queries.iter().map(|q| q.iter().map(|&d| mem.get_fields(d, &fields).unwrap().len()).sum::<usize>()).sum::<usize>());
     let per_query = |t: (f64, f64)| (t.0 / queries.len() as f64, t.1 / queries.len() as f64);
     eprintln!("  store warm: {:.1} us per 10 documents ({:.1} us for id, title)", per_query(warm).0 / 1e3, per_query(warm_proj).0 / 1e3);
 
@@ -517,7 +517,7 @@ fn store(seg: &SegmentFile, schema: &Schema, tmp: &Path, reps: usize, rng: &mut 
             iostat::evict(&path).unwrap();
             let before = iostat::resident_pages(&path).unwrap();
             let t = Instant::now();
-            black_box(q.iter().map(|&d| store.get(d).len()).sum::<usize>());
+            black_box(q.iter().map(|&d| store.get(d).unwrap().len()).sum::<usize>());
             lat.push(t.elapsed().as_nanos() as f64);
             pages.push(iostat::resident_pages(&path).unwrap().saturating_sub(before));
         }

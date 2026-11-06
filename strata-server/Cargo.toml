@@ -14,6 +14,7 @@ clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
 axum = "0.7"
 # Answers gzip-compressed for clients that ask (the command center polls large JSON).
+tower = { version = "0.5", default-features = false }
 tower-http = { version = "0.6", default-features = false, features = ["compression-gzip"] }
 tonic = { version = "0.12", features = ["tls", "tls-webpki-roots"] }
 prost = "0.13"
@@ -46,6 +47,14 @@ sha2 = "0.10"
 roxmltree = "0.20"
 # Kafka (Redpanda) topics for engine-compare's stream test: a client in Rust alone.
 rskafka = { version = "0.6", default-features = false }
+# engine-compare's traffic simulator (`plan`, `replay`): seeded draws,
+# profiles in TOML, latency histograms, gzip-compressed schedule files.
+rand = "0.8"
+rand_distr = "0.4"
+rand_chacha = "0.3"
+toml = "0.8"
+hdrhistogram = { version = "7.5", default-features = false }
+flate2 = "1"
 
 # CPU profiles (`profiler`): every thread's stack, sampled on SIGPROF.
 [target.'cfg(unix)'.dependencies]

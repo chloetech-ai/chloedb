@@ -20,7 +20,7 @@ use pyo3::prelude::*;
 use pyo3::intern;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use serde_json::{Map, Number, Value as Json};
-use strata::db::{Db, SqlResult};
+use strata::db::{Db, SqlResult, WriteOp};
 use strata::ingest::{self, Format};
 use strata::query::ir::Plan;
 use strata::query::sql::{ident, quoted};
@@ -31,7 +31,7 @@ use strata::schema::Schema;
 use strata::sid::{Codebook, TrainOptions};
 use strata::sqlite;
 use strata::segment::build::BuildOptions;
-use strata::storage::{DbOptions, Layout, MergePolicy};
+use strata::storage::{DbOptions, Layout, MergerOptions};
 use strata::{FieldType, Value};
 
 create_exception!(_strata, StrataError, PyException, "An error from the database: a bad schema, query, value or file.");
@@ -312,6 +312,15 @@ impl Database {
     fn new(db: Db, models: Option<PathBuf>) -> Self {
         let models = models.unwrap_or_else(strata::embed::models_dir);
         let embed_errors = db.open_embedders(&models).into_iter().map(|(f, e)| (f, e.to_string())).collect();
+        Database::of(db, embed_errors)
+    }
+
+    /// The database `db`, merging its segments in the background as writes
+    /// add them (one merge at a time), as a server does: without it a
+    /// table that is written to for a long time collects segments, each a
+    /// query visits, and the rows its updates and deletes replaced.
+    fn of(db: Db, embed_errors: Vec<(String, String)>) -> Self {
+        db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });
         Database { db: RwLock::new(Some(Arc::new(db))), embed_errors }
     }
 
@@ -567,12 +576,8 @@ impl Database {
             if docs.len() >= BULK_INSERT {
                 db.load_into(&schema.table, docs)?;
             } else {
-                let mut t = db.storage().begin()?;
-                let mut tt = t.table(&schema.table)?;
-                for d in docs {
-                    tt.insert(d)?;
-                }
-                t.commit()?;
+                // Threads inserting at once share commits.
+                db.write_ops(docs.into_iter().map(|doc| WriteOp::Insert { table: schema.table.clone(), doc }).collect())?;
             }
             Ok(n)
         })
@@ -593,12 +598,7 @@ impl Database {
                 let chunk: Vec<Row> = rows.by_ref().take(BATCH).collect();
                 let len = chunk.len() as u64;
                 let docs = Database::documents(&db, &schema, chunk, n as usize + 1)?;
-                let mut t = db.storage().begin()?;
-                let mut tt = t.table(&schema.table)?;
-                for d in docs {
-                    tt.upsert(d)?;
-                }
-                t.commit()?;
+                db.write_ops(docs.into_iter().map(|doc| WriteOp::Upsert { table: schema.table.clone(), doc }).collect())?;
                 n += len;
             }
             Ok(n)
@@ -615,14 +615,8 @@ impl Database {
         py.detach(|| -> strata::Result<u64> {
             let s = table_of(&db, table)?;
             let pk = s.primary_key.ok_or_else(|| strata::Error::Query("deleting by key needs a primary key".into()))?;
-            let mut t = db.storage().begin()?;
-            let mut tt = t.table(&s.table)?;
-            let mut n = 0;
-            for k in &keys {
-                n += tt.delete(&ingest::value(&s, pk, k)?)? as u64;
-            }
-            t.commit()?;
-            Ok(n)
+            let ops = keys.iter().map(|k| Ok(WriteOp::Delete { table: s.table.clone(), key: ingest::value(&s, pk, k)? })).collect::<strata::Result<Vec<_>>>()?;
+            db.write_ops(ops)
         })
         .map_err(err)
     }
@@ -668,20 +662,23 @@ impl Database {
     }
 
     /// Applies write operations as strata-server's /v1/write takes them, in
-    /// one transaction: insert, upsert and delete, and set and add of a
-    /// numeric field in place (an add with a "doc" inserts it when no row
-    /// has its key). Returns the rows written.
+    /// one transaction: insert, upsert and delete, set of a field (a
+    /// number in place, another by writing the row again), and add to a
+    /// number in place (an add with a "doc" inserts it when no row has its
+    /// key). Returns the rows written.
     fn write(&self, py: Python<'_>, ops: &Bound<'_, PyAny>) -> PyResult<u64> {
         let db = self.get()?;
         let ops = rows_json(ops)?;
         py.detach(|| -> strata::Result<u64> {
             let bad = |i: usize, m: &str| strata::Error::Query(format!("operation {}: {m}", i + 1));
-            let mut t = db.storage().begin()?;
-            let mut n = 0;
+            // Read before the write starts: threads writing at once share
+            // its commit.
+            let mut write = Vec::with_capacity(ops.len());
             for (i, op) in ops.iter().enumerate() {
                 let get = |k: &str| op.get(k).filter(|v| !v.is_null());
                 let kind = get("op").and_then(Json::as_str).ok_or_else(|| bad(i, "it needs \"op\""))?;
                 let s = table_of(&db, get("table").and_then(Json::as_str))?;
+                let table = s.table.clone();
                 let doc = || match get("doc") {
                     Some(d) => Ok(Database::documents(&db, &s, vec![Row { json: d.clone(), vectors: Vec::new() }], 1)?.remove(0)),
                     None => Err(bad(i, &format!("{kind} needs \"doc\""))),
@@ -690,16 +687,15 @@ impl Database {
                     let pk = s.primary_key.ok_or_else(|| bad(i, "writing by key needs a primary key"))?;
                     ingest::value(&s, pk, get("key").ok_or_else(|| bad(i, &format!("{kind} needs \"key\"")))?)
                 };
-                let field = || get("field").and_then(Json::as_str).ok_or_else(|| bad(i, &format!("{kind} needs \"field\"")));
-                let mut tt = t.table(&s.table)?;
-                let wrote = match kind {
-                    "insert" => tt.insert(doc()?).map(|_| true)?,
-                    "upsert" => tt.upsert(doc()?).map(|_| true)?,
-                    "delete" => tt.delete(&key()?)?,
+                let field = || get("field").and_then(Json::as_str).map(str::to_string).ok_or_else(|| bad(i, &format!("{kind} needs \"field\"")));
+                write.push(match kind {
+                    "insert" => WriteOp::Insert { table, doc: doc()? },
+                    "upsert" => WriteOp::Upsert { table, doc: doc()? },
+                    "delete" => WriteOp::Delete { table, key: key()? },
                     "set" => {
                         let f = field()?;
-                        let fi = s.field_index(f).ok_or_else(|| bad(i, &format!("no field {f}")))?;
-                        tt.set(&key()?, f, ingest::value(&s, fi, get("value").unwrap_or(&Json::Null))?)?
+                        let fi = s.field_index(&f).ok_or_else(|| bad(i, &format!("no field {f}")))?;
+                        WriteOp::Set { table, key: key()?, value: ingest::value(&s, fi, get("value").unwrap_or(&Json::Null))?, field: f }
                     }
                     "add" => {
                         let delta = match get("value") {
@@ -712,17 +708,15 @@ impl Database {
                             if get("key").is_some() && Some(&key()?) != s.primary_key.map(|pk| &d[pk]) {
                                 return Err(bad(i, "add's key and its doc's key differ: give one"));
                             }
-                            tt.add_or_insert(d, field()?, &delta).map(|_| true)?
+                            WriteOp::AddOrInsert { table, doc: d, field: field()?, delta }
                         } else {
-                            tt.add(&key()?, field()?, &delta)?
+                            WriteOp::Add { table, key: key()?, field: field()?, delta }
                         }
                     }
                     other => return Err(bad(i, &format!("unknown op {other:?}"))),
-                };
-                n += wrote as u64;
+                });
             }
-            t.commit()?;
-            Ok(n)
+            db.write_ops(write)
         })
         .map_err(err)
     }
@@ -851,7 +845,7 @@ impl Database {
                 Ok((db, embed_errors, r.to_json().to_string()))
             })
             .map_err(err)?;
-        Ok((Database { db: RwLock::new(Some(Arc::new(with_threads(db, threads)))), embed_errors }, report))
+        Ok((Database::of(with_threads(db, threads), embed_errors), report))
     }
 
     /// What an import of the SQLite file `sqlite_path` into a new database
@@ -898,7 +892,7 @@ impl Database {
                 Ok((db, embed_errors, r.to_json().to_string()))
             })
             .map_err(err)?;
-        Ok((Database { db: RwLock::new(Some(Arc::new(db))), embed_errors }, report))
+        Ok((Database::of(db, embed_errors), report))
     }
 
     /// What an import of the Parquet file or directory `parquet_path` (or
@@ -990,15 +984,10 @@ impl Database {
     }
 
     /// Writes the memtable's rows into segments, merges them into as few
-    /// as it can ([`MergePolicy::compact`]) and vacuums the file.
+    /// as it can and vacuums the file ([`Db::optimize`]).
     fn optimize(&self, py: Python<'_>) -> PyResult<()> {
         let db = self.get()?;
-        py.detach(|| {
-            db.storage().flush()?;
-            db.storage().merge(&MergePolicy::compact())?;
-            db.storage().vacuum().map(drop)
-        })
-        .map_err(err)
+        py.detach(|| db.optimize().map(drop)).map_err(err)
     }
 
     /// Returns the space merges freed to the file system; the bytes the
@@ -1008,12 +997,14 @@ impl Database {
         py.detach(|| db.storage().vacuum()).map_err(err)
     }
 
-    /// Merges small segments and closes the database (also when the last
-    /// reference to it goes).
+    /// Merges small segments, gives the file system back the space merges
+    /// freed when it is an eighth of the file or more ([`Db::close`]), and
+    /// closes the database. It also closes when the last reference to it
+    /// goes, without the merge.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let db = self.db.write().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(db) = db {
-            py.detach(|| db.storage().merge(&MergePolicy::default()).map(|_| ())).map_err(err)?;
+            py.detach(|| db.close().map(drop)).map_err(err)?;
         }
         Ok(())
     }

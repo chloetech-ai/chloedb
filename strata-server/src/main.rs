@@ -230,6 +230,11 @@ struct Args {
     /// 0: no limit).
     #[arg(long)]
     query_memory_mb: Option<u64>,
+    /// Memory for filters kept between queries, in MiB: a filter a segment
+    /// sees twice is kept until less recently used ones need the room
+    /// (default: 64; 0: none kept).
+    #[arg(long)]
+    filter_cache_mb: Option<usize>,
     /// Write requests the server holds at once (embedding, waiting for the
     /// writer, or being applied); more are refused with 429 (0: no limit).
     #[arg(long, default_value_t = 1024)]
@@ -729,6 +734,7 @@ async fn main() {
         max_groups: a.max_groups,
         max_rerank: a.max_rerank,
         query_memory_mb: a.query_memory_mb,
+        filter_cache_mb: a.filter_cache_mb,
         max_queued_writes: a.max_queued_writes,
         max_body_mb: a.max_body_mb,
         model: a.model,

@@ -93,6 +93,9 @@ pub struct Options {
     /// Memory the running queries may hold together, in MiB (`None`: a
     /// third of [`strata::storage::memory_limit`]; 0: no limit).
     pub query_memory_mb: Option<u64>,
+    /// Memory for filters kept between queries, in MiB (`None`:
+    /// [`strata::query::exec::FILTER_CACHE_BYTES`]; 0: none kept).
+    pub filter_cache_mb: Option<usize>,
     /// Write requests held at once before more are refused (0: no limit).
     pub max_queued_writes: usize,
     /// The largest write or import body, in MiB (0: 256).
@@ -212,6 +215,10 @@ pub fn db_options(directory: bool) -> DbOptions {
         build: build_options(),
         mem_build: Some(BuildOptions::default().set("vector.index", "flat")),
         layout: if directory { Layout::Directory } else { Layout::SingleFile },
+        // The writer thread retries a busy write until each request's
+        // deadline, and refuses one whose deadline passed: it does not
+        // wait inside Strata past it.
+        write_wait: Duration::ZERO,
         ..DbOptions::default()
     }
 }
@@ -304,6 +311,10 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         }
         if replicating && db.storage().seq_no().is_none() {
             return Err(format!("{} does not number its writes, which replication ships by: pass --seq-no", path.display()));
+        }
+        let mut db = db;
+        if let Some(mb) = o.filter_cache_mb {
+            db.exec.filter_cache = Some(Arc::new(strata::query::exec::FilterCache::new(mb << 20)));
         }
         let db = Arc::new(db);
         // Writes go on while a full memtable becomes segments, and while

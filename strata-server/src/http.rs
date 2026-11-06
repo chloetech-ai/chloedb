@@ -303,11 +303,11 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/livez", get(live))
         .route("/readyz", get(ready))
         .merge(api)
-        .layer(compression())
-        .layer(middleware::map_response(close_when_draining))
-        .layer(middleware::from_fn_with_state(app.clone(), browsers))
-        .layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))
-        .layer(middleware::from_fn_with_state(app.clone(), observe))
+        // One stack, outermost first, put on each route once: each layer
+        // put on its own wraps the routes in another boxed service, and
+        // each request then clones every box inside the layer it passes
+        // (some 40 allocations a request, with five layers).
+        .layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY)).layer(compression()))
         .with_state(app)
 }
 
@@ -328,28 +328,41 @@ fn compression() -> tower_http::compression::CompressionLayer<impl tower_http::c
 /// debug level, or as an error when it failed on the server's side. The
 /// log viewer's own requests (`/v1/logs...`) are not logged as answered:
 /// a viewer following the logs would otherwise read lines of its reading.
-/// 
+///
+/// It also keeps out other sites' pages ([`browsers`]), and while the
+/// server drains, closes each answer's connection ([`close_when_draining`]).
+/// One layer rather than three: each layer costs a request a boxed future
+/// and clones of the services inside it.
 async fn observe(State(app): State<App>, req: Request, next: Next) -> Response {
     let id = obs::request_id(header_str(req.headers(), header::HeaderName::from_static(obs::HEADER)));
-    let route = req.extensions().get::<MatchedPath>().map_or("other", |p| p.as_str()).to_string();
+    // The route's name is shared, not copied.
+    let matched = req.extensions().get::<MatchedPath>().cloned();
+    let route = matched.as_ref().map_or("other", |p| p.as_str());
     let span = tracing::info_span!("request", id = %id, method = %req.method(), route = %route);
     let t0 = Instant::now();
     let peer = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0);
     let caller = caller_of(req.headers(), peer, &app.svc.trusted_proxies);
     let ui = caller.command_center();
-    let inner = keys::calling(caller, obs::scope(Some(id.clone()), next.run(req)));
-    let run = crate::service::DEADLINE.scope(crate::service::Deadline::default(), async move { (inner.await, crate::service::deadline_of_request()) });
-    let (mut res, deadline) = telemetry::traced(telemetry::Trace::new(), run).instrument(span.clone()).await;
+    let (mut res, deadline) = match browsers(&app, &req) {
+        Some(refused) => (refused, None),
+        None => {
+            let inner = keys::calling(caller, obs::scope(Some(id.clone()), next.run(req)));
+            // A combinator, not an `async move` block, which would keep `inner` twice.
+            let run = crate::service::DEADLINE.scope(crate::service::Deadline::default(), futures::FutureExt::map(inner, |res| (res, crate::service::deadline_of_request())));
+            telemetry::traced(telemetry::Trace::new(), run).instrument(span.clone()).await
+        }
+    };
     let secs = t0.elapsed().as_secs_f64();
     let status = res.status().as_u16();
     // The command center's own requests are not the clients' traffic
     // (`/v1/routes`, the series' HTTP rates).
     if !ui {
-        app.svc.metrics.http(&route, status, secs);
+        app.svc.metrics.http(route, status, secs);
     }
     if let Ok(v) = header::HeaderValue::from_str(&id) {
         res.headers_mut().insert(obs::HEADER, v);
     }
+    close_when_draining(&mut res);
     let _in = span.enter();
     match res.extensions().get::<Failure>() {
         // The client's own deadline passed: its choice, not a fault.
@@ -634,24 +647,37 @@ async fn events_note(State(app): State<App>, w: Option<axum::Extension<Principal
 /// plan, a logged query, an import that creates tables) is checked by the
 /// service, as for gRPC. Requests that need the admin scope, refused ones,
 /// and ones the service notes ([`keys::note`]) go to the audit log.
-async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next: Next) -> Response {
+async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response {
     let t0 = Instant::now();
-    let route = req.extensions().get::<MatchedPath>().map_or("other", |p| p.as_str()).to_string();
+    // The route's name is shared, not copied.
+    let matched = req.extensions().get::<MatchedPath>().cloned();
+    let route = matched.as_ref().map_or("other", |p| p.as_str());
     let method = req.method().clone();
-    let who = app.svc.keys.resolve(app.token.as_ref(), app.cluster.as_ref(), header_str(&headers, header::AUTHORIZATION));
-    let need = route_scope(&method, &route);
+    let token = header_str(req.headers(), header::AUTHORIZATION);
+    let who = app.svc.keys.resolve(app.token.as_ref(), app.cluster.as_ref(), token);
+    // A refused credential that is a key known here (expired, revoked):
+    // its name and id, so that Access names the client still sending it.
+    let known = match &who {
+        None => app.svc.keys.identify(token),
+        Some(_) => None,
+    };
+    let need = route_scope(&method, route);
     let refused = match &who {
         None => Some(ApiError { status: 401, message: "missing or wrong token".into() }),
-        Some(w) => w.may(need, &format!("{method} {route}")).err(),
+        Some(w) if w.scope < need => w.may(need, &format!("{method} {route}")).err(),
+        Some(_) => None,
     };
     let (res, note, change) = match refused {
         Some(e) => (e.into_response(), None, keys::Change::default()),
         None => {
+            // Who the request's queries are from ([`telemetry::Caller`]).
+            let caller = match &who {
+                Some(w) => telemetry::Caller::of(w, keys::caller()),
+                None => telemetry::Caller::of(&Principal::open(), keys::caller()),
+            };
             if let Some(w) = &who {
                 req.extensions_mut().insert(w.clone());
             }
-            // Who the request's queries are from ([`telemetry::Caller`]).
-            let caller = telemetry::Caller::of(&who.clone().unwrap_or_else(Principal::open), keys::caller().as_ref());
             telemetry::calling(Arc::new(caller), keys::noting_change(next.run(req))).await
         }
     };
@@ -665,7 +691,7 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
     // A POST that only reads (a plan asked, a log search, a replay, a
     // cloud's plan or check) changes nothing: a read too.
     let plan = matches!(
-        route.as_str(),
+        route,
         "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
             // alerts agent: a rule replayed.
             | "/v1/alerts/backtest"
@@ -675,7 +701,6 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
     // servers, which the coordinator it came from audited as its change.
     let sync = route == "/v1/alerts/peer";
     let read = method == axum::http::Method::GET || method == axum::http::Method::HEAD || plan || sync;
-    let caller = keys::caller().unwrap_or_default();
     // A request that made its own event of what it did (an alert
     // acknowledged, a log level set, a Contain rule): its audit entry is
     // not a `change` event too, so that the Timeline says it once.
@@ -685,12 +710,7 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
     let failed = (status >= 400).then(|| res.extensions().get::<ClientError>().map(|e| e.0.clone()).or_else(|| res.extensions().get::<Failure>().map(|e| e.0.clone()))).flatten();
     if refusal || detail.is_some() || (need == Scope::Admin && !read) {
         let kind = if refusal { keys::REFUSAL } else { change.kind.unwrap_or(keys::CHANGE) };
-        // A refused credential that is a key known here (expired, revoked):
-        // its name and id, so that Access names the client still sending it.
-        let known = match &who {
-            None => app.svc.keys.identify(header_str(&headers, header::AUTHORIZATION)),
-            Some(_) => None,
-        };
+        let caller = keys::caller().unwrap_or_default();
         let detail = match (&known, detail) {
             (Some((_, name, why)), None) => Some(format!("refused: the key {name} is {why}")),
             (_, d) => d,
@@ -701,7 +721,7 @@ async fn auth(State(app): State<App>, headers: HeaderMap, mut req: Request, next
             key: who.as_ref().and_then(|w| w.key.clone()).or_else(|| known.as_ref().map(|k| k.0.clone())),
             scope: who.as_ref().map(|w| w.scope.name()),
             method: method.to_string(),
-            route: route.clone(),
+            route: route.to_string(),
             status,
             ms: t0.elapsed().as_secs_f64() * 1e3,
             request_id: obs::current().map(|id| id.to_string()),
@@ -794,13 +814,12 @@ fn who(req_who: Option<axum::Extension<Principal>>) -> Principal {
 /// DNS rebinding (a `Host` it does not answer to), and one that posts to
 /// it (an `Origin` other than its own), which a browser lets any page do
 /// without a token.
-async fn browsers(State(app): State<App>, headers: HeaderMap, req: Request, next: Next) -> Response {
-    let safe = req.method().is_safe();
-    let host = header_str(&headers, header::HOST).map(str::to_string).or_else(|| req.uri().authority().map(|a| a.to_string()));
-    if let Some(why) = auth::browser_check(app.hosts.as_deref(), host.as_deref(), header_str(&headers, header::ORIGIN), safe) {
-        return ApiError { status: 403, message: why }.into_response();
-    }
-    next.run(req).await
+/// The answer that refuses the request, if it is refused ([`observe`]).
+fn browsers(app: &App, req: &Request) -> Option<Response> {
+    let headers = req.headers();
+    let host = header_str(headers, header::HOST).or_else(|| req.uri().authority().map(|a| a.as_str()));
+    let why = auth::browser_check(app.hosts.as_deref(), host, header_str(headers, header::ORIGIN), req.method().is_safe())?;
+    Some(ApiError { status: 403, message: why }.into_response())
 }
 
 fn body_str<'a>(b: &'a Json, k: &str) -> Result<&'a str, ApiError> {
@@ -858,11 +877,10 @@ async fn ready(state: State<App>) -> Response {
 /// While the server drains, each answer closes its connection: the
 /// client's next request opens another, which a load balancer sends to a
 /// server that stays.
-async fn close_when_draining(mut r: Response) -> Response {
+fn close_when_draining(r: &mut Response) {
     if crate::server::draining() {
         r.headers_mut().insert(axum::http::header::CONNECTION, axum::http::HeaderValue::from_static("close"));
     }
-    r
 }
 
 async fn stats(State(app): State<App>) -> AxJson<Json> {
@@ -1282,7 +1300,7 @@ async fn kv_one(State(app): State<App>, axum::extract::Path((table, key)): axum:
 }
 
 /// `POST /v1/kv/get`: rows by their keys (MGET), without SQL.
-async fn kv_get(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+async fn kv_get(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let t0 = Instant::now();
     let keys = match b.get("keys") {
         Some(Json::Array(k)) => k.iter().map(js::param).collect::<Result<Vec<_>, _>>()?,
@@ -1294,9 +1312,60 @@ async fn kv_get(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
         Some(_) => return Err(ApiError::bad("table is a table's name")),
     };
     let got = app.svc.get_rows(table, keys, &after(&b)?, body_u64(&b, "timeout_ms"), true).await?;
-    let seq_nos: Vec<Json> = got.rows.iter().map(|r| r.as_ref().map_or(Json::Null, |(_, s)| json!(s))).collect();
-    let rows: Vec<Json> = got.rows.iter().map(|r| r.as_ref().map_or(Json::Null, |(row, _)| key_row(&got.columns, row))).collect();
-    Ok(AxJson(json!({"table": got.table, "columns": got.columns, "rows": rows, "seq_nos": seq_nos, "took_ms": t0.elapsed().as_secs_f64() * 1e3})))
+    Ok(AxJson(KeyRowsJson { got: &got, took_ms: t0.elapsed().as_secs_f64() * 1e3 }).into_response())
+}
+
+/// A read by key's answer ([`kv_get`]), written as it is read rather than
+/// built as JSON first: `{"columns", "rows", "seq_nos", "table",
+/// "took_ms"}`, a row an object of its columns in the order of their
+/// names (as JSON objects here are), a key not found `null` in both lists.
+struct KeyRowsJson<'a> {
+    got: &'a crate::service::KeyRows,
+    took_ms: f64,
+}
+
+impl serde::Serialize for KeyRowsJson<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+        struct Row<'a>(&'a [String], &'a [usize], &'a [strata::value::Value]);
+        impl serde::Serialize for Row<'_> {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                let mut m = s.serialize_map(None)?;
+                // A name twice: the last of its columns the row has.
+                let mut last: Option<&str> = None;
+                for &i in self.1 {
+                    let Some(v) = self.2.get(i) else { continue };
+                    if last == Some(self.0[i].as_str()) {
+                        continue;
+                    }
+                    last = Some(&self.0[i]);
+                    m.serialize_entry(&self.0[i], &js::AsJson(v))?;
+                }
+                m.end()
+            }
+        }
+        struct Rows<'a>(&'a crate::service::KeyRows, &'a [usize]);
+        impl serde::Serialize for Rows<'_> {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                let mut q = s.serialize_seq(Some(self.0.rows.len()))?;
+                for r in &self.0.rows {
+                    q.serialize_element(&r.as_ref().map(|(row, _)| Row(&self.0.columns, self.1, row)))?;
+                }
+                q.end()
+            }
+        }
+        let got = self.got;
+        // The columns in the order of their names, a name's last first.
+        let mut by_name: Vec<usize> = (0..got.columns.len()).collect();
+        by_name.sort_by(|&a, &b| got.columns[a].cmp(&got.columns[b]).then(b.cmp(&a)));
+        let mut m = s.serialize_map(Some(5))?;
+        m.serialize_entry("columns", &got.columns)?;
+        m.serialize_entry("rows", &Rows(got, &by_name))?;
+        m.serialize_entry("seq_nos", &got.rows.iter().map(|r| r.as_ref().map(|(_, n)| *n)).collect::<Vec<_>>())?;
+        m.serialize_entry("table", &got.table)?;
+        m.serialize_entry("took_ms", &self.took_ms)?;
+        m.end()
+    }
 }
 
 /// The idempotency key of a write: the `Idempotency-Key` header.
@@ -4227,3 +4296,39 @@ async fn alert_backtest(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res 
 }
 
 // ----- end alerts
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use strata::value::Value;
+
+    /// A read by key's answer, written directly, is the JSON the tree
+    /// built from the same rows was: every kind of value, a key not found,
+    /// a row shorter than the columns and a column named twice.
+    #[test]
+    fn key_rows_written_as_the_tree_was() {
+        let columns: Vec<String> = ["id", "v", "f", "nan", "t", "list", "b", "z", "a", "id"].iter().map(|s| s.to_string()).collect();
+        let row = |id: i64| {
+            vec![
+                Value::Int(id),
+                Value::Vector(vec![0.1f32, -2.5, 1e-7].into()),
+                Value::Float(1.25),
+                Value::Float(f64::NAN),
+                Value::Timestamp(1_790_000_000_000_000),
+                Value::List(vec![Value::Str("x\"y".into()), Value::Null, Value::Int(-3)]),
+                Value::Bool(true),
+                Value::Str("é\n".into()),
+                Value::Null,
+                Value::Str("last".into()),
+            ]
+        };
+        let mut short = row(2);
+        short.truncate(4);
+        let got = crate::service::KeyRows { table: "docs".into(), columns: columns.clone(), rows: vec![Some((row(1), 7)), None, Some((short, 9))] };
+        let seq_nos: Vec<Json> = got.rows.iter().map(|r| r.as_ref().map_or(Json::Null, |(_, s)| json!(s))).collect();
+        let rows: Vec<Json> = got.rows.iter().map(|r| r.as_ref().map_or(Json::Null, |(row, _)| key_row(&got.columns, row))).collect();
+        let tree = json!({"table": got.table, "columns": got.columns, "rows": rows, "seq_nos": seq_nos, "took_ms": 1.5});
+        let direct = serde_json::to_string(&KeyRowsJson { got: &got, took_ms: 1.5 }).unwrap();
+        assert_eq!(direct, serde_json::to_string(&tree).unwrap());
+    }
+}

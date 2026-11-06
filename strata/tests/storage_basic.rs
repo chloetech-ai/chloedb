@@ -529,6 +529,9 @@ fn single_writer() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db.strata");
     let src = Arc::new(MapSource::default());
+    // Writes fail at once while another holds the writer (many_writers.rs
+    // has those that wait for it).
+    let opts = |src| DbOptions { write_wait: std::time::Duration::ZERO, ..opts(src) };
     let db = Database::create(&path, schema(), opts(&src)).unwrap();
     assert!(matches!(Database::open(&path, opts(&src)), Err(Error::Busy(_))));
     let tx = db.begin().unwrap();

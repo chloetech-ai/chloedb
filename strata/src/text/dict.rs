@@ -270,6 +270,22 @@ impl Dict {
         None
     }
 
+    /// The entry of the term of rank `ord`, `None` past the last: a decode
+    /// of its block up to it.
+    pub fn info_at(&self, ord: usize) -> Option<TermInfo> {
+        if ord >= self.n_terms as usize {
+            return None;
+        }
+        let mut found = None;
+        self.scan_block(ord / DICT_BLOCK, |_, info| {
+            if info.ord as usize == ord {
+                found = Some(info);
+            }
+            found.is_none()
+        });
+        found
+    }
+
     /// Up to `limit` terms starting with `prefix`, in order.
     pub fn prefix(&self, prefix: &str, limit: usize) -> Vec<(String, TermInfo)> {
         let mut out = Vec::new();

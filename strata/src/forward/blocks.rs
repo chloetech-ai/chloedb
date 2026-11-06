@@ -303,6 +303,29 @@ impl Blocks {
         Some(self.zone(b).0)
     }
 
+    /// Writes the keys of block `b`'s slots to `out` (`out[j]` for
+    /// document `BLOCK * b + j`) and returns the mask of those with a value
+    /// (bit `j % 64` of word `j / 64`); slots without one hold any key.
+    pub fn block_keys(&self, b: usize, out: &mut [i64; BLOCK]) -> [u64; 2] {
+        let mut deltas = [0u32; BLOCK];
+        let mask = self.present_mask(b);
+        match self.decode_block_u32(b, &mut deltas) {
+            Some(min) => {
+                for (o, &x) in out.iter_mut().zip(&deltas) {
+                    *o = min.wrapping_add(x as i64);
+                }
+            }
+            None => {
+                for (j, o) in out.iter_mut().enumerate() {
+                    if mask[j / 64] >> (j % 64) & 1 == 1 {
+                        *o = self.raw((b * BLOCK + j) as u32);
+                    }
+                }
+            }
+        }
+        mask
+    }
+
     /// The presence (and end-of-column) mask of block `b`'s two words.
     #[inline]
     pub fn present_mask(&self, b: usize) -> [u64; 2] {

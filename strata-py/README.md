@@ -9,7 +9,9 @@ answers with Arrow columns (`query_arrow`), which pyarrow, polars and pandas
 read without copying them.
 
 ```sh
-pip install ./strata-py          # from the repository's root; needs Rust
+# a release's prebuilt wheel (Linux glibc 2.35+, macOS 11+); no Rust needed
+pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0
+pip install ./strata-py          # or from source, from the repository's root; needs Rust
 ```
 
 ```python
