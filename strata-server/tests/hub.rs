@@ -151,3 +151,61 @@ async fn a_self_signed_certificate_is_pinned_once_trusted() {
     assert_eq!(s, 409, "{j}");
     assert!(j["error"].as_str().unwrap().contains("plain HTTP"), "{j}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tables_are_copied_between_this_server_and_a_connection() {
+    use strata::schema::{Field, FieldType, Schema};
+    let dir = tempfile::tempdir().unwrap();
+    // This server: products, kept by brand, with rows.
+    let mut products = demo::schema(30);
+    if let Some(f) = products.fields.iter_mut().find(|f| f.name == "brand") {
+        *f = f.clone().not_null();
+    }
+    let db = Db::create(&dir.path().join("hub.strata"), products.with_shard_by("brand").unwrap(), DbOptions::default()).unwrap();
+    db.load((0..30).map(|i| demo::product(i, 7))).unwrap();
+    let schema = (*db.schema()).clone();
+    let hub = Arc::new(Service::new(Backend::Local(Arc::new(db)), schema, agent(), 16, Duration::from_secs(20)));
+    let (hub_url, _) = serve(hub.clone(), Access::default()).await;
+    // The other server: only notes, a note in it, and an admin key the
+    // hub holds (a copy may make tables there).
+    let notes = Schema::new("notes", vec![Field::new("id", FieldType::Keyword), Field::new("text", FieldType::Text { positions: false })], Some("id")).unwrap();
+    let db = Db::create(&dir.path().join("remote.strata"), notes, DbOptions::default()).unwrap();
+    let schema = (*db.schema()).clone();
+    let remote = Arc::new(Service::new(Backend::Local(Arc::new(db)), schema, agent(), 16, Duration::from_secs(20)));
+    let (_, secret) = remote.keys.create("hub-laptop", Scope::Admin, None, true, false).unwrap();
+    let (remote_url, _) = serve(remote.clone(), Access { token: Some(Secret::new("remote-root")), ..Access::default() }).await;
+    let (s, j) = call("POST", &format!("{hub_url}/v1/admin/hub/connections"), None, Some(json!({"name": "remote", "url": remote_url, "key": secret}))).await;
+    assert_eq!(s, 201, "{j}");
+    let (s, j) = call("POST", &format!("{remote_url}/v1/write"), Some("remote-root"), Some(json!({"ops": [{"op": "upsert", "table": "notes", "doc": {"id": "n1", "text": "a note"}}]}))).await;
+    assert_eq!(s, 200, "{j}");
+
+    // Here to there: the table is made with its schema, then its rows.
+    let copy_url = format!("{hub_url}/v1/admin/hub/copy");
+    let copy = |b: Json| call("POST", &copy_url, None, Some(b));
+    let (s, j) = copy(json!({"from": "", "to": "remote", "tables": ["products"]})).await;
+    assert_eq!(s, 200, "{j}");
+    assert_eq!((j["written"].as_u64(), j["from"].as_str(), j["to"].as_str()), (Some(30), Some("this server"), Some("remote")), "{j}");
+    let (s, j) = call("POST", &format!("{remote_url}/v1/query"), Some("remote-root"), Some(json!({"sql": "SELECT count(*) FROM products"}))).await;
+    assert_eq!((s, &j["rows"]), (200, &json!([[30]])), "{j}");
+    let (_, tables) = call("GET", &format!("{remote_url}/v1/tables"), Some("remote-root"), None).await;
+    let products = tables["tables"].as_array().unwrap().iter().find(|t| t["table"] == "products").cloned().unwrap_or_default();
+    assert_eq!(products["shard_by"], "brand", "the shard key went with it: {products}");
+    // Again: the same rows by their keys, no more.
+    let (s, j) = copy(json!({"from": "", "to": "remote", "tables": ["products"]})).await;
+    assert_eq!((s, j["written"].as_u64()), (200, Some(30)), "{j}");
+    let (_, j) = call("POST", &format!("{remote_url}/v1/query"), Some("remote-root"), Some(json!({"sql": "SELECT count(*) FROM products"}))).await;
+    assert_eq!(j["rows"], json!([[30]]));
+
+    // There to here.
+    let (s, j) = copy(json!({"from": "remote", "to": "", "tables": ["notes"]})).await;
+    assert_eq!((s, j["written"].as_u64()), (200, Some(1)), "{j}");
+    let (_, j) = call("POST", &format!("{hub_url}/v1/query"), None, Some(json!({"sql": "SELECT text FROM notes WHERE id = 'n1'"}))).await;
+    assert_eq!(j["rows"], json!([["a note"]]), "{j}");
+
+    // What is not a copy.
+    assert_eq!(copy(json!({"from": "remote", "to": "remote", "tables": ["notes"]})).await.0, 400);
+    assert_eq!(copy(json!({"from": "", "to": "remote", "tables": []})).await.0, 400);
+    assert_eq!(copy(json!({"from": "", "to": "nobody", "tables": ["products"]})).await.0, 404);
+    let (s, j) = copy(json!({"from": "", "to": "remote", "tables": ["products; DROP"]})).await;
+    assert_eq!(s, 400, "{j}");
+}

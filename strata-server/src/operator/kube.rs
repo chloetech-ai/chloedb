@@ -87,6 +87,17 @@ impl Kube {
         self.token.clone().or_else(|| std::fs::read_to_string(format!("{SA}/token")).ok().map(|t| t.trim().to_string()))
     }
 
+    /// A request to `path` of the API server with the token, whose
+    /// answer may take as long as `timeout`: a call the hub forwards
+    /// through a Service's proxy ([`crate::hub`]), which may stream.
+    pub fn request(&self, method: reqwest::Method, path: &str, timeout: Duration) -> reqwest::RequestBuilder {
+        let mut r = self.http.request(method, format!("{}{path}", self.api)).timeout(timeout);
+        if let Some(t) = self.token() {
+            r = r.bearer_auth(t);
+        }
+        r
+    }
+
     async fn send(&self, method: reqwest::Method, path: &str, body: Option<(&str, &Json)>) -> Result<Option<Json>, String> {
         let mut r = self.http.request(method.clone(), format!("{}{path}", self.api));
         if let Some(t) = self.token() {

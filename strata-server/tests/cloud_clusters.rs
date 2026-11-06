@@ -63,9 +63,56 @@ struct KubeApi {
     claims: Vec<String>,
     status_reads: u32,
     volume_looks: u32,
+    /// The Secrets applied, by path, as the API server keeps them
+    /// (`stringData` turned into base64 `data`).
+    secrets: std::collections::HashMap<String, Json>,
+    /// The coordinators' Service: where its proxy sends calls.
+    strata: Option<String>,
+    /// The calls through the Service's proxy: their path, and whether
+    /// each carried the cluster's own token (`Authorization`, here) and a
+    /// Strata key (X-Strata-Authorization).
+    proxied: Vec<(String, String, bool)>,
+}
+
+/// The API server's service proxy to the coordinators: the caller's
+/// `Authorization` is the API server's (refused unless it is the
+/// cluster's token) and is not passed on; the rest is.
+async fn kube_proxy(k: Arc<Mutex<KubeApi>>, method: Method, uri: axum::http::Uri, headers: HeaderMap, body: Bytes) -> axum::response::Response {
+    const PROXY: &str = "/api/v1/namespaces/strata/services/http:search:7700/proxy";
+    let auth = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or_default().trim_start_matches("Bearer ").to_string();
+    let rest = uri.path().strip_prefix(PROXY).unwrap_or_default().to_string();
+    let target = {
+        let mut k = k.lock().unwrap();
+        k.proxied.push((rest.clone(), auth.clone(), headers.contains_key("x-strata-authorization")));
+        k.strata.clone()
+    };
+    if auth != KUBE_TOKEN {
+        return (StatusCode::UNAUTHORIZED, json!({"kind": "Status", "status": "Failure", "message": "Unauthorized", "code": 401}).to_string()).into_response();
+    }
+    let Some(target) = target else {
+        return (StatusCode::SERVICE_UNAVAILABLE, json!({"kind": "Status", "status": "Failure", "message": "no endpoints available for service \"search\"", "code": 503}).to_string()).into_response();
+    };
+    let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    let mut r = strata_server::http_client().build().unwrap().request(reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap(), format!("{target}{rest}{q}"));
+    for (name, v) in &headers {
+        if !matches!(name.as_str(), "authorization" | "host" | "content-length") {
+            r = r.header(name.as_str(), v.as_bytes());
+        }
+    }
+    let a = r.body(body.to_vec()).send().await.unwrap();
+    let status = StatusCode::from_u16(a.status().as_u16()).unwrap();
+    let ct = a.headers().get("content-type").cloned();
+    let mut out = (status, a.bytes().await.unwrap()).into_response();
+    if let Some(ct) = ct {
+        out.headers_mut().insert("content-type", ct);
+    }
+    out
 }
 
 async fn kube(State(k): State<Arc<Mutex<KubeApi>>>, method: Method, OriginalUri(uri): OriginalUri, headers: HeaderMap, body: Bytes) -> axum::response::Response {
+    if uri.path().contains("/services/http:search:7700/proxy") {
+        return kube_proxy(k, method, uri, headers, body).await;
+    }
     let mut k = k.lock().unwrap();
     let path = uri.path().to_string();
     k.calls.push(format!("{method} {path}"));
@@ -75,6 +122,20 @@ async fn kube(State(k): State<Arc<Mutex<KubeApi>>>, method: Method, OriginalUri(
     const CLAIMS: &str = "/api/v1/namespaces/strata/persistentvolumeclaims";
     let ok = |j: Json| j.to_string().into_response();
     match (method.as_str(), path.as_str()) {
+        ("GET", p) if p.starts_with("/api/v1/namespaces/strata/secrets/") => match k.secrets.get(p) {
+            Some(s) => ok(s.clone()),
+            None => (StatusCode::NOT_FOUND, json!({"kind": "Status", "message": "not found"}).to_string()).into_response(),
+        },
+        ("PATCH", p) if p.starts_with("/api/v1/namespaces/strata/secrets/") => {
+            use base64::Engine;
+            let mut o: Json = serde_json::from_slice(&body).unwrap();
+            let token = o["stringData"]["token"].as_str().unwrap().to_string();
+            o["data"] = json!({"token": base64::engine::general_purpose::STANDARD.encode(token)});
+            o.as_object_mut().unwrap().remove("stringData");
+            k.secrets.insert(p.to_string(), o.clone());
+            k.applied.push((p.to_string(), o.clone()));
+            ok(o)
+        }
         ("PATCH", p) => {
             assert_eq!(headers.get("content-type").unwrap(), "application/apply-patch+yaml");
             assert!(uri.query().unwrap_or_default().contains("fieldManager="), "{uri}");
@@ -88,7 +149,8 @@ async fn kube(State(k): State<Arc<Mutex<KubeApi>>>, method: Method, OriginalUri(
         ("GET", CLUSTER) if k.applied.iter().any(|(p, _)| p == CLUSTER) => {
             k.status_reads += 1;
             let status = if k.status_reads == 1 { json!({"phase": "Creating"}) } else { json!({"phase": "Ready", "message": "", "shards": [{"servers": [{"up": true}, {"up": true}]}, {"servers": [{"up": true}, {"up": true}]}]}) };
-            ok(json!({"metadata": {"name": "search"}, "status": status}))
+            let spec = k.applied.iter().rev().find(|(p, _)| p == CLUSTER).map(|(_, o)| o["spec"].clone()).unwrap_or_default();
+            ok(json!({"metadata": {"name": "search"}, "spec": spec, "status": status}))
         }
         ("DELETE", CLUSTER) => ok(json!({"status": "Success"})),
         ("GET", CLAIMS) => ok(json!({"items": k.claims.iter().map(|n| json!({"metadata": {"name": n}})).collect::<Vec<_>>()})),
@@ -319,7 +381,7 @@ async fn a_cluster_is_made_on_eks_installed_and_deleted_volumes_first() {
         let k = kube_seen.lock().unwrap();
         let paths: Vec<&str> = k.applied.iter().map(|(p, _)| p.as_str()).collect();
         let mut want: Vec<&str> = OPERATOR.to_vec();
-        want.extend(["/api/v1/namespaces/strata", "/apis/storage.k8s.io/v1/storageclasses/gp3", "/apis/strata.chloetech.ai/v1alpha1/namespaces/strata/strataclusters/search"]);
+        want.extend(["/api/v1/namespaces/strata", "/apis/storage.k8s.io/v1/storageclasses/gp3", "/api/v1/namespaces/strata/secrets/strata-token", "/apis/strata.chloetech.ai/v1alpha1/namespaces/strata/strataclusters/search"]);
         assert_eq!(paths, want);
         let spec = &k.applied.last().unwrap().1["spec"];
         assert_eq!((spec["shards"].as_u64(), spec["replicas"].as_u64(), spec["storage"]["storageClassName"].as_str()), (Some(2), Some(2), Some("gp3")));
@@ -454,7 +516,7 @@ async fn a_cluster_is_made_on_doks_installed_and_deleted() {
         let k = kube_seen.lock().unwrap();
         let paths: Vec<&str> = k.applied.iter().map(|(p, _)| p.as_str()).collect();
         let mut want: Vec<&str> = OPERATOR.to_vec();
-        want.extend(["/api/v1/namespaces/strata", "/apis/strata.chloetech.ai/v1alpha1/namespaces/strata/strataclusters/search"]);
+        want.extend(["/api/v1/namespaces/strata", "/api/v1/namespaces/strata/secrets/strata-token", "/apis/strata.chloetech.ai/v1alpha1/namespaces/strata/strataclusters/search"]);
         assert_eq!(paths, want);
         assert_eq!(k.applied.last().unwrap().1["spec"]["storage"]["storageClassName"], "do-block-storage");
         assert!(k.tokens.iter().all(|t| t == KUBE_TOKEN), "the cluster's own token, never the account's");
@@ -537,4 +599,156 @@ async fn a_stack_that_fails_says_why_and_is_deleted_not_forgotten() {
     assert_eq!(calls.iter().filter(|c| *c == "cloudformation DeleteStack").count(), 2, "{calls:?}");
     // Nothing was installed, so the cluster's API was never asked.
     assert!(!calls.iter().any(|c| c == "eks DescribeCluster"), "{calls:?}");
+}
+
+// ------------------------------------------- the hub, through Kubernetes
+
+/// A cluster made here gets a token, kept in a Secret it makes there; its
+/// command center then opens from this server through the cluster's
+/// Kubernetes API (the DigitalOcean token reaches it): the token read
+/// from the Secret makes a key of the hub's own, and every call goes
+/// through the API server's service proxy with the cluster's own token
+/// there and the key beside it. Nothing is exposed, nothing installed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cluster_made_here_opens_through_its_kubernetes_api() {
+    let (kube_seen, kube_url) = kube_api().await;
+    let seen = Arc::new(Mutex::new(Do { kube: kube_url, ..Default::default() }));
+    let (l, do_url) = listen().await;
+    let app = axum::Router::new().fallback(digitalocean).with_state(seen.clone());
+    tokio::spawn(async move { axum::serve(l, app).await });
+    let (base, _dir, _svc) = server(None, Some(&do_url)).await;
+    assert_eq!(call(&base, "PUT", "/v1/admin/digitalocean/token", Some(json!({"token": DO_TOKEN}))).await.0, 200);
+
+    let plan = json!({"name": "search", "region": "nyc3", "machine": "m-4vcpu-32gb", "nodes": 2, "volume_gb": 10, "ha": false, "cluster": {"shards": 2, "replicas": 2}});
+    let (status, j) = call(&base, "POST", "/v1/admin/digitalocean/plan", Some(plan.clone())).await;
+    assert_eq!(status, 200, "{j}");
+    let by_hand: Vec<&str> = j["commands"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
+    let secret_at = by_hand.iter().position(|c| c.contains("create secret generic strata-token")).expect("a token's Secret, by hand too");
+    assert!(secret_at < by_hand.iter().position(|c| c.ends_with("-cluster.yaml") && c.starts_with("kubectl apply")).unwrap(), "{by_hand:?}");
+    // Not open yet: Strata is not installed on it.
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(json!({"provider": "digitalocean", "plan": plan, "confirm": "strata-search"}))).await;
+    assert_eq!(status, 202, "{j}");
+    let id = j["id"].as_str().unwrap().to_string();
+    let (status, j) = call(&base, "POST", "/v1/admin/hub/adopt", Some(json!({"made": id}))).await;
+    assert!(status == 409 || status == 502, "not until Strata answers there: {j}");
+    until(&base, &id, "ready").await;
+
+    // The token: made once in the cluster, named by the StrataCluster.
+    let token = {
+        let k = kube_seen.lock().unwrap();
+        let spec = &k.applied.iter().rev().find(|(p, _)| p.ends_with("/strataclusters/search")).unwrap().1["spec"];
+        assert_eq!(spec["tokenSecret"], "strata-token");
+        assert!(spec.get("demo").is_none(), "no demo table: {spec}");
+        use base64::Engine;
+        let b64 = k.secrets["/api/v1/namespaces/strata/secrets/strata-token"]["data"]["token"].as_str().unwrap().to_string();
+        String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64).unwrap()).unwrap()
+    };
+    assert_eq!(token.len(), 48, "{token}");
+    assert!(!call(&base, "GET", &format!("/v1/admin/cloud/clusters/{id}"), None).await.1.to_string().contains(&token), "the token is not kept here");
+
+    // The coordinators behind the Service take that token.
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create(&dir.path().join("c.strata"), demo::schema(10), DbOptions::default()).unwrap();
+    let schema = (*db.schema()).clone();
+    let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+    let remote = Arc::new(Service::new(Backend::Local(Arc::new(db)), schema, agent, 4, Duration::from_secs(10)));
+    let (l, remote_url) = listen().await;
+    tokio::spawn(server::serve_http(remote.clone(), l, Access { token: Some(Secret::new(token.as_str())), ..Default::default() }));
+    kube_seen.lock().unwrap().strata = Some(remote_url.clone());
+
+    let (status, c) = call(&base, "POST", "/v1/admin/hub/adopt", Some(json!({"made": id}))).await;
+    assert_eq!(status, 201, "{c}");
+    assert_eq!((c["name"].as_str(), c["kube"]["cluster"].as_str(), c["key"]["scope"].as_str()), (Some("search"), Some("strata-search"), Some("admin")), "{c}");
+    assert!(c["key"]["name"].as_str().unwrap().starts_with("hub "), "a key of the hub's own: {c}");
+    assert_eq!(c["urls"], json!([]));
+    let (_, list) = call(&base, "GET", "/v1/admin/cloud/clusters", None).await;
+    assert_eq!(list["clusters"][0]["connection"], "search", "{list}");
+    let (_, book) = call(&base, "GET", "/v1/admin/hub", None).await;
+    assert!(!book.to_string().contains(&token), "{book}");
+
+    // Its command center, through the hub: a read and a write.
+    let (status, j) = call(&base, "GET", "/c/search/v1/stats", None).await;
+    assert_eq!(status, 200, "{j}");
+    let (status, j) = call(&base, "POST", "/c/search/v1/write", Some(json!({"ops": [{"op": "upsert", "doc": {"id": "k8s-1", "title": "through the API server"}}]}))).await;
+    assert_eq!(status, 200, "{j}");
+    let c2 = strata_server::http_client().build().unwrap();
+    let rows: Json = c2.post(format!("{remote_url}/v1/query")).bearer_auth(&token).json(&json!({"sql": "SELECT title FROM products WHERE id = 'k8s-1'"})).send().await.unwrap().json().await.unwrap();
+    assert_eq!(rows["rows"], json!([["through the API server"]]), "{rows}");
+    {
+        let k = kube_seen.lock().unwrap();
+        assert!(k.proxied.iter().all(|(_, auth, _)| auth == KUBE_TOKEN), "the API server gets the cluster's token, never the key: {:?}", k.proxied);
+        assert!(k.proxied.iter().all(|(_, _, key)| *key), "every call carries a key for Strata: {:?}", k.proxied);
+        assert!(k.proxied.iter().any(|(p, _, _)| p == "/v1/admin/keys"));
+    }
+
+    // Opened again: the same connection, no second key.
+    let (status, again) = call(&base, "POST", "/v1/admin/hub/adopt", Some(json!({"made": id}))).await;
+    assert_eq!((status, again["name"].as_str()), (200, Some("search")), "{again}");
+    let hub_keys: Vec<Json> = remote.keys.list().into_iter().filter(|k| k["name"].as_str().is_some_and(|n| n.starts_with("hub ")) && k["revoked_ms"].is_null()).collect();
+    assert_eq!(hub_keys.len(), 1, "{hub_keys:?}");
+
+    // The hub's key revoked there: the hub says so and how to mend it.
+    remote.keys.revoke(hub_keys[0]["id"].as_str().unwrap(), true).unwrap();
+    let (status, j) = call(&base, "GET", "/c/search/v1/stats", None).await;
+    assert_eq!(status, 502, "{j}");
+    assert!(j["error"].as_str().unwrap().contains("refused this hub's key"), "{j}");
+    // The cluster's API refusing the cloud's token is the API's say, not the key's.
+    kube_seen.lock().unwrap().strata = None;
+    let (status, j) = call(&base, "GET", "/c/search/v1/stats", None).await;
+    assert_eq!(status, 502, "{j}");
+    assert!(j["error"].as_str().unwrap().contains("no endpoints available"), "{j}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cluster_made_here_brings_tables_once_it_is_ready() {
+    // The coordinators behind the Service: open, with a table of their own.
+    let dir = tempfile::tempdir().unwrap();
+    let notes = strata::schema::Schema::new("notes", vec![strata::schema::Field::new("id", strata::schema::FieldType::Keyword)], Some("id")).unwrap();
+    let db = Db::create(&dir.path().join("c.strata"), notes, DbOptions::default()).unwrap();
+    let schema = (*db.schema()).clone();
+    let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+    let remote = Arc::new(Service::new(Backend::Local(Arc::new(db)), schema, agent, 4, Duration::from_secs(10)));
+    let (l, remote_url) = listen().await;
+    tokio::spawn(server::serve_http(remote.clone(), l, Access::default()));
+    let (kube_seen, kube_url) = kube_api().await;
+    kube_seen.lock().unwrap().strata = Some(remote_url.clone());
+    let seen = Arc::new(Mutex::new(Do { kube: kube_url, ..Default::default() }));
+    let (l, do_url) = listen().await;
+    let app = axum::Router::new().fallback(digitalocean).with_state(seen.clone());
+    tokio::spawn(async move { axum::serve(l, app).await });
+    // This server: its products, ten of them.
+    let (base, _dir, svc) = server(None, Some(&do_url)).await;
+    let here = match &svc.backend {
+        Backend::Local(db) => db.clone(),
+        _ => unreachable!(),
+    };
+    here.load((0..10).map(|i| demo::product(i, 7))).unwrap();
+    assert_eq!(call(&base, "PUT", "/v1/admin/digitalocean/token", Some(json!({"token": DO_TOKEN}))).await.0, 200);
+
+    let plan = json!({"name": "search", "region": "nyc3", "machine": "m-4vcpu-32gb", "nodes": 2, "volume_gb": 10, "ha": false, "cluster": {"shards": 2, "replicas": 2}});
+    let create = |bring: Json| json!({"provider": "digitalocean", "plan": plan, "confirm": "strata-search", "bring": bring});
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(create(json!(["nothing"])))).await;
+    assert_eq!(status, 400, "a table this server lacks: {j}");
+    let (status, j) = call(&base, "POST", "/v1/admin/cloud/clusters", Some(create(json!(["products"])))).await;
+    assert_eq!(status, 202, "{j}");
+    assert_eq!(j["bring"], json!(["products"]));
+    let id = j["id"].as_str().unwrap().to_string();
+    until(&base, &id, "ready").await;
+    let start = Instant::now();
+    let m = loop {
+        let (_, m) = call(&base, "GET", &format!("/v1/admin/cloud/clusters/{id}"), None).await;
+        if !m["brought"].is_null() {
+            break m;
+        }
+        assert!(start.elapsed() < Duration::from_secs(30), "never brought: {m}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(m["brought"]["written"], 10, "{}", m["brought"]);
+    assert!(m["steps"].to_string().contains("brought products from this server: 10 rows"), "{}", m["steps"]);
+    // There, read through the hub: its Kubernetes API, the hub's own key.
+    let (status, rows) = call(&base, "POST", "/c/search/v1/query", Some(json!({"sql": "SELECT count(*) FROM products"}))).await;
+    assert_eq!((status, &rows["rows"]), (200, &json!([[10]])), "{rows}");
+    let (_, book) = call(&base, "GET", "/v1/admin/hub", None).await;
+    assert_eq!(book["connections"][0]["kube"]["cluster"], "strata-search", "{book}");
+    assert!(kube_seen.lock().unwrap().proxied.iter().any(|(p, _, _)| p.starts_with("/v1/import")));
 }

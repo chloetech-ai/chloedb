@@ -502,6 +502,12 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     open_log_store(&mut svc, o)?;
     let svc = Arc::new(svc);
+    // Clusters made here that were to bring tables when ready, and have not.
+    for m in svc.clouds.list() {
+        if !m.bring.is_empty() && m.brought.is_none() {
+            crate::copy::bring_when_ready(svc.clone(), m.id);
+        }
+    }
     spawn_maintenance(&svc);
     spawn_expirer(&svc, Duration::from_secs(5));
     spawn_sampler(&svc);

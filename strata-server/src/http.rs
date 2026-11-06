@@ -257,10 +257,13 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/hub/connections", post(hub_add))
         .route("/v1/admin/hub/connections/:name", post(hub_update).delete(hub_remove))
         .route("/v1/admin/hub/connections/:name/check", post(hub_check))
+        .route("/v1/admin/hub/adopt", post(hub_adopt))
+        .route("/v1/admin/hub/copy", post(hub_copy))
         .route("/c/:name/*rest", axum::routing::any(hub_forward))
         .route("/v1/admin/cloud/clusters", get(cloud_list).post(cloud_create))
         .route("/v1/admin/cloud/clusters/:id", get(cloud_one).merge(axum::routing::delete(cloud_forget)))
         .route("/v1/admin/cloud/clusters/:id/delete", post(cloud_delete))
+        .route("/v1/admin/cloud/clusters/:id/expiry", post(cloud_expiry))
         .route("/v1/routes", get(routes))
         .route("/v1/whoami", get(whoami))
         .route("/v1/admin/keys", get(list_keys).merge(post(create_key)))
@@ -662,7 +665,11 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     let matched = req.extensions().get::<MatchedPath>().cloned();
     let route = matched.as_ref().map_or("other", |p| p.as_str());
     let method = req.method().clone();
-    let token = header_str(req.headers(), header::AUTHORIZATION);
+    // `X-Strata-Authorization` when there is no `Authorization`: a call
+    // through a Kubernetes API server's proxy (the hub's way into a
+    // cluster it made, [`crate::hub`]), which takes `Authorization` for
+    // itself and does not pass it on.
+    let token = header_str(req.headers(), header::AUTHORIZATION).or_else(|| header_str(req.headers(), header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH)));
     let who = app.svc.keys.resolve(app.token.as_ref(), app.cluster.as_ref(), token);
     // A refused credential that is a key known here (expired, revoked):
     // its name and id, so that Access names the client still sending it.
@@ -3794,7 +3801,8 @@ async fn hub_add(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
 
 /// `POST /v1/admin/hub/connections/:name {color?, key?}`.
 async fn hub_update(State(app): State<App>, axum::extract::Path(name): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Result<AxJson<Json>, ApiError> {
-    let c = app.svc.hub.update(&name, &b).await?;
+    let k = hub_kube(&app, &name).await?;
+    let c = app.svc.hub.update(&name, &b, k.as_ref()).await?;
     keys::note_change(keys::Change { object: Some(format!("connection {name}")), after: Some(json!({"color": b.get("color"), "key": b.get("key").map(|_| &c.key)})), ..Default::default() });
     Ok(AxJson(c.view()))
 }
@@ -3806,7 +3814,45 @@ async fn hub_remove(State(app): State<App>, axum::extract::Path(name): axum::ext
 }
 
 async fn hub_check(State(app): State<App>, axum::extract::Path(name): axum::extract::Path<String>) -> Result<AxJson<Json>, ApiError> {
-    Ok(AxJson(app.svc.hub.check(&name).await?.view()))
+    let k = hub_kube(&app, &name).await?;
+    Ok(AxJson(app.svc.hub.check(&name, k.as_ref()).await?.view()))
+}
+
+/// A client of the Kubernetes API a connection goes through, for one made
+/// from the Cloud view ([`crate::hub::ViaKube`]); none for one reached at
+/// its address.
+async fn hub_kube(app: &App, name: &str) -> Result<Option<crate::operator::kube::Kube>, ApiError> {
+    crate::copy::kube_for(&app.svc, name).await
+}
+
+/// `POST /v1/admin/hub/adopt {made, name?, color?}`: the cluster `made`
+/// (made from the Cloud view) in the book, reached through its Kubernetes
+/// API with a key of this hub's own ([`crate::hub::Hub::adopt`]); the
+/// connection that has it already, checked again, when there is one.
+async fn hub_adopt(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let id = b["made"].as_str().ok_or_else(|| ApiError::bad("made is the id of a cluster made from the Cloud view"))?;
+    let by = keys::audit_name(&who(w));
+    let (c, new) = crate::copy::adopt_made(&app.svc, id, b["name"].as_str().map(String::from), b["color"].as_str().map(String::from), &by).await?;
+    if !new {
+        return Ok(AxJson(c.view()).into_response());
+    }
+    let through = c.kube.as_ref().map(|v| v.cluster.clone());
+    tracing::info!(connection = %c.name, cluster = ?through, by = %by, "hub connection added through the cluster's Kubernetes API");
+    keys::note_change(keys::Change { object: Some(format!("connection {}", c.name)), after: Some(json!({"through": through, "key": c.key})), ..Default::default() });
+    Ok((StatusCode::CREATED, AxJson(c.view())).into_response())
+}
+
+/// `POST /v1/admin/hub/copy {from, to, tables}`: copies the tables from
+/// one end to the other ([`crate::copy`]): each end a connection's name,
+/// or `""` for this server. The target's import answer.
+async fn hub_copy(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let from = crate::copy::End::parse(&b["from"])?;
+    let to = crate::copy::End::parse(&b["to"])?;
+    let tables: Vec<String> = b["tables"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect()).unwrap_or_default();
+    let who = who(w);
+    let j = crate::copy::copy(&app.svc, &who, &from, &to, &tables).await?;
+    let detail = format!("copied {} from {} to {}: {} rows", tables.join(", "), from.describe(), to.describe(), j["written"].as_u64().unwrap_or(0));
+    Ok(audited(j, detail))
 }
 
 /// `/c/:name/<path>`: the call, to the connection `name` with its key
@@ -3820,14 +3866,27 @@ async fn hub_forward(State(app): State<App>, axum::extract::Path((name, rest)): 
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).map_err(|_| ApiError::bad("an HTTP method the hub does not forward"))?;
     let headers = req.headers().clone();
     let body = reqwest::Body::wrap_stream(req.into_body().into_data_stream());
-    app.svc.hub.forward(&name, method, &path, &headers, body).await
+    let k = hub_kube(&app, &name).await?;
+    app.svc.hub.forward(&name, method, &path, &headers, body, k.as_ref()).await
 }
 
 /// The clusters the cloud view made ([`crate::cloud::clusters`]), the
 /// newest first, each with where it is, what it has cost so far and how
 /// to reach it.
 async fn cloud_list(State(app): State<App>) -> AxJson<Json> {
-    let list: Vec<Json> = app.svc.clouds.list().iter().map(crate::cloud::clusters::Made::view).collect();
+    let book = app.svc.hub.list();
+    let list: Vec<Json> = app
+        .svc
+        .clouds
+        .list()
+        .iter()
+        .map(|m| {
+            let mut v = m.view();
+            // The hub's connection to it, once its command center was opened.
+            v["connection"] = json!(book.iter().find(|c| c.kube.as_ref().is_some_and(|k| k.made == m.id)).map(|c| &c.name));
+            v
+        })
+        .collect();
     AxJson(json!({"clusters": list, "file": app.svc.clouds.file().map(|f| f.display().to_string())}))
 }
 
@@ -3836,11 +3895,13 @@ async fn cloud_one(State(app): State<App>, axum::extract::Path(id): axum::extrac
     Ok(AxJson(m.view()))
 }
 
-/// `{"provider", "plan", "confirm"}`: makes the plan's cluster, which bills
-/// the account until it is deleted. `confirm` is the cluster's name, typed
-/// again. Refused when the account's limit would not start the nodes, or
-/// when the cloud already has a cluster of that name. 202: the cluster is
-/// on its way; `GET` it to follow.
+/// `{"provider", "plan", "confirm", "delete_after_hours"?, "bring"?}`:
+/// makes the plan's cluster, which bills the account until it is deleted.
+/// `confirm` is the cluster's name, typed again; `bring` names tables of
+/// this server the cluster copies in once it is ready
+/// ([`crate::copy::bring_when_ready`]). Refused when the account's limit
+/// would not start the nodes, or when the cloud already has a cluster of
+/// that name. 202: the cluster is on its way; `GET` it to follow.
 async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     use crate::cloud::clusters::{Made, Phase};
     let provider = b["provider"].as_str().unwrap_or_default().to_string();
@@ -3878,11 +3939,36 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
         _ => return Err(ApiError::bad("provider is aws or digitalocean")),
     };
     let cluster = j["cluster_name"].as_str().unwrap_or_default().to_string();
+    let after_ms = delete_after(&b["delete_after_hours"])?;
+    let bring: Vec<String> = match &b["bring"] {
+        Json::Null => Vec::new(),
+        Json::Array(a) => a.iter().map(|t| t.as_str().map(String::from).ok_or_else(|| ApiError::bad("bring is a list of this server's tables"))).collect::<Result<_, _>>()?,
+        _ => return Err(ApiError::bad("bring is a list of this server's tables")),
+    };
+    if !bring.is_empty() {
+        if !matches!(app.svc.backend, crate::service::Backend::Local(_)) {
+            return Err(ApiError::bad("bring copies tables of this server, and a coordinator holds no rows"));
+        }
+        let here = app.svc.tables_listed().await;
+        if let Some(t) = bring.iter().find(|t| !here.iter().any(|s| s.table.eq_ignore_ascii_case(t))) {
+            return Err(ApiError::bad(format!("this server has no table {t} to bring")));
+        }
+    }
     if b["confirm"].as_str() != Some(cluster.as_str()) {
         return Err(ApiError::bad(format!("confirm is the cluster's name, {cluster}, typed again: making it bills the account until it is deleted")));
     }
     let who = who(w);
     let now = crate::operator::now_ms();
+    // Who asked for it, as a DigitalOcean tag (letters, digits, ':', '-',
+    // '_') its console and API show. When it deletes itself is not a tag
+    // (see the stack's tags, crate::cloud::clusters).
+    let mut j = j;
+    if provider == "digitalocean" {
+        let tag = |s: &str| s.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_') { c } else { '-' }).take(200).collect::<String>();
+        if let Some(tags) = j["request"]["tags"].as_array_mut() {
+            tags.push(json!(format!("strata-owner:{}", tag(&keys::audit_name(&who)))));
+        }
+    }
     let m = Made {
         id: format!("{provider}-{cluster}-{now}"),
         provider: provider.clone(),
@@ -3911,14 +3997,44 @@ async fn cloud_create(State(app): State<App>, w: Option<axum::Extension<Principa
         deleting_since_ms: None,
         volumes_gone: false,
         delete_asked: false,
+        delete_at_ms: after_ms.map(|a| now + a),
+        bring,
+        brought: None,
     };
     let m = app.svc.clouds.add(m).map_err(refuse)?;
     app.svc.clouds.start(app.svc.aws.clone(), app.svc.digitalocean.clone());
+    crate::copy::bring_when_ready(app.svc.clone(), m.id.clone());
     let what = if provider == "aws" { "AWS" } else { "DigitalOcean" };
     let detail = format!("asked {what} for the cluster {cluster} in {}: {} × {}, ${:.3} an hour", m.region, m.nodes, m.machine, m.cost_hour);
     let mut r = audited(m.view(), detail);
     *r.status_mut() = axum::http::StatusCode::ACCEPTED;
     Ok(r)
+}
+
+/// `delete_after_hours`: a number of hours (above 0, at most 30 days) as
+/// milliseconds, or none.
+fn delete_after(v: &Json) -> Result<Option<u64>, ApiError> {
+    match v {
+        Json::Null => Ok(None),
+        v => {
+            let h = v.as_f64().filter(|h| *h > 0.0 && *h <= 720.0).ok_or_else(|| ApiError::bad("delete_after_hours is a number of hours above 0, at most 720 (30 days), or null to keep it"))?;
+            Ok(Some((h * 3_600_000.0) as u64))
+        }
+    }
+}
+
+/// `{"hours"}`: the cluster deletes itself that many hours from now;
+/// `null` keeps it until someone deletes it.
+async fn cloud_expiry(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let after = delete_after(&b["hours"])?;
+    let by = who(w).name.clone();
+    let at = after.map(|a| crate::operator::now_ms() + a);
+    let m = app.svc.clouds.delete_at(&id, at, &by).map_err(|e| ApiError { status: 409, message: e })?;
+    let detail = match at {
+        Some(t) => format!("set the cluster {} to delete itself at {} UTC", m.cluster, crate::cloud::clusters::utc(t)),
+        None => format!("kept the cluster {}: it no longer deletes itself", m.cluster),
+    };
+    Ok(audited(m.view(), detail))
 }
 
 /// `{"confirm"}`: deletes a cluster made here: the StrataCluster and its

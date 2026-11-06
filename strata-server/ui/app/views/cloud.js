@@ -11,7 +11,7 @@
 // copies until they answer, and deletes it (its volumes first) when asked.
 
 import * as core from "../core.js";
-import { h, s, icon, clear, fmt, card, api, toast, confirm, seg, toggle, pill, empty, table, tipOn, hideTip, debounce, copy, failure, clamp, modal } from "../core.js";
+import { h, s, icon, clear, fmt, card, api, toast, confirm, seg, toggle, pill, empty, table, tipOn, hideTip, debounce, copy, failure, clamp, modal, menu, connectionName } from "../core.js";
 import { state } from "../data.js";
 
 export default {
@@ -58,7 +58,6 @@ const PROVIDERS = {
     region: "us-east-1", spot: true, cpus: [["any", "Any CPU"], ["arm64", "Graviton"], ["x86_64", "x86-64"]],
     cpu: (m) => (m.arch === "arm64" ? "arm64" : "x86_64"), filled: (m) => m.arch === "arm64", cpuLabel: (m) => (m.arch === "arm64" ? "Graviton" : "x86-64"),
     hollow: "hollow: x86-64", ringed: "the newest Graviton general and memory machines", hoursAMonth: 730,
-    pick: (cat) => cat.recommended?.find((t) => t.startsWith("m")) || cat.recommended?.[0],
     check: "Check with AWS", checkTitle: "CloudFormation's own check of the template: free, and makes nothing",
     asks: [["the regions", "ec2:DescribeRegions"], ["the machines of a region", "ec2:DescribeInstanceTypes"], ["their prices", "pricing:GetProducts, ec2:DescribeSpotPriceHistory"], ["the account's vCPU quota", "servicequotas:GetServiceQuota"]],
     trail: "Each call is in the account's CloudTrail, made by the identity of those keys.",
@@ -69,7 +68,6 @@ const PROVIDERS = {
     region: "nyc3", spot: false, cpus: [["any", "Any CPU"], ["regular", "Regular"], ["intel", "Premium Intel"], ["amd", "Premium AMD"]],
     cpu: (m) => (m.family.endsWith("-intel") ? "intel" : m.family.endsWith("-amd") ? "amd" : "regular"), filled: (m) => !m.burstable, cpuLabel: (m) => (m.family.endsWith("-intel") ? "Premium Intel" : m.family.endsWith("-amd") ? "Premium AMD" : m.burstable ? "Shared" : "Dedicated"),
     hollow: "hollow: shared CPUs", ringed: "dedicated general and memory-optimized sizes of 2 to 8 vCPUs", hoursAMonth: 672,
-    pick: (cat) => cat.recommended?.find((t) => t.startsWith("m-4vcpu")) || cat.recommended?.[0],
     check: "Check with DigitalOcean", checkTitle: "DigitalOcean's own answer, fetched now: the account, the region, the size, the version and the droplet limit. Makes nothing",
     asks: [["the regions", "GET /v2/regions"], ["the sizes and their prices", "GET /v2/sizes, /v2/kubernetes/options"], ["the account and its droplet limit", "GET /v2/account"]],
     trail: "Each call is made with that token, and counts against its rate limit.",
@@ -110,6 +108,15 @@ const PHASES = {
   ready: ["ok", "ready"], deleting: ["warn", "deleting"], deleted: ["disabled", "deleted"], failed: ["bad", "failed"],
 };
 const ON_ITS_WAY = new Set(["creating", "installing", "starting", "deleting"]);
+/** The plan's machine for the cheapest that gives each copy the floor (crate::cloud::SMALLEST). */
+const SMALLEST = "smallest";
+/** The demo products a cluster may start with, split over its shards. */
+const DEMO_ROWS = 10000;
+/** Delete it after: hours, or kept until deleted. */
+const AFTER = [[null, "keep it"], [4, "4 hours"], [8, "8 hours"], [24, "a day"], [72, "3 days"], [168, "a week"]];
+/** A time this week, to the minute: "Thu 14:05". */
+const when = (ms) => new Date(ms).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
+const hoursLabel = (h) => (AFTER.find(([v]) => v === h)?.[1] || `${h} hours`);
 
 /** How far a press of − or + goes: further as the number grows. */
 const stride = (v) => (v >= 1000 ? 100 : v >= 200 ? 50 : v >= 50 ? 10 : v >= 20 ? 5 : 1);
@@ -152,11 +159,15 @@ function render(page, r) {
   let status, regions, region, cat, catErr, loadingCat, editing, filt, form, plan, planErr, checked, checking;
   let seq = 0;
   let running = null;   // this cluster's size: {shards, replicas, coordinators}
+  let here = null;      // this server's tables, which a new cluster may bring
   let sized = false;    // the size was set by hand (or from this cluster's)
   function reset() {
     status = null; regions = null; region = null; cat = null; catErr = null; loadingCat = false; editing = false;
     filt = { kind: "all", cpu: "any", spot: false, q: "" };
-    form = { name: "search", machine: null, nodes: 3, spot: false, ha: false, version: "", volume_gb: 10, shards: 2, replicas: 3, coordinators: 1, image: "" };
+    // The machine starts as the cheapest that gives each copy a GiB and
+    // half a core (the server's crate::cloud::SMALLEST); the cluster
+    // starts with no tables, and is kept until it is deleted.
+    form = { name: "search", machine: SMALLEST, nodes: 3, spot: false, ha: false, version: "", volume_gb: 10, shards: 2, replicas: 3, coordinators: 1, image: "", demo: false, delete_after: null, bring: [] };
     plan = null; planErr = null; checked = null; checking = false; seq++;
   }
   reset();
@@ -204,6 +215,11 @@ function render(page, r) {
     if (!sized) useRunning(false);
     else drawPlan();
   }
+  /** This server's tables: what a new cluster may bring once it is ready. */
+  async function loadHere() {
+    try { here = ((await api("/v1/tables")).tables || []).map((t) => t.table); } catch { here = []; }
+    if (alive && cat) drawPlan();
+  }
   /** Starts the plan from this cluster's size: its shards and copies, a node for about every 4 copies. */
   function useRunning(byHand = true) {
     if (!running) return;
@@ -221,7 +237,7 @@ function render(page, r) {
       const c = await api(`${P.base}/machines?region=${encodeURIComponent(region)}${fresh ? "&fresh=1" : ""}`);
       if (mine !== seq) return;
       cat = c;
-      if (!form.machine || !cat.machines.some((m) => m.type === form.machine)) form.machine = P.pick(cat) || cat.machines[0]?.type || null;
+      if (!form.machine || (form.machine !== SMALLEST && !cat.machines.some((m) => m.type === form.machine))) form.machine = SMALLEST;
       if (form.version && !(cat.versions || []).includes(form.version)) form.version = "";
     } catch (e) { if (mine !== seq) return; catErr = e; cat = null; }
     loadingCat = false;
@@ -391,6 +407,8 @@ function render(page, r) {
   const kinds = () => KINDS.filter(([k]) => (cat?.machines || []).some((m) => m.kind === k));
 
   function select(t) { form.machine = t; drawMachines(); replan(); }
+  /** The machine the plan runs on: the one picked, or the one the server found for SMALLEST. */
+  const chosen = () => (form.machine === SMALLEST ? plan?.machine?.type : form.machine);
 
   function chart(list) {
     const W = 760, H = 300, L = 48, B = 28, T = 10, R = 12;
@@ -413,10 +431,10 @@ function render(page, r) {
     g.append(s("text", { x: W - R, y: H - 4, class: "cloud-ax", "text-anchor": "end" }, filt.spot ? "spot price an hour →" : "price an hour →"), s("text", { x: 4, y: T + 4, class: "cloud-ax" }, "↑ memory"));
     const rec = new Set(cat?.recommended || []);
     // The chosen machine drawn last, over the others.
-    const order = list.slice().sort((a, b) => (a.type === form.machine) - (b.type === form.machine));
+    const order = list.slice().sort((a, b) => (a.type === chosen()) - (b.type === chosen()));
     for (const m of order) {
       const p = price(m); if (!(p > 0)) continue;
-      const on = m.type === form.machine;
+      const on = m.type === chosen();
       const c = s("circle", {
         cx: X(p), cy: Y(m.memory_gib), r: on ? 7 : 4,
         class: "cloud-dot" + (on ? " on" : ""), tabindex: "0", role: "button", "aria-label": `${m.type}: ${m.vcpu} vCPUs, ${gib(m.memory_gib)}, ${usd(p)} an hour`,
@@ -456,7 +474,7 @@ function render(page, r) {
       { key: "per", label: "$ / GiB-month", num: true, sort: (m) => price(m) * H / m.memory_gib, render: (m) => usd(price(m) * H / m.memory_gib, 2) },
       { key: "local_gb", label: prov === "aws" ? "Local disk" : "Disk", num: true, render: (m) => (m.local_gb ? fmt.n(m.local_gb) + " GB" : "–") },
       { key: "max_pods", label: "Pods", num: true, title: "The pods a node of this type may run" },
-    ], { rows: list, sortKey: "per", desc: false, compact: true, maxHeight: "280px", onRow: (m) => select(m.type), rowClass: (m) => (m.type === form.machine ? "sel" : "") });
+    ], { rows: list, sortKey: "per", desc: false, compact: true, maxHeight: "280px", onRow: (m) => select(m.type), rowClass: (m) => (m.type === chosen() ? "sel" : "") });
     const ks = kinds();
     clear(machines, card({
       title: "Machines", sub: `${fmt.n(list.length)} of ${fmt.n(cat.machines.length)} in ${cat.region}`, cls: "cloud-machines",
@@ -480,7 +498,7 @@ function render(page, r) {
   const body = () => ({
     name: form.name, region, machine: form.machine, nodes: form.nodes, volume_gb: form.volume_gb,
     ...(prov === "aws" ? { spot: form.spot } : { ha: form.ha, version: form.version }),
-    cluster: { shards: form.shards, replicas: form.replicas, coordinators: form.coordinators, ...(form.image ? { image: form.image } : {}) },
+    cluster: { shards: form.shards, replicas: form.replicas, coordinators: form.coordinators, ...(form.image ? { image: form.image } : {}), ...(form.demo ? { demo: DEMO_ROWS } : {}) },
   });
 
   const replan = debounce(async () => {
@@ -490,6 +508,7 @@ function render(page, r) {
     catch (e) { if (mine !== seq) return; planErr = e; }
     checked = null;
     drawPlan(); drawWhere();
+    if (form.machine === SMALLEST) drawMachines();
   }, 200);
 
   function set(k, v) { form[k] = v; if (["shards", "replicas", "coordinators", "nodes"].includes(k)) sized = true; replan(); }
@@ -557,11 +576,15 @@ function render(page, r) {
     if (!may() || !cat) { clear(planEl); return; }
     const name = h("input", { class: "input sm mono", value: form.name, size: 14, onchange: () => set("name", name.value.trim()) });
     const image = h("input", { class: "input sm mono", value: form.image, placeholder: "ghcr.io/chloetech-ai/strata-server:latest", size: 34, onchange: () => set("image", image.value.trim()) });
+    const afterSel = h("select", { class: "select sm", title: "This server deletes it then (and its data), or as soon as it runs again if it was off: nothing in the cloud does", onchange: () => { form.delete_after = afterSel.value ? Number(afterSel.value) : null; drawCreate(); } },
+      AFTER.map(([v, l]) => h("option", { value: v ?? "", selected: (v ?? null) === form.delete_after }, l)));
     const version = prov === "digitalocean" ? h("select", { class: "select sm", onchange: () => set("version", version.value) },
       h("option", { value: "", selected: !form.version }, `newest (${cat.versions?.[0] || "–"})`), (cat.versions || []).map((v) => h("option", { value: v, selected: v === form.version }, v))) : null;
     const controls = h("div", { class: "cloud-controls" },
       h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Name"), h("div", { class: "row nw" }, h("span", { class: "small dim mono" }, "strata-"), name)),
-      h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Machine"), h("b", { class: "mono" }, form.machine || "pick one above")),
+      h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Machine"), form.machine === SMALLEST
+        ? h("div", { class: "row nw", title: "The cheapest machine whose nodes give each copy at least 1 GiB and half a core, with room for its pods. Pick one above to choose it yourself." }, h("b", { class: "mono" }, plan?.machine?.type || "…"), pill("ok", "smallest that fits"))
+        : h("div", { class: "row nw" }, h("b", { class: "mono" }, form.machine || "pick one above"), h("button", { class: "btn sm ghost", title: "The cheapest machine whose nodes give each copy at least 1 GiB and half a core", onclick: () => select(SMALLEST) }, "Smallest that fits"))),
       stepper(form.nodes, 1, 1000, (v) => set("nodes", v), "Nodes"),
       stepper(form.shards, 1, 4096, (v) => set("shards", v), "Shards"),
       stepper(form.replicas, 1, 9, (v) => set("replicas", v), "Copies a shard"),
@@ -571,7 +594,10 @@ function render(page, r) {
         ? h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Nodes bought"), toggle(form.spot, (v) => set("spot", v), form.spot ? "spot" : "on demand"))
         : [h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Control plane"), toggle(form.ha, (v) => set("ha", v), form.ha ? "highly available" : "standard (free)")),
           h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Kubernetes"), version)],
-      h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Image"), image));
+      h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Image"), image),
+      h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Starts with"), toggle(form.demo, (v) => set("demo", v), form.demo ? `${fmt.n(DEMO_ROWS)} demo products` : "no tables")),
+      h("label", { class: "cloud-step" }, h("span", { class: "small dim" }, "Delete it after"), afterSel),
+      here?.length ? h("div", { class: "cloud-step" }, h("span", { class: "small dim" }, "Bring from this server"), bringPick()) : null);
     const same = running && form.shards === running.shards && form.replicas === running.replicas && form.coordinators === running.coordinators && (!running.volume_gb || form.volume_gb === running.volume_gb);
     const vol = running?.volume_gb ? `, volumes of ${fmt.n(running.volume_gb)} GiB (${running.volumeFrom})` : "";
     const start = running ? h("div", { class: "small dim ro-cstart" }, same
@@ -622,6 +648,16 @@ function render(page, r) {
     }));
   }
 
+  /** Tables of this server the new cluster copies in once it is ready (crate::copy::bring_when_ready). */
+  function bringPick() {
+    const label = form.bring.length ? form.bring.join(", ") : "nothing";
+    return h("details", { class: "cloud-bring" },
+      h("summary", { class: "btn sm", title: "Once every copy answers, this server copies these tables in, with their schemas (shard and cluster keys too), through the cluster's Kubernetes API" }, label),
+      h("div", { class: "cloud-bring-list stack" }, here.map((t) => h("label", { class: "row nw small" },
+        h("input", { type: "checkbox", checked: form.bring.includes(t), onchange: (e) => { form.bring = e.target.checked ? [...form.bring, t] : form.bring.filter((x) => x !== t); e.target.closest("details").querySelector("summary").textContent = form.bring.length ? form.bring.join(", ") : "nothing"; drawCreate(); } }),
+        h("span", { class: "mono" }, t)))));
+  }
+
   // ---------------------------------------------------------- making it
   /** Why the account would not start the nodes, if it would not. */
   function blocked() {
@@ -638,7 +674,9 @@ function render(page, r) {
     const why = blocked();
     clear(createEl, h("div", { class: "row" },
       h("button", { class: "btn danger solid", disabled: creating || !!why, onclick: create, title: why || `Make ${plan.stack} on ${P.name} now` }, icon("cloud"), creating ? "Asking…" : `Create it on ${P.name}…`),
-      h("span", { class: "small dim" }, why || `About ${usd(plan.cost.hour, 2)} an hour from then until it is deleted, billed to the account whose key is saved here. This page follows it and deletes it.`)));
+      h("span", { class: "small dim" }, why ? why : [form.bring.length ? `Once ready, it brings ${form.bring.join(", ")} from this server. ` : "", (form.delete_after
+        ? `About ${usd(plan.cost.hour, 2)} an hour, billed to the account whose key is saved here, and it deletes itself after ${hoursLabel(form.delete_after)}: about ${usd(plan.cost.hour * form.delete_after, 2)} in all. This server deletes it, so it must be running then (or it deletes it when it runs again).`
+        : `About ${usd(plan.cost.hour, 2)} an hour from then until it is deleted, billed to the account whose key is saved here. This page follows it and deletes it.`)])));
   }
 
   async function create() {
@@ -646,16 +684,21 @@ function render(page, r) {
     const ok = await typed({
       title: `Create ${name} on ${P.name}?`, name, ok: "Create it",
       body: h("div", { class: "stack" },
-        h("p", { class: "dim", style: { margin: 0 } }, `${p.layout.nodes.length} × ${p.machine.type} in ${p.region}, on ${P.k8s}: about ${usd(p.cost.hour, 2)} an hour, ${usd(p.cost.month, 0)} a month, from now until it is deleted.`),
+        h("p", { class: "dim", style: { margin: 0 } }, form.delete_after
+          ? `${p.layout.nodes.length} × ${p.machine.type} in ${p.region}, on ${P.k8s}: about ${usd(p.cost.hour, 2)} an hour. It deletes itself, with its data, after ${hoursLabel(form.delete_after)}: about ${usd(p.cost.hour * form.delete_after, 2)} in all.`
+          : `${p.layout.nodes.length} × ${p.machine.type} in ${p.region}, on ${P.k8s}: about ${usd(p.cost.hour, 2)} an hour, ${usd(p.cost.month, 0)} a month, from now until it is deleted.`),
         h("p", { class: "dim", style: { margin: 0 } }, prov === "aws"
           ? "CloudFormation makes the network, the EKS cluster and its nodes (15 to 20 minutes); then this server installs Strata's operator and the cluster, and follows its copies until they answer."
           : "DigitalOcean makes the cluster and its nodes (5 to 10 minutes); then this server installs Strata's operator and the cluster, and follows its copies until they answer."),
+        form.bring.length ? h("p", { class: "dim", style: { margin: 0 } }, `Then it copies ${form.bring.join(", ")} from this server into it, with their schemas, through its Kubernetes API.`) : null,
         p.warnings.length ? h("div", { class: "stack cloud-warn" }, p.warnings.map((w) => h("div", { class: "row nw small" }, icon("warn"), h("span", {}, w)))) : null),
     });
     if (!ok) return;
     creating = true; drawCreate();
     try {
-      const m = await api("/v1/admin/cloud/clusters", { body: { provider: prov, plan: body(), confirm: name } });
+      // The machine confirmed, not "smallest" again: the cloud's prices may
+      // have moved since the plan.
+      const m = await api("/v1/admin/cloud/clusters", { body: { provider: prov, plan: { ...body(), machine: p.machine.type }, confirm: name, ...(form.delete_after ? { delete_after_hours: form.delete_after } : {}), ...(form.bring.length ? { bring: form.bring } : {}) } });
       clusters = [m, ...clusters.filter((c) => c.id !== m.id)];
       toast(`${name} is on its way`, "ok");
       drawMade(); poll(2000);
@@ -671,6 +714,19 @@ function render(page, r) {
     });
     if (!ok) return;
     try { const m = await api(`/v1/admin/cloud/clusters/${encodeURIComponent(c.id)}/delete`, { body: { confirm: c.cluster } }); clusters = clusters.map((x) => (x.id === m.id ? m : x)); drawMade(); poll(2000); }
+    catch (e) { toast(e.message, "bad", 8000); }
+  }
+
+  /** Its command center, through its Kubernetes API: the hub keeps a key of its own for it (crate::hub, adopt), then opens /c/<name>. */
+  async function openIt(c, btn) {
+    btn.disabled = true; btn.lastChild.textContent = "Opening…";
+    try { const x = await api("/v1/admin/hub/adopt", { body: { made: c.id }, hub: true }); location.href = `/c/${encodeURIComponent(x.name)}#/home`; }
+    catch (e) { toast(e.message, "bad", 9000); btn.disabled = false; btn.lastChild.textContent = "Open its command center"; }
+  }
+
+  /** When it deletes itself: `hours` from now, or null to keep it. */
+  async function expiry(c, hours) {
+    try { const m = await api(`/v1/admin/cloud/clusters/${encodeURIComponent(c.id)}/expiry`, { body: { hours } }); clusters = clusters.map((x) => (x.id === m.id ? m : x)); drawMade(); toast(hours ? `${c.cluster} deletes itself at ${when(m.delete_at_ms)}` : `${c.cluster} is kept until it is deleted`, "ok"); }
     catch (e) { toast(e.message, "bad", 8000); }
   }
 
@@ -706,6 +762,15 @@ function render(page, r) {
     }));
   }
 
+  /** What bringing this server's tables did, or that it will. */
+  function broughtLine(c) {
+    if (!c.bring?.length) return null;
+    const b = c.brought, what = c.bring.join(", ");
+    if (!b) return ["deleting", "deleted", "failed"].includes(c.phase) ? null : h("div", { class: "small dim" }, icon("import"), ` Brings ${what} from this server once every copy answers.`);
+    if (b.error) return h("div", { class: "small error" }, icon("warn"), ` Did not bring ${what}: ${b.error}. Copy them from Connections.`);
+    return h("div", { class: "small" }, icon("check"), ` Brought ${what} from this server: ${fmt.n(b.written || 0)} rows.`);
+  }
+
   function madeRow(c) {
     const order = ["creating", "installing", "starting", "ready"];
     const at = order.indexOf(c.phase);
@@ -718,19 +783,38 @@ function render(page, r) {
       ? h("button", { class: "btn sm", title: "Take it off this list", onclick: () => forget(c) }, icon("x"), "Forget")
       : c.phase === "deleting" ? null
       : h("button", { class: "btn sm danger", onclick: () => remove(c) }, icon("trash"), "Delete");
+    // On the hub's own page: its command center through the cluster's
+    // Kubernetes API, nothing to install. (On another cluster's page, that
+    // cluster made it, with its own cloud credentials.)
+    const open = connectionName ? null
+      : c.connection ? h("a", { class: "btn sm primary", href: `/c/${encodeURIComponent(c.connection)}#/home`, title: `Opens at /c/${c.connection}: calls go through its Kubernetes API with a key this server keeps` }, icon("ext"), h("span", {}, "Open its command center"))
+      : ["starting", "ready"].includes(c.phase) ? h("button", { class: "btn sm primary", title: "Through its Kubernetes API, with the cloud's credentials here: no public address, no kubectl. A key of this server's own is made there and kept here.", onclick: (e) => openIt(c, e.currentTarget) }, icon("ext"), h("span", {}, "Open its command center"))
+      : null;
+    const live = !["deleting", "deleted"].includes(c.phase) && !(c.phase === "failed" && !c.cloud_id);
+    const left = c.delete_at_ms ? (c.delete_at_ms - Date.now()) / 3_600_000 : null;
+    const ends = !live ? null : c.delete_at_ms
+      ? h("div", { class: "small cloud-expiry" },
+        h("span", {}, icon("clock"), ` Deletes itself at ${when(c.delete_at_ms)} (${left > 0 ? `in ${left >= 1 ? `${left.toFixed(1)} h` : `${Math.max(1, Math.round(left * 60))} min`}` : "now"}), about ${usd(c.cost_by_delete, 2)} in all.`),
+        h("span", { class: "row nw", style: { gap: "4px" } },
+          h("button", { class: "btn xs", title: "Four hours more than the time left now", onclick: () => expiry(c, Math.min(720, Math.max(0, left) + 4)) }, "+4 h"),
+          h("button", { class: "btn xs ghost", title: "It no longer deletes itself", onclick: () => expiry(c, null) }, "Keep it")))
+      : h("div", { class: "small dim cloud-expiry" }, h("span", {}, icon("clock"), " Kept until it is deleted."),
+        h("button", { class: "btn xs ghost", onclick: (e) => menu(e.currentTarget, AFTER.filter(([v]) => v).map(([v, l]) => ({ label: `Delete it in ${l}`, onclick: () => expiry(c, v) }))) }, "Delete it later…"));
     return h("div", { class: "cloud-made-row" },
       h("div", { class: "row between" },
         h("div", { class: "row nw" }, h("b", { class: "mono" }, c.cluster), pill(...PHASES[c.phase]),
           h("span", { class: "small dim" }, `${c.provider === "aws" ? "AWS" : "DigitalOcean"} · ${c.region} · ${c.nodes} × ${c.machine}`)),
         h("div", { class: "row nw" },
           h("span", { class: "small dim num", title: "at the planned price, from when it was asked for" }, `${usd(c.cost_so_far, 2)} so far${c.phase === "deleted" ? "" : ` · ${usd(c.cost_hour, 2)}/h`}`),
-          action)),
+          open, action)),
       track,
+      ends,
+      broughtLine(c),
       last ? h("div", { class: "small" }, h("span", { class: "dim" }, fmt.ago(last.at_ms) + " · "), last.text + progress) : null,
       c.summary && !["deleted", "ready"].includes(c.phase) && !(last && last.text.includes(c.summary)) ? h("div", { class: "small" }, h("span", { class: "dim" }, "The StrataCluster: "), c.summary) : null,
       c.phase === "failed" && c.error ? h("div", { class: "error small" }, c.error, c.cloud_id ? " Delete it: what the cloud made may still bill." : "") : null,
-      c.connect.length ? h("details", {}, h("summary", { class: "small" }, "Open its command center"),
-        h("div", { class: "small dim", style: { margin: "6px 0" } }, "Point kubectl at it, forward the coordinator's port, then open http://127.0.0.1:7700."),
+      c.connect.length ? h("details", {}, h("summary", { class: "small" }, "Or reach it with kubectl"),
+        h("div", { class: "small dim", style: { margin: "6px 0" } }, "Point kubectl at it, forward the coordinator's port, then open http://127.0.0.1:7700 with the cluster's token (the Secret strata-token in the strata namespace)."),
         cmds(c.connect)) : null,
       h("details", {}, h("summary", { class: "small" }, `What happened (${c.steps.length})`),
         h("div", { class: "stack small cloud-steps" }, c.steps.map((st) => h("div", { class: "row nw" }, h("span", { class: "dim num" }, fmt.time(st.at_ms)), h("span", {}, st.text))))));
@@ -739,5 +823,6 @@ function render(page, r) {
   load();
   loadMade();
   loadRunning();
+  loadHere();
   return () => { alive = false; clearTimeout(pollT); hideTip(); switchProvider = null; };
 }
