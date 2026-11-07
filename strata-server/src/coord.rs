@@ -3417,7 +3417,8 @@ impl Coordinator {
     /// What a server new to the cluster says: its protocol, part in
     /// replication, rows, and first table. It must speak protocol 9, hold
     /// no rows (unless `force`) and no slot map, and serve the cluster's
-    /// first table.
+    /// first table: of a cluster that began with no tables, the
+    /// placeholder, which a server made with no tables serves.
     async fn admit(&self, url: &str, force: bool) -> Result<(Client, Said), ApiError> {
         let t = self.topo();
         if let Some(i) = t.replicas.iter().position(|rs| rs.iter().any(|r| r.url == url)) {
@@ -3445,7 +3446,11 @@ impl Coordinator {
         let first: Schema = serde_json::from_str(&schema.schema_json).map_err(ApiError::internal)?;
         let ours = self.catalog().first().cloned().unwrap_or_else(|| Arc::new(self.schema.clone()));
         if !first.same_columns(&ours) {
-            return Err(ApiError::bad(format!("{url} serves table {} with another schema than the cluster's first table, {}: create its database with the same --schema", first.table, self.schema.table)));
+            return Err(ApiError::bad(match (ours.is_placeholder(), first.is_placeholder()) {
+                (true, _) => format!("{url} serves table {}, and the cluster began with no tables: start it on a new database with no --schema (nor --demo), and the coordinator creates every table of the cluster on it when it joins", first.table),
+                (false, true) => format!("{url} has no tables, and the cluster's first table is {}: start it on a new database with the same --schema as the cluster's first shard", ours.table),
+                (false, false) => format!("{url} serves table {} with another schema than the cluster's first table, {}: start it on a new database with the same --schema (altered as the cluster's was)", first.table, ours.table),
+            }));
         }
         if health.docs > 0 && !force {
             return Err(ApiError::bad(format!("{url} holds {} rows: a new shard or replica starts empty (pass force to drop them)", health.docs)));
