@@ -249,6 +249,45 @@ async fn three_shards_answer_like_one_database() {
         same(q, ordered, &query(&whole, q).await, &query(&coord, q).await);
     }
 
+    // The coordinator refuses a graph query, saying what to do instead. A
+    // walk from the application, a round of reads by key per hop, finds
+    // the rows the whole database's walk does.
+    let walk = |seed: &str| format!("SELECT id FROM items WHERE REACHABLE(cooc, '{seed}', hops => 2) ORDER BY id LIMIT 1000");
+    let e = coord.query(QueryReq { sql: walk("i1"), ..Default::default() }).await.err().unwrap();
+    assert!(e.status == 400 && e.message.contains("not supported through a coordinator") && e.message.contains("On a cluster"), "{}", e.message);
+    let ids = |j: Json| j["rows"].as_array().unwrap().iter().map(|r| r[0].as_str().unwrap().to_string()).collect::<std::collections::BTreeSet<String>>();
+    let mut seeds = 0;
+    for i in 0..ITEMS {
+        let seed = format!("i{i}");
+        let want = ids(query(&whole, &walk(&seed)).await);
+        if want.len() < 3 {
+            continue;
+        }
+        let mut seen = std::collections::BTreeSet::from([seed.clone()]);
+        let mut frontier = vec![seed.clone()];
+        for _ in 0..2 {
+            let keys = frontier.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+            let rows = query(&coord, &format!("SELECT id, cooc FROM items WHERE id IN ({keys}) LIMIT 1000")).await;
+            frontier.clear();
+            for r in rows["rows"].as_array().unwrap() {
+                // An EDGES column comes as its JSON text.
+                let edges: Vec<String> = serde_json::from_str(r[1].as_str().unwrap()).unwrap();
+                for to in edges {
+                    if seen.insert(to.clone()) {
+                        frontier.push(to);
+                    }
+                }
+            }
+        }
+        seen.remove(&seed);
+        assert_eq!(seen, want, "two hops from {seed}");
+        seeds += 1;
+        if seeds == 5 {
+            break;
+        }
+    }
+    assert_eq!(seeds, 5);
+
     // A user's events are on one shard: the one holding their slot.
     let map = slots::SlotMap::even(3, 1);
     let mut held = 0;
@@ -407,6 +446,19 @@ async fn every_table_over_http_and_grpc() {
     assert_eq!((count("items").await, count("users").await, count("events").await), (ITEMS as u64, USERS as u64, EVENTS as u64));
     let (_, a) = post("/v1/query", json!({"sql": "SELECT SUM(n_events) FROM users"})).await;
     assert_eq!(a["rows"][0][0], EVENTS, "{a}");
+    // Rows as objects keyed by column, on asking: a name two columns
+    // share keys the second by its place.
+    let join = "SELECT e.id, i.id, e.usr AS who, e.item AS who FROM events e JOIN items i ON e.item = i.id ORDER BY e.id LIMIT 2";
+    let (_, lists) = post("/v1/sql", json!({"sql": join})).await;
+    for path in ["/v1/sql", "/v1/query"] {
+        let (status, a) = post(path, json!({"sql": join, "objects": true})).await;
+        assert_eq!(status, 200, "{a}");
+        assert_eq!(a["columns"], lists["columns"], "{a}");
+        let want: Vec<Json> = lists["rows"].as_array().unwrap().iter().map(|r| json!({"e.id": r[0], "i.id": r[1], "who": r[2], "who_2": r[3]})).collect();
+        assert_eq!(a["rows"], json!(want), "{a}");
+    }
+    let (status, a) = post("/v1/query", json!({"sql": join, "objects": "yes"})).await;
+    assert!(status == 400 && a["error"].as_str().unwrap().contains("objects is true or false"), "{a}");
     let (status, a) = post("/v1/write", json!({"ops": [{"op": "upsert", "table": "nope", "doc": {"id": 1}}]})).await;
     assert!(status == 400 && a["error"].as_str().unwrap().contains("no such table: nope"), "{a}");
     let (_, a) = post("/v1/explain", json!({"sql": QUERIES[0].0})).await;

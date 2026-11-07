@@ -6,7 +6,7 @@
 //! follower takes no other client's writes until following stops. One
 //! that fell behind the source's log catches up (protocol 15), also when
 //! its catch-up is cut short, and a copy made again drops the rows the
-//! source deleted meanwhile. A switch-over (protocol 16) holds the
+//! source deleted meanwhile. A switch-over (protocol 17) holds the
 //! source's writes and promotes the follower having lost none, after which
 //! the old source follows it back without a copy; after one that was not
 //! planned, the old source rejoins with a copy that deletes the keys it
