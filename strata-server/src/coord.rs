@@ -2679,7 +2679,7 @@ impl Coordinator {
                 if p < SOURCES_PROTOCOL {
                     return Err(tonic::Status::unimplemented(format!("it speaks protocol {p}, and source offsets need {SOURCES_PROTOCOL}: upgrade it")));
                 }
-                c.sources(pb::SourcesRequest {}).await
+                c.sources(pb::SourcesRequest::default()).await
             })
         });
         let mut least: BTreeMap<String, (i64, i64, usize)> = BTreeMap::new();

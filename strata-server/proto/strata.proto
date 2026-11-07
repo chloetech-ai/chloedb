@@ -1360,7 +1360,12 @@ message WriteResponse {
   map<string, int64> offsets = 5;
 }
 
-message SourcesRequest {}
+message SourcesRequest {
+  // Protocol 15: each source's offset for the slots moving from this shard
+  // (its cluster map's move), which the move carries to the shard they go
+  // to; the slots that arrived here at other offsets count theirs.
+  bool moving = 1;
+}
 
 message SourcesResponse {
   repeated Source sources = 1;

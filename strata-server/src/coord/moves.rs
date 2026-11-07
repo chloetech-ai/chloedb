@@ -20,7 +20,8 @@
 use std::sync::atomic::AtomicBool;
 
 use super::*;
-use crate::cores::slots::{MoveRun, MoveStep, HOLD_RENEW, HOLD_TTL};
+use crate::cores::slots::{Edit, MoveRun, MoveStep, HOLD_RENEW, HOLD_TTL};
+use crate::grpc::MOVE_OFFSETS_PROTOCOL;
 use crate::service::RETRY_AFTER;
 use crate::slots::SLOTS;
 
@@ -396,7 +397,16 @@ impl Coordinator {
                         (true, Some(m), Some(s)) => self.topo().replicas.get(m.from).and_then(|rs| rs.get(s)).map(|r| r.url.clone()).into_iter().collect(),
                         _ => Vec::new(),
                     };
-                    let r = self.change(|m| edit.apply(m), &first).await.map(|(m, _)| m);
+                    // The flip carries the stream offsets of the slots on the
+                    // shard they leave, read while their writes are held.
+                    let edit = match edit {
+                        Edit::Flip(m) => self.moving_offsets(&m, src.unwrap_or(0)).await.map(|offsets| Edit::Flip(Move { offsets, ..m })),
+                        e => Ok(e),
+                    };
+                    let r = match edit {
+                        Ok(edit) => self.change(|m| edit.apply(m), &first).await.map(|(m, _)| m),
+                        Err(e) => Err(e),
+                    };
                     run.changed(r, self.map().as_ref())
                 }
                 MoveStep::Source => {
@@ -498,6 +508,25 @@ impl Coordinator {
                 self.step(k, |s| s.rows += chunk.rows);
             }
         }
+    }
+
+    /// The stream sources' offsets of `mv`'s slots on server `src` of the
+    /// shard they leave, for its flip to carry to the shard they go to
+    /// (`Sources` with `moving`): none while a server of the cluster speaks
+    /// a protocol before [`MOVE_OFFSETS_PROTOCOL`], which would not keep
+    /// them, nor while the shard has no stream source.
+    async fn moving_offsets(&self, mv: &Move, src: usize) -> Result<BTreeMap<String, i64>, ApiError> {
+        let t = self.topo();
+        if t.protocol() < MOVE_OFFSETS_PROTOCOL {
+            return Ok(BTreeMap::new());
+        }
+        let rep = t.replicas.get(mv.from).and_then(|rs| rs.get(src)).ok_or_else(|| ApiError::internal("the shard slots move from changed places"))?;
+        let mut c = rep.client.clone();
+        let a = tokio::time::timeout(Duration::from_secs(30), c.sources(pb::SourcesRequest { moving: true }))
+            .await
+            .map_err(|_| ApiError { status: 504, message: format!("shard {}: no stream offsets of the moving slots within 30 s", rep.url) })?
+            .map_err(|s| self.named(&rep.url, s))?;
+        Ok(a.into_inner().sources.into_iter().map(|s| (s.name, s.offset)).collect())
     }
 
     /// Holds writes to the slots moving from shard `i` on its server `src`
