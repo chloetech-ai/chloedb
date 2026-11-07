@@ -106,7 +106,7 @@ impl Moving {
 
     /// Waits until every write counted in before now has left, until
     /// `deadline`: whether they did.
-    async fn drained(&self, deadline: tokio::time::Instant) -> bool {
+    pub(super) async fn drained(&self, deadline: tokio::time::Instant) -> bool {
         let upto = self.entered.state.lock().unwrap_or_else(|e| e.into_inner()).0;
         loop {
             let left = self.entered.left.notified();

@@ -106,10 +106,11 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// answers a shard's feed (`Feed`, [`FEED_PROTOCOL`]), 14 starts a feed
 /// with a copy of the shard's rows ([`FEED_COPY_PROTOCOL`]), 15 copies
 /// only rows changed since a transaction and compares keys
-/// ([`FEED_KEYS_PROTOCOL`]), and 16 keeps the stream offsets of slots that
-/// move ([`MOVE_OFFSETS_PROTOCOL`]).
+/// ([`FEED_KEYS_PROTOCOL`]), 16 keeps the stream offsets of slots that
+/// move ([`MOVE_OFFSETS_PROTOCOL`]), and 17 holds clients' writes on a
+/// mark and keeps promotions ([`HOLD_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 16;
+pub const PROTOCOL: u32 = 17;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -158,6 +159,13 @@ pub const FEED_KEYS_PROTOCOL: u32 = 15;
 /// `SourcesRequest.moving`), which the shard they go to keeps for them
 /// ([`crate::service::arrivals`]).
 pub const MOVE_OFFSETS_PROTOCOL: u32 = 16;
+
+/// The protocol whose shards hold their clients' writes on a mark
+/// (`_strata/hold`, [`crate::service::feed::HOLD`]), say so in their feeds,
+/// and keep a promotion from a cluster they followed: a switch-over to a
+/// follower, and back. Nothing new on the wire but the marks, which an
+/// older shard refuses as its own.
+pub const HOLD_PROTOCOL: u32 = 17;
 
 /// The most bytes of a feed one `FeedChunk` carries.
 const FEED_CHUNK: usize = 1 << 20;
@@ -373,7 +381,7 @@ impl Grpc {
         // query spent an eighth of its time copying it).
         let call = Box::pin(f(self.0.clone(), who.clone(), req.into_inner()));
         let call = keys::noting(crate::service::DEADLINE.scope(crate::service::Deadline::of_part(clients), crate::service::ROUTED.scope(std::cell::Cell::new(0), call)));
-        let call = crate::telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, call));
+        let call = crate::telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::OWN.scope(who.root, call)));
         let (r, note) = crate::telemetry::traced(crate::telemetry::Trace::new(), obs::scope(Some(id.clone()), call)).instrument(span.clone()).await;
         let status = r.as_ref().map_or_else(|e| e.status, |_| 200);
         obs::scope(Some(id.clone()), async { audit(&self.0, &who, method, status, t0, note) }).await;

@@ -91,7 +91,7 @@ use tonic::transport::Channel;
 use tonic::Code;
 
 use crate::auth::Secret;
-use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_COPY_PROTOCOL, FEED_KEYS_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL};
+use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_COPY_PROTOCOL, FEED_KEYS_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, HOLD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL};
 use crate::metrics::Family;
 use crate::pb::{self, strata_client::StrataClient};
 use crate::service::{is_mark, op_place, op_schema, op_source, After, QueryReq, Written};
@@ -2779,6 +2779,23 @@ impl Coordinator {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         Err(ApiError { status: 503, message: format!("the shards served different slot maps in {KEYS_TRIES} reads of their keys: a move is under way; try again") })
+    }
+
+    /// Refuses (501) unless every shard's primary speaks
+    /// [`HOLD_PROTOCOL`], naming the first that does not: `what` needs it.
+    pub async fn need_hold_protocol(&self, what: &str) -> Result<(), ApiError> {
+        let t = &self.topo();
+        let calls = (0..t.replicas.len()).map(|i| async move {
+            let k = self.primary(t, i).await?.unwrap_or(0);
+            let rep = &t.replicas[i][k];
+            let mut c = rep.client.clone();
+            let p = self.speak(t, i, k, &mut c, PROTOCOL).await.map_err(|s| self.named(&rep.url, s))?;
+            match p < HOLD_PROTOCOL {
+                true => Err(ApiError { status: 501, message: format!("{}: it speaks protocol {p}, and {what} needs {HOLD_PROTOCOL}: upgrade it", self.copy_name(&rep.url)) }),
+                false => Ok(()),
+            }
+        });
+        join_all(calls).await.into_iter().collect()
     }
 
     /// Each shard's answer to [`Self::feed_keys`].

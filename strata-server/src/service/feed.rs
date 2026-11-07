@@ -69,33 +69,142 @@ pub(crate) const MOVE_CLEANUP: &str = "_strata/move cleanup";
 /// says, as an offset only grows.
 pub const FOLLOWS: &str = "_strata/follows ";
 
+/// The mark by which a shard holds its clients' writes
+/// (`POST /v1/admin/hold-writes`, for a switch-over to a cluster that
+/// follows this one): as for [`FOLLOWS`], its offset is twice the time it
+/// was written (in ms), plus one while it holds. Its transaction is the
+/// last with a client's rows until the hold ends, and a feed says so
+/// (`"hold": true`).
+pub const HOLD: &str = "_strata/hold";
+
+/// The start of the marks by which a cluster keeps its promotion from a
+/// cluster it followed (`POST /v1/admin/follow/promote`):
+/// `_strata/promoted <name>`, when (in ms), and `_strata/promoted
+/// <name>/<j>`, the number of its shard `j`'s transaction that ended
+/// following, after which every transaction is its own.
+pub const PROMOTED: &str = "_strata/promoted ";
+
+/// Whether `name` is a mark a server keeps of its own state in `_sources`
+/// ([`FOLLOWS`], [`HOLD`], [`PROMOTED`]), which a request may carry from
+/// the cluster's own alone ([`super::own_marks_ok`]).
+pub(crate) fn own_mark(name: &str) -> bool {
+    name.starts_with(FOLLOWS) || name == HOLD || name.starts_with(PROMOTED)
+}
+
 /// The offset of a [`FOLLOWS`] mark written now: following, or not.
 pub fn follows_offset(following: bool) -> i64 {
     crate::telemetry::now_ms() as i64 * 2 + following as i64
 }
 
-/// Whether operation `op` carries a [`FOLLOWS`] mark.
-pub(crate) fn marks_follows(op: &Json) -> bool {
-    op.pointer("/source/name").and_then(Json::as_str).is_some_and(|n| n.starts_with(FOLLOWS))
+/// The offset of a mark of [`FOLLOWS`]'s kind (twice the time, plus `on`)
+/// written now after one of offset `cur`: past it, though a clock behind
+/// the one that wrote it.
+pub fn next_offset(cur: Option<i64>, on: bool) -> i64 {
+    let now = crate::telemetry::now_ms() as i64 * 2 + on as i64;
+    match cur {
+        Some(c) if c >= now => c + 1 + ((c + 1) % 2 != on as i64) as i64,
+        _ => now,
+    }
+}
+
+/// The name an operation's source has.
+fn source_name(op: &Json) -> Option<&str> {
+    op.pointer("/source/name").and_then(Json::as_str)
+}
+
+/// The greatest offset `ops` carry of source `name`.
+fn carried(ops: &[Json], name: &str) -> Option<i64> {
+    ops.iter().filter(|op| source_name(op) == Some(name)).filter_map(|op| op.pointer("/source/offset").and_then(Json::as_i64)).max()
+}
+
+/// Whether operation `op` carries one of the server's own marks
+/// ([`own_mark`]).
+pub(crate) fn marks_own(op: &Json) -> bool {
+    source_name(op).is_some_and(own_mark)
+}
+
+/// Whether operation `op` carries a [`PROMOTED`] mark.
+pub(crate) fn marks_promoted(op: &Json) -> bool {
+    source_name(op).is_some_and(|n| n.starts_with(PROMOTED))
+}
+
+/// Whether operation `op` carries a [`HOLD`] mark.
+pub(crate) fn marks_hold(op: &Json) -> bool {
+    source_name(op) == Some(HOLD)
 }
 
 /// The offset of the [`FOLLOWS`] mark of cluster `name` that `ops`
 /// carry, the greatest.
 pub(crate) fn carried_follows(ops: &[Json], name: &str) -> Option<i64> {
-    ops.iter()
-        .filter(|op| op.pointer("/source/name").and_then(Json::as_str).and_then(|n| n.strip_prefix(FOLLOWS)) == Some(name))
-        .filter_map(|op| op.pointer("/source/offset").and_then(Json::as_i64))
-        .max()
+    carried(ops, &format!("{FOLLOWS}{name}"))
 }
 
-/// The [`FOLLOWS`] marks a shard holds, as last read from its `_sources`
-/// with the term it was read in (a new primary reads again), and what
-/// each cluster's follow process last said of itself
-/// (`POST /v1/admin/follow/status`).
+/// The offset of the [`HOLD`] mark `ops` carry, the greatest.
+pub(crate) fn carried_hold(ops: &[Json]) -> Option<i64> {
+    carried(ops, HOLD)
+}
+
+/// The offset `ops` carry of the mark by which the follow process of
+/// cluster `name` names the copy it follows from (`follow/<name>/copy`,
+/// when it began, in ms: [`crate::follow`]).
+pub(crate) fn carried_copy(ops: &[Json], name: &str) -> Option<i64> {
+    carried(ops, &format!("follow/{name}/copy"))
+}
+
+/// A shard's own marks ([`own_mark`]) as it holds them.
+#[derive(Debug, Default)]
+pub(crate) struct Marks {
+    /// The [`FOLLOWS`] marks, by the name of the cluster.
+    pub follows: BTreeMap<String, i64>,
+    /// The [`HOLD`] mark.
+    pub hold: Option<i64>,
+    /// When it was promoted from each cluster ([`PROMOTED`], in ms), by
+    /// its name.
+    pub promoted: BTreeMap<String, i64>,
+}
+
+impl Marks {
+    /// The marks among sources `all` (name and offset).
+    pub(crate) fn of<'a>(all: impl IntoIterator<Item = (&'a str, i64)>) -> Marks {
+        let mut m = Marks::default();
+        for (name, offset) in all {
+            if let Some(n) = name.strip_prefix(FOLLOWS) {
+                m.follows.insert(n.to_string(), offset);
+            } else if name == HOLD {
+                m.hold = Some(offset);
+            } else if let Some(n) = name.strip_prefix(PROMOTED).filter(|n| !n.contains('/')) {
+                m.promoted.insert(n.to_string(), offset);
+            }
+        }
+        m
+    }
+
+    /// Since when (ms) the shard holds its clients' writes, if it does.
+    pub(crate) fn holds(&self) -> Option<i64> {
+        self.hold.filter(|h| h % 2 == 1).map(|h| h / 2)
+    }
+}
+
+/// A shard's own marks ([`Marks`]), as last read from its `_sources` with
+/// the term it was read in (a new primary reads again); the holds of its
+/// writes under way ([`Service::hold_pending`]); and what each cluster's
+/// follow process last said of itself (`POST /v1/admin/follow/status`).
 #[derive(Default)]
 pub(crate) struct Follows {
-    marks: std::sync::RwLock<Option<(u64, Arc<BTreeMap<String, i64>>)>>,
+    marks: std::sync::RwLock<Option<(u64, Arc<Marks>)>>,
+    /// Writes of a [`HOLD`] under way: from before the writes it waits
+    /// for commit until it does, the shard takes no other.
+    holding: std::sync::atomic::AtomicU64,
     status: std::sync::Mutex<BTreeMap<String, (Instant, Json)>>,
+}
+
+/// A hold under way ([`Follows::holding`]), until dropped.
+pub(crate) struct Holding<'a>(&'a Follows);
+
+impl Drop for Holding<'_> {
+    fn drop(&mut self) {
+        self.0.holding.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl Follows {
@@ -119,6 +228,28 @@ impl Follows {
 /// written, while its offset is odd.
 pub(crate) fn followed(marks: &BTreeMap<String, i64>) -> Option<(&str, i64)> {
     marks.iter().max_by_key(|(_, o)| **o).filter(|(_, o)| *o % 2 == 1).map(|(n, o)| (n.as_str(), *o))
+}
+
+/// Each shard's own marks ([`Marks`]) of its stream sources `shards`
+/// (`_sources`, in shard order).
+pub(crate) fn own_marks_of(shards: &[Vec<strata::db::Source>]) -> impl Iterator<Item = Marks> + '_ {
+    shards.iter().map(|s| Marks::of(s.iter().map(|x| (x.name.as_str(), x.offset))))
+}
+
+/// The number of each shard's transaction that ended following cluster
+/// `name` at its promotion ([`PROMOTED`]), once every shard's is kept:
+/// each shard keeps them all, the greatest of each counts.
+pub(crate) fn promoted_seqs(shards: &[Vec<strata::db::Source>], name: &str) -> Option<Vec<u64>> {
+    let prefix = format!("{PROMOTED}{name}/");
+    let mut seqs: BTreeMap<usize, u64> = BTreeMap::new();
+    for x in shards.iter().flatten() {
+        if let Some(j) = x.name.strip_prefix(&prefix).and_then(|j| j.parse::<usize>().ok()) {
+            let e = seqs.entry(j).or_default();
+            *e = (*e).max(x.offset.max(0) as u64);
+        }
+    }
+    let n = shards.len();
+    (seqs.len() == n && seqs.keys().copied().eq(0..n)).then(|| seqs.into_values().collect())
 }
 
 /// The marks of the slots that change hands on shard `shard` as it takes
@@ -160,6 +291,9 @@ const COPY_ROWS: usize = 500;
 
 /// How to stop following, as a refused write says.
 const FOLLOW_STOP: &str = "POST /v1/admin/follow/stop";
+
+/// The call that holds a cluster's writes, and ends the hold.
+pub(crate) const HOLD_WRITES: &str = "POST /v1/admin/hold-writes";
 
 /// How long a follow process that says how it stands every 2 s may be
 /// silent before it counts as behind for as long ([`Service::follow_lags`]).
@@ -203,7 +337,9 @@ impl Service {
     /// - `{"copy": true, "ops": [...]}`: its rows, as upserts;
     /// - `{"copied": {"seq", "term", "rows", "sources"}}`: the stream
     ///   sources' offsets at the version, and with [`CopyOpts::digests`] the
-    ///   digests of its keys by slot (`digests`, [`key_digests`]);
+    ///   digests of its keys by slot (`digests`, [`key_digests`]), and
+    ///   `"hold": true` when the shard holds its clients' writes there
+    ///   ([`HOLD`], protocol 17);
     ///
     /// and then the feed from the transaction after it, which the log
     /// keeps until the reader reaches its end. The rows of slots this
@@ -259,6 +395,10 @@ impl Service {
             let copied = tokio::task::spawn_blocking(move || {
                 let Some((rows, sources)) = copy_rows(&d, &snap, &tables, c.since, &c.whole, &t)? else { return Ok(None) };
                 let mut end = json!({"seq": seq, "term": term, "rows": rows, "sources": sources});
+                // Whether the shard holds its clients' writes at the version.
+                if d.sources_at(&snap)?.iter().any(|s| s.name == HOLD && s.offset % 2 == 1) {
+                    end["hold"] = json!(true);
+                }
                 if c.digests {
                     let names: Vec<String> = tables.iter().map(|t| t.table.clone()).collect();
                     end["digests"] = digests_json(&key_digests(&snap, &names)?);
@@ -282,10 +422,10 @@ impl Service {
         Ok(rx)
     }
 
-    /// The [`FOLLOWS`] marks of this shard, by the name of the cluster:
-    /// the one written last says which this shard follows, if its offset
-    /// is odd. A coordinator holds none (its shards do).
-    pub(crate) fn follow_marks(&self) -> Result<Arc<BTreeMap<String, i64>>, ApiError> {
+    /// This shard's own marks ([`Marks`]): the [`FOLLOWS`] mark written
+    /// last says which cluster it follows, if its offset is odd. A
+    /// coordinator holds none (its shards do).
+    pub(crate) fn own_marks(&self) -> Result<Arc<Marks>, ApiError> {
         let Some(db) = self.local() else { return Ok(Arc::default()) };
         let term = self.term();
         if let Some((t, m)) = &*self.follows.marks.read().unwrap_or_else(|e| e.into_inner()) {
@@ -293,7 +433,8 @@ impl Service {
                 return Ok(m.clone());
             }
         }
-        let m: Arc<BTreeMap<String, i64>> = Arc::new(db.sources()?.into_iter().filter_map(|s| s.name.strip_prefix(FOLLOWS).map(|n| (n.to_string(), s.offset))).collect());
+        let all = db.sources()?;
+        let m = Arc::new(Marks::of(all.iter().map(|s| (s.name.as_str(), s.offset))));
         *self.follows.marks.write().unwrap_or_else(|e| e.into_inner()) = Some((term, m.clone()));
         Ok(m)
     }
@@ -301,7 +442,7 @@ impl Service {
     /// The cluster this shard follows, if any ([`FOLLOWS`]): its writes
     /// come from that cluster's follow process alone.
     pub fn follows(&self) -> Result<Option<Arc<str>>, ApiError> {
-        Ok(followed(&*self.follow_marks()?).map(|(n, _)| n.into()))
+        Ok(followed(&self.own_marks()?.follows).map(|(n, _)| n.into()))
     }
 
     /// Refuses a write (409) on a shard of a cluster that follows
@@ -309,20 +450,60 @@ impl Service {
     /// sends it; and one that follow process sends once following stopped
     /// (`POST /v1/admin/follow/stop`), unless it starts again: its write
     /// carries a [`FOLLOWS`] mark (`carried`, its offset) later than the
-    /// stop.
-    pub(super) fn not_following(&self, carried: Option<i64>) -> Result<(), ApiError> {
-        let marks = self.follow_marks()?;
+    /// stop. A cluster promoted from the one it followed ([`PROMOTED`])
+    /// takes its follow process's writes again only from a copy begun
+    /// since (`copy`, the offset of the copy's mark the write carries,
+    /// [`carried_copy`]).
+    pub(super) fn not_following(&self, carried: Option<i64>, copy: Option<i64>) -> Result<(), ApiError> {
+        let marks = self.own_marks()?;
         let sender = super::following();
-        match (followed(&marks), sender.as_deref()) {
+        match (followed(&marks.follows), sender.as_deref()) {
             (Some((source, _)), Some(s)) if s == source => Ok(()),
             (Some((source, _)), _) => Err(conflict(format!("this cluster follows {source}: it takes the writes of {source}'s follow process and none of its own; write to {source}, or stop following ({FOLLOW_STOP}) first"))),
-            (None, Some(s)) => match marks.get(s) {
-                Some(&stopped) if stopped % 2 == 0 && !carried.is_some_and(|c| c > stopped) => {
-                    Err(conflict(format!("this cluster stopped following {s} ({FOLLOW_STOP}): its follow process stops too; start it again to follow {s} again")))
+            (None, Some(s)) => {
+                if let Some(&at) = marks.promoted.get(s).filter(|&&p| !copy.is_some_and(|c| c > p)) {
+                    return Err(conflict(format!(
+                        "this cluster was promoted from {s} (at {}): it takes its own writes, and its follow process's no more; to follow {s} again, copy it afresh (strata-server follow --copy)",
+                        strata::timestamp::format(at.saturating_mul(1000))
+                    )));
                 }
-                _ => Ok(()),
-            },
+                match marks.follows.get(s) {
+                    Some(&stopped) if stopped % 2 == 0 && !carried.is_some_and(|c| c > stopped) => {
+                        Err(conflict(format!("this cluster stopped following {s} ({FOLLOW_STOP}): its follow process stops too; start it again to follow {s} again")))
+                    }
+                    _ => Ok(()),
+                }
+            }
             (None, None) => Ok(()),
+        }
+    }
+
+    /// Counts a write of a [`HOLD`] in ([`Follows::holding`]) until the
+    /// returned guard drops: meanwhile the shard takes no other write
+    /// ([`Self::not_held`]).
+    pub(super) fn hold_pending(&self) -> Holding<'_> {
+        self.follows.holding.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Holding(&self.follows)
+    }
+
+    /// Refuses a write (503) while this shard holds its writes ([`HOLD`]),
+    /// or a hold is under way. Checked once the write is counted in
+    /// ([`super::moving::Moving::enter`]), which a hold waits for: so a
+    /// write either commits before the hold's transaction or is refused.
+    pub(super) fn not_held(&self) -> Result<(), ApiError> {
+        let since = match self.follows.holding.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => self.own_marks()?.holds(),
+            _ => Some(crate::telemetry::now_ms() as i64),
+        };
+        match since {
+            None => Ok(()),
+            Some(ms) => Err(ApiError {
+                status: 503,
+                message: format!(
+                    "this cluster holds its writes (since {}, {HOLD_WRITES}): a switch-over to a cluster that follows it may be under way; write to the cluster that takes over, or again once the hold ends",
+                    strata::timestamp::format(ms.saturating_mul(1000))
+                ),
+            }),
         }
     }
 
@@ -353,21 +534,27 @@ impl Service {
     /// of `shards`), since when (`since_ms`, or `stopped_ms`), the copy
     /// it started from (`copy_ms`, `copied`), how far it applied each
     /// source shard's feed (`applied`, the least over this cluster's
-    /// shards), and what its follow process last said (`status`, with
-    /// `status_age_ms`), which only the coordinator it writes through
-    /// holds.
+    /// shards, with `held` when the source shard held its clients' writes
+    /// as of that transaction: [`HOLD`]), whether every source shard did
+    /// (`source_holds`), when it was promoted from it (`promoted_ms`, and
+    /// `promoted_seqs`, each of its shards' transaction that ended
+    /// following: [`PROMOTED`]), and what its follow process last said
+    /// (`status`, with `status_age_ms`), which only the coordinator it
+    /// writes through holds. `holding_ms`: since when this cluster holds
+    /// its own clients' writes, if it does.
     pub async fn follow_view(self: &Arc<Self>) -> Result<Json, ApiError> {
         let shards = self.sources_by_shard().await?;
         let said = self.follows.said();
         let mut names: BTreeMap<String, ()> = said.keys().map(|n| (n.clone(), ())).collect();
-        let marks: Vec<BTreeMap<String, i64>> = shards.iter().map(|s| s.iter().filter_map(|x| x.name.strip_prefix(FOLLOWS).map(|n| (n.to_string(), x.offset))).collect()).collect();
-        for m in &marks {
-            names.extend(m.keys().map(|n| (n.clone(), ())));
+        let own: Vec<Marks> = own_marks_of(&shards).collect();
+        for m in &own {
+            names.extend(m.follows.keys().map(|n| (n.clone(), ())));
+            names.extend(m.promoted.keys().map(|n| (n.clone(), ())));
         }
         let mut clusters = Vec::new();
         for name in names.keys() {
-            let following = marks.iter().filter(|m| followed(m).is_some_and(|(n, _)| n == name)).count();
-            let last = marks.iter().filter_map(|m| m.get(name)).max().copied();
+            let following = own.iter().filter(|m| followed(&m.follows).is_some_and(|(n, _)| n == name)).count();
+            let last = own.iter().filter_map(|m| m.follows.get(name)).max().copied();
             // The least over the shards that hold each mark.
             let prefix = format!("follow/{name}/");
             let mut least: BTreeMap<&str, i64> = BTreeMap::new();
@@ -379,14 +566,17 @@ impl Service {
             }
             let copy = shards.iter().flatten().filter(|x| x.name.strip_prefix(&prefix) == Some("copy")).map(|x| x.offset).max();
             let gen = copy.map(|c| format!("{c}/")).unwrap_or_default();
+            let mark = |rest: String| least.get(format!("{gen}{rest}").as_str()).copied();
             let applied: BTreeMap<usize, Json> = least
                 .iter()
                 .filter_map(|(rest, o)| {
                     let i = rest.strip_prefix(&gen)?.strip_suffix("/at")?.parse::<usize>().ok()?;
-                    let term = least.get(format!("{gen}{i}/term").as_str()).copied().unwrap_or(0);
-                    Some((i, json!({"shard": i, "seq": o, "term": term})))
+                    // Every transaction up to the hold applied.
+                    let held = mark(format!("{i}/held")).is_some_and(|h| h > mark(format!("{i}/released")).unwrap_or(0) && *o >= h);
+                    Some((i, json!({"shard": i, "seq": o, "term": mark(format!("{i}/term")).unwrap_or(0), "held": held})))
                 })
                 .collect();
+            let source_holds = !applied.is_empty() && applied.values().all(|a| a["held"] == true);
             let mut j = json!({
                 "name": name,
                 "following": following,
@@ -394,11 +584,18 @@ impl Service {
                 "copy_ms": copy,
                 "copied": copy.is_some_and(|_| least.contains_key(format!("{gen}copied").as_str())),
                 "applied": applied.into_values().collect::<Vec<_>>(),
+                "source_holds": source_holds,
             });
             match last {
                 Some(o) if o % 2 == 1 => j["since_ms"] = json!(o / 2),
                 Some(o) => j["stopped_ms"] = json!(o / 2),
                 None => {}
+            }
+            if let Some(p) = own.iter().filter_map(|m| m.promoted.get(name)).max() {
+                j["promoted_ms"] = json!(p);
+                if let Some(seqs) = promoted_seqs(&shards, name) {
+                    j["promoted_seqs"] = json!(seqs);
+                }
             }
             if let Some((age, st)) = said.get(name) {
                 j["status"] = st.clone();
@@ -406,8 +603,9 @@ impl Service {
             }
             clusters.push(j);
         }
-        let now = marks.iter().find_map(|m| followed(m).map(|(n, _)| n.to_string()));
-        Ok(json!({"following": now, "clusters": clusters}))
+        let now = own.iter().find_map(|m| followed(&m.follows).map(|(n, _)| n.to_string()));
+        let holding = own.iter().filter_map(Marks::holds).min();
+        Ok(json!({"following": now, "holding_ms": holding, "clusters": clusters}))
     }
 
     /// Stops following cluster `name`: a [`FOLLOWS`] mark of it, even,
@@ -424,7 +622,8 @@ impl Service {
         if c["following"] == 0 {
             return Ok(json!({"stopped": name, "already": true}));
         }
-        let at = follows_offset(false);
+        let shards = self.sources_by_shard().await?;
+        let at = next_offset(own_marks_of(&shards).filter_map(|m| m.follows.get(name).copied()).max(), false);
         let op = json!({"op": "source", "source": {"name": format!("{FOLLOWS}{name}"), "offset": at}});
         super::FOLLOW.scope(Some(name.into()), self.write_ops(vec![op], None)).await?;
         Ok(json!({"stopped": name, "at_ms": at / 2}))
@@ -696,6 +895,7 @@ pub(crate) fn line(t: &Changes) -> Json {
     let mut sources = Vec::new();
     let mut slots = Vec::new();
     let mut moved = None;
+    let mut hold = None;
     for c in &t.changes {
         match c {
             Change::Upsert { table, doc } => {
@@ -716,6 +916,7 @@ pub(crate) fn line(t: &Changes) -> Json {
                 None => sources.push(json!({"name": name, "offset": offset})),
                 Some(_) if name == MOVE_COPY => moved = Some(("copy", *offset)),
                 Some(_) if name == MOVE_CLEANUP => moved = Some(("cleanup", *offset)),
+                Some(_) if name == HOLD => hold = Some(offset % 2 == 1),
                 Some(m) => {
                     if let Some(j) = m.strip_prefix("slots ").and_then(|j| serde_json::from_str::<Json>(j).ok()) {
                         slots.push(j);
@@ -737,6 +938,10 @@ pub(crate) fn line(t: &Changes) -> Json {
     }
     if !slots.is_empty() {
         j["slots"] = Json::Array(slots);
+    }
+    // The shard holds its clients' writes from here on, or no longer.
+    if let Some(h) = hold {
+        j["hold"] = json!(h);
     }
     if t.unknown > 0 {
         j["unknown"] = json!(t.unknown);
