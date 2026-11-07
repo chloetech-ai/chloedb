@@ -219,12 +219,20 @@ The section is smaller than an `EDGES` field's graph for the same edges, because
 
 *Cloud VM: 4 cores of an Intel Xeon at 2.10 GHz, 16.9 GB, Linux 6.18. Source: `strata-server/results/edges/vm.json`.*
 
+## On a cluster
+
+Graph queries run on one database, not through a [coordinator](server.md#sharding-one-coordinator-many-shards). A walk reads every row it meets in one snapshot, and on a sharded cluster a row's edges point at rows that other shards hold, so a shard cannot walk its part alone and the coordinator has no edges to walk. A coordinator therefore refuses `REACHABLE`, `PATH`, `hops()` and `ppr` with an error saying so, before it asks any shard, as does a shard asked for its part of one. The other queries of the table, and writes to its `EDGES` field or edge table, work through the coordinator as usual. Until a coordinator walks the graph itself:
+
+- **Keep the graph where it is whole.** A server of its own (`strata-server --db`), or an embedded database in the application ([Python](python.md), [JavaScript](javascript.md), [Java](java.md)), runs every graph query of this page. A [primary and its replicas](server.md#replication-a-primary-and-its-replicas), without a coordinator, keep it available.
+- **Walk from the application.** Each hop is one read of the frontier's rows through the coordinator: `SELECT id, cites FROM papers WHERE id IN (:frontier)` gives each row's out-edges (the field's JSON text), and over an [edge table](#edge-tables) `SELECT dst, w FROM cooc WHERE src IN (:frontier)` gives them too, while `WHERE dst IN (...)` reaches back along them. A breadth-first walk of *h* hops is *h* such reads. The tests walk two hops this way on three shards and find the rows `REACHABLE(..., hops => 2)` finds on one database. Personalized PageRank is harder this way, since its pushes go round by round over a growing set of rows; run it on a whole database.
+
 ## Limits and next steps
 
 - **One quality task, one embedder.** With a stronger embedder, vector search would score above 0.123 and the relative gain over it would likely shrink. The gains over BM25 (+57%) and hybrid search (+58%) are the more robust numbers.
 - **Cross-segment hops cost lookups**, two to five times the in-memory CSR on these graphs. A snapshot-wide resolved CSR, rebuilt when the segment set changes, would close the gap for read-mostly tables; merging into fewer segments narrows it today.
 - **No patterns.** There is no multi-hop pattern matching with a predicate per step; `through` and labels cover one constraint per traversal. SQL/PGQ's `MATCH` would be the standard syntax for more.
 - **Unweighted paths.** Weights are used by PageRank only.
+- **Walks across shards.** A coordinator refuses graph queries ([above](#on-a-cluster)). It could run them itself, asking the shards for the edges of each frontier and sending them the rows it reached with their distances and PageRank scores, at a round trip per hop. That needs a call to read edges by key and a plan that carries the rows' values, so it is a change of the shard protocol.
 - **Engram.** Its records have natural edges the store does not keep yet: a distilled note to the turn it came from, a superseded decision to its replacement, an error to the edit that fixed it. The arXiv result suggests the pattern to try (recall's best hits as seeds, then the records linked to them), but Engram's earlier study found that widening a hit to its neighbouring records gained little, so this needs its own measurement first.
 
 The full report, with every table, is [Strata graphs](../reports/graph.html). [Reproducing the results](../reproduce.md#strata-graphs) has the commands.

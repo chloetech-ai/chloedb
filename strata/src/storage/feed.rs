@@ -10,10 +10,13 @@
 //! every table's schema as of the transaction it reads next: it starts from
 //! the tables as of the log's last transaction, undoes the changes of tables
 //! the log holds from the cursor's number on, and then applies each change
-//! as it reads past it. A table dropped before that number has no schema
-//! left to read its rows by: its operations are counted
-//! ([`Changes::unknown`]), not read, as the table is gone anyway (table ids
-//! are never given again).
+//! as it reads past it. The log names a drop by the table's id alone, so
+//! the database keeps the schemas of the tables it dropped since it
+//! opened (the last 256), and a cursor from before a drop reads the
+//! table's rows and its drop by them. A table dropped before that, or
+//! before the database opened, has no schema left to read its rows by:
+//! its operations are counted ([`Changes::unknown`]), not read, as the
+//! table is gone anyway (table ids are never given again).
 
 use std::sync::Arc;
 
@@ -185,7 +188,7 @@ impl Database {
     /// failover. [`Start::Gone`] when the ship log no longer holds `from`.
     pub fn changes_from(&self, from: u64, after: Option<u64>) -> Result<Start> {
         let from = from.max(1);
-        let (mut tables, n, read) = self.log_with_tables(from, usize::MAX).ok_or_else(not_numbered)?;
+        let (mut tables, dropped, n, read) = self.log_with_tables(from, usize::MAX).ok_or_else(not_numbered)?;
         let prev = from - 1;
         if prev > n.seq || (prev > 0 && after.is_some_and(|t| n.term_at(prev) != t)) {
             let last = n.last();
@@ -205,9 +208,14 @@ impl Database {
             for (id, op) in w.ops.iter().rev() {
                 match op {
                     Op::Alter { was, .. } => set(&mut tables, *id, was.clone()),
-                    // Made since, or dropped since with a schema the log
-                    // does not hold.
-                    Op::Table { .. } => tables.retain(|(i, _)| i != id),
+                    // Dropped since: as it was, if the database kept it
+                    // (the log names a drop by id alone).
+                    Op::Table { def: None } => match dropped.iter().rev().find(|(i, _)| i == id) {
+                        Some((_, was)) => set(&mut tables, *id, was.clone()),
+                        None => tables.retain(|(i, _)| i != id),
+                    },
+                    // Made since.
+                    Op::Table { def: Some(_) } => tables.retain(|(i, _)| i != id),
                     _ => {}
                 }
             }

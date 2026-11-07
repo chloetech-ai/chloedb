@@ -249,6 +249,45 @@ async fn three_shards_answer_like_one_database() {
         same(q, ordered, &query(&whole, q).await, &query(&coord, q).await);
     }
 
+    // The coordinator refuses a graph query, saying what to do instead. A
+    // walk from the application, a round of reads by key per hop, finds
+    // the rows the whole database's walk does.
+    let walk = |seed: &str| format!("SELECT id FROM items WHERE REACHABLE(cooc, '{seed}', hops => 2) ORDER BY id LIMIT 1000");
+    let e = coord.query(QueryReq { sql: walk("i1"), ..Default::default() }).await.err().unwrap();
+    assert!(e.status == 400 && e.message.contains("not supported through a coordinator") && e.message.contains("On a cluster"), "{}", e.message);
+    let ids = |j: Json| j["rows"].as_array().unwrap().iter().map(|r| r[0].as_str().unwrap().to_string()).collect::<std::collections::BTreeSet<String>>();
+    let mut seeds = 0;
+    for i in 0..ITEMS {
+        let seed = format!("i{i}");
+        let want = ids(query(&whole, &walk(&seed)).await);
+        if want.len() < 3 {
+            continue;
+        }
+        let mut seen = std::collections::BTreeSet::from([seed.clone()]);
+        let mut frontier = vec![seed.clone()];
+        for _ in 0..2 {
+            let keys = frontier.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+            let rows = query(&coord, &format!("SELECT id, cooc FROM items WHERE id IN ({keys}) LIMIT 1000")).await;
+            frontier.clear();
+            for r in rows["rows"].as_array().unwrap() {
+                // An EDGES column comes as its JSON text.
+                let edges: Vec<String> = serde_json::from_str(r[1].as_str().unwrap()).unwrap();
+                for to in edges {
+                    if seen.insert(to.clone()) {
+                        frontier.push(to);
+                    }
+                }
+            }
+        }
+        seen.remove(&seed);
+        assert_eq!(seen, want, "two hops from {seed}");
+        seeds += 1;
+        if seeds == 5 {
+            break;
+        }
+    }
+    assert_eq!(seeds, 5);
+
     // A user's events are on one shard: the one holding their slot.
     let map = slots::SlotMap::even(3, 1);
     let mut held = 0;

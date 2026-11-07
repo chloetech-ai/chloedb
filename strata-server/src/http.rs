@@ -181,6 +181,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/stream", post(stream).layer(DefaultBodyLimit::disable()))
         .route("/v1/sources", get(sources))
         .route("/v1/feed", get(feed))
+        .route("/v1/feed/keys", post(feed_keys))
         .route("/v1/sources/*name", get(source))
         .route("/v1/schema/check", post(schema_check))
         .route("/v1/explain", post(explain))
@@ -198,6 +199,9 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/vacuum", post(admin_vacuum))
         .route("/v1/admin/verify", post(admin_verify))
         .route("/v1/admin/promote", post(admin_promote))
+        .route("/v1/admin/follow", get(follow_view))
+        .route("/v1/admin/follow/status", post(follow_status))
+        .route("/v1/admin/follow/stop", post(follow_stop))
         .route("/v1/admin/shards", post(add_shard))
         .route("/v1/admin/shards/:i", axum::routing::delete(remove_shard))
         .route("/v1/admin/shards/:i/replicas", post(add_replica).merge(axum::routing::delete(remove_replica)))
@@ -679,9 +683,13 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
         Some(_) => None,
     };
     let need = route_scope(&method, route);
+    // A follow process's writes ([`crate::service::FOLLOW`]).
+    let follow = header_str(req.headers(), header::HeaderName::from_static(crate::service::FOLLOW_HEADER)).map(str::to_string);
     let refused = match &who {
         None => Some(ApiError { status: 401, message: "missing or wrong token".into() }),
         Some(w) if w.scope < need => w.may(need, &format!("{method} {route}")).err(),
+        Some(w) if follow.is_some() && !w.root => Some(ApiError { status: 403, message: format!("{} names a cluster this one follows: only its follow process sends it, with the cluster's token", crate::service::FOLLOW_HEADER) }),
+        Some(_) if follow.as_deref().is_some_and(|f| !crate::service::follow_name_ok(f)) => Some(ApiError::bad(format!("{} is 1 to 64 letters, digits, '.', '_' or '-'", crate::service::FOLLOW_HEADER))),
         Some(_) => None,
     };
     let (res, note, change) = match refused {
@@ -695,7 +703,8 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
             if let Some(w) = &who {
                 req.extensions_mut().insert(w.clone());
             }
-            telemetry::calling(Arc::new(caller), keys::noting_change(next.run(req))).await
+            let follow: Option<Arc<str>> = follow.map(Into::into);
+            telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, keys::noting_change(next.run(req)))).await
         }
     };
     let status = res.status().as_u16();
@@ -806,7 +815,7 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
     use axum::http::Method;
     match route {
         // All a feed key may read: the feed, and whether it is up.
-        "/v1/feed" | "/v1/health" | "/v1/whoami" => Scope::Feed,
+        "/v1/feed" | "/v1/feed/keys" | "/v1/health" | "/v1/whoami" => Scope::Feed,
         "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" => Scope::Write,
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
         "/v1/export" => Scope::Admin,
@@ -1074,16 +1083,24 @@ async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: 
 /// changes of the server's numbered transactions from `from` on (default
 /// 1), or of shard `i`'s through its primary, as NDJSON that goes on as
 /// they are written ([`crate::service::Service::feed`]). `after_term` is
-/// the term of transaction `from - 1` as the reader holds it. A failure
-/// after the answer started ends it with `{"error": ..., "status": ..}`.
+/// the term of transaction `from - 1` as the reader holds it. With
+/// `copy=true`, a copy of the rows first (`since=n`: those changed after
+/// transaction n, whose term `after_term` is then; `whole=a,b`: but every
+/// row of tables a and b; `digests=true`: with the digests of the keys). A
+/// failure after the answer started ends it with `{"error": ..., "status": ..}`.
 async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
     let num = |k: &str| -> Result<Option<u64>, ApiError> { q.get(k).map(|v| v.parse::<u64>().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}")))).transpose() };
     let (from, after) = (num("from")?.unwrap_or(1), num("after_term")?.filter(|&t| t > 0));
     let shard = num("shard")?;
+    let whole: Vec<String> = q.get("whole").into_iter().flat_map(|w| w.split(',')).filter(|t| !t.is_empty()).map(String::from).collect();
+    let copy = flag(&q, "copy", false)?.then_some(crate::service::feed::CopyOpts { since: num("since")?.unwrap_or(0), whole, digests: flag(&q, "digests", false)? });
+    if copy.is_none() && ["since", "whole", "digests"].iter().any(|k| q.contains_key(*k)) {
+        return Err(ApiError::bad("since, whole and digests are a copy's (copy=true)"));
+    }
     let ndjson = |body: axum::body::Body| ([(header::CONTENT_TYPE, "application/x-ndjson")], body).into_response();
     if let Ok(c) = app.svc.coordinator() {
         let shard = shard.ok_or_else(|| ApiError::bad("a cluster's feed is each shard's: name one (?shard=0 for the first)"))?;
-        let chunks = c.feed(shard as usize, from, after.unwrap_or(0)).await?;
+        let chunks = c.feed(shard as usize, from, after.unwrap_or(0), copy).await?;
         let lines = chunks.map(|c| {
             Ok::<_, std::convert::Infallible>(match c {
                 Ok(c) => Bytes::from(c.lines),
@@ -1100,9 +1117,32 @@ async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<
     if shard.is_some_and(|s| s != own) {
         return Err(ApiError::bad(format!("this server holds shard {own} alone: ask its coordinator for shard {}", shard.unwrap_or(0))));
     }
-    let rx = app.svc.feed(from, after).await?;
+    let rx = app.svc.feed(from, after, copy).await?;
     let lines = tokio_stream::wrappers::ReceiverStream::new(rx).map(|v| Ok::<_, std::convert::Infallible>(Bytes::from(v)));
     Ok(ndjson(axum::body::Body::from_stream(lines)))
+}
+
+/// `POST /v1/feed/keys {"tables": [...], "slots"?: [...]}`: the keys of
+/// `tables` as a follower's sweep compares them with its source's: with no
+/// `slots`, `{"digests": [[slot, count, "sum in hex"], ...]}` of the slots
+/// that hold one; with `slots`, `{"keys": [{"table", "key", "place"?},
+/// ...]}` of the rows those place ([`crate::service::Service::feed_keys`];
+/// a coordinator asks each shard's primary).
+async fn feed_keys(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<AxJson<Json>, ApiError> {
+    let names = |k: &str| -> Result<Vec<String>, ApiError> {
+        b.get(k).and_then(Json::as_array).ok_or_else(|| ApiError::bad(format!("{k} is a list")))?.iter().map(|t| t.as_str().map(String::from).ok_or_else(|| ApiError::bad(format!("{k} lists names")))).collect()
+    };
+    let tables = names("tables")?;
+    let slots = match b.get("slots") {
+        None | Some(Json::Null) => None,
+        Some(Json::Array(a)) => Some(a.iter().map(|s| s.as_u64().filter(|&s| (s as usize) < crate::slots::SLOTS).map(|s| s as usize).ok_or_else(|| ApiError::bad(format!("slots are 0 to {}", crate::slots::SLOTS - 1)))).collect::<Result<Vec<_>, _>>()?),
+        Some(_) => return Err(ApiError::bad("slots is a list")),
+    };
+    let j = match app.svc.coordinator() {
+        Ok(c) => c.feed_keys(tables, slots).await?,
+        Err(_) => app.svc.feed_keys(tables, slots).await?,
+    };
+    Ok(AxJson(j))
 }
 
 /// The records of a log table ([`strata::rank_log::export`]) as NDJSON,
@@ -1185,7 +1225,7 @@ pub fn as_objects(j: &mut Json) {
 
 /// Any statement: the service checks that the request's credential may
 /// run it ([`Service::sql`]), and audits a table's or rank profile's.
-async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let params = app.svc.params(b.get("params")).await?;
     let w = who(w);
     if let Some(log) = b.get("log") {
@@ -1198,7 +1238,8 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJs
     if writes {
         audit_ui_write(statement, None, None);
     }
-    let (r, partial) = crate::coord::with_partial(app.svc.sql(&w, statement, &params, after(&b)?, body_u64(&b, "timeout_ms"))).await;
+    let key = body_key(&b, &headers)?;
+    let (r, partial) = crate::coord::with_partial(app.svc.sql_in(&w, statement, &params, after(&b)?, body_u64(&b, "timeout_ms"), None, key)).await;
     match r {
         Ok(SqlAnswer::Rows(a)) => Ok(AxJson(answer_of(&b, &a)?).into_response()),
         Ok(SqlAnswer::Written { w, took_ms }) => {
@@ -1207,20 +1248,40 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJs
         }
         Err(e) => {
             if writes {
-                audit_ui_write(statement, None, partial.as_ref());
+                audit_ui_write(statement, None, partial.as_ref().map(|p| &p["shards"]));
             }
             Ok(write_failed(e, partial))
         }
     }
 }
 
+/// A write's idempotency key: the body's `idempotency_key`, or an
+/// `Idempotency-Key` header.
+fn body_key(b: &Json, headers: &HeaderMap) -> Result<Option<String>, ApiError> {
+    let key = match (b.get("idempotency_key"), headers.get("idempotency-key")) {
+        (Some(Json::String(k)), _) => Some(k.clone()),
+        (Some(_), _) => return Err(ApiError::bad("idempotency_key is a string")),
+        (None, Some(h)) => Some(h.to_str().map_err(|_| ApiError::bad("the Idempotency-Key header is not text"))?.to_string()),
+        (None, None) => None,
+    };
+    if key.as_ref().is_some_and(|k| k.is_empty() || k.len() > 256) {
+        return Err(ApiError::bad("an idempotency key has 1 to 256 characters"));
+    }
+    Ok(key)
+}
+
 /// The answer of a write that failed: its error, and when it failed
 /// partway through a coordinator, what each shard did (`shards`: `{shard,
 /// short, rows}` for those that took it, `{shard, short, error}` for the
-/// others; [`crate::coord::with_partial`]).
+/// others) and the idempotency key to send it again with
+/// (`idempotency_key`; [`crate::coord::with_partial`]).
 fn write_failed(e: ApiError, partial: Option<Json>) -> Response {
-    let Some(shards) = partial else { return e.into_response() };
-    let body = json!({"error": e.message, "partial": true, "shards": shards}).to_string();
+    let Some(partial) = partial else { return e.into_response() };
+    let mut body = json!({"error": e.message, "partial": true, "shards": partial["shards"]});
+    if let Some(k) = partial.get("idempotency_key") {
+        body["idempotency_key"] = k.clone();
+    }
+    let body = body.to_string();
     let mut r = e.into_response();
     *r.body_mut() = axum::body::Body::from(body);
     r
@@ -1316,15 +1377,7 @@ async fn write(State(app): State<App>, headers: HeaderMap, AxJson(mut b): AxJson
         Some(Json::Array(ops)) => ops,
         _ => return Err(ApiError::bad("the body needs an array \"ops\"")),
     };
-    let key = match (b.get("idempotency_key"), headers.get("idempotency-key")) {
-        (Some(Json::String(k)), _) => Some(k.clone()),
-        (Some(_), _) => return Err(ApiError::bad("idempotency_key is a string")),
-        (None, Some(h)) => Some(h.to_str().map_err(|_| ApiError::bad("the Idempotency-Key header is not text"))?.to_string()),
-        (None, None) => None,
-    };
-    if key.as_ref().is_some_and(|k| k.is_empty() || k.len() > 256) {
-        return Err(ApiError::bad("an idempotency key has 1 to 256 characters"));
-    }
+    let key = body_key(&b, &headers)?;
     let t0 = std::time::Instant::now();
     // A write from the command center is audited whatever its answer: its
     // table is its first operation's.
@@ -1338,14 +1391,14 @@ async fn write(State(app): State<App>, headers: HeaderMap, AxJson(mut b): AxJson
         }
     };
     note(None, None);
-    let (r, partial) = crate::coord::with_partial(app.svc.write_ops(ops, key)).await;
+    let (r, partial) = crate::coord::with_partial(app.svc.write_request(ops, key)).await;
     match r {
         Ok(w) => {
             note(Some(w.rows as u64), None);
             Ok(AxJson(written(w, t0.elapsed().as_secs_f64() * 1e3)).into_response())
         }
         Err(e) => {
-            note(None, partial.as_ref());
+            note(None, partial.as_ref().map(|p| &p["shards"]));
             Ok(write_failed(e, partial))
         }
     }
@@ -1558,7 +1611,7 @@ async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
             Ok(AxJson(j).into_response())
         }
         Err(e) => {
-            note(None, partial.as_ref());
+            note(None, partial.as_ref().map(|p| &p["shards"]));
             Ok(write_failed(e, partial))
         }
     }
@@ -1970,10 +2023,55 @@ fn line_ops(line: &[u8]) -> Result<Vec<Json>, ApiError> {
 }
 
 /// Every stream source written from, with the offset of the last event
-/// each wrote ([`Service::sources`]).
-async fn sources(State(app): State<App>) -> Res {
+/// each wrote ([`Service::sources`]): on a coordinator the least over its
+/// shards; `?shards=true` also lists each shard's own (`shards`).
+async fn sources(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
+    if flag(&q, "shards", false)? {
+        let by_shard = app.svc.sources_by_shard().await?;
+        let least = match app.svc.coordinator() {
+            Ok(_) => app.svc.sources().await?,
+            Err(_) => by_shard.first().cloned().unwrap_or_default(),
+        };
+        let shards: Vec<Json> = by_shard.into_iter().map(|s| Json::Array(s.into_iter().map(source_json).collect())).collect();
+        return Ok(AxJson(json!({"sources": least.into_iter().map(source_json).collect::<Vec<_>>(), "shards": shards})));
+    }
     let sources: Vec<Json> = app.svc.sources().await?.into_iter().map(source_json).collect();
     Ok(AxJson(json!({"sources": sources})))
+}
+
+/// `GET /v1/admin/follow`: the clusters this one follows or followed
+/// ([`crate::follow`]): whether it follows each now, how far its follow
+/// process applied each source shard's feed, and what that process last
+/// said of itself.
+async fn follow_view(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.follow_view().await?))
+}
+
+/// `POST /v1/admin/follow/status`: a follow process says how it stands
+/// (the cluster's token only).
+async fn follow_status(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    root_only(&who(w), "a follow process's status")?;
+    let name = b["name"].as_str().filter(|n| crate::service::follow_name_ok(n)).ok_or_else(|| ApiError::bad("the status names its cluster: {\"name\": ...}"))?.to_string();
+    app.svc.note_follow_status(&name, b);
+    Ok(AxJson(json!({"noted": name})))
+}
+
+/// `POST /v1/admin/follow/stop {"name"}`: stops following cluster `name`
+/// (the cluster's token only): from then on this cluster takes its
+/// clients' writes, and refuses its follow process's.
+async fn follow_stop(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    root_only(&who(w), "stopping following")?;
+    let name = b["name"].as_str().ok_or_else(|| ApiError::bad("name the cluster to stop following: {\"name\": ...}"))?;
+    let r = app.svc.stop_following(name).await?;
+    keys::note(format!("stopped following {name}"));
+    Ok(AxJson(r))
+}
+
+fn root_only(w: &Principal, what: &str) -> Result<(), ApiError> {
+    match w.root {
+        true => Ok(()),
+        false => Err(ApiError { status: 403, message: format!("{what} takes the cluster's token, not a key") }),
+    }
 }
 
 /// One source's offset, null for one not written from (start from the
