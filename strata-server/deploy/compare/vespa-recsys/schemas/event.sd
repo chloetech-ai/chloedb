@@ -1,0 +1,28 @@
+# The plays r6 writes while serving, read back as a user's last 5.
+schema event {
+    document event {
+        field eid type string {
+            indexing: summary | attribute
+            attribute: fast-search
+            match: word
+            rank: filter
+        }
+        field usr type string {
+            indexing: summary | attribute
+            attribute: fast-search
+            match: word
+            rank: filter
+        }
+        field item type string {
+            indexing: summary | attribute
+        }
+        field ts type long {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+    }
+
+    document-summary minimal {
+        summary eid {}
+    }
+}

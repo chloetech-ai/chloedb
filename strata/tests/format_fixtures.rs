@@ -227,6 +227,92 @@ fn format_2_fixtures_open_and_stay_in_their_format() {
     }
 }
 
+/// The kind of each on-disk segment's key index in table `table` (the
+/// first `u64` of section `pk`, [`strata::storage::pk`]): 1 and 2 as the
+/// versions before `compact_keys` wrote them (KEYWORD and INT keys, with
+/// 64-bit hashes and the keys in the index), 3 a KEYWORD key read from its
+/// keyword column and 5 an INT key, both with 32-bit fingerprints.
+fn key_kinds(db: &Db, table: &str) -> Vec<u64> {
+    let snap = db.storage().snapshot().table(table).unwrap();
+    snap.segments().iter().filter(|s| !s.in_memory).filter_map(|s| s.file.section("pk").unwrap()).map(|b| u64::from_le_bytes(b[..8].try_into().unwrap())).collect()
+}
+
+/// The required features the newest manifest of a directory names.
+fn recorded_features(dir: &Path) -> Vec<String> {
+    let cur: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("CURRENT")).unwrap()).unwrap();
+    let m: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(cur["manifest"].as_str().unwrap())).unwrap()).unwrap();
+    m["features"]["required"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect()
+}
+
+/// The sets written before `compact_keys` keep their segments' key
+/// indexes, and this version finds every key in them. The segments it
+/// writes, and those a merge rewrites, keep 32-bit fingerprints and read
+/// a KEYWORD key from its column; the manifest then requires
+/// `compact_keys`, so that the versions before refuse the database by
+/// name rather than misread its segments.
+#[test]
+fn key_indexes_of_every_set_find_their_keys() {
+    for (set, _) in sets("format2").into_iter().filter(|s| s.1 == Era::Ids) {
+        let compact = set.parent().unwrap().file_name().unwrap() == "fieldids";
+        let dir = tempfile::tempdir().unwrap();
+        for path in copies(&set, dir.path()) {
+            let what = path.display().to_string();
+            let mut model = Format2::written();
+            let lookups = |db: &Db, model: &Format2| {
+                for i in 0..210u64 {
+                    let want: Vec<Vec<Value>> = model.t.get(&i).map(|&(n, _)| vec![Value::Int(n)]).into_iter().collect();
+                    assert_eq!(rows(db, &format!("SELECT n FROM t WHERE id = '{}'", key(i))), want, "{what}: t {i}");
+                }
+                for i in 0..25i64 {
+                    let want: Vec<Vec<Value>> = model.u.get(&i).map(|&p| vec![Value::Str(key(p))]).into_iter().collect();
+                    assert_eq!(rows(db, &format!("SELECT parent FROM u WHERE id = {i}")), want, "{what}: u {i}");
+                }
+                assert_eq!(rows(db, "SELECT n FROM t WHERE id = 'k00002'"), Vec::<Vec<Value>>::new(), "{what}: a prefix of a key");
+            };
+            let db = open(&path, Era::Ids);
+            let (t, u) = if compact { (3, 5) } else { (1, 2) };
+            let before = (key_kinds(&db, "t"), key_kinds(&db, "u"));
+            assert!(!before.0.is_empty() && before.0.iter().all(|&k| k == t) && before.1.iter().all(|&k| k == u), "{what}: {before:?}");
+            if path.is_dir() {
+                assert_eq!(recorded_features(&path).contains(&"compact_keys".to_string()), compact, "{what}");
+            }
+            lookups(&db, &model);
+
+            // Rows replaced, added and deleted by key, in the segments
+            // there are and in a new one.
+            run(&db, "INSERT OR REPLACE INTO t (id, n, body) VALUES ('k000020', 4, 'document 20 version 3 lorem ipsum')");
+            run(&db, "DELETE FROM t WHERE id = 'k000021'");
+            for i in 100..200u64 {
+                run(&db, &format!("INSERT INTO t (id, n, body) VALUES ('{}', 5, 'document {i} version 3')", key(i)));
+                model.t.insert(i, (5, 3));
+            }
+            run(&db, "INSERT OR REPLACE INTO u (id, parent, note) VALUES (3, 'k000020', 'note 3 again')");
+            run(&db, "INSERT INTO u (id, parent, note) VALUES (20, 'k000150', 'note 20')");
+            model.t.insert(20, (4, 3));
+            model.t.remove(&21);
+            model.u.insert(3, 20);
+            model.u.insert(20, 150);
+            lookups(&db, &model);
+            db.storage().flush().unwrap();
+            let mixed = key_kinds(&db, "t");
+            assert_eq!(mixed.iter().filter(|&&k| k == 3).count(), if compact { mixed.len() } else { 1 }, "{what}: {mixed:?}");
+            assert!(key_kinds(&db, "u").contains(&5), "{what}");
+            lookups(&db, &model);
+            if path.is_dir() {
+                assert!(recorded_features(&path).contains(&"compact_keys".to_string()), "{what}");
+            }
+
+            db.storage().merge(&MergePolicy::compact()).unwrap();
+            db.storage().check().unwrap();
+            assert_eq!((key_kinds(&db, "t"), key_kinds(&db, "u")), (vec![3], vec![5]), "{what}");
+            lookups(&db, &model);
+            drop(db);
+            let db = open(&path, Era::Ids);
+            lookups(&db, &model);
+        }
+    }
+}
+
 /// A row of the format 3 fixtures' `tasks` table.
 #[derive(Clone)]
 struct Task {
@@ -401,7 +487,7 @@ fn profile_fixtures_rank_as_written() {
             assert_eq!(format_on_disk(&path), 3, "{what}");
             if path.is_dir() {
                 let (_, m) = strata::storage::dir::read_current(&path).unwrap();
-                let features: &[&str] = if era == Era::Old { &["rank_profiles"] } else { &["field_ids", "rank_profiles"] };
+                let features: &[&str] = if era == Era::Old { &["rank_profiles"] } else { &["compact_keys", "field_ids", "rank_profiles"] };
                 assert_eq!(m.features(), features, "{what}");
                 let names: Vec<&str> = m.tables[0].profiles.iter().map(|p| p.name.as_str()).collect();
                 assert_eq!(names, ["by_n", "phased"], "{what}: flushed with the deletes");

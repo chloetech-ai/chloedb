@@ -91,7 +91,7 @@ use tonic::transport::Channel;
 use tonic::Code;
 
 use crate::auth::Secret;
-use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL};
+use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_COPY_PROTOCOL, FEED_KEYS_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL};
 use crate::metrics::Family;
 use crate::pb::{self, strata_client::StrataClient};
 use crate::service::{is_mark, op_place, op_schema, op_source, After, QueryReq, Written};
@@ -165,6 +165,10 @@ impl tonic::service::Interceptor for Credentials {
         if let Some(id) = crate::obs::current().and_then(|id| id.parse().ok()) {
             req.metadata_mut().insert(crate::obs::HEADER, id);
         }
+        // A follow process's writes go to the shards as its.
+        if let Some(f) = crate::service::following().and_then(|f| f.parse().ok()) {
+            req.metadata_mut().insert(crate::service::FOLLOW_HEADER, f);
+        }
         // workdata (L7): the shard's part runs to the client's own deadline.
         if crate::service::client_deadline().is_some() {
             req.metadata_mut().insert(crate::service::CLIENT_DEADLINE, tonic::metadata::MetadataValue::from_static("client"));
@@ -193,6 +197,21 @@ pub(crate) fn client(url: &str, token: Option<&Secret>, ca: Option<&[u8]>) -> Re
     }
     let ch = ep.connect_timeout(Duration::from_secs(5)).tcp_nodelay(true).connect_lazy();
     Ok(StrataClient::with_interceptor(ch, Credentials(credentials)).max_decoding_message_size(256 << 20))
+}
+
+/// Each source every shard has, at the least offset over the shards
+/// ([`Coordinator::sources`]).
+fn least_sources(shards: Vec<Vec<Source>>) -> Vec<Source> {
+    let n = shards.len();
+    let mut least: BTreeMap<String, (i64, Option<i64>, usize)> = BTreeMap::new();
+    for s in shards.into_iter().flatten() {
+        let e = least.entry(s.name).or_insert((s.offset, s.updated, 0));
+        if s.offset < e.0 {
+            (e.0, e.1) = (s.offset, s.updated);
+        }
+        e.2 += 1;
+    }
+    least.into_iter().filter(|(_, (.., k))| *k == n).map(|(name, (offset, updated, _))| Source { name, offset, updated }).collect()
 }
 
 /// One server holding a copy of a shard.
@@ -873,6 +892,10 @@ async fn timed<T>(sent: &Sent, i: usize, r: usize, call: impl Future<Output = Re
 /// The most values a query may pin its placement field to and still be
 /// routed by them ([`Coordinator::pinned_shards`]).
 const MAX_ROUTED: usize = 4096;
+
+/// How many times [`Coordinator::feed_keys`] reads the shards' keys while
+/// they serve different slot maps.
+const KEYS_TRIES: u32 = 25;
 
 /// The values of field `f` that every row `p` matches has one of, when
 /// `p` says: `f = v`, `f IN (...)`, a conjunction with such a condition
@@ -2645,6 +2668,91 @@ impl Coordinator {
         Ok((wrote, failed, errors))
     }
 
+    /// Shard `i`'s feed from transaction `from` on, read from its primary
+    /// ([`FEED_PROTOCOL`], [`crate::service::Service::feed`]): its chunks
+    /// as they come. `after_term` is the term of transaction `from - 1` as
+    /// the reader holds it (0: not checked). With `copy`, the feed starts
+    /// with a copy of the shard's rows ([`FEED_COPY_PROTOCOL`]; of those
+    /// changed since a transaction, or with the digests of its keys,
+    /// [`FEED_KEYS_PROTOCOL`]).
+    pub async fn feed(&self, i: usize, from: u64, after_term: u64, copy: Option<crate::service::feed::CopyOpts>) -> Result<tonic::Streaming<pb::FeedChunk>, ApiError> {
+        let t = &self.topo();
+        if i >= t.replicas.len() {
+            return Err(ApiError::bad(format!("no shard {i}: the cluster has shards 0 to {}", t.replicas.len() - 1)));
+        }
+        let k = self.primary(t, i).await?.unwrap_or(0);
+        let rep = &t.replicas[i][k];
+        let mut c = rep.client.clone();
+        let p = self.speak(t, i, k, &mut c, PROTOCOL).await.map_err(|s| self.named(&rep.url, s))?;
+        let (need, what) = match &copy {
+            Some(c) if c.since > 0 || c.digests || !c.whole.is_empty() => (FEED_KEYS_PROTOCOL, "a copy of a shard's rows changed since a transaction, or of its keys' digests,"),
+            Some(_) => (FEED_COPY_PROTOCOL, "a shard's feed that starts with a copy of its rows"),
+            None => (FEED_PROTOCOL, "a shard's feed"),
+        };
+        if p < need {
+            return Err(ApiError { status: 501, message: format!("{}: it speaks protocol {p}, and {what} needs {need}: upgrade it", self.copy_name(&rep.url)) });
+        }
+        let on = copy.is_some();
+        let o = copy.unwrap_or_default();
+        c.feed(pb::FeedRequest { from, after_term, copy: on, since: o.since, digests: o.digests, whole: o.whole }).await.map(|r| r.into_inner()).map_err(|s| self.named(&rep.url, s))
+    }
+
+    /// The keys of `tables` of every shard, as a follower's sweep compares
+    /// them ([`crate::service::Service::feed_keys`], from each shard's
+    /// primary, [`FEED_KEYS_PROTOCOL`]): with no `slots` their digests by
+    /// slot, added up over the shards (each counts the slots it serves);
+    /// with `slots`, the keys those place. Read while the shards serve
+    /// the same slot map, so that each slot is counted once.
+    pub async fn feed_keys(&self, tables: Vec<String>, slots: Option<Vec<usize>>) -> Result<Json, ApiError> {
+        for _ in 0..KEYS_TRIES {
+            let answers = self.feed_keys_once(&tables, &slots).await?;
+            if answers.iter().all(|a| a["epoch"] == answers[0]["epoch"]) {
+                return Self::keys_of(answers, slots.is_some());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        Err(ApiError { status: 503, message: format!("the shards served different slot maps in {KEYS_TRIES} reads of their keys: a move is under way; try again") })
+    }
+
+    /// Each shard's answer to [`Self::feed_keys`].
+    async fn feed_keys_once(&self, tables: &[String], slots: &Option<Vec<usize>>) -> Result<Vec<Json>, ApiError> {
+        let t = &self.topo();
+        let calls = (0..t.replicas.len()).map(|i| {
+            let (tables, slots) = (tables.to_vec(), slots.clone());
+            async move {
+                let k = self.primary(t, i).await?.unwrap_or(0);
+                let rep = &t.replicas[i][k];
+                let mut c = rep.client.clone();
+                let p = self.speak(t, i, k, &mut c, PROTOCOL).await.map_err(|s| self.named(&rep.url, s))?;
+                if p < FEED_KEYS_PROTOCOL {
+                    return Err(ApiError { status: 501, message: format!("{}: it speaks protocol {p}, and a shard's keys for a follower's sweep need {FEED_KEYS_PROTOCOL}: upgrade it", self.copy_name(&rep.url)) });
+                }
+                let r = pb::FeedKeysRequest { tables, keys: slots.is_some(), slots: slots.unwrap_or_default().into_iter().map(|s| s as u32).collect() };
+                let a = c.feed_keys(r).await.map_err(|s| self.named(&rep.url, s))?.into_inner();
+                serde_json::from_slice::<Json>(&a.json).map_err(|e| ApiError::internal(format!("{}: its keys: {e}", rep.url)))
+            }
+        });
+        join_all(calls).await.into_iter().collect()
+    }
+
+    /// The shards' answers to [`Self::feed_keys`] as one: their keys, or
+    /// their digests added up.
+    fn keys_of(answers: Vec<Json>, keys: bool) -> Result<Json, ApiError> {
+        if keys {
+            let keys: Vec<Json> = answers.into_iter().flat_map(|a| a["keys"].as_array().cloned().unwrap_or_default()).collect();
+            return Ok(json!({"keys": keys}));
+        }
+        let mut sum: BTreeMap<usize, crate::service::feed::Digest> = BTreeMap::new();
+        for a in &answers {
+            for (s, (n, h)) in crate::service::feed::digests_of(&a["digests"])? {
+                let d = sum.entry(s).or_default();
+                d.0 += n;
+                d.1 = d.1.wrapping_add(h);
+            }
+        }
+        Ok(json!({"digests": crate::service::feed::digests_json(&sum)}))
+    }
+
     /// The stream sources written from through the shards, each at the
     /// least offset over them, which is where a stream resumes: a shard
     /// skips the events it applied already. A source some shard does not
@@ -2652,6 +2760,11 @@ impl Coordinator {
     /// stream of it starts over. Any replica may answer: one behind its
     /// primary has an older offset, which only means more to skip.
     pub async fn sources(&self) -> Result<Vec<Source>, ApiError> {
+        Ok(least_sources(self.sources_by_shard().await?))
+    }
+
+    /// Each shard's stream sources ([`Self::sources`]), in shard order.
+    pub async fn sources_by_shard(&self) -> Result<Vec<Vec<Source>>, ApiError> {
         let t = &self.topo();
         let deadline = Instant::now() + Duration::from_secs(30);
         let calls = (0..t.replicas.len()).map(|i| {
@@ -2663,19 +2776,12 @@ impl Coordinator {
                 c.sources(pb::SourcesRequest {}).await
             })
         });
-        let mut least: BTreeMap<String, (i64, i64, usize)> = BTreeMap::new();
-        let n = t.replicas.len();
+        let mut out = Vec::with_capacity(t.replicas.len());
         for a in join_all(calls).await {
             let (_, a) = a?;
-            for s in a.sources {
-                let e = least.entry(s.name).or_insert((s.offset, s.updated_micros, 0));
-                if s.offset < e.0 {
-                    (e.0, e.1) = (s.offset, s.updated_micros);
-                }
-                e.2 += 1;
-            }
+            out.push(a.sources.into_iter().map(|s| Source { name: s.name, offset: s.offset, updated: (s.updated_micros != 0).then_some(s.updated_micros) }).collect());
         }
-        Ok(least.into_iter().filter(|(_, (.., k))| *k == n).map(|(name, (offset, updated, _))| Source { name, offset, updated: (updated != 0).then_some(updated) }).collect())
+        Ok(out)
     }
 
     /// A profile of `node`, one replica of a shard named by its URL as
@@ -3075,7 +3181,7 @@ impl Coordinator {
 const WATCH_EVERY: Duration = Duration::from_secs(2);
 
 /// A rank profile as the statement that makes it again.
-fn profile_sql(table: &str, p: &RankProfile) -> String {
+pub(crate) fn profile_sql(table: &str, p: &RankProfile) -> String {
     use strata::query::sql::ident;
     let mut s = format!("CREATE OR REPLACE RANK PROFILE {} ON {} AS {}", ident(&p.name), ident(table), p.ranking);
     if !p.defaults.is_empty() {

@@ -341,6 +341,39 @@ async fn an_open_server_s_first_key_closes_it() {
     assert!(again.resolve(None, None, Some(&format!("Bearer {admin}"))).is_some());
 }
 
+/// A follow process's header and the follow routes take the cluster's
+/// token: an admin key may read where a follower is, not write as its
+/// follow process nor stop it.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_token_writes_as_a_follow_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(service(dir.path()));
+    let (l, base) = listen().await;
+    let access = Access { token: Some(Secret::new("root-token")), ..Default::default() };
+    tokio::spawn(server::serve_http(svc.clone(), l, access));
+    let admin = new_key(&base, Some("root-token"), "ops", "admin").await;
+    let write = |auth: &str, follow: &str| {
+        let r = strata_server::http_client().build().unwrap().post(format!("{base}/v1/write")).bearer_auth(auth).header("x-strata-follow", follow);
+        async move {
+            let r = r.json(&json!({"ops": [{"op": "upsert", "table": "products", "doc": {"id": "f-1", "title": "A lamp", "price": 1.0}}]})).send().await.unwrap();
+            (r.status().as_u16(), r.json::<Json>().await.unwrap_or(Json::Null))
+        }
+    };
+    let (status, j) = write(&admin, "east").await;
+    assert_eq!(status, 403, "{j}");
+    assert!(j["error"].as_str().unwrap().contains("x-strata-follow"), "{j}");
+    let (status, j) = write("root-token", "not a name!").await;
+    assert_eq!(status, 400, "{j}");
+    let (status, j) = write("root-token", "east").await;
+    assert_eq!(status, 200, "{j}");
+    // Reading where it is takes an admin key; telling and stopping, the token.
+    assert_eq!(call(&base, "GET", "/v1/admin/follow", Some(&admin), None).await.0, 200);
+    assert_eq!(call(&base, "POST", "/v1/admin/follow/status", Some(&admin), Some(json!({"name": "east"}))).await.0, 403);
+    assert_eq!(call(&base, "POST", "/v1/admin/follow/stop", Some(&admin), Some(json!({"name": "east"}))).await.0, 403);
+    let (status, j) = call(&base, "POST", "/v1/admin/follow/stop", Some("root-token"), Some(json!({"name": "east"}))).await;
+    assert_eq!(status, 404, "it never followed east: {j}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn alert_rules_fire_on_points_and_post_to_the_webhook() {
     // A webhook that keeps what it is sent.

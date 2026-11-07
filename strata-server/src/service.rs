@@ -42,10 +42,12 @@ use crate::telemetry::{self, LiveQueries, QueryLog, Sample, Series};
 use crate::{json as js, obs, pb, ApiError};
 
 mod failover;
+pub mod feed;
 mod moving;
 
 pub use failover::tuned as failover_tuned;
 pub(crate) use moving::Moving;
+pub use feed::MARK;
 pub use moving::FREEZE_TTL;
 
 tokio::task_local! {
@@ -99,6 +101,30 @@ pub fn part_of_clients_deadline() -> bool {
 tokio::task_local! {
     /// The request's [`Deadline`] (HTTP requests run in one).
     pub static DEADLINE: Deadline;
+}
+
+tokio::task_local! {
+    /// The cluster whose changes the request writes, when a follow process
+    /// sends it ([`FOLLOW_HEADER`], with the cluster's token): a cluster
+    /// that follows that one takes them ([`Service::follows`]).
+    pub static FOLLOW: Option<Arc<str>>;
+}
+
+/// The header (and gRPC metadata key) by which a follow process names
+/// the cluster it follows ([`FOLLOW`]); a coordinator passes it on to its
+/// shards.
+pub const FOLLOW_HEADER: &str = "x-strata-follow";
+
+/// The cluster the request being served writes the changes of
+/// ([`FOLLOW`]).
+pub fn following() -> Option<Arc<str>> {
+    FOLLOW.try_with(Clone::clone).ok().flatten()
+}
+
+/// Whether `name` may name a cluster to follow: 1 to 64 letters, digits,
+/// `.`, `_` or `-`.
+pub fn follow_name_ok(name: &str) -> bool {
+    (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
 /// The client's own deadline in ms, when the request being served asked
@@ -544,6 +570,8 @@ pub struct Service {
     slots_file: tokio::sync::Mutex<Option<PathBuf>>,
     /// Its part in moving slots between shards ([`moving`]).
     pub(crate) moving: Moving,
+    /// The cluster it follows, as last read ([`Self::follows`]).
+    follows: feed::Follows,
     /// Its part in replication ([`crate::replication`]), which a replica's
     /// promotion changes ([`Self::promote`]).
     replication: RwLock<Replication>,
@@ -673,6 +701,7 @@ impl Service {
             slots_since: AtomicU64::new(0),
             slots_file: tokio::sync::Mutex::new(None),
             moving: Moving::default(),
+            follows: feed::Follows::default(),
             replication: RwLock::new(Replication::None),
             promote_options: None,
             promoting: tokio::sync::Mutex::new(()),
@@ -716,8 +745,15 @@ impl Service {
         self.admit_write()
     }
 
-    /// Refuses a client's write on a replica (409).
+    /// Refuses a client's write on a replica, and on a shard of a cluster
+    /// that follows another but from its follow process (409).
     fn takes_writes(&self) -> Result<(), ApiError> {
+        self.is_writer()?;
+        self.not_following(None)
+    }
+
+    /// Refuses a write on a replica (409): its writes are its primary's.
+    pub(super) fn is_writer(&self) -> Result<(), ApiError> {
         match &self.replication() {
             Replication::Replica(_) => Err(conflict("this server is a replica: it applies its primary's writes and takes none from clients; write to the primary".into())),
             _ => Ok(()),
@@ -1106,8 +1142,8 @@ impl Service {
             core::Take::Keep { since, check_rows } => (since, check_rows),
         };
         if check_rows {
-            let m = map.clone();
-            let elsewhere = tokio::task::spawn_blocking(move || rows_elsewhere(&db, &m, shard)).await.map_err(ApiError::internal)??;
+            let (d, m) = (db.clone(), map.clone());
+            let elsewhere = tokio::task::spawn_blocking(move || rows_elsewhere(&d, &m, shard)).await.map_err(ApiError::internal)??;
             if let Some((n, key)) = elsewhere {
                 let other = map.shard_of(&key);
                 return Err(conflict(format!(
@@ -1116,6 +1152,16 @@ impl Service {
                     js::to_json(&key),
                     slots::slot(&key)
                 )));
+            }
+        }
+        // The slots that change hands here are marked in the log before
+        // the map lets a write reach them, so that a cluster following this
+        // one orders the writes on either side ([`feed`]).
+        if let Some((old, s)) = held.as_ref().filter(|(_, s)| writer && *s == shard && db.storage().numbering().is_some()) {
+            let marks = feed::flip_marks(old, &map, *s);
+            if !marks.is_empty() {
+                let (d, epoch, deadline) = (db.clone(), map.epoch, Instant::now() + self.timeout);
+                tokio::task::spawn_blocking(move || wait_for_writer(deadline, || feed::write_marks(&d, &marks, epoch))).await.map_err(ApiError::internal)??;
             }
         }
         if let Some(path) = &*file {
@@ -1637,7 +1683,12 @@ impl Service {
         };
         let (reply, rx) = tokio::sync::oneshot::channel();
         let keys = self.idempotency.clone();
-        tx.send(Queued { job, deadline, reply: Some(reply), key, keys, queued: Some(queued), pass: Some(pass) }).map_err(|_| ApiError::internal("the writer thread stopped"))?;
+        let mark = match moved {
+            Moved::No => None,
+            Moved::Copy => Some((feed::MOVE_COPY, self.slot_epoch() as i64)),
+            Moved::Cleanup => Some((feed::MOVE_CLEANUP, self.slot_epoch() as i64)),
+        };
+        tx.send(Queued { job, deadline, reply: Some(reply), key, keys, queued: Some(queued), pass: Some(pass), mark }).map_err(|_| ApiError::internal("the writer thread stopped"))?;
         rx.await.map_err(|_| ApiError::internal("the writer thread stopped"))?
     }
 
@@ -2710,10 +2761,12 @@ impl Service {
     /// read without SQL ([`Db::get_many_at`]): per key, its live row as
     /// `SELECT *` answers it and the number of the write that last changed
     /// it, or none. A coordinator asks each key's shard. At most
-    /// [`MAX_GET_KEYS`] keys.
+    /// [`MAX_GET_KEYS`] keys. With `columns`, of those columns alone, in
+    /// that order ([`Db::get_columns_at`]); a coordinator reads the
+    /// shards' whole rows and keeps those columns.
     /// With `count`, a client's read, its keys count as asked for
     /// ([`crate::reads`]).
-    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, after: &After, timeout_ms: u64, count: bool) -> Result<KeyRows, ApiError> {
+    pub async fn get_rows(self: &Arc<Self>, table: Option<&str>, keys: Vec<Value>, columns: Option<Vec<String>>, after: &After, timeout_ms: u64, count: bool) -> Result<KeyRows, ApiError> {
         let t0 = Instant::now();
         if keys.len() > MAX_GET_KEYS {
             return Err(ApiError::bad(format!("a read by key takes at most {MAX_GET_KEYS} keys, not {}", keys.len())));
@@ -2724,6 +2777,9 @@ impl Service {
         };
         let pk = schema.primary_key.ok_or_else(|| ApiError::bad(format!("{} has no primary key: rows are read by key only from a table with one", schema.table)))?;
         let keys: Vec<Value> = keys.iter().map(|k| strata::db::key_value(&schema, pk, k)).collect::<strata::Result<_>>()?;
+        if let Some(c) = &columns {
+            Db::key_read_fields(&schema, c)?;
+        }
         let timeout = self.timeout_of(timeout_ms);
         let deadline = t0 + timeout;
         let r = match &self.backend {
@@ -2735,8 +2791,12 @@ impl Service {
                 let opts = ExecOptions { deadline: Some(deadline), ..db.exec.clone() };
                 let asked = if count && self.reads.on() { keys.clone() } else { Vec::new() };
                 let r = tokio::task::spawn_blocking(move || {
-                    let columns = Db::get_columns(view.schema());
-                    db.get_many_at(&view, &keys, &opts).map(|rows| KeyRows { table: view.schema().table.clone(), columns, rows: rows.into_iter().map(|r| r.map(|r| (r.row, r.seq_no))).collect() })
+                    let s = view.schema();
+                    let (names, rows) = match &columns {
+                        None => (Db::get_columns(s), db.get_many_at(&view, &keys, &opts)),
+                        Some(c) => (Db::key_read_fields(s, c)?.into_iter().map(|i| s.fields[i].name.clone()).collect(), db.get_columns_at(&view, &keys, c, &opts)),
+                    };
+                    rows.map(|rows| KeyRows { table: s.table.clone(), columns: names, rows: rows.into_iter().map(|r| r.map(|r| (r.row, r.seq_no))).collect() })
                 })
                 .await
                 .map_err(ApiError::internal)?;
@@ -2753,8 +2813,19 @@ impl Service {
                         self.reads.asked(&schema.table, s.at, &s.keys, &s.found);
                     }
                 }
-                KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }
-            }),
+                match &columns {
+                    None => Ok(KeyRows { table: schema.table.clone(), columns: Db::get_columns(&schema), rows }),
+                    Some(c) => {
+                        // The shards answer every column `SELECT *` does.
+                        let star: Vec<usize> = strata::query::sql::star_fields(&schema).collect();
+                        let fields = Db::key_read_fields(&schema, c)?;
+                        let at: Vec<usize> = fields.iter().map(|f| star.iter().position(|s| s == f).expect("a column of a read by key")).collect();
+                        let rows = rows.into_iter().map(|r| r.map(|(row, n)| (at.iter().map(|&j| row.get(j).cloned().unwrap_or(Value::Null)).collect(), n))).collect();
+                        Ok(KeyRows { table: schema.table.clone(), columns: fields.iter().map(|&i| schema.fields[i].name.clone()).collect(), rows })
+                    }
+                }
+            })
+            .and_then(|r: Result<KeyRows, ApiError>| r),
         };
         telemetry::record("get", t0, if r.is_ok() { "ok" } else { "error" });
         r
@@ -2798,7 +2869,7 @@ impl Service {
     pub async fn sql_in(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>) -> Result<SqlAnswer, ApiError> {
         let command = self.bound(|tables| bind_command(sql, tables, params)).await?;
         let need = command_scope(&command);
-        who.may(need, &format!("a {} statement", match need { Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table or rank profile" }))?;
+        who.may(need, &format!("a {} statement", match need { Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table or rank profile" }))?;
         if need == Scope::Admin {
             keys::note(obs::truncate(sql, 500).into_owned());
         }
@@ -2928,11 +2999,20 @@ impl Service {
     /// ([`Self::write`]).
     pub async fn write_ops_as(self: &Arc<Self>, mut ops: Vec<Json>, key: Option<String>, moved: Moved) -> Result<Written, ApiError> {
         let t0 = Instant::now();
+        follow_marks_ok(&ops)?;
         let n = match &self.backend {
             Backend::Local(db) => {
                 // Before any work: a replica, a database behind on its
-                // flushes, or a full queue refuses the request.
-                let admitted = match self.takes_writes() {
+                // flushes, or a full queue refuses the request; and a
+                // client's on a follower (a move's copies and deletes are
+                // the cluster's own).
+                let follows = ops.iter().any(feed::marks_follows);
+                let carried = following().zip(follows.then_some(())).and_then(|(n, ())| feed::carried_follows(&ops, &n));
+                let writer = match moved {
+                    Moved::No => self.is_writer().and_then(|()| self.not_following(carried)),
+                    _ => self.is_writer(),
+                };
+                let admitted = match writer {
                     Ok(()) => self.backpressure(db).await.and_then(|_| self.enqueue()),
                     Err(e) => Err(e),
                 };
@@ -2985,7 +3065,12 @@ impl Service {
                 // Committed: a retry with its key answers it, whatever its
                 // copies say.
                 match r {
-                    Ok((w, by)) => self.replicated(w, self.timeout, by).await,
+                    Ok((w, by)) => {
+                        if follows {
+                            self.follows.forget();
+                        }
+                        self.replicated(w, self.timeout, by).await
+                    }
                     Err(e) => Err(e),
                 }
             }
@@ -3047,11 +3132,22 @@ impl Service {
     /// stream resumes ([`Coordinator::sources`]).
     pub async fn sources(&self) -> Result<Vec<Source>, ApiError> {
         match &self.backend {
+            // Without the marks of the server's own transactions, but the
+            // cluster it follows ([`feed::FOLLOWS`]).
             Backend::Local(db) => {
                 let db = db.clone();
-                tokio::task::spawn_blocking(move || db.sources()).await.map_err(ApiError::internal)?.map_err(Into::into)
+                let all = tokio::task::spawn_blocking(move || db.sources()).await.map_err(ApiError::internal)??;
+                Ok(all.into_iter().filter(|s| !s.name.starts_with(MARK) || s.name.starts_with(feed::FOLLOWS)).collect())
             }
             Backend::Cluster(c) => c.sources().await,
+        }
+    }
+
+    /// Each shard's stream sources, in shard order: a server's own alone.
+    pub async fn sources_by_shard(&self) -> Result<Vec<Vec<Source>>, ApiError> {
+        match &self.backend {
+            Backend::Local(_) => Ok(vec![self.sources().await?]),
+            Backend::Cluster(c) => c.sources_by_shard().await,
         }
     }
 
@@ -3445,6 +3541,12 @@ impl Service {
         }
         g.insert("running", self.running() as f64);
         g.insert("live", self.live.len() as f64);
+        // A cluster that follows another: its follow processes' lag.
+        let lags = self.follow_lags();
+        if !lags.is_empty() {
+            g.insert("follow_lag_s", lags.iter().map(|l| l.1).fold(0.0, f64::max));
+            g.insert("follow_behind", lags.iter().map(|l| l.2).fold(0.0, f64::max));
+        }
         g.insert("slots_free", self.admission.available_permits() as f64);
         if let Some(b) = &self.query_memory {
             g.insert("query_memory_bytes", b.used() as f64);
@@ -3799,6 +3901,14 @@ impl Service {
             Family { name: "strata_alerts_firing", ty: "gauge", help: "Alerts firing now, by severity (GET /v1/alerts).", values: self.alerts.firing() },
             one("strata_api_keys", "gauge", "API keys the server holds (GET /v1/admin/keys).", self.keys.list().len() as f64),
         ];
+        let lags = self.follow_lags();
+        if !lags.is_empty() {
+            let family = |name, help, f: fn(&(String, f64, f64)) -> f64| Family { name, ty: "gauge", help, values: lags.iter().map(|l| (format!("name=\"{}\"", metrics::esc(&l.0)), f(l))).collect() };
+            more.extend([
+                family("strata_follow_lag_seconds", "How far a follow process writing through this server is behind its source, by the source's name: since the source first reached a transaction it has not applied (and while it is silent, since it last said).", |l| l.1),
+                family("strata_follow_behind_transactions", "Transactions of the source a follow process writing through this server has not applied, over the source's shards.", |l| l.2),
+            ]);
+        }
         if let Some(s) = &self.log_store {
             more.extend(s.metrics());
         }
@@ -4109,6 +4219,11 @@ struct Queued {
     /// Held until the write commits, for a hold on writes to moving slots
     /// to wait for ([`Service::pass_gate`]).
     pass: Option<moving::Pass>,
+    /// The offset its transaction writes in `_sources` to mark it as a
+    /// slot move's ([`feed::MOVE_COPY`], [`feed::MOVE_CLEANUP`]): such a
+    /// request shares its transaction only with others of the same mark,
+    /// so that a shard's feed leaves out the move's rows and only them.
+    mark: Option<(&'static str, i64)>,
 }
 
 impl Queued {
@@ -4242,10 +4357,11 @@ fn writer(db: &Db, rx: mpsc::Receiver<Queued>, state: &WriterState) {
             prints.admit(p);
         }
         let ops = matches!(first.job, WriteJob::Ops(_));
+        let mark = first.mark;
         let mut group = vec![first];
         while n < GROUP_OPS {
             match rx.try_recv() {
-                Ok(q) if ops && matches!(q.job, WriteJob::Ops(_)) => {
+                Ok(q) if ops && matches!(q.job, WriteJob::Ops(_)) && q.mark == mark => {
                     n += q.weight();
                     group.push(q);
                 }
@@ -4297,7 +4413,9 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
         return;
     }
     let requests: Vec<&[Json]> = group.iter().map(|q| q.ops()).collect();
-    match wait_for_writer(deadline, || apply_requests(db, &requests)) {
+    // A group shares one mark ([`writer`]).
+    let mark = group[0].mark;
+    match wait_for_writer(deadline, || apply_requests(db, &requests, mark)) {
         Ok((applied, seq_no)) => {
             for (q, a) in group.into_iter().zip(applied) {
                 q.answer(Ok(a.written(seq_no)));
@@ -4310,7 +4428,7 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
         // as Ok), so each request can run again alone.
         Err(_) => {
             for q in group {
-                let r = wait_for_writer(q.deadline, || apply_ops(db, q.ops()));
+                let r = wait_for_writer(q.deadline, || apply_requests(db, &[q.ops()], q.mark).map(|(mut a, seq_no)| a.remove(0).written(seq_no)));
                 q.answer(r);
             }
         }
@@ -4362,7 +4480,7 @@ pub(crate) fn wait_for_writer<T>(deadline: Instant, mut write: impl FnMut() -> R
 
 /// Applies `ops` to `db` in one transaction.
 pub fn apply_ops(db: &Db, ops: &[Json]) -> Result<Written, ApiError> {
-    let (mut applied, seq_no) = apply_requests(db, &[ops])?;
+    let (mut applied, seq_no) = apply_requests(db, &[ops], None)?;
     Ok(applied.remove(0).written(seq_no))
 }
 
@@ -4382,11 +4500,12 @@ impl Applied {
 
 /// Applies several requests' operations in one transaction; returns what
 /// each did, and the transaction's sequence number in a database that
-/// numbers its writes.
-fn apply_requests(db: &Db, requests: &[&[Json]]) -> Result<(Vec<Applied>, Option<u64>), ApiError> {
+/// numbers its writes. With `mark`, the transaction also writes that
+/// offset of a source of the server's own ([`feed::MARK`]).
+fn apply_requests(db: &Db, requests: &[&[Json]], mark: Option<(&str, i64)>) -> Result<(Vec<Applied>, Option<u64>), ApiError> {
     let catalog = db.catalog();
     // Made outside the transaction, which holds the writer.
-    if requests.iter().flat_map(|ops| ops.iter()).any(has_source) {
+    if mark.is_some() || requests.iter().flat_map(|ops| ops.iter()).any(has_source) {
         db.storage().ensure_sources()?;
     }
     let mut t = db.storage().begin()?;
@@ -4394,8 +4513,26 @@ fn apply_requests(db: &Db, requests: &[&[Json]]) -> Result<(Vec<Applied>, Option
     for ops in requests {
         applied.push(apply_into(&catalog, &mut t, ops)?);
     }
+    if let Some((name, offset)) = mark {
+        t.mark_source(name, offset, strata::timestamp::now())?;
+    }
     let seq_no = t.commit_seq()?;
     Ok((applied, seq_no))
+}
+
+/// Refuses a request whose operations carry the mark of a cluster
+/// followed ([`feed::FOLLOWS`]) unless that cluster's follow process sends
+/// it ([`following`]): checked as the request comes, before the writer
+/// thread, which knows no request's sender, applies it.
+pub(crate) fn follow_marks_ok(ops: &[Json]) -> Result<(), ApiError> {
+    let sender = following();
+    for op in ops {
+        let Some(name) = op.pointer("/source/name").and_then(Json::as_str) else { continue };
+        if name.strip_prefix(feed::FOLLOWS).is_some_and(|n| sender.as_deref() != Some(n)) {
+            return Err(ApiError::bad(format!("source {name}: names starting with {MARK} are the server's own")));
+        }
+    }
+    Ok(())
 }
 
 /// Where an operation's event came from (its `"source"`): a stream's
@@ -4444,6 +4581,11 @@ pub fn op_source(op: &Json) -> Result<Option<Mark>, ApiError> {
         .and_then(|n| n.as_str())
         .filter(|n| !n.is_empty() && n.len() <= SOURCE_NAME)
         .ok_or_else(|| ApiError::bad(format!("an operation's source has a \"name\" of 1 to {SOURCE_NAME} bytes")))?;
+    // But for the follow process's mark of the cluster it follows, which
+    // a request may carry only from that process ([`follow_marks_ok`]).
+    if name.starts_with(MARK) && !name.starts_with(feed::FOLLOWS) {
+        return Err(ApiError::bad(format!("source {name}: names starting with {MARK} are the server's own")));
+    }
     let offset = s.get("offset").and_then(|o| o.as_i64()).ok_or_else(|| ApiError::bad(format!("source {name}: the \"offset\" is a whole number")))?;
     let ts = match s.get("ts") {
         None | Some(Json::Null) => None,
@@ -4702,7 +4844,7 @@ mod tests {
         assert_eq!(keys.begin("k", 1), idem::Begin::New);
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         let state = WriterState::default();
-        let q = Queued { job: WriteJob::Ops(Vec::new()), deadline: Instant::now(), reply: Some(tx), key: Some("k".into()), keys: keys.clone(), queued: InQueue::start(&state, 1), pass: None };
+        let q = Queued { job: WriteJob::Ops(Vec::new()), deadline: Instant::now(), reply: Some(tx), key: Some("k".into()), keys: keys.clone(), queued: InQueue::start(&state, 1), pass: None, mark: None };
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let _held = q;
             panic!("a bug while applying a write");

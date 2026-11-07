@@ -470,7 +470,7 @@ function askToken() {
     title: shared ? "Sign in to see what was shared" : "Sign in to this server",
     body: [
       shared ? h("p", { style: { margin: 0 } }, "This link opens ", h("b", {}, what), ` on ${clusterName() || location.host}. A link never holds a key: use your own.`) : null,
-      h("p", { class: "dim", style: { margin: 0 } }, "Paste an API key (read, write or admin) or the server's token. It is kept for this tab only, and sent as a bearer token."), inp],
+      h("p", { class: "dim", style: { margin: 0 } }, "Paste an API key (feed, read, write or admin) or the server's token. It is kept for this tab only, and sent as a bearer token."), inp],
     foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), save],
   });
   const ok = () => { setToken(inp.value.trim()); m.close(); refreshWho(); toast("Key saved for this tab", "ok"); };

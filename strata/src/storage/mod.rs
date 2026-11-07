@@ -9,6 +9,8 @@
 //! * [`freelist`]: free page runs and deferred frees.
 //! * [`manifest`]: one on-disk version (schema, segments, delete sets).
 //! * [`wal`]: the `-wal` sidecar.
+//! * [`feed`]: the changes of numbered transactions, read back from the
+//!   ship log with the schemas they were written under.
 //! * [`live`]: delete sets as live-document filters.
 //! * [`updates`]: in-place updates of numeric fields.
 //! * [`pk`]: the primary-key index section.
@@ -19,6 +21,7 @@
 
 mod db;
 pub mod dir;
+pub mod feed;
 pub mod freelist;
 pub mod io;
 pub mod live;

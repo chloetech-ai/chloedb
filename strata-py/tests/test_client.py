@@ -264,6 +264,7 @@ def test_client_rows_by_key(client):
     assert got["id"] == "b0007" and got["year"] == book(7)["year"]
     assert client.get("nope") is None
     assert [r and r["id"] for r in client.get_many(["b0001", "missing", "b0002"])] == ["b0001", None, "b0002"]
+    assert client.get_many(["b0007", "missing"], columns=["year"]) == [{"year": book(7)["year"]}, None]
     assert client.put("b0001", {"title": "Put", "year": 2001}) == 1
     got = client.get("b0001")
     assert got["title"] == "Put" and got["year"] == 2001 and got["description"] is None

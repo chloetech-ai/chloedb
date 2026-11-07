@@ -523,7 +523,15 @@ pub(crate) struct State {
     /// The most recent numbered transactions, for replicas
     /// ([`crate::storage::ship`]); updated with `seq`.
     pub ship: ShipLog,
+    /// The schemas of the tables dropped since the database opened, by
+    /// id, the latest last (at most [`DROPPED_KEPT`]): a drop is logged by
+    /// id alone, and a feed read from before it names the table it drops
+    /// ([`crate::storage::feed`]).
+    pub dropped: Vec<(u32, Arc<Schema>)>,
 }
+
+/// How many dropped tables' schemas [`State::dropped`] keeps.
+pub const DROPPED_KEPT: usize = 256;
 
 impl State {
     /// Position in `tables` of the table with this id.

@@ -620,6 +620,33 @@ pub fn create_sql(s: &Schema) -> String {
     format!("CREATE TABLE {} (\n  {}\n){opts};", name_sql(&s.table), columns.join(",\n  "))
 }
 
+/// The `ALTER TABLE` statement that changes table `was` into `now`, the
+/// same table after `ADD`, `DROP` and `RENAME COLUMN` (fields matched by
+/// their ids, [`crate::schema::Field::id`]): its drops, then its renames,
+/// then its additions. `None` when no column changed.
+pub fn alter_sql(was: &Schema, now: &Schema) -> Option<String> {
+    let j = now.to_short_json();
+    let key = j.get("key").and_then(J::as_str);
+    let mut parts = Vec::new();
+    for f in &was.fields {
+        if !now.fields.iter().any(|n| n.id == f.id) {
+            parts.push(format!("DROP COLUMN {}", name_sql(&f.name)));
+        }
+    }
+    for f in &was.fields {
+        if let Some(n) = now.fields.iter().find(|n| n.id == f.id && n.name != f.name) {
+            parts.push(format!("RENAME COLUMN {} TO {}", name_sql(&f.name), name_sql(&n.name)));
+        }
+    }
+    for n in &now.fields {
+        if !was.fields.iter().any(|f| f.id == n.id) {
+            let short = j["fields"].as_array().into_iter().flatten().find(|f| f["name"].as_str() == Some(n.name.as_str()))?;
+            parts.push(format!("ADD COLUMN {}", column_sql(short, key)));
+        }
+    }
+    (!parts.is_empty()).then(|| format!("ALTER TABLE {} {};", name_sql(&was.table), parts.join(", ")))
+}
+
 /// A field of the short JSON form as a column of `CREATE TABLE`.
 fn column_sql(f: &J, key: Option<&str>) -> String {
     let name = f["name"].as_str().unwrap_or_default();
@@ -793,6 +820,27 @@ mod tests {
     }
 
     #[test]
+    fn alter_sql_changes_a_table_into_another() {
+        let alter = |s: &Schema, text: &str| -> Schema {
+            let stmts = parse(text).unwrap();
+            let (_, changes) = alter_table(&stmts[0], &[s]).unwrap_or_else(|e| panic!("{text}: {e}")).unwrap();
+            changes.iter().fold(s.clone(), |t, a| t.altered(a).unwrap())
+        };
+        let (was, _) = create("CREATE TABLE t (id KEYWORD PRIMARY KEY, a TEXT, b INT, c FLOAT)", &[]).unwrap();
+        assert_eq!(alter_sql(&was, &was), None);
+        for change in [
+            "ALTER TABLE t ADD COLUMN d KEYWORD NOT NULL DEFAULT 'x'",
+            "ALTER TABLE t DROP COLUMN b",
+            "ALTER TABLE t RENAME COLUMN a TO body",
+            "ALTER TABLE t DROP COLUMN c, RENAME COLUMN a TO c, ADD COLUMN v VECTOR(4) OPTIONS(index = 'flat'), ADD a INT",
+        ] {
+            let now = alter(&was, change);
+            let sql = alter_sql(&was, &now).unwrap();
+            assert_eq!(alter(&was, &sql), now, "{change} as {sql}");
+        }
+    }
+
+    #[test]
     fn partition_options_are_checked() {
         let bad = |cols: &str| match create(&format!("CREATE TABLE t (id KEYWORD PRIMARY KEY, rating FLOAT, cat KEYWORD, tags KEYWORD[], {cols})"), &[]) {
             Ok(_) => panic!("{cols}: expected an error"),
@@ -858,7 +906,7 @@ mod tests {
         assert_eq!(f.derive, Some(crate::schema::Derive { from: "image".into(), model: "blip-image-captioning-base".into() }));
         assert!(f.stored && matches!(f.ty, FieldType::Text { .. }));
         assert_eq!(s.derives_from(2), Some(1));
-        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "derive"]);
+        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "derive", "compact_keys"]);
         assert_eq!(s.to_short_json()["fields"][2], serde_json::json!({"name": "caption", "type": "text", "derive": {"from": "image", "model": "blip-image-captioning-base"}}));
         assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
         assert_eq!(serde_json::from_str::<Schema>(&serde_json::to_string(&s).unwrap()).unwrap(), s);
@@ -884,7 +932,7 @@ mod tests {
         assert_eq!((f("image").media, f("any_file").media, f("scan").media), (Some(MediaKind::Image), Some(MediaKind::Any), Some(MediaKind::Pdf)));
         assert!(f("image").ty == FieldType::Keyword && f("image").stored && f("image").indexed && !f("scan").indexed);
         assert_eq!(f("image").type_name(), "MEDIA");
-        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "media", "media"]);
+        assert_eq!(s.features().collect::<Vec<_>>(), ["media", "media", "media", "compact_keys"]);
         assert_eq!(s.to_short_json()["fields"][1], serde_json::json!({"name": "image", "type": "media", "kind": "image"}));
         assert_eq!(s.to_short_json()["fields"][2], serde_json::json!({"name": "any_file", "type": "media"}));
         assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
@@ -911,7 +959,7 @@ mod tests {
         let (s, _) = create("CREATE TABLE events (id INT PRIMARY KEY, usr KEYWORD NOT NULL, ts INT) OPTIONS(shard_by = 'USR')", &[]).unwrap();
         assert_eq!(s.shard_by.as_deref(), Some("usr"));
         assert_eq!(s.shard_by_field(), Some(1));
-        assert_eq!(s.features().collect::<Vec<_>>(), ["not_null", "shard_by"]);
+        assert_eq!(s.features().collect::<Vec<_>>(), ["not_null", "shard_by", "compact_keys"]);
         assert_eq!(s.to_short_json()["shard_by"], "usr");
         assert_eq!(Schema::from_json_value(&s.to_short_json()).unwrap(), s);
         assert_eq!(serde_json::from_str::<Schema>(&serde_json::to_string(&s).unwrap()).unwrap(), s);

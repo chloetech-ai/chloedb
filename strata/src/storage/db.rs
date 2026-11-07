@@ -1064,6 +1064,7 @@ impl Database {
             reserved: Vec::new(),
             next_segment_id: 0,
             ship: ShipLog::new(opts.ship_log_bytes),
+            dropped: Vec::new(),
         };
         let mut flushed = false;
         for t in txns {
@@ -1248,7 +1249,8 @@ impl Database {
             }
         }
         let mut vw = VersionWriter::begin(self);
-        let names: Vec<String> = dropped.iter().filter_map(|&id| vw.manifest.table(id).map(|t| t.schema.table.clone())).collect();
+        let gone: Vec<(u32, Arc<Schema>)> = dropped.iter().filter_map(|&id| vw.manifest.table(id).map(|t| (id, Arc::new(t.schema.clone())))).collect();
+        let names: Vec<String> = gone.iter().map(|(_, s)| s.table.clone()).collect();
         for (id, op) in &ops {
             match op {
                 Op::Table { def: Some(schema) } => {
@@ -1288,6 +1290,9 @@ impl Database {
                 st.live_cache.clear();
                 st.updates_cache.clear();
             }
+            st.dropped.extend(gone);
+            let over = st.dropped.len().saturating_sub(crate::storage::state::DROPPED_KEPT);
+            st.dropped.drain(..over);
             if let Some(s) = next {
                 st.seq = s.seq;
                 st.ship.push(Shipped { seq: s, bytes: wal::encode_txn(txn, Some(s), &ops).into() });
@@ -1500,6 +1505,20 @@ impl Database {
     pub fn log_from(&self, from: u64, max_bytes: usize) -> LogRead {
         let st = lock(&self.state);
         st.ship.read(from, st.seq, max_bytes)
+    }
+
+    /// [`Database::log_from`], with what the log is read against, under
+    /// one lock: the tables (by id, `_sources` among them once made) and
+    /// the numbering as of the log's last transaction. `None` in a
+    /// database that does not number its writes.
+    /// The tables now, and those dropped since the database opened
+    /// ([`crate::storage::state::State::dropped`]).
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn log_with_tables(&self, from: u64, max_bytes: usize) -> Option<(Vec<(u32, Arc<Schema>)>, Vec<(u32, Arc<Schema>)>, Numbering, LogRead)> {
+        let st = lock(&self.state);
+        let n = st.manifest.seq_no.clone().map(|n| Numbering { seq: st.seq, ..n })?;
+        let tables = st.tables.iter().map(|t| (t.id, t.schema.clone())).collect();
+        Some((tables, st.dropped.clone(), n, st.ship.read(from, st.seq, max_bytes)))
     }
 
     /// Whether it keeps a ship log ([`DbOptions::ship_log_bytes`]).
@@ -4059,6 +4078,18 @@ impl<'a> WriteTxn<'a> {
             return Err(Error::Schema(format!("the database has no {SOURCES} table yet: Database::ensure_sources makes it")));
         }
         self.table(SOURCES)?.upsert(vec![Value::Str(name.to_string()), Value::Int(offset), Value::Timestamp(now)])
+    }
+
+    /// Logs `offset` as source `name`'s in this transaction, as
+    /// [`WriteTxn::set_source`] does, without keeping it: the row is
+    /// written and deleted again, so that `_sources` is left as it was and
+    /// only a reader of the log ([`crate::storage::feed`]) finds it. A mark
+    /// a server puts on a transaction of its own. The database needs the
+    /// table first ([`Database::ensure_sources`]).
+    pub fn mark_source(&mut self, name: &str, offset: i64, now: i64) -> Result<()> {
+        self.set_source(name, offset, now)?;
+        self.table(SOURCES)?.delete(&Value::Str(name.to_string()))?;
+        Ok(())
     }
 
     /// Inserts a document; its primary key must not be live.

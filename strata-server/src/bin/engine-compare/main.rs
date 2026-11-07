@@ -51,6 +51,7 @@ use strata_server::server;
 use strata_server::service::shard_of;
 
 mod more;
+mod recsys;
 mod replay;
 mod sim;
 #[cfg(test)]
@@ -214,6 +215,61 @@ enum Cmd {
         #[arg(long)]
         no_reset: bool,
         /// Names the run in the report (`--out/replay-<label>.json`).
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Loads the recommender serving data (strata/results/recsys/serving_data.py) into an engine: the tracks, and an empty table of plays, timed.
+    RecsysLoad {
+        #[arg(long, value_enum)]
+        engine: Which,
+        #[arg(long, value_delimiter = ',', required = true)]
+        url: Vec<String>,
+        /// The serving data's directory (items.jsonl, users.jsonl, ranker/).
+        #[arg(long)]
+        data: PathBuf,
+        /// Tracks per write (Vespa: one a request, this many in flight at most).
+        #[arg(long, default_value_t = 500)]
+        batch: usize,
+        #[arg(long, default_value_t = 4)]
+        clients: usize,
+        /// Elasticsearch and OpenSearch: the indexes' shards.
+        #[arg(long, default_value_t = 1)]
+        shards: usize,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Merges the database of a stopped Strata server that recsys-load filled into as few segments as it allows (`optimize`), as
+    /// the other engines are force-merged, and adds the merge to recsys-load's report.
+    RecsysOptimize {
+        #[arg(long)]
+        db: PathBuf,
+        /// recsys-load's report (recsys-load-strata.json).
+        #[arg(long)]
+        report: Option<PathBuf>,
+    },
+    /// Times the recommender kinds (r1 to r6, `recsys.rs`) against an engine loaded by recsys-load, and scores its answers against exact ones.
+    RecsysRun {
+        #[arg(long, value_enum)]
+        engine: Which,
+        #[arg(long, value_delimiter = ',', required = true)]
+        url: Vec<String>,
+        #[arg(long)]
+        data: PathBuf,
+        /// Users whose requests are sent, in turn.
+        #[arg(long, default_value_t = 300)]
+        users: usize,
+        #[arg(long, value_delimiter = ',', default_value = "1,4,16")]
+        concurrency: Vec<usize>,
+        #[arg(long, default_value_t = 6.0)]
+        seconds: f64,
+        /// Only these kinds, comma-separated (r1 .. r6; default: all).
+        #[arg(long, value_delimiter = ',')]
+        kinds: Vec<String>,
+        /// r6: plays written a second while r1 is timed.
+        #[arg(long, default_value_t = 200.0)]
+        event_rate: f64,
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
@@ -2872,6 +2928,15 @@ async fn main() {
                 Err(e) => Err(e),
             }
         }
+        Cmd::RecsysLoad { engine, url, data, batch, clients, shards, out } => match recsys::Eng::of(*engine) {
+            Ok(e) => recsys::load(e, url, data, *batch, *clients, *shards, out).await,
+            Err(e) => Err(e),
+        },
+        Cmd::RecsysOptimize { db, report } => recsys::optimize(db, report.as_deref()),
+        Cmd::RecsysRun { engine, url, data, users, concurrency, seconds, kinds, event_rate, label, out } => match recsys::Eng::of(*engine) {
+            Ok(e) => recsys::run(e, url, data, *users, concurrency, *seconds, kinds, *event_rate, label.clone(), out).await,
+            Err(e) => Err(e),
+        },
         Cmd::Stream { engine, url, brokers, partitions, rates, seconds, flat, restart, batch, label, out } => match engine.engine() {
             Ok(e) => stream(&cli.collection, e, url, brokers, *partitions, rates, *seconds, *flat, *restart, *batch, label.clone(), out).await,
             Err(o) => Err(format!("streams are not measured for {} yet", o.name())),
