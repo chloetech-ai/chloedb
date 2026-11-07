@@ -512,10 +512,63 @@ enum Command {
         batch: usize,
         /// Copy the source again from the start, whatever this cluster
         /// kept: after a failover of the source lost transactions it
-        /// applied. (One that falls behind the source's log catches up by
+        /// applied, or to follow again a cluster this one was promoted
+        /// from. (One that falls behind the source's log catches up by
         /// itself.)
         #[arg(long)]
         copy: bool,
+        /// This cluster is the one the source was promoted from (a
+        /// switch-over): follow the source back from the promotion's
+        /// numbers, without a copy. Refused if this cluster took writes
+        /// the source never applied (then follow with --copy).
+        #[arg(long, conflicts_with = "copy")]
+        reverse: bool,
+        /// For a process started again by itself (the operator's follow
+        /// Deployment): when it was asked for, in ms since the epoch.
+        /// --copy is then done once (a copy begun since is resumed), and
+        /// once this cluster stopped following the source or was promoted
+        /// from it since, the process does not follow again: it waits,
+        /// saying so in GET /v1/admin/follow, until it is stopped.
+        #[arg(long, value_name = "MS")]
+        once: Option<u64>,
+    },
+    /// Switch clients over to a cluster that follows another: hold the
+    /// source's writes (POST /v1/admin/hold-writes there), wait until
+    /// the follower applied them all, and promote it
+    /// (POST /v1/admin/follow/promote), which then takes its own writes
+    /// having lost none. The old source can then follow it back
+    /// (strata-server follow --reverse). Prints the promotion.
+    SwitchOver {
+        /// The follower's HTTP URL: its coordinator, or a server of its own.
+        #[arg(long)]
+        target: String,
+        /// The follower's cluster token.
+        #[arg(long, env = "STRATA_CLUSTER_TOKEN", hide_env_values = true)]
+        target_token: Option<String>,
+        /// A CA certificate (PEM) to check the follower's TLS certificate by.
+        #[arg(long)]
+        target_ca: Option<PathBuf>,
+        /// The name the follower knows the source by.
+        #[arg(long)]
+        name: String,
+        /// The source's HTTP URL; by default the one its follow process
+        /// names.
+        #[arg(long)]
+        source: Option<String>,
+        /// An admin key of the source (or its token), which holds its writes.
+        #[arg(long, env = "STRATA_SOURCE_KEY", hide_env_values = true)]
+        source_key: Option<String>,
+        /// A CA certificate (PEM) to check the source's TLS certificate by.
+        #[arg(long)]
+        source_ca: Option<PathBuf>,
+        /// Promote though the source's writes cannot be held (it is gone):
+        /// the writes the follower did not apply are lost.
+        #[arg(long)]
+        unplanned: bool,
+        /// How long to wait for the follower to apply the source's writes,
+        /// in seconds.
+        #[arg(long, default_value_t = 120)]
+        wait_s: u64,
     },
     /// Run the Kubernetes operator: it makes and changes the Strata clusters
     /// that StrataCluster resources describe (see deploy/README.md). In a
@@ -676,7 +729,7 @@ async fn main() {
             }
             return;
         }
-        Some(Command::Follow { source, source_key, source_ca, target, target_token, target_ca, name, batch, copy }) => {
+        Some(Command::Follow { source, source_key, source_ca, target, target_token, target_ca, name, batch, copy, reverse, once }) => {
             let read = |p: &Option<PathBuf>, what: &str| p.as_ref().map(|p| std::fs::read(p).unwrap_or_else(|e| fail(&format!("{what} {}: {e}", p.display()))));
             let o = strata_server::follow::Options {
                 source: source.clone(),
@@ -688,9 +741,30 @@ async fn main() {
                 name: name.clone(),
                 batch: *batch,
                 copy: *copy,
+                reverse: *reverse,
+                once: *once,
             };
             if let Err(e) = strata_server::follow::run(o).await {
                 fail(&format!("follow {name}: {e}"));
+            }
+            return;
+        }
+        Some(Command::SwitchOver { target, target_token, target_ca, name, source, source_key, source_ca, unplanned, wait_s }) => {
+            let read = |p: &Option<PathBuf>, what: &str| p.as_ref().map(|p| std::fs::read(p).unwrap_or_else(|e| fail(&format!("{what} {}: {e}", p.display()))));
+            let o = strata_server::follow::SwitchOptions {
+                target: target.clone(),
+                target_token: target_token.clone(),
+                target_ca: read(target_ca, "--target-ca"),
+                name: name.clone(),
+                source: source.clone(),
+                source_key: source_key.clone(),
+                source_ca: read(source_ca, "--source-ca"),
+                unplanned: *unplanned,
+                wait: std::time::Duration::from_secs(*wait_s),
+            };
+            match strata_server::follow::switch_over(o).await {
+                Ok(j) => println!("{}", serde_json::to_string_pretty(&j).unwrap_or_default()),
+                Err(e) => fail(&format!("switch-over to {target}: {e}")),
             }
             return;
         }

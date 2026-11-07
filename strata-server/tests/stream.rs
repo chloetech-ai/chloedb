@@ -285,7 +285,7 @@ async fn a_grpc_stream_stops_at_its_first_failure() {
     assert!(e.message().contains("offset 30 comes after 30"), "{}", e.message());
 
     // The offsets, over gRPC.
-    let s = c.sources(pb::SourcesRequest {}).await.unwrap().into_inner().sources;
+    let s = c.sources(pb::SourcesRequest::default()).await.unwrap().into_inner().sources;
     assert_eq!((s.len(), s[0].name.as_str(), s[0].offset), (1, SOURCE, 30));
     assert!(s[0].updated_micros > 0);
 }

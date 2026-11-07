@@ -6,7 +6,11 @@
 //! follower takes no other client's writes until following stops. One
 //! that fell behind the source's log catches up (protocol 15), also when
 //! its catch-up is cut short, and a copy made again drops the rows the
-//! source deleted meanwhile.
+//! source deleted meanwhile. A switch-over (protocol 17) holds the
+//! source's writes and promotes the follower having lost none, after which
+//! the old source follows it back without a copy; after one that was not
+//! planned, the old source rejoins with a copy that deletes the keys it
+//! took meanwhile.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -198,7 +202,7 @@ async fn gone(url: &str, i: usize, from: u64) -> bool {
 }
 
 fn options(source: &str, target: &str) -> Options {
-    Options { source: source.into(), source_key: None, source_ca: None, target: target.into(), target_token: None, target_ca: None, name: "east".into(), batch: 40, copy: false }
+    Options { source: source.into(), source_key: None, source_ca: None, target: target.into(), target_token: None, target_ca: None, name: "east".into(), batch: 40, copy: false, reverse: false, once: None }
 }
 
 async fn get(url: &str) -> Json {
@@ -212,6 +216,22 @@ async fn post(url: &str, body: Json, follow: Option<&str>) -> (u16, Json) {
     }
     let r = r.send().await.unwrap();
     (r.status().as_u16(), r.json().await.unwrap_or(Json::Null))
+}
+
+/// A writer's statement under an idempotency key, sent again with that key
+/// while a shard refuses it for a change of its table that overlapped it
+/// ("run it again"), as the test alters and drops tables while the
+/// writers write: the shards that took their part keep it and do not
+/// apply it twice.
+async fn write(svc: &Arc<Service>, s: &str, key: String) {
+    for _ in 0..100 {
+        match svc.sql_in(&Principal::open(), s, &Params::new(), After::Any, 0, None, Some(key.clone())).await {
+            Ok(_) => return,
+            Err(e) if e.message.contains("run it again") || e.message.contains("still running") => tokio::time::sleep(Duration::from_millis(20)).await,
+            Err(e) => panic!("{s}: {}", e.message),
+        }
+    }
+    panic!("{s}: refused 100 times");
 }
 
 /// Writes through `svc` until `stop`: rows by key (upserts, deletes, a
@@ -233,7 +253,7 @@ fn writers(svc: &Arc<Service>, stop: &Arc<AtomicBool>, tag: &'static str) -> Vec
                     8 => format!("INSERT OR REPLACE INTO events (id, usr, n) VALUES ({}, 'u{}', {r})", 200 + r % 50, (200 + r % 50) % 11),
                     _ => format!("INSERT OR REPLACE INTO products (id, title, description, price) VALUES ('{k}', '{tag} kettle', 'Round {r}', {r})"),
                 };
-                sql(&svc, &q).await;
+                write(&svc, &q, format!("{tag}-rows-{r}")).await;
                 r += 1;
             }
             r
@@ -244,7 +264,7 @@ fn writers(svc: &Arc<Service>, stop: &Arc<AtomicBool>, tag: &'static str) -> Vec
         tasks.push(tokio::spawn(async move {
             let mut n = 0;
             while !stop.load(Ordering::Relaxed) {
-                sql(&svc, "UPDATE products SET sold = sold + 1 WHERE price < 50").await;
+                write(&svc, "UPDATE products SET sold = sold + 1 WHERE price < 50", format!("{tag}-sold-{n}")).await;
                 n += 1;
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -609,4 +629,327 @@ async fn a_copy_made_again_drops_rows_deleted_meanwhile() {
     assert_eq!(st["keys_deleted"], 20, "{st}");
     assert!(!marks(&url_b).await.contains_key("0/since"), "a copy of every row");
     f.abort();
+}
+
+/// A follow process its Deployment starts again (`--once`, as the
+/// operator runs it) makes its copy once, resumes after that, and once
+/// the follower stopped following, waits rather than following again,
+/// until a later spec asks again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_follow_process_started_again_by_its_deployment_starts_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (svc_a, url_a, svc_b, url_b) = two_into_one(dir.path()).await;
+    sql(&svc_a, "INSERT INTO log (id, v) VALUES (1, 'one'), (2, 'two')").await;
+    let view = view_of(&url_b);
+    let asked = strata_server::telemetry::now_ms();
+    let o = Options { copy: true, once: Some(asked), ..options(&url_a, &url_b) };
+    let f = tokio::spawn(follow::run(o.clone()));
+    copied(&view, &f).await;
+    same_log(&svc_a, &svc_b).await;
+    let copy = view().await["clusters"][0]["copy_ms"].clone();
+    f.abort();
+    let _ = f.await;
+
+    // Started again with the same spec: no copy afresh.
+    sql(&svc_a, "INSERT INTO log (id, v) VALUES (3, 'three')").await;
+    let f = tokio::spawn(follow::run(o.clone()));
+    same_log(&svc_a, &svc_b).await;
+    let v = view().await;
+    assert_eq!(v["clusters"][0]["copy_ms"], copy, "{v}");
+    assert_eq!(settled(&view).await["rows_copied"], 0);
+
+    // Stopped: it waits, saying why, and does not follow again when
+    // started again; the follower takes its own writes.
+    let (status, r) = post(&format!("{url_b}/v1/admin/follow/stop"), json!({"name": "east"}), None).await;
+    assert_eq!(status, 200, "{r}");
+    let waiting = |v: &Json| v["clusters"][0]["status"]["state"] == "stopped" && v["clusters"][0]["status"]["error"].as_str().is_some_and(|e| e.contains("waiting to be stopped"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !waiting(&view().await) {
+        assert!(Instant::now() < deadline, "{}", view().await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!f.is_finished(), "it waits rather than ending");
+    f.abort();
+    let _ = f.await;
+    let f = tokio::spawn(follow::run(o.clone()));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!f.is_finished());
+    sql(&svc_b, "INSERT INTO log (id, v) VALUES (50, 'mine')").await;
+    let v = view().await;
+    assert!(v["following"].is_null() && waiting(&v), "{v}");
+    f.abort();
+    let _ = f.await;
+
+    // Asked again, later: it follows again, from where it was.
+    sql(&svc_a, "INSERT INTO log (id, v) VALUES (4, 'four')").await;
+    let f = tokio::spawn(follow::run(Options { copy: false, once: Some(strata_server::telemetry::now_ms()), ..o }));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !log_ids(&svc_b).await.contains(&4) {
+        assert!(Instant::now() < deadline, "{}", view().await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(view().await["following"], "east");
+    f.abort();
+}
+
+/// A source of two shards, with a table `log` of rows by number, and a
+/// follower of one shard, empty.
+async fn two_into_one(d: &Path) -> (Arc<Service>, String, Arc<Service>, String) {
+    let (_s0, u0) = shard(d, "s0.strata", |_| true).await;
+    let (a, svc_a, url_a) = coordinator(&[u0]).await;
+    sql(&svc_a, "CREATE TABLE log (id INT PRIMARY KEY, v TEXT)").await;
+    let (_s1, u1) = shard(d, "s1.strata", |_| false).await;
+    a.add_shard(vec![u1], Acks::All).await.unwrap();
+    a.rebalance(512).unwrap();
+    job_done(&a).await;
+    let (_t0, v0) = shard(d, "t0.strata", |_| false).await;
+    let (_b, svc_b, url_b) = coordinator(&[v0]).await;
+    (svc_a, url_a, svc_b, url_b)
+}
+
+/// The rows of `log` a cluster holds, by id.
+async fn log_ids(svc: &Arc<Service>) -> Vec<i64> {
+    let a = svc.query(QueryReq { sql: "SELECT id FROM log ORDER BY id LIMIT 100000".into(), ..Default::default() }).await.unwrap();
+    a.rs.rows.iter().map(|r| match r[0] { strata::value::Value::Int(n) => n, ref v => panic!("{v:?}") }).collect()
+}
+
+/// Waits until `follower` holds the rows of `log` that `source` does.
+async fn same_log(source: &Arc<Service>, follower: &Arc<Service>) {
+    let want = log_ids(source).await;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while log_ids(follower).await != want {
+        assert!(Instant::now() < deadline, "the follower's log is not the source's: {:?} there, {:?} here", want, log_ids(follower).await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Writes rows of `log` by new ids (`first`, then every `step`th) until
+/// `stop`: to `a`, and once `a` holds its writes, to `b`, as a client
+/// switched over would, until `b` takes them. Answers the ids each took.
+fn switching_writer(a: Arc<Service>, b: Arc<Service>, stop: Arc<AtomicBool>, first: i64, step: i64) -> tokio::task::JoinHandle<(Vec<i64>, Vec<i64>)> {
+    tokio::spawn(async move {
+        let (mut on_a, mut on_b) = (Vec::new(), Vec::new());
+        let mut id = first;
+        let mut switched = false;
+        while !stop.load(Ordering::Relaxed) {
+            let q = format!("INSERT INTO log (id, v) VALUES ({id}, 'row {id}')");
+            let to = if switched { &b } else { &a };
+            match to.sql(&Principal::open(), &q, &Params::new(), After::Any, 0).await {
+                Ok(_) => {
+                    if switched { on_b.push(id) } else { on_a.push(id) }
+                    id += step;
+                }
+                Err(e) if !switched && e.status == 503 && e.message.contains("holds its writes") => switched = true,
+                // The follower takes them once promoted.
+                Err(e) if switched && (e.status == 409 || e.status == 503) => tokio::time::sleep(Duration::from_millis(5)).await,
+                Err(e) => panic!("{q}: {} {}", e.status, e.message),
+            }
+        }
+        (on_a, on_b)
+    })
+}
+
+/// A planned switch-over while clients write: `strata-server switch-over`
+/// holds the source's writes (every client's either commits before the
+/// hold or is refused), waits until the follower applied them, and
+/// promotes it; the clients that move to it once the source refuses them
+/// lose no write. The source refuses writes while it holds them, the
+/// follow process stops, and starting it again is refused. The old source
+/// then follows the new primary back from the promotion's numbers, with no
+/// copy, and gets its writes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_planned_switch_over_loses_no_write_and_the_old_source_follows_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let (svc_a, url_a, svc_b, url_b) = two_into_one(dir.path()).await;
+    let view = view_of(&url_b);
+    let f = tokio::spawn(follow::run(options(&url_a, &url_b)));
+    copied(&view, &f).await;
+    caught_up(&svc_a, &svc_b, &view).await;
+
+    // Four clients write to the source as the switch-over runs.
+    let stop = Arc::new(AtomicBool::new(false));
+    let writers: Vec<_> = (0..4).map(|w| switching_writer(svc_a.clone(), svc_b.clone(), stop.clone(), w, 4)).collect();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let o = follow::SwitchOptions { target: url_b.clone(), target_token: None, target_ca: None, name: "east".into(), source: None, source_key: None, source_ca: None, unplanned: false, wait: Duration::from_secs(60) };
+    let r = follow::switch_over(o).await.unwrap();
+    assert_eq!(r["planned"], true, "{r}");
+    assert_eq!(r["lost"], 0, "{r}");
+    assert_eq!(r["seqs"].as_array().unwrap().len(), 1, "{r}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    stop.store(true, Ordering::Relaxed);
+    let (mut on_a, mut on_b) = (Vec::new(), Vec::new());
+    for w in writers {
+        let (a, b) = w.await.unwrap();
+        assert!(!b.is_empty(), "a client wrote to the new primary");
+        on_a.extend(a);
+        on_b.extend(b);
+    }
+    on_a.sort();
+    let mut all = [on_a.clone(), on_b].concat();
+    all.sort();
+    assert!(on_a.len() > 20, "{} writes before the hold", on_a.len());
+    // Every write the source took is on the new primary, and those it took.
+    assert_eq!(log_ids(&svc_a).await, on_a);
+    assert_eq!(log_ids(&svc_b).await, all);
+
+    // The follow process stopped; started again, it is refused, and so is
+    // a write that would start following again.
+    let e = tokio::time::timeout(Duration::from_secs(30), f).await.expect("the follow process stops").unwrap().unwrap_err();
+    assert!(e.message.contains("was promoted from east"), "{}", e.message);
+    let e = follow::run(options(&url_a, &url_b)).await.unwrap_err();
+    assert!(e.status == 409 && e.message.contains("was promoted from east"), "{}", e.message);
+    let start = json!({"ops": [{"op": "source", "source": {"name": "_strata/follows east", "offset": i64::MAX - 2}}]});
+    let (status, e) = post(&format!("{url_b}/v1/write"), start, Some("east")).await;
+    assert!(status == 409 && e.to_string().contains("was promoted from east"), "{status} {e}");
+    let v = view().await;
+    let c = &v["clusters"][0];
+    assert!(v["following"].is_null() && v["holding_ms"].is_null() && c["promoted_ms"].is_i64() && c["source_holds"] == true, "{v}");
+
+    // The old source holds its writes: refused, a change of tables too, with when to try again.
+    let res = strata_server::http_client().build().unwrap().post(format!("{url_a}/v1/write")).json(&json!({"ops": [{"op": "upsert", "table": "log", "doc": {"id": -1, "v": "late"}}]})).send().await.unwrap();
+    assert_eq!(res.status().as_u16(), 503);
+    assert!(res.headers().get("retry-after").is_some());
+    assert!(res.text().await.unwrap().contains("holds its writes"));
+    match svc_a.sql(&Principal::open(), "CREATE TABLE late (id INT PRIMARY KEY)", &Params::new(), After::Any, 0).await {
+        Err(e) => assert!(e.status == 503 && e.message.contains("holds its writes"), "{}", e.message),
+        Ok(_) => panic!("a table made while the writes are held"),
+    }
+    let h = get(&format!("{url_a}/v1/admin/hold-writes")).await;
+    assert_eq!(h["holding"], true, "{h}");
+
+    // It follows the new primary back, with no copy, from the promotion.
+    let promoted = get(&format!("{url_b}/v1/feed/promoted")).await;
+    assert_eq!(promoted["promotions"][0]["promoted"], "east", "{promoted}");
+    let back = Options { name: "west".into(), reverse: true, ..options(&url_b, &url_a) };
+    let g = tokio::spawn(follow::run(back));
+    let view_a = view_of(&url_a);
+    let st = settled(&view_a).await;
+    assert_eq!(st["rows_copied"], 0, "{st}");
+    let h = get(&format!("{url_a}/v1/admin/hold-writes")).await;
+    assert_eq!(h["holding"], false, "following, it holds no writes: {h}");
+    sql(&svc_b, "INSERT INTO log (id, v) VALUES (100000, 'after'), (100001, 'after')").await;
+    sql(&svc_b, &format!("DELETE FROM log WHERE id = {}", on_a[0])).await;
+    sql(&svc_b, "UPDATE products SET price = 1 WHERE price < 30").await;
+    caught_up(&svc_b, &svc_a, &view_a).await;
+    assert_eq!(log_ids(&svc_a).await, log_ids(&svc_b).await);
+    let (status, e) = post(&format!("{url_a}/v1/write"), json!({"ops": [{"op": "upsert", "table": "log", "doc": {"id": -1, "v": "late"}}]}), None).await;
+    assert!(status == 409 && e.to_string().contains("follows west"), "{status} {e}");
+    assert!(!g.is_finished());
+    g.abort();
+}
+
+/// A switch-over and back, as a drill does: each follow process started
+/// again resumes (one following back, with `--reverse` or without, and
+/// one following a cluster it was promoted from before), and each
+/// switch-over loses nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_switch_over_and_back_resumes_after_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (svc_a, url_a, svc_b, url_b) = two_into_one(dir.path()).await;
+    sql(&svc_a, "INSERT INTO log (id, v) VALUES (1, 'one'), (2, 'two')").await;
+    let view_b = view_of(&url_b);
+    let f = tokio::spawn(follow::run(options(&url_a, &url_b)));
+    copied(&view_b, &f).await;
+    caught_up(&svc_a, &svc_b, &view_b).await;
+    let switch = |target: &str, name: &str| follow::SwitchOptions { target: target.into(), target_token: None, target_ca: None, name: name.into(), source: None, source_key: None, source_ca: None, unplanned: false, wait: Duration::from_secs(60) };
+    let r = follow::switch_over(switch(&url_b, "east")).await.unwrap();
+    assert_eq!((r["planned"].clone(), r["lost"].clone()), (json!(true), json!(0)), "{r}");
+    let _ = f.await;
+
+    // The old source follows back; that process started again, with
+    // --reverse as a script would, or without, resumes.
+    let back = Options { name: "west".into(), reverse: true, ..options(&url_b, &url_a) };
+    let view_a = view_of(&url_a);
+    for (k, reverse) in [true, true, false].into_iter().enumerate() {
+        let before = view_a().await["clusters"][0]["status"]["started_ms"].as_u64().unwrap_or(0);
+        let g = tokio::spawn(follow::run(Options { reverse, ..back.clone() }));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let st = loop {
+            let st = settled(&view_a).await;
+            if st["started_ms"].as_u64().unwrap_or(0) > before {
+                break st;
+            }
+            assert!(!g.is_finished(), "the follow process ended: {:?}", g.await);
+            assert!(Instant::now() < deadline, "it does not follow: {st}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert_eq!(st["rows_copied"], 0, "{st}");
+        sql(&svc_b, &format!("INSERT INTO log (id, v) VALUES ({}, 'on west')", 100 + k)).await;
+        same_log(&svc_b, &svc_a).await;
+        g.abort();
+        let _ = g.await;
+    }
+    let g = tokio::spawn(follow::run(Options { reverse: false, ..back.clone() }));
+    settled(&view_a).await;
+    same_log(&svc_b, &svc_a).await;
+
+    // And back again: the old source is promoted from the new primary, and
+    // the new primary follows it back, from that promotion, as a cluster
+    // promoted from it once; started again, it resumes too.
+    let r = follow::switch_over(switch(&url_a, "west")).await.unwrap();
+    assert_eq!((r["planned"].clone(), r["lost"].clone()), (json!(true), json!(0)), "{r}");
+    let _ = g.await;
+    let again = Options { reverse: true, ..options(&url_a, &url_b) };
+    for reverse in [true, false] {
+        let h = tokio::spawn(follow::run(Options { reverse, ..again.clone() }));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!h.is_finished(), "the follow process ended: {:?}", h.await);
+        sql(&svc_a, &format!("INSERT INTO log (id, v) VALUES ({}, 'on east again')", 200 + reverse as i64)).await;
+        same_log(&svc_a, &svc_b).await;
+        assert_eq!(settled(&view_b).await["rows_copied"], 0);
+        h.abort();
+        let _ = h.await;
+    }
+    assert_eq!(log_ids(&svc_a).await, log_ids(&svc_b).await);
+    let (status, e) = post(&format!("{url_b}/v1/write"), json!({"ops": [{"op": "upsert", "table": "log", "doc": {"id": -1, "v": "late"}}]}), None).await;
+    assert!(status == 409 && e.to_string().contains("follows east"), "{status} {e}");
+}
+
+/// After a promotion that was not planned (the source unreachable), the
+/// old source, which took writes the new primary never saw, cannot follow
+/// it back from the promotion's numbers; it rejoins with a copy, whose
+/// sweep deletes the keys it took meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn an_old_source_rejoins_after_an_unplanned_promotion() {
+    let dir = tempfile::tempdir().unwrap();
+    let (svc_a, url_a, svc_b, url_b) = two_into_one(dir.path()).await;
+    sql(&svc_a, "INSERT INTO log (id, v) VALUES (1, 'one'), (2, 'two'), (3, 'three')").await;
+    let view = view_of(&url_b);
+    let f = tokio::spawn(follow::run(options(&url_a, &url_b)));
+    copied(&view, &f).await;
+    caught_up(&svc_a, &svc_b, &view).await;
+    f.abort();
+    let _ = f.await;
+    // Writes the follower never sees: 15 new keys, 5 deleted.
+    let v: Vec<String> = (0..15).map(|i| format!("({}, 'lost {i}')", 1000 + i)).collect();
+    sql(&svc_a, &format!("INSERT INTO log (id, v) VALUES {}", v.join(", "))).await;
+    let ids: Vec<String> = (0..5).map(|i| format!("'p{:07}'", i * 13)).collect();
+    sql(&svc_a, &format!("DELETE FROM products WHERE id IN ({})", ids.join(", "))).await;
+
+    // The source cannot be held: refused, then promoted all the same.
+    let gone = follow::SwitchOptions { target: url_b.clone(), target_token: None, target_ca: None, name: "east".into(), source: Some("http://127.0.0.1:9".into()), source_key: None, source_ca: None, unplanned: false, wait: Duration::from_secs(5) };
+    let e = follow::switch_over(gone.clone()).await.unwrap_err();
+    assert!(e.status == 409 && e.message.contains("could not hold the writes of east"), "{}", e.message);
+    let (status, e) = post(&format!("{url_b}/v1/admin/follow/promote"), json!({"name": "east"}), None).await;
+    assert!(status == 409 && e.to_string().contains("did not hold its writes"), "{status} {e}");
+    let r = follow::switch_over(follow::SwitchOptions { unplanned: true, ..gone }).await.unwrap();
+    assert_eq!(r["planned"], false, "{r}");
+    sql(&svc_b, "INSERT INTO log (id, v) VALUES (7, 'new primary')").await;
+
+    // Its numbers do not fit the old source, which took writes since.
+    let back = Options { name: "west".into(), reverse: true, ..options(&url_b, &url_a) };
+    let e = follow::run(back.clone()).await.unwrap_err();
+    assert!(e.status == 409 && e.message.contains("took writes after"), "{}", e.message);
+    // It still takes its own writes: the refusal changed nothing.
+    sql(&svc_a, "INSERT INTO log (id, v) VALUES (2000, 'still mine')").await;
+
+    // It rejoins with a copy: the new primary's rows over its own, and the
+    // keys only it has deleted.
+    let g = tokio::spawn(follow::run(Options { reverse: false, copy: true, ..back }));
+    let view_a = view_of(&url_a);
+    let st = settled(&view_a).await;
+    assert_eq!(st["keys_deleted"], 16, "{st}");
+    caught_up(&svc_b, &svc_a, &view_a).await;
+    assert_eq!(log_ids(&svc_a).await, vec![1, 2, 3, 7]);
+    g.abort();
 }

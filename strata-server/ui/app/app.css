@@ -3189,3 +3189,20 @@ html.via-hub::before { content: ""; position: fixed; left: 0; right: 0; top: 0; 
 .fleet-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .fleet-tile { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-top: 3px solid var(--c, var(--line)); border-radius: var(--r-sm); background: var(--surface-2); min-width: 0; }
 .fleet-nums { display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline; }
+
+/* ---------------------------------------------------------------- following another cluster */
+.fleet-card > .hd { flex-wrap: wrap; } .fleet-card > .hd .tools { flex-wrap: wrap; justify-content: flex-end; }
+.follow-links { gap: 10px; }
+.follow-link { display: flex; align-items: center; gap: 10px; min-width: 0; --fc: var(--good); }
+.follow-link.warn { --fc: var(--warn); } .follow-link.bad { --fc: var(--crit); } .follow-link.info { --fc: var(--accent); }
+.follow-chip { gap: 6px; padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2); min-width: 0; max-width: 34%; overflow: hidden; text-overflow: ellipsis; }
+.follow-arrow { flex: 1 1 120px; min-width: 70px; height: 2px; background: var(--fc); position: relative; margin: 14px 8px 0 0; }
+.follow-link.warn .follow-arrow, .follow-link.bad .follow-arrow { background: repeating-linear-gradient(90deg, var(--fc) 0 8px, transparent 8px 13px); }
+.follow-arrow::after { content: ""; position: absolute; right: -8px; top: -5px; border-left: 9px solid var(--fc); border-top: 6px solid transparent; border-bottom: 6px solid transparent; }
+.follow-lag { position: absolute; left: 0; right: 0; bottom: 6px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; color: var(--text-2); }
+.follow-steps { padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.follow-step.done { color: var(--good-ink); } .follow-step.doing { font-weight: 600; } .follow-step.bad { color: var(--crit-ink); }
+.follow-note { margin-bottom: 10px; }
+.wb-follow:empty { display: none; } .wb-follow .follow-note { margin: 6px 0 4px; padding: 8px 12px; }
+.follow-note .btn { flex: none; }
+@media (max-width: 560px) { .follow-link { flex-wrap: wrap; } .follow-chip { max-width: 100%; } .follow-arrow { flex-basis: 100%; order: 1; margin: 18px 8px 4px 0; } .follow-link > .btn { order: 2; } }

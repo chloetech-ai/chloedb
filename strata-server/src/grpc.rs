@@ -104,11 +104,13 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// [`GET_PROTOCOL`]), 12 names the version BM25 statistics came from,
 /// so that a coordinator can keep them ([`STATS_VERSION_PROTOCOL`]), 13
 /// answers a shard's feed (`Feed`, [`FEED_PROTOCOL`]), 14 starts a feed
-/// with a copy of the shard's rows ([`FEED_COPY_PROTOCOL`]), and 15
-/// copies only rows changed since a transaction and compares keys
-/// ([`FEED_KEYS_PROTOCOL`]).
+/// with a copy of the shard's rows ([`FEED_COPY_PROTOCOL`]), 15 copies
+/// only rows changed since a transaction and compares keys
+/// ([`FEED_KEYS_PROTOCOL`]), 16 keeps the stream offsets of slots that
+/// move ([`MOVE_OFFSETS_PROTOCOL`]), and 17 holds clients' writes on a
+/// mark and keeps promotions ([`HOLD_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 15;
+pub const PROTOCOL: u32 = 17;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -151,6 +153,19 @@ pub const FEED_COPY_PROTOCOL: u32 = 14;
 /// answers `FeedKeys`: what a follower that fell behind its source's log
 /// catches up by.
 pub const FEED_KEYS_PROTOCOL: u32 = 15;
+
+/// The protocol whose slot moves carry the stream sources' offsets of the
+/// slots on the shard they leave ([`crate::slots::Move::offsets`],
+/// `SourcesRequest.moving`), which the shard they go to keeps for them
+/// ([`crate::service::arrivals`]).
+pub const MOVE_OFFSETS_PROTOCOL: u32 = 16;
+
+/// The protocol whose shards hold their clients' writes on a mark
+/// (`_strata/hold`, [`crate::service::feed::HOLD`]), say so in their feeds,
+/// and keep a promotion from a cluster they followed: a switch-over to a
+/// follower, and back. Nothing new on the wire but the marks, which an
+/// older shard refuses as its own.
+pub const HOLD_PROTOCOL: u32 = 17;
 
 /// The most bytes of a feed one `FeedChunk` carries.
 const FEED_CHUNK: usize = 1 << 20;
@@ -366,7 +381,7 @@ impl Grpc {
         // query spent an eighth of its time copying it).
         let call = Box::pin(f(self.0.clone(), who.clone(), req.into_inner()));
         let call = keys::noting(crate::service::DEADLINE.scope(crate::service::Deadline::of_part(clients), crate::service::ROUTED.scope(std::cell::Cell::new(0), call)));
-        let call = crate::telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, call));
+        let call = crate::telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::OWN.scope(who.root, call)));
         let (r, note) = crate::telemetry::traced(crate::telemetry::Trace::new(), obs::scope(Some(id.clone()), call)).instrument(span.clone()).await;
         let status = r.as_ref().map_or_else(|e| e.status, |_| 200);
         obs::scope(Some(id.clone()), async { audit(&self.0, &who, method, status, t0, note) }).await;
@@ -480,10 +495,13 @@ impl pb::strata_server::Strata for Grpc {
         }
         self.serve("Write", req, |svc, who, r| async move {
             svc.check_epoch(r.epoch)?;
+            let key = Some(r.idempotency_key).filter(|k| !k.is_empty());
             let w = if !r.ops_json.is_empty() {
                 let ops: Vec<serde_json::Value> = from_json(&r.ops_json, "write operations")?;
-                let key = Some(r.idempotency_key).filter(|k| !k.is_empty());
-                svc.write_ops_as(ops, key, if r.moved { Moved::Copy } else { Moved::No }).await?
+                match r.moved {
+                    true => svc.write_ops_as(ops, key, Moved::Copy).await?,
+                    false => svc.write_request(ops, key).await?,
+                }
             } else if r.moved {
                 return Err(ApiError::bad("rows of moving slots come as write operations (ops_json), not SQL"));
             } else {
@@ -494,7 +512,7 @@ impl pb::strata_server::Strata for Grpc {
                         Some(ranges.into_iter().flat_map(|(a, b)| a..b.min(crate::slots::SLOTS)).collect())
                     }
                 };
-                match svc.sql_in(&who, &r.sql, &params_from_pb(r.params), After::Any, 0, slots).await? {
+                match svc.sql_in(&who, &r.sql, &params_from_pb(r.params), After::Any, 0, slots, key).await? {
                     crate::service::SqlAnswer::Written { w, .. } => w,
                     crate::service::SqlAnswer::Rows(_) => return Err(ApiError::bad("Write takes INSERT, UPDATE or DELETE; use Query")),
                 }
@@ -566,8 +584,11 @@ impl pb::strata_server::Strata for Grpc {
     }
 
     async fn sources(&self, req: Request<pb::SourcesRequest>) -> Result<Response<pb::SourcesResponse>, Status> {
-        self.serve("Sources", req, |svc, _who, _| async move {
-            let sources = svc.sources().await?;
+        self.serve("Sources", req, |svc, _who, r| async move {
+            let sources = match r.moving {
+                true => svc.moving_offsets().await?,
+                false => svc.sources().await?,
+            };
             Ok(pb::SourcesResponse { sources: sources.into_iter().map(|s| pb::Source { name: s.name, offset: s.offset, updated_micros: s.updated.unwrap_or(0) }).collect() })
         })
         .await

@@ -91,14 +91,23 @@ cd strata && cargo build --release
 target/release/strata db.strata "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, 'india') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
 ```
 
-Strata as a server, with a query builder and an agent in the browser:
+Strata as a server, with a query builder and an agent in the browser, prebuilt for Linux (x86_64, aarch64) and macOS (arm64, x86_64) ([more](docs/strata/server.md#run-it)):
+
+```sh
+v=0.1.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
+curl -LO https://github.com/chloetech-ai/strata/releases/download/strata-server-v$v/strata-server-$p.tar.gz
+tar xzf strata-server-$p.tar.gz
+strata-server-$p/strata-server --demo 20000 --db products.strata   # http://127.0.0.1:7700
+```
+
+Or built from source:
 
 ```sh
 cd strata-server && cargo build --release
-target/release/strata-server --demo 20000 --db products.strata   # http://127.0.0.1:7700
+target/release/strata-server --demo 20000 --db products.strata
 ```
 
-Or the same server without building it, from the published image (a new `--db` starts with no tables; add `--demo 20000` for the demo catalogue):
+Or from the published image (a new `--db` starts with no tables; add `--demo 20000` for the demo catalogue):
 
 ```sh
 docker run -p 127.0.0.1:7700:7700 -e STRATA_TOKEN=pick-a-secret -v strata:/data \
