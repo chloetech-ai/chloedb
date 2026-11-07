@@ -202,7 +202,7 @@ async fn gone(url: &str, i: usize, from: u64) -> bool {
 }
 
 fn options(source: &str, target: &str) -> Options {
-    Options { source: source.into(), source_key: None, source_ca: None, target: target.into(), target_token: None, target_ca: None, name: "east".into(), batch: 40, copy: false, reverse: false }
+    Options { source: source.into(), source_key: None, source_ca: None, target: target.into(), target_token: None, target_ca: None, name: "east".into(), batch: 40, copy: false, reverse: false, once: None }
 }
 
 async fn get(url: &str) -> Json {
@@ -612,6 +612,67 @@ async fn a_copy_made_again_drops_rows_deleted_meanwhile() {
     let st = settled(&view).await;
     assert_eq!(st["keys_deleted"], 20, "{st}");
     assert!(!marks(&url_b).await.contains_key("0/since"), "a copy of every row");
+    f.abort();
+}
+
+/// A follow process its Deployment starts again (`--once`, as the
+/// operator runs it) makes its copy once, resumes after that, and once
+/// the follower stopped following, waits rather than following again,
+/// until a later spec asks again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_follow_process_started_again_by_its_deployment_starts_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (svc_a, url_a, svc_b, url_b) = two_into_one(dir.path()).await;
+    sql(&svc_a, "INSERT INTO log (id, v) VALUES (1, 'one'), (2, 'two')").await;
+    let view = view_of(&url_b);
+    let asked = strata_server::telemetry::now_ms();
+    let o = Options { copy: true, once: Some(asked), ..options(&url_a, &url_b) };
+    let f = tokio::spawn(follow::run(o.clone()));
+    copied(&view, &f).await;
+    same_log(&svc_a, &svc_b).await;
+    let copy = view().await["clusters"][0]["copy_ms"].clone();
+    f.abort();
+    let _ = f.await;
+
+    // Started again with the same spec: no copy afresh.
+    sql(&svc_a, "INSERT INTO log (id, v) VALUES (3, 'three')").await;
+    let f = tokio::spawn(follow::run(o.clone()));
+    same_log(&svc_a, &svc_b).await;
+    let v = view().await;
+    assert_eq!(v["clusters"][0]["copy_ms"], copy, "{v}");
+    assert_eq!(settled(&view).await["rows_copied"], 0);
+
+    // Stopped: it waits, saying why, and does not follow again when
+    // started again; the follower takes its own writes.
+    let (status, r) = post(&format!("{url_b}/v1/admin/follow/stop"), json!({"name": "east"}), None).await;
+    assert_eq!(status, 200, "{r}");
+    let waiting = |v: &Json| v["clusters"][0]["status"]["state"] == "stopped" && v["clusters"][0]["status"]["error"].as_str().is_some_and(|e| e.contains("waiting to be stopped"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !waiting(&view().await) {
+        assert!(Instant::now() < deadline, "{}", view().await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!f.is_finished(), "it waits rather than ending");
+    f.abort();
+    let _ = f.await;
+    let f = tokio::spawn(follow::run(o.clone()));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!f.is_finished());
+    sql(&svc_b, "INSERT INTO log (id, v) VALUES (50, 'mine')").await;
+    let v = view().await;
+    assert!(v["following"].is_null() && waiting(&v), "{v}");
+    f.abort();
+    let _ = f.await;
+
+    // Asked again, later: it follows again, from where it was.
+    sql(&svc_a, "INSERT INTO log (id, v) VALUES (4, 'four')").await;
+    let f = tokio::spawn(follow::run(Options { copy: false, once: Some(strata_server::telemetry::now_ms()), ..o }));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !log_ids(&svc_b).await.contains(&4) {
+        assert!(Instant::now() < deadline, "{}", view().await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(view().await["following"], "east");
     f.abort();
 }
 

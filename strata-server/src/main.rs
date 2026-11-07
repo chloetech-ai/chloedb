@@ -523,6 +523,14 @@ enum Command {
         /// the source never applied (then follow with --copy).
         #[arg(long, conflicts_with = "copy")]
         reverse: bool,
+        /// For a process started again by itself (the operator's follow
+        /// Deployment): when it was asked for, in ms since the epoch.
+        /// --copy is then done once (a copy begun since is resumed), and
+        /// once this cluster stopped following the source or was promoted
+        /// from it since, the process does not follow again: it waits,
+        /// saying so in GET /v1/admin/follow, until it is stopped.
+        #[arg(long, value_name = "MS")]
+        once: Option<u64>,
     },
     /// Switch clients over to a cluster that follows another: hold the
     /// source's writes (POST /v1/admin/hold-writes there), wait until
@@ -721,7 +729,7 @@ async fn main() {
             }
             return;
         }
-        Some(Command::Follow { source, source_key, source_ca, target, target_token, target_ca, name, batch, copy, reverse }) => {
+        Some(Command::Follow { source, source_key, source_ca, target, target_token, target_ca, name, batch, copy, reverse, once }) => {
             let read = |p: &Option<PathBuf>, what: &str| p.as_ref().map(|p| std::fs::read(p).unwrap_or_else(|e| fail(&format!("{what} {}: {e}", p.display()))));
             let o = strata_server::follow::Options {
                 source: source.clone(),
@@ -734,6 +742,7 @@ async fn main() {
                 batch: *batch,
                 copy: *copy,
                 reverse: *reverse,
+                once: *once,
             };
             if let Err(e) = strata_server::follow::run(o).await {
                 fail(&format!("follow {name}: {e}"));

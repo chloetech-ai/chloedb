@@ -6,8 +6,15 @@
 // to the others on request, production last. Everything goes through the
 // hub's forward (/c/<name>/...), which adds each cluster's key; nothing is
 // kept here.
+//
+// Which clusters follow which (strata-server's crate::follow): an arrow
+// from each source to its follower, with how far behind it is, from each
+// follower's follow view; "Follow…" sets one connection to follow another
+// (the hub's POST /v1/admin/hub/follow), and the follower's Follow view
+// pauses, stops and promotes it.
 
-import { h, icon, clear, fmt, api, toast, confirm, card, empty, failure, pill, connectionName } from "../core.js";
+import { h, icon, clear, fmt, api, toast, confirm, card, empty, failure, pill, connectionName, every } from "../core.js";
+import { startFollow, behindText } from "../follows.js";
 
 export default {
   id: "clusters", title: "All clusters", icon: "cluster", group: "Change",
@@ -29,12 +36,13 @@ function render(page) {
     page.append(card({ title: "All clusters", body: h("div", { class: "stack" }, h("p", { class: "dim", style: { margin: 0 } }, "This page is the hub's: it lists every cluster the hub reaches."), h("div", {}, h("a", { class: "btn sm", href: "/#/clusters" }, "Open it on the hub"))) }));
     return;
   }
-  const tiles = h("div"), drift = h("div");
-  page.append(tiles, drift);
+  const tiles = h("div"), links = h("div"), drift = h("div");
+  page.append(tiles, links, drift);
   let alive = true;
   let book = null;
   let ends = [];         // [{name, label, path, color, env, conn}]
   const seen = new Map(); // name -> {stats, cfg, error}
+  const follows = new Map(); // name -> {view, spec} of its follow view, or null
   let base = "";
 
   async function load() {
@@ -43,7 +51,62 @@ function render(page) {
     ends = [{ name: "", label: "this server", path: "", color: "var(--text-3)", env: null, conn: null },
       ...(book.connections || []).map((c) => ({ name: c.name, label: c.name, path: `/c/${c.name}`, color: c.color, env: c.environment || c.cluster?.environment, conn: c }))];
     drawTiles(); drawDrift();
-    await Promise.all(ends.map(ask));
+    await Promise.all([...ends.map(ask), askFollows()]);
+  }
+
+  /** Each end's follow view, and its operator's spec.follow (to say "paused"). */
+  async function askFollows() {
+    await Promise.all(ends.map(async (e) => {
+      const [view, kube] = await Promise.all([api(e.path + "/v1/admin/follow", { hub: true, timeout: 10000 }).catch(() => null), api(e.path + "/v1/kube", { hub: true, timeout: 10000 }).catch(() => null)]);
+      follows.set(e.name, view ? { view, spec: kube?.spec?.follow || null } : null);
+    }));
+    if (!alive) return;
+    drawTiles(); drawLinks();
+  }
+
+  /** The end that `e`'s follow process reads: by the name it follows, or the source's URL. */
+  function sourceEnd(e, name, url) {
+    const t = (u) => String(u || "").replace(/\/+$/, "");
+    return ends.find((x) => x !== e && x.conn && (x.name === name || (url && [...(x.conn.urls || []), x.conn.cluster?.public_url].some((u) => u && t(u) === t(url))))) || null;
+  }
+
+  /** Who follows whom: [{src, srcLabel, dst, c, spec, tone, text}]. */
+  function pairs() {
+    const out = [];
+    for (const e of ends) {
+      const f = follows.get(e.name);
+      const name = f?.view?.following;
+      if (!name) continue;
+      const c = (f.view.clusters || []).find((x) => x.name === name) || {};
+      const st = c.status;
+      const src = sourceEnd(e, name, st?.source);
+      const paused = f.spec?.name === name && f.spec.paused;
+      const silent = !st || c.status_age_ms > 30_000;
+      const lag = st?.lag_ms ?? 0;
+      const [tone, text] = paused ? ["warn", "paused"]
+        : silent ? ["bad", st ? `silent ${fmt.ms(c.status_age_ms)}` : "no follow process"]
+        : st.state === "held" ? ["bad", "held: " + (st.error || "?")]
+        : st.state === "stopped" ? ["bad", "stopped"]
+        : st.state === "copying" || st.state === "catching up" ? ["info", `${st.state}, ${fmt.n(st.rows_copied || 0)} rows`]
+        : lag > 60_000 ? ["warn", behindText(lag)]
+        : ["ok", behindText(lag)];
+      out.push({ src, srcLabel: src?.label || name, dst: e, c, tone, text, behind: st?.behind });
+    }
+    return out;
+  }
+
+  /** An arrow from each source to its follower, with how far behind it is. */
+  function drawLinks() {
+    const ps = pairs();
+    const chip = (e, label) => h("span", { class: "row nw follow-chip" }, e?.conn ? h("span", { class: "conn-dot", style: { background: e.color } }) : icon("db"), h("b", {}, label));
+    clear(links, ps.length ? card({
+      title: "Following", sub: `${fmt.plural(ps.length, "cluster")} follow${ps.length === 1 ? "s" : ""} another`,
+      body: h("div", { class: "stack follow-links" }, ps.map((p) => h("div", { class: "follow-link " + p.tone },
+        chip(p.src, p.srcLabel),
+        h("span", { class: "follow-arrow", title: p.behind != null ? `${fmt.plural(p.behind, "transaction")} to apply` : "" }, h("span", { class: "follow-lag small" }, p.text)),
+        chip(p.dst, p.dst.label),
+        h("a", { class: "btn sm", href: p.dst.conn ? `/c/${p.dst.name}#/follow` : "/#/follow", title: "Pause, stop or promote it there" }, icon("share"), "Follow view")))),
+    }) : null);
   }
 
   /** One end's health and what is compared, as it answers now. */
@@ -71,6 +134,9 @@ function render(page) {
       const status = !s ? pill("info", "asking…") : s.error ? pill("bad", "not answering") : st?.status === "ok" ? pill("ok", "ok") : pill("warn", st?.status || "?");
       const key = e.conn?.key || {};
       const expires = e.conn ? (e.conn.keyless ? "through its Kubernetes API" : key.expires_ms ? `key expires ${fmt.ago(key.expires_ms).replace(" ago", "")} from now` : `${key.scope || "?"} key, no expiry`) : "the hub itself";
+      const f = follows.get(e.name)?.view;
+      const p = f?.following ? pairs().find((x) => x.dst === e) : null;
+      const fed = pairs().filter((x) => x.src === e);
       return h("div", { class: "fleet-tile", style: { "--c": e.color } },
         h("div", { class: "row between nw" }, h("span", { class: "row nw", style: { gap: "6px" } }, e.conn ? h("span", { class: "conn-dot", style: { background: e.color } }) : icon("db"), h("b", {}, e.label), isProd(e.env) ? h("span", { class: "badge" }, "PROD") : null), status),
         h("div", { class: "small dim" }, [e.conn?.cluster?.name, e.env].filter(Boolean).join(" · ") || (e.conn ? "unnamed cluster" : location.host)),
@@ -80,12 +146,17 @@ function render(page) {
             h("div", {}, h("b", { class: "num" }, fmt.n(Object.keys(st.tables || {}).length)), h("span", { class: "small dim" }, Object.keys(st.tables || {}).length === 1 ? " table" : " tables")),
             h("div", {}, h("span", { class: "small dim" }, st.role === "coordinator" ? "a cluster" : "one server")))
           : null,
+        p ? h("div", { class: "row nw small", style: { gap: "6px" } }, icon("share"), "follows ", h("b", {}, p.srcLabel), pill(p.tone, p.text))
+          : fed.length ? h("div", { class: "row nw small dim", style: { gap: "6px" } }, icon("share"), "followed by ", fed.map((x) => x.dst.label).join(", ")) : null,
         h("div", { class: "row between nw small" }, h("span", { class: "dim" }, expires),
-          h("a", { class: "btn sm", href: e.conn ? `/c/${e.name}#/home` : "/#/home" }, "Open")));
+          h("span", { class: "row nw", style: { gap: "6px" } },
+            e.conn && (book?.connections || []).length > 1 ? h("button", { class: "btn sm ghost", title: `Set ${e.label} to follow another cluster`, onclick: () => follow({ follower: e.name }) }, icon("share"), "Follow…") : null,
+            h("a", { class: "btn sm", href: e.conn ? `/c/${e.name}#/home` : "/#/home" }, "Open"))));
     }));
     clear(tiles, card({
       title: "All clusters", sub: `this server and ${fmt.plural((book?.connections || []).length, "connection")}`,
-      tools: [h("button", { class: "btn sm ghost", title: "Ask them all again", onclick: () => { seen.clear(); drawTiles(); drawDrift(); ends.forEach(ask); } }, icon("refresh")),
+      tools: [h("button", { class: "btn sm ghost", title: "Ask them all again", onclick: () => { seen.clear(); drawTiles(); drawDrift(); ends.forEach(ask); askFollows(); } }, icon("refresh")),
+        (book?.connections || []).length > 1 ? h("button", { class: "btn sm", title: "Set one cluster to follow another: it copies it, then applies its changes", onclick: () => follow({}) }, icon("share"), "Follow…") : null,
         h("a", { class: "btn sm", href: "/#/connections" }, icon("key"), "Connections"),
         (book?.connections || []).length ? h("button", { class: "btn sm danger", title: "Revokes the key this hub holds on each cluster, there, and takes each out of the book: for a device that is leaving", onclick: revokeAll }, icon("trash"), "Revoke this hub's keys…") : null],
       body: (book?.connections || []).length ? box : h("div", { class: "stack" }, box, empty("cluster", "No other clusters yet", "Add one in Connections, or open one made from Cloud setup: it then shows here.")),
@@ -182,6 +253,13 @@ function render(page) {
     seen.clear(); load();
   }
 
+  /** Sets a connection to follow another (the Start card), then asks again. */
+  async function follow(ask) {
+    const r = await startFollow(book, ask);
+    if (r) askFollows();
+  }
+
   load();
-  return () => { alive = false; };
+  const stopFollows = every(5000, () => (ends.length ? askFollows() : null), false);
+  return () => { alive = false; stopFollows(); };
 }

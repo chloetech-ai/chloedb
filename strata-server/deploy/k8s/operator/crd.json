@@ -204,6 +204,56 @@
                     "minimum": 0,
                     "type": "integer"
                   },
+                  "follow": {
+                    "description": "Following another cluster: a strata-server follow Deployment of one copies the source, then applies its feed; the cluster refuses its clients' writes meanwhile.",
+                    "properties": {
+                      "askedMs": {
+                        "description": "When following was asked for (ms since the epoch): a copy is made once, and a stop or promotion after it is final for this spec.",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "caSecret": {
+                        "description": "A Secret whose key ca.crt is the CA certificate (PEM) of the source's TLS certificate, for a self-signed one.",
+                        "type": "string"
+                      },
+                      "keySecret": {
+                        "description": "A Secret whose key key is a key of the source of the feed scope.",
+                        "type": "string"
+                      },
+                      "name": {
+                        "description": "The name this cluster knows the source by.",
+                        "pattern": "^[A-Za-z0-9._-]{1,64}$",
+                        "type": "string"
+                      },
+                      "paused": {
+                        "description": "No follow process for now; the cluster still refuses its clients' writes.",
+                        "type": "boolean"
+                      },
+                      "resources": {
+                        "description": "Resources of the follow process's container.",
+                        "type": "object",
+                        "x-kubernetes-preserve-unknown-fields": true
+                      },
+                      "source": {
+                        "description": "The source cluster's URL (its coordinators), as https://east.example:7700.",
+                        "type": "string"
+                      },
+                      "start": {
+                        "description": "follow (default): from where the cluster is, a copy the first time; copy: a copy afresh (an old source rejoining); reverse: back from the source's promotion from this cluster, without a copy.",
+                        "enum": [
+                          "follow",
+                          "copy",
+                          "reverse"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "name"
+                    ],
+                    "type": "object"
+                  },
                   "image": {
                     "description": "The strata-server image of every server (default strata-server:dev).",
                     "type": "string"

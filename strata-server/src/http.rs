@@ -204,6 +204,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/follow", get(follow_view))
         .route("/v1/admin/follow/status", post(follow_status))
         .route("/v1/admin/follow/stop", post(follow_stop))
+        .route("/v1/admin/follow/pause", post(follow_pause))
         .route("/v1/admin/follow/promote", post(follow_promote))
         .route("/v1/admin/hold-writes", get(hold_view).post(hold_writes))
         .route("/v1/admin/shards", post(add_shard))
@@ -268,6 +269,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/hub/connections/:name/check", post(hub_check))
         .route("/v1/admin/hub/adopt", post(hub_adopt))
         .route("/v1/admin/hub/copy", post(hub_copy))
+        .route("/v1/admin/hub/follow", post(hub_follow))
         .route("/c/:name/*rest", axum::routing::any(hub_forward))
         .route("/v1/admin/cloud/clusters", get(cloud_list).post(cloud_create))
         .route("/v1/admin/cloud/clusters/:id", get(cloud_one).merge(axum::routing::delete(cloud_forget)))
@@ -2013,14 +2015,56 @@ async fn follow_status(State(app): State<App>, w: Option<axum::Extension<Princip
 }
 
 /// `POST /v1/admin/follow/stop {"name"}`: stops following cluster `name`
-/// (the cluster's token only): from then on this cluster takes its
-/// clients' writes, and refuses its follow process's.
-async fn follow_stop(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
-    root_only(&who(w), "stopping following")?;
+/// (an admin's call): from then on this cluster takes its clients'
+/// writes, and refuses its follow process's. When the operator runs that
+/// process (`spec.follow`), its spec goes too ([`follow_spec`]).
+async fn follow_stop(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let name = b["name"].as_str().ok_or_else(|| ApiError::bad("name the cluster to stop following: {\"name\": ...}"))?;
-    let r = app.svc.stop_following(name).await?;
+    let mut r = app.svc.stop_following(name).await?;
     keys::note(format!("stopped following {name}"));
+    if let Some(s) = follow_spec(&app, name, Json::Null).await {
+        r["spec"] = s;
+    }
     Ok(AxJson(r))
+}
+
+/// `POST /v1/admin/follow/pause {"name", "paused"?: true}`: the operator's
+/// follow process of `name` stops for now (`spec.follow.paused`), or
+/// starts again from where it was; the cluster still refuses its
+/// clients' writes meanwhile. Only where the operator runs it.
+async fn follow_pause(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let name = b["name"].as_str().ok_or_else(|| ApiError::bad("name the cluster this one follows: {\"name\": ..., \"paused\"?: true}"))?;
+    let paused = b.get("paused").map(|p| p.as_bool().ok_or_else(|| ApiError::bad("paused is true or false"))).transpose()?.unwrap_or(true);
+    match follow_spec(&app, name, json!({"paused": paused})).await {
+        None => Err(ApiError { status: 409, message: format!("the follow process of {name} is not this cluster's operator's (no spec.follow names it): stop or start it where it runs") }),
+        Some(s) if s.get("error").is_some() => Err(ApiError { status: 502, message: format!("the Kubernetes API: {}", s["error"].as_str().unwrap_or_default()) }),
+        Some(s) => {
+            keys::note(format!("{} following {name}", if paused { "paused" } else { "resumed" }));
+            Ok(AxJson(json!({"name": name, "paused": paused, "spec": s})))
+        }
+    }
+}
+
+/// When the operator runs this cluster's follow process of `name`
+/// (`spec.follow` names it): merges `patch` into `spec.follow` (null:
+/// none), and answers `{"changed": true}` or the error. None when it does
+/// not.
+async fn follow_spec(app: &App, name: &str, patch: Json) -> Option<Json> {
+    let l = app.svc.kube.as_ref()?;
+    let now = match l.get().await {
+        Ok(j) => j,
+        Err(e) => return Some(json!({"error": e})),
+    };
+    if now["spec"]["follow"]["name"] != name {
+        return None;
+    }
+    Some(match l.change(&json!({"follow": patch}), &[]).await {
+        Ok(_) => json!({"changed": true}),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not change spec.follow");
+            json!({"error": e})
+        }
+    })
 }
 
 /// `POST /v1/admin/follow/promote {"name", "unplanned"?}`: promotes this
@@ -2028,12 +2072,15 @@ async fn follow_stop(State(app): State<App>, w: Option<axum::Extension<Principal
 /// own clients' writes ([`crate::service::Service::promote_follower`]).
 /// Refused (409) unless `name` held its writes on every shard as far as
 /// this cluster applied, or with `"unplanned": true`, which loses the
-/// writes it did not apply. Takes the cluster's token, as stopping does.
-async fn follow_promote(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
-    root_only(&who(w), "a promotion")?;
+/// writes it did not apply. An admin's call, as stopping is; where the
+/// operator runs the follow process, its spec goes ([`follow_spec`]).
+async fn follow_promote(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let name = b["name"].as_str().ok_or_else(|| ApiError::bad("name the cluster this one follows: {\"name\": ..., \"unplanned\"?: false}"))?;
     let unplanned = b.get("unplanned").map(|u| u.as_bool().ok_or_else(|| ApiError::bad("unplanned is true or false"))).transpose()?.unwrap_or(false);
-    let r = app.svc.promote_follower(name, unplanned).await?;
+    let mut r = app.svc.promote_follower(name, unplanned).await?;
+    if let Some(s) = follow_spec(&app, name, Json::Null).await {
+        r["spec"] = s;
+    }
     keys::note(match unplanned {
         true => format!("promoted from {name}, unplanned: {} transactions lost", r["lost"]),
         false => format!("promoted from {name}"),
@@ -4028,6 +4075,22 @@ async fn hub_copy(State(app): State<App>, w: Option<axum::Extension<Principal>>,
     let who = who(w);
     let j = crate::copy::copy(&app.svc, &who, &from, &to, &tables).await?;
     let detail = format!("copied {} from {} to {}: {} rows", tables.join(", "), from.describe(), to.describe(), j["written"].as_u64().unwrap_or(0));
+    Ok(audited(j, detail))
+}
+
+/// `POST /v1/admin/hub/follow {follower, source, name?, start?,
+/// source_url?, key_secret?, ca_secret?, plan?}`: sets the connection
+/// `follower` to follow `source` ([`crate::hub_follow`]): a feed key made
+/// on the source, kept in a Secret of the follower's namespace, and its
+/// `spec.follow`. With `plan`, what would be done, and why it would be
+/// refused (`refused`); nothing is made.
+async fn hub_follow(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let a = crate::hub_follow::Ask::from(&b)?;
+    let j = crate::hub_follow::follow(&app.svc, &who(w), &a).await?;
+    if a.plan {
+        return Ok(AxJson(j).into_response());
+    }
+    let detail = format!("set {} to follow {} (as {}, at {})", a.follower, a.source, j["name"].as_str().unwrap_or_default(), j["source_url"].as_str().unwrap_or_default());
     Ok(audited(j, detail))
 }
 

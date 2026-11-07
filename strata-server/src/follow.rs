@@ -82,6 +82,13 @@ pub struct Options {
     /// source from the promotion's numbers, without a copy, once it finds
     /// it holds what the source applied of it and nothing since.
     pub reverse: bool,
+    /// For a process started again by itself (the operator's Deployment,
+    /// [`crate::operator::FollowSpec`]): when it was asked for, in ms
+    /// since the epoch. A copy (`copy`) is then made once: one begun at or
+    /// after it is resumed. And once this cluster stopped following the
+    /// source, or was promoted from it, at or after it, the process does
+    /// not follow again but waits, saying so, until it is stopped.
+    pub once: Option<u64>,
 }
 
 /// How many transactions of a shard it holds read ahead of what it applied.
@@ -416,6 +423,16 @@ pub async fn run(o: Options) -> Result<(), ApiError> {
     };
     let kept = f.kept().await?;
     let mine = f.marks_here().await?;
+    if let Some(ms) = f.o.once {
+        if kept.copy_ms.is_some_and(|c| c >= ms) {
+            f.o.copy = false;
+        }
+        // Stopped (an even mark), and so promoted too, since it was asked.
+        let stopped = mine.follows.get(&f.o.name).filter(|&&o| o % 2 == 0).map(|&o| o / 2);
+        if let Some(at) = stopped.into_iter().chain(mine.promoted.get(&f.o.name).copied()).filter(|&t| t >= ms as i64).max() {
+            return f.idle(format!("this cluster stopped following {} at {}, since this process was asked for (at {}): it does not follow it again", f.o.name, strata::timestamp::format(at.saturating_mul(1000)), strata::timestamp::format((ms as i64).saturating_mul(1000)))).await;
+        }
+    }
     // A cluster promoted from the source takes its own writes: only a copy
     // begun since follows the source again (its shards refuse the rest),
     // a new one or the one it kept.
@@ -465,6 +482,9 @@ pub async fn run(o: Options) -> Result<(), ApiError> {
     let r = f.follow().await;
     if let Err(e) = &r {
         f.stopped = e.message.contains("stopped following") || e.message.contains("was promoted from");
+        if f.stopped && f.o.once.is_some() {
+            return f.idle(e.message.clone()).await;
+        }
         f.error = Some(e.message.clone());
         f.status(true).await;
     }
@@ -664,6 +684,18 @@ impl Follow {
         let mut all: Vec<(&str, i64)> = j["shards"].as_array().into_iter().flatten().flat_map(|s| s.as_array().into_iter().flatten()).filter_map(|s| Some((s["name"].as_str()?, s["offset"].as_i64()?))).collect();
         all.sort_by_key(|(_, o)| *o);
         Ok(Marks::of(all))
+    }
+
+    /// Says why it does not follow (`why`), and waits until it is stopped:
+    /// a process [`Options::once`] that its Deployment would start again.
+    async fn idle(&mut self, why: String) -> Result<(), ApiError> {
+        tracing::warn!(name = %self.o.name, "{why}; waiting to be stopped");
+        self.stopped = true;
+        self.error = Some(format!("{why}; waiting to be stopped"));
+        loop {
+            self.status(true).await;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
     }
 
     /// The source's promotion from this cluster ([`Options::reverse`]):
