@@ -53,7 +53,7 @@ use strata::schema::Schema;
 use strata::storage::{RankProfile, SOURCES};
 
 use crate::cores::follow::{Order, Step, Txn, Version};
-use crate::service::feed::{digests_of, follows_offset, Digest, FOLLOWS};
+use crate::service::feed::{digests_of, follows_offset, next_offset, Digest, Marks, FOLLOWS, HOLD};
 use crate::service::FOLLOW_HEADER;
 use crate::ApiError;
 
@@ -77,6 +77,11 @@ pub struct Options {
     pub batch: usize,
     /// Copy the source again, whatever the follower kept.
     pub copy: bool,
+    /// The follower is the cluster the source was promoted from
+    /// ([`crate::service::Service::promote_follower`]): it follows the
+    /// source from the promotion's numbers, without a copy, once it finds
+    /// it holds what the source applied of it and nothing since.
+    pub reverse: bool,
 }
 
 /// How many transactions of a shard it holds read ahead of what it applied.
@@ -252,6 +257,7 @@ fn txn_of(j: &Json) -> Txn {
         }
     }
     t.sources = j["sources"].as_array().cloned().unwrap_or_default();
+    t.hold = j["hold"].as_bool();
     t
 }
 
@@ -361,6 +367,9 @@ struct Follow {
     swept: u64,
     /// It stops because the follower stopped following.
     stopped: bool,
+    /// Per source shard, whether it holds its clients' writes as of the
+    /// last transaction applied ([`crate::service::feed::HOLD`]).
+    holds: BTreeMap<usize, bool>,
     error: Option<String>,
     rows_copied: u64,
     written: u64,
@@ -394,6 +403,7 @@ pub async fn run(o: Options) -> Result<(), ApiError> {
         behind_at: None,
         swept: 0,
         stopped: false,
+        holds: BTreeMap::new(),
         error: None,
         rows_copied: 0,
         written: 0,
@@ -404,30 +414,52 @@ pub async fn run(o: Options) -> Result<(), ApiError> {
         src,
         dst,
     };
-    // From here on the follower takes no other client's writes.
-    f.flush(&mut Vec::new(), true).await?;
-    f.load_tables().await?;
     let kept = f.kept().await?;
+    let mine = f.marks_here().await?;
+    // A cluster promoted from the source takes its own writes: only a copy
+    // begun since follows the source again (its shards refuse the rest).
+    if let Some(&at) = mine.promoted.get(&f.o.name).filter(|_| !f.o.copy && !f.o.reverse) {
+        return Err(ApiError {
+            status: 409,
+            message: format!("this cluster was promoted from {} (at {}): it takes its own writes; to follow {} again, copy it afresh (--copy)", f.o.name, strata::timestamp::format(at.saturating_mul(1000)), f.o.name),
+        });
+    }
     let n = shards.unwrap_or(1);
-    match kept.copy_ms {
-        Some(c) if kept.copied && !f.o.copy => {
-            f.copy_ms = c;
-            f.resume(n, &kept);
-        }
-        _ => {
+    let reverse = match f.o.reverse {
+        true => Some(f.reverse_from().await?),
+        false => None,
+    };
+    let resume = kept.copied && !f.o.copy && reverse.is_none();
+    // A copy's mark goes with the first write, which a cluster promoted
+    // from the source takes only from a copy begun since.
+    f.copy_ms = match kept.copy_ms {
+        Some(c) if resume => c,
+        c => crate::telemetry::now_ms().max(c.map_or(0, |c| c + 1)),
+    };
+    // From here on the follower takes no other client's writes; a hold of
+    // them (a switch-over's) ends, as it follows.
+    let mut first = Vec::new();
+    if mine.holds().is_some() {
+        first.push(json!({"op": "source", "source": {"name": HOLD, "offset": next_offset(mine.hold, false)}}));
+    }
+    f.flush(&mut first, true).await?;
+    f.load_tables().await?;
+    match reverse {
+        Some(seqs) => f.reverse(n, &seqs).await?,
+        None if resume => f.resume(n, &kept),
+        None => {
             // A copy cut short begins again from what it began with: a
             // catch-up from the transactions the follower had applied.
             let from = match f.o.copy {
                 true => CopyFrom { made: kept.made(), ..Default::default() },
                 false => CopyFrom { since: kept.since.clone(), whole: kept.whole.clone(), made: kept.made() },
             };
-            f.copy_ms = crate::telemetry::now_ms().max(kept.copy_ms.map_or(0, |c| c + 1));
             f.copy(n, from).await?;
         }
     }
     let r = f.follow().await;
     if let Err(e) = &r {
-        f.stopped = e.message.contains("stopped following");
+        f.stopped = e.message.contains("stopped following") || e.message.contains("was promoted from");
         f.error = Some(e.message.clone());
         f.status(true).await;
     }
@@ -482,6 +514,10 @@ struct Kept {
     made: BTreeSet<String>,
     /// The tables a catch-up copies every row of.
     whole: BTreeSet<String>,
+    /// Per source shard, the transaction at which it last held its
+    /// clients' writes, and the one at which it last ended a hold.
+    held: BTreeMap<usize, u64>,
+    released: BTreeMap<usize, u64>,
 }
 
 /// What a copy is from ([`Follow::copy`]).
@@ -596,6 +632,16 @@ impl Follow {
                 ["made", table] => {
                     k.made.insert(table.to_string());
                 }
+                [i, "held"] => {
+                    if let Ok(i) = i.parse() {
+                        k.held.insert(i, off);
+                    }
+                }
+                [i, "released"] => {
+                    if let Ok(i) = i.parse() {
+                        k.released.insert(i, off);
+                    }
+                }
                 ["whole", table] => {
                     k.whole.insert(table.to_string());
                 }
@@ -604,6 +650,89 @@ impl Follow {
             }
         }
         Ok(k)
+    }
+
+    /// The follower's own marks ([`Marks`]): of each, the greatest over its
+    /// shards.
+    async fn marks_here(&self) -> Result<Marks, ApiError> {
+        let j = retry("the follower's stream sources", || self.dst.get("/v1/sources?shards=true")).await?;
+        let mut all: Vec<(&str, i64)> = j["shards"].as_array().into_iter().flatten().flat_map(|s| s.as_array().into_iter().flatten()).filter_map(|s| Some((s["name"].as_str()?, s["offset"].as_i64()?))).collect();
+        all.sort_by_key(|(_, o)| *o);
+        Ok(Marks::of(all))
+    }
+
+    /// The source's promotion from this cluster ([`Options::reverse`]):
+    /// per source shard, the transaction that ended following, from which
+    /// this cluster follows it. Refused (409) unless this cluster holds
+    /// what the source applied of it and nothing since: each of its
+    /// shards' feeds from there carries no rows.
+    async fn reverse_from(&self) -> Result<Vec<u64>, ApiError> {
+        let src = &self.o.source;
+        let j = retry("the source's promotions", || self.src.get("/v1/feed/promoted")).await?;
+        let Some(p) = j["promotions"].as_array().and_then(|a| a.first()).cloned() else {
+            return Err(ApiError { status: 409, message: format!("{src} was never promoted from a cluster it followed: follow it with a copy (without --reverse)") });
+        };
+        let seqs: Vec<u64> = p["seqs"].as_array().into_iter().flatten().filter_map(Json::as_u64).collect();
+        let applied: Vec<(usize, u64, u64)> = p["applied"].as_array().into_iter().flatten().filter_map(|a| Some((a["shard"].as_u64()? as usize, a["seq"].as_u64()?, a["term"].as_u64().unwrap_or(0)))).collect();
+        let health = retry("the follower's health", || self.dst.get("/v1/health")).await?;
+        let mine = health.get("shards").and_then(Json::as_array).map(Vec::len);
+        let n = mine.unwrap_or(1);
+        let again = |why: String| ApiError { status: 409, message: format!("{why}: this cluster can follow {src} only with a copy (--copy, which writes its rows over these and deletes the keys it lacks)") };
+        if seqs.is_empty() || applied.len() != n || applied.iter().enumerate().any(|(i, a)| a.0 != i) {
+            return Err(again(format!("{src} was promoted from {} after applying {} shards of it, and this cluster has {n}", p["promoted"], applied.len())));
+        }
+        for &(i, seq, term) in &applied {
+            let mut path = format!("/v1/feed?from={}", seq + 1);
+            if mine.is_some() {
+                path.push_str(&format!("&shard={i}"));
+            }
+            if term > 0 {
+                path.push_str(&format!("&after_term={term}"));
+            }
+            let check = async {
+                let mut l = self.dst.lines(&path).await?;
+                let mut last = None;
+                while let Some(line) = l.next().await {
+                    let line = line.map_err(|e| ApiError { status: 503, message: format!("this cluster's shard {i}'s feed: {e}") })?;
+                    if let Some(h) = line.get("feed") {
+                        last = h["last"].as_u64();
+                    } else if line.get("gone").is_some() || line.get("diverged").is_some() {
+                        return Err(again(format!("this cluster's shard {i} no longer holds transaction {seq} as {src} applied it, or holds many after it")));
+                    } else if let Some(e) = line.get("error") {
+                        return Err(ApiError { status: line["status"].as_u64().unwrap_or(500) as u16, message: format!("this cluster's shard {i}'s feed: {}", e.as_str().unwrap_or_default()) });
+                    } else if let Some(t) = line["seq"].as_u64() {
+                        let rows = line["ops"].as_array().is_some_and(|o| !o.is_empty()) || line.get("sources").is_some();
+                        if rows {
+                            return Err(again(format!("this cluster's shard {i} took writes after {src} applied it (transaction {t}, after {seq}): {src} never saw them")));
+                        }
+                        if last.is_some_and(|l| t >= l) {
+                            return Ok(());
+                        }
+                    }
+                    if last.is_some_and(|l| l <= seq) {
+                        return Ok(());
+                    }
+                }
+                Err(ApiError { status: 503, message: format!("this cluster's shard {i}'s feed ended before its last transaction") })
+            };
+            tokio::time::timeout(Duration::from_secs(30), check).await.map_err(|_| ApiError { status: 503, message: format!("this cluster's shard {i}'s feed did not reach its last transaction in 30 s") })??;
+        }
+        tracing::info!(source = %src, from = %p["promoted"], "this cluster holds what the source applied of it: following it from its promotion");
+        Ok(seqs)
+    }
+
+    /// Follows the source from its promotion's numbers `seqs` (each of its
+    /// shards' transaction that ended following this cluster), without a
+    /// copy: this cluster's tables are the source's.
+    async fn reverse(&mut self, n: usize, seqs: &[u64]) -> Result<(), ApiError> {
+        let made: BTreeSet<String> = self.tables.values().filter(|s| !own_table(&s.table)).map(|s| s.table.clone()).collect();
+        let k = Kept { copy_ms: Some(self.copy_ms), copied: true, at: seqs.iter().enumerate().map(|(j, s)| (j, (*s, 0))).collect(), made: made.clone(), ..Default::default() };
+        self.resume(n, &k);
+        let mut m: Vec<Json> = made.iter().map(|t| self.mark(&format!("made/{t}"), 1)).collect();
+        m.push(self.mark("copied", 1));
+        self.flush(&mut m, true).await?;
+        self.status(true).await;
+        Ok(())
     }
 
     /// The path of shard `i`'s feed from transaction `from` (after
@@ -774,7 +903,14 @@ impl Follow {
                     for s in c["sources"].as_array().into_iter().flatten().filter(|s| s["name"].as_str().is_some_and(|n| !n.starts_with(crate::service::MARK))) {
                         ops.push(json!({"op": "source", "source": {"name": s["name"], "offset": s["offset"]}}));
                     }
-                    at.push((c["seq"].as_u64().unwrap_or(0), c["term"].as_u64().unwrap_or(0)));
+                    let seq = c["seq"].as_u64().unwrap_or(0);
+                    // The shard held its clients' writes at the version.
+                    let holds = c["hold"] == true;
+                    if holds {
+                        ops.push(self.mark(&format!("{i}/held"), seq as i64));
+                    }
+                    self.holds.insert(i, holds);
+                    at.push((seq, c["term"].as_u64().unwrap_or(0)));
                     break;
                 } else if let Some(e) = j.get("error") {
                     return Err(ApiError { status: j["status"].as_u64().unwrap_or(500) as u16, message: format!("the copy of shard {i}: {}", e.as_str().unwrap_or_default()) });
@@ -923,6 +1059,7 @@ impl Follow {
             }
         }
         self.order = order;
+        self.holds = (0..known).map(|i| (i, k.held.get(&i).is_some_and(|h| *h > k.released.get(&i).copied().unwrap_or(0)))).collect();
         for i in 0..known {
             let (seq, term) = self.order.at(i);
             self.start(i, seq + 1, term, None);
@@ -1082,6 +1219,17 @@ impl Follow {
             }
             for (_, id) in &t.left {
                 ops.push(self.mark(&format!("left/{i}/{id}"), t.seq as i64));
+            }
+            // The source shard holds its clients' writes from here on, or
+            // no longer: with what the follower applied, what a promotion
+            // looks for ([`crate::service::Service::promote_follower`]).
+            match t.hold {
+                Some(true) => ops.push(self.mark(&format!("{i}/held"), t.seq as i64)),
+                Some(false) => ops.push(self.mark(&format!("{i}/released"), t.seq as i64)),
+                None => {}
+            }
+            if let Some(h) = t.hold {
+                self.holds.insert(*i, h);
             }
         }
         for ((i, table), seq) in written {
@@ -1278,7 +1426,7 @@ impl Follow {
                 let (at, term) = self.order.at(i);
                 let r = self.readers.get(i);
                 let last = r.map_or(0, |r| r.last).max(at);
-                json!({"shard": i, "applied": at, "term": term, "last": last, "behind": last - at, "queued": self.order.queued(i), "joining": self.order.joining(i), "stopped": r.and_then(|r| r.ended.clone())})
+                json!({"shard": i, "applied": at, "term": term, "last": last, "behind": last - at, "queued": self.order.queued(i), "joining": self.order.joining(i), "stopped": r.and_then(|r| r.ended.clone()), "source_holds": self.holds.get(&i) == Some(&true)})
             })
             .collect();
         let state = match () {
@@ -1289,9 +1437,10 @@ impl Follow {
             _ => "following",
         };
         let behind: u64 = shards.iter().filter_map(|s| s["behind"].as_u64()).sum();
+        let source_holds = !shards.is_empty() && shards.iter().all(|s| s["source_holds"] == true);
         let body = json!({
             "name": self.o.name, "source": self.o.source, "state": state, "copy_ms": self.copy_ms, "error": self.error, "shards": shards,
-            "behind": behind, "lag_ms": lag_ms, "keys_deleted": self.swept,
+            "behind": behind, "lag_ms": lag_ms, "keys_deleted": self.swept, "source_holds": source_holds,
             "rows_copied": self.rows_copied, "written": self.written, "started_ms": self.started_ms, "time_ms": crate::telemetry::now_ms(),
         });
         if let Err(e) = self.dst.post("/v1/admin/follow/status", &body).await {
@@ -1300,3 +1449,94 @@ impl Follow {
     }
 }
 
+
+/// What `strata-server switch-over` is told.
+#[derive(Clone, Debug)]
+pub struct SwitchOptions {
+    /// The follower's HTTP URL: its coordinator, or a server of its own.
+    pub target: String,
+    /// The follower's cluster token, which a promotion takes.
+    pub target_token: Option<String>,
+    pub target_ca: Option<Vec<u8>>,
+    /// The name the follower knows the source by.
+    pub name: String,
+    /// The source's HTTP URL; by default the one its follow process names.
+    pub source: Option<String>,
+    /// A key of the source that holds its writes (an admin key), or its
+    /// token.
+    pub source_key: Option<String>,
+    pub source_ca: Option<Vec<u8>>,
+    /// Promote though the source's writes cannot be held (it is gone),
+    /// losing those the follower did not apply.
+    pub unplanned: bool,
+    /// How long to wait for the follower to apply the source's writes up
+    /// to its hold.
+    pub wait: Duration,
+}
+
+/// Switches over to a follower: holds the source's writes
+/// (`POST /v1/admin/hold-writes` there), waits until the follower applied
+/// every source shard's up to the hold, and promotes it
+/// (`POST /v1/admin/follow/promote`), which then takes its own clients'
+/// writes having lost none. A source it cannot hold stops it, saying why,
+/// unless [`SwitchOptions::unplanned`]: then it promotes all the same.
+/// Answers the promotion.
+pub async fn switch_over(o: SwitchOptions) -> Result<Json, ApiError> {
+    if !crate::service::follow_name_ok(&o.name) {
+        return Err(ApiError::bad("--name is 1 to 64 letters, digits, '.', '_' or '-'"));
+    }
+    let dst = Http::new(&o.target, o.target_token.as_deref(), o.target_ca.as_deref(), None)?;
+    let name = o.name.as_str();
+    let cluster = || async {
+        let v = dst.get("/v1/admin/follow").await?;
+        v["clusters"].as_array().into_iter().flatten().find(|c| c["name"] == name).cloned().ok_or_else(|| ApiError { status: 404, message: format!("{} never followed {name}", o.target) })
+    };
+    let c = cluster().await?;
+    let mut planned = c["source_holds"] == true || c.get("promoted_ms").is_some();
+    if !planned {
+        let url = o.source.clone().or_else(|| c["status"]["source"].as_str().map(String::from));
+        let held = match &url {
+            None => Err(format!("{} does not know where {name} is (its follow process has not said): name it (--source)", o.target)),
+            Some(u) => {
+                let src = Http::new(u, o.source_key.as_deref(), o.source_ca.as_deref(), None)?;
+                src.post("/v1/admin/hold-writes", &json!({"hold": true})).await.map_err(|e| e.message)
+            }
+        };
+        match held {
+            Ok(_) => {
+                tracing::info!("{name} holds its writes: waiting for {} to apply them", o.target);
+                let until = Instant::now() + o.wait;
+                loop {
+                    let c = cluster().await?;
+                    if c["source_holds"] == true {
+                        break;
+                    }
+                    if Instant::now() >= until {
+                        return Err(ApiError {
+                            status: 503,
+                            message: format!(
+                                "{} did not apply the writes of {name} up to its hold in {} s ({} transactions behind, as its follow process last said): {name} still holds its writes; run this again, or end the hold there (POST /v1/admin/hold-writes {{\"hold\": false}})",
+                                o.target,
+                                o.wait.as_secs(),
+                                c["status"]["behind"]
+                            ),
+                        });
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                planned = true;
+            }
+            Err(why) if !o.unplanned => {
+                return Err(ApiError {
+                    status: 409,
+                    message: format!(
+                        "could not hold the writes of {name}: {why}. Promoting {} now loses the writes {name} took that it has not applied ({} transactions, as its follow process last said); if {name} is gone, switch over with --unplanned",
+                        o.target, c["status"]["behind"]
+                    ),
+                });
+            }
+            Err(why) => tracing::warn!("could not hold the writes of {name} ({why}): promoting all the same, unplanned"),
+        }
+    }
+    dst.post("/v1/admin/follow/promote", &json!({"name": name, "unplanned": !planned})).await
+}

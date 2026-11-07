@@ -121,8 +121,9 @@ impl IntoResponse for ApiError {
         if let Some(c) = client {
             r.extensions_mut().insert(c);
         }
-        // Refused for the server's load: when to try again.
-        if self.status == 429 {
+        // Refused for the server's load, or while it holds its writes: when
+        // to try again.
+        if self.status == 429 || self.status == 503 {
             r.headers_mut().insert(header::RETRY_AFTER, header::HeaderValue::from(crate::service::RETRY_AFTER.as_secs()));
         }
         if let Some(f) = failure {
@@ -181,6 +182,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/stream", post(stream).layer(DefaultBodyLimit::disable()))
         .route("/v1/sources", get(sources))
         .route("/v1/feed", get(feed))
+        .route("/v1/feed/promoted", get(feed_promoted))
         .route("/v1/feed/keys", post(feed_keys))
         .route("/v1/sources/*name", get(source))
         .route("/v1/schema/check", post(schema_check))
@@ -202,6 +204,8 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/follow", get(follow_view))
         .route("/v1/admin/follow/status", post(follow_status))
         .route("/v1/admin/follow/stop", post(follow_stop))
+        .route("/v1/admin/follow/promote", post(follow_promote))
+        .route("/v1/admin/hold-writes", get(hold_view).post(hold_writes))
         .route("/v1/admin/shards", post(add_shard))
         .route("/v1/admin/shards/:i", axum::routing::delete(remove_shard))
         .route("/v1/admin/shards/:i/replicas", post(add_replica).merge(axum::routing::delete(remove_replica)))
@@ -704,7 +708,8 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
                 req.extensions_mut().insert(w.clone());
             }
             let follow: Option<Arc<str>> = follow.map(Into::into);
-            telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, keys::noting_change(next.run(req)))).await
+            let own = who.as_ref().is_some_and(|w| w.root);
+            telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::OWN.scope(own, keys::noting_change(next.run(req))))).await
         }
     };
     let status = res.status().as_u16();
@@ -815,7 +820,7 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
     use axum::http::Method;
     match route {
         // All a feed key may read: the feed, and whether it is up.
-        "/v1/feed" | "/v1/feed/keys" | "/v1/health" | "/v1/whoami" => Scope::Feed,
+        "/v1/feed" | "/v1/feed/keys" | "/v1/feed/promoted" | "/v1/health" | "/v1/whoami" => Scope::Feed,
         "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" => Scope::Write,
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
         "/v1/export" => Scope::Admin,
@@ -2016,6 +2021,49 @@ async fn follow_stop(State(app): State<App>, w: Option<axum::Extension<Principal
     let r = app.svc.stop_following(name).await?;
     keys::note(format!("stopped following {name}"));
     Ok(AxJson(r))
+}
+
+/// `POST /v1/admin/follow/promote {"name", "unplanned"?}`: promotes this
+/// cluster, which follows cluster `name`: it stops following and takes its
+/// own clients' writes ([`crate::service::Service::promote_follower`]).
+/// Refused (409) unless `name` held its writes on every shard as far as
+/// this cluster applied, or with `"unplanned": true`, which loses the
+/// writes it did not apply. Takes the cluster's token, as stopping does.
+async fn follow_promote(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    root_only(&who(w), "a promotion")?;
+    let name = b["name"].as_str().ok_or_else(|| ApiError::bad("name the cluster this one follows: {\"name\": ..., \"unplanned\"?: false}"))?;
+    let unplanned = b.get("unplanned").map(|u| u.as_bool().ok_or_else(|| ApiError::bad("unplanned is true or false"))).transpose()?.unwrap_or(false);
+    let r = app.svc.promote_follower(name, unplanned).await?;
+    keys::note(match unplanned {
+        true => format!("promoted from {name}, unplanned: {} transactions lost", r["lost"]),
+        false => format!("promoted from {name}"),
+    });
+    Ok(AxJson(r))
+}
+
+/// `POST /v1/admin/hold-writes {"hold"?: true}`: holds this cluster's
+/// clients' writes on every shard (503 to each from then on), as a
+/// switch-over to a cluster that follows it begins; `{"hold": false}`
+/// ends the hold. `GET`: whether it holds them.
+async fn hold_writes(State(app): State<App>, b: Option<AxJson<Json>>) -> Res {
+    let on = match b.as_ref().and_then(|AxJson(b)| b.get("hold")) {
+        None => true,
+        Some(h) => h.as_bool().ok_or_else(|| ApiError::bad("hold is true or false"))?,
+    };
+    let r = app.svc.hold_writes(on).await?;
+    keys::note(if on { "held the cluster's writes" } else { "ended the hold of the cluster's writes" }.to_string());
+    Ok(AxJson(r))
+}
+
+async fn hold_view(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.hold_view().await?))
+}
+
+/// `GET /v1/feed/promoted`: the clusters this one was promoted from, with
+/// its shards' numbers then, by which the old source follows it back
+/// ([`crate::service::Service::promotions`]).
+async fn feed_promoted(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.promotions().await?))
 }
 
 fn root_only(w: &Principal, what: &str) -> Result<(), ApiError> {

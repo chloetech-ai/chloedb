@@ -61,6 +61,10 @@ pub struct Txn {
     pub copied: bool,
     /// The versions of tables (or rank profiles) it makes or changes.
     pub versions: Vec<Version>,
+    /// The shard holds its clients' writes from here on (`true`: every
+    /// write of a client is in this transaction or before it), or no
+    /// longer (`false`).
+    pub hold: Option<bool>,
 }
 
 /// A table (or rank profile) a transaction makes or changes, by `key`:
