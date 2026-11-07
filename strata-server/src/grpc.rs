@@ -102,10 +102,11 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// 10 answers a compound query's leaf as Arrow columns
 /// ([`ARROW_PROTOCOL`]), 11 reads rows by key without SQL (`Get`,
 /// [`GET_PROTOCOL`]), 12 names the version BM25 statistics came from,
-/// so that a coordinator can keep them ([`STATS_VERSION_PROTOCOL`]), and
-/// 13 answers a shard's feed (`Feed`, [`FEED_PROTOCOL`]).
+/// so that a coordinator can keep them ([`STATS_VERSION_PROTOCOL`]), 13
+/// answers a shard's feed (`Feed`, [`FEED_PROTOCOL`]), and 14 starts a
+/// feed with a copy of the shard's rows ([`FEED_COPY_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 13;
+pub const PROTOCOL: u32 = 14;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -139,6 +140,10 @@ pub const STATS_VERSION_PROTOCOL: u32 = 12;
 /// The protocol of `Feed`, a shard's changes for another cluster to follow
 /// ([`crate::service::Service::feed`]).
 pub const FEED_PROTOCOL: u32 = 13;
+
+/// The protocol whose `Feed` starts with a copy of the shard's rows
+/// (`FeedRequest.copy`): a follower's first start.
+pub const FEED_COPY_PROTOCOL: u32 = 14;
 
 /// The most bytes of a feed one `FeedChunk` carries.
 const FEED_CHUNK: usize = 1 << 20;
@@ -327,7 +332,13 @@ impl Grpc {
         let id = obs::request_id(req.metadata().get(obs::HEADER).and_then(|v| v.to_str().ok()));
         let span = tracing::info_span!("request", id = %id, method);
         let t0 = Instant::now();
-        let (who, may) = may_call(&req, method);
+        let (who, mut may) = may_call(&req, method);
+        // A follow process's writes, through a coordinator
+        // ([`crate::service::FOLLOW`]).
+        let follow: Option<Arc<str>> = req.metadata().get(crate::service::FOLLOW_HEADER).and_then(|v| v.to_str().ok()).map(Into::into);
+        if follow.is_some() && !who.root && may.is_ok() {
+            may = Err(ApiError { status: 403, message: format!("{} is a coordinator's, with the cluster's token", crate::service::FOLLOW_HEADER) });
+        }
         if let Err(e) = may {
             self.0.metrics.grpc(method, "PermissionDenied", 0.0);
             obs::scope(Some(id.clone()), async { audit(&self.0, &who, method, e.status, t0, None) }).await;
@@ -348,7 +359,7 @@ impl Grpc {
         // query spent an eighth of its time copying it).
         let call = Box::pin(f(self.0.clone(), who.clone(), req.into_inner()));
         let call = keys::noting(crate::service::DEADLINE.scope(crate::service::Deadline::of_part(clients), crate::service::ROUTED.scope(std::cell::Cell::new(0), call)));
-        let call = crate::telemetry::calling(Arc::new(caller), call);
+        let call = crate::telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, call));
         let (r, note) = crate::telemetry::traced(crate::telemetry::Trace::new(), obs::scope(Some(id.clone()), call)).instrument(span.clone()).await;
         let status = r.as_ref().map_or_else(|e| e.status, |_| 200);
         obs::scope(Some(id.clone()), async { audit(&self.0, &who, method, status, t0, note) }).await;
@@ -635,7 +646,7 @@ impl pb::strata_server::Strata for Grpc {
     type FeedStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::FeedChunk, Status>> + Send>>;
 
     async fn feed(&self, req: Request<pb::FeedRequest>) -> Result<Response<Self::FeedStream>, Status> {
-        let rx = self.serve("Feed", req, |svc, _who, r| async move { svc.feed(r.from, (r.after_term > 0).then_some(r.after_term)).await }).await?.into_inner();
+        let rx = self.serve("Feed", req, |svc, _who, r| async move { svc.feed(r.from, (r.after_term > 0).then_some(r.after_term), r.copy).await }).await?.into_inner();
         let chunks = tokio_stream::wrappers::ReceiverStream::new(rx).flat_map(|lines| futures::stream::iter(lines.chunks(FEED_CHUNK).map(|c| Ok(pb::FeedChunk { lines: c.to_vec() })).collect::<Vec<_>>()));
         Ok(Response::new(Box::pin(chunks)))
     }
@@ -689,7 +700,7 @@ impl pb::strata_server::Strata for Grpc {
             let keys = r.keys.into_iter().map(from_pb).collect();
             // A coordinator's read names the protocol it speaks; it counts
             // the keys itself ([`crate::reads`]).
-            let got = svc.get_rows(table.as_deref(), keys, &after, r.timeout_ms as u64, r.protocol == 0).await?;
+            let got = svc.get_rows(table.as_deref(), keys, None, &after, r.timeout_ms as u64, r.protocol == 0).await?;
             Ok(get_response(got))
         })
         .await

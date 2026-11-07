@@ -15,7 +15,7 @@
 //! | `POST /v1/rank_log/interleaving` | the export's body | `{pairs: [{variants, requests, acted, wins, ties, delta, p}], took_ms}`: which of two interleaved rankings the users preferred ([`strata::rank_log::Credit`]) |
 //! | `POST /v1/write` | `{ops: [...]}` (see `proto/strata.proto`; each op writes the first table, or its `table`) | `{written, seq_no?, seq_nos?}` |
 //! | `GET /v1/kv/:table/:key?min_seq_no=n` | | `{table, key, found, row?, seq_no?}`: the row with that primary key, read without SQL, as `SELECT *` answers it ([`Service::get_rows`]); 404 when no live row has it (or it has expired) |
-//! | `POST /v1/kv/get` | `{keys, table?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{table, columns, rows, seq_nos, took_ms}`: per key, in their order, its row as an object (null for none) and its number; a coordinator asks each key's shard |
+//! | `POST /v1/kv/get` | `{keys, table?, columns?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{table, columns, rows, seq_nos, took_ms}`: per key, in their order, its row as an object (null for none) and its number, of `columns` alone when given; a coordinator asks each key's shard |
 //! | `PUT /v1/kv/:table/:key?if_seq_no=n` | the row's fields as an object (the key may be left out) | `{written, seq_no?}`: the row written in place of any with the key (an upsert; with `if_seq_no`, only while the row's number is that) |
 //! | `DELETE /v1/kv/:table/:key?if_seq_no=n&routing=v` | | `{deleted, written, seq_no?}` |
 //! | `POST /v1/plan` | `{plan, timeout_ms?, min_seq_no?, min_seq_nos?}` (a plan as `/v1/explain` gives it) | rows, or `{written, seq_no?, seq_nos?}` |
@@ -198,6 +198,9 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/vacuum", post(admin_vacuum))
         .route("/v1/admin/verify", post(admin_verify))
         .route("/v1/admin/promote", post(admin_promote))
+        .route("/v1/admin/follow", get(follow_view))
+        .route("/v1/admin/follow/status", post(follow_status))
+        .route("/v1/admin/follow/stop", post(follow_stop))
         .route("/v1/admin/shards", post(add_shard))
         .route("/v1/admin/shards/:i", axum::routing::delete(remove_shard))
         .route("/v1/admin/shards/:i/replicas", post(add_replica).merge(axum::routing::delete(remove_replica)))
@@ -679,9 +682,13 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
         Some(_) => None,
     };
     let need = route_scope(&method, route);
+    // A follow process's writes ([`crate::service::FOLLOW`]).
+    let follow = header_str(req.headers(), header::HeaderName::from_static(crate::service::FOLLOW_HEADER)).map(str::to_string);
     let refused = match &who {
         None => Some(ApiError { status: 401, message: "missing or wrong token".into() }),
         Some(w) if w.scope < need => w.may(need, &format!("{method} {route}")).err(),
+        Some(w) if follow.is_some() && !w.root => Some(ApiError { status: 403, message: format!("{} names a cluster this one follows: only its follow process sends it, with the cluster's token", crate::service::FOLLOW_HEADER) }),
+        Some(_) if follow.as_deref().is_some_and(|f| !crate::service::follow_name_ok(f)) => Some(ApiError::bad(format!("{} is 1 to 64 letters, digits, '.', '_' or '-'", crate::service::FOLLOW_HEADER))),
         Some(_) => None,
     };
     let (res, note, change) = match refused {
@@ -695,7 +702,8 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
             if let Some(w) = &who {
                 req.extensions_mut().insert(w.clone());
             }
-            telemetry::calling(Arc::new(caller), keys::noting_change(next.run(req))).await
+            let follow: Option<Arc<str>> = follow.map(Into::into);
+            telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, keys::noting_change(next.run(req)))).await
         }
     };
     let status = res.status().as_u16();
@@ -1077,10 +1085,11 @@ async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<
     let num = |k: &str| -> Result<Option<u64>, ApiError> { q.get(k).map(|v| v.parse::<u64>().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}")))).transpose() };
     let (from, after) = (num("from")?.unwrap_or(1), num("after_term")?.filter(|&t| t > 0));
     let shard = num("shard")?;
+    let copy = flag(&q, "copy", false)?;
     let ndjson = |body: axum::body::Body| ([(header::CONTENT_TYPE, "application/x-ndjson")], body).into_response();
     if let Ok(c) = app.svc.coordinator() {
         let shard = shard.ok_or_else(|| ApiError::bad("a cluster's feed is each shard's: name one (?shard=0 for the first)"))?;
-        let chunks = c.feed(shard as usize, from, after.unwrap_or(0)).await?;
+        let chunks = c.feed(shard as usize, from, after.unwrap_or(0), copy).await?;
         let lines = chunks.map(|c| {
             Ok::<_, std::convert::Infallible>(match c {
                 Ok(c) => Bytes::from(c.lines),
@@ -1097,7 +1106,7 @@ async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<
     if shard.is_some_and(|s| s != own) {
         return Err(ApiError::bad(format!("this server holds shard {own} alone: ask its coordinator for shard {}", shard.unwrap_or(0))));
     }
-    let rx = app.svc.feed(from, after).await?;
+    let rx = app.svc.feed(from, after, copy).await?;
     let lines = tokio_stream::wrappers::ReceiverStream::new(rx).map(|v| Ok::<_, std::convert::Infallible>(Bytes::from(v)));
     Ok(ndjson(axum::body::Body::from_stream(lines)))
 }
@@ -1347,7 +1356,7 @@ fn path_key(schema: &strata::schema::Schema, key: &str) -> Result<Json, ApiError
 async fn kv_one(State(app): State<App>, axum::extract::Path((table, key)): axum::extract::Path<(String, String)>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
     let t0 = Instant::now();
     let timeout_ms = q.get("timeout_ms").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let got = app.svc.get_rows(Some(&table), vec![strata::value::Value::Str(key.clone())], &after_of_query(&q)?, timeout_ms, true).await?;
+    let got = app.svc.get_rows(Some(&table), vec![strata::value::Value::Str(key.clone())], None, &after_of_query(&q)?, timeout_ms, true).await?;
     let took_ms = t0.elapsed().as_secs_f64() * 1e3;
     Ok(match got.rows.into_iter().next().flatten() {
         Some((row, seq_no)) => AxJson(json!({"table": got.table, "key": key, "found": true, "row": key_row(&got.columns, &row), "seq_no": seq_no, "took_ms": took_ms})).into_response(),
@@ -1367,7 +1376,12 @@ async fn kv_get(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Respo
         Some(Json::String(t)) => Some(t.as_str()),
         Some(_) => return Err(ApiError::bad("table is a table's name")),
     };
-    let got = app.svc.get_rows(table, keys, &after(&b)?, body_u64(&b, "timeout_ms"), true).await?;
+    let columns = match b.get("columns") {
+        None | Some(Json::Null) => None,
+        Some(Json::Array(c)) => Some(c.iter().map(|c| c.as_str().map(str::to_string)).collect::<Option<Vec<_>>>().ok_or_else(|| ApiError::bad("columns are the names of columns"))?),
+        Some(_) => return Err(ApiError::bad("columns is an array of the names of columns")),
+    };
+    let got = app.svc.get_rows(table, keys, columns, &after(&b)?, body_u64(&b, "timeout_ms"), true).await?;
     Ok(AxJson(KeyRowsJson { got: &got, took_ms: t0.elapsed().as_secs_f64() * 1e3 }).into_response())
 }
 
@@ -1929,10 +1943,55 @@ fn line_ops(line: &[u8]) -> Result<Vec<Json>, ApiError> {
 }
 
 /// Every stream source written from, with the offset of the last event
-/// each wrote ([`Service::sources`]).
-async fn sources(State(app): State<App>) -> Res {
+/// each wrote ([`Service::sources`]): on a coordinator the least over its
+/// shards; `?shards=true` also lists each shard's own (`shards`).
+async fn sources(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
+    if flag(&q, "shards", false)? {
+        let by_shard = app.svc.sources_by_shard().await?;
+        let least = match app.svc.coordinator() {
+            Ok(_) => app.svc.sources().await?,
+            Err(_) => by_shard.first().cloned().unwrap_or_default(),
+        };
+        let shards: Vec<Json> = by_shard.into_iter().map(|s| Json::Array(s.into_iter().map(source_json).collect())).collect();
+        return Ok(AxJson(json!({"sources": least.into_iter().map(source_json).collect::<Vec<_>>(), "shards": shards})));
+    }
     let sources: Vec<Json> = app.svc.sources().await?.into_iter().map(source_json).collect();
     Ok(AxJson(json!({"sources": sources})))
+}
+
+/// `GET /v1/admin/follow`: the clusters this one follows or followed
+/// ([`crate::follow`]): whether it follows each now, how far its follow
+/// process applied each source shard's feed, and what that process last
+/// said of itself.
+async fn follow_view(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.follow_view().await?))
+}
+
+/// `POST /v1/admin/follow/status`: a follow process says how it stands
+/// (the cluster's token only).
+async fn follow_status(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    root_only(&who(w), "a follow process's status")?;
+    let name = b["name"].as_str().filter(|n| crate::service::follow_name_ok(n)).ok_or_else(|| ApiError::bad("the status names its cluster: {\"name\": ...}"))?.to_string();
+    app.svc.note_follow_status(&name, b);
+    Ok(AxJson(json!({"noted": name})))
+}
+
+/// `POST /v1/admin/follow/stop {"name"}`: stops following cluster `name`
+/// (the cluster's token only): from then on this cluster takes its
+/// clients' writes, and refuses its follow process's.
+async fn follow_stop(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    root_only(&who(w), "stopping following")?;
+    let name = b["name"].as_str().ok_or_else(|| ApiError::bad("name the cluster to stop following: {\"name\": ...}"))?;
+    let r = app.svc.stop_following(name).await?;
+    keys::note(format!("stopped following {name}"));
+    Ok(AxJson(r))
+}
+
+fn root_only(w: &Principal, what: &str) -> Result<(), ApiError> {
+    match w.root {
+        true => Ok(()),
+        false => Err(ApiError { status: 403, message: format!("{what} takes the cluster's token, not a key") }),
+    }
 }
 
 /// One source's offset, null for one not written from (start from the

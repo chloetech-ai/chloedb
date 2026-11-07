@@ -44,7 +44,7 @@ export declare class Client extends Searchable {
   upsert(rows: Row | Iterable<Row>, options?: { table?: string }): Promise<number>;
   delete(keys: Input | Iterable<Input>, options?: { table?: string; routing?: Input }): Promise<number>;
   get(key: Input, options?: { table?: string }): Promise<Record<string, Value> | null>;
-  getMany(keys: Iterable<Input>, options?: { table?: string }): Promise<(Record<string, Value> | null)[]>;
+  getMany(keys: Iterable<Input>, options?: { table?: string; columns?: Iterable<string> }): Promise<(Record<string, Value> | null)[]>;
   put(key: Input, row: Row, options?: { table?: string; ifSeqNo?: number }): Promise<number>;
   stream(events: Iterable<Record<string, Input>> | AsyncIterable<Record<string, Input>>): Promise<Record<string, unknown>>;
   source(name: string): Promise<number | null>;
