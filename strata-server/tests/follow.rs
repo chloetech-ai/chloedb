@@ -218,6 +218,22 @@ async fn post(url: &str, body: Json, follow: Option<&str>) -> (u16, Json) {
     (r.status().as_u16(), r.json().await.unwrap_or(Json::Null))
 }
 
+/// A writer's statement under an idempotency key, sent again with that key
+/// while a shard refuses it for a change of its table that overlapped it
+/// ("run it again"), as the test alters and drops tables while the
+/// writers write: the shards that took their part keep it and do not
+/// apply it twice.
+async fn write(svc: &Arc<Service>, s: &str, key: String) {
+    for _ in 0..100 {
+        match svc.sql_in(&Principal::open(), s, &Params::new(), After::Any, 0, None, Some(key.clone())).await {
+            Ok(_) => return,
+            Err(e) if e.message.contains("run it again") || e.message.contains("still running") => tokio::time::sleep(Duration::from_millis(20)).await,
+            Err(e) => panic!("{s}: {}", e.message),
+        }
+    }
+    panic!("{s}: refused 100 times");
+}
+
 /// Writes through `svc` until `stop`: rows by key (upserts, deletes, a
 /// column set), and changes of a column of every row, in both tables.
 fn writers(svc: &Arc<Service>, stop: &Arc<AtomicBool>, tag: &'static str) -> Vec<tokio::task::JoinHandle<u64>> {
@@ -237,7 +253,7 @@ fn writers(svc: &Arc<Service>, stop: &Arc<AtomicBool>, tag: &'static str) -> Vec
                     8 => format!("INSERT OR REPLACE INTO events (id, usr, n) VALUES ({}, 'u{}', {r})", 200 + r % 50, (200 + r % 50) % 11),
                     _ => format!("INSERT OR REPLACE INTO products (id, title, description, price) VALUES ('{k}', '{tag} kettle', 'Round {r}', {r})"),
                 };
-                sql(&svc, &q).await;
+                write(&svc, &q, format!("{tag}-rows-{r}")).await;
                 r += 1;
             }
             r
@@ -248,7 +264,7 @@ fn writers(svc: &Arc<Service>, stop: &Arc<AtomicBool>, tag: &'static str) -> Vec
         tasks.push(tokio::spawn(async move {
             let mut n = 0;
             while !stop.load(Ordering::Relaxed) {
-                sql(&svc, "UPDATE products SET sold = sold + 1 WHERE price < 50").await;
+                write(&svc, "UPDATE products SET sold = sold + 1 WHERE price < 50", format!("{tag}-sold-{n}")).await;
                 n += 1;
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
