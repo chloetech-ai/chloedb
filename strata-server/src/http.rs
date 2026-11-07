@@ -181,6 +181,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/stream", post(stream).layer(DefaultBodyLimit::disable()))
         .route("/v1/sources", get(sources))
         .route("/v1/feed", get(feed))
+        .route("/v1/feed/keys", post(feed_keys))
         .route("/v1/sources/*name", get(source))
         .route("/v1/schema/check", post(schema_check))
         .route("/v1/explain", post(explain))
@@ -814,7 +815,7 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
     use axum::http::Method;
     match route {
         // All a feed key may read: the feed, and whether it is up.
-        "/v1/feed" | "/v1/health" | "/v1/whoami" => Scope::Feed,
+        "/v1/feed" | "/v1/feed/keys" | "/v1/health" | "/v1/whoami" => Scope::Feed,
         "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" => Scope::Write,
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
         "/v1/export" => Scope::Admin,
@@ -1079,13 +1080,20 @@ async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json) -> Res {
 /// changes of the server's numbered transactions from `from` on (default
 /// 1), or of shard `i`'s through its primary, as NDJSON that goes on as
 /// they are written ([`crate::service::Service::feed`]). `after_term` is
-/// the term of transaction `from - 1` as the reader holds it. A failure
-/// after the answer started ends it with `{"error": ..., "status": ..}`.
+/// the term of transaction `from - 1` as the reader holds it. With
+/// `copy=true`, a copy of the rows first (`since=n`: those changed after
+/// transaction n, whose term `after_term` is then; `whole=a,b`: but every
+/// row of tables a and b; `digests=true`: with the digests of the keys). A
+/// failure after the answer started ends it with `{"error": ..., "status": ..}`.
 async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
     let num = |k: &str| -> Result<Option<u64>, ApiError> { q.get(k).map(|v| v.parse::<u64>().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}")))).transpose() };
     let (from, after) = (num("from")?.unwrap_or(1), num("after_term")?.filter(|&t| t > 0));
     let shard = num("shard")?;
-    let copy = flag(&q, "copy", false)?;
+    let whole: Vec<String> = q.get("whole").into_iter().flat_map(|w| w.split(',')).filter(|t| !t.is_empty()).map(String::from).collect();
+    let copy = flag(&q, "copy", false)?.then_some(crate::service::feed::CopyOpts { since: num("since")?.unwrap_or(0), whole, digests: flag(&q, "digests", false)? });
+    if copy.is_none() && ["since", "whole", "digests"].iter().any(|k| q.contains_key(*k)) {
+        return Err(ApiError::bad("since, whole and digests are a copy's (copy=true)"));
+    }
     let ndjson = |body: axum::body::Body| ([(header::CONTENT_TYPE, "application/x-ndjson")], body).into_response();
     if let Ok(c) = app.svc.coordinator() {
         let shard = shard.ok_or_else(|| ApiError::bad("a cluster's feed is each shard's: name one (?shard=0 for the first)"))?;
@@ -1109,6 +1117,29 @@ async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<
     let rx = app.svc.feed(from, after, copy).await?;
     let lines = tokio_stream::wrappers::ReceiverStream::new(rx).map(|v| Ok::<_, std::convert::Infallible>(Bytes::from(v)));
     Ok(ndjson(axum::body::Body::from_stream(lines)))
+}
+
+/// `POST /v1/feed/keys {"tables": [...], "slots"?: [...]}`: the keys of
+/// `tables` as a follower's sweep compares them with its source's: with no
+/// `slots`, `{"digests": [[slot, count, "sum in hex"], ...]}` of the slots
+/// that hold one; with `slots`, `{"keys": [{"table", "key", "place"?},
+/// ...]}` of the rows those place ([`crate::service::Service::feed_keys`];
+/// a coordinator asks each shard's primary).
+async fn feed_keys(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<AxJson<Json>, ApiError> {
+    let names = |k: &str| -> Result<Vec<String>, ApiError> {
+        b.get(k).and_then(Json::as_array).ok_or_else(|| ApiError::bad(format!("{k} is a list")))?.iter().map(|t| t.as_str().map(String::from).ok_or_else(|| ApiError::bad(format!("{k} lists names")))).collect()
+    };
+    let tables = names("tables")?;
+    let slots = match b.get("slots") {
+        None | Some(Json::Null) => None,
+        Some(Json::Array(a)) => Some(a.iter().map(|s| s.as_u64().filter(|&s| (s as usize) < crate::slots::SLOTS).map(|s| s as usize).ok_or_else(|| ApiError::bad(format!("slots are 0 to {}", crate::slots::SLOTS - 1)))).collect::<Result<Vec<_>, _>>()?),
+        Some(_) => return Err(ApiError::bad("slots is a list")),
+    };
+    let j = match app.svc.coordinator() {
+        Ok(c) => c.feed_keys(tables, slots).await?,
+        Err(_) => app.svc.feed_keys(tables, slots).await?,
+    };
+    Ok(AxJson(j))
 }
 
 /// The records of a log table ([`strata::rank_log::export`]) as NDJSON,

@@ -122,6 +122,10 @@ service Strata {
   // for another cluster to follow. Chunks may split a line: their bytes
   // are the lines in order. A call between the servers of a cluster.
   rpc Feed(FeedRequest) returns (stream FeedChunk);
+  // Protocol 15: the shard's keys as a follower's sweep compares them with
+  // its source's: their digests by slot, or the keys of some slots, of the
+  // rows it serves. A call between the servers of a cluster.
+  rpc FeedKeys(FeedKeysRequest) returns (FeedKeysResponse);
   // Replication: a primary (--replicas) ships its numbered transactions to
   // a replica (--replica), which applies them in order under the
   // primary's term and numbers.
@@ -395,6 +399,32 @@ message FeedRequest {
   // from the transaction after that version; `from` is not read. A
   // follower's first start.
   bool copy = 3;
+  // Protocol 15, with copy: only the rows a transaction after this one
+  // last wrote (0: every row), for a follower that fell behind the log;
+  // after_term is then the term of that transaction as the follower holds
+  // it.
+  uint64 since = 4;
+  // Protocol 15, with copy: the copy's last line carries the digests of
+  // the shard's keys by slot, which a follower compares with its own.
+  bool digests = 5;
+  // Protocol 15, with since: but every row of these tables (those that
+  // changed while the follower was behind).
+  repeated string whole = 6;
+}
+
+message FeedKeysRequest {
+  // The tables whose keys, by name.
+  repeated string tables = 1;
+  // With keys: the slots whose keys (of the value that places each row).
+  repeated uint32 slots = 2;
+  // The keys of `slots`; else the digests of every slot's keys.
+  bool keys = 3;
+}
+
+message FeedKeysResponse {
+  // JSON: {"digests": [[slot, count, "sum in hex"], ...]} or {"keys":
+  // [{"table", "key", "place"?}, ...]}.
+  bytes json = 1;
 }
 
 message FeedChunk {

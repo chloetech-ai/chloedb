@@ -253,6 +253,7 @@ pub fn defaults() -> Vec<Rule> {
         (rule("replica-reads", "A replica does not serve reads", "serves_reads", "<", 1.0, "all", 60, 0, "warning", c, "The replica is catching up with its primary, or lost it."), 1.0),
         (rule("query-memory", "Query memory almost spent", "query_memory_ratio", ">", 0.9, "mean", 60, 0, "warning", s, "The running queries hold over 90% of --query-memory-mb; more are refused with 429."), 0.8),
         (rule("write-queue", "Writes queue up", "write_queue", ">", 512.0, "mean", 60, 0, "warning", c, "Write requests wait for the writer; at --max-queued-writes they are refused."), 256.0),
+        (rule("follow-behind", "A follower is behind its source", "follow_lag_s", ">", 60.0, "min", 60, 0, "warning", s, "This cluster follows another, and its follow process has been over a minute behind for a minute: it is down, catching up, or held (GET /v1/admin/follow says which)."), 30.0),
     ];
     let slo = crate::service::Slo::default();
     v.into_iter()
@@ -4132,6 +4133,12 @@ mod tests {
         // 400 transactions behind at 10 writes a second: 40 s.
         let s = one(d("replica-behind"), &at(&|_| json!({"replica_behind_max": 400.0, "writes_s": 10.0})));
         assert!((s["value"].as_f64().unwrap() - 40.0).abs() < 1e-9 && s["state"] == "firing", "{s}");
+        // A follower over a minute behind for a minute, and one that
+        // only now fell behind.
+        let s = one(d("follow-behind"), &at(&|_| json!({"follow_lag_s": 90.0})));
+        assert_eq!(s["state"], "firing", "{s}");
+        let s = one(d("follow-behind"), &at(&|i| json!({"follow_lag_s": if i > 290 { 90.0 } else { 1.0 }})));
+        assert_eq!(s["state"], "ok", "{s}");
         // Filling 5% an hour at 60%: 8 hours.
         let s = one(d("disk-filling"), &at(&|i| json!({"disk_used_ratio": 0.6 - 0.05 * (300 - i) as f64 * 2.0 / 3600.0})));
         assert!((s["value"].as_f64().unwrap() - 8.0).abs() < 0.01 && s["state"] == "firing", "{s}");
