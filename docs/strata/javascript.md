@@ -133,6 +133,8 @@ const r = await client.search("book", { limit: 5 });
 
 `Client` has the methods of `Database` that a server offers, over its [HTTP API](server.md#http-api), and more of the server's own: `health()`, `stats()`, `explain(sql)`, `put(key, row, {ifSeqNo})`, `stream(events)` (an iterable or async iterable of [stream events](server.md#streams), applied once), `source(name)` and `sources()`, `ask(question)` (the server's agent), and the file calls, which upload a path's bytes (Node, Bun, Deno) or bytes given (a `Uint8Array`, a `Blob`). `exportSqlite(null)` and `exportParquet(null)` give the file's bytes instead of writing it. Rows are written 1,000 a request, keys read 10,000 a request. An error the server answers rejects with a `StrataError` whose `status` is the HTTP status and `answer` its JSON; one where the server cannot be reached rejects with `fetch`'s error. `timeout` (milliseconds, 30 seconds by default) bounds each request, and `fetch` takes another fetch.
 
+`write(ops, {idempotencyKey})` and `sql(sql, params, {idempotencyKey})` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator rejects with a `StrataError` whose `answer` says so (`partial: true`) and names its key: `await client.write(ops, { idempotencyKey: e.answer.idempotency_key })` writes the rest.
+
 In a browser, the client works from pages of the server's own origin (a page it serves, or behind the same reverse proxy): strata-server sends no CORS headers, and refuses writes from pages of other sites ([security](server.md#security)).
 
 ## Bun and Deno

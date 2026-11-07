@@ -193,8 +193,8 @@ export class Client extends Searchable {
 
   /** Runs any statement: a SELECT's `Result`, or the number of rows an
    * INSERT, UPDATE or DELETE wrote. */
-  async sql(sql, params) {
-    return resultOrWritten(await this._call("POST", "/v1/sql", given({ sql, params })));
+  async sql(sql, params, { idempotencyKey } = {}) {
+    return resultOrWritten(await this._call("POST", "/v1/sql", given({ sql, params, idempotency_key: idempotencyKey })));
   }
 
   /** @internal */
@@ -248,8 +248,8 @@ export class Client extends Searchable {
 
   /** Write operations as /v1/write takes them ({op: "insert", doc}, {op:
    * "delete", key}, ...), in one request. Returns the rows written. */
-  async write(ops) {
-    return Number((await this._call("POST", "/v1/write", { ops: [...ops] })).written);
+  async write(ops, { idempotencyKey } = {}) {
+    return Number((await this._call("POST", "/v1/write", given({ ops: [...ops], idempotency_key: idempotencyKey }))).written);
   }
 
   async #ops(op, rows, table) {

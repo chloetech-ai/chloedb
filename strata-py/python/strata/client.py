@@ -122,10 +122,14 @@ class Client(Search):
             body["timeout_ms"] = timeout_ms
         return Result._of(self._call("POST", "/v1/query", body))
 
-    def sql(self, sql: str, params: Mapping[str, Any] | None = None, **kw: Any) -> Result | int:
+    def sql(self, sql: str, params: Mapping[str, Any] | None = None, *, idempotency_key: str | None = None, **kw: Any) -> Result | int:
         """Runs any statement: a SELECT's `Result`, or the number of rows an
-        INSERT, UPDATE or DELETE wrote."""
-        r = self._call("POST", "/v1/sql", {"sql": sql, "params": _params(params, kw)})
+        INSERT, UPDATE or DELETE wrote. With `idempotency_key`, a write sent
+        again is not applied twice (see `write`)."""
+        body: dict[str, Any] = {"sql": sql, "params": _params(params, kw)}
+        if idempotency_key is not None:
+            body["idempotency_key"] = idempotency_key
+        r = self._call("POST", "/v1/sql", body)
         return Result._of(r) if "rows" in r else int(r["written"])
 
     def _query_logged(self, sql: str, params: Mapping[str, Any] | None, log: dict) -> Result:
@@ -176,10 +180,17 @@ class Client(Search):
         got = self._call("POST", "/v1/sid/next", {k: v for k, v in body.items() if v is not None})
         return {n["prefix"]: {c["code"]: c["count"] for c in n["next"]} for n in got["next"]}
 
-    def write(self, ops: list[dict]) -> int:
+    def write(self, ops: list[dict], *, idempotency_key: str | None = None) -> int:
         """Write operations as /v1/write takes them ({"op": "insert",
-        "doc": {...}}, {"op": "delete", "key": k}, ...), in one request."""
-        return int(self._call("POST", "/v1/write", {"ops": ops})["written"])
+        "doc": {...}}, {"op": "delete", "key": k}, ...), in one request.
+        With `idempotency_key`, the same request sent again (after a lost
+        answer, or with the `idempotency_key` of an error whose `answer`
+        says it failed partway through a coordinator, `"partial": True`)
+        is not applied twice."""
+        body: dict[str, Any] = {"ops": ops}
+        if idempotency_key is not None:
+            body["idempotency_key"] = idempotency_key
+        return int(self._call("POST", "/v1/write", body)["written"])
 
     def _ops(self, op: str, rows: list, table: str | None) -> int:
         named = {} if table is None else {"table": table}

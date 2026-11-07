@@ -487,10 +487,13 @@ impl pb::strata_server::Strata for Grpc {
         }
         self.serve("Write", req, |svc, who, r| async move {
             svc.check_epoch(r.epoch)?;
+            let key = Some(r.idempotency_key).filter(|k| !k.is_empty());
             let w = if !r.ops_json.is_empty() {
                 let ops: Vec<serde_json::Value> = from_json(&r.ops_json, "write operations")?;
-                let key = Some(r.idempotency_key).filter(|k| !k.is_empty());
-                svc.write_ops_as(ops, key, if r.moved { Moved::Copy } else { Moved::No }).await?
+                match r.moved {
+                    true => svc.write_ops_as(ops, key, Moved::Copy).await?,
+                    false => svc.write_request(ops, key).await?,
+                }
             } else if r.moved {
                 return Err(ApiError::bad("rows of moving slots come as write operations (ops_json), not SQL"));
             } else {
@@ -501,7 +504,7 @@ impl pb::strata_server::Strata for Grpc {
                         Some(ranges.into_iter().flat_map(|(a, b)| a..b.min(crate::slots::SLOTS)).collect())
                     }
                 };
-                match svc.sql_in(&who, &r.sql, &params_from_pb(r.params), After::Any, 0, slots).await? {
+                match svc.sql_in(&who, &r.sql, &params_from_pb(r.params), After::Any, 0, slots, key).await? {
                     crate::service::SqlAnswer::Written { w, .. } => w,
                     crate::service::SqlAnswer::Rows(_) => return Err(ApiError::bad("Write takes INSERT, UPDATE or DELETE; use Query")),
                 }

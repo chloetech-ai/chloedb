@@ -300,7 +300,18 @@ client.upsert({"id": "b3", "title": "Star letters", "year": 2024})
 client.search("letters", limit=3).dicts()
 ```
 
-The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `strata.StrataError`, with the HTTP status as `.status`; a server that cannot be reached raises `urllib.error.URLError`.
+The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `strata.StrataError`, with the HTTP status as `.status` and the JSON answer as `.answer`; a server that cannot be reached raises `urllib.error.URLError`.
+
+`write(ops, idempotency_key=k)` and `sql(statement, idempotency_key=k)` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator, after some shards took their part, says so in its error's answer and names its key:
+
+```python
+try:
+    client.write(ops)
+except strata.StrataError as e:
+    if not (e.answer or {}).get("partial"):
+        raise
+    client.write(ops, idempotency_key=e.answer["idempotency_key"])   # the rest, once
+```
 
 ### Streams and Kafka
 
