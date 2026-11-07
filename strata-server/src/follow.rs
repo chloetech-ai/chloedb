@@ -417,8 +417,10 @@ pub async fn run(o: Options) -> Result<(), ApiError> {
     let kept = f.kept().await?;
     let mine = f.marks_here().await?;
     // A cluster promoted from the source takes its own writes: only a copy
-    // begun since follows the source again (its shards refuse the rest).
-    if let Some(&at) = mine.promoted.get(&f.o.name).filter(|_| !f.o.copy && !f.o.reverse) {
+    // begun since follows the source again (its shards refuse the rest),
+    // a new one or the one it kept.
+    let since = |at: i64| kept.copy_ms.is_some_and(|c| c as i64 > at);
+    if let Some(&at) = mine.promoted.get(&f.o.name).filter(|&&at| !f.o.copy && !f.o.reverse && !since(at)) {
         return Err(ApiError {
             status: 409,
             message: format!("this cluster was promoted from {} (at {}): it takes its own writes; to follow {} again, copy it afresh (--copy)", f.o.name, strata::timestamp::format(at.saturating_mul(1000)), f.o.name),
@@ -426,10 +428,13 @@ pub async fn run(o: Options) -> Result<(), ApiError> {
     }
     let n = shards.unwrap_or(1);
     let reverse = match f.o.reverse {
-        true => Some(f.reverse_from().await?),
+        true => f.reverse_from(&kept).await?,
         false => None,
     };
     let resume = kept.copied && !f.o.copy && reverse.is_none();
+    if f.o.reverse && resume {
+        tracing::info!(source = %f.o.source, "this cluster follows the source back already, from its promotion: resuming");
+    }
     // A copy's mark goes with the first write, which a cluster promoted
     // from the source takes only from a copy begun since.
     f.copy_ms = match kept.copy_ms {
@@ -665,13 +670,18 @@ impl Follow {
     /// per source shard, the transaction that ended following, from which
     /// this cluster follows it. Refused (409) unless this cluster holds
     /// what the source applied of it and nothing since: each of its
-    /// shards' feeds from there carries no rows.
-    async fn reverse_from(&self) -> Result<Vec<u64>, ApiError> {
+    /// shards' feeds from there carries no rows. None when this cluster
+    /// follows the source back already (`kept`: a copy begun since the
+    /// promotion, done), which it resumes.
+    async fn reverse_from(&self, kept: &Kept) -> Result<Option<Vec<u64>>, ApiError> {
         let src = &self.o.source;
         let j = retry("the source's promotions", || self.src.get("/v1/feed/promoted")).await?;
         let Some(p) = j["promotions"].as_array().and_then(|a| a.first()).cloned() else {
             return Err(ApiError { status: 409, message: format!("{src} was never promoted from a cluster it followed: follow it with a copy (without --reverse)") });
         };
+        if kept.copied && p["at_ms"].as_u64().is_some_and(|at| kept.copy_ms.is_some_and(|c| c > at)) {
+            return Ok(None);
+        }
         let seqs: Vec<u64> = p["seqs"].as_array().into_iter().flatten().filter_map(Json::as_u64).collect();
         let applied: Vec<(usize, u64, u64)> = p["applied"].as_array().into_iter().flatten().filter_map(|a| Some((a["shard"].as_u64()? as usize, a["seq"].as_u64()?, a["term"].as_u64().unwrap_or(0)))).collect();
         let health = retry("the follower's health", || self.dst.get("/v1/health")).await?;
@@ -718,7 +728,7 @@ impl Follow {
             tokio::time::timeout(Duration::from_secs(30), check).await.map_err(|_| ApiError { status: 503, message: format!("this cluster's shard {i}'s feed did not reach its last transaction in 30 s") })??;
         }
         tracing::info!(source = %src, from = %p["promoted"], "this cluster holds what the source applied of it: following it from its promotion");
-        Ok(seqs)
+        Ok(Some(seqs))
     }
 
     /// Follows the source from its promotion's numbers `seqs` (each of its
@@ -729,6 +739,9 @@ impl Follow {
         let k = Kept { copy_ms: Some(self.copy_ms), copied: true, at: seqs.iter().enumerate().map(|(j, s)| (j, (*s, 0))).collect(), made: made.clone(), ..Default::default() };
         self.resume(n, &k);
         let mut m: Vec<Json> = made.iter().map(|t| self.mark(&format!("made/{t}"), 1)).collect();
+        // Where each reader begins, so that a restart before its first
+        // transaction begins there too.
+        m.extend(seqs.iter().enumerate().map(|(j, s)| self.mark(&format!("{j}/at"), *s as i64)));
         m.push(self.mark("copied", 1));
         self.flush(&mut m, true).await?;
         self.status(true).await;

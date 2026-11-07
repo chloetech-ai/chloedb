@@ -636,6 +636,16 @@ async fn log_ids(svc: &Arc<Service>) -> Vec<i64> {
     a.rs.rows.iter().map(|r| match r[0] { strata::value::Value::Int(n) => n, ref v => panic!("{v:?}") }).collect()
 }
 
+/// Waits until `follower` holds the rows of `log` that `source` does.
+async fn same_log(source: &Arc<Service>, follower: &Arc<Service>) {
+    let want = log_ids(source).await;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while log_ids(follower).await != want {
+        assert!(Instant::now() < deadline, "the follower's log is not the source's: {:?} there, {:?} here", want, log_ids(follower).await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Writes rows of `log` by new ids (`first`, then every `step`th) until
 /// `stop`: to `a`, and once `a` holds its writes, to `b`, as a client
 /// switched over would, until `b` takes them. Answers the ids each took.
@@ -749,6 +759,73 @@ async fn a_planned_switch_over_loses_no_write_and_the_old_source_follows_back() 
     assert!(status == 409 && e.to_string().contains("follows west"), "{status} {e}");
     assert!(!g.is_finished());
     g.abort();
+}
+
+/// A switch-over and back, as a drill does: each follow process started
+/// again resumes (one following back, with `--reverse` or without, and
+/// one following a cluster it was promoted from before), and each
+/// switch-over loses nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_switch_over_and_back_resumes_after_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (svc_a, url_a, svc_b, url_b) = two_into_one(dir.path()).await;
+    sql(&svc_a, "INSERT INTO log (id, v) VALUES (1, 'one'), (2, 'two')").await;
+    let view_b = view_of(&url_b);
+    let f = tokio::spawn(follow::run(options(&url_a, &url_b)));
+    copied(&view_b, &f).await;
+    caught_up(&svc_a, &svc_b, &view_b).await;
+    let switch = |target: &str, name: &str| follow::SwitchOptions { target: target.into(), target_token: None, target_ca: None, name: name.into(), source: None, source_key: None, source_ca: None, unplanned: false, wait: Duration::from_secs(60) };
+    let r = follow::switch_over(switch(&url_b, "east")).await.unwrap();
+    assert_eq!((r["planned"].clone(), r["lost"].clone()), (json!(true), json!(0)), "{r}");
+    let _ = f.await;
+
+    // The old source follows back; that process started again, with
+    // --reverse as a script would, or without, resumes.
+    let back = Options { name: "west".into(), reverse: true, ..options(&url_b, &url_a) };
+    let view_a = view_of(&url_a);
+    for (k, reverse) in [true, true, false].into_iter().enumerate() {
+        let before = view_a().await["clusters"][0]["status"]["started_ms"].as_u64().unwrap_or(0);
+        let g = tokio::spawn(follow::run(Options { reverse, ..back.clone() }));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let st = loop {
+            let st = settled(&view_a).await;
+            if st["started_ms"].as_u64().unwrap_or(0) > before {
+                break st;
+            }
+            assert!(!g.is_finished(), "the follow process ended: {:?}", g.await);
+            assert!(Instant::now() < deadline, "it does not follow: {st}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert_eq!(st["rows_copied"], 0, "{st}");
+        sql(&svc_b, &format!("INSERT INTO log (id, v) VALUES ({}, 'on west')", 100 + k)).await;
+        same_log(&svc_b, &svc_a).await;
+        g.abort();
+        let _ = g.await;
+    }
+    let g = tokio::spawn(follow::run(Options { reverse: false, ..back.clone() }));
+    settled(&view_a).await;
+    same_log(&svc_b, &svc_a).await;
+
+    // And back again: the old source is promoted from the new primary, and
+    // the new primary follows it back, from that promotion, as a cluster
+    // promoted from it once; started again, it resumes too.
+    let r = follow::switch_over(switch(&url_a, "west")).await.unwrap();
+    assert_eq!((r["planned"].clone(), r["lost"].clone()), (json!(true), json!(0)), "{r}");
+    let _ = g.await;
+    let again = Options { reverse: true, ..options(&url_a, &url_b) };
+    for reverse in [true, false] {
+        let h = tokio::spawn(follow::run(Options { reverse, ..again.clone() }));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!h.is_finished(), "the follow process ended: {:?}", h.await);
+        sql(&svc_a, &format!("INSERT INTO log (id, v) VALUES ({}, 'on east again')", 200 + reverse as i64)).await;
+        same_log(&svc_a, &svc_b).await;
+        assert_eq!(settled(&view_b).await["rows_copied"], 0);
+        h.abort();
+        let _ = h.await;
+    }
+    assert_eq!(log_ids(&svc_a).await, log_ids(&svc_b).await);
+    let (status, e) = post(&format!("{url_b}/v1/write"), json!({"ops": [{"op": "upsert", "table": "log", "doc": {"id": -1, "v": "late"}}]}), None).await;
+    assert!(status == 409 && e.to_string().contains("follows east"), "{status} {e}");
 }
 
 /// After a promotion that was not planned (the source unreachable), the
