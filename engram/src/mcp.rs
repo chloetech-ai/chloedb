@@ -16,6 +16,7 @@ Relevant records are injected automatically when a prompt clearly matches them; 
 memory_ask is the way to answer a question about earlier work (what was decided, why, where something happens and why, which error, which numbers): it plans several searches, runs them and picks the records that answer it. \
 memory_search is one quick hybrid search. \
 memory_timeline shows what happened around a record id. memory_sql answers structured questions (counts, by file, by kind, by time). \
+memory_history shows how a decision, rule or fact changed over time, each version with the dates it held. \
 memory_remember stores a decision, preference, fact or open task worth keeping beyond this session, ideally one sentence that will make sense later.";
 
 fn tools() -> Json {
@@ -26,6 +27,7 @@ fn tools() -> Json {
             "inputSchema": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "The question or task, in natural language."},
                 "model": {"type": "string", "description": "Model for planning and ranking (default: the configured one, usually haiku); a stronger model for hard questions, e.g. sonnet."},
+                "as_of": {"type": "string", "description": "Answer as things stood on this date (YYYY-MM-DD): only records written by then, and the versions of notes in force then."},
                 "include_current": {"type": "boolean", "default": false}
             }, "required": ["question"]}
         },
@@ -37,8 +39,17 @@ fn tools() -> Json {
                 "kinds": {"type": "array", "items": {"type": "string", "enum": ["prompt", "answer", "tool_call", "tool_result", "error", "episode", "summary", "decision", "preference", "fact", "todo", "note"]}, "description": "Only these record kinds."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 8},
                 "since_days": {"type": "number", "description": "Only records from the last N days."},
+                "as_of": {"type": "string", "description": "Only what held on this date (YYYY-MM-DD): records written by then, and the versions of notes in force then."},
                 "include_current": {"type": "boolean", "default": false}
             }, "required": ["query"]}
+        },
+        {
+            "name": "memory_history",
+            "description": "How a decision, rule, requirement or fact changed over time: every version of it, oldest first, with the dates each held, what replaced it, and notes that contradict it. Give a note id, or words that name the subject (e.g. \"refund window\").",
+            "inputSchema": {"type": "object", "properties": {
+                "id": {"type": "string", "description": "A note id, e.g. from a search or the briefing."},
+                "query": {"type": "string", "description": "Words naming what changed, when no id is at hand."}
+            }}
         },
         {
             "name": "memory_timeline",
@@ -49,17 +60,18 @@ fn tools() -> Json {
         },
         {
             "name": "memory_sql",
-            "description": "Read-only SQL over the table memory(id, session, kind, tag, turn, seq, ts, importance, files, text, ctx, links). Full-text search uses MATCH(body, 'a AND b') or ORDER BY bm25(body, 'words') DESC; paths use MATCH(files, 'exec AND rs'); ts is Unix seconds; kind is one of prompt, answer, tool_call, tool_result, error, episode, summary, decision, preference, fact, todo, note, entity (a thing notes are about, id 'e:<name>' or 'f:<path>'); links holds a note's edges (about an entity, from its turn, supersedes an older note) and REACHABLE(links, 'e:count sheet', hops => 1, dir => 'in') finds the records about an entity; tag holds the tool name or summary section. Supports WHERE with AND/OR/NOT/IN/BETWEEN, ORDER BY a column or score, GROUP BY with COUNT(*), LIMIT. Example: SELECT ts, text FROM memory WHERE kind = 'error' AND MATCH(files, 'planner') ORDER BY ts DESC LIMIT 5",
+            "description": "Read-only SQL over the table memory(id, session, kind, tag, turn, seq, ts, importance, files, text, ctx, links, valid_from, valid_to). Full-text search uses MATCH(body, 'a AND b') or ORDER BY bm25(body, 'words') DESC; paths use MATCH(files, 'exec AND rs'); ts is Unix seconds; a note held from valid_from (0: from ts) until valid_to (0: it still holds), and a note a later version replaced has tag 'superseded'; kind is one of prompt, answer, tool_call, tool_result, error, episode, summary, decision, preference, fact, todo, note, entity (a thing notes are about, id 'e:<name>' or 'f:<path>'); links holds a note's edges (about an entity, from its turn, supersedes an older note, superseded_by a newer one, conflicts with one that disagrees) and REACHABLE(links, 'e:count sheet', hops => 1, dir => 'in') finds the records about an entity; tag holds the tool name or summary section. Supports WHERE with AND/OR/NOT/IN/BETWEEN, ORDER BY a column or score, GROUP BY with COUNT(*), LIMIT. Example: SELECT ts, text FROM memory WHERE kind = 'error' AND MATCH(files, 'planner') ORDER BY ts DESC LIMIT 5",
             "inputSchema": {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]}
         },
         {
             "name": "memory_remember",
-            "description": "Store a durable decision, preference, fact, open task or note for future sessions. Use a self-contained sentence (what, why, where). Use supersedes with an older record id when this replaces it.",
+            "description": "Store a durable decision, preference, fact, open task or note for future sessions. Use a self-contained sentence (what, why, where). Use supersedes with an older record id when this replaces it: the older one is kept in its history but no longer counts as current.",
             "inputSchema": {"type": "object", "properties": {
                 "kind": {"type": "string", "enum": ["decision", "preference", "fact", "todo", "note"]},
                 "text": {"type": "string"},
                 "files": {"type": "array", "items": {"type": "string"}},
-                "supersedes": {"type": "string"}
+                "supersedes": {"type": "string", "description": "Id of the note this one replaces."},
+                "since": {"type": "string", "description": "When this became true, YYYY-MM-DD, if not today."}
             }, "required": ["kind", "text"]}
         },
         {
@@ -77,6 +89,7 @@ fn call(dir: &std::path::Path, project: &str, name: &str, args: &Json) -> (Strin
         "memory_timeline" => "timeline",
         "memory_sql" => "sql",
         "memory_remember" => "remember",
+        "memory_history" => "history",
         "memory_forget" => "forget",
         _ => return (format!("unknown tool {name}"), true),
     };

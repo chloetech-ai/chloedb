@@ -108,11 +108,8 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 
 /// The live notes: not superseded or done, requirements still planned.
 pub fn live_notes(store: &Store, limit: usize) -> Result<Vec<Record>> {
-    Ok(store
-        .latest(&KNOWLEDGE, limit, &Filter::default())?
-        .into_iter()
-        .filter(|r| r.tag != "superseded" && r.tag != "done" && r.tag != "cue" && (r.kind != Kind::Todo || r.tag == "planned"))
-        .collect())
+    let now = crate::now();
+    Ok(store.latest(&KNOWLEDGE, limit, &Filter::default())?.into_iter().filter(|r| r.is_live(now) && r.tag != "cue").collect())
 }
 
 /// Groups of related notes (indices into `notes`), largest first, each of
@@ -245,14 +242,21 @@ pub fn run(store: &Store, cfg: &ConsolidateConfig, cli: &DistillConfig, now: i64
                 ctx += "\n";
                 ctx += &Anchor::merge(&anchors).to_line();
             }
-            let mut d = draft.ctx(ctx);
+            // The merged note holds from when the newest thing it says
+            // began; each note it replaces closes then.
+            let since = olds.iter().map(|r| r.valid_since()).max();
+            let mut d = draft.ctx(ctx).since(since);
             d.importance = Some(olds.iter().map(|r| r.importance).fold(0.0, f64::max));
             for id in &replaces {
                 d = d.link("supersedes", id.clone());
             }
-            store.append(&newest.session, newest.turn, now, vec![d])?;
+            let merged = store.append(&newest.session, newest.turn, now, vec![d])?;
+            let by = merged.first().map(|m| (m.id.clone(), m.valid_since()));
             for id in &replaces {
-                let _ = store.retag(id, "superseded");
+                match &by {
+                    Some((m, at)) => store.close(id, *at, Some(m), "superseded")?,
+                    None => store.close(id, now, None, "superseded")?,
+                };
             }
             rep.replaced += replaces.len();
             rep.written += 1;
@@ -299,5 +303,34 @@ mod tests {
         assert_eq!(g.len(), 1, "{g:?}");
         let texts: Vec<&str> = g[0].iter().map(|&i| live[i].text.as_str()).collect();
         assert!(texts.iter().all(|t| t.starts_with("Refunds")), "{texts:?}");
+    }
+
+    /// A merge replaces its notes from when the newest of them began: an
+    /// as-of question about the time before still finds the old ones.
+    #[test]
+    fn merged_notes_hold_from_the_newest_they_replace() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.strata"), Arc::new(HashEmbedder { dim: 256 }), StoreOptions { sync: false, ..Default::default() }).unwrap();
+        let a = s.append("a", 1, 1000, vec![Draft::new(Kind::Preference, "Refunds are allowed within 14 days of purchase").tag("distilled").entities(vec!["refund".into()])]).unwrap().remove(0);
+        let b = s.append("a", 2, 2000, vec![Draft::new(Kind::Preference, "Refunds are allowed within 30 days of purchase now").tag("distilled").entities(vec!["refund".into()])]).unwrap().remove(0);
+        let out = dir.path().join("out.json");
+        let script = dir.path().join("fake-model.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ncat > /dev/null\ncat '{}'\n", out.display())).unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let line = serde_json::json!({"kind": "rule", "text": "Refunds are allowed within 30 days of purchase (changed from 14).", "replaces": [a.id, b.id]}).to_string();
+        std::fs::write(&out, serde_json::json!({"is_error": false, "total_cost_usd": 0.0, "result": line}).to_string()).unwrap();
+        let cli = DistillConfig { command: script.to_string_lossy().into(), ..Default::default() };
+        let cfg = ConsolidateConfig { cos: 0.99, entity_cos: 0.0, min_live: 0, ..Default::default() };
+        let rep = run(&s, &cfg, &cli, 5000).unwrap();
+        assert_eq!((rep.groups, rep.replaced, rep.written), (1, 2, 1), "{rep:?}");
+        let live = live_notes(&s, 10).unwrap();
+        assert_eq!(live.len(), 1);
+        let m = &live[0];
+        assert_eq!((m.ts, m.valid_since()), (5000, 2000));
+        let old = s.get(&[a.id.clone(), b.id.clone()]).unwrap();
+        assert!(old.iter().all(|r| r.tag == "superseded" && r.valid_to == 2000 && r.linked("superseded_by").any(|x| x == m.id)), "{old:?}");
+        // Day 1500: the 14 days held.
+        let f = Filter { as_of: Some(1500), kinds: vec![Kind::Preference], ..Default::default() };
+        assert_eq!(s.latest(&[Kind::Preference], 5, &f).unwrap().iter().map(|r| r.id.clone()).collect::<Vec<_>>(), vec![a.id.clone()]);
     }
 }

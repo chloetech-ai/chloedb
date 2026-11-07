@@ -216,6 +216,7 @@ impl Daemon {
             "timeline" => self.op_timeline(req).map(|r| (r, None)),
             "sql" => self.op_sql(req).map(|r| (r, None)),
             "remember" => self.op_remember(req).map(|r| (r, None)),
+            "history" => self.op_history(req).map(|r| (r, None)),
             "forget" => self.op_forget(req).map(|r| (r, None)),
             "append" => self.op_append(req).map(|r| (r, None)),
             "stats" => self.op_stats().map(|r| (r, None)),
@@ -528,7 +529,7 @@ impl Daemon {
         known.sort_by_key(|r| -r.seq);
         let listed: Vec<(String, Kind, String)> = known.iter().rev().map(|r| (r.id.clone(), r.kind, r.text.clone())).collect();
         let t0 = Instant::now();
-        match crate::distill::distill(&self.distill_cfg(), prompt, answer, commands, &listed) {
+        match crate::distill::distill(&self.distill_cfg(), prompt, answer, commands, &listed, ts) {
             Ok(d) => {
                 let is_known = |id: &String| known.iter().any(|r| &r.id == id);
                 let replaced: Vec<String> = d.replaced.into_iter().filter(|id| is_known(id)).collect();
@@ -548,7 +549,9 @@ impl Daemon {
                     .and_then(|rs| rs.rows.first().and_then(|r| r[0].as_str().map(String::from)));
                 let n = d.drafts.len();
                 let mut drafts = Vec::new();
-                for x in d.drafts {
+                for mut x in d.drafts {
+                    // Links only to notes the model was shown.
+                    x.links.retain(|l| !matches!(l.label.as_str(), "supersedes" | "conflicts") || is_known(&l.to));
                     let t = terms(&x.text);
                     let dup = seen.iter().any(|s| {
                         let inter = s.intersection(&t).count() as f64;
@@ -568,20 +571,41 @@ impl Daemon {
                     }
                 }
                 let kept = drafts.len();
+                let mut stored: Vec<Record> = Vec::new();
                 if !drafts.is_empty() {
-                    if let Err(e) = self.store.append(sid, turn, ts, drafts) {
-                        self.log(&json!({"ts": now(), "error": e.to_string(), "event": "distill"}));
+                    match self.store.append(sid, turn, ts, drafts) {
+                        Ok(r) => stored = r,
+                        Err(e) => self.log(&json!({"ts": now(), "error": e.to_string(), "event": "distill"})),
                     }
                 }
-                for id in &replaced {
-                    let _ = self.store.retag(id, "superseded");
+                // A replaced note closes when its new version begins.
+                let (closed, conflicts) = self.link_versions(&stored);
+                for id in replaced.iter().filter(|id| !closed.contains(id)) {
+                    let _ = self.store.close(id, ts, None, "superseded");
                 }
                 for id in &done {
                     let _ = self.store.retag(id, "done");
                 }
+                // The sentences picked from the turn's prompt by their wording
+                // ("always", "from now on") are what the model just read and
+                // wrote down properly, or judged not worth keeping.
+                let cues = self
+                    .store
+                    .query_with(
+                        &format!("SELECT id FROM memory WHERE session = :session AND turn = {turn} AND tag = 'cue' LIMIT 50"),
+                        &Params::new().set("session", Value::Str(sid.to_string())),
+                    )
+                    .map(|rs| rs.rows.iter().filter_map(|r| r[0].as_str().map(String::from)).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let by = stored.iter().find(|r| r.kind == Kind::Preference).or(stored.first()).map(|r| r.id.clone());
+                for id in &cues {
+                    let _ = self.store.close(id, ts, by.as_deref(), "superseded");
+                }
+                let shown: HashSet<String> = known.iter().map(|r| r.id.clone()).collect();
+                let rec = if self.distill_cfg().reconciles() { self.reconcile_notes(&stored, &shown) } else { json!(null) };
                 self.store.warm();
                 self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "items": n, "kept": kept,
-                    "replaced": replaced, "done": done, "cost_usd": d.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
+                    "replaced": replaced, "done": done, "conflicts": conflicts, "reconcile": rec, "cost_usd": d.cost_usd, "tokens": d.usage.json(), "ms": t0.elapsed().as_millis() as u64}));
             }
             Err(e) => self.log(&json!({"ts": now(), "event": "distill", "session": sid, "turn": turn, "error": e.to_string()})),
         }
@@ -595,6 +619,89 @@ impl Daemon {
             }
         }
         self.pending.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// Applies the version links of newly stored notes: each note a new one
+    /// `supersedes` closes when the new one begins, and a note it
+    /// `conflicts` with links back. Returns the ids closed and the conflicts.
+    fn link_versions(&self, stored: &[Record]) -> (Vec<String>, Vec<(String, String)>) {
+        let mut closed = Vec::new();
+        let mut conflicts = Vec::new();
+        for r in stored {
+            for old in r.linked("supersedes") {
+                if let Ok(Some(_)) = self.store.close(old, r.valid_since(), Some(&r.id), "superseded") {
+                    closed.push(old.to_string());
+                }
+            }
+            for other in r.linked("conflicts") {
+                if self.store.add_link(other, "conflicts", &r.id).unwrap_or(false) {
+                    conflicts.push((r.id.clone(), other.to_string()));
+                }
+            }
+        }
+        (closed, conflicts)
+    }
+
+    /// Asks whether newly stored notes replace or contradict live notes
+    /// about the same entities that the distiller was not shown (`shown`),
+    /// and links and closes them as it says. One model call, only when
+    /// there are such notes.
+    fn reconcile_notes(&self, stored: &[Record], shown: &HashSet<String>) -> Json {
+        let notes: Vec<&Record> = stored.iter().filter(|r| r.kind.is_knowledge()).collect();
+        if notes.is_empty() {
+            return json!(null);
+        }
+        let new_ids: HashSet<&str> = notes.iter().map(|r| r.id.as_str()).collect();
+        let t = now();
+        let filter = Filter { kinds: recall::KNOWLEDGE.to_vec(), ..Default::default() };
+        let reach = crate::store::Reach { hops: 1, through: Vec::new(), max_nodes: 400 };
+        let mut old: Vec<Record> = Vec::new();
+        for r in &notes {
+            let seeds: Vec<String> = r.linked("about").filter(|e| e.starts_with("e:")).map(String::from).collect();
+            if seeds.is_empty() {
+                continue;
+            }
+            let Ok(v) = self.store.embedder.embed_query(&r.key_text()) else { continue };
+            let near = self.store.reach(&seeds, &v, 12, &filter, &reach).unwrap_or_default();
+            let linked: HashSet<&str> = r.links.iter().map(|l| l.to.as_str()).collect();
+            for (o, _) in near
+                .into_iter()
+                .filter(|(o, _)| o.is_live(t) && o.tag != "cue" && !shown.contains(&o.id) && !new_ids.contains(o.id.as_str()) && !linked.contains(o.id.as_str()))
+                .take(4)
+            {
+                if !old.iter().any(|x| x.id == o.id) {
+                    old.push(o);
+                }
+            }
+        }
+        old.truncate(16);
+        if old.is_empty() {
+            return json!(null);
+        }
+        let list = |xs: &[&Record]| xs.iter().map(|r| (r.id.clone(), r.kind, r.text.clone(), r.ts)).collect::<Vec<_>>();
+        let olds: Vec<&Record> = old.iter().collect();
+        match crate::distill::reconcile(&self.distill_cfg(), &list(&notes), &list(&olds)) {
+            Ok((found, reply)) => {
+                let mut replaced = Vec::new();
+                let mut conflicts = Vec::new();
+                for (note, reps, cons) in &found {
+                    let Some(new) = notes.iter().find(|r| &r.id == note) else { continue };
+                    for o in reps {
+                        let _ = self.store.add_link(note, "supersedes", o);
+                        if let Ok(Some(_)) = self.store.close(o, new.valid_since(), Some(note), "superseded") {
+                            replaced.push(o.clone());
+                        }
+                    }
+                    for o in cons {
+                        let _ = self.store.add_link(note, "conflicts", o);
+                        let _ = self.store.add_link(o, "conflicts", note);
+                        conflicts.push(o.clone());
+                    }
+                }
+                json!({"shown": old.len(), "replaced": replaced, "conflicts": conflicts, "cost_usd": reply.cost_usd, "tokens": reply.usage.json()})
+            }
+            Err(e) => json!({"shown": old.len(), "error": e.to_string()}),
+        }
     }
 
     /// Merges related notes (the caller holds the distillation lock).
@@ -731,7 +838,7 @@ impl Daemon {
             cfg.ranker_model = m.to_string();
         }
         let (active, w) = self.active_session();
-        let mut filter = Filter::default();
+        let mut filter = Filter { as_of: as_of(req)?, ..Default::default() };
         if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) && !active.is_empty() {
             filter.exclude_window = Some((active.clone(), w));
         }
@@ -853,7 +960,8 @@ impl Daemon {
         let mut parts = Vec::new();
         let mut ck = self.checker();
         if !known.is_empty() {
-            parts.push(recall::fmt_knowledge_checked(&known, now(), Some(&mut ck)));
+            let changes = recall::change_labels(&store, &known.iter().map(|k| &k.0).collect::<Vec<_>>(), now(), 30);
+            parts.push(recall::fmt_knowledge_checked(&known, now(), Some(&mut ck), &changes));
         }
         match decision {
             _ if hits.is_empty() => {}
@@ -976,7 +1084,7 @@ impl Daemon {
         let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(8).clamp(1, 50) as usize;
         let kinds: Vec<Kind> = req.get("kinds").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|k| k.as_str().and_then(Kind::parse)).collect()).unwrap_or_default();
         let (active, w) = self.active_session();
-        let mut f = Filter { kinds, ..Default::default() };
+        let mut f = Filter { kinds, as_of: as_of(req)?, ..Default::default() };
         if !req.get("include_current").and_then(|v| v.as_bool()).unwrap_or(false) && !active.is_empty() {
             f.exclude_window = Some((active, w));
         }
@@ -991,7 +1099,7 @@ impl Daemon {
         let mut text = String::new();
         for h in hits.iter().take(limit) {
             text += &recall::fmt_record(&h.record, &recall::snippet(&h.record.text, &terms, 700), now());
-            text += &format!("\n(score {:.3})\n\n", h.score);
+            text += &format!("\n(score {:.3}){}\n\n", h.score, recall::closed_label(&h.record, now()));
         }
         if text.is_empty() {
             text = "No matching records.".into();
@@ -1062,20 +1170,85 @@ impl Daemon {
         let (sid, _) = self.active_session();
         let sid = if sid.is_empty() { "manual".to_string() } else { sid };
         let turn = self.with_session(&sid, |s| s.turn);
-        if let Some(old) = req.get("supersedes").and_then(|v| v.as_str()) {
-            if let Some(mut r) = self.store.get(&[old.to_string()])?.pop() {
-                r.tag = "superseded".into();
-                r.importance *= 0.3;
-                self.store.insert(&[r])?;
-            }
-        }
+        let old = match req.get("supersedes").and_then(|v| v.as_str()).map(str::trim).filter(|o| !o.is_empty()) {
+            Some(o) => Some(self.store.get(&[o.to_string()])?.pop().ok_or_else(|| err(format!("no record {o} to supersede")))?),
+            None => None,
+        };
+        let since = match req.get("since").and_then(|v| v.as_str()).filter(|v| !v.trim().is_empty()) {
+            Some(t) => Some(crate::distill::parse_date(t).ok_or_else(|| err(format!("since: {t} is not a date (YYYY-MM-DD)")))?),
+            None => None,
+        };
         let a = anchor::make(Path::new(&self.project), &text, &files, &[]);
-        let mut d = Draft::new(kind, text).files(files).tag("remembered");
+        let mut d = Draft::new(kind, text).files(files).tag("remembered").since(since);
         if !a.is_empty() {
             d = d.ctx(a.to_line());
         }
+        if let Some(o) = &old {
+            d = d.link("supersedes", o.id.clone());
+        }
         let recs = self.store.append(&sid, turn, now(), vec![d])?;
-        Ok(json!({"id": recs[0].id, "text": format!("Stored {} as {}.", kind.as_str(), recs[0].id)}))
+        let r = &recs[0];
+        let mut text = format!("Stored {} as {}.", kind.as_str(), r.id);
+        if let Some(o) = &old {
+            self.store.close(&o.id, r.valid_since(), Some(&r.id), "superseded")?;
+            text += &format!(" {} no longer holds from {}.", o.id, crate::distill::fmt_date(r.valid_since()));
+        }
+        Ok(json!({"id": r.id, "text": text}))
+    }
+
+    /// How notes changed: the versions of a note (by id), or of the notes
+    /// that best match some words, oldest first, each with when it held.
+    fn op_history(&self, req: &Json) -> Result<Json> {
+        let id = req.get("id").and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
+        let q = req.get("query").and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
+        let store = self.store.pinned();
+        let t = now();
+        let mut starts: Vec<String> = Vec::new();
+        if !id.is_empty() {
+            starts.push(id.to_string());
+        } else if !q.is_empty() {
+            // Every version is a candidate here, the replaced ones too.
+            let f = Filter { kinds: recall::KNOWLEDGE.to_vec(), include_replaced: true, ..Default::default() };
+            let (hits, _) = recall::search(&store, q, &f, &self.cfg.rank)?;
+            starts.extend(hits.into_iter().take(3).map(|h| h.record.id));
+        } else {
+            return Err(err("give an id or a query"));
+        }
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut chains: Vec<Vec<Record>> = Vec::new();
+        for s in starts {
+            if seen.contains(&s) {
+                continue;
+            }
+            let chain = store.versions(&s, 20)?;
+            seen.extend(chain.iter().map(|r| r.id.clone()));
+            if !chain.is_empty() {
+                chains.push(chain);
+            }
+        }
+        if chains.is_empty() {
+            return Ok(json!({"text": "No matching notes.", "ids": []}));
+        }
+        let mut text = String::new();
+        let mut ids = Vec::new();
+        for chain in &chains {
+            if !text.is_empty() {
+                text += "\n";
+            }
+            text += &format!("{} version{}, oldest first:\n", chain.len(), if chain.len() == 1 { "" } else { "s" });
+            for r in chain {
+                let span = if r.valid_to > 0 && r.valid_to <= t {
+                    format!("{} to {}", crate::distill::fmt_date(r.valid_since()), crate::distill::fmt_date(r.valid_to))
+                } else {
+                    format!("since {}, current", crate::distill::fmt_date(r.valid_since()))
+                };
+                let conflicts: Vec<&str> = r.linked("conflicts").collect();
+                let conflicts = if conflicts.is_empty() { String::new() } else { format!("; conflicts with {}", conflicts.join(", ")) };
+                text += &format!("- [{}] {} ({span}; written {}{conflicts}): {}\n", r.id, r.kind.as_str(), crate::distill::fmt_date(r.ts), r.text.split_whitespace().collect::<Vec<_>>().join(" "));
+                ids.push(r.id.clone());
+            }
+        }
+        Ok(json!({"text": text, "ids": ids}))
     }
 
     fn op_forget(&self, req: &Json) -> Result<Json> {
@@ -1137,6 +1310,18 @@ impl Daemon {
 // ---------------------------------------------------------------- server
 
 /// Runs the daemon in this process until it is idle or shut down.
+/// A request's `as_of`: a date (`2026-10-01`), a date and time, or Unix
+/// seconds.
+fn as_of(req: &Json) -> Result<Option<i64>> {
+    match req.get("as_of") {
+        None | Some(Json::Null) => Ok(None),
+        Some(Json::Number(n)) => Ok(n.as_i64()),
+        Some(Json::String(t)) if t.trim().is_empty() => Ok(None),
+        Some(Json::String(t)) => crate::distill::parse_date(t).map(Some).ok_or_else(|| err(format!("as_of: {t} is not a date (YYYY-MM-DD)"))),
+        Some(v) => Err(err(format!("as_of: {v} is not a date"))),
+    }
+}
+
 pub fn serve(dir: &Path, project: &str) -> Result<()> {
     let paths = StorePaths::new(dir);
     crate::paths::create_private_dir(dir)?;
@@ -1254,4 +1439,49 @@ fn spawn(paths: &StorePaths, project: &str) -> Result<()> {
         std::thread::sleep(Duration::from_millis(10));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A new note about an entity is checked against the live notes about
+    /// that entity that the distiller was not shown; the one it replaces
+    /// closes, the one on another point of the subject stays.
+    #[test]
+    fn new_notes_are_reconciled_with_unseen_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.json");
+        let asked = dir.path().join("prompt.txt");
+        let script = dir.path().join("fake-model.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ncat > '{}'\ncat '{}'\n", asked.display(), out.display())).unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let cfg = json!({"embedder": "hash:64", "sync": false, "distill": {"command": script, "model": "m"}});
+        std::fs::write(dir.path().join("config.json"), cfg.to_string()).unwrap();
+        let d = Daemon::open(dir.path(), "/proj").unwrap();
+        let note = |k: Kind, t: &str, e: &str, ts: i64| d.store.append("old", 1, ts, vec![Draft::new(k, t).tag("distilled").entities(vec![e.into()])]).unwrap().remove(0);
+        let window = note(Kind::Preference, "Customers may return goods within 14 days", "return policy", 100);
+        let card = note(Kind::Fact, "Returned goods are refunded to the original card", "return policy", 110);
+        let other = note(Kind::Decision, "The shop footer shows the opening hours", "shop footer", 120);
+        let new = note(Kind::Preference, "Returns are accepted within 30 days", "return policy", 500);
+        let reply = json!({"note": new.id, "replaces": [window.id]}).to_string();
+        std::fs::write(&out, json!({"is_error": false, "total_cost_usd": 0.0005, "result": reply}).to_string()).unwrap();
+
+        let r = d.reconcile_notes(std::slice::from_ref(&new), &HashSet::new());
+        assert_eq!(r["replaced"], json!([window.id]), "{r}");
+        let prompt = std::fs::read_to_string(&asked).unwrap();
+        assert!(prompt.contains("within 14 days") && prompt.contains("original card") && !prompt.contains("footer"), "{prompt}");
+        let get = |id: &str| d.store.get(&[id.to_string()]).unwrap().remove(0);
+        let w = get(&window.id);
+        assert_eq!((w.tag.as_str(), w.valid_to), ("superseded", 500));
+        assert_eq!(w.linked("superseded_by").collect::<Vec<_>>(), vec![new.id.as_str()]);
+        assert!(get(&new.id).linked("supersedes").any(|x| x == window.id));
+        assert!(get(&card.id).is_live(1000) && get(&other.id).is_live(1000));
+
+        // Notes it was shown are not asked about again; with none left, no call.
+        std::fs::remove_file(&asked).unwrap();
+        let shown: HashSet<String> = [card.id.clone()].into_iter().collect();
+        assert_eq!(d.reconcile_notes(std::slice::from_ref(&new), &shown), json!(null));
+        assert!(!asked.exists());
+    }
 }

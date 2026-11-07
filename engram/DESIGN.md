@@ -105,6 +105,9 @@ One Strata table, `memory`:
 | `ctx` | TEXT, stored | the turn's request (≤ 200 characters) or a summary's section: part of the lexical key, never shown |
 | `body` | TEXT, generated from `text` and `ctx`, positions | the lexical key that `bm25` and `MATCH` search |
 | `emb` | VECTOR(d), HNSW | the dense key: embedding of `text` alone |
+| `links` | EDGES | `about` an entity, `from` the turn a note came from, `supersedes` and `superseded_by` between versions of a note, `conflicts` between notes that disagree, `touches` a file |
+| `valid_from` | INT | when what the record says became true, Unix seconds (0: `ts`) |
+| `valid_to` | INT | when it stopped being true because a later version replaced it (0: it still holds) |
 
 Each record is one key–value pair with attributes. The keys are small and
 precise: a 400-byte window matches a question better than a 1,500-byte
@@ -176,8 +179,47 @@ lines:
 | rule, constraint, convention (kept even if the code already follows it) | `preference` | `distilled` |
 | requirement of work planned but not done | `todo` | `planned` |
 | fact about the project or its environment, failed approaches | `fact` | `distilled` |
-| `replaces: id` on any of the above | the old item is retagged | `superseded` |
+| `replaces: id` on any of the above | the old item is closed (below) | `superseded` |
+| `since: date` with a replacement | the new item's `valid_from` | |
+| `conflicts: id` on any of the above | both stay current, linked `conflicts` | |
 | `done: id` for a planned item completed | the item is retagged | `done` |
+
+### Facts that change
+
+A note holds from `valid_from` until `valid_to`. A replacement closes
+the note it replaces instead of deleting it: the old note gets
+`valid_to` = the new note's `valid_from`, the tag `superseded` and a
+`superseded_by` link, and the new one links `supersedes` back. So the
+current state is what holds now, and every earlier version stays in the
+store with the dates it held. The distiller is told the date of the
+exchange and writes `since` when the conversation says from when a
+change holds ("from Monday on"). A fact that no longer holds at all is
+replaced by a fact that says so. Two statements that disagree, with
+nothing saying which changed, both stay current and link `conflicts`;
+recall shows them together and asks the model to check which holds.
+
+The distiller sees the notes most related to the turn, not all of them,
+so it can miss an older note that the turn contradicts. After its notes
+are stored, the live notes linked to the same entities that it was not
+shown (at most four per new note, sixteen in all, nearest first) go to a
+second, short call that says which of them each new note replaces or
+contradicts. It runs only when there are such notes
+(`distill.reconcile`, `ENGRAM_RECONCILE=0` turns it off). Consolidation
+follows the same rule: a merged note holds from the newest `valid_from`
+among the notes it replaces, and they close then. The sentences picked
+from a prompt by cue words ("always", "from now on") close when the
+distiller has read that turn, since its notes say the same properly.
+
+Recall shows the current version, with `changed 2026-11-02; was: <the
+version it replaced>` when the change is less than 30 days old, and
+`conflicts with [id]: <text>` beside a note that a live note contradicts.
+`memory_history` lists every version of a note, oldest first, with the
+dates each held; `memory_search` and `memory_ask` take `as_of` (a date),
+which keeps the records written by then and the versions of notes in force
+then; a stored note whose replacement is found by any search carries
+`[no longer holds since <date>; replaced by <id>]`. Stores written before
+these columns gain them on open (`ALTER TABLE ADD COLUMN`, no rewrite), and
+the notes already replaced are dated from their replacements.
 
 It is told to leave out what is already noted, status that goes stale
 (test counts, branches, what is committed) and the assistant's own
@@ -231,7 +273,10 @@ There are three push points and one pull path:
    - `memory_timeline(id, before, after)`, the neighbourhood of a hit;
    - `memory_sql(select)`: read-only SQL over `memory`, so the model can
      ask questions like "the last five errors in `exec.rs`";
-   - `memory_remember(kind, text, files)` and `memory_forget(id)`.
+   - `memory_history(id or query)`: every version of a note, with the
+     dates each held;
+   - `memory_remember(kind, text, files, supersedes, since)` and
+     `memory_forget(id)`.
 
    Tool descriptions and a short `CLAUDE.md` note say when to use each,
    phrased as facts. The server answers calls side by side, so a quick

@@ -237,7 +237,7 @@ Records found in the memory of earlier sessions (id in brackets; a label in squa
 
 {cands}
 
-Pick the records an assistant working on this request should see: those that state facts, decisions, rules, requirements or earlier results it needs, including constraints that apply although the request does not mention them. When the request asks for suggestions, recommendations or advice, also pick what the user said about their own tastes, habits, experience, plans and things they have, even when those records do not answer the request: the assistant should tailor its answer to them. Leave out records that are merely on the same topic. When two records disagree, the later one usually holds; pick it and say so. Order the picks by importance, at most {k}.
+Pick the records an assistant working on this request should see: those that state facts, decisions, rules, requirements or earlier results it needs, including constraints that apply although the request does not mention them. When the request asks for suggestions, recommendations or advice, also pick what the user said about their own tastes, habits, experience, plans and things they have, even when those records do not answer the request: the assistant should tailor its answer to them. Leave out records that are merely on the same topic. When two records disagree, the later one usually holds (a note marked as no longer holding has been replaced); pick it and say so. But when the later one does not say that anything changed and it is unclear which is right, pick both and say that they contradict each other, so the assistant can check. Order the picks by importance, at most {k}.
 
 Output {"relevant": [{"id": "<id>", "why": "<under 20 words: what it tells the assistant>"}], "answer": "<for a question about earlier work or conversations, 1 to 3 sentences answering it from the picked records, citing ids; otherwise the one or two things the assistant must keep in mind; empty if nothing applies>", "confidence": "high" or "medium" or "low" or "none"}"#;
 
@@ -470,7 +470,7 @@ fn describe(r: &Record, terms: &HashSet<String>, now: i64, label: &str, max: usi
         Kind::Preference => "rule",
         k => k.as_str(),
     };
-    let mut s = format!("[{}] {kind} · {} · {}{}", r.id, recall::fmt_time(r.ts), fmt_ago(r.ts, now), label);
+    let mut s = format!("[{}] {kind} · {} · {}{}{}", r.id, recall::fmt_time(r.ts), fmt_ago(r.ts, now), label, recall::closed_label(r, now));
     if !r.kind.is_knowledge() {
         if let Some(req) = request_of(r) {
             s += &format!("\n  (during the request: {req})");

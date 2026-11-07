@@ -25,12 +25,14 @@ model remembering to save. The design is in [DESIGN.md](DESIGN.md).
 | every prompt | stores it; injects the earlier decisions, rules and requirements that match it; searches older history (never what is still in context) and injects the best records when the evidence is strong (up to 4,000 characters), three records when it is weak (1,200), nothing otherwise |
 | before `Edit`/`Write` of a file | injects up to two earlier errors or decisions about that file, once per context window |
 | every tool call | stores the call and its result (errors flagged, long output trimmed to head and tail, secrets redacted) |
-| end of a turn | stores the answer, the commentary written between tool calls, and an episode card (prompt, files changed, commands, errors, outcome); then a small model writes down the decisions, rules, planned work and facts the turn stated, updating or closing earlier ones |
+| end of a turn | stores the answer, the commentary written between tool calls, and an episode card (prompt, files changed, commands, errors, outcome); then a small model writes down the decisions, rules, planned work and facts the turn stated, updating or closing earlier ones: a replaced note is kept with the dates it held, and recall shows the current version with what it replaced |
 | compaction | stores the summary by section; the live window restarts |
 
-The model also gets five MCP tools:
-- `memory_search`: hybrid search;
+The model also gets seven MCP tools:
+- `memory_ask`: several searches planned by a model, and the records that answer a question;
+- `memory_search`: hybrid search, now or `as_of` a date;
 - `memory_timeline`: what surrounded a record;
+- `memory_history`: every version of a decision, rule or fact, with the dates each held;
 - `memory_sql`: read-only SQL over the `memory` table;
 - `memory_remember` and `memory_forget`.
 
@@ -87,6 +89,8 @@ enable BGE-small vectors in the daemon (`"embedder": "bert"` in the store's
 engram search "why did the planner pick post-filtering"
 engram sql "SELECT ts, text FROM memory WHERE kind = 'error' AND MATCH(files, 'exec') ORDER BY ts DESC LIMIT 5"
 engram remember decision "Prices are integer cents"
+engram history "refund window"                                          # every version of a note, with when each held
+engram search "refund window" --as-of 2026-10-01                        # what held on a date
 engram ingest-transcript ~/.claude/projects/<project>/<session>.jsonl   # back-fill old sessions
 engram distill                                                          # write down knowledge for turns stored before distillation existed
 engram stats | briefing | stop [--all]

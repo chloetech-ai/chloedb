@@ -232,3 +232,88 @@ fn next_files_before_an_edit() {
     // Nothing was edited after the report module.
     assert_eq!(before("src/report.rs"), "");
 }
+
+/// A rule that changes across sessions: the briefing and the prompts show
+/// its current version and what it replaced, `memory_history` shows every
+/// version with its dates, and `memory_remember` can replace it again.
+#[test]
+fn a_changed_rule_keeps_its_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let script = dir.path().join("fake-model.sh");
+    std::fs::write(&script, format!("#!/bin/sh\ncat > /dev/null\ncat '{}'\n", out.display())).unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let cfg = json!({"embedder": "hash:64", "sync": false, "briefing_chars": 3000, "distill": {"command": script, "model": "m"}});
+    std::fs::write(dir.path().join("config.json"), cfg.to_string()).unwrap();
+    let d = Arc::new(Daemon::open(dir.path(), "/proj").unwrap());
+    let model_says = |lines: &[Json]| {
+        let result: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        std::fs::write(&out, json!({"is_error": false, "total_cost_usd": 0.001, "result": result.join("\n")}).to_string()).unwrap();
+    };
+    let sql = |q: &str| call(&d, json!({"op": "sql", "sql": q}))["text"].as_str().unwrap().to_string();
+    let id_of = |text: &str| -> String {
+        let rows = sql(&format!("SELECT id FROM memory WHERE kind = 'preference' AND tag != 'cue' AND MATCH(body, '{text}') LIMIT 1"));
+        rows.split_whitespace().find(|w| w.contains(':')).unwrap().to_string()
+    };
+
+    model_says(&[json!({"kind": "rule", "text": "Refunds are allowed within 14 days of purchase.", "entities": ["refund window"]})]);
+    hook(&d, "SessionStart", json!({"session_id": "s1", "source": "startup"}));
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s1", "prompt": "Refunds are allowed within 14 days of purchase."}));
+    hook(&d, "Stop", json!({"session_id": "s1", "last_assistant_message": "Noted: 14 days."}));
+    let v1 = id_of("14");
+
+    model_says(&[json!({"kind": "rule", "text": "Refunds are allowed within 30 days of purchase (changed from 14).", "entities": ["refund window"], "replaces": v1})]);
+    hook(&d, "SessionStart", json!({"session_id": "s2", "source": "startup"}));
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s2", "prompt": "From now on refunds are allowed within 30 days."}));
+    hook(&d, "Stop", json!({"session_id": "s2", "last_assistant_message": "Updated the refund check to 30 days."}));
+    let v2 = id_of("30");
+    assert_ne!(v1, v2);
+    let closed = sql(&format!("SELECT tag, valid_to FROM memory WHERE id = '{v1}' LIMIT 1"));
+    assert!(closed.contains("superseded") && !closed.contains(" 0"), "{closed}");
+
+    // The briefing holds the current version, and says what it replaced.
+    let brief = hook(&d, "SessionStart", json!({"session_id": "s3", "source": "startup"}));
+    assert!(brief.contains("Refunds are allowed within 30 days"), "{brief}");
+    assert!(brief.contains("was: Refunds are allowed within 14 days"), "{brief}");
+    assert!(!brief.contains("- Refunds are allowed within 14 days"), "{brief}");
+
+    // The history, oldest first, with when each held.
+    let h = call(&d, json!({"op": "history", "query": "how long are refunds allowed"}));
+    let text = h["text"].as_str().unwrap();
+    assert!(text.starts_with("2 versions, oldest first"), "{text}");
+    let (a, b) = (text.find(&format!("[{v1}]")).unwrap(), text.find(&format!("[{v2}]")).unwrap());
+    assert!(a < b && text.contains("current") && text.contains(" to "), "{text}");
+    assert_eq!(call(&d, json!({"op": "history", "id": v1}))["ids"], json!([v1, v2]));
+
+    // Replaced by hand, with the date it takes effect.
+    let r = call(&d, json!({"op": "remember", "kind": "preference", "text": "Refunds are allowed within 60 days of purchase.", "supersedes": v2}));
+    let v3 = r["id"].as_str().unwrap().to_string();
+    assert!(r["text"].as_str().unwrap().contains(&format!("{v2} no longer holds")), "{r}");
+    assert_eq!(call(&d, json!({"op": "history", "id": v2}))["ids"], json!([v1, v2, v3]));
+    assert!(call(&d, json!({"op": "remember", "kind": "preference", "text": "x y z w", "supersedes": "nope:1"})).get("error").is_some());
+    // The turn that stated the 30 days was distilled, so the sentence picked
+    // from its prompt by its wording ("from now on") was closed with it.
+    let cue = sql("SELECT tag, valid_to FROM memory WHERE tag = 'cue' LIMIT 5");
+    assert!(!cue.contains("cue"), "{cue}");
+    // A later session whose briefing cannot hold the rule gets it with a
+    // prompt it bears on, labelled with what it replaced.
+    let cfg = json!({"embedder": "hash:64", "sync": false, "briefing_chars": 100, "distill": {"command": script, "model": "m"}});
+    std::fs::write(dir.path().join("config.json"), cfg.to_string()).unwrap();
+    drop(d);
+    let d = Arc::new(Daemon::open(dir.path(), "/proj").unwrap());
+    hook(&d, "SessionStart", json!({"session_id": "s4", "source": "startup"}));
+    let ctx = hook(&d, "UserPromptSubmit", json!({"session_id": "s4", "prompt": "How many days are refunds allowed after purchase?"}));
+    assert!(ctx.contains("60 days") && ctx.contains("was: Refunds are allowed within 30 days"), "{ctx}");
+    assert!(!ctx.contains("[rule] Refunds are allowed within 30"), "{ctx}");
+
+    // As of a time before any of it, a search finds no rule in force.
+    let none = call(&d, json!({"op": "search", "query": "refunds allowed days", "kinds": ["preference"], "as_of": "2001-01-01", "include_current": true}));
+    assert_eq!(none["ids"], json!([]), "{none}");
+    // As of now, only the version in force.
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 60;
+    let now = call(&d, json!({"op": "search", "query": "refunds allowed days", "kinds": ["preference"], "as_of": t, "include_current": true}));
+    assert_eq!(now["ids"], json!([v3]), "{now}");
+    // The history finds the subject by the words of an old version too.
+    assert_eq!(call(&d, json!({"op": "history", "query": "refunds within 14 days"}))["ids"], json!([v1, v2, v3]));
+    assert!(call(&d, json!({"op": "search", "query": "refunds", "as_of": "last week"})).get("error").is_some());
+}

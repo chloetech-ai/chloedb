@@ -23,7 +23,7 @@ use strata::storage::{DbOptions, MergerOptions, Snapshot};
 use strata::{Document, Value, VectorIndexKind};
 
 use crate::embed::Embedder;
-use crate::record::{entity_id, file_entity_id, links_of, record_id, schema, Draft, Kind, Link, Record, COLUMNS};
+use crate::record::{entity_id, file_entity_id, links_of, record_id, schema, validity_fields, Draft, Kind, Link, Record, COLUMNS};
 use crate::{err, Error, Result};
 
 /// One search result with its component scores.
@@ -51,6 +51,20 @@ pub struct Filter {
     pub until_ts: Option<i64>,
     /// Only this session.
     pub session: Option<String>,
+    /// Only what held at this time (Unix seconds): records written by then,
+    /// and notes in force then, however much later they were written down
+    /// (see [`Record::holds_at`]).
+    pub as_of: Option<i64>,
+    /// Ranked searches leave out notes a later version replaced, unless
+    /// this is set or they ask about another time ([`Filter::as_of`]).
+    pub include_replaced: bool,
+}
+
+impl Filter {
+    /// Whether a ranked search keeps notes a later version replaced.
+    pub fn keeps_replaced(&self) -> bool {
+        self.include_replaced || self.as_of.is_some()
+    }
 }
 
 impl Filter {
@@ -84,6 +98,9 @@ impl Filter {
         }
         if self.session.is_some() {
             parts.push("session = :session".into());
+        }
+        if let Some(t) = self.as_of {
+            parts.push(format!("((valid_from > 0 AND valid_from <= {t}) OR (valid_from = 0 AND ts <= {t})) AND (valid_to = 0 OR valid_to > {t})"));
         }
         if self.kinds.is_empty() {
             parts.push("kind != 'entity'".into());
@@ -175,6 +192,13 @@ impl Store {
             }
             Db::create(path, schema(embedder.dim(), opts.vector_index.clone())?, dbo)?
         };
+        // Stores written before notes kept when they held gain the two
+        // columns (every row reads 0: held since it was written, still holds).
+        let dated = db.schema().field("valid_to").is_some();
+        if !dated {
+            let adds: Vec<strata::schema::Alter> = validity_fields().into_iter().map(strata::schema::Alter::AddField).collect();
+            db.alter_table("memory", &adds)?;
+        }
         let want = embedder.dim();
         if let Some(strata::FieldType::Vector { dim, .. }) = db.schema().field("emb").map(|f| f.ty.clone()) {
             if dim != want {
@@ -190,7 +214,49 @@ impl Store {
         // several daemons.
         db.spawn_merger(MergerOptions { threads: 1, ..MergerOptions::default() });
         let writer = Arc::new(Writer::start(db.clone(), next)?);
-        Ok(Store { db, embedder, writer, snap: None })
+        let store = Store { db, embedder, writer, snap: None };
+        if !dated {
+            let n = store.date_closed_notes()?;
+            if n > 0 {
+                eprintln!("engram: {} now keeps when each note held ({n} replaced notes dated)", path.display());
+            }
+        }
+        Ok(store)
+    }
+
+    /// Dates the notes that later notes replaced before validity was kept:
+    /// each closes when the note that replaced it began, and links to it.
+    fn date_closed_notes(&self) -> Result<usize> {
+        let kinds: Vec<String> = Kind::ALL.iter().filter(|k| k.is_knowledge()).map(|k| format!("'{}'", k.as_str())).collect();
+        let rs = self.query(&format!("SELECT {COLUMNS} FROM memory WHERE kind IN ({}) ORDER BY seq ASC LIMIT 10000000", kinds.join(", ")))?;
+        let notes: Vec<Record> = rs.rows.iter().filter_map(|r| row_record(r)).collect();
+        let mut by: HashMap<String, (String, i64)> = HashMap::new();
+        for r in &notes {
+            for old in r.linked("supersedes") {
+                by.entry(old.to_string()).or_insert((r.id.clone(), r.valid_since()));
+            }
+        }
+        let mut changed = Vec::new();
+        for mut r in notes {
+            if r.tag != "superseded" || r.valid_to != 0 {
+                continue;
+            }
+            match by.get(&r.id) {
+                Some((new, at)) => {
+                    r.valid_to = (*at).max(r.valid_since());
+                    if !r.links.iter().any(|l| l.label == "superseded_by" && &l.to == new) {
+                        r.links.push(Link::new("superseded_by", new.clone()));
+                    }
+                }
+                // Replaced by a note since forgotten: closed when written.
+                None => r.valid_to = r.valid_since(),
+            }
+            changed.push(r);
+        }
+        for chunk in changed.chunks(512) {
+            self.insert(chunk)?;
+        }
+        Ok(changed.len())
     }
 
     /// A handle whose reads all see the current version, however much is
@@ -327,6 +393,75 @@ impl Store {
         r.tag = tag.to_string();
         self.insert(&[r])?;
         Ok(true)
+    }
+
+    /// Closes a note: from `at` it no longer holds (a later version, `by`,
+    /// replaced it), and it is tagged `tag` (`superseded`). An earlier close
+    /// stands. Returns the note as it was, if it exists.
+    pub fn close(&self, id: &str, at: i64, by: Option<&str>, tag: &str) -> Result<Option<Record>> {
+        let Some(old) = self.get(&[id.to_string()])?.pop() else { return Ok(None) };
+        let mut r = old.clone();
+        let at = at.max(r.valid_since());
+        if r.valid_to == 0 || r.valid_to > at {
+            r.valid_to = at;
+        }
+        r.tag = tag.to_string();
+        if let Some(by) = by.filter(|b| *b != id) {
+            if !r.links.iter().any(|l| l.label == "superseded_by" && l.to == by) {
+                r.links.push(Link::new("superseded_by", by));
+            }
+        }
+        self.insert(&[r])?;
+        Ok(Some(old))
+    }
+
+    /// Adds a link from a record (if it has none with that label to `to`).
+    pub fn add_link(&self, id: &str, label: &str, to: &str) -> Result<bool> {
+        let Some(mut r) = self.get(&[id.to_string()])?.pop() else { return Ok(false) };
+        if id == to || r.links.iter().any(|l| l.label == label && l.to == to) {
+            return Ok(false);
+        }
+        r.links.push(Link::new(label, to));
+        self.insert(&[r])?;
+        Ok(true)
+    }
+
+    /// The versions of a note, oldest first: the notes it replaced and
+    /// that replaced it, followed both ways, at most `max`.
+    pub fn versions(&self, id: &str, max: usize) -> Result<Vec<Record>> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out: Vec<Record> = Vec::new();
+        let mut frontier = vec![id.to_string()];
+        while !frontier.is_empty() && out.len() < max {
+            frontier.retain(|i| seen.insert(i.clone()));
+            let recs = self.get(&frontier)?;
+            frontier = Vec::new();
+            for r in recs {
+                for l in &r.links {
+                    if (l.label == "supersedes" || l.label == "superseded_by") && !seen.contains(&l.to) {
+                        frontier.push(l.to.clone());
+                    }
+                }
+                // A note that replaced this one links to it; older stores
+                // have no link back.
+                out.push(r);
+            }
+            if frontier.is_empty() {
+                let ids: Vec<String> = out.iter().map(|r| r.id.clone()).collect();
+                let rs = self.query_with(
+                    &format!("SELECT {COLUMNS} FROM memory WHERE REACHABLE(links, :ids, hops => 1, dir => 'in') LIMIT {}", max * 4),
+                    &Params::new().set("ids", strs(&ids)),
+                )?;
+                for r in rs.rows.iter().filter_map(|r| row_record(r)) {
+                    if r.links.iter().any(|l| l.label == "supersedes" && ids.contains(&l.to)) && !seen.contains(&r.id) {
+                        frontier.push(r.id.clone());
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|r| (r.valid_since(), r.seq));
+        out.truncate(max);
+        Ok(out)
     }
 
     /// Deletes a record.
@@ -702,6 +837,8 @@ pub fn row_record(r: &[Value]) -> Option<Record> {
         text: s(9),
         ctx: s(10),
         links: r.get(11).map(links_of).unwrap_or_default(),
+        valid_from: n(12),
+        valid_to: n(13),
     })
 }
 
@@ -992,14 +1129,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("m.strata");
         let mut fields = schema(64, VectorIndexKind::Flat).unwrap().fields;
-        fields.retain(|f| f.name != "links");
+        fields.retain(|f| !["links", "valid_from", "valid_to"].contains(&f.name.as_str()));
         let old = strata::Schema::new("memory", fields, Some("id")).unwrap();
         {
             let db = Db::create(&path, old.clone(), DbOptions::default()).unwrap();
             let mut txn = db.storage().begin().unwrap();
             let r = Record::from_draft(Draft::new(Kind::Decision, "We use HNSW for the vector index"), "sess-a", 1, 1, 100);
             let mut doc = r.to_doc(vec![0.1; 64]);
-            doc.pop();
+            doc.truncate(doc.len() - 3);
             old.fill_generated(&mut doc);
             txn.upsert(doc).unwrap();
             txn.commit().unwrap();
@@ -1010,5 +1147,97 @@ mod tests {
         assert_eq!(s.len(), 1);
         assert_eq!(s.latest(&[Kind::Decision], 5, &Filter::default()).unwrap()[0].text, "We use HNSW for the vector index");
         assert!(dir.path().join("m.v1").exists());
+    }
+
+    /// A note replaced by a later version closes when that version begins:
+    /// it leaves what holds now, stays in the history, and is what an
+    /// as-of question about the time before gets.
+    #[test]
+    fn replaced_notes_close_and_hold_as_of() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path());
+        let day = 86_400;
+        let v1 = s.append("a", 1, 10 * day, vec![Draft::new(Kind::Preference, "Refunds are allowed within 14 days of purchase")]).unwrap().remove(0);
+        assert_eq!((v1.valid_from, v1.valid_to), (10 * day, 0));
+        // Written down on day 30, holding since day 20.
+        let v2 = s.append("b", 1, 30 * day, vec![Draft::new(Kind::Preference, "Refunds are allowed within 30 days of purchase").link("supersedes", v1.id.clone()).since(Some(20 * day))]).unwrap().remove(0);
+        assert_eq!(v2.valid_since(), 20 * day);
+        let was = s.close(&v1.id, v2.valid_since(), Some(&v2.id), "superseded").unwrap().unwrap();
+        assert_eq!(was.valid_to, 0);
+        let v1 = s.get(&[v1.id.clone()]).unwrap().remove(0);
+        assert_eq!((v1.valid_to, v1.tag.as_str()), (20 * day, "superseded"));
+        assert_eq!(v1.linked("superseded_by").collect::<Vec<_>>(), vec![v2.id.as_str()]);
+        assert!(!v1.is_live(40 * day) && v2.is_live(40 * day));
+        assert!(v1.holds_at(15 * day) && !v1.holds_at(25 * day) && v2.holds_at(25 * day) && !v2.holds_at(15 * day));
+        // A later close does not move an earlier one.
+        s.close(&v1.id, 35 * day, None, "superseded").unwrap();
+        assert_eq!(s.get(&[v1.id.clone()]).unwrap()[0].valid_to, 20 * day);
+
+        let held = |t: i64| -> Vec<String> {
+            let f = Filter { as_of: Some(t), kinds: vec![Kind::Preference], ..Default::default() };
+            s.bm25_top("refunds allowed days purchase", 10, &f).unwrap().into_iter().map(|(r, _)| r.text).collect()
+        };
+        assert_eq!(held(15 * day), vec!["Refunds are allowed within 14 days of purchase"]);
+        // Day 25: the new version held, though nobody had written it down yet.
+        assert_eq!(held(25 * day), vec!["Refunds are allowed within 30 days of purchase"]);
+        assert_eq!(held(40 * day), vec!["Refunds are allowed within 30 days of purchase"]);
+        assert!(held(5 * day).is_empty());
+
+        // The versions, oldest first, from either end.
+        let ids = |v: Vec<Record>| v.into_iter().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(ids(s.versions(&v2.id, 10).unwrap()), vec![v1.id.clone(), v2.id.clone()]);
+        assert_eq!(ids(s.versions(&v1.id, 10).unwrap()), vec![v1.id.clone(), v2.id.clone()]);
+        // Links added once.
+        assert!(s.add_link(&v2.id, "conflicts", &v1.id).unwrap());
+        assert!(!s.add_link(&v2.id, "conflicts", &v1.id).unwrap());
+    }
+
+    /// A store written before notes kept when they held gains the columns
+    /// on open; the notes replaced before then close when their
+    /// replacement began, and link to it.
+    #[test]
+    fn stores_without_validity_gain_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.strata");
+        let mut fields = schema(64, VectorIndexKind::Flat).unwrap().fields;
+        fields.retain(|f| !["valid_from", "valid_to"].contains(&f.name.as_str()));
+        let old = strata::Schema::new("memory", fields, Some("id")).unwrap();
+        {
+            let db = Db::create(&path, old.clone(), DbOptions::default()).unwrap();
+            let mut txn = db.storage().begin().unwrap();
+            let mut v1 = Record::from_draft(Draft::new(Kind::Decision, "Storage is SQLite"), "sess-a", 1, 1, 100);
+            v1.tag = "superseded".into();
+            let v2 = Record::from_draft(Draft::new(Kind::Decision, "Storage is Strata, not SQLite").link("supersedes", v1.id.clone()), "sess-b", 1, 2, 500);
+            let mut v3 = Record::from_draft(Draft::new(Kind::Fact, "The old cache was Redis"), "sess-b", 2, 3, 600);
+            v3.tag = "superseded".into();
+            for r in [v1, v2, v3] {
+                let mut doc = r.to_doc(vec![0.1; 64]);
+                doc.truncate(doc.len() - 2);
+                old.fill_generated(&mut doc);
+                txn.upsert(doc).unwrap();
+            }
+            txn.commit().unwrap();
+            db.storage().flush().unwrap();
+        }
+        let s = store(dir.path());
+        assert!(s.db.schema().field("valid_to").is_some());
+        let get = |id: &str| s.get(&[id.to_string()]).unwrap().remove(0);
+        let (v1, v2, v3) = (get("sessa:1"), get("sessb:2"), get("sessb:3"));
+        assert_eq!((v1.valid_from, v1.valid_to), (0, 500));
+        assert_eq!(v1.linked("superseded_by").collect::<Vec<_>>(), vec!["sessb:2"]);
+        assert_eq!((v2.valid_from, v2.valid_to, v2.valid_since()), (0, 0, 500));
+        // Replaced by a note no longer in the store: closed when written.
+        assert_eq!(v3.valid_to, 600);
+        // As-of filters read 0 as "since written".
+        let f = Filter { as_of: Some(300), ..Default::default() };
+        assert_eq!(s.latest(&[Kind::Decision], 5, &f).unwrap().iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), vec!["Storage is SQLite"]);
+        // New records carry their own dates; reopening changes nothing.
+        let r = s.append("sess-c", 1, 700, vec![Draft::new(Kind::Note, "after the upgrade")]).unwrap().remove(0);
+        assert_eq!(r.valid_from, 700);
+        s.flush().unwrap();
+        drop(s);
+        let s = store(dir.path());
+        assert_eq!(s.get(&["sessa:1".to_string()]).unwrap()[0].valid_to, 500);
+        assert_eq!(s.len(), 4);
     }
 }

@@ -87,7 +87,9 @@ impl Kind {
 }
 
 /// An edge from one record to another: `about` an entity, `from` the turn a
-/// note was written from, `supersedes` an older note, `touches` a file.
+/// note was written from, `supersedes` an older note (which links back
+/// `superseded_by`), `conflicts` with a note that disagrees with it and
+/// neither says which holds, `touches` a file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
     pub label: String,
@@ -164,11 +166,16 @@ pub struct Draft {
     /// which joins the lexical key and the vector).
     #[serde(default)]
     pub when: Vec<String>,
+    /// When what the note says became true (Unix seconds), if the
+    /// conversation said so ("from Monday", "as of 2.3"); else when it was
+    /// recorded.
+    #[serde(default)]
+    pub since: Option<i64>,
 }
 
 impl Draft {
     pub fn new(kind: Kind, text: impl Into<String>) -> Draft {
-        Draft { kind, tag: "-".into(), files: Vec::new(), text: text.into(), ctx: String::new(), importance: None, links: Vec::new(), entities: Vec::new(), when: Vec::new() }
+        Draft { kind, tag: "-".into(), files: Vec::new(), text: text.into(), ctx: String::new(), importance: None, links: Vec::new(), entities: Vec::new(), when: Vec::new(), since: None }
     }
     pub fn link(mut self, label: &str, to: impl Into<String>) -> Draft {
         self.links.push(Link::new(label, to));
@@ -199,6 +206,10 @@ impl Draft {
         self.when = w;
         self
     }
+    pub fn since(mut self, t: Option<i64>) -> Draft {
+        self.since = t.filter(|&t| t > 0);
+        self
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -215,6 +226,14 @@ pub struct Record {
     pub text: String,
     pub ctx: String,
     pub links: Vec<Link>,
+    /// When what it says became true, Unix seconds; 0 in records written
+    /// before validity was kept, which means `ts` ([`Record::valid_since`]).
+    #[serde(default)]
+    pub valid_from: i64,
+    /// When it stopped being true (a later version replaced it); 0 while it
+    /// holds.
+    #[serde(default)]
+    pub valid_to: i64,
 }
 
 impl Record {
@@ -240,7 +259,30 @@ impl Record {
             text: d.text,
             ctx,
             links: d.links,
+            valid_from: d.since.unwrap_or(ts),
+            valid_to: 0,
         }
+    }
+
+    /// When what the record says became true.
+    pub fn valid_since(&self) -> i64 {
+        if self.valid_from > 0 {
+            self.valid_from
+        } else {
+            self.ts
+        }
+    }
+
+    /// Whether it held at `t`: it had begun, and no later version had
+    /// replaced it.
+    pub fn holds_at(&self, t: i64) -> bool {
+        self.valid_since() <= t && (self.valid_to == 0 || self.valid_to > t)
+    }
+
+    /// A note still in force at `now`: not replaced or done, and, for a
+    /// requirement, still planned.
+    pub fn is_live(&self, now: i64) -> bool {
+        (self.valid_to == 0 || self.valid_to > now) && self.tag != "superseded" && self.tag != "done" && (self.kind != Kind::Todo || self.tag == "planned")
     }
 
     /// The note's `When:` line (situations in which it matters), if any.
@@ -274,6 +316,8 @@ impl Record {
             Value::Str(String::new()),
             Value::Vector(emb.into()),
             self.links_value(),
+            Value::Int(self.valid_from),
+            Value::Int(self.valid_to),
         ]
     }
 
@@ -305,7 +349,13 @@ pub fn record_id(session: &str, seq: i64) -> String {
 }
 
 /// Columns every query projects, in this order (see [`crate::store::Hit`]).
-pub const COLUMNS: &str = "id, session, kind, tag, turn, seq, ts, importance, files, text, ctx, links";
+pub const COLUMNS: &str = "id, session, kind, tag, turn, seq, ts, importance, files, text, ctx, links, valid_from, valid_to";
+
+/// The columns that say when a record held, which stores written before
+/// them gain with `ALTER TABLE` (so they come last, after `links`).
+pub fn validity_fields() -> Vec<Field> {
+    vec![Field::new("valid_from", FieldType::Int).default(serde_json::json!(0)), Field::new("valid_to", FieldType::Int).default(serde_json::json!(0))]
+}
 
 pub fn schema(dim: usize, index: VectorIndexKind) -> Result<Schema> {
     Ok(Schema::new(
@@ -327,7 +377,10 @@ pub fn schema(dim: usize, index: VectorIndexKind) -> Result<Schema> {
             Field::new("emb", FieldType::Vector { dim, index }).not_stored(),
             // Edges to other records (see [`Link`]); traversed by recall.
             Field::new("links", FieldType::Edges),
-        ],
+        ]
+        .into_iter()
+        .chain(validity_fields())
+        .collect(),
         Some("id"),
     )?)
 }
