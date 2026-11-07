@@ -488,7 +488,7 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
         # A step may start with IMAGE=REF, its own image (strata-ab), and
         # STRATA_COORD=..., its own layout (strata-was); its --kinds runs to
         # the next option as one argument (kinds have spaces).
-        local s=$step simage=$IMAGE scoord=${STRATA_COORD:-shards} kinds rest
+        local s=$step simage=$IMAGE scoord=${STRATA_COORD:-} kinds rest
         while [[ $s =~ ^(IMAGE|STRATA_COORD)=([^\ ]*)\ (.*)$ ]]; do
             case ${BASH_REMATCH[1]} in
             IMAGE) simage=${BASH_REMATCH[2]} ;;
