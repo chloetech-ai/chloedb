@@ -138,7 +138,7 @@ impl DeepConfig {
 }
 
 /// One search the planner asked for.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Query {
     /// text | keywords | semantic | notes | entity | file | sql
     pub kind: String,
@@ -353,7 +353,8 @@ pub fn plan(store: &Store, cfg: &DeepConfig, cli: &DistillConfig, request: &str,
 pub fn run_query(store: &Store, q: &Query, filter: &Filter, n: usize) -> Result<Vec<Record>> {
     let mut f = filter.clone();
     f.kinds = q.kinds.clone();
-    let useful = |r: &Record| r.kind != Kind::Entity && r.tag != "uncertain" && r.tag != "superseded";
+    // Replaced notes only when asked what held at some time.
+    let useful = |r: &Record| r.kind != Kind::Entity && r.tag != "uncertain" && (filter.keeps_replaced() || r.tag != "superseded");
     let out: Vec<Record> = match q.kind.as_str() {
         "text" => recall::search(store, &q.q, &f, &RankParams { n: n.max(20), ..Default::default() })?.0.into_iter().map(|h| h.record).collect(),
         "keywords" => {
@@ -826,6 +827,12 @@ mod tests {
         let res = DeepResult { picks: vec![(v2.clone(), String::new())], confidence: "high".into(), versions: labels, ..Default::default() };
         let t = format(&res, &HashSet::new(), 420 * day, None);
         assert!(t.contains("was: Refunds are allowed within 14 days"), "{t}");
+        // Searches find the version that held at a time asked about, and
+        // only the current one otherwise.
+        let q = Query { kind: "notes".into(), q: "refunds allowed days".into(), ..Default::default() };
+        let found = |f: &Filter| run_query(&s, &q, f, 10).unwrap().into_iter().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(found(&Filter { as_of: Some(100 * day), ..Default::default() }), vec![v1.id.clone()]);
+        assert!(!found(&Filter::default()).contains(&v1.id));
     }
 
     #[test]
