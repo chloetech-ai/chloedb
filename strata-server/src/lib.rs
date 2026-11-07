@@ -37,6 +37,7 @@ pub mod follow;
 pub mod grpc;
 pub mod heap;
 pub mod hub;
+pub mod hub_follow;
 pub mod http;
 pub mod idem;
 pub mod inspect;

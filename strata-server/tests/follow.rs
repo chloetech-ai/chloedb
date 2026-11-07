@@ -202,7 +202,7 @@ async fn gone(url: &str, i: usize, from: u64) -> bool {
 }
 
 fn options(source: &str, target: &str) -> Options {
-    Options { source: source.into(), source_key: None, source_ca: None, target: target.into(), target_token: None, target_ca: None, name: "east".into(), batch: 40, copy: false, reverse: false }
+    Options { source: source.into(), source_key: None, source_ca: None, target: target.into(), target_token: None, target_ca: None, name: "east".into(), batch: 40, copy: false, reverse: false, once: None }
 }
 
 async fn get(url: &str) -> Json {
@@ -216,6 +216,22 @@ async fn post(url: &str, body: Json, follow: Option<&str>) -> (u16, Json) {
     }
     let r = r.send().await.unwrap();
     (r.status().as_u16(), r.json().await.unwrap_or(Json::Null))
+}
+
+/// A writer's statement under an idempotency key, sent again with that key
+/// while a shard refuses it for a change of its table that overlapped it
+/// ("run it again"), as the test alters and drops tables while the
+/// writers write: the shards that took their part keep it and do not
+/// apply it twice.
+async fn write(svc: &Arc<Service>, s: &str, key: String) {
+    for _ in 0..100 {
+        match svc.sql_in(&Principal::open(), s, &Params::new(), After::Any, 0, None, Some(key.clone())).await {
+            Ok(_) => return,
+            Err(e) if e.message.contains("run it again") || e.message.contains("still running") => tokio::time::sleep(Duration::from_millis(20)).await,
+            Err(e) => panic!("{s}: {}", e.message),
+        }
+    }
+    panic!("{s}: refused 100 times");
 }
 
 /// Writes through `svc` until `stop`: rows by key (upserts, deletes, a
@@ -237,7 +253,7 @@ fn writers(svc: &Arc<Service>, stop: &Arc<AtomicBool>, tag: &'static str) -> Vec
                     8 => format!("INSERT OR REPLACE INTO events (id, usr, n) VALUES ({}, 'u{}', {r})", 200 + r % 50, (200 + r % 50) % 11),
                     _ => format!("INSERT OR REPLACE INTO products (id, title, description, price) VALUES ('{k}', '{tag} kettle', 'Round {r}', {r})"),
                 };
-                sql(&svc, &q).await;
+                write(&svc, &q, format!("{tag}-rows-{r}")).await;
                 r += 1;
             }
             r
@@ -248,7 +264,7 @@ fn writers(svc: &Arc<Service>, stop: &Arc<AtomicBool>, tag: &'static str) -> Vec
         tasks.push(tokio::spawn(async move {
             let mut n = 0;
             while !stop.load(Ordering::Relaxed) {
-                sql(&svc, "UPDATE products SET sold = sold + 1 WHERE price < 50").await;
+                write(&svc, "UPDATE products SET sold = sold + 1 WHERE price < 50", format!("{tag}-sold-{n}")).await;
                 n += 1;
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -612,6 +628,67 @@ async fn a_copy_made_again_drops_rows_deleted_meanwhile() {
     let st = settled(&view).await;
     assert_eq!(st["keys_deleted"], 20, "{st}");
     assert!(!marks(&url_b).await.contains_key("0/since"), "a copy of every row");
+    f.abort();
+}
+
+/// A follow process its Deployment starts again (`--once`, as the
+/// operator runs it) makes its copy once, resumes after that, and once
+/// the follower stopped following, waits rather than following again,
+/// until a later spec asks again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_follow_process_started_again_by_its_deployment_starts_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (svc_a, url_a, svc_b, url_b) = two_into_one(dir.path()).await;
+    sql(&svc_a, "INSERT INTO log (id, v) VALUES (1, 'one'), (2, 'two')").await;
+    let view = view_of(&url_b);
+    let asked = strata_server::telemetry::now_ms();
+    let o = Options { copy: true, once: Some(asked), ..options(&url_a, &url_b) };
+    let f = tokio::spawn(follow::run(o.clone()));
+    copied(&view, &f).await;
+    same_log(&svc_a, &svc_b).await;
+    let copy = view().await["clusters"][0]["copy_ms"].clone();
+    f.abort();
+    let _ = f.await;
+
+    // Started again with the same spec: no copy afresh.
+    sql(&svc_a, "INSERT INTO log (id, v) VALUES (3, 'three')").await;
+    let f = tokio::spawn(follow::run(o.clone()));
+    same_log(&svc_a, &svc_b).await;
+    let v = view().await;
+    assert_eq!(v["clusters"][0]["copy_ms"], copy, "{v}");
+    assert_eq!(settled(&view).await["rows_copied"], 0);
+
+    // Stopped: it waits, saying why, and does not follow again when
+    // started again; the follower takes its own writes.
+    let (status, r) = post(&format!("{url_b}/v1/admin/follow/stop"), json!({"name": "east"}), None).await;
+    assert_eq!(status, 200, "{r}");
+    let waiting = |v: &Json| v["clusters"][0]["status"]["state"] == "stopped" && v["clusters"][0]["status"]["error"].as_str().is_some_and(|e| e.contains("waiting to be stopped"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !waiting(&view().await) {
+        assert!(Instant::now() < deadline, "{}", view().await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!f.is_finished(), "it waits rather than ending");
+    f.abort();
+    let _ = f.await;
+    let f = tokio::spawn(follow::run(o.clone()));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!f.is_finished());
+    sql(&svc_b, "INSERT INTO log (id, v) VALUES (50, 'mine')").await;
+    let v = view().await;
+    assert!(v["following"].is_null() && waiting(&v), "{v}");
+    f.abort();
+    let _ = f.await;
+
+    // Asked again, later: it follows again, from where it was.
+    sql(&svc_a, "INSERT INTO log (id, v) VALUES (4, 'four')").await;
+    let f = tokio::spawn(follow::run(Options { copy: false, once: Some(strata_server::telemetry::now_ms()), ..o }));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !log_ids(&svc_b).await.contains(&4) {
+        assert!(Instant::now() < deadline, "{}", view().await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(view().await["following"], "east");
     f.abort();
 }
 

@@ -341,9 +341,9 @@ async fn an_open_server_s_first_key_closes_it() {
     assert!(again.resolve(None, None, Some(&format!("Bearer {admin}"))).is_some());
 }
 
-/// A follow process's header and the follow routes take the cluster's
-/// token: an admin key may read where a follower is, not write as its
-/// follow process nor stop it.
+/// A follow process's header and its status reports take the cluster's
+/// token: an admin key may read where a follower is, stop it and promote
+/// it (as the hub does), not write as its follow process nor report as it.
 #[tokio::test(flavor = "multi_thread")]
 async fn only_the_token_writes_as_a_follow_process() {
     let dir = tempfile::tempdir().unwrap();
@@ -366,12 +366,18 @@ async fn only_the_token_writes_as_a_follow_process() {
     assert_eq!(status, 400, "{j}");
     let (status, j) = write("root-token", "east").await;
     assert_eq!(status, 200, "{j}");
-    // Reading where it is takes an admin key; telling and stopping, the token.
+    // Reading where it is, stopping and promoting take an admin key;
+    // telling how the follow process stands, the token.
     assert_eq!(call(&base, "GET", "/v1/admin/follow", Some(&admin), None).await.0, 200);
     assert_eq!(call(&base, "POST", "/v1/admin/follow/status", Some(&admin), Some(json!({"name": "east"}))).await.0, 403);
-    assert_eq!(call(&base, "POST", "/v1/admin/follow/stop", Some(&admin), Some(json!({"name": "east"}))).await.0, 403);
-    let (status, j) = call(&base, "POST", "/v1/admin/follow/stop", Some("root-token"), Some(json!({"name": "east"}))).await;
-    assert_eq!(status, 404, "it never followed east: {j}");
+    let reader = new_key(&base, Some("root-token"), "look", "read").await;
+    for path in ["/v1/admin/follow/stop", "/v1/admin/follow/promote"] {
+        assert_eq!(call(&base, "POST", path, Some(&reader), Some(json!({"name": "east"}))).await.0, 403, "{path}");
+        for auth in [admin.as_str(), "root-token"] {
+            let (status, j) = call(&base, "POST", path, Some(auth), Some(json!({"name": "east"}))).await;
+            assert_eq!(status, 404, "{path}: it never followed east: {j}");
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
