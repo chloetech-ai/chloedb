@@ -164,20 +164,14 @@ fn changes_written_again_give_the_rows() {
     }
 
     // A cursor started at any number reads each transaction as the one
-    // that walked there, but those of the table dropped since, which it
-    // counts.
+    // that walked there, the table dropped since included: the database
+    // keeps the schemas of the tables it dropped, which the log names by
+    // id alone.
     let walked = read_all(&db, 1, usize::MAX);
-    let w_made = walked.iter().position(|t| t.changes.iter().any(|c| matches!(c, Change::Create { def } if def.table == "w"))).unwrap() as u64 + 1;
+    assert!(walked.iter().any(|t| t.changes.iter().any(|c| matches!(c, Change::Drop { was } if was.table == "w"))));
     for from in 1..=last {
         let got = read_all(&db, from, usize::MAX);
-        for (a, b) in got.iter().zip(&walked[from as usize - 1..]) {
-            let of_w = |t: &Changes| t.changes.iter().any(|c| matches!(c, Change::Upsert { table, .. } | Change::Delete { table, .. } if table.table == "w") || matches!(c, Change::Drop { was } if was.table == "w"));
-            if from > w_made && of_w(b) {
-                assert!(a.unknown > 0 && !of_w(a), "from {from}: seq {} reads w's rows without w", a.seq.seq);
-                continue;
-            }
-            assert_eq!(a, b, "from {from}: seq {}", a.seq.seq);
-        }
+        assert_eq!(got, walked[from as usize - 1..], "from {from}");
     }
     // Replayed from just after the first ALTER, onto the rows as they were.
     let alter = walked.iter().position(|t| t.changes.iter().any(|c| matches!(c, Change::Alter { .. }))).unwrap();

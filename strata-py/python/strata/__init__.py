@@ -513,7 +513,7 @@ def plan_parquet(parquet_path: str | os.PathLike, *, table: str | None = None, s
     return json.loads(_strata.Database.plan_parquet(os.fspath(parquet_path), table, None if schema is None else _schema_json(schema), key, blobs_base64, None if db is None else db._db))
 
 
-def connect(url: str = "http://127.0.0.1:7700", *, token: str | None = None, timeout: float = 30.0) -> Client:
+def connect(url: str = "http://127.0.0.1:7700", *, token: str | None = None, timeout: float = 30.0, retry_for: float = 10.0) -> Client:
     """A `Client` of the strata-server at `url`."""
-    return Client(url, token=token, timeout=timeout)
+    return Client(url, token=token, timeout=timeout, retry_for=retry_for)
 

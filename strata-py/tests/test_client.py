@@ -275,6 +275,53 @@ def test_client_rows_by_key(client):
     assert client.get("new") is None
 
 
+def test_client_sends_a_refused_request_again():
+    import http.server
+    import threading
+
+    answers, seen = [], []
+
+    class Busy(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen.append(json.loads(self.rfile.read(int(self.headers["content-length"]))))
+            status, body = answers.pop(0)
+            self.send_response(status)
+            self.send_header("content-type", "application/json")
+            if status == 429:
+                self.send_header("retry-after", "0")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode())
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Busy)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        c = strata.connect(f"http://127.0.0.1:{server.server_port}")
+        busy = (429, {"error": "the database is behind on flushing writes to disk, so the write was not applied; send it again in a second"})
+        # Refused for the server's load, twice: sent a third time.
+        answers[:] = [busy, busy, (200, {"written": 1, "took_ms": 1})]
+        assert c.write([{"op": "upsert", "doc": {"id": "a"}}]) == 1
+        assert len(seen) == 3 and seen[0] == seen[2]
+        # A write that failed partway is not sent again without its key...
+        seen.clear()
+        partial = (429, {"error": "busy. shard 0 (1 rows) took the write before it failed, and keep it", "partial": True, "shards": []})
+        answers[:] = [partial]
+        with pytest.raises(strata.StrataError) as e:
+            c.write([{"op": "upsert", "doc": {"id": "a"}}, {"op": "upsert", "doc": {"id": "b"}}])
+        assert e.value.status == 429 and e.value.answer["partial"] is True and len(seen) == 1
+        # ...nor anything once retry_for has passed.
+        seen.clear()
+        answers[:] = [busy]
+        c = strata.connect(f"http://127.0.0.1:{server.server_port}", retry_for=0)
+        with pytest.raises(strata.StrataError):
+            c.write([{"op": "upsert", "doc": {"id": "a"}}])
+        assert len(seen) == 1
+    finally:
+        server.shutdown()
+
+
 # The client alone: the package as a checkout holds it, without the compiled
 # extension (an import hook hides it, as if it were not built).
 WITHOUT_EXTENSION = r'''

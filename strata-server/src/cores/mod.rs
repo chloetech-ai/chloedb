@@ -35,5 +35,6 @@
 //! ([`strata::storage::Database::apply_shipped`], as
 //! [`crate::sim::db::ModelDb::apply_shipped`] models it).
 
+pub mod follow;
 pub mod shard;
 pub mod slots;
