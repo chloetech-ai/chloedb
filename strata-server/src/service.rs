@@ -4872,6 +4872,39 @@ fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json], epo
 mod tests {
     use super::*;
 
+    // A batch's part for the shard slots move to, routed by the map before
+    // their flip, reached it after the flip and moved its offset past an
+    // event of the slots that the shard they left still held (theirs and
+    // its own were equal at the flip, so it kept no arrival): when the
+    // event came by the new map, it was skipped as a replay, and lost.
+    // Both on a shard that holds slots and on one that held none.
+    #[test]
+    fn a_late_request_of_the_old_map_does_not_hide_an_arrived_event() {
+        let schema = Schema::from_json(r#"{"table": "events", "key": "id", "fields": [{"name": "id", "type": "keyword"}]}"#).unwrap();
+        let key = (0..).map(|i| format!("e{i}")).find(|k| SlotMap::even(2, 1).owner(slots::slot(&Value::Str(k.clone()))) == 0).unwrap();
+        let y = slots::slot(&Value::Str(key.clone()));
+        let mark = |o: i64| json!({"op": "source", "source": {"name": "s", "offset": o}});
+        let event = json!({"op": "upsert", "table": "events", "doc": {"id": key}, "source": {"name": "s", "offset": 11}});
+        for base in [SlotMap::even(2, 1), SlotMap::even(1, 1).with_replicas(vec![vec!["http://a".into()]]).unwrap().add_shard(vec!["http://new".into()]).unwrap()] {
+            let dir = tempfile::tempdir().unwrap();
+            let db = Db::create(&dir.path().join("t.strata"), schema.clone(), strata::storage::DbOptions::default()).unwrap();
+            let old = base.start_move(&[y], 1).unwrap();
+            let new = old.flip_move_with(std::collections::BTreeMap::from([("s".to_string(), 10)])).unwrap();
+            apply_requests(&db, &[(&[mark(10)], old.epoch)], None).unwrap();
+            write_flip(&db, &[], &old, &new, 1).unwrap();
+            // The late part: no events of the slots, the batch's offset.
+            apply_requests(&db, &[(&[mark(11)], old.epoch)], None).unwrap();
+            // The event the shard they left held, by the new map.
+            let (a, _) = apply_requests(&db, &[(&[event.clone(), mark(11)], new.epoch)], None).unwrap();
+            assert_eq!((a[0].rows, a[0].skipped), (1, 0), "held none: {}", base.count(1) == 0);
+            // Once: sent again, it is skipped, and the arrival is gone.
+            let (a, _) = apply_requests(&db, &[(&[event.clone(), mark(11)], new.epoch)], None).unwrap();
+            assert_eq!((a[0].rows, a[0].skipped), (0, 1));
+            let left: Vec<(String, i64)> = db.sources().unwrap().into_iter().map(|s| (s.name, s.offset)).collect();
+            assert_eq!(left, vec![("s".to_string(), 11)]);
+        }
+    }
+
     // A primary fenced by a call of the new primary as it kept its vote
     // for it wrote its replication file twice at once, through one new
     // file: one rename failed (no such file), and the file was left with

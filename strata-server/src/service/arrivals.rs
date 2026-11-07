@@ -13,7 +13,9 @@
 //!
 //! So a move carries the offsets of its slots on the shard they leave
 //! ([`crate::slots::Move::offsets`]), and the shard they arrive at keeps
-//! each that differs from its own as an *arrival*: a row of `_sources`,
+//! each as an *arrival*, even one its own offset equals (a request routed
+//! by the map before the flip, which gives the slots no events, can still
+//! come after it and move the shard's own past theirs): a row of `_sources`,
 //! `_strata/arrived <epoch> <runs> <source>`, whose offset is the slots'
 //! (with `_strata/arrivals <source>` while the source has any). An event
 //! of the source that one of those slots takes is checked against the
@@ -23,7 +25,7 @@
 //! its offsets move the arrival's on, and once that meets the shard's own
 //! the arrival is dropped. A stream resumes from the least of a shard's
 //! offsets ([`folded`]). A shard that held no slot before they arrived
-//! (a shard just added) takes the offsets as its own.
+//! (a shard just added) also takes the offsets as its own.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -207,8 +209,8 @@ impl<'a> Group<'a> {
 /// the slots that change hands here as it takes cluster map `new` in
 /// place of `old`: the arrivals of slots that leave are dropped, and slots
 /// that arrive with the offsets of the move that brought them
-/// ([`crate::slots::Move::offsets`]) are given those that differ from the
-/// shard's own, or, on a shard that held no slot, the offsets themselves.
+/// ([`crate::slots::Move::offsets`]) are given them as arrivals, which a
+/// shard that held no slot also takes as its own offsets.
 /// Slots that arrive without offsets (a move flipped by a coordinator
 /// before them) are kept as before: under the shard's own. Returns
 /// whether it wrote anything.
@@ -259,11 +261,7 @@ pub(crate) fn flip(db: &Db, txn: &mut WriteTxn<'_>, old: &SlotMap, new: &SlotMap
     for name in names {
         let theirs = mv.offsets.get(name).copied();
         let ours = txn.source_offset(name)?;
-        if theirs == ours {
-            continue;
-        }
-        wrote = true;
-        if held_none {
+        if held_none && theirs != ours {
             // The shard's offsets are the slots': it holds no others.
             match theirs {
                 Some(o) => txn.set_source(name, o, now)?,
@@ -271,10 +269,15 @@ pub(crate) fn flip(db: &Db, txn: &mut WriteTxn<'_>, old: &SlotMap, new: &SlotMap
                     txn.table(SOURCES)?.delete(&Value::Str(name.clone()))?;
                 }
             }
-            continue;
         }
+        // An arrival even at the shard's own offset: a request routed by
+        // the map before this one, which gives the slots none of its
+        // events, can still come after this flip and move the shard's
+        // offset past events of theirs that the shard they left held, and
+        // that come here again by the new map.
         Arrival { epoch: new.epoch, runs: runs.clone(), source: name.clone(), offset: theirs }.write(txn, now)?;
         txn.set_source(&format!("{GATE}{name}"), 1, now)?;
+        wrote = true;
     }
     Ok(wrote)
 }
