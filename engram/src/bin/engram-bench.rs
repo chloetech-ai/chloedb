@@ -261,6 +261,14 @@ enum Cmd {
         query: bool,
         texts: Vec<String>,
     },
+    /// Prints the notes of a store (one built by `deep --notes`), one JSON
+    /// object per line, oldest first: to read what distilling wrote.
+    Notes {
+        /// The store's folder.
+        dir: PathBuf,
+        #[arg(long, default_value = "static")]
+        embedder: String,
+    },
     /// Questions about this repository's own session transcript.
     Probes {
         #[arg(long)]
@@ -700,6 +708,13 @@ fn main() {
             concurrency_cmd(&data, &sizes, &embedder, &out, queries, &readers, secs, write_every_ms, knowledge)
         }
         Cmd::Writes { embedder, records, clients, out } => writes_cmd(&embedder, records, &clients, &out),
+        Cmd::Notes { dir, embedder } => {
+            let store = Store::open(&engram::paths::StorePaths::new(&dir).db, open_embedder(&embedder), StoreOptions { sync: false, ..Default::default() }).expect("store");
+            let rs = store.query(&format!("SELECT {} FROM memory WHERE kind IN ('decision', 'preference', 'fact', 'todo', 'note') ORDER BY seq ASC LIMIT 1000000", engram::record::COLUMNS)).expect("query");
+            for r in rs.rows.iter().filter_map(|r| engram::store::row_record(r)) {
+                println!("{}", serde_json::to_string(&r).unwrap());
+            }
+        }
         Cmd::Probes { transcript, probes, points, embedder, project, out, cache, dump_missing, dump_probes, per_turn, max_records } => {
             let d = PackParams::default();
             let pack = PackParams { per_turn: per_turn.unwrap_or(d.per_turn), max_records: max_records.unwrap_or(d.max_records), ..d };
