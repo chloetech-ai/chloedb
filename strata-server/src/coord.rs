@@ -338,6 +338,11 @@ pub const IN_DOUBT: &str = "the write may or may not be kept: a new primary took
 /// changes under it ([`Coordinator::route_again`]).
 pub(crate) const ROUTE_TRIES: u32 = 8;
 
+/// Why a coordinator refuses a graph query ([`Coordinator::query`]): a
+/// walk reads every row it meets in one snapshot, and a row's edges point
+/// at rows on any shard.
+pub const GRAPHS_ON_SHARDS: &str = "graph queries (REACHABLE, PATH, hops(), ppr) are not supported through a coordinator yet: a row's edges point at rows other shards hold. Run them on a server or an embedded database that holds the whole table, or walk from the application, one round of reads by key per hop (the Graphs page of the docs, On a cluster)";
+
 /// Why `seq_no()` and `if_seq_no` need a shard of several replicas to
 /// replicate: otherwise each numbers the writes it takes in its own order.
 const ONE_REPLICA: &str = "seq_no() and if_seq_no need one replica per shard, or a shard whose replicas replicate from a primary (--replicas): otherwise each replica numbers its own writes";
@@ -691,9 +696,10 @@ tokio::task_local! {
 }
 
 /// Runs `f`, and answers with it what a write through a coordinator did
-/// on each shard when it failed partway: `[{shard, short, rows}]` for the
-/// shards that took it and `[{shard, short, error}]` for the others. None
-/// when it did not fail partway.
+/// on each shard when it failed partway: `{shards, idempotency_key?}`,
+/// `shards` being `[{shard, short, rows}]` for the shards that took it and
+/// `[{shard, short, error}]` for the others, and `idempotency_key` the key
+/// to send it again with. None when it did not fail partway.
 pub async fn with_partial<F: Future>(f: F) -> (F::Output, Option<Json>) {
     PARTIAL
         .scope(std::cell::RefCell::new(None), async move {
@@ -701,6 +707,13 @@ pub async fn with_partial<F: Future>(f: F) -> (F::Output, Option<Json>) {
             (out, PARTIAL.with(|p| p.borrow_mut().take()))
         })
         .await
+}
+
+/// A key for a write through a coordinator that may go to several shards
+/// and came without one ([`Coordinator::keyed`]): `auto-` and 128 random
+/// bits.
+pub fn auto_key() -> String {
+    format!("auto-{:032x}", rand::random::<u128>())
 }
 
 /// Why a shard of `n` copies, `up` of them answering, elects no primary:
@@ -1687,6 +1700,9 @@ impl Coordinator {
     /// their answers. A guarded query (`min_rows`, `max_rows`) runs at the
     /// level the sums of its shards' counts choose ([`Self::level_counts`]).
     pub async fn query(&self, req: &QueryReq, schema: &Schema, select: &Select, deadline: Instant) -> Result<Merged, ApiError> {
+        if !select.graphs.is_empty() {
+            return Err(ApiError::bad(GRAPHS_ON_SHARDS));
+        }
         self.routed(|| self.query_once(req, schema, select, deadline)).await
     }
 
@@ -2364,7 +2380,7 @@ impl Coordinator {
     /// An INSERT goes to the shards of its documents' keys (or their
     /// shard_by values); UPDATE and DELETE go to every shard, so they take
     /// no LIMIT here.
-    pub async fn sql(&self, sql: &str, params: &Params) -> Result<Written, ApiError> {
+    pub async fn sql(&self, sql: &str, params: &Params, key: Option<String>) -> Result<Written, ApiError> {
         let catalog = self.catalog();
         let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
         let (schema, write) = match bind_command(sql, &tables, params)? {
@@ -2385,7 +2401,7 @@ impl Coordinator {
                 // Rows of the first table name none, as before there were
                 // tables.
                 let named = (schema.table != self.schema.table).then(|| json!(schema.table));
-                let ops = docs
+                let ops: Vec<Json> = docs
                     .iter()
                     .map(|d| {
                         let mut op = json!({"op": op, "doc": js::document_json(schema, d)});
@@ -2395,13 +2411,14 @@ impl Coordinator {
                         op
                     })
                     .collect();
-                self.write_ops(ops, None).await
+                let key = self.keyed(&ops, key);
+                self.write_ops(ops, key).await
             }
             // Each shard would take its own LIMIT rows.
             Write::Update { select, .. } | Write::Delete { select } if select.limit.is_some() => {
                 Err(ApiError::bad("UPDATE ... LIMIT and DELETE ... LIMIT are not supported through a coordinator yet"))
             }
-            _ => self.statement(sql, params).await,
+            _ => self.statement(sql, params, key.or_else(|| (self.topo().replicas.len() > 1).then(auto_key))).await,
         }
     }
 
@@ -2409,8 +2426,10 @@ impl Coordinator {
     /// refuses it as routed by a map it left (the cluster map changed: a
     /// move flipped) is sent it again by the new map, and so is every shard
     /// that now holds slots of the rows it was to change, over those slots
-    /// alone, so that each row is changed once.
-    async fn statement(&self, sql: &str, params: &Params) -> Result<Written, ApiError> {
+    /// alone, so that each row is changed once. Each shard gets the
+    /// idempotency key as `key/shard` (`key/shard.try` when sent again),
+    /// as write operations do.
+    async fn statement(&self, sql: &str, params: &Params, key: Option<String>) -> Result<Written, ApiError> {
         // The slots whose rows the statement has yet to change.
         let mut left = vec![true; slots::SLOTS];
         let mut done: Vec<(String, Wrote)> = Vec::new();
@@ -2439,11 +2458,16 @@ impl Coordinator {
                     None if tries > 0 => return None,
                     None => None,
                 };
+                let idempotency_key = match tries {
+                    0 => key.as_ref().map(|k| format!("{k}/{i}")),
+                    r => key.as_ref().map(|k| format!("{k}/{i}.{r}")),
+                };
                 let r = pb::WriteRequest {
                     sql: sql.into(),
                     params: params_to_pb(params),
                     epoch: t.epoch(),
                     slots_json: only.map(|o| serde_json::to_vec(&o).unwrap_or_default()).unwrap_or_default(),
+                    idempotency_key: idempotency_key.unwrap_or_default(),
                     ..Default::default()
                 };
                 let need = if r.slots_json.is_empty() { MIN_PROTOCOL } else { CLUSTER_PROTOCOL };
@@ -2468,7 +2492,7 @@ impl Coordinator {
             match failed {
                 None => return Ok(self.written_by(t, done)),
                 Some(e) if t.slots.is_some() && self.route_again(&e, t.epoch(), tries).await => tries += 1,
-                Some(e) => return Err(self.partial(t, &done, &errors, e)),
+                Some(e) => return Err(self.partial(t, &done, &errors, e, key.as_deref())),
             }
         }
     }
@@ -2578,9 +2602,20 @@ impl Coordinator {
         }
     }
 
+    /// The key a write of `ops` goes to the shards with: its own, or, for
+    /// one that may span shards (several operations, and several shards),
+    /// [`auto_key`], so that a write that fails on some shards after
+    /// others took it can be sent again without applying their parts twice
+    /// ([`Self::partial`] names the key).
+    pub fn keyed(&self, ops: &[Json], key: Option<String>) -> Option<String> {
+        key.or_else(|| (self.topo().replicas.len() > 1 && ops.iter().filter(|op| !is_mark(op)).nth(1).is_some()).then(auto_key))
+    }
+
     /// Write operations, grouped by the shard of their key. An idempotency
     /// key goes to each shard as `key/shard`, so a retry after a replica
-    /// failed is not applied twice by the replicas that took it.
+    /// failed is not applied twice by the replicas that took it. A
+    /// client's write without one that may span shards is given one
+    /// ([`Self::keyed`]).
     ///
     /// Operations a shard refused as routed by a map it left (a move
     /// flipped) go again by the new map, under keys of their own
@@ -2600,7 +2635,7 @@ impl Coordinator {
                     pending.extend(marks.iter().cloned());
                     round += 1;
                 }
-                Some((e, _)) => return Err(self.partial(&t, &done, &errors, e)),
+                Some((e, _)) => return Err(self.partial(&t, &done, &errors, e, key.as_deref())),
             }
         }
     }
@@ -2790,7 +2825,7 @@ impl Coordinator {
                 if p < SOURCES_PROTOCOL {
                     return Err(tonic::Status::unimplemented(format!("it speaks protocol {p}, and source offsets need {SOURCES_PROTOCOL}: upgrade it")));
                 }
-                c.sources(pb::SourcesRequest {}).await
+                c.sources(pb::SourcesRequest::default()).await
             })
         });
         let mut out = Vec::with_capacity(t.replicas.len());
@@ -2902,9 +2937,11 @@ impl Coordinator {
     }
 
     /// The error of a write that failed on some shards after others took
-    /// it: it says which took how many rows (not undone), and
-    /// [`with_partial`] answers each shard's part.
-    fn partial(&self, t: &Topology, done: &[(String, Wrote)], errors: &[(usize, String)], mut e: ApiError) -> ApiError {
+    /// it: it says which took how many rows (not undone), and, when the
+    /// write has an idempotency `key`, that the same request sent again
+    /// with it applies only the parts not taken; [`with_partial`] answers
+    /// each shard's part and the key.
+    fn partial(&self, t: &Topology, done: &[(String, Wrote)], errors: &[(usize, String)], mut e: ApiError, key: Option<&str>) -> ApiError {
         if done.is_empty() {
             return e;
         }
@@ -2927,8 +2964,15 @@ impl Coordinator {
             shards.push(json!({"shard": i, "short": short(*i, None), "error": why}));
         }
         shards.sort_by_key(|s| s["shard"].as_u64());
-        let _ = PARTIAL.try_with(|p| *p.borrow_mut() = Some(json!(shards)));
+        let mut answer = json!({"shards": shards});
+        if let Some(k) = key {
+            answer["idempotency_key"] = json!(k);
+        }
+        let _ = PARTIAL.try_with(|p| *p.borrow_mut() = Some(answer));
         e.message = format!("{}. {} took the write before it failed, and keep it", e.message, took.join(", "));
+        if let Some(k) = key {
+            e.message = format!("{}: send the same request again with idempotency_key \"{k}\" (within an hour) to write the rest, which the shards that took their part do not apply again", e.message);
+        }
         e
     }
 
@@ -3390,7 +3434,8 @@ impl Coordinator {
     /// What a server new to the cluster says: its protocol, part in
     /// replication, rows, and first table. It must speak protocol 9, hold
     /// no rows (unless `force`) and no slot map, and serve the cluster's
-    /// first table.
+    /// first table: of a cluster that began with no tables, the
+    /// placeholder, which a server made with no tables serves.
     async fn admit(&self, url: &str, force: bool) -> Result<(Client, Said), ApiError> {
         let t = self.topo();
         if let Some(i) = t.replicas.iter().position(|rs| rs.iter().any(|r| r.url == url)) {
@@ -3418,7 +3463,11 @@ impl Coordinator {
         let first: Schema = serde_json::from_str(&schema.schema_json).map_err(ApiError::internal)?;
         let ours = self.catalog().first().cloned().unwrap_or_else(|| Arc::new(self.schema.clone()));
         if !first.same_columns(&ours) {
-            return Err(ApiError::bad(format!("{url} serves table {} with another schema than the cluster's first table, {}: create its database with the same --schema", first.table, self.schema.table)));
+            return Err(ApiError::bad(match (ours.is_placeholder(), first.is_placeholder()) {
+                (true, _) => format!("{url} serves table {}, and the cluster began with no tables: start it on a new database with no --schema (nor --demo), and the coordinator creates every table of the cluster on it when it joins", first.table),
+                (false, true) => format!("{url} has no tables, and the cluster's first table is {}: start it on a new database with the same --schema as the cluster's first shard", ours.table),
+                (false, false) => format!("{url} serves table {} with another schema than the cluster's first table, {}: start it on a new database with the same --schema (altered as the cluster's was)", first.table, ours.table),
+            }));
         }
         if health.docs > 0 && !force {
             return Err(ApiError::bad(format!("{url} holds {} rows: a new shard or replica starts empty (pass force to drop them)", health.docs)));
@@ -3624,6 +3673,10 @@ mod tests {
         let s = tonic::Status::from(ApiError { status: 429, message: "too many queries running".into() });
         assert_eq!(s.code(), Code::ResourceExhausted);
         assert_eq!(ApiError::from(s).status, 429);
+        // An idempotency key used for other operations: 422 on both sides.
+        let s = tonic::Status::from(ApiError { status: 422, message: "this idempotency key was used for different operations".into() });
+        assert!(!try_elsewhere(&s));
+        assert_eq!(ApiError::from(s).status, 422);
     }
 }
 
