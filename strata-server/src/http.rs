@@ -198,6 +198,9 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/vacuum", post(admin_vacuum))
         .route("/v1/admin/verify", post(admin_verify))
         .route("/v1/admin/promote", post(admin_promote))
+        .route("/v1/admin/follow", get(follow_view))
+        .route("/v1/admin/follow/status", post(follow_status))
+        .route("/v1/admin/follow/stop", post(follow_stop))
         .route("/v1/admin/shards", post(add_shard))
         .route("/v1/admin/shards/:i", axum::routing::delete(remove_shard))
         .route("/v1/admin/shards/:i/replicas", post(add_replica).merge(axum::routing::delete(remove_replica)))
@@ -679,9 +682,13 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
         Some(_) => None,
     };
     let need = route_scope(&method, route);
+    // A follow process's writes ([`crate::service::FOLLOW`]).
+    let follow = header_str(req.headers(), header::HeaderName::from_static(crate::service::FOLLOW_HEADER)).map(str::to_string);
     let refused = match &who {
         None => Some(ApiError { status: 401, message: "missing or wrong token".into() }),
         Some(w) if w.scope < need => w.may(need, &format!("{method} {route}")).err(),
+        Some(w) if follow.is_some() && !w.root => Some(ApiError { status: 403, message: format!("{} names a cluster this one follows: only its follow process sends it, with the cluster's token", crate::service::FOLLOW_HEADER) }),
+        Some(_) if follow.as_deref().is_some_and(|f| !crate::service::follow_name_ok(f)) => Some(ApiError::bad(format!("{} is 1 to 64 letters, digits, '.', '_' or '-'", crate::service::FOLLOW_HEADER))),
         Some(_) => None,
     };
     let (res, note, change) = match refused {
@@ -695,7 +702,8 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
             if let Some(w) = &who {
                 req.extensions_mut().insert(w.clone());
             }
-            telemetry::calling(Arc::new(caller), keys::noting_change(next.run(req))).await
+            let follow: Option<Arc<str>> = follow.map(Into::into);
+            telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, keys::noting_change(next.run(req)))).await
         }
     };
     let status = res.status().as_u16();
@@ -1077,10 +1085,11 @@ async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<
     let num = |k: &str| -> Result<Option<u64>, ApiError> { q.get(k).map(|v| v.parse::<u64>().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}")))).transpose() };
     let (from, after) = (num("from")?.unwrap_or(1), num("after_term")?.filter(|&t| t > 0));
     let shard = num("shard")?;
+    let copy = flag(&q, "copy", false)?;
     let ndjson = |body: axum::body::Body| ([(header::CONTENT_TYPE, "application/x-ndjson")], body).into_response();
     if let Ok(c) = app.svc.coordinator() {
         let shard = shard.ok_or_else(|| ApiError::bad("a cluster's feed is each shard's: name one (?shard=0 for the first)"))?;
-        let chunks = c.feed(shard as usize, from, after.unwrap_or(0)).await?;
+        let chunks = c.feed(shard as usize, from, after.unwrap_or(0), copy).await?;
         let lines = chunks.map(|c| {
             Ok::<_, std::convert::Infallible>(match c {
                 Ok(c) => Bytes::from(c.lines),
@@ -1097,7 +1106,7 @@ async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<
     if shard.is_some_and(|s| s != own) {
         return Err(ApiError::bad(format!("this server holds shard {own} alone: ask its coordinator for shard {}", shard.unwrap_or(0))));
     }
-    let rx = app.svc.feed(from, after).await?;
+    let rx = app.svc.feed(from, after, copy).await?;
     let lines = tokio_stream::wrappers::ReceiverStream::new(rx).map(|v| Ok::<_, std::convert::Infallible>(Bytes::from(v)));
     Ok(ndjson(axum::body::Body::from_stream(lines)))
 }
@@ -1934,10 +1943,55 @@ fn line_ops(line: &[u8]) -> Result<Vec<Json>, ApiError> {
 }
 
 /// Every stream source written from, with the offset of the last event
-/// each wrote ([`Service::sources`]).
-async fn sources(State(app): State<App>) -> Res {
+/// each wrote ([`Service::sources`]): on a coordinator the least over its
+/// shards; `?shards=true` also lists each shard's own (`shards`).
+async fn sources(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
+    if flag(&q, "shards", false)? {
+        let by_shard = app.svc.sources_by_shard().await?;
+        let least = match app.svc.coordinator() {
+            Ok(_) => app.svc.sources().await?,
+            Err(_) => by_shard.first().cloned().unwrap_or_default(),
+        };
+        let shards: Vec<Json> = by_shard.into_iter().map(|s| Json::Array(s.into_iter().map(source_json).collect())).collect();
+        return Ok(AxJson(json!({"sources": least.into_iter().map(source_json).collect::<Vec<_>>(), "shards": shards})));
+    }
     let sources: Vec<Json> = app.svc.sources().await?.into_iter().map(source_json).collect();
     Ok(AxJson(json!({"sources": sources})))
+}
+
+/// `GET /v1/admin/follow`: the clusters this one follows or followed
+/// ([`crate::follow`]): whether it follows each now, how far its follow
+/// process applied each source shard's feed, and what that process last
+/// said of itself.
+async fn follow_view(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.follow_view().await?))
+}
+
+/// `POST /v1/admin/follow/status`: a follow process says how it stands
+/// (the cluster's token only).
+async fn follow_status(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    root_only(&who(w), "a follow process's status")?;
+    let name = b["name"].as_str().filter(|n| crate::service::follow_name_ok(n)).ok_or_else(|| ApiError::bad("the status names its cluster: {\"name\": ...}"))?.to_string();
+    app.svc.note_follow_status(&name, b);
+    Ok(AxJson(json!({"noted": name})))
+}
+
+/// `POST /v1/admin/follow/stop {"name"}`: stops following cluster `name`
+/// (the cluster's token only): from then on this cluster takes its
+/// clients' writes, and refuses its follow process's.
+async fn follow_stop(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    root_only(&who(w), "stopping following")?;
+    let name = b["name"].as_str().ok_or_else(|| ApiError::bad("name the cluster to stop following: {\"name\": ...}"))?;
+    let r = app.svc.stop_following(name).await?;
+    keys::note(format!("stopped following {name}"));
+    Ok(AxJson(r))
+}
+
+fn root_only(w: &Principal, what: &str) -> Result<(), ApiError> {
+    match w.root {
+        true => Ok(()),
+        false => Err(ApiError { status: 403, message: format!("{what} takes the cluster's token, not a key") }),
+    }
 }
 
 /// One source's offset, null for one not written from (start from the

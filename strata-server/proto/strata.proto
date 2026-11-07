@@ -390,6 +390,11 @@ message FeedRequest {
   // The term of transaction from - 1 as the reader holds it (0: not
   // checked). When the shard's differs, the feed says it diverged.
   uint64 after_term = 2;
+  // Protocol 14: first the shard's rows at a version every replica in
+  // sync holds (its tables, then its rows as upserts), and then the feed
+  // from the transaction after that version; `from` is not read. A
+  // follower's first start.
+  bool copy = 3;
 }
 
 message FeedChunk {

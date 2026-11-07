@@ -325,12 +325,16 @@ impl Db {
     /// name, with the offset of the last event each wrote; none before
     /// the first.
     pub fn sources(&self) -> Result<Vec<Source>> {
-        let snap = self.snapshot();
+        self.sources_at(&self.snapshot())
+    }
+
+    /// [`Db::sources`] as of version `snap`.
+    pub fn sources_at(&self, snap: &Snapshot) -> Result<Vec<Source>> {
         if snap.table(SOURCES).is_none() {
             return Ok(Vec::new());
         }
         let sql = format!("SELECT name, last_offset, updated FROM {SOURCES} LIMIT {}", u32::MAX);
-        let rs = self.query_at(&snap, &sql, &Params::new(), &ExecOptions { max_rows: None, ..self.exec.clone() })?;
+        let rs = self.query_at(snap, &sql, &Params::new(), &ExecOptions { max_rows: None, ..self.exec.clone() })?;
         let mut sources: Vec<Source> = rs
             .rows
             .into_iter()
