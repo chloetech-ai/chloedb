@@ -1268,57 +1268,92 @@ mod tests {
 
     /// An HTTP server that answers every request with `{}` after `service`,
     /// one request at a time (a single server: M/D/1 under Poisson arrivals).
-    fn one_at_a_time(service: Duration) -> String {
-        use std::io::{Read as _, Write as _};
+    /// One thread does it all without blocking: it takes connections, reads
+    /// what came, and serves the requests it found one after another, so
+    /// the next request starts the moment one ends. (A thread per connection
+    /// taking turns on a lock left the server idle, after each request,
+    /// while the next thread woke: on CI's macOS runner the mean response
+    /// was 70 ms instead of 10.) The requests that
+    /// came during one are served in the order of their connections, not of
+    /// their arrival; with every service the same length, that changes who
+    /// waits, not the mean wait. It stops when the guard drops.
+    fn one_at_a_time(service: Duration) -> (String, Stop) {
+        use std::io::{ErrorKind, Read as _, Write as _};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let addr = listener.local_addr().unwrap();
-        let busy = Arc::new(Mutex::new(()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
         std::thread::spawn(move || {
-            for conn in listener.incoming() {
-                let (mut conn, busy) = (conn.unwrap(), busy.clone());
-                std::thread::spawn(move || {
-                    let mut buf = Vec::new();
-                    let mut chunk = [0u8; 65536];
-                    loop {
-                        // A request: headers, then content-length bytes of body.
-                        let end = loop {
-                            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                                break i + 4;
-                            }
-                            match conn.read(&mut chunk) {
-                                Ok(0) | Err(_) => return,
-                                Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                            }
-                        };
-                        let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
-                        let len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).map_or(0, |v| v.trim().parse().unwrap_or(0));
-                        while buf.len() < end + len {
-                            match conn.read(&mut chunk) {
-                                Ok(0) | Err(_) => return,
-                                Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                            }
+            // Each connection and what it sent that is not a whole request yet.
+            let mut conns: Vec<Option<(std::net::TcpStream, Vec<u8>)>> = Vec::new();
+            let mut queue = std::collections::VecDeque::new();
+            let mut chunk = [0u8; 65536];
+            while !stopped.load(Ordering::Relaxed) {
+                while let Ok((c, _)) = listener.accept() {
+                    c.set_nonblocking(true).unwrap();
+                    c.set_nodelay(true).unwrap();
+                    conns.push(Some((c, Vec::new())));
+                }
+                for (i, slot) in conns.iter_mut().enumerate() {
+                    let Some((c, buf)) = slot else { continue };
+                    let open = loop {
+                        match c.read(&mut chunk) {
+                            Ok(0) => break false,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                            Err(e) if e.kind() == ErrorKind::WouldBlock => break true,
+                            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                            Err(_) => break false,
                         }
-                        buf.drain(..end + len);
-                        {
-                            let _one = busy.lock().unwrap();
-                            let t = Instant::now();
-                            while t.elapsed() < service {
-                                std::hint::spin_loop();
-                            }
-                        }
-                        if conn.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}").is_err() {
-                            return;
-                        }
+                    };
+                    while let Some(n) = whole_request(buf) {
+                        buf.drain(..n);
+                        queue.push_back(i);
                     }
-                });
+                    if !open {
+                        *slot = None;
+                    }
+                }
+                if let Some(i) = queue.pop_front() {
+                    let t = Instant::now();
+                    while t.elapsed() < service {
+                        std::hint::spin_loop();
+                    }
+                    // A closed connection's request goes unanswered; the answer fits in an empty send buffer.
+                    if let Some((c, _)) = &mut conns[i] {
+                        let _ = c.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}");
+                    }
+                }
             }
         });
-        format!("http://{addr}")
+        (format!("http://{addr}"), Stop(stop))
+    }
+
+    /// How long the request at the start of `buf` is (headers, then
+    /// content-length bytes of body), once it is all there.
+    fn whole_request(buf: &[u8]) -> Option<usize> {
+        let end = buf.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
+        let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+        let len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).map_or(0, |v| v.trim().parse().unwrap_or(0));
+        (buf.len() >= end + len).then_some(end + len)
+    }
+
+    /// Stops a test server when it drops.
+    struct Stop(Arc<AtomicBool>);
+
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Open-loop arrivals at a single server queue as M/D/1 does: at 75% of
     /// its capacity the mean response is the service time and a wait of
     /// rho D / (2 (1 - rho)) = 1.5 D; a closed loop would show D alone.
+    ///
+    /// The other tests of this binary share the CPU in its first seconds, and
+    /// a driver that sent late measured the machine, not the queue: such a
+    /// run is made again, three times at most.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn an_open_loop_queues_as_m_d_1() {
         let dir = crate::sim::fixture::write(&crate::sim::fixture::tempdir("queue"), 2000, 500, 0);
@@ -1331,18 +1366,26 @@ mod tests {
         let d = Duration::from_millis(4);
         let rate = 0.75 / d.as_secs_f64();
         crate::sim::gen::plan(&p, "test", &catalog, 1, Shape::Day { rate }, &schedule).unwrap();
-        let url = one_at_a_time(d);
-        let out = dir.join("out");
-        let opts = Opts { max_inflight: None, cache_mode: CacheMode::Ranked, paid: false, seconds: None, label: Some("queue".into()), reset: false, out: out.clone() };
-        replay_in(&dir, "queue", Target::Main(Engine::Strata), &[url], &schedule, &opts).await.unwrap();
-        let r: Json = serde_json::from_str(&std::fs::read_to_string(out.join("replay-queue.json")).unwrap()).unwrap();
+        let (url, _server) = one_at_a_time(d);
+        let mut runs = Vec::new();
+        let r = loop {
+            let out = dir.join(format!("out-{}", runs.len()));
+            let opts = Opts { max_inflight: None, cache_mode: CacheMode::Ranked, paid: false, seconds: None, label: Some("queue".into()), reset: false, out: out.clone() };
+            replay_in(&dir, "queue", Target::Main(Engine::Strata), &[url.clone()], &schedule, &opts).await.unwrap();
+            let r: Json = serde_json::from_str(&std::fs::read_to_string(out.join("replay-queue.json")).unwrap()).unwrap();
+            let lag = r["driver_lag"]["p99_ms"].as_f64().unwrap();
+            runs.push(format!("mean {} ms, service {} ms, driver lag {}", r["reads"]["mean_ms"], r["kinds"]["bm25"]["service"]["mean_ms"], r["driver_lag"]));
+            if lag < 2.0 || runs.len() == 3 {
+                break r;
+            }
+        };
+        assert!(r["driver_lag"]["p99_ms"].as_f64().unwrap() < 2.0, "the driver sent late in every run: {runs:?}");
         let mean = r["reads"]["mean_ms"].as_f64().unwrap();
         let svc = r["kinds"]["bm25"]["service"]["mean_ms"].as_f64().unwrap();
         // 4 ms of service and 6 ms of waiting; the client's own time and the scheduler's on top, a little.
-        assert!((8.0..13.0).contains(&mean), "mean response {mean} ms (service {svc} ms), M/D/1 says 10");
+        assert!((8.0..13.0).contains(&mean), "mean response {mean} ms (service {svc} ms), M/D/1 says 10; runs: {runs:?}");
         // The queue is the server's (every request has its connection), so the time from sending shows it too.
-        assert!(svc > 8.0, "service {svc} ms");
-        assert!(r["driver_lag"]["p99_ms"].as_f64().unwrap() < 2.0, "{}", r["driver_lag"]);
+        assert!(svc > 8.0, "service {svc} ms; runs: {runs:?}");
         assert_eq!(r["left_in_flight"], 0);
     }
 
