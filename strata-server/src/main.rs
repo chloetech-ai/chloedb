@@ -478,9 +478,10 @@ enum Command {
     /// this one, then keep applying its writes, a moment behind, until
     /// stopped. While it follows, this cluster takes no writes but this
     /// process's (POST /v1/admin/follow/stop ends that). It reads each of
-    /// the source's shards' feeds (shard protocol 14) and writes through
-    /// this cluster's coordinator; GET /v1/admin/follow there shows how far
-    /// it is. Started again, it goes on from where it was.
+    /// the source's shards' feeds (shard protocol 14; 15 to catch up once
+    /// it falls behind a shard's log) and writes through this cluster's
+    /// coordinator; GET /v1/admin/follow there shows how far it is.
+    /// Started again, it goes on from where it was.
     Follow {
         /// The source cluster's HTTP URL: its coordinator, or a server of
         /// its own, as https://east.example:7700.
@@ -510,8 +511,9 @@ enum Command {
         #[arg(long, default_value_t = strata_server::cores::follow::BATCH)]
         batch: usize,
         /// Copy the source again from the start, whatever this cluster
-        /// kept: after the source's log no longer holds what it needs, or
-        /// a failover of the source lost transactions it applied.
+        /// kept: after a failover of the source lost transactions it
+        /// applied. (One that falls behind the source's log catches up by
+        /// itself.)
         #[arg(long)]
         copy: bool,
     },

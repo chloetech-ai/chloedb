@@ -143,19 +143,6 @@ pub(crate) fn flip_marks(old: &SlotMap, new: &SlotMap, shard: usize) -> Vec<Stri
     left.chain(arrived).map(|j| format!("{MARK}slots {j}")).collect()
 }
 
-/// Writes `marks` in one transaction of their own, each as an offset
-/// `epoch` that `_sources` does not keep.
-pub(crate) fn write_marks(db: &Db, marks: &[String], epoch: u64) -> Result<(), ApiError> {
-    db.storage().ensure_sources()?;
-    let mut t = db.storage().begin()?;
-    let now = strata::timestamp::now();
-    for m in marks {
-        t.mark_source(m, epoch as i64, now)?;
-    }
-    t.commit_seq()?;
-    Ok(())
-}
-
 /// How many bytes of the log one read takes.
 const READ_BYTES: usize = 1 << 20;
 
@@ -174,20 +161,25 @@ const COPY_ROWS: usize = 500;
 /// How to stop following, as a refused write says.
 const FOLLOW_STOP: &str = "POST /v1/admin/follow/stop";
 
+/// How long a follow process that says how it stands every 2 s may be
+/// silent before it counts as behind for as long ([`Service::follow_lags`]).
+pub const SILENT_MS: u64 = 10_000;
+
 impl Service {
     /// This server's feed from transaction `from` on, in chunks of lines
     /// (each ending with a newline). `after` is the term of transaction
     /// `from - 1` as the reader holds it, if it holds one. With `copy`,
     /// the feed starts with a copy of the server's rows instead
-    /// ([`Self::copy_feed`]), and `from` and `after` are not read.
-    pub async fn feed(self: &Arc<Self>, from: u64, after: Option<u64>, copy: bool) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, ApiError> {
+    /// ([`Self::copy_feed`]): `from` is not read, and `after` is the term
+    /// of transaction [`CopyOpts::since`] as the reader holds it.
+    pub async fn feed(self: &Arc<Self>, from: u64, after: Option<u64>, copy: Option<CopyOpts>) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, ApiError> {
         let db = self.local().cloned().ok_or_else(|| ApiError::bad("a cluster's feed is each shard's: name one (?shard=0 for the first)"))?;
         if db.storage().numbering().is_none() {
             return Err(conflict("this server does not number its writes, so it has no feed: start it with --seq-no (a shard with replicas numbers them)".into()));
         }
         self.feed_reaches()?;
-        if copy {
-            return self.copy_feed(db).await;
+        if let Some(c) = copy {
+            return self.copy_feed(db, c, after).await;
         }
         let d = db.clone();
         let start = tokio::task::spawn_blocking(move || d.storage().changes_from(from, after)).await.map_err(ApiError::internal)??;
@@ -210,31 +202,30 @@ impl Service {
     ///   operations take them);
     /// - `{"copy": true, "ops": [...]}`: its rows, as upserts;
     /// - `{"copied": {"seq", "term", "rows", "sources"}}`: the stream
-    ///   sources' offsets at the version;
+    ///   sources' offsets at the version, and with [`CopyOpts::digests`] the
+    ///   digests of its keys by slot (`digests`, [`key_digests`]);
     ///
     /// and then the feed from the transaction after it, which the log
     /// keeps until the reader reaches its end. The rows of slots this
     /// shard holds without serving them (a move's) are left out: the
     /// version is taken as no new slot map is, so they are those of its
     /// epoch. Every table needs a primary key, by which the follower
-    /// replaces rows.
-    async fn copy_feed(self: &Arc<Self>, db: Arc<Db>) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, ApiError> {
-        let (snap, epoch) = {
-            // A slot map's marks are written before the map is taken
-            // ([`Self::set_slots`]): taken while none is, the version has
-            // the marks of the epoch it serves.
-            let _taking = self.slots_file.lock().await;
-            let held = self.slots.read().unwrap_or_else(|e| e.into_inner());
-            let epoch = held.as_ref().map_or(0, |(m, _)| m.epoch);
-            let snap = db.snapshot();
-            let mask = self.moving.mask();
-            drop(held);
-            match mask {
-                Some(m) => (snap.masked(&m)?, epoch),
-                None => (snap, epoch),
-            }
-        };
+    /// replaces rows. With [`CopyOpts::since`] (protocol 15), only the rows
+    /// a transaction after it last wrote, but every row of the tables
+    /// [`CopyOpts::whole`]: a follower that fell behind the log catches up
+    /// with them, and with the digests finds the keys deleted meanwhile.
+    /// `since_term` is the term of transaction `since` as the follower
+    /// holds it: one this shard holds under another term diverged.
+    async fn copy_feed(self: &Arc<Self>, db: Arc<Db>, c: CopyOpts, since_term: Option<u64>) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, ApiError> {
+        let (snap, epoch) = self.served(&db).await?;
         let seq = snap.seq_no().unwrap_or(0);
+        if c.since > seq {
+            return Err(conflict(format!("this shard's last transaction is {seq}, before {}, which the follower applied: a failover lost it; copy again (--copy)", c.since)));
+        }
+        let term_of_since = db.storage().numbering().map_or(0, |n| n.term_at(c.since));
+        if let Some(t) = since_term.filter(|&t| c.since > 0 && t != term_of_since) {
+            return Err(conflict(format!("this shard holds transaction {} of term {term_of_since}, and the follower applied it of term {t}: a failover lost it; copy again (--copy)", c.since)));
+        }
         let hold = Held { id: db.storage().hold_log(seq + 1), db: db.clone() };
         let tables: Vec<Schema> = snap.schemas().filter(|t| t.table != SOURCES && !t.is_placeholder()).cloned().collect();
         if let Some(t) = tables.iter().find(|t| t.primary_key.is_none()) {
@@ -265,9 +256,18 @@ impl Service {
         let svc = self.clone();
         tokio::spawn(async move {
             let (d, t) = (db.clone(), tx.clone());
-            let copied = tokio::task::spawn_blocking(move || copy_rows(&d, &snap, &tables, &t)).await;
+            let copied = tokio::task::spawn_blocking(move || {
+                let Some((rows, sources)) = copy_rows(&d, &snap, &tables, c.since, &c.whole, &t)? else { return Ok(None) };
+                let mut end = json!({"seq": seq, "term": term, "rows": rows, "sources": sources});
+                if c.digests {
+                    let names: Vec<String> = tables.iter().map(|t| t.table.clone()).collect();
+                    end["digests"] = digests_json(&key_digests(&snap, &names)?);
+                }
+                Ok::<_, ApiError>(Some(end))
+            })
+            .await;
             let end = match copied {
-                Ok(Ok(Some((rows, sources)))) => json!({"copied": {"seq": seq, "term": term, "rows": rows, "sources": sources}}),
+                Ok(Ok(Some(end))) => json!({"copied": end}),
                 // The reader left.
                 Ok(Ok(None)) => return,
                 Ok(Err(e)) => json!({"error": e.message, "status": e.status}),
@@ -330,6 +330,22 @@ impl Service {
     /// [`Self::follow_view`].
     pub fn note_follow_status(&self, name: &str, status: Json) {
         self.follows.note(name, status);
+    }
+
+    /// Per follow process that writes through this server and has not
+    /// stopped following: how far behind its source it is, in seconds (as
+    /// it last said, and once it is silent for over [`SILENT_MS`], plus
+    /// how long since: it applies nothing), and in transactions.
+    pub(crate) fn follow_lags(&self) -> Vec<(String, f64, f64)> {
+        self.follows
+            .said()
+            .into_iter()
+            .filter(|(_, (_, st))| st["state"] != "stopped")
+            .map(|(name, (age_ms, st))| {
+                let lag_ms = st["lag_ms"].as_u64().unwrap_or(0) + if age_ms > SILENT_MS { age_ms } else { 0 };
+                (name, lag_ms as f64 / 1e3, st["behind"].as_f64().unwrap_or(0.0))
+            })
+            .collect()
     }
 
     /// The clusters this one follows or followed ([`crate::follow`]): per
@@ -518,15 +534,17 @@ async fn tail(svc: Arc<Service>, db: Arc<Db>, mut cursor: Cursor, tx: tokio::syn
     }
 }
 
-/// Sends `tx` every row of `tables` in `snap` as upserts, [`COPY_ROWS`]
-/// a line. Returns the rows sent and the stream sources' offsets at
-/// `snap`, or `None` once the reader left.
-fn copy_rows(db: &Db, snap: &Snapshot, tables: &[Schema], tx: &tokio::sync::mpsc::Sender<Vec<u8>>) -> Result<Option<(u64, Vec<Json>)>, ApiError> {
+/// Sends `tx` every row of `tables` in `snap` as upserts (with `since`,
+/// those a transaction after it last wrote), [`COPY_ROWS`] a line.
+/// Returns the rows sent and the stream sources' offsets at `snap`, or
+/// `None` once the reader left.
+fn copy_rows(db: &Db, snap: &Snapshot, tables: &[Schema], since: u64, whole: &[String], tx: &tokio::sync::mpsc::Sender<Vec<u8>>) -> Result<Option<(u64, Vec<Json>)>, ApiError> {
     let every = Mask::new(|_, _| true);
     let mut sent = 0u64;
     for schema in tables {
         let Some(t) = snap.table(&schema.table) else { continue };
-        let rows = t.covered(&every, None)?;
+        let all = since == 0 || whole.iter().any(|w| w.eq_ignore_ascii_case(&schema.table));
+        let rows = t.covered(&every, (!all).then_some(since))?;
         for chunk in rows.chunks(COPY_ROWS) {
             let ops: Vec<Json> = db.documents_of(&t, chunk)?.iter().map(|d| json!({"op": "upsert", "table": schema.table, "doc": js::document_json(t.schema(), d)})).collect();
             sent += ops.len() as u64;
@@ -537,6 +555,123 @@ fn copy_rows(db: &Db, snap: &Snapshot, tables: &[Schema], tx: &tokio::sync::mpsc
     }
     let sources = db.sources_at(snap)?.into_iter().filter(|s| !s.name.starts_with(MARK)).map(|s| json!({"name": s.name, "offset": s.offset})).collect();
     Ok(Some((sent, sources)))
+}
+
+/// What a copy feed sends ([`Service::copy_feed`]).
+#[derive(Clone, Debug, Default)]
+pub struct CopyOpts {
+    /// Only the rows a transaction after this one last wrote (0: all).
+    pub since: u64,
+    /// But every row of these tables (a catch-up's tables that changed).
+    pub whole: Vec<String>,
+    /// The digests of its keys by slot, with its end.
+    pub digests: bool,
+}
+
+/// The digest of a slot's keys: how many, and the sum of their hashes
+/// ([`key_hash`]), which two clusters compare whatever their shards.
+pub type Digest = (u64, u64);
+
+/// The hash of a row's key as two clusters compare them: of its table's
+/// name (in lower case: the clusters number their tables apart) and of
+/// its key as slots hash it ([`slots::encode`]).
+pub fn key_hash(table: &str, key: &strata::value::Value) -> u64 {
+    let mut bytes = table.to_ascii_lowercase().into_bytes();
+    bytes.push(0xff);
+    slots::encode(key, |b| bytes.extend_from_slice(b));
+    twox_hash::XxHash3_64::oneshot(&bytes)
+}
+
+/// The digests of the keys of `tables` in `snap` by slot (of the value
+/// that places each row), for the slots that hold one.
+pub fn key_digests(snap: &Snapshot, tables: &[String]) -> Result<BTreeMap<usize, Digest>, ApiError> {
+    let every = Mask::new(|_, _| true);
+    let mut out: BTreeMap<usize, Digest> = BTreeMap::new();
+    for name in tables {
+        let Some(t) = snap.table(name) else { continue };
+        t.each_covered_key(&every, |key, place| {
+            let d = out.entry(slots::slot(place)).or_default();
+            d.0 += 1;
+            d.1 = d.1.wrapping_add(key_hash(name, key));
+        })?;
+    }
+    Ok(out)
+}
+
+/// The keys of `tables` in `snap` whose rows `slots` place, each as
+/// `{"table", "key", "place"}` (`place`: the shard_by value of a table
+/// placed by one).
+pub fn slot_keys(snap: &Snapshot, tables: &[String], slots: &std::collections::HashSet<usize>) -> Result<Vec<Json>, ApiError> {
+    let every = Mask::new(|_, _| true);
+    let mut out = Vec::new();
+    for name in tables {
+        let Some(t) = snap.table(name) else { continue };
+        let by = t.schema().shard_by.is_some();
+        let table = t.schema().table.clone();
+        t.each_covered_key(&every, |key, place| {
+            if slots.contains(&slots::slot(place)) {
+                let mut k = json!({"table": table, "key": js::to_json(key)});
+                if by {
+                    k["place"] = js::to_json(place);
+                }
+                out.push(k);
+            }
+        })?;
+    }
+    Ok(out)
+}
+
+/// Digests as JSON: `[[slot, count, "sum in hex"], ...]` (a sum may not
+/// fit a JSON number).
+pub fn digests_json(d: &BTreeMap<usize, Digest>) -> Json {
+    Json::Array(d.iter().map(|(s, (n, h))| json!([s, n, format!("{h:016x}")])).collect())
+}
+
+/// [`digests_json`] read back.
+pub fn digests_of(j: &Json) -> Result<BTreeMap<usize, Digest>, ApiError> {
+    let bad = || ApiError::bad(format!("digests are [[slot, count, \"sum in hex\"], ...], not {j}"));
+    let mut out = BTreeMap::new();
+    for d in j.as_array().ok_or_else(bad)? {
+        let (Some(s), Some(n), Some(h)) = (d[0].as_u64(), d[1].as_u64(), d[2].as_str().and_then(|h| u64::from_str_radix(h, 16).ok())) else { return Err(bad()) };
+        out.insert(s as usize, (n, h));
+    }
+    Ok(out)
+}
+
+impl Service {
+    /// This server's keys of `tables` as a follower's sweep compares them
+    /// (protocol 15): with no `slots`, their digests by slot
+    /// ([`key_digests`], `{"digests"}`); with `slots`, the keys those place
+    /// (`{"keys"}`, [`slot_keys`]). Of the rows it serves: not those of
+    /// slots a move sends it before they are its own.
+    pub async fn feed_keys(self: &Arc<Self>, tables: Vec<String>, slots: Option<Vec<usize>>) -> Result<Json, ApiError> {
+        let db = self.local().cloned().ok_or_else(|| ApiError::internal("a coordinator's keys are its shards'"))?;
+        let (snap, epoch) = self.served(&db).await?;
+        tokio::task::spawn_blocking(move || match slots {
+            None => Ok(json!({"digests": digests_json(&key_digests(&snap, &tables)?), "epoch": epoch})),
+            Some(s) => Ok(json!({"keys": slot_keys(&snap, &tables, &s.into_iter().collect())?, "epoch": epoch})),
+        })
+        .await
+        .map_err(ApiError::internal)?
+    }
+
+    /// A version of `db` as this shard serves it, and the epoch of the
+    /// slot map it serves (0 with none): the rows of slots it holds
+    /// without serving them (a move's) are left out. A slot map's marks
+    /// are written before the map is taken ([`Self::set_slots`]): taken
+    /// while none is, the version has the marks of the epoch it serves.
+    async fn served(&self, db: &Db) -> Result<(Snapshot, u64), ApiError> {
+        let _taking = self.slots_file.lock().await;
+        let held = self.slots.read().unwrap_or_else(|e| e.into_inner());
+        let epoch = held.as_ref().map_or(0, |(m, _)| m.epoch);
+        let snap = db.snapshot();
+        let mask = self.moving.mask();
+        drop(held);
+        match mask {
+            Some(m) => Ok((snap.masked(&m)?, epoch)),
+            None => Ok((snap, epoch)),
+        }
+    }
 }
 
 /// `js` as lines of JSON.

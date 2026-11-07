@@ -37,14 +37,17 @@ export declare class Client extends Searchable {
   count(): Promise<number>;
 
   query(sql: string, params?: Params | null, options?: { timeoutMs?: number }): Promise<Result>;
-  sql(sql: string, params?: Params | null): Promise<Result | number>;
+  /** With `idempotencyKey`, a write sent again (after a lost answer, or
+   * the `idempotency_key` of an error that says it failed partway through
+   * a coordinator) is not applied twice. */
+  sql(sql: string, params?: Params | null, options?: { idempotencyKey?: string }): Promise<Result | number>;
   explain(sql: string, params?: Params | null): Promise<Record<string, unknown>>;
   run(plan: Plan): Promise<Result | number>;
   embed(text?: string | null, options?: { field?: string; table?: string; image?: Uint8Array | ArrayBuffer | Blob; audio?: Uint8Array | ArrayBuffer | Blob }): Promise<number[]>;
   embedTokens(text: string, field: string, options?: { table?: string }): Promise<number[][]>;
   sidNext(prefixes: Iterable<string>, options: { field: string; where?: string; params?: Params; table?: string }): Promise<Record<string, Record<string, number>>>;
 
-  write(ops: Iterable<Record<string, Input>>): Promise<number>;
+  write(ops: Iterable<Record<string, Input>>, options?: { idempotencyKey?: string }): Promise<number>;
   insert(rows: Row | Iterable<Row>, options?: { table?: string }): Promise<number>;
   upsert(rows: Row | Iterable<Row>, options?: { table?: string }): Promise<number>;
   delete(keys: Input | Iterable<Input>, options?: { table?: string; routing?: Input }): Promise<number>;
