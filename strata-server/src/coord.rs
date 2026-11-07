@@ -91,7 +91,7 @@ use tonic::transport::Channel;
 use tonic::Code;
 
 use crate::auth::Secret;
-use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL};
+use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_COPY_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL};
 use crate::metrics::Family;
 use crate::pb::{self, strata_client::StrataClient};
 use crate::service::{is_mark, op_place, op_schema, op_source, After, QueryReq, Written};
@@ -165,6 +165,10 @@ impl tonic::service::Interceptor for Credentials {
         if let Some(id) = crate::obs::current().and_then(|id| id.parse().ok()) {
             req.metadata_mut().insert(crate::obs::HEADER, id);
         }
+        // A follow process's writes go to the shards as its.
+        if let Some(f) = crate::service::following().and_then(|f| f.parse().ok()) {
+            req.metadata_mut().insert(crate::service::FOLLOW_HEADER, f);
+        }
         // workdata (L7): the shard's part runs to the client's own deadline.
         if crate::service::client_deadline().is_some() {
             req.metadata_mut().insert(crate::service::CLIENT_DEADLINE, tonic::metadata::MetadataValue::from_static("client"));
@@ -193,6 +197,21 @@ pub(crate) fn client(url: &str, token: Option<&Secret>, ca: Option<&[u8]>) -> Re
     }
     let ch = ep.connect_timeout(Duration::from_secs(5)).tcp_nodelay(true).connect_lazy();
     Ok(StrataClient::with_interceptor(ch, Credentials(credentials)).max_decoding_message_size(256 << 20))
+}
+
+/// Each source every shard has, at the least offset over the shards
+/// ([`Coordinator::sources`]).
+fn least_sources(shards: Vec<Vec<Source>>) -> Vec<Source> {
+    let n = shards.len();
+    let mut least: BTreeMap<String, (i64, Option<i64>, usize)> = BTreeMap::new();
+    for s in shards.into_iter().flatten() {
+        let e = least.entry(s.name).or_insert((s.offset, s.updated, 0));
+        if s.offset < e.0 {
+            (e.0, e.1) = (s.offset, s.updated);
+        }
+        e.2 += 1;
+    }
+    least.into_iter().filter(|(_, (.., k))| *k == n).map(|(name, (offset, updated, _))| Source { name, offset, updated }).collect()
 }
 
 /// One server holding a copy of a shard.
@@ -2645,17 +2664,12 @@ impl Coordinator {
         Ok((wrote, failed, errors))
     }
 
-    /// The stream sources written from through the shards, each at the
-    /// least offset over them, which is where a stream resumes: a shard
-    /// skips the events it applied already. A source some shard does not
-    /// have is left out (its first batch did not reach that shard), so a
-    /// stream of it starts over. Any replica may answer: one behind its
-    /// primary has an older offset, which only means more to skip.
     /// Shard `i`'s feed from transaction `from` on, read from its primary
     /// ([`FEED_PROTOCOL`], [`crate::service::Service::feed`]): its chunks
     /// as they come. `after_term` is the term of transaction `from - 1` as
-    /// the reader holds it (0: not checked).
-    pub async fn feed(&self, i: usize, from: u64, after_term: u64) -> Result<tonic::Streaming<pb::FeedChunk>, ApiError> {
+    /// the reader holds it (0: not checked). With `copy`, the feed starts
+    /// with a copy of the shard's rows ([`FEED_COPY_PROTOCOL`]).
+    pub async fn feed(&self, i: usize, from: u64, after_term: u64, copy: bool) -> Result<tonic::Streaming<pb::FeedChunk>, ApiError> {
         let t = &self.topo();
         if i >= t.replicas.len() {
             return Err(ApiError::bad(format!("no shard {i}: the cluster has shards 0 to {}", t.replicas.len() - 1)));
@@ -2664,13 +2678,26 @@ impl Coordinator {
         let rep = &t.replicas[i][k];
         let mut c = rep.client.clone();
         let p = self.speak(t, i, k, &mut c, PROTOCOL).await.map_err(|s| self.named(&rep.url, s))?;
-        if p < FEED_PROTOCOL {
-            return Err(ApiError { status: 501, message: format!("{}: it speaks protocol {p}, and a shard's feed needs {FEED_PROTOCOL}: upgrade it", self.copy_name(&rep.url)) });
+        let need = if copy { FEED_COPY_PROTOCOL } else { FEED_PROTOCOL };
+        if p < need {
+            let what = if copy { "a shard's feed that starts with a copy of its rows" } else { "a shard's feed" };
+            return Err(ApiError { status: 501, message: format!("{}: it speaks protocol {p}, and {what} needs {need}: upgrade it", self.copy_name(&rep.url)) });
         }
-        c.feed(pb::FeedRequest { from, after_term }).await.map(|r| r.into_inner()).map_err(|s| self.named(&rep.url, s))
+        c.feed(pb::FeedRequest { from, after_term, copy }).await.map(|r| r.into_inner()).map_err(|s| self.named(&rep.url, s))
     }
 
+    /// The stream sources written from through the shards, each at the
+    /// least offset over them, which is where a stream resumes: a shard
+    /// skips the events it applied already. A source some shard does not
+    /// have is left out (its first batch did not reach that shard), so a
+    /// stream of it starts over. Any replica may answer: one behind its
+    /// primary has an older offset, which only means more to skip.
     pub async fn sources(&self) -> Result<Vec<Source>, ApiError> {
+        Ok(least_sources(self.sources_by_shard().await?))
+    }
+
+    /// Each shard's stream sources ([`Self::sources`]), in shard order.
+    pub async fn sources_by_shard(&self) -> Result<Vec<Vec<Source>>, ApiError> {
         let t = &self.topo();
         let deadline = Instant::now() + Duration::from_secs(30);
         let calls = (0..t.replicas.len()).map(|i| {
@@ -2682,19 +2709,12 @@ impl Coordinator {
                 c.sources(pb::SourcesRequest::default()).await
             })
         });
-        let mut least: BTreeMap<String, (i64, i64, usize)> = BTreeMap::new();
-        let n = t.replicas.len();
+        let mut out = Vec::with_capacity(t.replicas.len());
         for a in join_all(calls).await {
             let (_, a) = a?;
-            for s in a.sources {
-                let e = least.entry(s.name).or_insert((s.offset, s.updated_micros, 0));
-                if s.offset < e.0 {
-                    (e.0, e.1) = (s.offset, s.updated_micros);
-                }
-                e.2 += 1;
-            }
+            out.push(a.sources.into_iter().map(|s| Source { name: s.name, offset: s.offset, updated: (s.updated_micros != 0).then_some(s.updated_micros) }).collect());
         }
-        Ok(least.into_iter().filter(|(_, (.., k))| *k == n).map(|(name, (offset, updated, _))| Source { name, offset, updated: (updated != 0).then_some(updated) }).collect())
+        Ok(out)
     }
 
     /// A profile of `node`, one replica of a shard named by its URL as
@@ -3094,7 +3114,7 @@ impl Coordinator {
 const WATCH_EVERY: Duration = Duration::from_secs(2);
 
 /// A rank profile as the statement that makes it again.
-fn profile_sql(table: &str, p: &RankProfile) -> String {
+pub(crate) fn profile_sql(table: &str, p: &RankProfile) -> String {
     use strata::query::sql::ident;
     let mut s = format!("CREATE OR REPLACE RANK PROFILE {} ON {} AS {}", ident(&p.name), ident(table), p.ranking);
     if !p.defaults.is_empty() {

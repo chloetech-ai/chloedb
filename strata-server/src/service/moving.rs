@@ -234,7 +234,7 @@ impl Service {
     /// its primary (or a server of its own) exports and holds writes for.
     fn moving_from_here(&self) -> Result<(Arc<Db>, Move), ApiError> {
         let db = self.local().cloned().ok_or_else(|| ApiError::bad("a coordinator holds no slots"))?;
-        self.takes_writes()?;
+        self.is_writer()?;
         let (map, shard) = self.slots().ok_or_else(|| ApiError::bad("this server holds no cluster map"))?;
         match map.moving() {
             Some(m) if m.from == shard && m.state == MoveState::Copying => Ok((db, m.clone())),
@@ -345,7 +345,7 @@ impl Service {
     /// are refused. Returns the rows deleted.
     pub async fn cleanup_slots(self: &Arc<Self>) -> Result<u64, ApiError> {
         let db = self.local().cloned().ok_or_else(|| ApiError::bad("a coordinator holds no slots"))?;
-        self.takes_writes()?;
+        self.is_writer()?;
         let Some(mask) = self.moving.mask() else { return Ok(0) };
         if !self.moving.drained(tokio::time::Instant::now() + FREEZE_WAIT).await {
             return Err(ApiError { status: 503, message: format!("the writes under way here did not commit within {} s: clean up again", FREEZE_WAIT.as_secs()) });

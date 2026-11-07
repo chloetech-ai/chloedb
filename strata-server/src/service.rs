@@ -43,7 +43,7 @@ use crate::{json as js, obs, pb, ApiError};
 
 pub(crate) mod arrivals;
 mod failover;
-mod feed;
+pub(crate) mod feed;
 mod moving;
 
 pub use failover::tuned as failover_tuned;
@@ -102,6 +102,30 @@ pub fn part_of_clients_deadline() -> bool {
 tokio::task_local! {
     /// The request's [`Deadline`] (HTTP requests run in one).
     pub static DEADLINE: Deadline;
+}
+
+tokio::task_local! {
+    /// The cluster whose changes the request writes, when a follow process
+    /// sends it ([`FOLLOW_HEADER`], with the cluster's token): a cluster
+    /// that follows that one takes them ([`Service::follows`]).
+    pub static FOLLOW: Option<Arc<str>>;
+}
+
+/// The header (and gRPC metadata key) by which a follow process names
+/// the cluster it follows ([`FOLLOW`]); a coordinator passes it on to its
+/// shards.
+pub const FOLLOW_HEADER: &str = "x-strata-follow";
+
+/// The cluster the request being served writes the changes of
+/// ([`FOLLOW`]).
+pub fn following() -> Option<Arc<str>> {
+    FOLLOW.try_with(Clone::clone).ok().flatten()
+}
+
+/// Whether `name` may name a cluster to follow: 1 to 64 letters, digits,
+/// `.`, `_` or `-`.
+pub fn follow_name_ok(name: &str) -> bool {
+    (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
 /// The client's own deadline in ms, when the request being served asked
@@ -547,6 +571,8 @@ pub struct Service {
     slots_file: tokio::sync::Mutex<Option<PathBuf>>,
     /// Its part in moving slots between shards ([`moving`]).
     pub(crate) moving: Moving,
+    /// The cluster it follows, as last read ([`Self::follows`]).
+    follows: feed::Follows,
     /// Its part in replication ([`crate::replication`]), which a replica's
     /// promotion changes ([`Self::promote`]).
     replication: RwLock<Replication>,
@@ -676,6 +702,7 @@ impl Service {
             slots_since: AtomicU64::new(0),
             slots_file: tokio::sync::Mutex::new(None),
             moving: Moving::default(),
+            follows: feed::Follows::default(),
             replication: RwLock::new(Replication::None),
             promote_options: None,
             promoting: tokio::sync::Mutex::new(()),
@@ -719,8 +746,15 @@ impl Service {
         self.admit_write()
     }
 
-    /// Refuses a client's write on a replica (409).
+    /// Refuses a client's write on a replica, and on a shard of a cluster
+    /// that follows another but from its follow process (409).
     fn takes_writes(&self) -> Result<(), ApiError> {
+        self.is_writer()?;
+        self.not_following(None)
+    }
+
+    /// Refuses a write on a replica (409): its writes are its primary's.
+    pub(super) fn is_writer(&self) -> Result<(), ApiError> {
         match &self.replication() {
             Replication::Replica(_) => Err(conflict("this server is a replica: it applies its primary's writes and takes none from clients; write to the primary".into())),
             _ => Ok(()),
@@ -2970,11 +3004,20 @@ impl Service {
     /// ([`Self::write`]).
     pub async fn write_ops_as(self: &Arc<Self>, mut ops: Vec<Json>, key: Option<String>, moved: Moved) -> Result<Written, ApiError> {
         let t0 = Instant::now();
+        follow_marks_ok(&ops)?;
         let n = match &self.backend {
             Backend::Local(db) => {
                 // Before any work: a replica, a database behind on its
-                // flushes, or a full queue refuses the request.
-                let admitted = match self.takes_writes() {
+                // flushes, or a full queue refuses the request; and a
+                // client's on a follower (a move's copies and deletes are
+                // the cluster's own).
+                let follows = ops.iter().any(feed::marks_follows);
+                let carried = following().zip(follows.then_some(())).and_then(|(n, ())| feed::carried_follows(&ops, &n));
+                let writer = match moved {
+                    Moved::No => self.is_writer().and_then(|()| self.not_following(carried)),
+                    _ => self.is_writer(),
+                };
+                let admitted = match writer {
                     Ok(()) => self.backpressure(db).await.and_then(|_| self.enqueue()),
                     Err(e) => Err(e),
                 };
@@ -3027,7 +3070,12 @@ impl Service {
                 // Committed: a retry with its key answers it, whatever its
                 // copies say.
                 match r {
-                    Ok((w, by)) => self.replicated(w, self.timeout, by).await,
+                    Ok((w, by)) => {
+                        if follows {
+                            self.follows.forget();
+                        }
+                        self.replicated(w, self.timeout, by).await
+                    }
                     Err(e) => Err(e),
                 }
             }
@@ -3089,9 +3137,9 @@ impl Service {
     /// stream resumes ([`Coordinator::sources`]).
     pub async fn sources(&self) -> Result<Vec<Source>, ApiError> {
         match &self.backend {
-            // Without the marks of the server's own transactions.
-            // Without the marks of the server's own transactions, and at the
-            // least offset of each source's slots ([`arrivals::folded`]).
+            // Without the marks of the server's own transactions, but the
+            // cluster it follows ([`feed::FOLLOWS`]), and at the least offset
+            // of each source's slots ([`arrivals::folded`]).
             Backend::Local(db) => {
                 let db = db.clone();
                 let all = tokio::task::spawn_blocking(move || db.sources()).await.map_err(ApiError::internal)??;
@@ -3114,6 +3162,14 @@ impl Service {
         let mv = mv.ok_or_else(|| conflict("no slots are moving from this shard".into()))?;
         let all = tokio::task::spawn_blocking(move || db.sources()).await.map_err(ApiError::internal)??;
         Ok(arrivals::of_slots(all, &mv.slots, MARK).into_iter().map(|(name, offset)| Source { name, offset, updated: None }).collect())
+    }
+
+    /// Each shard's stream sources, in shard order: a server's own alone.
+    pub async fn sources_by_shard(&self) -> Result<Vec<Vec<Source>>, ApiError> {
+        match &self.backend {
+            Backend::Local(_) => Ok(vec![self.sources().await?]),
+            Backend::Cluster(c) => c.sources_by_shard().await,
+        }
     }
 
     /// Counts a write's outcome (the request logs a failure on the
@@ -4502,6 +4558,21 @@ fn apply_requests(db: &Db, requests: &[(&[Json], u64)], mark: Option<(&str, i64)
     Ok((applied, seq_no))
 }
 
+/// Refuses a request whose operations carry the mark of a cluster
+/// followed ([`feed::FOLLOWS`]) unless that cluster's follow process sends
+/// it ([`following`]): checked as the request comes, before the writer
+/// thread, which knows no request's sender, applies it.
+pub(crate) fn follow_marks_ok(ops: &[Json]) -> Result<(), ApiError> {
+    let sender = following();
+    for op in ops {
+        let Some(name) = op.pointer("/source/name").and_then(Json::as_str) else { continue };
+        if name.strip_prefix(feed::FOLLOWS).is_some_and(|n| sender.as_deref() != Some(n)) {
+            return Err(ApiError::bad(format!("source {name}: names starting with {MARK} are the server's own")));
+        }
+    }
+    Ok(())
+}
+
 /// Where an operation's event came from (its `"source"`): a stream's
 /// source, the event's offset in it, and when the event happened
 /// (microseconds since the epoch), if the operation says.
@@ -4548,7 +4619,9 @@ pub fn op_source(op: &Json) -> Result<Option<Mark>, ApiError> {
         .and_then(|n| n.as_str())
         .filter(|n| !n.is_empty() && n.len() <= SOURCE_NAME)
         .ok_or_else(|| ApiError::bad(format!("an operation's source has a \"name\" of 1 to {SOURCE_NAME} bytes")))?;
-    if name.starts_with(MARK) {
+    // But for the follow process's mark of the cluster it follows, which
+    // a request may carry only from that process ([`follow_marks_ok`]).
+    if name.starts_with(MARK) && !name.starts_with(feed::FOLLOWS) {
         return Err(ApiError::bad(format!("source {name}: names starting with {MARK} are the server's own")));
     }
     let offset = s.get("offset").and_then(|o| o.as_i64()).ok_or_else(|| ApiError::bad(format!("source {name}: the \"offset\" is a whole number")))?;

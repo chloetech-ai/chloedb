@@ -105,7 +105,8 @@ fn of_slot(arrivals: &[Arrival], slot: usize) -> Option<&Arrival> {
 /// least over this shard's offset and its arrivals' (a source whose
 /// arrival says its slots hold none of it is left out, as one this shard
 /// has no offset of, so that a stream of it starts over), without the
-/// rows the server keeps for itself.
+/// rows the server keeps for itself but the marks of the cluster it
+/// follows ([`super::feed::FOLLOWS`]).
 pub(crate) fn folded(all: Vec<Source>, mark: &str) -> Vec<Source> {
     let mut least: HashMap<String, Option<i64>> = HashMap::new();
     for s in &all {
@@ -118,7 +119,7 @@ pub(crate) fn folded(all: Vec<Source>, mark: &str) -> Vec<Source> {
         }
     }
     all.into_iter()
-        .filter(|s| !s.name.starts_with(mark))
+        .filter(|s| !s.name.starts_with(mark) || s.name.starts_with(super::feed::FOLLOWS))
         .filter_map(|mut s| match least.get(&s.name) {
             None => Some(s),
             Some(None) => None,

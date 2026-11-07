@@ -103,8 +103,9 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// ([`ARROW_PROTOCOL`]), 11 reads rows by key without SQL (`Get`,
 /// [`GET_PROTOCOL`]), 12 names the version BM25 statistics came from,
 /// so that a coordinator can keep them ([`STATS_VERSION_PROTOCOL`]), 13
-/// answers a shard's feed (`Feed`, [`FEED_PROTOCOL`]), and 15 keeps the
-/// stream offsets of slots that move ([`MOVE_OFFSETS_PROTOCOL`]).
+/// answers a shard's feed (`Feed`, [`FEED_PROTOCOL`]), 14 starts a feed
+/// with a copy of the shard's rows ([`FEED_COPY_PROTOCOL`]), and 15 keeps
+/// the stream offsets of slots that move ([`MOVE_OFFSETS_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
 pub const PROTOCOL: u32 = 15;
 
@@ -141,11 +142,14 @@ pub const STATS_VERSION_PROTOCOL: u32 = 12;
 /// ([`crate::service::Service::feed`]).
 pub const FEED_PROTOCOL: u32 = 13;
 
+/// The protocol whose `Feed` starts with a copy of the shard's rows
+/// (`FeedRequest.copy`): a follower's first start.
+pub const FEED_COPY_PROTOCOL: u32 = 14;
+
 /// The protocol whose slot moves carry the stream sources' offsets of the
 /// slots on the shard they leave ([`crate::slots::Move::offsets`],
 /// `SourcesRequest.moving`), which the shard they go to keeps for them
-/// ([`crate::service::arrivals`]). (14 is taken by following another
-/// cluster, in review as this was written.)
+/// ([`crate::service::arrivals`]).
 pub const MOVE_OFFSETS_PROTOCOL: u32 = 15;
 
 /// The most bytes of a feed one `FeedChunk` carries.
@@ -335,7 +339,13 @@ impl Grpc {
         let id = obs::request_id(req.metadata().get(obs::HEADER).and_then(|v| v.to_str().ok()));
         let span = tracing::info_span!("request", id = %id, method);
         let t0 = Instant::now();
-        let (who, may) = may_call(&req, method);
+        let (who, mut may) = may_call(&req, method);
+        // A follow process's writes, through a coordinator
+        // ([`crate::service::FOLLOW`]).
+        let follow: Option<Arc<str>> = req.metadata().get(crate::service::FOLLOW_HEADER).and_then(|v| v.to_str().ok()).map(Into::into);
+        if follow.is_some() && !who.root && may.is_ok() {
+            may = Err(ApiError { status: 403, message: format!("{} is a coordinator's, with the cluster's token", crate::service::FOLLOW_HEADER) });
+        }
         if let Err(e) = may {
             self.0.metrics.grpc(method, "PermissionDenied", 0.0);
             obs::scope(Some(id.clone()), async { audit(&self.0, &who, method, e.status, t0, None) }).await;
@@ -356,7 +366,7 @@ impl Grpc {
         // query spent an eighth of its time copying it).
         let call = Box::pin(f(self.0.clone(), who.clone(), req.into_inner()));
         let call = keys::noting(crate::service::DEADLINE.scope(crate::service::Deadline::of_part(clients), crate::service::ROUTED.scope(std::cell::Cell::new(0), call)));
-        let call = crate::telemetry::calling(Arc::new(caller), call);
+        let call = crate::telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, call));
         let (r, note) = crate::telemetry::traced(crate::telemetry::Trace::new(), obs::scope(Some(id.clone()), call)).instrument(span.clone()).await;
         let status = r.as_ref().map_or_else(|e| e.status, |_| 200);
         obs::scope(Some(id.clone()), async { audit(&self.0, &who, method, status, t0, note) }).await;
@@ -646,7 +656,7 @@ impl pb::strata_server::Strata for Grpc {
     type FeedStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::FeedChunk, Status>> + Send>>;
 
     async fn feed(&self, req: Request<pb::FeedRequest>) -> Result<Response<Self::FeedStream>, Status> {
-        let rx = self.serve("Feed", req, |svc, _who, r| async move { svc.feed(r.from, (r.after_term > 0).then_some(r.after_term)).await }).await?.into_inner();
+        let rx = self.serve("Feed", req, |svc, _who, r| async move { svc.feed(r.from, (r.after_term > 0).then_some(r.after_term), r.copy).await }).await?.into_inner();
         let chunks = tokio_stream::wrappers::ReceiverStream::new(rx).flat_map(|lines| futures::stream::iter(lines.chunks(FEED_CHUNK).map(|c| Ok(pb::FeedChunk { lines: c.to_vec() })).collect::<Vec<_>>()));
         Ok(Response::new(Box::pin(chunks)))
     }

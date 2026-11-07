@@ -33,6 +33,7 @@ pub mod cores;
 pub mod demo;
 pub mod events;
 pub mod fleet;
+pub mod follow;
 pub mod grpc;
 pub mod heap;
 pub mod hub;
