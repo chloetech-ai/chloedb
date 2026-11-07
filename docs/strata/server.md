@@ -15,13 +15,26 @@ nav_order: 4
 
 ## Run it
 
+A prebuilt server needs no Rust, no C compiler and no first build of several minutes. Each [release](https://github.com/chloetech-ai/strata/releases?q=strata-server) has one archive a platform: `linux-x86_64` and `linux-aarch64` (glibc 2.35 or later: Debian 12, Ubuntu 22.04 and newer), `macos-arm64` and `macos-x86_64` (macOS 11 or later), each with its `.sha256` beside it.
+
 ```sh
-cd strata-server && cargo build --release
-target/release/strata-server --demo 20000 --db products.strata   # a demo catalogue
+v=0.1.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
+curl -LO https://github.com/chloetech-ai/strata/releases/download/strata-server-v$v/strata-server-$p.tar.gz
+tar xzf strata-server-$p.tar.gz
+strata-server-$p/strata-server --demo 20000 --db products.strata   # a demo catalogue
 # open http://127.0.0.1:7700
 ```
 
-Or without building it, from the image every merge to main publishes (`linux/amd64` and `linux/arm64`). Beyond the container's own loopback the server needs a token, which the command center then asks for:
+macOS keeps an archive a browser downloaded from running until `xattr -d com.apple.quarantine strata-server-$p/strata-server`; `curl` sets no such mark. From source (Rust stable and a C compiler; the first build takes several minutes):
+
+```sh
+cd strata-server && cargo build --release
+target/release/strata-server --demo 20000 --db products.strata
+```
+
+`cargo build --release --no-default-features` builds a server without DataFusion, Parquet and `s3://` paths, from 321 crates rather than 412: joins, groups and sorts then run on Strata's own operators (`STRATA_ENGINE`, below), and `import` and `export` take no Parquet files or `s3://` paths.
+
+Or from the image every merge to main publishes (`linux/amd64` and `linux/arm64`). Beyond the container's own loopback the server needs a token, which the command center then asks for:
 
 ```sh
 docker run -p 127.0.0.1:7700:7700 -e STRATA_TOKEN=pick-a-secret -v strata:/data \
