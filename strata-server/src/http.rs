@@ -1040,10 +1040,10 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         if req.shard {
             return Err(ApiError::bad("a shard's query is not logged: log through the coordinator"));
         }
-        return logged(&app, &who(w), req, log).await;
+        return logged(&app, &who(w), req, log, body_bool(&b, "objects")?).await;
     }
     let a = app.svc.query(req).await?;
-    let mut j = answer(&a);
+    let mut j = answer_of(&b, &a)?;
     // `"trace": true`: the timed steps the request took; `"profile":
     // true` answers them too, beside its steps' CPU time.
     if b.get("trace").and_then(|v| v.as_bool()) == Some(true) || b.get("profile").and_then(|v| v.as_bool()) == Some(true) {
@@ -1057,10 +1057,13 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
 /// (`"teams"`: per row, the ranking that placed it) and the log's write
 /// (`"logged"`: the rows, and the write's sequence numbers as a write's
 /// answer gives them).
-async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json) -> Res {
+async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: bool) -> Res {
     let log = strata::rank_log::Log::from_json(log)?;
     let (a, served, w) = app.svc.query_logged(who, req, log).await?;
     let mut j = answer(&a);
+    if objects {
+        as_objects(&mut j);
+    }
     j["request"] = json!(served.request);
     if !served.teams.is_empty() {
         j["teams"] = json!(served.teams);
@@ -1187,6 +1190,39 @@ fn answer(a: &crate::service::Answer) -> Json {
     j
 }
 
+/// [`answer`], its rows as objects keyed by column when the body asks
+/// (`"objects": true`; [`as_objects`]).
+fn answer_of(b: &Json, a: &crate::service::Answer) -> Result<Json, ApiError> {
+    let mut j = answer(a);
+    if body_bool(b, "objects")? {
+        as_objects(&mut j);
+    }
+    Ok(j)
+}
+
+/// An answer's rows as objects, `{"id": "p1", "price": 9.5}`, in place of
+/// lists in the order of its `columns`. A column named as an earlier one
+/// (`SELECT a.id, b.id`) is keyed by its name and its place among those of
+/// its name: `id`, then `id_2`, `id_3` (or the next suffix no column has).
+pub fn as_objects(j: &mut Json) {
+    let mut names: Vec<String> = Vec::new();
+    for c in j["columns"].as_array().into_iter().flatten() {
+        let c = c.as_str().unwrap_or_default();
+        let mut name = c.to_string();
+        let mut k = 1;
+        while names.contains(&name) {
+            k += 1;
+            name = format!("{c}_{k}");
+        }
+        names.push(name);
+    }
+    for r in j.get_mut("rows").and_then(Json::as_array_mut).into_iter().flatten() {
+        if let Json::Array(values) = std::mem::take(r) {
+            *r = Json::Object(names.iter().cloned().zip(values).collect());
+        }
+    }
+}
+
 /// Any statement: the service checks that the request's credential may
 /// run it ([`Service::sql`]), and audits a table's or rank profile's.
 async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
@@ -1194,7 +1230,7 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, head
     let w = who(w);
     if let Some(log) = b.get("log") {
         let req = QueryReq { sql: body_str(&b, "sql")?.to_string(), params, timeout_ms: body_u64(&b, "timeout_ms"), after: after(&b)?, ..Default::default() };
-        return logged(&app, &w, req, log).await.map(IntoResponse::into_response);
+        return logged(&app, &w, req, log, body_bool(&b, "objects")?).await.map(IntoResponse::into_response);
     }
     let statement = body_str(&b, "sql")?;
     // A write from the command center is audited whatever its answer.
@@ -1205,7 +1241,7 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, head
     let key = body_key(&b, &headers)?;
     let (r, partial) = crate::coord::with_partial(app.svc.sql_in(&w, statement, &params, after(&b)?, body_u64(&b, "timeout_ms"), None, key)).await;
     match r {
-        Ok(SqlAnswer::Rows(a)) => Ok(AxJson(answer(&a)).into_response()),
+        Ok(SqlAnswer::Rows(a)) => Ok(AxJson(answer_of(&b, &a)?).into_response()),
         Ok(SqlAnswer::Written { w, took_ms }) => {
             audit_ui_write(statement, Some(w.rows as u64), None);
             Ok(AxJson(written(w, took_ms)).into_response())
@@ -1329,7 +1365,7 @@ fn written(w: Written, took_ms: f64) -> Json {
 async fn run_plan(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let plan = strata::query::ir::Plan::from_json(b.get("plan").ok_or_else(|| ApiError::bad("the body needs a \"plan\""))?)?;
     match app.svc.run_plan(&who(w), plan, after(&b)?, body_u64(&b, "timeout_ms")).await? {
-        SqlAnswer::Rows(a) => Ok(AxJson(answer(&a))),
+        SqlAnswer::Rows(a) => Ok(AxJson(answer_of(&b, &a)?)),
         SqlAnswer::Written { w, took_ms } => Ok(AxJson(written(w, took_ms))),
     }
 }

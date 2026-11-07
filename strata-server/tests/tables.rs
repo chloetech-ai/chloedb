@@ -446,6 +446,19 @@ async fn every_table_over_http_and_grpc() {
     assert_eq!((count("items").await, count("users").await, count("events").await), (ITEMS as u64, USERS as u64, EVENTS as u64));
     let (_, a) = post("/v1/query", json!({"sql": "SELECT SUM(n_events) FROM users"})).await;
     assert_eq!(a["rows"][0][0], EVENTS, "{a}");
+    // Rows as objects keyed by column, on asking: a name two columns
+    // share keys the second by its place.
+    let join = "SELECT e.id, i.id, e.usr AS who, e.item AS who FROM events e JOIN items i ON e.item = i.id ORDER BY e.id LIMIT 2";
+    let (_, lists) = post("/v1/sql", json!({"sql": join})).await;
+    for path in ["/v1/sql", "/v1/query"] {
+        let (status, a) = post(path, json!({"sql": join, "objects": true})).await;
+        assert_eq!(status, 200, "{a}");
+        assert_eq!(a["columns"], lists["columns"], "{a}");
+        let want: Vec<Json> = lists["rows"].as_array().unwrap().iter().map(|r| json!({"e.id": r[0], "i.id": r[1], "who": r[2], "who_2": r[3]})).collect();
+        assert_eq!(a["rows"], json!(want), "{a}");
+    }
+    let (status, a) = post("/v1/query", json!({"sql": join, "objects": "yes"})).await;
+    assert!(status == 400 && a["error"].as_str().unwrap().contains("objects is true or false"), "{a}");
     let (status, a) = post("/v1/write", json!({"ops": [{"op": "upsert", "table": "nope", "doc": {"id": 1}}]})).await;
     assert!(status == 400 && a["error"].as_str().unwrap().contains("no such table: nope"), "{a}");
     let (_, a) = post("/v1/explain", json!({"sql": QUERIES[0].0})).await;
