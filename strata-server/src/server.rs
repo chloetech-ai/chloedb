@@ -187,6 +187,10 @@ pub struct Options {
     pub node_name_given: Option<String>,
     /// `--image-repository`.
     pub image_repository: Option<String>,
+    /// `--app name=url`: apps the command center shows ([`crate::apps`]).
+    pub apps: Vec<String>,
+    /// What the server sends apps as its token (`STRATA_APP_TOKEN`).
+    pub app_token: Option<String>,
 }
 
 /// How writes resolve MEDIA values, from `--media-fetch`,
@@ -348,6 +352,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         crate::operator::upgrade::Ref::parse(&r).map_err(|e| format!("--image-repository: {e}"))?;
         svc.image_repository = r;
     }
+    svc.apps = crate::apps::Apps::new(crate::apps::parse(&o.apps)?, o.app_token.clone());
     svc.trusted_proxies = o.trust_proxy.iter().filter(|p| !p.trim().is_empty()).map(|p| crate::http::parse_net(p)).collect::<Result<_, _>>().map_err(|e| format!("--trust-proxy: {e}"))?;
     if let Some(path) = slots_file {
         svc.keep_slots_in(path)?;

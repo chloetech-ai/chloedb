@@ -104,7 +104,9 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
-        crate: [strata, engram, strata-server]
+        # strata-crawl's crawl into a real cluster runs in server-smoke,
+        # which builds strata-server; here its other tests and clippy.
+        crate: [strata, engram, strata-server, strata-crawl]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env: &test-env
@@ -482,7 +484,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
-          workspaces: strata-server
+          workspaces: |
+            strata-server
+            strata-crawl
           key: strata-server-smoke
       - name: Build
         working-directory: strata-server
@@ -521,6 +525,14 @@ jobs:
           curl -sf -X POST 'http://127.0.0.1:7702/v1/import?format=sqlite' -H 'content-type: application/vnd.sqlite3' --data-binary @"$RUNNER_TEMP/s.sqlite" | grep -q '"written":1'
           curl -sf http://127.0.0.1:7702/v1/export -o "$RUNNER_TEMP/s3.sqlite"
           python3 -c "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); assert c.execute('SELECT count(*) FROM t').fetchone() == (3,); assert c.execute('SELECT body FROM notes').fetchall() == [('a first note about rivers and mountains',)]" "$RUNNER_TEMP/s3.sqlite"
+      # The crawler on a site its test serves, into a cluster of this
+      # build's servers that it starts and grows to three shards.
+      - name: Crawl a site into a growing cluster
+        working-directory: strata-crawl
+        env:
+          STRATA_SERVER_BIN: ${{ github.workspace }}/strata-server/target/release/strata-server
+          STRATA_CRAWL_NEED_SERVER: "1"
+        run: cargo test --profile ci --test site
 
   python:
     name: Python package on ${{ matrix.os }}
