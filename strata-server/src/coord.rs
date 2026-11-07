@@ -304,6 +304,15 @@ const HELLO_EVERY_MS: u64 = 60_000;
 pub const PRIMARY_WAIT: Duration = Duration::from_secs(10);
 const PRIMARY_ASK_EVERY: Duration = Duration::from_millis(50);
 
+/// How long a coordinator sends a shard's part of a write again while the
+/// shard refuses it for its load (429: behind on flushing its writes to
+/// disk, as a shard is while its first flushes build its indexes, or its
+/// write queue full), and how often. The shard refused it before any
+/// work, so it cannot apply it twice; a client sees the 429 only when the
+/// shard stays busy that long.
+pub const LOAD_WAIT: Duration = Duration::from_secs(10);
+const LOAD_ASK_EVERY: Duration = Duration::from_millis(200);
+
 /// How long a read is asked again while no copy of its shard serves it
 /// (503), and how often: a handover, a new primary waiting out the old
 /// one's lease, a shard of two copies with one restarting.
@@ -321,6 +330,14 @@ fn not_applied_yet(s: &tonic::Status) -> bool {
         Code::FailedPrecondition => s.message().contains("another primary replaced this one, which takes no more writes"),
         _ => false,
     }
+}
+
+/// Whether a shard refused a write for its load, before any work
+/// ([`LOAD_WAIT`]): every 429 a write gets is one (`Service::enqueue`,
+/// `Service::backpressure`, a core to embed on), and gRPC's own limits
+/// answer other codes.
+fn refused_for_load(s: &tonic::Status) -> bool {
+    s.code() == Code::ResourceExhausted
 }
 
 /// Whether a primary's answer says it applied the write but another
@@ -2291,7 +2308,8 @@ impl Coordinator {
     /// A primary that refuses the write as a replaced one does, or does not
     /// answer, is passed over for the copy that took its place, if any
     /// (once), and one that refuses it unapplied for a moment is asked again
-    /// ([`PRIMARY_WAIT`]). One that applied it and was replaced before its
+    /// ([`PRIMARY_WAIT`]), as is one that refuses it for its load
+    /// ([`LOAD_WAIT`]). One that applied it and was replaced before its
     /// copies acknowledged it is answered as such ([`in_doubt`]), not sent
     /// again: a write applied twice is worse than one refused.
     async fn write(&self, t: &Topology, i: usize, r: pb::WriteRequest, need: u32) -> Result<Wrote, ApiError> {
@@ -2300,6 +2318,7 @@ impl Coordinator {
             None => (0..t.replicas[i].len()).collect(),
         };
         let named = |(k, s): (usize, tonic::Status)| self.named(&t.replicas[i][k].url, s);
+        let busy_until = Instant::now() + LOAD_WAIT;
         if let (&[first], true) = (&to[..], t.replicas[i].len() > 1) {
             let (mut k, mut passed_over) = (first, false);
             let deadline = Instant::now() + PRIMARY_WAIT;
@@ -2313,6 +2332,9 @@ impl Coordinator {
                             k = m;
                         }
                     }
+                    // Refused for its load, before any work: again, to the
+                    // same copy.
+                    Err((_, s)) if refused_for_load(&s) && Instant::now() < busy_until => tokio::time::sleep(LOAD_ASK_EVERY).await,
                     // Applied, and maybe lost: the client decides.
                     Err((_, s)) if in_doubt(&s) => {
                         // The next write goes to the new primary.
@@ -2323,6 +2345,16 @@ impl Coordinator {
                         Some(m) => (k, passed_over) = (m, true),
                         None => return Err(named((k, s))),
                     },
+                    a => return a.map_err(named),
+                }
+            }
+        }
+        // Several copies each take the write: one refusing it for its load
+        // is not sent it alone again, and the others hold it.
+        if let &[k] = &to[..] {
+            loop {
+                match self.write_to(t, i, vec![k], r.clone(), need).await {
+                    Err((_, s)) if refused_for_load(&s) && Instant::now() < busy_until => tokio::time::sleep(LOAD_ASK_EVERY).await,
                     a => return a.map_err(named),
                 }
             }

@@ -1654,7 +1654,7 @@ impl Service {
     /// 429 when [`Self::max_queued_writes`] requests hold one.
     fn enqueue(&self) -> Result<InQueue, ApiError> {
         InQueue::start(&self.writer_state, self.max_queued_writes)
-            .ok_or_else(|| ApiError { status: 429, message: format!("{} writes are queued, the most this server takes; try again", self.max_queued_writes) })
+            .ok_or_else(|| ApiError { status: 429, message: format!("{} writes are queued, the most this server takes, so the write was not applied; send it again in a second", self.max_queued_writes) })
     }
 
     /// Hands a write to the writer thread and waits for its commit. The
@@ -3163,7 +3163,7 @@ impl Service {
         let until = Instant::now() + BACKLOG_WAIT;
         while db.storage().backlogged() {
             if Instant::now() >= until {
-                return Err(ApiError { status: 429, message: "the database is behind on flushing writes to disk; try again in a second".into() });
+                return Err(ApiError { status: 429, message: "the database is behind on flushing writes to disk, so the write was not applied; send it again in a second".into() });
             }
             tokio::time::sleep(STREAM_POLL).await;
         }
