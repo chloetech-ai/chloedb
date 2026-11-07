@@ -154,7 +154,7 @@ function render(page) {
             h("a", { class: "btn sm", href: e.conn ? `/c/${e.name}#/home` : "/#/home" }, "Open"))));
     }));
     clear(tiles, card({
-      title: "All clusters", sub: `this server and ${fmt.plural((book?.connections || []).length, "connection")}`,
+      title: "All clusters", sub: `this server and ${fmt.plural((book?.connections || []).length, "connection")}`, cls: "fleet-card",
       tools: [h("button", { class: "btn sm ghost", title: "Ask them all again", onclick: () => { seen.clear(); drawTiles(); drawDrift(); ends.forEach(ask); askFollows(); } }, icon("refresh")),
         (book?.connections || []).length > 1 ? h("button", { class: "btn sm", title: "Set one cluster to follow another: it copies it, then applies its changes", onclick: () => follow({}) }, icon("share"), "Follow…") : null,
         h("a", { class: "btn sm", href: "/#/connections" }, icon("key"), "Connections"),

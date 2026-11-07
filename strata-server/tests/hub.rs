@@ -227,7 +227,8 @@ async fn a_connection_follows_another_only_where_the_operator_runs_its_follow_pr
         let (s, j) = call("POST", &format!("{hub_url}/v1/admin/hub/connections"), None, Some(json!({"name": name, "url": url, "key": secret}))).await;
         assert_eq!(s, 201, "{j}");
     }
-    let follow = |b: Json| call("POST", &format!("{hub_url}/v1/admin/hub/follow"), None, Some(b));
+    let follow_url = format!("{hub_url}/v1/admin/hub/follow");
+    let follow = |b: Json| call("POST", &follow_url, None, Some(b));
 
     // The plan says what it would do, and why it cannot here.
     let (s, plan) = follow(json!({"follower": "west", "source": "east", "plan": true})).await;

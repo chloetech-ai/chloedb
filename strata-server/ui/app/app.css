@@ -3191,6 +3191,7 @@ html.via-hub::before { content: ""; position: fixed; left: 0; right: 0; top: 0; 
 .fleet-nums { display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline; }
 
 /* ---------------------------------------------------------------- following another cluster */
+.fleet-card > .hd { flex-wrap: wrap; } .fleet-card > .hd .tools { flex-wrap: wrap; justify-content: flex-end; }
 .follow-links { gap: 10px; }
 .follow-link { display: flex; align-items: center; gap: 10px; min-width: 0; --fc: var(--good); }
 .follow-link.warn { --fc: var(--warn); } .follow-link.bad { --fc: var(--crit); } .follow-link.info { --fc: var(--accent); }

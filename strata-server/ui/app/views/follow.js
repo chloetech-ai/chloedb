@@ -120,7 +120,7 @@ function render(page) {
         h("td", { class: "num" }, s.behind != null ? fmt.n(s.behind) : "–"), h("td", { class: "num" }, s.queued != null ? fmt.n(s.queued) : "–"),
         h("td", {}, s.source_holds ? pill("ok", "held") : h("span", { class: "dim" }, "–")),
         h("td", { class: "small dim" }, s.joining ? "joining" : s.stopped ? `stopped: ${s.stopped}` : "")))))) : null;
-    const promo = c.promoted_ms ? h("div", { class: "small dim" }, "Promoted ", timeEl(c.promoted_ms), c.promoted_seqs ? ` at transactions ${c.promoted_seqs.join(", ")} of its shards, from which ${c.name} can follow it back without a copy.` : ".") : null;
+    const promo = c.promoted_ms ? h("div", { class: "small dim" }, "Promoted ", timeEl(c.promoted_ms), c.promoted_seqs ? ` at ${c.promoted_seqs.length === 1 ? `transaction ${c.promoted_seqs[0]} of its shard` : `transactions ${c.promoted_seqs.join(", ")} of its shards`}, from which ${c.name} can follow it back without a copy.` : ".") : null;
     clear(cur, card({ title: following ? `Following ${c.name}` : `Followed ${c.name}`, sub: following ? null : promoted(c) ? "promoted from it" : "stopped", tools, body: h("div", { class: "stack" }, kv, tbl, promo) }));
   }
 
@@ -201,10 +201,12 @@ function render(page) {
     clear(say, holdable
       ? h("p", { class: "dim", style: { margin: 0 } }, `A planned switch-over loses no write: ${c.name} stops taking writes, this cluster applies the last of them and takes over. Then ${c.name} can follow this cluster back without a copy.`)
       : h("div", { class: "stack" },
-          h("div", { class: "error" }, `${c.name} is not a cluster this hub reaches, so it cannot be held from here. Hold its writes there (Follow → Hold writes, or POST /v1/admin/hold-writes), then promote here; or promote now and lose what this cluster did not apply.`)));
+          h("div", { class: "error" }, `${connectionName ? `${c.name} is not a connection of this hub` : "This page reaches this cluster only"}, so ${c.name}'s writes cannot be held from here. Hold them there (its Follow view: Hold writes, or POST /v1/admin/hold-writes), then promote here; or promote now and lose what this cluster did not apply of them.`)));
     const m = modal({ title: `Promote this cluster, taking over from ${c.name}?`, body: [say, steps], foot: [no, anyway, holdable ? go : null], wide: true, onClose: () => { cancelled = true; } });
     no.onclick = () => { cancelled = true; m.close(); };
     anyway.onclick = async () => {
+      // One dialog at a time: this one gives way to the typed confirm.
+      cancelled = true; m.close();
       const typed = lost != null ? String(lost) : c.name;
       const ok = await confirm({
         title: lost != null ? `Promote, losing ${fmt.plural(lost, "transaction")}?` : `Promote, losing an unknown number of writes?`, ok: "Promote", danger: true, typed, reason: true,
@@ -214,9 +216,8 @@ function render(page) {
       if (!ok) return;
       try {
         const r = await api("/v1/admin/follow/promote", { body: { name: c.name, unplanned: true }, reason: ok.reason, timeout: 60000 });
-        m.close();
         toast(`Promoted from ${c.name}, unplanned: ${r.lost != null ? fmt.plural(r.lost, "transaction") : "an unknown number of transactions"} lost`, "ok", 9000);
-      } catch (e) { clear(say, h("div", { class: "error" }, e.message)); }
+      } catch (e) { toast(`Not promoted: ${e.message}`, "bad", 12000); }
       load();
     };
     go.onclick = async () => {
