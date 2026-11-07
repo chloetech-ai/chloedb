@@ -338,6 +338,11 @@ pub const IN_DOUBT: &str = "the write may or may not be kept: a new primary took
 /// changes under it ([`Coordinator::route_again`]).
 pub(crate) const ROUTE_TRIES: u32 = 8;
 
+/// Why a coordinator refuses a graph query ([`Coordinator::query`]): a
+/// walk reads every row it meets in one snapshot, and a row's edges point
+/// at rows on any shard.
+pub const GRAPHS_ON_SHARDS: &str = "graph queries (REACHABLE, PATH, hops(), ppr) are not supported through a coordinator yet: a row's edges point at rows other shards hold. Run them on a server or an embedded database that holds the whole table, or walk from the application, one round of reads by key per hop (the Graphs page of the docs, On a cluster)";
+
 /// Why `seq_no()` and `if_seq_no` need a shard of several replicas to
 /// replicate: otherwise each numbers the writes it takes in its own order.
 const ONE_REPLICA: &str = "seq_no() and if_seq_no need one replica per shard, or a shard whose replicas replicate from a primary (--replicas): otherwise each replica numbers its own writes";
@@ -1687,6 +1692,9 @@ impl Coordinator {
     /// their answers. A guarded query (`min_rows`, `max_rows`) runs at the
     /// level the sums of its shards' counts choose ([`Self::level_counts`]).
     pub async fn query(&self, req: &QueryReq, schema: &Schema, select: &Select, deadline: Instant) -> Result<Merged, ApiError> {
+        if !select.graphs.is_empty() {
+            return Err(ApiError::bad(GRAPHS_ON_SHARDS));
+        }
         self.routed(|| self.query_once(req, schema, select, deadline)).await
     }
 
