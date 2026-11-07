@@ -149,4 +149,27 @@ updates at 16 clients 5,408 → 5,001; the stream's flat-out lag p50
 2,568 → 2,542 ms (at 1M it halved), its p99 at 2,000 a second
 640 → 555 ms (`writes-strata.json`, `stream-strata.json`).
 
-<!-- 10M ef -->
+### The ef sweep at 10M
+
+`10m/ef.md`, Strata only (Qdrant was not built at 10M); as at 1M, medians
+of three passes, p50 at one client and queries a second at 16 clients:
+
+| kind | candidates | recall@10 | p50 ms | q/s, 16 clients |
+|---|---|---|---|---|
+| vector | 64 | 0.791 | 2.93 | 1,247 |
+| vector | 128 | 0.840 | 3.38 | 957 |
+| vector | 256 | 0.903 | 4.09 | 630 |
+| vector + filter | 64 | 0.821 | 3.27 | 1,137 |
+| vector + filter | 128 | 0.865 | 3.69 | 832 |
+| vector + filter | 256 | 0.916 | 4.52 | 555 |
+| similar items | 64 | 0.980 | 4.00 | 753 |
+| similar items | 128 | 0.981 | 4.15 | 684 |
+| similar items | 256 | 0.990 | 4.87 | 505 |
+
+At candidates 64, recall is the 6 November run's within 0.003 (vector
+0.794, vector + filter 0.819, similar items 0.979 in
+[that run's tables](../rerun-1106-do/10m/tables.md)): starting a merge's
+graphs from its inputs' graphs (#293) costs no recall. At 10M the same
+candidates give less recall than at 1M (0.903 at 256 against 0.931), and
+each doubling costs a quarter to a third of the queries a second. All 300
+SQL aggregates equal the true answer (`10m/tables.md`).
