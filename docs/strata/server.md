@@ -503,6 +503,7 @@ Every request and answer is JSON. Every answer carries the request's id in an `x
 | `POST /v1/snapshot` | | a snapshot lease for 60 s: `{snapshot, txn, ttl_s}` (at most 10,000 are held at once; more get 429) |
 | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the queries it ran |
 | `POST /v1/judge` | `{query, keys, table?, fields?, model?, api_key?}` | `{grades: [{key, grade, error?}], model, prompt, fields, usage, took_ms}`: each row graded 0 to 3 by a Claude model, one request a row ([relevance judgments](#relevance-judgments)); a write key |
+| `POST /v1/mcp` | a JSON-RPC message or a batch | the [Model Context Protocol](#agents-over-mcp): tools for an agent, each a route of this table called with the caller's key; 202 for a notification |
 | `POST /v1/admin/checkpoint` | `{name, layout?, link_from?}` | writes a checkpoint named `name` in `--backup-dir` ([backups](#backups)): `{checkpoint: {txn, tables, segments, segments_linked, live_docs, bytes_written, seconds}}` |
 | `POST /v1/admin/check` | | checks every byte against its checksums (writes wait meanwhile): `{ok: true}`, or the damage |
 | `POST /v1/admin/vacuum` | | returns free pages to the file system: `{bytes_freed}` |
@@ -1478,3 +1479,34 @@ curl -s localhost:7700/v1/judge -d '{"query": "mrna vaccine side effects", "keys
 ```
 
 On 25 TREC-COVID queries, pooling the top 10 of BM25 and of dense retrieval (464 rows), `claude-haiku-5-5`'s grades agreed with TREC's on "relevant" for 84% of the rows TREC judged (Cohen's kappa 0.57), were the more lenient (27% of the rows TREC judged not relevant got 2 or 3), and named the same winner of the two rankings on 21 of the 24 queries TREC's judgments decide; they reproduce the size of a gap less well (Kendall's tau 0.32 between the per-query differences). They are a good stand-in for telling which ranking is better on queries nobody has judged, and a weaker one for absolute nDCG. The study (`strata-server/results/judge/`) sent the prompts through Claude Code, where the model thinks before most answers; the endpoint asks without thinking.
+
+## Agents over MCP
+
+An agent such as Claude Code, Claude Desktop or any client of the [Model Context Protocol](https://modelcontextprotocol.io) drives Strata through tools: it lists the tables, reads their `CREATE TABLE` statements, checks a statement before it runs it, queries, writes, and looks up the syntax it needs in this documentation, which the server carries. `POST /v1/mcp` speaks the protocol's Streamable HTTP transport (versions 2025-06-18, 2025-03-26 and 2024-11-05), answering each message with JSON; `strata-server mcp` speaks it over stdin and stdout, for a client that starts its servers as commands, and sends each message to a server's `/v1/mcp`.
+
+```sh
+# Claude Code, over HTTP:
+claude mcp add --transport http strata http://127.0.0.1:7700/v1/mcp --header "Authorization: Bearer $STRATA_KEY"
+# or over stdio (the key from the environment, never on the command line):
+claude mcp add strata --env STRATA_KEY=$STRATA_KEY -- strata-server mcp --url http://127.0.0.1:7700
+```
+
+| tool | does | route |
+|---|---|---|
+| `list_tables` | every table's `CREATE TABLE`, primary and shard keys, rank profiles, models | `GET /v1/tables` |
+| `describe_table` | one table's schema in full | `GET /v1/schema` |
+| `query` | one `SELECT`: its columns and at most `max_rows` rows (100 by default, 2,000 at most), saying when it cut them | `POST /v1/query` |
+| `explain` | how a `SELECT` runs, and with `hits` the top rows' scores and features | `POST /v1/explain` |
+| `check_sql` | binds a statement against the tables without running it: what it would do, or why it is refused | none: bound in the server |
+| `execute` | `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `ALTER`, `DROP`, rank profiles | `POST /v1/sql` |
+| `write` | rows as JSON operations, in one transaction | `POST /v1/write` |
+| `get_rows` | rows by primary key | `POST /v1/kv/get` |
+| `json_paths` | the keys a `JSON` field holds, with counts, types and common values | `GET /v1/tables/<t>/paths` |
+| `list_models` | the embedding models a `VECTOR` field may name | `GET /v1/models` |
+| `judge` | grades rows 0 to 3 for a query, by a Claude model ([relevance judgments](#relevance-judgments)) | `POST /v1/judge` |
+| `search_docs` | sections of the [query language](query-language.md) and [Build an app](build-an-app.md) that match some words | none: the documents are compiled in |
+| `whoami` | the key's name and scope | `GET /v1/whoami` |
+
+A tool's call is a request to the route in its last column, made inside the server with the caller's `Authorization` header, so it passes every check that route makes: the key's scope decides what an agent may change (a read key's `execute` of an `INSERT` answers the 403 that `/v1/sql` does, as the tool's error, which the model reads), contain rules apply, the audit log names the key, and the latest queries name the client's app as `mcp` (or `mcp-stdio`). Give an agent a read key to explore, a write key to load rows, and an admin key only to make tables. A failed call answers its route's status and error (`403: ...`), so a model can fix its statement and try again; an argument a tool does not take is the protocol's error (-32602). An answer longer than 200,000 characters is cut, saying so.
+
+The server also offers the query language reference and the Build an app guide as resources (`strata://docs/query-language`, `strata://docs/build-an-app`) and, at `initialize`, a few lines of instructions on Strata's SQL. It keeps no session (any coordinator answers any message), sends no requests of its own, and has no stream to open (`GET /v1/mcp` answers 405). A request from a browser page of another origin is refused, as on every route.

@@ -46,6 +46,7 @@ pub mod judge;
 pub mod keys;
 pub mod keysync;
 pub mod logstore;
+pub mod mcp;
 pub mod media;
 pub mod metrics;
 pub mod obs;
