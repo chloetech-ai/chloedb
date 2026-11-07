@@ -104,11 +104,12 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// [`GET_PROTOCOL`]), 12 names the version BM25 statistics came from,
 /// so that a coordinator can keep them ([`STATS_VERSION_PROTOCOL`]), 13
 /// answers a shard's feed (`Feed`, [`FEED_PROTOCOL`]), 14 starts a feed
-/// with a copy of the shard's rows ([`FEED_COPY_PROTOCOL`]), and 15
-/// copies only rows changed since a transaction and compares keys
-/// ([`FEED_KEYS_PROTOCOL`]).
+/// with a copy of the shard's rows ([`FEED_COPY_PROTOCOL`]), 15 copies
+/// only rows changed since a transaction and compares keys
+/// ([`FEED_KEYS_PROTOCOL`]), and 16 keeps the stream offsets of slots that
+/// move ([`MOVE_OFFSETS_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 15;
+pub const PROTOCOL: u32 = 16;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -151,6 +152,12 @@ pub const FEED_COPY_PROTOCOL: u32 = 14;
 /// answers `FeedKeys`: what a follower that fell behind its source's log
 /// catches up by.
 pub const FEED_KEYS_PROTOCOL: u32 = 15;
+
+/// The protocol whose slot moves carry the stream sources' offsets of the
+/// slots on the shard they leave ([`crate::slots::Move::offsets`],
+/// `SourcesRequest.moving`), which the shard they go to keeps for them
+/// ([`crate::service::arrivals`]).
+pub const MOVE_OFFSETS_PROTOCOL: u32 = 16;
 
 /// The most bytes of a feed one `FeedChunk` carries.
 const FEED_CHUNK: usize = 1 << 20;
@@ -566,8 +573,11 @@ impl pb::strata_server::Strata for Grpc {
     }
 
     async fn sources(&self, req: Request<pb::SourcesRequest>) -> Result<Response<pb::SourcesResponse>, Status> {
-        self.serve("Sources", req, |svc, _who, _| async move {
-            let sources = svc.sources().await?;
+        self.serve("Sources", req, |svc, _who, r| async move {
+            let sources = match r.moving {
+                true => svc.moving_offsets().await?,
+                false => svc.sources().await?,
+            };
             Ok(pb::SourcesResponse { sources: sources.into_iter().map(|s| pb::Source { name: s.name, offset: s.offset, updated_micros: s.updated.unwrap_or(0) }).collect() })
         })
         .await

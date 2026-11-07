@@ -143,19 +143,6 @@ pub(crate) fn flip_marks(old: &SlotMap, new: &SlotMap, shard: usize) -> Vec<Stri
     left.chain(arrived).map(|j| format!("{MARK}slots {j}")).collect()
 }
 
-/// Writes `marks` in one transaction of their own, each as an offset
-/// `epoch` that `_sources` does not keep.
-pub(crate) fn write_marks(db: &Db, marks: &[String], epoch: u64) -> Result<(), ApiError> {
-    db.storage().ensure_sources()?;
-    let mut t = db.storage().begin()?;
-    let now = strata::timestamp::now();
-    for m in marks {
-        t.mark_source(m, epoch as i64, now)?;
-    }
-    t.commit_seq()?;
-    Ok(())
-}
-
 /// How many bytes of the log one read takes.
 const READ_BYTES: usize = 1 << 20;
 
