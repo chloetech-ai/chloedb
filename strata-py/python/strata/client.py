@@ -15,7 +15,7 @@ import urllib.request
 from typing import Any, Iterable, Mapping
 
 from ._search import Search, ordered_schema, params as _params
-from ._strata import StrataError
+from ._native import StrataError
 from .build import Query
 from .result import Result
 
