@@ -1317,8 +1317,12 @@ impl Service {
         // A field with a model it did not have: its rows may lack vectors.
         let opened = |l: &[FieldModel]| l.iter().filter(|m| m.model.is_ok()).map(|m| (m.table.to_lowercase(), m.field.clone(), m.spec.clone())).collect::<Vec<_>>();
         let gained = opened(&list).iter().any(|m| !opened(&old).contains(m));
+        // A field new here whose model did not open (a table created or
+        // altered since): its model may be one to fetch.
+        let same = |a: &FieldModel, b: &FieldModel| a.table.eq_ignore_ascii_case(&b.table) && a.field == b.field && a.spec == b.spec;
+        let wants = list.iter().any(|m| m.model.is_err() && !old.iter().any(|o| same(o, m)));
         *self.models.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(list);
-        if gained {
+        if gained || wants {
             self.models_changed.send_modify(|n| *n += 1);
         }
     }
@@ -4799,6 +4803,31 @@ fn apply_into(catalog: &[Arc<Schema>], txn: &mut WriteTxn<'_>, ops: &[Json]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A table created after the server started, naming a model the models
+    // directory lacked, did not wake `keep_models`, which then fetched only
+    // at start: the field had no model, and its rows no vectors, until the
+    // server was started again.
+    #[tokio::test]
+    async fn a_table_naming_a_model_to_fetch_wakes_the_fetcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create_empty(&dir.path().join("t.strata"), strata::storage::DbOptions::default()).unwrap());
+        let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+        let mut svc = Service::new(Backend::Local(db.clone()), (*db.schema()).clone(), agent, 16, Duration::from_secs(10));
+        svc.open_models(&dir.path().join("models"));
+        let svc = Arc::new(svc);
+        let mut changed = svc.models_changed.subscribe();
+        changed.borrow_and_update();
+        let ddl = "CREATE TABLE listings (id KEYWORD PRIMARY KEY, title TEXT, emb VECTOR OPTIONS(embed = 'title', model = 'potion-base-8M'))";
+        svc.sql(&Principal::open(), ddl, &Params::new(), After::Any, 0).await.unwrap();
+        assert!(changed.has_changed().unwrap(), "the fetcher was not woken");
+        let models = svc.models();
+        assert!(models.len() == 1 && models[0].model.as_ref().is_err_and(|e| e.contains("fetch it first")), "{:?}", models.iter().map(|m| m.model.as_ref().err()).collect::<Vec<_>>());
+        // Opening it again after a fetch that failed wakes it no more.
+        changed.borrow_and_update();
+        svc.reopen_models();
+        assert!(!changed.has_changed().unwrap());
+    }
 
     // A primary fenced by a call of the new primary as it kept its vote
     // for it wrote its replication file twice at once, through one new
