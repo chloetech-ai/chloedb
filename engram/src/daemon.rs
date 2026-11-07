@@ -850,8 +850,10 @@ impl Daemon {
         if !res.plan.need {
             res.plan.need = true;
             let (cands, _) = crate::deep::gather(&self.store, &cfg, &q, &res.plan, &filter);
-            let r = crate::deep::rank(&self.store, &cfg, &distill, &q, &cands, &HashMap::new(), false, now());
+            let versions = crate::deep::version_labels(&self.store, &cands, now());
+            let r = crate::deep::rank(&self.store, &cfg, &distill, &q, &cands, &versions, false, now());
             res.adopt(r, cands);
+            res.versions = versions;
         }
         let mut text = crate::deep::format(&res, &HashSet::new(), now(), Some(project));
         if text.is_empty() {

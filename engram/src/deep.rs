@@ -193,6 +193,9 @@ pub struct DeepResult {
     pub usage: llm::Usage,
     pub ms: u64,
     pub error: Option<String>,
+    /// How each candidate note changed or what it conflicts with
+    /// ([`version_labels`]), shown to the ranker and in the result.
+    pub versions: HashMap<String, String>,
 }
 
 impl DeepResult {
@@ -645,28 +648,40 @@ pub fn run(store: &Store, cfg: &DeepConfig, cli: &DistillConfig, request: &str, 
     if !errors.is_empty() && out.plan.error.is_none() {
         out.plan.error = Some(errors.join("; "));
     }
-    let mut labels = HashMap::new();
+    if cands.is_empty() {
+        out.confidence = "none".into();
+        out.ms = t0.elapsed().as_millis() as u64;
+        return out;
+    }
+    out.versions = version_labels(store, &cands, now);
+    let mut labels = out.versions.clone();
     if let Some(p) = project {
         let mut ck = Checker::new(p);
         for c in &cands {
             if c.record.kind.is_knowledge() {
                 let l = ck.check_record(&c.record).label();
                 if !l.is_empty() {
-                    labels.insert(c.record.id.clone(), l);
+                    labels.entry(c.record.id.clone()).or_default().insert_str(0, &l);
                 }
             }
         }
-    }
-    if cands.is_empty() {
-        out.confidence = "none".into();
-        out.ms = t0.elapsed().as_millis() as u64;
-        return out;
     }
     let r = rank(store, cfg, cli, request, &cands, &labels, out.plan.hard, now);
     out.adopt(r, cands);
     out.ms = t0.elapsed().as_millis() as u64;
     out
 }
+
+/// For the candidate notes, what each replaced (`changed DATE; was: ...`,
+/// however long ago: a question asked of memory wants the history) and the
+/// live notes it conflicts with ([`recall::change_labels`]).
+pub fn version_labels(store: &Store, cands: &[Cand], now: i64) -> HashMap<String, String> {
+    let notes: Vec<&Record> = cands.iter().map(|c| &c.record).filter(|r| r.kind.is_knowledge()).collect();
+    recall::change_labels(store, &notes, now, ALL_DAYS)
+}
+
+/// A window that holds every change.
+const ALL_DAYS: i64 = 1_000_000;
 
 impl DeepResult {
     /// Takes the ranker's picks (records from `cands`), reading and cost.
@@ -698,10 +713,11 @@ pub fn format(res: &DeepResult, shown: &HashSet<String>, now: i64, project: Opti
     );
     let terms: HashSet<String> = HashSet::new();
     for (r, why) in &new {
-        let label = match (&mut ck, r.kind.is_knowledge()) {
+        let mut label = match (&mut ck, r.kind.is_knowledge()) {
             (Some(c), true) => c.check_record(&r).label(),
             _ => String::new(),
         };
+        label += res.versions.get(&r.id).map(|s| s.as_str()).unwrap_or("");
         s += &format!("\n{}", describe(r, &terms, now, &label, 700));
         if !why.is_empty() {
             s += &format!("\n  Why it matters: {why}");
@@ -788,6 +804,28 @@ mod tests {
         assert_eq!(cands.len(), 3);
         // Found by several searches, so ranked first.
         assert!(cands[0].sources.len() >= 2);
+    }
+
+    #[test]
+    fn picks_show_what_they_replaced_and_conflict_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.strata"), Arc::new(HashEmbedder { dim: 64 }), StoreOptions { sync: false, ..Default::default() }).unwrap();
+        let day = 86_400;
+        // Written in January, replaced a year later, and contradicted since.
+        let v1 = s.append("a", 1, 10 * day, vec![Draft::new(Kind::Preference, "Refunds are allowed within 14 days")]).unwrap().remove(0);
+        let v2 = s.append("b", 1, 400 * day, vec![Draft::new(Kind::Preference, "Refunds are allowed within 30 days").link("supersedes", v1.id.clone())]).unwrap().remove(0);
+        s.close(&v1.id, v2.valid_since(), Some(&v2.id), "superseded").unwrap();
+        let c = s.append("c", 1, 410 * day, vec![Draft::new(Kind::Fact, "The user says refunds take 7 days").link("conflicts", v2.id.clone())]).unwrap().remove(0);
+        s.add_link(&v2.id, "conflicts", &c.id).unwrap();
+        let v2 = s.get(&[v2.id.clone()]).unwrap().remove(0);
+        let cands = vec![Cand { record: v2.clone(), score: 1.0, sources: vec![] }];
+        let labels = version_labels(&s, &cands, 420 * day);
+        // However long ago the change was, a question of memory sees it.
+        let l = &labels[&v2.id];
+        assert!(l.contains("was: Refunds are allowed within 14 days") && l.contains(&format!("conflicts with [{}]", c.id)), "{l}");
+        let res = DeepResult { picks: vec![(v2.clone(), String::new())], confidence: "high".into(), versions: labels, ..Default::default() };
+        let t = format(&res, &HashSet::new(), 420 * day, None);
+        assert!(t.contains("was: Refunds are allowed within 14 days"), "{t}");
     }
 
     #[test]

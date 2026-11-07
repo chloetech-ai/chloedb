@@ -102,6 +102,14 @@ enum Cmd {
         features: Option<PathBuf>,
         #[arg(long, default_value = "")]
         tag: String,
+        /// Distils each unit's exchanges in order through the daemon (notes,
+        /// replacements, reconciling, consolidation) into a store kept in
+        /// this folder, reused by later runs, and searches it with its notes.
+        #[arg(long)]
+        notes: Option<PathBuf>,
+        /// Only questions of these types (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        types: Vec<String>,
     },
     /// Distils each exchange of a test set with Engram's prompt, several
     /// times, and writes every output (graded by scripts/distill_eval.py).
@@ -667,9 +675,24 @@ fn main() {
             eprintln!("{} texts in {:.1} ms", texts.len(), t0.elapsed().as_secs_f64() * 1e3);
         }
         Cmd::Distill { cases, model, repeats, threads, out } => distill_cmd(&cases, &model, repeats, threads, &out),
-        Cmd::Deep { data, embedder, out, every, qevery, limit, threads, model, hard_model, max_picks, planner, ranker, features, tag } => {
-            deep_cmd(&data, &embedder, &out, every, qevery, limit, threads, &model, &hard_model, max_picks, &planner, &ranker, features.as_deref(), &tag)
-        }
+        Cmd::Deep { data, embedder, out, every, qevery, limit, threads, model, hard_model, max_picks, planner, ranker, features, tag, notes, types } => deep_cmd(
+            &data,
+            &embedder,
+            &out,
+            every,
+            qevery,
+            limit,
+            threads,
+            &model,
+            &hard_model,
+            max_picks,
+            &planner,
+            &ranker,
+            features.as_deref(),
+            &tag,
+            notes.as_deref(),
+            &types,
+        ),
         Cmd::Scale { data, sizes, embedder, out, queries, hooks, hook_gap_ms } => scale_cmd(&data, &sizes, &embedder, &out, queries, hooks, hook_gap_ms),
         Cmd::Latency { data, sizes, embedder, out, queries, rounds, hooks, knowledge } => latency_cmd(&data, &sizes, &embedder, &out, queries, rounds, hooks, knowledge),
         Cmd::Tail { data, sizes, embedder, out, queries, rounds, knowledge } => tail_cmd(&data, &sizes, &embedder, &out, queries, rounds, knowledge),
@@ -890,15 +913,91 @@ fn distill_cmd(cases: &Path, model: &str, repeats: usize, threads: usize, out: &
 // ---------------------------------------------------------------- deep
 
 /// A record as a reader context shows it (the layout of engram-structure's dumps).
-fn reader_block(r: &Record) -> String {
+/// A record as the reader gets it: a message with its time and session, or
+/// a note with the day it holds from and how it changed (`versions`).
+fn reader_block(r: &Record, versions: &HashMap<String, String>) -> String {
+    if r.kind.is_knowledge() {
+        let label = versions.get(&r.id).map(|s| s.as_str()).unwrap_or("");
+        return format!("[{} · note]\n{}: {}{label}", recall::fmt_time(r.valid_since()), r.kind.as_str(), r.text);
+    }
     let role = if r.kind == Kind::Answer { "assistant" } else { "user" };
     format!("[{} · session {}]\n{role}: {}", recall::fmt_time(r.ts), r.session, r.text)
+}
+
+/// A unit's store with its exchanges distilled in order by the daemon's own
+/// code (notes, replacements, reconciling, consolidation), as Engram would
+/// have written it over the conversation. Built once in `dir/<unit>/` and
+/// reopened after; returns the store and what distilling cost.
+fn distilled_store(u: &Unit, dir: &Path, embedder: &str, e: &Arc<dyn Embedder>) -> (Arc<Store>, Json) {
+    let udir = dir.join(u.unit_id.replace(['/', ' '], "_"));
+    let done = udir.join("distilled.json");
+    let paths = engram::paths::StorePaths::new(&udir);
+    if let Ok(stats) = std::fs::read_to_string(&done) {
+        let store = Store::open(&paths.db, e.clone(), StoreOptions { sync: false, ..Default::default() }).expect("open distilled store");
+        return (Arc::new(store), serde_json::from_str(&stats).unwrap_or(Json::Null));
+    }
+    let t0 = Instant::now();
+    let _ = std::fs::remove_dir_all(&udir);
+    std::fs::create_dir_all(&udir).unwrap();
+    std::fs::write(&paths.config, json!({"embedder": embedder, "sync": false}).to_string()).unwrap();
+    let d = engram::daemon::Daemon::open(&udir, "/bench").expect("daemon");
+    let recs = records(u, "request");
+    let texts: Vec<String> = recs.iter().map(|r| r.embed_text()).collect();
+    let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    d.store.bulk_insert(&recs, e.embed(&refs).expect("embedding")).unwrap();
+    // An exchange is a user message and the assistant messages after it in
+    // its session; its notes are dated by the reply.
+    let mut n = 0;
+    let mut i = 0;
+    while i < u.turns.len() {
+        let t = &u.turns[i];
+        let mut j = i + 1;
+        let mut answer = String::new();
+        let mut ts = t.timestamp.as_deref().map(parse_time).unwrap_or(0);
+        while j < u.turns.len() && u.turns[j].role != "user" && u.turns[j].session_id == t.session_id {
+            answer += &u.turns[j].text;
+            answer.push('\n');
+            ts = u.turns[j].timestamp.as_deref().map(parse_time).unwrap_or(ts);
+            j += 1;
+        }
+        let prompt = if t.role == "user" { t.text.as_str() } else { "" };
+        if t.role != "user" {
+            answer.insert_str(0, &format!("{}\n", t.text));
+        }
+        d.distill_turn(&t.session_id, i as i64, ts, prompt, &answer, &[], &[]);
+        n += 1;
+        if n % 25 == 0 {
+            eprintln!("  {}: {n} exchanges distilled, {:.0} s", u.unit_id, t0.elapsed().as_secs_f64());
+        }
+        i = j;
+    }
+    d.store.flush().unwrap();
+    // What it wrote and what it cost, from the daemon's log.
+    let log = std::fs::read_to_string(udir.join("events.log")).unwrap_or_default();
+    let (mut cost, mut errors, mut replaced, mut reconciled, mut consolidations) = (0.0, 0, 0, 0, 0);
+    for l in log.lines().filter_map(|l| serde_json::from_str::<Json>(l).ok()) {
+        cost += l["cost_usd"].as_f64().unwrap_or(0.0) + l["reconcile"]["cost_usd"].as_f64().unwrap_or(0.0);
+        errors += l.get("error").is_some_and(|e| !e.is_null()) as usize + l["reconcile"].get("error").is_some_and(|e| !e.is_null()) as usize;
+        replaced += l["replaced"].as_array().map_or(0, |a| a.len()) + l["reconcile"]["replaced"].as_array().map_or(0, |a| a.len());
+        reconciled += l["reconcile"].get("shown").is_some() as usize;
+        consolidations += (l["event"] == "consolidate") as usize;
+    }
+    let count = |w: &str| d.store.query(&format!("SELECT COUNT(*) FROM memory WHERE {w}")).ok().and_then(|r| r.rows[0][0].as_i64()).unwrap_or(0);
+    let kinds = "kind IN ('decision', 'preference', 'fact', 'todo', 'insight')";
+    let stats = json!({
+        "unit": u.unit_id, "exchanges": n, "seconds": t0.elapsed().as_secs_f64(), "cost_usd": cost, "errors": errors,
+        "notes": count(kinds), "closed": count(&format!("{kinds} AND valid_to > 0")), "replaced": replaced,
+        "reconcile_calls": reconciled, "consolidations": consolidations,
+    });
+    std::fs::write(&done, stats.to_string()).unwrap();
+    eprintln!("  {}: distilled {n} exchanges in {:.0} s, ${cost:.3}: {stats}", u.unit_id, t0.elapsed().as_secs_f64());
+    (d.store.clone(), stats)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn deep_cmd(
     data: &Path, embedder: &str, out: &Path, every: usize, qevery: usize, limit: Option<usize>, threads: usize, model: &str, hard_model: &str, max_picks: usize, planner: &str, ranker: &str,
-    features: Option<&Path>, tag: &str,
+    features: Option<&Path>, tag: &str, notes: Option<&Path>, types: &[String],
 ) {
     use engram::deep::{self, DeepConfig};
     let t0 = Instant::now();
@@ -922,7 +1021,30 @@ fn deep_cmd(
         ..Default::default()
     };
     let cli = engram::distill::DistillConfig::default();
-    let jobs: Vec<(usize, usize)> = units.iter().enumerate().flat_map(|(i, u)| (0..u.questions.len()).filter(move |j| j % qevery.max(1) == 0).map(move |j| (i, j))).collect();
+    let jobs: Vec<(usize, usize)> = units
+        .iter()
+        .enumerate()
+        .flat_map(|(i, u)| (0..u.questions.len()).filter(move |j| j % qevery.max(1) == 0).map(move |j| (i, j)))
+        .filter(|&(i, j)| types.is_empty() || types.contains(&units[i].questions[j].question_type))
+        .collect();
+    // With --notes, each unit with a question is distilled first (units in
+    // parallel, each one's exchanges in order).
+    let stores: Vec<Mutex<Option<(Arc<Store>, Json)>>> = units.iter().map(|_| Mutex::new(None)).collect();
+    if let Some(dir) = notes {
+        std::fs::create_dir_all(dir).unwrap();
+        let todo: Vec<usize> = (0..units.len()).filter(|i| jobs.iter().any(|j| j.0 == *i)).collect();
+        let next = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..threads.max(1).min(todo.len()) {
+                let (todo, next, units, stores, e) = (&todo, &next, &units, &stores, &e);
+                s.spawn(move || loop {
+                    let k = next.fetch_add(1, Ordering::SeqCst);
+                    let Some(&i) = todo.get(k) else { break };
+                    *stores[i].lock().unwrap() = Some(distilled_store(&units[i], dir, embedder, e));
+                });
+            }
+        });
+    }
     let next = AtomicUsize::new(0);
     let rows: Mutex<Vec<Json>> = Mutex::new(Vec::new());
     let ctxs: Mutex<Vec<Json>> = Mutex::new(Vec::new());
@@ -930,7 +1052,7 @@ fn deep_cmd(
     let want_features = features.is_some();
     std::thread::scope(|s| {
         for t in 0..threads.max(1) {
-            let (units, jobs, next, rows, ctxs, feats, e, cfg, cli) = (&units, &jobs, &next, &rows, &ctxs, &feats, &e, &cfg, &cli);
+            let (units, jobs, next, rows, ctxs, feats, e, cfg, cli, stores) = (&units, &jobs, &next, &rows, &ctxs, &feats, &e, &cfg, &cli, &stores);
             s.spawn(move || loop {
                 let k = next.fetch_add(1, Ordering::SeqCst);
                 if k >= jobs.len() {
@@ -939,15 +1061,23 @@ fn deep_cmd(
                 let (i, j) = jobs[k];
                 let (u, q) = (&units[i], &units[i].questions[j]);
                 let tmp = std::env::temp_dir().join(format!("engram-deep-{}-{t}", std::process::id()));
-                let _ = std::fs::remove_dir_all(&tmp);
-                std::fs::create_dir_all(&tmp).unwrap();
-                let recs = records(u, "request");
-                let texts: Vec<String> = recs.iter().map(|r| r.embed_text()).collect();
-                let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-                let vecs = e.embed(&refs).expect("embedding");
-                let store = Store::open(&tmp.join("m.strata"), e.clone(), StoreOptions { sync: false, flush_docs: usize::MAX / 8, ..Default::default() }).unwrap();
-                store.bulk_insert(&recs, vecs).unwrap();
-                let now = q.question_date.as_deref().map(parse_time).unwrap_or_else(|| recs.iter().map(|r| r.ts).max().unwrap_or(0) + 86_400);
+                let distilled = stores[i].lock().unwrap().as_ref().map(|(s, _)| s.clone());
+                let store = match distilled {
+                    Some(s) => s,
+                    None => {
+                        let _ = std::fs::remove_dir_all(&tmp);
+                        std::fs::create_dir_all(&tmp).unwrap();
+                        let recs = records(u, "request");
+                        let texts: Vec<String> = recs.iter().map(|r| r.embed_text()).collect();
+                        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                        let vecs = e.embed(&refs).expect("embedding");
+                        let store = Store::open(&tmp.join("m.strata"), e.clone(), StoreOptions { sync: false, flush_docs: usize::MAX / 8, ..Default::default() }).unwrap();
+                        store.bulk_insert(&recs, vecs).unwrap();
+                        Arc::new(store)
+                    }
+                };
+                let last = u.turns.iter().filter_map(|t| t.timestamp.as_deref().map(parse_time)).max().unwrap_or(0);
+                let now = q.question_date.as_deref().map(parse_time).unwrap_or(last + 86_400);
                 let (hits, _) = recall::search(&store, &q.question, &Filter::default(), &RankParams { n: 30, ..Default::default() }).unwrap();
                 let base = metrics(&hits, q, &q.question);
                 let res = deep::run(&store, cfg, cli, &q.question, &[], &Filter::default(), None, now);
@@ -972,7 +1102,7 @@ fn deep_cmd(
                 let (bp_any, bp_all) = cover(&base_pool);
                 let mut picked = String::new();
                 for (r, _) in &res.picks {
-                    picked += &reader_block(r);
+                    picked += &reader_block(r, &res.versions);
                     picked += "\n\n";
                 }
                 let reading = if res.answer.is_empty() { picked.clone() } else { format!("A first reading of these records (by a smaller model; check it against them): {}\n\n{picked}", res.answer) };
@@ -986,7 +1116,7 @@ fn deep_cmd(
                     "cost_usd": res.cost_usd, "tokens": res.usage.json(), "plan_ms": res.plan.ms, "ms": res.ms, "error": res.error.clone().or(res.plan.error.clone()),
                 });
                 // The plain hybrid search's top 10, for reading without the query engine.
-                let top10: String = hits.iter().take(10).map(|h| reader_block(&h.record) + "\n\n").collect();
+                let top10: String = hits.iter().take(10).map(|h| reader_block(&h.record, &HashMap::new()) + "\n\n").collect();
                 ctxs.lock().unwrap().push(json!({"qid": q.qid, "context": picked.trim_end(), "reading": reading.trim_end(), "chars": picked.len(), "base10": top10.trim_end()}));
                 let n = {
                     let mut g = rows.lock().unwrap();
@@ -1027,6 +1157,7 @@ fn deep_cmd(
         "ms_p50": pct(&mut ms, 0.5), "ms_p90": pct(&mut ms, 0.9),
         "errors": rows.iter().filter(|r| !r["error"].is_null()).count(),
         "hard": mean(&all, "hard"), "all": agg(&eligible), "by_type": by_type,
+        "distilled": stores.iter().filter_map(|s| s.lock().unwrap().as_ref().map(|(_, j)| j.clone())).collect::<Vec<_>>(),
     });
     std::fs::create_dir_all(out).unwrap();
     let base = format!("{dataset}_deep{}", if tag.is_empty() { String::new() } else { format!("_{tag}") });
