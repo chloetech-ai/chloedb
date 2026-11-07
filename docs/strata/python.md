@@ -34,6 +34,16 @@ pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expande
 
 The workflow [`py-release.yml`](https://github.com/chloetech-ai/strata/blob/main/.github/workflows/py-release.yml) builds them on a tag `strata-py-v<version>` (the version in `strata-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
 
+### Only the client, with no build
+
+[`strata.connect`](#a-server-from-python), the client of a running strata-server, needs only Python's standard library. Without the extension, from a checkout of the repository, put `strata-py/python` on the path and import it:
+
+```sh
+PYTHONPATH=strata-py/python python3 -c 'import strata; print(strata.connect("http://127.0.0.1:7700").health())'
+```
+
+The package imports without the extension, and `strata.Client`, `strata.connect`, `strata.StrataError`, `Result` and the query builder work. A database in the process (`strata.open`, `strata.Database`, `from_sqlite`, the codebook training) raises `ImportError` saying what to install.
+
 ### From source
 
 It needs Rust (stable) and a C compiler; the build takes about 12 minutes on 4 cores.

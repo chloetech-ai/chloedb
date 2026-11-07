@@ -35,7 +35,8 @@ import json
 import os
 from typing import Any, Iterable, Mapping
 
-from . import _strata, ngrams, train
+from . import ngrams, train
+from ._native import _strata
 from ._search import Search, ordered_schema, params as _params
 from .build import (
     Expr,
@@ -74,7 +75,7 @@ from .build import (
     similarity,
     sqrt,
 )
-from ._strata import StrataError
+from ._native import StrataError
 from .client import Client
 from .ngrams import next_items
 from .result import ArrowResult, Result

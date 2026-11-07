@@ -32,7 +32,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
-from ._strata import StrataError
+from ._native import StrataError
 from .client import Client, _default
 
 Partition = tuple[str, int]
