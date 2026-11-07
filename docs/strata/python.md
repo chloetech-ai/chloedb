@@ -34,6 +34,16 @@ pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expande
 
 The workflow [`py-release.yml`](https://github.com/chloetech-ai/strata/blob/main/.github/workflows/py-release.yml) builds them on a tag `strata-py-v<version>` (the version in `strata-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
 
+### Only the client, with no build
+
+[`strata.connect`](#a-server-from-python), the client of a running strata-server, needs only Python's standard library. Without the extension, from a checkout of the repository, put `strata-py/python` on the path and import it:
+
+```sh
+PYTHONPATH=strata-py/python python3 -c 'import strata; print(strata.connect("http://127.0.0.1:7700").health())'
+```
+
+The package imports without the extension, and `strata.Client`, `strata.connect`, `strata.StrataError`, `Result` and the query builder work. A database in the process (`strata.open`, `strata.Database`, `from_sqlite`, the codebook training) raises `ImportError` saying what to install.
+
 ### From source
 
 It needs Rust (stable) and a C compiler; the build takes about 12 minutes on 4 cores.
@@ -292,7 +302,7 @@ db.query("""SELECT id FROM items ORDER BY similarity(emb, encode('next',
 
 ## A server from Python
 
-`strata.connect(url, token=None)` returns a `Client` of a running strata-server, using only the standard library. It has `schema`, `tables`, `query`, `sql`, `search`, `insert`, `upsert`, `delete`, `import_file` (an upload to [`/v1/import`](server.md#loading-rows), up to the server's `--max-body-mb`, 256 MiB unless set), `import_sqlite(path, tables=None)` and `plan_sqlite(path)` (a SQLite file's tables, uploaded the same way; [SQLite in and out](sqlite.md#over-http-and-in-the-ui)), `export_sqlite(path, tables=None)` (the server's tables downloaded as a SQLite file), `import_parquet(path, table=None, key=None)`, `plan_parquet(path)` and `export_parquet(path, table=None)` ([Parquet over HTTP](parquet.md#over-http-and-in-the-ui)) and `len()`, as above, plus `get(key)`, `get_many(keys)` and `put(key, row, if_seq_no=None)` for [rows by key](server.md#rows-by-key), `write(ops)` for raw [write operations](server.md#http-api), `explain`, `run(plan)` (a plan from `explain(...)["ir"]` or a `table()` query, run by [`/v1/plan`](server.md#http-api)), `table()` ([queries built in Python](#queries-built-in-python)), `embed(text, field=None)` (a text's vector by the server's model, from [`/v1/embed`](server.md#http-api), or `embed(image=data)` an image's and `embed(audio=data)` a sound's), `embed_tokens(text, field)` (a query's vectors a token, for a multi-vector field), `query_logged` and `export_rank_log` ([the rank log](#the-rank-log)), `health`, `stats` and `ask(question)` for the [agent](server.md#the-agent).
+`strata.connect(url, token=None, timeout=30, retry_for=10)` returns a `Client` of a running strata-server, using only the standard library. It has `schema`, `tables`, `query`, `sql`, `search`, `insert`, `upsert`, `delete`, `import_file` (an upload to [`/v1/import`](server.md#loading-rows), up to the server's `--max-body-mb`, 256 MiB unless set), `import_sqlite(path, tables=None)` and `plan_sqlite(path)` (a SQLite file's tables, uploaded the same way; [SQLite in and out](sqlite.md#over-http-and-in-the-ui)), `export_sqlite(path, tables=None)` (the server's tables downloaded as a SQLite file), `import_parquet(path, table=None, key=None)`, `plan_parquet(path)` and `export_parquet(path, table=None)` ([Parquet over HTTP](parquet.md#over-http-and-in-the-ui)) and `len()`, as above, plus `get(key)`, `get_many(keys)` and `put(key, row, if_seq_no=None)` for [rows by key](server.md#rows-by-key), `write(ops)` for raw [write operations](server.md#http-api), `explain`, `run(plan)` (a plan from `explain(...)["ir"]` or a `table()` query, run by [`/v1/plan`](server.md#http-api)), `table()` ([queries built in Python](#queries-built-in-python)), `embed(text, field=None)` (a text's vector by the server's model, from [`/v1/embed`](server.md#http-api), or `embed(image=data)` an image's and `embed(audio=data)` a sound's), `embed_tokens(text, field)` (a query's vectors a token, for a multi-vector field), `query_logged` and `export_rank_log` ([the rank log](#the-rank-log)), `health`, `stats` and `ask(question)` for the [agent](server.md#the-agent).
 
 ```python
 client = strata.connect("http://127.0.0.1:7700")   # token= or $STRATA_TOKEN for a server with --token
@@ -300,7 +310,18 @@ client.upsert({"id": "b3", "title": "Star letters", "year": 2024})
 client.search("letters", limit=3).dicts()
 ```
 
-The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `strata.StrataError`, with the HTTP status as `.status`; a server that cannot be reached raises `urllib.error.URLError`.
+The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `strata.StrataError`, with the HTTP status as `.status` and the JSON answer as `.answer`; a server that cannot be reached raises `urllib.error.URLError`. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retry_for` seconds (10; 0 sends each request once), and raises the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
+
+`write(ops, idempotency_key=k)` and `sql(statement, idempotency_key=k)` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator, after some shards took their part, says so in its error's answer and names its key:
+
+```python
+try:
+    client.write(ops)
+except strata.StrataError as e:
+    if not (e.answer or {}).get("partial"):
+        raise
+    client.write(ops, idempotency_key=e.answer["idempotency_key"])   # the rest, once
+```
 
 ### Streams and Kafka
 
