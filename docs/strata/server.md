@@ -10,6 +10,8 @@ nav_order: 4
 `strata-server` serves a Strata database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Run several of them as shards and one more as a coordinator, and the coordinator answers like one database.
 {: .fs-5 .fw-300 }
 
+New to it? [Build an app](build-an-app.md) is one page from an empty server to search, stock, holds, events counted once and a cluster; this page is the reference.
+
 1. TOC
 {:toc}
 
