@@ -1149,7 +1149,7 @@ fn answer(a: &crate::service::Answer) -> Json {
 
 /// Any statement: the service checks that the request's credential may
 /// run it ([`Service::sql`]), and audits a table's or rank profile's.
-async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let params = app.svc.params(b.get("params")).await?;
     let w = who(w);
     if let Some(log) = b.get("log") {
@@ -1162,7 +1162,8 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJs
     if writes {
         audit_ui_write(statement, None, None);
     }
-    let (r, partial) = crate::coord::with_partial(app.svc.sql(&w, statement, &params, after(&b)?, body_u64(&b, "timeout_ms"))).await;
+    let key = body_key(&b, &headers)?;
+    let (r, partial) = crate::coord::with_partial(app.svc.sql_in(&w, statement, &params, after(&b)?, body_u64(&b, "timeout_ms"), None, key)).await;
     match r {
         Ok(SqlAnswer::Rows(a)) => Ok(AxJson(answer(&a)).into_response()),
         Ok(SqlAnswer::Written { w, took_ms }) => {
@@ -1171,20 +1172,40 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJs
         }
         Err(e) => {
             if writes {
-                audit_ui_write(statement, None, partial.as_ref());
+                audit_ui_write(statement, None, partial.as_ref().map(|p| &p["shards"]));
             }
             Ok(write_failed(e, partial))
         }
     }
 }
 
+/// A write's idempotency key: the body's `idempotency_key`, or an
+/// `Idempotency-Key` header.
+fn body_key(b: &Json, headers: &HeaderMap) -> Result<Option<String>, ApiError> {
+    let key = match (b.get("idempotency_key"), headers.get("idempotency-key")) {
+        (Some(Json::String(k)), _) => Some(k.clone()),
+        (Some(_), _) => return Err(ApiError::bad("idempotency_key is a string")),
+        (None, Some(h)) => Some(h.to_str().map_err(|_| ApiError::bad("the Idempotency-Key header is not text"))?.to_string()),
+        (None, None) => None,
+    };
+    if key.as_ref().is_some_and(|k| k.is_empty() || k.len() > 256) {
+        return Err(ApiError::bad("an idempotency key has 1 to 256 characters"));
+    }
+    Ok(key)
+}
+
 /// The answer of a write that failed: its error, and when it failed
 /// partway through a coordinator, what each shard did (`shards`: `{shard,
 /// short, rows}` for those that took it, `{shard, short, error}` for the
-/// others; [`crate::coord::with_partial`]).
+/// others) and the idempotency key to send it again with
+/// (`idempotency_key`; [`crate::coord::with_partial`]).
 fn write_failed(e: ApiError, partial: Option<Json>) -> Response {
-    let Some(shards) = partial else { return e.into_response() };
-    let body = json!({"error": e.message, "partial": true, "shards": shards}).to_string();
+    let Some(partial) = partial else { return e.into_response() };
+    let mut body = json!({"error": e.message, "partial": true, "shards": partial["shards"]});
+    if let Some(k) = partial.get("idempotency_key") {
+        body["idempotency_key"] = k.clone();
+    }
+    let body = body.to_string();
     let mut r = e.into_response();
     *r.body_mut() = axum::body::Body::from(body);
     r
@@ -1280,15 +1301,7 @@ async fn write(State(app): State<App>, headers: HeaderMap, AxJson(mut b): AxJson
         Some(Json::Array(ops)) => ops,
         _ => return Err(ApiError::bad("the body needs an array \"ops\"")),
     };
-    let key = match (b.get("idempotency_key"), headers.get("idempotency-key")) {
-        (Some(Json::String(k)), _) => Some(k.clone()),
-        (Some(_), _) => return Err(ApiError::bad("idempotency_key is a string")),
-        (None, Some(h)) => Some(h.to_str().map_err(|_| ApiError::bad("the Idempotency-Key header is not text"))?.to_string()),
-        (None, None) => None,
-    };
-    if key.as_ref().is_some_and(|k| k.is_empty() || k.len() > 256) {
-        return Err(ApiError::bad("an idempotency key has 1 to 256 characters"));
-    }
+    let key = body_key(&b, &headers)?;
     let t0 = std::time::Instant::now();
     // A write from the command center is audited whatever its answer: its
     // table is its first operation's.
@@ -1302,14 +1315,14 @@ async fn write(State(app): State<App>, headers: HeaderMap, AxJson(mut b): AxJson
         }
     };
     note(None, None);
-    let (r, partial) = crate::coord::with_partial(app.svc.write_ops(ops, key)).await;
+    let (r, partial) = crate::coord::with_partial(app.svc.write_request(ops, key)).await;
     match r {
         Ok(w) => {
             note(Some(w.rows as u64), None);
             Ok(AxJson(written(w, t0.elapsed().as_secs_f64() * 1e3)).into_response())
         }
         Err(e) => {
-            note(None, partial.as_ref());
+            note(None, partial.as_ref().map(|p| &p["shards"]));
             Ok(write_failed(e, partial))
         }
     }
@@ -1522,7 +1535,7 @@ async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
             Ok(AxJson(j).into_response())
         }
         Err(e) => {
-            note(None, partial.as_ref());
+            note(None, partial.as_ref().map(|p| &p["shards"]));
             Ok(write_failed(e, partial))
         }
     }

@@ -1384,7 +1384,7 @@ impl Service {
                 let (t, f, chunk) = (table.to_string(), field.to_string(), chunk.to_vec());
                 let guard = self.statement_guard(0, Arc::new(Mutex::new(None)));
                 let prepare = move |db: &Db| db.prepare_backfill(&t, &f, chunk).map(|p| Some(p.guarded(guard)));
-                match self.write_local(db, prepare, 0).await {
+                match self.write_local(db, prepare, 0, None).await {
                     // The queue is full: clients' writes come first.
                     Err(e) if e.status == 429 && busy < 600 => {
                         busy += 1;
@@ -2223,7 +2223,7 @@ impl Service {
             let Backend::Local(db) = &self.backend else {
                 return Err(ApiError::bad("a coordinator takes writes as SQL; its shards do not take write plans yet"));
             };
-            let w = self.write_local(db, move |db| db.prepare_plan(&plan).map(Some), timeout_ms).await;
+            let w = self.write_local(db, move |db| db.prepare_plan(&plan).map(Some), timeout_ms, None).await;
             let w = self.wrote(w, t0, Some(&text))?;
             return Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 });
         }
@@ -2826,13 +2826,17 @@ impl Service {
     /// The statement needs the scope of its kind ([`command_scope`]), which
     /// `who` must have; a table's or rank profile's statement is audited.
     pub async fn sql(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64) -> Result<SqlAnswer, ApiError> {
-        self.sql_in(who, sql, params, after, timeout_ms, None).await
+        self.sql_in(who, sql, params, after, timeout_ms, None, None).await
     }
 
     /// [`Self::sql`]; with `slots`, an UPDATE or DELETE over the rows of
     /// those slots alone, as a coordinator sends one again to the shard
-    /// slots moved to while it ran.
-    pub async fn sql_in(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>) -> Result<SqlAnswer, ApiError> {
+    /// slots moved to while it ran. With an idempotency `key`, a write
+    /// statement sent again after it committed answers its first answer
+    /// rather than applying again; through a coordinator, each shard's part
+    /// is kept under the key ([`Coordinator::sql`]).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn sql_in(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>, key: Option<String>) -> Result<SqlAnswer, ApiError> {
         let command = self.bound(|tables| bind_command(sql, tables, params)).await?;
         let need = command_scope(&command);
         who.may(need, &format!("a {} statement", match need { Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table or rank profile" }))?;
@@ -2865,6 +2869,7 @@ impl Service {
             (_, true) => self.ddl(sql, params, timeout_ms).await,
             (Backend::Local(db), false) => {
                 let (text, p) = (sql.to_string(), params.clone());
+                let slots_hashed = slots.clone();
                 let only = slots.map(|s| moving::mask_outside(&s));
                 let refused = Arc::new(Mutex::new(None));
                 let guard = self.statement_guard(routed(), refused.clone());
@@ -2876,14 +2881,14 @@ impl Service {
                     };
                     Ok(Some(w.guarded(guard)))
                 };
-                let r = self.write_local(db, prepare, timeout_ms).await;
+                let r = self.write_local(db, prepare, timeout_ms, key.map(|k| (k, statement_hash(sql, params, slots_hashed.as_deref())))).await;
                 let refusal = refused.lock().unwrap_or_else(|e| e.into_inner()).take();
                 match refusal {
                     Some(e) if r.is_err() => Err(e),
                     _ => r,
                 }
             }
-            (Backend::Cluster(c), false) => c.sql(sql, params).await,
+            (Backend::Cluster(c), false) => c.sql(sql, params, key).await,
         };
         let w = self.wrote(r, t0, Some(sql))?;
         Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
@@ -2924,32 +2929,65 @@ impl Service {
         r
     }
 
+    /// Applies write operations from a client (`/v1/write`, gRPC `Write`):
+    /// [`Self::write_ops`], under a key of its own through a coordinator
+    /// when it has none and may span shards ([`Coordinator::keyed`]).
+    pub async fn write_request(self: &Arc<Self>, ops: Vec<Json>, key: Option<String>) -> Result<Written, ApiError> {
+        let key = match &self.backend {
+            Backend::Cluster(c) => c.keyed(&ops, key),
+            Backend::Local(_) => key,
+        };
+        self.write_ops(ops, key).await
+    }
+
     /// A write `prepare` binds (`None`: not a write), queued for the writer
     /// thread. It is bound, and its vectors computed, before it queues:
-    /// models run on a core of their own, not in the writer thread.
-    async fn write_local<F>(self: &Arc<Self>, db: &Arc<Db>, prepare: F, timeout_ms: u64) -> Result<Written, ApiError>
+    /// models run on a core of their own, not in the writer thread. With
+    /// an idempotency key (and the hash of what it names), a retry of a
+    /// write that committed answers its first answer, as
+    /// [`Self::write_ops`] does.
+    async fn write_local<F>(self: &Arc<Self>, db: &Arc<Db>, prepare: F, timeout_ms: u64, key: Option<(String, u64)>) -> Result<Written, ApiError>
     where
         F: FnOnce(&Db) -> strata::Result<Option<PreparedWrite>> + Send + 'static,
     {
         let by = self.writable()?;
         self.backpressure(db).await?;
         let q = self.enqueue()?;
-        let core = match self.embeds() {
-            true => Some(self.embedding.clone().acquire_owned().await.map_err(ApiError::internal)?),
-            false => None,
-        };
-        let db = db.clone();
-        let prepared = tokio::task::spawn_blocking(move || {
-            let _core = core;
-            prepare(&db)
-        })
-        .await
-        .map_err(ApiError::internal)??
-        .ok_or_else(|| ApiError::bad("not a write statement"))?;
-        // The deadline bounds the wait for the writer, not the embedding.
-        let deadline = Instant::now() + self.timeout_of(timeout_ms);
-        let w = self.write(WriteJob::Sql(Box::new(prepared)), deadline, None, q, Moved::No).await?;
-        self.replicated(w, self.timeout_of(timeout_ms), by).await
+        if let Some((k, hash)) = &key {
+            match self.idempotency.begin(k, *hash) {
+                idem::Begin::New => {}
+                idem::Begin::Done(n) => {
+                    self.metrics.replay();
+                    return self.replicated(n, self.timeout_of(timeout_ms), self.admitted()).await;
+                }
+                idem::Begin::Busy => return Err(ApiError { status: 409, message: "a write with this idempotency key is still running".into() }),
+                idem::Begin::Mismatch => return Err(ApiError { status: 422, message: "this idempotency key was used for a different statement".into() }),
+            }
+        }
+        let key = key.map(|(k, _)| k);
+        let r = async {
+            let core = match self.embeds() {
+                true => Some(self.embedding.clone().acquire_owned().await.map_err(ApiError::internal)?),
+                false => None,
+            };
+            let db = db.clone();
+            let prepared = tokio::task::spawn_blocking(move || {
+                let _core = core;
+                prepare(&db)
+            })
+            .await
+            .map_err(ApiError::internal)??
+            .ok_or_else(|| ApiError::bad("not a write statement"))?;
+            // The deadline bounds the wait for the writer, not the embedding.
+            let deadline = Instant::now() + self.timeout_of(timeout_ms);
+            self.write(WriteJob::Sql(Box::new(prepared)), deadline, key.clone(), q, Moved::No).await
+        }
+        .await;
+        if let (Err(_), Some(k)) = (&r, &key) {
+            // Not committed (the writer reports a commit as Ok).
+            self.idempotency.finish(k, None);
+        }
+        self.replicated(r?, self.timeout_of(timeout_ms), by).await
     }
 
     /// Applies write operations (see the proto's WriteRequest) in one
@@ -3963,6 +4001,14 @@ pub const SMALL_BODY: usize = 16 << 20;
 /// writes. Loaders must split documents the same way.
 pub fn shard_of(key: &Value, n: usize) -> usize {
     slots::shard_of(key, n.max(1))
+}
+
+/// What an idempotency key of a write statement names: its text, its
+/// parameters (by name) and the slots it is limited to.
+fn statement_hash(sql: &str, params: &Params, slots: Option<&[usize]>) -> u64 {
+    let mut named: Vec<(&String, String)> = params.0.iter().map(|(k, v)| (k, format!("{v:?}"))).collect();
+    named.sort();
+    idem::hash_ops(&[json!(sql), json!(named), json!(slots)])
 }
 
 fn conflict(message: String) -> ApiError {

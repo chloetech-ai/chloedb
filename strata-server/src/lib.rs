@@ -121,6 +121,7 @@ impl From<tonic::Status> for ApiError {
         let status = match s.code() {
             Code::InvalidArgument => 400,
             Code::FailedPrecondition => 409,
+            Code::AlreadyExists => 422,
             Code::DeadlineExceeded => 504,
             Code::ResourceExhausted => 429,
             Code::Unavailable => 503,
@@ -142,6 +143,9 @@ impl From<ApiError> for tonic::Status {
             // Refused in the state the server is in: an older slot map, a
             // write with the same idempotency key still running.
             409 => Code::FailedPrecondition,
+            // An idempotency key used already, for other operations or
+            // another statement.
+            422 => Code::AlreadyExists,
             // Too many queries running: another replica would only be
             // loaded more ([`crate::coord`] does not retry it elsewhere).
             429 => Code::ResourceExhausted,
