@@ -11,6 +11,10 @@ export interface ClientOptions {
   token?: string;
   /** Milliseconds a request may take (0 for no limit); 30 s by default. */
   timeout?: number;
+  /** Milliseconds a request the server refused for its load (429) is sent
+   * again for, after its Retry-After; 10 s by default, 0 for never. A write
+   * that failed partway is sent again only with an idempotency key. */
+  retryFor?: number;
   /** The fetch to use (globalThis.fetch by default). */
   fetch?: typeof fetch;
 }
@@ -24,6 +28,7 @@ export declare class Client extends Searchable {
   url: string;
   token?: string;
   timeout: number;
+  retryFor: number;
 
   schema(table?: string): Promise<Schema>;
   tables(): Promise<Schema[]>;
