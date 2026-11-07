@@ -43,7 +43,7 @@ use crate::{json as js, obs, pb, ApiError};
 
 pub(crate) mod arrivals;
 mod failover;
-pub(crate) mod feed;
+pub mod feed;
 mod moving;
 
 pub use failover::tuned as failover_tuned;
@@ -3562,6 +3562,12 @@ impl Service {
         }
         g.insert("running", self.running() as f64);
         g.insert("live", self.live.len() as f64);
+        // A cluster that follows another: its follow processes' lag.
+        let lags = self.follow_lags();
+        if !lags.is_empty() {
+            g.insert("follow_lag_s", lags.iter().map(|l| l.1).fold(0.0, f64::max));
+            g.insert("follow_behind", lags.iter().map(|l| l.2).fold(0.0, f64::max));
+        }
         g.insert("slots_free", self.admission.available_permits() as f64);
         if let Some(b) = &self.query_memory {
             g.insert("query_memory_bytes", b.used() as f64);
@@ -3916,6 +3922,14 @@ impl Service {
             Family { name: "strata_alerts_firing", ty: "gauge", help: "Alerts firing now, by severity (GET /v1/alerts).", values: self.alerts.firing() },
             one("strata_api_keys", "gauge", "API keys the server holds (GET /v1/admin/keys).", self.keys.list().len() as f64),
         ];
+        let lags = self.follow_lags();
+        if !lags.is_empty() {
+            let family = |name, help, f: fn(&(String, f64, f64)) -> f64| Family { name, ty: "gauge", help, values: lags.iter().map(|l| (format!("name=\"{}\"", metrics::esc(&l.0)), f(l))).collect() };
+            more.extend([
+                family("strata_follow_lag_seconds", "How far a follow process writing through this server is behind its source, by the source's name: since the source first reached a transaction it has not applied (and while it is silent, since it last said).", |l| l.1),
+                family("strata_follow_behind_transactions", "Transactions of the source a follow process writing through this server has not applied, over the source's shards.", |l| l.2),
+            ]);
+        }
         if let Some(s) = &self.log_store {
             more.extend(s.metrics());
         }

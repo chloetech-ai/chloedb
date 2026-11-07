@@ -91,7 +91,7 @@ use tonic::transport::Channel;
 use tonic::Code;
 
 use crate::auth::Secret;
-use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_COPY_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL};
+use crate::grpc::{params_to_pb, result_from_pb, ARROW_PROTOCOL, CLUSTER_PROTOCOL, FEED_COPY_PROTOCOL, FEED_KEYS_PROTOCOL, FEED_PROTOCOL, GET_PROTOCOL, GUARD_PROTOCOL, MIN_PROTOCOL, PROTOCOL, SIDNEXT_PROTOCOL, SOURCES_PROTOCOL, STATS_VERSION_PROTOCOL};
 use crate::metrics::Family;
 use crate::pb::{self, strata_client::StrataClient};
 use crate::service::{is_mark, op_place, op_schema, op_source, After, QueryReq, Written};
@@ -892,6 +892,10 @@ async fn timed<T>(sent: &Sent, i: usize, r: usize, call: impl Future<Output = Re
 /// The most values a query may pin its placement field to and still be
 /// routed by them ([`Coordinator::pinned_shards`]).
 const MAX_ROUTED: usize = 4096;
+
+/// How many times [`Coordinator::feed_keys`] reads the shards' keys while
+/// they serve different slot maps.
+const KEYS_TRIES: u32 = 25;
 
 /// The values of field `f` that every row `p` matches has one of, when
 /// `p` says: `f = v`, `f IN (...)`, a conjunction with such a condition
@@ -2668,8 +2672,10 @@ impl Coordinator {
     /// ([`FEED_PROTOCOL`], [`crate::service::Service::feed`]): its chunks
     /// as they come. `after_term` is the term of transaction `from - 1` as
     /// the reader holds it (0: not checked). With `copy`, the feed starts
-    /// with a copy of the shard's rows ([`FEED_COPY_PROTOCOL`]).
-    pub async fn feed(&self, i: usize, from: u64, after_term: u64, copy: bool) -> Result<tonic::Streaming<pb::FeedChunk>, ApiError> {
+    /// with a copy of the shard's rows ([`FEED_COPY_PROTOCOL`]; of those
+    /// changed since a transaction, or with the digests of its keys,
+    /// [`FEED_KEYS_PROTOCOL`]).
+    pub async fn feed(&self, i: usize, from: u64, after_term: u64, copy: Option<crate::service::feed::CopyOpts>) -> Result<tonic::Streaming<pb::FeedChunk>, ApiError> {
         let t = &self.topo();
         if i >= t.replicas.len() {
             return Err(ApiError::bad(format!("no shard {i}: the cluster has shards 0 to {}", t.replicas.len() - 1)));
@@ -2678,12 +2684,73 @@ impl Coordinator {
         let rep = &t.replicas[i][k];
         let mut c = rep.client.clone();
         let p = self.speak(t, i, k, &mut c, PROTOCOL).await.map_err(|s| self.named(&rep.url, s))?;
-        let need = if copy { FEED_COPY_PROTOCOL } else { FEED_PROTOCOL };
+        let (need, what) = match &copy {
+            Some(c) if c.since > 0 || c.digests || !c.whole.is_empty() => (FEED_KEYS_PROTOCOL, "a copy of a shard's rows changed since a transaction, or of its keys' digests,"),
+            Some(_) => (FEED_COPY_PROTOCOL, "a shard's feed that starts with a copy of its rows"),
+            None => (FEED_PROTOCOL, "a shard's feed"),
+        };
         if p < need {
-            let what = if copy { "a shard's feed that starts with a copy of its rows" } else { "a shard's feed" };
             return Err(ApiError { status: 501, message: format!("{}: it speaks protocol {p}, and {what} needs {need}: upgrade it", self.copy_name(&rep.url)) });
         }
-        c.feed(pb::FeedRequest { from, after_term, copy }).await.map(|r| r.into_inner()).map_err(|s| self.named(&rep.url, s))
+        let on = copy.is_some();
+        let o = copy.unwrap_or_default();
+        c.feed(pb::FeedRequest { from, after_term, copy: on, since: o.since, digests: o.digests, whole: o.whole }).await.map(|r| r.into_inner()).map_err(|s| self.named(&rep.url, s))
+    }
+
+    /// The keys of `tables` of every shard, as a follower's sweep compares
+    /// them ([`crate::service::Service::feed_keys`], from each shard's
+    /// primary, [`FEED_KEYS_PROTOCOL`]): with no `slots` their digests by
+    /// slot, added up over the shards (each counts the slots it serves);
+    /// with `slots`, the keys those place. Read while the shards serve
+    /// the same slot map, so that each slot is counted once.
+    pub async fn feed_keys(&self, tables: Vec<String>, slots: Option<Vec<usize>>) -> Result<Json, ApiError> {
+        for _ in 0..KEYS_TRIES {
+            let answers = self.feed_keys_once(&tables, &slots).await?;
+            if answers.iter().all(|a| a["epoch"] == answers[0]["epoch"]) {
+                return Self::keys_of(answers, slots.is_some());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        Err(ApiError { status: 503, message: format!("the shards served different slot maps in {KEYS_TRIES} reads of their keys: a move is under way; try again") })
+    }
+
+    /// Each shard's answer to [`Self::feed_keys`].
+    async fn feed_keys_once(&self, tables: &[String], slots: &Option<Vec<usize>>) -> Result<Vec<Json>, ApiError> {
+        let t = &self.topo();
+        let calls = (0..t.replicas.len()).map(|i| {
+            let (tables, slots) = (tables.to_vec(), slots.clone());
+            async move {
+                let k = self.primary(t, i).await?.unwrap_or(0);
+                let rep = &t.replicas[i][k];
+                let mut c = rep.client.clone();
+                let p = self.speak(t, i, k, &mut c, PROTOCOL).await.map_err(|s| self.named(&rep.url, s))?;
+                if p < FEED_KEYS_PROTOCOL {
+                    return Err(ApiError { status: 501, message: format!("{}: it speaks protocol {p}, and a shard's keys for a follower's sweep need {FEED_KEYS_PROTOCOL}: upgrade it", self.copy_name(&rep.url)) });
+                }
+                let r = pb::FeedKeysRequest { tables, keys: slots.is_some(), slots: slots.unwrap_or_default().into_iter().map(|s| s as u32).collect() };
+                let a = c.feed_keys(r).await.map_err(|s| self.named(&rep.url, s))?.into_inner();
+                serde_json::from_slice::<Json>(&a.json).map_err(|e| ApiError::internal(format!("{}: its keys: {e}", rep.url)))
+            }
+        });
+        join_all(calls).await.into_iter().collect()
+    }
+
+    /// The shards' answers to [`Self::feed_keys`] as one: their keys, or
+    /// their digests added up.
+    fn keys_of(answers: Vec<Json>, keys: bool) -> Result<Json, ApiError> {
+        if keys {
+            let keys: Vec<Json> = answers.into_iter().flat_map(|a| a["keys"].as_array().cloned().unwrap_or_default()).collect();
+            return Ok(json!({"keys": keys}));
+        }
+        let mut sum: BTreeMap<usize, crate::service::feed::Digest> = BTreeMap::new();
+        for a in &answers {
+            for (s, (n, h)) in crate::service::feed::digests_of(&a["digests"])? {
+                let d = sum.entry(s).or_default();
+                d.0 += n;
+                d.1 = d.1.wrapping_add(h);
+            }
+        }
+        Ok(json!({"digests": crate::service::feed::digests_json(&sum)}))
     }
 
     /// The stream sources written from through the shards, each at the
