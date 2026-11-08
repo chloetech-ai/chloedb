@@ -136,10 +136,13 @@ jobs:
       # Strata's test binaries took 37 of the 40 minutes of its tests.
       # Strata's SQLite import and export (feature `sqlite`) are tested and
       # linted in the strata job; strata-server and the Python package turn
-      # the feature on.
+      # the feature on. --no-fail-fast runs every test binary even after one
+      # fails: cargo stops at the first otherwise, and from 11-05 to 11-07 a
+      # failing unit test of engine-compare kept strata-server's integration
+      # tests from running on macOS at all.
       - name: Tests
         working-directory: ${{ matrix.crate }}
-        run: cargo test --profile ci ${{ matrix.crate == 'strata' && '--features sqlite' || '' }}
+        run: cargo test --profile ci --no-fail-fast ${{ matrix.crate == 'strata' && '--features sqlite' || '' }}
       # The cluster simulator over more seeds than its tests run (`cargo
       # test` built strata-sim): the first 3,000 of each world on every
       # change, and in the nightly run and a run started by hand 30,000 of
