@@ -2,6 +2,7 @@
 // them", "add a due date to tasks") into capabilities, with their code, and
 // stores them in Strata as the app's next version.
 
+import { sqlFunctionsDoc } from './sqlfns.mjs';
 import vm from 'node:vm';
 import { ask, parseAnswer, MODEL } from './llm.mjs';
 import { checkFunction } from './sandbox.mjs';
@@ -855,11 +856,17 @@ export async function buildContext(engine, appId, request) {
 // The system prompt with the whole library of shared pieces, by name and
 // props, in a fixed order: it changes only when a piece is added or gets a
 // new version, so calls in a row read it from the prompt cache.
+// The library's SQL functions, once the engine has them in Strata
+// (engine/sqlfns.mjs): the model reads them after the system prompt.
+let sqlFnsDoc = '';
+export const useSqlFunctions = (fns) => { sqlFnsDoc = sqlFunctionsDoc(fns); };
+
 export function systemWith(shared) {
   const list = [...shared.values()].sort((a, b) => (a.kind === b.kind ? (a.slug < b.slug ? -1 : 1) : a.kind === 'component' ? -1 : 1));
-  if (!list.length) return SYSTEM;
+  const withFns = sqlFnsDoc ? `${SYSTEM}\n\n${sqlFnsDoc}` : SYSTEM;
+  if (!list.length) return withFns;
   const line = (c) => `${c.kind === 'helper' ? 'lib' : 'ui'}.${c.slug} (${c.title})`;
-  return `${SYSTEM}\n\n# The library: every shared component and helper, by name\n\n${list.map(line).join(', ')}.`;
+  return `${withFns}\n\n# The library: every shared component and helper, by name\n\n${list.map(line).join(', ')}.`;
 }
 
 export { SHARED, sharedRefs };

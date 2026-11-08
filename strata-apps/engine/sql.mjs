@@ -40,6 +40,12 @@ function segments(sql) {
   return out;
 }
 
+// The library's table functions (engine/sqlfns.mjs), called in FROM as
+// tables are (FROM amortization(:p, :r, :n)): they are Strata's, not the
+// app's, so their names stay as written.
+const tableFunctions = new Set();
+export const useTableFunctions = (names) => { tableFunctions.clear(); for (const n of names) tableFunctions.add(String(n).toLowerCase()); };
+
 export function rewriteSql(sql, tables, physical) {
   const text = String(sql || '').trim().replace(/;\s*$/, '');
   if (!text) throw new Error('empty SQL');
@@ -66,6 +72,7 @@ export function rewriteSql(sql, tables, physical) {
       if (kw.toUpperCase() === 'FROM' && /(EXTRACT\s*\(\s*\w+|DISTINCT|SUBSTRING\s*\([^()]*|TRIM\s*\([^()]*)\s*$/i.test(before)) return all;
       const lower = name.toLowerCase();
       if (ctes.has(lower)) return all;
+      if (tableFunctions.has(lower) && /^\s*\(/.test(str.slice(offset + all.length))) return all;
       if (!names.has(lower)) {
         const list = [...names].join(', ') || 'none yet';
         throw new Error(`no table ${name} in this app (its tables: ${list})`);

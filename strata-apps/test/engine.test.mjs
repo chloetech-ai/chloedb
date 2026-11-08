@@ -1408,3 +1408,56 @@ test('small changes go to the small model; the build does not write suggestions'
   assert.ok(!smallChange('Rename the app', { comp: { n: 0 } }), 'a first version is never small');
   if (SUGGEST_AFTER) assert.ok(!/"suggestions"/.test(SYSTEM) && !/- suggestions:/.test(SYSTEM));
 });
+
+test('the library SQL functions: read, described, and their table functions kept as written', async () => {
+  const { readSqlLibrary, statements, sqlFunctionsDoc } = await import('../engine/sqlfns.mjs');
+  const { useTableFunctions } = await import('../engine/sql.mjs');
+  assert.deepEqual(statements("CREATE FUNCTION a() RETURNS INT AS $$ 1; $$; -- c;\nCREATE FUNCTION b() RETURNS TEXT AS 'x;y'"), ["CREATE FUNCTION a() RETURNS INT AS $$ 1; $$", "CREATE FUNCTION b() RETURNS TEXT AS 'x;y'"]);
+  const fns = readSqlLibrary(join(import.meta.dirname, '..', 'library', 'sql'));
+  assert.ok(fns.length >= 20);
+  const due = fns.find((f) => f.name === 'due_state');
+  assert.equal(due.returns, 'KEYWORD');
+  assert.match(due.description, /overdue/);
+  assert.match(sqlFunctionsDoc(fns), /amortization\(principal FLOAT, annual_rate_pct FLOAT, months INT\) -> rows, called in FROM/);
+  useTableFunctions(fns.filter((f) => f.returns === 'TABLE').map((f) => f.name));
+  const out = rewriteSql('SELECT d.day AS day, SUM(r.km) AS km FROM days_from(:s, 7) AS d LEFT JOIN runs r ON r.day = d.day GROUP BY d.day', ['runs'], (t) => `app_x_${t}`);
+  assert.equal(out.sql, 'SELECT d.day AS day, SUM(r.km) AS km FROM days_from(:s, 7) AS d LEFT JOIN app_x_runs r ON r.day = d.day GROUP BY d.day');
+  assert.throws(() => rewriteSql('SELECT * FROM days_from', ['runs'], (t) => t), /no table days_from/);
+  useTableFunctions([]);
+});
+
+test('the library SQL functions run in Strata', async (t) => {
+  const { findServerBinary, startServer } = await import('../engine/strata.mjs');
+  const { readSqlLibrary, install } = await import('../engine/sqlfns.mjs');
+  const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
+  if (!bin) return t.skip('no strata-server binary');
+  const dir = mkdtempSync(join(tmpdir(), 'sa-fns-'));
+  const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+  const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
+  try {
+    const fns = readSqlLibrary(join(import.meta.dirname, '..', 'library', 'sql'));
+    const logs = [];
+    const ok = await install(client, fns, (m) => logs.push(m));
+    if (!ok.length && logs.some((m) => /no stored functions/.test(m))) return t.skip('this strata-server keeps no stored functions');
+    assert.equal(ok.length, fns.length, logs.join('\n'));
+    // Defining them again writes no new version.
+    assert.equal((await install(client, fns)).length, fns.length);
+    await client.sql('CREATE TABLE t (id KEYWORD PRIMARY KEY)');
+    await client.write([{ op: 'upsert', table: 't', doc: { id: 'a' } }]);
+    const one = async (expr) => (await client.query(`SELECT ${expr} AS v FROM t LIMIT 1`))[0].v;
+    assert.equal(await one('loan_payment(300000, 6, 360)'), 1798.65);
+    assert.equal(await one("due_state('2026-11-01', '2026-11-08')"), 'overdue');
+    assert.equal(await one("days_left('2026-11-10', '2026-11-08')"), 2);
+    assert.equal(await one("add_days('2026-11-28', 5)"), '2026-12-03');
+    assert.equal(await one('with_tax(100, 8.5)'), 108.5);
+    assert.equal(await one('stock_state(2, 5)'), 'low');
+    assert.equal(await one('reorder_qty(2, 5, 20, 6)'), 18);
+    const sched = await client.query('SELECT * FROM amortization(20000, 4.5, 48)');
+    assert.equal(sched.length, 48);
+    assert.equal(sched.at(-1).balance, 0);
+    const days = await client.query("SELECT * FROM days_from('2026-11-28', 3)");
+    assert.deepEqual(days.map((d) => d.day), ['2026-11-28', '2026-11-29', '2026-11-30']);
+  } finally {
+    child.kill();
+  }
+});

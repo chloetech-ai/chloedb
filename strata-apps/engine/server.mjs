@@ -10,7 +10,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Engine } from './engine.mjs';
-import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT } from './forge.mjs';
+import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT, useSqlFunctions } from './forge.mjs';
+import { readSqlLibrary, install as installSqlFunctions } from './sqlfns.mjs';
+import { useTableFunctions } from './sql.mjs';
 import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
@@ -55,7 +57,16 @@ const engine = new Engine(db, { log });
 // Where the build opens the views it made (engine/checks.mjs).
 engine.baseUrl = `http://127.0.0.1:${PORT}`;
 await engine.init();
-await seedLibrary(engine.store, process.env.STRATA_APPS_LIBRARY || path.join(ROOT, 'library'), log);
+const LIBRARY_DIR = process.env.STRATA_APPS_LIBRARY || path.join(ROOT, 'library');
+await seedLibrary(engine.store, LIBRARY_DIR, log);
+// The library's SQL functions, defined in Strata (STRATA_APPS_SQL_FUNCTIONS=off
+// leaves them out).
+if (process.env.STRATA_APPS_SQL_FUNCTIONS !== 'off') {
+  engine.sqlFunctions = await installSqlFunctions(engine.db, readSqlLibrary(path.join(LIBRARY_DIR, 'sql')), log);
+  useSqlFunctions(engine.sqlFunctions);
+  useTableFunctions(engine.sqlFunctions.filter((f) => f.returns === 'TABLE').map((f) => f.name));
+  if (engine.sqlFunctions.length) log(`${engine.sqlFunctions.length} SQL functions kept in Strata`);
+}
 // Screens expand from the patterns stored in Strata (built in and added by apps).
 await engine.store.usePatterns();
 const services = new Services(engine, { filesDir: path.join(DATA, 'files'), log });
