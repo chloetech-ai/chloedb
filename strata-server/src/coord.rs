@@ -3629,6 +3629,13 @@ impl Coordinator {
         }
         let k = self.primary(&t, i).await?;
         if k == Some(gone) {
+            // A dead primary is still the one each copy follows: removed, the
+            // shard would have no primary (finding chaos-2).
+            if rs[gone].down_since_ms.load(Ordering::Relaxed) > 0 {
+                return Err(ApiError::bad(format!(
+                    "{url} does not answer, but was shard {i}'s primary when it last did: make another of its servers the primary first (POST /v1/admin/shards/{i}/promote; with \"force\" when fewer than a majority of its copies answer)"
+                )));
+            }
             return Err(ApiError::bad(format!("{url} is shard {i}'s primary: promote another of its servers first")));
         }
         let (map, missed) = self.change(|m| m.set_servers(i, m.replicas()[i].iter().filter(|u| *u != url).cloned().collect()), &[]).await?;

@@ -19,14 +19,34 @@
 //! as they may have elected another; and a primary another replaced becomes
 //! a replica of it ([`Service::step_down`]), so that the new primary ships
 //! to it.
+//!
+//! A primary that cannot write until it restarts ([`Service::failing`]: a
+//! write failed partway, as on a full disk) hands its shard over to a
+//! replica in sync ([`Service::hand_over_failing`]), as an operator would
+//! by hand, so that writes go on there at once.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::{conflict, Replication, Service};
 use crate::cores::shard::Failover;
-use crate::replication::{Follow, PrimaryOptions, STICKY};
+use crate::replication::{Follow, Primary, PrimaryOptions, STICKY};
 use crate::{pb, ApiError};
+
+/// The replicas a primary that cannot write asks to take over, in that
+/// order: those in sync and not being sent a copy, of the latest
+/// transaction first, from its `health()`.
+pub fn takeover_order(health: &serde_json::Value) -> Vec<String> {
+    let mut v: Vec<(u64, String)> = health["replicas"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|f| f["in_sync"] == true && f["copying"] != true && f["member"] != false)
+        .filter_map(|f| Some((f["seq_no"].as_u64().unwrap_or(0), f["url"].as_str()?.to_string())))
+        .collect();
+    v.sort_by(|a, b| b.0.cmp(&a.0));
+    v.into_iter().map(|(_, u)| u).collect()
+}
 
 /// How a primary ships when its copies may elect another after `after`:
 /// it calls each replica at least four times within it (so that a replica
@@ -101,19 +121,29 @@ impl Service {
         let me = Arc::downgrade(self);
         tokio::spawn(async move {
             let mut f = Failover::new(after, Instant::now(), jitter(after));
+            let mut asked: Option<Instant> = None;
             loop {
                 tokio::time::sleep(f.every()).await;
                 let Some(svc) = me.upgrade() else { return };
-                svc.fail_over(&mut f).await;
+                svc.fail_over(&mut f, &mut asked).await;
             }
         });
     }
 
     /// One look of [`Self::start_failover`]: an election when `fo` says
-    /// it is due, which moves the next on.
-    async fn fail_over(&self, fo: &mut Failover) {
+    /// it is due, which moves the next on; on a primary that cannot
+    /// write, a handover, once a failover delay at most (`asked`: when
+    /// it last asked).
+    async fn fail_over(&self, fo: &mut Failover, asked: &mut Option<Instant>) {
         let f = match self.replication() {
             Replication::Primary(p) if p.replaced_by() > 0 => return self.step_down().await,
+            Replication::Primary(p) => {
+                if self.failing().is_some() && asked.is_none_or(|t| t.elapsed() >= fo.after) {
+                    *asked = Some(Instant::now());
+                    self.hand_over_failing(&p, fo.call_timeout(self.primary_options().call_timeout)).await;
+                }
+                return;
+            }
             Replication::Replica(f) => f,
             _ => return,
         };
@@ -148,5 +178,63 @@ impl Service {
             }
             Err(e) => tracing::warn!(error = %e.message, "elected, but could not begin the term"),
         }
+    }
+
+    /// Asks a replica in sync to be promoted, as `POST
+    /// /v1/admin/shards/{i}/promote` does from a coordinator, while this
+    /// primary cannot write until it restarts ([`Self::failing`]): the
+    /// replica asks the shard's copies for their votes, this primary grants
+    /// its own and steps down ([`Self::vote`]), and writes go on at the new
+    /// primary (finding chaos-4: a full disk on a primary stopped its
+    /// shard's writes until an operator handed it over by hand). This
+    /// server then follows it, and serves again once the cause is fixed and
+    /// it restarts. It holds no lock while it asks: the vote it is asked
+    /// for comes in meanwhile.
+    pub(crate) async fn hand_over_failing(&self, p: &Primary, within: Duration) {
+        let Some(why) = self.failing() else { return };
+        let opts = self.primary_options();
+        let order = takeover_order(&p.health());
+        if order.is_empty() {
+            tracing::debug!(cause = %why, "this primary cannot write, and no replica is in sync to hand its shard over to");
+            return;
+        }
+        for url in order {
+            let mut c = match crate::coord::client(&url, opts.token.as_ref(), opts.ca.as_deref()) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(replica = %url, error = %e.message, "cannot call the replica to hand over to");
+                    continue;
+                }
+            };
+            let r = pb::ConfigureRequest { role: pb::Role::Primary as i32, promote: true, ..Default::default() };
+            match tokio::time::timeout(within.max(Duration::from_secs(5)), c.configure(r)).await {
+                Ok(Ok(a)) => {
+                    let a = a.into_inner();
+                    tracing::warn!(cause = %why, to = %url, term = a.term, "this primary cannot write: it handed its shard over to a replica in sync");
+                    return;
+                }
+                Ok(Err(s)) => tracing::warn!(cause = %why, to = %url, error = %s.message(), "this primary cannot write, and the replica it asked to take over was not promoted"),
+                Err(_) => tracing::warn!(cause = %why, to = %url, "this primary cannot write, and the replica it asked to take over did not answer"),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_failing_primary_asks_its_replicas_in_sync_newest_first() {
+        let h = json!({"replicas": [
+            {"url": "http://a", "in_sync": true, "seq_no": 90},
+            {"url": "http://b", "in_sync": false, "seq_no": 99},
+            {"url": "http://c", "in_sync": true, "seq_no": 95},
+            {"url": "http://d", "in_sync": true, "copying": true, "seq_no": 99},
+            {"url": "http://e", "in_sync": true, "member": false, "seq_no": 99},
+        ]});
+        assert_eq!(takeover_order(&h), ["http://c", "http://a"]);
+        assert!(takeover_order(&json!({})).is_empty());
     }
 }

@@ -297,6 +297,38 @@ fn fills_in(days: f64) -> String {
     }
 }
 
+/// What to do about a shard whose primary answers but cannot write until
+/// it restarts (`failing`: a write failed partway, a full disk): hand the
+/// primary over to a replica in sync, so that writes go on at once, then
+/// fix the old primary (finding chaos-4: a restart alone, which the advice
+/// said, fails again while the disk is full, and loses the shard's writes
+/// meanwhile). None when the primary is not failing.
+fn hand_over(copies: &[Json], primary: &Json, failover: bool) -> Option<String> {
+    let p = copies.iter().find(|r| &r["url"] == primary && !down(r))?;
+    if p["detail"]["health"]["status"] != "failing" {
+        return None;
+    }
+    let name = short(p);
+    let full = p["detail"]["load"]["disk_used_ratio"].as_f64().filter(|&d| d >= 0.95);
+    let fix = match full {
+        Some(d) => format!("free {name}'s volume ({:.0}% full) and restart it", d * 100.0),
+        None => format!("fix the cause on {name} (its logs say what failed) and restart it"),
+    };
+    let in_sync = p["detail"]["health"]["replication"]["replicas"].as_array().into_iter().flatten().filter(|f| f["in_sync"] == true && f["copying"] != true).find_map(|f| copies.iter().find(|r| r["url"] == f["url"] && !down(r)));
+    Some(match in_sync {
+        Some(r) => format!(
+            "Make {} the primary (its menu in Cluster: Make it the primary): it is in sync, so writes go on at once{}. Then {fix}",
+            short(r),
+            if failover { "; with failover on, the primary hands itself over within seconds" } else { "" }
+        ),
+        None => {
+            let mut t = fix;
+            t[..1].make_ascii_uppercase();
+            format!("{t}: no replica is in sync to take over")
+        }
+    })
+}
+
 /// A copy's short name (`s1-0`), else its url.
 fn short(r: &Json) -> String {
     r["short"].as_str().or(r["url"].as_str()).unwrap_or("?").to_string()
@@ -361,10 +393,23 @@ impl Fleet {
                         let mut t = crate::coord::elect_by_hand(&gone, &up);
                         t[..1].make_ascii_uppercase();
                         t
-                    } else if s["primary"].is_null() && s["failover"] == true {
-                        "An election should choose a primary within seconds. If none does, bring a copy back or hand the primary over by hand".to_string()
                     } else if s["primary"].is_null() {
-                        "Hand the primary over to an up-to-date copy".to_string()
+                        // A majority answers: the votes of those that do make
+                        // the most up-to-date one the primary; the server
+                        // removes a dead primary only once another is
+                        // (finding chaos-2).
+                        let best = copies.iter().filter(|r| !down(r)).max_by_key(|r| (r["term"].as_u64().unwrap_or(0), r["txn"].as_u64().unwrap_or(0))).map(short);
+                        let make = best.map_or("make an up-to-date copy the primary".to_string(), |b| format!("make {b} the primary (its menu in Cluster: Make it the primary)"));
+                        let then = if gone.is_empty() { String::new() } else { format!(", then replace {}", both(&gone)) };
+                        if s["failover"] == true {
+                            format!("An election should choose a primary within seconds. If none does, {make}{then}")
+                        } else {
+                            let mut t = format!("{make}{then}");
+                            t[..1].make_ascii_uppercase();
+                            t
+                        }
+                    } else if let Some(t) = hand_over(&copies, &s["primary"], s["failover"] == true) {
+                        t
                     } else {
                         format!("Find out why on its primary: {why}")
                     };
@@ -891,7 +936,31 @@ mod tests {
             {"shard": 0, "state": "no_writes", "failover": true, "majority": true, "primary": null, "why": "", "replicas": [copy("s0-0", false), copy("s0-1", true), copy("s0-2", true)]},
         ]});
         let j = Fleet::default().judge(inputs(&c, &[]));
-        assert!(j["problems"][0]["next"]["text"].as_str().unwrap().contains("within seconds"));
+        let next = j["problems"][0]["next"]["text"].as_str().unwrap();
+        assert!(next.contains("within seconds"), "{next}");
+        assert!(next.contains("Make it the primary") && next.ends_with("then replace s0-0"), "{next}");
+        assert_eq!(j["headline"], "Writes are failing: shard 0 has no primary");
+    }
+
+    /// A primary that cannot write until it restarts (a full disk) is fixed
+    /// by handing it over to a replica in sync, not by a restart, which
+    /// fails again while its disk is full (finding chaos-4).
+    #[test]
+    fn a_primary_that_cannot_write_is_handed_over() {
+        let mut p = copy("s0-0", true);
+        p["detail"] = json!({"load": {"disk_used_ratio": 1.0}, "health": {"status": "failing", "replication": {"replicas": [
+            {"url": "http://s0-1", "in_sync": false}, {"url": "http://s0-2", "in_sync": true}]}}});
+        let c = json!({"shards": [{"shard": 0, "state": "no_writes", "failover": true, "majority": true, "primary": "http://s0-0",
+            "why": "3 of 3 copies answer: the primary takes no writes: a write failed partway", "replicas": [p, copy("s0-1", true), copy("s0-2", true)]}]});
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        let next = j["problems"][0]["next"]["text"].as_str().unwrap();
+        assert!(next.starts_with("Make s0-2 the primary"), "{next}");
+        assert!(next.contains("free s0-0's volume (100% full) and restart it") && !next.contains("restart the server"), "{next}");
+        // No replica in sync: fix it in place.
+        let mut c = c;
+        c["shards"][0]["replicas"][0]["detail"]["health"]["replication"]["replicas"][1]["in_sync"] = json!(false);
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        assert_eq!(j["problems"][0]["next"]["text"], "Free s0-0's volume (100% full) and restart it: no replica is in sync to take over");
     }
 
     #[test]
