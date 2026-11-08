@@ -163,7 +163,6 @@
            {
             "button": "{{deleteLabel}}",
             "class": "small ghost",
-            "confirm": "Delete this {{noun}}?",
             "do": "=() => app.remove({{table|json}}, {{key}}_row.id).then(() => set({ {{key}}_id: null }))"
            }
           ]

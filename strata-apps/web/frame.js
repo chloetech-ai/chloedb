@@ -98,6 +98,38 @@
   const origin = SA.origin || '';
   const files = `${origin}/api/apps/${SA.app || ''}/files/`;
   const one = (f) => rpc('upload', [f]);
+  // Every remove offers Undo for a few seconds, so nothing asks "are you
+  // sure?" first. Removes close together share one toast; Undo puts every
+  // row back as it was, with its id.
+  const NAMES = ['name', 'title', 'label', 'subject', 'item', 'task', 'what', 'text'];
+  let undone = null;
+  const offerUndo = (table, row) => {
+    if (!undone) {
+      const el = document.createElement('div');
+      el.className = '__toast __undo';
+      el.setAttribute('role', 'status');
+      const text = document.createElement('span');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = 'Undo';
+      el.append(text, btn);
+      document.body.append(el);
+      const box = { el, text, rows: [], timer: 0 };
+      btn.onclick = async () => {
+        clearTimeout(box.timer);
+        if (undone === box) undone = null;
+        btn.disabled = true;
+        try { for (const r of box.rows.reverse()) await rpc('insert', [r.table, r.row]); el.remove(); } catch (e) { text.textContent = `Could not undo: ${e.message || e}`; setTimeout(() => el.remove(), 4000); }
+      };
+      undone = box;
+    }
+    const box = undone;
+    box.rows.push({ table, row });
+    const name = box.rows.length === 1 ? NAMES.map((k) => row[k]).find((v) => typeof v === 'string' && v.trim()) : null;
+    box.text.textContent = name ? `Removed “${name.trim().slice(0, 40)}”` : box.rows.length === 1 ? 'Removed' : `Removed ${box.rows.length}`;
+    clearTimeout(box.timer);
+    box.timer = setTimeout(() => { box.el.remove(); if (undone === box) undone = null; }, 7000);
+  };
   const app = Object.freeze({
     params: Object.freeze({ ...(SA.params || {}) }),
     view: SA.slug,
@@ -117,7 +149,12 @@
     sql: (sql, params) => rpc('sql', [sql, params || {}]),
     insert: (table, row) => rpc('insert', [table, row || {}]),
     update: (table, id, fields) => rpc('update', [table, id, fields || {}]),
-    remove: (table, id) => rpc('remove', [table, id]),
+    // remove(table, id, {undo: false}) for a remove the person undoes by
+    // themselves (unticking a check).
+    remove: (table, id, opts) => rpc('remove', [table, id]).then((out) => {
+      if (out && out.row && !(opts && opts.undo === false)) offerUndo(table, out.row);
+      return out;
+    }),
     call: (name, input) => rpc('call', [name, input === undefined ? null : input]),
     // track(action, detail, {results, table, ms}): results is how many rows
     // a search or a filter found (0 says it found nothing).

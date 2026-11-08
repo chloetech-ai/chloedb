@@ -253,7 +253,6 @@
      {
       "label": "{{deleteLabel}}",
       "class": "small ghost",
-      "confirm": "Delete this {{noun}}?",
       "do": "=row => app.remove({{table|json}}, row.id).then(() => state.{{key}}_editing && state.{{key}}_editing.id === row.id && set({ {{key}}_editing: null }))"
      },
      "{{...actions}}"
@@ -288,7 +287,6 @@
          {
           "button": "{{deleteLabel}}",
           "class": "small ghost",
-          "confirm": "Delete this {{noun}}?",
           "do": "=() => app.remove({{table|json}}, row.id)"
          }
         ]
@@ -347,7 +345,6 @@
          {
           "label": "{{deleteLabel}}",
           "class": "small ghost",
-          "confirm": "Delete this {{noun}}?",
           "do": "=row => app.remove({{table|json}}, row.id).then(() => state.{{key}}_editing && state.{{key}}_editing.id === row.id && set({ {{key}}_editing: null }))"
          },
          "{{...actions}}"
@@ -382,7 +379,6 @@
              {
               "button": "{{deleteLabel}}",
               "class": "small ghost",
-              "confirm": "Delete this {{noun}}?",
               "do": "=() => app.remove({{table|json}}, row.id)"
              }
             ]

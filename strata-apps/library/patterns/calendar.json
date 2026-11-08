@@ -170,7 +170,6 @@
            {
             "button": "{{deleteLabel}}",
             "class": "danger small",
-            "confirm": "Delete this {{noun}}?",
             "do": "=() => app.remove({{table|json}}, state.{{key}}_editing.id).then(() => set({ {{key}}_editing: null }))"
            }
           ]

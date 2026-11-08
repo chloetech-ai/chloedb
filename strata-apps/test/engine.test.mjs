@@ -450,7 +450,7 @@ test('a change to a screen can be a patch on the paths the model is shown', () =
 test('a screen pattern expands into blocks, state, data and lets that pass the screen check', async () => {
   const { PATTERNS, expandScreen, fill } = await import('../engine/patterns.mjs');
   assert.ok(PATTERNS.size >= 4);
-  const cols = { guests: ['name', 'rsvp', 'table_no'], orders: ['customer', 'items', 'total', 'status'], clients: ['name', 'email', 'rate'], invoices: ['number', 'total', 'status', 'client'], expenses: ['amount', 'category', 'day'], chores: ['title', 'kid', 'points'], chore_done: ['chore', 'day', 'points', 'kid'], events: ['title', 'day', 'at', 'who'], cards: ['question', 'answer', 'deck', 'due', 'interval_days'], questions: ['question', 'options', 'correct', 'explanation', 'deck'], quiz_results: ['score', 'total', 'deck'], notes: ['title', 'body', 'meaning', 'paper', 'authors', 'year', 'tags'], hours: ['day', 'client', 'hours'] };
+  const cols = { guests: ['name', 'rsvp', 'table_no'], orders: ['customer', 'items', 'total', 'status'], clients: ['name', 'email', 'rate'], invoices: ['number', 'total', 'status', 'client'], expenses: ['amount', 'category', 'day'], chores: ['title', 'kid', 'points'], chore_done: ['chore', 'day', 'points', 'kid'], events: ['title', 'day', 'at', 'who'], cards: ['question', 'answer', 'deck', 'due', 'interval_days'], questions: ['question', 'options', 'correct', 'explanation', 'deck'], quiz_results: ['score', 'total', 'deck'], notes: ['title', 'body', 'meaning', 'paper', 'authors', 'year', 'tags'], hours: ['day', 'client', 'hours'], habits: ['name'], checkins: ['habit', 'day'] };
   const columnsOf = (t) => (cols[t] ? new Set(['id', 'created', ...cols[t]]) : null);
   for (const [name, p] of PATTERNS) {
     const r = expandScreen({ body: [{ h: 'Top' }, p.example] });
@@ -1738,4 +1738,64 @@ test('a layout class on a table cell leaves it a cell', async () => {
   // .center is a grid; on a td it stacked a week's days one under another.
   assert.match(kit, /:is\(td, th\):is\([^)]*\.center[^)]*\) \{ display: table-cell; \}/);
   assert.match(kit, /tr:is\([^)]*\.row[^)]*\) \{ display: table-row; \}/);
+});
+
+test('a thing done each day is a CHECKS part: one tap per item per day, its table and columns checked', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const { expandScreen } = await import('../engine/patterns.mjs');
+  const c = compileStatement(`CREATE SCREEN today TITLE 'Today'
+CHECKS checkins
+  ITEMS habits  ITEM habit  DAY day  NAME name  DAYS 5  ADD  NOUN 'habit'`);
+  const [part] = c.screen.body;
+  assert.deepEqual({ use: part.use, table: part.table, items: part.items, item: part.item, day: part.day, name: part.name, days: part.days, add: part.add, noun: part.noun },
+    { use: 'checks', table: 'checkins', items: 'habits', item: 'habit', day: 'day', name: 'name', days: 5, add: true, noun: 'habit' });
+  const e = expandScreen(c.screen);
+  assert.deepEqual(e.problems, []);
+  const cols = { habits: ['name'], checkins: ['habit', 'day'] };
+  const known = (over) => (t) => ((over || cols)[t] ? new Set(['id', 'created', ...(over || cols)[t]]) : null);
+  assert.deepEqual(checkScreen(e.screen, known()), []);
+  // a log table without the day column, or a table the app lacks, is named
+  assert.match(checkScreen(e.screen, known({ habits: ['name'], checkins: ['habit', 'when'] })).join('\n'), /day/);
+  assert.match(checkScreen(e.screen, known({ habits: ['name'] })).join('\n'), /checkins/);
+  assert.throws(() => compileStatement('CREATE SCREEN x\nCHECKS log\n  DAYS many'), /line 3/);
+});
+
+test('every design keeps grey text readable, on the page and on cards', async () => {
+  const { PRESETS, mutedOf, contrast, checkDesign } = await import('../web/design.js');
+  for (const p of PRESETS) for (const mode of ['light', 'dark']) {
+    const d = checkDesign(p);
+    const m = mutedOf(d[mode], mode === 'dark' ? 58 : 55);
+    assert.ok(contrast(m, d[mode].bg) >= 4.5 && contrast(m, d[mode].card) >= 4.5, `${p.name} ${mode}`);
+  }
+  // a pale grey mixes toward the text until it reads
+  const pale = { bg: '#ffffff', card: '#f6f6f6', fg: '#222222' };
+  assert.ok(contrast(mutedOf(pale, 10), pale.card) >= 4.5);
+});
+
+test('every app gets the same touch rules: 44 px taps, tables as cards on a phone, Undo instead of a question', async () => {
+  const { readFileSync } = await import('node:fs');
+  const web = (f) => readFileSync(join(import.meta.dirname, '..', 'web', f), 'utf8');
+  const kit = web('kit.css');
+  // a small button is still 44 px tall under a finger
+  assert.match(kit, /@media \(pointer: coarse\) \{\s*button:is\(\.small, \*\)[^{]*\{ min-height: 44px; \}/);
+  assert.match(kit, /table\.stack thead \{ display: none; \}/);
+  // a remove offers Undo, and a delete asks nothing first
+  assert.match(web('frame.js'), /remove: \(table, id, opts\) => rpc\('remove', \[table, id\]\)\.then/);
+  assert.match(web('screen.js'), /const asks = \(q, fn\) => !!q && !\/\\bapp\\\.remove\\\(\/\.test\(String\(fn\)\)/);
+  for (const f of ['crud', 'board', 'calendar', 'detail']) assert.ok(!/"confirm": "Delete/.test(readFileSync(join(import.meta.dirname, '..', 'library', 'patterns', `${f}.json`), 'utf8')), f);
+  // the engine hands back the removed row in a form insert takes back
+  const { Engine } = await import('../engine/engine.mjs');
+  const rows = new Map([['p1', { id: 'p1', created: '2026-11-08T10:00:00Z', name: 'Monstera', every: 7, _score: 1 }]]);
+  const engine = new Engine({
+    get: async (t, ids) => ids.map((id) => rows.get(id) || null),
+    write: async (ops) => { for (const o of ops) { if (o.op === 'delete') rows.delete(o.key); else rows.set(o.doc.id, o.doc); } },
+  }, { log: () => {} });
+  engine.store = { track: async () => {} };
+  engine.view = async () => ({ app: { id: 'a' }, comp: { n: 1 }, helpers: [], views: [], functions: [], tables: [{ spec: { name: 'plants', columns: [{ name: 'name', type: 'text' }, { name: 'every', type: 'int' }] } }] });
+  const out = await engine.remove('a', 'plants', 'p1');
+  assert.deepEqual(out, { removed: 1, row: { id: 'p1', created: '2026-11-08T10:00:00Z', name: 'Monstera', every: 7 } });
+  assert.equal(rows.size, 0);
+  await engine.insert('a', 'plants', out.row);
+  assert.deepEqual(rows.get('p1'), { id: 'p1', created: '2026-11-08T10:00:00.000Z', name: 'Monstera', every: 7 });
+  assert.deepEqual(await engine.remove('a', 'plants', 'nope'), { removed: 0, row: null });
 });

@@ -150,6 +150,16 @@ const DENSITY = { airy: { text: '15px', space: '20px', pad: '20px', row: '12px',
 const WIDTH = { narrow: '760px', regular: '1040px', wide: '1280px' };
 const STATUS = { light: { ok: '#18794e', warn: '#b4560a', bad: '#c4302b', info: '#2563c9' }, dark: { ok: '#3fcf8e', warn: '#f2a33a', bad: '#ff8a80', info: '#7cb4ff' } };
 
+// Secondary text: the design's grey, darkened (or lightened) until it reads
+// at 4.5:1 on the page and on a card (WCAG AA), however pale the design.
+export function mutedOf(p, start = 55) {
+  for (let k = start; k <= 100; k++) {
+    const m = mix(p.bg, p.fg, k / 100);
+    if (contrast(m, p.bg) >= 4.6 && contrast(m, p.card) >= 4.6) return m;
+  }
+  return p.fg;
+}
+
 // The variables of a design in one scheme.
 export function designVars(input, which = 'light') {
   const d = checkDesign(input);
@@ -170,7 +180,7 @@ export function designVars(input, which = 'light') {
     '--text': n.text, '--space': n.space, '--pad': n.pad, '--row': n.row, '--control': n.control, '--page': WIDTH[d.width],
     '--card-border': border, '--card-shadow': shadow, '--field-border': 'var(--line-2)',
     '--field-bg': isDark ? 'color-mix(in srgb, var(--fg) 3%, var(--card))' : 'var(--card)',
-    '--muted': `color-mix(in srgb, var(--fg) ${isDark ? 58 : 55}%, var(--bg))`,
+    '--muted': mutedOf(p, isDark ? 58 : 55),
     '--line': `color-mix(in srgb, var(--fg) ${isDark ? 11 : 10}%, transparent)`,
     '--line-2': `color-mix(in srgb, var(--fg) ${isDark ? 19 : 17}%, transparent)`,
     '--soft': `color-mix(in srgb, var(--fg) ${isDark ? 6 : 4}%, transparent)`,

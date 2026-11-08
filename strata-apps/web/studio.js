@@ -652,7 +652,7 @@ function renderApp() {
   applyDesign();
   if (BARE) {
     document.title = st.app.name;
-    $('.brand').replaceChildren(h('span', { class: 'mark' }), st.app.name);
+    $('.brand').replaceChildren(h('span', { class: 'mark' }), h('span', { class: 'name' }, st.app.name));
     renderLook();
   } else {
     $('#crumbs').replaceChildren(...[h('span', { class: 'sep' }, '/'), h('b', st.app.name), st.version.n ? h('span', { class: 'pill' }, st.version.trying ? `trying v${st.version.trying} (live v${st.version.live})` : `v${st.version.n}`) : null,

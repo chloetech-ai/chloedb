@@ -9,6 +9,16 @@
   const isExpr = (v) => v && typeof v === 'object' && !Array.isArray(v) && typeof v.$e === 'number' && Object.keys(v).length === 1;
   const OPT = (o) => (o && typeof o === 'object' ? { value: o.value ?? o.id ?? o.label, label: o.label ?? o.name ?? String(o.value) } : { value: o, label: String(o) });
   const human = (k) => String(k).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+  // What a row is called: its name or title, else its first short text. A
+  // button repeated on every row says which row it acts on ("Delete: Basil").
+  const NAMES = ['name', 'title', 'label', 'subject', 'item', 'task', 'what', 'text'];
+  const DAYLIKE = /^\d{4}-\d{2}-\d{2}/;
+  const rowName = (r) => {
+    if (!r || typeof r !== 'object') return '';
+    for (const k of NAMES) if (typeof r[k] === 'string' && r[k].trim()) return r[k].trim().slice(0, 60);
+    for (const [k, v] of Object.entries(r)) if (k !== 'id' && !/_id$/.test(k) && typeof v === 'string' && v.trim() && v.length <= 60 && !DAYLIKE.test(v) && !/^(https?:|data:)/.test(v)) return v.trim();
+    return '';
+  };
 
   window.__sa_screen = async (root, app, spec) => {
     const E = window.__SA_EXPR || [];
@@ -180,6 +190,7 @@
         if (b.input !== undefined) return input(b, s, path);
         if (b.button !== undefined) return button(b, s, path);
         if (b.form !== undefined) return form(b, s, path);
+        if (b.checks !== undefined) return checks(b, s, path);
         if (b.table !== undefined) return table(b, s, path);
         if (b.code !== undefined) return code(b, s, path);
         throw new Error(`unknown block ${JSON.stringify(Object.keys(b))}`);
@@ -195,7 +206,7 @@
       if (!list.length) return h('div', { class: 'empty' }, T(b.empty ?? 'Nothing here yet.', s, path));
       const cls = b.class || 'list';
       return h('div', { class: cls }, list.map((item, i) => {
-        const inner = scope({ ...s, [b.as || 'item']: item, index: i });
+        const inner = scope({ ...s, [b.as || 'item']: item, index: i, __row: item });
         const kids = blocks(b.body, inner, `${path}.body`);
         // An item that is one card already is not boxed again.
         const one = Array.isArray(b.body) && b.body.length === 1 && b.body[0] && typeof b.body[0] === 'object' && (b.body[0].card !== undefined || b.body[0].ui !== undefined);
@@ -227,14 +238,20 @@
       return label ? h('label', { class: 'col', style: 'gap:4px' }, h('span', { class: 'small muted' }, label), el) : el;
     }
 
+    // A question before a handler runs, except before a remove: every
+    // remove offers Undo, so a delete asks nothing first.
+    const asks = (q, fn) => !!q && !/\bapp\.remove\(/.test(String(fn));
+
     function button(b, s, path) {
       const fn = val(b.do, s, `${path}.do`);
       const btn = h('button', { class: b.class || null, type: 'button', onclick: async () => {
-        if (b.confirm && !confirm(T(b.confirm, s, path))) return;
+        if (asks(b.confirm, fn) && !confirm(T(b.confirm, s, path))) return;
         btn.disabled = true;
         await run(fn, [], `${path}.do`);
         btn.disabled = false;
       } }, T(b.button, s, path));
+      const who = rowName(s.__row);
+      if (who && btn.textContent.trim().length <= 24) btn.setAttribute('aria-label', `${btn.textContent.trim() || 'Open'}: ${who}`);
       return btn;
     }
 
@@ -422,11 +439,89 @@
         if (Array.isArray(v)) v = v.join(', ');
         return c.badge && v != null && v !== '' ? h('span', { class: `badge ${toneOf(v, c.badge)}` }, String(v)) : v == null ? '' : String(v);
       };
-      return h('div', { style: 'overflow-x:auto' }, h('table', null,
-        h('thead', null, h('tr', null, cols.map((c) => h('th', null, c.label ?? human(c.key || ''))), acts.length ? h('th') : null)),
+      // More than three columns is a list of cards on a phone (kit.css).
+      const heads = cols.map((c) => c.label ?? human(c.key || ''));
+      return h('div', { style: 'overflow-x:auto' }, h('table', { class: cols.length > 3 ? 'stack' : null },
+        h('thead', null, h('tr', null, heads.map((x) => h('th', null, x)), acts.length ? h('th') : null)),
         h('tbody', null, rows.map((r) => h('tr', { style: onRow ? 'cursor:pointer' : null, onclick: onRow ? (e) => { if (!e.target.closest('button')) run(onRow, [r], `${path}.onRow`); } : null },
-          cols.map((c, i) => h('td', null, cell(c, fns[i], r))),
-          acts.length ? h('td', { class: 'nowrap right' }, acts.map((a) => h('button', { class: a.class || 'small ghost', type: 'button', onclick: () => { if (a.confirm && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); } }, T(a.label, s, path)))) : null)))));
+          cols.map((c, i) => h('td', { 'data-label': heads[i] }, cell(c, fns[i], r))),
+          acts.length ? h('td', { class: 'nowrap right' }, acts.map((a) => {
+            const label = T(a.label, s, path);
+            const who = rowName(r);
+            return h('button', { class: a.class || 'small ghost', type: 'button', 'aria-label': who ? `${label}: ${who}` : null, onclick: () => { if (asks(a.confirm, a.fn) && !confirm(T(a.confirm, scope({ ...s, row: r }), path))) return; run(a.fn, [r], `${path}.actions`); } }, label);
+          })) : null)))));
+    }
+
+    // A check per item per day (habits, chores, medication, plants watered):
+    // one big tap for today on each item, the last days beside it (fewer on a
+    // phone), the streak by the name, and how many are done today. A tap adds
+    // or removes the row of that item and day in the log table.
+    //   {"checks": "=habits", "done": "=checkins", "table": "checkins",
+    //    "item": "habit", "day": "day", "name": "name", "days": 7}
+    function checks(b, s, path) {
+      const items = val(b.checks, s, `${path}.checks`) || [];
+      const log = val(b.done, s, `${path}.done`) || [];
+      const table = T(b.table, s, path);
+      if (!table) throw new Error('checks needs "table": the table a check is a row of');
+      const itemCol = b.item || 'item';
+      const dayCol = b.day || 'day';
+      const n = Math.max(1, Math.min(14, Number(val(b.days, s, path)) || 7));
+      if (!items.length) return h('div', { class: 'empty' }, T(b.empty ?? 'Nothing to check off yet.', s, path));
+      const pad = (x) => String(x).padStart(2, '0');
+      const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      const back = (k) => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - k); return d; };
+      const days = Array.from({ length: n }, (_, k) => back(n - 1 - k));
+      const today = ymd(days[n - 1]);
+      const has = new Map();
+      for (const r of log) if (r && r[itemCol] != null && r[dayCol] != null) has.set(`${r[itemCol]}|${String(r[dayCol]).slice(0, 10)}`, r);
+      const key = (it, d) => `${it.id}|${d}`;
+      const nameOf = (it) => (b.name ? String(it[b.name] ?? '') : rowName(it)) || 'Untitled';
+      const streak = (it) => {
+        let k = has.has(key(it, today)) ? 0 : 1;
+        let c = 0;
+        while (has.has(key(it, ymd(back(k))))) { c++; k++; }
+        return c;
+      };
+      const label = (d) => (ymd(d) === today ? 'today' : d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' }));
+      const toggle = async (it, d, btn) => {
+        const day = ymd(d);
+        const row = has.get(key(it, day));
+        btn.setAttribute('aria-pressed', String(!row));
+        btn.classList.toggle('on', !row);
+        btn.disabled = true;
+        try {
+          if (row) { await app.remove(table, row.id, { undo: false }); has.delete(key(it, day)); }
+          else { has.set(key(it, day), await app.insert(table, { ...(b.fields || {}), [itemCol]: it.id, [dayCol]: day })); }
+        } catch (e) { report(fail(path, e)); }
+        btn.disabled = false;
+        await refresh();
+      };
+      const dayBtn = (it, d, k) => {
+        const on = has.has(key(it, ymd(d)));
+        const now = k === n - 1;
+        const btn = h('button', { type: 'button', class: `check${now ? ' today' : ' past'}${on ? ' on' : ''}`, 'data-age': String(n - 1 - k), 'aria-pressed': String(on),
+          'aria-label': `${nameOf(it)}, ${label(d)}`, title: label(d), onclick: () => toggle(it, d, btn) },
+          h('span', { class: 'mark', 'aria-hidden': 'true' }));
+        return btn;
+      };
+      // The days named once, above the rows, in the same columns.
+      const legend = h('div', { class: 'checks-legend', 'aria-hidden': 'true' }, h('div', { class: 'checks-name' }),
+        h('div', { class: 'checks-days' }, days.map((d, k) => h('span', { class: `check-day${k === n - 1 ? ' today' : ' past'}`, 'data-age': String(n - 1 - k) },
+          k === n - 1 ? 'Today' : d.toLocaleDateString(undefined, { weekday: 'short' })))));
+      const doneToday = items.filter((it) => has.has(key(it, today))).length;
+      const all = doneToday === items.length;
+      return h('div', { class: `checks${all ? ' all' : ''}` },
+        b.summary === false ? null : h('div', { class: 'checks-head' },
+          h('div', { class: 'checks-count' }, h('b', `${doneToday} of ${items.length}`), all ? ' done today. Well done.' : ' done today'),
+          h('div', { class: 'checks-bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(items.length), 'aria-valuenow': String(doneToday) }, h('span', { style: `width:${Math.round((doneToday / items.length) * 100)}%` }))),
+        legend,
+        h('ul', { class: 'checks-list' }, items.map((it) => {
+          const st = b.streak === false ? 0 : streak(it);
+          return h('li', { class: `checks-row${has.has(key(it, today)) ? ' done' : ''}` },
+            h('div', { class: 'checks-name' }, h('span', { class: 'title' }, nameOf(it)),
+              b.streak === false ? null : h('span', { class: `streak${st ? '' : ' none'}` }, st ? `${st}-day streak` : 'No streak yet')),
+            h('div', { class: 'checks-days' }, days.map((d, k) => dayBtn(it, d, k))));
+        })));
     }
 
     function code(b, s, path) {

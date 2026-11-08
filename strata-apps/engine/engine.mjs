@@ -186,12 +186,14 @@ export class Engine extends EventEmitter {
   }
 
   async remove(appId, table, id, ctx = {}) {
-    await this.tableSpec(appId, table);
+    const spec = await this.tableSpec(appId, table);
     const [old] = await this.db.get(physical(appId, table), [String(id)]);
     await this.db.write([{ op: 'delete', table: physical(appId, table), key: String(id) }]);
     this.announce('data', { app: appId, tables: [table] });
     if (old) await this.after(appId, table, 'delete', old, ctx);
-    return { removed: old ? 1 : 0 };
+    // The row as it was, in a form app.insert takes back: the frame's Undo.
+    const row = old ? Object.fromEntries(Object.entries(old).filter(([k]) => k === 'id' || k === 'created' || (spec.columns || []).some((c) => c.name === k))) : null;
+    return { removed: old ? 1 : 0, row };
   }
 
   async call(appId, slug, input, ctx = {}) {

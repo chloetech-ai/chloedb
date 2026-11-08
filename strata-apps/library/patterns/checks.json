@@ -1,0 +1,35 @@
+{
+ "title": "Check off each thing today: one big tap per thing, its streak, and how many are done today",
+ "about": "Habits, medication, plants watered, chores, practice: anything done (or not) each day, used every day on a phone. Each thing (a row of one table) gets one big tap for today, its last days to fill in, and its streak; the top says how many are done today. A check is a row of another table, one per thing and day, its day as 'YYYY-MM-DD'; a tap adds or removes it. Use it for the screen people open every day; keep adding and editing the things on a second screen (or ADD for a quick add here).",
+ "params": {
+  "table": {"about": "the table of checks: one row per thing and day done", "need": true},
+  "items": {"about": "the table of the things to check off (habits, medicines, plants)", "need": true},
+  "item": {"about": "the column of the checks table that holds the thing's id", "need": true},
+  "day": {"about": "the column of the checks table that holds the day, 'YYYY-MM-DD'", "default": "day"},
+  "key": {"about": "names the pattern's data and state", "default": "{{table}}"},
+  "title": {"about": "a heading", "default": "Today"},
+  "name": {"about": "the column of the things shown as each one's name", "default": "name"},
+  "days": {"about": "how many days each thing shows, today last (a phone shows yesterday and today)", "default": 7},
+  "itemWhere": {"about": "an SQL condition on the things (such as active)"},
+  "itemOrder": {"about": "SQL ORDER BY for the things", "default": "{{name}}"},
+  "add": {"about": "true puts a quick add for a new thing under the list"},
+  "noun": {"about": "what one thing is, for the quick add", "default": "item"}
+ },
+ "example": {"use": "checks", "table": "checkins", "items": "habits", "item": "habit", "day": "day", "name": "name", "add": true, "noun": "habit"},
+ "screen": {
+  "state": {"{{key}}_new": ""},
+  "data": {
+   "{{key}}": {"sql": "SELECT * FROM {{table}} WHERE days_between({{day}}, :today) <= 400 LIMIT 10000", "params": {"today": "=today"}},
+   "{{key}}_items": "SELECT * FROM {{items}}{{itemWhere|pre: WHERE }} ORDER BY {{itemOrder}} LIMIT 300"
+  },
+  "body": [
+   {"$when": "title", "h": "{{title}}"},
+   {"text": "=new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })", "muted": true},
+   {"checks": "={{key}}_items", "done": "={{key}}", "table": "{{table}}", "item": "{{item}}", "day": "{{day}}", "name": "{{name}}", "days": "{{days}}", "empty": "Nothing to check off yet. Add the first one below."},
+   {"$when": "add", "row": [
+    {"input": "{{key}}_new", "placeholder": "Add a {{noun}}", "class": "grow"},
+    {"button": "Add", "class": "primary", "do": "=async () => { const v = String(state.{{key}}_new || '').trim(); if (!v) return; await app.insert({{items|json}}, { [{{name|json}}]: v }); set({ {{key}}_new: '' }); }"}
+   ]}
+  ]
+ }
+}

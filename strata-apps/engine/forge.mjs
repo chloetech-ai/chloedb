@@ -77,7 +77,7 @@ app in a view (every call returns a Promise):
 - app.sql(sql, params) -> array of row objects
 - app.insert(table, row) -> the stored row (with id and created)
 - app.update(table, id, fields) -> the stored row (fields not given stay as they are)
-- app.remove(table, id)
+- app.remove(table, id): the person gets Undo for a few seconds, so never ask "are you sure?" before a remove
 - app.call(functionSlug, input) -> the function's result
 - app.onChange(tables, fn): fn(changedTables) runs after any write to those tables (an array of names, or '*'), made anywhere: this view, another view, a function, another window, another client of the database. Re-query there and redraw what shows the data. Do not redraw a form someone is typing in: keep forms out of the part you redraw.
 - app.open(viewSlug, params): switches to another view of the app, which reads them as app.params (an object, {} when none)
@@ -99,7 +99,7 @@ Styling: a stylesheet is already there, and plain elements look good without cla
 - a board: .columns with .column children (kanban), cards inside
 CSS variables: --bg, --fg, --muted, --line, --card, --accent, --ok, --warn, --bad, --radius. The page has light and dark themes: use the variables, never fixed white or black. Add a <style> element in render for anything more.
 
-Make views complete and pleasant: a heading, real empty states that say what to do, forms that submit with Enter and clear after, disabled buttons while saving, sensible sort order, the date or time where it helps, delete with confirm(). They must work at 360 px wide. Never show raw ids. No placeholder or lorem ipsum content.
+Make views complete and pleasant: a heading, real empty states that say what to do, forms that submit with Enter and clear after, disabled buttons while saving, sensible sort order, the date or time where it helps, delete without asking first (a remove offers Undo). They must work at 360 px wide. Never show raw ids. No placeholder or lorem ipsum content.
 
 # Components (shared by every app)
 
@@ -205,7 +205,7 @@ Write each view as a screen unless it needs something a screen cannot say. A scr
      "submit": "Add guest", "edit": "=state.editing", "after": "=() => set({editing: null})", "cancel": "=() => set({editing: null})"},
     {"chips": "filter", "options": ["all", "yes", "no", "waiting"]},
     {"table": "=shown", "columns": [{"key": "name"}, {"key": "rsvp", "label": "RSVP", "badge": true}, {"key": "table_no", "label": "Table"}],
-     "actions": [{"label": "Edit", "do": "=g => set({editing: g})"}, {"label": "Delete", "do": "=g => app.remove('guests', g.id)", "confirm": "Delete this guest?"}],
+     "actions": [{"label": "Edit", "do": "=g => set({editing: g})"}, {"label": "Delete", "do": "=g => app.remove('guests', g.id)"}],
      "empty": "No guests yet: add the first one above."},
     {"ui": "barChart", "props": {"data": "=meals.map(m => ({label: m.meal, value: m.n}))"}}
   ]
@@ -223,8 +223,9 @@ Blocks, in "body" and in every block that holds blocks:
 - {"each": "=list", "as": "item", "body": [blocks], "empty": "text when the list is empty", "class": "list" | "grid" | "row"}
 - {"kpis": [{"label": "...", "value": "...", "hint": "..."}]}: big numbers; {"label": "Owed", "of": "<data name>", "format": "money"} shows the first value of a query's first row (formats: date, days, money, number, percent, pct, hours, duration, clock)
 - {"chips": "stateKey", "options": [...]}: picks one value of state (options: strings or {"value", "label"}); {"input": "stateKey", "type": "search" | "text" | "select" | "date" | "number" | "checkbox", "placeholder": "...", "options": [...], "label": "..."}: an input bound to state
-- {"button": "label", "do": "=handler", "class": "primary" | "ghost" | "danger" | "small" | "link", "confirm": "a question to confirm first"}
+- {"button": "label", "do": "=handler", "class": "primary" | "ghost" | "danger" | "small" | "link", "confirm": "a question to confirm first (never for a remove: it offers Undo)"}
 - {"form": "table", "fields": [{"name", "label", "type", "options", "required", "placeholder", "value", "hint"}] (a long form may group its fields under headings: {"section": "Payment"} among the fields starts one), "submit": "label", "set": {"column": "=value"} (more columns to store, such as the project the form adds to), "edit": "=the row to edit, or null", "after": "=handler(storedRow)", "cancel": "=handler", "layout": "col"}: adds a row, or saves the row given in edit; it keeps what is typed across redraws. Field types: text (the default), textarea, number, date ("YYYY-MM-DD", for a keyword column), time, datetime (a timestamp column), select (options), checkbox (bool), tags (keyword[]), email, url, color, file (uploads it and stores its id), rating (1 to 5).
+- {"checks": "=things", "done": "=checks", "table": "checks table", "item": "its column holding the thing's id", "day": "its 'YYYY-MM-DD' column", "name": "the things' name column", "days": 7}: the daily check-off (habits, medication, chores): one big tap per thing for today, its last days, its streak and how many are done today; a tap adds or removes that day's row. A check per day is this block (or the CHECKS part), never a grid written in code
 - {"table": "=rows", "columns": [{"key": "column", "label": "...", "value": "=r => ...", "badge": true, "format": "date" | "datetime" | "ago" | "money" | "number" | "percent" | "stars" | "bool"}], "actions": [{"label": "...", "do": "=r => ...", "confirm": "...", "class": "..."}], "onRow": "=r => ...", "empty": "..."}
 - {"code": "async function render(root, ctx) { ... }"}: for a part the blocks cannot say, JavaScript as in a view (h, svg, app, ui, lib), drawn again whenever the screen redraws; ctx holds state, set, refresh() and the data and lets by name.
 
@@ -592,7 +593,8 @@ export async function dryRunScreens(db, appId, names, plan) {
 
 // Front-page blocks first: a footer has "text", a band "title".
 const FRONT_BLOCKS = ['nav', 'hero', 'band', 'marquee', 'footer', 'features', 'stats', 'quotes', 'gallery', 'pricing', 'faq', 'steps', 'media', 'carousel'];
-const SCREEN_BLOCKS = [...FRONT_BLOCKS, 'h', 'text', 'ui', 'row', 'col', 'grid', 'split', 'card', 'section', 'if', 'each', 'kpis', 'chips', 'input', 'button', 'form', 'table', 'code'];
+// (checks before table: a checks block names the table its checks are rows of)
+const SCREEN_BLOCKS = [...FRONT_BLOCKS, 'h', 'text', 'ui', 'row', 'col', 'grid', 'split', 'card', 'section', 'if', 'each', 'kpis', 'chips', 'input', 'button', 'form', 'checks', 'table', 'code'];
 const NESTED = { row: 'row', col: 'col', grid: 'grid', split: 'split', card: 'card', section: 'section', then: 'then', else: 'else', body: 'body', band: 'band', media: 'media' };
 const BLOCK_LISTS = ['row', 'col', 'grid', 'split', 'card', 'section', 'then', 'else', 'body', 'band', 'media'];
 
@@ -632,6 +634,12 @@ export function checkScreen(screen, columnsOf = () => null) {
         if (typeof b.code !== 'string' || !/\bfunction\s+render\s*\(/.test(b.code)) problems.push(`${where}: a code block defines async function render(root, ctx)`);
         else { try { new vm.Script(`(async function () {\n${b.code}\n})`); } catch (e) { problems.push(`${where}: code: ${e.message}`); } }
         return;
+      }
+      if (kind === 'checks') {
+        const cols = typeof b.table === 'string' && !b.table.startsWith('=') ? columnsOf(b.table) : null;
+        if (!cols) problems.push(typeof b.table === 'string' && b.table && !b.table.startsWith('=') ? `${where}: the checks write table ${JSON.stringify(b.table)}, which the app does not have` : `${where}: checks names "table", the app's table whose rows are the checks`);
+        else for (const k of ['item', 'day']) { const n = b[k] || k; if (!cols.has(n)) problems.push(`${where}: the checks' ${k} column ${n} is not a column of ${b.table}`); }
+        if (b.done === undefined) problems.push(`${where}: checks needs "done": the rows of ${b.table || 'its table'}`);
       }
       if (kind === 'form') {
         const cols = columnsOf(b.form);

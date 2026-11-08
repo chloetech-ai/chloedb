@@ -17,7 +17,9 @@ a { color: var(--accent); text-decoration: none; }
 code, pre, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
 
 .top { display: flex; align-items: center; gap: 14px; padding: 0 16px; height: 52px; border-bottom: 1px solid var(--line); background: var(--card); flex: none; }
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; color: var(--fg); letter-spacing: -.01em; white-space: nowrap; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; color: var(--fg); letter-spacing: -.01em; white-space: nowrap; min-width: 0; }
+.brand .mark { flex: none; }
+.brand .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .mark { width: 20px; height: 20px; border-radius: 6px; background:
   linear-gradient(var(--accent), var(--accent)) 0 0 / 100% 30% no-repeat,
   linear-gradient(color-mix(in srgb, var(--accent) 60%, transparent), color-mix(in srgb, var(--accent) 60%, transparent)) 0 50% / 100% 30% no-repeat,
@@ -27,7 +29,7 @@ code, pre, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-
 .crumbs b { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .crumbs .navlink { white-space: nowrap; }
 @media (max-width: 560px) { .crumbs .own { display: none; } }
-.top-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+.top-right { margin-left: auto; flex: none; display: flex; align-items: center; gap: 14px; }
 .navlink { color: var(--muted); font-weight: 500; }
 .navlink.on, .navlink:hover { color: var(--fg); }
 .status { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
