@@ -180,7 +180,28 @@ pub struct SegmentMeta {
     pub updates_file: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub updates_crc: u32,
+    /// Directory layout: where the image is kept on object storage, when
+    /// the segment is cold ([`crate::storage::cold`]); `file` is then
+    /// `None` and `extent` spans the image. Feature [`COLD_SEGMENTS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cold: Option<ColdRef>,
 }
+
+/// A cold segment's image on object storage: the object's key (relative
+/// to the store's own prefix), the size of the parts it is fetched and
+/// checked in, and the crc32 of its table of their checksums, kept beside
+/// it as `<key>.crc` ([`crate::storage::cold::ChunkTable`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColdRef {
+    pub key: String,
+    pub chunk: u32,
+    pub table_crc: u32,
+}
+
+/// The feature of a database with a segment on object storage
+/// ([`SegmentMeta::cold`]): versions of Strata before it refuse it by name
+/// rather than look for the segment's file.
+pub const COLD_SEGMENTS: &str = "cold_segments";
 
 fn is_zero(x: &u32) -> bool {
     *x == 0
@@ -202,7 +223,7 @@ impl Manifest {
     /// every database with field ids does; for one written before them, 1
     /// while it holds only the table it was created with, else 2.
     pub fn format(&self) -> u32 {
-        if !self.is_legacy() || self.seq_no.is_some() || self.tables.iter().any(|t| t.schema.features().next().is_some() || !t.profiles.is_empty()) {
+        if !self.is_legacy() || self.seq_no.is_some() || self.segments().any(|s| s.cold.is_some()) || self.tables.iter().any(|t| t.schema.features().next().is_some() || !t.profiles.is_empty()) {
             3
         } else if self.tables.len() == 1 && self.tables[0].id == 0 {
             1
@@ -215,8 +236,8 @@ impl Manifest {
     /// unless it was written before field ids, its tables'
     /// ([`crate::schema::Schema::features`]), `seq_no` once it numbers its
     /// writes, `rank_profiles` while a table has a rank profile,
-    /// `sources` once it has [`SOURCES`] and `functions` once it has
-    /// [`FUNCTIONS`].
+    /// `sources` once it has [`SOURCES`], `functions` once it has
+    /// [`FUNCTIONS`], and [`COLD_SEGMENTS`] while a segment is cold.
     pub fn features(&self) -> Vec<String> {
         let mut used: BTreeSet<String> = self.tables.iter().flat_map(|t| t.schema.features()).collect();
         if !self.is_legacy() {
@@ -233,6 +254,9 @@ impl Manifest {
         }
         if self.table(FUNCTIONS_ID).is_some() {
             used.insert(FUNCTIONS_FEATURE.to_string());
+        }
+        if self.segments().any(|s| s.cold.is_some()) {
+            used.insert(COLD_SEGMENTS.to_string());
         }
         used.into_iter().collect()
     }
@@ -357,7 +381,7 @@ struct V1 {
 
 /// The features this version of Strata reads, besides its analyzers'
 /// ([`known_feature`]).
-pub const FEATURES: &[&str] = &[crate::schema::ADDED_FIELDS, "bool", "cluster_by", crate::schema::COMPACT_KEYS, "default", "derive", crate::schema::DERIVE_TEXT, "edge_table", crate::schema::EXPIRE_BY, FIELD_IDS, FUNCTIONS_FEATURE, crate::schema::JSON, crate::schema::JSON_TEXT, "media", "multi_vector", "not_null", RANK_PROFILES, crate::schema::RABITQ, "retain", "semantic_id", "seq_no", "shard_by", "sources", "timestamp", crate::schema::VECTOR_PARTITION];
+pub const FEATURES: &[&str] = &[crate::schema::ADDED_FIELDS, "bool", "cluster_by", COLD_SEGMENTS, crate::schema::COMPACT_KEYS, "default", "derive", crate::schema::DERIVE_TEXT, "edge_table", crate::schema::EXPIRE_BY, FIELD_IDS, FUNCTIONS_FEATURE, crate::schema::JSON, crate::schema::JSON_TEXT, "media", "multi_vector", "not_null", RANK_PROFILES, crate::schema::RABITQ, "retain", "semantic_id", "seq_no", "shard_by", "sources", "timestamp", crate::schema::VECTOR_PARTITION, crate::schema::ZSTD];
 
 /// The feature of a database whose fields have ids
 /// ([`crate::schema::Field::id`]): every database this version creates.
@@ -545,6 +569,7 @@ mod tests {
             updates: None,
             updates_file: None,
             updates_crc: 0,
+            cold: None,
         }
     }
 
@@ -737,6 +762,23 @@ mod tests {
     /// key, which a table from before field ids does not need), each
     /// table's ids and the next to give in its schema. Ids that clash, a table without them (or with them, in a
     /// manifest that does not require them) are damage.
+    /// A cold segment ([`ColdRef`]) needs feature `cold_segments`, which a
+    /// database without one does not list; it round-trips, and a manifest
+    /// without one encodes as before.
+    #[test]
+    fn cold_segments_are_a_feature() {
+        let mut m = Manifest::new(schema("logs").with_new_ids().unwrap());
+        m.tables[0].segments.push(segment(1));
+        let before = m.encode();
+        assert!(!String::from_utf8(before.clone()).unwrap().contains("cold"));
+        assert!(!m.features().contains(&COLD_SEGMENTS.to_string()));
+        m.tables[0].segments[0].cold = Some(ColdRef { key: "00ff/seg-0000000001.strata".into(), chunk: 256 << 10, table_crc: 7 });
+        assert_eq!((m.format(), m.features()), (3, strings(&[COLD_SEGMENTS, COMPACT_KEYS, FIELD_IDS])));
+        assert_eq!(Manifest::decode(&m.encode()).unwrap(), m);
+        m.tables[0].segments[0].cold = None;
+        assert_eq!(m.encode(), before);
+    }
+
     #[test]
     fn field_ids_are_format_3() {
         let ids = |name: &str| schema(name).with_new_ids().unwrap();

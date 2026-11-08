@@ -3,7 +3,8 @@
 //! the version the scroll started on, as JSON or Arrow, until the last
 //! page answers no cursor. A cursor is its owner's, can be closed, ends
 //! when not read over its keep-alive, and the rows scrolls hold between
-//! them are capped (`--max-scroll-rows`); a coordinator refuses a scroll.
+//! them are capped (`--max-scroll-rows`). A coordinator scrolls its
+//! shards' scrolls, merging their pages, and ends them with its own.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -58,12 +59,19 @@ async fn served(dir: &std::path::Path, scroll_rows: usize) -> (String, Arc<Db>, 
     svc.max_scroll_rows = scroll_rows;
     let svc = Arc::new(svc);
     let url = http(svc.clone()).await;
+    load(&url).await;
+    (url, db, svc)
+}
+
+/// Creates `docs` and `tags` through the server at `url`, and writes their
+/// rows.
+async fn load(url: &str) {
     for t in ["CREATE TABLE docs (id KEYWORD PRIMARY KEY, g KEYWORD, n INT, x FLOAT)", "CREATE TABLE tags (id KEYWORD PRIMARY KEY, doc KEYWORD, t KEYWORD)"] {
-        let (s, j) = call(&url, "POST", "/v1/sql", json!({"sql": t})).await;
+        let (s, j) = call(url, "POST", "/v1/sql", json!({"sql": t})).await;
         assert_eq!(s, 200, "{j}");
     }
     for _ in 0..50 {
-        if query(&url, json!({"sql": "SELECT COUNT(*) FROM tags"})).await.0 == 200 {
+        if query(url, json!({"sql": "SELECT COUNT(*) FROM tags"})).await.0 == 200 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -71,10 +79,9 @@ async fn served(dir: &std::path::Path, scroll_rows: usize) -> (String, Arc<Db>, 
     for chunk in (0..ROWS).collect::<Vec<_>>().chunks(200) {
         let mut ops: Vec<Json> = chunk.iter().map(|i| json!({"op": "upsert", "doc": {"id": format!("d{i:04}"), "g": format!("g{}", i % 7), "n": (i * 37) % 1000, "x": *i as f64 / 8.0}})).collect();
         ops.extend(chunk.iter().flat_map(|i| (0..2).map(move |k| json!({"op": "upsert", "table": "tags", "doc": {"id": format!("t{i:04}{k}"), "doc": format!("d{i:04}"), "t": format!("k{}", (i + k) % 5)}}))));
-        let (s, j) = call(&url, "POST", "/v1/write", json!({"ops": ops})).await;
+        let (s, j) = call(url, "POST", "/v1/write", json!({"ops": ops})).await;
         assert_eq!(s, 200, "{j}");
     }
-    (url, db, svc)
 }
 
 /// The rows of `sql` on the database, at once and without a window.
@@ -182,7 +189,7 @@ async fn a_cursor_is_its_owners_and_ends() {
     };
     // Another key's cursor is none of its own.
     let c = start(json!({"sql": "SELECT id FROM docs", "page_size": 10})).await;
-    let other = svc.scroll_next(&c, "reader/k2", None, 0).await.err().unwrap();
+    let other = svc.scroll_next(&c, "reader/k2", None, 0, None).await.err().unwrap();
     assert_eq!(other.status, 404, "{}", other.message);
     assert_eq!(query(&url, json!({"cursor": c})).await.0, 200);
     // Closed: no more pages, and closing again closes nothing.
@@ -248,33 +255,111 @@ async fn scrolls_hold_at_most_max_scroll_rows_between_them() {
     assert_eq!((gauge("strata_scrolls_open"), gauge("strata_scroll_rows_held")), (Some(2.0), Some(1000.0)), "{}", text.lines().filter(|l| l.contains("scroll")).collect::<Vec<_>>().join("\n"));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_coordinator_refuses_a_scroll() {
-    let dir = tempfile::tempdir().unwrap();
+/// Three shards and a coordinator over them, each with a window of
+/// WINDOW rows, `docs` and `tags` loaded through the coordinator: its URL,
+/// its service and the shards'.
+async fn cluster(dir: &std::path::Path) -> (String, Arc<Service>, Vec<Arc<Service>>) {
+    let mut urls = Vec::new();
     let mut shards = Vec::new();
-    for i in 0..2 {
-        let db = Db::create_empty(&dir.path().join(format!("s{i}.strata")), DbOptions::default()).unwrap();
+    for i in 0..3 {
+        let db = Db::create_empty(&dir.join(format!("s{i}.strata")), DbOptions { segment_max_docs: 60, ..DbOptions::default() }).unwrap();
         let schema = (*db.schema()).clone();
-        let svc = Arc::new(Service::new(Backend::Local(Arc::new(db)), schema, agent(), 16, Duration::from_secs(20)));
+        let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent(), 16, Duration::from_secs(20));
+        svc.max_rows = Some(WINDOW);
+        let svc = Arc::new(svc);
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        shards.push(format!("http://{}", l.local_addr().unwrap()));
-        tokio::spawn(server::serve_grpc(svc, l, Access::default()));
+        urls.push(format!("http://{}", l.local_addr().unwrap()));
+        tokio::spawn(server::serve_grpc(svc.clone(), l, Access::default()));
+        shards.push(svc);
     }
-    let c = Coordinator::connect(shards).await.unwrap();
+    let c = Coordinator::connect(urls).await.unwrap();
     let schema = c.schema.clone();
-    let url = http(Arc::new(Service::new(Backend::Cluster(Arc::new(c)), schema, agent(), 16, Duration::from_secs(20)))).await;
-    let (s, j) = call(&url, "POST", "/v1/sql", json!({"sql": "CREATE TABLE docs (id KEYWORD PRIMARY KEY, n INT)"})).await;
-    assert_eq!(s, 200, "{j}");
-    for sql in ["SELECT id FROM docs", "SELECT n, COUNT(*) FROM docs GROUP BY n", "SELECT a.id FROM docs a JOIN docs b ON a.id = b.id"] {
-        let mut last = (0, Json::Null);
-        for _ in 0..50 {
-            last = query(&url, json!({"sql": sql, "page_size": 10})).await;
-            if !last.1["error"].as_str().unwrap_or_default().contains("no such table") {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut svc = Service::new(Backend::Cluster(Arc::new(c)), schema, agent(), 16, Duration::from_secs(20));
+    svc.max_rows = Some(WINDOW);
+    let svc = Arc::new(svc);
+    let url = http(svc.clone()).await;
+    load(&url).await;
+    (url, svc, shards)
+}
+
+/// The scrolls the shards keep open, after the coordinator's ends were
+/// sent (in the background).
+async fn shard_scrolls(shards: &[Arc<Service>]) -> usize {
+    let mut open = 0;
+    for _ in 0..50 {
+        open = shards.iter().map(|s| s.sweep_scrolls().0).sum();
+        if open == 0 {
+            break;
         }
-        assert_eq!(last.0, 400, "{sql}: {}", last.1);
-        assert!(last.1["error"].as_str().unwrap().contains("not yet a coordinator's"), "{sql}: {}", last.1);
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    open
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coordinator_scrolls_its_shards() {
+    let dir = tempfile::tempdir().unwrap();
+    let (url, coord, shards) = cluster(dir.path()).await;
+    // The same rows on one server, for the answers' order.
+    let one = dir.path().join("one");
+    std::fs::create_dir(&one).unwrap();
+    let (_, db, _) = served(&one, 5000).await;
+    let all = "SELECT id, g, n, x FROM docs";
+    let (s, j) = query(&url, json!({"sql": all})).await;
+    assert_eq!(s, 400, "the window holds: {j}");
+    assert!(j["error"].as_str().unwrap().contains("a scroll, page_size"), "{j}");
+    let sorted = |mut rows: Vec<Json>| {
+        rows.sort_by_key(|r| r.to_string());
+        rows
+    };
+    // In no order, one shard's rows after another's; writes after the
+    // first page are not in the scroll.
+    let want = whole(&db, all);
+    let (rows, counts) = scroll(&url, all, 64, async || {
+        let (s, j) = call(&url, "POST", "/v1/sql", json!({"sql": "DELETE FROM docs WHERE n < 500"})).await;
+        assert_eq!(s, 200, "{j}");
+    })
+    .await;
+    assert_eq!(sorted(rows), sorted(want), "{counts:?}");
+    assert!(counts.iter().rev().skip(1).all(|&c| c == 64), "{counts:?}");
+    assert_eq!(shard_scrolls(&shards).await, 0, "the shards' scrolls end with the last page");
+    db.sql("DELETE FROM docs WHERE n < 500", &Params::new()).unwrap();
+    for (sql, page) in [
+        ("SELECT id, n FROM docs ORDER BY n DESC, id".to_string(), 30),
+        ("SELECT id, x FROM docs WHERE g <> 'g2' ORDER BY x, id LIMIT 200 OFFSET 45".into(), 64),
+        ("SELECT g, COUNT(*) AS c, MAX(n) AS m FROM docs GROUP BY g ORDER BY g".into(), 2),
+        ("SELECT d.id, t.t FROM docs d JOIN tags t ON t.doc = d.id ORDER BY t.id".into(), 99),
+        ("SELECT id FROM docs WHERE n > 100000".into(), 10),
+    ] {
+        let want = whole(&db, &sql);
+        let (rows, counts) = scroll(&url, &sql, page, async || {}).await;
+        assert_eq!(rows, want, "{sql}");
+        assert!(counts.iter().all(|&c| c <= page) && counts.iter().rev().skip(1).all(|&c| c == page), "{sql}: {counts:?}");
+    }
+    // LIMIT and OFFSET in no order: as many rows, each a row of the table.
+    let (rows, _) = scroll(&url, "SELECT id, g, n, x FROM docs LIMIT 150 OFFSET 230", 40, async || {}).await;
+    let every = whole(&db, all);
+    assert_eq!(rows.len(), 150);
+    assert!(rows.iter().all(|r| every.contains(r)));
+    assert_eq!(shard_scrolls(&shards).await, 0, "the shards' scrolls end at the LIMIT");
+    // Closed early, or by id read to a LIMIT before the shards' rows end:
+    // the shards' scrolls end with it.
+    let (s, j) = query(&url, json!({"sql": "SELECT id FROM docs ORDER BY n", "page_size": 10})).await;
+    assert_eq!((s, j["rows"].as_array().unwrap().len()), (200, 10), "{j}");
+    assert!(shards.iter().all(|s| s.sweep_scrolls().0 == 1), "each shard keeps a scroll");
+    let c = j["cursor"].as_str().unwrap().to_string();
+    // A keep-alive asked with a page reaches the shards' scrolls.
+    let (s, j) = query(&url, json!({"cursor": c, "keep_alive_ms": 600_000})).await;
+    assert_eq!((s, j["rows"].as_array().unwrap().len()), (200, 10), "{j}");
+    let (s, j) = call(&url, "DELETE", &format!("/v1/query/cursors/{c}"), Json::Null).await;
+    assert_eq!((s, &j["closed"]), (200, &json!(true)), "{j}");
+    assert_eq!(shard_scrolls(&shards).await, 0, "closed with the coordinator's");
+    // Not read over its keep-alive: the coordinator's sweep ends them.
+    let (s, j) = query(&url, json!({"sql": "SELECT id, x FROM docs ORDER BY x DESC", "page_size": 10, "keep_alive_ms": 200})).await;
+    assert_eq!((s, j["cursor"].is_string()), (200, true), "{j}");
+    assert!(shards.iter().all(|s| s.sweep_scrolls().0 == 1));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(coord.sweep_scrolls(), (0, 0));
+    assert_eq!(shard_scrolls(&shards).await, 0, "ended with the coordinator's");
+    assert_eq!(query(&url, json!({"cursor": j["cursor"]})).await.0, 404);
 }

@@ -178,6 +178,6 @@ pub fn orphans(dir: &Path, keep: &HashSet<String>) -> Result<Vec<(PathBuf, u64)>
 pub fn size(dir: &Path) -> u64 {
     let log = |name: &str| name == WAL || name.strip_prefix("wal.").is_some_and(|t| t.len() == 20 && t.bytes().all(|b| b.is_ascii_digit()));
     std::fs::read_dir(dir)
-        .map(|it| it.filter_map(|e| e.ok()).filter(|e| !log(&e.file_name().to_string_lossy())).filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum())
+        .map(|it| it.filter_map(|e| e.ok()).filter(|e| !log(&e.file_name().to_string_lossy())).filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).sum())
         .unwrap_or(0)
 }
