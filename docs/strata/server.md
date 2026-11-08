@@ -1389,7 +1389,7 @@ A local database merges its segments on merger threads as writes add them ([how 
 
 `GET /` serves the command center, a console for one server or a whole cluster. It reads the same API as any client (the cluster's shards, fleet health, the series, alerts, events, running and recent queries, the logs, keys and the audit log), so what it shows is what the server reports, and every change it makes is an API call a key's scope allows. Its requests carry `x-strata-client: command-center`, and a change it makes carries the reason it asked for in `x-strata-reason`, which the [audit log](#security) keeps with it. A button that changes something says, when the key lacks the scope, which scope it takes.
 
-The navigation has four groups for running a fleet, **Operate**, **Diagnose**, **Change** and **Data**, and **Labs**, the tools for search engineers, collapsed (pin one to keep it in the sidebar).
+The navigation has four groups for running a fleet, **Operate**, **Diagnose**, **Change** and **Data**, **Apps**, the programs the server shows as views of their own ([below](#apps)), and **Labs**, the tools for search engineers, collapsed (pin one to keep it in the sidebar).
 
 ![Home: a coordinator over two shards of two copies, all serving, with queries, latency and disks against their limits](../assets/img/strata-command-center-home.png)
 
@@ -1514,6 +1514,15 @@ Reads are counted in memory, since the server started or since `POST /v1/index/r
 - **Query language** is a guide to the SQL with examples written against the table's own fields and words from its rows: boolean, phrase, prefix, typo and synonym searches, conditions, aggregates and `HAVING`, subqueries and `WITH`, joins, graph queries, hybrid ranking and boosts, and what is not supported. "Try it" runs an example in the SQL tab. It also edits the server's synonym list.
 
 ![The SQL editor with a plan](../assets/img/strata-server-sql.png)
+
+### Apps
+
+An app is a program of its own that the command center shows as a view: the [crawler](crawler.md) is one. `--app name=url` (repeatable, or `STRATA_APPS=a=url,b=url`) names each, and the server reaches it there; browsers never do, so the app needs no address of theirs and no keys:
+
+- `GET /v1/apps` lists the apps (read scope), each with its manifest, the app's `GET /app.json`: `title`, `description`, `icon_svg` (the shapes of a 24-unit outline icon; only shapes and their geometry are drawn), `version`, and `view`, the path of its view module, as `/v1/apps/<name>/<view>`. An app that does not answer is listed with `up: false` and why. Manifests are read again after 15 seconds.
+- `/v1/apps/<name>/<path>` is sent on to the app's `<path>`, with its query, body, `content-type` and `accept`, and the server's `STRATA_APP_TOKEN` as `Authorization: Bearer` in place of the caller's key; the caller's key is checked first, read scope for `GET` and `HEAD` and admin scope for the rest. An answer is at most 32 MB, in at most 120 s, and an app that does not answer is a 502.
+
+The navigation lists the apps under **Apps**, each at `#/app/<name>`. Its view module is JavaScript the command center loads through the server (with the signed-in key) and runs with its own helpers: the module's default export's `render(el, ctx)` draws into `el` and may return a function that stops it, and `ctx` holds `core`, `charts` and `data` (the command center's modules), `app` (its listing), `api(path, opts)` (the app's API through the server), `path()`, `href(...)` and `onPath(f)` for the view's own paths under `#/app/<name>/`. An app's view is trusted as the server's own pages are: an admin names the app on the server's command line.
 
 ## The agent
 

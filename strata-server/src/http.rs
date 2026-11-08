@@ -283,6 +283,9 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/logs/store", get(log_store))
         .route("/v1/system", get(system))
         .route("/v1/cluster", get(cluster))
+        // Apps: their list, and requests forwarded to them (crate::apps).
+        .route("/v1/apps", get(apps_list))
+        .route("/v1/apps/:name/*rest", axum::routing::any(app_forward))
         .route("/v1/kube", get(kube))
         .route("/v1/admin/kube", post(kube_change))
         .route("/v1/admin/kube/plan", post(kube_plan))
@@ -864,6 +867,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         // alerts (alerts agent): acknowledging, silencing and noting write.
         "/v1/alerts/:rule/ack" | "/v1/alerts/:rule/silence" | "/v1/alerts/:rule/notes" => Scope::Write,
         "/v1/events/notes" => Scope::Admin,
+        // An app's reads are a reader's; what changes it (starts a crawl) an admin's.
+        "/v1/apps/:name/*rest" if method != Method::GET && method != Method::HEAD => Scope::Admin,
         // The inspector names the keys most read.
         // The hub's calls to other clusters carry their keys: its owner's.
         r if r.starts_with("/c/") => Scope::Admin,
@@ -3628,6 +3633,21 @@ async fn system(State(app): State<App>) -> AxJson<Json> {
     j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some()});
     j["logs"] = json!({"filter": obs::log_filter()});
     AxJson(j)
+}
+
+async fn apps_list(State(app): State<App>) -> AxJson<Json> {
+    AxJson(app.svc.apps.listing().await)
+}
+
+async fn app_forward(
+    State(app): State<App>,
+    axum::extract::Path((name, rest)): axum::extract::Path<(String, String)>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    app.svc.apps.forward(&name, method, &rest, uri.query(), &headers, body).await
 }
 
 async fn cluster(State(app): State<App>, Query(q): Params) -> AxJson<Json> {

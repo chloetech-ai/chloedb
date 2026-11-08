@@ -437,6 +437,14 @@ struct Args {
     /// ignored.
     #[arg(long, env = "STRATA_TRUST_PROXY", value_delimiter = ',')]
     trust_proxy: Vec<String>,
+    /// An app the command center shows as a view, as name=url
+    /// (crawler=http://127.0.0.1:7800; repeatable, or comma-separated in
+    /// $STRATA_APPS): the server forwards /v1/apps/<name>/... to it.
+    #[arg(long = "app", env = "STRATA_APPS", value_delimiter = ',')]
+    apps: Vec<String>,
+    /// The token the server sends its apps (Authorization: Bearer).
+    #[arg(long, env = "STRATA_APP_TOKEN", hide_env_values = true)]
+    app_token: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -964,6 +972,8 @@ async fn main() {
         slo_error_ratio: Some(a.slo_error_ratio),
         slo_p99_ms: Some(a.slo_p99_ms),
         trust_proxy: a.trust_proxy.clone(),
+        apps: a.apps.clone(),
+        app_token: a.app_token.clone(),
         node_name_given: a.node_name.clone().filter(|n| !n.is_empty()),
         image_repository: a.image_repository.clone().filter(|r| !r.trim().is_empty()),
         merger: {
