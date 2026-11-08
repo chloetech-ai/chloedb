@@ -7,6 +7,7 @@
 //!
 //! ```text
 //! log_bytes DB IN.jsonl [COLUMNS] [OPTIONS]
+//! log_bytes DB --table NAME
 //! ```
 //!
 //! `COLUMNS` is the table's column list after `id INT PRIMARY KEY, ts
@@ -16,6 +17,10 @@
 //! records. A column the records lack is NULL. A `COLUMNS` that names
 //! `ts` is the whole list (`id INT, ts TIMESTAMP NOT NULL, ...`: a table
 //! without a key). `OPTIONS` are the table's (`compression = 'zstd'`).
+//!
+//! `--table NAME` measures a table of an existing database instead, as
+//! another writer left it (strata-server's `otel_logs`, say): it is
+//! merged the same way, and its lines are its rows.
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -45,6 +50,22 @@ fn kind(schema: &strata::Schema, name: &str) -> String {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let (db_path, input) = (Path::new(&args[1]), Path::new(&args[2]));
+    if args[2] == "--table" {
+        let db = Db::open(db_path, DbOptions::default()).unwrap();
+        let table = &args[3];
+        let schema = db.catalog().into_iter().find(|s| &s.table == table).unwrap();
+        let t = Instant::now();
+        db.optimize().unwrap();
+        let merge_s = t.elapsed().as_secs_f64();
+        let strata::db::SqlResult::Rows(n) = db.sql(&format!("SELECT COUNT(*) FROM {table}"), &Params::new()).unwrap() else { panic!("no count") };
+        let Value::Int(lines) = n.rows[0][0] else { panic!("no count") };
+        let lines = lines as u64;
+        let mut out = report(&db, &schema, lines);
+        out["input"] = serde_json::json!(format!("table {table}"));
+        out["merge_seconds"] = serde_json::json!((merge_s * 10.0).round() / 10.0);
+        println!("{out}");
+        return;
+    }
     let columns = args.get(3).map_or(DEFAULT_COLUMNS, |c| c.as_str());
     let options = args.get(4).map_or("", |o| o.as_str());
     let opts = DbOptions { memtable_max_docs: 1_000_000_000, ..DbOptions::default() };
@@ -89,31 +110,39 @@ fn main() {
     db.optimize().unwrap();
     let merge_s = t.elapsed().as_secs_f64();
 
-    let snap = db.storage().snapshot().table("logs").unwrap();
+    let mut out = report(&db, &schema, lines);
+    let per_line = |b: u64| (b as f64 / lines as f64 * 10.0).round() / 10.0;
+    let o = out.as_object_mut().unwrap();
+    o.insert("input".into(), serde_json::json!(input.file_name().unwrap().to_string_lossy()));
+    o.insert("columns".into(), serde_json::json!(list));
+    o.insert("options".into(), serde_json::json!(options));
+    o.insert("input_bytes_per_line".into(), serde_json::json!(per_line(input_bytes)));
+    o.insert("body_bytes_per_line".into(), serde_json::json!(per_line(body_bytes)));
+    o.insert("load_seconds".into(), serde_json::json!((load_s * 10.0).round() / 10.0));
+    o.insert("merge_seconds".into(), serde_json::json!((merge_s * 10.0).round() / 10.0));
+    println!("{out}");
+}
+
+/// The bytes per line of the database and of each kind of section of
+/// `schema`'s table, merged, holding `lines` lines.
+fn report(db: &Db, schema: &strata::Schema, lines: u64) -> serde_json::Value {
+    let snap = db.storage().snapshot().table(&schema.table).unwrap();
     let mut by_kind: BTreeMap<String, u64> = BTreeMap::new();
     let mut image = 0u64;
     for s in snap.segments() {
         image += s.file.image().len() as u64;
         for (name, len) in s.file.section_sizes() {
-            *by_kind.entry(kind(&schema, &name)).or_default() += len as u64;
+            *by_kind.entry(kind(schema, &name)).or_default() += len as u64;
         }
     }
     let file_bytes = db.storage().file_stats().file_bytes;
     let per_line = |b: u64| (b as f64 / lines as f64 * 10.0).round() / 10.0;
-    let out = serde_json::json!({
-        "input": input.file_name().unwrap().to_string_lossy(),
-        "columns": list,
-        "options": options,
+    serde_json::json!({
         "lines": lines,
         "segments": snap.segments().len(),
-        "input_bytes_per_line": per_line(input_bytes),
-        "body_bytes_per_line": per_line(body_bytes),
         "file_bytes": file_bytes,
         "file_bytes_per_line": per_line(file_bytes),
         "image_bytes_per_line": per_line(image),
         "sections_bytes_per_line": by_kind.iter().map(|(k, b)| (k.clone(), serde_json::json!(per_line(*b)))).collect::<serde_json::Map<_, _>>(),
-        "load_seconds": (load_s * 10.0).round() / 10.0,
-        "merge_seconds": (merge_s * 10.0).round() / 10.0,
-    });
-    println!("{out}");
+    })
 }
