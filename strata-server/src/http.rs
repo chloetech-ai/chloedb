@@ -598,7 +598,7 @@ async fn fleet_health(State(app): State<App>) -> AxJson<Json> {
 async fn coordinators(State(app): State<App>, Query(q): Params) -> AxJson<Json> {
     let mut j = crate::peers::json(&app.svc);
     if q.get("window").is_some_and(|v| v == "1" || v == "true") {
-        j["window"] = crate::peers::window_json(&app.svc);
+        j["window"] = crate::peers::window_json(&app.svc).await;
     }
     AxJson(j)
 }

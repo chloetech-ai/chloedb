@@ -21,6 +21,11 @@ use strata_server::service::{AgentConfig, Backend, Service};
 use strata_server::{demo, server};
 use tokio::net::TcpListener;
 
+/// A copy's short name, as the cluster names it from its URL.
+fn short(url: &str) -> String {
+    strata_server::coord::copy_short(0, url)
+}
+
 const N: usize = 300;
 const AFTER_MS: u64 = 600;
 
@@ -185,7 +190,7 @@ async fn a_two_copy_shard_that_loses_a_copy_serves_no_reads() {
     assert_eq!((s["state"].as_str(), s["serves_reads"].as_bool(), s["takes_writes"].as_bool(), s["majority"].as_bool(), s["failover"].as_bool()), (Some("ok"), Some(true), Some(true), Some(true), Some(true)), "{s}");
     assert_eq!(s["primary"], json!(a.url()), "{s}");
     let copies = s["replicas"].as_array().unwrap();
-    assert_eq!(copies.iter().map(|r| r["short"].as_str().unwrap()).collect::<Vec<_>>(), ["s0-0", "s0-1"]);
+    assert_eq!(copies.iter().map(|r| r["short"].as_str().unwrap()).collect::<Vec<_>>(), [short(&a.url()), short(&b.url())]);
     assert_eq!(copies[0]["name"], "node-a");
     assert_eq!(copies[0]["zone"], "zone-a");
     assert_eq!(copies[0]["version"]["digest"], json!(format!("sha256:{}", "a".repeat(64))));
@@ -212,8 +217,8 @@ async fn a_two_copy_shard_that_loses_a_copy_serves_no_reads() {
     let f = svc.fleet_health().await;
     assert_eq!((f["status"].as_str(), f["headline"].as_str()), (Some("critical"), Some("Searches are failing: shard 0 has no majority")), "{f}");
     let p = &f["problems"][0];
-    assert_eq!(p["where"], json!(["shard 0", "s0-1"]));
-    assert_eq!(p["next"]["text"], "Bring s0-1 back, or remove it so s0-0 has a majority");
+    assert_eq!(p["where"], json!(["shard 0", short(&b.url())]));
+    assert_eq!(p["next"]["text"], format!("Bring {} back, or remove it so {} has a majority", short(&b.url()), short(&a.url())));
     assert_eq!(p["since_ms"], dead["down_since_ms"]);
     let check = |id: &str| f["checks"].as_array().unwrap().iter().find(|c| c["id"] == id).cloned().unwrap();
     assert_eq!(check("shards")["value"]["no_reads"], 1);
@@ -248,14 +253,15 @@ async fn a_dead_primary_loses_its_role() {
     let primaries = s["replicas"].as_array().unwrap().iter().filter(|r| r["takes_writes"] == true).count();
     assert_eq!(primaries, 1, "{s}");
     assert_eq!(s["state"], "degraded", "{s}");
-    assert!(s["why"].as_str().unwrap().contains("s0-0 down"), "{s}");
+    let sa = short(&a.url());
+    assert!(s["why"].as_str().unwrap().contains(&format!("{sa} down")), "{s}");
 
     // The coordinator's events: the primary down, then another elected.
     let (events, _) = svc.events.range(0, u64::MAX, &[], 100);
     let down = events.iter().find(|e| e.event.kind == "copy_down").unwrap_or_else(|| panic!("{events:?}"));
-    assert_eq!((down.event.where_["copy"].as_str(), down.event.severity.as_str()), (Some("s0-0"), "warning"));
+    assert_eq!((down.event.where_["copy"].as_str(), down.event.severity.as_str()), (Some(sa.as_str()), "warning"));
     let new = events.iter().find(|e| e.event.kind == "primary_changed").unwrap_or_else(|| panic!("{events:?}"));
-    assert_eq!((new.event.detail["from"].as_str(), new.event.detail["automatic"].as_bool()), (Some("s0-0"), Some(true)), "{:?}", new.event);
+    assert_eq!((new.event.detail["from"].as_str(), new.event.detail["automatic"].as_bool()), (Some(sa.as_str()), Some(true)), "{:?}", new.event);
     assert_eq!(new.event.detail["to_url"], s["primary"]);
     assert!(down.ts_ms <= new.ts_ms);
 }
@@ -349,14 +355,15 @@ async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
     b.args = vec!["--backup-dir".into(), backups.display().to_string()];
     let (c, svc) = shard_of(&mut [&mut a, &mut b]).await;
     let snap = fresh(&c).await;
-    assert_eq!(snap["shards"][0]["replicas"][0]["short"], "s0-0", "{snap}");
+    let (sa, sb) = (short(&a.url()), short(&b.url()));
+    assert_eq!(snap["shards"][0]["replicas"][0]["short"], sa, "{snap}");
     let dirs: Vec<&Json> = snap["shards"][0]["replicas"].as_array().unwrap().iter().map(|r| &r["backup_dir"]).collect();
     assert_eq!(dirs, [&Json::Null, &json!(backups.display().to_string())], "{snap}");
     let (l, base) = listen().await;
     tokio::spawn(server::serve_http(svc.clone(), l, Default::default()));
     let copy = format!("http://127.0.0.1:{}", a.http);
 
-    let r = client().put(format!("{base}/v1/logs/filter?node=s0-0")).json(&json!({"filter": "debug", "expires_s": 2})).send().await.unwrap();
+    let r = client().put(format!("{base}/v1/logs/filter?node={sa}")).json(&json!({"filter": "debug", "expires_s": 2})).send().await.unwrap();
     let status = r.status();
     let j: Json = r.json().await.unwrap();
     assert!(status.is_success(), "{j}");
@@ -380,13 +387,13 @@ async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
     let r = client().put(format!("{base}/v1/logs/filter")).json(&json!({"filter": "debug", "expires_s": -1})).send().await.unwrap();
     assert_eq!(r.status(), 400);
     let changes: Json = client().get(format!("{base}/v1/admin/audit?kind=change")).send().await.unwrap().json().await.unwrap();
-    assert!(changes["entries"].as_array().unwrap().iter().any(|e| e["object"] == "log filter" && e["detail"].as_str().is_some_and(|d| d.contains("on s0-0"))), "{changes}");
+    assert!(changes["entries"].as_array().unwrap().iter().any(|e| e["object"] == "log filter" && e["detail"].as_str().is_some_and(|d| d.contains(&format!("on {sa}")))), "{changes}");
 
     // A copy's profiling settings, read and set over the same call (PROF-2).
-    let r = client().get(format!("{base}/v1/profile/settings?node=s0-0")).send().await.unwrap();
+    let r = client().get(format!("{base}/v1/profile/settings?node={sa}")).send().await.unwrap();
     let was: Json = r.json().await.unwrap();
-    assert_eq!((was["short"].as_str(), was["cpu_all"].as_bool()), (Some("s0-0"), Some(false)), "{was}");
-    let r = client().put(format!("{base}/v1/profile/settings?node=s0-0")).json(&json!({"slow_ms": 25})).send().await.unwrap();
+    assert_eq!((was["short"].as_str(), was["cpu_all"].as_bool()), (Some(sa.as_str()), Some(false)), "{was}");
+    let r = client().put(format!("{base}/v1/profile/settings?node={sa}")).json(&json!({"slow_ms": 25})).send().await.unwrap();
     let status = r.status();
     let set: Json = r.json().await.unwrap();
     assert!(status.is_success(), "{set}");
@@ -395,10 +402,10 @@ async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
     assert_eq!((own["slow_ms"].as_f64(), own["started_slow_ms"].clone()), (Some(25.0), was["started_slow_ms"].clone()), "the copy's own: {own}");
     let mine: Json = client().get(format!("{base}/v1/profile/settings")).send().await.unwrap().json().await.unwrap();
     assert_ne!(mine["slow_ms"].as_f64(), Some(25.0), "the coordinator's are its own: {mine}");
-    let r = client().put(format!("{base}/v1/profile/settings?node=s0-0")).json(&json!({"slow_ms": -1})).send().await.unwrap();
+    let r = client().put(format!("{base}/v1/profile/settings?node={sa}")).json(&json!({"slow_ms": -1})).send().await.unwrap();
     assert_eq!(r.status(), 400);
     let changes: Json = client().get(format!("{base}/v1/admin/audit?kind=change")).send().await.unwrap().json().await.unwrap();
-    assert!(changes["entries"].as_array().unwrap().iter().any(|e| e["object"] == "profiling settings of s0-0" && e["detail"] == "profiling on s0-0: slow_ms 25"), "{changes}");
+    assert!(changes["entries"].as_array().unwrap().iter().any(|e| e["object"] == format!("profiling settings of {sa}") && e["detail"] == format!("profiling on {sa}: slow_ms 25")), "{changes}");
 
     // A plan changes nothing: one more copy is added, none removed.
     let r = client().post(format!("{base}/v1/admin/plan")).json(&json!({"shards": [{"shard": 0, "copies": [a.url(), b.url(), "http://127.0.0.1:1"]}]})).send().await.unwrap();
@@ -419,7 +426,7 @@ async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
 
     // A copy's shard verified by its primary, and a checkpoint of a copy,
     // each audited with the copy as its object.
-    let r = client().post(format!("{base}/v1/admin/copies/verify")).json(&json!({"url": "s0-1"})).send().await.unwrap();
+    let r = client().post(format!("{base}/v1/admin/copies/verify")).json(&json!({"url": sb})).send().await.unwrap();
     let status = r.status();
     let v: Json = r.json().await.unwrap();
     assert!(status.is_success(), "{v}");
@@ -431,11 +438,11 @@ async fn a_coordinator_sets_a_copys_log_filter_for_a_while() {
     let k: Json = r.json().await.unwrap();
     assert!(status.is_success(), "{k}");
     assert!(backups.join("before-upgrade").exists() || std::fs::read_dir(&backups).unwrap().count() == 1, "{k}");
-    let r = client().post(format!("{base}/v1/admin/copies/checkpoint")).json(&json!({"url": "s0-0", "name": "x"})).send().await.unwrap();
+    let r = client().post(format!("{base}/v1/admin/copies/checkpoint")).json(&json!({"url": sa, "name": "x"})).send().await.unwrap();
     assert_eq!(r.status(), 400, "s0-0 has no --backup-dir");
     let changes: Json = client().get(format!("{base}/v1/admin/audit?kind=change")).send().await.unwrap().json().await.unwrap();
     let objects: Vec<&str> = changes["entries"].as_array().unwrap().iter().filter(|e| e["route"].as_str().is_some_and(|r| r.starts_with("/v1/admin/copies/"))).filter_map(|e| e["object"].as_str()).collect();
-    assert_eq!(objects, ["copy s0-0", "copy s0-1", "copy s0-1"], "the newest first: {changes}");
+    assert_eq!(objects, [format!("copy {sa}"), format!("copy {sb}"), format!("copy {sb}")], "the newest first: {changes}");
 }
 
 /// Through a coordinator: a write a shard cannot take is refused before
@@ -514,8 +521,9 @@ async fn a_write_through_a_coordinator_says_what_each_shard_did() {
     assert!(status.is_server_error(), "{status}: {j}");
     assert_eq!(j["partial"], true, "{j}");
     let shards = j["shards"].as_array().unwrap();
-    assert_eq!((shards[0]["short"].as_str(), shards[1]["short"].as_str()), (Some("s0-0"), Some("s1-0")), "{j}");
-    assert!(shards[0]["rows"].as_u64().unwrap() > 0 && shards[1]["error"].as_str().unwrap().contains("s1-0"), "{j}");
+    let (sa, sb) = (short(&a.url()), short(&b.url()));
+    assert_eq!((shards[0]["short"].as_str(), shards[1]["short"].as_str()), (Some(sa.as_str()), Some(sb.as_str())), "{j}");
+    assert!(shards[0]["rows"].as_u64().unwrap() > 0 && shards[1]["error"].as_str().unwrap().contains(&sb), "{j}");
     assert!(!j["error"].as_str().unwrap().starts_with("shard http"), "{j}");
 
     // Once the cluster is seen without it, a write is refused before any
@@ -542,7 +550,7 @@ async fn a_write_through_a_coordinator_says_what_each_shard_did() {
     // Every table's view lists the copy that does not answer.
     let t: Json = client().get(format!("{base}/v1/index/tables")).send().await.unwrap().json().await.unwrap();
     let products = t["tables"].as_array().unwrap().iter().find(|t| t["table"] == "products").cloned().unwrap_or_else(|| panic!("{t}"));
-    let down = products["stale"].as_array().unwrap().iter().find(|s| s["short"] == "s1-0").cloned().unwrap_or_else(|| panic!("{t}"));
+    let down = products["stale"].as_array().unwrap().iter().find(|s| s["short"] == sb).cloned().unwrap_or_else(|| panic!("{t}"));
     assert_eq!(down["down"], true, "{t}");
     assert!(down["since_ms"].as_u64().is_some(), "{t}");
 }

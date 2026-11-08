@@ -1434,9 +1434,9 @@ impl Alerts {
             if n > 0 && in_sync < n {
                 places.entry("shards_under_replicated").or_default().push(json!({"shard": i, "name": shard_name, "short": shard_name, "state": "firing", "value": in_sync, "of": n}));
             }
-            for (k, r) in replicas.iter().enumerate() {
-                let short = r["short"].as_str().map(String::from).unwrap_or_else(|| format!("s{i}-{k}"));
+            for r in replicas.iter() {
                 let url = r["url"].as_str().unwrap_or_default().to_string();
+                let short = r["short"].as_str().map(String::from).unwrap_or_else(|| crate::coord::copy_short(i, &url));
                 if !answers(r) {
                     let since = r["down_since_ms"].as_u64();
                     places.entry("copies_down").or_default().push(json!({"copy": url, "short": short, "shard": i, "state": "firing", "since_ms": since, "error": r["error"]}));
@@ -1492,9 +1492,9 @@ impl Alerts {
         let mut versions = lock(&self.copy_rules_ms);
         for s in snap["shards"].as_array().into_iter().flatten() {
             let i = s["shard"].as_u64().unwrap_or(0) as usize;
-            for (k, r) in s["replicas"].as_array().into_iter().flatten().enumerate() {
+            for r in s["replicas"].as_array().into_iter().flatten() {
                 let url = r["url"].as_str().unwrap_or_default().to_string();
-                let short = r["short"].as_str().map(String::from).unwrap_or_else(|| format!("s{i}-{k}"));
+                let short = r["short"].as_str().map(String::from).unwrap_or_else(|| crate::coord::copy_short(i, &url));
                 let reported = &r["detail"]["alerts"]["rules"];
                 if let Some(v) = r["detail"]["alerts"]["rules_ms"].as_u64() {
                     versions.insert(url.clone(), v);
@@ -3706,10 +3706,10 @@ mod tests {
         let ev = event_of(&fired);
         assert_eq!(ev.where_, json!({"rule": "disk-full", "copies": ["http://a", "http://b"]}), "neither one copy nor one shard: {:?}", ev.where_);
         let resolved = a.check_cluster(&snap("ok"), 30_000).into_iter().find(|e| e.rule == "disk-full").unwrap();
-        assert_eq!((resolved.state, resolved.where_.clone()), ("resolved", vec!["s0-0".to_string(), "s1-0".to_string()]));
+        assert_eq!((resolved.state, resolved.where_.clone()), ("resolved", vec!["a".to_string(), "b".to_string()]), "named from their URLs");
         assert_eq!(resolved.fired_ms, Some(1_000));
-        assert!(a.message(&resolved).starts_with("[strata RESOLVED warning] Disk almost full on prod/s0-0,s1-0: "), "{}", a.message(&resolved));
-        assert!(event_of(&resolved).title.starts_with("Disk almost full resolved on s0-0, s1-0 after 29 s"), "{}", event_of(&resolved).title);
+        assert!(a.message(&resolved).starts_with("[strata RESOLVED warning] Disk almost full on prod/a,b: "), "{}", a.message(&resolved));
+        assert!(event_of(&resolved).title.starts_with("Disk almost full resolved on a, b after 29 s"), "{}", event_of(&resolved).title);
         // One copy: the copy and its shard.
         let one = json!({"shards": [{"shard": 0, "replicas": [copy("http://a", "firing")]}, {"shard": 1, "replicas": [copy("http://b", "ok")]}]});
         let fired = a.check_cluster(&one, 40_000).into_iter().find(|e| e.rule == "disk-full").unwrap();
@@ -3731,7 +3731,7 @@ mod tests {
         let fired: Vec<&str> = changes.iter().filter(|e| e.state == "firing").map(|e| e.rule.as_str()).collect();
         assert!(fired.contains(&"disk-full") && fired.contains(&"shard-no-majority"), "{fired:?}");
         let j = a.one("disk-full").unwrap();
-        assert_eq!(j["where"][0]["short"], "s1-0", "{j}");
+        assert_eq!(j["where"][0]["short"], "b", "{j}");
         assert_eq!(j["copies"]["firing"], 1);
         let m = a.one("shard-no-majority").unwrap();
         assert_eq!(m["where"][0]["shard"], 1, "{m}");
@@ -3788,7 +3788,7 @@ mod tests {
         assert_eq!(s["state"], "ok", "{s}");
         assert_eq!(s["copies"]["rule_differs"], 1, "{s}");
         let w = s["where"].as_array().unwrap();
-        assert_eq!((w.len(), w[0]["short"].as_str(), w[0]["rule_differs"].as_bool(), w[0]["copy_state"].as_str()), (1, Some("s1-0"), Some(true), Some("firing")), "{s}");
+        assert_eq!((w.len(), w[0]["short"].as_str(), w[0]["rule_differs"].as_bool(), w[0]["copy_state"].as_str()), (1, Some("b"), Some(true), Some("firing")), "{s}");
         assert_eq!(a.to_push(&snap, 1_000), ["http://b"], "only the copy on the old rule");
         a.pushed_to("http://b", 1_000, Err("older strata-server".into()));
         assert!(a.to_push(&snap, 2_000).is_empty(), "not again within 30 s");

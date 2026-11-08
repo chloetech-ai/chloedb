@@ -92,7 +92,8 @@ const pct0 = (v) => (v == null ? "–" : fmt.pct(v, 0));
 const plural = (n, w, ws) => fmt.plural(n, w, ws);
 const copies_ = (n) => plural(n, "copy", "copies");
 /** Capitalised, except a copy's name (s9-2) or a URL, which keep their case. */
-const cap = (t) => (!t || /^(s\d+-\d+|[a-z]+:\/\/|[a-z0-9-]+\.[a-z])/.test(t) ? t : t[0].toUpperCase() + t.slice(1));
+// A text that begins with a copy's name (s1-0, a0, 127.0.0.1:8004) or a URL keeps its case.
+const cap = (t) => (!t || /^(s\d+-\d+|[a-z]+:\/\/|[a-z0-9-]+\.[a-z]|[a-z][\w-]*\d[\w-]*\b|\S+:\d+\b)/.test(t) ? t : t[0].toUpperCase() + t.slice(1));
 /** 4 h 45 min, 22 min, 40 s. */
 function dur(secs) {
   if (secs == null || !Number.isFinite(secs)) return "–";
@@ -116,9 +117,11 @@ const kn = (v) => (v == null ? "–" : v >= 1000 ? (v / 1000).toFixed(v >= 1e5 ?
 const nodeLabel = (k) => (k && k.length > 18 ? "…" + k.slice(-14) : k || "–");
 
 /**
- * A copy's name: the cluster's short name (s1-0), which the server's texts,
- * events, alerts and Home say too (NEW-scenarios-7); its server's own name
- * goes beside it as a subtitle, and the URL in a tooltip.
+ * A copy's name: the cluster's short name, from its address (s1-0 for a pod
+ * the operator runs, a0, 127.0.0.1:8004), which it keeps when another copy
+ * leaves and which the server's texts, events, alerts and Home say too
+ * (NEW-scenarios-7); its server's own name goes beside it as a subtitle,
+ * and the URL in a tooltip.
  */
 const cname = (c) => (c.url && core.copyName(c.url, state.cluster)) || c.id || c.name;
 const cspan = (c, cls = "") => h("span", { class: "mono " + cls, title: [c.name && c.name !== c.id ? "server " + c.name : null, c.url].filter(Boolean).join(" · ") }, cname(c),
@@ -1201,7 +1204,7 @@ function render(page, r) {
       const g = s("g", { transform: `translate(${x},${y})`, class: "cc-dg", tabindex: 0, role: "button", "aria-label": `${cname(c)}, ${c.down ? "down" : c.role}` });
       const lines = [
         c.down ? (c.downSince ? `down ${dur((Date.now() - c.downSince) / 1000)}` : "down") : c.primary ? "primary" : c.copying ? "being copied" : c.lag ? `${kn(c.lag)} behind` : "in sync",
-        [c.node ? nodeLabel(c.node) : null, c.zone ? "zone " + c.zone : null].filter(Boolean).join(" · ") || short(c.url),
+        [c.node ? nodeLabel(c.node) : null, c.zone ? "zone " + c.zone : null].filter(Boolean).join(" · ") || (short(c.url) === cname(c) ? "" : short(c.url)),
         c.down ? (c.wasPrimary ? "was the primary" : c.error || "no answer") : c.noReads ? `serves no reads · CPU ${pct0(c.cpu)}` : `p99 ${fmt.ms(c.p99)} · CPU ${pct0(c.cpu)}`,
       ];
       g.append(s("rect", { width: bw, height: bh, rx: 8, class: cls }),
