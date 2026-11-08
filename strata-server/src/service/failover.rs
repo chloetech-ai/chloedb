@@ -9,6 +9,11 @@
 //! a copy holding every transaction it holds; a replica whose primary
 //! called within the delay refuses, and so does a primary that serves. A
 //! replica a majority elects begins the term and ships to the others.
+//! Each round ends once its answers decide it, so that a copy that is
+//! down or cut off holds none up, and a replica that granted a vote waits
+//! a whole delay from then before it asks itself: the copy it voted for
+//! may be a moment from winning, and a newer term asked for would fence
+//! it.
 //!
 //! A write is acknowledged once a majority of the copies hold it (with
 //! `--write-acks all` or `majority`), and an election needs a majority of

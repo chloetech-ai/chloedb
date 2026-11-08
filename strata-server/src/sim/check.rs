@@ -24,8 +24,9 @@ pub struct Stats {
     pub writes_failed: u64,
     pub reads_ok: u64,
     pub reads_failed: u64,
-    /// Terms begun past the first, by elections.
+    /// Terms begun past the first, by elections, and when each began.
     pub elections: u64,
+    pub began_at: Vec<Time>,
     /// Promotions by hand asked for, and those that won.
     pub promotions: u64,
     pub promoted: u64,
@@ -97,6 +98,7 @@ impl History {
     /// its first call to a replica that knows the newer term ends it.
     pub fn began(&mut self, i: usize, term: u64, db: &ModelDb, now: Time) {
         self.stats.elections += 1;
+        self.stats.began_at.push(now);
         if let Some(&j) = self.terms.get(&term) {
             if j != i {
                 self.violation(format!("two primaries in term {term}: s{j} and s{i} both began it"));
