@@ -1480,6 +1480,24 @@ curl -s localhost:7700/v1/judge -d '{"query": "mrna vaccine side effects", "keys
 
 On 25 TREC-COVID queries, pooling the top 10 of BM25 and of dense retrieval (464 rows), `claude-haiku-5-5`'s grades agreed with TREC's on "relevant" for 84% of the rows TREC judged (Cohen's kappa 0.57), were the more lenient (27% of the rows TREC judged not relevant got 2 or 3), and named the same winner of the two rankings on 21 of the 24 queries TREC's judgments decide; they reproduce the size of a gap less well (Kendall's tau 0.32 between the per-query differences). They are a good stand-in for telling which ranking is better on queries nobody has judged, and a weaker one for absolute nDCG. The study (`strata-server/results/judge/`) sent the prompts through Claude Code, where the model thinks before most answers; the endpoint asks without thinking.
 
+## The on-call agent
+
+`POST /v1/admin/oncall` (admin) has a Claude model look into a firing alert (`{"alert": "<rule>"}`) or a question about the cluster (`{"question": "why did p99 double at 14:05?"}`) the way an operator would, and report what it found and what it would do. It has the read-only views of this page as tools: health (`fleet` for every coordinator's), the cluster's shards and copies, each copy's load, the host, the alerts and one rule's events, the events timeline, the running, slow and recent queries and the statistics by statement, this server's log lines, the metrics series and the contain rules. Each tool call is a request to the server's own route with the caller's key, through the same checks and audit as any other, named `oncall` in the query log (`x-strata-app`), and the model sees at most 12,000 characters of each answer.
+
+It changes nothing. What it would do is a proposal: a contain rule (limit or refuse a statement or a key for a while), removing one, cancelling a running query, or silencing an alert. Each is kept for an admin to approve or reject, and can be approved for an hour; after that it is `expired`, so an action seen fit then is not applied to a cluster that has moved on. Approving one makes its request with the approver's key and the proposal's reason (`x-strata-reason: on-call proposal p3: <why>`), so the audit log and the contain rule name the admin who approved it.
+
+```sh
+curl -s localhost:7700/v1/admin/oncall -H "authorization: Bearer $ADMIN_KEY" -d '{"alert": "p99_high", "note": true}'
+# {"run": "oc1762557300112", "answer": "Summary: one statement holds every core ...\nProposed actions: p1 ...",
+#  "proposals": [{"id": "p1", "action": "contain", "what": "limit statement 9f3c... to 2 at once for 15 min", "why": "...", "state": "pending", ...}],
+#  "steps": [{"tool": "alerts", "input": {"rule": "p99_high"}, "ok": true, "took_ms": 1.9}, ...], "usage": {...}}
+curl -s localhost:7700/v1/admin/oncall/proposals?state=pending -H "authorization: Bearer $ADMIN_KEY"
+curl -s -X POST localhost:7700/v1/admin/oncall/proposals/p1/approve -H "authorization: Bearer $ADMIN_KEY"
+curl -s -X POST localhost:7700/v1/admin/oncall/proposals/p1/reject -H "authorization: Bearer $ADMIN_KEY" -d '{"reason": "a deploy is rolling back"}'
+```
+
+The report comes as a summary, the evidence (what each tool showed), the likely cause and how sure the model is, the proposals, and what to watch. `note: true` also writes it as a note on the events timeline. A run takes at most `max_steps` model calls (12 by default, 30 at most); the model, effort and key are the agent's. Approval is an admin's, as each action's route is: there is no narrower key for it yet.
+
 ## Agents over MCP
 
 An agent such as Claude Code, Claude Desktop or any client of the [Model Context Protocol](https://modelcontextprotocol.io) drives Strata through tools: it lists the tables, reads their `CREATE TABLE` statements, checks a statement before it runs it, queries, writes, and looks up the syntax it needs in this documentation, which the server carries. `POST /v1/mcp` speaks the protocol's Streamable HTTP transport (versions 2025-06-18, 2025-03-26 and 2024-11-05), answering each message with JSON; `strata-server mcp` speaks it over stdin and stdout, for a client that starts its servers as commands, and sends each message to a server's `/v1/mcp`.

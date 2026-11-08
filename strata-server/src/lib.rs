@@ -50,6 +50,7 @@ pub mod mcp;
 pub mod media;
 pub mod metrics;
 pub mod obs;
+pub mod oncall;
 pub mod operator;
 // fleet: coordinators that know each other.
 pub mod peers;
