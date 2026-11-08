@@ -656,17 +656,21 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
-      # setup-bun downloads Bun from GitHub's releases, which answered the
-      # runners 504 for an hour on 8 November; npm's registry has the same
-      # Bun.
+      # setup-bun and setup-deno download from GitHub's releases, which
+      # answered the runners 504 for an hour on 8 November; npm's registry
+      # has the same Bun and Deno.
       - uses: oven-sh/setup-bun@v2
         id: bun
         continue-on-error: true
       - if: steps.bun.outcome == 'failure'
         run: npm install -g bun && bun --version
       - uses: denoland/setup-deno@v2
+        id: deno
+        continue-on-error: true
         with:
           deno-version: v2.x
+      - if: steps.deno.outcome == 'failure'
+        run: npm install -g deno && deno --version
       # strata-js and strata-server build for a generic CPU: one cache on
       # every runner.
       - uses: Swatinem/rust-cache@v2
