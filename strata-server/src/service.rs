@@ -46,6 +46,7 @@ pub(crate) mod arrivals;
 mod failover;
 pub mod feed;
 mod moving;
+mod scroll;
 pub mod scrub;
 mod switch;
 
@@ -53,6 +54,7 @@ pub use failover::tuned as failover_tuned;
 pub(crate) use moving::Moving;
 pub use feed::MARK;
 pub use moving::FREEZE_TTL;
+pub use scroll::{owner as scroll_owner, ScrollAsk, MAX_KEEP_ALIVE, MAX_SCROLL_ROWS};
 
 tokio::task_local! {
     /// The cluster map epoch the request being served routes by, as
@@ -240,6 +242,9 @@ pub struct QueryReq {
     /// ([`Service::stats_version`]), which a coordinator kept: run only on
     /// that version, else answer [`Answer::stale`]. 0: any version.
     pub stats_version: u64,
+    /// Start a scroll ([`scroll`]): answer the first page, and keep the
+    /// rest for [`Service::scroll_next`] ([`Answer::cursor`]).
+    pub scroll: Option<ScrollAsk>,
     /// From a coordinator that fuses a rank-safe boost from the rows each
     /// shard's bound found alone ([`crate::grpc::BOOSTS_PROTOCOL`]): the
     /// shard leaves out the boost's inputs' top rows
@@ -298,6 +303,8 @@ pub struct Answer {
     /// The query did not run: its [`QueryReq::stats_version`] is not the
     /// version it would read.
     pub stale: bool,
+    /// A scroll's cursor, while rows are left to read ([`QueryReq::scroll`]).
+    pub cursor: Option<String>,
 }
 
 /// An answer of no rows, of a query that did not run.
@@ -556,6 +563,11 @@ pub struct Service {
     pub lease_ttl: Duration,
     leases: Mutex<HashMap<u64, Lease>>,
     next_lease: AtomicU64,
+    /// The open scrolls, by cursor ([`scroll`]).
+    scrolls: Mutex<HashMap<String, scroll::Cursor>>,
+    /// The rows (or rows' places) the open scrolls may hold between them
+    /// (`--max-scroll-rows`).
+    pub max_scroll_rows: usize,
     /// Random for each run of the server: what a snapshot's statistics
     /// version is drawn from with its txn ([`Self::stats_version`]), so
     /// that versions from before a restart are not taken for later ones.
@@ -714,6 +726,8 @@ impl Service {
             lease_ttl: Duration::from_secs(60),
             leases: Mutex::new(HashMap::new()),
             next_lease: AtomicU64::new(1),
+            scrolls: Mutex::new(HashMap::new()),
+            max_scroll_rows: MAX_SCROLL_ROWS,
             stats_nonce: std::hash::BuildHasher::hash_one(&std::hash::RandomState::new(), (std::process::id(), Instant::now())),
             stale_stats: AtomicU64::new(0),
             admission: Arc::new(Semaphore::new(max_concurrent.max(1))),
@@ -1953,6 +1967,13 @@ impl Service {
         self.leases.lock().unwrap_or_else(|e| e.into_inner()).get(&lease).map(|x| x.expansions.clone())
     }
 
+    /// Keeps lease `id` for `ttl` from now, if it is held.
+    fn renew_lease(&self, id: u64, ttl: Duration) {
+        if let Some(x) = self.leases.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&id) {
+            x.until = x.until.max(Instant::now() + ttl);
+        }
+    }
+
     /// Ends `leases` before they expire, and releases the versions only
     /// they held. Leases unknown or expired are passed over.
     pub fn release(&self, leases: &[u64]) {
@@ -2385,6 +2406,8 @@ impl Service {
         let live = self.live.start(&req.sql, kind, req.shard, &meta);
         // A shard's answer to a coordinator's leaf, as Arrow columns.
         let mut arrow = Vec::new();
+        // A scroll's cursor, while rows are left.
+        let mut cursor = None;
         let res = match &self.backend {
             Backend::Local(db) => {
                 let stats = req.stats.take().map(Arc::new);
@@ -2433,15 +2456,26 @@ impl Service {
                     // Arrow columns for a coordinator that puts this
                     // shard's rows after the others'.
                     let columns = req.arrow.filter(|_| req.shard && cfg!(feature = "datafusion") && strata::cluster::concatenates(&select));
+                    // A scroll's first page, at most the window, and what
+                    // its ordered rows may hold.
+                    let scroll = req.scroll.as_ref().map(|a| (self.page_size(a.page), self.max_scroll_rows));
                     // The work holds the slot and the count until it ends,
                     // and stops at its next check if this future is dropped.
                     let te = Instant::now();
                     let r = tokio::task::spawn_blocking(move || {
                         let _held = (permit, running);
                         let started = Instant::now();
-                        let r = match columns {
-                            Some(over) => db.execute_leaf(&view, &select, &opts, over).and_then(shard_leaf),
-                            None => db.execute(&view, &select, &opts).map(|rs| (rs, Vec::new())),
+                        let r = match (scroll, columns) {
+                            (Some((page, hold)), _) => db
+                                .scroll(&view, &select, &opts, page, hold)
+                                .map(|(rs, s)| (rs, Vec::new(), Some(s)))
+                                // What a scroll may hold is this server's flag.
+                                .map_err(|e| match e {
+                                    strata::Error::Query(m) if m.contains("a scroll of") => strata::Error::Query(format!("{m} (--max-scroll-rows)")),
+                                    e => e,
+                                }),
+                            (None, Some(over)) => db.execute_leaf(&view, &select, &opts, over).and_then(shard_leaf).map(|(rs, ipc)| (rs, ipc, None)),
+                            (None, None) => db.execute(&view, &select, &opts).map(|rs| (rs, Vec::new(), None)),
                         };
                         (r, started, Instant::now())
                     })
@@ -2450,13 +2484,15 @@ impl Service {
                     drop(cancel);
                     telemetry::record("execute", te, if matches!(r, Ok((Ok(_), ..))) { "ok" } else { "error" });
                     match r {
-                        Ok((r, started, ended)) => r
-                            .map(|(mut rs, ipc)| {
-                                steps::around(&mut rs.stats.steps, te, started, ended, back);
-                                arrow = ipc;
-                                (rs, Vec::new())
-                            })
-                            .map_err(ApiError::from),
+                        Ok((r, started, ended)) => {
+                            let (mut rs, ipc, scrolled) = r?;
+                            steps::around(&mut rs.stats.steps, te, started, ended, back);
+                            arrow = ipc;
+                            if let (Some(s), Some(ask)) = (scrolled, &req.scroll) {
+                                cursor = self.keep_scroll(s, Some(snap.clone()), &schema.table, &req.sql, ask)?;
+                            }
+                            Ok((rs, Vec::new()))
+                        }
                         Err(e) => Err(ApiError::internal(e)),
                     }
                 })
@@ -2464,6 +2500,9 @@ impl Service {
             }
             Backend::Cluster(c) => {
                 LiveQueries::run(&live, async {
+                    if req.scroll.is_some() {
+                        return Err(no_cluster_scroll());
+                    }
                     let ta = Instant::now();
                     let permit = self.admit(timeout).await;
                     telemetry::record("admission", ta, if permit.is_some() { "ok" } else { "rejected" });
@@ -2487,7 +2526,7 @@ impl Service {
         // statistics of this version.
         if stale {
             self.stale_stats.fetch_add(1, Ordering::Relaxed);
-            return Ok(Answer { rs: no_rows(), took_ms: t0.elapsed().as_secs_f64() * 1e3, kind, missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: true });
+            return Ok(Answer { rs: no_rows(), took_ms: t0.elapsed().as_secs_f64() * 1e3, kind, missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: true, cursor: None });
         }
         if req.reads {
             match (&res, &self.backend) {
@@ -2507,7 +2546,7 @@ impl Service {
         if let Some(l) = (req.release && req.snapshot != 0).then_some(req.snapshot).or(made) {
             self.release(&[l]);
         }
-        a.map(|a| Answer { lease, arrow, ..a })
+        a.map(|a| Answer { lease, arrow, cursor, ..a })
     }
 
     /// What the query log keeps of a query besides its text: who sent it
@@ -2532,6 +2571,13 @@ impl Service {
             (Ok((rs, _)), Some(m)) if rs.rows.len() > m => Err(ApiError::bad(format!("query error: the query matches more than {m} rows, the most a query returns; add a LIMIT"))),
             (r, _) => r,
         };
+        // Past the window, a server's client can scroll.
+        if let Err(e) = &mut res {
+            let window = e.message.contains("a query returns at most") || e.message.contains("the most a query returns");
+            if window && !shard && matches!(self.backend, Backend::Local(_)) {
+                e.message.push_str(" (or read every row a page at a time: a scroll, page_size)");
+            }
+        }
         // The steps count from the request's start, as its trace does: a
         // shard's, from the start of the call the coordinator made.
         if let Ok((rs, _)) = &mut res {
@@ -2556,7 +2602,7 @@ impl Service {
         if !quiet {
             self.query_log.add(sql, kind, outcome, secs, rows, shard, res.as_ref().err().map(|e| e.message.as_str()), slow, res.as_ref().ok().map(|(rs, _)| &rs.stats), profiled, meta);
         }
-        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0, arrow: Vec::new(), stale: false })
+        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0, arrow: Vec::new(), stale: false, cursor: None })
     }
 
     /// A compound query ([`compound`]): its plan's leaves run on one
@@ -2570,6 +2616,10 @@ impl Service {
         let deadline = t0 + timeout;
         let req_sql = req.sql.clone();
         let meta = self.meta(&req);
+        let scroll = req.scroll.clone();
+        if scroll.is_some() && matches!(self.backend, Backend::Cluster(_)) {
+            return Err(no_cluster_scroll());
+        }
         let live = self.live.start(&req.sql, kind, req.shard, &meta);
         let r = LiveQueries::run(&live, self.compound_run(req, plan, catalog, t0, timeout)).await;
         drop(live);
@@ -2577,7 +2627,22 @@ impl Service {
             Err(_) if Instant::now() > deadline => Err(ApiError { status: 504, message: format!("the query ran past its {} ms deadline", timeout.as_millis()) }),
             r => r,
         };
-        self.done(&req_sql, kind, t0, self.max_rows, false, (profiled, quiet), &meta, res)
+        let Some(ask) = scroll else {
+            return self.done(&req_sql, kind, t0, self.max_rows, false, (profiled, quiet), &meta, res);
+        };
+        // A scroll of a compound query holds its answer's rows.
+        let most = self.max_scroll_rows;
+        let res = match res {
+            Ok((rs, _)) if rs.rows.len() > most => Err(ApiError::bad(format!(
+                "query error: the query answers {} rows; a scroll of a join, WITH, UNION or DISTINCT holds its answer's rows, at most {most} (--max-scroll-rows)",
+                rs.rows.len()
+            ))),
+            r => r,
+        };
+        let a = self.done(&req_sql, kind, t0, None, false, (profiled, quiet), &meta, res)?;
+        let (first, s) = strata::query::exec::Scroll::of_rows(a.rs, self.page_size(ask.page));
+        let cursor = self.keep_scroll(s, None, "", &req_sql, &ask)?;
+        Ok(Answer { rs: first, cursor, ..a })
     }
 
     /// The work of [`Self::compound`]; [`Self::done`] counts it.
@@ -4152,6 +4217,8 @@ impl Service {
                     one("strata_free_bytes", "gauge", "Bytes of the database file free for reuse (0 in the directory layout).", (f.free_pages * strata::storage::pager::PAGE) as f64),
                     one("strata_wal_bytes", "gauge", "Bytes of the write-ahead log.", f.wal_bytes as f64),
                     one("strata_snapshot_leases", "gauge", "Snapshot leases held.", self.sweep_leases() as f64),
+                    one("strata_scrolls_open", "gauge", "Scrolls open: queries read a page at a time (page_size).", self.sweep_scrolls().0 as f64),
+                    one("strata_scroll_rows_held", "gauge", "Rows, or rows' places, the open scrolls hold between pages (at most --max-scroll-rows).", self.sweep_scrolls().1 as f64),
                     one("strata_stale_stats_total", "counter", "Queries a coordinator sent with kept BM25 statistics of an older version, answered without running.", self.stale_stats.load(Ordering::Relaxed) as f64),
                     one("strata_failing", "gauge", "1 when the database cannot write until the server restarts.", self.failing().is_some() as u8 as f64),
                     one("strata_flush_failing", "gauge", "1 while flushes fail (a full disk).", db.storage().flush_error().is_some() as u8 as f64),
@@ -4276,6 +4343,11 @@ fn shard_leaf(leaf: Leaf) -> strata::Result<(ResultSet, Vec<u8>)> {
             Ok((rs, ipc))
         }
     }
+}
+
+/// A coordinator's refusal of a scroll.
+fn no_cluster_scroll() -> ApiError {
+    ApiError::bad("a scroll (page_size) reads one server's rows, not yet a coordinator's: page through a cluster by a column, WHERE n > :last ORDER BY n LIMIT k")
 }
 
 fn too_many() -> ApiError {

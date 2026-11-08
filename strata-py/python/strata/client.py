@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from ._search import Search, ordered_schema, params as _params
 from ._native import StrataError
@@ -50,6 +50,11 @@ def _retry_after(headers: Any) -> float:
         return min(max(float(headers.get("retry-after") or 1), 0.0), 10.0)
     except (TypeError, ValueError):
         return 1.0
+
+
+# The rows a frame asks of each page of a server's answer: the server cuts
+# it to its --max-result-window.
+FRAME_PAGE = 100_000
 
 
 class Client(Search, FrameStore):
@@ -158,26 +163,70 @@ class Client(Search, FrameStore):
         return self._arrow_answer(sql, _params(params, kw), timeout_ms, {})
 
     def _arrow_answer(self, sql: str, params: Mapping[str, Any], timeout_ms: int | None, types: Mapping[str, dict]):
+        body: dict[str, Any] = {"sql": sql, "params": params}
+        if timeout_ms:
+            body["timeout_ms"] = timeout_ms
+        return self._arrow_page(body, types)[0]
+
+    def _arrow_page(self, body: dict, types: Mapping[str, dict]) -> tuple[Any, str | None]:
+        """An answer (or a scroll's page) as a pyarrow Table, and the
+        scroll's cursor while rows are left."""
         import io
 
         from .frame import _pyarrow
 
         _pyarrow()
         if self._json_only:
-            r = self.query(sql, params, timeout_ms=timeout_ms)
-            return _client_arrow(r, types)
-        body: dict[str, Any] = {"sql": sql, "params": params, "format": "arrow"}
-        if timeout_ms:
-            body["timeout_ms"] = timeout_ms
+            j = self._call("POST", "/v1/query", body)
+            return _client_arrow(Result._of(j), types), j.get("cursor")
         buf = io.BytesIO()
-        headers = self._call("POST", "/v1/query", body, out=buf)
+        headers = self._call("POST", "/v1/query", {**body, "format": "arrow"}, out=buf)
         if "arrow" not in (headers.get("content-type") or ""):
             # A server from before Arrow answers ignores "format".
             self._json_only = True
-            return _client_arrow(Result._of(json.loads(buf.getvalue() or b"null")), types)
+            j = json.loads(buf.getvalue() or b"null")
+            return _client_arrow(Result._of(j), types), j.get("cursor")
         import pyarrow.ipc
 
-        return pyarrow.ipc.open_stream(buf.getvalue()).read_all()
+        return pyarrow.ipc.open_stream(buf.getvalue()).read_all(), headers.get("x-strata-cursor")
+
+    def scroll(self, sql: str, params: Mapping[str, Any] | None = None, *, page_size: int = 10_000, arrow: bool = False, keep_alive_ms: int | None = None, timeout_ms: int | None = None, **kw: Any) -> Iterator[Any]:
+        """Runs a SELECT and yields its answer a page at a time: `Result`s,
+        or with `arrow=True` pyarrow Tables, of at most `page_size` rows
+        (and at most the server's --max-result-window, which caps each page
+        instead of the whole answer). Every page reads the version of the
+        database the first read. The server keeps the rest for
+        `keep_alive_ms` after each page (default its lease TTL, 60 s);
+        leaving the loop early ends it. A server from before scrolls
+        answers in one page."""
+        body: dict[str, Any] = {"sql": sql, "params": _params(params, kw), "page_size": int(page_size)}
+        more: dict[str, Any] = {}
+        if keep_alive_ms:
+            more["keep_alive_ms"] = int(keep_alive_ms)
+        if timeout_ms:
+            more["timeout_ms"] = int(timeout_ms)
+        body.update(more)
+        cursor = None
+        try:
+            while True:
+                if arrow:
+                    page, cursor = self._arrow_page(body, {})
+                else:
+                    j = self._call("POST", "/v1/query", body)
+                    page, cursor = Result._of(j), j.get("cursor")
+                yield page
+                if not cursor:
+                    return
+                body = {"cursor": cursor, **more}
+        finally:
+            if cursor:
+                self._close_cursor(cursor)
+
+    def _close_cursor(self, cursor: str) -> None:
+        try:
+            self._call("DELETE", f"/v1/query/cursors/{cursor}")
+        except (StrataError, OSError):
+            pass  # it ends when its keep-alive does
 
     def sql(self, sql: str, params: Mapping[str, Any] | None = None, *, idempotency_key: str | None = None, **kw: Any) -> Result | int:
         """Runs any statement: a SELECT's `Result`, or the number of rows an
@@ -498,15 +547,39 @@ class Client(Search, FrameStore):
     # fields its columns read; rows go up as Parquet.
 
     def _frame_arrow(self, sql: str, params: Mapping[str, Any], types: Mapping[str, dict]) -> Any:
+        pages = list(self._frame_batches(sql, params, types))
+        if len(pages) == 1:
+            return pages[0]
+        import pyarrow
+
+        # A page types each column by its values: one of NULLs only, or of
+        # whole numbers where another has fractions, widens to the others'.
+        return pyarrow.concat_tables(pages, promote_options="permissive")
+
+    def _frame_batches(self, sql: str, params: Mapping[str, Any], types: Mapping[str, dict]) -> Iterator[Any]:
+        """A frame's answer a page at a time (pyarrow Tables), by a scroll
+        of pages as large as the server allows."""
+        body: dict[str, Any] = {"sql": sql, "params": _params(params, {}), "page_size": FRAME_PAGE}
+        cursor = None
         try:
-            return self._arrow_answer(sql, _params(params, {}), None, types)
-        except StrataError as e:
-            # A server answers at most --max-result-window rows a query.
-            if "a query returns at most" not in str(e) and "the most a query returns" not in str(e):
-                raise
-            err = StrataError(f"{e}; a frame reads its rows in one query, so a server that holds more for it needs a larger --max-result-window (0: none)")
-            err.status, err.answer = getattr(e, "status", None), getattr(e, "answer", None)
-            raise err from None
+            while True:
+                try:
+                    page, cursor = self._arrow_page(body, types)
+                except StrataError as e:
+                    # A server from before scrolls answers at most
+                    # --max-result-window rows a query.
+                    if "a query returns at most" not in str(e) and "the most a query returns" not in str(e):
+                        raise
+                    err = StrataError(f"{e}; this server reads a frame in one query (it is from before scrolls), so it needs a larger --max-result-window (0: none)")
+                    err.status, err.answer = getattr(e, "status", None), getattr(e, "answer", None)
+                    raise err from None
+                yield page
+                if not cursor:
+                    return
+                body = {"cursor": cursor}
+        finally:
+            if cursor:
+                self._close_cursor(cursor)
 
     def _explain(self, sql: str, params: Mapping[str, Any]) -> list[str]:
         return list(self.explain(sql, params).get("tree") or [])

@@ -181,7 +181,7 @@ impl SegHandle {
     }
 }
 
-fn lock_tail(m: &Mutex<Option<MemSeg>>) -> std::sync::MutexGuard<'_, Option<MemSeg>> {
+fn lock_tail(m: &Mutex<Vec<MemSeg>>) -> std::sync::MutexGuard<'_, Vec<MemSeg>> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -236,11 +236,6 @@ impl Chunk {
     /// The documents appended so far, in order.
     pub fn iter(&self) -> impl Iterator<Item = &Document> + '_ {
         (0..self.len()).map(|i| self.get(i))
-    }
-
-    /// The first `n` documents, copied.
-    pub fn to_vec(&self, n: usize) -> Vec<Document> {
-        (0..n).map(|i| self.get(i).clone()).collect()
     }
 }
 
@@ -366,10 +361,10 @@ pub(crate) struct TableState {
     pub mem_live: Vec<Option<(usize, usize, Arc<LiveDocs>)>>,
     /// The latest segment built for each memtable chunk (emptied by a flush).
     pub memsegs: Vec<Option<MemSeg>>,
-    /// The latest segment a snapshot built of the memtable's last chunk,
-    /// which snapshots build only when a query needs its indexes
-    /// ([`crate::storage::snapshot`]); shared with them.
-    pub tail: Arc<Mutex<Option<MemSeg>>>,
+    /// The latest segments a snapshot built of the pieces of the memtable's
+    /// last chunk, which snapshots build only when a query needs their
+    /// indexes ([`crate::storage::snapshot`]); shared with them.
+    pub tail: Arc<Mutex<Vec<MemSeg>>>,
     /// Its rank profiles, sorted by name: those of the manifest and those
     /// logged since, which the next version writes
     /// ([`crate::storage::manifest::TableMeta::profiles`]).
@@ -418,7 +413,7 @@ impl TableState {
 
     /// Empties the memtable (after a flush).
     pub fn clear_mem(&mut self) {
-        *lock_tail(&self.tail) = None;
+        lock_tail(&self.tail).clear();
         self.mem.clear();
         self.mem_live.clear();
         self.memsegs.clear();
@@ -454,12 +449,10 @@ impl TableState {
                 .collect();
             self.mem_live = self.mem_live.drain(..).skip(k).collect();
             let mut tail = lock_tail(&self.tail);
-            match tail.as_mut() {
-                Some(s) if s.gen == old.gen && s.chunk >= k => {
-                    s.gen = gen;
-                    s.chunk -= k;
-                }
-                _ => *tail = None,
+            tail.retain(|s| s.gen == old.gen && s.chunk >= k);
+            for s in tail.iter_mut() {
+                s.gen = gen;
+                s.chunk -= k;
             }
         } else {
             for p in n..old.len {

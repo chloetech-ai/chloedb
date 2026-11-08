@@ -83,9 +83,15 @@ pub struct DbOptions {
     /// Flush when the memtable's documents plus pending deletes exceed this.
     pub memtable_max_docs: usize,
     /// Documents per memtable chunk (rounded up to a multiple of 64). Each
-    /// chunk is one in-memory segment of a snapshot; the first snapshot
-    /// after a write rebuilds only the last chunk's.
+    /// full chunk is one in-memory segment of a snapshot, built once.
     pub memtable_chunk_docs: usize,
+    /// The last chunk, which every write changes, is built in pieces of
+    /// this many documents (rounded up to a multiple of 64), a segment
+    /// each: the first query after a write rebuilds only the last piece,
+    /// whose cost grows with its rows (a text field's analysis above all),
+    /// and takes the others as they were. 0, or `memtable_chunk_docs` or
+    /// more: the last chunk is one piece.
+    pub memtable_tail_docs: usize,
     /// Largest segment written by flushes and bulk loads.
     pub segment_max_docs: usize,
     /// `fsync` at every commit. Without it a process crash still loses
@@ -217,6 +223,7 @@ impl Default for DbOptions {
             mem_build: None,
             memtable_max_docs: 10_000,
             memtable_chunk_docs: 1024,
+            memtable_tail_docs: 128,
             segment_max_docs: 100_000,
             sync: true,
             doc_source: None,
@@ -2268,7 +2275,7 @@ impl Database {
             }
         }
         let version = cap.version;
-        let inner = Arc::new(cap.assemble(self.path.clone(), &self.mem_opts));
+        let inner = Arc::new(cap.assemble(self.path.clone(), &self.mem_opts, self.opts.memtable_tail_docs));
         if with_mem {
             let mut st = lock(&self.state);
             if st.version == version {

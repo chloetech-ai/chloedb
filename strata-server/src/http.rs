@@ -9,7 +9,8 @@
 //! | `GET /v1/tables` | | `{tables: [...]}`: every table's schema and rank profiles, the first first |
 //! | `GET /v1/tables/:table/paths?field=attrs&path=dims&where=cond` | | `{table, field, rows, paths: [{path, keys, rows, types: {string, number, bool}, distinct, min?, max?, values?: [{value, rows}]}], truncated}`: the paths a JSON field's objects hold ([`strata::query::paths`]), under `path` if given, among the rows `where` matches; from a coordinator, every shard's summed |
 //! | `GET /metrics` | | Prometheus text |
-//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, profile?, format?}` | rows, and in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`strata::rank_log`]); with `"format": "arrow"` the rows as an Arrow IPC stream (`application/vnd.apache.arrow.stream`, typed as `strata::query::arrow::answer_batch` types them; `x-strata-took-ms` and `x-strata-stats` headers) |
+//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, profile?, format?, page_size?, keep_alive_ms?}`, or a scroll's next page: `{cursor, format?, keep_alive_ms?, timeout_ms?}` | rows, and in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`strata::rank_log`]); with `"format": "arrow"` the rows as an Arrow IPC stream (`application/vnd.apache.arrow.stream`, typed as `strata::query::arrow::answer_batch` types them; `x-strata-took-ms` and `x-strata-stats` headers); with `page_size` a scroll's first page (at most `--max-result-window` rows) and, while rows are left, its `cursor` (Arrow: the `x-strata-cursor` header), which reads the next page from the same version ([`crate::service`]'s scrolls) |
+//! | `DELETE /v1/query/cursors/:id` | | `{closed}`: a scroll ended before its last page |
 //! | `POST /v1/sql` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?, log?}` | rows, or `{written, seq_no?, seq_nos?}` |
 //! | `POST /v1/rank_log/export` | `{table?, since?, until?, events?, history?, window?, grades?}` | NDJSON: one record per logged row ([`strata::rank_log::export`]) |
 //! | `POST /v1/rank_log/interleaving` | the export's body | `{pairs: [{variants, requests, acted, wins, ties, delta, p}], took_ms}`: which of two interleaved rankings the users preferred ([`strata::rank_log::Credit`]) |
@@ -211,6 +212,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/config", get(config))
         .route("/metrics", get(metrics))
         .route("/v1/query", post(query))
+        .route("/v1/query/cursors/:id", axum::routing::delete(close_cursor))
         .route("/v1/sql", post(sql))
         .route("/v1/write", post(write).layer(rows.clone()))
         .route("/v1/kv/get", post(kv_get))
@@ -1122,6 +1124,37 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         Some(f) if f == "arrow" => true,
         Some(f) => return Err(ApiError::bad(format!("format is \"json\" (the default) or \"arrow\", not {f}"))),
     };
+    let who = who(w);
+    // A scroll: `page_size` starts one, its `cursor` reads the next page.
+    let given = |k: &str| b.get(k).is_some_and(|v| !v.is_null());
+    let keep_alive = match b.get("keep_alive_ms") {
+        None | Some(Json::Null) => None,
+        Some(v) => match v.as_u64() {
+            Some(ms) if ms > 0 && ms <= crate::service::MAX_KEEP_ALIVE.as_millis() as u64 => Some(Duration::from_millis(ms)),
+            _ => return Err(ApiError::bad(format!("keep_alive_ms is how long a scroll is kept after each page: 1 to {} ms", crate::service::MAX_KEEP_ALIVE.as_millis()))),
+        },
+    };
+    if given("cursor") {
+        let cursor = b["cursor"].as_str().ok_or_else(|| ApiError::bad("cursor is the string a scroll's last page answered"))?;
+        if let Some(k) = ["sql", "params", "page_size", "log", "shard", "stats", "snapshot", "min_seq_no", "min_seq_nos", "profile", "partial"].into_iter().find(|k| given(k)) {
+            return Err(ApiError::bad(format!("a scroll's next page takes its cursor alone (with format, keep_alive_ms or timeout_ms), not {k}: the query and its version are those it started with")));
+        }
+        let a = app.svc.scroll_next(cursor, &crate::service::scroll_owner(&who), keep_alive, body_u64(&b, "timeout_ms")).await?;
+        if arrow {
+            return arrow_answer(a).await;
+        }
+        return Ok(AxJson(answer_of(&b, &a)?).into_response());
+    }
+    let page = match b.get("page_size") {
+        None | Some(Json::Null) => None,
+        Some(v) => match v.as_u64() {
+            Some(n) if n > 0 => Some(n as usize),
+            _ => return Err(ApiError::bad("page_size is the most rows a scroll's page holds (1 or more; cut to --max-result-window)")),
+        },
+    };
+    if page.is_none() && keep_alive.is_some() {
+        return Err(ApiError::bad("keep_alive_ms is a scroll's: start one with page_size, or ask for its next page with its cursor"));
+    }
     let stats = match b.get("stats") {
         None | Some(Json::Null) => None,
         Some(s) => Some(serde_json::from_value(s.clone()).map_err(|e| ApiError::bad(format!("bad stats: {e}")))?),
@@ -1136,6 +1169,7 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         partial: b.get("partial").and_then(|v| v.as_bool()),
         after: after(&b)?,
         profile: b.get("profile").and_then(|v| v.as_bool()) == Some(true),
+        scroll: page.map(|page| crate::service::ScrollAsk { page, keep_alive, owner: crate::service::scroll_owner(&who) }),
         ..Default::default()
     };
     if let Some(log) = b.get("log") {
@@ -1145,10 +1179,16 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         if arrow {
             return Err(ApiError::bad("a logged query answers JSON: leave out format"));
         }
-        return logged(&app, &who(w), req, log, body_bool(&b, "objects")?).await.map(IntoResponse::into_response);
+        if req.scroll.is_some() {
+            return Err(ApiError::bad("a logged query answers at once: leave out page_size"));
+        }
+        return logged(&app, &who, req, log, body_bool(&b, "objects")?).await.map(IntoResponse::into_response);
     }
     if arrow && req.shard {
         return Err(ApiError::bad("a shard's query answers its coordinator over gRPC: leave out format"));
+    }
+    if req.shard && req.scroll.is_some() {
+        return Err(ApiError::bad("a shard answers its coordinator at once: leave out page_size"));
     }
     let a = app.svc.query(req).await?;
     if arrow {
@@ -1173,6 +1213,7 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
 async fn arrow_answer(a: crate::service::Answer) -> Result<Response, ApiError> {
     let took = a.took_ms;
     let missing = a.missing.join(",");
+    let cursor = a.cursor.clone();
     let (bytes, stats) = tokio::task::spawn_blocking(move || {
         let (batch, stats) = strata::query::arrow::answer_batch(strata::query::exec::Leaf::Rows(a.rs))?;
         Ok::<_, strata::Error>((strata::query::arrow::ipc_of(&batch)?, stats))
@@ -1191,6 +1232,9 @@ async fn arrow_answer(a: crate::service::Answer) -> Result<Response, ApiError> {
     put("x-strata-stats", serde_json::to_string(&stats).unwrap_or_default());
     if !missing.is_empty() {
         put("x-strata-missing-shards", missing);
+    }
+    if let Some(c) = cursor {
+        put("x-strata-cursor", c);
     }
     Ok(r)
 }
@@ -1335,7 +1379,18 @@ fn answer(a: &crate::service::Answer) -> Json {
     if !a.missing.is_empty() {
         j["partial"] = json!({"missing_shards": a.missing});
     }
+    // A scroll's cursor, while rows are left to read.
+    if let Some(c) = &a.cursor {
+        j["cursor"] = json!(c);
+    }
     j
+}
+
+/// `DELETE /v1/query/cursors/:id`: ends a scroll before its last page, for
+/// the key that started it: `{"closed": true}`, or false when it was not
+/// open (read to its end, closed, expired, or another key's).
+async fn close_cursor(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(json!({"closed": app.svc.close_scroll(&id, &crate::service::scroll_owner(&who(w)))})))
 }
 
 /// [`answer`], its rows as objects keyed by column when the body asks

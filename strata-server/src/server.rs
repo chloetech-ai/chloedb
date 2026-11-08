@@ -91,6 +91,10 @@ pub struct Options {
     pub max_concurrent: usize,
     /// The most rows a query may reach, OFFSET included (0: no limit).
     pub max_result_window: usize,
+    /// The rows the open scrolls may hold between them
+    /// ([`crate::service::Service::max_scroll_rows`]; `None`:
+    /// [`crate::service::MAX_SCROLL_ROWS`]).
+    pub max_scroll_rows: Option<usize>,
     /// The most groups a query may make (0: no limit).
     pub max_groups: usize,
     /// The most rows a cross-encoder's rerank phase may score (0: no
@@ -221,10 +225,12 @@ fn build_options() -> BuildOptions {
 /// How the server opens a database. Each write publishes its snapshot
 /// while queries come in, building the in-memory chunks it filled (1,024
 /// rows each; a write nobody reads leaves them to the flush, or to the
-/// first query after it): those chunks keep their vectors flat, since a
-/// graph over so few rows costs more to build at every write than an
-/// exact scan of them costs a query. Segments build their vector indexes
-/// on every core.
+/// first query after it), and the first query after it builds the last
+/// piece of the chunk still filling (128 rows,
+/// `DbOptions::memtable_tail_docs`): those chunks keep their vectors flat,
+/// since a graph over so few rows costs more to build at every write than
+/// an exact scan of them costs a query. Segments build their vector
+/// indexes on every core.
 pub fn db_options(directory: bool) -> DbOptions {
     DbOptions {
         publish_snapshots: true,
@@ -382,6 +388,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.slow = (o.slow_ms > 0).then(|| Duration::from_millis(o.slow_ms));
     svc.max_rows = (o.max_result_window > 0).then_some(o.max_result_window);
+    svc.max_scroll_rows = o.max_scroll_rows.unwrap_or(crate::service::MAX_SCROLL_ROWS);
     svc.max_groups = (o.max_groups > 0).then_some(o.max_groups);
     svc.max_rerank = (o.max_rerank > 0).then_some(o.max_rerank);
     let query_memory = match o.query_memory_mb {
@@ -997,6 +1004,7 @@ pub fn spawn_maintenance(svc: &Arc<Service>) {
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
             let Some(svc) = svc.upgrade() else { return };
+            svc.sweep_scrolls();
             svc.sweep_leases();
             let why = svc.failing().map(|w| format!("{w}; merges stop until then")).or_else(|| db.storage().merge_status().error.map(|e| format!("merge failed: {e}")));
             if why.is_some() && why != reported {
@@ -1117,6 +1125,19 @@ pub fn spawn_watch(svc: &Arc<Service>) {
 /// Serves the HTTP API and UI, over TLS with `access.tls`.
 pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access) -> std::io::Result<()> {
     let router = http::router(svc, &access);
+    serve_router(router, listener, &access).await
+}
+
+/// Serves the OpenSearch-compatible API ([`crate::opensearch`]) on its own
+/// listener (`--opensearch-listen`), with the HTTP API's credentials and
+/// TLS. `version` is the version its root reports.
+pub async fn serve_opensearch(svc: Arc<Service>, listener: TcpListener, access: Access, version: &str) -> std::io::Result<()> {
+    let router = crate::opensearch::router(svc, &access, version);
+    serve_router(router, listener, &access).await
+}
+
+/// Serves `router` on `listener`, over TLS with `access.tls`.
+async fn serve_router(router: axum::Router, listener: TcpListener, access: &Access) -> std::io::Result<()> {
     let Some(tls) = &access.tls else {
         // Each request knows its peer's address (the audit log's `addr`).
         return axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(shutdown()).await;

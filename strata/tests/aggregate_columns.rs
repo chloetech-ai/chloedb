@@ -56,7 +56,7 @@ fn row(rng: &mut rand::rngs::StdRng, i: usize) -> Vec<Value> {
 
 /// The table: most rows in segments of `seg` rows, the rest in the
 /// memtable, a tenth deleted, and `n`, `w` and `year` of some rows written
-/// in place. Returns the database and the rows it holds, in the order they
+/// in place (`n` and `w` of some to NULL). Returns the database and the rows it holds, in the order they
 /// are read.
 fn open(dir: &std::path::Path, in_place: bool, seg: usize) -> (Db, Vec<Vec<Value>>) {
     let mut rng = rand::rngs::StdRng::seed_from_u64(11);
@@ -83,6 +83,13 @@ fn open(dir: &std::path::Path, in_place: bool, seg: usize) -> (Db, Vec<Vec<Value
                     assert!(t.set(&rows[i][ID], name, v.clone()).unwrap());
                     rows[i][f] = v;
                 }
+            }
+        }
+        // Some set to NULL, a few of those set before.
+        for i in (5..ROWS).step_by(23).filter(|i| i % 10 != 0) {
+            for (f, name) in [(N, "n"), (W, "w")] {
+                assert!(t.set(&rows[i][ID], name, Value::Null).unwrap());
+                rows[i][f] = Value::Null;
             }
         }
         t.commit().unwrap();
@@ -225,6 +232,11 @@ fn groups_from_the_columns_are_the_rows_groups() {
         let dir = tempfile::tempdir().unwrap();
         let (db, rows) = open(dir.path(), in_place, 400);
         check(&db, &rows, if in_place { "values written in place" } else { "plain" }, &ExecOptions::default());
+        // The values written in place are added beside the columns', not
+        // row by row.
+        let rs = db.query("SELECT cat, COUNT(n), SUM(n), AVG(w) FROM t GROUP BY cat", &Params::new()).unwrap();
+        let plan = rs.stats.plan.join("\n");
+        assert_eq!(plan.contains("values written in place added as they are"), in_place, "{plan}");
     }
 }
 
