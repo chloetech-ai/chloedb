@@ -542,17 +542,57 @@ impl Generator {
         Ok(Generator { ep, prompt: prompt.to_string(), agent })
     }
 
+    /// The model `name` names in `models` ([`Generator::open`]), to answer
+    /// a query's questions ([`Generator::ask`], [`crate::query::llm`]):
+    /// a query waits on it, so its requests time out as a reranker's do
+    /// (30 s unless the endpoint says) and are tried again twice.
+    pub fn open_for_queries(name: &str, models: &std::path::Path) -> Result<Generator> {
+        let bad = |m: String| Error::Query(format!("model {name}: {m}"));
+        let path = models.join(name).join("endpoint.json");
+        let config = match path.exists() {
+            true => {
+                let text = std::fs::read_to_string(&path).map_err(|e| bad(format!("{}: {e}", path.display())))?;
+                Some(serde_json::from_str::<J>(&text).map_err(|e| bad(format!("{}: {e}", path.display())))?)
+            }
+            false => None,
+        };
+        let ep = RerankEndpoint::from_config(name, config.as_ref(), &|k| std::env::var(k).ok()).map_err(|e| bad(e.to_string()))?;
+        if !ep.api.grades() {
+            return Err(bad("not a language model: anthropic/<model>, openai/<model>, or a model directory whose endpoint.json has \"api\": \"chat\" or \"anthropic\"".into()));
+        }
+        let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(ep.timeout)).http_status_as_error(false).user_agent(format!("strata/{}", env!("CARGO_PKG_VERSION"))).build().into();
+        Ok(Generator { ep, prompt: String::new(), agent })
+    }
+
+    /// Requests the endpoint takes at once.
+    pub fn concurrency(&self) -> usize {
+        self.ep.concurrency
+    }
+
+    /// The model's answer to `text`, told `system`, in `max_tokens` at
+    /// most: trimmed, tried again on a rate limit or a server's failure as
+    /// many times as the endpoint's `retries` say (2 for a query).
+    pub fn ask(&self, system: &str, text: &str, max_tokens: u64) -> Result<String> {
+        self.request(system, text, max_tokens, self.ep.retries)
+    }
+
     /// The text made of `text`: the model's answer, trimmed. An empty text
     /// makes an empty one, with no request.
     pub fn generate(&self, text: &str) -> Result<String> {
         if text.trim().is_empty() {
             return Ok(String::new());
         }
+        self.request(&self.prompt, text, GENERATED_TOKENS, self.ep.retries.max(4))
+    }
+
+    fn request(&self, system: &str, text: &str, max_tokens: u64, tries: u32) -> Result<String> {
         let ep = &self.ep;
         let text = cut(text, ep.max_chars);
         let body = match ep.api {
-            RerankApi::Anthropic => json!({"model": ep.model, "max_tokens": GENERATED_TOKENS, "temperature": 0, "system": self.prompt, "messages": [{"role": "user", "content": text}]}),
-            _ => json!({"model": ep.model, "messages": [{"role": "system", "content": self.prompt}, {"role": "user", "content": text}]}),
+            RerankApi::Anthropic => json!({"model": ep.model, "max_tokens": max_tokens, "temperature": 0, "system": system, "messages": [{"role": "user", "content": text}]}),
+            // A chat server takes its own defaults: newer OpenAI models
+            // refuse `max_tokens` and a temperature other than 1.
+            _ => json!({"model": ep.model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": text}]}),
         };
         let mut attempt = 0u32;
         loop {
@@ -562,7 +602,7 @@ impl Generator {
                 Err(f) => f,
             };
             match failure {
-                Failure::Again(m, wait) if attempt < ep.retries.max(4) => {
+                Failure::Again(m, wait) if attempt < tries => {
                     attempt += 1;
                     let pause = wait.unwrap_or_else(|| backoff(attempt)).min(Duration::from_secs(30));
                     tracing::warn!(model = %ep.name, attempt, pause_ms = pause.as_millis() as u64, "a derived text's request failed, trying again: {m}");

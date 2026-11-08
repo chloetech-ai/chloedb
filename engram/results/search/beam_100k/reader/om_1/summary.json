@@ -1,0 +1,141 @@
+{
+ "bench": "beam",
+ "data": "beam_100k.jsonl",
+ "reader": "haiku",
+ "judge": "haiku",
+ "questions": 400,
+ "configs": {
+  "om": {
+   "n": 400,
+   "score": 0.639546130952381,
+   "mean_over_types": 0.6395461309523809,
+   "by_type": {
+    "abstention": {
+     "n": 40,
+     "score": 0.7
+    },
+    "contradiction_resolution": {
+     "n": 40,
+     "score": 0.434375
+    },
+    "event_ordering": {
+     "n": 40,
+     "score": 0.3519940476190476
+    },
+    "information_extraction": {
+     "n": 40,
+     "score": 0.7526041666666667
+    },
+    "instruction_following": {
+     "n": 40,
+     "score": 0.85625
+    },
+    "knowledge_update": {
+     "n": 40,
+     "score": 0.7875
+    },
+    "multi_session_reasoning": {
+     "n": 40,
+     "score": 0.5563988095238095
+    },
+    "preference_following": {
+     "n": 40,
+     "score": 0.84375
+    },
+    "summarization": {
+     "n": 40,
+     "score": 0.40008928571428576
+    },
+    "temporal_reasoning": {
+     "n": 40,
+     "score": 0.7125
+    }
+   },
+   "by_unit": {
+    "beam100K-1": {
+     "n": 20,
+     "score": 0.5616666666666666
+    },
+    "beam100K-10": {
+     "n": 20,
+     "score": 0.67125
+    },
+    "beam100K-11": {
+     "n": 20,
+     "score": 0.6975
+    },
+    "beam100K-12": {
+     "n": 20,
+     "score": 0.689375
+    },
+    "beam100K-13": {
+     "n": 20,
+     "score": 0.6725
+    },
+    "beam100K-14": {
+     "n": 20,
+     "score": 0.5595833333333333
+    },
+    "beam100K-15": {
+     "n": 20,
+     "score": 0.6325000000000001
+    },
+    "beam100K-16": {
+     "n": 20,
+     "score": 0.6630952380952382
+    },
+    "beam100K-17": {
+     "n": 20,
+     "score": 0.6775
+    },
+    "beam100K-18": {
+     "n": 20,
+     "score": 0.6983333333333334
+    },
+    "beam100K-19": {
+     "n": 20,
+     "score": 0.6738690476190476
+    },
+    "beam100K-2": {
+     "n": 20,
+     "score": 0.67
+    },
+    "beam100K-20": {
+     "n": 20,
+     "score": 0.6116666666666666
+    },
+    "beam100K-3": {
+     "n": 20,
+     "score": 0.5916666666666667
+    },
+    "beam100K-4": {
+     "n": 20,
+     "score": 0.6116666666666667
+    },
+    "beam100K-5": {
+     "n": 20,
+     "score": 0.6858333333333333
+    },
+    "beam100K-6": {
+     "n": 20,
+     "score": 0.745
+    },
+    "beam100K-7": {
+     "n": 20,
+     "score": 0.5425
+    },
+    "beam100K-8": {
+     "n": 20,
+     "score": 0.65125
+    },
+    "beam100K-9": {
+     "n": 20,
+     "score": 0.4841666666666667
+    }
+   },
+   "context_chars": 153360.35,
+   "reader_tokens": 59297.785,
+   "cost_usd": 5.696322100000001
+  }
+ }
+}

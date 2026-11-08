@@ -569,8 +569,9 @@ pub struct Service {
     /// (`--max-scroll-rows`).
     pub max_scroll_rows: usize,
     /// Random for each run of the server: what a snapshot's statistics
-    /// version is drawn from with its txn ([`Self::stats_version`]), so
-    /// that versions from before a restart are not taken for later ones.
+    /// version is drawn from with its text statistics' generation
+    /// ([`Self::stats_version`]), so that versions from before a restart
+    /// are not taken for later ones.
     stats_nonce: u64,
     /// Queries that did not run, sent statistics of another version
     /// ([`QueryReq::stats_version`]).
@@ -2032,11 +2033,13 @@ impl Service {
         Ok(id)
     }
 
-    /// The version of `snap`'s BM25 statistics: of its txn, which every
-    /// write, flush and merge moves on, and of this run of the server.
-    /// Never 0, which a query sends for any version.
+    /// The version of the BM25 statistics of the table `snap` looks at: of
+    /// the table's text statistics generation ([`Snapshot::stats_gen`]),
+    /// which a write to it that adds a row, a flush or a merge moves on but
+    /// values set in place, deletes and other tables' writes do not, and of
+    /// this run of the server. Never 0, which a query sends for any version.
     pub fn stats_version(&self, snap: &Snapshot) -> u64 {
-        match self.stats_nonce ^ snap.txn() {
+        match self.stats_nonce ^ snap.stats_gen() {
             0 => 1,
             v => v,
         }
@@ -2317,6 +2320,31 @@ impl Service {
     pub async fn query(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
         // alerts agent: Contain rules, at admission ([`crate::contain`]).
         let _turn = self.contained(&req).await?;
+        // A query that asks a language model about its rows
+        // ([`strata::query::llm`]): the rows first, as any query finds them
+        // (a coordinator's from its shards, merged), then the questions,
+        // here.
+        if req.plan.is_none() && !req.shard {
+            if let Some(split) = strata::query::llm::split_sql(&req.sql, &self.functions(), &req.params)? {
+                if req.scroll.is_some() {
+                    return Err(ApiError::bad("a query that calls llm() is not scrolled: page it with LIMIT and OFFSET"));
+                }
+                let mut first = req.clone();
+                first.sql = split.first.to_string();
+                let mut a = self.query_admitted(first).await?;
+                let rs = std::mem::replace(&mut a.rs, ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() });
+                let (params, models) = (req.params.clone(), self.models_dir());
+                let t0 = Instant::now();
+                a.rs = tokio::task::spawn_blocking(move || split.finish(rs, &params, &models)).await.map_err(|e| ApiError::internal(format!("llm(): {e}")))??;
+                a.took_ms += t0.elapsed().as_secs_f64() * 1e3;
+                return Ok(a);
+            }
+        }
+        self.query_admitted(req).await
+    }
+
+    /// [`Self::query`] of a query admitted, which calls no language model.
+    async fn query_admitted(self: &Arc<Self>, req: QueryReq) -> Result<Answer, ApiError> {
         let again = (matches!(self.backend, Backend::Cluster(_)) && req.plan.is_none() && req.sql.to_ascii_lowercase().contains("rank_profile")).then(|| req.clone());
         match (self.query_once(req).await, again) {
             (Err(e), Some(req)) if profile::is_stale(&e.message) => {
@@ -2506,7 +2534,7 @@ impl Service {
                     if req.after != After::Any {
                         telemetry::record("wait for writes", tw, "ok");
                     }
-                    if req.stats_version != 0 && req.stats_version != self.stats_version(&snap) {
+                    if req.stats_version != 0 && snap.table(&schema.table).is_some_and(|t| req.stats_version != self.stats_version(&t)) {
                         stale = true;
                         return Ok((no_rows(), Vec::new()));
                     }
@@ -2928,9 +2956,9 @@ impl Service {
         match &self.backend {
             Backend::Local(db) => {
                 let snap = self.read_snapshot(db, 0, after, Instant::now() + timeout).await?;
-                let version = self.stats_version(&snap);
                 let lease = self.lease_of(snap.clone(), self.lease_ttl.min(timeout + Duration::from_secs(1)))?;
                 let view = snap.table(&schema.table).ok_or_else(|| ApiError::bad(format!("query error: no such table: {}", schema.table)))?;
+                let version = self.stats_version(&view);
                 let db = db.clone();
                 // The query round on the lease finds the typo expansions
                 // these statistics were found with.
@@ -4349,6 +4377,13 @@ impl Service {
                 family("strata_embed_tokens_total", "Tokens a hosted embedding model counted, where its answers say.", |u| u.tokens),
             ]);
         }
+        // Language models' answers to queries' llm() calls.
+        let u = strata::query::llm::usage();
+        more.extend([
+            one("strata_llm_requests_total", "counter", "Requests this server made to language models for queries' llm() calls.", u.requests as f64),
+            one("strata_llm_cached_total", "counter", "Answers to llm() calls this server found in memory, with no request.", u.cached as f64),
+            one("strata_llm_failures_total", "counter", "Requests to language models for llm() calls that failed for good, failing their query.", u.failures as f64),
+        ]);
         if let Some(b) = &self.query_memory {
             more.extend([
                 one("strata_query_memory_bytes", "gauge", "Memory the running queries hold, as counted against their budget.", b.used() as f64),

@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css">
+<link rel="stylesheet" href="assets/site.css?v=d1b8a702c3">
 </head>
 <body>
 <div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
@@ -87,6 +87,7 @@
       </div>
       <div class="fm-key"><span><em class="r">random</em> advised <code>MADV_RANDOM</code>: a cold fault reads one page</span><span><em>read-ahead</em> read in runs</span></div>
     </div>
+    <div class="sim merge" data-sim="merge"></div>
     <div class="feat-grid mech-grid">
       <div class="feat mech">
         <h4>Commits by shadow paging</h4>
@@ -117,6 +118,8 @@
 
   <section class="gutter" id="text"><div class="wrap block">
     <div class="fam-head"><h2>Full text</h2><span class="fam text">dictionary, Loom lists, MaxScore</span></div>
+    <div class="sim maxscore" data-sim="maxscore"></div>
+    <p class="sim-note">Three made-up posting lists of 64 rows in blocks of 8 (Strata's blocks hold 128). Each bar above a block is the best score in it. Once the top 3 is full, a row whose blocks cannot beat the third is skipped, and a word whose best cannot lift a row alone stops driving the search.</p>
     <div class="feat-grid mech-grid">
       <div class="feat mech">
         <h4>A dictionary walked as a trie</h4>
@@ -170,6 +173,8 @@
 
   <section class="gutter" id="vectors"><div class="wrap block">
     <div class="fam-head"><h2>Vectors</h2><span class="fam vec">SQ8 and RaBitQ codes, HNSW, IVF</span></div>
+    <div class="sim hnsw" data-sim="hnsw"></div>
+    <p class="sim-note">An HNSW graph of 90 made-up points in two dimensions. A search enters at the top layer, steps to whichever neighbour is nearer the query until none is, drops a layer, and on the bottom layer keeps the 8 nearest it has seen. Click the bottom layer to place a query.</p>
     <div class="feat-grid mech-grid">
       <div class="feat mech">
         <h4>Integer dot products</h4>
@@ -281,6 +286,7 @@
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/site.js"></script>
+<script src="assets/site.js?v=6d78382461"></script>
+<script src="assets/sims.js?v=4af92a5911"></script>
 </body>
 </html>

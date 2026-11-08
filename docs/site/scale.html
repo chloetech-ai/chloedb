@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css">
+<link rel="stylesheet" href="assets/site.css?v=d1b8a702c3">
 </head>
 <body>
 <div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
@@ -66,6 +66,16 @@ kubectl -n strata patch strata demo --type merge \
   -p '{"spec": {"shards": 3}}'                  # slots move while it serves</pre><pre data-lang="python" data-title="app.py" data-mark="1">db = strata.connect("http://demo.strata:7700")  # the cluster's Service</pre></div>
       </div>
     </div>
+  </div></section>
+
+  <section class="gutter" id="watch"><div class="wrap block">
+    <div class="block-head center">
+      <span class="eyebrow">Watch it work</span>
+      <h2>A search, a write, a failover and a new shard</h2>
+      <p>Press a button, or let it play. Searches ask every shard and merge; a write goes to the one shard its key hashes to; a stopped primary is replaced by a vote; a new shard takes slots while the cluster serves.</p>
+    </div>
+    <div class="sim cluster" data-sim="cluster"></div>
+    <p class="sim-note">An animation of what the coordinator and the copies do, slowed down to be seen; it is not connected to a cluster. The flags it names are strata-server's own.</p>
   </div></section>
 
   <section class="gutter" id="same"><div class="wrap block">
@@ -145,8 +155,9 @@ curl -s -X POST 'localhost:7700/v1/import?format=sqlite' \
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js"></script>
-<script src="assets/site.js"></script>
-<script src="assets/bench.js"></script>
+<script src="assets/bench-data.js?v=5344f0f990"></script>
+<script src="assets/site.js?v=6d78382461"></script>
+<script src="assets/sims.js?v=4af92a5911"></script>
+<script src="assets/bench.js?v=6ebeb97e93"></script>
 </body>
 </html>

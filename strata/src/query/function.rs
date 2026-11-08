@@ -74,7 +74,7 @@ const TYPES: [&str; 8] = ["INT", "FLOAT", "TEXT", "KEYWORD", "BOOL", "TIMESTAMP"
 const RESERVED: &[&str] = &[
     "abs", "array_agg", "at_least", "avg", "bm25", "ceil", "ceiling", "char_length", "character_length", "clamp", "coalesce", "concat", "count", "count_true", "cross_encoder", "cume_dist", "date", "date_add",
     "date_format", "date_part", "date_sub", "date_trunc", "datediff", "datepart", "datetrunc", "day", "dayofweek", "decay", "dense_rank", "distance", "dot", "encode", "exp", "extract", "features", "first_value",
-    "floor", "gbdt", "greatest", "group_concat", "hash", "hops", "hour", "ifnull", "instr", "isnull", "json_extract", "lag", "last_value", "lcase", "lead", "least", "left", "len", "length", "ln", "log", "lower",
+    "floor", "gbdt", "greatest", "group_concat", "hash", "hops", "hour", "ifnull", "instr", "isnull", "json_extract", "lag", "last_value", "lcase", "lead", "least", "left", "len", "length", "llm", "ln", "log", "lower",
     "ltrim", "match", "max", "maxsim", "min", "minmax", "month", "now", "nth_value", "ntile", "nvl", "path", "percent_rank", "percentile_cont", "percentile_disc", "position", "pow", "power", "ppr", "prefix", "rand",
     "random", "rank", "rank_profile", "ranked", "reachable", "replace", "reverse", "right", "round", "row_number", "rrf", "rtrim", "score", "seq_no", "sid_at", "sigmoid", "similarity", "sparse", "split_part",
     "sqrt", "stddev", "strftime", "string_agg", "strpos", "substr", "substring", "sum", "tmm", "to_char", "trim", "trunc", "truncate", "ucase", "upper", "variance", "week", "weekday", "year", "zscore",
@@ -274,6 +274,9 @@ impl Function {
 #[derive(Clone, Debug, Default)]
 pub struct FunctionSet {
     by_name: BTreeMap<String, Vec<Arc<Function>>>,
+    /// Whether a version's body may call a language model
+    /// ([`super::llm`]).
+    llm: bool,
 }
 
 impl FunctionSet {
@@ -286,11 +289,19 @@ impl FunctionSet {
         for vs in s.by_name.values_mut() {
             vs.sort_by_key(|f| f.version);
         }
+        s.llm = s.by_name.values().flatten().any(|f| f.def.body.to_ascii_lowercase().contains(super::llm::NAME));
         s
     }
 
     pub fn is_empty(&self) -> bool {
         self.by_name.is_empty()
+    }
+
+    /// Whether a function's body may call a language model
+    /// ([`super::llm`]): whether a query that calls one is worth writing
+    /// out to look for calls.
+    pub fn calls_llm(&self) -> bool {
+        self.llm
     }
 
     /// The current version of `name` (any case): the highest, unless it is
@@ -587,6 +598,12 @@ fn first_word(mut text: &str) -> &str {
 /// A definition whose body is checked and printed as the parser prints it.
 fn definition(name: String, kind: Kind, params: Vec<Param>, returns: String, body: &str, description: Option<String>) -> Result<Definition> {
     let parsed = parse_body(kind, body)?;
+    // Its calls of a language model are checked as a query checks them.
+    match &parsed {
+        Body::Expr(e) => super::llm::check(e)?,
+        Body::Query(q) if super::llm::calls_in_query(q) => return Err(err(format!("the body of {name} calls llm(): a function that RETURNS TABLE gives rows a query reads, and a model is asked about the rows a query returns; call it in a function that returns a value, in a SELECT's columns"))),
+        _ => {}
+    }
     let declared: BTreeSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
     let mut used = BTreeSet::new();
     let mut columns = Vec::new();

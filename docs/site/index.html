@@ -5,11 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="claude:viewport-fit-sides" content="cover">
 <title>Strata</title>
-<meta name="description" content="Strata is a search engine, database and recommender in one: full text, vectors, columns and graphs over the same rows, in SQL, from a file in your app to a cluster in the cloud.">
+<meta name="description" content="Strata is a fast search engine, database and recommender in one: full text, vectors, columns and graphs over the same rows, in SQL, from a file in your app to a sharded cluster in the cloud.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css">
+<link rel="stylesheet" href="assets/site.css?v=d1b8a702c3">
 </head>
 <body>
 <div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
@@ -29,8 +29,8 @@
   <div class="gutter hero-band"><div class="wrap hero">
     <div class="hero-copy">
       <span class="eyebrow">Search engine · database · recommender</span>
-      <h1>One engine for search, data and recommendations</h1>
-      <p class="lede">Full text, vectors, columns and graphs over the same rows, in one SQL query. Run it as a file in your app or as a cluster in the cloud.</p>
+      <h1>One engine for search, data and recommendations <span class="h1-kick">Blazing fast, from laptop to cluster</span></h1>
+      <p class="lede">Full text, vectors, columns and graphs over the same rows, in one SQL query. Start with a file in your app and grow to a sharded cluster without changing a query. Your coffee breaks will need a new excuse.</p>
       <div class="actions">
         <a class="btn primary lg" href="#start">Get started</a>
         <a class="btn on-night lg" href="benchmarks.html">See the benchmarks</a>
@@ -42,6 +42,25 @@
       <div data-rank-mini="cloud-1m" data-top="4"></div>
       <span class="arrow-link">Read the report</span>
     </a>
+    <div class="says" role="region" aria-roledescription="carousel" aria-label="What Strata can do">
+      <span class="says-lbl">Strata can</span>
+      <div class="says-track" aria-live="polite">
+        <div class="say on" data-f="text"><p>find <b>“wireles controller”</b> despite the typo</p><code>WHERE MATCH(title, 'wireles~ controller')</code></div>
+        <div class="say" data-f="vec"><p>rank by <b>words and meaning</b> in one ORDER BY</p><code>ORDER BY rrf(bm25(title, :q), similarity(emb, :v))</code></div>
+        <div class="say" data-f="graph"><p>recommend what a shopper's <b>last purchases</b> lead to</p><code>ppr(bought_with, (SELECT item FROM reviews WHERE usr = :user …))</code></div>
+        <div class="say" data-f="cols"><p>keep <b>two items per brand</b> in the top ten</p><code>… DESC MAX 2 PER brand LIMIT 10</code></div>
+        <div class="say" data-f="cols"><p>follow your <b>Postgres</b> tables, a moment behind, with no Kafka</p><code>strata-server follow-postgres --source postgres://…</code></div>
+        <div class="say" data-f="text"><p>answer apps written for <b>OpenSearch</b>, unchanged</p><code>strata-server --opensearch-listen 127.0.0.1:9200</code></div>
+        <div class="say" data-f="vec"><p>run inside your app as <b>one file</b>, like SQLite</p><code>db = strata.open("shop.strata")</code></div>
+        <div class="say" data-f="graph"><p>grow to <b>shards on Kubernetes</b> with the same queries</p><code>kubectl apply -f operator.yaml -f cluster.yaml</code></div>
+        <div class="say" data-f="text"><p>give <b>Claude Code</b> your tables over MCP</p><code>claude mcp add --transport http strata http://127.0.0.1:7700/v1/mcp</code></div>
+      </div>
+      <div class="says-nav">
+        <button type="button" class="says-prev" aria-label="Previous statement"><svg viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></svg></button>
+        <span class="says-dots"></span>
+        <button type="button" class="says-next" aria-label="Next statement"><svg viewBox="0 0 16 16"><path d="m6 3 5 5-5 5"/></svg></button>
+      </div>
+    </div>
   </div></div>
 
   <div class="gutter strip"><div class="wrap">
@@ -64,22 +83,50 @@
     </div>
   </div></section>
 
-  <section class="gutter" id="new"><div class="wrap block">
+  <section class="gutter" id="highlights"><div class="wrap block">
     <div class="block-head center">
-      <span class="eyebrow">New in November</span>
-      <h2>Shipped this month</h2>
-      <p>All of it is in main, documented and tested.</p>
+      <span class="eyebrow">Highlights</span>
+      <h2>Where Strata stands out</h2>
+      <p>Each one is in main, documented and tested.</p>
     </div>
-    <div class="caps">
-      <a class="cap" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/opensearch.md"><h3>The OpenSearch API</h3><p>Point an app written for OpenSearch or Elasticsearch at Strata. It indexes and searches with no change.</p></a>
-      <a class="cap" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/postgres.md"><h3>Follows Postgres</h3><p>Search over your Postgres tables, a moment behind, by logical replication. No Kafka in between.</p></a>
-      <a class="cap" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md#stored-functions"><h3>Stored functions</h3><p><code>CREATE FUNCTION</code> keeps a score or a whole query in the database, for any query to call.</p></a>
-      <a class="cap" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md#agents-over-mcp"><h3>Agents over MCP</h3><p>Claude Code and other agents list the tables, check a statement, query and write.</p></a>
-      <a class="cap" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/slices.md"><h3>Search on the device</h3><p>A slice of a table near the user, searched on the phone, with the server as fallback.</p></a>
-      <a class="cap" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md#cold-segments"><h3>Older data on S3</h3><p>Cold segments on object storage, read through a local cache. Logs come in over OpenTelemetry.</p></a>
-      <a class="cap" href="command-center.html#agents"><h3>An on-call agent</h3><p>Claude looks into an alert, finds the cause and proposes a fix for an admin to approve.</p></a>
-      <a class="cap" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md#following-another-cluster"><h3>Follow another cluster</h3><p>A second cluster a moment behind, and a planned switch-over that loses no write.</p></a>
-      <a class="cap" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/crawler.md"><h3>A crawler</h3><p>Give it a site. It makes a table, fills it and adds shards as the table grows.</p></a>
+    <div class="bento">
+      <a class="hl hl-big" href="command-center.html#agents">
+        <div class="hl-copy">
+          <span class="kick">Command center</span>
+          <h3>Claude on call</h3>
+          <p>An alert fires. The on-call agent goes through the cluster's metrics, slow queries and recent events, writes up the likely cause, and proposes a fix that waits for an admin to approve it.</p>
+          <ul class="hl-steps"><li>Alert p99 is firing</li><li>Evidence, likely cause, how bad it is</li><li>A proposed fix: Approve or Reject</li></ul>
+          <span class="arrow-link">See the console</span>
+        </div>
+        <div class="hl-shot"><span class="hl-pop"><i></i>Looked at 12 things in 23 s</span><img src="../assets/img/site-cc-oncall.png" alt="The on-call agent's report on a p99 alert: a summary, the evidence, the likely cause and a proposed fix waiting for an admin" loading="lazy"></div>
+      </a>
+      <a class="hl text" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/opensearch.md">
+        <span class="ico"><svg viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></svg></span>
+        <span class="kick">Drop-in</span>
+        <h3>The OpenSearch API</h3>
+        <p>Gitea and Mastodon index and search through it unchanged: 42 of 42 and 112 of 114 of their searches return what OpenSearch 2.11 returns.</p>
+        <code>strata-server --opensearch-listen 127.0.0.1:9200</code>
+      </a>
+      <a class="hl cols" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/postgres.md">
+        <span class="ico"><svg viewBox="0 0 24 24"><ellipse cx="11" cy="5.5" rx="7" ry="2.5"/><path d="M4 5.5v6c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-6M4 11.5v6c0 1.4 3.1 2.5 7 2.5"/><path d="M15 19h6M18 16l3 3-3 3"/></svg></span>
+        <span class="kick">Data in</span>
+        <h3>Follows Postgres</h3>
+        <p>Search over your Postgres tables, a moment behind, by logical replication. Every insert, update and delete arrives, with no Kafka in between.</p>
+        <code>strata-server follow-postgres --source postgres://…</code>
+      </a>
+      <a class="hl vec" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/slices.md">
+        <span class="ico"><svg viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M11 18.5h2"/><circle cx="11.5" cy="9.5" r="2.6"/><path d="m13.4 11.4 1.8 1.8"/></svg></span>
+        <span class="kick">On the device</span>
+        <h3>Search on the phone</h3>
+        <p>A slice of a table near the user, by place or by meaning, is searched on the device. It answers when it can prove its top results, and asks the server when it can't.</p>
+      </a>
+      <a class="hl graph" href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md#agents-over-mcp">
+        <span class="ico"><svg viewBox="0 0 24 24"><path d="M11 3l1.8 4.7 4.7 1.8-4.7 1.8L11 16l-1.8-4.7-4.7-1.8 4.7-1.8z"/><path d="M18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9z"/></svg></span>
+        <span class="kick">Agents</span>
+        <h3>Agents over MCP</h3>
+        <p>Claude Code and other agents list the tables, read their schemas, check a statement before it runs, then query and write.</p>
+        <code>claude mcp add --transport http strata http://127.0.0.1:7700/v1/mcp</code>
+      </a>
     </div>
     <div class="center-row"><a class="arrow-link" href="features.html">Every feature</a></div>
   </div></section>
@@ -112,6 +159,16 @@
     </div>
   </div></section>
 
+  <section class="gutter" id="playground"><div class="wrap block">
+    <div class="block-head center">
+      <span class="eyebrow">Try the ranking</span>
+      <h2>Words, meaning, or both</h2>
+      <p>Search 40 sample products. Slide from BM25 on the words to similarity in meaning and watch the order change, typos and all.</p>
+    </div>
+    <div class="sim rank" data-sim="rank"></div>
+    <p class="sim-note">This runs in your browser, not on Strata: BM25 as Strata scores it (k1 1.2, b 0.75), and small hand-made vectors standing in for an embedding model. The statement beside it is what you would send Strata for the same ranking.</p>
+  </div></section>
+
   <section class="gutter band-night"><div class="wrap block">
     <div class="block-head center">
       <span class="eyebrow">Laptop to cloud</span>
@@ -119,9 +176,9 @@
       <p>The same schema, the same SQL and the same file format at every step.</p>
     </div>
     <div class="deploy">
-      <div class="dcard a"><span class="eyebrow">In your app</span><h3>A file, like SQLite</h3><p>Open it from Python, JavaScript, Java or Rust. No server to run.</p><pre>db = strata.open("shop.strata")</pre></div>
-      <div class="dcard b"><span class="eyebrow">One server</span><h3>HTTP, gRPC and a console</h3><p>Serve the same file, with API keys and replicas when you need them.</p><pre>strata-server --db shop.strata</pre></div>
-      <div class="dcard c"><span class="eyebrow">In the cloud</span><h3>Shards on Kubernetes</h3><p>An operator that scales, upgrades and fails over a sharded cluster.</p><pre>kubectl apply -f operator.yaml -f cluster.yaml</pre></div>
+      <div class="dcard a"><div class="deploy-art" aria-hidden="true"><svg viewBox="0 0 300 92"><rect class="bx" x="30" y="22" width="96" height="48" rx="8"/><text x="78" y="50" text-anchor="middle">app.py</text><path class="ln" d="M126 46H178"/><path class="bx" d="M178 12h40l16 16v54h-56z"/><rect class="lay pulse" x="186" y="34" width="40" height="7" rx="2" style="fill:var(--fam-text)"/><rect class="lay pulse" x="186" y="45" width="40" height="7" rx="2" style="fill:var(--fam-cols);animation-delay:.3s"/><rect class="lay pulse" x="186" y="56" width="40" height="7" rx="2" style="fill:var(--fam-vec);animation-delay:.6s"/><rect class="lay pulse" x="186" y="67" width="40" height="7" rx="2" style="fill:var(--fam-graph);animation-delay:.9s"/><text x="250" y="50">.strata</text><circle class="dot" cx="128" cy="46" r="3.5" style="--tx:48px;--ty:0px;--d:1.6s"/><circle class="dot" cx="176" cy="46" r="3.5" style="--tx:-48px;--ty:0px;--d:1.6s;--o:.8s"/></svg></div><span class="eyebrow">In your app</span><h3>A file, like SQLite</h3><p>Open it from Python, JavaScript, Java or Rust. No server to run.</p><pre>db = strata.open("shop.strata")</pre></div>
+      <div class="dcard b"><div class="deploy-art" aria-hidden="true"><svg viewBox="0 0 300 92"><rect class="bx" x="22" y="22" width="80" height="48" rx="8"/><text x="62" y="50" text-anchor="middle">app</text><path class="ln" d="M102 46H170"/><rect class="bx" x="170" y="14" width="108" height="64" rx="8"/><rect class="lay" x="180" y="24" width="60" height="6" rx="2" style="opacity:.35"/><rect class="lay" x="180" y="36" width="60" height="6" rx="2" style="opacity:.35"/><text x="180" y="64">:7700</text><circle class="ac pulse" cx="262" cy="27" r="4"/><circle class="ac pulse" cx="262" cy="39" r="4" style="animation-delay:.4s"/><circle class="dot" cx="104" cy="40" r="3.5" style="--tx:64px;--ty:0px;--d:1.4s"/><circle class="dot" cx="168" cy="52" r="3.5" style="--tx:-64px;--ty:0px;--d:1.4s;--o:.7s"/><circle class="dot" cx="104" cy="40" r="3.5" style="--tx:64px;--ty:0px;--d:1.4s;--o:.35s"/></svg></div><span class="eyebrow">One server</span><h3>HTTP, gRPC and a console</h3><p>Serve the same file, with API keys and replicas when you need them.</p><pre>strata-server --db shop.strata</pre></div>
+      <div class="dcard c"><div class="deploy-art" aria-hidden="true"><svg viewBox="0 0 300 92"><rect class="bx" x="16" y="30" width="78" height="32" rx="7"/><text x="55" y="50" text-anchor="middle">coord</text><path class="ln" d="M94 46L158 18M94 46H158M94 46L158 74"/><g><rect class="bx" x="160" y="10" width="16" height="16" rx="3"/><rect class="bx" x="182" y="10" width="16" height="16" rx="3"/><rect class="bx" x="204" y="10" width="16" height="16" rx="3"/><rect class="bx" x="160" y="38" width="16" height="16" rx="3"/><rect class="bx" x="182" y="38" width="16" height="16" rx="3"/><rect class="bx" x="204" y="38" width="16" height="16" rx="3"/><rect class="bx" x="160" y="66" width="16" height="16" rx="3"/><rect class="bx" x="182" y="66" width="16" height="16" rx="3"/><rect class="bx" x="204" y="66" width="16" height="16" rx="3"/><rect class="ac" x="163" y="13" width="10" height="10" rx="2"/><rect class="ac" x="185" y="41" width="10" height="10" rx="2"/><rect class="ac" x="207" y="69" width="10" height="10" rx="2"/></g><text x="230" y="22">shard 0</text><text x="230" y="50">shard 1</text><text x="230" y="78">shard 2</text><circle class="dot" cx="96" cy="46" r="3.5" style="--tx:62px;--ty:-28px;--d:1.5s"/><circle class="dot" cx="96" cy="46" r="3.5" style="--tx:62px;--ty:0px;--d:1.5s;--o:.15s"/><circle class="dot" cx="96" cy="46" r="3.5" style="--tx:62px;--ty:28px;--d:1.5s;--o:.3s"/></svg></div><span class="eyebrow">In the cloud</span><h3>Shards on Kubernetes</h3><p>An operator that scales, upgrades and fails over a sharded cluster.</p><pre>kubectl apply -f operator.yaml -f cluster.yaml</pre></div>
     </div>
     <div class="band-foot"><a class="arrow-link" href="scale.html">How it scales</a></div>
   </div></section>
@@ -193,11 +250,11 @@ GROUP BY p.brand ORDER BY reviews DESC LIMIT 10;</pre></div>
         <button type="button" role="tab" data-tab="cc-sql">SQL workbench</button>
         <button type="button" role="tab" data-tab="cc-relevance">Relevance lab</button>
       </div>
-      <div data-panel="cc-home"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/home</span></div><img src="../assets/img/strata-command-center-home.png" alt="Home: the cluster's health, traffic and open problems at a glance" loading="lazy"></figure></div>
-      <div data-panel="cc-cluster"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/cluster</span></div><img src="../assets/img/strata-command-center-topology.png" alt="Cluster: the coordinator, its shards and their copies, with calls a second on each link" loading="lazy"></figure></div>
-      <div data-panel="cc-profile"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/profile</span></div><img src="../assets/img/strata-command-center-profiler.png" alt="Profiler: a query's steps as a flame chart, on every server it touched" loading="lazy"></figure></div>
-      <div data-panel="cc-sql"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/sql</span></div><img src="../assets/img/strata-command-center-sql.png" alt="SQL workbench: a query, its results and its plan" loading="lazy"></figure></div>
-      <div data-panel="cc-relevance"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/relevance</span></div><img src="../assets/img/strata-command-center-relevance.png" alt="Relevance lab: two rankings side by side on graded queries" loading="lazy"></figure></div>
+      <div data-panel="cc-home"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/home</span></div><img src="../assets/img/site-cc-home.png" alt="Home: the cluster's health, traffic and open problems at a glance, during a slowdown" loading="lazy"></figure></div>
+      <div data-panel="cc-cluster"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/cluster</span></div><img src="../assets/img/site-cc-cluster.png" alt="Cluster: 3 shards of 3 copies on three nodes in three zones, and the alerts firing on them" loading="lazy"></figure></div>
+      <div data-panel="cc-profile"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/profile</span></div><img src="../assets/img/site-cc-profiler.png" alt="Profiler: a hybrid search's steps as a flame chart, on every shard it touched" loading="lazy"></figure></div>
+      <div data-panel="cc-sql"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/sql</span></div><img src="../assets/img/site-cc-sql.png" alt="SQL workbench: revenue by brand from a join, as a chart" loading="lazy"></figure></div>
+      <div data-panel="cc-relevance"><figure class="browser"><div class="bar"><i></i><i></i><i></i><span>localhost:7700/#/relevance</span></div><img src="../assets/img/site-cc-relevance.png" alt="Relevance lab: two rankings side by side, graded by Claude" loading="lazy"></figure></div>
     </div>
     <div class="center-row"><a class="arrow-link" href="command-center.html">Tour the command center</a></div>
   </div></section>
@@ -248,8 +305,9 @@ python -c 'import strata; db = strata.open("shop.strata")'</pre>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/index.md">Documentation</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/query-language.md">Query language</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/strata/server.md">Server and cluster</a></li></ul></div>
   <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="https://github.com/chloetech-ai/strata/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
 </div></footer>
-<script src="assets/bench-data.js"></script>
-<script src="assets/site.js"></script>
-<script src="assets/bench.js"></script>
+<script src="assets/bench-data.js?v=5344f0f990"></script>
+<script src="assets/site.js?v=6d78382461"></script>
+<script src="assets/bench.js?v=6ebeb97e93"></script>
+<script src="assets/sims.js?v=4af92a5911"></script>
 </body>
 </html>

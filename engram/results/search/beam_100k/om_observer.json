@@ -1,0 +1,167 @@
+{
+ "method": "scripts/om_baseline.py with @mastra/memory 1.41.0 prompts, observer haiku",
+ "units": [
+  {
+   "unit": "beam100K-1",
+   "calls": 15,
+   "cost_usd": 0.13001484,
+   "observation_tokens": 23284,
+   "tail_tokens": 5409,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-10",
+   "calls": 18,
+   "cost_usd": 0.14399848,
+   "observation_tokens": 21040,
+   "tail_tokens": 18701,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-11",
+   "calls": 24,
+   "cost_usd": 0.19881994,
+   "observation_tokens": 30922,
+   "tail_tokens": 24204,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-12",
+   "calls": 24,
+   "cost_usd": 0.19887604,
+   "observation_tokens": 24708,
+   "tail_tokens": 24458,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-13",
+   "calls": 12,
+   "cost_usd": 0.09600001999999999,
+   "observation_tokens": 15284,
+   "tail_tokens": 29810,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-14",
+   "calls": 12,
+   "cost_usd": 0.11453882,
+   "observation_tokens": 16011,
+   "tail_tokens": 12162,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-15",
+   "calls": 12,
+   "cost_usd": 0.09053832,
+   "observation_tokens": 14268,
+   "tail_tokens": 7978,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-16",
+   "calls": 15,
+   "cost_usd": 0.12618564999999998,
+   "observation_tokens": 18695,
+   "tail_tokens": 29358,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-17",
+   "calls": 15,
+   "cost_usd": 0.10744235,
+   "observation_tokens": 18923,
+   "tail_tokens": 9082,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-18",
+   "calls": 21,
+   "cost_usd": 0.16071561,
+   "observation_tokens": 22687,
+   "tail_tokens": 16283,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-19",
+   "calls": 21,
+   "cost_usd": 0.18046751000000003,
+   "observation_tokens": 26505,
+   "tail_tokens": 11897,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-2",
+   "calls": 12,
+   "cost_usd": 0.09711162000000001,
+   "observation_tokens": 20957,
+   "tail_tokens": 20052,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-20",
+   "calls": 24,
+   "cost_usd": 0.23487324000000004,
+   "observation_tokens": 30068,
+   "tail_tokens": 7354,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-3",
+   "calls": 12,
+   "cost_usd": 0.11638192,
+   "observation_tokens": 19002,
+   "tail_tokens": 26890,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-4",
+   "calls": 8,
+   "cost_usd": 0.06183978,
+   "observation_tokens": 8680,
+   "tail_tokens": 24807,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-5",
+   "calls": 9,
+   "cost_usd": 0.06832339000000001,
+   "observation_tokens": 7075,
+   "tail_tokens": 18007,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-6",
+   "calls": 15,
+   "cost_usd": 0.10988025,
+   "observation_tokens": 18946,
+   "tail_tokens": 22161,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-7",
+   "calls": 15,
+   "cost_usd": 0.11385185,
+   "observation_tokens": 18014,
+   "tail_tokens": 17705,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-8",
+   "calls": 15,
+   "cost_usd": 0.10955975,
+   "observation_tokens": 22101,
+   "tail_tokens": 7810,
+   "needs_reflection": false
+  },
+  {
+   "unit": "beam100K-9",
+   "calls": 15,
+   "cost_usd": 0.09286434999999998,
+   "observation_tokens": 18250,
+   "tail_tokens": 20405,
+   "needs_reflection": false
+  }
+ ],
+ "cost_usd": 2.55228373,
+ "mean_context_chars": 153360
+}

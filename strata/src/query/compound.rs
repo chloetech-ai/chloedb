@@ -2795,6 +2795,12 @@ fn compile_all(es: &[Expr], cols: &[(String, String)], multi: &[bool], params: &
     es.iter().map(|e| compile_row(e, cols, multi, params, subs)).collect()
 }
 
+/// The value of `e`, an expression of no row (a literal or a
+/// parameter).
+pub(crate) fn value_of(e: &Expr, params: &Params) -> Result<Value> {
+    value(&compile(e, params, &|_| None, &[])?)
+}
+
 /// The value of an expression of no row.
 fn value(e: &ir::Expr) -> Result<Value> {
     eval::eval(e, &|r| Err(err(format!("{r:?} is not a value of no row"))))
@@ -3079,6 +3085,7 @@ fn unknown_function(n: &str) -> String {
         "ifnull" | "nvl" | "isnull" => "; coalesce(x, y) gives x, or y where x is NULL",
         "floor" | "ceil" | "ceiling" | "trunc" | "truncate" => "; round(x) rounds to a whole number, round(x, n) to n decimals",
         "char_length" | "character_length" | "len" => "; length(text) counts its characters",
+        "llm" => "; llm() asks a language model about the rows a query returns, after the query finds them: Db::query and a server's queries run it, not a plan",
         "lcase" => "; lower(text)",
         "ucase" => "; upper(text)",
         _ => "",

@@ -182,4 +182,4 @@ python3 scripts/ab_stats.py stockroom=results/ab/stockroom/runs.jsonl slotwise=r
 
 ## The website and these pages
 
-GitHub Pages publishes `docs/` as it is, with no build step (`docs/.nojekyll`): the root redirects to the website in `docs/site/`, whose benchmark charts read `docs/site/assets/bench-data.js` (written by `docs/site/scripts/bench_data.py`). These Markdown pages are read on GitHub. The long-form reports in `docs/reports/` are copies of the HTML reports each crate builds.
+GitHub Pages publishes `docs/` as it is, with no build step (`docs/.nojekyll`): the root redirects to the website in `docs/site/`, whose benchmark charts read `docs/site/assets/bench-data.js` (written by `docs/site/scripts/bench_data.py`). The pages link each stylesheet and script with a hash of it (`?v=`), so a browser never pairs a new page with a stylesheet it cached; after editing anything in `docs/site/assets/`, run `docs/site/scripts/stamp_assets.py` (`bench_data.py` runs it). These Markdown pages are read on GitHub. The long-form reports in `docs/reports/` are copies of the HTML reports each crate builds.
