@@ -433,6 +433,9 @@ pub struct Service {
     /// Proxies whose `X-Forwarded-For` names the client (`--trust-proxy`):
     /// addresses and prefix lengths.
     pub trusted_proxies: Vec<(std::net::IpAddr, u8)>,
+    /// The apps the command center shows (`--app`), which `/v1/apps/<name>`
+    /// reaches ([`crate::apps`]).
+    pub apps: crate::apps::Apps,
     /// Fleet health's memory ([`crate::fleet`]).
     pub fleet: crate::fleet::Fleet,
     /// The coordinators this server knows ([`crate::peers`]).
@@ -477,6 +480,8 @@ pub struct Service {
     pub alerts: Alerts,
     /// Contain rules, applied at admission ([`crate::contain`]): alerts agent.
     pub contain: crate::contain::Contain,
+    /// The on-call agent's proposals, waiting for an admin ([`crate::oncall`]).
+    pub oncall: crate::oncall::Desk,
     /// The cloud view's AWS credentials and machine catalogues ([`crate::aws`]).
     pub aws: Arc<crate::aws::Aws>,
     /// The cloud view's DigitalOcean token and size catalogues
@@ -601,6 +606,9 @@ pub struct Service {
     /// its shard's other copies to elect it (`--failover-after-ms`; zero:
     /// never), as [`Self::start_failover`] does.
     pub failover_after: Duration,
+    /// The command center's Simulator: its test run and the reports kept
+    /// ([`crate::traffic::run`]).
+    pub simulator: crate::traffic::run::Simulator,
 }
 
 /// A server's part in replication.
@@ -653,6 +661,7 @@ impl Service {
             slo: Slo::default(),
             place: Place::from_env(None),
             trusted_proxies: Vec::new(),
+            apps: Default::default(),
             fleet: Default::default(),
             peers: Default::default(),
             image_repository: crate::operator::upgrade::REPOSITORY.into(),
@@ -672,6 +681,7 @@ impl Service {
             audit: Audit::new(None).expect("an audit log in memory"),
             alerts: Alerts::new(None, None).expect("the default alert rules"),
             contain: Default::default(),
+            oncall: Default::default(),
             aws: Arc::new(crate::aws::Aws::memory()),
             digitalocean: Arc::new(crate::digitalocean::DigitalOcean::memory()),
             clouds: Arc::new(crate::cloud::clusters::Clusters::memory()),
@@ -722,6 +732,7 @@ impl Service {
             promoting: tokio::sync::Mutex::new(()),
             replication_file: None,
             failover_after: Duration::ZERO,
+            simulator: Default::default(),
         }
     }
 
@@ -1107,6 +1118,11 @@ impl Service {
 
     /// The coordinator this server is, for the calls that change the
     /// cluster; a database refuses them (400).
+    /// The cores this server may use.
+    pub fn cores(&self) -> usize {
+        self.cores
+    }
+
     pub fn coordinator(&self) -> Result<&Arc<Coordinator>, ApiError> {
         match &self.backend {
             Backend::Cluster(c) => Ok(c),
@@ -3930,7 +3946,8 @@ impl Service {
         });
         json!({
             "health": health, "load": load, "minute": minute,
-            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores, "memory_limit_bytes": strata::storage::memory_limit()},
+            // The Simulator reads `cpu_seconds` (the process's CPU so far) before and after a test.
+            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores, "cpu_seconds": telemetry::process_usage().1, "memory_limit_bytes": strata::storage::memory_limit()},
             "running": self.live.len(), "log_store": log_store,
             // core: what a coordinator's /v1/cluster shows of each copy.
             "capability": self.capability(),

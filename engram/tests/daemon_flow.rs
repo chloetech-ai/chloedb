@@ -317,3 +317,38 @@ fn a_changed_rule_keeps_its_history() {
     assert_eq!(call(&d, json!({"op": "history", "query": "refunds within 14 days"}))["ids"], json!([v1, v2, v3]));
     assert!(call(&d, json!({"op": "search", "query": "refunds", "as_of": "last week"})).get("error").is_some());
 }
+
+/// A command that failed and then passed after an edit is written down as
+/// a fix; the same error in a later session gets the fix with it, once.
+#[test]
+fn an_error_fixed_before_comes_back_with_its_fix() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path());
+    let failing = json!({"stdout": "   Compiling ledger v0.1.0\nerror[E0425]: cannot find value `rate` in this scope\n --> /proj/src/ledger.rs:40:17", "exit_code": 101});
+    hook(&d, "SessionStart", json!({"session_id": "s1", "source": "startup"}));
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s1", "prompt": "Make the ledger tests pass"}));
+    assert_eq!(hook(&d, "PostToolUseFailure", json!({"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": "cd /proj && cargo test 2>&1 | tail -30"}, "error": failing["stdout"]})), "");
+    hook(&d, "PostToolUse", json!({"session_id": "s1", "tool_name": "Edit",
+        "tool_input": {"file_path": "/proj/src/ledger.rs", "old_string": "use crate::money;", "new_string": "use crate::money::{self, rate};"}, "tool_response": {}}));
+    hook(&d, "PostToolUse", json!({"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": "cargo test 2>&1 | tail -30"},
+        "tool_response": {"stdout": "test result: ok. 12 passed; 0 failed", "exit_code": 0}}));
+    hook(&d, "Stop", json!({"session_id": "s1", "last_assistant_message": "Imported rate; the tests pass."}));
+    let r = call(&d, json!({"op": "sql", "sql": "SELECT text, ctx, links FROM memory WHERE kind = 'error' AND tag = 'fix' LIMIT 5"}));
+    let text = r["text"].as_str().unwrap();
+    assert!(text.contains("Cleared by:") && text.contains("Edited src/ledger.rs") && text.contains("Signature: error[E#]: cannot find value `rate` in this scope"), "{r}");
+    let links = call(&d, json!({"op": "sql", "sql": "SELECT links FROM memory WHERE kind = 'error' AND tag = 'fix' LIMIT 1"}));
+    assert!(links["text"].as_str().unwrap().contains("from"), "the fix links to its turn's prompt: {links}");
+
+    // A later session, the same error: the fix comes with it, once.
+    hook(&d, "SessionStart", json!({"session_id": "s2", "source": "startup"}));
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s2", "prompt": "Run the tests again after the rebase"}));
+    let fail = json!({"session_id": "s2", "tool_name": "Bash", "tool_input": {"command": "cargo test"}, "tool_response": {"stdout": "error[E0425]: cannot find value `rate` in this scope\n --> src/ledger.rs:52:9", "exit_code": 101}});
+    let ctx = hook(&d, "PostToolUse", fail.clone());
+    assert!(ctx.starts_with("Engram: this error was seen before"), "{ctx}");
+    assert!(ctx.contains("use crate::money::{self, rate};") && ctx.contains("Then the same command passed."), "{ctx}");
+    assert_eq!(hook(&d, "PostToolUse", fail), "", "shown once a session");
+    // Another error is not matched to it.
+    let other = hook(&d, "PostToolUse", json!({"session_id": "s2", "tool_name": "Bash", "tool_input": {"command": "cargo test"}, "tool_response": {"stdout": "error[E0308]: mismatched types", "exit_code": 101}}));
+    assert_eq!(other, "");
+}
+

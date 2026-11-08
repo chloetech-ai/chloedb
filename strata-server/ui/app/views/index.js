@@ -20,6 +20,7 @@ import tables from "./tables.js";
 import inspector from "./inspector.js";
 import rollout from "./rollout.js";
 import autoscale from "./autoscale.js";
+import simulator from "./simulator.js";
 import access from "./access.js";
 import system from "./system.js";
 import cloud from "./cloud.js";
@@ -37,10 +38,11 @@ import autocomplete from "./autocomplete.js";
 import media from "./media.js";
 import graph from "./graph.js";
 import classic from "./classic.js";
+import apps from "./apps.js";
 
-export const VIEWS = [home, timeline, alerts, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, access, system, cloud, connections, clusters, follow, sql, schema, importer, builder, relevance, recsys, sid, autocomplete, media, graph, classic];
+export const VIEWS = [home, timeline, alerts, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, importer, builder, relevance, recsys, sid, autocomplete, media, graph, classic, apps];
 
-export const GROUPS = ["Operate", "Diagnose", "Change", "Data", "Labs"];
+export const GROUPS = ["Operate", "Diagnose", "Change", "Data", "Apps", "Labs"];
 
 /**
  * The navigation, in order: [group, [{id, title, icon, key, scope}]]. `key`
@@ -65,6 +67,7 @@ export const NAV = [
   ["Change", [
     { id: "rollout", title: "Rollouts", icon: "rollout", key: "u", scope: "admin" },
     { id: "autoscale", title: "Autoscaling", icon: "autoscale", scope: "admin" },
+    { id: "simulator", title: "Simulator", icon: "gauge", scope: "admin" },
     { id: "access", title: "Access and audit", icon: "access", key: "k", scope: "admin" },
     { id: "system", title: "Settings", icon: "system", key: "s", scope: "admin" },
     { id: "cloud", title: "Cloud setup", icon: "cloud", scope: "admin" },
@@ -77,6 +80,9 @@ export const NAV = [
     { id: "schema", title: "Schema", icon: "schema", key: "d" },
     { id: "import", title: "Import and export", icon: "import", key: "i", scope: "write" },
   ]],
+  // Apps (--app name=url): one entry each, added by the shell once the
+  // server lists them (views/apps.js); the group shows only when it has one.
+  ["Apps", []],
   ["Labs", [
     { id: "builder", title: "Query builder", icon: "builder", key: "b" },
     { id: "relevance", title: "Relevance lab", icon: "relevance" },
