@@ -548,6 +548,58 @@ enum Command {
         #[arg(long, value_name = "MS")]
         once: Option<u64>,
     },
+    /// Follow a Postgres database by logical replication: copy the tables
+    /// of a publication into Strata (making the tables it lacks), then
+    /// keep applying their inserts, updates, deletes, truncates and new
+    /// columns, a moment behind, until stopped. Postgres needs wal_level =
+    /// logical and a publication (CREATE PUBLICATION strata FOR TABLE
+    /// ...); the user signs in with the REPLICATION attribute. What it
+    /// applied is kept in Strata's _sources (postgres/NAME/...), so that
+    /// started again it goes on from there and applies each change once.
+    FollowPostgres {
+        /// The database, as postgres://user:password@host:5432/database
+        /// (?sslmode=require and the like; PGPASSWORD gives a password the
+        /// URL leaves out).
+        #[arg(long, env = "STRATA_POSTGRES_URL", hide_env_values = true)]
+        source: String,
+        /// A CA certificate (PEM) to check the database's TLS certificate by.
+        #[arg(long)]
+        source_ca: Option<PathBuf>,
+        /// The publication whose tables it follows.
+        #[arg(long, default_value = "strata")]
+        publication: String,
+        /// The replication slot it reads and makes (strata_NAME by default).
+        #[arg(long)]
+        slot: Option<String>,
+        /// Strata's HTTP URL: a server, or a cluster's coordinator.
+        #[arg(long)]
+        target: String,
+        /// Strata's token (a server's --token, or a cluster's --cluster-token).
+        #[arg(long, env = "STRATA_CLUSTER_TOKEN", hide_env_values = true)]
+        target_token: Option<String>,
+        /// A CA certificate (PEM) to check the target's TLS certificate by.
+        #[arg(long)]
+        target_ca: Option<PathBuf>,
+        /// The name Strata knows the database by (letters, digits, '.', '_'
+        /// and '-'), which its marks in _sources name.
+        #[arg(long)]
+        name: String,
+        /// The most operations of one write while copying, and of the
+        /// transactions written together.
+        #[arg(long, default_value_t = strata_server::postgres::BATCH)]
+        batch: usize,
+        /// Copy the tables again from the start (with a new slot), whatever
+        /// Strata kept.
+        #[arg(long)]
+        copy: bool,
+        /// How many tables are copied at once.
+        #[arg(long, default_value_t = 4)]
+        copy_workers: usize,
+        /// Drop the replication slot and exit: stop following for good, so
+        /// that Postgres no longer keeps WAL for the follower.
+        #[arg(long)]
+        drop_slot: bool,
+    },
     /// Switch clients over to a cluster that follows another: hold the
     /// source's writes (POST /v1/admin/hold-writes there), wait until
     /// the follower applied them all, and promote it
@@ -772,6 +824,34 @@ async fn main() {
             };
             if let Err(e) = strata_server::follow::run(o).await {
                 fail(&format!("follow {name}: {e}"));
+            }
+            return;
+        }
+        Some(Command::FollowPostgres { source, source_ca, publication, slot, target, target_token, target_ca, name, batch, copy, copy_workers, drop_slot }) => {
+            let read = |p: &Option<PathBuf>, what: &str| p.as_ref().map(|p| std::fs::read(p).unwrap_or_else(|e| fail(&format!("{what} {}: {e}", p.display()))));
+            let o = strata_server::postgres::Options {
+                source: source.clone(),
+                source_ca: read(source_ca, "--source-ca"),
+                publication: publication.clone(),
+                slot: slot.clone(),
+                target: target.clone(),
+                target_token: target_token.clone(),
+                target_ca: read(target_ca, "--target-ca"),
+                name: name.clone(),
+                batch: (*batch).max(1),
+                copy: *copy,
+                copy_workers: *copy_workers,
+                crash_after: None,
+            };
+            if *drop_slot {
+                match strata_server::postgres::drop_slot(o).await {
+                    Ok(j) => println!("{}", serde_json::to_string_pretty(&j).unwrap_or_default()),
+                    Err(e) => fail(&format!("follow-postgres {name}: {e}")),
+                }
+                return;
+            }
+            if let Err(e) = strata_server::postgres::run(o).await {
+                fail(&format!("follow-postgres {name}: {e}"));
             }
             return;
         }
