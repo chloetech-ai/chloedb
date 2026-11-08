@@ -16,7 +16,7 @@ Around the library:
 - **[strata-crawl](docs/strata/crawler.md)** crawls a site into a table: given a URL it reads the pages, finds their fields (JSON-LD, meta tags, spec tables, the site's template), makes a table from them and fills it, and adds shards to the cluster as the table grows. A program of its own that talks to strata-server over HTTP, shown in the command center as an app.
 - **[Engram](#engram-memory-for-coding-agents-built-on-strata)** is an application built on Strata: long-term memory for coding agents. It records every Claude Code session of a project into one Strata file and brings the right pieces back when a prompt needs them.
 
-📖 **Documentation:** [`docs/`](docs/index.md), published at [rkonow.github.io/strata](https://rkonow.github.io/strata/).
+📖 **Documentation:** [`docs/`](docs/index.md), published at [chloetech-ai.github.io/strata](https://chloetech-ai.github.io/strata/). The Strata website, with the benchmarks against other engines, is at [chloetech-ai.github.io/strata/site](https://chloetech-ai.github.io/strata/site/).
 
 ## Strata in one query
 
@@ -145,9 +145,9 @@ cd strata-js && npm run build && cd ../my-app && npm install ../strata/strata-js
 
 Claude Code forgets. A long session gets compacted into a summary of about 15,000 characters, and a new session starts with almost nothing. Engram records everything a session does (prompts, answers, tool calls and their results, errors, compaction summaries) into one local Strata file per project. It brings the right pieces back on its own when a prompt needs them, and it gives the model tools to search its own history. Every question it asks is Strata SQL: recall is a BM25 search and a vector search under a filter that leaves out what the model can still see, and the model's `memory_sql` tool is Strata's SQL itself, read-only.
 
-🧭 **Why Engram, in two pages:** where it wins, where it loses, how it searches and what it saves on coding sessions, with a cost calculator: [`docs/why/`](docs/why/index.html), live at [rkonow.github.io/strata/why/](https://rkonow.github.io/strata/why/).
+🧭 **Why Engram, in two pages:** where it wins, where it loses, how it searches and what it saves on coding sessions, with a cost calculator: [`docs/why/`](docs/why/index.html), live at [chloetech-ai.github.io/strata/why/](https://chloetech-ai.github.io/strata/why/).
 
-🚀 **Try it:** `git clone https://github.com/chloetech-ai/strata && cd strata && ./install.sh` sets Engram up for every Claude Code session on a Mac or Linux machine ([install Engram](#install-engram)). To have a coding agent do it, tell it: *"Clone https://github.com/rkonow/strata and set Engram up for my Claude Code by following its AGENTS.md."* [`AGENTS.md`](AGENTS.md) gives an agent the steps, the checks and what to ask you first.
+🚀 **Try it:** `git clone https://github.com/chloetech-ai/strata && cd strata && ./install.sh` sets Engram up for every Claude Code session on a Mac or Linux machine ([install Engram](#install-engram)). To have a coding agent do it, tell it: *"Clone https://github.com/chloetech-ai/strata and set Engram up for my Claude Code by following its AGENTS.md."* [`AGENTS.md`](AGENTS.md) gives an agent the steps, the checks and what to ask you first.
 
 ![A new Claude Code session answers from Engram's memory: the storage decision, its reason, and the receipt-printer constraint, all stated in an earlier session](docs/assets/img/inspector-new-session.png)
 

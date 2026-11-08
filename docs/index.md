@@ -143,4 +143,4 @@ Each project also has a long-form report with interactive charts, formulas and e
 
 Every figure on these pages comes from the experiments committed in this repository (`*/results/`). The timings were measured on a MacBook Air with an Apple M2 (8 cores, 24 GB), replacing earlier runs on a 4-core cloud VM; the runs that call a model are the original ones. The comparisons with other engines ran on DigitalOcean, and [each report](site/benchmarks.html) names its machines. [Reproducing the results](reproduce.md) compares the two machines and has the commands.
 
-The repository was called `rkonow/engram`, and this site `rkonow.github.io/engram`, until October 2026.
+The repository was called `rkonow/engram`, and this site `rkonow.github.io/engram`, until October 2026; it is now `chloetech-ai/strata`, published at `chloetech-ai.github.io/strata`.
