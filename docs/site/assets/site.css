@@ -680,7 +680,49 @@ a.report:hover { border-color: var(--ink-3); text-decoration: none; }
 .loss p { color: var(--ink-2); font-size: 0.93rem; }
 .loss p b { color: var(--ink); }
 .loss .fix { display: inline-block; margin-top: 4px; font-size: 0.84rem; color: var(--yes); }
+.loss .fix.open { color: var(--ink-2); }
 @media (max-width: 760px) { .loss { grid-template-columns: minmax(0, 1fr); } }
+
+/* Strata's speed over each engine's: a log track per engine, a hollow dot
+ * at one client and a filled one at 16 clients; each row opens to its kinds. */
+.vs { display: grid; background: var(--panel); border: 1px solid var(--rule); border-radius: 12px; padding: 6px 14px 4px; margin-top: 12px; }
+.vs-head, .vs-row > summary { display: grid; grid-template-columns: minmax(7.5rem, 11rem) minmax(0, 1fr) 8rem 5.5rem; gap: 14px; align-items: center; }
+.vs-head { font: 500 0.7rem/1 var(--mono); color: var(--ink-3); padding: 8px 0; border-bottom: 1px solid var(--rule); }
+.vs-scale { position: relative; height: 1em; }
+.vs-scale i { position: absolute; transform: translateX(-50%); font-style: normal; white-space: nowrap; }
+.vs-scale i:first-child { transform: none; }
+.vs-scale i:last-child { transform: translateX(-100%); }
+.vs-row > summary { list-style: none; cursor: pointer; padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 0.9rem; }
+.vs-row > summary::-webkit-details-marker { display: none; }
+.vs-row:last-child > summary { border-bottom: 0; }
+.vs-row > summary:hover .vs-name, .vs-row[open] > summary .vs-name { color: var(--accent); }
+.vs-name { font-weight: 550; min-width: 0; }
+.vs-name::before { content: "▸"; display: inline-block; width: 1em; color: var(--ink-3); font-size: 0.8em; }
+.vs-row[open] .vs-name::before { content: "▾"; }
+.vs-name small { display: block; margin-left: 1.25em; color: var(--ink-3); font-weight: 400; font-size: 0.74rem; }
+.vs-track { position: relative; height: 20px; }
+.vs-tick { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--rule); }
+.vs-tick.one { border-left: 1.5px solid var(--ink-3); }
+.vs-span { position: absolute; top: 50%; height: 2px; margin-top: -1px; background: color-mix(in srgb, var(--accent) 45%, transparent); }
+.vs-dot { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; border: 2px solid var(--accent); background: var(--panel); box-sizing: border-box; }
+.vs-dot.sixteen { background: var(--accent); }
+.vs-legend { margin-top: 10px; }
+.vs-legend .vs-dot { position: static; display: inline-block; margin: 0; flex: none; }
+.vs-num { font: 500 0.82rem/1.2 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--ink-2); }
+.vs-num b { color: var(--ink); font-weight: 600; }
+.vs-won { font: 500 0.82rem/1.2 var(--mono); color: var(--ink-2); white-space: nowrap; }
+.vs-row .table-wrap { margin: 4px 0 14px; max-width: 34em; }
+table.vs-kinds td.n { text-align: right; }
+table.vs-kinds th, table.vs-kinds td { padding: 6px 12px; }
+@media (max-width: 640px) {
+  .vs { padding: 6px 10px 4px; }
+  .vs-head, .vs-row > summary { grid-template-columns: minmax(5.5rem, 7rem) minmax(0, 1fr) 6.6rem; gap: 8px; }
+  .vs-won { display: none; }
+  .vs-scale i:nth-child(even) { display: none; }
+  .vs-name small { display: none; }
+}
+table.data.ef th[scope="colgroup"] { text-align: center; }
+table.data.ef th[scope="rowgroup"] { vertical-align: middle; }
 
 .principles { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); }
 .principles > div { background: var(--panel); border: 1px solid var(--rule); border-radius: 12px; padding: 16px 18px; display: grid; gap: 6px; align-content: start; }
@@ -794,7 +836,8 @@ a.cap:hover { border-color: var(--rule-2); box-shadow: var(--shadow); text-decor
 
 /* laptop to cloud */
 .deploy { display: grid; gap: 20px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-@media (max-width: 900px) { .deploy { grid-template-columns: minmax(0, 1fr); } }
+.deploy.pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 900px) { .deploy, .deploy.pair { grid-template-columns: minmax(0, 1fr); } }
 .dcard { background: var(--panel); color: var(--ink); border-radius: 14px; border-top: 5px solid var(--c, var(--accent)); padding: 24px; display: grid; gap: 12px; align-content: start; min-width: 0; }
 .dcard .eyebrow { color: var(--ink-3); }
 .dcard h3 { color: var(--ink) !important; font-size: 1.3rem; }
@@ -850,10 +893,6 @@ a.lang:hover { border-color: var(--rule-2); box-shadow: var(--shadow); text-deco
 
 /* centered heads and a centered row of actions under a block */
 .center-row { display: flex; flex-wrap: wrap; gap: 12px 20px; justify-content: center; align-items: center; }
-.engram { display: grid; gap: 40px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; }
-.engram > div { display: grid; gap: 16px; justify-items: start; }
-.engram p { color: var(--ink-2); }
-@media (max-width: 900px) { .engram { grid-template-columns: minmax(0, 1fr); } }
 
 /* night versions of a few components used on night bands */
 .band-night .tablist button { background: transparent; color: var(--night-dim); border-color: var(--night-rule); }

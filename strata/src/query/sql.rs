@@ -34,7 +34,7 @@ use crate::query::compound::{func_args, outer_field};
 use crate::query::ir::{ArithOp, CmpOp, Func, NormKind};
 use crate::query::{ddl, hint, ir};
 use crate::query::rank::Rank;
-use crate::query::logical::{AggFn, Col, Decay, DecayShape, Direction, Expand, GraphKind, GraphQuery, Guard, GuardSite, Having, OrderBy, Opts, PathTest, Pred, Projection, Score, Seeds, Select, Tiebreak, Vectors};
+use crate::query::logical::{AggFn, Col, Decay, Fraction, DecayShape, Direction, Expand, GraphKind, GraphQuery, Guard, GuardSite, Having, OrderBy, Opts, PathTest, Pred, Projection, Score, Seeds, Select, Tiebreak, Vectors};
 use crate::schema::{Field, FieldType, Logical, Schema};
 use crate::storage::DropOptions;
 use crate::value::Value;
@@ -559,7 +559,7 @@ pub(crate) fn keyed_rows(schema: &Schema, keys: Vec<Value>) -> Result<Select> {
     let projection = every_field(schema);
     let types = projection_types(schema, &projection);
     let filter = if keys.is_empty() { Pred::False } else { Pred::In { field: pk, values: keys } };
-    Ok(Select { projection, filter, order: None, group_by: Vec::new(), paths: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types, guard: None, per: None })
+    Ok(Select { projection, filter, order: None, group_by: Vec::new(), paths: Vec::new(), times: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types, guard: None, per: None })
 }
 
 /// The fields `SELECT *` answers, by position: the stored ones but
@@ -574,7 +574,7 @@ pub fn star_fields(schema: &Schema) -> impl Iterator<Item = usize> + '_ {
 pub(crate) fn fields_select(schema: &Schema, fields: &[usize]) -> Select {
     let projection: Vec<(String, Projection)> = fields.iter().map(|&i| (schema.fields[i].name.clone(), Projection::Field(i))).collect();
     let types = projection_types(schema, &projection);
-    Select { projection, filter: Pred::False, order: None, group_by: Vec::new(), paths: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types, guard: None, per: None }
+    Select { projection, filter: Pred::False, order: None, group_by: Vec::new(), paths: Vec::new(), times: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types, guard: None, per: None }
 }
 
 fn every_field(schema: &Schema) -> Vec<(String, Projection)> {
@@ -1169,7 +1169,7 @@ impl<'a> Binder<'a> {
         let graphs = self.graphs.take();
         let types = projection_types(self.schema, &projection);
         let group_by = group_by.into_iter().map(Col::Field).collect();
-        Ok(Select { projection, filter, order, group_by, paths: Vec::new(), having, tiebreak, phases: Vec::new(), limit, offset, graphs, types, guard, per: None })
+        Ok(Select { projection, filter, order, group_by, paths: Vec::new(), times: Vec::new(), having, tiebreak, phases: Vec::new(), limit, offset, graphs, types, guard, per: None })
     }
 
     /// The graph predicate `hops()` refers to: the first REACHABLE or PATH.
@@ -1441,7 +1441,7 @@ impl<'a> Binder<'a> {
                 "score" => Ok(Projection::Score),
                 "hops" => Ok(Projection::Hops(self.hops_graph()?)),
                 "seq_no" => Ok(Projection::SeqNo),
-                "count" | "sum" | "avg" | "min" | "max" => self.aggregate(f),
+                n if super::compound::AGGREGATES.contains(&n) => self.aggregate(f),
                 "features" => Err(err("features() stands for several columns: it takes no alias and is not part of an expression")),
                 _ => self.feature(e),
             },
@@ -1531,10 +1531,14 @@ impl<'a> Binder<'a> {
         Ok(items)
     }
 
-    /// `COUNT(*)`, `COUNT([DISTINCT] f)`, `SUM(f)`, `AVG(f)`, `MIN(f)`, `MAX(f)`.
+    /// `COUNT(*)`, `COUNT([DISTINCT] f)`, `SUM(f)`, `AVG(f)`, `MIN(f)`,
+    /// `MAX(f)`, and the percentiles ([`Binder::percentile`]).
     fn aggregate(&self, f: &sql::Function) -> Result<Projection> {
         let name = fname(f);
         let distinct = matches!(&f.args, FunctionArguments::List(l) if l.duplicate_treatment == Some(sql::DuplicateTreatment::Distinct));
+        if super::compound::PERCENTILES.contains(&name.as_str()) {
+            return self.percentile(f, &name, distinct);
+        }
         let (args, _) = self.args_raw(f)?;
         let star = args.is_empty() || (name == "count" && args.len() == 1 && literal_usize(args[0]).is_some());
         if star {
@@ -1583,6 +1587,46 @@ impl<'a> Binder<'a> {
         Ok(Projection::Agg { func, of: Col::Field(field) })
     }
 
+    /// `MEDIAN(f)`, `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY f)` and
+    /// `PERCENTILE_DISC(..)` (which parse as `PERCENTILE_CONT(f, p)`,
+    /// [`super::parse`]): of an INT or FLOAT field (`PERCENTILE_DISC` of a
+    /// TIMESTAMP too, which gives one of its times).
+    fn percentile(&self, f: &sql::Function, name: &str, distinct: bool) -> Result<Projection> {
+        let upper = name.to_uppercase();
+        if distinct {
+            return Err(err("DISTINCT works in COUNT only"));
+        }
+        let (args, _) = self.args_raw(f)?;
+        let (arg, p) = match (name, args.as_slice()) {
+            ("median", [x]) => (*x, 0.5),
+            ("median", _) => return Err(err("MEDIAN takes one field: MEDIAN(price)")),
+            (_, [x, p]) => (*x, self.number(p).ok_or_else(|| err(format!("{upper}: the fraction is a number from 0 to 1, not {}", self.described(p))))?),
+            _ => return Err(err(format!("{upper}(p) WITHIN GROUP (ORDER BY field): p, from 0 to 1, of one field's values"))),
+        };
+        let p = Fraction::new(p).ok_or_else(|| err(format!("{upper}: the fraction is from 0 to 1, not {p}")))?;
+        let field = self.field_of(arg)?;
+        let fld = &self.schema.fields[field];
+        let cont = name != "percentile_disc";
+        let numeric = matches!(fld.ty, FieldType::Int | FieldType::Float);
+        if !numeric || (cont && fld.logical.is_some()) {
+            let nums = hint::fields_where(self.schema, |f| matches!(f.ty, FieldType::Int | FieldType::Float) && f.logical.is_none());
+            return Err(err(format!(
+                "{upper}({}): {} is a {} field, and {upper} {} numbers (INT or FLOAT{}){}",
+                fld.name,
+                fld.name,
+                hint::type_of(fld),
+                if cont { "interpolates between" } else { "picks one of" },
+                if nums.is_empty() { String::new() } else { format!(": {}", hint::listing(&nums, 6)) },
+                if cont && fld.logical == Some(Logical::Timestamp) { "; PERCENTILE_DISC picks one of a TIMESTAMP's times" } else { "" }
+            )));
+        }
+        if !fld.indexed {
+            return Err(err(format!("{}: aggregates read the field's column, and it is not indexed", fld.name)));
+        }
+        let func = if cont { AggFn::PercentileCont(p) } else { AggFn::PercentileDisc(p) };
+        Ok(Projection::Agg { func, of: Col::Field(field) })
+    }
+
     /// An aggregate or group value named in HAVING or ORDER BY: a function
     /// call, a selected column's alias or position, or a group field.
     fn group_value(&self, e: &Expr, proj: &[(String, Projection)], group: &[usize]) -> Result<Projection> {
@@ -1591,7 +1635,7 @@ impl<'a> Binder<'a> {
         }
         match e {
             Expr::Nested(inner) => self.group_value(inner, proj, group),
-            Expr::Function(f) if matches!(fname(f).as_str(), "count" | "sum" | "avg" | "min" | "max") => self.aggregate(f),
+            Expr::Function(f) if super::compound::AGGREGATES.contains(&fname(f).as_str()) => self.aggregate(f),
             Expr::Identifier(id) if proj.iter().any(|(n, p)| n.eq_ignore_ascii_case(&id.value) && !matches!(p, Projection::Field(_))) => {
                 Ok(proj.iter().find(|(n, _)| n.eq_ignore_ascii_case(&id.value)).unwrap().1.clone())
             }
@@ -1692,6 +1736,7 @@ impl<'a> Binder<'a> {
                 Projection::Feature(s) => Ok(OrderBy::Score { score: s.clone(), desc, nulls_first: false }),
                 Projection::Path(p) => Ok(OrderBy::Path { path: *p, desc, nulls_first: false }),
                 Projection::Count | Projection::Agg { .. } => Err(err("ORDER BY an aggregate needs GROUP BY")),
+                Projection::Time(_) => Err(err("ORDER BY a part of a time orders groups by it")),
             };
         }
         // `ORDER BY hops()` is nearest first; ranking is always best first.
@@ -2966,7 +3011,7 @@ impl<'a> Binder<'a> {
 /// holds: the field itself, or its MIN or MAX.
 fn typed_source(schema: &Schema, p: &Projection) -> Option<usize> {
     match p {
-        Projection::Field(f) | Projection::Agg { func: AggFn::Min | AggFn::Max, of: Col::Field(f) } => Some(*f).filter(|&f| schema.fields[f].logical.is_some()),
+        Projection::Field(f) | Projection::Agg { func: AggFn::Min | AggFn::Max | AggFn::PercentileDisc(_), of: Col::Field(f) } => Some(*f).filter(|&f| schema.fields[f].logical.is_some()),
         _ => None,
     }
 }

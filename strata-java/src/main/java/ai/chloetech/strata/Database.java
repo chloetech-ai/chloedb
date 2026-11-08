@@ -434,13 +434,21 @@ public final class Database implements AutoCloseable {
         return exportParquet(path, null);
     }
 
-    /** Writes the in-memory rows into segments and merges small segments, as a server does in the background. */
+    /**
+     * Readies a table that is done changing for queries: writes the rows
+     * still in memory into segments, merges its segments into as few as it
+     * can (one, up to 2,000,000 rows; a query visits each), drops deleted
+     * rows, and returns the space this frees to the file system. Segments
+     * merge in the background anyway; this is for after a load.
+     */
     public void optimize() {
         call("optimize");
     }
 
     /**
-     * Merges small segments and closes the database. Calls after it throw
+     * Merges small segments, returns the space merges freed to the file
+     * system when it is an eighth of the file or more, and closes the
+     * database. Calls after it throw
      * {@link IllegalStateException}; closing again does nothing.
      */
     @Override

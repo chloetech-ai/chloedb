@@ -54,10 +54,10 @@
       <p>Look at these before choosing Strata.</p>
     </div>
     <div class="behind">
-      <div class="card"><h4>Elasticsearch and OpenSearch</h4><p>Years at very large scale, a large ecosystem and analyzers for dozens of languages. Far faster on SQL aggregates and typo search: 4.86 ms against Strata's 4.3 s on an aggregate at 10M.</p></div>
+      <div class="card"><h4>Elasticsearch and OpenSearch</h4><p>Years at very large scale, a large ecosystem and analyzers for dozens of languages. Faster on typo search (Elasticsearch 34.6 ms against Strata's 45.8 at 10M) and on BM25 under load (OpenSearch 720 queries a second at 16 clients against 625).</p></div>
       <div class="card"><h4>Vespa</h4><p>Proven at very large scale, multi-phase tensor ranking and a managed cloud. Fastest on BM25 × recency at 10M.</p></div>
-      <div class="card"><h4>Milvus, Qdrant and Weaviate</h4><p>Indexes for billions of vectors, on disk or GPUs, and managed clouds. Qdrant's recall@10 at 10M is 0.941, Strata's 0.795 at the shared settings.</p></div>
-      <div class="card"><h4>SQLite and PostgreSQL</h4><p>Decades of hardening. SQLite reads a row by id in 8 µs against Strata's 21; Postgres looks up keys in half Strata's time at 10M.</p></div>
+      <div class="card"><h4>Milvus, Qdrant and Weaviate</h4><p>Indexes for billions of vectors, on disk or GPUs, and managed clouds. Qdrant's recall@10 at 10M is 0.941, Strata's 0.791 at the shared settings.</p></div>
+      <div class="card"><h4>SQLite and PostgreSQL</h4><p>Decades of hardening. SQLite reads a row by id in 8 µs against Strata's 21; Postgres looks up keys in about a third of Strata's time at 10M (0.37 against 0.99 ms).</p></div>
       <div class="card"><h4>Tantivy</h4><p>Faster facet counts on small collections, and faster cold range filters.</p></div>
       <div class="card"><h4>Strata itself</h4><p>A young project: English and simple analyzers only, no managed service, no point-in-time recovery yet, and one writer per file.</p></div>
     </div>
@@ -70,7 +70,7 @@
   <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
   <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
   <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="../strata/">Documentation</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li></ul></div>
-  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../engram/">Engram</a></li><li><a href="../reproduce.html">Reproduce the results</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../reproduce.html">Reproduce the results</a></li></ul></div>
 </div></footer>
 <script src="assets/compare-data.js"></script>
 <script src="assets/bench-data.js"></script>

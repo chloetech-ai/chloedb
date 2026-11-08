@@ -36,7 +36,10 @@
 //! model directory's `endpoint.json` names
 //! ([`crate::hosted::RerankEndpoint`]). Each request scores a batch of rows
 //! (feature `hosted`, on by default). A provider's score is its
-//! `relevance_score`, between 0 and 1; TEI's is the logit, as here. The
+//! `relevance_score`, between 0 and 1; TEI's is the logit, as here. A
+//! language model (`anthropic/claude-haiku-5-5`, `openai/<chat model>`, or
+//! a chat server of one's own) grades each row in a request of its own,
+//! 0 to 3, which is the score ([`crate::hosted::grading_prompt`]). The
 //! hash is of the endpoint: its API, URL and model, not its secret.
 //!
 //! `builtin:overlap` needs no files or feature: the share of the query's

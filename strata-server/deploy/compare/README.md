@@ -16,11 +16,13 @@ Elasticsearch and Solr, 28 October 2026) are in
 | `compare.sh` | builds and loads the image, starts and stops each engine, loads it, runs the client |
 | `es.yaml`, `os.yaml`, `solr.yaml` | two data nodes of Elasticsearch 9.5.5, OpenSearch 3.9.0 or Solr 10.1.0 (SolrCloud, ZooKeeper embedded in `solr-0`) |
 | `vespa.yaml`, `vespa/` | Vespa 8.778.45: `vespa-0` (config server, cluster controller and the container that answers queries) and two content nodes; `vespa/package.sh` writes the application package (`services-cluster.xml`, `schemas/doc.sd`, the stopword lists); `vespa/services.xml` is the same application on one node, for trying it in Docker |
-| `strata.yaml`, `strata-coordinator.yaml` | two Strata shards and their coordinator |
+| `strata-coordinating.yaml` | two Strata shards, each with a coordinator in its process that calls the shard in-process (`--coordinator-listen`), or as a process of its own in the pod (`STRATA_COORD=shards`, as from 6 November 2026 until then) |
+| `strata.yaml`, `strata-coordinator.yaml` | two Strata shards and a coordinator in a pod of its own (`STRATA_COORD=pod`, as before 6 November 2026) |
 | `redpanda.yaml` | one Redpanda broker for the stream test |
 | `more/*.yaml` | the nine one-node engines (`postgres.yaml` is ParadeDB's and Postgres's, as `paradedb-0` or `postgres-0`) |
 | `analyze.py` | scores the answers and prints the tables |
-| `../../src/bin/engine-compare/` | the client: `build` (a Strata shard), `load` (the other engines) and `run` (time the kinds and record the answers); `more.rs` speaks to the nine one-node engines |
+| `profiles/*.toml` | traffic profiles for the [traffic simulator](#traffic-simulator) (copied into the image) |
+| `../../src/bin/engine-compare/` | the client: `build` (a Strata shard), `load` (the other engines), `run` (time the kinds and record the answers), `plan` and `replay` (the traffic simulator, `sim/` and `replay.rs`); `more.rs` speaks to the nine one-node engines |
 
 ## What is the same for every engine
 
@@ -37,11 +39,16 @@ Elasticsearch and Solr, 28 October 2026) are in
 - **CPU and memory**: 3 CPUs and 6 GiB per engine, as Kubernetes limits:
   Elasticsearch, OpenSearch and Solr have two data nodes of 1.5 CPUs and 3
   GiB (heap 1.5 GB for Elasticsearch and OpenSearch, as Elastic recommends;
-  1 GB for Solr, whose full-precision vectors need the page cache); Strata
-  has two shards of 1 CPU and 2.5 GiB and a coordinator of 1 CPU and 1 GiB,
-  since its shards do not also coordinate (`SHARD_CPU` and `COORD_CPU`
-  split it otherwise; the results compare 1.25 + 1.25 + 0.5 too). Vespa is
-  split as Strata is, since its content nodes do not answer queries either:
+  1 GB for Solr, whose full-precision vectors need the page cache); and
+  as their data nodes also coordinate, Strata has two pods of a data
+  node's CPU and memory (`DATA_CPU`, `DATA_MEM`), each with a shard and a
+  coordinator over both shards, and the client sends its requests to both
+  coordinators. Runs before 6 November 2026 gave Strata two shards of 1
+  CPU and 2.5 GiB and a coordinator of 1 CPU and 1 GiB in a pod of its own
+  on the clients' node, where it sat mostly idle while the shards ran
+  short of CPU; `STRATA_COORD=pod` runs that split again (`SHARD_CPU` and
+  `COORD_CPU` change it; those results compare 1.25 + 1.25 + 0.5 too). Vespa is
+  split that way, since its content nodes do not answer queries:
   `vespa-0` on the clients' node (config server, cluster controller and the
   container, 1 CPU and 2.25 GiB, container heap 768 MB) and two content
   nodes of 1 CPU and 1.875 GiB. Vespa asks for 4 GB per node and refuses to
@@ -75,6 +82,17 @@ Elasticsearch and Solr, 28 October 2026) are in
   from disk when memory is short (Vespa warns that paged HNSW vectors are
   slow when they do not fit), with `targetHits` 10 and
   `exploreAdditionalHits` 54.
+- **Filtered vectors**: Strata's vector field is partitioned by `rating`
+  (`partition_by = 'rating', partition_bounds = '1, 2, 3, 4'`). Besides
+  its graph of every row, each segment keeps a graph for each range of
+  ratings, over the same codes. `vector + filter` (`rating >= 4`) and
+  `similar items` (`rating >= 3`) walk the graphs of the ranges they
+  cover, and test nothing in a range whose every row passes. Like an
+  index on a column a workload filters by, this is a schema choice made
+  for these two kinds. The other engines search their one graph with the
+  filter applied during the search: Qdrant with a `float` payload index
+  on `rating`, Weaviate with a range index, Milvus with an `STL_SORT`
+  index. Runs before 6 November 2026 built Strata without the partitions.
 - **Segments**: Strata builds its shards as one segment each
   up to 500K documents; a bigger shard is loaded in segments of 500K and
   then compacted as `optimize` does, into segments of up to Strata's cap of
@@ -89,10 +107,21 @@ Elasticsearch and Solr, 28 October 2026) are in
   per cluster by `compare.sh` and kept in the secret `strata-token`; the
   other engines run with their security off, as their images start
   (Typesense needs an API key, a fixed `compare`).
-- **No result caches**: the timed runs repeat 300 queries, so Solr's
-  `queryResultCache` is off and Elasticsearch's and OpenSearch's shard
-  request caches are bypassed (`request_cache=false`); filter caches stay
-  on everywhere. Vespa keeps no result cache by default.
+- **No result caches**: the timed runs repeat 300 queries, so no engine
+  may answer a repeat from a cache of answers. Solr's `queryResultCache`
+  is off (size 0); Elasticsearch's and OpenSearch's shard request caches
+  are off for the index while it is timed
+  (`index.requests.cache.enable: false`, which also covers their SQL
+  endpoints); Manticore's query cache is off (`SET GLOBAL
+  qcache_max_bytes=0`; it keeps queries slower than 3 s). Vespa, the
+  other engines and Strata keep no result cache by default (Typesense
+  only when a request asks with `use_cache`, which these do not). Page
+  caches and filter caches stay on everywhere. Each `run-*.json` keeps
+  the caches' counters from before and after the timed runs
+  (`result_cache`), so a report can show that none answered. Runs
+  before 5 November 2026 only passed `request_cache=false` on
+  Elasticsearch's and OpenSearch's `_search` and left Manticore's cache
+  on, so their SQL aggregates could be answered from the request cache.
 
 ## The query kinds
 
@@ -203,6 +232,133 @@ the time it was due.
 
 Afterwards the streamed documents are deleted and the topic too.
 
+## Traffic simulator
+
+`run` asks each kind's queries in turn, as fast as a fixed number of
+clients can: a closed loop, which measures each engine at its best and
+cannot say what a user would wait at a given load. The traffic simulator
+sends a planned stream of requests instead, at the times it was planned for,
+whatever the engine's answers: an open loop, so a slow answer delays nothing
+behind it, and requests that would have queued are counted from when they
+were due (as wrk2 does, against coordinated omission). It comes in two
+steps, so that every engine gets the same requests at the same times:
+
+```bash
+B=strata-server/target/release/engine-compare    # or the image's engine-compare
+P=strata-server/deploy/compare/profiles
+$B --collection msmarco-1000k-v2-h5 plan --profile $P/search-app.toml --seed 1 --rate 200 --out search-app-1.jsonl.gz
+$B --collection msmarco-1000k-v2-h5 replay --engine strata --url http://127.0.0.1:7700 --schedule search-app-1.jsonl.gz --out reports
+# In the cluster: plans in the Job, then replays (PROFILE is a name under profiles/ or a path under /data).
+$C replay strata search-app --rate 200;  $C replay es search-app --rate 200
+$C replay strata search-app --shape ramp --label strata-ramp
+```
+
+The command center's **Simulator** sends the same kinds and profiles (the
+library's `strata_server::traffic`, which `plan` and `replay` read too) at
+the cluster it runs on, over a table of synthetic documents of its own, and
+fits a model to what it measured that predicts other shapes and their cost
+(docs/strata/server.md, "The Simulator").
+
+**A profile** (`profiles/*.toml`, every value checked when it is read) holds
+the distributions:
+
+| section | what it draws |
+|---|---|
+| `mix` | the share of each kind of `KINDS` a session sets out to ask |
+| `queries` | the collection's queries or a larger pool (`source = "pool"`); a Zipf head (`head`, `zipf_s`) that drifts (`drift_share` of it replaced every `drift_every_s`), a tail of queries asked once (`tail_share`), misspellings (`typo_share`: Strata's typo kind under `typos = "fuzzy"`, the text misspelt for every engine under `"plain"`) |
+| `docs` | which documents key lookups and similar items ask for: Zipf over the collection (`popular`; `doc_popularity.f32` beside it, if present, gives the weights) or `run`'s strides (`legacy`) |
+| `filters` | `run`'s fixed filters, or `drawn`: a target share of documents (log-uniform between `min_selectivity` and `max_selectivity`) met by a year and categories, or a rating, from the collection's own counts |
+| `sessions` | follow-ups (`follow_up`, the weights of refine, open and similar), think times (log-normal), and typing: one prefix request a keystroke, a log-normal gap apart, before the query |
+| `traffic` | the day (`day_s` long, `peak_to_trough`, `humps`, `peak_at`), bursts (a two-state Markov process: `factor` times the rate for spells of `busy_s` every `calm_s`), flash crowds (a few queries, `factor` times the rate, for `for_s`), the warm-up, the ramp's steps, the closed loop's concurrencies |
+| `writes` | their share of requests, inserts, updates and deletes among them, batch sizes, `jobs` (bulk loads of `docs` in batches, beside the traffic), and every `mark_every`-th insert carrying a word no other document has |
+| `slo` | the p99 a step must hold and the share of errors it may have |
+
+`today.toml` is `run` again (the collection's queries in order, `run`'s
+filters and documents): `replay --shape closed` with it sends the requests
+`run` sends, at the same concurrencies, which a test checks for all 14
+engines. `search-app.toml` is a search box in an app (typing, filters,
+sessions, a 3:1 day with bursts and a flash crowd, 2% writes and a bulk
+job); `rag.toml` is retrieval for a model (vector and hybrid, longer
+thinking, no typing, 5% writes and an ingest job). Their starting values
+and where they came from are in their comments.
+
+**Shapes**: `--shape day --rate R` (R requests a second at the day's peak),
+`--shape ramp` (the profile's steps of rising rates; a step holds when at
+most 1% of its reads are over the SLO's p99, counting requests still in
+flight at its end as late, and its errors stay under the SLO's share; two
+steps that do not hold end the replay, and the report's
+`capacity_at_slo` is the rate of the last step that held), `--shape closed`
+(`run`'s loop). A warm-up (`warmup_s`, head queries only, no writes, planned
+by a generator of its own so that it never shifts the timed requests) goes
+first and is left out of every number.
+
+**The schedule** is gzip-compressed JSON lines: a header (the profile, its
+SHA-256, the seed, the collection, the steps), one line a request (its time,
+kind, query, filters, session, write), and a trailer with what the plan
+measured of itself (requests by kind, Zipf head share, first-time queries,
+selectivity quantiles, peak rate). It names no engine: `replay` turns each
+line into each engine's request as it sends it. The same profile, seed and
+collection make the same file, byte for byte; its hash (`zcat FILE |
+sha256sum`) goes into every report replayed from it.
+
+**The report** (`OUT/replay-LABEL.json`) gives, for each kind, the response
+time (from when the request was due) and the service time (from when it was
+sent), from HDR histograms; the same by 10 s window, with whether the window
+held the SLO; each ramp step's verdict; how soon a marked write was found (a
+search for its word every 5 ms, up to 60 s); the driver's own lag behind the
+schedule; and errors. A dispatcher thread sleeps until a request's time and
+spins for the last 200 µs, so the driver's lag stays well under a
+millisecond, and a test serving 4 ms answers one at a time at 75% load checks
+the measured wait against M/D/1's. Afterwards the documents the schedule
+inserted are deleted and the ratings it changed written back (`--no-reset`
+keeps them).
+
+**Caches**: `--cache-mode ranked` (the default) sends requests as `run` does,
+with Elasticsearch's and OpenSearch's request cache off by request, so a
+repeated head query is not answered from a cache of results that one engine
+has and another has not; `shipped` sends them as each engine ships, for the
+numbers a user of its defaults would see. Page and filter caches stay on in
+both. Two result caches are as shipped in both modes until `run` turns them
+off too: Elasticsearch's and OpenSearch's SQL endpoints (the SQL aggregate)
+and Manticore's query cache. Report the mode with every number.
+
+**Data**: a profile can ask for more than `prepare_msmarco_compare.py`'s
+first collection holds:
+
+- `--attrs v2` draws the fields as a catalogue's are (years growing, ratings
+  skewed high, the category tied to the topic, or kept away from it with
+  `--categories anti`); `--heldout 0.05` keeps every 20th passage out, in
+  `heldout.jsonl` and `heldout_vecs.f32`, for inserts of documents no engine
+  has seen (without them, inserts copy loaded documents under new keys).
+  Either goes into a directory of its own (`msmarco-1000k-v2-h5`); the
+  default collection is the one before, row for row.
+- `strata/scripts/prepare_query_pool.py COLLECTION_DIR --n 1000000` writes a
+  pool of queries beside it (ORCAS's and MS MARCO's train queries, without
+  the collection's own, embedded with the same model) for `source = "pool"`.
+- `strata/scripts/fit_traffic.py` fits a profile's values to data: `zipf` to
+  a query log (ORCAS's clicks), `day` to Wikipedia's hourly page views.
+
+The nine one-node engines replay writes too, each through its own API:
+
+| engine | insert | rating update | delete |
+|---|---|---|---|
+| Meilisearch | add documents (a task) | add or update with the rating only | delete a batch of ids |
+| Typesense | import, upsert | `PATCH` of the document | delete by `filter_by=id:[…]` |
+| Qdrant | upsert points (`wait=true`) | set the payload's rating | delete points |
+| Weaviate | batch of objects | `PATCH` of the object | delete each object |
+| Milvus | insert | upsert of the whole document (no partial update) | delete by `key in […]` |
+| Manticore | bulk `replace` | `/update` of the attribute | `DELETE … WHERE id IN (…)` |
+| ParadeDB, Postgres | `INSERT` | `UPDATE … SET rating` | `DELETE … WHERE key IN (…)` |
+| Redis | `HSET` | `HSET` of the rating | `DEL` |
+
+Qdrant and Manticore number their documents: a loaded one by its row, a
+replay's own from its key, above every row. The freshness prober searches
+for the marked word with the engine's bm25 request and waits for the new
+document's key in the answer (Meilisearch and Typesense forgive typos, so
+another marked document can match the word too). After the reset, the
+report's `reset.searchable_docs_after` is the number of documents the engine
+says it holds, which should be the collection's again.
+
 ## Nine more engines, on one node
 
 `compare.sh up|load|run|down ENGINE` takes `meili`, `typesense`,
@@ -251,6 +407,86 @@ Postgres and Redis are spoken to over their own protocols (the simple query
 protocol, with trust authentication, and RESP2), a few lines each in
 `more.rs`, so the client needs no library for them.
 
+## Recommender kinds
+
+`engine-compare recsys-load` and `recsys-run` (`src/bin/engine-compare/recsys.rs`)
+time what a recommender asks of its store, on Strata, Elasticsearch,
+OpenSearch, Vespa, Qdrant, Milvus, Redis and Postgres (pgvector). The data
+is `strata/results/recsys/serving_data.py`'s, made from Yambda-50M: the
+most played tracks, each with the vector the sequence model learned (64
+numbers), its artist, the regions it may be played in (synthetic: Yambda
+has none), a popularity and twelve ranking features; users with their
+vector at the start of the test day, their region and the tracks they
+played; and a LightGBM ranker of 300 trees over the features and the
+user-track dot product (`f12`). Each kind is sent for each of `--users`
+users in turn:
+
+| kind | what | Strata |
+|---|---|---|
+| r1 user to items | the 500 nearest tracks in the user's region, minus the (up to) 500 they played | `WHERE regions = :r AND id NOT IN (...) ORDER BY similarity(emb, :u, ef => 1000, rerank => 1000) DESC LIMIT 500` |
+| r2 candidates (RRF) | three sources under r1's filters, 1,000 deep: nearest the user, nearest their last track, most popular; fused by RRF (k 60), the best 1,000 | `rrf(similarity(emb, :u), similarity(emb, :l), pop, depth => 1000)` |
+| r3 features | the twelve features of 1,000 tracks by key | `POST /v1/kv/get` with `columns` (the twelve) |
+| r4 GBDT rerank | those 1,000 by the ranker; the best 50 | a rerank phase: `WITH c AS (... ORDER BY ranked(:c) ...) SELECT ... ORDER BY gbdt('ranker', ..., dot(emb, :u))` |
+| r5 diversify | r1's ranking with at most 2 tracks an artist; the best 20 | `... MAX 2 PER artist LIMIT 20` |
+| r6 events while serving | r1 while plays are written one a request at `--event-rate`, and how soon a play is in a query of the user's last 5 | `/v1/write`, then `SELECT id FROM events WHERE usr = :u ORDER BY ts DESC LIMIT 5` |
+
+`run` sends each kind once and scores the answers against exact ones it
+computes from the same data (recall for r1, r2 and r5, rows found for r3,
+and for r4 the share of the answer in the model's own top 50, ties
+counted), then times them closed-loop at each `--concurrency` after a
+2-second warm-up. Where an engine has no request that does a kind's whole
+job, the client does the rest and the report says so (`differs`):
+
+| engine | r2 | r4 | r5 |
+|---|---|---|---|
+| Elasticsearch | the `rrf` retriever (two `knn`, one `function_score` of pop), on the trial licence | `_mget`, the trees scored in the client | the `knn` query, 200, collapsed by artist, `inner_hits` 2 |
+| OpenSearch | a `hybrid` query through a search pipeline's `score-ranker-processor`, rrf, k 60 | `_mget`, scored in the client | `knn` 200 collapsed by artist, `inner_hits` 2 |
+| Vespa | three queries at once (two `nearestNeighbor`, one of the region `order by pop desc`), fused in the client | `lightgbm("ranker.json")` in a rank profile | `nearestNeighbor` 200 grouped by artist |
+| Qdrant | the query API's `prefetch` (two vectors, one `order_by` pop) with `rrf` k 60 | points by id, scored in the client | `query/groups` by artist, group size 2 |
+| Milvus | the two vector searches at once, fused in the client with the region's most popular, which the client keeps (Milvus ranks by vectors only) | entities by id, scored in the client | a search of 200 grouped by artist, group size 2 |
+| Redis | three `FT.SEARCH` at once (two KNN, one `SORTBY pop`), fused in the client | 1,000 pipelined `HMGET`, scored in the client | KNN 200 with the artist, capped in the client |
+| Postgres | one SQL statement: three subqueries ranked by `row_number()`, summed as RRF | `WHERE id = ANY(...)`, scored in the client | the nearest 200 in a subquery, `row_number()` over each artist |
+
+The client scores the trees with Strata's own GBDT evaluator, so a
+client-side r4 costs what Strata's trees cost plus the read. Vectors are
+each engine's HNSW of full-precision floats (m 16, ef_construction 200, dot
+product), searched with 1,000 candidates for r1 and twice the depth for the
+others (pgvector's `ef_search` at most 1,000); Strata walks its graph over
+its 8-bit codes, as it always does, with the same `ef` and every candidate
+re-scored with the floats (`similarity(emb, :u, ef => 1000, rerank =>
+1000)`), and its database is merged into one segment after the load, as
+Elasticsearch's and OpenSearch's are. Qdrant indexes a segment
+once it holds 10 MB of vectors (its default `indexing_threshold`), and
+searches smaller segments exactly: at 100,000 tracks of 64 numbers it
+indexed 81,500 in one of its two segments (`recsys-load` records it). Vespa's
+package is `vespa-recsys/` (`package.sh` adds the ranker); Strata's server
+starts with `recsys/strata-items.json` as its schema and the serving data
+as its `--models`.
+
+Four things each engine's documentation leaves easy to miss.
+Elasticsearch's `rrf` retriever needs a paid or trial licence, so
+`local.sh` starts it on the 30-day trial. Elasticsearch's collapse runs its
+`inner_hits` as the request's `query` within each group, so r5 sends the
+`knn` query; with a top-level `knn` the inner hits are any two tracks of
+the artist. Milvus serves a collection created with its indexes from
+growing segments through an interim index until the sealed segments are
+handed over, a fraction of the HNSW's recall (0.35 at r1 in a test), so
+`recsys-load` releases and loads each collection once the index is built.
+Vespa's `range(pop)` with a `hitLimit` takes the most popular before the
+query's filters, and a query that matches the whole region computes
+`closeness` for every document it matches, not only for the neighbours, so
+no one query keeps the region's 1,000 most popular beside the two
+neighbour lists; r2 sends three.
+
+On one machine, one engine at a time in Docker (each capped at `CPUS` and
+`MEM`; Strata's server runs outside Docker, on the first `CPUS` cores):
+
+```bash
+python3 strata/results/recsys/serving_data.py --work ~/data/yambda/work --data ~/data/yambda --out ~/data/recsys-100k --items 100000
+(cd strata-server && cargo build --profile ci --bins)
+DATA=~/data/recsys-100k OUT=~/data/recsys-out strata-server/deploy/compare/recsys/local.sh strata es os vespa qdrant milvus redis postgres
+```
+
 ## Running it
 
 With the cluster of `../kind-test.sh up` (its `/data` and `/beir`
@@ -267,8 +503,12 @@ $C up os;        $C load os;   $C run os;     $C writes os;    $C stream os;    
 $C up solr;      $C load solr; $C run solr;   $C writes solr;  $C stream solr;  $C down solr
 $C up vespa;     $C load vespa; $C run vespa; $C writes vespa; $C stream vespa; $C down vespa
 python3 strata-server/deploy/compare/analyze.py $STRATA_WORK/compare $STRATA_DATA/quora
-# Strata at another split of its 3 CPUs, kept beside the default run:
+# Strata with its coordinator in a pod of its own, as before 6 November
+# 2026, at the old split and another, kept beside the default run:
+export STRATA_COORD=pod
+$C up strata; $C run strata --label strata-coord-pod; $C down strata
 SHARD_CPU=1250m COORD_CPU=500m $C up strata; $C run strata --label strata-coord500m; $C down strata
+unset STRATA_COORD
 # The nine one-node engines, one at a time:
 for e in meili typesense manticore qdrant weaviate milvus paradedb postgres redis; do
     $C up $e; $C load $e; $C run $e; $C down $e

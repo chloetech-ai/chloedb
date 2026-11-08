@@ -12,7 +12,7 @@ use strata::segment::build::BuildOptions;
 use strata::storage::{DbOptions, Layout, MergePolicy, MergerOptions};
 use tokio::net::TcpListener;
 
-use crate::auth::{self, Access};
+use crate::auth::{self, Access, Secret};
 use crate::coord::{CoordOptions, Coordinator};
 use crate::cores::shard::{self, Restart};
 use crate::replication::{self, Acks, Follow, Primary, PrimaryOptions};
@@ -93,6 +93,9 @@ pub struct Options {
     /// Memory the running queries may hold together, in MiB (`None`: a
     /// third of [`strata::storage::memory_limit`]; 0: no limit).
     pub query_memory_mb: Option<u64>,
+    /// Memory for filters kept between queries, in MiB (`None`:
+    /// [`strata::query::exec::FILTER_CACHE_BYTES`]; 0: none kept).
+    pub filter_cache_mb: Option<usize>,
     /// Write requests held at once before more are refused (0: no limit).
     pub max_queued_writes: usize,
     /// The largest write or import body, in MiB (0: 256).
@@ -144,6 +147,10 @@ pub struct Options {
     /// The clusters the cloud view made (default: `<db>.cloud.json` beside
     /// a database; in memory on a coordinator without it).
     pub cloud_file: Option<PathBuf>,
+    /// The hub's book of connections to other clusters ([`crate::hub`]).
+    pub hub_file: Option<PathBuf>,
+    /// Who this hub's calls to other clusters say they come from.
+    pub hub_device: Option<String>,
     /// The alert rules' file (default rules, in memory, without it).
     pub alerts: Option<PathBuf>,
     /// A coordinator's Contain rules' file (in memory without it): fleet.
@@ -180,6 +187,10 @@ pub struct Options {
     pub node_name_given: Option<String>,
     /// `--image-repository`.
     pub image_repository: Option<String>,
+    /// `--app name=url`: apps the command center shows ([`crate::apps`]).
+    pub apps: Vec<String>,
+    /// What the server sends apps as its token (`STRATA_APP_TOKEN`).
+    pub app_token: Option<String>,
 }
 
 /// How writes resolve MEDIA values, from `--media-fetch`,
@@ -201,17 +212,23 @@ fn build_options() -> BuildOptions {
     BuildOptions::default().set("vector.threads", std::thread::available_parallelism().map_or(1, |n| n.get()))
 }
 
-/// How the server opens a database. Each write publishes its snapshot,
-/// rebuilding the newest in-memory chunk (up to 1,024 rows): those chunks
-/// keep their vectors flat, since a graph over so few rows costs more to
-/// build at every write than an exact scan of them costs a query. Segments
-/// build their vector indexes on every core.
+/// How the server opens a database. Each write publishes its snapshot
+/// while queries come in, building the in-memory chunks it filled (1,024
+/// rows each; a write nobody reads leaves them to the flush, or to the
+/// first query after it): those chunks keep their vectors flat, since a
+/// graph over so few rows costs more to build at every write than an
+/// exact scan of them costs a query. Segments build their vector indexes
+/// on every core.
 pub fn db_options(directory: bool) -> DbOptions {
     DbOptions {
         publish_snapshots: true,
         build: build_options(),
         mem_build: Some(BuildOptions::default().set("vector.index", "flat")),
         layout: if directory { Layout::Directory } else { Layout::SingleFile },
+        // The writer thread retries a busy write until each request's
+        // deadline, and refuses one whose deadline passed: it does not
+        // wait inside Strata past it.
+        write_wait: Duration::ZERO,
         ..DbOptions::default()
     }
 }
@@ -294,7 +311,10 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
             fill = o.copy_from.clone().map(Fill::Copy);
             Db::create_in(&path, schema, DbOptions { ship_log_bytes, ..db_options(o.directory) }, &o.models).map_err(|e| e.to_string())?
         } else {
-            return Err(format!("{} does not exist: pass --schema FILE or --demo N to create it", path.display()));
+            // No schema: a database with no tables yet, which CREATE TABLE
+            // and the imports that create tables fill.
+            tracing::info!(db = %path.display(), "creating the database with no tables: create one with CREATE TABLE or an import");
+            Db::create_empty(&path, DbOptions { ship_log_bytes, ..db_options(o.directory) }).map_err(|e| e.to_string())?
         };
         for (field, why) in db.open_codebooks(&o.models) {
             tracing::warn!(field = %field, error = %why, "cannot give this field semantic IDs: writes must carry them");
@@ -304,6 +324,10 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         }
         if replicating && db.storage().seq_no().is_none() {
             return Err(format!("{} does not number its writes, which replication ships by: pass --seq-no", path.display()));
+        }
+        let mut db = db;
+        if let Some(mb) = o.filter_cache_mb {
+            db.exec.filter_cache = Some(Arc::new(strata::query::exec::FilterCache::new(mb << 20)));
         }
         let db = Arc::new(db);
         // Writes go on while a full memtable becomes segments, and while
@@ -330,6 +354,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         crate::operator::upgrade::Ref::parse(&r).map_err(|e| format!("--image-repository: {e}"))?;
         svc.image_repository = r;
     }
+    svc.apps = crate::apps::Apps::new(crate::apps::parse(&o.apps)?, o.app_token.clone());
     svc.trusted_proxies = o.trust_proxy.iter().filter(|p| !p.trim().is_empty()).map(|p| crate::http::parse_net(p)).collect::<Result<_, _>>().map_err(|e| format!("--trust-proxy: {e}"))?;
     if let Some(path) = slots_file {
         svc.keep_slots_in(path)?;
@@ -380,6 +405,11 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         if svc.clouds.list().iter().any(|m| !matches!(m.phase, crate::cloud::clusters::Phase::Deleted | crate::cloud::clusters::Phase::Failed)) {
             svc.clouds.start(svc.aws.clone(), svc.digitalocean.clone());
         }
+    }
+    let hub = o.hub_file.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::hub::Hub::file_of));
+    if let Some(file) = hub {
+        let secrets = crate::hub::Secrets::detect(Some(crate::hub::Hub::keys_file_of(&file)));
+        svc.hub = Arc::new(crate::hub::Hub::open(file, secrets, o.hub_device.clone())?);
     }
     let keys = o.keys.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(Keys::file_of));
     if let Some(file) = keys {
@@ -479,6 +509,12 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     open_log_store(&mut svc, o)?;
     let svc = Arc::new(svc);
+    // Clusters made here that were to bring tables when ready, and have not.
+    for m in svc.clouds.list() {
+        if !m.bring.is_empty() && m.brought.is_none() {
+            crate::copy::bring_when_ready(svc.clone(), m.id);
+        }
+    }
     spawn_maintenance(&svc);
     spawn_expirer(&svc, Duration::from_secs(5));
     spawn_sampler(&svc);
@@ -498,6 +534,11 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
 /// service's queries; a coordinator keeps one only where told. Without one
 /// the lines kept for it are let go ([`obs::Sink::stop`]).
 fn open_log_store(svc: &mut Service, o: &Options) -> Result<(), String> {
+    // A coordinator in a shard server's process: the shard keeps the
+    // process's lines.
+    if o.coord.local.is_some() {
+        return Ok(());
+    }
     let path = match &o.log_store {
         Some(p) => p.clone(),
         None => o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::logstore::file_of),
@@ -1114,45 +1155,64 @@ pub async fn serve_grpc(svc: Arc<Service>, listener: TcpListener, access: Access
         }
         s
     });
-    let (token, cluster) = (access.token.clone(), access.cluster.clone());
-    let counted = svc.clone();
-    // Who the call is from, for each method to check its scope.
-    let check = move |mut req: tonic::Request<()>| match counted.keys.resolve(token.as_ref(), cluster.as_ref(), req.metadata().get("authorization").and_then(|v| v.to_str().ok())) {
-        Some(who) => {
-            req.extensions_mut().insert(who);
-            Ok(req)
-        }
-        None => {
-            counted.metrics.grpc("any", "Unauthenticated", 0.0);
-            // The method is not known yet: the path is the service's.
-            counted.audit.add(crate::keys::Entry {
-                ts_ms: crate::telemetry::now_ms(),
-                who: "unknown".into(),
-                key: None,
-                scope: None,
-                method: "gRPC".into(),
-                route: "any".into(),
-                status: 401,
-                ms: 0.0,
-                request_id: None,
-                detail: None,
-                kind: crate::keys::REFUSAL.into(),
-                ..Default::default()
-            });
-            Err(tonic::Status::unauthenticated("missing or wrong token"))
-        }
-    };
-    // A Write message carries rows, as an HTTP write's body does.
-    let max_body = svc.max_body;
-    let service = pb::strata_server::StrataServer::new(grpc::Grpc(svc)).max_decoding_message_size(max_body).max_encoding_message_size(256 << 20);
+    let service = grpc_service(svc, &access);
     let mut builder = tonic::transport::Server::builder();
     if let Some(tls) = &access.tls {
         builder = builder.tls_config(tonic::transport::ServerTlsConfig::new().identity(tonic::transport::Identity::from_pem(&tls.cert, &tls.key)))?;
     }
-    builder
-        .add_service(tonic::service::interceptor::InterceptedService::new(service, check))
-        .serve_with_incoming_shutdown(incoming, shutdown())
-        .await
+    builder.add_service(service).serve_with_incoming_shutdown(incoming, shutdown()).await
+}
+
+/// A shard server's gRPC service, its calls checked for their token or key
+/// ([`Check`]): what [`serve_grpc`] serves, and what a coordinator in the
+/// same process calls in-process ([`crate::coord::LocalShard`]).
+pub type GrpcService = tonic::service::interceptor::InterceptedService<pb::strata_server::StrataServer<grpc::Grpc>, Check>;
+
+pub fn grpc_service(svc: Arc<Service>, access: &Access) -> GrpcService {
+    // A Write message carries rows, as an HTTP write's body does.
+    let max_body = svc.max_body;
+    let check = Check { svc: svc.clone(), token: access.token.clone(), cluster: access.cluster.clone() };
+    let service = pb::strata_server::StrataServer::new(grpc::Grpc(svc)).max_decoding_message_size(max_body).max_encoding_message_size(256 << 20);
+    tonic::service::interceptor::InterceptedService::new(service, check)
+}
+
+/// Who a gRPC call is from, for each method to check its scope: the
+/// caller its token or key names, or a refusal.
+#[derive(Clone)]
+pub struct Check {
+    svc: Arc<Service>,
+    token: Option<Secret>,
+    cluster: Option<Secret>,
+}
+
+impl tonic::service::Interceptor for Check {
+    fn call(&mut self, mut req: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        match self.svc.keys.resolve(self.token.as_ref(), self.cluster.as_ref(), req.metadata().get("authorization").and_then(|v| v.to_str().ok())) {
+            Some(who) => {
+                req.extensions_mut().insert(who);
+                Ok(req)
+            }
+            None => {
+                self.svc.metrics.grpc("any", "Unauthenticated", 0.0);
+                // The method is not known yet: the path is the service's.
+                self.svc.audit.add(crate::keys::Entry {
+                    ts_ms: crate::telemetry::now_ms(),
+                    who: "unknown".into(),
+                    key: None,
+                    scope: None,
+                    method: "gRPC".into(),
+                    route: "any".into(),
+                    status: 401,
+                    ms: 0.0,
+                    request_id: None,
+                    detail: None,
+                    kind: crate::keys::REFUSAL.into(),
+                    ..Default::default()
+                });
+                Err(tonic::Status::unauthenticated("missing or wrong token"))
+            }
+        }
+    }
 }
 
 /// Whether the server was told to stop and serves out its drain time

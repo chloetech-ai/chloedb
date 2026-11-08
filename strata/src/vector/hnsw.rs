@@ -128,16 +128,19 @@ fn level_of(i: u32, seed: u64, m: usize) -> usize {
     ((-u.ln() / (m as f64).ln()).floor() as usize).min(MAX_LEVEL)
 }
 
-/// SQ8 codes to build on: `codes` holds row `v`'s at `v * stride`.
+/// SQ8 codes to build on: `codes` holds row `v`'s at `v * stride` (with
+/// `map`, row `map[v]`'s, as [`Rows`] maps a partition's rows).
 pub(crate) struct BuildCodes<'a> {
     pub sq8: &'a Sq8,
     pub codes: &'a [u8],
     pub stride: usize,
+    pub map: Option<&'a [u32]>,
 }
 
 impl BuildCodes<'_> {
     fn row(&self, v: u32) -> &[u8] {
-        &self.codes[v as usize * self.stride..(v as usize + 1) * self.stride]
+        let v = self.map.map_or(v, |m| m[v as usize]) as usize;
+        &self.codes[v * self.stride..(v + 1) * self.stride]
     }
 }
 
@@ -804,11 +807,12 @@ impl HnswView {
                 io::will_need(&mut ids.iter().map(|&d| (codes.row(d).as_ptr() as usize, codes.stride())).collect::<Vec<_>>());
             }
         };
+        // Nodes are docIDs, or a partition's rows (`codes` maps them).
         let is_member = |d: u32, stats: &mut SearchStats| match &filter {
             None => true,
             Some(f) => {
                 stats.filter_checks += 1;
-                f.contains(d)
+                f.contains(codes.doc(d))
             }
         };
         let peek = |v: &Vec<u64>, d: u32| v[d as usize / 64] >> (d % 64) & 1 == 1;
@@ -987,7 +991,7 @@ mod tests {
     fn a_node_setting_its_links_keeps_those_other_threads_added() {
         // Six unit vectors at angles 0, 10, ..., 50 degrees; M = 2 (cap 4 on layer 0).
         let data: Vec<f32> = (0..6).flat_map(|i| [(i as f32 * 10f32).to_radians().cos(), (i as f32 * 10f32).to_radians().sin()]).collect();
-        let rows = Rows { data: &data, dim: 2, stride: 2, n: 6 };
+        let rows = Rows { data: &data, dim: 2, stride: 2, n: 6, map: None };
         let b = Builder {
             rows: &rows,
             codes: None,

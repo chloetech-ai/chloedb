@@ -207,21 +207,23 @@ const facts = (rows) => h("dl", { class: "ro-facts" }, rows.filter(Boolean).flat
 const missing = (e) => (e?.status === 404 || e?.status === 405) && !e?.body?.error;
 
 const SCOPES = [
-  ["read", "Read", "queries, search, schema, stats, the series and alerts"],
+  ["feed", "Feed", "the feed alone, for another cluster to follow this one, and health"],
+  ["read", "Read", "queries, search, schema, stats, the series and alerts, and the feed"],
   ["write", "Write", "also writes, imports, streams, the agent, INSERT, UPDATE and DELETE"],
   ["admin", "Admin", "also DDL, keys, the audit log, alert rules, checkpoints, vacuum, export, others' queries and the logs"],
 ];
 const MATRIX = [
-  ["Run queries, search, explain", 1, 1, 1],
-  ["Read the schema, stats, series, alerts, cluster", 1, 1, 1],
-  ["Write rows, import files, stream", 0, 1, 1],
-  ["INSERT, UPDATE, DELETE", 0, 1, 1],
-  ["Ask the agent", 0, 1, 1],
-  ["CREATE, DROP (DDL), over HTTP and gRPC", 0, 0, 1],
-  ["See and cancel others' queries; read the logs", 0, 0, 1],
-  ["Checkpoint, vacuum, verify, promote, roll out", 0, 0, 1],
-  ["Export the database", 0, 0, 1],
-  ["Manage keys and alert rules; read the audit log", 0, 0, 1],
+  ["Read the feed (a cluster following this one)", 1, 1, 1, 1],
+  ["Run queries, search, explain", 0, 1, 1, 1],
+  ["Read the schema, stats, series, alerts, cluster", 0, 1, 1, 1],
+  ["Write rows, import files, stream", 0, 0, 1, 1],
+  ["INSERT, UPDATE, DELETE", 0, 0, 1, 1],
+  ["Ask the agent", 0, 0, 1, 1],
+  ["CREATE, DROP (DDL), over HTTP and gRPC", 0, 0, 0, 1],
+  ["See and cancel others' queries; read the logs", 0, 0, 0, 1],
+  ["Checkpoint, vacuum, verify, promote, roll out", 0, 0, 0, 1],
+  ["Export the database", 0, 0, 0, 1],
+  ["Manage keys and alert rules; read the audit log", 0, 0, 0, 1],
 ];
 const SUCCESSOR = /^(\d{4}-\d{2}(-\d+)?|v?\d+|new)$/;
 
@@ -363,7 +365,7 @@ function render(page, r) {
   function names() {
     const m = {};
     for (const e of audit?.changes || []) {
-      const x = /created key (.+?) \(([0-9a-f]{8,}), (read|write|admin)\)/.exec(e.detail || "");
+      const x = /created key (.+?) \(([0-9a-f]{8,}), (feed|read|write|admin)\)/.exec(e.detail || "");
       if (x) m[x[2]] = x[1];
     }
     for (const k of keysJ?.keys || []) m[k.id] = k.name;
@@ -375,7 +377,7 @@ function render(page, r) {
     if (listed.length || !audit || audit.kinds) return listed;
     const made = {}, gone = [];
     for (const e of audit.changes) {
-      const c = /created key (.+?) \(([0-9a-f]{8,}), (read|write|admin)\)/.exec(e.detail || "");
+      const c = /created key (.+?) \(([0-9a-f]{8,}), (feed|read|write|admin)\)/.exec(e.detail || "");
       if (c && e.status < 400) made[c[2]] = { name: c[1], scope: c[3], created_ms: e.ts_ms, created_by: whoName(e) };
       const v = /revoked key ([0-9a-f]{8,})/.exec(e.detail || "");
       if (v && e.status < 400) gone.push({ id: v[1], revoked_ms: e.ts_ms, revoked_by: e.who });
@@ -573,7 +575,7 @@ function render(page, r) {
   /** A detail made readable: names for key ids and copies, short versions. */
   function words(d) {
     const ns = names();
-    let s = d.replace(/\(([0-9a-f]{16}), (read|write|admin)\)/g, "($2)")
+    let s = d.replace(/\(([0-9a-f]{16}), (feed|read|write|admin)\)/g, "($2)")
       .replace(/\bkey ([0-9a-f]{16})\b/g, (m, id) => `key ${ns[id] || id.slice(0, 8)}`)
       .replace(/https?:\/\/[^\s,;)]+/g, (u) => (core.copyName ? core.copyName(u) : u))
       .replace(/(?:[a-z0-9.-]+(?::\d+)?\/)+[a-z0-9._-]+(?::[\w.-]+|@sha256:[0-9a-f]{64})/gi, shortImage);
@@ -804,7 +806,7 @@ function render(page, r) {
   function scopesCard() {
     return h("details", { class: "card ac-scopes" }, h("summary", { class: "hd" }, h("h3", {}, "What each scope may do")),
       h("div", { class: "bd flush" }, h("div", { class: "tbl-wrap" }, h("table", { class: "t compact" },
-        h("thead", {}, h("tr", {}, h("th", {}, ""), ...["read", "write", "admin"].map((x) => h("th", { style: { textAlign: "center" } }, x)))),
+        h("thead", {}, h("tr", {}, h("th", {}, ""), ...["feed", "read", "write", "admin"].map((x) => h("th", { style: { textAlign: "center" } }, x)))),
         h("tbody", {}, MATRIX.map(([what, ...on]) => h("tr", {}, h("td", { class: "small" }, what), on.map((x) => h("td", { style: { textAlign: "center", color: x ? "var(--good)" : "var(--line-2)" } }, x ? icon("check") : "·")))))))));
   }
 

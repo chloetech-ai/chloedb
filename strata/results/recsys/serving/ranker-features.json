@@ -1,0 +1,20 @@
+{
+ "features": [
+  "f00",
+  "f01",
+  "f02",
+  "f03",
+  "f04",
+  "f05",
+  "f06",
+  "f07",
+  "f08",
+  "f09",
+  "f10",
+  "f11",
+  "f12 (the dot product of the user's and the track's vectors)"
+ ],
+ "trees": 300,
+ "rows": 399800,
+ "positive": 0.021250625312656327
+}

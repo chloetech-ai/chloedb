@@ -102,6 +102,9 @@ const QUERIES: &[&str] = &[
     "WITH top AS (SELECT id, venue FROM papers ORDER BY bm25(title, 'graph') DESC LIMIT 50) SELECT v.field, COUNT(*) FROM top t JOIN venues v ON t.venue = v.id GROUP BY v.field",
     "WITH old AS (SELECT id, author, year FROM papers WHERE year < 2000) SELECT a.id, b.id FROM old a JOIN old b ON a.author = b.author WHERE a.id < b.id",
     "SELECT field, n FROM (SELECT v.field AS field, COUNT(*) AS n FROM papers p JOIN venues v ON p.venue = v.id GROUP BY v.field) AS t WHERE n > 10 ORDER BY n DESC",
+    // Columns qualified inside a WITH or a derived table, named by their own names.
+    "WITH last AS (SELECT p.id, p.author, ROW_NUMBER() OVER (PARTITION BY p.author ORDER BY p.year DESC, p.id) AS rn FROM papers p) SELECT l.id, a.name FROM last l JOIN authors a ON l.author = a.id WHERE l.rn = 1",
+    "SELECT t.id, v.name FROM (SELECT p.id, p.venue FROM papers p WHERE p.year > 2000) AS t JOIN venues v ON t.venue = v.id",
     // `*` over a WITH result: its columns, not its table's.
     "WITH old AS (SELECT id, author FROM papers WHERE year < 2000) SELECT * FROM old o JOIN authors a ON o.author = a.id",
     "WITH top AS (SELECT id, score() AS s FROM papers ORDER BY bm25(title, 'graph') DESC LIMIT 50) SELECT * FROM top t JOIN papers p ON p.id = t.id",

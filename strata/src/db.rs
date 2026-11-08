@@ -28,9 +28,12 @@ use crate::query::{bind_command, compound, ops, profile, sql as qsql, Assign, Co
 use crate::rank_log::{self, Export, Log, Logged};
 use crate::schema::{Alter, Derive, Embed, FieldType, Schema};
 use crate::segment::{DocId, SegmentFile};
-use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, Found, Mask, SeqNo, Snapshot, TableTxn, SOURCES};
+use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, Found, Mask, MergePolicy, MergeStats, SeqNo, Snapshot, TableTxn, WriteTxn, SOURCES};
 use crate::value::{Document, Value};
 use crate::vector::VectorReader;
+
+mod writes;
+pub use writes::{Footprints, WriteOp, WriteStats, GROUP_OPS};
 
 /// What [`Db::sql`] returns.
 #[derive(Debug)]
@@ -176,6 +179,8 @@ pub struct Db {
     ranking: Models,
     /// How writes resolve MEDIA values ([`Db::set_media_resolver`]).
     media: RwLock<Arc<Resolver>>,
+    /// Writes waiting for their turn, which share commits ([`Db::write_ops`]).
+    writes: writes::Writes,
 }
 
 /// The model of an embedded VECTOR field, and the field it was set for: it
@@ -216,6 +221,21 @@ impl Db {
         Ok(db)
     }
 
+    /// A new database with no tables of its own: its first table is the
+    /// placeholder ([`Schema::placeholder`]), and `CREATE TABLE`
+    /// ([`Db::create_table`]) adds the tables it holds.
+    pub fn create_empty(path: &Path, opts: DbOptions) -> Result<Db> {
+        Db::create(path, Schema::placeholder(), opts)
+    }
+
+    /// The table a write or a read that names no table goes to: the first
+    /// table, or in a database made with no tables
+    /// ([`Db::create_empty`]) the first one created after its
+    /// placeholder; `None` while it has none.
+    pub fn default_table(&self) -> Option<Arc<Schema>> {
+        default_table(&self.catalog())
+    }
+
     /// Opens a database; the codebooks of its semantic-ID fields come from
     /// the default models directory, or from [`Db::open_embedders`]'s.
     pub fn open(path: &Path, opts: DbOptions) -> Result<Db> {
@@ -228,12 +248,13 @@ impl Db {
         Db {
             storage: Arc::new(storage),
             readers: RwLock::new(HashMap::new()),
-            exec: ExecOptions::default(),
+            exec: ExecOptions { filter_cache: Some(Arc::new(crate::query::exec::FilterCache::new(crate::query::exec::FILTER_CACHE_BYTES))), ..ExecOptions::default() },
             embedders: RwLock::new(Vec::new()),
             derivers: RwLock::new(Vec::new()),
             models: RwLock::new(None),
             media: RwLock::new(Arc::new(Resolver::default())),
             ranking: Models::default(),
+            writes: writes::Writes::default(),
         }
     }
 
@@ -251,6 +272,42 @@ impl Db {
         self.storage.spawn_merger(opts);
     }
 
+    /// Readies the database for queries once its tables are done changing
+    /// (`optimize` in Python, JavaScript and Java): writes the rows in
+    /// memory into segments, merges each table's segments into as few as
+    /// [`MergePolicy::compact`] allows, without their deleted rows, and
+    /// returns the space this frees to the file system
+    /// ([`Database::vacuum`]).
+    pub fn optimize(&self) -> Result<MergeStats> {
+        self.storage.flush()?;
+        let stats = self.storage.merge(&MergePolicy::compact())?;
+        self.storage.vacuum()?;
+        Ok(stats)
+    }
+
+    /// What a program that embeds the database runs before it lets go of it
+    /// (`close` in Python, JavaScript and Java): stops the background
+    /// merger ([`Database::stop_merger`], waiting for a merge it runs),
+    /// merges small segments as the merger would ([`MergePolicy::default`]),
+    /// then, when an eighth of the file or more is free, returns that space
+    /// to the file system ([`Database::vacuum`]). The free space is what
+    /// merges freed: later writes would reuse it, but a program that writes
+    /// for a while and stops would leave it in the file. Rows still in
+    /// memory stay in the write-ahead log, which the next open reads. The
+    /// database still answers and takes writes after it, without merging
+    /// in the background. Returns the bytes the file shrank by.
+    pub fn close(&self) -> Result<u64> {
+        self.storage.stop_merger();
+        self.storage.merge(&MergePolicy::default())?;
+        let st = self.storage.file_stats();
+        // A database of the directory layout has no pages: its vacuum
+        // removes only files a crash left behind.
+        if st.page_count > 0 && (st.free_pages + st.pending_pages) * 8 < st.page_count {
+            return Ok(0);
+        }
+        self.storage.vacuum()
+    }
+
     /// The schema of the database's first table, which the methods here
     /// that name no table write.
     pub fn schema(&self) -> Arc<Schema> {
@@ -258,7 +315,8 @@ impl Db {
     }
 
     /// The schemas of the database's tables, the first one first
-    /// ([`Database::tables`]).
+    /// ([`Database::tables`]), the placeholder of a database made with no
+    /// tables among them ([`Db::create_empty`]).
     pub fn catalog(&self) -> Vec<Arc<Schema>> {
         self.storage.tables()
     }
@@ -267,12 +325,16 @@ impl Db {
     /// name, with the offset of the last event each wrote; none before
     /// the first.
     pub fn sources(&self) -> Result<Vec<Source>> {
-        let snap = self.snapshot();
+        self.sources_at(&self.snapshot())
+    }
+
+    /// [`Db::sources`] as of version `snap`.
+    pub fn sources_at(&self, snap: &Snapshot) -> Result<Vec<Source>> {
         if snap.table(SOURCES).is_none() {
             return Ok(Vec::new());
         }
         let sql = format!("SELECT name, last_offset, updated FROM {SOURCES} LIMIT {}", u32::MAX);
-        let rs = self.query_at(&snap, &sql, &Params::new(), &ExecOptions { max_rows: None, ..self.exec.clone() })?;
+        let rs = self.query_at(snap, &sql, &Params::new(), &ExecOptions { max_rows: None, ..self.exec.clone() })?;
         let mut sources: Vec<Source> = rs
             .rows
             .into_iter()
@@ -464,7 +526,7 @@ impl Db {
         let derivers = self.derivers_of(&schema);
         let media = self.media_resolver();
         let mut docs = docs.into_iter();
-        if models.iter().all(Option::is_none) && !schema.fields.iter().any(|f| f.media.is_some()) {
+        if models.iter().all(Option::is_none) && derivers.iter().all(Option::is_none) && !schema.fields.iter().any(|f| f.media.is_some()) {
             return self.storage.try_bulk_load_into(table, docs.map(move |d| {
                 d.map(|mut d| {
                     schema.fill_generated(&mut d);
@@ -714,7 +776,16 @@ impl Db {
         let schema = self.table(table)?;
         let f = schema.field(field).ok_or_else(|| Error::Schema(format!("no field {field}")))?;
         let Some(spec) = &f.derive else { return Err(Error::Schema(format!("field {field} is not a derived TEXT field"))) };
-        let kind = schema.field(&spec.from).and_then(|m| m.media).expect("checked by the schema");
+        let Some(kind) = schema.field(&spec.from).and_then(|m| m.media) else {
+            // Text of text: a language model's.
+            if d.modality() != Modality::Text {
+                return Err(Error::Schema(format!("model {} makes text of {}s, and {} is not a MEDIA field", spec.model, d.modality().as_str(), spec.from)));
+            }
+            let mut all = self.derivers.write().unwrap_or_else(|e| e.into_inner());
+            all.retain(|m| !(m.table.eq_ignore_ascii_case(&schema.table) && m.field.eq_ignore_ascii_case(&f.name)));
+            all.push(Deriving { table: schema.table.clone(), field: f.name.clone(), derive: spec.clone(), model: d });
+            return Ok(());
+        };
         let wants = match d.modality() {
             Modality::Image => crate::media::MediaKind::Image,
             Modality::Audio => crate::media::MediaKind::Audio,
@@ -815,7 +886,7 @@ impl Db {
         for f in schema.fields.iter().filter(|f| which(f)) {
             let opened = match (&f.embed, &f.derive) {
                 (Some(spec), _) => crate::embed::open_for(&spec.model, match f.ty { FieldType::Vector { dim, .. } => Some(dim), _ => None }, models).and_then(|m| self.set_embedder_in(table, &f.name, m)),
-                (_, Some(spec)) => crate::derive::open(&spec.model, models).and_then(|m| self.set_deriver_in(table, &f.name, m)),
+                (_, Some(spec)) => crate::derive::open_for(spec, models).and_then(|m| self.set_deriver_in(table, &f.name, m)),
                 _ => continue,
             };
             if let Err(e) = opened {
@@ -1144,7 +1215,7 @@ impl Db {
     /// binder checks SQL.
     pub fn run(&self, plan: &Plan) -> Result<SqlResult> {
         match plan.is_write() {
-            true => self.write_prepared(&self.prepare_plan(plan)?).map(SqlResult::Written),
+            true => self.write_queued(writes::Job::Sql(self.prepare_plan(plan)?)).map(|(n, _)| SqlResult::Written(n)),
             false => self.run_at(&self.snapshot(), plan, &self.exec).map(SqlResult::Rows),
         }
     }
@@ -1237,7 +1308,7 @@ impl Db {
             Command::Write { table, write } => {
                 let schema = catalog.iter().find(|t| t.table == table).expect("bound to a table of the catalog");
                 let write = Plan::of_write(schema, &write).to_write(schema)?;
-                self.write_prepared(&self.prepare(schema.clone(), write)?).map(SqlResult::Written)
+                self.write_queued(writes::Job::Sql(self.prepare(schema.clone(), write)?)).map(|(n, _)| SqlResult::Written(n))
             }
         }
     }
@@ -1354,18 +1425,45 @@ impl Db {
     /// returns the number of documents written. The rows an UPDATE or
     /// DELETE changes are read under the writer lock, so no other write
     /// lands between; vectors computed ahead are used where their source
-    /// texts did not change. It can run again after an error (a busy
+    /// texts did not change. Threads writing at once share commits, as
+    /// [`Db::write_ops`] says. It can run again after an error (a busy
     /// writer).
     pub fn write_prepared(&self, p: &PreparedWrite) -> Result<u64> {
-        Ok(self.write_prepared_seq(p)?.0)
+        Ok(self.write_queued(writes::Job::Sql(p.clone()))?.0)
     }
 
-    /// [`Db::write_prepared`], also returning the transaction's sequence
+    /// [`Db::write_prepared`] in a transaction of its own, not shared with
+    /// other threads' writes, also returning the transaction's sequence
     /// number in a database that numbers its writes (none if it wrote
-    /// nothing).
+    /// nothing): for a caller that orders and groups its writes itself,
+    /// as strata-server's writer thread does.
     pub fn write_prepared_seq(&self, p: &PreparedWrite) -> Result<(u64, Option<u64>)> {
-        let schema = &*p.schema;
         let mut t = self.storage.begin()?;
+        let n = self.write_prepared_in(&mut t, p)?;
+        Ok((n, t.commit_seq()?))
+    }
+
+    /// Runs writes [`Db::prepare_write`] bound in one transaction, one
+    /// commit for all, and returns the rows each wrote and the
+    /// transaction's sequence number. They must be writes that can share
+    /// one ([`Footprints::admit`]: no two touch the same rows), else none
+    /// runs. If one fails, none is written, and each can run again alone.
+    pub fn write_prepared_group(&self, ps: &[&PreparedWrite]) -> Result<(Vec<u64>, Option<u64>)> {
+        let mut prints = Footprints::default();
+        if !ps.iter().all(|p| prints.admit(p)) {
+            return Err(Error::Query("these writes cannot share a transaction: two of them may touch the same rows".into()));
+        }
+        let mut t = self.storage.begin()?;
+        let rows = ps.iter().map(|p| self.write_prepared_in(&mut t, p)).collect::<Result<Vec<u64>>>()?;
+        Ok((rows, t.commit_seq()?))
+    }
+
+    /// Runs a write in transaction `t`, which holds the writer lock. It
+    /// finds its rows in the last committed snapshot, which does not show
+    /// `t`'s own changes: writes sharing `t` must not touch the same rows
+    /// ([`Footprints`]).
+    fn write_prepared_in(&self, t: &mut WriteTxn<'_>, p: &PreparedWrite) -> Result<u64> {
+        let schema = &*p.schema;
         let mut tt = t.table(&schema.table)?;
         if tt.schema() != schema {
             return Err(Error::Query(format!("table {} was altered, or dropped and created again, while the statement ran; run it again", schema.table)));
@@ -1443,9 +1541,7 @@ impl Db {
                 n += set_rows(&mut tt, schema, (&models, &derivers), rows.into_iter().map(|r| (r, Vec::new())).collect(), &sets, (&p.known, &p.derived), &files)?;
             }
         }
-        drop(tt);
-        let seq = t.commit_seq()?;
-        Ok((n, seq))
+        Ok(n)
     }
 
     /// The live rows of the documents an INSERT proposed (`live`), every
@@ -1482,12 +1578,42 @@ impl Db {
     /// read after each write builds nothing ([`Snapshot::find`]). An INT
     /// key may be given as text of its digits.
     pub fn get_many_at(&self, snap: &Snapshot, keys: &[Value], opts: &ExecOptions) -> Result<Vec<Option<KeyRow>>> {
+        let fields: Vec<usize> = qsql::star_fields(snap.schema()).collect();
+        self.get_fields_at(snap, keys, &fields, opts)
+    }
+
+    /// [`Db::get_many_at`] of the columns named `columns` alone, in that
+    /// order: each one of those [`Db::get_columns`] lists. A read of a few
+    /// columns of many rows (a ranker's features) leaves the rest unread:
+    /// the doc store's blocks are not decompressed at all when every
+    /// column asked for is a single-valued KEYWORD, INT or FLOAT, which
+    /// their columns answer.
+    pub fn get_columns_at(&self, snap: &Snapshot, keys: &[Value], columns: &[String], opts: &ExecOptions) -> Result<Vec<Option<KeyRow>>> {
+        let fields = Self::key_read_fields(snap.schema(), columns)?;
+        self.get_fields_at(snap, keys, &fields, opts)
+    }
+
+    /// The positions of the columns named `columns` (any case) of a table
+    /// of schema `schema`, as a read by key answers them
+    /// ([`Db::get_columns_at`]).
+    pub fn key_read_fields(schema: &Schema, columns: &[String]) -> Result<Vec<usize>> {
+        columns
+            .iter()
+            .map(|c| {
+                schema.field_index(c).filter(|&i| qsql::star_fields(schema).any(|s| s == i)).ok_or_else(|| {
+                    let names: Vec<String> = Self::get_columns(schema);
+                    Error::Query(format!("{c:?} is not a column a read by key of {} answers; those are {}", schema.table, names.join(", ")))
+                })
+            })
+            .collect()
+    }
+
+    fn get_fields_at(&self, snap: &Snapshot, keys: &[Value], fields: &[usize], opts: &ExecOptions) -> Result<Vec<Option<KeyRow>>> {
         let schema = snap.schema();
         let pk = schema.primary_key.ok_or_else(|| Error::Query(format!("{} has no primary key: rows are read by key only from a table with one", schema.table)))?;
         let keys: Vec<Value> = keys.iter().map(|k| key_value(schema, pk, k)).collect::<Result<_>>()?;
-        let fields: Vec<usize> = qsql::star_fields(schema).collect();
-        let q = qsql::fields_select(schema, &fields);
-        let mut out = self.rows_by_key(snap, &keys, &fields, opts)?;
+        let q = qsql::fields_select(schema, fields);
+        let mut out = self.rows_by_key(snap, &keys, fields, opts)?;
         for row in out.iter_mut().flatten() {
             q.typed(std::slice::from_mut(&mut row.row));
         }
@@ -1539,6 +1665,11 @@ impl Db {
             }
         }
         if !at.is_empty() {
+            // Read in the order of the segments' docIDs, whatever the keys'
+            // order: the doc store keeps one decompressed block a segment,
+            // so rows of the same block are then decompressed once rather
+            // than once each.
+            at.sort_unstable_by_key(|&(_, seg, doc, _)| (seg, doc));
             let q = qsql::fields_select(schema, &fields);
             let view = snap.found_view();
             let readers = self.readers(&view)?;
@@ -1641,6 +1772,7 @@ impl Db {
                     order: None,
                     group_by: Vec::new(),
                     paths: Vec::new(),
+                    times: Vec::new(),
                     having: None,
                     tiebreak: None,
                     phases: Vec::new(),
@@ -2112,6 +2244,27 @@ fn derived_of(derivers: &[Option<Arc<dyn Deriver>>], schema: &Schema, docs: &[Do
 /// together (a sound can be an hour long).
 fn derive_sources(d: &dyn Deriver, schema: &Schema, m: usize, values: &[String], files: &Files) -> Result<Vec<String>> {
     let field = &schema.fields[m].name;
+    // A TEXT or KEYWORD field's values are the inputs themselves, each
+    // distinct one given once (a language model's request each).
+    if schema.fields[m].media.is_none() {
+        let mut at: HashMap<&str, usize> = HashMap::new();
+        let mut distinct: Vec<&str> = Vec::new();
+        let slots: Vec<usize> = values
+            .iter()
+            .map(|v| {
+                *at.entry(v.as_str()).or_insert_with(|| {
+                    distinct.push(v.as_str());
+                    distinct.len() - 1
+                })
+            })
+            .collect();
+        let mut made = Vec::with_capacity(distinct.len());
+        for batch in distinct.chunks(32) {
+            let inputs: Vec<Input> = batch.iter().map(|v| Input::Text(v)).collect();
+            made.extend(d.derive(&inputs)?);
+        }
+        return Ok(slots.into_iter().map(|i| made[i].clone()).collect());
+    }
     if d.modality() == Modality::Audio {
         return in_sound_batches(field, values, files, |inputs| d.derive(inputs));
     }
@@ -2497,9 +2650,11 @@ impl DocumentSource for StoredSource {
             }
         }
         let mut out = Vec::with_capacity(docs.len());
+        // Documents in docID order: each block decompressed once.
+        let mut cache = crate::forward::StoreCache::default();
         for &d in docs {
             let mut doc = match &store {
-                Some(s) => s.get(d),
+                Some(s) => s.get_cached(d, &mut cache)?,
                 None => vec![Value::Null; schema.fields.len()],
             };
             for (i, v) in &vectors {
@@ -2545,4 +2700,12 @@ fn opened_step(stats: &mut crate::query::exec::ExecStats, t0: std::time::Instant
         let step = crate::query::steps::Step { op: "open readers".into(), detail: format!("{segments} segments"), start_us: crate::query::steps::us_at(t0), us: crate::query::steps::tenth(opened.as_nanos() as f64 / 1e3), ..Default::default() };
         stats.steps.insert(0, step);
     }
+}
+
+/// The table of `catalog` (a database's tables, the first first) that a
+/// write or a read naming no table goes to ([`Db::default_table`]): the
+/// first table that is not the placeholder of a database made with no
+/// tables, if any.
+pub fn default_table(catalog: &[Arc<Schema>]) -> Option<Arc<Schema>> {
+    catalog.iter().find(|t| !t.is_placeholder()).cloned()
 }

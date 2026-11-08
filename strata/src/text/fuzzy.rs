@@ -99,6 +99,12 @@ pub trait Sorted {
             None => skip_rest(self),
         }
     }
+    /// The bytes the current term shares with the one before it, when the
+    /// cursor knows them without comparing (`None` otherwise): a walk
+    /// keeps its path's rows by them.
+    fn shared_with_previous(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Sorted terms in a slice.
@@ -378,9 +384,16 @@ fn walk_rows<S: Sorted, R: Rows>(mut rows: R, q: &[char], k: u8, m: Match, terms
         if first.as_ref().is_some_and(|f| !t.starts_with(f)) {
             return;
         }
-        // Keep the rows of the letters the path shares with this term.
-        let shared = bytes.iter().zip(t).take_while(|(a, b)| a == b).count();
-        let j = ends.partition_point(|&e| e <= shared) - 1;
+        // Keep the rows of the letters the path shares with this term. The
+        // path starts the term before this one (the walk read it, or jumped
+        // past the terms starting with the path), so it shares with this
+        // term what the two terms share, up to its length.
+        let shared = match terms.shared_with_previous() {
+            Some(s) => s.min(bytes.len()),
+            None => bytes.iter().zip(t).take_while(|(a, b)| a == b).count(),
+        };
+        // The letters within those bytes: as many when the path is ASCII.
+        let j = if bytes.len() == path.len() { shared } else { ends.partition_point(|&e| e <= shared) - 1 };
         path.truncate(j);
         ends.truncate(j + 1);
         bests.truncate(j + 1);

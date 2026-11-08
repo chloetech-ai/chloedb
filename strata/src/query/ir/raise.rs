@@ -5,7 +5,7 @@
 
 use super::{err, Agg, ArithOp, CmpOp, Expr, Func, Graph, GraphKind, Node, NormKind, OnConflict, Plan};
 use crate::error::Result;
-use crate::query::logical::{self, AggFn, Col, GraphQuery, Having, OrderBy, PathCol, PathTest, Pred, Projection, Score, Seeds, Select, Tiebreak, Vectors, CROSS_ENCODER_FIRST};
+use crate::query::logical::{self, AggFn, Col, GraphQuery, Having, OrderBy, PathCol, PathTest, Pred, Projection, Score, Seeds, Select, Tiebreak, TimeCol, TimeOf, Vectors, CROSS_ENCODER_FIRST};
 use crate::query::rank::Rank;
 use crate::query::sql::{self, Assign, Conflict, Write};
 use crate::schema::{FieldType, Schema};
@@ -93,16 +93,27 @@ struct Raise<'a> {
     graphs: Vec<GraphQuery>,
     /// The paths read as columns so far (`Select::paths`).
     paths: Vec<PathCol>,
+    /// The parts of times read as columns so far (`Select::times`).
+    times: Vec<TimeCol>,
 }
 
 impl<'a> Raise<'a> {
     fn new(schema: &'a Schema) -> Self {
-        Raise { schema, graphs: Vec::new(), paths: Vec::new() }
+        Raise { schema, graphs: Vec::new(), paths: Vec::new(), times: Vec::new() }
     }
 
     /// The column `e` reads: a field, or a path of an indexed JSON field
     /// (`json_extract(field, path [, type])`, [`Select::paths`]).
     fn col_of(&mut self, e: &Expr) -> Result<Col> {
+        if let Some(tc) = self.time_of(e)? {
+            return Ok(Col::Time(match self.times.iter().position(|t| *t == tc) {
+                Some(i) => i,
+                None => {
+                    self.times.push(tc);
+                    self.times.len() - 1
+                }
+            }));
+        }
         let Some((field, path, kind)) = self.typed_path_of(e)? else { return Ok(Col::Field(self.field_of(e)?)) };
         let pc = PathCol { field, path, kind };
         Ok(Col::Path(match self.paths.iter().position(|p| *p == pc) {
@@ -112,6 +123,30 @@ impl<'a> Raise<'a> {
                 self.paths.len() - 1
             }
         }))
+    }
+
+    /// The part of a TIMESTAMP field's times `e` reads, when it is
+    /// `date_trunc(unit, field)`, `date_part(part, field)` or
+    /// `strftime(format, field)` of an indexed single-valued TIMESTAMP
+    /// field.
+    fn time_of(&self, e: &Expr) -> Result<Option<TimeCol>> {
+        let Expr::Call { func: func @ (Func::DateTrunc | Func::DatePart | Func::Strftime), args } = e else { return Ok(None) };
+        let (Some(Expr::Lit(Value::Str(how))), Some(Expr::Field(f)), 2) = (args.first(), args.get(1), args.len()) else {
+            return Err(err(format!("a Search's {} reads a TIMESTAMP field, with the first argument given as text", func.name())));
+        };
+        let field = self.field(*f)?;
+        let fld = &self.schema.fields[field];
+        if fld.logical != Some(crate::schema::Logical::Timestamp) || fld.multi || !fld.indexed {
+            return Err(err(format!("a Search's {} reads an indexed TIMESTAMP field of one value, not {}", func.name(), fld.name)));
+        }
+        // What is wrong with the unit, part or format, as the row evaluator says it.
+        super::eval::call(*func, &[Value::Str(how.clone()), Value::Timestamp(0)])?;
+        let of = match func {
+            Func::DateTrunc => TimeOf::Trunc(crate::timestamp::Unit::parse(how).expect("checked")),
+            Func::DatePart => TimeOf::Part(crate::timestamp::Part::parse(how).expect("checked")),
+            _ => TimeOf::Format(how.clone()),
+        };
+        Ok(Some(TimeCol { field, of }))
     }
 
     fn table(&self, t: &str) -> Result<()> {
@@ -265,7 +300,7 @@ impl<'a> Raise<'a> {
                     Some(k) if k.expr == Expr::Hops => Some(OrderBy::Score { score: Score::Hops { graph: self.hops_graph()?, far_first: k.desc }, desc: true, nulls_first: false }),
                     Some(k) if matches!(k.expr, Expr::Call { func: Func::JsonExtract, .. }) => match self.col_of(&k.expr)? {
                         Col::Path(path) => Some(OrderBy::Path { path, desc: k.desc, nulls_first: k.nulls_first }),
-                        Col::Field(_) => unreachable!("json_extract reads a path"),
+                        Col::Field(_) | Col::Time(_) => unreachable!("json_extract reads a path"),
                     },
                     Some(k) => Some(OrderBy::Score { score: self.score(&k.expr)?, desc: k.desc, nulls_first: k.nulls_first }),
                 };
@@ -318,9 +353,17 @@ impl<'a> Raise<'a> {
                 (projection, group_by, having, order, tiebreak)
             }
         };
-        let types = sql::projection_types(self.schema, &projection);
+        let mut types = sql::projection_types(self.schema, &projection);
+        // A day, week or month a time is in is a time.
+        for (t, (_, p)) in types.iter_mut().zip(&projection) {
+            if let Projection::Time(i) = p {
+                if matches!(self.times[*i].of, TimeOf::Trunc(_)) {
+                    *t = Some(crate::schema::Logical::Timestamp);
+                }
+            }
+        }
         let per = per.filter(|_| group_by.is_empty() && phases.is_empty() && matches!(order, Some(OrderBy::Score { .. })));
-        Ok(Select { projection, filter, order, group_by, having, tiebreak, phases, limit, offset, graphs: self.graphs, paths: self.paths, types, guard, per })
+        Ok(Select { projection, filter, order, group_by, having, tiebreak, phases, limit, offset, graphs: self.graphs, paths: self.paths, times: self.times, types, guard, per })
     }
 
     /// The graph `hops()` refers to: the first REACHABLE or PATH.

@@ -45,7 +45,7 @@ use crate::query::ir::eval;
 use crate::query::ir::{self, ArithOp, CmpOp, Func, When};
 use crate::query::ops;
 use crate::query::sql::{CastTo, Sub, Subs};
-use crate::query::logical::{OrderBy, Phase, Select};
+use crate::query::logical::{Fraction, OrderBy, Phase, Select};
 use crate::query::rank::Rank;
 use crate::query::{AggFn, Params, Projection};
 use crate::schema::{FieldType, Schema};
@@ -64,7 +64,11 @@ fn err(m: impl Into<String>) -> Error {
 const NATIVE: [&str; 14] = ["match", "bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "reachable", "path", "hops", "score", "now", "near"];
 /// Score functions, which order a side's scan.
 const SCORES: [&str; 8] = ["bm25", "similarity", "distance", "maxsim", "rrf", "ppr", "decay", "hops"];
-const AGGREGATES: [&str; 5] = ["count", "sum", "avg", "min", "max"];
+pub(crate) const AGGREGATES: [&str; 8] = ["count", "sum", "avg", "min", "max", "median", "percentile_cont", "percentile_disc"];
+/// The percentiles among the aggregates: `MEDIAN(x)`, and `PERCENTILE_CONT(x,
+/// p)` as `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` parses
+/// ([`super::parse`]), and `PERCENTILE_DISC` alike.
+pub(crate) const PERCENTILES: [&str; 3] = ["median", "percentile_cont", "percentile_disc"];
 /// Functions whose value a ranking computes (a score, a graph's, a model's,
 /// a set function's, a row's sequence number), not the row evaluator.
 const RANKING: [&str; 18] = [
@@ -268,6 +272,111 @@ fn joins_mut(q: &mut sql::Query, f: &mut dyn FnMut(&mut Expr)) {
                 _ => {}
             }
         }
+    }
+}
+
+/// Names the columns of each `WITH` result and derived table in `q` as SQL
+/// names them: a column of a table in its FROM, written without an alias
+/// as `s.item`, is the column `item` (as PostgreSQL and SQLite name it),
+/// so the query reading it says `ls.item`. One whose name another of its
+/// columns has too keeps `s.item`, and so does a column of the answer
+/// itself, where the qualifier tells a join's sides apart.
+pub(crate) fn bare_column_names(q: &mut sql::Query) {
+    if let Some(w) = &mut q.with {
+        for cte in &mut w.cte_tables {
+            if cte.alias.columns.is_empty() {
+                name_bare(&mut cte.query);
+            }
+            bare_column_names(&mut cte.query);
+        }
+    }
+    let mut inner = |q: &mut sql::Query| bare_column_names(q);
+    match q.body.as_mut() {
+        sql::SetExpr::Select(s) => derived_tables(s, &mut inner),
+        sql::SetExpr::Query(sq) => bare_column_names(sq),
+        sql::SetExpr::SetOperation { left, right, .. } => {
+            for side in [left, right] {
+                if let sql::SetExpr::Select(s) = side.as_mut() {
+                    derived_tables(s, &mut inner);
+                }
+            }
+        }
+        _ => {}
+    }
+    query_mut(q, &mut |e| {
+        if let Expr::Subquery(sq) | Expr::Exists { subquery: sq, .. } | Expr::InSubquery { subquery: sq, .. } = e {
+            bare_column_names(sq);
+        }
+    });
+}
+
+/// Each derived table of `s`'s FROM, its columns named by
+/// [`bare_column_names`] (unless its alias names them), then `f` of it.
+fn derived_tables(s: &mut sql::Select, f: &mut dyn FnMut(&mut sql::Query)) {
+    for t in &mut s.from {
+        for r in std::iter::once(&mut t.relation).chain(t.joins.iter_mut().map(|j| &mut j.relation)) {
+            if let TableFactor::Derived { subquery, alias, .. } = r {
+                if alias.as_ref().is_none_or(|a| a.columns.is_empty()) {
+                    name_bare(subquery);
+                }
+                f(subquery);
+            }
+        }
+    }
+}
+
+/// [`bare_column_names`] of one query's columns: those of its SELECT, or
+/// of a set operation's first SELECT, which names its columns.
+fn name_bare(q: &mut sql::Query) {
+    let mut body = q.body.as_mut();
+    loop {
+        match body {
+            sql::SetExpr::SetOperation { left, .. } => body = left.as_mut(),
+            sql::SetExpr::Select(s) => break name_bare_select(s),
+            // A query in parentheses names its own.
+            _ => break,
+        }
+    }
+}
+
+fn name_bare_select(s: &mut sql::Select) {
+    let joined = s.from.len() > 1 || s.from.iter().any(|t| !t.joins.is_empty());
+    // Over one table, `*` gives its columns by their own names, which a
+    // column named here might be too.
+    if !joined && s.projection.iter().any(|i| matches!(i, SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..))) {
+        return;
+    }
+    let mut tables: Vec<String> = Vec::new();
+    for t in &s.from {
+        for r in std::iter::once(&t.relation).chain(t.joins.iter().map(|j| &j.relation)) {
+            match r {
+                TableFactor::Table { name, alias, .. } => {
+                    tables.push(super::sql::table_name(name).to_ascii_lowercase());
+                    tables.extend(alias.iter().map(|a| a.name.value.to_ascii_lowercase()));
+                }
+                TableFactor::Derived { alias: Some(a), .. } => tables.push(a.name.value.to_ascii_lowercase()),
+                _ => {}
+            }
+        }
+    }
+    // The column a select item would be named by its column's own name.
+    let bare = |item: &SelectItem| match item {
+        SelectItem::UnnamedExpr(Expr::CompoundIdentifier(ids)) if ids.len() == 2 && tables.contains(&ids[0].value.to_ascii_lowercase()) => Some(ids[1].clone()),
+        _ => None,
+    };
+    let name = |item: &SelectItem| match item {
+        SelectItem::UnnamedExpr(e) => bare(item).map_or_else(|| super::sql::name_of(e), |id| id.value),
+        SelectItem::ExprWithAlias { alias, .. } => alias.value.clone(),
+        _ => String::new(),
+    };
+    let names: Vec<String> = s.projection.iter().map(|i| name(i).to_ascii_lowercase()).collect();
+    for item in s.projection.iter_mut() {
+        let Some(id) = bare(item) else { continue };
+        if names.iter().filter(|n| **n == id.value.to_ascii_lowercase()).count() > 1 {
+            continue;
+        }
+        let SelectItem::UnnamedExpr(e) = item else { continue };
+        *item = SelectItem::ExprWithAlias { expr: e.clone(), alias: id };
     }
 }
 
@@ -627,7 +736,7 @@ fn select_exprs(s: &sql::Select) -> Vec<&Expr> {
 pub(crate) fn walk(e: &Expr, f: &mut dyn FnMut(&Expr)) {
     f(e);
     match e {
-        Expr::Nested(x) | Expr::UnaryOp { expr: x, .. } | Expr::IsNull(x) | Expr::IsNotNull(x) | Expr::Cast { expr: x, .. } => walk(x, f),
+        Expr::Nested(x) | Expr::UnaryOp { expr: x, .. } | Expr::IsNull(x) | Expr::IsNotNull(x) | Expr::Cast { expr: x, .. } | Expr::Extract { expr: x, .. } => walk(x, f),
         Expr::BinaryOp { left, right, .. } => {
             walk(left, f);
             walk(right, f);
@@ -766,6 +875,7 @@ pub(crate) fn plan_query(q: &sql::Query, catalog: &[&Schema], params: &Params) -
 /// fields outside WHERE from the field's terms ([`ir::fuse_paths`]).
 fn plan_query_fused(q: &sql::Query, catalog: &[&Schema], params: &Params, fuse: bool) -> Result<ir::Plan> {
     let mut q = q.clone();
+    bare_column_names(&mut q);
     json_paths(&mut q, catalog)?;
     inline_windows(&mut q)?;
     let p = Planner { catalog, params, ctes: RefCell::new(Vec::new()), outer: RefCell::new(None) };
@@ -2148,7 +2258,7 @@ fn grouped_first(n: &ir::Node, sort: &[ir::SortKey], catalog: &[&Schema]) -> Opt
                 let fl = lt.fields.get(f as usize)?;
                 let typed = match a.func {
                     AggFn::Count | AggFn::CountDistinct => matches!(fl.ty, FieldType::Keyword | FieldType::Int | FieldType::Float),
-                    AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max => matches!(fl.ty, FieldType::Int | FieldType::Float),
+                    AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::PercentileCont(_) | AggFn::PercentileDisc(_) => matches!(fl.ty, FieldType::Int | FieldType::Float),
                 };
                 if !plain(fl) || !typed {
                     return None;
@@ -2442,7 +2552,7 @@ pub(crate) fn query_mut(q: &mut sql::Query, f: &mut dyn FnMut(&mut Expr)) {
 fn walk_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
     f(e);
     match e {
-        Expr::Nested(x) | Expr::UnaryOp { expr: x, .. } | Expr::IsNull(x) | Expr::IsNotNull(x) | Expr::Cast { expr: x, .. } => walk_mut(x, f),
+        Expr::Nested(x) | Expr::UnaryOp { expr: x, .. } | Expr::IsNull(x) | Expr::IsNotNull(x) | Expr::Cast { expr: x, .. } | Expr::Extract { expr: x, .. } => walk_mut(x, f),
         Expr::BinaryOp { left, right, .. } => {
             walk_mut(left, f);
             walk_mut(right, f);
@@ -2840,6 +2950,9 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 "sid_at" => Func::SidAt,
                 "count_true" => Func::CountTrue,
                 "json_extract" => Func::JsonExtract,
+                "date_trunc" => Func::DateTrunc,
+                "date_part" => Func::DatePart,
+                "strftime" => Func::Strftime,
                 n if Func::numeric(n).is_some() => Func::numeric(n).expect("a numeric function"),
                 n if NATIVE.contains(&n) => {
                     return Err(err(format!("{}(...) works on one table's scan, in its WHERE or ORDER BY (in a join, on that table's column: a.body), not on values of rows", n.to_uppercase())))
@@ -2880,29 +2993,41 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
         Expr::Overlay { .. } => return Err(err(unknown_function("replace"))),
         Expr::Ceil { .. } => return Err(err(unknown_function("ceil"))),
         Expr::Floor { .. } => return Err(err(unknown_function("floor"))),
+        // EXTRACT(part FROM t) is date_part('part', t).
         Expr::Extract { field, expr, .. } => {
-            return Err(err(format!(
-                "EXTRACT({field} FROM {expr}): Strata has no date parts yet; compare the time with a range instead ({expr} >= '2026-01-01' AND {expr} < '2027-01-01')"
-            )))
+            let part = extract_part(field);
+            ir::Expr::Call { func: Func::DatePart, args: vec![ir::Expr::Lit(Value::Str(part)), go(expr)?] }
         }
         e => return Err(err(format!("{e} is not something Strata computes for a row: {}", ROW_EXPRESSIONS))),
     })
 }
 
 /// What the row evaluator computes, for an error about what it does not.
-const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp and dot";
+const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part and strftime";
+
+/// The part `EXTRACT(part FROM t)` names, as `date_part` takes it.
+pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
+    match field {
+        sql::DateTimeField::Custom(id) => id.value.to_ascii_lowercase(),
+        sql::DateTimeField::Week(_) | sql::DateTimeField::IsoWeek => "week".into(),
+        sql::DateTimeField::DayOfWeek => "dow".into(),
+        sql::DateTimeField::DayOfYear => "doy".into(),
+        f => f.to_string().to_ascii_lowercase(),
+    }
+}
 
 /// Why a function is not one the row evaluator knows: the one meant, if
 /// the name is near one, or what there is.
 fn unknown_function(n: &str) -> String {
-    const ROW_FUNCTIONS: [&str; 16] =
-        ["lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot"];
+    const ROW_FUNCTIONS: [&str; 19] = [
+        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime",
+    ];
     let hint = match n {
         "substr" | "substring" | "left" | "right" | "trim" | "ltrim" | "rtrim" | "replace" | "concat" | "position" | "instr" | "strpos" | "split_part" | "reverse" => {
             "; to match part of a text, use LIKE '%part%' (ILIKE ignores case) or PREFIX(field, 'start'); to join texts, use ||"
         }
-        "date_trunc" | "date_part" | "extract" | "strftime" | "date" | "year" | "month" | "day" | "to_char" | "datediff" | "date_add" | "date_sub" => {
-            "; Strata has no date functions yet: compare the time with a range (at >= '2026-01-01' AND at < '2026-02-01')"
+        "date" | "year" | "month" | "day" | "hour" | "week" | "to_char" | "datepart" | "datetrunc" | "date_format" | "datediff" | "date_add" | "date_sub" | "dayofweek" | "weekday" => {
+            "; a time's parts are date_trunc('day', at) (its day, week, month, ...), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + n or at - n, n in microseconds"
         }
         "random" | "rand" => "; ORDER BY random() is not supported: Strata orders by columns and scores",
         "ifnull" | "nvl" | "isnull" => "; coalesce(x, y) gives x, or y where x is NULL",
@@ -2926,8 +3051,9 @@ struct AggCall {
     arg: Option<Expr>,
 }
 
-fn agg_calls(exprs: &[&Expr]) -> Result<Vec<AggCall>> {
+fn agg_calls(exprs: &[&Expr], params: &Params) -> Result<Vec<AggCall>> {
     let mut out: Vec<AggCall> = Vec::new();
+    let mut failed = None;
     for e in exprs {
         walk(e, &mut |x| {
             let Expr::Function(f) = x else { return };
@@ -2945,14 +3071,43 @@ fn agg_calls(exprs: &[&Expr]) -> Result<Vec<AggCall>> {
                     "sum" => AggFn::Sum,
                     "avg" => AggFn::Avg,
                     "min" => AggFn::Min,
-                    _ => AggFn::Max,
+                    "max" => AggFn::Max,
+                    _ => match percentile(f, &name, distinct, params) {
+                        Ok(func) => func,
+                        Err(e) => {
+                            failed.get_or_insert(e);
+                            return;
+                        }
+                    },
                 };
                 (Some(func), func_args(f).first().map(|a| (*a).clone()))
             };
             out.push(AggCall { text: x.to_string(), func, arg });
         });
     }
-    Ok(out)
+    failed.map_or(Ok(out), Err)
+}
+
+/// The percentile a call of one of [`PERCENTILES`] computes: `MEDIAN(x)`,
+/// or `PERCENTILE_CONT(x, p)` and the others with a constant fraction p
+/// from 0 to 1.
+fn percentile(f: &sql::Function, name: &str, distinct: bool, params: &Params) -> Result<AggFn> {
+    let upper = name.to_uppercase();
+    if distinct {
+        return Err(err("DISTINCT works in COUNT only"));
+    }
+    let args = func_args(f);
+    let p = match (name, args.as_slice()) {
+        ("median", [_]) => 0.5,
+        ("median", _) => return Err(err("MEDIAN takes one value: MEDIAN(price)")),
+        (_, [_, p]) => match compile(p, params, &|_| None, &[]).and_then(|e| value(&e)) {
+            Ok(v) => v.as_f64().filter(|_| matches!(v, Value::Int(_) | Value::Float(_))).ok_or_else(|| err(format!("{upper}: the fraction is a number from 0 to 1, not {p}")))?,
+            Err(_) => return Err(err(format!("{upper}: the fraction is a constant from 0 to 1, not {p}"))),
+        },
+        _ => return Err(err(format!("{upper}(p) WITHIN GROUP (ORDER BY x): p, from 0 to 1, of one value of each row"))),
+    };
+    let p = Fraction::new(p).ok_or_else(|| err(format!("{upper}: the fraction is from 0 to 1, not {p}")))?;
+    Ok(if name == "percentile_disc" { AggFn::PercentileDisc(p) } else { AggFn::PercentileCont(p) })
 }
 
 /// A window function's call: its text (how other expressions name it) and
@@ -3203,7 +3358,7 @@ impl Planner<'_> {
         item_exprs.extend(s.having.iter());
         item_exprs.extend(order.iter().map(|o| &o.0));
         item_exprs.extend(qualify.iter());
-        let calls = agg_calls(&item_exprs)?;
+        let calls = agg_calls(&item_exprs, params)?;
         let windows = window_calls(&item_exprs)?;
         let grouped = !group_exprs.is_empty() || !calls.is_empty();
         // The window functions over the rows (or the groups) as `slot`

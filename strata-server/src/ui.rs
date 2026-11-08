@@ -34,13 +34,18 @@ pub const FILES: &[(&str, &str, &str)] = &[
     ("flame.js", JS, include_str!("../ui/app/flame.js")),
     ("workload.js", JS, include_str!("../ui/app/workload.js")),
     ("spec.js", JS, include_str!("../ui/app/spec.js")),
+    ("follows.js", JS, include_str!("../ui/app/follows.js")),
     ("views/index.js", JS, include_str!("../ui/app/views/index.js")),
     ("views/overview.js", JS, include_str!("../ui/app/views/overview.js")),
     ("views/timeline.js", JS, include_str!("../ui/app/views/timeline.js")),
     ("views/cluster.js", JS, include_str!("../ui/app/views/cluster.js")),
     ("views/rollout.js", JS, include_str!("../ui/app/views/rollout.js")),
     ("views/autoscale.js", JS, include_str!("../ui/app/views/autoscale.js")),
+    ("views/simulator.js", JS, include_str!("../ui/app/views/simulator.js")),
     ("views/cloud.js", JS, include_str!("../ui/app/views/cloud.js")),
+    ("views/connections.js", JS, include_str!("../ui/app/views/connections.js")),
+    ("views/clusters.js", JS, include_str!("../ui/app/views/clusters.js")),
+    ("views/follow.js", JS, include_str!("../ui/app/views/follow.js")),
     ("views/querypath.js", JS, include_str!("../ui/app/views/querypath.js")),
     ("views/performance.js", JS, include_str!("../ui/app/views/performance.js")),
     ("views/alerts.js", JS, include_str!("../ui/app/views/alerts.js")),
@@ -63,6 +68,7 @@ pub const FILES: &[(&str, &str, &str)] = &[
     ("views/media.js", JS, include_str!("../ui/app/views/media.js")),
     ("views/graph.js", JS, include_str!("../ui/app/views/graph.js")),
     ("views/classic.js", JS, include_str!("../ui/app/views/classic.js")),
+    ("views/apps.js", JS, include_str!("../ui/app/views/apps.js")),
 ];
 
 /// A file from `STRATA_UI_DIR`, when it is set: `rel` under it.

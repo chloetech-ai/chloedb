@@ -32,8 +32,11 @@
 //! not choose primaries, except to hand one over before its pod goes.
 
 pub mod autoscale;
+pub mod follow;
 pub mod kube;
 pub mod upgrade;
+
+pub use follow::FollowSpec;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -107,6 +110,11 @@ pub struct Spec {
     /// a new image the tag points to is suggested, or rolled out. Not part
     /// of a version either.
     pub upgrade: upgrade::Upgrade,
+    /// Following another cluster ([`follow`]): a follow process of its
+    /// own, while the cluster refuses its clients' writes. Not part of a
+    /// version: it changes no server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow: Option<FollowSpec>,
 }
 
 /// How the operator makes a change (`spec.rollout`). Not part of a
@@ -324,6 +332,7 @@ impl Default for Spec {
             rollout: RolloutSpec::default(),
             autoscale: autoscale::Autoscale::default(),
             upgrade: upgrade::Upgrade::default(),
+            follow: None,
         }
     }
 }
@@ -388,6 +397,9 @@ impl Spec {
         }
         self.autoscale.check()?;
         self.upgrade.check(&self.image)?;
+        if let Some(f) = &self.follow {
+            f.check()?;
+        }
         if let Some(c) = &self.cluster_token_secret {
             if self.token_secret.is_none() {
                 return Err("clusterTokenSecret needs tokenSecret: the operator, and whoever runs the cluster, call the coordinators with that token".into());
@@ -401,17 +413,22 @@ impl Spec {
         }
         match (&self.schema, self.demo) {
             (Some(_), Some(_)) => Err("give a schema or demo, not both".into()),
-            (None, None) => Err("give the first table's schema, or demo (a number of demo products)".into()),
+            // No tables yet: the servers start with the placeholder
+            // (strata-server --db on a new path), and CREATE TABLE fills them.
+            (None, None) => Ok(()),
             (Some(s), None) => strata::schema::Schema::from_json_value(s).map(|_| ()).map_err(|e| format!("schema: {e}")),
             (None, Some(_)) => Ok(()),
         }
     }
 
-    /// The schema every server is created with, as JSON.
+    /// The schema every server is created with, as JSON: the spec's, the
+    /// demo's, or with neither the placeholder of a database with no tables
+    /// ([`strata::schema::Schema::placeholder`]).
     pub fn schema_json(&self) -> String {
         match (&self.schema, self.demo) {
             (Some(s), _) => s.to_string(),
-            (None, n) => serde_json::to_string(&crate::demo::schema(n.unwrap_or(0))).expect("a schema serialises"),
+            (None, Some(n)) => serde_json::to_string(&crate::demo::schema(n)).expect("a schema serialises"),
+            (None, None) => serde_json::to_string(&strata::schema::Schema::placeholder()).expect("a schema serialises"),
         }
     }
 }
@@ -419,10 +436,10 @@ impl Spec {
 /// The fields of a spec that say how it changes, not what the cluster
 /// is: no version of their own ([`Spec::version`]), and left as they are
 /// by a rollback.
-pub const UNVERSIONED: &[&str] = &["rollout", "autoscale", "upgrade"];
+pub const UNVERSIONED: &[&str] = &["rollout", "autoscale", "upgrade", "follow"];
 
 /// The first 12 hex digits of the SHA-256 of `j`'s text.
-fn short_hash(j: &Json) -> String {
+pub(crate) fn short_hash(j: &Json) -> String {
     use sha2::{Digest, Sha256};
     Sha256::digest(j.to_string().as_bytes()).iter().take(6).map(|b| format!("{b:02x}")).collect()
 }
@@ -512,6 +529,12 @@ pub trait Platform {
     }
     /// Ends the pre-flight: what it started goes.
     async fn end_preflight(&self) -> Result<(), String>;
+    /// Runs the follow process `spec.follow` asks for, or none
+    /// ([`follow`]): a Deployment of one on Kubernetes. Applied once the
+    /// coordinators are there.
+    async fn follow(&self, _spec: &Spec) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// How the coordinators' restart stands ([`Platform::coordinators_rolled`]).
@@ -921,6 +944,7 @@ async fn step<P: Platform>(spec: &Spec, p: &P, admin: &Admin, before: &Rollout) 
         p.set_coordinator(&first, 1).await?;
         return Ok(Outcome::new(Phase::Creating, "starting the coordinator, which lays the cluster out"));
     };
+    p.follow(spec).await?;
     let view = match admin.view().await {
         Ok(v) => v,
         Err(e) => return Ok(Outcome::new(Phase::Creating, format!("waiting for the coordinator: {e}"))),
@@ -1772,6 +1796,26 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
     if new.autoscale != old.autoscale {
         steps.push(format!("new autoscaling rules, no restart: {}", new.autoscale.said()));
     }
+    if new.follow != old.follow {
+        steps.push(match (&old.follow, &new.follow) {
+            (None, Some(f)) | (Some(_), Some(f)) if old.follow.as_ref().is_none_or(|o| o.name != f.name) => format!(
+                "a follow process of {} starts (no server restarts): {}, then it applies {}'s feed; from its first write the cluster refuses its clients' writes (\"this cluster follows {}\")",
+                f.name,
+                match f.start {
+                    follow::Start::Follow => "it copies the source the first time, else it goes on from where the cluster is".to_string(),
+                    follow::Start::Copy => "it copies the source afresh, writing its rows over these and deleting the keys it lacks".to_string(),
+                    follow::Start::Reverse => format!("it follows {} back from its promotion from this cluster, without a copy (refused if this cluster took writes since)", f.name),
+                },
+                f.name,
+                f.name
+            ),
+            (Some(o), None) => format!("the follow process of {} stops (its Deployment goes); the cluster refuses its clients' writes until following is stopped or it is promoted", o.name),
+            (Some(a), Some(b)) if b.paused && !a.paused => format!("the follow process of {} pauses: nothing more is applied, and the cluster still refuses its clients' writes", b.name),
+            (Some(a), Some(b)) if a.paused && !b.paused => format!("the follow process of {} starts again, from where it was", b.name),
+            (_, Some(b)) => format!("the follow process of {} restarts with the new settings, from where it was", b.name),
+            (None, None) => unreachable!("the follow specs differ"),
+        });
+    }
     if steps.is_empty() && changes.is_empty() {
         steps.push("nothing: the spec says what it says now".into());
     }
@@ -1813,7 +1857,7 @@ pub fn crd() -> Json {
                 "size": {"type": "string", "description": "Each copy's volume (default 10Gi)."},
                 "storageClassName": {"type": "string"},
             }},
-            "schema": free("The first table's schema, as strata-server --schema takes it."),
+            "schema": free("The first table's schema, as strata-server --schema takes it. Without it and without demo, the cluster starts with no tables."),
             "demo": int(0, "Instead of a schema: this many demo products, split over the shards the cluster starts with."),
             "failoverAfterMs": int(0, "--failover-after-ms of every server (default 3000; 0: failover by hand)."),
             "writeAcks": {"type": "string", "enum": ["all", "majority", "primary"], "description": "--write-acks of every primary (default all)."},
@@ -1840,6 +1884,7 @@ pub fn crd() -> Json {
             }},
             "autoscale": autoscale::schema(),
             "upgrade": upgrade::schema(),
+            "follow": follow::schema(),
         },
     });
     let status = free("What the operator found and does.");
@@ -1880,7 +1925,10 @@ mod tests {
         s.check().unwrap();
         let bad = |j: Json| serde_json::from_value::<Spec>(j).unwrap().check().unwrap_err();
         assert!(bad(json!({"shards": 0, "demo": 1})).contains("1 or more"));
-        assert!(bad(json!({})).contains("give the first table's schema"));
+        // Neither a schema nor demo: no tables yet, the placeholder first.
+        let empty: Spec = serde_json::from_value(json!({})).unwrap();
+        empty.check().unwrap();
+        assert!(strata::schema::Schema::from_json(&empty.schema_json()).unwrap().is_placeholder());
         assert!(bad(json!({"writeAcks": "most", "demo": 1})).contains("writeAcks"));
         assert!(bad(json!({"schema": {"table": "t"}})).contains("schema:"));
         assert!(bad(json!({"demo": 1, "clusterTokenSecret": "c"})).contains("needs tokenSecret"));

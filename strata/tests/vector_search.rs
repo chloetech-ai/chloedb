@@ -292,3 +292,47 @@ fn post_filter_widens_its_walk() {
     assert_eq!(retried, queries.len(), "every query needs a wider walk");
     assert!(found as f64 >= 0.9 * total as f64, "post-filter recall {found}/{total}");
 }
+
+/// A random 20% filter: the post-filter fetches enough candidates that about
+/// as many members reach the float32 re-rank as an unfiltered search
+/// re-ranks rows (40), not `2k` = 20; and going on from the planner's
+/// selectivity sample ([`VectorReader::sample`]) scores fewer codes than
+/// walking the graph again, with the same answers' quality.
+#[test]
+fn post_filter_reranks_its_depth_and_goes_on_from_the_sample() {
+    let dim = 32;
+    let n = 4000;
+    let vecs: Vec<Option<Vec<f32>>> = clustered(n, dim, 8, 31).into_iter().map(Some).collect();
+    let seg = segment(&vecs, dim, &opts("hnsw"));
+    let r = VectorReader::open(&seg, EMB).unwrap();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(32);
+    let members: Vec<u32> = (0..n as u32).filter(|_| rng.gen_bool(0.2)).collect();
+    let f = DocSet::from_sorted(members, n as u32);
+    let p = SearchParams { strategy: Strategy::PostFilter, ..Default::default() };
+    let queries = clustered(20, dim, 8, 33);
+    let (mut reranked, mut fresh_found, mut from_found, mut total) = (0, 0, 0, 0);
+    let (mut fresh_codes, mut from_codes) = (0, 0);
+    for q in &queries {
+        let truth = naive(&vecs, q, 10, Some(&f));
+        let fresh = r.search(q, 10, &p, Some(&f));
+        let mut sample = strata::vector::Sample::default();
+        let near = r.sample(q, 32, &p, &mut sample);
+        assert_eq!(near.len(), 32);
+        let from = r.search_from(q, 10, &p, Some(&f), Some(&mut sample));
+        for out in [&fresh, &from] {
+            assert_eq!(out.hits.len(), 10);
+            assert!(out.hits.iter().all(|h| f.contains(h.doc)));
+        }
+        reranked += fresh.stats.candidates;
+        fresh_codes += fresh.stats.sq8_distances;
+        from_codes += from.stats.sq8_distances;
+        fresh_found += fresh.hits.iter().filter(|h| truth.contains(&h.doc)).count();
+        from_found += from.hits.iter().filter(|h| truth.contains(&h.doc)).count();
+        total += truth.len();
+    }
+    let per = reranked as f64 / queries.len() as f64;
+    assert!(per >= 30.0, "members re-ranked per query: {per}");
+    assert!(from_codes < fresh_codes, "codes scored going on from the sample {from_codes}, afresh {fresh_codes}");
+    assert!(fresh_found as f64 >= 0.9 * total as f64, "post-filter recall {fresh_found}/{total}");
+    assert!(from_found as f64 >= 0.9 * total as f64, "post-filter recall from the sample {from_found}/{total}");
+}

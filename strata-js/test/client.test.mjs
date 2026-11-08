@@ -50,6 +50,8 @@ describe("Client", { skip: serverBinary() ? false : "strata-server is not built"
     assert.equal(await client.get("nope"), null);
     const keys = ["b0001", "nope", "b0002"];
     assert.deepEqual(await client.getMany(keys), await local.getMany(keys));
+    const year = (await local.get("b0001")).year;
+    assert.deepEqual(await client.getMany(keys, { columns: ["year"] }), [{ year }, null, { year: (await local.get("b0002")).year }]);
   });
 
   test("writes", async () => {

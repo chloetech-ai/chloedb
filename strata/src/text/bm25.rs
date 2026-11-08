@@ -222,6 +222,13 @@ struct TopK<'g, S = f32> {
     /// With a cap on each group's rows, the rows kept instead of the heap
     /// ([`TopK::capped`]).
     cap: Option<Cap<'g, S>>,
+    /// A score known to be reached by `k` documents elsewhere (the other
+    /// segments searched before this one, [`TopK::above`]): a document
+    /// below it cannot be among the best `k` overall, so it is left out
+    /// and the threshold starts there. Minus infinity when there is none.
+    floor: S,
+    /// `floor`'s threshold: the score just below it.
+    below: S,
 }
 
 /// Rows a capped top-k compacts at the least ([`Cap::limit`]).
@@ -316,7 +323,7 @@ impl<S: Key> PartialOrd for Entry<S> {
 
 impl<'g, S: Key> TopK<'g, S> {
     fn new(k: usize) -> Self {
-        TopK { k, heap: BinaryHeap::with_capacity(k.saturating_add(1).min(HEAP_RESERVE)), ties: None, cap: None }
+        TopK { k, heap: BinaryHeap::with_capacity(k.saturating_add(1).min(HEAP_RESERVE)), ties: None, cap: None, floor: S::NEG_INFINITY, below: S::NEG_INFINITY }
     }
 
     fn with_ties(k: usize) -> Self {
@@ -327,7 +334,19 @@ impl<'g, S: Key> TopK<'g, S> {
     /// a document) keeps only its best `per` ([`Cap`]).
     fn capped(k: usize, per: usize, group: &'g dyn Fn(DocId) -> Option<u64>) -> Self {
         let cap = Cap { per: per.max(1), group, rows: Vec::new(), limit: k.saturating_mul(2).max(CAP_MIN), theta: S::NEG_INFINITY, full: HashMap::new() };
-        TopK { k, heap: BinaryHeap::new(), ties: None, cap: Some(cap) }
+        TopK { k, heap: BinaryHeap::new(), ties: None, cap: Some(cap), floor: S::NEG_INFINITY, below: S::NEG_INFINITY }
+    }
+
+    /// Seeded with a floor: documents scoring below `floor` are left out,
+    /// for `k` documents elsewhere score at least that. A document tied
+    /// with it is kept, so the documents searched elsewhere need not come
+    /// first in the order that breaks ties.
+    fn above(mut self, floor: S) -> Self {
+        if self.cap.is_none() && floor.total_cmp(&S::NEG_INFINITY).is_gt() {
+            self.floor = floor;
+            self.below = floor.next_down();
+        }
+        self
     }
 
     /// Scores must exceed this to enter (to be kept, with ties).
@@ -338,18 +357,24 @@ impl<'g, S: Key> TopK<'g, S> {
             return c.theta.next_down();
         }
         if self.heap.len() < self.k {
-            return S::NEG_INFINITY;
+            return self.below;
         }
         let worst = self.heap.peek().map_or(S::NEG_INFINITY, |e| e.0);
         // A score equal to the worst is kept with ties, so only lower
         // bounds may be skipped.
-        if self.ties.is_some() { worst.next_down() } else { worst }
+        let own = if self.ties.is_some() { worst.next_down() } else { worst };
+        if self.below > own { self.below } else { own }
     }
 
     #[inline]
     fn insert(&mut self, doc: DocId, score: S) {
         if let Some(c) = &mut self.cap {
             c.insert(doc, score, self.k);
+            return;
+        }
+        // Below the floor (a part of its score, offered once its bound
+        // fell to it): not among the best `k` overall.
+        if score < self.floor {
             return;
         }
         if self.heap.len() < self.k {
@@ -652,9 +677,31 @@ impl TextFieldReader {
         algo: TopKAlgo,
         ties: bool,
     ) -> Vec<(DocId, f32)> {
+        self.top_k_weighted_above(terms, stats, params, k, filter, algo, ties, f32::NEG_INFINITY)
+    }
+
+    /// [`top_k_weighted`](Self::top_k_weighted), when `k` documents
+    /// elsewhere (other segments of the same collection, scored with the
+    /// same `stats`) score at least `floor`: only documents scoring at
+    /// least `floor` are returned, and the search skips from the start what
+    /// cannot reach it, as Lucene shares the minimum competitive score
+    /// between segments. The best `k` of these and of those elsewhere,
+    /// ties included, are the best `k` of all.
+    #[allow(clippy::too_many_arguments)]
+    pub fn top_k_weighted_above(
+        &self,
+        terms: &[(String, f32)],
+        stats: &CollectionStats,
+        params: Bm25Params,
+        k: usize,
+        filter: Option<&dyn DocFilter>,
+        algo: TopKAlgo,
+        ties: bool,
+        floor: f32,
+    ) -> Vec<(DocId, f32)> {
         let w: Vec<(&str, f32)> = terms.iter().map(|(t, w)| (t.as_str(), *w)).collect();
         let top = if ties { TopK::with_ties(k) } else { TopK::new(k) };
-        self.run(self.query_weighted(&w, stats, params), top, &mut Text, filter, algo, FilterStrategy::Auto)
+        self.run(self.query_weighted(&w, stats, params), top.above(floor), &mut Text, filter, algo, FilterStrategy::Auto)
     }
 
     /// The documents that can be among the best `k` by weighted BM25
@@ -699,8 +746,27 @@ impl TextFieldReader {
         algo: TopKAlgo,
         boost: &mut B,
     ) -> (Vec<(DocId, f64)>, TopKAlgo) {
+        self.top_k_boosted_above(terms, stats, params, k, filter, algo, boost, f64::NEG_INFINITY)
+    }
+
+    /// [`top_k_boosted`](Self::top_k_boosted), when `k` documents
+    /// elsewhere score at least `floor` by the same boost: only documents
+    /// scoring at least `floor` are returned, as
+    /// [`top_k_weighted_above`](Self::top_k_weighted_above) does.
+    #[allow(clippy::too_many_arguments)]
+    pub fn top_k_boosted_above<B: Boost>(
+        &self,
+        terms: &[(String, f32)],
+        stats: &CollectionStats,
+        params: Bm25Params,
+        k: usize,
+        filter: Option<&dyn DocFilter>,
+        algo: TopKAlgo,
+        boost: &mut B,
+        floor: f64,
+    ) -> (Vec<(DocId, f64)>, TopKAlgo) {
         let w: Vec<(&str, f32)> = terms.iter().map(|(t, w)| (t.as_str(), *w)).collect();
-        self.run_boosted(self.query_weighted(&w, stats, params), k, filter, algo, boost)
+        self.run_boosted(self.query_weighted(&w, stats, params), k, filter, algo, boost, floor)
     }
 
     /// [`top_k_boosted`](Self::top_k_boosted) of a sparse field's dot
@@ -713,14 +779,28 @@ impl TextFieldReader {
         algo: TopKAlgo,
         boost: &mut B,
     ) -> (Vec<(DocId, f64)>, TopKAlgo) {
-        self.run_boosted(self.query_dot(terms), k, filter, algo, boost)
+        self.top_k_dot_boosted_above(terms, k, filter, algo, boost, f64::NEG_INFINITY)
     }
 
-    fn run_boosted<B: Boost>(&self, q: Query<'_>, k: usize, filter: Option<&dyn DocFilter>, algo: TopKAlgo, boost: &mut B) -> (Vec<(DocId, f64)>, TopKAlgo) {
+    /// [`top_k_dot_boosted`](Self::top_k_dot_boosted) above a floor
+    /// ([`top_k_boosted_above`](Self::top_k_boosted_above)).
+    pub fn top_k_dot_boosted_above<B: Boost>(
+        &self,
+        terms: &[(String, f32)],
+        k: usize,
+        filter: Option<&dyn DocFilter>,
+        algo: TopKAlgo,
+        boost: &mut B,
+        floor: f64,
+    ) -> (Vec<(DocId, f64)>, TopKAlgo) {
+        self.run_boosted(self.query_dot(terms), k, filter, algo, boost, floor)
+    }
+
+    fn run_boosted<B: Boost>(&self, q: Query<'_>, k: usize, filter: Option<&dyn DocFilter>, algo: TopKAlgo, boost: &mut B, floor: f64) -> (Vec<(DocId, f64)>, TopKAlgo) {
         let max = q.scorers.iter().map(|s| s.max).sum::<f32>();
         let mut f = Boosted::new(boost, max);
         let algo = if f.narrows() { algo } else { TopKAlgo::Exhaustive };
-        (self.run(q, TopK::with_ties(k), &mut f, filter, algo, FilterStrategy::Auto), algo)
+        (self.run(q, TopK::with_ties(k).above(floor), &mut f, filter, algo, FilterStrategy::Auto), algo)
     }
 
     /// Exact weighted BM25 of `docs` (see [`top_k_weighted`](Self::top_k_weighted)).

@@ -87,6 +87,17 @@ impl Kube {
         self.token.clone().or_else(|| std::fs::read_to_string(format!("{SA}/token")).ok().map(|t| t.trim().to_string()))
     }
 
+    /// A request to `path` of the API server with the token, whose
+    /// answer may take as long as `timeout`: a call the hub forwards
+    /// through a Service's proxy ([`crate::hub`]), which may stream.
+    pub fn request(&self, method: reqwest::Method, path: &str, timeout: Duration) -> reqwest::RequestBuilder {
+        let mut r = self.http.request(method, format!("{}{path}", self.api)).timeout(timeout);
+        if let Some(t) = self.token() {
+            r = r.bearer_auth(t);
+        }
+        r
+    }
+
     async fn send(&self, method: reqwest::Method, path: &str, body: Option<(&str, &Json)>) -> Result<Option<Json>, String> {
         let mut r = self.http.request(method.clone(), format!("{}{path}", self.api));
         if let Some(t) = self.token() {
@@ -412,6 +423,53 @@ impl Cluster {
         format!("{}-preflight", self.name)
     }
 
+    fn follow_path(&self) -> String {
+        format!("{}/{}-follow", ns_path(&self.ns, "apps/v1", "deployments"), self.name)
+    }
+
+    /// The follow process's Deployment ([`super::follow`]): one pod, or
+    /// none while paused, never two at once (Recreate), that writes
+    /// through the coordinators' Service with the cluster's token.
+    pub fn follow_deployment(&self, f: &super::FollowSpec) -> Json {
+        let s = &self.spec;
+        let mut labels = self.labels();
+        labels["app.kubernetes.io/component"] = json!("follow");
+        let mut env = vec![json!({"name": "RUST_LOG", "value": "info"})];
+        if let Some(k) = &f.key_secret {
+            env.push(json!({"name": "STRATA_FOLLOW_KEY", "valueFrom": {"secretKeyRef": {"name": k, "key": "key"}}}));
+        }
+        // The cluster token where there is one, else the token: what the
+        // coordinators take from their own cluster's servers.
+        if let Some(t) = s.cluster_token_secret.as_ref().or(s.token_secret.as_ref()) {
+            env.push(secret_env("STRATA_CLUSTER_TOKEN", t));
+        }
+        let mut container = json!({
+            "name": "follow", "image": s.image, "args": f.args(&format!("http://{}:7700", self.name)), "env": env,
+            "resources": f.resources.clone().unwrap_or_else(|| json!({"requests": {"cpu": "100m", "memory": "128Mi"}, "limits": {"memory": "1Gi"}})),
+            "terminationMessagePolicy": "FallbackToLogsOnError",
+        });
+        if let Some(p) = &s.image_pull_policy {
+            container["imagePullPolicy"] = json!(p);
+        }
+        let mut pod = json!({"automountServiceAccountToken": false, "terminationGracePeriodSeconds": 10, "containers": [container]});
+        if let Some(ca) = &f.ca_secret {
+            pod["containers"][0]["volumeMounts"] = json!([{"name": "source-ca", "mountPath": super::follow::CA_DIR, "readOnly": true}]);
+            pod["volumes"] = json!([{"name": "source-ca", "secret": {"secretName": ca, "items": [{"key": "ca.crt", "path": "ca.crt"}]}}]);
+        }
+        json!({
+            "apiVersion": "apps/v1", "kind": "Deployment", "metadata": self.meta(&format!("{}-follow", self.name), labels.clone()),
+            "spec": {
+                "replicas": if f.paused { 0 } else { 1 },
+                "selector": {"matchLabels": labels},
+                // Never two follow processes at once: the old one stops
+                // before the new one starts (two would apply nothing
+                // twice, but write twice as much).
+                "strategy": {"type": "Recreate"},
+                "template": {"metadata": {"labels": labels}, "spec": pod},
+            },
+        })
+    }
+
     fn preflight_path(&self) -> String {
         format!("{}/{}", ns_path(&self.ns, "apps/v1", "deployments"), self.preflight_name())
     }
@@ -611,6 +669,26 @@ impl Platform for Cluster {
 
     async fn set_coordinator(&self, shards: &[Vec<String>], replicas: usize) -> Result<(), String> {
         self.kube.apply(&self.coordinator_path(), &self.coordinator_deployment(shards, replicas)).await.map(|_| ())
+    }
+
+    async fn follow(&self, spec: &Spec) -> Result<(), String> {
+        let path = self.follow_path();
+        let have = self.kube.get(&path).await?;
+        let Some(f) = &spec.follow else {
+            if have.is_some() {
+                self.kube.delete(&path).await?;
+            }
+            return Ok(());
+        };
+        // Applied only when it changes, by the hash of what it is.
+        let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
+        let mut d = with.follow_deployment(f);
+        let hash = super::short_hash(&d);
+        d["metadata"]["annotations"] = json!({CONFIG: hash});
+        if have.is_some_and(|h| h["metadata"]["annotations"][CONFIG] == hash.as_str()) {
+            return Ok(());
+        }
+        self.kube.apply(&path, &d).await.map(|_| ())
     }
 
     async fn coordinator_config(&self) -> Result<Option<String>, String> {
@@ -1176,6 +1254,40 @@ mod tests {
     fn cluster(spec: Json) -> Cluster {
         let kube = Kube::new(&Options { api: Some("http://127.0.0.1:1".into()), ..Default::default() }).unwrap();
         Cluster { kube, ns: "db".into(), name: "orders".into(), uid: "u-1".into(), spec: serde_json::from_value(spec).unwrap() }
+    }
+
+    #[test]
+    fn a_follower_runs_one_follow_process_with_the_sources_key_and_its_own_token() {
+        let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "imagePullPolicy": "Always",
+            "follow": {"source": "https://east.example:7700", "name": "east", "keySecret": "east-feed", "caSecret": "east-ca", "askedMs": 1700000000000u64}}));
+        let f = c.spec.follow.clone().unwrap();
+        let d = c.follow_deployment(&f);
+        assert_eq!(d["metadata"]["name"], "orders-follow");
+        assert_eq!(d["metadata"]["ownerReferences"][0]["uid"], "u-1");
+        assert_eq!((&d["spec"]["replicas"], &d["spec"]["strategy"]["type"]), (&json!(1), &json!("Recreate")));
+        let pod = &d["spec"]["template"]["spec"];
+        assert_eq!(pod["automountServiceAccountToken"], false);
+        let k = &pod["containers"][0];
+        assert_eq!(k["imagePullPolicy"], "Always");
+        let args: Vec<&str> = k["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+        assert_eq!(args, ["follow", "--source", "https://east.example:7700", "--target", "http://orders:7700", "--name", "east", "--once", "1700000000000", "--source-ca", "/etc/strata-follow/ca.crt"]);
+        let env = k["env"].as_array().unwrap();
+        let get = |n: &str| env.iter().find(|e| e["name"] == n).cloned().unwrap_or_default();
+        assert_eq!(get("STRATA_FOLLOW_KEY")["valueFrom"]["secretKeyRef"], json!({"name": "east-feed", "key": "key"}));
+        assert_eq!(get("STRATA_CLUSTER_TOKEN")["valueFrom"]["secretKeyRef"], json!({"name": "inner", "key": "token"}), "the cluster's token, not the admin's");
+        assert_eq!(pod["volumes"][0]["secret"]["secretName"], "east-ca");
+        assert_eq!(k["volumeMounts"][0]["mountPath"], "/etc/strata-follow");
+        // Paused: no pod. Without a cluster token, the token.
+        let paused = cluster(json!({"tokenSecret": "admin", "follow": {"source": "http://east:7700", "name": "east", "paused": true}}));
+        let d = paused.follow_deployment(paused.spec.follow.as_ref().unwrap());
+        assert_eq!(d["spec"]["replicas"], 0);
+        let env = d["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+        assert!(env.iter().any(|e| e["name"] == "STRATA_CLUSTER_TOKEN" && e["valueFrom"]["secretKeyRef"]["name"] == "admin"));
+        assert!(!env.iter().any(|e| e["name"] == "STRATA_FOLLOW_KEY"));
+        // Following is not a version of the cluster: no server restarts.
+        let none = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "imagePullPolicy": "Always"}));
+        assert_eq!(none.spec.version(), c.spec.version());
+        assert_eq!(none.spec.server_config(), c.spec.server_config());
     }
 
     #[test]

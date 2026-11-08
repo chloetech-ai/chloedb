@@ -4,9 +4,10 @@
 // palette (Ctrl+K), which finds views, actions and the fleet's shards,
 // copies, nodes, tables, statements, alerts and keys, and the shortcuts.
 
-import { h, icon, clear, store, bus, api, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink } from "./core.js";
+import { h, icon, clear, store, bus, api, at, connectionName, setToken, hasToken, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink } from "./core.js";
 import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, setPolls, overnight } from "./data.js";
 import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
+import { loadApps, listApps, appIcon } from "./views/apps.js";
 
 const app = document.getElementById("app");
 const byId = Object.fromEntries(VIEWS.map((v) => [v.id, v]));
@@ -58,7 +59,38 @@ async function otherCoordinators() {
   }
   return peers.list || state.fleet?.coordinators || [];
 }
+// The hub's book (GET /v1/admin/hub): the clusters this server's command
+// center reaches. Read once a minute at most; a server whose key is not an
+// admin's, or a coordinator, has none to show.
+let book = { at: 0, list: [] };
+async function hubBook() {
+  if (Date.now() - book.at > 60e3) {
+    try { const j = await api("/v1/admin/hub", { hub: true, timeout: 3000 }); book = { at: Date.now(), list: j.connections || [] }; }
+    catch { book = { at: Date.now(), list: [] }; }
+  }
+  return book.list;
+}
+const openConnection = (name) => { location.href = name ? `/c/${name}#/home` : "/#/home"; };
+// On a connection's page: its color on the top edge and the brand, and
+// its name in the tab's title.
+if (connectionName) {
+  document.documentElement.classList.add("via-hub");
+  hubBook().then((list) => {
+    const c = list.find((x) => x.name === connectionName);
+    if (c?.color) document.documentElement.style.setProperty("--conn", c.color);
+  });
+}
 brand.onclick = async () => {
+  const conns = await hubBook();
+  if (conns.length || connectionName) {
+    const items = [];
+    items.push({ label: `This hub · ${location.host}`, icon: connectionName ? "left" : "check", onclick: () => connectionName && openConnection(null) });
+    items.push("-");
+    for (const c of conns) items.push({ label: `${c.name}${c.environment ? " · " + c.environment : ""}${c.last_error ? " · not answering" : ""}`, icon: c.name === connectionName ? "check" : "cluster", color: c.color, onclick: () => c.name !== connectionName && openConnection(c.name) });
+    items.push("-", { label: "Connections and keys…", icon: "key", onclick: () => { location.href = "/#/connections"; } });
+    menu(brand, items);
+    return;
+  }
   const here = location.origin;
   const coords = (await otherCoordinators()).filter((c) => c.url && !c.this && !sameOrigin(c.url, here));
   const recent = (store.get(RECENT, []) || []).filter((x) => x.url !== here && !coords.some((c) => sameOrigin(c.url, x.url)));
@@ -97,6 +129,11 @@ function drawNav() {
   clear(nav);
   const pins = new Set(store.get(PINS, []));
   for (const [g, list] of NAV) {
+    if (g === "Apps") {
+      const as = listApps();
+      if (as.length) { nav.append(h("h6", {}, "Apps")); for (const a of as) nav.append(appLink(a)); }
+      continue;
+    }
     const es = list.map((e) => ({ ...e, group: g })).filter((e) => viewOf(e));
     if (!es.length) continue;
     if (g !== "Labs") { nav.append(h("h6", {}, g)); for (const e of es) nav.append(navLink(e)); continue; }
@@ -111,6 +148,12 @@ function drawNav() {
     nav.append(box);
   }
   markCurrent();
+}
+/** An app's entry: #/app/<name>, with the app's own icon. */
+function appLink(a) {
+  const el = h("a", { href: "#/app/" + encodeURIComponent(a.name), dataset: { view: "app/" + a.name }, title: a.up ? `${a.title}: ${a.description || "an app"}` : `${a.title}: not answering (${a.error})` }, appIcon(a), h("span", { class: "t" }, a.title));
+  if (!a.up) el.append(h("span", { class: "count warn", title: "not answering" }, "!"));
+  return el;
 }
 function labItem(e, pinned) {
   const a = navLink(e);
@@ -161,6 +204,12 @@ function drawBadges() {
 }
 for (const ev of ["alerts", "fleet", "cluster"]) bus.on(ev, drawBadges);
 bus.on("whoami", () => { drawNav(); drawBadges(); });
+// The server's apps, once it says who is signed in (the list needs a key on a closed server).
+bus.on("whoami", () => loadApps(true));
+bus.on("apps", () => {
+  drawNav(); drawBadges();
+  if (current?.id === "app" && currentEntry?.id?.startsWith("app/")) { const a = listApps().find((x) => "app/" + x.name === currentEntry.id); if (a) currentEntry.title = a.title; drawCrumbs(); markCurrent(); }
+});
 setInterval(drawBadges, 5000);
 
 // ---------------------------------------------------------------- the top bar
@@ -304,12 +353,12 @@ function drawCluster() {
   const name = clusterName(), env = environment();
   const c = state.cluster;
   const coords = state.fleet?.coordinators?.length || null;
-  brandName.textContent = name || location.host;
+  brandName.textContent = connectionName || name || location.host;
   const cn = crumbs.querySelector(".cname");
   if (cn && cn.textContent !== (name || location.host)) drawCrumbs();
   const shards = c?.shards?.length;
   brandSub.textContent = [env || null, coords > 1 ? fmt.plural(coords, "coordinator") : shards != null ? fmt.plural(shards, "shard") : state.health && !isCoordinator() ? "one server" : null].filter(Boolean).join(" · ") || (state.health ? "environment not set" : "connecting…");
-  brand.title = `${name || "This server"}${env ? " (" + env + ")" : ", environment not set"} at ${location.host}. Click for its other coordinators and the ones you used`;
+  brand.title = connectionName ? `${connectionName}: ${name || "a cluster"}${env ? " (" + env + ")" : ""}, through this hub (${location.host}), which adds its key to every call. Click for the other connections` : `${name || "This server"}${env ? " (" + env + ")" : ", environment not set"} at ${location.host}. Click for its other coordinators and the ones you used`;
   const prod = env != null && /^prod/i.test(env);
   envBadge.className = "env" + (env ? "" : " hidden") + (prod ? " prod" : "");
   envBadge.textContent = env ? (prod ? "PROD" : env.toUpperCase().slice(0, 12)) : "";
@@ -400,6 +449,7 @@ function route() {
   const { v, e, unknown } = resolve(r);
   rangeFromUrl(r.params);
   currentEntry = e || { id: v.id, title: v.title, icon: v.icon, parent: v.parent };
+  if (v.id === "app" && r.rest[0]) { const a = listApps().find((x) => x.name === r.rest[0]); currentEntry = { id: "app/" + r.rest[0], title: a?.title || r.rest[0], icon: "box" }; }
   markCurrent();
   // A view with no time axis (the SQL workbench, Schema, Labs) hides the range and Live.
   top.classList.toggle("no-range", v.range === false);
@@ -410,6 +460,9 @@ function route() {
   moreBtn.querySelector("svg").replaceWith(icon(v.range === false ? "dots" : "clock"));
   if (unknown && unknown !== "home") toast(`There is no view "${unknown}": this is Home`);
   if (current === v && v.onParams) { v.onParams(r); return; }
+  // An app's page: drawn again only when another app opens.
+  if (current === v && v.id === "app" && route.app === r.rest[0]) return;
+  route.app = v.id === "app" ? r.rest[0] : null;
   try { cleanup?.(); } catch (err) { console.error(err); }
   current = v;
   drawCrumbs(v);
@@ -439,7 +492,7 @@ function askToken() {
     title: shared ? "Sign in to see what was shared" : "Sign in to this server",
     body: [
       shared ? h("p", { style: { margin: 0 } }, "This link opens ", h("b", {}, what), ` on ${clusterName() || location.host}. A link never holds a key: use your own.`) : null,
-      h("p", { class: "dim", style: { margin: 0 } }, "Paste an API key (read, write or admin) or the server's token. It is kept for this tab only, and sent as a bearer token."), inp],
+      h("p", { class: "dim", style: { margin: 0 } }, "Paste an API key (feed, read, write or admin) or the server's token. It is kept for this tab only, and sent as a bearer token."), inp],
     foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), save],
   });
   const ok = () => { setToken(inp.value.trim()); m.close(); refreshWho(); toast("Key saved for this tab", "ok"); };
@@ -463,7 +516,7 @@ const ACTIONS = [
   { name: "Open another coordinator", icon: "node", run: () => askCoordinator() },
   { name: "Use another API key or token", icon: "access", run: () => askToken() },
   { name: "Create an API key", icon: "plus", run: go("#/access?tab=keys&new=1"), scope: "admin" },
-  { name: "Open the raw Prometheus metrics", icon: "ext", run: () => window.open("/metrics", "_blank") },
+  { name: "Open the raw Prometheus metrics", icon: "ext", run: () => window.open(at("/metrics"), "_blank") },
   { name: "Keyboard shortcuts", icon: "keyboard", run: () => shortcuts(), hint: "?" },
 ];
 export function addActions(items) { ACTIONS.push(...items); }

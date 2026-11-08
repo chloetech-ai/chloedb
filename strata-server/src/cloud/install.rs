@@ -84,15 +84,47 @@ pub fn objects(image: &str, cluster: &[Json]) -> Vec<Json> {
 }
 
 /// Applies `objects` in order, and names each (`Kind/name`). Stops at the
-/// first the API refuses; applying again redoes nothing that was done.
+/// first the API refuses; applying again redoes nothing that was done. A
+/// StrataCluster that names a token's Secret has it made first
+/// ([`ensure_token`]).
 pub async fn apply(k: &Kube, objects: &[Json]) -> Result<Vec<String>, String> {
     let mut done = Vec::new();
     for o in objects {
+        if o["kind"] == "StrataCluster" {
+            if let (Some(ns), Some(secret)) = (o["metadata"]["namespace"].as_str(), o["spec"]["tokenSecret"].as_str()) {
+                if ensure_token(k, ns, secret).await? {
+                    done.push(format!("Secret/{secret}"));
+                }
+            }
+        }
         let path = path_of(o)?;
         k.apply(&path, o).await?;
         done.push(format!("{}/{}", o["kind"].as_str().unwrap_or("?"), o["metadata"]["name"].as_str().unwrap_or("?")));
     }
     Ok(done)
+}
+
+/// Makes the Secret `name` in `ns` holding a random token (`token`), unless
+/// it is there: the token the cluster's servers take. It is made in the
+/// cluster and never kept here; `true` when it was made now.
+pub async fn ensure_token(k: &Kube, ns: &str, name: &str) -> Result<bool, String> {
+    let path = format!("/api/v1/namespaces/{ns}/secrets/{name}");
+    if k.get(&path).await?.is_some() {
+        return Ok(false);
+    }
+    let mut b = [0u8; 24];
+    {
+        use std::io::Read;
+        std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).map_err(|e| format!("no random bytes for the cluster's token: {e}"))?;
+    }
+    let token: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    let o = json!({
+        "apiVersion": "v1", "kind": "Secret", "type": "Opaque",
+        "metadata": {"name": name, "namespace": ns, "labels": {"app.kubernetes.io/name": "strata", "app.kubernetes.io/managed-by": "strata-server"}},
+        "stringData": {"token": token},
+    });
+    k.apply(&path, &o).await.map_err(|e| format!("the token's Secret {ns}/{name}: {e}"))?;
+    Ok(true)
 }
 
 /// The StrataCluster `name`'s status, `None` while it has none (or is not

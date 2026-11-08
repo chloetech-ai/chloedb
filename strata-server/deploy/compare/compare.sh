@@ -12,6 +12,7 @@
 #   compare.sh run ENGINE [ARGS]      # time the query kinds and record answers; CPU use around it
 #   compare.sh writes ENGINE [ARGS]   # time writes, updates and how soon a write is found (after run: it changes the index, then puts it back)
 #   compare.sh stream ENGINE [ARGS]   # stream documents through Redpanda into it: rates, flat out, a consumer crash (after run)
+#   compare.sh replay ENGINE PROFILE [ARGS]  # replay a traffic profile's schedule into it, open loop (after run: its writes are put back)
 #   compare.sh trial                  # Elasticsearch: start the 30-day trial licence (hybrid retrievers)
 #   compare.sh down ENGINE            # stop it (Strata's shard files stay on the nodes)
 #
@@ -46,21 +47,32 @@ MORE="meili typesense manticore qdrant weaviate milvus paradedb postgres redis"
 NS=${NS:-compare}
 HERE=$(cd "$(dirname "$0")" && pwd)
 K="kubectl --context $CONTEXT -n $NS"
-# Data pods on the first two workers; clients (and Strata's coordinator) on the third.
+# Data pods on the first two workers; clients on the third.
 read -r -a NODES <<<"${NODES:-strata-worker strata-worker2}"
 CLIENT_NODE=${CLIENT_NODE:-strata-worker3}
-# Every engine: 3 CPUs and 6 GiB in all. Elasticsearch and Solr: two data
-# nodes of 1.5 CPUs and 3 GiB. Strata: two shards of 1 CPU and 2.5 GiB and a
-# coordinator of 1 CPU and 1 GiB. Loading gets the whole budget
-# too: Elasticsearch and Solr on their two data nodes, Strata one shard's
-# build job at a time.
-# SHARD_CPU and COORD_CPU may be set to split Strata's 3 CPUs otherwise.
+# Every engine: 3 CPUs and 6 GiB in all. Elasticsearch, OpenSearch and
+# Solr: two data nodes of 1.5 CPUs and 3 GiB, which also coordinate.
+# Strata: as they, two pods of a data node's DATA_CPU and DATA_MEM, each
+# with a shard and a coordinator over both shards (strata-coordinating.yaml);
+# the client sends its requests to both coordinators. Loading gets the
+# whole budget too: Elasticsearch and Solr on their two data nodes, Strata
+# one shard's build job at a time.
+# By default each pod runs one server, the shard with its coordinator in
+# its process, which calls that shard in-process (--coordinator-listen).
+# STRATA_COORD=shards runs them as two processes in the pod, as from 6
+# November 2026 until then (and as images without --coordinator-listen
+# must run). STRATA_COORD=pod runs Strata as the runs before 6 November
+# 2026 did: two shards of SHARD_CPU and SHARD_MEM (1 CPU and 2.5 GiB) and a
+# coordinator of COORD_CPU and COORD_MEM (1 CPU and 1 GiB) in a pod of its
+# own on the clients' node (strata.yaml, strata-coordinator.yaml).
 # BUILD_PARALLEL=1 builds both shards at once, each with its node's share
 # (a node then holds BUILD_CPU and BUILD_MEM, not the whole budget).
 DATA_CPU=${DATA_CPU:-1500m} DATA_MEM=${DATA_MEM:-3Gi}
 BUILD_CPU=${BUILD_CPU:-3} BUILD_MEM=${BUILD_MEM:-6Gi} BUILD_THREADS=${BUILD_THREADS:-3} BUILD_PARALLEL=${BUILD_PARALLEL:-0}
 SHARD_CPU=${SHARD_CPU:-1} SHARD_MEM=${SHARD_MEM:-2560Mi}
 COORD_CPU=${COORD_CPU:-1} COORD_MEM=${COORD_MEM:-1Gi}
+STRATA_COORD=${STRATA_COORD:-process}
+case $STRATA_COORD in process | pod | shards) ;; *) echo "STRATA_COORD is process (a coordinator in each shard's process, the default), shards (in each shard's pod, a process of its own) or pod (one in its own pod)" >&2 && exit 2 ;; esac
 # Vespa: vespa-0 (config server, cluster controller and the container that
 # answers queries and takes documents) on the clients' node, as Strata's
 # coordinator, and a content node on each data node; 1 CPU each, 6 GiB in all.
@@ -83,7 +95,7 @@ COLLECTION=${COLLECTION:-quora}
 # render FILE I NODE CPU MEM [ZK|ROLE]: a manifest for node I.
 render() {
     sed -e "s/__I__/$2/g" -e "s/__NODE__/$3/g" -e "s/__CPU__/$4/g" -e "s/__MEM__/$5/g" -e "s|__ZK__|${6:-}|g" -e "s|__ROLE__|${6:-}|g" -e "s|__COLL__|$COLLECTION|g" \
-        -e "s|__NS__|$NS|g" -e "s|__IMAGE__|$IMAGE|g" -e "s|__HEAP__|${HEAP:-}|g" -e "s|__THREADS__|$ONE_THREADS|g" -e "s|__TS_THREADS__|$TS_THREADS|g" \
+        -e "s|__NS__|$NS|g" -e "s|__IMAGE__|$IMAGE|g" -e "s|__IN_PROCESS__|$([ "$STRATA_COORD" = process ] && echo 1)|g" -e "s|__HEAP__|${HEAP:-}|g" -e "s|__THREADS__|$ONE_THREADS|g" -e "s|__TS_THREADS__|$TS_THREADS|g" \
         -e "s|__MEILI_MEM__|$MEILI_MEM|g" -e "s|__REDIS_MAXMEM__|$REDIS_MAXMEM|g" -e "s|__GOMEMLIMIT__|$GOMEMLIMIT_ONE|g" -e "s|__PG_SHARED__|$PG_SHARED|g" \
         -e "s|__PG_CACHE__|$PG_CACHE|g" -e "s|__PG_MAINT__|$PG_MAINT|g" -e "s|__PG_PAR__|$PG_PAR|g" -e "s|__PG_WORKERS__|$PG_WORKERS|g" "$HERE/$1"
 }
@@ -185,7 +197,13 @@ EOF
 
 urls() {
     case $1 in
-    strata) echo http://strata-coordinator:7700 ;;
+    strata)
+        if [ "$STRATA_COORD" != pod ]; then
+            echo http://strata-0.strata:7710,http://strata-1.strata:7710
+        else
+            echo http://strata-coordinator:7700
+        fi
+        ;;
     es) echo http://es-0.es:9200,http://es-1.es:9200 ;;
     os) echo http://os-0.os:9200,http://os-1.os:9200 ;;
     vespa) echo http://vespa-0.vespa:8080 ;;
@@ -289,10 +307,16 @@ up)
     case $1 in
     strata)
         token_secret
-        render strata.yaml 0 "${NODES[0]}" "$SHARD_CPU" "$SHARD_MEM" | $K apply -f -
-        render strata.yaml 1 "${NODES[1]}" "$SHARD_CPU" "$SHARD_MEM" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
-        render strata-coordinator.yaml c "$CLIENT_NODE" "$COORD_CPU" "$COORD_MEM" | $K apply -f -
-        $K wait --for=condition=Ready pod/strata-0 pod/strata-1 pod/strata-coordinator --timeout=300s
+        if [ "$STRATA_COORD" != pod ]; then
+            render strata-coordinating.yaml 0 "${NODES[0]}" "$DATA_CPU" "$DATA_MEM" | $K apply -f -
+            render strata-coordinating.yaml 1 "${NODES[1]}" "$DATA_CPU" "$DATA_MEM" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
+            $K wait --for=condition=Ready pod/strata-0 pod/strata-1 --timeout=300s
+        else
+            render strata.yaml 0 "${NODES[0]}" "$SHARD_CPU" "$SHARD_MEM" | $K apply -f -
+            render strata.yaml 1 "${NODES[1]}" "$SHARD_CPU" "$SHARD_MEM" | awk 'f {print} /^---$/ {f = 1}' | $K apply -f -
+            render strata-coordinator.yaml c "$CLIENT_NODE" "$COORD_CPU" "$COORD_MEM" | $K apply -f -
+            $K wait --for=condition=Ready pod/strata-0 pod/strata-1 pod/strata-coordinator --timeout=300s
+        fi
         ;;
     es)
         HEAP=$ES_HEAP render es.yaml 0 "${NODES[0]}" "$DATA_CPU" "$DATA_MEM" | $K apply -f -
@@ -390,6 +414,32 @@ stream)
     cpu "$e" stream-before
     job "stream-$e" "$CLIENT_NODE" "" "" stream --engine "$e" --url "$(urls "$e")" --brokers redpanda.redpanda:9092 --out "$OUT" "$@"
     cpu "$e" stream-after
+    ;;
+replay)
+    # PROFILE is a name under deploy/compare/profiles (in the image) or a
+    # path under /data. The schedule is planned in the Job, beside the
+    # report (OUT/schedule-PROFILE-SEED.jsonl.gz), and kept.
+    e=${1:?replay ENGINE PROFILE}
+    p=${2:?replay ENGINE PROFILE}
+    shift 2
+    case $p in
+    */*) ;;
+    *) p=/usr/local/share/engine-compare/profiles/${p%.toml}.toml ;;
+    esac
+    label="" prev=""
+    for a in "$@"; do
+        [ "$prev" = --label ] && label=$a
+        prev=$a
+    done
+    # Without --label, the run is ENGINE-PROFILE.
+    if [ -z "$label" ]; then
+        label=$e-$(basename "${p%.toml}")
+        set -- "$@" --label "$label"
+    fi
+    cpu "$e" replay-before "$label"
+    jl=$(echo "$label" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '-')
+    job "replay-$jl" "$CLIENT_NODE" "" "" replay --engine "$e" --url "$(urls "$e")" --profile "$p" --out "$OUT" "$@"
+    cpu "$e" replay-after "$label"
     ;;
 trial)
     $K exec es-0 -- curl -sf -X POST 'http://localhost:9200/_license/start_trial?acknowledge=true'

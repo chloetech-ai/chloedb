@@ -90,8 +90,10 @@ impl Histogram {
 #[derive(Default)]
 struct Inner {
     /// (route, status) → requests.
-    http: BTreeMap<(String, u16), u64>,
-    http_seconds: BTreeMap<String, Histogram>,
+    http: BTreeMap<(&'static str, u16), u64>,
+    http_seconds: BTreeMap<&'static str, Histogram>,
+    /// The routes' names, each kept once ([`Metrics::http`]).
+    routes: std::collections::BTreeSet<&'static str>,
     /// (method, code) → calls.
     grpc: BTreeMap<(&'static str, &'static str), u64>,
     grpc_seconds: BTreeMap<&'static str, Histogram>,
@@ -143,8 +145,8 @@ type Hist = (Vec<u64>, f64, u64);
 /// What [`Metrics::routes`] counts, at one time.
 #[derive(Clone, Default)]
 struct Counts {
-    http: BTreeMap<(String, u16), u64>,
-    http_seconds: BTreeMap<String, Hist>,
+    http: BTreeMap<(&'static str, u16), u64>,
+    http_seconds: BTreeMap<&'static str, Hist>,
     queries: BTreeMap<(&'static str, &'static str), u64>,
     query_seconds: BTreeMap<&'static str, Hist>,
     admission: Hist,
@@ -155,7 +157,7 @@ impl Counts {
         let hist = |h: &Histogram| (h.counts(), h.sum, h.n);
         Counts {
             http: m.http.clone(),
-            http_seconds: m.http_seconds.iter().map(|(k, h)| (k.clone(), hist(h))).collect(),
+            http_seconds: m.http_seconds.iter().map(|(k, h)| (*k, hist(h))).collect(),
             queries: m.queries.clone(),
             query_seconds: m.query_seconds.iter().map(|(k, h)| (*k, hist(h))).collect(),
             admission: hist(&m.admission_seconds),
@@ -170,7 +172,7 @@ impl Counts {
         }
         Counts {
             http: self.http.iter().map(|(k, n)| (k.clone(), n.saturating_sub(base.http.get(k).copied().unwrap_or(0)))).filter(|(_, n)| *n > 0).collect(),
-            http_seconds: self.http_seconds.iter().map(|(k, x)| (k.clone(), h(x, base.http_seconds.get(k)))).filter(|(_, x)| x.2 > 0).collect(),
+            http_seconds: self.http_seconds.iter().map(|(k, x)| (*k, h(x, base.http_seconds.get(k)))).filter(|(_, x)| x.2 > 0).collect(),
             queries: self.queries.iter().map(|(k, n)| (*k, n.saturating_sub(base.queries.get(k).copied().unwrap_or(0)))).filter(|(_, n)| *n > 0).collect(),
             query_seconds: self.query_seconds.iter().map(|(k, x)| (*k, h(x, base.query_seconds.get(k)))).filter(|(_, x)| x.2 > 0).collect(),
             admission: h(&self.admission, Some(&base.admission)),
@@ -182,7 +184,7 @@ impl Counts {
         use crate::telemetry::quantile;
         let mut by: BTreeMap<&str, (u64, u64, u64)> = BTreeMap::new();
         for ((route, status), &n) in &self.http {
-            let e = by.entry(route.as_str()).or_default();
+            let e = by.entry(*route).or_default();
             e.0 += n;
             if (400..500).contains(status) {
                 e.1 += n;
@@ -277,10 +279,21 @@ impl Metrics {
     }
 
     /// An HTTP request answered: its route pattern and status.
+    ///
+    /// A route's name is copied once, the first time it is answered: the
+    /// routes are the server's own (and "other"), so they are few.
     pub fn http(&self, route: &str, status: u16, secs: f64) {
         let mut m = self.inner();
-        *m.http.entry((route.to_string(), status)).or_default() += 1;
-        m.http_seconds.entry(route.to_string()).or_default().observe(secs);
+        let route = match m.routes.get(route) {
+            Some(&r) => r,
+            None => {
+                let r: &'static str = Box::leak(route.into());
+                m.routes.insert(r);
+                r
+            }
+        };
+        *m.http.entry((route, status)).or_default() += 1;
+        m.http_seconds.entry(route).or_default().observe(secs);
     }
 
     /// A gRPC call answered: its method and status code.
@@ -460,7 +473,7 @@ impl Metrics {
         let m = self.inner();
         let mut by: BTreeMap<&str, (u64, u64, u64)> = BTreeMap::new();
         for ((route, status), &n) in &m.http {
-            let e = by.entry(route.as_str()).or_default();
+            let e = by.entry(*route).or_default();
             e.0 += n;
             if (400..500).contains(status) {
                 e.1 += n;

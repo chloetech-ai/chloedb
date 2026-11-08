@@ -323,6 +323,73 @@ async fn grouped_writes_fail_alone() {
     assert_eq!(sold(&post(&c, &format!("{base}/v1/query"), count).await.1), sold0 + 56);
 }
 
+/// SQL writes that wait together share commits when they touch other rows
+/// (INSERTs, UPDATEs by key of other keys); UPDATEs of one row commit one
+/// after another and lose no increment, and a statement that fails is not
+/// applied while the others sharing its commit are.
+#[tokio::test(flavor = "multi_thread")]
+async fn grouped_sql_writes_fail_alone_and_lose_no_update() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(create(dir.path(), "s.strata", |i| i < 200));
+    let svc = Arc::new(Service::new(Backend::Local(db.clone()), (*db.schema()).clone(), agent_config("http://unused"), 16, Duration::from_secs(30)));
+    let base = http(svc, None).await;
+    let c = strata_server::http_client().build().unwrap();
+    let sold = |id: String| {
+        let (c, base) = (c.clone(), base.clone());
+        async move { post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT sold FROM products WHERE id = :k", "params": {"k": id}})).await.1["rows"][0][0].as_i64().unwrap() }
+    };
+    let metric = |name: &'static str| {
+        let (c, base) = (c.clone(), base.clone());
+        async move {
+            let m = c.get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
+            m.lines().find_map(|l| l.strip_prefix(name)?.strip_prefix(' ')?.parse::<f64>().ok()).unwrap()
+        }
+    };
+    let key = |i: usize| format!("p{:07}", 10 + i);
+    let hot0 = sold("p0000004".into()).await;
+    let mut before = Vec::new();
+    for i in 0..64 {
+        before.push(sold(key(i)).await);
+    }
+    let batches0 = metric("strata_write_batches_total").await;
+    // A transaction held here keeps the writer waiting while they queue.
+    let held = db.storage().begin().unwrap();
+    let requests: Vec<_> = (0..64)
+        .map(|i| {
+            let body = match i % 4 {
+                0 => json!({"sql": "UPDATE products SET sold = sold + 1 WHERE id = 'p0000004'"}),
+                1 => json!({"sql": "UPDATE products SET sold = sold + 1 WHERE id = :k", "params": {"k": key(i)}}),
+                // A key that is already live: this statement fails.
+                3 if i % 8 == 3 => json!({"sql": "INSERT INTO products (id, title) VALUES ('p0000001', 'again')"}),
+                _ => json!({"sql": "INSERT INTO products (id, title) VALUES (:k, 'new')", "params": {"k": format!("new{i}")}}),
+            };
+            let (c, base) = (c.clone(), base.clone());
+            tokio::spawn(async move { post(&c, &format!("{base}/v1/sql"), body).await.0 })
+        })
+        .collect();
+    let t0 = std::time::Instant::now();
+    while metric("strata_write_queue_requests").await < 64.0 {
+        assert!(t0.elapsed() < Duration::from_secs(10), "the writes never queued");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    drop(held);
+    let mut statuses = Vec::new();
+    for r in requests {
+        statuses.push(r.await.unwrap());
+    }
+    assert_eq!(statuses.iter().filter(|&&s| s == 200).count(), 56, "{statuses:?}");
+    assert_eq!(statuses.iter().filter(|&&s| s == 400).count(), 8, "{statuses:?}");
+    assert_eq!(sold("p0000004".into()).await, hot0 + 16);
+    for i in (1..64).step_by(4) {
+        assert_eq!(sold(key(i)).await, before[i] + 1, "{}", key(i));
+    }
+    let (_, r) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT count(*) FROM products WHERE id LIKE 'new%'"})).await;
+    assert_eq!(r["rows"][0][0], json!(24), "{r}");
+    // The 16 UPDATEs of one row took a commit each; the rest shared them.
+    let batches = metric("strata_write_batches_total").await - batches0;
+    assert!((16.0..40.0).contains(&batches), "{batches} commits for 64 statements");
+}
+
 /// A retried write with an idempotency key is applied once (DB-2), and an
 /// `add` after an upsert of the same key in one request reads the upserted
 /// value (bug 13).
@@ -690,6 +757,13 @@ impl pb::strata_server::Strata for Stuck {
     async fn export_slots(&self, _: tonic::Request<pb::ExportSlotsRequest>) -> Result<tonic::Response<Self::ExportSlotsStream>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
+    type FeedStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::FeedChunk, tonic::Status>> + Send>>;
+    async fn feed_keys(&self, _: tonic::Request<pb::FeedKeysRequest>) -> Result<tonic::Response<pb::FeedKeysResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
+    async fn feed(&self, _: tonic::Request<pb::FeedRequest>) -> Result<tonic::Response<Self::FeedStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
     async fn freeze_slots(&self, _: tonic::Request<pb::FreezeRequest>) -> Result<tonic::Response<pb::FreezeResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
@@ -769,6 +843,13 @@ impl pb::strata_server::Strata for Overloaded {
     }
     type ExportSlotsStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::ExportSlotsChunk, tonic::Status>> + Send>>;
     async fn export_slots(&self, _: tonic::Request<pb::ExportSlotsRequest>) -> Result<tonic::Response<Self::ExportSlotsStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
+    type FeedStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::FeedChunk, tonic::Status>> + Send>>;
+    async fn feed_keys(&self, _: tonic::Request<pb::FeedKeysRequest>) -> Result<tonic::Response<pb::FeedKeysResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
+    async fn feed(&self, _: tonic::Request<pb::FeedRequest>) -> Result<tonic::Response<Self::FeedStream>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
     async fn freeze_slots(&self, _: tonic::Request<pb::FreezeRequest>) -> Result<tonic::Response<pb::FreezeResponse>, tonic::Status> {
@@ -1086,6 +1167,15 @@ impl pb::strata_server::Strata for Recording {
     async fn export_slots(&self, r: tonic::Request<pb::ExportSlotsRequest>) -> Result<tonic::Response<Self::ExportSlotsStream>, tonic::Status> {
         self.up()?;
         self.inner.export_slots(r).await
+    }
+    type FeedStream = <strata_server::grpc::Grpc as pb::strata_server::Strata>::FeedStream;
+    async fn feed(&self, r: tonic::Request<pb::FeedRequest>) -> Result<tonic::Response<Self::FeedStream>, tonic::Status> {
+        self.up()?;
+        self.inner.feed(r).await
+    }
+    async fn feed_keys(&self, r: tonic::Request<pb::FeedKeysRequest>) -> Result<tonic::Response<pb::FeedKeysResponse>, tonic::Status> {
+        self.up()?;
+        self.inner.feed_keys(r).await
     }
     async fn freeze_slots(&self, r: tonic::Request<pb::FreezeRequest>) -> Result<tonic::Response<pb::FreezeResponse>, tonic::Status> {
         self.up()?;

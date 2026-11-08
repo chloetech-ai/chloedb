@@ -1,0 +1,76 @@
+{
+ "table": "items",
+ "key": "id",
+ "fields": [
+  {
+   "name": "id",
+   "type": "keyword"
+  },
+  {
+   "name": "emb",
+   "type": "vector",
+   "dim": 64
+  },
+  {
+   "name": "artist",
+   "type": "keyword"
+  },
+  {
+   "name": "regions",
+   "type": "keyword",
+   "multi": true
+  },
+  {
+   "name": "pop",
+   "type": "float"
+  },
+  {
+   "name": "f00",
+   "type": "float"
+  },
+  {
+   "name": "f01",
+   "type": "float"
+  },
+  {
+   "name": "f02",
+   "type": "float"
+  },
+  {
+   "name": "f03",
+   "type": "float"
+  },
+  {
+   "name": "f04",
+   "type": "float"
+  },
+  {
+   "name": "f05",
+   "type": "float"
+  },
+  {
+   "name": "f06",
+   "type": "float"
+  },
+  {
+   "name": "f07",
+   "type": "float"
+  },
+  {
+   "name": "f08",
+   "type": "float"
+  },
+  {
+   "name": "f09",
+   "type": "float"
+  },
+  {
+   "name": "f10",
+   "type": "float"
+  },
+  {
+   "name": "f11",
+   "type": "float"
+  }
+ ]
+}

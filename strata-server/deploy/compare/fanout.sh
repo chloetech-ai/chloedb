@@ -7,7 +7,7 @@
 # after HOURS even if this script never runs `down`) and, per job, its own
 # pools: two SHARDED_SIZE nodes (Strata, Elasticsearch, OpenSearch, Solr,
 # Vespa) or one ONE_SIZE node (the nine one-node engines), and a CLIENT_SIZE
-# node for the client, Redpanda, Strata's coordinator and Vespa's container.
+# node for the client, Redpanda and Vespa's container.
 # A job's pools are labelled and tainted for it, and deleted as soon as its
 # reports are back. Everything is tagged strata-bench; nothing else in the
 # account is touched.
@@ -44,12 +44,19 @@
 # separated, that hold for that job only: its node sizes (ONE_SIZE,
 # SHARDED_SIZE, CLIENT_SIZE) and compare.sh's budgets (ONE_MEM,
 # REDIS_MAXMEM, ...), e.g. a node with more memory for an engine that keeps
-# everything in it.
+# everything in it, or STRATA_COORD=pod for Strata's coordinator in a pod
+# of its own on the client node (compare.sh), as before 6 November 2026.
 #
 # The engine strata-ab runs two Strata images on the same nodes, IMAGE and
 # the job's IMAGE_B, passes alternating, for a before and after that the
 # nodes cannot sway (KINDS in the environment picks the kinds):
 #   strata-ab  strata-ab  sharded  1  IMAGE_B=ghcr.io/chloetech-ai/strata-server:<sha>
+# The engine strata-was runs IMAGE_B as an earlier run ran it: shards built
+# by IMAGE_B itself (an older image may not read a newer one's segments),
+# served in STRATA_COORD_B's layout (default pod, as before 6 November
+# 2026), its passes labelled strata-b. Before a rerun of Strata alone, on
+# the same nodes, it shows how far these nodes are from that run's:
+#   rerun-1m  strata-was+strata  sharded  2  IMAGE_B=ghcr.io/chloetech-ai/strata-server:<sha of that run>
 # Engines joined by + run one after another on the same nodes, each with its
 # own steps (engines of the job's one shape):
 #   same-nodes  strata+es+os+solr+vespa  sharded  5
@@ -61,6 +68,12 @@
 # skipped (its down still runs) and the next engine goes on; its failures
 # are in the job's reason and failures/<engine>/, and the job ends done.
 #   same-nodes-1m  strata-first+es+os+solr+vespa+strata-last  sharded  7
+# EFS in the fifth column (values separated by /) sweeps the HNSW
+# candidates (ef, num_candidates, topK; the runs' default is 64): after its
+# PASSES passes of `run`, each engine runs PASSES more per value, labelled
+# ENGINE-efN, with only the kinds that search vectors (EF_KINDS); ef.py
+# reports recall and latency per value:
+#   ef-sweep  strata+qdrant  sharded  5  EFS=128/256
 set -euo pipefail
 
 API=https://api.digitalocean.com/v2
@@ -78,6 +91,7 @@ RETRIES=${RETRIES:-1}
 BUDGET=${BUDGET:-50}
 LOAD_HOURS=${LOAD_HOURS:-3}
 PASSES=${PASSES:-3}
+EFS=${EFS:-}
 COPY_JOBS=${COPY_JOBS:-0}
 STATE=${STATE:-$HOME/.strata-fanout}
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -88,8 +102,10 @@ REPO=${FANOUT_REPO:-$(cd "$HERE/../../.." && pwd)}
 case ${1:-} in
 up | prep | run)
     if [ -z "${FANOUT_COPY:-}" ]; then
-        copy=$STATE/code-$(date +%Y%m%dT%H%M%S)
-        mkdir -p "$STATE" && chmod 700 "$STATE" && cp -r "$HERE" "$copy"
+        # mktemp: two calls in the same second (a run and a prep started
+        # together) must not share a copy, or the second cp fails.
+        mkdir -p "$STATE" && chmod 700 "$STATE"
+        copy=$(mktemp -d "$STATE/code-$(date +%Y%m%dT%H%M%S)-XXXX") && cp -r "$HERE/." "$copy"
         FANOUT_COPY=$copy FANOUT_REPO=$REPO exec "$copy/fanout.sh" "$@"
     fi
     ;;
@@ -108,6 +124,7 @@ FILES=http://files.fanout.svc.cluster.local:8000
 # not (a pod bound by nodeName is then refused, not left pending).
 export DATA_CPU=${DATA_CPU:-3400m} DATA_MEM=${DATA_MEM:-26Gi} ES_HEAP=${ES_HEAP:-13g} OS_HEAP=${OS_HEAP:-13g} SOLR_HEAP=${SOLR_HEAP:-8g}
 export BUILD_CPU=${BUILD_CPU:-3400m} BUILD_MEM=${BUILD_MEM:-26Gi} BUILD_THREADS=${BUILD_THREADS:-4} BUILD_PARALLEL=${BUILD_PARALLEL:-1}
+# Strata's pods have DATA_CPU and DATA_MEM; these split it only with STRATA_COORD=pod.
 export SHARD_CPU=${SHARD_CPU:-2900m} SHARD_MEM=${SHARD_MEM:-24Gi} COORD_CPU=${COORD_CPU:-1} COORD_MEM=${COORD_MEM:-4Gi}
 export VESPA_CONFIG_CPU=${VESPA_CONFIG_CPU:-1} VESPA_CONFIG_MEM=${VESPA_CONFIG_MEM:-6Gi} VESPA_CONTAINER_HEAP=${VESPA_CONTAINER_HEAP:-2g}
 export VESPA_CONTENT_CPU=${VESPA_CONTENT_CPU:-2900m} VESPA_CONTENT_MEM=${VESPA_CONTENT_MEM:-23Gi}
@@ -310,16 +327,30 @@ print("slow" if len(xs) >= 3 and line["sha256_4g_s"] > 1.05 * statistics.median(
 PY
 }
 
-# The PASSES passes of `run` for ENGINE (labelled LABEL, default ENGINE).
+# The PASSES passes of `run` for ENGINE (labelled LABEL, default ENGINE),
+# then, on the first set of runs (LABEL is ENGINE), PASSES more for each
+# HNSW candidates value in EFS (the header).
+EF_KINDS=${EF_KINDS:-vector,vector + filter,hybrid (RRF),hybrid (weighted),similar items}
 runs() { # ENGINE [LABEL]
-    local i l=${2:-$1}
+    local i l=${2:-$1} ef
     [ "$l" = "$1" ] && echo "run $1" || echo "run $1 --label $l"
     for ((i = 2; i <= PASSES; i++)); do echo "run $1 --label $l-pass$i"; done
+    [ "$l" = "$1" ] || return 0
+    for ef in ${EFS//\// }; do
+        echo "run $1 --candidates $ef --label $l-ef$ef --kinds $EF_KINDS"
+        for ((i = 2; i <= PASSES; i++)); do echo "run $1 --candidates $ef --label $l-ef$ef-pass$i --kinds $EF_KINDS"; done
+    done
+}
+# A step without the settings it may start with (IMAGE=REF STRATA_COORD=...).
+bare_step() { # STEP
+    local s=$1
+    while [[ $s =~ ^(IMAGE|STRATA_COORD)=[^\ ]*\ (.*)$ ]]; do s=${BASH_REMATCH[2]}; done
+    echo "$s"
 }
 # The engine a step is for: compare.sh's argument after the command.
-step_engine() { # STEP (without IMAGE=)
+step_engine() { # STEP
     local c e
-    read -r c e _ <<<"$1"
+    read -r c e _ <<<"$(bare_step "$1")"
     case $c in build) echo strata ;; trial) echo es ;; *) echo "$e" ;; esac
 }
 steps_of() { # ENGINE: compare.sh's steps, one per line
@@ -356,6 +387,16 @@ steps_of() { # ENGINE: compare.sh's steps, one per line
                 printf '%s\n' "IMAGE=$img up strata" "run strata --label strata-$x$sfx${KINDS:+ --kinds $KINDS}" "down strata"
             done
         done
+        ;;
+    # IMAGE_B as an earlier run ran it (see the top of this file): its own
+    # build, client and layout; the passes labelled strata-b. The shards are
+    # its own, so it goes before the job's other Strata steps, which build
+    # theirs again.
+    strata-was)
+        local b="IMAGE=${IMAGE_B:?strata-was needs IMAGE_B} STRATA_COORD=${STRATA_COORD_B:-pod}"
+        printf '%s\n' "$b build" "$b up strata"
+        runs strata strata-b | sed "s|^|$b |"
+        printf '%s\n' "$b down strata"
         ;;
     os | solr | vespa) printf '%s\n' "up $1" "load $1" "$(runs "$1")" "writes $1" "stream $1" "down $1" ;;
     *) printf '%s\n' "up $1" "load $1" "$(runs "$1")" "down $1" ;;
@@ -433,7 +474,7 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
     if [ $multi = 1 ] && [ -f "$dir/steps.tsv" ]; then
         local res prev
         while IFS=$'\t' read -r _ res _ _ prev; do
-            [[ $res == fail:* ]] && skip+="$(step_engine "${prev#IMAGE=* }") "
+            [[ $res == fail:* ]] && skip+="$(step_engine "$prev") "
         done <"$dir/steps.tsv"
     fi
     while IFS= read -r step; do
@@ -444,13 +485,17 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
             echo "timeout before: $step" >>"$dir/reason"
             return 1
         fi
-        # A step may start with IMAGE=REF, its own image (strata-ab), and its
-        # --kinds runs to the next option as one argument (kinds have spaces).
-        local s=$step simage=$IMAGE kinds rest
-        if [[ $s == IMAGE=* ]]; then
-            simage=${s%% *} s=${s#* }
-            simage=${simage#IMAGE=}
-        fi
+        # A step may start with IMAGE=REF, its own image (strata-ab), and
+        # STRATA_COORD=..., its own layout (strata-was); its --kinds runs to
+        # the next option as one argument (kinds have spaces).
+        local s=$step simage=$IMAGE scoord=${STRATA_COORD:-} kinds rest
+        while [[ $s =~ ^(IMAGE|STRATA_COORD)=([^\ ]*)\ (.*)$ ]]; do
+            case ${BASH_REMATCH[1]} in
+            IMAGE) simage=${BASH_REMATCH[2]} ;;
+            STRATA_COORD) scoord=${BASH_REMATCH[2]} ;;
+            esac
+            s=${BASH_REMATCH[3]}
+        done
         se=$(step_engine "$s")
         if [[ $skip == *" $se "* ]] && [[ $s != down* ]]; then
             printf '%s\t%s\t%s\t%s\t%s\n' "$i" skipped "$(now)" "$(now)" "$step" >>"$dir/steps.tsv"
@@ -465,7 +510,7 @@ print(" ".join(sorted(x["metadata"]["name"] for x in n)))') && [ "$(wc -w <<<"$r
         rc=0
         # shellcheck disable=SC2086
         (
-            export CONTEXT NS=$ns NODES="${dnodes[*]}" CLIENT_NODE=$cnode IMAGE=$simage COLLECTION STRATA_WORK=$dir/work STRATA_DATA=$STATE/data
+            export CONTEXT NS=$ns NODES="${dnodes[*]}" CLIENT_NODE=$cnode IMAGE=$simage STRATA_COORD=$scoord COLLECTION STRATA_WORK=$dir/work STRATA_DATA=$STATE/data
             if [[ $s == *" --kinds "* ]]; then
                 rest=${s#* --kinds }
                 kinds=${rest%% --*}

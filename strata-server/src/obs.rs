@@ -46,10 +46,16 @@ pub fn current() -> Option<Arc<str>> {
 }
 
 /// Runs `f` as the request `id`'s (none: as it is).
-pub async fn scope<F: Future>(id: Option<Arc<str>>, f: F) -> F::Output {
+///
+/// This and the other wrappers of a request's future (`keys::calling`,
+/// `telemetry::traced`, ...) are plain functions, not `async fn`s: an
+/// `async fn` keeps its argument `f` in its state besides the future it
+/// awaits, so each one nested doubled the size of a request's future (7.7 KB
+/// for every HTTP request, boxed and copied, before they were).
+pub fn scope<F: Future>(id: Option<Arc<str>>, f: F) -> impl Future<Output = F::Output> {
     match id {
-        Some(id) => REQUEST_ID.scope(id, f).await,
-        None => f.await,
+        Some(id) => futures::future::Either::Left(REQUEST_ID.scope(id, f)),
+        None => futures::future::Either::Right(f),
     }
 }
 
@@ -199,8 +205,39 @@ impl LogRing {
 /// Keeps every event in the [`ring`], with its request's id.
 struct RingLayer;
 
-/// A span's fields, kept in its extensions for [`RingLayer`].
-struct SpanFields(serde_json::Map<String, serde_json::Value>);
+/// The fields of a span that its events' lines name (the request's id,
+/// method and route), kept in its extensions for [`RingLayer`]. Only
+/// these: a request's span is made for every request.
+#[derive(Default)]
+struct SpanFields {
+    id: Option<String>,
+    method: Option<String>,
+    route: Option<String>,
+}
+
+impl SpanFields {
+    fn slot(&mut self, name: &str) -> Option<&mut Option<String>> {
+        match name {
+            "id" => Some(&mut self.id),
+            "method" => Some(&mut self.method),
+            "route" => Some(&mut self.route),
+            _ => None,
+        }
+    }
+}
+
+impl tracing::field::Visit for SpanFields {
+    fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+        if let Some(slot) = self.slot(f.name()) {
+            *slot = Some(format!("{v:?}"));
+        }
+    }
+    fn record_str(&mut self, f: &tracing::field::Field, v: &str) {
+        if let Some(slot) = self.slot(f.name()) {
+            *slot = Some(v.to_string());
+        }
+    }
+}
 
 #[derive(Default)]
 struct Fields(serde_json::Map<String, serde_json::Value>);
@@ -231,10 +268,10 @@ where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
     fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
-        let mut f = Fields::default();
+        let mut f = SpanFields::default();
         attrs.record(&mut f);
         if let Some(span) = ctx.span(id) {
-            span.extensions_mut().insert(SpanFields(f.0));
+            span.extensions_mut().insert(f);
         }
     }
 
@@ -245,11 +282,10 @@ where
         let (mut request_id, mut method, mut route) = (None, None, None);
         if let Some(scope) = ctx.event_scope(event) {
             for span in scope {
-                if let Some(SpanFields(sf)) = span.extensions().get::<SpanFields>() {
-                    let get = |k: &str| sf.get(k).map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string));
-                    request_id = request_id.or_else(|| get("id"));
-                    method = method.or_else(|| get("method"));
-                    route = route.or_else(|| get("route"));
+                if let Some(sf) = span.extensions().get::<SpanFields>() {
+                    request_id = request_id.or_else(|| sf.id.clone());
+                    method = method.or_else(|| sf.method.clone());
+                    route = route.or_else(|| sf.route.clone());
                 }
             }
         }

@@ -43,13 +43,20 @@ use serde_json::{json, Value as Json};
 use strata::data::{self, col};
 use strata::db::Db;
 use strata::metrics::{mean, percentile};
+use strata::schema::VectorPartition;
 use strata::segment::build::BuildOptions;
 use strata::storage::{DbOptions, MergePolicy};
 use strata::{Document, Value, VectorCodes, VectorIndexKind};
 use strata_server::server;
 use strata_server::service::shard_of;
+use strata_server::traffic::KINDS;
 
 mod more;
+mod recsys;
+mod replay;
+mod sim;
+#[cfg(test)]
+mod snapshot;
 
 #[derive(Parser)]
 #[command(about = "Strata, Elasticsearch, OpenSearch, Solr and Vespa on the same BEIR collection")]
@@ -124,6 +131,12 @@ enum Cmd {
         /// uses the linear retriever with min-max normalisation.
         #[arg(long)]
         paid: bool,
+        /// HNSW candidates per vector search (ef, num_candidates, topK) for
+        /// every engine; the default is the benchmark's 64. Give the run a
+        /// `--label` per value for a sweep. Weaviate's ef is set when its
+        /// collection is made, at `load`, so this does not reach it.
+        #[arg(long, default_value_t = CANDIDATES)]
+        candidates: usize,
         #[arg(long)]
         out: PathBuf,
     },
@@ -148,6 +161,122 @@ enum Cmd {
         #[arg(long, default_value_t = 30)]
         samples: usize,
         /// Names the run in the report (`--out/writes-<label>.json`).
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Plans a schedule of requests from a profile (deploy/compare/profiles)
+    /// and a seed, for `replay`: the same profile, seed and collection make
+    /// the same file, byte for byte. Prints what the schedule holds.
+    Plan {
+        #[arg(long)]
+        profile: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        #[arg(long, value_enum, default_value = "day")]
+        shape: sim::ShapeArg,
+        /// With `--shape day`: requests a second at the day's peak.
+        #[arg(long)]
+        rate: Option<f64>,
+        /// The schedule file (gzip-compressed JSON lines).
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Sends a schedule to an engine as an open loop: each request at its
+    /// planned time, its latency from that time; sessions' follow-ups a
+    /// think time after the step before is answered. Records latencies by
+    /// kind, overall and by 10 s window, judges a ramp's steps against the
+    /// profile's SLO (stopping after two misses), times how soon marked
+    /// writes are found, then deletes what the schedule wrote and puts back
+    /// the ratings it changed.
+    Replay {
+        #[arg(long, value_enum)]
+        engine: Which,
+        /// The engine's endpoints, comma-separated (Strata: its coordinator); requests go round-robin.
+        #[arg(long, value_delimiter = ',', required = true)]
+        url: Vec<String>,
+        /// A schedule from `plan`; without one, --profile (with --seed, --shape, --rate) is planned into --out first.
+        #[arg(long)]
+        schedule: Option<PathBuf>,
+        #[arg(long)]
+        profile: Option<PathBuf>,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        #[arg(long, value_enum, default_value = "day")]
+        shape: sim::ShapeArg,
+        #[arg(long)]
+        rate: Option<f64>,
+        /// Requests in flight at most (default 512; Postgres, ParadeDB and Redis 64, a connection each); one waiting for a slot waits on the clock.
+        #[arg(long)]
+        max_inflight: Option<usize>,
+        /// ranked: result caches off (Elasticsearch's and OpenSearch's request cache off by request); shipped: as each engine ships.
+        #[arg(long, value_enum, default_value = "ranked")]
+        cache_mode: replay::CacheMode,
+        #[arg(long)]
+        paid: bool,
+        /// Only the first SECONDS of the timed schedule (a quick check).
+        #[arg(long)]
+        seconds: Option<f64>,
+        /// Leave what the schedule wrote in the index.
+        #[arg(long)]
+        no_reset: bool,
+        /// Names the run in the report (`--out/replay-<label>.json`).
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Loads the recommender serving data (strata/results/recsys/serving_data.py) into an engine: the tracks, and an empty table of plays, timed.
+    RecsysLoad {
+        #[arg(long, value_enum)]
+        engine: Which,
+        #[arg(long, value_delimiter = ',', required = true)]
+        url: Vec<String>,
+        /// The serving data's directory (items.jsonl, users.jsonl, ranker/).
+        #[arg(long)]
+        data: PathBuf,
+        /// Tracks per write (Vespa: one a request, this many in flight at most).
+        #[arg(long, default_value_t = 500)]
+        batch: usize,
+        #[arg(long, default_value_t = 4)]
+        clients: usize,
+        /// Elasticsearch and OpenSearch: the indexes' shards.
+        #[arg(long, default_value_t = 1)]
+        shards: usize,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Merges the database of a stopped Strata server that recsys-load filled into as few segments as it allows (`optimize`), as
+    /// the other engines are force-merged, and adds the merge to recsys-load's report.
+    RecsysOptimize {
+        #[arg(long)]
+        db: PathBuf,
+        /// recsys-load's report (recsys-load-strata.json).
+        #[arg(long)]
+        report: Option<PathBuf>,
+    },
+    /// Times the recommender kinds (r1 to r6, `recsys.rs`) against an engine loaded by recsys-load, and scores its answers against exact ones.
+    RecsysRun {
+        #[arg(long, value_enum)]
+        engine: Which,
+        #[arg(long, value_delimiter = ',', required = true)]
+        url: Vec<String>,
+        #[arg(long)]
+        data: PathBuf,
+        /// Users whose requests are sent, in turn.
+        #[arg(long, default_value_t = 300)]
+        users: usize,
+        #[arg(long, value_delimiter = ',', default_value = "1,4,16")]
+        concurrency: Vec<usize>,
+        #[arg(long, default_value_t = 6.0)]
+        seconds: f64,
+        /// Only these kinds, comma-separated (r1 .. r6; default: all).
+        #[arg(long, value_delimiter = ',')]
+        kinds: Vec<String>,
+        /// r6: plays written a second while r1 is timed.
+        #[arg(long, default_value_t = 200.0)]
+        event_rate: f64,
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
@@ -345,9 +474,13 @@ fn build(collection: &str, shard: usize, of: usize, out: &Path, threads: usize, 
             std::fs::remove_file(&p).map_err(s)?;
         }
     }
-    // As strata-server-bench builds its databases.
+    // As strata-server-bench builds its databases, with the vectors
+    // partitioned by rating: a graph per range (below 1, 1 to 2, ..., 4 and
+    // up) besides the graph of every row, which the filtered kinds
+    // (`rating >= 4`, `rating >= 3`) walk instead (README, "Vectors").
     let mut schema = data::beir_schema(dim, VectorIndexKind::Hnsw { m: 16, ef_construction: 200 });
     schema.fields[col::EMB].codes = VectorCodes::Sq8;
+    schema.fields[col::EMB].partition = Some(VectorPartition { by: "rating".into(), bounds: vec![1.0, 2.0, 3.0, 4.0] });
     let opts = DbOptions { build: BuildOptions::default().set("vector.threads", threads), segment_max_docs: segment_docs.max(1), ..server::db_options(false) };
     let db = Db::create(out, schema, opts).map_err(s)?;
     // The documents stream from the files into the load, which builds a
@@ -518,6 +651,46 @@ async fn check(r: reqwest::Result<reqwest::Response>, what: &str) -> Result<Json
         return Err(format!("{what}: {status}: {}", text.chars().take(2000).collect::<String>()));
     }
     Ok(serde_json::from_str(&text).unwrap_or(Json::Null))
+}
+
+/// The engine's result cache counters, read before and after the timed
+/// runs so a report can show that no answer came from one: the shard
+/// request cache's (Elasticsearch, OpenSearch), and Solr's
+/// `queryResultCache` size and each node's counters. Null where the engine keeps none (Strata, Vespa) or
+/// the counters could not be read.
+async fn result_cache(engine: Engine, client: &reqwest::Client, urls: &[String]) -> Json {
+    match engine {
+        Engine::Es | Engine::Os => match check(client.get(format!("{}/quora/_stats/request_cache", urls[0])).send().await, "request cache stats").await {
+            Ok(j) => j["_all"]["total"]["request_cache"].clone(),
+            Err(e) => json!({"error": e}),
+        },
+        Engine::Solr => {
+            // The size the timed runs leave it (0, set at load), and each
+            // node's counters for the cores it holds: JSON, or the lines of
+            // Prometheus text that name the cache.
+            let size = match check(client.get(format!("{}/solr/quora/config/overlay", urls[0])).send().await, "config overlay").await {
+                Ok(j) => j["overlay"]["props"]["query"]["queryResultCache"].clone(),
+                Err(e) => json!({"error": e}),
+            };
+            let mut nodes = serde_json::Map::new();
+            for u in urls {
+                let r = client.get(format!("{u}/solr/admin/metrics?group=core&prefix=CACHE.searcher.queryResultCache&wt=json")).send().await;
+                let v = match r {
+                    Ok(r) => {
+                        let text = r.text().await.unwrap_or_default();
+                        match serde_json::from_str::<Json>(&text) {
+                            Ok(j) => j["metrics"].clone(),
+                            Err(_) => json!(text.lines().filter(|l| l.contains("queryResultCache")).take(40).collect::<Vec<_>>()),
+                        }
+                    }
+                    Err(e) => json!({"error": e.to_string()}),
+                };
+                nodes.insert(u.clone(), v);
+            }
+            json!({"queryResultCache": size, "nodes": nodes})
+        }
+        Engine::Strata | Engine::Vespa => Json::Null,
+    }
 }
 
 /// Creates the empty index (Elasticsearch) or collection (Solr), dropping
@@ -874,38 +1047,33 @@ async fn load(collection: &str, engine: Engine, urls: &[String], shards: usize, 
 
 // --- Query kinds ---------------------------------------------------------
 
-/// The kinds of `strata-server-bench`, then five more (phrase, typo,
-/// prefix, similar items, SQL aggregate), as Strata SQL. `:seen` and `:y`
-/// are written into the statement as literals (a list, and a number that
-/// varies by query).
-const KINDS: &[(&str, &str)] = &[
-    ("bm25", "SELECT id, score() FROM docs ORDER BY bm25(body, :t, syntax => 'plain') DESC LIMIT 10"),
-    ("bm25 + filter", "SELECT id, score() FROM docs WHERE year >= 2010 AND category IN ('c00', 'c01', 'c02', 'c03') ORDER BY bm25(body, :t, syntax => 'plain') DESC LIMIT 10"),
-    ("vector", "SELECT id, score() FROM docs ORDER BY similarity(emb, :v) DESC LIMIT 10"),
-    ("vector + filter", "SELECT id, score() FROM docs WHERE rating >= 4 ORDER BY similarity(emb, :v) DESC LIMIT 10"),
-    ("hybrid (RRF)", "SELECT id, score() FROM docs ORDER BY rrf(bm25(body, :t, syntax => 'plain'), similarity(emb, :v)) DESC LIMIT 10"),
-    ("hybrid (weighted)", "SELECT id, score() FROM docs ORDER BY 0.2 * minmax(bm25(body, :t, syntax => 'plain')) + 0.8 * minmax(similarity(emb, :v)) DESC LIMIT 10"),
-    ("boosted (bm25 × decay)", "SELECT id, score() FROM docs ORDER BY bm25(body, :t, syntax => 'plain') * decay(year, 2024, 5) DESC LIMIT 10"),
-    ("facet", "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, :w) GROUP BY category ORDER BY 2 DESC LIMIT 5"),
-    ("key lookup", "SELECT id, title, year, rating FROM docs WHERE id = :k"),
-    // The rows with two neighbouring words of the query as a phrase, ranked by all of its words.
-    ("phrase", "SELECT id, score() FROM docs ORDER BY bm25(body, :p) DESC LIMIT 10"),
-    // The query with two letters of its longest word swapped, each word matching terms an edit or two away.
-    ("typo", "SELECT id, score() FROM docs ORDER BY bm25(body, :x, syntax => 'plain', fuzzy => 'auto') DESC LIMIT 10"),
-    // Search as you type: the rows with a word starting with the last word's first letters, ranked by the words before it.
-    ("prefix", "SELECT id, score() FROM docs WHERE MATCH(body, :pre) ORDER BY bm25(body, :before, syntax => 'plain') DESC LIMIT 10"),
-    // A recommender's request: the items nearest an item, rated 3 or more, minus the 20 the user has seen.
-    ("similar items", "SELECT id, score() FROM docs WHERE rating >= 3 AND id NOT IN (:seen) ORDER BY similarity(emb, :i) DESC LIMIT 10"),
-    // Analytics over the structured fields alone.
-    ("sql aggregate", "SELECT category, COUNT(*), AVG(rating) FROM docs WHERE year >= :y GROUP BY category HAVING COUNT(*) > 1000 ORDER BY 2 DESC LIMIT 10"),
-];
+// The kinds (`KINDS`) are the library's (`strata_server::traffic::KINDS`),
+// which the command center's simulator sends too.
 
 /// HNSW candidates for the vector kinds: Strata searches with ef 64 and
 /// re-scores the best 40 with the full vectors; Elasticsearch and
 /// OpenSearch get the same (num_candidates or ef_search 64, re-scoring 4 x
 /// 10 with the full vectors); Solr's and Vespa's vectors are full precision,
 /// searched with topK 64 (Vespa: target hits 10 plus 54 explored).
+///
+/// `run --candidates N` sets another number, for a sweep of recall against
+/// speed: the engines above get N, and Strata's vector searches `ef => N`.
 const CANDIDATES: usize = 64;
+static CANDIDATES_RUN: AtomicUsize = AtomicUsize::new(CANDIDATES);
+
+/// The HNSW candidates of this run ([`CANDIDATES`] unless `--candidates`).
+fn candidates() -> usize {
+    CANDIDATES_RUN.load(Ordering::Relaxed)
+}
+
+/// A Strata statement with the run's candidates: its vector searches get
+/// `ef => N` when the run has other than [`CANDIDATES`].
+fn with_ef(sql: &str) -> std::borrow::Cow<'_, str> {
+    match candidates() {
+        CANDIDATES => sql.into(),
+        n => sql.replace("similarity(emb, :v)", &format!("similarity(emb, :v, ef => {n})")).replace("similarity(emb, :i)", &format!("similarity(emb, :i, ef => {n})")).into(),
+    }
+}
 const OVERSAMPLE: usize = 4;
 /// Each input's depth for the hybrid kinds (Strata's default).
 const DEPTH: usize = 100;
@@ -966,18 +1134,20 @@ fn typo_of(s: &str) -> Option<String> {
 }
 
 /// Search as you type: the words before the last, and the last word's
-/// first 3 letters (a query of at least two words whose last is kept).
-fn prefix_of(s: &str) -> Option<(String, String)> {
+/// first `n` letters (`run`: 3), for a query of at least two words whose
+/// last is kept and longer than `n` (`n` is at least 2: Redis, as others,
+/// expands no shorter prefix).
+fn prefix_of(s: &str, n: usize) -> Option<(String, String)> {
     let w = word_list(s);
     let last = w.last()?;
-    if w.len() < 2 || !kept(last) || last.len() < 4 {
+    if w.len() < 2 || !kept(last) || last.len() <= n || n < 2 {
         return None;
     }
     let before = w[..w.len() - 1].join(" ");
     if !w[..w.len() - 1].iter().any(|x| kept(x)) {
         return None;
     }
-    Some((before, last[..3].to_string()))
+    Some((before, last[..n].to_string()))
 }
 
 /// The Lucene query parser's edits for a word in Strata's `'auto'` (and
@@ -1067,8 +1237,54 @@ fn differs(engine: Engine, kind: &str, paid: bool) -> Option<&'static str> {
     }
 }
 
+/// The values of a request's filters and the length of its prefix, which
+/// the traffic simulator varies by request; `Knobs::default()` are those
+/// `run` sends.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, Deserialize)]
+struct Knobs {
+    /// bm25 + filter: `year >= year_min AND category IN (...)`, the
+    /// categories of the mask's bits (bit i: `c<i>`, two digits).
+    #[serde(rename = "fy")]
+    year_min: i64,
+    #[serde(rename = "fc")]
+    cats: u64,
+    /// vector + filter: `rating >= rating_min`.
+    #[serde(rename = "fr")]
+    rating_min: f64,
+    /// similar items: `rating >= similar_rating`.
+    #[serde(rename = "fs")]
+    similar_rating: f64,
+    /// prefix: the letters of the last word sent.
+    #[serde(rename = "pl")]
+    prefix_len: usize,
+}
+
+impl Default for Knobs {
+    fn default() -> Self {
+        Knobs { year_min: 2010, cats: 0b1111, rating_min: 4.0, similar_rating: 3.0, prefix_len: 3 }
+    }
+}
+
+impl Knobs {
+    /// The categories of the mask, in order.
+    fn cat_names(&self) -> Vec<String> {
+        (0..64).filter(|i| self.cats & (1 << i) != 0).map(|i| format!("c{i:02}")).collect()
+    }
+}
+
+/// A number as JSON: a whole one as an integer (`run`'s filters are `4`, not `4.0`).
+fn json_num(x: f64) -> Json {
+    if x.fract() == 0.0 && x.abs() < 1e15 {
+        json!(x as i64)
+    } else {
+        json!(x)
+    }
+}
+
 /// What one request of a kind is about: the query, and for the kinds that
-/// need them a key, an item's vector and the items seen with it, and a year.
+/// need them a key, an item's vector and the items seen with it, a year,
+/// and the values of its filters.
+#[derive(Clone)]
 struct Probe<'a> {
     q: &'a data::Query,
     key: &'a str,
@@ -1079,6 +1295,15 @@ struct Probe<'a> {
     year: i64,
     /// Elasticsearch on a paid (or trial) licence.
     paid: bool,
+    knobs: Knobs,
+}
+
+impl<'a> Probe<'a> {
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    fn new(q: &'a data::Query, key: &'a str, row: usize, item: &'a [f32], seen: &'a [String], year: i64, paid: bool) -> Probe<'a> {
+        Probe { q, key, row, item, seen, year, paid, knobs: Knobs::default() }
+    }
 }
 
 /// The request for one kind on one engine: the path under the engine's URL
@@ -1095,9 +1320,11 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
     let v = &p.q.vector;
     let phrase = if kind == "phrase" { Some(phrase_of(t)?) } else { None };
     let typo = if kind == "typo" { Some(typo_of(t)?) } else { None };
-    let prefix = if kind == "prefix" { Some(prefix_of(t)?) } else { None };
+    let prefix = if kind == "prefix" { Some(prefix_of(t, p.knobs.prefix_len)?) } else { None };
     let seen = p.seen;
     let year = p.year;
+    let f = p.knobs;
+    let cats = f.cat_names();
     match engine {
         // A read by key goes through the key-value API, without SQL, as
         // Meilisearch's, Milvus's and Redis's go through their own gets.
@@ -1129,8 +1356,14 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
             if sql.contains(":i") {
                 params.insert("i".into(), json!(p.item.to_vec()));
             }
-            let sql = sql.replace(":seen", &seen.iter().map(|k| sql_str(k)).collect::<Vec<_>>().join(", ")).replace(":y", &year.to_string());
-            Some(("/v1/query", json!({"sql": sql, "params": params})))
+            let sql = sql
+                .replace(":seen", &seen.iter().map(|k| sql_str(k)).collect::<Vec<_>>().join(", "))
+                .replace(":y", &year.to_string())
+                .replace(":fy", &f.year_min.to_string())
+                .replace(":fc", &cats.iter().map(|c| sql_str(c)).collect::<Vec<_>>().join(", "))
+                .replace(":fr", &f.rating_min.to_string())
+                .replace(":fs", &f.similar_rating.to_string());
+            Some(("/v1/query", json!({"sql": with_ef(&sql), "params": params})))
         }
         Engine::Es | Engine::Os => {
             let os = engine == Engine::Os;
@@ -1168,10 +1401,10 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
             let body = match kind {
                 "bm25" => top(json!({"query": m})),
                 "bm25 + filter" => top(json!({"query": {"bool": {"must": [m], "filter": [
-                    {"range": {"year": {"gte": 2010}}}, {"terms": {"category": ["c00", "c01", "c02", "c03"]}}]}}})),
+                    {"range": {"year": {"gte": f.year_min}}}, {"terms": {"category": cats}}]}}})),
                 "vector" | "vector + filter" => {
-                    let filter = (kind == "vector + filter").then(|| json!({"range": {"rating": {"gte": 4}}}));
-                    top(knn_body(knn_query(v, 10, CANDIDATES, true, filter)))
+                    let filter = (kind == "vector + filter").then(|| json!({"range": {"rating": {"gte": json_num(f.rating_min)}}}));
+                    top(knn_body(knn_query(v, 10, candidates(), true, filter)))
                 }
                 "hybrid (RRF)" | "hybrid (weighted)" if os => {
                     let pipeline = if kind == "hybrid (RRF)" { "rrf" } else { "minmax" };
@@ -1208,8 +1441,8 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
                     top(json!({"query": {"bool": {"filter": [{"prefix": {"body": pre}}], "must": [{"match": {"body": before}}]}}}))
                 }
                 "similar items" => {
-                    let filter = json!({"bool": {"filter": [{"range": {"rating": {"gte": 3}}}], "must_not": [{"ids": {"values": seen}}]}});
-                    top(knn_body(knn_query(p.item, 10, CANDIDATES, true, Some(filter))))
+                    let filter = json!({"bool": {"filter": [{"range": {"rating": {"gte": json_num(f.similar_rating)}}}], "must_not": [{"ids": {"values": seen}}]}});
+                    top(knn_body(knn_query(p.item, 10, candidates(), true, Some(filter))))
                 }
                 "sql aggregate" => {
                     // Elasticsearch SQL quotes identifiers (year is also a function); OpenSearch SQL reads a quoted one as a string.
@@ -1236,13 +1469,13 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
                 "bm25" => ranked(json!(lex), json!({})),
                 "bm25 + filter" => {
                     let mut b = ranked(json!(lex), json!({}));
-                    b["filter"] = json!(["year:[2010 TO *]", "{!terms f=category}c00,c01,c02,c03"]);
+                    b["filter"] = json!([format!("year:[{} TO *]", f.year_min), format!("{{!terms f=category}}{}", cats.join(","))]);
                     b
                 }
                 "vector" | "vector + filter" => {
-                    let mut b = json!({"query": knn(CANDIDATES), "limit": 10, "fields": "id,score"});
+                    let mut b = json!({"query": knn(candidates()), "limit": 10, "fields": "id,score"});
                     if kind == "vector + filter" {
-                        b["filter"] = json!(["rating:[4 TO *]"]);
+                        b["filter"] = json!([format!("rating:[{} TO *]", f.rating_min)]);
                     }
                     b
                 }
@@ -1287,8 +1520,8 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| format!("\"{}\"", k.replace('"', "\\\""))).collect();
-                    json!({"query": format!("{{!knn f=emb topK={CANDIDATES}}}{}", vector_text(p.item)), "limit": 10, "fields": "id,score",
-                        "filter": ["rating:[3 TO *]", format!("-id:({})", ids.join(" OR "))]})
+                    json!({"query": format!("{{!knn f=emb topK={}}}{}", candidates(), vector_text(p.item)), "limit": 10, "fields": "id,score",
+                        "filter": [format!("rating:[{} TO *]", f.similar_rating), format!("-id:({})", ids.join(" OR "))]})
                 }
                 "sql aggregate" => {
                     // Solr's SQL quotes names with backticks (year is a keyword),
@@ -1314,10 +1547,13 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
             let nn = |field_v: &str, k: usize, extra: usize| format!("{{targetHits:{k}, hnsw.exploreAdditionalHits:{extra}}}nearestNeighbor(emb, {field_v})");
             let mut body = match kind {
                 "bm25" => with(text_query(""), json!({"ranking": "bm25"})),
-                "bm25 + filter" => with(text_query(" and year >= 2010 and category in (\"c00\", \"c01\", \"c02\", \"c03\")"), json!({"ranking": "bm25"})),
+                "bm25 + filter" => {
+                    let list = cats.iter().map(|c| yql_str(c)).collect::<Vec<_>>().join(", ");
+                    with(text_query(&format!(" and year >= {} and category in ({list})", f.year_min)), json!({"ranking": "bm25"}))
+                }
                 "vector" | "vector + filter" => {
-                    let filter = if kind == "vector + filter" { " and rating >= 4" } else { "" };
-                    json!({"yql": format!("select * from doc where {}{filter}", nn("v", 10, CANDIDATES - 10)), "ranking": "vector", "input.query(v)": v.to_vec()})
+                    let filter = if kind == "vector + filter" { format!(" and rating >= {}", f.rating_min) } else { String::new() };
+                    json!({"yql": format!("select * from doc where {}{filter}", nn("v", 10, candidates().saturating_sub(10))), "ranking": "vector", "input.query(v)": v.to_vec()})
                 }
                 "hybrid (RRF)" | "hybrid (weighted)" => json!({
                     "yql": format!("select * from doc where userQuery() or ({{targetHits:{DEPTH}}}nearestNeighbor(emb, v))"),
@@ -1335,7 +1571,7 @@ fn request(engine: Engine, kind: &str, sql: &str, p: &Probe) -> Option<(&'static
                 }
                 "similar items" => {
                     let ids: Vec<String> = seen.iter().map(|k| yql_str(k)).collect();
-                    json!({"yql": format!("select * from doc where {} and rating >= 3 and !(id in ({}))", nn("i", 10, CANDIDATES - 10), ids.join(", ")),
+                    json!({"yql": format!("select * from doc where {} and rating >= {} and !(id in ({}))", nn("i", 10, candidates().saturating_sub(10)), f.similar_rating, ids.join(", ")),
                         "ranking": "similar", "input.query(i)": p.item.to_vec()})
                 }
                 "sql aggregate" => json!({
@@ -1592,6 +1828,14 @@ async fn run(
     let keys: Vec<String> = coll.docs.iter().map(|d| d[col::ID].as_str().unwrap_or("").to_string()).collect();
     let items: Vec<Arc<[f32]>> = coll.docs.iter().map(|d| Arc::from(d[col::EMB].as_vector().unwrap_or(&[]))).collect();
     let client = http_client(engine, 30)?;
+    // The shard request cache answers a repeated size-0 search from memory,
+    // and the SQL endpoints take no `request_cache=false` (the SQL
+    // aggregate's 30 years repeat 10 times in 300 queries): off for the
+    // whole index while it is timed.
+    if matches!(engine, Engine::Es | Engine::Os) {
+        check(client.put(format!("{}/quora/_settings", urls[0])).json(&json!({"index": {"requests.cache.enable": false}})).send().await, "settings").await?;
+    }
+    let cache_before = result_cache(engine, &client, urls).await;
     let label = label.unwrap_or_else(|| engine.name().to_string());
     let (mut http, mut answers, mut query_ids, mut unavailable, mut differ) = (Vec::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
     let mut warmups = BTreeMap::new();
@@ -1615,7 +1859,7 @@ async fn run(
             let k = (i * 7919) % keys.len();
             let it = (i * 104_729 + 13) % keys.len();
             let seen: Vec<String> = std::iter::once(it).chain((1..SEEN).map(|j| (it + j * 997) % keys.len())).map(|j| keys[j].clone()).collect();
-            let probe = Probe { q, key: &keys[k], row: k, item: &items[it], seen: &seen, year: 1990 + (i % 30) as i64, paid };
+            let probe = Probe { q, key: &keys[k], row: k, item: &items[it], seen: &seen, year: 1990 + (i % 30) as i64, paid, knobs: Knobs::default() };
             if let Some((path, body)) = request(engine, kind, sql, &probe) {
                 // Solr's /sql reads its statement from the request's parameters only, not from a JSON body.
                 let (path, body) = match body.get("stmt").and_then(|x| x.as_str()) {
@@ -1713,10 +1957,13 @@ async fn run(
             }));
         }
     }
+    let cache = json!({"before": cache_before, "after": result_cache(engine, &client, urls).await});
+    eprintln!("{label:<8} result cache: {cache}");
     let report = json!({
         "engine": engine.name(), "label": label, "collection": collection, "urls": urls, "queries": queries.len(),
-        "params": {"seconds": seconds, "concurrency": concurrency, "candidates": CANDIDATES, "oversample": OVERSAMPLE, "hybrid_depth": DEPTH, "paid": paid},
+        "params": {"seconds": seconds, "concurrency": concurrency, "candidates": candidates(), "oversample": OVERSAMPLE, "hybrid_depth": DEPTH, "paid": paid},
         "http": http, "unavailable": unavailable, "differs": differ, "query_ids": query_ids, "probes": probes, "answers": answers, "warm_up_p50_ms": warmups,
+        "result_cache": cache,
     });
     std::fs::create_dir_all(out).map_err(s)?;
     let path = out.join(format!("run-{}.json", label.replace(' ', "-")));
@@ -1730,6 +1977,8 @@ async fn run(
 enum WriteReq {
     One { url: String, put: bool, body: Vec<u8> },
     Many(Vec<(String, Vec<u8>)>),
+    /// Vespa's deletes: one request a document, all sent at once.
+    Deletes(Vec<String>),
 }
 
 /// What a write's answer says went wrong, if anything.
@@ -1762,6 +2011,10 @@ async fn send_write(client: &reqwest::Client, w: &WriteReq) -> Option<String> {
         WriteReq::Many(reqs) => {
             // As loading does: each put again a second later while Vespa is overloaded.
             let all = reqs.iter().map(|(url, body)| async move { vespa_retry(|| client.post(url).header("content-type", "application/json").body(body.clone())).await });
+            futures::future::join_all(all).await.into_iter().flatten().next()
+        }
+        WriteReq::Deletes(urls) => {
+            let all = urls.iter().map(|url| async move { vespa_retry(|| client.delete(url)).await });
             futures::future::join_all(all).await.into_iter().flatten().next()
         }
     }
@@ -1952,20 +2205,7 @@ async fn writes(collection: &str, engine: Engine, urls: &[String], concurrency: 
     let client = http_client(engine, 60)?;
     let label = label.unwrap_or_else(|| engine.name().to_string());
     let u0 = &urls[0];
-    // Searchable within a second of a write, as Elasticsearch's and
-    // OpenSearch's default refresh is (loading turned it off); Solr's soft
-    // commits the same. Strata and Vespa make a write searchable when it returns.
-    let nrt = match engine {
-        Engine::Es | Engine::Os => {
-            check(client.put(format!("{u0}/quora/_settings")).json(&json!({"index": {"refresh_interval": "1s"}})).send().await, "settings").await?;
-            "refresh_interval 1s (the default; loading turned it off)"
-        }
-        Engine::Solr => {
-            check(client.post(format!("{u0}/solr/quora/config")).json(&json!({"set-property": {"updateHandler.autoSoftCommit.maxTime": 1000}})).send().await, "config").await?;
-            "autoSoftCommit.maxTime 1000 ms (as Elasticsearch's 1 s refresh; loading turned it off)"
-        }
-        Engine::Strata | Engine::Vespa => "searchable when the write returns",
-    };
+    let nrt = searchable_soon(engine, &client, u0).await?;
     // The documents written: the first 20,000, each under a new key.
     let mut docs = Vec::new();
     each_doc(collection, Some(20_000), |r, v| {
@@ -2063,6 +2303,24 @@ async fn writes(collection: &str, engine: Engine, urls: &[String], concurrency: 
     restore(engine, &client, u0, &new_keys, &touched.iter().map(|&i| &docs[i]).collect::<Vec<_>>()).await?;
     eprintln!("{label:<8} deleted {} written documents and put back {} ratings in {:.1} s", new_keys.len(), touched.len(), t_clean.elapsed().as_secs_f64());
     Ok(())
+}
+
+/// Makes writes searchable within a second, as Elasticsearch's and
+/// OpenSearch's default refresh is (loading turned it off); Solr's soft
+/// commits the same. Strata and Vespa make a write searchable when it
+/// returns. Says what it set.
+async fn searchable_soon(engine: Engine, client: &reqwest::Client, u0: &str) -> Result<&'static str, String> {
+    Ok(match engine {
+        Engine::Es | Engine::Os => {
+            check(client.put(format!("{u0}/quora/_settings")).json(&json!({"index": {"refresh_interval": "1s"}})).send().await, "settings").await?;
+            "refresh_interval 1s (the default; loading turned it off)"
+        }
+        Engine::Solr => {
+            check(client.post(format!("{u0}/solr/quora/config")).json(&json!({"set-property": {"updateHandler.autoSoftCommit.maxTime": 1000}})).send().await, "config").await?;
+            "autoSoftCommit.maxTime 1000 ms (as Elasticsearch's 1 s refresh; loading turned it off)"
+        }
+        Engine::Strata | Engine::Vespa => "searchable when the write returns",
+    })
 }
 
 /// Sends a request to Vespa again, a second later, while it is overloaded
@@ -2643,13 +2901,46 @@ async fn main() {
             Ok(e) => load(&cli.collection, e, url, *shards, *batch, *clients, *limit, out).await,
             Err(o) => more::load(&cli.collection, o, url, *batch, *clients, *limit, out).await,
         },
-        Cmd::Run { engine, url, queries, concurrency, seconds, label, kinds, paid, out } => match engine.engine() {
-            Ok(e) => run(&cli.collection, e, url, *queries, concurrency, *seconds, label.clone(), kinds, *paid, out).await,
-            Err(o) => more::run(&cli.collection, o, url, *queries, concurrency, *seconds, label.clone(), kinds, out).await,
-        },
+        Cmd::Run { engine, url, queries, concurrency, seconds, label, kinds, paid, candidates, out } => {
+            CANDIDATES_RUN.store(*candidates, Ordering::Relaxed);
+            match engine.engine() {
+                Ok(e) => run(&cli.collection, e, url, *queries, concurrency, *seconds, label.clone(), kinds, *paid, out).await,
+                Err(o) => more::run(&cli.collection, o, url, *queries, concurrency, *seconds, label.clone(), kinds, out).await,
+            }
+        }
         Cmd::Writes { engine, url, concurrency, seconds, batch, samples, label, out } => match engine.engine() {
             Ok(e) => writes(&cli.collection, e, url, concurrency, *seconds, *batch, *samples, label.clone(), out).await,
             Err(o) => Err(format!("writes are not measured for {} yet", o.name())),
+        },
+        Cmd::Plan { profile, seed, shape, rate, out } => sim::shape(*shape, *rate).and_then(|sh| sim::plan(&cli.collection, profile, *seed, sh, out)).map(|_| ()),
+        Cmd::Replay { engine, url, schedule, profile, seed, shape, rate, max_inflight, cache_mode, paid, seconds, no_reset, label, out } => {
+            let target = match engine.engine() {
+                Ok(e) => replay::Target::Main(e),
+                Err(o) => replay::Target::More(o),
+            };
+            let opts = replay::Opts { max_inflight: *max_inflight, cache_mode: *cache_mode, paid: *paid, seconds: *seconds, label: label.clone(), reset: !*no_reset, out: out.clone() };
+            let path = match (schedule, profile) {
+                (Some(p), _) => Ok(p.clone()),
+                (None, Some(prof)) => {
+                    let name = prof.file_stem().map_or("profile".into(), |n| n.to_string_lossy().to_string());
+                    let path = out.join(format!("schedule-{name}-{seed}.jsonl.gz"));
+                    sim::shape(*shape, *rate).and_then(|sh| sim::plan(&cli.collection, prof, *seed, sh, &path)).map(|_| path)
+                }
+                (None, None) => Err("replay needs --schedule, or --profile to plan one".to_string()),
+            };
+            match path {
+                Ok(p) => replay::replay(&cli.collection, target, url, &p, &opts).await,
+                Err(e) => Err(e),
+            }
+        }
+        Cmd::RecsysLoad { engine, url, data, batch, clients, shards, out } => match recsys::Eng::of(*engine) {
+            Ok(e) => recsys::load(e, url, data, *batch, *clients, *shards, out).await,
+            Err(e) => Err(e),
+        },
+        Cmd::RecsysOptimize { db, report } => recsys::optimize(db, report.as_deref()),
+        Cmd::RecsysRun { engine, url, data, users, concurrency, seconds, kinds, event_rate, label, out } => match recsys::Eng::of(*engine) {
+            Ok(e) => recsys::run(e, url, data, *users, concurrency, *seconds, kinds, *event_rate, label.clone(), out).await,
+            Err(e) => Err(e),
         },
         Cmd::Stream { engine, url, brokers, partitions, rates, seconds, flat, restart, batch, label, out } => match engine.engine() {
             Ok(e) => stream(&cli.collection, e, url, brokers, *partitions, rates, *seconds, *flat, *restart, *batch, label.clone(), out).await,

@@ -134,7 +134,7 @@ pub fn export(db: &Db, out: &Path, opts: &ExportOptions) -> Result<Exported> {
 fn chosen<'a>(snap: &'a Snapshot, names: &[String]) -> Result<Vec<&'a Schema>> {
     let all: Vec<&Schema> = snap.schemas().collect();
     if names.is_empty() {
-        return Ok(all);
+        return Ok(all.into_iter().filter(|s| !s.is_placeholder()).collect());
     }
     let mut out: Vec<&Schema> = Vec::new();
     for name in names {

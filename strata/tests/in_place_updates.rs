@@ -128,10 +128,11 @@ fn run(name: &str, layout: Layout) {
         }
         t.commit().unwrap();
 
-        // Refused: unknown keys, non-numeric fields, the key, bad values.
+        // Refused: unknown keys, the key, bad values. A keyword is written
+        // with its row (tests/set_any_field.rs); rolled back here.
         let mut t = db.storage().begin().unwrap();
         assert!(!t.set(&Value::Str("nope".into()), "rating", Value::Float(1.0)).unwrap());
-        assert!(t.set(&docs[0][col::ID], "category", Value::Str("c01".into())).is_err());
+        assert!(t.set(&docs[0][col::ID], "category", Value::Str("c01".into())).unwrap());
         assert!(t.set(&docs[0][col::ID], "id", Value::Str("x".into())).is_err());
         assert!(t.set(&docs[0][col::ID], "year", Value::Float(2.5)).is_err());
         t.rollback();
