@@ -3620,7 +3620,7 @@ impl Service {
     /// is restarted. A coordinator is never failing; its shards may be.
     pub fn failing(&self) -> Option<String> {
         match &self.backend {
-            Backend::Local(db) if db.storage().is_poisoned() => Some("a write failed partway, so the database refuses writes until it is reopened: restart the server".into()),
+            Backend::Local(db) if db.storage().is_poisoned() => Some("a write failed partway (a full disk, an I/O error), so the database refuses writes until it is reopened: fix the cause and restart the server, a primary once another copy is the primary".into()),
             Backend::Local(_) if !self.writer_state.alive.load(Ordering::Relaxed) => Some("the writer thread stopped: restart the server".into()),
             _ => None,
         }

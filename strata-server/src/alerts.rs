@@ -236,7 +236,7 @@ pub fn defaults() -> Vec<Rule> {
     let s = "self";
     #[rustfmt::skip]
     let v = [
-        (rule("failing", "Database refuses writes", "failing", ">", 0.0, "max", 30, 0, "critical", c, "A write failed partway (a full disk, an I/O error): restart the server once the cause is fixed."), 0.0),
+        (rule("failing", "Database refuses writes", "failing", ">", 0.0, "max", 30, 0, "critical", c, "A write failed partway (a full disk, an I/O error), and the database refuses writes until it is reopened. On a primary, hand the primary over to a replica in sync first (Cluster: its menu, Make it the primary), so writes go on; then fix the cause and restart the server."), 0.0),
         (rule("flush-failing", "Flushes fail", "flush_failing", ">", 0.0, "max", 30, 0, "critical", c, "Writes still commit to the log until the memtable holds twice its limit. Usually a full disk."), 0.0),
         (rule("merge-failing", "Merges fail", "merge_failing", ">", 0.0, "all", 60, 0, "warning", c, "Segments pile up and queries slow down until merges succeed again."), 0.0),
         (rule("disk-full", "Disk almost full", "disk_used_ratio", ">", 0.9, "mean", 300, 0, "warning", c, "Under 10% of the copy's disk is left."), 0.88),
