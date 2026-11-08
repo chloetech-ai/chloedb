@@ -1,17 +1,6 @@
----
-title: Following Postgres
-parent: Strata
-nav_order: 7.5
----
-
 # Following Postgres
-{: .no_toc }
 
 `strata-server follow-postgres` keeps Strata in step with a Postgres database by logical replication: it copies the tables of a publication, then applies every insert, update, delete, `TRUNCATE` and new column a moment after Postgres commits it, so Strata serves search over the rows Postgres holds without a nightly job or a Debezium and Kafka pipeline in between. It speaks Postgres's own protocol (`pgoutput`, the plugin Postgres ships, from version 10), and keeps what it applied in Strata's `_sources`, in the same transactions as the rows, so a follower stopped and started again goes on from there and applies each change once.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## Set up Postgres
 

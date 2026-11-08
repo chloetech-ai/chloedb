@@ -1,17 +1,6 @@
----
-title: Java
-parent: Strata
-nav_order: 5.5
----
-
 # Strata from Java
-{: .no_toc }
 
 The `ai.chloetech.strata` package runs a Strata database inside a Java process, the way sqlite-jdbc runs SQLite: the database is a file the JVM opens, read and written by Strata's native library over JNI, with no server and nothing to configure. It has a JDBC driver too (`jdbc:strata:books.strata`), for code and tools that speak JDBC. It works on Java 11 and later.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## Build it
 

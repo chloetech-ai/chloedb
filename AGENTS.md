@@ -102,7 +102,7 @@ editing their settings by hand.
 | `.github/workflows/chaos.yml` | every night (or by hand, with a list of scenarios), `strata-chaos run` plays the chaos monkey's scenarios on a local cluster on one runner, as root, and fails when a write was lost or applied twice; its results.md is the run's summary |
 | `scripts/ci-local.sh` | CI's jobs on this machine (macOS or Linux), on the merge of a commit into main; `--post-status` records the result on GitHub as commit status `ci-local`, `--list` lists the jobs, and the header says what a Mac cannot test |
 | `.github/CODEOWNERS`, `.github/pull_request_template.md` | the one-way doors (on-disk format, shard protocol, replication, auth), which wait for a human review; a pull request says whether it touches one |
-| `docs/` | the documentation site (Jekyll, just-the-docs); `docs/demo/inspector.html` is a separate static copy of the inspector |
+| `docs/` | the website and the documentation: GitHub Pages publishes the folder as it is (no Jekyll, `docs/.nojekyll`), its root redirects to the website in `docs/site/`, and the Markdown pages are read on GitHub; `docs/demo/inspector.html` is a separate static copy of the inspector |
 | `install.sh` | the installer described above |
 
 Build and test each crate from its own directory (`engram` and

@@ -1,17 +1,6 @@
----
-title: JavaScript
-parent: Strata
-nav_order: 6
----
-
 # Strata from JavaScript
-{: .no_toc }
 
 The `strata-db` package opens a Strata file inside a Node, Bun or Deno process, the way better-sqlite3 opens a SQLite file: no server, no configuration. It can also talk to a running [strata-server](server.md) from any JavaScript runtime with `fetch` (a browser, a worker, Node, Bun, Deno). Both have the same methods, so code written against a local file works against a server.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## Install
 

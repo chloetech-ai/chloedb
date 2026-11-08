@@ -1,17 +1,6 @@
----
-title: Install on your machine
-parent: Engram
-nav_order: 0
----
-
 # Install Engram on your machine
-{: .no_toc }
 
 Engram runs next to your own Claude Code: hooks record each session into a local Strata file per project, and a small MCP server lets the model search that history. This page takes a fresh macOS or Linux machine to a working install in a few minutes, shows how to check it, and covers remote boxes, dev containers and upgrades.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## What you need
 
@@ -30,7 +19,7 @@ The CLI login matters more than it looks. The distiller runs `claude -p` in the 
 ## Install in one command
 
 ```bash
-git clone https://github.com/rkonow/strata && cd strata && ./install.sh
+git clone https://github.com/chloetech-ai/strata && cd strata && ./install.sh
 ```
 
 `install.sh` does five things and can be run again at any time:
@@ -54,14 +43,14 @@ Sessions that were already open pick Engram up when they restart.
 
 Tell Claude Code (or another coding agent) in any session:
 
-> Clone https://github.com/rkonow/strata and set Engram up for my Claude Code by following its AGENTS.md.
+> Clone https://github.com/chloetech-ai/strata and set Engram up for my Claude Code by following its AGENTS.md.
 
-[`AGENTS.md`](https://github.com/rkonow/strata/blob/main/AGENTS.md) tells the agent to check the prerequisites without installing anything unasked, to ask you whether to install for every session or one project, to run `install.sh` and `engram doctor`, and to report what failed. Two things stay with you: `claude auth login` if the CLI is logged out (it is interactive), and starting a new session afterwards, because the session that ran the install started before the hooks existed.
+[`AGENTS.md`](https://github.com/chloetech-ai/strata/blob/main/AGENTS.md) tells the agent to check the prerequisites without installing anything unasked, to ask you whether to install for every session or one project, to run `install.sh` and `engram doctor`, and to report what failed. Two things stay with you: `claude auth login` if the CLI is logged out (it is interactive), and starting a new session afterwards, because the session that ran the install started before the hooks existed.
 
 ## Or step by step
 
 ```bash
-git clone https://github.com/rkonow/strata && cd strata/engram
+git clone https://github.com/chloetech-ai/strata && cd strata/engram
 cargo build --release --bin engram
 cargo install --path . --bin engram --root ~/.local       # a stable path for the hooks: ~/.local/bin/engram
 engram fetch-model                                        # potion-retrieval-32M, 129 MB
@@ -163,7 +152,7 @@ Run the installer when the container is created, for example in `.devcontainer/d
 
 ```json
 {
-  "postCreateCommand": "git clone https://github.com/rkonow/strata /tmp/strata && /tmp/strata/install.sh",
+  "postCreateCommand": "git clone https://github.com/chloetech-ai/strata /tmp/strata && /tmp/strata/install.sh",
   "containerEnv": { "ENGRAM_HOME": "/workspaces/.engram" },
   "forwardPorts": [8765]
 }
@@ -188,7 +177,7 @@ engram uninstall --user                          # or `engram uninstall` in a pr
 rm -rf ~/.local/share/engram/projects/<store>    # delete one project's memory
 ```
 
-The repository was called `rkonow/engram` until October 2026. A checkout made before then keeps working, because GitHub redirects the old address: upgrade it with `git pull && ./install.sh` in its folder (still named `engram`), and `git remote set-url origin https://github.com/rkonow/strata` points it at the new name.
+The repository was called `rkonow/engram` until October 2026. A checkout made before then keeps working, because GitHub redirects the old address: upgrade it with `git pull && ./install.sh` in its folder (still named `engram`), and `git remote set-url origin https://github.com/chloetech-ai/strata` points it at the new name.
 
 ## Troubleshooting
 

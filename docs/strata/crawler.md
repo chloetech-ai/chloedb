@@ -1,18 +1,6 @@
----
-title: Crawler
-parent: Strata
-nav_order: 8.5
-has_children: true
----
-
 # strata-crawl: a site into a table
-{: .no_toc }
 
 `strata-crawl` takes a URL, reads the site's pages, finds their fields, makes a table from them and fills it, and adds shards to the cluster as the table grows. It is a program of its own, in Rust, that talks to strata-server over HTTP only, so it runs on the machine next to the cluster or on another one; the command center shows it as an app.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## Run it
 

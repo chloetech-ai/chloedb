@@ -16,7 +16,7 @@ Around the library:
 - **[strata-crawl](docs/strata/crawler.md)** crawls a site into a table: given a URL it reads the pages, finds their fields (JSON-LD, meta tags, spec tables, the site's template), makes a table from them and fills it, and adds shards to the cluster as the table grows. A program of its own that talks to strata-server over HTTP, shown in the command center as an app.
 - **[Engram](#engram-memory-for-coding-agents-built-on-strata)** is an application built on Strata: long-term memory for coding agents. It records every Claude Code session of a project into one Strata file and brings the right pieces back when a prompt needs them.
 
-📖 **Documentation:** [`docs/`](docs/index.md), published at [chloetech-ai.github.io/strata](https://chloetech-ai.github.io/strata/). The Strata website, with the benchmarks against other engines, is at [chloetech-ai.github.io/strata/site](https://chloetech-ai.github.io/strata/site/).
+🌐 **Website:** [chloetech-ai.github.io/strata](https://chloetech-ai.github.io/strata/), with the benchmarks against other engines. 📖 **Documentation:** [`docs/`](docs/README.md).
 
 ## Strata in one query
 
@@ -226,10 +226,10 @@ Each crate also carries its own design document ([Strata](strata/DESIGN.md), [En
 
 ## Documentation
 
-- [Overview](docs/index.md)
+- [Overview](docs/README.md)
 - **Strata:** [design](docs/strata/index.md) · [query language](docs/strata/query-language.md) · [graphs](docs/strata/graphs.md) · [server](docs/strata/server.md) · [Python](docs/strata/python.md) · [Java](docs/strata/java.md) · [JavaScript](docs/strata/javascript.md) · [SQLite](docs/strata/sqlite.md) · [Postgres](docs/strata/postgres.md) · [results](docs/strata/results.md)
 - [Posting lists](docs/posting-lists.md)
-- **Engram, built on Strata:** [install on your machine](docs/engram/setup.md) · [how it works](docs/engram/index.md) · [live inspector](docs/engram/inspector.md) · [results](docs/engram/results.md) · [why Engram](docs/why/index.html)
+- **Engram, built on Strata:** [install on your machine](docs/engram/setup.md) · [how it works](docs/engram/index.md) · [live inspector](docs/engram/inspector.md) · [results](docs/engram/results.md) · [why Engram](https://chloetech-ai.github.io/strata/why/)
 - [Reproducing the results](docs/reproduce.md)
 
 ## Status and limits

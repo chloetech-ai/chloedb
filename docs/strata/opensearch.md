@@ -1,17 +1,6 @@
----
-title: OpenSearch API
-parent: Strata
-nav_order: 4.5
----
-
 # The OpenSearch API
-{: .no_toc }
 
 `strata-server --opensearch-listen 127.0.0.1:9200` answers OpenSearch's REST API on a port of its own: an application written for OpenSearch or Elasticsearch (Gitea, Mastodon, a client library) indexes into Strata and searches it without a change. Each index is a Strata table; queries in OpenSearch's Query DSL become SQL.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## Run it
 
