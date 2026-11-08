@@ -1785,7 +1785,7 @@ async fn a_shard_takes_typed_plans_and_refuses_newer_ones() {
     let e = c.query(pb::QueryRequest { snapshot: held.snapshot, ..typed.clone() }).await.unwrap_err();
     assert!(e.message().contains("expired"), "{}", e.message());
     let unused = c.query(pb::QueryRequest { hold: true, ..typed.clone() }).await.unwrap().into_inner().snapshot;
-    c.release(pb::ReleaseRequest { snapshots: vec![unused, 12345] }).await.unwrap();
+    c.release(pb::ReleaseRequest { snapshots: vec![unused, 12345], cursors: Vec::new() }).await.unwrap();
     assert_eq!(svc.sweep_leases(), 0);
 
     let e = c.query(pb::QueryRequest { protocol: newest + 1, ..typed.clone() }).await.unwrap_err();

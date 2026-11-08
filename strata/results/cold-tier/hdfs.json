@@ -1,0 +1,81 @@
+{
+  "image_mb": 926.0,
+  "local_mb_after_pinned_only": 188.0,
+  "local_mb_before": 926.0,
+  "offload_seconds": 1.7,
+  "open_empty_cache_ms": 1226.35,
+  "pinned_mb": 188.0,
+  "queries": [
+    {
+      "cold_first_ms": 0.23,
+      "cold_warm_ms": 0.01,
+      "fetched_mb": 0.0,
+      "fetches": 0,
+      "local_ms": 0.01,
+      "query": "count",
+      "sql": "SELECT count(*) FROM logs"
+    },
+    {
+      "cold_first_ms": 504.77,
+      "cold_warm_ms": 0.02,
+      "fetched_mb": 11.3,
+      "fetches": 11,
+      "local_ms": 0.03,
+      "query": "by key",
+      "sql": "SELECT * FROM logs WHERE id = 5123457"
+    },
+    {
+      "cold_first_ms": 530.93,
+      "cold_warm_ms": 0.03,
+      "fetched_mb": 4.2,
+      "fetches": 16,
+      "local_ms": 0.03,
+      "query": "keyword filter",
+      "sql": "SELECT count(*) FROM logs WHERE severity = 'WARN'"
+    },
+    {
+      "cold_first_ms": 465.5,
+      "cold_warm_ms": 0.21,
+      "fetched_mb": 3.7,
+      "fetches": 14,
+      "local_ms": 0.27,
+      "query": "group by",
+      "sql": "SELECT host, count(*) FROM logs GROUP BY host ORDER BY count(*) DESC LIMIT 10"
+    },
+    {
+      "cold_first_ms": 632.72,
+      "cold_warm_ms": 0.04,
+      "fetched_mb": 24.9,
+      "fetches": 12,
+      "local_ms": 0.04,
+      "query": "time range",
+      "sql": "SELECT count(*) FROM logs WHERE ts >= '2008-11-10T12:03:46Z' AND ts < '2008-11-10T15:55:53Z'"
+    },
+    {
+      "cold_first_ms": 2423.87,
+      "cold_warm_ms": 0.04,
+      "fetched_mb": 278.1,
+      "fetches": 57,
+      "local_ms": 0.04,
+      "query": "text match",
+      "sql": "SELECT count(*) FROM logs WHERE MATCH(body, 'exception')"
+    },
+    {
+      "cold_first_ms": 2836.81,
+      "cold_warm_ms": 20.59,
+      "fetched_mb": 281.5,
+      "fetches": 69,
+      "local_ms": 16.7,
+      "query": "bm25 top 10",
+      "sql": "SELECT id, body FROM logs ORDER BY bm25(body, 'block replication failed') DESC LIMIT 10"
+    }
+  ],
+  "rows": 11175629,
+  "segments": 6,
+  "store": {
+    "latency_ms": 30,
+    "mb_per_sec_per_request": 100.0,
+    "parallel_requests": 8
+  },
+  "store_mb": 926.0
+}

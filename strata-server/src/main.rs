@@ -322,6 +322,27 @@ struct Args {
     /// How long a media fetch may take, in seconds.
     #[arg(long, default_value_t = 30)]
     media_timeout_s: u64,
+    /// Keep segments cold on object storage, read through a local cache: an
+    /// `s3://bucket/prefix/` URL (configured as `import` reads them) or a
+    /// directory. The database must be a directory (`--directory`); once a
+    /// segment is cold, it opens only with its store.
+    #[arg(long)]
+    cold_store: Option<String>,
+    /// The cold tier's cache of fetched parts, in GiB (segments' headers and
+    /// keys apart, which it always keeps).
+    #[arg(long, default_value_t = 8.0)]
+    cold_cache_gb: f64,
+    /// Keep the newest segments local up to this many GiB, and make the
+    /// older ones cold (default: none goes cold by itself).
+    #[arg(long)]
+    cold_keep_local_gb: Option<f64>,
+    /// Segments smaller than this stay local, in MiB.
+    #[arg(long, default_value_t = 16)]
+    cold_min_segment_mb: u64,
+    /// The cold tier's local cache directory (default: `cold` in the
+    /// database's directory).
+    #[arg(long)]
+    cold_cache_dir: Option<PathBuf>,
     /// Merges that may run at once (default: half the cores, 1 to 4).
     #[arg(long)]
     merge_threads: Option<usize>,
@@ -1063,6 +1084,13 @@ async fn main() {
         backup_dir: a.backup_dir,
         slices: a.slices,
         slices_rebuild_s: a.slices_rebuild_s,
+        cold: a.cold_store.clone().map(|store| strata_server::server::ColdFlags {
+            store,
+            cache_bytes: (a.cold_cache_gb * (1u64 << 30) as f64) as u64,
+            keep_local_bytes: a.cold_keep_local_gb.map(|g| (g * (1u64 << 30) as f64) as u64),
+            min_segment_bytes: a.cold_min_segment_mb << 20,
+            cache_dir: a.cold_cache_dir.clone(),
+        }),
         media_fetch: a.media_fetch,
         // The default needs no resolver of its own: a database's has it.
         media_max_bytes: if a.media_max_bytes == strata::media::DEFAULT_MAX_BYTES { 0 } else { a.media_max_bytes },

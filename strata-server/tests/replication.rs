@@ -21,7 +21,7 @@ use strata_server::keys::Principal;
 use strata_server::coord::Coordinator;
 use strata_server::replication::{self, Acks, Digests, Follow, Primary, PrimaryOptions};
 use strata_server::service::{shard_of, After, AgentConfig, Backend, QueryReq, Replication, Service, SqlAnswer};
-use strata_server::{demo, pb, server, slots};
+use strata_server::{demo, idem, pb, server, slots};
 use tokio::net::TcpListener;
 
 const N: usize = 300;
@@ -1866,4 +1866,58 @@ async fn all_acks_need_a_majority_and_reads_need_the_lease() {
     let w = p.write_ops(vec![set("p0000001", "sold", json!(1))], None).await.unwrap();
     assert_eq!(last(&r1db), w.seq_no.unwrap(), "the write was answered once a majority held it");
     until("the primary serves reads", || async { p.query(QueryReq { sql: "SELECT id FROM products LIMIT 1".into(), ..Default::default() }).await.is_ok() }).await;
+}
+
+/// A write whose answer was lost when its primary failed is sent again
+/// under its idempotency key to the copy promoted in its place, which
+/// holds the write: it is answered from the key, which the write's own
+/// transaction recorded, not applied again (the chaos monkey's
+/// primary-crash saw counters added to twice this way). So is a write sent
+/// again to a server restarted since, and a statement's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_sent_again_to_the_promoted_copy_applies_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = |name: &str| replication::file_of(&dir.path().join(name));
+    let (pdb, r1db) = (create(dir.path(), "p.strata"), create(dir.path(), "r1.strata"));
+    let (r1, u1) = replica(r1db.clone(), Some(&file("r1.strata"))).await;
+    let p = primary(pdb.clone(), Some(&file("p.strata")), ships_to(&[&u1], Acks::All), Duration::from_secs(5));
+    let one = |db: &Db, field: &str, id: &str| db.query(&format!("SELECT {field} FROM products WHERE id = '{id}'"), &Params::new()).unwrap().rows[0][0].clone();
+    let before = one(&r1db, "reviews", "p0000001");
+    let add = |n: i64| vec![json!({"op": "add", "key": "p0000001", "field": "reviews", "value": n})];
+    let bump = |svc: Arc<Service>| async move { svc.sql_in(&Principal::open(), "UPDATE products SET sold = sold + 1 WHERE id = 'p0000002'", &Params::new(), After::Any, 0, None, Some("bump-1".into())).await.map(written) };
+    let first = p.write_ops(add(1), Some("retry-1".into())).await.unwrap();
+    let (bumped, _) = bump(p.clone()).await.unwrap();
+    assert_eq!(bumped, 1);
+    // Sent again to the same primary: answered from its memory.
+    let again = p.write_ops(add(1), Some("retry-1".into())).await.unwrap();
+    assert_eq!(again.seq_no, first.seq_no);
+    let top = last(&pdb);
+    until("the replica holds the writes", || async { last(&r1db) == top }).await;
+    let (reviews, sold) = (one(&r1db, "reviews", "p0000001"), one(&r1db, "sold", "p0000002"));
+    assert_ne!(reviews, before, "the replica holds the add");
+    // The primary fails before the client hears the answers; the replica
+    // is promoted, and the client sends the writes again under their keys.
+    drop(p);
+    r1.promote(&Principal::open(), Vec::new(), Acks::All, true).await.unwrap();
+    let after = r1.write_ops(add(1), Some("retry-1".into())).await.unwrap();
+    assert_eq!(one(&r1db, "reviews", "p0000001"), reviews, "the add was applied again on the promoted copy");
+    assert_eq!(after.rows, first.rows, "answered as the first time");
+    assert!(after.seq_no >= first.seq_no, "a sequence number that follows the write's: {after:?} {first:?}");
+    assert_eq!(bump(r1.clone()).await.unwrap().0, bumped);
+    assert_eq!(one(&r1db, "sold", "p0000002"), sold, "the UPDATE was applied again on the promoted copy");
+    // The key used for other operations is refused, as on the primary.
+    assert_eq!(r1.write_ops(add(2), Some("retry-1".into())).await.unwrap_err().status, 422);
+    // The server's list of sources leaves the keys' rows out.
+    assert!(r1.sources().await.unwrap().iter().all(|s| !s.name.starts_with(idem::ROW)));
+    // A server restarted (one that remembers no key) answers them too.
+    let restarted = Arc::new(service(r1db.clone(), Duration::from_secs(5)));
+    assert_eq!(restarted.write_ops(add(1), Some("retry-1".into())).await.unwrap().rows, first.rows);
+    assert_eq!(one(&r1db, "reviews", "p0000001"), reviews, "the add was applied again after a restart");
+    // An hour on, the keys' rows are deleted.
+    let keys = |db: &Db| db.sources().unwrap().into_iter().filter(|s| s.name.starts_with(idem::ROW)).count();
+    assert_eq!(keys(&r1db), 2);
+    assert_eq!(idem::forget_expired(&r1db, strata::timestamp::now() - 1_000_000, Instant::now() + Duration::from_secs(5)).unwrap(), 0, "kept for an hour");
+    let later = strata::timestamp::now() + idem::TTL.as_micros() as i64 + 1;
+    assert_eq!(idem::forget_expired(&r1db, later, Instant::now() + Duration::from_secs(5)).unwrap(), 2);
+    assert_eq!(keys(&r1db), 0);
 }
