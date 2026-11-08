@@ -43,14 +43,16 @@ env:
 # 7 GB). The organisation's own runners (gh-linux, gh-mac and gh-mac2) are
 # billed by the minute even for a public repository, so no job uses them.
 #
-# macOS jobs are the scarcest (the account runs five at once, and a push to
-# main takes all five), so a pull request (and the merge queue) runs only
-# Strata's tests on macOS, where its NEON kernels and syncs differ from
-# Linux, and CI result does not wait for them (job `macos`): a pull request
-# waited 9 to 12 minutes for a macOS runner and then 16 more, after every
-# Linux job had passed. Its check still turns red on a failure. A push to
-# main, the nightly run and a run started by hand run every macOS job, and
-# CI result waits for each.
+# macOS jobs are the scarcest: the account runs five at once. A pull
+# request, the merge queue and a push to main run only Strata's tests on
+# macOS, where its NEON kernels and syncs differ from Linux, and CI result
+# does not wait for them (job `macos`): a pull request waited 9 to 12
+# minutes for a macOS runner and then 16 more, after every Linux job had
+# passed. Its check still turns red on a failure. The nightly run and a run
+# started by hand run every macOS job (8 of them), and CI result waits for
+# each. (Until 8 November a push to main ran all 8 too: they took the five
+# runners for up to 50 minutes a merge, and a pull request's macOS job
+# waited 46 minutes behind them.)
 #
 # Caches (Swatinem/rust-cache, one per job) are saved by runs on main, the
 # nightly and runs started by hand, and only restored by pull requests: a
@@ -114,7 +116,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
         # strata-crawl's crawl into a real cluster runs in server-smoke,
         # which builds strata-server; here its other tests and clippy.
         crate: [strata, engram, strata-server, strata-crawl]
@@ -193,14 +195,15 @@ jobs:
         working-directory: ${{ matrix.crate }}
         run: cargo clippy --release --all-targets ${{ matrix.crate == 'strata' && '--features sqlite' || '' }} -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
-  # A pull request's (and the merge queue's) Strata tests on macOS: the
-  # `test` job's steps, in a job of its own that CI result does not wait
-  # for (see the top of this file). On main, the nightly run and a run
-  # started by hand they run in `test`, and this job is skipped.
+  # Strata's tests on macOS for a pull request, the merge queue and a push
+  # to main: the `test` job's steps, in a job of its own that CI result does
+  # not wait for (see the top of this file). In the nightly run and a run
+  # started by hand they run in `test`, and this job is skipped. A push to
+  # main saves the cache that a pull request's run restores.
   macos:
     name: ${{ matrix.crate }} on ${{ matrix.os }}
     needs: changes
-    if: needs.changes.outputs.code == 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+    if: needs.changes.outputs.code == 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push')
     strategy:
       matrix:
         os: [macos-latest]
@@ -353,7 +356,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -555,7 +558,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -642,7 +645,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -698,7 +701,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -737,8 +740,8 @@ jobs:
 
   # The one check main requires: every job above passed, or was skipped
   # because the change touches only the documentation. A failed or
-  # cancelled job fails it. It does not wait for `macos`, a pull request's
-  # macOS tests (see the top of this file).
+  # cancelled job fails it. It does not wait for `macos`, the Strata tests
+  # on macOS of a pull request and a push to main (see the top of this file).
   ci-result:
     name: CI result
     if: always()
