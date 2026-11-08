@@ -93,6 +93,13 @@ pub struct Spec {
     /// slot moves, key sharing, votes). Clients and the operator never
     /// hold it. It needs `token_secret`.
     pub cluster_token_secret: Option<String>,
+    /// Environment variables of every server and coordinator taken from
+    /// Secrets: the keys of models behind an API, such as
+    /// `ANTHROPIC_API_KEY` for the agents, LLM fields and reranking, or
+    /// `OPENAI_API_KEY` for hosted embeddings. Changing it restarts the
+    /// copies one at a time, as other settings do.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub secret_env: Vec<SecretEnv>,
     /// Resources of each server's and each coordinator's container.
     pub resources: Option<Json>,
     pub coordinator_resources: Option<Json>,
@@ -315,6 +322,25 @@ impl Default for Storage {
     }
 }
 
+/// An environment variable taken from a Secret (`spec.secretEnv`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretEnv {
+    /// The variable, such as `ANTHROPIC_API_KEY`.
+    pub name: String,
+    /// The Secret, in the cluster's namespace.
+    pub secret: String,
+    /// The Secret's key that holds the value.
+    #[serde(default = "SecretEnv::default_key")]
+    pub key: String,
+}
+
+impl SecretEnv {
+    fn default_key() -> String {
+        "key".into()
+    }
+}
+
 impl Default for Spec {
     fn default() -> Spec {
         Spec {
@@ -331,6 +357,7 @@ impl Default for Spec {
             write_acks: "all".into(),
             token_secret: None,
             cluster_token_secret: None,
+            secret_env: Vec::new(),
             resources: None,
             coordinator_resources: None,
             args: Vec::new(),
@@ -348,25 +375,35 @@ impl Spec {
     /// The settings every server starts with, as a short hash: a copy
     /// started with another hash runs older settings, and is restarted.
     pub fn server_config(&self) -> String {
-        short_hash(&json!({
+        short_hash(&self.with_secret_env(json!({
             "image": self.image, "imagePullPolicy": self.image_pull_policy, "args": self.args, "resources": self.resources,
             "failoverAfterMs": self.failover_after_ms, "writeAcks": self.write_acks,
             "tokenSecret": self.token_secret, "clusterTokenSecret": self.cluster_token_secret,
-        }))
+        })))
     }
 
     /// The settings every coordinator starts with, as a short hash.
     pub fn coordinator_config(&self) -> String {
-        let mut j = json!({
+        let mut j = self.with_secret_env(json!({
             "image": self.image, "imagePullPolicy": self.image_pull_policy, "resources": self.coordinator_resources,
             "args": self.coordinator_args, "tokenSecret": self.token_secret, "clusterTokenSecret": self.cluster_token_secret,
-        });
+        }));
         // Only when there is one, so that a cluster without one keeps its
         // hash (and its coordinators) across the operator's upgrade.
         if self.crawler.is_some() {
             j["apps"] = json!([crawler::APP]);
         }
         short_hash(&j)
+    }
+
+    /// `settings` with `secretEnv` when there is one: a cluster without it
+    /// keeps the hash it had before there was such a setting, so a new
+    /// operator restarts none of its copies.
+    fn with_secret_env(&self, mut settings: Json) -> Json {
+        if !self.secret_env.is_empty() {
+            settings["secretEnv"] = json!(self.secret_env);
+        }
+        settings
     }
 
     /// The spec but for `rollout`, `autoscale` and `upgrade`, as a short
@@ -422,6 +459,23 @@ impl Spec {
             }
             if self.token_secret.as_ref() == Some(c) {
                 return Err("clusterTokenSecret and tokenSecret name the same Secret: the cluster's token would be the admin's".into());
+            }
+        }
+        let mut names = std::collections::HashSet::new();
+        for e in &self.secret_env {
+            let mut chars = e.name.chars();
+            let first = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+            if !first || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                return Err(format!("secretEnv: {:?} is not an environment variable's name (letters, digits and _, not first a digit)", e.name));
+            }
+            if e.name.starts_with("STRATA_") {
+                return Err(format!("secretEnv: {} is the operator's to set (STRATA_ variables are its own; tokens go in tokenSecret)", e.name));
+            }
+            if !names.insert(e.name.as_str()) {
+                return Err(format!("secretEnv names {} twice", e.name));
+            }
+            if e.secret.is_empty() || e.key.is_empty() {
+                return Err(format!("secretEnv: {} needs a secret, and a key in it", e.name));
             }
         }
         if !matches!(self.write_acks.as_str(), "all" | "majority" | "primary") {
@@ -1910,6 +1964,13 @@ pub fn crd() -> Json {
             "writeAcks": {"type": "string", "enum": ["all", "majority", "primary"], "description": "--write-acks of every primary (default all)."},
             "tokenSecret": {"type": "string", "description": "A Secret whose key token every server and coordinator requires; with clusterTokenSecret, the coordinators only (the admin token)."},
             "clusterTokenSecret": {"type": "string", "description": "A Secret whose key token is the cluster's token (--cluster-token), which the servers and coordinators send each other and clients never hold. Needs tokenSecret."},
+            "secretEnv": {"type": "array", "description": "Environment variables of every server and coordinator taken from Secrets: the keys of models behind an API (ANTHROPIC_API_KEY for the agents, LLM fields and reranking; OPENAI_API_KEY, COHERE_API_KEY, ... for hosted embeddings). Changing it restarts the copies one at a time.", "items": {
+                "type": "object", "required": ["name", "secret"], "properties": {
+                    "name": {"type": "string", "description": "The variable, such as ANTHROPIC_API_KEY."},
+                    "secret": {"type": "string", "description": "The Secret, in the cluster's namespace."},
+                    "key": {"type": "string", "description": "The Secret's key that holds the value (default key)."},
+                },
+            }},
             "resources": free("Resources of each server's container."),
             "coordinatorResources": free("Resources of each coordinator's container."),
             "args": {"type": "array", "items": {"type": "string"}, "description": "More arguments for every server."},
@@ -2120,6 +2181,44 @@ mod tests {
         let l = logged(&logged(&l, Phase::Scaling, "a", 2), Phase::Ready, "b", 3);
         assert_eq!(l, json!([{"atMs": 1, "phase": "Scaling", "message": "a"}, {"atMs": 3, "phase": "Ready", "message": "b"}]));
         assert_eq!(merge_diff(&json!({"a": 1, "b": {"c": 2}}), &json!({"a": 1, "b": {"c": 2}})), json!({}));
+    }
+
+    #[test]
+    fn secret_env_is_checked_and_restarts_only_when_set() {
+        let bad = |e: Json| serde_json::from_value::<Spec>(json!({"demo": 1, "secretEnv": e})).unwrap().check().unwrap_err();
+        assert!(bad(json!([{"name": "1KEY", "secret": "s"}])).contains("not an environment variable's name"));
+        assert!(bad(json!([{"name": "A-KEY", "secret": "s"}])).contains("not an environment variable's name"));
+        assert!(bad(json!([{"name": "", "secret": "s"}])).contains("not an environment variable's name"));
+        assert!(bad(json!([{"name": "STRATA_TOKEN", "secret": "s"}])).contains("the operator's to set"));
+        assert!(bad(json!([{"name": "K", "secret": "a"}, {"name": "K", "secret": "b"}])).contains("twice"));
+        assert!(bad(json!([{"name": "K", "secret": ""}])).contains("needs a secret"));
+        assert!(bad(json!([{"name": "K", "secret": "s", "key": ""}])).contains("needs a secret"));
+        let with: Spec = serde_json::from_value(json!({"demo": 1, "secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}]})).unwrap();
+        with.check().unwrap();
+        assert_eq!(with.secret_env[0].key, "key");
+        // A cluster without it keeps the hashes and version it had before
+        // the setting existed: a new operator restarts none of its copies.
+        let without = Spec { secret_env: Vec::new(), ..with.clone() };
+        let before = |s: &Spec| {
+            let server = json!({
+                "image": s.image, "imagePullPolicy": s.image_pull_policy, "args": s.args, "resources": s.resources,
+                "failoverAfterMs": s.failover_after_ms, "writeAcks": s.write_acks,
+                "tokenSecret": s.token_secret, "clusterTokenSecret": s.cluster_token_secret,
+            });
+            let coordinator = json!({
+                "image": s.image, "imagePullPolicy": s.image_pull_policy, "resources": s.coordinator_resources,
+                "args": s.coordinator_args, "tokenSecret": s.token_secret, "clusterTokenSecret": s.cluster_token_secret,
+            });
+            (short_hash(&server), short_hash(&coordinator))
+        };
+        assert_eq!((without.server_config(), without.coordinator_config()), before(&without));
+        assert!(serde_json::to_value(&without).unwrap().get("secretEnv").is_none());
+        // Setting it (or changing it) is a new version that restarts them.
+        assert_ne!(with.server_config(), without.server_config());
+        assert_ne!(with.coordinator_config(), without.coordinator_config());
+        assert_ne!(with.version(), without.version());
+        let other = Spec { secret_env: vec![SecretEnv { key: "other".into(), ..with.secret_env[0].clone() }], ..with.clone() };
+        assert_ne!(other.server_config(), with.server_config());
     }
 
     #[test]

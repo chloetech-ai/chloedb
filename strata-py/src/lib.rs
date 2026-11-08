@@ -1066,6 +1066,14 @@ fn upgrade(py: Python<'_>, path: PathBuf) -> PyResult<Option<(PathBuf, usize, u6
     Ok(py.detach(|| strata::upgrade::upgrade(&path)).map_err(err)?.map(|u| (u.old, u.tables, u.rows)))
 }
 
+/// The `CREATE TABLE` statement that makes a table of `schema` (JSON
+/// text, either form): how a frame's store adds a table to an open
+/// database.
+#[pyfunction]
+fn create_sql(schema: &str) -> PyResult<String> {
+    Ok(strata::query::ddl::create_sql(&Schema::from_json(schema).map_err(err)?))
+}
+
 #[pymodule]
 fn _strata(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Database>()?;
@@ -1073,6 +1081,7 @@ fn _strata(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<arrow::Arrow>()?;
     m.add_function(wrap_pyfunction!(train_codebook, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
+    m.add_function(wrap_pyfunction!(create_sql, m)?)?;
     m.add("StrataError", m.py().get_type::<StrataError>())?;
     Ok(())
 }
