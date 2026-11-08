@@ -128,7 +128,7 @@ pub(crate) fn needs(q: &sql::Query, schema: &Schema) -> bool {
         TableFactor::Table { name, .. } if is_table(name, schema) => {}
         _ => return true,
     }
-    if orders_by_text(q, s, schema) || filters_rows(s, schema) || orders_by_several(q, s, schema) {
+    if orders_by_text(q, s, schema) || orders_by_row_values(q, s) || filters_rows(s, schema) || orders_by_several(q, s, schema) {
         return true;
     }
     let mut found = false;
@@ -712,6 +712,30 @@ fn orders_by_text(q: &sql::Query, s: &sql::Select, schema: &Schema) -> bool {
     };
     // The first key: a text tie-break (the primary key) the scan orders by.
     !grouped && es.first().is_some_and(|o| text(&o.expr))
+}
+
+/// Whether `q`, a query of one table that does not group, orders by a
+/// value of its rows that the scan's ranking does not compute, which
+/// takes numbers and scores: a text function, a hash (`ORDER BY hash(id,
+/// 7)`, a seeded shuffle) or a part of a time, and no score. The row
+/// evaluator sorts by it, over the rows the table's query finds.
+fn orders_by_row_values(q: &sql::Query, s: &sql::Select) -> bool {
+    let grouped = !matches!(&s.group_by, sql::GroupByExpr::Expressions(es, _) if es.is_empty()) || has_aggregate(s);
+    let Some(sql::OrderBy { kind: sql::OrderByKind::Expressions(es), .. }) = &q.order_by else { return false };
+    let mut found = false;
+    for o in es {
+        if ranks(&o.expr) {
+            return false;
+        }
+        walk(&o.expr, &mut |x| {
+            found |= match x {
+                Expr::Function(f) => matches!(fname(f).as_str(), "lower" | "upper" | "length" | "hash" | "date_trunc" | "date_part" | "strftime"),
+                Expr::Extract { .. } => true,
+                _ => false,
+            }
+        });
+    }
+    !grouped && found
 }
 
 /// The expressions of a SELECT outside its FROM and ORDER BY.
@@ -1468,11 +1492,18 @@ impl<'a> Planner<'a> {
             Some(sql::Distinct::On(_)) => return self.join(&q, &s),
             _ if per_capped(&q) => return self.join(&q, &s),
             // Columns computed from the rows' values, and an order by
-            // text, by the row evaluator.
+            // text or by values of rows, by the row evaluator.
             // Window functions, by operators over the rows.
             // Conditions the indexes cannot answer, and orders by several
             // keys, by the row evaluator over the scan's rows.
-            _ if computes_columns(&q, &s) || orders_by_text(&q, &s, schema) || reads_paths(&q, &s) || windowed(&q, &s) || filters_rows(&s, schema) || orders_by_several(&q, &s, schema) => {
+            _ if computes_columns(&q, &s)
+                || orders_by_text(&q, &s, schema)
+                || orders_by_row_values(&q, &s)
+                || reads_paths(&q, &s)
+                || windowed(&q, &s)
+                || filters_rows(&s, schema)
+                || orders_by_several(&q, &s, schema) =>
+            {
                 return self.join(&q, &s)
             }
             Some(sql::Distinct::Distinct) => distinct_to_group(&mut s)?,
@@ -2953,6 +2984,7 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
                 "date_trunc" => Func::DateTrunc,
                 "date_part" => Func::DatePart,
                 "strftime" => Func::Strftime,
+                "hash" => Func::Hash,
                 n if Func::numeric(n).is_some() => Func::numeric(n).expect("a numeric function"),
                 n if NATIVE.contains(&n) => {
                     return Err(err(format!("{}(...) works on one table's scan, in its WHERE or ORDER BY (in a join, on that table's column: a.body), not on values of rows", n.to_uppercase())))
@@ -3003,7 +3035,7 @@ fn compile_with(e: &Expr, params: &Params, slot: &dyn Fn(&Expr) -> Option<Result
 }
 
 /// What the row evaluator computes, for an error about what it does not.
-const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part and strftime";
+const ROW_EXPRESSIONS: &str = "it computes columns, values and parameters with + - * / %, ||, comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, ILIKE, IS NULL, CASE, CAST, EXTRACT and the functions lower, upper, length, abs, round, coalesce, ln, log, exp, sqrt, pow, least, greatest, sigmoid, clamp, dot, date_trunc, date_part, strftime and hash";
 
 /// The part `EXTRACT(part FROM t)` names, as `date_part` takes it.
 pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
@@ -3019,8 +3051,8 @@ pub(crate) fn extract_part(field: &sql::DateTimeField) -> String {
 /// Why a function is not one the row evaluator knows: the one meant, if
 /// the name is near one, or what there is.
 fn unknown_function(n: &str) -> String {
-    const ROW_FUNCTIONS: [&str; 19] = [
-        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime",
+    const ROW_FUNCTIONS: [&str; 20] = [
+        "lower", "upper", "length", "abs", "round", "coalesce", "ln", "log", "exp", "sqrt", "pow", "least", "greatest", "sigmoid", "clamp", "dot", "date_trunc", "date_part", "strftime", "hash",
     ];
     let hint = match n {
         "substr" | "substring" | "left" | "right" | "trim" | "ltrim" | "rtrim" | "replace" | "concat" | "position" | "instr" | "strpos" | "split_part" | "reverse" => {
@@ -3029,7 +3061,7 @@ fn unknown_function(n: &str) -> String {
         "date" | "year" | "month" | "day" | "hour" | "week" | "to_char" | "datepart" | "datetrunc" | "date_format" | "datediff" | "date_add" | "date_sub" | "dayofweek" | "weekday" => {
             "; a time's parts are date_trunc('day', at) (its day, week, month, ...), EXTRACT(year FROM at) or date_part('dow', at), and strftime('%Y-%m-%d', at); a time later or earlier is at + n or at - n, n in microseconds"
         }
-        "random" | "rand" => "; ORDER BY random() is not supported: Strata orders by columns and scores",
+        "random" | "rand" => "; ORDER BY random() is not supported: for a seeded shuffle, ORDER BY hash(id, 7), and for a sample of about a tenth, WHERE hash(id, 7) % 10 = 0",
         "ifnull" | "nvl" | "isnull" => "; coalesce(x, y) gives x, or y where x is NULL",
         "floor" | "ceil" | "ceiling" | "trunc" | "truncate" => "; round(x) rounds to a whole number, round(x, n) to n decimals",
         "char_length" | "character_length" | "len" => "; length(text) counts its characters",

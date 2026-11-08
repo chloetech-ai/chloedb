@@ -453,6 +453,7 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
             Ok(if r.is_nan() { Value::Null } else { Value::Float(r) })
         }
         Func::DateTrunc | Func::DatePart | Func::Strftime => dates(func, &one, args.get(1).unwrap_or(&Value::Null)),
+        Func::Hash => hash(&one, args.get(1).unwrap_or(&Value::Int(0))),
         // With the kernel similarity() uses, so the two agree to the bit.
         Func::Dot => match (vector(&one)?, vector(args.get(1).unwrap_or(&Value::Null))?) {
             (Some(a), Some(b)) if a.len() == b.len() => Ok(Some(crate::vector::kernels::dot_f32(&a, &b) as f64).filter(|d| d.is_finite()).map_or(Value::Null, Value::Float)),
@@ -460,6 +461,42 @@ pub(crate) fn call(func: Func, args: &[Value]) -> Result<Value> {
             _ => Ok(Value::Null),
         },
     }
+}
+
+/// `hash(x, seed)` ([`Func::Hash`]): the 64-bit FNV-1a of the seed's 8
+/// bytes (little-endian) followed by `x`'s bytes, through SplitMix64's
+/// finalizer ([`crate::inspect::mix64`]), shifted right by one so that it
+/// is an INT from 0 to 2^63 - 1. `x`'s bytes are a text's UTF-8, the
+/// integer of an INT, a BOOL (1 or 0) or a TIMESTAMP (microseconds) as 8
+/// bytes little-endian, and a FLOAT's IEEE 754 bits as 8 bytes
+/// little-endian (-0 as 0). NULL `x` or `seed` gives NULL.
+///
+/// Never change it: a sample or a train/test split made with it is the
+/// same rows only while it gives the same values (tests/hash_function.rs
+/// holds some).
+pub fn hash(x: &Value, seed: &Value) -> Result<Value> {
+    let seed = match seed {
+        Value::Int(s) => *s,
+        Value::Null => return Ok(Value::Null),
+        v => return Err(err(format!("hash's seed is an INT, not {}", sv(v)))),
+    };
+    let mut h: u64 = 0xcbf29ce484222325;
+    let mut eat = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    };
+    eat(&seed.to_le_bytes());
+    match x {
+        Value::Null => return Ok(Value::Null),
+        Value::Str(s) => eat(s.as_bytes()),
+        Value::Int(i) | Value::Timestamp(i) => eat(&i.to_le_bytes()),
+        Value::Bool(b) => eat(&(*b as i64).to_le_bytes()),
+        Value::Float(f) => eat(&(if *f == 0.0 { 0.0f64 } else { *f }).to_bits().to_le_bytes()),
+        v => return Err(err(format!("hash takes one value (text, a number, a BOOL or a TIMESTAMP), not {}", sv(v)))),
+    }
+    Ok(Value::Int((crate::inspect::mix64(h) >> 1) as i64))
 }
 
 /// `date_trunc(unit, t)`, `date_part(part, t)` and `strftime(format, t)`

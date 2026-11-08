@@ -251,13 +251,29 @@ pub async fn refresh(svc: &Service) {
 }
 
 /// This server's searches over the fleet health windows, for the other
-/// coordinators (`GET /v1/coordinators?window=1`).
-pub fn window_json(app: &App) -> Json {
+/// coordinators (`GET /v1/coordinators?window=1`), and, on a coordinator,
+/// the copies its last survey found not answering (`unreached`, by URL,
+/// and `surveyed_ms`, when that survey began): so that each coordinator's
+/// Home tells a copy that is down from one that this or another
+/// coordinator alone cannot reach.
+pub async fn window_json(app: &App) -> Json {
     let now = now_ms();
     let points = app.series.since(now.saturating_sub(crate::fleet::WINDOW_S * 1000));
     let w = crate::fleet::Window::of(&points);
     let r = crate::fleet::Window::since(&points, now.saturating_sub(crate::fleet::RECENT_S * 1000));
-    json!({"window": w.json(), "recent": r.json(), "window_s": crate::fleet::WINDOW_S, "recent_s": crate::fleet::RECENT_S, "at_ms": now})
+    let mut j = json!({"window": w.json(), "recent": r.json(), "window_s": crate::fleet::WINDOW_S, "recent_s": crate::fleet::RECENT_S, "at_ms": now});
+    if let Backend::Cluster(c) = &app.backend {
+        let snap = c.snapshot_within(Duration::from_secs(10)).await;
+        j["unreached"] = json!(unreached(&snap));
+        j["surveyed_ms"] = snap["at_ms"].clone();
+    }
+    j
+}
+
+/// The copies of a cluster snapshot that did not answer it, by URL.
+pub fn unreached(snap: &Json) -> Vec<String> {
+    let copies = snap["shards"].as_array().into_iter().flatten().flat_map(|s| s["replicas"].as_array().into_iter().flatten());
+    copies.filter(|r| r["status"] == "down").filter_map(|r| r["url"].as_str().map(String::from)).collect()
 }
 
 /// Asks every other coordinator for its searches ([`window_json`]).
@@ -267,7 +283,7 @@ async fn fetch_windows(svc: &Service) {
     let mut w = svc.peers.windows.write().unwrap_or_else(|e| e.into_inner());
     w.retain(|_, (t, _)| *t + LIVE_MS > now);
     for (p, a) in answers {
-        w.insert(p.url, (now, a.map(|j| j["window"].clone())));
+        w.insert(p.url, (now, a.map(|mut j| j["window"].take())));
     }
 }
 
@@ -284,6 +300,8 @@ pub fn windows(app: &App) -> Vec<crate::fleet::PeerWindow> {
                 Some((t, Ok(j))) if t + 20_000 > now && j.is_object() => {
                     pw.window = crate::fleet::Window::from_json(&j["window"]);
                     pw.recent = crate::fleet::Window::from_json(&j["recent"]);
+                    pw.unreached = j["unreached"].as_array().map(|v| v.iter().filter_map(|u| u.as_str().map(String::from)).collect());
+                    pw.surveyed_ms = j["surveyed_ms"].as_u64().unwrap_or(0);
                 }
                 Some((t, Err(e))) if t + 20_000 > now => pw.error = Some(e.clone()),
                 _ => pw.error = Some(format!("{}: not asked yet", p.name)),
