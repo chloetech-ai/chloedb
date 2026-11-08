@@ -879,6 +879,40 @@ CI runs `strata-sim` after the server's tests on every change: the first 3,000 s
 
 The simulator does not cover the database's own threads and files (the fault-injection tests do), nor the shards' copies within a cluster: each shard of the second world is one server.
 
+### The chaos monkey
+
+`strata-chaos`, built with the server, breaks a real cluster rather than a model of one. It starts strata-server processes on this machine (by default two shards of three copies with `--failover-after-ms 2000`, two spare servers to replace copies with or to add as shards, and two coordinators), puts clients on it that search, read rows by key and add 1 to counters through the coordinators, and then injects faults. Each server's gRPC port sits behind a proxy of its own, which the cluster map names, so that every call between servers crosses it; each process runs as a uid of its own, so that firewall rules can cut one off from another; and with `--disk-mb` each server's data sits on a tmpfs of that size, so that its disk can fill. A supervisor starts again a process that exits, after `--restart-after-ms` (5 s), doubling while it keeps exiting soon after it starts, as a Kubernetes StatefulSet would; a process held down (a lost node) stays down.
+
+| fault | what it stands for |
+|---|---|
+| `kill`, `stop` | a crash the pod comes back from; a node lost until healed |
+| `pause` | a frozen VM or a long stall (SIGSTOP), until healed or for `--ms` |
+| `slow-cpu` | CPU throttling: stopped `--pct` of every 100 ms |
+| `delay` | a slow network to a server: `--ms` each way on its gRPC port |
+| `isolate`, `cut` | a partition: a server cut off from every other process, or the calls from one to another (`--oneway`) |
+| `disk-fill` | a ballast file leaving `--free-mb` on its disk |
+| `corrupt` | bit rot: bytes flipped in its largest data file, then a restart |
+| `wipe` | a pod rescheduled without its volume: it starts again empty |
+| `bad-token` | a bad configuration: started again with a wrong `--cluster-token` |
+| `flood` | a runaway report job: `--clients` heavy queries without pause, under a key of its own |
+| `hot-shard` | a hot partition: writers adding to a few keys of one shard as fast as they are answered |
+
+A target is a process's name (`node4`, `coord1`) or a role, resolved against the map the coordinators route by: `primary:N`, `replica:N`, `replicas:N`, `shard:N`, `coord`, `any-copy`, `any-replica`.
+
+```sh
+cd strata-server && cargo build --profile ci --bin strata-server --bin strata-chaos
+sudo ./target/ci/strata-chaos up --dir /tmp/strata-chaos --disk-mb 512   # the cluster, its clients and a control API; Ctrl-C ends it
+./target/ci/strata-chaos inject kill primary:0                            # from another shell
+./target/ci/strata-chaos inject isolate primary:1
+./target/ci/strata-chaos status                                          # processes, the map, Home's headline, the alerts, what the clients see
+./target/ci/strata-chaos heal --all
+./target/ci/strata-chaos check                                           # the counters against what was acknowledged
+sudo ./target/ci/strata-chaos run --dir /tmp/strata-chaos --disk-mb 512  # every scenario in turn: results.json and results.md
+sudo ./target/ci/strata-chaos run --monkey 1800 --seed 7                 # 30 minutes of random faults, then the check
+```
+
+`up` prints the command center's address with its token, so the cluster can be watched, and fixed, from the UI while faults come and go. The writers keep a ledger of each counter's adds that were acknowledged and of those that may have applied (answered in doubt, a timeout, a dropped connection); `check` holds the writes, reads every counter and reports any below its acknowledged count (a lost write) or above what may have applied (a write applied twice). `run` plays each scenario (`--list` lists them: crashes, lost nodes, a lost majority, a shard down, a frozen primary, a partitioned primary, a coordinator cut from a replica, slow networks and CPUs, a full disk, bit rot, a lost volume, a wrong token, a flood, a hot shard, a coordinator crash, a coordinator dying while it moves slots) with what brings the cluster back (Kubernetes restarting a pod, the network healing, or the admin call a command center button makes), and records for each the clients' calls by kind and outcome, second by second, when the coordinators' fleet health (Home) and alerts first showed it and when they cleared, how long the clients took to see 10 s without a failure, and the counters' check; `events.jsonl` holds what happened, in order. Cutting links needs iptables and filling disks a tmpfs, so both need Linux and root; the other faults run anywhere. `cargo test --test chaos` runs one scenario, a primary killed under writes, on a shard of three copies.
+
 ### Reads that see a write
 
 A write's answer carries its sequence number (`seq_no`). A read with `"min_seq_no": n` (`/v1/query`, `/v1/sql`, `/v1/plan`, `/v1/term_stats`; `QueryRequest.min_seq_no` over gRPC) reads a version that holds transaction n, so a client reads its own writes from any copy:
