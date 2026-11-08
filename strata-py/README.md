@@ -34,7 +34,7 @@ for row in db.table().where(col("year") >= 1990).order_by(bm25("title", "dragon"
 ```
 
 Frames are lazy dataframes over tables, run where the data is (pyarrow
-needed: `pip install "strata-db[frame]"`):
+needed: `pip install "strata-db[frame]" -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0`):
 
 ```python
 import strata
