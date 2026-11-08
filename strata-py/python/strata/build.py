@@ -342,6 +342,15 @@ class Expr:
         """The expression, or `value` where it is NULL (`COALESCE`)."""
         return _SqlCall("coalesce", [self, value])
 
+    def hash(self, seed: Any = 0) -> Expr:
+        """An int from 0 to 2^63 - 1 that only the value and `seed` (an
+        int, or another hash to chain columns) decide, the same on every
+        machine and in every version (SQL's `hash`): for a seeded sample,
+        split or shuffle. NULL for a NULL value."""
+        if isinstance(seed, bool) or not isinstance(seed, (int, Expr)):
+            raise StrataError(f"hash's seed is an int, not {seed!r}")
+        return _SqlCall("hash", [self, seed], f"{self!r}.hash({seed!r})")
+
     def cast(self, dtype: Any) -> Expr:
         """The expression as another type: "int", "float", "str" (TEXT),
         "bool" or "timestamp", or the Python types int, float, str and

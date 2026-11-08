@@ -371,6 +371,7 @@ fn expr(e: &Expr) -> E {
                 Func::DateTrunc => pb::Func::DateTrunc,
                 Func::DatePart => pb::Func::DatePart,
                 Func::Strftime => pb::Func::Strftime,
+                Func::Hash => pb::Func::Hash,
             } as i32,
             args: args.iter().map(ex).collect(),
         }),
@@ -731,6 +732,7 @@ fn from_expr(e: E) -> Result<Expr, ApiError> {
                 pb::Func::DateTrunc => Func::DateTrunc,
                 pb::Func::DatePart => Func::DatePart,
                 pb::Func::Strftime => Func::Strftime,
+                pb::Func::Hash => Func::Hash,
             };
             Expr::Call { func, args: from_exprs(c.args)? }
         }
