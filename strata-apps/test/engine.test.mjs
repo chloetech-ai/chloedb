@@ -8,7 +8,7 @@ import { parseAnswer, ask } from '../engine/llm.mjs';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan } from '../engine/forge.mjs';
+import { validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode } from '../engine/forge.mjs';
 import { readLibrary, parsePiece, parseTables } from '../engine/library.mjs';
 import { linksOf, appDocs, parseLinks } from '../engine/graph.mjs';
 import { checkFunction, runFunction } from '../engine/sandbox.mjs';
@@ -391,4 +391,26 @@ test('a build\'s timeline names what was used, copied, forked, rewritten, writte
   assert.ok(by('remove', 'old'));
   assert.ok(by('keep', 'dialog'), 'a shared piece the app had, kept');
   assert.ok(decisions.every((d) => d.t === 42));
+});
+
+test('a screen view is data in the plan: checked for shape, expressions, SQL and form columns', async () => {
+  const screen = {
+    state: { filter: 'all' },
+    data: { notes: 'SELECT * FROM notes LIMIT 50' },
+    let: { shown: "=notes.filter(n => state.filter === 'all' || n.tag === state.filter)" },
+    body: [{ h: 'Notes' }, { form: 'notes', fields: [{ name: 'body', type: 'textarea' }] }, { table: '=shown', columns: [{ key: 'body' }] }, { ui: 'barChart', props: { items: '=[]' } }],
+  };
+  const plan = { tables: [{ name: 'notes', columns: [{ name: 'body', type: 'text' }, { name: 'tag', type: 'keyword' }] }], views: [{ slug: 'home', title: 'Home', screen }] };
+  const code = screensToCode(plan, {});
+  assert.equal(JSON.parse(code.home).body[0].h, 'Notes');
+  assert.deepEqual(await validate(plan, code, empty, [], new Map([['component/barChart', {}]])), []);
+  assert.deepEqual([...sharedRefs(code.home)], ['component/barChart']);
+  // A JSON code block for a view is taken as its screen.
+  const plan2 = { views: [{ slug: 'home' }] };
+  const code2 = screensToCode(plan2, { home: JSON.stringify(screen) });
+  assert.ok(plan2.views[0].screen && code2.home.includes('"Notes"'));
+  const cols = (t) => (t === 'notes' ? new Set(['id', 'created', 'body']) : null);
+  const p = checkScreen({ data: { a: 'DELETE FROM notes', b: '=app.call(' }, body: [{ wat: 1 }, { form: 'tasks', fields: ['x'] }, { form: 'notes', fields: ['body', 'nope'] }, { if: '=a.length >', then: ['ok'] }, { code: 'root.append(1)' }] }, cols);
+  for (const want of ['only SELECT', 'data.b', 'unknown block', 'table "tasks"', 'nope is not a column', 'body[3].if', 'render(root, ctx)']) assert.ok(p.some((x) => x.includes(want)), `${want}: ${p.join(' | ')}`);
+  assert.deepEqual(checkScreen([]), ['the screen must be a JSON object with "body"']);
 });

@@ -136,6 +136,9 @@
       return h('div', { class: cls }, list.map((item, i) => {
         const inner = scope({ ...s, [b.as || 'item']: item, index: i });
         const kids = blocks(b.body, inner, `${path}.body`);
+        // An item that is one card already is not boxed again.
+        const one = Array.isArray(b.body) && b.body.length === 1 && b.body[0] && typeof b.body[0] === 'object' && (b.body[0].card !== undefined || b.body[0].ui !== undefined);
+        if (one && kids.length === 1 && kids[0]) return kids[0];
         return cls === 'list' ? h('div', { class: 'item' }, kids) : cls === 'grid' ? h('div', { class: 'card col' }, kids) : h('div', { class: 'col' }, kids);
       }));
     }
