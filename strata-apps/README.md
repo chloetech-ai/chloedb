@@ -1,0 +1,117 @@
+# strata-apps: apps that are built from a description and grow
+
+A prototype of the idea in the doc
+[Strata as a self-extending app engine](https://claude.ai/artifact/K7nVdw9VKT4d9u9QGDb35e):
+an app is data in Strata, made of capabilities (tables, views, server
+functions) that a model writes and the engine checks, stores and runs.
+
+- **Start from a description.** "A reading list: I paste a link with a title
+  and a note, tag it, and mark it read." The forge asks the model for the
+  first version: tables, the views (screens) and any server functions, with
+  their code. The engine checks the code, creates the tables, stores every
+  capability as a row in Strata and puts the app live.
+- **Ask for changes.** "Let me star a link", "add a Stats tab with a weekly
+  chart". Each change is a new version of the app: the changed capabilities
+  are new rows, and a version is a row listing the capabilities it is made
+  of, so going back is one click. Tables only grow, so data survives every
+  change and every step back.
+- **It suggests, from what you do.** Each build proposes three next steps,
+  and the engine records what you do (views opened, rows added and changed,
+  actions the views report). After 25 actions, or when you ask, it reads that
+  use and suggests changes that it points to.
+- **It reuses.** Before writing anything the forge searches the library of
+  every capability any app has built (BM25 over what each one is and its
+  code) and either reuses one as it is or forks it.
+- **It repairs itself.** A view or function that fails at run time is sent
+  back to the forge with its error, once per version, and the fixed version
+  replaces it while the app stays open.
+- **Everything is live.** The engine follows Strata's feed of committed
+  writes, so every open window sees new rows and new versions as they land,
+  whoever wrote them (another window, a trigger, another client of the
+  database).
+
+## Run it
+
+You need Node.js 20 or later, Claude Code signed in (`claude` on the PATH:
+the engine calls `claude -p`, so it uses your Claude Code sign-in and needs no
+API key of its own), and strata-server, which `run.sh` builds when it finds
+none (Rust needed for that).
+
+```bash
+cd strata-apps
+./run.sh                     # http://127.0.0.1:7730/
+```
+
+`run.sh` starts strata-server on `127.0.0.1:7720` with its database in
+`strata-apps/data/apps.strata`, and the engine on `127.0.0.1:7730`. Options:
+
+| | |
+|---|---|
+| `--port N`, `--host H` | where the studio listens |
+| `--data DIR` (or `STRATA_APPS_DATA`) | where the engine keeps its database |
+| `--strata URL` (or `STRATA_URL`, with `STRATA_TOKEN`) | use a strata-server that is already running (started with `--seq-no` for live updates) |
+| `STRATA_SERVER_BIN` | the strata-server to start |
+| `STRATA_APPS_MODEL` | the model (default `claude-opus-5-5`) |
+| `STRATA_APPS_CLAUDE` | the Claude Code binary (default `claude`) |
+| `STRATA_APPS_AUTOREPAIR=0` | do not send failing capabilities back to the forge |
+
+A first version takes the model 40 to 90 seconds; a change about as long.
+
+## What is where
+
+| | |
+|---|---|
+| `engine/server.mjs` | HTTP API, live updates (server-sent events), the request queue, repairs, suggestions from use |
+| `engine/forge.mjs` | the forge: the prompt, the context it reads from Strata (the app's code, tables, sample rows, what you did, library matches), the checks, and applying a plan as the next version |
+| `engine/engine.mjs` | the runtime: SQL, inserts, updates, removes and function calls on an app's data; triggers; events; following Strata's feed |
+| `engine/store.mjs` | the system tables in Strata and the app's tables |
+| `engine/sql.mjs` | rewrites `FROM tasks` to the app's physical table and refuses anything but one `SELECT` over the app's own tables |
+| `engine/sandbox.mjs` | server functions run in QuickJS compiled to WebAssembly: a fresh interpreter per call, 64 MiB, 10 s, no network, files or Node APIs, `app.*` calls only |
+| `engine/llm.mjs` | the model, through `claude -p` with tools, settings and MCP switched off |
+| `web/` | the studio, and the runtime (`frame.js`, `kit.css`) each view runs with in a sandboxed frame |
+
+In Strata:
+
+| table | holds |
+|---|---|
+| `sa_apps` | each app and its live version (`head`) |
+| `sa_capabilities` | every capability ever written, one row per version, with its code: `id` is `app/kind/slug@version` |
+| `sa_compositions` | each version of each app: the capability ids it is made of, the request and a summary |
+| `sa_requests` | requests to the forge, with their progress log, cost and errors |
+| `sa_events` | what people did in each app |
+| `sa_suggestions` | suggestions, from builds and from use |
+| `app_<app>_<table>` | each app's data |
+
+## How views and functions run
+
+A **view** is JavaScript that defines `async function render(root, app)`. The
+studio runs it in an `<iframe sandbox="allow-scripts ...">` with no same
+origin and a content security policy that blocks the network, so a view can
+reach data only through `app`, whose calls go to the studio as messages and
+from there to the engine: `app.sql` (one `SELECT`, over the app's own tables),
+`app.insert`, `app.update`, `app.remove`, `app.call`, `app.onChange`,
+`app.open`, `app.track`.
+
+A **function** is JavaScript that defines `function run(input, app)`. It runs
+on the server in QuickJS (WebAssembly), with the same `app` calls answered by
+the engine synchronously, and may be a trigger (`on: {table, event}`) that
+runs after each insert, update or delete of a table.
+
+The forge's checks: the plan's shape, names and types; types of existing
+columns never change; every view parses and defines `render`, uses no
+`fetch`, `import` or `localStorage`; every function compiles in QuickJS,
+defines `run` and uses no `async`; triggers name tables that exist. An answer
+that fails gets one more try with the problems listed.
+
+## What it is not (yet)
+
+A prototype for one person on one machine: no accounts, no sharing of apps
+between people, no limit on what a request costs, and a capability that
+passes the checks can still be wrong (the repair loop and going back are the
+safety net). The doc lists what a real version needs.
+
+## Tests
+
+```bash
+npm test     # the SQL rewrite, the answer parser, the plan checks, the sandbox
+```
