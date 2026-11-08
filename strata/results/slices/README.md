@@ -7,8 +7,8 @@ with the cloud's statistics, plus enough to know when the device's answer
 is the cloud's. The question is how much traffic a slice of a given size
 answers alone, for search (MS MARCO passages, searched by ORCAS's queries,
 by the AOL log's and by ideal Zipf traffic over AOL's strings), for places
-near the user (New York's places, searched by Foursquare check-ins) and for
-recommendations (Yambda-50M).
+near the user (New York's and Houston's places, searched by Foursquare
+check-ins) and for recommendations (Yambda-50M).
 
 Everything ran in one cloud container (Intel Xeon @ 2.30GHz, 4 cores,
 15 GB, Linux 6.18) on 2026-11-07 and 08. The numbers are shares of queries and
@@ -29,7 +29,12 @@ the device within 5% of the cloud's NDCG@10.
   86.7%, against the cloud's ranking by text and distance. Over category
   and name searches together, 85.1% and 71.1%. The bound works here
   because a place outside the square scores at most its text score faded
-  by its distance.
+  by its distance. In Houston, a sparser city
+  ([below](#a-sparser-city-houston)), the same share takes a 9 km square,
+  which is smaller in bytes (3.0 MB at the median, 3.9 MB at the 90th
+  percentile, 85.0% of category top 10s): what sets the slice is the number
+  of places around the user, about 20,000 to 40,000 in both cities, not
+  the square's width.
 - **Search over text alone passes Gate A when the traffic's head is heavy,
   and fails on AOL's.** The gate passes once the 10,000 most searched strings carry about
   a third of all searches.
@@ -642,7 +647,78 @@ What this does not settle: the demand is check-ins from 2012 standing in
 for searches, and today's places were matched to them. The ranking has no
 ratings or popularity; a boost with a known maximum, such as a rating,
 multiplies the bound by that maximum and keeps the proof exact, but proves
-less. And this is one dense city.
+less. And New York is dense; Houston is the sparser case.
+
+### A sparser city: Houston
+
+The same study on Houston, where a box of about the same size holds less
+than half as many places and people search farther from home.
+
+- **Places:** Overture's places in a box around Houston (lon -95.63 to
+  -95.11, lat 29.53 to 29.99), 283,039 of them; 194,966 kept by the same
+  rules ([`geo-houston/prep.json`](geo-houston/prep.json)).
+- **Demand:** Foursquare's global check-ins of April 2012 to September 2013
+  (Yang et al., ACM TIST 2015 and JNCA 2015) inside that box: 65,460
+  check-ins by 2,592 users, read the same way as New York's. They give
+  48,382 `category` searches over 336 queries and 27,335 `name` searches
+  over 2,728 names ([`geo-houston/searches.json`](geo-houston/searches.json)).
+  The median search is made 4.3 km from home (2.8 km in New York), the
+  90th percentile 16.8 km.
+
+The two cities with the square following the user, d0 1 km:
+
+<!-- report:geo-cities -->
+| city | places | median search from home | square's side | slice MB, median / 90th pct | category: top 3 proved | category: top 10 proved | name: top 1 proved | name: top 10 proved |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| New York | 477,995 | 2.8 km | 5 km | 5.4 / 14.6 | 94.8% | 86.7% | 88.3% | 47.2% |
+| New York | 477,995 | 2.8 km | 9 km | 17.4 / 23.3 | 98.6% | 96.2% | 97.7% | 81.8% |
+| Houston | 194,966 | 4.3 km | 5 km | 1.1 / 1.8 | 81.7% | 61.1% | 74.4% | 17.8% |
+| Houston | 194,966 | 4.3 km | 9 km | 3.0 / 3.9 | 92.6% | 85.0% | 95.5% | 64.7% |
+<!-- /report -->
+
+Houston's squares, following the user
+([`geo-houston/eval.json`](geo-houston/eval.json),
+[`geo-houston/bytes.json`](geo-houston/bytes.json)):
+
+<!-- report:geo-houston -->
+| searches | square's side | places, median / 90th pct | slice MB, median / 90th pct | top 1 proved | top 3 proved | top 10 proved | top 10 the cloud's (proved or not) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| category | 1 km | 355 / 998 | 0.2 / 0.3 | 1.1% | 0.1% | 0.0% | 3.2% | 0 |
+| category | 3 km | 2,576 / 6,050 | 0.5 / 1.0 | 66.0% | 41.7% | 15.0% | 59.0% | 0 |
+| category | 5 km | 7,002 / 11,709 | 1.1 / 1.8 | 90.4% | 81.7% | 61.1% | 81.7% | 0 |
+| category | 9 km | 19,878 / 26,391 | 3.0 / 3.9 | 96.1% | 92.6% | 85.0% | 89.7% | 0 |
+| category | 19 km | 60,833 / 75,566 | 8.7 / 10.7 | 98.4% | 97.0% | 93.8% | 95.8% | 0 |
+| name | 1 km | 355 / 998 | 0.2 / 0.3 | 1.1% | 0.0% | 0.0% | 2.4% | 0 |
+| name | 3 km | 2,576 / 6,050 | 0.5 / 1.0 | 34.4% | 5.7% | 1.0% | 44.8% | 0 |
+| name | 5 km | 7,002 / 11,709 | 1.1 / 1.8 | 74.4% | 45.3% | 17.8% | 67.6% | 0 |
+| name | 9 km | 19,878 / 26,391 | 3.0 / 3.9 | 95.5% | 85.6% | 64.7% | 84.1% | 0 |
+| name | 19 km | 60,833 / 75,566 | 8.7 / 10.7 | 99.1% | 95.6% | 89.5% | 94.8% | 0 |
+
+Over both kinds (75,717 searches), the 5 km square proves the top 3 of 68.6% and the top 10 of 45.5%; the 9 km square 90.1% and 77.7%.
+<!-- /report -->
+
+Square for square, Houston proves less: its 5 km square proves the top 10
+of 61.1% of category searches, against 86.7% in New York. A square around
+the user holds fewer places (7,002 at the median for 5 km, against 38,711),
+so its k-th best match is weaker and the bound from outside beats it more
+often. Megabyte for megabyte it proves more, since its squares are small:
+the 9 km square, 3.0 MB at the median and 3.9 MB at the 90th percentile,
+proves the top 10 of 85.0% of category searches and the top 1 of 95.5% of
+name searches, about what New York's 5 km square (5.4 / 14.6 MB) does. The
+19 km square (8.7 / 10.7 MB) proves 93.8% of category top 10s and 89.5% of
+name top 10s.
+
+So a slice is better sized by its number of places than by its width.
+About 20,000 places around the user in Houston and 39,000 in New York (the
+median 9 km and 5 km squares) prove the top 10 of 85% or more of category
+searches, at about 150 bytes a place. The table of every word's best score
+is smaller too (62,104 words, about 0.5 MB unpacked).
+
+The rest holds as in New York. The gentler fade (d0 3 km) needs the 19 km
+square here: there it proves 93.5% of category top 10s and 84.6% of name
+top 10s, against 66.4% and 10.9% at 9 km. A square fixed at home does
+worse than in New York, since people search farther from home: 63.9% of
+category top 10s at 19 km (78.1% in New York). Not one proof was wrong.
 
 ## Recommendations: Yambda-50M
 
@@ -786,6 +862,10 @@ curl -LO http://www-public.imtbs-tsp.eu/~zhang_da/pub/dataset_tsmc2014.zip && un
 cd - && G="--work $HOME/data/geo/work --checkins $HOME/data/geo/dataset_tsmc2014/dataset_TSMC2014_NYC.txt"
 python geo.py $G prep && python geo.py $G searches && python geo.py $G eval && python geo.py $G bytes
 cp ~/data/geo/work/{prep,searches,eval,bytes,maxima}.json geo/
+curl -L -o ~/data/geo/dataset_TIST2015.zip https://huggingface.co/datasets/Davidham3/FourSquare_Global/resolve/main/dataset_TIST2015.zip  # a mirror, md5 fb4939a5a1ba3fd92d18ec7c47c96f9a
+H="--city houston --work $HOME/data/geo/houston --checkins $HOME/data/geo/houston/checkins.txt --tist $HOME/data/geo/dataset_TIST2015.zip"
+python geo.py $H tist && python geo.py $H prep && python geo.py $H searches && python geo.py $H eval && python geo.py $H bytes
+cp ~/data/geo/houston/{prep,searches,eval,bytes,maxima}.json geo-houston/
 python report.py
 ```
 
@@ -793,4 +873,5 @@ On the container above the ORCAS side takes under an hour (each load of
 the 8.8 million passages about 4 minutes, the cloud top 10 of a million
 queries about 6) and about 8 GB of disk; the AOL side about 40 minutes more
 and 3 GB, each Zipf run about 20 minutes and 3 GB, and the geo side about
-25 minutes and half a GB.
+25 minutes and half a GB for New York, and 5 minutes and 130 MB for
+Houston (after the 776 MB check-in zip).
