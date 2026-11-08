@@ -7,7 +7,7 @@ Strata is to search what SQLite is to relational data: a library that keeps a wh
 Around the library:
 
 - **[strata-server](docs/strata/server.md)** serves a database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Several servers run as shards behind a coordinator that answers like one database, and a primary ships its writes to replicas.
-- **[strata-py](docs/strata/python.md)** runs a database inside a Python process, the way `sqlite3` runs SQLite, or talks to a server with the same methods.
+- **[strata-py](docs/strata/python.md)** runs a database inside a Python process, the way `sqlite3` runs SQLite, or talks to a server with the same methods. Its [frames](docs/strata/frames.md) are lazy dataframes written as Polars writes them (filters, groups, joins, windows, and search as verbs), run as one SQL query where the data is, with the answer as Arrow for pandas, Polars and NumPy.
 - **[strata-java](docs/strata/java.md)** runs a database inside a Java process (Java 11 and later) over JNI, the way sqlite-jdbc runs SQLite: no server. It is a JDBC driver too: `jdbc:strata:books.strata`.
 - **[strata-js](docs/strata/javascript.md)** does the same from JavaScript: a Strata file opened inside a Node, Bun or Deno process with no server, or a `fetch` client of a server for any runtime, browsers included.
 - **[Parquet and S3](docs/strata/parquet.md)**: `strata-server import` reads Parquet files and directories of them as Spark writes them (Hive partitions too) into a table, `export` writes tables to Parquet that Spark, DuckDB, polars and pandas read, and either takes `s3://` URLs; from Python, `db.import_arrow` takes any Arrow table or dataframe.

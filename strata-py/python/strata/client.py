@@ -17,6 +17,7 @@ from typing import Any, Iterable, Mapping
 from ._search import Search, ordered_schema, params as _params
 from ._native import StrataError
 from .build import Query
+from .frame import FrameStore, _UPLOAD_ROWS, _arrow_table, _client_arrow
 from .result import Result
 
 # Rows a write request carries.
@@ -51,7 +52,7 @@ def _retry_after(headers: Any) -> float:
         return 1.0
 
 
-class Client(Search):
+class Client(Search, FrameStore):
     """A strata-server at `url` ("http://host:7700"). `token` is the
     server's --token, if it has one. Errors the server reports raise
     `StrataError`; one it cannot be reached raises `urllib.error.URLError`.
@@ -461,6 +462,42 @@ class Client(Search):
             if os.path.exists(part):
                 os.remove(part)
         return headers.get("x-strata-tables") or ""
+
+    # What frames need of a store (FrameStore). Until the server answers in
+    # Arrow, a frame's answer comes as JSON and is typed here by the
+    # fields its columns read; rows go up as Parquet.
+
+    def _frame_arrow(self, sql: str, params: Mapping[str, Any], types: Mapping[str, dict]) -> Any:
+        return _client_arrow(self.query(sql, params), types)
+
+    def _explain(self, sql: str, params: Mapping[str, Any]) -> list[str]:
+        return list(self.explain(sql, params).get("tree") or [])
+
+    def _plan_parquet_file(self, path: str, table: str, key: str | None) -> dict:
+        return self.plan_parquet(path, table=table, key=key)
+
+    def _create(self, schema: Mapping[str, Any]) -> None:
+        self.sql(self._call("POST", "/v1/schema/check", dict(schema))["sql"])
+        self._schema = None
+
+    def _load(self, table: str, data: Any) -> dict:
+        import io
+
+        import pyarrow.parquet
+
+        t = _arrow_table(data)
+        rows = 0
+        for start in range(0, max(t.num_rows, 1), _UPLOAD_ROWS):
+            part = t.slice(start, _UPLOAD_ROWS)
+            if part.num_rows == 0:
+                break
+            buf = io.BytesIO()
+            pyarrow.parquet.write_table(part, buf, compression="zstd")
+            body = buf.getvalue()
+            query = urllib.parse.urlencode({"format": "parquet", "table": table})
+            r = self._call("POST", "/v1/import?" + query, data=body, headers={"content-length": str(len(body)), "content-type": "application/vnd.apache.parquet"})
+            rows += int(r.get("rows", part.num_rows))
+        return {"table": table, "rows": rows}
 
     def ask(self, question: str, *, model: str | None = None, effort: str | None = None, api_key: str | None = None, max_steps: int | None = None) -> dict:
         """Asks the server's agent a question about the data: {answer,
