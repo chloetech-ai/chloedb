@@ -32,7 +32,7 @@ use crate::error::{Error, Result};
 #[cfg(feature = "hosted")]
 mod client;
 #[cfg(feature = "hosted")]
-pub use client::{HostedEmbedder, HostedReranker};
+pub use client::{Generator, HostedEmbedder, HostedReranker};
 
 /// Query texts whose vectors a model keeps.
 pub const QUERY_CACHE: usize = 4096;
@@ -104,18 +104,23 @@ struct Provider {
     /// The name of the parameter that asks for fewer dimensions.
     dim_param: &'static str,
     /// Its cross-encoders' API, if it has one: the path under `base`, the
-    /// wire format, and the texts a request carries at most.
+    /// wire format, and the texts a request carries at most. A language
+    /// model's API ([`RerankApi::grades`]) grades one text a request.
     rerank: Option<(&'static str, RerankApi, usize)>,
+    /// Whether it has embedding models (Anthropic's API has none).
+    embeds: bool,
 }
 
 const PROVIDERS: &[Provider] = &[
-    Provider { prefix: "openai", api: Api::OpenAi, base: "https://api.openai.com/v1", base_env: "OPENAI_BASE_URL", keys: &["OPENAI_API_KEY"], key_header: "authorization", batch: 256, batch_chars: 400_000, max_chars: 24_000, concurrency: 4, dim_param: "dimensions", rerank: None },
-    Provider { prefix: "cohere", api: Api::Cohere, base: "https://api.cohere.com", base_env: "COHERE_BASE_URL", keys: &["COHERE_API_KEY", "CO_API_KEY"], key_header: "authorization", batch: 96, batch_chars: usize::MAX, max_chars: usize::MAX, concurrency: 4, dim_param: "output_dimension", rerank: Some(("/v2/rerank", RerankApi::Cohere, 1000)) },
-    Provider { prefix: "voyage", api: Api::Voyage, base: "https://api.voyageai.com/v1", base_env: "VOYAGE_BASE_URL", keys: &["VOYAGE_API_KEY"], key_header: "authorization", batch: 128, batch_chars: 300_000, max_chars: usize::MAX, concurrency: 4, dim_param: "output_dimension", rerank: Some(("/rerank", RerankApi::Voyage, 1000)) },
-    Provider { prefix: "gemini", api: Api::Gemini, base: "https://generativelanguage.googleapis.com/v1beta", base_env: "GEMINI_BASE_URL", keys: &["GEMINI_API_KEY", "GOOGLE_API_KEY"], key_header: "x-goog-api-key", batch: 100, batch_chars: usize::MAX, max_chars: 8_000, concurrency: 4, dim_param: "outputDimensionality", rerank: None },
-    Provider { prefix: "mistral", api: Api::OpenAi, base: "https://api.mistral.ai/v1", base_env: "MISTRAL_BASE_URL", keys: &["MISTRAL_API_KEY"], key_header: "authorization", batch: 64, batch_chars: 32_000, max_chars: 24_000, concurrency: 4, dim_param: "output_dimension", rerank: None },
-    Provider { prefix: "jina", api: Api::Jina, base: "https://api.jina.ai/v1", base_env: "JINA_BASE_URL", keys: &["JINA_API_KEY"], key_header: "authorization", batch: 128, batch_chars: 400_000, max_chars: usize::MAX, concurrency: 4, dim_param: "dimensions", rerank: Some(("/rerank", RerankApi::Jina, 1000)) },
-    Provider { prefix: "ollama", api: Api::Ollama, base: "http://localhost:11434", base_env: "OLLAMA_HOST", keys: &[], key_header: "authorization", batch: 32, batch_chars: usize::MAX, max_chars: usize::MAX, concurrency: 2, dim_param: "dimensions", rerank: None },
+    Provider { prefix: "openai", api: Api::OpenAi, base: "https://api.openai.com/v1", base_env: "OPENAI_BASE_URL", keys: &["OPENAI_API_KEY"], key_header: "authorization", batch: 256, batch_chars: 400_000, max_chars: 24_000, concurrency: 4, dim_param: "dimensions", rerank: Some(("/chat/completions", RerankApi::Chat, 1)), embeds: true },
+    Provider { prefix: "cohere", api: Api::Cohere, base: "https://api.cohere.com", base_env: "COHERE_BASE_URL", keys: &["COHERE_API_KEY", "CO_API_KEY"], key_header: "authorization", batch: 96, batch_chars: usize::MAX, max_chars: usize::MAX, concurrency: 4, dim_param: "output_dimension", rerank: Some(("/v2/rerank", RerankApi::Cohere, 1000)), embeds: true },
+    Provider { prefix: "voyage", api: Api::Voyage, base: "https://api.voyageai.com/v1", base_env: "VOYAGE_BASE_URL", keys: &["VOYAGE_API_KEY"], key_header: "authorization", batch: 128, batch_chars: 300_000, max_chars: usize::MAX, concurrency: 4, dim_param: "output_dimension", rerank: Some(("/rerank", RerankApi::Voyage, 1000)), embeds: true },
+    Provider { prefix: "gemini", api: Api::Gemini, base: "https://generativelanguage.googleapis.com/v1beta", base_env: "GEMINI_BASE_URL", keys: &["GEMINI_API_KEY", "GOOGLE_API_KEY"], key_header: "x-goog-api-key", batch: 100, batch_chars: usize::MAX, max_chars: 8_000, concurrency: 4, dim_param: "outputDimensionality", rerank: None, embeds: true },
+    Provider { prefix: "mistral", api: Api::OpenAi, base: "https://api.mistral.ai/v1", base_env: "MISTRAL_BASE_URL", keys: &["MISTRAL_API_KEY"], key_header: "authorization", batch: 64, batch_chars: 32_000, max_chars: 24_000, concurrency: 4, dim_param: "output_dimension", rerank: None, embeds: true },
+    Provider { prefix: "jina", api: Api::Jina, base: "https://api.jina.ai/v1", base_env: "JINA_BASE_URL", keys: &["JINA_API_KEY"], key_header: "authorization", batch: 128, batch_chars: 400_000, max_chars: usize::MAX, concurrency: 4, dim_param: "dimensions", rerank: Some(("/rerank", RerankApi::Jina, 1000)), embeds: true },
+    Provider { prefix: "ollama", api: Api::Ollama, base: "http://localhost:11434", base_env: "OLLAMA_HOST", keys: &[], key_header: "authorization", batch: 32, batch_chars: usize::MAX, max_chars: usize::MAX, concurrency: 2, dim_param: "dimensions", rerank: None, embeds: true },
+    // Claude grades rows in a rerank phase; it has no embedding models (`api` is not used).
+    Provider { prefix: "anthropic", api: Api::OpenAi, base: "https://api.anthropic.com/v1", base_env: "ANTHROPIC_BASE_URL", keys: &["ANTHROPIC_API_KEY"], key_header: "x-api-key", batch: 1, batch_chars: usize::MAX, max_chars: usize::MAX, concurrency: 8, dim_param: "", rerank: Some(("/messages", RerankApi::Anthropic, 1)), embeds: false },
 ];
 
 /// What Strata knows of a hosted model: its dimensions, whether it makes
@@ -178,6 +183,8 @@ pub fn known_model(name: &str) -> Option<&'static Known> {
 }
 
 /// Whether `name` is a hosted model's by its prefix (`openai/...`).
+/// (Anthropic's names too, which [`Endpoint::from_config`] refuses with
+/// why.)
 pub fn is_hosted_name(name: &str) -> bool {
     provider(name).is_some()
 }
@@ -246,13 +253,16 @@ impl Endpoint {
         let empty = J::Object(Default::default());
         let c = Conf { name, c: config.unwrap_or(&empty) };
         c.check(&["api", "url", "base_url", "model", "dim", "key_env", "key_header", "headers", "document_prefix", "query_prefix", "dimensions", "batch", "batch_chars", "max_chars", "concurrency", "retries", "timeout_s"])?;
+        if let Some((p, _)) = provider(name).filter(|(p, _)| !p.embeds) {
+            return Err(c.bad(format!("{} has no embedding models: its models grade rows in a rerank phase (cross_encoder('{name}', ...))", p.prefix)));
+        }
         let prov = provider(name);
         let api = match c.text("api")? {
             Some(a) => Api::parse(&a).ok_or_else(|| c.bad(format!("endpoint.json: api {a:?} is one of openai, cohere, voyage, gemini, jina, ollama")))?,
             None => prov.map(|(p, _)| p.api).ok_or_else(|| c.bad("endpoint.json needs \"api\" (openai, cohere, voyage, gemini, jina or ollama), as the name has no provider's prefix".into()))?,
         };
         // A provider's defaults, or those of the API's own provider.
-        let p = prov.map(|(p, _)| p).unwrap_or_else(|| PROVIDERS.iter().find(|p| p.api == api).expect("every API has a provider"));
+        let p = prov.map(|(p, _)| p).unwrap_or_else(|| PROVIDERS.iter().find(|p| p.api == api && p.embeds).expect("every API has a provider"));
         let model = c.model(prov)?;
         let path = match api {
             Api::OpenAi | Api::Voyage | Api::Jina => "/embeddings".to_string(),
@@ -310,6 +320,12 @@ pub enum RerankApi {
     /// answered with `[{"index", "score"}]`: the model's logit, as a
     /// cross-encoder run here gives it.
     Tei,
+    /// Anthropic's Messages API, `POST /v1/messages`: a Claude model grades
+    /// each text for the query, 0 to 3 ([`grading_prompt`]).
+    Anthropic,
+    /// A chat model's `POST /chat/completions` (OpenAI's, and that of vLLM,
+    /// Ollama, LM Studio and LiteLLM): it grades each text, 0 to 3.
+    Chat,
 }
 
 impl RerankApi {
@@ -319,8 +335,56 @@ impl RerankApi {
             "jina" => RerankApi::Jina,
             "voyage" => RerankApi::Voyage,
             "tei" => RerankApi::Tei,
+            "anthropic" => RerankApi::Anthropic,
+            "chat" | "openai" => RerankApi::Chat,
             _ => return None,
         })
+    }
+
+    /// Whether it is a language model's, which grades one text a request
+    /// instead of scoring a batch.
+    pub fn grades(self) -> bool {
+        matches!(self, RerankApi::Anthropic | RerankApi::Chat)
+    }
+}
+
+/// What a language model is asked to grade `passage` for `query`:
+/// UMBRELA's prompt (Upadhyay et al., 2024), the open reproduction of the
+/// one with which Thomas et al. (SIGIR 2024) found a model agreeing with
+/// searchers as well as human labellers did. The grade is the integer
+/// after `##final score:`, 0 (nothing to do with the query) to 3 (the
+/// exact answer) ([`grade_of`]).
+pub fn grading_prompt(query: &str, passage: &str) -> String {
+    format!(
+        "Given a query and a passage, you must provide a score on an integer scale of 0 to 3 with the following meanings:\n\
+0 = represent that the passage has nothing to do with the query,\n\
+1 = represents that the passage seems related to the query but does not answer it,\n\
+2 = represents that the passage has some answer for the query, but the answer may be a bit unclear, or hidden amongst extraneous information and\n\
+3 = represents that the passage is dedicated to the query and contains the exact answer.\n\n\
+Important Instruction: Assign category 1 if the passage is somewhat related to the topic but not completely, category 2 if passage presents something very important related to the entire topic but also has some extra information and category 3 if the passage only and entirely refers to the topic. If none of the above satisfies give it category 0.\n\n\
+Query: {query}\n\
+Passage: {passage}\n\n\
+Split this problem into steps:\n\
+Consider the underlying intent of the search.\n\
+Measure how well the content matches a likely intent of the query (M).\n\
+Measure how trustworthy the passage is (T).\n\
+Consider the aspects above and the relative importance of each, and decide on a final score (O). Final score must be an integer value only.\n\
+Do not provide any code in result. Provide each score in the format of: ##final score: score without providing any reasoning."
+    )
+}
+
+/// The grade in a model's answer: the digit after its last "final score",
+/// or the answer's only digit, from 0 to 3.
+pub fn grade_of(answer: &str) -> Option<u8> {
+    let lower = answer.to_lowercase();
+    let digit = |s: &str| s.chars().find(|c| c.is_ascii_digit()).and_then(|c| c.to_digit(10)).filter(|&d| d <= 3).map(|d| d as u8);
+    if let Some(i) = lower.rfind("final score") {
+        return digit(&lower[i + "final score".len()..]);
+    }
+    let mut ds = lower.chars().filter(|c| c.is_ascii_digit());
+    match (ds.next(), ds.next()) {
+        (Some(c), None) => digit(&c.to_string()),
+        _ => None,
     }
 }
 
@@ -379,7 +443,7 @@ impl RerankEndpoint {
         let prov = provider(name).filter(|(p, _)| p.rerank.is_some());
         let (api, p) = match c.text("api")? {
             Some(a) => {
-                let api = RerankApi::parse(&a).ok_or_else(|| c.bad(format!("endpoint.json: api {a:?} is one of cohere, jina, voyage, vllm, infinity, litellm, tei")))?;
+                let api = RerankApi::parse(&a).ok_or_else(|| c.bad(format!("endpoint.json: api {a:?} is one of cohere, jina, voyage, vllm, infinity, litellm, tei, anthropic, chat")))?;
                 // The defaults of the name's provider, or of the provider
                 // the API is named for; none for a server's own (vLLM,
                 // Infinity, LiteLLM, TEI).
@@ -388,14 +452,22 @@ impl RerankEndpoint {
             }
             None => match prov {
                 Some((p, _)) => (p.rerank.expect("a reranking provider").1, Some(p)),
-                None => return Err(c.bad("endpoint.json needs \"api\" (cohere, jina, voyage, vllm, infinity, litellm or tei), as the name has no reranking provider's prefix".into())),
+                None => return Err(c.bad("endpoint.json needs \"api\" (cohere, jina, voyage, vllm, infinity, litellm, tei, anthropic or chat), as the name has no reranking provider's prefix".into())),
             },
         };
         let model = c.model(prov)?;
-        let (path, batch) = match p.and_then(|p| p.rerank) {
+        let (path, batch) = match p.and_then(|p| p.rerank).filter(|r| r.1 == api) {
             Some((path, _, batch)) => (path, batch),
-            None => ("/rerank", 32),
+            None => match api {
+                RerankApi::Chat => ("/chat/completions", 1),
+                RerankApi::Anthropic => ("/messages", 1),
+                _ => ("/rerank", 32),
+            },
         };
+        let mut headers = c.headers()?;
+        if api == RerankApi::Anthropic && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("anthropic-version")) {
+            headers.push(("anthropic-version".into(), "2023-06-01".into()));
+        }
         let (url, own_server) = c.url(p, path, env)?;
         let (key, key_from) = c.key(p, own_server, env)?;
         Ok(RerankEndpoint {
@@ -408,13 +480,13 @@ impl RerankEndpoint {
             key_from,
             batch: c.count("batch")?.unwrap_or(batch),
             max_chars: c.count("max_chars")?.unwrap_or(usize::MAX),
-            concurrency: c.count("concurrency")?.unwrap_or(4),
+            concurrency: c.count("concurrency")?.unwrap_or(if api.grades() { 8 } else { 4 }),
             retries: match c.c.get("retries") {
                 None | Some(J::Null) => 2,
                 Some(_) => c.retries()?,
             },
-            timeout: Duration::from_secs(c.count("timeout_s")?.unwrap_or(10) as u64),
-            headers: c.headers()?,
+            timeout: Duration::from_secs(c.count("timeout_s")?.unwrap_or(if api.grades() { 30 } else { 10 }) as u64),
+            headers,
         })
     }
 }
@@ -600,7 +672,14 @@ mod tests {
         let e = RerankEndpoint::from_config("jina/jina-reranker-v2-base-multilingual", None, &env(&[("JINA_API_KEY", "j")])).unwrap();
         assert_eq!((e.api, e.url.as_str(), e.model.as_str()), (RerankApi::Jina, "https://api.jina.ai/v1/rerank", "jina-reranker-v2-base-multilingual"));
         assert!(is_reranker_name("cohere/rerank-v3.5") && is_reranker_name("Voyage/rerank-2"));
-        assert!(!is_reranker_name("openai/text-embedding-3-small") && !is_reranker_name("ms-marco-MiniLM-L-6-v2") && !is_reranker_name("cohere/"));
+        assert!(!is_reranker_name("ms-marco-MiniLM-L-6-v2") && !is_reranker_name("cohere/"));
+        // A language model grades: Claude by Anthropic's API, OpenAI's chat models.
+        assert!(is_reranker_name("anthropic/claude-haiku-5-5") && is_reranker_name("openai/gpt-5-mini"));
+        let e = RerankEndpoint::from_config("anthropic/claude-haiku-5-5", None, &env(&[("ANTHROPIC_API_KEY", "a")])).unwrap();
+        assert_eq!((e.api, e.url.as_str(), e.key_header.as_str(), e.batch), (RerankApi::Anthropic, "https://api.anthropic.com/v1/messages", "x-api-key", 1));
+        assert!(e.headers.contains(&("anthropic-version".to_string(), "2023-06-01".to_string())));
+        let e = RerankEndpoint::from_config("openai/gpt-5-mini", None, &env(&[("OPENAI_API_KEY", "o")])).unwrap();
+        assert_eq!((e.api, e.url.as_str(), e.batch), (RerankApi::Chat, "https://api.openai.com/v1/chat/completions", 1));
         let e = RerankEndpoint::from_config("voyage/rerank-2.5", None, &env(&[])).unwrap_err().to_string();
         assert!(e.contains("$VOYAGE_API_KEY") && e.contains("VOYAGE_BASE_URL"), "{e}");
         // A provider's base URL variable names a server of its API.
@@ -631,8 +710,12 @@ mod tests {
         assert_eq!((e.url.as_str(), e.key.as_deref()), ("https://api.cohere.com/v2/rerank", Some("c")));
         let c = json!({"url": "http://gpu/rerank"});
         assert!(RerankEndpoint::from_config("ours", Some(&c), &env(&[])).unwrap_err().to_string().contains("needs \"api\""));
-        let c = json!({"api": "openai", "url": "http://gpu/rerank"});
+        let c = json!({"api": "triton", "url": "http://gpu/rerank"});
         assert!(RerankEndpoint::from_config("ours", Some(&c), &env(&[])).unwrap_err().to_string().contains("is one of cohere"));
+        // A chat server of one's own grades at its /chat/completions.
+        let c = json!({"api": "chat", "base_url": "http://gpu:8000/v1", "model": "qwen3-8b"});
+        let e = RerankEndpoint::from_config("local-llm", Some(&c), &env(&[])).unwrap();
+        assert_eq!((e.api, e.url.as_str(), e.model.as_str(), e.batch), (RerankApi::Chat, "http://gpu:8000/v1/chat/completions", "qwen3-8b", 1));
         let c = json!({"api": "tei", "url": "http://gpu/rerank", "dim": 3});
         assert!(RerankEndpoint::from_config("ours", Some(&c), &env(&[])).unwrap_err().to_string().contains("unknown key \"dim\""));
     }

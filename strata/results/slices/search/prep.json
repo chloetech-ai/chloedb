@@ -1,0 +1,9 @@
+{
+ "orcas_queries": 10405342,
+ "skipped_non_ascii_or_only_stopwords": 42142,
+ "distinct_normalised": 10129372,
+ "raw_variants_per_string_max": 197,
+ "test": 50000,
+ "train": 1000000,
+ "docs": 8841823
+}

@@ -1,0 +1,111 @@
+{
+ "here": {
+  "500": {
+   "median": {
+    "places": 1389,
+    "file_bytes": 331776
+   },
+   "p90": {
+    "places": 10844,
+    "file_bytes": 1597440
+   }
+  },
+  "1500": {
+   "median": {
+    "places": 10668,
+    "file_bytes": 1605632
+   },
+   "p90": {
+    "places": 66418,
+    "file_bytes": 9113600
+   }
+  },
+  "2500": {
+   "median": {
+    "places": 38711,
+    "file_bytes": 5431296
+   },
+   "p90": {
+    "places": 107031,
+    "file_bytes": 14553088
+   }
+  },
+  "4500": {
+   "median": {
+    "places": 125824,
+    "file_bytes": 17395712
+   },
+   "p90": {
+    "places": 168545,
+    "file_bytes": 23277568
+   }
+  },
+  "9500": {
+   "median": {
+    "places": 256377,
+    "file_bytes": 35700736
+   },
+   "p90": {
+    "places": 264336,
+    "file_bytes": 37003264
+   }
+  }
+ },
+ "home": {
+  "500": {
+   "median": {
+    "places": 863,
+    "file_bytes": 258048
+   },
+   "p90": {
+    "places": 9896,
+    "file_bytes": 1474560
+   }
+  },
+  "1500": {
+   "median": {
+    "places": 6221,
+    "file_bytes": 1024000
+   },
+   "p90": {
+    "places": 66418,
+    "file_bytes": 9113600
+   }
+  },
+  "2500": {
+   "median": {
+    "places": 15054,
+    "file_bytes": 2232320
+   },
+   "p90": {
+    "places": 105653,
+    "file_bytes": 14413824
+   }
+  },
+  "4500": {
+   "median": {
+    "places": 63467,
+    "file_bytes": 8978432
+   },
+   "p90": {
+    "places": 168545,
+    "file_bytes": 23277568
+   }
+  },
+  "9500": {
+   "median": {
+    "places": 252504,
+    "file_bytes": 35131392
+   },
+   "p90": {
+    "places": 265891,
+    "file_bytes": 37191680
+   }
+  }
+ },
+ "maxima_table": {
+  "words": 131336,
+  "bytes": 1167407,
+  "search_words": 10258
+ }
+}

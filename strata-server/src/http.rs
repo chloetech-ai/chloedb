@@ -9,7 +9,7 @@
 //! | `GET /v1/tables` | | `{tables: [...]}`: every table's schema and rank profiles, the first first |
 //! | `GET /v1/tables/:table/paths?field=attrs&path=dims&where=cond` | | `{table, field, rows, paths: [{path, keys, rows, types: {string, number, bool}, distinct, min?, max?, values?: [{value, rows}]}], truncated}`: the paths a JSON field's objects hold ([`strata::query::paths`]), under `path` if given, among the rows `where` matches; from a coordinator, every shard's summed |
 //! | `GET /metrics` | | Prometheus text |
-//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, profile?}` | rows, and in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`strata::rank_log`]) |
+//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, profile?, format?}` | rows, and in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`strata::rank_log`]); with `"format": "arrow"` the rows as an Arrow IPC stream (`application/vnd.apache.arrow.stream`, typed as `strata::query::arrow::answer_batch` types them; `x-strata-took-ms` and `x-strata-stats` headers) |
 //! | `POST /v1/sql` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?, log?}` | rows, or `{written, seq_no?, seq_nos?}` |
 //! | `POST /v1/rank_log/export` | `{table?, since?, until?, events?, history?, window?, grades?}` | NDJSON: one record per logged row ([`strata::rank_log::export`]) |
 //! | `POST /v1/rank_log/interleaving` | the export's body | `{pairs: [{variants, requests, acted, wins, ties, delta, p}], took_ms}`: which of two interleaved rankings the users preferred ([`strata::rank_log::Credit`]) |
@@ -34,6 +34,13 @@
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
 //! | `POST /v1/judge` | `{query, keys, table?, fields?, model?, api_key?}` | `{grades: [{key, grade, error?}], model, usage}`: each row graded 0 to 3 for the query by a Claude model ([`crate::judge`]) |
+//! | `POST /v1/admin/oncall` | `{question?, alert?, follows?, model?, effort?, api_key?, max_steps?, note?, wait?}` | the run, `{run, answer, proposals, steps, said, usage, ...}`: a Claude model looks into an alert or a question with read-only tools and proposes actions ([`crate::oncall`]); `note` also writes the answer on the events timeline; `follows` asks a run's follow-up in its conversation; `wait: false` answers `{run, state: "running"}` at once |
+//! | `GET /v1/admin/oncall` | | `{configured, model, steps, max_steps, runs, running, pending}`: whether the server has a Claude key, its defaults, and the runs kept, newest first, each in short |
+//! | `GET /v1/admin/oncall/runs`, `GET /v1/admin/oncall/runs/:id` | | `{runs}` in short; one run in full, with its steps (and what each tool answered, cut), what the model wrote between them, its report and proposals, as it goes |
+//! | `POST /v1/admin/oncall/runs/:id/stop` | | the run: it stops before its next model call |
+//! | `GET /v1/admin/oncall/proposals?state=&run=` | | `{proposals}`: the on-call agent's proposed actions, newest first, each `pending`, `applied`, `failed`, `rejected` or `expired` (after an hour) |
+//! | `POST /v1/admin/oncall/proposals/:id/approve`, `.../reject` | `{reason?}` to reject | the proposal: approving makes its request with the approver's credential and its reason, audited as theirs |
+//! | `POST /v1/mcp` | a JSON-RPC message or a batch | the Model Context Protocol's answer, or 202 for notifications: tools that call these routes with the caller's credential ([`crate::mcp`]) |
 //! | `GET /v1/queries` | | `{queries, running}`: the queries running now, the longest first, each with its trace so far; on a coordinator, every coordinator's (another's ids are `id@name`, with `local_id` and `nodes`: who answered) |
 //! | `DELETE /v1/queries/:id` | | `{cancelled}`: the query stops at its next check and answers 499; an `id@name` is cancelled on that coordinator |
 //! | `GET /v1/queries/recent?since=ms&limit=n`, `/v1/queries/slow?limit=n` | | `{queries}`: the latest that ended (or the slow ones), the newest first, each with its trace |
@@ -49,6 +56,7 @@
 //! | `GET /v1/timeseries?from=&to=` | | the same over any range: memory's points when it holds `from`, else a point a minute from the log store's `load` (`source`) |
 //! | `GET /v1/index/reads?table=` | | this server's read counts of a table (a coordinator's own, which the others merge into `/v1/index`'s `reads_from`) |
 //! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, its skew, writes and reads a minute, growth over a day and a week, and copies behind; kept 30 s ([`crate::inspect::tables`]) |
+//! | `POST /v1/admin/scrub`, `POST /v1/admin/copies/scrub` | `{rate_mib_s?}`, `{url}` | reads every segment of the database (of a copy, on a coordinator) against its checksum while writes go on, and answers `{scrub: {txn, segments, bytes, damaged, seconds}}`; 409 while one runs ([`crate::service::scrub`]) |
 //! | `POST /v1/admin/copies/verify`, `POST /v1/admin/copies/checkpoint` | `{url, timeout_ms?}`, `{url, name, layout?, link_from?}` | on a coordinator, of a copy (its URL or short name): its shard's primary compares the replicas' rows with its own (`{replicas: [{url, in_sync, compared, differing_slots, first_differing_slot, seq_no, error}]}`), or the copy writes a checkpoint into its own `--backup-dir` (`{checkpoint}`) |
 //! | `POST /v1/admin/plan` | `{shards?: [{shard, copies}], add_shards?, remove_shards?, moves?}` | on own machines, the steps of a change of the cluster's shape, rows to copy, an estimate, what clients feel and what to check first; changes nothing ([`crate::coord::plan`]) |
 //! | `POST /v1/admin/plan/apply` | `{steps: [...], estimate_s?}`, or a plan's body | applies a plan on the coordinator, its steps in order, in the background; kept in a file so that a restart says where it stopped ([`crate::coord::plan::apply`]) |
@@ -141,6 +149,9 @@ struct App {
     token: Option<Secret>,
     cluster: Option<Secret>,
     hosts: Option<Arc<[String]>>,
+    /// The API's routes again, which `/v1/mcp`'s tools call ([`crate::mcp`]):
+    /// none in that copy itself.
+    mcp: Option<Router>,
 }
 
 impl App {
@@ -152,14 +163,42 @@ impl App {
 }
 
 pub fn router(svc: Arc<Service>, access: &Access) -> Router {
-    // Rows come in writes and imports; every other body is small.
-    let rows = DefaultBodyLimit::max(svc.max_body);
-    let app = App { svc, token: access.token.clone(), cluster: access.cluster.clone(), hosts: access.hosts.clone().map(Into::into) };
+    let app = App { svc, token: access.token.clone(), cluster: access.cluster.clone(), hosts: access.hosts.clone().map(Into::into), mcp: None };
     // alerts2: coordinators tell each other of their alerts.
     crate::alerts::peering(&app.svc);
     // cluster2: a plan a restart stopped is taken up (interrupted).
     crate::coord::plan::start(&app.svc);
-    let api = Router::new()
+    // mcp: the routes an MCP tool's call goes to, with the caller's
+    // credential, through the same checks (a copy, so the router does not
+    // hold itself); and health, which takes no credential (the on-call
+    // agent's first look, [`crate::oncall`]).
+    let tools = api(&app).route("/v1/health", get(health)).layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))).with_state(app.clone());
+    let app = App { mcp: Some(tools), ..app };
+    let api = api(&app);
+    Router::new()
+        .route("/", get(ui::index))
+        .route("/classic", get(ui::classic))
+        .route("/ui/*file", get(ui::file))
+        .route("/v1/health", get(health))
+        .route("/livez", get(live))
+        .route("/readyz", get(ready))
+        // The command center of a connection of the hub's book: the same
+        // page, whose calls go to /c/<name>/v1/...
+        .route("/c/:name", get(ui::index))
+        .merge(api)
+        // One stack, outermost first, put on each route once: each layer
+        // put on its own wraps the routes in another boxed service, and
+        // each request then clones every box inside the layer it passes
+        // (some 40 allocations a request, with five layers).
+        .layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY)).layer(compression()))
+        .with_state(app)
+}
+
+/// The API's routes, behind [`auth`].
+fn api(app: &App) -> Router<App> {
+    // Rows come in writes and imports; every other body is small.
+    let rows = DefaultBodyLimit::max(app.svc.max_body);
+    Router::new()
         .route("/v1/stats", get(stats))
         .route("/v1/schema", get(schema))
         .route("/v1/tables", get(tables))
@@ -176,7 +215,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/kv/get", post(kv_get))
         .route("/v1/kv/:table/:key", get(kv_one).merge(put(kv_put)).merge(axum::routing::delete(kv_delete)).layer(rows.clone()))
         .route("/v1/plan", post(run_plan).layer(rows.clone()))
-        .route("/v1/import", post(import).layer(rows))
+        .route("/v1/import", post(import).layer(rows.clone()))
         .route("/v1/export", get(export))
         // A stream's body has no end set.
         .route("/v1/stream", post(stream).layer(DefaultBodyLimit::disable()))
@@ -198,6 +237,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/snapshot", post(snapshot))
         .route("/v1/admin/checkpoint", post(admin_checkpoint))
         .route("/v1/admin/check", post(admin_check))
+        .route("/v1/admin/scrub", post(admin_scrub))
         .route("/v1/admin/vacuum", post(admin_vacuum))
         .route("/v1/admin/verify", post(admin_verify))
         .route("/v1/admin/promote", post(admin_promote))
@@ -218,6 +258,14 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/moves/finish", post(finish_move))
         .route("/v1/agent", post(agent_run))
         .route("/v1/judge", post(judge))
+        .route("/v1/admin/oncall", get(oncall_overview).post(oncall_run))
+        .route("/v1/admin/oncall/runs", get(oncall_runs))
+        .route("/v1/admin/oncall/runs/:id", get(oncall_run_get))
+        .route("/v1/admin/oncall/runs/:id/stop", post(oncall_stop))
+        .route("/v1/admin/oncall/proposals", get(oncall_proposals))
+        .route("/v1/admin/oncall/proposals/:id/approve", post(oncall_approve))
+        .route("/v1/admin/oncall/proposals/:id/reject", post(oncall_reject))
+        .route("/v1/mcp", post(mcp).layer(rows))
         // workload (alerts agent): grouped, and cancelled by statement
         .route("/v1/queries", get(live_queries).delete(cancel_queries))
         .route("/v1/admin/contain", get(contain_rules).post(add_contain))
@@ -243,6 +291,9 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/logs/store", get(log_store))
         .route("/v1/system", get(system))
         .route("/v1/cluster", get(cluster))
+        // Apps: their list, and requests forwarded to them (crate::apps).
+        .route("/v1/apps", get(apps_list))
+        .route("/v1/apps/:name/*rest", axum::routing::any(app_forward))
         .route("/v1/kube", get(kube))
         .route("/v1/admin/kube", post(kube_change))
         .route("/v1/admin/kube/plan", post(kube_plan))
@@ -313,25 +364,16 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/index/tables", get(index_tables))
         .route("/v1/admin/copies/verify", post(copy_verify))
         .route("/v1/admin/copies/checkpoint", post(copy_checkpoint))
+        .route("/v1/admin/copies/scrub", post(copy_scrub))
+        // The Simulator: a test run of the traffic simulator's mix against
+        // this cluster, graded, with a model of other shapes (src/traffic).
+        .route("/v1/admin/simulator", get(sim_view).post(sim_start))
+        .route("/v1/admin/simulator/stop", post(sim_stop))
+        .route("/v1/admin/simulator/predict", post(sim_predict))
+        .route("/v1/admin/simulator/runs/:id", get(sim_report))
+        .route("/v1/admin/simulator/table", axum::routing::delete(sim_drop))
         // ----- end core
-        .route_layer(middleware::from_fn_with_state(app.clone(), auth));
-    Router::new()
-        .route("/", get(ui::index))
-        .route("/classic", get(ui::classic))
-        .route("/ui/*file", get(ui::file))
-        .route("/v1/health", get(health))
-        .route("/livez", get(live))
-        .route("/readyz", get(ready))
-        // The command center of a connection of the hub's book: the same
-        // page, whose calls go to /c/<name>/v1/...
-        .route("/c/:name", get(ui::index))
-        .merge(api)
-        // One stack, outermost first, put on each route once: each layer
-        // put on its own wraps the routes in another boxed service, and
-        // each request then clones every box inside the layer it passes
-        // (some 40 allocations a request, with five layers).
-        .layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY)).layer(compression()))
-        .with_state(app)
+        .route_layer(middleware::from_fn_with_state(app.clone(), auth))
 }
 
 /// gzip for a client that asks for it (`Accept-Encoding: gzip`), of JSON
@@ -550,6 +592,23 @@ async fn copy_checkpoint(State(app): State<App>, w: Option<axum::Extension<Princ
     Ok(audited(j, format!("checkpoint {name} of {}", copy.short)))
 }
 
+/// `POST /v1/admin/copies/scrub {"url"}` on a coordinator: that copy
+/// reads every segment of its database against its checksum (as its
+/// `POST /v1/admin/scrub`), and answers `{scrub}`.
+async fn copy_scrub(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let c = app.svc.coordinator()?;
+    let copy = copy_of(&*c.snapshot().await, body_str(&b, "url")?)?;
+    let by = keys::audit_name(&who(w));
+    keys::note_change(keys::Change { object: Some(format!("copy {}", copy.short)), after: Some(json!({"url": copy.url, "scrub": true})), ..Default::default() });
+    let j = ask_copy(c, &copy.url, crate::profiling::Kind::Scrub, json!({"by": by})).await?;
+    let found = j["scrub"]["damaged"].as_array().map_or(0, Vec::len);
+    Ok(audited(j, format!("checked {}'s data against its checksums: {}", copy.short, match found {
+        0 => "no damage".to_string(),
+        1 => "1 damaged segment".to_string(),
+        n => format!("{n} damaged segments"),
+    })))
+}
+
 /// `GET /v1/index/tables` ([`crate::inspect::tables`]).
 async fn index_tables(State(app): State<App>) -> Res {
     Ok(AxJson(crate::inspect::tables(&app.svc).await?))
@@ -565,7 +624,7 @@ async fn fleet_health(State(app): State<App>) -> AxJson<Json> {
 async fn coordinators(State(app): State<App>, Query(q): Params) -> AxJson<Json> {
     let mut j = crate::peers::json(&app.svc);
     if q.get("window").is_some_and(|v| v == "1" || v == "true") {
-        j["window"] = crate::peers::window_json(&app.svc);
+        j["window"] = crate::peers::window_json(&app.svc).await;
     }
     AxJson(j)
 }
@@ -725,7 +784,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // cloud's plan or check) changes nothing: a read too.
     let plan = matches!(
         route,
-        "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
+        "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/admin/simulator/predict" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
             // alerts agent: a rule replayed.
             | "/v1/alerts/backtest"
     );
@@ -834,6 +893,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         // alerts (alerts agent): acknowledging, silencing and noting write.
         "/v1/alerts/:rule/ack" | "/v1/alerts/:rule/silence" | "/v1/alerts/:rule/notes" => Scope::Write,
         "/v1/events/notes" => Scope::Admin,
+        // An app's reads are a reader's; what changes it (starts a crawl) an admin's.
+        "/v1/apps/:name/*rest" if method != Method::GET && method != Method::HEAD => Scope::Admin,
         // The inspector names the keys most read.
         // The hub's calls to other clusters carry their keys: its owner's.
         r if r.starts_with("/c/") => Scope::Admin,
@@ -1026,7 +1087,13 @@ async fn metrics(State(app): State<App>) -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], app.svc.prometheus().await)
 }
 
-async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let arrow = match b.get("format") {
+        None | Some(Json::Null) => false,
+        Some(f) if f == "json" => false,
+        Some(f) if f == "arrow" => true,
+        Some(f) => return Err(ApiError::bad(format!("format is \"json\" (the default) or \"arrow\", not {f}"))),
+    };
     let stats = match b.get("stats") {
         None | Some(Json::Null) => None,
         Some(s) => Some(serde_json::from_value(s.clone()).map_err(|e| ApiError::bad(format!("bad stats: {e}")))?),
@@ -1047,16 +1114,62 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         if req.shard {
             return Err(ApiError::bad("a shard's query is not logged: log through the coordinator"));
         }
-        return logged(&app, &who(w), req, log, body_bool(&b, "objects")?).await;
+        if arrow {
+            return Err(ApiError::bad("a logged query answers JSON: leave out format"));
+        }
+        return logged(&app, &who(w), req, log, body_bool(&b, "objects")?).await.map(IntoResponse::into_response);
+    }
+    if arrow && req.shard {
+        return Err(ApiError::bad("a shard's query answers its coordinator over gRPC: leave out format"));
     }
     let a = app.svc.query(req).await?;
+    if arrow {
+        return arrow_answer(a).await;
+    }
     let mut j = answer_of(&b, &a)?;
     // `"trace": true`: the timed steps the request took; `"profile":
     // true` answers them too, beside its steps' CPU time.
     if b.get("trace").and_then(|v| v.as_bool()) == Some(true) || b.get("profile").and_then(|v| v.as_bool()) == Some(true) {
         j["trace"] = json!(telemetry::trace().map(|t| t.spans()).unwrap_or_default());
     }
-    Ok(AxJson(j))
+    Ok(AxJson(j).into_response())
+}
+
+/// A query's answer as an Arrow IPC stream of one batch, for clients that
+/// want columns (`"format": "arrow"`): no JSON to write or read, and each
+/// column typed as an Arrow answer in a client's own process is
+/// ([`strata::query::arrow::answer_batch`]). How long it took and what the
+/// engine did go in headers; an answer without some shards (`partial`)
+/// names them in `x-strata-missing-shards`.
+#[cfg(feature = "datafusion")]
+async fn arrow_answer(a: crate::service::Answer) -> Result<Response, ApiError> {
+    let took = a.took_ms;
+    let missing = a.missing.join(",");
+    let (bytes, stats) = tokio::task::spawn_blocking(move || {
+        let (batch, stats) = strata::query::arrow::answer_batch(strata::query::exec::Leaf::Rows(a.rs))?;
+        Ok::<_, strata::Error>((strata::query::arrow::ipc_of(&batch)?, stats))
+    })
+    .await
+    .map_err(ApiError::internal)??;
+    let mut r = (StatusCode::OK, [(header::CONTENT_TYPE, "application/vnd.apache.arrow.stream")], bytes).into_response();
+    // A header holds visible ASCII: one that would not is left out rather
+    // than failing the answer.
+    let mut put = |name: &'static str, v: String| {
+        if let Ok(v) = axum::http::HeaderValue::from_str(&v) {
+            r.headers_mut().insert(name, v);
+        }
+    };
+    put("x-strata-took-ms", format!("{took:.3}"));
+    put("x-strata-stats", serde_json::to_string(&stats).unwrap_or_default());
+    if !missing.is_empty() {
+        put("x-strata-missing-shards", missing);
+    }
+    Ok(r)
+}
+
+#[cfg(not(feature = "datafusion"))]
+async fn arrow_answer(_: crate::service::Answer) -> Result<Response, ApiError> {
+    Err(ApiError::bad("this server was built without Arrow answers (feature datafusion): leave out format"))
 }
 
 /// A query run and logged ([`Service::query_logged`]): its answer, with
@@ -2353,6 +2466,13 @@ async fn admin_checkpoint(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     Ok(AxJson(json!({"checkpoint": stats})))
 }
 
+/// `{"rate_mib_s"?}`: reads every segment against its checksum now
+/// ([`Service::scrub`]); unpaced unless asked.
+async fn admin_scrub(State(app): State<App>, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Res {
+    let rate = body.as_ref().and_then(|b| b.get("rate_mib_s")).and_then(Json::as_u64).unwrap_or(0) << 20;
+    Ok(AxJson(app.svc.scrub(rate, &keys::audit_name(&who(w))).await?))
+}
+
 async fn admin_check(State(app): State<App>) -> Res {
     app.svc.check().await?;
     Ok(AxJson(json!({"ok": true})))
@@ -2575,6 +2695,46 @@ async fn plan_apply(State(app): State<App>, w: Option<axum::Extension<Principal>
     Ok(audited(j, detail.chars().take(1500).collect()))
 }
 
+/// `GET /v1/admin/simulator`: the test run under way or last, the reports
+/// kept, and what a run can be given (presets, kinds, machines).
+async fn sim_view(State(app): State<App>) -> Res {
+    Ok(AxJson(crate::traffic::run::view(&app.svc)))
+}
+
+/// `POST /v1/admin/simulator {profile?, mix?, docs?, shape?, ...}`: starts
+/// a test run: it loads a table of test documents, measures each kind of
+/// request alone, sends the mix at a rising (or a steady) rate, and fits a
+/// model to it ([`crate::traffic::run::Config`]).
+async fn sim_start(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let config: crate::traffic::run::Config = serde_json::from_value(b).map_err(|e| ApiError::bad(format!("a test run's settings: {e}")))?;
+    let p = who(w);
+    let j = crate::traffic::run::start(&app.svc, &keys::audit_name(&p), config)?;
+    let detail = format!("started a simulator test run ({})", j["id"].as_str().unwrap_or("?"));
+    Ok(audited(j, detail))
+}
+
+/// `POST /v1/admin/simulator/stop`: the run stops after its requests under way.
+async fn sim_stop(State(app): State<App>) -> Result<Response, ApiError> {
+    let j = crate::traffic::run::stop(&app.svc);
+    Ok(audited(j, "stopped the simulator's test run".into()))
+}
+
+/// `POST /v1/admin/simulator/predict`: other shapes, by a report's model.
+async fn sim_predict(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::traffic::run::predict(&app.svc, &b)?))
+}
+
+/// `GET /v1/admin/simulator/runs/:id`: a report kept.
+async fn sim_report(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(crate::traffic::run::report(&app.svc, &id)?))
+}
+
+/// `DELETE /v1/admin/simulator/table`: drops the test table a run kept.
+async fn sim_drop(State(app): State<App>) -> Result<Response, ApiError> {
+    let j = crate::traffic::run::drop_table(&app.svc).await?;
+    Ok(audited(j, format!("dropped the simulator's test table {}", crate::traffic::data::TABLE)))
+}
+
 /// `GET /v1/admin/plan/run`: the plan this coordinator applies or applied
 /// last, step by step; and, under `elsewhere`, the plan each other
 /// coordinator of the cluster applies or applied, so that every
@@ -2692,6 +2852,96 @@ async fn agent_run(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     };
     app.svc.metrics.agent_run();
     Ok(AxJson(agent::run(&app.svc, req).await?))
+}
+
+/// `POST /v1/mcp`: the Model Context Protocol, whose tools call this
+/// server's routes with the caller's credential ([`crate::mcp`]).
+async fn mcp(State(app): State<App>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, body: Bytes) -> Response {
+    crate::mcp::serve(&app.svc, app.mcp.clone(), crate::mcp::Caller { headers: &headers, peer: peer.map(|c| c.0) }, &body).await
+}
+
+/// `POST /v1/admin/oncall`: the on-call agent looks into an alert or a
+/// question, and proposes actions ([`crate::oncall`]).
+async fn oncall_run(State(app): State<App>, w: Option<axum::Extension<Principal>>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Res {
+    let opt = |k: &str| b.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+    let req = crate::oncall::OncallReq {
+        question: opt("question"),
+        alert: opt("alert"),
+        follows: opt("follows"),
+        wait: b.get("wait").and_then(Json::as_bool).unwrap_or(true),
+        model: opt("model"),
+        effort: opt("effort"),
+        api_key: opt("api_key"),
+        max_steps: b.get("max_steps").and_then(|v| v.as_u64()).map(|n| (n as usize).clamp(1, crate::oncall::MAX_STEPS)).unwrap_or(crate::oncall::STEPS),
+        note: b.get("note").and_then(Json::as_bool).unwrap_or(false),
+        by: by(&who(w)),
+    };
+    app.svc.metrics.agent_run();
+    Ok(AxJson(crate::oncall::run(&app.svc, app.mcp.clone(), &headers, peer.map(|c| c.0), req).await?))
+}
+
+/// `GET /v1/admin/oncall`: whether the on-call agent can run here, its
+/// defaults, and its runs in short.
+async fn oncall_overview(State(app): State<App>) -> Res {
+    let d = &app.svc.oncall;
+    d.ready(&app.svc);
+    let (running, pending) = d.counts();
+    Ok(AxJson(json!({
+        "configured": app.svc.agent.api_key.is_some(),
+        "model": app.svc.agent.model,
+        "steps": crate::oncall::STEPS,
+        "max_steps": crate::oncall::MAX_STEPS,
+        "kept": crate::oncall::RUNS,
+        "proposal_for_ms": crate::oncall::PROPOSAL_FOR_MS,
+        "runs": d.runs(),
+        "running": running,
+        "pending": pending,
+    })))
+}
+
+/// `GET /v1/admin/oncall/runs`: the runs kept, newest first, in short.
+async fn oncall_runs(State(app): State<App>) -> Res {
+    app.svc.oncall.ready(&app.svc);
+    Ok(AxJson(json!({"runs": app.svc.oncall.runs()})))
+}
+
+/// `GET /v1/admin/oncall/runs/:id`: one run in full, as it goes.
+async fn oncall_run_get(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    app.svc.oncall.ready(&app.svc);
+    app.svc.oncall.run_json(&id).map(AxJson).ok_or_else(|| ApiError { status: 404, message: format!("no run {id}: the server keeps the latest {}", crate::oncall::RUNS) })
+}
+
+/// `POST /v1/admin/oncall/runs/:id/stop`: stops a run before its next
+/// model call.
+async fn oncall_stop(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    app.svc.oncall.ready(&app.svc);
+    Ok(AxJson(app.svc.oncall.stop(&id, &by(&who(w)))?))
+}
+
+/// `GET /v1/admin/oncall/proposals?state=&run=`: the on-call agent's
+/// proposals, newest first.
+async fn oncall_proposals(State(app): State<App>, Query(q): Params) -> Res {
+    app.svc.oncall.ready(&app.svc);
+    let pick = |k: &str| q.get(k).map(String::as_str).filter(|s| !s.is_empty());
+    Ok(AxJson(json!({"proposals": app.svc.oncall.list(pick("state"), pick("run"))})))
+}
+
+/// `POST /v1/admin/oncall/proposals/:id/approve`: makes the proposal's
+/// request, as the approver.
+async fn oncall_approve(State(app): State<App>, w: Option<axum::Extension<Principal>>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    let by = by(&who(w));
+    let p = crate::oncall::approve(&app.svc, app.mcp.clone(), &headers, peer.map(|c| c.0), &id, &by).await?;
+    keys::note(format!("approved on-call proposal {id}: {}", p["what"].as_str().unwrap_or_default()));
+    Ok(AxJson(p))
+}
+
+/// `POST /v1/admin/oncall/proposals/:id/reject`: `{reason?}`.
+async fn oncall_reject(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, b: Option<AxJson<Json>>) -> Res {
+    let reason = b.and_then(|AxJson(b)| b.get("reason").and_then(Json::as_str).map(String::from)).unwrap_or_default();
+    app.svc.oncall.ready(&app.svc);
+    let p = app.svc.oncall.reject(&id, &by(&who(w)), &reason)?;
+    keys::note(format!("rejected on-call proposal {id}: {}", p["what"].as_str().unwrap_or_default()));
+    Ok(AxJson(p))
 }
 
 /// `POST /v1/judge`: a Claude model's grade of each row for a query
@@ -3510,6 +3760,21 @@ async fn system(State(app): State<App>) -> AxJson<Json> {
     j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some()});
     j["logs"] = json!({"filter": obs::log_filter()});
     AxJson(j)
+}
+
+async fn apps_list(State(app): State<App>) -> AxJson<Json> {
+    AxJson(app.svc.apps.listing().await)
+}
+
+async fn app_forward(
+    State(app): State<App>,
+    axum::extract::Path((name, rest)): axum::extract::Path<(String, String)>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    app.svc.apps.forward(&name, method, &rest, uri.query(), &headers, body).await
 }
 
 async fn cluster(State(app): State<App>, Query(q): Params) -> AxJson<Json> {

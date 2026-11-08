@@ -113,7 +113,7 @@ fn url_part(s: &str) -> String {
 
 /// A cluster over HTTP.
 #[derive(Clone)]
-struct Http {
+pub(crate) struct Http {
     url: String,
     client: reqwest::Client,
     auth: Option<String>,
@@ -122,7 +122,7 @@ struct Http {
 }
 
 impl Http {
-    fn new(url: &str, token: Option<&str>, ca: Option<&[u8]>, follow: Option<&str>) -> Result<Http, ApiError> {
+    pub(crate) fn new(url: &str, token: Option<&str>, ca: Option<&[u8]>, follow: Option<&str>) -> Result<Http, ApiError> {
         let mut b = crate::http_client().connect_timeout(Duration::from_secs(5));
         if let Some(ca) = ca {
             let cert = reqwest::Certificate::from_pem(ca).map_err(|e| ApiError::bad(format!("the CA certificate for {url}: {e}")))?;
@@ -159,11 +159,11 @@ impl Http {
         Ok(j)
     }
 
-    async fn get(&self, path: &str) -> Result<Json, ApiError> {
+    pub(crate) async fn get(&self, path: &str) -> Result<Json, ApiError> {
         self.call(reqwest::Method::GET, path, None).await
     }
 
-    async fn post(&self, path: &str, body: &Json) -> Result<Json, ApiError> {
+    pub(crate) async fn post(&self, path: &str, body: &Json) -> Result<Json, ApiError> {
         self.call(reqwest::Method::POST, path, Some(body)).await
     }
 
@@ -493,7 +493,7 @@ pub async fn run(o: Options) -> Result<(), ApiError> {
 
 /// Calls `f` until it answers or fails for good (a 4xx but 408, 409 and
 /// 429), waiting longer each time, up to 2 minutes in all.
-async fn retry<F, Fut>(what: &str, f: F) -> Result<Json, ApiError>
+pub(crate) async fn retry<F, Fut>(what: &str, f: F) -> Result<Json, ApiError>
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<Json, ApiError>>,
@@ -514,7 +514,7 @@ where
 }
 
 /// Whether a failed call may answer when tried again.
-fn again(e: &ApiError) -> bool {
+pub(crate) fn again(e: &ApiError) -> bool {
     e.status >= 500 || matches!(e.status, 408 | 429) || (e.status == 409 && !e.message.contains("follow"))
 }
 

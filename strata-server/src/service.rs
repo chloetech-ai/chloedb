@@ -45,6 +45,7 @@ pub(crate) mod arrivals;
 mod failover;
 pub mod feed;
 mod moving;
+pub mod scrub;
 mod switch;
 
 pub use failover::tuned as failover_tuned;
@@ -433,6 +434,9 @@ pub struct Service {
     /// Proxies whose `X-Forwarded-For` names the client (`--trust-proxy`):
     /// addresses and prefix lengths.
     pub trusted_proxies: Vec<(std::net::IpAddr, u8)>,
+    /// The apps the command center shows (`--app`), which `/v1/apps/<name>`
+    /// reaches ([`crate::apps`]).
+    pub apps: crate::apps::Apps,
     /// Fleet health's memory ([`crate::fleet`]).
     pub fleet: crate::fleet::Fleet,
     /// The coordinators this server knows ([`crate::peers`]).
@@ -477,6 +481,8 @@ pub struct Service {
     pub alerts: Alerts,
     /// Contain rules, applied at admission ([`crate::contain`]): alerts agent.
     pub contain: crate::contain::Contain,
+    /// The on-call agent's proposals, waiting for an admin ([`crate::oncall`]).
+    pub oncall: crate::oncall::Desk,
     /// The cloud view's AWS credentials and machine catalogues ([`crate::aws`]).
     pub aws: Arc<crate::aws::Aws>,
     /// The cloud view's DigitalOcean token and size catalogues
@@ -601,6 +607,12 @@ pub struct Service {
     /// its shard's other copies to elect it (`--failover-after-ms`; zero:
     /// never), as [`Self::start_failover`] does.
     pub failover_after: Duration,
+    /// Scrubbing: how often, how fast, and what the last scrub found
+    /// (`--scrub-every-s`, [`Self::start_scrubs`]).
+    pub scrubs: scrub::Scrubs,
+    /// The command center's Simulator: its test run and the reports kept
+    /// ([`crate::traffic::run`]).
+    pub simulator: crate::traffic::run::Simulator,
 }
 
 /// A server's part in replication.
@@ -653,6 +665,7 @@ impl Service {
             slo: Slo::default(),
             place: Place::from_env(None),
             trusted_proxies: Vec::new(),
+            apps: Default::default(),
             fleet: Default::default(),
             peers: Default::default(),
             image_repository: crate::operator::upgrade::REPOSITORY.into(),
@@ -672,6 +685,7 @@ impl Service {
             audit: Audit::new(None).expect("an audit log in memory"),
             alerts: Alerts::new(None, None).expect("the default alert rules"),
             contain: Default::default(),
+            oncall: Default::default(),
             aws: Arc::new(crate::aws::Aws::memory()),
             digitalocean: Arc::new(crate::digitalocean::DigitalOcean::memory()),
             clouds: Arc::new(crate::cloud::clusters::Clusters::memory()),
@@ -722,6 +736,8 @@ impl Service {
             promoting: tokio::sync::Mutex::new(()),
             replication_file: None,
             failover_after: Duration::ZERO,
+            scrubs: Default::default(),
+            simulator: Default::default(),
         }
     }
 
@@ -1107,6 +1123,11 @@ impl Service {
 
     /// The coordinator this server is, for the calls that change the
     /// cluster; a database refuses them (400).
+    /// The cores this server may use.
+    pub fn cores(&self) -> usize {
+        self.cores
+    }
+
     pub fn coordinator(&self) -> Result<&Arc<Coordinator>, ApiError> {
         match &self.backend {
             Backend::Cluster(c) => Ok(c),
@@ -3591,6 +3612,14 @@ impl Service {
                     h["status"] = json!("degraded");
                     h["error"] = json!(format!("flushes fail: {e}"));
                 }
+                // What the last scrub found: the copy still serves (a query
+                // that reads a damaged section fails, and a coordinator
+                // tries another copy), but it is to be replaced.
+                h["scrub"] = self.scrubs.json();
+                let damaged = self.scrubs.damaged();
+                if !damaged.is_empty() {
+                    h["damaged"] = json!(damaged);
+                }
                 h
             }
             Backend::Cluster(c) => c.health().await,
@@ -3604,7 +3633,7 @@ impl Service {
     /// is restarted. A coordinator is never failing; its shards may be.
     pub fn failing(&self) -> Option<String> {
         match &self.backend {
-            Backend::Local(db) if db.storage().is_poisoned() => Some("a write failed partway, so the database refuses writes until it is reopened: restart the server".into()),
+            Backend::Local(db) if db.storage().is_poisoned() => Some("a write failed partway (a full disk, an I/O error), so the database refuses writes until it is reopened: fix the cause and restart the server, a primary once another copy is the primary".into()),
             Backend::Local(_) if !self.writer_state.alive.load(Ordering::Relaxed) => Some("the writer thread stopped: restart the server".into()),
             _ => None,
         }
@@ -3677,6 +3706,7 @@ impl Service {
                 ("failing", self.failing().is_some() as u8 as f64),
                 ("flush_failing", db.storage().flush_error().is_some() as u8 as f64),
                 ("merge_failing", m.error.is_some() as u8 as f64),
+                ("damaged_segments", self.scrubs.damaged().len() as f64),
                 ("pool_queued", strata::query::pool::Pool::global().queued() as f64),
             ] {
                 g.insert(k, v);
@@ -3930,7 +3960,8 @@ impl Service {
         });
         json!({
             "health": health, "load": load, "minute": minute,
-            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores, "memory_limit_bytes": strata::storage::memory_limit()},
+            // The Simulator reads `cpu_seconds` (the process's CPU so far) before and after a test.
+            "system": {"version": env!("CARGO_PKG_VERSION"), "uptime_s": self.started.elapsed().map_or(0.0, |d| d.as_secs_f64()), "cores": self.cores, "cpu_seconds": telemetry::process_usage().1, "memory_limit_bytes": strata::storage::memory_limit()},
             "running": self.live.len(), "log_store": log_store,
             // core: what a coordinator's /v1/cluster shows of each copy.
             "capability": self.capability(),
@@ -4067,6 +4098,7 @@ impl Service {
                     one("strata_merges_limited_total", "counter", "Merges cut, or put off, to fit the memory budget or an interrupted merge's.", m.merges_limited as f64),
                     one("strata_merges_interrupted", "gauge", "Groups of segments whose merge a crash interrupted.", m.interrupted as f64),
                     one("strata_merge_failing", "gauge", "1 while merges fail.", m.error.is_some() as u8 as f64),
+                    one("strata_damaged_segments", "gauge", "Segments the last scrub found failing their checksums (--scrub-every-s).", self.scrubs.damaged().len() as f64),
                 ]);
                 match &self.replication() {
                     Replication::None => {}

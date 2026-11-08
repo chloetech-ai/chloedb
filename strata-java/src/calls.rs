@@ -112,10 +112,10 @@ impl Handle {
 /// being ignored by work already done.
 fn takes(method: &str) -> Option<&'static [&'static str]> {
     Some(match method {
-        "version" | "close" | "closed" | "embedErrors" | "tables" | "count" | "expire" | "optimize" => &[],
+        "version" | "close" | "closed" | "embedErrors" | "tables" | "count" | "expire" | "optimize" | "refresh" => &[],
         "echo" => &["value"],
         "create" => &["path", "schema", "directory", "models", "threads"],
-        "open" => &["path", "models", "threads"],
+        "open" => &["path", "models", "threads", "readOnly"],
         "fromSqlite" => &["sqlitePath", "path", "tables", "schemas", "blobsBase64", "directory", "models", "threads"],
         "planSqlite" => &["sqlitePath", "tables", "schemas", "blobsBase64"],
         "fromParquet" => &["parquetPath", "path", "table", "schema", "key", "blobsBase64", "directory", "models", "threads"],
@@ -411,9 +411,12 @@ fn threads_or_cores(threads: Option<usize>) -> R<usize> {
 
 /// How a database is opened here, as strata-server and the Python package
 /// open one: segment builds (flushes, merges) build vector indexes on
-/// `threads` cores, and the newest in-memory chunk keeps its vectors flat.
+/// `threads` cores, the newest in-memory chunk keeps its vectors flat,
+/// and each write publishes its snapshot, so a query never waits to index
+/// a memtable chunk another write filled.
 fn db_options(directory: bool, threads: usize) -> DbOptions {
     DbOptions {
+        publish_snapshots: true,
         layout: if directory { Layout::Directory } else { Layout::SingleFile },
         build: BuildOptions::default().set("vector.threads", threads),
         mem_build: Some(BuildOptions::default().set("vector.index", "flat")),
@@ -633,7 +636,7 @@ fn call_static(method: &str, a: &mut Args) -> R<Vec<u8>> {
                 return Err(Fail::Db(strata::Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{} does not exist: Database.create makes one", path.display())))));
             }
             // A file's layout is its own: the option is a create's.
-            let db = Db::open(&path, db_options(false, threads))?;
+            let db = Db::open(&path, DbOptions { read_only: a.bool("readOnly", false)?, ..db_options(false, threads) })?;
             Handle::new(with_threads(db, threads), &models).opened(None)
         }
         "fromSqlite" => {
@@ -963,6 +966,12 @@ fn call_on(h: &Handle, method: &str, a: &mut Args) -> R<Vec<u8>> {
         "optimize" => {
             db.optimize()?;
             null()
+        }
+        // Opened read-only: what the writer committed since the last look.
+        "refresh" => {
+            let mut w = Writer::default();
+            w.bool(db.storage().refresh()?);
+            w.b
         }
         other => return arg(format!("no such call: {other}")),
     })

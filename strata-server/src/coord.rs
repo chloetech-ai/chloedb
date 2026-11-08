@@ -63,6 +63,12 @@
 //! version, and speaks the oldest any replica speaks. From protocol 2 a
 //! read reaches the shards as a typed plan ([`crate::plan_pb`]); a server
 //! from before `Hello` takes SQL, or a JSON plan, as it did.
+//!
+//! A coordinator may run in the process of one of its shards
+//! (`--coordinator-listen`, [`CoordOptions::local`]): it calls that shard's
+//! gRPC service in-process ([`Transport::Local`]), the same messages
+//! through the same checks, without the connection, HTTP/2 and the second
+//! process. The other shards it reaches over the network as ever.
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -133,6 +139,9 @@ pub struct CoordOptions {
     /// Terms whose BM25 statistics are kept per shard copy
     /// ([`StatsCache`]); 0 keeps none.
     pub stats_cache_terms: usize,
+    /// The shard served by this process, if any: the coordinator calls the
+    /// server of that URL in-process.
+    pub local: Option<LocalShard>,
 }
 
 impl Default for CoordOptions {
@@ -147,6 +156,81 @@ impl Default for CoordOptions {
             fetch: true,
             slots: None,
             stats_cache_terms: STATS_CACHE_TERMS,
+            local: None,
+        }
+    }
+}
+
+impl CoordOptions {
+    /// A client of the server at gRPC URL `url`: the process's own shard
+    /// in-process, any other over the network ([`client`]).
+    fn client(&self, url: &str) -> Result<Client, ApiError> {
+        match &self.local {
+            Some(l) if l.url == url => Ok(StrataClient::with_interceptor(Transport::Local(l.service.clone()), credentials(self.token.as_ref())?).max_decoding_message_size(256 << 20)),
+            _ => client(url, self.token.as_ref(), self.ca.as_deref()),
+        }
+    }
+}
+
+/// The gRPC service of the shard this process serves
+/// ([`crate::server::grpc_service`]), as other servers reach it over the
+/// network, and the URL they reach it at (the one `--shards` names).
+#[derive(Clone)]
+pub struct LocalShard {
+    pub url: String,
+    pub service: crate::server::GrpcService,
+}
+
+impl std::fmt::Debug for LocalShard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalShard").field("url", &self.url).finish_non_exhaustive()
+    }
+}
+
+/// How a client reaches its server: over the network, or, for the shard
+/// this process serves, by calling its service in-process.
+#[derive(Clone)]
+pub enum Transport {
+    Net(Channel),
+    Local(crate::server::GrpcService),
+}
+
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+impl tower::Service<tonic::codegen::http::Request<tonic::body::BoxBody>> for Transport {
+    type Response = tonic::codegen::http::Response<tonic::body::BoxBody>;
+    type Error = BoxError;
+    type Future = std::pin::Pin<Box<dyn Future<Output = Result<Self::Response, BoxError>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), BoxError>> {
+        match self {
+            Transport::Net(c) => tower::Service::poll_ready(c, cx).map_err(Into::into),
+            Transport::Local(_) => std::task::Poll::Ready(Ok(())),
+        }
+    }
+
+    fn call(&mut self, req: tonic::codegen::http::Request<tonic::body::BoxBody>) -> Self::Future {
+        match self {
+            Transport::Net(c) => {
+                let f = tower::Service::call(c, req);
+                Box::pin(async move { f.await.map_err(Into::into) })
+            }
+            Transport::Local(s) => {
+                let mut s = s.clone();
+                // A task of its own, as a call from another server would
+                // be: the shard's part sees none of the coordinator's
+                // request's task-locals, and runs on while the
+                // coordinator stops waiting for it (a hedge won, a
+                // deadline passed), as a remote shard's would.
+                let call = tokio::spawn(async move { tower::Service::call(&mut s, req).await });
+                Box::pin(async move {
+                    match call.await {
+                        Ok(Ok(r)) => Ok(r),
+                        Ok(Err(e)) => match e {},
+                        Err(e) => Err(e.into()),
+                    }
+                })
+            }
         }
     }
 }
@@ -177,16 +261,20 @@ impl tonic::service::Interceptor for Credentials {
     }
 }
 
-pub(crate) type Client = StrataClient<InterceptedService<Channel, Credentials>>;
+pub(crate) type Client = StrataClient<InterceptedService<Transport, Credentials>>;
+
+fn credentials(token: Option<&Secret>) -> Result<Credentials, ApiError> {
+    match token {
+        Some(t) => Ok(Credentials(Some(format!("Bearer {}", t.0).parse().map_err(|_| ApiError::bad("the shards' token must be printable ASCII"))?))),
+        None => Ok(Credentials(None)),
+    }
+}
 
 /// A client of the server at gRPC URL `url`, sending `token` with every
 /// call; an `https://` server's certificate is checked against the public
 /// roots and `ca`. It connects on its first call.
 pub(crate) fn client(url: &str, token: Option<&Secret>, ca: Option<&[u8]>) -> Result<Client, ApiError> {
-    let credentials = match token {
-        Some(t) => Some(format!("Bearer {}", t.0).parse().map_err(|_| ApiError::bad("the shards' token must be printable ASCII"))?),
-        None => None,
-    };
+    let credentials = credentials(token)?;
     let mut ep = Channel::from_shared(url.to_string()).map_err(|e| ApiError::bad(format!("bad shard URL {url}: {e}")))?;
     if url.starts_with("https://") {
         let mut tls = tonic::transport::ClientTlsConfig::new().with_webpki_roots();
@@ -196,7 +284,7 @@ pub(crate) fn client(url: &str, token: Option<&Secret>, ca: Option<&[u8]>) -> Re
         ep = ep.tls_config(tls).map_err(|e| ApiError::bad(format!("TLS to {url}: {e}")))?;
     }
     let ch = ep.connect_timeout(Duration::from_secs(5)).tcp_nodelay(true).connect_lazy();
-    Ok(StrataClient::with_interceptor(ch, Credentials(credentials)).max_decoding_message_size(256 << 20))
+    Ok(StrataClient::with_interceptor(Transport::Net(ch), credentials).max_decoding_message_size(256 << 20))
 }
 
 /// Each source every shard has, at the least offset over the shards
@@ -601,6 +689,8 @@ pub(crate) struct Topology {
     /// Per shard: calls answered, failed, timed out, and cut by a client's
     /// own deadline ([`Coordinator::call`]).
     outcomes: Vec<Arc<[AtomicU64; 4]>>,
+    /// Each copy's short name, as [`replicas`](Self::replicas) ([`copy_shorts`]).
+    shorts: Vec<Vec<String>>,
 }
 
 impl Topology {
@@ -615,7 +705,7 @@ impl Topology {
                 let kept = before.and_then(|b| b.replicas.iter().flatten().find(|r| r.url == *url));
                 rs.push(match kept {
                     Some(r) => r.clone(),
-                    None => Arc::new(Replica::new(url, client(url, opts.token.as_ref(), opts.ca.as_deref())?)),
+                    None => Arc::new(Replica::new(url, opts.client(url)?)),
                 });
             }
             if rs.is_empty() {
@@ -625,7 +715,18 @@ impl Topology {
             outcomes.push(same.and_then(|i| before.map(|b| b.outcomes[i].clone())).unwrap_or_default());
             replicas.push(rs);
         }
-        Ok(Topology { shards: groups.iter().map(|g| g.join("|")).collect(), skip_until: groups.iter().map(|_| AtomicU64::new(0)).collect(), replicas, slots, outcomes })
+        let shorts = copy_shorts(&groups);
+        Ok(Topology { shards: groups.iter().map(|g| g.join("|")).collect(), skip_until: groups.iter().map(|_| AtomicU64::new(0)).collect(), replicas, slots, outcomes, shorts })
+    }
+
+    /// The short name of copy `k` of shard `i` ([`copy_shorts`]).
+    fn short(&self, i: usize, k: usize) -> &str {
+        self.shorts.get(i).and_then(|s| s.get(k)).map_or("?", String::as_str)
+    }
+
+    /// The short name of the copy at `url`, and its shard.
+    fn short_of(&self, url: &str) -> Option<(usize, &str)> {
+        self.replicas.iter().enumerate().find_map(|(i, rs)| rs.iter().position(|r| r.url == url).map(|k| (i, self.short(i, k))))
     }
 
     /// Each shard's servers' URLs.
@@ -731,6 +832,90 @@ pub async fn with_partial<F: Future>(f: F) -> (F::Output, Option<Json>) {
 /// bits.
 pub fn auto_key() -> String {
     format!("auto-{:032x}", rand::random::<u128>())
+}
+
+/// The default port of a shard server's gRPC (`--grpc`), which a short
+/// name leaves out.
+const GRPC_PORT: &str = "7701";
+
+/// A copy's short name, which every text, event and alert of the cluster
+/// says: from its URL alone, so that a copy keeps its name when another
+/// copy of its shard leaves or joins, and every coordinator names it alike
+/// (a name by its place in the shard's list, `s0-2`, became `s0-1` once
+/// `s0-0` left, and the alerts about `s0-0` then pointed at another
+/// server). A server the operator runs, `<cluster>-s<set>-<ordinal>.…`,
+/// is `s<shard>-<ordinal>` (`s1-0`), as its pod is numbered; another host
+/// is its first label (`a0` of `http://a0.example:7701`), with its port
+/// unless that is 7701 (`a0:7711`); an IP address or `localhost` is
+/// `host:port` (`127.0.0.1:8004`). [`copy_shorts`] makes them unique.
+pub fn copy_short(shard: usize, url: &str) -> String {
+    let (host, port) = host_port(url);
+    let ip = host.starts_with('[') || host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok();
+    if ip {
+        return match port {
+            Some(p) => format!("{host}:{p}"),
+            None => host.to_string(),
+        };
+    }
+    let label = host.split('.').next().unwrap_or(host);
+    let parts: Vec<&str> = label.split('-').collect();
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if let [.., set, ordinal] = parts.as_slice() {
+        if parts.len() >= 3 && set.len() > 1 && set.starts_with('s') && digits(&set[1..]) && digits(ordinal) {
+            return format!("s{shard}-{ordinal}");
+        }
+    }
+    match port.filter(|p| *p != GRPC_PORT) {
+        Some(p) => format!("{label}:{p}"),
+        None => label.to_string(),
+    }
+}
+
+/// `host` and `port` of a URL (`[::1]` keeps its brackets).
+fn host_port(url: &str) -> (&str, Option<&str>) {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let auth = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let auth = auth.rsplit_once('@').map_or(auth, |(_, a)| a);
+    if let Some(end) = auth.find(']') {
+        let (h, p) = auth.split_at(end + 1);
+        return (h, p.strip_prefix(':').filter(|p| !p.is_empty()));
+    }
+    match auth.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() => (h, Some(p)),
+        _ => (auth.trim_end_matches(':'), None),
+    }
+}
+
+/// The short names of the copies of each shard ([`copy_short`]): where two
+/// copies would share one (hosts `db.east` and `db.west`), each is named by
+/// its `host:port`, and failing that by its URL.
+pub fn copy_shorts<S: AsRef<str>>(groups: &[Vec<S>]) -> Vec<Vec<String>> {
+    let mut names: Vec<Vec<String>> = groups.iter().enumerate().map(|(i, g)| g.iter().map(|u| copy_short(i, u.as_ref())).collect()).collect();
+    for pass in 0..2 {
+        let mut by: HashMap<String, std::collections::HashSet<&str>> = HashMap::new();
+        for (g, ns) in groups.iter().zip(&names) {
+            for (u, n) in g.iter().zip(ns) {
+                by.entry(n.clone()).or_default().insert(u.as_ref());
+            }
+        }
+        let shared: std::collections::HashSet<String> = by.into_iter().filter(|(_, us)| us.len() > 1).map(|(n, _)| n).collect();
+        if shared.is_empty() {
+            break;
+        }
+        for (g, ns) in groups.iter().zip(&mut names) {
+            for (u, n) in g.iter().zip(ns.iter_mut()) {
+                if shared.contains(n) {
+                    let u = u.as_ref();
+                    *n = match (pass, host_port(u)) {
+                        (0, (h, Some(p))) => format!("{h}:{p}"),
+                        (0, (h, None)) => h.to_string(),
+                        _ => u.to_string(),
+                    };
+                }
+            }
+        }
+    }
+    names
 }
 
 /// Why a shard of `n` copies, `up` of them answering, elects no primary:
@@ -979,7 +1164,10 @@ fn refuses_reads(s: &tonic::Status) -> bool {
 
 /// Whether another replica may answer where this one failed: not when the
 /// request itself is wrong, nor when the replica is overloaded
-/// (`ResourceExhausted`), which would only load the next one more.
+/// (`ResourceExhausted`), which would only load the next one more. A
+/// replica that refuses the cluster's token (`Unauthenticated`) was
+/// started with another `--cluster-token`: the coordinator sends every
+/// replica the same one, and the others take it.
 fn try_elsewhere(s: &tonic::Status) -> bool {
     !matches!(
         s.code(),
@@ -987,12 +1175,21 @@ fn try_elsewhere(s: &tonic::Status) -> bool {
             | Code::NotFound
             | Code::AlreadyExists
             | Code::PermissionDenied
-            | Code::Unauthenticated
             | Code::FailedPrecondition
             | Code::OutOfRange
             | Code::Unimplemented
             | Code::ResourceExhausted
     )
+}
+
+/// A copy's entry `j` in the cluster's view, which failed with `e`: one
+/// that refuses the cluster's token answers, but counts as down to the
+/// coordinators, and says so (`refuses_token`).
+fn token_refused(mut j: Json, e: &tonic::Status) -> Json {
+    if e.code() == Code::Unauthenticated {
+        j["refuses_token"] = json!(true);
+    }
+    j
 }
 
 /// What one shard answered a write ([`Coordinator::write`]): the rows it
@@ -1502,12 +1699,10 @@ impl Coordinator {
     /// 1)`), or its URL when the cluster map no longer holds it.
     pub fn copy_name(&self, url: &str) -> String {
         let t = self.topo();
-        for (i, rs) in t.replicas.iter().enumerate() {
-            if let Some(k) = rs.iter().position(|r| r.url == url) {
-                return format!("s{i}-{k} (shard {i})");
-            }
+        match t.short_of(url) {
+            Some((i, short)) => format!("{short} (shard {i})"),
+            None => format!("copy {url}"),
         }
-        format!("copy {url}")
     }
 
     /// The statistics of shards `which`, and the replica, lease and
@@ -2339,7 +2534,7 @@ impl Coordinator {
                     Err((_, s)) if in_doubt(&s) => {
                         // The next write goes to the new primary.
                         self.ask_all(t, i).await;
-                        return Err(ApiError { status: 409, message: format!("s{i}-{k} (shard {i}): {}; {IN_DOUBT}", s.message()) });
+                        return Err(ApiError { status: 409, message: format!("{} (shard {i}): {}; {IN_DOUBT}", t.short(i, k), s.message()) });
                     }
                     Err((_, s)) if matches!(s.code(), Code::FailedPrecondition | Code::Unavailable) && !passed_over => match self.moved(t, i, k, s.code()).await {
                         Some(m) => (k, passed_over) = (m, true),
@@ -2982,7 +3177,7 @@ impl Coordinator {
                 Some(u) => t.replicas[i].iter().position(|r| r.url == u),
                 None => t.replicas[i].iter().position(|r| r.takes_writes()),
             };
-            format!("s{i}-{}", k.unwrap_or(0))
+            t.short(i, k.unwrap_or(0)).to_string()
         };
         let mut shards: Vec<Json> = Vec::new();
         let mut took = Vec::new();
@@ -3085,7 +3280,7 @@ impl Coordinator {
                             let detail: Json = serde_json::from_str(&h.detail).unwrap_or(Json::Null);
                             json!({"url": r.url, "status": h.status, "docs": h.docs, "segments": h.segments, "txn": h.txn, "rtt_ms": ms, "detail": detail})
                         }
-                        Ok(Err(e)) => json!({"url": r.url, "status": "down", "error": e.message(), "rtt_ms": ms}),
+                        Ok(Err(e)) => token_refused(json!({"url": r.url, "status": "down", "error": e.message(), "rtt_ms": ms}), &e),
                         Err(_) => json!({"url": r.url, "status": "down", "error": "no answer within 2 s", "rtt_ms": ms}),
                     };
                     let up = j["status"] != "down";
@@ -3096,7 +3291,7 @@ impl Coordinator {
                         let _ = r.down_since_ms.compare_exchange(0, wall, Ordering::Relaxed, Ordering::Relaxed);
                     }
                     let role = r.role().as_str_name().to_lowercase();
-                    j["short"] = json!(format!("s{i}-{k}"));
+                    j["short"] = json!(t.short(i, k));
                     {
                         let mut known = r.known.lock().unwrap_or_else(|e| e.into_inner());
                         if up {
@@ -3223,7 +3418,7 @@ impl Coordinator {
                         answering.get_or_insert((h.docs, h.segments));
                         json!({"url": r.url, "status": h.status, "docs": h.docs, "segments": h.segments, "txn": h.txn})
                     }
-                    Ok(Err(e)) => json!({"url": r.url, "status": "down", "error": e.message()}),
+                    Ok(Err(e)) => token_refused(json!({"url": r.url, "status": "down", "error": e.message()}), &e),
                     Err(_) => json!({"url": r.url, "status": "down", "error": "no answer within 2 s"}),
                 };
                 all_up &= j["status"] == "ok";
@@ -3473,7 +3668,7 @@ impl Coordinator {
         if let Some(i) = t.replicas.iter().position(|rs| rs.iter().any(|r| r.url == url)) {
             return Err(ApiError::bad(format!("{url} serves shard {i} already")));
         }
-        let mut c = client(url, self.opts.token.as_ref(), self.opts.ca.as_deref())?;
+        let mut c = self.opts.client(url)?;
         let named = |s: tonic::Status| ApiError { status: ApiError::from(s.clone()).status, message: format!("{url}: {}", s.message()) };
         let ask = async {
             let said = hello(&mut c).await.map_err(named)?;
@@ -3629,6 +3824,13 @@ impl Coordinator {
         }
         let k = self.primary(&t, i).await?;
         if k == Some(gone) {
+            // A dead primary is still the one each copy follows: removed, the
+            // shard would have no primary (finding chaos-2).
+            if rs[gone].down_since_ms.load(Ordering::Relaxed) > 0 {
+                return Err(ApiError::bad(format!(
+                    "{url} does not answer, but was shard {i}'s primary when it last did: make another of its servers the primary first (POST /v1/admin/shards/{i}/promote; with \"force\" when fewer than a majority of its copies answer)"
+                )));
+            }
             return Err(ApiError::bad(format!("{url} is shard {i}'s primary: promote another of its servers first")));
         }
         let (map, missed) = self.change(|m| m.set_servers(i, m.replicas()[i].iter().filter(|u| *u != url).cloned().collect()), &[]).await?;
@@ -3661,6 +3863,31 @@ async fn configure_with(c: &mut Client, url: &str, r: pb::ConfigureRequest) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copy_is_named_by_its_address_and_keeps_its_name_when_another_leaves() {
+        let k8s = |set: u32, o: u32| format!("http://search-s{set}-{o}.search-servers.prod.svc:7701");
+        for (url, want) in [
+            (k8s(0, 2), "s1-2"),
+            ("http://a0:7701".to_string(), "a0"),
+            ("http://a0.example:7711/".to_string(), "a0:7711"),
+            ("https://node-3.east.example".to_string(), "node-3"),
+            ("http://127.0.0.1:8004".to_string(), "127.0.0.1:8004"),
+            ("http://localhost:7701".to_string(), "localhost:7701"),
+            ("http://[::1]:8000".to_string(), "[::1]:8000"),
+            ("http://10.0.0.5".to_string(), "10.0.0.5"),
+        ] {
+            assert_eq!(copy_short(1, &url), want, "{url}");
+        }
+        // s0-0 leaves: the others keep their names, and a new copy has its own.
+        let before = copy_shorts(&[vec![k8s(0, 0), k8s(0, 1), k8s(0, 2)], vec!["http://127.0.0.1:8000".into(), "http://127.0.0.1:8004".into()]]);
+        let after = copy_shorts(&[vec![k8s(0, 1), k8s(0, 2), k8s(0, 3)], vec!["http://127.0.0.1:8004".into()]]);
+        assert_eq!(before, [vec!["s0-0", "s0-1", "s0-2"], vec!["127.0.0.1:8000", "127.0.0.1:8004"]]);
+        assert_eq!(after, [vec!["s0-1", "s0-2", "s0-3"], vec!["127.0.0.1:8004"]]);
+        // Two hosts that would share a name are named by host and port.
+        let same = copy_shorts(&[vec!["http://db.east.example:7701", "http://db.west.example:7701"], vec!["http://a1:7701"]]);
+        assert_eq!(same, [vec!["db.east.example:7701", "db.west.example:7701"], vec!["a1"]]);
+    }
 
     #[test]
     fn hedges_stay_within_their_share() {
@@ -3700,6 +3927,9 @@ mod tests {
         assert!(!try_elsewhere(&tonic::Status::resource_exhausted("too many queries running")));
         assert!(try_elsewhere(&tonic::Status::unavailable("connection refused")));
         assert!(!try_elsewhere(&tonic::Status::invalid_argument("bad SQL")));
+        // A replica started with another cluster token: the others take it.
+        assert!(try_elsewhere(&tonic::Status::unauthenticated("missing or wrong token")));
+        assert!(!try_elsewhere(&tonic::Status::permission_denied("this key may not write")));
         // The server answers too many queries with 429, which crosses gRPC
         // as ResourceExhausted and back.
         let s = tonic::Status::from(ApiError { status: 429, message: "too many queries running".into() });

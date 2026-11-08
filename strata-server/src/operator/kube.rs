@@ -214,6 +214,13 @@ impl Cluster {
         }
     }
 
+    /// The variables `spec.secretEnv` takes from Secrets, for every server
+    /// and coordinator.
+    fn from_secrets(&self) -> Vec<Json> {
+        let e = self.spec.secret_env.iter();
+        e.map(|e| json!({"name": e.name, "valueFrom": {"secretKeyRef": {"name": e.secret, "key": e.key}}})).collect()
+    }
+
     /// The coordinators' tokens: the token, and the cluster token when
     /// there is one, which they send to the servers.
     fn coordinator_token_env(&self) -> Vec<Json> {
@@ -285,6 +292,7 @@ impl Cluster {
             env.push(json!({"name": "STRATA_DEMO_SHARD", "value": format!("{i}/{of}")}));
         }
         env.extend(self.server_token_env());
+        env.extend(self.from_secrets());
         let mut container = json!({
             "name": "strata",
             "image": s.image,
@@ -347,9 +355,18 @@ impl Cluster {
         }
         args.extend(s.coordinator_args.iter().cloned());
         let mut env = self.coordinator_token_env();
+        // The crawler beside the cluster, as an app the command center
+        // shows; the admin token is the one it requires.
+        if s.crawler.is_some() {
+            env.push(json!({"name": "STRATA_APPS", "value": format!("{}={}", super::crawler::APP, self.crawler_url())}));
+            if let Some(t) = &s.token_secret {
+                env.push(secret_env("STRATA_APP_TOKEN", t));
+            }
+        }
         env.push(json!({"name": "STRATA_KUBE_CLUSTER", "value": format!("{}/{}", self.ns, self.name)}));
         env.push(json!({"name": "STRATA_DRAIN_MS", "value": DRAIN_MS.to_string()}));
         env.extend(self.place_env());
+        env.extend(self.from_secrets());
         let mut container = json!({
             "name": "coordinator", "image": s.image, "args": args, "env": env,
             "ports": [{"name": "http", "containerPort": 7700}],
@@ -421,6 +438,73 @@ impl Cluster {
 
     fn preflight_name(&self) -> String {
         format!("{}-preflight", self.name)
+    }
+
+    fn crawler_name(&self) -> String {
+        format!("{}-crawler", self.name)
+    }
+
+    /// Where the coordinators reach the crawler: its Service.
+    fn crawler_url(&self) -> String {
+        format!("http://{}:{}", self.crawler_name(), super::crawler::PORT)
+    }
+
+    fn crawler_labels(&self) -> Json {
+        let mut labels = self.labels();
+        labels["app.kubernetes.io/component"] = json!("crawler");
+        labels
+    }
+
+    /// The crawler's Deployment ([`super::crawler`]): one pod, or none
+    /// while paused, never two at once (Recreate: each would hold crawls
+    /// of its own), that writes through the coordinators' Service with
+    /// the admin token, which its API requires too.
+    pub fn crawler_deployment(&self, c: &super::CrawlerSpec) -> Json {
+        let s = &self.spec;
+        let labels = self.crawler_labels();
+        let mut env = vec![json!({"name": "RUST_LOG", "value": "info"})];
+        if let Some(t) = &s.token_secret {
+            env.push(secret_env("STRATA_KEY", t));
+            env.push(secret_env("STRATA_CRAWL_TOKEN", t));
+        }
+        let port = super::crawler::PORT;
+        let mut container = json!({
+            "name": "crawler", "image": s.image, "command": ["strata-crawl"], "args": c.args(&format!("http://{}:7700", self.name)), "env": env,
+            "ports": [{"name": "http", "containerPort": port}],
+            "readinessProbe": {"tcpSocket": {"port": port}, "periodSeconds": 5},
+            "resources": c.resources.clone().unwrap_or_else(|| json!({"requests": {"cpu": "50m", "memory": "64Mi"}, "limits": {"memory": "1Gi"}})),
+            "terminationMessagePolicy": "FallbackToLogsOnError",
+        });
+        if let Some(p) = &s.image_pull_policy {
+            container["imagePullPolicy"] = json!(p);
+        }
+        json!({
+            "apiVersion": "apps/v1", "kind": "Deployment", "metadata": self.meta(&self.crawler_name(), labels.clone()),
+            "spec": {
+                "replicas": if c.paused { 0 } else { 1 },
+                "selector": {"matchLabels": labels},
+                "strategy": {"type": "Recreate"},
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": {"automountServiceAccountToken": false, "terminationGracePeriodSeconds": 10, "containers": [container]},
+                },
+            },
+        })
+    }
+
+    /// The crawler's Service, which the coordinators forward
+    /// `/v1/apps/crawler/...` to.
+    pub fn crawler_service(&self) -> Json {
+        let port = super::crawler::PORT;
+        json!({
+            "apiVersion": "v1", "kind": "Service", "metadata": self.meta(&self.crawler_name(), self.labels()),
+            "spec": {"selector": self.crawler_labels(), "ports": [{"name": "http", "port": port, "targetPort": port}]},
+        })
+    }
+
+    fn crawler_paths(&self) -> (String, String) {
+        let name = self.crawler_name();
+        (format!("{}/{name}", ns_path(&self.ns, "v1", "services")), format!("{}/{name}", ns_path(&self.ns, "apps/v1", "deployments")))
     }
 
     fn follow_path(&self) -> String {
@@ -689,6 +773,29 @@ impl Platform for Cluster {
             return Ok(());
         }
         self.kube.apply(&path, &d).await.map(|_| ())
+    }
+
+    async fn crawler(&self, spec: &Spec) -> Result<(), String> {
+        let (service, deployment) = self.crawler_paths();
+        let Some(c) = &spec.crawler else {
+            for path in [deployment, service] {
+                if self.kube.get(&path).await?.is_some() {
+                    self.kube.delete(&path).await?;
+                }
+            }
+            return Ok(());
+        };
+        // Each applied only when it changes, by the hash of what it is.
+        let with = Cluster { kube: self.kube.clone(), ns: self.ns.clone(), name: self.name.clone(), uid: self.uid.clone(), spec: spec.clone() };
+        for (path, mut want) in [(service, with.crawler_service()), (deployment, with.crawler_deployment(c))] {
+            let hash = super::short_hash(&want);
+            want["metadata"]["annotations"] = json!({CONFIG: hash});
+            if self.kube.get(&path).await?.is_some_and(|h| h["metadata"]["annotations"][CONFIG] == hash.as_str()) {
+                continue;
+            }
+            self.kube.apply(&path, &want).await?;
+        }
+        Ok(())
     }
 
     async fn coordinator_config(&self) -> Result<Option<String>, String> {
@@ -1291,6 +1398,49 @@ mod tests {
     }
 
     #[test]
+    fn a_crawler_runs_beside_the_cluster_and_the_coordinators_list_it() {
+        let none = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner"}));
+        let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "clusterTokenSecret": "inner", "crawler": {"splitRows": 5000}}));
+        let d = c.crawler_deployment(c.spec.crawler.as_ref().unwrap());
+        assert_eq!(d["metadata"]["name"], "orders-crawler");
+        assert_eq!(d["metadata"]["ownerReferences"][0]["uid"], "u-1");
+        assert_eq!((&d["spec"]["replicas"], &d["spec"]["strategy"]["type"]), (&json!(1), &json!("Recreate")));
+        let pod = &d["spec"]["template"]["spec"];
+        assert_eq!(pod["automountServiceAccountToken"], false);
+        let k = &pod["containers"][0];
+        assert_eq!(k["command"], json!(["strata-crawl"]));
+        assert_eq!(k["image"], c.spec.image.as_str(), "the cluster's image, which carries strata-crawl");
+        assert_eq!(k["args"], json!(["serve", "--listen", "0.0.0.0:7800", "--strata", "http://orders:7700", "--grow", "kube", "--split-rows", "5000"]));
+        let env = k["env"].as_array().unwrap();
+        let secret = |n: &str| env.iter().find(|e| e["name"] == n).map(|e| e["valueFrom"]["secretKeyRef"].clone()).unwrap_or_default();
+        // The admin token writes and grows the cluster, and is what its API takes.
+        assert_eq!(secret("STRATA_KEY"), json!({"name": "admin", "key": "token"}));
+        assert_eq!(secret("STRATA_CRAWL_TOKEN"), json!({"name": "admin", "key": "token"}));
+        assert!(!env.iter().any(|e| e["name"] == "STRATA_CLUSTER_TOKEN"), "never the cluster's token");
+        let s = c.crawler_service();
+        assert_eq!(s["metadata"]["name"], "orders-crawler");
+        assert_eq!(s["spec"]["selector"], d["spec"]["selector"]["matchLabels"]);
+        assert_eq!(s["spec"]["ports"][0]["port"], 7800);
+        // The coordinators list it, with the token it takes; the servers
+        // do not restart for it, the coordinators do.
+        let coord = c.coordinator_deployment(&[vec!["http://a:7701".into()]], 1);
+        let env = coord["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().clone();
+        assert!(env.iter().any(|e| e["name"] == "STRATA_APPS" && e["value"] == "crawler=http://orders-crawler:7800"));
+        assert!(env.iter().any(|e| e["name"] == "STRATA_APP_TOKEN" && e["valueFrom"]["secretKeyRef"]["name"] == "admin"));
+        let plain = none.coordinator_deployment(&[vec!["http://a:7701".into()]], 1);
+        assert!(!plain["spec"]["template"]["spec"]["containers"][0]["env"].as_array().unwrap().iter().any(|e| e["name"] == "STRATA_APPS"));
+        assert_eq!(c.spec.server_config(), none.spec.server_config());
+        assert_ne!(c.spec.coordinator_config(), none.spec.coordinator_config());
+        // A cluster without one keeps the hashes it had before spec.crawler.
+        let before = json!({"image": none.spec.image, "imagePullPolicy": null, "resources": null, "args": [], "tokenSecret": "admin", "clusterTokenSecret": "inner"});
+        assert_eq!(none.spec.coordinator_config(), super::super::short_hash(&before));
+        assert!(!serde_json::to_value(&none.spec).unwrap().as_object().unwrap().contains_key("crawler"));
+        // Paused: no pod.
+        let paused = cluster(json!({"tokenSecret": "admin", "crawler": {"paused": true}}));
+        assert_eq!(paused.crawler_deployment(paused.spec.crawler.as_ref().unwrap())["spec"]["replicas"], 0);
+    }
+
+    #[test]
     fn copies_are_named_by_set_and_ordinal() {
         let c = cluster(json!({"demo": 10}));
         let u = c.url(3, 2);
@@ -1380,6 +1530,24 @@ mod tests {
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin"}));
         let d = c.coordinator_deployment(&[vec!["a".into()]], 1);
         assert_eq!(names(&d["spec"]["template"]["spec"]["containers"][0]["env"]), [("STRATA_TOKEN".to_string(), "admin".to_string())]);
+    }
+
+    #[test]
+    fn secret_env_reaches_every_server_and_coordinator() {
+        let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}, {"name": "OPENAI_API_KEY", "secret": "models", "key": "openai"}]}));
+        let from = |env: &Json, name: &str| env.as_array().unwrap().iter().find(|e| e["name"] == name).map(|e| e["valueFrom"]["secretKeyRef"].clone());
+        let s = c.statefulset(0, 2, Some((0, 1)));
+        let d = c.coordinator_deployment(&[vec!["a".into()]], 1);
+        for env in [&s["spec"]["template"]["spec"]["containers"][0]["env"], &d["spec"]["template"]["spec"]["containers"][0]["env"]] {
+            assert_eq!(from(env, "ANTHROPIC_API_KEY"), Some(json!({"name": "anthropic", "key": "key"})));
+            assert_eq!(from(env, "OPENAI_API_KEY"), Some(json!({"name": "models", "key": "openai"})));
+        }
+        // Not the follow process's: it calls no model.
+        let f: super::super::FollowSpec = serde_json::from_value(json!({"source": "https://east:7700"})).unwrap();
+        assert!(from(&c.follow_deployment(&f)["spec"]["template"]["spec"]["containers"][0]["env"], "ANTHROPIC_API_KEY").is_none());
+        // Without it, the servers' and coordinators' variables are as before.
+        let plain = cluster(json!({"demo": 10, "tokenSecret": "admin"}));
+        assert!(from(&plain.statefulset(0, 2, Some((0, 1)))["spec"]["template"]["spec"]["containers"][0]["env"], "ANTHROPIC_API_KEY").is_none());
     }
 
     #[test]

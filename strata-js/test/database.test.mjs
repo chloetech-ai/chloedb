@@ -62,6 +62,24 @@ test("one process at a time has a database open", async () => {
   await (await Database.open(path)).close();
 });
 
+test("other processes read a database one process writes", async () => {
+  const path = join(tempDir(), "shared.strata");
+  const db = await Database.create(path, BOOKS);
+  await db.insert(books(10));
+  const r = await Database.open(path, { readOnly: true });
+  assert.equal(await r.count(), 10);
+  await db.insert(books(30).slice(10));
+  await db.optimize();
+  await db.delete(["b0001"]);
+  assert.equal(await r.count(), 29);
+  assert.equal(await db.refresh(), false);
+  await assert.rejects(r.insert(book(100)), /read-only/);
+  // A second writer is still kept out.
+  await assert.rejects(Database.open(path), /busy/);
+  await r.close();
+  await db.close();
+});
+
 test("open without a schema needs the file", async () => {
   await assert.rejects(open(join(tempDir(), "missing.strata")), /pass a schema/);
 });

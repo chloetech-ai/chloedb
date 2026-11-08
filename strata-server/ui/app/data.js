@@ -434,10 +434,23 @@ export function deriveFleet() {
     if (st === "no_reads" || st === "down" || st === "no_writes") {
       const reps = sh.replicas || [];
       const up = reps.filter((r) => r.status === "ok").length;
-      problems.push({ id: "shard-" + (sh.shard ?? i), severity: "critical", title: st === "down" ? `Shard ${sh.shard ?? i} does not answer` : `Searches are failing: shard ${sh.shard ?? i} has no majority`,
-        where: ["shard " + (sh.shard ?? i), ...reps.filter((r) => r.status !== "ok").map((r) => name(r.url))], since_ms: null,
+      // "No majority" only when fewer than a majority answer: a shard whose
+      // primary went with a majority left has no primary until one is
+      // elected (finding chaos-2).
+      const n = sh.shard ?? i, majority = sh.majority ?? up * 2 > reps.length;
+      const title = st === "down" ? `Shard ${n} does not answer`
+        : !majority ? `Searches are failing: shard ${n} has no majority`
+        : st === "no_writes" ? `Writes are failing: shard ${n} ${sh.primary ? "takes no writes" : "has no primary"}`
+        : `Searches are failing: shard ${n} serves no reads`;
+      const gone = reps.filter((r) => r.status !== "ok");
+      const text = !majority ? (gone.length === 1 ? `Bring ${name(gone[0].url)} back, or remove it so the others have a majority` : "Bring its copies back")
+        : st === "no_writes" && !sh.primary ? "An election should choose a primary within seconds. If none does, make an up-to-date copy the primary (Cluster: its menu)"
+        : st === "no_writes" ? "Hand the primary over to a replica in sync (Cluster: its menu, Make it the primary), then fix the old primary"
+        : "Find out why on its copies";
+      problems.push({ id: "shard-" + n, severity: "critical", title,
+        where: ["shard " + n, ...gone.map((r) => name(r.url))], since_ms: null,
         impact: sh.why || `${up} of ${reps.length} copies answer: without a majority the shard serves no reads, and every search asks every shard`,
-        next: { text: reps.length - up === 1 ? `Bring ${name(reps.find((r) => r.status !== "ok")?.url)} back, or remove it so the others have a majority` : "Bring its copies back", view: "cluster", params: { shard: sh.shard ?? i } } });
+        next: { text, view: "cluster", params: { shard: n } } });
     }
   });
   disks.sort((a, b) => a - b);
