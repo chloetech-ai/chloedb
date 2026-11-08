@@ -64,6 +64,8 @@ A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'
 | `--verify-every-s N` | 600 | with `--replicas`: how often each replica's rows are [compared](#replication-a-primary-and-its-replicas) with the primary's; a replica whose rows differ is sent a copy of the primary (0: only when asked, `POST /v1/admin/verify`) |
 | `--verify-checksums` | off | check every segment against its checksum before serving (reads the whole database once); a damaged newest version is skipped for the one before it |
 | `--shards URL,URL,…` | | run as a coordinator over these shard servers' gRPC addresses |
+| `--coordinator-listen ADDR` | | with `--db`, `--grpc` and `--shards`: also serve a coordinator over `--shards` at this HTTP address, in this server's process, which calls this server's shard in-process ([a coordinator beside a shard](#a-coordinator-beside-each-shard)) |
+| `--local-shard URL` | | with `--coordinator-listen`: the URL of `--shards` that is this server's own gRPC address |
 | `--peer-url URL` | `$STRATA_PEER_URL`, else `$STRATA_POD_IP` and the `--listen` port, else the `--listen` address | on a coordinator: the address other coordinators reach its HTTP API at; it names itself so to its shards |
 | `--contain FILE` | `contain.json` beside `--alerts`; in memory without either | on a coordinator: where its Contain rules and their removals are kept across a restart |
 | `--slot-map FILE` | equal runs, epoch 1 | with `--shards`: the [slot map](#slots) to route writes by, which the shards are given |
@@ -691,6 +693,19 @@ strata-server --shards http://127.0.0.1:7711,http://127.0.0.1:7721 --listen 127.
 ```
 
 With tokens, give every server of the cluster the same `--cluster-token` (`STRATA_CLUSTER_TOKEN=…` for all three), which they send each other, and the coordinator a `--token` of its own for its operator; make API keys for clients on the coordinator, and every server holds them ([security](#security)). Without a cluster token, give the shards and the coordinator the same `--token`, which then makes the calls between servers too. On other machines, serve the shards with `--tls-cert` and `--tls-key` and list them as `https://`.
+
+### A coordinator beside each shard
+
+A shard server can serve a coordinator too, in its own process, as Elasticsearch's data nodes answer queries: each machine then runs one server, and clients may ask any of them.
+
+```sh
+strata-server --demo 20000 --demo-shard 0/2 --db a.strata --listen 127.0.0.1:7710 --grpc 127.0.0.1:7711 \
+  --shards http://127.0.0.1:7711,http://127.0.0.1:7721 --coordinator-listen 127.0.0.1:7700 --local-shard http://127.0.0.1:7711
+strata-server --demo 20000 --demo-shard 1/2 --db b.strata --listen 127.0.0.1:7720 --grpc 127.0.0.1:7721 \
+  --shards http://127.0.0.1:7711,http://127.0.0.1:7721 --coordinator-listen 127.0.0.1:7730 --local-shard http://127.0.0.1:7721
+```
+
+The coordinator calls its own shard's gRPC service in-process: the same calls and the same checks of their token as over the network, without a connection, HTTP/2 or a second process. It reaches the other shards over the network. A read by key whose key the coordinator's own shard holds is answered without leaving the process: with two shards on one machine of 4 cores (the cloud container, an Intel Xeon), a key of its own shard took 0.39 to 0.53 ms at the client's median against 0.86 to 0.87 ms with the coordinator as a process of its own beside the shard, and a key of either shard, asking both coordinators in turn, 0.82 to 0.84 ms against 1.02 to 1.03 ms. BM25 queries from 8 clients answered 16% more a second, and from one client as fast (they wait for the other shard). The coordinator keeps no log store, API keys file or other files of its own (the shard keeps them), and takes no part in replication.
 
 A coordinator holds no data. For a query, it
 
@@ -1374,7 +1389,7 @@ A local database merges its segments on merger threads as writes add them ([how 
 
 `GET /` serves the command center, a console for one server or a whole cluster. It reads the same API as any client (the cluster's shards, fleet health, the series, alerts, events, running and recent queries, the logs, keys and the audit log), so what it shows is what the server reports, and every change it makes is an API call a key's scope allows. Its requests carry `x-strata-client: command-center`, and a change it makes carries the reason it asked for in `x-strata-reason`, which the [audit log](#security) keeps with it. A button that changes something says, when the key lacks the scope, which scope it takes.
 
-The navigation has four groups for running a fleet, **Operate**, **Diagnose**, **Change** and **Data**, and **Labs**, the tools for search engineers, collapsed (pin one to keep it in the sidebar).
+The navigation has four groups for running a fleet, **Operate**, **Diagnose**, **Change** and **Data**, **Apps**, the programs the server shows as views of their own ([below](#apps)), and **Labs**, the tools for search engineers, collapsed (pin one to keep it in the sidebar).
 
 ![Home: a coordinator over two shards of two copies, all serving, with queries, latency and disks against their limits](../assets/img/strata-command-center-home.png)
 
@@ -1499,6 +1514,15 @@ Reads are counted in memory, since the server started or since `POST /v1/index/r
 - **Query language** is a guide to the SQL with examples written against the table's own fields and words from its rows: boolean, phrase, prefix, typo and synonym searches, conditions, aggregates and `HAVING`, subqueries and `WITH`, joins, graph queries, hybrid ranking and boosts, and what is not supported. "Try it" runs an example in the SQL tab. It also edits the server's synonym list.
 
 ![The SQL editor with a plan](../assets/img/strata-server-sql.png)
+
+### Apps
+
+An app is a program of its own that the command center shows as a view: the [crawler](crawler.md) is one. `--app name=url` (repeatable, or `STRATA_APPS=a=url,b=url`) names each, and the server reaches it there; browsers never do, so the app needs no address of theirs and no keys:
+
+- `GET /v1/apps` lists the apps (read scope), each with its manifest, the app's `GET /app.json`: `title`, `description`, `icon_svg` (the shapes of a 24-unit outline icon; only shapes and their geometry are drawn), `version`, and `view`, the path of its view module, as `/v1/apps/<name>/<view>`. An app that does not answer is listed with `up: false` and why. Manifests are read again after 15 seconds.
+- `/v1/apps/<name>/<path>` is sent on to the app's `<path>`, with its query, body, `content-type` and `accept`, and the server's `STRATA_APP_TOKEN` as `Authorization: Bearer` in place of the caller's key; the caller's key is checked first, read scope for `GET` and `HEAD` and admin scope for the rest. An answer is at most 32 MB, in at most 120 s, and an app that does not answer is a 502.
+
+The navigation lists the apps under **Apps**, each at `#/app/<name>`. Its view module is JavaScript the command center loads through the server (with the signed-in key) and runs with its own helpers: the module's default export's `render(el, ctx)` draws into `el` and may return a function that stops it, and `ctx` holds `core`, `charts` and `data` (the command center's modules), `app` (its listing), `api(path, opts)` (the app's API through the server), `path()`, `href(...)` and `onPath(f)` for the view's own paths under `#/app/<name>/`. An app's view is trusted as the server's own pages are: an admin names the app on the server's command line.
 
 ## The agent
 

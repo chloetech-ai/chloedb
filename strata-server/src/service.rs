@@ -433,6 +433,9 @@ pub struct Service {
     /// Proxies whose `X-Forwarded-For` names the client (`--trust-proxy`):
     /// addresses and prefix lengths.
     pub trusted_proxies: Vec<(std::net::IpAddr, u8)>,
+    /// The apps the command center shows (`--app`), which `/v1/apps/<name>`
+    /// reaches ([`crate::apps`]).
+    pub apps: crate::apps::Apps,
     /// Fleet health's memory ([`crate::fleet`]).
     pub fleet: crate::fleet::Fleet,
     /// The coordinators this server knows ([`crate::peers`]).
@@ -658,6 +661,7 @@ impl Service {
             slo: Slo::default(),
             place: Place::from_env(None),
             trusted_proxies: Vec::new(),
+            apps: Default::default(),
             fleet: Default::default(),
             peers: Default::default(),
             image_repository: crate::operator::upgrade::REPOSITORY.into(),

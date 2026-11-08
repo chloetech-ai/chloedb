@@ -13,6 +13,7 @@ Around the library:
 - **[Parquet and S3](docs/strata/parquet.md)**: `strata-server import` reads Parquet files and directories of them as Spark writes them (Hive partitions too) into a table, `export` writes tables to Parquet that Spark, DuckDB, polars and pandas read, and either takes `s3://` URLs; from Python, `db.import_arrow` takes any Arrow table or dataframe.
 - **[Following Postgres](docs/strata/postgres.md)**: `strata-server follow-postgres` copies a Postgres publication's tables into Strata and then applies their inserts, updates, deletes, truncates and new columns by logical replication (pgoutput), a moment behind, each change once across restarts: search over Postgres's rows without a Debezium or PGSync pipeline.
 - **[SQLite in and out](docs/strata/sqlite.md)**: `strata-server import` turns a SQLite database's tables into Strata tables, and `strata-server export` writes a Strata database to a SQLite file with its keys, references, indexes and an FTS5 index over the text.
+- **[strata-crawl](docs/strata/crawler.md)** crawls a site into a table: given a URL it reads the pages, finds their fields (JSON-LD, meta tags, spec tables, the site's template), makes a table from them and fills it, and adds shards to the cluster as the table grows. A program of its own that talks to strata-server over HTTP, shown in the command center as an app.
 - **[Engram](#engram-memory-for-coding-agents-built-on-strata)** is an application built on Strata: long-term memory for coding agents. It records every Claude Code session of a project into one Strata file and brings the right pieces back when a prompt needs them.
 
 📖 **Documentation:** [`docs/`](docs/index.md), published at [rkonow.github.io/strata](https://rkonow.github.io/strata/).
@@ -215,6 +216,7 @@ demo/run.sh --embedder hash:256 ...                           # without download
 | [`strata-py/`](strata-py/) | Strata from Python: the database in-process (a Rust extension) or a client of strata-server, with the same methods ([docs](docs/strata/python.md)) |
 | [`strata-java/`](strata-java/) | Strata from Java: the database in-process over JNI (a Rust library and the `ai.chloetech.strata` package, built by Maven) ([docs](docs/strata/java.md)) |
 | [`strata-js/`](strata-js/) | Strata from JavaScript: the database in-process (a Node-API addon for Node, Bun and Deno) or a `fetch` client of strata-server, with the same methods ([docs](docs/strata/javascript.md)) |
+| [`strata-crawl/`](strata-crawl/) | the crawler: polite fetching, field extraction, a table's schema inferred from the pages, batched writes and a cluster grown a shard at a time; its command center view (`ui/view.js`) ([docs](docs/strata/crawler.md)) |
 | [`engram/`](engram/) | Engram, the memory system built on Strata: hooks client, daemon, MCP server, recall and gate, distiller, live inspector (`demo/`), evaluation harnesses and results |
 | [`docs/`](docs/) | this documentation, as Markdown and as a GitHub Pages site |
 | [`install.sh`](install.sh) | builds Engram, installs it to `~/.local/bin` and wires it into Claude Code |

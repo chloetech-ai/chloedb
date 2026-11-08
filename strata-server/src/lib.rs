@@ -23,6 +23,7 @@
 
 pub mod agent;
 pub mod alerts;
+pub mod apps;
 pub mod aws;
 pub mod cloud;
 pub mod digitalocean;
