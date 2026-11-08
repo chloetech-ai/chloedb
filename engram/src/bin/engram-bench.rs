@@ -1040,6 +1040,7 @@ fn context_params(set: &[String]) -> engram::context::ContextParams {
             "reply_user_chars" => p.reply_user_chars = n(),
             "broad_replies" => p.broad_replies = n(),
             "broad_reply_chars" => p.broad_reply_chars = n(),
+            "broad_timeline" => p.broad_timeline = n(),
             "shares" => {
                 let xs: Vec<f64> = v.split('/').map(|x| x.parse().unwrap_or_else(|_| panic!("--set {kv}: a/b"))).collect();
                 assert!(xs.len() == 2, "--set {kv}: a/b");
