@@ -99,12 +99,14 @@ async fn a_server_keeps_and_calls_stored_functions() {
 }
 
 /// A shard's server: rows of `N` that `keep` keeps, numbered writes, its
-/// slots kept beside the database.
+/// slots kept beside the database, and at most 10,000 rows a query, as
+/// strata-server's `--max-result-window` keeps by default.
 async fn shard(dir: &Path, name: &str, keep: impl Fn(usize) -> bool) -> (Arc<Service>, String) {
     let db = create_keeping(dir, name, keep);
     db.storage().start_seq_no().unwrap();
     let schema = (*db.schema()).clone();
     let mut svc = Service::new(Backend::Local(db), schema, agent(), 16, Duration::from_secs(20));
+    svc.max_rows = Some(10_000);
     svc.keep_slots_in(slots::file_of(&dir.join(name))).unwrap();
     let svc = Arc::new(svc);
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -122,6 +124,32 @@ async fn coordinator(urls: &[String]) -> (Arc<Service>, Arc<Coordinator>) {
 /// Each version a service calls: (id, dropped).
 fn versions(svc: &Arc<Service>) -> Vec<(String, bool)> {
     svc.functions().all().map(|f| (f.id(), f.dropped)).collect()
+}
+
+/// One shard with one copy: functions made through its coordinator are
+/// numbered, called and listed. (The coordinator read a shard's
+/// `_functions` with a LIMIT of a million rows, which a server refuses
+/// past its `--max-result-window`, so once the shard held a function the
+/// coordinator saw none, and the next CREATE FUNCTION waited for it.)
+#[tokio::test(flavor = "multi_thread")]
+async fn a_coordinator_of_one_shard_keeps_its_functions() {
+    let dir = tempfile::tempdir().unwrap();
+    let (one, url) = shard(dir.path(), "one.strata", |_| true).await;
+    let (coord, _) = coordinator(&[url.clone()]).await;
+    let admin = key_of("ops", Scope::Admin);
+    sql_as(&coord, &admin, CHEAPER).await.unwrap();
+    sql_as(&coord, &admin, KETTLES).await.unwrap();
+    let both = [("cheaper@1".to_string(), false), ("kettles@1".to_string(), false)];
+    assert_eq!(versions(&coord), both);
+    assert_eq!(versions(&one), both);
+    let called = "SELECT id FROM products WHERE MATCH(body, 'easy') ORDER BY cheaper(bm25(body, 'easy'), price) DESC LIMIT 5";
+    let want = rows(&one, called).await;
+    assert_eq!(want.len(), 5);
+    assert_eq!(rows(&coord, called).await, want);
+    assert_eq!(rows(&coord, "SELECT * FROM kettles(k => 3)").await, rows(&one, "SELECT * FROM kettles(k => 3)").await);
+    // A coordinator started later finds them.
+    let (later, _) = coordinator(&[url]).await;
+    assert_eq!(versions(&later), both);
 }
 
 #[tokio::test(flavor = "multi_thread")]

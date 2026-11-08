@@ -502,15 +502,19 @@ fn common_profiles(answers: &[pb::SchemaResponse]) -> Vec<(String, RankProfile)>
 }
 
 /// What a coordinator reads a replica's stored functions with: an
-/// ordinary query, so that no shard protocol changes.
-const FUNCTIONS_SQL: &str = "SELECT id, name, version, language, kind, signature, body, hash, description, created, created_by, dropped FROM _functions LIMIT 1000000";
+/// ordinary query, so that no shard protocol changes. It has no LIMIT: a
+/// server refuses a LIMIT past the most rows a query returns
+/// (`--max-result-window`, 10,000 by default), and answers a query without
+/// one with every row up to that many.
+const FUNCTIONS_SQL: &str = "SELECT id, name, version, language, kind, signature, body, hash, description, created, created_by, dropped FROM _functions";
 
 /// The stored functions of each replica that answered within 5 s, by URL:
 /// none for one that has made no function, or a server from before stored
-/// functions (which reads no `_functions`). It is read as every read is:
-/// in the protocol the cluster speaks, typed from protocol 2 and under the
-/// slot map's epoch from 4.
-async fn replica_functions(t: &Topology) -> Vec<(String, FunctionSet)> {
+/// functions (which reads no `_functions`); and, for each replica that did
+/// not say, its URL and why. It is read as every read is: in the protocol
+/// the cluster speaks, typed from protocol 2 and under the slot map's
+/// epoch from 4.
+async fn replica_functions(t: &Topology) -> (Vec<(String, FunctionSet)>, Vec<String>) {
     let p = t.protocol();
     let schema = strata::storage::functions_schema();
     let typed = || strata::query::compound::plan_read(FUNCTIONS_SQL, &[&schema], &Params::new(), &|_, _| None);
@@ -518,25 +522,34 @@ async fn replica_functions(t: &Topology) -> Vec<(String, FunctionSet)> {
         Ok(read) => read.request(p, 0),
         Err(e) => {
             tracing::warn!(error = %e.message, "the read of stored functions does not plan");
-            return Vec::new();
+            return (Vec::new(), t.replicas.iter().flatten().map(|r| format!("{}: {}", r.url, e.message)).collect());
         }
     };
     let calls = t.replicas.iter().flatten().map(|r| {
         let (mut c, url, req) = (r.client.clone(), r.url.clone(), req.clone());
         async move { (url, tokio::time::timeout(Duration::from_secs(5), c.query(req)).await) }
     });
-    let mut out = Vec::new();
+    let (mut sets, mut failed) = (Vec::new(), Vec::new());
     for (url, a) in join_all(calls).await {
-        match a {
+        let why = match a {
             Ok(Ok(r)) => match result_from_pb(r.into_inner()).and_then(|rs| functions_of(&rs)) {
-                Ok(set) => out.push((url, set)),
-                Err(e) => tracing::warn!(replica = %url, error = %e.message, "a replica sent stored functions this coordinator cannot read"),
+                Ok(set) => {
+                    sets.push((url, set));
+                    continue;
+                }
+                Err(e) => format!("its stored functions do not read: {}", e.message),
             },
-            Ok(Err(s)) if s.message().contains("no such table") => out.push((url, FunctionSet::default())),
-            _ => {}
-        }
+            Ok(Err(s)) if s.message().contains("no such table") => {
+                sets.push((url, FunctionSet::default()));
+                continue;
+            }
+            Ok(Err(s)) => s.message().to_string(),
+            Err(_) => "no answer within 5 s".to_string(),
+        };
+        tracing::warn!(replica = %url, error = %why, "a replica did not say which stored functions it holds");
+        failed.push(format!("{url}: {why}"));
     }
-    out
+    (sets, failed)
 }
 
 /// The functions in rows of `_functions`.
@@ -1429,7 +1442,7 @@ impl Coordinator {
             }
         }
         let stats_cache_terms = opts.stats_cache_terms;
-        let functions = common_functions(&replica_functions(&topo).await);
+        let functions = common_functions(&replica_functions(&topo).await.0);
         Ok(Coordinator {
             topo: RwLock::new(Arc::new(topo)),
             changing: tokio::sync::Mutex::new(()),
@@ -1520,7 +1533,7 @@ impl Coordinator {
             _ => return false,
         };
         let profiles = common_profiles(&answers);
-        let functions = common_functions(&replica_functions(t).await);
+        let functions = common_functions(&replica_functions(t).await.0);
         let mut changed = false;
         {
             let mut held = self.functions.write().unwrap_or_else(|e| e.into_inner());
@@ -2977,12 +2990,12 @@ impl Coordinator {
     /// the version's `created_by`.
     pub async fn define_function(&self, stmt: &Statement, author: &str) -> Result<Written, ApiError> {
         let t = self.topo();
-        let sets = replica_functions(&t).await;
+        let (sets, failed) = replica_functions(&t).await;
         let replicas = t.replicas.iter().flatten().count();
-        if sets.len() < replicas {
+        if !failed.is_empty() {
             return Err(ApiError {
                 status: 503,
-                message: format!("{} of {replicas} replicas did not say which functions they hold: a function's versions are numbered alike on every shard, so CREATE and DROP FUNCTION wait for every replica", replicas - sets.len()),
+                message: format!("{} of {replicas} replicas did not say which functions they hold ({}): a function's versions are numbered alike on every shard, so CREATE and DROP FUNCTION wait for every replica", failed.len(), failed.join("; ")),
             });
         }
         let all = union_functions(&sets)?;
