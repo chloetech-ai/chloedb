@@ -238,6 +238,122 @@ async fn scenario(base: &str) -> Vec<Json> {
     seen
 }
 
+/// What Mastodon's searches need: n-gram fields (`edge_ngram`), words as
+/// the standard tokenizer and `word_delimiter_graph` cut them, emoji,
+/// `script_score` and `field_value_factor` over numbers, `gauss` over
+/// dates, constant `should` boosts, and a search of two indexes with
+/// `_index` filters and `collapse`. Returns what each search found.
+async fn social(base: &str) -> Vec<Json> {
+    let mut seen = Vec::new();
+    let ids = |r: &Json| -> Vec<String> { r["hits"]["hits"].as_array().unwrap().iter().map(|h| h["_id"].as_str().unwrap().to_string()).collect() };
+    let total = |r: &Json| r["hits"]["total"]["value"].as_u64().unwrap();
+    let text = |analyzer: &str| json!({"type": "text", "analyzer": analyzer, "fields": {"edge_ngram": {"type": "text", "analyzer": "edge_ngram", "search_analyzer": analyzer}}});
+    ok(base, "PUT", "/accounts", Some(json!({
+        "settings": {"analysis": {
+            "analyzer": {"verbatim": {"tokenizer": "standard", "filter": ["lowercase", "asciifolding"]}, "edge_ngram": {"tokenizer": "edge_ngram", "filter": ["lowercase", "asciifolding"]}},
+            "tokenizer": {"edge_ngram": {"type": "edge_ngram", "min_gram": 1, "max_gram": 15}}}},
+        "mappings": {"properties": {"id": {"type": "long"}, "followers_count": {"type": "long"}, "username": text("verbatim"), "display_name": text("verbatim")}}
+    }))).await;
+    let accounts = [(1, "gargron", "Eugen Rochko", 1000), (2, "garden_fan@mastodon.social", "Gardener 🌱", 10), (3, "alice", "Alice", 5), (4, "gary", "Gary 🌱", 0), (5, "rochko_fan", "Fan", 100)];
+    let mut nd = String::new();
+    for (id, u, d, f) in accounts {
+        nd.push_str(&format!("{}\n{}\n", json!({"index": {"_id": id.to_string()}}), json!({"id": id, "username": u, "display_name": d, "followers_count": f})));
+    }
+    assert_eq!(ok(base, "POST", "/accounts/_bulk?refresh=true", Some(Json::String(nd))).await["errors"], json!(false));
+    let autocomplete = |q: &str, boost: Option<i64>| {
+        let core = json!({"dis_max": {"queries": [
+            {"multi_match": {"query": q, "type": "most_fields", "fields": ["username", "username.*"]}},
+            {"multi_match": {"query": q, "type": "most_fields", "fields": ["display_name", "display_name.*"]}}]}});
+        let should: Vec<Json> = boost.map(|id| json!({"terms": {"id": [id], "boost": 100}})).into_iter().collect();
+        json!({"query": {"bool": {"must": {"function_score": {"query": {"bool": {"must": [core]}}, "functions": [{"script_score": {"script": {"source": "Math.log10((Math.max(doc['followers_count'].value, 0) + 1))"}}}]}}, "should": should}}})
+    };
+    // `gar` starts gargron, garden_fan and gary; more followers rank
+    // higher, and gary's none score 0.
+    let r = ok(base, "POST", "/accounts/_search", Some(autocomplete("gar", None))).await;
+    assert_eq!(ids(&r), ["1", "2", "4"]);
+    assert_eq!(r["hits"]["hits"][2]["_score"], json!(0.0));
+    // An account followed comes first.
+    let r = ok(base, "POST", "/accounts/_search", Some(autocomplete("gar", Some(2)))).await;
+    assert_eq!(ids(&r), ["2", "1", "4"]);
+    assert!(r["hits"]["hits"][0]["_score"].as_f64().unwrap() > 100.0);
+    seen.push(r);
+    // The standard tokenizer keeps `mastodon.social` and `rochko_fan`
+    // whole, and makes an emoji a word.
+    let m = |f: &str, q: &str| json!({"query": {"match": {f: q}}});
+    for (f, q, want) in [("username", "mastodon.social", 1), ("username", "mastodon", 0), ("username", "rochko", 0), ("username", "rochko_fan", 1), ("display_name", "rochko", 1), ("display_name", "🌱", 2)] {
+        let r = ok(base, "POST", "/accounts/_search", Some(m(f, q))).await;
+        assert_eq!(total(&r), want, "{f}: {q}");
+        seen.push(json!(ids(&r)));
+    }
+    // Hashtags: words cut where case and digits change, and prefixes.
+    ok(base, "PUT", "/tags", Some(json!({
+        "settings": {"analysis": {
+            "analyzer": {"content": {"tokenizer": "keyword", "filter": ["word_delimiter_graph", "lowercase", "asciifolding"]}, "edge_ngram": {"tokenizer": "edge_ngram", "filter": ["lowercase", "asciifolding"]}},
+            "tokenizer": {"edge_ngram": {"type": "edge_ngram", "min_gram": 2, "max_gram": 15}}}},
+        "mappings": {"properties": {"name": text("content"), "usage": {"type": "long"}, "last_status_at": {"type": "date"}}}
+    }))).await;
+    let tags = [("t1", "CatsOfMastodon", 50, "2026-11-07"), ("t2", "cats", 5, "2026-11-08"), ("t3", "Caturday", 500, "2026-09-01"), ("t4", "dogs2026", 1, "2026-11-08")];
+    let mut nd = String::new();
+    for (id, n, u, at) in tags {
+        nd.push_str(&format!("{}\n{}\n", json!({"index": {"_id": id}}), json!({"name": n, "usage": u, "last_status_at": at})));
+    }
+    ok(base, "POST", "/tags/_bulk?refresh=true", Some(Json::String(nd))).await;
+    let r = ok(base, "POST", "/tags/_search", Some(json!({"query": {"match": {"name": "cats"}}}))).await;
+    assert_eq!(ids(&r).into_iter().collect::<BTreeSet<_>>(), ["t1", "t2"].map(String::from).into());
+    let r = ok(base, "POST", "/tags/_search", Some(json!({"query": {"match": {"name": "2026"}}}))).await;
+    assert_eq!(ids(&r), ["t4"]);
+    let tag_search = json!({"query": {"function_score": {
+        "query": {"multi_match": {"query": "cat", "fields": ["name.edge_ngram", "name"], "type": "most_fields", "operator": "and"}},
+        "functions": [{"field_value_factor": {"field": "usage", "modifier": "log2p", "missing": 0}}, {"gauss": {"last_status_at": {"origin": "2026-11-08", "scale": "7d", "offset": "14d", "decay": 0.5}}}],
+        "boost_mode": "multiply"}}});
+    // Caturday is used most, but two months ago; CatsOfMastodon this week.
+    let r = ok(base, "POST", "/tags/_search", Some(tag_search)).await;
+    assert_eq!(ids(&r), ["t1", "t2", "t3"]);
+    seen.push(r);
+    // Statuses in two indexes, a status in both once.
+    for (ix, private) in [("pub_statuses", false), ("statuses", true)] {
+        let mut props = json!({"id": {"type": "long"}, "text": {"type": "text"}, "created_at": {"type": "date"}});
+        if private {
+            props["searchable_by"] = json!({"type": "long"});
+        }
+        ok(base, "PUT", &format!("/{ix}"), Some(json!({"mappings": {"properties": props}}))).await;
+    }
+    let mut pub_nd = String::new();
+    let mut priv_nd = String::new();
+    for i in 1..=30i64 {
+        let doc = json!({"id": 1000 + i, "text": format!("coffee number {i}"), "created_at": "2026-11-01"});
+        if i % 2 == 0 {
+            pub_nd.push_str(&format!("{}\n{}\n", json!({"index": {"_id": (1000 + i).to_string()}}), doc));
+        }
+        if i % 3 == 0 || i % 2 == 1 {
+            let mut d = doc.clone();
+            d["searchable_by"] = json!(if i % 5 == 0 { vec![8] } else { vec![7, 9] });
+            priv_nd.push_str(&format!("{}\n{}\n", json!({"index": {"_id": (1000 + i).to_string()}}), d));
+        }
+    }
+    ok(base, "POST", "/pub_statuses/_bulk?refresh=true", Some(Json::String(pub_nd))).await;
+    ok(base, "POST", "/statuses/_bulk?refresh=true", Some(Json::String(priv_nd))).await;
+    let search = |from: usize| json!({
+        "query": {"bool": {"must": [{"match": {"text": "coffee"}}], "filter": [{"bool": {"should": [{"term": {"_index": "pub_statuses"}}, {"bool": {"must": [{"term": {"_index": "statuses"}}, {"term": {"searchable_by": 7}}]}}], "minimum_should_match": 1}}]}},
+        "collapse": {"field": "id"}, "sort": [{"id": {"order": "desc"}}], "size": 10, "from": from});
+    // Public: the even ones; account 7's: the odd ones and the multiples of
+    // 3 but those of 5.
+    let want: Vec<String> = (1..=30i64).rev().filter(|i| i % 2 == 0 || ((i % 3 == 0 || i % 2 == 1) && i % 5 != 0)).map(|i| (1000 + i).to_string()).collect();
+    let mut got = Vec::new();
+    for from in [0, 10, 20] {
+        let r = ok(base, "POST", "/pub_statuses,statuses/_search", Some(search(from))).await;
+        got.extend(ids(&r));
+        seen.push(r);
+    }
+    assert_eq!(got, want);
+    let (s, _) = call(base, "POST", "/pub_statuses,statuses/_search", Some(json!({"aggs": {"n": {"max": {"field": "id"}}}})), None).await;
+    assert_eq!(s, 400);
+    for ix in ["accounts", "tags", "pub_statuses", "statuses"] {
+        ok(base, "DELETE", &format!("/{ix}"), None).await;
+    }
+    seen
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_server_and_a_cluster_answer_opensearch_requests_alike() {
     let dir = tempfile::tempdir().unwrap();
@@ -246,6 +362,19 @@ async fn one_server_and_a_cluster_answer_opensearch_requests_alike() {
     let a = scenario(&one).await;
     let b = scenario(&many).await;
     assert_eq!(a, b);
+    let a = social(&one).await;
+    let b = social(&many).await;
+    assert_eq!(strip_took(a), strip_took(b));
+}
+
+/// Answers without their `took`.
+fn strip_took(v: Vec<Json>) -> Vec<Json> {
+    v.into_iter().map(|mut j| {
+        if let Some(m) = j.as_object_mut() {
+            m.remove("took");
+        }
+        j
+    }).collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

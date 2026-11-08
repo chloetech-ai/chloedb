@@ -85,6 +85,12 @@ impl Score {
     }
 }
 
+/// Whether a score expression reads a score (`bm25`, `similarity`,
+/// `decay`...), which `score()` needs, not conditions and numbers alone.
+pub fn has_score(e: &str) -> bool {
+    ["bm25(", "similarity(", "decay(", "maxsim(", "rrf(", "ppr("].iter().any(|f| e.contains(f))
+}
+
 /// A number as SQL writes it.
 pub fn num(x: f64) -> String {
     if x.fract() == 0.0 && x.abs() < 1e15 {
@@ -179,7 +185,7 @@ impl<'a> Ctx<'a> {
         }
         match self.ix.fields.get(name) {
             Some(f) => match &f.kind {
-                Kind::Text { analyzer } => Target::Text(name.to_string(), if *analyzer == "english" { Analyzer::English } else { Analyzer::Simple }),
+                Kind::Text { analyzer, .. } => Target::Text(name.to_string(), if *analyzer == "english" { Analyzer::English } else { Analyzer::Simple }),
                 Kind::Date => Target::Date(name.to_string()),
                 Kind::Vector { .. } => Target::Vector(name.to_string()),
                 k => Target::Json(f.source.clone(), Some(k.clone())),
@@ -190,6 +196,32 @@ impl<'a> Ctx<'a> {
                 Some(base) if self.ix.fields.contains_key(base) => Target::Json(base.to_string(), Some(Kind::Keyword)),
                 _ => Target::Json(name.to_string(), None),
             },
+        }
+    }
+
+    /// A `term` or `terms` on `_index`: every row of this index if one of
+    /// `vals` names it (or an alias of it), else none.
+    fn of_index(&self, vals: &[Json], b: f64) -> Compiled {
+        let named = vals.iter().filter_map(Json::as_str).any(|v| v == self.ix.name || self.ix.aliases.iter().any(|a| a == v));
+        Compiled { pred: if named { None } else { Some(NONE.into()) }, score: Score::Const(b) }
+    }
+
+    /// A query's text for text field `field`, as its search analyzer
+    /// cuts it ([`super::mapping::Cut`]).
+    fn query_text(&self, field: &str, text: &str) -> String {
+        match self.ix.fields.get(field).map(|f| &f.kind) {
+            Some(Kind::Text { query_cut, .. }) => query_cut.apply(text),
+            _ => text.to_string(),
+        }
+    }
+
+    /// The column a score reads field `name`'s number from: a number's or
+    /// a date's.
+    pub fn score_column(&self, name: &str) -> Result<String, OsError> {
+        match self.ix.fields.get(name).map(|f| &f.kind) {
+            Some(Kind::Long | Kind::Double | Kind::Date) => Ok(ident(name)),
+            Some(_) => Err(OsError::new(400, "illegal_argument_exception", format!("a score reads numbers and dates, and [{name}] is neither: map it as a long, double or date"))),
+            None => Err(OsError::new(400, "illegal_argument_exception", format!("No field found for [{name}] in mapping"))),
         }
     }
 
@@ -414,6 +446,7 @@ pub fn compile(q: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
             compile(p, cx)
         }
         "function_score" => compile_function_score(body, cx),
+        "script_score" => compile_script_score(body, cx),
         "nested" => {
             // Objects of an array are not kept apart: the inner query
             // reads the paths of every one.
@@ -492,7 +525,7 @@ pub fn compile(q: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
         "multi_match" => compile_multi_match(body, cx),
         "query_string" | "simple_query_string" => compile_query_string(body, cx, kind == "simple_query_string"),
         "knn" => compile_knn(body, cx),
-        other => Err(OsError::parsing(format!("unknown query [{other}]: Strata's OpenSearch API answers bool, match, match_phrase, match_phrase_prefix, multi_match, query_string, simple_query_string, term, terms, ids, range, exists, prefix, wildcard, fuzzy, constant_score, dis_max, function_score, nested, knn, match_all and match_none")).kind("parsing_exception")),
+        other => Err(OsError::parsing(format!("unknown query [{other}]: Strata's OpenSearch API answers bool, match, match_phrase, match_phrase_prefix, multi_match, query_string, simple_query_string, term, terms, ids, range, exists, prefix, wildcard, fuzzy, constant_score, dis_max, function_score, script_score, nested, knn, match_all and match_none")).kind("parsing_exception")),
     }
 }
 
@@ -544,20 +577,26 @@ fn compile_bool(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
     }
     let mut should_preds = Vec::new();
     let mut should_all = false;
+    let default = if must.is_empty() && filter.is_empty() { 1 } else { 0 };
+    let need = match body.get("minimum_should_match") {
+        Some(m) if !should.is_empty() => min_should(m, should.len())?,
+        _ => default,
+    };
     for q in &should {
         let c = compile(q, cx)?;
+        let score_of = match (&c.score, &c.pred) {
+            // A constant counts for the rows its clause holds, unless
+            // every row the bool keeps holds it.
+            (Score::Const(k), Some(p)) if *k != 0.0 && !(need >= should.len()) => Score::Expr(format!("{} * count_true({p})", num(*k))),
+            _ => c.score,
+        };
         match c.pred {
             Some(p) => should_preds.push(p),
             None => should_all = true,
         }
-        score = score.add(c.score);
+        score = score.add(score_of);
     }
     if !should.is_empty() {
-        let default = if must.is_empty() && filter.is_empty() { 1 } else { 0 };
-        let need = match body.get("minimum_should_match") {
-            Some(m) => min_should(m, should.len())?,
-            None => default,
-        };
         if need > 0 && !should_all {
             if need == 1 {
                 preds.push(or(should_preds));
@@ -582,11 +621,14 @@ fn compile_term(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
     let (f, v, opts) = field_and(body, "term", "value")?;
     let b = boost(&opts) * boost(body);
     let insensitive = opts.get("case_insensitive").and_then(Json::as_bool) == Some(true);
+    if f == "_index" {
+        return Ok(cx.of_index(&[v], b));
+    }
     let pred = match cx.target(&f) {
         Target::Id => format!("{} = {}", ident(ID), lit(&id_text(&v))),
         Target::Text(c, a) => {
             // A term on a text field matches a token: one word.
-            let ws = kept(&words_of(&id_text(&v)), a);
+            let ws = kept(&words_of(&cx.query_text(&f, &id_text(&v))), a);
             match ws.as_slice() {
                 [w] => {
                     cx.note_words(&f, &ws);
@@ -631,10 +673,13 @@ fn compile_terms(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
     if vals.is_empty() {
         return Ok(Compiled { pred: Some(NONE.into()), score: Score::None });
     }
+    if f == "_index" {
+        return Ok(cx.of_index(&vals, boost(body)));
+    }
     let pred = match cx.target(f) {
         Target::Id => format!("{} IN ({})", ident(ID), vals.iter().map(|v| lit(&id_text(v))).collect::<Vec<_>>().join(", ")),
         Target::Text(c, a) => {
-            let ws: Vec<String> = vals.iter().flat_map(|v| kept(&words_of(&id_text(v)), a)).collect();
+            let ws: Vec<String> = vals.iter().flat_map(|v| kept(&words_of(&cx.query_text(f, &id_text(v))), a)).collect();
             if ws.is_empty() {
                 NONE.to_string()
             } else {
@@ -830,7 +875,7 @@ fn match_one(cx: &mut Ctx, field: &str, text: &Json, opts: &Json, mk: MatchKind)
             return compile(&json!({"term": {field: {"value": text, "boost": b}}}), cx);
         }
     };
-    let all = words_of(&s);
+    let all = words_of(&cx.query_text(field, &s));
     let ws = kept(&all, a);
     let zero_all = opts.get("zero_terms_query").and_then(Json::as_str) == Some("all");
     if ws.is_empty() {
@@ -1391,7 +1436,7 @@ fn compile_function_score(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError
         let mut factor = None;
         if let Some(fv) = f.get("field_value_factor") {
             let field = fv.get("field").and_then(Json::as_str).ok_or_else(|| OsError::parsing("[field_value_factor] requires field"))?;
-            let x = format!("coalesce({}, {})", cx.target(field).sql(), num(fv.get("missing").and_then(Json::as_f64).unwrap_or(1.0)));
+            let x = format!("coalesce({}, {})", cx.score_column(field)?, num(fv.get("missing").and_then(Json::as_f64).unwrap_or(1.0)));
             let x = format!("{} * {x}", num(fv.get("factor").and_then(Json::as_f64).unwrap_or(1.0)));
             factor = Some(match fv.get("modifier").and_then(Json::as_str).unwrap_or("none") {
                 "none" => x,
@@ -1433,11 +1478,18 @@ fn compile_function_score(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError
                     (false, None) => return Err(OsError::parsing(format!("[{shape}] needs an origin"))),
                 };
                 let decay = spec.get("decay").and_then(Json::as_f64).unwrap_or(0.5);
-                factor = Some(format!("decay({}, {origin}, {}, offset => {}, decay => {}, shape => '{shape}')", t.sql(), num(scale), num(offset), num(decay)));
+                factor = Some(format!("decay({}, {origin}, {}, offset => {}, decay => {}, shape => '{shape}')", cx.score_column(field)?, num(scale), num(offset), num(decay)));
             }
         }
-        if f.get("random_score").is_some() || f.get("script_score").is_some() {
-            return Err(OsError::parsing("Strata's function_score takes field_value_factor, gauss, exp, linear and weight"));
+        if let Some(ss) = f.get("script_score") {
+            let script = ss.get("script").ok_or_else(|| OsError::parsing("[script_score] requires script"))?;
+            factor = Some(match super::script::compile(script, cx, &query_score(&base.score))? {
+                Ok(e) => e,
+                Err(k) => num(k),
+            });
+        }
+        if f.get("random_score").is_some() {
+            return Err(OsError::parsing("Strata's function_score takes field_value_factor, gauss, exp, linear, script_score and weight, not random_score"));
         }
         let fx = match (factor, weight) {
             (Some(x), Some(w)) => format!("{} * {x}", num(w)),
@@ -1459,11 +1511,7 @@ fn compile_function_score(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError
         "first" => factors[0].clone(),
         m => return Err(OsError::parsing(format!("[function_score] score_mode [{m}]"))),
     };
-    let q = match &base.score {
-        Score::Expr(e) => e.clone(),
-        Score::Const(c) => num(*c),
-        Score::None => "1.0".into(),
-    };
+    let q = query_score(&base.score);
     let score = match body.get("boost_mode").and_then(Json::as_str).unwrap_or("multiply") {
         "multiply" => format!("({q}) * ({combined})"),
         "sum" => format!("({q}) + ({combined})"),
@@ -1474,6 +1522,32 @@ fn compile_function_score(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError
         m => return Err(OsError::parsing(format!("[function_score] boost_mode [{m}]"))),
     };
     Ok(Compiled { pred: base.pred, score: Score::Expr(score).scale(boost(body)) })
+}
+
+/// A query's score as SQL, as functions of it read it (`_score`).
+fn query_score(s: &Score) -> String {
+    match s {
+        Score::Expr(e) => e.clone(),
+        Score::Const(c) => num(*c),
+        Score::None => "1.0".into(),
+    }
+}
+
+/// `script_score`: a query whose score a script computes from its own.
+fn compile_script_score(body: &Json, cx: &mut Ctx) -> Result<Compiled, OsError> {
+    let base = match body.get("query") {
+        Some(q) => compile(q, cx)?,
+        None => return Err(OsError::parsing("[script_score] requires query")),
+    };
+    if body.get("min_score").is_some() {
+        return Err(OsError::parsing("Strata's script_score takes no min_score"));
+    }
+    let script = body.get("script").ok_or_else(|| OsError::parsing("[script_score] requires script"))?;
+    let score = match super::script::compile(script, cx, &query_score(&base.score))? {
+        Ok(e) => Score::Expr(e),
+        Err(k) => Score::Const(k),
+    };
+    Ok(Compiled { pred: base.pred, score: score.scale(boost(body)) })
 }
 
 /// A duration such as `7d`, `12h`, `30m`, `10s`, `500ms`, in seconds.

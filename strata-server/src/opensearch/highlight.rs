@@ -6,6 +6,8 @@ use std::collections::HashSet;
 
 use strata::text::analyzer::{normalize_word, Analyzer};
 
+use super::mapping::Cut;
+
 /// What a highlight asks for.
 pub struct Ask<'a> {
     pub pre: &'a str,
@@ -16,27 +18,6 @@ pub struct Ask<'a> {
     pub count: usize,
     /// Escape the text as HTML (`encoder: html`).
     pub html: bool,
-}
-
-/// The byte spans of the words of `text`, as Strata's analyzers split it.
-fn words(text: &str) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    let mut start = None;
-    for (i, c) in text.char_indices() {
-        let word = if c.is_ascii() { c.is_ascii_alphanumeric() } else { c.is_alphanumeric() || ('\u{300}'..='\u{36f}').contains(&c) };
-        match (word, start) {
-            (true, None) => start = Some(i),
-            (false, Some(s)) => {
-                out.push((s, i));
-                start = None;
-            }
-            _ => {}
-        }
-    }
-    if let Some(s) = start {
-        out.push((s, text.len()));
-    }
-    out
 }
 
 /// The terms of query words, as `analyzer` indexes them; a word ending in
@@ -80,10 +61,11 @@ fn tagged(text: &str, from: usize, to: usize, hits: &[(usize, usize)], ask: &Ask
 }
 
 /// The fragments of `text` that hold the terms, best first by how many
-/// they hold (ties in the order of the text), or none if none does.
-pub fn fragments(text: &str, terms: &HashSet<String>, analyzer: Analyzer, ask: &Ask) -> Vec<String> {
-    let spans = words(text);
-    let hits: Vec<(usize, usize)> = spans.iter().copied().filter(|&(s, e)| analyzer.term_of(&normalize_word(&text[s..e])).is_some_and(|t| holds(terms, t.as_ref()))).collect();
+/// they hold (ties in the order of the text), or none if none does; its
+/// words as `cut` and `analyzer` read them.
+pub fn fragments(text: &str, terms: &HashSet<String>, analyzer: Analyzer, cut: &Cut, ask: &Ask) -> Vec<String> {
+    let spans = cut.spans(text);
+    let hits: Vec<(usize, usize)> = spans.iter().copied().filter(|&(s, e)| analyzer.term_of(&normalize_word(&cut.word(&text[s..e]))).is_some_and(|t| holds(terms, t.as_ref()))).collect();
     if hits.is_empty() {
         return Vec::new();
     }
@@ -149,11 +131,15 @@ mod tests {
     fn tags_stemmed_words() {
         let ask = Ask { pre: "<em>", post: "</em>", size: 100, count: 0, html: false };
         let t = terms(&["running".into()], Analyzer::English);
-        assert_eq!(fragments("He runs. They ran; she is running.", &t, Analyzer::English, &ask), vec!["He <em>runs</em>. They ran; she is <em>running</em>."]);
+        assert_eq!(fragments("He runs. They ran; she is running.", &t, Analyzer::English, &Cut::default(), &ask), vec!["He <em>runs</em>. They ran; she is <em>running</em>."]);
         let t = terms(&["mug".into()], Analyzer::Simple);
-        assert!(fragments("no match here", &t, Analyzer::Simple, &ask).is_empty());
+        assert!(fragments("no match here", &t, Analyzer::Simple, &Cut::default(), &ask).is_empty());
         let t = terms(&["quick".into(), "bro*".into()], Analyzer::English);
-        assert_eq!(fragments("The quick brown fox", &t, Analyzer::English, &ask), vec!["The <em>quick</em> <em>brown</em> fox"]);
+        assert_eq!(fragments("The quick brown fox", &t, Analyzer::English, &Cut::default(), &ask), vec!["The <em>quick</em> <em>brown</em> fox"]);
+        // A word the standard tokenizer keeps whole.
+        let std = Cut { join: super::super::mapping::Join::Standard, split: false };
+        let t = terms(&[std.apply("merge_segments")], Analyzer::Simple);
+        assert_eq!(fragments("run merge_segments, not merge", &t, Analyzer::Simple, &std, &ask), vec!["run <em>merge_segments</em>, not merge"]);
     }
 
     #[test]
@@ -161,7 +147,7 @@ mod tests {
         let text = format!("{} needle {} needle {}", "a ".repeat(100), "b ".repeat(100), "c ".repeat(10));
         let t = terms(&["needle".into()], Analyzer::Simple);
         let ask = Ask { pre: "[", post: "]", size: 40, count: 5, html: false };
-        let f = fragments(&text, &t, Analyzer::Simple, &ask);
+        let f = fragments(&text, &t, Analyzer::Simple, &Cut::default(), &ask);
         assert_eq!(f.len(), 2, "{f:?}");
         assert!(f.iter().all(|x| x.contains("[needle]") && x.len() < 60), "{f:?}");
     }

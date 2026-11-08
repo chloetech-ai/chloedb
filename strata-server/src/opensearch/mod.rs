@@ -18,6 +18,7 @@ pub mod aggs;
 pub mod dsl;
 pub mod highlight;
 pub mod mapping;
+pub mod script;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -736,12 +737,11 @@ impl Os {
 
     async fn info(&self) -> Json {
         let elastic7 = self.version.starts_with('7');
-        json!({
+        let mut j = json!({
             "name": crate::logstore::hostname(),
             "cluster_name": self.cluster_name(),
             "cluster_uuid": "strata",
             "version": {
-                "distribution": if elastic7 { Json::Null } else { json!("opensearch") },
                 "number": self.version,
                 "build_type": "strata",
                 "build_flavor": "default",
@@ -754,7 +754,11 @@ impl Os {
                 "strata_version": env!("CARGO_PKG_VERSION"),
             },
             "tagline": if elastic7 { "You Know, for Search" } else { "The OpenSearch Project: https://opensearch.org/" },
-        })
+        });
+        if !elastic7 {
+            j["version"]["distribution"] = json!("opensearch");
+        }
+        j
     }
 
     async fn health(&self) -> Json {
@@ -1156,7 +1160,10 @@ impl Os {
     }
 
     async fn cat(&self, what: &str, expr: Option<&str>, q: &HashMap<String, String>) -> Result<Reply, OsError> {
-        let rows: Vec<Map<String, Json>> = match what {
+        let row = |cells: &[(&str, String)]| cells.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<Vec<(String, String)>>();
+        let epoch = || (crate::telemetry::now_ms() / 1000).to_string();
+        // Each row's columns in OpenSearch's order.
+        let rows: Vec<Vec<(String, String)>> = match what {
             "indices" => {
                 let ixs = match expr {
                     Some(e) => self.resolve(e).await?,
@@ -1165,8 +1172,7 @@ impl Os {
                 let mut out = Vec::new();
                 for ix in &ixs {
                     let n = self.count_of(ix, &None, &[]).await?;
-                    let m = json!({"health": "green", "status": "open", "index": ix.name, "uuid": ix.uuid, "pri": "1", "rep": "0", "docs.count": n.to_string(), "docs.deleted": "0", "store.size": "-", "pri.store.size": "-"});
-                    out.push(m.as_object().cloned().unwrap_or_default());
+                    out.push(row(&[("health", "green".into()), ("status", "open".into()), ("index", ix.name.clone()), ("uuid", ix.uuid.clone()), ("pri", "1".into()), ("rep", "0".into()), ("docs.count", n.to_string()), ("docs.deleted", "0".into()), ("store.size", "-".into()), ("pri.store.size", "-".into())]));
                 }
                 out
             }
@@ -1174,16 +1180,15 @@ impl Os {
                 let mut out = Vec::new();
                 for ix in self.all().await? {
                     for a in &ix.aliases {
-                        let m = json!({"alias": a, "index": ix.name, "filter": "-", "routing.index": "-", "routing.search": "-", "is_write_index": "-"});
-                        out.push(m.as_object().cloned().unwrap_or_default());
+                        out.push(row(&[("alias", a.clone()), ("index", ix.name.clone()), ("filter", "-".into()), ("routing.index", "-".into()), ("routing.search", "-".into()), ("is_write_index", "-".into())]));
                     }
                 }
                 out
             }
             "health" => {
                 let h = self.health().await;
-                let m = json!({"epoch": (crate::telemetry::now_ms() / 1000).to_string(), "cluster": h["cluster_name"], "status": h["status"], "node.total": "1", "node.data": "1", "shards": h["active_shards"].to_string(), "pri": h["active_primary_shards"].to_string(), "relo": "0", "init": "0", "unassign": "0", "pending_tasks": "0", "active_shards_percent": "100.0%"});
-                vec![m.as_object().cloned().unwrap_or_default()]
+                let s = |k: &str| h[k].as_str().map(String::from).unwrap_or_else(|| h[k].to_string());
+                vec![row(&[("epoch", epoch()), ("timestamp", "00:00:00".into()), ("cluster", s("cluster_name")), ("status", s("status")), ("node.total", "1".into()), ("node.data", "1".into()), ("discovered_cluster_manager", "true".into()), ("shards", s("active_shards")), ("pri", s("active_primary_shards")), ("relo", "0".into()), ("init", "0".into()), ("unassign", "0".into()), ("pending_tasks", "0".into()), ("max_task_wait_time", "-".into()), ("active_shards_percent", "100.0%".into())])]
             }
             "count" => {
                 let ixs = match expr {
@@ -1194,34 +1199,64 @@ impl Os {
                 for ix in &ixs {
                     n += self.count_of(ix, &None, &[]).await?;
                 }
-                let m = json!({"epoch": (crate::telemetry::now_ms() / 1000).to_string(), "timestamp": "00:00:00", "count": n.to_string()});
-                vec![m.as_object().cloned().unwrap_or_default()]
+                vec![row(&[("epoch", epoch()), ("timestamp", "00:00:00".into()), ("count", n.to_string())])]
             }
             other => return Err(OsError::new(400, "illegal_argument_exception", format!("Strata's _cat answers indices, aliases, health and count, not [{other}]"))),
         };
+        // `h`: the columns asked for, in its order.
+        let all_cols: Vec<String> = match rows.first() {
+            Some(r) => r.iter().map(|(k, _)| k.clone()).collect(),
+            None => Vec::new(),
+        };
+        let cols: Vec<String> = match q.get("h") {
+            Some(h) => h.split(',').map(str::trim).filter(|c| all_cols.iter().any(|x| x == c)).map(String::from).collect(),
+            None => all_cols,
+        };
+        let mut table: Vec<Vec<String>> = rows.iter().map(|r| cols.iter().map(|c| r.iter().find(|(k, _)| k == c).map(|(_, v)| v.clone()).unwrap_or_default()).collect()).collect();
+        // `s`: sorted by these columns (`index`, `docs.count:desc`).
+        if let Some(sorts) = q.get("s") {
+            let keys: Vec<(usize, bool)> = sorts.split(',').filter_map(|k| {
+                let (name, desc) = match k.split_once(':') {
+                    Some((n, d)) => (n, d.eq_ignore_ascii_case("desc")),
+                    None => (k, false),
+                };
+                cols.iter().position(|c| c == name).map(|i| (i, desc))
+            }).collect();
+            table.sort_by(|a, b| {
+                for &(i, desc) in &keys {
+                    let o = match (a[i].parse::<f64>(), b[i].parse::<f64>()) {
+                        (Ok(x), Ok(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+                        _ => a[i].cmp(&b[i]),
+                    };
+                    let o = if desc { o.reverse() } else { o };
+                    if o.is_ne() {
+                        return o;
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
         if q.get("format").is_some_and(|f| f == "json") {
-            return ok(Json::Array(rows.into_iter().map(Json::Object).collect()));
+            return ok(Json::Array(table.into_iter().map(|r| Json::Object(cols.iter().cloned().zip(r.into_iter().map(Json::String)).collect())).collect()));
         }
         // A table of text, as `_cat` writes one.
-        let cols: Vec<String> = rows.first().map(|r| r.keys().cloned().collect()).unwrap_or_default();
-        let cell = |v: &Json| v.as_str().map(String::from).unwrap_or_else(|| v.to_string());
         let mut widths: Vec<usize> = cols.iter().map(String::len).collect();
-        for r in &rows {
-            for (i, c) in cols.iter().enumerate() {
-                widths[i] = widths[i].max(cell(&r[c]).len());
+        for r in &table {
+            for (i, v) in r.iter().enumerate() {
+                widths[i] = widths[i].max(v.len());
             }
         }
         let mut text = String::new();
-        let line = |vals: Vec<String>, text: &mut String| {
+        let line = |vals: &[String], text: &mut String| {
             let l: Vec<String> = vals.iter().enumerate().map(|(i, v)| format!("{v:<w$}", w = widths[i])).collect();
             text.push_str(l.join(" ").trim_end());
             text.push('\n');
         };
         if q.contains_key("v") {
-            line(cols.clone(), &mut text);
+            line(&cols, &mut text);
         }
-        for r in &rows {
-            line(cols.iter().map(|c| cell(&r[c])).collect(), &mut text);
+        for r in &table {
+            line(r, &mut text);
         }
         ok(Json::String(text))
     }
@@ -1692,8 +1727,125 @@ impl Os {
         }
     }
 
-    /// A search: its answer, and the index it read.
+    /// A search: its answer, and the index it read (the first, of
+    /// several). A search of several indexes searches each for the hits up
+    /// to its page's end and merges them in its order; `collapse` keeps
+    /// the first hit of each value of its field, reading more until the
+    /// page is full or every hit is read.
     async fn search(&self, expr: &str, b: &Json, q: &HashMap<String, String>) -> Result<(Json, Arc<Index>), OsError> {
+        let t0 = Instant::now();
+        let ixs = self.resolve(expr).await?;
+        let collapse = match b.get("collapse") {
+            None => None,
+            Some(c) => {
+                if c.get("inner_hits").is_some() {
+                    return Err(OsError::parsing("Strata's collapse takes no inner_hits"));
+                }
+                Some(c.get("field").and_then(Json::as_str).ok_or_else(|| OsError::parsing("[collapse] requires field"))?.to_string())
+            }
+        };
+        if ixs.len() <= 1 && collapse.is_none() {
+            return self.search_one(expr, b, q).await;
+        }
+        let scrolling = q.contains_key("scroll") || b.get("scroll").is_some() || b.get(SCROLL_AFTER).is_some() || b.get("_scroll_from").is_some();
+        if scrolling {
+            return Err(OsError::new(400, "illegal_argument_exception", "Strata scrolls one index at a time, without collapse"));
+        }
+        if ixs.len() > 1 && (b.get("aggs").is_some() || b.get("aggregations").is_some()) {
+            return Err(OsError::new(400, "illegal_argument_exception", format!("[{expr}] names {} indexes; Strata aggregates one index (or an alias of one) at a time", ixs.len())));
+        }
+        if b.get("search_after").is_some() && collapse.is_some() {
+            return Err(OsError::parsing("Strata's collapse takes no search_after"));
+        }
+        let page = |k: &str, d: usize| -> Result<usize, OsError> {
+            let v = q.get(k).map(|s| json!(s)).or_else(|| b.get(k).cloned());
+            match v {
+                None | Some(Json::Null) => Ok(d),
+                Some(v) => match v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())) {
+                    Some(n) if n >= 0 => Ok(n as usize),
+                    _ => Err(OsError::new(400, "illegal_argument_exception", format!("[{k}] parameter cannot be negative"))),
+                },
+            }
+        };
+        let (from, size) = (page("from", 0)?, page("size", 10)?);
+        if from + size > MAX_WINDOW {
+            return Err(OsError::new(400, "illegal_argument_exception", format!("Result window is too large, from + size must be less than or equal to: [{MAX_WINDOW}] but was [{}]. See the scroll api for a more efficient way to request large data sets.", from + size)));
+        }
+        let mut inner = b.clone();
+        if let Some(m) = inner.as_object_mut() {
+            m.remove("collapse");
+            m.remove("from");
+        }
+        let mut q2 = q.clone();
+        q2.remove("from");
+        q2.remove("size");
+        if let Some(f) = &collapse {
+            let mut dv = match inner.get("docvalue_fields") {
+                Some(Json::Array(a)) => a.clone(),
+                _ => Vec::new(),
+            };
+            dv.push(json!(f));
+            inner["docvalue_fields"] = Json::Array(dv);
+        }
+        let dirs = sort_dirs(b, q);
+        let want = from + size;
+        let mut fetch = if collapse.is_some() { (want * 2).max(want + 10).min(MAX_WINDOW) } else { want };
+        loop {
+            inner["size"] = json!(fetch);
+            let answers = futures::future::join_all(ixs.iter().map(|ix| self.search_one(&ix.name, &inner, &q2))).await;
+            let answers: Vec<Json> = answers.into_iter().map(|r| r.map(|(j, _)| j)).collect::<Result<_, _>>()?;
+            let mut all: Vec<(usize, usize, Json)> = Vec::new();
+            let mut more = false;
+            for (i, a) in answers.iter().enumerate() {
+                let hits = a["hits"]["hits"].as_array().cloned().unwrap_or_default();
+                more |= hits.len() >= fetch;
+                all.extend(hits.into_iter().enumerate().map(|(k, h)| (i, k, h)));
+            }
+            all.sort_by(|x, y| {
+                let ord = if dirs.is_empty() {
+                    let s = |h: &Json| h["_score"].as_f64().unwrap_or(f64::MIN);
+                    s(&y.2).partial_cmp(&s(&x.2)).unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    let (a, c) = (x.2["sort"].as_array(), y.2["sort"].as_array());
+                    let mut o = std::cmp::Ordering::Equal;
+                    for (k, desc) in dirs.iter().enumerate() {
+                        let (u, v) = (a.and_then(|a| a.get(k)).unwrap_or(&Json::Null), c.and_then(|c| c.get(k)).unwrap_or(&Json::Null));
+                        o = cmp_sort(u, v, *desc);
+                        if o.is_ne() {
+                            break;
+                        }
+                    }
+                    o
+                };
+                ord.then(x.0.cmp(&y.0)).then(x.1.cmp(&y.1))
+            });
+            let mut hits: Vec<Json> = all.into_iter().map(|(_, _, h)| h).collect();
+            if let Some(f) = &collapse {
+                let mut seen = std::collections::HashSet::new();
+                hits.retain(|h| seen.insert(h["fields"][f].get(0).cloned().unwrap_or(Json::Null).to_string()));
+            }
+            if collapse.is_some() && hits.len() < want && more && fetch < MAX_WINDOW {
+                fetch = (fetch * 4).min(MAX_WINDOW);
+                continue;
+            }
+            let page: Vec<Json> = hits.into_iter().skip(from).take(size).collect();
+            let max_score = answers.iter().filter_map(|a| a["hits"]["max_score"].as_f64()).fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x))));
+            let mut hits_j = json!({"max_score": max_score, "hits": page});
+            if answers.iter().all(|a| a["hits"].get("total").is_some()) {
+                let value: i64 = answers.iter().map(|a| a["hits"]["total"]["value"].as_i64().unwrap_or(0)).sum();
+                let gte = answers.iter().any(|a| a["hits"]["total"]["relation"] == "gte");
+                hits_j["total"] = json!({"value": value, "relation": if gte { "gte" } else { "eq" }});
+            }
+            let mut j = json!({"took": t0.elapsed().as_millis() as u64, "timed_out": false, "_shards": shards(), "hits": hits_j});
+            if let Some(aggs) = answers.first().and_then(|a| a.get("aggregations")) {
+                j["aggregations"] = aggs.clone();
+            }
+            return Ok((j, ixs[0].clone()));
+        }
+    }
+
+    /// A search of one index.
+    async fn search_one(&self, expr: &str, b: &Json, q: &HashMap<String, String>) -> Result<(Json, Arc<Index>), OsError> {
         let t0 = Instant::now();
         let ix = match self.resolve(expr).await? {
             v if v.is_empty() && (expr == "*" || expr == "_all") => return Ok((empty_search(), Arc::new(Index::new("", "", "", 0, json!({}), json!({}), Vec::new())?))),
@@ -1860,7 +2012,13 @@ impl Os {
         // sort key's from `sort_base` on.
         let mut cols: Vec<String> = if need_doc { ix.read_columns().iter().map(|c| ident(c)).collect() } else { vec![ident(ID), ident(VERSION)] };
         if by_score_first {
-            cols.push("score()".into());
+            // score() reads a ranking of scores; one of conditions and
+            // numbers alone (`count_true`, `doc['f'].value`) is its own
+            // column.
+            cols.push(match &c.score {
+                Score::Expr(e) if !dsl::has_score(e) => format!("{e} AS {}", ident(SCORE_COL)),
+                _ => "score()".into(),
+            });
         }
         let sort_base = cols.len();
         let hits_sql = if limit > 0 {
@@ -1940,7 +2098,7 @@ impl Os {
             for (k, row) in r.rows.iter().enumerate() {
                 let (id, version, doc) = mapping::doc_of(&ix, &r.columns, row);
                 let score: Json = if by_score_first {
-                    let s = r.columns.iter().position(|c| c == "score()").and_then(|i| row[i].as_f64()).or_else(|| r.scores.get(k).copied());
+                    let s = r.columns.iter().position(|c| c == "score()" || c == SCORE_COL).and_then(|i| row[i].as_f64()).or_else(|| r.scores.get(k).copied());
                     if let Some(s) = s {
                         max_score = Some(max_score.map_or(s, |m: f64| m.max(s)));
                     }
@@ -2153,6 +2311,53 @@ enum SortVal {
     Date,
 }
 
+/// The direction of each key a search sorts by (true: descending), as
+/// its hits' `sort` values come.
+fn sort_dirs(b: &Json, q: &HashMap<String, String>) -> Vec<bool> {
+    if let Some(s) = q.get("sort") {
+        return s.split(',').map(|p| match p.split_once(':') {
+            Some((_, d)) => d.eq_ignore_ascii_case("desc"),
+            None => p == "_score",
+        }).collect();
+    }
+    let sorts = match b.get("sort") {
+        None | Some(Json::Null) => return Vec::new(),
+        Some(Json::Array(a)) => a.clone(),
+        Some(s) => vec![s.clone()],
+    };
+    sorts
+        .iter()
+        .map(|s| match s {
+            Json::String(f) => f == "_score",
+            Json::Object(m) => match m.iter().next() {
+                Some((f, Json::String(d))) => d.eq_ignore_ascii_case("desc") || (f == "_score" && !d.eq_ignore_ascii_case("asc")),
+                Some((f, v)) => v.get("order").and_then(Json::as_str).map_or(f == "_score", |o| o.eq_ignore_ascii_case("desc")),
+                None => false,
+            },
+            _ => false,
+        })
+        .collect()
+}
+
+/// Two hits' values of one sort key in its order: missing values last.
+fn cmp_sort(a: &Json, b: &Json, desc: bool) -> std::cmp::Ordering {
+    use std::cmp::Ordering::*;
+    let o = match (a, b) {
+        (Json::Null, Json::Null) => return Equal,
+        (Json::Null, _) => return Greater,
+        (_, Json::Null) => return Less,
+        (Json::Number(x), Json::Number(y)) => x.as_f64().partial_cmp(&y.as_f64()).unwrap_or(Equal),
+        (Json::String(x), Json::String(y)) => x.cmp(y),
+        (Json::Bool(x), Json::Bool(y)) => x.cmp(y),
+        _ => Equal,
+    };
+    if desc {
+        o.reverse()
+    } else {
+        o
+    }
+}
+
 fn empty_search() -> Json {
     json!({"took": 0, "timed_out": false, "_shards": {"total": 0, "successful": 0, "skipped": 0, "failed": 0}, "hits": {"total": {"value": 0, "relation": "eq"}, "max_score": null, "hits": []}})
 }
@@ -2163,6 +2368,8 @@ const AFTER: &str = "_strata_after";
 
 /// The `_hash` a scroll's next page starts after, in its search's body.
 const SCROLL_AFTER: &str = "_scroll_after";
+/// The column of a score that is no ranking of scores.
+const SCORE_COL: &str = "_strata_score";
 
 /// The id of a scroll: the search, and where its next page starts.
 fn scroll_id(expr: &str, b: &Json, q: &HashMap<String, String>, answer: &Json) -> String {
@@ -2214,8 +2421,8 @@ fn highlights(ix: &Index, words: &BTreeMap<String, Vec<String>>, all: &[String],
         let names: Vec<String> = if pat.contains('*') { ix.fields.keys().filter(|k| dsl::glob(&pat, k)).cloned().collect() } else { vec![pat.clone()] };
         for name in names {
             let Some(f) = ix.fields.get(&name) else { continue };
-            let Kind::Text { analyzer } = f.kind else { continue };
-            let a = if analyzer == "english" { strata::text::analyzer::Analyzer::English } else { strata::text::analyzer::Analyzer::Simple };
+            let Kind::Text { analyzer, cut, .. } = &f.kind else { continue };
+            let a = if *analyzer == "english" { strata::text::analyzer::Analyzer::English } else { strata::text::analyzer::Analyzer::Simple };
             let ws: Vec<String> = if require { words.get(&name).cloned().unwrap_or_default() } else { all.to_vec() };
             if ws.is_empty() {
                 continue;
@@ -2232,7 +2439,7 @@ fn highlights(ix: &Index, words: &BTreeMap<String, Vec<String>>, all: &[String],
             let mut frags = Vec::new();
             for v in mapping::values_at(doc, &f.source) {
                 if let Some(text) = v.as_str() {
-                    frags.extend(highlight::fragments(text, &terms, a, &ask));
+                    frags.extend(highlight::fragments(text, &terms, a, cut, &ask));
                 }
             }
             if ask.count > 0 {
