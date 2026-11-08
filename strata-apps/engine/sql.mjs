@@ -59,6 +59,8 @@ export function rewriteSql(sql, tables, physical) {
   const out = segs.map((s) => {
     if (!s.code) return s.text;
     return s.text.replace(re, (all, kw, sp, name, after, alias, offset, str) => {
+      // A parameter (:from, :join) or a column (t.from) is not the keyword.
+      if (offset > 0 && /[:@$.]/.test(str[offset - 1])) return all;
       const before = str.slice(Math.max(0, offset - 40), offset);
       // EXTRACT(dow FROM at), x IS DISTINCT FROM y, SUBSTRING(s FROM 2)
       if (kw.toUpperCase() === 'FROM' && /(EXTRACT\s*\(\s*\w+|DISTINCT|SUBSTRING\s*\([^()]*|TRIM\s*\([^()]*)\s*$/i.test(before)) return all;

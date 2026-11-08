@@ -301,7 +301,7 @@ function whereFrom(d) {
   if (d.decision === 'copy') return f.starter ? 'built-in starter, copied as it is' : `copied from another app: ${f.title}`;
   if (d.decision === 'fork') return `forked from ${f.starter ? 'the built-in starter ' : ''}${f.title}`;
   if (d.decision === 'version') return `new version of the shared ${d.kind} (${f.author === 'builtin' ? 'built-in' : 'from another app'})`;
-  if (d.decision === 'change') return d.kind === 'table' ? d.detail : d.screen ? 'rewritten, as a screen (data, no code)' : 'rewritten';
+  if (d.decision === 'change') return d.kind === 'table' ? d.detail : d.patched ? `edited in place: ${d.patched} change${d.patched === 1 ? '' : 's'} to the screen, not rewritten` : d.screen ? 'rewritten, as a screen (data, no code)' : 'rewritten';
   if (d.decision === 'new') return d.kind === 'table' ? d.detail : d.screen ? 'written from scratch as a screen (data, no code)' : 'written from scratch';
   if (d.decision === 'upgrade') return 'moved to a newer version';
   return DECISION[d.decision]?.[1] || '';

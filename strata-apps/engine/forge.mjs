@@ -8,6 +8,7 @@ import { checkFunction } from './sandbox.mjs';
 import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, SHARED_KINDS, physical } from './store.mjs';
 import { SHARED, sharedRefs, appNode } from './graph.mjs';
 import { Trace, planDecisions } from './trace.mjs';
+import { rewriteSql } from './sql.mjs';
 
 const BASE_SYSTEM = `You build and change small web apps for one person, through a runtime whose backbone is a database, Strata. An app is made of capabilities that the runtime stores in Strata and loads:
 
@@ -213,7 +214,8 @@ Blocks, in "body" and in every block that holds blocks:
 Keep expressions short: do work over many rows in SQL (GROUP BY, SUM) or in a function, and logic another app could use in a helper. Write a code view (a code block, no "screen") only when most of the screen would be "code" blocks: a game, a drawing surface, an editor of its own.`;
 
 const SCREEN_PLAN = `
-- views: a screen view carries its whole screen in the plan entry ("screen": {...}) and has no code block. A code view has no "screen" and a code block of its slug.`;
+- views: a screen view carries its whole screen in the plan entry ("screen": {...}) and has no code block. A code view has no "screen" and a code block of its slug.
+- To change a screen the app has, give "patch" in its plan entry instead of "screen": JSON Patch operations on the screen as the app shows it, with the paths shown there: {"op": "add" | "replace" | "remove" | "move" | "copy", "path": "/body/3", "value": ...} ("from" for move and copy; "/body/2/columns/-" adds at the end of a list; an add at /body/3 puts the block before the one there). A patch is far shorter than the screen: use it whenever most of the screen stays; give the whole "screen" when most of it changes.`;
 
 export const SYSTEM = SCREENS
   ? BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n# Components (shared by every app)`)
@@ -232,6 +234,105 @@ function columnsFor(view, plan) {
   };
 }
 
+// A screen as the model sees it in an app: one part per line after its JSON
+// Pointer, so a patch can name the part it changes.
+export function screenLines(code) {
+  let s;
+  try { s = JSON.parse(code); } catch { return code; }
+  const esc = (k) => String(k).replace(/~/g, '~0').replace(/\//g, '~1');
+  const out = [];
+  for (const [k, v] of Object.entries(s)) {
+    if (Array.isArray(v)) v.forEach((b, i) => out.push(`/${esc(k)}/${i}: ${JSON.stringify(b)}`));
+    else if (v && typeof v === 'object' && Object.keys(v).length) for (const [kk, vv] of Object.entries(v)) out.push(`/${esc(k)}/${esc(kk)}: ${JSON.stringify(vv)}`);
+    else out.push(`/${esc(k)}: ${JSON.stringify(v)}`);
+  }
+  return out.join('\n');
+}
+
+// JSON Patch (RFC 6902: add, remove, replace, move, copy) on a copy of doc.
+// It is lenient where that cannot go wrong: an add creates missing objects on
+// its path, and a replace of a missing key of an object sets it.
+export function applyPatch(doc, ops) {
+  if (!Array.isArray(ops)) throw new Error('a patch is a list of operations');
+  const out = structuredClone(doc);
+  const parse = (path) => {
+    if (typeof path !== 'string' || !path.startsWith('/')) throw new Error(`the path ${JSON.stringify(path)} must start with /`);
+    return path.slice(1).split('/').map((p) => p.replace(/~1/g, '/').replace(/~0/g, '~'));
+  };
+  const walk = (parts, create) => {
+    let cur = out;
+    for (const [i, p] of parts.slice(0, -1).entries()) {
+      let next = Array.isArray(cur) ? cur[Number(p)] : cur[p];
+      if ((next === undefined || next === null) && create && !Array.isArray(cur)) { next = /^\d+$|^-$/.test(parts[i + 1]) ? [] : {}; cur[p] = next; }
+      if (next === undefined || next === null || typeof next !== 'object') throw new Error(`there is nothing at /${parts.slice(0, i + 1).join('/')}`);
+      cur = next;
+    }
+    return [cur, parts[parts.length - 1]];
+  };
+  const index = (arr, key, extra = 0) => {
+    const i = key === '-' ? arr.length : Number(key);
+    if (!Number.isInteger(i) || i < 0 || i >= arr.length + extra) throw new Error(`index ${key} is outside the list (it has ${arr.length})`);
+    return i;
+  };
+  const get = (path) => {
+    const [parent, key] = walk(parse(path));
+    const v = Array.isArray(parent) ? parent[index(parent, key)] : parent[key];
+    if (v === undefined) throw new Error(`there is nothing at ${path}`);
+    return v;
+  };
+  const remove = (path) => {
+    const [parent, key] = walk(parse(path));
+    if (Array.isArray(parent)) return parent.splice(index(parent, key), 1)[0];
+    if (!(key in parent)) throw new Error(`there is nothing at ${path}`);
+    const v = parent[key];
+    delete parent[key];
+    return v;
+  };
+  const add = (path, value) => {
+    const [parent, key] = walk(parse(path), true);
+    if (Array.isArray(parent)) parent.splice(index(parent, key, 1), 0, value);
+    else parent[key] = value;
+  };
+  ops.forEach((op, n) => {
+    try {
+      if (!op || typeof op !== 'object') throw new Error('an operation is an object');
+      if (op.op === 'add') add(op.path, op.value);
+      else if (op.op === 'remove') remove(op.path);
+      else if (op.op === 'replace') {
+        const [parent, key] = walk(parse(op.path));
+        if (Array.isArray(parent)) parent[index(parent, key)] = op.value;
+        else parent[key] = op.value;
+      } else if (op.op === 'move') add(op.path, remove(op.from));
+      else if (op.op === 'copy') add(op.path, structuredClone(get(op.from)));
+      else throw new Error(`op ${JSON.stringify(op.op)}: use add, remove, replace, move or copy`);
+    } catch (e) { throw new Error(`patch[${n}] (${op?.op} ${op?.path}): ${e.message}`); }
+  });
+  return out;
+}
+
+// A plan's patches, applied to the screens the app has: each becomes the
+// entry's whole screen. Returns problems.
+export function patchScreens(plan, view) {
+  const problems = [];
+  for (const v of plan?.views || []) {
+    if (!v || v.patch === undefined) continue;
+    const cur = view.views.find((x) => x.slug === v.slug);
+    if (!cur || !cur.spec?.screen) problems.push(`view ${v.slug}: "patch" changes a screen the app has; give a whole "screen" (or a code block)`);
+    else if (v.screen) problems.push(`view ${v.slug}: give "patch" or "screen", not both`);
+    else {
+      try {
+        v.screen = applyPatch(JSON.parse(cur.code), v.patch);
+        v.patched = Array.isArray(v.patch) ? v.patch.length : 0;
+        if (v.title === undefined) v.title = cur.title;
+        if (v.order === undefined) v.order = cur.spec.order;
+        if (v.description === undefined) v.description = cur.description;
+      } catch (e) { problems.push(`view ${v.slug}: ${e.message}`); }
+    }
+    delete v.patch;
+  }
+  return problems;
+}
+
 // A plan's screens become the code of their views (JSON text), so the rest
 // of the forge handles them as it handles code.
 export function screensToCode(plan, code) {
@@ -244,6 +345,35 @@ export function screensToCode(plan, code) {
     else delete v.screen;
   }
   return code;
+}
+
+// Runs each screen's queries against the app's tables as they will be
+// (names: the tables after this version), the way the screen runs them when
+// it opens: expression parameters are worked out from its first state, or
+// null. Returns the queries that fail.
+export async function dryRunScreens(db, appId, names, plan) {
+  const problems = [];
+  const today = new Date().toISOString().slice(0, 10);
+  const nothing = new Proxy(() => null, { get: () => nothing, apply: () => null });
+  const guess = (x, state) => {
+    if (typeof x !== 'string' || !x.startsWith('=')) return x;
+    try { return new Function('s', `with (s) { return (${x.slice(1)}\n); }`)({ state, today, params: {}, app: { today: () => today, now: () => new Date().toISOString(), me: () => null }, lib: nothing }) ?? null; } catch { return null; }
+  };
+  for (const v of plan.views || []) {
+    if (!v || !v.screen) continue;
+    const state = v.screen.state || {};
+    for (const [name, q] of Object.entries(v.screen.data || {})) {
+      const sql = typeof q === 'string' ? q : q && q.sql;
+      if (typeof sql !== 'string' || sql.startsWith('=')) continue;
+      const params = {};
+      for (const [k, x] of Object.entries((q && typeof q === 'object' && q.params) || {})) params[k] = guess(x, state);
+      try {
+        const { sql: phys } = rewriteSql(sql, names, (t) => physical(appId, t));
+        await db.query(phys, params);
+      } catch (e) { problems.push(`view ${v.slug}: data.${name} (${sql.replace(/\s+/g, ' ').slice(0, 200)}) fails: ${String(e.message).replace(/^strata \/v1\/query: /, '').slice(0, 300)}`); }
+    }
+  }
+  return problems;
 }
 
 const SCREEN_BLOCKS = ['h', 'text', 'ui', 'row', 'col', 'grid', 'split', 'card', 'section', 'if', 'each', 'kpis', 'chips', 'input', 'button', 'form', 'table', 'code'];
@@ -337,13 +467,11 @@ export function summarizeEvents(events) {
   return `${events.length} events since ${first}:\n${lines.join('\n')}`;
 }
 
-// How much library code a change request carries: the code of the best few
-// pieces, within a budget of characters.
-const CODE_PIECES = 4;
-// Library pieces listed in full (description and props) in a prompt; the
-// others are listed by name and title.
+// How many of the library's pieces a prompt names as the best fits, and how
+// many of those it gives with their props (the system prompt lists every
+// piece by name and title).
 const FULL_ENTRIES = 30;
-const CODE_BUDGET = 15000;
+const PROPS_ENTRIES = 12;
 
 export async function buildContext(engine, appId, request) {
   const { store } = engine;
@@ -365,16 +493,19 @@ export async function buildContext(engine, appId, request) {
     }
     parts.push(`## Tables\n${tables.join('\n') || '(none)'}`);
     const views = view.views.slice().sort((a, b) => (a.spec.order ?? 99) - (b.spec.order ?? 99))
-      .map((v) => `<view slug="${v.slug}" title="${v.title}" order="${v.spec.order ?? ''}" id="${v.id}"${v.spec.screen ? ' format="screen"' : ''}>\n${v.code}\n</view>`);
-    parts.push(`## Views\n${views.some((v) => v.includes('format="screen"')) ? 'A view with format="screen" is a screen (JSON). To change it, give its whole screen, changed, in its plan entry ("screen"); to turn it into a code view, give a code block and no "screen".\n\n' : ''}${views.join('\n\n') || '(none)'}`);
+      .map((v) => `<view slug="${v.slug}" title="${v.title}" order="${v.spec.order ?? ''}" id="${v.id}"${v.spec.screen ? ' format="screen"' : ''}>\n${v.spec.screen ? screenLines(v.code) : v.code}\n</view>`);
+    parts.push(`## Views\n${views.some((v) => v.includes('format="screen"')) ? 'A view with format="screen" is a screen, shown one part per line after its path. To change it, give "patch" (operations on those paths) or its whole "screen" in its plan entry; to turn it into a code view, give a code block and no "screen".\n\n' : ''}${views.join('\n\n') || '(none)'}`);
     const fns = view.functions.map((f) => `<function slug="${f.slug}" on='${JSON.stringify(f.spec.on || null)}' id="${f.id}">\n${f.description ? `// ${f.description}\n` : ''}${f.code}\n</function>`);
     parts.push(`## Functions\n${fns.join('\n\n') || '(none)'}`);
+    // Code only for the pieces this app wrote: the others (built-in, or from
+    // another app) are used by their props, and their code is long.
     const mine = view.shared.map((c) => {
       const newest = shared.get(`${c.kind}/${c.slug}`);
       const note = newest && newest.version > Number(c.version) ? ` newest="${newest.version}" (the newest adds: ${newest.spec?.change || 'see the library'})` : '';
-      return `<${c.kind} name="${c.slug}" version="${c.version}"${note}>\n// ${c.title}: ${c.description}\n// ${c.kind === 'helper' ? 'api' : 'props'}: ${c.spec?.props || ''}\n${c.code}\n</${c.kind}>`;
+      const own = c.spec?.by === appId;
+      return `<${c.kind} name="${c.slug}" version="${c.version}"${note}${own ? '' : ` by="${c.author === 'builtin' ? 'built in' : 'another app'}"`}>\n// ${c.title}: ${c.description}\n// ${c.kind === 'helper' ? 'api' : 'props'}: ${c.spec?.props || ''}${own ? `\n${c.code}` : ''}\n</${c.kind}>`;
     });
-    parts.push(`## Components and helpers this app uses (shared with other apps)\n${mine.join('\n\n') || '(none)'}`);
+    parts.push(`## Components and helpers this app uses (shared with other apps)\nThe code of the ones this app did not write is left out: use them by their props and api. To change one, write a new version of it from its props and description.\n\n${mine.join('\n\n') || '(none)'}`);
     const live = new Set(view.comp.caps);
     const events = (await store.recentEvents(appId, 300)).filter((e) => e.kind !== 'error' || live.has(e.cap));
     parts.push(`## What the person did lately\n${summarizeEvents(events)}`);
@@ -407,26 +538,18 @@ export async function buildContext(engine, appId, request) {
     const top = [...fused.entries()].sort((a, b) => b[1] - a[1]).slice(0, FULL_ENTRIES);
     const rank = new Map(top.map(([k], i) => [k, i]));
     others.sort((a, b) => (rank.get(key(a)) ?? 99) - (rank.get(key(b)) ?? 99) || (a.kind === b.kind ? 0 : a.kind === 'helper' ? 1 : -1));
-    let budget = view.comp.n ? CODE_BUDGET : 0;
-    const entries = [];
     libIndex = parts.length;
-    const brief = [];
+    const best = [];
+    const more = [];
     for (const [i, c] of others.entries()) {
       const used = (users.get(key(c)) || []).map((u) => `${u.name} (v${u.version})`).join(', ') || 'no app yet';
-      let body = '';
-      if (budget > 0 && (rank.get(key(c)) ?? 99) < CODE_PIECES) {
-        const [full] = await store.getCapabilities([c.id]);
-        if (full?.code && full.code.length < budget) { body = `\n${full.code}`; budget -= full.code.length; }
-      }
-      const entry = `<${c.kind} name="${c.slug}" version="${c.version}" title="${c.title}" used_by="${used}">\n// ${c.description}\n// ${c.kind === 'helper' ? 'api' : 'props'}: ${c.spec?.props || ''}${body}\n</${c.kind}>`;
-      libEntries.set(key(c), entry);
-      // The best fits in full; the rest by name and title, enough to ask for
-      // one in "uses" (its writer then gets the whole entry).
-      if (i < FULL_ENTRIES) entries.push(entry);
-      else brief.push(`${c.kind === 'helper' ? 'lib' : 'ui'}:${c.slug} (${c.title})`);
+      libEntries.set(key(c), `<${c.kind} name="${c.slug}" version="${c.version}" title="${c.title}" used_by="${used}">\n// ${c.description}\n// ${c.kind === 'helper' ? 'api' : 'props'}: ${c.spec?.props || ''}\n</${c.kind}>`);
+      if (i < PROPS_ENTRIES) best.push(libEntries.get(key(c)));
+      else if (i < FULL_ENTRIES) more.push(`${c.kind === 'helper' ? 'lib' : 'ui'}.${c.slug}`);
     }
-    const more = brief.length ? `\n\nAlso in the library, by name: ${brief.join(', ')}. To use one, name it in "uses"; its writer gets its props or api.` : '';
-    parts.push(`# Shared components (ui.NAME(props)) and helpers (lib.NAME.fn(...)) in the library\n\nThe first ones fit best: by the request's words, and by what goes with the pieces this app and the request's best matches use (other views use them together, or they call each other).${budget === 0 && !view.comp.n ? ' Their code is left out: use them by their props and api.' : ''}\n\n${entries.join('\n\n')}${more}`);
+    // Every piece is named in the system prompt (the same for every call, so
+    // it is read from the prompt cache); here, the best fits with their props.
+    parts.push(`# Shared components (ui.NAME(props)) and helpers (lib.NAME.fn(...)) that fit this request best\n\nThe best first: by the request's words, and by what goes with the pieces this app and the request's best matches use (other views use them together, or they call each other). The rest of the library is named in "The library" above; to use one of those, name it in "uses" (its writer gets its props).\n\n${best.join('\n\n')}${more.length ? `\n\nAlso fitting: ${more.join(', ')}.` : ''}`);
   } else if (!own.size) {
     parts.push('# Shared components and helpers in the library\n\nNone yet: the ones you write now start it.');
   }
@@ -473,7 +596,17 @@ export async function buildContext(engine, appId, request) {
     }
     return copy.filter(Boolean).join('\n\n');
   };
-  return { prompt: parts.join('\n\n'), forPiece, view, library: libCaps, shared };
+  return { prompt: parts.join('\n\n'), forPiece, view, library: libCaps, shared, system: systemWith(shared) };
+}
+
+// The system prompt with the whole library of shared pieces, by name and
+// props, in a fixed order: it changes only when a piece is added or gets a
+// new version, so calls in a row read it from the prompt cache.
+export function systemWith(shared) {
+  const list = [...shared.values()].sort((a, b) => (a.kind === b.kind ? (a.slug < b.slug ? -1 : 1) : a.kind === 'component' ? -1 : 1));
+  if (!list.length) return SYSTEM;
+  const line = (c) => `${c.kind === 'helper' ? 'lib' : 'ui'}.${c.slug} (${c.title})`;
+  return `${SYSTEM}\n\n# The library: every shared component and helper, by name\n\n${list.map(line).join(', ')}.`;
 }
 
 export { SHARED, sharedRefs };
@@ -686,7 +819,7 @@ async function pool(items, n, fn) {
   return out;
 }
 
-async function buildSplit({ prompt, forPiece, view, library, shared }, progress, tr = new Trace()) {
+async function buildSplit({ prompt, forPiece, view, library, shared, system = SYSTEM }, progress, tr = new Trace()) {
   let cost = 0;
   let plan;
   let problems = [];
@@ -695,8 +828,8 @@ async function buildSplit({ prompt, forPiece, view, library, shared }, progress,
   for (let attempt = 1; attempt <= 2; attempt++) {
     progress(attempt === 1 ? `Asking the model (${MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`);
     const span = tr.start('plan', attempt === 1 ? 'The model plans the first version' : 'The model plans again, to fix the plan');
-    const answer = await ask({ system: SYSTEM, prompt: planPrompt, onWrite: writing(progress, 'The model') });
-    tr.call(span, answer, SYSTEM.length + planPrompt.length);
+    const answer = await ask({ system, prompt: planPrompt, onWrite: writing(progress, 'The model') });
+    tr.call(span, answer, system.length + planPrompt.length);
     cost += answer.cost || 0;
     await tr.span('check', 'Check the plan', async (c) => {
       try {
@@ -726,7 +859,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared }, progress,
       const extra = fix ? `\n\n# Your previous code for it\n\n<code slug="${pc.slug}">\n${fix.code}\n</code>\n\n# Its problems\n\n${fix.problems.map((p) => `- ${p}`).join('\n')}\n\nWrite it again, whole, with these fixed.` : '';
       const piecePrompt = `${forPiece(pc.item.uses, pc.item.forked_from)}\n\n${planText}\n\n${pieceStep(pc.what, pc.slug)}${extra}`;
       const answer = await ask({
-        system: SYSTEM,
+        system,
         prompt: piecePrompt,
         onWrite: ({ chars }) => {
           seen.set(pc.slug, chars);
@@ -737,7 +870,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared }, progress,
           progress(`The model is writing ${pieces.length - done.length} of ${pieces.length}: ${total.toLocaleString('en-US')} characters so far (${Math.round((now - t0) / 1000)} s)${done.length ? `; done: ${done.join(', ')}` : ''}`, { replace: true });
         },
       });
-      tr.call(span, answer, SYSTEM.length + piecePrompt.length);
+      tr.call(span, answer, system.length + piecePrompt.length);
       cost += answer.cost || 0;
       const blocks = parseAnswer(`<plan>{}</plan>\n${answer.text}`).code;
       code[pc.slug] = blocks[pc.slug] ?? Object.values(blocks)[0] ?? '';
@@ -779,7 +912,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const started = Date.now();
   progress('Reading the app and its history from Strata');
   const context = await tr.span('strata', 'Read the app, its data and the library from Strata', () => buildContext(engine, appId, request));
-  const { prompt, view, library, shared } = context;
+  const { prompt, view, library, shared, system } = context;
   if (library.length) progress(`Found ${library.length} capabilit${library.length === 1 ? 'y' : 'ies'} in the library that may fit: ${library.map((c) => c.title).join(', ')}`);
   let answer;
   let plan;
@@ -793,16 +926,17 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   for (let attempt = 1; attempt <= 2 && !split; attempt++) {
     progress(attempt === 1 ? `Asking the model (${MODEL}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model again to fix: ${problems.slice(0, 3).join('; ')}`);
     const span = tr.start('model', attempt === 1 ? (view.comp.n ? 'The model plans and writes the change' : 'The model plans and writes the first version') : 'The model answers again, to fix problems');
-    answer = await ask({ system: SYSTEM, prompt: attemptPrompt, onWrite: writing(progress) });
-    tr.call(span, answer, SYSTEM.length + attemptPrompt.length);
+    answer = await ask({ system, prompt: attemptPrompt, onWrite: writing(progress) });
+    tr.call(span, answer, system.length + attemptPrompt.length);
     cost += answer.cost || 0;
     progress(`The model answered in ${Math.round(answer.ms / 1000)} s`);
     await tr.span('check', 'Check the code', async (c) => {
       try {
         ({ plan, code } = parseAnswer(answer.text));
+        const patching = patchScreens(plan, view);
         screensToCode(plan, code);
         completePlan(plan, view, library);
-        problems = await validate(plan, code, view, library, shared);
+        problems = [...patching, ...await validate(plan, code, view, library, shared)];
       } catch (e) {
         problems = [e.message];
       }
@@ -818,7 +952,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     throw err;
   }
   progress('The code passed the checks; storing it in Strata');
-  const storing = tr.start('strata', 'Store the code and the new version in Strata');
+  let storing = tr.start('strata', 'Store the code and the new version in Strata');
 
   // Tables first: data the new code reads must exist when it goes live.
   const caps = new Map(view.comp.caps.map((id) => {
@@ -840,6 +974,35 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     const id = await store.putCapability({ app: appId, slug: t.name, kind: 'table', title: t.name, description: spec.description, spec, code: '' });
     caps.set(`table/${t.name}`, id);
     written.push(id);
+  }
+  // Screens: their queries run now against the tables as they are, and the
+  // model gets one try to fix the screens whose queries fail.
+  if ((plan.views || []).some((v) => v.screen)) {
+    const names = [...new Set([...view.tables.map((t) => t.spec.name), ...(plan.tables || []).map((t) => t.name)])];
+    const run = (label) => tr.span('check', label, async (c) => { const p = await dryRunScreens(engine.db, appId, names, plan); c.problems = p.slice(0, 8); return p; });
+    let failed = await run("Run the screens' queries");
+    if (failed.length) {
+      tr.end(storing);
+      progress(`Running the screens' queries: ${failed.length} failed (${failed.slice(0, 2).join('; ').slice(0, 300)}); asking the model to fix them`);
+      const span = tr.start('fix', 'The model fixes the screens whose queries fail', { problems: failed.slice(0, 4) });
+      const fixPrompt = `${prompt}\n\n# Your plan\n\n<plan>\n${JSON.stringify(plan, null, 1)}\n</plan>\n\n# These queries failed when run against the app's tables\n\n${failed.map((p) => `- ${p}`).join('\n')}\n\n# This step\n\nAnswer with a <plan> holding only "views": each screen view above whose queries failed, whole, with its queries fixed (the same slug, title and order). No code blocks, nothing else.`;
+      try {
+        const answer = await ask({ system, prompt: fixPrompt, onWrite: writing(progress) });
+        tr.call(span, answer, system.length + fixPrompt.length);
+        cost += answer.cost || 0;
+        const fixed = parseAnswer(answer.text).plan;
+        const cols = columnsFor(view, plan);
+        for (const v of fixed.views || []) {
+          const i = (plan.views || []).findIndex((x) => x.slug === v.slug);
+          if (i < 0 || !v.screen || typeof v.screen !== 'object' || checkScreen(v.screen, cols).length) continue;
+          plan.views[i] = { ...plan.views[i], screen: v.screen };
+          code[v.slug] = JSON.stringify(v.screen, null, 1);
+        }
+      } catch (e) { if (!span.end) tr.end(span, { error: e.message }); }
+      failed = await run("Run the screens' queries again");
+      progress(failed.length ? `Still failing, stored as they are (the runtime reports them): ${failed.slice(0, 2).join('; ').slice(0, 300)}` : "The screens' queries run");
+      storing = tr.start('strata', 'Store the code and the new version in Strata');
+    }
   }
   for (const [kind, list] of [['view', plan.views], ['function', plan.functions]]) {
     for (const item of list || []) {

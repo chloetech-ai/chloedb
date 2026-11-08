@@ -8,7 +8,7 @@ import { parseAnswer, ask } from '../engine/llm.mjs';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode } from '../engine/forge.mjs';
+import { validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines } from '../engine/forge.mjs';
 import { readLibrary, parsePiece, parseTables } from '../engine/library.mjs';
 import { linksOf, appDocs, parseLinks } from '../engine/graph.mjs';
 import { checkFunction, runFunction } from '../engine/sandbox.mjs';
@@ -413,4 +413,24 @@ test('a screen view is data in the plan: checked for shape, expressions, SQL and
   const p = checkScreen({ data: { a: 'DELETE FROM notes', b: '=app.call(' }, body: [{ wat: 1 }, { form: 'tasks', fields: ['x'] }, { form: 'notes', fields: ['body', 'nope'] }, { if: '=a.length >', then: ['ok'] }, { code: 'root.append(1)' }] }, cols);
   for (const want of ['only SELECT', 'data.b', 'unknown block', 'table "tasks"', 'nope is not a column', 'body[3].if', 'render(root, ctx)']) assert.ok(p.some((x) => x.includes(want)), `${want}: ${p.join(' | ')}`);
   assert.deepEqual(checkScreen([]), ['the screen must be a JSON object with "body"']);
+});
+
+test('a parameter named like a keyword (:from, :to) is not taken for one', () => {
+  const { sql } = rewriteSql('SELECT * FROM events WHERE at >= :from AND at < :to ORDER BY at LIMIT 50', ['events'], P);
+  assert.equal(sql, 'SELECT * FROM app_abc123_events AS events WHERE at >= :from AND at < :to ORDER BY at LIMIT 50');
+});
+
+test('a change to a screen can be a patch on the paths the model is shown', () => {
+  const screen = { data: { notes: 'SELECT * FROM notes LIMIT 50' }, body: [{ h: 'Notes' }, { table: '=notes', columns: [{ key: 'body' }] }] };
+  assert.equal(screenLines(JSON.stringify(screen)), '/data/notes: "SELECT * FROM notes LIMIT 50"\n/body/0: {"h":"Notes"}\n/body/1: {"table":"=notes","columns":[{"key":"body"}]}');
+  const out = applyPatch(screen, [{ op: 'add', path: '/body/1', value: { text: 'hi' } }, { op: 'add', path: '/body/2/columns/-', value: { key: 'tag' } }, { op: 'add', path: '/state/q', value: '' }, { op: 'move', from: '/body/0', path: '/body/-' }]);
+  assert.deepEqual(out, { data: screen.data, body: [{ text: 'hi' }, { table: '=notes', columns: [{ key: 'body' }, { key: 'tag' }] }, { h: 'Notes' }], state: { q: '' } });
+  assert.equal(screen.body.length, 2, 'the screen the app has is left as it is');
+  assert.throws(() => applyPatch(screen, [{ op: 'remove', path: '/body/5' }]), /patch\[0\].*outside the list/);
+  const view = { ...empty, views: [{ slug: 'home', title: 'Home', description: 'd', spec: { order: 2, screen: true }, code: JSON.stringify(screen) }, { slug: 'old', spec: { order: 3 }, code: 'async function render() {}' }] };
+  const plan = { views: [{ slug: 'home', patch: [{ op: 'replace', path: '/body/0/h', value: 'My notes' }] }, { slug: 'old', patch: [] }] };
+  const problems = patchScreens(plan, view);
+  assert.deepEqual(plan.views[0], { slug: 'home', screen: { ...screen, body: [{ h: 'My notes' }, screen.body[1]] }, patched: 1, title: 'Home', order: 2, description: 'd' });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /view old: "patch" changes a screen the app has/);
 });
