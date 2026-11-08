@@ -72,6 +72,7 @@ A `--db` that does not exist is created: with `--schema`'s table, with `--demo`'
 | `--slot-map FILE` | equal runs, epoch 1 | with `--shards`: the [slot map](#slots) to route writes by, which the shards are given |
 | `--listen ADDR` | `127.0.0.1:7700` | HTTP: the API, `/metrics` and the UI |
 | `--grpc ADDR` | `127.0.0.1:7701` | gRPC (`off` to disable) |
+| `--opensearch-listen ADDR` | off | also answer [OpenSearch's REST API](opensearch.md) here, for applications written for OpenSearch or Elasticsearch; `--opensearch-version V` is the version it reports (`2.11.0`; `7.10.2` for clients of Elasticsearch 7) |
 | `--token T` | `$STRATA_TOKEN` | require `Authorization: Bearer T` on the API and on gRPC; needed to listen beyond loopback ([security](#security)) |
 | `--no-token` | off | listen beyond loopback without a token anyway |
 | `--allow-host NAME` | | also answer HTTP requests for this host name (repeatable) |
