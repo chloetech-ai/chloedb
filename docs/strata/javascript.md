@@ -137,6 +137,19 @@ const r = await client.search("book", { limit: 5 });
 
 In a browser, the client works from pages of the server's own origin (a page it serves, or behind the same reverse proxy): strata-server sends no CORS headers, and refuses writes from pages of other sites ([security](server.md#security)).
 
+## Search on the device
+
+`openNearby(url, table, dir)` holds a [slice](slices.md) of a strata-server's table near a user: the rows of the tiles around them in a database in `dir`, searched with the server's statistics. `moveTo(lat, lon)` fetches the tiles it lacks, and `search(q, { k, d0 })` answers on the device when it can prove the answer is the server's, and asks the server otherwise; the result's `where` is `"device"` or `"server"` and `why` the reason.
+
+```js
+import { openNearby } from "strata-db";
+
+const near = await openNearby("http://127.0.0.1:7700", "places", "./slice");
+await near.moveTo(40.7484, -73.9857);
+const r = await near.search("pizza", { k: 10 });
+console.log(r.where, r.why);   // device proved
+```
+
 ## Bun and Deno
 
 Bun loads the addon as Node does: `bun run app.js`. Deno loads it through its Node compatibility with `--allow-ffi` (and `--allow-read`, `--allow-write`, `--allow-env` for the files and `$STRATA_MODELS`); the client needs only `--allow-net`.

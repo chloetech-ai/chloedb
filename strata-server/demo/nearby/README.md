@@ -27,6 +27,15 @@ Drag the blue dot (or click the map) to move, then search. Each answer says
 where it was answered and why, and "Also ask the cloud" compares the two
 answers.
 
+Every 30 seconds the phone asks the cloud whether its slice is current
+(`GET /v1/slices/places/status`): it fetches a newer one, and while the
+table has changed since the build it asks the cloud for every search. It
+reports its counts every 5 searches (`POST /v1/slices/places/usage`,
+named by `--device NAME`), which the command center's Slices view
+(http://127.0.0.1:7700/#/slices) shows with the tiles each device
+downloaded. Apps do the same with `strata.nearby` (Python) and
+`openNearby` (JavaScript): [Search on the device](../../../docs/strata/slices.md).
+
 ## Run it
 
 From the repository root, with Rust and Python 3 (`pip install duckdb` for

@@ -270,3 +270,95 @@ fn query_terms_count_repeats() {
     let t = query_terms(&schema(), "body", "Pizza pizza, coffee").unwrap();
     assert_eq!(t.iter().map(|(_, w)| *w).collect::<Vec<_>>(), vec![2.0, 1.0], "{t:?}");
 }
+
+#[test]
+fn search_or_ask_asks_the_cloud_when_the_device_cannot_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = cloud(dir.path(), places(3000, 7));
+    let out = dir.path().join("slice");
+    let m = build(&db, &opts(), &out).unwrap().manifest;
+    let mut dev = Device::create(&dir.path().join("device"), m.clone()).unwrap();
+    fetch(&mut dev, &out, 40.7, -74.0, 2);
+    let asked = std::cell::Cell::new(0);
+    let ask = |sql: &str, p: &Params| {
+        asked.set(asked.get() + 1);
+        db.query(sql, p)
+    };
+    let mut whys = HashSet::new();
+    for q in ["pizza", "coffee shop", "ramen pub diner", "nothing here at all"] {
+        for (k, d0) in [(1, 1000.0), (10, 1000.0), (50, 3000.0)] {
+            let s = Search::new(q, 40.7, -74.0, k, d0).unwrap();
+            let before = asked.get();
+            let o = dev.search_or_ask(&s, ask).unwrap();
+            let a = &o.answer;
+            whys.insert(a.why);
+            assert_eq!(a.on_device, asked.get() == before, "{q} k {k}: asked the cloud exactly when not on the device");
+            assert_eq!(a.on_device, matches!(a.why, Why::Proved | Why::NoMatch), "{q} k {k}: {:?}", a.why);
+            match a.why {
+                Why::Short => assert!(a.rows.scores.len() < k),
+                Why::Bound => assert!(a.rows.scores[k - 1] < a.bound),
+                Why::NoMatch => assert!(a.text_bound == 0.0 && o.rows.rows.is_empty()),
+                _ => {}
+            }
+            // Either way the answer is the cloud's.
+            assert_eq!(o.rows.scores, cloud_answer(&db, &m, &s).1, "{q} k {k} d0 {d0}");
+        }
+    }
+    assert!(whys.contains(&Why::Proved) && whys.contains(&Why::NoMatch), "{whys:?}");
+    assert!(whys.contains(&Why::Short) || whys.contains(&Why::Bound), "{whys:?}");
+
+    // A stale device asks the cloud for everything, proved or not.
+    dev.set_stale(true);
+    let s = Search::new("pizza", 40.7, -74.0, 1, 1000.0).unwrap();
+    let before = asked.get();
+    let o = dev.search_or_ask(&s, ask).unwrap();
+    assert!(o.answer.proved && o.answer.stale && !o.answer.on_device);
+    assert_eq!((o.answer.why, asked.get()), (Why::Stale, before + 1));
+    dev.set_stale(false);
+    assert!(dev.search(&s).unwrap().on_device);
+}
+
+#[test]
+fn an_answer_carries_the_request_that_asks_the_cloud() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = cloud(dir.path(), places(800, 8));
+    let out = dir.path().join("slice");
+    let m = build(&db, &opts(), &out).unwrap().manifest;
+    let mut dev = Device::create(&dir.path().join("device"), m.clone()).unwrap();
+    fetch(&mut dev, &out, 40.7, -74.0, 1);
+    let s = Search::new("pizza bar", 40.7, -74.0, 5, 1000.0).unwrap();
+    let a = dev.search(&s).unwrap();
+    let j = a.to_json(&s, &m);
+    assert_eq!(j["scores"].as_array().unwrap().len(), a.rows.scores.len());
+    assert_eq!(j["why"], serde_json::json!(a.why.as_str()));
+    let body: serde_json::Value = serde_json::from_str(j["ask"].as_str().unwrap()).unwrap();
+    assert_eq!(body["sql"], serde_json::json!(s.sql(&m)));
+    // A whole-number float stays a float, so the cloud scores with it as
+    // the device does.
+    assert!(body["params"]["d0sq"].is_f64(), "{}", body["params"]);
+    assert_eq!(body["params"]["q"], serde_json::json!("pizza bar"));
+}
+
+#[test]
+fn a_new_slice_replaces_the_devices_old_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = cloud(dir.path(), places(600, 9));
+    let out = dir.path().join("slice");
+    let m = build(&db, &opts(), &out).unwrap().manifest;
+    let dev_dir = dir.path().join("device");
+    std::fs::create_dir_all(dev_dir.join("keep-me")).unwrap();
+    let mut dev = Device::create(&dev_dir, m.clone()).unwrap();
+    fetch(&mut dev, &out, 40.7, -74.0, 1);
+    drop(dev);
+    db.write_ops(vec![crate::db::WriteOp::Delete { table: "places".into(), key: Value::Int(0) }]).unwrap();
+    let m2 = build(&db, &opts(), &out).unwrap().manifest;
+    assert!(m2.version > m.version && m2.built_ms >= m.built_ms);
+    // Twice: a device made again of the same version starts empty too.
+    for _ in 0..2 {
+        let dev = Device::create(&dev_dir, m2.clone()).unwrap();
+        assert_eq!(dev.held().count(), 0);
+        let mut names: Vec<String> = std::fs::read_dir(&dev_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names, vec!["keep-me".to_string(), format!("places-{}", m2.version)]);
+    }
+}

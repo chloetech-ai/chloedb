@@ -8,11 +8,10 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde_json::Value as Json;
 
-use super::{check_schema, Grid, Manifest, Tile, TileEntry, Words, FORMAT};
+use super::{check_schema, value_json, Grid, Manifest, Tile, TileEntry, Words, FORMAT};
 use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::text::{Bm25Params, CollectionStats};
-use crate::value::Value;
 
 /// What to build a slice of.
 #[derive(Clone, Debug)]
@@ -110,6 +109,7 @@ pub fn build(db: &Db, opts: &BuildOptions, out: &Path) -> Result<Built> {
     let manifest = Manifest {
         format: FORMAT,
         version: snap.txn(),
+        built_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64),
         schema,
         text: opts.text.clone(),
         lat: opts.lat.clone(),
@@ -125,17 +125,4 @@ pub fn build(db: &Db, opts: &BuildOptions, out: &Path) -> Result<Built> {
     let text = manifest.to_json();
     std::fs::write(out.join("manifest.json"), &text)?;
     Ok(Built { manifest, manifest_bytes: text.len() as u64, tile_bytes, rows })
-}
-
-/// A field's value in a tile's line, as a write would take it back.
-fn value_json(v: &Value) -> Json {
-    match v {
-        Value::Null => Json::Null,
-        Value::Int(i) | Value::Timestamp(i) => Json::from(*i),
-        Value::Float(x) => serde_json::Number::from_f64(*x).map_or(Json::Null, Json::Number),
-        Value::Str(s) => Json::from(s.as_str()),
-        Value::Bool(b) => Json::from(*b),
-        Value::List(items) => Json::Array(items.iter().map(value_json).collect()),
-        Value::Vector(xs) => Json::Array(xs.iter().map(|&x| serde_json::Number::from_f64(x as f64).map_or(Json::Null, Json::Number)).collect()),
-    }
 }

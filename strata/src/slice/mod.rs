@@ -49,6 +49,7 @@ mod device;
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value as Json};
 
 use crate::error::{Error, Result};
 use crate::query::sql::Params;
@@ -56,7 +57,7 @@ use crate::schema::{FieldType, Schema};
 use crate::value::Value;
 
 pub use build::{build, BuildOptions, Built};
-pub use device::{Answer, Device, Plan};
+pub use device::{Answer, Device, Outcome, Plan, Why};
 
 /// The manifest's format, which a device checks before reading the rest.
 pub const FORMAT: u32 = 1;
@@ -159,6 +160,9 @@ pub struct Manifest {
     /// The version of the table it was built from (its last commit), which
     /// its tiles carry too.
     pub version: u64,
+    /// When it was built, in milliseconds since 1970.
+    #[serde(default)]
+    pub built_ms: u64,
     pub schema: Schema,
     /// The TEXT field searched, and the FLOAT fields of latitude and
     /// longitude.
@@ -242,6 +246,15 @@ impl Search {
         )
     }
 
+    /// The body of the request that asks the cloud this search (`POST
+    /// /v1/query`): its SQL and parameters as JSON text, which an app sends
+    /// as it is (a float written by a JavaScript or Python `JSON` stays a
+    /// float here, so the cloud scores with the same numbers).
+    pub fn ask_body(&self, m: &Manifest) -> String {
+        let params: serde_json::Map<String, Json> = self.params(m).0.iter().map(|(k, v)| (k.clone(), value_json(v))).collect();
+        json!({"sql": self.sql(m), "params": params}).to_string()
+    }
+
     /// The values of [`Search::sql`]'s placeholders.
     pub fn params(&self, m: &Manifest) -> Params {
         let mut p = Params::new();
@@ -269,6 +282,19 @@ pub fn query_terms(schema: &Schema, text_field: &str, q: &str) -> Result<Vec<(St
         }
     }
     Ok(out)
+}
+
+/// A value as JSON, as a tile's line and the HTTP API carry it.
+pub fn value_json(v: &Value) -> Json {
+    match v {
+        Value::Null => Json::Null,
+        Value::Int(i) | Value::Timestamp(i) => Json::from(*i),
+        Value::Float(x) => serde_json::Number::from_f64(*x).map_or(Json::Null, Json::Number),
+        Value::Str(s) => Json::from(s.as_str()),
+        Value::Bool(b) => Json::from(*b),
+        Value::List(items) => Json::Array(items.iter().map(value_json).collect()),
+        Value::Vector(xs) => Json::Array(xs.iter().map(|&x| serde_json::Number::from_f64(x as f64).map_or(Json::Null, Json::Number)).collect()),
+    }
 }
 
 /// The fields a slice reads, checked: a primary key, TEXT, FLOAT latitude

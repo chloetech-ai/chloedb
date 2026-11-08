@@ -2851,6 +2851,51 @@ async fn slices_are_built_served_and_searched_on_a_device() {
     }
     assert!(proved >= 2, "proved {proved}");
 
+    // Freshness, usage reports and the command center's view of them.
+    let get_json = |path: String| {
+        let c = c.clone();
+        async move {
+            let r = c.get(path).send().await.unwrap();
+            (r.status().as_u16(), r.json::<Json>().await.unwrap())
+        }
+    };
+    let (status, st) = get_json(format!("{base}/v1/slices/places/status")).await;
+    assert_eq!((status, st["fresh"].as_bool(), st["version"].as_u64()), (200, Some(true), Some(m.version)), "{st}");
+    let (status, r) = post(&c, &format!("{base}/v1/slices/places/usage"), json!({"device": "phone-1", "searches": 4, "why": {"proved": 3, "short": 1}, "device_ms": 8.0, "cloud_ms": 3.0})).await;
+    assert_eq!(status, 200, "{r}");
+    let (status, _) = post(&c, &format!("{base}/v1/slices/places/usage"), json!({"why": {"perhaps": 1}})).await;
+    assert_eq!(status, 400);
+    let (status, list) = get_json(format!("{base}/v1/admin/slices")).await;
+    assert_eq!(status, 200, "{list}");
+    let one = &list["slices"][0];
+    assert_eq!((one["table"].as_str(), one["usage"]["searches"].as_u64(), one["usage"]["on_device"].as_u64(), one["usage"]["devices"].as_u64()), (Some("places"), Some(4), Some(3), Some(1)), "{one}");
+    let (status, detail) = get_json(format!("{base}/v1/admin/slices/places")).await;
+    assert_eq!(status, 200, "{detail}");
+    let downloaded: u64 = detail["tile_list"].as_array().unwrap().iter().map(|t| t[4].as_u64().unwrap()).sum();
+    assert_eq!(downloaded, dev.held().count() as u64, "each tile the device fetched, once");
+    assert_eq!(detail["usage"]["manifests"].as_u64(), Some(1));
+
+    // A write makes the slice stale; a rebuild with the table alone makes
+    // a fresh one, of a later version, as it was built.
+    let (status, r) = post(&c, &format!("{base}/v1/write"), json!({"ops": [{"op": "delete", "key": 7}]})).await;
+    assert_eq!(status, 200, "{r}");
+    let (_, st) = get_json(format!("{base}/v1/slices/places/status")).await;
+    assert_eq!(st["fresh"].as_bool(), Some(false), "{st}");
+    let (status, r) = post(&c, &format!("{base}/v1/admin/slices"), json!({"table": "places"})).await;
+    assert_eq!((status, r["rows"].as_u64()), (200, Some(1999)), "{r}");
+    let (_, st) = get_json(format!("{base}/v1/slices/places/status")).await;
+    assert!(st["fresh"].as_bool() == Some(true) && st["version"].as_u64() > Some(m.version), "{st}");
+    let (_, detail) = get_json(format!("{base}/v1/admin/slices/places")).await;
+    assert_eq!((detail["grid"]["lat0"].as_f64(), detail["text"].as_str()), (Some(40.7), Some("body")));
+
+    // Deleted, it is gone for devices.
+    let r = c.delete(format!("{base}/v1/admin/slices/places")).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let (status, _) = get(format!("{base}/v1/slices/places/manifest.json")).await;
+    assert_eq!(status, 404);
+    let (status, _) = get_json(format!("{base}/v1/slices/places/status")).await;
+    assert_eq!(status, 404);
+
     for bad in ["..%2Fmanifest.json", "1_2.json", "x_1.jsonl.gz", "1_2.jsonl.gz.bak"] {
         let (status, _) = get(format!("{base}/v1/slices/places/tiles/{bad}")).await;
         assert!(status == 400 || status == 404, "{bad}: {status}");

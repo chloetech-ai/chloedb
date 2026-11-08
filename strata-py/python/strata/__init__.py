@@ -79,12 +79,16 @@ from .build import (
 from ._native import StrataError
 from .client import Client
 from .frame import Frame, FrameStore, GroupBy, concat, len_, _arrow_table
+from .nearby import Nearby, NearbyResult, nearby
 from .ngrams import next_items
 from .result import ArrowResult, Result
 
 __all__ = [
     "Database",
     "Client",
+    "Nearby",
+    "NearbyResult",
+    "nearby",
     "Result",
     "ArrowResult",
     "StrataError",

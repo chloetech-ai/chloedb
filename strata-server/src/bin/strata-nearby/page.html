@@ -214,16 +214,16 @@ function render(a) {
   const kth = a.local_kth == null ? null : a.local_kth.toFixed(3);
   const bound = a.bound.toFixed(3), edge = a.edge_m == null ? "none are missing" : `the nearest tile not held is ${km(a.edge_m)} away`;
   let v;
-  if (a.proved) {
+  if (a.on_device) {
     v = `<div class="verdict device"><b>Answered on the device</b><p>Proved to be the cloud's top ${a.k}: ` +
       (a.text_bound === 0 ? "no place anywhere has these words." : `the ${ordinal(a.k)} score here, ${kth}, beats ${bound}, the most a place not held could score (${edge}).`) +
       ` ${a.device_ms.toFixed(1)} ms, no request.</p>` +
       (a.check ? `<p>${a.check.same ? "The cloud's answer, asked too, is the same." : '<span class="bad">The cloud answered differently.</span>'}</p>` : "") + "</div>";
   } else {
-    const why = a.local_rows < a.k ? `the device holds only ${a.local_rows} matching places` : `the ${ordinal(a.k)} score here, ${kth}, is below ${bound}, the most a place not held could score (${edge})`;
+    const why = a.why === "stale" ? "the table changed since its slice was built, so a proof holds for the old version only" : a.local_rows < a.k ? `the device holds only ${a.local_rows} matching places` : `the ${ordinal(a.k)} score here, ${kth}, is below ${bound}, the most a place not held could score (${edge})`;
     v = `<div class="verdict cloud"><b>Asked the cloud</b><p>The device could not prove its answer: ${why}. Device ${a.device_ms.toFixed(1)} ms, cloud ${a.cloud_ms.toFixed(1)} ms.</p></div>`;
   }
-  const pin = a.proved ? "var(--device)" : "var(--cloud)";
+  const pin = a.on_device ? "var(--device)" : "var(--cloud)";
   const list = a.rows.length ? "<ol>" + a.rows.map((r, i) => {
     const name = r.name || String(r.body || "").split("\n")[0];
     const meta = [r.category, r.address].filter(Boolean).join(" · ");

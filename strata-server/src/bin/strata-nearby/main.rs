@@ -10,6 +10,12 @@
 //! the answer is the cloud's and no request leaves the device. Otherwise
 //! it sends the same query to the cloud's `POST /v1/query`.
 //!
+//! Before it trusts its slice it asks the cloud whether it is the current
+//! one (`GET /v1/slices/<table>/status`, every 30 s): it fetches a newer
+//! one, and while the table has changed since the build it asks the cloud.
+//! It reports its searches to `POST /v1/slices/<table>/usage`, which the
+//! command center's Slices view shows.
+//!
 //! Its page (at `--listen`) shows the city's tiles, the ones held, the
 //! user (drag or click to move), and for each search where it was answered
 //! and why. `--check` (or the page's box) runs every search in the cloud
@@ -22,7 +28,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -32,7 +38,7 @@ use axum::{Json as AxJson, Router};
 use clap::Parser;
 use serde_json::{json, Value as Json};
 use strata::query::sql::Params;
-use strata::slice::{Device, Manifest, Search};
+use strata::slice::{Device, Manifest, Search, Why};
 use strata::Value;
 
 const PAGE: &str = include_str!("page.html");
@@ -67,7 +73,30 @@ struct Args {
     /// A key for the cloud, sent as a bearer token.
     #[arg(long, env = "STRATA_KEY")]
     key: Option<String>,
+    /// The name it reports its searches under.
+    #[arg(long)]
+    device: Option<String>,
 }
+
+/// Searches it answered since its last report to the cloud.
+#[derive(Default)]
+struct Pending {
+    searches: u64,
+    why: [u64; 5],
+    device_ms: f64,
+    cloud_ms: f64,
+}
+
+impl Pending {
+    fn body(&self, device: &str) -> Json {
+        let why: serde_json::Map<String, Json> = Why::ALL.iter().zip(self.why).map(|(w, n)| (w.as_str().to_string(), json!(n))).collect();
+        json!({"device": device, "searches": self.searches, "why": why, "device_ms": self.device_ms, "cloud_ms": self.cloud_ms})
+    }
+}
+
+/// How often it asks whether its slice is the current one, and reports.
+const STATUS_EVERY: Duration = Duration::from_secs(30);
+const REPORT_EVERY: u64 = 5;
 
 /// What the device holds and has done.
 struct Phone {
@@ -82,6 +111,9 @@ struct Phone {
     on_device: u64,
     /// Searches whose cloud check differed (never, for a proved answer).
     mismatches: u64,
+    pending: Pending,
+    status_at: Option<Instant>,
+    device: String,
 }
 
 #[derive(Clone)]
@@ -89,6 +121,7 @@ struct App {
     phone: Arc<Mutex<Phone>>,
     cloud: Cloud,
     check: bool,
+    dir: PathBuf,
 }
 
 #[derive(Clone)]
@@ -105,6 +138,22 @@ impl Cloud {
             Some(k) => r.bearer_auth(k),
             None => r,
         }
+    }
+
+    /// Reports searches (`POST /v1/slices/<table>/usage`).
+    async fn report(&self, body: Json) -> Result<(), String> {
+        let url = format!("{}/v1/slices/{}/usage", self.url, self.table);
+        let r = self.req(self.http.post(&url)).json(&body).send().await.map_err(|e| format!("POST {url}: {e}"))?;
+        if !r.status().is_success() {
+            return Err(format!("POST {url}: {}", r.status()));
+        }
+        Ok(())
+    }
+
+    /// The cloud's word on its slice: `{version, fresh, ...}`.
+    async fn status(&self) -> Result<Json, String> {
+        let bytes = self.bytes("status").await?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("the slice's status: {e}"))
     }
 
     async fn bytes(&self, path: &str) -> Result<Vec<u8>, String> {
@@ -176,8 +225,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         text.len() as f64 / 1e6
     );
     let dev = Device::create(&dir, m)?;
-    let phone = Phone { dev, lat, lon, reach: a.reach, fetched_bytes: text.len() as u64, fetched_tiles: 0, searches: 0, on_device: 0, mismatches: 0 };
-    let app = App { phone: Arc::new(Mutex::new(phone)), cloud, check: a.check };
+    let device = a.device.clone().unwrap_or_else(|| format!("nearby-{}", std::process::id()));
+    let phone = Phone { dev, lat, lon, reach: a.reach, fetched_bytes: text.len() as u64, fetched_tiles: 0, searches: 0, on_device: 0, mismatches: 0, pending: Pending::default(), status_at: None, device };
+    let app = App { phone: Arc::new(Mutex::new(phone)), cloud, check: a.check, dir: dir.clone() };
     move_to(&app, lat, lon, a.reach).await.map_err(|f| f.1)?;
     let router = Router::new()
         .route("/", get(|| async { Html(PAGE) }))
@@ -272,9 +322,40 @@ async fn moved(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<AxJson
     move_to(&app, f("lat")?, f("lon")?, reach).await.map(AxJson)
 }
 
+/// Asks the cloud whether the slice is the current one, when it last
+/// asked over [`STATUS_EVERY`] ago: fetches a newer slice (and the tiles
+/// around the user again), and marks the device stale while the table has
+/// changed since the build.
+async fn check_status(app: &App) -> Result<(), Failure> {
+    let due = app.phone.lock().unwrap().status_at.is_none_or(|t| t.elapsed() >= STATUS_EVERY);
+    if !due {
+        return Ok(());
+    }
+    let st = app.cloud.status().await.map_err(fail)?;
+    let (version, lat, lon, reach) = {
+        let mut p = app.phone.lock().unwrap();
+        p.status_at = Some(Instant::now());
+        (p.dev.manifest().version, p.lat, p.lon, p.reach)
+    };
+    if st["version"].as_u64() != Some(version) {
+        let text = String::from_utf8(app.cloud.bytes("manifest.json").await.map_err(fail)?).map_err(fail)?;
+        let m = Manifest::from_json(&text).map_err(fail)?;
+        let dev = Device::create(&app.dir, m).map_err(fail)?;
+        {
+            let mut p = app.phone.lock().unwrap();
+            p.fetched_bytes += text.len() as u64;
+            p.dev = dev;
+        }
+        move_to(app, lat, lon, reach).await?;
+    }
+    app.phone.lock().unwrap().dev.set_stale(st["fresh"] == json!(false));
+    Ok(())
+}
+
 /// `{q, k?, d0_m?, check?}`: answered on the device when proved, else by
 /// the cloud.
 async fn search(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<AxJson<Json>, Failure> {
+    check_status(&app).await?;
     let q = b.get("q").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let k = b.get("k").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
     let d0 = b.get("d0_m").and_then(|v| v.as_f64()).unwrap_or(1000.0);
@@ -287,27 +368,45 @@ async fn search(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<AxJso
         (s, p.dev.manifest().clone(), a, t0.elapsed().as_secs_f64() * 1e3)
     };
     let local: Vec<Json> = a.rows.rows.iter().map(|r| Json::Object(a.rows.columns.iter().cloned().zip(r.iter().map(value_json)).collect())).collect();
-    let (rows, scores, cloud_ms) = if a.proved {
+    let (rows, scores, cloud_ms) = if a.on_device {
         (local.clone(), a.rows.scores.clone(), None)
     } else {
         let t0 = Instant::now();
         let (rows, scores) = app.cloud.query(&s.sql(&m), &s.params(&m)).await.map_err(fail)?;
         (rows, scores, Some(t0.elapsed().as_secs_f64() * 1e3))
     };
-    let checked = if check && a.proved {
+    let checked = if check && a.on_device {
         let t0 = Instant::now();
         let (_, cs) = app.cloud.query(&s.sql(&m), &s.params(&m)).await.map_err(fail)?;
         Some(json!({"same": cs == a.rows.scores, "cloud_ms": t0.elapsed().as_secs_f64() * 1e3}))
     } else {
         None
     };
-    {
+    let report = {
         let mut p = app.phone.lock().unwrap();
         p.searches += 1;
-        p.on_device += a.proved as u64;
+        p.on_device += a.on_device as u64;
         if checked.as_ref().is_some_and(|c| c["same"] == json!(false)) {
             p.mismatches += 1;
         }
+        let w = Why::ALL.iter().position(|w| *w == a.why).expect("a reason");
+        p.pending.searches += 1;
+        p.pending.why[w] += 1;
+        p.pending.device_ms += device_ms;
+        p.pending.cloud_ms += cloud_ms.unwrap_or(0.0);
+        (p.pending.searches >= REPORT_EVERY).then(|| {
+            let body = p.pending.body(&p.device);
+            p.pending = Pending::default();
+            body
+        })
+    };
+    if let Some(body) = report {
+        let cloud = app.cloud.clone();
+        tokio::spawn(async move {
+            if let Err(e) = cloud.report(body).await {
+                eprintln!("{e}");
+            }
+        });
     }
     let g = m.grid;
     let (ux, uy) = g.xy(s.lat, s.lon);
@@ -323,7 +422,7 @@ async fn search(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<AxJso
         })
         .collect();
     Ok(AxJson(json!({
-        "q": q, "k": k, "d0_m": d0, "proved": a.proved, "where": if a.proved { "device" } else { "cloud" },
+        "q": q, "k": k, "d0_m": d0, "proved": a.proved, "on_device": a.on_device, "why": a.why, "stale": a.stale, "where": if a.on_device { "device" } else { "cloud" },
         "rows": out, "local_kth": a.rows.scores.get(k - 1), "local_rows": a.rows.scores.len(),
         "bound": a.bound, "text_bound": a.text_bound, "edge_m": finite(a.edge_m),
         "device_ms": device_ms, "cloud_ms": cloud_ms, "check": checked,

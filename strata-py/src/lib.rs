@@ -1088,9 +1088,110 @@ fn create_sql(schema: &str) -> PyResult<String> {
     Ok(strata::query::ddl::create_sql(&Schema::from_json(schema).map_err(err)?))
 }
 
+/// A device's slice of a table ([`strata::slice::Device`]): the tiles it
+/// fetched around its user in a local database, searched with the server's
+/// statistics. `strata.nearby` (python/strata/nearby.py) fetches the
+/// manifest and tiles over HTTP and asks the server when the device cannot
+/// prove its answer; this class does the rest, with no network of its own.
+#[pyclass(module = "strata._strata")]
+struct SliceDevice {
+    dev: std::sync::Mutex<Option<strata::slice::Device>>,
+}
+
+impl SliceDevice {
+    fn with<T>(&self, f: impl FnOnce(&mut strata::slice::Device) -> strata::Result<T>) -> PyResult<T> {
+        let mut g = self.dev.lock().unwrap_or_else(|e| e.into_inner());
+        let d = g.as_mut().ok_or_else(|| StrataError::new_err("the slice is closed"))?;
+        f(d).map_err(err)
+    }
+}
+
+#[pymethods]
+impl SliceDevice {
+    /// A device with no tiles yet, from a slice's manifest (JSON text), its
+    /// database under directory `dir` (earlier ones of the table there are
+    /// deleted: they are a cache).
+    #[staticmethod]
+    fn create(py: Python<'_>, dir: PathBuf, manifest: &str) -> PyResult<Self> {
+        let m = strata::slice::Manifest::from_json(manifest).map_err(err)?;
+        let dev = py.detach(|| strata::slice::Device::create(&dir, m)).map_err(err)?;
+        Ok(SliceDevice { dev: std::sync::Mutex::new(Some(dev)) })
+    }
+
+    /// What the manifest says, without its words, as JSON text: table,
+    /// version, built_ms, grid, text, lat, lon, tiles (count), rows.
+    fn info(&self) -> PyResult<String> {
+        self.with(|d| {
+            let m = d.manifest();
+            Ok(serde_json::json!({
+                "table": m.schema.table, "version": m.version, "built_ms": m.built_ms, "grid": m.grid,
+                "text": m.text, "lat": m.lat, "lon": m.lon, "tiles": m.tiles.len(), "rows": m.tiles.iter().map(|t| t.rows).sum::<u64>(),
+            })
+            .to_string())
+        })
+    }
+
+    /// The tiles to fetch for a user at (`lat`, `lon`), nearest first, as
+    /// (x, y, path, bytes), and those to drop, as (x, y).
+    fn plan(&self, lat: f64, lon: f64, reach: i32) -> PyResult<(Vec<(i32, i32, String, u64)>, Vec<(i32, i32)>)> {
+        self.with(|d| {
+            let p = d.plan(lat, lon, reach);
+            Ok((p.fetch.iter().map(|(t, b)| (t.x, t.y, t.path(), *b)).collect(), p.drop.iter().map(|t| (t.x, t.y)).collect()))
+        })
+    }
+
+    /// Adds a tile from its file's bytes; the rows it held.
+    fn add_tile(&self, py: Python<'_>, x: i32, y: i32, data: &[u8]) -> PyResult<usize> {
+        let data = data.to_vec();
+        py.detach(|| self.with(|d| d.add_tile(strata::slice::Tile { x, y }, &data)))
+    }
+
+    fn drop_tile(&self, py: Python<'_>, x: i32, y: i32) -> PyResult<()> {
+        py.detach(|| self.with(|d| d.drop_tile(strata::slice::Tile { x, y })))
+    }
+
+    /// The tiles held, as (x, y, rows).
+    fn held(&self) -> PyResult<Vec<(i32, i32, usize)>> {
+        self.with(|d| Ok(d.held().map(|(t, n)| (t.x, t.y, n)).collect()))
+    }
+
+    /// The distance in metres to the nearest tile with rows not held
+    /// (None when it holds them all).
+    fn edge(&self, lat: f64, lon: f64) -> PyResult<Option<f64>> {
+        self.with(|d| Ok(Some(d.edge(lat, lon)).filter(|e| e.is_finite())))
+    }
+
+    /// Notes whether the server's table changed since the slice was built.
+    fn set_stale(&self, stale: bool) -> PyResult<()> {
+        self.with(|d| {
+            d.set_stale(stale);
+            Ok(())
+        })
+    }
+
+    /// Searches the tiles held ([`strata::slice::Device::search`]); the
+    /// answer as JSON text ([`strata::slice::Answer::to_json`]), with
+    /// `ask`, the body of the request that asks the server.
+    #[pyo3(signature = (q, lat, lon, k = 10, d0_m = 1000.0))]
+    fn search(&self, py: Python<'_>, q: &str, lat: f64, lon: f64, k: usize, d0_m: f64) -> PyResult<String> {
+        py.detach(|| {
+            self.with(|d| {
+                let s = strata::slice::Search::new(q, lat, lon, k, d0_m)?;
+                Ok(d.search(&s)?.to_json(&s, d.manifest()).to_string())
+            })
+        })
+    }
+
+    /// Closes its database.
+    fn close(&self) {
+        self.dev.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
 #[pymodule]
 fn _strata(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Database>()?;
+    m.add_class::<SliceDevice>()?;
     #[cfg(feature = "datafusion")]
     m.add_class::<arrow::Arrow>()?;
     m.add_function(wrap_pyfunction!(train_codebook, m)?)?;

@@ -283,6 +283,11 @@ struct Args {
     /// /v1/admin/slices` and served at `GET /v1/slices/<table>/...`.
     #[arg(long)]
     slices: Option<PathBuf>,
+    /// Every this many seconds, rebuild the slices whose table changed
+    /// since they were built, so that devices find a fresh one (0: only
+    /// when asked, by `POST /v1/admin/slices`).
+    #[arg(long, default_value_t = 0)]
+    slices_rebuild_s: u64,
     /// What writes may fetch for MEDIA fields, comma-separated: directories
     /// (`file:/data/media`) and hosts fetched over HTTPS
     /// (`cdn.example.com`, `*.example.com`; `http://host:port` only spelled
@@ -1039,6 +1044,7 @@ async fn main() {
         synonyms: a.synonyms,
         backup_dir: a.backup_dir,
         slices: a.slices,
+        slices_rebuild_s: a.slices_rebuild_s,
         media_fetch: a.media_fetch,
         // The default needs no resolver of its own: a database's has it.
         media_max_bytes: if a.media_max_bytes == strata::media::DEFAULT_MAX_BYTES { 0 } else { a.media_max_bytes },

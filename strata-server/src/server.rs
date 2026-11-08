@@ -124,6 +124,9 @@ pub struct Options {
     pub backup_dir: Option<PathBuf>,
     /// Where `POST /v1/admin/slices` writes slices ([`strata::slice`]).
     pub slices: Option<PathBuf>,
+    /// Every this many seconds, rebuild the slices whose table changed
+    /// since they were built (0: only when asked).
+    pub slices_rebuild_s: u64,
     /// What writes may fetch for MEDIA fields: `file:` roots and hosts
     /// ([`strata::media::Allowlist::parse`]).
     pub media_fetch: Vec<String>,
@@ -535,6 +538,19 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     // workdata: every table's counts a minute apart (rates on a first look).
     crate::inspect::keep_looking(&svc);
     tokio::spawn(svc.clone().keep_models());
+    if o.slices.is_some() && o.slices_rebuild_s > 0 {
+        let (svc, every) = (svc.clone(), Duration::from_secs(o.slices_rebuild_s));
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                match svc.rebuild_stale_slices().await {
+                    Ok(t) if !t.is_empty() => tracing::info!(tables = ?t, "rebuilt stale slices"),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e.message, "rebuilding stale slices"),
+                }
+            }
+        });
+    }
     svc.start_failover();
     svc.start_scrubs();
     // The cluster's keys: a coordinator takes them from its shards before

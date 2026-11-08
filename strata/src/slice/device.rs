@@ -1,6 +1,7 @@
 //! A device's side of a slice: a local database of the tiles it fetched,
 //! searched with the cloud's statistics and checked against the bound
-//! ([`Device::search`]).
+//! ([`Device::search`]), and the cloud asked when the check fails
+//! ([`Device::search_or_ask`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
@@ -8,12 +9,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use flate2::read::GzDecoder;
-use serde_json::Value as Json;
+use serde::Serialize;
+use serde_json::{json, Value as Json};
 
-use super::{query_terms, Manifest, Search, Tile};
+use super::{query_terms, value_json, Manifest, Search, Tile};
 use crate::db::{Db, WriteOp};
 use crate::error::{Error, Result};
 use crate::query::exec::{ExecOptions, ResultSet};
+use crate::query::sql::Params;
 use crate::query::stats::{FieldStats, TermStats};
 use crate::storage::DbOptions;
 use crate::value::Value;
@@ -27,6 +30,9 @@ pub struct Device {
     tiles: HashMap<Tile, u64>,
     /// The tiles held, with the keys of their rows.
     held: BTreeMap<Tile, Vec<Value>>,
+    /// Whether the cloud's table changed since the slice was built
+    /// ([`Device::set_stale`]).
+    stale: bool,
 }
 
 /// Which tiles to fetch and which to let go ([`Device::plan`]).
@@ -37,6 +43,40 @@ pub struct Plan {
     pub fetch: Vec<(Tile, u64)>,
     /// Tiles held that are now farther than one ring beyond the square.
     pub drop: Vec<Tile>,
+}
+
+/// Why a search was answered where it was ([`Answer::why`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Why {
+    /// The k-th local score reaches the bound (or the device holds every
+    /// tile): the local top k is the cloud's.
+    Proved,
+    /// No place in the table has a word of the query, wherever it is: the
+    /// answer is empty in the cloud too.
+    NoMatch,
+    /// The device holds fewer than k places with a word of the query.
+    Short,
+    /// The k-th local score is below the most a place the device lacks
+    /// could score.
+    Bound,
+    /// The cloud's table changed since the slice was built.
+    Stale,
+}
+
+impl Why {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Why::Proved => "proved",
+            Why::NoMatch => "no_match",
+            Why::Short => "short",
+            Why::Bound => "bound",
+            Why::Stale => "stale",
+        }
+    }
+
+    /// All of them, in the order a report lists them.
+    pub const ALL: [Why; 5] = [Why::Proved, Why::NoMatch, Why::Short, Why::Bound, Why::Stale];
 }
 
 /// A search answered on the device ([`Device::search`]).
@@ -52,19 +92,82 @@ pub struct Answer {
     /// The distance from the user to the nearest tile with rows the device
     /// lacks (infinite when it holds them all).
     pub edge_m: f64,
-    /// Whether `rows` is the cloud's top k: k rows whose last scores at
-    /// least `bound`, or no place anywhere has a word of the query.
+    /// Whether `rows` is the top k of the slice's table: k rows whose last
+    /// scores at least `bound`, or no place anywhere has a word of the
+    /// query.
     pub proved: bool,
+    /// Whether the cloud's table changed since the slice was built, so that
+    /// a proof holds for the slice's version of it only.
+    pub stale: bool,
+    /// Whether to use `rows`: proved, and the slice not stale.
+    pub on_device: bool,
+    pub why: Why,
+}
+
+impl Answer {
+    /// The answer as JSON, for an app in another language: the rows as the
+    /// HTTP API answers a query (`columns`, `rows`, `keys`, `scores`), what
+    /// the device found (`on_device`, `why`, `proved`, `stale`, `bound`,
+    /// `text_bound`, `edge_m`, `kth`), and `ask`, the body of the request
+    /// that asks the cloud ([`Search::ask_body`]).
+    pub fn to_json(&self, s: &Search, m: &Manifest) -> Json {
+        let finite = |x: f64| if x.is_finite() { json!(x) } else { Json::Null };
+        let rs = &self.rows;
+        json!({
+            "columns": rs.columns,
+            "rows": rs.rows.iter().map(|r| r.iter().map(value_json).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            "keys": rs.keys.iter().map(value_json).collect::<Vec<_>>(),
+            "scores": rs.scores.iter().map(|&x| finite(x)).collect::<Vec<_>>(),
+            "on_device": self.on_device, "why": self.why, "proved": self.proved, "stale": self.stale,
+            "bound": self.bound, "text_bound": self.text_bound, "edge_m": finite(self.edge_m),
+            "kth": rs.scores.get(s.k - 1), "matches": rs.scores.len(),
+            "ask": s.ask_body(m),
+        })
+    }
+}
+
+/// A search answered on the device or by the cloud
+/// ([`Device::search_or_ask`]).
+#[derive(Debug)]
+pub struct Outcome {
+    /// The answer: the device's when `answer.on_device`, else the cloud's.
+    pub rows: ResultSet,
+    /// What the device found.
+    pub answer: Answer,
 }
 
 impl Device {
-    /// A device with no tiles yet, its database in directory `dir`.
+    /// A device with no tiles yet, its database in `dir/<table>-<version>`.
+    /// Earlier databases of the table there (of this version or another)
+    /// are a cache of what the device fetched, and are deleted.
     pub fn create(dir: &Path, m: Manifest) -> Result<Device> {
         std::fs::create_dir_all(dir)?;
-        let db = Db::create(&dir.join("slice.strata"), m.schema.clone(), DbOptions::default())?;
+        let prefix = format!("{}-", m.schema.table);
+        for e in std::fs::read_dir(dir)? {
+            let e = e?;
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.strip_prefix(&prefix).is_some_and(|v| v.parse::<u64>().is_ok()) && e.file_type()?.is_dir() {
+                std::fs::remove_dir_all(e.path())?;
+            }
+        }
+        let own = dir.join(format!("{prefix}{}", m.version));
+        std::fs::create_dir_all(&own)?;
+        let db = Db::create(&own.join("slice.strata"), m.schema.clone(), DbOptions::default())?;
         let words = m.word_map().into_iter().map(|(w, v)| (w.to_string(), v)).collect();
         let tiles = m.tiles.iter().map(|t| (t.tile(), t.bytes)).collect();
-        Ok(Device { db, m, words, tiles, held: BTreeMap::new() })
+        Ok(Device { db, m, words, tiles, held: BTreeMap::new(), stale: false })
+    }
+
+    /// Notes whether the cloud's table changed since the slice was built,
+    /// as the server's `GET /v1/slices/<table>/status` says. A stale
+    /// device's proofs hold for the slice's version of the table only, so
+    /// [`Device::search_or_ask`] asks the cloud instead.
+    pub fn set_stale(&mut self, stale: bool) {
+        self.stale = stale;
+    }
+
+    pub fn is_stale(&self) -> bool {
+        self.stale
     }
 
     pub fn manifest(&self) -> &Manifest {
@@ -163,7 +266,30 @@ impl Device {
         let fade = if edge_m.is_finite() { 1.0 / (1.0 + edge_m * edge_m / (s.d0_m * s.d0_m)) } else { 0.0 };
         let bound = text_bound * fade;
         let proved = bound == 0.0 || rows.scores.get(s.k - 1).is_some_and(|&kth| kth >= bound);
-        Ok(Answer { rows, bound, text_bound, edge_m, proved })
+        let why = if self.stale {
+            Why::Stale
+        } else if text_bound == 0.0 {
+            Why::NoMatch
+        } else if proved {
+            Why::Proved
+        } else if rows.scores.len() < s.k {
+            Why::Short
+        } else {
+            Why::Bound
+        };
+        Ok(Answer { rows, bound, text_bound, edge_m, proved, stale: self.stale, on_device: proved && !self.stale, why })
+    }
+
+    /// Runs `s` on the device ([`Device::search`]) and, when its answer is
+    /// not one to use, asks the cloud with `ask(sql, params)` (which sends
+    /// them to `POST /v1/query`).
+    pub fn search_or_ask(&self, s: &Search, ask: impl FnOnce(&str, &Params) -> Result<ResultSet>) -> Result<Outcome> {
+        let answer = self.search(s)?;
+        if answer.on_device {
+            return Ok(Outcome { rows: answer.rows.clone(), answer });
+        }
+        let rows = ask(&s.sql(&self.m), &s.params(&self.m))?;
+        Ok(Outcome { rows, answer })
     }
 
     /// The local database (to read what it holds).

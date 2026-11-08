@@ -116,3 +116,75 @@ export declare function upgrade(path: Path): Promise<{ old: string; tables: numb
 export declare function trainCodebook(vectors: Iterable<number[] | Float32Array>, name: string, options?: { models?: Path; levels?: number; k?: number; iterations?: number; sample?: number; seed?: number }): Promise<string>;
 /** The addon's version. */
 export declare const version: string;
+
+export interface NearbyOptions {
+  /** The server's --token or an API key ($STRATA_TOKEN by default). */
+  token?: string;
+  /** Tiles held each way around the user (default 2: a 5 x 5 square). */
+  reach?: number;
+  /** Milliseconds a request may take (default 30000). */
+  timeout?: number;
+  /** Milliseconds between asking the server whether the slice is the
+   * current one (default 30000; 0 never asks). */
+  statusEvery?: number;
+  /** Milliseconds a slice may lag a changed table and still answer
+   * (default 0: a changed table sends every search to the server). */
+  maxLag?: number;
+  /** Searches between usage reports to the server (default 20; 0 never). */
+  reportEvery?: number;
+  /** This device's name in the server's counts (default a random one). */
+  device?: string;
+  fetch?: typeof globalThis.fetch;
+}
+
+/** Why a search was answered where it was: "proved" and "no_match" on the
+ * device; "short", "bound" and "stale" by the server. */
+export type NearbyWhy = "proved" | "no_match" | "short" | "bound" | "stale";
+
+export declare class NearbyResult extends Result {
+  /** "device" when the device proved its answer is the server's. */
+  where: "device" | "server";
+  why: NearbyWhy;
+  /** The body of the request (POST /v1/query) that asks the server. */
+  ask: string;
+  readonly onDevice: boolean;
+  proved: boolean;
+  stale: boolean;
+  /** The most a place not held could score. */
+  bound: number;
+  /** Metres to the nearest tile with rows not held (null when all held). */
+  edgeM: number | null;
+  deviceMs: number;
+  serverMs: number | null;
+}
+
+/** A device's slice of a table on a strata-server. */
+export declare class Nearby {
+  readonly url: string;
+  readonly table: string;
+  readonly dir: string;
+  readonly device: string;
+  reach: number;
+  position: [number, number] | null;
+  /** The manifest's summary: table, version, built_ms, grid, text, lat,
+   * lon, tiles, rows. */
+  info: Record<string, unknown>;
+  stats: { searches: number; onDevice: number; fetchedTiles: number; fetchedBytes: number };
+  load(): Promise<this>;
+  /** Asks the server whether the slice is current; fetches a newer one. */
+  check(): Promise<{ table: string; version: number; built_ms: number; fresh: boolean; changed_ms?: number }>;
+  /** Moves the user: fetches the tiles around it, drops those far behind. */
+  moveTo(lat: number, lon: number, options?: { reach?: number }): Promise<{ fetched: number; dropped: number; bytes: number }>;
+  /** The tiles held, as [x, y, rows]. */
+  held(): [number, number, number][];
+  /** The k best places for q near the user: on the device when it can
+   * prove the answer is the server's, else the server's. */
+  search(q: string, options?: { k?: number; d0?: number; lat?: number; lon?: number }): Promise<NearbyResult>;
+  /** Sends the counts since the last report to the server. */
+  report(): Promise<void>;
+  close(): Promise<void>;
+}
+
+/** A device's slice of `table` on the strata-server at `url`, kept in
+ * directory `dir`. */
+export declare function openNearby(url: string, table: string, dir: string, options?: NearbyOptions): Promise<Nearby>;

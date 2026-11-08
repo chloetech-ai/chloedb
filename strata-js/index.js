@@ -33,10 +33,12 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { Nearby } from "./nearby.js";
 import { StrataError, Result, Searchable, decode, encode, given, orderedSchema, pickTable, resultOrWritten } from "./common.js";
 
 export { StrataError, Result } from "./common.js";
 export { Client, connect } from "./client.js";
+export { Nearby, NearbyResult } from "./nearby.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -469,4 +471,12 @@ export function trainCodebook(vectors, name, { models, levels, k, iterations, sa
 }
 
 /** The addon's version. */
+/** A device's slice of `table` on the strata-server at `url`, kept in
+ * directory `dir`: its manifest fetched and its database opened (see
+ * nearby.js). Searches near the user answer on the device when they can
+ * prove the answer is the server's, else ask the server. */
+export function openNearby(url, table, dir, options = {}) {
+  return new Nearby(native, url, table, dir, options).load();
+}
+
 export const version = native.version();

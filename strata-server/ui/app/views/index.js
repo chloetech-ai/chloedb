@@ -31,6 +31,7 @@ import follow from "./follow.js";
 import sql from "./sql.js";
 import schema from "./schema.js";
 import importer from "./import.js";
+import slices from "./slices.js";
 import builder from "./builder.js";
 import relevance from "./relevance.js";
 import recsys from "./recsys.js";
@@ -41,7 +42,7 @@ import graph from "./graph.js";
 import classic from "./classic.js";
 import apps from "./apps.js";
 
-export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, importer, builder, relevance, recsys, sid, autocomplete, media, graph, classic, apps];
+export const VIEWS = [home, timeline, alerts, oncall, cluster, logs, queries, statement, performance, profile, querypath, tables, inspector, rollout, autoscale, simulator, access, system, cloud, connections, clusters, follow, sql, schema, importer, slices, builder, relevance, recsys, sid, autocomplete, media, graph, classic, apps];
 
 export const GROUPS = ["Operate", "Diagnose", "Change", "Data", "Apps", "Labs"];
 
@@ -81,6 +82,7 @@ export const NAV = [
     { id: "sql", title: "SQL workbench", icon: "sql", key: "w" },
     { id: "schema", title: "Schema", icon: "schema", key: "d" },
     { id: "import", title: "Import and export", icon: "import", key: "i", scope: "write" },
+    { id: "slices", title: "Slices", icon: "layers" },
   ]],
   // Apps (--app name=url): one entry each, added by the shell once the
   // server lists them (views/apps.js); the group shows only when it has one.
