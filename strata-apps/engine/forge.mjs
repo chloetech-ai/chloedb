@@ -22,7 +22,7 @@ Column types:
 - keyword: a short label you filter, group and sort by: a status, category, person, email, url, color, a reference to another row's id
 - keyword[]: a list of labels (tags)
 - int, float, bool
-- timestamp: a moment, ISO 8601 text in and out ("2026-11-08T10:00:00Z", or a date "2026-11-08")
+- timestamp: a moment, ISO 8601 text in and out ("2026-11-08T10:00:00Z"). For a calendar day without a time (a due date, the day of a check-in, a birthday) use a keyword holding "YYYY-MM-DD" instead: it compares and sorts correctly, does not shift with time zones, and app.today() gives today's in the person's time zone
 
 Every table also has id (keyword, the primary key; app.insert makes one when the row has none) and created (timestamp, set when the row is inserted). Do not declare those two. Table and column names: lowercase letters, digits and _, starting with a letter.
 

@@ -60,7 +60,11 @@
   });
 
   const pad = (n) => String(n).padStart(2, '0');
-  const asDate = (v) => (v instanceof Date ? v : new Date(v));
+  // A calendar day ("2026-11-07") is that day where the person is, not UTC
+  // midnight (which is the day before anywhere west of UTC).
+  const asDate = (v) => (v instanceof Date ? v : typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? new Date(`${v}T00:00:00`) : new Date(v));
+  // A timestamp at exactly midnight UTC was almost always written as a date.
+  const dateOnly = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T00:00:00(\.0+)?Z$/.test(v);
   const fmt = {
     ago(v) {
       if (!v) return '';
@@ -70,7 +74,7 @@
       if (f < 45) return s < 0 ? 'in a moment' : 'just now';
       return s < 0 ? `in ${unit[0]} ${unit[1]}` : `${unit[0]} ${unit[1]} ago`;
     },
-    date(v) { return v ? asDate(v).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : ''; },
+    date(v) { return v ? asDate(v).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric', ...(dateOnly(v) ? { timeZone: 'UTC' } : {}) }) : ''; },
     time(v) { return v ? asDate(v).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : ''; },
     datetime(v) { return v ? `${fmt.date(v)}, ${fmt.time(v)}` : ''; },
     number(n) { return n === null || n === undefined ? '' : Number(n).toLocaleString(); },
