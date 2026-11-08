@@ -532,6 +532,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     spawn_maintenance(&svc);
     spawn_expirer(&svc, Duration::from_secs(5));
+    spawn_key_forgetter(&svc, Duration::from_secs(60));
     spawn_sampler(&svc);
     spawn_watch(&svc);
     // workdata: every table's counts a minute apart (rates on a first look).
@@ -1042,6 +1043,38 @@ pub fn spawn_expirer(svc: &Arc<Service>, every: Duration) {
                     reported = Some(why);
                 }
                 Err(e) => tracing::error!(error = %e, "the expirer stopped"),
+            }
+        }
+    });
+}
+
+/// Deletes the database's records of idempotency keys older than
+/// [`crate::idem::TTL`], every `every` ([`Service::forget_keys_due`]),
+/// until the service is dropped.
+pub fn spawn_key_forgetter(svc: &Arc<Service>, every: Duration) {
+    if svc.local_db().is_none() {
+        return;
+    }
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        let mut reported = None;
+        loop {
+            tokio::time::sleep(every).await;
+            let Some(svc) = svc.upgrade() else { return };
+            match tokio::task::spawn_blocking(move || svc.forget_keys_due()).await {
+                Ok(Ok(n)) => {
+                    reported = None;
+                    if n > 0 {
+                        tracing::debug!(keys = n, "forgot expired idempotency keys");
+                    }
+                }
+                Ok(Err(e)) => {
+                    if reported.as_ref() != Some(&e.message) {
+                        tracing::warn!(error = %e.message, "could not delete expired idempotency keys; retries ignore them meanwhile");
+                    }
+                    reported = Some(e.message);
+                }
+                Err(e) => tracing::error!(error = %e, "the idempotency key forgetter stopped"),
             }
         }
     });

@@ -1453,12 +1453,21 @@ impl Db {
     /// one ([`Footprints::admit`]: no two touch the same rows), else none
     /// runs. If one fails, none is written, and each can run again alone.
     pub fn write_prepared_group(&self, ps: &[&PreparedWrite]) -> Result<(Vec<u64>, Option<u64>)> {
+        self.write_prepared_group_then(ps, |_, _| Ok(()))
+    }
+
+    /// [`Db::write_prepared_group`], then `then` in the same transaction,
+    /// given the rows each write wrote: what a caller keeps of the writes
+    /// (strata-server keeps their idempotency keys in [`SOURCES`]), so
+    /// that it commits with them or not at all.
+    pub fn write_prepared_group_then(&self, ps: &[&PreparedWrite], then: impl FnOnce(&mut WriteTxn<'_>, &[u64]) -> Result<()>) -> Result<(Vec<u64>, Option<u64>)> {
         let mut prints = Footprints::default();
         if !ps.iter().all(|p| prints.admit(p)) {
             return Err(Error::Query("these writes cannot share a transaction: two of them may touch the same rows".into()));
         }
         let mut t = self.storage.begin()?;
         let rows = ps.iter().map(|p| self.write_prepared_in(&mut t, p)).collect::<Result<Vec<u64>>>()?;
+        then(&mut t, &rows)?;
         Ok((rows, t.commit_seq()?))
     }
 
