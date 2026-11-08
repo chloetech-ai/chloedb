@@ -1,0 +1,183 @@
+{
+ "title": "A month calendar of a table's rows by day, with the chosen day's list and a form to add to it",
+ "about": "Family events, bookings, classes, deadlines: rows with a day ('YYYY-MM-DD') drawn on a month grid; tap a day to see its rows and add one on it; tap a row to edit it.",
+ "params": {
+  "table": {
+   "about": "the table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data and state",
+   "default": "{{table}}"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "noun": {
+   "about": "what one row is",
+   "default": "event"
+  },
+  "date": {
+   "about": "the column holding the day, 'YYYY-MM-DD' (a keyword)",
+   "default": "date"
+  },
+  "name": {
+   "about": "the column shown as the row's title",
+   "default": "title"
+  },
+  "time": {
+   "about": "a column with the time of day, 'HH:MM' (rows sort by it)"
+  },
+  "place": {
+   "about": "a column with the place"
+  },
+  "color": {
+   "about": "a column whose value colors the row (a css color, or a value such as a person's name: each value gets a color)"
+  },
+  "fields": {
+   "about": "the form's fields, to add a row and edit one (the day is set from the chosen day; leave the date column out)",
+   "need": true
+  },
+  "where": {
+   "about": "an SQL condition on the rows"
+  }
+ },
+ "example": {
+  "use": "calendar",
+  "table": "events",
+  "title": "Family calendar",
+  "date": "day",
+  "name": "title",
+  "time": "at",
+  "color": "who",
+  "fields": [
+   {
+    "name": "title",
+    "required": true
+   },
+   {
+    "name": "at",
+    "label": "Time",
+    "type": "time"
+   },
+   {
+    "name": "who",
+    "type": "select",
+    "options": [
+     "Mum",
+     "Dad",
+     "Ana",
+     "Leo"
+    ]
+   }
+  ]
+ },
+ "screen": {
+  "state": {
+   "{{key}}_month": null,
+   "{{key}}_day": null,
+   "{{key}}_editing": null
+  },
+  "data": {
+   "{{key}}": {
+    "sql": "SELECT * FROM {{table}} WHERE {{date}} LIKE :m{{where|pre: AND }} LIMIT 2000",
+    "params": {
+     "m": "=(state.{{key}}_month || today.slice(0, 7)) + '-%'"
+    }
+   }
+  },
+  "let": {
+   "{{key}}_sel": "=state.{{key}}_day || today",
+   "{{key}}_palette": "=['#3b5bdb', '#2b8a3e', '#c27c0e', '#c92a2a', '#1971c2', '#9c36b5', '#0c8599', '#e8590c']",
+   "{{key}}_colorOf": "=r => { const v = {{color|json}} ? r[{{color|json}}] : null; if (!v) return null; if (/^(#|rgb|hsl)/.test(String(v))) return String(v); let h = 0; for (const ch of String(v)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return {{key}}_palette[h % {{key}}_palette.length]; }",
+   "{{key}}_onDay": "={{key}}.filter(r => String(r[{{date|json}}] || '').slice(0, 10) === {{key}}_sel).sort((a, b) => String(a[{{time|json}}] ?? '').localeCompare(String(b[{{time|json}}] ?? '')))"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}"
+   },
+   {
+    "split": [
+     {
+      "card": [
+       {
+        "ui": "calendar",
+        "props": {
+         "items": "={{key}}.map(r => ({date: String(r[{{date|json}}] || '').slice(0, 10), color: {{key}}_colorOf(r) || undefined, label: String(r[{{name|json}}] ?? '')}))",
+         "month": "=state.{{key}}_month || today.slice(0, 7)",
+         "onMonth": "=m => set({ {{key}}_month: m })",
+         "onSelect": "=d => set({ {{key}}_day: d, {{key}}_editing: null })",
+         "selected": "={{key}}_sel"
+        }
+       }
+      ]
+     },
+     {
+      "col": [
+       {
+        "h": "=lib.dates.weekdayName({{key}}_sel) + ' ' + {{key}}_sel.slice(8).replace(/^0/, '') + ' ' + lib.dates.monthName({{key}}_sel) + ({{key}}_sel === today ? ' (today)' : '')",
+        "level": 3
+       },
+       {
+        "each": "={{key}}_onDay",
+        "as": "r",
+        "empty": "Nothing on this day.",
+        "body": [
+         {
+          "row": [
+           {
+            "col": [
+             {
+              "text": "=({{time|json}} && r[{{time|json}}] ? r[{{time|json}}] + '  ' : '') + String(r[{{name|json}}] ?? '')"
+             },
+             {
+              "$when": "place",
+              "text": "=r[{{place|json}}] ? String(r[{{place|json}}]) : ''",
+              "muted": true,
+              "small": true
+             }
+            ]
+           },
+           {
+            "button": "Edit",
+            "class": "ghost small",
+            "do": "=() => set({ {{key}}_editing: r })"
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "card": [
+         {
+          "form": "{{table}}",
+          "layout": "col",
+          "fields": "{{fields}}",
+          "set": "=state.{{key}}_editing ? {} : { [{{date|json}}]: {{key}}_sel }",
+          "edit": "=state.{{key}}_editing",
+          "submit": "=state.{{key}}_editing ? 'Save' : 'Add ' + {{noun|json}}",
+          "after": "=() => set({ {{key}}_editing: null })",
+          "cancel": "=() => set({ {{key}}_editing: null })"
+         },
+         {
+          "if": "=state.{{key}}_editing",
+          "then": [
+           {
+            "button": "Delete",
+            "class": "danger small",
+            "confirm": "Delete this {{noun}}?",
+            "do": "=() => app.remove({{table|json}}, state.{{key}}_editing.id).then(() => set({ {{key}}_editing: null }))"
+           }
+          ]
+         }
+        ],
+        "title": "=state.{{key}}_editing ? 'Edit ' + {{noun|json}} : 'Add ' + {{noun|json}} + ' on this day'"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

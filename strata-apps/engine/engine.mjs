@@ -6,6 +6,7 @@ import { EventEmitter } from 'node:events';
 import { Store, physical, newId } from './store.mjs';
 import { rewriteSql } from './sql.mjs';
 import { runFunction } from './sandbox.mjs';
+import { runRule } from './rules.mjs';
 
 const MAX_ROWS = 1000;
 const MAX_DEPTH = 3;
@@ -52,6 +53,7 @@ export class Engine extends EventEmitter {
     this.store = new Store(strata, log);
     this.log = log;
     this.feed = false;
+    this.pending = new Set();
     this.services = null; // set by the server: people, files, email, places
   }
 
@@ -206,7 +208,10 @@ export class Engine extends EventEmitter {
       }
     };
     try {
-      const out = await runFunction(fn.code, input, host, { user, helpers: view.helpers.map((c) => ({ name: c.slug, code: c.code })) });
+      // A rule runs here, in the engine; JavaScript runs in the sandbox.
+      const out = fn.spec.rule
+        ? await runRule(JSON.parse(fn.code), { user: user ? { id: user.id, name: user.name, email: user.email } : null, ...(input || {}) }, host)
+        : await runFunction(fn.code, input, host, { user, helpers: view.helpers.map((c) => ({ name: c.slug, code: c.code })) });
       if (!ctx.depth) this.store.track(appId, 'call', fn.id, slug).catch(() => {});
       return out;
     } catch (e) {
@@ -228,9 +233,17 @@ export class Engine extends EventEmitter {
       if (!on || on.table !== table || (on.event || 'insert') !== event) continue;
       if (fn.id === ctx.by) continue;
       // A trigger's failure is the function's, not the write's: the write stands.
-      this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null })
+      const run = this.call(appId, fn.slug, { row, table, event }, { depth: ctx.depth || 0, trigger: `${event} ${table}`, user: ctx.user || null })
         .catch((e) => this.log(`trigger ${fn.id}: ${e.message}`));
+      this.pending.add(run);
+      run.finally(() => this.pending.delete(run));
     }
+  }
+
+  // Waits until the triggers that writes started (and the triggers those
+  // started) have run.
+  async settle() {
+    while (this.pending.size) await Promise.allSettled([...this.pending]);
   }
 
   reportError(appId, capId, message, where) {

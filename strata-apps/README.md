@@ -128,6 +128,9 @@ cd strata-apps
 | `STRATA_APPS_SPLIT` | `first` (default): first versions are planned, then written piece by piece at once; `always`: changes too; `off`: one answer holds the plan and all the code |
 | `STRATA_APPS_IDLE_S`, `STRATA_APPS_TIMEOUT_S` | a build stops when the model writes nothing for this many seconds (default 180), or after this many in all (default 1200) |
 | `STRATA_APPS_AUTOREPAIR=0` | do not send failing capabilities back to the forge |
+| `STRATA_APPS_SCREEN_MODEL` | the model for the plan step and for changes, which write the screens and rules (default: `STRATA_APPS_MODEL`); code views, functions and repairs keep `STRATA_APPS_MODEL` |
+| `STRATA_APPS_RULES=off`, `STRATA_APPS_TESTS=off` | functions and triggers only as JavaScript; no tests in plans |
+| `STRATA_APPS_OPEN_VIEWS=off` | do not open each view in a headless browser after a build |
 | `SMTP_URL`, `SMTP_FROM` | a mail server (`smtps://user:pass@host:465`, or `smtp://` with STARTTLS when offered) and the From address; without them email waits in the outbox, marked held |
 | `STRATA_APPS_GEOCODER` | the address search (default OpenStreetMap's Nominatim, at most one request a second, cached; `off` turns it off) |
 | `STRATA_APPS_TILES` | the map tile URL template (default OpenStreetMap's, fetched by the engine with a user agent and kept under `DATA/tiles`; `off` turns maps off) |
@@ -136,9 +139,15 @@ A first version of a small app takes 50 seconds to a minute; a bigger one takes 
 
 **Screens.** Most views are written as data instead of code: a screen is JSON (its state, the SELECTs it reads, values derived from them, and a body of blocks such as forms, tables, number tiles, chips, lists, shared components by name, and small `code` blocks for what blocks cannot say), and `web/screen.js` draws it, fetches its data again after every write and redraws when its state changes. The model writes a screen inside the plan, so a first version with only screens takes one call and no writers; the forge checks each screen (its shape, that every `=expression` parses, that its SQL is a SELECT, that its forms name tables and columns the app has). Views that are mostly code (a game, a drawing surface) stay code. `STRATA_APPS_SCREENS=off` turns screens off.
 
-**Screen patterns.** `library/patterns/` holds whole parts of a screen with parameters: `crud` (a table's rows with an add and edit form, search, filter chips, a done toggle, big numbers), `board` (a kanban over a status column), `detail` (one row with its details, editing and related rows) and `summary` (a total and a bar per group). A screen block `{"use": "crud", "table": "guests", ...}` is expanded by `engine/patterns.mjs` before the screen is checked and stored, so the stored screen holds ordinary blocks that later changes patch.
+**Screen patterns.** `library/patterns/` holds whole parts of a screen with parameters: `crud` (a table's rows with an add and edit form, search, filter chips, a done toggle, big numbers), `board` (a kanban over a status column), `detail` (one row with its details, editing and related rows), `summary` (a total and a bar per group), `week` (a row per thing with its seven days to tick, such as habits or chores), `calendar` (a month with a day's rows and a form to add one), `flashcards` (spaced repetition: a card, its answer, Again/Hard/Good/Easy), `quiz` (multiple choice with a score, saved per try), `search` (words and meaning ranked together, the picked row and rows like it) and `dashboard` (a value over the last N days against the N before, per day, by a group, and the newest rows). A screen block `{"use": "crud", "table": "guests", ...}` is expanded by `engine/patterns.mjs` before the screen is checked and stored, so the stored screen holds ordinary blocks that later changes patch.
 
 **CREATE SCREEN.** With `STRATA_APPS_STATEMENTS=on`, the model writes each screen as an SQL-shaped statement in its code block (`CREATE SCREEN guests TITLE 'Guests'`, then `LIST guests`, `SEARCH name`, `FILTER rsvp IN (...)`, `FORM (...)`, `KPI 'Coming' = COUNT(*) WHERE rsvp = 'yes'`, `SUMMARY guests AS meals`, `GROUP BY meal`...). `engine/statement.mjs` compiles it into pattern blocks; the statement is about half the characters of the pattern JSON and a quarter of the screen's.
+
+**Rules.** A function that is a query, or a trigger that keeps a count, a total or a stock level right, is written as data in the plan (`engine/rules.mjs`): `{"query": "SELECT ... :from"}`, or `{"steps": [...]}` of update, insert, remove, call and let steps, each with an optional `if` (a SELECT). The engine runs it directly: no writer, no QuickJS. A query rule has the shape of a SQL function with named parameters, so it can become one when Strata has them.
+
+**Tests as data.** A plan may carry `"tests"`: steps as in rules, then SELECTs and the value or row count each must give (`engine/checks.mjs`). They run once the version is live, on the tables it creates while they are still empty, and those tables are emptied again before the example rows go in. A failing test goes to repair like an error a person saw. After each build, every view is also opened in a headless browser (when Playwright is installed), and errors there are reported the same way.
+
+**Small changes to code.** A change to a view or function written in JavaScript can be `"edits": [{"old": "...", "new": "..."}]` in its plan entry instead of the whole code: each `old` must occur exactly once. "Make the heading pink" is one line, not a rewrite.
 
 **Edits by hand.** The studio's Edit tab (on a screen view) renames, moves and hides parts of the screen, and reorders, renames or hides a table's columns and a form's fields. Each edit is a JSON Patch sent to `POST /api/apps/:id/screens/:slug`, which checks the screen, runs its queries and stores it as a new version without the model (about 0.2 s).
 
@@ -157,6 +166,8 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | `engine/sql.mjs` | rewrites `FROM tasks` to the app's physical table and refuses anything but one `SELECT` over the app's own tables |
 | `engine/services.mjs` | people and sessions (scrypt passwords, session cookie), files (bytes under `DATA/files`, at most 15 MB, served with a sandbox policy and `nosniff`), the email outbox and a small SMTP client, address search |
 | `engine/sandbox.mjs` | server functions run in QuickJS compiled to WebAssembly: a fresh interpreter per call, 64 MiB, 10 s, no network, files or Node APIs, `app.*` calls only |
+| `engine/rules.mjs` | functions and triggers written as data: their checks and their runtime |
+| `engine/checks.mjs` | a build's tests, run on its new tables, and opening each view in a headless browser |
 | `engine/llm.mjs` | the model, through `claude -p` with tools, settings and MCP switched off |
 | `web/` | the studio, and the runtime (`frame.js`, `kit.css`) each view runs with in a sandboxed frame |
 

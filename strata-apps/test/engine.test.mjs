@@ -8,7 +8,8 @@ import { parseAnswer, ask } from '../engine/llm.mjs';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines } from '../engine/forge.mjs';
+import { validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode } from '../engine/forge.mjs';
+import { runRule, checkRule } from '../engine/rules.mjs';
 import { readLibrary, parsePiece, parseTables } from '../engine/library.mjs';
 import { linksOf, appDocs, parseLinks } from '../engine/graph.mjs';
 import { checkFunction, runFunction } from '../engine/sandbox.mjs';
@@ -438,7 +439,7 @@ test('a change to a screen can be a patch on the paths the model is shown', () =
 test('a screen pattern expands into blocks, state, data and lets that pass the screen check', async () => {
   const { PATTERNS, expandScreen, fill } = await import('../engine/patterns.mjs');
   assert.ok(PATTERNS.size >= 4);
-  const cols = { guests: ['name', 'rsvp', 'table_no'], orders: ['customer', 'items', 'total', 'status'], clients: ['name', 'email', 'rate'], invoices: ['number', 'total', 'status', 'client'], expenses: ['amount', 'category', 'day'] };
+  const cols = { guests: ['name', 'rsvp', 'table_no'], orders: ['customer', 'items', 'total', 'status'], clients: ['name', 'email', 'rate'], invoices: ['number', 'total', 'status', 'client'], expenses: ['amount', 'category', 'day'], chores: ['title', 'kid', 'points'], chore_done: ['chore', 'day', 'points', 'kid'], events: ['title', 'day', 'at', 'who'], cards: ['question', 'answer', 'deck', 'due', 'interval_days'], questions: ['question', 'options', 'correct', 'explanation', 'deck'], quiz_results: ['score', 'total', 'deck'], notes: ['title', 'body', 'meaning', 'paper', 'authors', 'year', 'tags'], hours: ['day', 'client', 'hours'] };
   const columnsOf = (t) => (cols[t] ? new Set(['id', 'created', ...cols[t]]) : null);
   for (const [name, p] of PATTERNS) {
     const r = expandScreen({ body: [{ h: 'Top' }, p.example] });
@@ -519,4 +520,88 @@ BLOCKS [{"text": "=guests.length + ' guests'"}]`;
   assert.ok(plan.views[0].screen && plan.views[0].statement && !code.guests);
   assert.match(problems[0], /^view bad: CREATE SCREEN line 3/);
   assert.ok(code.bad.startsWith('CREATE SCREEN'));
+});
+
+test('a rule is a function as data: queries return rows, steps write, and :row.col reads the trigger row', async () => {
+  const calls = [];
+  const votes = { f1: 3 };
+  const host = async (method, args) => {
+    calls.push([method, ...args]);
+    if (method === 'sql') {
+      if (/COUNT/.test(args[0])) return [{ n: votes[args[1].row_feature] }];
+      if (/stock/.test(args[0])) return [{ stock: 2 }];
+      if (/AS no/.test(args[0])) return [{ no: 0 }];
+      return [{ total: 42, n: 2 }, { total: 7, n: 1 }];
+    }
+    if (method === 'insert') return { id: 'm1', ...args[1] };
+    return {};
+  };
+  assert.deepEqual(await runRule({ query: 'SELECT SUM(amount) AS total FROM expenses WHERE day >= :from' }, { from: '2026-11-01', unused: 1 }, host), [{ total: 42, n: 2 }, { total: 7, n: 1 }]);
+  assert.deepEqual(calls.at(-1), ['sql', 'SELECT SUM(amount) AS total FROM expenses WHERE day >= :from', { from: '2026-11-01' }]);
+  assert.deepEqual(await runRule({ query: 'SELECT 1', one: true }, {}, host), { total: 42, n: 2 });
+  assert.equal(await runRule({ query: 'SELECT 1', value: true }, {}, host), 42);
+  const out = await runRule({ steps: [
+    { update: 'features', id: ':row.feature', set: { votes: 'SELECT COUNT(*) AS n FROM votes WHERE feature = :row.feature', touched: true } },
+    { let: 'left', value: 'SELECT stock FROM items WHERE id = :row.item' },
+    { insert: 'moves', values: { item: ':row.item', qty: ':left', by: ':user.id', note: "it's :row.feature" } },
+    { remove: 'holds', id: ':row.hold', if: 'SELECT 0 AS no' },
+  ] }, { row: { feature: 'f1', item: 'i9', hold: 'h1' }, user: { id: 'u7' } }, host);
+  assert.deepEqual(out.done, ['updated features f1', 'added to moves m1']);
+  assert.ok(calls.some((c) => c[0] === 'sql' && c[1] === 'SELECT COUNT(*) AS n FROM votes WHERE feature = :row_feature' && c[2].row_feature === 'f1'));
+  assert.deepEqual(calls.find((c) => c[0] === 'update'), ['update', 'features', 'f1', { votes: 3, touched: true }]);
+  assert.deepEqual(calls.find((c) => c[0] === 'insert'), ['insert', 'moves', { item: 'i9', qty: 2, by: 'u7', note: "it's :row.feature" }]);
+  assert.ok(!calls.some((c) => c[0] === 'remove'), 'the step whose if is 0 does not run');
+});
+
+test('a rule is checked against the tables it writes, and needs no writer', async () => {
+  const cols = (t) => (t === 'features' ? new Set(['id', 'created', 'votes']) : null);
+  assert.deepEqual(checkRule({ query: 'SELECT 1' }), []);
+  const p = checkRule({ steps: [
+    { update: 'features', set: { votes: 1, nope: 2 } },
+    { insert: 'ghosts', values: { a: 1 } },
+    { update: 'features', id: ':row.feature', set: { votes: 'DELETE FROM features' } },
+    { wat: 1 },
+  ] }, cols).join('\n');
+  for (const want of ['give "id"', 'nope is not a column of features', 'no table "ghosts"', 'only SELECT here', 'a step is update, insert, remove, call or let']) assert.ok(p.includes(want), `missing ${want} in:\n${p}`);
+  assert.match(checkRule({ query: 'UPDATE x SET a = 1' }).join(), /give a SELECT/);
+  // In a plan: the rule becomes the function's code, is checked, and gets no writer.
+  const plan = { tables: [{ name: 'features', columns: [{ name: 'votes', type: 'int' }] }, { name: 'votes', columns: [{ name: 'feature', type: 'keyword' }] }],
+    views: [{ slug: 'home', title: 'Home', screen: { body: [{ h: 'Hi' }] } }], functions: [{ slug: 'count-votes', on: { table: 'votes', event: 'insert' }, rule: { steps: [{ update: 'features', id: ':row.feature', set: { votes: 'SELECT COUNT(*) FROM votes WHERE feature = :row.feature' } }] } },
+      { slug: 'bad', rule: { steps: [{ insert: 'features', values: { stars: 5 } }] } }] };
+  const code = {};
+  assert.deepEqual(prepareScreens(plan, code, empty), []);
+  assert.equal(JSON.parse(code['count-votes']).steps[0].update, 'features');
+  const problems = await validate(plan, code, empty, []);
+  assert.deepEqual(problems, ['function bad: steps[0]: stars is not a column of features']);
+  // A rule given as JSON in a code block is a rule too; JavaScript stays JavaScript.
+  const p2 = { functions: [{ slug: 'a' }, { slug: 'b' }] };
+  rulesToCode(p2, { a: '{"query": "SELECT 1"}', b: 'function run(input, app) { return 1 }' });
+  assert.deepEqual(p2.functions[0].rule, { query: 'SELECT 1' });
+  assert.equal(p2.functions[1].rule, undefined);
+});
+
+test('edits change a JavaScript view or function by find and replace, and refuse what does not match once', () => {
+  const src = "function render(root) {\n  root.append(h('h2', { style: 'color: #1d4ed8' }, 'Notes'));\n  root.append(h('p', {}, 'Notes'));\n}";
+  const view = {
+    views: [{ slug: 'notes', title: 'Notes', description: 'd', code: src, spec: { order: 2 } }, { slug: 'board', title: 'Board', code: '{}', spec: { screen: true } }],
+    functions: [{ slug: 'total', code: '{"query": "SELECT 1"}', spec: { rule: true } }],
+  };
+  const plan = { views: [{ slug: 'notes', edits: [{ old: 'color: #1d4ed8', new: 'color: #db2777' }] }] };
+  const code = {};
+  assert.deepEqual(editCode(plan, code, view), []);
+  assert.ok(code.notes.includes('color: #db2777') && !code.notes.includes('#1d4ed8'));
+  assert.equal(plan.views[0].title, 'Notes');
+  assert.equal(plan.views[0].order, 2);
+  assert.equal(plan.views[0].edits, undefined);
+  // "Notes" occurs twice, "purple" not at all: both are refused with how to fix it
+  assert.match(editCode({ views: [{ slug: 'notes', edits: [{ old: "'Notes'", new: "'Diary'" }] }] }, {}, view)[0], /found 2 times/);
+  assert.match(editCode({ views: [{ slug: 'notes', edits: [{ old: 'purple', new: 'red' }] }] }, {}, view)[0], /found 0 times/);
+  // a replacement with $ signs is taken as it is
+  const c2 = {};
+  editCode({ views: [{ slug: 'notes', edits: [{ old: 'color: #1d4ed8', new: "content: '$&'" }] }] }, c2, view);
+  assert.ok(c2.notes.includes("content: '$&'"));
+  // screens take patches, rules are given whole, and a code block with edits is one too many
+  assert.match(editCode({ views: [{ slug: 'board', edits: [{ old: '{}', new: '[]' }] }] }, {}, view)[0], /a screen takes "patch"/);
+  assert.match(editCode({ functions: [{ slug: 'total', edits: [{ old: '1', new: '2' }] }] }, {}, view)[0], /a rule is given whole/);
+  assert.match(editCode({ views: [{ slug: 'notes', edits: [{ old: 'Notes', new: 'x' }] }] }, { notes: 'x' }, view)[0], /not both/);
 });

@@ -43,6 +43,9 @@ button.danger.primary { background: var(--bad); border-color: var(--bad); color:
 button.ghost { background: transparent; border-color: transparent; box-shadow: none; }
 button.ghost:hover { background: var(--soft); }
 button.small { padding: 3px 9px; font-size: 13px; }
+button.link { background: transparent; border-color: transparent; box-shadow: none; padding: 0; text-align: left; font-weight: 500; color: inherit; }
+button.link:hover { text-decoration: underline; background: transparent; }
+.lead { flex: 0 0 180px; min-width: 0; }
 button.icon { width: 32px; height: 32px; padding: 0; display: inline-grid; place-items: center; }
 input:where(:not([type=checkbox]):not([type=radio]):not([type=range])), select, textarea {
   border: 1px solid var(--line); background: var(--card); padding: 7px 10px; border-radius: 8px; min-width: 0; outline: none;

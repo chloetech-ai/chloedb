@@ -1,0 +1,169 @@
+{
+ "title": "A week grid: rows (chores, habits, people) by the seven days, a tap marks a day done",
+ "about": "Chores per kid, habits, practice attendance, a workout plan: the rows come from one table (the chores), and each mark is a row of another table (one per row and day, its day as 'YYYY-MM-DD'). A tap on a day adds or removes the mark; arrows move a week; each row shows how many of its days are done.",
+ "params": {
+  "table": {
+   "about": "the table of marks: one row per row and day done",
+   "need": true
+  },
+  "items": {
+   "about": "the table of the rows (chores, habits, kids)",
+   "need": true
+  },
+  "item": {
+   "about": "the column of the marks table that holds the row's id",
+   "need": true
+  },
+  "day": {
+   "about": "the column of the marks table that holds the day, 'YYYY-MM-DD'",
+   "default": "day"
+  },
+  "key": {
+   "about": "names the pattern's data and state",
+   "default": "{{table}}"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "name": {
+   "about": "the column of the rows shown as each row's name",
+   "default": "name"
+  },
+  "sub": {
+   "about": "a column of the rows shown small under the name"
+  },
+  "itemWhere": {
+   "about": "an SQL condition on the rows (such as active)"
+  },
+  "itemOrder": {
+   "about": "SQL ORDER BY for the rows",
+   "default": "{{name}}"
+  },
+  "extra": {
+   "about": "more columns a new mark stores, as a JavaScript object of it (the row) and day, such as \"{points: it.points, kid: it.kid}\""
+  },
+  "label": {
+   "about": "what a mark is, for the totals",
+   "default": "Done"
+  }
+ },
+ "example": {
+  "use": "week",
+  "table": "chore_done",
+  "items": "chores",
+  "item": "chore",
+  "day": "day",
+  "title": "This week",
+  "name": "title",
+  "sub": "kid",
+  "extra": "{points: it.points, kid: it.kid}"
+ },
+ "screen": {
+  "state": {
+   "{{key}}_week": 0
+  },
+  "data": {
+   "{{key}}": {
+    "sql": "SELECT * FROM {{table}} WHERE {{day}} IN (:d0, :d1, :d2, :d3, :d4, :d5, :d6) LIMIT 5000",
+    "params": {
+     "d0": "=lib.dates.addDays(lib.dates.startOfWeek(today), 7 * state.{{key}}_week + 0)",
+     "d1": "=lib.dates.addDays(lib.dates.startOfWeek(today), 7 * state.{{key}}_week + 1)",
+     "d2": "=lib.dates.addDays(lib.dates.startOfWeek(today), 7 * state.{{key}}_week + 2)",
+     "d3": "=lib.dates.addDays(lib.dates.startOfWeek(today), 7 * state.{{key}}_week + 3)",
+     "d4": "=lib.dates.addDays(lib.dates.startOfWeek(today), 7 * state.{{key}}_week + 4)",
+     "d5": "=lib.dates.addDays(lib.dates.startOfWeek(today), 7 * state.{{key}}_week + 5)",
+     "d6": "=lib.dates.addDays(lib.dates.startOfWeek(today), 7 * state.{{key}}_week + 6)"
+    }
+   },
+   "{{key}}_items": "SELECT * FROM {{items}}{{itemWhere|pre: WHERE }} ORDER BY {{itemOrder}} LIMIT 300"
+  },
+  "let": {
+   "{{key}}_days": "=Array.from({length: 7}, (_, i) => lib.dates.addDays(lib.dates.startOfWeek(today), 7 * state.{{key}}_week + i))",
+   "{{key}}_marks": "=it => {{key}}.filter(m => m[{{item|json}}] === it.id)"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}"
+   },
+   {
+    "row": [
+     {
+      "button": "‹",
+      "class": "ghost small",
+      "do": "=() => set({ {{key}}_week: state.{{key}}_week - 1 })"
+     },
+     {
+      "text": "=lib.dates.weekdayName({{key}}_days[0], true) + ' ' + {{key}}_days[0].slice(5).replace('-', '/') + ' – ' + lib.dates.weekdayName({{key}}_days[6], true) + ' ' + {{key}}_days[6].slice(5).replace('-', '/')"
+     },
+     {
+      "button": "›",
+      "class": "ghost small",
+      "do": "=() => set({ {{key}}_week: state.{{key}}_week + 1 })"
+     },
+     {
+      "if": "=state.{{key}}_week !== 0",
+      "then": [
+       {
+        "button": "This week",
+        "class": "ghost small",
+        "do": "=() => set({ {{key}}_week: 0 })"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "kpis": [
+     {
+      "label": "{{label}} this week",
+      "value": "={{key}}.length + ' of ' + {{key}}_items.length * 7"
+     },
+     {
+      "label": "Days with everything done",
+      "value": "={{key}}_items.length ? {{key}}_days.filter(d => {{key}}_items.every(it => {{key}}_marks(it).some(m => m[{{day|json}}] === d))).length : 0"
+     }
+    ]
+   },
+   {
+    "each": "={{key}}_items",
+    "as": "it",
+    "empty": "Nothing to track yet.",
+    "body": [
+     {
+      "row": [
+       {
+        "col": [
+         {
+          "text": "=String(it[{{name|json}}] ?? '')"
+         },
+         {
+          "$when": "sub",
+          "text": "=it[{{sub|json}}] == null ? '' : String(it[{{sub|json}}])",
+          "muted": true,
+          "small": true
+         }
+        ],
+        "class": "lead"
+       },
+       {
+        "ui": "dayStrip",
+        "props": {
+         "marks": "={{key}}_marks(it).map(m => m[{{day|json}}])",
+         "days": 7,
+         "end": "={{key}}_days[6]",
+         "onToggle": "=(d, done) => { const m = {{key}}_marks(it).find(x => x[{{day|json}}] === d); return done ? (m ? null : app.insert({{table|json}}, { [{{item|json}}]: it.id, [{{day|json}}]: d{{extra|pre:, ...}} })) : (m ? app.remove({{table|json}}, m.id) : null); }"
+        }
+       },
+       {
+        "text": "={{key}}_marks(it).length + ' / 7'",
+        "muted": true,
+        "small": true
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

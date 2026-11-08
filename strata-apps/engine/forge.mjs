@@ -11,6 +11,8 @@ import { Trace, planDecisions } from './trace.mjs';
 import { rewriteSql } from './sql.mjs';
 import { expandPlan, expandScreen, patternsDoc } from './patterns.mjs';
 import { compileStatements, compileStatement, STATEMENT_DOC } from './statement.mjs';
+import { checkRule, RULES_DOC } from './rules.mjs';
+import { TESTS_DOC, checkTests, runTests, openViews } from './checks.mjs';
 
 const BASE_SYSTEM = `You build and change small web apps for one person, through a runtime whose backbone is a database, Strata. An app is made of capabilities that the runtime stores in Strata and loads:
 
@@ -85,7 +87,7 @@ Styling: a stylesheet is already there, and plain elements look good without cla
 - layout: .row (flex row, gap, wraps), .col (flex column, gap), .grow (takes the free space), .grid (responsive grid of cards), .split (two columns that stack on phones), .right (pushes to the end of a row), .center
 - surfaces: .card, .list (rows with separators; put .item on each row), .empty (empty state, centred, muted), .toolbar (a row of controls above content), .section
 - text: .muted, .small, .big, .title, .strike (done items), .mono, .nowrap, .clip (one line, ellipsis)
-- buttons: .primary, .danger, .ghost, .small, .icon (a square icon button); .chips with .chip children (toggles; add .on)
+- buttons: .primary, .danger, .ghost, .small, .icon (a square icon button), .link (reads as a link: a title that opens a row); .chips with .chip children (toggles; add .on); .lead on the first block of a row keeps it 180px wide, so rows line up
 - badges: .badge plus .ok, .warn, .bad, .info, or style="--c: #hex" for any color
 - numbers: .kpis with .kpi children, each a .value and a .label
 - a board: .columns with .column children (kanban), cards inside
@@ -205,7 +207,7 @@ Write each view as a screen unless it needs something a screen cannot say. A scr
 
 Values: a string that starts with "=" is a JavaScript expression; anything else is taken as it is. An expression sees each "data" entry by name (its rows), each "let" by name (computed in order, after the data), state, set(changes) (merges into state and redraws), app (as in a view: app.insert, app.update, app.remove, app.call, app.open, app.toast, app.fmt, app.today(), app.me()...), lib (the helpers), ui, h, params (app.params), today, and, inside "each", the item by its name. A handler is an expression that gives a function ("=g => app.remove('guests', g.id)"); after it finishes the screen fetches its data again. Callbacks in a component's props are handlers too.
 
-data: name -> a SELECT (as for app.sql), or {"sql": "...", "params": {"name": value}} (values may be expressions, such as "=state.month": the data is fetched again when the state changes), or "=expression" for anything else (a Promise is awaited: "=app.call('totals', {month: state.month})", "=app.people()").
+data: name -> a SELECT (as for app.sql), or {"sql": "...", "params": {"name": value}} (values may be expressions, such as "=state.month": the data is fetched again when the state changes), or {"sql": "=expression giving the SELECT", "params": {...}} when the query itself depends on state, or "=expression" for anything else (a Promise is awaited: "=app.call('totals', {month: state.month})", "=app.people()").
 
 Blocks, in "body" and in every block that holds blocks:
 - a plain string (a paragraph); {"h": "text", "level": 1 | 2 | 3}; {"text": "...", "muted": true, "small": true}
@@ -215,7 +217,7 @@ Blocks, in "body" and in every block that holds blocks:
 - {"each": "=list", "as": "item", "body": [blocks], "empty": "text when the list is empty", "class": "list" | "grid" | "row"}
 - {"kpis": [{"label": "...", "value": "...", "hint": "..."}]}: big numbers
 - {"chips": "stateKey", "options": [...]}: picks one value of state (options: strings or {"value", "label"}); {"input": "stateKey", "type": "search" | "text" | "select" | "date" | "number" | "checkbox", "placeholder": "...", "options": [...], "label": "..."}: an input bound to state
-- {"button": "label", "do": "=handler", "class": "primary" | "ghost" | "danger" | "small", "confirm": "a question to confirm first"}
+- {"button": "label", "do": "=handler", "class": "primary" | "ghost" | "danger" | "small" | "link", "confirm": "a question to confirm first"}
 - {"form": "table", "fields": [{"name", "label", "type", "options", "required", "placeholder", "value"}], "submit": "label", "set": {"column": "=value"} (more columns to store, such as the project the form adds to), "edit": "=the row to edit, or null", "after": "=handler(storedRow)", "cancel": "=handler", "layout": "col"}: adds a row, or saves the row given in edit; it keeps what is typed across redraws. Field types: text (the default), textarea, number, date ("YYYY-MM-DD", for a keyword column), time, datetime (a timestamp column), select (options), checkbox (bool), tags (keyword[]), email, url, color, file (uploads it and stores its id), rating (1 to 5).
 - {"table": "=rows", "columns": [{"key": "column", "label": "...", "value": "=r => ...", "badge": true, "format": "date" | "datetime" | "ago" | "money" | "number" | "percent" | "stars" | "bool"}], "actions": [{"label": "...", "do": "=r => ...", "confirm": "...", "class": "..."}], "onRow": "=r => ...", "empty": "..."}
 - {"code": "async function render(root, ctx) { ... }"}: for a part the blocks cannot say, JavaScript as in a view (h, svg, app, ui, lib), drawn again whenever the screen redraws; ctx holds state, set, refresh() and the data and lets by name.
@@ -234,21 +236,36 @@ const STATEMENT_PLAN = `
 - views: a screen view has a code block of its slug holding its CREATE SCREEN statement, and no "screen" in its plan entry (a mostly custom screen may instead carry a JSON "screen" in its plan entry, with no code block). A code view has a code block of its slug with its JavaScript.
 - To change a screen the app has, give "patch" in its plan entry instead of a statement: JSON Patch operations on the screen as the app shows it (as JSON), with the paths shown there: {"op": "add" | "replace" | "remove" | "move" | "copy", "path": "/body/3", "value": ...} ("from" for move and copy; "/body/2/columns/-" adds at the end of a list; an add at /body/3 puts the block before the one there). A patch is far shorter: use it whenever most of the screen stays; write a new CREATE SCREEN statement when most of it changes.`;
 
-export const SYSTEM = !SCREENS ? BASE_SYSTEM : STATEMENTS
+// Rules (engine/rules.mjs): functions and triggers written as data in the
+// plan, run by the engine with no writer and no sandbox. Off with
+// STRATA_APPS_RULES=off.
+export const RULES = SCREENS && process.env.STRATA_APPS_RULES !== 'off';
+// The model for plans, screens and changes (idea 8: screens are tightly
+// constrained, so a faster model may write them as well); the writers of code
+// views, functions, components and helpers keep MODEL.
+export const SCREEN_MODEL = (SCREENS && process.env.STRATA_APPS_SCREEN_MODEL) || MODEL;
+const KEEP_LOGIC = 'Keep logic in views when it is simple and only one view needs it.';
+// Tests as data (engine/checks.mjs), run when a version is built. Off with
+// STRATA_APPS_TESTS=off.
+export const TESTS = SCREENS && process.env.STRATA_APPS_TESTS !== 'off';
+const withRules = (s) => (RULES || TESTS ? s.replace(KEEP_LOGIC, [KEEP_LOGIC, RULES ? RULES_DOC : '', TESTS ? TESTS_DOC : ''].filter(Boolean).join('\n\n')) : s);
+
+export const SYSTEM = withRules(!SCREENS ? BASE_SYSTEM : STATEMENTS
   ? BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n${patternsDoc()}\n\n${STATEMENT_DOC}\n\n# Components (shared by every app)`)
     .replace('- An app has one to five views.', `${STATEMENT_PLAN.trim()}\n- An app has one to five views.`)
     .replace('one <code slug="...">...</code> block for each view and function you add or rewrite', 'one <code slug="...">...</code> block for each view and function you add or rewrite (a screen view\'s block holds its CREATE SCREEN statement)')
   : BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n${patternsDoc()}\n\n# Components (shared by every app)`)
     .replace('"views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1}],', '"views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1, "screen": {"data": {}, "body": []}}],')
     .replace('- An app has one to five views.', `${SCREEN_PLAN.trim()}\n- An app has one to five views.`)
-    .replace('one <code slug="...">...</code> block for each view and function you add or rewrite', 'one <code slug="...">...</code> block for each code view and function you add or rewrite (a screen view has its screen in the plan instead)');
+    .replace('one <code slug="...">...</code> block for each view and function you add or rewrite', 'one <code slug="...">...</code> block for each code view and function you add or rewrite (a screen view has its screen in the plan instead)'));
 
 // A plan's screens made ready to check: statements compiled, patches applied
 // to the screens the app has, patterns expanded, and each screen put in the
 // code of its view (as JSON). Returns problems.
 export function prepareScreens(plan, code, view) {
-  const problems = [...compileStatements(plan, code), ...patchScreens(plan, view), ...expandPlan(plan)];
+  const problems = [...compileStatements(plan, code), ...(SCREENS ? editCode(plan, code, view) : []), ...patchScreens(plan, view), ...expandPlan(plan)];
   screensToCode(plan, code);
+  rulesToCode(plan, code);
   return problems;
 }
 
@@ -338,6 +355,40 @@ export function applyPatch(doc, ops) {
   return out;
 }
 
+// Small changes to code the app has (a code view or a JavaScript function):
+// "edits": [{"old": exact text, "new": its replacement}], each old found once.
+export function editCode(plan, code, view) {
+  const problems = [];
+  for (const [kind, list, have] of [['view', plan?.views, view.views], ['function', plan?.functions, view.functions]]) {
+    for (const item of list || []) {
+      if (!item || item.edits === undefined) continue;
+      const cur = have.find((x) => x.slug === item.slug);
+      const where = `${kind} ${item.slug}`;
+      if (!cur || (kind === 'view' && cur.spec?.screen) || (kind === 'function' && cur.spec?.rule)) problems.push(`${where}: "edits" change the code of a ${kind} the app has in JavaScript${kind === 'view' ? '; a screen takes "patch"' : '; a rule is given whole'}`);
+      else if (code[item.slug] !== undefined) problems.push(`${where}: give "edits" or a code block, not both`);
+      else if (!Array.isArray(item.edits) || !item.edits.length) problems.push(`${where}: "edits" is a list of {"old": "...", "new": "..."}`);
+      else {
+        let src = cur.code;
+        for (const [i, e] of item.edits.entries()) {
+          const old = e && typeof e.old === 'string' ? e.old : '';
+          const n = old ? src.split(old).length - 1 : 0;
+          if (n !== 1) { problems.push(`${where}: edits[${i}].old is found ${n} times in its code; give text copied exactly from it that occurs once (with a line around it)`); src = null; break; }
+          src = src.replace(old, () => String(e.new ?? ''));
+        }
+        if (src !== null) {
+          code[item.slug] = src;
+          item.edited = item.edits.length;
+          for (const k of ['title', 'description']) if (item[k] === undefined) item[k] = cur[k];
+          if (kind === 'view' && item.order === undefined) item.order = cur.spec.order;
+          if (kind === 'function' && item.on === undefined) item.on = cur.spec.on || undefined;
+        }
+      }
+      delete item.edits;
+    }
+  }
+  return problems;
+}
+
 // A plan's patches, applied to the screens the app has: each becomes the
 // entry's whole screen. Returns problems.
 export function patchScreens(plan, view) {
@@ -423,6 +474,20 @@ export function screensToCode(plan, code) {
     }
     if (v.screen && typeof v.screen === 'object') code[v.slug] = JSON.stringify(v.screen, null, 1);
     else delete v.screen;
+  }
+  return code;
+}
+
+// A plan's rules become the code of their functions (JSON text); a function
+// whose code block holds a rule as JSON becomes a rule.
+export function rulesToCode(plan, code) {
+  for (const f of plan?.functions || []) {
+    if (!f) continue;
+    if (!(f.rule && typeof f.rule === 'object') && typeof code[f.slug] === 'string' && code[f.slug].trim().startsWith('{')) {
+      try { const r = JSON.parse(code[f.slug]); if (r && (r.query !== undefined || r.steps !== undefined)) f.rule = r; } catch { /* checked as code */ }
+    }
+    if (f.rule && typeof f.rule === 'object') code[f.slug] = JSON.stringify(f.rule, null, 1);
+    else delete f.rule;
   }
   return code;
 }
@@ -578,9 +643,9 @@ export async function buildContext(engine, appId, request) {
     parts.push(`## Tables\n${tables.join('\n') || '(none)'}`);
     const views = view.views.slice().sort((a, b) => (a.spec.order ?? 99) - (b.spec.order ?? 99))
       .map((v) => `<view slug="${v.slug}" title="${v.title}" order="${v.spec.order ?? ''}" id="${v.id}"${v.spec.screen ? ' format="screen"' : ''}>\n${v.spec.screen ? screenLines(v.code) : v.code}\n</view>`);
-    parts.push(`## Views\n${views.some((v) => v.includes('format="screen"')) ? 'A view with format="screen" is a screen, shown one part per line after its path. To change it, give "patch" (operations on those paths) or its whole "screen" in its plan entry; to turn it into a code view, give a code block and no "screen".\n\n' : ''}${views.join('\n\n') || '(none)'}`);
-    const fns = view.functions.map((f) => `<function slug="${f.slug}" on='${JSON.stringify(f.spec.on || null)}' id="${f.id}">\n${f.description ? `// ${f.description}\n` : ''}${f.code}\n</function>`);
-    parts.push(`## Functions\n${fns.join('\n\n') || '(none)'}`);
+    parts.push(`## Views\n${views.some((v) => v.includes('format="screen"')) ? 'A view with format="screen" is a screen, shown one part per line after its path. To change it, give "patch" (operations on those paths) or its whole "screen" in its plan entry; to turn it into a code view, give a code block and no "screen".\n\n' : ''}${SCREENS && view.views.some((v) => !v.spec.screen) ? 'To change a view or function written in JavaScript a little (a color, a label, a line of logic), give "edits" in its plan entry instead of a code block: [{"old": "text copied exactly from its code, occurring once", "new": "its replacement"}]. Give a whole code block only when most of it changes.\n\n' : ''}${views.join('\n\n') || '(none)'}`);
+    const fns = view.functions.map((f) => `<function slug="${f.slug}" on='${JSON.stringify(f.spec.on || null)}' id="${f.id}"${f.spec.rule ? ' format="rule"' : ''}>\n${f.description && !f.spec.rule ? `// ${f.description}\n` : ''}${f.code}\n</function>`);
+    parts.push(`## Functions\n${view.functions.some((f) => f.spec.rule) ? 'A function with format="rule" is a rule (JSON). To change it, give its whole "rule" in its plan entry; to turn it into JavaScript, give a code block and no "rule".\n\n' : ''}${fns.join('\n\n') || '(none)'}`);
     // Code only for the pieces this app wrote: the others (built-in, or from
     // another app) are used by their props, and their code is long.
     const mine = view.shared.map((c) => {
@@ -794,7 +859,7 @@ export async function validate(plan, code, view, library, shared = new Map()) {
       const src = code[item.slug];
       if (!src || !src.trim()) { problems.push(`${kind} ${item.slug} has no <code slug="${item.slug}"> block`); continue; }
       if (kind === 'view' && /^\s*CREATE\s+SCREEN\b/i.test(src)) continue; // its problems came from compiling it
-      const p = kind === 'view' ? checkView(src) : await checkFunction(src);
+      const p = kind === 'view' ? checkView(src) : item.rule ? checkRule(item.rule, columnsFor(view, plan)) : await checkFunction(src);
       for (const x of p) problems.push(`${kind} ${item.slug}: ${x}`);
       if (kind === 'function' && item.on) {
         const on = item.on;
@@ -804,6 +869,7 @@ export async function validate(plan, code, view, library, shared = new Map()) {
       }
     }
   }
+  if (TESTS) problems.push(...checkTests(plan.tests, columnsFor(view, plan)));
   const known = new Set([...shared.keys(), ...view.shared.map((c) => `${c.kind}/${c.slug}`)]);
   const writtenCode = [];
   for (const [kind, { ns, plural }] of Object.entries(SHARED)) {
@@ -888,7 +954,7 @@ Answer with the <plan> alone this time, and no code blocks${STATEMENTS ? ' (but 
 - Give each one "uses": the shared components and helpers its code calls, as "ui:name" and "lib:name", new ones and ones from the library.
 - Give components "props" and helpers "api" exactly as their code will take them, with every argument and what each function returns.
 - Keep the scope to what the request asks: the fewest pieces, each the smallest that does its job well. Content gets an outline of what it covers, sized to the request (a short course is 4 to 6 lessons, a quiz 5 to 8 questions, unless the person asked for more).
-- Keep "summary", "seed" and "suggestions" as always.${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}`;
+- Keep "summary", "seed" and "suggestions" as always.${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}${RULES ? '\n- A function that is a rule has no writer either: give its whole "rule" in its plan entry now, complete. Only functions written in JavaScript get a writer.' : ''}`;
 
 const pieceStep = (what, slug) => `# This step: write ${what}
 
@@ -898,7 +964,7 @@ Write the code of ${what} alone, as the plan above and its spec say: what the sp
 function planPieces(plan) {
   const out = [];
   for (const v of plan.views || []) if (!v.screen) out.push({ what: `the view ${v.slug}`, label: `view ${v.slug}`, slug: v.slug, item: v });
-  for (const f of plan.functions || []) out.push({ what: `the function ${f.slug}`, label: `function ${f.slug}`, slug: f.slug, item: f });
+  for (const f of plan.functions || []) if (!f.rule) out.push({ what: `the function ${f.slug}`, label: `function ${f.slug}`, slug: f.slug, item: f });
   for (const [kind, { ns, plural }] of Object.entries(SHARED)) {
     for (const c of plan[plural] || []) out.push({ what: `the shared ${kind} ${c.name}`, label: `${kind} ${c.name}`, slug: `${ns}:${c.name}`, item: c });
   }
@@ -922,9 +988,9 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   let decidedAt = 0;
   let planPrompt = `${prompt}\n\n${PLAN_STEP}`;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    progress(attempt === 1 ? `Asking the model (${MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`);
+    progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to plan the first version` : `Asking the model again to fix the plan: ${problems.slice(0, 3).join('; ')}`);
     const span = tr.start('plan', attempt === 1 ? 'The model plans the first version' : 'The model plans again, to fix the plan');
-    const answer = await ask({ system, prompt: planPrompt, onWrite: tee(writing(progress, 'The model'), previewer(view, progress)) });
+    const answer = await ask({ system, prompt: planPrompt, model: SCREEN_MODEL, onWrite: tee(writing(progress, 'The model'), previewer(view, progress)) });
     tr.call(span, answer, system.length + planPrompt.length);
     cost += answer.cost || 0;
     await tr.span('check', 'Check the plan', async (c) => {
@@ -944,7 +1010,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
   }
   if (problems.length) return { plan, code: {}, cost, problems, decidedAt };
   const pieces = planPieces(plan);
-  const code = screensToCode(plan, {});
+  const code = rulesToCode(plan, screensToCode(plan, {}));
   const planText = `# The plan, decided\n\n<plan>\n${JSON.stringify(plan, null, 1)}\n</plan>`;
   const write = async (pieces, notes = new Map()) => {
     const seen = new Map();
@@ -1023,9 +1089,9 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   const split = SPLIT === 'always' || (SPLIT === 'first' && !view.comp.n);
   if (split) ({ plan, code, cost, problems, decidedAt } = await buildSplit(context, progress, tr));
   for (let attempt = 1; attempt <= 2 && !split; attempt++) {
-    progress(attempt === 1 ? `Asking the model (${MODEL}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model again to fix: ${problems.slice(0, 3).join('; ')}`);
+    progress(attempt === 1 ? `Asking the model (${SCREEN_MODEL}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model again to fix: ${problems.slice(0, 3).join('; ')}`);
     const span = tr.start('model', attempt === 1 ? (view.comp.n ? 'The model plans and writes the change' : 'The model plans and writes the first version') : 'The model answers again, to fix problems');
-    answer = await ask({ system, prompt: attemptPrompt, onWrite: tee(writing(progress), previewer(view, progress)) });
+    answer = await ask({ system, prompt: attemptPrompt, model: SCREEN_MODEL, onWrite: tee(writing(progress), previewer(view, progress)) });
     tr.call(span, answer, system.length + attemptPrompt.length);
     cost += answer.cost || 0;
     progress(`The model answered in ${Math.round(answer.ms / 1000)} s`);
@@ -1109,7 +1175,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   }
   for (const [kind, list] of [['view', plan.views], ['function', plan.functions]]) {
     for (const item of list || []) {
-      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true } : {}) } : { on: item.on || null };
+      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true } : {}) } : { on: item.on || null, ...(item.rule ? { rule: true } : {}) };
       const id = await store.putCapability({ app: appId, slug: item.slug, kind, title: item.title || item.slug, description: item.description || '',
         code: code[item.slug], spec, forked_from: item.forked_from || null, author: request.source === 'repair' ? 'repair' : 'forge' });
       caps.set(`${kind}/${item.slug}`, id);
@@ -1159,6 +1225,18 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   tr.end(storing, { written: written.length });
   tr.decisions.push(...planDecisions({ plan, view, library, shared, pinned, written: writtenShared, code, at: decidedAt }));
   progress(`Version ${n} is live: ${written.length} capabilit${written.length === 1 ? 'y' : 'ies'} written`);
+  // The app's tests run on the tables this version creates, while they are
+  // empty; a failure goes to the repair like an error a person saw.
+  const fresh = new Set((plan.tables || []).map((t) => t.name).filter((n) => !view.tables.some((t) => t.spec.name === n)));
+  if (TESTS && Array.isArray(plan.tests) && plan.tests.length && fresh.size) {
+    const testing = tr.start('check', "Run the app's tests");
+    const results = await runTests(engine, appId, plan.tests.slice(0, 5), fresh).catch((e) => [{ name: 'tests', ok: false, problem: e.message }]);
+    const ran = results.filter((r) => r.ok !== null);
+    const failed = results.filter((r) => r.ok === false);
+    progress(failed.length ? `Tests: ${ran.length - failed.length} of ${ran.length} pass; ${failed.map((r) => `"${r.name}": ${r.problem}`).join('; ').slice(0, 400)}` : `Tests: ${ran.length} of ${ran.length} pass${ran.length < results.length ? ` (${results.length - ran.length} skipped)` : ''}`);
+    tr.end(testing, { tests: results });
+    for (const r of failed) if (r.cap) engine.reportError(appId, r.cap, `test "${r.name}" fails: ${r.problem}`, 'in a test the build ran');
+  }
   // Example rows go in once the tables are part of the live version.
   if (!view.comp.n && plan.seed) {
     const seeding = tr.start('strata', 'Add example rows');
@@ -1171,6 +1249,12 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     if (added) progress(`Added ${added} example rows`);
     tr.end(seeding, { rows: added });
   }
+  // Every view is opened in a headless browser, when one is installed; an
+  // error there reaches the engine as a person's would, and is repaired.
+  openViews(engine.baseUrl, appId).then((r) => {
+    const bad = r.views.filter((v) => v.errors.length);
+    if (r.ran) engine.log(`[${appId}] opened ${r.views.length} view${r.views.length === 1 ? '' : 's'} after version ${n}${bad.length ? `: errors in ${bad.map((v) => `${v.tab || 'the app'} (${v.errors[0]})`).join('; ')}` : ', no errors'}`);
+  }).catch((e) => engine.log(`[${appId}] opening the views: ${e.message}`));
   await offerNewVersions(engine, appId, newVersions, progress);
   const suggestions = (plan.suggestions || []).filter((s) => s && s.text).slice(0, 3)
     .map((s) => ({ text: String(s.text).slice(0, 300), why: String(s.why || '').slice(0, 300), source: 'forge' }));

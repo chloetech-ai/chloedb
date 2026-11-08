@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Engine } from './engine.mjs';
-import { forge, suggestFromUse, useSharedVersion, editScreen } from './forge.mjs';
+import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL } from './forge.mjs';
 import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
@@ -48,6 +48,8 @@ if (!strataUrl) {
 }
 const db = new Strata(strataUrl, process.env.STRATA_TOKEN);
 const engine = new Engine(db, { log });
+// Where the build opens the views it made (engine/checks.mjs).
+engine.baseUrl = `http://127.0.0.1:${PORT}`;
 await engine.init();
 await seedLibrary(engine.store, process.env.STRATA_APPS_LIBRARY || path.join(ROOT, 'library'), log);
 const services = new Services(engine, { filesDir: path.join(DATA, 'files'), log });
@@ -461,5 +463,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  log(`strata-apps on http://${HOST}:${PORT}/ (Strata at ${strataUrl}, model ${MODEL})`);
+  log(`strata-apps on http://${HOST}:${PORT}/ (Strata at ${strataUrl}, model ${MODEL}${SCREEN_MODEL !== MODEL ? `, screens ${SCREEN_MODEL}` : ''})`);
 });

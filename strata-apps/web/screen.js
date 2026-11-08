@@ -79,7 +79,13 @@
         try {
           if (isExpr(q)) return await val(q, s, where);
           const def = typeof q === 'string' ? { sql: q } : q || {};
-          if (isExpr(def.sql)) return await val(def.sql, s, where);
+          // An expression for sql gives the SELECT to run (one that depends on
+          // state), or the rows themselves.
+          if (isExpr(def.sql)) {
+            const sql = await val(def.sql, s, where);
+            if (typeof sql !== 'string') return sql;
+            return await app.sql(sql, val(def.params || {}, s, `${where}.params`));
+          }
           return await app.sql(def.sql, val(def.params || {}, s, `${where}.params`));
         } catch (e) { report(fail(where, e)); return []; }
       }));
