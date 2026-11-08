@@ -157,8 +157,8 @@ def t_discovery():
 A = os.path.join(HERE, "aol")
 
 
-def t_aol(m):
-    e, b = load(A, "eval.json"), load(A, "bytes.json")
+def t_aol(m, d=A):
+    e, b = load(d, "eval.json"), load(d, "bytes.json")
     if not e:
         return "(not run)"
     rows = []
@@ -170,27 +170,29 @@ def t_aol(m):
                   "top 10 proved, pairs", "top 10 proved or cached (100K answers)", "wrong proofs"], rows)
 
 
-def t_aol_cache():
-    e, p = load(A, "eval.json"), load(A, "prep.json")
+def t_aol_cache(d=A):
+    e, p = load(d, "eval.json"), load(d, "prep.json")
     if not e:
         return "(not run)"
     any_n = next(iter(e["methods"]["cov"].values()))["10"]["cache_ids"]
     q = load(S, "answer_cache.json")
     per = q["mean_query_bytes"] + 4 * q["k"] if q else 61
     rows = [[f"{int(c):,}", f"{int(c) * per / 1e6:.1f}", pct(v)] for c, v in any_n.items()]
-    return table(["answers cached", "MB (ids only)", "test search volume answered"], rows) + \
-        f"\n\n{pct(p['test_volume_seen_in_training'])} of test searches repeat a string searched in training at all."
+    out = table(["answers cached", "MB (ids only)", "test search volume answered"], rows)
+    if "test_volume_seen_in_training" in p:
+        out += f"\n\n{pct(p['test_volume_seen_in_training'])} of test searches repeat a string searched in training at all."
+    return out
 
 
 PAIR_BYTES = 9  # two 4-byte term ids and a 1-byte bound, unpacked
 
 
-def t_aol_budget():
-    """The best ways to spend 50 MB: a slice, a result cache, and pair
+def budget(d):
+    """The ways to spend 50 MB, best first: a slice, a result cache, and pair
     bounds for every training pair (counted unpacked) when the proof uses them."""
-    e, b = load(A, "eval.json"), load(A, "bytes.json")
+    e, b = load(d, "eval.json"), load(d, "bytes.json")
     if not e or not b:
-        return "(not run)"
+        return None
     q = load(S, "answer_cache.json")
     per = q["mean_query_bytes"] + 4 * q["k"]
     pairs_mb = e["train_pairs"] * PAIR_BYTES / 1e6
@@ -204,31 +206,124 @@ def t_aol_budget():
                                           ("cache + proof", v["10"]["proved_or_cache_held"][c], pairs_mb)):
                     tot = mb + cmb + extra
                     if tot <= 50:
-                        rows.append((share, [m, docs(n), f"{mb:.1f}", f"{int(c):,}", f"{cmb:.1f}", f"{extra:.1f}" if extra else "", f"{tot:.1f}", how, pct(share)]))
+                        rows.append((share, [m, docs(n), f"{mb:.1f}", f"{int(c):,}", f"{cmb:.1f}", f"{extra:.1f}" if extra else "", f"{tot:.1f}", how, pct(share)],
+                                     (m, n, how)))
     rows.sort(key=lambda r: -r[0])
+    return rows, pairs_mb, e
+
+
+def t_aol_budget(d=A):
+    got = budget(d)
+    if not got:
+        return "(not run)"
+    rows, pairs_mb, e = got
     return table(["slice", "passages", "slice MB", "answers cached", "cache MB", "pair bounds MB", "MB on the device", "answered by",
-                  "test volume answered exactly on the device"], [r for _, r in rows[:8]]) + \
+                  "test volume answered exactly on the device"], [r for _, r, _ in rows[:8]]) + \
         f"\n\nPair bounds are counted for all {e['train_pairs']:,} training pairs at {PAIR_BYTES} bytes each ({pairs_mb:.1f} MB); a slice needs only the pairs of words it holds, so this is an upper bound."
 
 
-def t_aol_bands():
-    e = load(A, "eval.json")
+def zipf_ranks(p):
+    """For Zipf traffic, the rank range whose expected training searches
+    fall in each band (counts are T * r^-s / H, rounded)."""
+    s, n = p["zipf_s"], p["strings"]
+    t = p.get("train_searches") or load(A, "prep.json")["train_searches"]
+    h = sum(r ** -s for r in range(1, n + 1))
+    def last(lo):  # the last rank expected to be searched lo times or more
+        r = int((t / (h * (lo - 0.5))) ** (1 / s))
+        while r > 0 and round(t * r ** -s / h) < lo:
+            r -= 1
+        while round(t * (r + 1) ** -s / h) >= lo:
+            r += 1
+        return min(r, n)
+    return {lo: last(lo) for lo in (1, 10, 100, 1000)}
+
+
+def t_aol_bands(d=A):
+    e, p = load(d, "eval.json"), load(d, "prep.json")
     if not e:
         return "(not run)"
+    ranks = zipf_ranks(p) if "zipf_s" in p else None
     rows = []
     for n in ("100000", "400000"):
         for lbl, v in e["methods"]["cov"][n]["10"]["by_training_searches"].items():
             lo, hi = lbl.split("-")
+            if ranks and lo == "0":
+                continue  # no Zipf string is new
             name = "new string" if lo == "0" else (f"{int(lo):,} to {int(hi):,}" if hi else f"{int(lo):,} or more")
+            if ranks:
+                first = ranks[int(hi) + 1] + 1 if hi else 1
+                name += f" (ranks {first:,} to {ranks[int(lo)]:,})"
             rows.append([docs(n), name, pct(v["volume"]), pct(v["held"]), pct(v["proved_pairs"])])
     return table(["passages", "training searches of the string", "share of test volume", "top 10 held", "top 10 proved, pairs"], rows)
+
+
+Z = os.path.join(HERE, "zipf")
+Z086 = os.path.join(HERE, "zipf086")
+
+
+def t_zipf_summary():
+    """One row per traffic shape: how concentrated it is, and what a 33 MB
+    slice, a 10,000-answer cache and the best mix within 50 MB answer."""
+    rows = []
+    for name, d in (("AOL log, measured", A), ("Zipf s = 0.86 over 1M strings", Z086), ("Zipf s = 1 over 1M strings", Z)):
+        e, p, got = load(d, "eval.json"), load(d, "prep.json"), budget(d)
+        if not e or not got:
+            continue
+        v = e["methods"]["cov"]["100000"]["10"]
+        top = load(Z, "prep.json")["aol_top_share_of_training"]["10000"] if d == A else p["top_share"]["10000"]
+        new = v["by_training_searches"]["0-0"]["volume"]
+        best = got[0][0][:2]
+        rows.append([name, pct(top), pct(new), pct(v["held"]), pct(v["proved_pairs"]), pct(v["cache_ids"]["10000"]),
+                     f"{pct(best[0])} ({best[1][7]}, {best[1][6]} MB)", "pass" if best[0] >= 0.4 else "fail"])
+    return table(["traffic", "top 10,000 strings' share of searches", "test volume on new strings", "100K slice: top 10 held",
+                  "100K slice: top 10 proved, pairs", "10,000 cached answers (0.6 MB)", "best exact answer within 50 MB", "Gate A (40%)"], rows)
+
+
+def zipf_heads(sv, n, at=(10_000, 1_000_000)):
+    """Shares of searches the top k strings carry under Zipf s over n strings."""
+    tot, cut = 0.0, {}
+    for r in range(1, n + 1):
+        tot += r ** -sv
+        if r in at:
+            cut[r] = tot
+    return {k: cut[k] / tot for k in at}
+
+
+def t_zipf_tail():
+    """Zipf over as many strings as AOL's training had (8.7M), of which only
+    the top 1M were measured: the top 1M carry their share of searches with
+    the rates measured over 1M (the law is the same once cut at 1M), and the
+    rest are counted at the rates AOL's new strings were measured at (held,
+    and proved with pairs; never cached)."""
+    a, ap = load(A, "eval.json"), load(A, "prep.json")
+    if not a:
+        return "(not run)"
+    universe = ap["train_distinct"]
+    rows = []
+    for d in (Z086, Z):
+        e, p, got = load(d, "eval.json"), load(d, "prep.json"), budget(d)
+        if not e or not got:
+            continue
+        head = zipf_heads(p["zipf_s"], universe)
+        f = head[1_000_000]
+        new = lambda m, n: a["methods"][m][n]["10"]["by_training_searches"]["0-0"]
+        z, t = e["methods"]["cov"]["100000"]["10"], new("cov", "100000")
+        best = max((f * sh + (1 - f) * (new(m, n)["proved_pairs"] if how == "cache + proof" else 0.0), r)
+                   for sh, r, (m, n, how) in got[0])
+        rows.append([f"Zipf s = {p['zipf_s']:g} over {universe / 1e6:.1f}M strings", pct(head[10_000]), pct(f), pct(f * z["held"] + (1 - f) * t["held"]),
+                     pct(f * z["proved_pairs"] + (1 - f) * t["proved_pairs"]), pct(f * z["cache_ids"]["10000"]),
+                     f"{pct(best[0])} ({best[1][7]}, {best[1][6]} MB)", "pass" if best[0] >= 0.4 else "fail"])
+    return table(["traffic", "top 10,000 strings' share of searches", "top 1,000,000 strings' share", "100K slice: top 10 held",
+                  "100K slice: top 10 proved, pairs", "10,000 cached answers (0.6 MB)", "best exact answer within 50 MB", "Gate A (40%)"], rows)
 
 
 TABLES = {"slices-cov": lambda: t_slices("cov"), "slices-pop": lambda: t_slices("pop"), "overlap": t_overlap,
           "lengths": t_lengths, "pairs": t_pairs, "confidence": t_confidence, "recs": t_recs, "churn": t_churn,
           "pack-bytes": t_bytes, "discovery": t_discovery,
           "aol-cov": lambda: t_aol("cov"), "aol-pop": lambda: t_aol("pop"), "aol-cache": t_aol_cache, "aol-budget": t_aol_budget,
-          "aol-bands": t_aol_bands}
+          "aol-bands": t_aol_bands, "zipf-summary": t_zipf_summary, "zipf-cov": lambda: t_aol("cov", Z), "zipf-pop": lambda: t_aol("pop", Z),
+          "zipf-bands": lambda: t_aol_bands(Z), "zipf-cache": lambda: t_aol_cache(Z), "zipf-budget": lambda: t_aol_budget(Z),
+          "zipf-tail": t_zipf_tail}
 
 
 def main():

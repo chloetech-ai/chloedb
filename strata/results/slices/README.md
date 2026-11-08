@@ -5,11 +5,12 @@ https://claude.ai/artifact/14s2MaZu2wua3Q3NNvbL2E), run before building
 anything. A slice is part of the corpus shipped to a device, scored there
 with the cloud's statistics, plus enough to know when the device's answer
 is the cloud's. The question is how much traffic a slice of a given size
-answers alone, for search (ORCAS queries over MS MARCO) and for
+answers alone, for search (MS MARCO passages, searched by ORCAS's queries,
+by the AOL log's and by ideal Zipf traffic over AOL's strings) and for
 recommendations (Yambda-50M).
 
 Everything ran in one cloud container (Intel Xeon @ 2.30GHz, 4 cores,
-15 GB, Linux 6.18) on 2026-11-07. The numbers are shares of queries and
+15 GB, Linux 6.18) on 2026-11-07 and 08. The numbers are shares of queries and
 users and file sizes, which do not depend on the machine; no time here is a
 benchmark.
 
@@ -19,16 +20,30 @@ the device within 5% of the cloud's NDCG@10.
 
 ## Verdict
 
-- **Search fails Gate A on both logs, but by very different margins.**
-  - **Counted by search volume** (the AOL log, 21 million searches, run over
-    the same passages; [below](#search-weighted-by-volume-the-aol-log)): a
-    33 MB slice holds the whole cloud top 10 for 41.5% of test searches,
-    so a perfect proof would just pass. The real one, with pair bounds,
-    proves 22.6%. The best mix found within 50 MB, that slice and a cache
-    of the 100,000 most searched answers (38.6 MB), answers 27.6% exactly,
-    against the gate's 40%. The head is answered almost entirely (strings searched 100
-    times or more in training: 100% held, 78% to 91% proved); the 48% of
-    searches that are new strings almost never (0.6% proved).
+- **Search passes Gate A when the traffic's head is heavy, and fails on
+  AOL's.** The gate passes once the 10,000 most searched strings carry about
+  a third of all searches.
+  - **On ideal Zipf traffic** (the most searched query twice as often as
+    the second, three times the third; [below](#search-on-ideal-zipf-traffic)),
+    the top 10,000 of AOL's strings carry 68% of searches. A 33 MB slice
+    holds the whole cloud top 10 for 79.6% of them and proves 65.1% with
+    pair bounds. With a cache of the 100,000 most searched answers (38.5 MB
+    in all) the device answers 76.2% exactly. Even a 3.4 MB slice proves
+    51.6% with pair bounds (at most 12.8 MB more). Spread over a tail as long as AOL's (8.7 million strings), an
+    estimate from the measurements gives 66.3%. With AOL's own slope
+    (r^-0.86) it passes over 1 million strings (56.1%) and sits on the line
+    with AOL's tail (39.9%, estimated).
+  - **On the real AOL log** (21 million searches, run over the same
+    passages; [below](#search-weighted-by-volume-the-aol-log)), the top
+    10,000 strings carry only 22% of searches. The same 33 MB slice holds
+    the top 10 for 41.5% and proves 22.6%. The best mix within 50 MB (that
+    slice and the 100,000-answer cache, 38.6 MB) answers 27.6% exactly,
+    against the gate's 40%. The 48% of searches that are new strings are
+    almost never proved (0.6%).
+  - Band by band the two agree: strings searched 1,000 times or more are
+    held entirely and about 91% proved on both, strings searched 100 to
+    999 times held entirely and 75% to 78% proved. Only the share of
+    traffic in those bands differs (71% on Zipf, 22% on AOL).
   - **Counted by distinct strings** (ORCAS): at the same 33 MB the proof
     answers 0.2% to 0.4% of top 10s, or 0.5% to 1.2% with pair bounds, and
     the slice holds only 5% to 8% of them.
@@ -37,9 +52,10 @@ the device within 5% of the cloud's NDCG@10.
     per-word bounds is near every word's ceiling at once, so from two words
     on it proves far less than the slice holds.
   - For cost alone, a plain result cache does most of the work and needs no
-    slice and no proof: the top 10 ids of the 300,000 most searched
-    training strings (18 MB) answer 40.2% of AOL's test searches. Only
-    showing those results offline needs their passages on the device.
+    slice and no proof: the top 10 ids of the 10,000 most searched strings
+    (0.6 MB) answer 69.3% of Zipf searches, and those of the 300,000 most
+    searched (18 MB) 40.2% of AOL's. Only showing those results offline
+    needs their passages on the device.
 - **Recommendations pass.** Ranking only the user's own tracks, a 1,000
   track base pack and the meaning packs nearest the user's taste (5,000
   tracks, 1.9 MB), the device's NDCG@10 is 0.0828 against the same model's
@@ -53,9 +69,11 @@ the device within 5% of the cloud's NDCG@10.
 
 What this does not settle: AOL's traffic is web search from 2006, run over
 another corpus, and its head is mostly short navigational queries, which
-the proof handles best. An app's own search (a shop, a catalogue, a help
-centre) may concentrate more or less than this; its own log, or TripClick's
-health-search log (on request from the Trip Database), would say.
+the proof handles best. The Zipf runs keep AOL's strings and change only
+how often each is searched. Whether an app's own search (a shop, a
+catalogue, a help centre) has the heavy head or AOL's flatter one is the
+open question; its own log, or TripClick's health-search log (on request
+from the Trip Database), would say.
 
 ## Search: ORCAS queries over MS MARCO passages
 
@@ -363,6 +381,134 @@ it from strings searched before, and there a cached answer does the same
 job more cheaply. On new strings, the only place the proof could add what a
 cache cannot, it proves 0.6% of their volume at 33 MB (1.5% at 128 MB).
 
+## Search on ideal Zipf traffic
+
+AOL's head is flatter than search traffic is often taken to be: its 10,000
+most searched strings are 22.3% of its training searches, and its counts
+fall as about r^-0.86 with rank r. [`zipf.py`](zipf.py) asks what the same
+slices do when the traffic follows Zipf's law exactly, the most searched
+query twice as often as the second and three times as often as the third.
+It keeps AOL's 1,000,000 most searched training strings in AOL's order and
+gives rank r the weight r^-s: at s = 1 the top 10,000 strings are 68.0% of
+searches, and at s = 0.86, AOL's own slope over the same strings, 45.2%.
+Slices and the result cache are chosen from those weights, and the test is
+200,000 searches drawn from them (65,366 distinct strings at s = 1, 103,759
+at s = 0.86), answered by the same cloud top 10s as the AOL study
+([`zipf/prep.json`](zipf/prep.json), [`zipf086/prep.json`](zipf086/prep.json)).
+Everything else is `aol.py`'s.
+
+One row per traffic shape, `cov` slices, top 10:
+
+<!-- report:zipf-summary -->
+| traffic | top 10,000 strings' share of searches | test volume on new strings | 100K slice: top 10 held | 100K slice: top 10 proved, pairs | 10,000 cached answers (0.6 MB) | best exact answer within 50 MB | Gate A (40%) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| AOL log, measured | 22.3% | 48.0% | 41.5% | 22.6% | 22.6% | 27.6% (cache, 38.6 MB) | fail |
+| Zipf s = 0.86 over 1M strings | 45.2% | 0.0% | 62.9% | 45.5% | 46.5% | 56.1% (cache, 38.6 MB) | pass |
+| Zipf s = 1 over 1M strings | 68.0% | 0.0% | 79.6% | 65.1% | 69.3% | 76.2% (cache, 38.5 MB) | pass |
+<!-- /report -->
+
+The rest of this section is s = 1. Query coverage (`cov`,
+[`zipf/eval.json`](zipf/eval.json)):
+
+<!-- report:zipf-cov -->
+| passages | file MB | top 1 held | top 1 proved, words | top 1 proved, pairs | top 10 held | top 10 proved, words | top 10 proved, pairs | top 10 proved or cached (100K answers) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10K | 3.4 | 64.9% | 35.4% | 56.5% | 62.4% | 32.7% | 51.6% | 60.5% | 0 |
+| 30K | 9.9 | 73.8% | 39.1% | 64.0% | 70.8% | 35.6% | 58.0% | 68.6% | 0 |
+| 100K | 32.4 | 83.2% | 42.7% | 71.7% | 79.6% | 38.8% | 65.1% | 76.9% | 0 |
+| 200K | 64.5 | 88.3% | 44.3% | 75.9% | 84.8% | 40.0% | 68.5% | 81.4% | 0 |
+| 400K | 128.5 | 93.0% | 46.0% | 79.8% | 90.0% | 41.2% | 71.9% | 85.5% | 0 |
+<!-- /report -->
+
+Popular passages (`pop`):
+
+<!-- report:zipf-pop -->
+| passages | file MB | top 1 held | top 1 proved, words | top 1 proved, pairs | top 10 held | top 10 proved, words | top 10 proved, pairs | top 10 proved or cached (100K answers) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10K | 3.4 | 66.5% | 35.5% | 57.5% | 60.6% | 32.1% | 50.1% | 58.6% | 0 |
+| 30K | 9.8 | 75.4% | 39.2% | 64.9% | 68.6% | 35.3% | 56.4% | 66.4% | 0 |
+| 100K | 31.9 | 84.8% | 42.7% | 72.5% | 77.3% | 38.2% | 63.5% | 74.6% | 0 |
+| 200K | 63.4 | 89.7% | 44.5% | 76.5% | 82.5% | 39.6% | 67.2% | 79.4% | 0 |
+| 400K | 126.4 | 94.1% | 46.0% | 80.2% | 88.0% | 40.8% | 70.8% | 84.1% | 0 |
+<!-- /report -->
+
+By how often the string is expected to be searched in a training period as
+long as AOL's (`cov`, top 10), with the ranks that band covers:
+
+<!-- report:zipf-bands -->
+| passages | training searches of the string | share of test volume | top 10 held | top 10 proved, pairs |
+|---|---:|---:|---:|---:|
+| 100K | 1 to 9 (ranks 128,914 to 1,000,000) | 13.7% | 21.6% | 3.7% |
+| 100K | 10 to 99 (ranks 12,309 to 128,913) | 15.7% | 38.4% | 17.0% |
+| 100K | 100 to 999 (ranks 1,226 to 12,308) | 15.6% | 100.0% | 74.5% |
+| 100K | 1,000 or more (ranks 1 to 1,225) | 55.1% | 100.0% | 91.3% |
+| 400K | 1 to 9 (ranks 128,914 to 1,000,000) | 13.7% | 40.2% | 11.6% |
+| 400K | 10 to 99 (ranks 12,309 to 128,913) | 15.7% | 88.2% | 53.4% |
+| 400K | 100 to 999 (ranks 1,226 to 12,308) | 15.6% | 100.0% | 74.7% |
+| 400K | 1,000 or more (ranks 1 to 1,225) | 55.1% | 100.0% | 91.3% |
+<!-- /report -->
+
+A result cache of ids alone:
+
+<!-- report:zipf-cache -->
+| answers cached | MB (ids only) | test search volume answered |
+|---|---:|---:|
+| 10,000 | 0.6 | 69.3% |
+| 30,000 | 1.8 | 76.6% |
+| 100,000 | 6.1 | 84.6% |
+| 300,000 | 18.2 | 92.0% |
+| 1,000,000 | 60.8 | 100.0% |
+<!-- /report -->
+
+The best ways found to spend 50 MB on exact answers with the passages on
+the device:
+
+<!-- report:zipf-budget -->
+| slice | passages | slice MB | answers cached | cache MB | pair bounds MB | MB on the device | answered by | test volume answered exactly on the device |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| cov | 100K | 32.4 | 100,000 | 6.1 |  | 38.5 | cache | 76.2% |
+| cov | 100K | 32.4 | 30,000 | 1.8 | 12.8 | 47.1 | cache + proof | 75.3% |
+| pop | 100K | 31.9 | 100,000 | 6.1 |  | 38.0 | cache | 74.1% |
+| cov | 100K | 32.4 | 30,000 | 1.8 |  | 34.3 | cache | 73.8% |
+| cov | 100K | 32.4 | 10,000 | 0.6 | 12.8 | 45.8 | cache + proof | 73.4% |
+| pop | 100K | 31.9 | 30,000 | 1.8 | 12.8 | 46.5 | cache + proof | 73.2% |
+| pop | 100K | 31.9 | 30,000 | 1.8 |  | 33.7 | cache | 72.1% |
+| pop | 100K | 31.9 | 10,000 | 0.6 | 12.8 | 45.3 | cache + proof | 71.9% |
+
+Pair bounds are counted for all 1,422,227 training pairs at 9 bytes each (12.8 MB); a slice needs only the pairs of words it holds, so this is an upper bound.
+<!-- /report -->
+
+Every test string here is among the 1,000,000, so none is new, where 48% of
+AOL's test searches were. A real log has a long tail: AOL's training had
+8,697,441 distinct strings. Spreading the same law over that many strings,
+the top 1,000,000 are measured above and every other string is counted at
+the rates measured for AOL's new strings. This is an estimate computed from
+the two measurements, not a run:
+
+<!-- report:zipf-tail -->
+| traffic | top 10,000 strings' share of searches | top 1,000,000 strings' share | 100K slice: top 10 held | 100K slice: top 10 proved, pairs | 10,000 cached answers (0.6 MB) | best exact answer within 50 MB | Gate A (40%) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Zipf s = 0.86 over 8.7M strings | 32.1% | 71.0% | 50.6% | 32.5% | 33.0% | 39.9% (cache, 38.6 MB) | fail |
+| Zipf s = 1 over 8.7M strings | 59.1% | 86.9% | 71.9% | 56.6% | 60.2% | 66.3% (cache, 38.5 MB) | pass |
+<!-- /report -->
+
+What decides the gate is how much volume sits in the head, not anything the
+slices do differently. Band by band, the rates match the AOL study: strings
+searched 1,000 times or more are 100% held and about 91% proved in both,
+strings searched 100 to 999 times 100% held and 75% to 78% proved. Zipf
+moves the volume into those bands, 70.7% of it against AOL's 22.0%. Across
+the five shapes above, the best exact share within 50 MB is 1.1 to 1.25
+times the top 10,000 strings' share of searches, so the gate passes once
+those strings carry about a third of the traffic. An app can estimate its
+own outcome from its log the same way: the share of its search volume in
+each band, times these rates.
+
+Under every shape a result cache answers the head more cheaply than a
+proof. The slice and the proof pay for themselves on answers shown offline
+with their passages, and on the middle of the distribution (strings
+searched 10 to 99 times, ranks 12,309 to 128,913 at s = 1), where a bigger
+slice raises the share held from 38% at 100K passages to 88% at 400K.
+
 ## Recommendations: Yambda-50M
 
 [`recs.py`](recs.py) (its docstring has the details) uses the protocol of
@@ -495,10 +641,15 @@ python aol.py $A select && python aol.py $A load --tiers && python aol.py $A eva
 cp ~/data/slices/work/{prep,select,eval_test,eval_seen,eval2_test,eval2_seen,bytes,residuals}.json search/
 cp ~/data/slices/work/recs_*.json recs/
 cp ~/data/slices/aol/{prep,select,eval,bytes}.json aol/
+Z="--aol $HOME/data/slices/aol"
+python zipf.py $Z --work ~/data/slices/zipf prep && python zipf.py $Z --work ~/data/slices/zipf select
+python zipf.py $Z --work ~/data/slices/zipf load --tiers && python zipf.py $Z --work ~/data/slices/zipf eval && python zipf.py $Z --work ~/data/slices/zipf bytes
+python zipf.py $Z --work ~/data/slices/zipf086 prep --s 0.86   # then select, load --tiers, eval, bytes as above
+cp ~/data/slices/zipf/{prep,select,eval,bytes}.json zipf/ && cp ~/data/slices/zipf086/{prep,select,eval,bytes}.json zipf086/
 python report.py
 ```
 
 On the container above the ORCAS side takes under an hour (each load of
 the 8.8 million passages about 4 minutes, the cloud top 10 of a million
 queries about 6) and about 8 GB of disk; the AOL side about 40 minutes more
-and 3 GB.
+and 3 GB, and each Zipf run about 20 minutes and 3 GB.
