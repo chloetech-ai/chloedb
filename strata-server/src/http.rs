@@ -34,7 +34,10 @@
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
 //! | `POST /v1/judge` | `{query, keys, table?, fields?, model?, api_key?}` | `{grades: [{key, grade, error?}], model, usage}`: each row graded 0 to 3 for the query by a Claude model ([`crate::judge`]) |
-//! | `POST /v1/admin/oncall` | `{question?, alert?, model?, effort?, api_key?, max_steps?, note?}` | `{run, answer, proposals, steps, usage}`: a Claude model looks into an alert or a question with read-only tools and proposes actions ([`crate::oncall`]); `note` also writes the answer on the events timeline |
+//! | `POST /v1/admin/oncall` | `{question?, alert?, follows?, model?, effort?, api_key?, max_steps?, note?, wait?}` | the run, `{run, answer, proposals, steps, said, usage, ...}`: a Claude model looks into an alert or a question with read-only tools and proposes actions ([`crate::oncall`]); `note` also writes the answer on the events timeline; `follows` asks a run's follow-up in its conversation; `wait: false` answers `{run, state: "running"}` at once |
+//! | `GET /v1/admin/oncall` | | `{configured, model, steps, max_steps, runs, running, pending}`: whether the server has a Claude key, its defaults, and the runs kept, newest first, each in short |
+//! | `GET /v1/admin/oncall/runs`, `GET /v1/admin/oncall/runs/:id` | | `{runs}` in short; one run in full, with its steps (and what each tool answered, cut), what the model wrote between them, its report and proposals, as it goes |
+//! | `POST /v1/admin/oncall/runs/:id/stop` | | the run: it stops before its next model call |
 //! | `GET /v1/admin/oncall/proposals?state=&run=` | | `{proposals}`: the on-call agent's proposed actions, newest first, each `pending`, `applied`, `failed`, `rejected` or `expired` (after an hour) |
 //! | `POST /v1/admin/oncall/proposals/:id/approve`, `.../reject` | `{reason?}` to reject | the proposal: approving makes its request with the approver's credential and its reason, audited as theirs |
 //! | `POST /v1/mcp` | a JSON-RPC message or a batch | the Model Context Protocol's answer, or 202 for notifications: tools that call these routes with the caller's credential ([`crate::mcp`]) |
@@ -255,7 +258,10 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/moves/finish", post(finish_move))
         .route("/v1/agent", post(agent_run))
         .route("/v1/judge", post(judge))
-        .route("/v1/admin/oncall", post(oncall_run))
+        .route("/v1/admin/oncall", get(oncall_overview).post(oncall_run))
+        .route("/v1/admin/oncall/runs", get(oncall_runs))
+        .route("/v1/admin/oncall/runs/:id", get(oncall_run_get))
+        .route("/v1/admin/oncall/runs/:id/stop", post(oncall_stop))
         .route("/v1/admin/oncall/proposals", get(oncall_proposals))
         .route("/v1/admin/oncall/proposals/:id/approve", post(oncall_approve))
         .route("/v1/admin/oncall/proposals/:id/reject", post(oncall_reject))
@@ -2861,6 +2867,8 @@ async fn oncall_run(State(app): State<App>, w: Option<axum::Extension<Principal>
     let req = crate::oncall::OncallReq {
         question: opt("question"),
         alert: opt("alert"),
+        follows: opt("follows"),
+        wait: b.get("wait").and_then(Json::as_bool).unwrap_or(true),
         model: opt("model"),
         effort: opt("effort"),
         api_key: opt("api_key"),
@@ -2872,9 +2880,48 @@ async fn oncall_run(State(app): State<App>, w: Option<axum::Extension<Principal>
     Ok(AxJson(crate::oncall::run(&app.svc, app.mcp.clone(), &headers, peer.map(|c| c.0), req).await?))
 }
 
+/// `GET /v1/admin/oncall`: whether the on-call agent can run here, its
+/// defaults, and its runs in short.
+async fn oncall_overview(State(app): State<App>) -> Res {
+    let d = &app.svc.oncall;
+    d.ready(&app.svc);
+    let (running, pending) = d.counts();
+    Ok(AxJson(json!({
+        "configured": app.svc.agent.api_key.is_some(),
+        "model": app.svc.agent.model,
+        "steps": crate::oncall::STEPS,
+        "max_steps": crate::oncall::MAX_STEPS,
+        "kept": crate::oncall::RUNS,
+        "proposal_for_ms": crate::oncall::PROPOSAL_FOR_MS,
+        "runs": d.runs(),
+        "running": running,
+        "pending": pending,
+    })))
+}
+
+/// `GET /v1/admin/oncall/runs`: the runs kept, newest first, in short.
+async fn oncall_runs(State(app): State<App>) -> Res {
+    app.svc.oncall.ready(&app.svc);
+    Ok(AxJson(json!({"runs": app.svc.oncall.runs()})))
+}
+
+/// `GET /v1/admin/oncall/runs/:id`: one run in full, as it goes.
+async fn oncall_run_get(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    app.svc.oncall.ready(&app.svc);
+    app.svc.oncall.run_json(&id).map(AxJson).ok_or_else(|| ApiError { status: 404, message: format!("no run {id}: the server keeps the latest {}", crate::oncall::RUNS) })
+}
+
+/// `POST /v1/admin/oncall/runs/:id/stop`: stops a run before its next
+/// model call.
+async fn oncall_stop(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    app.svc.oncall.ready(&app.svc);
+    Ok(AxJson(app.svc.oncall.stop(&id, &by(&who(w)))?))
+}
+
 /// `GET /v1/admin/oncall/proposals?state=&run=`: the on-call agent's
 /// proposals, newest first.
 async fn oncall_proposals(State(app): State<App>, Query(q): Params) -> Res {
+    app.svc.oncall.ready(&app.svc);
     let pick = |k: &str| q.get(k).map(String::as_str).filter(|s| !s.is_empty());
     Ok(AxJson(json!({"proposals": app.svc.oncall.list(pick("state"), pick("run"))})))
 }
@@ -2891,6 +2938,7 @@ async fn oncall_approve(State(app): State<App>, w: Option<axum::Extension<Princi
 /// `POST /v1/admin/oncall/proposals/:id/reject`: `{reason?}`.
 async fn oncall_reject(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, b: Option<AxJson<Json>>) -> Res {
     let reason = b.and_then(|AxJson(b)| b.get("reason").and_then(Json::as_str).map(String::from)).unwrap_or_default();
+    app.svc.oncall.ready(&app.svc);
     let p = app.svc.oncall.reject(&id, &by(&who(w)), &reason)?;
     keys::note(format!("rejected on-call proposal {id}: {}", p["what"].as_str().unwrap_or_default()));
     Ok(AxJson(p))
