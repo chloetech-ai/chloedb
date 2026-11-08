@@ -16,6 +16,13 @@
 //! - **Copies.** A shard's reads spread over its copies; its writes are
 //!   applied on every copy, and by one writer a shard, so copies add room
 //!   for reads only.
+//! - **Rebuilds after writes.** A row added to a shard makes the next
+//!   search on each of its copies rebuild the part of the memtable it
+//!   changed before it answers (the test measures a search right after an
+//!   insert against one alone): that search waits all of it, and searches
+//!   that come meanwhile wait for the rest. Every copy rebuilds for itself,
+//!   so copies add none of it back; rows written a batch a commit cut it.
+//!   The rebuilds' CPU is the copies' too.
 //! - **The coordinator.** Each request costs it some CPU of its own and a
 //!   little for each shard it asks, and some wall time besides its calls
 //!   (end to end less the slowest call, at no load).
@@ -71,6 +78,15 @@ pub struct WriteStats {
     /// CPU of every copy for one written row, ms.
     pub cpu_copies_ms: Option<f64>,
     pub cpu_coord_ms: Option<f64>,
+    /// A search of `after_kind` sent right after a one-row insert, end to end.
+    #[serde(default)]
+    pub after_insert: Option<Quant>,
+    #[serde(default)]
+    pub after_kind: Option<String>,
+    /// Share of the writes that add a row (an insert): the others (a value
+    /// set in place, a delete) leave the memtable's segments as they were.
+    #[serde(default)]
+    pub insert_share: f64,
 }
 
 /// The cluster as tested.
@@ -130,12 +146,25 @@ pub struct Fit {
     pub write_coord_ms: f64,
     /// Share of requests that are writes.
     pub write_share: f64,
+    /// What a copy takes to rebuild the part of its memtable a row added
+    /// changed, ms (0: not measured), and the share of writes that add one.
+    #[serde(default)]
+    pub stall_ms: f64,
+    #[serde(default)]
+    pub insert_share: f64,
+    /// Rows a commit: the test wrote one a request.
+    #[serde(default = "one")]
+    pub rows_per_commit: f64,
     /// The cores' factor that makes the model's capacity at the tested
     /// shape the test's (1 until [`calibrate`]).
     pub kappa: f64,
     /// Whether the copies' CPU counters were read (else wall times stand in).
     pub measured_cpu: bool,
     pub assumptions: Vec<String>,
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 /// A shape to predict.
@@ -176,6 +205,21 @@ impl Busy {
     }
 }
 
+/// What the rebuilds after writes do to each copy at a rate.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct Stall {
+    /// The rebuild's time, ms, and rebuilds a second on each copy.
+    pub ms: f64,
+    pub rebuilds_s: f64,
+    /// The chance that a search's call to a copy finds a rebuild to make
+    /// (it waits all of it), and that it comes while one is under way (it
+    /// waits the rest).
+    pub first: f64,
+    pub during: f64,
+    /// The chance that a search waits for one on some shard.
+    pub search_waits: f64,
+}
+
 /// A kind's latency at a rate.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KindAt {
@@ -193,6 +237,8 @@ pub struct At {
     pub p50_ms: Option<f64>,
     pub p99_ms: Option<f64>,
     pub kinds: Vec<KindAt>,
+    #[serde(default)]
+    pub stall: Stall,
 }
 
 /// What a shape does.
@@ -254,6 +300,51 @@ fn sum_cdf(t: f64, shift: f64, ms: f64, pw: f64, mw: f64) -> f64 {
         }
     };
     (1.0 - pw) * es + pw * both
+}
+
+/// The integral of [`sum_cdf`] from minus infinity to `t`: what averages
+/// it over a window (a uniform wait).
+fn sum_cdf_int(t: f64, shift: f64, ms: f64, pw: f64, mw: f64) -> f64 {
+    let x = t - shift;
+    if x <= 0.0 {
+        return 0.0;
+    }
+    // The integral of 1 - e^(-x/m) from 0 to x.
+    let one = |m: f64| if m > 1e-12 { x - m * (1.0 - (-x / m).exp()) } else { x };
+    let es = one(ms);
+    if pw <= 0.0 || mw <= 1e-12 {
+        return es;
+    }
+    let both = if ms <= 1e-12 {
+        one(mw)
+    } else {
+        let (l1, l2) = (1.0 / ms, 1.0 / mw);
+        if (l1 - l2).abs() < 1e-9 * l1.max(l2) {
+            x - (2.0 * (1.0 - (-l1 * x).exp()) - l1 * x * (-l1 * x).exp()) / l1
+        } else {
+            x - ((l2 / l1) * (1.0 - (-l1 * x).exp()) - (l1 / l2) * (1.0 - (-l2 * x).exp())) / (l2 - l1)
+        }
+    };
+    (1.0 - pw) * es + pw * both
+}
+
+/// P(S + W + D ≤ t), S and W as in [`sum_cdf`], D the wait for a rebuild
+/// of `ms`: all of it with chance `first`, a part of it (uniform) with
+/// chance `during`, and none else.
+#[allow(clippy::too_many_arguments)]
+fn stalled_cdf(t: f64, shift: f64, ms: f64, pw: f64, mw: f64, first: f64, during: f64, stall: f64) -> f64 {
+    let g = |t: f64| sum_cdf(t, shift, ms, pw, mw);
+    if stall <= 0.0 || first + during <= 0.0 {
+        return g(t);
+    }
+    let part = (sum_cdf_int(t, shift, ms, pw, mw) - sum_cdf_int(t - stall, shift, ms, pw, mw)) / stall;
+    (1.0 - first - during) * g(t) + first * g(t - stall) + during * part
+}
+
+/// Whether a kind's call waits for a rebuild after a write: a search does,
+/// a read by key (which reads the row where it is) does not.
+fn stalls(k: &KindFit) -> bool {
+    k.kind != "key lookup"
 }
 
 /// The t where the increasing `f` reaches `q`.
@@ -379,13 +470,31 @@ pub fn fit(tested: &Tested, kinds: &[KindStats], write: &WriteStats, write_share
     if write_share > 0.0 && write.requests == 0 {
         assumptions.push("writes were not measured: they are left out of the model".into());
     }
+    // The rebuild a row added makes: a search right after an insert less
+    // the same kind alone.
+    let stall_ms = match (write.after_insert, write.after_kind.as_ref().and_then(|a| kinds.iter().find(|k| &k.kind == a))) {
+        (Some(after), Some(k)) if write_share > 0.0 && write.insert_share > 0.0 => {
+            let t = (after.p50 - k.lat.p50).max(0.0);
+            if t >= 0.05 {
+                assumptions.push(format!(
+                    "a row added makes the next search on each copy of its shard rebuild the part of the memtable it changed: {} ms, a search of {} right after an insert less one alone; the rebuild is the same at every size and on every machine, and searches that come during it wait for the rest",
+                    (t * 100.0).round() / 100.0,
+                    k.kind
+                ));
+                t
+            } else {
+                0.0
+            }
+        }
+        _ => 0.0,
+    };
     assumptions.push("a request's CPU costs the same on another machine's core (the same CPU family)".into());
     assumptions.push("the test sent its requests from inside the coordinator: making them is taken off its CPU, but the HTTP or gRPC of real clients (reading a request, checking its key) is not counted, so a coordinator does a little more for them".into());
     assumptions.push("every copy of a shard serves reads, and reads spread evenly over the copies and the shards".into());
     if tested.local {
         assumptions.push("one server answered by itself: a cluster's coordinator is taken to add 0.05 ms of CPU a request, 0.03 ms a shard asked, and 0.2 ms of network".into());
     }
-    Fit { tested: tested.clone(), a0, r, n_ref, kinds: fits, write_copy_ms, write_coord_ms, write_share, kappa: 1.0, measured_cpu, assumptions }
+    Fit { tested: tested.clone(), a0, r, n_ref, kinds: fits, write_copy_ms, write_coord_ms, write_share, stall_ms, insert_share: write.insert_share, rows_per_commit: 1.0, kappa: 1.0, measured_cpu, assumptions }
 }
 
 // ------------------------------------------------------------- predicting
@@ -438,9 +547,38 @@ impl Fit {
             coord += k.share * self.coord_cpu(k, calls, s);
         }
         let w = self.write_share;
-        let copy = self.reads() * copy + w * self.write_copy_ms / shards;
+        let (calls, commits) = self.stall_rates(s);
+        let rebuild = if self.stall_ms > 0.0 { calls.min(commits) * self.stall_ms } else { 0.0 };
+        let copy = self.reads() * copy + w * self.write_copy_ms / shards + rebuild;
         let coord = self.reads() * coord + w * self.write_coord_ms;
         (copy, coord, w * self.write_copy_ms / shards)
+    }
+
+    /// A request of the mix's search calls to one copy, and its commits
+    /// that add rows to one shard (applied on each of its copies).
+    fn stall_rates(&self, s: &Shape) -> (f64, f64) {
+        let shards = s.shards.max(1) as f64;
+        let calls = self.reads() * self.kinds.iter().filter(|k| stalls(k)).map(|k| k.share * self.calls(k, s)).sum::<f64>() / shards / s.copies.max(1) as f64;
+        let commits = self.write_share * self.insert_share / shards / self.rows_per_commit.max(1.0);
+        (calls, commits)
+    }
+
+    /// What the rebuilds after writes do to a copy of `s` at `qps`.
+    pub fn stall(&self, s: &Shape, qps: f64) -> Stall {
+        let t = self.stall_ms;
+        let (calls, commits) = self.stall_rates(s);
+        if t <= 0.0 || calls <= 0.0 || commits <= 0.0 || qps <= 0.0 || !qps.is_finite() {
+            return Stall::default();
+        }
+        // The next search on a copy after a commit rebuilds: no more
+        // rebuilds than searches, nor than one a rebuild's time.
+        let rebuilds = (qps * calls.min(commits)).min(1000.0 / t);
+        let during = (rebuilds * t / 1000.0).min(1.0);
+        let first = (rebuilds / (qps * calls)).min(1.0 - during);
+        let p = first + during;
+        let total: f64 = self.kinds.iter().filter(|k| stalls(k)).map(|k| k.share).sum();
+        let search_waits = if total > 0.0 { self.kinds.iter().filter(|k| stalls(k)).map(|k| k.share * (1.0 - (1.0 - p).powf(self.calls(k, s)))).sum::<f64>() / total } else { 0.0 };
+        Stall { ms: t, rebuilds_s: rebuilds, first, during, search_waits }
     }
 
     fn calls(&self, k: &KindFit, s: &Shape) -> f64 {
@@ -475,8 +613,9 @@ impl Fit {
     pub fn at(&self, s: &Shape, qps: f64) -> At {
         let busy = self.busy(s, qps);
         if busy.max() >= 1.0 || !qps.is_finite() {
-            return At { qps, busy, p50_ms: None, p99_ms: None, kinds: Vec::new() };
+            return At { qps, busy, p50_ms: None, p99_ms: None, kinds: Vec::new(), stall: Stall::default() };
         }
+        let stall = self.stall(s, qps);
         let shards = s.shards.max(1) as f64;
         let n = s.docs / shards;
         // Each kind's call: its wall time scaled by its CPU at the new size.
@@ -521,14 +660,15 @@ impl Fit {
                     k.over * now / was
                 } + coord_wait;
                 let m = m.round().max(1.0) as i32;
-                Box::new(move |t: f64| sum_cdf(t - over, shift, mean, pw, mw).powi(m)) as Box<dyn Fn(f64) -> f64>
+                let (first, during) = if stalls(k) { (stall.first, stall.during) } else { (0.0, 0.0) };
+                Box::new(move |t: f64| stalled_cdf(t - over, shift, mean, pw, mw, first, during, stall.ms).powi(m)) as Box<dyn Fn(f64) -> f64>
             })
             .collect();
         let kinds: Vec<KindAt> = self.kinds.iter().zip(&cdfs).map(|(k, f)| KindAt { kind: k.kind.clone(), p50_ms: solve(f, 0.5), p99_ms: solve(f, 0.99) }).collect();
         // The reads' quantiles: the mix of the kinds' times.
         let total: f64 = self.kinds.iter().map(|k| k.share).sum::<f64>().max(1e-12);
         let mix = |t: f64| self.kinds.iter().zip(&cdfs).map(|(k, f)| k.share * f(t)).sum::<f64>() / total;
-        At { qps, busy, p50_ms: Some(solve(mix, 0.5)), p99_ms: Some(solve(mix, 0.99)), kinds }
+        At { qps, busy, p50_ms: Some(solve(mix, 0.5)), p99_ms: Some(solve(mix, 0.99)), kinds, stall }
     }
 
     /// The most `s` holds with the reads' p99 at most `slo_ms`.
@@ -697,6 +837,79 @@ mod tests {
         assert!(b.copy < a.copy);
         let c = f.busy(&Shape { shards: 4, ..s }, 1000.0);
         assert!(c.writer < a.writer);
+    }
+
+    #[test]
+    fn the_integral_of_the_cdf_is_right() {
+        for &(shift, ms, pw, mw) in &[(0.5, 1.0, 0.0, 0.0), (0.5, 1.0, 0.4, 2.0), (0.2, 1.0, 0.3, 1.0), (0.0, 0.0, 0.5, 3.0), (0.3, 0.0, 0.0, 0.0)] {
+            for &t in &[0.1, 0.6, 1.0, 4.0, 12.0] {
+                let n = 100_000;
+                let dx = t / n as f64;
+                let sum: f64 = (0..n).map(|i| sum_cdf((i as f64 + 0.5) * dx, shift, ms, pw, mw)).sum::<f64>() * dx;
+                let got = sum_cdf_int(t, shift, ms, pw, mw);
+                assert!((got - sum).abs() < 1e-5 * t.max(1.0), "{shift} {ms} {pw} {mw} at {t}: {got} vs {sum}");
+            }
+        }
+        // A wait of all of a rebuild moves the CDF by it; one of a part of it, less.
+        let at = |first: f64, during: f64| solve(|t| stalled_cdf(t, 0.5, 1.0, 0.0, 0.0, first, during, 10.0), 0.5);
+        assert!((at(1.0, 0.0) - at(0.0, 0.0) - 10.0).abs() < 1e-6);
+        let half = at(0.0, 1.0) - at(0.0, 0.0);
+        assert!((4.0..6.5).contains(&half), "{half}");
+    }
+
+    /// 2% writes, half of them inserts, each making the next search on
+    /// each copy of its shard wait `stall` ms.
+    fn stalled(stall: f64) -> Fit {
+        let (t, kinds, _) = measured();
+        let bm = kinds[0].lat;
+        let w = WriteStats {
+            requests: 500,
+            lat: q(1.0, 2.0),
+            cpu_copies_ms: Some(0.4),
+            cpu_coord_ms: Some(0.05),
+            after_insert: Some(q(bm.p50 + stall, bm.p99 + stall)),
+            after_kind: Some("bm25".into()),
+            insert_share: 0.5,
+            ..Default::default()
+        };
+        fit(&t, &kinds, &w, 0.02)
+    }
+
+    #[test]
+    fn rebuilds_after_writes_slow_searches_copies_do_not_help_batches_do() {
+        let f = stalled(8.0);
+        assert!((f.stall_ms - 8.0).abs() < 1e-9, "{}", f.stall_ms);
+        let mut none = f.clone();
+        none.stall_ms = 0.0;
+        let s = f.tested_shape();
+        // At any rate, some searches are the first on their copy after an
+        // insert: the p99 shows it.
+        let (p, p0) = (f.at(&s, 100.0).p99_ms.unwrap(), none.at(&s, 100.0).p99_ms.unwrap());
+        assert!(p > p0 + 4.0, "{p} vs {p0}");
+        // At ten times the rate, ten times the searches come during one.
+        let (a, b) = (f.stall(&s, 100.0), f.stall(&s, 1000.0));
+        assert!((b.during / a.during - 10.0).abs() < 1e-6, "{} {}", a.during, b.during);
+        assert!((a.first - b.first).abs() < 1e-9);
+        assert!(b.search_waits > a.search_waits);
+        // Copies do not cut it: each one rebuilds, and gets fewer searches to share it.
+        assert!(f.stall(&Shape { copies: 4, ..s }, 1000.0).search_waits >= b.search_waits);
+        // Batches do: a tenth of the commits.
+        let mut batched = f.clone();
+        batched.rows_per_commit = 10.0;
+        assert!(batched.stall(&s, 1000.0).search_waits < 0.15 * b.search_waits);
+        // And the room: the rebuilds take the copies' CPU, and the p99.
+        let slo = 20.0;
+        assert!(f.capacity(&s, slo) < 0.97 * none.capacity(&s, slo), "{} vs {}", f.capacity(&s, slo), none.capacity(&s, slo));
+        assert!(batched.capacity(&s, slo) > f.capacity(&s, slo));
+        // A key lookup reads the row where it is: no rebuild.
+        let k = |f: &Fit| f.at(&s, 1000.0).kinds.iter().find(|k| k.kind == "key lookup").unwrap().p99_ms;
+        assert!((k(&f) - k(&none)).abs() < 0.5 * k(&none), "{} vs {}", k(&f), k(&none));
+        // Nothing measured, or no inserts: no stall.
+        let (t, kinds, _) = measured();
+        let w = WriteStats { requests: 500, lat: q(1.0, 2.0), cpu_copies_ms: Some(0.4), insert_share: 0.5, ..Default::default() };
+        assert_eq!(fit(&t, &kinds, &w, 0.02).stall_ms, 0.0);
+        let w = WriteStats { after_insert: Some(q(20.0, 30.0)), after_kind: Some("bm25".into()), insert_share: 0.0, ..w };
+        assert_eq!(fit(&t, &kinds, &w, 0.02).stall_ms, 0.0);
     }
 
     #[test]

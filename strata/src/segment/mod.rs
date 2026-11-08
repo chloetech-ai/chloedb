@@ -75,6 +75,57 @@ pub fn encode_field_ids(schema: &crate::schema::Schema) -> Vec<u8> {
 
 pub const PAGE: usize = 4096;
 
+/// Brings ranges of a segment image into memory before they are read: the
+/// image of a cold segment ([`crate::storage::cold`]) is a sparse local
+/// file whose parts are fetched from object storage the first time a
+/// section of them is read. A segment with one hands out a section's bytes
+/// only once its whole range is fetched ([`SegmentFile::section`]), or,
+/// for a section whose reader fetches it a part at a time (the doc store's
+/// blocks), with a [`SectionFetch`] for its parts
+/// ([`SegmentFile::section_parts`]).
+pub trait Fetch: Send + Sync + std::fmt::Debug {
+    /// Makes bytes `range` of the image readable, fetching what is not.
+    fn ensure(&self, range: std::ops::Range<usize>) -> Result<()>;
+}
+
+/// Fetches parts of one section of a segment with a [`Fetch`]: ranges are
+/// relative to the section's start.
+#[derive(Clone, Debug)]
+pub struct SectionFetch {
+    fetch: Arc<dyn Fetch>,
+    start: usize,
+}
+
+impl SectionFetch {
+    /// Makes bytes `range` of the section readable.
+    pub fn ensure(&self, range: std::ops::Range<usize>) -> Result<()> {
+        self.fetch.ensure(self.start + range.start..self.start + range.end)
+    }
+}
+
+/// The length of an image's header (magic, document count, directory,
+/// padding) and its sections' names and ranges, from its first bytes: as
+/// many as the header needs, which [`header_len_from`] reads from the
+/// first 24.
+pub fn directory(bytes: &[u8]) -> Result<(usize, Vec<(String, std::ops::Range<usize>)>)> {
+    let need = header_len_from(bytes)?;
+    if bytes.len() < need {
+        return Err(corrupt("segment directory out of bounds"));
+    }
+    let dir_len = u64::from_le_bytes(bytes[16..24].try_into().unwrap()) as usize;
+    let dir: Vec<DirEntry> = serde_json::from_slice(&bytes[24..24 + dir_len]).map_err(corrupt)?;
+    Ok((need, dir.into_iter().map(|e| (e.name, e.offset as usize..(e.offset + e.len) as usize)).collect()))
+}
+
+/// The bytes an image's header takes, from its first 24 bytes.
+pub fn header_len_from(bytes: &[u8]) -> Result<usize> {
+    if bytes.len() < 24 || &bytes[..8] != MAGIC {
+        return Err(corrupt("bad segment magic"));
+    }
+    let dir_len = u64::from_le_bytes(bytes[16..24].try_into().unwrap()) as usize;
+    dir_len.checked_add(24).ok_or_else(|| corrupt("segment directory out of bounds"))
+}
+
 /// Builds one field's index sections from its values, in docID order.
 pub trait FieldIndexBuilder: Send {
     /// The field's value for document `doc`. Called for docIDs 0, 1, 2, ...
@@ -309,6 +360,8 @@ pub struct SegmentFile {
     /// to its table after it was written), read where the segment has
     /// none of that name ([`SegmentFile::with_overlay`]).
     overlay: Option<Arc<SegmentFile>>,
+    /// A cold segment's: what brings its ranges in before they are read.
+    fetch: Option<Arc<dyn Fetch>>,
 }
 
 /// Which sections of a mapped segment the kernel was advised to read
@@ -356,7 +409,47 @@ impl SegmentFile {
             }
             sections.insert(e.name, Section { offset, len, crc: e.crc32, slot });
         }
-        Ok(SegmentFile { n_docs, bytes, sections, checked: None, random: Random::None, overlay: None })
+        Ok(SegmentFile { n_docs, bytes, sections, checked: None, random: Random::None, overlay: None, fetch: None })
+    }
+
+    /// Opens a cold segment's image: `bytes`, a mapping in which only
+    /// what `fetch` has brought in may be read. The header is fetched
+    /// now, each section when it is first read.
+    pub fn open_fetched(bytes: OwnedBytes, fetch: Arc<dyn Fetch>) -> Result<Self> {
+        fetch.ensure(0..24.min(bytes.len()))?;
+        let header = header_len_from(&bytes)?;
+        if header > bytes.len() {
+            return Err(corrupt("segment directory out of bounds"));
+        }
+        fetch.ensure(0..header)?;
+        let mut seg = SegmentFile::open(bytes)?;
+        seg.fetch = Some(fetch);
+        Ok(seg)
+    }
+
+    /// Whether the image is fetched as it is read ([`Self::open_fetched`]).
+    pub fn is_fetched(&self) -> bool {
+        self.fetch.is_some()
+    }
+
+    /// Brings the whole image in (a cold segment's), for what reads it
+    /// whole: a copy of it, a check of every section.
+    pub fn ensure_all(&self) -> Result<()> {
+        match &self.fetch {
+            Some(f) => f.ensure(0..self.bytes.len()),
+            None => Ok(()),
+        }
+    }
+
+    /// Section `name`'s bytes and what fetches its parts, for a cold
+    /// segment whose reader fetches the section a part at a time; `None`
+    /// for a segment that is not cold, or without the section. The bytes
+    /// are not checked against the section's crc32: the parts fetched are
+    /// checked as they arrive ([`crate::storage::cold`]).
+    pub fn section_parts(&self, name: &str) -> Option<(OwnedBytes, SectionFetch)> {
+        let fetch = self.fetch.as_ref()?;
+        let s = self.sections.get(name)?;
+        Some((self.bytes.slice(s.offset..s.offset + s.len), SectionFetch { fetch: fetch.clone(), start: s.offset }))
     }
 
     /// Builds a segment in memory (tests, memtable snapshots).
@@ -407,6 +500,9 @@ impl SegmentFile {
                 None => Ok(None),
             };
         };
+        if let Some(f) = &self.fetch {
+            f.ensure(s.offset..s.offset + s.len)?;
+        }
         if let (Some(checked), Some(_)) = (&self.checked, s.crc) {
             let state = &checked[s.slot];
             let known = match state.load(Ordering::Acquire) {
@@ -433,11 +529,18 @@ impl SegmentFile {
     /// their own, which its reader checks part by part as it reads them
     /// (the doc store's blocks, `store.crc`), so that the first read of a
     /// row does not read the whole section. [`verify_sections`]
-    /// (Self::verify_sections) still checks it whole.
-    pub fn section_unchecked(&self, name: &str) -> Option<OwnedBytes> {
+    /// (Self::verify_sections) still checks it whole. A cold segment's
+    /// section is fetched whole first ([`Self::section_parts`] fetches it
+    /// a part at a time).
+    pub fn section_unchecked(&self, name: &str) -> Result<Option<OwnedBytes>> {
         match self.sections.get(name) {
-            Some(s) => Some(self.bytes.slice(s.offset..s.offset + s.len)),
-            None => self.overlay.as_ref().and_then(|o| o.section_unchecked(name)),
+            Some(s) => {
+                if let Some(f) = &self.fetch {
+                    f.ensure(s.offset..s.offset + s.len)?;
+                }
+                Ok(Some(self.bytes.slice(s.offset..s.offset + s.len)))
+            }
+            None => self.overlay.as_ref().map_or(Ok(None), |o| o.section_unchecked(name)),
         }
     }
 
@@ -455,6 +558,7 @@ impl SegmentFile {
     /// Checks every section that has a crc32 against it, reading the whole
     /// segment; the error names the first section that fails.
     pub fn verify_sections(&self) -> Result<()> {
+        self.ensure_all()?;
         for (name, s) in &self.sections {
             if !self.matches(name, s) {
                 return Err(corrupt(format!("section {name} fails its checksum")));

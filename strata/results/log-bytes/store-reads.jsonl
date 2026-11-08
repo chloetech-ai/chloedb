@@ -1,0 +1,8 @@
+{"db":"/home/user/data/logbytes/hdfs.strata","read_by_key_us":{"p50":33.9,"p90":48.7,"p99":88.0},"reads_by_key":5000,"rows":11175629,"scan_body_seconds":9.9,"scan_rows_per_second_millions":1.13}
+{"db":"/home/user/data/logbytes/hdfs-zstd.strata","read_by_key_us":{"p50":47.5,"p90":60.6,"p99":85.6},"reads_by_key":5000,"rows":11175629,"scan_body_seconds":10.36,"scan_rows_per_second_millions":1.08}
+{"db":"/home/user/data/logbytes/ssh.strata","read_by_key_us":{"p50":33.5,"p90":44.9,"p99":98.6},"reads_by_key":5000,"rows":655147,"scan_body_seconds":0.54,"scan_rows_per_second_millions":1.21}
+{"db":"/home/user/data/logbytes/ssh-zstd.strata","read_by_key_us":{"p50":37.9,"p90":53.7,"p99":107.4},"reads_by_key":5000,"rows":655147,"scan_body_seconds":0.48,"scan_rows_per_second_millions":1.36}
+{"db":"/home/user/data/logbytes/android.strata","read_by_key_us":{"p50":54.5,"p90":73.7,"p99":120.4},"reads_by_key":5000,"rows":1555005,"scan_body_seconds":1.36,"scan_rows_per_second_millions":1.15}
+{"db":"/home/user/data/logbytes/android-zstd.strata","read_by_key_us":{"p50":61.5,"p90":80.4,"p99":107.8},"reads_by_key":5000,"rows":1555005,"scan_body_seconds":1.34,"scan_rows_per_second_millions":1.16}
+{"db":"/home/user/data/logbytes/bgl.strata","read_by_key_us":{"p50":36.4,"p90":47.0,"p99":85.2},"reads_by_key":5000,"rows":4747963,"scan_body_seconds":3.13,"scan_rows_per_second_millions":1.52}
+{"db":"/home/user/data/logbytes/bgl-zstd.strata","read_by_key_us":{"p50":43.5,"p90":54.0,"p99":78.2},"reads_by_key":5000,"rows":4747963,"scan_body_seconds":3.2,"scan_rows_per_second_millions":1.49}

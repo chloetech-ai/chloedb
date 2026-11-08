@@ -7,7 +7,9 @@
 //!    its latency, the shards it asks and their answers' times (from its
 //!    trace), and the CPU every copy and the coordinator spent on it.
 //! 2. **Load the rest** and measure each kind again, and writes: how a
-//!    kind's work grows with the rows a shard holds.
+//!    kind's work grows with the rows a shard holds; and the mix's main
+//!    search right after an insert, which waits for the copy it asks to
+//!    rebuild the part of its memtable the insert changed.
 //! 3. **Traffic**: the mix (reads and writes at the profile's shares) at
 //!    a rising rate, an open loop (each request timed from when it was
 //!    due, as `engine-compare replay` does), each step judged by the SLO,
@@ -723,6 +725,11 @@ impl Writer {
             let rating = (rng.gen_range(0..=500) as f64) / 100.0;
             return vec![json!({"op": "set", "table": TABLE, "key": data::key(n), "field": "rating", "value": rating})];
         }
+        self.insert(corpus)
+    }
+
+    /// A new document.
+    fn insert(&self, corpus: &Corpus) -> Vec<Json> {
         let n = self.base + self.next.fetch_add(1, Ordering::Relaxed);
         lock(&self.inserted).push_back(n);
         vec![json!({"op": "upsert", "table": TABLE, "doc": corpus.doc(n)})]
@@ -890,7 +897,30 @@ async fn writes_alone(svc: &Arc<Service>, set: &Settings, ctx: &Ctx, writer: &Wr
     let local = matches!(svc.backend, Backend::Local(_));
     let copies = if servers.iter().all(Option::is_some) { Some(servers.iter().flatten().sum::<f64>() * 1e3 / ok) } else { None };
     let (copies, coord) = if local { (Some(coord * 1e3 / ok), None) } else { (copies, Some(coord * 1e3 / ok)) };
-    WriteStats { requests: n, errors, lat: quant(&h), cpu_copies_ms: copies, cpu_coord_ms: coord }
+    let (i, u, d) = set.writes;
+    WriteStats { requests: n, errors, lat: quant(&h), cpu_copies_ms: copies, cpu_coord_ms: coord, insert_share: i / (i + u + d).max(1e-9), ..Default::default() }
+}
+
+/// `kind` right after a one-row insert, an insert and a search at a time,
+/// for `secs`: the search waits for the copy it asks to rebuild the part
+/// of its memtable the insert changed (the next search on each copy does).
+async fn after_inserts(svc: &Arc<Service>, set: &Settings, ctx: &Ctx, writer: &Writer, kind: &str, secs: f64) -> Option<Quant> {
+    let mut rng = stream(set.config.seed, "after-inserts");
+    let mut picks = ctx.picks();
+    let timeout = timeout_ms(set);
+    let end = Instant::now() + Duration::from_secs_f64(secs);
+    let mut h = hist();
+    while Instant::now() < end && !svc.simulator.stopping() {
+        if !write(svc, writer.insert(&ctx.corpus)).await.ok {
+            continue;
+        }
+        let Some(ask) = data::ask(kind, &ctx.corpus, &mut picks, &mut rng) else { break };
+        let d = read(svc, ask, timeout).await;
+        if d.ok {
+            let _ = h.record(d.us.max(1));
+        }
+    }
+    (!h.is_empty()).then(|| quant(&h))
 }
 
 // ===================================================================== traffic
@@ -1167,7 +1197,13 @@ async fn run(svc: &Arc<Service>, set: &Settings, id: &str) -> Result<Json, ApiEr
     let writer = Arc::new(Writer::new(docs));
     let wstats = if set.write_share > 0.0 {
         sim.say("Writes, alone");
-        let w = writes_alone(svc, set, &ctx, &writer, c.alone_s, &idle1).await;
+        let mut w = writes_alone(svc, set, &ctx, &writer, c.alone_s, &idle1).await;
+        // The mix's main search, each right after an insert.
+        if let Some(k) = stats.iter().filter(|s| s.kind != "key lookup" && s.share > 0.0 && s.requests > s.errors).max_by(|a, b| a.share.total_cmp(&b.share)) {
+            sim.say(format!("{}, each right after an insert", k.kind));
+            w.after_insert = after_inserts(svc, set, &ctx, &writer, &k.kind, c.alone_s).await;
+            w.after_kind = w.after_insert.is_some().then(|| k.kind.clone());
+        }
         writer.reset(svc).await;
         w
     } else {

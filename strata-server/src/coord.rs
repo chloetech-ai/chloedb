@@ -108,8 +108,10 @@ use crate::{json as js, plan_pb, ApiError};
 
 mod moves;
 pub mod plan;
+mod scroll;
 mod stats;
 pub use stats::{StatsCache, STATS_CACHE_TERMS};
+pub use scroll::{ShardScroll, SHARD_KEEP_ALIVE_MARGIN};
 pub use moves::{plan_even, MOVE_SLOTS};
 
 /// How the coordinator uses replicas and handles shards that do not answer.
@@ -1257,8 +1259,9 @@ impl Coordinator {
             return Err(ApiError::bad("the shards serve different schemas"));
         }
         let schema = parsed.into_iter().next().ok_or_else(|| ApiError::bad("no shard answered"))?;
-        if schema.primary_key.is_none() {
-            return Err(ApiError::bad("a sharded table needs a primary key to route writes"));
+        // otlp: a table without a key places its rows by shard_by.
+        if schema.primary_key.is_none() && schema.shard_by_field().is_none() {
+            return Err(ApiError::bad("a sharded table needs a primary key or shard_by to route writes"));
         }
         let catalog = common_tables(&tables)?;
         let profiles = common_profiles(&tables);
@@ -2280,7 +2283,7 @@ impl Coordinator {
         for (i, r, lease) in leases {
             if lease != 0 {
                 let mut c = t.replicas[i][r].client.clone();
-                tokio::spawn(async move { tokio::time::timeout(Duration::from_secs(5), c.release(pb::ReleaseRequest { snapshots: vec![lease] })).await });
+                tokio::spawn(async move { tokio::time::timeout(Duration::from_secs(5), c.release(pb::ReleaseRequest { snapshots: vec![lease], cursors: Vec::new() })).await });
             }
         }
     }

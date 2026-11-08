@@ -426,7 +426,7 @@ function render(page, route) {
     ], { rows: r.steps, sortKey: "i", desc: false, compact: true }) });
 
     const notes = card({ title: "How the model works, and what it assumes", body: h("div", { class: "stack small dim", style: { gap: "6px" } },
-      h("p", { style: { margin: 0 } }, "Each request is a call to every shard it needs (a search asks them all, a key lookup one), and each copy of a shard is a queue served by its cores. A call's CPU was measured by kind at two sizes, so it grows with the rows a shard holds as it grew between them; the coordinator's CPU grows with the shards it asks. Reads spread over a shard's copies, writes apply on every copy, by one writer a shard. The p99 comes from the calls' measured latency, waiting in the queues, and a search waiting for the slowest shard."),
+      h("p", { style: { margin: 0 } }, "Each request is a call to every shard it needs (a search asks them all, a key lookup one), and each copy of a shard is a queue served by its cores. A call's CPU was measured by kind at two sizes, so it grows with the rows a shard holds as it grew between them; the coordinator's CPU grows with the shards it asks. Reads spread over a shard's copies, writes apply on every copy, by one writer a shard. A row added makes the next search on each copy rebuild the part of the memtable it changed (measured: a search right after an insert), so searches wait for it; copies do not cut that, rows written in batches do. The p99 comes from the calls' measured latency, waiting in the queues, and a search waiting for the slowest shard."),
       h("ul", { style: { margin: 0, paddingLeft: "18px" } }, (r.notes || []).map((n) => h("li", {}, n))),
       h("p", { style: { margin: 0 } }, `Prices: ${r.machines_source}.`)) });
 

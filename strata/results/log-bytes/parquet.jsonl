@@ -1,0 +1,4 @@
+{"input": "ssh.jsonl", "lines": 655147, "raw_bytes_per_line": 112.1, "raw_zstd3_bytes_per_line": 7.8, "parquet_zstd3_bytes_per_line": 6.2}
+{"input": "android.jsonl", "lines": 1555005, "raw_bytes_per_line": 123.6, "raw_zstd3_bytes_per_line": 9.6, "parquet_zstd3_bytes_per_line": 8.8}
+{"input": "bgl.jsonl", "lines": 4747963, "raw_bytes_per_line": 156.5, "raw_zstd3_bytes_per_line": 14.8, "parquet_zstd3_bytes_per_line": 6.6}
+{"input": "hdfs.jsonl", "lines": 11175629, "raw_bytes_per_line": 141.2, "raw_zstd3_bytes_per_line": 13.6, "parquet_zstd3_bytes_per_line": 12.6}

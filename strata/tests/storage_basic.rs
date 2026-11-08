@@ -186,7 +186,8 @@ fn deletes_and_upserts_visible_and_durable() {
         assert!(matches!(tx.insert(doc(150, 2)), Err(Error::Schema(_))));
         tx.commit().unwrap();
         let s = db.snapshot();
-        assert_eq!(s.segments().len(), 4);
+        // Three on disk, and the memtable's 150 rows in pieces of 128.
+        assert_eq!(s.segments().len(), 5);
         assert_keys(&s, &want);
         assert!(s.lookup(&Value::Str(key(50))).is_none());
         // The upserted key lives in the memtable segment now.

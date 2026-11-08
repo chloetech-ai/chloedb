@@ -22,6 +22,7 @@
 //! * [`Database`], [`WriteTxn`], [`Snapshot`]: the API.
 
 mod db;
+pub mod cold;
 pub mod dir;
 pub mod feed;
 pub mod freelist;
@@ -43,6 +44,7 @@ pub mod wal;
 use std::sync::{Mutex, MutexGuard};
 
 pub use db::{CheckpointOptions, CheckpointStats, Database, DbOptions, DocumentSource, DropOptions, FileStats, Layout, ScrubReport, SegmentStats, TableTxn, WriteTxn, LOCK_WAIT};
+pub use cold::{open_store, ColdOptions, ColdStats, DirStore, ObjectStore};
 pub use live::LiveDocs;
 pub use manifest::{sources_schema, Numbering, RankProfile, SeqNo, SOURCES, SOURCES_ID};
 pub use merge::{memory_limit, merge_memory, MergePolicy, MergeStats, MergeStatus, MergerOptions, SegmentInfo, MERGE_NICE};

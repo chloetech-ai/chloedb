@@ -678,6 +678,10 @@ async fn session(ctx: Arc<Ctx>, mut rx: mpsc::UnboundedReceiver<Step>) {
     ctx.sessions.fetch_sub(1, Ordering::Relaxed);
 }
 
+/// A replay whose driver sent 1% of its requests later than this measured
+/// its own machine as much as the engine: it says so.
+const LATE_MS: f64 = 5.0;
+
 /// Waits for the schedule's times on one thread: a sleep, then a spin for
 /// the end of it (a timer of the async runtime wakes a millisecond late, and
 /// that millisecond would show in every latency). The spin is as long as
@@ -693,10 +697,13 @@ impl Clock {
     const LEAST: Duration = Duration::from_micros(200);
     const MOST: Duration = Duration::from_millis(250);
 
-    /// A clock that knows how late a short sleep wakes here.
+    /// A clock that knows how late a short sleep wakes here: it sleeps a
+    /// millisecond at a time for 300 ms first (the schedule's clock starts a
+    /// second after the driver does).
     fn new() -> Clock {
         let mut c = Clock { early: Self::LEAST };
-        for _ in 0..8 {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_millis(300) {
             c.sleep(Duration::from_millis(1));
         }
         c
@@ -1141,8 +1148,8 @@ pub async fn replay_in(dir: &Path, collection: &str, target: Target, urls: &[Str
         report["capacity_at_slo"].as_f64().map_or(String::new(), |c| format!("; capacity at the SLO {c:.1} requests a second")),
         report["driver_lag"]["p99_ms"].as_f64().unwrap_or(0.0)
     );
-    if report["driver_lag"]["p99_ms"].as_f64().unwrap_or(0.0) > 5.0 {
-        eprintln!("warning: the driver sent 1% of its requests more than 5 ms late: give it more CPU, or replay at a lower rate");
+    if report["driver_lag"]["p99_ms"].as_f64().unwrap_or(0.0) > LATE_MS {
+        eprintln!("warning: the driver sent 1% of its requests more than {LATE_MS} ms late: give it more CPU, or replay at a lower rate");
     }
     eprintln!("wrote {}", path.display());
 
@@ -1356,9 +1363,11 @@ mod tests {
     /// its capacity the mean response is the service time and a wait of
     /// rho D / (2 (1 - rho)) = 1.5 D; a closed loop would show D alone.
     ///
-    /// A run whose driver sent late measured the machine, not the queue (the
-    /// other tests of this binary share the CPU in its first seconds): it is
-    /// made again, three times at most.
+    /// A run whose driver sent late, as the replay itself warns of (1% of
+    /// its requests more than 5 ms late), measured the machine, not the
+    /// queue: the other tests of this binary share the CPU in its first
+    /// seconds, and CI's macOS runner stalls for 100 ms now and then. It is
+    /// made again, five times at most.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn an_open_loop_queues_as_m_d_1() {
         let dir = crate::sim::fixture::write(&crate::sim::fixture::tempdir("queue"), 2000, 500, 0);
@@ -1381,11 +1390,11 @@ mod tests {
             let lag = r["driver_lag"]["p99_ms"].as_f64().unwrap();
             runs.push(format!("mean {} ms, service {} ms, driver lag {}", r["reads"]["mean_ms"], r["kinds"]["bm25"]["service"]["mean_ms"], r["driver_lag"]));
             eprintln!("run {}: {}", runs.len(), runs[runs.len() - 1]);
-            if lag < 2.0 || runs.len() == 3 {
+            if lag <= LATE_MS || runs.len() == 5 {
                 break r;
             }
         };
-        assert!(r["driver_lag"]["p99_ms"].as_f64().unwrap() < 2.0, "the driver sent late in every run: {runs:?}");
+        assert!(r["driver_lag"]["p99_ms"].as_f64().unwrap() <= LATE_MS, "the driver sent late in every run: {runs:?}");
         let mean = r["reads"]["mean_ms"].as_f64().unwrap();
         let svc = r["kinds"]["bm25"]["service"]["mean_ms"].as_f64().unwrap();
         // 4 ms of service and 6 ms of waiting; the client's own time and the scheduler's on top, a little.
