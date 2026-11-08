@@ -378,7 +378,7 @@ struct V1 {
 
 /// The features this version of Strata reads, besides its analyzers'
 /// ([`known_feature`]).
-pub const FEATURES: &[&str] = &[crate::schema::ADDED_FIELDS, "bool", "cluster_by", COLD_SEGMENTS, crate::schema::COMPACT_KEYS, "default", "derive", crate::schema::DERIVE_TEXT, "edge_table", crate::schema::EXPIRE_BY, FIELD_IDS, crate::schema::JSON, crate::schema::JSON_TEXT, "media", "multi_vector", "not_null", RANK_PROFILES, crate::schema::RABITQ, "retain", "semantic_id", "seq_no", "shard_by", "sources", "timestamp", crate::schema::VECTOR_PARTITION];
+pub const FEATURES: &[&str] = &[crate::schema::ADDED_FIELDS, "bool", "cluster_by", COLD_SEGMENTS, crate::schema::COMPACT_KEYS, "default", "derive", crate::schema::DERIVE_TEXT, "edge_table", crate::schema::EXPIRE_BY, FIELD_IDS, crate::schema::JSON, crate::schema::JSON_TEXT, "media", "multi_vector", "not_null", RANK_PROFILES, crate::schema::RABITQ, "retain", "semantic_id", "seq_no", "shard_by", "sources", "timestamp", crate::schema::VECTOR_PARTITION, crate::schema::ZSTD];
 
 /// The feature of a database whose fields have ids
 /// ([`crate::schema::Field::id`]): every database this version creates.

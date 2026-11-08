@@ -6,14 +6,16 @@
 //! per line of the database and of each kind of section, as JSON.
 //!
 //! ```text
-//! log_bytes DB IN.jsonl [COLUMNS]
+//! log_bytes DB IN.jsonl [COLUMNS] [OPTIONS]
 //! ```
 //!
 //! `COLUMNS` is the table's column list after `id INT PRIMARY KEY, ts
 //! TIMESTAMP NOT NULL,` (default: `host KEYWORD, service KEYWORD,
 //! severity KEYWORD, pid INT, body TEXT`), so variants (`body TEXT
 //! OPTIONS(positions = false)`, a table without `pid`) take the same
-//! records. A column the records lack is NULL.
+//! records. A column the records lack is NULL. A `COLUMNS` that names
+//! `ts` is the whole list (`id INT, ts TIMESTAMP NOT NULL, ...`: a table
+//! without a key). `OPTIONS` are the table's (`compression = 'zstd'`).
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -44,9 +46,12 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let (db_path, input) = (Path::new(&args[1]), Path::new(&args[2]));
     let columns = args.get(3).map_or(DEFAULT_COLUMNS, |c| c.as_str());
+    let options = args.get(4).map_or("", |o| o.as_str());
     let opts = DbOptions { memtable_max_docs: 1_000_000_000, ..DbOptions::default() };
     let db = Db::create_empty(db_path, opts).unwrap();
-    db.sql(&format!("CREATE TABLE logs (id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, {columns})"), &Params::new()).unwrap();
+    let list = if columns.split(',').any(|c| c.split_whitespace().next() == Some("ts")) { columns.to_string() } else { format!("id INT PRIMARY KEY, ts TIMESTAMP NOT NULL, {columns}") };
+    let with = if options.is_empty() { String::new() } else { format!(" OPTIONS({options})") };
+    db.sql(&format!("CREATE TABLE logs ({list}){with}"), &Params::new()).unwrap();
     let schema = db.catalog().into_iter().find(|s| s.table == "logs").unwrap();
     let names: Vec<(String, FieldType)> = schema.fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect();
 
@@ -97,7 +102,8 @@ fn main() {
     let per_line = |b: u64| (b as f64 / lines as f64 * 10.0).round() / 10.0;
     let out = serde_json::json!({
         "input": input.file_name().unwrap().to_string_lossy(),
-        "columns": columns,
+        "columns": list,
+        "options": options,
         "lines": lines,
         "segments": snap.segments().len(),
         "input_bytes_per_line": per_line(input_bytes),
