@@ -10,9 +10,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Engine } from './engine.mjs';
-import { forge, suggestFromUse, useComponentVersion } from './forge.mjs';
+import { forge, suggestFromUse, useSharedVersion } from './forge.mjs';
 import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
+import { seedLibrary } from './library.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -47,6 +48,7 @@ if (!strataUrl) {
 const db = new Strata(strataUrl, process.env.STRATA_TOKEN);
 const engine = new Engine(db, { log });
 await engine.init();
+await seedLibrary(engine.store, path.join(ROOT, 'library'), log);
 
 // ---- live updates: one stream per open studio page
 
@@ -95,7 +97,7 @@ async function runRequest(req, extra = {}) {
   };
   await engine.store.putRequest({ ...req, status: 'running' });
   try {
-    const out = req.source === 'component' ? await useComponentVersion(engine, req.app, extra.cap, progress) : await forge(engine, req.app, req, progress);
+    const out = req.source === 'component' ? await useSharedVersion(engine, req.app, extra.cap, progress) : await forge(engine, req.app, req, progress);
     await engine.store.putRequest({ ...req, status: 'done', comp: out.n, summary: out.summary, log: lines.map((l) => l.line).join('\n'), ms: out.ms, cost: out.cost });
     broadcast('done', { app: req.app, request: req.id, n: out.n, summary: out.summary });
   } catch (e) {
@@ -143,6 +145,7 @@ const STATIC = {
   '/studio.js': ['web/studio.js', 'text/javascript; charset=utf-8'],
   '/studio.css': ['web/studio.css', 'text/css; charset=utf-8'],
   '/frame.js': ['web/frame.js', 'text/javascript; charset=utf-8'],
+  '/graph.js': ['web/graph.js', 'text/javascript; charset=utf-8'],
   '/kit.css': ['web/kit.css', 'text/css; charset=utf-8'],
 };
 
@@ -178,11 +181,12 @@ async function appState(appId) {
     version: { n: view.comp.n, summary: view.comp.summary || '', request: view.comp.request || '' },
     views: view.views.map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
     functions: view.functions.map(cap),
-    components: await (async () => {
-      const newest = await store.components();
-      const users = await store.componentUsers();
-      return view.components.map((c) => ({ ...cap(c), latest: newest.get(c.slug)?.version || Number(c.version), users: (users.get(c.slug) || []).length }));
-    })(),
+    ...(await (async () => {
+      const newest = await store.shared();
+      const users = await store.sharedUsers();
+      const one = (c) => ({ ...cap(c), latest: newest.get(`${c.kind}/${c.slug}`)?.version || Number(c.version), users: (users.get(`${c.kind}/${c.slug}`) || []).length });
+      return { components: view.components.map(one), helpers: view.helpers.map(one) };
+    })()),
     tables,
     suggestions: await store.suggestions(appId),
     versions: await store.compositions(appId),
@@ -253,9 +257,17 @@ const routes = [
     const q = url.searchParams.get('q');
     const rows = q ? await engine.store.searchCapabilities(q, { limit: 40 }) : await engine.store.liveCapabilities();
     const apps = new Map((await engine.store.listApps()).map((a) => [a.id, a.name]));
-    const users = await engine.store.componentUsers();
-    return { capabilities: rows.map((r) => ({ ...r, app_name: r.kind === 'component' ? 'shared' : apps.get(r.app) || r.app,
-      used_by: r.kind === 'component' ? (users.get(r.slug) || []).map((u) => ({ app: u.app, name: u.name, version: u.version })) : undefined })) };
+    const users = await engine.store.sharedUsers();
+    const isShared = (r) => r.kind === 'component' || r.kind === 'helper';
+    return { capabilities: rows.map((r) => ({ ...r, app_name: isShared(r) ? 'shared' : apps.get(r.app) || r.app,
+      used_by: isShared(r) ? (users.get(`${r.kind}/${r.slug}`) || []).map((u) => ({ app: u.app, name: u.name, version: u.version })) : undefined })) };
+  }],
+  // The graph of apps and pieces: all of it, or one app's part.
+  ['GET', /^\/api\/graph$/, async (b, m, url) => ({ nodes: await engine.store.graph({ app: url.searchParams.get('app') || undefined }) })],
+  ['GET', /^\/api\/graph\/node$/, async (b, m, url) => {
+    const node = await engine.store.node(String(url.searchParams.get('id') || ''));
+    if (!node) throw Object.assign(new Error('no such node'), { status: 404 });
+    return node;
   }],
   ['GET', /^\/api\/capabilities\/(.+)$/, async (b, [id]) => {
     const [cap] = await engine.store.getCapabilities([decodeURIComponent(id)]);

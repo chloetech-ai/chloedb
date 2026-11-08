@@ -4,7 +4,8 @@ A prototype of the idea in the doc
 [Strata as a self-extending app engine](https://claude.ai/artifact/K7nVdw9VKT4d9u9QGDb35e):
 an app is data in Strata, made of capabilities (tables, views, server
 functions) that a model writes and the engine checks, stores and runs, and of
-shared components that every app uses from one library.
+shared components and helpers that every app uses from one library, linked to
+each other in a graph that Strata walks.
 
 - **Start from a description.** "A reading list: I paste a link with a title
   and a note, tag it, and mark it read." The forge asks the model for the
@@ -29,7 +30,25 @@ shared components that every app uses from one library.
   so it fits any app. Each app pins the version it uses; when one app needs
   more from a component, the forge writes a new version (new props only,
   old ones keep their meaning) and the other apps are offered it, which
-  takes a fraction of a second and no model call.
+  takes a fraction of a second and no model call. Plain logic shared the same
+  way is a **helper**, called as `lib.dates.addDays(day, 1)` in views,
+  components and server functions alike.
+- **It starts with a library.** 25 pieces written by hand ship in `library/`
+  and are stored in Strata at start-up like any other: components for a
+  calendar, a day strip, an activity heatmap, bar, line and donut charts, a
+  sparkline, stat tiles, a progress ring, a data table, a kanban board, a
+  timeline, a checklist, a form, a tag input, filter chips, rating stars and a
+  timer; helpers for dates, streaks, repeating schedules, statistics, money,
+  CSV and text. A changed file is stored as a new version at the next start.
+- **It knows what goes with what.** Every app, view, function, table and
+  shared piece is a node of `sa_graph`, and what each one uses, reads, calls
+  or opens is its `EDGES` field. The forge ranks the library for a request by
+  BM25 over what pieces do fused with personalized PageRank from the pieces
+  the app and the best text matches use (pieces other views use together,
+  pieces that call each other). A new version of a piece is offered to the
+  apps found by walking the graph backwards from it (`REACHABLE ... dir =>
+  'in'`), through the pieces that use it. The Library's Graph view and each
+  app's Map draw it and ask Strata about any node.
 - **It reuses whole screens too.** The forge searches the library of what
   every app runs now (BM25 over what each capability is and its code) and
   can reuse a view or function as it is, or fork it.
@@ -76,6 +95,8 @@ A first version takes the model 40 seconds to 2.5 minutes (longer when it writes
 | `engine/forge.mjs` | the forge: the prompt, the context it reads from Strata (the app's code, tables, sample rows, what you did, library matches), the checks, and applying a plan as the next version |
 | `engine/engine.mjs` | the runtime: SQL, inserts, updates, removes and function calls on an app's data; triggers; events; following Strata's feed |
 | `engine/store.mjs` | the system tables in Strata and the app's tables |
+| `engine/graph.mjs` | what each capability links to, read from its code, and the rows of `sa_graph` |
+| `engine/library.mjs`, `library/` | the built-in components and helpers, one file each, seeded into Strata at start-up |
 | `engine/sql.mjs` | rewrites `FROM tasks` to the app's physical table and refuses anything but one `SELECT` over the app's own tables |
 | `engine/sandbox.mjs` | server functions run in QuickJS compiled to WebAssembly: a fresh interpreter per call, 64 MiB, 10 s, no network, files or Node APIs, `app.*` calls only |
 | `engine/llm.mjs` | the model, through `claude -p` with tools, settings and MCP switched off |
@@ -86,8 +107,9 @@ In Strata:
 | table | holds |
 |---|---|
 | `sa_apps` | each app and its live version (`head`) |
-| `sa_capabilities` | every capability ever written, one row per version, with its code: `id` is `app/kind/slug@version`, and `lib/component/name@version` for a shared component |
-| `sa_compositions` | each version of each app: the capability ids it is made of (the component versions it pins included), the request and a summary |
+| `sa_capabilities` | every capability ever written, one row per version, with its code: `id` is `app/kind/slug@version`, and `lib/component/name@version` or `lib/helper/name@version` for a shared piece |
+| `sa_compositions` | each version of each app: the capability ids it is made of (the versions of shared pieces it pins included), the request and a summary |
+| `sa_graph` | one row per app, per live table, view and function, and per shared piece (by name, `live` naming its version); `links` (an `EDGES` field) holds labelled edges: `has`, `uses`, `data`, `on`, `calls`, `opens`, `forked` |
 | `sa_requests` | requests to the forge, with their progress log, cost and errors |
 | `sa_events` | what people did in each app |
 | `sa_suggestions` | suggestions, from builds and from use |
@@ -106,8 +128,13 @@ from there to the engine: `app.sql` (one `SELECT`, over the app's own tables),
 A **component** is JavaScript that defines `function component(props)` and
 returns an element. Every frame gets the components its app pins, each in its
 own script and loaded on first call; an error inside one is reported (and
-repaired) against the component. Components may call other components and add
-a stylesheet once with `css(name, text)`.
+repaired) against the component. Components may call other components and
+helpers, and add a stylesheet once with `css(name, text)`.
+
+A **helper** is JavaScript that defines `function helper()` returning an
+object of plain functions, called as `lib.name.fn(...)`. It has no page and no
+data calls, and is synchronous, so the same code runs in a view's frame and in
+a server function's QuickJS.
 
 A **function** is JavaScript that defines `function run(input, app)`. It runs
 on the server in QuickJS (WebAssembly), with the same `app` calls answered by
@@ -132,5 +159,5 @@ safety net). The doc lists what a real version needs.
 ## Tests
 
 ```bash
-npm test     # the SQL rewrite, the answer parser, the plan checks, the sandbox
+npm test     # the SQL rewrite, the answer parser, the plan checks, the sandbox, pinning, the built-in library, the graph's edges
 ```

@@ -184,6 +184,31 @@
     };
   };
   window.ui = ui;
+
+  // Shared helpers, called as lib.<name>.fn(...): plain functions, loaded on
+  // first use; an error inside one is reported against the helper.
+  const lib = {};
+  const tag = (e, id) => { if (e && typeof e === 'object' && !e.__cap) { try { e.__cap = id; } catch { /* frozen */ } } return e; };
+  window.__sa_helper = (name, id, factory) => {
+    let value;
+    Object.defineProperty(lib, name, {
+      enumerable: true,
+      get() {
+        if (value === undefined) {
+          let made;
+          try { made = factory(); } catch (e) { throw tag(e, id); }
+          if (!made || typeof made !== 'object') throw tag(new Error(`the helper ${name} defines no helper() returning its functions`), id);
+          value = {};
+          for (const [k, f] of Object.entries(made)) {
+            value[k] = typeof f === 'function' ? (...a) => { try { return f(...a); } catch (e) { throw tag(e, id); } } : f;
+          }
+          Object.freeze(value);
+        }
+        return value;
+      },
+    });
+  };
+  window.lib = lib;
   // css(name, text): a component's stylesheet, added once.
   const styled = new Set();
   window.css = (name, text) => {

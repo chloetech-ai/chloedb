@@ -2,6 +2,8 @@
 // suggestions, go back to an earlier version, and read the code the engine
 // generated and stored in Strata.
 
+import { drawGraph, nodePanel, GRAPH_HELP } from './graph.js';
+
 const $ = (sel, el = document) => el.querySelector(sel);
 function h(tag, props, ...children) {
   const el = document.createElement(tag);
@@ -132,7 +134,7 @@ function route() {
   $('#nav-library').classList.toggle('on', parts[0] === 'library');
   if (parts[0] === 'app' && parts[1]) return openApp(parts[1], parts[2] ? decodeURIComponent(parts[2]) : null);
   leaveApp();
-  if (parts[0] === 'library') return renderLibrary();
+  if (parts[0] === 'library') return renderLibrary(parts[1] === 'graph' && parts[2] ? decodeURIComponent(parts[2]) : null);
   return renderHome();
 }
 
@@ -191,14 +193,19 @@ async function renderHome() {
 
 // ---- library
 
-async function renderLibrary() {
+async function renderLibrary(selected) {
   $('#crumbs').replaceChildren(h('span', { class: 'sep' }, '/'), h('b', 'Library'));
   const main = $('#main');
   const q = h('input', { class: 'search', placeholder: 'Search what every app has built (views, functions, tables)...' });
   const out = h('div', { class: 'lib' });
-  main.replaceChildren(h('div', { class: 'page scroll' },
-    h('section', { class: 'hero' }, h('h1', 'Library'), h('p', 'What every app runs now: shared components, which every app can call, and each app’s views, functions and tables. Each version is a row of sa_capabilities in Strata, searched with BM25 over what it is and its code. The forge looks here before it writes something new.')),
-    q, out));
+  const mode = location.hash.includes('graph') ? 'graph' : 'list';
+  const switcher = h('div', { class: 'seg' },
+    h('button', { class: mode === 'list' ? 'on' : '', onclick: () => { location.hash = '#/library'; } }, 'List'),
+    h('button', { class: mode === 'graph' ? 'on' : '', onclick: () => { location.hash = '#/library/graph'; } }, 'Graph'));
+  main.replaceChildren(h('div', { class: `page scroll${mode === 'graph' ? ' wide' : ''}` },
+    h('section', { class: 'hero' }, h('h1', 'Library'), h('p', 'What every app runs now: shared components and helpers, which every app can call, and each app’s views, functions and tables. Each version is a row of sa_capabilities in Strata, searched with BM25 over what it is and its code, and linked to what it uses in a graph. The forge looks here before it writes something new.')),
+    switcher, mode === 'graph' ? out : q, mode === 'graph' ? null : out));
+  if (mode === 'graph') return libraryGraph(out, { selected });
   let apps = [];
   try { ({ apps } = await api('GET', '/api/apps')); } catch { /* none */ }
   async function load() {
@@ -209,28 +216,62 @@ async function renderLibrary() {
       if (!latest.has(k) || Number(latest.get(k).version) < Number(c.version)) latest.set(k, c);
     }
     const items = [...latest.values()].filter((c) => q.value.trim() || c.kind !== 'table')
-      .sort((a, b) => (a.kind === 'component' ? 0 : 1) - (b.kind === 'component' ? 0 : 1));
+      .sort((a, b) => ({ component: 0, helper: 1 }[a.kind] ?? 2) - ({ component: 0, helper: 1 }[b.kind] ?? 2));
     out.replaceChildren(...(items.length ? items.map((c) => {
       const sel = h('select', { class: 'btn small' }, h('option', { value: '' }, 'Use in...'), apps.filter((a) => a.id !== c.app).map((a) => h('option', { value: a.id }, a.name)));
       sel.addEventListener('change', async () => {
         if (!sel.value) return;
         const target = sel.value;
-        await api('POST', `/api/apps/${target}/requests`, { source: 'library', text: c.kind === 'component'
-          ? `Use the shared component ${c.slug} ("${c.title}") in this app, where it fits.`
+        await api('POST', `/api/apps/${target}/requests`, { source: 'library', text: c.kind === 'component' || c.kind === 'helper'
+          ? `Use the shared ${c.kind} ${c.slug} ("${c.title}") in this app, where it fits.`
           : `Bring in the ${c.kind} "${c.title}" from the app "${c.app_name}" (library id ${c.id}) and make it work with this app's data.` });
         location.hash = `#/app/${target}`;
       });
       return h('div', { class: 'libitem' },
-        h('span', { class: `pill ${c.kind}` }, c.kind), h('span', { class: 't' }, c.title), h('span', { class: 'meta' }, c.kind === 'component'
-          ? `ui.${c.slug} · v${c.version} · ${c.used_by?.length ? `used by ${c.used_by.map((u) => `${u.name}${u.version < c.version ? ` (v${u.version})` : ''}`).join(', ')}` : 'not used yet'}`
+        h('span', { class: `pill ${c.kind}` }, c.kind), h('span', { class: 't' }, c.title), h('span', { class: 'meta' }, c.kind === 'component' || c.kind === 'helper'
+          ? `${c.kind === 'helper' ? 'lib' : 'ui'}.${c.slug} · v${c.version}${c.author === 'builtin' ? ' · built in' : ''} · ${c.used_by?.length ? `used by ${c.used_by.map((u) => `${u.name}${u.version < c.version ? ` (v${u.version})` : ''}`).join(', ')}` : 'not used yet'}`
           : `${c.app_name} · v${c.version}${c.author && c.author !== 'forge' ? ` · ${c.author}` : ''}`),
-        h('span', { style: 'margin-left:auto;display:flex;gap:6px' }, h('button', { class: 'btn small', onclick: () => showCode(c.id) }, 'Code'), c.kind !== 'table' ? sel : null),
+        h('span', { style: 'margin-left:auto;display:flex;gap:6px' }, h('button', { class: 'btn small', onclick: () => showCode(c.id) }, 'Code'),
+          h('button', { class: 'btn small', title: 'what it uses, what depends on it, what goes with it', onclick: () => { location.hash = `#/library/graph/${encodeURIComponent(`${c.app}/${c.kind}/${c.slug}`)}`; } }, 'Links'), c.kind !== 'table' ? sel : null),
         c.description ? h('div', { class: 'd' }, c.description) : null);
     }) : [h('div', { class: 'hint' }, q.value ? 'Nothing matches.' : 'Nothing yet: build an app first.')]));
   }
   let t;
   q.addEventListener('input', () => { clearTimeout(t); t = setTimeout(load, 200); });
   load().catch((e) => out.replaceChildren(h('div', { class: 'err' }, e.message)));
+}
+
+// The library as a graph: every node of sa_graph, and a panel with what
+// Strata's graph queries say about the one picked.
+async function libraryGraph(out, { app, selected } = {}) {
+  let nodes;
+  try { ({ nodes } = await api('GET', `/api/graph${app ? `?app=${app}` : ''}`)); } catch (e) { out.replaceChildren(h('div', { class: 'err' }, e.message)); return; }
+  if (!nodes.length) { out.replaceChildren(h('div', { class: 'hint' }, 'Nothing yet: build an app first.')); return; }
+  const side = h('div', { class: 'gside' }, h('div', { class: 'hint' }, 'Click a node to see what it needs, what depends on it and what goes with it.'));
+  let picked = null;
+  const pick = async (id) => {
+    if (!id || id === picked) return;
+    picked = id;
+    side.replaceChildren(h('div', { class: 'hint' }, 'Asking Strata...'));
+    const panel = await nodePanel(id, { h, api, showCode, onPick: (x) => g.select(x) });
+    if (picked === id) side.replaceChildren(panel);
+  };
+  const g = drawGraph(nodes, { onSelect: pick, compact: !!app, selected });
+  const edges = nodes.reduce((n, x) => n + (x.links || []).length, 0);
+  out.replaceChildren(
+    h('div', { class: 'where' }, GRAPH_HELP, ` ${nodes.length} nodes, ${edges} edges.`),
+    h('div', { class: 'glegend' }, g.legend.map((l) => h('span', null, h('i', { style: `border-top:2px ${l.dash ? 'dashed' : 'solid'} ${l.color}` }), l.text))),
+    h('div', { class: 'gwrap' }, h('div', { class: 'gcanvas' }, g.svg), side));
+}
+
+async function showMap(appId, name) {
+  const modal = $('#modal');
+  const close = () => { modal.hidden = true; modal.replaceChildren(); };
+  modal.onclick = (e) => { if (e.target === modal) close(); };
+  const body = h('div', { class: 'mapbody' }, h('div', { class: 'hint' }, 'Loading...'));
+  modal.replaceChildren(h('div', { class: 'sheet wide' }, h('header', h('span', { class: 't' }, `${name}: how its pieces link`), h('button', { class: 'btn small ghost', onclick: close }, 'Close')), body));
+  modal.hidden = false;
+  await libraryGraph(body, { app: appId });
 }
 
 // ---- code
@@ -335,18 +376,22 @@ function switchView(slug, params) {
 
 const noClose = (code) => String(code).replace(/<\/(script)/gi, '<\\/$1');
 
-function srcdoc(view, params, components) {
+function srcdoc(view, params, components, helpers) {
   const code = noClose(view.code);
   const boot = JSON.stringify({ slug: view.slug, cap: view.id, params: params || {} }).replace(/</g, '\\u003c');
   // One script per shared component, so a broken one does not take the others down.
   const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
 ${noClose(c.code)}
 ;return typeof component === 'function' ? component : null; });</script>`).join('\n');
+  const libs = (helpers || []).map((c) => `<script>__sa_helper(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
+${noClose(c.code)}
+;return helper(); });</script>`).join('\n');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src https: data: blob:; media-src https: data: blob:; font-src data:">
 <style>${KIT}</style></head><body><div id="root"></div>
 <script>window.__SA = ${boot};</script>
 <script>${FRAME}</script>
+${libs}
 ${comps}
 <script>
 (async () => { try {
@@ -369,7 +414,7 @@ function renderFrames() {
   }
   box.querySelector('.building')?.remove();
   // drop frames of views that are gone or changed, or whose components changed
-  const compSig = (st.components || []).map((c) => c.id).join(',');
+  const compSig = [...(st.components || []), ...(st.helpers || [])].map((c) => c.id).join(',');
   for (const [slug, f] of S.frames) {
     const v = st.views.find((x) => x.slug === slug);
     if (!v || v.id !== f.capId || f.comps !== compSig) { f.iframe.remove(); S.frames.delete(slug); S.errors.delete(slug); }
@@ -378,7 +423,7 @@ function renderFrames() {
   if (v && !S.frames.has(v.slug)) {
     const params = S.params?.[v.slug] || {};
     const iframe = h('iframe', { sandbox: 'allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox', title: v.title });
-    iframe.srcdoc = srcdoc(v, params, st.components);
+    iframe.srcdoc = srcdoc(v, params, st.components, st.helpers);
     box.append(iframe);
     S.frames.set(v.slug, { iframe, capId: v.id, comps: compSig, params });
   }
@@ -474,7 +519,7 @@ function changeTab(draft) {
         h('div', { class: 'bar' },
           h('button', { class: 'btn small primary', onclick: async (e) => { e.target.disabled = true; await ask(s.text, { source: 'suggestion', suggestion: s.id }); refreshApp(); } }, 'Do it'),
           h('button', { class: 'btn small ghost', onclick: async () => { await api('POST', `/api/apps/${S.appId}/suggestions/${s.id}`, { status: 'dismissed' }); refreshApp(); } }, 'Not now'),
-          h('span', { class: 'src' }, s.source === 'use' ? 'from your use' : s.source === 'component' ? 'newer shared component' : 'from the last build'))))
+          h('span', { class: 'src' }, s.source === 'use' ? 'from your use' : s.source === 'component' ? 'newer shared piece' : 'from the last build'))))
         : h('div', { class: 'hint' }, 'No suggestions open.')));
   }
   return out;
@@ -509,8 +554,11 @@ function insideTab() {
   return [
     h('div', { class: 'where' }, `This app is data in Strata: version ${st.version.n} is the row `, h('span', { class: 'mono' }, `${st.app.id}#${st.version.n}`),
       ' of sa_compositions; each piece below is a row of sa_capabilities with its code; the app\'s data is in tables named ', h('span', { class: 'mono' }, `app_${st.app.id}_*`), '. Click a piece to read its code.'),
+    st.version.n ? h('button', { class: 'btn small', style: 'align-self:flex-start', onclick: () => showMap(st.app.id, st.app.name) }, 'Map: how the pieces link') : null,
     h('h2', { class: 'label' }, 'Views'), h('div', { class: 'caps' }, st.views.map((c) => cap(c))),
     h('h2', { class: 'label' }, 'Components (shared with other apps)'), h('div', { class: 'caps' }, (st.components || []).length ? st.components.map((c) => cap(c,
+      [c.users > 1 ? `used by ${c.users} apps` : 'only this app so far', c.latest > c.version ? `v${c.latest} available` : null].filter(Boolean).join(' · '))) : h('div', { class: 'hint' }, 'None')),
+    h('h2', { class: 'label' }, 'Helpers (shared with other apps)'), h('div', { class: 'caps' }, (st.helpers || []).length ? st.helpers.map((c) => cap(c,
       [c.users > 1 ? `used by ${c.users} apps` : 'only this app so far', c.latest > c.version ? `v${c.latest} available` : null].filter(Boolean).join(' · '))) : h('div', { class: 'hint' }, 'None')),
     h('h2', { class: 'label' }, 'Functions'), h('div', { class: 'caps' }, st.functions.length ? st.functions.map((c) => cap(c, c.spec?.on ? `on ${c.spec.on.event || 'insert'} ${c.spec.on.table}` : null)) : h('div', { class: 'hint' }, 'None')),
     h('h2', { class: 'label' }, 'Tables'), h('div', { class: 'caps' }, st.tables.map((t) => h('div', null,

@@ -52,7 +52,8 @@ export async function checkFunction(code) {
 }
 
 // Runs `code`'s run(input, app). `host(method, args)` answers app calls.
-export async function runFunction(code, input, host, { timeoutMs = 10000, memoryBytes = 64 * 1024 * 1024 } = {}) {
+// `helpers` are the shared helpers the app pins, available as lib.<name>.
+export async function runFunction(code, input, host, { timeoutMs = 10000, memoryBytes = 64 * 1024 * 1024, helpers = [] } = {}) {
   const vm = await newAsyncContext();
   const logs = [];
   const started = Date.now();
@@ -77,7 +78,8 @@ export async function runFunction(code, input, host, { timeoutMs = 10000, memory
     vm.setProp(vm.global, '__log', logFn);
     logFn.dispose();
     const arg = JSON.stringify(input === undefined ? null : input);
-    const program = `${PRELUDE}\n${code}\n;globalThis.__last = run(${arg}, app);\nJSON.stringify({ result: globalThis.__last === undefined ? null : globalThis.__last });`;
+    const libs = helpers.map((x) => `lib[${JSON.stringify(x.name)}] = (function () {\n${x.code}\n;return helper();\n})();`).join('\n');
+    const program = `${PRELUDE}\nconst lib = {};\n${libs}\n${code}\n;globalThis.__last = run(${arg}, app);\nJSON.stringify({ result: globalThis.__last === undefined ? null : globalThis.__last });`;
     const res = await vm.evalCodeAsync(program, 'capability.js');
     if (res.error) {
       const text = errorText(vm.dump(res.error));

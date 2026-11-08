@@ -194,7 +194,7 @@ export class Engine extends EventEmitter {
       }
     };
     try {
-      const out = await runFunction(fn.code, input, host);
+      const out = await runFunction(fn.code, input, host, { helpers: view.helpers.map((c) => ({ name: c.slug, code: c.code })) });
       if (!ctx.depth) this.store.track(appId, 'call', fn.id, slug).catch(() => {});
       return out;
     } catch (e) {

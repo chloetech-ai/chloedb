@@ -5,7 +5,8 @@
 import vm from 'node:vm';
 import { ask, parseAnswer, MODEL } from './llm.mjs';
 import { checkFunction } from './sandbox.mjs';
-import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, physical } from './store.mjs';
+import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, SHARED_KINDS, physical } from './store.mjs';
+import { SHARED, sharedRefs, appNode } from './graph.mjs';
 
 export const SYSTEM = `You build and change small web apps for one person, through a runtime whose backbone is a database, Strata. An app is made of capabilities that the runtime stores in Strata and loads:
 
@@ -13,6 +14,7 @@ export const SYSTEM = `You build and change small web apps for one person, throu
 - view: a screen of the app, shown as a tab. JavaScript that runs in the browser, in a sandboxed frame.
 - function: JavaScript that runs on the server in a sandboxed interpreter: work over many rows, logic several views share, and reactions to writes (triggers).
 - component: a piece of interface that every app shares through the library (a month calendar, a bar chart, a date picker, a tag input). Views call components; the library holds one copy that every app uses.
+- helper: plain functions every app shares through the library (dates, streaks, repeating schedules, statistics, money, CSV). Views, components and functions call them.
 
 The person describes what they want in their own words: the first version of a new app, or a change to the app they have. Build exactly that, completely and well, and keep everything else as it is.
 
@@ -96,6 +98,14 @@ Build screens from components, so that what one app builds, every app can use. A
 - State the person changes and the view may want to keep across redraws (the month shown, the tab open, the sort) is a prop with a callback (month and onMonth), with a default when not given.
 - One job per component, small enough to use from its props alone; build bigger ones from smaller ones. Name: camelCase, a noun for what it is (calendar, barChart, tagInput), never the app's subject (not habitCalendar). Describe its props precisely: names, types, defaults, callbacks and their arguments.
 
+# Helpers (shared by every app)
+
+A helper is a set of plain functions in the library, called as lib.NAME.fn(...) from views, components and server functions alike: lib.dates.addDays('2026-11-08', 3), lib.streak.current(days, {today}). Use the shared helpers listed below instead of writing the same logic again: date arithmetic, streaks, repeating schedules, sums and averages, money, CSV, text. A helper's code defines
+
+    function helper() { ...; return { fnA, fnB }; }
+
+returning an object of functions. Helpers get no app and no page (no app.*, document, window, ui, h): plain values in, plain values out, synchronous, so they run in the browser and in the server sandbox alike. Write a new helper (in "helpers") for logic that is not about one app's data and that another app could use; a new version may add functions and optional arguments, never change what an existing function returns.
+
 # Functions
 
 A function's code defines
@@ -117,7 +127,7 @@ Below the app you may get capabilities that other apps built, from Strata's libr
 
 # Your answer
 
-First <plan>...</plan> holding one JSON object, then one <code slug="...">...</code> block for each view and function you add or rewrite, and one <code slug="ui:NAME">...</code> block for each component you add or write a new version of, the code alone (no markdown fences). Nothing else.
+First <plan>...</plan> holding one JSON object, then one <code slug="...">...</code> block for each view and function you add or rewrite, one <code slug="ui:NAME">...</code> block for each component and one <code slug="lib:NAME">...</code> block for each helper you add or write a new version of, the code alone (no markdown fences). Nothing else.
 
 {
   "name": "a short name for the app (only for a new app, or when asked to rename it)",
@@ -126,6 +136,7 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
   "views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1}],
   "functions": [{"slug": "weekly-summary", "description": "what it does, its input and output", "on": null}],
   "components": [{"name": "calendar", "title": "Month calendar", "description": "what it shows and lets the person do", "props": "month: 'YYYY-MM', default this month; onMonth(month): the person moved to another month; items: [{date: 'YYYY-MM-DD', label, color}], ...", "change": "for a new version of an existing component: what it adds"}],
+  "helpers": [{"name": "recurrence", "title": "Repeating schedules", "description": "what it computes", "api": "next(rule, after) -> 'YYYY-MM-DD': ...; each function with its arguments, defaults and what it returns", "change": "for a new version: what it adds"}],
   "upgrade": [],
   "remove": [],
   "reuse": [{"id": "abc123/view/board@2", "slug": "board", "title": "Board", "order": 2}],
@@ -135,8 +146,8 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
 
 - tables: tables to add, and existing tables you add columns to (for an existing table, list only its new columns).
 - views and functions: the ones you add or rewrite, each with a code block of the same slug holding its whole code. Leave out the ones that stay as they are. Rewriting a view means writing all of it again. Keep slugs as they are (lowercase letters, digits, dashes). "order" places views (the lowest opens first).
-- components: components you add, or write a new version of, each with a <code slug="ui:NAME"> block holding its whole code. The components the views call are found from their code: the app keeps the version of each it has, and takes the newest of one it did not use before.
-- upgrade: names of components this app uses at an older version (see the list) that it should move to the newest.
+- components and helpers: the ones you add, or write a new version of, each with a <code slug="ui:NAME"> or <code slug="lib:NAME"> block holding its whole code. The components and helpers the code calls are found from it: the app keeps the version of each it has, and takes the newest of one it did not use before.
+- upgrade: names of components or helpers this app uses at an older version (see the list) that it should move to the newest.
 - remove: slugs of views or functions to take out.
 - reuse: capabilities from the library to copy, by id.
 - seed: example rows, only for a new app, and only when examples help the person see the app working (3 to 8 rows per table, realistic, dated near today). Leave it out when the app holds the person's own data from the start (an expense log, a journal), unless they asked for examples.
@@ -180,7 +191,7 @@ export function summarizeEvents(events) {
 export async function buildContext(engine, appId, request) {
   const { store } = engine;
   const view = await store.resolve(appId);
-  const shared = await store.components();
+  const shared = await store.shared();
   const parts = [];
   if (!view.comp.n) {
     parts.push('# The app\n\nThe app is new: nothing exists yet. Build its first version from the request.');
@@ -201,12 +212,12 @@ export async function buildContext(engine, appId, request) {
     parts.push(`## Views\n${views.join('\n\n') || '(none)'}`);
     const fns = view.functions.map((f) => `<function slug="${f.slug}" on='${JSON.stringify(f.spec.on || null)}' id="${f.id}">\n${f.description ? `// ${f.description}\n` : ''}${f.code}\n</function>`);
     parts.push(`## Functions\n${fns.join('\n\n') || '(none)'}`);
-    const comps = view.components.map((c) => {
-      const newest = shared.get(c.slug);
+    const mine = view.shared.map((c) => {
+      const newest = shared.get(`${c.kind}/${c.slug}`);
       const note = newest && newest.version > Number(c.version) ? ` newest="${newest.version}" (the newest adds: ${newest.spec?.change || 'see the library'})` : '';
-      return `<component name="${c.slug}" version="${c.version}"${note}>\n// ${c.title}: ${c.description}\n// props: ${c.spec?.props || ''}\n${c.code}\n</component>`;
+      return `<${c.kind} name="${c.slug}" version="${c.version}"${note}>\n// ${c.title}: ${c.description}\n// ${c.kind === 'helper' ? 'api' : 'props'}: ${c.spec?.props || ''}\n${c.code}\n</${c.kind}>`;
     });
-    parts.push(`## Components this app uses (shared with other apps)\n${comps.join('\n\n') || '(none)'}`);
+    parts.push(`## Components and helpers this app uses (shared with other apps)\n${mine.join('\n\n') || '(none)'}`);
     const live = new Set(view.comp.caps);
     const events = (await store.recentEvents(appId, 300)).filter((e) => e.kind !== 'error' || live.has(e.cap));
     parts.push(`## What the person did lately\n${summarizeEvents(events)}`);
@@ -215,29 +226,39 @@ export async function buildContext(engine, appId, request) {
     const history = await store.suggestionHistory(appId, 30);
     if (history.length) parts.push(`## Suggestions made before\n${history.map((h) => `- [${h.status === 'taken' ? 'taken' : h.status === 'dismissed' ? 'dismissed' : h.status === 'open' ? 'still open' : 'replaced'}] ${h.text}`).join('\n')}`);
   }
-  // Shared components: all of them by name and props, and the code of those
-  // that match the request best (BM25), within a budget.
-  const own = new Set(view.components.map((c) => c.slug));
-  const others = [...shared.values()].filter((c) => !own.has(c.slug));
+  // Shared components and helpers: all of them by name and props, and the
+  // code of those that fit best, within a budget. Fit is two rankings fused:
+  // BM25 of the request over what pieces are and do, and PageRank over the
+  // graph from this app and the best text matches, which finds the pieces
+  // that go with them (used by the same views, called by them).
+  const own = new Set(view.shared.map((c) => `${c.kind}/${c.slug}`));
+  const others = [...shared.entries()].filter(([k]) => !own.has(k)).map(([, c]) => c);
   if (others.length) {
-    const users = await store.componentUsers();
-    const hits = await store.searchCapabilities(`${request.text} ${view.app.description || ''}`, { kinds: ['component'], limit: 12 });
-    const rank = new Map(hits.map((h, i) => [h.slug, i]));
-    others.sort((a, b) => (rank.get(a.slug) ?? 99) - (rank.get(b.slug) ?? 99));
-    let budget = 40000;
+    const users = await store.sharedUsers();
+    const key = (c) => `${c.kind}/${c.slug}`;
+    const hits = await store.searchCapabilities(`${request.text} ${view.app.description || ''}`, { kinds: SHARED_KINDS, limit: 14 });
+    const near = await store.related([appNode(appId), ...hits.slice(0, 3).map((h) => `${LIB}/${key(h)}`)], { limit: 14 });
+    const fused = new Map();
+    const vote = (k, i) => fused.set(k, (fused.get(k) || 0) + 1 / (60 + i));
+    hits.forEach((h, i) => vote(key(h), i));
+    near.forEach((r, i) => vote(key(r), i));
+    const top = [...fused.entries()].sort((a, b) => b[1] - a[1]).slice(0, 14);
+    const rank = new Map(top.map(([k], i) => [k, i]));
+    others.sort((a, b) => (rank.get(key(a)) ?? 99) - (rank.get(key(b)) ?? 99) || (a.kind === b.kind ? 0 : a.kind === 'helper' ? 1 : -1));
+    let budget = 45000;
     const entries = [];
-    for (const c of others.slice(0, 60)) {
-      const used = (users.get(c.slug) || []).map((u) => `${u.name} (v${u.version})`).join(', ') || 'no app yet';
+    for (const c of others.slice(0, 80)) {
+      const used = (users.get(key(c)) || []).map((u) => `${u.name} (v${u.version})`).join(', ') || 'no app yet';
       let body = '';
-      if (budget > 0 && rank.has(c.slug)) {
+      if (budget > 0 && rank.has(key(c))) {
         const [full] = await store.getCapabilities([c.id]);
         if (full?.code && full.code.length < budget) { body = `\n${full.code}`; budget -= full.code.length; }
       }
-      entries.push(`<component name="${c.slug}" version="${c.version}" title="${c.title}" used_by="${used}">\n// ${c.description}\n// props: ${c.spec?.props || ''}${body}\n</component>`);
+      entries.push(`<${c.kind} name="${c.slug}" version="${c.version}" title="${c.title}" used_by="${used}">\n// ${c.description}\n// ${c.kind === 'helper' ? 'api' : 'props'}: ${c.spec?.props || ''}${body}\n</${c.kind}>`);
     }
-    parts.push(`# Shared components in the library (use them as ui.NAME(props))\n\n${entries.join('\n\n')}`);
+    parts.push(`# Shared components (ui.NAME(props)) and helpers (lib.NAME.fn(...)) in the library\n\nThe first ones, with their code, fit best: by the request's words, and by what goes with the pieces this app and the request's best matches use (other views use them together, or they call each other).\n\n${entries.join('\n\n')}`);
   } else if (!own.size) {
-    parts.push('# Shared components in the library\n\nNone yet: the components you write now start it.');
+    parts.push('# Shared components and helpers in the library\n\nNone yet: the ones you write now start it.');
   }
   // The library: whole views and functions other apps built that may fit this request.
   const lib = await store.searchCapabilities(`${request.text} ${view.app.description || ''}`, { excludeApp: appId, kinds: ['view', 'function'], limit: 3 });
@@ -256,42 +277,50 @@ export async function buildContext(engine, appId, request) {
   return { prompt: parts.join('\n\n'), view, library: libCaps, shared };
 }
 
-// The components a piece of code calls: ui.name(...) or ui['name'](...).
+export { SHARED, sharedRefs };
+
+// The components a piece of code calls, by name.
 export function uiRefs(code) {
-  const out = new Set();
-  for (const m of String(code || '').matchAll(/\bui\s*(?:\.\s*([a-z][a-zA-Z0-9]*)|\[\s*['"]([a-z][a-zA-Z0-9]*)['"]\s*\])/g)) out.add(m[1] || m[2]);
-  return out;
+  return new Set([...sharedRefs(code)].filter((k) => k.startsWith('component/')).map((k) => k.slice('component/'.length)));
 }
 
-function checkComponent(code) {
+export function checkShared(kind, code) {
   const problems = [];
-  if (!/\bfunction\s+component\s*\(/.test(code)) problems.push('must define function component(props)');
+  if (!SHARED[kind].define.test(code)) problems.push(`must define ${SHARED[kind].defines}`);
   const data = code.match(/\bapp\s*\.\s*(sql|insert|update|remove|call|onChange|open|track)\b/);
-  if (data) problems.push(`uses app.${data[1]}: a component gets its data through props and reports what the person does through callbacks`);
+  if (data) problems.push(kind === 'component'
+    ? `uses app.${data[1]}: a component gets its data through props and reports what the person does through callbacks`
+    : `uses app.${data[1]}: a helper gets plain values and returns plain values`);
+  if (kind === 'helper') {
+    const page = code.match(/\b(document|window|localStorage)\b|(?<![\w$.])(ui|h|svg|css)\s*[.(]/);
+    if (page) problems.push(`uses ${page[1] || page[2]}: helpers also run on the server, where there is no page`);
+    if (/\bawait\b|\basync\b/.test(code)) problems.push('a helper is synchronous: no async or await');
+  }
   if (/\bimport\s+[\w{*]|\brequire\s*\(/.test(code)) problems.push('no import or require');
-  if (/\bfetch\s*\(/.test(code)) problems.push('no fetch: the frame has no network');
-  if (/\blocalStorage\b/.test(code)) problems.push('no localStorage');
-  try { new vm.Script(`(function () {\n${code}\n})`, { filename: 'component.js' }); } catch (e) { problems.push(`syntax: ${e.message}`); }
-  if (code.length > 60 * 1024) problems.push('the code is longer than 60 KiB: split it into smaller components');
+  if (/\bfetch\s*\(/.test(code)) problems.push('no fetch: there is no network');
+  if (kind === 'component' && /\blocalStorage\b/.test(code)) problems.push('no localStorage');
+  try { new vm.Script(`(function () {\n${code}\n})`, { filename: `${kind}.js` }); } catch (e) { problems.push(`syntax: ${e.message}`); }
+  if (code.length > 60 * 1024) problems.push(`the code is longer than 60 KiB: split it`);
   return problems;
 }
 
-// Pins the components the app's views call, following components that call
+// Pins the shared pieces an app's code calls, following pieces that call
 // others: one written in this version, else the version the app had (unless
-// upgraded), else the newest in the library.
-export async function pinComponents(store, viewIds, { written = new Map(), had = new Map(), upgrade = new Set(), shared } = {}) {
-  const lib = shared || await store.components();
+// upgraded), else the newest in the library. Keys are kind/name.
+export async function pinShared(store, rootIds, { written = new Map(), had = new Map(), upgrade = new Set(), shared } = {}) {
+  const lib = shared || await store.shared();
   const codeOf = async (id) => (await store.getCapabilities([id]))[0]?.code || '';
   const want = new Map();
   const queue = [];
-  for (const id of viewIds) queue.push(...uiRefs(await codeOf(id)));
+  for (const id of rootIds) queue.push(...sharedRefs(await codeOf(id)));
   while (queue.length) {
-    const name = queue.shift();
-    if (want.has(name)) continue;
-    const id = written.get(name) || (!upgrade.has(name) && had.get(name)) || lib.get(name)?.id;
+    const key = queue.shift();
+    if (want.has(key)) continue;
+    const name = key.split('/')[1];
+    const id = written.get(key) || (!upgrade.has(name) && !upgrade.has(key) && had.get(key)) || lib.get(key)?.id;
     if (!id) continue;
-    want.set(name, id);
-    queue.push(...uiRefs(await codeOf(id)));
+    want.set(key, id);
+    queue.push(...sharedRefs(await codeOf(id)));
   }
   return want;
 }
@@ -341,19 +370,28 @@ export async function validate(plan, code, view, library, shared = new Map()) {
       }
     }
   }
-  const known = new Set([...shared.keys(), ...view.components.map((c) => c.slug)]);
-  for (const c of plan.components || []) {
-    if (!COMPONENT_RE.test(c.name || '')) { problems.push(`component name ${JSON.stringify(c.name)}: camelCase letters and digits, starting with a lowercase letter`); continue; }
-    known.add(c.name);
-    const src = code[`ui:${c.name}`];
-    if (!src || !src.trim()) { problems.push(`component ${c.name} has no <code slug="ui:${c.name}"> block`); continue; }
-    for (const x of checkComponent(src)) problems.push(`component ${c.name}: ${x}`);
+  const known = new Set([...shared.keys(), ...view.shared.map((c) => `${c.kind}/${c.slug}`)]);
+  const writtenCode = [];
+  for (const [kind, { ns, plural }] of Object.entries(SHARED)) {
+    for (const c of plan[plural] || []) {
+      if (!COMPONENT_RE.test(c.name || '')) { problems.push(`${kind} name ${JSON.stringify(c.name)}: camelCase letters and digits, starting with a lowercase letter`); continue; }
+      known.add(`${kind}/${c.name}`);
+      const src = code[`${ns}:${c.name}`];
+      if (!src || !src.trim()) { problems.push(`${kind} ${c.name} has no <code slug="${ns}:${c.name}"> block`); continue; }
+      for (const x of checkShared(kind, src)) problems.push(`${kind} ${c.name}: ${x}`);
+      writtenCode.push([`${kind} ${c.name}`, src, kind]);
+    }
   }
-  const written = [...(plan.views || []).map((v) => [`view ${v.slug}`, code[v.slug]]), ...(plan.components || []).map((c) => [`component ${c.name}`, code[`ui:${c.name}`]])];
-  for (const [what, src] of written) {
-    for (const name of uiRefs(src)) if (!known.has(name)) problems.push(`${what} calls ui.${name}, which is not a shared component; write it (in "components") or use one that exists`);
+  for (const v of plan.views || []) writtenCode.push([`view ${v.slug}`, code[v.slug], 'view']);
+  for (const f of plan.functions || []) writtenCode.push([`function ${f.slug}`, code[f.slug], 'function']);
+  for (const [what, src, kind] of writtenCode) {
+    for (const key of sharedRefs(src)) {
+      const [k, name] = key.split('/');
+      if ((kind === 'function' || kind === 'helper') && k === 'component') { problems.push(`${what} calls ui.${name}: components are for views, ${kind}s run where there is no page`); continue; }
+      if (!known.has(key)) problems.push(`${what} calls ${SHARED[k].ns}.${name}, which is not a shared ${k}; write it (in "${SHARED[k].plural}") or use one that exists`);
+    }
   }
-  for (const name of plan.upgrade || []) if (!view.components.some((c) => c.slug === name)) problems.push(`upgrade ${name}: the app does not use that component`);
+  for (const name of plan.upgrade || []) if (!view.shared.some((c) => c.slug === name)) problems.push(`upgrade ${name}: the app does not use a shared piece of that name`);
   const libIds = new Set(library.map((c) => c.id));
   for (const r of plan.reuse || []) {
     if (!libIds.has(r.id)) problems.push(`reuse ${r.id}: not in the library given`);
@@ -446,28 +484,31 @@ export async function forge(engine, appId, request, progress = () => {}) {
     caps.delete(`view/${s}`);
     caps.delete(`function/${s}`);
   }
-  // Components go to the shared library, then the app pins what its views call.
-  const writtenComps = new Map();
+  // Components and helpers go to the shared library; then the app pins what
+  // its views and functions call.
+  const writtenShared = new Map();
   const newVersions = [];
-  for (const c of plan.components || []) {
-    const prev = shared.get(c.name);
-    const id = await store.putCapability({ app: LIB, slug: c.name, kind: 'component', title: c.title || c.name, description: c.description || '',
-      code: code[`ui:${c.name}`], spec: { props: String(c.props || ''), change: prev ? String(c.change || '') : '', by: appId }, author: request.source === 'repair' ? 'repair' : 'forge' });
-    writtenComps.set(c.name, id);
-    written.push(id);
-    const version = Number(id.split('@').pop());
-    progress(prev ? `Wrote version ${version} of the shared component ${c.name}` : `Wrote a new shared component, ${c.name}`);
-    if (prev) newVersions.push({ name: c.name, id, version, title: c.title || prev.title, change: String(c.change || '') });
+  for (const [kind, { ns, plural }] of Object.entries(SHARED)) {
+    for (const c of plan[plural] || []) {
+      const prev = shared.get(`${kind}/${c.name}`);
+      const id = await store.putCapability({ app: LIB, slug: c.name, kind, title: c.title || c.name, description: c.description || '',
+        code: code[`${ns}:${c.name}`], spec: { props: String(c.props || c.api || ''), change: prev ? String(c.change || '') : '', by: appId }, author: request.source === 'repair' ? 'repair' : 'forge' });
+      writtenShared.set(`${kind}/${c.name}`, id);
+      written.push(id);
+      const version = Number(id.split('@').pop());
+      progress(prev ? `Wrote version ${version} of the shared ${kind} ${c.name}` : `Wrote a new shared ${kind}, ${c.name}`);
+      if (prev) newVersions.push({ kind, name: c.name, id, version, title: c.title || prev.title, change: String(c.change || '') });
+    }
   }
-  const had = new Map(view.components.map((c) => [c.slug, c.id]));
-  const pinned = await pinComponents(store, [...caps.entries()].filter(([k]) => k.startsWith('view/')).map(([, id]) => id),
-    { written: writtenComps, had, upgrade: new Set(plan.upgrade || []), shared });
-  for (const k of [...caps.keys()]) if (k.startsWith('component/')) caps.delete(k);
-  for (const [name, id] of pinned) {
-    caps.set(`component/${name}`, id);
-    if (!writtenComps.has(name) && had.get(name) !== id) progress(`Uses the shared component ${name} (${id.split('@').pop() === '1' ? 'from the library' : `version ${id.split('@').pop()}`})`);
+  const had = new Map(view.shared.map((c) => [`${c.kind}/${c.slug}`, c.id]));
+  const roots = [...caps.entries()].filter(([k]) => k.startsWith('view/') || k.startsWith('function/')).map(([, id]) => id);
+  const pinned = await pinShared(store, roots, { written: writtenShared, had, upgrade: new Set(plan.upgrade || []), shared });
+  for (const k of [...caps.keys()]) if (SHARED_KINDS.some((kind) => k.startsWith(`${kind}/`))) caps.delete(k);
+  for (const [key, id] of pinned) {
+    caps.set(key, id);
+    const [kind, name] = key.split('/');
+    if (!writtenShared.has(key) && had.get(key) !== id) progress(`Uses the shared ${kind} ${name} (version ${id.split('@').pop()})`);
   }
-  if (plan.name && (!view.comp.n || /\brename|\bname\b/i.test(request.text))) await store.updateApp(appId, { name: String(plan.name).slice(0, 60) });
   const n = await store.writeComposition(appId, [...caps.values()], request.text, plan.summary || '');
   progress(`Version ${n} is live: ${written.length} capabilit${written.length === 1 ? 'y' : 'ies'} written`);
   // Example rows go in once the tables are part of the live version.
@@ -490,43 +531,53 @@ export async function forge(engine, appId, request, progress = () => {}) {
   return { n, summary: plan.summary || '', written, cost, ms: Date.now() - started };
 }
 
-// A new version of a shared component is offered to every other app that
-// uses an older one: taking it needs no model, the code is in Strata already.
+// A new version of a shared component or helper is offered to every other
+// app that uses an older one: taking it needs no model, the code is in Strata.
 async function offerNewVersions(engine, appId, newVersions, progress) {
   if (!newVersions.length) return;
   const { store } = engine;
-  const users = await store.componentUsers();
   const from = (await store.getApp(appId))?.name || appId;
   for (const nv of newVersions) {
-    for (const u of users.get(nv.name) || []) {
+    // Who depends on the piece, directly or through other pieces: the graph
+    // walked backwards from it. The version each app has is in its pins.
+    const deps = await store.dependents(`${LIB}/${nv.kind}/${nv.name}`).catch(() => []);
+    const users = [];
+    for (const d of deps.filter((x) => x.kind === 'app' && x.app !== appId)) {
+      const v = await store.resolve(d.app).catch(() => null);
+      const pin = v?.shared.find((c) => c.kind === nv.kind && c.slug === nv.name);
+      if (pin) users.push({ app: d.app, name: v.app.name, version: Number(pin.version) });
+    }
+    for (const u of users) {
       if (u.app === appId || u.version >= nv.version) continue;
-      const open = (await store.suggestions(u.app)).filter((s) => s.source === 'component' && String(s.cap || '').startsWith(`${LIB}/component/${nv.name}@`));
+      const open = (await store.suggestions(u.app)).filter((s) => s.source === 'component' && String(s.cap || '').startsWith(`${LIB}/${nv.kind}/${nv.name}@`));
       if (open.length) await engine.db.write(open.map((s) => ({ op: 'set', table: 'sa_suggestions', key: s.id, field: 'status', value: 'stale' })));
-      await store.putSuggestions(u.app, [{ text: `Use the newer ${nv.title} (version ${nv.version}, made for ${from})`, why: nv.change ? `It adds: ${nv.change}` : `A newer version of a component this app uses (it has version ${u.version}).`, source: 'component', cap: nv.id }]);
+      await store.putSuggestions(u.app, [{ text: `Use the newer ${nv.title} (version ${nv.version}, made for ${from})`, why: nv.change ? `It adds: ${nv.change}` : `A newer version of a shared ${nv.kind} this app uses (it has version ${u.version}).`, source: 'component', cap: nv.id }]);
       progress(`Offered ${nv.name} version ${nv.version} to ${u.name}, which has version ${u.version}`);
     }
   }
 }
 
-// Moves an app to another version of a shared component, as a new version of
-// the app. No model call: the code is in Strata already.
-export async function useComponentVersion(engine, appId, capId, progress = () => {}) {
+// Moves an app to another version of a shared component or helper, as a new
+// version of the app. No model call: the code is in Strata already.
+export async function useSharedVersion(engine, appId, capId, progress = () => {}) {
   const started = Date.now();
   const { store } = engine;
   const view = await store.resolve(appId);
   const [cap] = await store.getCapabilities([capId]);
-  if (!cap || cap.kind !== 'component') throw new Error(`no component ${capId}`);
+  if (!cap || !SHARED_KINDS.includes(cap.kind)) throw new Error(`no shared component or helper ${capId}`);
   progress(`Moving ${cap.title} to version ${cap.version}: the code is in Strata already, so no model is needed`);
-  const caps = new Map(view.comp.caps.map((id) => [id.startsWith(`${LIB}/component/`) ? `component/${id.split('/')[2].split('@')[0]}` : id, id]));
-  const had = new Map(view.components.map((c) => [c.slug, c.id]));
-  const pinned = await pinComponents(store, view.views.map((v) => v.id), { written: new Map([[cap.slug, cap.id]]), had });
-  for (const k of [...caps.keys()]) if (k.startsWith('component/')) caps.delete(k);
-  for (const [name, id] of pinned) caps.set(`component/${name}`, id);
+  const caps = new Map(view.caps.map((c) => [`${c.kind}/${c.slug}`, c.id]));
+  const had = new Map(view.shared.map((c) => [`${c.kind}/${c.slug}`, c.id]));
+  const roots = [...view.views, ...view.functions].map((c) => c.id);
+  const pinned = await pinShared(store, roots, { written: new Map([[`${cap.kind}/${cap.slug}`, cap.id]]), had });
+  for (const k of [...caps.keys()]) if (SHARED_KINDS.some((kind) => k.startsWith(`${kind}/`))) caps.delete(k);
+  for (const [key, id] of pinned) caps.set(key, id);
   const summary = `${cap.title} is now version ${cap.version}${cap.spec?.change ? `: ${String(cap.spec.change).replace(/\.\s*$/, '')}` : ''}.`;
   const n = await store.writeComposition(appId, [...caps.values()], `Use ${cap.title} version ${cap.version}`, summary);
   progress(`Version ${n} is live`);
   return { n, summary, written: [], cost: 0, ms: Date.now() - started };
 }
+export const useComponentVersion = useSharedVersion;
 
 async function retireSuggestions(engine, appId) {
   const open = await engine.store.suggestions(appId);

@@ -59,8 +59,8 @@ h2.label { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; co
 .meta { color: var(--muted); font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .pill { display: inline-flex; align-items: center; padding: 0 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; background: var(--soft); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
 .pill.view { color: #3b5bdb; } .pill.function { color: #9c36b5; } .pill.table { color: #2b8a3e; }
-.pill.repair { color: var(--warn); } .pill.library { color: #1098ad; } .pill.component { color: #d9480f; }
-@media (prefers-color-scheme: dark) { .pill.view { color: #91a7ff; } .pill.function { color: #e599f7; } .pill.table { color: #8ce99a; } .pill.library { color: #66d9e8; } .pill.component { color: #ffa94d; } }
+.pill.repair { color: var(--warn); } .pill.library { color: #1098ad; } .pill.component { color: #d9480f; } .pill.helper { color: #5f3dc4; }
+@media (prefers-color-scheme: dark) { .pill.view { color: #91a7ff; } .pill.function { color: #e599f7; } .pill.table { color: #8ce99a; } .pill.library { color: #66d9e8; } .pill.component { color: #ffa94d; } .pill.helper { color: #b197fc; } }
 .how { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
 .how div { border-top: 2px solid var(--line); padding-top: 10px; color: var(--muted); }
 .how b { color: var(--fg); display: block; margin-bottom: 2px; }
@@ -145,3 +145,45 @@ h2.label { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; co
   .page { padding: 24px 16px 40px; }
   .hero h1 { font-size: 24px; }
 }
+
+/* the graph of apps and pieces */
+:root { --g-uses: #d9480f; --g-data: #2b8a3e; --g-has: #adb5bd; --g-calls: #9c36b5; --g-on: #1971c2; --g-forked: #1098ad; }
+@media (prefers-color-scheme: dark) { :root { --g-uses: #ffa94d; --g-data: #8ce99a; --g-has: #5c5f66; --g-calls: #e599f7; --g-on: #74c0fc; --g-forked: #66d9e8; } }
+.page.wide { max-width: 1400px; }
+.seg { flex: none; display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; align-self: flex-start; background: var(--card); }
+.seg button { border: 0; background: none; padding: 5px 14px; cursor: pointer; color: var(--muted); }
+.seg button.on { background: var(--fg); color: var(--bg); }
+.gwrap { flex: none; display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 14px; align-items: start; }
+.gcanvas { overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); padding: 8px; max-height: 72vh; }
+.gside { position: sticky; top: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); padding: 12px; max-height: 72vh; overflow: auto; }
+@media (max-width: 900px) { .gwrap { grid-template-columns: 1fr; } .gside { position: static; } }
+svg.graph { display: block; font: 12px ui-sans-serif, -apple-system, system-ui, sans-serif; }
+svg.graph .ghead { fill: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+svg.graph .gnode { cursor: pointer; outline: none; }
+svg.graph .gnode rect { fill: var(--soft); stroke: var(--line); }
+svg.graph .gnode text { fill: var(--fg); }
+svg.graph .gnode:hover rect, svg.graph .gnode:focus rect { stroke: var(--fg); }
+svg.graph .gnode.sel rect { stroke: var(--fg); stroke-width: 2; fill: var(--card); }
+svg.graph .gnode.dim, svg.graph .gedge.dim { opacity: .18; }
+svg.graph .gedge { opacity: .55; transition: opacity .12s; }
+svg.graph .gedge.hot { opacity: 1; stroke-width: 2; }
+svg.graph .k-app circle { fill: var(--fg); } svg.graph .k-app text { font-weight: 650; }
+svg.graph .k-view circle { fill: #3b5bdb; } svg.graph .k-function circle { fill: #9c36b5; } svg.graph .k-table circle { fill: #2b8a3e; }
+svg.graph .k-component circle { fill: #d9480f; } svg.graph .k-helper circle { fill: #5f3dc4; }
+@media (prefers-color-scheme: dark) { svg.graph .k-view circle { fill: #91a7ff; } svg.graph .k-function circle { fill: #e599f7; } svg.graph .k-table circle { fill: #8ce99a; } svg.graph .k-component circle { fill: #ffa94d; } svg.graph .k-helper circle { fill: #b197fc; } }
+.glegend { display: flex; flex-wrap: wrap; gap: 14px; color: var(--muted); font-size: 12.5px; }
+.glegend span { display: inline-flex; align-items: center; gap: 6px; }
+.glegend i { display: inline-block; width: 22px; }
+.gpanel { display: flex; flex-direction: column; gap: 12px; }
+.gpanel-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.gsec { display: flex; flex-direction: column; gap: 6px; }
+.gsec-h { display: flex; flex-direction: column; gap: 1px; }
+.gsql { color: var(--muted); font-size: 11px; word-break: break-all; }
+.glist { display: flex; flex-direction: column; gap: 4px; }
+.gitem { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 4px 8px; cursor: pointer; text-align: left; }
+.gitem:hover { border-color: var(--fg); }
+.gitem .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gitem .v { color: var(--muted); font-size: 12px; }
+.muted { color: var(--muted); } .small { font-size: 12.5px; }
+.sheet.wide { width: min(1300px, 100%); }
+.mapbody { padding: 14px 16px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }

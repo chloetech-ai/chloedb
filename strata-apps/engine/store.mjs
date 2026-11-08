@@ -4,6 +4,7 @@
 // app's own data lives in tables named app_<app>_<table>.
 
 import { randomBytes } from 'node:crypto';
+import { GRAPH_SQL, appDocs, capDoc, appNode, parseLinks } from './graph.mjs';
 
 export const TYPES = {
   text: 'TEXT',            // prose people search by words
@@ -28,16 +29,20 @@ const SYSTEM_TABLES = {
     detail TEXT, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   sa_suggestions: `CREATE TABLE sa_suggestions (id KEYWORD PRIMARY KEY, app KEYWORD NOT NULL, text TEXT, why TEXT,
     source KEYWORD, cap KEYWORD, status KEYWORD, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  // Apps, their pieces and the shared library as a graph (graph.mjs).
+  sa_graph: GRAPH_SQL,
 };
 
 export const newId = (n = 8) => randomBytes(n).toString('base64url').replace(/[^a-zA-Z0-9]/g, '').slice(0, n).toLowerCase().padEnd(n, '0');
 export const physical = (app, table) => `app_${app}_${table}`;
 export const NAME_RE = /^[a-z][a-z0-9_]{0,30}$/;
 export const SLUG_RE = /^[a-z][a-z0-9-]{0,40}$/;
-// Components are shared by every app: they belong to the library, not to an
-// app, and views call them as ui.<name>(props), so names are JavaScript names.
+// Components and helpers are shared by every app: they belong to the library,
+// not to an app. Code calls them as ui.<name>(props) and lib.<name>.fn(...),
+// so their names are JavaScript names.
 export const LIB = 'lib';
 export const COMPONENT_RE = /^[a-z][a-zA-Z0-9]{1,40}$/;
+export const SHARED_KINDS = ['component', 'helper'];
 
 const tableName = (t) => t.table || t.schema?.table || t.name;
 const parseSpec = (s) => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
@@ -58,6 +63,7 @@ export class Store {
         this.log(`created ${name}`);
       }
     }
+    await this.rebuildGraph();
   }
 
   async tableNames() {
@@ -79,6 +85,7 @@ export class Store {
   async createApp({ name, description }) {
     const id = newId(6);
     await this.db.write([{ op: 'insert', table: 'sa_apps', doc: { id, name: name || 'New app', description: description || '', head: 0 } }]);
+    await this.syncAppGraph(id);
     return id;
   }
 
@@ -89,6 +96,7 @@ export class Store {
     delete doc.created;
     await this.db.write([{ op: 'upsert', table: 'sa_apps', doc: { ...doc, created: app.created } }]);
     this.resolved.delete(id);
+    await this.syncAppGraph(id);
   }
 
   // ---- capabilities
@@ -117,6 +125,9 @@ export class Store {
     if (!doc.forked_from) delete doc.forked_from;
     await this.db.write([{ op: 'insert', table: 'sa_capabilities', doc }]);
     this.capCache.set(id, { ...doc, spec: spec || {} });
+    // A shared piece's node follows its newest version; an app's own
+    // capabilities join the graph when a version of the app goes live.
+    if (SHARED_KINDS.includes(kind)) await this.writeGraph([capDoc({ ...doc, spec: spec || {} }, { lib: LIB })]);
     return id;
   }
 
@@ -124,13 +135,19 @@ export class Store {
   // newest version of every shared component. Older versions stay in Strata
   // (going back needs them) but the library offers only what is live.
   async liveMap() {
+    try {
+      const rows = await this.db.query(`SELECT id, live FROM sa_graph WHERE kind != 'app' LIMIT 10000`);
+      return new Map(rows.filter((r) => r.live).map((r) => [r.id, r.live]));
+    } catch (e) {
+      this.log(`graph: ${e.message}; reading what is live from every app`);
+    }
     const live = new Map(); // app/kind/slug -> id
     for (const a of await this.listApps()) {
       if (!Number(a.head)) continue;
       const view = await this.resolve(a.id).catch(() => null);
-      for (const c of view?.caps || []) if (c.kind !== 'component') live.set(`${c.app}/${c.kind}/${c.slug}`, c.id);
+      for (const c of view?.caps || []) if (!SHARED_KINDS.includes(c.kind)) live.set(`${c.app}/${c.kind}/${c.slug}`, c.id);
     }
-    for (const c of (await this.components()).values()) live.set(`${LIB}/component/${c.slug}`, c.id);
+    for (const c of (await this.shared()).values()) live.set(`${LIB}/${c.kind}/${c.slug}`, c.id);
     return live;
   }
 
@@ -214,6 +231,8 @@ export class Store {
       views: caps.filter((c) => c.kind === 'view'),
       functions: caps.filter((c) => c.kind === 'function'),
       components: caps.filter((c) => c.kind === 'component'),
+      helpers: caps.filter((c) => c.kind === 'helper'),
+      shared: caps.filter((c) => SHARED_KINDS.includes(c.kind)),
     };
     this.resolved.set(appId, { head: app.head, view });
     return view;
@@ -223,27 +242,120 @@ export class Store {
 
   // ---- shared components
 
-  // The newest version of every component in the library, by name.
-  async components() {
-    const rows = await this.db.query(`SELECT id, slug, version, title, description, spec, created FROM sa_capabilities
-      WHERE kind = 'component' ORDER BY version DESC LIMIT 1000`);
+  // The newest version of every shared component and helper, by kind/name.
+  async shared() {
+    const rows = await this.db.query(`SELECT id, slug, version, kind, title, description, spec, author, created FROM sa_capabilities
+      WHERE kind IN ('component', 'helper') ORDER BY version DESC LIMIT 5000`);
     const out = new Map();
-    for (const r of rows) if (!out.has(r.slug)) out.set(r.slug, { ...r, version: Number(r.version), spec: parseSpec(r.spec) });
+    for (const r of rows) {
+      const key = `${r.kind}/${r.slug}`;
+      if (!out.has(key)) out.set(key, { ...r, version: Number(r.version), spec: parseSpec(r.spec) });
+    }
     return out;
   }
 
-  // Which apps use which component, and at which version (each app pins one).
-  async componentUsers() {
-    const users = new Map(); // slug -> [{app, name, id, version}]
+  // Which apps use which shared piece, and at which version (each app pins
+  // one), by kind/name.
+  async sharedUsers() {
+    const users = new Map(); // kind/slug -> [{app, name, id, version}]
     for (const a of await this.listApps()) {
       if (!Number(a.head)) continue;
       const view = await this.resolve(a.id).catch(() => null);
-      for (const c of view?.components || []) {
-        if (!users.has(c.slug)) users.set(c.slug, []);
-        users.get(c.slug).push({ app: a.id, name: a.name, id: c.id, version: Number(c.version) });
+      for (const c of view?.shared || []) {
+        const key = `${c.kind}/${c.slug}`;
+        if (!users.has(key)) users.set(key, []);
+        users.get(key).push({ app: a.id, name: a.name, id: c.id, version: Number(c.version) });
       }
     }
     return users;
+  }
+
+  // ---- the graph of apps and pieces (graph.mjs)
+
+  async writeGraph(docs, deletes = []) {
+    const ops = [...docs.map((doc) => ({ op: 'upsert', table: 'sa_graph', doc })), ...deletes.map((key) => ({ op: 'delete', table: 'sa_graph', key }))];
+    if (!ops.length) return;
+    try { await this.db.write(ops); } catch (e) { this.log(`graph: ${e.message}`); }
+  }
+
+  // An app's nodes follow the version that is live: written again whenever
+  // the app changes, and its nodes that the new version lacks are removed.
+  async syncAppGraph(appId) {
+    let view;
+    try { view = await this.resolve(appId); } catch { return; }
+    const docs = appDocs(view, SHARED_KINDS);
+    const keep = new Set(docs.map((d) => d.id));
+    let old = [];
+    try { old = await this.db.query('SELECT id FROM sa_graph WHERE app = :a LIMIT 10000', { a: appId }); } catch { /* none */ }
+    await this.writeGraph(docs, old.map((r) => r.id).filter((id) => !keep.has(id)));
+  }
+
+  // The whole graph from what Strata holds, at start-up.
+  async rebuildGraph() {
+    const docs = [];
+    const shared = [...(await this.shared()).values()];
+    for (const c of await this.getCapabilities(shared.map((x) => x.id))) docs.push(capDoc(c, { lib: LIB }));
+    for (const a of await this.listApps()) {
+      const view = await this.resolve(a.id).catch(() => null);
+      if (view) docs.push(...appDocs(view, SHARED_KINDS));
+    }
+    const keep = new Set(docs.map((d) => d.id));
+    let old = [];
+    try { old = await this.db.query('SELECT id FROM sa_graph LIMIT 10000'); } catch { /* none */ }
+    await this.writeGraph(docs, old.map((r) => r.id).filter((id) => !keep.has(id)));
+    this.log(`graph: ${docs.length} nodes, ${docs.reduce((n, d) => n + d.links.length, 0)} edges`);
+  }
+
+  // Nodes with their edges: every one, or an app's and what it reaches.
+  async graph({ app } = {}) {
+    const cols = 'id, kind, app, slug, title, description, live, version, links';
+    const rows = app
+      ? await this.db.query(`SELECT ${cols}, hops() AS hops FROM sa_graph WHERE REACHABLE(links, :n, hops => 6, min_hops => 0) ORDER BY hops() LIMIT 2000`, { n: appNode(app) })
+      : await this.db.query(`SELECT ${cols} FROM sa_graph LIMIT 5000`);
+    return rows.map((r) => ({ ...r, version: Number(r.version) || 0, links: parseLinks(r.links) }));
+  }
+
+  // What depends on a node, directly or through others: the views,
+  // functions and pieces that use it, and the apps they belong to, nearest
+  // first. A view that only opens another does not depend on its pieces.
+  async dependents(id, { hops = 8 } = {}) {
+    return this.db.query(`SELECT id, kind, app, slug, title, hops() AS hops FROM sa_graph
+      WHERE REACHABLE(links, :n, hops => ${Number(hops)}, dir => 'in', label => 'uses,has,calls') ORDER BY hops(), id LIMIT 2000`, { n: id });
+  }
+
+  // What a node needs: the pieces, tables and functions it reaches.
+  async needs(id, { hops = 8 } = {}) {
+    return this.db.query(`SELECT id, kind, app, slug, title, hops() AS hops FROM sa_graph
+      WHERE REACHABLE(links, :n, hops => ${Number(hops)}, label => 'has,uses,data,calls,on') ORDER BY hops(), id LIMIT 2000`, { n: id });
+  }
+
+  // Shared pieces near some nodes, by personalized PageRank over every
+  // edge, both ways: from a piece, the pieces the same views also use and
+  // the ones it calls; from an app, the pieces apps like it use.
+  async related(seeds, { kinds = SHARED_KINDS, limit = 20, exclude = [] } = {}) {
+    const ids = [...new Set(seeds.filter(Boolean))];
+    if (!ids.length) return [];
+    const skip = new Set([...ids, ...exclude]);
+    const params = { s: ids };
+    kinds.forEach((k, i) => { params[`k${i}`] = k; });
+    let rows;
+    try {
+      rows = await this.db.query(`SELECT id, kind, slug, title, score() AS score FROM sa_graph WHERE kind IN (${kinds.map((k, i) => `:k${i}`).join(', ')})
+        ORDER BY ppr(links, :s) DESC LIMIT ${Number(limit) + skip.size}`, params);
+    } catch (e) { this.log(`graph: ${e.message}`); return []; }
+    return rows.filter((r) => !skip.has(r.id) && Number(r.score) > 0).slice(0, limit).map((r) => ({ ...r, score: Number(r.score) }));
+  }
+
+  // One node: what it uses, what uses it (and which apps), what goes with it.
+  async node(id) {
+    const [row] = await this.db.get('sa_graph', [id]);
+    if (!row) return null;
+    const links = parseLinks(row.links);
+    const needs = await this.needs(id);
+    const dependents = await this.dependents(id);
+    const direct = new Set([...links.map((l) => l.to), ...dependents.filter((d) => Number(d.hops) === 1).map((d) => d.id)]);
+    const related = await this.related([id], { exclude: [...direct], limit: 8 });
+    return { ...row, version: Number(row.version) || 0, links, needs, dependents, related };
   }
 
   // ---- each app's data tables
