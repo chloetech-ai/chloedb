@@ -2358,6 +2358,8 @@ impl Service {
         let res = match &self.backend {
             Backend::Local(db) => {
                 let stats = req.stats.take().map(Arc::new);
+                // A shard's scroll scores its later pages as its first.
+                let scroll_stats = stats.clone().filter(|_| req.shard && req.scroll.is_some());
                 LiveQueries::run(&live, async {
                     // A read on a replica may wait for a write it must see,
                     // before it takes a query slot.
@@ -2436,7 +2438,7 @@ impl Service {
                             steps::around(&mut rs.stats.steps, te, started, ended, back);
                             arrow = ipc;
                             if let (Some(s), Some(ask)) = (scrolled, &req.scroll) {
-                                cursor = self.keep_scroll(s, Some(snap.clone()), &schema.table, &req.sql, ask)?;
+                                cursor = self.keep_scroll(scroll::Paged::Db(s), Some(snap.clone()), &schema.table, &req.sql, ask, req.shard, scroll_stats)?;
                             }
                             Ok((rs, Vec::new()))
                         }
@@ -2447,17 +2449,41 @@ impl Service {
             }
             Backend::Cluster(c) => {
                 LiveQueries::run(&live, async {
-                    if req.scroll.is_some() {
-                        return Err(no_cluster_scroll());
-                    }
                     let ta = Instant::now();
                     let permit = self.admit(timeout).await;
                     telemetry::record("admission", ta, if permit.is_some() { "ok" } else { "rejected" });
                     let permit = permit.ok_or_else(too_many)?;
                     let reach = select.limit.unwrap_or(0).saturating_add(select.offset);
-                    let r = match self.max_rows.filter(|&m| reach > m) {
-                        Some(m) => Err(ApiError::bad(format!("query error: LIMIT and OFFSET reach row {reach}; a query returns at most {m} rows"))),
-                        None => c.query(&req, &schema, &select, t0 + timeout).await.map(|m| {
+                    let r = match (&req.scroll, self.max_rows.filter(|&m| reach > m)) {
+                        // The shards' scrolls, their pages merged as they come.
+                        (Some(ask), _) if strata::cluster::streams(&select) => {
+                            let keep_alive = self.keep_alive(ask.keep_alive, false) + crate::coord::SHARD_KEEP_ALIVE_MARGIN;
+                            match c.scroll(&req, &schema, &select, self.page_size(ask.page), keep_alive, t0 + timeout).await {
+                                Ok((rs, s)) => {
+                                    if let Some(s) = s {
+                                        cursor = self.keep_scroll(scroll::Paged::Shards(Box::new(s)), None, &schema.table, &req.sql, ask, false, None)?;
+                                    }
+                                    Ok((rs, Vec::new()))
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                        // Groups, counts, fused or reranked rows: answered
+                        // whole, and held.
+                        (Some(ask), _) => {
+                            let most = self.max_scroll_rows;
+                            match c.query(&req, &schema, &select, t0 + timeout).await {
+                                Ok(m) if m.rs.rows.len() > most => Err(ApiError::bad(format!("query error: the query answers {} rows; a scroll of groups, counts, fused or reranked rows over shards holds them, at most {most} (--max-scroll-rows)", m.rs.rows.len()))),
+                                Ok(m) => {
+                                    let (first, s) = strata::query::exec::Scroll::of_rows(m.rs, self.page_size(ask.page));
+                                    cursor = self.keep_scroll(scroll::Paged::Db(s), None, &schema.table, &req.sql, ask, false, None)?;
+                                    Ok((first, m.missing))
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                        (None, Some(m)) => Err(ApiError::bad(format!("query error: LIMIT and OFFSET reach row {reach}; a query returns at most {m} rows"))),
+                        (None, None) => c.query(&req, &schema, &select, t0 + timeout).await.map(|m| {
                             served = m.served;
                             (m.rs, m.missing)
                         }),
@@ -2521,7 +2547,7 @@ impl Service {
         // Past the window, a server's client can scroll.
         if let Err(e) = &mut res {
             let window = e.message.contains("a query returns at most") || e.message.contains("the most a query returns");
-            if window && !shard && matches!(self.backend, Backend::Local(_)) {
+            if window && !shard {
                 e.message.push_str(" (or read every row a page at a time: a scroll, page_size)");
             }
         }
@@ -2564,9 +2590,6 @@ impl Service {
         let req_sql = req.sql.clone();
         let meta = self.meta(&req);
         let scroll = req.scroll.clone();
-        if scroll.is_some() && matches!(self.backend, Backend::Cluster(_)) {
-            return Err(no_cluster_scroll());
-        }
         let live = self.live.start(&req.sql, kind, req.shard, &meta);
         let r = LiveQueries::run(&live, self.compound_run(req, plan, catalog, t0, timeout)).await;
         drop(live);
@@ -2588,7 +2611,7 @@ impl Service {
         };
         let a = self.done(&req_sql, kind, t0, None, false, (profiled, quiet), &meta, res)?;
         let (first, s) = strata::query::exec::Scroll::of_rows(a.rs, self.page_size(ask.page));
-        let cursor = self.keep_scroll(s, None, "", &req_sql, &ask)?;
+        let cursor = self.keep_scroll(scroll::Paged::Db(s), None, "", &req_sql, &ask, false, None)?;
         Ok(Answer { rs: first, cursor, ..a })
     }
 
@@ -4277,11 +4300,6 @@ fn shard_leaf(leaf: Leaf) -> strata::Result<(ResultSet, Vec<u8>)> {
             Ok((rs, ipc))
         }
     }
-}
-
-/// A coordinator's refusal of a scroll.
-fn no_cluster_scroll() -> ApiError {
-    ApiError::bad("a scroll (page_size) reads one server's rows, not yet a coordinator's: page through a cluster by a column, WHERE n > :last ORDER BY n LIMIT k")
 }
 
 fn too_many() -> ApiError {
