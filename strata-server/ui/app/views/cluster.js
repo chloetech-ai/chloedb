@@ -149,7 +149,83 @@ function refreshSoon() { refreshCluster(); setTimeout(() => refreshCluster(), 25
  */
 function forceTarget(sh) {
   if (sh.primary || !sh.up || !CRIT.has(sh.state) || sh.majority) return null;
-  return sh.copies.filter((c) => !c.down).sort((a, b) => (b.term || 0) - (a.term || 0) || (b.txn || 0) - (a.txn || 0))[0] || null;
+  return bestLive(sh);
+}
+/**
+ * Of a shard's copies that answer (but those in `skip`), the one of the
+ * latest term and transaction: the copy an election or a promotion can
+ * make the primary, as the others vote only for a copy holding all they do.
+ */
+function bestLive(sh, skip = []) {
+  return sh.copies.filter((c) => !c.down && !skip.includes(c.url)).sort((a, b) => (b.term || 0) - (a.term || 0) || (b.txn || 0) - (a.txn || 0))[0] || null;
+}
+/**
+ * The copy to make a shard's primary by a vote: one that answers, when no
+ * copy that answers is the primary but a majority answer (the primary
+ * died, or is cut off, with a majority left). The server keeps a dead
+ * primary as the shard's primary, so it removes it only once another is
+ * (finding chaos-2).
+ */
+function voteTarget(sh) {
+  if (sh.primary || !sh.up || !CRIT.has(sh.state) || !sh.majority) return null;
+  return bestLive(sh);
+}
+/**
+ * Why a shard serves no reads or takes no writes, and the way back, in
+ * words: `cause` and `restore` for its box, `next` for its problem. A
+ * shard with a majority that has no primary is not short of a majority
+ * (finding chaos-2); one whose primary cannot write is fixed by handing
+ * the primary over, not by a restart (finding chaos-4).
+ */
+function critAdvice(sh) {
+  const down = sh.copies.filter((c) => c.down), left = sh.copies.filter((c) => !c.down);
+  const wasP = down.find((c) => c.wasPrimary);
+  const them = down.length === 1 ? cname(down[0]) : "either " + down.map(cname).join(" or ");
+  const what = noReads(sh) ? "serves no reads and takes no writes" : "takes no writes";
+  if (sh.state === "down" || !left.length) {
+    const t = `Bring ${them} back`;
+    return { cause: `None of its ${copies_(sh.n)} answers: searches that need shard ${sh.i} fail, and it takes no writes.`, restore: `To restore it: bring ${them} back.`, next: t };
+  }
+  const lead = forceTarget(sh);
+  if (lead) {
+    return {
+      cause: `${sh.up} of ${sh.n} copies ${sh.up === 1 ? "answers" : "answer"}, no majority: shard ${sh.i} ${what}${wasP ? `, and ${cname(wasP)}, its primary, is down` : ""}.`,
+      restore: `To restore it: bring ${them} back; or force ${cname(lead)} to be the primary, remove ${down.length === 1 ? cname(down[0]) : "the copies down"} so ${cname(lead)} ${left.length === 1 ? "serves alone (1 of 1 is a majority)" : "has a majority"}, then add new copies. Plan the repair does these in order.`,
+      next: `Bring ${them} back, or remove ${down.length === 1 ? "it" : "them"} so ${left.map(cname).join(", ")} ${left.length === 1 ? "has" : "have"} a majority`,
+    };
+  }
+  if (!sh.majority) {
+    return {
+      cause: `${sh.up} of ${sh.n} copies ${sh.up === 1 ? "answers" : "answer"}, no majority: shard ${sh.i} ${what}.`,
+      restore: `To restore it: bring ${them} back, or remove ${down.length === 1 ? "it" : "them"} so ${left.map(cname).join(" and ")} ${left.length === 1 ? "serves alone (1 of 1 is a majority)" : "serve as a majority"}, then add new copies.`,
+      next: `Bring ${them} back, or remove ${down.length === 1 ? "it" : "them"} so ${left.map(cname).join(", ")} ${left.length === 1 ? "has" : "have"} a majority`,
+    };
+  }
+  const vote = voteTarget(sh);
+  if (vote) {
+    const gone = down.length ? `, then replace ${down.length === 1 ? cname(down[0]) : "the copies down"}` : "";
+    const elect = sh.failover !== false;
+    return {
+      cause: `${sh.up} of ${sh.n} copies answer, a majority, but none is the primary${wasP ? `: ${cname(wasP)}, the primary, does not answer` : ""}. Shard ${sh.i} ${what}${elect ? " until its copies elect a primary" : " (failover is off)"}.`,
+      restore: `To restore it: ${elect ? `its copies should elect a primary within seconds. If none is elected, make ${cname(vote)} the primary` : `make ${cname(vote)} the primary`} (its menu: Make it the primary)${gone}.${down.length ? " Plan the repair does these in order." : ""}`,
+      next: `${elect ? "Wait a few seconds for an election, or make" : "Make"} ${cname(vote)} the primary${gone}`,
+    };
+  }
+  const P = sh.primary;
+  if (P && !sh.takes_writes) {
+    // The primary answers but cannot write: a full disk, a write that
+    // failed partway. A replica in sync takes over at once; a restart of
+    // the primary alone does not help while the cause lasts.
+    const to = sh.copies.find((c) => !c.down && !c.primary && c.inSync) || null;
+    const why = String(sh.why || "").replace(/^[^:]*: the primary takes no writes: /, "").replace(/: restart the server$/, "");
+    const disk = P.disk != null && P.disk >= 0.95 ? `free its volume (${pct0(P.disk)} full)` : "fix the cause";
+    return {
+      cause: `${cname(P)}, shard ${sh.i}'s primary, takes no writes${why && why !== sh.why ? `: ${why}` : ""}.`,
+      restore: to ? `To restore it: make ${cname(to)} the primary (its menu: Make it the primary); it is in sync, so writes go on at once. Then ${disk} on ${cname(P)} and restart it.${sh.failover !== false ? " With failover on, the primary hands itself over to a replica in sync within seconds." : ""}` : `To restore it: ${disk} on ${cname(P)} and restart it; no replica is in sync to take over.`,
+      next: to ? `Make ${cname(to)} the primary, then ${disk} on ${cname(P)} and restart it` : `${cap(disk)} on ${cname(P)} and restart it`,
+    };
+  }
+  return { cause: cap(String(sh.why || `shard ${sh.i} ${what}`).replace(/\.?$/, ".")), restore: "To restore it: see why on its copies (their logs).", next: "Look at its copies' logs" };
 }
 /**
  * The moves the server's drain or rebalance makes, by counts of slots only:
@@ -227,6 +303,8 @@ function model(c) {
         inSync: primary ? true : f ? !!f.in_sync && !f.copying : null,
         copying: !primary && !!f?.copying,
         alerts: d.alerts || null,
+        // What its last scrub found failing its checksums (finding chaos-6).
+        damaged: !down && d.health?.damaged?.length ? d.health.damaged : null,
         // false: the server says it has no --backup-dir; null: it does not say.
         backupDir: "backup_dir" in r ? r.backup_dir || false : null,
         uptime: d.system?.uptime_s ?? null,
@@ -326,7 +404,9 @@ function issues(sh) {
   const out = [];
   if (sh.state === "down") out.push({ sev: 2, short: "down", long: sh.why });
   else if (sh.state === "no_reads") out.push({ sev: 2, short: "no reads", long: sh.why });
-  else if (sh.state === "no_writes") out.push({ sev: 2, short: sh.failover === false ? "no writes" : "no majority", long: sh.why });
+  // "no majority" only when too few copies answer: a shard whose primary
+  // went with a majority left has no primary until one is elected.
+  else if (sh.state === "no_writes") out.push({ sev: 2, short: sh.failover === false || sh.primary ? "no writes" : sh.majority ? "no primary" : "no majority", long: sh.why });
   else if (sh.state === "degraded") {
     const d = sh.copies.filter((c) => c.down);
     out.push({ sev: 1, short: `${d.length} down`, long: `${d.map(cname).join(", ")} ${d.length === 1 ? "does" : "do"} not answer; it serves from ${sh.up} of ${sh.n}` });
@@ -336,6 +416,7 @@ function issues(sh) {
     if (c.copying) out.push({ sev: 0, short: "copying", long: `${cname(c)} is being sent a copy of the primary` });
     else if (c.lag != null && c.lag >= LAG_WARN) out.push({ sev: 1, short: `lag ${kn(c.lag)}`, long: `${cname(c)} is ${fmt.n(c.lag)} transactions behind its primary` });
     if (c.disk != null && c.disk >= 0.85) out.push({ sev: 1, short: `disk ${pct0(c.disk)}`, long: `${cname(c)}'s volume is ${pct0(c.disk)} full` });
+    if (c.damaged) out.push({ sev: 2, short: "damaged", long: `${cname(c)}'s data is damaged on disk: ${plural(c.damaged.length, "segment")} ${c.damaged.length === 1 ? "fails its checksum" : "fail their checksums"}; replace the copy` });
     if (c.avoided) out.push({ sev: 1, short: "avoided", long: `the coordinator sends ${cname(c)} no searches${c.avoidedWhy ? ": " + c.avoidedWhy : " after failures"}` });
   }
   const failing = sh.copies.filter((c) => c.err != null && c.err > sloErr()).sort((a, b) => b.err - a.err)[0];
@@ -377,8 +458,8 @@ function problems(M) {
       sev: 2, shards: [sh.i], label: `Shard ${sh.i} ${sh.state === "down" ? "is down" : noReads(sh) ? "serves no reads" : "takes no writes"}`,
       text: `${sh.up} of ${sh.n} copies answer`, since: Math.min(...down.map((c) => c.downSince || Infinity)),
       impact: noReads(sh) ? "searches that need it fail, and it takes no writes" : "it takes no writes: searches go on from its other copies",
-      next: left.length ? `Bring ${down.map(cname).join(" or ")} back, or remove ${down.length === 1 ? "it" : "them"} so ${left.map(cname).join(", ")} ${left.length === 1 ? "has" : "have"} a majority` : `Bring a copy of shard ${sh.i} back`,
-      fix: left.length ? { kind: "repair", shard: sh.i } : null,
+      next: left.length ? critAdvice(sh).next : `Bring a copy of shard ${sh.i} back`,
+      fix: left.length && down.length ? { kind: "repair", shard: sh.i } : null,
     });
   }
   // Searches failing on a copy: Home's first critical problem (NEW-shell-monitor-6).
@@ -1162,18 +1243,10 @@ function render(page, r) {
    * disk, an alert) as rows of their own (finding NEW-scenarios-19).
    */
   function critBox(sh, is) {
-    const down = sh.copies.filter((c) => c.down), left = sh.copies.filter((c) => !c.down);
-    const lead = forceTarget(sh);
-    const wasP = down.find((c) => c.wasPrimary);
-    const cause = sh.state === "down" ? `None of its ${copies_(sh.n)} answers: searches that need shard ${sh.i} fail, and it takes no writes.`
-      : `${sh.up} of ${sh.n} copies ${sh.up === 1 ? "answers" : "answer"}, no majority: shard ${sh.i} ${noReads(sh) ? "serves no reads and takes no writes" : "takes no writes"}${wasP && !sh.primary ? `, and ${cname(wasP)}, its primary, is down` : ""}.`;
-    const them = down.length === 1 ? cname(down[0]) : "either " + down.map(cname).join(" or ");
-    const restore = !left.length ? `To restore it: bring ${them} back.`
-      : lead ? `To restore it: bring ${them} back; or force ${cname(lead)} to be the primary, remove ${down.length === 1 ? cname(down[0]) : "the copies down"} so ${cname(lead)} ${left.length === 1 ? "serves alone (1 of 1 is a majority)" : "has a majority"}, then add new copies. Plan the repair does these in order.`
-      : `To restore it: bring ${them} back, or remove ${down.length === 1 ? "it" : "them"} so ${left.map(cname).join(" and ")} ${left.length === 1 ? "serves alone (1 of 1 is a majority)" : "serve as a majority"}, then add new copies.`;
+    const { cause, restore } = critAdvice(sh);
     // The rest, without what the cause says already: the primary avoided
     // for want of a majority is the shard serving no reads.
-    const rest = is.filter((x) => x.sev < 2 || !/^(down|no reads|no writes|no majority)$/.test(x.short)).filter((x) => !/^\d+ down$/.test(x.short))
+    const rest = is.filter((x) => x.sev < 2 || !/^(down|no reads|no writes|no majority|no primary)$/.test(x.short)).filter((x) => !/^\d+ down$/.test(x.short))
       .filter((x) => !(x.short === "avoided" && /fewer than a majority/.test(x.long || "")));
     return h("div", { class: "cc-why crit" }, h("div", {}, cause), h("div", { style: { marginTop: "6px" } }, restore),
       rest.length ? h("div", { class: "cc2-why-also" }, h("div", { class: "small" }, "Also:"), h("ul", { class: "cc2-why-rest" }, rest.map((x) => h("li", { class: x.sev === 2 ? "crit" : "warn" }, cap(String(x.long || x.short).replace(/\.$/, "")) + ".")))) : null);
@@ -1269,11 +1342,15 @@ function render(page, r) {
     if (lead && !c.down) items.push({ label: `Force ${cname(c)} to be the primary, removing the dead ${sh.copies.filter((x) => x.down).length === 1 ? "copy" : "copies"}…`, icon: "up", danger: true, no: managed() ? "the operator hands primaries over" : changes ? changes : !canAdmin() ? needsAdmin : null, run: () => forcePromote(sh, c) });
     else if (!c.primary) items.push({ label: "Make it the primary", icon: "up", no: promote, run: () => promoteCopy(sh, c) });
     if (c.primary) items.push({ label: "Verify its replicas", icon: "okc", no: verifyNo, run: () => verifyCopy(sh, c) });
+    // Bytes against checksums, which Verify (rows against rows) does not
+    // see (finding chaos-6).
+    items.push({ label: "Check its data", icon: "okc", no: c.down ? "it does not answer" : unsupported.scrub ? "this server cannot run it from the coordinator (a newer server can)" : !canAdmin() ? needsAdmin : null, run: () => scrubCopy(sh, c) });
     items.push({ label: "Write a checkpoint", icon: "download", no: ckNo, run: () => checkpointCopy(sh, c) });
     // No Remove on a primary (finding CL-3): hand it over first.
     // A dead primary is still the primary to the server, which refuses to
     // remove it: another copy becomes the primary first.
-    const deadLead = c.down && c.wasPrimary && !sh.primary ? (lead ? `it was the primary: force ${cname(lead)} to be the primary first (its menu)` : "it was the primary and no other copy answers to take over") : null;
+    const vote = voteTarget(sh);
+    const deadLead = c.down && c.wasPrimary && !sh.primary ? (lead ? `it was the primary: force ${cname(lead)} to be the primary first (its menu)` : vote ? `it was the primary: make ${cname(vote)} the primary first (its menu)` : "it was the primary and no other copy answers to take over") : null;
     if (!c.primary) items.push({ label: "Remove it from the shard…", icon: "trash", danger: true, no: deadLead || remove, run: () => removeCopy(sh, c) });
     items.push({ label: "Its logs", icon: "logs", href: typeof core.logsLink === "function" ? core.logsLink({ server: c.url }) : link("logs", { node: c.url }) });
     if (!c.down) items.push({ label: "Profile it", icon: "flame", href: link("profile", { node: c.url }) });
@@ -1365,6 +1442,21 @@ function render(page, r) {
     } catch (e) {
       if (e.status === 404 || e.status === 405) { unsupported.verify = true; store.set("cluster.unsupported", unsupported); toast("This server cannot verify a shard's replicas from the coordinator: a newer server can.", "bad", 8000); drawSide(); }
       else toast(`Not verified: ${e.message}`, "bad", 8000);
+    }
+  }
+  /** Reads every segment of a copy against its checksum, while it serves. */
+  async function scrubCopy(sh, c) {
+    toast(`Checking ${cname(c)}'s data against its checksums: every segment is read, while it serves…`);
+    try {
+      const j = await api("/v1/admin/copies/scrub", { body: { url: c.url } });
+      const r = j.scrub || {}, bad = r.damaged || [];
+      const read = [r.segments != null ? plural(r.segments, "segment") : null, r.bytes != null ? fmt.bytes(r.bytes) : null, r.seconds != null ? `in ${r.seconds < 1 ? fmt.ms(r.seconds * 1000) : dur(r.seconds)}` : null].filter(Boolean).join(", ");
+      if (!bad.length) toast(`${cname(c)}'s data matches its checksums (${read})`, "ok", 8000);
+      else toast(`${cname(c)}'s data is damaged on disk: ${bad.length === 1 ? bad[0] : `${bad.length} segments fail their checksums, ${bad[0]} first`}. Replace the copy (Plan the repair).`, "bad", 15000);
+      refreshSoon();
+    } catch (e) {
+      if (e.status === 404 || e.status === 405 || /no profile of kind "scrub"/.test(e.message)) { unsupported.scrub = true; store.set("cluster.unsupported", unsupported); toast("This server cannot check a copy's data from the coordinator: a newer server can.", "bad", 8000); drawSide(); }
+      else toast(`Not checked: ${e.message}`, "bad", 8000);
     }
   }
   async function checkpointCopy(sh, c) {
@@ -1691,7 +1783,19 @@ function render(page, r) {
         if (lead && deadRm.length) steps.push({ kind: "promote", force: true, repair: true, shard: i, url: lead.url, rows: 0, est: 3,
           text: `${cname(lead)} is forced to be shard ${i}'s primary, asking no votes: ${deadPrimary ? cname(deadPrimary) + ", the primary," : "its primary"} does not answer and ${sh.up} of ${sh.n} is no majority`,
           call: ["POST", `/v1/admin/shards/${i}/promote`, { url: lead.url, force: true }] });
-        deadRm.forEach((x) => removeStep(x, true, true)); draft.adds.filter((a) => a.shard === i).forEach(addStep); rm.filter((x) => !deadRm.includes(x)).forEach((x) => removeStep(x, true));
+        // A majority answers but none is the primary: the dead primary is
+        // still the primary to the server, which removes it only once
+        // another copy is, by the votes of those that answer (finding
+        // chaos-2). Then the shard serves, so its new copies join before
+        // the dead ones leave, as for a shard that serves.
+        const vote = !lead && deadPrimary ? voteTarget(sh) : null;
+        if (vote) {
+          steps.push({ kind: "promote", repair: true, shard: i, url: vote.url, rows: 0, est: 3,
+            text: `${cname(vote)} becomes shard ${i}'s primary by its copies' votes: ${cname(deadPrimary)}, the primary, does not answer, and ${sh.up} of ${sh.n} answer${sh.failover !== false ? " (skipped when they have elected a primary by then)" : ""}`,
+            call: ["POST", `/v1/admin/shards/${i}/promote`, { url: vote.url }] });
+          draft.adds.filter((a) => a.shard === i).forEach(addStep); rm.forEach((x) => removeStep(x, true));
+        }
+        else { deadRm.forEach((x) => removeStep(x, true, true)); draft.adds.filter((a) => a.shard === i).forEach(addStep); rm.filter((x) => !deadRm.includes(x)).forEach((x) => removeStep(x, true)); }
       }
       else { draft.adds.filter((a) => a.shard === i).forEach(addStep); rm.forEach((x) => removeStep(x, true)); }
     }
@@ -1814,7 +1918,9 @@ function render(page, r) {
       const sh = shardOf(i), after = afterOf(i).n;
       const gone = removes.filter((x) => x.shard === i).map((x) => M.all.find((y) => y.url === x.url)).filter(Boolean);
       const dead = gone.filter((c) => c.down), live = gone.filter((c) => !c.down);
-      if (dead.length && CRIT.has(sh.state)) blast.push(dead.length === sh.n - sh.up ? `Removing ${dead.map(cname).join(" and ")} first lets shard ${i} serve again (${sh.up} of ${sh.up} is a majority) before its new copies join.` : `Shard ${i} stays without a majority until its new copies are in sync.`);
+      const vote = voteTarget(sh);
+      if (dead.length && vote) blast.push(`Shard ${i} takes writes again once ${cname(vote)} is its primary, at the first step; writes to it wait about a second then.`);
+      else if (dead.length && CRIT.has(sh.state)) blast.push(dead.length === sh.n - sh.up ? `Removing ${dead.map(cname).join(" and ")} first lets shard ${i} serve again (${sh.up} of ${sh.up} is a majority) before its new copies join.` : `Shard ${i} stays without a majority until its new copies are in sync.`);
       for (const c of live) blast.push(`Shard ${i} has one copy fewer once ${cname(c)} leaves${after <= 2 ? `; with ${copies_(after)}, one more failure there stops its writes` : ""}.`);
     }
     for (const i of draft.drops) blast.push(`Shard ${i}'s rows are spread over the others: each holds more.`);

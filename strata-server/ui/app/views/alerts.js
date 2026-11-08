@@ -903,7 +903,8 @@ function alertHub(page, id, r) {
     clear(tools, ackBtn, silBtn,
       h("button", { class: "btn", disabled: !fleet || !w8, title: !fleet ? "This server keeps no notes yet" : !w8 ? Needs("write") : "Add a note to the alert's timeline", onclick: () => { noteIn.scrollIntoView({ block: "center", behavior: "smooth" }); noteIn.focus({ preventScroll: true }); } }, icon("edit"), h("span", { class: "al-wide-only" }, "Add note"), h("span", { class: "al-narrow-only" }, "Note")),
       h("button", { class: "btn al-ico", title: "Copy a link to this alert at this time", onclick: () => { const t = since(); copy(location.origin + location.pathname + alertLink(id, { from: Math.round(t - 30 * 60e3), to: Math.round(x.state === "firing" ? Date.now() : t + 60 * 60e3) }), "Link copied: it opens this alert at this time"); } }, icon("link"), h("span", { class: "al-wide-only" }, "Copy link")),
-      h("button", { class: "btn ghost al-ico", title: "Edit the rule", onclick: () => editRule(rule, { after: load }) }, icon("sliders"), h("span", { class: "al-wide-only" }, "Edit rule")));
+      h("button", { class: "btn ghost al-ico", title: "Edit the rule", onclick: () => editRule(rule, { after: load }) }, icon("sliders"), h("span", { class: "al-wide-only" }, "Edit rule")),
+      can("admin") ? h("a", { class: "btn al-ico", href: "#/oncall?alert=" + encodeURIComponent(id) + (st === "firing" || st === "pending" ? "&start=1" : ""), title: st === "firing" || st === "pending" ? "The on-call agent looks into it now, with read-only tools, and proposes what to do" : "Ask the on-call agent about this alert" }, icon("agent"), h("span", { class: "al-wide-only" }, "Investigate")) : null);
     noteIn.disabled = noteBtn.disabled = !fleet || !w8;
     noteIn.placeholder = !fleet ? "Notes need a newer server" : !w8 ? Needs("write") : "Add a note: what you found, what you did";
   }

@@ -2694,6 +2694,41 @@ async fn health_reports_a_database_that_cannot_write() {
 }
 
 
+/// A scrub reads every segment against its checksum while the server
+/// serves: damage on disk that no query read yet (bit rot on a replica,
+/// finding chaos-6) is in `/v1/health`, the metrics and the series, which
+/// the built-in `damaged` alert watches.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scrub_finds_data_damaged_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("d.strata");
+    let opts = DbOptions { layout: Layout::Directory, publish_snapshots: true, ..DbOptions::default() };
+    let db = Db::create(&path, demo::schema(10), opts).unwrap();
+    db.load((0..10).map(|i| demo::product(i, 7))).unwrap();
+    let svc = service(db, "http://unused");
+    let url = http(svc.clone(), None).await;
+    let c = strata_server::http_client().build().unwrap();
+    let (status, r) = post(&c, &format!("{url}/v1/admin/scrub"), json!({})).await;
+    assert_eq!(status, 200, "{r}");
+    assert!(r["scrub"]["segments"].as_u64().unwrap() >= 1 && r["scrub"]["damaged"] == json!([]), "{r}");
+
+    // A byte flipped in the middle of a segment file.
+    let seg = std::fs::read_dir(&path).unwrap().flatten().map(|e| e.path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with("seg-")).unwrap();
+    let mut bytes = std::fs::read(&seg).unwrap();
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0xff;
+    std::fs::write(&seg, &bytes).unwrap();
+    let (status, r) = post(&c, &format!("{url}/v1/admin/scrub"), json!({"rate_mib_s": 1024})).await;
+    assert_eq!(status, 200, "{r}");
+    let damaged = r["scrub"]["damaged"].as_array().unwrap().clone();
+    assert!(damaged.len() == 1 && damaged[0].as_str().unwrap().contains("fails its checksum"), "{r}");
+    let h: Json = c.get(format!("{url}/v1/health")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(h["damaged"], json!(damaged), "{h}");
+    let m = c.get(format!("{url}/metrics")).send().await.unwrap().text().await.unwrap();
+    assert!(m.contains("strata_damaged_segments 1"), "{m}");
+    assert_eq!(svc.sample().gauges.get("damaged_segments").copied(), Some(1.0));
+}
+
 /// Checkpoints into `--backup-dir` (a write still in the memtable included,
 /// a directory checkpoint linked to the one before), names that would leave
 /// the directory refused, and the check and vacuum routes.
