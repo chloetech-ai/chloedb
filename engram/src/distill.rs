@@ -101,7 +101,7 @@ Each item is one self-contained sentence that names its subject and keeps the ex
 
 Also list, for each item, 2 to 4 situations in which a later session must recall it, phrased the way a later request would be phrased, including indirect ones: what kind of task, choice or question it constrains, in words that need not appear in the item itself. For example, "the client's office PCs run Python 3.8" matters "when choosing a library or standard-library module (tomllib needs 3.11)", "when parsing a config file", "when using newer syntax such as match statements".
 
-The already-noted items above are the notes most related to this exchange (not all notes). When this exchange changes, reverses or extends one of them, write the new version with "replaces": the new sentence must stand on its own (repeat what still holds) and may say what changed (e.g. "30 days, changed from 14"). When a noted item no longer holds at all (a requirement dropped, a rule lifted, a tool no longer used), write a fact that says so and why, with "replaces" naming it. When the exchange says from when a change holds ("from Monday on", "since release 2.3", "as of March 1"), add "since" with that date as YYYY-MM-DD. When the user states something that disagrees with a noted item without saying that it changed, and it is unclear which holds, write the new statement with "conflicts" naming the item instead of "replaces".
+The already-noted items above are the notes most related to this exchange (not all notes). When this exchange changes, reverses or extends one of them, write the new version with "replaces": the new sentence must stand on its own (repeat what still holds) and may say what changed (e.g. "30 days, changed from 14"). When a noted item no longer holds at all (a requirement dropped, a rule lifted, a tool no longer used), write a fact that says so and why, with "replaces" naming it. When the exchange says from when a change holds ("from Monday on", "since release 2.3", "as of March 1"), add "since" with that date as YYYY-MM-DD. A later statement that gives a different value for something noted (a date, number, amount, name, version, choice or plan) is an update even when nobody says that it changed: write it with "replaces". Use "conflicts" instead only when the two cannot both be true and the new one cannot be an update: one says something never happened, was never done or does not exist, and the other says it did (e.g. "I have never used Docker" against a noted "the user set up Docker for the API"). Write each sentence as it was said in this exchange; never write a disagreement or "it is unclear" into the sentence itself.
 
 Leave out:
 - anything already noted above, unless this exchange changes it;
@@ -243,8 +243,8 @@ These earlier notes are about the same things and still count as current:
 </earlier_notes>
 
 For each new note, say which earlier notes it changes:
-- "replaces": earlier notes it is a later version of (the same rule, decision, requirement or fact with a new value, or one it says no longer holds);
-- "conflicts": earlier notes it disagrees with, when neither says the other changed and it is unclear which holds.
+- "replaces": earlier notes it is a later version of: the same rule, decision, requirement, plan or fact with a new value (a different date, number, amount, name or choice is a new value even when nothing says it changed), or one it says no longer holds;
+- "conflicts": earlier notes it contradicts in a way an update cannot explain: they cannot both be true (one says something never happened, was never done or does not exist, the other that it did).
 An earlier note on a different point of the same subject is neither: two notes about the CSV export, one on its separator and one on its schedule, both stay. When in doubt, it is neither.
 
 Output one JSON object per line, only for new notes that replace or conflict with something:
