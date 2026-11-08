@@ -915,7 +915,7 @@ fn distill_cmd(cases: &Path, model: &str, repeats: usize, threads: usize, out: &
                             .collect()
                     })
                     .unwrap_or_default();
-                let row = match distill::distill(cfg, &st("request"), &st("answer"), &commands, &known) {
+                let row = match distill::distill(cfg, &st("request"), &st("answer"), &commands, &known, 0) {
                     Ok(d) => json!({
                         "id": st("id"), "repeat": rep, "cost_usd": d.cost_usd, "tokens": d.usage.json(),
                         "items": d.drafts.iter().map(|x| json!({"kind": distill::label(x.kind), "text": x.text, "replaces": x.links.iter().filter(|l| l.label == "supersedes").map(|l| l.to.as_str()).collect::<Vec<_>>(), "entities": x.entities, "when": x.when})).collect::<Vec<_>>(),
