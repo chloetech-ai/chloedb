@@ -75,7 +75,7 @@ export async function runTests(engine, appId, tests, fresh) {
         case 'insert': return engine.insert(appId, args[0], args[1], {});
         case 'update': return engine.update(appId, args[0], args[1], args[2], {});
         case 'remove': return engine.remove(appId, args[0], args[1], {});
-        case 'call': return engine.call(appId, args[0], args[1], { depth: 0 });
+        case 'call': return (await engine.call(appId, args[0], args[1], { depth: 0 })).result;
         default: throw new Error(`no ${method} in a test`);
       }
     };

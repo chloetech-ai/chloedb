@@ -458,7 +458,7 @@ const server = http.createServer(async (req, res) => {
     const passOn = e.status && (e.status < 500 || ((e.status === 502 || e.status === 503) && !e.message.startsWith('strata')));
     const status = passOn ? e.status : (/^(no |table |app\.sql|one statement|empty SQL|.* takes )/.test(e.message) ? 400 : (e.message.startsWith('strata') ? 400 : 500));
     if (status >= 500) log(`${req.method} ${url.pathname}: ${e.stack || e.message}`);
-    send(res, status, { error: e.message });
+    send(res, status, { error: e.message, ...(e.refused ? { refused: true } : {}) });
   }
 });
 

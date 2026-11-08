@@ -28,7 +28,7 @@ function h(tag, props, ...children) {
 async function api(method, url, body) {
   const res = await fetch(url, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), data.refused ? { refused: true } : {});
   return data;
 }
 
@@ -911,7 +911,7 @@ async function upload(base, file) {
   const q = new URLSearchParams({ name: file.name || 'file', type: file.type || 'application/octet-stream' });
   const res = await fetch(`${base}/files?${q}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: file });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), data.refused ? { refused: true } : {});
   return { ...data.file, url: location.origin + data.file.url };
 }
 
@@ -932,7 +932,7 @@ window.addEventListener('message', async (e) => {
   let entry = null;
   for (const [slug, f] of S.frames) if (f.iframe.contentWindow === e.source) entry = { slug, ...f };
   if (!entry) return;
-  const reply = (value, error) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error }, '*');
+  const reply = (value, error, refused) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused }, '*');
   const base = `/api/apps/${S.appId}`;
   try {
     if (m.kind === 'rpc') {
@@ -966,7 +966,7 @@ window.addEventListener('message', async (e) => {
       renderApp();
     }
   } catch (err) {
-    if (m.kind === 'rpc') reply(undefined, err.message);
+    if (m.kind === 'rpc') reply(undefined, err.message, !!err.refused);
   }
 });
 

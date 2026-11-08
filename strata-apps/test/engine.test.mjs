@@ -562,7 +562,7 @@ test('a rule is checked against the tables it writes, and needs no writer', asyn
     { update: 'features', id: ':row.feature', set: { votes: 'DELETE FROM features' } },
     { wat: 1 },
   ] }, cols).join('\n');
-  for (const want of ['give "id"', 'nope is not a column of features', 'no table "ghosts"', 'only SELECT here', 'a step is update, insert, remove, call or let']) assert.ok(p.includes(want), `missing ${want} in:\n${p}`);
+  for (const want of ['give "id"', 'nope is not a column of features', 'no table "ghosts"', 'only SELECT here', 'a step is update, insert, upsert, remove, call, let, each, require or return']) assert.ok(p.includes(want), `missing ${want} in:\n${p}`);
   assert.match(checkRule({ query: 'UPDATE x SET a = 1' }).join(), /give a SELECT/);
   // In a plan: the rule becomes the function's code, is checked, and gets no writer.
   const plan = { tables: [{ name: 'features', columns: [{ name: 'votes', type: 'int' }] }, { name: 'votes', columns: [{ name: 'feature', type: 'keyword' }] }],
@@ -617,4 +617,52 @@ test('tests and rules name values as :name, and an =expression is refused at bui
   assert.match(problems.join('\n'), /expect\[0\]\.is: a value, or ":name.col"/);
   assert.match(problems.join('\n'), /project: a value here is a SELECT, ":name" or a literal; not an =expression/);
   assert.match(checkRule({ steps: [{ update: 'hours', id: '=row.id', set: { client: 'x' } }] }, cols)[0], /steps\[0\]\.id: .* not an =expression/);
+});
+
+test('rule steps loop over rows, refuse with a message, insert or update, and return a value', async () => {
+  const { Refused } = await import('../engine/rules.mjs');
+  const writes = [];
+  const stock = { p1: 5, p2: 1 };
+  let big = false;
+  const host = async (method, args) => {
+    if (method === 'sql') {
+      const [q, p] = args;
+      if (/FROM cart/.test(q) && /SELECT product/.test(q)) return [{ product: 'p1', qty: 2 }, { product: 'p2', qty: big ? 3 : 1 }];
+      if (/stock >= :line_qty/.test(q)) return [{ ok: stock[p.line_product] >= p.line_qty }];
+      if (/SELECT stock - :line_qty/.test(q)) return [{ s: stock[p.line_product] - p.line_qty }];
+      if (/SELECT stock FROM products/.test(q)) return [{ stock: stock[p.line_product] }];
+      if (/SELECT id FROM cart WHERE product = :product/.test(q)) return p.product === 'p1' ? [{ id: 'c1' }] : [];
+      return [];
+    }
+    writes.push([method, ...args]);
+    return method === 'insert' ? { id: `new-${writes.length}`, ...args[1] } : { id: args[1], ...args[2] };
+  };
+  const checkout = { steps: [
+    { insert: 'orders', values: { status: 'new' }, as: 'order' },
+    { each: 'SELECT product, qty FROM cart WHERE owner = :user.id', as: 'line', do: [
+      { let: 'stock', value: 'SELECT stock FROM products WHERE id = :line.product' },
+      { require: 'SELECT stock >= :line.qty AS ok FROM products WHERE id = :line.product', else: 'Only :stock left of :line.product' },
+      { insert: 'order_lines', values: { order: ':order.id', product: ':line.product', qty: ':line.qty' } },
+      { update: 'products', id: ':line.product', set: { stock: 'SELECT stock - :line.qty FROM products WHERE id = :line.product' } }] },
+    { return: ':order.id' }] };
+  assert.equal(await runRule(checkout, { user: { id: 'u1' } }, host), 'new-1');
+  assert.deepEqual(writes.map((w) => w[0] + ' ' + w[1]), ['insert orders', 'insert order_lines', 'update products', 'insert order_lines', 'update products']);
+  assert.deepEqual(writes[2][3], { stock: 3 });
+  // a refusal names what is short; the engine writes nothing of it (its batch is never committed)
+  big = true;
+  await assert.rejects(runRule(checkout, { user: { id: 'u1' } }, host), (e) => e instanceof Refused && e.refused && e.message === 'Only 1 left of p2');
+  // upsert: the row found is updated, otherwise one is added
+  writes.length = 0;
+  const add = { steps: [{ upsert: 'cart', find: 'SELECT id FROM cart WHERE product = :product', values: { product: ':product', qty: 1 } }] };
+  await runRule(add, { product: 'p1' }, host);
+  await runRule(add, { product: 'p3' }, host);
+  assert.deepEqual(writes.map((w) => `${w[0]} ${w[1]} ${w[0] === 'update' ? w[2] : w[2].product}`), ['update cart c1', 'insert cart p3']);
+  // the checks know the new steps
+  const cols = (t) => ({ orders: new Set(['id', 'status']), order_lines: new Set(['id', 'order', 'product', 'qty']), products: new Set(['id', 'stock']), cart: new Set(['id', 'product', 'qty']) })[t] || null;
+  assert.deepEqual(checkRule(checkout, cols), []);
+  assert.deepEqual(checkRule(add, cols), []);
+  assert.match(checkRule({ steps: [{ each: 'SELECT 1', as: 'x' }] }, cols)[0], /give "do"/);
+  assert.match(checkRule({ steps: [{ require: 'stock > 1' }] }, cols)[0], /require: give a SELECT/);
+  assert.match(checkRule({ steps: [{ upsert: 'cart', values: { qty: 1 } }] }, cols)[0], /find: give a SELECT/);
+  assert.match(checkRule({ steps: [{ each: 'SELECT 1', do: [{ insert: 'cart', values: { color: 'red' } }] }] }, cols)[0], /steps\[0\]\.do\[0\]: color is not a column of cart/);
 });

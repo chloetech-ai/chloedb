@@ -15,6 +15,8 @@
   const text = (e) => (e && (e.stack || e.message)) || String(e);
   let reported = 0;
   const report = (e) => {
+    // A rule's refusal ("Only 2 left") is an answer for the person, not a bug.
+    if (e && e.refused) return;
     if (reported++ > 3) return;
     const message = e && e.message ? e.message : String(e);
     console.error(e);
@@ -34,7 +36,7 @@
       const p = pending.get(m.id);
       if (!p) return;
       pending.delete(m.id);
-      if (m.error !== undefined) p.reject(new Error(m.error));
+      if (m.error !== undefined) p.reject(Object.assign(new Error(m.error), m.refused ? { refused: true } : {}));
       else p.resolve(m.value);
     } else if (m.kind === 'change') {
       for (const l of listeners) {

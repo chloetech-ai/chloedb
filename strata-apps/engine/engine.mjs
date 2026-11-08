@@ -54,6 +54,7 @@ export class Engine extends EventEmitter {
     this.log = log;
     this.feed = false;
     this.pending = new Set();
+    this.locks = new Map(); // app -> the end of its queue of rules that write
     this.services = null; // set by the server: people, files, email, places
   }
 
@@ -193,13 +194,20 @@ export class Engine extends EventEmitter {
       if (!this.services) throw new Error('this engine runs without services (people, files, email, places)');
       return this.services;
     };
+    // A rule with steps writes through a batch (its own, or the one of the
+    // rule that called it), committed when the outermost rule ends.
+    const steps = !!fn.spec.rule && !JSON.parse(fn.code).query;
+    const batch = steps ? ctx.batch || this.batch(appId, inner) : null;
+    // (A JavaScript function a rule calls passes the rule's batch on, so a
+    // rule it calls in turn joins it rather than waiting for it.)
+    if (batch || ctx.batch) inner.batch = batch || ctx.batch;
     const host = async (method, args) => {
       switch (method) {
         case 'sql': return this.sql(appId, args[0], args[1]);
-        case 'insert': return this.insert(appId, args[0], args[1], inner);
-        case 'update': return this.update(appId, args[0], args[1], args[2], inner);
-        case 'remove': return this.remove(appId, args[0], args[1], inner);
-        case 'call': return this.call(appId, args[0], args[1], inner);
+        case 'insert': return batch ? batch.insert(args[0], args[1]) : this.insert(appId, args[0], args[1], inner);
+        case 'update': return batch ? batch.update(args[0], args[1], args[2]) : this.update(appId, args[0], args[1], args[2], inner);
+        case 'remove': return batch ? batch.remove(args[0], args[1]) : this.remove(appId, args[0], args[1], inner);
+        case 'call': return (await this.call(appId, args[0], args[1], inner)).result;
         case 'people': return services().people(appId);
         case 'email': return services().email(appId, args[0], fn.id);
         case 'geocode': return services().geocode(args[0]);
@@ -209,15 +217,88 @@ export class Engine extends EventEmitter {
     };
     try {
       // A rule runs here, in the engine; JavaScript runs in the sandbox.
-      const out = fn.spec.rule
-        ? await runRule(JSON.parse(fn.code), { user: user ? { id: user.id, name: user.name, email: user.email } : null, ...(input || {}) }, host)
-        : await runFunction(fn.code, input, host, { user, helpers: view.helpers.map((c) => ({ name: c.slug, code: c.code })) });
+      // A call answers {result, logs, ms}, from a rule as from JavaScript.
+      const started = Date.now();
+      const rule = async () => ({ result: await runRule(JSON.parse(fn.code), { user: user ? { id: user.id, name: user.name, email: user.email } : null, ...(input || {}) }, host), logs: [], ms: Date.now() - started });
+      let out;
+      if (batch && !ctx.batch) out = await this.exclusive(appId, async () => { const r = await rule(); await batch.commit(); return r; });
+      else if (fn.spec.rule) out = await rule();
+      else out = await runFunction(fn.code, input, host, { user, helpers: view.helpers.map((c) => ({ name: c.slug, code: c.code })) });
       if (!ctx.depth) this.store.track(appId, 'call', fn.id, slug).catch(() => {});
       return out;
     } catch (e) {
-      this.reportError(appId, fn.id, e.message, ctx.trigger ? `trigger on ${ctx.trigger}` : 'call');
+      // A rule's refusal ("Only 2 left") is for the person, not a repair.
+      if (!e.refused) this.reportError(appId, fn.id, e.message, ctx.trigger ? `trigger on ${ctx.trigger}` : 'call');
       throw e;
     }
+  }
+
+  // Runs fn when the app's earlier rules that write have finished, so two
+  // never overlap: what one checks with "require" still holds when it writes.
+  async exclusive(appId, fn) {
+    const prev = this.locks.get(appId) || Promise.resolve();
+    let release;
+    const mine = new Promise((r) => { release = r; });
+    const tail = prev.then(() => mine);
+    this.locks.set(appId, tail);
+    await prev;
+    try { return await fn(); } finally {
+      release();
+      if (this.locks.get(appId) === tail) this.locks.delete(appId);
+    }
+  }
+
+  // A rule's writes, kept until it ends, then written in one request (all or
+  // nothing); the triggers on them run after. Reads during the rule see the
+  // data as it was (a row this batch changed is read back from the batch).
+  batch(appId, ctx) {
+    const ops = [];
+    const rows = new Map();
+    const events = [];
+    const key = (table, id) => `${table}\u0000${id}`;
+    const current = async (table, id) => {
+      if (rows.has(key(table, id))) return rows.get(key(table, id));
+      const [old] = await this.db.get(physical(appId, table), [String(id)]);
+      return old || null;
+    };
+    return {
+      insert: async (table, fields) => {
+        const spec = await this.tableSpec(appId, table);
+        const doc = this.makeDoc(spec, fields);
+        for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
+        doc.id = fields?.id ? String(fields.id) : newId(10);
+        ops.push({ op: 'insert', table: physical(appId, table), doc });
+        rows.set(key(table, doc.id), doc);
+        events.push([table, 'insert', doc]);
+        return doc;
+      },
+      update: async (table, id, fields) => {
+        const spec = await this.tableSpec(appId, table);
+        const old = await current(table, String(id));
+        if (!old) throw new Error(`no row ${id} in ${table}`);
+        const changes = this.makeDoc(spec, fields, { partial: true });
+        const doc = { ...old, ...changes, id: old.id };
+        for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
+        ops.push({ op: 'upsert', table: physical(appId, table), doc });
+        rows.set(key(table, doc.id), doc);
+        events.push([table, 'update', doc, Object.keys(changes)]);
+        return doc;
+      },
+      remove: async (table, id) => {
+        await this.tableSpec(appId, table);
+        const old = await current(table, String(id));
+        ops.push({ op: 'delete', table: physical(appId, table), key: String(id) });
+        rows.set(key(table, String(id)), null);
+        if (old) events.push([table, 'delete', old]);
+        return { removed: old ? 1 : 0 };
+      },
+      commit: async () => {
+        if (!ops.length) return;
+        await this.db.write(ops.splice(0));
+        this.announce('data', { app: appId, tables: [...new Set(events.map((e) => e[0]))] });
+        for (const [table, event, row, changed] of events.splice(0)) await this.after(appId, table, event, row, { ...ctx, batch: undefined, changed });
+      },
+    };
   }
 
   // Tracks the write and runs the functions that wait for it.

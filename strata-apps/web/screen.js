@@ -45,7 +45,7 @@
       try {
         const r = typeof fn === 'function' ? fn(...args) : fn;
         if (r && typeof r.then === 'function') await r;
-      } catch (e) { report(fail(where, e)); app.toast(e && e.message ? e.message : String(e)); }
+      } catch (e) { if (!(e && e.refused)) report(fail(where, e)); app.toast(e && e.message ? e.message : String(e)); }
       await refresh();
     };
     const handler = (v, s, where) => {
