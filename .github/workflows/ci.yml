@@ -22,12 +22,16 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
-# A new push to a pull request cancels its older run. Runs on main and in
-# the merge queue are never cancelled: each commit of main gets its whole
-# run (a group per commit, since a group holds one waiting run and would
-# drop the others).
+# A new push to a pull request cancels its older run. Pushes to main share
+# one group that never cancels the run in progress, so main's runs keep
+# finishing, but a group holds one waiting run and a newer push replaces
+# it: after a burst of merges only the newest waits, and it tests every
+# merge before it. (A group per commit queued every merge's whole run,
+# 5 macOS jobs each against a limit of 5 at once, and the queue grew by
+# hours.) The merge queue, the nightly run and a run by hand keep a group
+# per event and commit, so none of them is dropped.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: ci-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || format('{0}-{1}', github.event_name, github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
