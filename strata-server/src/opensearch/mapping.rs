@@ -321,7 +321,7 @@ pub const BREAK: char = '\u{E000}';
 /// Whether the standard tokenizer makes `c` a word of its own: an
 /// ideograph or a hiragana.
 fn lone(c: char) -> bool {
-    matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FFFF | 0x3007 | 0x3021..=0x3029 | 0x3038..=0x303A | 0x3041..=0x3096 | 0x309D..=0x309F)
+    matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FFFF | 0x3007 | 0x3021..=0x3029 | 0x3038..=0x303A | 0x3041..=0x3096 | 0x309D..=0x309F | 0x2E80..=0x2EF3 | 0x2F00..=0x2FD5 | 0x1F200)
 }
 
 /// Whether `c` is a katakana, whose runs are words of their own.
@@ -337,9 +337,27 @@ fn aletter(c: char) -> bool {
 
 /// Whether `c` is a character that Unicode's word breaks keep with the
 /// one before it (Format and Extend: a soft hyphen, a joiner, a variation
-/// selector, a combining mark).
+/// selector, a combining mark, a virama, a tone mark).
 fn attached(c: char) -> bool {
-    matches!(c as u32, 0xAD | 0x200C..=0x200F | 0x2060..=0x2064 | 0xFEFF | 0xFE00..=0xFE0F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F)
+    if c.is_ascii() {
+        return false;
+    }
+    if matches!(c as u32, 0xAD | 0x200C..=0x200F | 0x2060..=0x2064 | 0xFEFF) {
+        return true;
+    }
+    // Extend and SpacingMark are what goes on with a letter's grapheme.
+    let mut b = [b'a'; 5];
+    let n = c.encode_utf8(&mut b[1..]).len();
+    let s = std::str::from_utf8(&b[..1 + n]).unwrap_or("a");
+    unicode_segmentation::UnicodeSegmentation::graphemes(s, true).nth(1).is_none()
+}
+
+/// Whether `c`, no letter or digit to Strata, is one to the standard
+/// tokenizer: modifier letters (`ʾ`), radicals (`⼈`), the katakana and
+/// hiragana symbols (`゛`, `㋐`, `🈀`), a few marks of Armenian, Hebrew,
+/// Arabic and the scripts of Southeast Asia.
+fn letterlike(c: char) -> bool {
+    matches!(c as u32, 0x2C2..=0x2C5 | 0x2D2..=0x2D7 | 0x2DE..=0x2DF | 0x2ED | 0x2EF..=0x2FF | 0x55B..=0x55C | 0x55E | 0x5F3 | 0x66B | 0x109E..=0x109F | 0x19DE..=0x19DF | 0x1AA0..=0x1AA6 | 0x1AA8..=0x1AAD | 0x2E80..=0x2E99 | 0x2E9B..=0x2EF3 | 0x2F00..=0x2FD5 | 0x309B..=0x309C | 0x30A0 | 0x32D0..=0x32FE | 0x3300..=0x3357 | 0x1F200)
 }
 
 /// Whether Strata's analyzers fold the lowercase letter `c`.
@@ -370,15 +388,25 @@ pub enum Join {
     Whole,
 }
 
-/// Whether `c` is an emoji (Unicode's `Extended_Pictographic`, near
-/// enough: the blocks of pictographs and symbols, and the few elsewhere).
+/// Whether `c` is an emoji to the standard tokenizer: the characters
+/// OpenSearch 2.11's `_analyze` makes a word of type `<EMOJI>`, asked one
+/// by one (Unicode's `Extended_Pictographic` as Lucene's tables have it;
+/// `★` is one, `☆` and `✓` are not).
 fn pictographic(c: char) -> bool {
     matches!(c as u32,
-        0x1F000..=0x1F1E5 | 0x1F200..=0x1F3FA | 0x1F400..=0x1FAFF | 0x2600..=0x27BF
-        | 0x00A9 | 0x00AE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x2194..=0x2199 | 0x21A9 | 0x21AA
-        | 0x231A | 0x231B | 0x2328 | 0x23CF | 0x23E9..=0x23F3 | 0x23F8..=0x23FA | 0x24C2 | 0x25AA | 0x25AB
-        | 0x25B6 | 0x25C0 | 0x25FB..=0x25FE | 0x2934 | 0x2935 | 0x2B05..=0x2B07 | 0x2B1B | 0x2B1C | 0x2B50
-        | 0x2B55 | 0x3030 | 0x303D | 0x3297 | 0x3299)
+        0xA9 | 0xAE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x2194..=0x2199 | 0x21A9..=0x21AA
+        | 0x231A..=0x231B | 0x2328 | 0x2388 | 0x23CF | 0x23E9..=0x23F3 | 0x23F8..=0x23FA | 0x24C2
+        | 0x25AA..=0x25AB | 0x25B6 | 0x25C0 | 0x25FB..=0x25FE | 0x2600..=0x2605 | 0x2607..=0x2612
+        | 0x2614..=0x2685 | 0x2690..=0x2705 | 0x2708..=0x2712 | 0x2714 | 0x2716 | 0x271D | 0x2721
+        | 0x2728 | 0x2733..=0x2734 | 0x2744 | 0x2747 | 0x274C | 0x274E | 0x2753..=0x2755 | 0x2757
+        | 0x2763..=0x2767 | 0x2795..=0x2797 | 0x27A1 | 0x27B0 | 0x27BF | 0x2934..=0x2935
+        | 0x2B05..=0x2B07 | 0x2B1B..=0x2B1C | 0x2B50 | 0x2B55 | 0x3030 | 0x303D | 0x3297 | 0x3299
+        | 0x1F000..=0x1F0FF | 0x1F10D..=0x1F10F | 0x1F12F | 0x1F16C..=0x1F171 | 0x1F17E..=0x1F17F
+        | 0x1F18E | 0x1F191..=0x1F19A | 0x1F1AD..=0x1F1E5 | 0x1F201..=0x1F20F | 0x1F21A | 0x1F22F
+        | 0x1F232..=0x1F23A | 0x1F23C..=0x1F23F | 0x1F249..=0x1F53D | 0x1F546..=0x1F64F
+        | 0x1F680..=0x1F6FF | 0x1F774..=0x1F77F | 0x1F7D5..=0x1F7FF | 0x1F80C..=0x1F80F
+        | 0x1F848..=0x1F84F | 0x1F85A..=0x1F85F | 0x1F888..=0x1F88F | 0x1F8AE..=0x1F8FF
+        | 0x1F90C..=0x1F93A | 0x1F93C..=0x1F945 | 0x1F947..=0x1FBFF)
 }
 
 fn word_char(c: char) -> bool {
@@ -389,15 +417,16 @@ fn word_char(c: char) -> bool {
     }
 }
 
-/// Whether `c` is a number that is not a digit (superscripts, fractions,
-/// circled numbers: `²`, `¼`, `①`), which Strata's words hold and
-/// Unicode's word breaks cut at.
-fn odd_number(c: char) -> bool {
-    matches!(c as u32, 0xB2 | 0xB3 | 0xB9 | 0xBC..=0xBE | 0x2070 | 0x2074..=0x2079 | 0x2080..=0x2089 | 0x2150..=0x215F | 0x2189 | 0x2460..=0x249B | 0x24EA..=0x24FF | 0x2776..=0x2793 | 0x3248..=0x325F | 0x3280..=0x3289 | 0x32B1..=0x32BF)
+/// Whether `c` is a letter or digit to Strata and in no word to the
+/// standard tokenizer: a number that is not a digit (superscripts,
+/// fractions, circled numbers: `²`, `¼`, `①`), `〆`, the letters newer
+/// than Lucene's tables.
+fn stray(c: char) -> bool {
+    matches!(c as u32, 0xB2 | 0xB3 | 0xB9 | 0xBC..=0xBE | 0x9F4..=0x9F9 | 0xB72..=0xB77 | 0xBF0..=0xBF2 | 0xC78..=0xC7E | 0xD58..=0xD5E | 0xD70..=0xD78 | 0xF2A..=0xF33 | 0x1369..=0x137C | 0x17F0..=0x17F9 | 0x2070 | 0x2074..=0x2079 | 0x2080..=0x2089 | 0x2150..=0x215F | 0x2189 | 0x2460..=0x249B | 0x24EA..=0x24FF | 0x2776..=0x2793 | 0x2C2F | 0x2C5F | 0x2CFD | 0x3006 | 0x3192..=0x3195 | 0x31BB..=0x31BF | 0x3220..=0x3229 | 0x3248..=0x325F | 0x3280..=0x3289 | 0x32B1..=0x32BF | 0x1F100..=0x1F10C)
 }
 
 /// What stands for `c`, a character of no word that Strata's analyzers
-/// would read as one ([`odd_number`]): a private use character, which
+/// would read as one ([`stray`]): a private use character, which
 /// [`Cut::unapply`] gives back.
 fn unworded(c: char) -> char {
     char::from_u32(0xF0000 + c as u32).unwrap_or(BREAK)
@@ -414,7 +443,7 @@ impl Cut {
             Join::Whitespace => !c[i].is_whitespace(),
             Join::Standard => {
                 let letters = p.is_some_and(aletter) && n.is_some_and(aletter);
-                let digit = |x: char| x.is_numeric() && !odd_number(x);
+                let digit = |x: char| x.is_numeric() && !stray(x);
                 let digits = p.is_some_and(digit) && n.is_some_and(digit);
                 match c[i] {
                     x if attached(x) => p.is_some_and(|x| self.is_word(x)) || (i > 0 && self.joins(c, i - 1)),
@@ -431,10 +460,14 @@ impl Cut {
         }
     }
 
-    /// Whether `c` is a letter or digit of a word ([`word_char`], but for
-    /// the numbers the standard tokenizer cuts at, [`odd_number`]).
+    /// Whether `c` is a letter or digit of a word ([`word_char`]; to the
+    /// standard tokenizer, but for [`stray`] and with [`letterlike`]).
     fn is_word(&self, c: char) -> bool {
-        word_char(c) && !(self.join == Join::Standard && odd_number(c))
+        if self.join == Join::Standard {
+            (word_char(c) && !stray(c)) || letterlike(c)
+        } else {
+            word_char(c)
+        }
     }
 
     /// Whether a word is cut before character `i` of `c`, a letter or
@@ -501,6 +534,10 @@ impl Cut {
     /// whose accent is kept is [`joined`] (lowercased first, since Strata
     /// does not lowercase what it stands for).
     fn put(&self, ch: char, out: &mut String) {
+        if !word_char(ch) {
+            out.push(joined(ch));
+            return;
+        }
         if !self.keep_accents || ch.is_ascii() {
             out.push(ch);
             return;
@@ -548,7 +585,8 @@ impl Cut {
         }
         let ri = |x: char| ('\u{1F1E6}'..='\u{1F1FF}').contains(&x);
         if ri(c[i]) {
-            return Some(if c.get(i + 1).copied().is_some_and(ri) { i + 2 } else { i + 1 });
+            // A flag is two; one alone is no word.
+            return c.get(i + 1).copied().is_some_and(ri).then_some(i + 2);
         }
         if !pictographic(c[i]) {
             return None;
@@ -1349,6 +1387,18 @@ mod tests {
         }
         assert_ne!(keep.unapply(&keep.apply("SÉVÈRE")), "SÉVÈRE");
         assert_eq!(keep.apply("İnfection"), "infection");
+        // What OpenSearch 2.11's standard analyzer makes of these, word for
+        // word: `☆`, `✓`, a lone flag letter and `〆` are none; a tone
+        // mark, a virama, `゛` and a modifier letter go on with the word.
+        let words = |t: &str| {
+            let mut out = Vec::new();
+            strata::text::analyzer::for_each_word(&keep.apply(t), |w| out.push(keep.unapply(w)));
+            out
+        };
+        let w = words("Networks ☆ ✓ ★ 🇺 🇺🇸");
+        assert_eq!((w.len(), &w[..2]), (3, &["networks".to_string(), "★".to_string()][..]));
+        assert_eq!(words("ผู้ใหญ่ हिन्दी தமிழ் ខ្មែរ"), ["ผู้ใหญ่", "हिन्दी", "தமிழ்", "ខ្មែរ"]);
+        assert_eq!(words("ab〆cd ⼈⼈ カ゛ガ aʾb x¹²"), ["ab", "cd", "⼈", "⼈", "カ゛ガ", "aʾb", "x"]);
         assert_eq!(std.unapply(&std.apply("Infection¼ in m² ①")), "Infection¼ in m² ①");
         let text = "the children's toys";
         let spans: Vec<&str> = en.spans(text).iter().map(|&(a, b)| &text[a..b]).collect();
