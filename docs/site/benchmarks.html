@@ -79,6 +79,8 @@
         <p>A client reaches a coordinator in a shard pod across the network, as with Elasticsearch: 4 to 29% slower at one client at 1M, 7% at 10M (median over the kinds), for up to 1.9 times the queries a second at 16 clients.</p></div>
       <div class="loss"><div><h3>Vector recall at shared settings</h3><div class="nums">10M · recall@10 0.791; Qdrant 0.941</div></div>
         <p>Strata scores 8-bit codes and re-scores the best 40, so read its vector speeds with this recall. At 1M, asking for 256 candidates instead of 64 lifts it from 0.809 to 0.931, past Qdrant's 0.905, and Strata still serves 11% more queries a second; with a filter, 3.6 times as many at about equal recall. <a href="bench-1m.html#recall">The sweep</a>.</p></div>
+      <div class="loss"><div><h3>Short graph hops</h3><div class="nums">Graph · 1 hop 0.35 ms over gRPC; Memgraph 0.18</div></div>
+        <p>Memgraph and FalkorDB, both in memory, answer one to three hops in about half Strata's time. Strata's own time on one hop is 0.10 ms against Memgraph's 0.02; gRPC instead of HTTP JSON took 0.1 ms off the rest. Not fixed yet.</p></div>
       <div class="loss"><div><h3>Indexed price updates in an app</h3><div class="nums">571/s on main; SQLite 7,670</div></div>
         <p>Updating a row's price while it carries a text and a vector index is 2.4 times slower than on Strata's 2 November build (1,389 a second) and 13 times slower than SQLite. Found by the 6 November rerun, in both of its writes runs; not fixed yet. Without the indexes the same update got faster (3,276 a second).</p></div>
     </div>
