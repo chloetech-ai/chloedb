@@ -37,6 +37,9 @@ pub enum Kind {
     /// Not a profile: writes a checkpoint into the server's backup
     /// directory ([`crate::service::Service::checkpoint`]).
     Checkpoint,
+    /// Not a profile: reads the database against its checksums
+    /// ([`crate::service::Service::scrub`]).
+    Scrub,
     /// Not a profile: a coordinator gives its copy the each_copy alert
     /// rules, or has it backtest one ([`crate::alerts::copy_call`]).
     Alerts,
@@ -57,6 +60,7 @@ impl Kind {
             "log_filter" => Kind::LogFilter,
             "verify" => Kind::Verify,
             "checkpoint" => Kind::Checkpoint,
+            "scrub" => Kind::Scrub,
             "alerts" => Kind::Alerts,
             "profile_settings" => Kind::Settings,
             _ => return Err(ApiError::bad(format!("no profile of kind {s:?}: cpu, heap, memory, threads or index"))),
@@ -73,6 +77,7 @@ impl Kind {
             Kind::LogFilter => "log_filter",
             Kind::Verify => "verify",
             Kind::Checkpoint => "checkpoint",
+            Kind::Scrub => "scrub",
             Kind::Alerts => "alerts",
             Kind::Settings => "profile_settings",
         }
@@ -89,6 +94,8 @@ impl Kind {
             Kind::Verify => b.get("timeout_ms").and_then(|v| v.as_f64()).filter(|t| t.is_finite() && *t > 0.0).map_or(60.0, |t| t / 1e3).min(600.0),
             // A checkpoint copies the database: up to 10 minutes.
             Kind::Checkpoint => 540.0,
+            // Every byte of the database, unpaced: up to half an hour.
+            Kind::Scrub => 1800.0,
         };
         std::time::Duration::from_secs_f64(s + 60.0)
     }
@@ -208,6 +215,7 @@ pub async fn take(svc: &Arc<Service>, a: Asked) -> Result<Answer, ApiError> {
             let stats = svc.checkpoint(name, layout, b["link_from"].as_str()).await?;
             Ok(Answer::Json(json!({"checkpoint": stats})))
         }
+        Kind::Scrub => Ok(Answer::Json(svc.scrub(b["rate_mib_s"].as_u64().unwrap_or(0) << 20, b["by"].as_str().unwrap_or("a coordinator")).await?)),
         Kind::Alerts => Ok(Answer::Json(crate::alerts::copy_call(svc, b).await?)),
     }
 }

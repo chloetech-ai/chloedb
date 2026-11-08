@@ -754,7 +754,8 @@ impl State {
         for t in 0..self.tables.len() {
             tables.push(self.capture_table(t, with_mem, numbered));
         }
-        Capture { version: self.version, txn: self.txn, numbered, seq: self.seq, pin: pins.pin(self.txn), tables }
+        let pinned = if self.pin_versions { self.meta.txn } else { self.txn };
+        Capture { version: self.version, txn: self.txn, numbered, seq: self.seq, pin: pins.pin(pinned), tables }
     }
 
     fn capture_table(&mut self, t: usize, with_mem: bool, numbered: bool) -> TableCapture {

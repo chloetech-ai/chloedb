@@ -244,7 +244,15 @@ fn power_loss(sync: bool, seed: u64, ops: usize) {
         allowed.extend(run.failed.iter().map(|(_, k, _)| k));
         for image in 0..3 {
             crash.copy(&path, &copy).unwrap();
-            crash.copy(&wal_of(&path), &wal_of(&copy)).unwrap();
+            // A log is started again by renaming a new file over its name
+            // (after a background flush renamed it away): power lost
+            // before the rename leaves no log, which opening starts again.
+            match wal_of(&path).exists() {
+                true => crash.copy(&wal_of(&path), &wal_of(&copy)).unwrap(),
+                false => {
+                    let _ = std::fs::remove_file(wal_of(&copy));
+                }
+            }
             for (_, p) in wal::sealed_files(&wal_of(&copy)).unwrap() {
                 std::fs::remove_file(p).unwrap();
             }

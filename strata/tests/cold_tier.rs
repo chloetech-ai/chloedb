@@ -525,3 +525,26 @@ fn writes_by_key_need_no_store_with_keyword_keys_too() {
     db.storage().check().unwrap();
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// The cache files are the writer's, so a read-only open of a database
+/// with cold segments is refused, saying why, whether or not it names a
+/// cold tier; once the segments are local again, it reads.
+#[test]
+fn a_read_only_open_refuses_cold_segments() {
+    let d = tmp("read-only");
+    let path = d.join("db");
+    let store: Arc<dyn ObjectStore> = Arc::new(DirStore::new(d.join("store")).unwrap());
+    let db = Db::create_empty(&path, opts(cold(store.clone()))).unwrap();
+    fill(&db);
+    let want = answers(&db);
+    let ro = DbOptions { layout: Layout::Directory, read_only: true, ..DbOptions::default() };
+    assert_eq!(answers(&Db::open(&path, ro.clone()).unwrap()), want);
+    offload_all(&db);
+    let e = Db::open(&path, ro.clone()).err().expect("a reader of cold segments").to_string();
+    assert!(e.contains("object storage") && e.contains("read-only"), "{e}");
+    let e = Db::open(&path, DbOptions { cold: Some(cold(store)), ..ro }).err().expect("a reader with a cold tier").to_string();
+    assert!(e.contains("read-only") && e.contains("cold"), "{e}");
+    assert_eq!(answers(&db), want);
+    drop(db);
+    let _ = std::fs::remove_dir_all(&d);
+}

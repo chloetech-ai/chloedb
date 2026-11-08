@@ -718,7 +718,7 @@ def main():
     # compacting during its first two passes (the run's README)
     # Engines whose code or settings changed since that run, from the runs that
     # measured them again: Strata on 7 November (main 8e66622 with five pull
-    # requests in review; 6 November's main b022e39 until that run's results
+    # requests, since merged; 6 November's main b022e39 until that run's results
     # are in), Manticore on 6 November (its query cache off, #262),
     # Elasticsearch and OpenSearch on 5
     # November (result caches off, #262). The others' code and settings did

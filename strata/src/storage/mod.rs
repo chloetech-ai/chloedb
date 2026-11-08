@@ -14,6 +14,8 @@
 //! * [`live`]: delete sets as live-document filters.
 //! * [`updates`]: in-place updates of numeric fields.
 //! * [`pk`]: the primary-key index section.
+//! * [`share`]: the locks and pins that let other processes read a
+//!   database while one writes it (`reader`: such a reader).
 //! * [`merge`]: the tiered merge policy, and what the background merger
 //!   needs (memory estimates and limits, a write throttle, the record of
 //!   interrupted merges).
@@ -30,7 +32,9 @@ pub mod manifest;
 pub mod merge;
 pub mod pager;
 pub mod pk;
+mod reader;
 pub mod rowseq;
+pub mod share;
 pub mod ship;
 mod snapshot;
 mod state;
@@ -39,11 +43,11 @@ pub mod wal;
 
 use std::sync::{Mutex, MutexGuard};
 
-pub use db::{CheckpointOptions, CheckpointStats, Database, DbOptions, DocumentSource, DropOptions, FileStats, Layout, SegmentStats, TableTxn, WriteTxn, LOCK_WAIT};
+pub use db::{CheckpointOptions, CheckpointStats, Database, DbOptions, DocumentSource, DropOptions, FileStats, Layout, ScrubReport, SegmentStats, TableTxn, WriteTxn, LOCK_WAIT};
 pub use cold::{open_store, ColdOptions, ColdStats, DirStore, ObjectStore};
 pub use live::LiveDocs;
 pub use manifest::{sources_schema, Numbering, RankProfile, SeqNo, SOURCES, SOURCES_ID};
-pub use merge::{memory_limit, merge_memory, MergePolicy, MergeStats, MergeStatus, MergerOptions, SegmentInfo};
+pub use merge::{memory_limit, merge_memory, MergePolicy, MergeStats, MergeStatus, MergerOptions, SegmentInfo, MERGE_NICE};
 pub use ship::{Applied, LogRead, Shipped};
 pub use pk::{build_pk_index, build_pk_index_of, key_hash, KeyList, KeyRef, PkIndex};
 pub use snapshot::{tail_builds, Found, Mask, SegmentView, Snapshot};

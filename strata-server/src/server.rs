@@ -12,7 +12,7 @@ use strata::segment::build::BuildOptions;
 use strata::storage::{DbOptions, Layout, MergePolicy, MergerOptions};
 use tokio::net::TcpListener;
 
-use crate::auth::{self, Access};
+use crate::auth::{self, Access, Secret};
 use crate::coord::{CoordOptions, Coordinator};
 use crate::cores::shard::{self, Restart};
 use crate::replication::{self, Acks, Follow, Primary, PrimaryOptions};
@@ -71,6 +71,12 @@ pub struct Options {
     /// its primary before it asks its shard's copies to elect it, in
     /// milliseconds (0: never; [`Service::start_failover`]).
     pub failover_after_ms: u64,
+    /// On a database server: how often it reads every segment against its
+    /// checksum, in seconds (0: only when asked, `POST /v1/admin/scrub`;
+    /// [`Service::start_scrubs`]).
+    pub scrub_every_s: u64,
+    /// The MiB a second a scheduled scrub reads at most (0: 64).
+    pub scrub_mib_s: u64,
     /// Coordinate these shard servers (gRPC URLs; replicas of a shard
     /// joined by `|`) instead of serving a database.
     pub shards: Vec<String>,
@@ -189,6 +195,10 @@ pub struct Options {
     pub node_name_given: Option<String>,
     /// `--image-repository`.
     pub image_repository: Option<String>,
+    /// `--app name=url`: apps the command center shows ([`crate::apps`]).
+    pub apps: Vec<String>,
+    /// What the server sends apps as its token (`STRATA_APP_TOKEN`).
+    pub app_token: Option<String>,
 }
 
 /// How writes resolve MEDIA values, from `--media-fetch`,
@@ -237,11 +247,13 @@ fn build_options() -> BuildOptions {
     BuildOptions::default().set("vector.threads", std::thread::available_parallelism().map_or(1, |n| n.get()))
 }
 
-/// How the server opens a database. Each write publishes its snapshot,
-/// rebuilding the newest in-memory chunk (up to 1,024 rows): those chunks
-/// keep their vectors flat, since a graph over so few rows costs more to
-/// build at every write than an exact scan of them costs a query. Segments
-/// build their vector indexes on every core.
+/// How the server opens a database. Each write publishes its snapshot
+/// while queries come in, building the in-memory chunks it filled (1,024
+/// rows each; a write nobody reads leaves them to the flush, or to the
+/// first query after it): those chunks keep their vectors flat, since a
+/// graph over so few rows costs more to build at every write than an
+/// exact scan of them costs a query. Segments build their vector indexes
+/// on every core.
 pub fn db_options(directory: bool) -> DbOptions {
     DbOptions {
         publish_snapshots: true,
@@ -389,6 +401,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         crate::operator::upgrade::Ref::parse(&r).map_err(|e| format!("--image-repository: {e}"))?;
         svc.image_repository = r;
     }
+    svc.apps = crate::apps::Apps::new(crate::apps::parse(&o.apps)?, o.app_token.clone());
     svc.trusted_proxies = o.trust_proxy.iter().filter(|p| !p.trim().is_empty()).map(|p| crate::http::parse_net(p)).collect::<Result<_, _>>().map_err(|e| format!("--trust-proxy: {e}"))?;
     if let Some(path) = slots_file {
         svc.keep_slots_in(path)?;
@@ -491,6 +504,8 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if let Some(dir) = &o.backup_dir {
         svc.set_backup_dir(dir).map_err(|e| e.message)?;
     }
+    svc.scrubs.every = Duration::from_secs(o.scrub_every_s);
+    svc.scrubs.rate = if o.scrub_mib_s == 0 { crate::service::scrub::DEFAULT_RATE } else { o.scrub_mib_s << 20 };
     if !o.media_fetch.is_empty() || o.media_store.is_some() || o.media_max_bytes > 0 {
         svc.set_media(media_resolver(o)?).map_err(|e| e.message)?;
     }
@@ -557,6 +572,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     crate::inspect::keep_looking(&svc);
     tokio::spawn(svc.clone().keep_models());
     svc.start_failover();
+    svc.start_scrubs();
     // The cluster's keys: a coordinator takes them from its shards before
     // it serves, and a coordinator or primary passes changes on.
     crate::keysync::start(&svc).await;
@@ -568,6 +584,11 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
 /// service's queries; a coordinator keeps one only where told. Without one
 /// the lines kept for it are let go ([`obs::Sink::stop`]).
 fn open_log_store(svc: &mut Service, o: &Options) -> Result<(), String> {
+    // A coordinator in a shard server's process: the shard keeps the
+    // process's lines.
+    if o.coord.local.is_some() {
+        return Ok(());
+    }
     let path = match &o.log_store {
         Some(p) => p.clone(),
         None => o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::logstore::file_of),
@@ -1184,48 +1205,67 @@ pub async fn serve_grpc(svc: Arc<Service>, listener: TcpListener, access: Access
         }
         s
     });
-    let (token, cluster) = (access.token.clone(), access.cluster.clone());
-    let counted = svc.clone();
-    // Who the call is from, for each method to check its scope.
-    let check = move |mut req: tonic::Request<()>| match counted.keys.resolve(token.as_ref(), cluster.as_ref(), req.metadata().get("authorization").and_then(|v| v.to_str().ok())) {
-        Some(who) => {
-            req.extensions_mut().insert(who);
-            Ok(req)
-        }
-        None => {
-            counted.metrics.grpc("any", "Unauthenticated", 0.0);
-            // The method is not known yet: the path is the service's.
-            counted.audit.add(crate::keys::Entry {
-                ts_ms: crate::telemetry::now_ms(),
-                who: "unknown".into(),
-                key: None,
-                scope: None,
-                method: "gRPC".into(),
-                route: "any".into(),
-                status: 401,
-                ms: 0.0,
-                request_id: None,
-                detail: None,
-                kind: crate::keys::REFUSAL.into(),
-                ..Default::default()
-            });
-            Err(tonic::Status::unauthenticated("missing or wrong token"))
-        }
-    };
-    // A Write message carries rows, as an HTTP write's body does.
-    let max_body = svc.max_body;
-    let otlp = crate::otlp::grpc_service(svc.clone(), max_body);
-    let service = pb::strata_server::StrataServer::new(grpc::Grpc(svc)).max_decoding_message_size(max_body).max_encoding_message_size(256 << 20);
+    // otlp: OpenTelemetry's LogsService, behind the same check.
+    let otlp = crate::otlp::grpc_service(svc.clone(), svc.max_body);
+    let otlp = tonic::service::interceptor::InterceptedService::new(otlp, Check { svc: svc.clone(), token: access.token.clone(), cluster: access.cluster.clone() });
+    let service = grpc_service(svc, &access);
     let mut builder = tonic::transport::Server::builder();
     if let Some(tls) = &access.tls {
         builder = builder.tls_config(tonic::transport::ServerTlsConfig::new().identity(tonic::transport::Identity::from_pem(&tls.cert, &tls.key)))?;
     }
-    builder
-        .add_service(tonic::service::interceptor::InterceptedService::new(service, check.clone()))
-        // otlp: OpenTelemetry's LogsService, behind the same check.
-        .add_service(tonic::service::interceptor::InterceptedService::new(otlp, check))
-        .serve_with_incoming_shutdown(incoming, shutdown())
-        .await
+    builder.add_service(service).add_service(otlp).serve_with_incoming_shutdown(incoming, shutdown()).await
+}
+
+/// A shard server's gRPC service, its calls checked for their token or key
+/// ([`Check`]): what [`serve_grpc`] serves, and what a coordinator in the
+/// same process calls in-process ([`crate::coord::LocalShard`]).
+pub type GrpcService = tonic::service::interceptor::InterceptedService<pb::strata_server::StrataServer<grpc::Grpc>, Check>;
+
+pub fn grpc_service(svc: Arc<Service>, access: &Access) -> GrpcService {
+    // A Write message carries rows, as an HTTP write's body does.
+    let max_body = svc.max_body;
+    let check = Check { svc: svc.clone(), token: access.token.clone(), cluster: access.cluster.clone() };
+    let service = pb::strata_server::StrataServer::new(grpc::Grpc(svc)).max_decoding_message_size(max_body).max_encoding_message_size(256 << 20);
+    tonic::service::interceptor::InterceptedService::new(service, check)
+}
+
+/// Who a gRPC call is from, for each method to check its scope: the
+/// caller its token or key names, or a refusal.
+#[derive(Clone)]
+pub struct Check {
+    svc: Arc<Service>,
+    token: Option<Secret>,
+    cluster: Option<Secret>,
+}
+
+impl tonic::service::Interceptor for Check {
+    fn call(&mut self, mut req: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        match self.svc.keys.resolve(self.token.as_ref(), self.cluster.as_ref(), req.metadata().get("authorization").and_then(|v| v.to_str().ok())) {
+            Some(who) => {
+                req.extensions_mut().insert(who);
+                Ok(req)
+            }
+            None => {
+                self.svc.metrics.grpc("any", "Unauthenticated", 0.0);
+                // The method is not known yet: the path is the service's.
+                self.svc.audit.add(crate::keys::Entry {
+                    ts_ms: crate::telemetry::now_ms(),
+                    who: "unknown".into(),
+                    key: None,
+                    scope: None,
+                    method: "gRPC".into(),
+                    route: "any".into(),
+                    status: 401,
+                    ms: 0.0,
+                    request_id: None,
+                    detail: None,
+                    kind: crate::keys::REFUSAL.into(),
+                    ..Default::default()
+                });
+                Err(tonic::Status::unauthenticated("missing or wrong token"))
+            }
+        }
+    }
 }
 
 /// Whether the server was told to stop and serves out its drain time

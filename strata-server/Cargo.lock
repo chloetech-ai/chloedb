@@ -4650,9 +4650,11 @@ dependencies = [
  "flate2",
  "futures",
  "hdrhistogram",
+ "hmac",
  "hyper-util",
  "image",
  "libc",
+ "md-5",
  "pprof",
  "prost",
  "protox",
@@ -4681,6 +4683,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "twox-hash",
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]

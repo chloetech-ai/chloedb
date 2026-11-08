@@ -44,6 +44,11 @@ tempfile = "3"
 # A new cluster's CA, and EKS's tokens (the cloud view).
 base64 = "0.23"
 sha2 = "0.10"
+# Postgres's sign-in (`postgres::wire`): SCRAM-SHA-256's HMAC, and MD5;
+# and the public CAs a TLS certificate of verify-full is checked against.
+hmac = "0.12"
+md-5 = "0.10"
+webpki-roots = "1"
 # AWS answers in XML (EC2: instance types, regions, spot prices; `aws`).
 roxmltree = "0.20"
 # Kafka (Redpanda) topics for engine-compare's stream test: a client in Rust alone.

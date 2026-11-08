@@ -11,6 +11,7 @@
 //! * [`replication`]: a primary shipping its writes to its replicas.
 //! * [`cores`]: the cluster's protocols as decisions with no I/O, and
 //!   [`sim`], which runs them on a seeded model of a cluster.
+//! * [`postgres`]: following a Postgres database by logical replication.
 //! * [`media`]: fetching the files MEDIA fields name over HTTP(S).
 //! * [`keys`]: API keys with scopes, and the audit log; [`alerts`]: alert
 //!   rules over the series.
@@ -22,6 +23,7 @@
 
 pub mod agent;
 pub mod alerts;
+pub mod apps;
 pub mod aws;
 pub mod cloud;
 pub mod digitalocean;
@@ -56,6 +58,8 @@ pub mod operator;
 // fleet: coordinators that know each other.
 pub mod peers;
 pub mod plan_pb;
+// `strata-server follow-postgres`: Postgres's logical replication into Strata.
+pub mod postgres;
 pub mod profiler;
 pub mod profiling;
 pub mod reads;
