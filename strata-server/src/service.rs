@@ -593,6 +593,10 @@ pub struct Service {
     synonyms_file: Option<PathBuf>,
     /// Where `POST /v1/admin/checkpoint` writes checkpoints.
     backup_dir: Option<PathBuf>,
+    /// Where `POST /v1/admin/slices` writes slices, one directory a table,
+    /// which `GET /v1/slices/...` serves ([`strata::slice`]), and how
+    /// devices use them ([`crate::slices`]).
+    slices: Option<Arc<crate::slices::Slices>>,
     /// The slot map a coordinator gave this shard and its place in it
     /// ([`Service::set_slots`]), and the file that keeps them (a new map
     /// is set while its lock is held).
@@ -741,6 +745,7 @@ impl Service {
             synonyms: RwLock::new(None),
             synonyms_file: None,
             backup_dir: None,
+            slices: None,
             slots: RwLock::new(None),
             slots_since: AtomicU64::new(0),
             slots_file: tokio::sync::Mutex::new(None),
@@ -1672,6 +1677,83 @@ impl Service {
         Ok(())
     }
 
+    /// Sets where `POST /v1/admin/slices` writes slices, creating the
+    /// directory if need be.
+    pub fn set_slices_dir(&mut self, dir: &Path) -> Result<(), ApiError> {
+        if let Backend::Cluster(_) = self.backend {
+            return Err(ApiError::bad("--slices goes to a server with a database of its own: a slice is built from one table's rows"));
+        }
+        self.slices = Some(Arc::new(crate::slices::Slices::new(dir)?));
+        Ok(())
+    }
+
+    /// The slices this server builds and serves.
+    pub fn slices(&self) -> Result<&Arc<crate::slices::Slices>, ApiError> {
+        self.slices.as_ref().ok_or_else(|| ApiError::bad("slices need the server started with --slices DIR"))
+    }
+
+    /// The directory of a table's slice, if the server serves slices and
+    /// the name is one a table may have.
+    pub fn slice_dir(&self, table: &str) -> Result<PathBuf, ApiError> {
+        self.slices()?.dir_of(table)
+    }
+
+    /// The options a table's slice was built with, from its manifest: what
+    /// a rebuild (`POST /v1/admin/slices` with the table alone) takes.
+    pub fn slice_options(&self, table: &str) -> Result<strata::slice::BuildOptions, ApiError> {
+        let i = self.slices()?.info(table)?;
+        Ok(strata::slice::BuildOptions { table: Some(i.table.clone()), key: i.key.clone() })
+    }
+
+    /// Builds the slice of a table ([`strata::slice::build`]) into its
+    /// directory under `--slices`, replacing the one there only once the
+    /// new one is whole, so that a device never reads half of one.
+    pub async fn build_slice(&self, opts: strata::slice::BuildOptions) -> Result<strata::slice::Built, ApiError> {
+        let db = self.admin_db()?;
+        let slices = self.slices()?.clone();
+        let table = match &opts.table {
+            Some(t) => t.clone(),
+            None => db.snapshot().schema().table.clone(),
+        };
+        let dest = slices.dir_of(&table)?;
+        let parent = dest.parent().expect("under the slices directory").to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            // The table's writes so far: a write after this one makes the
+            // slice stale (one during the build too, which is safe).
+            let ops = db.storage().activity(&table).map_or(0, |a| a.ops);
+            let fresh = parent.join(format!(".building-{table}"));
+            let old = parent.join(format!(".old-{table}"));
+            let _ = std::fs::remove_dir_all(&fresh);
+            let built = strata::slice::build(&db, &opts, &fresh)?;
+            let _ = std::fs::remove_dir_all(&old);
+            if dest.exists() {
+                std::fs::rename(&dest, &old)?;
+            }
+            std::fs::rename(&fresh, &dest)?;
+            let _ = std::fs::remove_dir_all(&old);
+            slices.built(crate::slices::Info::of(&built.manifest, built.manifest_bytes), ops);
+            Ok::<_, strata::Error>(built)
+        })
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(Into::into)
+    }
+
+    /// Rebuilds every slice whose table changed since it was built, with
+    /// the options it was built with; the tables rebuilt.
+    pub async fn rebuild_stale_slices(&self) -> Result<Vec<String>, ApiError> {
+        let db = self.admin_db()?;
+        let slices = self.slices()?.clone();
+        let mut done = Vec::new();
+        for table in slices.tables() {
+            if !slices.is_fresh(&table, &db).unwrap_or(true) {
+                self.build_slice(self.slice_options(&table)?).await?;
+                done.push(table);
+            }
+        }
+        Ok(done)
+    }
+
     /// Writes a checkpoint of the database ([`strata::storage::Database::checkpoint`])
     /// named `name` in the backup directory, hard-linking the segments an
     /// earlier checkpoint there (`link_from`) already holds.
@@ -1700,7 +1782,7 @@ impl Service {
         tokio::task::spawn_blocking(move || wait_for_writer(deadline, || Ok(db.storage().vacuum()?))).await.map_err(ApiError::internal)?
     }
 
-    fn admin_db(&self) -> Result<Arc<Db>, ApiError> {
+    pub(crate) fn admin_db(&self) -> Result<Arc<Db>, ApiError> {
         self.local_db().cloned().ok_or_else(|| ApiError::bad("a coordinator has no database of its own: ask each shard server"))
     }
 

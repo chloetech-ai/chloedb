@@ -276,7 +276,7 @@ fn nearest(v: &[f32], cents: &[f32], norms: &[f32], dim: usize) -> usize {
 }
 
 /// The nearest centroid of every point, on the cores.
-fn assign(points: &[f32], cents: &[f32], norms: &[f32], dim: usize) -> Vec<u32> {
+pub(crate) fn assign(points: &[f32], cents: &[f32], norms: &[f32], dim: usize) -> Vec<u32> {
     let n = points.len() / dim;
     let threads = std::thread::available_parallelism().map_or(1, |t| t.get()).min(n.div_ceil(256)).max(1);
     let per = n.div_ceil(threads).max(1) * dim;
@@ -325,7 +325,7 @@ fn kmeans_pp(points: &[f32], dim: usize, k: usize, rng: &mut rand::rngs::StdRng)
 /// `k` centroids of `points` by Lloyd's algorithm, started by k-means++. A
 /// cluster left empty takes the point farthest from its centroid. Sums run
 /// in point order, so the result does not depend on the number of cores.
-fn kmeans(points: &[f32], dim: usize, k: usize, iters: usize, rng: &mut rand::rngs::StdRng) -> Vec<f32> {
+pub(crate) fn kmeans(points: &[f32], dim: usize, k: usize, iters: usize, rng: &mut rand::rngs::StdRng) -> Vec<f32> {
     let n = points.len() / dim;
     let start = kmeans_pp(points, dim, k, rng);
     let mut cents: Vec<f32> = start.iter().flat_map(|&i| points[i * dim..(i + 1) * dim].iter().copied()).collect();

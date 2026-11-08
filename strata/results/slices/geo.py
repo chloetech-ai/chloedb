@@ -5,8 +5,9 @@ cloud.
 Data:
 
 - Places: Overture Maps' places (release 2026-10-21.0, CDLA Permissive 2.0)
-  in a box around New York City (lon -74.26 to -73.70, lat 40.49 to 40.92),
-  open or of unknown status, confidence 0.5 or more. A place's text is its
+  in a box around the city (`CITIES`: New York City, lon -74.26 to -73.70,
+  lat 40.49 to 40.92, or Houston, lon -95.63 to -95.11, lat 29.53 to
+  29.99), open or of unknown status, confidence 0.5 or more. A place's text is its
   name, the words of its categories (Overture's taxonomy: primary,
   hierarchy, alternates, basic category), its brand and its locality.
 - Demand: the Foursquare check-ins in New York of April 2012 to February
@@ -15,7 +16,10 @@ Data:
   for the venue's category (`category` searches, "pizza") or for the place
   itself (`name` searches: the nearest Overture place within 50 m sharing a
   word of the category). Check-ins at homes, offices, transit, roads and
-  other places nobody searches for are left out.
+  other places nobody searches for are left out. For other cities the
+  check-ins come from Foursquare's global dataset of April 2012 to
+  September 2013 (Yang et al., ACM TIST 2015 and JNCA 2015): the `tist`
+  stage writes the city's in the New York file's format.
 
 The cloud ranks every place by `bm25(body, q) / (1 + d^2 / d0^2)`, d the
 distance from the user, d0 1 km (3 km as a variant), a rank-safe boost in
@@ -31,6 +35,10 @@ more. A table of each word's best score ships with the slice.
     python geo.py searches  # check-ins -> searches
     python geo.py eval      # cloud and device top 10s, about 20 minutes on 4 cores
     python geo.py bytes     # slice files at the median and 90th percentile areas
+
+Houston: `--city houston`, its own `--work` and `--checkins`, and `python
+geo.py --city houston tist` (the global dataset's zip as `--tist`) before
+`searches`.
 """
 import argparse
 import collections
@@ -51,9 +59,23 @@ from search import SEED, log, normalise, run_all  # noqa: E402
 
 strata = None
 RELEASE = "2026-10-21.0"
-BOX = (-74.26, -73.70, 40.49, 40.92)  # lon min, lon max, lat min, lat max
-LAT0, LON0 = 40.7, -73.98
+# A box per city: lon min, lon max, lat min, lat max, and the centre the
+# metres are measured from.
+CITIES = {
+    "nyc": {"box": (-74.26, -73.70, 40.49, 40.92), "centre": (40.7, -73.98)},
+    "houston": {"box": (-95.63, -95.11, 29.53, 29.99), "centre": (29.76, -95.37)},  # 50 km a side, sprawling
+}
+CITY = "nyc"
+BOX = CITIES[CITY]["box"]
+LAT0, LON0 = CITIES[CITY]["centre"]
 KX, KY = 111320 * math.cos(math.radians(LAT0)), 110540  # metres per degree
+
+
+def set_city(name):
+    global CITY, BOX, LAT0, LON0, KX
+    CITY, BOX = name, CITIES[name]["box"]
+    LAT0, LON0 = CITIES[name]["centre"]
+    KX = 111320 * math.cos(math.radians(LAT0))
 TILE = 1000.0
 HALF = [500.0, 1500.0, 2500.0, 4500.0, 9500.0]  # squares of 1, 3, 5, 9 and 19 km a side, whole tiles
 D0 = [1000.0, 3000.0]
@@ -94,13 +116,13 @@ def tile_centre(v):
 
 
 def db_path(a):
-    return os.path.join(a.work, "nyc.strata")
+    return os.path.join(a.work, f"{CITY}.strata")
 
 
 def cmd_prep(a):
     import duckdb
     os.makedirs(a.work, exist_ok=True)
-    src = os.path.join(a.work, "nyc_box.parquet")
+    src = os.path.join(a.work, f"{CITY}_box.parquet")
     con = duckdb.connect()
     if not os.path.exists(src):  # anonymous read of Overture's public bucket
         for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
@@ -143,7 +165,7 @@ def cmd_prep(a):
     np.savez(os.path.join(a.work, "places.npz"), x=xs, y=ys)
     with open(os.path.join(a.work, "names.txt"), "w") as f:
         f.write("\n".join(" ".join(r[0].split()) for r in rows) + "\n")
-    stats = {"release": RELEASE, "box": BOX, "places_in_box": total, "places": len(rows), "mean_body_bytes": body_bytes / len(rows)}
+    stats = {"city": CITY, "release": RELEASE, "box": BOX, "places_in_box": total, "places": len(rows), "mean_body_bytes": body_bytes / len(rows)}
     json.dump(stats, open(os.path.join(a.work, "prep.json"), "w"), indent=1)
     log("prep", stats)
 
@@ -347,18 +369,46 @@ def cmd_bytes(a):
     json.dump(out, open(os.path.join(a.work, "bytes.json"), "w"), indent=1)
 
 
+def cmd_tist(a):
+    """The city's check-ins from Foursquare's global dataset (Yang et al.,
+    TIST 2015), written in the New York file's format for `searches`."""
+    import zipfile
+    z = zipfile.ZipFile(a.tist)
+    name = lambda end: next(n for n in z.namelist() if n.endswith(end))
+    venues = {}
+    with z.open(name("POIs.txt")) as f:
+        for line in f:
+            v, lat, lon, cat, _ = line.decode("utf-8", "replace").rstrip("\n").split("\t")
+            lat, lon = float(lat), float(lon)
+            if BOX[0] < lon < BOX[1] and BOX[2] < lat < BOX[3]:
+                venues[v] = (cat, lat, lon)
+    n = 0
+    os.makedirs(a.work, exist_ok=True)
+    with z.open(name("Checkins.txt")) as f, open(os.path.join(a.work, "checkins.txt"), "w", encoding="latin-1", errors="replace") as out:
+        for line in f:
+            user, v, ts, tz = line.decode("utf-8", "replace").rstrip("\n").split("\t")
+            if v in venues:
+                cat, lat, lon = venues[v]
+                out.write(f"{user}\t{v}\t\t{cat}\t{lat}\t{lon}\t{tz}\t{ts}\n")
+                n += 1
+    log("tist", CITY, "venues", len(venues), "check-ins", n)
+
+
 def main():
     global strata
     ap = argparse.ArgumentParser()
+    ap.add_argument("--city", default="nyc", choices=sorted(CITIES))
     ap.add_argument("--work", default="/home/user/data/geo/work")
+    ap.add_argument("--tist", default="/home/user/data/geo/tist/dataset_TIST2015.zip", help="tist: the global check-in dataset's zip")
     ap.add_argument("--checkins", default="/home/user/data/geo/tsmc/dataset_tsmc2014/dataset_TSMC2014_NYC.txt")
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--sample", type=int, default=0, help="eval: a seeded sample of the searches")
-    ap.add_argument("cmd", choices=["prep", "searches", "eval", "bytes"])
+    ap.add_argument("cmd", choices=["prep", "tist", "searches", "eval", "bytes"])
     a = ap.parse_args()
+    set_city(a.city)
     import strata as st
     strata = search.strata = st
-    {"prep": cmd_prep, "searches": cmd_searches, "eval": cmd_eval, "bytes": cmd_bytes}[a.cmd](a)
+    {"prep": cmd_prep, "tist": cmd_tist, "searches": cmd_searches, "eval": cmd_eval, "bytes": cmd_bytes}[a.cmd](a)
 
 
 if __name__ == "__main__":

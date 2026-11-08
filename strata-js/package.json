@@ -27,6 +27,7 @@
     "client.d.ts",
     "common.js",
     "common.d.ts",
+    "nearby.js",
     "scripts/build.mjs",
     "Cargo.toml",
     "Cargo.lock",

@@ -295,6 +295,16 @@ struct Args {
     /// taken while it serves) written by `POST /v1/admin/checkpoint`.
     #[arg(long)]
     backup_dir: Option<PathBuf>,
+    /// A directory for slices (a table's rows by map tile, for devices to
+    /// search near their user: `strata::slice`), written by `POST
+    /// /v1/admin/slices` and served at `GET /v1/slices/<table>/...`.
+    #[arg(long)]
+    slices: Option<PathBuf>,
+    /// Every this many seconds, rebuild the slices whose table changed
+    /// since they were built, so that devices find a fresh one (0: only
+    /// when asked, by `POST /v1/admin/slices`).
+    #[arg(long, default_value_t = 0)]
+    slices_rebuild_s: u64,
     /// What writes may fetch for MEDIA fields, comma-separated: directories
     /// (`file:/data/media`) and hosts fetched over HTTPS
     /// (`cdn.example.com`, `*.example.com`; `http://host:port` only spelled
@@ -1072,6 +1082,8 @@ async fn main() {
         fetch_models: !a.no_fetch_models,
         synonyms: a.synonyms,
         backup_dir: a.backup_dir,
+        slices: a.slices,
+        slices_rebuild_s: a.slices_rebuild_s,
         cold: a.cold_store.clone().map(|store| strata_server::server::ColdFlags {
             store,
             cache_bytes: (a.cold_cache_gb * (1u64 << 30) as f64) as u64,
@@ -1147,6 +1159,7 @@ async fn main() {
             alerts: None,
             contain: None,
             backup_dir: None,
+            slices: None,
             log_store: None,
             ..o.clone()
         };

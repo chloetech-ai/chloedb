@@ -320,11 +320,12 @@ def t_zipf_tail():
 G = os.path.join(HERE, "geo")
 
 
-def t_geo(mode, d0="1000"):
+def t_geo(mode, d0="1000", g=None):
     """Near-me searches: the device holds a square of tiles around the user
     (`here`) or around home (`home`); per square, its places and bytes, and
     the share of searches whose top k it proved."""
-    e, b = load(G, "eval.json"), load(G, "bytes.json")
+    g = g or G
+    e, b = load(g, "eval.json"), load(g, "bytes.json")
     if not e or not b:
         return "(not run)"
     rows = []
@@ -336,7 +337,7 @@ def t_geo(mode, d0="1000"):
             rows.append([kind, f"{side:g} km", f"{sz['median']['places']:,} / {sz['p90']['places']:,}",
                          f"{sz['median']['file_bytes'] / 1e6:.1f} / {sz['p90']['file_bytes'] / 1e6:.1f}",
                          pct(v["1"]["proved"]), pct(v["3"]["proved"]), pct(v["10"]["proved"]), pct(v["10"]["same"]), wrong])
-    n = load(G, "searches.json")["searches"]
+    n = load(g, "searches.json")["searches"]
     both = lambda h, k: sum(e[kind][d0][mode][h][k]["proved"] * n[kind] for kind in n) / sum(n.values())
     return table(["searches", "square's side", "places, median / 90th pct", "slice MB, median / 90th pct", "top 1 proved", "top 3 proved",
                   "top 10 proved", "top 10 the cloud's (proved or not)", "wrong proofs"], rows) + \
@@ -357,13 +358,86 @@ def t_geo_d0():
     return table(["searches", "square's side", "top 3 proved, d0 1 km", "top 3 proved, d0 3 km", "top 10 proved, d0 1 km", "top 10 proved, d0 3 km"], rows)
 
 
-TABLES = {"slices-cov": lambda: t_slices("cov"), "slices-pop": lambda: t_slices("pop"), "overlap": t_overlap,
+GH = os.path.join(HERE, "geo-houston")
+
+
+def t_geo_cities():
+    """New York against Houston, the square following the user, d0 1 km."""
+    rows = []
+    for city, g in (("New York", G), ("Houston", GH)):
+        e, b, p, q = load(g, "eval.json"), load(g, "bytes.json"), load(g, "prep.json"), load(g, "searches.json")
+        if not e or not b:
+            continue
+        for h in ("2500", "4500"):
+            c, n = e["category"]["1000"]["here"][h], e["name"]["1000"]["here"][h]
+            sz = b["here"][h]
+            rows.append([city, f"{p['places']:,}", f"{q['from_home_m']['median'] / 1000:.1f} km", f"{2 * int(h) / 1000:g} km",
+                         f"{sz['median']['file_bytes'] / 1e6:.1f} / {sz['p90']['file_bytes'] / 1e6:.1f}",
+                         pct(c["3"]["proved"]), pct(c["10"]["proved"]), pct(n["1"]["proved"]), pct(n["10"]["proved"])])
+    return table(["city", "places", "median search from home", "square's side", "slice MB, median / 90th pct", "category: top 3 proved",
+                  "category: top 10 proved", "name: top 1 proved", "name: top 10 proved"], rows)
+
+
+V = os.path.join(HERE, "vectors")
+
+
+def kb(x):
+    return f"{x / 1e3:,.0f}" if x < 1e6 else f"{x / 1e6:,.1f} MB"
+
+
+def t_vectors(c):
+    """A vector slice of `c` clusters: what is proved by the clusters'
+    centres alone, with every row's codes, and after fetching what the
+    codes name; how much that fetch is."""
+    e = load(V, "vectors_eval.json")
+    if not e:
+        return ""
+    rows = []
+    for r in e["runs"][c]["results"]:
+        rows.append([{"taste": "recommend for me", "last": "more like the last track"}[r["query"]], f"{r['budget']:,}", r["k"],
+                     pct(r["exact"]), pct(r["proved_centres"]), pct(r["proved_codes"]), pct(r["proved_after_fetch"]),
+                     pct(r["fetch_share"]), f"{r['fetch_clusters_mean']:.1f}", kb(r["fetch_bytes_mean"]),
+                     kb(r["fetch_bytes_p50_when_fetching"]), kb(r["fetch_bytes_p90_when_fetching"]), r["unsound"]])
+    return table(["search", "tracks held", "k", "device's top k right", "proved: centres", "proved: codes", "proved after fetching",
+                  "searches that fetch", "clusters fetched (mean)", "KB fetched (mean)", "KB when fetching: median", "90th pct", "wrong proofs"], rows)
+
+
+def t_vector_files():
+    e = load(V, "vectors_eval.json")
+    if not e:
+        return ""
+    rows = []
+    for c, b in e["builds"].items():
+        rows.append([f"{b['clusters']:,}" + (" (default)" if c == "0" else ""), f"{b['cluster_rows_median']:,}", f"{b['cluster_rows_max']:,}",
+                     f"{b['manifest_bytes'] / 1e6:.2f}", f"{b['tile_bytes'] / 1e6:.1f}", f"{b['tile_bytes'] / b['rows']:.0f}",
+                     f"{b['codes_bytes'] / 1e6:.1f}", f"{b['codes_bytes'] / b['rows']:.1f}", f"{b['seconds']:.0f}"])
+    return table(["clusters", "rows a cluster: median", "largest", "manifest MB", "tiles MB", "tile bytes / row", "codes MB", "codes bytes / row",
+                  "build s"], rows)
+
+
+def t_vector_verify():
+    v = load(V, "vectors_verify.json")
+    if not v:
+        return ""
+    rows = []
+    for r in v["runs"]:
+        rows.append([f"{r['clusters']:,}", r["searches"], r["proved"], r["fetched"], r["proved_after_fetch"], r["proved_and_same_as_cloud"],
+                     r["proved_not_same"], f"{r['proved_as_replay']} of {r['searches']}", f"{r['device_ms_p50']:.1f} / {r['device_ms_p99']:.1f}",
+                     f"{r['cloud_ms_p50']:.0f} / {r['cloud_ms_p99']:.0f}"])
+    return table(["clusters", "searches", "proved", "fetched what it named", "then proved", "proved and the cloud's answer", "proved, not the cloud's",
+                  "proof as the replay's", "device ms, median / 99th", "cloud ms (exact scan), median / 99th"], rows)
+
+
+TABLES = {"vectors-793": lambda: t_vectors("0"), "vectors-4096": lambda: t_vectors("4096"), "vector-files": t_vector_files,
+          "vector-verify": t_vector_verify,
+          "slices-cov": lambda: t_slices("cov"), "slices-pop": lambda: t_slices("pop"), "overlap": t_overlap,
           "lengths": t_lengths, "pairs": t_pairs, "confidence": t_confidence, "recs": t_recs, "churn": t_churn,
           "pack-bytes": t_bytes, "discovery": t_discovery,
           "aol-cov": lambda: t_aol("cov"), "aol-pop": lambda: t_aol("pop"), "aol-cache": t_aol_cache, "aol-budget": t_aol_budget,
           "aol-bands": t_aol_bands, "zipf-summary": t_zipf_summary, "zipf-cov": lambda: t_aol("cov", Z), "zipf-pop": lambda: t_aol("pop", Z),
           "zipf-bands": lambda: t_aol_bands(Z), "zipf-cache": lambda: t_aol_cache(Z), "zipf-budget": lambda: t_aol_budget(Z),
-          "zipf-tail": t_zipf_tail, "geo-here": lambda: t_geo("here"), "geo-home": lambda: t_geo("home"), "geo-d0": t_geo_d0}
+          "zipf-tail": t_zipf_tail, "geo-here": lambda: t_geo("here"), "geo-home": lambda: t_geo("home"), "geo-d0": t_geo_d0,
+          "geo-houston": lambda: t_geo("here", g=GH), "geo-cities": t_geo_cities}
 
 
 def main():

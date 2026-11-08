@@ -126,6 +126,11 @@ pub struct Options {
     pub synonyms: Option<PathBuf>,
     /// Where `POST /v1/admin/checkpoint` writes checkpoints.
     pub backup_dir: Option<PathBuf>,
+    /// Where `POST /v1/admin/slices` writes slices ([`strata::slice`]).
+    pub slices: Option<PathBuf>,
+    /// Every this many seconds, rebuild the slices whose table changed
+    /// since they were built (0: only when asked).
+    pub slices_rebuild_s: u64,
     /// Keep segments cold on object storage ([`strata::storage::cold`]).
     pub cold: Option<ColdFlags>,
     /// What writes may fetch for MEDIA fields: `file:` roots and hosts
@@ -513,6 +518,9 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.scrubs.every = Duration::from_secs(o.scrub_every_s);
     svc.scrubs.rate = if o.scrub_mib_s == 0 { crate::service::scrub::DEFAULT_RATE } else { o.scrub_mib_s << 20 };
+    if let Some(dir) = &o.slices {
+        svc.set_slices_dir(dir).map_err(|e| e.message)?;
+    }
     if !o.media_fetch.is_empty() || o.media_store.is_some() || o.media_max_bytes > 0 {
         svc.set_media(media_resolver(o)?).map_err(|e| e.message)?;
     }
@@ -579,6 +587,19 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     // workdata: every table's counts a minute apart (rates on a first look).
     crate::inspect::keep_looking(&svc);
     tokio::spawn(svc.clone().keep_models());
+    if o.slices.is_some() && o.slices_rebuild_s > 0 {
+        let (svc, every) = (svc.clone(), Duration::from_secs(o.slices_rebuild_s));
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                match svc.rebuild_stale_slices().await {
+                    Ok(t) if !t.is_empty() => tracing::info!(tables = ?t, "rebuilt stale slices"),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e.message, "rebuilding stale slices"),
+                }
+            }
+        });
+    }
     svc.start_failover();
     svc.start_scrubs();
     // The cluster's keys: a coordinator takes them from its shards before

@@ -68,6 +68,7 @@ pub mod replication;
 pub mod server;
 pub mod service;
 pub mod sim;
+pub mod slices;
 pub mod slots;
 pub mod telemetry;
 pub mod traffic;

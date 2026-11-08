@@ -24,6 +24,12 @@
 //! | `POST /v1/import?format=sqlite&tables=a,b&plan=true` | a SQLite file (`application/vnd.sqlite3`; recognised by its first bytes too) | `{tables, skipped, written}`, or with `plan` the plan ([`strata::sqlite`]) |
 //! | `POST /v1/import?format=parquet&table=name&key=id&plan=true` | a Parquet file (`application/vnd.apache.parquet`; recognised by its first bytes too) | `{table, rows, created, skipped, notes, written}`, or with `plan` the plan ([`strata::parquet`]) |
 //! | `GET /v1/export?tables=a,b&fts=false&indexes=false&schemas=false` | | the database as a SQLite file |
+//! | `POST /v1/admin/slices` | `{table?, text, lat, lon, lat0, lon0, tile_m?, k1?, b?}` (a geo slice), `{table?, vector, clusters?, seed?, codes?}` (a vector slice), or `{table}` alone to rebuild it as it was built | `{table, kind, version, rows, tiles, words or clusters and codes_bytes, manifest_bytes, tile_bytes, took_ms}`: builds a table's slice into `--slices` ([`strata::slice`]) |
+//! | `GET /v1/admin/slices` | | `{slices: [...]}`: each slice, whether its table changed since, and how devices use it ([`crate::slices`]) |
+//! | `GET /v1/admin/slices/:table`, `DELETE /v1/admin/slices/:table` | | one slice with each tile's rows, bytes and downloads, and the last hour by minute; or `{deleted}` |
+//! | `GET /v1/slices/:table/manifest.json`, `GET /v1/slices/:table/tiles/<x>_<y>.jsonl.gz`, `GET /v1/slices/:table/codes.bin.gz` | | a slice's manifest, a tile's rows (gzipped JSON lines), and a vector slice's codes of every row, for a device to search near its user or its user's taste |
+//! | `GET /v1/slices/:table/status` | | `{table, version, built_ms, fresh, changed_ms}`: whether a device's slice is the current one |
+//! | `POST /v1/slices/:table/usage` | `{device?, searches, why: {proved, no_match, short, bound, stale}, device_ms?, cloud_ms?}` | `{}`: a device's searches since its last report |
 //! | `GET /v1/export?format=parquet&tables=name` | | one table as a Parquet file, keeping its Strata schema |
 //! | `POST /v1/schema/check` | a schema, in either JSON form | `{schema, short}`, or an error |
 //! | `POST /v1/explain` | `{sql, params?, hits?}` | the bound query, its plan IR and the executor's plan; with `hits`, the top rows with their `score()` and `features()` |
@@ -239,6 +245,13 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/rank_log/interleaving", post(interleaving))
         .route("/v1/snapshot", post(snapshot))
         .route("/v1/admin/checkpoint", post(admin_checkpoint))
+        .route("/v1/admin/slices", get(admin_slices_list).post(admin_slices))
+        .route("/v1/admin/slices/:table", get(admin_slice).delete(admin_slice_delete))
+        .route("/v1/slices/:table/manifest.json", get(slice_manifest))
+        .route("/v1/slices/:table/tiles/:file", get(slice_tile))
+        .route("/v1/slices/:table/codes.bin.gz", get(slice_codes))
+        .route("/v1/slices/:table/status", get(slice_status))
+        .route("/v1/slices/:table/usage", post(slice_usage))
         .route("/v1/admin/check", post(admin_check))
         .route("/v1/admin/scrub", post(admin_scrub))
         .route("/v1/admin/vacuum", post(admin_vacuum))
@@ -924,6 +937,131 @@ fn browsers(app: &App, req: &Request) -> Option<Response> {
     let host = header_str(headers, header::HOST).or_else(|| req.uri().authority().map(|a| a.as_str()));
     let why = auth::browser_check(app.hosts.as_deref(), host, header_str(headers, header::ORIGIN), req.method().is_safe())?;
     Some(ApiError { status: 403, message: why }.into_response())
+}
+
+/// Builds a table's slice into the server's `--slices` directory
+/// ([`strata::slice::build`]). `{"table"?, "text", "lat", "lon", "lat0",
+/// "lon0", "tile_m"?, "k1"?, "b"?}` is a geo slice, the grid's origin at
+/// (`lat0`, `lon0`) and its tiles `tile_m` metres on a side (1,000 by
+/// default); `{"table"?, "vector", "clusters"?, "seed"?, "codes"?}` a
+/// vector slice of that many k-means clusters (about the square root of
+/// the rows by default), with every row's codes unless `codes` is false. `{"table"}` alone rebuilds a table's slice with the options
+/// it was built with.
+async fn admin_slices(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let table = b.get("table").and_then(|v| v.as_str()).map(str::to_string);
+    let opts = if let Some(field) = b.get("vector") {
+        let field = field.as_str().ok_or_else(|| ApiError::bad("\"vector\" is the name of a VECTOR field"))?;
+        let n = |k: &str, d: u64| b.get(k).map_or(Ok(d), |v| v.as_u64().ok_or_else(|| ApiError::bad(format!("{k:?} is a whole number"))));
+        let clusters = n("clusters", 0)?;
+        if clusters > 65_536 {
+            return Err(ApiError::bad("a vector slice has at most 65,536 clusters"));
+        }
+        let codes = b.get("codes").map_or(Ok(true), |v| v.as_bool().ok_or_else(|| ApiError::bad("\"codes\" is true or false")))?;
+        strata::slice::BuildOptions { table, key: strata::slice::BuildKey::Vector { field: field.to_string(), clusters: clusters as usize, seed: n("seed", crate::slices::SEED)?, codes } }
+    } else if b.get("text").is_none() && b.get("lat0").is_none() {
+        let table = table.ok_or_else(|| ApiError::bad("the body needs a table to rebuild, text, lat, lon, lat0 and lon0 to build a geo slice, or vector to build a vector slice"))?;
+        app.svc.slice_options(&table)?
+    } else {
+        let f = |k: &str| b.get(k).and_then(|v| v.as_f64()).ok_or_else(|| ApiError::bad(format!("the body needs a number {k:?}")));
+        let mut bm25 = strata::text::Bm25Params::default();
+        if let Some(k1) = b.get("k1").and_then(|v| v.as_f64()) {
+            bm25.k1 = k1 as f32;
+        }
+        if let Some(x) = b.get("b").and_then(|v| v.as_f64()) {
+            bm25.b = x as f32;
+        }
+        let grid = strata::slice::Grid::new(f("lat0")?, f("lon0")?, b.get("tile_m").and_then(|v| v.as_f64()).unwrap_or(1000.0))?;
+        let key = strata::slice::BuildKey::Geo { text: body_str(&b, "text")?.to_string(), lat: body_str(&b, "lat")?.to_string(), lon: body_str(&b, "lon")?.to_string(), grid, bm25 };
+        strata::slice::BuildOptions { table, key }
+    };
+    let t0 = Instant::now();
+    let built = app.svc.build_slice(opts).await?;
+    let m = &built.manifest;
+    let mut out = json!({
+        "table": m.schema.table, "kind": m.kind(), "version": m.version, "rows": built.rows, "tiles": m.tiles.len(),
+        "manifest_bytes": built.manifest_bytes, "tile_bytes": built.tile_bytes, "took_ms": t0.elapsed().as_secs_f64() * 1e3,
+    });
+    match &m.key {
+        strata::slice::Key::Geo(g) => out["words"] = json!(g.words.terms.len()),
+        strata::slice::Key::Vector(v) => {
+            out["clusters"] = json!(v.centroids.len());
+            out["codes_bytes"] = json!(v.codes.as_ref().map(|c| c.bytes));
+        }
+    }
+    Ok(AxJson(out))
+}
+
+/// Every slice the server has, with whether its table changed since it
+/// was built and how devices use it.
+async fn admin_slices_list(State(app): State<App>) -> Res {
+    let Ok(slices) = app.svc.slices() else {
+        return Ok(AxJson(json!({"enabled": false, "slices": []})));
+    };
+    let db = app.svc.admin_db()?;
+    let list: Vec<Json> = slices.tables().iter().filter_map(|t| slices.describe(t, &db, false).ok()).collect();
+    let tables: Vec<Json> = db.catalog().iter().map(|s| json!({"table": s.table, "fields": s.fields.iter().map(|f| json!({"name": f.name, "type": f.type_name()})).collect::<Vec<_>>()})).collect();
+    Ok(AxJson(json!({"enabled": true, "dir": slices.dir(), "slices": list, "tables": tables})))
+}
+
+/// One slice: what it holds, each tile's rows, bytes and downloads, and
+/// how devices used it in the last hour, by minute.
+async fn admin_slice(State(app): State<App>, axum::extract::Path(table): axum::extract::Path<String>) -> Res {
+    let db = app.svc.admin_db()?;
+    Ok(AxJson(app.svc.slices()?.describe(&table, &db, true)?))
+}
+
+/// Deletes a table's slice: devices then find none and ask the cloud.
+async fn admin_slice_delete(State(app): State<App>, axum::extract::Path(table): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(json!({"deleted": app.svc.slices()?.remove(&table)?})))
+}
+
+/// Whether a device's slice is the current one.
+async fn slice_status(State(app): State<App>, axum::extract::Path(table): axum::extract::Path<String>) -> Res {
+    let db = app.svc.admin_db()?;
+    Ok(AxJson(app.svc.slices()?.status(&table, &db)?))
+}
+
+/// A device's searches since its last report ([`crate::slices::Slices::report`]).
+async fn slice_usage(State(app): State<App>, axum::extract::Path(table): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+    app.svc.slices()?.report(&table, &b)?;
+    Ok(AxJson(json!({})))
+}
+
+/// A table's slice manifest, as `POST /v1/admin/slices` last built it.
+async fn slice_manifest(State(app): State<App>, axum::extract::Path(table): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let (r, n) = slice_file(&app, &table, "manifest.json", "application/json").await?;
+    app.svc.slices()?.note_manifest(&table, n);
+    Ok(r)
+}
+
+/// One tile of a table's slice (`<x>_<y>.jsonl.gz`).
+async fn slice_tile(State(app): State<App>, axum::extract::Path((table, file)): axum::extract::Path<(String, String)>) -> Result<Response, ApiError> {
+    let xy = file.strip_suffix(".jsonl.gz").and_then(|t| t.split_once('_')).and_then(|(x, y)| Some((x.parse::<i32>().ok()?, y.parse::<i32>().ok()?)));
+    let Some((x, y)) = xy else {
+        return Err(ApiError::bad(format!("{file:?} is not a tile's file (<x>_<y>.jsonl.gz)")));
+    };
+    let (r, n) = slice_file(&app, &table, &format!("tiles/{file}"), "application/gzip").await?;
+    app.svc.slices()?.note_tile(&table, x, y, n);
+    Ok(r)
+}
+
+/// A vector slice's codes of every row (`codes.bin.gz`).
+async fn slice_codes(State(app): State<App>, axum::extract::Path(table): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let (r, n) = slice_file(&app, &table, strata::slice::CODES_FILE, "application/gzip").await?;
+    app.svc.slices()?.note_codes(&table, n);
+    Ok(r)
+}
+
+async fn slice_file(app: &App, table: &str, rel: &str, ty: &'static str) -> Result<(Response, u64), ApiError> {
+    let path = app.svc.slice_dir(table)?.join(rel);
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            let n = bytes.len() as u64;
+            Ok((([(header::CONTENT_TYPE, ty), (header::CACHE_CONTROL, "no-cache")], bytes).into_response(), n))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ApiError { status: 404, message: format!("no {rel} in table {table}'s slice (build it with POST /v1/admin/slices)") }),
+        Err(e) => Err(ApiError::internal(e)),
+    }
 }
 
 fn body_str<'a>(b: &'a Json, k: &str) -> Result<&'a str, ApiError> {
