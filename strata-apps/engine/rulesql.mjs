@@ -215,6 +215,26 @@ function parseStatement(c, q) {
     if (rest.trim() && !as) fail(`CALL ${m[1]}: unexpected "${rest.trim().slice(0, 30)}"`);
     return [{ call: m[1], input, ...(as ? { as: as[1] } : {}) }];
   }
+  // UPSERT INTO t (cols) VALUES (values) FIND (SELECT id ...) [AS name]: the
+  // row FIND selects gets the values, or a new row does.
+  if ((m = c.match(new RegExp(`^UPSERT\\s+INTO\\s+(${NAME})\\s*`, 'i')))) {
+    const table = m[1];
+    const cols = group(c.slice(m[0].length));
+    if (!cols) fail(`UPSERT INTO ${table}: list the columns`);
+    let rest = cols[1].trim();
+    if (!/^VALUES\b/i.test(rest)) fail(`UPSERT INTO ${table}: give VALUES (...)`);
+    const vals = group(rest.slice(6));
+    rest = vals[1].trim();
+    const names = splitTop(cols[0], ',').map((x) => x.trim()).filter(Boolean);
+    const exprs = splitTop(vals[0], ',').map((x) => x.trim()).filter(Boolean);
+    if (names.length !== exprs.length) fail(`UPSERT INTO ${table}: ${names.length} columns but ${exprs.length} values`);
+    if (!/^FIND\b/i.test(rest)) fail(`UPSERT INTO ${table}: give FIND (SELECT id FROM ${table} WHERE ...), the row to update`);
+    const find = group(rest.slice(4));
+    if (!find) fail(`UPSERT INTO ${table}: FIND (SELECT ...)`);
+    const as = find[1].match(new RegExp(`^\\s*AS\\s+(${NAME})\\s*$`, 'i'));
+    if (find[1].trim() && !as) fail(`UPSERT INTO ${table}: unexpected "${find[1].trim().slice(0, 30)}"`);
+    return [{ upsert: table, find: find[0].trim(), values: Object.fromEntries(names.map((n, i) => [n, valueOf(exprs[i])])), ...(as ? { as: as[1] } : {}) }];
+  }
   // INSERT INTO t (cols) VALUES (values) [ON CONFLICT (cols) DO NOTHING | DO UPDATE SET ...] [AS name]
   if ((m = c.match(new RegExp(`^INSERT\\s+INTO\\s+(${NAME})\\s*`, 'i')))) {
     const table = m[1];
@@ -399,3 +419,69 @@ Triggers: CREATE RULE count_votes AFTER INSERT OR DELETE ON votes AS
 - A rule with statements is one transaction: its SELECTs see the data as it was when it started (not its own writes: compute a total from the cart, not from the order lines it adds), its writes happen together at the end or not at all, and two runs never overlap, so REQUIRE really holds (nothing is sold twice). Triggers on its writes run after.
 - :user.id is the signed-in person (also :user.name and :user.email; null when nobody is).
 - A rule is checked when the version is built: the tables and columns it writes must exist.`;
+
+// ---- a rule (JSON) as a statement
+
+const sqlText = (v) => `'${String(v).replace(/'/g, "''")}'`;
+const canon = (v) => (Array.isArray(v) ? v.map(canon) : v && typeof v === 'object'
+  ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])])) : v);
+const same = (a, b) => JSON.stringify(canon(a)) === JSON.stringify(canon(b));
+export const onOf = (on) => (on && on.table ? { table: on.table, event: [].concat(on.event || 'insert').length === 1 ? [].concat(on.event || 'insert')[0] : [].concat(on.event) } : null);
+
+// A value as the statement says it: a parameter, a quoted literal, a number,
+// or a SELECT in parentheses.
+function valueSql(v) {
+  if (v === null || v === undefined) return 'NULL';
+  if (typeof v === 'number') return String(v);
+  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
+  if (typeof v !== 'string') throw new RuleSqlError('a value that is not text, a number or a SELECT');
+  if (PARAM_RE.test(v)) return v;
+  if (SELECT_RE.test(v)) return `(${v})`;
+  return sqlText(v);
+}
+const condSql = (c) => { if (typeof c !== 'string' || !SELECT_RE.test(c)) throw new RuleSqlError('a condition that is not a SELECT'); return `(${c})`; };
+
+function stepSql(st, pad) {
+  if (st.if !== undefined) { const { if: cond, ...rest } = st; return `IF ${condSql(cond)} THEN\n${pad}  ${stepSql(rest, `${pad}  `)};\n${pad}END`; }
+  const as = st.as ? ` AS ${st.as}` : '';
+  if (st.let !== undefined) return `LET ${st.let} = ${valueSql(st.value)}`;
+  if (st.require !== undefined) return `REQUIRE ${condSql(st.require)}${st.else !== undefined ? ` ELSE ${sqlText(st.else)}` : ''}`;
+  if (st.return !== undefined) return `RETURN ${valueSql(st.return)}`;
+  if (st.insert !== undefined || st.upsert !== undefined) {
+    const vals = Object.entries(st.values || {});
+    if (!vals.length) throw new RuleSqlError('an insert with no values');
+    const head = `${st.upsert !== undefined ? 'UPSERT' : 'INSERT'} INTO ${st.upsert ?? st.insert} (${vals.map(([k]) => k).join(', ')}) VALUES (${vals.map(([, v]) => valueSql(v)).join(', ')})`;
+    return st.upsert !== undefined ? `${head} FIND (${st.find})${as}` : `${head}${as}`;
+  }
+  if (st.update !== undefined) {
+    const id = valueSql(st.id);
+    const own = (v) => { const m = typeof v === 'string' && v.match(/^SELECT ([\s\S]+) FROM (\S+) WHERE id = ([\s\S]+)$/); return m && m[2] === st.update && m[3] === id ? m[1] : null; };
+    const sets = Object.entries(st.set || {}).map(([k, v]) => `${k} = ${own(v) ?? valueSql(v)}`);
+    if (!sets.length) throw new RuleSqlError('an update that sets nothing');
+    return `UPDATE ${st.update} SET ${sets.join(', ')} WHERE id = ${id}${as}`;
+  }
+  if (st.remove !== undefined) return `DELETE FROM ${st.remove} WHERE id = ${valueSql(st.id)}`;
+  if (st.call !== undefined) return `CALL ${st.call}(${Object.entries(st.input || {}).map(([k, v]) => `${k} => ${valueSql(v)}`).join(', ')})${as}`;
+  if (st.each !== undefined) return `FOR ${st.as} IN (${st.each}) DO\n${(st.do || []).map((x) => `${pad}  ${stepSql(x, `${pad}  `)};`).join('\n')}\n${pad}END`;
+  throw new RuleSqlError(`a step of an unknown kind: ${Object.keys(st).join(', ')}`);
+}
+
+// A rule (its JSON and trigger) as a CREATE RULE statement that compiles
+// back into exactly that rule, or null.
+export function ruleStatement(slug, rule, on) {
+  try {
+    const events = on && on.table ? ` AFTER ${[].concat(on.event || 'insert').map((e) => e.toUpperCase()).join(' OR ')} ON ${on.table}` : '';
+    let text;
+    if (rule && typeof rule.query === 'string') {
+      if (events) return null;
+      text = `CREATE RULE ${slug}${rule.one ? ' RETURNS ROW' : rule.value ? ' RETURNS VALUE' : ''} AS\n  ${rule.query}`;
+    } else if (rule && Array.isArray(rule.steps) && rule.steps.length) {
+      text = `CREATE RULE ${slug}${events} AS\n${rule.steps.map((st) => `  ${stepSql(st, '  ')};`).join('\n')}`;
+    } else return null;
+    const back = compileRule(text);
+    return same(back.rule, rule) && same(back.on, onOf(on)) ? text : null;
+  } catch (e) {
+    if (e instanceof RuleSqlError) return null;
+    throw e;
+  }
+}

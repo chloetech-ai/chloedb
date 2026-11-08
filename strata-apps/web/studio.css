@@ -187,6 +187,9 @@ svg.graph .k-component circle { fill: #d9480f; } svg.graph .k-helper circle { fi
 .gitem .v { color: var(--muted); font-size: 12px; }
 .muted { color: var(--muted); } .small { font-size: 12.5px; }
 .sheet.wide { width: min(1300px, 100%); }
+.sheet pre.sql .k { color: var(--accent); font-weight: 600; }
+.sheet pre.sql .s { color: color-mix(in srgb, var(--ok) 80%, var(--fg)); }
+.sheet pre.sql .c { color: var(--muted); font-style: italic; }
 .mapbody { padding: 14px 16px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
 
 /* an app on its own (/a/<id>) */

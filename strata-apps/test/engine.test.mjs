@@ -1270,3 +1270,133 @@ test('graph questions are answered from Strata', async (t) => {
     child.kill();
   }
 });
+
+// Every piece is stored as its SQL and compiled when read: the statement
+// gives back exactly what the engine runs.
+test('pieces are stored as SQL: each kind gives back what it runs', async () => {
+  const { toSource, fromSource, storedSpec, withoutPhotos, appScript } = await import('../engine/source.mjs');
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const { expandScreen } = await import('../engine/patterns.mjs');
+  const round = (piece) => {
+    const sql = toSource(piece);
+    const spec = storedSpec(piece.kind, piece.spec, sql);
+    return { sql, spec, back: fromSource({ ...piece, code: sql, spec }) };
+  };
+  // A table: its CREATE TABLE.
+  const t = round({ kind: 'table', slug: 'dishes', title: 'dishes', code: '', spec: { name: 'dishes', description: 'What the kitchen serves', columns: [{ name: 'name', type: 'text' }, { name: 'price', type: 'float' }, { name: 'about', type: 'meaning', of: ['name'] }] } });
+  assert.match(t.sql, /^-- What the kitchen serves\nCREATE TABLE dishes \(\n {2}id KEYWORD PRIMARY KEY,\n {2}name TEXT,\n {2}price FLOAT,\n {2}about VECTOR OPTIONS\(embed = 'name'/);
+  assert.equal(t.back.code, '');
+  // A screen written as a statement, with a photo found for it after it was
+  // expanded: the statement and a PHOTOS part.
+  const statement = "CREATE SCREEN home TITLE 'Home'\nBLOCKS [{\"hero\": \"Fresh sushi\", \"photo\": \"sushi counter\"}]\nLIST dishes\n  TITLE 'Dishes'  NOUN 'dish'\n  FORM (name REQUIRED, price NUMBER)";
+  const ex = expandScreen(compileStatement(statement).screen);
+  assert.deepEqual(ex.problems, []);
+  ex.screen.body[0].src = 'https://images.unsplash.com/photo-1-abc?w=1600';
+  ex.screen.body[0].credit = 'A. Person';
+  const s = round({ kind: 'view', slug: 'home', title: 'Home', code: JSON.stringify(ex.screen, null, 1), spec: { screen: true, order: 10, statement } });
+  assert.ok(s.sql.startsWith(statement));
+  assert.match(s.sql, /\nPHOTOS \[\n {2}\{"photo":"sushi counter","src":"https:\/\/images\.unsplash\.com\/photo-1-abc\?w=1600","credit":"A\. Person"\}\n\]$/);
+  assert.deepEqual(JSON.parse(s.back.code), ex.screen);
+  assert.equal(s.back.statement, statement);
+  assert.equal(withoutPhotos(s.sql), statement);
+  assert.ok(!s.spec.statement && !s.spec.derived);
+  // A screen written as JSON: a statement made from it, marked derived (it is
+  // still shown and changed as JSON).
+  const json = { data: { n: 'SELECT COUNT(*) AS n FROM dishes' }, body: [{ h: 'Menu' }, { table: '=data.dishes', columns: [{ key: 'name' }] }] };
+  const j = round({ kind: 'view', slug: 'menu', title: 'Menu', code: JSON.stringify(json), spec: { screen: true } });
+  assert.match(j.sql, /^CREATE SCREEN menu TITLE 'Menu'\nDATA n AS \(SELECT COUNT\(\*\) AS n FROM dishes\)\nHEADING 'Menu'\nBLOCKS \[/);
+  assert.deepEqual(JSON.parse(j.back.code), json);
+  assert.equal(j.spec.derived, true);
+  assert.equal(j.back.statement, null);
+  // A stale statement (the JSON was patched since) is not stored: the JSON's own is.
+  const patched = { ...ex.screen, body: ex.screen.body.slice(1) };
+  const p = round({ kind: 'view', slug: 'home', title: 'Home', code: JSON.stringify(patched), spec: { screen: true, statement } });
+  assert.ok(!p.sql.includes('LIST dishes'));
+  assert.equal(p.spec.derived, true);
+  assert.deepEqual(JSON.parse(p.back.code), patched);
+  // A rule written as CREATE RULE, and one written as JSON.
+  const ruleSql = "CREATE RULE count_votes AFTER INSERT OR DELETE ON votes AS\n  UPDATE features SET votes = (SELECT COUNT(*) FROM votes WHERE feature = :row.feature) WHERE id = :row.feature;";
+  const { compileRule } = await import('../engine/rulesql.mjs');
+  const compiled = compileRule(ruleSql);
+  const r = round({ kind: 'function', slug: 'count_votes', title: 'count_votes', code: JSON.stringify(compiled.rule), spec: { rule: true, on: compiled.on, statement: ruleSql } });
+  assert.equal(r.sql, ruleSql);
+  assert.deepEqual(JSON.parse(r.back.code), compiled.rule);
+  assert.equal(r.back.statement, ruleSql);
+  const rj = round({ kind: 'function', slug: 'add-guest', title: 'add-guest', code: JSON.stringify({ steps: [{ insert: 'guests', values: { name: ':name' } }] }), spec: { rule: true, on: null } });
+  assert.match(rj.sql, /^CREATE RULE add-guest AS\n {2}INSERT INTO guests \(name\) VALUES \(:name\);$/);
+  assert.equal(rj.spec.derived, true);
+  assert.deepEqual(JSON.parse(rj.back.code), { steps: [{ insert: 'guests', values: { name: ':name' } }] });
+  // JavaScript and JSON inside a CREATE ... AS $$ ... $$, exactly, even
+  // with $$ in the body.
+  for (const [kind, slug, code, spec, head] of [
+    ['function', 'send-digest', "async function run(input, app) {\n  return '$$' + input.x;\n}\n", { on: { table: 'orders', event: 'insert' } }, 'CREATE FUNCTION send-digest AFTER INSERT ON orders LANGUAGE javascript AS $js$'],
+    ['view', 'game', 'function view(root, app) { root.append("hi"); }', { order: 5 }, "CREATE SCREEN game TITLE 'Snake' LANGUAGE javascript AS $$"],
+    ['component', 'stars', 'function component(props) { return h("span", {}, "*"); }', {}, 'CREATE COMPONENT stars LANGUAGE javascript AS $$'],
+    ['helper', 'money', 'function helper() { return { f: (n) => n }; }', {}, 'CREATE HELPER money LANGUAGE javascript AS $$'],
+    ['pattern', 'leaderboard', '{\n "params": {}\n}\n', {}, 'CREATE PATTERN leaderboard LANGUAGE json AS $$'],
+  ]) {
+    const w = round({ kind, slug, title: slug === 'game' ? 'Snake' : slug, code, spec });
+    assert.ok(w.sql.startsWith(head), `${kind}: ${w.sql.split('\n')[0]}`);
+    assert.equal(w.back.code, code, kind);
+  }
+  // The whole app as one script.
+  const sql = appScript({ app: { id: 'abc123', name: 'Sushi', description: 'A sushi bar' }, comp: { n: 3, summary: 'Added the menu' },
+    tables: [{ kind: 'table', sql: t.sql }], views: [{ kind: 'view', sql: j.sql, spec: { order: 20 } }, { kind: 'view', sql: s.sql, spec: { order: 10 } }],
+    functions: [{ kind: 'function', sql: r.sql, spec: { rule: true }, description: 'Counts the votes' }], components: [], helpers: [] });
+  assert.match(sql, /^-- Sushi\n-- A sushi bar\n-- Version 3: Added the menu\n/);
+  assert.ok(sql.indexOf('CREATE SCREEN home') < sql.indexOf('CREATE SCREEN menu'));
+  assert.match(sql, /-- Counts the votes\nCREATE RULE count_votes [\s\S]*WHERE id = :row\.feature;\n/);
+  assert.ok(!/;;/.test(sql));
+});
+
+// Against a real strata-server: the row holds the SQL, a read compiles it,
+// and pieces stored before are rewritten as SQL in place on start.
+test('the store keeps SQL in Strata and compiles it when read', async (t) => {
+  const { findServerBinary, startServer } = await import('../engine/strata.mjs');
+  const { Store } = await import('../engine/store.mjs');
+  const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
+  if (!bin) return t.skip('no strata-server binary');
+  const dir = mkdtempSync(join(tmpdir(), 'sa-sql-'));
+  const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+  const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
+  try {
+    const store = new Store(client, () => {});
+    await store.init();
+    const statement = "CREATE SCREEN guests TITLE 'Guests'\nLIST guests\n  NOUN 'guest'\n  FORM (name REQUIRED, rsvp SELECT ('yes', 'no'))";
+    const { compileStatement } = await import('../engine/statement.mjs');
+    const { expandScreen } = await import('../engine/patterns.mjs');
+    const screen = expandScreen(compileStatement(statement).screen).screen;
+    const id = await store.putCapability({ app: 'a1', slug: 'guests', kind: 'view', title: 'Guests', code: JSON.stringify(screen, null, 1), spec: { screen: true, statement } });
+    const [row] = await client.get('sa_capabilities', [id]);
+    assert.equal(row.code, statement);
+    assert.ok(!JSON.parse(row.spec).statement);
+    // Read back by a store that has not seen it: compiled from the SQL.
+    const fresh = new Store(client, () => {});
+    const [cap] = await fresh.getCapabilities([id]);
+    assert.deepEqual(JSON.parse(cap.code), screen);
+    assert.equal(cap.sql, statement);
+    assert.equal(cap.spec.statement, statement);
+    // A row an older engine stored (its compiled JSON) is rewritten as SQL
+    // on start, with the same id.
+    const oldRule = { steps: [{ insert: 'guests', values: { name: ':name' } }] };
+    await client.write([
+      { op: 'insert', table: 'sa_capabilities', doc: { id: 'a1/function/add@1', slug: 'add', version: 1, kind: 'function', app: 'a1', title: 'add', description: '', code: JSON.stringify(oldRule), spec: JSON.stringify({ rule: true, on: null }), author: 'forge' } },
+      { op: 'insert', table: 'sa_capabilities', doc: { id: 'a1/view/old@1', slug: 'old', version: 1, kind: 'view', app: 'a1', title: 'Old', description: '', code: JSON.stringify(screen), spec: JSON.stringify({ screen: true, statement }), author: 'forge' } },
+      { op: 'insert', table: 'sa_capabilities', doc: { id: 'lib/helper/fmt@1', slug: 'fmt', version: 1, kind: 'helper', app: 'lib', title: 'fmt', description: '', code: 'function helper() { return {}; }', spec: '{}', author: 'builtin' } },
+    ]);
+    await client.write([{ op: 'delete', table: 'sa_settings', key: '_engine:stored-as-sql' }]);
+    const again = new Store(client, () => {});
+    await again.init();
+    const rows = await client.get('sa_capabilities', ['a1/function/add@1', 'a1/view/old@1', 'lib/helper/fmt@1']);
+    assert.match(rows[0].code, /^CREATE RULE add AS\n {2}INSERT INTO guests/);
+    assert.equal(JSON.parse(rows[0].spec).derived, true);
+    assert.equal(rows[1].code, statement.replace('guests TITLE', 'guests TITLE'));
+    assert.match(rows[2].code, /^CREATE HELPER fmt LANGUAGE javascript AS \$\$\nfunction helper\(\) \{ return \{\}; \}\n\$\$$/);
+    const caps = await again.getCapabilities(['a1/function/add@1', 'a1/view/old@1', 'lib/helper/fmt@1']);
+    assert.deepEqual(JSON.parse(caps[0].code), oldRule);
+    assert.deepEqual(JSON.parse(caps[1].code), screen);
+    assert.equal(caps[2].code, 'function helper() { return {}; }');
+  } finally {
+    child.kill();
+  }
+});

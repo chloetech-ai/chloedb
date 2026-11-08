@@ -499,6 +499,21 @@ async function buildStats(box) {
 
 // ---- code
 
+// SQL with its keywords, strings and comments told apart (bodies in
+// $$ ... $$, JavaScript or JSON, are shown as they are).
+const SQL_TOKENS = /(--[^\n]*)|('(?:[^']|'')*')|(\$[A-Za-z0-9_]*\$[\s\S]*?\$[A-Za-z0-9_]*\$)|\b([A-Z][A-Z_]{1,}(?:\s+BY)?)\b/g;
+function sqlNodes(text) {
+  const out = [];
+  let at = 0;
+  for (const m of String(text).matchAll(SQL_TOKENS)) {
+    if (m.index > at) out.push(text.slice(at, m.index));
+    out.push(m[1] ? h('span', { class: 'c' }, m[1]) : m[2] ? h('span', { class: 's' }, m[2]) : m[3] ? m[3] : h('span', { class: 'k' }, m[4]));
+    at = m.index + m[0].length;
+  }
+  out.push(text.slice(at));
+  return out;
+}
+
 async function showCode(id, newer) {
   const modal = $('#modal');
   const close = () => { modal.hidden = true; modal.replaceChildren(); };
@@ -507,21 +522,60 @@ async function showCode(id, newer) {
   try { cap = await api('GET', `/api/capabilities/${encodeURIComponent(id)}`); } catch (e) { toast(e.message); return; }
   const v = Number(cap.version);
   const prev = v > 1 ? id.replace(/@\d+$/, `@${v - 1}`) : null;
-  const body = cap.kind === 'table'
-    ? ['id keyword (primary key)', 'created timestamp', ...(cap.spec.columns || []).map((c) => `${c.name} ${c.type}`)].join('\n')
-    : cap.spec?.statement || cap.code; // a statement is the source of its screen or rule
+  // Each piece is stored as its SQL; a screen or a rule also shows what it
+  // compiles into (the JSON the engine runs).
+  const sql = cap.sql || cap.spec?.statement || cap.code;
+  const compiled = (cap.kind === 'view' && cap.spec?.screen) || (cap.kind === 'function' && cap.spec?.rule) ? cap.code : null;
+  const pre = h('pre', { class: 'sql' }, sqlNodes(sql));
+  const shown = { now: 'sql' };
+  const seg = compiled ? h('div', { class: 'seg' },
+    ...[['sql', 'SQL'], ['compiled', 'Compiled']].map(([k, label]) => h('button', { class: k === 'sql' ? 'on' : '', onclick: (e) => {
+      shown.now = k;
+      pre.replaceChildren(...(k === 'sql' ? sqlNodes(sql) : [compiled]));
+      for (const b of e.target.parentNode.children) b.classList.toggle('on', b === e.target);
+    } }, label))) : null;
+  const copy = h('button', { class: 'btn small', onclick: async () => { try { await navigator.clipboard.writeText(pre.textContent); toast('Copied'); } catch { toast('Copy did not work here: select the text instead'); } } }, 'Copy');
   const trigger = cap.spec?.on ? `runs after each ${[].concat(cap.spec.on.event || 'insert').join(' or ')} on ${cap.spec.on.table}` : null;
   modal.replaceChildren(h('div', { class: 'sheet' },
     h('header', h('span', { class: `pill ${cap.kind}` }, cap.kind), h('span', { class: 't' }, `${cap.title} · v${v}`),
       prev ? h('button', { class: 'btn small', title: 'the version before', onclick: () => showCode(prev, id) }, `← v${v - 1}`) : null,
       newer ? h('button', { class: 'btn small', onclick: () => showCode(newer) }, `v${v + 1} →`) : null,
+      seg, copy,
       h('button', { class: 'btn small ghost', onclick: close }, 'Close')),
     h('div', { class: 'info' },
       cap.description ? h('div', cap.description) : null,
       trigger ? h('div', trigger) : null,
       h('div', h('span', { class: 'mono' }, cap.id), ` · written by ${cap.author || 'forge'} ${ago(cap.created)}`, cap.forked_from ? ` · from ${cap.forked_from}` : ''),
-      h('div', `A row of sa_capabilities in Strata${cap.kind === 'table' ? `; its data is the table app_${cap.app}_${cap.slug}` : ''}.`)),
-    h('pre', body)));
+      h('div', `A row of sa_capabilities in Strata, stored as this SQL${compiled ? ' (compiled when it is read)' : ''}${cap.kind === 'table' ? `; its data is the table app_${cap.app}_${cap.slug}` : ''}.`)),
+    pre));
+  modal.hidden = false;
+}
+
+// The whole app as one SQL script: every table, screen, rule and function,
+// and the shared pieces it uses.
+async function showAppSql(appId) {
+  const modal = $('#modal');
+  const close = () => { modal.hidden = true; modal.replaceChildren(); };
+  modal.onclick = (e) => { if (e.target === modal) close(); };
+  let out;
+  try { out = await api('GET', `/api/apps/${appId}/source`); } catch (e) { toast(e.message); return; }
+  const file = `${String(out.name || appId).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || appId}.sql`;
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([out.sql], { type: 'application/sql' }));
+    const a = h('a', { href: url, download: file });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const lines = out.sql.split('\n').length;
+  modal.replaceChildren(h('div', { class: 'sheet wide' },
+    h('header', h('span', { class: 'pill view' }, 'sql'), h('span', { class: 't' }, `${out.name} as SQL`),
+      h('button', { class: 'btn small', onclick: async () => { try { await navigator.clipboard.writeText(out.sql); toast('Copied'); } catch { toast('Copy did not work here: select the text instead'); } } }, 'Copy'),
+      h('button', { class: 'btn small', onclick: download }, `Download ${file}`),
+      h('button', { class: 'btn small ghost', onclick: close }, 'Close')),
+    h('div', { class: 'info' }, h('div', `Every piece of the app as the SQL it is stored as: ${lines} lines. Tables are CREATE TABLE, screens CREATE SCREEN, rules CREATE RULE, and pieces written in JavaScript a CREATE ... LANGUAGE javascript.`)),
+    h('pre', { class: 'sql' }, sqlNodes(out.sql))));
   modal.hidden = false;
 }
 
@@ -1052,9 +1106,10 @@ function versionsTab() {
 // A screen written as a CREATE SCREEN statement is edited as its statement:
 // the engine compiles it, checks it, runs its queries and stores it.
 function statementTab(view) {
-  const box = h('textarea', { class: 'statement', spellcheck: 'false', rows: Math.min(30, view.spec.statement.split('\n').length + 2) });
+  const source = view.sql || view.spec.statement;
+  const box = h('textarea', { class: 'statement', spellcheck: 'false', rows: Math.min(30, source.split('\n').length + 2) });
   const err = h('div', { class: 'statement-error' });
-  box.value = view.spec.statement;
+  box.value = source;
   const save = h('button', { class: 'btn primary', onclick: async () => {
     if (S.app.running) { toast('A change is being built: edit once it is live'); return; }
     S.editing = true;
@@ -1071,7 +1126,7 @@ function statementTab(view) {
     h('div', { class: 'where' }, 'This screen is a CREATE SCREEN statement. Edit it and save: no model, compiled, checked and stored at once as a new version (Versions goes back).'),
     box,
     err,
-    h('div', { style: 'display:flex; gap:8px; margin-top:8px' }, save, h('button', { class: 'btn ghost', onclick: () => { box.value = view.spec.statement; } }, 'Undo my edits')),
+    h('div', { style: 'display:flex; gap:8px; margin-top:8px' }, save, h('button', { class: 'btn ghost', onclick: () => { box.value = source; } }, 'Undo my edits')),
   ];
 }
 
@@ -1147,8 +1202,10 @@ function insideTab() {
     extra ? h('span', { class: 'v' }, extra) : null, h('span', { class: 'v' }, `v${c.version}`));
   return [
     h('div', { class: 'where' }, `This app is data in Strata: version ${st.version.n} is the row `, h('span', { class: 'mono' }, `${st.app.id}#${st.version.n}`),
-      ' of sa_compositions; each piece below is a row of sa_capabilities with its code; the app\'s data is in tables named ', h('span', { class: 'mono' }, `app_${st.app.id}_*`), '. Click a piece to read its code.'),
-    st.version.n ? h('button', { class: 'btn small', style: 'align-self:flex-start', onclick: () => showMap(st.app.id, st.app.name) }, 'Map: how the pieces link') : null,
+      ' of sa_compositions; each piece below is a row of sa_capabilities, stored as its SQL; the app\'s data is in tables named ', h('span', { class: 'mono' }, `app_${st.app.id}_*`), '. Click a piece to read its SQL.'),
+    st.version.n ? h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
+      h('button', { class: 'btn small', onclick: () => showAppSql(st.app.id) }, 'Whole app as SQL'),
+      h('button', { class: 'btn small', onclick: () => showMap(st.app.id, st.app.name) }, 'Map: how the pieces link')) : null,
     h('h2', { class: 'label' }, 'Views'), h('div', { class: 'caps' }, st.views.map((c) => cap(c))),
     h('h2', { class: 'label' }, 'Components (shared with other apps)'), h('div', { class: 'caps' }, (st.components || []).length ? st.components.map((c) => cap(c,
       [c.users > 1 ? `used by ${c.users} apps` : 'only this app so far', c.latest > c.version ? `v${c.latest} available` : null].filter(Boolean).join(' · '))) : h('div', { class: 'hint' }, 'None')),

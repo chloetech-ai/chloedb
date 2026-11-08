@@ -48,6 +48,11 @@ export function loadPatterns(dir = process.env.STRATA_APPS_PATTERNS || DIR) {
 export const PATTERNS = loadPatterns();
 export const BUILTIN = new Set(PATTERNS.keys());
 
+// Which patterns are in use: a number that changes whenever they do (a
+// screen compiled with earlier ones is compiled again).
+let gen = 0;
+export const patternsGen = () => gen;
+
 // Makes the patterns stored in Strata the ones in use: rows from
 // store.patterns(), each one's code the pattern as JSON. Returns how many.
 export function usePatterns(rows) {
@@ -56,6 +61,7 @@ export function usePatterns(rows) {
     try { next.set(name, { ...JSON.parse(r.code), author: r.author, version: r.version }); } catch { /* a row that is not JSON is skipped */ }
   }
   if (!next.size) return 0;
+  gen++;
   PATTERNS.clear();
   for (const [k, v] of [...next.entries()].sort((a, b) => a[0].localeCompare(b[0]))) PATTERNS.set(k, v);
   return PATTERNS.size;

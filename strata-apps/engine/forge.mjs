@@ -11,6 +11,7 @@ import { Trace, planDecisions } from './trace.mjs';
 import { rewriteSql } from './sql.mjs';
 import { expandPlan, expandScreen, patternsDoc, PATTERNS, BUILTIN, usePatterns, checkPattern, PATTERN_ADD_DOC } from './patterns.mjs';
 import { placePhotos, placeScreenPhotos, photoIds } from './photos.mjs';
+import { withPhotos } from './source.mjs';
 import { compileStatements, compileStatement, STATEMENT_DOC } from './statement.mjs';
 import { compileRuleStatements, isRuleStatement, RULE_SQL_DOC } from './rulesql.mjs';
 import { checkRule, RULES_DOC } from './rules.mjs';
@@ -263,8 +264,10 @@ const SCREEN_PLAN = `
 - To change a screen the app has, give "patch" in its plan entry instead of "screen": JSON Patch operations on the screen as the app shows it, with the paths shown there: {"op": "add" | "replace" | "remove" | "move" | "copy", "path": "/body/3", "value": ...} ("from" for move and copy; "/body/2/columns/-" adds at the end of a list; an add at /body/3 puts the block before the one there). A patch is far shorter than the screen: use it whenever most of the screen stays; give the whole "screen" when most of it changes.`;
 
 // CREATE SCREEN statements (engine/statement.mjs): screen views written as
-// SQL-shaped statements in their code blocks. On with STRATA_APPS_STATEMENTS=on.
-export const STATEMENTS = SCREENS && process.env.STRATA_APPS_STATEMENTS === 'on';
+// SQL-shaped statements in their code blocks, as every piece is stored as its
+// SQL. STRATA_APPS_STATEMENTS=off has the model write the screen's JSON (it
+// is stored as the statement that makes it).
+export const STATEMENTS = SCREENS && process.env.STRATA_APPS_STATEMENTS !== 'off';
 
 const STATEMENT_PLAN = `
 - views: a screen view has a code block of its slug holding its CREATE SCREEN statement, and no "screen" in its plan entry (a mostly custom screen may instead carry a JSON "screen" in its plan entry, with no code block). A code view has a code block of its slug with its JavaScript.
@@ -954,6 +957,8 @@ export async function validate(plan, code, view, library, shared = new Map()) {
       if (kind === 'function' && !item.rule && isRuleStatement(src)) continue; // likewise
       const p = kind === 'view' ? checkView(src) : item.rule ? checkRule(item.rule, columnsFor(view, plan)) : await checkFunction(src);
       for (const x of p) problems.push(`${kind} ${item.slug}: ${x}`);
+      // "on": "none" (or {"table": "none"}) is no trigger.
+      if (kind === 'function' && item.on && (typeof item.on !== 'object' || !item.on.table || /^(none|null|no|-)$/i.test(String(item.on.table)))) item.on = null;
       if (kind === 'function' && item.on) {
         const on = item.on;
         const known = tables.has(on.table) || (plan.tables || []).some((t) => t.name === on.table);
@@ -1305,7 +1310,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     const { name, title, about, params, example, screen } = p;
     const id = await store.putCapability({ app: LIB, slug: name, kind: 'pattern', title, description: about,
       code: `${JSON.stringify({ title, about, params, example, screen }, null, 1)}\n`, spec: { params: Object.keys(params), from: appId }, author: appId });
-    usePatterns(await store.patterns());
+    await store.usePatterns();
     progress(`Added the pattern ${name} to the library (${id}); every app can use it now`);
   }
   // Components and helpers go to the shared library; then the app pins what
@@ -1510,15 +1515,19 @@ export async function editScreen(engine, appId, slug, { patch, screen, statement
   if (cur.spec.statement && statement === undefined && !(screen && typeof screen === 'object')) throw Object.assign(new Error(`${slug} is a CREATE SCREEN statement: edit its statement`), { status: 400 });
   let next;
   let source = null;
+  let photos = null;
   try {
     if (typeof statement === 'string') {
       const out = compileStatement(statement);
       if (out.slug !== slug) throw new Error(`the statement creates ${out.slug}; this screen is ${slug}`);
       next = out.screen;
+      photos = out.photos;
       source = statement.trim();
     } else next = screen && typeof screen === 'object' ? screen : applyPatch(JSON.parse(cur.code), Array.isArray(patch) ? patch : []);
   } catch (e) { throw Object.assign(new Error(e.message), { status: 400 }); }
   const ex = expandScreen(next);
+  // The photos the statement keeps (its PHOTOS part) go back where they were.
+  if (photos && !ex.problems.length) withPhotos(ex.screen, photos);
   const problems = [...ex.problems, ...checkScreen(ex.screen, columnsFor(view, {}))];
   // A photo the edit names is found as for a built screen.
   if (!problems.length) await placeScreenPhotos(ex.screen, { used: new Set([...view.views.filter((v) => v.slug !== slug).flatMap((v) => photoIds(v.code)), ...photoIds(JSON.stringify(ex.screen))]) });

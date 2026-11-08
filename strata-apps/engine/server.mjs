@@ -14,7 +14,7 @@ import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL } fro
 import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
-import { usePatterns } from './patterns.mjs';
+import { appScript } from './source.mjs';
 import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { ensureDesigns } from './designs.mjs';
@@ -57,7 +57,7 @@ engine.baseUrl = `http://127.0.0.1:${PORT}`;
 await engine.init();
 await seedLibrary(engine.store, process.env.STRATA_APPS_LIBRARY || path.join(ROOT, 'library'), log);
 // Screens expand from the patterns stored in Strata (built in and added by apps).
-usePatterns(await engine.store.patterns());
+await engine.store.usePatterns();
 const services = new Services(engine, { filesDir: path.join(DATA, 'files'), log });
 engine.services = services;
 log(services.smtpUrl && services.smtpFrom ? `email goes out through ${new URL(services.smtpUrl).host}` : 'email is held in the outbox (set SMTP_URL and SMTP_FROM to send it)');
@@ -295,7 +295,7 @@ async function appState(appId) {
   for (const t of view.tables) {
     tables.push({ id: t.id, name: t.spec.name, description: t.spec.description, columns: t.spec.columns, rows: await store.countRows(`app_${appId}_${t.spec.name}`) });
   }
-  const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, description: c.description, code: c.code, spec: c.spec, forked_from: c.forked_from || null, author: c.author, created: c.created });
+  const cap = (c) => ({ id: c.id, slug: c.slug, version: Number(c.version), kind: c.kind, title: c.title, description: c.description, code: c.code, sql: c.sql, spec: c.spec, forked_from: c.forked_from || null, author: c.author, created: c.created });
   const run = running.get(appId);
   return {
     app: view.app,
@@ -337,6 +337,8 @@ const routes = [
   ['GET', /^\/api\/apps\/([a-z0-9]+)$/, async (b, [id]) => appState(id)],
   // Designs: three per app, made on first ask; choosing one is instant.
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/designs$/, async (b, [id]) => designsOf(id)],
+  // The whole app as one SQL script (every piece is stored as its SQL).
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/source$/, async (b, [id]) => { const view = await engine.view(id); return { name: view.app.name, sql: appScript(view) }; }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/designs$/, async (b, [id]) => {
     const cur = await designsOf(id);
     const chosen = Number(b.chosen);

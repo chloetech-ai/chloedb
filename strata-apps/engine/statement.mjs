@@ -33,7 +33,7 @@ const MORE = {
   DASHBOARD: { use: 'dashboard',
     clauses: { DATE: ['date', 'name'], DAY: ['date', 'day'], VALUE: ['value', 'sql'], LABEL: ['label', 'str'], FORMAT: ['format', 'word'], DAYS: ['days', 'num'], BY: ['group', 'name'], 'GROUP BY': ['group', 'name'], WHERE: ['where', 'sql'], RECENT: ['recent', 'cols'], TITLE: ['title', 'str'] } },
 };
-const PARTS = ['LIST', 'BOARD', 'DETAIL', 'SUMMARY', ...Object.keys(MORE), 'HEADING', 'TEXT', 'DATA', 'STATE', 'LET', 'BLOCKS'];
+const PARTS = ['LIST', 'BOARD', 'DETAIL', 'SUMMARY', ...Object.keys(MORE), 'HEADING', 'TEXT', 'DATA', 'STATE', 'LET', 'BLOCKS', 'PAGE', 'PHOTOS'];
 const FIELD_TYPES = ['TEXT', 'TEXTAREA', 'NUMBER', 'DATE', 'TIME', 'DATETIME', 'SELECT', 'CHECKBOX', 'TAGS', 'EMAIL', 'URL', 'COLOR', 'FILE', 'RATING'];
 const COLUMN_FORMATS = ['DATE', 'DATETIME', 'AGO', 'MONEY', 'NUMBER', 'PERCENT', 'STARS', 'BOOL'];
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -56,6 +56,8 @@ function logicalLines(text) {
       const c = raw[j];
       if (quote) {
         line += c;
+        // In a double-quoted (JSON) string a backslash escapes what follows.
+        if (quote === '"' && c === '\\' && j + 1 < raw.length) { line += raw[++j]; continue; }
         if (c === quote) { if (raw[j + 1] === quote) { line += raw[++j]; } else quote = null; }
         continue;
       }
@@ -174,6 +176,7 @@ export function compileStatement(text) {
   const screen = { state: {}, data: {}, let: {}, body: [] };
   const title = head[2] ? literal(head[2]) : null;
   let part = null;
+  let photos = null;
   let kpiN = 0;
   const finish = () => {
     if (!part) return;
@@ -194,7 +197,7 @@ export function compileStatement(text) {
   // Several clauses may share a line: split after a simple clause (TITLE
   // 'x' NOUN 'y'), and at two or more spaces before a clause word, except in
   // the clauses that hold their own WHERE or JSON.
-  const OWN = /^(KPI|ACTION|RELATED|DATA|LET|STATE|BLOCKS|QUERY|PARAM|EXTRA)\b/i;
+  const OWN = /^(KPI|ACTION|RELATED|DATA|LET|STATE|BLOCKS|PHOTOS|QUERY|PARAM|EXTRA)\b/i;
   const split = [];
   for (const ln of lines.slice(1)) {
     const pieces = OWN.test(ln.text) ? [ln.text] : ln.text.split(new RegExp(`\\s{2,}(?=${CLAUSE})`, 'i'));
@@ -214,13 +217,36 @@ export function compileStatement(text) {
     if (PARTS.includes(kw) && !(part && part.more && part.more.clauses[kw])) {
       finish();
       if (kw === 'HEADING') { screen.body.push({ h: literal(rest) }); continue; }
+      if (kw === 'PAGE') { if (!/^[a-z]+$/i.test(rest)) fail(n, 'PAGE <kind>, such as PAGE front'); screen.page = rest.toLowerCase(); continue; }
       if (kw === 'TEXT') { screen.body.push({ text: literal(rest), muted: true }); continue; }
       if (kw === 'DATA') {
-        const m = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)\s+AS\s+([\s\S]+)$/i);
+        // DATA name AS (SELECT ...) [PARAMS (name = expression, ...)]
+        // DATA name = <JavaScript giving the rows, or the SELECT to run> [PARAMS (...)]
+        // DATA name JSON <the entry as JSON>
+        const js = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)\s+JSON\s+([\s\S]+)$/i);
+        if (js) { try { screen.data[js[1]] = JSON.parse(js[2]); } catch (e) { fail(n, `DATA ${js[1]} JSON: ${e.message}`); } continue; }
+        const m = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*(?:\s+AS\s+|=)([\s\S]+)$/i);
         if (!m) fail(n, 'DATA <name> AS SELECT ...');
-        let sql = m[2].trim();
-        if (sql.startsWith('(') && sql.endsWith(')')) sql = sql.slice(1, -1).trim();
-        screen.data[m[1]] = sql;
+        const isExpr = !/^\s*[A-Za-z_][A-Za-z0-9_]*\s+AS\s/i.test(rest);
+        let body = m[2].trim();
+        let params = null;
+        const pm = body.match(/\s+PARAMS\s*(\([\s\S]*\))\s*$/i);
+        if (pm) {
+          const p = parens(pm[1], n, 'PARAMS');
+          if (!p.rest) {
+            params = {};
+            for (const a of splitTop(p.inside)) { const am = a.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([\s\S]+)$/); if (!am) fail(n, `PARAMS: ${JSON.stringify(a)} is not name = expression`); params[am[1]] = `=${am[2].trim()}`; }
+            body = body.slice(0, pm.index).trim();
+          }
+        }
+        if (isExpr) { screen.data[m[1]] = params ? { sql: `=${body}`, params } : `=${body}`; continue; }
+        if (body.startsWith('(')) { const p = parens(body, n, 'DATA'); if (!p.rest) body = p.inside.trim(); }
+        screen.data[m[1]] = params ? { sql: body, params } : body;
+        continue;
+      }
+      if (kw === 'LET' && /^[A-Za-z_][A-Za-z0-9_]*\s+JSON\s/i.test(rest)) {
+        const m = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)\s+JSON\s+([\s\S]+)$/i);
+        try { screen.let[m[1]] = JSON.parse(m[2]); } catch (e) { fail(n, `LET ${m[1]} JSON: ${e.message}`); }
         continue;
       }
       if (kw === 'STATE' || kw === 'LET') {
@@ -228,6 +254,13 @@ export function compileStatement(text) {
         if (!m) fail(n, `${kw} <name> = ${kw === 'STATE' ? 'a JSON value' : 'a JavaScript expression'}`);
         if (kw === 'LET') screen.let[m[1]] = `=${m[2].trim()}`;
         else { try { screen.state[m[1]] = JSON.parse(m[2]); } catch { screen.state[m[1]] = literal(m[2]); } }
+        continue;
+      }
+      // PHOTOS [{"photo": "query", "src": "...", "credit": "..."}, ...]: the
+      // photos found for the screen's photo queries, in the order they show.
+      if (kw === 'PHOTOS') {
+        try { photos = JSON.parse(rest); } catch (e) { fail(n, `PHOTOS takes a JSON list of the photos found: ${e.message}`); }
+        if (!Array.isArray(photos) || photos.some((x) => !x || typeof x.photo !== 'string' || typeof x.src !== 'string')) fail(n, 'PHOTOS takes a JSON list of {"photo": "query", "src": "url"}');
         continue;
       }
       if (kw === 'BLOCKS') {
@@ -336,7 +369,7 @@ export function compileStatement(text) {
   }
   finish();
   for (const k of ['state', 'data', 'let']) if (!Object.keys(screen[k]).length) delete screen[k];
-  return { slug: head[1], title, screen };
+  return { slug: head[1], title, screen, ...(photos?.length ? { photos } : {}) };
 }
 
 // A clause of one of the newer parts: sets one parameter of its pattern.
@@ -363,6 +396,59 @@ function moreClause(part, kw, rest, l, n) {
     }
     default: fail(n, `${kw}: unknown`);
   }
+}
+
+// ---- a screen (JSON) as a statement
+
+// Two screens are the same when their JSON is, empty parts aside.
+const canon = (v) => (Array.isArray(v) ? v.map(canon) : v && typeof v === 'object'
+  ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])])) : v);
+export const sameScreen = (a, b) => {
+  const norm = (x) => { const o = { ...(x || {}) }; for (const k of ['state', 'data', 'let']) if (o[k] && !Object.keys(o[k]).length) delete o[k]; if (!o.body) o.body = []; return JSON.stringify(canon(o)); };
+  return norm(a) === norm(b);
+};
+
+const oneLine = (s) => typeof s === 'string' && !/[\n\r]/.test(s) && !/\s{2,}/.test(s);
+const sqlText = (s) => `'${String(s).replace(/'/g, "''")}'`;
+
+// A screen as a CREATE SCREEN statement that compiles back into exactly that
+// screen: its state, data and lets as STATE, DATA and LET lines (SQL as SQL),
+// headings as HEADING, the rest of its blocks as BLOCKS. With plain, data
+// and lets that are not SQL or one-line expressions are given as JSON.
+// Returns null when no statement compiles back into it.
+export function screenStatement(slug, title, screen, { plain = false } = {}) {
+  if (!screen || typeof screen !== 'object' || Array.isArray(screen)) return null;
+  if (Object.keys(screen).some((k) => !['state', 'data', 'let', 'body', 'page'].includes(k))) return null;
+  const NAME_OK = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  const L = [`CREATE SCREEN ${slug}${title ? ` TITLE ${sqlText(title)}` : ''}`];
+  if (screen.page !== undefined) { if (typeof screen.page !== 'string' || !/^[a-z]+$/.test(screen.page)) return null; L.push(`PAGE ${screen.page}`); }
+  for (const [k, v] of Object.entries(screen.state || {})) { if (!NAME_OK.test(k)) return null; L.push(`STATE ${k} = ${JSON.stringify(v)}`); }
+  for (const [k, v] of Object.entries(screen.data || {})) {
+    if (!NAME_OK.test(k)) return null;
+    const params = (p) => (p && typeof p === 'object' && !Array.isArray(p) && Object.keys(p).length && Object.entries(p).every(([pk, pv]) => NAME_OK.test(pk) && typeof pv === 'string' && pv.startsWith('=') && oneLine(pv))
+      ? ` PARAMS (${Object.entries(p).map(([pk, pv]) => `${pk} = ${pv.slice(1)}`).join(', ')})` : null);
+    if (!plain && typeof v === 'string' && !v.startsWith('=') && /^\s*(select|with)\b/i.test(v)) L.push(`DATA ${k} AS (${v})`);
+    else if (!plain && typeof v === 'string' && v.startsWith('=') && oneLine(v)) L.push(`DATA ${k} = ${v.slice(1)}`);
+    else if (!plain && v && typeof v === 'object' && Object.keys(v).length === 2 && typeof v.sql === 'string' && !v.sql.startsWith('=') && /^\s*(select|with)\b/i.test(v.sql) && params(v.params)) L.push(`DATA ${k} AS (${v.sql})${params(v.params)}`);
+    else if (!plain && v && typeof v === 'object' && Object.keys(v).length === 2 && typeof v.sql === 'string' && v.sql.startsWith('=') && oneLine(v.sql) && params(v.params)) L.push(`DATA ${k} = ${v.sql.slice(1)}${params(v.params)}`);
+    else L.push(`DATA ${k} JSON ${JSON.stringify(v)}`);
+  }
+  for (const [k, v] of Object.entries(screen.let || {})) {
+    if (!NAME_OK.test(k)) return null;
+    L.push(!plain && typeof v === 'string' && v.startsWith('=') && oneLine(v) ? `LET ${k} = ${v.slice(1)}` : `LET ${k} JSON ${JSON.stringify(v)}`);
+  }
+  let run = [];
+  const flush = () => { if (run.length) L.push(`BLOCKS ${JSON.stringify(run, null, 2)}`); run = []; };
+  for (const b of Array.isArray(screen.body) ? screen.body : []) {
+    const keys = b && typeof b === 'object' && !Array.isArray(b) ? Object.keys(b).sort().join(',') : '';
+    if (!plain && keys === 'h' && oneLine(b.h)) { flush(); L.push(`HEADING ${sqlText(b.h)}`); }
+    else if (!plain && keys === 'muted,text' && b.muted === true && oneLine(b.text)) { flush(); L.push(`TEXT ${sqlText(b.text)}`); }
+    else run.push(b);
+  }
+  flush();
+  const text = L.join('\n');
+  try { if (sameScreen(compileStatement(text).screen, screen)) return text; } catch { /* not this way */ }
+  return plain ? null : screenStatement(slug, title, screen, { plain: true });
 }
 
 // The plan's views whose code is a CREATE SCREEN statement become screens.

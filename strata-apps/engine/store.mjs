@@ -6,23 +6,13 @@
 import { randomBytes } from 'node:crypto';
 import { GRAPH_SQL, appDocs, capDoc, appNode, parseLinks } from './graph.mjs';
 
-export const TYPES = {
-  text: 'TEXT',            // prose people search by words
-  keyword: 'KEYWORD',      // short labels: status, owner, category, email; filter, group and sort by them
-  'keyword[]': 'KEYWORD[]',// tags
-  int: 'INT',
-  float: 'FLOAT',
-  bool: 'BOOL',
-  timestamp: 'TIMESTAMP',  // ISO 8601 text in and out
-  meaning: 'VECTOR',       // what other text columns mean, embedded by Strata as rows are written
-};
-
-// The embedding model of meaning columns: Strata computes each row's vector
-// when it is written (and fills in rows written before the column).
-export const EMBED_MODEL = process.env.STRATA_APPS_EMBED_MODEL || 'potion-retrieval-32M';
-const colSql = (c) => (c.type === 'meaning'
-  ? `${c.name} VECTOR OPTIONS(embed = '${(Array.isArray(c.of) ? c.of : [c.of]).filter(Boolean).join(', ')}', model = '${EMBED_MODEL}')`
-  : `${c.name} ${TYPES[c.type]}`);
+// Column types, the embedding model and a column's SQL live in types.mjs
+// (source.mjs writes tables as CREATE TABLE with them too).
+import { TYPES, EMBED_MODEL, colSql } from './types.mjs';
+import { toSource, fromSource, isSource, storedSpec } from './source.mjs';
+import { patternsGen, usePatterns } from './patterns.mjs';
+import { sameScreen } from './statement.mjs';
+export { TYPES, EMBED_MODEL };
 
 const SYSTEM_TABLES = {
   sa_apps: `CREATE TABLE sa_apps (id KEYWORD PRIMARY KEY, name TEXT, description TEXT, head INT DEFAULT 0, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
@@ -100,6 +90,10 @@ const viewOf = (app, comp, caps) => ({
   shared: caps.filter((c) => SHARED_KINDS.includes(c.kind)),
 });
 const parseSpec = (s) => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
+const canon = (v) => (Array.isArray(v) ? v.map(canon) : v && typeof v === 'object'
+  ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])])) : v);
+const sameScreenJson = (a, b) => { try { return sameScreen(JSON.parse(a), JSON.parse(b)); } catch { return false; } };
+const sameJson = (a, b) => { try { return JSON.stringify(canon(JSON.parse(a))) === JSON.stringify(canon(JSON.parse(b))); } catch { return false; } };
 
 export class Store {
   constructor(strata, log = () => {}) {
@@ -107,7 +101,8 @@ export class Store {
     this.log = log;
     this.resolved = new Map(); // app -> {head, view}
     this.resolvedAt = new Map(); // "app#n" -> view of a version that is not the head (versions never change)
-    this.capCache = new Map();  // capability id -> row (capabilities never change once written)
+    this.capCache = new Map();  // capability id -> row as stored, its code SQL (capabilities never change once written)
+    this.made = new Map();      // capability id -> {gen, row}: the row as it runs, compiled with the patterns of gen
     this.meaning = false;       // whether sa_capabilities has its meaning column
   }
 
@@ -135,7 +130,63 @@ export class Store {
         }
       }
     }
+    // Screens are compiled with the patterns stored here (built in and added
+    // by apps), so those come first; then every piece stored before pieces
+    // were kept as SQL is written as its statement.
+    await this.usePatterns();
+    await this.storeAsSql();
     await this.rebuildGraph();
+  }
+
+  // The patterns stored in Strata become the ones screens expand from; a
+  // screen compiled with others is compiled again when next read.
+  async usePatterns() {
+    const n = usePatterns(await this.patterns());
+    this.resolved.clear();
+    this.resolvedAt.clear();
+    return n;
+  }
+
+  // Rewrites each piece whose code is not yet its SQL (stored by an engine
+  // before pieces were kept as SQL) as its statement, in place: the same id,
+  // the same piece, only written as SQL. A piece whose statement does not
+  // give back exactly what it runs is left as it is.
+  async storeAsSql() {
+    if (await this.setting('_engine', 'stored-as-sql')) return;
+    const rows = [];
+    try {
+      // By app and kind (a query returns at most 10000 rows), and a large
+      // group by ranges of versions.
+      const COLS = 'id, slug, version, kind, app, title, description, code, spec, forked_from, author, created';
+      const groups = await this.db.query('SELECT app, kind, COUNT(*) AS n, MAX(version) AS top FROM sa_capabilities GROUP BY app, kind LIMIT 10000');
+      for (const g of groups) {
+        const where = 'app = :a AND kind = :k';
+        if (Number(g.n) <= 10000) { rows.push(...await this.db.query(`SELECT ${COLS} FROM sa_capabilities WHERE ${where} LIMIT 10000`, { a: g.app, k: g.kind })); continue; }
+        for (let lo = 0; lo <= Number(g.top); lo += 50) {
+          rows.push(...await this.db.query(`SELECT ${COLS} FROM sa_capabilities WHERE ${where} AND version >= :lo AND version < :hi LIMIT 10000`, { a: g.app, k: g.kind, lo, hi: lo + 50 }));
+        }
+      }
+    } catch (e) { this.log(`pieces as SQL: ${e.message}`); return; }
+    const ops = [];
+    let kept = 0;
+    for (const r of rows) {
+      if (isSource(r.code)) continue;
+      const spec = parseSpec(r.spec);
+      try {
+        const sql = toSource({ ...r, spec });
+        const back = fromSource({ ...r, code: sql, spec: storedSpec(r.kind, spec, sql) });
+        const same = r.kind === 'table' || (r.kind === 'view' && spec.screen ? sameScreenJson(back.code, r.code) : r.kind === 'function' && spec.rule ? sameJson(back.code, r.code) : back.code === (r.code ?? ''));
+        if (!isSource(sql) || !same) { kept++; continue; }
+        const stored = storedSpec(r.kind, spec, sql);
+        const { meaning, score, ...doc } = r;
+        ops.push({ op: 'upsert', table: 'sa_capabilities', doc: { ...doc, code: sql, spec: JSON.stringify(stored) } });
+      } catch (e) { kept++; this.log(`pieces as SQL: ${r.id}: ${e.message}`); }
+    }
+    for (let i = 0; i < ops.length; i += 200) await this.db.write(ops.slice(i, i + 200));
+    this.capCache.clear();
+    this.made.clear();
+    if (ops.length || kept) this.log(`pieces as SQL: ${ops.length} rewritten as statements${kept ? `, ${kept} left as they were` : ''}`);
+    await this.putSetting('_engine', 'stored-as-sql', new Date().toISOString());
   }
 
   async tableNames() {
@@ -188,6 +239,8 @@ export class Store {
 
   // ---- capabilities
 
+  // Pieces by id, as they run: each one's SQL compiled (source.mjs), with
+  // the SQL as `sql`.
   async getCapabilities(ids) {
     const missing = ids.filter((id) => !this.capCache.has(id));
     if (missing.length) {
@@ -195,7 +248,27 @@ export class Store {
       // The vector stays in Strata: nothing here reads it.
       rows.forEach((r, i) => { if (r) { const { meaning, ...rest } = r; this.capCache.set(missing[i], { ...rest, spec: parseSpec(r.spec) }); } });
     }
-    return ids.map((id) => this.capCache.get(id)).filter(Boolean);
+    return ids.map((id) => this.capCache.get(id)).filter(Boolean).map((r) => this.runs(r));
+  }
+
+  // A stored row as it runs. A screen is compiled with the patterns in use,
+  // so it is compiled again once they change.
+  runs(raw) {
+    const hit = this.made.get(raw.id);
+    const gen = patternsGen();
+    if (hit && hit.gen === gen) return hit.row;
+    let out;
+    let failed = null;
+    try { out = fromSource(raw); } catch (e) {
+      failed = e.message;
+      this.log(`${raw.id}: ${e.message}`);
+      out = { code: raw.kind === 'view' && raw.spec?.screen ? JSON.stringify({ body: [{ h: 'This screen could not be built' }, { text: e.message, muted: true }] }) : '', sql: raw.code, statement: null };
+    }
+    const spec = { ...(raw.spec || {}) };
+    if (out.statement) spec.statement = out.statement;
+    const row = { ...raw, code: out.code, spec, sql: out.sql, ...(isSource(raw.code) ? {} : { legacy: true }) };
+    if (!failed) this.made.set(raw.id, { gen, row });
+    return row;
   }
 
   async nextVersion(app, kind, slug) {
@@ -208,14 +281,24 @@ export class Store {
   async putCapability({ app, slug, kind, title, description, code, spec, forked_from, author }) {
     const version = await this.nextVersion(app, kind, slug);
     const id = `${app}/${kind}/${slug}@${version}`;
-    const doc = { id, slug, version, kind, app, title: title || slug, description: description || '', code: code || '',
-      spec: JSON.stringify(spec || {}), forked_from: forked_from || null, author: author || 'forge' };
+    // What is stored is the piece's SQL (source.mjs): a screen's or a
+    // rule's statement, a table's CREATE TABLE, JavaScript inside a CREATE.
+    // The statement a screen or rule was written as is that SQL, so the
+    // spec does not keep it too.
+    const sql = toSource({ kind, slug, title: title || slug, code: code || '', spec: spec || {} });
+    const stored = storedSpec(kind, spec, sql);
+    const doc = { id, slug, version, kind, app, title: title || slug, description: description || '', code: sql,
+      spec: JSON.stringify(stored), forked_from: forked_from || null, author: author || 'forge' };
     if (!doc.forked_from) delete doc.forked_from;
     await this.db.write([{ op: 'insert', table: 'sa_capabilities', doc }]);
-    this.capCache.set(id, { ...doc, spec: spec || {} });
+    const raw = { ...doc, spec: stored };
+    this.capCache.set(id, raw);
+    // As it runs: the code it was given (its SQL gives back the same).
+    const row = { ...this.runs(raw), code: code || '' };
+    this.made.set(id, { gen: patternsGen(), row });
     // A shared piece's node follows its newest version; an app's own
     // capabilities join the graph when a version of the app goes live.
-    if (SHARED_KINDS.includes(kind) || kind === 'pattern') await this.writeGraph([capDoc({ ...doc, spec: spec || {} }, { lib: LIB })]);
+    if (SHARED_KINDS.includes(kind) || kind === 'pattern') await this.writeGraph([capDoc(row, { lib: LIB })]);
     return id;
   }
 
@@ -334,15 +417,16 @@ export class Store {
     if (!app) throw new Error(`no app ${appId}`);
     if (n && Number(n) !== Number(app.head)) return this.resolveAt(app, Number(n));
     const cached = this.resolved.get(appId);
-    if (cached && cached.head === app.head) return cached.view;
+    if (cached && cached.head === app.head && cached.gen === patternsGen()) return cached.view;
     const comp = await this.composition(appId, app.head);
+    const gen = patternsGen();
     const view = viewOf(app, comp, await this.getCapabilities(comp.caps));
-    this.resolved.set(appId, { head: app.head, view });
+    this.resolved.set(appId, { head: app.head, gen, view });
     return view;
   }
 
   async resolveAt(app, n) {
-    const key = `${app.id}#${n}`;
+    const key = `${app.id}#${n}@${patternsGen()}`;
     let view = this.resolvedAt.get(key);
     if (!view) {
       const comp = await this.composition(app.id, n);
@@ -389,7 +473,13 @@ export class Store {
     const rows = await this.db.query(`SELECT id, slug, version, kind, app, title, description, code, spec, author, created FROM sa_capabilities
       WHERE app = :lib AND kind = 'pattern' ORDER BY version DESC LIMIT 2000`, { lib: LIB });
     const out = new Map();
-    for (const r of rows) if (!out.has(r.slug)) out.set(r.slug, { ...r, version: Number(r.version), spec: parseSpec(r.spec) });
+    for (const r of rows) {
+      if (out.has(r.slug)) continue;
+      const raw = { ...r, version: Number(r.version), spec: parseSpec(r.spec) };
+      let code = raw.code;
+      try { code = fromSource(raw).code; } catch { /* as stored */ }
+      out.set(r.slug, { ...raw, code, sql: r.code });
+    }
     return out;
   }
 
