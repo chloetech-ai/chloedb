@@ -5,10 +5,15 @@
 //! shards (`strata::query::stats`): the document count and length of each
 //! field, and each term's document frequency. Asking every shard for them
 //! first is a round of calls before the query's own. But they change only
-//! with a shard's version: a write, a flush, a merge or a restart
-//! (`TermStatsResponse.version`, [`STATS_VERSION_PROTOCOL`]). So the
-//! coordinator keeps, per copy, the version its last statistics round
-//! answered and what it answered of each field and term. A query whose
+//! with the version of the shard's table (`TermStatsResponse.version`,
+//! [`STATS_VERSION_PROTOCOL`], `strata::storage::Snapshot::stats_gen`): a
+//! write to the table that adds a row, a flush, a merge or a restart. Values
+//! set in place and deletes leave it, as the statistics count deleted rows
+//! as a segment's own do, and so do writes to other tables (each write
+//! through a coordinator also writes its idempotency key to `_sources`). So
+//! the coordinator keeps, per copy and table, the version its last
+//! statistics round answered and what it answered of each field and term.
+//! A query whose
 //! terms follow from its text alone ([`strata::cluster::stat_terms`]: no
 //! typos or synonyms, which only a shard can expand) and are all kept for
 //! a copy of every shard is sent the kept sums at once, each copy with the
@@ -18,10 +23,10 @@
 //! are exact either way: a query runs only on the version its statistics
 //! are of, as it does on the snapshot a statistics round leased.
 //!
-//! A copy that answers stale is not asked with kept statistics for a while
-//! after, from 10 ms, doubling while it keeps moving on, to a second: a
-//! shard taking writes all the time costs a wasted query a second, not
-//! one each write.
+//! A copy that answers stale is not asked with kept statistics of that
+//! table for a while after, from 10 ms, doubling while it keeps moving on,
+//! to a second: a shard taking new rows all the time costs a wasted query
+//! a second, not one each row.
 //!
 //! [`STATS_VERSION_PROTOCOL`]: crate::grpc::STATS_VERSION_PROTOCOL
 
@@ -42,7 +47,7 @@ const COOL_UP_TO: Duration = Duration::from_secs(1);
 
 /// What a coordinator keeps of each copy's statistics, by its URL.
 pub struct StatsCache {
-    copies: Mutex<HashMap<String, Kept>>,
+    copies: Mutex<HashMap<String, Copy>>,
     max_terms: usize,
     /// Queries sent kept statistics, sent a statistics round, and answered
     /// stale (then sent again with a round).
@@ -51,16 +56,32 @@ pub struct StatsCache {
     pub stale: AtomicU64,
 }
 
-/// One copy's statistics as of `version`.
+/// One copy's statistics, by table, and how many terms they hold.
+#[derive(Default)]
+struct Copy {
+    tables: HashMap<String, Kept>,
+    terms: usize,
+}
+
+/// One table's statistics on a copy, as of `version` (a shard's tables
+/// have versions of their own: a write to one leaves the others').
 #[derive(Default)]
 struct Kept {
     version: u64,
-    /// By table and field.
-    fields: HashMap<(String, String), Field>,
+    fields: HashMap<String, Field>,
     terms: usize,
     /// Passed over until then, after a stale answer; how long it was.
     cool_until: Option<Instant>,
     cool: Duration,
+}
+
+impl Kept {
+    /// Drops the statistics, which `copy` counted the terms of.
+    fn clear(&mut self, copy_terms: &mut usize) {
+        *copy_terms -= self.terms;
+        self.fields.clear();
+        self.terms = 0;
+    }
 }
 
 #[derive(Default)]
@@ -80,30 +101,36 @@ impl StatsCache {
     }
 
     /// Keeps what copy `url` answered a statistics round with for a query
-    /// of `table`: `stats`, of its version `version` (0: none to keep).
+    /// of `table`: `stats`, of the table's version `version` (0: none to
+    /// keep).
     pub fn keep(&self, url: &str, version: u64, table: &str, stats: &TermStats) {
         if version == 0 || !self.on() {
             return;
         }
         let mut copies = self.copies.lock().unwrap_or_else(|e| e.into_inner());
-        let k = copies.entry(url.to_string()).or_default();
+        let c = copies.entry(url.to_string()).or_default();
+        let k = c.tables.entry(table.to_string()).or_default();
         if k.version != version {
             k.version = version;
-            k.fields.clear();
-            k.terms = 0;
+            k.clear(&mut c.terms);
         }
-        let new: usize = stats.fields.iter().map(|(f, s)| k.fields.get(&(table.to_string(), f.clone())).map_or(s.df.len(), |kf| s.df.keys().filter(|t| !kf.df.contains_key(*t)).count())).sum();
-        if k.terms + new > self.max_terms {
-            k.fields.clear();
-            k.terms = 0;
+        let new: usize = stats.fields.iter().map(|(f, s)| k.fields.get(f).map_or(s.df.len(), |kf| s.df.keys().filter(|t| !kf.df.contains_key(*t)).count())).sum();
+        if c.terms + new > self.max_terms {
+            for k in c.tables.values_mut() {
+                k.fields.clear();
+                k.terms = 0;
+            }
+            c.terms = 0;
         }
+        let k = c.tables.get_mut(table).expect("kept above");
         for (f, s) in &stats.fields {
-            let kf = k.fields.entry((table.to_string(), f.clone())).or_default();
+            let kf = k.fields.entry(f.clone()).or_default();
             kf.n_docs = s.n_docs;
             kf.total_len = s.total_len;
             for (t, n) in &s.df {
                 if kf.df.insert(t.clone(), *n).is_none() {
                     k.terms += 1;
+                    c.terms += 1;
                 }
             }
         }
@@ -111,7 +138,7 @@ impl StatsCache {
 
     /// Copy `url`'s statistics of `terms` (by field) in `table`, as a
     /// statistics round would answer them, and their version: `None`
-    /// unless every term is kept, or while the copy is passed over.
+    /// unless every term is kept, or while the copy's table is passed over.
     pub fn get(&self, url: &str, table: &str, terms: &[(String, Vec<String>)]) -> Option<(TermStats, u64)> {
         self.get_at(url, table, terms, Instant::now())
     }
@@ -119,13 +146,13 @@ impl StatsCache {
     /// [`StatsCache::get`] at `now`.
     fn get_at(&self, url: &str, table: &str, terms: &[(String, Vec<String>)], now: Instant) -> Option<(TermStats, u64)> {
         let copies = self.copies.lock().unwrap_or_else(|e| e.into_inner());
-        let k = copies.get(url)?;
+        let k = copies.get(url)?.tables.get(table)?;
         if k.version == 0 || k.cool_until.is_some_and(|t| now < t) {
             return None;
         }
         let mut out = TermStats::default();
         for (f, ts) in terms {
-            let kf = k.fields.get(&(table.to_string(), f.clone()))?;
+            let kf = k.fields.get(f)?;
             let mut df = std::collections::BTreeMap::new();
             for t in ts {
                 df.insert(t.clone(), *kf.df.get(t)?);
@@ -138,19 +165,20 @@ impl StatsCache {
         Some((out, k.version))
     }
 
-    /// Copy `url` answered stale a query sent its statistics of `version`:
-    /// they are dropped, and the copy is passed over for a while (longer
-    /// each time it moved on again within a second). Answers of a version
-    /// already dropped change nothing more.
-    pub fn stale(&self, url: &str, version: u64) {
-        self.stale_at(url, version, Instant::now())
+    /// Copy `url` answered stale a query of `table` sent its statistics of
+    /// `version`: they are dropped, and the copy's table is passed over for
+    /// a while (longer each time it moved on again within a second).
+    /// Answers of a version already dropped change nothing more.
+    pub fn stale(&self, url: &str, table: &str, version: u64) {
+        self.stale_at(url, table, version, Instant::now())
     }
 
     /// [`StatsCache::stale`] at `now`.
-    fn stale_at(&self, url: &str, version: u64, now: Instant) {
+    fn stale_at(&self, url: &str, table: &str, version: u64, now: Instant) {
         self.stale.fetch_add(1, Ordering::Relaxed);
         let mut copies = self.copies.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(k) = copies.get_mut(url) else { return };
+        let Some(c) = copies.get_mut(url) else { return };
+        let Some(k) = c.tables.get_mut(table) else { return };
         if k.version != version {
             return;
         }
@@ -158,13 +186,12 @@ impl StatsCache {
         k.cool = if again { (k.cool * 2).clamp(COOL_FROM, COOL_UP_TO) } else { COOL_FROM };
         k.cool_until = Some(now + k.cool);
         k.version = 0;
-        k.fields.clear();
-        k.terms = 0;
+        k.clear(&mut c.terms);
     }
 
     /// Terms kept, over every copy.
     pub fn terms(&self) -> usize {
-        self.copies.lock().unwrap_or_else(|e| e.into_inner()).values().map(|k| k.terms).sum()
+        self.copies.lock().unwrap_or_else(|e| e.into_inner()).values().map(|c| c.terms).sum()
     }
 }
 
@@ -210,24 +237,24 @@ mod tests {
         let cat = terms(&["cat"]);
         let c = StatsCache::new(100);
         c.keep("a", 7, "docs", &stats(100, &[("cat", 3)]));
-        c.stale_at("a", 7, at(0));
+        c.stale_at("a", "docs", 7, at(0));
         assert!(c.get_at("a", "docs", &cat, at(0)).is_none());
         c.keep("a", 8, "docs", &stats(100, &[("cat", 3)]));
         // Kept again, but passed over until the cool-down ends.
         assert!(c.get_at("a", "docs", &cat, at(9)).is_none());
         assert_eq!(c.get_at("a", "docs", &cat, at(10)).unwrap().1, 8);
         // A stale answer of a dropped version changes nothing.
-        c.stale_at("a", 7, at(15));
+        c.stale_at("a", "docs", 7, at(15));
         assert_eq!(c.get_at("a", "docs", &cat, at(15)).unwrap().1, 8);
         // Moving on again within a second doubles the wait.
-        c.stale_at("a", 8, at(15));
+        c.stale_at("a", "docs", 8, at(15));
         c.keep("a", 9, "docs", &stats(100, &[("cat", 3)]));
         assert!(c.get_at("a", "docs", &cat, at(34)).is_none());
         assert_eq!(c.get_at("a", "docs", &cat, at(35)).unwrap().1, 9);
         // Up to a second.
         let mut now = 35;
         for (v, wait) in (9..).zip([40, 80, 160, 320, 640, 1000, 1000]) {
-            c.stale_at("a", v, at(now));
+            c.stale_at("a", "docs", v, at(now));
             c.keep("a", v + 1, "docs", &stats(100, &[("cat", 3)]));
             assert!(c.get_at("a", "docs", &cat, at(now + wait - 1)).is_none(), "{wait} ms");
             assert_eq!(c.get_at("a", "docs", &cat, at(now + wait)).unwrap().1, v + 1);
@@ -235,9 +262,32 @@ mod tests {
         }
         // A copy that kept its version for a second after its wait ended
         // starts from the first wait again.
-        c.stale_at("a", 16, at(now + 1000));
+        c.stale_at("a", "docs", 16, at(now + 1000));
         c.keep("a", 17, "docs", &stats(100, &[("cat", 3)]));
         assert_eq!(c.get_at("a", "docs", &cat, at(now + 1010)).unwrap().1, 17);
+    }
+
+    /// A copy's tables have versions of their own: a new one, or a stale
+    /// answer, of one leaves the other's kept.
+    #[test]
+    fn tables_keep_their_own_versions() {
+        let t0 = Instant::now();
+        let cat = terms(&["cat"]);
+        let c = StatsCache::new(100);
+        c.keep("a", 7, "docs", &stats(100, &[("cat", 3)]));
+        c.keep("a", 40, "notes", &stats(5, &[("cat", 1)]));
+        assert_eq!(c.get("a", "docs", &cat).unwrap().1, 7);
+        assert_eq!(c.get("a", "notes", &cat).unwrap(), (stats(5, &[("cat", 1)]), 40));
+        c.keep("a", 41, "notes", &stats(6, &[("cat", 2)]));
+        assert_eq!(c.get("a", "docs", &cat).unwrap().1, 7);
+        assert_eq!(c.terms(), 2);
+        c.stale_at("a", "notes", 41, t0);
+        assert!(c.get_at("a", "notes", &cat, t0).is_none());
+        assert_eq!(c.get_at("a", "docs", &cat, t0).unwrap().1, 7);
+        assert_eq!(c.terms(), 1);
+        // A stale answer names the table: docs' version 41 is not kept.
+        c.stale_at("a", "docs", 41, t0);
+        assert_eq!(c.get_at("a", "docs", &cat, t0).unwrap().1, 7);
     }
 
     #[test]

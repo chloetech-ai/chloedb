@@ -569,8 +569,9 @@ pub struct Service {
     /// (`--max-scroll-rows`).
     pub max_scroll_rows: usize,
     /// Random for each run of the server: what a snapshot's statistics
-    /// version is drawn from with its txn ([`Self::stats_version`]), so
-    /// that versions from before a restart are not taken for later ones.
+    /// version is drawn from with its text statistics' generation
+    /// ([`Self::stats_version`]), so that versions from before a restart
+    /// are not taken for later ones.
     stats_nonce: u64,
     /// Queries that did not run, sent statistics of another version
     /// ([`QueryReq::stats_version`]).
@@ -2032,11 +2033,13 @@ impl Service {
         Ok(id)
     }
 
-    /// The version of `snap`'s BM25 statistics: of its txn, which every
-    /// write, flush and merge moves on, and of this run of the server.
-    /// Never 0, which a query sends for any version.
+    /// The version of the BM25 statistics of the table `snap` looks at: of
+    /// the table's text statistics generation ([`Snapshot::stats_gen`]),
+    /// which a write to it that adds a row, a flush or a merge moves on but
+    /// values set in place, deletes and other tables' writes do not, and of
+    /// this run of the server. Never 0, which a query sends for any version.
     pub fn stats_version(&self, snap: &Snapshot) -> u64 {
-        match self.stats_nonce ^ snap.txn() {
+        match self.stats_nonce ^ snap.stats_gen() {
             0 => 1,
             v => v,
         }
@@ -2506,7 +2509,7 @@ impl Service {
                     if req.after != After::Any {
                         telemetry::record("wait for writes", tw, "ok");
                     }
-                    if req.stats_version != 0 && req.stats_version != self.stats_version(&snap) {
+                    if req.stats_version != 0 && snap.table(&schema.table).is_some_and(|t| req.stats_version != self.stats_version(&t)) {
                         stale = true;
                         return Ok((no_rows(), Vec::new()));
                     }
@@ -2928,9 +2931,9 @@ impl Service {
         match &self.backend {
             Backend::Local(db) => {
                 let snap = self.read_snapshot(db, 0, after, Instant::now() + timeout).await?;
-                let version = self.stats_version(&snap);
                 let lease = self.lease_of(snap.clone(), self.lease_ttl.min(timeout + Duration::from_secs(1)))?;
                 let view = snap.table(&schema.table).ok_or_else(|| ApiError::bad(format!("query error: no such table: {}", schema.table)))?;
+                let version = self.stats_version(&view);
                 let db = db.clone();
                 // The query round on the lease finds the typo expansions
                 // these statistics were found with.

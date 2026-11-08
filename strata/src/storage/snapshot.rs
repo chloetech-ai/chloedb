@@ -79,6 +79,8 @@ pub(crate) struct SnapInner {
 #[derive(Clone)]
 struct TableView {
     id: u32,
+    /// Its text statistics generation ([`Snapshot::stats_gen`]).
+    stats_gen: u64,
     schema: Arc<Schema>,
     profiles: Arc<Vec<RankProfile>>,
     segments: Vec<SegmentView>,
@@ -270,6 +272,19 @@ impl Snapshot {
         self.inner.txn
     }
 
+    /// The generation of the text indexes the BM25 statistics
+    /// ([`crate::query::stats::TermStats`]) of the table this snapshot
+    /// looks at are read from: two snapshots of a table with the same
+    /// generation have the same statistics. It is new with every write to
+    /// the table that adds a row, every flush, merge and change of tables,
+    /// and every open of the database. Values set in place leave it, and
+    /// so do deletes, which the statistics count as a segment's own do,
+    /// but for one that leaves a memtable chunk with no live row (snapshots
+    /// leave such a chunk out). Unique in the process, never 0.
+    pub fn stats_gen(&self) -> u64 {
+        self.base().stats_gen
+    }
+
     /// The sequence number of the last transaction this snapshot holds,
     /// in a database that numbers its writes (0 before the first).
     pub fn seq_no(&self) -> Option<u64> {
@@ -446,7 +461,20 @@ impl Snapshot {
         if self.inner.tables.iter().all(|t| t.tail.is_none() || t.full.get().is_some()) {
             return self.clone();
         }
-        let tables = self.inner.tables.iter().map(|t| TableSlot::built(t.full.get().unwrap_or(&t.base).clone())).collect();
+        let tables = self
+            .inner
+            .tables
+            .iter()
+            .map(|t| {
+                TableSlot::built(match (t.full.get(), &t.tail) {
+                    (Some(v), _) => v.clone(),
+                    (None, None) => t.base.clone(),
+                    // Without the last chunk's rows, its statistics are not
+                    // the version's.
+                    (None, Some(_)) => TableView { stats_gen: crate::storage::state::next_stats_gen(), ..t.base.clone() },
+                })
+            })
+            .collect();
         let i = &self.inner;
         let inner = SnapInner { txn: i.txn, numbered: i.numbered, seq: i.seq, tables, maps: i.maps.clone(), path: i.path.clone(), _pin: i._pin.pins.pin(i._pin.txn) };
         Snapshot { inner: Arc::new(inner), table: self.table }
@@ -487,6 +515,8 @@ impl Snapshot {
         let mut tables = Vec::with_capacity(self.inner.tables.len());
         let mut present = std::collections::HashSet::new();
         for t in &self.inner.tables {
+            // Hidden rows count in its statistics, as deleted ones do: it
+            // keeps its generation.
             let mut t = t.view().clone();
             let place = t.schema.shard_by_field().or(t.schema.primary_key);
             if let Some(place) = place {
@@ -808,6 +838,7 @@ pub(crate) struct MemPart {
 /// What a snapshot needs of one table.
 pub(crate) struct TableCapture {
     id: u32,
+    stats_gen: u64,
     pub schema: Arc<Schema>,
     profiles: Arc<Vec<RankProfile>>,
     disk: Vec<(Arc<SegHandle>, Option<Arc<LiveDocs>>, u32, Option<Arc<Updates>>)>,
@@ -891,7 +922,7 @@ impl State {
             let seqs = (numbered && (seg.is_none() || last)).then(|| (first..first + len).map(|p| table.mem.seqs.get(p).copied().unwrap_or(0)).collect());
             mem.push(MemPart { table: table.id, gen, chunk: k, start: 0, len, docs, last, live, n_live: (len - n_deleted) as u32, seg, updates, seqs });
         }
-        TableCapture { id: table.id, schema: table.schema.clone(), profiles: table.profiles.clone(), disk, mem, tail_cache: table.tail.clone() }
+        TableCapture { id: table.id, stats_gen: table.stats_gen, schema: table.schema.clone(), profiles: table.profiles.clone(), disk, mem, tail_cache: table.tail.clone() }
     }
 
     /// The cached segment of the first `len` documents of chunk `k` of
@@ -979,7 +1010,7 @@ impl Capture {
                 });
             }
             let n_live = segments.iter().map(|s| s.n_live as u64).sum();
-            let base = TableView { id: t.id, schema: t.schema, profiles: t.profiles, segments, pks, n_live };
+            let base = TableView { id: t.id, stats_gen: t.stats_gen, schema: t.schema, profiles: t.profiles, segments, pks, n_live };
             tables.push(TableSlot { base, tail, full: OnceLock::new() });
         }
         SnapInner { txn: self.txn, numbered: self.numbered, seq: self.seq, tables, maps, path, _pin: self.pin }

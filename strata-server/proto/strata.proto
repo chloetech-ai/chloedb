@@ -1338,8 +1338,10 @@ message QueryResponse {
 message TermStatsResponse {
   bytes stats_json = 1;
   uint64 snapshot = 2;
-  // Protocol 12: the version the statistics are of, which changes with
-  // every write, flush and merge, and with the server's restart (0: none
+  // Protocol 12: the version the statistics of the query's table are of,
+  // which changes with every write to the table that adds a row, flush and
+  // merge, and with the server's restart, but not with values set in place,
+  // deletes (which the statistics count) or other tables' writes (0: none
   // to keep, as a coordinator's). A query naming it in stats_version runs
   // only on that version.
   uint64 version = 3;
