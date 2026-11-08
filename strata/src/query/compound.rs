@@ -33,6 +33,7 @@
 //! ([`plan_in`]): each leaf names its table, and a join or subquery across
 //! tables runs as one within a table does.
 
+use super::function::FunctionSet;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -849,24 +850,37 @@ pub type Profiles<'a> = &'a dyn Fn(&str, &str) -> Option<RankProfile>;
 /// ranks by a rank profile (`ORDER BY rank_profile(..)`) plans as written
 /// out with the one `profiles` finds ([`super::profile::expand`]), and its
 /// plan names it. A server binds its requests against its database's
-/// tables with it.
+/// tables with it. It calls no stored function: [`plan_read_calling`]
+/// does.
 pub fn plan_read(sql_text: &str, catalog: &[&Schema], params: &Params, profiles: Profiles) -> Result<ir::Plan> {
-    plan_read_parsed(&*super::sql::parse_query_cached(sql_text)?, catalog, params, profiles)
+    plan_read_calling(sql_text, catalog, params, profiles, &FunctionSet::default())
 }
 
-/// [`plan_read`] of a query [`super::sql::parse_query_cached`] parsed.
-pub(crate) fn plan_read_parsed(p: &super::sql::Parsed, catalog: &[&Schema], params: &Params, profiles: Profiles) -> Result<ir::Plan> {
-    plan_read_with(&p.query, catalog, params, profiles, p.profiles)
+/// [`plan_read`] of a query that may call the stored functions of
+/// `functions`, which plan as written out ([`super::function::expand`]).
+pub fn plan_read_calling(sql_text: &str, catalog: &[&Schema], params: &Params, profiles: Profiles, functions: &FunctionSet) -> Result<ir::Plan> {
+    plan_read_parsed(&*super::sql::parse_query_cached(sql_text)?, catalog, params, profiles, functions)
 }
 
-/// [`plan_read`] of a parsed query.
-pub(crate) fn plan_read_query(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles: Profiles) -> Result<ir::Plan> {
-    plan_read_with(q, catalog, params, profiles, true)
+/// [`plan_read_calling`] of a query [`super::sql::parse_query_cached`]
+/// parsed.
+pub(crate) fn plan_read_parsed(p: &super::sql::Parsed, catalog: &[&Schema], params: &Params, profiles: Profiles, functions: &FunctionSet) -> Result<ir::Plan> {
+    plan_read_with(&p.query, catalog, params, profiles, functions, p.profiles)
+}
+
+/// [`plan_read_calling`] of a parsed query.
+pub(crate) fn plan_read_query(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles: Profiles, functions: &FunctionSet) -> Result<ir::Plan> {
+    plan_read_with(q, catalog, params, profiles, functions, true)
 }
 
 /// [`plan_read_query`]; `may_rank_by_profile` false for a query whose text
 /// names no `rank_profile`.
-fn plan_read_with(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles: Profiles, may_rank_by_profile: bool) -> Result<ir::Plan> {
+fn plan_read_with(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles: Profiles, functions: &FunctionSet, may_rank_by_profile: bool) -> Result<ir::Plan> {
+    // Stored functions are written out first: a table function's body may
+    // rank by a rank profile.
+    if let Some((q, _)) = super::function::expand(q, functions)? {
+        return plan_read_with(&q, catalog, params, profiles, &FunctionSet::default(), true);
+    }
     let mut rewritten;
     let q = match catalog.iter().any(|s| s.fields.iter().any(|f| f.ty == FieldType::Json)) {
         true => {
@@ -878,7 +892,7 @@ fn plan_read_with(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles
     };
     if let Some((q, r)) = if may_rank_by_profile { super::profile::expand(q, profiles)? } else { None } {
         let table = super::tables::read_by(&q).first().cloned().unwrap_or_default();
-        return Ok(super::profile::mark(plan_read_query(&q, catalog, params, &|_, _| None)?, &table, &r));
+        return Ok(super::profile::mark(plan_read_query(&q, catalog, params, &|_, _| None, functions)?, &table, &r));
     }
     let schema = match super::tables::read_by(q).first() {
         None => *catalog.first().ok_or_else(|| err("the database has no tables"))?,

@@ -4,7 +4,7 @@
 //! default: it loads 200,000 of the Simulator's test documents per setting
 //! and prints JSON lines (strata/results/storage/memtable-tail/):
 //!
-//! `cargo test --profile ci --test write_stall -- --ignored --nocapture`
+//! `cargo test --profile ci --test all write_stall:: -- --ignored --nocapture`
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

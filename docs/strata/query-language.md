@@ -7,7 +7,7 @@ nav_order: 1
 # Strata's query language
 {: .no_toc }
 
-Strata speaks standard SQL over the tables of a database: `SELECT` with functions for full text, vectors, rank fusion and graphs, aggregates, typo-tolerant and synonym searches, and subqueries, `WITH` and joins of a table with itself; `INSERT`, `UPDATE` and `DELETE`; and `CREATE TABLE`, `ALTER TABLE` and `DROP TABLE`. Text, structured and vector conditions mix freely in one statement, and the planner decides how to evaluate them together.
+Strata speaks standard SQL over the tables of a database: `SELECT` with functions for full text, vectors, rank fusion and graphs, aggregates, typo-tolerant and synonym searches, and subqueries, `WITH` and joins of a table with itself; `INSERT`, `UPDATE` and `DELETE`; `CREATE TABLE`, `ALTER TABLE` and `DROP TABLE`; and functions stored in the database (`CREATE FUNCTION`), which queries call. Text, structured and vector conditions mix freely in one statement, and the planner decides how to evaluate them together.
 {: .fs-5 .fw-300 }
 
 1. TOC
@@ -1126,6 +1126,39 @@ ORDER BY ppr(cooc, (SELECT item FROM events WHERE usr = :u ORDER BY ts DESC LIMI
 - An edge is followed while its weight, as it is now, is above 0. `UPDATE cooc SET w = w * 0.9` decays every weight in place, and an edge whose weight is 0 or `NULL` stays in the table without being followed. `src` and `dst` are never changed in place: an `UPDATE` of a `KEYWORD` one rewrites the row, and `set`, `add` or an `UPDATE` of an `INT` one is refused, as for `shard_by` (delete the row and insert it again).
 - `REACHABLE`, `PATH`, `hops()` and `ppr` take an edge table with every option but `label`, since its edges have none. A walk over `cooc` and a walk over an `EDGES` field holding the same edges and weights find the same rows at the same hops and the same PageRank, up to rounding.
 - Each segment of the edge table indexes its rows by the keys they link, which flushes and merges build, so a walk finds a row's edges with one lookup of its key in each of the edge table's segments ([how, and what it costs](graphs.md#edge-tables)).
+
+## Stored functions
+
+A function is kept in the database under a name, and any query calls it as it calls a built-in one. Its body is SQL: an expression of its parameters for a function that returns a value, a `SELECT` for one that returns rows (`RETURNS TABLE`).
+
+```sql
+CREATE FUNCTION boosted(s FLOAT, importance FLOAT, w FLOAT DEFAULT 0.2)
+  RETURNS FLOAT AS :s * (1 + :w * :importance);
+
+SELECT id FROM memories WHERE MATCH(body, :q)
+ORDER BY boosted(bm25(body, :q), importance) DESC LIMIT 10;
+
+CREATE FUNCTION recall(q TEXT, k INT DEFAULT 10) RETURNS TABLE AS
+  SELECT id, body FROM memories WHERE MATCH(body, :q)
+  ORDER BY bm25(body, :q) DESC LIMIT :k;
+
+SELECT * FROM recall('tokio runtime', k => 5);
+SELECT r.id, m.created FROM recall(:q) AS r JOIN memories m ON m.id = r.id;
+
+CREATE OR REPLACE FUNCTION boosted(...) RETURNS FLOAT AS ...;   -- version 2
+SELECT "boosted@1"(bm25(body, :q), importance) FROM memories ...;  -- pins version 1
+CREATE OR REPLACE FUNCTION boosted FROM VERSION 1;             -- a rollback: version 3, as 1
+DROP FUNCTION IF EXISTS boosted;                               -- a tombstone: version 4
+DROP FUNCTION boosted VERSION 2;                               -- deletes an old version
+```
+
+- **The definition**: `CREATE [OR REPLACE] FUNCTION name(parameter TYPE [DEFAULT value], ...) RETURNS TYPE | RETURNS TABLE [LANGUAGE sql] [OPTIONS (description = '...')] AS body`, the body also between `$$` and `$$`. Types are `INT`, `FLOAT`, `TEXT`, `KEYWORD`, `BOOL`, `TIMESTAMP`, `JSON`, `VECTOR` or `VECTOR(n)`, and `KEYWORD[]` and `INT[]`; a default is a number, a quoted string, `TRUE`, `FALSE` or `NULL`, and the parameters after one with a default have one too. In the body a parameter is `:name`, as in a [rank profile](#rank-profiles-a-ranking-kept-with-its-table), so the body runs as written as a query with the same parameters. A body that returns a value reads only its parameters: a column is passed in as an argument. Names are letters, digits and `_`, in any case; the name of a built-in function (`lower`, `bm25`, `coalesce`, ...) is refused, and there is one function of a name, whatever its parameters. `CREATE` checks that a `RETURNS TABLE` body plans against the tables, its parameters given their defaults or a value of their type.
+- **A call is written out**: binding replaces each call with its body, the arguments in place of the parameters, so the query plans and ranks as if it were written out (indexes, `score()` and a shard's pushdown included), and `EXPLAIN` begins with `calls stored function boosted@2`. Arguments are by position, then by name (`w => 0.5`); a missing one takes its default. A literal argument of another type than its parameter's is refused; any other expression is computed as the body would with it, and the value is the body's (`RETURNS FLOAT` of `:a + :b` with two `INT`s is an `INT`). A function that returns rows is called in `FROM`, alone, joined, or in `WITH`, and its arguments are values or parameters of the query, not columns. A function may call others, up to 16 deep.
+- **Versions never change**: `CREATE` writes version 1; `CREATE OR REPLACE` the next version, or nothing when the definition is the current one's; a new version returns what the old one did (a value, or rows). `DROP FUNCTION` writes a tombstone version, so version numbers keep rising and `"f@2"` always means one body. A query calls the current version, the highest that is not a tombstone, or pins one with its name and version in double quotes, which still runs after a drop. `CREATE OR REPLACE FUNCTION f FROM VERSION n` makes a new version with version *n*'s definition; `DROP FUNCTION f VERSION n` deletes an old version (not the current one).
+- **Kept as rows**: each version is a row of the system table `_functions` (`id` `name@version`, `name`, `version`, `language`, `kind`, `signature`, `body`, `hash`, `description`, `created`, `created_by`, `dropped`), written by its own transaction, so it is logged, numbered and shipped to replicas as writes are, and checkpoints and copies carry it. `SELECT * FROM _functions` reads it; it is not one of the database's tables, and only `CREATE` and `DROP FUNCTION` write it. The first function adds it, and the database then needs the format 3 feature `functions`, which a version of Strata from before stored functions refuses by name. A database from before field ids keeps none (upgrade it first).
+- **From Rust**, `Db::sql` runs both statements, `Db::define_function` runs a parsed one and records who wrote it, and `Db::functions` lists every version.
+- **On strata-server**, `CREATE` and `DROP FUNCTION` need an admin key, whose name is the version's `created_by`; any key that may read calls them. `GET /v1/functions` lists each function with its current version and every version's definition.
+- **Through a coordinator**, a version has one number and one body on every shard: `CREATE` and `DROP FUNCTION` ask every replica which versions it holds, number the new one past all of them, and write it on each shard, so they wait for every replica to answer. A coordinator calls the versions every replica holds alike (a new version once every shard has it) and stops calling a dropped function as soon as any replica holds the drop. A shard added to the cluster gets every version under its number. Each shard records the coordinator's credential as `created_by`.
 
 ## Running SQL
 

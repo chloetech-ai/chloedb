@@ -137,6 +137,9 @@ pub enum Command {
     CreateRankProfile { table: String, profile: crate::storage::RankProfile, replace: bool },
     /// `DROP RANK PROFILE [IF EXISTS] name [ON table]`.
     DropRankProfile { table: Option<String>, name: String, if_exists: bool },
+    /// `CREATE [OR REPLACE] FUNCTION` or `DROP FUNCTION`
+    /// ([`crate::query::function`]).
+    Function(crate::query::function::Statement),
     /// `EXPLAIN [FORMAT JSON] <statement>`: the statement's plan
     /// ([`crate::query::ir`]), as lines of text or as JSON, made when it
     /// runs ([`crate::db::Db::explain`]).
@@ -213,9 +216,13 @@ pub fn bind_write(sql_text: &str, schema: &Schema, params: &Params) -> Result<Op
 
 /// Parses and binds one statement of a database whose tables are `tables`:
 /// a SELECT (bound when it runs), an INSERT, UPDATE or DELETE of one of
-/// them, `CREATE TABLE` or `DROP TABLE`, or `CREATE RANK PROFILE` or
-/// `DROP RANK PROFILE` ([`crate::query::profile`]).
+/// them, `CREATE TABLE` or `DROP TABLE`, `CREATE RANK PROFILE` or `DROP
+/// RANK PROFILE` ([`crate::query::profile`]), or `CREATE FUNCTION` or
+/// `DROP FUNCTION` ([`crate::query::function`]).
 pub fn bind_command(sql_text: &str, tables: &[&Schema], params: &Params) -> Result<Command> {
+    if let Some(f) = super::function::parse_statement(sql_text)? {
+        return Ok(Command::Function(f));
+    }
     if let Some(p) = super::profile::parse_statement(sql_text)? {
         let table = |name: &str| tables.iter().find(|t| t.table.eq_ignore_ascii_case(name)).map(|t| t.table.clone()).ok_or_else(|| err(hint::no_table(name, tables.iter().map(|t| t.table.as_str()))));
         return Ok(match p {
@@ -320,7 +327,7 @@ pub(crate) fn bind_statement(stmt: &sql::Statement, tables: &[&Schema], params: 
 /// Why a statement Strata does not run is refused, and what does the
 /// same: the tables and their columns are in `GET /v1/tables`.
 fn unsupported_statement(stmt: &sql::Statement, tables: &[&Schema]) -> String {
-    let supported = "Strata runs SELECT, INSERT, UPDATE, DELETE, CREATE TABLE, ALTER TABLE, DROP TABLE, CREATE RANK PROFILE, DROP RANK PROFILE and EXPLAIN";
+    let supported = "Strata runs SELECT, INSERT, UPDATE, DELETE, CREATE TABLE, ALTER TABLE, DROP TABLE, CREATE RANK PROFILE, DROP RANK PROFILE, CREATE FUNCTION, DROP FUNCTION and EXPLAIN";
     let names: Vec<&str> = tables.iter().map(|t| t.table.as_str()).collect();
     let listing = if names.is_empty() { String::new() } else { format!(" (the tables are {})", hint::listing(&names, 20)) };
     let first = word_of(stmt);

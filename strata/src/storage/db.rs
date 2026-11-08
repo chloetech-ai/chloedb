@@ -50,7 +50,7 @@ use crate::storage::io;
 use crate::storage::dir::{self, Current};
 use crate::storage::live::LiveDocs;
 use crate::storage::lock;
-use crate::storage::manifest::{sources_schema, Manifest, Numbering, RankProfile, SegmentMeta, SeqNo, TableMeta, SOURCES, SOURCES_ID};
+use crate::storage::manifest::{is_system, system_id, system_schema, Manifest, Numbering, RankProfile, SegmentMeta, SeqNo, TableMeta, FUNCTIONS_ID, SOURCES, SOURCES_ID, SYSTEM_IDS};
 use crate::storage::merge::{memory_limit, merge_memory, MergeEntry, MERGE_BATCH_BYTES, MERGE_BATCH_DOCS, MergePolicy, MergeRecord, MergeStats, MergeStatus, MergerOptions, Pacer, SegmentInfo};
 use crate::storage::pager::{self, Extent, Meta, META_PAGES, PAGE};
 use crate::postings::bytes::OwnedBytes;
@@ -1355,12 +1355,12 @@ impl Database {
     }
 
     /// The schemas of the database's tables, in creation order (the first
-    /// is the table the database was created with). The system table
-    /// [`SOURCES`] is not among them: [`Self::table`] and SQL read it by
-    /// name.
+    /// is the table the database was created with). The system tables
+    /// ([`SOURCES`], [`FUNCTIONS`](crate::storage::FUNCTIONS)) are not
+    /// among them: [`Self::table`] and SQL read them by name.
     pub fn tables(&self) -> Vec<Arc<Schema>> {
         self.follow();
-        lock(&self.state).tables.iter().filter(|t| t.id != SOURCES_ID).map(|t| t.schema.clone()).collect()
+        lock(&self.state).tables.iter().filter(|t| !is_system(t.id)).map(|t| t.schema.clone()).collect()
     }
 
     /// The schema of the table named `name` (any case).
@@ -1388,8 +1388,10 @@ impl Database {
         let mut wal = self.try_writer()?;
         self.check_poisoned()?;
         check_table_name(&schema.table)?;
-        if schema.table.eq_ignore_ascii_case(SOURCES) {
-            return Err(Error::Schema(format!("{SOURCES} is a system table, which streams make and write (Database::ensure_sources)")));
+        match system_id(&schema.table) {
+            Some(SOURCES_ID) => return Err(Error::Schema(format!("{SOURCES} is a system table, which streams make and write (Database::ensure_sources)"))),
+            Some(_) => return Err(Error::Schema(format!("{} is a system table, which CREATE FUNCTION makes and writes", schema.table))),
+            None => {}
         }
         if self.table(&schema.table).is_some() {
             return Err(Error::Schema(format!("table {} already exists", schema.table)));
@@ -1545,8 +1547,8 @@ impl Database {
         check_name("rank profile", &profile.name)?;
         let mut txn = self.begin()?;
         let t = self.table_ref(Some(table))?;
-        if t.id == SOURCES_ID {
-            return Err(Error::Schema(format!("{SOURCES} is a system table, which takes no rank profile")));
+        if is_system(t.id) {
+            return Err(Error::Schema(format!("{} is a system table, which takes no rank profile", t.schema.table)));
         }
         crate::query::profile::check_columns(&profile, &t.schema)?;
         let exists = lock(&self.state).tables[t.pos].profiles.iter().any(|p| p.name.eq_ignore_ascii_case(&profile.name));
@@ -1610,19 +1612,50 @@ impl Database {
     }
 
     fn has_sources(&self) -> bool {
-        lock(&self.state).tables.iter().any(|t| t.id == SOURCES_ID)
+        self.has_system(SOURCES_ID)
+    }
+
+    fn has_system(&self, id: u32) -> bool {
+        lock(&self.state).tables.iter().any(|t| t.id == id)
     }
 
     /// [`Database::ensure_sources`], under the writer lock.
     fn add_sources(&self, wal: &mut Wal) -> Result<()> {
-        if self.has_sources() {
+        self.add_system(wal, SOURCES_ID)
+    }
+
+    /// Adds the system table with id `id` ([`SYSTEM_IDS`]) if the database
+    /// lacks it, under the writer lock, in one commit.
+    fn add_system(&self, wal: &mut Wal, id: u32) -> Result<()> {
+        if self.has_system(id) {
             return Ok(());
         }
         let mut vw = VersionWriter::begin(self);
-        let schema = if vw.manifest.is_legacy() { sources_schema().without_ids() } else { sources_schema() };
-        vw.manifest.tables.push(TableMeta { id: SOURCES_ID, schema, segments: Vec::new(), profiles: Vec::new() });
+        let schema = system_schema(id).ok_or_else(|| Error::Schema(format!("no system table has id {id}")))?;
+        let schema = if vw.manifest.is_legacy() { schema.without_ids() } else { schema };
+        vw.manifest.tables.push(TableMeta { id, schema, segments: Vec::new(), profiles: Vec::new() });
         let c = vw.commit(wal)?;
         self.publish(c, |_| {})
+    }
+
+    /// Adds the system table [`FUNCTIONS`](crate::storage::FUNCTIONS) if
+    /// the database lacks it, in one commit: stored functions keep a row per version there
+    /// ([`crate::query::function`]). Every copy of a database gives it the
+    /// same id ([`FUNCTIONS_ID`]), so a replica makes its own when its
+    /// primary's first function arrives ([`Database::apply_shipped`]). The
+    /// database then needs feature `functions`, so versions of Strata
+    /// before it refuse to open it. A database written before field ids
+    /// takes none: it is upgraded first ([`crate::upgrade`]).
+    pub fn ensure_functions(&self) -> Result<()> {
+        if self.has_system(FUNCTIONS_ID) {
+            return Ok(());
+        }
+        let mut wal = self.try_writer()?;
+        self.check_poisoned()?;
+        if lock(&self.state).manifest.is_legacy() {
+            return Err(Error::Schema("this database was written before field ids, and keeps no functions: upgrade it first (strata upgrade)".into()));
+        }
+        self.add_system(&mut wal, FUNCTIONS_ID)
     }
 
     /// Numbers this database's writes from now on: every write transaction
@@ -1795,10 +1828,12 @@ impl Database {
         }
         let Some(WriteTxn { mut wal, .. }) = held else { return Ok(Applied::At(prev)) };
         let mut schemas: Vec<(u32, Arc<Schema>)> = lock(&self.state).tables.iter().map(|t| (t.id, t.schema.clone())).collect();
-        // The primary's sources' offsets, before this copy has a table for
-        // them: it makes its own, as the primary did.
-        if !schemas.iter().any(|(id, _)| *id == SOURCES_ID) {
-            schemas.push((SOURCES_ID, Arc::new(sources_schema())));
+        // The primary's sources' offsets and functions, before this copy
+        // has a table for them: it makes its own, as the primary did.
+        for sys in SYSTEM_IDS {
+            if !schemas.iter().any(|(id, _)| *id == sys) {
+                schemas.push((sys, Arc::new(system_schema(sys).expect("a system table"))));
+            }
         }
         // Writes fit the tables as the changes of tables before them in the
         // batch leave them; those changes are checked below.
@@ -1824,7 +1859,7 @@ impl Database {
             if t.ops.iter().any(|(_, op)| op.changes_tables()) {
                 let differs = |what: String| Error::Schema(format!("shipped transaction {} {what}: this database is not a copy of its primary's", s.seq));
                 for (id, op) in &t.ops {
-                    let system = *id == 0 || *id == SOURCES_ID;
+                    let system = *id == 0 || is_system(*id);
                     match op {
                         Op::Table { def: Some(def) } => {
                             if system || check_table_name(&def.table).is_err() || schemas.iter().any(|(i, x)| i == id || x.table.eq_ignore_ascii_case(&def.table)) {
@@ -1842,7 +1877,7 @@ impl Database {
                         // included: columns kept under another id here
                         // would read the primary's ids as columns missing.
                         Op::Alter { was, def } => match schemas.iter_mut().find(|(i, _)| i == id) {
-                            Some((_, s)) if *id != SOURCES_ID && **s == **was && def.check_ids().is_ok() && def.follows(was) => *s = def.clone(),
+                            Some((_, s)) if !is_system(*id) && **s == **was && def.check_ids().is_ok() && def.follows(was) => *s = def.clone(),
                             _ => return Err(differs(format!("alters the table with id {id}, which this database lacks, cannot alter, or holds with other columns or field ids"))),
                         },
                         _ => return Err(corrupt(format!("shipped transaction {} changes tables along with rows", s.seq))),
@@ -1851,8 +1886,10 @@ impl Database {
             }
             shipped.push((s, t.ops));
         }
-        if shipped.iter().any(|(_, ops)| ops.iter().any(|(id, _)| *id == SOURCES_ID)) {
-            self.add_sources(&mut wal)?;
+        for sys in SYSTEM_IDS {
+            if shipped.iter().any(|(_, ops)| ops.iter().any(|(id, _)| *id == sys)) {
+                self.add_system(&mut wal, sys)?;
+            }
         }
         let mut at = now.last();
         let mut failed = None;
@@ -1963,11 +2000,11 @@ impl Database {
             let st = lock(&copy.state);
             let n = st.manifest.seq_no.clone().ok_or_else(|| Error::Schema("the copy does not number its writes".into()))?;
             let mut tables = Vec::new();
-            let mut sources = None;
+            let mut system = Vec::new();
             for t in &st.manifest.tables {
                 let segs = t.segments.iter().map(|m| Ok((m.n_docs, st.handle(m.id).cloned().ok_or_else(|| corrupt(format!("segment {} is in the manifest but not open", m.id)))?))).collect::<Result<Vec<_>>>()?;
-                match t.id == SOURCES_ID {
-                    true => sources = Some(segs),
+                match is_system(t.id) {
+                    true => system.push((t.id, segs)),
                     false => {
                         // Logged since its last version, maybe.
                         let profiles = st.tables.iter().find(|ts| ts.id == t.id).map_or_else(Vec::new, |ts| ts.profiles.to_vec());
@@ -1975,9 +2012,9 @@ impl Database {
                     }
                 }
             }
-            (Numbering { seq: st.seq, ..n }, (tables, sources, st.manifest.next_table_id))
+            (Numbering { seq: st.seq, ..n }, (tables, system, st.manifest.next_table_id))
         };
-        let (tables, sources, next_table_id) = tables;
+        let (tables, system, next_table_id) = tables;
         // No background flush may seal the log in between.
         let _one = lock(&self.background);
         let mut wal = self.try_writer()?;
@@ -1991,8 +2028,8 @@ impl Database {
                 first.table
             )));
         }
-        if sources.is_some() {
-            self.add_sources(&mut wal)?;
+        for (id, _) in &system {
+            self.add_system(&mut wal, *id)?;
         }
         if theirs.term < ours.term {
             return Err(Error::Schema(format!("the copy is of term {}, older than this database's ({}): it is a copy of a replaced primary", theirs.term, ours.term)));
@@ -2009,11 +2046,11 @@ impl Database {
         for id in vw.manifest.tables.iter().flat_map(|t| &t.segments).map(|s| s.id).collect::<Vec<_>>() {
             vw.remove_segment(id);
         }
-        // The copy's tables, in its order, then the sources: a table of the
-        // same id takes the copy's schema, and one the copy lacks goes (its
-        // segments went above).
+        // The copy's tables, in its order, then the system tables: a table
+        // of the same id takes the copy's schema, and one the copy lacks
+        // goes (its segments went above).
         let mut old = std::mem::take(&mut vw.manifest.tables);
-        let kept_sources = old.iter().position(|t| t.id == SOURCES_ID).map(|i| old.remove(i));
+        let kept_system: Vec<TableMeta> = SYSTEM_IDS.iter().filter_map(|sys| old.iter().position(|t| t.id == *sys).map(|i| old.remove(i))).collect();
         for (id, schema, _, _) in &tables {
             let t = match old.iter().position(|t| t.id == *id) {
                 Some(i) => TableMeta { schema: schema.clone(), ..old.remove(i) },
@@ -2021,11 +2058,11 @@ impl Database {
             };
             vw.manifest.tables.push(t);
         }
-        vw.manifest.tables.extend(kept_sources);
+        vw.manifest.tables.extend(kept_system);
         vw.manifest.next_table_id = vw.manifest.next_table_id.max(next_table_id);
         let mut into: Vec<_> = tables.iter().map(|(id, _, segs, profiles)| (*id, (segs, profiles.clone()))).collect();
-        if let Some(segs) = &sources {
-            into.push((SOURCES_ID, (segs, Vec::new())));
+        for (id, segs) in &system {
+            into.push((*id, (segs, Vec::new())));
         }
         for (to, (segs, profiles)) in into {
             for (n_docs, h) in segs {
@@ -2095,6 +2132,7 @@ impl Database {
                     Some(t) if t.id == 0 => return Err(Error::Schema(format!("{} is the database's first table, which cannot be dropped", t.schema.table))),
                     // A replica's would come back with its primary's next offset.
                     Some(t) if t.id == SOURCES_ID => return Err(Error::Schema(format!("{SOURCES} is a system table, which cannot be dropped: delete its rows to forget sources"))),
+                    Some(t) if is_system(t.id) => return Err(Error::Schema(format!("{} is a system table, which cannot be dropped: DROP FUNCTION drops a function", t.schema.table))),
                     Some(t) if ids.contains(&t.id) => {}
                     Some(t) => {
                         ids.push(t.id);
@@ -2143,8 +2181,8 @@ impl Database {
         let (id, before, profiles) = {
             let st = lock(&self.state);
             let t = st.tables.iter().find(|t| t.schema.table.eq_ignore_ascii_case(table)).ok_or_else(|| Error::Schema(format!("no table {table}")))?;
-            if t.id == SOURCES_ID {
-                return Err(Error::Schema(format!("{SOURCES} is a system table, whose columns do not change")));
+            if is_system(t.id) {
+                return Err(Error::Schema(format!("{} is a system table, whose columns do not change", t.schema.table)));
             }
             (t.id, t.schema.clone(), t.profiles.clone())
         };
@@ -3463,9 +3501,10 @@ impl Database {
         let o = DbOptions { layout, sync: true, publish_snapshots: false, doc_source: None, ..DbOptions::default() };
         let out = Database::create(tmp, manifest.tables[0].schema.clone(), o)?;
         for t in &manifest.tables[1..] {
-            match t.id == SOURCES_ID {
-                true => out.ensure_sources()?,
-                false => out.create_table(t.schema.clone())?,
+            match t.id {
+                SOURCES_ID => out.ensure_sources()?,
+                FUNCTIONS_ID => out.ensure_functions()?,
+                _ => out.create_table(t.schema.clone())?,
             }
         }
         let mut stats = CheckpointStats { tables: manifest.tables.len(), ..CheckpointStats::default() };
