@@ -669,7 +669,8 @@ need() {
 # as on GitHub's runners).
 jdk() {
     local home
-    home=$( (/usr/libexec/java_home -v "$1" 2>/dev/null) || eval "echo \${JAVA_HOME_$1_X64:-}")
+    # -F: no other version when there is none of this one.
+    home=$( (/usr/libexec/java_home -F -v "$1" 2>/dev/null) || eval "echo \${JAVA_HOME_$1_X64:-}")
     [ -n "$home" ] || { echo "ci-local: this job needs a JDK $1 (on a Mac: brew install --cask temurin@$1)" >&2; return 1; }
     echo "$home"
 }
