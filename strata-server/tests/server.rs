@@ -2730,8 +2730,9 @@ async fn admin_routes_checkpoint_check_and_vacuum() {
     }
     let (status, _) = post(&c, &format!("{base}/v1/admin/checkpoint"), json!({"name": "first"})).await;
     assert_eq!(status, 500, "an existing name is not overwritten");
-    // (`first-wal` is the log opening `first` above created.)
-    let mut names: Vec<String> = std::fs::read_dir(&backups).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n != "first-wal").collect();
+    // (`first-wal` and `first-readers` are the log and the writer's lock
+    // opening `first` above made.)
+    let mut names: Vec<String> = std::fs::read_dir(&backups).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n != "first-wal" && n != "first-readers").collect();
     names.sort();
     assert_eq!(names, ["d1", "d2", "first"]);
     assert!(!dir.path().join("out").exists());
