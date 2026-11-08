@@ -1,6 +1,8 @@
 //! Stored functions on a server: `CREATE FUNCTION` needs an admin key and
 //! records its name; a query calls them as one database does, in every
-//! read path; and `SELECT ... FROM _functions` reads their versions.
+//! read path; and `SELECT ... FROM _functions` reads their versions. Through
+//! a coordinator, each version has one number on every shard, a query calls
+//! the versions every shard holds, and a new shard gets them all.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -10,9 +12,13 @@ use strata::db::Db;
 use strata::query::Params;
 use strata::storage::DbOptions;
 use strata::value::Value;
+use strata_server::auth::Access;
+use strata_server::coord::Coordinator;
 use strata_server::keys::{Principal, Scope};
-use strata_server::service::{After, AgentConfig, Backend, QueryReq, Service, SqlAnswer};
-use strata_server::demo;
+use strata_server::replication::Acks;
+use strata_server::service::{shard_of, After, AgentConfig, Backend, QueryReq, Service, SqlAnswer};
+use strata_server::{demo, server, slots};
+use tokio::net::TcpListener;
 
 const N: usize = 300;
 
@@ -90,4 +96,113 @@ async fn a_server_keeps_and_calls_stored_functions() {
     // Not a table people write.
     let e = sql_as(&svc, &admin, "INSERT INTO _functions (id) VALUES ('x@1')").await.err().unwrap();
     assert!(e.contains("_functions"), "{e}");
+}
+
+/// A shard's server: rows of `N` that `keep` keeps, numbered writes, its
+/// slots kept beside the database.
+async fn shard(dir: &Path, name: &str, keep: impl Fn(usize) -> bool) -> (Arc<Service>, String) {
+    let db = create_keeping(dir, name, keep);
+    db.storage().start_seq_no().unwrap();
+    let schema = (*db.schema()).clone();
+    let mut svc = Service::new(Backend::Local(db), schema, agent(), 16, Duration::from_secs(20));
+    svc.keep_slots_in(slots::file_of(&dir.join(name))).unwrap();
+    let svc = Arc::new(svc);
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(server::serve_grpc(svc.clone(), l, Access::default()));
+    (svc, url)
+}
+
+async fn coordinator(urls: &[String]) -> (Arc<Service>, Arc<Coordinator>) {
+    let c = Arc::new(Coordinator::connect(urls.to_vec()).await.unwrap());
+    let schema = c.schema.clone();
+    (Arc::new(Service::new(Backend::Cluster(c.clone()), schema, agent(), 16, Duration::from_secs(10))), c)
+}
+
+/// Each version a service calls: (id, dropped).
+fn versions(svc: &Arc<Service>) -> Vec<(String, bool)> {
+    svc.functions().all().map(|f| (f.id(), f.dropped)).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_coordinator_numbers_versions_alike_on_every_shard() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let whole = service(create(d, "whole.strata"));
+    let key = |i: usize| Value::Str(format!("p{i:07}"));
+    let mut shards = Vec::new();
+    let mut urls = Vec::new();
+    for s in 0..3 {
+        let (svc, url) = shard(d, &format!("s{s}.strata"), |i| shard_of(&key(i), 3) == s).await;
+        shards.push(svc);
+        urls.push(url);
+    }
+    // One shard has numbered versions of its own: made and dropped on it
+    // alone, before the cluster.
+    let root = Principal::open();
+    sql_as(&shards[1], &root, "CREATE FUNCTION label(p FLOAT) RETURNS KEYWORD AS CASE WHEN :p > 100 THEN 'dear' ELSE 'cheap' END").await.unwrap();
+    sql_as(&shards[1], &root, "DROP FUNCTION label").await.unwrap();
+    let (coord, c) = coordinator(&urls).await;
+    let admin = key_of("ops", Scope::Admin);
+    // Version 1 is on one shard only, so not called; its drop is served at once.
+    assert_eq!(versions(&coord), [("label@2".to_string(), true)]);
+    for svc in [&whole, &coord] {
+        sql_as(svc, &admin, CHEAPER).await.unwrap();
+        sql_as(svc, &admin, KETTLES).await.unwrap();
+    }
+    // `label` comes back as version 3 on every shard, after shard 1's.
+    sql_as(&coord, &admin, "CREATE FUNCTION label(p FLOAT) RETURNS KEYWORD AS CASE WHEN :p > 50 THEN 'dear' ELSE 'cheap' END").await.unwrap();
+    for s in &shards {
+        let f = s.functions();
+        assert_eq!(f.current("label").unwrap().version, 3, "{:?}", versions(s));
+        assert_eq!(f.current("cheaper").unwrap().version, 1);
+        assert_eq!(f.current("label").unwrap().hash, coord.functions().current("label").unwrap().hash);
+    }
+    assert_eq!(coord.functions().current("label").unwrap().version, 3);
+
+    // Called through the coordinator as on one database.
+    let called = "SELECT id FROM products WHERE MATCH(body, 'easy') ORDER BY cheaper(bm25(body, 'easy'), price) DESC LIMIT 8";
+    let want = rows(&whole, called).await;
+    assert_eq!(want.len(), 8);
+    assert_eq!(rows(&coord, called).await, want);
+    let top = "SELECT * FROM kettles(k => 4)";
+    assert_eq!(rows(&coord, top).await, rows(&whole, top).await);
+    let labels = rows(&coord, "SELECT id, label(price) FROM products WHERE MATCH(body, 'easy') ORDER BY id LIMIT 6").await;
+    assert_eq!(labels.len(), 6);
+    assert!(labels.iter().all(|r| ["dear", "cheap"].contains(&r[1].as_str().unwrap())), "{labels:?}");
+
+    // A new version everywhere; the old one still answers by its number.
+    let v2 = "CREATE OR REPLACE FUNCTION cheaper(s FLOAT, price FLOAT, w FLOAT DEFAULT 0.05) RETURNS FLOAT AS :s / (1 + :w * :price)";
+    for svc in [&whole, &coord] {
+        sql_as(svc, &admin, v2).await.unwrap();
+    }
+    assert_eq!(rows(&coord, called).await, rows(&whole, called).await);
+    let pinned = called.replace("cheaper(", "\"cheaper@1\"(");
+    assert_eq!(rows(&coord, &pinned).await, want);
+    // The same definition again changes nothing.
+    sql_as(&coord, &admin, v2).await.unwrap();
+    assert!(shards.iter().all(|s| s.functions().max_version("cheaper") == 2));
+    // A coordinator started later finds them.
+    let (other, _) = coordinator(&urls).await;
+    assert_eq!(rows(&other, called).await, rows(&whole, called).await);
+
+    // A table function's body is checked against the cluster's tables.
+    let e = sql_as(&coord, &admin, "CREATE FUNCTION nowhere(q TEXT) RETURNS TABLE AS SELECT id FROM missing WHERE MATCH(body, :q)").await.err().unwrap();
+    assert!(e.contains("does not plan"), "{e}");
+    // Dropped through the coordinator: from every shard.
+    sql_as(&coord, &admin, "DROP FUNCTION kettles").await.unwrap();
+    assert!(coord.query(QueryReq { sql: top.into(), ..Default::default() }).await.is_err());
+    for s in &shards {
+        assert!(s.functions().current("kettles").is_none());
+    }
+    sql_as(&coord, &admin, "DROP FUNCTION cheaper VERSION 1").await.unwrap();
+    assert!(shards.iter().all(|s| s.functions().get("cheaper", 1).is_none()));
+
+    // A new shard gets every version under its number.
+    let (fresh, url) = shard(d, "s3.strata", |_| false).await;
+    c.add_shard(vec![url], Acks::All).await.unwrap();
+    let ids = |s: &Arc<Service>| s.functions().all().map(|f| (f.id(), f.hash.clone())).collect::<Vec<_>>();
+    assert_eq!(ids(&fresh), ids(&shards[0]));
+    assert_eq!(fresh.functions().current("label").unwrap().version, 3);
+    assert!(fresh.functions().current("kettles").is_none());
 }

@@ -90,6 +90,7 @@ use strata::query::stats::TermStats;
 use strata::query::steps::{self, Step};
 use strata::query::{bind_command, Command, Conflict, Params, Projection, Select, Write};
 use strata::schema::Schema;
+use strata::query::function::{self, Change, Function, FunctionSet, Statement};
 use strata::storage::RankProfile;
 use strata::value::Value;
 use tonic::service::interceptor::InterceptedService;
@@ -498,6 +499,114 @@ fn common_profiles(answers: &[pb::SchemaResponse]) -> Vec<(String, RankProfile)>
     out
 }
 
+/// What a coordinator reads a replica's stored functions with: an
+/// ordinary query, so that no shard protocol changes.
+const FUNCTIONS_SQL: &str = "SELECT id, name, version, language, kind, signature, body, hash, description, created, created_by, dropped FROM _functions LIMIT 1000000";
+
+/// The stored functions of each replica that answered within 5 s, by URL:
+/// none for one that has made no function, or a server from before stored
+/// functions (which reads no `_functions`). It is read as every read is:
+/// in the protocol the cluster speaks, typed from protocol 2 and under the
+/// slot map's epoch from 4.
+async fn replica_functions(t: &Topology) -> Vec<(String, FunctionSet)> {
+    let p = t.protocol();
+    let schema = strata::storage::functions_schema();
+    let typed = || strata::query::compound::plan_read(FUNCTIONS_SQL, &[&schema], &Params::new(), &|_, _| None);
+    let req = match Read::new(FUNCTIONS_SQL, &Params::new(), None, p, if p >= 4 { t.epoch() } else { 0 }, typed) {
+        Ok(read) => read.request(p, 0),
+        Err(e) => {
+            tracing::warn!(error = %e.message, "the read of stored functions does not plan");
+            return Vec::new();
+        }
+    };
+    let calls = t.replicas.iter().flatten().map(|r| {
+        let (mut c, url, req) = (r.client.clone(), r.url.clone(), req.clone());
+        async move { (url, tokio::time::timeout(Duration::from_secs(5), c.query(req)).await) }
+    });
+    let mut out = Vec::new();
+    for (url, a) in join_all(calls).await {
+        match a {
+            Ok(Ok(r)) => match result_from_pb(r.into_inner()).and_then(|rs| functions_of(&rs)) {
+                Ok(set) => out.push((url, set)),
+                Err(e) => tracing::warn!(replica = %url, error = %e.message, "a replica sent stored functions this coordinator cannot read"),
+            },
+            Ok(Err(s)) if s.message().contains("no such table") => out.push((url, FunctionSet::default())),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The functions in rows of `_functions`.
+fn functions_of(rs: &ResultSet) -> Result<FunctionSet, ApiError> {
+    let rows = rs.rows.iter().map(|r| Function::from_row(&rs.columns.iter().cloned().zip(r.iter().cloned()).collect()).map_err(ApiError::from));
+    Ok(FunctionSet::of(rows.collect::<Result<Vec<_>, _>>()?))
+}
+
+/// Every version any replica holds; an error when two hold one version
+/// with two definitions.
+fn union_functions(sets: &[(String, FunctionSet)]) -> Result<FunctionSet, ApiError> {
+    let mut all: BTreeMap<String, (&str, &Function)> = BTreeMap::new();
+    for (url, set) in sets {
+        for f in set.all() {
+            match all.get(&f.id()) {
+                Some((other, g)) if g.hash != f.hash || g.dropped != f.dropped => {
+                    return Err(ApiError::bad(format!("version {} of {} differs on {other} and {url}: drop it on one (DROP FUNCTION {} VERSION {}) on that server", f.version, f.def.name, f.def.name, f.version)));
+                }
+                Some(_) => {}
+                None => {
+                    all.insert(f.id(), (url, f));
+                }
+            }
+        }
+    }
+    Ok(FunctionSet::of(all.into_values().map(|(_, f)| f.clone())))
+}
+
+/// The stored functions a coordinator calls: the versions every replica
+/// that answered holds alike (one that a replica lacks, or holds with
+/// another definition, is left out until they agree, so that a new
+/// version is called once every shard has it), and a function's drop as
+/// soon as any replica holds it, so that a dropped function is not called
+/// while the drop reaches the others.
+fn common_functions(sets: &[(String, FunctionSet)]) -> FunctionSet {
+    let Some((_, first)) = sets.first() else { return FunctionSet::default() };
+    let alike = |f: &Function| sets.iter().all(|(_, s)| s.get(&f.def.name, f.version).is_some_and(|g| g.hash == f.hash && g.dropped == f.dropped));
+    let mut out: Vec<Function> = first.all().filter(|f| alike(f)).map(|f| (**f).clone()).collect();
+    let mut tops: BTreeMap<&str, &Function> = BTreeMap::new();
+    for f in sets.iter().flat_map(|(_, s)| s.all()) {
+        let top = tops.entry(f.def.name.as_str()).or_insert(f);
+        if f.version > top.version {
+            *top = f;
+        }
+    }
+    for top in tops.into_values().filter(|f| f.dropped) {
+        if !out.iter().any(|f| f.id() == top.id()) {
+            out.push(top.clone());
+        }
+    }
+    FunctionSet::of(out)
+}
+
+/// What tells two sets of functions apart: each version's id, hash and
+/// whether it is a drop.
+fn fingerprint(set: &FunctionSet) -> Vec<(String, String, bool)> {
+    set.all().map(|f| (f.id(), f.hash.clone(), f.dropped)).collect()
+}
+
+/// The statements that write every version of `set` on a new shard under
+/// its number, oldest first, drops included.
+fn copied_functions(set: &FunctionSet) -> Vec<String> {
+    let mut all: Vec<&Arc<Function>> = set.all().collect();
+    all.sort_by(|a, b| (&a.def.name, a.version).cmp(&(&b.def.name, b.version)));
+    all.into_iter()
+        .map(|f| match f.dropped {
+            true => Statement::Drop { name: f.def.name.clone(), if_exists: true, version: None, at: Some(f.version) }.sql(),
+            false => Statement::Create { def: f.def.clone(), replace: true, at: Some(f.version) }.sql(),
+        })
+        .collect()
+}
+
 /// A table's rank profile as `Schema` sends it: `{"table", "profile"}`.
 pub fn profile_json(table: &str, profile: &RankProfile) -> String {
     json!({"table": table, "profile": profile}).to_string()
@@ -767,6 +876,9 @@ pub struct Coordinator {
     /// The rank profiles every replica holds alike, by table
     /// ([`Self::refresh`]).
     profiles: RwLock<Arc<Vec<(String, RankProfile)>>>,
+    /// The stored functions it calls: the versions every replica holds
+    /// alike, and drops ([`common_functions`]).
+    functions: RwLock<Arc<FunctionSet>>,
     /// When the replicas were last asked for their tables.
     asked: Mutex<Option<Instant>>,
     pub opts: CoordOptions,
@@ -1314,6 +1426,7 @@ impl Coordinator {
             }
         }
         let stats_cache_terms = opts.stats_cache_terms;
+        let functions = common_functions(&replica_functions(&topo).await);
         Ok(Coordinator {
             topo: RwLock::new(Arc::new(topo)),
             changing: tokio::sync::Mutex::new(()),
@@ -1323,6 +1436,7 @@ impl Coordinator {
             schema,
             catalog: RwLock::new(Arc::new(catalog)),
             profiles: RwLock::new(Arc::new(profiles)),
+            functions: RwLock::new(Arc::new(functions)),
             asked: Mutex::new(Some(Instant::now())),
             opts,
             epoch: Instant::now(),
@@ -1372,9 +1486,17 @@ impl Coordinator {
         self.profiles.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Asks every replica for its tables and rank profiles again, at most
-    /// once a second unless `now`, and serves those every replica that
-    /// answered (within 5 s) holds alike. Returns whether they changed.
+    /// The stored functions it calls ([`strata::query::function`]): the
+    /// versions every replica held alike when last asked, and the drops
+    /// any held ([`common_functions`]).
+    pub fn functions(&self) -> Arc<FunctionSet> {
+        self.functions.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Asks every replica for its tables, rank profiles and stored
+    /// functions again, at most once a second unless `now`, and serves
+    /// those every replica that answered (within 5 s) holds alike. Returns
+    /// whether they changed.
     pub async fn refresh(&self, now: bool) -> bool {
         let t = &self.topo();
         {
@@ -1395,7 +1517,15 @@ impl Coordinator {
             _ => return false,
         };
         let profiles = common_profiles(&answers);
+        let functions = common_functions(&replica_functions(t).await);
         let mut changed = false;
+        {
+            let mut held = self.functions.write().unwrap_or_else(|e| e.into_inner());
+            if fingerprint(&held) != fingerprint(&functions) {
+                *held = Arc::new(functions);
+                changed = true;
+            }
+        }
         {
             let mut held = self.catalog.write().unwrap_or_else(|e| e.into_inner());
             if **held != tables {
@@ -2829,6 +2959,61 @@ impl Coordinator {
         }
     }
 
+    /// Runs `CREATE FUNCTION` or `DROP FUNCTION` on every shard, with the
+    /// version numbered alike on all of them: the coordinator asks every
+    /// replica which versions it holds, works out the change against all
+    /// of them together ([`function::change`]), and sends each shard's
+    /// primary the version to write (`AT VERSION n`), which a shard that
+    /// holds it already passes over. A definition that is the current
+    /// one's goes again to the shards that lack it. It waits for every
+    /// replica to answer, so that two shards never give one number two
+    /// definitions; a shard that fails leaves the others changed, and the
+    /// statement runs again. A table function's body is checked against
+    /// the tables the coordinator serves first. `author` is the name of the
+    /// key that asked; each shard records the coordinator's credential as
+    /// the version's `created_by`.
+    pub async fn define_function(&self, stmt: &Statement, author: &str) -> Result<Written, ApiError> {
+        let t = self.topo();
+        let sets = replica_functions(&t).await;
+        let replicas = t.replicas.iter().flatten().count();
+        if sets.len() < replicas {
+            return Err(ApiError {
+                status: 503,
+                message: format!("{} of {replicas} replicas did not say which functions they hold: a function's versions are numbered alike on every shard, so CREATE and DROP FUNCTION wait for every replica", replicas - sets.len()),
+            });
+        }
+        let all = union_functions(&sets)?;
+        let send = match function::change(&all, stmt, Some(strata::timestamp::now()), Some(author))? {
+            Change::Put(f) if f.dropped => Some(Statement::Drop { name: f.def.name.clone(), if_exists: true, version: None, at: Some(f.version) }),
+            Change::Put(f) => {
+                if let Some(params) = function::sample_params(&f.def).filter(|_| f.def.kind == function::Kind::Table) {
+                    let catalog = self.catalog();
+                    let refs: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+                    let profiles = self.rank_profiles();
+                    let profile = |t: &str, n: &str| profiles.iter().find(|(pt, p)| pt.eq_ignore_ascii_case(t) && p.name.eq_ignore_ascii_case(n)).map(|(_, p)| p.clone());
+                    strata::query::compound::plan_read_calling(&f.def.body, &refs, &params, &profile, &self.functions()).map_err(|e| ApiError::bad(format!("query error: the body of {} does not plan: {e}", f.def.name)))?;
+                }
+                Some(Statement::Create { def: f.def.clone(), replace: true, at: Some(f.version) })
+            }
+            Change::Delete(id) => {
+                let (name, v) = id.rsplit_once('@').ok_or_else(|| ApiError::internal(format!("a function's version without a number: {id}")))?;
+                Some(Statement::Drop { name: name.to_string(), if_exists: true, version: Some(v.parse().map_err(ApiError::internal)?), at: None })
+            }
+            // The definition is the current one's: the shards that lack it get it.
+            Change::Nothing => match stmt {
+                Statement::Create { def, .. } => all.current(&def.name).filter(|c| c.hash == def.hash()).map(|c| Statement::Create { def: c.def.clone(), replace: true, at: Some(c.version) }),
+                _ => None,
+            },
+        };
+        match send {
+            Some(s) => self.ddl(&s.sql(), &Params::new()).await,
+            None => {
+                self.refresh(true).await;
+                Ok(Written::default())
+            }
+        }
+    }
+
     /// The key a write of `ops` goes to the shards with: its own, or, for
     /// one that may span shards (several operations, and several shards),
     /// [`auto_key`], so that a write that fails on some shards after
@@ -3703,13 +3888,16 @@ impl Coordinator {
     }
 
     /// Creates every table the cluster serves on a new server, `c`, which
-    /// serves the first table already, and its rank profiles. Only a
+    /// serves the first table already, its rank profiles and its stored
+    /// functions, each version under its number. Only a
     /// server that no primary ships to is given them: each is a numbered
     /// write, which would make a replica's history differ from its
     /// primary's, which ships its tables and profiles.
     async fn copy_catalog(&self, url: &str, c: &mut Client) -> Result<(), ApiError> {
         let mut statements: Vec<String> = self.catalog().iter().skip(1).map(|t| strata::query::ddl::create_sql(t).replacen("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1)).collect();
         statements.extend(self.rank_profiles().iter().map(|(t, p)| profile_sql(t, p)));
+        // Every version of each function, numbered as on the other shards.
+        statements.extend(copied_functions(&self.functions()));
         for sql in statements {
             let r = pb::WriteRequest { sql: sql.clone(), ..Default::default() };
             c.write(r).await.map_err(|s| ApiError { status: ApiError::from(s.clone()).status, message: format!("{url}: {sql}: {}", s.message()) })?;
