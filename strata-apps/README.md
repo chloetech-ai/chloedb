@@ -93,6 +93,19 @@ each other in a graph that Strata walks.
   apps found by walking the graph backwards from it (`REACHABLE ... dir =>
   'in'`), through the pieces that use it. The Library's Graph view and each
   app's Map draw it and ask Strata about any node.
+- **It answers questions about how pieces fit.** The Library's search box
+  (and `GET /api/graph/ask?q=`) takes questions such as "which screens use
+  the calendar", "which apps use lib.money", "which rules write votes",
+  "what runs when a vote is added" or "what does the cart screen use", and
+  answers them from `sa_graph` with no model call (`engine/ask.mjs`): the
+  piece is found by its name ("the progress bar", "ui.progressBar", "the
+  votes table in the bakery"), else by words and meaning; the question is a
+  walk of the labelled edges (`REACHABLE(links, :pieces, dir => 'in', label
+  => 'uses,calls')`); writes are told from reads by the code; and a piece
+  found through others says through which (an app, through its screen
+  menu, through ui.cart, uses lib.money). Screens record the patterns they
+  were expanded from, and patterns are nodes too, so "which screens use the
+  leaderboard pattern" has an answer.
 - **It reuses whole screens too.** The forge searches the library of what
   every app runs now and can reuse a screen, rule or function as it is, or
   fork it. Search is two rankings fused (reciprocal rank fusion): BM25 over
@@ -214,6 +227,7 @@ Each build keeps its timeline. Under Versions, **Timeline** on a version shows w
 | `engine/services.mjs` | people and sessions (scrypt passwords, session cookie), files (bytes under `DATA/files`, at most 15 MB, served with a sandbox policy and `nosniff`), the email outbox and a small SMTP client, address search |
 | `engine/sandbox.mjs` | server functions run in QuickJS compiled to WebAssembly: a fresh interpreter per call, 64 MiB, 10 s, no network, files or Node APIs, `app.*` calls only |
 | `engine/rules.mjs` | functions and triggers written as data: their checks and their runtime |
+| `engine/ask.mjs` | questions about the graph ("which screens use the calendar"), answered from `sa_graph` |
 | `engine/rulesql.mjs` | CREATE RULE: rules written as SQL, compiled into those steps |
 | `engine/evolve.mjs` | evolving from use: patterns in events, candidates built beside the live version, keep (merge) and drop, and each candidate's measure |
 | `engine/designs.mjs`, `web/design.js` | each app's three designs: one small model call, design tokens, CSS variables |

@@ -215,7 +215,7 @@ export class Store {
     this.capCache.set(id, { ...doc, spec: spec || {} });
     // A shared piece's node follows its newest version; an app's own
     // capabilities join the graph when a version of the app goes live.
-    if (SHARED_KINDS.includes(kind)) await this.writeGraph([capDoc({ ...doc, spec: spec || {} }, { lib: LIB })]);
+    if (SHARED_KINDS.includes(kind) || kind === 'pattern') await this.writeGraph([capDoc({ ...doc, spec: spec || {} }, { lib: LIB })]);
     return id;
   }
 
@@ -434,6 +434,7 @@ export class Store {
     const docs = [];
     const shared = [...(await this.shared()).values()];
     for (const c of await this.getCapabilities(shared.map((x) => x.id))) docs.push(capDoc(c, { lib: LIB }));
+    for (const c of (await this.patterns()).values()) docs.push(capDoc(c, { lib: LIB }));
     for (const a of await this.listApps()) {
       const view = await this.resolve(a.id).catch(() => null);
       if (view) docs.push(...appDocs(view, SHARED_KINDS));
@@ -460,6 +461,18 @@ export class Store {
   async dependents(id, { hops = 8 } = {}) {
     return this.db.query(`SELECT id, kind, app, slug, title, hops() AS hops FROM sa_graph
       WHERE REACHABLE(links, :n, hops => ${Number(hops)}, dir => 'in', label => 'uses,has,calls') ORDER BY hops(), id LIMIT 2000`, { n: id });
+  }
+
+  // The nodes a walk from some nodes reaches along edges with these labels
+  // (dir 'in': what points at them; 'out': what they point at), nearest
+  // first, with their edges.
+  async reach(seeds, { dir = 'in', label = '', hops = 1 } = {}) {
+    const ids = [...new Set(seeds.filter(Boolean))];
+    if (!ids.length) return [];
+    const labels = String(label).split(',').map((l) => l.trim()).filter((l) => /^[a-z]+$/.test(l)).join(',');
+    const rows = await this.db.query(`SELECT id, kind, app, slug, title, live, links, hops() AS hops FROM sa_graph
+      WHERE REACHABLE(links, :s, hops => ${Math.max(1, Math.min(8, Number(hops) || 1))}, dir => '${dir === 'out' ? 'out' : 'in'}'${labels ? `, label => '${labels}'` : ''}) ORDER BY hops(), id LIMIT 2000`, { s: ids });
+    return rows.map((r) => ({ ...r, hops: Number(r.hops) || 0, links: parseLinks(r.links) }));
   }
 
   // What a node needs: the pieces, tables and functions it reaches.

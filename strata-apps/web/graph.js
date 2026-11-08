@@ -1,10 +1,11 @@
 // The graph of apps and shared pieces, as Strata holds it in sa_graph: drawn
-// in columns (apps, their views and functions, tables, components, helpers),
+// in columns (apps, their views and functions, tables, components and
+// patterns, helpers),
 // with a panel that asks Strata what a node needs, what depends on it and
 // what goes with it.
 
-const COLS = ['Apps', 'Views and functions', 'Tables', 'Components', 'Helpers'];
-const COL = { app: 0, view: 1, function: 1, table: 2, component: 3, helper: 4 };
+const COLS = ['Apps', 'Views and functions', 'Tables', 'Components and patterns', 'Helpers'];
+const COL = { app: 0, view: 1, function: 1, table: 2, component: 3, pattern: 3, helper: 4 };
 const EDGE = {
   uses: { c: 'var(--g-uses)', t: 'uses' }, data: { c: 'var(--g-data)', t: 'reads or writes' }, has: { c: 'var(--g-has)', t: 'has' },
   calls: { c: 'var(--g-calls)', t: 'calls' }, opens: { c: 'var(--g-calls)', t: 'opens' }, on: { c: 'var(--g-on)', t: 'runs on writes to' },
@@ -91,7 +92,7 @@ export function drawGraph(nodes, { onSelect, selected, compact = false } = {}) {
   const boxes = s('g', null);
   for (const n of nodes) {
     const p = at(n.id);
-    const label = String(n.kind === 'component' || n.kind === 'helper' ? `${n.kind === 'helper' ? 'lib' : 'ui'}.${n.slug}` : n.title || n.slug);
+    const label = String(n.kind === 'component' || n.kind === 'helper' ? `${n.kind === 'helper' ? 'lib' : 'ui'}.${n.slug}` : n.kind === 'pattern' ? `pattern ${n.slug}` : n.title || n.slug);
     const max = Math.floor((W - 22) / 6.6);
     const g = s('g', { class: `gnode k-${n.kind}`, transform: `translate(${p.x},${p.y})`, tabindex: 0 },
       s('rect', { width: W, height: BH, rx: 7 }), s('circle', { cx: 11, cy: BH / 2, r: 4 }),
@@ -126,7 +127,7 @@ export function drawGraph(nodes, { onSelect, selected, compact = false } = {}) {
 export async function nodePanel(id, { h, api, showCode, onPick }) {
   let n;
   try { n = await api('GET', `/api/graph/node?id=${encodeURIComponent(id)}`); } catch (e) { return h('div', { class: 'err' }, e.message); }
-  const name = (r) => (r.kind === 'component' || r.kind === 'helper' ? `${r.kind === 'helper' ? 'lib' : 'ui'}.${r.slug}` : r.title || r.slug);
+  const name = (r) => (r.kind === 'component' || r.kind === 'helper' ? `${r.kind === 'helper' ? 'lib' : 'ui'}.${r.slug}` : r.kind === 'pattern' ? `pattern ${r.slug}` : r.title || r.slug);
   const item = (r, extra) => h('button', { class: 'gitem', onclick: () => onPick && onPick(r.id) }, h('span', { class: `pill ${r.kind}` }, r.kind), h('span', { class: 't' }, name(r)), extra ? h('span', { class: 'v' }, extra) : null);
   const list = (title, rows, sql, extra) => h('div', { class: 'gsec' }, h('div', { class: 'gsec-h' }, h('b', title), h('span', { class: 'mono gsql' }, sql)),
     rows.length ? h('div', { class: 'glist' }, rows.map((r) => item(r, extra && extra(r)))) : h('div', { class: 'hint' }, 'None'));

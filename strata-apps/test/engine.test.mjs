@@ -1186,3 +1186,87 @@ test('pieces are searched by words and by meaning', async (t) => {
     child.kill();
   }
 });
+
+test('graph questions are parsed into a kind, a relation and a piece', async () => {
+  const { parseQuestion, resolveName, writesTable } = await import('../engine/ask.mjs');
+  const q = (s) => { const p = parseQuestion(s); return p && [p.what.name, p.rel, p.target, p.dir, p.event || null]; };
+  assert.deepEqual(q('Which screens use the calendar?'), ['screens', 'uses', 'the calendar', 'in', null]);
+  assert.deepEqual(q('which rules write votes'), ['rules', 'writes', 'votes', 'in', null]);
+  assert.deepEqual(q('which apps use lib.money'), ['apps', 'uses', 'lib.money', 'in', null]);
+  assert.deepEqual(q('what calls checkout'), ['pieces', 'calls', 'checkout', 'in', null]);
+  assert.deepEqual(q('what tables does the board screen read'), ['tables', 'reads', 'the board screen', 'out', null]);
+  assert.deepEqual(q('what runs when a vote is added'), ['triggers', 'on', 'vote', 'in', 'insert']);
+  assert.deepEqual(q('where is the shopping cart used'), ['pieces', 'uses', 'the shopping cart', 'in', null]);
+  assert.deepEqual(q('which screens depend on the invoices table'), ['screens', 'depends', 'the invoices table', 'in', null]);
+  // Not questions about the graph: searched as words and meaning instead.
+  for (const s of ['let people pay for their basket', 'checkout', 'which colors look best', 'how do I make a cake']) assert.equal(parseQuestion(s), null, s);
+  const nodes = [
+    { id: 'lib/component/progressBar', kind: 'component', app: 'lib', slug: 'progressBar', title: 'Progress bar' },
+    { id: 'lib/pattern/calendar', kind: 'pattern', app: 'lib', slug: 'calendar', title: 'Calendar' },
+    { id: 'a/table/votes', kind: 'table', app: 'a', slug: 'votes', title: 'votes' },
+    { id: 'b/table/votes', kind: 'table', app: 'b', slug: 'votes', title: 'votes' },
+    { id: 'a/view/board', kind: 'view', app: 'a', slug: 'board', title: 'Features' },
+    { id: 'b/function/cast-special-vote', kind: 'function', app: 'b', slug: 'cast-special-vote', title: 'cast-special-vote' },
+    { id: 'app/b', kind: 'app', app: 'b', slug: 'b', title: 'Bakery' },
+  ];
+  const ids = (t, o) => resolveName(t, nodes, o).hits.map((n) => n.id);
+  assert.deepEqual(ids('the progress bar'), ['lib/component/progressBar']);
+  assert.deepEqual(ids('ui.progressBar'), ['lib/component/progressBar']);
+  assert.deepEqual(ids('vote', { hint: 'table' }), ['a/table/votes', 'b/table/votes']);
+  assert.deepEqual(ids('the votes table in the bakery', { apps: new Map([['a', 'Voting'], ['b', 'Bakery']]) }), ['b/table/votes']);
+  assert.deepEqual(ids('cast special vote'), ['b/function/cast-special-vote']);
+  assert.deepEqual(ids('the board screen'), ['a/view/board']);
+  assert.deepEqual(ids('the calendar pattern'), ['lib/pattern/calendar']);
+  // Writes, told from reads by the code.
+  assert.ok(writesTable('{"steps": [{"insert": "votes", "values": {}}]}', 'votes'));
+  assert.ok(writesTable("=() => app.update('features', id, {done: true})", 'features'));
+  assert.ok(writesTable('{"form": "guests", "fields": []}', 'guests'));
+  assert.ok(writesTable('DELETE FROM votes WHERE id = :id', 'votes'));
+  assert.ok(!writesTable('SELECT COUNT(*) FROM votes WHERE feature = :f', 'votes'));
+  assert.ok(!writesTable('{"update": "features", "set": {"votes": "SELECT COUNT(*) FROM votes"}}', 'votes'));
+});
+
+test('graph questions are answered from Strata', async (t) => {
+  const { findServerBinary, startServer } = await import('../engine/strata.mjs');
+  const { Store } = await import('../engine/store.mjs');
+  const { ask } = await import('../engine/ask.mjs');
+  const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
+  if (!bin) return t.skip('no strata-server binary');
+  const dir = mkdtempSync(join(tmpdir(), 'sa-ask-'));
+  const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+  const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
+  try {
+    const store = new Store(client, () => {});
+    await store.init();
+    const put = async (c) => { const id = await store.putCapability({ author: 'forge', description: '', ...c }); return { ...c, id, version: 1, spec: c.spec || {} }; };
+    await put({ app: 'lib', slug: 'money', kind: 'helper', title: 'Money', code: 'function helper() { return {}; }' });
+    await put({ app: 'lib', slug: 'progressBar', kind: 'component', title: 'Progress bar', code: 'function component(p) { return lib.money.format(p.v); }' });
+    await put({ app: 'lib', slug: 'leaderboard', kind: 'pattern', title: 'Leaderboard', code: '{"screen": {"body": [{"ui": "progressBar"}]}}' });
+    const caps = [
+      await put({ app: 'v', slug: 'board', kind: 'view', title: 'Features', code: '{"body": [{"ui": "progressBar"}, {"table": "features"}, {"button": "Vote", "do": "=() => app.call(\'toggle-vote\', {})"}]}', spec: { screen: true, patterns: ['leaderboard'] } }),
+      await put({ app: 'v', slug: 'toggle-vote', kind: 'function', title: 'toggle-vote', code: '{"steps": [{"insert": "votes", "values": {"feature": ":feature"}}]}', spec: { rule: true } }),
+      await put({ app: 'v', slug: 'count-votes', kind: 'function', title: 'count-votes', code: '{"steps": [{"update": "features", "id": ":row.feature", "set": {"votes": "SELECT COUNT(*) FROM votes"}}]}', spec: { rule: true, on: { table: 'votes', event: ['insert', 'delete'] } } }),
+      await put({ app: 'v', slug: 'features', kind: 'table', title: 'features', code: '', spec: { name: 'features' } }),
+      await put({ app: 'v', slug: 'votes', kind: 'table', title: 'votes', code: '', spec: { name: 'votes' } }),
+    ];
+    const view = { app: { id: 'v', name: 'Voting board', head: 1 }, caps, tables: caps.filter((c) => c.kind === 'table').map((c) => ({ ...c, spec: c.spec })), functions: caps.filter((c) => c.kind === 'function'), views: caps.filter((c) => c.kind === 'view') };
+    await store.writeGraph(appDocs(view, ['component', 'helper']));
+    const a = async (q) => { const r = await ask(store, q); return r.answer.map((x) => `${x.id}${x.via ? ` via ${x.via.map((v) => v.label).join(' > ')}` : ''}`); };
+    assert.deepEqual(await a('which screens use the progress bar'), ['v/view/board']);
+    assert.deepEqual(await a('which screens use lib.money'), ['v/view/board via ui.progressBar']);
+    assert.deepEqual(await a('which apps use lib.money'), ['app/v via the screen board > ui.progressBar']);
+    assert.deepEqual(await a('which screens use the leaderboard pattern'), ['v/view/board']);
+    assert.deepEqual(await a('which rules write votes'), ['v/function/toggle-vote']);
+    assert.deepEqual(await a('which rules write features'), ['v/function/count-votes']);
+    assert.deepEqual(await a('what runs when a vote is added'), ['v/function/count-votes']);
+    assert.deepEqual(await a('what runs when a vote is changed'), []);
+    assert.deepEqual(await a('what calls toggle vote'), ['v/view/board']);
+    assert.deepEqual((await a('what tables does the board screen read')).sort(), ['v/table/features']);
+    const r = await ask(store, 'which screens use the zzqxv');
+    assert.deepEqual(r.answer, []);
+    assert.match(r.note, /Nothing in the graph is called "zzqxv"/);
+    assert.equal(await ask(store, 'a board for votes'), null);
+  } finally {
+    child.kill();
+  }
+});

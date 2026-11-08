@@ -1,12 +1,13 @@
 // The pieces of every app, and the shared library, as a graph in Strata.
 //
 // A row of sa_graph is a node: an app, one of its tables, views or
-// functions, or a shared component or helper, by name (the version that is
+// functions, or a shared component, helper or screen pattern, by name (the version that is
 // live now is in `live`). Its `links` field, of Strata's EDGES type, holds
 // what it points at, each edge labelled:
 //
 //   has     app -> its tables, views and functions
-//   uses    view, function, component or helper -> a shared piece it calls
+//   uses    view, function, component or helper -> a shared piece it calls,
+//           and a screen -> each screen pattern it was expanded from
 //   data    view or function -> a table of its app it reads or writes
 //   on      function -> the table whose writes run it
 //   calls   view or function -> a function of its app it calls
@@ -61,9 +62,12 @@ export function linksOf(cap, { tables = [], functions = [], views = [], lib = 'l
       const n = esc(t);
       if (new RegExp(`(['"\`])\\s*${n}\\s*\\1|\\b(?:from|join|into|update)\\s+${n}\\b`, 'i').test(code)) add('data', `${cap.app}/table/${t}`);
     }
-    for (const f of functions) if (new RegExp(`\\bapp\\s*\\.\\s*call\\s*\\(\\s*['"\`]${esc(f)}['"\`]`).test(code)) add('calls', `${cap.app}/function/${f}`);
+    // app.call('f') in code, {"call": "f"} in a rule's steps.
+    for (const f of functions) if (new RegExp(`\\bapp\\s*\\.\\s*call\\s*\\(\\s*['"\`]${esc(f)}['"\`]|"call"\\s*:\\s*"${esc(f)}"`).test(code)) add('calls', `${cap.app}/function/${f}`);
     for (const v of views) if (new RegExp(`\\bapp\\s*\\.\\s*open\\s*\\(\\s*['"\`]${esc(v)}['"\`]`).test(code)) add('opens', `${cap.app}/view/${v}`);
   }
+  // The patterns a screen was expanded from (the forge records them).
+  if (cap.kind === 'view') for (const p of cap.spec?.patterns || []) add('uses', `${lib}/pattern/${p}`);
   const on = cap.spec?.on?.table;
   if (cap.kind === 'function' && on) add('on', `${cap.app}/table/${on}`);
   if (cap.forked_from) add('forked', nameOf(cap.forked_from));

@@ -231,23 +231,43 @@ async function renderHome() {
 
 // ---- library
 
+// A graph question's answer: what it understood, then each piece with its
+// app and, when found through others, the pieces between.
+function answerOf(a) {
+  const head = h('div', { class: 'answer-head' }, h('b', a.understood), h('span', { class: 'meta' },
+    `${a.answer.length} found${a.found_by === 'meaning' ? ` · "${a.about.map((x) => x.label).join(', ')}" found by meaning` : ''} · from sa_graph in Strata`));
+  if (!a.answer.length) return [head, h('div', { class: 'hint' }, a.note || 'Nothing in any app does that yet.')];
+  return [head, ...a.answer.map((r) => h('div', { class: 'libitem' },
+    h('span', { class: `pill ${r.kind === 'function' && r.rule ? 'rule' : r.kind}` }, r.kind === 'view' ? 'screen' : r.kind === 'function' && r.rule ? 'rule' : r.kind),
+    h('span', { class: 't' }, r.title), h('span', { class: 'meta' }, [r.kind === 'app' ? '' : r.app_name, r.via ? `through ${r.via.map((v) => v.label).join(' › ')}` : r.kind !== 'app' && r.hops > 0 && a.answer.some((x) => x.via) ? 'directly' : ''].filter(Boolean).join(' · ')),
+    h('span', { style: 'margin-left:auto;display:flex;gap:6px' },
+      r.kind === 'app' ? h('button', { class: 'btn small', onclick: () => { location.hash = `#/app/${r.app}`; } }, 'Open')
+        : r.live ? h('button', { class: 'btn small', onclick: () => showCode(r.live) }, 'Code') : null,
+      h('button', { class: 'btn small', title: 'what it uses, what depends on it, what goes with it', onclick: () => { location.hash = `#/library/graph/${encodeURIComponent(r.id)}`; } }, 'Links'))))];
+}
+
 async function renderLibrary(selected) {
   $('#crumbs').replaceChildren(h('span', { class: 'sep' }, '/'), h('b', 'Library'));
   const main = $('#main');
-  const q = h('input', { class: 'search', placeholder: 'Search what every app has built, by words or meaning ("let people pay for their basket")...' });
+  const q = h('input', { class: 'search', placeholder: 'Search what every app has built, by words or meaning, or ask: which screens use the calendar?' });
   const out = h('div', { class: 'lib' });
+  // Questions the graph answers, to click.
+  const asks = h('div', { class: 'asks' }, h('span', { class: 'hint' }, 'Ask the graph:'),
+    ['which screens use the calendar', 'which rules write votes', 'which apps use lib.money', 'what runs when an order is added', 'what does the cart screen use']
+      .map((x) => h('button', { class: 'chip', onclick: () => { q.value = x; load().catch((e) => out.replaceChildren(h('div', { class: 'err' }, e.message))); } }, x)));
   const mode = location.hash.includes('graph') ? 'graph' : 'list';
   const switcher = h('div', { class: 'seg' },
     h('button', { class: mode === 'list' ? 'on' : '', onclick: () => { location.hash = '#/library'; } }, 'List'),
     h('button', { class: mode === 'graph' ? 'on' : '', onclick: () => { location.hash = '#/library/graph'; } }, 'Graph'));
   main.replaceChildren(h('div', { class: `page scroll${mode === 'graph' ? ' wide' : ''}` },
     h('section', { class: 'hero' }, h('h1', 'Library'), h('p', 'What every app runs now: shared components and helpers, which every app can call, screen patterns every app’s screens expand from, and each app’s views, functions and tables. Each version is a row of sa_capabilities in Strata, searched by its words (BM25 over what it is and its code) and by its meaning (its title and description embedded), and linked to what it uses in a graph. The forge looks here before it writes something new.')),
-    switcher, mode === 'graph' ? out : q, mode === 'graph' ? null : out));
+    switcher, mode === 'graph' ? out : q, mode === 'graph' ? null : asks, mode === 'graph' ? null : out));
   if (mode === 'graph') return libraryGraph(out, { selected });
   let apps = [];
   try { ({ apps } = await api('GET', '/api/apps')); } catch { /* none */ }
   async function load() {
-    const { capabilities } = await api('GET', `/api/library${q.value.trim() ? `?q=${encodeURIComponent(q.value.trim())}` : ''}`);
+    const { capabilities, question } = await api('GET', `/api/library${q.value.trim() ? `?q=${encodeURIComponent(q.value.trim())}` : ''}`);
+    if (question) return out.replaceChildren(...answerOf(question));
     const latest = new Map();
     for (const c of capabilities) {
       const k = `${c.app}/${c.kind}/${c.slug}`;
@@ -273,7 +293,7 @@ async function renderLibrary(selected) {
           ? `${c.kind === 'helper' ? 'lib' : 'ui'}.${c.slug} · v${c.version}${c.author === 'builtin' ? ' · built in' : ''} · ${c.used_by?.length ? `used by ${c.used_by.map((u) => `${u.name}${u.version < c.version ? ` (v${u.version})` : ''}`).join(', ')}` : 'not used yet'}${found(c)}`
           : `${c.app_name} · v${c.version}${c.author && c.author !== 'forge' ? ` · ${c.author}` : ''}${found(c)}`),
         h('span', { style: 'margin-left:auto;display:flex;gap:6px' }, h('button', { class: 'btn small', onclick: () => showCode(c.id) }, 'Code'),
-          c.kind === 'pattern' ? null : h('button', { class: 'btn small', title: 'what it uses, what depends on it, what goes with it', onclick: () => { location.hash = `#/library/graph/${encodeURIComponent(`${c.app}/${c.kind}/${c.slug}`)}`; } }, 'Links'), c.kind !== 'table' ? sel : null),
+          h('button', { class: 'btn small', title: 'what it uses, what depends on it, what goes with it', onclick: () => { location.hash = `#/library/graph/${encodeURIComponent(`${c.app}/${c.kind}/${c.slug}`)}`; } }, 'Links'), c.kind !== 'table' ? sel : null),
         c.description ? h('div', { class: 'd' }, c.description) : null);
     }) : [h('div', { class: 'hint' }, q.value ? 'Nothing matches.' : 'Nothing yet: build an app first.')]));
   }

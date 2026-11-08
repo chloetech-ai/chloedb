@@ -1276,7 +1276,10 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   if (photos.count) progress(`Found ${photos.count} photo${photos.count === 1 ? '' : 's'}: ${photos.sources}`);
   for (const [kind, list] of [['view', plan.views], ['function', plan.functions]]) {
     for (const item of list || []) {
-      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) } : { on: item.on || null, ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) };
+      // The patterns a screen was expanded from, for the graph: this
+      // version's, and a patched screen keeps its earlier ones.
+      const patterns = kind === 'view' && item.screen ? [...new Set([...(item.patched !== undefined ? view.views.find((x) => x.slug === item.slug)?.spec?.patterns || [] : []), ...(item.patterns || [])])] : [];
+      const spec = kind === 'view' ? { order: item.order ?? 50, ...(item.screen ? { screen: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}), ...(patterns.length ? { patterns } : {}) } : {}) } : { on: item.on || null, ...(item.rule ? { rule: true, ...(typeof item.statement === 'string' ? { statement: item.statement } : {}) } : {}) };
       const id = await store.putCapability({ app: appId, slug: item.slug, kind, title: item.title || item.slug, description: item.description || '',
         code: code[item.slug], spec, forked_from: item.forked_from || null, author: request.source === 'repair' ? 'repair' : 'forge' });
       caps.set(`${kind}/${item.slug}`, id);
@@ -1525,6 +1528,9 @@ export async function editScreen(engine, appId, slug, { patch, screen, statement
   if (code === cur.code && (source || null) === (cur.spec.statement || null)) return { n: view.comp.n, unchanged: true };
   const spec = { ...cur.spec };
   if (source) spec.statement = source; else delete spec.statement;
+  // The patterns it was expanded from: a patch keeps the earlier ones.
+  const used = [...new Set([...(!source && !(screen && typeof screen === 'object') ? cur.spec.patterns || [] : []), ...ex.used])];
+  if (used.length) spec.patterns = used; else delete spec.patterns;
   // Shared components the screen names must exist; the app pins the ones it
   // did not use before (a pattern may bring the kanban, the bar chart...).
   const shared = await store.shared();

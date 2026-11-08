@@ -349,3 +349,10 @@ body.bare.designed { background: var(--bg); }
 .signals .signal { display: flex; gap: 8px; align-items: center; font-size: 12.5px; padding: 4px 0; border-bottom: 1px solid var(--line); }
 .signals .signal .grow { flex: 1; }
 @media (max-width: 720px) { .trybar { flex-wrap: wrap; } }
+.asks { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 8px 0 12px; }
+.asks .chip { border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.asks .chip:hover { border-color: var(--accent, var(--fg)); }
+.answer-head { display: flex; flex-direction: column; gap: 2px; padding: 4px 2px 10px; }
+.answer-head .meta { color: var(--muted); font-size: 12px; }
+.pill.rule { color: #c2255c; } .pill.app { color: #e67700; }
+@media (prefers-color-scheme: dark) { .pill.rule { color: #faa2c1; } .pill.app { color: #ffc078; } }

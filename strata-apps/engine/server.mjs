@@ -15,6 +15,7 @@ import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
 import { usePatterns } from './patterns.mjs';
+import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { ensureDesigns } from './designs.mjs';
 import { Evolver, MODES } from './evolve.mjs';
@@ -441,6 +442,9 @@ const routes = [
   }],
   ['GET', /^\/api\/library$/, async (b, m, url) => {
     const q = url.searchParams.get('q');
+    // A question about how pieces fit together is answered from the graph.
+    const question = q ? await ask(engine.store, q).catch(() => null) : null;
+    if (question) return { question };
     const rows = q ? await engine.store.searchCapabilities(q, { limit: 40 }) : await engine.store.liveCapabilities();
     const apps = new Map((await engine.store.listApps()).map((a) => [a.id, a.name]));
     const users = await engine.store.sharedUsers();
@@ -449,6 +453,8 @@ const routes = [
     return { capabilities: rows.map((r) => ({ ...r, app_name: isShared(r) ? 'shared' : r.kind === 'pattern' ? patternBy(r) : r.app === 'lib' ? 'built-in starter' : apps.get(r.app) || r.app,
       used_by: isShared(r) ? (users.get(`${r.kind}/${r.slug}`) || []).map((u) => ({ app: u.app, name: u.name, version: u.version })) : undefined })) };
   }],
+  // A question about the graph ("which screens use the calendar").
+  ['GET', /^\/api\/graph\/ask$/, async (b, m, url) => (await ask(engine.store, String(url.searchParams.get('q') || ''))) || { understood: null }],
   // The graph of apps and pieces: all of it, or one app's part.
   ['GET', /^\/api\/graph$/, async (b, m, url) => ({ nodes: await engine.store.graph({ app: url.searchParams.get('app') || undefined }) })],
   ['GET', /^\/api\/graph\/node$/, async (b, m, url) => {
