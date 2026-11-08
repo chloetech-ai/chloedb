@@ -1,12 +1,12 @@
 name: CI
 
-# A change to the documentation site or to Markdown files alone builds and
-# tests nothing.
+# A change to the documentation site, to Markdown files or to benchmark
+# results alone builds and tests nothing.
 #
 # Main is protected by one required check, "CI result", which every run
 # reports: the jobs below run when a change touches more than the
-# documentation (job `changes`), and are skipped otherwise, which a
-# required check counts as passing. A workflow skipped by a path filter
+# documentation and benchmark results (job `changes`), and are skipped
+# otherwise, which a required check counts as passing. A workflow skipped by a path filter
 # would report nothing, and the pull request would wait for its check
 # forever.
 on:
@@ -59,8 +59,11 @@ env:
 # kernels at run time (strata::simd). macOS builds keep native, and the CPU
 # in their cache's key.
 jobs:
-  # Whether the change touches more than the documentation site and
-  # Markdown files: if not, every other job is skipped.
+  # Whether the change touches more than the documentation site, Markdown
+  # files and benchmark results (the data under strata/results,
+  # strata-server/results and engram/results, which nothing builds or
+  # reads): if not, every other job is skipped. A Python script there
+  # still counts as code, since a job runs strata/results/sequence/gate.py.
   changes:
     name: changes
     runs-on: ubuntu-latest
@@ -90,7 +93,9 @@ jobs:
             exit 0
           fi
           git diff --name-only "$base" HEAD | tee "$RUNNER_TEMP/changed"
-          if grep -qvE '^docs/|\.md$' "$RUNNER_TEMP/changed"; then
+          grep -vE '^docs/|\.md$' "$RUNNER_TEMP/changed" > "$RUNNER_TEMP/rest" || true
+          if grep -qvE '^(strata|strata-server|engram)/results/' "$RUNNER_TEMP/rest" \
+            || grep -qE '^(strata|strata-server|engram)/results/.*\.py$' "$RUNNER_TEMP/rest"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
