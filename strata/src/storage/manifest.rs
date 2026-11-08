@@ -235,8 +235,9 @@ impl Manifest {
     /// The format 3 features the database needs, sorted: [`FIELD_IDS`]
     /// unless it was written before field ids, its tables'
     /// ([`crate::schema::Schema::features`]), `seq_no` once it numbers its
-    /// writes, `rank_profiles` while a table has a rank profile, and
-    /// `sources` once it has [`SOURCES`].
+    /// writes, `rank_profiles` while a table has a rank profile,
+    /// `sources` once it has [`SOURCES`], and [`COLD_SEGMENTS`] while a
+    /// segment is cold.
     pub fn features(&self) -> Vec<String> {
         let mut used: BTreeSet<String> = self.tables.iter().flat_map(|t| t.schema.features()).collect();
         if !self.is_legacy() {
@@ -700,6 +701,23 @@ mod tests {
     /// key, which a table from before field ids does not need), each
     /// table's ids and the next to give in its schema. Ids that clash, a table without them (or with them, in a
     /// manifest that does not require them) are damage.
+    /// A cold segment ([`ColdRef`]) needs feature `cold_segments`, which a
+    /// database without one does not list; it round-trips, and a manifest
+    /// without one encodes as before.
+    #[test]
+    fn cold_segments_are_a_feature() {
+        let mut m = Manifest::new(schema("logs").with_new_ids().unwrap());
+        m.tables[0].segments.push(segment(1));
+        let before = m.encode();
+        assert!(!String::from_utf8(before.clone()).unwrap().contains("cold"));
+        assert!(!m.features().contains(&COLD_SEGMENTS.to_string()));
+        m.tables[0].segments[0].cold = Some(ColdRef { key: "00ff/seg-0000000001.strata".into(), chunk: 256 << 10, table_crc: 7 });
+        assert_eq!((m.format(), m.features()), (3, strings(&[COLD_SEGMENTS, COMPACT_KEYS, FIELD_IDS])));
+        assert_eq!(Manifest::decode(&m.encode()).unwrap(), m);
+        m.tables[0].segments[0].cold = None;
+        assert_eq!(m.encode(), before);
+    }
+
     #[test]
     fn field_ids_are_format_3() {
         let ids = |name: &str| schema(name).with_new_ids().unwrap();
