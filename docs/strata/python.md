@@ -1,19 +1,8 @@
----
-title: Python
-parent: Strata
-nav_order: 5
----
-
 # Strata from Python
-{: .no_toc }
 
 The `strata` package runs a Strata database inside a Python process, the way `sqlite3` runs SQLite, or talks to a running [strata-server](server.md). Both have the same methods, so a script written against a local file works against a server.
-{: .fs-5 .fw-300 }
 
 For dataframe work, `db["table"]` is a lazy frame written as Polars writes one, run where the data is, with the answer as Arrow: see [DataFrames](frames.md).
-
-1. TOC
-{:toc}
 
 ## Install
 

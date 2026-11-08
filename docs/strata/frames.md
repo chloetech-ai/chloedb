@@ -1,17 +1,6 @@
----
-title: DataFrames
-parent: Strata
-nav_order: 5.2
----
-
 # DataFrames in Python
-{: .no_toc }
 
 `store["table"]` is a `strata.Frame`: a lazy dataframe written the way Polars writes one. Nothing is read until you ask for rows. Then the whole chain compiles to one SQL statement, which runs where the data is (a file in your process, or a strata-server), and the answer comes back as an Arrow table, which pandas, Polars, NumPy, DuckDB and PyTorch read without a copy. The same code runs on a file and on a server.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## Install
 

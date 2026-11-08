@@ -1,17 +1,6 @@
----
-title: Search on the device
-parent: Strata
-nav_order: 8.7
----
-
 # Slices: search on the device, the server as fallback
-{: .no_toc }
 
 A slice is a copy of the rows of a table near a device's user, which the device searches itself: near in space (a geo slice, for "near me" search) or near in meaning ([a vector slice](#vector-slices-more-like-this-on-the-device), for recommendations and "more like this"). strata-server builds a geo slice from a table with a text field and a latitude and longitude: a manifest (the schema, a grid of square tiles, the text field's statistics) and one file of rows per tile. An app fetches the manifest and the tiles around its user, and searches them with the server's statistics, so every place it holds scores exactly as on the server. When it can prove that its answer is the server's, nothing leaves the device; otherwise it sends the same query to the server. Each answer says where it was answered and why.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## When an answer comes from the device
 

@@ -1,17 +1,6 @@
----
-title: Build an app
-parent: Strata
-nav_order: 0
----
-
 # Build an app on strata-server
-{: .no_toc }
 
 A shop in one page: search, stock that never oversells, holds that expire, and click events counted exactly once. Each part is a few lines of SQL or JSON over HTTP, with links to the reference for the rest.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## Run a server
 

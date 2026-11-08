@@ -1,17 +1,8 @@
----
-title: Overview
-nav_order: 1
-description: An embedded search database with SQL, indexing full text, structured columns, vectors and graph edges in one file
-permalink: /
----
-
 # Strata
-{: .fs-9 }
 
 An embedded search database with SQL: full text, structured columns, vectors and graph edges in one file, combined in one query by one planner.
-{: .fs-6 .fw-300 }
 
-[How Strata works](strata/index.md){: .btn .btn-primary .mr-2 } [Query language](strata/query-language.md){: .btn .mr-2 } [Server](strata/server.md){: .btn .mr-2 } [Python](strata/python.md){: .btn .mr-2 } [JavaScript](strata/javascript.md){: .btn .mr-2 } [Source on GitHub](https://github.com/rkonow/strata){: .btn }
+[How Strata works](strata/index.md) · [Query language](strata/query-language.md) · [Server](strata/server.md) · [Python](strata/python.md) · [JavaScript](strata/javascript.md) · [Website](https://chloetech-ai.github.io/strata/)
 
 ---
 
@@ -26,7 +17,7 @@ This repository holds Strata, the pieces around it, and Engram, an application b
 | **strata-py** | Strata from Python: a database inside the process, the way `sqlite3` runs SQLite, or a client of strata-server with the same methods. | [Python](strata/python.md) |
 | **strata-js** | Strata from JavaScript: a database inside a Node, Bun or Deno process, from its file with no server, or a `fetch` client of strata-server for any runtime, with the same methods. | [JavaScript](strata/javascript.md) |
 | **Strata's posting lists** | A study of compressed posting lists and their intersection and union algorithms, which produced three new formats. Strata's text and keyword indexes use two of them. | [Posting lists](posting-lists.md) |
-| **Engram**, built on Strata | Long-term memory for Claude Code. Hooks store every event of a session in a Strata file per project; a per-project daemon decides when to bring history back, and MCP tools let the model search it. | [How it works](engram/index.md) · [Install](engram/setup.md) · [Inspector](engram/inspector.md) · [Results](engram/results.md) · [Why Engram](why/) |
+| **Engram**, built on Strata | Long-term memory for Claude Code. Hooks store every event of a session in a Strata file per project; a per-project daemon decides when to bring history back, and MCP tools let the model search it. | [How it works](engram/index.md) · [Install](engram/setup.md) · [Inspector](engram/inspector.md) · [Results](engram/results.md) · [Why Engram](https://chloetech-ai.github.io/strata/why/) |
 
 ## One query
 
@@ -73,7 +64,7 @@ A statement is parsed and bound into a predicate tree and a scorer; the planner 
 
 | question | answer |
 |---|---|
-| How does it compare with search engines? | First of 14 engines on places summed over 45 tests (MS MARCO 1M on DigitalOcean, 7 November): Strata **146**, Solr 286, Elasticsearch 291, Qdrant 300. Behind on typo search, key lookups and BM25 × recency. [The benchmarks](site/benchmarks.html) |
+| How does it compare with search engines? | First of 14 engines on places summed over 45 tests (MS MARCO 1M on DigitalOcean, 7 November): Strata **146**, Solr 286, Elasticsearch 291, Qdrant 300. Behind on typo search, key lookups and BM25 × recency. [The benchmarks](https://chloetech-ai.github.io/strata/site/benchmarks.html) |
 | Is Strata fast? | Warm BM25 **1.7–3.2×** faster than Tantivy, and 24 of 28 text and filter comparisons won; vector top-10 in **0.05–0.10 ms** at recall@10 0.99 on Quora. |
 | Does the planner earn its keep? | On filtered vector search it is **1.8–6.1×** faster than the best fixed strategy, at recall@10 0.991–0.998. |
 | Do graph edges help search? | Following the citations of the two nearest papers doubles nDCG@20 on arXiv (0.123 → 0.253). |
@@ -89,13 +80,13 @@ A coding agent's context window is its whole working memory. When a long session
 
 Engram keeps all of it in a Strata file per project and brings back what a prompt needs. Strata answers every question Engram asks with SQL: recall is two searches (BM25 and vectors) under a filter that excludes what the model can still see, the briefing is a handful of structured queries, and the model's `memory_sql` tool is Strata's SQL itself, read-only.
 
-[How Engram works](engram/index.md){: .btn .btn-primary .mr-2 } [Install it](engram/setup.md){: .btn .mr-2 } [Why Engram](why/){: .btn }
+[How Engram works](engram/index.md) · [Install it](engram/setup.md) · [Why Engram](https://chloetech-ai.github.io/strata/why/)
 
 ![The Engram live inspector: a new session answers from memory](assets/img/inspector-new-session.png)
 
 *A fresh Claude Code session, asked what storage was chosen earlier and why, answers from the briefing Engram injected at session start. Right: the records the hooks wrote and the knowledge a small model distilled from the previous session. See [the live inspector](engram/inspector.md).*
 
-[Try the inspector in your browser](demo/inspector.html){: .btn .btn-primary } It replays a recorded session, and every panel queries the recorded store with Strata's SQL, run by a JavaScript model of Strata.
+[Try the inspector in your browser](https://chloetech-ai.github.io/strata/demo/inspector.html) It replays a recorded session, and every panel queries the recorded store with Strata's SQL, run by a JavaScript model of Strata.
 
 ```mermaid
 flowchart TB
@@ -131,16 +122,16 @@ For the short version, with the week-long Kestrel benchmark and its cost compari
 
 ## Full reports
 
-Each project also has a long-form report with interactive charts, formulas and every table. They are published alongside these pages:
+Each project also has a long-form report with interactive charts, formulas and every table. They are published on the website:
 
-- [Strata: the database and its evaluation](reports/strata.html)
-- [Strata graphs](reports/graph.html)
-- [Posting lists: formats and algorithms](reports/posting-lists.html) and [the three new designs](reports/posting-list-designs.html)
-- [Engram: the memory system](reports/engram.html)
-- [Engram: what a record should be](reports/structure.html)
+- [Strata: the database and its evaluation](https://chloetech-ai.github.io/strata/reports/strata.html)
+- [Strata graphs](https://chloetech-ai.github.io/strata/reports/graph.html)
+- [Posting lists: formats and algorithms](https://chloetech-ai.github.io/strata/reports/posting-lists.html) and [the three new designs](https://chloetech-ai.github.io/strata/reports/posting-list-designs.html)
+- [Engram: the memory system](https://chloetech-ai.github.io/strata/reports/engram.html)
+- [Engram: what a record should be](https://chloetech-ai.github.io/strata/reports/structure.html)
 
 ## Where the numbers come from
 
-Every figure on these pages comes from the experiments committed in this repository (`*/results/`). The timings were measured on a MacBook Air with an Apple M2 (8 cores, 24 GB), replacing earlier runs on a 4-core cloud VM; the runs that call a model are the original ones. The comparisons with other engines ran on DigitalOcean, and [each report](site/benchmarks.html) names its machines. [Reproducing the results](reproduce.md) compares the two machines and has the commands.
+Every figure in these documents comes from the experiments committed in this repository (`*/results/`). The timings were measured on a MacBook Air with an Apple M2 (8 cores, 24 GB), replacing earlier runs on a 4-core cloud VM; the runs that call a model are the original ones. The comparisons with other engines ran on DigitalOcean, and [each report](https://chloetech-ai.github.io/strata/site/benchmarks.html) names its machines. [Reproducing the results](reproduce.md) compares the two machines and has the commands.
 
-The repository was called `rkonow/engram`, and this site `rkonow.github.io/engram`, until October 2026.
+The repository was called `rkonow/engram` until October 2026. Strata's website is [chloetech-ai.github.io/strata](https://chloetech-ai.github.io/strata/); these documents are read here on GitHub.

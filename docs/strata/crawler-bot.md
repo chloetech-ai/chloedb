@@ -1,12 +1,4 @@
----
-title: For site owners
-parent: Crawler
-grand_parent: Strata
-nav_order: 1
----
-
 # strata-crawl, for site owners
-{: .no_toc }
 
 You may have found this page through a user agent in your logs:
 
@@ -15,7 +7,6 @@ strata-crawl/0.1.0 (+https://chloetech-ai.github.io/strata/strata/crawler-bot.ht
 ```
 
 This page says what the crawler is, how it behaves on your site, and how to slow it down or keep it out.
-{: .fs-5 .fw-300 }
 
 ## What it is
 

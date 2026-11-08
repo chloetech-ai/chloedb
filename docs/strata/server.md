@@ -1,19 +1,8 @@
----
-title: Server
-parent: Strata
-nav_order: 4
----
-
 # strata-server
-{: .no_toc }
 
 `strata-server` serves a Strata database over HTTP JSON and gRPC, with a browser UI for building queries and an agent that answers questions by writing and running SQL. Run several of them as shards and one more as a coordinator, and the coordinator answers like one database.
-{: .fs-5 .fw-300 }
 
 New to it? [Build an app](build-an-app.md) is one page from an empty server to search, stock, holds, events counted once and a cluster; this page is the reference.
-
-1. TOC
-{:toc}
 
 ## Run it
 
@@ -233,7 +222,7 @@ A `VECTOR` field can say what its vectors are: a model's embedding of other fiel
 
 The sources are stored (or generated) `TEXT` or `KEYWORD` fields, and the text embedded is their non-empty values joined by newlines, as for a generated field; or one [`media` field](#media-fields) of kind `image` or `audio`, whose files a model of images and text, or of sound and text, embeds ([vectors of images](#vectors-of-images), [of sound](#vectors-of-sound)). The declaration is kept in the database, returned by `/v1/schema` and shown by the UI ("emb_title ← title") and the agent. When the server starts it opens each field's model from `--models` and logs what each field is. With the model open:
 
-- writes that leave the vector out get it computed: `/v1/write` documents and SQL `INSERT`, and an `UPDATE` that changes a source recomputes it, all before the write queues for the writer (on as many writes at once as there are cores), so the writer never waits for a model (with bge-small on 4 cores, an in-place `UPDATE` beside two clients inserting rows went from 4.7 to 500 a second, and four inserting clients from 10 to 23 rows a second: [results](https://github.com/rkonow/strata/tree/main/strata-server/results/sql-writes)); a vector a write supplies is kept as given;
+- writes that leave the vector out get it computed: `/v1/write` documents and SQL `INSERT`, and an `UPDATE` that changes a source recomputes it, all before the write queues for the writer (on as many writes at once as there are cores), so the writer never waits for a model (with bge-small on 4 cores, an in-place `UPDATE` beside two clients inserting rows went from 4.7 to 500 a second, and four inserting clients from 10 to 23 rows a second: [results](https://github.com/chloetech-ai/strata/tree/main/strata-server/results/sql-writes)); a vector a write supplies is kept as given;
 - an `UPDATE` that changes a source recomputes the vector; merges do not (they keep the stored vectors);
 - a parameter `{"embed": "some text", "field": "emb_title"}` is the text's vector by that field's model, so queries and rows are always embedded alike (`field` defaults to the first embedded field with a model); the query console's "Similar to: a description" uses the chosen vector field's model.
 
@@ -322,7 +311,7 @@ strata-server --db products-v2.strata --schema v2.json --copy-from products.stra
 
 Rows are copied field by field by name; a vector field is copied when the old one has the same dimensions, sources and model, and embedded anew otherwise; fields the new schema drops are left out. The old database may be one from before [field ids](index.md#wal-memtable-and-snapshots), which opens only to be copied. `Db::load_from` does the same from Rust.
 
-**Which fields to embed.** Embed the text that carries what people search for, usually title and description; keep brand, price, category and dates out of the vector and filter on them instead. Measured on four BEIR collections with titles (nDCG@10; Apple M2, 2026-10-27; [all tables, recall and times](https://github.com/rkonow/strata/tree/main/strata/results/embed-fields)):
+**Which fields to embed.** Embed the text that carries what people search for, usually title and description; keep brand, price, category and dates out of the vector and filter on them instead. Measured on four BEIR collections with titles (nDCG@10; Apple M2, 2026-10-27; [all tables, recall and times](https://github.com/chloetech-ai/strata/tree/main/strata/results/embed-fields)):
 
 | collection | model | title | text | title + text | title + text with BM25 |
 |---|---|---|---|---|---|
@@ -386,7 +375,7 @@ curl -s localhost:7700/v1/query -d '{"sql": "SELECT id FROM photos ORDER BY simi
   "params": {"q": {"embed": "a dog on a beach", "field": "emb"}}}'
 ```
 
-Through Strata, `siglip-base-patch16-224` retrieves as well as [open_clip's published results](https://github.com/mlfoundations/open_clip/blob/main/docs/openclip_retrieval_results.csv) for it say (Karpathy's test splits, five captions an image, exact search; `strata-media-eval`, cloud container with 4 vCPUs, [results](https://github.com/rkonow/strata/tree/main/strata/results/media)):
+Through Strata, `siglip-base-patch16-224` retrieves as well as [open_clip's published results](https://github.com/mlfoundations/open_clip/blob/main/docs/openclip_retrieval_results.csv) for it say (Karpathy's test splits, five captions an image, exact search; `strata-media-eval`, cloud container with 4 vCPUs, [results](https://github.com/chloetech-ai/strata/tree/main/strata/results/media)):
 
 | split | text to image R@1 / R@5 / R@10 | image to text R@1 / R@5 / R@10 |
 |---|---|---|
@@ -406,7 +395,7 @@ An embedded vector field can also be the embedding of a `media` field of kind `a
 
 Sound is decoded as for [transcripts](#text-from-media), resampled to CLAP's 48 kHz and cut into 10-second windows; a window shorter than 10 seconds is repeated to fill them. A recording's vector is the normalized mean of its windows' vectors, so all of it counts: the `transformers` library's default takes one 10 seconds at random from a longer recording. Writes, logs, replicas and the errors of a file that cannot be read are as for [vectors of images](#vectors-of-images). A query embeds a sound file with the model's audio tower, `{"embed": {"audio": "<base64>"}, "field": "emb"}`, and a text with its text tower, `{"embed": "rain on a tin roof", "field": "emb"}`; either finds recordings.
 
-Strata's vectors are the `transformers` library's: on the first 20 recordings of Clotho's evaluation split and their 100 captions, every vector Strata made had a cosine of 1.000000 with the one `transformers` 4.46.3 made from the same samples. On the whole split, 1,045 recordings of 15 to 30 seconds with five captions each, exact search (`strata-clap-eval`, cloud container with 4 vCPUs, [results](https://github.com/rkonow/strata/tree/main/strata/results/media#vectors-of-sound)):
+Strata's vectors are the `transformers` library's: on the first 20 recordings of Clotho's evaluation split and their 100 captions, every vector Strata made had a cosine of 1.000000 with the one `transformers` 4.46.3 made from the same samples. On the whole split, 1,045 recordings of 15 to 30 seconds with five captions each, exact search (`strata-clap-eval`, cloud container with 4 vCPUs, [results](https://github.com/chloetech-ai/strata/tree/main/strata/results/media#vectors-of-sound)):
 
 | vectors of the recordings | text to audio R@1 / R@5 / R@10 | audio to text R@1 / R@5 / R@10 |
 |---|---|---|
@@ -436,9 +425,9 @@ A `text` field can be a model's text of a `media` field's file: a caption of eac
 
 Strata's captions are the `transformers` library's: on 100 images of Flickr30K's test split (the first by file name), BLIP base through Strata and through `transformers` 4.46.3 wrote the same caption for 97 of them; the other three part at a word that two choices nearly tie for (`a man in a red shirt` against `a man wearing a red shirt`), most likely from small differences in resizing the image and in float arithmetic. Changing the model of a field means a new database filled from the old one (`--copy-from`): text of the same model is copied, and text of another is made again.
 
-Sound is decoded from WAV, FLAC, MP3, Ogg Vorbis and AAC (in MP4) files, mixed down to one channel and resampled to Whisper's 16 kHz; a recording longer than an hour is refused. A recording is cut every 30 seconds, so a word across a cut can be lost or split: Whisper's long-form mode, which moves its window by the timestamps it predicts, is not implemented. Strata's transcripts are the `transformers` library's: on 200 utterances of LibriSpeech's `test-clean` (every 13th, all 40 speakers), `whisper-small` through Strata and through `transformers` 4.46.3 wrote the same 200 transcripts, with a word error rate of 3.8% (`strata-asr-eval`, [results](https://github.com/rkonow/strata/tree/main/strata/results/media#transcripts-of-speech); words compared without punctuation, a stricter count than Whisper's own normalizer). Searching the utterances by what was said, `ORDER BY bm25(transcript, :t)`, ranked the right one first for 198 of 200.
+Sound is decoded from WAV, FLAC, MP3, Ogg Vorbis and AAC (in MP4) files, mixed down to one channel and resampled to Whisper's 16 kHz; a recording longer than an hour is refused. A recording is cut every 30 seconds, so a word across a cut can be lost or split: Whisper's long-form mode, which moves its window by the timestamps it predicts, is not implemented. Strata's transcripts are the `transformers` library's: on 200 utterances of LibriSpeech's `test-clean` (every 13th, all 40 speakers), `whisper-small` through Strata and through `transformers` 4.46.3 wrote the same 200 transcripts, with a word error rate of 3.8% (`strata-asr-eval`, [results](https://github.com/chloetech-ai/strata/tree/main/strata/results/media#transcripts-of-speech); words compared without punctuation, a stricter count than Whisper's own normalizer). Searching the utterances by what was said, `ORDER BY bm25(transcript, :t)`, ranked the right one first for 198 of 200.
 
-For finding images by text, the captions add little to an image model's vectors. With SigLIP's vectors and BM25 over BLIP's captions, fused in SQL (`strata-media-eval`, cloud container with 4 vCPUs, [results](https://github.com/rkonow/strata/tree/main/strata/results/media#captions-made-from-the-images)), R@1:
+For finding images by text, the captions add little to an image model's vectors. With SigLIP's vectors and BM25 over BLIP's captions, fused in SQL (`strata-media-eval`, cloud container with 4 vCPUs, [results](https://github.com/chloetech-ai/strata/tree/main/strata/results/media#captions-made-from-the-images)), R@1:
 
 | ranking | Flickr30K 1K, text to image | image to text | COCO (first 1K of 5K), text to image | image to text |
 |---|---|---|---|---|
@@ -495,7 +484,7 @@ curl -s localhost:7700/v1/sid/next -H 'content-type: application/json' -d '{
 
 Each prefix's next codes come in the order of their last numbers, with the rows under each that `where` matches (every row without it), and a code no matching row has is left out. The filter is worked out once per segment; the codes below a prefix are found by jumping through the field's sorted dictionary, where every prefix is a value, and each is counted against the filter. `Db::sid_next` answers the same from Rust. A coordinator asks every shard (gRPC `SidNext`, protocol 7) and adds their counts. Each shard numbers the ties of its own rows, so on a coordinator a full code can name one row on each shard: the counts of the levels are the table's, and a tie's are those of every row with that code.
 
-**With a decoder.** A TIGER-style decoder over these codes, each step's numbers from `sid_next` among the items a user does not have, comes within 0.0023 Recall@10 of published TIGER on Amazon Beauty and Sports (0.0085 below it on Toys). Alone it ranks no better than a sequence model's [`encode()`](query-language.md#sequence-models-encodemodel-history), at 30 to 40 times its time, most of it the decoder's own; its answer, given to a query as `ranked(:gen)` and fused with `rrf`, adds to that model's and to a walk's ([results](https://github.com/rkonow/strata/tree/main/strata/results/generative)).
+**With a decoder.** A TIGER-style decoder over these codes, each step's numbers from `sid_next` among the items a user does not have, comes within 0.0023 Recall@10 of published TIGER on Amazon Beauty and Sports (0.0085 below it on Toys). Alone it ranks no better than a sequence model's [`encode()`](query-language.md#sequence-models-encodemodel-history), at 30 to 40 times its time, most of it the decoder's own; its answer, given to a query as `ranked(:gen)` and fused with `rrf`, adds to that model's and to a walk's ([results](https://github.com/chloetech-ai/strata/tree/main/strata/results/generative)).
 
 A database with a semantic-ID field needs the manifest feature `semantic_id`, and a plan that uses `sid_at` the plan feature of the same name, which versions of Strata before them refuse by name.
 
@@ -1036,7 +1025,7 @@ kubectl apply -f strata-server/deploy/k8s/operator/cluster.yaml     # 2 shards o
 kubectl -n strata patch strata demo --type merge -p '{"spec": {"shards": 3}}'
 ```
 
-The coordinators run as a service account of their own, which may read and change only their `StrataCluster`: the command center's **Control center** edits its whole spec and **Cluster** shows its phase, through `GET /v1/kube` (the spec, the status, and `settled` once the operator has seen the latest spec; `{"managed": false}` elsewhere), `POST /v1/admin/kube/plan {"spec": {...}}` (what a merge patch of the spec would change, the operator's steps for it, what to mind, and why it is refused if it is: a volume that would shrink, a size Kubernetes does not read, a spec the operator would not take; nothing is changed) and `POST /v1/admin/kube {"spec": {...}}` (the same patch, checked as the plan is, then applied; or the sizes alone, `{"shards"?, "replicas"?, "coordinators"?}`; admin scope, audited, and noted on the resource with who made it). Both also take `{"rollback": version}`, the spec of an earlier version in the status's history (its `rollout` kept), which no gate holds; `POST /v1/admin/kube/resume` lifts the hold a gate put on a change, or one on a version that failed; `POST /v1/admin/kube/upgrade {"image"?, "plan"?, "force"?}` rolls out a new image ([upgrades](#upgrades)). The spec's `rollout` pauses a change (`paused`), holds it while a live number is over a limit (`gates`: `p99Ms`, `errorRatio`, `replicaBehind`, `diskUsedRatio`, each over for `holdAfterSeconds`), and lets each restarted copy serve `soakSeconds` before the next restarts. The spec's fields, what each change does, and a run on kind are in the [deploy README](https://github.com/rkonow/strata/tree/main/strata-server/deploy#the-operator).
+The coordinators run as a service account of their own, which may read and change only their `StrataCluster`: the command center's **Control center** edits its whole spec and **Cluster** shows its phase, through `GET /v1/kube` (the spec, the status, and `settled` once the operator has seen the latest spec; `{"managed": false}` elsewhere), `POST /v1/admin/kube/plan {"spec": {...}}` (what a merge patch of the spec would change, the operator's steps for it, what to mind, and why it is refused if it is: a volume that would shrink, a size Kubernetes does not read, a spec the operator would not take; nothing is changed) and `POST /v1/admin/kube {"spec": {...}}` (the same patch, checked as the plan is, then applied; or the sizes alone, `{"shards"?, "replicas"?, "coordinators"?}`; admin scope, audited, and noted on the resource with who made it). Both also take `{"rollback": version}`, the spec of an earlier version in the status's history (its `rollout` kept), which no gate holds; `POST /v1/admin/kube/resume` lifts the hold a gate put on a change, or one on a version that failed; `POST /v1/admin/kube/upgrade {"image"?, "plan"?, "force"?}` rolls out a new image ([upgrades](#upgrades)). The spec's `rollout` pauses a change (`paused`), holds it while a live number is over a limit (`gates`: `p99Ms`, `errorRatio`, `replicaBehind`, `diskUsedRatio`, each over for `holdAfterSeconds`), and lets each restarted copy serve `soakSeconds` before the next restarts. The spec's fields, what each change does, and a run on kind are in the [deploy README](https://github.com/chloetech-ai/strata/tree/main/strata-server/deploy#the-operator).
 
 ### Upgrades
 
@@ -1358,7 +1347,7 @@ Write requests are held in one queue, from embedding (a server embeds on as many
 - `failing`: the database cannot write until the server restarts. A write failed partway (a full disk, an I/O error) and the database refuses writes until it is reopened, or the writer thread stopped. Reads still work; merges stop. On a shard's primary, hand the primary over to a replica in sync first (with `--failover-after-ms` it does so itself), then fix the cause and restart it: restarted alone, it fails again while its disk is full.
 - `down`: a coordinator has a shard with no replica answering.
 
-It answers 503 for `down` and `failing`. `/livez` and `/readyz` answer 503 only for `failing`, so that an orchestrator restarts the server (the [Kubernetes manifests](https://github.com/rkonow/strata/tree/main/strata-server/deploy) use them as probes), and `/readyz` also while the server drains: with `--drain-ms N` (`STRATA_DRAIN_MS`; 0 by default, 5,000 under the operator), a server sent SIGTERM answers `/readyz` 503 (`"status": "draining"`) and closes each HTTP connection after its answer for N ms while it goes on serving, so that a load balancer stops sending it requests before it stops; then it stops as it does without the flag, finishing the requests it holds. Neither asks a coordinator's shards, so one slow shard cannot take every coordinator out of service at once; `/v1/health` shows the shards. The writer thread survives a panic while applying a write: the requests in that batch get 500, the panic is counted in `strata_writer_panics_total`, and the next batch goes on.
+It answers 503 for `down` and `failing`. `/livez` and `/readyz` answer 503 only for `failing`, so that an orchestrator restarts the server (the [Kubernetes manifests](https://github.com/chloetech-ai/strata/tree/main/strata-server/deploy) use them as probes), and `/readyz` also while the server drains: with `--drain-ms N` (`STRATA_DRAIN_MS`; 0 by default, 5,000 under the operator), a server sent SIGTERM answers `/readyz` 503 (`"status": "draining"`) and closes each HTTP connection after its answer for N ms while it goes on serving, so that a load balancer stops sending it requests before it stops; then it stops as it does without the flag, finishing the requests it holds. Neither asks a coordinator's shards, so one slow shard cannot take every coordinator out of service at once; `/v1/health` shows the shards. The writer thread survives a panic while applying a write: the requests in that batch get 500, the panic is counted in `strata_writer_panics_total`, and the next batch goes on.
 
 `GET /metrics` serves, in Prometheus text format, with `# HELP` and `# TYPE` lines for every family and durations in seconds:
 

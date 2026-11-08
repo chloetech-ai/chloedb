@@ -1,17 +1,6 @@
----
-title: Graphs
-parent: Strata
-nav_order: 2
----
-
 # Graphs in Strata
-{: .no_toc }
 
 Rows can link to other rows. A traversal, a shortest path or personalized PageRank runs in the same SQL statement as BM25, filters and vector search, and can start from any of them. On arXiv, the papers cited by a new paper's two nearest neighbours find twice as many of its references as vector search alone. A graph built from the vectors themselves does not help.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## Rows are nodes
 
@@ -235,4 +224,4 @@ Graph queries run on one database, not through a [coordinator](server.md#shardin
 - **Walks across shards.** A coordinator refuses graph queries ([above](#on-a-cluster)). It could run them itself, asking the shards for the edges of each frontier and sending them the rows it reached with their distances and PageRank scores, at a round trip per hop. That needs a call to read edges by key and a plan that carries the rows' values, so it is a change of the shard protocol.
 - **Engram.** Its records have natural edges the store does not keep yet: a distilled note to the turn it came from, a superseded decision to its replacement, an error to the edit that fixed it. The arXiv result suggests the pattern to try (recall's best hits as seeds, then the records linked to them), but Engram's earlier study found that widening a hit to its neighbouring records gained little, so this needs its own measurement first.
 
-The full report, with every table, is [Strata graphs](../reports/graph.html). [Reproducing the results](../reproduce.md#strata-graphs) has the commands.
+The full report, with every table, is [Strata graphs](https://chloetech-ai.github.io/strata/reports/graph.html). [Reproducing the results](../reproduce.md#strata-graphs) has the commands.

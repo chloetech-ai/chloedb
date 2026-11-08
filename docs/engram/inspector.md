@@ -1,21 +1,10 @@
----
-title: Live inspector
-parent: Engram
-nav_order: 1
----
-
 # The live inspector
-{: .no_toc }
 
 A local web app for watching Engram work: what the hooks store, what the distiller writes down and what recall injects, for your own sessions or for a chat in a scratch project. Every panel is a query against the project's Strata file, made through the same daemon the hooks talk to. Nothing is simulated: chat turns are real `claude -p` runs.
-{: .fs-5 .fw-300 }
 
-[Try it in your browser](../demo/inspector.html){: .btn .btn-primary } A static copy replays a recorded session. Its SQL runs in a JavaScript model of Strata over the recorded records and vectors.
+[Try it in your browser](https://chloetech-ai.github.io/strata/demo/inspector.html) A static copy replays a recorded session. Its SQL runs in a JavaScript model of Strata over the recorded records and vectors.
 
 The inspector runs in two ways: `engram ui` points it at the stores of your own sessions, and `demo/run.sh` runs it with a chat column against a scratch project.
-
-1. TOC
-{:toc}
 
 ## On your own stores: `engram ui`
 
