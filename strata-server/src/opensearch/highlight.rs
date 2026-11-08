@@ -137,7 +137,7 @@ mod tests {
         let t = terms(&["quick".into(), "bro*".into()], Analyzer::English);
         assert_eq!(fragments("The quick brown fox", &t, Analyzer::English, &Cut::default(), &ask), vec!["The <em>quick</em> <em>brown</em> fox"]);
         // A word the standard tokenizer keeps whole.
-        let std = Cut { join: super::super::mapping::Join::Standard, split: false };
+        let std = Cut { join: super::super::mapping::Join::Standard, split: false, possessive: false, keep_accents: false };
         let t = terms(&[std.apply("merge_segments")], Analyzer::Simple);
         assert_eq!(fragments("run merge_segments, not merge", &t, Analyzer::Simple, &std, &ask), vec!["run <em>merge_segments</em>, not merge"]);
     }

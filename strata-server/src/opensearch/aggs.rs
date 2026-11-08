@@ -12,7 +12,7 @@ use futures::future::BoxFuture;
 use serde_json::{json, Map, Value as Json};
 
 use super::dsl::{add_units, compile, date_math, num, Ctx, Target};
-use super::mapping::{lit, Index};
+use super::mapping::{ident, lit, Index, Kind};
 use super::{Os, OsError};
 
 /// The condition of the rows an aggregation reads (`None`: all), with
@@ -35,6 +35,9 @@ fn value_of(cx: &Ctx, field: &str) -> Result<(String, bool), OsError> {
         Target::Text(..) => Err(OsError::new(400, "illegal_argument_exception", format!("Text fields are not optimised for operations that require per-document field data like aggregations and sorting, so these operations are disabled by default. Please use a keyword field instead (field [{field}])"))),
         Target::Vector(_) => Err(OsError::new(400, "illegal_argument_exception", format!("Field [{field}] of type [knn_vector] is not supported for aggregation"))),
         t @ Target::Date(_) => Ok((t.sql(), true)),
+        // A number no document holds several of: its column, which Strata
+        // aggregates from the columns, not a path of `_source`.
+        Target::Json(_, Some(Kind::Long | Kind::Double)) if cx.ix.single_numbers.as_ref().is_some_and(|s| s.contains(field)) => Ok((ident(field), false)),
         t => Ok((t.sql(), false)),
     }
 }
@@ -85,10 +88,15 @@ fn metric_cols_of(kind: &str, x: &str) -> Vec<(String, String)> {
 /// A metric's answer from its columns' values.
 fn metric_json(kind: &str, cx: &Ctx, spec: &Json, vals: &[(String, Json)]) -> Json {
     let date = spec.get("field").and_then(Json::as_str).is_some_and(|f| matches!(cx.target(f), Target::Date(_)));
+    let counts = matches!(kind, "value_count" | "cardinality");
     let fix = |k: &str, v: &Json| -> Json {
         match v {
-            Json::Null if matches!(kind, "sum" | "value_count" | "cardinality") || (kind == "stats" && matches!(k, "count" | "sum")) => json!(0),
+            Json::Null if counts || (kind == "stats" && k == "count") => json!(0),
+            Json::Null if kind == "sum" || (kind == "stats" && k == "sum") => json!(0.0),
             Json::String(_) if date => date_ms(v).map_or(Json::Null, |m| json!(m as f64)),
+            // A metric of numbers is a double (an INT column's sum or
+            // minimum too); counts are whole.
+            Json::Number(n) if !counts && k != "count" => json!(n.as_f64().unwrap_or(0.0)),
             v => v.clone(),
         }
     };
@@ -565,6 +573,9 @@ async fn histogram(os: &Os, ix: &Index, cx: &Ctx<'_>, pred: Option<String>, body
     let (x, is_date) = value_of(cx, field)?;
     if dates && !is_date {
         return Err(OsError::parsing(format!("Strata's date_histogram reads a date field; [{field}] is not one (a histogram reads numbers)")));
+    }
+    if !dates && cx.ix.single_numbers.as_ref().is_some_and(|s| !s.contains(field)) && matches!(cx.target(field), Target::Json(_, Some(Kind::Long | Kind::Double))) {
+        return Err(OsError::new(400, "illegal_argument_exception", format!("Strata's histogram reads a number field of one value a document; documents of [{field}] hold arrays of them")));
     }
     let interval = if dates {
         let cal = body.get("calendar_interval").and_then(Json::as_str);

@@ -31,6 +31,10 @@ pub const ID: &str = "_id";
 pub const VERSION: &str = "_version";
 pub const HASH: &str = "_hash";
 pub const SOURCE: &str = "_source";
+/// The number fields of which a document holds more than one value (an
+/// array): their columns hold the smallest, so that aggregations read
+/// such a field's values from `_source` ([`Index::single_numbers`]).
+pub const MULTI: &str = "_multi";
 
 /// A document's place in its index's order ([`HASH`]): its id's xxh3,
 /// 63 bits.
@@ -182,6 +186,9 @@ pub struct Index {
     pub aliases: Vec<String>,
     /// Every field a query may name, by name.
     pub fields: BTreeMap<String, Field>,
+    /// The number fields no document holds an array of, when a search has
+    /// asked ([`MULTI`]): aggregations read their columns, else `_source`.
+    pub single_numbers: Option<std::sync::Arc<std::collections::BTreeSet<String>>>,
 }
 
 impl Index {
@@ -190,7 +197,7 @@ impl Index {
         if let Some(props) = mappings.get("properties") {
             walk_properties(props, "", &settings, &mut fields)?;
         }
-        Ok(Index { name: name.into(), table: table.into(), uuid: uuid.into(), created_ms, mappings, settings, aliases, fields })
+        Ok(Index { name: name.into(), table: table.into(), uuid: uuid.into(), created_ms, mappings, settings, aliases, fields, single_numbers: None })
     }
 
     /// The index's `dynamic` setting: `true` (the default), `false` or
@@ -289,14 +296,60 @@ fn grams_in(name: &str, spec: &Json) -> Option<(usize, usize, bool)> {
 /// How an analyzer cuts text into words where Strata's analyzers (runs
 /// of letters and digits) would cut it otherwise. The text is rewritten
 /// before Strata reads it, in writes and in queries alike: a character
-/// a word holds becomes a letter ([`joined`]), and a space goes where a word is
-/// cut.
+/// a word holds becomes a letter ([`joined`]), as does a letter whose
+/// accent the analyzer keeps, and [`BREAK`] goes where a word is cut.
+/// [`Cut::unapply`] gives the text back.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Cut {
     pub join: Join,
     /// Words are cut where their case or digits change (a
     /// `word_delimiter_graph` filter: `CatsOf2026` is `cats of 2026`).
     pub split: bool,
+    /// A word's `'s` is dropped (the `english` analyzer's possessive
+    /// filter: `children's` is `children`).
+    pub possessive: bool,
+    /// Accents are kept (`sévère` is not `severe`), as they are unless an
+    /// `asciifolding` filter folds them; Strata's analyzers fold them.
+    pub keep_accents: bool,
+}
+
+/// What [`Cut::apply`] puts where a word is cut that Strata's analyzers
+/// would not cut: a character of no word (private use), which
+/// [`Cut::unapply`] takes out.
+pub const BREAK: char = '\u{E000}';
+
+/// Whether the standard tokenizer makes `c` a word of its own: an
+/// ideograph or a hiragana.
+fn lone(c: char) -> bool {
+    matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FFFF | 0x3007 | 0x3021..=0x3029 | 0x3038..=0x303A | 0x3041..=0x3096 | 0x309D..=0x309F)
+}
+
+/// Whether `c` is a katakana, whose runs are words of their own.
+fn katakana(c: char) -> bool {
+    matches!(c as u32, 0x30A0..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F | 0x3031..=0x3035 | 0x309B | 0x309C | 0x32D0..=0x32FE | 0x3300..=0x3357)
+}
+
+/// Whether `c` is a letter that Unicode's word breaks join across `.`,
+/// `'` and `:` (ALetter).
+fn aletter(c: char) -> bool {
+    c.is_alphabetic() && !lone(c) && !katakana(c)
+}
+
+/// Whether `c` is a character that Unicode's word breaks keep with the
+/// one before it (Format and Extend: a soft hyphen, a joiner, a variation
+/// selector, a combining mark).
+fn attached(c: char) -> bool {
+    matches!(c as u32, 0xAD | 0x200C..=0x200F | 0x2060..=0x2064 | 0xFEFF | 0xFE00..=0xFE0F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F)
+}
+
+/// Whether Strata's analyzers fold the lowercase letter `c`.
+fn folds(c: char) -> bool {
+    if c.is_ascii() {
+        return false;
+    }
+    let mut b = [0u8; 4];
+    let s = c.encode_utf8(&mut b);
+    strata::text::analyzer::normalize_word(s) != *s
 }
 
 /// The characters other than letters and digits that a word holds.
@@ -307,8 +360,9 @@ pub enum Join {
     #[default]
     None,
     /// The `standard` tokenizer's, as Unicode's word breaks keep them:
-    /// `_` beside a letter or digit (`merge_segments`), `.` between
-    /// letters (`mastodon.social`), `.` and `,` between digits (`3.14`).
+    /// `_` beside a letter or digit (`merge_segments`), `.`, `'`, `:`
+    /// and `·` between letters (`mastodon.social`, `children's`), `.`,
+    /// `,`, `;` and `'` between digits (`3.14`).
     Standard,
     /// Every one but whitespace (`whitespace`).
     Whitespace,
@@ -335,6 +389,20 @@ fn word_char(c: char) -> bool {
     }
 }
 
+/// Whether `c` is a number that is not a digit (superscripts, fractions,
+/// circled numbers: `²`, `¼`, `①`), which Strata's words hold and
+/// Unicode's word breaks cut at.
+fn odd_number(c: char) -> bool {
+    matches!(c as u32, 0xB2 | 0xB3 | 0xB9 | 0xBC..=0xBE | 0x2070 | 0x2074..=0x2079 | 0x2080..=0x2089 | 0x2150..=0x215F | 0x2189 | 0x2460..=0x249B | 0x24EA..=0x24FF | 0x2776..=0x2793 | 0x3248..=0x325F | 0x3280..=0x3289 | 0x32B1..=0x32BF)
+}
+
+/// What stands for `c`, a character of no word that Strata's analyzers
+/// would read as one ([`odd_number`]): a private use character, which
+/// [`Cut::unapply`] gives back.
+fn unworded(c: char) -> char {
+    char::from_u32(0xF0000 + c as u32).unwrap_or(BREAK)
+}
+
 impl Cut {
     /// Whether character `i` of `c`, which is no letter or digit, is in
     /// a word.
@@ -344,19 +412,43 @@ impl Cut {
             Join::None => false,
             Join::Whole => true,
             Join::Whitespace => !c[i].is_whitespace(),
-            Join::Standard => match c[i] {
-                '_' => p.is_some_and(word_char) || n.is_some_and(word_char),
-                '.' => (p.is_some_and(char::is_alphabetic) && n.is_some_and(char::is_alphabetic)) || (p.is_some_and(char::is_numeric) && n.is_some_and(char::is_numeric)),
-                ',' => p.is_some_and(char::is_numeric) && n.is_some_and(char::is_numeric),
-                _ => false,
-            },
+            Join::Standard => {
+                let letters = p.is_some_and(aletter) && n.is_some_and(aletter);
+                let digit = |x: char| x.is_numeric() && !odd_number(x);
+                let digits = p.is_some_and(digit) && n.is_some_and(digit);
+                match c[i] {
+                    x if attached(x) => p.is_some_and(|x| self.is_word(x)) || (i > 0 && self.joins(c, i - 1)),
+                    '_' => p.is_some_and(|x| self.is_word(x) && !lone(x)) || n.is_some_and(|x| self.is_word(x) && !lone(x)),
+                    // Unicode's MidNumLet and Single_Quote.
+                    '.' | '\'' | '\u{2018}' | '\u{2019}' | '\u{2024}' | '\u{FE52}' | '\u{FF07}' | '\u{FF0E}' => letters || digits,
+                    // MidLetter.
+                    ':' | '\u{B7}' | '\u{387}' | '\u{5F4}' | '\u{2027}' | '\u{FE13}' | '\u{FE55}' | '\u{FF1A}' => letters,
+                    // MidNum.
+                    ',' | ';' | '\u{37E}' | '\u{589}' | '\u{60C}' | '\u{60D}' | '\u{66C}' | '\u{7F8}' | '\u{2044}' | '\u{FE10}' | '\u{FE14}' | '\u{FE50}' | '\u{FE54}' | '\u{FF0C}' | '\u{FF1B}' => digits,
+                    _ => false,
+                }
+            }
         }
     }
 
+    /// Whether `c` is a letter or digit of a word ([`word_char`], but for
+    /// the numbers the standard tokenizer cuts at, [`odd_number`]).
+    fn is_word(&self, c: char) -> bool {
+        word_char(c) && !(self.join == Join::Standard && odd_number(c))
+    }
+
     /// Whether a word is cut before character `i` of `c`, a letter or
-    /// digit after another (`split`).
+    /// digit after another: where case or digits change (`split`), or the
+    /// standard tokenizer's scripts do (each ideograph a word, runs of
+    /// katakana).
     fn splits(&self, c: &[char], i: usize) -> bool {
-        if !self.split || i == 0 {
+        if i == 0 {
+            return false;
+        }
+        if self.join == Join::Standard && (lone(c[i]) || lone(c[i - 1]) || katakana(c[i]) != katakana(c[i - 1])) {
+            return true;
+        }
+        if !self.split {
             return false;
         }
         let (p, x) = (c[i - 1], c[i]);
@@ -378,18 +470,24 @@ impl Cut {
         let mut i = 0;
         while i < c.len() {
             if let Some(end) = self.emoji(&c, i) {
-                out.push(' ');
+                out.push(BREAK);
                 out.extend(c[i..end].iter().map(|&x| joined(x)));
-                out.push(' ');
+                out.push(BREAK);
                 i = end;
                 continue;
             }
-            if word_char(c[i]) {
-                if i > 0 && word_char(c[i - 1]) && self.splits(&c, i) {
-                    out.push(' ');
+            if self.is_word(c[i]) {
+                if i > 0 && self.is_word(c[i - 1]) && self.splits(&c, i) {
+                    out.push(BREAK);
                 }
-                out.push(c[i]);
+                self.put(c[i], &mut out);
+            } else if word_char(c[i]) {
+                out.push(unworded(c[i]));
             } else if self.joins(&c, i) {
+                if self.possessive_at(&c, i) {
+                    i += 2;
+                    continue;
+                }
                 out.push(joined(c[i]));
             } else {
                 out.push(c[i]);
@@ -397,6 +495,48 @@ impl Cut {
             i += 1;
         }
         out
+    }
+
+    /// Letter or digit `ch` of a word, as Strata should read it: a letter
+    /// whose accent is kept is [`joined`] (lowercased first, since Strata
+    /// does not lowercase what it stands for).
+    fn put(&self, ch: char, out: &mut String) {
+        if !self.keep_accents || ch.is_ascii() {
+            out.push(ch);
+            return;
+        }
+        // Lowercased one character at a time, as Lucene does: `İ` is `i`.
+        if ch == '\u{130}' {
+            out.push('i');
+            return;
+        }
+        for l in ch.to_lowercase() {
+            out.push(if folds(l) { joined(l) } else { l });
+        }
+    }
+
+    /// The text that [`Cut::apply`] gave `t` of: none of its breaks, and the
+    /// characters [`joined`] stands for (which [`Index`] checks before it
+    /// keeps a text in its column alone: a letter lowercased or a
+    /// character beyond those [`joined`] tells apart does not come back).
+    pub fn unapply(&self, t: &str) -> String {
+        if self.is_plain() {
+            return t.to_string();
+        }
+        t.chars().filter(|&c| c != BREAK).map(|c| match c as u32 {
+            x @ 0x20000..=0x2A6D6 => char::from_u32(x - 0x20000).unwrap_or(c),
+            x @ 0xF0000..=0xFFFFD => char::from_u32(x - 0xF0000).unwrap_or(c),
+            _ => c,
+        }).collect()
+    }
+
+    /// Whether the apostrophe at character `i` of `c`, in a word, and the
+    /// `s` after it end the word, and are dropped ([`Cut::possessive`]).
+    fn possessive_at(&self, c: &[char], i: usize) -> bool {
+        self.possessive
+            && matches!(c[i], '\'' | '\u{2019}' | '\u{FF07}')
+            && matches!(c.get(i + 1), Some('s' | 'S'))
+            && c.get(i + 2).is_none_or(|&x| !self.is_word(x) && !self.joins(c, i + 2))
     }
 
     /// Where the emoji at character `i` of `c` ends, if one starts there:
@@ -444,9 +584,9 @@ impl Cut {
                 i = end;
                 continue;
             }
-            if word_char(c[i]) || self.joins(&c, i) {
+            if self.is_word(c[i]) || self.joins(&c, i) {
                 match start {
-                    Some(s) if word_char(c[i]) && word_char(c[i - 1]) && self.splits(&c, i) => {
+                    Some(s) if self.is_word(c[i]) && self.is_word(c[i - 1]) && self.splits(&c, i) => {
                         out.push((s, pos(i)));
                         start = Some(pos(i));
                     }
@@ -467,7 +607,18 @@ impl Cut {
     /// A word of the text as written as Strata indexes it (its joined
     /// characters [`joined`]).
     pub fn word(&self, w: &str) -> String {
-        w.chars().map(|ch| if word_char(ch) { ch } else { joined(ch) }).collect()
+        let c: Vec<char> = w.chars().collect();
+        let n = c.len();
+        let c = if n > 2 && self.possessive_at(&c, n - 2) { &c[..n - 2] } else { &c[..] };
+        let mut out = String::new();
+        for &ch in c {
+            if word_char(ch) {
+                self.put(ch, &mut out);
+            } else {
+                out.push(joined(ch));
+            }
+        }
+        out
     }
 }
 
@@ -483,19 +634,28 @@ fn cut_of(name: Option<&str>, settings: &Json) -> Cut {
             "simple" | "stop" | "pattern" | "fingerprint" => Join::None,
             _ => Join::Standard,
         };
-        return Cut { join, split: false };
+        return Cut { join, split: false, possessive: name == "english", keep_accents: true };
     }
-    let split = custom.get("filter").and_then(Json::as_array).is_some_and(|fs| {
-        fs.iter().filter_map(Json::as_str).any(|f| {
-            let spec = analysis(settings, "filter", f);
-            let ty = spec.get("type").and_then(Json::as_str).unwrap_or(f);
-            let on = |k: &str| spec.get(k).map_or(true, |v| v.as_bool().unwrap_or(v.as_str() != Some("false")));
-            matches!(ty, "word_delimiter" | "word_delimiter_graph") && on("split_on_case_change") && on("split_on_numerics")
-        })
+    let filters: Vec<&str> = custom.get("filter").and_then(Json::as_array).map(|fs| fs.iter().filter_map(Json::as_str).collect()).unwrap_or_default();
+    let possessive = filters.iter().any(|f| {
+        let spec = analysis(settings, "filter", f);
+        let ty = spec.get("type").and_then(Json::as_str).unwrap_or(f);
+        let lang = spec.get("language").or_else(|| spec.get("name")).and_then(Json::as_str);
+        ty == "stemmer" && lang == Some("possessive_english")
+    });
+    let keep_accents = !filters.iter().any(|f| {
+        let spec = analysis(settings, "filter", f);
+        matches!(spec.get("type").and_then(Json::as_str).unwrap_or(f), "asciifolding" | "icu_folding")
+    });
+    let split = filters.iter().any(|f| {
+        let spec = analysis(settings, "filter", f);
+        let ty = spec.get("type").and_then(Json::as_str).unwrap_or(f);
+        let on = |k: &str| spec.get(k).map_or(true, |v| v.as_bool().unwrap_or(v.as_str() != Some("false")));
+        matches!(ty, "word_delimiter" | "word_delimiter_graph") && on("split_on_case_change") && on("split_on_numerics")
     });
     // A word delimiter cuts at every character but letters and digits.
     if split {
-        return Cut { join: Join::None, split };
+        return Cut { join: Join::None, split, possessive: false, keep_accents };
     }
     let tok_name = custom.get("tokenizer").and_then(Json::as_str).unwrap_or("standard");
     let tok = analysis(settings, "tokenizer", tok_name);
@@ -505,7 +665,7 @@ fn cut_of(name: Option<&str>, settings: &Json) -> Cut {
         "keyword" => Join::Whole,
         _ => Join::None,
     };
-    Cut { join, split: false }
+    Cut { join, split: false, possessive, keep_accents }
 }
 
 /// The n-grams a custom analyzer makes, if it makes them.
@@ -667,7 +827,7 @@ pub fn column_sql(name: &str, kind: &Kind) -> String {
 
 /// `CREATE TABLE` of an index.
 pub fn create_sql(ix: &Index) -> String {
-    let mut cols = vec![format!("{} KEYWORD PRIMARY KEY", ident(ID)), format!("{} INT", ident(VERSION)), format!("{} INT", ident(HASH)), format!("{} JSON", ident(SOURCE))];
+    let mut cols = vec![format!("{} KEYWORD PRIMARY KEY", ident(ID)), format!("{} INT", ident(VERSION)), format!("{} INT", ident(HASH)), format!("{} JSON", ident(SOURCE)), format!("{} KEYWORD[]", ident(MULTI))];
     cols.extend(ix.columns().iter().map(|(c, k)| column_sql(c, k)));
     format!("CREATE TABLE {} ({})", ix.table, cols.join(", "))
 }
@@ -789,6 +949,7 @@ pub fn row_of(ix: &Index, id: &str, version: i64, doc: &Map<String, Json>) -> Re
     row.insert(VERSION.into(), json!(version));
     row.insert(HASH.into(), json!(hash_of(id)));
     let whole = Json::Object(doc.clone());
+    let mut multi = Vec::new();
     for (name, f) in &ix.fields {
         let vals = values_at(&whole, &f.source);
         if vals.is_empty() {
@@ -823,6 +984,9 @@ pub fn row_of(ix: &Index, id: &str, version: i64, doc: &Map<String, Json>) -> Re
                 row.insert(name.clone(), Json::Array(xs));
             }
             Kind::Long | Kind::Double => {
+                if vals.len() > 1 {
+                    multi.push(name.clone());
+                }
                 let mut least: Option<f64> = None;
                 for v in &vals {
                     let x = v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()));
@@ -849,12 +1013,16 @@ pub fn row_of(ix: &Index, id: &str, version: i64, doc: &Map<String, Json>) -> Re
             Kind::Keyword | Kind::Other => {}
         }
     }
+    if !multi.is_empty() {
+        row.insert(MULTI.into(), json!(multi));
+    }
     // Strings kept in their text column alone.
-    // (A string its analyzer's cut rewrites stays in `_source`: the column
-    // holds the rewritten one.)
+    // (The column holds it as its analyzer's cut rewrote it, which
+    // `doc_of` takes back; a string that does not come back stays in
+    // `_source`.)
     for name in ix.kept_apart() {
         if let Kind::Text { cut, .. } = &ix.fields[&name].kind {
-            if matches!(peek_path(&source, &name), Some(Json::String(s)) if cut.is_plain() || cut.apply(s) == *s) {
+            if matches!(peek_path(&source, &name), Some(Json::String(s)) if cut.is_plain() || cut.unapply(&cut.apply(s)) == *s) {
                 take_path(&mut source, &name);
             }
         }
@@ -889,10 +1057,11 @@ pub fn doc_of(ix: &Index, columns: &[String], row: &[Json]) -> (String, i64, Jso
         if peek_path(&source, &ix.fields[&name].source).is_some() {
             continue;
         }
-        let v = match get(&name) {
-            Some(Json::Null) | None => continue,
-            Some(Json::Array(xs)) => Json::Array(xs.iter().map(|x| x.as_f64().map(|f| json!(shortest(f as f32))).unwrap_or(Json::Null)).collect()),
-            Some(v) => v.clone(),
+        let v = match (get(&name), &ix.fields[&name].kind) {
+            (Some(Json::Null) | None, _) => continue,
+            (Some(Json::Array(xs)), _) => Json::Array(xs.iter().map(|x| x.as_f64().map(|f| json!(shortest(f as f32))).unwrap_or(Json::Null)).collect()),
+            (Some(Json::String(t)), Kind::Text { cut, .. }) => json!(cut.unapply(t)),
+            (Some(v), _) => v.clone(),
         };
         put_path(&mut source, &ix.fields[&name].source, v);
     }
@@ -1076,7 +1245,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        assert_eq!(ix.fields["body"].kind, Kind::Text { analyzer: "english", grams: None, cut: Cut { join: Join::Standard, split: false }, query_cut: Cut { join: Join::Standard, split: false } });
+        assert_eq!(ix.fields["body"].kind, Kind::Text { analyzer: "english", grams: None, cut: Cut { join: Join::Standard, split: false, possessive: true, keep_accents: true }, query_cut: Cut { join: Join::Standard, split: false, possessive: true, keep_accents: true } });
         assert_eq!(ix.fields["title.raw"].source, "title");
         assert!(!ix.stripped_text("title"));
         assert!(ix.stripped_text("body"));
@@ -1140,12 +1309,50 @@ mod tests {
 
     #[test]
     fn cuts() {
-        let split = Cut { join: Join::None, split: true };
-        assert_eq!(split.apply("CatsOfMastodon"), "Cats Of Mastodon");
-        assert_eq!(split.apply("XMLParser food2026 iPhone"), "XML Parser food 2026 i Phone");
-        let std = Cut { join: Join::Standard, split: false };
+        let b = BREAK;
+        let split = Cut { join: Join::None, split: true, possessive: false, keep_accents: false };
+        assert_eq!(split.apply("CatsOfMastodon"), format!("Cats{b}Of{b}Mastodon"));
+        assert_eq!(split.apply("XMLParser food2026 iPhone"), format!("XML{b}Parser food{b}2026 i{b}Phone"));
+        let std = Cut { join: Join::Standard, split: false, possessive: false, keep_accents: false };
         let j = |c: char| joined(c);
         assert_eq!(std.apply("merge_segments at mastodon.social, 3.14 or 1,000; e.g. _x"), format!("merge{}segments at mastodon{}social, 3{}14 or 1{}000; e{}g. {}x", j('_'), j('.'), j('.'), j(','), j('.'), j('_')));
+        // Apostrophes, colons and middle dots between letters; `;` and
+        // `'` between digits; none at a word's edge.
+        assert_eq!(std.apply("children's school\u{2019}s a:b x\u{B7}y 1;2 3'4 dogs' :a"), format!("children{}s school{}s a{}b x{}y 1{}2 3{}4 dogs' :a", j('\''), j('\u{2019}'), j(':'), j('\u{B7}'), j(';'), j('\'')));
+        // The english analyzer drops a possessive `'s`, and only that.
+        let en = Cut { possessive: true, ..std };
+        assert_eq!(en.apply("the children's toys, CHILDREN'S, it's an s's don't"), format!("the children toys, CHILDREN, it an s don{}t", j('\'')));
+        assert_eq!(en.word("children's"), "children");
+        // Each ideograph and hiragana a word, runs of katakana; a soft
+        // hyphen inside a word.
+        assert_eq!(std.apply("與2019新型 ひらがなカタカナ漢字 abc漢"), format!("與{b}2019{b}新{b}型 ひ{b}ら{b}が{b}な{b}カタカナ{b}漢{b}字 abc{b}漢"));
+        assert_eq!(std.apply("SARS\u{AD}CoV\u{AD}2"), format!("SARS{}CoV{}2", j('\u{AD}'), j('\u{AD}')));
+        // Superscripts and fractions are no part of a word; `İ` is `i`.
+        let text = "Infection¼ in m² ①";
+        let spans: Vec<&str> = std.spans(text).iter().map(|&(a, b)| &text[a..b]).collect();
+        assert_eq!(spans, ["Infection", "in", "m"]);
+        let mut words = Vec::new();
+        strata::text::analyzer::for_each_word(&std.apply(text), |w| words.push(w.to_string()));
+        assert_eq!(words, ["infection", "in", "m"]);
+        // Accents kept: Strata does not fold what a letter stands for.
+        let keep = Cut { keep_accents: true, ..std };
+        assert_eq!(keep.apply("SÉVÈRE straße"), format!("S{}V{}RE stra{}e", j('é'), j('è'), j('ß')));
+        let mut words = Vec::new();
+        strata::text::analyzer::for_each_word(&keep.apply("Sévère severe"), |w| words.push(w.to_string()));
+        assert_ne!(words[0], words[1]);
+        assert_eq!(strata::text::analyzer::normalize_word(&keep.word("Sévère")), words[0]);
+        // The text comes back but for the case of a letter whose accent is kept.
+        for t in ["merge_segments at 3.14", "與2019新型", "CatsOf2026", "SARS\u{AD}CoV\u{AD}2", "sévère"] {
+            for cut in [std, split, keep] {
+                assert_eq!(cut.unapply(&cut.apply(t)), t, "{cut:?}");
+            }
+        }
+        assert_ne!(keep.unapply(&keep.apply("SÉVÈRE")), "SÉVÈRE");
+        assert_eq!(keep.apply("İnfection"), "infection");
+        assert_eq!(std.unapply(&std.apply("Infection¼ in m² ①")), "Infection¼ in m² ①");
+        let text = "the children's toys";
+        let spans: Vec<&str> = en.spans(text).iter().map(|&(a, b)| &text[a..b]).collect();
+        assert_eq!(spans, ["the", "children's", "toys"]);
         let text = "see merge_segments and fooBar";
         let spans: Vec<&str> = std.spans(text).iter().map(|&(a, b)| &text[a..b]).collect();
         assert_eq!(spans, ["see", "merge_segments", "and", "fooBar"]);
@@ -1163,12 +1370,12 @@ mod tests {
         let ix = Index::new("i", "os_i", "u", 0, json!({"properties": {"t": {"type": "text", "analyzer": "tag"}, "w": {"type": "text", "analyzer": "ws"}, "k": {"type": "text", "analyzer": "keyword"}, "s": {"type": "text", "analyzer": "simple"}}}), settings, vec![]).unwrap();
         let doc: Map<String, Json> = serde_json::from_value(json!({"t": "CatsOf2026", "w": "a-b c", "k": "New York", "s": "a_b"})).unwrap();
         let row = row_of(&ix, "1", 1, &doc).unwrap();
-        assert_eq!(row["t"], json!("Cats Of 2026"));
+        assert_eq!(row["t"], json!(format!("Cats{b}Of{b}2026")));
         assert_eq!(row["w"], json!(format!("a{}b c", joined('-'))));
         assert_eq!(row["k"], json!(format!("New{}York", joined(' '))));
         assert_eq!(row["s"], json!("a_b"));
-        // Kept in `_source` when the column no longer holds it as written.
-        assert_eq!(row["_source"], json!({"t": "CatsOf2026", "w": "a-b c", "k": "New York"}));
+        // In the columns alone: each comes back as written.
+        assert_eq!(row["_source"], json!({}));
         let cols = ix.read_columns();
         let vals: Vec<Json> = cols.iter().map(|c| if c == "_source" { json!(row["_source"].to_string()) } else { row[c].clone() }).collect();
         assert_eq!(doc_of(&ix, &cols, &vals).2, Json::Object(doc));

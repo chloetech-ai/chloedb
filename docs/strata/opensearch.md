@@ -39,7 +39,8 @@ It shares the server's TLS (`--tls-cert`), hosts (`--allow-host`) and credential
 | [Gitea](https://gitea.com) 1.24.6 | its issue indexer and code indexer set to `elasticsearch` at this port, next to a second Gitea on OpenSearch 2.11, the same repository and issues in both | 42 of 42 searches find the same issues and files |
 | [Mastodon](https://joinmastodon.org) 4.3 | its four indexes (accounts, tags, statuses, public statuses: analyzers, mappings) and the searches its services make (account autocomplete and full search with follower boosts, hashtag search, status search over two indexes), replayed on 1,500 accounts, 1,200 tags and 4,000 statuses next to OpenSearch 2.11 | 112 of 114 searches return the same hits in the same order; the other two differ in the order of two hits tied at score 0 |
 | elasticsearch-ruby 7.17 (Mastodon's client, through Chewy) | its product check, index creation, `_bulk`, a search with `script_score` | works with `--opensearch-version 7.10.2` |
-| OpenSearch 2.11 itself | 97 requests sent to both, answers compared field by field | 93 identical; the others are listed under [Differences](#differences) |
+| OpenSearch 2.11 itself | 100 requests sent to both, answers compared field by field | 96 identical; the others are listed under [Differences](#differences) |
+| OpenSearch 2.11 on [TREC-COVID](#numbers) | 3,000 searches of ten kinds over 171,332 abstracts | every one finds as many hits; see [Numbers](#numbers) for the first pages |
 
 Gitea's `app.ini`:
 
@@ -72,7 +73,9 @@ An index `books` is the table `os_books`: its key `_id`, `_version`, `_hash` (a 
 
 Text is read by one of Strata's two analyzers, chosen from the field's: `english` for OpenSearch's `english` analyzer or a custom one with a stemmer, `simple` (lowercased, folded, nothing dropped) for the rest. Before Strata reads it, the text is cut into words as the field's analyzer would:
 
-- the `standard` tokenizer keeps `merge_segments`, `mastodon.social` and `3.14` whole, and makes each emoji a word;
+- the `standard` tokenizer keeps `merge_segments`, `mastodon.social`, `children's`, `3.14` and a word with a soft hyphen in it whole, makes each emoji, each ideograph (Chinese, Japanese) and each hiragana a word, and a run of katakana one, and cuts at `²`, `¼` and `①`;
+- accents are kept (`sévère` is not `severe`), unless the analyzer has an `asciifolding` filter;
+- the `english` analyzer, and a `stemmer` filter of `possessive_english`, drop a word's `'s`;
 - `whitespace` keeps every word between spaces whole, and `keyword` the whole text;
 - `word_delimiter_graph` cuts where case or digits change (`CatsOfMastodon2026` is `cats of mastodon 2026`);
 - an `edge_ngram` or `ngram` tokenizer or token filter makes the field's column hold the n-grams themselves, each a word, so that a query's words match them and BM25 counts them as Lucene does (on Mastodon's account search, scores agree with OpenSearch's to five digits);
@@ -82,8 +85,8 @@ Text is read by one of Strata's two analyzers, chosen from the field's: `english
 
 What a request gets that OpenSearch would answer otherwise:
 
-- **Analysis**: only what the list above names. Stop words other than English's, synonyms, other languages' stemmers, `pattern` tokenizers (taken as Strata's words), `path_hierarchy`, `shingle`, phonetic filters and normalizers are not applied. Text in Chinese, Japanese or Korean is not cut into words.
-- **Ranking**: BM25 with OpenSearch's defaults (k1 1.2, b 0.75) over the same words, so scores agree when the words do; Lucene rounds a document's length to one byte, and two documents near a page's edge can swap places. Hits with equal scores come in another order. A ranked query lists the rows none of its words scores after the others, with score 0.
+- **Analysis**: only what the list above names. Stop words other than English's, synonyms, other languages' stemmers, `pattern` tokenizers (taken as Strata's words), `path_hierarchy`, `shingle`, phonetic filters and normalizers are not applied. Chinese and Japanese are cut a word per ideograph, as the `standard` tokenizer cuts them, not into the `cjk` analyzer's pairs or a dictionary's words.
+- **Ranking**: BM25 with OpenSearch's defaults (k1 1.2, b 0.75) over the same words and the same one-byte lengths, so scores agree to about five digits when the words do, and two documents of nearly equal scores can swap places. Hits of equal scores come in the order of their `_id` (OpenSearch's in the order they were written), which Strata keeps the same on one server and over shards. A phrase (`match_phrase`, or one in `query_string`) scores the sum of its words' BM25, where OpenSearch scores how often the phrase itself occurs: phrase searches find the same documents and rank them otherwise. A ranked query lists the rows none of its words scores after the others, with score 0.
 - **Queries**: `wildcard` takes a trailing `*` alone; `match_phrase`'s `slop` is ignored; `nested` queries read the paths of objects, without matching inside one object; `regexp`, `terms` lookups, `geo_*`, `more_like_this`, `percolate`, `span_*`, `intervals`, `rank_feature` and `random_score` are refused, as are per-function `filter`s and `min_score`; a range's `time_zone` is not applied (dates are UTC).
 - **Searches**: aggregations read one index at a time; `collapse` takes no `inner_hits`; point-in-time searches are refused; `track_scores` is ignored (a field sort scores nothing); a scroll ordered by score or a field is limited to 10,000 hits.
 - **Aggregations**: `composite` returns at most 9,999 groups a page; `cardinality` is exact; scripts are refused.

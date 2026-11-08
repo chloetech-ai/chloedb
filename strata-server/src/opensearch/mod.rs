@@ -907,6 +907,23 @@ impl Os {
         Ok(())
     }
 
+    /// `ix` with the number fields no document holds an array of
+    /// ([`Index::single_numbers`]), for its aggregations; as it is when
+    /// the table cannot say.
+    async fn with_single_numbers(&self, ix: &Index) -> Index {
+        let mut out = ix.clone();
+        let numbers: std::collections::BTreeSet<String> = ix.fields.iter().filter(|(n, f)| matches!(f.kind, Kind::Long | Kind::Double) && f.column(n).is_some()).map(|(n, _)| n.clone()).collect();
+        if numbers.is_empty() {
+            return out;
+        }
+        let m = ident(mapping::MULTI);
+        if let Ok(r) = self.rows(&format!("SELECT {m}, COUNT(*) FROM {} WHERE {m} IS NOT NULL GROUP BY 1", ix.table), &[]).await {
+            let many: std::collections::BTreeSet<String> = r.rows.iter().filter_map(|row| row.first().and_then(Json::as_str).map(String::from)).collect();
+            out.single_numbers = Some(Arc::new(numbers.difference(&many).cloned().collect()));
+        }
+        out
+    }
+
     async fn save(&self, ix: &Index) -> Result<(), OsError> {
         self.write(vec![json!({"op": "upsert", "table": META, "doc": ix.meta_row()})]).await?;
         self.forget(&ix.name);
@@ -2059,7 +2076,7 @@ impl Os {
         };
         let aggs_f = async {
             match b.get("aggs").or_else(|| b.get("aggregations")) {
-                Some(a) => aggs::run(self, &ix, c.pred.clone(), a).await.map(Some),
+                Some(a) => aggs::run(self, &self.with_single_numbers(&ix).await, c.pred.clone(), a).await.map(Some),
                 None => Ok(None),
             }
         };

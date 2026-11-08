@@ -8,7 +8,9 @@
 //! bits one pass gives.
 //!
 //! It answers a query whose groups are single-valued keyword, INT or
-//! FLOAT fields and whose aggregates are `COUNT(*)`, or `COUNT`, `SUM`,
+//! FLOAT fields, or a part of a single-valued TIMESTAMP's times
+//! (`date_trunc('year', at)`, `EXTRACT(dow FROM at)`), and whose
+//! aggregates are `COUNT(*)`, or `COUNT`, `SUM`,
 //! `AVG`, `MIN`, `MAX` and percentiles of single-valued INT or FLOAT
 //! fields; anything
 //! else (paths, multi-valued fields, `COUNT(DISTINCT)`, aggregates of
@@ -21,16 +23,18 @@ use super::{Executor, Local, Seg};
 use crate::error::Result;
 use crate::forward::{KeywordColumn, NumericColumn, NumericKind, BLOCK};
 use crate::query::agg::{self, Acc, ExactSum, Part};
-use crate::query::logical::{AggFn, Col, Projection, Select};
+use crate::query::logical::{AggFn, Col, Projection, Select, TimeCol, TimeOf};
 use crate::schema::FieldType;
 use crate::segment::{DocId, DocSet};
 use crate::storage::Updates;
 use crate::value::Value;
 
-/// The fields a query's groups and aggregates read: each group's field,
-/// and each needed aggregate's (None for `COUNT(*)`).
+/// The fields a query's groups and aggregates read: each group's field
+/// (and the part of its times, [`Select::times`], it groups by), and each
+/// needed aggregate's (None for `COUNT(*)`).
 pub(super) struct Plan {
     groups: Vec<usize>,
+    times: Vec<Option<usize>>,
     aggs: Vec<Option<usize>>,
 }
 
@@ -41,9 +45,18 @@ pub(super) fn plan(schema: &crate::schema::Schema, q: &Select, needed: &[Project
         !fd.multi && kinds.contains(&fd.ty)
     };
     let mut groups = Vec::with_capacity(q.group_by.len());
+    let mut times = Vec::with_capacity(q.group_by.len());
     for c in &q.group_by {
         match *c {
-            Col::Field(f) if single(f, &[FieldType::Keyword, FieldType::Int, FieldType::Float]) => groups.push(f),
+            Col::Field(f) if single(f, &[FieldType::Keyword, FieldType::Int, FieldType::Float]) => {
+                groups.push(f);
+                times.push(None);
+            }
+            // A part of a time is a number; text (`strftime`) goes row by row.
+            Col::Time(t) if q.times.get(t).is_some_and(|tc| matches!(tc.of, TimeOf::Trunc(_) | TimeOf::Part(_)) && single(tc.field, &[FieldType::Int])) => {
+                groups.push(q.times[t].field);
+                times.push(Some(t));
+            }
             _ => return None,
         }
     }
@@ -61,13 +74,25 @@ pub(super) fn plan(schema: &crate::schema::Schema, q: &Select, needed: &[Project
             _ => return None,
         }
     }
-    Some(Plan { groups, aggs })
+    Some(Plan { groups, times, aggs })
 }
 
-/// A group field's values in one segment.
+/// A group field's values in one segment: a numeric field's, or the part
+/// of its times the group takes.
 enum Key<'s> {
     Codes(&'s KeywordColumn),
-    Num(&'s NumericColumn, Option<&'s Updates>),
+    Num(&'s NumericColumn, Option<&'s Updates>, Option<&'s TimeCol>),
+}
+
+/// A group's value of a numeric field's value `v`: the part of the time
+/// it is when the group takes one ([`TimeCol::value`], as the row-by-row
+/// aggregate reads it).
+#[inline]
+fn timed(t: Option<&TimeCol>, v: Value) -> Value {
+    match (t, v) {
+        (Some(tc), Value::Int(m) | Value::Timestamp(m)) => tc.value(m),
+        (_, v) => v,
+    }
 }
 
 /// A numeric field's value of document `d`, whose key in the column is
@@ -315,9 +340,10 @@ impl<'a> Executor<'a> {
         let keys: Vec<Key> = plan
             .groups
             .iter()
-            .map(|&f| match self.schema.fields[f].ty {
+            .zip(&plan.times)
+            .map(|(&f, t)| match self.schema.fields[f].ty {
                 FieldType::Keyword => self.keyword(s, f).map(Key::Codes),
-                _ => self.numeric(s, f).map(|n| Key::Num(n.col(), self.updates(s, f))),
+                _ => self.numeric(s, f).map(|n| Key::Num(n.col(), self.updates(s, f), t.map(|t| &q.times[t]))),
             })
             .collect::<Result<_>>()?;
         let aggs: Vec<Option<(usize, &NumericColumn, Option<&Updates>)>> = plan
@@ -334,7 +360,7 @@ impl<'a> Executor<'a> {
         // key's bits.
         let (mut by_code, base): (Vec<u32>, Option<i64>) = match keys.as_slice() {
             [Key::Codes(kw)] => (vec![u32::MAX; kw.n_values() + 1], None),
-            [Key::Num(col, None)] => match col.key_bounds() {
+            [Key::Num(col, None, None)] => match col.key_bounds() {
                 Some((lo, hi)) if hi.checked_sub(lo).is_some_and(|w| w < DENSE_KEYS) => (vec![u32::MAX; (hi - lo) as usize + 2], Some(lo)),
                 None => (vec![u32::MAX; 1], Some(0)),
                 _ => (Vec::new(), None),
@@ -357,7 +383,7 @@ impl<'a> Executor<'a> {
             for (i, k) in keys.iter().enumerate() {
                 masks[i] = match k {
                     Key::Codes(kw) => kw.block_codes_of(b, &mut block[i]),
-                    Key::Num(col, _) => col.block_keys_of(b, &mut block[i]),
+                    Key::Num(col, _, _) => col.block_keys_of(b, &mut block[i]),
                 };
             }
             for (i, a) in aggs.iter().enumerate() {
@@ -405,7 +431,7 @@ impl<'a> Executor<'a> {
                         for (i, kc) in keys.iter().enumerate() {
                             key[i] = match kc {
                                 Key::Codes(_) => if has(i, j) { (5, block[i][j] as u64) } else { (0, 0) },
-                                Key::Num(col, u) => bits(&value(col, *u, plan.groups[i], d, has(i, j).then_some(block[i][j]))),
+                                Key::Num(col, u, t) => bits(&timed(*t, value(col, *u, plan.groups[i], d, has(i, j).then_some(block[i][j])))),
                             };
                         }
                         match by_bits.get(&key) {
@@ -488,7 +514,7 @@ impl<'a> Executor<'a> {
             .zip(&plan.groups)
             .map(|(k, &f)| match k {
                 Key::Codes(kw) => kw.value_of_doc(d).map_or(Part::Null, |v| Part::Str(v.to_string())),
-                Key::Num(col, u) => Part::group(&value(col, *u, f, d, col.sort_key(d))),
+                Key::Num(col, u, t) => Part::group(&timed(*t, value(col, *u, f, d, col.sort_key(d)))),
             })
             .collect();
         if let Some(&g) = all.index.get(&key) {

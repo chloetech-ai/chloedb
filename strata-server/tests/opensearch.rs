@@ -180,6 +180,29 @@ async fn scenario(base: &str) -> Vec<Json> {
     assert_eq!(a["names"]["after_key"], json!({"n": "cy"}));
     assert_eq!(a["awarded"]["doc_count"], count_of(&|i| i % 5 == 0));
     seen.push(a.clone());
+    // Numbers: from their columns while no document holds an array of
+    // one, from `_source` once one does (each value counts).
+    ok(base, "PUT", "/nums", Some(json!({"mappings": {"properties": {"n": {"type": "long"}, "x": {"type": "double"}, "k": {"type": "keyword"}}}}))).await;
+    for (i, d) in [json!({"n": 2, "x": 1.5, "k": "a"}), json!({"n": 4, "x": 2.5, "k": "b"}), json!({"n": 13, "k": "a"})].into_iter().enumerate() {
+        ok(base, "PUT", &format!("/nums/_doc/{i}?refresh=true"), Some(d)).await;
+    }
+    let num_aggs = json!({"size": 0, "aggs": {"s": {"stats": {"field": "n"}}, "x": {"avg": {"field": "x"}}, "h": {"histogram": {"field": "n", "interval": 10}, "aggs": {"x": {"sum": {"field": "x"}}}}, "k": {"terms": {"field": "k"}, "aggs": {"n": {"max": {"field": "n"}}}}}});
+    let a = ok(base, "POST", "/nums/_search", Some(num_aggs.clone())).await["aggregations"].clone();
+    assert_eq!(a["s"], json!({"count": 3, "min": 2.0, "max": 13.0, "avg": 19.0 / 3.0, "sum": 19.0}));
+    assert_eq!(a["x"]["value"], json!(2.0));
+    assert_eq!(a["h"]["buckets"], json!([{"key": 0.0, "doc_count": 2, "x": {"value": 4.0}}, {"key": 10.0, "doc_count": 1, "x": {"value": 0.0}}]));
+    assert_eq!(a["k"]["buckets"][0], json!({"key": "a", "doc_count": 2, "n": {"value": 13.0}}));
+    seen.push(a);
+    ok(base, "PUT", "/nums/_doc/3?refresh=true", Some(json!({"n": [1, 9], "x": [0.5, 7.5], "k": "b"}))).await;
+    let (status, e) = call(base, "POST", "/nums/_search", Some(num_aggs.clone()), None).await;
+    assert_eq!((status, e["error"]["type"].as_str()), (400, Some("illegal_argument_exception")), "{e}");
+    let mut num_aggs = num_aggs;
+    num_aggs["aggs"].as_object_mut().unwrap().remove("h");
+    let a = ok(base, "POST", "/nums/_search", Some(num_aggs)).await["aggregations"].clone();
+    assert_eq!(a["s"], json!({"count": 5, "min": 1.0, "max": 13.0, "avg": 29.0 / 5.0, "sum": 29.0}));
+    assert_eq!(a["x"]["value"], json!(3.0));
+    assert_eq!(a["k"]["buckets"][1], json!({"key": "b", "doc_count": 2, "n": {"value": 9.0}}));
+    seen.push(a);
     let r = ok(base, "POST", "/books/_search", Some(json!({"size": 0, "aggs": {"names": {"composite": {"size": 3, "after": {"n": "cy"}, "sources": [{"n": {"terms": {"field": "author.name"}}}]}}}}))).await;
     assert_eq!(r["aggregations"]["names"]["buckets"], json!([{"key": {"n": "dee"}, "doc_count": N / 4}]));
     // A scroll through every document, past pages of 70.

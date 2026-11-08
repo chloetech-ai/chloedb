@@ -9,9 +9,9 @@ fields to filter, sort and count by.
 DIR holds corpus.jsonl.gz and queries.jsonl.gz of BeIR/trec-covid (revision
 d158b3b1564c0d022d67c482c3d5bbb10922dfe7 on Hugging Face). Each engine is
 measured alone, one after the other, with the same requests in the same
-order. A search's latency is the client's: from sending the request to
+order, while the others are stopped (SIGSTOP). A search's latency is the client's: from sending the request to
 reading the whole answer, over one kept-alive connection."""
-import argparse, gzip, http.client, json, os, random, re, statistics, subprocess, sys, threading, time, urllib.parse
+import argparse, gzip, http.client, json, os, random, re, signal, statistics, subprocess, sys, threading, time, urllib.parse
 
 INDEX = "covid"
 SOURCES = ["pubmed", "medrxiv", "biorxiv", "who", "elsevier", "arxiv"]
@@ -171,20 +171,26 @@ def bench(name, url, pid, disk, data, limit, nq, conc_secs):
             c.call("POST", f"/{INDEX}/_search", b)
     lat = {}
     totals = {}
+    tops = {}
     for kind, bodies in qs.items():
         ms = []
         tot = []
+        top = []
         for b in bodies:
             t = time.perf_counter()
             s, r = c.call("POST", f"/{INDEX}/_search", b)
             ms.append((time.perf_counter() - t) * 1000)
             assert s == 200, (kind, s, str(r)[:400])
             tot.append(r["hits"]["total"]["value"] if r["hits"].get("total") else None)
+            # Each hit's id and what orders it: its score, or its first sort value.
+            top.append([(h["_id"], h["_score"] if h.get("_score") is not None else (h.get("sort") or [None])[0]) for h in r["hits"]["hits"]])
         lat[kind] = {"p50_ms": round(pct(ms, 50), 2), "p90_ms": round(pct(ms, 90), 2), "p99_ms": round(pct(ms, 99), 2), "mean_ms": round(statistics.mean(ms), 2), "n": len(ms)}
         totals[kind] = tot
+        tops[kind] = top
         print(name, kind, lat[kind], flush=True)
     out["latency"] = lat
     out["totals"] = totals
+    out["tops"] = tops
     # Throughput: 8 clients sending topic matches for conc_secs.
     stop = time.time() + conc_secs
     done = [0] * 8
@@ -224,20 +230,47 @@ def main():
     machine = {"cpu": next((l.split(":", 1)[1].strip() for l in open("/proc/cpuinfo") if l.startswith("model name")), None), "cores": os.cpu_count(),
                "ram_gb": round(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30, 1), "kernel": os.uname().release}
     results = {"machine": machine, "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "engines": []}
+    engines = []
     for spec in a.engine:
         name, _, rest = spec.partition("=")
         parts = rest.split(",")
-        url = parts[0]
         opts = dict(p.split("=", 1) for p in parts[1:])
-        results["engines"].append(bench(name, url, int(opts["pid"]) if "pid" in opts else None, opts.get("disk"), a.data, a.docs, a.searches, a.concurrent_seconds))
-    # Do the engines find as many hits for each search?
+        engines.append((name, parts[0], int(opts["pid"]) if "pid" in opts else None, opts.get("disk")))
+    # The engines not being measured are stopped (SIGSTOP), so that each
+    # runs alone on the machine.
+    for name, url, pid, disk in engines:
+        others = [e[2] for e in engines if e[2] and e[2] != pid]
+        for o in others:
+            os.kill(o, signal.SIGSTOP)
+        try:
+            results["engines"].append(bench(name, url, pid, disk, a.data, a.docs, a.searches, a.concurrent_seconds))
+        finally:
+            for o in others:
+                os.kill(o, signal.SIGCONT)
+    # Do the engines find as many hits for each search, and the same first
+    # page? The same page "but for ties": the same scores or sort values
+    # (to 1 part in 10,000) in the same places, the documents of equal ones
+    # in another order.
     if len(results["engines"]) == 2:
         x, y = results["engines"]
         results["same_totals"] = {k: sum(1 for p, q in zip(x["totals"][k], y["totals"][k]) if p == q) for k in x["totals"]}
+        def close(a, b):
+            return (a is None and b is None) or (a is not None and b is not None and abs(a - b) <= 1e-4 * max(abs(a), abs(b), 1e-9))
+        pages = {}
+        for k in x["tops"]:
+            ranked = [(p, q) for p, q in zip(x["tops"][k], y["tops"][k]) if p or q]
+            if not ranked:
+                continue
+            same = sum(1 for p, q in ranked if [i for i, _ in p] == [i for i, _ in q])
+            ties = sum(1 for p, q in ranked if [i for i, _ in p] != [i for i, _ in q] and len(p) == len(q) and all(close(a[1], b[1]) for a, b in zip(p, q)))
+            same_set = sum(1 for p, q in ranked if {i for i, _ in p} == {i for i, _ in q})
+            pages[k] = {"searches": len(ranked), "same_hits_same_order": same, "same_but_for_ties": ties, "same_hits_any_order": same_set}
+        results["same_first_page"] = pages
     for e in results["engines"]:
         e.pop("totals", None)
+        e.pop("tops", None)
     with open(a.out, "w") as f:
         json.dump(results, f, indent=2)
-    print(json.dumps(results.get("same_totals"), indent=1))
+    print(json.dumps({"same_totals": results.get("same_totals"), "same_first_page": results.get("same_first_page")}, indent=1))
 
 main()
