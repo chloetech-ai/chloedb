@@ -6,9 +6,9 @@ name: CI
 # Main is protected by one required check, "CI result", which every run
 # reports: the jobs below run when a change touches more than the
 # documentation and benchmark results (job `changes`), and are skipped
-# otherwise, which a required check counts as passing. A workflow skipped by a path filter
-# would report nothing, and the pull request would wait for its check
-# forever.
+# otherwise, which a required check counts as passing. A workflow skipped
+# by a path filter would report nothing, and the pull request would wait
+# for its check forever.
 on:
   push:
     branches: [main]
