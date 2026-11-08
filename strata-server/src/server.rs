@@ -993,11 +993,23 @@ pub fn export_parquet(_: &Path, _: &str, _: &ParquetExport) -> Result<(), String
     Err("this strata-server was built without Parquet (feature parquet)".into())
 }
 
-/// Releases expired snapshot leases, and reports merges that fail (the
+/// Releases expired snapshot leases and scrolls, and reports merges that fail (the
 /// database's merger threads merge as writes add segments; a database
 /// that cannot write, [`Service::failing`], merges nothing).
 pub fn spawn_maintenance(svc: &Arc<Service>) {
-    let Some(db) = svc.local_db().cloned() else { return };
+    let Some(db) = svc.local_db().cloned() else {
+        // A coordinator ends the scrolls not read over their keep-alive,
+        // and their shards' with them.
+        let svc = Arc::downgrade(svc);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let Some(svc) = svc.upgrade() else { return };
+                svc.sweep_scrolls();
+            }
+        });
+        return;
+    };
     let svc = Arc::downgrade(svc);
     tokio::spawn(async move {
         let mut reported = None;

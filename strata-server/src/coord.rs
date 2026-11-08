@@ -108,8 +108,10 @@ use crate::{json as js, plan_pb, ApiError};
 
 mod moves;
 pub mod plan;
+mod scroll;
 mod stats;
 pub use stats::{StatsCache, STATS_CACHE_TERMS};
+pub use scroll::{ShardScroll, SHARD_KEEP_ALIVE_MARGIN};
 pub use moves::{plan_even, MOVE_SLOTS};
 
 /// How the coordinator uses replicas and handles shards that do not answer.
@@ -2280,7 +2282,7 @@ impl Coordinator {
         for (i, r, lease) in leases {
             if lease != 0 {
                 let mut c = t.replicas[i][r].client.clone();
-                tokio::spawn(async move { tokio::time::timeout(Duration::from_secs(5), c.release(pb::ReleaseRequest { snapshots: vec![lease] })).await });
+                tokio::spawn(async move { tokio::time::timeout(Duration::from_secs(5), c.release(pb::ReleaseRequest { snapshots: vec![lease], cursors: Vec::new() })).await });
             }
         }
     }

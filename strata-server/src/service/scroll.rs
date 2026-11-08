@@ -12,17 +12,25 @@
 //! (`DELETE /v1/query/cursors/:id`), or when no page is asked for over its
 //! keep-alive. A plain scan holds nothing between pages; the open scrolls
 //! of ordered queries, groups and compound queries hold at most
-//! `--max-scroll-rows` rows' places, or rows, between them. One server
-//! scrolls: a coordinator refuses `page_size` (its shards' scrolls are the
-//! next step).
+//! `--max-scroll-rows` rows' places, or rows, between them.
+//!
+//! A coordinator scrolls its shards' scrolls of a plain scan, or of rows
+//! ordered by one score or column, and merges their pages as they come
+//! ([`crate::coord::ShardScroll`]), holding the rows of two pages at most;
+//! it answers any other query whole and holds its rows, as a server holds
+//! a compound query's. A shard's scroll for a coordinator is asked by the
+//! shard protocol ([`crate::grpc::SCROLL_PROTOCOL`]), each page of so many
+//! rows as the coordinator asks for.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use strata::query::exec::{ExecOptions, Scroll};
+use strata::query::exec::{ExecOptions, ResultSet, Scroll};
+use strata::query::stats::TermStats;
 use strata::storage::Snapshot;
 
 use super::{conflict, too_many, Answer, Backend, Cancel, QueryReq, Running, Service};
+use crate::coord::ShardScroll;
 use crate::telemetry::LiveQueries;
 use crate::ApiError;
 
@@ -36,7 +44,8 @@ pub const MAX_SCROLL_ROWS: usize = 1_000_000;
 /// What a query asks of a scroll ([`QueryReq::scroll`]).
 #[derive(Clone, Debug)]
 pub struct ScrollAsk {
-    /// The rows a page holds at most (cut to `--max-result-window`).
+    /// The rows a page holds at most (cut to `--max-result-window`); a
+    /// coordinator opens a shard's scroll with a page of none.
     pub page: usize,
     /// How long the scroll is kept after each page (`None`: the server's
     /// lease TTL).
@@ -51,10 +60,41 @@ pub fn owner(who: &crate::keys::Principal) -> String {
     format!("{}/{}", who.name, who.key.as_deref().unwrap_or(""))
 }
 
+/// What an open scroll reads its pages from.
+pub(super) enum Paged {
+    /// This server's database (or the rows it holds).
+    Db(Scroll),
+    /// A coordinator's shards' scrolls.
+    Shards(Box<ShardScroll>),
+}
+
+impl Paged {
+    fn done(&self) -> bool {
+        match self {
+            Paged::Db(s) => s.done(),
+            Paged::Shards(s) => s.done(),
+        }
+    }
+
+    fn held(&self) -> usize {
+        match self {
+            Paged::Db(s) => s.held(),
+            Paged::Shards(s) => s.held(),
+        }
+    }
+
+    /// Ends what it keeps open elsewhere: a coordinator's shards' scrolls.
+    fn end(self) {
+        if let Paged::Shards(s) = self {
+            s.end();
+        }
+    }
+}
+
 /// An open scroll.
 pub(super) struct Cursor {
     /// `None` while a page is read.
-    scroll: Option<Scroll>,
+    scroll: Option<Paged>,
     /// The lease on the version it reads (0: it holds its rows).
     lease: u64,
     table: String,
@@ -64,6 +104,10 @@ pub(super) struct Cursor {
     keep_alive: Duration,
     until: Instant,
     held: usize,
+    /// A shard's scroll for a coordinator: its pages in shard mode, scored
+    /// with the statistics it started with.
+    shard: bool,
+    stats: Option<Arc<TermStats>>,
 }
 
 /// A scroll taken from its cursor while a page is read: put back when
@@ -71,7 +115,7 @@ pub(super) struct Cursor {
 struct Taken {
     svc: Arc<Service>,
     cursor: String,
-    scroll: Option<Scroll>,
+    scroll: Option<Paged>,
 }
 
 impl Drop for Taken {
@@ -87,30 +131,38 @@ fn gone() -> ApiError {
 }
 
 impl Service {
-    /// The rows a scroll's pages hold: `asked`, at most the window.
+    /// The rows a scroll's pages hold: `asked`, at most the window (none
+    /// only for a coordinator's opening of a shard's scroll).
     pub(super) fn page_size(&self, asked: usize) -> usize {
-        asked.max(1).min(self.max_rows.unwrap_or(usize::MAX))
+        asked.min(self.max_rows.unwrap_or(usize::MAX))
     }
 
-    fn keep_alive(&self, asked: Option<Duration>) -> Duration {
-        asked.unwrap_or(self.lease_ttl).min(MAX_KEEP_ALIVE)
+    /// How long a scroll is kept after each page: `asked`, an hour at most
+    /// (a shard's for a coordinator, the coordinator's margin more).
+    pub(super) fn keep_alive(&self, asked: Option<Duration>, shard: bool) -> Duration {
+        let most = if shard { MAX_KEEP_ALIVE + crate::coord::SHARD_KEEP_ALIVE_MARGIN } else { MAX_KEEP_ALIVE };
+        asked.unwrap_or(self.lease_ttl).min(most)
     }
 
     /// Keeps what is left of a scroll that started on `snap` (`None`: one
-    /// that holds its rows), and returns its cursor; `None` when no rows
-    /// are left. Refused (429) when the open scrolls would hold more than
-    /// `--max-scroll-rows` rows between them.
-    pub(super) fn keep_scroll(&self, scroll: Scroll, snap: Option<Snapshot>, table: &str, sql: &str, ask: &ScrollAsk) -> Result<Option<String>, ApiError> {
+    /// that holds its rows, or a coordinator's), and returns its cursor;
+    /// `None` when no rows are left. Refused (429) when the open scrolls
+    /// would hold more than `--max-scroll-rows` rows between them.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn keep_scroll(&self, scroll: Paged, snap: Option<Snapshot>, table: &str, sql: &str, ask: &ScrollAsk, shard: bool, stats: Option<Arc<TermStats>>) -> Result<Option<String>, ApiError> {
         if scroll.done() {
+            scroll.end();
             return Ok(None);
         }
         let held = scroll.held();
-        let keep_alive = self.keep_alive(ask.keep_alive);
+        let keep_alive = self.keep_alive(ask.keep_alive, shard);
         let mut open = self.scrolls.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        open.retain(|_, c| c.until > now);
+        ended(&mut open, now);
         let holding: usize = open.values().map(|c| c.held).sum();
         if holding.saturating_add(held) > self.max_scroll_rows {
+            drop(open);
+            scroll.end();
             return Err(ApiError {
                 status: 429,
                 message: format!(
@@ -119,97 +171,131 @@ impl Service {
                 ),
             });
         }
-        let lease = match snap {
-            Some(s) => self.lease_of(s, keep_alive)?,
-            None => 0,
+        let lease = match snap.map(|s| self.lease_of(s, keep_alive)).transpose() {
+            Ok(l) => l.unwrap_or(0),
+            Err(e) => {
+                drop(open);
+                scroll.end();
+                return Err(e);
+            }
         };
         let id = format!("{:032x}", rand::random::<u128>());
-        open.insert(id.clone(), Cursor { scroll: Some(scroll), lease, table: table.to_string(), sql: sql.to_string(), page: self.page_size(ask.page), owner: ask.owner.clone(), keep_alive, until: now + keep_alive, held });
+        let page = self.page_size(ask.page).max(1);
+        open.insert(id.clone(), Cursor { scroll: Some(scroll), lease, table: table.to_string(), sql: sql.to_string(), page, owner: ask.owner.clone(), keep_alive, until: now + keep_alive, held, shard, stats });
         Ok(Some(id))
     }
 
     /// The next page of scroll `cursor`, read by `owner`, who started it:
-    /// at most its page size of rows, with the cursor again while rows are
-    /// left. `keep_alive` changes how long it is kept after this page.
-    pub async fn scroll_next(self: &Arc<Self>, cursor: &str, owner: &str, keep_alive: Option<Duration>, timeout_ms: u64) -> Result<Answer, ApiError> {
+    /// at most its page size of rows (`page`: so many, as a coordinator
+    /// asks of a shard), with the cursor again while rows are left.
+    /// `keep_alive` changes how long it is kept after this page.
+    pub async fn scroll_next(self: &Arc<Self>, cursor: &str, owner: &str, keep_alive: Option<Duration>, timeout_ms: u64, page: Option<usize>) -> Result<Answer, ApiError> {
         let t0 = Instant::now();
-        let Backend::Local(db) = &self.backend else { return Err(gone()) };
         let timeout = self.timeout_of(timeout_ms);
-        let (scroll, lease, table, sql, page) = {
+        let (scroll, lease, table, sql, page, shard, stats, kept_for) = {
             let mut open = self.scrolls.lock().unwrap_or_else(|e| e.into_inner());
             let now = Instant::now();
             let c = open.get_mut(cursor).filter(|c| c.owner == owner && c.until > now).ok_or_else(gone)?;
             let scroll = c.scroll.take().ok_or_else(|| conflict("this cursor's page is being read: ask for the next once it is answered".into()))?;
             if keep_alive.is_some() {
-                c.keep_alive = self.keep_alive(keep_alive);
+                c.keep_alive = self.keep_alive(keep_alive, c.shard);
             }
             // Kept while the page is read.
             c.until = now + c.keep_alive + timeout;
-            (scroll, c.lease, c.table.clone(), c.sql.clone(), c.page)
+            let page = page.map_or(c.page, |p| self.page_size(p));
+            // A coordinator's shards keep their scrolls the margin longer.
+            let kept_for = keep_alive.map(|_| c.keep_alive + crate::coord::SHARD_KEEP_ALIVE_MARGIN);
+            (scroll, c.lease, c.table.clone(), c.sql.clone(), page, c.shard, c.stats.clone(), kept_for)
         };
-        let snap = match lease {
-            0 => None,
-            l => {
-                self.renew_lease(l, timeout + Duration::from_secs(1));
-                match self.leased(l) {
-                    Ok(s) => Some(s),
-                    Err(e) => {
+        let mut taken = Taken { svc: self.clone(), cursor: cursor.to_string(), scroll: Some(scroll) };
+        let req = QueryReq { sql: sql.clone(), timeout_ms, shard, ..Default::default() };
+        let meta = self.meta(&req);
+        let live = self.live.start(&sql, "scroll", shard, &meta);
+        let res = match (taken.scroll.as_mut(), &self.backend) {
+            // A coordinator's: its shards' pages, merged.
+            (Some(Paged::Shards(s)), Backend::Cluster(c)) => {
+                let r = LiveQueries::run(&live, async {
+                    let permit = self.admit(timeout).await.ok_or_else(too_many)?;
+                    let r = c.scroll_next(s, page, kept_for, t0 + timeout).await;
+                    drop(permit);
+                    r
+                })
+                .await;
+                match r {
+                    Ok(rs) => Ok((rs, !s.done())),
+                    // A shard's scroll failed: the pages cannot be put together.
+                    Err(mut e) => {
+                        drop(taken);
                         self.end_scroll(cursor);
-                        return Err(e);
+                        e.message.push_str(" (the scroll ended: start it again)");
+                        Err(e)
                     }
                 }
             }
-        };
-        let req = QueryReq { sql: sql.clone(), timeout_ms, ..Default::default() };
-        let meta = self.meta(&req);
-        let live = self.live.start(&sql, "scroll", false, &meta);
-        let mut taken = Taken { svc: self.clone(), cursor: cursor.to_string(), scroll: Some(scroll) };
-        let db = db.clone();
-        let res = LiveQueries::run(&live, async {
-            let permit = self.admit(timeout).await.ok_or_else(too_many)?;
-            let (running, n) = Running::start(&self.running);
-            let cancel = Cancel::default();
-            let opts = ExecOptions {
-                threads: (self.cores / n).max(1),
-                deadline: Some(t0 + timeout),
-                cancel: Some(cancel.0.clone()),
-                synonyms: self.synonyms().or_else(|| db.exec.synonyms.clone()),
-                max_groups: self.max_groups,
-                memory: self.query_memory.clone(),
-                ..db.exec.clone()
-            };
-            // The scroll goes back with the page read, or as it was when the
-            // page fails, also when the caller stopped waiting.
-            let r = tokio::task::spawn_blocking(move || {
-                let _held = (permit, running);
-                let scroll = taken.scroll.as_mut().expect("the scroll taken");
-                let r = match &snap {
-                    Some(snap) => match snap.table(&table) {
-                        Some(view) => db.scroll_next(&view, scroll, &opts, page).map_err(ApiError::from),
-                        None => Err(ApiError::bad(format!("query error: no such table: {table}"))),
-                    },
-                    None => Ok(scroll.next_rows(page)),
+            (Some(Paged::Db(scroll)), _) if !scroll.reads() => {
+                let rs = scroll.next_rows(page);
+                Ok((rs, !scroll.done()))
+            }
+            (Some(Paged::Db(_)), Backend::Local(db)) => {
+                let snap = match self.leased(lease) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        drop(taken);
+                        self.end_scroll(cursor);
+                        return Err(e);
+                    }
                 };
-                let more = !scroll.done();
-                drop(taken);
-                r.map(|rs| (rs, more))
-            })
-            .await;
-            drop(cancel);
-            r.map_err(ApiError::internal)?
-        })
-        .await;
+                self.renew_lease(lease, timeout + Duration::from_secs(1));
+                let db = db.clone();
+                LiveQueries::run(&live, async {
+                    let permit = self.admit(timeout).await.ok_or_else(too_many)?;
+                    let (running, n) = Running::start(&self.running);
+                    let cancel = Cancel::default();
+                    let opts = ExecOptions {
+                        stats,
+                        shard,
+                        threads: (self.cores / n).max(1),
+                        deadline: Some(t0 + timeout),
+                        cancel: Some(cancel.0.clone()),
+                        synonyms: self.synonyms().or_else(|| db.exec.synonyms.clone()),
+                        max_groups: self.max_groups,
+                        memory: self.query_memory.clone(),
+                        ..db.exec.clone()
+                    };
+                    // The scroll goes back with the page read, or as it was when
+                    // the page fails, also when the caller stopped waiting.
+                    let r = tokio::task::spawn_blocking(move || {
+                        let _held = (permit, running);
+                        let Some(Paged::Db(scroll)) = taken.scroll.as_mut() else { unreachable!("a scroll of this database taken") };
+                        let r = match snap.table(&table) {
+                            Some(view) => db.scroll_next(&view, scroll, &opts, page).map_err(ApiError::from),
+                            None => Err(ApiError::bad(format!("query error: no such table: {table}"))),
+                        };
+                        let more = !scroll.done();
+                        drop(taken);
+                        r.map(|rs| (rs, more))
+                    })
+                    .await;
+                    drop(cancel);
+                    r.map_err(ApiError::internal)?
+                })
+                .await
+            }
+            _ => Err(gone()),
+        };
         drop(live);
         let more = matches!(res, Ok((_, true)));
-        let a = self.done(&sql, "scroll", t0, None, false, (false, false), &meta, res.map(|(rs, _)| (rs, Vec::new())))?;
+        let a = self.done(&sql, "scroll", t0, None, shard, (false, false), &meta, res.map(|(rs, _): (ResultSet, bool)| (rs, Vec::new())))?;
         Ok(Answer { cursor: more.then(|| cursor.to_string()), ..a })
     }
 
     /// Puts a scroll back after a page: kept for its keep-alive while rows
     /// are left, ended (its lease released) once none are.
-    fn put_back(&self, cursor: &str, scroll: Scroll) {
+    fn put_back(&self, cursor: &str, scroll: Paged) {
         let mut open = self.scrolls.lock().unwrap_or_else(|e| e.into_inner());
         let Some(c) = open.get_mut(cursor) else {
+            drop(open);
+            scroll.end();
             return;
         };
         if scroll.done() {
@@ -217,6 +303,7 @@ impl Service {
             open.remove(cursor);
             drop(open);
             self.release(&[lease]);
+            scroll.end();
             return;
         }
         c.until = Instant::now() + c.keep_alive;
@@ -230,10 +317,14 @@ impl Service {
     /// Ends scroll `cursor` and releases its lease; whether it was open.
     fn end_scroll(&self, cursor: &str) -> bool {
         let c = self.scrolls.lock().unwrap_or_else(|e| e.into_inner()).remove(cursor);
-        if let Some(c) = &c {
+        if let Some(c) = c {
             self.release(&[c.lease]);
+            if let Some(s) = c.scroll {
+                s.end();
+            }
+            return true;
         }
-        c.is_some()
+        false
     }
 
     /// Closes scroll `cursor` before its last page, for `owner`, who
@@ -247,8 +338,18 @@ impl Service {
     /// are open still and the rows they hold.
     pub fn sweep_scrolls(&self) -> (usize, usize) {
         let mut open = self.scrolls.lock().unwrap_or_else(|e| e.into_inner());
-        let now = Instant::now();
-        open.retain(|_, c| c.until > now);
+        ended(&mut open, Instant::now());
         (open.len(), open.values().map(|c| c.held).sum())
+    }
+}
+
+/// Ends the scrolls of `open` not read over their keep-alive (their
+/// leases expire): a coordinator's ends its shards' scrolls.
+fn ended(open: &mut std::collections::HashMap<String, Cursor>, now: Instant) {
+    let gone: Vec<String> = open.iter().filter(|(_, c)| c.until <= now).map(|(k, _)| k.clone()).collect();
+    for k in gone {
+        if let Some(s) = open.remove(&k).and_then(|c| c.scroll) {
+            s.end();
+        }
     }
 }

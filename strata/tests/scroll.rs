@@ -3,13 +3,18 @@
 //! in its order, whatever the size of a page, and after rows are written
 //! and deleted between pages. A plain scan holds nothing between pages;
 //! an ordered query holds its rows' places, and one of groups its rows, at
-//! most as many as its start allows.
+//! most as many as its start allows. Shards scroll for a coordinator,
+//! which merges their pages into the answer one database would give.
 
 use std::time::{Duration, Instant};
 
+use std::sync::Arc;
+
+use strata::cluster::{self, Pages};
 use strata::data::{self, col};
 use strata::db::Db;
 use strata::query::exec::{ExecOptions, ResultSet, Scroll};
+use strata::query::stats::TermStats;
 use strata::query::logical::Select;
 use strata::query::{compound, Params};
 use strata::storage::{DbOptions, Snapshot};
@@ -212,4 +217,111 @@ fn a_page_that_fails_is_read_again() {
         got.push(db.scroll_next(&snap, &mut s, &opts, 500).unwrap());
     }
     same("after a timeout", 500, &got, &want);
+}
+
+/// The rows of `open`'s database split over three shards by row, each
+/// with segments of its own and the same rows deleted.
+fn shards(dir: &std::path::Path, docs: &[strata::Document]) -> Vec<Db> {
+    (0..3)
+        .map(|i| {
+            let opts = DbOptions { segment_max_docs: SEG / 3, ..DbOptions::default() };
+            let db = Db::create(&dir.join(format!("shard{i}.strata")), data::beir_schema(8, VectorIndexKind::Flat), opts).unwrap();
+            db.load(docs.iter().enumerate().filter(|(n, _)| n % 3 == i).map(|(_, d)| d.clone())).unwrap();
+            db.sql("DELETE FROM docs WHERE category = 'c05'", &Params::new()).unwrap();
+            db
+        })
+        .collect()
+}
+
+/// The pages a coordinator merges from the shards' scrolls of `q` (in
+/// shard mode, with the shards' statistics summed): each scroll opened
+/// with a page of `open` rows, then the rows `Pages::needs` asks for.
+fn merged_pages(shards: &[Db], snaps: &[Snapshot], q: &Select, opts: &ExecOptions, page: usize, open: usize) -> Vec<ResultSet> {
+    let mut pages = Pages::new(q, shards.len()).unwrap();
+    let mut scrolls = Vec::new();
+    for (i, (d, s)) in shards.iter().zip(snaps).enumerate() {
+        let (rs, sc) = d.scroll(s, q, opts, open, 1_000_000).unwrap();
+        assert!(rs.rows.len() <= open);
+        pages.add(i, rs, !sc.done()).unwrap();
+        scrolls.push(sc);
+    }
+    let mut out = Vec::new();
+    let mut asked = 0;
+    // A first page always, as a coordinator answers one.
+    loop {
+        loop {
+            let needs = pages.needs(page);
+            if needs.is_empty() {
+                break;
+            }
+            for (i, ask) in needs {
+                assert!(ask >= 1 && ask <= 2 * page.max(cluster::MIN_ASK), "asked {ask} rows for a page of {page}");
+                let rs = shards[i].scroll_next(&snaps[i], &mut scrolls[i], opts, ask).unwrap();
+                pages.add(i, rs, !scrolls[i].done()).unwrap();
+                asked += 1;
+                assert!(asked < 100_000, "the shards are asked without end");
+            }
+        }
+        // It holds at most what the shards answered for two pages.
+        assert!(pages.held() <= shards.len() * 2 * page.max(cluster::MIN_ASK), "holds {}", pages.held());
+        let p = pages.page(page);
+        assert!(p.rows.len() <= page, "a page of {} rows", p.rows.len());
+        out.push(p);
+        if pages.done() {
+            break;
+        }
+    }
+    // Pages that only skipped OFFSET's rows are left out; the last is
+    // empty when the rows ran out on a full page.
+    let first = out.first().map(|p| ResultSet { rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default(), columns: p.columns.clone() });
+    out.retain(|p| !p.rows.is_empty());
+    out.extend(first.filter(|_| out.is_empty()));
+    out
+}
+
+#[test]
+fn shards_scroll_pages_a_coordinator_merges_as_they_come() {
+    let dir = tempfile::tempdir().unwrap();
+    let docs = data::synthetic(N, 8, 5);
+    let shards = shards(dir.path(), &docs);
+    let snaps: Vec<Snapshot> = shards.iter().map(|d| d.snapshot()).collect();
+    assert!(snaps.iter().all(|s| s.segments().len() >= 8));
+    let word = match &docs[3][col::TITLE] {
+        Value::Str(t) => t.split(' ').next().unwrap().to_string(),
+        v => panic!("{v:?}"),
+    };
+    for (sql, sizes) in [
+        ("SELECT id, year, rating FROM docs".to_string(), &[7, 300, 10_000][..]),
+        ("SELECT id, category FROM docs WHERE year >= 2000 LIMIT 500 OFFSET 333".into(), &[64, 1000]),
+        ("SELECT id FROM docs OFFSET 1500".into(), &[100]),
+        ("SELECT id, rating FROM docs ORDER BY rating DESC, id".into(), &[250, 1]),
+        ("SELECT id, year FROM docs WHERE year < 2010 ORDER BY year, id LIMIT 500 OFFSET 30".into(), &[64]),
+        (format!("SELECT id, score() FROM docs ORDER BY bm25(body, '{word}') DESC LIMIT 150"), &[15]),
+        ("SELECT id FROM docs WHERE year > 3000".into(), &[10]),
+    ] {
+        let q = select(&snaps[0], &sql);
+        assert!(cluster::streams(&q), "{sql}");
+        let stats: Vec<TermStats> = shards.iter().zip(&snaps).map(|(d, s)| d.term_stats(s, &q).unwrap()).collect();
+        let opts = ExecOptions { stats: Some(Arc::new(TermStats::sum(&stats))), shard: true, ..ExecOptions::default() };
+        let answers = shards.iter().zip(&snaps).map(|(d, s)| d.execute(s, &q, &opts).unwrap()).collect();
+        let want = cluster::merge(&q, answers).unwrap();
+        for &page in sizes {
+            for open in [0, page] {
+                let got = merged_pages(&shards, &snaps, &q, &opts, page, open);
+                same(&format!("{sql} (opened with {open})"), page, &got, &want);
+                // Every page full but the last.
+                for p in got.iter().rev().skip(1) {
+                    assert_eq!(p.rows.len(), page, "{sql}");
+                }
+            }
+        }
+    }
+    // Groups, counts and fused scores are answered whole.
+    for sql in ["SELECT category, COUNT(*) FROM docs GROUP BY category", "SELECT COUNT(*) FROM docs", "SELECT id FROM docs ORDER BY rrf(bm25(body, 'the'), bm25(body, 'of')) LIMIT 10"] {
+        let q = select(&snaps[0], sql);
+        assert!(!cluster::streams(&q), "{sql}");
+        let opts = ExecOptions { shard: true, ..ExecOptions::default() };
+        let e = shards[0].scroll(&snaps[0], &q, &opts, 10, 1000).err().unwrap_or_else(|| panic!("{sql}: a shard's scroll"));
+        assert!(e.to_string().contains("answers any other query whole"), "{e}");
+    }
 }
