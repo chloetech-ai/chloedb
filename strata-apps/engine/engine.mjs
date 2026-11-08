@@ -8,6 +8,7 @@ import { Store, physical, newId } from './store.mjs';
 import { rewriteSql } from './sql.mjs';
 import { runFunction } from './sandbox.mjs';
 import { runRule } from './rules.mjs';
+import { rowLabel, tablesOf } from './activity.mjs';
 
 const MAX_ROWS = 1000;
 const MAX_DEPTH = 3;
@@ -328,7 +329,9 @@ export class Engine extends EventEmitter {
     const view = await this.view(appId);
     if (!ctx.depth) {
       const detail = event === 'update' && ctx.changed ? `${table}: ${ctx.changed.join(', ')}` : table;
-      this.store.track(appId, event, '', detail, { person: ctx.who || ctx.user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, tbl: table, rid: row?.id, fields: event === 'update' ? ctx.changed : null }).catch(() => {});
+      const where = { person: ctx.who || ctx.user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, tbl: table, rid: row?.id, fields: event === 'update' ? ctx.changed : null };
+      rowLabel(this.db, appId, table, row, tablesOf(view)).catch(() => null)
+        .then((label) => this.store.track(appId, event, '', detail, { ...where, label })).catch(() => {});
     }
     if ((ctx.depth || 0) >= MAX_DEPTH) return;
     for (const fn of view.functions) {

@@ -22,6 +22,7 @@ import { ask } from './ask.mjs';
 import { Services, SESSION_DAYS, MAX_FILE } from './services.mjs';
 import { ensureDesigns } from './designs.mjs';
 import { Evolver, MODES } from './evolve.mjs';
+import { activity as activityOf } from './activity.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -318,6 +319,7 @@ const STATIC = {
   '/graph.js': ['web/graph.js', 'text/javascript; charset=utf-8'],
   '/kit.css': ['web/kit.css', 'text/css; charset=utf-8'],
   '/design.js': ['web/design.js', 'text/javascript; charset=utf-8'],
+  '/activity.js': ['web/activity.js', 'text/javascript; charset=utf-8'],
 };
 
 async function body(req) {
@@ -443,6 +445,14 @@ const routes = [
     const user = await cx.user(id);
     if (!user) throw Object.assign(new Error('email: sign in to send email from this app'), { status: 401 });
     return { email: await services.email(id, b, user.id) };
+  }],
+  // What people did in the app, in its own words, for the Activity view.
+  ['GET', /^\/api\/apps\/([a-z0-9]+)\/activity$/, async (b, [id], url, cx) => {
+    const days = Math.max(0, Math.min(3650, Number(url.searchParams.get('days') ?? 30) || 0));
+    const out = await activityOf(engine, id, { days });
+    const view = await engine.store.resolve(id);
+    return { ...out, me: await cx.who(id), people: (await services.people(id).catch(() => [])).map((p) => ({ id: p.id, name: p.name })),
+      signals: (await evolver.state(id, view).catch(() => ({ signals: [] }))).signals };
   }],
   ['GET', /^\/api\/apps\/([a-z0-9]+)\/outbox$/, async (b, [id]) => ({ outbox: await services.outbox(id) })],
   ['GET', /^\/api\/geocode$/, async (b, m, url) => ({ places: await services.geocode(url.searchParams.get('q')) })],

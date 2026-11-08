@@ -4,6 +4,7 @@
 
 import { drawGraph, nodePanel, GRAPH_HELP } from './graph.js';
 import { designCss, checkDesign, PRESETS } from './design.js';
+import { mountActivity } from './activity.js';
 
 const $ = (sel, el = document) => el.querySelector(sel);
 function h(tag, props, ...children) {
@@ -184,7 +185,10 @@ function route() {
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   if (BARE) return openApp(BARE, parts[0] ? decodeURIComponent(parts[0]) : null);
   $('#nav-library').classList.toggle('on', parts[0] === 'library');
-  if (parts[0] === 'app' && parts[1]) return openApp(parts[1], parts[2] ? decodeURIComponent(parts[2]) : null);
+  if (parts[0] === 'app' && parts[1]) {
+    const activity = parts[2] === '~activity';
+    return openApp(parts[1], parts[2] && !activity ? decodeURIComponent(parts[2]) : null, activity);
+  }
   leaveApp();
   if (parts[0] === 'library') return renderLibrary(parts[1] === 'graph' && parts[2] ? decodeURIComponent(parts[2]) : null);
   return renderHome();
@@ -192,6 +196,7 @@ function route() {
 
 function leaveApp() {
   leaveView(false);
+  closeActivity();
   S.designCss = '';
   S.designKey = '';
   S.appId = null;
@@ -600,7 +605,7 @@ async function showAppSql(appId) {
 
 // ---- an app
 
-async function openApp(id, viewSlug) {
+async function openApp(id, viewSlug, activity = false) {
   const first = S.appId !== id;
   if (first) {
     leaveApp();
@@ -612,6 +617,7 @@ async function openApp(id, viewSlug) {
       h('aside', { class: 'panel closed', id: 'panel' })));
   }
   if (viewSlug) S.view = viewSlug;
+  if (!BARE) S.activity = activity;
   await refreshApp();
 }
 
@@ -650,19 +656,20 @@ function renderApp() {
     renderLook();
   } else {
     $('#crumbs').replaceChildren(...[h('span', { class: 'sep' }, '/'), h('b', st.app.name), st.version.n ? h('span', { class: 'pill' }, st.version.trying ? `trying v${st.version.trying} (live v${st.version.live})` : `v${st.version.n}`) : null,
-      st.views.length ? h('a', { class: 'navlink small', href: `/a/${st.app.id}`, target: '_blank', title: 'The app without the studio: for a phone, or to hand to someone' }, 'Open on its own') : null].filter(Boolean));
+      st.views.length ? h('button', { class: `navlink small act-open${S.activity ? ' on' : ''}`, title: 'What people did in this app', 'aria-pressed': String(!!S.activity), onclick: () => (S.activity ? switchView(S.view) : showActivity()) }, h('span', { class: 'pulse' }), 'Activity') : null,
+      st.views.length ? h('a', { class: 'navlink small own', href: `/a/${st.app.id}`, target: '_blank', title: 'The app without the studio: for a phone, or to hand to someone' }, 'Open on its own') : null].filter(Boolean));
   }
   const views = st.views;
   if (!views.find((v) => v.slug === S.view)) S.view = views[0]?.slug || null;
   // The first screen shown is opened too.
-  if (S.view && !S.viewSince) {
+  if (S.view && !S.viewSince && !S.activity) {
     S.viewSince = Date.now();
     const first = views.find((v) => v.slug === S.view);
     if (first) api('POST', `/api/apps/${S.appId}/track${atV()}`, { kind: 'open', detail: S.view, cap: first.id }).catch(() => {});
   }
   // tabs
   const tabs = $('#tabs');
-  tabs.replaceChildren(...views.map((v) => h('button', { class: `tab${v.slug === S.view ? ' on' : ''}`, onclick: () => switchView(v.slug) }, v.title, S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
+  tabs.replaceChildren(...views.map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, onclick: () => switchView(v.slug) }, v.title, S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
     h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, st.running ? 'Changing...' : 'Change'));
   if (!views.length) tabs.replaceChildren(h('span', { class: 'tab on' }, 'First version'), h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, 'Details'));
   renderTryBar();
@@ -846,8 +853,22 @@ function leaveView(beacon) {
 }
 window.addEventListener('pagehide', () => leaveView(true));
 
+// What people did in the app, over its screens, in the app's own design.
+function showActivity() {
+  leaveView(false);
+  S.activity = true;
+  history.replaceState(null, '', `#/app/${S.appId}/~activity`);
+  renderApp();
+}
+function closeActivity() {
+  S.act?.destroy();
+  S.act = null;
+  S.activity = false;
+}
+
 function switchView(slug, params) {
   if (slug !== S.view) leaveView(false);
+  if (S.activity) { S.activity = false; S.viewSince = 0; }
   S.view = slug;
   S.viewSince = Date.now();
   const v = S.app.views.find((x) => x.slug === slug);
@@ -945,6 +966,7 @@ function renderFrames() {
   if (pv) {
     pv.dataset.key = key;
     for (const f of S.frames.values()) f.iframe.hidden = true;
+    if (S.act) S.act.box.hidden = true;
     box.querySelector('.building')?.remove();
     box.append(pv);
     return;
@@ -970,7 +992,15 @@ function renderFrames() {
     box.append(iframe);
     S.frames.set(v.slug, { iframe, capId: v.id, comps: compSig, params });
   }
-  for (const [slug, f] of S.frames) f.iframe.hidden = slug !== S.view;
+  for (const [slug, f] of S.frames) f.iframe.hidden = slug !== S.view || !!S.activity;
+  if (S.activity && !BARE) {
+    if (!S.act || !box.contains(S.act.box)) {
+      S.act?.destroy();
+      const holder = h('div', { class: 'act-box' });
+      box.append(holder);
+      S.act = { box: holder, ...mountActivity(holder, { appId: S.appId, api, onClose: () => switchView(S.view), openScreen: (slug) => switchView(slug) }) };
+    } else { S.act.box.hidden = false; S.act.refresh(); }
+  } else if (S.act) { S.act.destroy(); S.act.box.remove(); S.act = null; }
   // An app on its own showing a front page gives the page the whole window:
   // the page has its own header.
   document.body.classList.toggle('front-view', BARE && !!v?.spec?.screen && /"page"\s*:\s*"front"/.test(v.code || ''));

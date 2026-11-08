@@ -185,6 +185,11 @@ td.right > button + button { margin-left: 2px; }
 .grow { flex: 1 1 0; min-width: 0; }
 .right { margin-left: auto; }
 .center { display: grid; place-items: center; text-align: center; }
+/* A layout class on a table's cell or row only aligns it: a cell stays a
+   cell (a week grid whose cells say "center" would otherwise stack its days). */
+:is(td, th):is(.row, .col, .center, .grid, .split, .section, .toolbar, .kpis, .columns) { display: table-cell; }
+:is(td, th).center { text-align: center; vertical-align: middle; }
+tr:is(.row, .col, .center, .grid, .split, .section, .toolbar, .kpis, .columns) { display: table-row; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
 .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space); align-items: start; }
 @media (max-width: 680px) { .split { grid-template-columns: minmax(0, 1fr); } body { padding: var(--space) 14px calc(var(--space) * 2); } }

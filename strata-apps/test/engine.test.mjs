@@ -1581,6 +1581,12 @@ test('the patterns of use are counted in Strata', async (t) => {
     assert.equal(kept.screen, 'guests');
     assert.equal(kept.rid, 'g1');
     assert.equal((await store.recentEvents('a1', 5)).find((e) => e.kind === 'action').q, 'big party');
+    // A write keeps the name of its row; events() reads a period's events.
+    await store.track('a1', 'delete', '', 'guests', { session: 's9', tbl: 'guests', rid: 'g2', label: 'Ana Lima' });
+    const since = await store.events('a1', { since: new Date(Date.now() - 60000).toISOString() });
+    assert.equal(since.length, 3);
+    assert.equal(since.find((e) => e.kind === 'delete').label, 'Ana Lima');
+    assert.equal((await store.events('a1', { since: new Date(Date.now() + 60000).toISOString() })).length, 0);
     // Then a day of use, with times, written as the engine writes events.
     const docs = [];
     const ev = (min, sec, o) => docs.push({ op: 'insert', table: 'sa_events', doc: { id: `e${docs.length}`, app: 'a2', ts: at(min, sec), ...o } });
@@ -1681,4 +1687,55 @@ test('what apps change next is learned across apps, in Strata', async (t) => {
   } finally {
     child.kill();
   }
+});
+
+test('an event is told by the name of the row it wrote', async () => {
+  const { singular, rowLabel, activity } = await import('../engine/activity.mjs');
+  for (const [many, one] of [['plants', 'plant'], ['categories', 'category'], ['boxes', 'box'], ['people', 'person'], ['status', 'status'], ['glass', 'glass'], ['check_ins', 'check in']]) assert.equal(singular(many), one);
+  const columns = { habits: [{ name: 'name', type: 'text' }, { name: 'goal', type: 'int' }], checkins: [{ name: 'habit', type: 'keyword' }, { name: 'day', type: 'keyword' }, { name: 'note', type: 'text' }],
+    waterings: [{ name: 'plant_name', type: 'keyword' }, { name: 'day', type: 'keyword' }], notes: [{ name: 'body', type: 'text' }] };
+  const tables = Object.entries(columns).map(([name, cols]) => ({ name, columns: cols }));
+  const rows = { app_a1_habits: { h1: { id: 'h1', name: 'Read 20 pages' } }, app_a1_checkins: { c1: { id: 'c1', habit: 'h1', day: '2026-11-08' } } };
+  const db = { get: async (t, ids) => ids.map((id) => rows[t]?.[id] || null) };
+  // its own name; the name of what it points to, with its day; another
+  // table's name kept in a column; its first short text
+  assert.equal(await rowLabel(db, 'a1', 'habits', rows.app_a1_habits.h1, tables), 'Read 20 pages');
+  assert.equal(await rowLabel(db, 'a1', 'checkins', rows.app_a1_checkins.c1, tables), 'Read 20 pages · 2026-11-08');
+  assert.equal(await rowLabel(db, 'a1', 'waterings', { id: 'w1', plant_name: 'Monstera', day: '2026-11-08' }, tables), 'Monstera · 2026-11-08');
+  assert.equal(await rowLabel(db, 'a1', 'notes', { id: 'n1', body: 'Call   the vet' }, tables), 'Call the vet');
+  assert.equal(await rowLabel(db, 'a1', 'notes', { id: 'n2', body: 'https://example.com/a' }, tables), null);
+  assert.equal(await rowLabel(db, 'a1', 'gone', { id: 'x' }, tables), null);
+  // The view's events: a label kept with the event wins (a removed row keeps
+  // its name), else the row as it is now; empty fields are left out.
+  let asked = null;
+  const engine = {
+    view: async () => ({ app: { id: 'a1', name: 'Habits' }, tables: tables.map((t) => ({ spec: { name: t.name, columns: t.columns } })),
+      views: [{ id: 'a1/view/manage@1', slug: 'manage', title: 'Manage', spec: { order: 60 } }, { id: 'a1/view/today@2', slug: 'today', title: 'Today', spec: { order: 10 } }], functions: [{ id: 'a1/function/streaks@1', slug: 'streaks', title: 'streaks' }] }),
+    store: {
+      events: async (app, o) => { asked = o; return [
+        { kind: 'insert', tbl: 'checkins', rid: 'c1', label: null, person: null, ts: '2026-11-08T10:00:00Z' },
+        { kind: 'delete', tbl: 'habits', rid: 'h9', label: 'Meditate', ts: '2026-11-08T09:00:00Z' },
+        { kind: 'update', tbl: 'habits', rid: 'h1', fields: 'goal', ts: '2026-11-08T08:00:00Z' },
+        { kind: 'open', detail: 'today', screen: 'today', session: 's1', ts: '2026-11-08T07:00:00Z' }]; },
+      countRows: async (t) => Object.keys(rows[t] || {}).length,
+    },
+    db,
+  };
+  const out = await activity(engine, 'a1', { days: 7 });
+  assert.equal(asked.limit, 5000);
+  assert.ok(Math.abs(Date.parse(asked.since) - (Date.now() - 7 * 86400000)) < 5000);
+  assert.deepEqual(out.events.map((e) => e.label || null), ['Read 20 pages · 2026-11-08', 'Meditate', 'Read 20 pages', null]);
+  assert.ok(!('person' in out.events[0]), 'empty fields are left out');
+  assert.deepEqual(out.screens.map((x) => x.slug), ['today', 'manage']);
+  assert.deepEqual(out.tables.map((t) => [t.name, t.noun, t.rows]), [['habits', 'habit', 1], ['checkins', 'checkin', 1], ['waterings', 'watering', 0], ['notes', 'note', 0]]);
+  assert.equal((await activity(engine, 'a1', { days: 0 })).since, null);
+  assert.equal(asked.since, null);
+});
+
+test('a layout class on a table cell leaves it a cell', async () => {
+  const { readFileSync } = await import('node:fs');
+  const kit = readFileSync(join(import.meta.dirname, '..', 'web', 'kit.css'), 'utf8');
+  // .center is a grid; on a td it stacked a week's days one under another.
+  assert.match(kit, /:is\(td, th\):is\([^)]*\.center[^)]*\) \{ display: table-cell; \}/);
+  assert.match(kit, /tr:is\([^)]*\.row[^)]*\) \{ display: table-row; \}/);
 });

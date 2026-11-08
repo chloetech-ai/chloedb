@@ -157,7 +157,7 @@
    }
   },
   "let": {
-   "{{key}}_shown": "={{key}}.filter(row => (!state.{{key}}_f || String(row[{{filter.column|json}}]) === String(state.{{key}}_f)) && (!state.{{key}}_q || {{search|json}}.some(k => String(row[k] ?? '').toLowerCase().includes(String(state.{{key}}_q).toLowerCase()))))"
+   "{{key}}_shown": "={{key}}.filter(row => (!state.{{key}}_f || !{{filter.column|json}} || String(row[{{filter.column|json}}]) === String(state.{{key}}_f)) && (!state.{{key}}_q || ({{search|json}} || []).some(k => String(row[k] ?? '').toLowerCase().includes(String(state.{{key}}_q).toLowerCase()))))"
   },
   "body": [
    {
