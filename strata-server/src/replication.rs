@@ -1197,6 +1197,7 @@ impl Follow {
         let (a, save) = self.core().vote(r, &n, Instant::now(), sticky);
         if let Some(k) = save {
             self.keep(k, "the vote")?;
+            self.core().granted(Instant::now());
             tracing::info!(term = r.term, candidate = %r.candidate, handover = r.handover, "voted for a copy to be the shard's primary");
         }
         Ok(a)
@@ -1212,7 +1213,9 @@ impl Follow {
     /// copies that granted it refuse the primary of an older term from then.
     ///
     /// It asks for the term after the newest it knows or a copy told it
-    /// ([`shard::Replica::heard`]).
+    /// ([`shard::Replica::heard`]). On its own (not a `handover`), each
+    /// round ends once its answers decide it ([`shard::Campaign::decided`]):
+    /// it waits for no copy that is down.
     ///
     /// The copies of `first` (in a handover, those that serve as the
     /// shard's primary) are asked for their votes before the others, while
@@ -1223,7 +1226,8 @@ impl Follow {
     /// two copies the shard is left with no primary.
     pub async fn campaign(&self, copies: &[String], opts: &PrimaryOptions, handover: bool, first: &[String]) -> Result<Elected, ApiError> {
         let c = self.core().campaign(&self.numbering()?, handover);
-        let t = c.tally(copies, self.ask(c.ask(self.numbering()?.last(), true), copies, opts).await);
+        let early = (!handover && first.is_empty()).then_some(&c);
+        let t = c.tally(copies, self.ask(c.ask(self.numbering()?.last(), true), copies, opts, early).await);
         self.core().heard(&t);
         c.pre_voted(&t)?;
         let (before, after): (Vec<String>, Vec<String>) = copies.iter().cloned().partition(|u| first.contains(u));
@@ -1233,10 +1237,10 @@ impl Follow {
             let k = c.vote_self(&self.core(), &n)?;
             self.keep(k, "the vote")?;
             let req = c.ask(n.last(), false);
-            let said = self.ask(req.clone(), &before, opts).await;
+            let said = self.ask(req.clone(), &before, opts, None).await;
             (req, said)
         };
-        let (mut said, mut rest) = (said.into_iter(), self.ask(req, &after, opts).await.into_iter());
+        let (mut said, mut rest) = (said.into_iter(), self.ask(req, &after, opts, early).await.into_iter());
         let answers = copies.iter().map(|u| if first.contains(u) { said.next() } else { rest.next() }.expect("an answer from each copy")).collect();
         let t = c.tally(copies, answers);
         self.core().heard(&t);
@@ -1246,20 +1250,39 @@ impl Follow {
         Ok(e)
     }
 
-    /// What each of `copies` answered vote `req` (an error: no answer).
-    async fn ask(&self, req: pb::VoteRequest, copies: &[String], opts: &PrimaryOptions) -> Vec<Result<pb::VoteResponse, String>> {
-        futures::future::join_all(copies.iter().map(|url| {
-            let req = req.clone();
-            async move {
-                let mut c = coord::client(url, opts.token.as_ref(), opts.ca.as_deref()).map_err(|e| e.message)?;
-                match tokio::time::timeout(opts.call_timeout, c.vote(req)).await {
-                    Ok(Ok(a)) => Ok(a.into_inner()),
-                    Ok(Err(s)) => Err(format!("{}: {}", crate::grpc::code_name(s.code()), s.message())),
-                    Err(_) => Err(format!("no answer within {} s", opts.call_timeout.as_secs())),
+    /// What each of `copies` answered vote `req` (an error: no answer),
+    /// waiting for every answer, or, with `until`, only until the answers
+    /// decide that campaign's round
+    /// ([`shard::Campaign::decided`]): a copy it stopped waiting for is
+    /// answered as not waited for.
+    async fn ask(&self, req: pb::VoteRequest, copies: &[String], opts: &PrimaryOptions, until: Option<&shard::Campaign>) -> Vec<Result<pb::VoteResponse, String>> {
+        use futures::StreamExt;
+        let mut calls: futures::stream::FuturesUnordered<_> = copies
+            .iter()
+            .enumerate()
+            .map(|(i, url)| {
+                let req = req.clone();
+                async move {
+                    let a = async {
+                        let mut c = coord::client(url, opts.token.as_ref(), opts.ca.as_deref()).map_err(|e| e.message)?;
+                        match tokio::time::timeout(opts.call_timeout, c.vote(req)).await {
+                            Ok(Ok(a)) => Ok(a.into_inner()),
+                            Ok(Err(s)) => Err(format!("{}: {}", crate::grpc::code_name(s.code()), s.message())),
+                            Err(_) => Err(format!("no answer within {} s", opts.call_timeout.as_secs())),
+                        }
+                    };
+                    (i, a.await)
                 }
+            })
+            .collect();
+        let mut said: Vec<Option<Result<pb::VoteResponse, String>>> = vec![None; copies.len()];
+        while let Some((i, a)) = calls.next().await {
+            said[i] = Some(a);
+            if until.is_some_and(|c| c.decided(&said)) {
+                break;
             }
-        }))
-        .await
+        }
+        said.into_iter().map(|a| a.unwrap_or_else(|| Err("not waited for: the copies that answered decided the round".into()))).collect()
     }
 
     /// Before a handover: asks `copies` whether they would vote for it,
@@ -1270,7 +1293,7 @@ impl Follow {
     /// not applied yet, and would refuse it the vote.
     async fn catch_up(&self, copies: &[String], opts: &PrimaryOptions) -> Result<(), ApiError> {
         let c = self.core().campaign(&self.numbering()?, true);
-        let t = c.tally(copies, self.ask(c.ask(self.numbering()?.last(), true), copies, opts).await);
+        let t = c.tally(copies, self.ask(c.ask(self.numbering()?.last(), true), copies, opts, None).await);
         let until = Instant::now() + HANDOVER_CATCH_UP;
         let mut committed = self.committed.subscribe();
         loop {
