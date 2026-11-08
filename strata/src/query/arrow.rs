@@ -83,13 +83,7 @@ impl Columns {
     /// The rows of [`Columns::to_ipc`]'s stream `bytes`, their columns
     /// named `names`, with the statistics `stats`.
     pub fn from_ipc(bytes: &[u8], names: Vec<String>, stats: ExecStats) -> StrataResult<Columns> {
-        let read = || -> Result<RecordBatch, ArrowError> {
-            let r = StreamReader::try_new(std::io::Cursor::new(bytes), None)?;
-            let schema = r.schema();
-            let batches = r.collect::<Result<Vec<_>, _>>()?;
-            concat_batches(&schema, &batches)
-        };
-        let batch = read().map_err(ipc_error)?;
+        let batch = batch_of_ipc(bytes)?;
         if batch.num_columns() != names.len() + 2 {
             return Err(Error::Query(format!("an Arrow answer of {} columns for {} named", batch.num_columns(), names.len())));
         }
@@ -504,6 +498,106 @@ pub fn values_of(a: &ArrayRef) -> Result<Vec<Value>, Mixed> {
         t => return mixed(format!("an answer column of type {t}")),
     }
     Ok(out)
+}
+
+/// A query's answer as one record batch, its columns named as the query
+/// names them, with what the engine did: the executor's arrays as they
+/// are, or its rows made arrays ([`answer_arrays`]). Times are in UTC, as
+/// Strata's are. This is the Arrow a client gets, in this process or
+/// from strata-server, so both type a column the same.
+pub fn answer_batch(leaf: crate::query::exec::Leaf) -> StrataResult<(RecordBatch, ExecStats)> {
+    let (names, arrays, rows, stats) = match leaf {
+        crate::query::exec::Leaf::Arrow(c) => (c.names, c.arrays, c.rows, c.stats),
+        crate::query::exec::Leaf::Rows(rs) => {
+            let n = rs.rows.len();
+            (rs.columns.clone(), answer_arrays(&rs.columns, rs.rows)?, n, rs.stats)
+        }
+    };
+    let arrays: Vec<ArrayRef> = arrays.into_iter().map(utc).collect();
+    let fields: Vec<Field> = names.iter().zip(&arrays).map(|(name, a)| Field::new(name, a.data_type().clone(), true)).collect();
+    let opts = RecordBatchOptions::new().with_row_count(Some(rows));
+    let batch = RecordBatch::try_new_with_options(Arc::new(ArrowSchema::new(fields)), arrays, &opts).map_err(|e| Error::Query(format!("arrow: {e}")))?;
+    Ok((batch, stats))
+}
+
+/// The batches of the Arrow IPC stream `bytes`, as one.
+pub fn batch_of_ipc(bytes: &[u8]) -> StrataResult<RecordBatch> {
+    let read = || -> Result<RecordBatch, ArrowError> {
+        let r = StreamReader::try_new(std::io::Cursor::new(bytes), None)?;
+        let schema = r.schema();
+        let batches = r.collect::<Result<Vec<_>, _>>()?;
+        concat_batches(&schema, &batches)
+    };
+    read().map_err(ipc_error)
+}
+
+/// `batch` as an Arrow IPC stream of one batch.
+pub fn ipc_of(batch: &RecordBatch) -> StrataResult<Vec<u8>> {
+    let write = || -> Result<Vec<u8>, ArrowError> {
+        let mut out = Vec::with_capacity(batch.get_array_memory_size() + 1024);
+        let mut w = StreamWriter::try_new(&mut out, &batch.schema())?;
+        w.write(batch)?;
+        w.finish()?;
+        drop(w);
+        Ok(out)
+    };
+    write().map_err(ipc_error)
+}
+
+/// Rows of `columns.len()` values as arrays, one a column (a row with
+/// fewer is NULL in the rest). A column of integers and floats is
+/// Float64, and one of lists of vectors (a multi-vector field's) a list
+/// of lists of Float32; values of other types mixed in one column are an
+/// error, as Arrow holds one type a column.
+pub fn answer_arrays(columns: &[String], rows: Vec<Vec<Value>>) -> StrataResult<Vec<ArrayRef>> {
+    let n = rows.len();
+    let mut cols: Vec<Vec<Value>> = columns.iter().map(|_| Vec::with_capacity(n)).collect();
+    for r in rows {
+        let k = r.len();
+        for (c, v) in cols.iter_mut().zip(r) {
+            c.push(v);
+        }
+        cols.iter_mut().skip(k).for_each(|c| c.push(Value::Null));
+    }
+    cols.into_iter().zip(columns).map(|(values, name)| answer_array(name, values)).collect()
+}
+
+/// One column's values as an array of their one type.
+fn answer_array(name: &str, values: Vec<Value>) -> StrataResult<ArrayRef> {
+    let numbers = |v: &Value| matches!(v, Value::Null | Value::Int(_) | Value::Float(_));
+    if values.iter().any(|v| matches!(v, Value::Int(_))) && values.iter().any(|v| matches!(v, Value::Float(_))) && values.iter().all(numbers) {
+        return Ok(Arc::new(values.iter().map(Value::as_f64).collect::<Float64Array>()));
+    }
+    // A multi-vector field's: a list of vectors a row.
+    let vectors = |v: &Value| match v {
+        Value::List(xs) => xs.iter().all(|x| matches!(x, Value::Vector(_))),
+        v => matches!(v, Value::Null),
+    };
+    if values.iter().any(|v| matches!(v, Value::List(xs) if !xs.is_empty())) && values.iter().all(vectors) {
+        let mut b = ListBuilder::new(ListBuilder::new(Float32Builder::new()));
+        for v in &values {
+            match v {
+                Value::List(xs) => {
+                    for x in xs {
+                        b.values().values().append_slice(x.as_vector().unwrap_or_default());
+                        b.values().append(true);
+                    }
+                    b.append(true);
+                }
+                _ => b.append(false),
+            }
+        }
+        return Ok(Arc::new(b.finish()));
+    }
+    column_of(values).map_err(|m| Error::Query(format!("column {name}: {}; an Arrow column holds values of one type (query() answers it)", m.0)))
+}
+
+/// A column of times in UTC, which Strata's are; any other as it is.
+fn utc(a: ArrayRef) -> ArrayRef {
+    match (a.data_type(), a.as_any().downcast_ref::<TimestampMicrosecondArray>()) {
+        (DataType::Timestamp(_, None), Some(t)) => Arc::new(t.clone().with_timezone("UTC")),
+        _ => a,
+    }
 }
 
 #[cfg(test)]

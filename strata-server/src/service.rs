@@ -18,10 +18,11 @@ use strata::query::ir::Plan;
 use strata::query::model::Models;
 use strata::query::paths::{Call, Paths};
 use strata::query::sql::{ident, quoted};
+use strata::query::function::FunctionSet;
 use strata::query::{bind_command, compound, ops, profile, steps, Command, Params, Select};
 use strata::rank_log::{self, Log};
 use strata::schema::{Alter, Schema};
-use strata::storage::{CheckpointOptions, CheckpointStats, Layout, RankProfile, Snapshot, TableTxn, WriteTxn};
+use strata::storage::{CheckpointOptions, CheckpointStats, Layout, RankProfile, Snapshot, TableTxn, WriteTxn, FUNCTIONS, SOURCES};
 use strata::text::Synonyms;
 use strata::value::Value;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -45,12 +46,15 @@ pub(crate) mod arrivals;
 mod failover;
 pub mod feed;
 mod moving;
+mod scroll;
+pub mod scrub;
 mod switch;
 
 pub use failover::tuned as failover_tuned;
 pub(crate) use moving::Moving;
 pub use feed::MARK;
 pub use moving::FREEZE_TTL;
+pub use scroll::{owner as scroll_owner, ScrollAsk, MAX_KEEP_ALIVE, MAX_SCROLL_ROWS};
 
 tokio::task_local! {
     /// The cluster map epoch the request being served routes by, as
@@ -238,6 +242,9 @@ pub struct QueryReq {
     /// ([`Service::stats_version`]), which a coordinator kept: run only on
     /// that version, else answer [`Answer::stale`]. 0: any version.
     pub stats_version: u64,
+    /// Start a scroll ([`scroll`]): answer the first page, and keep the
+    /// rest for [`Service::scroll_next`] ([`Answer::cursor`]).
+    pub scroll: Option<ScrollAsk>,
     /// From a coordinator that fuses a rank-safe boost from the rows each
     /// shard's bound found alone ([`crate::grpc::BOOSTS_PROTOCOL`]): the
     /// shard leaves out the boost's inputs' top rows
@@ -296,6 +303,8 @@ pub struct Answer {
     /// The query did not run: its [`QueryReq::stats_version`] is not the
     /// version it would read.
     pub stale: bool,
+    /// A scroll's cursor, while rows are left to read ([`QueryReq::scroll`]).
+    pub cursor: Option<String>,
 }
 
 /// An answer of no rows, of a query that did not run.
@@ -433,6 +442,9 @@ pub struct Service {
     /// Proxies whose `X-Forwarded-For` names the client (`--trust-proxy`):
     /// addresses and prefix lengths.
     pub trusted_proxies: Vec<(std::net::IpAddr, u8)>,
+    /// The apps the command center shows (`--app`), which `/v1/apps/<name>`
+    /// reaches ([`crate::apps`]).
+    pub apps: crate::apps::Apps,
     /// Fleet health's memory ([`crate::fleet`]).
     pub fleet: crate::fleet::Fleet,
     /// The coordinators this server knows ([`crate::peers`]).
@@ -477,6 +489,8 @@ pub struct Service {
     pub alerts: Alerts,
     /// Contain rules, applied at admission ([`crate::contain`]): alerts agent.
     pub contain: crate::contain::Contain,
+    /// The on-call agent's proposals, waiting for an admin ([`crate::oncall`]).
+    pub oncall: crate::oncall::Desk,
     /// The cloud view's AWS credentials and machine catalogues ([`crate::aws`]).
     pub aws: Arc<crate::aws::Aws>,
     /// The cloud view's DigitalOcean token and size catalogues
@@ -549,6 +563,11 @@ pub struct Service {
     pub lease_ttl: Duration,
     leases: Mutex<HashMap<u64, Lease>>,
     next_lease: AtomicU64,
+    /// The open scrolls, by cursor ([`scroll`]).
+    scrolls: Mutex<HashMap<String, scroll::Cursor>>,
+    /// The rows (or rows' places) the open scrolls may hold between them
+    /// (`--max-scroll-rows`).
+    pub max_scroll_rows: usize,
     /// Random for each run of the server: what a snapshot's statistics
     /// version is drawn from with its txn ([`Self::stats_version`]), so
     /// that versions from before a restart are not taken for later ones.
@@ -574,6 +593,10 @@ pub struct Service {
     synonyms_file: Option<PathBuf>,
     /// Where `POST /v1/admin/checkpoint` writes checkpoints.
     backup_dir: Option<PathBuf>,
+    /// Where `POST /v1/admin/slices` writes slices, one directory a table,
+    /// which `GET /v1/slices/...` serves ([`strata::slice`]), and how
+    /// devices use them ([`crate::slices`]).
+    slices: Option<Arc<crate::slices::Slices>>,
     /// The slot map a coordinator gave this shard and its place in it
     /// ([`Service::set_slots`]), and the file that keeps them (a new map
     /// is set while its lock is held).
@@ -601,6 +624,9 @@ pub struct Service {
     /// its shard's other copies to elect it (`--failover-after-ms`; zero:
     /// never), as [`Self::start_failover`] does.
     pub failover_after: Duration,
+    /// Scrubbing: how often, how fast, and what the last scrub found
+    /// (`--scrub-every-s`, [`Self::start_scrubs`]).
+    pub scrubs: scrub::Scrubs,
     /// The command center's Simulator: its test run and the reports kept
     /// ([`crate::traffic::run`]).
     pub simulator: crate::traffic::run::Simulator,
@@ -656,6 +682,7 @@ impl Service {
             slo: Slo::default(),
             place: Place::from_env(None),
             trusted_proxies: Vec::new(),
+            apps: Default::default(),
             fleet: Default::default(),
             peers: Default::default(),
             image_repository: crate::operator::upgrade::REPOSITORY.into(),
@@ -675,6 +702,7 @@ impl Service {
             audit: Audit::new(None).expect("an audit log in memory"),
             alerts: Alerts::new(None, None).expect("the default alert rules"),
             contain: Default::default(),
+            oncall: Default::default(),
             aws: Arc::new(crate::aws::Aws::memory()),
             digitalocean: Arc::new(crate::digitalocean::DigitalOcean::memory()),
             clouds: Arc::new(crate::cloud::clusters::Clusters::memory()),
@@ -702,6 +730,8 @@ impl Service {
             lease_ttl: Duration::from_secs(60),
             leases: Mutex::new(HashMap::new()),
             next_lease: AtomicU64::new(1),
+            scrolls: Mutex::new(HashMap::new()),
+            max_scroll_rows: MAX_SCROLL_ROWS,
             stats_nonce: std::hash::BuildHasher::hash_one(&std::hash::RandomState::new(), (std::process::id(), Instant::now())),
             stale_stats: AtomicU64::new(0),
             admission: Arc::new(Semaphore::new(max_concurrent.max(1))),
@@ -715,6 +745,7 @@ impl Service {
             synonyms: RwLock::new(None),
             synonyms_file: None,
             backup_dir: None,
+            slices: None,
             slots: RwLock::new(None),
             slots_since: AtomicU64::new(0),
             slots_file: tokio::sync::Mutex::new(None),
@@ -725,6 +756,7 @@ impl Service {
             promoting: tokio::sync::Mutex::new(()),
             replication_file: None,
             failover_after: Duration::ZERO,
+            scrubs: Default::default(),
             simulator: Default::default(),
         }
     }
@@ -1645,6 +1677,83 @@ impl Service {
         Ok(())
     }
 
+    /// Sets where `POST /v1/admin/slices` writes slices, creating the
+    /// directory if need be.
+    pub fn set_slices_dir(&mut self, dir: &Path) -> Result<(), ApiError> {
+        if let Backend::Cluster(_) = self.backend {
+            return Err(ApiError::bad("--slices goes to a server with a database of its own: a slice is built from one table's rows"));
+        }
+        self.slices = Some(Arc::new(crate::slices::Slices::new(dir)?));
+        Ok(())
+    }
+
+    /// The slices this server builds and serves.
+    pub fn slices(&self) -> Result<&Arc<crate::slices::Slices>, ApiError> {
+        self.slices.as_ref().ok_or_else(|| ApiError::bad("slices need the server started with --slices DIR"))
+    }
+
+    /// The directory of a table's slice, if the server serves slices and
+    /// the name is one a table may have.
+    pub fn slice_dir(&self, table: &str) -> Result<PathBuf, ApiError> {
+        self.slices()?.dir_of(table)
+    }
+
+    /// The options a table's slice was built with, from its manifest: what
+    /// a rebuild (`POST /v1/admin/slices` with the table alone) takes.
+    pub fn slice_options(&self, table: &str) -> Result<strata::slice::BuildOptions, ApiError> {
+        let i = self.slices()?.info(table)?;
+        Ok(strata::slice::BuildOptions { table: Some(i.table.clone()), key: i.key.clone() })
+    }
+
+    /// Builds the slice of a table ([`strata::slice::build`]) into its
+    /// directory under `--slices`, replacing the one there only once the
+    /// new one is whole, so that a device never reads half of one.
+    pub async fn build_slice(&self, opts: strata::slice::BuildOptions) -> Result<strata::slice::Built, ApiError> {
+        let db = self.admin_db()?;
+        let slices = self.slices()?.clone();
+        let table = match &opts.table {
+            Some(t) => t.clone(),
+            None => db.snapshot().schema().table.clone(),
+        };
+        let dest = slices.dir_of(&table)?;
+        let parent = dest.parent().expect("under the slices directory").to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            // The table's writes so far: a write after this one makes the
+            // slice stale (one during the build too, which is safe).
+            let ops = db.storage().activity(&table).map_or(0, |a| a.ops);
+            let fresh = parent.join(format!(".building-{table}"));
+            let old = parent.join(format!(".old-{table}"));
+            let _ = std::fs::remove_dir_all(&fresh);
+            let built = strata::slice::build(&db, &opts, &fresh)?;
+            let _ = std::fs::remove_dir_all(&old);
+            if dest.exists() {
+                std::fs::rename(&dest, &old)?;
+            }
+            std::fs::rename(&fresh, &dest)?;
+            let _ = std::fs::remove_dir_all(&old);
+            slices.built(crate::slices::Info::of(&built.manifest, built.manifest_bytes), ops);
+            Ok::<_, strata::Error>(built)
+        })
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(Into::into)
+    }
+
+    /// Rebuilds every slice whose table changed since it was built, with
+    /// the options it was built with; the tables rebuilt.
+    pub async fn rebuild_stale_slices(&self) -> Result<Vec<String>, ApiError> {
+        let db = self.admin_db()?;
+        let slices = self.slices()?.clone();
+        let mut done = Vec::new();
+        for table in slices.tables() {
+            if !slices.is_fresh(&table, &db).unwrap_or(true) {
+                self.build_slice(self.slice_options(&table)?).await?;
+                done.push(table);
+            }
+        }
+        Ok(done)
+    }
+
     /// Writes a checkpoint of the database ([`strata::storage::Database::checkpoint`])
     /// named `name` in the backup directory, hard-linking the segments an
     /// earlier checkpoint there (`link_from`) already holds.
@@ -1673,7 +1782,7 @@ impl Service {
         tokio::task::spawn_blocking(move || wait_for_writer(deadline, || Ok(db.storage().vacuum()?))).await.map_err(ApiError::internal)?
     }
 
-    fn admin_db(&self) -> Result<Arc<Db>, ApiError> {
+    pub(crate) fn admin_db(&self) -> Result<Arc<Db>, ApiError> {
         self.local_db().cloned().ok_or_else(|| ApiError::bad("a coordinator has no database of its own: ask each shard server"))
     }
 
@@ -1685,12 +1794,14 @@ impl Service {
     }
 
     /// Hands a write to the writer thread and waits for its commit. The
-    /// writer records `key`'s outcome, even if this future is dropped.
+    /// writer records `key`'s outcome (the key, and the hash of what it
+    /// names), even if this future is dropped: in memory, and in the
+    /// write's transaction ([`idem::record`]).
     /// Writes `moved` are rows of moving slots, copied by the coordinator
     /// moving them or deleted here ([`Self::check_keys`]); while slots move
     /// from this shard, a write to them, or an UPDATE or DELETE statement,
     /// holds the move's gate until it commits ([`Self::pass_gate`]).
-    async fn write(&self, job: WriteJob, deadline: Instant, key: Option<String>, queued: InQueue, moved: Moved) -> Result<Written, ApiError> {
+    async fn write(&self, job: WriteJob, deadline: Instant, key: Option<(String, u64)>, queued: InQueue, moved: Moved) -> Result<Written, ApiError> {
         let tx = self.writes.as_ref().ok_or_else(|| ApiError::internal("no writer for a coordinator"))?;
         // Counted in before it looks at the map, which a move may change,
         // and before it looks for a hold of the shard's writes, which waits
@@ -1830,6 +1941,59 @@ impl Service {
         }
     }
 
+    /// The stored functions queries call ([`strata::query::function`]): a
+    /// local database's as they are now, a coordinator's as its replicas
+    /// held them alike when last asked ([`Coordinator::functions`]).
+    pub fn functions(&self) -> Arc<FunctionSet> {
+        match &self.backend {
+            Backend::Local(db) => db.functions().unwrap_or_default(),
+            Backend::Cluster(c) => c.functions(),
+        }
+    }
+
+    /// A coordinator asks its shards for their functions again (at most
+    /// once a second, as [`Self::catalog_now`] asks for tables).
+    pub async fn learn_functions(&self) {
+        self.learn_tables(false).await;
+    }
+
+    /// The tables a query may read: [`Self::catalog`], and a local
+    /// database's system tables (`_functions`, `_sources`), which
+    /// [`Db::query`] reads too.
+    fn readable(&self) -> Vec<Arc<Schema>> {
+        let mut c = self.catalog();
+        if let Backend::Local(db) = &self.backend {
+            let snap = db.snapshot();
+            c.extend(snap.schemas().filter(|s| [FUNCTIONS, SOURCES].iter().any(|n| s.table.eq_ignore_ascii_case(n))).map(|s| Arc::new(s.clone())));
+        }
+        c
+    }
+
+    /// The table named `name` that a query reads ([`Self::table`]), a
+    /// local database's system tables too ([`Self::readable`]).
+    async fn readable_table(&self, name: &str) -> Result<Arc<Schema>, ApiError> {
+        match self.readable().into_iter().find(|t| t.table.eq_ignore_ascii_case(name)) {
+            Some(t) => Ok(t),
+            None => self.table(name).await,
+        }
+    }
+
+    /// The plan of a query `sql`, bound as [`Self::bound`] binds, over the
+    /// tables a query may read ([`Self::readable`]), its rank profiles and
+    /// its stored functions written out.
+    async fn bound_read(&self, sql: &str, params: &Params) -> Result<Plan, ApiError> {
+        let functions = self.functions();
+        let run = || {
+            let c = self.readable();
+            let refs: Vec<&Schema> = c.iter().map(|t| &**t).collect();
+            compound::plan_read_calling(sql, &refs, params, &|t, n| self.rank_profile(t, n), &functions)
+        };
+        match run() {
+            Err(e) if (["no such table", "has no rank profile named", "unknown function"].iter().any(|m| e.to_string().contains(m))) && self.learn_tables(false).await => Ok(run()?),
+            r => Ok(r?),
+        }
+    }
+
     /// Runs `bind` over the database's tables; a coordinator whose tables
     /// lack one the statement names, or a rank profile it ranks by, asks
     /// its shards again, then binds once more.
@@ -1886,6 +2050,13 @@ impl Service {
             return None;
         }
         self.leases.lock().unwrap_or_else(|e| e.into_inner()).get(&lease).map(|x| x.expansions.clone())
+    }
+
+    /// Keeps lease `id` for `ttl` from now, if it is held.
+    fn renew_lease(&self, id: u64, ttl: Duration) {
+        if let Some(x) = self.leases.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&id) {
+            x.until = x.until.max(Instant::now() + ttl);
+        }
     }
 
     /// Ends `leases` before they expire, and releases the versions only
@@ -2173,7 +2344,7 @@ impl Service {
         let tp = Instant::now();
         let plan = match &req.plan {
             Some(p) => Ok(p.clone()),
-            None => self.bound(|tables| compound::plan_read(&req.sql, tables, &req.params, &|t, n| self.rank_profile(t, n))).await.map(Arc::new),
+            None => self.bound_read(&req.sql, &req.params).await.map(Arc::new),
         };
         // A plan made with a rank profile runs only on a database whose
         // profile of that name is the same.
@@ -2190,7 +2361,7 @@ impl Service {
                 req.plan = Some(plan.clone());
                 return self.compound(req, plan, t0, timeout).await;
             }
-            Ok(plan) => match self.table(plan.table()).await {
+            Ok(plan) => match self.readable_table(plan.table()).await {
                 Ok(schema) => {
                     // A coordinator sends the shards a plan by a rank
                     // profile or a model as is, naming the profile or the
@@ -2320,9 +2491,13 @@ impl Service {
         let live = self.live.start(&req.sql, kind, req.shard, &meta);
         // A shard's answer to a coordinator's leaf, as Arrow columns.
         let mut arrow = Vec::new();
+        // A scroll's cursor, while rows are left.
+        let mut cursor = None;
         let res = match &self.backend {
             Backend::Local(db) => {
                 let stats = req.stats.take().map(Arc::new);
+                // A shard's scroll scores its later pages as its first.
+                let scroll_stats = stats.clone().filter(|_| req.shard && req.scroll.is_some());
                 LiveQueries::run(&live, async {
                     // A read on a replica may wait for a write it must see,
                     // before it takes a query slot.
@@ -2368,15 +2543,26 @@ impl Service {
                     // Arrow columns for a coordinator that puts this
                     // shard's rows after the others'.
                     let columns = req.arrow.filter(|_| req.shard && cfg!(feature = "datafusion") && strata::cluster::concatenates(&select));
+                    // A scroll's first page, at most the window, and what
+                    // its ordered rows may hold.
+                    let scroll = req.scroll.as_ref().map(|a| (self.page_size(a.page), self.max_scroll_rows));
                     // The work holds the slot and the count until it ends,
                     // and stops at its next check if this future is dropped.
                     let te = Instant::now();
                     let r = tokio::task::spawn_blocking(move || {
                         let _held = (permit, running);
                         let started = Instant::now();
-                        let r = match columns {
-                            Some(over) => db.execute_leaf(&view, &select, &opts, over).and_then(shard_leaf),
-                            None => db.execute(&view, &select, &opts).map(|rs| (rs, Vec::new())),
+                        let r = match (scroll, columns) {
+                            (Some((page, hold)), _) => db
+                                .scroll(&view, &select, &opts, page, hold)
+                                .map(|(rs, s)| (rs, Vec::new(), Some(s)))
+                                // What a scroll may hold is this server's flag.
+                                .map_err(|e| match e {
+                                    strata::Error::Query(m) if m.contains("a scroll of") => strata::Error::Query(format!("{m} (--max-scroll-rows)")),
+                                    e => e,
+                                }),
+                            (None, Some(over)) => db.execute_leaf(&view, &select, &opts, over).and_then(shard_leaf).map(|(rs, ipc)| (rs, ipc, None)),
+                            (None, None) => db.execute(&view, &select, &opts).map(|rs| (rs, Vec::new(), None)),
                         };
                         (r, started, Instant::now())
                     })
@@ -2385,13 +2571,15 @@ impl Service {
                     drop(cancel);
                     telemetry::record("execute", te, if matches!(r, Ok((Ok(_), ..))) { "ok" } else { "error" });
                     match r {
-                        Ok((r, started, ended)) => r
-                            .map(|(mut rs, ipc)| {
-                                steps::around(&mut rs.stats.steps, te, started, ended, back);
-                                arrow = ipc;
-                                (rs, Vec::new())
-                            })
-                            .map_err(ApiError::from),
+                        Ok((r, started, ended)) => {
+                            let (mut rs, ipc, scrolled) = r?;
+                            steps::around(&mut rs.stats.steps, te, started, ended, back);
+                            arrow = ipc;
+                            if let (Some(s), Some(ask)) = (scrolled, &req.scroll) {
+                                cursor = self.keep_scroll(scroll::Paged::Db(s), Some(snap.clone()), &schema.table, &req.sql, ask, req.shard, scroll_stats)?;
+                            }
+                            Ok((rs, Vec::new()))
+                        }
                         Err(e) => Err(ApiError::internal(e)),
                     }
                 })
@@ -2404,9 +2592,36 @@ impl Service {
                     telemetry::record("admission", ta, if permit.is_some() { "ok" } else { "rejected" });
                     let permit = permit.ok_or_else(too_many)?;
                     let reach = select.limit.unwrap_or(0).saturating_add(select.offset);
-                    let r = match self.max_rows.filter(|&m| reach > m) {
-                        Some(m) => Err(ApiError::bad(format!("query error: LIMIT and OFFSET reach row {reach}; a query returns at most {m} rows"))),
-                        None => c.query(&req, &schema, &select, t0 + timeout).await.map(|m| {
+                    let r = match (&req.scroll, self.max_rows.filter(|&m| reach > m)) {
+                        // The shards' scrolls, their pages merged as they come.
+                        (Some(ask), _) if strata::cluster::streams(&select) => {
+                            let keep_alive = self.keep_alive(ask.keep_alive, false) + crate::coord::SHARD_KEEP_ALIVE_MARGIN;
+                            match c.scroll(&req, &schema, &select, self.page_size(ask.page), keep_alive, t0 + timeout).await {
+                                Ok((rs, s)) => {
+                                    if let Some(s) = s {
+                                        cursor = self.keep_scroll(scroll::Paged::Shards(Box::new(s)), None, &schema.table, &req.sql, ask, false, None)?;
+                                    }
+                                    Ok((rs, Vec::new()))
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                        // Groups, counts, fused or reranked rows: answered
+                        // whole, and held.
+                        (Some(ask), _) => {
+                            let most = self.max_scroll_rows;
+                            match c.query(&req, &schema, &select, t0 + timeout).await {
+                                Ok(m) if m.rs.rows.len() > most => Err(ApiError::bad(format!("query error: the query answers {} rows; a scroll of groups, counts, fused or reranked rows over shards holds them, at most {most} (--max-scroll-rows)", m.rs.rows.len()))),
+                                Ok(m) => {
+                                    let (first, s) = strata::query::exec::Scroll::of_rows(m.rs, self.page_size(ask.page));
+                                    cursor = self.keep_scroll(scroll::Paged::Db(s), None, &schema.table, &req.sql, ask, false, None)?;
+                                    Ok((first, m.missing))
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                        (None, Some(m)) => Err(ApiError::bad(format!("query error: LIMIT and OFFSET reach row {reach}; a query returns at most {m} rows"))),
+                        (None, None) => c.query(&req, &schema, &select, t0 + timeout).await.map(|m| {
                             served = m.served;
                             (m.rs, m.missing)
                         }),
@@ -2422,7 +2637,7 @@ impl Service {
         // statistics of this version.
         if stale {
             self.stale_stats.fetch_add(1, Ordering::Relaxed);
-            return Ok(Answer { rs: no_rows(), took_ms: t0.elapsed().as_secs_f64() * 1e3, kind, missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: true });
+            return Ok(Answer { rs: no_rows(), took_ms: t0.elapsed().as_secs_f64() * 1e3, kind, missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: true, cursor: None });
         }
         if req.reads {
             match (&res, &self.backend) {
@@ -2442,7 +2657,7 @@ impl Service {
         if let Some(l) = (req.release && req.snapshot != 0).then_some(req.snapshot).or(made) {
             self.release(&[l]);
         }
-        a.map(|a| Answer { lease, arrow, ..a })
+        a.map(|a| Answer { lease, arrow, cursor, ..a })
     }
 
     /// What the query log keeps of a query besides its text: who sent it
@@ -2467,6 +2682,13 @@ impl Service {
             (Ok((rs, _)), Some(m)) if rs.rows.len() > m => Err(ApiError::bad(format!("query error: the query matches more than {m} rows, the most a query returns; add a LIMIT"))),
             (r, _) => r,
         };
+        // Past the window, a server's client can scroll.
+        if let Err(e) = &mut res {
+            let window = e.message.contains("a query returns at most") || e.message.contains("the most a query returns");
+            if window && !shard {
+                e.message.push_str(" (or read every row a page at a time: a scroll, page_size)");
+            }
+        }
         // The steps count from the request's start, as its trace does: a
         // shard's, from the start of the call the coordinator made.
         if let Ok((rs, _)) = &mut res {
@@ -2491,7 +2713,7 @@ impl Service {
         if !quiet {
             self.query_log.add(sql, kind, outcome, secs, rows, shard, res.as_ref().err().map(|e| e.message.as_str()), slow, res.as_ref().ok().map(|(rs, _)| &rs.stats), profiled, meta);
         }
-        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0, arrow: Vec::new(), stale: false })
+        res.map(|(rs, missing)| Answer { rs, took_ms: secs * 1e3, kind, missing, lease: 0, arrow: Vec::new(), stale: false, cursor: None })
     }
 
     /// A compound query ([`compound`]): its plan's leaves run on one
@@ -2501,10 +2723,11 @@ impl Service {
         let kind = "compound";
         req.profile |= self.profiling.cpu_all.load(Ordering::Relaxed);
         let (profiled, quiet) = (req.profile, req.quiet);
-        let catalog = self.catalog();
+        let catalog = self.readable();
         let deadline = t0 + timeout;
         let req_sql = req.sql.clone();
         let meta = self.meta(&req);
+        let scroll = req.scroll.clone();
         let live = self.live.start(&req.sql, kind, req.shard, &meta);
         let r = LiveQueries::run(&live, self.compound_run(req, plan, catalog, t0, timeout)).await;
         drop(live);
@@ -2512,7 +2735,22 @@ impl Service {
             Err(_) if Instant::now() > deadline => Err(ApiError { status: 504, message: format!("the query ran past its {} ms deadline", timeout.as_millis()) }),
             r => r,
         };
-        self.done(&req_sql, kind, t0, self.max_rows, false, (profiled, quiet), &meta, res)
+        let Some(ask) = scroll else {
+            return self.done(&req_sql, kind, t0, self.max_rows, false, (profiled, quiet), &meta, res);
+        };
+        // A scroll of a compound query holds its answer's rows.
+        let most = self.max_scroll_rows;
+        let res = match res {
+            Ok((rs, _)) if rs.rows.len() > most => Err(ApiError::bad(format!(
+                "query error: the query answers {} rows; a scroll of a join, WITH, UNION or DISTINCT holds its answer's rows, at most {most} (--max-scroll-rows)",
+                rs.rows.len()
+            ))),
+            r => r,
+        };
+        let a = self.done(&req_sql, kind, t0, None, false, (profiled, quiet), &meta, res)?;
+        let (first, s) = strata::query::exec::Scroll::of_rows(a.rs, self.page_size(ask.page));
+        let cursor = self.keep_scroll(scroll::Paged::Db(s), None, "", &req_sql, &ask, false, None)?;
+        Ok(Answer { rs: first, cursor, ..a })
     }
 
     /// The work of [`Self::compound`]; [`Self::done`] counts it.
@@ -2676,7 +2914,7 @@ impl Service {
     pub async fn term_stats(self: &Arc<Self>, sql: &str, plan: Option<&Plan>, params: &Params, after: &After, timeout_ms: u64) -> Result<(TermStats, u64, u64), ApiError> {
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound(|tables| compound::plan_read(sql, tables, params, &|t, n| self.rank_profile(t, n))).await?,
+            None => self.bound_read(sql, params).await?,
         };
         // Statistics are a shard's: its coordinator scores with the
         // cross-encoders.
@@ -2717,7 +2955,7 @@ impl Service {
         let t0 = Instant::now();
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound(|tables| compound::plan_read(sql, tables, params, &|t, n| self.rank_profile(t, n))).await?,
+            None => self.bound_read(sql, params).await?,
         };
         if bound.root.uses_operators() {
             return Err(ApiError::bad("query error: a guard's levels are counted over one table's rows: a query without subqueries"));
@@ -2752,7 +2990,7 @@ impl Service {
         let t0 = Instant::now();
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound(|tables| compound::plan_read(sql, tables, params, &|t, n| self.rank_profile(t, n))).await?,
+            None => self.bound_read(sql, params).await?,
         };
         if bound.root.uses_operators() {
             return Err(ApiError::bad("query error: the next codes count one table's rows: a condition without subqueries"));
@@ -2793,6 +3031,23 @@ impl Service {
             return Ok(0);
         }
         db.expire(strata::timestamp::now(), EXPIRE_BATCH)
+    }
+
+    /// Deletes the database's records of idempotency keys older than
+    /// [`idem::TTL`] ([`idem::forget_expired`]), as a server that takes
+    /// writes does every minute ([`crate::server::spawn_key_forgetter`]):
+    /// not a replica, which applies its primary's deletes, nor a server
+    /// that cannot write. Retries ignore an expired key's record either
+    /// way. Returns how many it deleted.
+    pub fn forget_keys_due(&self) -> Result<usize, ApiError> {
+        let Backend::Local(db) = &self.backend else { return Ok(0) };
+        if matches!(self.replication(), Replication::Replica(_)) || self.failing().is_some() {
+            return Ok(0);
+        }
+        // Held like a client's write, so that a primary handing its shard
+        // over waits for it.
+        let _by = self.admit_write()?;
+        idem::forget_expired(db, strata::timestamp::now(), Instant::now() + self.timeout)
     }
 
     /// Rows of table `table` (the first without one) by primary key,
@@ -2910,8 +3165,15 @@ impl Service {
     #[allow(clippy::too_many_arguments)]
     pub async fn sql_in(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>, key: Option<String>) -> Result<SqlAnswer, ApiError> {
         let command = self.bound(|tables| bind_command(sql, tables, params)).await?;
+        if let Command::Function(f) = &command {
+            // How a coordinator numbers a function's versions alike on
+            // every shard.
+            if f.at().is_some() && !who.root {
+                return Err(ApiError::bad("query error: AT VERSION is for a coordinator's own statements: CREATE OR REPLACE FUNCTION makes the next version"));
+            }
+        }
         let need = command_scope(&command);
-        who.may(need, &format!("a {} statement", match need { Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table or rank profile" }))?;
+        who.may(need, &format!("a {} statement", match need { Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table, rank profile or function" }))?;
         if need == Scope::Admin {
             keys::note(obs::truncate(sql, 500).into_owned());
         }
@@ -2921,7 +3183,7 @@ impl Service {
                 return Ok(SqlAnswer::Rows(a));
             }
             Command::Explain { .. } => return Err(ApiError::bad("query error: EXPLAIN runs through POST /v1/explain")),
-            Command::CreateTable { .. } | Command::DropTable { .. } | Command::CreateRankProfile { .. } | Command::DropRankProfile { .. } => true,
+            Command::CreateTable { .. } | Command::DropTable { .. } | Command::CreateRankProfile { .. } | Command::DropRankProfile { .. } | Command::Function(_) => true,
             Command::AlterTable { alters, .. } => {
                 // A coordinator's plans name a table's columns by their
                 // place, and its shards drop a column one by one: a query
@@ -2938,7 +3200,7 @@ impl Service {
         }
         let t0 = Instant::now();
         let r = match (&self.backend, ddl) {
-            (_, true) => self.ddl(sql, params, timeout_ms).await,
+            (_, true) => self.ddl(sql, params, timeout_ms, &who.name).await,
             (Backend::Local(db), false) => {
                 let (text, p) = (sql.to_string(), params.clone());
                 let slots_hashed = slots.clone();
@@ -2973,7 +3235,10 @@ impl Service {
     /// transaction in a database that numbers its writes, so a primary
     /// ships it as it ships a write, and answers once the copies its acks
     /// name hold it.
-    async fn ddl(self: &Arc<Self>, sql: &str, params: &Params, timeout_ms: u64) -> Result<Written, ApiError> {
+    ///
+    /// A stored function's version records `author`, the name of the key
+    /// that wrote it.
+    async fn ddl(self: &Arc<Self>, sql: &str, params: &Params, timeout_ms: u64, author: &str) -> Result<Written, ApiError> {
         let r = match &self.backend {
             Backend::Local(db) => {
                 self.takes_writes()?;
@@ -2982,10 +3247,13 @@ impl Service {
                 self.not_held()?;
                 let by = self.admitted();
                 let timeout = self.timeout_of(timeout_ms);
-                let (db, sql, params) = (db.clone(), sql.to_string(), params.clone());
+                let (db, sql, params, who) = (db.clone(), sql.to_string(), params.clone(), author.to_string());
                 let w = tokio::task::spawn_blocking(move || {
                     wait_for_writer(Instant::now() + timeout, || {
-                        db.sql(&sql, &params)?;
+                        match strata::query::function::parse_statement(&sql)? {
+                            Some(f) => drop(db.define_function(&f, Some(&who))?),
+                            None => drop(db.sql(&sql, &params)?),
+                        }
                         // Its number, or a later one.
                         Ok(Written { seq_no: db.storage().seq_no().map(|n| n.seq), ..Default::default() })
                     })
@@ -2997,7 +3265,10 @@ impl Service {
                     e => e,
                 }
             }
-            Backend::Cluster(c) => c.ddl(sql, params).await,
+            Backend::Cluster(c) => match strata::query::function::parse_statement(sql)? {
+                Some(f) => c.define_function(&f, author).await,
+                None => c.ddl(sql, params).await,
+            },
         };
         // The models of the tables it made.
         self.refresh_models();
@@ -3015,6 +3286,35 @@ impl Service {
         self.write_ops(ops, key).await
     }
 
+    /// Looks idempotency key `key` up for a request whose operations hash
+    /// to `hash`, claiming it if it is new ([`idem::Keys::begin`]): in
+    /// memory, then, for a key memory does not hold, in the database
+    /// ([`idem::recorded`]), which holds the keys of writes another server
+    /// applied before this one was promoted, or this one before it
+    /// restarted.
+    fn begin_key(&self, db: &Db, key: &str, hash: u64) -> Result<idem::Begin, ApiError> {
+        let b = self.idempotency.begin(key, hash);
+        if b != idem::Begin::New {
+            return Ok(b);
+        }
+        match idem::recorded(db, key, hash) {
+            Ok(None) => Ok(idem::Begin::New),
+            // Kept in memory: answered from there from now on.
+            Ok(Some(Ok(w))) => {
+                self.idempotency.finish(key, Some(w.clone()));
+                Ok(idem::Begin::Done(w))
+            }
+            Ok(Some(Err(()))) => {
+                self.idempotency.finish(key, None);
+                Ok(idem::Begin::Mismatch)
+            }
+            Err(e) => {
+                self.idempotency.finish(key, None);
+                Err(e)
+            }
+        }
+    }
+
     /// A write `prepare` binds (`None`: not a write), queued for the writer
     /// thread. It is bound, and its vectors computed, before it queues:
     /// models run on a core of their own, not in the writer thread. With
@@ -3029,7 +3329,7 @@ impl Service {
         self.backpressure(db).await?;
         let q = self.enqueue()?;
         if let Some((k, hash)) = &key {
-            match self.idempotency.begin(k, *hash) {
+            match self.begin_key(db, k, *hash)? {
                 idem::Begin::New => {}
                 idem::Begin::Done(n) => {
                     self.metrics.replay();
@@ -3039,7 +3339,6 @@ impl Service {
                 idem::Begin::Mismatch => return Err(ApiError { status: 422, message: "this idempotency key was used for a different statement".into() }),
             }
         }
-        let key = key.map(|(k, _)| k);
         let r = async {
             let core = match self.embeds() {
                 true => Some(self.embedding.clone().acquire_owned().await.map_err(ApiError::internal)?),
@@ -3058,7 +3357,7 @@ impl Service {
             self.write(WriteJob::Sql(Box::new(prepared)), deadline, key.clone(), q, Moved::No).await
         }
         .await;
-        if let (Err(_), Some(k)) = (&r, &key) {
+        if let (Err(_), Some((k, _))) = (&r, &key) {
             // Not committed (the writer reports a commit as Ok).
             self.idempotency.finish(k, None);
         }
@@ -3103,8 +3402,10 @@ impl Service {
                     Ok(q) => q,
                     Err(e) => return self.wrote(Err(e), t0, None),
                 };
-                if let Some(k) = &key {
-                    match self.idempotency.begin(k, idem::hash_ops(&ops)) {
+                // Hashed as sent, before embedding adds to them.
+                let key = key.map(|k| (k, idem::hash_ops(&ops)));
+                if let Some((k, hash)) = &key {
+                    match self.begin_key(db, k, *hash)? {
                         idem::Begin::New => {}
                         idem::Begin::Done(n) => {
                             self.metrics.replay();
@@ -3120,7 +3421,7 @@ impl Service {
                 // other, and it commits once those under way did.
                 let _holding = feed::carried_hold(&ops).filter(|h| h % 2 == 1).map(|_| self.hold_pending());
                 if _holding.is_some() && !self.moving.drained(tokio::time::Instant::now() + self.timeout).await {
-                    if let Some(k) = &key {
+                    if let Some((k, _)) = &key {
                         self.idempotency.finish(k, None);
                     }
                     return self.wrote(Err(ApiError { status: 503, message: format!("the writes under way did not commit within {} s, so the writes are not held: try again", self.timeout.as_secs()) }), t0, None);
@@ -3150,7 +3451,7 @@ impl Service {
                     Ok((w, by))
                 }
                 .await;
-                if let (Err(_), Some(k)) = (&r, &key) {
+                if let (Err(_), Some((k, _))) = (&r, &key) {
                     // Not committed (the writer reports a commit as Ok).
                     self.idempotency.finish(k, None);
                 }
@@ -3582,7 +3883,7 @@ impl Service {
                 // cluster2: the rows of every table (`docs` counts the first
                 // only), which a move or a new copy sends: plans and moves
                 // count these.
-                let tables: serde_json::Map<String, Json> = s.schemas().filter(|t| t.table != strata::storage::SOURCES).filter_map(|t| s.table(&t.table).map(|v| (t.table.clone(), json!(v.n_live_docs())))).collect();
+                let tables: serde_json::Map<String, Json> = s.schemas().filter(|t| t.table != SOURCES && t.table != FUNCTIONS).filter_map(|t| s.table(&t.table).map(|v| (t.table.clone(), json!(v.n_live_docs())))).collect();
                 h["rows"] = json!(tables.values().filter_map(Json::as_u64).sum::<u64>());
                 h["tables"] = Json::Object(tables);
                 if let Some((m, shard)) = self.slots() {
@@ -3600,6 +3901,14 @@ impl Service {
                     h["status"] = json!("degraded");
                     h["error"] = json!(format!("flushes fail: {e}"));
                 }
+                // What the last scrub found: the copy still serves (a query
+                // that reads a damaged section fails, and a coordinator
+                // tries another copy), but it is to be replaced.
+                h["scrub"] = self.scrubs.json();
+                let damaged = self.scrubs.damaged();
+                if !damaged.is_empty() {
+                    h["damaged"] = json!(damaged);
+                }
                 h
             }
             Backend::Cluster(c) => c.health().await,
@@ -3613,7 +3922,7 @@ impl Service {
     /// is restarted. A coordinator is never failing; its shards may be.
     pub fn failing(&self) -> Option<String> {
         match &self.backend {
-            Backend::Local(db) if db.storage().is_poisoned() => Some("a write failed partway, so the database refuses writes until it is reopened: restart the server".into()),
+            Backend::Local(db) if db.storage().is_poisoned() => Some("a write failed partway (a full disk, an I/O error), so the database refuses writes until it is reopened: fix the cause and restart the server, a primary once another copy is the primary".into()),
             Backend::Local(_) if !self.writer_state.alive.load(Ordering::Relaxed) => Some("the writer thread stopped: restart the server".into()),
             _ => None,
         }
@@ -3686,6 +3995,7 @@ impl Service {
                 ("failing", self.failing().is_some() as u8 as f64),
                 ("flush_failing", db.storage().flush_error().is_some() as u8 as f64),
                 ("merge_failing", m.error.is_some() as u8 as f64),
+                ("damaged_segments", self.scrubs.damaged().len() as f64),
                 ("pool_queued", strata::query::pool::Pool::global().queued() as f64),
             ] {
                 g.insert(k, v);
@@ -4065,6 +4375,8 @@ impl Service {
                     one("strata_free_bytes", "gauge", "Bytes of the database file free for reuse (0 in the directory layout).", (f.free_pages * strata::storage::pager::PAGE) as f64),
                     one("strata_wal_bytes", "gauge", "Bytes of the write-ahead log.", f.wal_bytes as f64),
                     one("strata_snapshot_leases", "gauge", "Snapshot leases held.", self.sweep_leases() as f64),
+                    one("strata_scrolls_open", "gauge", "Scrolls open: queries read a page at a time (page_size).", self.sweep_scrolls().0 as f64),
+                    one("strata_scroll_rows_held", "gauge", "Rows, or rows' places, the open scrolls hold between pages (at most --max-scroll-rows).", self.sweep_scrolls().1 as f64),
                     one("strata_stale_stats_total", "counter", "Queries a coordinator sent with kept BM25 statistics of an older version, answered without running.", self.stale_stats.load(Ordering::Relaxed) as f64),
                     one("strata_failing", "gauge", "1 when the database cannot write until the server restarts.", self.failing().is_some() as u8 as f64),
                     one("strata_flush_failing", "gauge", "1 while flushes fail (a full disk).", db.storage().flush_error().is_some() as u8 as f64),
@@ -4077,7 +4389,20 @@ impl Service {
                     one("strata_merges_limited_total", "counter", "Merges cut, or put off, to fit the memory budget or an interrupted merge's.", m.merges_limited as f64),
                     one("strata_merges_interrupted", "gauge", "Groups of segments whose merge a crash interrupted.", m.interrupted as f64),
                     one("strata_merge_failing", "gauge", "1 while merges fail.", m.error.is_some() as u8 as f64),
+                    one("strata_damaged_segments", "gauge", "Segments the last scrub found failing their checksums (--scrub-every-s).", self.scrubs.damaged().len() as f64),
                 ]);
+                if let Some(c) = db.storage().cold_stats() {
+                    more.extend([
+                        one("strata_cold_segments", "gauge", "Segments kept on object storage.", c.segments as f64),
+                        one("strata_cold_bytes", "gauge", "Bytes of the segments kept on object storage.", c.bytes as f64),
+                        one("strata_cold_cache_bytes", "gauge", "Bytes of cold segments in the local cache, their headers and keys included.", c.cached_bytes as f64),
+                        one("strata_cold_cache_limit_bytes", "gauge", "The local cache's limit, headers and keys apart.", c.cache_limit as f64),
+                        one("strata_cold_fetches_total", "counter", "Reads of object storage for cold segments' parts.", c.fetches as f64),
+                        one("strata_cold_fetched_bytes_total", "counter", "Bytes read from object storage.", c.fetched_bytes as f64),
+                        one("strata_cold_evictions_total", "counter", "Cold segments whose cached parts were dropped.", c.evictions as f64),
+                        one("strata_cold_offloaded_total", "counter", "Segments made cold.", c.segments_offloaded as f64),
+                    ]);
+                }
                 match &self.replication() {
                     Replication::None => {}
                     Replication::Primary(p) => more.extend(p.metrics()),
@@ -4331,8 +4656,9 @@ struct Queued {
     deadline: Instant,
     /// `None` once answered.
     reply: Option<tokio::sync::oneshot::Sender<Result<Written, ApiError>>>,
-    /// The request's idempotency key, whose outcome the writer records.
-    key: Option<String>,
+    /// The request's idempotency key and the hash of what it names, whose
+    /// outcome the writer records ([`idem`]).
+    key: Option<(String, u64)>,
     keys: Arc<idem::Keys>,
     /// Counts the request as queued until it is answered (`None` then).
     queued: Option<InQueue>,
@@ -4352,7 +4678,7 @@ struct Queued {
 impl Queued {
     /// Records the outcome under the request's key and answers it.
     fn answer(mut self, r: Result<Written, ApiError>) {
-        if let Some(k) = &self.key {
+        if let Some((k, _)) = &self.key {
             self.keys.finish(k, r.as_ref().ok().cloned());
         }
         // Uncounted before the answer, which its caller may follow with a
@@ -4369,7 +4695,7 @@ impl Drop for Queued {
     /// A request dropped unanswered: the writer panicked applying it.
     fn drop(&mut self) {
         if let Some(reply) = self.reply.take() {
-            if let Some(k) = &self.key {
+            if let Some((k, _)) = &self.key {
                 self.keys.finish(k, None);
             }
             let _ = reply.send(Err(ApiError::internal("the writer failed applying this write (see the server's log)")));
@@ -4520,15 +4846,26 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
     let Some(deadline) = group.iter().map(|q| q.deadline).max() else { return };
     let sql: Vec<&PreparedWrite> = group.iter().filter_map(|q| q.sql()).collect();
     if !sql.is_empty() {
-        let alone = |p: &PreparedWrite, deadline: Instant| wait_for_writer(deadline, || db.write_prepared_seq(p).map(|(rows, seq_no)| Written { rows, seq_no, ..Default::default() }).map_err(ApiError::from));
-        let answers: Vec<Result<Written, ApiError>> = match &sql[..] {
-            [p] => vec![alone(p, deadline)],
-            _ => match wait_for_writer(deadline, || db.write_prepared_group(&sql).map_err(ApiError::from)) {
-                Ok((rows, seq_no)) => rows.into_iter().map(|rows| Ok(Written { rows, seq_no, ..Default::default() })).collect(),
-                // A failed commit wrote nothing: each runs again alone.
-                Err(_) => group.iter().zip(&sql).map(|(q, p)| alone(p, q.deadline)).collect(),
-            },
+        let keys: Vec<Option<(&str, u64)>> = group.iter().map(Queued::key).collect();
+        // Each key in its write's transaction, if it wrote a row ([`idem::record`]).
+        let run = |ps: &[&PreparedWrite], keys: &[Option<(&str, u64)>], deadline: Instant| {
+            let now = strata::timestamp::now();
+            let record = |t: &mut WriteTxn<'_>, rows: &[u64]| keys.iter().zip(rows).filter(|(_, &rows)| rows > 0).try_for_each(|(k, &rows)| k.map_or(Ok(()), |(k, hash)| idem::record(t, k, hash, rows, now)));
+            wait_for_writer(deadline, || {
+                // Made outside the transaction, which holds the writer.
+                if keys.iter().any(Option::is_some) {
+                    db.storage().ensure_sources()?;
+                }
+                db.write_prepared_group_then(ps, record).map_err(ApiError::from)
+            })
         };
+        let answers: Vec<Result<Written, ApiError>> = match run(&sql, &keys, deadline) {
+            Ok((rows, seq_no)) => rows.into_iter().map(|rows| Ok(Written { rows, seq_no, ..Default::default() })).collect(),
+            Err(e) if sql.len() == 1 => vec![Err(e)],
+            // A failed commit wrote nothing: each runs again alone.
+            Err(_) => sql.iter().zip(&keys).zip(&group).map(|((p, k), q)| run(&[*p], &[*k], q.deadline).map(|(rows, seq_no)| Written { rows: rows[0], seq_no, ..Default::default() })).collect(),
+        };
+        drop(keys);
         drop(sql);
         for (q, r) in group.into_iter().zip(answers) {
             q.answer(r);
@@ -4536,9 +4873,12 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
         return;
     }
     let requests: Vec<(&[Json], u64)> = group.iter().map(|q| (q.ops(), q.epoch)).collect();
+    let keys: Vec<Option<(&str, u64)>> = group.iter().map(Queued::key).collect();
     // A group shares one mark ([`writer`]).
     let mark = group[0].mark;
-    match wait_for_writer(deadline, || apply_requests(db, &requests, mark)) {
+    let answers = wait_for_writer(deadline, || apply_keyed(db, &requests, &keys, mark));
+    drop((requests, keys));
+    match answers {
         Ok((applied, seq_no)) => {
             for (q, a) in group.into_iter().zip(applied) {
                 q.answer(Ok(a.written(seq_no)));
@@ -4551,7 +4891,7 @@ fn apply_group(db: &Db, group: Vec<Queued>) {
         // as Ok), so each request can run again alone.
         Err(_) => {
             for q in group {
-                let r = wait_for_writer(q.deadline, || apply_requests(db, &[(q.ops(), q.epoch)], q.mark).map(|(mut a, seq_no)| a.remove(0).written(seq_no)));
+                let r = wait_for_writer(q.deadline, || apply_keyed(db, &[(q.ops(), q.epoch)], &[q.key()], q.mark).map(|(mut a, seq_no)| a.remove(0).written(seq_no)));
                 q.answer(r);
             }
         }
@@ -4571,6 +4911,11 @@ impl Queued {
             WriteJob::Ops(..) => None,
             WriteJob::Sql(p) => Some(p),
         }
+    }
+
+    /// Its idempotency key and the hash of what it names.
+    fn key(&self) -> Option<(&str, u64)> {
+        self.key.as_ref().map(|(k, h)| (k.as_str(), *h))
     }
 
     /// How much of a group it takes ([`GROUP_OPS`]).
@@ -4653,16 +4998,29 @@ impl Applied {
 /// its writes. With `mark`, the transaction also writes that offset of a
 /// source of the server's own ([`feed::MARK`]).
 fn apply_requests(db: &Db, requests: &[(&[Json], u64)], mark: Option<(&str, i64)>) -> Result<(Vec<Applied>, Option<u64>), ApiError> {
+    apply_keyed(db, requests, &[], mark)
+}
+
+/// [`apply_requests`], recording in the transaction the idempotency key
+/// (and the hash of what it names) of each request that has one, by the
+/// request's place in `keys` ([`idem::record`]), if it wrote a row: one
+/// that wrote none leaves no transaction behind it, as before.
+fn apply_keyed(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u64)>], mark: Option<(&str, i64)>) -> Result<(Vec<Applied>, Option<u64>), ApiError> {
     let catalog = db.catalog();
     // Made outside the transaction, which holds the writer.
-    if mark.is_some() || requests.iter().flat_map(|(ops, _)| ops.iter()).any(has_source) {
+    if mark.is_some() || keys.iter().any(Option::is_some) || requests.iter().flat_map(|(ops, _)| ops.iter()).any(has_source) {
         db.storage().ensure_sources()?;
     }
     let mut t = db.storage().begin()?;
     let mut applied = Vec::with_capacity(requests.len());
     let mut arrived = arrivals::Group::new(db);
-    for (ops, epoch) in requests {
-        applied.push(apply_into(&catalog, &mut t, ops, *epoch, &mut arrived)?);
+    let now = strata::timestamp::now();
+    for (i, (ops, epoch)) in requests.iter().enumerate() {
+        let a = apply_into(&catalog, &mut t, ops, *epoch, &mut arrived)?;
+        if let Some(Some((k, hash))) = keys.get(i).filter(|_| a.rows > 0) {
+            idem::record(&mut t, k, *hash, a.rows, now)?;
+        }
+        applied.push(a);
     }
     if let Some((name, offset)) = mark {
         t.mark_source(name, offset, strata::timestamp::now())?;
@@ -4710,13 +5068,14 @@ pub fn has_source(op: &Json) -> bool {
 }
 
 /// The scope a SQL statement needs ([`crate::keys`]): a query read, a
-/// write write, and a table's or rank profile's statement admin. Every
+/// write write, and a table's, rank profile's or stored function's
+/// statement admin. Every
 /// kind is named, so that a new one must say what it needs.
 pub fn command_scope(c: &Command) -> Scope {
     match c {
         Command::Query | Command::Explain { .. } => Scope::Read,
         Command::Write { .. } => Scope::Write,
-        Command::CreateTable { .. } | Command::AlterTable { .. } | Command::DropTable { .. } | Command::CreateRankProfile { .. } | Command::DropRankProfile { .. } => Scope::Admin,
+        Command::CreateTable { .. } | Command::AlterTable { .. } | Command::DropTable { .. } | Command::CreateRankProfile { .. } | Command::DropRankProfile { .. } | Command::Function(_) => Scope::Admin,
     }
 }
 
@@ -5079,7 +5438,7 @@ mod tests {
         assert_eq!(keys.begin("k", 1), idem::Begin::New);
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         let state = WriterState::default();
-        let q = Queued { job: WriteJob::Ops(Vec::new()), deadline: Instant::now(), reply: Some(tx), key: Some("k".into()), keys: keys.clone(), queued: InQueue::start(&state, 1), pass: None, mark: None, epoch: 0 };
+        let q = Queued { job: WriteJob::Ops(Vec::new()), deadline: Instant::now(), reply: Some(tx), key: Some(("k".into(), 1)), keys: keys.clone(), queued: InQueue::start(&state, 1), pass: None, mark: None, epoch: 0 };
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let _held = q;
             panic!("a bug while applying a write");

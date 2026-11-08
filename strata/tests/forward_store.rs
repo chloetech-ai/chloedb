@@ -8,6 +8,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use strata::forward::{DocStore, KeywordColumn, NumericColumn, RangeIndex, StoreCache};
 use strata::segment::build::{build_segment, BuildOptions};
 use strata::segment::SegmentFile;
+use strata::schema::Compression;
 use strata::{data, Document, Field, FieldType, Schema, Value, VectorIndexKind};
 
 fn schema() -> Schema {
@@ -58,8 +59,13 @@ fn expected(schema: &Schema, doc: &Document) -> Document {
 
 #[test]
 fn random_documents_round_trip() {
+    for c in [Compression::Lz4, Compression::Zstd] {
+        round_trip(schema().with_compression(c));
+    }
+}
+
+fn round_trip(schema: Schema) {
     let mut rng = StdRng::seed_from_u64(1);
-    let schema = schema();
     for (n, block) in [(0usize, 16384usize), (1, 16384), (3000, 16384), (3000, 1), (3000, 1 << 20)] {
         let docs = random_docs(&mut rng, n);
         let seg = build(&schema, &docs, &BuildOptions::default().set("forward.store_block", block));
@@ -174,7 +180,11 @@ fn build_segment_writes_forward_sections() {
 /// A segment of `n` random documents in small blocks, its image, and the
 /// documents as the store returns them.
 fn blocks_image(n: usize) -> (Schema, Vec<u8>, Vec<Document>) {
-    let schema = schema();
+    blocks_image_of(n, Compression::Lz4)
+}
+
+fn blocks_image_of(n: usize, c: Compression) -> (Schema, Vec<u8>, Vec<Document>) {
+    let schema = schema().with_compression(c);
     let docs = random_docs(&mut StdRng::seed_from_u64(5), n);
     let seg = build(&schema, &docs, &BuildOptions::default().set("forward.store_block", 2048));
     let want = docs.iter().map(|d| expected(&schema, d)).collect();
@@ -191,7 +201,13 @@ fn entry_at(image: &[u8], name: &str) -> usize {
 
 #[test]
 fn a_damaged_block_fails_its_checksum_and_the_others_read() {
-    let (schema, mut image, want) = blocks_image(3000);
+    for c in [Compression::Lz4, Compression::Zstd] {
+        damaged_block(c);
+    }
+}
+
+fn damaged_block(c: Compression) {
+    let (schema, mut image, want) = blocks_image_of(3000, c);
     let seg = SegmentFile::from_vec(image.clone()).unwrap();
     assert!(seg.has("store.crc"));
     let n_blocks = DocStore::open(&seg, &schema).unwrap().n_blocks();
@@ -269,3 +285,51 @@ fn a_store_without_block_checksums_is_checked_whole() {
     assert!(e.contains("section store.data fails its checksum"), "{e}");
 }
 
+
+/// The bytes of section `name` of a segment.
+fn section(seg: &SegmentFile, name: &str) -> Vec<u8> {
+    seg.require(name).unwrap().to_vec()
+}
+
+#[test]
+fn zstd_blocks_say_so_and_lz4_ones_are_as_before() {
+    let docs = random_docs(&mut StdRng::seed_from_u64(9), 2000);
+    let lz4 = build(&schema(), &docs, &BuildOptions::default());
+    let zstd = build(&schema().with_compression(Compression::Zstd), &docs, &BuildOptions::default());
+    // LZ4: version 1, as every version wrote it; zstd: version 2, codec 1.
+    let version = |seg: &SegmentFile| u64::from_le_bytes(section(seg, "store.index")[..8].try_into().unwrap());
+    assert_eq!(version(&lz4), 1);
+    assert_eq!(version(&zstd), 2);
+    assert_eq!(u64::from_le_bytes(section(&zstd, "store.index")[8..16].try_into().unwrap()), 1);
+    let (a, b) = (DocStore::open(&lz4, &schema()).unwrap(), DocStore::open(&zstd, &schema().with_compression(Compression::Zstd)).unwrap());
+    // Larger blocks (32 KiB to LZ4's 16), and fewer bytes.
+    assert!(b.n_blocks() < a.n_blocks(), "{} vs {} blocks", b.n_blocks(), a.n_blocks());
+    assert!(b.byte_sizes().0 < a.byte_sizes().0, "{:?} vs {:?}", b.byte_sizes(), a.byte_sizes());
+    for d in 0..docs.len() as u32 {
+        assert_eq!(a.get(d).unwrap(), b.get(d).unwrap(), "doc {d}");
+    }
+    // A store reads by what its index says, whatever the schema reading it
+    // says (a schema changed since keeps reading older segments).
+    assert_eq!(DocStore::open(&zstd, &schema()).unwrap().get(5).unwrap(), b.get(5).unwrap());
+}
+
+#[test]
+fn damaged_zstd_blocks_are_errors_not_panics() {
+    // Not checked on read (as memtable images are not), so the damage
+    // reaches the decompressor, which must refuse it or decode something:
+    // never read out of bounds or panic. (Read from disk, a block's crc32
+    // is checked first: `a_damaged_block_fails_its_checksum_and_the_others_read`.)
+    let (schema, mut image, _) = blocks_image_of(3000, Compression::Zstd);
+    let seg = SegmentFile::from_vec(image.clone()).unwrap();
+    let data = seg.section_range("store.data").unwrap();
+    let mut rng = StdRng::seed_from_u64(3);
+    for _ in 0..200 {
+        let at = rng.gen_range(data.clone());
+        image[at] = rng.gen();
+    }
+    let seg = SegmentFile::from_vec(image).unwrap();
+    let store = DocStore::open(&seg, &schema).unwrap();
+    let failed = (0..3000u32).filter(|&d| store.get(d).is_err()).count();
+    assert!(failed > 0);
+    assert!(store.field_values(1).is_err());
+}

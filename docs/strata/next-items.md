@@ -1,17 +1,6 @@
----
-title: Next items
-parent: Strata
-nav_order: 9
----
-
 # Next items
-{: .no_toc }
 
 What a user will open, watch or buy next, from what came after the same items before: counts kept in an ordinary table as events arrive, read with backoff from the last two items to the last one. They update with every event, explain themselves, and are the baseline that a learned sequence model has to beat.
-{: .fs-5 .fw-300 }
-
-- TOC
-{:toc}
 
 ## Counts in a table
 
@@ -67,11 +56,11 @@ On Amazon Beauty (22,363 users' reviews of 12,101 products in time order, the 5-
 | only those before the last two, as SASRec trains | 1 | 0.0607 | 0.0404 | 0.49 | 1.23 |
 | | 2 | 0.0613 | 0.0398 | 0.57 | 1.38 |
 
-SASRec's published numbers on the same split are 0.0605 and 0.0318 (as [TIGER](https://arxiv.org/abs/2305.05065) reports them, from P5), so counted the way SASRec trains, counts match its recall and beat its NDCG: a strong baseline on this data. Two caveats: 43.5% of users wrote their last two reviews on the same day, which the usual preprocessing leaves in product order and which favours counted transitions; and with under nine reviews per user, the pair's context adds little over the last item's (order 3 adds nothing). Answers were the same as scoring every item for the first 2,000 users. Fewer than 10 scored items were filled with the most frequent ones. Script and results: [`results/sequence/ngrams_beauty.py` and `ngrams-beauty.json`](https://github.com/rkonow/strata/tree/main/strata/results/sequence).
+SASRec's published numbers on the same split are 0.0605 and 0.0318 (as [TIGER](https://arxiv.org/abs/2305.05065) reports them, from P5), so counted the way SASRec trains, counts match its recall and beat its NDCG: a strong baseline on this data. Two caveats: 43.5% of users wrote their last two reviews on the same day, which the usual preprocessing leaves in product order and which favours counted transitions; and with under nine reviews per user, the pair's context adds little over the last item's (order 3 adds nothing). Answers were the same as scoring every item for the first 2,000 users. Fewer than 10 scored items were filled with the most frequent ones. Script and results: [`results/sequence/ngrams_beauty.py` and `ngrams-beauty.json`](https://github.com/chloetech-ai/strata/tree/main/strata/results/sequence).
 
-A sequence model ([`encode()`](query-language.md#sequence-models-encodemodel-history)) trained on the same split, reading items only, has 0.0662 and 0.0406 ([results](https://github.com/rkonow/strata/tree/main/strata/results/sequence)), at 0.6 ms a query.
+A sequence model ([`encode()`](query-language.md#sequence-models-encodemodel-history)) trained on the same split, reading items only, has 0.0662 and 0.0406 ([results](https://github.com/chloetech-ai/strata/tree/main/strata/results/sequence)), at 0.6 ms a query.
 
-On Beauty, Sports and Toys, the walk of the next section ranks above both that model and a generative decoder over [semantic IDs](server.md#semantic-ids), and `rrf` of the model's scores and the walk's ranks above the walk: on Beauty, Recall@10 0.0834 and NDCG@10 0.0511, and Recall@10 0.0855 with the decoder's answer added ([results](https://github.com/rkonow/strata/tree/main/strata/results/generative)).
+On Beauty, Sports and Toys, the walk of the next section ranks above both that model and a generative decoder over [semantic IDs](server.md#semantic-ids), and `rrf` of the model's scores and the walk's ranks above the walk: on Beauty, Recall@10 0.0834 and NDCG@10 0.0511, and Recall@10 0.0855 with the decoder's answer added ([results](https://github.com/chloetech-ai/strata/tree/main/strata/results/generative)).
 
 ## Several steps ahead
 

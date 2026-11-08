@@ -29,7 +29,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -236,9 +236,10 @@ pub fn defaults() -> Vec<Rule> {
     let s = "self";
     #[rustfmt::skip]
     let v = [
-        (rule("failing", "Database refuses writes", "failing", ">", 0.0, "max", 30, 0, "critical", c, "A write failed partway (a full disk, an I/O error): restart the server once the cause is fixed."), 0.0),
+        (rule("failing", "Database refuses writes", "failing", ">", 0.0, "max", 30, 0, "critical", c, "A write failed partway (a full disk, an I/O error), and the database refuses writes until it is reopened. On a primary, hand the primary over to a replica in sync first (Cluster: its menu, Make it the primary), so writes go on; then fix the cause and restart the server."), 0.0),
         (rule("flush-failing", "Flushes fail", "flush_failing", ">", 0.0, "max", 30, 0, "critical", c, "Writes still commit to the log until the memtable holds twice its limit. Usually a full disk."), 0.0),
         (rule("merge-failing", "Merges fail", "merge_failing", ">", 0.0, "all", 60, 0, "warning", c, "Segments pile up and queries slow down until merges succeed again."), 0.0),
+        (rule("damaged", "Data damaged on disk", "damaged_segments", ">", 0.0, "max", 30, 0, "critical", c, "A scrub found segments that fail their checksums on this copy: searches that read them fail there, and it must not become the primary. Replace the copy (Cluster: Plan the repair), or restore it from a checkpoint."), 0.0),
         (rule("disk-full", "Disk almost full", "disk_used_ratio", ">", 0.9, "mean", 300, 0, "warning", c, "Under 10% of the copy's disk is left."), 0.88),
         (rule("disk-critical", "Disk nearly full", "disk_used_ratio", ">", 0.97, "mean", 120, 0, "critical", c, "Under 3% of the copy's disk is left: writes fail when it is full. Free space or move slots off the copy now."), 0.95),
         (rule("disk-filling", "Disk full within 12 hours", "disk_hours_to_full", "<", 12.0, "mean", 1800, 0, "warning", c, "At the rate the copy's disk filled over the last 30 minutes, it is full in under 12 hours."), 24.0),
@@ -246,6 +247,7 @@ pub fn defaults() -> Vec<Rule> {
         (rule("p99-jump", "Query p99 doubled", "p99_ms", ">", 2.0, "mean", 300, 0, "warning", s, "The p99 of the last 5 minutes is over twice the p99 of the 5 minutes before."), 1.5),
         (rule("errors", "", "error_ratio", ">", 0.0, "mean", 300, 0, "warning", s, ""), 0.0),
         (rule("key-failing", "A client's calls fail", "key_error_ratio", ">", 0.2, "mean", 300, 0, "warning", s, "Over 20% of one key's calls failed in 5 minutes (its own errors included: bad SQL, its own deadline), for a key with 30 calls or more. Tell the key's owner."), 0.1),
+        (rule("key-flood", "A client crowds out the others", "key_busy_ratio", ">", 1.0, "mean", 60, 0, "warning", s, "Over a minute, one key's queries took over half of this server's query time, and ran more at once than the server has cores, while other keys queried too: their queries wait. Queries, Running now, grouped by key, shows its queries; Contain a key limits it. Tell the key's owner."), 0.5),
         (rule("rejected", "Queries refused (429)", "rejected_s", ">", 0.5, "mean", 300, 0, "warning", s, "Queries found no slot (--max-concurrent) or no memory before their deadline, or a Contain rule refused them."), 0.2),
         (rule("5xx", "Server errors over 1% of requests", "http_5xx_ratio", ">", 0.01, "mean", 300, 0, "warning", s, "Over 1% of the HTTP requests of 5 minutes failed on the server's side (5xx)."), 0.005),
         (rule("replica-behind", "A replica is behind", "replica_behind_s", ">", 30.0, "mean", 300, 0, "warning", c, "A replica is over 30 seconds of its primary's writes behind (transactions behind over the write rate)."), 10.0),
@@ -253,6 +255,7 @@ pub fn defaults() -> Vec<Rule> {
         (rule("replica-reads", "A replica does not serve reads", "serves_reads", "<", 1.0, "all", 60, 0, "warning", c, "The replica is catching up with its primary, or lost it."), 1.0),
         (rule("query-memory", "Query memory almost spent", "query_memory_ratio", ">", 0.9, "mean", 60, 0, "warning", s, "The running queries hold over 90% of --query-memory-mb; more are refused with 429."), 0.8),
         (rule("write-queue", "Writes queue up", "write_queue", ">", 512.0, "mean", 60, 0, "warning", c, "Write requests wait for the writer; at --max-queued-writes they are refused."), 256.0),
+        (rule("write-p99", "Writes are slow", "write_p99_ms", ">", 500.0, "mean", 60, 0, "warning", s, "The p99 of writes over a minute is over 500 ms: a replica or the link to it is slow (with --write-acks all a write waits for every copy), or the disk is."), 250.0),
         (rule("follow-behind", "A follower is behind its source", "follow_lag_s", ">", 60.0, "min", 60, 0, "warning", s, "This cluster follows another, and its follow process has been over a minute behind for a minute: it is down, catching up, or held (GET /v1/admin/follow says which)."), 30.0),
     ];
     let slo = crate::service::Slo::default();
@@ -332,9 +335,25 @@ pub const CLUSTER_METRICS: [&str; 5] = ["shards_no_majority", "copies_down", "sh
 pub const CAUSES: [&str; 2] = ["shard-no-majority", "copy-down"];
 /// Metrics of a shard's replicas, which a copy of it that is down explains.
 pub const REPLICA_METRICS: [&str; 5] = ["replicas_out_of_sync", "replica_behind_max", "replica_behind_s", "serves_reads", "shards_under_replicated"];
+
+/// The metrics a server reports in one role only: a primary its replicas
+/// out of sync and behind, a replica whether it serves reads. A server
+/// whose role changed stops reporting one, and one elected a moment ago
+/// has not reported it for long ([`role_key`]).
+const ROLE_METRICS: [&str; 4] = ["replicas_out_of_sync", "replica_behind_max", "replica_behind_s", "serves_reads"];
+
+/// The point key a role metric is read from (`replica_behind_s` is made of
+/// `replica_behind_max`).
+fn role_key(metric: &str) -> &str {
+    if metric == "replica_behind_s" {
+        "replica_behind_max"
+    } else {
+        metric
+    }
+}
 /// Metrics of the searches a coordinator serves, which a shard's trouble
 /// explains.
-pub const TRAFFIC_METRICS: [&str; 14] = ["availability", "error_ratio", "http_5xx_ratio", "http_5xx_s", "errors_s", "timeouts_s", "p99_ms", "p95_ms", "p50_ms", "partial_s", "rejected_s", "qps", "slow_s", "key_error_ratio"];
+pub const TRAFFIC_METRICS: [&str; 15] = ["availability", "error_ratio", "http_5xx_ratio", "http_5xx_s", "errors_s", "timeouts_s", "p99_ms", "p95_ms", "p50_ms", "partial_s", "rejected_s", "qps", "slow_s", "key_error_ratio", "key_busy_ratio"];
 
 fn sev_rank(s: &str) -> u8 {
     match s {
@@ -552,6 +571,21 @@ impl St {
             }
             _ => None,
         }
+    }
+
+    /// Its server no longer reports the rule's metric, as its role changed
+    /// (a primary that stepped down reports no replicas out of sync):
+    /// nothing of it is left here, so it is ok, and resolves if it fired.
+    fn gone(&mut self, t: u64) -> Option<&'static str> {
+        self.no_data_since_ms = None;
+        let was = self.state;
+        if was != "ok" {
+            (self.state, self.since_ms) = ("ok", t);
+        }
+        (was == "firing").then(|| {
+            self.clear(t);
+            "resolved"
+        })
     }
 
     /// What survives a restart ([`Saved`]).
@@ -860,6 +894,8 @@ pub struct Alerts {
     file: Option<PathBuf>,
     http: reqwest::Client,
     coordinator: AtomicBool,
+    /// The cores `key_busy_ratio` counts per (the machine's, unless set).
+    cores: AtomicUsize,
     copies: Mutex<HashMap<(String, String), CopySt>>,
     cluster: Mutex<ClusterView>,
     /// When the coordinator last checked its cluster (ms), and whether a
@@ -981,6 +1017,7 @@ impl Alerts {
             file,
             http,
             coordinator: AtomicBool::new(false),
+            cores: AtomicUsize::new(std::thread::available_parallelism().map_or(1, |n| n.get())),
             copies: Mutex::new(HashMap::new()),
             cluster: Mutex::new(view),
             cluster_checked: AtomicU64::new(0),
@@ -1034,6 +1071,16 @@ impl Alerts {
 
     pub fn identity(&self) -> Identity {
         lock(&self.identity).clone()
+    }
+
+    /// The cores this server's queries share, which `key_busy_ratio`
+    /// counts the queries a key runs at once per.
+    pub fn cores(&self) -> usize {
+        self.cores.load(Ordering::Relaxed)
+    }
+
+    pub fn set_cores(&self, n: usize) {
+        self.cores.store(n.max(1), Ordering::Relaxed);
     }
 
     /// Whether this server coordinates shards: it then has the
@@ -1286,7 +1333,8 @@ impl Alerts {
     }
 
     /// [`Self::check`], with each key's calls of a window (`keys(from,
-    /// to)`: key, calls, failed, its owner) for `key_error_ratio`.
+    /// to)`: key, calls, failed, the time they ran, its owner) for
+    /// `key_error_ratio` and `key_busy_ratio`.
     pub fn check_with(&self, points: &[Arc<Json>], t: u64, keys: &dyn Fn(u64, u64) -> Vec<KeyCalls>) -> Vec<Arc<Event>> {
         let rules = self.rules();
         let routes = self.routes();
@@ -1295,8 +1343,19 @@ impl Alerts {
             let mut states = lock(&self.states);
             for r in rules.iter().filter(|r| self.own(r)) {
                 let st = states.entry(r.id.clone()).or_insert_with(|| St::new(t));
-                let (v, partial) = if r.metric == "key_error_ratio" {
-                    let (v, place) = key_window(r, st.state == "firing", &keys(t.saturating_sub(r.window_s * 1000), t + 1));
+                let role = ROLE_METRICS.contains(&r.metric.as_str()).then(|| role_key(&r.metric));
+                if role.is_some_and(|k| points.last().is_some_and(|p| value_of(p, k).is_none())) {
+                    st.reports = false;
+                    if st.gone(t).is_some() {
+                        changes.push(Arc::new(self.resolution(r, st, t)));
+                    }
+                    continue;
+                }
+                let (v, partial) = if KEY_METRICS.contains(&r.metric.as_str()) {
+                    let from = t.saturating_sub(r.window_s * 1000);
+                    let calls = keys(from, t + 1);
+                    let firing = st.state == "firing";
+                    let (v, place) = if r.metric == "key_busy_ratio" { key_busy(r, firing, &calls, t + 1 - from, self.cores()) } else { key_window(r, firing, &calls) };
                     if v.is_some() {
                         st.where_ = place;
                     }
@@ -1304,11 +1363,24 @@ impl Alerts {
                 } else {
                     window_of(r, points, t)
                 };
+                // A server that took the role within the window (a primary
+                // elected a moment ago, whose old primary is still starting
+                // again) is judged once the metric spans the window: "all"
+                // over a minute means a minute of it.
+                let since = role.and_then(|k| points.iter().rev().take_while(|p| value_of(p, k).is_some()).last()).and_then(|p| p["t"].as_u64());
+                let young = since.is_some_and(|s| s > t.saturating_sub(r.window_s * 1000) + crate::telemetry::INTERVAL.as_millis() as u64);
+                if young && st.state != "firing" && v.is_some_and(|x| r.holds(x)) {
+                    (st.value, st.no_data_since_ms, st.reports) = (v, None, true);
+                    if st.state != "pending" {
+                        (st.state, st.since_ms) = ("pending", t);
+                    }
+                    continue;
+                }
                 st.partial_ms = partial.filter(|_| v.is_some());
-                st.reports = v.is_some() || points.iter().any(|p| value_of(p, &r.metric).is_some());
+                st.reports = v.is_some() || points.iter().any(|p| value_of(p, &r.metric).is_some()) || role.is_some();
                 if let Some(change) = st.step(r, v, t) {
                     let mut e = if change == "resolved" { self.resolution(r, st, t) } else { Event::of(r, change, st, t) };
-                    if r.metric == "key_error_ratio" {
+                    if KEY_METRICS.contains(&r.metric.as_str()) {
                         owner_route(&mut e, &routes);
                     }
                     changes.push(Arc::new(e));
@@ -1434,9 +1506,9 @@ impl Alerts {
             if n > 0 && in_sync < n {
                 places.entry("shards_under_replicated").or_default().push(json!({"shard": i, "name": shard_name, "short": shard_name, "state": "firing", "value": in_sync, "of": n}));
             }
-            for (k, r) in replicas.iter().enumerate() {
-                let short = r["short"].as_str().map(String::from).unwrap_or_else(|| format!("s{i}-{k}"));
+            for r in replicas.iter() {
                 let url = r["url"].as_str().unwrap_or_default().to_string();
+                let short = r["short"].as_str().map(String::from).unwrap_or_else(|| crate::coord::copy_short(i, &url));
                 if !answers(r) {
                     let since = r["down_since_ms"].as_u64();
                     places.entry("copies_down").or_default().push(json!({"copy": url, "short": short, "shard": i, "state": "firing", "since_ms": since, "error": r["error"]}));
@@ -1492,9 +1564,9 @@ impl Alerts {
         let mut versions = lock(&self.copy_rules_ms);
         for s in snap["shards"].as_array().into_iter().flatten() {
             let i = s["shard"].as_u64().unwrap_or(0) as usize;
-            for (k, r) in s["replicas"].as_array().into_iter().flatten().enumerate() {
+            for r in s["replicas"].as_array().into_iter().flatten() {
                 let url = r["url"].as_str().unwrap_or_default().to_string();
-                let short = r["short"].as_str().map(String::from).unwrap_or_else(|| format!("s{i}-{k}"));
+                let short = r["short"].as_str().map(String::from).unwrap_or_else(|| crate::coord::copy_short(i, &url));
                 let reported = &r["detail"]["alerts"]["rules"];
                 if let Some(v) = r["detail"]["alerts"]["rules_ms"].as_u64() {
                     versions.insert(url.clone(), v);
@@ -2656,7 +2728,45 @@ pub struct KeyCalls {
     pub key: String,
     pub calls: u64,
     pub failed: u64,
+    /// The milliseconds its calls ran within the window, summed.
+    pub ms: f64,
     pub owner: Option<String>,
+}
+
+/// The metrics counted from each key's calls of a window, not kept as
+/// points ([`Alerts::check_with`]).
+pub const KEY_METRICS: [&str; 2] = ["key_error_ratio", "key_busy_ratio"];
+
+/// The share of a window's query time over which a key holds the most of it.
+const KEY_BUSY_SHARE: f64 = 0.5;
+
+/// `key_busy_ratio` over a window's calls (`span_ms` long): the queries a
+/// key ran at once on average (its calls' time in the window over its
+/// span), per core of this server, for a key that took over half of
+/// the query time while another key made [`KEY_MIN_CALLS`] calls or more
+/// (a client alone crowds out no one; a few long queries count as much as
+/// many short ones); 0 when none does. The key that
+/// passes the rule is its place, with its share, the queries it ran at
+/// once and its owner.
+fn key_busy(r: &Rule, firing: bool, calls: &[KeyCalls], span_ms: u64, cores: usize) -> (Option<f64>, Vec<Json>) {
+    let named = |k: &&KeyCalls| k.key != "-" && k.key != "(other keys)";
+    // No calls (a server just restarted keeps none): no data.
+    let Some(top) = calls.iter().filter(named).max_by(|a, b| a.ms.total_cmp(&b.ms)) else { return (None, Vec::new()) };
+    let total: f64 = calls.iter().map(|k| k.ms).sum();
+    let share = if total > 0.0 { top.ms / total } else { 0.0 };
+    let others = calls.iter().filter(named).any(|k| k.key != top.key && k.calls >= KEY_MIN_CALLS);
+    // Once it fires, crowding every other key out keeps it firing.
+    if share <= KEY_BUSY_SHARE || !(others || firing) {
+        return (Some(0.0), Vec::new());
+    }
+    let running = top.ms / span_ms.max(1) as f64;
+    let v = running / cores.max(1) as f64;
+    let place = if r.holds(v) || (firing && r.still(v)) {
+        vec![json!({"key": top.key, "name": format!("key {}", top.key), "short": format!("key {}", top.key), "state": "firing", "value": v, "calls": top.calls, "share": share, "running": running, "cores": cores, "owner": top.owner})]
+    } else {
+        Vec::new()
+    };
+    (Some(v), place)
 }
 
 /// The fewest calls a key makes in a window for `key_error_ratio` to judge
@@ -2700,9 +2810,10 @@ fn owner_route(e: &mut Event, routes: &[Route]) {
 /// Metrics a window makes of others, which no point holds as such: the
 /// share of HTTP requests that failed on the server's side, a replica's
 /// lag in seconds (transactions behind over the primary's write rate), the
-/// hours until the disk is full at the window's rate, and the worst key's
-/// share of failed calls ([`Alerts::check_with`]).
-pub const DERIVED: [&str; 4] = ["http_5xx_ratio", "replica_behind_s", "disk_hours_to_full", "key_error_ratio"];
+/// hours until the disk is full at the window's rate, the worst key's
+/// share of failed calls and the busiest key's queries at once per core
+/// ([`Alerts::check_with`]).
+pub const DERIVED: [&str; 5] = ["http_5xx_ratio", "replica_behind_s", "disk_hours_to_full", "key_error_ratio", "key_busy_ratio"];
 
 /// What `disk_hours_to_full` is when the disk does not fill: ten years.
 pub const NOT_FILLING_H: f64 = 87_600.0;
@@ -2922,7 +3033,7 @@ fn key_calls(svc: &crate::service::Service, from: u64, to: u64) -> Vec<KeyCalls>
         return Vec::new();
     }
     let owners: HashMap<String, String> = svc.keys.list().into_iter().filter_map(|k| Some((k["name"].as_str()?.to_string(), k["owner"].as_str()?.to_string()))).collect();
-    calls.into_iter().map(|(key, calls, failed)| KeyCalls { owner: owners.get(&key).cloned(), key, calls, failed }).collect()
+    calls.into_iter().map(|(key, calls, failed, ms)| KeyCalls { owner: owners.get(&key).cloned(), key, calls, failed, ms }).collect()
 }
 
 /// A coordinator's check of its cluster now ([`Alerts::check_cluster`]);
@@ -3250,8 +3361,8 @@ pub async fn backtest(svc: &Arc<crate::service::Service>, b: &Json) -> Result<Js
     if from >= to {
         return Err(ApiError::bad("from comes before to"));
     }
-    if rule.metric == "key_error_ratio" {
-        return Err(ApiError::bad("key_error_ratio is counted from each key's calls a minute at a time, not kept as points: it cannot be replayed"));
+    if KEY_METRICS.contains(&rule.metric.as_str()) {
+        return Err(ApiError::bad(format!("{} is counted from each key's calls a minute at a time, not kept as points: it cannot be replayed", rule.metric)));
     }
     // A coordinator replays the cluster's rules from its events, and has
     // each copy replay an each_copy rule over the copy's own points.
@@ -3507,6 +3618,40 @@ fn backtest_events(svc: &crate::service::Service, rule: &Rule, from: u64, to: u6
 mod tests {
     use super::*;
 
+    /// A primary that stepped down reports no replicas out of sync: its
+    /// alert resolves rather than firing on (it kept a critical alert for
+    /// 13 minutes in the chaos monkey's run); and a primary elected a
+    /// moment ago, whose old primary is still starting again, is judged
+    /// once it has been primary for the rule's window.
+    #[test]
+    fn a_role_metric_resolves_when_the_role_ends_and_waits_after_it_begins() {
+        let sync = defaults().into_iter().find(|r| r.id == "out-of-sync").unwrap();
+        let a = Alerts::new(None, None).unwrap();
+        a.set_rules(vec![sync.clone()], "t").unwrap();
+        let primary = |from: u64, to: u64, v: f64| (from..=to).map(move |s| Arc::new(json!({"t": s * 1000, "replicas_out_of_sync": v})));
+        let replica = |from: u64, to: u64| (from..=to).map(|s| Arc::new(json!({"t": s * 1000, "serves_reads": 1.0})));
+        // A replica for 5 minutes, then elected: its old primary is out of sync.
+        let mut ps: Vec<Arc<Json>> = replica(0, 300).chain(primary(301, 330, 1.0)).collect();
+        a.check(&ps, 330_000);
+        assert_eq!(a.one("out-of-sync").unwrap()["state"], "pending", "30 s a primary");
+        ps.extend(primary(331, 365, 1.0));
+        a.check(&ps, 365_000);
+        let s = a.one("out-of-sync").unwrap();
+        assert_eq!(s["state"], "firing", "a whole minute out of sync: {s}");
+        // It steps down: a replica again, which reports no replicas.
+        ps.extend(replica(366, 370));
+        let changes = a.check(&ps, 370_000);
+        assert!(changes.iter().any(|e| e.rule == "out-of-sync" && e.state == "resolved"), "{changes:?}");
+        let s = a.one("out-of-sync").unwrap();
+        assert_eq!(s["state"], "ok", "{s}");
+        // A primary from its start is judged as before.
+        let b = Alerts::new(None, None).unwrap();
+        b.set_rules(vec![sync], "t").unwrap();
+        let ps: Vec<Arc<Json>> = primary(0, 300, 1.0).collect();
+        b.check(&ps, 300_000);
+        assert_eq!(b.one("out-of-sync").unwrap()["state"], "firing");
+    }
+
     fn points(vals: &[(u64, f64)]) -> Vec<Arc<Json>> {
         vals.iter().map(|(t, v)| Arc::new(json!({"t": t, "p99_ms": v}))).collect()
     }
@@ -3706,10 +3851,10 @@ mod tests {
         let ev = event_of(&fired);
         assert_eq!(ev.where_, json!({"rule": "disk-full", "copies": ["http://a", "http://b"]}), "neither one copy nor one shard: {:?}", ev.where_);
         let resolved = a.check_cluster(&snap("ok"), 30_000).into_iter().find(|e| e.rule == "disk-full").unwrap();
-        assert_eq!((resolved.state, resolved.where_.clone()), ("resolved", vec!["s0-0".to_string(), "s1-0".to_string()]));
+        assert_eq!((resolved.state, resolved.where_.clone()), ("resolved", vec!["a".to_string(), "b".to_string()]), "named from their URLs");
         assert_eq!(resolved.fired_ms, Some(1_000));
-        assert!(a.message(&resolved).starts_with("[strata RESOLVED warning] Disk almost full on prod/s0-0,s1-0: "), "{}", a.message(&resolved));
-        assert!(event_of(&resolved).title.starts_with("Disk almost full resolved on s0-0, s1-0 after 29 s"), "{}", event_of(&resolved).title);
+        assert!(a.message(&resolved).starts_with("[strata RESOLVED warning] Disk almost full on prod/a,b: "), "{}", a.message(&resolved));
+        assert!(event_of(&resolved).title.starts_with("Disk almost full resolved on a, b after 29 s"), "{}", event_of(&resolved).title);
         // One copy: the copy and its shard.
         let one = json!({"shards": [{"shard": 0, "replicas": [copy("http://a", "firing")]}, {"shard": 1, "replicas": [copy("http://b", "ok")]}]});
         let fired = a.check_cluster(&one, 40_000).into_iter().find(|e| e.rule == "disk-full").unwrap();
@@ -3731,7 +3876,7 @@ mod tests {
         let fired: Vec<&str> = changes.iter().filter(|e| e.state == "firing").map(|e| e.rule.as_str()).collect();
         assert!(fired.contains(&"disk-full") && fired.contains(&"shard-no-majority"), "{fired:?}");
         let j = a.one("disk-full").unwrap();
-        assert_eq!(j["where"][0]["short"], "s1-0", "{j}");
+        assert_eq!(j["where"][0]["short"], "b", "{j}");
         assert_eq!(j["copies"]["firing"], 1);
         let m = a.one("shard-no-majority").unwrap();
         assert_eq!(m["where"][0]["shard"], 1, "{m}");
@@ -3788,7 +3933,7 @@ mod tests {
         assert_eq!(s["state"], "ok", "{s}");
         assert_eq!(s["copies"]["rule_differs"], 1, "{s}");
         let w = s["where"].as_array().unwrap();
-        assert_eq!((w.len(), w[0]["short"].as_str(), w[0]["rule_differs"].as_bool(), w[0]["copy_state"].as_str()), (1, Some("s1-0"), Some(true), Some("firing")), "{s}");
+        assert_eq!((w.len(), w[0]["short"].as_str(), w[0]["rule_differs"].as_bool(), w[0]["copy_state"].as_str()), (1, Some("b"), Some(true), Some("firing")), "{s}");
         assert_eq!(a.to_push(&snap, 1_000), ["http://b"], "only the copy on the old rule");
         a.pushed_to("http://b", 1_000, Err("older strata-server".into()));
         assert!(a.to_push(&snap, 2_000).is_empty(), "not again within 30 s");
@@ -4096,7 +4241,7 @@ mod tests {
         assert_eq!(s["held_by"], "shard-no-majority", "{s}");
         assert_eq!(s["held_why"], "A shard has no majority (on shard 1)", "{s}");
         // A key's calls fail while the shard is out: explained too.
-        let keys = |_: u64, _: u64| vec![KeyCalls { key: "app".into(), calls: 100, failed: 90, owner: None }];
+        let keys = |_: u64, _: u64| vec![KeyCalls { key: "app".into(), calls: 100, failed: 90, ms: 0.0, owner: None }];
         a.check_with(&[Arc::new(json!({"t": 1_000, "qps": 1.0}))], 1_000, &keys);
         let k = a.one("key-failing").unwrap();
         assert_eq!((k["state"].as_str(), k["held_by"].as_str()), (Some("firing"), Some("shard-no-majority")), "{k}");
@@ -4153,7 +4298,7 @@ mod tests {
         let a = Alerts::new(None, None).unwrap();
         a.set_rules(vec![d("key-failing")], "t").unwrap();
         a.set_routes(vec![Route { name: "mobile-team".into(), url: "http://hooks.example/m".into(), ..Route::default() }, Route { name: "all".into(), url: "http://hooks.example/a".into(), ..Route::default() }]).unwrap();
-        let keys = |_: u64, _: u64| vec![KeyCalls { key: "app".into(), calls: 100, failed: 40, owner: Some("Mobile team".into()) }, KeyCalls { key: "few".into(), calls: 5, failed: 5, owner: None }, KeyCalls { key: "ok".into(), calls: 500, failed: 1, owner: None }];
+        let keys = |_: u64, _: u64| vec![KeyCalls { key: "app".into(), calls: 100, failed: 40, ms: 0.0, owner: Some("Mobile team".into()) }, KeyCalls { key: "few".into(), calls: 5, failed: 5, ms: 0.0, owner: None }, KeyCalls { key: "ok".into(), calls: 500, failed: 1, ms: 0.0, owner: None }];
         let fired = a.check_with(&at(&|_| json!({"qps": 1.0})), t, &keys);
         assert_eq!(fired.len(), 1, "{fired:?}");
         let s = a.one("key-failing").unwrap();
@@ -4163,6 +4308,54 @@ mod tests {
         // No key with calls enough (a restart forgets them): no data, still firing.
         assert!(a.check_with(&at(&|_| json!({"qps": 1.0})), t + 2_000, &|_, _| Vec::new()).is_empty());
         assert_eq!(a.one("key-failing").unwrap()["state"], "firing");
+    }
+
+    /// One key's queries take most of the query time and outnumber the
+    /// cores while others query: it crowds them out. Alone, under a query
+    /// a core, or sharing the time evenly, it does not (the chaos
+    /// monkey's query flood).
+    #[test]
+    fn a_key_that_takes_the_query_time_while_others_query_crowds_them_out() {
+        let t = 600_000u64;
+        let at: Vec<Arc<Json>> = (0..=300u64).map(|i| Arc::new(json!({"t": i * 2_000, "qps": 1.0}))).collect();
+        let rule = defaults().into_iter().find(|r| r.id == "key-flood").unwrap();
+        let fresh = || {
+            let a = Alerts::new(None, None).unwrap();
+            a.set_cores(4);
+            a.set_rules(vec![rule.clone()], "t").unwrap();
+            a
+        };
+        let k = |key: &str, calls: u64, ms: f64| KeyCalls { key: key.into(), calls, failed: 0, ms, owner: if key == "report" { Some("Data team".into()) } else { None } };
+        // 960 s of query time in the window [t - 60 s, t] (60.001 s) is
+        // 16 queries at once, 4 a core.
+        let a = fresh();
+        let fired = a.check_with(&at, t, &|_, _| vec![k("report", 30_000, 960_000.0), k("app", 3_000, 30_000.0)]);
+        assert_eq!(fired.len(), 1, "{fired:?}");
+        assert_eq!(fired[0].owner, "Data team");
+        let s = a.one("key-flood").unwrap();
+        assert_eq!(s["state"], "firing", "{s}");
+        assert!((s["value"].as_f64().unwrap() - 4.0).abs() < 0.01, "{s}");
+        let w = &s["where"][0];
+        assert_eq!((w["key"].as_str(), w["cores"].as_u64()), (Some("report"), Some(4)), "{s}");
+        assert!((w["running"].as_f64().unwrap() - 16.0).abs() < 0.01 && (w["share"].as_f64().unwrap() - 0.97).abs() < 0.01, "{s}");
+        // Crowding every other key out keeps it firing; once its share of
+        // the time is under half, it resolves.
+        assert!(a.check_with(&at, t + 2_000, &|_, _| vec![k("report", 30_000, 960_000.0), k("app", 2, 300.0)]).is_empty());
+        let gone = a.check_with(&at, t + 4_000, &|_, _| vec![k("report", 300, 20_000.0), k("app", 3_000, 30_000.0)]);
+        assert!(gone.len() == 1 && gone[0].state == "resolved", "{gone:?}");
+        let quiet = |calls: Vec<KeyCalls>| {
+            let a = fresh();
+            let fired = a.check_with(&at, t, &move |_, _| calls.clone());
+            (fired.len(), a.one("key-flood").unwrap()["value"].as_f64())
+        };
+        // The same load from a client alone crowds out no one.
+        assert_eq!(quiet(vec![k("report", 30_000, 960_000.0)]), (0, Some(0.0)));
+        // Most of the time, but 2 queries at once on 4 cores.
+        assert_eq!(quiet(vec![k("app", 30_000, 120_000.0), k("ui", 100, 1_000.0)]).0, 0);
+        // Two keys with half the time each.
+        assert_eq!(quiet(vec![k("a", 1_000, 480_000.0), k("b", 1_000, 480_000.0)]), (0, Some(0.0)));
+        // No calls (a restart forgets them): no data.
+        assert_eq!(quiet(Vec::new()), (0, None));
     }
 
     /// A value next to its threshold has the digits to differ from it, and

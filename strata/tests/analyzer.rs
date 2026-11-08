@@ -117,7 +117,7 @@ fn through_sql(path: &Path, layout: Layout) {
     // english by name is english: it needs no feature (but field ids, as
     // every database does).
     run(&db, "CREATE TABLE plain (id KEYWORD PRIMARY KEY, body TEXT OPTIONS(analyzer = 'english'))");
-    assert_eq!(required(path), ["compact_keys", "field_ids"]);
+    assert_eq!(required(path), ["compact_keys", "field_ids", "packed_positions"]);
     assert_eq!(db.storage().table("plain").unwrap().fields[1].analyzer, None);
     for bad in [
         "CREATE TABLE t (id KEYWORD PRIMARY KEY, body TEXT OPTIONS(analyzer = 'french'))",
@@ -129,7 +129,7 @@ fn through_sql(path: &Path, layout: Layout) {
 
     run(&db, NOTES);
     assert_eq!(format_on_disk(path), 3);
-    assert_eq!(required(path), ["analyzer:simple:1", "compact_keys", "field_ids"]);
+    assert_eq!(required(path), ["analyzer:simple:1", "compact_keys", "field_ids", "packed_positions"]);
     let notes = db.storage().table("notes").unwrap();
     assert_eq!(notes.fields[1].analyzer, Some(Analyzer::Simple));
     assert_eq!(notes.to_short_json()["fields"][1], serde_json::json!({"name": "title", "type": "text", "analyzer": "simple"}));
@@ -151,9 +151,9 @@ fn through_sql(path: &Path, layout: Layout) {
     let db = Db::open(path, opts()).unwrap();
     searches(&db);
     run(&db, "DROP TABLE notes");
-    assert_eq!(required(path), ["compact_keys", "field_ids"]);
+    assert_eq!(required(path), ["compact_keys", "field_ids", "packed_positions"]);
     run(&db, "DROP TABLE plain");
-    assert_eq!((format_on_disk(path), required(path)), (3, vec!["compact_keys".to_string(), "field_ids".to_string()]));
+    assert_eq!((format_on_disk(path), required(path)), (3, vec!["compact_keys".to_string(), "field_ids".to_string(), "packed_positions".to_string()]));
 }
 
 // A version of Strata without an analyzer refuses the database by the
@@ -166,7 +166,7 @@ fn a_missing_analyzer_is_refused_by_name() {
     let schema = Schema::new("notes", vec![Field::new("id", FieldType::Keyword), Field::new("title", FieldType::Text { positions: true }).analyzer(Analyzer::Simple)], Some("id")).unwrap();
     Db::create(&path, schema, opts()).unwrap();
     let (mut m, mut rewrite) = manifest(&path);
-    assert_eq!(m["features"]["required"], serde_json::json!(["analyzer:simple:1", "compact_keys", "field_ids"]));
+    assert_eq!(m["features"]["required"], serde_json::json!(["analyzer:simple:1", "compact_keys", "field_ids", "packed_positions"]));
     assert_eq!(m["tables"][0]["schema"]["fields"][1]["analyzer"], serde_json::json!({"name": "simple", "version": 1}));
     // As a later version would write a field analysed by simple version 2.
     m["features"]["required"] = serde_json::json!(["analyzer:simple:2", "field_ids"]);

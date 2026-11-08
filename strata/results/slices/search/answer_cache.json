@@ -1,0 +1,6 @@
+{
+ "train_queries": 1000000,
+ "mean_query_bytes": 20.78,
+ "id_bytes": 4,
+ "k": 10
+}

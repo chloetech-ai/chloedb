@@ -15,6 +15,11 @@ use serde_json::{json, Value as Json};
 use strata::db::Db;
 use strata::storage::DbOptions;
 use strata_server::coord::Coordinator;
+
+/// A copy's short name, as the cluster names it from its URL.
+fn short(url: &str) -> String {
+    strata_server::coord::copy_short(0, url)
+}
 use strata_server::service::{AgentConfig, Backend, Service};
 use strata_server::{alerts, demo, server};
 use tokio::net::TcpListener;
@@ -434,10 +439,13 @@ async fn a_coordinator_gathers_its_copies_and_sees_a_shard_lose_its_majority() {
     })
     .await;
     let s = state(&all, "many-docs");
+    let (sa, sb) = (short(&a.url()), short(&b.url()));
     let shorts: Vec<&str> = s["where"].as_array().unwrap().iter().map(|w| w["short"].as_str().unwrap()).collect();
-    assert_eq!(shorts, ["s0-0", "s0-1"], "{s}");
-    assert_eq!(s["where"][0]["copy"], a.url().as_str());
-    assert!(s["where"][0]["value"].as_f64().unwrap() >= N as f64, "{s}");
+    let mut want = [sa.as_str(), sb.as_str()];
+    want.sort();
+    assert_eq!(shorts, want, "by name: {s}");
+    let wa = s["where"].as_array().unwrap().iter().find(|w| w["copy"] == a.url().as_str()).unwrap_or_else(|| panic!("{s}"));
+    assert!(wa["value"].as_f64().unwrap() >= N as f64, "{s}");
     assert_eq!(s["copies"]["firing"], 2, "{s}");
     // Its event names both copies, in one shard.
     let (fired, _) = svc.events.range(0, u64::MAX, &["alert_fired".to_string()], 10);
@@ -454,12 +462,12 @@ async fn a_coordinator_gathers_its_copies_and_sees_a_shard_lose_its_majority() {
     // event of it, which names the copy.
     let cbase = http(svc.clone()).await;
     let (status, j) = call(&cbase, "PUT", &format!("/v1/logs/filter?node={}", b.url()), Some(json!({"filter": "debug", "expires_s": 60}))).await;
-    assert_eq!((status, j["filter"].as_str(), j["short"].as_str()), (200, Some("debug"), Some("s0-1")), "{j}");
+    assert_eq!((status, j["filter"].as_str(), j["short"].as_str()), (200, Some("debug"), Some(sb.as_str())), "{j}");
     let (status, j) = call(&cbase, "GET", &format!("/v1/logs?node={}", b.url()), None).await;
     assert_eq!(status, 200, "{j}");
     assert_eq!((j["node"].as_str(), j["filter"].as_str(), j["filter_set_by"].as_str()), (Some(b.url().as_str()), Some("debug"), Some("open")), "{j}");
     assert!(j["filter_expires_ms"].as_u64().is_some(), "{j}");
-    let (_, j) = call(&cbase, "GET", "/v1/logs/filter?node=s0-1", None).await;
+    let (_, j) = call(&cbase, "GET", &format!("/v1/logs/filter?node={sb}"), None).await;
     assert_eq!((j["filter"].as_str(), j["node"].as_str()), (Some("debug"), Some(b.url().as_str())), "{j}");
     let (_, j) = call(&cbase, "GET", "/v1/logs/filter?node=s9-9", None).await;
     assert!(j["error"].as_str().is_some_and(|e| e.contains("no copy s9-9")), "{j}");
@@ -467,8 +475,8 @@ async fn a_coordinator_gathers_its_copies_and_sees_a_shard_lose_its_majority() {
     let evs = ev["events"].as_array().unwrap();
     let levels: Vec<&Json> = evs.iter().filter(|e| e["kind"] == "log_level").collect();
     assert_eq!(levels.len(), 1, "{ev}");
-    assert_eq!((levels[0]["where"]["copy"].as_str(), levels[0]["where"]["shard"].as_u64()), (Some("s0-1"), Some(0)), "{ev}");
-    assert!(levels[0]["title"].as_str().unwrap().contains("on s0-1"), "{ev}");
+    assert_eq!((levels[0]["where"]["copy"].as_str(), levels[0]["where"]["shard"].as_u64()), (Some(sb.as_str()), Some(0)), "{ev}");
+    assert!(levels[0]["title"].as_str().unwrap().contains(&format!("on {sb}")), "{ev}");
     assert!(!evs.iter().any(|e| e["kind"] == "change" && e["detail"]["route"] == "/v1/logs/filter"), "said once: {ev}");
     let (_, audit) = call(&cbase, "GET", "/v1/admin/audit", None).await;
     assert!(audit["entries"].as_array().unwrap().iter().any(|e| e["route"] == "/v1/logs/filter"), "and audited: {audit}");
@@ -485,7 +493,7 @@ async fn a_coordinator_gathers_its_copies_and_sees_a_shard_lose_its_majority() {
     // is the last it told.
     assert_eq!(state(&lost, "copy-down")["state"], "pending", "{lost}");
     let w = state(&lost, "many-docs")["where"].as_array().unwrap().clone();
-    assert!(w.iter().any(|w| w["short"] == "s0-1" && w["unheard_since_ms"].as_u64().is_some()), "{w:?}");
+    assert!(w.iter().any(|w| w["short"] == sb && w["unheard_since_ms"].as_u64().is_some()), "{w:?}");
 
     // A coordinator that starts while the shard has no majority has no
     // event of it (its events start then); its backtest still shows the
@@ -621,7 +629,7 @@ async fn an_edit_of_an_each_copy_rule_reaches_every_copy() {
     assert_eq!(status, 200, "{j}");
     let p = &j["pushed"];
     assert_eq!((p["copies"].as_u64(), p["took"].as_u64()), (Some(2), Some(1)), "{j}");
-    assert_eq!((p["failed"][0]["copy"].as_str(), p["failed"][0]["short"].as_str()), (Some(b.url().as_str()), Some("s1-0")), "{j}");
+    assert_eq!((p["failed"][0]["copy"].as_str(), p["failed"][0]["short"].as_str()), (Some(b.url().as_str()), Some(short(&b.url()).as_str())), "{j}");
     let (_, x) = call(&a.base(), "GET", "/v1/alerts", None).await;
     assert_eq!(threshold(&x), Some(json!(100_000.0)), "{x}");
     // The copy that took it reports ok by the new rule; the one that did

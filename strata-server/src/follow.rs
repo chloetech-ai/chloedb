@@ -50,7 +50,7 @@ use serde_json::{json, Value as Json};
 use strata::query::ddl::{alter_sql, create_sql};
 use strata::query::sql::ident;
 use strata::schema::Schema;
-use strata::storage::{RankProfile, SOURCES};
+use strata::storage::{RankProfile, FUNCTIONS, SOURCES};
 
 use crate::cores::follow::{Order, Step, Txn, Version};
 use crate::service::feed::{digests_of, follows_offset, next_offset, Digest, Marks, FOLLOWS, HOLD};
@@ -113,7 +113,7 @@ fn url_part(s: &str) -> String {
 
 /// A cluster over HTTP.
 #[derive(Clone)]
-struct Http {
+pub(crate) struct Http {
     url: String,
     client: reqwest::Client,
     auth: Option<String>,
@@ -122,7 +122,7 @@ struct Http {
 }
 
 impl Http {
-    fn new(url: &str, token: Option<&str>, ca: Option<&[u8]>, follow: Option<&str>) -> Result<Http, ApiError> {
+    pub(crate) fn new(url: &str, token: Option<&str>, ca: Option<&[u8]>, follow: Option<&str>) -> Result<Http, ApiError> {
         let mut b = crate::http_client().connect_timeout(Duration::from_secs(5));
         if let Some(ca) = ca {
             let cert = reqwest::Certificate::from_pem(ca).map_err(|e| ApiError::bad(format!("the CA certificate for {url}: {e}")))?;
@@ -159,11 +159,11 @@ impl Http {
         Ok(j)
     }
 
-    async fn get(&self, path: &str) -> Result<Json, ApiError> {
+    pub(crate) async fn get(&self, path: &str) -> Result<Json, ApiError> {
         self.call(reqwest::Method::GET, path, None).await
     }
 
-    async fn post(&self, path: &str, body: &Json) -> Result<Json, ApiError> {
+    pub(crate) async fn post(&self, path: &str, body: &Json) -> Result<Json, ApiError> {
         self.call(reqwest::Method::POST, path, Some(body)).await
     }
 
@@ -230,9 +230,11 @@ fn schema_of(j: &Json) -> Result<Schema, ApiError> {
     serde_json::from_value(j.clone()).map_err(|e| ApiError::bad(format!("a table's schema in the feed: {e}")))
 }
 
-/// Whether a table is the server's own, which the follower leaves.
+/// Whether a table is the server's own, which the follower leaves: its
+/// stream offsets, its stored functions (each cluster defines its own) and
+/// the placeholder.
 fn own_table(t: &str) -> bool {
-    t.eq_ignore_ascii_case(SOURCES) || t.eq_ignore_ascii_case(strata::schema::PLACEHOLDER_TABLE)
+    t.eq_ignore_ascii_case(SOURCES) || t.eq_ignore_ascii_case(FUNCTIONS) || t.eq_ignore_ascii_case(strata::schema::PLACEHOLDER_TABLE)
 }
 
 /// A transaction line of a feed as the follower orders it.
@@ -493,7 +495,7 @@ pub async fn run(o: Options) -> Result<(), ApiError> {
 
 /// Calls `f` until it answers or fails for good (a 4xx but 408, 409 and
 /// 429), waiting longer each time, up to 2 minutes in all.
-async fn retry<F, Fut>(what: &str, f: F) -> Result<Json, ApiError>
+pub(crate) async fn retry<F, Fut>(what: &str, f: F) -> Result<Json, ApiError>
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<Json, ApiError>>,
@@ -514,7 +516,7 @@ where
 }
 
 /// Whether a failed call may answer when tried again.
-fn again(e: &ApiError) -> bool {
+pub(crate) fn again(e: &ApiError) -> bool {
     e.status >= 500 || matches!(e.status, 408 | 429) || (e.status == 409 && !e.message.contains("follow"))
 }
 

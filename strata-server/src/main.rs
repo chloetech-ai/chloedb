@@ -127,6 +127,15 @@ struct Args {
     /// it serves no reads (0: no automatic failover; promote by hand).
     #[arg(long, default_value_t = 0)]
     failover_after_ms: u64,
+    /// On a database server: read every segment against its checksum every
+    /// this many seconds, while it serves, to find data damaged on disk
+    /// before a query or a failover does (0: only when asked, POST
+    /// /v1/admin/scrub). The first scrub starts within ten minutes.
+    #[arg(long, default_value_t = 86_400)]
+    scrub_every_s: u64,
+    /// The MiB a second a scheduled scrub reads at most.
+    #[arg(long, default_value_t = 64)]
+    scrub_mib_s: u64,
     /// Coordinate these shard servers (comma-separated gRPC URLs; replicas
     /// of one shard joined by '|'). Servers of protocol 9 hold the cluster
     /// map, which names every shard's servers: the coordinator then routes
@@ -156,12 +165,34 @@ struct Args {
     /// the pod's service account (the operator sets it).
     #[arg(long, env = "STRATA_KUBE_CLUSTER")]
     kube_cluster: Option<String>,
+    /// With --db, --grpc and --shards: this shard server also coordinates
+    /// --shards, serving the coordinator's HTTP API at this address, in
+    /// the same process. The coordinator calls this server's own shard
+    /// (--local-shard) in-process, without a connection or HTTP/2, and the
+    /// others over the network.
+    #[arg(long)]
+    coordinator_listen: Option<String>,
+    /// With --coordinator-listen: the URL of --shards that is this server's
+    /// own gRPC address (http://strata-0.strata:7701).
+    #[arg(long)]
+    local_shard: Option<String>,
     /// HTTP address (API, metrics, UI).
     #[arg(long, default_value = "127.0.0.1:7700")]
     listen: String,
     /// gRPC address ("off" to disable).
     #[arg(long, default_value = "127.0.0.1:7701")]
     grpc: String,
+    /// Also serve an OpenSearch-compatible API (indexes, documents, _bulk,
+    /// _search with the Query DSL and aggregations) on this address, for
+    /// applications written for OpenSearch or Elasticsearch 7: the same
+    /// data, credentials and TLS as the HTTP API (a key or the token as a
+    /// Bearer token, or as Basic authentication's password).
+    #[arg(long, env = "STRATA_OPENSEARCH_LISTEN")]
+    opensearch_listen: Option<String>,
+    /// The version the OpenSearch API's root reports: OpenSearch 2's by
+    /// default; 7.10.2 for clients of Elasticsearch 7 that check it.
+    #[arg(long, env = "STRATA_OPENSEARCH_VERSION", default_value = strata_server::opensearch::VERSION_NUMBER)]
+    opensearch_version: String,
     /// Require "Authorization: Bearer TOKEN" on the API and on gRPC (the
     /// UI asks for it). Needed to listen beyond loopback.
     #[arg(long, env = "STRATA_TOKEN", hide_env_values = true)]
@@ -213,6 +244,12 @@ struct Args {
     /// (0: no limit).
     #[arg(long, default_value_t = 10_000)]
     max_result_window: usize,
+    /// The rows the open scrolls (`page_size`) of ordered queries, groups
+    /// and joins hold between them, or their places: a scroll that would
+    /// hold more is refused (0: only scrolls without ORDER BY, groups or
+    /// joins, which hold none).
+    #[arg(long, default_value_t = strata_server::service::MAX_SCROLL_ROWS)]
+    max_scroll_rows: usize,
     /// The most groups a GROUP BY may make before the query fails (0: no
     /// limit).
     #[arg(long, default_value_t = 65_536)]
@@ -258,6 +295,16 @@ struct Args {
     /// taken while it serves) written by `POST /v1/admin/checkpoint`.
     #[arg(long)]
     backup_dir: Option<PathBuf>,
+    /// A directory for slices (a table's rows by map tile, for devices to
+    /// search near their user: `strata::slice`), written by `POST
+    /// /v1/admin/slices` and served at `GET /v1/slices/<table>/...`.
+    #[arg(long)]
+    slices: Option<PathBuf>,
+    /// Every this many seconds, rebuild the slices whose table changed
+    /// since they were built, so that devices find a fresh one (0: only
+    /// when asked, by `POST /v1/admin/slices`).
+    #[arg(long, default_value_t = 0)]
+    slices_rebuild_s: u64,
     /// What writes may fetch for MEDIA fields, comma-separated: directories
     /// (`file:/data/media`) and hosts fetched over HTTPS
     /// (`cdn.example.com`, `*.example.com`; `http://host:port` only spelled
@@ -275,6 +322,27 @@ struct Args {
     /// How long a media fetch may take, in seconds.
     #[arg(long, default_value_t = 30)]
     media_timeout_s: u64,
+    /// Keep segments cold on object storage, read through a local cache: an
+    /// `s3://bucket/prefix/` URL (configured as `import` reads them) or a
+    /// directory. The database must be a directory (`--directory`); once a
+    /// segment is cold, it opens only with its store.
+    #[arg(long)]
+    cold_store: Option<String>,
+    /// The cold tier's cache of fetched parts, in GiB (segments' headers and
+    /// keys apart, which it always keeps).
+    #[arg(long, default_value_t = 8.0)]
+    cold_cache_gb: f64,
+    /// Keep the newest segments local up to this many GiB, and make the
+    /// older ones cold (default: none goes cold by itself).
+    #[arg(long)]
+    cold_keep_local_gb: Option<f64>,
+    /// Segments smaller than this stay local, in MiB.
+    #[arg(long, default_value_t = 16)]
+    cold_min_segment_mb: u64,
+    /// The cold tier's local cache directory (default: `cold` in the
+    /// database's directory).
+    #[arg(long)]
+    cold_cache_dir: Option<PathBuf>,
     /// Merges that may run at once (default: half the cores, 1 to 4).
     #[arg(long)]
     merge_threads: Option<usize>,
@@ -285,6 +353,11 @@ struct Args {
     /// How fast merges may write, in MiB/s (default: no limit).
     #[arg(long)]
     merge_write_mb_per_sec: Option<u64>,
+    /// The nice value merges run at, 0 to 19, on Linux (default 10): a
+    /// merge gets the cores reads and writes leave idle, and a tenth of a
+    /// busy one. 0 runs them at the priority of reads and writes.
+    #[arg(long)]
+    merge_nice: Option<i32>,
     /// Log queries and writes that take this many milliseconds or more,
     /// with their SQL (0: none).
     #[arg(long, default_value_t = 1000)]
@@ -421,6 +494,14 @@ struct Args {
     /// ignored.
     #[arg(long, env = "STRATA_TRUST_PROXY", value_delimiter = ',')]
     trust_proxy: Vec<String>,
+    /// An app the command center shows as a view, as name=url
+    /// (crawler=http://127.0.0.1:7800; repeatable, or comma-separated in
+    /// $STRATA_APPS): the server forwards /v1/apps/<name>/... to it.
+    #[arg(long = "app", env = "STRATA_APPS", value_delimiter = ',')]
+    apps: Vec<String>,
+    /// The token the server sends its apps (Authorization: Bearer).
+    #[arg(long, env = "STRATA_APP_TOKEN", hide_env_values = true)]
+    app_token: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -547,6 +628,58 @@ enum Command {
         /// saying so in GET /v1/admin/follow, until it is stopped.
         #[arg(long, value_name = "MS")]
         once: Option<u64>,
+    },
+    /// Follow a Postgres database by logical replication: copy the tables
+    /// of a publication into Strata (making the tables it lacks), then
+    /// keep applying their inserts, updates, deletes, truncates and new
+    /// columns, a moment behind, until stopped. Postgres needs wal_level =
+    /// logical and a publication (CREATE PUBLICATION strata FOR TABLE
+    /// ...); the user signs in with the REPLICATION attribute. What it
+    /// applied is kept in Strata's _sources (postgres/NAME/...), so that
+    /// started again it goes on from there and applies each change once.
+    FollowPostgres {
+        /// The database, as postgres://user:password@host:5432/database
+        /// (?sslmode=require and the like; PGPASSWORD gives a password the
+        /// URL leaves out).
+        #[arg(long, env = "STRATA_POSTGRES_URL", hide_env_values = true)]
+        source: String,
+        /// A CA certificate (PEM) to check the database's TLS certificate by.
+        #[arg(long)]
+        source_ca: Option<PathBuf>,
+        /// The publication whose tables it follows.
+        #[arg(long, default_value = "strata")]
+        publication: String,
+        /// The replication slot it reads and makes (strata_NAME by default).
+        #[arg(long)]
+        slot: Option<String>,
+        /// Strata's HTTP URL: a server, or a cluster's coordinator.
+        #[arg(long)]
+        target: String,
+        /// Strata's token (a server's --token, or a cluster's --cluster-token).
+        #[arg(long, env = "STRATA_CLUSTER_TOKEN", hide_env_values = true)]
+        target_token: Option<String>,
+        /// A CA certificate (PEM) to check the target's TLS certificate by.
+        #[arg(long)]
+        target_ca: Option<PathBuf>,
+        /// The name Strata knows the database by (letters, digits, '.', '_'
+        /// and '-'), which its marks in _sources name.
+        #[arg(long)]
+        name: String,
+        /// The most operations of one write while copying, and of the
+        /// transactions written together.
+        #[arg(long, default_value_t = strata_server::postgres::BATCH)]
+        batch: usize,
+        /// Copy the tables again from the start (with a new slot), whatever
+        /// Strata kept.
+        #[arg(long)]
+        copy: bool,
+        /// How many tables are copied at once.
+        #[arg(long, default_value_t = 4)]
+        copy_workers: usize,
+        /// Drop the replication slot and exit: stop following for good, so
+        /// that Postgres no longer keeps WAL for the follower.
+        #[arg(long)]
+        drop_slot: bool,
     },
     /// Switch clients over to a cluster that follows another: hold the
     /// source's writes (POST /v1/admin/hold-writes there), wait until
@@ -775,6 +908,34 @@ async fn main() {
             }
             return;
         }
+        Some(Command::FollowPostgres { source, source_ca, publication, slot, target, target_token, target_ca, name, batch, copy, copy_workers, drop_slot }) => {
+            let read = |p: &Option<PathBuf>, what: &str| p.as_ref().map(|p| std::fs::read(p).unwrap_or_else(|e| fail(&format!("{what} {}: {e}", p.display()))));
+            let o = strata_server::postgres::Options {
+                source: source.clone(),
+                source_ca: read(source_ca, "--source-ca"),
+                publication: publication.clone(),
+                slot: slot.clone(),
+                target: target.clone(),
+                target_token: target_token.clone(),
+                target_ca: read(target_ca, "--target-ca"),
+                name: name.clone(),
+                batch: (*batch).max(1),
+                copy: *copy,
+                copy_workers: *copy_workers,
+                crash_after: None,
+            };
+            if *drop_slot {
+                match strata_server::postgres::drop_slot(o).await {
+                    Ok(j) => println!("{}", serde_json::to_string_pretty(&j).unwrap_or_default()),
+                    Err(e) => fail(&format!("follow-postgres {name}: {e}")),
+                }
+                return;
+            }
+            if let Err(e) = strata_server::postgres::run(o).await {
+                fail(&format!("follow-postgres {name}: {e}"));
+            }
+            return;
+        }
         Some(Command::SwitchOver { target, target_token, target_ca, name, source, source_key, source_ca, unplanned, wait_s }) => {
             let read = |p: &Option<PathBuf>, what: &str| p.as_ref().map(|p| std::fs::read(p).unwrap_or_else(|e| fail(&format!("{what} {}: {e}", p.display()))));
             let o = strata_server::follow::SwitchOptions {
@@ -885,6 +1046,8 @@ async fn main() {
         ship_log_mb: a.ship_log_mb,
         verify_every_s: a.verify_every_s,
         failover_after_ms: a.failover_after_ms,
+        scrub_every_s: a.scrub_every_s,
+        scrub_mib_s: a.scrub_mib_s,
         shards: a.shards,
         kube_cluster: a.kube_cluster.filter(|c| !c.is_empty()),
         coord: strata_server::coord::CoordOptions {
@@ -904,6 +1067,7 @@ async fn main() {
         max_timeout_ms: a.max_timeout_ms,
         max_concurrent: a.max_concurrent,
         max_result_window: a.max_result_window,
+        max_scroll_rows: Some(a.max_scroll_rows),
         max_groups: a.max_groups,
         max_rerank: a.max_rerank,
         query_memory_mb: a.query_memory_mb,
@@ -918,6 +1082,15 @@ async fn main() {
         fetch_models: !a.no_fetch_models,
         synonyms: a.synonyms,
         backup_dir: a.backup_dir,
+        slices: a.slices,
+        slices_rebuild_s: a.slices_rebuild_s,
+        cold: a.cold_store.clone().map(|store| strata_server::server::ColdFlags {
+            store,
+            cache_bytes: (a.cold_cache_gb * (1u64 << 30) as f64) as u64,
+            keep_local_bytes: a.cold_keep_local_gb.map(|g| (g * (1u64 << 30) as f64) as u64),
+            min_segment_bytes: a.cold_min_segment_mb << 20,
+            cache_dir: a.cold_cache_dir.clone(),
+        }),
         media_fetch: a.media_fetch,
         // The default needs no resolver of its own: a database's has it.
         media_max_bytes: if a.media_max_bytes == strata::media::DEFAULT_MAX_BYTES { 0 } else { a.media_max_bytes },
@@ -948,6 +1121,8 @@ async fn main() {
         slo_error_ratio: Some(a.slo_error_ratio),
         slo_p99_ms: Some(a.slo_p99_ms),
         trust_proxy: a.trust_proxy.clone(),
+        apps: a.apps.clone(),
+        app_token: a.app_token.clone(),
         node_name_given: a.node_name.clone().filter(|n| !n.is_empty()),
         image_repository: a.image_repository.clone().filter(|r| !r.trim().is_empty()),
         merger: {
@@ -956,9 +1131,43 @@ async fn main() {
                 threads: a.merge_threads.unwrap_or(d.threads),
                 memory_budget: a.merge_memory_mb.map(|m| m << 20),
                 write_bytes_per_sec: a.merge_write_mb_per_sec.map(|m| m << 20),
+                nice: a.merge_nice.unwrap_or(d.nice),
                 ..d
             }
         },
+    };
+    // --coordinator-listen: a shard server with a coordinator beside it, in
+    // this process. The coordinator keeps none of the files a server may
+    // be given (the shard does), nor a part in replication.
+    let beside = a.coordinator_listen.clone().map(|addr| {
+        let local = match (&o.db, a.grpc.as_str(), o.shards.is_empty(), &a.local_shard) {
+            (Some(_), g, false, Some(url)) if g != "off" && o.shards.iter().any(|s| s.split('|').any(|u| u == url)) => url.clone(),
+            _ => fail("--coordinator-listen serves a coordinator beside this shard server: it needs --db, --grpc, --shards and --local-shard, the URL of --shards that is this server"),
+        };
+        let co = Options {
+            db: None,
+            replicas: Vec::new(),
+            replica: false,
+            promote: false,
+            seq_no: false,
+            keys: None,
+            audit_log: None,
+            aws_file: None,
+            digitalocean_file: None,
+            cloud_file: None,
+            hub_file: None,
+            alerts: None,
+            contain: None,
+            backup_dir: None,
+            slices: None,
+            log_store: None,
+            ..o.clone()
+        };
+        (addr, local, co)
+    });
+    let o = match beside {
+        Some(_) => Options { shards: Vec::new(), ..o },
+        None => o,
     };
     let coordinator = !o.shards.is_empty();
     server::set_drain(std::time::Duration::from_millis(a.drain_ms));
@@ -1007,6 +1216,42 @@ async fn main() {
             }
         }));
     }
+    // The OpenSearch API answers for what this process serves: beside a
+    // coordinator (--coordinator-listen), for the cluster, once the
+    // coordinator is up.
+    let mut opensearch = None;
+    if let Some(addr) = &a.opensearch_listen {
+        let (l, ip) = bind(addr).await;
+        let scheme = if access.tls.is_some() { "https" } else { "http" };
+        tracing::info!("OpenSearch API on {scheme}://{addr}/ (version {})", a.opensearch_version);
+        opensearch = Some((l, Access { hosts: auth::allowed_hosts(ip, &a.allow_host), ..access.clone() }, a.opensearch_version.clone()));
+    }
+    if beside.is_none() {
+        if let Some((l, os_access, version)) = opensearch.take() {
+            tasks.push(tokio::spawn(serve_opensearch(svc.clone(), l, os_access, version)));
+        }
+    }
+    if let Some((addr, url, mut co)) = beside {
+        co.coord.local = Some(strata_server::coord::LocalShard { url, service: server::grpc_service(svc.clone(), &access) });
+        let (l, cip) = bind(&addr).await;
+        let access = Access { hosts: auth::allowed_hosts(cip, &a.allow_host), ..access.clone() };
+        let (peer, no_read_stats) = (a.peer_url.clone(), a.no_read_stats);
+        // Its shards, this one among them, may answer only later: the
+        // shard serves meanwhile.
+        tasks.push(tokio::spawn(async move {
+            let c = server::service(&co).await.unwrap_or_else(|e| fail(&format!("the coordinator: {e}")));
+            c.reads.set_on(!no_read_stats);
+            let at = l.local_addr().unwrap_or_else(|e| fail(&format!("listen on {addr}: {e}")));
+            strata_server::peers::start(&c, strata_server::peers::own_url(peer.as_deref(), at, access.tls.is_some()));
+            tracing::info!("coordinator HTTP on {addr}, its own shard in-process");
+            if let Some((ol, os_access, version)) = opensearch {
+                tokio::spawn(serve_opensearch(c.clone(), ol, os_access, version));
+            }
+            if let Err(e) = server::serve_http(c, l, access).await {
+                fail(&format!("coordinator HTTP server: {e}"));
+            }
+        }));
+    }
     let store = svc.log_store.clone();
     if let Err(e) = server::serve_http(svc, http, access).await {
         fail(&format!("HTTP server: {e}"));
@@ -1018,6 +1263,13 @@ async fn main() {
     if let Some(s) = store {
         tracing::info!("stopping");
         s.close();
+    }
+}
+
+/// The OpenSearch API of `svc` ([`server::serve_opensearch`]).
+async fn serve_opensearch(svc: std::sync::Arc<strata_server::service::Service>, l: tokio::net::TcpListener, access: Access, version: String) {
+    if let Err(e) = server::serve_opensearch(svc, l, access, &version).await {
+        tracing::error!(error = %e, "OpenSearch API stopped");
     }
 }
 

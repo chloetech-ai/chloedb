@@ -1,17 +1,8 @@
----
-title: Python
-parent: Strata
-nav_order: 5
----
-
 # Strata from Python
-{: .no_toc }
 
 The `strata` package runs a Strata database inside a Python process, the way `sqlite3` runs SQLite, or talks to a running [strata-server](server.md). Both have the same methods, so a script written against a local file works against a server.
-{: .fs-5 .fw-300 }
 
-1. TOC
-{:toc}
+For dataframe work, `db["table"]` is a lazy frame written as Polars writes one, run where the data is, with the answer as Arrow: see [DataFrames](frames.md).
 
 ## Install
 
@@ -99,7 +90,7 @@ db.close()
 
 A database written by a version of Strata from before [field ids](index.md#wal-memtable-and-snapshots) does not open: `strata.upgrade(path)` copies it into this version's format in its place, keeps the old one as `<path>.before-field-ids`, and returns `(old_path, tables, rows)`, or `None` when the database needs no upgrade. Nothing may have it open meanwhile.
 
-A database file can be open in one process at a time. Within that process, threads can query at once: every call releases the GIL while it runs. Threads can write at once too: a write waits while another holds the writer, and the writes that wait share the next commit (one disk flush for all of them), so none fails as busy. To share a database between processes, serve it with `strata-server` and use the client below. Segments are merged in the background as writes add them, one merge at a time, as a server merges them, so a table written to for weeks stays in a few segments without the rows its updates replaced. A `with` block, or `close()`, merges the small segments that writes left, gives the file system back the space merges freed when it is an eighth of the file or more, and closes the file. `optimize()` goes further, for a table that is done changing: one segment, up to 2,000,000 rows.
+One process at a time can have a database open to write it. Others can open it with `strata.open(path, read_only=True)` (or `Database.open(path, read_only=True)`) to read it while it is written, the other workers of a web server under gunicorn or uwsgi, say: each query sees the writer's commits so far, every write raises `StrataError`, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). Within a process, threads can query at once: every call releases the GIL while it runs. Threads can write at once too: a write waits while another holds the writer, and the writes that wait share the next commit (one disk flush for all of them), so none fails as busy. For writes from several processes, serve the database with `strata-server` and use the client below. Segments are merged in the background as writes add them, one merge at a time, as a server merges them, so a table written to for weeks stays in a few segments without the rows its updates replaced. A `with` block, or `close()`, merges the small segments that writes left, gives the file system back the space merges freed when it is an eighth of the file or more, and closes the file. `optimize()` goes further, for a table that is done changing: one segment, up to 2,000,000 rows.
 
 ## Writing
 
@@ -172,7 +163,7 @@ duckdb.sql("SELECT avg(rating) FROM r")
 | `vector` | `list<float32>` |
 | a `multi` field | `list<int64>` or `list<string>` |
 
-A computed column has the type of its values: a column of only NULLs (or of no rows) is `null`, and one of integers and floats `float64`. Values of other types mixed in one column (a `CASE` that answers a number in some rows and text in others) are not one Arrow array: `query_arrow` raises `StrataError` naming the column, and `query` answers it. `r.columns`, `len(r)` and `r.stats` are as a `Result`'s. `query_arrow` comes with the package's default feature `datafusion`; `Client` has none, as a server answers in JSON.
+A computed column has the type of its values: a column of only NULLs (or of no rows) is `null`, and one of integers and floats `float64`. Values of other types mixed in one column (a `CASE` that answers a number in some rows and text in others) are not one Arrow array: `query_arrow` raises `StrataError` naming the column, and `query` answers it. `r.columns`, `len(r)` and `r.stats` are as a `Result`'s. `query_arrow` comes with the package's default feature `datafusion`. A `Client`'s `query_arrow` asks the server for an Arrow answer (`"format": "arrow"`) and returns a pyarrow Table with the same column types; it needs pyarrow, and a server too old for Arrow answers JSON, which it types from the values.
 
 `search(text, limit=10, where=None, columns="*", mode="auto")` writes the query for the common case. It ranks by BM25 over the text fields (the generated ones if the table has any, such as a combined `body`, else every indexed text field) fused by reciprocal rank with the similarity of the first embedded vector field whose model is open; `mode="text"` or `"vector"` uses one side only. `where` adds a condition, [built in Python](#queries-built-in-python) or in SQL with `params` for its placeholders:
 
@@ -310,6 +301,13 @@ client.upsert({"id": "b3", "title": "Star letters", "year": 2024})
 client.search("letters", limit=3).dicts()
 ```
 
+A server answers at most `--max-result-window` rows a query (10,000 by default). `scroll(sql, params, page_size=10_000, arrow=False, keep_alive_ms=None)` reads past it: it yields the answer a page at a time, `Result`s or with `arrow=True` pyarrow Tables, each page at most `page_size` rows and at most the window, every page from the version of the database the first read ([scrolls](server.md#reading-past-the-window-scrolls)). Leaving the loop early ends the scroll on the server. A `Database` has `scroll` too, whose pages are slices of one answer, since a database in your process has no window.
+
+```python
+for page in client.scroll("SELECT id, title FROM books WHERE year >= :y", y=1950, page_size=5000):
+    handle(page.dicts())
+```
+
 The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `strata.StrataError`, with the HTTP status as `.status` and the JSON answer as `.answer`; a server that cannot be reached raises `urllib.error.URLError`. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retry_for` seconds (10; 0 sends each request once), and raises the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
 
 `write(ops, idempotency_key=k)` and `sql(statement, idempotency_key=k)` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator, after some shards took their part, says so in its error's answer and names its key:
@@ -345,3 +343,14 @@ ingest.kafka(strata.connect("http://127.0.0.1:7700"), "clicks", click, brokers="
 ```
 
 The function gives an event's operations, which commit together with its offset; None writes the offset alone (for events to leave out). Without one, each value is JSON: an operation, or `{"ops": [...]}`. The consumer runs until interrupted, or until `max_events=` events were read or none came for `idle=` seconds, and returns counts (`events`, `written`, `skipped`, `streams`, `retries`). It keeps a stream open for `seconds_per_stream=` (1 by default), then commits the stream's offsets to Kafka for Kafka's own lag tools and opens the next. When the server cannot be reached, or answers 429 or 5xx, it waits and reads every partition again from the server's offsets, for up to `retry_for=` seconds (60). An event the function fails on stops it after the events before it are written, so a restart begins with that event. `config=` adds librdkafka settings, and consumers of one `group` share the partitions. `ingest.consume(client, log, to_ops)` runs the same loop over another log, through the small `ingest.Log` interface.
+
+## Search on the device
+
+`strata.nearby(url, table, dir)` holds a [slice](slices.md) of a strata-server's table near a user: the rows of the tiles around them in a database in `dir`, searched with the server's statistics. `move_to(lat, lon)` fetches the tiles it lacks, and `search(q, k=10, d0=1000)` answers on the device when it can prove the answer is the server's, and asks the server otherwise; the result's `where` is `"device"` or `"server"` and `why` the reason. For a [vector slice](slices.md#vector-slices-more-like-this-on-the-device), `focus(taste, rows=20_000)` holds the clusters nearest a taste vector and `similar(vector, k=10)` answers a similarity search the same way, fetching the few clusters its codes name when that proves the answer.
+
+```python
+near = strata.nearby("http://127.0.0.1:7700", "places", "./slice")
+near.move_to(40.7484, -73.9857)
+r = near.search("pizza", k=10)
+r.where, r.why            # ("device", "proved")
+```

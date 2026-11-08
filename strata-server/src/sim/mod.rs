@@ -87,7 +87,7 @@ pub struct Config {
     pub settle: Duration,
     pub quiet: Duration,
     /// The mean times between crashes, cuts of the network, pauses of a
-    /// node and links slowed down (zero: no pauses, no slow links).
+    /// node and links slowed down (zero: none of them).
     pub crash_every: Duration,
     pub cut_every: Duration,
     pub pause_every: Duration,
@@ -99,6 +99,9 @@ pub struct Config {
     /// found it and the server was fixed: a run with one must find it
     /// ([`Bug`]).
     pub bugs: Vec<Bug>,
+    /// Cuts placed by hand besides the drawn ones: copy `.0` cut off from
+    /// every other node, both ways, from `.1` for `.2`.
+    pub isolate: Vec<(usize, Duration, Duration)>,
 }
 
 /// A bug the simulator found, put back with [`Config::bugs`] to check
@@ -124,10 +127,21 @@ pub enum Bug {
     /// them ([`crate::cores::shard::Replica::open`]): if the first primary
     /// stops before any of them heard from it, no copy is ever elected.
     WaitsForAFirstCall,
+    /// A replica that granted a vote asks to be elected as soon as its
+    /// primary has been silent for the failover delay, a moment after the
+    /// vote ([`crate::cores::shard::Replica::granted`]), and an election
+    /// round waits for every copy's answer, a cut-off copy's until the
+    /// call's timeout ([`crate::cores::shard::Campaign::decided`]): the
+    /// copy it voted for is still a replica while its round waits, grants
+    /// that replica's pre-vote, and the replica's newer term then fences
+    /// it once it is elected. For as long as their primary is cut off, the
+    /// replicas replace each other: 28 terms in a minute in one seed. Either
+    /// fix alone stops it in the simulator; the server has both.
+    ReplacesTheCopyItElected,
 }
 
 impl Bug {
-    pub const ALL: [Bug; 4] = [Bug::AsksAKnownTerm, Bug::TakesWritesInALease, Bug::RefusesOlderTerms, Bug::WaitsForAFirstCall];
+    pub const ALL: [Bug; 5] = [Bug::AsksAKnownTerm, Bug::TakesWritesInALease, Bug::RefusesOlderTerms, Bug::WaitsForAFirstCall, Bug::ReplacesTheCopyItElected];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -135,6 +149,7 @@ impl Bug {
             Bug::TakesWritesInALease => "takes-writes-in-a-lease",
             Bug::RefusesOlderTerms => "refuses-older-terms",
             Bug::WaitsForAFirstCall => "waits-for-a-first-call",
+            Bug::ReplacesTheCopyItElected => "replaces-the-copy-it-elected",
         }
     }
 
@@ -172,6 +187,7 @@ impl Config {
             cut_every: r.ms(500, 6000),
             promote_ppm: r.below(5_000),
             bugs: Vec::new(),
+            isolate: Vec::new(),
             // Drawn last, so that the draws above give what they gave
             // before pauses and slow links; each in half the seeds, so that
             // the runs without them (which find other bugs) stay as many.
@@ -382,7 +398,7 @@ impl Sim {
         let mut r = self.rng.fork();
         let until = us(self.cfg.faults_for);
         let mut t = us(r.part_of(self.cfg.crash_every));
-        while t < until {
+        while !self.cfg.crash_every.is_zero() && t < until {
             let i = r.below(self.cfg.copies as u64) as usize;
             self.at(t, Event::Crash(i));
             let down = us(r.ms(50, 4000));
@@ -398,7 +414,7 @@ impl Sim {
             t += us(r.ms(10, 2 * self.cfg.crash_every.as_millis() as u64));
         }
         let mut t = us(r.part_of(self.cfg.cut_every));
-        while t < until {
+        while !self.cfg.cut_every.is_zero() && t < until {
             let n = self.nodes();
             let mut side: Vec<bool> = (0..n).map(|_| r.below(2) == 0).collect();
             // One node alone, half the time.
@@ -441,6 +457,11 @@ impl Sim {
             let lasts = us(r.ms(200, 8000));
             self.at(t, Event::Slow { from, to, one_way, extra, lasts });
             t += lasts + us(r.ms(10, 2 * self.cfg.slow_every.as_millis() as u64));
+        }
+        for &(i, from, lasts) in &self.cfg.isolate.clone() {
+            let to = (0..self.nodes()).filter(|&x| x != i).collect();
+            self.at(us(from), Event::Cut { from: vec![i], to, one_way: false });
+            self.at(us(from + lasts), Event::Heal);
         }
         self.at(until, Event::Settle);
         self.at(us(self.cfg.faults_for + self.cfg.settle).saturating_sub(us(self.cfg.quiet)), Event::Quiet);
@@ -656,6 +677,14 @@ impl Sim {
 /// the reports of those that broke a promise, by seed.
 pub fn run_seeds(seeds: std::ops::Range<u64>, config: &(dyn Fn(u64) -> Config + Sync), jobs: usize) -> Vec<Report> {
     on_threads(seeds, jobs, &|s| Some(run(config(s), false)).filter(|r| !r.ok()))
+}
+
+/// Runs `run` on each of `seeds`, on `jobs` threads.
+pub fn on_seeds(seeds: std::ops::Range<u64>, jobs: usize, run: &(dyn Fn(u64) + Sync)) {
+    on_threads(seeds, jobs, &|s| {
+        run(s);
+        None::<()>
+    });
 }
 
 /// What `run` gives of each of `seeds`, run on `jobs` threads, by seed.

@@ -4,8 +4,14 @@
 //! query   := and ("OR" and)*
 //! and     := unary (["AND"] unary)*        juxtaposition is AND
 //! unary   := ("NOT" | "-") unary | primary  "a NOT b" is "a AND NOT b"
-//! primary := "(" query ")" ["@" n | "@" p "%"] | ("\"phrase\"" | word | word* | word~ | word~N) ["^" weight]
+//! primary := "(" query ")" ["@" n | "@" p "%"] | ("\"phrase\"" | "\"phrase pre*\"" | word | word* | word~ | word~N) ["^" weight]
 //! ```
+//!
+//! A phrase whose last word ends in `*` (`"quick bro*"`, a phrase as it is
+//! being typed) matches the phrase with that word as a prefix: its other
+//! words followed by any indexed term starting with it, up to
+//! [`PHRASE_PREFIX_TERMS`] of them in order, as Lucene's phrase prefix
+//! query (OpenSearch's `match_phrase_prefix`) expands it.
 //!
 //! `(a b c d)@2` matches a row with at least 2 of the group's items: its
 //! operands, joined by `AND`, by juxtaposition or by `OR`, each a word, a
@@ -43,6 +49,10 @@ pub enum BoolQuery {
     Term(String),
     /// Consecutive terms.
     Phrase(Vec<String>),
+    /// Consecutive terms followed by a term with `prefix` (`"quick bro*"`):
+    /// the phrase of `terms` and each of the first [`PHRASE_PREFIX_TERMS`]
+    /// indexed terms with the prefix.
+    PhrasePrefix { terms: Vec<String>, prefix: String },
     /// Every indexed term with this prefix.
     Prefix(String),
     /// Every indexed term within `edits` edits of `term` (itself included).
@@ -72,7 +82,7 @@ impl BoolQuery {
         match self {
             BoolQuery::Term(_) => true,
             BoolQuery::Phrase(ts) => ts.len() <= 1,
-            BoolQuery::Prefix(_) | BoolQuery::Fuzzy { .. } => false,
+            BoolQuery::Prefix(_) | BoolQuery::Fuzzy { .. } | BoolQuery::PhrasePrefix { .. } => false,
             BoolQuery::And(cs) | BoolQuery::Or(cs) | BoolQuery::AtLeast { items: cs, .. } => cs.iter().all(|c| c.seeks_only()),
             BoolQuery::Not(c) => c.seeks_only(),
         }
@@ -81,7 +91,7 @@ impl BoolQuery {
     fn collect_terms<'a>(&'a self, out: &mut Vec<&'a str>) {
         match self {
             BoolQuery::Term(t) => out.push(t),
-            BoolQuery::Phrase(ts) => out.extend(ts.iter().map(|t| t.as_str())),
+            BoolQuery::Phrase(ts) | BoolQuery::PhrasePrefix { terms: ts, .. } => out.extend(ts.iter().map(|t| t.as_str())),
             BoolQuery::Prefix(_) | BoolQuery::Fuzzy { .. } => {}
             BoolQuery::And(cs) | BoolQuery::Or(cs) | BoolQuery::AtLeast { items: cs, .. } => cs.iter().for_each(|c| c.collect_terms(out)),
             BoolQuery::Not(c) => c.collect_terms(out),
@@ -193,6 +203,11 @@ enum Tok {
     Word(String),
 }
 
+/// The most indexed terms the last word of a phrase prefix
+/// (`"quick bro*"`) stands for, in order: Lucene's default
+/// `max_expansions`.
+pub const PHRASE_PREFIX_TERMS: usize = 50;
+
 /// What a `MATCH` query uses that a Strata from before it reads as other
 /// words ([`match_features`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -201,6 +216,8 @@ pub struct MatchFeatures {
     pub weights: bool,
     /// A group a row needs some of (`(a b c)@2`).
     pub at_least: bool,
+    /// A phrase whose last word is a prefix (`"quick bro*"`).
+    pub phrase_prefix: bool,
 }
 
 /// The tokens of `q`, and what of [`MatchFeatures`] it uses.
@@ -208,6 +225,7 @@ fn lex(q: &str) -> Result<(Vec<Tok>, MatchFeatures)> {
     let mut out = Vec::new();
     let mut weighted = false;
     let mut at_least = false;
+    let mut phrase_prefix = false;
     let mut it = q.char_indices().peekable();
     while let Some(&(i, c)) = it.peek() {
         match c {
@@ -246,6 +264,7 @@ fn lex(q: &str) -> Result<(Vec<Tok>, MatchFeatures)> {
                     }
                 }
                 let end = end.ok_or_else(|| Error::Query(format!("unterminated phrase in MATCH query {q:?}")))?;
+                phrase_prefix |= phrase_prefix_head(&q[start..end]).is_some();
                 out.push(Tok::Phrase(q[start..end].to_string()));
                 // A weight right after the closing quote.
                 let rest = &q[end + 1..];
@@ -299,7 +318,7 @@ fn lex(q: &str) -> Result<(Vec<Tok>, MatchFeatures)> {
             }
         }
     }
-    Ok((out, MatchFeatures { weights: weighted, at_least }))
+    Ok((out, MatchFeatures { weights: weighted, at_least, phrase_prefix }))
 }
 
 /// What a `MATCH` query uses of weights and groups a row needs some of
@@ -535,7 +554,10 @@ impl Parser {
                     _ => return Err(Error::Query("unbalanced parentheses in MATCH query".into())),
                 }
             }
-            Tok::Phrase(s) => terms_query(self.analyzer.analyze(&s)),
+            Tok::Phrase(s) => match phrase_prefix_head(&s) {
+                Some(head) => phrase_prefix_query(head, self.analyzer),
+                None => terms_query(self.analyzer.analyze(&s)),
+            },
             Tok::Word(w) => match (w.strip_suffix('*'), fuzzy_suffix(&w)) {
                 (Some(stem), _) => prefix_query(stem, self.analyzer),
                 (None, Some((word, edits))) => fuzzy_query(word, edits, self.analyzer)?,
@@ -657,6 +679,24 @@ pub fn resolve_fuzzy(q: BoolQuery, near: &mut dyn FnMut(&str, u8) -> Vec<String>
     }
 }
 
+/// A phrase's text without the `*` that ends its last word, if it ends
+/// so (`quick bro*`; not `quick *`, nor a `*` alone).
+fn phrase_prefix_head(s: &str) -> Option<&str> {
+    let head = s.trim_end().strip_suffix('*')?;
+    head.chars().next_back().is_some_and(|c| c.is_alphanumeric()).then_some(head)
+}
+
+/// `"words pre*"`: the analysed words, then the last word, folded but not
+/// stemmed, as a prefix ([`BoolQuery::PhrasePrefix`]); a prefix alone
+/// when the other words analyse to nothing.
+fn phrase_prefix_query(s: &str, analyzer: Analyzer) -> Option<BoolQuery> {
+    let mut words = Vec::new();
+    for_each_word(s, |x| words.push(x.to_string()));
+    let prefix = words.pop()?;
+    let terms = analyzer.analyze(&words.join(" "));
+    Some(if terms.is_empty() { BoolQuery::Prefix(prefix) } else { BoolQuery::PhrasePrefix { terms, prefix } })
+}
+
 /// `w*`: the last word is a prefix; earlier words (as in `e-mai*`) are
 /// required terms.
 fn prefix_query(w: &str, analyzer: Analyzer) -> Option<BoolQuery> {
@@ -749,6 +789,13 @@ mod tests {
         assert_eq!(parse_match("()@2").unwrap(), Or(vec![]));
         assert_eq!(parse_match("(the a)@2").unwrap(), Or(vec![]));
         assert_eq!(parse_match("user@host").unwrap(), Phrase(vec!["user".into(), "host".into()]));
+        // A phrase being typed: its last word a prefix.
+        assert_eq!(parse_match("\"quick bro*\"").unwrap(), PhrasePrefix { terms: vec!["quick".into()], prefix: "bro".into() });
+        assert_eq!(parse_match("\"the Quick Brown fo*\" cat").unwrap(), And(vec![PhrasePrefix { terms: vec!["quick".into(), "brown".into()], prefix: "fo".into() }, t("cat")]));
+        assert_eq!(parse_match("\"bro*\"").unwrap(), Prefix("bro".into()));
+        assert_eq!(parse_match("\"quick *\"").unwrap(), t("quick"));
+        assert!(match_features("\"quick bro*\"").phrase_prefix);
+        assert!(!match_features("\"quick brown\" bro*").phrase_prefix);
         for bad in ["(cat dog)@", "(cat dog)@x", "(cat dog)@2x", "(cat dog)@101%", "(cat dog)@-1", "cat)@2", "(cat dog)@ 2"] {
             assert!(parse_match(bad).is_err(), "{bad}");
         }

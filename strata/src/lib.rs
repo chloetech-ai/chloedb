@@ -61,6 +61,7 @@ pub mod rank_log;
 pub mod schema;
 pub mod segment;
 pub mod sid;
+pub mod slice;
 pub mod simd;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;

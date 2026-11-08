@@ -281,8 +281,18 @@ fn threads_or_cores(threads: Option<usize>) -> PyResult<usize> {
 /// in-memory chunk keeps its vectors flat, since a graph over so few rows
 /// costs more to build at every write than an exact scan of them costs a
 /// query.
+///
+/// Each write publishes its snapshot while queries come in
+/// (`DbOptions::publish_snapshots`): the insert that fills a memtable chunk
+/// indexes it before it returns. Without that the first query after it
+/// did, while every other query waited for it, and a stream of inserts
+/// beside queries left the queries waiting on chunk after chunk (on 4
+/// cores, inserts of 2,500 rows 20 times a second beside 4 threads
+/// querying: 77 queries a second with a p99 of 1.2 s, against 5,200 with
+/// a p99 of 6 ms).
 fn db_options(directory: bool, threads: usize) -> DbOptions {
     DbOptions {
+        publish_snapshots: true,
         layout: if directory { Layout::Directory } else { Layout::SingleFile },
         build: BuildOptions::default().set("vector.threads", threads),
         mem_build: Some(BuildOptions::default().set("vector.index", "flat")),
@@ -442,14 +452,28 @@ impl Database {
         Ok(Database::new(with_threads(db, threads), Some(models)))
     }
 
-    /// Opens the database at `path`.
+    /// Opens the database at `path`; `read_only` to read it while another
+    /// process writes it.
     #[staticmethod]
-    #[pyo3(signature = (path, models = None, threads = None))]
-    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>) -> PyResult<Self> {
+    #[pyo3(signature = (path, models = None, threads = None, read_only = false))]
+    fn open(py: Python<'_>, path: PathBuf, models: Option<PathBuf>, threads: Option<usize>, read_only: bool) -> PyResult<Self> {
         let threads = threads_or_cores(threads)?;
         // The layout comes from the file; the option only matters to a create.
-        let db = py.detach(|| Db::open(&path, db_options(false, threads))).map_err(err)?;
+        let opts = DbOptions { read_only, ..db_options(false, threads) };
+        let db = py.detach(|| Db::open(&path, opts)).map_err(err)?;
         Ok(Database::new(with_threads(db, threads), models))
+    }
+
+    /// Whether it was opened read-only.
+    fn read_only(&self) -> PyResult<bool> {
+        Ok(self.get()?.storage().is_read_only())
+    }
+
+    /// A read-only database: reads what the writer committed since it
+    /// last looked, now; whether anything changed.
+    fn refresh(&self, py: Python<'_>) -> PyResult<bool> {
+        let db = self.get()?;
+        py.detach(|| db.storage().refresh()).map_err(err)
     }
 
     /// The schema of the first table, or of `table`, in its short JSON form.
@@ -1056,13 +1080,154 @@ fn upgrade(py: Python<'_>, path: PathBuf) -> PyResult<Option<(PathBuf, usize, u6
     Ok(py.detach(|| strata::upgrade::upgrade(&path)).map_err(err)?.map(|u| (u.old, u.tables, u.rows)))
 }
 
+/// The `CREATE TABLE` statement that makes a table of `schema` (JSON
+/// text, either form): how a frame's store adds a table to an open
+/// database.
+#[pyfunction]
+fn create_sql(schema: &str) -> PyResult<String> {
+    Ok(strata::query::ddl::create_sql(&Schema::from_json(schema).map_err(err)?))
+}
+
+/// A device's slice of a table ([`strata::slice::Device`]): the tiles it
+/// fetched around its user in a local database, searched with the server's
+/// statistics. `strata.nearby` (python/strata/nearby.py) fetches the
+/// manifest and tiles over HTTP and asks the server when the device cannot
+/// prove its answer; this class does the rest, with no network of its own.
+#[pyclass(module = "strata._strata")]
+struct SliceDevice {
+    dev: std::sync::Mutex<Option<strata::slice::Device>>,
+}
+
+impl SliceDevice {
+    fn with<T>(&self, f: impl FnOnce(&mut strata::slice::Device) -> strata::Result<T>) -> PyResult<T> {
+        let mut g = self.dev.lock().unwrap_or_else(|e| e.into_inner());
+        let d = g.as_mut().ok_or_else(|| StrataError::new_err("the slice is closed"))?;
+        f(d).map_err(err)
+    }
+}
+
+#[pymethods]
+impl SliceDevice {
+    /// A device with no tiles yet, from a slice's manifest (JSON text), its
+    /// database under directory `dir` (earlier ones of the table there are
+    /// deleted: they are a cache).
+    #[staticmethod]
+    fn create(py: Python<'_>, dir: PathBuf, manifest: &str) -> PyResult<Self> {
+        let m = strata::slice::Manifest::from_json(manifest).map_err(err)?;
+        let dev = py.detach(|| strata::slice::Device::create(&dir, m)).map_err(err)?;
+        Ok(SliceDevice { dev: std::sync::Mutex::new(Some(dev)) })
+    }
+
+    /// What the manifest says, without its words or centres, as JSON text:
+    /// kind ("geo" or "vector"), table, version, built_ms, tiles (count),
+    /// rows; a geo slice's grid, text, lat and lon; a vector slice's field
+    /// and dim.
+    fn info(&self) -> PyResult<String> {
+        self.with(|d| Ok(strata::slice::summary(d.manifest()).to_string()))
+    }
+
+    /// The tiles to fetch for a user at (`lat`, `lon`), nearest first, as
+    /// (x, y, path, bytes), and those to drop, as (x, y).
+    fn plan(&self, lat: f64, lon: f64, reach: i32) -> PyResult<(Vec<(i32, i32, String, u64)>, Vec<(i32, i32)>)> {
+        self.with(|d| {
+            let p = d.plan(lat, lon, reach);
+            Ok((p.fetch.iter().map(|(t, b)| (t.x, t.y, t.path(), *b)).collect(), p.drop.iter().map(|t| (t.x, t.y)).collect()))
+        })
+    }
+
+    /// A vector slice's clusters to fetch so that the device holds those
+    /// whose rows could score highest for `taste`, best first, as many as
+    /// fit in `rows` rows, as (x, y, path, bytes), and those to drop, as
+    /// (x, y).
+    fn plan_vector(&self, taste: Vec<f32>, rows: u64) -> PyResult<(Vec<(i32, i32, String, u64)>, Vec<(i32, i32)>)> {
+        self.with(|d| {
+            let p = d.plan_vector(&taste, rows)?;
+            Ok((p.fetch.iter().map(|(t, b)| (t.x, t.y, t.path(), *b)).collect(), p.drop.iter().map(|t| (t.x, t.y)).collect()))
+        })
+    }
+
+    /// Adds a tile from its file's bytes; the rows it held.
+    fn add_tile(&self, py: Python<'_>, x: i32, y: i32, data: &[u8]) -> PyResult<usize> {
+        let data = data.to_vec();
+        py.detach(|| self.with(|d| d.add_tile(strata::slice::Tile { x, y }, &data)))
+    }
+
+    /// Adds a vector slice's codes of every row from the bytes of its
+    /// `codes.bin.gz`: searches then bound the clusters not held far more
+    /// tightly, and name the clusters that would prove an answer.
+    fn add_codes(&self, py: Python<'_>, data: &[u8]) -> PyResult<()> {
+        let data = data.to_vec();
+        py.detach(|| self.with(|d| d.add_codes(&data)))
+    }
+
+    fn has_codes(&self) -> PyResult<bool> {
+        self.with(|d| Ok(d.has_codes()))
+    }
+
+    fn drop_tile(&self, py: Python<'_>, x: i32, y: i32) -> PyResult<()> {
+        py.detach(|| self.with(|d| d.drop_tile(strata::slice::Tile { x, y })))
+    }
+
+    /// The tiles held, as (x, y, rows).
+    fn held(&self) -> PyResult<Vec<(i32, i32, usize)>> {
+        self.with(|d| Ok(d.held().map(|(t, n)| (t.x, t.y, n)).collect()))
+    }
+
+    /// The distance in metres to the nearest tile with rows not held
+    /// (None when it holds them all).
+    fn edge(&self, lat: f64, lon: f64) -> PyResult<Option<f64>> {
+        self.with(|d| Ok(Some(d.edge(lat, lon)).filter(|e| e.is_finite())))
+    }
+
+    /// Notes whether the server's table changed since the slice was built.
+    fn set_stale(&self, stale: bool) -> PyResult<()> {
+        self.with(|d| {
+            d.set_stale(stale);
+            Ok(())
+        })
+    }
+
+    /// Searches the tiles held ([`strata::slice::Device::search`]); the
+    /// answer as JSON text ([`strata::slice::Answer::to_json`]), with
+    /// `ask`, the body of the request that asks the server.
+    #[pyo3(signature = (q, lat, lon, k = 10, d0_m = 1000.0))]
+    fn search(&self, py: Python<'_>, q: &str, lat: f64, lon: f64, k: usize, d0_m: f64) -> PyResult<String> {
+        py.detach(|| {
+            self.with(|d| {
+                let s = strata::slice::Search::new(q, lat, lon, k, d0_m)?;
+                Ok(d.search(&s)?.to_json(&s, d.manifest()).to_string())
+            })
+        })
+    }
+
+    /// Searches a vector slice's clusters held
+    /// ([`strata::slice::Device::search_vector`]): the `k` rows most similar
+    /// to `vector`, as JSON text like [`SliceDevice::search`]'s.
+    #[pyo3(signature = (vector, k = 10))]
+    fn search_vector(&self, py: Python<'_>, vector: Vec<f32>, k: usize) -> PyResult<String> {
+        py.detach(|| {
+            self.with(|d| {
+                let s = strata::slice::VectorSearch::new(vector, k)?;
+                Ok(d.search_vector(&s)?.to_json(&s, d.manifest()).to_string())
+            })
+        })
+    }
+
+    /// Closes its database.
+    fn close(&self) {
+        self.dev.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
 #[pymodule]
 fn _strata(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Database>()?;
+    m.add_class::<SliceDevice>()?;
     #[cfg(feature = "datafusion")]
     m.add_class::<arrow::Arrow>()?;
     m.add_function(wrap_pyfunction!(train_codebook, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
+    m.add_function(wrap_pyfunction!(create_sql, m)?)?;
     m.add("StrataError", m.py().get_type::<StrataError>())?;
     Ok(())
 }

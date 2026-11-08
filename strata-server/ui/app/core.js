@@ -353,14 +353,15 @@ export function findCopy(url, cluster = ctx.cluster) {
 }
 const hostPort = (url) => String(url).replace(/^[a-z]+:\/\//, "").replace(/\/.*$/, "");
 /**
- * The short name of a copy: its node name when the server has one, else
- * "s1-0" (shard 1, copy 0); host:port for a URL the cluster does not list.
+ * The short name of a copy, as the cluster names it from its address
+ * ("s1-0" for a pod the operator runs, "a0", "127.0.0.1:8004"); host:port
+ * for a URL the cluster does not list.
  */
 export function copyName(url, cluster = ctx.cluster) {
   if (!url) return "–";
   const f = findCopy(url, cluster);
   if (!f) return hostPort(url);
-  // The server's own texts (fleet health, events) say "s1-0": the same name here; the node name goes in the title.
+  // The server's own texts (fleet health, events) say the same name; the node name goes in the title.
   return f.rep.short || `s${f.shard}-${f.copy}`;
 }
 /** The long form, for a tooltip: "s1-0: shard 1, copy 0, primary · node … · http://…". */
@@ -370,7 +371,7 @@ export function copyTitle(url, cluster = ctx.cluster) {
   if (!f) return String(url);
   const r = f.rep;
   const role = r.role === "unknown" ? `not answering${r.last_role ? ` (was ${r.last_role})` : ""}` : r.role;
-  return [`${copyName(url, cluster)}: shard ${f.shard}, copy ${f.copy}${role ? ", " + role : ""}`, r.name && r.name !== r.node ? `server ${r.name}` : null, r.node ? `node ${r.node}` : null, r.zone ? `zone ${r.zone}` : null, String(url)].filter(Boolean).join(" · ");
+  return [`${copyName(url, cluster)}: shard ${f.shard}${role ? ", " + role : ""}`, r.name && r.name !== r.node ? `server ${r.name}` : null, r.node ? `node ${r.node}` : null, r.zone ? `zone ${r.zone}` : null, String(url)].filter(Boolean).join(" · ");
 }
 
 // ---------------------------------------------------------------- links

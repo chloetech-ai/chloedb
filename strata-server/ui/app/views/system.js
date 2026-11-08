@@ -27,7 +27,7 @@ export default {
 };
 
 const kv = (pairs) => h("dl", { class: "kv" }, pairs.filter(Boolean).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v ?? "–")]));
-const cap = (t) => (!t || /^(s\d+-\d+|[a-z]+:\/\/)/.test(t) ? t : t[0].toUpperCase() + t.slice(1));
+const cap = (t) => (!t || /^(s\d+-\d+|[a-z]+:\/\/|[a-z][\w-]*\d[\w-]*\b|\S+:\d+\b)/.test(t) ? t : t[0].toUpperCase() + t.slice(1));
 const narrow = () => (typeof core.isNarrow === "function" ? core.isNarrow() : matchMedia("(max-width: 900px)").matches);
 const canAdmin = () => can("admin");
 const needsAdmin = needs("admin");

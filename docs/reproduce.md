@@ -1,16 +1,6 @@
----
-title: Reproducing the results
-nav_order: 5
----
-
 # Reproducing the results
-{: .no_toc }
 
 Every timing on these pages comes from a file committed under `engram/results/` or `strata/results/`, produced on a MacBook Air with an Apple M2. They replace an earlier set of runs on a 4-core cloud VM with an Emerald Rapids Xeon. The runs that call a model (Claude Code with and without Engram, the reader study, fact extraction and the probe sessions) were not repeated; their results are the original ones. This page describes the machine, what changed against the VM, and how to run everything.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## The machine
 
@@ -90,12 +80,10 @@ These need no model calls or downloads, only the per-run and per-query files in 
 - **Claude Code with and without Engram.** `engram/scripts/ab_stats.py` over the held-out projects' `runs.jsonl` gives the same counts (100/100 against 60/100; 60/60 against 20/60 on conversation-only facts), the same Fisher p-values (1.34 × 10<sup>−14</sup> pooled) and the same permutation p-values (< 1/20,001). The bootstrap intervals differ in the second decimal, because the committed `stats.json` also covers the Tally runs, which shifts the resampling's random stream.
 - **Does the graph help search?** `strata/scripts/graph_quality_stats.py` over `quality_arxiv.rows.jsonl.gz` reproduces `strata/results/graph/quality_stats.json` exactly, including nDCG@20 0.253 against 0.123 and its interval and p-value.
 
-
 ## Not re-run
 
 The runs that call a model were not repeated: Claude Code with and without Engram (`engram/results/ab/`, `engram/results/long/`), the reader study (`engram/results/reader*`), fact extraction and record structure (`engram/results/structure/`), and the probes on the 26-hour session (`engram/results/probes*`), which need that session's transcript. Their counts and costs do not depend on the machine. Where a page quotes a timing from them (the 6 s back-fill of the 26-hour session, BGE's 50 ms per record, the recall step inside the kestrel runs), it says it was measured on the cloud VM.
 
-{: .note }
 The first long-session A/B (`engram/results/long/*_v1_leaky`) is kept for the record only, and its own `NOTE.md` marks it invalid: Claude Code's auto-memory was not reset between runs, so runs within a lane were not independent. The clean rerun (`engram/results/long/stockroom` and `slotwise`) used the isolated harness in `engram/scripts/long_session_ab.py`, which resets that memory before each lane's history and restores it before every task.
 
 ## Requirements
@@ -186,12 +174,12 @@ target/release/engram-bench latency --data data/longmemeval_s.jsonl --sizes 1000
 target/release/engram-bench probes --transcript <session.jsonl> --probes probes/lost_probes.json --points 1952:4632,4633:5392
 ```
 
-**Record structure and answers** (`engram-structure`, `scripts/extract_facts.py`, `scripts/reader_eval.py`) and **Claude Code with and without Engram** call a model; see the [Engram README](https://github.com/rkonow/strata/blob/main/engram/README.md#evaluation) for the full commands. The A/B statistics alone need nothing but the committed runs:
+**Record structure and answers** (`engram-structure`, `scripts/extract_facts.py`, `scripts/reader_eval.py`) and **Claude Code with and without Engram** call a model; see the [Engram README](https://github.com/chloetech-ai/strata/blob/main/engram/README.md#evaluation) for the full commands. The A/B statistics alone need nothing but the committed runs:
 
 ```sh
 python3 scripts/ab_stats.py stockroom=results/ab/stockroom/runs.jsonl slotwise=results/ab/slotwise/runs.jsonl --out /tmp/ab_stats.json
 ```
 
-## Building these pages
+## The website and these pages
 
-The pages are a Jekyll site with the [just-the-docs](https://just-the-docs.com/) theme, under `docs/`. GitHub Pages can publish it from that folder; the long-form reports in `docs/reports/` are copies of the HTML reports each crate builds.
+GitHub Pages publishes `docs/` as it is, with no build step (`docs/.nojekyll`): the root redirects to the website in `docs/site/`, whose benchmark charts read `docs/site/assets/bench-data.js` (written by `docs/site/scripts/bench_data.py`). These Markdown pages are read on GitHub. The long-form reports in `docs/reports/` are copies of the HTML reports each crate builds.

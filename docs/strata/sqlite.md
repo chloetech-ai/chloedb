@@ -1,19 +1,8 @@
----
-title: SQLite
-parent: Strata
-nav_order: 7
----
-
 # SQLite in and out
-{: .no_toc }
 
 Strata imports the tables of a SQLite database, making a Strata table of each with a schema read from SQLite's declarations and the values the columns hold, and exports a Strata database to a new SQLite file that any SQLite program can read: rows, keys, references, indexes and an FTS5 index over the text. An export keeps each table's Strata schema in the file, so importing it back gives the same schemas and rows.
-{: .fs-5 .fw-300 }
 
 Parquet files go in and out the same way, and a SQLite file may be an `s3://` URL too: [Parquet and S3](parquet.md).
-
-1. TOC
-{:toc}
 
 ## Import
 

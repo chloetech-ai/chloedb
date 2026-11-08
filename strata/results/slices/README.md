@@ -1,0 +1,992 @@
+# On-device slices, Phase 0: how much a device could answer alone
+
+The replay study of the "Strata on the device" design (Claude Doc,
+https://claude.ai/artifact/14s2MaZu2wua3Q3NNvbL2E), run before building
+anything. A slice is part of the corpus shipped to a device, scored there
+with the cloud's statistics, plus enough to know when the device's answer
+is the cloud's. The question is how much traffic a slice of a given size
+answers alone, for search (MS MARCO passages, searched by ORCAS's queries,
+by the AOL log's and by ideal Zipf traffic over AOL's strings), for places
+near the user (New York's and Houston's places, searched by Foursquare
+check-ins) and for recommendations (Yambda-50M).
+
+Everything ran in one cloud container (Intel Xeon @ 2.30GHz, 4 cores,
+15 GB, Linux 6.18) on 2026-11-07 and 08. The numbers are shares of queries and
+users and file sizes, which do not depend on the machine; no time here is a
+benchmark.
+
+The gate the design proposed (Gate A): 40% of query volume answered on the
+device with a proof at a slice of 50 MB or less, and recommendations made on
+the device within 5% of the cloud's NDCG@10.
+
+## Verdict
+
+- **Search near the user passes Gate A by far**
+  ([below](#search-near-the-user-places-in-new-york)). With the places of a
+  5 km square around the user on the device (5.4 MB at the median and
+  14.6 MB at the 90th percentile, in New York), the device proves the top 3
+  of 94.8% of category searches ("pizza", "coffee shop") and the top 10 of
+  86.7%, against the cloud's ranking by text and distance. Over category
+  and name searches together, 85.1% and 71.1%. The bound works here
+  because a place outside the square scores at most its text score faded
+  by its distance. In Houston, a sparser city
+  ([below](#a-sparser-city-houston)), the same share takes a 9 km square,
+  which is smaller in bytes (3.0 MB at the median, 3.9 MB at the 90th
+  percentile, 85.0% of category top 10s): what sets the slice is the number
+  of places around the user, about 20,000 to 40,000 in both cities, not
+  the square's width.
+- **Search over text alone passes Gate A when the traffic's head is heavy,
+  and fails on AOL's.** The gate passes once the 10,000 most searched strings carry about
+  a third of all searches.
+  - **On ideal Zipf traffic** (the most searched query twice as often as
+    the second, three times the third; [below](#search-on-ideal-zipf-traffic)),
+    the top 10,000 of AOL's strings carry 68% of searches. A 33 MB slice
+    holds the whole cloud top 10 for 79.6% of them and proves 65.1% with
+    pair bounds. With a cache of the 100,000 most searched answers (38.5 MB
+    in all) the device answers 76.2% exactly. Even a 3.4 MB slice proves
+    51.6% with pair bounds (at most 12.8 MB more). Spread over a tail as long as AOL's (8.7 million strings), an
+    estimate from the measurements gives 66.3%. With AOL's own slope
+    (r^-0.86) it passes over 1 million strings (56.1%) and sits on the line
+    with AOL's tail (39.9%, estimated).
+  - **On the real AOL log** (21 million searches, run over the same
+    passages; [below](#search-weighted-by-volume-the-aol-log)), the top
+    10,000 strings carry only 22% of searches. The same 33 MB slice holds
+    the top 10 for 41.5% and proves 22.6%. The best mix within 50 MB (that
+    slice and the 100,000-answer cache, 38.6 MB) answers 27.6% exactly,
+    against the gate's 40%. The 48% of searches that are new strings are
+    almost never proved (0.6%).
+  - Band by band the two agree: strings searched 1,000 times or more are
+    held entirely and about 91% proved on both, strings searched 100 to
+    999 times held entirely and 75% to 78% proved. Only the share of
+    traffic in those bands differs (71% on Zipf, 22% on AOL).
+  - **Counted by distinct strings** (ORCAS): at the same 33 MB the proof
+    answers 0.2% to 0.4% of top 10s, or 0.5% to 1.2% with pair bounds, and
+    the slice holds only 5% to 8% of them.
+  - The proof itself is sound: not one wrong answer, on either log, at any
+    size, k or kind of bound. What limits it is the bound: the sum of
+    per-word bounds is near every word's ceiling at once, so from two words
+    on it proves far less than the slice holds.
+  - For cost alone, a plain result cache does most of the work and needs no
+    slice and no proof: the top 10 ids of the 10,000 most searched strings
+    (0.6 MB) answer 69.3% of Zipf searches, and those of the 300,000 most
+    searched (18 MB) 40.2% of AOL's. Only showing those results offline
+    needs their passages on the device.
+- **Recommendations pass.** Ranking only the user's own tracks, a 1,000
+  track base pack and the meaning packs nearest the user's taste (5,000
+  tracks, 1.9 MB), the device's NDCG@10 is 0.0828 against the same model's
+  0.0827 over all 629,298 tracks in the cloud, and 0.0235 against 0.0236 on
+  tracks new to the user. The user's own history, which needs no download,
+  is still the best single source on this data (0.1854), above every cloud
+  source measured in [`../recsys`](../recsys/README.md).
+- **Freshness is cheap for recommendations.** A base pack of the 10,000
+  most played tracks of the last week gains 591 tracks a day on average,
+  about 217 KB a day at 367 bytes a track.
+
+What this does not settle: AOL's traffic is web search from 2006, run over
+another corpus, and its head is mostly short navigational queries, which
+the proof handles best. The Zipf runs keep AOL's strings and change only
+how often each is searched. Whether an app's own search (a shop, a
+catalogue, a help centre) has the heavy head or AOL's flatter one is the
+open question; its own log, or TripClick's health-search log (on request
+from the Trip Database), would say.
+
+## Search: ORCAS queries over MS MARCO passages
+
+[`search.py`](search.py) (its docstring has the details). The corpus is
+MS MARCO's 8,841,823 passages in one Strata database, which plays the
+cloud. The queries are ORCAS's 10.4 million Bing queries, normalised the way
+Strata's analyser splits words and with duplicate strings removed
+([`search/prep.json`](search/prep.json)): 1,000,000 of them choose the
+slices, and 50,000 others are the new queries. The "right answer" is the
+cloud's BM25 top 10 for the query (ORCAS's clicks are on MS MARCO's
+documents, not its passages, so they are not used), and only queries with a
+full top 10 count: 47,191 new queries and a sample of 50,000 training
+queries, the repeats.
+
+ORCAS has no query counts. Every query weighs 1, and train and test share
+no string, so a result cache of the training queries answers none of the new
+queries by construction. Real traffic repeats far more; the new and repeat
+columns below are the two ends, and a log with counts would weigh them.
+
+Slices are nested, 10,000 to 400,000 passages, chosen two ways from the
+training queries' cloud top 10: `cov` greedily completes the training query
+that misses the fewest passages, and `pop` takes passages by how many
+training queries' top 10 hold them. Each slice ships, for each word it
+holds, its residual bound: the most that word adds to the score of any
+passage left in the cloud. The device answers alone when the k-th local
+score reaches the sum of the query's bounds (the proof); "held" is the share
+whose cloud top k is wholly in the slice, which a perfect bound would prove.
+A word the slice has no posting for sends the query to the cloud. The file
+sizes are of real Strata files of the slice's passages (`id`, `body`),
+optimised and vacuumed ([`search/bytes.json`](search/bytes.json)).
+
+Query coverage (`cov`):
+
+<!-- report:slices-cov -->
+| passages | file MB | bytes / passage | new: top 1 held | new: top 1 proved | new: top 10 held | new: top 10 proved | new: top 10 proved, 8-bit bounds | repeat: top 10 held | repeat: top 10 proved | new: a word the slice lacks |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10K | 3.4 | 341 | 2.1% | 0.08% | 0.6% | 0.01% | 0.01% | 0.9% | 0.05% | 39.4% |
+| 30K | 10.2 | 339 | 5.8% | 0.24% | 2.0% | 0.04% | 0.03% | 3.1% | 0.18% | 27.1% |
+| 100K | 32.9 | 329 | 12.9% | 0.57% | 5.0% | 0.17% | 0.11% | 7.9% | 0.37% | 17.9% |
+| 200K | 65.0 | 325 | 19.3% | 0.88% | 7.9% | 0.31% | 0.19% | 13.2% | 0.54% | 13.7% |
+| 400K | 127.9 | 320 | 29.6% | 1.45% | 12.8% | 0.55% | 0.38% | 22.5% | 0.87% | 9.8% |
+<!-- /report -->
+
+Popular passages (`pop`):
+
+<!-- report:slices-pop -->
+| passages | file MB | bytes / passage | new: top 1 held | new: top 1 proved | new: top 10 held | new: top 10 proved | new: top 10 proved, 8-bit bounds | repeat: top 10 held | repeat: top 10 proved | new: a word the slice lacks |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10K | 3.3 | 332 | 8.3% | 0.32% | 1.5% | 0.06% | 0.02% | 1.6% | 0.08% | 36.0% |
+| 30K | 9.6 | 321 | 14.4% | 0.57% | 2.1% | 0.13% | 0.03% | 2.2% | 0.14% | 23.3% |
+| 100K | 31.7 | 317 | 25.7% | 1.19% | 3.5% | 0.27% | 0.11% | 4.0% | 0.32% | 13.6% |
+| 200K | 63.4 | 317 | 35.4% | 1.75% | 5.4% | 0.46% | 0.18% | 6.4% | 0.54% | 10.0% |
+| 400K | 126.7 | 317 | 46.6% | 2.47% | 8.4% | 0.69% | 0.31% | 10.8% | 0.88% | 7.4% |
+<!-- /report -->
+
+No proof was wrong: each proved answer was the cloud's top k (or differed
+only among passages with the same score), for all 97,191 queries, at every
+slice size, for k = 1, 3, 5 and 10, with word bounds and with the pair
+bounds below ([`search/eval_test.json`](search/eval_test.json),
+[`search/eval_seen.json`](search/eval_seen.json)). A proof can hold where
+the slice lacks one of the cloud's passages, when the two tie. Rounding the
+bounds up to 8 bits, as a slice would ship them, loses 25% to 40% of the top
+10 proofs of `cov` slices and 55% to 75% of `pop` slices'.
+
+When the slice cannot prove its answer, its top k still shares this much
+with the cloud's (new queries, the mean share of the cloud's top k found in
+the local top k):
+
+<!-- report:overlap -->
+| passages | cov: top 1 | cov: top 10 | pop: top 1 | pop: top 10 |
+|---|---:|---:|---:|---:|
+| 10K | 2% | 2% | 8% | 7% |
+| 30K | 6% | 5% | 14% | 12% |
+| 100K | 12% | 11% | 25% | 22% |
+| 200K | 19% | 17% | 34% | 30% |
+| 400K | 29% | 26% | 45% | 40% |
+<!-- /report -->
+
+### Why the proof answers so little
+
+A query's bound is the sum of its words' bounds, and each word's bound
+comes from a different passage: over 8.4 million passages left in the cloud,
+almost every word has one where it scores near its ceiling. Of the words a
+100,000-passage `cov` slice knows, 90% keep their single best passage in
+the cloud, so their bound is their top score anywhere, and 97% have a bound
+of at least 0.9 of it (60% and 96% for `pop`;
+[`search/residuals.json`](search/residuals.json)). For one-word
+queries the bound is exact and the proof answers every query whose answer
+the slice holds; from two words on, the local top k would have to score
+near every word's ceiling at once. ORCAS queries are long: 3.5% have one
+word (after query stopwords), 32% two, 37% three and 27% four or more.
+
+Two ways past it were measured on the `cov` slices
+([`search/eval2_test.json`](search/eval2_test.json),
+[`search/eval2_seen.json`](search/eval2_seen.json)):
+
+- **Pair bounds.** For two words that appear together in some training
+  query (1,540,914 pairs), the slice can also ship G(a, b), the most any
+  cloud-only passage scores on the two together. A query's bound is then the
+  sum over a greedy pairing of its words, which is still a valid bound.
+- **A confidence rule** instead of a proof: answer on the device when the
+  k-th local score reaches a share alpha of the (pair) bound, and count how
+  often that answer is the cloud's.
+
+By the number of words (k = 10):
+
+<!-- report:lengths -->
+| queries | passages | words | share of queries | top 10 held | proved, word bounds | proved, pair bounds |
+|---|---:|---:|---:|---:|---:|---:|
+| new | 100K | 1 | 3.5% | 1.8% | 1.75% | 1.75% |
+| new | 100K | 2 | 32.4% | 3.7% | 0.27% | 0.98% |
+| new | 100K | 3 | 37.0% | 4.9% | 0.05% | 0.29% |
+| new | 100K | 4+ | 27.0% | 7.0% | 0.00% | 0.03% |
+| new | 400K | 1 | 3.5% | 7.6% | 7.62% | 7.62% |
+| new | 400K | 2 | 32.4% | 9.0% | 0.78% | 3.72% |
+| new | 400K | 3 | 37.0% | 12.4% | 0.08% | 0.64% |
+| new | 400K | 4+ | 27.0% | 18.4% | 0.00% | 0.09% |
+| repeat | 100K | 1 | 3.4% | 2.1% | 2.09% | 2.09% |
+| repeat | 100K | 2 | 33.1% | 5.1% | 0.79% | 2.74% |
+| repeat | 100K | 3 | 36.9% | 7.6% | 0.11% | 0.51% |
+| repeat | 100K | 4+ | 26.6% | 12.8% | 0.00% | 0.04% |
+| repeat | 400K | 1 | 3.4% | 8.0% | 8.02% | 8.02% |
+| repeat | 400K | 2 | 33.1% | 14.5% | 1.67% | 11.19% |
+| repeat | 400K | 3 | 36.9% | 22.1% | 0.12% | 0.94% |
+| repeat | 400K | 4+ | 26.6% | 34.7% | 0.00% | 0.14% |
+<!-- /report -->
+
+Pair bounds are exact for a two-word query whose pair the slice ships,
+which is why repeats of two words gain most (at 400,000 passages, 11.2%
+proved against 14.5% held). From three words on they stay loose, and a
+new query's pairs are often not among the training queries'.
+
+Pair bounds against word bounds, all slice sizes:
+
+<!-- report:pairs -->
+| queries | passages | top 1 held | top 1 proved, words | top 1 proved, pairs | top 10 held | top 10 proved, words | top 10 proved, pairs | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| new | 10K | 2.1% | 0.08% | 0.28% | 0.6% | 0.01% | 0.03% | 0 |
+| new | 30K | 5.8% | 0.24% | 0.86% | 2.0% | 0.04% | 0.13% | 0 |
+| new | 100K | 12.9% | 0.57% | 2.52% | 5.0% | 0.17% | 0.49% | 0 |
+| new | 200K | 19.3% | 0.88% | 4.09% | 7.9% | 0.31% | 0.95% | 0 |
+| new | 400K | 29.6% | 1.45% | 6.83% | 12.8% | 0.55% | 1.74% | 0 |
+| repeat | 10K | 2.2% | 0.15% | 0.49% | 0.9% | 0.05% | 0.12% | 0 |
+| repeat | 30K | 6.1% | 0.38% | 1.60% | 3.1% | 0.18% | 0.40% | 0 |
+| repeat | 100K | 13.7% | 0.83% | 4.15% | 7.9% | 0.37% | 1.18% | 0 |
+| repeat | 200K | 20.4% | 1.22% | 6.87% | 13.2% | 0.54% | 2.29% | 0 |
+| repeat | 400K | 32.0% | 1.87% | 11.68% | 22.5% | 0.87% | 4.36% | 0 |
+<!-- /report -->
+
+The confidence rule:
+
+<!-- report:confidence -->
+| queries | passages | alpha | top 1: answered on the device | top 1: of those, the cloud's | top 10: answered on the device | top 10: of those, the cloud's |
+|---|---:|---:|---:|---:|---:|---:|
+| new | 100K | 1.0 | 2.5% | 100% | 0.5% | 100% |
+| new | 100K | 0.9 | 6.7% | 69% | 1.1% | 68% |
+| new | 100K | 0.8 | 13.3% | 53% | 3.1% | 48% |
+| new | 100K | 0.7 | 23.0% | 40% | 6.6% | 37% |
+| new | 100K | 0.6 | 36.7% | 28% | 12.6% | 25% |
+| new | 100K | 0.5 | 54.4% | 20% | 23.0% | 15% |
+| new | 100K | 0.4 | 71.2% | 15% | 40.0% | 9% |
+| new | 100K | 0.3 | 80.5% | 14% | 63.1% | 5% |
+| new | 400K | 1.0 | 6.8% | 100% | 1.7% | 100% |
+| new | 400K | 0.9 | 15.9% | 78% | 3.7% | 72% |
+| new | 400K | 0.8 | 28.2% | 67% | 8.8% | 55% |
+| new | 400K | 0.7 | 42.8% | 55% | 17.3% | 45% |
+| new | 400K | 0.6 | 59.0% | 44% | 29.3% | 33% |
+| new | 400K | 0.5 | 75.2% | 36% | 45.5% | 24% |
+| new | 400K | 0.4 | 86.0% | 31% | 64.3% | 17% |
+| new | 400K | 0.3 | 89.9% | 30% | 81.9% | 13% |
+| repeat | 100K | 1.0 | 4.1% | 100% | 1.2% | 100% |
+| repeat | 100K | 0.9 | 10.0% | 65% | 1.9% | 84% |
+| repeat | 100K | 0.8 | 19.1% | 48% | 4.4% | 62% |
+| repeat | 100K | 0.7 | 31.5% | 35% | 9.0% | 51% |
+| repeat | 100K | 0.6 | 47.4% | 24% | 17.0% | 35% |
+| repeat | 100K | 0.5 | 64.2% | 18% | 30.6% | 20% |
+| repeat | 100K | 0.4 | 76.8% | 15% | 49.8% | 13% |
+| repeat | 100K | 0.3 | 82.0% | 14% | 70.4% | 9% |
+| repeat | 400K | 1.0 | 11.7% | 100% | 4.4% | 100% |
+| repeat | 400K | 0.9 | 24.3% | 75% | 6.5% | 88% |
+| repeat | 400K | 0.8 | 39.8% | 62% | 13.1% | 73% |
+| repeat | 400K | 0.7 | 56.0% | 51% | 24.8% | 63% |
+| repeat | 400K | 0.6 | 71.6% | 41% | 39.7% | 49% |
+| repeat | 400K | 0.5 | 83.1% | 35% | 57.1% | 35% |
+| repeat | 400K | 0.4 | 89.0% | 33% | 73.8% | 28% |
+| repeat | 400K | 0.3 | 90.4% | 33% | 86.3% | 24% |
+<!-- /report -->
+
+### Against a result cache
+
+For repeats, the cheaper exact answer is not a proof but a cached answer:
+the cloud's top 10 ids for a query string, about 61 bytes (the training
+queries average 20.8 bytes, [`search/answer_cache.json`](search/answer_cache.json),
+plus ten 4-byte ids). A `cov` slice is built by completing training
+queries, so beside it the device can hold those queries' answers and
+answer exactly the "repeat: top 10 held" share above, with no bound at all.
+At 400,000 passages that is 22.3% of the 943,457 training queries with a
+full top 10 ([`search/select.json`](search/select.json)), about 210,000
+answers or 13 MB. New strings are where only the proof (or the confidence
+rule) can help.
+
+## Search weighted by volume: the AOL log
+
+[`aol.py`](aol.py) (its docstring has the details) repeats the search study
+on a log with counts: the AOL search log of March to May 2006, 21,011,340
+searches (a user's consecutive rows of one query are one search), over the
+same 8.8 million MS MARCO passages. The cloud's answer is BM25 over a
+modern web corpus, not over the pages AOL's users saw, so only the shape of
+the traffic comes from AOL. That log was withdrawn in 2006 for its privacy
+failings and is still widely used in IR research (ir_datasets' `aol-ia`);
+nothing here quotes a query, and the results hold only counts and shares.
+
+Training is every search before 17 May 2006 (17.6 million searches, 8.7
+million distinct strings); the 1,000,000 most searched strings, 54% of the
+training searches, choose the slices and fill the result cache. The test is
+a uniform sample of 200,000 of the 2.9 million searches of the last two
+weeks (156,325 distinct strings), so each string weighs its searches and
+every share below is a share of test search volume
+([`aol/prep.json`](aol/prep.json)). 52.1% of test searches repeat a string
+searched in training. Slices are chosen as for ORCAS, weighted by training
+searches: `cov` completes the query with the most searches per missing
+passage first. Shares are of the test searches whose query has a full top
+10 in the whole corpus (93.6% of them).
+
+Query coverage (`cov`, [`aol/eval.json`](aol/eval.json)):
+
+<!-- report:aol-cov -->
+| passages | file MB | top 1 held | top 1 proved, words | top 1 proved, pairs | top 10 held | top 10 proved, words | top 10 proved, pairs | top 10 proved or cached (100K answers) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10K | 3.4 | 30.0% | 8.3% | 15.6% | 26.3% | 7.2% | 13.4% | 17.3% | 0 |
+| 30K | 9.9 | 38.6% | 10.9% | 20.7% | 33.1% | 9.3% | 17.6% | 22.5% | 0 |
+| 100K | 32.5 | 50.8% | 13.5% | 27.0% | 41.5% | 11.6% | 22.6% | 28.6% | 0 |
+| 200K | 64.6 | 59.5% | 15.0% | 30.8% | 47.7% | 12.7% | 25.7% | 32.5% | 0 |
+| 400K | 128.7 | 69.3% | 16.6% | 34.9% | 55.0% | 13.8% | 28.8% | 36.2% | 0 |
+<!-- /report -->
+
+Popular passages (`pop`):
+
+<!-- report:aol-pop -->
+| passages | file MB | top 1 held | top 1 proved, words | top 1 proved, pairs | top 10 held | top 10 proved, words | top 10 proved, pairs | top 10 proved or cached (100K answers) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10K | 3.4 | 32.6% | 8.2% | 16.3% | 25.3% | 6.7% | 12.2% | 15.9% | 0 |
+| 30K | 9.8 | 42.2% | 11.0% | 21.7% | 31.0% | 8.8% | 16.0% | 20.5% | 0 |
+| 100K | 31.8 | 55.2% | 13.7% | 27.9% | 39.0% | 10.9% | 20.9% | 26.3% | 0 |
+| 200K | 63.3 | 63.8% | 15.2% | 31.7% | 45.0% | 12.2% | 24.1% | 30.3% | 0 |
+| 400K | 126.3 | 72.8% | 16.6% | 35.4% | 52.4% | 13.4% | 27.5% | 34.5% | 0 |
+<!-- /report -->
+
+By how often the test query was searched in training (`cov`, top 10):
+
+<!-- report:aol-bands -->
+| passages | training searches of the string | share of test volume | top 10 held | top 10 proved, pairs |
+|---|---:|---:|---:|---:|
+| 100K | new string | 48.0% | 20.4% | 0.6% |
+| 100K | 1 to 9 | 16.4% | 22.8% | 4.0% |
+| 100K | 10 to 99 | 13.6% | 44.0% | 23.1% |
+| 100K | 100 to 999 | 10.7% | 100.0% | 77.6% |
+| 100K | 1,000 or more | 11.3% | 100.0% | 90.6% |
+| 400K | new string | 48.0% | 30.1% | 1.5% |
+| 400K | 1 to 9 | 16.4% | 39.8% | 11.1% |
+| 400K | 10 to 99 | 13.6% | 88.6% | 56.6% |
+| 400K | 100 to 999 | 10.7% | 100.0% | 77.8% |
+| 400K | 1,000 or more | 11.3% | 100.0% | 90.7% |
+<!-- /report -->
+
+A result cache alone, the cloud's top 10 ids for the most searched training
+strings, needs no slice and no proof; to show its answers offline, the
+device needs their passages too:
+
+<!-- report:aol-cache -->
+| answers cached | MB (ids only) | test search volume answered |
+|---|---:|---:|
+| 10,000 | 0.6 | 22.6% |
+| 30,000 | 1.8 | 27.9% |
+| 100,000 | 6.1 | 34.4% |
+| 300,000 | 18.2 | 40.2% |
+| 1,000,000 | 60.8 | 44.8% |
+
+52.1% of test searches repeat a string searched in training at all.
+<!-- /report -->
+
+The best ways found to spend 50 MB on exact answers with the passages on
+the device (a slice, a cache of answers whose passages the slice holds, and
+the proof):
+
+<!-- report:aol-budget -->
+| slice | passages | slice MB | answers cached | cache MB | pair bounds MB | MB on the device | answered by | test volume answered exactly on the device |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| cov | 100K | 32.5 | 100,000 | 6.1 |  | 38.6 | cache | 27.6% |
+| cov | 100K | 32.5 | 30,000 | 1.8 | 12.8 | 47.1 | cache + proof | 27.4% |
+| cov | 100K | 32.5 | 10,000 | 0.6 | 12.8 | 45.9 | cache + proof | 26.2% |
+| cov | 100K | 32.5 | 30,000 | 1.8 |  | 34.3 | cache | 25.6% |
+| pop | 100K | 31.8 | 100,000 | 6.1 |  | 37.9 | cache | 25.6% |
+| pop | 100K | 31.8 | 30,000 | 1.8 | 12.8 | 46.4 | cache + proof | 25.3% |
+| pop | 100K | 31.8 | 10,000 | 0.6 | 12.8 | 45.2 | cache + proof | 24.5% |
+| pop | 100K | 31.8 | 30,000 | 1.8 |  | 33.6 | cache | 24.1% |
+
+Pair bounds are counted for all 1,422,227 training pairs at 9 bytes each (12.8 MB); a slice needs only the pairs of words it holds, so this is an upper bound.
+<!-- /report -->
+
+With volume, the slice holds what the traffic asks for most: the head. At
+33 MB it holds the whole top 10 for 41.5% of searches, which would pass the
+gate with a perfect bound. The proof gets about half of that, almost all of
+it from strings searched before, and there a cached answer does the same
+job more cheaply. On new strings, the only place the proof could add what a
+cache cannot, it proves 0.6% of their volume at 33 MB (1.5% at 128 MB).
+
+## Search on ideal Zipf traffic
+
+AOL's head is flatter than search traffic is often taken to be: its 10,000
+most searched strings are 22.3% of its training searches, and its counts
+fall as about r^-0.86 with rank r. [`zipf.py`](zipf.py) asks what the same
+slices do when the traffic follows Zipf's law exactly, the most searched
+query twice as often as the second and three times as often as the third.
+It keeps AOL's 1,000,000 most searched training strings in AOL's order and
+gives rank r the weight r^-s: at s = 1 the top 10,000 strings are 68.0% of
+searches, and at s = 0.86, AOL's own slope over the same strings, 45.2%.
+Slices and the result cache are chosen from those weights, and the test is
+200,000 searches drawn from them (65,366 distinct strings at s = 1, 103,759
+at s = 0.86), answered by the same cloud top 10s as the AOL study
+([`zipf/prep.json`](zipf/prep.json), [`zipf086/prep.json`](zipf086/prep.json)).
+Everything else is `aol.py`'s.
+
+One row per traffic shape, `cov` slices, top 10:
+
+<!-- report:zipf-summary -->
+| traffic | top 10,000 strings' share of searches | test volume on new strings | 100K slice: top 10 held | 100K slice: top 10 proved, pairs | 10,000 cached answers (0.6 MB) | best exact answer within 50 MB | Gate A (40%) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| AOL log, measured | 22.3% | 48.0% | 41.5% | 22.6% | 22.6% | 27.6% (cache, 38.6 MB) | fail |
+| Zipf s = 0.86 over 1M strings | 45.2% | 0.0% | 62.9% | 45.5% | 46.5% | 56.1% (cache, 38.6 MB) | pass |
+| Zipf s = 1 over 1M strings | 68.0% | 0.0% | 79.6% | 65.1% | 69.3% | 76.2% (cache, 38.5 MB) | pass |
+<!-- /report -->
+
+The rest of this section is s = 1. Query coverage (`cov`,
+[`zipf/eval.json`](zipf/eval.json)):
+
+<!-- report:zipf-cov -->
+| passages | file MB | top 1 held | top 1 proved, words | top 1 proved, pairs | top 10 held | top 10 proved, words | top 10 proved, pairs | top 10 proved or cached (100K answers) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10K | 3.4 | 64.9% | 35.4% | 56.5% | 62.4% | 32.7% | 51.6% | 60.5% | 0 |
+| 30K | 9.9 | 73.8% | 39.1% | 64.0% | 70.8% | 35.6% | 58.0% | 68.6% | 0 |
+| 100K | 32.4 | 83.2% | 42.7% | 71.7% | 79.6% | 38.8% | 65.1% | 76.9% | 0 |
+| 200K | 64.5 | 88.3% | 44.3% | 75.9% | 84.8% | 40.0% | 68.5% | 81.4% | 0 |
+| 400K | 128.5 | 93.0% | 46.0% | 79.8% | 90.0% | 41.2% | 71.9% | 85.5% | 0 |
+<!-- /report -->
+
+Popular passages (`pop`):
+
+<!-- report:zipf-pop -->
+| passages | file MB | top 1 held | top 1 proved, words | top 1 proved, pairs | top 10 held | top 10 proved, words | top 10 proved, pairs | top 10 proved or cached (100K answers) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10K | 3.4 | 66.5% | 35.5% | 57.5% | 60.6% | 32.1% | 50.1% | 58.6% | 0 |
+| 30K | 9.8 | 75.4% | 39.2% | 64.9% | 68.6% | 35.3% | 56.4% | 66.4% | 0 |
+| 100K | 31.9 | 84.8% | 42.7% | 72.5% | 77.3% | 38.2% | 63.5% | 74.6% | 0 |
+| 200K | 63.4 | 89.7% | 44.5% | 76.5% | 82.5% | 39.6% | 67.2% | 79.4% | 0 |
+| 400K | 126.4 | 94.1% | 46.0% | 80.2% | 88.0% | 40.8% | 70.8% | 84.1% | 0 |
+<!-- /report -->
+
+By how often the string is expected to be searched in a training period as
+long as AOL's (`cov`, top 10), with the ranks that band covers:
+
+<!-- report:zipf-bands -->
+| passages | training searches of the string | share of test volume | top 10 held | top 10 proved, pairs |
+|---|---:|---:|---:|---:|
+| 100K | 1 to 9 (ranks 128,914 to 1,000,000) | 13.7% | 21.6% | 3.7% |
+| 100K | 10 to 99 (ranks 12,309 to 128,913) | 15.7% | 38.4% | 17.0% |
+| 100K | 100 to 999 (ranks 1,226 to 12,308) | 15.6% | 100.0% | 74.5% |
+| 100K | 1,000 or more (ranks 1 to 1,225) | 55.1% | 100.0% | 91.3% |
+| 400K | 1 to 9 (ranks 128,914 to 1,000,000) | 13.7% | 40.2% | 11.6% |
+| 400K | 10 to 99 (ranks 12,309 to 128,913) | 15.7% | 88.2% | 53.4% |
+| 400K | 100 to 999 (ranks 1,226 to 12,308) | 15.6% | 100.0% | 74.7% |
+| 400K | 1,000 or more (ranks 1 to 1,225) | 55.1% | 100.0% | 91.3% |
+<!-- /report -->
+
+A result cache of ids alone:
+
+<!-- report:zipf-cache -->
+| answers cached | MB (ids only) | test search volume answered |
+|---|---:|---:|
+| 10,000 | 0.6 | 69.3% |
+| 30,000 | 1.8 | 76.6% |
+| 100,000 | 6.1 | 84.6% |
+| 300,000 | 18.2 | 92.0% |
+| 1,000,000 | 60.8 | 100.0% |
+<!-- /report -->
+
+The best ways found to spend 50 MB on exact answers with the passages on
+the device:
+
+<!-- report:zipf-budget -->
+| slice | passages | slice MB | answers cached | cache MB | pair bounds MB | MB on the device | answered by | test volume answered exactly on the device |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| cov | 100K | 32.4 | 100,000 | 6.1 |  | 38.5 | cache | 76.2% |
+| cov | 100K | 32.4 | 30,000 | 1.8 | 12.8 | 47.1 | cache + proof | 75.3% |
+| pop | 100K | 31.9 | 100,000 | 6.1 |  | 38.0 | cache | 74.1% |
+| cov | 100K | 32.4 | 30,000 | 1.8 |  | 34.3 | cache | 73.8% |
+| cov | 100K | 32.4 | 10,000 | 0.6 | 12.8 | 45.8 | cache + proof | 73.4% |
+| pop | 100K | 31.9 | 30,000 | 1.8 | 12.8 | 46.5 | cache + proof | 73.2% |
+| pop | 100K | 31.9 | 30,000 | 1.8 |  | 33.7 | cache | 72.1% |
+| pop | 100K | 31.9 | 10,000 | 0.6 | 12.8 | 45.3 | cache + proof | 71.9% |
+
+Pair bounds are counted for all 1,422,227 training pairs at 9 bytes each (12.8 MB); a slice needs only the pairs of words it holds, so this is an upper bound.
+<!-- /report -->
+
+Every test string here is among the 1,000,000, so none is new, where 48% of
+AOL's test searches were. A real log has a long tail: AOL's training had
+8,697,441 distinct strings. Spreading the same law over that many strings,
+the top 1,000,000 are measured above and every other string is counted at
+the rates measured for AOL's new strings. This is an estimate computed from
+the two measurements, not a run:
+
+<!-- report:zipf-tail -->
+| traffic | top 10,000 strings' share of searches | top 1,000,000 strings' share | 100K slice: top 10 held | 100K slice: top 10 proved, pairs | 10,000 cached answers (0.6 MB) | best exact answer within 50 MB | Gate A (40%) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Zipf s = 0.86 over 8.7M strings | 32.1% | 71.0% | 50.6% | 32.5% | 33.0% | 39.9% (cache, 38.6 MB) | fail |
+| Zipf s = 1 over 8.7M strings | 59.1% | 86.9% | 71.9% | 56.6% | 60.2% | 66.3% (cache, 38.5 MB) | pass |
+<!-- /report -->
+
+What decides the gate is how much volume sits in the head, not anything the
+slices do differently. Band by band, the rates match the AOL study: strings
+searched 1,000 times or more are 100% held and about 91% proved in both,
+strings searched 100 to 999 times 100% held and 75% to 78% proved. Zipf
+moves the volume into those bands, 70.7% of it against AOL's 22.0%. Across
+the five shapes above, the best exact share within 50 MB is 1.1 to 1.25
+times the top 10,000 strings' share of searches, so the gate passes once
+those strings carry about a third of the traffic. An app can estimate its
+own outcome from its log the same way: the share of its search volume in
+each band, times these rates.
+
+Under every shape a result cache answers the head more cheaply than a
+proof. The slice and the proof pay for themselves on answers shown offline
+with their passages, and on the middle of the distribution (strings
+searched 10 to 99 times, ranks 12,309 to 128,913 at s = 1), where a bigger
+slice raises the share held from 38% at 100K passages to 88% at 400K.
+
+## Search near the user: places in New York
+
+[`geo.py`](geo.py) tries the case where the proof should work: searching
+for places near the user. The device holds the places of a square of 1 km
+tiles around it, and the cloud ranks by text and distance, so a place
+outside the square can only score so much.
+
+- **Places:** Overture Maps' places (release 2026-10-21.0, CDLA Permissive
+  2.0) in a box around New York City, 629,748 of them; 477,995 are kept
+  (open or of unknown status, confidence 0.5 or more). A place's text is
+  its name, the words of its categories, its brand and its locality
+  ([`geo/prep.json`](geo/prep.json)).
+- **Demand:** Foursquare's New York check-ins of April 2012 to February
+  2013 (Yang et al., IEEE TSMC 2015; 227,428 check-ins by 1,083 users). Each
+  check-in is taken as a search made from where the user checked in before.
+  It searches for the venue's category (135,225 `category` searches over
+  212 distinct queries, such as "pizza" or "coffee shop") and, where an
+  Overture place within 50 m shares a word of that category, for that place
+  by name (88,607 `name` searches over 12,381 names). Check-ins at homes,
+  offices, transit, roads and areas are left out (83,279;
+  [`geo/searches.json`](geo/searches.json)).
+- **Ranking:** the cloud ranks every place by `bm25(body, q) / (1 + d^2 /
+  d0^2)`, d the distance from the user and d0 1 km, so a place 1 km away
+  counts half. Strata runs it as a rank-safe boost, checked against a
+  brute-force ranking on 100 searches.
+- **Proof:** the device ranks its square the same way, with the cloud's
+  statistics. Its top k is the cloud's when the k-th local score is at
+  least the sum of the query words' best city-wide BM25 scores divided by
+  `1 + e^2 / d0^2`, e the user's distance to the square's edge: no place
+  outside can score more. A table of every word's best score goes with the
+  slice (131,336 words, about 1.2 MB unpacked).
+
+The square follows the user, the app fetching the tiles around the tile it
+is in ([`geo/eval.json`](geo/eval.json), [`geo/bytes.json`](geo/bytes.json)):
+
+<!-- report:geo-here -->
+| searches | square's side | places, median / 90th pct | slice MB, median / 90th pct | top 1 proved | top 3 proved | top 10 proved | top 10 the cloud's (proved or not) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| category | 1 km | 1,389 / 10,844 | 0.3 / 1.6 | 1.5% | 0.4% | 0.0% | 9.6% | 0 |
+| category | 3 km | 10,668 / 66,418 | 1.6 / 9.1 | 85.8% | 73.4% | 54.5% | 84.8% | 0 |
+| category | 5 km | 38,711 / 107,031 | 5.4 / 14.6 | 98.0% | 94.8% | 86.7% | 94.4% | 0 |
+| category | 9 km | 125,824 / 168,545 | 17.4 / 23.3 | 99.5% | 98.6% | 96.2% | 97.8% | 0 |
+| category | 19 km | 256,377 / 264,336 | 35.7 / 37.0 | 99.9% | 99.7% | 99.1% | 99.3% | 0 |
+| name | 1 km | 1,389 / 10,844 | 0.3 / 1.6 | 1.3% | 0.0% | 0.0% | 4.6% | 0 |
+| name | 3 km | 10,668 / 66,418 | 1.6 / 9.1 | 53.8% | 15.9% | 5.3% | 67.8% | 0 |
+| name | 5 km | 38,711 / 107,031 | 5.4 / 14.6 | 88.3% | 70.4% | 47.2% | 82.9% | 0 |
+| name | 9 km | 125,824 / 168,545 | 17.4 / 23.3 | 97.7% | 91.0% | 81.8% | 90.5% | 0 |
+| name | 19 km | 256,377 / 264,336 | 35.7 / 37.0 | 99.4% | 95.4% | 90.4% | 95.6% | 0 |
+
+Over both kinds (223,832 searches), the 5 km square proves the top 3 of 85.1% and the top 10 of 71.1%; the 9 km square 95.6% and 90.5%.
+<!-- /report -->
+
+Slice MB are the Strata files of the squares with the median and 90th
+percentile number of places among the category searches, about 140 bytes a
+place.
+
+The square fixed around home (the user's most checked-in home, else the
+place they checked in at most), downloaded once. The median search is made
+2.8 km from home, and the 90th percentile 14.7 km:
+
+<!-- report:geo-home -->
+| searches | square's side | places, median / 90th pct | slice MB, median / 90th pct | top 1 proved | top 3 proved | top 10 proved | top 10 the cloud's (proved or not) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| category | 1 km | 863 / 9,896 | 0.3 / 1.5 | 0.3% | 0.1% | 0.0% | 1.9% | 0 |
+| category | 3 km | 6,221 / 66,418 | 1.0 / 9.1 | 25.5% | 20.3% | 13.7% | 28.3% | 0 |
+| category | 5 km | 15,054 / 105,653 | 2.2 / 14.4 | 41.5% | 38.1% | 32.6% | 42.5% | 0 |
+| category | 9 km | 63,467 / 168,545 | 9.0 / 23.3 | 59.4% | 57.4% | 54.1% | 59.7% | 0 |
+| category | 19 km | 252,504 / 265,891 | 35.1 / 37.2 | 80.5% | 79.7% | 78.1% | 80.5% | 0 |
+| name | 1 km | 863 / 9,896 | 0.3 / 1.5 | 0.3% | 0.0% | 0.0% | 1.2% | 0 |
+| name | 3 km | 6,221 / 66,418 | 1.0 / 9.1 | 17.0% | 4.5% | 1.5% | 22.0% | 0 |
+| name | 5 km | 15,054 / 105,653 | 2.2 / 14.4 | 33.8% | 22.8% | 13.7% | 36.3% | 0 |
+| name | 9 km | 63,467 / 168,545 | 9.0 / 23.3 | 54.9% | 47.0% | 39.3% | 54.7% | 0 |
+| name | 19 km | 252,504 / 265,891 | 35.1 / 37.2 | 79.2% | 73.9% | 68.2% | 77.2% | 0 |
+
+Over both kinds (223,832 searches), the 5 km square proves the top 3 of 32.1% and the top 10 of 25.1%; the 9 km square 53.3% and 48.2%.
+<!-- /report -->
+
+A gentler fade (d0 = 3 km, so a place 3 km away counts half) needs a bigger
+square, since places farther out can still win:
+
+<!-- report:geo-d0 -->
+| searches | square's side | top 3 proved, d0 1 km | top 3 proved, d0 3 km | top 10 proved, d0 1 km | top 10 proved, d0 3 km |
+|---|---:|---:|---:|---:|---:|
+| category | 1 km | 0.4% | 0.0% | 0.0% | 0.0% |
+| category | 3 km | 73.4% | 14.0% | 54.5% | 5.1% |
+| category | 5 km | 94.8% | 64.0% | 86.7% | 45.5% |
+| category | 9 km | 98.6% | 95.2% | 96.2% | 88.0% |
+| category | 19 km | 99.7% | 99.7% | 99.1% | 99.0% |
+| name | 1 km | 0.0% | 0.0% | 0.0% | 0.0% |
+| name | 3 km | 15.9% | 0.9% | 5.3% | 0.1% |
+| name | 5 km | 70.4% | 13.7% | 47.2% | 4.7% |
+| name | 9 km | 91.0% | 55.6% | 81.8% | 30.1% |
+| name | 19 km | 95.4% | 94.9% | 90.4% | 89.0% |
+<!-- /report -->
+
+This passes Gate A by far. A 5 km square, 5.4 MB at the median and 14.6 MB
+at the 90th percentile, proves the top 3 of 94.8% of category searches and
+the top 10 of 86.7%. Not one proof was wrong.
+
+It works where web search failed because the bound shrinks with distance.
+On AOL the bound was each word's best score anywhere, and the passage that
+scored it was almost always outside the slice. Here that score is faded by
+the distance to the square's edge: 2 km from the edge, with d0 = 1 km, it
+counts a fifth, and the places around the user outrank it. A search with a
+radius ("within 1 km") needs no bound at all: it is exact whenever the
+radius fits inside the square, which for a square that follows the user is
+every such search from the 3 km square on.
+
+Name searches prove less. A named place is one place, often not the nearest
+match of its words, and the rest of its top 10 is weaker matches of single
+words from farther away. Its top 1, what a search for a place by name
+shows first, is proved for 88.3% of name searches at 5 km.
+
+What following the user costs: a 1 km tile is 0.3 MB at the median and
+1.6 MB at the 90th percentile, and moving into the next tile fetches a row
+of 5 tiles for the 5 km square. A square fixed at home needs no fetches
+but proves much less, since people search far from home: 32.6% of category
+top 10s at 5 km and 78.1% at 19 km (35 MB).
+
+What this does not settle: the demand is check-ins from 2012 standing in
+for searches, and today's places were matched to them. The ranking has no
+ratings or popularity; a boost with a known maximum, such as a rating,
+multiplies the bound by that maximum and keeps the proof exact, but proves
+less. And New York is dense; Houston is the sparser case.
+
+### A sparser city: Houston
+
+The same study on Houston, where a box of about the same size holds less
+than half as many places and people search farther from home.
+
+- **Places:** Overture's places in a box around Houston (lon -95.63 to
+  -95.11, lat 29.53 to 29.99), 283,039 of them; 194,966 kept by the same
+  rules ([`geo-houston/prep.json`](geo-houston/prep.json)).
+- **Demand:** Foursquare's global check-ins of April 2012 to September 2013
+  (Yang et al., ACM TIST 2015 and JNCA 2015) inside that box: 65,460
+  check-ins by 2,592 users, read the same way as New York's. They give
+  48,382 `category` searches over 336 queries and 27,335 `name` searches
+  over 2,728 names ([`geo-houston/searches.json`](geo-houston/searches.json)).
+  The median search is made 4.3 km from home (2.8 km in New York), the
+  90th percentile 16.8 km.
+
+The two cities with the square following the user, d0 1 km:
+
+<!-- report:geo-cities -->
+| city | places | median search from home | square's side | slice MB, median / 90th pct | category: top 3 proved | category: top 10 proved | name: top 1 proved | name: top 10 proved |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| New York | 477,995 | 2.8 km | 5 km | 5.4 / 14.6 | 94.8% | 86.7% | 88.3% | 47.2% |
+| New York | 477,995 | 2.8 km | 9 km | 17.4 / 23.3 | 98.6% | 96.2% | 97.7% | 81.8% |
+| Houston | 194,966 | 4.3 km | 5 km | 1.1 / 1.8 | 81.7% | 61.1% | 74.4% | 17.8% |
+| Houston | 194,966 | 4.3 km | 9 km | 3.0 / 3.9 | 92.6% | 85.0% | 95.5% | 64.7% |
+<!-- /report -->
+
+Houston's squares, following the user
+([`geo-houston/eval.json`](geo-houston/eval.json),
+[`geo-houston/bytes.json`](geo-houston/bytes.json)):
+
+<!-- report:geo-houston -->
+| searches | square's side | places, median / 90th pct | slice MB, median / 90th pct | top 1 proved | top 3 proved | top 10 proved | top 10 the cloud's (proved or not) | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| category | 1 km | 355 / 998 | 0.2 / 0.3 | 1.1% | 0.1% | 0.0% | 3.2% | 0 |
+| category | 3 km | 2,576 / 6,050 | 0.5 / 1.0 | 66.0% | 41.7% | 15.0% | 59.0% | 0 |
+| category | 5 km | 7,002 / 11,709 | 1.1 / 1.8 | 90.4% | 81.7% | 61.1% | 81.7% | 0 |
+| category | 9 km | 19,878 / 26,391 | 3.0 / 3.9 | 96.1% | 92.6% | 85.0% | 89.7% | 0 |
+| category | 19 km | 60,833 / 75,566 | 8.7 / 10.7 | 98.4% | 97.0% | 93.8% | 95.8% | 0 |
+| name | 1 km | 355 / 998 | 0.2 / 0.3 | 1.1% | 0.0% | 0.0% | 2.4% | 0 |
+| name | 3 km | 2,576 / 6,050 | 0.5 / 1.0 | 34.4% | 5.7% | 1.0% | 44.8% | 0 |
+| name | 5 km | 7,002 / 11,709 | 1.1 / 1.8 | 74.4% | 45.3% | 17.8% | 67.6% | 0 |
+| name | 9 km | 19,878 / 26,391 | 3.0 / 3.9 | 95.5% | 85.6% | 64.7% | 84.1% | 0 |
+| name | 19 km | 60,833 / 75,566 | 8.7 / 10.7 | 99.1% | 95.6% | 89.5% | 94.8% | 0 |
+
+Over both kinds (75,717 searches), the 5 km square proves the top 3 of 68.6% and the top 10 of 45.5%; the 9 km square 90.1% and 77.7%.
+<!-- /report -->
+
+Square for square, Houston proves less: its 5 km square proves the top 10
+of 61.1% of category searches, against 86.7% in New York. A square around
+the user holds fewer places (7,002 at the median for 5 km, against 38,711),
+so its k-th best match is weaker and the bound from outside beats it more
+often. Megabyte for megabyte it proves more, since its squares are small:
+the 9 km square, 3.0 MB at the median and 3.9 MB at the 90th percentile,
+proves the top 10 of 85.0% of category searches and the top 1 of 95.5% of
+name searches, about what New York's 5 km square (5.4 / 14.6 MB) does. The
+19 km square (8.7 / 10.7 MB) proves 93.8% of category top 10s and 89.5% of
+name top 10s.
+
+So a slice is better sized by its number of places than by its width.
+About 20,000 places around the user in Houston and 39,000 in New York (the
+median 9 km and 5 km squares) prove the top 10 of 85% or more of category
+searches, at about 150 bytes a place. The table of every word's best score
+is smaller too (62,104 words, about 0.5 MB unpacked).
+
+The rest holds as in New York. The gentler fade (d0 3 km) needs the 19 km
+square here: there it proves 93.5% of category top 10s and 84.6% of name
+top 10s, against 66.4% and 10.9% at 9 km. A square fixed at home does
+worse than in New York, since people search farther from home: 63.9% of
+category top 10s at 19 km (78.1% in New York). Not one proof was wrong.
+
+## Recommendations: Yambda-50M
+
+[`recs.py`](recs.py) (its docstring has the details) uses the protocol of
+[`../recsys/yambda.py`](../recsys/README.md): Listen+ events, train on
+everything up to 30 minutes before the last day, test on that day's 157,695
+listens of 4,599 users, tune on the day before. Every track gets a vector
+(a 64-dimension SVD of the user-track plays) and a two-level semantic ID
+(residual k-means, 256 centroids a level); a track's pack is its two-level
+prefix: 36,790 packs, median 3 tracks, largest 2,781. A user's taste is the
+decayed sum of their history's vectors (decay 1 hour, chosen on the
+validation day at the edge of its grid of 1, 24 and 168 hours and none,
+[`recs/recs_validation.json`](recs/recs_validation.json)).
+
+The cloud (`vec_cloud`) ranks all 629,298 tracks by cosine with the taste.
+The device (`vec_device@N`) ranks only what it holds: the user's own tracks,
+a shared base pack of the 1,000 most played, and the packs whose centroids
+are nearest the taste, up to N tracks. `rrf` fuses either with `history`
+(the user's own tracks by plays in the last 720 hours), which runs on the
+device with no download. Every source answers 100 tracks.
+
+<!-- report:recs -->
+| source | pack tracks | pack MB | NDCG@10 | recall@100 (of min(targets, 100)) |
+|---|---:|---:|---:|---:|
+| history |  | 0 | 0.1854 | 0.2702 |
+| vec_cloud |  |  | 0.0827 | 0.1180 |
+| vec_device@1000 | 1000 | 0.4 | 0.0842 | 0.1235 |
+| vec_device@5000 | 5000 | 1.9 | 0.0828 | 0.1197 |
+| vec_device@20000 | 20000 | 7.3 | 0.0827 | 0.1185 |
+| vec_device@50000 | 50000 | 18.4 | 0.0827 | 0.1182 |
+| rrf_cloud |  |  | 0.1501 | 0.2523 |
+| rrf_device@1000 | 1000 | 0.4 | 0.1516 | 0.2537 |
+| rrf_device@5000 | 5000 | 1.9 | 0.1505 | 0.2526 |
+| rrf_device@20000 | 20000 | 7.3 | 0.1502 | 0.2524 |
+| rrf_device@50000 | 50000 | 18.4 | 0.1501 | 0.2524 |
+| decay_pop (cloud, `../recsys`) |  |  | 0.0256 | 0.0486 |
+| item_knn (cloud, `../recsys`) |  |  | 0.1152 | 0.1385 |
+| Strata `encode` (cloud, `../recsys`) |  |  | 0.0799 | 0.1189 |
+| Strata `ppr` (cloud, `../recsys`) |  |  | 0.1188 | 0.1074 |
+| Strata `fused` (cloud, `../recsys`) |  |  | 0.1655 | 0.2351 |
+
+Pack MB is the pack tracks alone; the device also holds the base pack (0.4 MB) and the user's own tracks.
+<!-- /report -->
+
+On discovery, the test day's listens of tracks the user had never played,
+against lists with the user's own tracks left out:
+
+<!-- report:discovery -->
+| source (user's own tracks left out) | pack tracks | NDCG@10 | recall@100 (of min(targets, 100)) |
+|---|---:|---:|---:|
+| decay_pop |  | 0.0234 | 0.0482 |
+| vec_cloud |  | 0.0236 | 0.0754 |
+| vec_device@1000 | 1000 | 0.0224 | 0.0608 |
+| vec_device@5000 | 5000 | 0.0235 | 0.0719 |
+| vec_device@20000 | 20000 | 0.0236 | 0.0747 |
+| vec_device@50000 | 50000 | 0.0236 | 0.0756 |
+
+3,539 of 4,599 test users listened to at least one track they had never played.
+<!-- /report -->
+
+The device keeps up with the cloud because the packs nearest the taste
+hold the top of the cloud's own cosine ranking: from 5,000 pack tracks on,
+NDCG@10 is within 0.5% of the cloud's on both target sets, and at 20,000 it
+is equal. The 1,000-track device is a little above the cloud on all targets
+(its base pack pulls popular tracks up) and 5% below it on discovery. What
+this measures is how much a device loses by not holding the catalogue, for
+one model. It does not make that model good: on discovery the taste vector
+is barely above DecayPop. A stronger model (`ppr`, `fused`) would need its
+own pack design, which is not tested here.
+
+### Pack bytes and churn
+
+A pack file is a Strata file of tracks with an id, a semantic-ID keyword
+and a 64-dimension vector (float32 plus SQ8 codes, flat search),
+optimised and vacuumed ([`recs/recs_bytes.json`](recs/recs_bytes.json));
+random unit vectors stand in for the tracks', which does not change the
+size:
+
+<!-- report:pack-bytes -->
+| tracks | file bytes | bytes / track |
+|---|---:|---:|
+| 5,000 | 1,884,160 | 377 |
+| 50,000 | 18,370,560 | 367 |
+<!-- /report -->
+
+How many tracks enter a base pack of the N most played tracks of the past
+7 days, each day, over the 30 days before the test day
+([`recs/recs_churn.json`](recs/recs_churn.json)):
+
+<!-- report:churn -->
+| base pack | tracks entering a day (mean) | most in a day | KB a day (mean) |
+|---|---:|---:|---:|
+| 1K | 47 | 61 | 17 |
+| 10K | 591 | 665 | 217 |
+| 50K | 3,785 | 4,120 | 1391 |
+
+New tracks a day (first listen, mean of 30 days): 1,598, in a catalogue of 629,298 tracks.
+<!-- /report -->
+
+The packs nearest a taste change as the taste moves; how many bytes a day
+that costs a user was not measured. ORCAS has no timestamps, so search
+slices' daily patches could not be measured either.
+
+## Vector slices on Yambda: proving similarity search on the device
+
+Built after Phase 0 (`strata::slice`, `Key::Vector`): a slice of a VECTOR
+field cuts the table into k-means clusters, each a file of rows, and a
+device holds the clusters nearest its user's taste. [`vectors.py`](vectors.py)
+(its docstring has the details) replays it on the 629,298 tracks above,
+with the same 64-dimension SVD vectors (unit length) and the 4,599 test
+users' tastes (decay 1 hour). Each user makes two searches, each for the
+top 10 and the top 100 by dot product over the whole catalogue:
+"recommend for me" (the taste itself) and "more like the last track"
+(the vector of the last track they played). The device holds the
+clusters with the highest bound for the taste, as many as fit in the
+budget of tracks (`Device::plan_vector`). A search is proved when its
+k-th score reaches every bound of a cluster not held.
+
+Two bounds of a cluster not held. **Centres**: the manifest's centre,
+radius, angular radius and longest and shortest vector of each cluster
+(the lesser of a ball and a cone bound). **Codes**: also every row's
+vector as one byte a dimension (`codes.bin.gz`), each row bounded within
+half a step a dimension. When a search is not proved with codes, the
+clusters whose bound beats its k-th are what the device fetches
+(`Answer::need`); then it is proved. "Device's top k right" is how often
+the device's top k is the exact one whether or not it can prove it, the
+most any bound could prove.
+
+The slices, built by `strata-slice` from `tracks.strata` (one flat VECTOR
+field and an INT key), at the default number of clusters (the square root
+of the rows) and at 4,096:
+
+<!-- report:vector-files -->
+| clusters | rows a cluster: median | largest | manifest MB | tiles MB | tile bytes / row | codes MB | codes bytes / row | build s |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 793 (default) | 621 | 4,917 | 0.70 | 260.9 | 415 | 19.3 | 30.6 | 50 |
+| 4,096 | 93 | 2,724 | 3.59 | 231.9 | 369 | 19.0 | 30.1 | 68 |
+<!-- /report -->
+
+With 793 clusters (the default):
+
+<!-- report:vectors-793 -->
+| search | tracks held | k | device's top k right | proved: centres | proved: codes | proved after fetching | searches that fetch | clusters fetched (mean) | KB fetched (mean) | KB when fetching: median | 90th pct | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| recommend for me | 5,000 | 10 | 25.2% | 0.2% | 20.2% | 100.0% | 79.8% | 4.3 | 1.7 MB | 1.4 MB | 4.9 MB | 0 |
+| recommend for me | 5,000 | 100 | 5.5% | 0.0% | 4.4% | 100.0% | 95.6% | 18.5 | 6.6 MB | 5.6 MB | 14.2 MB | 0 |
+| recommend for me | 20,000 | 10 | 87.8% | 2.4% | 83.8% | 100.0% | 16.2% | 0.3 | 96 | 435 | 1.2 MB | 0 |
+| recommend for me | 20,000 | 100 | 46.7% | 1.2% | 41.6% | 100.0% | 58.4% | 3.7 | 1.3 MB | 1.5 MB | 5.1 MB | 0 |
+| recommend for me | 50,000 | 10 | 97.6% | 4.9% | 96.4% | 100.0% | 3.6% | 0.0 | 13 | 291 | 690 | 0 |
+| recommend for me | 50,000 | 100 | 74.6% | 2.4% | 69.8% | 100.0% | 30.2% | 0.9 | 321 | 702 | 2.4 MB | 0 |
+| more like the last track | 5,000 | 10 | 15.0% | 0.3% | 12.8% | 100.0% | 87.2% | 53.3 | 19.0 MB | 4.4 MB | 66.8 MB | 0 |
+| more like the last track | 5,000 | 100 | 4.7% | 0.1% | 3.9% | 100.0% | 96.1% | 115.5 | 40.5 MB | 11.0 MB | 154.7 MB | 0 |
+| more like the last track | 20,000 | 10 | 50.1% | 2.9% | 45.9% | 100.0% | 54.1% | 9.9 | 3.6 MB | 1.7 MB | 13.8 MB | 0 |
+| more like the last track | 20,000 | 100 | 23.9% | 1.3% | 21.6% | 100.0% | 78.4% | 28.0 | 9.9 MB | 3.7 MB | 28.9 MB | 0 |
+| more like the last track | 50,000 | 10 | 68.9% | 5.7% | 64.9% | 100.0% | 35.1% | 2.4 | 926 | 963 | 5.7 MB | 0 |
+| more like the last track | 50,000 | 100 | 40.5% | 2.7% | 37.3% | 100.0% | 62.7% | 8.9 | 3.2 MB | 2.1 MB | 10.5 MB | 0 |
+<!-- /report -->
+
+With 4,096 clusters:
+
+<!-- report:vectors-4096 -->
+| search | tracks held | k | device's top k right | proved: centres | proved: codes | proved after fetching | searches that fetch | clusters fetched (mean) | KB fetched (mean) | KB when fetching: median | 90th pct | wrong proofs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| recommend for me | 5,000 | 10 | 67.7% | 0.5% | 60.3% | 100.0% | 39.7% | 1.3 | 142 | 176 | 857 | 0 |
+| recommend for me | 5,000 | 100 | 17.2% | 0.1% | 13.2% | 100.0% | 86.8% | 9.5 | 810 | 647 | 2.1 MB | 0 |
+| recommend for me | 20,000 | 10 | 96.5% | 4.5% | 94.9% | 100.0% | 5.1% | 0.1 | 4 | 64 | 171 | 0 |
+| recommend for me | 20,000 | 100 | 67.1% | 2.1% | 61.3% | 100.0% | 38.7% | 1.4 | 101 | 157 | 617 | 0 |
+| recommend for me | 50,000 | 10 | 99.6% | 10.6% | 99.2% | 100.0% | 0.8% | 0.0 | 0 | 33 | 89 | 0 |
+| recommend for me | 50,000 | 100 | 87.5% | 4.7% | 84.0% | 100.0% | 16.0% | 0.3 | 20 | 74 | 290 | 0 |
+| more like the last track | 5,000 | 10 | 29.9% | 1.2% | 26.3% | 100.0% | 73.7% | 49.4 | 3.8 MB | 748 | 11.6 MB | 0 |
+| more like the last track | 5,000 | 100 | 7.6% | 0.4% | 5.7% | 100.0% | 94.3% | 152.9 | 11.4 MB | 2.1 MB | 31.5 MB | 0 |
+| more like the last track | 20,000 | 10 | 58.3% | 4.6% | 54.6% | 100.0% | 45.4% | 9.1 | 740 | 340 | 3.3 MB | 0 |
+| more like the last track | 20,000 | 100 | 29.0% | 2.2% | 25.9% | 100.0% | 74.1% | 35.0 | 2.7 MB | 859 | 7.4 MB | 0 |
+| more like the last track | 50,000 | 10 | 74.5% | 7.3% | 70.8% | 100.0% | 29.2% | 2.1 | 191 | 223 | 1.5 MB | 0 |
+| more like the last track | 50,000 | 100 | 45.0% | 3.6% | 42.0% | 100.0% | 58.0% | 9.9 | 796 | 493 | 3.1 MB | 0 |
+<!-- /report -->
+
+What the clusters' centres prove alone is small: from 0.1% to 10.6% of
+searches, though the device's top k is the exact one up to 99.6% of the
+time. In 64 dimensions a cluster's rows point every way from its centre,
+so `q . (x - c)` stays far below `|q| r` for every row and the bound sits
+well above the best row. A split of each cluster's vectors at its top 8
+or 16 principal directions, and 8 sub-balls a cluster, proved no more on
+a sample of 400 users (not kept). Every row's codes, 30 bytes a track
+gzipped (19 MB for the catalogue), bring the proofs within a few points
+of the most any bound could prove, and fetching what they name proves
+every search. For "recommend for me" that fetch is small: with 4,096
+clusters and 20,000 tracks held, 94.9% of top 10s are proved at once and
+the rest after a median 64 KB. "More like the last track" leaves the
+taste behind more often, so it fetches more (a median 340 KB for the top
+10, but a 90th percentile of 3.3 MB); smaller clusters keep each fetch
+smaller. 4-bit codes (half the size) proved 16% of those top 10s against
+95% on a sample of 400 users (not kept): their half step a dimension adds
+about 0.19 to a unit query's bound, against 0.011 for 8 bits. No proved
+answer was wrong, before or after a fetch, in 110,376 searches.
+
+Strata's own device (`strata.SliceDevice`, the slice's files, 20,000
+tracks held for each of 200 users drawn at random, both searches and both
+k), each proved answer against the cloud's exact search
+(`Database.query` of the SQL the device would send), after fetching what
+it named when it was not proved:
+
+<!-- report:vector-verify -->
+| clusters | searches | proved | fetched what it named | then proved | proved and the cloud's answer | proved, not the cloud's | proof as the replay's | device ms, median / 99th | cloud ms (exact scan), median / 99th |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 793 | 800 | 387 | 413 | 413 | 800 | 0 | 800 of 800 | 16.0 / 40.8 | 93 / 403 |
+| 4,096 | 800 | 447 | 353 | 353 | 800 | 0 | 800 of 800 | 15.4 / 28.1 | 87 / 349 |
+<!-- /report -->
+
+"Proof as the replay's" counts the searches where the device proved what
+this replay's bound says it can prove, no more and no fewer. The times
+were taken on the cloud container's 4 cores (Intel Xeon @ 2.30GHz) while
+builds ran beside them, so they are upper bounds: the device's is a
+search of the 20,000 tracks it holds plus the codes' bounds of the
+clusters it lacks, the cloud's an exact scan of all 629,298 tracks.
+
+## Reproduce
+
+Data (ORCAS is under a non-commercial research licence):
+
+```bash
+mkdir -p ~/data/slices && cd ~/data/slices
+curl -L -o orcas-queries.tsv.gz https://msmarco.z22.web.core.windows.net/msmarcoranking/orcas-doctrain-queries.tsv.gz
+curl -LO https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/msmarco.zip
+```
+
+Yambda-50M is fetched as in [`../recsys`](../recsys/README.md). Then, with
+the `strata` Python package installed (`strata-py`, `maturin develop
+--release`) and numpy, polars and scipy:
+
+```bash
+W="--work $HOME/data/slices/work"
+python search.py $W prep --data ~/data/slices
+python search.py $W load && python search.py $W cloud train && python search.py $W select
+python search.py $W load --tiers && python search.py $W cloud test
+python search.py $W eval test && python search.py $W eval seen && python search.py $W bytes
+python search.py $W eval2 test && python search.py $W eval2 seen && python search.py $W residuals
+python recs.py $W --data ~/data/yambda prep && python recs.py $W --data ~/data/yambda eval
+python recs.py $W --data ~/data/yambda churn && python recs.py $W bytes
+curl -L -o ~/data/slices/aol-data.tar.gz https://cim.mcgill.ca/~dudek/206/Logs/AOL-user-ct-collection/aol-data.tar.gz  # md5 31cd27ce12c3a3f2df62a38050ce4c0a
+A="--work $HOME/data/slices/aol --orcas $HOME/data/slices/work"
+python aol.py $A prep --data ~/data/slices && python aol.py $A cloud train && python aol.py $A cloud test
+python aol.py $A select && python aol.py $A load --tiers && python aol.py $A eval && python aol.py $A bytes
+cp ~/data/slices/work/{prep,select,eval_test,eval_seen,eval2_test,eval2_seen,bytes,residuals}.json search/
+cp ~/data/slices/work/recs_*.json recs/
+cp ~/data/slices/aol/{prep,select,eval,bytes}.json aol/
+Z="--aol $HOME/data/slices/aol"
+python zipf.py $Z --work ~/data/slices/zipf prep && python zipf.py $Z --work ~/data/slices/zipf select
+python zipf.py $Z --work ~/data/slices/zipf load --tiers && python zipf.py $Z --work ~/data/slices/zipf eval && python zipf.py $Z --work ~/data/slices/zipf bytes
+python zipf.py $Z --work ~/data/slices/zipf086 prep --s 0.86   # then select, load --tiers, eval, bytes as above
+cp ~/data/slices/zipf/{prep,select,eval,bytes}.json zipf/ && cp ~/data/slices/zipf086/{prep,select,eval,bytes}.json zipf086/
+mkdir -p ~/data/geo && cd ~/data/geo  # geo.py prep also needs duckdb, and reads Overture's public bucket
+curl -LO http://www-public.imtbs-tsp.eu/~zhang_da/pub/dataset_tsmc2014.zip && unzip dataset_tsmc2014.zip  # md5 a9534dc06f0495b36f216017d2f47701
+cd - && G="--work $HOME/data/geo/work --checkins $HOME/data/geo/dataset_tsmc2014/dataset_TSMC2014_NYC.txt"
+python geo.py $G prep && python geo.py $G searches && python geo.py $G eval && python geo.py $G bytes
+cp ~/data/geo/work/{prep,searches,eval,bytes,maxima}.json geo/
+curl -L -o ~/data/geo/dataset_TIST2015.zip https://huggingface.co/datasets/Davidham3/FourSquare_Global/resolve/main/dataset_TIST2015.zip  # a mirror, md5 fb4939a5a1ba3fd92d18ec7c47c96f9a
+H="--city houston --work $HOME/data/geo/houston --checkins $HOME/data/geo/houston/checkins.txt --tist $HOME/data/geo/dataset_TIST2015.zip"
+python geo.py $H tist && python geo.py $H prep && python geo.py $H searches && python geo.py $H eval && python geo.py $H bytes
+cp ~/data/geo/houston/{prep,searches,eval,bytes,maxima}.json geo-houston/
+python vectors.py $W --data ~/data/yambda prep && python vectors.py $W slices   # strata-slice from strata/target/ci
+python vectors.py $W eval && python vectors.py $W verify --users 200 --budget 20000
+python report.py
+```
+
+On the container above the ORCAS side takes under an hour (each load of
+the 8.8 million passages about 4 minutes, the cloud top 10 of a million
+queries about 6) and about 8 GB of disk; the AOL side about 40 minutes more
+and 3 GB, each Zipf run about 20 minutes and 3 GB, and the geo side about
+25 minutes and half a GB for New York, and 5 minutes and 130 MB for
+Houston (after the 776 MB check-in zip).

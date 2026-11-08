@@ -1,0 +1,111 @@
+{
+ "here": {
+  "500": {
+   "median": {
+    "places": 355,
+    "file_bytes": 155648
+   },
+   "p90": {
+    "places": 998,
+    "file_bytes": 253952
+   }
+  },
+  "1500": {
+   "median": {
+    "places": 2576,
+    "file_bytes": 512000
+   },
+   "p90": {
+    "places": 6050,
+    "file_bytes": 995328
+   }
+  },
+  "2500": {
+   "median": {
+    "places": 7002,
+    "file_bytes": 1114112
+   },
+   "p90": {
+    "places": 11709,
+    "file_bytes": 1789952
+   }
+  },
+  "4500": {
+   "median": {
+    "places": 19878,
+    "file_bytes": 2961408
+   },
+   "p90": {
+    "places": 26391,
+    "file_bytes": 3899392
+   }
+  },
+  "9500": {
+   "median": {
+    "places": 60833,
+    "file_bytes": 8736768
+   },
+   "p90": {
+    "places": 75566,
+    "file_bytes": 10711040
+   }
+  }
+ },
+ "home": {
+  "500": {
+   "median": {
+    "places": 274,
+    "file_bytes": 159744
+   },
+   "p90": {
+    "places": 872,
+    "file_bytes": 249856
+   }
+  },
+  "1500": {
+   "median": {
+    "places": 2367,
+    "file_bytes": 479232
+   },
+   "p90": {
+    "places": 5627,
+    "file_bytes": 950272
+   }
+  },
+  "2500": {
+   "median": {
+    "places": 5501,
+    "file_bytes": 933888
+   },
+   "p90": {
+    "places": 11709,
+    "file_bytes": 1789952
+   }
+  },
+  "4500": {
+   "median": {
+    "places": 18147,
+    "file_bytes": 2715648
+   },
+   "p90": {
+    "places": 25956,
+    "file_bytes": 3825664
+   }
+  },
+  "9500": {
+   "median": {
+    "places": 59258,
+    "file_bytes": 8507392
+   },
+   "p90": {
+    "places": 75117,
+    "file_bytes": 10752000
+   }
+  }
+ },
+ "maxima_table": {
+  "words": 62104,
+  "bytes": 539959,
+  "search_words": 3488
+ }
+}

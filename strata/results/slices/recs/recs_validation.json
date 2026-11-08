@@ -1,0 +1,72 @@
+{
+ "tracks": 627648,
+ "packs": 36018,
+ "pack_median_tracks": 3,
+ "pack_max_tracks": 2401,
+ "history": {
+  "hr@10": 0.4554,
+  "hr@100": 0.7305,
+  "ndcg@10": 0.1907,
+  "ndcg@100": 0.2335,
+  "recall@10": 0.1814,
+  "recall@100": 0.2715,
+  "recall_published@10": 0.0934,
+  "recall_published@100": 0.268,
+  "coverage@10": 0.0378,
+  "coverage@100": 0.1685,
+  "users": 4627
+ },
+ "vec_cloud": {
+  "hr@10": 0.338,
+  "hr@100": 0.6553,
+  "ndcg@10": 0.0819,
+  "ndcg@100": 0.1002,
+  "recall@10": 0.0734,
+  "recall@100": 0.1199,
+  "recall_published@10": 0.0357,
+  "recall_published@100": 0.118,
+  "coverage@10": 0.0413,
+  "coverage@100": 0.2431,
+  "users": 4627
+ },
+ "rrf_cloud": {
+  "hr@10": 0.4502,
+  "hr@100": 0.7826,
+  "ndcg@10": 0.1518,
+  "ndcg@100": 0.2062,
+  "recall@10": 0.1404,
+  "recall@100": 0.2539,
+  "recall_published@10": 0.0718,
+  "recall_published@100": 0.2509,
+  "coverage@10": 0.0405,
+  "coverage@100": 0.2083,
+  "users": 4627
+ },
+ "vec_device@5000": {
+  "hr@10": 0.34,
+  "hr@100": 0.6577,
+  "ndcg@10": 0.0823,
+  "ndcg@100": 0.1011,
+  "recall@10": 0.0736,
+  "recall@100": 0.1215,
+  "recall_published@10": 0.0357,
+  "recall_published@100": 0.1196,
+  "coverage@10": 0.0414,
+  "coverage@100": 0.2456,
+  "users": 4627
+ },
+ "rrf_device@5000": {
+  "hr@10": 0.4519,
+  "hr@100": 0.7826,
+  "ndcg@10": 0.1521,
+  "ndcg@100": 0.2065,
+  "recall@10": 0.141,
+  "recall@100": 0.254,
+  "recall_published@10": 0.0723,
+  "recall_published@100": 0.251,
+  "coverage@10": 0.0405,
+  "coverage@100": 0.2095,
+  "users": 4627
+ },
+ "taste_hours": 1
+}

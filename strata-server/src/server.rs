@@ -12,7 +12,7 @@ use strata::segment::build::BuildOptions;
 use strata::storage::{DbOptions, Layout, MergePolicy, MergerOptions};
 use tokio::net::TcpListener;
 
-use crate::auth::{self, Access};
+use crate::auth::{self, Access, Secret};
 use crate::coord::{CoordOptions, Coordinator};
 use crate::cores::shard::{self, Restart};
 use crate::replication::{self, Acks, Follow, Primary, PrimaryOptions};
@@ -71,6 +71,12 @@ pub struct Options {
     /// its primary before it asks its shard's copies to elect it, in
     /// milliseconds (0: never; [`Service::start_failover`]).
     pub failover_after_ms: u64,
+    /// On a database server: how often it reads every segment against its
+    /// checksum, in seconds (0: only when asked, `POST /v1/admin/scrub`;
+    /// [`Service::start_scrubs`]).
+    pub scrub_every_s: u64,
+    /// The MiB a second a scheduled scrub reads at most (0: 64).
+    pub scrub_mib_s: u64,
     /// Coordinate these shard servers (gRPC URLs; replicas of a shard
     /// joined by `|`) instead of serving a database.
     pub shards: Vec<String>,
@@ -85,6 +91,10 @@ pub struct Options {
     pub max_concurrent: usize,
     /// The most rows a query may reach, OFFSET included (0: no limit).
     pub max_result_window: usize,
+    /// The rows the open scrolls may hold between them
+    /// ([`crate::service::Service::max_scroll_rows`]; `None`:
+    /// [`crate::service::MAX_SCROLL_ROWS`]).
+    pub max_scroll_rows: Option<usize>,
     /// The most groups a query may make (0: no limit).
     pub max_groups: usize,
     /// The most rows a cross-encoder's rerank phase may score (0: no
@@ -116,6 +126,13 @@ pub struct Options {
     pub synonyms: Option<PathBuf>,
     /// Where `POST /v1/admin/checkpoint` writes checkpoints.
     pub backup_dir: Option<PathBuf>,
+    /// Where `POST /v1/admin/slices` writes slices ([`strata::slice`]).
+    pub slices: Option<PathBuf>,
+    /// Every this many seconds, rebuild the slices whose table changed
+    /// since they were built (0: only when asked).
+    pub slices_rebuild_s: u64,
+    /// Keep segments cold on object storage ([`strata::storage::cold`]).
+    pub cold: Option<ColdFlags>,
     /// What writes may fetch for MEDIA fields: `file:` roots and hosts
     /// ([`strata::media::Allowlist::parse`]).
     pub media_fetch: Vec<String>,
@@ -187,6 +204,10 @@ pub struct Options {
     pub node_name_given: Option<String>,
     /// `--image-repository`.
     pub image_repository: Option<String>,
+    /// `--app name=url`: apps the command center shows ([`crate::apps`]).
+    pub apps: Vec<String>,
+    /// What the server sends apps as its token (`STRATA_APP_TOKEN`).
+    pub app_token: Option<String>,
 }
 
 /// How writes resolve MEDIA values, from `--media-fetch`,
@@ -203,16 +224,47 @@ fn media_resolver(o: &Options) -> Result<strata::media::Resolver, String> {
     Ok(strata::media::Resolver { allow, max_bytes, store: o.media_store.clone(), http: Some(std::sync::Arc::new(http)) })
 }
 
+/// The cold tier's flags ([`strata::storage::ColdOptions`]).
+#[derive(Clone, Debug)]
+pub struct ColdFlags {
+    /// An `s3://` URL or a directory ([`strata::storage::open_store`]).
+    pub store: String,
+    pub cache_bytes: u64,
+    pub keep_local_bytes: Option<u64>,
+    pub min_segment_bytes: u64,
+    pub cache_dir: Option<PathBuf>,
+}
+
+impl ColdFlags {
+    fn options(&self) -> Result<strata::storage::ColdOptions, String> {
+        let store = strata::storage::open_store(&self.store).map_err(|e| format!("--cold-store {}: {e}", self.store))?;
+        Ok(strata::storage::ColdOptions {
+            cache_dir: self.cache_dir.clone(),
+            cache_bytes: self.cache_bytes,
+            keep_local_bytes: self.keep_local_bytes,
+            min_segment_bytes: self.min_segment_bytes,
+            ..strata::storage::ColdOptions::new(store)
+        })
+    }
+}
+
+/// How often the cold tier looks for segments to make cold.
+const COLD_EVERY: Duration = Duration::from_secs(30);
+
 /// Segment builds (flushes, merges, imports): vector indexes on every core.
 fn build_options() -> BuildOptions {
     BuildOptions::default().set("vector.threads", std::thread::available_parallelism().map_or(1, |n| n.get()))
 }
 
-/// How the server opens a database. Each write publishes its snapshot,
-/// rebuilding the newest in-memory chunk (up to 1,024 rows): those chunks
-/// keep their vectors flat, since a graph over so few rows costs more to
-/// build at every write than an exact scan of them costs a query. Segments
-/// build their vector indexes on every core.
+/// How the server opens a database. Each write publishes its snapshot
+/// while queries come in, building the in-memory chunks it filled (1,024
+/// rows each; a write nobody reads leaves them to the flush, or to the
+/// first query after it), and the first query after it builds the last
+/// piece of the chunk still filling (128 rows,
+/// `DbOptions::memtable_tail_docs`): those chunks keep their vectors flat,
+/// since a graph over so few rows costs more to build at every write than
+/// an exact scan of them costs a query. Segments build their vector
+/// indexes on every core.
 pub fn db_options(directory: bool) -> DbOptions {
     DbOptions {
         publish_snapshots: true,
@@ -289,6 +341,14 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         if o.copy_from.is_some() && (path.exists() || o.schema.is_none()) {
             return Err("--copy-from fills a new database: pass a --db that does not exist and its --schema".into());
         }
+        let cold = match &o.cold {
+            Some(c) if path.is_file() || (!path.exists() && !o.directory) => {
+                return Err(format!("--cold-store {}: cold segments need a database in the directory layout (--directory)", c.store));
+            }
+            Some(c) => Some(c.options()?),
+            None => None,
+        };
+        let db_options = |directory: bool| DbOptions { cold: cold.clone(), ..db_options(directory) };
         let db = if path.exists() {
             let db = Db::open(&path, DbOptions { wal_drop_damaged: o.wal_drop_damaged, verify_checksums: o.verify_checksums, ship_log_bytes, ..db_options(o.directory) })
                 .map_err(|e| format!("open {}: {e}", path.display()))?;
@@ -328,6 +388,10 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         // segments are merged.
         db.spawn_flusher();
         db.spawn_merger(o.merger.clone());
+        if let Some(c) = &o.cold {
+            db.spawn_cold(COLD_EVERY);
+            tracing::info!(store = %c.store, cache_mib = c.cache_bytes >> 20, keep_local_mib = ?c.keep_local_bytes.map(|b| b >> 20), "cold segments: kept on object storage, read through a local cache");
+        }
         if let Some(b) = db.storage().merge_status().memory_budget {
             tracing::info!(threads = o.merger.threads.max(1), memory_mib = b >> 20, "merging in the background");
         }
@@ -348,6 +412,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         crate::operator::upgrade::Ref::parse(&r).map_err(|e| format!("--image-repository: {e}"))?;
         svc.image_repository = r;
     }
+    svc.apps = crate::apps::Apps::new(crate::apps::parse(&o.apps)?, o.app_token.clone());
     svc.trusted_proxies = o.trust_proxy.iter().filter(|p| !p.trim().is_empty()).map(|p| crate::http::parse_net(p)).collect::<Result<_, _>>().map_err(|e| format!("--trust-proxy: {e}"))?;
     if let Some(path) = slots_file {
         svc.keep_slots_in(path)?;
@@ -369,6 +434,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.slow = (o.slow_ms > 0).then(|| Duration::from_millis(o.slow_ms));
     svc.max_rows = (o.max_result_window > 0).then_some(o.max_result_window);
+    svc.max_scroll_rows = o.max_scroll_rows.unwrap_or(crate::service::MAX_SCROLL_ROWS);
     svc.max_groups = (o.max_groups > 0).then_some(o.max_groups);
     svc.max_rerank = (o.max_rerank > 0).then_some(o.max_rerank);
     let query_memory = match o.query_memory_mb {
@@ -450,6 +516,11 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if let Some(dir) = &o.backup_dir {
         svc.set_backup_dir(dir).map_err(|e| e.message)?;
     }
+    svc.scrubs.every = Duration::from_secs(o.scrub_every_s);
+    svc.scrubs.rate = if o.scrub_mib_s == 0 { crate::service::scrub::DEFAULT_RATE } else { o.scrub_mib_s << 20 };
+    if let Some(dir) = &o.slices {
+        svc.set_slices_dir(dir).map_err(|e| e.message)?;
+    }
     if !o.media_fetch.is_empty() || o.media_store.is_some() || o.media_max_bytes > 0 {
         svc.set_media(media_resolver(o)?).map_err(|e| e.message)?;
     }
@@ -510,12 +581,27 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     spawn_maintenance(&svc);
     spawn_expirer(&svc, Duration::from_secs(5));
+    spawn_key_forgetter(&svc, Duration::from_secs(60));
     spawn_sampler(&svc);
     spawn_watch(&svc);
     // workdata: every table's counts a minute apart (rates on a first look).
     crate::inspect::keep_looking(&svc);
     tokio::spawn(svc.clone().keep_models());
+    if o.slices.is_some() && o.slices_rebuild_s > 0 {
+        let (svc, every) = (svc.clone(), Duration::from_secs(o.slices_rebuild_s));
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                match svc.rebuild_stale_slices().await {
+                    Ok(t) if !t.is_empty() => tracing::info!(tables = ?t, "rebuilt stale slices"),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e.message, "rebuilding stale slices"),
+                }
+            }
+        });
+    }
     svc.start_failover();
+    svc.start_scrubs();
     // The cluster's keys: a coordinator takes them from its shards before
     // it serves, and a coordinator or primary passes changes on.
     crate::keysync::start(&svc).await;
@@ -527,6 +613,11 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
 /// service's queries; a coordinator keeps one only where told. Without one
 /// the lines kept for it are let go ([`obs::Sink::stop`]).
 fn open_log_store(svc: &mut Service, o: &Options) -> Result<(), String> {
+    // A coordinator in a shard server's process: the shard keeps the
+    // process's lines.
+    if o.coord.local.is_some() {
+        return Ok(());
+    }
     let path = match &o.log_store {
         Some(p) => p.clone(),
         None => o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::logstore::file_of),
@@ -965,17 +1056,30 @@ pub fn export_parquet(_: &Path, _: &str, _: &ParquetExport) -> Result<(), String
     Err("this strata-server was built without Parquet (feature parquet)".into())
 }
 
-/// Releases expired snapshot leases, and reports merges that fail (the
+/// Releases expired snapshot leases and scrolls, and reports merges that fail (the
 /// database's merger threads merge as writes add segments; a database
 /// that cannot write, [`Service::failing`], merges nothing).
 pub fn spawn_maintenance(svc: &Arc<Service>) {
-    let Some(db) = svc.local_db().cloned() else { return };
+    let Some(db) = svc.local_db().cloned() else {
+        // A coordinator ends the scrolls not read over their keep-alive,
+        // and their shards' with them.
+        let svc = Arc::downgrade(svc);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let Some(svc) = svc.upgrade() else { return };
+                svc.sweep_scrolls();
+            }
+        });
+        return;
+    };
     let svc = Arc::downgrade(svc);
     tokio::spawn(async move {
         let mut reported = None;
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
             let Some(svc) = svc.upgrade() else { return };
+            svc.sweep_scrolls();
             svc.sweep_leases();
             let why = svc.failing().map(|w| format!("{w}; merges stop until then")).or_else(|| db.storage().merge_status().error.map(|e| format!("merge failed: {e}")));
             if why.is_some() && why != reported {
@@ -1013,6 +1117,38 @@ pub fn spawn_expirer(svc: &Arc<Service>, every: Duration) {
                     reported = Some(why);
                 }
                 Err(e) => tracing::error!(error = %e, "the expirer stopped"),
+            }
+        }
+    });
+}
+
+/// Deletes the database's records of idempotency keys older than
+/// [`crate::idem::TTL`], every `every` ([`Service::forget_keys_due`]),
+/// until the service is dropped.
+pub fn spawn_key_forgetter(svc: &Arc<Service>, every: Duration) {
+    if svc.local_db().is_none() {
+        return;
+    }
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        let mut reported = None;
+        loop {
+            tokio::time::sleep(every).await;
+            let Some(svc) = svc.upgrade() else { return };
+            match tokio::task::spawn_blocking(move || svc.forget_keys_due()).await {
+                Ok(Ok(n)) => {
+                    reported = None;
+                    if n > 0 {
+                        tracing::debug!(keys = n, "forgot expired idempotency keys");
+                    }
+                }
+                Ok(Err(e)) => {
+                    if reported.as_ref() != Some(&e.message) {
+                        tracing::warn!(error = %e.message, "could not delete expired idempotency keys; retries ignore them meanwhile");
+                    }
+                    reported = Some(e.message);
+                }
+                Err(e) => tracing::error!(error = %e, "the idempotency key forgetter stopped"),
             }
         }
     });
@@ -1096,6 +1232,19 @@ pub fn spawn_watch(svc: &Arc<Service>) {
 /// Serves the HTTP API and UI, over TLS with `access.tls`.
 pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access) -> std::io::Result<()> {
     let router = http::router(svc, &access);
+    serve_router(router, listener, &access).await
+}
+
+/// Serves the OpenSearch-compatible API ([`crate::opensearch`]) on its own
+/// listener (`--opensearch-listen`), with the HTTP API's credentials and
+/// TLS. `version` is the version its root reports.
+pub async fn serve_opensearch(svc: Arc<Service>, listener: TcpListener, access: Access, version: &str) -> std::io::Result<()> {
+    let router = crate::opensearch::router(svc, &access, version);
+    serve_router(router, listener, &access).await
+}
+
+/// Serves `router` on `listener`, over TLS with `access.tls`.
+async fn serve_router(router: axum::Router, listener: TcpListener, access: &Access) -> std::io::Result<()> {
     let Some(tls) = &access.tls else {
         // Each request knows its peer's address (the audit log's `addr`).
         return axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(shutdown()).await;
@@ -1143,45 +1292,67 @@ pub async fn serve_grpc(svc: Arc<Service>, listener: TcpListener, access: Access
         }
         s
     });
-    let (token, cluster) = (access.token.clone(), access.cluster.clone());
-    let counted = svc.clone();
-    // Who the call is from, for each method to check its scope.
-    let check = move |mut req: tonic::Request<()>| match counted.keys.resolve(token.as_ref(), cluster.as_ref(), req.metadata().get("authorization").and_then(|v| v.to_str().ok())) {
-        Some(who) => {
-            req.extensions_mut().insert(who);
-            Ok(req)
-        }
-        None => {
-            counted.metrics.grpc("any", "Unauthenticated", 0.0);
-            // The method is not known yet: the path is the service's.
-            counted.audit.add(crate::keys::Entry {
-                ts_ms: crate::telemetry::now_ms(),
-                who: "unknown".into(),
-                key: None,
-                scope: None,
-                method: "gRPC".into(),
-                route: "any".into(),
-                status: 401,
-                ms: 0.0,
-                request_id: None,
-                detail: None,
-                kind: crate::keys::REFUSAL.into(),
-                ..Default::default()
-            });
-            Err(tonic::Status::unauthenticated("missing or wrong token"))
-        }
-    };
-    // A Write message carries rows, as an HTTP write's body does.
-    let max_body = svc.max_body;
-    let service = pb::strata_server::StrataServer::new(grpc::Grpc(svc)).max_decoding_message_size(max_body).max_encoding_message_size(256 << 20);
+    // otlp: OpenTelemetry's LogsService, behind the same check.
+    let otlp = crate::otlp::grpc_service(svc.clone(), svc.max_body);
+    let otlp = tonic::service::interceptor::InterceptedService::new(otlp, Check { svc: svc.clone(), token: access.token.clone(), cluster: access.cluster.clone() });
+    let service = grpc_service(svc, &access);
     let mut builder = tonic::transport::Server::builder();
     if let Some(tls) = &access.tls {
         builder = builder.tls_config(tonic::transport::ServerTlsConfig::new().identity(tonic::transport::Identity::from_pem(&tls.cert, &tls.key)))?;
     }
-    builder
-        .add_service(tonic::service::interceptor::InterceptedService::new(service, check))
-        .serve_with_incoming_shutdown(incoming, shutdown())
-        .await
+    builder.add_service(service).add_service(otlp).serve_with_incoming_shutdown(incoming, shutdown()).await
+}
+
+/// A shard server's gRPC service, its calls checked for their token or key
+/// ([`Check`]): what [`serve_grpc`] serves, and what a coordinator in the
+/// same process calls in-process ([`crate::coord::LocalShard`]).
+pub type GrpcService = tonic::service::interceptor::InterceptedService<pb::strata_server::StrataServer<grpc::Grpc>, Check>;
+
+pub fn grpc_service(svc: Arc<Service>, access: &Access) -> GrpcService {
+    // A Write message carries rows, as an HTTP write's body does.
+    let max_body = svc.max_body;
+    let check = Check { svc: svc.clone(), token: access.token.clone(), cluster: access.cluster.clone() };
+    let service = pb::strata_server::StrataServer::new(grpc::Grpc(svc)).max_decoding_message_size(max_body).max_encoding_message_size(256 << 20);
+    tonic::service::interceptor::InterceptedService::new(service, check)
+}
+
+/// Who a gRPC call is from, for each method to check its scope: the
+/// caller its token or key names, or a refusal.
+#[derive(Clone)]
+pub struct Check {
+    svc: Arc<Service>,
+    token: Option<Secret>,
+    cluster: Option<Secret>,
+}
+
+impl tonic::service::Interceptor for Check {
+    fn call(&mut self, mut req: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        match self.svc.keys.resolve(self.token.as_ref(), self.cluster.as_ref(), req.metadata().get("authorization").and_then(|v| v.to_str().ok())) {
+            Some(who) => {
+                req.extensions_mut().insert(who);
+                Ok(req)
+            }
+            None => {
+                self.svc.metrics.grpc("any", "Unauthenticated", 0.0);
+                // The method is not known yet: the path is the service's.
+                self.svc.audit.add(crate::keys::Entry {
+                    ts_ms: crate::telemetry::now_ms(),
+                    who: "unknown".into(),
+                    key: None,
+                    scope: None,
+                    method: "gRPC".into(),
+                    route: "any".into(),
+                    status: 401,
+                    ms: 0.0,
+                    request_id: None,
+                    detail: None,
+                    kind: crate::keys::REFUSAL.into(),
+                    ..Default::default()
+                });
+                Err(tonic::Status::unauthenticated("missing or wrong token"))
+            }
+        }
+    }
 }
 
 /// Whether the server was told to stop and serves out its drain time

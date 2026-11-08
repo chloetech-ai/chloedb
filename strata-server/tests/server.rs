@@ -1785,7 +1785,7 @@ async fn a_shard_takes_typed_plans_and_refuses_newer_ones() {
     let e = c.query(pb::QueryRequest { snapshot: held.snapshot, ..typed.clone() }).await.unwrap_err();
     assert!(e.message().contains("expired"), "{}", e.message());
     let unused = c.query(pb::QueryRequest { hold: true, ..typed.clone() }).await.unwrap().into_inner().snapshot;
-    c.release(pb::ReleaseRequest { snapshots: vec![unused, 12345] }).await.unwrap();
+    c.release(pb::ReleaseRequest { snapshots: vec![unused, 12345], cursors: Vec::new() }).await.unwrap();
     assert_eq!(svc.sweep_leases(), 0);
 
     let e = c.query(pb::QueryRequest { protocol: newest + 1, ..typed.clone() }).await.unwrap_err();
@@ -2694,6 +2694,41 @@ async fn health_reports_a_database_that_cannot_write() {
 }
 
 
+/// A scrub reads every segment against its checksum while the server
+/// serves: damage on disk that no query read yet (bit rot on a replica,
+/// finding chaos-6) is in `/v1/health`, the metrics and the series, which
+/// the built-in `damaged` alert watches.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scrub_finds_data_damaged_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("d.strata");
+    let opts = DbOptions { layout: Layout::Directory, publish_snapshots: true, ..DbOptions::default() };
+    let db = Db::create(&path, demo::schema(10), opts).unwrap();
+    db.load((0..10).map(|i| demo::product(i, 7))).unwrap();
+    let svc = service(db, "http://unused");
+    let url = http(svc.clone(), None).await;
+    let c = strata_server::http_client().build().unwrap();
+    let (status, r) = post(&c, &format!("{url}/v1/admin/scrub"), json!({})).await;
+    assert_eq!(status, 200, "{r}");
+    assert!(r["scrub"]["segments"].as_u64().unwrap() >= 1 && r["scrub"]["damaged"] == json!([]), "{r}");
+
+    // A byte flipped in the middle of a segment file.
+    let seg = std::fs::read_dir(&path).unwrap().flatten().map(|e| e.path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with("seg-")).unwrap();
+    let mut bytes = std::fs::read(&seg).unwrap();
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0xff;
+    std::fs::write(&seg, &bytes).unwrap();
+    let (status, r) = post(&c, &format!("{url}/v1/admin/scrub"), json!({"rate_mib_s": 1024})).await;
+    assert_eq!(status, 200, "{r}");
+    let damaged = r["scrub"]["damaged"].as_array().unwrap().clone();
+    assert!(damaged.len() == 1 && damaged[0].as_str().unwrap().contains("fails its checksum"), "{r}");
+    let h: Json = c.get(format!("{url}/v1/health")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(h["damaged"], json!(damaged), "{h}");
+    let m = c.get(format!("{url}/metrics")).send().await.unwrap().text().await.unwrap();
+    assert!(m.contains("strata_damaged_segments 1"), "{m}");
+    assert_eq!(svc.sample().gauges.get("damaged_segments").copied(), Some(1.0));
+}
+
 /// Checkpoints into `--backup-dir` (a write still in the memtable included,
 /// a directory checkpoint linked to the one before), names that would leave
 /// the directory refused, and the check and vacuum routes.
@@ -2730,8 +2765,9 @@ async fn admin_routes_checkpoint_check_and_vacuum() {
     }
     let (status, _) = post(&c, &format!("{base}/v1/admin/checkpoint"), json!({"name": "first"})).await;
     assert_eq!(status, 500, "an existing name is not overwritten");
-    // (`first-wal` is the log opening `first` above created.)
-    let mut names: Vec<String> = std::fs::read_dir(&backups).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n != "first-wal").collect();
+    // (`first-wal` and `first-readers` are the log and the writer's lock
+    // opening `first` above made.)
+    let mut names: Vec<String> = std::fs::read_dir(&backups).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n != "first-wal" && n != "first-readers").collect();
     names.sort();
     assert_eq!(names, ["d1", "d2", "first"]);
     assert!(!dir.path().join("out").exists());
@@ -2747,6 +2783,218 @@ async fn admin_routes_checkpoint_check_and_vacuum() {
     let base = http(service(db, "http://127.0.0.1:9"), None).await;
     let (status, r) = post(&c, &format!("{base}/v1/admin/checkpoint"), json!({"name": "x"})).await;
     assert_eq!(status, 400, "{r}");
+}
+
+/// A table's slice built into `--slices` and served: the manifest and a
+/// tile over HTTP, read by a device ([`strata::slice::Device`]) whose
+/// proved answers are the server's own; tile names that are not a tile's,
+/// a missing tile, and a server without `--slices` refused.
+#[tokio::test]
+async fn slices_are_built_served_and_searched_on_a_device() {
+    use strata::schema::{Field, FieldType, Schema};
+    use strata::slice::{Device, Manifest, Search, SliceQuery};
+    let dir = tempfile::tempdir().unwrap();
+    let schema = Schema::new(
+        "places",
+        vec![Field::new("id", FieldType::Int), Field::new("body", FieldType::Text { positions: false }), Field::new("lat", FieldType::Float), Field::new("lon", FieldType::Float)],
+        Some("id"),
+    )
+    .unwrap();
+    let db = Db::create(&dir.path().join("places.strata"), schema.clone(), DbOptions::default()).unwrap();
+    let words = ["pizza", "coffee", "bagel", "pharmacy", "park", "deli", "sushi", "bar"];
+    db.load((0..2000).map(|i: usize| {
+        let body = format!("{} {}", words[i % words.len()], words[(i * 7 + 3) % words.len()]);
+        let (lat, lon) = (40.7 + ((i * 37) % 200) as f64 * 0.0003 - 0.03, -74.0 + ((i * 53) % 200) as f64 * 0.0004 - 0.04);
+        vec![Value::Int(i as i64), Value::Str(body), Value::Float(lat), Value::Float(lon)]
+    }))
+    .unwrap();
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent_config("http://127.0.0.1:9"), 16, Duration::from_secs(10));
+    svc.set_slices_dir(&dir.path().join("slices")).unwrap();
+    let base = http(Arc::new(svc), None).await;
+    let c = strata_server::http_client().build().unwrap();
+
+    let (status, r) = post(&c, &format!("{base}/v1/admin/slices"), json!({"text": "body", "lat": "lat", "lon": "lon", "lat0": 40.7, "lon0": -74.0})).await;
+    assert_eq!(status, 200, "{r}");
+    assert_eq!((r["table"].as_str(), r["rows"].as_u64()), (Some("places"), Some(2000)), "{r}");
+    let get = |path: String| {
+        let c = c.clone();
+        async move {
+            let r = c.get(path).send().await.unwrap();
+            (r.status().as_u16(), r.bytes().await.unwrap().to_vec())
+        }
+    };
+    let (status, text) = get(format!("{base}/v1/slices/places/manifest.json")).await;
+    assert_eq!(status, 200);
+    let m = Manifest::from_json(std::str::from_utf8(&text).unwrap()).unwrap();
+    assert_eq!(m.tiles.len() as u64, r["tiles"].as_u64().unwrap());
+
+    let mut dev = Device::create(&dir.path().join("device"), m.clone()).unwrap();
+    let (lat, lon) = (40.7, -74.0);
+    for (t, bytes) in dev.plan(lat, lon, 1).fetch {
+        let (status, gz) = get(format!("{base}/v1/slices/places/{}", t.path())).await;
+        assert_eq!((status, gz.len() as u64), (200, bytes));
+        dev.add_tile(t, &gz).unwrap();
+    }
+    let mut proved = 0;
+    for q in ["pizza", "coffee bar", "sushi deli", "nothing"] {
+        let s = Search::new(q, lat, lon, 5, 300.0).unwrap();
+        let a = dev.search(&s).unwrap();
+        if !a.proved {
+            continue;
+        }
+        proved += 1;
+        let params: serde_json::Map<String, Json> = s.params(&m).0.into_iter().map(|(k, v)| (k, js::to_json(&v))).collect();
+        let (status, r) = post(&c, &format!("{base}/v1/query"), json!({"sql": s.sql(&m), "params": params})).await;
+        assert_eq!(status, 200, "{r}");
+        let cloud: Vec<f64> = r["scores"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        assert_eq!(a.rows.scores, cloud, "{q}");
+    }
+    assert!(proved >= 2, "proved {proved}");
+
+    // Freshness, usage reports and the command center's view of them.
+    let get_json = |path: String| {
+        let c = c.clone();
+        async move {
+            let r = c.get(path).send().await.unwrap();
+            (r.status().as_u16(), r.json::<Json>().await.unwrap())
+        }
+    };
+    let (status, st) = get_json(format!("{base}/v1/slices/places/status")).await;
+    assert_eq!((status, st["fresh"].as_bool(), st["version"].as_u64()), (200, Some(true), Some(m.version)), "{st}");
+    let (status, r) = post(&c, &format!("{base}/v1/slices/places/usage"), json!({"device": "phone-1", "searches": 4, "why": {"proved": 3, "short": 1}, "device_ms": 8.0, "cloud_ms": 3.0})).await;
+    assert_eq!(status, 200, "{r}");
+    let (status, _) = post(&c, &format!("{base}/v1/slices/places/usage"), json!({"why": {"perhaps": 1}})).await;
+    assert_eq!(status, 400);
+    let (status, list) = get_json(format!("{base}/v1/admin/slices")).await;
+    assert_eq!(status, 200, "{list}");
+    let one = &list["slices"][0];
+    assert_eq!((one["table"].as_str(), one["usage"]["searches"].as_u64(), one["usage"]["on_device"].as_u64(), one["usage"]["devices"].as_u64()), (Some("places"), Some(4), Some(3), Some(1)), "{one}");
+    let (status, detail) = get_json(format!("{base}/v1/admin/slices/places")).await;
+    assert_eq!(status, 200, "{detail}");
+    let downloaded: u64 = detail["tile_list"].as_array().unwrap().iter().map(|t| t[4].as_u64().unwrap()).sum();
+    assert_eq!(downloaded, dev.held().count() as u64, "each tile the device fetched, once");
+    assert_eq!(detail["usage"]["manifests"].as_u64(), Some(1));
+
+    // A write makes the slice stale; a rebuild with the table alone makes
+    // a fresh one, of a later version, as it was built.
+    let (status, r) = post(&c, &format!("{base}/v1/write"), json!({"ops": [{"op": "delete", "key": 7}]})).await;
+    assert_eq!(status, 200, "{r}");
+    let (_, st) = get_json(format!("{base}/v1/slices/places/status")).await;
+    assert_eq!(st["fresh"].as_bool(), Some(false), "{st}");
+    let (status, r) = post(&c, &format!("{base}/v1/admin/slices"), json!({"table": "places"})).await;
+    assert_eq!((status, r["rows"].as_u64()), (200, Some(1999)), "{r}");
+    let (_, st) = get_json(format!("{base}/v1/slices/places/status")).await;
+    assert!(st["fresh"].as_bool() == Some(true) && st["version"].as_u64() > Some(m.version), "{st}");
+    let (_, detail) = get_json(format!("{base}/v1/admin/slices/places")).await;
+    assert_eq!((detail["grid"]["lat0"].as_f64(), detail["text"].as_str()), (Some(40.7), Some("body")));
+
+    // Deleted, it is gone for devices.
+    let r = c.delete(format!("{base}/v1/admin/slices/places")).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let (status, _) = get(format!("{base}/v1/slices/places/manifest.json")).await;
+    assert_eq!(status, 404);
+    let (status, _) = get_json(format!("{base}/v1/slices/places/status")).await;
+    assert_eq!(status, 404);
+
+    for bad in ["..%2Fmanifest.json", "1_2.json", "x_1.jsonl.gz", "1_2.jsonl.gz.bak"] {
+        let (status, _) = get(format!("{base}/v1/slices/places/tiles/{bad}")).await;
+        assert!(status == 400 || status == 404, "{bad}: {status}");
+    }
+    let (status, _) = get(format!("{base}/v1/slices/places/tiles/999_999.jsonl.gz")).await;
+    assert_eq!(status, 404);
+    let (status, _) = get(format!("{base}/v1/slices/no-such-table/manifest.json")).await;
+    assert_eq!(status, 400);
+
+    // Without --slices there is nowhere to build or serve them.
+    let db = create(dir.path(), "other.strata", |i| i < 10);
+    let base = http(service(db, "http://127.0.0.1:9"), None).await;
+    let (status, r) = post(&c, &format!("{base}/v1/admin/slices"), json!({"text": "name", "lat": "price", "lon": "price", "lat0": 0, "lon0": 0})).await;
+    assert_eq!(status, 400, "{r}");
+}
+
+/// A vector slice built over HTTP: k-means clusters of a VECTOR field, read
+/// by a device whose proved answers are the server's own, and the command
+/// center's view of it; a rebuild with the table alone keeps it a vector
+/// slice.
+#[tokio::test]
+async fn vector_slices_are_built_and_searched_on_a_device() {
+    use strata::schema::{Field, FieldType, Schema, VectorIndexKind};
+    use strata::slice::{Device, Manifest, SliceQuery, VectorSearch};
+    let dir = tempfile::tempdir().unwrap();
+    let schema = Schema::new("tracks", vec![Field::new("id", FieldType::Int), Field::new("emb", FieldType::Vector { dim: 8, index: VectorIndexKind::Flat })], Some("id")).unwrap();
+    let db = Db::create(&dir.path().join("tracks.strata"), schema.clone(), DbOptions::default()).unwrap();
+    let unit = |v: Vec<f32>| {
+        let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.into_iter().map(|x| x / n).collect::<Vec<f32>>()
+    };
+    let vec_of = |i: usize| unit((0..8).map(|d| (((i % 6) * 7 + d * 3) % 11) as f32 + ((i * 31 + d * 17) % 13) as f32 * 0.03).collect());
+    db.load((0..1200).map(|i| vec![Value::Int(i as i64), Value::Vector(vec_of(i).into())])).unwrap();
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent_config("http://127.0.0.1:9"), 16, Duration::from_secs(10));
+    svc.set_slices_dir(&dir.path().join("slices")).unwrap();
+    let base = http(Arc::new(svc), None).await;
+    let c = strata_server::http_client().build().unwrap();
+
+    let (status, r) = post(&c, &format!("{base}/v1/admin/slices"), json!({"vector": "emb", "clusters": 12})).await;
+    assert_eq!(status, 200, "{r}");
+    assert_eq!((r["kind"].as_str(), r["rows"].as_u64(), r["clusters"].as_u64()), (Some("vector"), Some(1200), Some(12)), "{r}");
+    let get = |path: String| {
+        let c = c.clone();
+        async move {
+            let r = c.get(path).send().await.unwrap();
+            (r.status().as_u16(), r.bytes().await.unwrap().to_vec())
+        }
+    };
+    let (status, text) = get(format!("{base}/v1/slices/tracks/manifest.json")).await;
+    assert_eq!(status, 200);
+    let m = Manifest::from_json(std::str::from_utf8(&text).unwrap()).unwrap();
+    let mut dev = Device::create(&dir.path().join("device"), m.clone()).unwrap();
+    let taste = vec_of(5);
+    for (t, _) in dev.plan_vector(&taste, 400).unwrap().fetch {
+        let (status, gz) = get(format!("{base}/v1/slices/tracks/{}", t.path())).await;
+        assert_eq!(status, 200, "{}", t.path());
+        dev.add_tile(t, &gz).unwrap();
+    }
+    // Every row's codes, which the device bounds the clusters it lacks by.
+    let codes_bytes = r["codes_bytes"].as_u64().unwrap();
+    let (status, gz) = get(format!("{base}/v1/slices/tracks/codes.bin.gz")).await;
+    assert_eq!((status, gz.len() as u64), (200, codes_bytes));
+    dev.add_codes(&gz).unwrap();
+    let mut proved = 0;
+    for (i, k) in [(5, 1), (11, 3), (17, 10), (23, 1000)] {
+        let s = VectorSearch::new(vec_of(i), k).unwrap();
+        let a = dev.search_vector(&s).unwrap();
+        let body: Json = serde_json::from_str(&s.ask_body(&m)).unwrap();
+        let (status, r) = post(&c, &format!("{base}/v1/query"), body).await;
+        assert_eq!(status, 200, "{r}");
+        let cloud: Vec<f64> = r["scores"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        if a.proved {
+            proved += 1;
+            assert_eq!(a.rows.scores, cloud, "k {k}");
+        } else {
+            assert!(a.rows.scores.len() < k || a.rows.scores[k - 1] < a.bound, "k {k}: not proved, so a cluster not held could beat the k-th");
+        }
+    }
+    assert!(proved >= 1, "proved {proved}");
+    let get_json = |path: String| {
+        let c = c.clone();
+        async move {
+            let r = c.get(path).send().await.unwrap();
+            (r.status().as_u16(), r.json::<Json>().await.unwrap())
+        }
+    };
+    let (status, detail) = get_json(format!("{base}/v1/admin/slices/tracks")).await;
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!((detail["kind"].as_str(), detail["field"].as_str(), detail["clusters"].as_u64(), detail["dim"].as_u64()), (Some("vector"), Some("emb"), Some(12), Some(8)), "{detail}");
+    assert_eq!((detail["codes_bytes"].as_u64(), detail["usage"]["codes"].as_u64(), detail["usage"]["codes_bytes"].as_u64()), (Some(codes_bytes), Some(1), Some(codes_bytes)), "{detail}");
+    let (status, r) = post(&c, &format!("{base}/v1/admin/slices"), json!({"table": "tracks"})).await;
+    assert_eq!((status, r["kind"].as_str(), r["clusters"].as_u64()), (200, Some("vector"), Some(12)), "{r}");
+    let (status, _) = post(&c, &format!("{base}/v1/admin/slices"), json!({"vector": "id"})).await;
+    assert_eq!(status, 400);
+    // Without codes: none in the manifest, and none to fetch.
+    let (status, r) = post(&c, &format!("{base}/v1/admin/slices"), json!({"vector": "emb", "codes": false})).await;
+    assert_eq!((status, r["codes_bytes"].is_null()), (200, true), "{r}");
+    let (status, _) = get(format!("{base}/v1/slices/tracks/codes.bin.gz")).await;
+    assert_eq!(status, 404);
 }
 
 /// BOOL and TIMESTAMP fields answer as JSON booleans and ISO 8601 text,

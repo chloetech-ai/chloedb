@@ -33,10 +33,12 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { Nearby } from "./nearby.js";
 import { StrataError, Result, Searchable, decode, encode, given, orderedSchema, pickTable, resultOrWritten } from "./common.js";
 
 export { StrataError, Result } from "./common.js";
 export { Client, connect } from "./client.js";
+export { Nearby, NearbyResult } from "./nearby.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -160,9 +162,9 @@ export class Database extends Searchable {
   }
 
   /** Opens the database at `path`; `models` and `threads` as `create` takes
-   * them. */
-  static open(path, { models, threads } = {}) {
-    return opened("open", { path: paths(path), models: paths(models), threads });
+   * them. `readOnly` opens it to read while another process writes it. */
+  static open(path, { models, threads, readOnly = false } = {}) {
+    return opened("open", { path: paths(path), models: paths(models), threads, read_only: readOnly });
   }
 
   async #call(op, args = {}, vectors) {
@@ -391,6 +393,13 @@ export class Database extends Searchable {
     return this.#call("vacuum");
   }
 
+  /** Opened `readOnly`: reads what the writer committed since the last
+   * query, now (each query does so by itself); whether anything changed.
+   * False for the writer. */
+  async refresh() {
+    return this.#call("refresh");
+  }
+
   /** Merges small segments, returns the space merges freed to the file
    * system when it is an eighth of the file or more, and closes the
    * database. Calls after it fail. */
@@ -412,8 +421,8 @@ export class Database extends Searchable {
  * exist; `directory`, `models` and `threads` as `Database.create` takes
  * them.
  */
-export async function open(path, { schema, directory = false, models, threads } = {}) {
-  if (existsSync(paths(path))) return Database.open(path, { models, threads });
+export async function open(path, { schema, directory = false, models, threads, readOnly = false } = {}) {
+  if (existsSync(paths(path)) || readOnly) return Database.open(path, { models, threads, readOnly });
   if (schema == null) throw new StrataError(`${paths(path)} does not exist: pass a schema to create it`);
   return Database.create(path, schema, { directory, models, threads });
 }
@@ -462,4 +471,12 @@ export function trainCodebook(vectors, name, { models, levels, k, iterations, sa
 }
 
 /** The addon's version. */
+/** A device's slice of `table` on the strata-server at `url`, kept in
+ * directory `dir`: its manifest fetched and its database opened (see
+ * nearby.js). Searches near the user answer on the device when they can
+ * prove the answer is the server's, else ask the server. */
+export function openNearby(url, table, dir, options = {}) {
+  return new Nearby(native, url, table, dir, options).load();
+}
+
 export const version = native.version();

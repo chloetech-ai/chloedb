@@ -52,6 +52,9 @@ use crate::query::rank::Rank;
 use crate::schema::Schema;
 use crate::value::Value;
 
+mod scroll;
+pub use scroll::{streams, Pages, MIN_ASK};
+
 fn err(m: impl Into<String>) -> Error {
     Error::Query(m.into())
 }

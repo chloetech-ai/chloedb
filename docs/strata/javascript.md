@@ -1,17 +1,6 @@
----
-title: JavaScript
-parent: Strata
-nav_order: 6
----
-
 # Strata from JavaScript
-{: .no_toc }
 
 The `strata-db` package opens a Strata file inside a Node, Bun or Deno process, the way better-sqlite3 opens a SQLite file: no server, no configuration. It can also talk to a running [strata-server](server.md) from any JavaScript runtime with `fetch` (a browser, a worker, Node, Bun, Deno). Both have the same methods, so code written against a local file works against a server.
-{: .fs-5 .fw-300 }
-
-1. TOC
-{:toc}
 
 ## Install
 
@@ -76,7 +65,7 @@ await db.close();
 
 `open(path, {schema})` opens the file, or creates it with the schema when it does not exist; `Database.create(path, schema)` and `Database.open(path)` do one or the other. A schema is an object, JSON text or the path of a JSON file, in the [short form or the long one](server.md#schemas). `directory: true` keeps a database as a directory of segment files, `models` is where embedded fields' models are (`$STRATA_MODELS`, else `~/.local/share/strata/models`; `strata-server fetch-model` fetches them), and `threads` how many cores index builds and each query use (every core by default).
 
-Every call answers a promise and runs on a worker thread of Node's pool, so queries and writes leave the event loop free and many run at once. Writes made at once wait for each other and share commits (one disk flush for all those waiting), so none fails as busy. One process at a time may have a database open (a second one gets "busy: the database is open elsewhere"): serve it with strata-server to share it.
+Every call answers a promise and runs on a worker thread of Node's pool, so queries and writes leave the event loop free and many run at once. Writes made at once wait for each other and share commits (one disk flush for all those waiting), so none fails as busy. One process at a time may have a database open to write it (a second one gets "busy: the database is open elsewhere"). Others can open it with `Database.open(path, { readOnly: true })` to read it while it is written, the workers of a cluster, say: each query sees the writer's commits so far, every write fails, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). For writes from several processes, serve it with strata-server.
 
 ### Querying
 
@@ -136,6 +125,19 @@ const r = await client.search("book", { limit: 5 });
 `write(ops, {idempotencyKey})` and `sql(sql, params, {idempotencyKey})` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator rejects with a `StrataError` whose `answer` says so (`partial: true`) and names its key: `await client.write(ops, { idempotencyKey: e.answer.idempotency_key })` writes the rest.
 
 In a browser, the client works from pages of the server's own origin (a page it serves, or behind the same reverse proxy): strata-server sends no CORS headers, and refuses writes from pages of other sites ([security](server.md#security)).
+
+## Search on the device
+
+`openNearby(url, table, dir)` holds a [slice](slices.md) of a strata-server's table near a user: the rows of the tiles around them in a database in `dir`, searched with the server's statistics. `moveTo(lat, lon)` fetches the tiles it lacks, and `search(q, { k, d0 })` answers on the device when it can prove the answer is the server's, and asks the server otherwise; the result's `where` is `"device"` or `"server"` and `why` the reason. For a [vector slice](slices.md#vector-slices-more-like-this-on-the-device), `focus(taste, { rows })` holds the clusters nearest a taste vector and `similar(vector, { k })` answers a similarity search the same way, fetching the few clusters its codes name when that proves the answer.
+
+```js
+import { openNearby } from "strata-db";
+
+const near = await openNearby("http://127.0.0.1:7700", "places", "./slice");
+await near.moveTo(40.7484, -73.9857);
+const r = await near.search("pizza", { k: 10 });
+console.log(r.where, r.why);   // device proved
+```
 
 ## Bun and Deno
 

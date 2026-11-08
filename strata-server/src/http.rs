@@ -9,7 +9,8 @@
 //! | `GET /v1/tables` | | `{tables: [...]}`: every table's schema and rank profiles, the first first |
 //! | `GET /v1/tables/:table/paths?field=attrs&path=dims&where=cond` | | `{table, field, rows, paths: [{path, keys, rows, types: {string, number, bool}, distinct, min?, max?, values?: [{value, rows}]}], truncated}`: the paths a JSON field's objects hold ([`strata::query::paths`]), under `path` if given, among the rows `where` matches; from a coordinator, every shard's summed |
 //! | `GET /metrics` | | Prometheus text |
-//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, profile?}` | rows, and in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`strata::rank_log`]) |
+//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, profile?, format?, page_size?, keep_alive_ms?}`, or a scroll's next page: `{cursor, format?, keep_alive_ms?, timeout_ms?}` | rows, and in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`strata::rank_log`]); with `"format": "arrow"` the rows as an Arrow IPC stream (`application/vnd.apache.arrow.stream`, typed as `strata::query::arrow::answer_batch` types them; `x-strata-took-ms` and `x-strata-stats` headers); with `page_size` a scroll's first page (at most `--max-result-window` rows) and, while rows are left, its `cursor` (Arrow: the `x-strata-cursor` header), which reads the next page from the same version ([`crate::service`]'s scrolls) |
+//! | `DELETE /v1/query/cursors/:id` | | `{closed}`: a scroll ended before its last page |
 //! | `POST /v1/sql` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?, log?}` | rows, or `{written, seq_no?, seq_nos?}` |
 //! | `POST /v1/rank_log/export` | `{table?, since?, until?, events?, history?, window?, grades?}` | NDJSON: one record per logged row ([`strata::rank_log::export`]) |
 //! | `POST /v1/rank_log/interleaving` | the export's body | `{pairs: [{variants, requests, acted, wins, ties, delta, p}], took_ms}`: which of two interleaved rankings the users preferred ([`strata::rank_log::Credit`]) |
@@ -23,6 +24,12 @@
 //! | `POST /v1/import?format=sqlite&tables=a,b&plan=true` | a SQLite file (`application/vnd.sqlite3`; recognised by its first bytes too) | `{tables, skipped, written}`, or with `plan` the plan ([`strata::sqlite`]) |
 //! | `POST /v1/import?format=parquet&table=name&key=id&plan=true` | a Parquet file (`application/vnd.apache.parquet`; recognised by its first bytes too) | `{table, rows, created, skipped, notes, written}`, or with `plan` the plan ([`strata::parquet`]) |
 //! | `GET /v1/export?tables=a,b&fts=false&indexes=false&schemas=false` | | the database as a SQLite file |
+//! | `POST /v1/admin/slices` | `{table?, text, lat, lon, lat0, lon0, tile_m?, k1?, b?}` (a geo slice), `{table?, vector, clusters?, seed?, codes?}` (a vector slice), or `{table}` alone to rebuild it as it was built | `{table, kind, version, rows, tiles, words or clusters and codes_bytes, manifest_bytes, tile_bytes, took_ms}`: builds a table's slice into `--slices` ([`strata::slice`]) |
+//! | `GET /v1/admin/slices` | | `{slices: [...]}`: each slice, whether its table changed since, and how devices use it ([`crate::slices`]) |
+//! | `GET /v1/admin/slices/:table`, `DELETE /v1/admin/slices/:table` | | one slice with each tile's rows, bytes and downloads, and the last hour by minute; or `{deleted}` |
+//! | `GET /v1/slices/:table/manifest.json`, `GET /v1/slices/:table/tiles/<x>_<y>.jsonl.gz`, `GET /v1/slices/:table/codes.bin.gz` | | a slice's manifest, a tile's rows (gzipped JSON lines), and a vector slice's codes of every row, for a device to search near its user or its user's taste |
+//! | `GET /v1/slices/:table/status` | | `{table, version, built_ms, fresh, changed_ms}`: whether a device's slice is the current one |
+//! | `POST /v1/slices/:table/usage` | `{device?, searches, why: {proved, no_match, short, bound, stale}, device_ms?, cloud_ms?}` | `{}`: a device's searches since its last report |
 //! | `GET /v1/export?format=parquet&tables=name` | | one table as a Parquet file, keeping its Strata schema |
 //! | `POST /v1/schema/check` | a schema, in either JSON form | `{schema, short}`, or an error |
 //! | `POST /v1/explain` | `{sql, params?, hits?}` | the bound query, its plan IR and the executor's plan; with `hits`, the top rows with their `score()` and `features()` |
@@ -34,6 +41,12 @@
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
 //! | `POST /v1/judge` | `{query, keys, table?, fields?, model?, api_key?}` | `{grades: [{key, grade, error?}], model, usage}`: each row graded 0 to 3 for the query by a Claude model ([`crate::judge`]) |
+//! | `POST /v1/admin/oncall` | `{question?, alert?, follows?, model?, effort?, api_key?, max_steps?, note?, wait?}` | the run, `{run, answer, proposals, steps, said, usage, ...}`: a Claude model looks into an alert or a question with read-only tools and proposes actions ([`crate::oncall`]); `note` also writes the answer on the events timeline; `follows` asks a run's follow-up in its conversation; `wait: false` answers `{run, state: "running"}` at once |
+//! | `GET /v1/admin/oncall` | | `{configured, model, steps, max_steps, runs, running, pending}`: whether the server has a Claude key, its defaults, and the runs kept, newest first, each in short |
+//! | `GET /v1/admin/oncall/runs`, `GET /v1/admin/oncall/runs/:id` | | `{runs}` in short; one run in full, with its steps (and what each tool answered, cut), what the model wrote between them, its report and proposals, as it goes |
+//! | `POST /v1/admin/oncall/runs/:id/stop` | | the run: it stops before its next model call |
+//! | `GET /v1/admin/oncall/proposals?state=&run=` | | `{proposals}`: the on-call agent's proposed actions, newest first, each `pending`, `applied`, `failed`, `rejected` or `expired` (after an hour) |
+//! | `POST /v1/admin/oncall/proposals/:id/approve`, `.../reject` | `{reason?}` to reject | the proposal: approving makes its request with the approver's credential and its reason, audited as theirs |
 //! | `POST /v1/mcp` | a JSON-RPC message or a batch | the Model Context Protocol's answer, or 202 for notifications: tools that call these routes with the caller's credential ([`crate::mcp`]) |
 //! | `GET /v1/queries` | | `{queries, running}`: the queries running now, the longest first, each with its trace so far; on a coordinator, every coordinator's (another's ids are `id@name`, with `local_id` and `nodes`: who answered) |
 //! | `DELETE /v1/queries/:id` | | `{cancelled}`: the query stops at its next check and answers 499; an `id@name` is cancelled on that coordinator |
@@ -50,6 +63,7 @@
 //! | `GET /v1/timeseries?from=&to=` | | the same over any range: memory's points when it holds `from`, else a point a minute from the log store's `load` (`source`) |
 //! | `GET /v1/index/reads?table=` | | this server's read counts of a table (a coordinator's own, which the others merge into `/v1/index`'s `reads_from`) |
 //! | `GET /v1/index/tables` | | every table's documents, bytes and segments, by shard, its skew, writes and reads a minute, growth over a day and a week, and copies behind; kept 30 s ([`crate::inspect::tables`]) |
+//! | `POST /v1/admin/scrub`, `POST /v1/admin/copies/scrub` | `{rate_mib_s?}`, `{url}` | reads every segment of the database (of a copy, on a coordinator) against its checksum while writes go on, and answers `{scrub: {txn, segments, bytes, damaged, seconds}}`; 409 while one runs ([`crate::service::scrub`]) |
 //! | `POST /v1/admin/copies/verify`, `POST /v1/admin/copies/checkpoint` | `{url, timeout_ms?}`, `{url, name, layout?, link_from?}` | on a coordinator, of a copy (its URL or short name): its shard's primary compares the replicas' rows with its own (`{replicas: [{url, in_sync, compared, differing_slots, first_differing_slot, seq_no, error}]}`), or the copy writes a checkpoint into its own `--backup-dir` (`{checkpoint}`) |
 //! | `POST /v1/admin/plan` | `{shards?: [{shard, copies}], add_shards?, remove_shards?, moves?}` | on own machines, the steps of a change of the cluster's shape, rows to copy, an estimate, what clients feel and what to check first; changes nothing ([`crate::coord::plan`]) |
 //! | `POST /v1/admin/plan/apply` | `{steps: [...], estimate_s?}`, or a plan's body | applies a plan on the coordinator, its steps in order, in the background; kept in a file so that a restart says where it stopped ([`crate::coord::plan::apply`]) |
@@ -163,8 +177,9 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
     crate::coord::plan::start(&app.svc);
     // mcp: the routes an MCP tool's call goes to, with the caller's
     // credential, through the same checks (a copy, so the router does not
-    // hold itself).
-    let tools = api(&app).layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))).with_state(app.clone());
+    // hold itself); and health, which takes no credential (the on-call
+    // agent's first look, [`crate::oncall`]).
+    let tools = api(&app).route("/v1/health", get(health)).layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))).with_state(app.clone());
     let app = App { mcp: Some(tools), ..app };
     let api = api(&app);
     Router::new()
@@ -194,6 +209,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/stats", get(stats))
         .route("/v1/schema", get(schema))
         .route("/v1/tables", get(tables))
+        .route("/v1/functions", get(functions))
         .route("/v1/tables/:table/paths", get(json_paths))
         .route("/v1/index", get(index))
         .route("/v1/index/reads/reset", post(reset_reads))
@@ -202,6 +218,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/config", get(config))
         .route("/metrics", get(metrics))
         .route("/v1/query", post(query))
+        .route("/v1/query/cursors/:id", axum::routing::delete(close_cursor))
         .route("/v1/sql", post(sql))
         .route("/v1/write", post(write).layer(rows.clone()))
         .route("/v1/kv/get", post(kv_get))
@@ -228,7 +245,15 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/rank_log/interleaving", post(interleaving))
         .route("/v1/snapshot", post(snapshot))
         .route("/v1/admin/checkpoint", post(admin_checkpoint))
+        .route("/v1/admin/slices", get(admin_slices_list).post(admin_slices))
+        .route("/v1/admin/slices/:table", get(admin_slice).delete(admin_slice_delete))
+        .route("/v1/slices/:table/manifest.json", get(slice_manifest))
+        .route("/v1/slices/:table/tiles/:file", get(slice_tile))
+        .route("/v1/slices/:table/codes.bin.gz", get(slice_codes))
+        .route("/v1/slices/:table/status", get(slice_status))
+        .route("/v1/slices/:table/usage", post(slice_usage))
         .route("/v1/admin/check", post(admin_check))
+        .route("/v1/admin/scrub", post(admin_scrub))
         .route("/v1/admin/vacuum", post(admin_vacuum))
         .route("/v1/admin/verify", post(admin_verify))
         .route("/v1/admin/promote", post(admin_promote))
@@ -249,6 +274,13 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/moves/finish", post(finish_move))
         .route("/v1/agent", post(agent_run))
         .route("/v1/judge", post(judge))
+        .route("/v1/admin/oncall", get(oncall_overview).post(oncall_run))
+        .route("/v1/admin/oncall/runs", get(oncall_runs))
+        .route("/v1/admin/oncall/runs/:id", get(oncall_run_get))
+        .route("/v1/admin/oncall/runs/:id/stop", post(oncall_stop))
+        .route("/v1/admin/oncall/proposals", get(oncall_proposals))
+        .route("/v1/admin/oncall/proposals/:id/approve", post(oncall_approve))
+        .route("/v1/admin/oncall/proposals/:id/reject", post(oncall_reject))
         .route("/v1/mcp", post(mcp).layer(rows))
         // workload (alerts agent): grouped, and cancelled by statement
         .route("/v1/queries", get(live_queries).delete(cancel_queries))
@@ -269,12 +301,16 @@ fn api(app: &App) -> Router<App> {
         // workload (alerts agent): one statement over a window
         .route("/v1/queries/stats/:fingerprint", get(query_stat))
         .route("/v1/timeseries", get(timeseries))
-        .route("/v1/logs", get(logs))
+        // otlp: OpenTelemetry logs in (POST), beside the log store's own lines (GET).
+        .route("/v1/logs", get(logs).merge(post(otlp_logs).layer(rows.clone())))
         .route("/v1/logs/filter", put(log_filter).merge(get(log_filter_now)))
         .route("/v1/logs/query", post(log_query))
         .route("/v1/logs/store", get(log_store))
         .route("/v1/system", get(system))
         .route("/v1/cluster", get(cluster))
+        // Apps: their list, and requests forwarded to them (crate::apps).
+        .route("/v1/apps", get(apps_list))
+        .route("/v1/apps/:name/*rest", axum::routing::any(app_forward))
         .route("/v1/kube", get(kube))
         .route("/v1/admin/kube", post(kube_change))
         .route("/v1/admin/kube/plan", post(kube_plan))
@@ -345,6 +381,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/index/tables", get(index_tables))
         .route("/v1/admin/copies/verify", post(copy_verify))
         .route("/v1/admin/copies/checkpoint", post(copy_checkpoint))
+        .route("/v1/admin/copies/scrub", post(copy_scrub))
         // The Simulator: a test run of the traffic simulator's mix against
         // this cluster, graded, with a model of other shapes (src/traffic).
         .route("/v1/admin/simulator", get(sim_view).post(sim_start))
@@ -572,6 +609,23 @@ async fn copy_checkpoint(State(app): State<App>, w: Option<axum::Extension<Princ
     Ok(audited(j, format!("checkpoint {name} of {}", copy.short)))
 }
 
+/// `POST /v1/admin/copies/scrub {"url"}` on a coordinator: that copy
+/// reads every segment of its database against its checksum (as its
+/// `POST /v1/admin/scrub`), and answers `{scrub}`.
+async fn copy_scrub(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let c = app.svc.coordinator()?;
+    let copy = copy_of(&*c.snapshot().await, body_str(&b, "url")?)?;
+    let by = keys::audit_name(&who(w));
+    keys::note_change(keys::Change { object: Some(format!("copy {}", copy.short)), after: Some(json!({"url": copy.url, "scrub": true})), ..Default::default() });
+    let j = ask_copy(c, &copy.url, crate::profiling::Kind::Scrub, json!({"by": by})).await?;
+    let found = j["scrub"]["damaged"].as_array().map_or(0, Vec::len);
+    Ok(audited(j, format!("checked {}'s data against its checksums: {}", copy.short, match found {
+        0 => "no damage".to_string(),
+        1 => "1 damaged segment".to_string(),
+        n => format!("{n} damaged segments"),
+    })))
+}
+
 /// `GET /v1/index/tables` ([`crate::inspect::tables`]).
 async fn index_tables(State(app): State<App>) -> Res {
     Ok(AxJson(crate::inspect::tables(&app.svc).await?))
@@ -587,7 +641,7 @@ async fn fleet_health(State(app): State<App>) -> AxJson<Json> {
 async fn coordinators(State(app): State<App>, Query(q): Params) -> AxJson<Json> {
     let mut j = crate::peers::json(&app.svc);
     if q.get("window").is_some_and(|v| v == "1" || v == "true") {
-        j["window"] = crate::peers::window_json(&app.svc);
+        j["window"] = crate::peers::window_json(&app.svc).await;
     }
     AxJson(j)
 }
@@ -847,6 +901,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/feed" | "/v1/feed/keys" | "/v1/feed/promoted" | "/v1/health" | "/v1/whoami" => Scope::Feed,
         "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" => Scope::Write,
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
+        // otlp: logs in; reading the server's own lines stays the admin's.
+        "/v1/logs" if method == Method::POST => Scope::Write,
         "/v1/export" => Scope::Admin,
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
         "/v1/alerts/rules" => Scope::Admin,
@@ -856,6 +912,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         // alerts (alerts agent): acknowledging, silencing and noting write.
         "/v1/alerts/:rule/ack" | "/v1/alerts/:rule/silence" | "/v1/alerts/:rule/notes" => Scope::Write,
         "/v1/events/notes" => Scope::Admin,
+        // An app's reads are a reader's; what changes it (starts a crawl) an admin's.
+        "/v1/apps/:name/*rest" if method != Method::GET && method != Method::HEAD => Scope::Admin,
         // The inspector names the keys most read.
         // The hub's calls to other clusters carry their keys: its owner's.
         r if r.starts_with("/c/") => Scope::Admin,
@@ -879,6 +937,131 @@ fn browsers(app: &App, req: &Request) -> Option<Response> {
     let host = header_str(headers, header::HOST).or_else(|| req.uri().authority().map(|a| a.as_str()));
     let why = auth::browser_check(app.hosts.as_deref(), host, header_str(headers, header::ORIGIN), req.method().is_safe())?;
     Some(ApiError { status: 403, message: why }.into_response())
+}
+
+/// Builds a table's slice into the server's `--slices` directory
+/// ([`strata::slice::build`]). `{"table"?, "text", "lat", "lon", "lat0",
+/// "lon0", "tile_m"?, "k1"?, "b"?}` is a geo slice, the grid's origin at
+/// (`lat0`, `lon0`) and its tiles `tile_m` metres on a side (1,000 by
+/// default); `{"table"?, "vector", "clusters"?, "seed"?, "codes"?}` a
+/// vector slice of that many k-means clusters (about the square root of
+/// the rows by default), with every row's codes unless `codes` is false. `{"table"}` alone rebuilds a table's slice with the options
+/// it was built with.
+async fn admin_slices(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let table = b.get("table").and_then(|v| v.as_str()).map(str::to_string);
+    let opts = if let Some(field) = b.get("vector") {
+        let field = field.as_str().ok_or_else(|| ApiError::bad("\"vector\" is the name of a VECTOR field"))?;
+        let n = |k: &str, d: u64| b.get(k).map_or(Ok(d), |v| v.as_u64().ok_or_else(|| ApiError::bad(format!("{k:?} is a whole number"))));
+        let clusters = n("clusters", 0)?;
+        if clusters > 65_536 {
+            return Err(ApiError::bad("a vector slice has at most 65,536 clusters"));
+        }
+        let codes = b.get("codes").map_or(Ok(true), |v| v.as_bool().ok_or_else(|| ApiError::bad("\"codes\" is true or false")))?;
+        strata::slice::BuildOptions { table, key: strata::slice::BuildKey::Vector { field: field.to_string(), clusters: clusters as usize, seed: n("seed", crate::slices::SEED)?, codes } }
+    } else if b.get("text").is_none() && b.get("lat0").is_none() {
+        let table = table.ok_or_else(|| ApiError::bad("the body needs a table to rebuild, text, lat, lon, lat0 and lon0 to build a geo slice, or vector to build a vector slice"))?;
+        app.svc.slice_options(&table)?
+    } else {
+        let f = |k: &str| b.get(k).and_then(|v| v.as_f64()).ok_or_else(|| ApiError::bad(format!("the body needs a number {k:?}")));
+        let mut bm25 = strata::text::Bm25Params::default();
+        if let Some(k1) = b.get("k1").and_then(|v| v.as_f64()) {
+            bm25.k1 = k1 as f32;
+        }
+        if let Some(x) = b.get("b").and_then(|v| v.as_f64()) {
+            bm25.b = x as f32;
+        }
+        let grid = strata::slice::Grid::new(f("lat0")?, f("lon0")?, b.get("tile_m").and_then(|v| v.as_f64()).unwrap_or(1000.0))?;
+        let key = strata::slice::BuildKey::Geo { text: body_str(&b, "text")?.to_string(), lat: body_str(&b, "lat")?.to_string(), lon: body_str(&b, "lon")?.to_string(), grid, bm25 };
+        strata::slice::BuildOptions { table, key }
+    };
+    let t0 = Instant::now();
+    let built = app.svc.build_slice(opts).await?;
+    let m = &built.manifest;
+    let mut out = json!({
+        "table": m.schema.table, "kind": m.kind(), "version": m.version, "rows": built.rows, "tiles": m.tiles.len(),
+        "manifest_bytes": built.manifest_bytes, "tile_bytes": built.tile_bytes, "took_ms": t0.elapsed().as_secs_f64() * 1e3,
+    });
+    match &m.key {
+        strata::slice::Key::Geo(g) => out["words"] = json!(g.words.terms.len()),
+        strata::slice::Key::Vector(v) => {
+            out["clusters"] = json!(v.centroids.len());
+            out["codes_bytes"] = json!(v.codes.as_ref().map(|c| c.bytes));
+        }
+    }
+    Ok(AxJson(out))
+}
+
+/// Every slice the server has, with whether its table changed since it
+/// was built and how devices use it.
+async fn admin_slices_list(State(app): State<App>) -> Res {
+    let Ok(slices) = app.svc.slices() else {
+        return Ok(AxJson(json!({"enabled": false, "slices": []})));
+    };
+    let db = app.svc.admin_db()?;
+    let list: Vec<Json> = slices.tables().iter().filter_map(|t| slices.describe(t, &db, false).ok()).collect();
+    let tables: Vec<Json> = db.catalog().iter().map(|s| json!({"table": s.table, "fields": s.fields.iter().map(|f| json!({"name": f.name, "type": f.type_name()})).collect::<Vec<_>>()})).collect();
+    Ok(AxJson(json!({"enabled": true, "dir": slices.dir(), "slices": list, "tables": tables})))
+}
+
+/// One slice: what it holds, each tile's rows, bytes and downloads, and
+/// how devices used it in the last hour, by minute.
+async fn admin_slice(State(app): State<App>, axum::extract::Path(table): axum::extract::Path<String>) -> Res {
+    let db = app.svc.admin_db()?;
+    Ok(AxJson(app.svc.slices()?.describe(&table, &db, true)?))
+}
+
+/// Deletes a table's slice: devices then find none and ask the cloud.
+async fn admin_slice_delete(State(app): State<App>, axum::extract::Path(table): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(json!({"deleted": app.svc.slices()?.remove(&table)?})))
+}
+
+/// Whether a device's slice is the current one.
+async fn slice_status(State(app): State<App>, axum::extract::Path(table): axum::extract::Path<String>) -> Res {
+    let db = app.svc.admin_db()?;
+    Ok(AxJson(app.svc.slices()?.status(&table, &db)?))
+}
+
+/// A device's searches since its last report ([`crate::slices::Slices::report`]).
+async fn slice_usage(State(app): State<App>, axum::extract::Path(table): axum::extract::Path<String>, AxJson(b): AxJson<Json>) -> Res {
+    app.svc.slices()?.report(&table, &b)?;
+    Ok(AxJson(json!({})))
+}
+
+/// A table's slice manifest, as `POST /v1/admin/slices` last built it.
+async fn slice_manifest(State(app): State<App>, axum::extract::Path(table): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let (r, n) = slice_file(&app, &table, "manifest.json", "application/json").await?;
+    app.svc.slices()?.note_manifest(&table, n);
+    Ok(r)
+}
+
+/// One tile of a table's slice (`<x>_<y>.jsonl.gz`).
+async fn slice_tile(State(app): State<App>, axum::extract::Path((table, file)): axum::extract::Path<(String, String)>) -> Result<Response, ApiError> {
+    let xy = file.strip_suffix(".jsonl.gz").and_then(|t| t.split_once('_')).and_then(|(x, y)| Some((x.parse::<i32>().ok()?, y.parse::<i32>().ok()?)));
+    let Some((x, y)) = xy else {
+        return Err(ApiError::bad(format!("{file:?} is not a tile's file (<x>_<y>.jsonl.gz)")));
+    };
+    let (r, n) = slice_file(&app, &table, &format!("tiles/{file}"), "application/gzip").await?;
+    app.svc.slices()?.note_tile(&table, x, y, n);
+    Ok(r)
+}
+
+/// A vector slice's codes of every row (`codes.bin.gz`).
+async fn slice_codes(State(app): State<App>, axum::extract::Path(table): axum::extract::Path<String>) -> Result<Response, ApiError> {
+    let (r, n) = slice_file(&app, &table, strata::slice::CODES_FILE, "application/gzip").await?;
+    app.svc.slices()?.note_codes(&table, n);
+    Ok(r)
+}
+
+async fn slice_file(app: &App, table: &str, rel: &str, ty: &'static str) -> Result<(Response, u64), ApiError> {
+    let path = app.svc.slice_dir(table)?.join(rel);
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            let n = bytes.len() as u64;
+            Ok((([(header::CONTENT_TYPE, ty), (header::CACHE_CONTROL, "no-cache")], bytes).into_response(), n))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ApiError { status: 404, message: format!("no {rel} in table {table}'s slice (build it with POST /v1/admin/slices)") }),
+        Err(e) => Err(ApiError::internal(e)),
+    }
 }
 
 fn body_str<'a>(b: &'a Json, k: &str) -> Result<&'a str, ApiError> {
@@ -959,6 +1142,33 @@ async fn schema(State(app): State<App>, Query(q): Query<std::collections::HashMa
 async fn tables(State(app): State<App>) -> AxJson<Json> {
     let tables: Vec<Json> = app.svc.tables_listed().await.iter().map(|s| table_json(&app.svc, s)).collect();
     AxJson(json!({"tables": tables}))
+}
+
+/// `GET /v1/functions`: the stored functions queries call
+/// ([`strata::query::function`]), by name: each one's current version
+/// (none once dropped) and every version kept, oldest first.
+async fn functions(State(app): State<App>) -> Res {
+    app.svc.learn_functions().await;
+    let set = app.svc.functions();
+    let mut out: Vec<Json> = Vec::new();
+    let mut names: Vec<&str> = set.all().map(|f| f.def.name.as_str()).collect();
+    names.dedup();
+    for name in names {
+        let versions: Vec<Json> = set
+            .all()
+            .filter(|f| f.def.name == name)
+            .map(|f| {
+                json!({
+                    "version": f.version, "dropped": f.dropped, "kind": f.def.kind.name(), "signature": f.def.signature(), "returns": f.def.returns,
+                    "body": (!f.dropped).then_some(&f.def.body), "description": f.def.description, "hash": f.hash,
+                    "created": f.created.map(strata::timestamp::format), "created_by": f.created_by,
+                    "sql": (!f.dropped).then(|| f.def.sql(false, None)),
+                })
+            })
+            .collect();
+        out.push(json!({"name": name, "current": set.current(name).map(|f| f.version), "versions": versions}));
+    }
+    Ok(AxJson(json!({"functions": out})))
 }
 
 /// `GET /v1/index?table=&sample=&seed=&terms=&top=`: the index
@@ -1048,7 +1258,44 @@ async fn metrics(State(app): State<App>) -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], app.svc.prometheus().await)
 }
 
-async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let arrow = match b.get("format") {
+        None | Some(Json::Null) => false,
+        Some(f) if f == "json" => false,
+        Some(f) if f == "arrow" => true,
+        Some(f) => return Err(ApiError::bad(format!("format is \"json\" (the default) or \"arrow\", not {f}"))),
+    };
+    let who = who(w);
+    // A scroll: `page_size` starts one, its `cursor` reads the next page.
+    let given = |k: &str| b.get(k).is_some_and(|v| !v.is_null());
+    let keep_alive = match b.get("keep_alive_ms") {
+        None | Some(Json::Null) => None,
+        Some(v) => match v.as_u64() {
+            Some(ms) if ms > 0 && ms <= crate::service::MAX_KEEP_ALIVE.as_millis() as u64 => Some(Duration::from_millis(ms)),
+            _ => return Err(ApiError::bad(format!("keep_alive_ms is how long a scroll is kept after each page: 1 to {} ms", crate::service::MAX_KEEP_ALIVE.as_millis()))),
+        },
+    };
+    if given("cursor") {
+        let cursor = b["cursor"].as_str().ok_or_else(|| ApiError::bad("cursor is the string a scroll's last page answered"))?;
+        if let Some(k) = ["sql", "params", "page_size", "log", "shard", "stats", "snapshot", "min_seq_no", "min_seq_nos", "profile", "partial"].into_iter().find(|k| given(k)) {
+            return Err(ApiError::bad(format!("a scroll's next page takes its cursor alone (with format, keep_alive_ms or timeout_ms), not {k}: the query and its version are those it started with")));
+        }
+        let a = app.svc.scroll_next(cursor, &crate::service::scroll_owner(&who), keep_alive, body_u64(&b, "timeout_ms"), None).await?;
+        if arrow {
+            return arrow_answer(a).await;
+        }
+        return Ok(AxJson(answer_of(&b, &a)?).into_response());
+    }
+    let page = match b.get("page_size") {
+        None | Some(Json::Null) => None,
+        Some(v) => match v.as_u64() {
+            Some(n) if n > 0 => Some(n as usize),
+            _ => return Err(ApiError::bad("page_size is the most rows a scroll's page holds (1 or more; cut to --max-result-window)")),
+        },
+    };
+    if page.is_none() && keep_alive.is_some() {
+        return Err(ApiError::bad("keep_alive_ms is a scroll's: start one with page_size, or ask for its next page with its cursor"));
+    }
     let stats = match b.get("stats") {
         None | Some(Json::Null) => None,
         Some(s) => Some(serde_json::from_value(s.clone()).map_err(|e| ApiError::bad(format!("bad stats: {e}")))?),
@@ -1063,22 +1310,79 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         partial: b.get("partial").and_then(|v| v.as_bool()),
         after: after(&b)?,
         profile: b.get("profile").and_then(|v| v.as_bool()) == Some(true),
+        scroll: page.map(|page| crate::service::ScrollAsk { page, keep_alive, owner: crate::service::scroll_owner(&who) }),
         ..Default::default()
     };
     if let Some(log) = b.get("log") {
         if req.shard {
             return Err(ApiError::bad("a shard's query is not logged: log through the coordinator"));
         }
-        return logged(&app, &who(w), req, log, body_bool(&b, "objects")?).await;
+        if arrow {
+            return Err(ApiError::bad("a logged query answers JSON: leave out format"));
+        }
+        if req.scroll.is_some() {
+            return Err(ApiError::bad("a logged query answers at once: leave out page_size"));
+        }
+        return logged(&app, &who, req, log, body_bool(&b, "objects")?).await.map(IntoResponse::into_response);
+    }
+    if arrow && req.shard {
+        return Err(ApiError::bad("a shard's query answers its coordinator over gRPC: leave out format"));
+    }
+    if req.shard && req.scroll.is_some() {
+        return Err(ApiError::bad("a shard answers its coordinator at once: leave out page_size"));
     }
     let a = app.svc.query(req).await?;
+    if arrow {
+        return arrow_answer(a).await;
+    }
     let mut j = answer_of(&b, &a)?;
     // `"trace": true`: the timed steps the request took; `"profile":
     // true` answers them too, beside its steps' CPU time.
     if b.get("trace").and_then(|v| v.as_bool()) == Some(true) || b.get("profile").and_then(|v| v.as_bool()) == Some(true) {
         j["trace"] = json!(telemetry::trace().map(|t| t.spans()).unwrap_or_default());
     }
-    Ok(AxJson(j))
+    Ok(AxJson(j).into_response())
+}
+
+/// A query's answer as an Arrow IPC stream of one batch, for clients that
+/// want columns (`"format": "arrow"`): no JSON to write or read, and each
+/// column typed as an Arrow answer in a client's own process is
+/// ([`strata::query::arrow::answer_batch`]). How long it took and what the
+/// engine did go in headers; an answer without some shards (`partial`)
+/// names them in `x-strata-missing-shards`.
+#[cfg(feature = "datafusion")]
+async fn arrow_answer(a: crate::service::Answer) -> Result<Response, ApiError> {
+    let took = a.took_ms;
+    let missing = a.missing.join(",");
+    let cursor = a.cursor.clone();
+    let (bytes, stats) = tokio::task::spawn_blocking(move || {
+        let (batch, stats) = strata::query::arrow::answer_batch(strata::query::exec::Leaf::Rows(a.rs))?;
+        Ok::<_, strata::Error>((strata::query::arrow::ipc_of(&batch)?, stats))
+    })
+    .await
+    .map_err(ApiError::internal)??;
+    let mut r = (StatusCode::OK, [(header::CONTENT_TYPE, "application/vnd.apache.arrow.stream")], bytes).into_response();
+    // A header holds visible ASCII: one that would not is left out rather
+    // than failing the answer.
+    let mut put = |name: &'static str, v: String| {
+        if let Ok(v) = axum::http::HeaderValue::from_str(&v) {
+            r.headers_mut().insert(name, v);
+        }
+    };
+    put("x-strata-took-ms", format!("{took:.3}"));
+    put("x-strata-stats", serde_json::to_string(&stats).unwrap_or_default());
+    if !missing.is_empty() {
+        put("x-strata-missing-shards", missing);
+    }
+    if let Some(c) = cursor {
+        put("x-strata-cursor", c);
+    }
+    Ok(r)
+}
+
+#[cfg(not(feature = "datafusion"))]
+async fn arrow_answer(_: crate::service::Answer) -> Result<Response, ApiError> {
+    Err(ApiError::bad("this server was built without Arrow answers (feature datafusion): leave out format"))
 }
 
 /// A query run and logged ([`Service::query_logged`]): its answer, with
@@ -1216,7 +1520,18 @@ fn answer(a: &crate::service::Answer) -> Json {
     if !a.missing.is_empty() {
         j["partial"] = json!({"missing_shards": a.missing});
     }
+    // A scroll's cursor, while rows are left to read.
+    if let Some(c) = &a.cursor {
+        j["cursor"] = json!(c);
+    }
     j
+}
+
+/// `DELETE /v1/query/cursors/:id`: ends a scroll before its last page, for
+/// the key that started it: `{"closed": true}`, or false when it was not
+/// open (read to its end, closed, expired, or another key's).
+async fn close_cursor(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(json!({"closed": app.svc.close_scroll(&id, &crate::service::scroll_owner(&who(w)))})))
 }
 
 /// [`answer`], its rows as objects keyed by column when the body asks
@@ -2264,7 +2579,7 @@ async fn explain(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     // of those ran is in "plan".
     let profiles = |t: &str, n: &str| app.svc.rank_profile(t, n);
     // The plan names the files of its ranking models.
-    let plan = app.svc.open_ranking_models(std::sync::Arc::new(strata::query::compound::plan_read(sql, &tables, &params, &profiles)?), false)?;
+    let plan = app.svc.open_ranking_models(std::sync::Arc::new(strata::query::compound::plan_read_calling(sql, &tables, &params, &profiles, &app.svc.functions())?), false)?;
     let logical = match plan.root.uses_operators() {
         true => "a compound query: operators over single-table queries (\"tree\"), whose runs are in \"plan\"".to_string(),
         false => {
@@ -2373,6 +2688,13 @@ async fn admin_checkpoint(State(app): State<App>, AxJson(b): AxJson<Json>) -> Re
     };
     let stats = app.svc.checkpoint(body_str(&b, "name")?, layout, b.get("link_from").and_then(|v| v.as_str())).await?;
     Ok(AxJson(json!({"checkpoint": stats})))
+}
+
+/// `{"rate_mib_s"?}`: reads every segment against its checksum now
+/// ([`Service::scrub`]); unpaced unless asked.
+async fn admin_scrub(State(app): State<App>, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Res {
+    let rate = body.as_ref().and_then(|b| b.get("rate_mib_s")).and_then(Json::as_u64).unwrap_or(0) << 20;
+    Ok(AxJson(app.svc.scrub(rate, &keys::audit_name(&who(w))).await?))
 }
 
 async fn admin_check(State(app): State<App>) -> Res {
@@ -2760,6 +3082,90 @@ async fn agent_run(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 /// server's routes with the caller's credential ([`crate::mcp`]).
 async fn mcp(State(app): State<App>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, body: Bytes) -> Response {
     crate::mcp::serve(&app.svc, app.mcp.clone(), crate::mcp::Caller { headers: &headers, peer: peer.map(|c| c.0) }, &body).await
+}
+
+/// `POST /v1/admin/oncall`: the on-call agent looks into an alert or a
+/// question, and proposes actions ([`crate::oncall`]).
+async fn oncall_run(State(app): State<App>, w: Option<axum::Extension<Principal>>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Res {
+    let opt = |k: &str| b.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+    let req = crate::oncall::OncallReq {
+        question: opt("question"),
+        alert: opt("alert"),
+        follows: opt("follows"),
+        wait: b.get("wait").and_then(Json::as_bool).unwrap_or(true),
+        model: opt("model"),
+        effort: opt("effort"),
+        api_key: opt("api_key"),
+        max_steps: b.get("max_steps").and_then(|v| v.as_u64()).map(|n| (n as usize).clamp(1, crate::oncall::MAX_STEPS)).unwrap_or(crate::oncall::STEPS),
+        note: b.get("note").and_then(Json::as_bool).unwrap_or(false),
+        by: by(&who(w)),
+    };
+    app.svc.metrics.agent_run();
+    Ok(AxJson(crate::oncall::run(&app.svc, app.mcp.clone(), &headers, peer.map(|c| c.0), req).await?))
+}
+
+/// `GET /v1/admin/oncall`: whether the on-call agent can run here, its
+/// defaults, and its runs in short.
+async fn oncall_overview(State(app): State<App>) -> Res {
+    let d = &app.svc.oncall;
+    d.ready(&app.svc);
+    let (running, pending) = d.counts();
+    Ok(AxJson(json!({
+        "configured": app.svc.agent.api_key.is_some(),
+        "model": app.svc.agent.model,
+        "steps": crate::oncall::STEPS,
+        "max_steps": crate::oncall::MAX_STEPS,
+        "kept": crate::oncall::RUNS,
+        "proposal_for_ms": crate::oncall::PROPOSAL_FOR_MS,
+        "runs": d.runs(),
+        "running": running,
+        "pending": pending,
+    })))
+}
+
+/// `GET /v1/admin/oncall/runs`: the runs kept, newest first, in short.
+async fn oncall_runs(State(app): State<App>) -> Res {
+    app.svc.oncall.ready(&app.svc);
+    Ok(AxJson(json!({"runs": app.svc.oncall.runs()})))
+}
+
+/// `GET /v1/admin/oncall/runs/:id`: one run in full, as it goes.
+async fn oncall_run_get(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    app.svc.oncall.ready(&app.svc);
+    app.svc.oncall.run_json(&id).map(AxJson).ok_or_else(|| ApiError { status: 404, message: format!("no run {id}: the server keeps the latest {}", crate::oncall::RUNS) })
+}
+
+/// `POST /v1/admin/oncall/runs/:id/stop`: stops a run before its next
+/// model call.
+async fn oncall_stop(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    app.svc.oncall.ready(&app.svc);
+    Ok(AxJson(app.svc.oncall.stop(&id, &by(&who(w)))?))
+}
+
+/// `GET /v1/admin/oncall/proposals?state=&run=`: the on-call agent's
+/// proposals, newest first.
+async fn oncall_proposals(State(app): State<App>, Query(q): Params) -> Res {
+    app.svc.oncall.ready(&app.svc);
+    let pick = |k: &str| q.get(k).map(String::as_str).filter(|s| !s.is_empty());
+    Ok(AxJson(json!({"proposals": app.svc.oncall.list(pick("state"), pick("run"))})))
+}
+
+/// `POST /v1/admin/oncall/proposals/:id/approve`: makes the proposal's
+/// request, as the approver.
+async fn oncall_approve(State(app): State<App>, w: Option<axum::Extension<Principal>>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    let by = by(&who(w));
+    let p = crate::oncall::approve(&app.svc, app.mcp.clone(), &headers, peer.map(|c| c.0), &id, &by).await?;
+    keys::note(format!("approved on-call proposal {id}: {}", p["what"].as_str().unwrap_or_default()));
+    Ok(AxJson(p))
+}
+
+/// `POST /v1/admin/oncall/proposals/:id/reject`: `{reason?}`.
+async fn oncall_reject(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, b: Option<AxJson<Json>>) -> Res {
+    let reason = b.and_then(|AxJson(b)| b.get("reason").and_then(Json::as_str).map(String::from)).unwrap_or_default();
+    app.svc.oncall.ready(&app.svc);
+    let p = app.svc.oncall.reject(&id, &by(&who(w)), &reason)?;
+    keys::note(format!("rejected on-call proposal {id}: {}", p["what"].as_str().unwrap_or_default()));
+    Ok(AxJson(p))
 }
 
 /// `POST /v1/judge`: a Claude model's grade of each row for a query
@@ -3419,6 +3825,11 @@ async fn copies_load(State(app): State<App>, Query(q): Params) -> Res {
     Ok(AxJson(json!({"from_ms": from, "to_ms": to, "interval_ms": interval, "asked": copies.len() + missing.len(), "answered": copies.len(), "copies": copies, "missing": missing})))
 }
 
+/// OpenTelemetry logs in, over OTLP/HTTP ([`crate::otlp`]).
+async fn otlp_logs(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, Query(q): Params, body: axum::body::Bytes) -> Response {
+    crate::otlp::http(&app.svc, &who(w), &headers, q.get("table").map(String::as_str), body).await
+}
+
 async fn logs(State(app): State<App>, Query(q): Params) -> Res {
     // A copy's: its filter, until when and by whom (its lines are in the
     // log store, `POST /v1/logs/query`).
@@ -3578,6 +3989,21 @@ async fn system(State(app): State<App>) -> AxJson<Json> {
     j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some()});
     j["logs"] = json!({"filter": obs::log_filter()});
     AxJson(j)
+}
+
+async fn apps_list(State(app): State<App>) -> AxJson<Json> {
+    AxJson(app.svc.apps.listing().await)
+}
+
+async fn app_forward(
+    State(app): State<App>,
+    axum::extract::Path((name, rest)): axum::extract::Path<(String, String)>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    app.svc.apps.forward(&name, method, &rest, uri.query(), &headers, body).await
 }
 
 async fn cluster(State(app): State<App>, Query(q): Params) -> AxJson<Json> {

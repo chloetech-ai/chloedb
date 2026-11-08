@@ -87,13 +87,22 @@ struct TableView {
 }
 
 impl TableView {
-    /// This view with `tail`'s segment after its own.
+    /// This view with the segments of `tail`'s pieces after its own.
     fn with_tail(&self, tail: &Tail) -> TableView {
-        let seg = tail.segment(&self.schema);
         let p = &tail.part;
         let mut v = self.clone();
-        v.pks.push(seg.pk);
-        v.segments.push(SegmentView { id: seg.id, file: seg.file, live: p.live.clone().map(|l| l as Arc<dyn DocFilter>), n_live: p.n_live, in_memory: true, updates: p.updates.clone() });
+        for (seg, (start, len)) in tail.segments(&self.schema).into_iter().zip(tail.pieces()) {
+            let (live, n_live, updates) = if (start, len) == (0, p.len) {
+                (p.live.clone(), p.n_live, p.updates.clone())
+            } else {
+                let live = p.live.as_ref().map(|l| Arc::new(LiveDocs::from_deleted(l.deleted_words()[start / 64..(start + len).div_ceil(64)].to_vec(), len as u32)));
+                let n_live = live.as_ref().map_or(len as u32, |l| l.n_live());
+                let updates = p.updates.as_ref().map(|u| u.slice(start as DocId, len as u32)).filter(|u| !u.is_empty()).map(Arc::new);
+                (live, n_live, updates)
+            };
+            v.pks.push(seg.pk);
+            v.segments.push(SegmentView { id: seg.id, file: seg.file, live: live.map(|l| l as Arc<dyn DocFilter>), n_live, in_memory: true, updates });
+        }
         v.n_live += p.n_live as u64;
         v
     }
@@ -129,25 +138,64 @@ impl TableSlot {
 }
 
 /// The last chunk of a table's memtable, not built yet: its documents, and
-/// how to build its segment.
+/// how to build its segments. The chunk is built in pieces of `piece`
+/// documents ([`DbOptions::memtable_tail_docs`](crate::storage::DbOptions::memtable_tail_docs)),
+/// one segment each: a write changes only the last piece, so the first
+/// query after it rebuilds that one and takes the others from `cache`.
 pub(crate) struct Tail {
     pub part: MemPart,
     pub opts: Arc<BuildOptions>,
-    /// The latest tail segment built, shared with the table's state so that
-    /// the next snapshot of the same chunk takes it.
-    pub cache: Arc<Mutex<Option<MemSeg>>>,
+    /// Documents a piece: a multiple of 64, or `usize::MAX` for one piece.
+    pub piece: usize,
+    /// The pieces last built, shared with the table's state so that the
+    /// next snapshot of the same chunk takes those it has.
+    pub cache: Arc<Mutex<Vec<MemSeg>>>,
 }
 
 impl Tail {
-    fn segment(&self, schema: &Schema) -> MemSeg {
+    /// The pieces' first positions in the chunk and their lengths.
+    fn pieces(&self) -> impl Iterator<Item = (usize, usize)> {
+        let (n, step) = (self.part.len, self.piece);
+        (0..n).step_by(step).map(move |s| (s, step.min(n - s)))
+    }
+
+    /// The segment of each piece, in order: those `cache` holds, the others
+    /// built (and kept in `cache` in place of what it held).
+    fn segments(&self, schema: &Schema) -> Vec<MemSeg> {
         let p = &self.part;
-        if let Some(s) = lock(&self.cache).as_ref().filter(|s| (s.gen, s.chunk, s.len) == (p.gen, p.chunk, p.len)) {
-            return s.clone();
+        let held: Vec<Option<MemSeg>> = {
+            let cache = lock(&self.cache);
+            self.pieces().map(|(start, len)| cache.iter().find(|s| (s.gen, s.chunk, s.start, s.len) == (p.gen, p.chunk, start, len)).cloned()).collect()
+        };
+        if held.iter().all(Option::is_some) {
+            return held.into_iter().flatten().collect();
         }
-        TAIL_BUILDS.with(|n| n.set(n.get() + 1));
-        let seg = build_memseg(schema, &self.opts, p, next_mem_id());
-        *lock(&self.cache) = Some(seg.clone());
-        seg
+        let segs: Vec<MemSeg> = self
+            .pieces()
+            .zip(held)
+            .map(|((start, len), seg)| {
+                seg.unwrap_or_else(|| {
+                    TAIL_BUILDS.with(|n| n.set(n.get() + 1));
+                    let piece = MemPart {
+                        table: p.table,
+                        gen: p.gen,
+                        chunk: p.chunk,
+                        start,
+                        len,
+                        docs: p.docs.clone(),
+                        last: true,
+                        live: None,
+                        n_live: 0,
+                        seg: None,
+                        updates: None,
+                        seqs: p.seqs.as_ref().map(|q| q[start..start + len].to_vec()),
+                    };
+                    build_memseg(schema, &self.opts, &piece, next_mem_id())
+                })
+            })
+            .collect();
+        *lock(&self.cache) = segs.clone();
+        segs
     }
 
     /// Position `j` of the chunk's documents, if live.
@@ -183,8 +231,9 @@ pub(crate) fn next_mem_id() -> u64 {
 pub enum Found<'a> {
     /// In the memtable's last chunk, not built: the document as written,
     /// with values set in place since applied, its sequence number (0
-    /// unnumbered), and the segment ordinal and docID it has in the
-    /// chunk's segment once built (the last of [`Snapshot::segments`]).
+    /// unnumbered), and the segment ordinal and docID it has once the
+    /// chunk is built (in the segment of its piece, one of the last of
+    /// [`Snapshot::segments`]).
     Memtable { doc: Document, seq: u64, at: (usize, DocId) },
     /// Document `doc` of segment `seg` (an ordinal of
     /// [`Snapshot::segments`]), whose stored fields are read from `view`.
@@ -277,6 +326,32 @@ impl Snapshot {
         self.rank_profiles().iter().find(|p| p.name.eq_ignore_ascii_case(name))
     }
 
+    /// A number that changes whenever a row of the table this snapshot
+    /// looks at is written or deleted (its segments, their live rows and
+    /// the memtable's last chunk), and stays while none is: what a cache
+    /// of a small table's rows is kept by ([`crate::db::Db::functions`]).
+    pub fn stamp(&self) -> u64 {
+        let slot = &self.inner.tables[self.table];
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |x: u64| {
+            for b in x.to_le_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100_0000_01b3);
+            }
+        };
+        for seg in &slot.base.segments {
+            mix(seg.id);
+            mix(seg.n_live as u64);
+        }
+        if let Some(t) = &slot.tail {
+            mix(t.part.gen);
+            mix(t.part.chunk as u64);
+            mix(t.part.len as u64);
+            mix(t.part.n_live as u64);
+        }
+        h
+    }
+
     /// The same version, looking at the table named `name` (any case).
     pub fn table(&self, name: &str) -> Option<Snapshot> {
         let t = self.inner.tables.iter().position(|t| t.base.schema.table.eq_ignore_ascii_case(name))?;
@@ -349,7 +424,7 @@ impl Snapshot {
                     Some(s) => crate::storage::state::mem_seq(p.updates.as_deref().unwrap_or(&Updates::default()), s, j as u32),
                     None => 0,
                 };
-                return Some(Found::Memtable { doc, seq, at: (slot.base.segments.len(), j as DocId) });
+                return Some(Found::Memtable { doc, seq, at: (slot.base.segments.len() + j / t.piece, (j % t.piece) as DocId) });
             }
         }
         let v = &slot.base;
@@ -692,12 +767,14 @@ impl DocFilter for Unhidden {
     }
 }
 
-/// A built segment of the first `len` documents of memtable chunk `chunk`
-/// of generation `gen`.
+/// A built segment of the `len` documents from position `start` of
+/// memtable chunk `chunk` of generation `gen` (`start` is 0 but for a
+/// piece of the last chunk, [`Tail`]).
 #[derive(Clone)]
 pub(crate) struct MemSeg {
     pub gen: u64,
     pub chunk: usize,
+    pub start: usize,
     pub len: usize,
     pub id: u64,
     pub file: SegmentFile,
@@ -710,6 +787,9 @@ pub(crate) struct MemPart {
     pub table: u32,
     pub gen: u64,
     pub chunk: usize,
+    /// The first of the chunk's documents it holds: 0 but for a piece of
+    /// the last chunk ([`Tail`]).
+    pub start: usize,
     pub len: usize,
     pub docs: Arc<Chunk>,
     /// The memtable's last chunk, still filling: built only when a query
@@ -732,7 +812,7 @@ pub(crate) struct TableCapture {
     profiles: Arc<Vec<RankProfile>>,
     disk: Vec<(Arc<SegHandle>, Option<Arc<LiveDocs>>, u32, Option<Arc<Updates>>)>,
     pub mem: Vec<MemPart>,
-    tail_cache: Arc<Mutex<Option<MemSeg>>>,
+    tail_cache: Arc<Mutex<Vec<MemSeg>>>,
 }
 
 /// Everything a snapshot needs, taken under the state lock.
@@ -754,7 +834,8 @@ impl State {
         for t in 0..self.tables.len() {
             tables.push(self.capture_table(t, with_mem, numbered));
         }
-        Capture { version: self.version, txn: self.txn, numbered, seq: self.seq, pin: pins.pin(self.txn), tables }
+        let pinned = if self.pin_versions { self.meta.txn } else { self.txn };
+        Capture { version: self.version, txn: self.txn, numbered, seq: self.seq, pin: pins.pin(pinned), tables }
     }
 
     fn capture_table(&mut self, t: usize, with_mem: bool, numbered: bool) -> TableCapture {
@@ -800,7 +881,7 @@ impl State {
             }
             let mut seg = table.memsegs.get(k).and_then(|s| s.as_ref()).filter(|s| (s.gen, s.len) == (gen, len)).cloned();
             if seg.is_none() {
-                seg = lock(&table.tail).as_ref().filter(|s| (s.gen, s.chunk, s.len) == (gen, k, len)).cloned();
+                seg = lock(&table.tail).iter().find(|s| (s.gen, s.chunk, s.start, s.len) == (gen, k, 0, len)).cloned();
             }
             let docs = table.mem.chunks[k].clone();
             let first = k * table.mem.chunk;
@@ -808,7 +889,7 @@ impl State {
             let updates = Some(table.mem.updates.slice(first as DocId, len as u32)).filter(|u| !u.is_empty()).map(Arc::new);
             // The tail's numbers are read by key too, built or not.
             let seqs = (numbered && (seg.is_none() || last)).then(|| (first..first + len).map(|p| table.mem.seqs.get(p).copied().unwrap_or(0)).collect());
-            mem.push(MemPart { table: table.id, gen, chunk: k, len, docs, last, live, n_live: (len - n_deleted) as u32, seg, updates, seqs });
+            mem.push(MemPart { table: table.id, gen, chunk: k, start: 0, len, docs, last, live, n_live: (len - n_deleted) as u32, seg, updates, seqs });
         }
         TableCapture { id: table.id, schema: table.schema.clone(), profiles: table.profiles.clone(), disk, mem, tail_cache: table.tail.clone() }
     }
@@ -844,22 +925,23 @@ pub(crate) fn page_aligned(image: &[u8]) -> OwnedBytes {
     OwnedBytes::new(PageAligned::new(image))
 }
 
-/// Builds the segment of a memtable chunk's first `len` documents.
+/// Builds the segment of a memtable chunk's `len` documents from `start`.
 pub(crate) fn build_memseg(schema: &Schema, opts: &BuildOptions, part: &MemPart, id: u64) -> MemSeg {
     // The documents were validated when they were written, so a failure
     // here is a bug in an index builder.
-    let docs = part.docs.to_vec(part.len);
+    let docs: Vec<Document> = (part.start..part.start + part.len).map(|i| part.docs[i].clone()).collect();
     let image = rowseq::build(schema, &docs, part.seqs.as_deref(), opts).expect("building a memtable segment");
     let file = SegmentFile::open(OwnedBytes::new(PageAligned::new(&image))).expect("memtable segment opens");
     let pk = PkIndex::open(&file).expect("memtable pk index");
-    MemSeg { gen: part.gen, chunk: part.chunk, len: part.len, id, file, pk }
+    MemSeg { gen: part.gen, chunk: part.chunk, start: part.start, len: part.len, id, file, pk }
 }
 
 impl Capture {
     /// The snapshot, from what was captured once every memtable chunk but
-    /// each table's last one is built; that one is built with `opts` when
-    /// a query needs it.
-    pub(crate) fn assemble(self, path: PathBuf, opts: &Arc<BuildOptions>) -> SnapInner {
+    /// each table's last one is built; that one is built with `opts`, in
+    /// pieces of `tail_docs` documents (0: one piece), when a query needs it.
+    pub(crate) fn assemble(self, path: PathBuf, opts: &Arc<BuildOptions>, tail_docs: usize) -> SnapInner {
+        let piece = if tail_docs == 0 { usize::MAX } else { tail_docs.next_multiple_of(64) };
         let mut maps: Vec<OwnedBytes> = Vec::new();
         let mut tables = Vec::with_capacity(self.tables.len());
         for t in self.tables {
@@ -883,7 +965,7 @@ impl Capture {
             for m in t.mem {
                 let Some(seg) = m.seg.clone() else {
                     assert!(m.last, "memtable segment built before assembly");
-                    tail = Some(Tail { part: m, opts: opts.clone(), cache: t.tail_cache.clone() });
+                    tail = Some(Tail { part: m, opts: opts.clone(), piece, cache: t.tail_cache.clone() });
                     continue;
                 };
                 pks.push(seg.pk);

@@ -8,7 +8,7 @@
 //!   [`eval_range`] picks between it and a column scan.
 //! * [`KeywordColumn`] (KEYWORD): sorted dictionary, bit-packed codes and a
 //!   Pyramid list per value; equality, `IN`, probes and facet counts.
-//! * [`DocStore`]: stored fields as rows in LZ4-compressed blocks.
+//! * [`DocStore`]: stored fields as rows in LZ4- or zstd-compressed blocks.
 //!
 //! Every reader is a zero-copy view of its segment sections:
 //!

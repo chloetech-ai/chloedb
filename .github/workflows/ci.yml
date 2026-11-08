@@ -1,14 +1,14 @@
 name: CI
 
-# A change to the documentation site or to Markdown files alone builds and
-# tests nothing.
+# A change to the documentation site, to Markdown files or to benchmark
+# results alone builds and tests nothing.
 #
 # Main is protected by one required check, "CI result", which every run
 # reports: the jobs below run when a change touches more than the
-# documentation (job `changes`), and are skipped otherwise, which a
-# required check counts as passing. A workflow skipped by a path filter
-# would report nothing, and the pull request would wait for its check
-# forever.
+# documentation and benchmark results (job `changes`), and are skipped
+# otherwise, which a required check counts as passing. A workflow skipped
+# by a path filter would report nothing, and the pull request would wait
+# for its check forever.
 on:
   push:
     branches: [main]
@@ -22,12 +22,16 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
-# A new push to a pull request cancels its older run. Runs on main and in
-# the merge queue are never cancelled: each commit of main gets its whole
-# run (a group per commit, since a group holds one waiting run and would
-# drop the others).
+# A new push to a pull request cancels its older run. Pushes to main share
+# one group that never cancels the run in progress, so main's runs keep
+# finishing, but a group holds one waiting run and a newer push replaces
+# it: after a burst of merges only the newest waits, and it tests every
+# merge before it. (A group per commit queued every merge's whole run,
+# 5 macOS jobs each against a limit of 5 at once, and the queue grew by
+# hours.) The merge queue, the nightly run and a run by hand keep a group
+# per event and commit, so none of them is dropped.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: ci-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || format('{0}-{1}', github.event_name, github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -39,14 +43,16 @@ env:
 # 7 GB). The organisation's own runners (gh-linux, gh-mac and gh-mac2) are
 # billed by the minute even for a public repository, so no job uses them.
 #
-# macOS jobs are the scarcest (the account runs five at once, and a push to
-# main takes all five), so a pull request (and the merge queue) runs only
-# Strata's tests on macOS, where its NEON kernels and syncs differ from
-# Linux, and CI result does not wait for them (job `macos`): a pull request
-# waited 9 to 12 minutes for a macOS runner and then 16 more, after every
-# Linux job had passed. Its check still turns red on a failure. A push to
-# main, the nightly run and a run started by hand run every macOS job, and
-# CI result waits for each.
+# macOS jobs are the scarcest: the account runs five at once. A pull
+# request, the merge queue and a push to main run only Strata's tests on
+# macOS, where its NEON kernels and syncs differ from Linux, and CI result
+# does not wait for them (job `macos`): a pull request waited 9 to 12
+# minutes for a macOS runner and then 16 more, after every Linux job had
+# passed. Its check still turns red on a failure. The nightly run and a run
+# started by hand run every macOS job (8 of them), and CI result waits for
+# each. (Until 8 November a push to main ran all 8 too: they took the five
+# runners for up to 50 minutes a merge, and a pull request's macOS job
+# waited 46 minutes behind them.)
 #
 # Caches (Swatinem/rust-cache, one per job) are saved by runs on main, the
 # nightly and runs started by hand, and only restored by pull requests: a
@@ -59,8 +65,13 @@ env:
 # kernels at run time (strata::simd). macOS builds keep native, and the CPU
 # in their cache's key.
 jobs:
-  # Whether the change touches more than the documentation site and
-  # Markdown files: if not, every other job is skipped.
+  # Whether the change touches more than the documentation site, Markdown
+  # files and benchmark results (the data under strata/results,
+  # strata-server/results and engram/results, which nothing builds or
+  # reads): if not, every other job is skipped. A Python script there
+  # still counts as code, since a job runs strata/results/sequence/gate.py,
+  # and so does strata/results/workloads/, which tests/workload_gen.rs
+  # checks is not stale.
   changes:
     name: changes
     runs-on: ubuntu-latest
@@ -90,7 +101,9 @@ jobs:
             exit 0
           fi
           git diff --name-only "$base" HEAD | tee "$RUNNER_TEMP/changed"
-          if grep -qvE '^docs/|\.md$' "$RUNNER_TEMP/changed"; then
+          grep -vE '^docs/|\.md$' "$RUNNER_TEMP/changed" > "$RUNNER_TEMP/rest" || true
+          if grep -qvE '^(strata|strata-server|engram)/results/' "$RUNNER_TEMP/rest" \
+            || grep -qE '^(strata|strata-server|engram)/results/.*\.py$|^strata/results/workloads/' "$RUNNER_TEMP/rest"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
@@ -103,10 +116,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
-        crate: [strata, engram, strata-server]
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        # strata-crawl's crawl into a real cluster runs in server-smoke,
+        # which builds strata-server; here its other tests and clippy.
+        crate: [strata, engram, strata-server, strata-crawl]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # rust-cache saves only from a job that passed, so a macOS job that ran
+    # out of time starts the next one cold too: strata-server's tests took
+    # 59 minutes from a cold build on the macOS runner on 11-08, and Clippy
+    # after them did not fit in 60.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 90 || 60 }}
     env: &test-env
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.crate == 'strata' && '-C target-cpu=x86-64-v3' || '' }}
     steps: &test-steps
@@ -136,10 +155,13 @@ jobs:
       # Strata's test binaries took 37 of the 40 minutes of its tests.
       # Strata's SQLite import and export (feature `sqlite`) are tested and
       # linted in the strata job; strata-server and the Python package turn
-      # the feature on.
+      # the feature on. --no-fail-fast runs every test binary even after one
+      # fails: cargo stops at the first otherwise, and from 11-05 to 11-07 a
+      # failing unit test of engine-compare kept strata-server's integration
+      # tests from running on macOS at all.
       - name: Tests
         working-directory: ${{ matrix.crate }}
-        run: cargo test --profile ci ${{ matrix.crate == 'strata' && '--features sqlite' || '' }}
+        run: cargo test --profile ci --no-fail-fast ${{ matrix.crate == 'strata' && '--features sqlite' || '' }}
       # The cluster simulator over more seeds than its tests run (`cargo
       # test` built strata-sim): the first 3,000 of each world on every
       # change, and in the nightly run and a run started by hand 30,000 of
@@ -177,14 +199,15 @@ jobs:
         working-directory: ${{ matrix.crate }}
         run: cargo clippy --release --all-targets ${{ matrix.crate == 'strata' && '--features sqlite' || '' }} -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
-  # A pull request's (and the merge queue's) Strata tests on macOS: the
-  # `test` job's steps, in a job of its own that CI result does not wait
-  # for (see the top of this file). On main, the nightly run and a run
-  # started by hand they run in `test`, and this job is skipped.
+  # Strata's tests on macOS for a pull request, the merge queue and a push
+  # to main: the `test` job's steps, in a job of its own that CI result does
+  # not wait for (see the top of this file). In the nightly run and a run
+  # started by hand they run in `test`, and this job is skipped. A push to
+  # main saves the cache that a pull request's run restores.
   macos:
     name: ${{ matrix.crate }} on ${{ matrix.os }}
     needs: changes
-    if: needs.changes.outputs.code == 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+    if: needs.changes.outputs.code == 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push')
     strategy:
       matrix:
         os: [macos-latest]
@@ -319,7 +342,7 @@ jobs:
       - name: Strata
         working-directory: strata
         run: |
-          cargo test --profile ci --features datafusion --test datafusion_engine
+          cargo test --profile ci --features datafusion --test datafusion_engine --test hash_function
           cargo test --profile ci --features datafusion,sqlite --test window_functions --test set_operations
           STRATA_ENGINE=datafusion cargo test --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
           # Parquet files in and out, and s3:// URLs (strata::parquet, strata::objects)
@@ -337,7 +360,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -482,7 +505,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
-          workspaces: strata-server
+          workspaces: |
+            strata-server
+            strata-crawl
           key: strata-server-smoke
       - name: Build
         working-directory: strata-server
@@ -521,6 +546,14 @@ jobs:
           curl -sf -X POST 'http://127.0.0.1:7702/v1/import?format=sqlite' -H 'content-type: application/vnd.sqlite3' --data-binary @"$RUNNER_TEMP/s.sqlite" | grep -q '"written":1'
           curl -sf http://127.0.0.1:7702/v1/export -o "$RUNNER_TEMP/s3.sqlite"
           python3 -c "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); assert c.execute('SELECT count(*) FROM t').fetchone() == (3,); assert c.execute('SELECT body FROM notes').fetchall() == [('a first note about rivers and mountains',)]" "$RUNNER_TEMP/s3.sqlite"
+      # The crawler on a site its test serves, into a cluster of this
+      # build's servers that it starts and grows to three shards.
+      - name: Crawl a site into a growing cluster
+        working-directory: strata-crawl
+        env:
+          STRATA_SERVER_BIN: ${{ github.workspace }}/strata-server/target/release/strata-server
+          STRATA_CRAWL_NEED_SERVER: "1"
+        run: cargo test --profile ci --test site
 
   python:
     name: Python package on ${{ matrix.os }}
@@ -529,7 +562,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -616,7 +649,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -624,13 +657,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      # setup-bun and setup-deno download from GitHub's releases, which
+      # answered the runners 504 for an hour on 8 November; npm's registry
+      # has the same Bun and Deno.
       - uses: oven-sh/setup-bun@v2
+        id: bun
+        continue-on-error: true
+      - if: steps.bun.outcome == 'failure'
+        run: npm install -g bun && bun --version
       - uses: denoland/setup-deno@v2
+        id: deno
+        continue-on-error: true
         with:
           deno-version: v2.x
+      - if: steps.deno.outcome == 'failure'
+        run: npm install -g deno && deno --version
       # strata-js and strata-server build for a generic CPU: one cache on
       # every runner.
       - uses: Swatinem/rust-cache@v2
@@ -672,7 +716,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -686,7 +730,7 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: strata-java
           key: java
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "11"
@@ -695,7 +739,7 @@ jobs:
       - name: Build and test on Java 11
         working-directory: strata-java
         run: mvn -B -ntp -Dcargo.profile=ci package
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "25"
@@ -711,8 +755,8 @@ jobs:
 
   # The one check main requires: every job above passed, or was skipped
   # because the change touches only the documentation. A failed or
-  # cancelled job fails it. It does not wait for `macos`, a pull request's
-  # macOS tests (see the top of this file).
+  # cancelled job fails it. It does not wait for `macos`, the Strata tests
+  # on macOS of a pull request and a push to main (see the top of this file).
   ci-result:
     name: CI result
     if: always()
