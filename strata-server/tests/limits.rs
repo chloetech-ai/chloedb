@@ -286,3 +286,60 @@ async fn a_coordinator_passes_on_its_shards_429_and_counts_its_joins() {
     out_of_memory(&base, "SELECT x.id, y.title FROM products x JOIN products y ON x.brand = y.brand LIMIT 5").await;
     assert_eq!(metric(&base, "strata_query_memory_trips_total").await, 1.0);
 }
+
+/// A shard that refuses its part of a write for its load (429: here its
+/// write queue is full, as when it is behind on its flushes) is sent the
+/// part again by the coordinator, for up to 10 s: the client's write is
+/// slower, not refused, and nothing is applied twice.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_coordinator_sends_a_busy_shard_its_part_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let shard = |s: usize| move |i: usize| shard_of(&strata::Value::Str(format!("p{i:07}")), 2) == s;
+    let busy = open(dir.path(), "b0.strata", shard(0));
+    let mut svc = capped(busy.clone());
+    svc.max_queued_writes = 1;
+    let svc = Arc::new(svc);
+    let busy_http = http(svc.clone()).await;
+    let shards = vec![grpc(svc).await, grpc(Arc::new(capped(open(dir.path(), "b1.strata", shard(1))))).await];
+    let c = Coordinator::connect(shards).await.unwrap();
+    let schema = c.schema.clone();
+    let base = http(Arc::new(Service::new(Backend::Cluster(Arc::new(c)), schema, agent(), 16, Duration::from_secs(10)))).await;
+    let client = strata_server::http_client().build().unwrap();
+    // Ten new rows a write, on both shards.
+    let write = |from: usize| {
+        let ops: Vec<Json> = (from..from + 10).map(|i| json!({"op": "upsert", "doc": {"id": format!("p{i:07}"), "title": "busy"}})).collect();
+        client.post(format!("{base}/v1/write")).json(&json!({"ops": ops})).send()
+    };
+    let metric = |name: &'static str| {
+        let client = client.clone();
+        let url = format!("{busy_http}/metrics");
+        async move {
+            let m = client.get(url).send().await.unwrap().text().await.unwrap();
+            m.lines().find_map(|l| l.strip_prefix(name)).map_or(0.0, |v| v.trim().parse::<f64>().unwrap())
+        }
+    };
+    // A transaction held on shard 0 keeps its writer waiting: the first
+    // write's part fills its queue, and the second's is refused.
+    let held = busy.storage().begin().unwrap();
+    let first = tokio::spawn(write(N));
+    let t0 = std::time::Instant::now();
+    while metric("strata_write_queue_requests ").await < 1.0 {
+        assert!(t0.elapsed() < Duration::from_secs(5), "the first write never queued");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let second = tokio::spawn(write(N + 10));
+    while metric("strata_write_errors_total{status=\"429\"} ").await < 2.0 {
+        assert!(t0.elapsed() < Duration::from_secs(5), "the shard refused the second write's part {} times", metric("strata_write_errors_total{status=\"429\"} ").await);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // The shard catches up: both writes are taken, each once.
+    drop(held);
+    for w in [first, second] {
+        let r = w.await.unwrap().unwrap();
+        let status = r.status().as_u16();
+        let body: Json = r.json().await.unwrap();
+        assert_eq!((status, body["written"].as_u64()), (200, Some(10)), "{body}");
+    }
+    let (status, body) = query(&base, "SELECT COUNT(*) FROM products").await;
+    assert_eq!((status, body["rows"][0][0].as_u64()), (200, Some(N as u64 + 20)), "{body}");
+}

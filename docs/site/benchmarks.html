@@ -31,7 +31,7 @@
     <span class="eyebrow">Benchmarks</span>
     <h1>First overall when one system has to do it all</h1>
     <p class="lede">Applications need full text, filters, SQL, vectors and hybrids together. We test all of them at once, against thirteen search engines and databases. Strata is not the fastest at everything, and this page shows where.</p>
-    <p class="updated">Updated 4 November 2026 · measured, never edited</p>
+    <p class="updated">Updated 7 November 2026 · measured, never edited</p>
   </div></div>
 
   <section class="gutter" id="results"><div class="wrap block">
@@ -39,18 +39,26 @@
       <a href="bench-10m.html" data-overall="cloud-10m" data-mode="tile"></a>
       <a href="bench-1m.html" data-overall="cloud-1m" data-mode="tile"></a>
       <a href="bench-laptop.html" data-overall="laptop" data-mode="tile"></a>
-      <a href="bench-embedded.html"><span class="eyebrow">No server · inside an app</span><span class="v">1.9× to 23×</span><p>Faster hybrid search than SQLite, DuckDB or LanceDB on every BEIR collection tested.</p></a>
+      <a href="bench-embedded.html"><span class="eyebrow">No server · inside an app</span><span class="v">4.8× to 33×</span><p>Faster hybrid search than SQLite, DuckDB or LanceDB on every BEIR collection tested.</p></a>
       <a href="bench-graph.html"><span class="eyebrow">Graph · arXiv citations</span><span class="v">1st of 5</span><p>Against Neo4j, Memgraph, FalkorDB and ArangoDB: Strata 31 points, Memgraph 60.</p></a>
-      <a href="bench-10m.html#writes"><span class="eyebrow">Fresh writes · 10M</span><span class="v">8.2 ms</span><p>From a write to a search that finds it, at the median. Vespa 10.0 ms, OpenSearch 641.</p></a>
+      <a href="bench-10m.html#writes"><span class="eyebrow">Fresh writes · 10M</span><span class="v">7.6 ms</span><p>From a write to a search that finds it, at the median. Vespa 10.0 ms, OpenSearch 674.</p></a>
     </div>
   </div></section>
 
   <section class="gutter" id="scoreboard"><div class="wrap block">
     <div class="block-head">
       <h2>Strata's place on every kind of query</h2>
-      <p>First or close to it on vectors, hybrids and facets. Behind the specialists on typos, SQL aggregates and key lookups.</p>
+      <p>First or close to it on vectors, hybrids, facets and SQL aggregates. Behind the specialists on typos and key lookups.</p>
     </div>
     <div data-scoreboard></div>
+  </div></section>
+
+  <section class="gutter" id="versus"><div class="wrap block">
+    <div class="block-head">
+      <h2>How much faster or slower, engine by engine</h2>
+      <p>Strata's speed over each engine's, on the kinds both run. At 1M it keeps pace with Qdrant and Milvus at one client and is 1.6 to 9 times as fast as the rest; at 16 clients it serves 1.8 to 28 times their queries a second. At 10M it is about twice as fast as Elasticsearch, OpenSearch and Vespa. Open an engine to see each kind, including the ones where Strata is slower.</p>
+    </div>
+    <div data-versus="cloud-1m,cloud-10m"></div>
   </div></section>
 
   <section class="gutter" id="losses"><div class="wrap block">
@@ -59,29 +67,45 @@
       <p>The large losses, and what is being done about each.</p>
     </div>
     <div class="losses">
-      <div class="loss"><div><h3>Typo-tolerant search</h3><div class="nums">10M · 81 ms on latest main; Elasticsearch 38</div></div>
-        <p>A misspelt word was expanded against the whole dictionary. <span class="fix">#242 made it six to ten times faster (824 to 81 ms at 10M, 120 to 19.6 at 1M), but at 10M Elasticsearch and OpenSearch are still about twice as fast, and at 1M Typesense and Meilisearch take 6 ms.</span></p></div>
-      <div class="loss"><div><h3>SQL aggregates</h3><div class="nums">10M · 2,894 ms on latest main; OpenSearch 4.08</div></div>
-        <p>A <code>GROUP BY</code> with <code>HAVING</code> over a filtered table. Strata's largest loss, and it grows with the data. Not fixed yet.</p></div>
-      <div class="loss"><div><h3>BM25 at 16 clients</h3><div class="nums">10M · 470 q/s on latest main; OpenSearch 896</div></div>
-        <p>A query through a coordinator took two rounds to the shards. <span class="fix">#245 made it one: at 1M Strata now serves 1,962 q/s, second to Qdrant's 2,471. At 10M the shards are what waits.</span></p></div>
-      <div class="loss"><div><h3>Key lookups</h3><div class="nums">10M · 0.86 ms, 5th of 9; Postgres 0.37</div></div>
-        <p>Postgres, Weaviate, ParadeDB and Qdrant read a row by id in about half Strata's time.</p></div>
-      <div class="loss"><div><h3>Vector recall at shared settings</h3><div class="nums">10M · recall@10 0.795; Qdrant 0.941</div></div>
-        <p>Strata scores 8-bit codes and re-scores the best 40, so read its vector speeds with this recall.</p></div>
-      <div class="loss"><div><h3>Single-row writes in an app</h3><div class="nums">One row a commit 4,022/s; SQLite 5,128</div></div>
-        <p>SQLite wins one row a commit; batches turn it around, 95,670 rows a second to SQLite's 18,905.</p></div>
+      <div class="loss"><div><h3>Key lookups</h3><div class="nums">10M · 0.99 ms, 5th of 9; Postgres 0.37</div></div>
+        <p>Postgres, Weaviate, ParadeDB and Qdrant read a row by id in under half Strata's time, and Redis, on a bigger node, in a fifth of it. Most of Strata's time is the hop from a coordinator to the shard over gRPC, not the lookup. <span class="fix open">In review: #299 answers a pod's own shard inside its coordinator, 34% more lookups a second at 16 clients on the same nodes. A lighter shard protocol would close more of the gap.</span></p></div>
+      <div class="loss"><div><h3>Typo-tolerant search</h3><div class="nums">10M · 45.8 ms; Elasticsearch 34.6</div></div>
+        <p>A misspelt word is expanded against the dictionary. <span class="fix">#242 and #266 took it from 824 to 45.8 ms at 10M and from 120 to 11.9 at 1M, but Elasticsearch is still faster at 10M, and at 1M Typesense and Meilisearch take 6 ms.</span> <span class="fix open">Next: a deletion index (SymSpell), in memory first.</span></p></div>
+      <div class="loss"><div><h3>BM25 × recency</h3><div class="nums">10M · 8.89 ms, 3rd of 9; Vespa 5.42</div></div>
+        <p>Vespa and Qdrant are 1.5 to 1.6 times faster at one client at 10M, and at 1M Qdrant takes 1.95 ms against Strata's 4.00. <span class="fix open">Planned, not started: skip the blocks whose recency bound cannot reach the top 10.</span></p></div>
+      <div class="loss"><div><h3>BM25 at 16 clients</h3><div class="nums">10M · 625 q/s; OpenSearch 720</div></div>
+        <p>Strata answers a single BM25 query the fastest at 10M (3.56 ms), but under load OpenSearch and Elasticsearch serve 15% and 9% more. The shards' own scoring is what waits: moving the coordinators into the shard pods (#287) added 3% on the same nodes, and both layouts hit their CPU limits in bursts.</p></div>
+      <div class="loss"><div><h3>One client, through the coordinator</h3><div class="nums">1M · BM25 2.03 ms on 6 November's main; 1.64 before #287</div></div>
+        <p>A client reaches a coordinator in a shard pod across the network, as with Elasticsearch: 4 to 29% slower at one client at 1M, 7% at 10M (median over the kinds), for up to 1.9 times the queries a second at 16 clients.</p></div>
+      <div class="loss"><div><h3>Vector recall at shared settings</h3><div class="nums">10M · recall@10 0.791; Qdrant 0.941</div></div>
+        <p>Strata scores 8-bit codes and re-scores the best 40, so read its vector speeds with this recall. At 1M, asking for 256 candidates instead of 64 lifts it from 0.809 to 0.931, past Qdrant's 0.905, and Strata still serves 11% more queries a second; with a filter, 3.6 times as many at about equal recall. <a href="bench-1m.html#recall">The sweep</a>.</p></div>
+      <div class="loss"><div><h3>Indexed price updates in an app</h3><div class="nums">571/s on main; SQLite 7,670</div></div>
+        <p>Updating a row's price while it carries a text and a vector index is 2.4 times slower than on Strata's 2 November build (1,389 a second) and 13 times slower than SQLite. Found by the 6 November rerun, in both of its writes runs; not fixed yet. Without the indexes the same update got faster (3,276 a second).</p></div>
     </div>
   </div></section>
 
+  <section class="gutter" id="since"><div class="wrap block">
+    <div class="block-head">
+      <h2>Five fixes in review, measured on the cluster</h2>
+      <p>On 7 November an image with five open pull requests ran on the same nodes as 6 November's main, serving the same data, three passes each. The rankings on these pages use it, labelled 7 Nov. Key lookups gain the most. At 1M most other kinds serve 5 to 13% more queries a second at 16 clients (hybrids and SQL aggregates 1 to 3%, typos 2% fewer), and no median at one client moves by more than 5%.</p>
+    </div>
+    <ul class="gaps">
+      <li><b><a href="https://github.com/chloetech-ai/strata/pull/299">#299</a> answers a pod's own shard inside its coordinator.</b> <span>Key lookups at 16 clients: 9,210 to 12,673 a second at 1M, 8,967 to 11,993 at 10M.</span></li>
+      <li><b><a href="https://github.com/chloetech-ai/strata/pull/293">#293</a> starts a merged partition's vector graph from its inputs' graphs.</b> <span>The 10M shards' merges take 40 and 58 minutes instead of 54 and 77; the whole 1M build 336 s instead of 470.</span></li>
+      <li><b><a href="https://github.com/chloetech-ai/strata/pull/294">#294</a> runs the merger below the queries</b> <span>(nice 10), and <a href="https://github.com/chloetech-ai/strata/pull/295">#295</a> stops stream reads from waiting on a publish of every write batch.</span></li>
+      <li><b><a href="https://github.com/chloetech-ai/strata/pull/296">#296</a> sweeps the vector candidates (ef)</b> <span>for Strata and Qdrant: <a href="bench-1m.html#recall">recall against speed</a>.</span></li>
+    </ul>
+    <div data-ab="fix-1107-1m" data-merge data-labels="6 Nov main,7 Nov image"></div>
+    <p class="small muted">1M on two m-4vcpu-32gb nodes (Xeon Platinum 8168), 7 November; 10M in <a href="bench-10m.html#fixes">its report</a>. Images <code>b022e39</code> (main of 6 November) and <code>861ab1d</code> (main at <code>8e66622</code> with #293, #294, #295, #296 and #299). Raw data: <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/rerun-1107-do/README.md">rerun-1107-do</a>. The 5 November fixes, measured the same way: <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/results/bigger-items-do/README.md">bigger-items-do</a>.</p>
+  </div></section>
   <section class="gutter" id="reports"><div class="wrap block">
     <div class="block-head">
       <h2>Every report</h2>
       <p>Each has its setup, its wins, its losses and its raw data.</p>
     </div>
     <div class="reports">
-      <a class="report" href="bench-10m.html"><span class="eyebrow">10M passages · cloud</span><h3>Fourteen engines at 10M</h3><p class="res" data-overall="cloud-10m" data-mode="chip"></p><p class="small muted">MS MARCO on DigitalOcean, equal machines per engine, one pass, and a head-to-head on latest main.</p><span class="more">Read the report →</span></a>
-      <a class="report" href="bench-1m.html"><span class="eyebrow">1M passages · cloud</span><h3>Fourteen engines at 1M</h3><p class="res" data-overall="cloud-1m" data-mode="chip"></p><p class="small muted">Latest main, each lane's engines on the same machines, three passes, plus writes and streams.</p><span class="more">Read the report →</span></a>
+      <a class="report" href="bench-10m.html"><span class="eyebrow">10M passages · cloud</span><h3>Fourteen engines at 10M</h3><p class="res" data-overall="cloud-10m" data-mode="chip"></p><p class="small muted">MS MARCO on DigitalOcean, equal machines per engine, and a head-to-head with Elasticsearch and OpenSearch, three passes each.</p><span class="more">Read the report →</span></a>
+      <a class="report" href="bench-1m.html"><span class="eyebrow">1M passages · cloud</span><h3>Fourteen engines at 1M</h3><p class="res" data-overall="cloud-1m" data-mode="chip"></p><p class="small muted">Each engine's newest run, three passes, with recall against speed, writes and streams.</p><span class="more">Read the report →</span></a>
       <a class="report" href="bench-laptop.html"><span class="eyebrow">1M passages · laptop</span><h3>Fourteen engines on one laptop</h3><p class="res" data-overall="laptop" data-mode="chip"></p><p class="small muted">BEIR NQ with judged answers, on a cluster inside a MacBook Air.</p><span class="more">Read the report →</span></a>
       <a class="report" href="bench-embedded.html"><span class="eyebrow">No server</span><h3>Against SQLite, DuckDB, LanceDB and Tantivy</h3><p class="res"><b>First on search, hybrids and recommendations</b></p><p class="small muted">One file in an app: reads, writes, search and feeds.</p><span class="more">Read the report →</span></a>
       <a class="report" href="bench-graph.html"><span class="eyebrow">Graph</span><h3>Against four graph databases</h3><p class="res"><b>1st of 5</b> over 16 tests</p><p class="small muted">Hops, shortest paths and PageRank on 169,343 papers.</p><span class="more">Read the report →</span></a>
@@ -110,7 +134,7 @@
     <div class="faq">
       <details><summary>Are we biased?</summary><p>Probably. We build Strata and wrote every engine's queries. Each engine runs at its defaults plus the tuning its documentation recommends, every setting is in <a href="https://github.com/chloetech-ai/strata/blob/main/strata-server/deploy/compare/README.md">the method</a>, and we <a href="bench-method.html#audit">audited our own runs</a>. If you know a better configuration, open an issue and we will run it again.</p></details>
       <details><summary>Why sum places instead of averaging speeds?</summary><p>Latencies differ a thousandfold between kinds of query, so an average is decided by the slowest kind. Places weigh every test the same.</p></details>
-      <details><summary>Doesn't counting a missing kind as last favour Strata?</summary><p>It favours breadth, which a mixed workload needs. At 1M on latest main, Strata also leads on the seven kinds every engine runs; at 10M, on the older build, Postgres leads on the four every engine answered. Each report shows its ranking under five rules.</p></details>
+      <details><summary>Doesn't counting a missing kind as last favour Strata?</summary><p>It favours breadth, which a mixed workload needs. At 1M Strata also leads on the seven kinds every engine runs; at 10M Postgres leads on the four every engine answered (33 points against Strata's 42). Each report shows its ranking under five rules.</p></details>
       <details><summary>Why only nine engines at 10M?</summary><p>Five did not run in 52 GiB. Milvus and Redis then ran with twice the memory: <a href="bench-10m.html#big">shown, not ranked</a>.</p></details>
       <details><summary>Can I run it myself?</summary><p>Yes: <a href="bench-method.html#reproduce">How we test</a> has the commands for a laptop or a cloud account.</p></details>
     </div>

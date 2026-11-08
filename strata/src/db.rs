@@ -325,12 +325,16 @@ impl Db {
     /// name, with the offset of the last event each wrote; none before
     /// the first.
     pub fn sources(&self) -> Result<Vec<Source>> {
-        let snap = self.snapshot();
+        self.sources_at(&self.snapshot())
+    }
+
+    /// [`Db::sources`] as of version `snap`.
+    pub fn sources_at(&self, snap: &Snapshot) -> Result<Vec<Source>> {
         if snap.table(SOURCES).is_none() {
             return Ok(Vec::new());
         }
         let sql = format!("SELECT name, last_offset, updated FROM {SOURCES} LIMIT {}", u32::MAX);
-        let rs = self.query_at(&snap, &sql, &Params::new(), &ExecOptions { max_rows: None, ..self.exec.clone() })?;
+        let rs = self.query_at(snap, &sql, &Params::new(), &ExecOptions { max_rows: None, ..self.exec.clone() })?;
         let mut sources: Vec<Source> = rs
             .rows
             .into_iter()
@@ -522,7 +526,7 @@ impl Db {
         let derivers = self.derivers_of(&schema);
         let media = self.media_resolver();
         let mut docs = docs.into_iter();
-        if models.iter().all(Option::is_none) && !schema.fields.iter().any(|f| f.media.is_some()) {
+        if models.iter().all(Option::is_none) && derivers.iter().all(Option::is_none) && !schema.fields.iter().any(|f| f.media.is_some()) {
             return self.storage.try_bulk_load_into(table, docs.map(move |d| {
                 d.map(|mut d| {
                     schema.fill_generated(&mut d);
@@ -772,7 +776,16 @@ impl Db {
         let schema = self.table(table)?;
         let f = schema.field(field).ok_or_else(|| Error::Schema(format!("no field {field}")))?;
         let Some(spec) = &f.derive else { return Err(Error::Schema(format!("field {field} is not a derived TEXT field"))) };
-        let kind = schema.field(&spec.from).and_then(|m| m.media).expect("checked by the schema");
+        let Some(kind) = schema.field(&spec.from).and_then(|m| m.media) else {
+            // Text of text: a language model's.
+            if d.modality() != Modality::Text {
+                return Err(Error::Schema(format!("model {} makes text of {}s, and {} is not a MEDIA field", spec.model, d.modality().as_str(), spec.from)));
+            }
+            let mut all = self.derivers.write().unwrap_or_else(|e| e.into_inner());
+            all.retain(|m| !(m.table.eq_ignore_ascii_case(&schema.table) && m.field.eq_ignore_ascii_case(&f.name)));
+            all.push(Deriving { table: schema.table.clone(), field: f.name.clone(), derive: spec.clone(), model: d });
+            return Ok(());
+        };
         let wants = match d.modality() {
             Modality::Image => crate::media::MediaKind::Image,
             Modality::Audio => crate::media::MediaKind::Audio,
@@ -873,7 +886,7 @@ impl Db {
         for f in schema.fields.iter().filter(|f| which(f)) {
             let opened = match (&f.embed, &f.derive) {
                 (Some(spec), _) => crate::embed::open_for(&spec.model, match f.ty { FieldType::Vector { dim, .. } => Some(dim), _ => None }, models).and_then(|m| self.set_embedder_in(table, &f.name, m)),
-                (_, Some(spec)) => crate::derive::open(&spec.model, models).and_then(|m| self.set_deriver_in(table, &f.name, m)),
+                (_, Some(spec)) => crate::derive::open_for(spec, models).and_then(|m| self.set_deriver_in(table, &f.name, m)),
                 _ => continue,
             };
             if let Err(e) = opened {
@@ -1565,12 +1578,42 @@ impl Db {
     /// read after each write builds nothing ([`Snapshot::find`]). An INT
     /// key may be given as text of its digits.
     pub fn get_many_at(&self, snap: &Snapshot, keys: &[Value], opts: &ExecOptions) -> Result<Vec<Option<KeyRow>>> {
+        let fields: Vec<usize> = qsql::star_fields(snap.schema()).collect();
+        self.get_fields_at(snap, keys, &fields, opts)
+    }
+
+    /// [`Db::get_many_at`] of the columns named `columns` alone, in that
+    /// order: each one of those [`Db::get_columns`] lists. A read of a few
+    /// columns of many rows (a ranker's features) leaves the rest unread:
+    /// the doc store's blocks are not decompressed at all when every
+    /// column asked for is a single-valued KEYWORD, INT or FLOAT, which
+    /// their columns answer.
+    pub fn get_columns_at(&self, snap: &Snapshot, keys: &[Value], columns: &[String], opts: &ExecOptions) -> Result<Vec<Option<KeyRow>>> {
+        let fields = Self::key_read_fields(snap.schema(), columns)?;
+        self.get_fields_at(snap, keys, &fields, opts)
+    }
+
+    /// The positions of the columns named `columns` (any case) of a table
+    /// of schema `schema`, as a read by key answers them
+    /// ([`Db::get_columns_at`]).
+    pub fn key_read_fields(schema: &Schema, columns: &[String]) -> Result<Vec<usize>> {
+        columns
+            .iter()
+            .map(|c| {
+                schema.field_index(c).filter(|&i| qsql::star_fields(schema).any(|s| s == i)).ok_or_else(|| {
+                    let names: Vec<String> = Self::get_columns(schema);
+                    Error::Query(format!("{c:?} is not a column a read by key of {} answers; those are {}", schema.table, names.join(", ")))
+                })
+            })
+            .collect()
+    }
+
+    fn get_fields_at(&self, snap: &Snapshot, keys: &[Value], fields: &[usize], opts: &ExecOptions) -> Result<Vec<Option<KeyRow>>> {
         let schema = snap.schema();
         let pk = schema.primary_key.ok_or_else(|| Error::Query(format!("{} has no primary key: rows are read by key only from a table with one", schema.table)))?;
         let keys: Vec<Value> = keys.iter().map(|k| key_value(schema, pk, k)).collect::<Result<_>>()?;
-        let fields: Vec<usize> = qsql::star_fields(schema).collect();
-        let q = qsql::fields_select(schema, &fields);
-        let mut out = self.rows_by_key(snap, &keys, &fields, opts)?;
+        let q = qsql::fields_select(schema, fields);
+        let mut out = self.rows_by_key(snap, &keys, fields, opts)?;
         for row in out.iter_mut().flatten() {
             q.typed(std::slice::from_mut(&mut row.row));
         }
@@ -1622,6 +1665,11 @@ impl Db {
             }
         }
         if !at.is_empty() {
+            // Read in the order of the segments' docIDs, whatever the keys'
+            // order: the doc store keeps one decompressed block a segment,
+            // so rows of the same block are then decompressed once rather
+            // than once each.
+            at.sort_unstable_by_key(|&(_, seg, doc, _)| (seg, doc));
             let q = qsql::fields_select(schema, &fields);
             let view = snap.found_view();
             let readers = self.readers(&view)?;
@@ -2196,6 +2244,27 @@ fn derived_of(derivers: &[Option<Arc<dyn Deriver>>], schema: &Schema, docs: &[Do
 /// together (a sound can be an hour long).
 fn derive_sources(d: &dyn Deriver, schema: &Schema, m: usize, values: &[String], files: &Files) -> Result<Vec<String>> {
     let field = &schema.fields[m].name;
+    // A TEXT or KEYWORD field's values are the inputs themselves, each
+    // distinct one given once (a language model's request each).
+    if schema.fields[m].media.is_none() {
+        let mut at: HashMap<&str, usize> = HashMap::new();
+        let mut distinct: Vec<&str> = Vec::new();
+        let slots: Vec<usize> = values
+            .iter()
+            .map(|v| {
+                *at.entry(v.as_str()).or_insert_with(|| {
+                    distinct.push(v.as_str());
+                    distinct.len() - 1
+                })
+            })
+            .collect();
+        let mut made = Vec::with_capacity(distinct.len());
+        for batch in distinct.chunks(32) {
+            let inputs: Vec<Input> = batch.iter().map(|v| Input::Text(v)).collect();
+            made.extend(d.derive(&inputs)?);
+        }
+        return Ok(slots.into_iter().map(|i| made[i].clone()).collect());
+    }
     if d.modality() == Modality::Audio {
         return in_sound_batches(field, values, files, |inputs| d.derive(inputs));
     }

@@ -44,6 +44,9 @@ pub struct Config {
     /// Before Edit/Write, also the files usually edited next, with a note
     /// on each ([`crate::next_files`]; an experiment, `ENGRAM_NEXT_FILES=1`).
     pub next_files: bool,
+    /// A command that fails with an error cleared before gets the steps
+    /// that cleared it, and fixes are written down ([`crate::fixes`]).
+    pub error_fixes: bool,
     pub sync: bool,
     /// Knowledge written down by a small model after each turn.
     pub distill: crate::distill::DistillConfig,
@@ -65,6 +68,7 @@ impl Default for Config {
             knowledge: Default::default(),
             file_notes: true,
             next_files: std::env::var("ENGRAM_NEXT_FILES").is_ok_and(|v| v == "1"),
+            error_fixes: std::env::var("ENGRAM_ERROR_FIXES").map_or(true, |v| v != "0"),
             sync: true,
             distill: Default::default(),
             consolidate: Default::default(),
@@ -104,6 +108,9 @@ pub struct Session {
     pub last_seen: i64,
     /// Bytes of the transcript already scanned for narration.
     pub transcript_offset: u64,
+    /// Failed commands followed until they pass ([`crate::fixes`]).
+    #[serde(default)]
+    pub fixes: crate::fixes::Tracker,
 }
 
 /// A query-understanding search started after a prompt (`async` mode).
@@ -399,19 +406,35 @@ impl Daemon {
                     resp = json!({"is_error": true, "error": p.get("error").cloned().unwrap_or(resp)});
                 }
                 let project = self.project.clone();
-                let (turn, ctx) = self.with_session(&sid, |s| {
+                let fixes_on = self.cfg.error_fixes;
+                let (turn, ctx, fixed) = self.with_session(&sid, |s| {
                     s.episode.add_tool(&tool, &input, &resp, &project);
-                    (s.turn, format!("Turn {} request: {}", s.turn, s.episode.prompt.chars().take(200).collect::<String>()))
+                    let fixed = if fixes_on { s.fixes.observe(&tool, &input, &resp, &project) } else { Vec::new() };
+                    (s.turn, format!("Turn {} request: {}", s.turn, s.episode.prompt.chars().take(200).collect::<String>()), fixed)
                 });
                 let me = self.clone();
-                let out = match self.take_deep(&sid, turn, false) {
-                    Some(t) => ctx_out(event, t),
-                    None => json!({"output": null}),
-                };
+                let mut text = self.take_deep(&sid, turn, false).unwrap_or_default();
+                if fixes_on && tool == "Bash" {
+                    let fix = self.fix_for(&sid, &resp);
+                    if !fix.is_empty() {
+                        text = if text.is_empty() { fix } else { format!("{text}\n\n{fix}") };
+                    }
+                }
                 Ok((
-                    out,
+                    ctx_out(event, text),
                     Some(Box::new(move || {
-                        let drafts: Vec<Draft> = capture::tool_drafts(&tool, &input, &resp, &project).into_iter().map(|d| d.ctx(ctx.clone())).collect();
+                        let mut drafts: Vec<Draft> = capture::tool_drafts(&tool, &input, &resp, &project).into_iter().map(|d| d.ctx(ctx.clone())).collect();
+                        if !fixed.is_empty() {
+                            let from = me.prompt_of(&sid, turn);
+                            for f in &fixed {
+                                let d = f.draft(&ctx);
+                                drafts.push(match &from {
+                                    Some(p) => d.link("from", p.clone()),
+                                    None => d,
+                                });
+                            }
+                            me.log(&json!({"ts": now(), "event": "fix", "session": sid, "turn": turn, "fixes": fixed.len()}));
+                        }
                         if let Err(e) = me.store.append(&sid, turn, now(), drafts) {
                             me.log(&json!({"ts": now(), "error": e.to_string(), "event": "PostToolUse"}));
                         }
@@ -538,14 +561,7 @@ impl Daemon {
                 let mut seen: Vec<HashSet<String>> = known.iter().filter(|r| !replaced.contains(&r.id)).map(|r| terms(&r.text)).collect();
                 let ctx = format!("Turn {turn} request: {}", prompt.chars().take(200).collect::<String>());
                 // Each note links to the turn it was written from.
-                let source = self
-                    .store
-                    .query_with(
-                        &format!("SELECT id FROM memory WHERE session = :session AND turn = {turn} AND kind = 'prompt' ORDER BY seq ASC LIMIT 1"),
-                        &Params::new().set("session", Value::Str(sid.to_string())),
-                    )
-                    .ok()
-                    .and_then(|rs| rs.rows.first().and_then(|r| r[0].as_str().map(String::from)));
+                let source = self.prompt_of(sid, turn);
                 let n = d.drafts.len();
                 let mut drafts = Vec::new();
                 for x in d.drafts {
@@ -691,6 +707,44 @@ impl Daemon {
     /// The finished search of `turn` not delivered yet, once. With `wait`,
     /// waits for a running one (up to `stop_wait_secs`) and returns it only
     /// when its confidence is high or medium.
+    /// The id of a turn's prompt record, which notes and fixes link to.
+    fn prompt_of(&self, sid: &str, turn: i64) -> Option<String> {
+        self.store
+            .query_with(
+                &format!("SELECT id FROM memory WHERE session = :session AND turn = {turn} AND kind = 'prompt' ORDER BY seq ASC LIMIT 1"),
+                &Params::new().set("session", Value::Str(sid.to_string())),
+            )
+            .ok()
+            .and_then(|rs| rs.rows.first().and_then(|r| r[0].as_str().map(String::from)))
+    }
+
+    /// For a failed command: the fixes known for its error that this
+    /// session has not been shown, as context ([`crate::fixes`]).
+    fn fix_for(&self, sid: &str, resp: &Json) -> String {
+        let text = capture::response_text(resp);
+        if !capture::looks_like_error(resp, &text) {
+            return String::new();
+        }
+        let Some((sig, _)) = crate::fixes::signature(&text, &self.project) else { return String::new() };
+        // Not one the model was shown, nor one of this session's live window
+        // (in its context already).
+        let (shown, window) = self.with_session(sid, |s| (s.injected.clone(), s.window_start));
+        let found: Vec<Record> = match crate::fixes::known(&self.store, &sig, 4) {
+            Ok(f) => f.into_iter().filter(|r| !shown.contains(&r.id) && !(r.session == sid && r.seq >= window)).take(2).collect(),
+            Err(e) => {
+                self.log(&json!({"ts": now(), "event": "fix_lookup", "error": e.to_string()}));
+                return String::new();
+            }
+        };
+        if found.is_empty() {
+            return String::new();
+        }
+        let ids: Vec<String> = found.iter().map(|r| r.id.clone()).collect();
+        self.log(&json!({"ts": now(), "event": "fix_shown", "session": sid, "ids": ids}));
+        self.with_session(sid, |s| s.injected.extend(ids));
+        crate::fixes::render(&found)
+    }
+
     fn take_deep(&self, sid: &str, turn: i64, wait: bool) -> Option<String> {
         let until = Instant::now() + Duration::from_secs(if wait { self.deep_cfg().stop_wait_secs } else { 0 });
         loop {

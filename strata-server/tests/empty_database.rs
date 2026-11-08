@@ -12,8 +12,9 @@ use strata::db::Db;
 use strata::storage::DbOptions;
 use strata_server::auth::Access;
 use strata_server::coord::Coordinator;
+use strata_server::replication::Acks;
 use strata_server::service::{AgentConfig, Backend, Service};
-use strata_server::server;
+use strata_server::{server, slots};
 use tokio::net::TcpListener;
 
 fn agent() -> AgentConfig {
@@ -117,4 +118,64 @@ async fn a_cluster_starts_with_no_tables() {
     assert!(schema.is_placeholder());
     let url = http(service(Backend::Cluster(Arc::new(c)), schema)).await;
     starts_empty_then_serves_its_first_table(&url).await;
+}
+
+/// A server of a cluster: a numbered database (`db`) that keeps its
+/// cluster map beside it, as `strata-server --db` does.
+async fn shard(dir: &std::path::Path, name: &str, db: Db) -> (Arc<Service>, String) {
+    db.storage().start_seq_no().unwrap();
+    let schema = (*db.schema()).clone();
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent(), 16, Duration::from_secs(20));
+    svc.keep_slots_in(slots::file_of(&dir.join(name))).unwrap();
+    let svc = Arc::new(svc);
+    let url = grpc(svc.clone()).await;
+    (svc, url)
+}
+
+async fn moved(c: &Coordinator) {
+    for _ in 0..1200 {
+        let m = c.moves();
+        if m["job"]["state"] != "running" {
+            assert_eq!(m["job"]["state"], "done", "{m}");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the moves did not end: {}", c.moves());
+}
+
+/// A shard that joins a cluster that began with no tables is a server made
+/// with none, as the cluster's were: the coordinator creates the cluster's
+/// tables on it, and slots then move to it. A server made with a table
+/// (`--schema`), even one of the cluster's, is refused, saying so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shard_joins_a_cluster_that_began_with_no_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let (_, s0) = shard(d, "s0.strata", Db::create_empty(&d.join("s0.strata"), DbOptions::default()).unwrap()).await;
+    let c = Arc::new(Coordinator::connect(vec![s0]).await.unwrap());
+    let url = http(service(Backend::Cluster(c.clone()), c.schema.clone())).await;
+    let ddl = "CREATE TABLE snapshots (id KEYWORD PRIMARY KEY, item KEYWORD NOT NULL, price FLOAT)";
+    let (s, j) = call(&url, "POST", "/v1/sql", Some(json!({"sql": ddl}))).await;
+    assert_eq!(s, 200, "{j}");
+    let ops: Vec<Json> = (0..200).map(|i| json!({"op": "upsert", "table": "snapshots", "doc": {"id": format!("s{i}"), "item": format!("i{}", i % 5), "price": i as f64}})).collect();
+    let (s, j) = call(&url, "POST", "/v1/write", Some(json!({"ops": ops}))).await;
+    assert_eq!(s, 200, "{j}");
+
+    let typed = strata::Schema::from_json(r#"{"table": "snapshots", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "item", "type": "keyword"}, {"name": "price", "type": "float"}]}"#).unwrap();
+    let (_, with_schema) = shard(d, "typed.strata", Db::create(&d.join("typed.strata"), typed, DbOptions::default()).unwrap()).await;
+    let e = c.add_shard(vec![with_schema], Acks::All).await.unwrap_err();
+    assert!(e.status == 400 && e.message.contains("began with no tables") && e.message.contains("no --schema"), "{}", e.message);
+
+    let (s1, u1) = shard(d, "s1.strata", Db::create_empty(&d.join("s1.strata"), DbOptions::default()).unwrap()).await;
+    c.add_shard(vec![u1], Acks::All).await.unwrap();
+    let names: Vec<String> = s1.catalog().iter().filter(|t| !t.is_placeholder()).map(|t| t.table.clone()).collect();
+    assert_eq!(names, ["snapshots"]);
+    c.rebalance(256).unwrap();
+    moved(&c).await;
+    let (_, j) = call(&url, "POST", "/v1/query", Some(json!({"sql": "SELECT COUNT(*), SUM(price) FROM snapshots"}))).await;
+    assert_eq!(j["rows"], json!([[200, 19900.0]]), "{j}");
+    let held = s1.query(strata_server::service::QueryReq { sql: "SELECT COUNT(*) FROM snapshots".into(), ..Default::default() }).await.unwrap();
+    let n = strata_server::json::result(&held.rs, 0.0)["rows"][0][0].as_u64().unwrap();
+    assert!(n > 0 && n < 200, "the new shard holds {n} of the rows");
 }

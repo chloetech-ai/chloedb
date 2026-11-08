@@ -19,6 +19,7 @@ import { grid, resultChart, planTree, segments, answerStats, exportMenu } from "
 import { profileView } from "../profile.js";
 import { state, isProduction } from "../data.js";
 import { parseStatement, runLabel, mode, askAllow, checkWrite, endWrites, writesAllowed, whereName, reach, nearNames, replaceWord } from "../sqlguard.js";
+import { followsWho, writeThere, followBanner } from "../follows.js";
 
 export default { id: "sql", title: "SQL workbench", icon: "sql", group: "Data", full: true, range: false, keywords: "query editor sql run explain plan results chart history saved snippets parameters", render, onParams };
 
@@ -309,7 +310,11 @@ function render(page, r) {
     h("button", { class: "btn ghost", title: "Saved queries and history", onclick: library }, icon("clock"), "Library"),
     // NEW-data-tools-9: under 1,100 px the sidebar is a sheet this opens.
     h("button", { class: "btn ghost wb-tables-btn", title: "The tables, their fields and snippets", onclick: () => sideOpen(true) }, icon("table"), "Tables"));
-  const wbEl = h("div", { class: "wb" }, side, h("div", { class: "wb-main" }, tabBar, modeBar, tools, edWrap, paramsBox, splitter, out));
+  // A cluster that follows another refuses its clients' writes: say so
+  // above the editor (known with an admin key; a refused write says it too).
+  const followEl = h("div", { class: "wb-follow" });
+  followBanner(followEl, "sql").catch(() => {});
+  const wbEl = h("div", { class: "wb" }, side, h("div", { class: "wb-main" }, tabBar, modeBar, followEl, tools, edWrap, paramsBox, splitter, out));
   const sideOpen = (on) => wbEl.classList.toggle("side-open", on);
   // On a narrow screen a pick from the sheet closes it.
   side.addEventListener("click", (e) => { if (e.target.closest(".fi, .snip, .tt-h .btn") && matchMedia("(max-width: 1100px)").matches) sideOpen(false); });
@@ -595,6 +600,7 @@ function render(page, r) {
         h("span", { class: "sep" }),
         h("button", { class: "btn ghost sm", title: "Copy the message", onclick: () => copy(msg, "Error copied") }, icon("copy"), "Copy")),
       h("div", { class: "error" }, msg),
+      followsWho(msg) ? writeThere(followsWho(msg), "sql") : null,
       partialNote,
       excerpt,
       excerpt && !matchMedia("(max-width: 900px)").matches ? h("div", { class: "small muted" }, "The editor marks the same place.") : null,

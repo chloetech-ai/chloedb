@@ -95,6 +95,8 @@ const METRICS = {
   serves_reads: ["Serves reads (0 or 1)", "flag", "copy"],
   query_memory_ratio: ["Query memory used", "pct", "both"],
   write_queue: ["Writes waiting", "n", "copy"],
+  follow_lag_s: ["Follower behind its source, in seconds", "s", "both"],
+  follow_behind: ["Follower behind its source, in transactions", "n", "both"],
   running: ["Queries running", "n", "both"],
   rss_bytes: ["Resident memory", "bytes", "both"],
   heap_bytes: ["Heap", "bytes", "both"],

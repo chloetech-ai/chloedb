@@ -49,8 +49,10 @@ use strata::storage::{DbOptions, MergePolicy};
 use strata::{Document, Value, VectorCodes, VectorIndexKind};
 use strata_server::server;
 use strata_server::service::shard_of;
+use strata_server::traffic::KINDS;
 
 mod more;
+mod recsys;
 mod replay;
 mod sim;
 #[cfg(test)]
@@ -220,6 +222,61 @@ enum Cmd {
         #[arg(long)]
         no_reset: bool,
         /// Names the run in the report (`--out/replay-<label>.json`).
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Loads the recommender serving data (strata/results/recsys/serving_data.py) into an engine: the tracks, and an empty table of plays, timed.
+    RecsysLoad {
+        #[arg(long, value_enum)]
+        engine: Which,
+        #[arg(long, value_delimiter = ',', required = true)]
+        url: Vec<String>,
+        /// The serving data's directory (items.jsonl, users.jsonl, ranker/).
+        #[arg(long)]
+        data: PathBuf,
+        /// Tracks per write (Vespa: one a request, this many in flight at most).
+        #[arg(long, default_value_t = 500)]
+        batch: usize,
+        #[arg(long, default_value_t = 4)]
+        clients: usize,
+        /// Elasticsearch and OpenSearch: the indexes' shards.
+        #[arg(long, default_value_t = 1)]
+        shards: usize,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Merges the database of a stopped Strata server that recsys-load filled into as few segments as it allows (`optimize`), as
+    /// the other engines are force-merged, and adds the merge to recsys-load's report.
+    RecsysOptimize {
+        #[arg(long)]
+        db: PathBuf,
+        /// recsys-load's report (recsys-load-strata.json).
+        #[arg(long)]
+        report: Option<PathBuf>,
+    },
+    /// Times the recommender kinds (r1 to r6, `recsys.rs`) against an engine loaded by recsys-load, and scores its answers against exact ones.
+    RecsysRun {
+        #[arg(long, value_enum)]
+        engine: Which,
+        #[arg(long, value_delimiter = ',', required = true)]
+        url: Vec<String>,
+        #[arg(long)]
+        data: PathBuf,
+        /// Users whose requests are sent, in turn.
+        #[arg(long, default_value_t = 300)]
+        users: usize,
+        #[arg(long, value_delimiter = ',', default_value = "1,4,16")]
+        concurrency: Vec<usize>,
+        #[arg(long, default_value_t = 6.0)]
+        seconds: f64,
+        /// Only these kinds, comma-separated (r1 .. r6; default: all).
+        #[arg(long, value_delimiter = ',')]
+        kinds: Vec<String>,
+        /// r6: plays written a second while r1 is timed.
+        #[arg(long, default_value_t = 200.0)]
+        event_rate: f64,
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
@@ -990,31 +1047,8 @@ async fn load(collection: &str, engine: Engine, urls: &[String], shards: usize, 
 
 // --- Query kinds ---------------------------------------------------------
 
-/// The kinds of `strata-server-bench`, then five more (phrase, typo,
-/// prefix, similar items, SQL aggregate), as Strata SQL. `:seen`, `:y` and
-/// the filters' values (`:fy`, `:fc`, `:fr`, `:fs`, see `Knobs`) are written
-/// into the statement as literals (lists, and numbers that vary by query).
-const KINDS: &[(&str, &str)] = &[
-    ("bm25", "SELECT id, score() FROM docs ORDER BY bm25(body, :t, syntax => 'plain') DESC LIMIT 10"),
-    ("bm25 + filter", "SELECT id, score() FROM docs WHERE year >= :fy AND category IN (:fc) ORDER BY bm25(body, :t, syntax => 'plain') DESC LIMIT 10"),
-    ("vector", "SELECT id, score() FROM docs ORDER BY similarity(emb, :v) DESC LIMIT 10"),
-    ("vector + filter", "SELECT id, score() FROM docs WHERE rating >= :fr ORDER BY similarity(emb, :v) DESC LIMIT 10"),
-    ("hybrid (RRF)", "SELECT id, score() FROM docs ORDER BY rrf(bm25(body, :t, syntax => 'plain'), similarity(emb, :v)) DESC LIMIT 10"),
-    ("hybrid (weighted)", "SELECT id, score() FROM docs ORDER BY 0.2 * minmax(bm25(body, :t, syntax => 'plain')) + 0.8 * minmax(similarity(emb, :v)) DESC LIMIT 10"),
-    ("boosted (bm25 × decay)", "SELECT id, score() FROM docs ORDER BY bm25(body, :t, syntax => 'plain') * decay(year, 2024, 5) DESC LIMIT 10"),
-    ("facet", "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, :w) GROUP BY category ORDER BY 2 DESC LIMIT 5"),
-    ("key lookup", "SELECT id, title, year, rating FROM docs WHERE id = :k"),
-    // The rows with two neighbouring words of the query as a phrase, ranked by all of its words.
-    ("phrase", "SELECT id, score() FROM docs ORDER BY bm25(body, :p) DESC LIMIT 10"),
-    // The query with two letters of its longest word swapped, each word matching terms an edit or two away.
-    ("typo", "SELECT id, score() FROM docs ORDER BY bm25(body, :x, syntax => 'plain', fuzzy => 'auto') DESC LIMIT 10"),
-    // Search as you type: the rows with a word starting with the last word's first letters, ranked by the words before it.
-    ("prefix", "SELECT id, score() FROM docs WHERE MATCH(body, :pre) ORDER BY bm25(body, :before, syntax => 'plain') DESC LIMIT 10"),
-    // A recommender's request: the items nearest an item, rated 3 or more, minus the 20 the user has seen.
-    ("similar items", "SELECT id, score() FROM docs WHERE rating >= :fs AND id NOT IN (:seen) ORDER BY similarity(emb, :i) DESC LIMIT 10"),
-    // Analytics over the structured fields alone.
-    ("sql aggregate", "SELECT category, COUNT(*), AVG(rating) FROM docs WHERE year >= :y GROUP BY category HAVING COUNT(*) > 1000 ORDER BY 2 DESC LIMIT 10"),
-];
+// The kinds (`KINDS`) are the library's (`strata_server::traffic::KINDS`),
+// which the command center's simulator sends too.
 
 /// HNSW candidates for the vector kinds: Strata searches with ef 64 and
 /// re-scores the best 40 with the full vectors; Elasticsearch and
@@ -2899,6 +2933,15 @@ async fn main() {
                 Err(e) => Err(e),
             }
         }
+        Cmd::RecsysLoad { engine, url, data, batch, clients, shards, out } => match recsys::Eng::of(*engine) {
+            Ok(e) => recsys::load(e, url, data, *batch, *clients, *shards, out).await,
+            Err(e) => Err(e),
+        },
+        Cmd::RecsysOptimize { db, report } => recsys::optimize(db, report.as_deref()),
+        Cmd::RecsysRun { engine, url, data, users, concurrency, seconds, kinds, event_rate, label, out } => match recsys::Eng::of(*engine) {
+            Ok(e) => recsys::run(e, url, data, *users, concurrency, *seconds, kinds, *event_rate, label.clone(), out).await,
+            Err(e) => Err(e),
+        },
         Cmd::Stream { engine, url, brokers, partitions, rates, seconds, flat, restart, batch, label, out } => match engine.engine() {
             Ok(e) => stream(&cli.collection, e, url, brokers, *partitions, rates, *seconds, *flat, *restart, *batch, label.clone(), out).await,
             Err(o) => Err(format!("streams are not measured for {} yet", o.name())),

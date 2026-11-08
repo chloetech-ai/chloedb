@@ -472,6 +472,34 @@ impl Snapshot {
         Ok(out)
     }
 
+    /// Calls `f` with the primary key of each live row `mask` hides, and
+    /// the value that places it (its shard_by value, or else the key), in
+    /// the order of [`Snapshot::covered`]. A table without a primary key
+    /// has none. A follower compares its keys with its source's by them.
+    pub fn each_covered_key(&self, mask: &Mask, mut f: impl FnMut(&Value, &Value)) -> Result<()> {
+        let v = self.view();
+        if v.schema.primary_key.is_none() {
+            return Ok(());
+        }
+        let by = v.schema.shard_by_field();
+        let mut values: Option<(usize, Vec<Value>)> = None;
+        for (s, d) in self.covered(mask, None)? {
+            let pk = v.pks[s].as_ref().ok_or_else(|| Error::Corrupt(format!("table {}: segment {} has no primary-key index", v.schema.table, v.segments[s].id)))?;
+            let key = pk.key(d);
+            match by {
+                None => f(&key, &key),
+                Some(field) => {
+                    if values.as_ref().is_none_or(|(i, _)| *i != s) {
+                        values = Some((s, crate::forward::DocStore::open(&v.segments[s].file, &v.schema)?.field_values(field)?));
+                    }
+                    let place = values.as_ref().and_then(|(_, vs)| vs.get(d as usize)).unwrap_or(&Value::Null);
+                    f(&key, place)
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The rows `mask` hides in `prev`, an earlier snapshot of the same
     /// table, that this one no longer holds where `mask` hides them:
     /// deleted since, or replaced by a row of the same key that `mask`
