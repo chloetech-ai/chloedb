@@ -169,7 +169,7 @@ window.STRATA_COMPARE = {
           elastic: "p:Add fields; other changes reindex", opensearch: "p", solr: "p", vespa: "p:Some changes need a reindex", qdrant: "y:The payload has no schema", weaviate: "p?", milvus: "p?" }],
         ["Import from and export to SQLite", {
           strata: "y:strata-server import and export, or one call from Python", sqlite: "y", postgres: "p:pgloader" }],
-        ["Functions kept in the database (CREATE FUNCTION)", {
+        ["User-defined functions (UDFs) kept in the database (CREATE FUNCTION)", {
           strata: "y:SQL bodies that return a value or rows, called from any query, on one server or a cluster", postgres: "y",
           sqlite: "p:Functions are registered by the program that opens the file, not kept in it",
           elastic: "p:Stored scripts in Painless", opensearch: "p:Stored scripts in Painless", solr: "p:Function queries; new functions are Java plugins",
