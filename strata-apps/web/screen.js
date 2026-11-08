@@ -225,6 +225,9 @@
           el = h('input', { type: typ, name: f.name, placeholder: ph, required: !!f.required, value: shown, step: t === 'number' ? (f.step || 'any') : null, min: f.min ?? null, max: f.max ?? null });
         }
         controls.set(f.name, el);
+        // In a column a control keeps its own height (a form's controls flex
+        // along the row).
+        if (inCol && t !== 'checkbox') el.style.flex = 'none';
         const lab = f.label ? T(f.label, s, path) : t === 'checkbox' || t === 'file' || t === 'rating' || t === 'date' || t === 'time' || t === 'datetime' || t === 'select' ? human(f.name) : null;
         return lab ? h('label', { class: 'col', style: inCol ? 'gap:4px' : 'gap:4px;flex:1 1 140px' }, h('span', { class: 'small muted' }, lab), el) : el;
       };
@@ -259,7 +262,8 @@
     function table(b, s, path) {
       const rows = val(b.table, s, `${path}.table`) || [];
       if (!rows.length) return h('div', { class: 'empty' }, T(b.empty ?? 'Nothing here yet.', s, path));
-      const cols = (b.columns || Object.keys(rows[0]).filter((k) => k !== 'id' && k !== 'created').map((key) => ({ key }))).map((c) => (typeof c === 'string' ? { key: c } : c));
+      const given = b.columns !== undefined ? val(b.columns, s, `${path}.columns`) : null;
+      const cols = (Array.isArray(given) && given.length ? given : Object.keys(rows[0]).filter((k) => k !== 'id' && k !== 'created').map((key) => ({ key }))).map((c) => (typeof c === 'string' ? { key: c } : c));
       const fns = cols.map((c, i) => (c.value !== undefined ? val(c.value, s, `${path}.columns[${i}].value`) : null));
       const acts = (b.actions || []).map((a, i) => ({ ...a, fn: val(a.do, s, `${path}.actions[${i}].do`) }));
       const onRow = b.onRow !== undefined ? val(b.onRow, s, `${path}.onRow`) : null;

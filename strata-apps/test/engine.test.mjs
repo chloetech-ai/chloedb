@@ -434,3 +434,89 @@ test('a change to a screen can be a patch on the paths the model is shown', () =
   assert.equal(problems.length, 1);
   assert.match(problems[0], /view old: "patch" changes a screen the app has/);
 });
+
+test('a screen pattern expands into blocks, state, data and lets that pass the screen check', async () => {
+  const { PATTERNS, expandScreen, fill } = await import('../engine/patterns.mjs');
+  assert.ok(PATTERNS.size >= 4);
+  const cols = { guests: ['name', 'rsvp', 'table_no'], orders: ['customer', 'items', 'total', 'status'], clients: ['name', 'email', 'rate'], invoices: ['number', 'total', 'status', 'client'], expenses: ['amount', 'category', 'day'] };
+  const columnsOf = (t) => (cols[t] ? new Set(['id', 'created', ...cols[t]]) : null);
+  for (const [name, p] of PATTERNS) {
+    const r = expandScreen({ body: [{ h: 'Top' }, p.example] });
+    assert.deepEqual(r.problems, [], name);
+    assert.deepEqual(r.used, [name]);
+    assert.ok(!JSON.stringify(r.screen).includes('{{'), `${name}: a placeholder is left`);
+    assert.ok(!JSON.stringify(r.screen).includes('$when'), `${name}: a condition is left`);
+    assert.deepEqual(checkScreen(r.screen, columnsOf), [], name);
+    assert.equal(r.screen.body[0].h, 'Top');
+  }
+  // crud: the form goes beside the list; no search box when no search columns;
+  // columns come from the fields; the toggle column is not shown twice
+  const c = expandScreen({ body: [{ use: 'crud', table: 'tasks', form: 'side', toggle: 'done', fields: [{ name: 'title', required: true }, { name: 'due', type: 'date' }, { name: 'done', type: 'checkbox' }] }] });
+  assert.deepEqual(c.problems, []);
+  assert.ok(c.screen.body.some((b) => b.split), 'a split');
+  const text = JSON.stringify(c.screen);
+  assert.ok(!text.includes('"input"'), 'no search box');
+  const table = c.screen.body.find((b) => b.split).split[0].col.find((b) => b.table);
+  assert.deepEqual(table.columns.map((x) => x.key), ['done', 'title', 'due']);
+  assert.equal(table.columns[2].format, 'date');
+  assert.equal(c.screen.data.tasks.sql, 'SELECT * FROM tasks ORDER BY created DESC LIMIT 500');
+  // mistakes come back as problems the model can fix
+  assert.match(expandScreen({ body: [{ use: 'crud', table: 'x' }] }).problems[0], /needs "fields"/);
+  assert.match(expandScreen({ body: [{ use: 'crud', table: 'x', fields: ['a'], colums: [] }] }).problems[0], /takes table, .* not colums/);
+  assert.match(expandScreen({ body: [{ use: 'grid-of-things' }] }).problems[0], /no screen pattern/);
+  assert.match(expandScreen({ data: { guests: 'SELECT 1' }, body: [{ use: 'crud', table: 'guests', fields: ['name'] }] }).problems[0], /has data.guests already/);
+  // two of one pattern in a screen, apart by key
+  assert.deepEqual(expandScreen({ body: [{ use: 'crud', table: 'a', fields: ['n'] }, { use: 'crud', table: 'a', key: 'a2', fields: ['n'], where: 'n > 1' }] }).problems, []);
+  // the template language
+  assert.equal(fill('x{{a|pre: WHERE }}y', { a: '' }), 'xy');
+  assert.equal(fill('x{{a|pre: WHERE }}y', { a: 'b = 1' }), 'x WHERE b = 1y');
+  assert.equal(fill('{{a|json}}.map(k => r[k])', { a: ['p', 'q'] }), '["p","q"].map(k => r[k])');
+  assert.deepEqual(fill([1, '{{...a}}', { $when: 'b=2', z: 1 }, { $when: 'b!=2', z: 2 }], { a: [7, 8], b: 2 }), [1, 7, 8, { z: 1 }]);
+  assert.deepEqual(fill({ k: { $when: 'm', $value: '{{m}}' } }, {}), {});
+});
+
+test('a CREATE SCREEN statement compiles into a screen of patterns that passes the screen check', async () => {
+  const { compileStatement, compileStatements } = await import('../engine/statement.mjs');
+  const { expandScreen } = await import('../engine/patterns.mjs');
+  const src = `CREATE SCREEN guests TITLE 'Guests'
+LIST guests
+  TITLE 'Guests'  NOUN 'guest'
+  ORDER BY name  SEARCH name
+  FILTER rsvp IN ('yes', 'no', 'waiting')
+  FORM (name REQUIRED, rsvp 'RSVP' SELECT ('yes', 'no', 'waiting') DEFAULT 'waiting',
+        table_no 'Table' NUMBER)
+  COLUMNS (name, rsvp 'RSVP' BADGE, table_no 'Table')
+  KPI 'Coming' = COUNT(*) WHERE rsvp = 'yes'
+  ACTION 'Confirm' SET rsvp = 'yes'
+BOARD guests AS by_rsvp
+  BY rsvp ('yes', 'no', 'waiting')
+  NAME name
+SUMMARY guests AS tables
+  GROUP BY table_no  WHERE rsvp = 'yes'  -- a comment
+BLOCKS [{"text": "=guests.length + ' guests'"}]`;
+  const c = compileStatement(src);
+  assert.equal(c.slug, 'guests');
+  assert.equal(c.title, 'Guests');
+  assert.deepEqual(c.screen.body.map((b) => b.use || Object.keys(b)[0]), ['crud', 'board', 'summary', 'text']);
+  const list = c.screen.body[0];
+  assert.equal(list.order, 'name');
+  assert.deepEqual(list.search, ['name']);
+  assert.deepEqual(list.fields[1], { name: 'rsvp', label: 'RSVP', type: 'select', options: ['yes', 'no', 'waiting'], value: 'waiting' });
+  assert.equal(c.screen.data.guests_k0, "SELECT COUNT(*) AS v FROM guests WHERE (rsvp = 'yes')");
+  assert.equal(c.screen.body[2].group, 'table_no');
+  assert.equal(c.screen.body[2].where, "rsvp = 'yes'");
+  const e = expandScreen(c.screen);
+  assert.deepEqual(e.problems, []);
+  const cols = new Set(['id', 'created', 'name', 'rsvp', 'table_no']);
+  assert.deepEqual(checkScreen(e.screen, (t) => (t === 'guests' ? cols : null)), []);
+  // mistakes name their line and what to write
+  assert.throws(() => compileStatement("CREATE SCREEN x\nLIST t\n  FORM (a WIDGET)"), /line 3: FORM a: cannot read "WIDGET"/);
+  assert.throws(() => compileStatement('CREATE SCREEN x\nLIST t\n  SEARCH a'), /needs FORM/);
+  // in a plan: the view's code block becomes its screen; a bad one stays as code with a problem
+  const plan = { views: [{ slug: 'guests' }, { slug: 'bad' }] };
+  const code = { guests: src, bad: 'CREATE SCREEN bad\nLIST t\n  NOPE' };
+  const problems = compileStatements(plan, code);
+  assert.ok(plan.views[0].screen && plan.views[0].statement && !code.guests);
+  assert.match(problems[0], /^view bad: CREATE SCREEN line 3/);
+  assert.ok(code.bad.startsWith('CREATE SCREEN'));
+});

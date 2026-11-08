@@ -315,8 +315,8 @@ function whereFrom(d) {
   if (d.decision === 'copy') return f.starter ? 'built-in starter, copied as it is' : `copied from another app: ${f.title}`;
   if (d.decision === 'fork') return `forked from ${f.starter ? 'the built-in starter ' : ''}${f.title}`;
   if (d.decision === 'version') return `new version of the shared ${d.kind} (${f.author === 'builtin' ? 'built-in' : 'from another app'})`;
-  if (d.decision === 'change') return d.kind === 'table' ? d.detail : d.patched ? `edited in place: ${d.patched} change${d.patched === 1 ? '' : 's'} to the screen, not rewritten` : d.screen ? 'rewritten, as a screen (data, no code)' : 'rewritten';
-  if (d.decision === 'new') return d.kind === 'table' ? d.detail : d.screen ? 'written from scratch as a screen (data, no code)' : 'written from scratch';
+  if (d.decision === 'change') return d.kind === 'table' ? d.detail : d.patched ? `edited in place: ${d.patched} change${d.patched === 1 ? '' : 's'} to the screen, not rewritten` : d.patterns ? `rewritten, as a screen from the pattern${d.patterns.length > 1 ? 's' : ''} ${d.patterns.join(', ')}${d.statement ? ' (a CREATE SCREEN statement)' : ''}` : d.screen ? 'rewritten, as a screen (data, no code)' : 'rewritten';
+  if (d.decision === 'new') return d.kind === 'table' ? d.detail : d.patterns ? `written as a screen from the pattern${d.patterns.length > 1 ? 's' : ''} ${d.patterns.join(', ')}${d.statement ? ' (a CREATE SCREEN statement)' : ''}` : d.screen ? 'written from scratch as a screen (data, no code)' : 'written from scratch';
   if (d.decision === 'upgrade') return 'moved to a newer version';
   return DECISION[d.decision]?.[1] || '';
 }
@@ -721,10 +721,13 @@ function renderPanel() {
   const hadFocus = active && panel.contains(active) && active.tagName === 'TEXTAREA';
   const tab = (key, label, count) => h('button', { class: `ptab${S.panel === key ? ' on' : ''}`, onclick: () => { S.panel = key; renderPanel(); if (key !== 'change') refreshApp(); } }, label, count ? h('span', { class: 'count' }, count) : null);
   const body = h('div', { class: 'pbody' });
+  const screenView = st.views.find((v) => v.slug === S.view && v.spec?.screen);
+  if (S.panel === 'edit' && !screenView) S.panel = 'change';
   if (S.panel === 'change') body.append(...changeTab(draft));
+  else if (S.panel === 'edit') body.append(...editTab(screenView));
   else if (S.panel === 'versions') body.append(...versionsTab());
   else body.append(...insideTab());
-  panel.replaceChildren(h('div', { class: 'ptabs' }, tab('change', 'Change'), tab('versions', 'Versions', st.versions.length), tab('inside', 'Inside', st.views.length + st.functions.length + st.tables.length),
+  panel.replaceChildren(h('div', { class: 'ptabs' }, tab('change', 'Change'), screenView ? tab('edit', 'Edit') : null, tab('versions', 'Versions', st.versions.length), tab('inside', 'Inside', st.views.length + st.functions.length + st.tables.length),
     h('button', { class: 'btn small ghost mobile-only', style: 'margin-left:auto', onclick: togglePanel }, 'Close')), body);
   if (hadFocus) { const t = panel.querySelector('textarea'); t?.focus(); t?.setSelectionRange(t.value.length, t.value.length); }
 }
@@ -794,6 +797,68 @@ function versionsTab() {
       failed.map((r) => h('div', { class: 'sugg' }, h('div', { class: 'why' }, `“${r.text}”`), h('div', { class: 'small err' }, r.error),
         h('div', null, h('button', { class: 'btn small ghost', onclick: () => showTimeline(r.id, 'How this build failed') }, 'Timeline'))))) : null,
   ].filter(Boolean);
+}
+
+// Edits of a screen by hand: move, hide or rename its parts, and reorder,
+// rename or hide a table's columns and a form's fields. Each edit is a JSON
+// Patch the engine checks, runs and stores as a new version, with no model.
+function editTab(view) {
+  let screen;
+  try { screen = JSON.parse(view.code); } catch { return [h('div', { class: 'hint' }, 'This screen cannot be read.')]; }
+  const send = async (patch, note) => {
+    if (S.app.running) { toast('A change is being built: edit once it is live'); return; }
+    S.editing = true;
+    try { const r = await api('POST', `/api/apps/${S.appId}/screens/${view.slug}`, { patch, note }); if (r.unchanged) toast('Nothing changed'); } catch (e) { toast(e.message); }
+    S.editing = false;
+  };
+  const isText = (v) => typeof v === 'string' && !v.startsWith('=');
+  const KINDS = ['h', 'text', 'ui', 'row', 'col', 'grid', 'split', 'card', 'section', 'if', 'each', 'kpis', 'chips', 'input', 'button', 'form', 'table', 'code'];
+  const HOLD = ['row', 'col', 'grid', 'split', 'card', 'section', 'then', 'else', 'body'];
+  const NAMES = { h: 'Heading', text: 'Text', ui: 'Component', row: 'Row', col: 'Column', grid: 'Grid', split: 'Two columns', card: 'Card', section: 'Section', if: 'Shown when', each: 'List', kpis: 'Big numbers', chips: 'Filter chips', input: 'Input', button: 'Button', form: 'Form', table: 'Table', code: 'Code' };
+  // The text a person may rename in a block, by the key that holds it.
+  const textKey = (b) => ['h', 'text', 'button', 'title', 'placeholder', 'empty', 'label'].find((k) => isText(b[k]));
+  const out = [h('div', { class: 'where' }, 'Change this screen by hand: no model, stored at once as a new version (Versions goes back). For anything else, ask in Change.')];
+  const rows = [];
+  const walk = (list, path, depth) => {
+    (list || []).forEach((b, i) => {
+      const at = `${path}/${i}`;
+      if (!b || typeof b !== 'object') { rows.push({ at, depth, b: { text: String(b) }, kind: 'text', list, i, path }); return; }
+      const kind = KINDS.find((k) => b[k] !== undefined) || '?';
+      rows.push({ at, depth, b, kind, list, i, path });
+      if (depth < 3) for (const k of HOLD) if (Array.isArray(b[k])) walk(b[k], `${at}/${k}`, depth + 1);
+    });
+  };
+  walk(screen.body, '/body', 0);
+  const box = h('div', { class: 'caps' });
+  for (const r of rows) {
+    const tk = textKey(r.b);
+    const name = h('span', { class: 'pill' }, r.kind === 'ui' ? `ui.${r.b.ui}` : NAMES[r.kind] || r.kind);
+    const label = tk ? h('input', { value: r.b[tk], style: 'flex:1;min-width:0', title: `Rename (${tk})`, onchange: (e) => send([{ op: 'replace', path: `${r.at}/${tk}`, value: e.target.value }], `Renamed "${r.b[tk]}" to "${e.target.value}"`) })
+      : h('span', { class: 't' }, r.kind === 'table' || r.kind === 'each' ? 'rows' : r.kind === 'form' ? `adds to ${r.b.form}` : '');
+    const btn = (text, title, patch, note, disabled) => h('button', { class: 'btn small ghost', title, disabled: disabled || S.editing, onclick: () => send(patch, note) }, text);
+    const what = `${NAMES[r.kind] || r.kind}${tk ? ` "${r.b[tk]}"` : ''}`;
+    const line = h('div', { class: 'cap', style: `cursor:default;margin-left:${r.depth * 14}px` }, name, label,
+      btn('↑', 'Move up', [{ op: 'move', from: r.at, path: `${r.path}/${r.i - 1}` }], `Moved ${what} up`, r.i === 0),
+      btn('↓', 'Move down', [{ op: 'move', from: r.at, path: `${r.path}/${r.i + 1}` }], `Moved ${what} down`, r.i === r.list.length - 1),
+      btn('Hide', 'Take it out of the screen', [{ op: 'remove', path: r.at }], `Took out ${what}`));
+    box.append(line);
+    // A table's columns and a form's fields, one chip each.
+    const items = r.kind === 'table' && Array.isArray(r.b.columns) ? ['columns', r.b.columns, (c) => c.label || c.key] : r.kind === 'form' && Array.isArray(r.b.fields) ? ['fields', r.b.fields, (f) => (typeof f === 'string' ? f : f.label || f.name)] : null;
+    if (items) {
+      const [key, list, show] = items;
+      box.append(h('div', { style: `display:flex;flex-wrap:wrap;gap:6px;margin-left:${r.depth * 14 + 14}px` }, list.map((c, k) => {
+        const obj = typeof c === 'object' && c;
+        const text = show(c);
+        return h('span', { class: 'chip', style: 'display:inline-flex;gap:4px;align-items:center;padding:2px 6px;border:1px solid var(--line);border-radius:999px;font-size:12px' },
+          k > 0 ? h('button', { class: 'btn small ghost', style: 'padding:0 4px', title: 'Move left', onclick: () => send([{ op: 'move', from: `${r.at}/${key}/${k}`, path: `${r.at}/${key}/${k - 1}` }], `Moved ${text} left`) }, '‹') : null,
+          obj ? h('input', { value: String(text), style: 'width:9em;font-size:12px;padding:1px 4px', title: 'Rename', onchange: (e) => send([{ op: 'add', path: `${r.at}/${key}/${k}/label`, value: e.target.value }], `Renamed ${text} to ${e.target.value}`) }) : h('span', null, String(text)),
+          k < list.length - 1 ? h('button', { class: 'btn small ghost', style: 'padding:0 4px', title: 'Move right', onclick: () => send([{ op: 'move', from: `${r.at}/${key}/${k}`, path: `${r.at}/${key}/${k + 1}` }], `Moved ${text} right`) }, '›') : null,
+          h('button', { class: 'btn small ghost', style: 'padding:0 4px', title: 'Hide', onclick: () => send([{ op: 'remove', path: `${r.at}/${key}/${k}` }], `Took out the ${key === 'columns' ? 'column' : 'field'} ${text}`) }, '×'));
+      })));
+    }
+  }
+  out.push(box);
+  return out;
 }
 
 function insideTab() {

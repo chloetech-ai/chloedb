@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Engine } from './engine.mjs';
-import { forge, suggestFromUse, useSharedVersion } from './forge.mjs';
+import { forge, suggestFromUse, useSharedVersion, editScreen } from './forge.mjs';
 import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
@@ -353,6 +353,19 @@ const routes = [
     await engine.store.setSuggestion(sid, b.status === 'taken' ? 'taken' : 'dismissed');
     if (!engine.feed) broadcast('suggestions', { app: id });
     return { ok: true };
+  }],
+  // A person's own edit of a screen (from the studio): no model, no queue;
+  // refused while a change is being built, which would not include it.
+  ['POST', /^\/api\/apps\/([a-z0-9]+)\/screens\/([a-z0-9-]+)$/, async (b, [id, slug]) => {
+    if (running.has(id)) throw Object.assign(new Error('a change is being built: edit once it is live'), { status: 409 });
+    const t0 = Date.now();
+    const out = await editScreen(engine, id, slug, b);
+    if (!out.unchanged) {
+      const text = String(b.note || `Edited the screen ${slug} by hand`).slice(0, 300);
+      await engine.store.putRequest({ id: newId(10), app: id, text, source: 'edit', status: 'done', comp: out.n, summary: text, log: '', error: '', ms: Date.now() - t0, cost: 0, created: new Date().toISOString() });
+      broadcast('done', { app: id, request: null, n: out.n, summary: text });
+    }
+    return out;
   }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/restore$/, async (b, [id]) => {
     const n = Number(b.n);

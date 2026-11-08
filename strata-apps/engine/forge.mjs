@@ -9,6 +9,8 @@ import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, SHARED_KINDS, physical } fr
 import { SHARED, sharedRefs, appNode } from './graph.mjs';
 import { Trace, planDecisions } from './trace.mjs';
 import { rewriteSql } from './sql.mjs';
+import { expandPlan, expandScreen, patternsDoc } from './patterns.mjs';
+import { compileStatements, compileStatement, STATEMENT_DOC } from './statement.mjs';
 
 const BASE_SYSTEM = `You build and change small web apps for one person, through a runtime whose backbone is a database, Strata. An app is made of capabilities that the runtime stores in Strata and loads:
 
@@ -197,7 +199,7 @@ Write each view as a screen unless it needs something a screen cannot say. A scr
     {"table": "=shown", "columns": [{"key": "name"}, {"key": "rsvp", "label": "RSVP", "badge": true}, {"key": "table_no", "label": "Table"}],
      "actions": [{"label": "Edit", "do": "=g => set({editing: g})"}, {"label": "Delete", "do": "=g => app.remove('guests', g.id)", "confirm": "Delete this guest?"}],
      "empty": "No guests yet: add the first one above."},
-    {"ui": "barChart", "props": {"items": "=meals.map(m => ({label: m.meal, value: m.n}))"}}
+    {"ui": "barChart", "props": {"data": "=meals.map(m => ({label: m.meal, value: m.n}))"}}
   ]
 }
 
@@ -224,12 +226,31 @@ const SCREEN_PLAN = `
 - views: a screen view carries its whole screen in the plan entry ("screen": {...}) and has no code block. A code view has no "screen" and a code block of its slug.
 - To change a screen the app has, give "patch" in its plan entry instead of "screen": JSON Patch operations on the screen as the app shows it, with the paths shown there: {"op": "add" | "replace" | "remove" | "move" | "copy", "path": "/body/3", "value": ...} ("from" for move and copy; "/body/2/columns/-" adds at the end of a list; an add at /body/3 puts the block before the one there). A patch is far shorter than the screen: use it whenever most of the screen stays; give the whole "screen" when most of it changes.`;
 
-export const SYSTEM = SCREENS
-  ? BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n# Components (shared by every app)`)
+// CREATE SCREEN statements (engine/statement.mjs): screen views written as
+// SQL-shaped statements in their code blocks. On with STRATA_APPS_STATEMENTS=on.
+export const STATEMENTS = SCREENS && process.env.STRATA_APPS_STATEMENTS === 'on';
+
+const STATEMENT_PLAN = `
+- views: a screen view has a code block of its slug holding its CREATE SCREEN statement, and no "screen" in its plan entry (a mostly custom screen may instead carry a JSON "screen" in its plan entry, with no code block). A code view has a code block of its slug with its JavaScript.
+- To change a screen the app has, give "patch" in its plan entry instead of a statement: JSON Patch operations on the screen as the app shows it (as JSON), with the paths shown there: {"op": "add" | "replace" | "remove" | "move" | "copy", "path": "/body/3", "value": ...} ("from" for move and copy; "/body/2/columns/-" adds at the end of a list; an add at /body/3 puts the block before the one there). A patch is far shorter: use it whenever most of the screen stays; write a new CREATE SCREEN statement when most of it changes.`;
+
+export const SYSTEM = !SCREENS ? BASE_SYSTEM : STATEMENTS
+  ? BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n${patternsDoc()}\n\n${STATEMENT_DOC}\n\n# Components (shared by every app)`)
+    .replace('- An app has one to five views.', `${STATEMENT_PLAN.trim()}\n- An app has one to five views.`)
+    .replace('one <code slug="...">...</code> block for each view and function you add or rewrite', 'one <code slug="...">...</code> block for each view and function you add or rewrite (a screen view\'s block holds its CREATE SCREEN statement)')
+  : BASE_SYSTEM.replace('# Components (shared by every app)', `${SCREENS_DOC}\n\n${patternsDoc()}\n\n# Components (shared by every app)`)
     .replace('"views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1}],', '"views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1, "screen": {"data": {}, "body": []}}],')
     .replace('- An app has one to five views.', `${SCREEN_PLAN.trim()}\n- An app has one to five views.`)
-    .replace('one <code slug="...">...</code> block for each view and function you add or rewrite', 'one <code slug="...">...</code> block for each code view and function you add or rewrite (a screen view has its screen in the plan instead)')
-  : BASE_SYSTEM;
+    .replace('one <code slug="...">...</code> block for each view and function you add or rewrite', 'one <code slug="...">...</code> block for each code view and function you add or rewrite (a screen view has its screen in the plan instead)');
+
+// A plan's screens made ready to check: statements compiled, patches applied
+// to the screens the app has, patterns expanded, and each screen put in the
+// code of its view (as JSON). Returns problems.
+export function prepareScreens(plan, code, view) {
+  const problems = [...compileStatements(plan, code), ...patchScreens(plan, view), ...expandPlan(plan)];
+  screensToCode(plan, code);
+  return problems;
+}
 
 // Columns of a table, as the app has it and as the plan adds to it.
 function columnsFor(view, plan) {
@@ -361,6 +382,18 @@ export function screenWatcher(view, onScreen) {
     const now = Date.now();
     if (!text || now - last < 600) return;
     last = now;
+    // A CREATE SCREEN statement, once its code block is complete.
+    for (const m of text.matchAll(/<code slug="([a-z][a-z0-9-]*)">\s*(CREATE\s+SCREEN\b[\s\S]*?)<\/code>/gi)) {
+      if (sent.has(m[1])) continue;
+      try {
+        const c = compileStatement(m[2]);
+        const v = (text.match(new RegExp(`\\{[^{}]*"slug"\\s*:\\s*"${m[1]}"[^{}]*\\}`)) || [])[0];
+        let entry = {};
+        try { entry = v ? JSON.parse(v) : {}; } catch { /* the plan entry is not complete JSON on its own */ }
+        sent.add(m[1]);
+        onScreen({ slug: m[1], title: entry.title || c.title || m[1], order: entry.order ?? 50, screen: c.screen });
+      } catch { /* not complete or not right yet */ }
+    }
     const key = text.indexOf('"views"');
     const open = key < 0 ? -1 : text.indexOf('[', key);
     if (open < 0) return;
@@ -378,7 +411,7 @@ export function screenWatcher(view, onScreen) {
 }
 
 const tee = (...fns) => (seen, text) => { for (const f of fns) if (f) f(seen, text); };
-const previewer = (view, progress) => screenWatcher(view, (p) => progress(`Drew the screen ${p.title} while the rest is written`, { preview: p }));
+const previewer = (view, progress) => screenWatcher(view, (p) => progress(`Drew the screen ${p.title} while the rest is written`, { preview: { ...p, screen: expandScreen(p.screen).screen } }));
 
 // A plan's screens become the code of their views (JSON text), so the rest
 // of the forge handles them as it handles code.
@@ -760,6 +793,7 @@ export async function validate(plan, code, view, library, shared = new Map()) {
       }
       const src = code[item.slug];
       if (!src || !src.trim()) { problems.push(`${kind} ${item.slug} has no <code slug="${item.slug}"> block`); continue; }
+      if (kind === 'view' && /^\s*CREATE\s+SCREEN\b/i.test(src)) continue; // its problems came from compiling it
       const p = kind === 'view' ? checkView(src) : await checkFunction(src);
       for (const x of p) problems.push(`${kind} ${item.slug}: ${x}`);
       if (kind === 'function' && item.on) {
@@ -849,12 +883,12 @@ export const SPLIT = process.env.STRATA_APPS_SPLIT || 'first';
 
 const PLAN_STEP = `# This step: the plan alone
 
-Answer with the <plan> alone this time, and no code blocks. Each view, function, component and helper in it is then written by its own writer, all at once, and each writer sees this plan and the request but nothing the others write. So the plan is the contract between them:
+Answer with the <plan> alone this time, and no code blocks${STATEMENTS ? ' (but for the screens\' CREATE SCREEN statements)' : ''}. Each view, function, component and helper in it is then written by its own writer, all at once, and each writer sees this plan and the request but nothing the others write. So the plan is the contract between them:
 - Give every view, function, component and helper a "spec": what it shows or computes, in enough detail to be written alone. For a view: the tables and columns it reads and writes, the functions it calls with their input and output, and the components and helpers it calls with the props or arguments it passes. For a function: its input and what it returns. For content (lessons, explanations, questions, texts), an outline of it; the writer writes it out in full.
 - Give each one "uses": the shared components and helpers its code calls, as "ui:name" and "lib:name", new ones and ones from the library.
 - Give components "props" and helpers "api" exactly as their code will take them, with every argument and what each function returns.
 - Keep the scope to what the request asks: the fewest pieces, each the smallest that does its job well. Content gets an outline of what it covers, sized to the request (a short course is 4 to 6 lessons, a quiz 5 to 8 questions, unless the person asked for more).
-- Keep "summary", "seed" and "suggestions" as always.${SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}`;
+- Keep "summary", "seed" and "suggestions" as always.${STATEMENTS ? '\n- A screen view has no writer: after the plan, give its CREATE SCREEN statement now, complete, in a <code slug="..."> block of its slug (the only code blocks of this answer). Only code views, functions, components and helpers are written after the plan.' : SCREENS ? '\n- A screen view has no writer: give its whole "screen" in its plan entry now, complete. Only code views, functions, components and helpers are written after the plan.' : ''}`;
 
 const pieceStep = (what, slug) => `# This step: write ${what}
 
@@ -895,10 +929,13 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
     cost += answer.cost || 0;
     await tr.span('check', 'Check the plan', async (c) => {
       try {
-        ({ plan } = parseAnswer(answer.text));
-        screensToCode(plan, {});
+        const parsed = parseAnswer(answer.text);
+        plan = parsed.plan;
+        // The plan's CREATE SCREEN statements come with it; other code waits for the writers.
+        const statements = Object.fromEntries(Object.entries(parsed.code || {}).filter(([, c]) => /^\s*CREATE\s+SCREEN\b/i.test(c)));
+        const preparing = prepareScreens(plan, statements, view);
         completePlan(plan, view, library);
-        problems = (await validate(plan, {}, view, library, shared)).filter((p) => !/has no <code slug=/.test(p));
+        problems = [...preparing, ...(await validate(plan, {}, view, library, shared)).filter((p) => !/has no <code slug=/.test(p))];
       } catch (e) { problems = [e.message]; }
       c.problems = problems.slice(0, 8);
     });
@@ -941,7 +978,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
     });
   };
   await write(pieces);
-  problems = await tr.span('check', 'Check the code', async (c) => { const p = await validate(plan, code, view, library, shared); c.problems = p.slice(0, 8); return p; });
+  problems = await tr.span('check', 'Check the code', async (c) => { const p = [...prepareScreens(plan, code, view), ...await validate(plan, code, view, library, shared)]; c.problems = p.slice(0, 8); return p; });
   if (problems.length) {
     const notes = new Map();
     for (const pc of pieces) {
@@ -952,7 +989,7 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
     progress(`Checking the code: ${problems.length} problem${problems.length === 1 ? '' : 's'} (${problems.slice(0, 3).join('; ').slice(0, 400)})${again.length ? `; writing ${again.map((p) => p.label).join(', ')} again` : ''}`);
     if (again.length) {
       await write(again, notes);
-      problems = await tr.span('check', 'Check the code again', async (c) => { const p = await validate(plan, code, view, library, shared); c.problems = p.slice(0, 8); return p; });
+      problems = await tr.span('check', 'Check the code again', async (c) => { const p = [...prepareScreens(plan, code, view), ...await validate(plan, code, view, library, shared)]; c.problems = p.slice(0, 8); return p; });
     }
   }
   return { plan, code, cost, problems, decidedAt };
@@ -995,10 +1032,9 @@ async function forgeTraced(engine, appId, request, progress, tr) {
     await tr.span('check', 'Check the code', async (c) => {
       try {
         ({ plan, code } = parseAnswer(answer.text));
-        const patching = patchScreens(plan, view);
-        screensToCode(plan, code);
+        const preparing = prepareScreens(plan, code, view);
         completePlan(plan, view, library);
-        problems = [...patching, ...await validate(plan, code, view, library, shared)];
+        problems = [...preparing, ...await validate(plan, code, view, library, shared)];
       } catch (e) {
         problems = [e.message];
       }
@@ -1058,7 +1094,10 @@ async function forgeTraced(engine, appId, request, progress, tr) {
         const cols = columnsFor(view, plan);
         for (const v of fixed.views || []) {
           const i = (plan.views || []).findIndex((x) => x.slug === v.slug);
-          if (i < 0 || !v.screen || typeof v.screen !== 'object' || checkScreen(v.screen, cols).length) continue;
+          if (i < 0 || !v.screen || typeof v.screen !== 'object') continue;
+          const ex = expandScreen(v.screen);
+          if (ex.problems.length || checkScreen(ex.screen, cols).length) continue;
+          v.screen = ex.screen;
           plan.views[i] = { ...plan.views[i], screen: v.screen };
           code[v.slug] = JSON.stringify(v.screen, null, 1);
         }
@@ -1232,4 +1271,35 @@ export async function suggestFromUse(engine, appId) {
     .map((s) => ({ text: String(s.text).slice(0, 300), why: String(s.why || '').slice(0, 300), source: 'use', cap: s.library || '' }));
   if (items.length) await store.putSuggestions(appId, items);
   return items;
+}
+
+// A person's own change to a screen, with no model: a patch on the screen as
+// the app has it (or a whole screen), expanded, checked and its queries run,
+// then stored as the view's next version in a new version of the app. A
+// screen that fails a check is not stored; the problems come back.
+export async function editScreen(engine, appId, slug, { patch, screen, note } = {}) {
+  const store = engine.store;
+  const view = await store.resolve(appId);
+  const cur = view.views.find((v) => v.slug === slug);
+  if (!cur || !cur.spec?.screen) throw Object.assign(new Error(`the app has no screen ${slug}`), { status: 404 });
+  let next;
+  try { next = screen && typeof screen === 'object' ? screen : applyPatch(JSON.parse(cur.code), Array.isArray(patch) ? patch : []); } catch (e) { throw Object.assign(new Error(e.message), { status: 400 }); }
+  const ex = expandScreen(next);
+  const problems = [...ex.problems, ...checkScreen(ex.screen, columnsFor(view, {}))];
+  if (!problems.length) problems.push(...await dryRunScreens(engine.db, appId, view.tables.map((t) => t.spec.name), { views: [{ slug, screen: ex.screen }] }));
+  if (problems.length) throw Object.assign(new Error(problems.slice(0, 4).join('; ')), { status: 400, problems });
+  const code = JSON.stringify(ex.screen, null, 1);
+  if (code === cur.code) return { n: view.comp.n, unchanged: true };
+  // Shared components the screen names must exist; the app pins the ones it
+  // did not use before (a pattern may bring the kanban, the bar chart...).
+  const shared = await store.shared();
+  const missing = [...sharedRefs(code)].filter((k) => !shared.has(k));
+  if (missing.length) throw Object.assign(new Error(`the library has no ${missing.map((k) => k.replace('component/', 'ui.').replace('helper/', 'lib.')).join(', ')}`), { status: 400 });
+  const id = await store.putCapability({ app: appId, slug, kind: 'view', title: cur.title, description: cur.description, code, spec: cur.spec, author: 'person' });
+  const own = view.comp.caps.filter((c) => !view.shared.some((x) => x.id === c)).map((c) => (c === cur.id ? id : c));
+  const roots = own.filter((c) => /\/(view|function)\//.test(c));
+  const pinned = await pinShared(store, roots, { had: new Map(view.shared.map((c) => [`${c.kind}/${c.slug}`, c.id])), shared });
+  const text = String(note || `Edited the screen ${cur.title} by hand`).slice(0, 300);
+  const n = await store.writeComposition(appId, [...own, ...pinned.values()], text, text);
+  return { n, cap: id, patterns: ex.used };
 }

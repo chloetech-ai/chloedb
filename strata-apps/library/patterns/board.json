@@ -1,0 +1,148 @@
+{
+ "title": "A board of a table's rows in columns by a status column, moved by drag or arrows",
+ "about": "Orders from new to ready, requests from open to done, deals by stage: the kanban component over a table, with the status column as the board's columns, a form to add a card in a column, and editing a card when tapped.",
+ "params": {
+  "table": {
+   "about": "the table",
+   "need": true
+  },
+  "key": {
+   "about": "names the pattern's data and state",
+   "default": "{{table}}"
+  },
+  "title": {
+   "about": "a heading"
+  },
+  "noun": {
+   "about": "what one card is",
+   "default": "card"
+  },
+  "status": {
+   "about": "the column whose value is the card's column",
+   "need": true
+  },
+  "statuses": {
+   "about": "the columns in order: values, or {\"value\", \"label\"}",
+   "need": true
+  },
+  "name": {
+   "about": "the column shown as the card's title",
+   "default": "title"
+  },
+  "meta": {
+   "about": "columns shown under the title, joined by dots"
+  },
+  "fields": {
+   "about": "the form's fields, to add a card and edit one (no adding when left out)"
+  },
+  "where": {
+   "about": "an SQL condition on the rows"
+  },
+  "order": {
+   "about": "SQL ORDER BY",
+   "default": "created"
+  },
+  "sql": {
+   "about": "the whole SELECT (default: from table, where and order)",
+   "default": "SELECT * FROM {{table}}{{where|pre: WHERE }} ORDER BY {{order}} LIMIT 500"
+  }
+ },
+ "example": {
+  "use": "board",
+  "table": "orders",
+  "title": "Orders",
+  "noun": "order",
+  "status": "status",
+  "statuses": [
+   "new",
+   "preparing",
+   "ready"
+  ],
+  "name": "customer",
+  "meta": [
+   "items",
+   "total"
+  ],
+  "fields": [
+   {
+    "name": "customer",
+    "required": true
+   },
+   {
+    "name": "items",
+    "type": "textarea"
+   },
+   {
+    "name": "total",
+    "type": "number"
+   }
+  ]
+ },
+ "screen": {
+  "state": {
+   "{{key}}_adding": null,
+   "{{key}}_editing": null
+  },
+  "data": {
+   "{{key}}": "{{sql}}"
+  },
+  "let": {
+   "{{key}}_columns": "={{statuses|json}}.map(s => s && typeof s === 'object' ? {id: s.value, title: s.label || String(s.value)} : {id: s, title: String(s).charAt(0).toUpperCase() + String(s).slice(1).replace(/_/g, ' ')})",
+   "{{key}}_items": "={{key}}.map(row => ({id: row.id, column: row[{{status|json}}], title: String(row[{{name|json}}] ?? 'Untitled'), subtitle: ({{meta|json}} || []).map(k => row[k]).filter(v => v != null && v !== '').map(v => Array.isArray(v) ? v.join(', ') : String(v)).join(' \u00b7 ')}))"
+  },
+  "body": [
+   {
+    "$when": "title",
+    "h": "{{title}}"
+   },
+   {
+    "ui": "kanban",
+    "props": {
+     "columns": "={{key}}_columns",
+     "items": "={{key}}_items",
+     "onMove": "=(id, column) => app.update({{table|json}}, id, { [{{status|json}}]: column })",
+     "onAdd": {
+      "$when": "fields",
+      "$value": "=column => set({ {{key}}_adding: column, {{key}}_editing: null })"
+     },
+     "onOpen": {
+      "$when": "fields",
+      "$value": "=item => set({ {{key}}_editing: {{key}}.find(r => r.id === item.id) || null, {{key}}_adding: null })"
+     }
+    }
+   },
+   {
+    "$when": "fields",
+    "if": "=state.{{key}}_adding || state.{{key}}_editing",
+    "then": [
+     {
+      "card": [
+       {
+        "form": "{{table}}",
+        "layout": "col",
+        "fields": "{{fields}}",
+        "set": "=state.{{key}}_editing ? {} : { [{{status|json}}]: state.{{key}}_adding }",
+        "submit": "=state.{{key}}_editing ? 'Save' : 'Add ' + {{noun|json}}",
+        "edit": "=state.{{key}}_editing",
+        "after": "=() => set({ {{key}}_adding: null, {{key}}_editing: null })",
+        "cancel": "=() => set({ {{key}}_adding: null, {{key}}_editing: null })"
+       },
+       {
+        "if": "=state.{{key}}_editing",
+        "then": [
+         {
+          "button": "Delete",
+          "class": "danger small",
+          "confirm": "Delete this {{noun}}?",
+          "do": "=() => app.remove({{table|json}}, state.{{key}}_editing.id).then(() => set({ {{key}}_editing: null }))"
+         }
+        ]
+       }
+      ],
+      "title": "=state.{{key}}_editing ? 'Edit ' + {{noun|json}} : 'Add ' + {{noun|json}} + ' to ' + ({{key}}_columns.find(c => c.id === state.{{key}}_adding) || {}).title"
+     }
+    ]
+   }
+  ]
+ }
+}

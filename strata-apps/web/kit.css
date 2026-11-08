@@ -69,7 +69,7 @@ tbody tr:hover { background: var(--soft); }
 .center { display: grid; place-items: center; text-align: center; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
 .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
-@media (max-width: 640px) { .split { grid-template-columns: 1fr; } body { padding: 14px; } }
+@media (max-width: 640px) { .split { grid-template-columns: minmax(0, 1fr); } body { padding: 14px; } }
 .section { display: flex; flex-direction: column; gap: 10px; }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 6px; }
