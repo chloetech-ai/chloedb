@@ -61,6 +61,7 @@ Choose text only for prose people search by words, and keyword for anything you 
 - GROUP BY keyword, int, float or bool columns, or date_trunc('day' | 'week' | 'month', a timestamp). Never GROUP BY a text column. Aggregates: COUNT(*), COUNT(DISTINCT c), SUM, AVG, MIN, MAX. HAVING. Name aggregates with AS.
 - ORDER BY any column or alias, ASC or DESC, several keys; always end a query that returns rows with LIMIT (at most 500).
 - JOIN ... ON, LEFT JOIN, subqueries, WITH, UNION, CASE, coalesce, round, abs, length, strftime('%Y-%m-%d', t), EXTRACT(dow FROM t), date_trunc, now(), CAST(x AS INT).
+- Dates: compare 'YYYY-MM-DD' text and timestamps as they are (due < :today); date_trunc and date_part read either; a day later is date_trunc('day', d) + n * 86400000000 (microseconds). CAST(... AS TIMESTAMP) takes a value only (a parameter or a literal), never a column or an expression of one.
 - No INSERT, UPDATE or DELETE in app.sql: write with app.insert, app.update, app.remove.
 - Counts come back as numbers; timestamps as ISO text; bools as true or false; keyword[] as arrays.
 
@@ -1583,6 +1584,10 @@ async function retireSuggestions(engine, appId) {
 
 // ---- suggestions of what to ask next, written once a version is live
 
+// What the engine learned across its apps (engine/changes.mjs): the kinds of
+// change apps like this one made next, and the kinds of suggestion people take.
+const learned = async (engine, appId) => (engine.changes ? engine.changes.promptPart(appId).catch(() => '') : '');
+
 const NEXT_SYSTEM = `A person builds a small app by asking for changes, and a change they asked for was just built. Suggest 3 changes they might ask for next, written as they would ask for them ("Let me snooze a task until a date"), each with a short why that refers to what they asked, or to what they did as recorded; never claim a habit the record does not show. Make them specific to this app, small enough to build in one step, and new: not what the app does already (read the versions, which say what each change added), not what was just asked, and not one of the suggestions made before.
 
 Answer with JSON only: {"suggestions": [{"text": "the change, in one sentence", "why": "one plain sentence under 25 words"}]}.`;
@@ -1604,7 +1609,8 @@ export async function suggestNext(engine, appId, request, summary) {
     `## Just built\nAsked: ${request.text}\nBuilt: ${summary}`,
     `## Suggestions made before\n${history.map((h) => `- [${h.status === 'taken' ? 'taken' : h.status === 'dismissed' ? 'dismissed' : h.status === 'open' ? 'still open' : 'replaced'}] ${h.text}`).join('\n') || '(none)'}`,
     `## What the person did lately\n${summarizeEvents(events)}`,
-  ].join('\n\n');
+    await learned(engine, appId),
+  ].filter(Boolean).join('\n\n');
   const answer = await ask({ system: NEXT_SYSTEM, prompt, model: SUGGEST_MODEL, effort: 'low' });
   let out;
   try {
@@ -1617,7 +1623,7 @@ export async function suggestNext(engine, appId, request, summary) {
   // A newer version may have been built meanwhile: its own suggestions win.
   if ((await store.resolve(appId)).comp.n !== view.comp.n) return [];
   await retireSuggestions(engine, appId);
-  const put = await store.putSuggestions(appId, items);
+  const put = await store.putSuggestions(appId, engine.changes ? await engine.changes.rank(items) : items);
   engine.emit?.('suggestions', { app: appId });
   return put;
 }
@@ -1660,7 +1666,8 @@ export async function suggestFromUse(engine, appId, { signals = [], fresh = [] }
     `## What the person did\n${summarizeEvents(events)}`,
     `## Recent actions in order (newest first)\n${events.slice(0, 60).map((e) => `- ${e.ts} ${e.kind} ${e.detail}`).join('\n')}`,
     `## Library\n${lib.map((c) => `- ${c.id} (${c.kind}): ${c.title}. ${c.description}`).join('\n') || '(empty)'}`,
-  ].join('\n\n');
+    await learned(engine, appId),
+  ].filter(Boolean).join('\n\n');
   const answer = await ask({ system: SUGGEST_SYSTEM, prompt });
   let out;
   try {
@@ -1670,7 +1677,7 @@ export async function suggestFromUse(engine, appId, { signals = [], fresh = [] }
   const keys = new Set(signals.map((s) => s.key));
   const items = (out.suggestions || []).filter((s) => s && s.text).slice(0, 3)
     .map((s) => ({ text: clipWords(s.text, 300), why: clipWords(s.why, 240), source: 'use', cap: s.library || '', signal: keys.has(s.signal) ? s.signal : null }));
-  return items.length ? store.putSuggestions(appId, items) : [];
+  return items.length ? store.putSuggestions(appId, engine.changes ? await engine.changes.rank(items) : items) : [];
 }
 
 // A person's own change to a screen, with no model: a patch on the screen as

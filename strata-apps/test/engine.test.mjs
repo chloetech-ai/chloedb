@@ -521,6 +521,9 @@ BLOCKS [{"text": "=guests.length + ' guests'"}]`;
   assert.deepEqual(e.problems, []);
   const cols = new Set(['id', 'created', 'name', 'rsvp', 'table_no']);
   assert.deepEqual(checkScreen(e.screen, (t) => (t === 'guests' ? cols : null)), []);
+  // A column's value is an expression of row; a function of the row is taken as written, not wrapped again.
+  const valued = compileStatement("CREATE SCREEN x\nLIST t\n  FORM (a NUMBER)\n  COLUMNS (a 'A' = row.a * 2, b 'B' = r => r.a + 1, c 'C' = (row) => row.a)").screen.body[0].columns;
+  assert.deepEqual(valued.map((x) => x.value), ['=row => row.a * 2', '=r => r.a + 1', '=(row) => row.a']);
   // mistakes name their line and what to write
   assert.throws(() => compileStatement("CREATE SCREEN x\nLIST t\n  FORM (a WIDGET)"), /line 3: FORM a: cannot read "WIDGET"/);
   assert.throws(() => compileStatement('CREATE SCREEN x\nLIST t\n  SEARCH a'), /needs FORM/);
@@ -1460,6 +1463,12 @@ test('the library SQL functions run in Strata', async (t) => {
     assert.equal(sched.at(-1).balance, 0);
     const days = await client.query("SELECT * FROM days_from('2026-11-28', 3)");
     assert.deepEqual(days.map((d) => d.day), ['2026-11-28', '2026-11-29', '2026-11-30']);
+    // Over the rows: dates as text, as keywords, and as timestamps.
+    await client.sql('CREATE TABLE tasks (id KEYWORD PRIMARY KEY, due TEXT, day KEYWORD, at TIMESTAMP)');
+    await client.write([{ op: 'upsert', table: 'tasks', doc: { id: 'a', due: '2026-11-05', day: '2026-11-08', at: '2026-11-09T15:00:00Z' } },
+      { op: 'upsert', table: 'tasks', doc: { id: 'b', due: '2026-11-10', day: '2026-11-30', at: '2026-12-01T08:00:00Z' } }]);
+    const rows = await client.query('SELECT id, due_state(due, :t) AS s, days_left(due, :t) AS n, add_days(day, 3) AS later, days_between(day, at) AS gap FROM tasks ORDER BY id', { t: '2026-11-08' });
+    assert.deepEqual(rows.map((r) => [r.id, r.s, r.n, r.later, r.gap]), [['a', 'overdue', -3, '2026-11-11', 1], ['b', 'soon', 2, '2026-12-03', 1]]);
   } finally {
     child.kill();
   }
@@ -1530,6 +1539,67 @@ test('the patterns of use are counted in Strata', async (t) => {
     assert.equal(measureEffect(events, measureFor('abandon:guests/guests new'), at(0)).after, 3);
     const screens = await client.query('SELECT * FROM sa_use_screens(:a)', { a: 'a2' });
     assert.deepEqual(screens, []);
+  } finally {
+    child.kill();
+  }
+});
+
+test('a request is sorted into kinds of change', async () => {
+  const { kindsOf, changeDocs } = await import('../engine/changes.mjs');
+  assert.deepEqual(kindsOf('Sort the runs newest first.'), ['sort']);
+  assert.deepEqual(kindsOf('Add a weekly digest email of new requests'), ['notify']);
+  assert.deepEqual(kindsOf('Show the number of books per genre as a small bar chart above the list.'), ['totals', 'chart']);
+  assert.deepEqual(kindsOf('hello there'), []);
+  // An app did each kind once per change; a kind points at the kinds that followed it.
+  const docs = changeDocs(new Map([['a', [['search'], ['chart', 'totals']]]]));
+  assert.deepEqual(docs.find((d) => d.id === 'app:a').links, [['did', 'change:search'], ['did', 'change:chart'], ['did', 'change:totals']]);
+  assert.deepEqual(docs.find((d) => d.id === 'change:search').links, [['then', 'change:chart'], ['then', 'change:totals']]);
+});
+
+// Against a real strata-server: the next change ranked by ppr over the graph
+// of what apps did, and suggestions ordered by how often their kind is taken.
+test('what apps change next is learned across apps, in Strata', async (t) => {
+  const { findServerBinary, startServer } = await import('../engine/strata.mjs');
+  const { Store } = await import('../engine/store.mjs');
+  const { Changes } = await import('../engine/changes.mjs');
+  const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
+  if (!bin) return t.skip('no strata-server binary');
+  const dir = mkdtempSync(join(tmpdir(), 'sa-next-'));
+  const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+  const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
+  try {
+    const store = new Store(client, () => {});
+    await store.init();
+    // Four apps added a search and then a chart; one added a search and then
+    // an export; the new app has added a search.
+    const asks = { a1: ['Add a search box', 'Add a bar chart of the totals'], a2: ['Let me search my notes', 'Show a chart of notes per week'], a3: ['Search by title', 'A chart of spending'],
+      a4: ['Find by name', 'Add a chart'], a5: ['Search by tag', 'Export as CSV'], me: ['Add a search'] };
+    let t0 = Date.parse('2026-11-08T10:00:00Z');
+    const docs = [];
+    for (const [app, list] of Object.entries(asks)) for (const text of [`A ${app} app`, ...list]) docs.push({ op: 'insert', table: 'sa_requests', doc: { id: `r${docs.length}`, app, text, source: 'user', status: 'done', created: new Date(t0 += 1000).toISOString() } });
+    await client.write(docs);
+    const changes = new Changes(store, () => {});
+    await changes.init();
+    assert.deepEqual(await changes.next('me'), [], 'fewer than ten other apps: nothing yet');
+    const next = await changes.next('me', { least: 3 });
+    assert.equal(next[0]?.kind, 'chart', JSON.stringify(next));
+    assert.equal(next[0].apps, 4);
+    assert.ok(!next.some((n) => n.kind === 'search'), 'a kind the app made already is not offered');
+    // Suggestions: exports were never taken, charts were.
+    const sug = [];
+    for (let i = 0; i < 6; i++) sug.push({ op: 'insert', table: 'sa_suggestions', doc: { id: `s${i}`, app: 'a1', text: 'Export the rows as CSV', status: i ? 'stale' : 'dismissed' } });
+    for (let i = 0; i < 5; i++) sug.push({ op: 'insert', table: 'sa_suggestions', doc: { id: `c${i}`, app: 'a2', text: 'Add a chart of the week', status: i < 3 ? 'taken' : 'stale' } });
+    await client.write(sug);
+    const rates = await changes.takeRates();
+    assert.equal(rates.export.offered, 6);
+    assert.equal(rates.export.taken, 0);
+    assert.equal(rates.chart.rate, 0.6);
+    const ranked = await changes.rank([{ text: 'Download a CSV export' }, { text: 'A chart of runs per week' }]);
+    assert.deepEqual(ranked.map((s) => s.text), ['A chart of runs per week', 'Download a CSV export']);
+    const part = await changes.promptPart('me', { least: 3 });
+    assert.match(part, /What apps like this one changed next \(learned from 6 apps here\)\n- a chart or a dashboard \(4 other apps added one\)/);
+    assert.match(part, /Taken most: a chart or a dashboard: 3 of 5/);
+    assert.match(part, /Rarely taken: an export, a document or an invoice: 0 of 6/);
   } finally {
     child.kill();
   }

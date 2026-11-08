@@ -158,7 +158,8 @@ function columnSpec(spec, line) {
     if ((mm = rest.match(/^BADGE\b/i))) { c.badge = true; rest = rest.slice(mm[0].length); continue; }
     if ((mm = rest.match(/^FORMAT\s+/i))) { rest = rest.slice(mm[0].length); continue; }
     if ((mm = rest.match(/^([A-Za-z]+)\b/)) && COLUMN_FORMATS.includes(mm[1].toUpperCase())) { c.format = mm[1].toLowerCase(); rest = rest.slice(mm[0].length); continue; }
-    if ((mm = rest.match(/^=\s*(.+)$/s))) { c.value = `=row => ${mm[1].trim()}`; rest = ''; continue; }
+    // = an expression of row; a function of the row (= r => ...) is taken as it is.
+    if ((mm = rest.match(/^=\s*(.+)$/s))) { const e = mm[1].trim(); c.value = /^(\(\s*[A-Za-z_$][\w$]*\s*\)|[A-Za-z_$][\w$]*)\s*=>/.test(e) ? `=${e}` : `=row => ${e}`; rest = ''; continue; }
     fail(line, `COLUMNS ${c.key}: cannot read ${JSON.stringify(rest.slice(0, 40))}; a column is name 'Label' FORMAT BADGE (formats ${COLUMN_FORMATS.join(', ')}), or name 'Label' = a JavaScript expression of row`);
   }
   return c;

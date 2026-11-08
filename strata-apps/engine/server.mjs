@@ -12,6 +12,7 @@ import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Engine } from './engine.mjs';
 import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT, useSqlFunctions } from './forge.mjs';
 import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './sqlfns.mjs';
+import { Changes } from './changes.mjs';
 import { useTableFunctions } from './sql.mjs';
 import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
@@ -74,6 +75,9 @@ if (process.env.STRATA_APPS_SQL_FUNCTIONS !== 'off') {
   engine.signalSql = (await installSqlFunctions(engine.db, sig, log)).length === sig.length;
   if (!engine.signalSql) log('the patterns of use are counted in the engine, not in Strata');
 }
+// What apps change next, learned across them (a graph in Strata, ranked by ppr).
+engine.changes = new Changes(engine.store, log);
+await engine.changes.init().catch((e) => { log(`changes: ${e.message}`); engine.changes = null; });
 // Screens expand from the patterns stored in Strata (built in and added by apps).
 await engine.store.usePatterns();
 const services = new Services(engine, { filesDir: path.join(DATA, 'files'), log });
@@ -246,6 +250,7 @@ async function runRequest(req, extra = {}) {
     if (out.trace) { await saveTrace(req, out.trace, lines, { status: 'done', n: out.n, cost: out.cost }); learnExpected().catch(() => {}); }
     if (extra.candidate) await evolver.built(extra.candidate, out).catch((e) => log(`candidate ${extra.candidate}: ${e.message}`));
     broadcast('done', { app: req.app, request: req.id, n: out.n, summary: out.summary, candidate: extra.candidate || null });
+    engine.changes?.soon();
   } catch (e) {
     progress(`Failed: ${e.message}`);
     await engine.store.putRequest({ ...req, status: 'failed', error: e.message.slice(0, 2000), log: lines.map((l) => l.line).join('\n'), cost: e.cost || 0 });
@@ -493,6 +498,7 @@ const routes = [
       const text = String(b.note || `Edited the screen ${slug} by hand`).slice(0, 300);
       await engine.store.putRequest({ id: newId(10), app: id, text, source: 'edit', status: 'done', comp: out.n, summary: text, log: '', error: '', ms: Date.now() - t0, cost: 0, created: new Date().toISOString() });
       broadcast('done', { app: id, request: null, n: out.n, summary: text });
+      engine.changes?.soon();
     }
     return out;
   }],
