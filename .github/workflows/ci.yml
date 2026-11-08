@@ -117,9 +117,10 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
-        # strata-crawl's crawl into a real cluster runs in server-smoke,
-        # which builds strata-server; here its other tests and clippy.
-        crate: [strata, engram, strata-server, strata-crawl]
+        # strata-crawl's crawl into a real cluster, and strata-sheets'
+        # workbooks in one, run in server-smoke, which builds strata-server;
+        # here their other tests and clippy.
+        crate: [strata, engram, strata-server, strata-crawl, strata-sheets]
     runs-on: ${{ matrix.os }}
     # rust-cache saves only from a job that passed, so a macOS job that ran
     # out of time starts the next one cold too: strata-server's tests took
@@ -508,6 +509,7 @@ jobs:
           workspaces: |
             strata-server
             strata-crawl
+            strata-sheets
           key: strata-server-smoke
       - name: Build
         working-directory: strata-server
@@ -554,6 +556,15 @@ jobs:
           STRATA_SERVER_BIN: ${{ github.workspace }}/strata-server/target/release/strata-server
           STRATA_CRAWL_NEED_SERVER: "1"
         run: cargo test --profile ci --test site
+      # Spreadsheets kept in a server of this build: made, changed,
+      # imported (CSV, SQLite), filled by a query, saved as a table,
+      # searched, exported, and read back after a restart.
+      - name: Workbooks in a cluster
+        working-directory: strata-sheets
+        env:
+          STRATA_SERVER_BIN: ${{ github.workspace }}/strata-server/target/release/strata-server
+          STRATA_SHEETS_NEED_SERVER: "1"
+        run: cargo test --profile ci --test cluster
 
   python:
     name: Python package on ${{ matrix.os }}
