@@ -1,10 +1,12 @@
 //! Date functions: `date_trunc`, `date_part` and `EXTRACT`, and
 //! `strftime`, over a TIMESTAMP column. As values of rows they are the row
 //! evaluator's; a `GROUP BY` of one over a table's TIMESTAMP field is the
-//! executor's, read from the field's column, and its answer is the one the
-//! operators give computing the function row by row: the same groups with
-//! the same aggregates. Checked on rows in the memtable, across flushed
-//! segments, after deletes and updates, and after a merge.
+//! executor's, read from the field's column (a part that is a number from
+//! the columns, with the query's other groups and aggregates), and its
+//! answer is the one the operators give computing the function row by
+//! row: the same groups with the same aggregates. Checked on rows in the
+//! memtable, across flushed segments, after deletes and updates, and after
+//! a merge.
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -96,6 +98,10 @@ fn check(db: &Db, stage: &str) {
         let plan = db.explain(&q, &Params::new()).unwrap();
         assert!(plan.features.iter().any(|f| f == "dates"), "{stage}: {q}: {:?}", plan.features);
         assert!(got.stats.plan.iter().any(|l| l.contains("aggregate") && l.contains("rows into groups")), "{stage}: {q}: {:?}", got.stats.plan);
+        // A part that is a number is grouped by from the columns; text
+        // (strftime) row by row.
+        let columns = got.stats.plan.iter().any(|l| l.contains("rows into groups") && l.contains("from the columns"));
+        assert_eq!(columns, !q.contains("strftime"), "{stage}: {q}: {:?}", got.stats.plan);
         let by_rows = plan_read_by_rows(&q, &tables, &Params::new()).unwrap();
         let SqlResult::Rows(want) = db.run(&by_rows).unwrap_or_else(|e| panic!("{stage}: {q}, by rows: {e}")) else { panic!("rows") };
         assert!(!want.stats.plan.iter().any(|l| l.contains("rows into groups")), "{stage}: {q}: by rows: {:?}", want.stats.plan);

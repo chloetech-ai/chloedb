@@ -66,9 +66,9 @@ pub(crate) use fuse::paths as fuse_paths;
 pub const VERSION: u32 = 1;
 
 /// The plan features this version of Strata reads.
-pub const FEATURES: [&str; 29] = [
+pub const FEATURES: [&str; 30] = [
     OPERATORS, SEQ_NO, RANK_EXPRESSIONS, SEMANTIC_ID, RANK_PHASES, RANK_FEATURES, MAXSIM, RANK_PROFILES, RANK_MODELS, DISTINCT_ON, EDGE_TABLE, RANKED, TEXT_OPERATORS, PREFIX, CORRELATED, PREFIX_EDITS, MIN_MATCH, AT_LEAST, GUARD, PER_CAP, ENCODE,
-    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH,
+    SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX,
 ];
 
 /// The feature of a plan with operators over rows in memory: a join,
@@ -156,6 +156,11 @@ pub const PREFIX_EDITS: &str = "prefix_edits";
 /// group `(a b c)@2`, or `bm25`'s `min` option. A Strata from before them
 /// reads `)@2` as a word and ignores `min`, and so returns other rows.
 pub const MIN_MATCH: &str = "min_match";
+
+/// The feature of a plan whose `MATCH` has a phrase ending in a prefix
+/// (`"quick bro*"`, [`crate::text::query::BoolQuery::PhrasePrefix`]),
+/// which a Strata from before it reads as the phrase `quick bro`.
+pub const PHRASE_PREFIX: &str = "phrase_prefix";
 
 /// The feature of a plan that counts conditions: `AT_LEAST(n, ..)`
 /// ([`Expr::AtLeast`]) or `count_true(..)` ([`Func::CountTrue`]).
@@ -1532,6 +1537,13 @@ impl Node {
         found
     }
 
+    /// Whether a `MATCH` of the plan has a phrase prefix ([`PHRASE_PREFIX`]).
+    pub fn has_phrase_prefix(&self) -> bool {
+        let mut found = false;
+        self.visit_exprs(&mut |e| found |= matches!(e, Expr::Match { query, .. } if crate::text::query::match_features(query).phrase_prefix));
+        found
+    }
+
     /// Whether a text of the plan needs some of its items ([`MIN_MATCH`]).
     pub fn has_min_match(&self) -> bool {
         let mut found = false;
@@ -2179,6 +2191,9 @@ impl Plan {
         }
         if root.has_min_match() {
             features.push(MIN_MATCH.to_string());
+        }
+        if root.has_phrase_prefix() {
+            features.push(PHRASE_PREFIX.to_string());
         }
         let mut counts = false;
         root.visit_exprs(&mut |e| counts |= matches!(e, Expr::AtLeast { .. } | Expr::Call { func: Func::CountTrue, .. }));

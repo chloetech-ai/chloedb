@@ -4683,6 +4683,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "twox-hash",
+ "unicode-segmentation",
  "webpki-roots 1.0.11",
 ]
 

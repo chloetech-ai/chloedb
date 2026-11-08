@@ -182,6 +182,17 @@ struct Args {
     /// gRPC address ("off" to disable).
     #[arg(long, default_value = "127.0.0.1:7701")]
     grpc: String,
+    /// Also serve an OpenSearch-compatible API (indexes, documents, _bulk,
+    /// _search with the Query DSL and aggregations) on this address, for
+    /// applications written for OpenSearch or Elasticsearch 7: the same
+    /// data, credentials and TLS as the HTTP API (a key or the token as a
+    /// Bearer token, or as Basic authentication's password).
+    #[arg(long, env = "STRATA_OPENSEARCH_LISTEN")]
+    opensearch_listen: Option<String>,
+    /// The version the OpenSearch API's root reports: OpenSearch 2's by
+    /// default; 7.10.2 for clients of Elasticsearch 7 that check it.
+    #[arg(long, env = "STRATA_OPENSEARCH_VERSION", default_value = strata_server::opensearch::VERSION_NUMBER)]
+    opensearch_version: String,
     /// Require "Authorization: Bearer TOKEN" on the API and on gRPC (the
     /// UI asks for it). Needed to listen beyond loopback.
     #[arg(long, env = "STRATA_TOKEN", hide_env_values = true)]
@@ -233,6 +244,12 @@ struct Args {
     /// (0: no limit).
     #[arg(long, default_value_t = 10_000)]
     max_result_window: usize,
+    /// The rows the open scrolls (`page_size`) of ordered queries, groups
+    /// and joins hold between them, or their places: a scroll that would
+    /// hold more is refused (0: only scrolls without ORDER BY, groups or
+    /// joins, which hold none).
+    #[arg(long, default_value_t = strata_server::service::MAX_SCROLL_ROWS)]
+    max_scroll_rows: usize,
     /// The most groups a GROUP BY may make before the query fails (0: no
     /// limit).
     #[arg(long, default_value_t = 65_536)]
@@ -1029,6 +1046,7 @@ async fn main() {
         max_timeout_ms: a.max_timeout_ms,
         max_concurrent: a.max_concurrent,
         max_result_window: a.max_result_window,
+        max_scroll_rows: Some(a.max_scroll_rows),
         max_groups: a.max_groups,
         max_rerank: a.max_rerank,
         query_memory_mb: a.query_memory_mb,
@@ -1170,6 +1188,21 @@ async fn main() {
             }
         }));
     }
+    // The OpenSearch API answers for what this process serves: beside a
+    // coordinator (--coordinator-listen), for the cluster, once the
+    // coordinator is up.
+    let mut opensearch = None;
+    if let Some(addr) = &a.opensearch_listen {
+        let (l, ip) = bind(addr).await;
+        let scheme = if access.tls.is_some() { "https" } else { "http" };
+        tracing::info!("OpenSearch API on {scheme}://{addr}/ (version {})", a.opensearch_version);
+        opensearch = Some((l, Access { hosts: auth::allowed_hosts(ip, &a.allow_host), ..access.clone() }, a.opensearch_version.clone()));
+    }
+    if beside.is_none() {
+        if let Some((l, os_access, version)) = opensearch.take() {
+            tasks.push(tokio::spawn(serve_opensearch(svc.clone(), l, os_access, version)));
+        }
+    }
     if let Some((addr, url, mut co)) = beside {
         co.coord.local = Some(strata_server::coord::LocalShard { url, service: server::grpc_service(svc.clone(), &access) });
         let (l, cip) = bind(&addr).await;
@@ -1183,6 +1216,9 @@ async fn main() {
             let at = l.local_addr().unwrap_or_else(|e| fail(&format!("listen on {addr}: {e}")));
             strata_server::peers::start(&c, strata_server::peers::own_url(peer.as_deref(), at, access.tls.is_some()));
             tracing::info!("coordinator HTTP on {addr}, its own shard in-process");
+            if let Some((ol, os_access, version)) = opensearch {
+                tokio::spawn(serve_opensearch(c.clone(), ol, os_access, version));
+            }
             if let Err(e) = server::serve_http(c, l, access).await {
                 fail(&format!("coordinator HTTP server: {e}"));
             }
@@ -1199,6 +1235,13 @@ async fn main() {
     if let Some(s) = store {
         tracing::info!("stopping");
         s.close();
+    }
+}
+
+/// The OpenSearch API of `svc` ([`server::serve_opensearch`]).
+async fn serve_opensearch(svc: std::sync::Arc<strata_server::service::Service>, l: tokio::net::TcpListener, access: Access, version: String) {
+    if let Err(e) = server::serve_opensearch(svc, l, access, &version).await {
+        tracing::error!(error = %e, "OpenSearch API stopped");
     }
 }
 
