@@ -519,6 +519,21 @@ body.bare.designed { background: var(--bg); }
 .act-attn .ai { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
 .act-attn li.bad .ai { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
 .act-attn .when { white-space: nowrap; }
+.ux-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.ux-m { padding: 12px 14px; border-radius: var(--radius-control, 10px); background: var(--soft); display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ux-m .ux-l { display: flex; align-items: flex-start; gap: 6px; color: var(--muted); font-size: 12.5px; font-weight: 500; }
+.ux-m .ux-l .ico { color: var(--accent); }
+.ux-m .ux-v { font-family: var(--font-title, inherit); font-size: 26px; font-weight: 650; letter-spacing: -.02em; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.ux-m .ux-l .ico, .ux-m .ux-s .ico { flex: none; margin-top: 2px; }
+.ux-m.wait .ux-v { color: var(--muted); }
+.ux-m .ux-s { display: flex; align-items: flex-start; gap: 5px; font-size: 12.5px; margin-top: 4px; color: var(--muted); }
+.ux-m.ok .ux-s { color: var(--fg); } .ux-m.ok .ux-s .ico { color: var(--ok); }
+.ux-m.over { background: color-mix(in srgb, var(--warn) 10%, var(--soft)); }
+.ux-m.over .ux-s { color: var(--fg); font-weight: 550; } .ux-m.over .ux-s .ico { color: var(--warn); }
+.ux-vs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; }
+.ux-vs .act-chip.on { border-color: var(--accent); }
+.ux-f { margin-top: 12px; }
+@media (max-width: 760px) { .ux-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } .ux-m { padding: 10px 12px; } .ux-m .ux-v { font-size: 22px; } }
 .act-ok { display: flex; gap: 8px; align-items: center; color: var(--muted); padding: 10px 12px; background: var(--soft); border-radius: var(--radius-control, 10px); }
 .act-ok .ico { color: var(--ok); }
 .act-sub { margin: 16px 0 8px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }

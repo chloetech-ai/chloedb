@@ -24,6 +24,9 @@
   };
   window.__sa_report = report;
   window.__sa_ready = () => post({ kind: 'ready' });
+  // Every tap in the app is counted (the studio sends the count with the
+  // next write): how many taps it takes to do something is a measure of use.
+  document.addEventListener('click', (e) => { if (e.isTrusted && e.target !== document.documentElement && e.target !== document.body) post({ kind: 'tap' }); }, true);
   window.addEventListener('error', (e) => report(e.error || e.message));
   window.addEventListener('unhandledrejection', (e) => report(e.reason));
 

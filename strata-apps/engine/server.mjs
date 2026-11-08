@@ -308,14 +308,14 @@ const drawnOf = new Map();
 const lookedAt = new Map();
 engine.on('drawn', (d) => {
   const high = d.found.filter((f) => f.severity === 'high');
-  drawnOf.set(d.app, { n: d.n, at: new Date().toISOString(), found: d.found, views: d.views, cost: d.cost, looked: d.looked });
+  drawnOf.set(d.app, { n: d.n, at: new Date().toISOString(), found: d.found, views: d.views, cost: d.cost, looked: d.looked, grade: d.grade ?? null });
   const said = d.found.length ? `${d.found.length} problem${d.found.length === 1 ? '' : 's'}, ${high.length} in the way` : 'nothing in the way';
   const look = d.looked ? ` (look $${(d.cost || 0).toFixed(3)})` : d.lookError ? ` (no look: ${d.lookError.slice(0, 120)})` : '';
-  log(`[${d.app}] drew version ${d.n} on a phone and a computer: ${said}${look}`);
+  log(`[${d.app}] drew version ${d.n} on a phone and a computer: ${said}${d.grade ? `, graded ${d.grade} of 5` : ''}${look}`);
   const text = repairRequest(d.found);
   // A newer change already being built is drawn and checked in turn.
   const fixing = !!text && AUTOREPAIR && d.source !== 'look' && !running.has(d.app) && Date.now() - (lookedAt.get(d.app) || 0) > 600000;
-  broadcast('drawn', { app: d.app, n: d.n, found: d.found.length, high: high.length, fixing });
+  broadcast('drawn', { app: d.app, n: d.n, found: d.found.length, high: high.length, fixing, grade: d.grade ?? null });
   if (fixing) {
     lookedAt.set(d.app, Date.now());
     submit(d.app, text, 'look').catch((e) => log(`look ${d.app}: ${e.message}`));
@@ -502,7 +502,7 @@ const routes = [
     const where = cx.where(b.session);
     const screen = kind === 'open' || kind === 'leave' ? String(b.detail || '') : where.screen || b.screen;
     const q = kind === 'action' && /^(search|filter)$/.test(String(b.action || '')) ? (b.q ?? b.detail) : null;
-    await engine.store.track(id, kind, String(b.cap || ''), detail, { person: await cx.who(id), v: (await engine.view(id)).comp.n, ...where, screen, tbl: b.table, q, results: b.results, ms: b.ms });
+    await engine.store.track(id, kind, String(b.cap || ''), detail, { person: await cx.who(id), v: (await engine.view(id)).comp.n, ...where, taps: null, screen, tbl: b.table, q, results: b.results, ms: b.ms });
     noteActivity(id);
     return { ok: true };
   }],
@@ -637,7 +637,9 @@ const server = http.createServer(async (req, res) => {
     // screen it was made on, as the studio's headers say (a beacon, which
     // sends no headers, names its session in the body).
     const tag = (x) => (typeof x === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(x) ? x : null);
-    const where = (session) => ({ session: tag(req.headers['x-sa-session']) || tag(session), screen: tag(req.headers['x-sa-view']) });
+    // A write or a run also says how many taps led to it (x-sa-taps).
+    const taps = Number(req.headers['x-sa-taps']);
+    const where = (session) => ({ session: tag(req.headers['x-sa-session']) || tag(session), screen: tag(req.headers['x-sa-view']), ...(Number.isInteger(taps) && taps >= 0 && taps < 10000 ? { taps } : {}) });
     const cx = { req, res, where, user: (appId) => userOf(req, appId), who: async (appId) => (await userOf(req, appId))?.id || visitorOf(req) };
     // ?v=N runs a request on version N of the app (a version built to try).
     const v = Number(url.searchParams.get('v')) || null;

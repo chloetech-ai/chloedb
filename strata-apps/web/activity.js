@@ -49,6 +49,8 @@ const ICONS = {
   spark: ['M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6'],
   close: ['M6 6l12 12M18 6 6 18'],
   refresh: ['M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6'],
+  tap: ['M9 11.5V5a1.5 1.5 0 0 1 3 0v5.5M12 10V8.5a1.5 1.5 0 0 1 3 0v2M15 10.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-.6a6 6 0 0 1-4.7-2.3l-2.2-2.9a1.5 1.5 0 0 1 2.3-1.9L9 16'],
+  home: ['M4 11 12 4l8 7M6 9.5V20h12V9.5M10 20v-5h4v5'],
 };
 function icon(name, size = 14) {
   const [d, more] = ICONS[name] || ICONS.spark;
@@ -516,7 +518,7 @@ function attention(m) {
   for (const e of m.events) if (e.kind === 'error') { const k = String(e.detail || '').slice(0, 120); const x = errs.get(k) || { n: 0, last: 0 }; x.n++; x.last = e.t; errs.set(k, x); }
   for (const [k, x] of errs) items.push({ tone: 'bad', ico: 'error', n: x.n, last: x.last, words: ['An error ', plural(x.n, 'time'), ': ', h('span', { class: 'act-err' }, k)] });
   items.sort((a, b) => (b.tone === 'bad') - (a.tone === 'bad') || b.n - a.n || b.last - a.last);
-  const signals = (m.d.signals || []).filter((x) => x.kind !== 'nothing');
+  const signals = (m.d.signals || []).filter((x) => x.kind !== 'nothing' && x.kind !== 'ux');
   // Each kind of problem says what it may mean once, on its first item.
   const said = new Set();
   for (const x of items) { if (x.hint && said.has(x.ico)) x.hint = null; else said.add(x.ico); }
@@ -530,6 +532,49 @@ function attention(m) {
     out.push(h('ul', { class: 'act-signals' }, signals.slice(0, 5).map((x) => h('li', icon('spark', 14), h('span', `People ${x.text}`), x.answered ? h('span', { class: 'act-chip' }, 'suggested') : null))));
   }
   return out;
+}
+
+// How easy it is: the UX measures from use (engine/measures.mjs), each
+// against what the brief asks of the job, judged once there are enough
+// visits, and how they moved from version to version.
+function ease(m) {
+  const ux = m.d.ux;
+  if (!ux || !ux.sittings) return null;
+  const M = ux.measures;
+  const T = ux.targets;
+  const pc = (x) => `${Math.round(x * 100)}%`;
+  const one = (x) => String(Math.round(x * 10) / 10);
+  const secs = (x) => (x < 90 ? `${Math.round(x)}\u00a0s` : dur(x * 1000));
+  const acting = Math.round((M.acted || 0) * M.sittings);
+  const first = m.screens.get(ux.first)?.title || null;
+  const rows = [
+    { k: 'taps', ico: 'tap', label: 'Taps to do something', n: M.tapsMeasured, val: M.tapsToAct, show: one, aim: `${T.taps} or fewer`, good: (x) => x <= T.taps, sub: 'from opening the app', unit: ['visit', 'visits'] },
+    { k: 'secs', ico: 'clock', label: 'Time to do something', n: acting, val: M.secsToAct, show: secs, aim: `under ${T.secs}\u00a0s`, good: (x) => x <= T.secs, sub: 'from opening the app', unit: ['visit', 'visits'] },
+    { k: 'first', ico: 'home', label: 'Done on the first screen', n: M.located, val: M.onFirst, show: pc, aim: `${pc(T.first)} or more`, good: (x) => x >= T.first, sub: first, unit: ['thing done', 'things done'] },
+    { k: 'gaveUp', ico: 'pencil', label: 'Forms given up', n: M.forms, val: M.gaveUp, show: pc, aim: `${pc(T.gaveUp)} or fewer`, good: (x) => x <= T.gaveUp, sub: 'typed into, closed unsaved', unit: ['thing added', 'things added'] },
+    { k: 'wrong', ico: 'trash', label: 'Added, then removed', n: M.inserts, val: M.wrong, show: pc, aim: `${pc(T.wrong)} or fewer`, good: (x) => x <= T.wrong, sub: 'within ten minutes', unit: ['row added', 'rows added'] },
+    { k: 'undo', ico: 'undo', label: 'Removes undone', n: M.deletes, val: M.undone, show: pc, aim: `${pc(T.undo)} or fewer`, good: (x) => x <= T.undo, sub: 'Undo right after', unit: ['remove', 'removes'], least: 3 },
+  ];
+  const LEAST = 5;
+  const cells = rows.map((r) => {
+    const has = r.val !== null && r.val !== undefined;
+    const judged = has && r.n >= (r.least || LEAST);
+    const ok = judged && r.good(r.val);
+    return h('div', { class: `ux-m${judged ? (ok ? ' ok' : ' over') : ' wait'}` },
+      h('div', { class: 'ux-l' }, icon(r.ico, 14), r.label),
+      h('div', { class: 'ux-v' }, has ? r.show(r.val) : '–'),
+      h('div', { class: 'act-meta' }, r.sub || ''),
+      h('div', { class: 'ux-s' }, judged
+        ? [icon(ok ? 'check' : 'leave', 13), h('span', ok ? `On target: ${r.aim}` : `Over the aim: ${r.aim}`)]
+        : h('span', has ? `${plural(r.n, ...r.unit)} so far; judged after ${r.least || LEAST}` : `Not measured yet: aim ${r.aim}`)));
+  });
+  const vs = (ux.versions || []).filter((x) => x.sittings && (x.tapsToAct !== null || x.secsToAct !== null)).slice(-4);
+  const trend = vs.length > 1 ? h('div', { class: 'ux-vs' }, h('span', { class: 'act-meta' }, 'By version'),
+    vs.map((x, i) => h('span', { class: `act-chip${i === vs.length - 1 ? ' on' : ''}` }, h('b', `v${x.v}`),
+      [x.tapsToAct !== null ? ` ${one(x.tapsToAct)} taps` : '', x.secsToAct !== null ? ` · ${secs(x.secsToAct)}` : '', ` · ${plural(x.sittings, 'visit')}`].join('')))) : null;
+  const found = (ux.findings || []).length ? h('ul', { class: 'act-attn ux-f' }, ux.findings.map((f) => h('li', { class: f.severity === 'high' ? 'bad' : '' },
+    h('span', { class: 'ai' }, icon(f.key === 'taps' ? 'tap' : f.key === 'secs' ? 'clock' : f.key === 'first' ? 'home' : f.key === 'gaveUp' ? 'pencil' : f.key === 'wrong' ? 'trash' : f.key === 'undo' ? 'undo' : 'leave', 15)), h('div', h('div', f.text), h('div', { class: 'act-meta' }, 'The engine suggests a change for this from use.')), h('span')))) : null;
+  return [h('div', { class: 'ux-grid' }, cells), trend, found];
 }
 
 const FILTERS = [['all', 'Everything'], ['change', 'Changes'], ['find', 'Searches'], ['trouble', 'Problems']];
@@ -626,8 +671,10 @@ export function mountActivity(box, { appId, api, onClose, openScreen }) {
     const metricSeg = h('div', { class: 'act-seg small', role: 'tablist', 'aria-label': 'Measure' }, Object.entries(METRICS).map(([k, x]) => h('button', { class: st.metric === k ? 'on' : '', role: 'tab', 'aria-selected': String(st.metric === k), onclick: () => { st.metric = k; rerender(); } }, x.label)));
     const wide = width > 760;
     const chartW = wide ? Math.floor(width * 0.6) - 40 : width - 32;
+    const easy = ease(m);
     root.replaceChildren(head,
       tiles(m, bk),
+      easy ? card('How easy it is', `${plural(st.data.ux.sittings, 'visit')}, against what it is for`, ...easy) : null,
       h('div', { class: `act-two${wide ? '' : ' one'}` },
         card(`${METRICS[st.metric].label} ${bk.unit === 'hour' ? 'by hour' : bk.unit === 'week' ? 'by week' : 'by day'}`, null, metricSeg, columnChart(bk, st.metric, chartW, tip)),
         card('When people use it', 'by weekday and hour', punchCard(m, wide ? Math.floor(width * 0.4) - 40 : width - 32, tip))),

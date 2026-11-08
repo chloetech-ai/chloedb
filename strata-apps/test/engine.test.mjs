@@ -1894,3 +1894,65 @@ CHECKS checkins
   assert.equal(joinAsks(['Add a note']), 'Add a note');
   assert.match(joinAsks(['Let me skip a day', 'Show a weekly count']), /^Make these 2 changes together, as one design: .*\n1\. Let me skip a day\n2\. Show a weekly count$/);
 });
+
+test('UX measures from use: taps and seconds to do something, the first screen, forms given up, rows added by mistake, Undo; judged against the brief, version by version', async () => {
+  const { uxMeasures, uxSignals, uxEffect, targetsOf, sittingsOf } = await import('../engine/measures.mjs');
+  const { measureFor } = await import('../engine/evolve.mjs');
+  const { Store } = await import('../engine/store.mjs');
+  const t0 = Date.parse('2026-11-01T08:00:00Z');
+  const at = (s) => new Date(t0 + s * 1000).toISOString();
+  const ev = [];
+  // Version 1: six visits that open on Today, go to Habits and add one there
+  // after 20 s and 6 taps.
+  for (let i = 0; i < 6; i++) {
+    const b = i * 3600;
+    ev.push({ kind: 'open', detail: 'today', session: `a${i}`, v: 1, ts: at(b) },
+      { kind: 'open', detail: 'habits', session: `a${i}`, v: 1, ts: at(b + 5) },
+      { kind: 'insert', tbl: 'habits', rid: `h${i}`, screen: 'habits', taps: 6, session: `a${i}`, v: 1, ts: at(b + 20) });
+  }
+  // A form given up, a row removed two minutes after it was added, a remove undone.
+  ev.push({ kind: 'abandon', detail: 'habits new', tbl: 'habits', session: 'a0', v: 1, ts: at(30) },
+    { kind: 'delete', tbl: 'habits', rid: 'h1', screen: 'habits', taps: 1, session: 'a1', v: 1, ts: at(3600 + 140) },
+    { kind: 'delete', tbl: 'habits', rid: 'h2', screen: 'habits', taps: 1, session: 'a2', v: 1, ts: at(7200 + 60) },
+    { kind: 'insert', tbl: 'habits', rid: 'h2', screen: 'habits', taps: 1, session: 'a2', v: 1, ts: at(7200 + 64) },
+    { kind: 'delete', tbl: 'habits', rid: 'h3', screen: 'habits', taps: 1, session: 'a3', v: 1, ts: at(10800 + 60) },
+    { kind: 'insert', tbl: 'habits', rid: 'h3', screen: 'habits', taps: 1, session: 'a3', v: 1, ts: at(10800 + 66) });
+  // Version 2: the job on Today, in one tap and 4 s.
+  for (let i = 0; i < 6; i++) {
+    const b = 86400 + i * 3600;
+    ev.push({ kind: 'open', detail: 'today', session: `b${i}`, v: 2, ts: at(b) },
+      { kind: 'insert', tbl: 'checkins', rid: `c${i}`, screen: 'today', taps: 1, session: `b${i}`, v: 2, ts: at(b + 4) });
+  }
+  // A tab left open: an hour later is another visit.
+  assert.equal(sittingsOf([{ session: 'x', ts: at(0) }, { session: 'x', ts: at(600) }, { session: 'x', ts: at(4000) }]).length, 2);
+  const screens = [{ slug: 'habits', title: 'Habits', order: 60 }, { slug: 'today', title: 'Today', order: 10 }];
+  const brief = { who: 'someone building habits', job: 'check off today\'s habits', often: 'daily', device: 'phone' };
+  assert.deepEqual([targetsOf(brief).taps, targetsOf({ ...brief, often: 'weekly' }).taps], [3, 5]);
+  const v1 = uxMeasures(ev.filter((e) => e.v === 1), { screens, brief });
+  assert.equal(v1.first, 'today');
+  assert.equal(v1.sittings, 6);
+  assert.equal(v1.measures.tapsToAct, 6);
+  assert.equal(v1.measures.secsToAct, 20);
+  assert.equal(v1.measures.screensToAct, 2);
+  assert.equal(v1.measures.onFirst, 0);
+  assert.ok(Math.abs(v1.measures.undone - 2 / 3) < 1e-9, 'two removes of three were undone');
+  assert.equal(v1.measures.inserts, 6, 'the row put back is not counted as added');
+  assert.ok(Math.abs(v1.measures.wrong - 1 / 6) < 1e-9, 'h1 was removed two minutes after it was added; h2 and h3 were put back');
+  assert.ok(Math.abs(v1.measures.gaveUp - 1 / 7) < 1e-9);
+  assert.deepEqual(v1.findings.map((f) => [f.key, f.severity]), [['taps', 'medium'], ['secs', 'medium'], ['first', 'high'], ['wrong', 'medium'], ['undo', 'medium']]);
+  assert.match(v1.findings[0].text, /6 taps .*check off today's habits.* 3 or fewer/);
+  assert.match(v1.findings[2].text, /first screen, Today; most is done on Habits/);
+  const all = uxMeasures(ev, { screens, brief });
+  assert.deepEqual(all.versions.map((x) => [x.v, x.sittings, x.tapsToAct, x.secsToAct, x.onFirst]), [[1, 6, 6, 20, 0], [2, 6, 1, 4, 1]]);
+  // Too few visits to judge: measured, not judged.
+  assert.deepEqual(uxMeasures(ev.slice(0, 9), { screens, brief }).findings, []);
+  // The findings are use signals, and a change kept for one is judged by it.
+  assert.deepEqual(uxSignals(v1).map((s) => s.key), ['ux:taps', 'ux:secs', 'ux:first', 'ux:wrong', 'ux:undo']);
+  assert.deepEqual(measureFor({ key: 'ux:taps' }), { ux: 'taps', goal: 'fewer', says: 'taps to do something' });
+  assert.equal(measureFor({ key: 'ux:first' }).goal, 'more');
+  assert.deepEqual(uxEffect(ev, 'taps', at(86000), { screens, brief }), { ux: 'taps', before: 6, after: 1, sittingsBefore: 6, sittingsAfter: 6 });
+  // The store keeps the taps with the event.
+  const written = [];
+  await Store.prototype.track.call({ db: { write: async (ops) => written.push(...ops) } }, 'a1', 'insert', '', 'habits', { taps: 4, session: 's1' });
+  assert.equal(written[0].doc.taps, 4);
+});

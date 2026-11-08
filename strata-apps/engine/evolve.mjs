@@ -10,7 +10,11 @@
 // event records the version it happened on, so the same measure can later
 // compare two versions served side by side (an A/B test).
 
-import { newId } from './store.mjs';
+import { newId, briefOf } from './store.mjs';
+import { uxMeasures, uxSignals, uxEffect } from './measures.mjs';
+
+// What the UX measures need of a resolved app: its screens in order, its brief.
+const uxOpts = (view) => ({ screens: (view?.views || []).map((v) => ({ slug: v.slug, title: v.title, order: v.spec?.order ?? 50 })), brief: view?.app ? briefOf(view.app) : null });
 
 export const DEFAULT_MODE = ['off', 'suggest', 'build'].includes(process.env.STRATA_APPS_EVOLVE) ? process.env.STRATA_APPS_EVOLVE : 'build';
 export const MODES = { off: 'off', suggest: 'suggest only', build: 'build to try' };
@@ -191,6 +195,7 @@ export function measureFor(signal) {
     }
     case 'path': return { event: 'open', match: what.split('>')[1], goal: 'fewer', says: `times ${what.split('>')[1]} is opened` };
     case 'call': return { event: 'call', match: what, goal: 'fewer', says: `runs of ${what} by hand` };
+    case 'ux': return { ux: what, goal: what === 'first' ? 'more' : 'fewer', says: { taps: 'taps to do something', secs: 'seconds to do something', first: 'share done on the first screen', gaveUp: 'share of forms given up', wrong: 'share of rows added by mistake', undo: 'share of removes undone' }[what] || what };
     default: return null;
   }
 }
@@ -258,11 +263,17 @@ export class Evolver {
 
   // The patterns in an app's use: counted by Strata when it keeps the
   // signal functions, else here from the events.
+  // With them, what the UX measures find against the brief (taps and time to
+  // do something, forms given up...: engine/measures.mjs).
   async signalsOf(appId, view, events) {
+    let found = null;
     if (this.engine.signalSql) {
-      try { return await signalsFromSql(this.engine.db, appId, view); } catch (e) { this.log(`[${appId}] signals in SQL: ${e.message}; counting them here`); }
+      try { found = await signalsFromSql(this.engine.db, appId, view); } catch (e) { this.log(`[${appId}] signals in SQL: ${e.message}; counting them here`); }
     }
-    return signals(events, view);
+    if (!found) found = signals(events, view);
+    let ux = [];
+    try { ux = uxSignals(uxMeasures(events, uxOpts(view))); } catch (e) { this.log(`[${appId}] UX measures: ${e.message}`); }
+    return [...ux, ...found].slice(0, 12);
   }
 
   async mode(appId) {
@@ -289,7 +300,7 @@ export class Evolver {
         const measure = parse(c.measure);
         return { id: c.id, text: c.text, why: c.why, signal: c.signal, status: c.status, n: Number(c.n) || null, base: Number(c.base) || null, kept: Number(c.kept) || null,
           summary: c.summary || '', problems: parse(c.problems) || [], cost: Number(c.cost) || 0, created: c.created, decided: c.decided || null,
-          measure, effect: c.status === 'kept' && c.decided ? measureEffect(events, measure, c.decided) : null };
+          measure, effect: c.status === 'kept' && c.decided ? (measure?.ux ? uxEffect(events, measure.ux, c.decided, uxOpts(view)) : measureEffect(events, measure, c.decided)) : null };
       }),
     };
   }

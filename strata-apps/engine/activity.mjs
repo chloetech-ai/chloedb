@@ -4,6 +4,7 @@
 // screens, tables and functions, so the view can tell it the way the app does.
 
 import { physical, briefOf } from './store.mjs';
+import { uxMeasures } from './measures.mjs';
 
 // Columns that name a row, best first; then a column named after something
 // else's name (plant_name); then the row it points to (plant, habit_id).
@@ -107,6 +108,7 @@ export async function activity(engine, appId, { days = 30 } = {}) {
   }
   const counts = {};
   for (const t of view.tables) counts[t.spec.name] = await engine.store.countRows(physical(appId, t.spec.name)).catch(() => null);
+  const screens = view.views.map((v) => ({ id: v.id, slug: v.slug, title: v.title, order: v.spec?.order ?? 50 })).sort((a, b) => a.order - b.order);
   return {
     app: { id: view.app.id, name: view.app.name, description: view.app.description || '', brief: briefOf(view.app) },
     days, since, now: new Date().toISOString(), truncated: events.length >= MAX_EVENTS,
@@ -116,7 +118,8 @@ export async function activity(engine, appId, { days = 30 } = {}) {
       if (!out.label && e.tbl && e.rid) { const l = labels.get(`${e.tbl}/${e.rid}`); if (l) out.label = l; }
       return out;
     }),
-    screens: view.views.map((v) => ({ id: v.id, slug: v.slug, title: v.title, order: v.spec?.order ?? 50 })).sort((a, b) => a.order - b.order),
+    screens,
+    ux: uxMeasures(events, { screens, brief: briefOf(view.app) }),
     tables: view.tables.map((t) => ({ name: t.spec.name, noun: singular(t.spec.name), rows: counts[t.spec.name] })),
     functions: view.functions.map((f) => ({ id: f.id, slug: f.slug, title: f.title || f.slug })),
   };

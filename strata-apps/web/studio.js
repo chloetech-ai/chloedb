@@ -180,9 +180,10 @@ function connect() {
   es.addEventListener('drawn', (e) => {
     const d = mine(e);
     if (!d) return;
-    toast(d.fixing ? `Checked the screens on a phone and a computer: ${d.high} thing${d.high === 1 ? '' : 's'} in the way; fixing ${d.high === 1 ? 'it' : 'them'} now`
-      : d.high ? `Checked the screens on a phone and a computer: ${d.high} thing${d.high === 1 ? '' : 's'} in the way`
-      : `Checked the screens on a phone and a computer: nothing in the way${d.found ? ` (${d.found} to polish)` : ''}`);
+    const graded = d.grade ? `, ${d.grade} of 5 for what it is for` : '';
+    toast(d.fixing ? `Checked the screens on a phone and a computer${graded}: ${d.high} thing${d.high === 1 ? '' : 's'} in the way; fixing ${d.high === 1 ? 'it' : 'them'} now`
+      : d.high ? `Checked the screens on a phone and a computer${graded}: ${d.high} thing${d.high === 1 ? '' : 's'} in the way`
+      : `Checked the screens on a phone and a computer${graded}: nothing in the way${d.found ? ` (${d.found} to polish)` : ''}`);
   });
 }
 
@@ -676,7 +677,7 @@ function renderApp() {
   }
   // tabs
   const tabs = $('#tabs');
-  tabs.replaceChildren(...views.map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, 'data-slug': v.slug, onclick: () => switchView(v.slug) }, v.title, S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
+  tabs.replaceChildren(...views.map((v) => h('button', { class: `tab${v.slug === S.view && !S.activity ? ' on' : ''}`, 'data-slug': v.slug, onclick: () => { S.taps = (S.taps || 0) + 1; switchView(v.slug); } }, v.title, S.errors.has(v.slug) ? h('span', { class: 'dot', style: 'background:var(--bad)' }) : null)),
     h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, st.running ? 'Changing...' : 'Change'));
   if (!views.length) tabs.replaceChildren(h('span', { class: 'tab on' }, 'First version'), h('button', { class: 'tab mobile-only', style: 'margin-left:auto', onclick: () => togglePanel() }, 'Details'));
   renderTryBar();
@@ -1218,6 +1219,10 @@ function evolveBox(st) {
     const e = c.effect;
     if (!e || !c.measure) return null;
     const span = (d) => (d < 1 ? `${Math.max(1, Math.round(d * 24))} h` : `${Math.round(d)} day${Math.round(d) === 1 ? '' : 's'}`);
+    if (e.ux) {
+      const val = (x) => (x === null || x === undefined ? 'not measured' : /^(first|gaveUp|wrong|undo)$/.test(e.ux) ? `${Math.round(x * 100)}%` : String(Math.round(x * 10) / 10));
+      return h('div', { class: 'effect' }, h('b', 'Since kept: '), `${c.measure.says || 'measure'}: ${val(e.before)} over ${e.sittingsBefore} visits before, ${val(e.after)} over ${e.sittingsAfter} since`);
+    }
     return h('div', { class: 'effect' }, h('b', 'Since kept: '), `${c.measure.says || 'measure'}: ${e.before} in the ${span(e.beforeDays)} before, ${e.after} in the ${span(e.afterDays)} since`);
   };
   const cards = (ev.candidates || []).filter((c) => c.status !== 'dropped').slice(0, 4).map((c) => h('div', { class: `sugg cand ${c.status}` },
@@ -1442,8 +1447,11 @@ window.addEventListener('message', async (e) => {
   }
   const reply = (value, error, refused) => e.source.postMessage({ __sa: 1, kind: 'result', id: m.id, value, error, refused }, '*');
   const base = `/api/apps/${S.appId}`;
-  // Writes and calls name the screen they were made on.
+  // Writes and calls name the screen they were made on, and the taps (in the
+  // app and on its tabs) since the write before.
+  if (m.kind === 'tap') { if (!entry.preview) S.taps = (S.taps || 0) + 1; return; }
   const on = entry.preview ? {} : { 'x-sa-view': entry.slug };
+  if (!entry.preview && m.kind === 'rpc' && ['insert', 'update', 'remove', 'call'].includes(m.method)) { on['x-sa-taps'] = String(S.taps || 0); S.taps = 0; }
   try {
     if (m.kind === 'rpc') {
       const [a, b, c] = m.args || [];

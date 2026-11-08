@@ -244,7 +244,7 @@ export class Engine extends EventEmitter {
       if (batch && !ctx.batch) out = await this.exclusive(appId, async () => { const r = await rule(); await batch.commit(); return r; });
       else if (fn.spec.rule) out = await rule();
       else out = await runFunction(fn.code, input, host, { user, helpers: view.helpers.map((c) => ({ name: c.slug, code: c.code })) });
-      if (!ctx.depth) this.store.track(appId, 'call', fn.id, slug, { person: ctx.who || user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, ms: out.ms }).catch(() => {});
+      if (!ctx.depth) this.store.track(appId, 'call', fn.id, slug, { person: ctx.who || user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, ms: out.ms, taps: ctx.taps }).catch(() => {});
       return out;
     } catch (e) {
       // A rule's refusal ("Only 2 left") is for the person, not a repair.
@@ -319,7 +319,8 @@ export class Engine extends EventEmitter {
         if (ops.length) {
           await this.db.write(ops.splice(0));
           this.announce('data', { app: appId, tables: [...new Set(events.map((e) => e[0]))] });
-          for (const [table, event, row, changed] of events.splice(0)) await this.after(appId, table, event, row, { ...ctx, batch: undefined, changed });
+          // The taps that led to the writes go with the first of them.
+          for (const [i, [table, event, row, changed]] of events.splice(0).entries()) await this.after(appId, table, event, row, { ...ctx, batch: undefined, changed, taps: i ? null : ctx.taps });
         }
         for (const fn of afterwards.splice(0)) await fn();
       },
@@ -331,7 +332,7 @@ export class Engine extends EventEmitter {
     const view = await this.view(appId);
     if (!ctx.depth) {
       const detail = event === 'update' && ctx.changed ? `${table}: ${ctx.changed.join(', ')}` : table;
-      const where = { person: ctx.who || ctx.user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, tbl: table, rid: row?.id, fields: event === 'update' ? ctx.changed : null };
+      const where = { person: ctx.who || ctx.user?.id, v: view.comp.n, session: ctx.session, screen: ctx.screen, tbl: table, rid: row?.id, fields: event === 'update' ? ctx.changed : null, taps: ctx.taps };
       rowLabel(this.db, appId, table, row, tablesOf(view)).catch(() => null)
         .then((label) => this.store.track(appId, event, '', detail, { ...where, label })).catch(() => {});
     }
