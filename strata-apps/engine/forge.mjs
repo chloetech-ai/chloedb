@@ -179,7 +179,7 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
 }
 
 - name: only for a new app, or when asked to rename it: what a person would call it on their home screen, 2 to 4 words ("Habits", "Plant care", "Lunch votes"); never the request cut short.
-- ux: the brief the screens are designed from, decided first, before the tables and screens (for a new app, and for a change that alters who uses it or how): "who" uses it and where; the "job" they come back for, in their words; how "often" ("several times a day", "daily", "weekly", "monthly" or "now and then"); the "device" ("phone", "desktop" or "both"; a thing done daily is done on a phone unless the request says otherwise); "first", the slug of the screen that opens first, where that job is done; and the "glance", what they see on opening without a tap (the count, the list or the number that matters). The screens follow it, in this order: first the one where the job is done (in one or two taps for a job done daily or more: a check per item, a quick add, a toggle; never a form to fill for it), then the ones to look back (history, charts, totals), last the ones to set up (the list of things, settings). On a phone a screen is one column of what fits a phone; a table with more than three columns is drawn as cards.
+- ux: the brief the screens are designed from, decided first, before the tables and screens (for a new app, and for a change that alters who uses it or how): "who" uses it and where; the "job" they come back for, in their words; how "often" ("several times a day", "daily", "several times a week", "weekly", "monthly" or "now and then"); the "device" ("phone", "desktop" or "both"; a thing done daily is done on a phone unless the request says otherwise); "first", the slug of the screen that opens first, where that job is done; and the "glance", what they see on opening without a tap (the count, the list or the number that matters). The screens follow it, in this order: first the one where the job is done (in one or two taps for a job done daily or more: a check per item, a quick add, a toggle; never a form to fill for it), then the ones to look back (history, charts, totals), last the ones to set up (the list of things, settings). On a phone a screen is one column of what fits a phone; a table with more than three columns is drawn as cards.
 - tables: tables to add, and existing tables you add columns to (for an existing table, list only its new columns).
 - views and functions: the ones you add or rewrite, each with a code block of the same slug holding its whole code. Leave out the ones that stay as they are. Rewriting a view means writing all of it again. Keep slugs as they are (lowercase letters, digits, dashes). "order" places views (the lowest opens first).
 - components and helpers: the ones you add, or write a new version of, each with a <code slug="ui:NAME"> or <code slug="lib:NAME"> block holding its whole code. The components and helpers the code calls are found from it: the app keeps the version of each it has, and takes the newest of one it did not use before.
@@ -1111,8 +1111,23 @@ export async function validate(plan, code, view, library, shared = new Map()) {
 // The UX brief: who uses the app, for what job, how often, on what, which
 // screen opens first and what it shows at a glance. A new app decides it
 // with its name, before its tables and screens; a change may restate it.
-export const OFTEN = ['several times a day', 'daily', 'weekly', 'monthly', 'now and then'];
+export const OFTEN = ['several times a day', 'daily', 'several times a week', 'weekly', 'monthly', 'now and then'];
 export const DEVICES = ['phone', 'desktop', 'both'];
+// A brief in other words is taken in the nearest of these, not refused:
+// "a few times a week" is several times a week, "mobile" a phone.
+const OFTEN_AS = [[/(several|many|a few) times a day|hourly|all day/i, 'several times a day'], [/(several|a few|\d) times a week|most days|every other day/i, 'several times a week'],
+  [/daily|every ?day|each day|a day/i, 'daily'], [/week/i, 'weekly'], [/month/i, 'monthly'], [/./, 'now and then']];
+const deviceAs = (w) => {
+  const phone = /phone|mobile|ios|android/i.test(w);
+  const desk = /desk|computer|laptop|web|browser|tablet/i.test(w);
+  return /\b(both|either|any|all)\b/i.test(w) || (phone && desk) ? 'both' : phone ? 'phone' : desk ? 'desktop' : null;
+};
+export function normalizeBrief(plan) {
+  const ux = plan?.ux;
+  if (!ux || typeof ux !== 'object' || Array.isArray(ux)) return;
+  if (typeof ux.often === 'string' && ux.often.trim() && !OFTEN.includes(ux.often)) ux.often = OFTEN_AS.find(([re]) => re.test(ux.often))[1];
+  if (typeof ux.device === 'string' && ux.device.trim() && !DEVICES.includes(ux.device)) ux.device = deviceAs(ux.device) || ux.device;
+}
 const BRIEF = ['who', 'job', 'often', 'device', 'first', 'glance'];
 export { briefOf };
 
@@ -1150,7 +1165,7 @@ export function orderByBrief(plan, view) {
 }
 
 export function completePlan(plan, view, library) {
-  if (plan) orderByBrief(plan, view);
+  if (plan) { normalizeBrief(plan); orderByBrief(plan, view); }
   if (!plan || !Array.isArray(plan.reuse)) return plan;
   const have = new Map(view.tables.map((t) => [t.spec.name, new Set((t.spec.columns || []).map((c) => c.name))]));
   plan.tables = Array.isArray(plan.tables) ? plan.tables : [];

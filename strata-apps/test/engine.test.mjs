@@ -8,7 +8,7 @@ import { parseAnswer, ask } from '../engine/llm.mjs';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkBrief, orderByBrief, briefOf, validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode, smallChange, SYSTEM, SUGGEST_AFTER } from '../engine/forge.mjs';
+import { checkBrief, orderByBrief, normalizeBrief, briefOf, validate, uiRefs, pinShared, checkShared, sharedRefs, checkView, completePlan, checkScreen, screensToCode, applyPatch, patchScreens, screenLines, rulesToCode, prepareScreens, editCode, smallChange, SYSTEM, SUGGEST_AFTER } from '../engine/forge.mjs';
 import { expandScreen as expandWith } from '../engine/patterns.mjs';
 import { runRule, checkRule } from '../engine/rules.mjs';
 import { readLibrary, parsePiece, parseTables } from '../engine/library.mjs';
@@ -1829,6 +1829,17 @@ test('a new app is planned from a UX brief: a short name, who, the job, how ofte
   assert.equal(briefOf({ ux: JSON.stringify(ux) }).first, 'today');
   assert.equal(briefOf({ ux: 'not json' }), null);
   assert.equal(briefOf({}), null);
+  // a brief in other words is taken in the nearest, not refused
+  const near = (often, device = 'phone') => { const p = { ux: { ...ux, often, device } }; normalizeBrief(p); return [p.ux.often, p.ux.device]; };
+  assert.deepEqual(near('several times a week'), ['several times a week', 'phone']);
+  assert.deepEqual(near('3 times a week', 'mobile'), ['several times a week', 'phone']);
+  assert.deepEqual(near('every day', 'laptop'), ['daily', 'desktop']);
+  assert.deepEqual(near('a few times a day', 'phone and computer'), ['several times a day', 'both']);
+  assert.deepEqual(near('once a month'), ['monthly', 'phone']);
+  assert.deepEqual(near('a lot', 'watch'), ['now and then', 'watch']);
+  const asked = { name: 'Runs', ux: { ...ux, often: 'a few times a week' }, views };
+  completePlan(asked, empty, []);
+  assert.deepEqual(checkBrief(asked, empty), []);
 });
 
 test('every version is drawn on a phone and a computer, and the rules find what stands in the way', async (t) => {
