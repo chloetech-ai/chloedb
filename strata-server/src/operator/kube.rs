@@ -214,6 +214,13 @@ impl Cluster {
         }
     }
 
+    /// The variables `spec.secretEnv` takes from Secrets, for every server
+    /// and coordinator.
+    fn from_secrets(&self) -> Vec<Json> {
+        let e = self.spec.secret_env.iter();
+        e.map(|e| json!({"name": e.name, "valueFrom": {"secretKeyRef": {"name": e.secret, "key": e.key}}})).collect()
+    }
+
     /// The coordinators' tokens: the token, and the cluster token when
     /// there is one, which they send to the servers.
     fn coordinator_token_env(&self) -> Vec<Json> {
@@ -285,6 +292,7 @@ impl Cluster {
             env.push(json!({"name": "STRATA_DEMO_SHARD", "value": format!("{i}/{of}")}));
         }
         env.extend(self.server_token_env());
+        env.extend(self.from_secrets());
         let mut container = json!({
             "name": "strata",
             "image": s.image,
@@ -350,6 +358,7 @@ impl Cluster {
         env.push(json!({"name": "STRATA_KUBE_CLUSTER", "value": format!("{}/{}", self.ns, self.name)}));
         env.push(json!({"name": "STRATA_DRAIN_MS", "value": DRAIN_MS.to_string()}));
         env.extend(self.place_env());
+        env.extend(self.from_secrets());
         let mut container = json!({
             "name": "coordinator", "image": s.image, "args": args, "env": env,
             "ports": [{"name": "http", "containerPort": 7700}],
@@ -1380,6 +1389,24 @@ mod tests {
         let c = cluster(json!({"demo": 10, "tokenSecret": "admin"}));
         let d = c.coordinator_deployment(&[vec!["a".into()]], 1);
         assert_eq!(names(&d["spec"]["template"]["spec"]["containers"][0]["env"]), [("STRATA_TOKEN".to_string(), "admin".to_string())]);
+    }
+
+    #[test]
+    fn secret_env_reaches_every_server_and_coordinator() {
+        let c = cluster(json!({"demo": 10, "tokenSecret": "admin", "secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}, {"name": "OPENAI_API_KEY", "secret": "models", "key": "openai"}]}));
+        let from = |env: &Json, name: &str| env.as_array().unwrap().iter().find(|e| e["name"] == name).map(|e| e["valueFrom"]["secretKeyRef"].clone());
+        let s = c.statefulset(0, 2, Some((0, 1)));
+        let d = c.coordinator_deployment(&[vec!["a".into()]], 1);
+        for env in [&s["spec"]["template"]["spec"]["containers"][0]["env"], &d["spec"]["template"]["spec"]["containers"][0]["env"]] {
+            assert_eq!(from(env, "ANTHROPIC_API_KEY"), Some(json!({"name": "anthropic", "key": "key"})));
+            assert_eq!(from(env, "OPENAI_API_KEY"), Some(json!({"name": "models", "key": "openai"})));
+        }
+        // Not the follow process's: it calls no model.
+        let f: super::super::FollowSpec = serde_json::from_value(json!({"source": "https://east:7700"})).unwrap();
+        assert!(from(&c.follow_deployment(&f)["spec"]["template"]["spec"]["containers"][0]["env"], "ANTHROPIC_API_KEY").is_none());
+        // Without it, the servers' and coordinators' variables are as before.
+        let plain = cluster(json!({"demo": 10, "tokenSecret": "admin"}));
+        assert!(from(&plain.statefulset(0, 2, Some((0, 1)))["spec"]["template"]["spec"]["containers"][0]["env"], "ANTHROPIC_API_KEY").is_none());
     }
 
     #[test]

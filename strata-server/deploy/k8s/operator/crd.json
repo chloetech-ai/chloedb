@@ -346,6 +346,31 @@
                     "type": "object",
                     "x-kubernetes-preserve-unknown-fields": true
                   },
+                  "secretEnv": {
+                    "description": "Environment variables of every server and coordinator taken from Secrets: the keys of models behind an API (ANTHROPIC_API_KEY for the agents, LLM fields and reranking; OPENAI_API_KEY, COHERE_API_KEY, ... for hosted embeddings). Changing it restarts the copies one at a time.",
+                    "items": {
+                      "properties": {
+                        "key": {
+                          "description": "The Secret's key that holds the value (default key).",
+                          "type": "string"
+                        },
+                        "name": {
+                          "description": "The variable, such as ANTHROPIC_API_KEY.",
+                          "type": "string"
+                        },
+                        "secret": {
+                          "description": "The Secret, in the cluster's namespace.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "secret"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
                   "shards": {
                     "description": "Shards, each holding a part of the 4,096 slots (default 1).",
                     "minimum": 1,
