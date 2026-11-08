@@ -265,3 +265,28 @@ async fn a_replica_holds_its_primarys_keys() {
     until("the primary holds the replica's key", || admits(&p, &reader)).await;
     assert!(p.keys.peers()[&ur]["error"].is_null());
 }
+
+/// A copy started with another cluster token refuses the coordinator's
+/// calls: the coordinator reads from the copies that take its token, and
+/// its view of the cluster says which copy refuses it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_with_another_cluster_token_is_passed_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let good = Access { cluster: cluster(), ..Default::default() };
+    let other = Access { cluster: Some(Secret::new("another-cluster-secret")), ..Default::default() };
+    let (_b, ub) = serve(create(d, "b.strata", |_| true), d, "b.strata", good, |_| {}).await;
+    let (_a, ua) = serve(create(d, "a.strata", |_| true), d, "a.strata", other, |_| {}).await;
+    let (_c, _svc, base) = coordinator(&[format!("{ub}|{ua}")], cluster(), Access::default()).await;
+    for _ in 0..40 {
+        let (status, j) = http(&base, "POST", "/v1/query", None, Some(json!({"sql": "SELECT COUNT(*) FROM products"}))).await;
+        assert_eq!((status, j["rows"][0][0].as_i64()), (200, Some(N as i64)), "{j}");
+    }
+    let (status, j) = http(&base, "GET", "/v1/cluster", None, None).await;
+    assert_eq!(status, 200, "{j}");
+    let copies = j["shards"][0]["replicas"].as_array().unwrap();
+    let a = copies.iter().find(|r| r["url"] == json!(ua)).unwrap();
+    assert_eq!((a["status"].as_str(), a["refuses_token"].as_bool()), (Some("down"), Some(true)), "{j}");
+    let b = copies.iter().find(|r| r["url"] == json!(ub)).unwrap();
+    assert!(b["refuses_token"].is_null(), "{j}");
+}

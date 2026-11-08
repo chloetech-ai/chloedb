@@ -33,8 +33,9 @@ This document is the design. `report/` holds the evaluation of the prototype.
   personalized PageRank) and combine the result with text, structured and
   vector search in one statement (§5.4, §6.1).
 
-Non-goals for the prototype: joins, multi-process writers (the file lock and
-`-shm` reader table of SQLite are designed but not built), distribution.
+Non-goals for the prototype: joins, writers in several processes (one
+process writes a database and others may read it, `DbOptions::read_only`:
+`storage/share.rs`), distribution.
 
 ## 2. Architecture
 
