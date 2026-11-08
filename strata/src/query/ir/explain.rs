@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use super::{Agg, ArithOp, CmpOp, Expr, Graph, GraphKind, GuardSite, JoinKey, JoinKind, Node, NormKind, OnConflict, Plan, SortKey};
+use super::{Agg, ArithOp, Bound, CmpOp, Expr, FrameUnits, Graph, GraphKind, GuardSite, JoinKey, JoinKind, Node, NormKind, OnConflict, Plan, SetOp, SortKey, WindowFn, WindowFunc};
 use crate::query::logical::{AggFn, DecayShape, Direction, Expand, Fuzzy, Opts};
 use crate::query::sql::ident;
 use crate::schema::{FieldType, Logical, Schema};
@@ -148,6 +148,19 @@ impl<'a> Text<'a> {
                 }
                 (std::iter::once(head).chain(indent(l)).chain(indent(r)).collect(), names)
             }
+            Node::SetOp { op, all, left, right } => {
+                let (l, ln) = self.node(left);
+                let (r, _) = self.node(right);
+                let head = match (op, all) {
+                    (SetOp::Union, true) => "Union all",
+                    (SetOp::Union, false) => "Union",
+                    (SetOp::Intersect, true) => "Intersect all",
+                    (SetOp::Intersect, false) => "Intersect",
+                    (SetOp::Except, true) => "Except all",
+                    (SetOp::Except, false) => "Except",
+                };
+                (std::iter::once(head.to_string()).chain(indent(l)).chain(indent(r)).collect(), Names { schema: None, outputs: ln.outputs })
+            }
             Node::With { ctes, input } => {
                 let mut lines = vec!["With".to_string()];
                 for c in ctes {
@@ -172,6 +185,13 @@ impl<'a> Text<'a> {
                     k => format!("At most {k} per: {keys}"),
                 }
             }),
+            Node::Window { input, funcs } => {
+                let (lines, names) = self.node(input);
+                let calls: Vec<String> = funcs.iter().map(|w| self.window(w, &names)).collect();
+                let head = format!("Window: {}", calls.join(", "));
+                let names = Names { schema: names.schema, outputs: names.outputs.iter().cloned().chain(calls).collect() };
+                (std::iter::once(head).chain(indent(lines)).collect(), names)
+            }
             Node::KeyOrder { input, by } => {
                 let (il, names) = self.node(input);
                 let lines = match &**by {
@@ -250,7 +270,48 @@ impl<'a> Text<'a> {
             AggFn::Avg => format!("AVG({arg})"),
             AggFn::Min => format!("MIN({arg})"),
             AggFn::Max => format!("MAX({arg})"),
+            AggFn::PercentileCont(p) => format!("PERCENTILE_CONT({}) WITHIN GROUP (ORDER BY {arg})", p.get()),
+            AggFn::PercentileDisc(p) => format!("PERCENTILE_DISC({}) WITHIN GROUP (ORDER BY {arg})", p.get()),
         }
+    }
+
+    /// A window function in SQL's words.
+    fn window(&self, w: &WindowFn, names: &Names) -> String {
+        let x = |e: &Expr| self.expr(e, names);
+        let call = match &w.func {
+            WindowFunc::Ntile(n) => format!("NTILE({n})"),
+            WindowFunc::Lag { arg, offset, default } | WindowFunc::Lead { arg, offset, default } => {
+                let mut args = vec![x(arg), offset.to_string()];
+                args.extend(default.iter().map(x));
+                format!("{}({})", w.func.name().to_ascii_uppercase(), args.join(", "))
+            }
+            WindowFunc::FirstValue(a) | WindowFunc::LastValue(a) => format!("{}({})", w.func.name().to_ascii_uppercase(), x(a)),
+            WindowFunc::NthValue { arg, n } => format!("NTH_VALUE({}, {n})", x(arg)),
+            WindowFunc::Agg(a) => self.agg(a, names),
+            f => format!("{}()", f.name().to_ascii_uppercase()),
+        };
+        let mut spec = Vec::new();
+        if !w.partition.is_empty() {
+            spec.push(format!("PARTITION BY {}", w.partition.iter().map(x).collect::<Vec<_>>().join(", ")));
+        }
+        if !w.order.is_empty() {
+            spec.push(format!("ORDER BY {}", self.keys(&w.order, names)));
+        }
+        if let Some(f) = &w.frame {
+            let bound = |b: &Bound| match b {
+                Bound::UnboundedPreceding => "UNBOUNDED PRECEDING".to_string(),
+                Bound::Preceding(e) => format!("{} PRECEDING", x(e)),
+                Bound::CurrentRow => "CURRENT ROW".to_string(),
+                Bound::Following(e) => format!("{} FOLLOWING", x(e)),
+                Bound::UnboundedFollowing => "UNBOUNDED FOLLOWING".to_string(),
+            };
+            let units = match f.units {
+                FrameUnits::Rows => "ROWS",
+                FrameUnits::Range => "RANGE",
+            };
+            spec.push(format!("{units} BETWEEN {} AND {}", bound(&f.start), bound(&f.end)));
+        }
+        format!("{call} OVER ({})", spec.join(" "))
     }
 
     /// `e`, in parentheses if it is AND, OR or an operator's.

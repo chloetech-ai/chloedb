@@ -1,0 +1,63 @@
+Name:             strata-coordinator
+Namespace:        compare
+Priority:         0
+Service Account:  default
+Node:             strata-worker3/172.19.0.5
+Start Time:       Sun, 01 Nov 2026 21:39:13 -0800
+Labels:           app=strata-coordinator
+                  engine=strata
+Annotations:      <none>
+Status:           Running
+IP:               10.244.1.2
+IPs:
+  IP:  10.244.1.2
+Containers:
+  strata:
+    Container ID:  containerd://4d58bc61a815a8a594b61ae90a8e2cffbe73e11da8e5a81791b6e4f4f7e74595
+    Image:         strata-server:compare
+    Image ID:      docker.io/library/import-2026-11-02@sha256:558ed7893b0b5b27fdb3d8f76b47c88199cb97a642ae8bcb4d61e041afbbdeda
+    Port:          7700/TCP (http)
+    Host Port:     0/TCP (http)
+    Args:
+      --listen=0.0.0.0:7700
+      --grpc=off
+      --shards=http://strata-0.strata:7701,http://strata-1.strata:7701
+    State:          Running
+      Started:      Sun, 01 Nov 2026 21:39:14 -0800
+    Ready:          False
+    Restart Count:  0
+    Limits:
+      cpu:     1
+      memory:  1Gi
+    Requests:
+      cpu:        1
+      memory:     1Gi
+    Readiness:    http-get http://:http/v1/health delay=0s timeout=1s period=2s successThreshold=1 failureThreshold=3
+    Environment:  <none>
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-54mxw (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  kube-api-access-54mxw:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason     Age                  From     Message
+  ----     ------     ----                 ----     -------
+  Normal   Pulled     5m                   kubelet  spec.containers{strata}: Container image "strata-server:compare" already present on machine and can be accessed by the pod
+  Normal   Created    5m                   kubelet  spec.containers{strata}: Container created
+  Normal   Started    5m                   kubelet  spec.containers{strata}: Container started
+  Warning  Unhealthy  4m14s (x25 over 5m)  kubelet  spec.containers{strata}: Readiness probe failed: Get "http://10.244.1.2:7700/v1/health": dial tcp 10.244.1.2:7700: connect: connection refused

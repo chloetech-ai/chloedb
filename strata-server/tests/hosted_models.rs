@@ -99,7 +99,7 @@ async fn rows_and_queries_embedded_by_a_hosted_model() {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", l.local_addr().unwrap());
     tokio::spawn(server::serve_http(Arc::new(svc), l, Access::default()));
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
 
     let r: Json = c.get(format!("{base}/v1/schema")).send().await.unwrap().json().await.unwrap();
     assert_eq!(r["embeddings"][0]["loaded"], true, "{r}");
@@ -193,7 +193,7 @@ async fn rows_stored_before_the_model_opened_get_their_vectors() {
     std::fs::create_dir_all(models.join("gpu")).unwrap();
     std::fs::write(models.join("gpu").join("endpoint.json"), json!({"api": "openai", "url": url, "dim": 16}).to_string()).unwrap();
     let base = serve(db, schema, &models).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
 
     let e = embeddings_when(&c, &base, |e| e["backfill"]["state"] == "done").await;
     // The row without text gets none; 599 in writes of 256 rows.
@@ -218,7 +218,7 @@ async fn a_model_that_fails_leaves_the_rows_for_another_try() {
     std::fs::create_dir_all(models.join("gpu")).unwrap();
     std::fs::write(models.join("gpu").join("endpoint.json"), json!({"api": "openai", "url": url, "dim": 16, "retries": 0}).to_string()).unwrap();
     let base = serve(db, schema, &models).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
 
     let e = embeddings_when(&c, &base, |e| e["backfill"]["state"] == "failed").await;
     assert_eq!((&e["backfill"]["missing"], &e["backfill"]["embedded"]), (&json!(10), &json!(0)), "{e}");

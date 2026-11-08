@@ -126,6 +126,19 @@ impl Naive {
                     })
                     .collect()
             }
+            // The phrases of `terms` and each of the first terms the
+            // prefix starts.
+            BoolQuery::PhrasePrefix { terms, prefix } => self
+                .index
+                .keys()
+                .filter(|t| t.starts_with(prefix.as_str()))
+                .take(strata::text::query::PHRASE_PREFIX_TERMS)
+                .flat_map(|t| {
+                    let mut ts = terms.clone();
+                    ts.push(t.clone());
+                    self.eval(&BoolQuery::Phrase(ts))
+                })
+                .collect(),
             BoolQuery::Fuzzy { term, edits } => {
                 let a: Vec<char> = term.chars().collect();
                 self.index.iter().filter(|(t, _)| strata::text::fuzzy::within(&a, t, *edits).is_some()).flat_map(|(_, ps)| ps.iter().map(|x| x.0)).collect()

@@ -5,10 +5,12 @@
 //! replicas, counts the copies that hold a write, is fenced and holds a
 //! lease on reads ([`Primary`], [`Shipper`]).
 //!
-//! The rules are [`crate::replication`]'s, whose documentation says what
-//! they promise and why; each function here is one of its decisions, with
-//! the same answers and messages, but for the fixes [`super`] lists. What a caller must keep durably before it
-//! answers comes back as a [`Kept`] to save; the time is passed in.
+//! The server runs these decisions ([`crate::replication`], whose
+//! documentation says what they promise and why), and so does the
+//! simulator ([`crate::sim`]): [`crate::replication`] does the I/O, the
+//! calls, the database and the files, and each function here decides one
+//! step. What a caller must keep durably before it answers comes back as a
+//! [`Kept`] to save; the time is passed in.
 
 use std::time::{Duration, Instant};
 
@@ -46,6 +48,13 @@ impl Kept {
     /// A copy with id `id` and nothing else kept yet.
     pub fn new(id: String) -> Kept {
         Kept { id, ..Kept::default() }
+    }
+
+    /// Whether it has had no part in replication yet: a copy started so,
+    /// as its shard's primary (`--replicas`) or a replica (`--replica`), is
+    /// one of the shard's first copies.
+    pub fn first(&self) -> bool {
+        self.role.is_none() && self.follows.is_none() && self.replaced_by.is_none()
     }
 
     /// The newest term it knows of, besides the database's `term`: of the
@@ -193,21 +202,42 @@ pub struct Replica {
     /// The newest term a copy said it knows, answering its votes
     /// ([`Self::heard`]); its next [`Self::campaign`] asks above it.
     pub heard: u64,
+    /// When it last granted a vote ([`Self::granted`]).
+    pub voted_at: Option<Instant>,
 }
 
 impl Replica {
     /// A replica keeping `kept`, from `now`, and what to keep when its
-    /// part changes.
-    pub fn open(kept: Kept, now: Instant) -> (Replica, Option<Kept>) {
-        let save = (kept.role != Some(KeptRole::Replica)).then(|| Kept { role: Some(KeptRole::Replica), ..kept.clone() });
+    /// part changes. Started with `--replica` (`flags`) on a database that
+    /// had no part yet ([`Kept::first`]), it is one of its shard's first
+    /// copies, which count among the copies a majority is counted of from
+    /// the start, as Raft's first members do: the primary started with
+    /// them counts them so, and if it stopped before any of them heard from
+    /// it, they could otherwise never elect another. A replica that joins a
+    /// serving shard counts once it caught up ([`Self::take`]).
+    pub fn open(kept: Kept, now: Instant, flags: bool) -> (Replica, Option<Kept>) {
+        let member = kept.member || (flags && kept.first());
+        let next = Kept { role: Some(KeptRole::Replica), member, ..kept.clone() };
+        let save = (next != kept).then_some(next);
         let kept = save.clone().unwrap_or(kept);
-        (Replica { kept, called_at: None, serves_reads: false, opened: now, global_checkpoint: 0, heard: 0 }, save)
+        (Replica { kept, called_at: None, serves_reads: false, opened: now, global_checkpoint: 0, heard: 0, voted_at: None }, save)
     }
 
-    /// How long since its primary last called, or since it started
-    /// following when none has.
+    /// How long since its primary last called or it granted a vote
+    /// ([`Self::granted`]), or since it started following when neither
+    /// happened: automatic failover asks to elect it after so long.
     pub fn silent_for(&self, now: Instant) -> Duration {
-        now.saturating_duration_since(self.called_at.unwrap_or(self.opened))
+        let last = self.called_at.max(self.voted_at).unwrap_or(self.opened);
+        now.saturating_duration_since(last)
+    }
+
+    /// It kept a vote it granted at `now` (not a pre-vote): as in Raft, it
+    /// waits a whole failover delay from then before it asks to be elected
+    /// itself. The copy it voted for may be a moment from winning; a
+    /// campaign of its own would ask for a newer term, and that term,
+    /// kept, fences the primary it just elected.
+    pub fn granted(&mut self, now: Instant) {
+        self.voted_at = Some(now);
     }
 
     /// Answers vote `r` ([`decide`]) at `n`, and what to keep (the vote)
@@ -215,7 +245,7 @@ impl Replica {
     /// called within `sticky`: that primary serves.
     pub fn vote(&self, r: &pb::VoteRequest, n: &Numbering, now: Instant, sticky: Duration) -> (pb::VoteResponse, Option<Kept>) {
         let kept = &self.kept;
-        let quiet = self.silent_for(now);
+        let quiet = now.saturating_duration_since(self.called_at.unwrap_or(self.opened));
         if !r.handover && r.candidate != kept.id && self.called_at.is_some() && quiet < sticky {
             return (refused(kept.newest(n.term), n.last(), format!("its primary called {} ms ago", quiet.as_millis())), None);
         }
@@ -395,8 +425,8 @@ pub fn promote_check(mine: &Numbering, said: &[(String, Result<pb::HelloResponse
     Ok(Asked { copies, primaries })
 }
 
-/// How long a replica elected by hand (`elected`, a handover, after the
-/// copies said `asked`, none with `force`) waits before it takes writes,
+/// How long a replica promoted by hand (`elected` in a handover, after the
+/// copies said `asked`; no election with `force`) waits before it takes writes,
 /// when primaries hold a `lease` on reads: the primary it replaced serves
 /// reads until it learns of the new term or its lease runs out, and it
 /// would serve them without what the new primary acknowledges. None when
@@ -409,9 +439,9 @@ pub fn promote_check(mine: &Numbering, said: &[(String, Result<pb::HelloResponse
 /// in a handover may have answered its primary a moment before, so the
 /// winner waits as long: the lease, and a third more for the servers'
 /// clocks, as the copies' failover delay.
-pub fn handover_hold(asked: Option<&Asked>, elected: &Elected, lease: Duration) -> Duration {
-    let stepped_down = asked.is_some_and(|a| {
-        let granted = |url: &String| elected.votes.as_array().is_some_and(|v| v.iter().any(|j| j["url"] == json!(url) && j["granted"] == json!(true)));
+pub fn handover_hold(asked: Option<&Asked>, elected: Option<&Elected>, lease: Duration) -> Duration {
+    let stepped_down = asked.zip(elected).is_some_and(|(a, e)| {
+        let granted = |url: &String| e.votes.as_array().is_some_and(|v| v.iter().any(|j| j["url"] == json!(url) && j["granted"] == json!(true)));
         !a.primaries.is_empty() && a.primaries.iter().all(granted)
     });
     match stepped_down || lease.is_zero() {
@@ -441,6 +471,8 @@ pub struct Tally {
     pub need: usize,
     /// The newest term a copy said it knows.
     pub newer: u64,
+    /// The newest last transaction a copy said it holds, as (term, number).
+    pub last: (u64, u64),
     /// What each copy answered.
     pub said: Json,
 }
@@ -456,7 +488,7 @@ impl Campaign {
     /// counted again.
     pub fn tally(&self, copies: &[String], answers: Vec<Result<pb::VoteResponse, String>>) -> Tally {
         let mut others = Vec::new();
-        let (mut granted, mut newer, mut said) = (1, 0, Vec::new());
+        let (mut granted, mut newer, mut last, mut said) = (1, 0, (0, 0), Vec::new());
         for (url, a) in copies.iter().zip(answers) {
             match a {
                 Ok(a) if a.candidate => {}
@@ -464,6 +496,7 @@ impl Campaign {
                     others.push(url.clone());
                     granted += a.granted as usize;
                     newer = newer.max(a.term);
+                    last = last.max((a.last_term, a.last_seq));
                     let mut j = json!({"url": url, "granted": a.granted, "term": a.term, "seq_no": a.last_seq});
                     if !a.reason.is_empty() {
                         j["reason"] = json!(a.reason);
@@ -477,7 +510,27 @@ impl Campaign {
             }
         }
         let need = (others.len() + 1) / 2 + 1;
-        Tally { others, granted, need, newer, said: Json::Array(said) }
+        Tally { others, granted, need, newer, last, said: Json::Array(said) }
+    }
+
+    /// Whether the answers a round has so far (`None`: not yet) decide
+    /// it, so that an election waits for no copy it does not need: the
+    /// candidate answered (which tells the copies besides it), and a
+    /// majority granted or too few are left to. A copy that is down, cut
+    /// off or paused answers at the call's timeout; while its campaign
+    /// waits for one, the copy that is winning is still a replica, grants
+    /// another copy's pre-vote, and that copy's newer term, kept, fences
+    /// it once it is elected.
+    pub fn decided(&self, answers: &[Option<Result<pb::VoteResponse, String>>]) -> bool {
+        let me = answers.iter().filter(|a| matches!(a, Some(Ok(a)) if a.candidate)).count();
+        if me != 1 {
+            return answers.iter().all(Option::is_some);
+        }
+        // As `tally` counts: the copies besides the candidate, and itself.
+        let need = answers.len() / 2 + 1;
+        let granted = 1 + answers.iter().filter(|a| matches!(a, Some(Ok(a)) if a.granted && !a.candidate)).count();
+        let left = answers.iter().filter(|a| a.is_none()).count();
+        granted >= need || granted + left < need
     }
 
     fn lost(&self, round: &str, t: &Tally) -> ApiError {
@@ -676,7 +729,9 @@ pub enum Ship {
     /// and give it to [`Primary::read`].
     Read { from: u64 },
     /// Call the replica (`Replicate`) and give its answer to
-    /// [`Primary::answered`].
+    /// [`Primary::answered`]. A call that pins the version a round compares
+    /// at (`pin`) is followed by the round's `Verify` once answered
+    /// ([`Shipper::take_pinned`]).
     Call(pb::ReplicateRequest),
     /// Hold the log from `hold_from` on ([`Shipper::holds`]), send the
     /// replica a copy of the database (`Restore`) under `term`, and give
@@ -695,22 +750,32 @@ struct Sent {
     /// Transactions sent.
     n: u64,
     started: Instant,
+    /// Whether the call pins the version of the round under way.
+    pin: bool,
 }
 
 /// One task's shipping to a replica: the next number to send (`None`
 /// until the replica said its last), whether it must be sent a copy, the
-/// wait before calling again after a failure, and whether the log is held
-/// for it. The task holds it; the [`Primary`] holds what is shared.
+/// wait before calling again after a failure, whether the log is held for
+/// it, and the round comparing its rows under way. The task holds it; the
+/// [`Primary`] holds what is shared.
 #[derive(Clone, Debug)]
 pub struct Shipper {
-    /// The [`Primary`] generation it ships for ([`Peer::owner`]).
+    /// The [`Primary`] generation it ships for ([`Peer::owner`]), and the
+    /// replica it ships to.
     pub gen: u64,
+    url: String,
     next: Option<u64>,
     must_copy: bool,
     retry: Duration,
     holding: bool,
     from: u64,
     sent: Option<Sent>,
+    /// The transaction a round comparing the replica's rows with the
+    /// primary's compares at, until the call that pins it there; and
+    /// whether that call was answered, until the driver takes it up.
+    round: Option<u64>,
+    pinned: bool,
 }
 
 impl Shipper {
@@ -724,6 +789,33 @@ impl Shipper {
     /// ([`Ship::Copy`]): its answer goes to [`Primary::copied`].
     pub fn sending_copy(&self) -> bool {
         self.sent.as_ref().is_some_and(|s| s.end.is_none())
+    }
+
+    /// A round comparing the replica's rows with the primary's starts at
+    /// `seq`, the last transaction of the version the driver took: when the
+    /// replica was shipped no further than it ([`Primary::may_verify`]
+    /// first). The replica is then shipped up to it, and not past it, in a
+    /// call that has it keep the version it leaves (`pin`). Returns whether
+    /// it started.
+    pub fn verify_at(&mut self, seq: u64) -> bool {
+        let starts = self.round.is_none() && self.next.is_some_and(|n| n <= seq + 1);
+        if starts {
+            self.round = Some(seq);
+        }
+        starts
+    }
+
+    /// The transaction the round under way compares at: once none, the
+    /// driver lets go of the round's version.
+    pub fn round(&self) -> Option<u64> {
+        self.round
+    }
+
+    /// Whether the call that pinned the round's version was answered since
+    /// last asked: the driver then compares the two versions' digests
+    /// (`Verify`), and tells [`Primary::diverged`] when they differ.
+    pub fn take_pinned(&mut self) -> bool {
+        std::mem::take(&mut self.pinned)
     }
 }
 
@@ -744,6 +836,9 @@ pub struct Primary {
     pub progress: u64,
     /// It takes no writes before then ([`handover_hold`]).
     pub writes_from: Option<Instant>,
+    /// It takes no writes until then, as a copy asks it to hand the shard
+    /// over ([`Self::hand_over`]), unless it answered that copy's vote first.
+    pub handing_over: Option<Instant>,
     gen: u64,
 }
 
@@ -754,10 +849,12 @@ impl Primary {
     /// replicas that are there, but those `joining`, which are sent a copy
     /// of the primary first.
     pub fn new(kept: Kept, replicas: &[String], opts: Opts, joining: bool) -> (Primary, Option<Kept>) {
-        let role = Some(KeptRole::Primary { replicas: replicas.to_vec(), acks: opts.acks });
-        let save = (kept.role != role).then(|| Kept { role: role.clone(), ..kept.clone() });
+        // A primary counts among its shard's copies, as a replica once it
+        // steps down or starts again.
+        let next = Kept { role: Some(KeptRole::Primary { replicas: replicas.to_vec(), acks: opts.acks }), member: true, ..kept.clone() };
+        let save = (next != kept).then_some(next);
         let kept = save.clone().unwrap_or(kept);
-        let mut p = Primary { id: kept.id.clone(), opts, peers: replicas.iter().map(|u| Peer::new(u, joining)).collect(), fenced: 0, kept, progress: 0, writes_from: None, gen: 0 };
+        let mut p = Primary { id: kept.id.clone(), opts, peers: replicas.iter().map(|u| Peer::new(u, joining)).collect(), fenced: 0, kept, progress: 0, writes_from: None, handing_over: None, gen: 0 };
         p.gen = 1;
         for peer in &mut p.peers {
             peer.owner = p.gen;
@@ -767,7 +864,10 @@ impl Primary {
 
     /// A shipper for each replica, by index.
     pub fn shippers(&self) -> Vec<Shipper> {
-        self.peers.iter().map(|_| Shipper { gen: self.gen, next: None, must_copy: false, retry: Duration::from_millis(50), holding: false, from: 0, sent: None }).collect()
+        self.peers
+            .iter()
+            .map(|p| Shipper { gen: self.gen, url: p.url.clone(), next: None, must_copy: false, retry: Duration::from_millis(50), holding: false, from: 0, sent: None, round: None, pinned: false })
+            .collect()
     }
 
     /// The copies a majority is counted of: the primary, and the replicas
@@ -876,6 +976,31 @@ impl Primary {
         (a, Some(Kept { voted: Some((r.term, r.candidate.clone())), ..kept }))
     }
 
+    /// A copy asked whether it would vote for it in a handover (a
+    /// promotion by hand): it takes no writes until `until`, so that the
+    /// copy can catch up with it before it asks for the vote, which a copy
+    /// missing a transaction it holds is refused. False when another
+    /// primary replaced it, which takes no writes anyway.
+    pub fn hand_over(&mut self, until: Instant) -> bool {
+        if self.fenced > 0 {
+            return false;
+        }
+        self.handing_over = Some(until);
+        true
+    }
+
+    /// It answered handover vote `r`, at `n`, with `a`: it takes writes
+    /// again, unless it granted it or refused a copy only behind it, which
+    /// catches up and asks again. A vote granted, not a question, steps
+    /// it down ([`Self::gave_vote`]).
+    pub fn answered_handover(&mut self, r: &pb::VoteRequest, n: &Numbering, a: &pb::VoteResponse) {
+        let last = n.last();
+        let behind = (r.last_term, r.last_seq) < (last.term, last.seq);
+        if !r.pre || !(a.granted || behind) {
+            self.handing_over = None;
+        }
+    }
+
     /// It kept `kept`, its vote for another copy in term `term`: it steps
     /// down, as a primary the new one replaced. Returns what to keep then.
     pub fn gave_vote(&mut self, kept: Kept, term: u64, mine: u64) -> Option<Kept> {
@@ -886,17 +1011,21 @@ impl Primary {
 
     /// Whether a write may be applied at term `term` at `now`: not on a
     /// primary another replaced (409), not before [`Self::writes_from`]
-    /// (503), and, unless only the primary acknowledges, while a majority
-    /// of copies is in sync (503).
+    /// nor while it hands the shard over ([`Self::hand_over`]) (503), and,
+    /// unless only the primary acknowledges, while a majority of copies is
+    /// in sync (503).
     pub fn admit(&self, term: u64, now: Instant) -> Result<(), ApiError> {
         if self.fenced > 0 {
             return Err(conflict(format!("a copy holds term {}, newer than this primary's ({term}): another primary replaced this one, which takes no more writes", self.fenced)));
         }
         if let Some(from) = self.writes_from.filter(|&f| f > now) {
             return Err(unavailable(format!(
-                "this primary was elected by hand, and the primary it replaced may serve reads for {} ms more: it takes writes after that",
+                "this primary was promoted by hand, and the primary it replaced may serve reads for {} ms more: it takes writes after that",
                 (from - now).as_millis()
             )));
+        }
+        if self.handing_over.is_some_and(|until| until > now) {
+            return Err(unavailable("this primary is handing its shard over to another copy, which takes the writes once elected: the write was not applied".into()));
         }
         if self.opts.acks != Acks::Primary {
             let up = 1 + self.peers.iter().filter(|p| p.member && p.in_sync).count();
@@ -982,8 +1111,36 @@ impl Primary {
         self.peers = peers;
         self.opts.acks = acks;
         let role = Some(KeptRole::Primary { replicas, acks });
-        self.kept = Kept { id: self.id.clone(), voted: self.kept.voted.clone(), role, ..Kept::default() };
+        self.kept = Kept { id: self.id.clone(), voted: self.kept.voted.clone(), role, member: true, ..Kept::default() };
         Ok(Some(self.kept.clone()))
+    }
+
+    /// Replica `k`, when shipper `s` still ships to it: a primary given
+    /// other replicas ([`Self::reconfigure`]) stops the shippers before.
+    fn ships_to(&self, k: usize, s: &Shipper) -> Option<usize> {
+        self.peers.get(k).filter(|p| p.owner == s.gen && p.url == s.url).map(|_| k)
+    }
+
+    /// Whether a round comparing replica `k`'s rows with the primary's may
+    /// start ([`Shipper::verify_at`]): none is under way, the replica said
+    /// its last and holds a run of this primary's history, it is in sync,
+    /// and it is not to be sent a copy.
+    pub fn may_verify(&self, k: usize, s: &Shipper) -> bool {
+        self.ships_to(k, s).is_some_and(|k| {
+            let p = &self.peers[k];
+            s.round.is_none() && !s.must_copy && !p.diverged && s.next.is_some() && p.in_sync
+        })
+    }
+
+    /// A round found the rows of the replica at `url` differ from the
+    /// primary's, for `why`: it drops out of sync, and its shipper sends it
+    /// a copy of the primary.
+    pub fn diverged(&mut self, url: &str, why: String) {
+        if let Some(p) = self.peers.iter_mut().find(|p| p.url == url) {
+            p.drop_out(why);
+            p.diverged = true;
+        }
+        self.changed();
     }
 
     /// What replica `k`'s shipper `s` does next, the database at `n`, at
@@ -992,20 +1149,24 @@ impl Primary {
     /// is called with no transactions (a heartbeat); otherwise the log is
     /// read from its next number.
     pub fn poll(&mut self, k: usize, s: &mut Shipper, n: &Numbering, now: Instant) -> Ship {
+        let Some(k) = self.ships_to(k, s) else { return Ship::Stop };
         let p = &mut self.peers[k];
-        if p.owner != s.gen {
-            return Ship::Stop;
-        }
         // A shipper of the primary before this one is sending it a copy.
         if p.copying && s.next.is_none() && !s.holding {
             return Ship::Sleep(Duration::from_millis(100));
         }
         if std::mem::take(&mut p.diverged) {
             s.must_copy = true;
+            s.round = None;
         }
         let last = n.seq;
         let from = s.next.unwrap_or(last + 1);
         s.from = from;
+        // A replica that said a last past the round's version holds rows
+        // the version does not.
+        if s.round.is_some_and(|r| from > r + 1) {
+            s.round = None;
+        }
         if s.must_copy {
             return self.copy(k, s, n, now);
         }
@@ -1032,14 +1193,19 @@ impl Primary {
         self.peers[k].copying = true;
         // The copy holds at least what was committed by now.
         s.holding = true;
-        s.sent = Some(Sent { numbering: n.clone(), end: None, n: 0, started: now });
+        s.sent = Some(Sent { numbering: n.clone(), end: None, n: 0, started: now, pin: false });
         Ship::Copy { hold_from: n.seq + 1, term: n.term }
     }
 
-    fn call(&mut self, k: usize, s: &mut Shipper, n: &Numbering, txns: Vec<strata::storage::Shipped>, now: Instant) -> Ship {
+    fn call(&mut self, k: usize, s: &mut Shipper, n: &Numbering, mut txns: Vec<strata::storage::Shipped>, now: Instant) -> Ship {
+        // The replica is shipped up to the round's version, and not past it.
+        if let Some(r) = s.round {
+            txns.retain(|t| t.seq.seq <= r);
+        }
         let from = s.from;
         let prev = SeqNo { term: n.term_at(from - 1), seq: from - 1 };
         let end = txns.last().map_or(prev.seq, |t| t.seq.seq);
+        let pin = s.round == Some(end);
         let req = pb::ReplicateRequest {
             term: n.term,
             prev_term: prev.term,
@@ -1048,10 +1214,10 @@ impl Primary {
             global_checkpoint: self.global_checkpoint(n.seq),
             primary: self.id.clone(),
             behind: end < n.seq,
-            pin: false,
+            pin,
             member: self.peers[k].member,
         };
-        s.sent = Some(Sent { numbering: n.clone(), end: Some(end), n: txns.len() as u64, started: now });
+        s.sent = Some(Sent { numbering: n.clone(), end: Some(end), n: txns.len() as u64, started: now, pin });
         Ship::Call(req)
     }
 
@@ -1059,14 +1225,23 @@ impl Primary {
     /// the database now at `n`. Returns what to do next, and what to keep
     /// when the answer fenced this primary.
     pub fn answered(&mut self, k: usize, s: &mut Shipper, answer: Result<pb::ReplicateResponse, String>, n: &Numbering) -> (Ship, Option<Kept>) {
+        let Some(k) = self.ships_to(k, s) else { return (Ship::Stop, None) };
         if answer.is_ok() {
             self.peers[k].answered = s.sent.as_ref().map(|c| c.started);
         }
         self.outcome(k, s, answer, n)
     }
 
-    /// Replica `k` answered the copy `s` sent it.
+    /// Replica `k` answered the copy `s` sent it. The shipper of a
+    /// replica the primary no longer ships to stops, and the replica's next
+    /// shipper, which waited for the copy, goes on.
     pub fn copied(&mut self, k: usize, s: &mut Shipper, answer: Result<pb::ReplicateResponse, String>, n: &Numbering) -> (Ship, Option<Kept>) {
+        let Some(k) = self.ships_to(k, s) else {
+            if let Some(p) = self.peers.iter_mut().find(|p| p.url == s.url) {
+                p.copying = false;
+            }
+            return (Ship::Stop, None);
+        };
         self.peers[k].copying = false;
         self.outcome(k, s, answer.map_err(|e| format!("sending it a copy of the primary failed: {e}")), n)
     }
@@ -1108,6 +1283,12 @@ impl Primary {
                             s.holding = false;
                         }
                     }
+                    // The replica keeps its version at the round's
+                    // transaction: compare them, while shipping goes on.
+                    if sent.pin {
+                        s.round = None;
+                        s.pinned = true;
+                    }
                     self.changed();
                     s.retry = Duration::from_millis(50);
                     None
@@ -1126,6 +1307,7 @@ impl Primary {
                     ));
                     self.changed();
                     s.must_copy = true;
+                    s.round = None;
                     return (Ship::Again, None);
                 } else {
                     Some(format!(
@@ -1143,12 +1325,13 @@ impl Primary {
             self.changed();
             s.next = None;
             s.holding = false;
+            s.round = None;
             // A copy is a checkpoint of the database: not again at once.
             let wait = if end.is_none() { self.opts.copy_retry } else { s.retry };
             s.retry = (s.retry * 2).min(self.opts.retry_max);
             return (Ship::Sleep(wait), kept);
         }
-        if !s.must_copy && s.next.is_some_and(|next| next > now.seq) {
+        if s.round.is_none() && !s.must_copy && s.next.is_some_and(|next| next > now.seq) {
             return (Ship::Idle(self.opts.heartbeat), kept);
         }
         (Ship::Again, kept)
@@ -1226,7 +1409,7 @@ mod tests {
     #[test]
     fn a_replica_follows_one_primary_a_term() {
         let t0 = Instant::now();
-        let (mut r, save) = Replica::open(Kept::new("r".into()), t0);
+        let (mut r, save) = Replica::open(Kept::new("r".into()), t0, false);
         assert_eq!(save.unwrap().role, Some(KeptRole::Replica));
         let at = n(2, 4, &[(1, 1), (2, 3)]);
         let Ok(Take::Apply { kept }) = r.take(2, "p", true, &at) else { panic!() };
@@ -1243,6 +1426,134 @@ mod tests {
         assert!(v.granted && save.is_some_and(|k| k.voted == Some((3, "x".into()))));
     }
 
+    #[test]
+    fn a_replica_that_voted_waits_a_whole_delay_before_it_campaigns() {
+        let t0 = Instant::now();
+        let after = Duration::from_secs(2);
+        let (mut r, _) = Replica::open(Kept { member: true, ..Kept::new("r".into()) }, t0, false);
+        r.took(None, t0);
+        let at = n(1, 4, &[(1, 1)]);
+        // Its primary went silent 3 s ago; it grants a vote at 3 s.
+        let voted = t0 + Duration::from_secs(3);
+        assert!(r.silent_for(voted) >= after);
+        let (v, save) = r.vote(&ask(2, "x", (1, 4), false), &at, voted, after);
+        assert!(v.granted);
+        r.kept = save.unwrap();
+        r.granted(voted);
+        assert_eq!(r.silent_for(voted + Duration::from_millis(500)), Duration::from_millis(500));
+        // A pre-vote changes nothing, and is not a vote to wait after.
+        let (v, save) = r.vote(&ask(3, "y", (1, 4), true), &at, voted + Duration::from_millis(500), after);
+        assert!(v.granted && save.is_none(), "its primary did not call: the stickiness counts the primary's calls only");
+        // Its primary calling counts as before.
+        r.took(None, voted + Duration::from_secs(1));
+        assert_eq!(r.silent_for(voted + Duration::from_secs(1)), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_round_is_decided_without_the_copies_it_does_not_need() {
+        let c = Campaign { id: "me".into(), term: 5, handover: false };
+        let me = Some(Ok(pb::VoteResponse { granted: true, candidate: true, ..Default::default() }));
+        let yes = Some(Ok(pb::VoteResponse { granted: true, ..Default::default() }));
+        let no = Some(Ok(pb::VoteResponse { granted: false, reason: "no".into(), ..Default::default() }));
+        let down = Some(Err("no answer within 2 s".into()));
+        // Three copies: itself and one more win; one copy cut off is not waited for.
+        assert!(c.decided(&[me.clone(), yes.clone(), None]));
+        assert!(!c.decided(&[me.clone(), None, None]));
+        assert!(!c.decided(&[None, yes.clone(), None]), "the candidate's own answer tells the copies besides it");
+        assert!(c.decided(&[me.clone(), no.clone(), down.clone()]), "lost");
+        assert!(!c.decided(&[me.clone(), no.clone(), None]), "the last copy could still grant it");
+        // Five copies: three votes win.
+        assert!(!c.decided(&[me.clone(), yes.clone(), None, None, None]));
+        assert!(c.decided(&[me.clone(), yes.clone(), yes.clone(), None, None]));
+        assert!(c.decided(&[me.clone(), no.clone(), no.clone(), down.clone(), None]), "1 granted, 1 left: fewer than 3");
+        // Not among the copies asked (its own answer never comes): every answer.
+        assert!(!c.decided(&[yes.clone(), yes.clone(), None]));
+        assert!(c.decided(&[yes.clone(), yes.clone(), no.clone()]));
+    }
+
+    #[test]
+    fn a_shards_first_copies_vote_from_the_start() {
+        let t0 = Instant::now();
+        let at = n(1, 0, &[]);
+        let long_ago = t0 + Duration::from_secs(60);
+        // Started with --replica on a database that had no part yet.
+        let (r, save) = Replica::open(Kept::new("r".into()), t0, true);
+        assert!(save.is_some_and(|k| k.member && k.role == Some(KeptRole::Replica)));
+        assert!(r.vote(&ask(2, "x", (1, 0), false), &at, long_ago, Duration::from_secs(1)).0.granted, "a first copy");
+        // A server made a replica of a serving shard (Configure), or one
+        // that was a replica before: none until a primary says it caught up.
+        for (kept, flags) in [(Kept::new("r".into()), false), (Kept { follows: Some(("p".into(), 1)), role: Some(KeptRole::Replica), ..Kept::new("r".into()) }, true)] {
+            let (r, save) = Replica::open(kept, t0, flags);
+            assert!(!save.is_some_and(|k| k.member) && !r.kept.member);
+            assert!(!r.vote(&ask(2, "x", (1, 0), false), &at, long_ago, Duration::from_secs(1)).0.granted, "a copy that joined");
+        }
+        // The primary counts itself one, as a replica once it starts again.
+        let (p, save) = Primary::new(Kept::new("p".into()), &["r".into()], Opts::of(&PrimaryOptions::default()), true);
+        assert!(save.is_some_and(|k| k.member) && p.kept.member);
+    }
+
+    fn opts() -> Opts {
+        Opts { acks: Acks::All, heartbeat: Duration::from_millis(250), retry_max: Duration::from_secs(2), copy_retry: Duration::from_secs(30), lease: Duration::ZERO }
+    }
+
+    fn txns(term: u64, seqs: std::ops::RangeInclusive<u64>) -> Vec<strata::storage::Shipped> {
+        seqs.map(|seq| strata::storage::Shipped { seq: SeqNo { term, seq }, bytes: std::sync::Arc::from(vec![0u8; 1]) }).collect()
+    }
+
+    fn matched(seq: u64) -> Result<pb::ReplicateResponse, String> {
+        Ok(pb::ReplicateResponse { matched: true, seq, term: 1, replica_term: 1 })
+    }
+
+    #[test]
+    fn a_round_ships_a_replica_up_to_its_version_and_pins_it() {
+        let t0 = Instant::now();
+        let (mut p, _) = Primary::new(Kept::new("p".into()), &["a".into()], opts(), false);
+        let mut s = p.shippers().remove(0);
+        let at = n(1, 2, &[(1, 1)]);
+        // The replica says its last: 2, all the primary holds.
+        let Ship::Call(_) = p.poll(0, &mut s, &at, t0) else { panic!() };
+        assert!(!p.may_verify(0, &s), "no round before the replica said its last");
+        let (next, _) = p.answered(0, &mut s, matched(2), &at);
+        assert!(matches!(next, Ship::Idle(_)));
+        // The primary writes 3 to 5, and takes a version at 4.
+        let at = n(1, 5, &[(1, 1)]);
+        assert!(p.may_verify(0, &s) && s.verify_at(4) && s.round() == Some(4));
+        assert!(!s.verify_at(4), "one round at a time");
+        let Ship::Read { from: 3 } = p.poll(0, &mut s, &at, t0) else { panic!() };
+        let Ship::Call(req) = p.read(0, &mut s, &at, LogRead::Txns(txns(1, 3..=5)), t0) else { panic!() };
+        assert_eq!((req.txns.len(), req.pin, req.behind), (2, true, true), "up to the version, not past it");
+        let (next, _) = p.answered(0, &mut s, matched(4), &at);
+        assert!(matches!(next, Ship::Again), "it is behind: ship on");
+        assert!(s.take_pinned() && !s.take_pinned() && s.round().is_none());
+        let Ship::Read { from: 5 } = p.poll(0, &mut s, &at, t0) else { panic!() };
+        // Its rows differed: no round, and it is sent a copy.
+        p.diverged("a", "its rows differ".into());
+        assert!(!p.peers[0].in_sync && !p.may_verify(0, &s));
+        assert!(matches!(p.poll(0, &mut s, &at, t0), Ship::Copy { hold_from: 6, term: 1 }));
+    }
+
+    #[test]
+    fn a_primary_given_other_replicas_stops_the_shippers_before() {
+        let t0 = Instant::now();
+        let at = n(1, 2, &[(1, 1)]);
+        let (mut p, _) = Primary::new(Kept::new("p".into()), &["a".into(), "b".into()], opts(), false);
+        let mut old = p.shippers();
+        // b is sent a copy when it changes.
+        p.peers[1].diverged = true;
+        assert!(matches!(p.poll(1, &mut old[1], &at, t0), Ship::Copy { .. }));
+        let kept = p.reconfigure(vec!["b".into(), "c".into()], Acks::Majority).unwrap().unwrap();
+        assert!(kept.member && kept.role == Some(KeptRole::Primary { replicas: vec!["b".into(), "c".into()], acks: Acks::Majority }));
+        let mut new = p.shippers();
+        assert!(matches!(p.poll(0, &mut old[0], &at, t0), Ship::Stop), "a is shipped to no more");
+        // b's new shipper waits for the copy its shipper before sends.
+        assert!(matches!(p.poll(0, &mut new[0], &at, t0), Ship::Sleep(_)));
+        let (next, kept) = p.copied(1, &mut old[1], matched(2), &at);
+        assert!(matches!(next, Ship::Stop) && kept.is_none() && !p.peers[0].copying);
+        assert!(!matches!(p.poll(0, &mut new[0], &at, t0), Ship::Sleep(_) | Ship::Stop));
+        assert!(matches!(p.poll(1, &mut new[1], &at, t0), Ship::Copy { .. }), "c joins: it is sent a copy first");
+        assert_eq!((p.copies(), p.majority()), (2, 2), "c counts once it caught up");
+    }
+
     fn said(term: u64, granted: bool) -> Result<pb::VoteResponse, String> {
         Ok(pb::VoteResponse { granted, term, last_seq: 4, last_term: 2, reason: String::new(), candidate: false })
     }
@@ -1250,7 +1561,7 @@ mod tests {
     #[test]
     fn a_replica_asks_above_the_newest_term_a_copy_told_it() {
         let t0 = Instant::now();
-        let (mut r, _) = Replica::open(Kept::new("r".into()), t0);
+        let (mut r, _) = Replica::open(Kept::new("r".into()), t0, false);
         let at = n(2, 4, &[(1, 1), (2, 3)]);
         let c = r.campaign(&at, false);
         assert_eq!(c.term, 3);
@@ -1272,15 +1583,54 @@ mod tests {
         let asked = promote_check(&n(2, 4, &[(1, 1), (2, 3)]), &said, false).unwrap();
         assert_eq!(asked.primaries, ["p"]);
         let elected = |p_granted: bool| Elected { term: 3, others: vec!["p".into(), "q".into()], votes: json!([{"url": "p", "granted": p_granted}, {"url": "q", "granted": true}]) };
-        assert_eq!(handover_hold(Some(&asked), &elected(true), lease), Duration::ZERO, "the primary voted and stepped down");
-        assert_eq!(handover_hold(Some(&asked), &elected(false), lease), Duration::from_millis(1000));
-        assert_eq!(handover_hold(None, &elected(true), lease), Duration::from_millis(1000), "with force, no copy was asked");
-        assert_eq!(handover_hold(Some(&asked), &elected(false), Duration::ZERO), Duration::ZERO, "no lease");
+        assert_eq!(handover_hold(Some(&asked), Some(&elected(true)), lease), Duration::ZERO, "the primary voted and stepped down");
+        assert_eq!(handover_hold(Some(&asked), Some(&elected(false)), lease), Duration::from_millis(1000));
+        assert_eq!(handover_hold(Some(&asked), None, lease), Duration::from_millis(1000), "with force, no votes");
+        assert_eq!(handover_hold(None, Some(&elected(true)), lease), Duration::from_millis(1000), "no copy was asked");
+        assert_eq!(handover_hold(Some(&asked), Some(&elected(false)), Duration::ZERO), Duration::ZERO, "no lease");
         let opts = Opts { acks: Acks::Majority, heartbeat: Duration::from_millis(250), retry_max: Duration::from_secs(2), copy_retry: Duration::from_secs(30), lease };
         let (mut p, _) = Primary::new(Kept::new("r".into()), &["p".into(), "q".into()], opts, false);
         let t0 = Instant::now();
         p.writes_from = Some(t0 + Duration::from_millis(1000));
         assert_eq!(p.admit(3, t0).unwrap_err().status, 503);
         assert!(p.admit(3, t0 + Duration::from_millis(1000)).is_ok());
+    }
+
+    #[test]
+    fn a_primary_asked_to_hand_over_takes_no_writes_until_it_answers_the_vote() {
+        let opts = Opts { acks: Acks::Primary, heartbeat: Duration::from_millis(250), retry_max: Duration::from_secs(2), copy_retry: Duration::from_secs(30), lease: Duration::ZERO };
+        let (mut p, _) = Primary::new(Kept::new("p".into()), &["q".into()], opts, false);
+        let (t0, at, pause) = (Instant::now(), n(1, 5, &[(1, 1)]), Duration::from_secs(2));
+        let handover = |last: (u64, u64), pre: bool| pb::VoteRequest { handover: true, ..ask(2, "q", last, pre) };
+        assert!(p.hand_over(t0 + pause));
+        let e = p.admit(1, t0).unwrap_err();
+        assert!(e.status == 503 && e.message.contains("the write was not applied"), "{}", e.message);
+        // A copy a transaction behind would not be voted for; it catches up,
+        // and no write comes meanwhile.
+        let r = handover((1, 4), true);
+        let (a, _) = p.vote(&r, &at);
+        assert!(!a.granted && a.reason.contains("past the candidate's last"), "{}", a.reason);
+        p.answered_handover(&r, &at, &a);
+        assert!(p.admit(1, t0).is_err());
+        // Refused the vote itself: it takes writes again.
+        let r = handover((1, 4), false);
+        let (a, _) = p.vote(&r, &at);
+        assert!(!a.granted);
+        p.answered_handover(&r, &at, &a);
+        assert!(p.admit(1, t0).is_ok());
+        // Asked for a vote it would not grant for another reason: at once.
+        let r = handover((1, 5), true);
+        assert!(p.hand_over(t0 + pause));
+        let (a, _) = p.vote(&ask(1, "q", (1, 5), true), &at);
+        assert!(!a.granted);
+        p.answered_handover(&r, &at, &a);
+        assert!(p.admit(1, t0).is_ok());
+        // Asked and never voted: once the pause ran out.
+        assert!(p.hand_over(t0 + pause));
+        assert!(p.admit(1, t0).is_err());
+        assert!(p.admit(1, t0 + pause).is_ok());
+        // Replaced, it takes no writes anyway.
+        p.fenced = 2;
+        assert!(!p.hand_over(t0 + pause));
     }
 }

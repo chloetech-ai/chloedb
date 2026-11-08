@@ -119,9 +119,35 @@ pub fn document_at(schema: &Schema, j: &Json, now: i64) -> Result<Document> {
     document_with(schema, j, now, &mut None)
 }
 
+/// [`document_at`] of a row whose vectors came apart from the rest as
+/// float32 (an app's arrays, read without a number per element): each
+/// `(field, values)` of `vectors` is a field [`takes_vector`] says yes to,
+/// set as `j`'s values are.
+pub fn document_with_vectors(schema: &Schema, j: &Json, vectors: Vec<(usize, Vec<f32>)>, now: i64) -> Result<Document> {
+    let mut doc = fields_of(schema, j, now, &mut None)?;
+    for (f, xs) in vectors {
+        debug_assert!(takes_vector(&schema.fields[f]));
+        doc[f] = Value::Vector(xs.into());
+    }
+    finish(schema, doc)
+}
+
+/// Whether `field`'s value from JSON is a [`Value::Vector`] of an array's
+/// numbers as they are: a VECTOR field of one vector a row.
+pub fn takes_vector(field: &Field) -> bool {
+    matches!(field.ty, FieldType::Vector { .. }) && !field.multi && field.logical.is_none() && field.media.is_none()
+}
+
 /// [`document_at`], adding the names of fields the schema lacks to
 /// `unknown` instead of failing when it is given.
 fn document_with(schema: &Schema, j: &Json, now: i64, unknown: &mut Option<&mut BTreeSet<String>>) -> Result<Document> {
+    let doc = fields_of(schema, j, now, unknown)?;
+    finish(schema, doc)
+}
+
+/// The defaults with `j`'s values set: a document before its generated
+/// fields.
+fn fields_of(schema: &Schema, j: &Json, now: i64, unknown: &mut Option<&mut BTreeSet<String>>) -> Result<Document> {
     let Json::Object(m) = j else { return Err(Error::Schema(format!("a row is a JSON object, not {}", short(j)))) };
     let mut doc = start(schema, now)?;
     for (k, v) in m {
@@ -135,6 +161,11 @@ fn document_with(schema: &Schema, j: &Json, now: i64, unknown: &mut Option<&mut 
             },
         }
     }
+    Ok(doc)
+}
+
+/// `doc` with its generated fields, checked for missing values.
+fn finish(schema: &Schema, mut doc: Document) -> Result<Document> {
     schema.fill_generated(&mut doc);
     required(schema, &doc)?;
     Ok(doc)

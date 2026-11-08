@@ -15,11 +15,12 @@
 // RRF once its one weight is tuned on a few graded queries; minmax() and
 // zscore() are there to compare.
 
-import { h, s, icon, clear, fmt, api, store, toast, modal, empty, seg, sqlBlock, debounce, failure, showTip, hideTip } from "../core.js";
+import { h, s, icon, clear, fmt, api, store, toast, modal, confirm, empty, seg, sqlBlock, debounce, failure, showTip, hideTip } from "../core.js";
+import { isProduction } from "../data.js";
 import { tables, table as tableOf, invalidate } from "../catalog.js";
 import { quoteName } from "../sqledit.js";
 
-export default { id: "relevance", title: "Relevance lab", icon: "relevance", group: "Tune", full: true, keywords: "relevance ranking compare a/b judgments ndcg mrr precision tune weights hybrid fusion rrf bm25 vector rank profile evaluation", render };
+export default { id: "relevance", title: "Relevance lab", icon: "relevance", group: "Labs", full: true, range: false, keywords: "relevance ranking compare a/b judgments ndcg mrr precision tune weights hybrid fusion rrf bm25 vector rank profile evaluation", render };
 
 const PRESETS = [
   ["bm25", "Words (BM25)"], ["fuzzy", "Words, typos allowed"], ["vector", "Meaning (vectors)"], ["weighted", "Hybrid: weighted"],
@@ -138,19 +139,30 @@ function render(page) {
     }
   }
   const profileSql = (name) => { const p = (tableOf(st.table)?.profiles || []).find((x) => x.name === name); return p ? JSON.stringify(p) : ""; };
-  function sqlOf(r, q = st.q, over) {
+  // features() lists each part of the score as a column. tmm() and zscore()
+  // rank rows against each other, so they are not columns: the server
+  // refuses features() over them (minmax it accepts).
+  const plainOnly = (r) => r.preset === "custom" || (r.preset === "weighted" && (r.norm || "tmm") !== "minmax");
+  function sqlOf(r, q = st.q, over, plain = false) {
     const t = tableOf(st.table);
     const key = t.short.key;
     const e = expr(over ? { ...r, ...over } : r);
-    const cols = [quoteName(key), st.shown && st.shown !== key ? quoteName(st.shown) : null, "score()", r.preset === "custom" ? null : "features()"].filter(Boolean).join(", ");
+    const cols = [quoteName(key), st.shown && st.shown !== key ? quoteName(st.shown) : null, "score()", plain || plainOnly(over ? { ...r, ...over } : r) ? null : "features()"].filter(Boolean).join(", ");
     const sql = `SELECT ${cols} FROM ${quoteName(t.table)}${st.where.trim() ? ` WHERE ${st.where}` : ""} ORDER BY ${e}${r.preset === "profile" ? "" : " DESC"} LIMIT ${st.k}`;
     const params = { q };
     if (/:v\b/.test(e)) params.v = r.vfield ? { embed: q, field: r.vfield } : { embed: q };
     return { sql, params };
   }
   async function query(r, q, over) {
-    const { sql, params } = sqlOf(r, q, over);
-    const j = await api("/v1/query", { body: { sql, params } });
+    let { sql, params } = sqlOf(r, q, over);
+    let j;
+    try { j = await api("/v1/query", { body: { sql, params } }); } catch (e) {
+      // A ranking (a profile, say) that fuses over a set function: ask again
+      // without the parts of the score.
+      if (!/features\(\)/.test(sql) || !/not a column; select score\(\)/.test(e.message)) throw e;
+      ({ sql, params } = sqlOf(r, q, over, true));
+      j = await api("/v1/query", { body: { sql, params } });
+    }
     const t = tableOf(st.table);
     const ki = j.columns.indexOf(t.short.key), ti = st.shown && st.shown !== t.short.key ? j.columns.indexOf(st.shown) : -1, si = j.columns.indexOf("score()");
     const fi = j.columns.map((c, i) => i).filter((i) => i !== ki && i !== ti && i !== si);
@@ -429,7 +441,19 @@ function render(page) {
     name.oninput = draw; draw();
     const m = modal({ title: "Keep this ranking with the table", body: [h("label", { class: "f" }, "Name", name), preview],
       foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), h("button", { class: "btn primary", onclick: async () => {
-        try { await api("/v1/sql", { body: { sql: sqlFor() } }); m.close(); toast(`Rank profile ${name.value.trim()} saved`, "ok"); invalidate(); ts = await tables(true); }
+        // NEW-data-tools-8: on production the statement says why, as the workbench's writes do.
+        let reason = null;
+        // R2-data-tools-3: saving under a name in use replaces that profile; say so, with the old ranking.
+        const nm = name.value.trim() || "p";
+        const old = (t.profiles || []).find((x) => x.name.toLowerCase() === nm.toLowerCase());
+        if (isProduction() || old) {
+          const body = [h("p", {}, (old ? `It replaces the profile ${old.name} that ${t.table} has now: every query that names it ranks the new way from then on.` : "Every query that names the profile ranks by it.") + (isProduction() ? " This cluster counts as production, and the audit log keeps the statement with your reason." : ""))];
+          if (old) body.push(h("div", { class: "small muted" }, "Now"), sqlBlock(old.ranking), h("div", { class: "small muted", style: { marginTop: "6px" } }, "After"), sqlBlock(sqlFor()));
+          const ok = await confirm({ title: old ? `Replace rank profile ${old.name} on ${t.table}?` : `Save rank profile ${nm} on ${t.table}?`, body, ok: old ? "Replace it" : "Save it", danger: !!old, reason: isProduction() });
+          if (!ok) return;
+          reason = ok.reason || null;
+        }
+        try { await api("/v1/sql", { body: { sql: sqlFor() }, reason }); m.close(); toast(`Rank profile ${name.value.trim()} saved`, "ok"); invalidate(); ts = await tables(true); }
         catch (err) { toast(err.message, "bad", 9000); }
       } }, "Save the profile")] });
   }

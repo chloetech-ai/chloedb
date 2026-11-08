@@ -33,8 +33,9 @@ This document is the design. `report/` holds the evaluation of the prototype.
   personalized PageRank) and combine the result with text, structured and
   vector search in one statement (§5.4, §6.1).
 
-Non-goals for the prototype: joins, multi-process writers (the file lock and
-`-shm` reader table of SQLite are designed but not built), distribution.
+Non-goals for the prototype: joins, writers in several processes (one
+process writes a database and others may read it, `DbOptions::read_only`:
+`storage/share.rs`), distribution.
 
 ## 2. Architecture
 
@@ -234,7 +235,8 @@ need no table.
   is written in format 3 only while a table uses a feature (a `BOOL` or
   `TIMESTAMP` field is `"bool"` or `"timestamp"`, a `NOT NULL` field
   `"not_null"`, a default `"default"`, a TEXT field's analyzer other than
-  `english` `"analyzer:<name>:<version>"`; a database that numbers its
+  `english` `"analyzer:<name>:<version>"`, a VECTOR field searched by
+  RaBitQ codes `"rabitq"`; a database that numbers its
   writes `"seq_no"`, for good; a table with a rank profile
   `"rank_profiles"`), and falls back to 2 or 1,
   in both meta slots, when the last one goes. A reader refuses a manifest

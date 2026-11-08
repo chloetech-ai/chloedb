@@ -65,6 +65,10 @@ use crate::ApiError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
+    /// The feed alone, for another cluster to follow this one
+    /// (`/v1/feed`), and whether the server is up (`/v1/health`,
+    /// `/v1/whoami`): every row, as it is written, but no query.
+    Feed,
     Read,
     Write,
     Admin,
@@ -73,6 +77,7 @@ pub enum Scope {
 impl Scope {
     pub fn parse(s: &str) -> Option<Scope> {
         match s.to_ascii_lowercase().as_str() {
+            "feed" => Some(Scope::Feed),
             "read" => Some(Scope::Read),
             "write" => Some(Scope::Write),
             "admin" => Some(Scope::Admin),
@@ -82,6 +87,7 @@ impl Scope {
 
     pub fn name(self) -> &'static str {
         match self {
+            Scope::Feed => "feed",
             Scope::Read => "read",
             Scope::Write => "write",
             Scope::Admin => "admin",
@@ -150,21 +156,49 @@ pub struct Key {
     pub sha256: String,
     #[serde(default)]
     pub last_used_ms: u64,
+    /// Who answers for it (a person or team), and what it is for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// The address it was last used from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_addr: Option<String>,
 }
 
 impl Key {
     /// What the API shows of it.
     pub fn json(&self) -> Json {
-        json!({"id": self.id, "name": self.name, "scope": self.scope.name(), "created_ms": self.created_ms, "expires_ms": self.expires_ms, "last_used_ms": self.last_used_ms, "prefix": format!("sk_{}_", self.id)})
+        json!({"id": self.id, "name": self.name, "scope": self.scope.name(), "created_ms": self.created_ms, "expires_ms": self.expires_ms, "last_used_ms": self.last_used_ms, "prefix": format!("sk_{}_", self.id),
+            "owner": self.owner, "note": self.note, "last_addr": self.last_addr})
     }
 }
 
 /// A revoked key's id, kept so that the revocation wins wherever keys are
-/// merged.
+/// merged; and what the key was, so that Access still names it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revoked {
     pub id: String,
     pub revoked_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_by: Option<String>,
+    /// The digest of its secret, to name the key a refused request still
+    /// sends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+impl Revoked {
+    /// What the API shows of it.
+    pub fn json(&self) -> Json {
+        json!({"id": self.id, "name": self.name, "scope": self.scope, "owner": self.owner, "revoked_ms": self.revoked_ms, "revoked_by": self.revoked_by, "prefix": format!("sk_{}_", self.id)})
+    }
 }
 
 /// Keys and the ids of revoked ones: what a keys file holds and the
@@ -215,7 +249,12 @@ impl KeySet {
                 continue;
             }
             match next.keys.iter_mut().find(|x| x.id == k.id) {
-                Some(x) if x.sha256 == k.sha256 => x.last_used_ms = x.last_used_ms.max(k.last_used_ms),
+                Some(x) if x.sha256 == k.sha256 => {
+                    if k.last_used_ms > x.last_used_ms {
+                        x.last_addr = k.last_addr.clone();
+                    }
+                    x.last_used_ms = x.last_used_ms.max(k.last_used_ms);
+                }
                 Some(x) => {
                     if k.sha256 < x.sha256 {
                         *x = k.clone();
@@ -369,6 +408,12 @@ impl Keys {
     /// while it serves in a cluster (`in_cluster`), since the key would
     /// close it to the servers that call it, which send no credential.
     pub fn create(&self, name: &str, scope: Scope, expires_ms: Option<u64>, token: bool, in_cluster: bool) -> Result<(Key, String), ApiError> {
+        self.create_owned(name, scope, expires_ms, None, None, token, in_cluster)
+    }
+
+    /// [`Self::create`], with who answers for the key and what it is for.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_owned(&self, name: &str, scope: Scope, expires_ms: Option<u64>, owner: Option<String>, note: Option<String>, token: bool, in_cluster: bool) -> Result<(Key, String), ApiError> {
         let name = name.trim();
         if name.is_empty() || name.len() > 64 {
             return Err(ApiError::bad("a key's name has 1 to 64 characters"));
@@ -389,7 +434,7 @@ impl Keys {
         let id = hex(&random(8)?);
         let secret = hex(&random(24)?);
         let full = format!("sk_{id}_{secret}");
-        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms, sha256: sha256(&secret), last_used_ms: 0 };
+        let key = Key { id, name: name.to_string(), scope, created_ms: now_ms(), expires_ms, sha256: sha256(&secret), last_used_ms: 0, owner, note, last_addr: None };
         let mut next = set.clone();
         next.keys.push(key.clone());
         if !token && !managed(&next.keys) {
@@ -411,13 +456,17 @@ impl Keys {
     /// The revocation is kept, so that it wins wherever these keys are
     /// merged.
     pub fn revoke(&self, id: &str, token: bool) -> Result<bool, ApiError> {
+        self.revoke_by(id, token, None)
+    }
+
+    /// [`Self::revoke`], by `by` (a key's name, for the list of revoked
+    /// keys).
+    pub fn revoke_by(&self, id: &str, token: bool, by: Option<String>) -> Result<bool, ApiError> {
         let mut set = self.lock();
         let mut next = set.clone();
+        let Some(k) = set.keys.iter().find(|k| k.id == id).cloned() else { return Ok(false) };
         next.keys.retain(|k| k.id != id);
-        if next.keys.len() == set.keys.len() {
-            return Ok(false);
-        }
-        next.revoked.push(Revoked { id: id.to_string(), revoked_ms: now_ms() });
+        next.revoked.push(Revoked { id: id.to_string(), revoked_ms: now_ms(), name: Some(k.name), scope: Some(k.scope.name().into()), owner: k.owner, revoked_by: by, sha256: Some(k.sha256) });
         if !token && !managed(&next.keys) {
             return Err(ApiError {
                 status: 409,
@@ -429,6 +478,66 @@ impl Keys {
         drop(set);
         self.changed.notify_one();
         Ok(true)
+    }
+
+    /// The revoked keys, the latest first.
+    pub fn revoked(&self) -> Vec<Json> {
+        let mut v: Vec<Revoked> = self.lock().revoked.clone();
+        v.sort_by(|a, b| b.revoked_ms.cmp(&a.revoked_ms));
+        v.iter().map(Revoked::json).collect()
+    }
+
+    /// A new key in place of key `id`: of its name, scope, owner and note,
+    /// with the old one's lifetime counted from now (none if it had none);
+    /// the old one expires `grace_ms` from now (or when it did, if sooner).
+    /// Its secret, not kept, is in the answer only.
+    pub fn rotate(&self, id: &str, grace_ms: u64, token: bool) -> Result<(Key, String, Key), ApiError> {
+        let mut set = self.lock();
+        let now = now_ms();
+        let old = set.keys.iter().find(|k| k.id == id).cloned().ok_or_else(|| ApiError { status: 404, message: format!("no key {id}") })?;
+        if old.expires_ms.is_some_and(|e| now >= e) {
+            return Err(ApiError { status: 409, message: format!("key {} has expired: make a new one instead", old.name) });
+        }
+        let new_id = hex(&random(8)?);
+        let secret = hex(&random(24)?);
+        let full = format!("sk_{new_id}_{secret}");
+        let expires_ms = old.expires_ms.map(|e| now + e.saturating_sub(old.created_ms));
+        let key = Key { id: new_id, sha256: sha256(&secret), created_ms: now, expires_ms, last_used_ms: 0, last_addr: None, ..old.clone() };
+        let mut next = set.clone();
+        let until = now + grace_ms;
+        let mut ending = old.clone();
+        ending.expires_ms = Some(old.expires_ms.map_or(until, |e| e.min(until)));
+        if let Some(k) = next.keys.iter_mut().find(|k| k.id == id) {
+            k.expires_ms = ending.expires_ms;
+        }
+        next.keys.push(key.clone());
+        if !token && !managed(&next.keys) {
+            return Err(ApiError {
+                status: 409,
+                message: "this server has no token, so one of its admin keys must never expire; rotating this one would leave none. Make an admin key without expires_days first".into(),
+            });
+        }
+        self.save(&next)?;
+        *set = next;
+        drop(set);
+        self.changed.notify_one();
+        Ok((key, full, ending))
+    }
+
+    /// The key a refused credential names, if it is a key these keys knew
+    /// (expired or revoked too) with that secret: its id, its name and
+    /// why it no longer opens anything.
+    pub fn identify(&self, authorization: Option<&str>) -> Option<(String, String, &'static str)> {
+        let rest = authorization?.strip_prefix("Bearer ")?.strip_prefix("sk_")?;
+        let (id, secret) = rest.split_once('_')?;
+        let digest = sha256(secret);
+        let set = self.lock();
+        if let Some(k) = set.keys.iter().find(|k| k.id == id && same_secret(digest.as_bytes(), k.sha256.as_bytes())) {
+            let why = if k.expires_ms.is_some_and(|e| now_ms() >= e) { "expired" } else { "valid" };
+            return Some((k.id.clone(), k.name.clone(), why));
+        }
+        let r = set.revoked.iter().find(|r| r.id == id && r.sha256.as_ref().is_none_or(|d| same_secret(digest.as_bytes(), d.as_bytes())))?;
+        Some((r.id.clone(), r.name.clone().unwrap_or_else(|| format!("key {}", r.id)), "revoked"))
     }
 
     /// Whether an admin key that never expires is among these keys: on a
@@ -451,6 +560,9 @@ impl Keys {
         }
         // Kept in memory; written with the next change of keys.
         k.last_used_ms = now_ms();
+        if let Some(addr) = caller().and_then(|c| c.addr) {
+            k.last_addr = Some(addr);
+        }
         Some(Principal { name: k.name.clone(), key: Some(k.id.clone()), scope: k.scope, root: false })
     }
 
@@ -479,33 +591,113 @@ fn managed(keys: &[Key]) -> bool {
 }
 
 tokio::task_local! {
-    static NOTE: std::cell::RefCell<Option<String>>;
+    static NOTE: std::cell::RefCell<(Option<String>, Change)>;
 }
 
 /// Runs `f`, a request, with room for what the audit log is to say of it
 /// ([`note`]): its output, and that note.
-pub async fn noting<F: std::future::Future>(f: F) -> (F::Output, Option<String>) {
-    NOTE.scope(std::cell::RefCell::new(None), async move {
-        let out = f.await;
-        (out, NOTE.with(|n| n.borrow_mut().take()))
-    })
-    .await
+pub fn noting<F: std::future::Future>(f: F) -> impl std::future::Future<Output = (F::Output, Option<String>)> {
+    use futures::FutureExt;
+    noting_change(f).map(|(out, note, _)| (out, note))
+}
+
+/// [`noting`], with what the request changed ([`note_change`]).
+pub fn noting_change<F: std::future::Future>(f: F) -> impl std::future::Future<Output = (F::Output, Option<String>, Change)> {
+    use futures::FutureExt;
+    // The note is taken as `f` ends, while the scope still holds it.
+    NOTE.scope(
+        std::cell::RefCell::new((None, Change::default())),
+        f.map(|out| {
+            let (note, change) = NOTE.with(|n| std::mem::take(&mut *n.borrow_mut()));
+            (out, note, change)
+        }),
+    )
+}
+
+/// Says what the request being served changed, for its audit entry: the
+/// object, and it before and after. Outside a request, nothing.
+pub fn note_change(c: Change) {
+    let _ = NOTE.try_with(|n| n.borrow_mut().1 = c);
 }
 
 /// Says what the audit log keeps of the request being served (a table's
 /// statement, the tables an import creates), which audits it whatever its
 /// route or method. Outside a request ([`noting`]), nothing.
 pub fn note(detail: impl Into<String>) {
-    let _ = NOTE.try_with(|n| *n.borrow_mut() = Some(detail.into()));
+    let _ = NOTE.try_with(|n| n.borrow_mut().0 = Some(detail.into()));
 }
 
+/// The client header of the command center's own requests
+/// (`x-strata-client: command-center`).
+pub const COMMAND_CENTER: &str = "command-center";
+
+/// Who is calling, as the request says: the address it came from (its
+/// peer, or the first address of `X-Forwarded-For` when the peer is a
+/// proxy the server trusts, `--trust-proxy`), the client (the command
+/// center, by its `x-strata-client` header), the app (`x-strata-app`, else
+/// the product of its `User-Agent`), and the reason given for a change
+/// (`x-strata-reason`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Caller {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl Caller {
+    /// One of the command center's own requests.
+    pub fn command_center(&self) -> bool {
+        self.client.as_deref() == Some(COMMAND_CENTER)
+    }
+
+    /// The client as the audit log names it: the command center, or the
+    /// app.
+    pub fn named(&self) -> Option<String> {
+        self.client.clone().or_else(|| self.app.clone())
+    }
+}
+
+/// The product of a `User-Agent` (`nightly-reports/2.3 (linux)` is
+/// `nightly-reports`).
+pub fn product(user_agent: &str) -> Option<String> {
+    let p = user_agent.split_whitespace().next()?.split('/').next()?.trim();
+    (!p.is_empty()).then(|| p.chars().take(64).collect())
+}
+
+tokio::task_local! {
+    static CALLER: Caller;
+}
+
+/// Runs `f`, a request, as `caller`'s ([`caller`]).
+pub fn calling<F: std::future::Future>(caller: Caller, f: F) -> impl std::future::Future<Output = F::Output> {
+    CALLER.scope(caller, f)
+}
+
+/// Who is calling in the request being served (`None` outside one).
+pub fn caller() -> Option<Caller> {
+    CALLER.try_with(Caller::clone).ok()
+}
+
+/// What an audit entry is: a change, a refusal (401, 403), or a note.
+pub const CHANGE: &str = "change";
+pub const REFUSAL: &str = "refusal";
+pub const NOTE_KIND: &str = "note";
+
 /// What the audit log keeps of a request.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Entry {
     pub ts_ms: u64,
+    /// The key's name; "root token" for the token; "cluster" for another
+    /// server; "open" on a server without credentials.
     pub who: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    #[serde(skip_deserializing)]
     pub scope: Option<&'static str>,
     pub method: String,
     pub route: String,
@@ -515,6 +707,63 @@ pub struct Entry {
     pub request_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// [`CHANGE`], [`REFUSAL`] or [`NOTE_KIND`] (empty in entries from
+    /// before kinds: read as a change, or a refusal by its status).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// The client's address, the client, and the reason it gave
+    /// ([`Caller`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// What was changed, in words ("shard 2", "key oncall-bot", "alert
+    /// rules", "table products").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<String>,
+    /// The object before and after, for rules, settings and spec patches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Json>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Json>,
+    /// Who acted: "person" (a request), or the server's own "operator",
+    /// "autoscaler" or "upgrader".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub actor: String,
+}
+
+impl Entry {
+    /// Its kind, for entries from before kinds too.
+    pub fn kind(&self) -> &str {
+        match self.kind.as_str() {
+            "" if self.status == 401 || self.status == 403 => REFUSAL,
+            "" => CHANGE,
+            k => k,
+        }
+    }
+}
+
+/// What a handler adds to the audit entry of its request, beside its
+/// detail ([`note_change`]): its kind (a change by default), the object,
+/// it before and after, and who acted (a person by default).
+#[derive(Clone, Debug, Default)]
+pub struct Change {
+    pub kind: Option<&'static str>,
+    pub object: Option<String>,
+    pub before: Option<Json>,
+    pub after: Option<Json>,
+    pub actor: Option<&'static str>,
+}
+
+/// The name the audit log gives a credential: a key's name, "root token"
+/// for the token.
+pub fn audit_name(p: &Principal) -> String {
+    match (p.key.is_none(), p.name.as_str()) {
+        (true, "token") => "root token".into(),
+        _ => p.name.clone(),
+    }
 }
 
 /// The requests that changed something or were refused: the latest in
@@ -526,7 +775,7 @@ pub struct Audit {
 }
 
 /// Entries kept in memory.
-pub const AUDIT: usize = 2000;
+pub const AUDIT: usize = 20_000;
 
 impl Audit {
     pub fn new(path: Option<PathBuf>) -> Result<Audit, String> {
@@ -567,6 +816,24 @@ impl Audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rotated_key_lives_as_long_as_the_old_one_did_from_now() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = Keys::open(dir.path().join("keys.json")).unwrap();
+        keys.create("ops", Scope::Admin, None, true, false).unwrap();
+        let day = 86_400_000;
+        let (old, _) = keys.create("ci", Scope::Write, Some(now_ms() + 30 * day), true, false).unwrap();
+        let (new, secret, ending) = keys.rotate(&old.id, 15 * 60_000, true).unwrap();
+        let lifetime = new.expires_ms.unwrap() - new.created_ms;
+        assert!(lifetime.abs_diff(old.expires_ms.unwrap() - old.created_ms) < 1_000, "{lifetime}");
+        assert!(ending.expires_ms.unwrap() <= now_ms() + 15 * 60_000);
+        assert_eq!((new.name.as_str(), new.scope), ("ci", Scope::Write));
+        assert!(secret.starts_with(&format!("sk_{}_", new.id)));
+        // A key that never expired: its successor never does either.
+        let (forever, _) = keys.create("dash", Scope::Read, None, true, false).unwrap();
+        assert_eq!(keys.rotate(&forever.id, 0, true).unwrap().0.expires_ms, None);
+    }
 
     #[test]
     fn keys_resolve_to_their_scope_and_revoke() {
@@ -697,7 +964,7 @@ mod tests {
     fn the_audit_log_appends_to_its_file() {
         let dir = tempfile::tempdir().unwrap();
         let a = Audit::new(Some(dir.path().join("audit.jsonl"))).unwrap();
-        let e = |status| Entry { ts_ms: 1, who: "ops".into(), key: None, scope: Some("admin"), method: "POST".into(), route: "/v1/admin/vacuum".into(), status, ms: 1.0, request_id: None, detail: None };
+        let e = |status| Entry { ts_ms: 1, who: "ops".into(), key: None, scope: Some("admin"), method: "POST".into(), route: "/v1/admin/vacuum".into(), status, ms: 1.0, request_id: None, detail: None, ..Default::default() };
         a.add(e(200));
         a.add(e(403));
         assert_eq!(a.latest(10)[0].status, 403);

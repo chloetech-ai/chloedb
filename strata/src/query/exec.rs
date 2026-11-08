@@ -2,7 +2,13 @@
 //! snapshot, segment by segment, following the planner's choices, and
 //! merges the per-segment results.
 
+mod agg_columns;
 mod graph;
+mod filter_cache;
+mod scroll;
+
+pub use filter_cache::{FilterCache, FILTER_CACHE_BYTES};
+pub use scroll::Scroll;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,7 +22,7 @@ use crate::forward::{self, DocStore, KeyRange, KeywordColumn, NumericColumn, Ran
 use crate::graph::GraphReader;
 use crate::query::agg;
 use crate::query::memory::{Charge, MemoryBudget};
-use crate::query::logical::{Decay, Expand, GuardSite, OrderBy, Opts, PathTest, Phase, Pred, Projection, Score, Select, Tiebreak, Vectors, MAX_QUERY_VECTORS, CROSS_ENCODER_FIRST};
+use crate::query::logical::{Col, Decay, Expand, Fuzzy, GuardSite, OrderBy, Opts, PathCol, PathTest, Phase, Pred, Projection, Score, Select, Tiebreak, TimeOf, Vectors, MAX_QUERY_VECTORS, CROSS_ENCODER_FIRST};
 use crate::query::plan::{CostModel, Estimator, FilterMode, Planner, VectorStrategy};
 use crate::query::rank::{Interval, Rank};
 use crate::query::stats::{FieldStats, TermStats};
@@ -79,6 +85,14 @@ fn cells<T>(n: usize) -> Vec<OnceLock<T>> {
     (0..n).map(|_| OnceLock::new()).collect()
 }
 
+/// Row `d`'s stored value of JSON field `field` (NULL without a doc store).
+fn object(store: Option<&DocStore>, field: usize, d: DocId, cache: &mut forward::StoreCache) -> Result<Value> {
+    Ok(match store {
+        Some(st) => st.get_fields_cached(d, &[field], cache)?.pop().unwrap_or(Value::Null),
+        None => Value::Null,
+    })
+}
+
 fn opened<'r, T>(cell: &'r OnceLock<Opened<T>>, open: impl FnOnce() -> Result<Option<T>>) -> Result<Option<&'r T>> {
     match cell.get_or_init(|| open().map_err(|e| e.to_string())) {
         Ok(r) => Ok(r.as_ref()),
@@ -117,7 +131,9 @@ impl SegmentReaders {
         let f = &self.schema.fields[field];
         opened(&self.text[field], || {
             Ok(match f.ty {
+                // A JSON field with text has one beside its terms.
                 FieldType::Text { .. } | FieldType::Sparse if f.indexed => Some(TextFieldReader::open(&self.seg, &f.key())?),
+                FieldType::Json if f.has_text() => Some(TextFieldReader::open(&self.seg, &f.key())?),
                 _ => None,
             })
         })
@@ -148,7 +164,7 @@ impl SegmentReaders {
             if col.needs_values() {
                 // Multi-valued fields are stored.
                 let store = self.store()?.ok_or_else(|| crate::error::corrupt(format!("keyword column {}: no stored values to repair it from", f.name)))?;
-                let mut values = store.field_values(field);
+                let mut values = store.field_values(field)?;
                 if f.ty == FieldType::Json {
                     for v in values.iter_mut() {
                         *v = Value::List(crate::json::terms(v)?.into_iter().map(Value::Str).collect());
@@ -168,6 +184,13 @@ impl SegmentReaders {
                 _ => None,
             })
         })
+    }
+
+    /// Whether the terms of JSON field `field` include marks
+    /// ([`crate::json::mark_term`]); a segment written before them reads
+    /// the value of every row holding a path from its object.
+    pub fn json_marks(&self, field: usize) -> bool {
+        self.seg.has(&crate::json::marks_section(&self.schema.fields[field].key()))
     }
 
     pub fn store(&self) -> Result<Option<&DocStore>> {
@@ -197,16 +220,38 @@ pub struct ExecOptions {
     /// the text score's top `depth` rows as candidates, as other
     /// expressions do (for comparisons).
     pub rank_safe: bool,
+    /// In shard mode, a rank-safe boost also answers with the top `depth`
+    /// rows of each input that generates candidates: what a coordinator
+    /// from before rank-safe boosts fuses from. A later one fuses the
+    /// boost from the rows its bound found alone, and does not read them
+    /// (strata-server leaves them out for coordinators of shard protocol
+    /// 10 and later). On by default.
+    pub boost_inputs: bool,
     /// Find a LIMIT's rows by a numeric column (`ORDER BY clicks DESC
     /// LIMIT 10`) by reading the column's blocks best first and stopping
     /// at the first that cannot reach them. False reads every matching
     /// row (for comparisons).
     pub column_blocks: bool,
+    /// Search a VECTOR field's partitions ([`crate::schema::VectorPartition`])
+    /// where a filter limits its key and the cost model expects them to be
+    /// faster. False plans as if the field had none (for comparisons);
+    /// `strategy => 'partition'` still uses them.
+    pub vector_partitions: bool,
     /// Collection statistics to score BM25 with instead of this database's
     /// own, so that a shard of a larger collection scores like the whole
     /// of it ([`crate::query::stats`]). Terms missing from it use local
     /// counts.
     pub stats: Option<Arc<TermStats>>,
+    /// The typo expansions of a query run as several on one snapshot (a
+    /// shard's statistics round for a coordinator, then the query round
+    /// on the snapshot it leased), shared so that each typo-tolerant word
+    /// walks the dictionaries once ([`Expansions`]). `None`: the query's
+    /// own.
+    pub expansions: Option<Arc<Expansions>>,
+    /// Filters kept between queries, by segment ([`FilterCache`]): a
+    /// database's queries share its own ([`crate::db::Db::exec`]); `None`
+    /// keeps none.
+    pub filter_cache: Option<Arc<FilterCache>>,
     /// Answer as one shard of a larger collection, for a coordinator to
     /// merge ([`crate::cluster::merge`]): OFFSET is folded into LIMIT,
     /// facets and counts return every group, and fused scores return every
@@ -217,6 +262,11 @@ pub struct ExecOptions {
     /// the process's shared pool ([`Pool::global`](super::pool::Pool::global)),
     /// as they come free.
     pub threads: usize,
+    /// Live rows a query's segments must hold per thread it searches them
+    /// on: a query over fewer than twice this many runs on its caller
+    /// alone, as a small table's do ([`FAN_OUT_ROWS`]; 0: a thread per
+    /// segment, up to `threads`).
+    pub fan_out_rows: usize,
     /// Fail with `Error::Timeout` once this has passed (checked between
     /// segments).
     pub deadline: Option<Instant>,
@@ -250,6 +300,13 @@ pub struct ExecOptions {
     /// `DISTINCT`, groups of derived rows): [`Engine::from_env`] by
     /// default.
     pub engine: Engine,
+    /// The time (microseconds since the epoch) at which rows of a table
+    /// with `expire_by` ([`crate::schema::Schema::with_expire_by`]) have
+    /// expired if their time is at or before it: `None` takes the time the
+    /// query starts. A coordinator gives its shards one time.
+    pub now: Option<i64>,
+    /// Keep expired rows: what deletes them looks for them with it.
+    pub expired: bool,
 }
 
 /// The engine of a plan's operators ([`crate::query::ops`] or
@@ -303,10 +360,15 @@ impl Default for ExecOptions {
             bm25_algo: TopKAlgo::MaxScore,
             fusion_depth: 100,
             rank_safe: true,
+            boost_inputs: true,
             column_blocks: true,
+            vector_partitions: true,
             stats: None,
+            expansions: None,
+            filter_cache: None,
             shard: false,
             threads: 1,
+            fan_out_rows: FAN_OUT_ROWS,
             deadline: None,
             cancel: None,
             synonyms: None,
@@ -316,6 +378,8 @@ impl Default for ExecOptions {
             memory: None,
             profile: false,
             engine: Engine::from_env(),
+            now: None,
+            expired: false,
         }
     }
 }
@@ -427,6 +491,15 @@ pub struct ResultSet {
     pub stats: ExecStats,
 }
 
+/// A search leaf's rows for DataFusion ([`Executor::execute_arrow`]):
+/// as rows, or as Arrow columns.
+#[derive(Debug)]
+pub enum Leaf {
+    Rows(ResultSet),
+    #[cfg(feature = "datafusion")]
+    Arrow(crate::query::arrow::Columns),
+}
+
 /// What a coordinator ranks a shard's rows by, row by row, so that it ranks
 /// the rows of several shards once ([`crate::cluster::merge`]): the inputs
 /// of a fused score (a ranking expression, RRF, a weighted sum), and the
@@ -463,6 +536,43 @@ struct PerGroup {
 enum GroupKey<'k> {
     Str(&'k str),
     Int(i64),
+}
+
+/// What [`Executor::projecting`] reads for a projection.
+struct Projecting {
+    stored: Vec<usize>,
+    features: Vec<Option<Vec<f64>>>,
+    /// Each segment's last decompressed doc store block: rows in docID
+    /// order (a scan) decompress each block once rather than once a row.
+    blocks: HashMap<usize, forward::StoreCache>,
+}
+
+/// A row's value in a column, as the executor finds it: made for it, a
+/// stored field fetched, or a keyword column's text.
+enum Cell<'c> {
+    Value(Value),
+    Ref(&'c Value),
+    Str(&'c str),
+}
+
+impl Cell<'_> {
+    fn into_value(self) -> Value {
+        match self {
+            Cell::Value(v) => v,
+            Cell::Ref(v) => v.clone(),
+            Cell::Str(x) => Value::Str(x.to_string()),
+        }
+    }
+
+    /// About the bytes the value holds ([`crate::query::memory::value_bytes`]).
+    #[cfg(feature = "datafusion")]
+    fn bytes(&self) -> u64 {
+        match self {
+            Cell::Value(v) => crate::query::memory::value_bytes(v),
+            Cell::Ref(v) => crate::query::memory::value_bytes(v),
+            Cell::Str(x) => std::mem::size_of::<Value>() as u64 + x.len() as u64,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -566,6 +676,34 @@ impl DocFilter for ProbeFilter {
     }
 }
 
+/// A kept filter ([`FilterCache`]) checked per document; deleted
+/// documents are checked apart ([`ProbeFilter::live`]), so it is not a
+/// set of the segment's live documents to enumerate.
+struct KeptSet(Arc<DocSet>);
+
+impl DocFilter for KeptSet {
+    fn contains(&self, d: DocId) -> bool {
+        self.0.contains(d)
+    }
+    fn cardinality(&self) -> usize {
+        self.0.len()
+    }
+    fn may_have(&self, docs: std::ops::Range<DocId>) -> bool {
+        DocFilter::may_have(self.0.as_ref(), docs)
+    }
+}
+
+/// The longest predicate the filter cache keeps, written out (a long IN
+/// list is seldom repeated).
+const MAX_CACHE_KEY: usize = 4096;
+
+/// [`ExecOptions::fan_out_rows`] by default. Waking a pool thread and
+/// taking in its result costs about what searching a few thousand rows
+/// does: in A2 of the laptop benchmark, BM25 on nfcorpus (3,633 rows in two
+/// segments) took 71 µs on one thread and 97 µs on eight, and on fiqa
+/// (57,638 rows in eight) 544 µs and 338 µs.
+pub const FAN_OUT_ROWS: usize = 16_384;
+
 /// What per-segment work records, taken into the executor afterwards (so
 /// that segments can run on several threads).
 #[derive(Default)]
@@ -603,6 +741,28 @@ pub struct Executor<'a> {
     charge: Charge,
     /// What times the query's steps.
     clock: Clock,
+    /// This query among the database's, for the filter cache to count a
+    /// query that looks at a filter twice as one sight of it.
+    query: u64,
+}
+
+/// The last [`Executor::query`] handed out.
+static QUERIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The rows of a table that have not expired at `now`: those without a
+/// time in its `expire_by` field `f`, or with a later one.
+pub fn unexpired(f: usize, now: i64) -> Pred {
+    Pred::Or(vec![Pred::Not(Box::new(Pred::Present { field: f })), Pred::IntRange { field: f, lo: now.saturating_add(1), hi: i64::MAX }])
+}
+
+/// The indexed terms near typo-tolerant words that several queries on
+/// one snapshot share ([`ExecOptions::expansions`]): by table, field, word
+/// and edits, the terms of every segment within those edits, with their
+/// document counts and distances. Valid only for the snapshot it was
+/// filled on.
+#[derive(Debug, Default)]
+pub struct Expansions {
+    near: Mutex<HashMap<(String, usize, String, u8), Arc<Vec<(String, u64, u8)>>>>,
 }
 
 /// Searches with their synonyms and typos resolved to indexed terms.
@@ -626,6 +786,29 @@ fn err(m: impl Into<String>) -> Error {
 /// runs plans whose subqueries already ran ([`crate::query::ops`]).
 fn unresolved() -> Error {
     err("a subquery's condition reached the executor before the subquery ran; run the query's plan with operators")
+}
+
+/// The order of rows by their values of a path (`ORDER BY attrs.price`),
+/// as the operators' Sort orders values: by [`agg::cmp`], NULL last
+/// unless `nulls_first`, in either direction.
+pub fn path_order(a: &Value, b: &Value, desc: bool, nulls_first: bool) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (matches!(a, Value::Null), matches!(b, Value::Null)) {
+        (true, true) => Ordering::Equal,
+        (true, false) => if nulls_first { Ordering::Less } else { Ordering::Greater },
+        (false, true) => if nulls_first { Ordering::Greater } else { Ordering::Less },
+        (false, false) if desc => agg::cmp(a, b).reverse(),
+        (false, false) => agg::cmp(a, b),
+    }
+}
+
+/// [`keep_best`] of rows with their values.
+fn keep_best_values(v: &mut Vec<(Value, Hit)>, k: usize, better: impl Fn(&(Value, Hit), &(Value, Hit)) -> std::cmp::Ordering) {
+    if k > 0 && k < v.len() {
+        v.select_nth_unstable_by(k - 1, &better);
+        let cut = v[k - 1].clone();
+        v.retain(|c| better(c, &cut) != std::cmp::Ordering::Greater);
+    }
 }
 
 /// Keeps the rows of `v` that `better` puts among its first `k`, and every
@@ -726,6 +909,21 @@ impl<'a> Executor<'a> {
             expanded: Mutex::new(Expanded::default()),
             charge: Charge::new(opts.memory.clone()),
             clock: Clock::new(opts.profile),
+            query: QUERIES.fetch_add(1, Ordering::Relaxed) + 1,
+        }
+    }
+
+    /// `q` without the rows that have expired ([`ExecOptions::now`]), unless
+    /// its table has no `expire_by` or [`ExecOptions::expired`] keeps them.
+    fn unexpired<'q>(&self, q: &'q Select) -> std::borrow::Cow<'q, Select> {
+        match self.schema.expire_field() {
+            Some(f) if !self.opts.expired => {
+                let now = self.opts.now.unwrap_or_else(crate::timestamp::now);
+                let mut q = q.clone();
+                q.filter = Pred::And(vec![std::mem::replace(&mut q.filter, Pred::True), unexpired(f, now)]);
+                std::borrow::Cow::Owned(q)
+            }
+            _ => std::borrow::Cow::Borrowed(q),
         }
     }
 
@@ -812,6 +1010,8 @@ impl<'a> Executor<'a> {
     /// children of a prefix are found by jumping through the field's
     /// sorted dictionary, past each child's own children.
     pub fn sid_next(mut self, q: &Select, field: usize, prefixes: &[String]) -> Result<Vec<Vec<(String, u64)>>> {
+        let unexpired = self.unexpired(q);
+        let q = unexpired.as_ref();
         let mut counts: Vec<std::collections::BTreeMap<u32, u64>> = vec![Default::default(); prefixes.len()];
         let segs = self.segs.clone();
         for s in segs.iter() {
@@ -853,6 +1053,8 @@ impl<'a> Executor<'a> {
     /// rows left out: the segments' terms read in one merge, in term order,
     /// each counted over those rows, then each path's runs of a type.
     pub fn json_paths(mut self, q: &Select, field: usize, call: &crate::query::paths::Call) -> Result<crate::query::paths::Paths> {
+        let unexpired = self.unexpired(q);
+        let q = unexpired.as_ref();
         use std::cmp::Reverse;
         use std::collections::BinaryHeap;
         let runs = call.runs();
@@ -962,6 +1164,13 @@ impl<'a> Executor<'a> {
     /// items, deleted rows left out. No levels when the guard has no items
     /// to count (a `bm25` text without optional words).
     pub fn guard_counts(&mut self, q: &Select) -> Result<(usize, Vec<u64>)> {
+        let unexpired = self.unexpired(q);
+        self.level_counts(unexpired.as_ref())
+    }
+
+    /// [`Executor::guard_counts`] of a query whose expired rows are left
+    /// out already.
+    fn level_counts(&mut self, q: &Select) -> Result<(usize, Vec<u64>)> {
         let Some(g) = &q.guard else { return Ok((0, Vec::new())) };
         // A bm25 site's options, and its MATCH filter at level m.
         let bm25 = |m: Option<usize>| -> Result<(usize, Option<String>)> {
@@ -1036,7 +1245,7 @@ impl<'a> Executor<'a> {
         if self.opts.shard {
             return Err(err("a guarded query (min_rows, max_rows) runs on shards at the level its coordinator chose"));
         }
-        let (n, counts) = self.guard_counts(q)?;
+        let (n, counts) = self.level_counts(q)?;
         if counts.is_empty() {
             self.stats.plan.push("guard: no items to count".into());
             return Ok(Some(q.at_level(n)));
@@ -1046,13 +1255,17 @@ impl<'a> Executor<'a> {
         Ok(Some(q.at_level(m)))
     }
 
-    pub fn execute(mut self, q: &Select) -> Result<ResultSet> {
-        let m = self.mark();
-        let settled = self.settle_guard(q)?;
-        if q.guard.is_some() {
-            self.step(m, "guard", String::new(), None);
-        }
-        let q = settled.as_ref().unwrap_or(q);
+    /// The rows of `q`'s projection at these places (segment ordinal and
+    /// docID), in their order, as [`Executor::execute`] would give them
+    /// before typing them ([`Select::typed`]): what reads by key fetch
+    /// once they have found their rows ([`crate::db::Db::get_many_at`]).
+    pub fn rows_at(self, q: &Select, at: &[(usize, DocId)]) -> Result<Vec<Vec<Value>>> {
+        let hits: Vec<Hit> = at.iter().map(|&(seg, doc)| Hit { seg, doc, score: f64::NAN }).collect();
+        self.project(q, &hits)
+    }
+
+    /// Refuses a query its models or cross-encoders cannot run as given.
+    fn refuse(&self, q: &Select) -> Result<()> {
         if let Some(m) = q.unopened_model(self.opts.shard) {
             return Err(err(format!("ranking model {m} is not open: Db::query and Db::run open the models of a query's plan (Db::open_ranking_models)")));
         }
@@ -1062,9 +1275,40 @@ impl<'a> Executor<'a> {
         if q.projection.iter().any(|(_, p)| matches!(p, Projection::Feature(s) if s.has_cross_encoder())) {
             return Err(err("a cross-encoder ranks in a rerank phase, not in a column: rank by it and select score()"));
         }
+        Ok(())
+    }
+
+    pub fn execute(self, q: &Select) -> Result<ResultSet> {
+        match self.answer(q, None)? {
+            Leaf::Rows(rs) => Ok(rs),
+            #[cfg(feature = "datafusion")]
+            Leaf::Arrow(_) => unreachable!("rows asked for"),
+        }
+    }
+
+    /// [`Executor::execute`], with the rows as Arrow columns when there are
+    /// more than `over` of them and the query neither groups nor counts
+    /// (nor, run for a coordinator, needs more than its rows to be merged,
+    /// [`crate::cluster::concatenates`]): what DataFusion reads, without
+    /// the rows being made first.
+    #[cfg(feature = "datafusion")]
+    pub fn execute_arrow(self, q: &Select, over: usize) -> Result<Leaf> {
+        self.answer(q, Some(over))
+    }
+
+    fn answer(mut self, q: &Select, arrow_over: Option<usize>) -> Result<Leaf> {
+        let unexpired = self.unexpired(q);
+        let q = unexpired.as_ref();
+        let m = self.mark();
+        let settled = self.settle_guard(q)?;
+        if q.guard.is_some() {
+            self.step(m, "guard", String::new(), None);
+        }
+        let q = settled.as_ref().unwrap_or(q);
+        self.refuse(q)?;
         let columns: Vec<String> = q.projection.iter().map(|(n, _)| n.clone()).collect();
         if self.opts.shard && has_graphs(q) {
-            return Err(err("graph queries cannot be split across shards: edges cross them"));
+            return Err(err("graph queries (REACHABLE, PATH, hops(), ppr) run on one database, not split across shards: a row's edges point at rows other shards hold"));
         }
         let m = self.mark();
         self.run_graphs(&q.graphs)?;
@@ -1080,8 +1324,12 @@ impl<'a> Executor<'a> {
             let needed = agg::needed(q);
             let m = self.mark();
             let general = agg::is_general(q, |f| self.facet_field(f));
-            let groups = if general { self.aggregate(q, &needed)? } else { self.facets(q, q.group_by[0], &needed)? };
-            let by = q.group_by.iter().map(|&f| self.field_name(f).to_string()).collect::<Vec<_>>().join(", ");
+            let groups = match (general, q.group_by[..].first()) {
+                (false, Some(&Col::Path(p))) => self.path_facets(q, &q.paths[p], &needed)?,
+                (false, Some(&Col::Field(f))) => self.facets(q, f, &needed)?,
+                _ => self.aggregate(q, &needed)?,
+            };
+            let by = q.group_by.iter().map(|&c| self.col_name(q, c)).collect::<Vec<_>>().join(", ");
             self.step(m, if general { "aggregate" } else { "facet" }, if by.is_empty() { "every row".into() } else { format!("by {by}") }, Some(groups.map.len() as u64));
             // Shards return every group with partial aggregates, for the
             // coordinator to combine.
@@ -1092,7 +1340,7 @@ impl<'a> Executor<'a> {
                 q.typed(&mut rows);
                 rows
             };
-            return Ok(empty(columns, rows, self.stats));
+            return Ok(Leaf::Rows(empty(columns, rows, self.stats)));
         }
         let has_count = q.projection.iter().any(|(_, p)| *p == Projection::Count);
         if has_count {
@@ -1104,7 +1352,7 @@ impl<'a> Executor<'a> {
             self.step(m, "count", String::new(), Some(n as u64));
             let one = self.opts.shard || (q.offset == 0 && q.limit != Some(0));
             let rows = if one { vec![vec![Value::Int(n); columns.len()]] } else { Vec::new() };
-            return Ok(empty(columns, rows, self.stats));
+            return Ok(Leaf::Rows(empty(columns, rows, self.stats)));
         }
         let m = self.mark();
         let hits = self.ordered_hits(q, self.opts.max_rows)?;
@@ -1113,6 +1361,17 @@ impl<'a> Executor<'a> {
         let skip = if self.opts.shard { 0 } else { q.offset };
         let hits: Vec<Hit> = hits.into_iter().skip(skip).collect();
         let m = self.mark();
+        #[cfg(feature = "datafusion")]
+        if arrow_over.is_some_and(|o| hits.len() > o) && (!self.opts.shard || crate::cluster::concatenates(q)) {
+            if let Some((arrays, keys)) = self.project_arrow(q, &hits)? {
+                self.step(m, "project", format!("{} column{} into Arrow", columns.len(), if columns.len() == 1 { "" } else { "s" }), Some(hits.len() as u64));
+                let scores = hits.iter().map(|h| h.score).collect();
+                let c = crate::query::arrow::Columns { names: columns, arrays, keys, scores, rows: hits.len(), stats: self.stats };
+                return Ok(Leaf::Arrow(c));
+            }
+        }
+        #[cfg(not(feature = "datafusion"))]
+        let _ = arrow_over;
         let mut rows = self.project(q, &hits)?;
         self.step(m, "project", format!("{} column{}", columns.len(), if columns.len() == 1 { "" } else { "s" }), Some(rows.len() as u64));
         // Shards answer with the stored integers, which the merge types.
@@ -1138,7 +1397,7 @@ impl<'a> Executor<'a> {
             parts.get_or_insert_with(RankParts::default).phases = self.phase_parts(&q.phases, &hits)?;
             self.step(m, "phase values", format!("{} phase{}", q.phases.len(), if q.phases.len() == 1 { "" } else { "s" }), Some(hits.len() as u64));
         }
-        Ok(ResultSet { columns, rows, keys, scores, parts, stats: self.stats })
+        Ok(Leaf::Rows(ResultSet { columns, rows, keys, scores, parts, stats: self.stats }))
     }
 
     /// What the step that finds a query's rows is called, and its order.
@@ -1150,6 +1409,7 @@ impl<'a> Executor<'a> {
         match &q.order {
             None => ("scan", format!("rows WHERE keeps{cut}")),
             Some(OrderBy::Score { score: Score::Column { field }, desc, .. }) => ("order", format!("by {} {}{cut}", self.field_name(*field), if *desc { "DESC" } else { "ASC" })),
+            Some(OrderBy::Path { path, desc, .. }) => ("order", format!("by {} {}{cut}", self.col_name(q, Col::Path(*path)), if *desc { "DESC" } else { "ASC" })),
             Some(OrderBy::Score { score, .. }) => match Rank::of(score, 0) {
                 Some(rank) => ("rank", format!("by {}{cut}", rank.explain(&self.schema))),
                 None => ("rank", format!("by {}{cut}", self.leaf_label(score).0)),
@@ -1296,8 +1556,62 @@ impl<'a> Executor<'a> {
             }
             Some(OrderBy::Score { score, .. }) if Rank::of(score, 0).is_some() => return Err(err("a ranking expression is ordered DESC (negate it to rank the smallest first)")),
             Some(OrderBy::Score { .. }) => return Err(err("relevance scores can only be ordered DESC")),
+            Some(OrderBy::Path { path, desc, nulls_first }) => {
+                let pc = q.paths.get(*path).ok_or_else(|| err("ORDER BY names a path the query does not read"))?.clone();
+                self.by_path(&pc, *desc, *nulls_first, &q.filter, want, q.tiebreak.as_ref())?
+            }
             Some(_) => return Err(err("ORDER BY COUNT(*) needs GROUP BY")),
         })
+    }
+
+    /// The rows of the filter in the order of their values of path `pc`,
+    /// as the operators' Sort orders values ([`path_order`]), rows tied on
+    /// it by key (`ORDER BY attrs.price, id`) or in index order; with a
+    /// LIMIT, the first `want`. Each row's value is read from the path's
+    /// terms ([`Self::path_values`]).
+    fn by_path(&mut self, pc: &PathCol, desc: bool, nulls_first: bool, p: &Pred, want: Option<usize>, tb: Option<&Tiebreak>) -> Result<Vec<Hit>> {
+        let order = |a: &(Value, Hit), b: &(Value, Hit)| path_order(&a.0, &b.0, desc, nulls_first);
+        let mut cands: Vec<(Value, Hit)> = Vec::new();
+        let mut cut_at = want.map_or(usize::MAX, |k| (2 * k).max(4096));
+        let segs = self.segs.clone();
+        let mut tick = self.ticker();
+        for s in segs.iter() {
+            self.check_deadline()?;
+            let set = self.filter_set(s, p)?;
+            let pv = self.path_values(s, pc, &set)?;
+            for d in set.iter() {
+                tick.tick()?;
+                let v = pv.get(d);
+                self.charge.room(&mut cands)?;
+                cands.push((v.clone(), Hit { seg: s.ord, doc: d, score: 0.0 }));
+                self.stats.scored += 1;
+                if cands.len() >= cut_at {
+                    keep_best_values(&mut cands, want.unwrap_or(0), order);
+                    cut_at = cut_at.max(2 * cands.len());
+                }
+            }
+        }
+        if let Some(k) = want {
+            keep_best_values(&mut cands, k, order);
+        }
+        let key_desc = match tb {
+            Some(Tiebreak::Key { desc }) => Some(*desc),
+            _ => None,
+        };
+        let mut keyed: Vec<((Value, Hit), Value)> = cands.into_iter().map(|c| { let k = if key_desc.is_some() { self.key(&c.1) } else { Value::Null }; (c, k) }).collect();
+        keyed.sort_by(|a, b| {
+            order(&a.0, &b.0).then_with(|| match key_desc {
+                Some(kd) => {
+                    let c = cmp_values(&a.1, &b.1);
+                    if kd { c.reverse() } else { c }
+                }
+                None => (a.0 .1.seg, a.0 .1.doc).cmp(&(b.0 .1.seg, b.0 .1.doc)),
+            })
+        });
+        if let Some(k) = want {
+            keyed.truncate(k);
+        }
+        Ok(keyed.into_iter().map(|((_, h), _)| h).collect())
     }
 
     /// The cap of a `MAX k PER` ([`Select::per`]) that the executor keeps
@@ -1445,6 +1759,16 @@ impl<'a> Executor<'a> {
         }
         match mode {
             FilterMode::Probe => {
+                // A kept filter is a bit to test rather than columns to
+                // read for each candidate.
+                if let Some((set, found)) = self.kept(s, p)? {
+                    l.plan.push(format!("seg {}: filter {}, {} docs", s.ord, if found { "from the cache" } else { "kept in the cache" }, set.len()));
+                    let card = set.len();
+                    return Ok(match &s.view.live {
+                        None => SegFilter::Set(set),
+                        Some(lv) => SegFilter::Probe(ProbeFilter { root: ProbeNode::Leaf(Box::new(KeptSet(set))), live: Some(lv.clone()), card }),
+                    });
+                }
                 let root = self.compile_probe(s, p)?;
                 let card = {
                     let est = SegEst { ex: self, s, params: None, local_sel: None };
@@ -1469,18 +1793,86 @@ impl<'a> Executor<'a> {
             return Ok(set.clone());
         }
         let t0 = Instant::now();
-        let mut set = self.materialize(s, p)?;
-        if let Some(live) = &s.view.live {
-            set = DocSet::from_sorted(set.iter().filter(|&d| live.contains(d)).collect(), s.r.n_docs);
-        }
+        let (base, how) = match self.kept(s, p)? {
+            Some((set, true)) => (set, " (from the cache)"),
+            Some((set, false)) => (set, " (kept in the cache)"),
+            None => (Arc::new(self.materialize(s, p)?), ""),
+        };
+        let set = match &s.view.live {
+            Some(live) => Arc::new(DocSet::from_sorted(base.iter().filter(|&d| live.contains(d)).collect(), s.r.n_docs)),
+            None => base,
+        };
         l.filter_docs += set.len() as u64;
-        l.plan.push(format!("seg {}: filter materialised, {} docs", s.ord, set.len()));
+        l.plan.push(format!("seg {}: filter materialised, {} docs{how}", s.ord, set.len()));
         let step = Step { op: "filter".into(), detail: "materialised".into(), start_us: steps::us_at(t0), us: steps::tenth(t0.elapsed().as_nanos() as f64 / 1e3), rows: Some(set.len() as u64), seg: Some(s.ord as u32), ..Step::default() };
         let at = l.steps.len();
         steps::wrap(&mut l.steps, at, step);
-        let set = Arc::new(set);
         l.sets.push((s.ord, set.clone()));
         Ok(set)
+    }
+
+    /// Segment `s`'s documents of `p`, deletes not taken out, from the
+    /// filter cache ([`ExecOptions::filter_cache`]), and whether they were
+    /// found there; or made now and kept, when the segment sees `p` again.
+    /// `None`: the cache does not have them, or does not keep `p`.
+    fn kept(&self, s: &Seg<'a>, p: &Pred) -> Result<Option<(Arc<DocSet>, bool)>> {
+        let Some(cache) = &self.opts.filter_cache else { return Ok(None) };
+        let Some(key) = self.cache_key(s, p) else { return Ok(None) };
+        match cache.look(&s.r, &key, self.query) {
+            filter_cache::Look::Kept(set) => Ok(Some((set, true))),
+            filter_cache::Look::Keep => {
+                let set = Arc::new(self.materialize(s, p)?);
+                cache.keep(&s.r, &key, set.clone());
+                Ok(Some((set, false)))
+            }
+            filter_cache::Look::No => Ok(None),
+        }
+    }
+
+    /// What the filter cache keeps `p` of segment `s` by: the predicate
+    /// written out. `None` for a segment in memory (rebuilt as rows come),
+    /// for a predicate that reads more than the segment's own rows
+    /// ([`Self::own_rows`]) and for one that tests a list of the table's
+    /// keys ([`Self::key_list`]).
+    fn cache_key(&self, s: &Seg<'a>, p: &Pred) -> Option<String> {
+        if s.view.in_memory || matches!(p, Pred::True | Pred::False) || !self.own_rows(s, p) || self.key_list(p) {
+            return None;
+        }
+        Some(format!("{p:?}")).filter(|k| k.len() <= MAX_CACHE_KEY)
+    }
+
+    /// Whether `p` tests the table's own keys (`id IN (...)`, `id NOT IN
+    /// (...)`, `id = ...`): a request's own list (the items a user has seen,
+    /// a page of results), seldom asked again, and tested on a candidate by
+    /// looking its key up among a few. Kept, it would be a set of a row or
+    /// two, or under NOT of nearly every row of the segment, made by reading
+    /// a whole column where the query tested a few hundred rows; and a few
+    /// hundred such requests going round would push each other out of the
+    /// cache before any came back. A fixed condition beside it is kept on
+    /// its own ([`Self::probe_kept`]).
+    fn key_list(&self, p: &Pred) -> bool {
+        match p {
+            Pred::In { field, .. } => self.schema.primary_key == Some(*field),
+            Pred::Not(c) => self.key_list(c),
+            Pred::And(cs) | Pred::Or(cs) | Pred::AtLeast { items: cs, .. } => cs.iter().any(|c| self.key_list(c)),
+            _ => false,
+        }
+    }
+
+    /// Whether `p`'s documents in segment `s` depend on its rows alone: no
+    /// field with values written in place (which change under the same
+    /// readers), typo or synonym expansions (worked out over every
+    /// segment), graphs, subqueries or JSON paths.
+    fn own_rows(&self, s: &Seg<'a>, p: &Pred) -> bool {
+        match p {
+            Pred::True | Pred::False => true,
+            Pred::Range { field, .. } | Pred::IntRange { field, .. } | Pred::In { field, .. } | Pred::Present { field } => self.updates(s, *field).is_none(),
+            Pred::Prefix { edits, .. } => *edits == 0,
+            Pred::Match { query, expand, .. } => expand.is_none() && !query.contains('~'),
+            Pred::And(cs) | Pred::Or(cs) | Pred::AtLeast { items: cs, .. } => cs.iter().all(|c| self.own_rows(s, c)),
+            Pred::Not(c) => self.own_rows(s, c),
+            Pred::Path { .. } | Pred::Graph { .. } | Pred::Sub(_) => false,
+        }
     }
 
     /// Takes in what per-segment work recorded.
@@ -1497,14 +1889,18 @@ impl<'a> Executor<'a> {
 
     /// Runs `f` on every segment, on this thread and up to
     /// [`ExecOptions::threads`] `- 1` pool threads (largest segments first),
-    /// and returns the results in segment order with what each recorded
-    /// taken in.
+    /// one per [`ExecOptions::fan_out_rows`] live rows, and returns the results in
+    /// segment order with what each recorded taken in.
     fn per_segment<T: Send>(&mut self, f: impl Fn(&Self, &Seg<'a>, &mut Local) -> Result<T> + Sync) -> Result<Vec<T>>
     where
         Self: Sync,
     {
         let segs = self.segs.clone();
-        let threads = self.opts.threads.clamp(1, segs.len().max(1));
+        let rows: usize = segs.iter().map(|s| s.view.n_live as usize).sum();
+        let threads = match self.opts.fan_out_rows {
+            0 => self.opts.threads.clamp(1, segs.len().max(1)),
+            per => self.opts.threads.clamp(1, segs.len().max(1)).min((rows / per).max(1)),
+        };
         let mut outs: Vec<Option<(Result<T>, Local)>> = (0..segs.len()).map(|_| None).collect();
         // Each segment's work is a step, on the thread (`lane`) that ran it.
         let run = |this: &Self, s: &Seg<'a>, lane: u32| {
@@ -1517,13 +1913,15 @@ impl<'a> Executor<'a> {
             }
             (r, l)
         };
+        // Largest segments first: a ranked query's best so far lets the
+        // later ones skip more (`Found`).
+        let mut order: Vec<usize> = (0..segs.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(segs[i].view.n_live));
         if threads == 1 {
-            for (i, s) in segs.iter().enumerate() {
-                outs[i] = Some(run(self, s, 0));
+            for &i in &order {
+                outs[i] = Some(run(self, &segs[i], 0));
             }
         } else {
-            let mut order: Vec<usize> = (0..segs.len()).collect();
-            order.sort_by_key(|&i| std::cmp::Reverse(segs[i].view.n_live));
             let next = std::sync::atomic::AtomicUsize::new(0);
             let slots: Vec<std::sync::Mutex<Option<(Result<T>, Local)>>> = (0..segs.len()).map(|_| std::sync::Mutex::new(None)).collect();
             let this = &*self;
@@ -1623,7 +2021,10 @@ impl<'a> Executor<'a> {
                 let mut acc: Option<DocSet> = None;
                 for (_, c) in ests {
                     acc = Some(match acc {
-                        None => self.materialize(s, c)?,
+                        None => match self.kept(s, c)? {
+                            Some((set, _)) => DocSet::clone(&set),
+                            None => self.materialize(s, c)?,
+                        },
                         Some(a) if a.is_empty() => return Ok(a),
                         Some(a) => {
                             let e = planner.estimate(c);
@@ -1740,9 +2141,19 @@ impl<'a> Executor<'a> {
                 let planner = self.planner(&est);
                 let mut ordered: Vec<(f64, &Pred)> = cs.iter().map(|c| (planner.estimate(c).card, c)).collect();
                 ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
-                ProbeNode::And(ordered.into_iter().map(|(_, c)| self.compile_probe(s, c)).collect::<Result<_>>()?)
+                ProbeNode::And(ordered.into_iter().map(|(_, c)| self.probe_kept(s, c)).collect::<Result<_>>()?)
             }
         })
+    }
+
+    /// A conjunct's probe: its kept documents when the filter cache has
+    /// them (a fixed filter beside one that changes with every query),
+    /// else its own probe.
+    fn probe_kept(&self, s: &Seg<'a>, c: &Pred) -> Result<ProbeNode> {
+        match self.kept(s, c)? {
+            Some((set, _)) => Ok(ProbeNode::Leaf(Box::new(KeptSet(set)))),
+            None => self.compile_probe(s, c),
+        }
     }
 
     // ---- unranked --------------------------------------------------------
@@ -2357,15 +2768,20 @@ impl<'a> Executor<'a> {
         if let Some(v) = self.expanded.lock().unwrap_or_else(|e| e.into_inner()).near.get(&key) {
             return Ok(v.clone());
         }
-        let mut found: HashMap<String, (u64, u8)> = HashMap::new();
-        for s in self.stat_segs() {
-            for (t, info, d) in self.text(s, field)?.fuzzy_terms(term, edits) {
-                found.entry(t).or_insert((0, d)).0 += info.df as u64;
+        let shared = self.opts.expansions.as_ref().map(|x| (x, (self.schema.table.clone(), field, term.to_string(), edits)));
+        if let Some((x, k)) = &shared {
+            if let Some(v) = x.near.lock().unwrap_or_else(|e| e.into_inner()).get(k).cloned() {
+                self.expanded.lock().unwrap_or_else(|e| e.into_inner()).near.insert(key, v.clone());
+                return Ok(v);
             }
         }
-        let mut v: Vec<(String, u64, u8)> = found.into_iter().map(|(t, (df, d))| (t, df, d)).collect();
+        let fields = self.stat_segs().iter().map(|s| self.text(s, field)).collect::<Result<Vec<_>>>()?;
+        let mut v = TextFieldReader::fuzzy_across(&fields, term, edits);
         v.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
         let v = Arc::new(v);
+        if let Some((x, k)) = shared {
+            x.near.lock().unwrap_or_else(|e| e.into_inner()).insert(k, v.clone());
+        }
         self.expanded.lock().unwrap_or_else(|e| e.into_inner()).near.insert(key, v.clone());
         Ok(v)
     }
@@ -2405,7 +2821,10 @@ impl<'a> Executor<'a> {
     /// without one), then its synonyms' and its typo-tolerant words'
     /// nearest indexed terms (`1 − edits / length`), each times the
     /// highest weight its word is written with: repeating a word does not
-    /// weigh its expansions more.
+    /// weigh its expansions more. With `fuzzy => 'auto'` a word in enough
+    /// documents gets no typo neighbours ([`text::fuzzy::known`]), and
+    /// another only those in more documents than it, each also times the
+    /// chance it was meant ([`text::fuzzy::meant`]).
     fn bm25_terms(&self, field: usize, text: &str, opts: &Opts) -> Result<Vec<(String, f32)>> {
         Ok(self.bm25_query(field, text, opts)?.terms)
     }
@@ -2464,15 +2883,38 @@ impl<'a> Executor<'a> {
             }
         }
         if let Some(fz) = expand.fuzzy {
-            for b in 0..n_base {
-                let (t, w) = (out.terms[b].0.clone(), top[b]);
+            // `'auto'` corrects typos ([`text::fuzzy::known`],
+            // [`text::fuzzy::meant`]): it leaves a word in enough documents
+            // as it is, and adds only neighbours in more documents than the
+            // word, each weighted by the chance it was meant. The choice
+            // goes by this snapshot's counts, so that a shard adds the same
+            // terms in a coordinator's statistics round and in its query;
+            // the chances by the collection's where they were sent.
+            let auto = fz == Fuzzy::Auto;
+            let names: Vec<String> = out.terms[..n_base].iter().map(|(t, _)| t.clone()).collect();
+            let local = if auto { Some(self.local_stats(field, &names)?) } else { None };
+            let sent = self.opts.stats.as_ref().and_then(|s| s.fields.get(&self.schema.fields[field].name));
+            for (b, t) in names.iter().enumerate() {
+                let w = top[b];
                 let len = t.chars().count();
                 let e = fz.edits(len);
                 if e == 0 {
                     continue;
                 }
-                for (near, _, d) in self.near_terms(field, &t, e)?.iter().filter(|x| x.2 > 0).take(MAX_FUZZY_TERMS) {
-                    add(near, w * text::fuzzy::weight(*d, len), Some(b), &mut out);
+                let df = local.as_ref().map_or(0, |st| st.df.get(t).copied().unwrap_or(0));
+                if let Some(st) = &local {
+                    if text::fuzzy::known(df, st.n_docs) {
+                        continue;
+                    }
+                }
+                let near = self.near_terms(field, t, e)?;
+                for (n, ndf, d) in near.iter().filter(|x| x.2 > 0 && (!auto || x.1 > df)).take(MAX_FUZZY_TERMS) {
+                    let mut x = w * text::fuzzy::weight(*d, len);
+                    if auto {
+                        let (df, ndf) = sent.and_then(|g| Some((*g.df.get(t)?, *g.df.get(n)?))).unwrap_or((df, *ndf));
+                        x *= text::fuzzy::meant(df, ndf, *d);
+                    }
+                    add(n, x, Some(b), &mut out);
                 }
             }
         }
@@ -2491,10 +2933,48 @@ impl<'a> Executor<'a> {
         Ok((q, stats))
     }
 
-    /// Whether facets can count `field`'s values (a keyword column).
-    fn facet_field(&self, field: usize) -> bool {
+    /// Whether facets can count a column's values: a keyword column's, or
+    /// a path's, from its terms.
+    fn facet_field(&self, c: Col) -> bool {
+        let field = match c {
+            Col::Field(f) => f,
+            Col::Path(_) => return true,
+            Col::Time(_) => return false,
+        };
         let f = &self.schema.fields[field];
         f.ty == FieldType::Keyword || (f.ty == FieldType::Int && f.multi)
+    }
+
+    /// A column's name, for steps.
+    fn col_name(&self, q: &Select, c: Col) -> String {
+        match c {
+            Col::Field(f) => self.field_name(f).to_string(),
+            Col::Path(p) => q.paths.get(p).map_or("?".into(), |pc| format!("{}.{}", self.field_name(pc.field), pc.path)),
+            Col::Time(t) => q.times.get(t).map_or("?".into(), |tc| match &tc.of {
+                TimeOf::Trunc(u) => format!("date_trunc('{}', {})", u.name(), self.field_name(tc.field)),
+                TimeOf::Part(p) => format!("date_part('{}', {})", p.name(), self.field_name(tc.field)),
+                TimeOf::Format(f) => format!("strftime({}, {})", crate::query::hint::sql_value(&Value::Str(f.clone())), self.field_name(tc.field)),
+            }),
+        }
+    }
+
+    /// Path `pc`'s values over the rows of `set` in segment `s`, from the
+    /// field's terms and the objects of the rows they do not give.
+    fn path_values(&mut self, s: &Seg<'a>, pc: &PathCol, set: &DocSet) -> Result<crate::json::PathValues> {
+        let kw = self.keyword(s, pc.field)?;
+        let marks = s.r.json_marks(pc.field);
+        let store = s.r.store()?;
+        let mut cache = forward::StoreCache::default();
+        let pv = crate::json::PathValues::read(kw, marks, &pc.path, pc.kind, set, |d| object(store, pc.field, d, &mut cache))?;
+        self.note_objects(s, pc, pv.objects_read);
+        Ok(pv)
+    }
+
+    /// A step's note of the rows a path's values were read from objects for.
+    fn note_objects(&mut self, s: &Seg<'a>, pc: &PathCol, n: usize) {
+        if n > 0 {
+            self.stats.plan.push(format!("seg {}: {} rows' {}.{} read from their objects", s.ord, n, self.field_name(pc.field), pc.path));
+        }
     }
 
     /// Document `d`'s values of `field` for aggregates: one for a
@@ -2524,14 +3004,53 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
+    /// Document `d`'s values of column `c` for aggregates
+    /// ([`Self::agg_values`]); of a path, from `paths` (each path's values
+    /// over the segment's rows): each of a list's, the distinct ones for a
+    /// group (`key`), as the operators' aggregate reads them.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
+    fn col_values(&self, s: &Seg<'a>, q: &Select, c: Col, d: DocId, multi: &HashMap<usize, HashMap<DocId, Vec<u32>>>, paths: &HashMap<usize, crate::json::PathValues>, key: bool, out: &mut Vec<Value>) -> Result<()> {
+        let p = match c {
+            Col::Field(f) => return self.agg_values(s, f, d, multi, out),
+            Col::Path(p) => p,
+            // The function of the field's time; none without one.
+            Col::Time(t) => {
+                let tc = &q.times[t];
+                self.agg_values(s, tc.field, d, multi, out)?;
+                for v in out.iter_mut() {
+                    if let Value::Int(m) | Value::Timestamp(m) = *v {
+                        *v = tc.value(m);
+                    }
+                }
+                out.retain(|v| !matches!(v, Value::Null));
+                return Ok(());
+            }
+        };
+        out.clear();
+        match paths.get(&p).map(|pv| pv.get(d)) {
+            None | Some(Value::Null) => {}
+            Some(Value::List(xs)) if key => {
+                let mut seen = std::collections::HashSet::new();
+                out.extend(xs.iter().filter(|x| seen.insert(agg::Part::group(x))).cloned());
+            }
+            Some(Value::List(xs)) => out.extend(xs.iter().cloned()),
+            Some(v) => out.push(v.clone()),
+        }
+        Ok(())
+    }
+
     /// Groups and aggregates, document by document (anything beyond a
     /// facet's counts).
     fn aggregate(&mut self, q: &Select, needed: &[Projection]) -> Result<agg::Groups> {
-        let mut fields: Vec<usize> = q.group_by.clone();
+        if let Some(plan) = agg_columns::plan(self.schema, q, needed) {
+            return self.aggregate_columns(q, needed, &plan);
+        }
+        let mut cols: Vec<Col> = q.group_by.clone();
         for p in needed {
-            if let Projection::Agg { field, .. } = p {
-                if !fields.contains(field) {
-                    fields.push(*field);
+            if let Projection::Agg { of, .. } = p {
+                if !cols.contains(of) {
+                    cols.push(*of);
                 }
             }
         }
@@ -2547,7 +3066,18 @@ impl<'a> Executor<'a> {
             self.stats.plan.push(format!("seg {}: aggregate {} rows into groups of {}", s.ord, set.len(), q.group_by.len()));
             // Multi-valued fields: each document's value codes, from the postings.
             let mut multi: HashMap<usize, HashMap<DocId, Vec<u32>>> = HashMap::new();
-            for &f in &fields {
+            let mut paths: HashMap<usize, crate::json::PathValues> = HashMap::new();
+            for &c in &cols {
+                let f = match c {
+                    Col::Field(f) => f,
+                    Col::Path(p) => {
+                        let pv = self.path_values(s, &q.paths[p], &set)?;
+                        paths.insert(p, pv);
+                        continue;
+                    }
+                    // A TIMESTAMP field of one value.
+                    Col::Time(_) => continue,
+                };
                 if self.schema.fields[f].multi {
                     let kw = self.keyword(s, f)?;
                     let mut m: HashMap<DocId, Vec<u32>> = HashMap::new();
@@ -2566,18 +3096,18 @@ impl<'a> Executor<'a> {
                 // group values.
                 let mut keys: Vec<Vec<agg::Part>> = vec![Vec::new()];
                 for &g in &q.group_by {
-                    self.agg_values(s, g, d, &multi, &mut gv)?;
+                    self.col_values(s, q, g, d, &multi, &paths, true, &mut gv)?;
                     if gv.is_empty() {
                         gv.push(Value::Null);
                     }
-                    keys = keys.into_iter().flat_map(|k| gv.iter().map(move |v| [k.clone(), vec![agg::Part::of(v)]].concat())).collect();
+                    keys = keys.into_iter().flat_map(|k| gv.iter().map(move |v| [k.clone(), vec![agg::Part::group(v)]].concat())).collect();
                 }
                 for key in keys {
                     let accs = groups.entry(key, needed)?;
                     for (a, p) in accs.iter_mut().zip(needed) {
                         match p {
-                            Projection::Agg { field, .. } => {
-                                self.agg_values(s, *field, d, &multi, &mut vals)?;
+                            Projection::Agg { of, .. } => {
+                                self.col_values(s, q, *of, d, &multi, &paths, false, &mut vals)?;
                                 for v in &vals {
                                     let more = a.add(v);
                                     if more > 0 {
@@ -2655,6 +3185,9 @@ impl<'a> Executor<'a> {
             self.stats.plan.push(format!("bm25 expanded with {} terms: {}", added.len(), added.join(", ")));
         }
         let (params, algo) = self.bm25_params(opts)?;
+        // The best `k` scores of the segments searched so far: a segment
+        // searched after them skips what cannot reach their `k`-th.
+        let found = (cap.is_none() && k > 0).then(|| Found::new(k));
         let per = self.per_segment(|ex, s, l| {
             let t = ex.text(s, field)?;
             // Block-Max WAND fully scores a fraction of the postings it meets.
@@ -2667,8 +3200,16 @@ impl<'a> Executor<'a> {
                 }
             };
             let f = ex.seg_filter_l(s, p, mode, l)?;
+            // Exact in `f32`: the floor is one of the segments' scores.
+            let floor = found.as_ref().map_or(f32::NEG_INFINITY, |x| x.floor() as f32);
             let hits = match cap {
-                None => t.top_k_weighted(terms, &stats, params, k, f.as_dyn(), algo, ties),
+                None => {
+                    let hits = t.top_k_weighted_above(terms, &stats, params, k, f.as_dyn(), algo, ties, floor);
+                    if let Some(found) = &found {
+                        found.add(hits.iter().map(|h| h.1 as f64));
+                    }
+                    hits
+                }
                 Some(g) if g.int => {
                     let col = ex.numeric(s, g.field)?.col();
                     t.top_k_capped(terms, &stats, params, k, g.per, &|d: DocId| ex.int_value(s, g.field, col, d).map(|v| v as u64), f.as_dyn(), algo)
@@ -2678,7 +3219,11 @@ impl<'a> Executor<'a> {
                     t.top_k_capped(terms, &stats, params, k, g.per, &|d: DocId| col.code_of_doc(d).map(u64::from), f.as_dyn(), algo)
                 }
             };
-            l.plan.push(format!("seg {}: bm25 {algo:?}, filter {mode:?}", s.ord));
+            if floor > f32::NEG_INFINITY {
+                l.plan.push(format!("seg {}: bm25 {algo:?}, filter {mode:?}, above {floor}", s.ord));
+            } else {
+                l.plan.push(format!("seg {}: bm25 {algo:?}, filter {mode:?}", s.ord));
+            }
             Ok(hits.into_iter().map(|(doc, sc)| Hit { seg: s.ord, doc, score: sc as f64 }).collect::<Vec<_>>())
         })?;
         let mut hits = merge_top(per.concat(), usize::MAX);
@@ -2710,7 +3255,16 @@ impl<'a> Executor<'a> {
             return Err(err(crate::query::sql::multi_similarity(&self.schema.fields[field].name)));
         }
         let base = self.search_params(opts);
-        let forced = match opts.get("strategy").and_then(|v| v.as_str()) {
+        let strategy_opt = opts.get("strategy").and_then(|v| v.as_str());
+        // Partitions are weighed when nothing is forced, and used wherever
+        // they apply when asked for.
+        let parts_opt = match strategy_opt {
+            Some("partition") => Some(true),
+            None | Some("auto") if self.opts.vector.is_none() && self.opts.vector_partitions => Some(false),
+            _ => None,
+        };
+        let forced = match strategy_opt {
+            Some("partition") => None,
             Some("prefilter") => Some(VectorStrategy::PreFilter),
             Some("postfilter") => Some(VectorStrategy::PostFilter),
             Some("index") | Some("ivf") | Some("hnsw") => Some(VectorStrategy::InIndex),
@@ -2722,6 +3276,15 @@ impl<'a> Executor<'a> {
         let per = self.per_segment(|ex, s, l| {
             let vr = ex.vector(s, field)?;
             let has_index = vr.index_kind() != "flat";
+            if let Some(must) = parts_opt {
+                if let Some(pick) = ex.partition_pick(field, vr, p) {
+                    if let Some(hits) = ex.partition_search(s, vr, field, q, &base, k, p, pick, must, l)? {
+                        return Ok(hits);
+                    }
+                }
+            }
+            // The selectivity sample's search, which a post-filter goes on from.
+            let mut sample = vector::Sample::default();
             let (strategy, mode) = {
                 let est = SegEst { ex, s, params: Some((field, base.clone())), local_sel: None };
                 let planner = ex.planner(&est);
@@ -2738,7 +3301,7 @@ impl<'a> Executor<'a> {
                         // An index strategy chosen on the global selectivity is
                         // re-checked against the selectivity near the query.
                         if st != VectorStrategy::PreFilter && has_index && *p != Pred::True {
-                            if let Some(ls) = ex.local_selectivity(s, vr, q, p, &base, global, l)? {
+                            if let Some(ls) = ex.local_selectivity(s, vr, q, p, &base, global, &mut sample, l)? {
                                 let est = SegEst { ex, s, params: Some((field, base.clone())), local_sel: Some(ls) };
                                 (st, mode, _) = ex.planner(&est).vector_plan(field, p, k, has_index);
                                 l.plan.push(format!("seg {}: selectivity {global:.4} global, {ls:.4} near the query", s.ord));
@@ -2751,12 +3314,154 @@ impl<'a> Executor<'a> {
             let f = ex.seg_filter_l(s, p, if *p == Pred::True { FilterMode::None } else { mode }, l)?;
             let mut sp = base.clone();
             sp.strategy = to_vector_strategy(strategy, vr.index_kind(), f.as_dyn().is_some());
-            let out = vr.search(q, k, &sp, f.as_dyn());
+            let out = vr.search_from(q, k, &sp, f.as_dyn(), Some(&mut sample));
             l.scored += out.stats.candidates as u64;
             l.plan.push(format!("seg {}: vector {:?} ({:?} ran), filter {mode:?}", s.ord, strategy, out.stats.strategy));
             Ok(out.hits.into_iter().map(|h| Hit { seg: s.ord, doc: h.doc, score: h.score as f64 }).collect::<Vec<_>>())
         })?;
         Ok(merge_top(per.concat(), k))
+    }
+
+    /// The partitions of segment reader `vr`'s graph of partitioned field
+    /// `field` ([`crate::schema::VectorPartition`]) that a search under `p`
+    /// needs, when `p` limits the partition key: a top-level condition of
+    /// `p` on the key (a range of a numeric key, values of a KEYWORD one)
+    /// names the partitions whose rows can pass it. None when `p` does not
+    /// limit the key, or limits it to values without a partition here.
+    fn partition_pick(&self, field: usize, vr: &VectorReader, p: &Pred) -> Option<PartPick> {
+        let part = self.schema.fields[field].partition.as_ref()?;
+        let info = vr.partitions()?;
+        let key = self.schema.field_index(&part.by)?;
+        if info.bounds != part.bounds {
+            return None;
+        }
+        let conjuncts: &[Pred] = match p {
+            Pred::And(cs) => cs,
+            p => std::slice::from_ref(p),
+        };
+        // The first condition on the key decides; the others stay a filter.
+        let at = conjuncts.iter().position(|c| match c {
+            Pred::Range { field: f, .. } | Pred::IntRange { field: f, .. } | Pred::In { field: f, .. } => *f == key,
+            _ => false,
+        })?;
+        let bound = |b: Option<usize>, lo: bool| -> f64 {
+            let b = b.unwrap_or(0);
+            match lo {
+                true if b == 0 => f64::NEG_INFINITY,
+                true => info.bounds[b - 1],
+                false if b == info.bounds.len() => f64::INFINITY,
+                false => info.bounds[b],
+            }
+        };
+        // (meets, covers) of each partition: some of its rows can pass the
+        // condition, every one of them does.
+        let test = |pi: &vector::PartInfo| -> (bool, bool) {
+            let (lo_b, hi_b) = (bound(pi.bucket, true), bound(pi.bucket, false));
+            match &conjuncts[at] {
+                Pred::Range { lo, hi, .. } if pi.bucket.is_some() => (*lo < hi_b && *hi >= lo_b, *lo <= lo_b && *hi >= hi_b.next_down()),
+                Pred::IntRange { lo, hi, .. } if pi.bucket.is_some() => {
+                    // The integers of [lo_b, hi_b).
+                    let first = if lo_b.is_finite() { lo_b.ceil() as i64 } else { i64::MIN };
+                    let last = if hi_b.is_finite() { hi_b.ceil() as i64 - 1 } else { i64::MAX };
+                    (*lo <= last && *hi >= first, *lo <= first && *hi >= last)
+                }
+                Pred::In { values, .. } => match &pi.value {
+                    Some(v) => (values.iter().any(|x| x.as_str() == Some(v)), true),
+                    None => {
+                        let meets = values.iter().any(|x| match x {
+                            Value::Int(i) => (lo_b..hi_b).contains(&(*i as f64)),
+                            Value::Float(f) => (lo_b..hi_b).contains(f),
+                            _ => false,
+                        });
+                        (meets, false)
+                    }
+                },
+                _ => (false, false),
+            }
+        };
+        let mut pick = PartPick { parts: Vec::new(), covered: true, rest: Pred::True, rows: 0 };
+        for (i, pi) in info.parts.iter().enumerate() {
+            let (meets, covers) = test(pi);
+            if meets {
+                pick.parts.push(i);
+                pick.covered &= covers;
+                pick.rows += pi.n;
+            }
+        }
+        // A KEYWORD value without a partition may still have rows here.
+        if !info.complete {
+            let Pred::In { values, .. } = &conjuncts[at] else { return None };
+            if !values.iter().all(|x| info.parts.iter().any(|pi| pi.value.as_deref() == x.as_str())) {
+                return None;
+            }
+        }
+        let rest: Vec<Pred> = conjuncts.iter().enumerate().filter(|&(i, _)| i != at).map(|(_, c)| c.clone()).collect();
+        pick.rest = match rest.len() {
+            0 => Pred::True,
+            1 => rest.into_iter().next().unwrap(),
+            _ => Pred::And(rest),
+        };
+        Some(pick)
+    }
+
+    /// A search of segment `s` over the partitions `pick` names, when the
+    /// cost model expects it to be cheaper than the plan without them (or
+    /// `must`): the rows of `pick`'s partitions are walked, testing what of
+    /// `p` the partitions do not already guarantee. None when the plan
+    /// without partitions is cheaper.
+    #[allow(clippy::too_many_arguments)]
+    fn partition_search(&self, s: &Seg<'a>, vr: &VectorReader, field: usize, q: &[f32], base: &SearchParams, k: usize, p: &Pred, pick: PartPick, must: bool, l: &mut Local) -> Result<Option<Vec<Hit>>> {
+        if pick.parts.is_empty() {
+            l.plan.push(format!("seg {}: vector partitions: none can hold a match", s.ord));
+            return Ok(Some(Vec::new()));
+        }
+        // What the walk tests: nothing when the partitions guarantee the
+        // condition on the key and nothing else is asked (deleted rows
+        // aside), the rest of the filter when it can be probed, else all of it.
+        let est = SegEst { ex: self, s, params: Some((field, base.clone())), local_sel: None };
+        let planner = self.planner(&est);
+        let (test, mode) = match (&pick.rest, pick.covered) {
+            (Pred::True, true) => (Pred::True, FilterMode::None),
+            (rest, true) if planner.estimate(rest).probeable => (rest.clone(), FilterMode::Probe),
+            _ => {
+                let e = planner.estimate(p);
+                (p.clone(), if e.probeable { FilterMode::Probe } else { FilterMode::Materialize })
+            }
+        };
+        if !must {
+            let n = est.n_docs().max(1.0);
+            // The tested filter's share of the partitions' rows, taken as
+            // independent of the partitions unless it is the whole filter.
+            let share = match (&test, pick.covered) {
+                (Pred::True, _) => None,
+                (t, true) => Some(planner.estimate(t).card / n),
+                (_, false) => Some((planner.estimate(p).card / pick.rows as f64).min(1.0)),
+            };
+            let info = vr.partitions().expect("picked");
+            let m = vr.shape().hnsw_m;
+            let cost: f64 = pick
+                .parts
+                .iter()
+                .map(|&i| {
+                    let rows = info.parts[i].n;
+                    let shape = vector::IndexShape { n: rows, kind: "hnsw".into(), nlist: 1, hnsw_m: m };
+                    let card = share.map(|x| ((x * rows as f64).ceil() as usize).max(1));
+                    vr.cost_model().estimate(&shape, vector::Strategy::Hnsw, k, card, base)
+                })
+                .sum();
+            let (_, _, plain) = planner.vector_plan(field, p, k, true);
+            if cost >= plain {
+                l.plan.push(format!("seg {}: vector partitions predicted {cost:.0} µs, plan without them {plain:.0} µs", s.ord));
+                return Ok(None);
+            }
+        }
+        let f = self.seg_filter_l(s, &test, mode, l)?;
+        let out = vr.search_parts(q, k, base, &pick.parts, f.as_dyn());
+        l.scored += out.stats.candidates as u64;
+        let info = vr.partitions().expect("picked");
+        let names: Vec<String> = pick.parts.iter().map(|&i| info.parts[i].value.clone().unwrap_or_else(|| format!("range {}", info.parts[i].bucket.unwrap_or(0)))).collect();
+        l.plan.push(format!("seg {}: vector partitions {} ({} of {} rows), filter {}", s.ord, names.join(", "), pick.rows, vr.n_docs(), if test == Pred::True { "none".to_string() } else { format!("{mode:?}") }));
+        Ok(Some(out.hits.into_iter().map(|h| Hit { seg: s.ord, doc: h.doc, score: h.score as f64 }).collect()))
     }
 
     /// Top-`k` by `maxsim`: the union of each query vector's top `k` by
@@ -2871,13 +3576,14 @@ impl<'a> Executor<'a> {
 
     /// The fraction of the query's nearest neighbours that pass the filter,
     /// from a cheap unfiltered index search (32 results, 160 when the first
-    /// sample holds at most one match). A filter correlated
+    /// sample holds at most one match), kept in `sample` for a post-filter
+    /// search to go on from. A filter correlated
     /// with the query, or anti-correlated, has a local selectivity far from
     /// its global one, and the local one decides how far an index search
     /// must go to collect k matches. Only measured when the global
     /// selectivity leaves the choice open.
     #[allow(clippy::too_many_arguments)]
-    fn local_selectivity(&self, s: &Seg<'a>, vr: &VectorReader, q: &[f32], p: &Pred, base: &SearchParams, global: f64, l: &mut Local) -> Result<Option<f64>> {
+    fn local_selectivity(&self, s: &Seg<'a>, vr: &VectorReader, q: &[f32], p: &Pred, base: &SearchParams, global: f64, sample: &mut vector::Sample, l: &mut Local) -> Result<Option<f64>> {
         if !(0.0005..0.6).contains(&global) {
             return Ok(None);
         }
@@ -2886,23 +3592,20 @@ impl<'a> Executor<'a> {
             self.planner(&est).estimate(p).probeable
         };
         let f = self.seg_filter_l(s, p, if probeable { FilterMode::Probe } else { FilterMode::Materialize }, l)?;
-        let sample = |m: usize| {
+        let mut take = |m: usize| {
             let mut sp = base.clone();
-            sp.strategy = to_vector_strategy(VectorStrategy::InIndex, vr.index_kind(), false);
-            sp.ef = m;
-            sp.rerank = 0;
             sp.nprobe = sp.nprobe.min(if m > 32 { 8 } else { 4 });
-            let out = vr.search(q, m, &sp, None);
-            let pass = out.hits.iter().filter(|h| f.as_dyn().is_none_or(|f| f.contains(h.doc))).count();
-            (pass, out.hits.len())
+            let docs = vr.sample(q, m, &sp, sample);
+            let pass = docs.iter().filter(|&&d| f.as_dyn().is_none_or(|f| f.contains(d))).count();
+            (pass, docs.len())
         };
         // 32 neighbours resolve selectivities down to a few per cent. When
         // they hold almost no matches, a 160-neighbour sample tells a filter
         // that is merely selective from one whose members lie far from the
         // query, where an index search would wander for tens of ms.
-        let (mut pass, mut m) = sample(32);
+        let (mut pass, mut m) = take(32);
         if pass <= 1 && global > 0.02 {
-            (pass, m) = sample(160);
+            (pass, m) = take(160);
         }
         Ok(Some((pass as f64 + 0.5) / (m as f64 + 1.0)))
     }
@@ -2918,12 +3621,13 @@ impl<'a> Executor<'a> {
         let driver = rank.driver().filter(|_| self.opts.rank_safe);
         // Each generating leaf's top rows: the candidates, and the rankings
         // RRF and a coordinator read. A shard answers a driven expression
-        // with them too, for a coordinator from before rank-safe boosts to
-        // fuse as it did.
+        // with them too when asked to (`boost_inputs`), for a coordinator
+        // from before rank-safe boosts to fuse as it did.
         let mut lists: Vec<Vec<(usize, DocId)>> = Vec::with_capacity(rank.leaves.len());
         let rankings = rank.reads_rankings();
+        let for_coordinator = shard && (driver.is_none() || self.opts.boost_inputs);
         for (s, &generates) in rank.leaves.iter().zip(&rank.generates) {
-            let read = generates && (shard || rankings || (!rank.exact && driver.is_none()));
+            let read = generates && (for_coordinator || rankings || (!rank.exact && driver.is_none()));
             lists.push(if read { self.input_top(s, p, depth, false)?.into_iter().map(|h| (h.seg, h.doc)).collect() } else { Vec::new() });
         }
         let m = self.mark();
@@ -2970,6 +3674,22 @@ impl<'a> Executor<'a> {
             Vec::new()
         };
         let mut hits: Vec<Hit> = rank.eval(cands.len(), &values, &ranks, if shard { cands.len() } else { k }).into_iter().map(|(i, score)| Hit { seg: cands[i].0, doc: cands[i].1, score }).collect();
+        // A shard's rank-safe boost for a coordinator that fuses from the
+        // boost's rows alone: each segment found its own top k, so the
+        // shard sends its top k over all of them, and every row tied with
+        // the k-th (the coordinator orders ties by key, over all shards).
+        // No row of the cluster's top k is left out: each is in its own
+        // shard's.
+        let cut = shard && driver.is_some() && !for_coordinator;
+        let found = hits.len();
+        if cut {
+            let k = self.rows_at_most(k);
+            let keep = match k.checked_sub(1).and_then(|l| hits.get(l)) {
+                Some(kth) => k + hits[k..].iter().take_while(|h| h.score.total_cmp(&kth.score).is_eq()).count(),
+                None => hits.len().min(k),
+            };
+            hits.truncate(keep);
+        }
         self.order_sorted_ties(&mut hits);
         let generating = rank.generates.iter().filter(|g| **g).count();
         let from = match driver {
@@ -2980,6 +3700,9 @@ impl<'a> Executor<'a> {
         // For one release: `+` between scores meant min-max fusion before.
         let raw = if rank.adds_raw_scores() { " (+ adds raw scores; minmax() normalises them, as a sum of scores did before ranking expressions)" } else { "" };
         self.stats.plan.push(format!("fused {}: {} candidates from {from}{raw}", rank.explain(&self.schema), cands.len()));
+        if cut && hits.len() < found {
+            self.stats.plan.push(format!("shard sends its top {} of the {found} its segments found (ties at the cut kept)", hits.len()));
+        }
         if shard {
             let ranked = ranks
                 .iter()
@@ -3018,6 +3741,9 @@ impl<'a> Executor<'a> {
             return Ok(Vec::new());
         }
         let p = &with_filter(p, &filter);
+        // As in `bm25_rows`: segments searched later skip what cannot
+        // reach the `k`-th value found before them.
+        let found = (k > 0).then(|| Found::new(k));
         let per = self.per_segment(|ex, s, l| {
             let t = ex.text(s, field)?;
             let candidates = terms.iter().map(|(w, _)| t.doc_freq(w) as f64).sum::<f64>() * 0.3;
@@ -3030,12 +3756,17 @@ impl<'a> Executor<'a> {
             };
             let f = ex.seg_filter_l(s, p, mode, l)?;
             let mut boost = ex.row_boost(s, rank, text)?;
+            let floor = found.as_ref().map_or(f64::NEG_INFINITY, Found::floor);
             let (hits, ran) = match &bm25 {
-                Some((stats, params)) => t.top_k_boosted(&terms, stats, *params, k, f.as_dyn(), algo, &mut boost),
-                None => t.top_k_dot_boosted(&terms, k, f.as_dyn(), algo, &mut boost),
+                Some((stats, params)) => t.top_k_boosted_above(&terms, stats, *params, k, f.as_dyn(), algo, &mut boost, floor),
+                None => t.top_k_dot_boosted_above(&terms, k, f.as_dyn(), algo, &mut boost, floor),
             };
+            if let Some(found) = &found {
+                found.add(hits.iter().map(|h| h.1));
+            }
             let how = if ran == algo { String::new() } else { " (its bound does not narrow with the text score: every match scored)".to_string() };
-            l.plan.push(format!("seg {}: {} {ran:?} ranks by the expression{how}, filter {mode:?}", s.ord, if bm25.is_some() { "bm25" } else { "sparse" }));
+            let above = if floor > f64::NEG_INFINITY { format!(", above {floor}") } else { String::new() };
+            l.plan.push(format!("seg {}: {} {ran:?} ranks by the expression{how}, filter {mode:?}{above}", s.ord, if bm25.is_some() { "bm25" } else { "sparse" }));
             Ok(hits.into_iter().map(|(d, _)| (s.ord, d)).collect::<Vec<_>>())
         })?;
         let mut cands = per.concat();
@@ -3216,7 +3947,10 @@ impl<'a> Executor<'a> {
             let store = s.r.store()?;
             for i in range {
                 let d = cands[i].1;
-                let mut stored = store.map(|st| st.get_fields(d, fields)).unwrap_or_default();
+                let mut stored = match store {
+                    Some(st) => st.get_fields(d, fields)?,
+                    None => Vec::new(),
+                };
                 stored.resize(fields.len(), Value::Null);
                 let values = fields.iter().zip(stored).map(|(&f, v)| match self.updates(s, f).and_then(|u| u.get(f, d)) {
                     Some(u) => u.clone(),
@@ -3259,11 +3993,14 @@ impl<'a> Executor<'a> {
             }
             for (code, c) in code_counts.into_iter().enumerate() {
                 if c > 0 {
-                    let n = counts.len();
                     let v = kw.value(code as u32);
-                    *counts.entry(v.to_string()).or_insert(0) += c;
-                    if counts.len() > n {
-                        self.charge.add(48 + v.len() as u64)?;
+                    // A value an earlier segment had is not copied again.
+                    match counts.get_mut(v) {
+                        Some(n) => *n += c,
+                        None => {
+                            counts.insert(v.to_string(), c);
+                            self.charge.add(48 + v.len() as u64)?;
+                        }
                     }
                 }
             }
@@ -3285,6 +4022,36 @@ impl<'a> Executor<'a> {
             for a in groups.entry(vec![agg::Part::Null], needed)? {
                 *a = agg::Acc::Count(missing as i64);
             }
+        }
+        Ok(groups)
+    }
+
+    /// The groups of one path and their counts ([`Self::facets`] of a
+    /// path), from its terms' postings: only the rows the terms do not
+    /// give are read, from their objects.
+    fn path_facets(&mut self, q: &Select, pc: &PathCol, needed: &[Projection]) -> Result<agg::Groups> {
+        let mut groups = agg::Groups::limited(self.opts.max_groups);
+        groups.charge = self.charge.clone();
+        let segs = self.segs.clone();
+        for s in segs.iter() {
+            self.check_deadline()?;
+            let m = self.mark();
+            let set = self.filter_set(s, &q.filter)?;
+            let kw = self.keyword(s, pc.field)?;
+            let marks = s.r.json_marks(pc.field);
+            let store = s.r.store()?;
+            let mut cache = forward::StoreCache::default();
+            let (counts, objects) = crate::json::PathValues::counts(kw, marks, &pc.path, pc.kind, &set, |d| object(store, pc.field, d, &mut cache))?;
+            self.stats.plan.push(format!("seg {}: facet of a path's terms over {} docs", s.ord, set.len()));
+            self.note_objects(s, pc, objects);
+            for (v, c) in counts {
+                for a in groups.entry(vec![agg::Part::group(&v)], needed)? {
+                    if let agg::Acc::Count(n) = a {
+                        *n += c as i64;
+                    }
+                }
+            }
+            self.seg_step(m, s, Some(set.len() as u64));
         }
         Ok(groups)
     }
@@ -3323,28 +4090,35 @@ impl<'a> Executor<'a> {
         }
     }
 
-    fn project(&self, q: &Select, hits: &[Hit]) -> Result<Vec<Vec<Value>>> {
+    /// What projecting `hits` reads besides each row's own cells: the
+    /// stored fields to fetch, and each ranking expression's values.
+    fn projecting(&self, q: &Select, hits: &[Hit]) -> Result<Projecting> {
         if q.projection.iter().any(|(_, p)| *p == Projection::SeqNo) && !self.snap.numbers_writes() {
             return Err(Error::Query("seq_no(): the database does not number its writes (Database::start_seq_no)".into()));
         }
-        let stored: Vec<usize> = q
+        let mut stored: Vec<usize> = q
             .projection
             .iter()
             .filter_map(|(_, p)| match p {
                 // Vectors live in their index, not the doc store, and a
-                // single-valued KEYWORD's index reads a row's value without
-                // decompressing its stored fields.
+                // single-valued KEYWORD's, INT's or FLOAT's column reads a
+                // row's value without decompressing its stored fields.
                 Projection::Field(i)
                     if self.schema.fields[*i].stored
                         && Some(*i) != self.schema.primary_key
                         && !matches!(self.schema.fields[*i].ty, FieldType::Vector { .. })
-                        && !self.keyword_column(*i) =>
+                        && !self.keyword_column(*i)
+                        && !self.numeric_column(*i) =>
                 {
                     Some(*i)
                 }
+                // A path of the rows of a page is read from their objects.
+                Projection::Path(p) => Some(q.paths[*p].field),
                 _ => None,
             })
             .collect();
+        let mut seen = std::collections::HashSet::new();
+        stored.retain(|f| seen.insert(*f));
         // Each ranking expression's value of every row, column by column.
         let features: Vec<Option<Vec<f64>>> = q
             .projection
@@ -3354,43 +4128,137 @@ impl<'a> Executor<'a> {
                 _ => Ok(None),
             })
             .collect::<Result<_>>()?;
+        Ok(Projecting { stored, features, blocks: HashMap::new() })
+    }
+
+    /// The stored fields of hit `h` that the projection reads.
+    fn fetch(&self, p: &mut Projecting, s: &Seg<'a>, h: &Hit) -> Result<Vec<Value>> {
+        Ok(match (s.r.store()?, p.stored.is_empty()) {
+            (Some(store), false) => store.get_fields_cached(h.doc, &p.stored, p.blocks.entry(h.seg).or_default())?,
+            _ => Vec::new(),
+        })
+    }
+
+    /// Column `c` (`proj`) of hit `h`, the `r`-th row, whose stored fields
+    /// are `fetched`.
+    fn cell<'c>(&self, q: &Select, p: &Projecting, s: &'c Seg<'a>, h: &Hit, r: usize, c: usize, proj: &Projection, fetched: &'c [Value]) -> Result<Cell<'c>> {
+        Ok(Cell::Value(match proj {
+            Projection::Feature(_) => match p.features[c].as_ref().map(|v| v[r]) {
+                Some(x) if x.is_finite() => Value::Float(x),
+                _ => Value::Null,
+            },
+            // A row without the ordering column's value scores ±inf.
+            Projection::Score if h.score.is_finite() => Value::Float(h.score),
+            Projection::Score => Value::Null,
+            Projection::Count | Projection::Agg { .. } => Value::Null,
+            Projection::Hops(g) => self.hops_of(*g, h.seg, h.doc).map_or(Value::Null, |x| Value::Int(x as i64)),
+            Projection::SeqNo => Value::Int(rowseq::of_view(s.view, h.doc)? as i64),
+            Projection::Field(i) if Some(*i) == self.schema.primary_key => self.key(h),
+            Projection::Field(i) if self.updates(s, *i).is_some_and(|u| u.get(*i, h.doc).is_some()) => self.updates(s, *i).and_then(|u| u.get(*i, h.doc)).cloned().unwrap_or(Value::Null),
+            Projection::Field(i) => match p.stored.iter().position(|x| x == i) {
+                Some(j) => return Ok(fetched.get(j).map_or(Cell::Value(Value::Null), Cell::Ref)),
+                None => return self.unstored_cell(s, *i, h.doc),
+            },
+            Projection::Path(path) => {
+                let pc = &q.paths[*path];
+                let j = p.stored.iter().position(|x| *x == pc.field);
+                crate::json::extract(j.and_then(|j| fetched.get(j)).unwrap_or(&Value::Null), &pc.path, pc.kind)?
+            }
+            Projection::Time(_) => return Err(err("a part of a time is a column of groups (GROUP BY date_trunc('day', at)); of rows, the row evaluator computes it")),
+        }))
+    }
+
+    fn project(&self, q: &Select, hits: &[Hit]) -> Result<Vec<Vec<Value>>> {
+        let mut p = self.projecting(q, hits)?;
         let mut rows = Vec::with_capacity(hits.len());
-        // A segment's last decompressed block: rows in docID order (a scan)
-        // decompress each block once rather than once a row.
-        let mut blocks: HashMap<usize, forward::StoreCache> = HashMap::new();
+        let mut at: Option<Seg<'a>> = None;
         for (r, h) in hits.iter().enumerate() {
-            let s = &self.seg_by_ord(h.seg);
-            let fetched = match (s.r.store()?, stored.is_empty()) {
-                (Some(store), false) => store.get_fields_cached(h.doc, &stored, blocks.entry(h.seg as usize).or_default()),
-                _ => Vec::new(),
-            };
+            if at.as_ref().is_none_or(|s| s.ord != h.seg) {
+                at = Some(self.seg_by_ord(h.seg));
+            }
+            let s = at.as_ref().expect("the hit's segment");
+            let fetched = self.fetch(&mut p, s, h)?;
             let mut row = Vec::with_capacity(q.projection.len());
-            for (c, (_, p)) in q.projection.iter().enumerate() {
-                row.push(match p {
-                    Projection::Feature(_) => match features[c].as_ref().map(|v| v[r]) {
-                        Some(x) if x.is_finite() => Value::Float(x),
-                        _ => Value::Null,
-                    },
-                    // A row without the ordering column's value scores ±inf.
-                    Projection::Score if h.score.is_finite() => Value::Float(h.score),
-                    Projection::Score => Value::Null,
-                    Projection::Count | Projection::Agg { .. } => Value::Null,
-                    Projection::Hops(g) => self.hops_of(*g, h.seg, h.doc).map_or(Value::Null, |x| Value::Int(x as i64)),
-                    Projection::SeqNo => Value::Int(rowseq::of_view(s.view, h.doc)? as i64),
-                    Projection::Field(i) if Some(*i) == self.schema.primary_key => self.key(h),
-                    Projection::Field(i) if self.updates(s, *i).is_some_and(|u| u.get(*i, h.doc).is_some()) => {
-                        self.updates(s, *i).and_then(|u| u.get(*i, h.doc)).cloned().unwrap_or(Value::Null)
-                    }
-                    Projection::Field(i) => match stored.iter().position(|x| x == i) {
-                        Some(j) => fetched.get(j).cloned().unwrap_or(Value::Null),
-                        None => self.unstored_value(s, *i, h.doc),
-                    },
-                });
+            for (c, (_, proj)) in q.projection.iter().enumerate() {
+                row.push(self.cell(q, &p, s, h, r, c, proj, &fetched)?.into_value());
             }
             self.charge.row(&row)?;
             rows.push(row);
         }
         Ok(rows)
+    }
+
+    /// [`Executor::project`] into Arrow arrays, typed as the answer types
+    /// them ([`Select::typed`]), with the keys' array: `None` when a
+    /// column holds values of more than one type, which only rows can.
+    #[cfg(feature = "datafusion")]
+    fn project_arrow(&self, q: &Select, hits: &[Hit]) -> Result<Option<(Vec<datafusion::arrow::array::ArrayRef>, datafusion::arrow::array::ArrayRef)>> {
+        use crate::query::arrow::Builder;
+        let n = hits.len();
+        let mut p = self.projecting(q, hits)?;
+        let mut cols: Vec<Builder> = q.projection.iter().map(|_| Builder::new()).collect();
+        // The key column, when the projection has one as it is, is the
+        // keys' array too.
+        let pk = q.projection.iter().enumerate().position(|(c, (_, proj))| matches!(proj, Projection::Field(i) if Some(*i) == self.schema.primary_key) && q.types.get(c).copied().flatten().is_none());
+        let mut keys = Builder::new();
+        let mut bytes = 0u64;
+        let mut at: Option<Seg<'a>> = None;
+        let mut seg_keys = None;
+        for (r, h) in hits.iter().enumerate() {
+            if at.as_ref().is_none_or(|s| s.ord != h.seg) {
+                at = Some(self.seg_by_ord(h.seg));
+                seg_keys = self.snap.pk(h.seg);
+            }
+            let s = at.as_ref().expect("the hit's segment");
+            let fetched = self.fetch(&mut p, s, h)?;
+            bytes += 24;
+            for (c, (_, proj)) in q.projection.iter().enumerate() {
+                let b = &mut cols[c];
+                let cell = self.cell(q, &p, s, h, r, c, proj, &fetched)?;
+                bytes += cell.bytes();
+                let pushed = match (q.types.get(c).copied().flatten(), cell) {
+                    (Some(t), cell) => b.push(t.output(cell.into_value()), n),
+                    (None, Cell::Value(v)) => b.push(v, n),
+                    (None, Cell::Ref(v)) => b.push_ref(v, n),
+                    (None, Cell::Str(x)) => b.push_str(x, n),
+                };
+                if pushed.is_err() {
+                    return Ok(None);
+                }
+            }
+            // The key copied from its index into the array, not made a
+            // value first ([`Executor::key`]).
+            if pk.is_none() {
+                let pushed = match seg_keys.map(|k| k.key_ref(h.doc)) {
+                    Some(KeyRef::Str(b)) => match std::str::from_utf8(b) {
+                        Ok(x) => keys.push_str(x, n),
+                        Err(_) => keys.push(Value::Str(String::from_utf8_lossy(b).into_owned()), n),
+                    },
+                    Some(KeyRef::Int(k)) => keys.push(Value::Int(k), n),
+                    None => keys.push(Value::Null, n),
+                };
+                if pushed.is_err() {
+                    return Ok(None);
+                }
+            }
+            // Counted every 1,024 rows rather than every row.
+            if r % 1024 == 1023 {
+                self.charge.add(std::mem::take(&mut bytes))?;
+            }
+        }
+        self.charge.add(bytes)?;
+        let arrays = match cols.into_iter().map(|b| b.finish(n)).collect::<std::result::Result<Vec<_>, _>>() {
+            Ok(a) => a,
+            Err(_) => return Ok(None),
+        };
+        let keys = match pk {
+            Some(c) => arrays[c].clone(),
+            None => match keys.finish(n) {
+                Ok(k) => k,
+                Err(_) => return Ok(None),
+            },
+        };
+        Ok(Some((arrays, keys)))
     }
 
     /// The value of the ranking expression `score`, which scores each row
@@ -3410,6 +4278,13 @@ impl<'a> Executor<'a> {
             .collect())
     }
 
+    /// Whether the field's values are read from its numeric column: one
+    /// INT or FLOAT a row, which the column holds exactly.
+    fn numeric_column(&self, field: usize) -> bool {
+        let f = &self.schema.fields[field];
+        matches!(f.ty, FieldType::Int | FieldType::Float) && f.indexed && !f.multi
+    }
+
     /// Whether the field's values are read from its keyword column: one
     /// value a row, the value itself (a MEDIA field's column holds its
     /// `sha256`).
@@ -3418,15 +4293,17 @@ impl<'a> Executor<'a> {
         matches!(f.ty, FieldType::Keyword) && f.indexed && !f.multi && f.media.is_none()
     }
 
-    fn unstored_value(&self, s: &Seg<'a>, field: usize, d: DocId) -> Value {
-        match self.schema.fields[field].ty {
+    /// A field read from its index rather than the doc store.
+    fn unstored_cell<'s>(&self, s: &'s Seg<'a>, field: usize, d: DocId) -> Result<Cell<'s>> {
+        Ok(Cell::Value(match self.schema.fields[field].ty {
             FieldType::Vector { .. } => s.r.vector(field).ok().flatten().map_or(Value::Null, |v| v.row_value(d)),
+            FieldType::Int | FieldType::Float if self.numeric_column(field) => s.r.numeric(field)?.map_or(Value::Null, |n| n.col().get(d)),
             FieldType::Int | FieldType::Float => s.r.numeric(field).ok().flatten().map_or(Value::Null, |n| n.col().get(d)),
-            FieldType::Keyword => s.r.keyword(field).ok().flatten().and_then(|k| k.value_of_doc(d)).map_or(Value::Null, |v| Value::Str(v.to_string())),
+            FieldType::Keyword => return Ok(s.r.keyword(field).ok().flatten().and_then(|k| k.value_of_doc(d)).map_or(Cell::Value(Value::Null), Cell::Str)),
             // A JSON field is always stored.
             FieldType::Text { .. } | FieldType::Sparse | FieldType::Json => Value::Null,
             FieldType::Edges => s.r.graph(field).ok().flatten().map_or(Value::Null, |g| g.edges_value(d)),
-        }
+        }))
     }
 }
 
@@ -3523,10 +4400,70 @@ fn decay_box(decay: &Decay, b: Interval) -> Interval {
     Interval::new(0.0, top + top.abs() * 1e-12 + f64::MIN_POSITIVE, false)
 }
 
+/// The best `k` scores the segments of one ranked query found so far,
+/// shared by the threads that search them: a segment searched later starts
+/// at the `k`-th ([`TextFieldReader::top_k_weighted_above`]), as Lucene
+/// shares the minimum competitive score between segments.
+struct Found {
+    k: usize,
+    best: Mutex<Vec<f64>>,
+}
+
+impl Found {
+    fn new(k: usize) -> Found {
+        Found { k, best: Mutex::new(Vec::new()) }
+    }
+
+    /// The `k`-th best score so far; minus infinity until `k` are found.
+    fn floor(&self) -> f64 {
+        let best = self.best.lock().unwrap_or_else(|e| e.into_inner());
+        if best.len() < self.k {
+            f64::NEG_INFINITY
+        } else {
+            best[self.k - 1]
+        }
+    }
+
+    /// Takes in the scores of a segment's hits.
+    fn add(&self, scores: impl Iterator<Item = f64>) {
+        let mut best = self.best.lock().unwrap_or_else(|e| e.into_inner());
+        best.extend(scores.filter(|s| !s.is_nan()));
+        best.sort_unstable_by(|a, b| b.total_cmp(a));
+        best.truncate(self.k);
+    }
+}
+
 fn merge_top(mut hits: Vec<Hit>, k: usize) -> Vec<Hit> {
     hits.sort_by(|a, b| b.score.total_cmp(&a.score).then((a.seg, a.doc).cmp(&(b.seg, b.doc))));
     hits.truncate(k);
     hits
+}
+
+/// The terms each BM25 input of `q` scores with, by field (as
+/// [`Executor::term_stats`] asks a database for their statistics), when
+/// they follow from the query and `schema` alone. `None` when an input
+/// widens its terms by what a database holds (typos, synonyms): only a
+/// shard finds those.
+pub fn stat_terms(q: &Select, schema: &Schema) -> Result<Option<Vec<(usize, Vec<String>)>>> {
+    let mut leaves = Vec::new();
+    bm25_leaves(q, &mut leaves);
+    let mut out = Vec::with_capacity(leaves.len());
+    for (field, text, opts) in leaves {
+        if !Expand::from_opts(opts).map_err(err)?.is_none() {
+            return Ok(None);
+        }
+        let Some(f) = schema.fields.get(field) else { return Ok(None) };
+        let (weighted, _, _) = ranked_terms(text, opts, f.text_analyzer())?;
+        // As Executor::bm25_query: each term once.
+        let mut terms: Vec<String> = Vec::with_capacity(weighted.len());
+        for (t, _) in weighted {
+            if !terms.contains(&t) {
+                terms.push(t);
+            }
+        }
+        out.push((field, terms));
+    }
+    Ok(Some(out))
 }
 
 /// The BM25 inputs of a query (its ranking, its phases' and its columns')
@@ -3892,4 +4829,18 @@ fn value_keys(col: &NumericColumn, v: &Value) -> Option<KeyRange> {
         Value::Int(x) => col.int_key_range(*x, *x),
         v => v.as_f64().and_then(|x| col.key_range(x, x)),
     }
+}
+
+/// The partitions of a segment a filtered vector search can walk instead of
+/// the field's whole graph ([`Executor::partition_pick`]).
+struct PartPick {
+    /// Positions in the segment's [`vector::PartitionsInfo::parts`].
+    parts: Vec<usize>,
+    /// Whether every row of those partitions passes the filter's condition
+    /// on the key.
+    covered: bool,
+    /// The filter without that condition.
+    rest: Pred,
+    /// The partitions' rows.
+    rows: usize,
 }

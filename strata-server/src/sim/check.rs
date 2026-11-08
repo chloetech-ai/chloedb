@@ -24,8 +24,9 @@ pub struct Stats {
     pub writes_failed: u64,
     pub reads_ok: u64,
     pub reads_failed: u64,
-    /// Terms begun past the first, by elections.
+    /// Terms begun past the first, by elections, and when each began.
     pub elections: u64,
+    pub began_at: Vec<Time>,
     /// Promotions by hand asked for, and those that won.
     pub promotions: u64,
     pub promoted: u64,
@@ -75,10 +76,11 @@ impl History {
     }
 
     /// Whether copy `i` (its database `db`) holds every write acknowledged
-    /// before `before`; reports those it lacks as `what` does.
-    fn holds_all(&mut self, i: usize, db: &ModelDb, before: Time, what: &dyn Fn(&Acked) -> String) {
+    /// before `before` as a transaction of a term older than `older_than`,
+    /// up to the first that is not; reports those it lacks as `what` does.
+    fn holds_all(&mut self, i: usize, db: &ModelDb, before: Time, older_than: u64, what: &dyn Fn(&Acked) -> String) {
         while let Some(a) = self.acked.get(self.held[i]).copied() {
-            if a.at >= before {
+            if a.at >= before || a.seq.term >= older_than {
                 break;
             }
             self.held[i] += 1;
@@ -90,16 +92,20 @@ impl History {
     }
 
     /// Copy `i` began term `term`, holding `db`, at `now`: no other copy
-    /// began it, and it holds every write acknowledged so far.
+    /// began it, and it holds every write acknowledged so far in an older
+    /// term. A copy can win a term after a newer one acknowledged writes,
+    /// when the votes it asked for come late: it serves none of them, as
+    /// its first call to a replica that knows the newer term ends it.
     pub fn began(&mut self, i: usize, term: u64, db: &ModelDb, now: Time) {
         self.stats.elections += 1;
+        self.stats.began_at.push(now);
         if let Some(&j) = self.terms.get(&term) {
             if j != i {
                 self.violation(format!("two primaries in term {term}: s{j} and s{i} both began it"));
             }
         }
         self.terms.insert(term, i);
-        self.holds_all(i, db, now, &|a| {
+        self.holds_all(i, db, now, term, &|a| {
             format!(
                 "write {} acknowledged by s{} as transaction {} of term {} at {} ms is not held by s{i}, elected the primary of term {term} at {} ms",
                 a.write,
@@ -114,7 +120,7 @@ impl History {
 
     /// Copy `i`, a primary, served a read sent at `sent`, holding `db`.
     pub fn read_on_primary(&mut self, i: usize, sent: Time, db: &ModelDb, now: Time) {
-        self.holds_all(i, db, sent, &|a| {
+        self.holds_all(i, db, sent, u64::MAX, &|a| {
             format!(
                 "s{i} served a read at {} ms as a primary without write {} (transaction {} of term {}), acknowledged by s{} at {} ms, before the read was sent at {} ms: a stale read",
                 now / 1000,

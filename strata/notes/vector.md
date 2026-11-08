@@ -10,6 +10,9 @@ choose between them.
 | `build.rs` | the `FieldIndexBuilder` (buffering, SQ8 encoding, build options, sections) |
 | `kernels.rs` | float32 / SQ8 dot products (AVX-512 FMA, AVX-512 VNNI), 4×4 block kernel, prefetch |
 | `sq8.rs` | per-dimension 8-bit scalar quantisation, query preparation |
+| `bits.rs` | binary codes: a bit per dimension, signs around the mean |
+| `rabitq.rs` | RaBitQ codes: 1, 2 or 4 bits of the rotated vectors and a correction factor per row |
+| `codes.rs` | the quantiser and query of each kind of code, and how many candidates each rescores |
 | `ivf.rs` | spherical k-means, the cluster layout, probing (filtered and not) |
 | `hnsw.rs` | parallel graph construction, fixed-degree layout, search (traverse / two-hop) |
 | `cost.rs` | `Work` (operation counts), `CostModel` (ns per operation), `Auto` |
@@ -134,7 +137,7 @@ without a filter is the plain index search.
 | key | default | |
 |---|---|---|
 | `vector.index` | schema's `VectorIndexKind` | `flat`, `ivf`, `hnsw` |
-| `vector.codes` | schema's `Field::codes` (`sq8`) | `sq8` or `binary` |
+| `vector.codes` | schema's `Field::codes` (`sq8`) | `sq8`, `binary`, `rabitq1`, `rabitq2` or `rabitq4` (for experiments: only the schema's codes make the manifest name feature `rabitq`) |
 | `vector.ivf.nlist` | schema's `nlist` if > 0, else ≈ 4·√n | |
 | `vector.ivf.iters` | 10 | k-means iterations |
 | `vector.ivf.sample` | 64 | training points per list |
@@ -156,11 +159,14 @@ A field that is not `indexed` stores the forward vectors only (flat).
 | `vec.<f>.f32` | `n × stride` f32, rows padded to 16 floats (one 4 KiB page per vector at 1024 d) |
 | `vec.<f>.sq8` | `n × code_stride` u8, rows padded to 64 bytes (1 KiB at 1024 d) |
 | `vec.<f>.bin`, `vec.<f>.binp` | instead of `sq8`/`sq8p` for a field with binary codes: `n × ⌈d/64⌉` u64 sign bits (128 B at 1024 d), and the per-dimension threshold and spread |
+| `vec.<f>.rq`, `vec.<f>.rqp` | instead, for a field with RaBitQ codes of `B` bits: per row `B` planes of `⌈d/64⌉` u64 words, then the correction factor `f` and the error scale `e` (f32 each; `B·128 + 8` B at 1024 d); and the centre (`d` f32, the segment's mean) and the rotation's seed (u64) |
 | `vec.<f>.ivf_centroids` | SQ8 ranges of the centroids, then one code row per centroid |
 | `vec.<f>.ivf_dir` | per cluster: byte offset (u64) and size (u32) |
 | `vec.<f>.ivf` | clusters back to back, 64-byte aligned: docIDs (u32, ascending), pad, code rows |
 | `vec.<f>.hnsw` | layer 0: `n × 2M` u32, padded with `u32::MAX` (128 bytes per node at M = 16) |
 | `vec.<f>.hnsw_upper` | per upper level: sorted node ids, `n_l × M` links |
+| `vec.<f>.part<i>.docs` | a [partition](#partitions)'s rows: its `n_i` docIDs (u32, ascending) |
+| `vec.<f>.part<i>.hnsw`, `vec.<f>.part<i>.hnsw_upper` | the partition's graph, as `hnsw` and `hnsw_upper`, over its local ids `0..n_i`, which `part<i>.docs` maps to the segment's rows (the codes are the field's, not copied) |
 
 Opening parses the JSON header, the `sq8p` and `ivf_dir` arrays as views,
 and checks the IVF offsets (`nlist` entries); no per-vector array is copied
@@ -286,6 +292,102 @@ against 0.993), each holding an eighth of the code memory.
 Synthetic clusters are easy for IVF; real embeddings lose more to binary
 codes, and how much depends on the model, so measure recall on the
 collection before choosing them.
+
+### RaBitQ codes
+
+A field declared with `codes: "rabitq1"`, `"rabitq2"` or `"rabitq4"`
+keeps RaBitQ codes (Gao and Long, SIGMOD 2024; the `B`-bit grid of
+Extended RaBitQ, Gao et al. 2025): `B` bits per dimension of the vector
+centred on the segment's mean `c` and rotated by a fixed orthogonal
+transform `P`, with two floats per row. A row's code is the point `ȳ` of
+the grid `{u − (2^B − 1)/2 : u ∈ 0..2^B}^D` (rescaled) closest in angle to
+its unit direction `o = P(x − c)/‖x − c‖`; for `B > 1` the encoder finds it
+exactly by sweeping the scale over the merged breakpoints of every
+coordinate. The estimate is unbiased:
+
+    q·x ≈ q·c + f·⟨Pq, ȳ⟩,   f = ‖x − c‖ / ⟨ȳ, o⟩
+
+and comes with an error scale `e = ‖x − c‖·tan θ/√(D − 1)`, `cos θ =
+⟨ȳ, o⟩/‖ȳ‖`, so the true dot product is below `estimate + EPS0·‖q‖·e`
+except with a probability of about 1/740 (`EPS0 = 3.0`; the unit tests
+check fewer than 0.5% of estimates break it).
+
+* **Rotation.** Vectors are padded to `D = ⌈d/64⌉·64` dimensions. `P` is 4
+  rounds of random signs, a normalised fast Walsh–Hadamard transform over
+  the first (even rounds) or last (odd rounds) `h = 2^⌊log₂ D⌋`
+  coordinates and, when `h < D`, a butterfly pairing `i` with `i + D/2`:
+  orthogonal, `O(D log D)` per vector, and fixed by `SEED`, which `rqp`
+  records and opening checks (a different seed is a corrupt segment, so a
+  change to the generator is a format change; a unit test pins it).
+* **Scoring.** The query is rotated (not centred) and quantised to int8,
+  as for binary codes, so each plane is the same masked-sum kernel and a
+  row's integer score is `Σ_b 2^b·plane_b`; then `f` turns it into the
+  estimate, returned as an `i32` that orders as the float does. Flat, IVF,
+  HNSW, every filter strategy and the multi-vector search run unchanged.
+* **Pruning.** The search keeps `oversample × rerank` candidates (1-bit 8,
+  2-bit 4, 4-bit 2; `codes::oversample`) and rescores them best first; a
+  candidate whose bound is below the k-th exact score so far cannot enter
+  the top k and is skipped without reading its float32 row
+  (`SearchStats::pruned`). With read-ahead hints on (cold segments), the
+  first k rows are hinted, then only those of the rest whose bound clears
+  the k-th of their scores, so the pruned rows are not read from disk
+  either.
+
+Measured with `strata-codes-bench` on the cloud container (Intel Xeon
+@ 2.80 GHz, 4 cores, AVX-512 VNNI and BW), one search thread, builds on
+four, idle machine; recall@10 against the exact float32 top 10. FiQA's
+57,638 Cohere embed-english-v3 vectors (1024 d) and 648 queries,
+results/vector/codes-fiqa-rabitq.json, at the default rerank of 40:
+
+| codes | index | candidates | rescored | codes in memory | recall@10 | p50 ms | build s |
+|---|---|---|---|---|---|---|---|
+| SQ8 | flat | 40 | 40 | 59.0 MB | 1.000 | 6.93 | 0.6 |
+| binary | flat | 320 | 320 | 7.4 MB | 1.000 | 1.93 | 0.7 |
+| RaBitQ 1 | flat | 320 | 90.7 | 7.8 MB | 1.000 | 2.50 | 1.1 |
+| RaBitQ 2 | flat | 160 | 28.1 | 15.2 MB | 1.000 | 5.31 | 2.3 |
+| RaBitQ 4 | flat | 80 | 13.4 | 30.0 MB | 1.000 | 10.11 | 6.1 |
+| SQ8 | HNSW (ef 64) | 40 | 40 | 59.0 MB | 0.982 | 0.33 | 15.4 |
+| binary | HNSW | 320 | 320 | 7.4 MB | 0.997 | 0.83 | 30.0 |
+| RaBitQ 1 | HNSW | 320 | 89.1 | 7.8 MB | 0.998 | 0.57 | 28.6 |
+| RaBitQ 2 | HNSW | 160 | 27.9 | 15.2 MB | 0.996 | 0.49 | 31.4 |
+| RaBitQ 4 | HNSW | 80 | 13.4 | 30.0 MB | 0.987 | 0.40 | 34.3 |
+
+At rerank 10 (a quarter of the candidates) binary codes reach 0.995
+rescoring 80 rows, RaBitQ 1 0.999 rescoring 65, RaBitQ 2 1.000 rescoring
+27 and RaBitQ 4 1.000 rescoring 13; SQ8 0.992 rescoring 10. IVF (nprobe
+32) gives 0.947 for every code, its probe being the limit.
+
+The same synthetic data as for binary codes (500,000 × 768, 1,000 centres
+sharing a direction; results/vector/codes-500000x768-rabitq.json), where
+every code's error is spread evenly and the bound prunes less:
+
+| codes | index | rerank | candidates | rescored | codes in memory | recall@10 | p50 ms | build s |
+|---|---|---|---|---|---|---|---|---|
+| SQ8 | flat | 20 | 20 | 20 | 384 MB | 1.000 | 46.3 | 4.1 |
+| binary | flat | 40 | 320 | 320 | 48 MB | 0.994 | 13.3 | 3.9 |
+| RaBitQ 1 | flat | 40 | 320 | 320 | 52 MB | 0.995 | 20.7 | 5.7 |
+| RaBitQ 2 | flat | 40 | 160 | 159.4 | 100 MB | 1.000 | 29.2 | 12.4 |
+| RaBitQ 4 | flat | 20 | 40 | 32.2 | 196 MB | 1.000 | 64.5 | 35.0 |
+| SQ8 | IVF (nprobe 32) | 40 | 40 | 40 | 384 MB | 1.000 | 1.19 | 65.8 |
+| binary | IVF | 40 | 320 | 320 | 48 MB | 0.994 | 0.67 | 64.7 |
+| RaBitQ 1 | IVF | 40 | 320 | 320 | 52 MB | 0.995 | 0.73 | 61.9 |
+| RaBitQ 2 | IVF | 40 | 160 | 159.4 | 100 MB | 1.000 | 1.02 | 69.1 |
+| RaBitQ 4 | IVF | 20 | 40 | 32.2 | 196 MB | 1.000 | 2.06 | 91.7 |
+
+So: on real embeddings RaBitQ's bound does what binary codes cannot, and
+the float32 rows read per query fall 3.5× (1 bit), 11× (2 bits) and 24×
+(4 bits) from binary's 320 at equal or better recall; on the isotropic
+synthetic clusters 1-bit RaBitQ is binary's equal (0.995 against 0.994,
+no pruning) and 2 bits reach full recall with half binary's rows. The
+scan costs more per row than binary's: one more float multiply and 8
+more bytes a row at 1 bit (1.3–1.6× binary's flat time), a plane per bit
+beyond, so 4-bit codes scan 1.4–1.5× slower than SQ8 at half its
+memory, and the merged-breakpoint
+encoder makes 4-bit builds the slowest (35 s for 500,000 rows on four
+threads). RaBitQ codes are the choice when float32 reads are the cost (a
+table larger than memory, or a cold cache, where each rescored row is a
+random 4 KiB read): 1 bit where code memory is tightest, 2 bits for a
+quarter of SQ8's memory, 4 bits for half.
 
 ### Flat scan
 
@@ -456,7 +558,8 @@ well with plain read-around.
 * **Ivf** in-filter: the per-cluster rule above; cost ∝ `nprobe/√s` clusters
   of docID checks plus the members' codes.
 * **Hnsw** in-filter: traverse (default) or two-hop, above.
-* **PostFilter**: an unfiltered index search for `k·2/s` candidates (HNSW
+* **PostFilter**: an unfiltered index search for `max(R, 2k)/s` candidates
+  (until 2026-11 `2k/s`; see "Post-filter depth" below) (HNSW
   `ef`, IVF `nprobe` scaled by the same factor, flat: the whole scan), then
   the filter, retried with 4× the candidates if fewer than k members
   survive. Filters correlated *away* from the query need retries (TREC-COVID
@@ -528,6 +631,107 @@ same cells and left out: they give two-hop's recall exactly (topic 1%:
 failing, so the guard always looks two hops out. The planner's choice is
 unchanged: pre-filter below ~3%, post-filter above.
 
+**Post-filter depth (2026-11).** The post-filter fetched `2k/s` candidates,
+so about `2k` members reached the float32 re-rank: 20 at `k` = 10, half the
+40 rows an unfiltered search re-ranks. On the engine comparison's
+`rating >= 4` (a random 20%) that left Strata's recall@10 at 0.83 (1M and
+10M), below engines that re-rank their full candidate list. It now fetches
+`max(rerank, 2k)/s` candidates (`cost::post_filter_candidates`, which the
+cost model shares), so a filtered search re-ranks as many rows as an
+unfiltered one. And the planner's selectivity sample (an unfiltered walk to
+the query's 32 nearest neighbours, `Executor::local_selectivity`) was
+thrown away, the post-filter walking the graph again from the top; the
+sample's walk is now kept (`VectorReader::sample`, `vector::Sample`) and the
+post-filter widens it (`VectorReader::search_from`), and the sample no
+longer re-ranks its 32 rows in float32. One 300,000-row segment of
+`data::synthetic` (128 dimensions, HNSW M 16, ef 64, rerank 40), 300
+queries, recall@10 against an exact filtered search, mean µs (best of three
+rounds; one thread, the 4-core cloud container, Intel Xeon @ 2.10 GHz):
+
+| filter | Auto before | Auto after | post-filter alone, before → after |
+|---|---|---|---|
+| rating ≥ 3 (40%) | 117 µs, 0.724 | 124 µs, 0.815 | 76 → 98 µs |
+| rating ≥ 4 (20%) | 156 µs, 0.816 | 199 µs, 0.909 | 112 → 174 µs |
+| rating ≥ 4.5 (10%) | 254 µs, 0.892 | 357 µs, 0.958 | 194 → 306 µs |
+| rating ≥ 4.9 (2%) | 160 µs, 1.000 (pre-filter) | 142 µs, 1.000 (pre-filter) | – |
+
+The sample's cost over a forced post-filter fell from 44 to 25 µs at 20%.
+The in-filter traverse at 20% (241 µs, recall 0.951) stays dearer than the
+deeper post-filter.
+
+### Partitions
+
+A filter that keeps a fifth of the rows leaves an HNSW search two plans:
+walk the graph testing every row it reaches, or fetch five times the
+candidates and drop the rest (the post-filter). A field partitioned by the
+filter's column (`OPTIONS(partition_by = 'rating', partition_bounds = '1, 2,
+3, 4')`, `schema::VectorPartition`) gives a third: each segment keeps,
+besides the field's graph of every row, a graph per partition of its rows
+(`vec.<f>.part<i>.*` above), and a filter that limits the column walks only
+the partitions it can match. A partition whose every row passes the
+condition on the column is walked with no test at all, so the benchmark's
+`rating >= 4` costs what an unfiltered search of a 200K-row graph costs.
+
+- **Keys.** An `INT` or `FLOAT` column splits by `bounds` (bucket = the
+  number of bounds ≤ the value: below 1, [1, 2), ..., 4 and up); a
+  `KEYWORD` column splits by value, the segment's
+  `schema::MAX_VALUE_PARTITIONS` (64) most frequent values
+  (`PartitionsInfo::complete` is false when values were left out, and a
+  filter on one of them uses the plans without partitions). Rows with no
+  value are only in the field's graph. The column must be stored, since
+  merges read the keys back from the stored values, indexed and
+  single-valued.
+- **Build.** `FieldIndexBuilder::partition_key` hands the builder each row's
+  key; `finish` groups the rows and builds one `hnsw::build` per group over
+  local ids `0..n_i`, reading rows and codes through the group's docID list
+  (`Rows::map`, `BuildCodes::map`), so no vector or code is copied. Merges
+  build the partitions again from scratch; they do not start from the
+  inputs' partition graphs as the field's graph does.
+- **Search.** `VectorReader::search_parts` walks each picked partition's
+  graph with `ef' = max(ef, R)` (capped at its rows), maps local ids to
+  docIDs through `Codes::map`, merges the candidates and re-ranks the best
+  `R` together.
+- **Planner** (`Executor::partition_pick`, `partition_search`). The first
+  top-level conjunct on the column picks the partitions: a range (`>=`,
+  `<`, `BETWEEN`), an integer range, `=` or `IN`. The walk tests nothing
+  when the partitions guarantee that conjunct and it is the whole filter,
+  else the rest of the filter by probing (never a materialised set: the
+  per-segment filter cache is keyed by the whole predicate), else the whole
+  filter. Unless forced (`strategy => 'partition'`), it sums the cost
+  model's HNSW estimate over the partitions (filtered by the tested share
+  when there is a test) and keeps the plan without partitions when that
+  predicts less. Another forced strategy, a session strategy, or
+  `ExecOptions::vector_partitions = false` leaves them alone. Partitions
+  that cannot hold a match return no rows for the segment.
+
+msmarco-1000k (the engine comparison's first 1M MS MARCO passages, 768-d
+Arctic Embed M v1.5 vectors, its ratings, the first 300 dev queries), built
+as `engine-compare build` builds Strata (one segment, HNSW m 16,
+ef_construction 200, SQ8 codes), `examples/vector_partitions.rs`; recall@10
+against the exact top 10 by dot product, mean µs over 300 queries, one
+query thread, best of two passes, two runs (both shown where they differ);
+the 4-core cloud container, Intel Xeon @ 2.10 GHz
+(`results/vector/partitions-msmarco-1000000x768.json`):
+
+| filter | Auto without partitions | Auto with them | partitions, ef 128 |
+|---|---|---|---|
+| none | 0.876, 152–192 µs (HNSW) | the same plan | – |
+| rating ≥ 4 (20%) | 0.961, 364–438 µs (post-filter) | 0.963, 176–184 µs (`filter none`) | 0.984, 340 µs |
+| rating ≥ 4.5 (10%) | 0.982, 674–777 µs (post-filter) | 0.982, 383–385 µs | 0.992, 655–660 µs |
+| rating ≥ 4.9 (2%) | 0.999, 1.6–2.2 ms (pre-filter) | 0.995, 1.09–1.16 ms | 0.999, 1.6–1.9 ms |
+
+Alternated three times on the partitioned file, the benchmark's query took
+469–561 µs without partitions and 201–237 µs with them. The post-filter
+needs ef 512 for 0.987 at 20% (804–878 µs), where partitions get 0.984 in
+340 µs. At 2% the planner trades recall for time: the partition walk at its
+default ef finds 0.995 where the pre-filter scan is exact, and matches the
+scan's 0.999 only at ef 128, in about the scan's time. Unfiltered queries do
+not touch the partitions (0.876 is the duplicate-passage cap; see the
+explainer). Costs: the build took 320 s instead of 179 s (4 threads), the
+file grew from 4.04 to 4.17 GB (partition graphs 128 MB + upper levels
+4.5 MB + docIDs 4 MB, as much again as the field's graph), and the build's
+peak memory from 10.4 to 10.7 GB.
+
 ### Cost model
 
 `estimate_cost` = Σ predicted operation counts × ns per operation:
@@ -538,7 +742,7 @@ unchanged: pre-filter below ~3%, post-filter above.
 | PreFilter | s·n codes gathered, min(R, s·n) re-ranks |
 | Ivf | nlist centroids; p = max(nprobe, R/avg) clusters, p·avg codes scanned (filtered: p = max(nprobe/√s, R/(s·avg)), p·avg docID checks, p·avg·s codes gathered) |
 | Hnsw | (9.0·ef' + 252)·M/16 codes gathered, 0.99·ef' + 2.5 expansions, ef' = max(ef, R); filtered (traverse): both ÷ s, capped at n |
-| PostFilter | the native search for k' = max(R, 2k/s) candidates, plus k' checks |
+| PostFilter | the native search for k' = max(R, 2k)/s candidates, plus k' checks |
 
 The per-operation costs are a non-negative least-squares fit (relative
 error) of measured latency on measured counts (`Work::from_stats`) over the

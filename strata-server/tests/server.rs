@@ -168,7 +168,7 @@ async fn http_answers_like_the_embedded_database() {
         want.push(js::result(&db.query(sql, &p).unwrap(), 0.0));
     }
     let base = http(service(db, "http://unused"), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     for ((sql, params), want) in queries().into_iter().zip(&want) {
         let (status, got) = post(&c, &format!("{base}/v1/query"), json!({"sql": sql, "params": params})).await;
         assert_eq!(status, 200, "{sql}: {got}");
@@ -181,7 +181,7 @@ async fn http_answers_like_the_embedded_database() {
     assert_eq!(health["docs"], N);
     let metrics = c.get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
     assert!(metrics.contains("strata_queries_total{kind=\"bm25\",outcome=\"ok\"} 3"), "{metrics}");
-    assert!(metrics.contains("strata_queries_total{kind=\"invalid\",outcome=\"error\"} 1"), "{metrics}");
+    assert!(metrics.contains("strata_queries_total{kind=\"invalid\",outcome=\"client_error\"} 1"), "{metrics}");
     let cores = std::thread::available_parallelism().unwrap().get();
     assert!(metrics.contains(&format!("strata_query_pool_threads {cores}\n")) && metrics.contains("strata_query_pool_queued 0\n"), "{metrics}");
 }
@@ -191,7 +191,7 @@ async fn http_answers_like_the_embedded_database() {
 async fn writes_over_http() {
     let dir = tempfile::tempdir().unwrap();
     let base = http(service(create(dir.path(), "w.strata", |i| i < 500), "http://unused"), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let get = |id: &'static str| {
         let c = c.clone();
         let base = base.clone();
@@ -250,7 +250,7 @@ async fn concurrent_writes_wait_for_the_writer() {
     let schema = (*db.schema()).clone();
     let svc = Arc::new(Service::new(Backend::Local(db.clone()), schema, agent_config("http://unused"), 16, Duration::from_secs(30)));
     let base = http(svc, None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let sold = |r: &Json| r["rows"][0][0].as_i64().unwrap();
     let count = json!({"sql": "SELECT sold FROM products WHERE id = 'p0000003'"});
     let sold0 = sold(&post(&c, &format!("{base}/v1/query"), count.clone()).await.1);
@@ -297,7 +297,7 @@ async fn grouped_writes_fail_alone() {
     let db = Arc::new(create(dir.path(), "g.strata", |i| i < 200));
     let svc = Arc::new(Service::new(Backend::Local(db.clone()), (*db.schema()).clone(), agent_config("http://unused"), 16, Duration::from_secs(30)));
     let base = http(svc, None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let sold = |r: &Json| r["rows"][0][0].as_i64().unwrap();
     let count = json!({"sql": "SELECT sold FROM products WHERE id = 'p0000004'"});
     let sold0 = sold(&post(&c, &format!("{base}/v1/query"), count.clone()).await.1);
@@ -323,6 +323,73 @@ async fn grouped_writes_fail_alone() {
     assert_eq!(sold(&post(&c, &format!("{base}/v1/query"), count).await.1), sold0 + 56);
 }
 
+/// SQL writes that wait together share commits when they touch other rows
+/// (INSERTs, UPDATEs by key of other keys); UPDATEs of one row commit one
+/// after another and lose no increment, and a statement that fails is not
+/// applied while the others sharing its commit are.
+#[tokio::test(flavor = "multi_thread")]
+async fn grouped_sql_writes_fail_alone_and_lose_no_update() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(create(dir.path(), "s.strata", |i| i < 200));
+    let svc = Arc::new(Service::new(Backend::Local(db.clone()), (*db.schema()).clone(), agent_config("http://unused"), 16, Duration::from_secs(30)));
+    let base = http(svc, None).await;
+    let c = strata_server::http_client().build().unwrap();
+    let sold = |id: String| {
+        let (c, base) = (c.clone(), base.clone());
+        async move { post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT sold FROM products WHERE id = :k", "params": {"k": id}})).await.1["rows"][0][0].as_i64().unwrap() }
+    };
+    let metric = |name: &'static str| {
+        let (c, base) = (c.clone(), base.clone());
+        async move {
+            let m = c.get(format!("{base}/metrics")).send().await.unwrap().text().await.unwrap();
+            m.lines().find_map(|l| l.strip_prefix(name)?.strip_prefix(' ')?.parse::<f64>().ok()).unwrap()
+        }
+    };
+    let key = |i: usize| format!("p{:07}", 10 + i);
+    let hot0 = sold("p0000004".into()).await;
+    let mut before = Vec::new();
+    for i in 0..64 {
+        before.push(sold(key(i)).await);
+    }
+    let batches0 = metric("strata_write_batches_total").await;
+    // A transaction held here keeps the writer waiting while they queue.
+    let held = db.storage().begin().unwrap();
+    let requests: Vec<_> = (0..64)
+        .map(|i| {
+            let body = match i % 4 {
+                0 => json!({"sql": "UPDATE products SET sold = sold + 1 WHERE id = 'p0000004'"}),
+                1 => json!({"sql": "UPDATE products SET sold = sold + 1 WHERE id = :k", "params": {"k": key(i)}}),
+                // A key that is already live: this statement fails.
+                3 if i % 8 == 3 => json!({"sql": "INSERT INTO products (id, title) VALUES ('p0000001', 'again')"}),
+                _ => json!({"sql": "INSERT INTO products (id, title) VALUES (:k, 'new')", "params": {"k": format!("new{i}")}}),
+            };
+            let (c, base) = (c.clone(), base.clone());
+            tokio::spawn(async move { post(&c, &format!("{base}/v1/sql"), body).await.0 })
+        })
+        .collect();
+    let t0 = std::time::Instant::now();
+    while metric("strata_write_queue_requests").await < 64.0 {
+        assert!(t0.elapsed() < Duration::from_secs(10), "the writes never queued");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    drop(held);
+    let mut statuses = Vec::new();
+    for r in requests {
+        statuses.push(r.await.unwrap());
+    }
+    assert_eq!(statuses.iter().filter(|&&s| s == 200).count(), 56, "{statuses:?}");
+    assert_eq!(statuses.iter().filter(|&&s| s == 400).count(), 8, "{statuses:?}");
+    assert_eq!(sold("p0000004".into()).await, hot0 + 16);
+    for i in (1..64).step_by(4) {
+        assert_eq!(sold(key(i)).await, before[i] + 1, "{}", key(i));
+    }
+    let (_, r) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT count(*) FROM products WHERE id LIKE 'new%'"})).await;
+    assert_eq!(r["rows"][0][0], json!(24), "{r}");
+    // The 16 UPDATEs of one row took a commit each; the rest shared them.
+    let batches = metric("strata_write_batches_total").await - batches0;
+    assert!((16.0..40.0).contains(&batches), "{batches} commits for 64 statements");
+}
+
 /// A retried write with an idempotency key is applied once (DB-2), and an
 /// `add` after an upsert of the same key in one request reads the upserted
 /// value (bug 13).
@@ -330,7 +397,7 @@ async fn grouped_writes_fail_alone() {
 async fn retries_apply_once_and_adds_read_earlier_ops() {
     let dir = tempfile::tempdir().unwrap();
     let base = http(service(create(dir.path(), "i.strata", |i| i < 100), "http://unused"), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let url = format!("{base}/v1/write");
     let sold = |id: &'static str| {
         let (c, base) = (c.clone(), base.clone());
@@ -384,7 +451,7 @@ async fn retries_apply_once_and_adds_read_earlier_ops() {
 async fn a_token_guards_the_api() {
     let dir = tempfile::tempdir().unwrap();
     let base = http(service(create(dir.path(), "t.strata", |i| i < 100), "http://unused"), Some("s3cret")).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let q = json!({"sql": "SELECT COUNT(*) FROM products"});
     assert_eq!(post(&c, &format!("{base}/v1/query"), q.clone()).await.0, 401);
     let r = c.post(format!("{base}/v1/query")).bearer_auth("wrong").json(&q).send().await.unwrap();
@@ -402,7 +469,7 @@ async fn a_token_guards_the_api() {
 async fn a_server_not_run_by_the_operator_has_no_kubernetes_cluster() {
     let dir = tempfile::tempdir().unwrap();
     let base = http(service(create(dir.path(), "k.strata", |i| i < 10), "http://unused"), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let j: Json = c.get(format!("{base}/v1/kube")).send().await.unwrap().json().await.unwrap();
     assert_eq!(j, json!({"managed": false}));
     let (status, j) = post(&c, &format!("{base}/v1/admin/kube"), json!({"shards": 3})).await;
@@ -446,7 +513,7 @@ async fn pages_on_other_sites_are_kept_out() {
     let hosts = auth::allowed_hosts("127.0.0.1".parse().unwrap(), &["db.internal".into()]);
     let base = http_with(service(create(dir.path(), "b.strata", |i| i < 100), "http://unused"), Access { hosts, ..Default::default() }).await;
     let host = base.trim_start_matches("http://").to_string();
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let csv = "id,title\nx1,from a page\n";
     let import = format!("{base}/v1/import?format=csv");
 
@@ -496,14 +563,14 @@ async fn tls_on_both_listeners() {
     let shard = grpc_with(svc, access).await;
     assert!(base.starts_with("https://") && shard.starts_with("https://"));
 
-    let c = reqwest::Client::builder().add_root_certificate(reqwest::Certificate::from_pem(&ca).unwrap()).build().unwrap();
+    let c = strata_server::http_client().add_root_certificate(reqwest::Certificate::from_pem(&ca).unwrap()).build().unwrap();
     let r = c.post(format!("{base}/v1/query")).bearer_auth("t").json(&json!({"sql": "SELECT COUNT(*) FROM products"})).send().await.unwrap();
     assert_eq!(r.status(), 200);
     assert_eq!(r.json::<Json>().await.unwrap()["rows"][0][0], 100);
     // Plain HTTP to the TLS port gets nothing, and a client without the CA
     // does not trust the certificate.
-    assert!(reqwest::get(base.replace("https://", "http://") + "/v1/health").await.is_err());
-    assert!(reqwest::get(format!("{base}/v1/health")).await.is_err());
+    assert!(strata_server::http_client().build().unwrap().get(base.replace("https://", "http://") + "/v1/health").send().await.is_err());
+    assert!(strata_server::http_client().build().unwrap().get(format!("{base}/v1/health")).send().await.is_err());
 
     let opts = |ca| CoordOptions { token: Some(Secret::new("t")), ca, ..Default::default() };
     assert!(Coordinator::connect_with(vec![shard.clone()], opts(None)).await.is_err());
@@ -690,6 +757,13 @@ impl pb::strata_server::Strata for Stuck {
     async fn export_slots(&self, _: tonic::Request<pb::ExportSlotsRequest>) -> Result<tonic::Response<Self::ExportSlotsStream>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
+    type FeedStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::FeedChunk, tonic::Status>> + Send>>;
+    async fn feed_keys(&self, _: tonic::Request<pb::FeedKeysRequest>) -> Result<tonic::Response<pb::FeedKeysResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
+    async fn feed(&self, _: tonic::Request<pb::FeedRequest>) -> Result<tonic::Response<Self::FeedStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
     async fn freeze_slots(&self, _: tonic::Request<pb::FreezeRequest>) -> Result<tonic::Response<pb::FreezeResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
@@ -697,6 +771,9 @@ impl pb::strata_server::Strata for Stuck {
         Err(tonic::Status::unimplemented("a test shard"))
     }
     async fn vote(&self, _: tonic::Request<pb::VoteRequest>) -> Result<tonic::Response<pb::VoteResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
+    async fn get(&self, _: tonic::Request<pb::GetRequest>) -> Result<tonic::Response<pb::GetResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
 }
@@ -768,6 +845,13 @@ impl pb::strata_server::Strata for Overloaded {
     async fn export_slots(&self, _: tonic::Request<pb::ExportSlotsRequest>) -> Result<tonic::Response<Self::ExportSlotsStream>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
+    type FeedStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::FeedChunk, tonic::Status>> + Send>>;
+    async fn feed_keys(&self, _: tonic::Request<pb::FeedKeysRequest>) -> Result<tonic::Response<pb::FeedKeysResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
+    async fn feed(&self, _: tonic::Request<pb::FeedRequest>) -> Result<tonic::Response<Self::FeedStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
     async fn freeze_slots(&self, _: tonic::Request<pb::FreezeRequest>) -> Result<tonic::Response<pb::FreezeResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
@@ -775,6 +859,9 @@ impl pb::strata_server::Strata for Overloaded {
         Err(tonic::Status::unimplemented("a test shard"))
     }
     async fn vote(&self, _: tonic::Request<pb::VoteRequest>) -> Result<tonic::Response<pb::VoteResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("a test shard"))
+    }
+    async fn get(&self, _: tonic::Request<pb::GetRequest>) -> Result<tonic::Response<pb::GetResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("a test shard"))
     }
 }
@@ -916,6 +1003,9 @@ struct Recording {
     /// `Hello` and `Write` calls, answered or not.
     hellos: AtomicUsize,
     writes: AtomicUsize,
+    /// `TermStats` calls, and queries answered stale (protocol 12).
+    stats_rounds: AtomicUsize,
+    stale: AtomicUsize,
 }
 
 impl Recording {
@@ -931,6 +1021,9 @@ impl Recording {
         let q = r.get_mut();
         self.seen.lock().unwrap().push(Seen { protocol: q.protocol, typed: q.plan.is_some(), hold: q.hold, release: q.release, epoch: q.epoch, min_seq_no: q.min_seq_no });
         let v = self.version.load(Ordering::Relaxed);
+        if v < 12 {
+            q.stats_version = 0;
+        }
         if v < 5 {
             q.min_seq_no = 0;
         }
@@ -965,6 +1058,9 @@ impl pb::strata_server::Strata for Recording {
         let r = self.read(r)?;
         let hold = r.get_ref().hold;
         let a = self.inner.query(r).await?;
+        if a.get_ref().stale {
+            self.stale.fetch_add(1, Ordering::Relaxed);
+        }
         let write = self.after_hold.lock().unwrap().take_if(|_| hold);
         if let Some(sql) = write {
             self.inner.0.sql(&Principal::open(), &sql, &Params::new(), After::Any, 0).await.unwrap();
@@ -972,7 +1068,12 @@ impl pb::strata_server::Strata for Recording {
         Ok(a)
     }
     async fn term_stats(&self, r: tonic::Request<pb::QueryRequest>) -> Result<tonic::Response<pb::TermStatsResponse>, tonic::Status> {
-        self.inner.term_stats(self.read(r)?).await
+        self.stats_rounds.fetch_add(1, Ordering::Relaxed);
+        let mut a = self.inner.term_stats(self.read(r)?).await?;
+        if self.version.load(Ordering::Relaxed) < 12 {
+            a.get_mut().version = 0;
+        }
+        Ok(a)
     }
     async fn write(&self, r: tonic::Request<pb::WriteRequest>) -> Result<tonic::Response<pb::WriteResponse>, tonic::Status> {
         self.writes.fetch_add(1, Ordering::Relaxed);
@@ -1067,6 +1168,15 @@ impl pb::strata_server::Strata for Recording {
         self.up()?;
         self.inner.export_slots(r).await
     }
+    type FeedStream = <strata_server::grpc::Grpc as pb::strata_server::Strata>::FeedStream;
+    async fn feed(&self, r: tonic::Request<pb::FeedRequest>) -> Result<tonic::Response<Self::FeedStream>, tonic::Status> {
+        self.up()?;
+        self.inner.feed(r).await
+    }
+    async fn feed_keys(&self, r: tonic::Request<pb::FeedKeysRequest>) -> Result<tonic::Response<pb::FeedKeysResponse>, tonic::Status> {
+        self.up()?;
+        self.inner.feed_keys(r).await
+    }
     async fn freeze_slots(&self, r: tonic::Request<pb::FreezeRequest>) -> Result<tonic::Response<pb::FreezeResponse>, tonic::Status> {
         self.up()?;
         self.inner.freeze_slots(r).await
@@ -1078,6 +1188,10 @@ impl pb::strata_server::Strata for Recording {
     async fn vote(&self, r: tonic::Request<pb::VoteRequest>) -> Result<tonic::Response<pb::VoteResponse>, tonic::Status> {
         self.up()?;
         self.inner.vote(r).await
+    }
+    async fn get(&self, r: tonic::Request<pb::GetRequest>) -> Result<tonic::Response<pb::GetResponse>, tonic::Status> {
+        self.up()?;
+        self.inner.get(r).await
     }
 }
 
@@ -1100,6 +1214,8 @@ async fn recording_of(svc: Arc<Service>, version: u32) -> (String, Arc<Recording
         delay: std::sync::Mutex::new(Duration::ZERO),
         hellos: AtomicUsize::new(0),
         writes: AtomicUsize::new(0),
+        stats_rounds: AtomicUsize::new(0),
+        stale: AtomicUsize::new(0),
     });
     let svc = pb::strata_server::StrataServer::from_arc(shard.clone()).max_decoding_message_size(256 << 20);
     tokio::spawn(tonic::transport::Server::builder().add_service(svc).serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(l)));
@@ -1116,6 +1232,92 @@ async fn leases_end(shards: &[Arc<Recording>]) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("leases held: {:?}", shards.iter().map(|s| s.leases()).collect::<Vec<_>>());
+}
+
+/// A BM25 query whose terms the coordinator has seen skips the statistics
+/// round: it is sent the statistics kept of each shard's version and
+/// answers as one database would. After a write, the shard that took it
+/// answers stale, and the query runs again with a round, scoring with the
+/// write counted; then the new version's statistics are kept. A query with
+/// typos keeps its round, as do shards of protocol 11, which cannot tell
+/// their versions apart; and so does every query with no terms kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bm25_statistics_kept_by_the_coordinator() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = |i: usize| Value::Str(format!("p{i:07}"));
+    let whole = service(create(dir.path(), "whole.strata", |_| true), "http://unused");
+    let mut urls = Vec::new();
+    let mut shards = Vec::new();
+    for s in 0..2 {
+        let (url, shard) = recording(create(dir.path(), &format!("s{s}.strata"), |i| shard_of(&key(i), 2) == s), strata_server::grpc::PROTOCOL).await;
+        urls.push(url);
+        shards.push(shard);
+    }
+    let coord = cluster(Coordinator::connect(urls.clone()).await.unwrap());
+    let rounds = || shards.iter().map(|s| s.stats_rounds.load(Ordering::Relaxed)).collect::<Vec<_>>();
+    let stale = || shards.iter().map(|s| s.stale.load(Ordering::Relaxed)).collect::<Vec<_>>();
+    let check = |svc: Arc<Service>, sql: &'static str| {
+        let whole = whole.clone();
+        async move {
+            let want = whole.query(QueryReq { sql: sql.into(), ..Default::default() }).await.unwrap();
+            let got = svc.query(QueryReq { sql: sql.into(), ..Default::default() }).await.unwrap_or_else(|e| panic!("{sql}: {}", e.message));
+            same(sql, &js::result(&want.rs, 0.0), &js::result(&got.rs, 0.0));
+            got
+        }
+    };
+    let sql = "SELECT id, title, score() FROM products ORDER BY bm25(body, 'waterproof hiking boots') DESC LIMIT 10";
+    check(coord.clone(), sql).await;
+    assert_eq!(rounds(), [1, 1]);
+    let got = check(coord.clone(), sql).await;
+    assert_eq!(rounds(), [1, 1], "the second query was sent the kept statistics");
+    assert!(got.rs.stats.steps.iter().any(|s| s.op == "term statistics" && s.detail.contains("kept")), "{:?}", got.rs.stats.steps);
+    // Its words in another query, with a filter: kept too.
+    check(coord.clone(), "SELECT id, score() FROM products WHERE price < 150 ORDER BY bm25(body, 'boots waterproof') DESC LIMIT 5").await;
+    assert_eq!(rounds(), [1, 1]);
+    // A new word: a round.
+    check(coord.clone(), "SELECT id, score() FROM products ORDER BY bm25(body, 'hiking kettle') DESC LIMIT 5").await;
+    assert_eq!(rounds(), [2, 2]);
+
+    // A write on one shard: it answers stale, and the query runs again.
+    let id = (0..).map(|i| format!("w{i}")).find(|id| shard_of(&Value::Str(id.clone()), 2) == 0).unwrap();
+    let insert = format!("INSERT INTO products (id, title, category, price, sold) VALUES ('{id}', 'Waterproof hiking boots, waterproof', 'outdoor', 10.0, 0)");
+    for svc in [&coord, &whole] {
+        svc.sql(&Principal::open(), &insert, &Params::new(), After::Any, 0).await.unwrap();
+    }
+    let got = check(coord.clone(), sql).await;
+    assert_eq!(stale(), [1, 0]);
+    assert_eq!(rounds(), [3, 3]);
+    assert!(got.rs.rows.iter().any(|r| r[0] == Value::Str(id.clone())), "the new row is found: {:?}", got.rs.rows);
+    assert!(got.rs.stats.plan.iter().any(|l| l.contains("older version on shard 0")), "{:?}", got.rs.stats.plan);
+    // Waits out the stale shard's pause; then the new version's are kept.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    check(coord.clone(), sql).await;
+    assert_eq!((rounds(), stale()), (vec![3, 3], vec![1, 0]));
+    let m = coord.prometheus().await;
+    for line in ["strata_stats_cache_total{outcome=\"hit\"} 4", "strata_stats_cache_total{outcome=\"miss\"} 2", "strata_stats_cache_total{outcome=\"stale\"} 1"] {
+        assert!(m.contains(line), "{line}: {m}");
+    }
+
+    // Typos: only a shard finds the terms, so every such query has a round.
+    for _ in 0..2 {
+        check(coord.clone(), "SELECT id, score() FROM products ORDER BY bm25(body, 'waterprof boots', fuzzy => 'auto') DESC LIMIT 5").await;
+    }
+    assert_eq!(rounds(), [5, 5]);
+    // Off: a round each time.
+    let off = cluster(Coordinator::connect_with(urls.clone(), CoordOptions { stats_cache_terms: 0, ..Default::default() }).await.unwrap());
+    for _ in 0..2 {
+        check(off.clone(), sql).await;
+    }
+    assert_eq!(rounds(), [7, 7]);
+    // Shards of protocol 11 answer no version: a round each time.
+    for s in &shards {
+        s.version.store(11, Ordering::Relaxed);
+    }
+    let old = cluster(Coordinator::connect(urls).await.unwrap());
+    for _ in 0..2 {
+        check(old.clone(), sql).await;
+    }
+    assert_eq!(rounds(), [9, 9]);
 }
 
 /// A coordinator asks each shard the protocol versions it speaks and
@@ -1168,8 +1370,8 @@ async fn shards_speak_the_oldest_protocol_among_them() {
             leases_end(&seen).await;
         }
         // Statistics alone, as a coordinator in front of this one asks.
-        let (stats, _) = coord.term_stats("SELECT id FROM products ORDER BY bm25(body, 'waterproof') DESC LIMIT 3", None, &Params::new(), &After::Any, 0).await.unwrap();
-        let (local, _) = service(create(dir.path(), &format!("r{round}w.strata"), |_| true), "http://unused").term_stats("SELECT id FROM products ORDER BY bm25(body, 'waterproof') DESC LIMIT 3", None, &Params::new(), &After::Any, 0).await.unwrap();
+        let (stats, _, _) = coord.term_stats("SELECT id FROM products ORDER BY bm25(body, 'waterproof') DESC LIMIT 3", None, &Params::new(), &After::Any, 0).await.unwrap();
+        let (local, _, _) = service(create(dir.path(), &format!("r{round}w.strata"), |_| true), "http://unused").term_stats("SELECT id FROM products ORDER BY bm25(body, 'waterproof') DESC LIMIT 3", None, &Params::new(), &After::Any, 0).await.unwrap();
         assert_eq!(serde_json::to_value(&stats).unwrap(), serde_json::to_value(&local).unwrap());
         // Every read reached every shard in the protocol spoken, typed from
         // 2, and pages were fetched from 3.
@@ -1558,8 +1760,9 @@ async fn a_shard_takes_typed_plans_and_refuses_newer_ones() {
     let svc = service(db, "http://unused");
     let url = grpc(svc.clone()).await;
     let mut c = pb::strata_client::StrataClient::connect(url).await.unwrap();
-    let h = c.hello(pb::HelloRequest { min_protocol: 1, max_protocol: 10 }).await.unwrap().into_inner();
-    assert_eq!((h.min_protocol, h.max_protocol, h.plan_version, h.slot_epoch), (1, 9, strata::query::ir::VERSION, 0));
+    let newest = strata_server::grpc::PROTOCOL;
+    let h = c.hello(pb::HelloRequest { min_protocol: 1, max_protocol: newest + 1 }).await.unwrap().into_inner();
+    assert_eq!((h.min_protocol, h.max_protocol, h.plan_version, h.slot_epoch), (1, newest, strata::query::ir::VERSION, 0));
     assert!(h.plan_features.iter().any(|f| f == "operators") && h.server.starts_with("strata-server "), "{h:?}");
 
     let sql = "SELECT id, price FROM products WHERE year >= 2020 AND MATCH(body, 'waterproof') ORDER BY price DESC, id LIMIT 7";
@@ -1585,9 +1788,9 @@ async fn a_shard_takes_typed_plans_and_refuses_newer_ones() {
     c.release(pb::ReleaseRequest { snapshots: vec![unused, 12345] }).await.unwrap();
     assert_eq!(svc.sweep_leases(), 0);
 
-    let e = c.query(pb::QueryRequest { protocol: 10, ..typed.clone() }).await.unwrap_err();
+    let e = c.query(pb::QueryRequest { protocol: newest + 1, ..typed.clone() }).await.unwrap_err();
     assert_eq!(e.code(), tonic::Code::InvalidArgument);
-    assert!(e.message().contains("protocol 10"), "{}", e.message());
+    assert!(e.message().contains(&format!("protocol {}", newest + 1)), "{}", e.message());
     let newer = pb::Plan { features: vec!["teleport".into()], ..plan };
     let e = c.term_stats(pb::QueryRequest { plan: Some(newer), ..typed }).await.unwrap_err();
     assert_eq!(e.code(), tonic::Code::InvalidArgument);
@@ -1718,7 +1921,7 @@ async fn agent_runs_queries_and_answers() {
 
     let dir = tempfile::tempdir().unwrap();
     let base = http(service(create(dir.path(), "a.strata", |i| i < 1000), &format!("http://{addr}")), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let (status, r) = post(&c, &format!("{base}/v1/agent"), json!({"question": "Which brand sells the most tents?"})).await;
     assert_eq!(status, 200, "{r}");
     assert!(r["answer"].as_str().unwrap().starts_with("Northpeak"));
@@ -1811,7 +2014,7 @@ async fn a_judge_grades_each_row_alone() {
     *mock.odd.lock().unwrap() = (title(odd), title(late));
     let key = |i: usize| rows.rows[i][0].as_str().unwrap().to_string();
     let base = http(service(db, &format!("http://{addr}")), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let keys = json!([key(tent), key(other), "p9999999", key(odd), key(late)]);
     let (status, r) = post(&c, &format!("{base}/v1/judge"), json!({"query": "a tent for two", "keys": keys})).await;
     assert_eq!(status, 200, "{r}");
@@ -1867,7 +2070,7 @@ async fn sparse_and_binary_vector_fields_over_http() {
     let opts = DbOptions { publish_snapshots: true, ..DbOptions::default() };
     let db = Db::create(&dir.path().join("s.strata"), schema, opts).unwrap();
     let base = http(service(db, "http://unused"), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let unit = |i: usize| (0..8).map(|j| if j == i % 8 { 1.0 } else { 0.1 }).collect::<Vec<f32>>();
     let docs: Vec<Json> = (0..40)
         .map(|i| json!({"id": format!("n{i:02}"), "splade": {"common": 0.5, format!("tok{}", i % 5): 1.0 + i as f64 / 100.0}, "emb": unit(i)}))
@@ -1908,7 +2111,7 @@ async fn multi_vector_fields_over_http() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::create(&dir.path().join("m.strata"), schema, DbOptions { publish_snapshots: true, ..DbOptions::default() }).unwrap();
     let base = http(service(db, "http://unused"), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let docs = [
         json!({"id": "a", "patches": [[1, 0, 0], [0, 1, 0]]}),
         json!({"id": "b", "patches": [[0.0, 0.0, 1.0]]}),
@@ -1938,7 +2141,7 @@ async fn vector_of_any_field_name() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::create(&dir.path().join("v.strata"), schema, DbOptions { publish_snapshots: true, ..DbOptions::default() }).unwrap();
     let base = http(service(db, "http://unused"), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let ops: Vec<Json> = (0..4).map(|i| json!({"op": "insert", "doc": {"doc id": format!("n{i}"), "my vec": [1.0, i as f64]}})).collect();
     let (status, r) = post(&c, &format!("{base}/v1/write"), json!({ "ops": ops })).await;
     assert_eq!(status, 200, "{r}");
@@ -1958,7 +2161,7 @@ async fn embedded_fields_over_http() {
     let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent_config("http://unused"), 16, Duration::from_secs(10));
     svc.open_models(dir.path());
     let base = http(Arc::new(svc), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let r: Json = c.get(format!("{base}/v1/schema")).send().await.unwrap().json().await.unwrap();
     assert_eq!(r["embeddings"], json!([{"field": "emb", "from": ["title", "description"], "model": "hash:64", "loaded": true, "error": null, "usage": null, "backfill": null}]));
 
@@ -2014,7 +2217,7 @@ async fn token_vectors_over_http() {
     let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent_config("http://unused"), 16, Duration::from_secs(10));
     svc.open_models(dir.path());
     let base = http(Arc::new(svc), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let ops: Vec<Json> = [("a", "green apples"), ("b", "red apples"), ("c", "pears")].iter().map(|(id, body)| json!({"op": "insert", "doc": {"id": id, "body": body}})).collect();
     let (status, w) = post(&c, &format!("{base}/v1/write"), json!({ "ops": ops })).await;
     assert_eq!(status, 200, "{w}");
@@ -2046,7 +2249,7 @@ async fn imports_files_over_http() {
     let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent_config("http://unused"), 16, Duration::from_secs(10));
     svc.open_models(dir.path());
     let base = http(Arc::new(svc), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
 
     let jsonl = (0..2500).map(|i| json!({"id": format!("i{i}"), "title": format!("item number {i}"), "tags": ["a", "b"], "price": i, "colour": "red"}).to_string()).collect::<Vec<_>>().join("\n");
     let ndjson = "application/x-ndjson";
@@ -2107,7 +2310,7 @@ async fn sqlite_files_over_http() {
     let mut svc = Service::new(Backend::Local(Arc::new(db)), schema.clone(), agent_config("http://unused"), 16, Duration::from_secs(10));
     svc.open_models(dir.path());
     let base = http(Arc::new(svc), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
 
     // A SQLite file with rows for the server's table and a table it lacks,
     // made by an export without the Strata schemas, so that the server
@@ -2222,12 +2425,13 @@ fn sqlite_files_from_and_to_the_command_line() {
     let db = dir.path().join("items.strata");
     server::import_files(&db, Some(&schema), None, dir.path(), None, false, std::slice::from_ref(&rows), Default::default()).unwrap();
     let out = dir.path().join("items.sqlite");
-    server::export_sqlite(&db, &out, &Default::default()).unwrap();
+    let out_s = out.to_str().unwrap();
+    server::export_sqlite(&db, out_s, &Default::default()).unwrap();
     assert!(strata::sqlite::is_sqlite_file(&out));
-    assert!(server::export_sqlite(&db, &out, &Default::default()).unwrap_err().contains("exists"));
+    assert!(server::export_sqlite(&db, out_s, &Default::default()).unwrap_err().contains("exists"));
     // --plan writes nothing, and is for SQLite files.
     let back = dir.path().join("back.strata");
-    let plan = || server::SqliteImport { plan: true, ..Default::default() };
+    let plan = || server::FileImport { plan: true, ..Default::default() };
     server::import_files(&back, None, None, dir.path(), None, false, std::slice::from_ref(&out), plan()).unwrap();
     assert!(!back.exists());
     assert!(server::import_files(&back, None, None, dir.path(), None, false, std::slice::from_ref(&rows), plan()).unwrap_err().contains("--plan"));
@@ -2238,6 +2442,119 @@ fn sqlite_files_from_and_to_the_command_line() {
     assert_eq!(b.snapshot().n_live_docs(), 2);
     let r = b.query("SELECT price FROM items WHERE id = 'b'", &Params::new()).unwrap();
     assert_eq!(r.rows[0][0], Value::Float(2.0));
+}
+
+#[test]
+fn parquet_files_from_and_to_the_command_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let (schema, rows) = (dir.path().join("items.json"), dir.path().join("rows.jsonl"));
+    std::fs::write(&schema, ITEMS).unwrap();
+    std::fs::write(&rows, "{\"id\": \"a\", \"title\": \"first\", \"tags\": [\"x\"]}\n{\"id\": \"b\", \"title\": \"second\", \"price\": 2}\n").unwrap();
+    let db = dir.path().join("items.strata");
+    server::import_files(&db, Some(&schema), None, dir.path(), None, false, std::slice::from_ref(&rows), Default::default()).unwrap();
+    // To a file, by its name; to a directory, by a trailing slash.
+    let out = dir.path().join("items.parquet");
+    let out_s = out.to_str().unwrap();
+    server::export_parquet(&db, out_s, &Default::default()).unwrap();
+    assert!(strata::parquet::is_parquet(&out));
+    assert!(server::export_parquet(&db, out_s, &Default::default()).unwrap_err().contains("exists"));
+    let all = format!("{}/", dir.path().join("all").display());
+    server::export_parquet(&db, &all, &Default::default()).unwrap();
+    assert!(dir.path().join("all/items.parquet").is_file());
+    // --plan writes nothing.
+    let back = dir.path().join("back.strata");
+    let plan = server::FileImport { plan: true, ..Default::default() };
+    server::import_files(&back, None, None, dir.path(), None, false, std::slice::from_ref(&out), plan).unwrap();
+    assert!(!back.exists());
+    // A new database from the file: the schema it kept, and the rows.
+    server::import_files(&back, None, None, dir.path(), None, false, std::slice::from_ref(&out), Default::default()).unwrap();
+    let (a, b) = (Db::open(&db, DbOptions::default()).unwrap(), Db::open(&back, DbOptions::default()).unwrap());
+    assert_eq!(a.schema().to_short_json(), b.schema().to_short_json());
+    assert_eq!(b.snapshot().n_live_docs(), 2);
+    let r = b.query("SELECT price FROM items WHERE id = 'b'", &Params::new()).unwrap();
+    assert_eq!(r.rows[0][0], Value::Float(2.0));
+    drop((a, b));
+    // Into another table of it, named by --table, keyed by --key; a
+    // directory reads as one table.
+    let how = server::FileImport { key: Some("title".into()), ..Default::default() };
+    let dir_in = dir.path().join("all");
+    server::import_files(&back, None, Some("copy"), dir.path(), None, false, std::slice::from_ref(&dir_in), how).unwrap();
+    let b = Db::open(&back, DbOptions::default()).unwrap();
+    assert_eq!(b.query("SELECT COUNT(*) FROM copy", &Params::new()).unwrap().rows[0][0], Value::Int(2));
+    assert_eq!(b.storage().table("copy").unwrap().to_short_json()["key"], json!("id"), "the kept schema's key stands");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn parquet_files_over_http() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = strata::Schema::from_json(ITEMS).unwrap();
+    let db = Db::create(&dir.path().join("i.strata"), schema.clone(), DbOptions { publish_snapshots: true, ..DbOptions::default() }).unwrap();
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema.clone(), agent_config("http://unused"), 16, Duration::from_secs(10));
+    svc.open_models(dir.path());
+    let base = http(Arc::new(svc), None).await;
+    let c = strata_server::http_client().build().unwrap();
+
+    // Files exported from another database: its items (kept schema), and
+    // its notes without the schema, so that the server makes one.
+    let src = Db::create(&dir.path().join("src.strata"), schema, DbOptions::default()).unwrap();
+    src.sql("INSERT INTO items (id, title, tags, price) VALUES ('a', 'red umbrella', ['rain'], 12.5), ('b', 'blue kettle', [], 30), ('c', 'green lamp', ['home', 'light'], 18)", &Params::new()).unwrap();
+    src.sql("CREATE TABLE notes (id INT PRIMARY KEY, item KEYWORD, body TEXT, at TIMESTAMP)", &Params::new()).unwrap();
+    src.sql("INSERT INTO notes (id, item, body, at) VALUES (1, 'a', 'keeps the rain off on the walk to the station', '2026-10-01T12:00:00Z'), (2, 'c', 'a warm light for reading in the evening', '2026-10-02T08:30:00Z')", &Params::new()).unwrap();
+    let items = dir.path().join("items.parquet");
+    strata::parquet::export(&src, &items, &strata::parquet::ExportOptions { tables: vec!["items".into()], ..Default::default() }).unwrap();
+    let notes = dir.path().join("notes.parquet");
+    strata::parquet::export(&src, &notes, &strata::parquet::ExportOptions { tables: vec!["notes".into()], meta: false }).unwrap();
+    let (items, notes) = (std::fs::read(&items).unwrap(), std::fs::read(&notes).unwrap());
+    let send = |url: String, body: Vec<u8>, ct: &'static str| {
+        let c = c.clone();
+        async move {
+            let r = c.post(url).header("content-type", ct).body(body).send().await.unwrap();
+            (r.status().as_u16(), r.json::<Json>().await.unwrap())
+        }
+    };
+
+    // The plan writes nothing; a file that keeps no table needs ?table=.
+    let (status, plan) = send(format!("{base}/v1/import?format=parquet&table=notes&plan=true"), notes.clone(), "application/vnd.apache.parquet").await;
+    assert_eq!((status, &plan["exists"], &plan["key"]), (200, &json!(false), &json!("id")), "{plan}");
+    assert_eq!(plan["fields"][2]["type"], json!("text"), "{plan}");
+    assert_eq!(plan["fields"][3]["type"], json!("timestamp"), "{plan}");
+    let (status, r) = send(format!("{base}/v1/import"), notes.clone(), "application/octet-stream").await;
+    assert_eq!(status, 400, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("?table="), "{r}");
+    // Recognised by its first bytes; the table is created.
+    let (status, r) = send(format!("{base}/v1/import?table=notes"), notes.clone(), "application/octet-stream").await;
+    assert_eq!((status, &r["written"], &r["created"]), (200, &json!(2), &json!(true)), "{r}");
+    let (_, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT id FROM notes WHERE MATCH(body, 'reading')"})).await;
+    assert_eq!(q["rows"], json!([[2]]), "{q}");
+    // The table the file kept, which the server has: upserted by key.
+    let (status, r) = send(format!("{base}/v1/import?format=parquet"), items.clone(), "application/vnd.apache.parquet").await;
+    assert_eq!((status, &r["table"], &r["written"], &r["created"]), (200, &json!("items"), &json!(3), &json!(false)), "{r}");
+    let (_, q) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT price FROM items WHERE id = 'a'"})).await;
+    assert_eq!(q["rows"], json!([[12.5]]), "{q}");
+
+    // What is refused: ?tables= (for SQLite), a file that is not Parquet.
+    for (url, body, why) in [("format=parquet&tables=items", items.clone(), "?table="), ("format=parquet&table=x", b"PAR1 but not really".to_vec(), "not a Parquet file")] {
+        let (status, r) = send(format!("{base}/v1/import?{url}"), body, "application/octet-stream").await;
+        assert_eq!(status, 400, "{url}: {r}");
+        assert!(r["error"].as_str().unwrap().contains(why), "{url}: {r}");
+        assert!(!r["error"].as_str().unwrap().contains("upload.parquet"), "{url}: {r}");
+    }
+
+    // The export: one table, which imports back as it was.
+    let r = c.get(format!("{base}/v1/export?format=parquet")).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 400, "two tables: name one");
+    let r = c.get(format!("{base}/v1/export?format=parquet&tables=notes")).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    assert_eq!(r.headers()["content-type"], "application/vnd.apache.parquet");
+    assert_eq!(r.headers()["content-disposition"], "attachment; filename=\"notes.parquet\"");
+    assert_eq!(r.headers()["x-strata-tables"], "notes");
+    let out = dir.path().join("out.parquet");
+    std::fs::write(&out, r.bytes().await.unwrap()).unwrap();
+    let (back, done) = strata::parquet::import_new(&out, &dir.path().join("back.strata"), DbOptions::default(), &Default::default()).unwrap();
+    assert_eq!((done.table.as_str(), done.rows), ("notes", 2));
+    assert_eq!(back.schema().to_short_json(), src.storage().table("notes").unwrap().to_short_json());
+    let r = c.get(format!("{base}/v1/export?format=parquet&tables=items,notes")).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 400);
 }
 
 // OPS-3: a replica that refused a query because too many were running was
@@ -2299,7 +2616,7 @@ async fn snapshot_leases_end_with_their_query() {
     let dir = tempfile::tempdir().unwrap();
     let svc = service(create(dir.path(), "db.strata", |_| true), "http://unused");
     let sql = "SELECT id FROM products ORDER BY bm25(body, 'waterproof hiking boots') DESC LIMIT 5";
-    let (_, lease) = svc.term_stats(sql, None, &Params::new(), &After::Any, 200).await.unwrap();
+    let (_, lease, _) = svc.term_stats(sql, None, &Params::new(), &After::Any, 200).await.unwrap();
     let q = |snapshot| QueryReq { sql: sql.into(), snapshot, ..Default::default() };
     svc.query(q(lease)).await.unwrap();
     assert_eq!(svc.sweep_leases(), 1);
@@ -2331,7 +2648,7 @@ async fn health_reports_a_database_that_cannot_write() {
     let svc = service(db, "http://unused");
     let db = svc.local_db().unwrap().clone();
     let url = http(svc.clone(), Some("tok")).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let get = |route: &str| {
         let r = c.get(format!("{url}{route}")).bearer_auth("tok").send();
         async move {
@@ -2377,6 +2694,41 @@ async fn health_reports_a_database_that_cannot_write() {
 }
 
 
+/// A scrub reads every segment against its checksum while the server
+/// serves: damage on disk that no query read yet (bit rot on a replica,
+/// finding chaos-6) is in `/v1/health`, the metrics and the series, which
+/// the built-in `damaged` alert watches.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scrub_finds_data_damaged_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("d.strata");
+    let opts = DbOptions { layout: Layout::Directory, publish_snapshots: true, ..DbOptions::default() };
+    let db = Db::create(&path, demo::schema(10), opts).unwrap();
+    db.load((0..10).map(|i| demo::product(i, 7))).unwrap();
+    let svc = service(db, "http://unused");
+    let url = http(svc.clone(), None).await;
+    let c = strata_server::http_client().build().unwrap();
+    let (status, r) = post(&c, &format!("{url}/v1/admin/scrub"), json!({})).await;
+    assert_eq!(status, 200, "{r}");
+    assert!(r["scrub"]["segments"].as_u64().unwrap() >= 1 && r["scrub"]["damaged"] == json!([]), "{r}");
+
+    // A byte flipped in the middle of a segment file.
+    let seg = std::fs::read_dir(&path).unwrap().flatten().map(|e| e.path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with("seg-")).unwrap();
+    let mut bytes = std::fs::read(&seg).unwrap();
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0xff;
+    std::fs::write(&seg, &bytes).unwrap();
+    let (status, r) = post(&c, &format!("{url}/v1/admin/scrub"), json!({"rate_mib_s": 1024})).await;
+    assert_eq!(status, 200, "{r}");
+    let damaged = r["scrub"]["damaged"].as_array().unwrap().clone();
+    assert!(damaged.len() == 1 && damaged[0].as_str().unwrap().contains("fails its checksum"), "{r}");
+    let h: Json = c.get(format!("{url}/v1/health")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(h["damaged"], json!(damaged), "{h}");
+    let m = c.get(format!("{url}/metrics")).send().await.unwrap().text().await.unwrap();
+    assert!(m.contains("strata_damaged_segments 1"), "{m}");
+    assert_eq!(svc.sample().gauges.get("damaged_segments").copied(), Some(1.0));
+}
+
 /// Checkpoints into `--backup-dir` (a write still in the memtable included,
 /// a directory checkpoint linked to the one before), names that would leave
 /// the directory refused, and the check and vacuum routes.
@@ -2389,7 +2741,7 @@ async fn admin_routes_checkpoint_check_and_vacuum() {
     let backups = dir.path().join("backups");
     svc.set_backup_dir(&backups).unwrap();
     let base = http(Arc::new(svc), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let (status, r) = post(&c, &format!("{base}/v1/write"), json!({"ops": [{"op": "delete", "key": "p0000001"}]})).await;
     assert_eq!(status, 200, "{r}");
 
@@ -2413,8 +2765,9 @@ async fn admin_routes_checkpoint_check_and_vacuum() {
     }
     let (status, _) = post(&c, &format!("{base}/v1/admin/checkpoint"), json!({"name": "first"})).await;
     assert_eq!(status, 500, "an existing name is not overwritten");
-    // (`first-wal` is the log opening `first` above created.)
-    let mut names: Vec<String> = std::fs::read_dir(&backups).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n != "first-wal").collect();
+    // (`first-wal` and `first-readers` are the log and the writer's lock
+    // opening `first` above made.)
+    let mut names: Vec<String> = std::fs::read_dir(&backups).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n != "first-wal" && n != "first-readers").collect();
     names.sort();
     assert_eq!(names, ["d1", "d2", "first"]);
     assert!(!dir.path().join("out").exists());
@@ -2455,7 +2808,7 @@ async fn bool_and_timestamp_fields_over_http_and_grpc() {
     let svc = |db: Db| Arc::new(Service::new(Backend::Local(Arc::new(db)), schema.clone(), agent_config("http://unused"), 16, Duration::from_secs(10)));
 
     let base = http(svc(open("whole.strata", &|_| true)), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let (query_url, write_url) = (format!("{base}/v1/query"), format!("{base}/v1/write"));
     let query = |sql: &str, params: Json| post(&c, &query_url, json!({"sql": sql, "params": params}));
     let (status, r) = query("SELECT id, done, at FROM tasks WHERE done = :d AND at >= :since ORDER BY n LIMIT 2", json!({"d": true, "since": "2026-10-20"})).await;
@@ -2545,7 +2898,7 @@ async fn defaults_and_not_null_over_http_and_grpc() {
     let svc = |db: Db| Arc::new(Service::new(Backend::Local(Arc::new(db)), schema.clone(), agent_config("http://unused"), 16, Duration::from_secs(10)));
 
     let base = http(svc(open("one.strata")), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let (status, r) = c.get(format!("{base}/v1/schema")).send().await.unwrap().json::<Json>().await.map(|j| (200, j)).unwrap();
     assert_eq!((status, &r["short"]["fields"][1]), (200, &json!({"name": "kind", "type": "keyword", "not_null": true, "default": "click"})));
     let (status, r) = post(&c, &format!("{base}/v1/write"), json!({"ops": [{"op": "insert", "doc": {"id": "a"}}, {"op": "insert", "doc": {"id": "b", "kind": "view", "n": null}}]})).await;
@@ -2598,7 +2951,7 @@ async fn a_simple_analyzer_over_http() {
     let db = Db::create(&dir.path().join("n.strata"), schema.clone(), DbOptions { publish_snapshots: true, ..DbOptions::default() }).unwrap();
     let svc = Arc::new(Service::new(Backend::Local(Arc::new(db)), schema, agent_config("http://unused"), 16, Duration::from_secs(10)));
     let base = http(svc, None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let r = c.get(format!("{base}/v1/schema")).send().await.unwrap().json::<Json>().await.unwrap();
     assert_eq!(r["short"]["fields"][1], json!({"name": "title", "type": "text", "analyzer": "simple"}));
     assert_eq!(r["schema"]["fields"][1]["analyzer"], json!({"name": "simple", "version": 1}));
@@ -2637,7 +2990,7 @@ async fn explain_gives_the_plan_ir() {
     let db = create(dir.path(), "e.strata", |i| i < 300);
     let schema = (*db.schema()).clone();
     let base = http(service(db, "http://unused"), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let sql = "SELECT id, price, score() FROM products WHERE category = 'kitchen' ORDER BY bm25(body, 'quiet kettle') DESC LIMIT 5";
     let (status, r) = post(&c, &format!("{base}/v1/explain"), json!({ "sql": sql })).await;
     assert_eq!(status, 200, "{r}");
@@ -2670,8 +3023,10 @@ async fn explain_gives_the_plan_ir() {
         assert!((score - bm25 * (1.0 + 0.1 * rating)).abs() < 1e-9 * score.max(1.0), "{hit}");
         assert_eq!(hit["bm25(body, 'quiet kettle') * (1 + 0.1 * coalesce(rating, 0))"], hit["score()"], "{hit}");
     }
+    // A query that ranks nothing has no values to show for its rows: its
+    // plan comes back without hits (the workbench asks for them always).
     let (status, e) = post(&c, &format!("{base}/v1/explain"), json!({ "sql": "SELECT id FROM products LIMIT 3", "hits": 3 })).await;
-    assert!(status == 400 && e["error"].as_str().unwrap().contains("ORDER BY"), "{e}");
+    assert!(status == 200 && e.get("hits").is_none() && e["rows"] == 3, "{e}");
     // POST /v1/plan runs that plan as /v1/query runs the SQL, and a write
     // plan as /v1/sql runs the statement.
     let (status, want) = post(&c, &format!("{base}/v1/query"), json!({ "sql": sql })).await;
@@ -2719,7 +3074,7 @@ async fn conditional_writes_apply_while_the_row_is_unchanged() {
     db.storage().start_seq_no().unwrap();
     let svc = service(db, "http://unused");
     let base = http(svc.clone(), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let url = format!("{base}/v1/write");
     let row = |id: &'static str| {
         let (c, base) = (c.clone(), base.clone());
@@ -2891,7 +3246,7 @@ async fn conditional_writes_through_a_coordinator() {
     // Over HTTP and gRPC, a read through it names the write it must see
     // with each shard's number, as the write answered them.
     let base = http(coord.clone(), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let (status, r) = post(&c, &format!("{base}/v1/write"), json!({"ops": [{"op": "set", "key": "p0000004", "field": "sold", "value": 6}]})).await;
     assert_eq!(status, 200, "{r}");
     let nos = r["seq_nos"].clone();
@@ -3089,7 +3444,7 @@ async fn next_semantic_id_codes_over_http_and_shards() {
 
     // Over HTTP.
     let url = http(service(make("http.strata", &|_| true), "http://unused"), None).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let (status, got) = post(&c, &format!("{url}/v1/sid/next"), json!({"field": "sid", "prefixes": prefixes, "where": "tag = :t", "params": {"t": "red"}})).await;
     assert_eq!(status, 200, "{got}");
     assert_eq!(got["next"], as_json(want(Some("tag = 'red'"))));

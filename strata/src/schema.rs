@@ -31,6 +31,15 @@ pub enum VectorCodes {
     /// A bit per dimension: 1/32 of the float32 vectors. Searches rescore
     /// [`crate::vector::codes::BINARY_RERANK`] times more candidates.
     Binary,
+    /// RaBitQ codes ([`crate::vector::rabitq`]): the vectors rotated at
+    /// random, a bit per dimension and a correction factor per row.
+    /// Searches rescore [`crate::vector::codes::oversample`] times more
+    /// candidates.
+    Rabitq1,
+    /// RaBitQ codes of two bits per dimension.
+    Rabitq2,
+    /// RaBitQ codes of four bits per dimension: half the bytes of SQ8.
+    Rabitq4,
 }
 
 impl VectorCodes {
@@ -38,19 +47,36 @@ impl VectorCodes {
         match self {
             VectorCodes::Sq8 => "sq8",
             VectorCodes::Binary => "binary",
+            VectorCodes::Rabitq1 => "rabitq1",
+            VectorCodes::Rabitq2 => "rabitq2",
+            VectorCodes::Rabitq4 => "rabitq4",
         }
     }
 
+    pub const ALL: [VectorCodes; 5] = [VectorCodes::Sq8, VectorCodes::Binary, VectorCodes::Rabitq1, VectorCodes::Rabitq2, VectorCodes::Rabitq4];
+
     pub fn parse(s: &str) -> Option<VectorCodes> {
-        [VectorCodes::Sq8, VectorCodes::Binary].into_iter().find(|k| k.as_str().eq_ignore_ascii_case(s))
+        VectorCodes::ALL.into_iter().find(|k| k.as_str().eq_ignore_ascii_case(s))
+    }
+
+    /// The bits per dimension of RaBitQ codes.
+    pub fn rabitq_bits(&self) -> Option<usize> {
+        match self {
+            VectorCodes::Rabitq1 => Some(1),
+            VectorCodes::Rabitq2 => Some(2),
+            VectorCodes::Rabitq4 => Some(4),
+            VectorCodes::Sq8 | VectorCodes::Binary => None,
+        }
     }
 
     /// Bytes per code row of `dim` dimensions: SQ8 rows are padded to 64
-    /// bytes, binary rows to 8.
+    /// bytes, binary rows to 8; RaBitQ rows hold their bit planes of
+    /// `⌈dim/64⌉·64` dimensions and 8 bytes of factors.
     pub fn stride(&self, dim: usize) -> usize {
         match self {
             VectorCodes::Sq8 => dim.next_multiple_of(64),
             VectorCodes::Binary => crate::vector::bits::stride(dim),
+            c => crate::vector::rabitq::stride(dim, c.rabitq_bits().expect("rabitq")),
         }
     }
 
@@ -87,6 +113,72 @@ pub enum FieldType {
 
 /// The feature of a database with a JSON field ([`FieldType::Json`]).
 pub const JSON: &str = "json";
+/// The feature of a database with a JSON field whose strings are indexed
+/// as text too ([`Field::text`]): its segments hold a text index beside
+/// the field's terms.
+pub const JSON_TEXT: &str = "json_text";
+/// The feature of a TEXT field a language model makes of another's text
+/// ([`Derive::prompt`]): a version without it would not make the text.
+pub const DERIVE_TEXT: &str = "derive_text";
+
+/// The feature of a database with a VECTOR field searched by RaBitQ codes
+/// ([`VectorCodes::Rabitq1`], [`crate::vector::rabitq`]): versions of
+/// Strata from before them refuse it by name rather than misread its
+/// segments.
+pub const RABITQ: &str = "rabitq";
+
+/// The feature of a database with a VECTOR field partitioned by a column
+/// ([`Field::partition`]): its segments hold a graph per value of the
+/// column besides the field's graph, which versions of Strata from before
+/// it would not keep through a merge, so they refuse the database by name.
+pub const VECTOR_PARTITION: &str = "vector_partition";
+
+/// The most partitions a segment builds for a KEYWORD partition key
+/// ([`VectorPartition`]): the most frequent values get one each, and a
+/// filter on another value searches the field's own graph.
+pub const MAX_VALUE_PARTITIONS: usize = 64;
+
+/// What a VECTOR field is partitioned by (`OPTIONS(partition_by = 'rating',
+/// partition_bounds = '1, 2, 3, 4')`): each segment keeps, besides the
+/// field's HNSW graph of every row, one graph per partition of the rows, and
+/// a search whose filter limits column `by` to some partitions walks only
+/// their graphs ([`crate::vector::VectorReader::search_parts`]). A filter
+/// that holds for every row of a partition needs no test inside it, so it
+/// costs what an unfiltered search of that partition costs.
+///
+/// A KEYWORD column partitions by value (up to [`MAX_VALUE_PARTITIONS`] per
+/// segment); an INT or FLOAT column by the ranges between `bounds`, which
+/// increase: `[1, 2, 3, 4]` makes `< 1`, `[1, 2)`, `[2, 3)`, `[3, 4)` and
+/// `>= 4`. Rows whose column is NULL are in the field's graph only.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VectorPartition {
+    /// A stored, single-valued KEYWORD, INT or FLOAT column of the table.
+    pub by: String,
+    /// The bounds of an INT or FLOAT column's ranges; empty for KEYWORD.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bounds: Vec<f64>,
+}
+
+impl VectorPartition {
+    /// The range a numeric value falls in: the number of bounds at or
+    /// below it.
+    pub fn bucket(&self, v: f64) -> usize {
+        self.bounds.partition_point(|&b| b <= v)
+    }
+}
+
+/// The feature of a database with field ids whose table has a primary
+/// key: its segments' key index keeps a 32-bit fingerprint of each key's
+/// hash and reads a KEYWORD key from the key field's keyword column
+/// ([`crate::storage::pk`]), a layout that versions of Strata from before
+/// it cannot read, so they refuse the database by name. A database written
+/// before field ids keeps the layout those versions read.
+pub const COMPACT_KEYS: &str = "compact_keys";
+
+/// The feature of a database with a table whose rows expire at a time
+/// they hold ([`Schema::with_expire_by`]): versions of Strata from before
+/// it would show expired rows, so they refuse the database by name.
+pub const EXPIRE_BY: &str = "expire_by";
 
 /// What an INT column's integers stand for (format 3; a database is
 /// written in format 3 only while a table has such a field). Queries and
@@ -250,6 +342,18 @@ pub struct Field {
     /// that would find those sections missing refuse it by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added: Option<Added>,
+    /// A VECTOR field's partitions ([`VectorPartition`]): makes the
+    /// database format 3 (feature [`VECTOR_PARTITION`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<VectorPartition>,
+    /// A JSON field whose string values are also indexed as text
+    /// (`OPTIONS(text = true)`): one text index over the strings of each
+    /// row's object, so `MATCH(attrs, ...)` and `bm25(attrs, ...)` search
+    /// them as they do a TEXT field's, with the field's [`Field::analyzer`]
+    /// and positions ([`crate::json::text_of`]). Makes the database format
+    /// 3 (feature [`JSON_TEXT`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub text: bool,
 }
 
 /// What [`Field::added`] records of a field added to a table.
@@ -276,11 +380,18 @@ pub const ADDED_FIELDS: &str = "added_fields";
 /// stored, so merges and replicas never run the model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Derive {
-    /// A MEDIA field.
+    /// A MEDIA field; or, with a prompt, a stored TEXT or KEYWORD field.
     pub from: String,
     /// The model, by the name [`crate::derive::open`] finds it under, such
-    /// as `blip-image-captioning-base` or `colors`.
+    /// as `blip-image-captioning-base` or `colors`; with a prompt, a
+    /// language model's (`anthropic/claude-haiku-5-5`, `openai/<model>`,
+    /// or a directory whose `endpoint.json` names a chat server).
     pub model: String,
+    /// What a language model is told to make of the source field's text
+    /// ([`crate::derive::open_for`]): a summary, a category, keywords.
+    /// Empty for a model of media.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prompt: String,
 }
 
 /// A semantic-ID field's source and codebook ([`crate::sid`]): the writer
@@ -365,6 +476,8 @@ impl Field {
             semantic_id: None,
             derive: None,
             added: None,
+            partition: None,
+            text: false,
         }
     }
     /// What the field's sections are named by in a segment
@@ -404,13 +517,20 @@ impl Field {
     /// `v` in the form this field's column stores: a BOOL field's value
     /// as 1 or 0 (from a boolean, 1 or 0, or the text `true`, `false`,
     /// `t`, `f`, `1` or `0`), a TIMESTAMP field's as microseconds since
-    /// the epoch (from a timestamp, that integer, or ISO 8601 text), and a
-    /// boolean given to any other INT or FLOAT field as 1 or 0. Any other
-    /// value is returned as it is, for [`crate::value::validate`] to
-    /// judge.
+    /// the epoch (from a timestamp, that integer, or ISO 8601 text), a
+    /// boolean given to any other INT field as 1 or 0, and a FLOAT field's
+    /// value as a FLOAT, as its column reads it back (an integer or a
+    /// boolean as its double, -0.0 as 0.0). Any other value is returned as
+    /// it is, for [`crate::value::validate`] to judge.
     pub fn store(&self, v: crate::value::Value) -> Result<crate::value::Value> {
         use crate::value::Value;
-        let bad = |v: &Value, want: Logical| Error::Schema(format!("bad value for {}: {v:?} ({})", self.name, want.expects()));
+        let float = |v: Value| match v {
+            Value::Bool(b) => Value::Float(b as i64 as f64),
+            Value::Int(x) => Value::Float(x as f64),
+            Value::Float(x) if x == 0.0 => Value::Float(0.0),
+            v => v,
+        };
+        let bad = |v: &Value, want: Logical| Error::Schema(format!("bad value for {}: {} ({})", self.name, crate::query::hint::sql_value(v), want.expects()));
         const BOOL: Logical = Logical::Bool;
         const TIME: Logical = Logical::Timestamp;
         Ok(match (self.logical, v) {
@@ -429,7 +549,7 @@ impl Field {
                 None => return Err(bad(&Value::Str(s), TIME)),
             },
             (Some(Logical::Timestamp), v) => return Err(bad(&v, TIME)),
-            (None, Value::Bool(b)) if matches!(self.ty, FieldType::Int | FieldType::Float) => Value::Int(b as i64),
+            (None, Value::Bool(b)) if self.ty == FieldType::Int => Value::Int(b as i64),
             (None, Value::List(xs)) if self.ty == FieldType::Int => Value::List(
                 xs.into_iter()
                     .map(|x| match x {
@@ -438,6 +558,8 @@ impl Field {
                     })
                     .collect(),
             ),
+            (None, Value::List(xs)) if self.ty == FieldType::Float => Value::List(xs.into_iter().map(float).collect()),
+            (None, v) if self.ty == FieldType::Float => float(v),
             (None, v) => v,
         })
     }
@@ -454,6 +576,16 @@ impl Field {
     /// The analyzer of a TEXT field's text ([`Field::analyzer`]).
     pub fn text_analyzer(&self) -> Analyzer {
         self.analyzer.unwrap_or_default()
+    }
+    /// Indexes a JSON field's strings as text too ([`Field::text`]).
+    pub fn json_text(mut self) -> Self {
+        self.text = true;
+        self
+    }
+    /// The field has a text index that `MATCH` and `bm25` read: an
+    /// indexed TEXT field, or a JSON field with [`Field::text`].
+    pub fn has_text(&self) -> bool {
+        self.indexed && (matches!(self.ty, FieldType::Text { .. }) || self.ty == FieldType::Json && self.text)
     }
     /// Gives the field a default ([`Field::default`]).
     pub fn default(mut self, value: serde_json::Value) -> Self {
@@ -539,7 +671,14 @@ impl Field {
 
     /// Makes a TEXT field `model`'s text of MEDIA field `from` ([`Derive`]).
     pub fn derived(mut self, model: &str, from: &str) -> Self {
-        self.derive = Some(Derive { from: from.to_string(), model: model.to_string() });
+        self.derive = Some(Derive { from: from.to_string(), model: model.to_string(), prompt: String::new() });
+        self
+    }
+
+    /// A stored TEXT field that language model `model` makes of TEXT or
+    /// KEYWORD field `from`, told `prompt` ([`Derive::prompt`]).
+    pub fn derived_by(mut self, model: &str, from: &str, prompt: &str) -> Self {
+        self.derive = Some(Derive { from: from.to_string(), model: model.to_string(), prompt: prompt.to_string() });
         self
     }
     /// A semantic-ID field: a stored KEYWORD[] filled from the vector of
@@ -578,6 +717,10 @@ pub struct Schema {
     /// How long rows are kept ([`Schema::with_retain`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retain: Option<Retain>,
+    /// The TIMESTAMP field that holds when each row expires
+    /// ([`Schema::with_expire_by`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expire_by: Option<String>,
     /// The fields that make each row an edge of a graph
     /// ([`Schema::with_edges`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -661,7 +804,7 @@ pub enum Alter {
     /// Drops the column of this name (any case): its id leaves the table
     /// for good, and segments keep its data until a merge rewrites them.
     /// Not the key, nor a column that another one or the table's options
-    /// name (`shard_by`, `cluster_by`, `retain_by`, `edges`).
+    /// name (`shard_by`, `cluster_by`, `retain_by`, `expire_by`, `edges`).
     DropField(String),
     /// Renames a column, which keeps its id and everything written of it;
     /// the table's options and fields that name it name it anew.
@@ -678,6 +821,30 @@ impl Alter {
     }
 }
 
+/// The name of the table a database made with no tables holds first
+/// ([`Schema::placeholder`]). A database always has a first table, the one
+/// it was created with; a server started on a new path without a schema
+/// creates its database with this one, which holds no rows, and the
+/// tables people create come after it. Listings and exports leave it out,
+/// and a write that names no table goes to the first table created after
+/// it. It is an ordinary table on disk: a version of Strata from before it
+/// opens such a database and lists it.
+pub const PLACEHOLDER_TABLE: &str = "_placeholder";
+
+impl Schema {
+    /// The first table of a database made with no tables
+    /// ([`PLACEHOLDER_TABLE`]): a key and nothing else.
+    pub fn placeholder() -> Schema {
+        Schema::from_json(&format!(r#"{{"table": "{PLACEHOLDER_TABLE}", "key": "id", "fields": [{{"name": "id", "type": "keyword"}}]}}"#)).expect("the placeholder schema is valid")
+    }
+
+    /// Whether this is the first table of a database made with no tables
+    /// ([`PLACEHOLDER_TABLE`]).
+    pub fn is_placeholder(&self) -> bool {
+        self.table.eq_ignore_ascii_case(PLACEHOLDER_TABLE)
+    }
+}
+
 impl Schema {
     /// This table with `alter` made, checked as [`Schema::new`] checks a
     /// table. Fields keep their ids; an added one gets the next
@@ -691,7 +858,7 @@ impl Schema {
         }
         let find = |name: &str| self.field_index(name).ok_or_else(|| Error::Schema(format!("table {} has no column {name}", self.table)));
         let mut fields = self.fields.clone();
-        let mut options = (self.shard_by.clone(), self.cluster_by.clone(), self.retain.clone(), self.edges.clone());
+        let mut options = (self.shard_by.clone(), self.cluster_by.clone(), self.retain.clone(), self.edges.clone(), self.expire_by.clone());
         match alter {
             Alter::AddField(f) => {
                 let mut f = f.clone();
@@ -754,8 +921,8 @@ impl Schema {
                     }
                 }
                 fields[i].name = to.clone();
-                let (shard_by, cluster_by, retain, edges) = &mut options;
-                shard_by.iter_mut().chain(cluster_by.iter_mut()).for_each(rename);
+                let (shard_by, cluster_by, retain, edges, expire_by) = &mut options;
+                shard_by.iter_mut().chain(cluster_by.iter_mut()).chain(expire_by.iter_mut()).for_each(rename);
                 if let Some(r) = retain {
                     rename(&mut r.by);
                 }
@@ -768,9 +935,12 @@ impl Schema {
         }
         let key = self.primary_key.map(|k| self.fields[k].id).and_then(|id| fields.iter().find(|f| f.id == id)).map(|f| f.name.clone());
         let mut s = Schema::with_next_id(&self.table, fields, key.as_deref(), self.next_field_id)?;
-        let (shard_by, cluster_by, retain, edges) = options;
+        let (shard_by, cluster_by, retain, edges, expire_by) = options;
         if let Some(f) = shard_by {
             s = s.with_shard_by(&f)?;
+        }
+        if let Some(f) = expire_by {
+            s = s.with_expire_by(&f)?;
         }
         if let Some(f) = cluster_by {
             s = s.with_cluster_by(&f)?;
@@ -835,12 +1005,18 @@ impl Schema {
             if f.name.eq_ignore_ascii_case(name) {
                 continue;
             }
-            let names = f.generated_from.iter().chain(f.embed.iter().flat_map(|e| e.from.iter())).chain(f.derive.iter().map(|d| &d.from)).chain(f.semantic_id.iter().map(|s| &s.from));
+            let names = f
+                .generated_from
+                .iter()
+                .chain(f.embed.iter().flat_map(|e| e.from.iter()))
+                .chain(f.derive.iter().map(|d| &d.from))
+                .chain(f.semantic_id.iter().map(|s| &s.from))
+                .chain(f.partition.iter().map(|p| &p.by));
             if names.into_iter().any(|n| same(n)) {
                 return Some(format!("column {}", f.name));
             }
         }
-        let options = [("shard_by", self.shard_by.as_deref()), ("cluster_by", self.cluster_by.as_deref()), ("retain_by", self.retain.as_ref().map(|r| r.by.as_str()))];
+        let options = [("shard_by", self.shard_by.as_deref()), ("cluster_by", self.cluster_by.as_deref()), ("retain_by", self.retain.as_ref().map(|r| r.by.as_str())), ("expire_by", self.expire_by.as_deref())];
         if let Some((o, _)) = options.iter().find(|(_, n)| n.is_some_and(same)) {
             return Some(format!("its option {o}"));
         }
@@ -858,7 +1034,7 @@ impl Schema {
     /// `next_field_id`: a field without one gets the next, never an id a
     /// field it had before held.
     fn with_next_id(table: &str, fields: Vec<Field>, primary_key: Option<&str>, next_field_id: u32) -> Result<Self> {
-        let mut s = Schema { table: table.to_string(), fields, next_field_id, primary_key: None, shard_by: None, cluster_by: None, retain: None, edges: None };
+        let mut s = Schema { table: table.to_string(), fields, next_field_id, primary_key: None, shard_by: None, cluster_by: None, retain: None, expire_by: None, edges: None };
         s.give_ids()?;
         if let Some(pk) = primary_key {
             let i = s.field_index(pk).ok_or_else(|| Error::Schema(format!("no primary key field {pk}")))?;
@@ -902,6 +1078,30 @@ impl Schema {
             }
             if f.multi && (!matches!(f.ty, FieldType::Keyword | FieldType::Int) || !f.stored || s.primary_key == Some(i)) {
                 return Err(Error::Schema(format!("multi-valued field {} must be a stored KEYWORD or INT, or a VECTOR, and not the primary key", f.name)));
+            }
+        }
+        for f in s.fields.iter() {
+            let Some(p) = &f.partition else { continue };
+            let bad = |m: String| Err(Error::Schema(format!("field {}: {m}", f.name)));
+            if !matches!(f.ty, FieldType::Vector { index: crate::schema::VectorIndexKind::Hnsw { .. }, .. }) || f.multi || !f.indexed {
+                return bad("partition_by is an option of an indexed one-vector field with index = 'hnsw'".into());
+            }
+            let Some(key) = s.field(&p.by) else { return bad(format!("partition_by names no column: {}", p.by)) };
+            if key.multi || !key.stored || key.logical.is_some() || !key.indexed {
+                return bad(format!("partition_by: {} must be a stored, indexed, single-valued KEYWORD, INT or FLOAT column", key.name));
+            }
+            match key.ty {
+                FieldType::Keyword if p.bounds.is_empty() => {}
+                FieldType::Keyword => return bad(format!("partition_by: {} is a KEYWORD column, partitioned by value without partition_bounds", key.name)),
+                FieldType::Int | FieldType::Float => {
+                    if p.bounds.is_empty() || p.bounds.len() > MAX_VALUE_PARTITIONS - 1 {
+                        return bad(format!("partition_by: the {} column {} needs partition_bounds, 1 to {} increasing numbers", type_name(&key.ty), key.name, MAX_VALUE_PARTITIONS - 1));
+                    }
+                    if !p.bounds.windows(2).all(|w| w[0] < w[1]) || p.bounds.iter().any(|b| !b.is_finite()) {
+                        return bad("partition_bounds must be finite and increase".into());
+                    }
+                }
+                _ => return bad(format!("partition_by: {} must be a KEYWORD, INT or FLOAT column", key.name)),
             }
         }
         for f in s.fields.iter() {
@@ -964,8 +1164,14 @@ impl Schema {
             if f.analyzer == Some(Analyzer::English) {
                 f.analyzer = None;
             }
-            if f.analyzer.is_some() && !matches!(f.ty, FieldType::Text { .. }) {
-                return Err(Error::Schema(format!("field {}: only a TEXT field has an analyzer", f.name)));
+            if f.analyzer.is_some() && !matches!(f.ty, FieldType::Text { .. }) && !(f.ty == FieldType::Json && f.text) {
+                return Err(Error::Schema(format!("field {}: only a TEXT field, or a JSON field with text, has an analyzer", f.name)));
+            }
+            if f.text && f.ty != FieldType::Json {
+                return Err(Error::Schema(format!("field {}: text is an option of a JSON field (a TEXT field is text already)", f.name)));
+            }
+            if f.text && !f.indexed {
+                return Err(Error::Schema(format!("field {}: text indexes the field's strings, so the field is indexed", f.name)));
             }
         }
         for (i, f) in s.fields.iter().enumerate() {
@@ -1099,6 +1305,41 @@ impl Schema {
         Ok(self)
     }
 
+    /// Expires each row at the time its TIMESTAMP field `by` holds: from
+    /// then on queries, counts and reads by key leave it out, and a write
+    /// by its key finds no row there (an `INSERT` of the key succeeds).
+    /// Expired rows are deleted soon after by [`crate::db::Db::expire`],
+    /// whose deletes are logged as any delete is, so that replicas, which
+    /// apply them, hold the same rows. Rows without a time never expire.
+    /// `by` is an indexed, single-valued TIMESTAMP field other than the
+    /// key, and the table has a primary key. It makes the database format
+    /// 3 (feature [`EXPIRE_BY`]).
+    pub fn with_expire_by(mut self, by: &str) -> Result<Schema> {
+        let i = self.field_index(by).ok_or_else(|| Error::Schema(format!("expire_by names {by}, which is not a field of {}", self.table)))?;
+        let f = &self.fields[i];
+        if f.logical != Some(Logical::Timestamp) || !f.indexed || f.multi {
+            return Err(Error::Schema(format!("expire_by {}: rows expire at the time in an indexed, single-valued TIMESTAMP field", f.name)));
+        }
+        if self.primary_key.is_none() {
+            return Err(Error::Schema(format!("expire_by: table {} needs a primary key, by which expired rows are deleted", self.table)));
+        }
+        self.expire_by = Some(f.name.clone());
+        Ok(self)
+    }
+
+    /// The position of the field holding when rows expire
+    /// ([`Schema::with_expire_by`]).
+    pub fn expire_field(&self) -> Option<usize> {
+        self.expire_by.as_deref().and_then(|f| self.field_index(f))
+    }
+
+    /// Whether `doc`, a row of this table, has expired at `now`
+    /// (microseconds since the epoch, [`crate::timestamp::now`]).
+    pub fn is_expired(&self, doc: &[crate::value::Value], now: i64) -> bool {
+        use crate::value::Value;
+        self.expire_field().and_then(|f| doc.get(f)).is_some_and(|v| matches!(v, Value::Timestamp(t) | Value::Int(t) if *t <= now))
+    }
+
     /// The position of the retention's TIMESTAMP field, and the time
     /// (microseconds since the epoch) before which rows expire at `now`
     /// ([`Schema::with_retain`]).
@@ -1145,8 +1386,21 @@ impl Schema {
             if d.model.is_empty() {
                 return bad("a derived field names its model");
             }
-            if !self.field(&d.from).is_some_and(|m| m.media.is_some()) {
-                return bad(&format!("derive names {}, which is not a MEDIA field", d.from));
+            match self.field(&d.from) {
+                Some(m) if m.media.is_some() => {
+                    if !d.prompt.is_empty() {
+                        return bad("a model of media takes no prompt: a prompt is for text a language model makes of a TEXT or KEYWORD field");
+                    }
+                }
+                Some(m) if matches!(m.ty, FieldType::Text { .. } | FieldType::Keyword) => {
+                    if d.prompt.trim().is_empty() {
+                        return bad(&format!("derive names {}, which is not a MEDIA field: text made of a TEXT or KEYWORD field is a language model's, told what to make by prompt = '...'", d.from));
+                    }
+                    if m.name.eq_ignore_ascii_case(&f.name) || m.derive.is_some() || !m.stored || !m.generated_from.is_empty() || m.multi {
+                        return bad(&format!("derive names {}: a language model reads a stored TEXT or KEYWORD field of one value, not generated or derived itself", d.from));
+                    }
+                }
+                _ => return bad(&format!("derive names {}, which is not a MEDIA field (nor, with a prompt, a TEXT or KEYWORD field)", d.from)),
             }
         }
         Ok(())
@@ -1262,10 +1516,13 @@ impl Schema {
     /// The format 3 features this table needs, as the manifest names them:
     /// its fields' [`Logical::feature`], `not_null`, `default`,
     /// `multi_vector`, `semantic_id`, [`Analyzer::feature`], `media`
-    /// ([`Field::media`]), `derive` ([`Field::derive`]) and [`JSON`], and
+    /// ([`Field::media`]), `derive` ([`Field::derive`]), [`JSON`],
+    /// [`JSON_TEXT`] and [`RABITQ`], and
     /// its options `shard_by`, `cluster_by`, `retain` and `edge_table`
     /// ([`Schema::with_shard_by`], [`Schema::with_cluster_by`],
-    /// [`Schema::with_retain`], [`Schema::with_edges`]).
+    /// [`Schema::with_retain`], [`Schema::with_edges`]), [`EXPIRE_BY`], and
+    /// [`COMPACT_KEYS`] for a primary key (unless the table comes from a
+    /// database written before field ids).
     pub fn features(&self) -> impl Iterator<Item = String> + '_ {
         let fields = self.fields.iter().flat_map(|f| {
             let named = [
@@ -1276,12 +1533,23 @@ impl Schema {
                 f.semantic_id.as_ref().map(|_| "semantic_id"),
                 f.media.map(|_| "media"),
                 f.derive.as_ref().map(|_| "derive"),
+                f.derive.as_ref().filter(|d| !d.prompt.is_empty()).map(|_| DERIVE_TEXT),
                 f.added.as_ref().map(|_| ADDED_FIELDS),
                 (f.ty == FieldType::Json).then_some(JSON),
+                (f.ty == FieldType::Json && f.text).then_some(JSON_TEXT),
+                f.codes.rabitq_bits().map(|_| RABITQ),
+                f.partition.as_ref().map(|_| VECTOR_PARTITION),
             ];
             named.into_iter().flatten().map(String::from).chain(f.analyzer.and_then(Analyzer::feature))
         });
-        let options = [self.shard_by.as_ref().map(|_| "shard_by"), self.cluster_by.as_ref().map(|_| "cluster_by"), self.retain.as_ref().map(|_| "retain"), self.edges.as_ref().map(|_| "edge_table")];
+        let options = [
+            self.shard_by.as_ref().map(|_| "shard_by"),
+            self.cluster_by.as_ref().map(|_| "cluster_by"),
+            self.retain.as_ref().map(|_| "retain"),
+            self.edges.as_ref().map(|_| "edge_table"),
+            self.expire_by.as_ref().map(|_| EXPIRE_BY),
+            (self.primary_key.is_some() && !self.is_legacy()).then_some(COMPACT_KEYS),
+        ];
         fields.chain(options.into_iter().flatten().map(String::from))
     }
 
@@ -1513,8 +1781,9 @@ impl Schema {
     /// each segment's rows by it ([`Schema::with_cluster_by`]), and
     /// `"retain": "400 days"` keeps rows for that long after the time in
     /// `"retain_by"` (default: the table's only TIMESTAMP field;
-    /// [`Schema::with_retain`]). `"edges": "src, dst, w"` makes each row an
-    /// edge ([`Schema::with_edges`]).
+    /// [`Schema::with_retain`]). `"expire_by": "until"` expires each row at
+    /// the time in that field ([`Schema::with_expire_by`]). `"edges": "src,
+    /// dst, w"` makes each row an edge ([`Schema::with_edges`]).
     /// A text field may be made from a media field's file by a model,
     /// `"derive": {"from": "image", "model": "blip-image-captioning-base"}`,
     /// which makes the database format 3 ([`Field::derive`]).
@@ -1587,6 +1856,9 @@ impl Schema {
                 schema = schema.with_retain(&r.by, r.seconds)?;
             }
             Some(other) => return Err(bad(format!("retain is a period, as \"400 days\", not {other}"))),
+        }
+        if let Some(f) = name("expire_by")? {
+            schema = schema.with_expire_by(f)?;
         }
         match obj.get("edges") {
             None | Some(J::Null) => {}
@@ -1663,7 +1935,12 @@ impl Schema {
                     }
                     FieldType::Sparse => ("sparse", true),
                     FieldType::Edges => ("edges", true),
-                    FieldType::Json => ("json", true),
+                    FieldType::Json => {
+                        if f.text {
+                            m.insert("text".into(), json!(true));
+                        }
+                        ("json", true)
+                    }
                 };
                 m.insert("type".into(), json!(ty));
                 if f.multi {
@@ -1691,7 +1968,14 @@ impl Schema {
                     m.insert("semantic_id".into(), serde_json::to_value(s).expect("serialises"));
                 }
                 if let Some(d) = &f.derive {
-                    m.insert("derive".into(), json!({"from": d.from, "model": d.model}));
+                    let mut j = json!({"from": d.from, "model": d.model});
+                    if !d.prompt.is_empty() {
+                        j["prompt"] = json!(d.prompt);
+                    }
+                    m.insert("derive".into(), j);
+                }
+                if let Some(p) = &f.partition {
+                    m.insert("partition".into(), serde_json::to_value(p).expect("serialises"));
                 }
                 if let Some(a) = f.analyzer {
                     // Version 1 by its name alone, as short_field reads it.
@@ -1721,6 +2005,9 @@ impl Schema {
             out.insert("retain".into(), json!(r.period()));
             out.insert("retain_by".into(), json!(r.by));
         }
+        if let Some(f) = &self.expire_by {
+            out.insert("expire_by".into(), json!(f));
+        }
         if let Some(e) = &self.edges {
             out.insert("edges".into(), json!(e.text()));
         }
@@ -1743,7 +2030,7 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
     use serde_json::Value as J;
     let name = j.get("name").and_then(J::as_str).ok_or_else(|| Error::Schema(format!("a field needs a \"name\": {j}")))?;
     let bad = |m: &str| Error::Schema(format!("field {name}: {m}"));
-    let known = ["name", "type", "stored", "indexed", "multi", "positions", "from", "dim", "index", "codes", "keep_f32", "pool", "pool_factor", "embed", "references", "not_null", "default", "analyzer", "kind", "semantic_id", "derive"];
+    let known = ["name", "type", "stored", "indexed", "multi", "positions", "from", "dim", "index", "codes", "keep_f32", "pool", "pool_factor", "embed", "references", "not_null", "default", "analyzer", "kind", "semantic_id", "derive", "text", "partition"];
     if let Some(k) = j.as_object().into_iter().flat_map(|o| o.keys()).find(|k| !known.contains(&k.as_str())) {
         return Err(bad(&format!("unknown option {k:?} (known: {})", known.join(", "))));
     }
@@ -1837,7 +2124,7 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
         Some(p) => Some(p.as_f64().ok_or_else(|| bad("pool_factor is a number above 1, such as 2"))? as f32),
     };
     if let Some(c) = j.get("codes").filter(|c| !c.is_null()) {
-        f.codes = c.as_str().and_then(VectorCodes::parse).ok_or_else(|| bad("codes is \"sq8\" or \"binary\""))?;
+        f.codes = c.as_str().and_then(VectorCodes::parse).ok_or_else(|| bad("codes is \"sq8\", \"binary\", \"rabitq1\", \"rabitq2\" or \"rabitq4\""))?;
     }
     match j.get("references") {
         None | Some(J::Null) => {}
@@ -1845,6 +2132,7 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
         Some(_) => return Err(bad("references names a table")),
     }
     f.not_null = flag("not_null")?.unwrap_or(false);
+    f.text = flag("text")?.unwrap_or(false);
     f.default = j.get("default").filter(|d| !d.is_null()).cloned();
     f.analyzer = match j.get("analyzer") {
         None | Some(J::Null) => None,
@@ -1859,6 +2147,10 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
     match j.get("derive") {
         None | Some(J::Null) => {}
         Some(d) => f.derive = Some(serde_json::from_value(d.clone()).map_err(|e| bad(&format!("derive is {{\"from\": media field, \"model\": name}}: {e}")))?),
+    }
+    match j.get("partition") {
+        None | Some(J::Null) => {}
+        Some(p) => f.partition = Some(serde_json::from_value(p.clone()).map_err(|e| bad(&format!("partition is {{\"by\": column, \"bounds\": [numbers]}}: {e}")))?),
     }
     match j.get("embed") {
         None | Some(J::Null) => {}

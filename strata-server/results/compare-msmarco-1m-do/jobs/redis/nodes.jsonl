@@ -1,0 +1,2 @@
+{"node": "redis-d-a1-3ee7et", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 65853636, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 20.637, "sha256_1g_x_vcpus_s": 11.432, "disk_write_2g_s": 15.967, "copy_ms": 0, "time": 1793673473, "size": "m-8vcpu-64gb"}
+{"node": "redis-c-a1-3ee7el", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382188, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.041, "sha256_1g_x_vcpus_s": 11.35, "disk_write_2g_s": 5.819, "copy_ms": 38880, "time": 1793673503, "size": "c-8"}

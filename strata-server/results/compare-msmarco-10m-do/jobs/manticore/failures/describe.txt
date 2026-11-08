@@ -1,0 +1,139 @@
+Name:             load-manticore-lzz6n
+Namespace:        manticore
+Priority:         0
+Service Account:  default
+Node:             manticore-c-a1-3eatoz/10.120.0.19
+Start Time:       Tue, 03 Nov 2026 09:55:23 +0000
+Labels:           batch.kubernetes.io/controller-uid=35ea3770-dd16-4ddf-b6ae-4cbb0c695251
+                  batch.kubernetes.io/job-name=load-manticore
+                  controller-uid=35ea3770-dd16-4ddf-b6ae-4cbb0c695251
+                  job-name=load-manticore
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Running
+IP:               10.150.7.34
+IPs:
+  IP:           10.150.7.34
+Controlled By:  Job/load-manticore
+Containers:
+  compare:
+    Container ID:  containerd://e687fcdb8a5c707591bdfa4a0184b8a3b3c7a910f655ce6d1728a8f6cba96275
+    Image:         ghcr.io/chloetech-ai/strata-server:f64dbb459febab46154e465ca2c87f0dc9b183a5
+    Image ID:      ghcr.io/chloetech-ai/strata-server@sha256:be4d5bb6c8cf56f774c644c1238b6f5a4b4e768bb1127c5bbafa51d76e932738
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      load
+      --engine
+      manticore
+      --url
+      http://manticore-0.manticore:9308
+      --clients
+      8
+      --out
+      /data/compare
+      --collection
+      msmarco-10000k
+    State:          Running
+      Started:      Tue, 03 Nov 2026 09:55:25 +0000
+    Ready:          True
+    Restart Count:  0
+    Environment:
+      STRATA_DATA:   /beir
+      STRATA_TOKEN:  <set to the key 'token' in secret 'strata-token'>  Optional: true
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-4nmpq (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  DirectoryOrCreate
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-4nmpq:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 op=Exists
+
+
+Name:             manticore-0
+Namespace:        manticore
+Priority:         0
+Service Account:  default
+Node:             manticore-d-a1-3eato1/10.120.0.16
+Start Time:       Tue, 03 Nov 2026 09:55:08 +0000
+Labels:           app=manticore
+                  engine=manticore
+                  topology.kubernetes.io/region=sfo2
+Annotations:      <none>
+Status:           Running
+IP:               10.150.5.153
+IPs:
+  IP:  10.150.5.153
+Containers:
+  manticore:
+    Container ID:   containerd://56ea64f6b217abd55333d9d6309d07da8841232d9cd972663b05b0e3053ed48f
+    Image:          manticoresearch/manticore:29.9.0
+    Image ID:       docker.io/manticoresearch/manticore@sha256:461b419739a2bbbffb4be0b32db26c41d7b435bf7fd1fce95b414ca5ccbb3775
+    Port:           9308/TCP (api)
+    Host Port:      0/TCP (api)
+    State:          Running
+      Started:      Tue, 03 Nov 2026 09:55:18 +0000
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     6800m
+      memory:  52Gi
+    Requests:
+      cpu:        6800m
+      memory:     52Gi
+    Readiness:    tcp-socket :api delay=0s timeout=1s period=2s successThreshold=1 failureThreshold=3
+    Environment:  <none>
+    Mounts:
+      /var/lib/manticore from data (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-xnhtk (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  data:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  kube-api-access-xnhtk:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s

@@ -1,0 +1,185 @@
+service/redis created
+pod/redis-0 created
+pod/redis-0 condition met
+job.batch/load-redis created
+redis: index created in 0.0 s
+redis: 25000 documents sent, 8 s
+redis: 50000 documents sent, 17 s
+redis: 75000 documents sent, 26 s
+redis: 100000 documents sent, 36 s
+redis: 125000 documents sent, 46 s
+redis: 150000 documents sent, 55 s
+redis: 175000 documents sent, 66 s
+redis: 200000 documents sent, 76 s
+redis: 225000 documents sent, 84 s
+redis: 250000 documents sent, 92 s
+redis: 275000 documents sent, 100 s
+redis: 300000 documents sent, 110 s
+redis: 325000 documents sent, 121 s
+redis: 350000 documents sent, 131 s
+redis: 375000 documents sent, 141 s
+redis: 400000 documents sent, 148 s
+redis: 425000 documents sent, 157 s
+redis: 450000 documents sent, 167 s
+redis: 475000 documents sent, 179 s
+redis: 500000 documents sent, 191 s
+redis: 525000 documents sent, 201 s
+redis: 550000 documents sent, 211 s
+redis: 575000 documents sent, 221 s
+redis: 600000 documents sent, 231 s
+redis: 625000 documents sent, 242 s
+redis: 650000 documents sent, 253 s
+redis: 675000 documents sent, 263 s
+redis: 700000 documents sent, 272 s
+redis: 725000 documents sent, 283 s
+redis: 750000 documents sent, 293 s
+redis: 775000 documents sent, 304 s
+redis: 800000 documents sent, 315 s
+redis: 825000 documents sent, 325 s
+redis: 850000 documents sent, 337 s
+redis: 875000 documents sent, 348 s
+redis: 900000 documents sent, 359 s
+redis: 925000 documents sent, 371 s
+redis: 950000 documents sent, 382 s
+redis: 975000 documents sent, 393 s
+redis: 1000000 documents sent, 404 s
+redis: 1000000 documents (2.8 GB) sent in 403.6 s
+redis: index_s in 0.0 s
+redis: indexed 0.0 s after the last write; 403.6 s in all
+wrote /data/compare/load-redis.json
+job.batch/run-redis created
+redis     bm25                     c=1         13 q/s  p50  67.155 ms  p90 137.547 ms  p99 171.770 ms  errors 0
+redis     bm25                     c=4         43 q/s  p50  82.879 ms  p90 158.293 ms  p99 245.861 ms  errors 0
+redis     bm25                     c=16        63 q/s  p50 238.197 ms  p90 340.837 ms  p99 428.314 ms  errors 0
+redis     bm25 + filter            c=1         12 q/s  p50  77.831 ms  p90 123.866 ms  p99 147.933 ms  errors 0
+redis     bm25 + filter            c=4         40 q/s  p50  98.360 ms  p90 158.744 ms  p99 199.413 ms  errors 0
+redis     bm25 + filter            c=16        55 q/s  p50 285.220 ms  p90 362.692 ms  p99 418.366 ms  errors 0
+redis     vector                   c=1        790 q/s  p50   1.239 ms  p90   1.514 ms  p99   1.893 ms  errors 0
+redis     vector                   c=4       2628 q/s  p50   1.479 ms  p90   1.904 ms  p99   2.512 ms  errors 0
+redis     vector                   c=16      3997 q/s  p50   3.719 ms  p90   5.676 ms  p99   6.731 ms  errors 0
+redis     vector + filter          c=1        422 q/s  p50   2.210 ms  p90   3.310 ms  p99   4.706 ms  errors 0
+redis     vector + filter          c=4       1533 q/s  p50   2.469 ms  p90   3.643 ms  p99   4.993 ms  errors 0
+redis     vector + filter          c=16      3176 q/s  p50   4.652 ms  p90   6.530 ms  p99  13.663 ms  errors 0
+redis     hybrid (RRF)             c=1         12 q/s  p50  72.456 ms  p90 138.285 ms  p99 177.908 ms  errors 0
+redis     hybrid (RRF)             c=4         41 q/s  p50  89.988 ms  p90 180.473 ms  p99 256.172 ms  errors 0
+redis     hybrid (RRF)             c=16        33 q/s  p50 476.029 ms  p90 591.647 ms  p99 711.595 ms  errors 0
+redis     hybrid (weighted)        c=1         12 q/s  p50  73.483 ms  p90 144.594 ms  p99 175.338 ms  errors 0
+redis     hybrid (weighted)        c=4         42 q/s  p50  86.948 ms  p90 172.979 ms  p99 241.348 ms  errors 0
+redis     hybrid (weighted)        c=16        33 q/s  p50 474.176 ms  p90 592.585 ms  p99 731.818 ms  errors 0
+redis     boosted (bm25 × decay)   c=1          1 q/s  p50 847.740 ms  p90 1059.508 ms  p99 1816.732 ms  errors 0
+redis     boosted (bm25 × decay)   c=4          2 q/s  p50 2163.497 ms  p90 3670.399 ms  p99 4499.983 ms  errors 0
+redis     boosted (bm25 × decay)   c=16         2 q/s  p50 7872.968 ms  p90 8657.735 ms  p99 11944.218 ms  errors 0
+redis     facet                    c=1         17 q/s  p50  11.341 ms  p90 140.500 ms  p99 542.572 ms  errors 0
+redis     facet                    c=4         25 q/s  p50  92.939 ms  p90 471.059 ms  p99 788.026 ms  errors 0
+redis     facet                    c=16        26 q/s  p50 545.785 ms  p90 1145.956 ms  p99 1350.899 ms  errors 0
+redis     key lookup               c=1       4458 q/s  p50   0.219 ms  p90   0.249 ms  p99   0.296 ms  errors 0
+redis     key lookup               c=4      16482 q/s  p50   0.234 ms  p90   0.274 ms  p99   0.339 ms  errors 0
+redis     key lookup               c=16     47130 q/s  p50   0.326 ms  p90   0.434 ms  p99   0.530 ms  errors 0
+redis     phrase                   c=1        775 q/s  p50   0.833 ms  p90   2.649 ms  p99   6.205 ms  errors 0
+redis     phrase                   c=4       2629 q/s  p50   1.006 ms  p90   3.082 ms  p99   7.874 ms  errors 0
+redis     phrase                   c=16      4979 q/s  p50   2.652 ms  p90   4.879 ms  p99  10.308 ms  errors 0
+redis     typo                     c=1          5 q/s  p50 222.280 ms  p90 315.645 ms  p99 372.870 ms  errors 0
+redis     typo                     c=4         17 q/s  p50 215.630 ms  p90 388.708 ms  p99 572.799 ms  errors 0
+redis     typo                     c=16        24 q/s  p50 614.853 ms  p90 832.406 ms  p99 1030.670 ms  errors 0
+redis     prefix                   c=1         83 q/s  p50   7.355 ms  p90  25.226 ms  p99  65.370 ms  errors 0
+redis     prefix                   c=4        291 q/s  p50   7.981 ms  p90  27.227 ms  p99  95.943 ms  errors 0
+redis     prefix                   c=16       457 q/s  p50  29.013 ms  p90  54.276 ms  p99 124.979 ms  errors 0
+redis     similar items            c=1        422 q/s  p50   2.175 ms  p90   3.384 ms  p99   5.171 ms  errors 0
+redis     similar items            c=4       1506 q/s  p50   2.458 ms  p90   3.768 ms  p99   5.528 ms  errors 0
+redis     similar items            c=16      2790 q/s  p50   5.543 ms  p90   7.778 ms  p99   9.063 ms  errors 0
+redis     sql aggregate            c=1          0 q/s  p50 2236.100 ms  p90 2329.048 ms  p99 2329.048 ms  errors 0
+redis     sql aggregate            c=4          1 q/s  p50 7127.203 ms  p90 7424.582 ms  p99 7424.582 ms  errors 0
+redis     sql aggregate            c=16         1 q/s  p50 15618.178 ms  p90 15618.365 ms  p99 15618.421 ms  errors 7
+  first error: SEARCH_TIMEOUT Timeout limit was reached
+wrote /data/compare/run-redis.json
+job.batch/run-redis-pass2 created
+redis-pass2 bm25                     c=1         13 q/s  p50  71.108 ms  p90 136.879 ms  p99 185.276 ms  errors 0
+redis-pass2 bm25                     c=4         43 q/s  p50  83.738 ms  p90 167.805 ms  p99 246.655 ms  errors 0
+redis-pass2 bm25                     c=16        62 q/s  p50 247.854 ms  p90 347.011 ms  p99 459.352 ms  errors 0
+redis-pass2 bm25 + filter            c=1         11 q/s  p50  83.224 ms  p90 129.645 ms  p99 149.675 ms  errors 0
+redis-pass2 bm25 + filter            c=4         39 q/s  p50 102.227 ms  p90 157.361 ms  p99 201.107 ms  errors 0
+redis-pass2 bm25 + filter            c=16        53 q/s  p50 298.935 ms  p90 369.832 ms  p99 433.822 ms  errors 0
+redis-pass2 vector                   c=1        773 q/s  p50   1.270 ms  p90   1.534 ms  p99   1.950 ms  errors 0
+redis-pass2 vector                   c=4       2416 q/s  p50   1.536 ms  p90   2.041 ms  p99   2.734 ms  errors 0
+redis-pass2 vector                   c=16      4018 q/s  p50   3.713 ms  p90   5.570 ms  p99   6.679 ms  errors 0
+redis-pass2 vector + filter          c=1        415 q/s  p50   2.244 ms  p90   3.369 ms  p99   4.950 ms  errors 0
+redis-pass2 vector + filter          c=4       1513 q/s  p50   2.490 ms  p90   3.728 ms  p99   5.052 ms  errors 0
+redis-pass2 vector + filter          c=16      3103 q/s  p50   4.936 ms  p90   6.576 ms  p99  10.945 ms  errors 0
+redis-pass2 hybrid (RRF)             c=1         13 q/s  p50  70.147 ms  p90 137.186 ms  p99 188.101 ms  errors 0
+redis-pass2 hybrid (RRF)             c=4         43 q/s  p50  81.782 ms  p90 165.571 ms  p99 235.549 ms  errors 0
+redis-pass2 hybrid (RRF)             c=16        34 q/s  p50 468.179 ms  p90 582.426 ms  p99 730.856 ms  errors 0
+redis-pass2 hybrid (weighted)        c=1         13 q/s  p50  72.449 ms  p90 134.063 ms  p99 171.466 ms  errors 0
+redis-pass2 hybrid (weighted)        c=4         44 q/s  p50  80.001 ms  p90 156.150 ms  p99 234.753 ms  errors 0
+redis-pass2 hybrid (weighted)        c=16        33 q/s  p50 477.062 ms  p90 596.935 ms  p99 728.343 ms  errors 0
+redis-pass2 boosted (bm25 × decay)   c=1          1 q/s  p50 807.158 ms  p90 1032.768 ms  p99 1656.846 ms  errors 0
+redis-pass2 boosted (bm25 × decay)   c=4          2 q/s  p50 1870.140 ms  p90 3475.750 ms  p99 4388.677 ms  errors 0
+redis-pass2 boosted (bm25 × decay)   c=16         2 q/s  p50 6827.206 ms  p90 10897.684 ms  p99 11928.997 ms  errors 0
+redis-pass2 facet                    c=1         18 q/s  p50   9.756 ms  p90 148.851 ms  p99 507.503 ms  errors 0
+redis-pass2 facet                    c=4         25 q/s  p50 108.948 ms  p90 398.154 ms  p99 739.586 ms  errors 0
+redis-pass2 facet                    c=16        27 q/s  p50 555.424 ms  p90 1011.630 ms  p99 1491.211 ms  errors 0
+redis-pass2 key lookup               c=1       3923 q/s  p50   0.249 ms  p90   0.277 ms  p99   0.395 ms  errors 0
+redis-pass2 key lookup               c=4      17439 q/s  p50   0.222 ms  p90   0.260 ms  p99   0.325 ms  errors 0
+redis-pass2 key lookup               c=16     56133 q/s  p50   0.273 ms  p90   0.340 ms  p99   0.456 ms  errors 0
+redis-pass2 phrase                   c=1        786 q/s  p50   0.828 ms  p90   2.627 ms  p99   5.967 ms  errors 0
+redis-pass2 phrase                   c=4       2728 q/s  p50   0.960 ms  p90   3.021 ms  p99   7.602 ms  errors 0
+redis-pass2 phrase                   c=16      5096 q/s  p50   2.589 ms  p90   4.806 ms  p99   9.939 ms  errors 0
+redis-pass2 typo                     c=1          5 q/s  p50 213.777 ms  p90 310.885 ms  p99 353.572 ms  errors 0
+redis-pass2 typo                     c=4         17 q/s  p50 204.009 ms  p90 390.353 ms  p99 518.687 ms  errors 0
+redis-pass2 typo                     c=16        24 q/s  p50 602.617 ms  p90 818.717 ms  p99 1063.461 ms  errors 0
+redis-pass2 prefix                   c=1         87 q/s  p50   7.105 ms  p90  23.063 ms  p99  69.823 ms  errors 0
+redis-pass2 prefix                   c=4        298 q/s  p50   7.907 ms  p90  27.686 ms  p99  94.211 ms  errors 0
+redis-pass2 prefix                   c=16       468 q/s  p50  28.048 ms  p90  53.568 ms  p99 116.812 ms  errors 0
+redis-pass2 similar items            c=1        441 q/s  p50   2.110 ms  p90   3.178 ms  p99   5.010 ms  errors 0
+redis-pass2 similar items            c=4       1570 q/s  p50   2.360 ms  p90   3.599 ms  p99   5.311 ms  errors 0
+redis-pass2 similar items            c=16      2878 q/s  p50   5.407 ms  p90   7.491 ms  p99   8.821 ms  errors 0
+redis-pass2 sql aggregate            c=1          0 q/s  p50 2215.649 ms  p90 2297.198 ms  p99 2297.198 ms  errors 0
+redis-pass2 sql aggregate            c=4          1 q/s  p50 6886.303 ms  p90 7136.801 ms  p99 7136.801 ms  errors 0
+redis-pass2 sql aggregate            c=16         1 q/s  p50 10896.951 ms  p90 10897.421 ms  p99 10897.421 ms  errors 10
+  first error: SEARCH_TIMEOUT Timeout limit was reached
+wrote /data/compare/run-redis-pass2.json
+job.batch/run-redis-pass3 created
+redis-pass3 bm25                     c=1         12 q/s  p50  72.986 ms  p90 140.373 ms  p99 166.334 ms  errors 0
+redis-pass3 bm25                     c=4         44 q/s  p50  84.268 ms  p90 162.020 ms  p99 240.449 ms  errors 0
+redis-pass3 bm25                     c=16        62 q/s  p50 244.339 ms  p90 344.385 ms  p99 446.472 ms  errors 0
+redis-pass3 bm25 + filter            c=1         12 q/s  p50  79.417 ms  p90 123.738 ms  p99 143.216 ms  errors 0
+redis-pass3 bm25 + filter            c=4         39 q/s  p50  93.487 ms  p90 159.224 ms  p99 209.285 ms  errors 0
+redis-pass3 bm25 + filter            c=16        55 q/s  p50 286.630 ms  p90 354.346 ms  p99 423.574 ms  errors 0
+redis-pass3 vector                   c=1        804 q/s  p50   1.211 ms  p90   1.488 ms  p99   1.903 ms  errors 0
+redis-pass3 vector                   c=4       2626 q/s  p50   1.481 ms  p90   1.901 ms  p99   2.497 ms  errors 0
+redis-pass3 vector                   c=16      4038 q/s  p50   3.691 ms  p90   5.572 ms  p99   6.587 ms  errors 0
+redis-pass3 vector + filter          c=1        415 q/s  p50   2.240 ms  p90   3.400 ms  p99   5.201 ms  errors 0
+redis-pass3 vector + filter          c=4       1585 q/s  p50   2.383 ms  p90   3.546 ms  p99   4.933 ms  errors 0
+redis-pass3 vector + filter          c=16      3224 q/s  p50   4.493 ms  p90   6.271 ms  p99  14.558 ms  errors 0
+redis-pass3 hybrid (RRF)             c=1         13 q/s  p50  68.520 ms  p90 132.713 ms  p99 169.267 ms  errors 0
+redis-pass3 hybrid (RRF)             c=4         43 q/s  p50  82.541 ms  p90 166.405 ms  p99 231.099 ms  errors 0
+redis-pass3 hybrid (RRF)             c=16        33 q/s  p50 473.083 ms  p90 595.827 ms  p99 723.799 ms  errors 0
+redis-pass3 hybrid (weighted)        c=1         12 q/s  p50  72.225 ms  p90 144.050 ms  p99 173.664 ms  errors 0
+redis-pass3 hybrid (weighted)        c=4         42 q/s  p50  83.381 ms  p90 162.190 ms  p99 258.526 ms  errors 0
+redis-pass3 hybrid (weighted)        c=16        33 q/s  p50 476.929 ms  p90 590.253 ms  p99 742.319 ms  errors 0
+redis-pass3 boosted (bm25 × decay)   c=1          1 q/s  p50 802.547 ms  p90 1021.390 ms  p99 1598.487 ms  errors 0
+redis-pass3 boosted (bm25 × decay)   c=4          2 q/s  p50 1996.333 ms  p90 3399.409 ms  p99 5528.228 ms  errors 0
+redis-pass3 boosted (bm25 × decay)   c=16         2 q/s  p50 6911.408 ms  p90 8146.701 ms  p99 9577.233 ms  errors 0
+redis-pass3 facet                    c=1         17 q/s  p50  10.397 ms  p90 155.771 ms  p99 497.332 ms  errors 0
+redis-pass3 facet                    c=4         26 q/s  p50 112.493 ms  p90 409.562 ms  p99 768.230 ms  errors 0
+redis-pass3 facet                    c=16        27 q/s  p50 547.554 ms  p90 1043.487 ms  p99 1250.116 ms  errors 0
+redis-pass3 key lookup               c=1       4241 q/s  p50   0.232 ms  p90   0.258 ms  p99   0.307 ms  errors 0
+redis-pass3 key lookup               c=4      17037 q/s  p50   0.228 ms  p90   0.261 ms  p99   0.316 ms  errors 0
+redis-pass3 key lookup               c=16     54402 q/s  p50   0.284 ms  p90   0.349 ms  p99   0.461 ms  errors 0
+redis-pass3 phrase                   c=1        758 q/s  p50   0.829 ms  p90   2.681 ms  p99   6.425 ms  errors 0
+redis-pass3 phrase                   c=4       2639 q/s  p50   0.988 ms  p90   3.115 ms  p99   7.853 ms  errors 0
+redis-pass3 phrase                   c=16      5023 q/s  p50   2.616 ms  p90   4.835 ms  p99  10.180 ms  errors 0
+redis-pass3 typo                     c=1          5 q/s  p50 210.456 ms  p90 297.362 ms  p99 322.033 ms  errors 0
+redis-pass3 typo                     c=4         17 q/s  p50 205.401 ms  p90 373.495 ms  p99 502.381 ms  errors 0
+redis-pass3 typo                     c=16        25 q/s  p50 611.443 ms  p90 825.653 ms  p99 1011.411 ms  errors 0
+redis-pass3 prefix                   c=1         84 q/s  p50   7.129 ms  p90  26.618 ms  p99  75.851 ms  errors 0
+redis-pass3 prefix                   c=4        297 q/s  p50   7.662 ms  p90  27.009 ms  p99  84.570 ms  errors 0
+redis-pass3 prefix                   c=16       463 q/s  p50  28.545 ms  p90  54.370 ms  p99 115.921 ms  errors 0
+redis-pass3 similar items            c=1        444 q/s  p50   2.062 ms  p90   3.211 ms  p99   4.772 ms  errors 0
+redis-pass3 similar items            c=4       1562 q/s  p50   2.364 ms  p90   3.630 ms  p99   5.353 ms  errors 0
+redis-pass3 similar items            c=16      2907 q/s  p50   5.326 ms  p90   7.418 ms  p99   8.611 ms  errors 0
+redis-pass3 sql aggregate            c=1          0 q/s  p50 2178.302 ms  p90 2342.473 ms  p99 2342.473 ms  errors 0
+redis-pass3 sql aggregate            c=4          1 q/s  p50 6928.885 ms  p90 7184.868 ms  p99 7184.868 ms  errors 0
+redis-pass3 sql aggregate            c=16         0 q/s  p50 11976.902 ms  p90 11977.064 ms  p99 18380.447 ms  errors 10
+  first error: SEARCH_TIMEOUT Timeout limit was reached
+wrote /data/compare/run-redis-pass3.json
+pod "redis-0" deleted from redis namespace

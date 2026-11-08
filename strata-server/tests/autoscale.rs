@@ -34,7 +34,7 @@ async fn listen() -> (TcpListener, String) {
 }
 
 async fn post(base: &str, path: &str, body: Json) -> (u16, Json) {
-    let r = reqwest::Client::new().post(format!("{base}{path}")).json(&body).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{base}{path}")).json(&body).send().await.unwrap();
     (r.status().as_u16(), r.json().await.unwrap_or(Json::Null))
 }
 
@@ -58,7 +58,7 @@ fn minutes(store: &LogStore, shard: usize, end: u64, busy: impl Fn(u64) -> f64) 
         .flat_map(|m| {
             let ts_ms = end - (360 - m) * MIN;
             let b = busy(m);
-            (0..3).map(move |copy| Load { ts_ms: ts_ms + copy, role: if copy == 0 { "primary" } else { "replica" }.into(), shard: Some(shard), qps: 100.0, cpu: b * 4.0, cores: 4, p99_ms: Some(20.0), disk_used_ratio: Some(0.4 + m as f64 / 3600.0) })
+            (0..3).map(move |copy| Load { ts_ms: ts_ms + copy, role: if copy == 0 { "primary" } else { "replica" }.into(), shard: Some(shard), qps: 100.0, cpu: b * 4.0, cores: 4, p99_ms: Some(20.0), disk_used_ratio: Some(0.4 + m as f64 / 3600.0), ..Default::default() })
         })
         .collect();
     store.write_loads(&rows).unwrap();
@@ -115,7 +115,7 @@ async fn rules_are_replayed_on_the_servers_load_saved_and_run() {
     let mut coord = Service::new(Backend::Cluster(Arc::new(c)), schema, agent, 16, Duration::from_secs(10));
     // The coordinator's own minutes are not a shard's.
     let own = LogStore::open(LogOptions { capture: false, ..LogOptions::new(dir.path().join("coord.logs"), "coord".into()) }).unwrap();
-    own.write_loads(&[Load { ts_ms: end - 100 * MIN, role: "coordinator".into(), shard: None, qps: 1.0, cpu: 4.0, cores: 4, p99_ms: None, disk_used_ratio: Some(0.99) }]).unwrap();
+    own.write_loads(&[Load { ts_ms: end - 100 * MIN, role: "coordinator".into(), shard: None, qps: 1.0, cpu: 4.0, cores: 4, p99_ms: None, disk_used_ratio: Some(0.99), ..Default::default() }]).unwrap();
     coord.log_store = Some(own);
     let cluster = json!({"apiVersion": "strata.chloetech.ai/v1alpha1", "kind": "StrataCluster",
         "metadata": {"name": "orders", "namespace": "db", "generation": 1, "annotations": {}},
@@ -144,6 +144,8 @@ async fn rules_are_replayed_on_the_servers_load_saved_and_run() {
     assert!((100..=120).contains(&sum["fixedOverMinutes"].as_u64().unwrap()), "{sum}");
     assert_eq!(r["rules"], "1 copy a shard when its copies are over 70% busy for 10 min, up to 5; 20 min between changes; off (the rules are kept)");
     assert!(r["nodes"].as_array().unwrap().iter().all(|n| n["error"].is_null()), "{}", r["nodes"]);
+    // Each shard has one copy now, which a view says beside the 3 modelled; the volume is the spec's.
+    assert_eq!((&r["copies_now"], &r["volume_from"]), (&json!({"min": 1, "max": 1}), &Json::Null), "{r}");
     // Rules that undo each other, and more than a week, are refused.
     let (s, e) = post(&base, "/v1/admin/autoscale/replay", json!({"autoscale": {"grow": {"busyAbove": 0.5}, "shrink": {"busyBelow": 0.6}}})).await;
     assert!(s == 400 && e["error"].as_str().unwrap().contains("would undo each other"), "{e}");
@@ -221,5 +223,6 @@ async fn rules_are_replayed_on_the_servers_load_saved_and_run() {
     let (s, r) = post(&one, "/v1/admin/autoscale/replay", json!({"autoscale": grow, "days": 1, "sizes": {"replicas": 3}})).await;
     assert_eq!(s, 200, "{r}");
     assert_eq!((&r["sizes"]["replicas"], &r["managed"]), (&json!(3), &json!(false)));
+    assert!(r["volume_from"].is_string(), "with no spec, the replay says where its volume is from: {r}");
     assert!(r["events"].as_array().unwrap().iter().any(|e| e["kind"] == "grow"), "{r}");
 }

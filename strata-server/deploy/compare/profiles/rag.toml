@@ -1,0 +1,83 @@
+# Retrieval for an LLM (RAG) and a recommender beside it: vector and hybrid
+# searches with filters, chunks fetched by key, few typos, no typing, and
+# documents ingested in batches while it serves. Starting values, to be
+# fitted (Engram's recall statistics are one source) before a ranked round.
+name = "rag"
+description = "retrieval for an LLM: vector and hybrid with filters, chunks by key, ingest jobs, a 3:1 day"
+
+[mix]
+"vector" = 35
+"hybrid (RRF)" = 25
+"hybrid (weighted)" = 15
+"vector + filter" = 15
+"similar items" = 5
+"key lookup" = 5
+
+[queries]
+source = "pool"
+order = "zipf"
+head = 100000
+zipf_s = 0.6
+tail_share = 0.7
+drift_every_s = 300.0
+drift_share = 0.02
+typo_share = 0.02
+typos = "plain"
+
+[docs]
+pick = "popular"
+zipf_s = 0.8
+
+[filters]
+mode = "drawn"
+min_selectivity = 0.0001
+max_selectivity = 0.5
+
+[sessions]
+follow_up = 0.3
+refine = 1.0
+open = 2.0
+similar = 0.0
+think_median_s = 15.0
+think_sigma = 0.8
+typing = false
+
+[traffic]
+day_s = 2880.0
+# As in search-app.toml, between one country's day and the world's (its
+# comments give the Wikipedia fits).
+peak_to_trough = 3.0
+humps = 1
+peak_at = 0.67
+warmup_s = 120.0
+
+[traffic.bursts]
+factor = 1.5
+busy_s = 20.0
+calm_s = 120.0
+
+[traffic.ramp]
+start = 20.0
+factor = 1.25
+step_s = 60.0
+steps = 30
+
+[writes]
+share = 0.05
+insert = 0.7
+update = 0.2
+delete = 0.1
+batch_median = 8.0
+batch_sigma = 1.0
+batch_max = 500
+mark_every = 50
+
+[[writes.jobs]]
+at_s = 900.0
+docs = 50000
+batch = 500
+clients = 4
+
+[slo]
+p99_ms = 250.0
+errors = 0.001

@@ -12,7 +12,9 @@ once, and a database someone wrote with that version looks the same.
 | `format3/` | 3, with `analyzer:simple:1`, `bool`, `default`, `not_null` and `timestamp` | 835ca9a | `tests/format_fixtures.rs` |
 | `seqno/` | 3, with `seq_no`: numbered writes and rows, and a numbered WAL (`STRWAL02`) | c0d46c2 | `tests/format_fixtures.rs` |
 | `profiles/` | 3, with `rank_profiles`: rank profiles in the manifest, and profile records in a WAL that names the feature (`STRWAL02`) | b43bfb2 | `tests/format_fixtures.rs` |
-| `fieldids/` | 3, with `field_ids`: the writes of `format2/`, `format3/`, `seqno/` and `profiles/`, in subdirectories of those names, as the first version with field ids writes them | the commit that adds this row | `tests/format_fixtures.rs` |
+| `fieldids-13d5bc5/` | 3, with `field_ids`: the writes of `format2/`, `format3/`, `seqno/` and `profiles/`, in subdirectories of those names, as the first version with field ids writes them | 13d5bc5 | `tests/format_fixtures.rs` |
+| `fieldids-bce183f/` | 3, with `field_ids`, the same writes as `fieldids-13d5bc5/`, and each segment's doc store with `store.crc`, a crc32 per block | bce183f | `tests/format_fixtures.rs` |
+| `fieldids/` | 3, with `field_ids` and `compact_keys`, the same writes as `fieldids-bce183f/`, and each segment's key index (`pk`) with 32-bit fingerprints, reading table `t`'s KEYWORD keys from their keyword column | the commit that adds this row | `tests/format_fixtures.rs` |
 
 All but `format1/` were written by [`writer.rs`](writer.rs). The sets from
 before field ids (`format1/` to `profiles/`), which named fields by position

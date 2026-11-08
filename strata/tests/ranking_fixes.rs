@@ -188,6 +188,52 @@ fn typos_and_synonyms_score_like_their_word() {
     assert!((score_of(&plain, 2) - score_of(&r, 2)).abs() < 1e-6);
 }
 
+// Roberto's typo correction: with `fuzzy => 'auto'` a ranked query leaves
+// a word in enough documents as written, and gives a rarer one only its
+// more common neighbours, each weighted by the chance it was meant.
+#[test]
+fn auto_typos_go_by_how_common_the_words_are() {
+    // `color` in 20 rows, `colour` and `kolour` in one each, the rest
+    // other words; every body has two terms.
+    let mut rows = vec![row(1, Some("colour pencil"))];
+    rows.extend((2..=21).map(|i| row(i, Some("color pencil"))));
+    rows.extend((30..80).map(|i| row(i, Some("rubber eraser"))));
+    rows.push(row(90, Some("kolour pencil")));
+    let (_d, db) = db_with(rows);
+    let top = |text: &str, fuzzy: &str| query(&db, &format!("SELECT id FROM t ORDER BY bm25(body, '{text}'{fuzzy}) DESC LIMIT 30"));
+    let color = score_of(&top("color", ""), 2);
+
+    // A word in 2 or more documents (and 1 in 10,000) is spelled right:
+    // 'auto' adds nothing, where one edit finds the rare spelling.
+    let r = top("color", ", fuzzy => 'auto'");
+    assert_eq!(ids(&r).len(), 20, "{:?}", ids(&r));
+    assert!(!ids(&r).contains(&1));
+    assert!((score_of(&r, 2) - color).abs() < 1e-6);
+    assert!(ids(&top("color", ", fuzzy => 1")).contains(&1));
+
+    // A word in no document is a typo of each neighbour (chance 1): only
+    // `1 − edits / length` weighs it.
+    let r = top("colro", ", fuzzy => 'auto'");
+    assert_eq!(ids(&r).len(), 20, "{:?}", ids(&r));
+    assert!((score_of(&r, 2) / color - 0.8).abs() < 1e-4, "{}", score_of(&r, 2) / color);
+
+    // A word in one document keeps its rows first, and adds its neighbour
+    // times the chance it was meant: 20 × 0.01 / (20 × 0.01 + 1).
+    let r = top("colour", ", fuzzy => 'auto'");
+    assert_eq!(ids(&r)[0], 1);
+    let meant = 0.2 / 1.2 * (1.0 - 1.0 / 6.0);
+    assert!((score_of(&r, 2) / score_of(&r, 1) - meant).abs() < 1e-4, "{}", score_of(&r, 2) / score_of(&r, 1));
+    // One edit weighs the neighbour by its length alone.
+    let r = top("colour", ", fuzzy => 1");
+    assert!((score_of(&r, 2) / score_of(&r, 1) - (1.0 - 1.0 / 6.0)).abs() < 1e-4);
+
+    assert!(ids(&r).contains(&90), "{:?}", ids(&r));
+
+    // A neighbour in no more documents than the word is not added.
+    let r = top("colour", ", fuzzy => 'auto'");
+    assert!(!ids(&r).contains(&90), "{:?}", ids(&r));
+}
+
 // Found comparing the old and new evaluators of fused scores: under
 // `ORDER BY <fused> DESC, id DESC`, one database cut a weighted sum or a
 // product to its LIMIT by ascending key before ordering the tied rows by

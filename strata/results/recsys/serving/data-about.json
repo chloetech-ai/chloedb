@@ -1,0 +1,63 @@
+{
+ "items": 100000,
+ "users": 9208,
+ "features": [
+  [
+   "f00",
+   "plays in the last day"
+  ],
+  [
+   "f01",
+   "plays in the last 7 days"
+  ],
+  [
+   "f02",
+   "plays in the last 30 days"
+  ],
+  [
+   "f03",
+   "plays in all"
+  ],
+  [
+   "f04",
+   "listeners in all"
+  ],
+  [
+   "f05",
+   "mean share of the track played, all listens"
+  ],
+  [
+   "f06",
+   "track length, seconds"
+  ],
+  [
+   "f07",
+   "share of plays not from a recommendation"
+  ],
+  [
+   "f08",
+   "likes"
+  ],
+  [
+   "f09",
+   "dislikes"
+  ],
+  [
+   "f10",
+   "days since its first play"
+  ],
+  [
+   "f11",
+   "days since its last play"
+  ]
+ ],
+ "regions": [
+  "r0",
+  "r1",
+  "r2",
+  "r3",
+  "r4"
+ ],
+ "decay_pop_hours": 2,
+ "trees": 300
+}

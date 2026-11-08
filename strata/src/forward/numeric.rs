@@ -438,6 +438,12 @@ impl NumericColumn {
         }
     }
 
+    /// The smallest and largest key of a present value (as
+    /// [`Self::sort_key`] gives them), if any.
+    pub fn key_bounds(&self) -> Option<(i64, i64)> {
+        self.blocks.key_bounds()
+    }
+
     /// Smallest value.
     pub fn min(&self) -> Option<f64> {
         self.blocks.key_bounds().map(|(lo, _)| self.kind.decode(lo))
@@ -610,23 +616,7 @@ impl NumericColumn {
     /// document `BLOCK * b + j`) and returns the mask of those with a value
     /// (bit `j % 64` of word `j / 64`); slots without one hold any key.
     pub fn block_keys_of(&self, b: usize, out: &mut [i64; super::BLOCK]) -> [u64; 2] {
-        let mut deltas = [0u32; super::BLOCK];
-        let mask = self.blocks.present_mask(b);
-        match self.blocks.decode_block_u32(b, &mut deltas) {
-            Some(min) => {
-                for (o, &x) in out.iter_mut().zip(&deltas) {
-                    *o = min.wrapping_add(x as i64);
-                }
-            }
-            None => {
-                for (j, o) in out.iter_mut().enumerate() {
-                    if mask[j / 64] >> (j % 64) & 1 == 1 {
-                        *o = self.blocks.raw((b * super::BLOCK + j) as u32);
-                    }
-                }
-            }
-        }
-        mask
+        self.blocks.block_keys(b, out)
     }
 }
 

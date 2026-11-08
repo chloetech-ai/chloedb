@@ -5,7 +5,7 @@
 
 use super::{err, Agg, ArithOp, CmpOp, Expr, Func, Graph, GraphKind, Node, NormKind, OnConflict, Plan};
 use crate::error::Result;
-use crate::query::logical::{self, AggFn, GraphQuery, Having, OrderBy, PathTest, Pred, Projection, Score, Seeds, Select, Tiebreak, Vectors, CROSS_ENCODER_FIRST};
+use crate::query::logical::{self, AggFn, Col, GraphQuery, Having, OrderBy, PathCol, PathTest, Pred, Projection, Score, Seeds, Select, Tiebreak, TimeCol, TimeOf, Vectors, CROSS_ENCODER_FIRST};
 use crate::query::rank::Rank;
 use crate::query::sql::{self, Assign, Conflict, Write};
 use crate::schema::{FieldType, Schema};
@@ -75,20 +75,78 @@ fn name(n: &Node) -> &'static str {
         Node::Distinct { .. } => "Distinct",
         Node::DistinctOn { .. } => "DistinctOn",
         Node::KeyOrder { .. } => "KeyOrder",
+        Node::Window { .. } => "Window",
+        Node::SetOp { .. } => "SetOp",
     }
 }
 
 const SHAPES: &str = "the executor runs Project [Limit] Search and Project [Limit] [Sort] [Filter] Aggregate Search (other plans run with operators)";
 
+/// The SELECT of `schema`'s table that node `n` runs as ([`Plan::to_select`]).
+pub(crate) fn select_of(n: &Node, schema: &Schema) -> Result<Select> {
+    Raise::new(schema).select(n)
+}
+
 struct Raise<'a> {
     schema: &'a Schema,
     /// The graph computations raised so far (`Select::graphs`).
     graphs: Vec<GraphQuery>,
+    /// The paths read as columns so far (`Select::paths`).
+    paths: Vec<PathCol>,
+    /// The parts of times read as columns so far (`Select::times`).
+    times: Vec<TimeCol>,
 }
 
 impl<'a> Raise<'a> {
     fn new(schema: &'a Schema) -> Self {
-        Raise { schema, graphs: Vec::new() }
+        Raise { schema, graphs: Vec::new(), paths: Vec::new(), times: Vec::new() }
+    }
+
+    /// The column `e` reads: a field, or a path of an indexed JSON field
+    /// (`json_extract(field, path [, type])`, [`Select::paths`]).
+    fn col_of(&mut self, e: &Expr) -> Result<Col> {
+        if let Some(tc) = self.time_of(e)? {
+            return Ok(Col::Time(match self.times.iter().position(|t| *t == tc) {
+                Some(i) => i,
+                None => {
+                    self.times.push(tc);
+                    self.times.len() - 1
+                }
+            }));
+        }
+        let Some((field, path, kind)) = self.typed_path_of(e)? else { return Ok(Col::Field(self.field_of(e)?)) };
+        let pc = PathCol { field, path, kind };
+        Ok(Col::Path(match self.paths.iter().position(|p| *p == pc) {
+            Some(i) => i,
+            None => {
+                self.paths.push(pc);
+                self.paths.len() - 1
+            }
+        }))
+    }
+
+    /// The part of a TIMESTAMP field's times `e` reads, when it is
+    /// `date_trunc(unit, field)`, `date_part(part, field)` or
+    /// `strftime(format, field)` of an indexed single-valued TIMESTAMP
+    /// field.
+    fn time_of(&self, e: &Expr) -> Result<Option<TimeCol>> {
+        let Expr::Call { func: func @ (Func::DateTrunc | Func::DatePart | Func::Strftime), args } = e else { return Ok(None) };
+        let (Some(Expr::Lit(Value::Str(how))), Some(Expr::Field(f)), 2) = (args.first(), args.get(1), args.len()) else {
+            return Err(err(format!("a Search's {} reads a TIMESTAMP field, with the first argument given as text", func.name())));
+        };
+        let field = self.field(*f)?;
+        let fld = &self.schema.fields[field];
+        if fld.logical != Some(crate::schema::Logical::Timestamp) || fld.multi || !fld.indexed {
+            return Err(err(format!("a Search's {} reads an indexed TIMESTAMP field of one value, not {}", func.name(), fld.name)));
+        }
+        // What is wrong with the unit, part or format, as the row evaluator says it.
+        super::eval::call(*func, &[Value::Str(how.clone()), Value::Timestamp(0)])?;
+        let of = match func {
+            Func::DateTrunc => TimeOf::Trunc(crate::timestamp::Unit::parse(how).expect("checked")),
+            Func::DatePart => TimeOf::Part(crate::timestamp::Part::parse(how).expect("checked")),
+            _ => TimeOf::Format(how.clone()),
+        };
+        Ok(Some(TimeCol { field, of }))
     }
 
     fn table(&self, t: &str) -> Result<()> {
@@ -217,6 +275,7 @@ impl<'a> Raise<'a> {
                             c.name.clone(),
                             match &c.expr {
                                 Expr::Field(f) => Projection::Field(self.field(*f)?),
+                                e @ Expr::Call { func: Func::JsonExtract, .. } => self.col_of(e)?.projection(),
                                 Expr::Score => Projection::Score,
                                 Expr::Hops => Projection::Hops(self.hops_graph()?),
                                 Expr::SeqNo => Projection::SeqNo,
@@ -239,6 +298,10 @@ impl<'a> Raise<'a> {
                 let order = match search.order.first() {
                     None => None,
                     Some(k) if k.expr == Expr::Hops => Some(OrderBy::Score { score: Score::Hops { graph: self.hops_graph()?, far_first: k.desc }, desc: true, nulls_first: false }),
+                    Some(k) if matches!(k.expr, Expr::Call { func: Func::JsonExtract, .. }) => match self.col_of(&k.expr)? {
+                        Col::Path(path) => Some(OrderBy::Path { path, desc: k.desc, nulls_first: k.nulls_first }),
+                        Col::Field(_) | Col::Time(_) => unreachable!("json_extract reads a path"),
+                    },
                     Some(k) => Some(OrderBy::Score { score: self.score(&k.expr)?, desc: k.desc, nulls_first: k.nulls_first }),
                 };
                 if matches!(&order, Some(OrderBy::Score { score, .. }) if score.has_cross_encoder()) {
@@ -256,17 +319,16 @@ impl<'a> Raise<'a> {
                 if !search.order.is_empty() || !search.phases.is_empty() {
                     return Err(err("a Search under an Aggregate is not ordered"));
                 }
-                let group_by: Vec<usize> = keys.iter().map(|k| self.field_of(k)).collect::<Result<_>>()?;
+                let group_by: Vec<Col> = keys.iter().map(|k| self.col_of(k)).collect::<Result<_>>()?;
+                let mut of = Vec::with_capacity(aggs.len());
                 for a in aggs.iter() {
-                    match (&a.func, &a.arg) {
-                        (AggFn::Count, None) => {}
-                        (_, Some(e)) => {
-                            self.field_of(e)?;
-                        }
+                    of.push(match (&a.func, &a.arg) {
+                        (AggFn::Count, None) => None,
+                        (_, Some(e)) => Some(self.col_of(e)?),
                         (f, None) => return Err(err(format!("{f:?} takes a field"))),
-                    }
+                    });
                 }
-                let out = |e: &Expr| output(e, &group_by, aggs);
+                let out = |e: &Expr| output(e, &group_by, aggs, &of);
                 let projection = columns.iter().map(|c| Ok((c.name.clone(), out(&c.expr)?))).collect::<Result<Vec<_>>>()?;
                 let having = having.map(|h| self.having(h, &out)).transpose()?;
                 let keys = sort.map_or(&[][..], |k| &k[..]);
@@ -291,9 +353,17 @@ impl<'a> Raise<'a> {
                 (projection, group_by, having, order, tiebreak)
             }
         };
-        let types = sql::projection_types(self.schema, &projection);
-        let per = per.filter(|_| group_by.is_empty() && phases.is_empty() && order.is_some());
-        Ok(Select { projection, filter, order, group_by, having, tiebreak, phases, limit, offset, graphs: self.graphs, types, guard, per })
+        let mut types = sql::projection_types(self.schema, &projection);
+        // A day, week or month a time is in is a time.
+        for (t, (_, p)) in types.iter_mut().zip(&projection) {
+            if let Projection::Time(i) = p {
+                if matches!(self.times[*i].of, TimeOf::Trunc(_)) {
+                    *t = Some(crate::schema::Logical::Timestamp);
+                }
+            }
+        }
+        let per = per.filter(|_| group_by.is_empty() && phases.is_empty() && matches!(order, Some(OrderBy::Score { .. })));
+        Ok(Select { projection, filter, order, group_by, having, tiebreak, phases, limit, offset, graphs: self.graphs, paths: self.paths, times: self.times, types, guard, per })
     }
 
     /// The graph `hops()` refers to: the first REACHABLE or PATH.
@@ -310,9 +380,9 @@ impl<'a> Raise<'a> {
     fn guard(&mut self, g: &super::Guard) -> Result<logical::Guard> {
         let text_field = |me: &Self, f: u32| -> Result<usize> {
             let i = me.field(f)?;
-            match me.schema.fields[i].ty {
-                FieldType::Text { .. } if me.schema.fields[i].indexed => Ok(i),
-                _ => Err(err(format!("a guard's MATCH or bm25 reads an indexed TEXT field, not {}", me.schema.fields[i].name))),
+            match me.schema.fields[i].has_text() {
+                true => Ok(i),
+                false => Err(err(format!("a guard's MATCH or bm25 reads an indexed TEXT field (or a JSON field with text), not {}", me.schema.fields[i].name))),
             }
         };
         let site = match &g.site {
@@ -447,8 +517,8 @@ impl<'a> Raise<'a> {
             Expr::Match { field, query, expand } => {
                 let f = self.field(*field)?;
                 let fld = &self.schema.fields[f];
-                if !matches!(fld.ty, FieldType::Text { .. }) || !fld.indexed {
-                    return Err(err(format!("MATCH needs an indexed TEXT field, not {}", fld.name)));
+                if !fld.has_text() {
+                    return Err(err(format!("MATCH needs an indexed TEXT field (or a JSON field with text), not {}", fld.name)));
                 }
                 crate::text::query::parse_match_with(query, fld.text_analyzer())?;
                 Pred::Match { field: f, query: query.clone(), expand: *expand }
@@ -777,7 +847,13 @@ impl<'a> Raise<'a> {
                 }
                 Score::Column { field: f }
             }
-            Expr::Bm25 { field, text, opts } => Score::Bm25 { field: self.typed(*field, |t| matches!(t, FieldType::Text { .. }), "bm25", "TEXT")?, text: text.clone(), opts: opts.clone() },
+            Expr::Bm25 { field, text, opts } => {
+                let f = self.typed(*field, |t| matches!(t, FieldType::Text { .. } | FieldType::Json), "bm25", "TEXT")?;
+                if self.schema.fields[f].ty == FieldType::Json && !self.schema.fields[f].has_text() {
+                    return Err(err(format!("bm25 reads a JSON field's strings when it has text (OPTIONS(text = true)), which {} has not", self.schema.fields[f].name)));
+                }
+                Score::Bm25 { field: f, text: text.clone(), opts: opts.clone() }
+            }
             Expr::Similarity { field, vector, opts } => {
                 let f = self.typed(*field, |t| matches!(t, FieldType::Vector { .. }), "similarity", "VECTOR")?;
                 if self.schema.fields[f].multi {
@@ -944,16 +1020,18 @@ fn path_value(v: Value) -> Result<Value> {
     }
 }
 
-/// What an Aggregate's output column `e` holds.
-fn output(e: &Expr, keys: &[usize], aggs: &[Agg]) -> Result<Projection> {
+/// What an Aggregate's output column `e` holds; `of` is the column each
+/// aggregate reads.
+fn output(e: &Expr, keys: &[Col], aggs: &[Agg], of: &[Option<Col>]) -> Result<Projection> {
     let Expr::Output(i) = e else { return Err(err(format!("above an Aggregate, columns are its outputs, not {e:?}"))) };
     let i = *i as usize;
-    if let Some(&f) = keys.get(i) {
-        return Ok(Projection::Field(f));
+    if let Some(&c) = keys.get(i) {
+        return Ok(c.projection());
     }
-    match aggs.get(i - keys.len()) {
-        Some(Agg { func: AggFn::Count, arg: None }) => Ok(Projection::Count),
-        Some(Agg { func, arg: Some(Expr::Field(f)) }) => Ok(Projection::Agg { func: *func, field: *f as usize }),
+    let j = i - keys.len();
+    match (aggs.get(j), of.get(j)) {
+        (Some(Agg { func: AggFn::Count, arg: None }), _) => Ok(Projection::Count),
+        (Some(Agg { func, arg: Some(_) }), Some(Some(c))) => Ok(Projection::Agg { func: *func, of: *c }),
         _ => Err(err(format!("the Aggregate has no output {i}"))),
     }
 }

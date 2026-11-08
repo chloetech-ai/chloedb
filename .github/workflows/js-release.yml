@@ -1,0 +1,112 @@
+name: strata-js release
+
+# Prebuilt strata-js: the addon built once per platform, so that installing
+# the package needs no Rust and no C compiler. Each platform's package is a
+# tarball of the JavaScript and its addon (strata-js/scripts/pack.mjs),
+# which `npm install <tarball or its URL>` takes as it is.
+#
+# A tag strata-js-v<version> (strata-js/package.json's version) builds and
+# tests every platform and attaches the tarballs to the tag's GitHub
+# release; a run started by hand does the same and keeps them as the run's
+# artifacts. Publishing to npm comes later.
+on:
+  push:
+    tags: ["strata-js-v*"]
+  workflow_dispatch:
+  # A change to the release itself builds every platform as a release does,
+  # without releasing.
+  pull_request:
+    paths:
+      - .github/workflows/js-release.yml
+      - strata-js/scripts/**
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc 2.35: the addon runs on that and later (Debian 12,
+          # Ubuntu 22.04, RHEL 10 and newer).
+          - { platform: linux-x64-gnu, os: ubuntu-22.04 }
+          - { platform: linux-arm64-gnu, os: ubuntu-22.04-arm }
+          - { platform: darwin-arm64, os: macos-latest }
+          - { platform: darwin-x64, os: macos-15-intel }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      # macOS 11 and later load it.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: The tag names package.json's version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: test "strata-js-v$(node -p 'require("./strata-js/package.json").version')" = "$GITHUB_REF_NAME"
+      - name: Build
+        working-directory: strata-js
+        run: node scripts/build.mjs
+      - name: Test
+        working-directory: strata-js
+        run: node --test test/database.test.mjs
+      - name: Pack
+        working-directory: strata-js
+        run: node scripts/pack.mjs ${{ matrix.platform }}
+      # The tarball installs into an empty app and runs there, without
+      # building anything (a cargo that fails would fail the install).
+      - name: Install the tarball and use it
+        run: |
+          mkdir "$RUNNER_TEMP/app" && cd "$RUNNER_TEMP/app"
+          npm init -y > /dev/null
+          CARGO=false npm install --no-audit --no-fund "$GITHUB_WORKSPACE"/strata-js/dist/*.tgz
+          node --input-type=module -e '
+            import { open, version } from "strata-db";
+            const db = await open("notes.strata", { schema: { table: "notes", key: "id", fields: [{ name: "id", type: "int" }, { name: "body", type: "text" }] } });
+            await db.upsert([{ id: 1, body: "rivers and mountains" }, { id: 2, body: "the sea" }]);
+            const hits = await db.search("river");
+            if (hits.length !== 1 || hits.at(0).id !== 1) throw new Error("search found " + JSON.stringify(hits.objects()));
+            await db.close();
+            console.log(`strata-db ${version}: installed and searched on ${process.platform}-${process.arch}`);
+          '
+      - uses: actions/upload-artifact@v7
+        with:
+          name: strata-js-${{ matrix.platform }}
+          path: strata-js/dist/*.tgz
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: strata-js-*
+          path: dist
+          merge-multiple: true
+      - name: Attach the tarballs to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -la dist
+          if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" --title "strata-js ${TAG#strata-js-v}" --notes "Prebuilt strata-db for Node, Bun and Deno: \`npm install\` the tarball of your platform (its URL works too); no Rust needed. Platforms: linux-x64-gnu, linux-arm64-gnu (glibc 2.35 or later), darwin-arm64, darwin-x64 (macOS 11 or later)."
+          fi
+          gh release upload "$TAG" dist/*.tgz --repo "$REPO" --clobber

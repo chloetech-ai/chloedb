@@ -21,15 +21,17 @@
 //! * Readers never take the writer lock; the state lock is held only to
 //!   copy pointers, never across I/O or index builds.
 //! * With [`DbOptions::publish_snapshots`] the writer also builds each new
-//!   version's snapshot before its commit returns, and readers only clone
-//!   the published one: they never build a memtable segment or wait for
-//!   one to be built.
+//!   version's snapshot before its commit returns, while readers take
+//!   snapshots, and readers only clone the published one: they never build
+//!   a memtable segment or wait for one to be built.
+//! * Other processes can read the database while one writes it: they open
+//!   it with [`DbOptions::read_only`], and see its commits as they are made
+//!   ([`crate::storage::share`] has the locks and pins that make it safe).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock, TryLockError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -50,16 +52,16 @@ use crate::storage::manifest::{sources_schema, Manifest, Numbering, RankProfile,
 use crate::storage::merge::{memory_limit, merge_memory, MergeEntry, MERGE_BATCH_BYTES, MERGE_BATCH_DOCS, MergePolicy, MergeRecord, MergeStats, MergeStatus, MergerOptions, Pacer, SegmentInfo};
 use crate::storage::pager::{self, Extent, Meta, META_PAGES, PAGE};
 use crate::postings::bytes::OwnedBytes;
-use crate::storage::snapshot::{build_memseg, Pins, SegmentView, Snapshot};
+use crate::storage::snapshot::{build_memseg, next_mem_id, Pins, SegmentView, Snapshot};
+use crate::storage::reader::Reader;
 use crate::storage::rowseq::{self, Seqs};
-use crate::storage::state::{mem_seq, Check, Key, Loc, SegHandle, State, TableState};
+use crate::storage::share::{self, lock_exclusive, ReaderInfo, ReaderPin, Session, WriterLock};
+use crate::storage::state::{mem_seq, Check, Chunk, Key, Loc, SegHandle, State, TableState};
 use crate::storage::updates::{Updates, SEQ};
 use crate::storage::ship::{Applied, LogRead, ShipLog, Shipped};
 use crate::storage::wal::{self, Op, Wal, WalTxn};
 use crate::value::{conform, conform_as, validate, Document, Pooling, Value};
 
-/// Ids of in-memory segments have this bit set.
-const MEM_ID: u64 = 1 << 63;
 
 /// Rebuilds full documents from a segment, for merges. Provided by the
 /// layer that owns the doc store and vector sections.
@@ -106,9 +108,12 @@ pub struct DbOptions {
     pub random_hints: bool,
     /// Build each version's snapshot when it is made, in the writer (a
     /// commit, flush, bulk load, merge or vacuum returns once readers can
-    /// see it), and give readers that one. A reader then never builds a
-    /// memtable segment or waits for another reader's build; each write
-    /// pays for the build instead of the first query after it.
+    /// see it), and give readers that one. While queries keep coming, a
+    /// reader then never builds a memtable segment or waits for another
+    /// reader's build; each write pays for the build instead of the first
+    /// query after it. A write that follows no read since the last
+    /// published version publishes none (nobody is waiting for it), and
+    /// the first reader after it builds the version, as without this.
     pub publish_snapshots: bool,
     /// How a database created with these options is laid out on disk (an
     /// existing one opens in the layout it has).
@@ -153,6 +158,33 @@ pub struct DbOptions {
     /// end: the same image, built without holding it in memory, for a
     /// second write of its bytes. 0: every merge does.
     pub merge_spill_bytes: u64,
+    /// How long a write ([`Database::begin`], a flush, a bulk load, a
+    /// change of tables) waits for the writer lock while another write
+    /// holds it, before it fails with `Busy`. Threads of one process that
+    /// write at once then take turns instead of failing; [`crate::db::Db`]'s
+    /// writes also share commits ([`crate::db::Db::write_ops`]). A
+    /// background flush or merge holding the lock to install is waited for
+    /// however long this is. 0: a write fails at once, as strata-server
+    /// wants (its writer retries until each request's deadline).
+    pub write_wait: Duration,
+    /// Open the database to read it while another process writes it (or
+    /// none does): any number of processes can, beside the one writer. It
+    /// never changes the database's files, and its writes fail. Its
+    /// snapshots see each commit the writer had made when they were taken
+    /// ([`DbOptions::refresh_interval`]); a thread of its own follows the
+    /// writer once a second when no snapshot does, so that the pages of
+    /// versions it no longer reads go back to the writer. Readers and
+    /// writers must be on one machine (a local file system, where `flock`
+    /// and the page cache are shared), and of a version of Strata that
+    /// knows read-only opens: an older one takes the file for itself and
+    /// is refused while readers have it ([`crate::storage::share`]).
+    pub read_only: bool,
+    /// How long a read-only database's snapshots go without looking for new
+    /// commits after one looked: 0 (the default) looks before every
+    /// snapshot, a few system calls; more saves those calls under many
+    /// queries a second, and a snapshot may then miss commits that recent.
+    /// [`Database::refresh`] looks at once.
+    pub refresh_interval: Duration,
 }
 
 /// How a database is laid out on disk.
@@ -169,7 +201,7 @@ pub enum Layout {
 
 impl DbOptions {
     /// How the segments of the version a database opens at are checked.
-    fn check_at_open(&self) -> Check {
+    pub(crate) fn check_at_open(&self) -> Check {
         match (self.verify_checksums, self.check_sections) {
             (true, _) => Check::Open,
             (false, true) => Check::Read,
@@ -198,6 +230,9 @@ impl Default for DbOptions {
             ship_log_bytes: 0,
             open_old: false,
             merge_spill_bytes: 64 << 20,
+            write_wait: Duration::from_secs(5),
+            read_only: false,
+            refresh_interval: Duration::ZERO,
         }
     }
 }
@@ -213,6 +248,19 @@ pub struct CheckpointOptions {
     /// and keep their ids in a checkpoint, so successive checkpoints share
     /// every segment no merge has replaced since.
     pub link_from: Option<PathBuf>,
+}
+
+/// What [`Database::scrub`] read, and what failed its checksum.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ScrubReport {
+    /// The commit of the database whose segments it read.
+    pub txn: u64,
+    pub segments: usize,
+    /// Bytes read: segment images, delete sets and updates.
+    pub bytes: u64,
+    /// Each segment whose bytes fail their checksum, in words.
+    pub damaged: Vec<String>,
+    pub seconds: f64,
 }
 
 /// What [`Database::checkpoint`] copied.
@@ -244,6 +292,9 @@ pub struct FileStats {
     pub memtable_docs: usize,
     pub pending_deletes: usize,
     pub segments: Vec<SegmentStats>,
+    /// The processes reading the database read-only (one file): each one's
+    /// pid and the oldest version whose pages it keeps.
+    pub readers: Vec<ReaderInfo>,
 }
 
 /// Size of one on-disk segment.
@@ -270,11 +321,23 @@ pub struct Database {
     dir: Option<PathBuf>,
     /// The single-writer lock; it owns the WAL.
     writer: Mutex<Wal>,
-    state: Mutex<State>,
+    /// Shared with the reader, read-only.
+    state: Arc<Mutex<State>>,
+    /// Where the writer's lock and the readers' pins are
+    /// ([`share::share_dir`]).
+    share: PathBuf,
+    /// The writer's hold on the files, kept while it is open; `None`
+    /// read-only.
+    _writer_lock: Option<WriterLock>,
+    /// What follows another process's writes, read-only.
+    reader: Option<Arc<Reader>>,
     /// Serialises memtable segment builds, so concurrent readers build once.
     build_lock: Mutex<()>,
     /// The snapshot readers get, with `DbOptions::publish_snapshots`.
     published: RwLock<Option<Snapshot>>,
+    /// Whether a snapshot was taken since the writer last published one:
+    /// it publishes the next version only then ([`Database::republish`]).
+    read: AtomicBool,
     /// The merges running, with what a crash interrupted ([`Merging`]).
     merging: Mutex<Merging>,
     /// Expired rows per segment ([`Database::expired_in`]): the segment's
@@ -287,7 +350,9 @@ pub struct Database {
     merger: OnceLock<Arc<Merger>>,
     merger_threads: Mutex<Vec<JoinHandle<()>>>,
     pins: Arc<Pins>,
-    mem_ids: AtomicU64,
+    /// The options memtable segments are built with (`mem_build`, else
+    /// `build`).
+    mem_opts: Arc<BuildOptions>,
     /// Set when a write failed in a way that leaves memory and disk out of
     /// step; every later write fails until the database is reopened.
     poisoned: AtomicBool,
@@ -518,6 +583,10 @@ impl Merger {
         lock(&self.wake).closed = true;
         self.cv.notify_all();
     }
+
+    fn closed(&self) -> bool {
+        lock(&self.wake).closed
+    }
 }
 
 /// A table's rows as a flush or a bulk load writes them to segments:
@@ -610,7 +679,9 @@ fn merger(db: Weak<Database>, m: Arc<Merger>) {
         }
         let Some(db) = db.upgrade() else { return };
         let mut failed = false;
-        while let Some(claim) = db.next_merge(&m) {
+        // A merger stopped ([`Database::stop_merger`]) finishes the merge it
+        // runs and starts no other.
+        while let Some(claim) = (!m.closed()).then(|| db.next_merge(&m)).flatten() {
             let mut stats = MergeStats::default();
             let t0 = Instant::now();
             let r = db.merge_claimed(&claim, m.pacer.as_ref(), &mut stats);
@@ -700,6 +771,9 @@ impl Drop for Database {
         if let Some(sig) = self.flush_signal.get() {
             sig.close();
         }
+        if let Some(r) = &self.reader {
+            r.close();
+        }
         if let Some(m) = self.merger.get() {
             m.close();
         }
@@ -724,7 +798,7 @@ struct SealedMem {
     schema: Arc<Schema>,
     gen: u64,
     len: usize,
-    chunks: Vec<Arc<Vec<Document>>>,
+    chunks: Vec<Arc<Chunk>>,
     deleted: Vec<u64>,
     updates: Updates,
     seqs: Vec<u64>,
@@ -817,6 +891,9 @@ impl Database {
         if path.exists() {
             return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{} exists", path.display()))));
         }
+        if opts.read_only {
+            return Err(read_only(path));
+        }
         let tmp = beside(path, "creating")?;
         if opts.layout == Layout::Directory {
             return Database::create_dir(path, &tmp, schema, opts);
@@ -829,7 +906,7 @@ impl Database {
             let mut fl = FreeList::new(META_PAGES);
             let mbytes = manifest.encode();
             let mext = Extent { page: fl.alloc(pages_for(mbytes.len())), len: mbytes.len() as u64 };
-            let (fext, fbytes) = place_freelist(&mut fl, &[]);
+            let (fext, fbytes) = place_freelist(&mut fl, &[], false);
             io::set_len(&file, fl.page_count() * PAGE)?;
             io::write_at(&file, &mbytes, mext.page * PAGE)?;
             io::write_at(&file, &fbytes, fext.page * PAGE)?;
@@ -857,21 +934,98 @@ impl Database {
         Wal::create(&wal_path(path), db_id, false, true)?;
         let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         io::sync_dir(dir)?;
-        Database::load(path, file, opts)
+        // The file is held exclusively until here; from now on as a writer,
+        // whom readers can share it with.
+        let lock = WriterLock::take(&file, &share::share_dir(path, false))?;
+        Database::load(path, file, lock, opts)
     }
 
     /// Opens an existing database, recovering from a crash: the newest valid
     /// meta slot (or `CURRENT`) names the on-disk version, and committed WAL
     /// transactions not yet in it are replayed into the memtable.
+    ///
+    /// With [`DbOptions::read_only`] it opens the database to read it while
+    /// another process writes it, and changes nothing.
     pub fn open(path: &Path, opts: DbOptions) -> Result<Database> {
+        if opts.read_only {
+            return Database::open_read_only(path, opts);
+        }
         if path.is_dir() {
             let lockf = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path.join(dir::LOCK))?;
-            lock_exclusive(&lockf)?;
-            return Database::load_dir(path, lockf, opts);
+            let lock = WriterLock::take(&lockf, path)?;
+            return Database::load_dir(path, lockf, lock, opts);
         }
         let file = OpenOptions::new().read(true).write(true).open(path)?;
-        lock_exclusive(&file)?;
-        Database::load(path, file, opts)
+        let lock = WriterLock::take(&file, &share::share_dir(path, false))?;
+        Database::load(path, file, lock, opts)
+    }
+
+    /// [`Database::open`] with [`DbOptions::read_only`].
+    fn open_read_only(path: &Path, opts: DbOptions) -> Result<Database> {
+        // Snapshots are taken by readers, and the log is the writer's to ship.
+        let opts = DbOptions { publish_snapshots: false, ship_log_bytes: 0, ..opts };
+        let (file, dir) = match path.is_dir() {
+            true => (File::open(path.join(dir::LOCK))?, Some(path.to_path_buf())),
+            false => (File::open(path)?, None),
+        };
+        share::lock_shared(&file)?;
+        let share_path = share::share_dir(path, dir.is_some());
+        // Before the first meta slot is read ([`share`]).
+        let pin = match &dir {
+            Some(_) => None,
+            None => ReaderPin::register(&share_path)?,
+        };
+        let wal_path = match &dir {
+            Some(d) => d.join(dir::WAL),
+            None => wal_path(path),
+        };
+        let (reader, damaged) = Reader::open(path, wal_path.clone(), dir.clone(), file.try_clone()?, opts.clone(), pin, Session::new(&share_path))?;
+        let db_id = lock(&reader.state).meta.db_id;
+        let merge_record_path = match &dir {
+            Some(d) => d.join(dir::MERGE_RECORD),
+            None => {
+                let mut s = path.as_os_str().to_owned();
+                s.push("-merging");
+                PathBuf::from(s)
+            }
+        };
+        let mem_opts = Arc::new(opts.mem_build.clone().unwrap_or_else(|| opts.build.clone()));
+        let db = Database {
+            path: path.to_path_buf(),
+            writer: Mutex::new(Wal::unwritable(file.try_clone()?, &wal_path, db_id)),
+            wal_path,
+            opts,
+            file,
+            dir,
+            state: reader.state.clone(),
+            share: share_path,
+            _writer_lock: None,
+            reader: Some(reader.clone()),
+            build_lock: Mutex::new(()),
+            published: RwLock::new(None),
+            read: AtomicBool::new(true),
+            merging: Mutex::new(Merging::default()),
+            expired: Mutex::new(HashMap::new()),
+            merge_record_path,
+            merger: OnceLock::new(),
+            merger_threads: Mutex::new(Vec::new()),
+            pins: reader.pins.clone(),
+            mem_opts,
+            poisoned: AtomicBool::new(false),
+            flush_error: Mutex::new(None),
+            damaged,
+            sealed_wals: Mutex::new(Vec::new()),
+            background: Mutex::new(()),
+            flush_signal: OnceLock::new(),
+            flusher: Mutex::new(None),
+            background_waiting: AtomicUsize::new(0),
+            background_holding: AtomicUsize::new(0),
+            commit_hook: RwLock::new(None),
+            codebooks: RwLock::new(Vec::new()),
+        };
+        let h = std::thread::Builder::new().name("strata-reader".into()).spawn(move || reader.run())?;
+        *lock(&db.flusher) = Some(h);
+        Ok(db)
     }
 
     /// [`Database::create`] in the directory layout, built in `tmp`.
@@ -901,10 +1055,11 @@ impl Database {
         };
         let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         io::sync_dir(parent)?;
-        Database::load_dir(path, lockf, opts)
+        let lock = WriterLock::take(&lockf, path)?;
+        Database::load_dir(path, lockf, lock, opts)
     }
 
-    fn load_dir(path: &Path, lockf: File, opts: DbOptions) -> Result<Database> {
+    fn load_dir(path: &Path, lockf: File, lock: WriterLock, opts: DbOptions) -> Result<Database> {
         let (cur, manifest) = dir::read_current(path)?;
         // Files a crash left behind: written for a commit that did not
         // finish, or no longer named after one that did.
@@ -917,7 +1072,7 @@ impl Database {
             .map(|t| t.segments.iter().map(|m| SegHandle::open_in(path, m, &t.schema, opts.read_ahead, opts.read_ahead && opts.random_hints, opts.check_at_open()).map(Arc::new)).collect())
             .collect::<Result<_>>()?;
         let meta = dir_meta(&cur);
-        Database::assemble(path, path.join(dir::WAL), Some(path.to_path_buf()), lockf, opts, manifest, meta, 0, FreeList::new(META_PAGES), OwnedBytes::empty(), handles)
+        Database::assemble(path, path.join(dir::WAL), Some(path.to_path_buf()), lockf, lock, opts, manifest, meta, 0, FreeList::new(META_PAGES), OwnedBytes::empty(), handles)
     }
 
     /// Opens the newest version named by a valid meta slot, or, when that
@@ -927,13 +1082,13 @@ impl Database {
     /// ([`crate::storage::freelist`]). With `sync` off, a power loss can
     /// leave the newest slot naming pages that never reached the disk;
     /// that loses the newest commits, not the database.
-    fn load(path: &Path, file: File, opts: DbOptions) -> Result<Database> {
+    fn load(path: &Path, file: File, lock: WriterLock, opts: DbOptions) -> Result<Database> {
         let metas = pager::read_metas(&file)?;
         let mut damaged = None;
         for (i, &(meta, slot)) in metas.iter().enumerate() {
             match Database::load_version(&file, &opts, meta, i > 0) {
                 Ok((manifest, freelist, map, handles)) => {
-                    let mut db = Database::assemble(path, wal_path(path), None, file, opts, manifest, meta, slot, freelist, map, handles)?;
+                    let mut db = Database::assemble(path, wal_path(path), None, file, lock, opts, manifest, meta, slot, freelist, map, handles)?;
                     db.damaged = match (damaged, db.damaged.take()) {
                         (Some(a), Some(b)) => Some(format!("{a}; {b}")),
                         (a, b) => a.or(b),
@@ -985,6 +1140,7 @@ impl Database {
         wal_path: PathBuf,
         dir: Option<PathBuf>,
         file: File,
+        writer_lock: WriterLock,
         opts: DbOptions,
         manifest: Manifest,
         meta: Meta,
@@ -999,6 +1155,8 @@ impl Database {
                 path.display()
             )));
         }
+        // Logs a crash left before they were named.
+        wal::remove_leftovers(&wal_path);
         let fits = |table: u32, op: &Op| manifest.table(table).is_none_or(|t| op_fits(&t.schema, op));
         let numbered = manifest.seq_no.is_some();
         let (sealed, mut txns, cut) = read_sealed_wals(&wal_path, &manifest, meta.db_id, opts.wal_drop_damaged, &fits)?;
@@ -1048,6 +1206,8 @@ impl Database {
             reserved: Vec::new(),
             next_segment_id: 0,
             ship: ShipLog::new(opts.ship_log_bytes),
+            dropped: Vec::new(),
+            pin_versions: false,
         };
         let mut flushed = false;
         for t in txns {
@@ -1094,6 +1254,8 @@ impl Database {
         record.store(&merge_record_path)?;
         let (spill_dir, spill_prefix) = spill_place(path, dir.as_deref());
         crate::segment::spill::remove_leftovers(spill_dir, &spill_prefix);
+        let mem_opts = Arc::new(opts.mem_build.clone().unwrap_or_else(|| opts.build.clone()));
+        let share = share::share_dir(path, dir.is_some());
         let db = Database {
             path: path.to_path_buf(),
             wal_path,
@@ -1101,16 +1263,20 @@ impl Database {
             file,
             dir,
             writer: Mutex::new(wal),
-            state: Mutex::new(st),
+            state: Arc::new(Mutex::new(st)),
+            share,
+            _writer_lock: Some(writer_lock),
+            reader: None,
             build_lock: Mutex::new(()),
             published: RwLock::new(None),
+            read: AtomicBool::new(true),
             merging: Mutex::new(Merging { record, ..Merging::default() }),
             expired: Mutex::new(HashMap::new()),
             merge_record_path,
             merger: OnceLock::new(),
             merger_threads: Mutex::new(Vec::new()),
             pins: Arc::new(Pins::default()),
-            mem_ids: AtomicU64::new(0),
+            mem_opts,
             poisoned: AtomicBool::new(false),
             flush_error: Mutex::new(None),
             damaged: wal_dropped,
@@ -1130,6 +1296,7 @@ impl Database {
     /// The schema of the database's first table, as it is now
     /// ([`Database::alter_table`] changes it).
     pub fn schema(&self) -> Arc<Schema> {
+        self.follow();
         lock(&self.state).tables[0].schema.clone()
     }
 
@@ -1138,11 +1305,13 @@ impl Database {
     /// [`SOURCES`] is not among them: [`Self::table`] and SQL read it by
     /// name.
     pub fn tables(&self) -> Vec<Arc<Schema>> {
+        self.follow();
         lock(&self.state).tables.iter().filter(|t| t.id != SOURCES_ID).map(|t| t.schema.clone()).collect()
     }
 
     /// The schema of the table named `name` (any case).
     pub fn table(&self, name: &str) -> Option<Arc<Schema>> {
+        self.follow();
         lock(&self.state).tables.iter().find(|t| t.schema.table.eq_ignore_ascii_case(name)).map(|t| t.schema.clone())
     }
 
@@ -1231,7 +1400,8 @@ impl Database {
             }
         }
         let mut vw = VersionWriter::begin(self);
-        let names: Vec<String> = dropped.iter().filter_map(|&id| vw.manifest.table(id).map(|t| t.schema.table.clone())).collect();
+        let gone: Vec<(u32, Arc<Schema>)> = dropped.iter().filter_map(|&id| vw.manifest.table(id).map(|t| (id, Arc::new(t.schema.clone())))).collect();
+        let names: Vec<String> = gone.iter().map(|(_, s)| s.table.clone()).collect();
         for (id, op) in &ops {
             match op {
                 Op::Table { def: Some(schema) } => {
@@ -1271,6 +1441,9 @@ impl Database {
                 st.live_cache.clear();
                 st.updates_cache.clear();
             }
+            st.dropped.extend(gone);
+            let over = st.dropped.len().saturating_sub(crate::storage::state::DROPPED_KEPT);
+            st.dropped.drain(..over);
             if let Some(s) = next {
                 st.seq = s.seq;
                 st.ship.push(Shipped { seq: s, bytes: wal::encode_txn(txn, Some(s), &ops).into() });
@@ -1459,6 +1632,22 @@ impl Database {
         self.publish(c, |_| {})
     }
 
+    /// Drops the terms begun after the last transaction, which hold none,
+    /// for `term`, that of the next transaction, which is not older than
+    /// the last's ([`Database::apply_shipped`]), under the writer lock.
+    fn drop_empty_terms(&self, wal: &mut Wal, term: u64) -> Result<()> {
+        let seq = lock(&self.state).seq;
+        let mut vw = VersionWriter::begin(self);
+        let n = vw.manifest.seq_no.as_mut().expect("numbered");
+        n.terms.retain(|&(_, first)| first <= seq);
+        if n.terms.last().is_none_or(|&(t, _)| t < term) {
+            n.terms.push((term, seq + 1));
+        }
+        n.term = term;
+        let c = vw.commit(wal)?;
+        self.publish(c, |_| {})
+    }
+
     /// The numbered transactions from sequence number `from` on, as they
     /// were logged, up to `max_bytes` of them (at least one), for a replica
     /// to apply ([`Database::apply_shipped`]): none when `from` is past the
@@ -1467,6 +1656,20 @@ impl Database {
     pub fn log_from(&self, from: u64, max_bytes: usize) -> LogRead {
         let st = lock(&self.state);
         st.ship.read(from, st.seq, max_bytes)
+    }
+
+    /// [`Database::log_from`], with what the log is read against, under
+    /// one lock: the tables (by id, `_sources` among them once made) and
+    /// the numbering as of the log's last transaction. `None` in a
+    /// database that does not number its writes.
+    /// The tables now, and those dropped since the database opened
+    /// ([`crate::storage::state::State::dropped`]).
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn log_with_tables(&self, from: u64, max_bytes: usize) -> Option<(Vec<(u32, Arc<Schema>)>, Vec<(u32, Arc<Schema>)>, Numbering, LogRead)> {
+        let st = lock(&self.state);
+        let n = st.manifest.seq_no.clone().map(|n| Numbering { seq: st.seq, ..n })?;
+        let tables = st.tables.iter().map(|t| (t.id, t.schema.clone())).collect();
+        Some((tables, st.dropped.clone(), n, st.ship.read(from, st.seq, max_bytes)))
     }
 
     /// Whether it keeps a ship log ([`DbOptions::ship_log_bytes`]).
@@ -1503,7 +1706,11 @@ impl Database {
     /// number's term): when it is not this database's last
     /// ([`Numbering::last`]), nothing is applied ([`Applied::Mismatch`]).
     /// A transaction with a newer term than this database's raises its
-    /// term first.
+    /// term first. One of an older term than this database's, but not
+    /// older than its last transaction's, drops first the terms this
+    /// database began, or took in a copy ([`Database::install_copy`]),
+    /// after its last transaction: they hold none, and a primary of a newer
+    /// term ships what it holds of an older one past this database's last.
     ///
     /// Each transaction is checked before any is applied: an error for one
     /// that is damaged, does not follow the one before it, or comes from an
@@ -1553,12 +1760,10 @@ impl Database {
             if s.seq != at.seq + 1 {
                 return Err(corrupt(format!("shipped transaction {} does not follow {}", s.seq, at.seq)));
             }
-            if s.term < at.term.max(now.term) {
+            if s.term < at.term {
                 return Err(Error::Schema(format!(
                     "shipped transaction {} has term {}, older than term {}: it comes from a primary that another has replaced",
-                    s.seq,
-                    s.term,
-                    at.term.max(now.term)
+                    s.seq, s.term, at.term
                 )));
             }
             at = s;
@@ -1598,6 +1803,12 @@ impl Database {
         let mut at = now.last();
         let mut failed = None;
         for (s, ops) in shipped {
+            if s.term < lock(&self.state).manifest.seq_no.as_ref().map_or(0, |n| n.term) {
+                if let Err(e) = self.drop_empty_terms(&mut wal, s.term) {
+                    failed = Some(e);
+                    break;
+                }
+            }
             if s.term > lock(&self.state).manifest.seq_no.as_ref().map_or(0, |n| n.term) {
                 if let Err(e) = self.raise_term(&mut wal, s.term) {
                     failed = Some(e);
@@ -1612,7 +1823,9 @@ impl Database {
                 at = s;
                 continue;
             }
-            let mut txn = WriteTxn { db: self, wal, ops: Vec::new(), keys: Vec::new(), ties: Vec::new() };
+            // A primary's deletes of expired rows are in its log: rows do
+            // not expire here by this machine's clock.
+            let mut txn = WriteTxn { db: self, wal, ops: Vec::new(), keys: Vec::new(), ties: Vec::new(), now: None };
             let replayed = txn.replay(ops);
             let WriteTxn { wal: w, ops, .. } = txn;
             wal = w;
@@ -1913,32 +2126,81 @@ impl Database {
         &self.opts
     }
 
-    /// Starts the write transaction; `Error::Busy` while another one (or a
-    /// flush, bulk load or merge commit) is in progress.
+    /// Starts the write transaction, waiting up to
+    /// [`DbOptions::write_wait`] while another one (or a flush, bulk load
+    /// or merge commit) is in progress; `Error::Busy` after that.
     pub fn begin(&self) -> Result<WriteTxn<'_>> {
         self.wait_for_flusher();
         let wal = self.try_writer()?;
         self.check_poisoned()?;
-        Ok(WriteTxn { db: self, wal, ops: Vec::new(), keys: Vec::new(), ties: Vec::new() })
+        Ok(WriteTxn { db: self, wal, ops: Vec::new(), keys: Vec::new(), ties: Vec::new(), now: Some(crate::timestamp::now()) })
     }
 
     /// The current version. Never waits for a writer; the first snapshot
     /// after a write rebuilds the last memtable chunk's segment, unless
     /// `DbOptions::publish_snapshots` has the writer build it.
     pub fn snapshot(&self) -> Snapshot {
-        if let Some(s) = &*self.published.read().unwrap_or_else(|e| e.into_inner()) {
-            return s.clone();
+        self.follow();
+        if !self.read.load(Ordering::Relaxed) {
+            self.read.store(true, Ordering::Relaxed);
         }
-        self.snapshot_inner(true)
+        if let Some(s) = self.published() {
+            return s;
+        }
+        let s = self.snapshot_inner(true);
+        // Meanwhile the writer may have published a version and applied the
+        // next write, which this snapshot holds, without publishing that
+        // one yet: this reader's next snapshot would be the published one,
+        // older, and rows would disappear. So a version published meanwhile
+        // is returned instead; any published after this check holds at
+        // least what this snapshot does.
+        self.published().unwrap_or(s)
+    }
+
+    /// The snapshot readers get, with `DbOptions::publish_snapshots`.
+    fn published(&self) -> Option<Snapshot> {
+        self.published.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// A read-only database: follows the writer, at most once each
+    /// [`DbOptions::refresh_interval`], before a snapshot or a look at the
+    /// tables. A failure is tried again a little later; meanwhile what the
+    /// reader holds is read.
+    fn follow(&self) {
+        if let Some(r) = &self.reader {
+            if let Err(e) = r.sync(self.opts.refresh_interval, false) {
+                tracing::warn!(path = %self.path.display(), error = %e, "a read-only database could not follow its writer");
+            }
+        }
+    }
+
+    /// Whether the database was opened with [`DbOptions::read_only`].
+    pub fn is_read_only(&self) -> bool {
+        self.reader.is_some()
+    }
+
+    /// A read-only database: reads what the writer committed since it last
+    /// looked, now (snapshots do so at most once each
+    /// [`DbOptions::refresh_interval`]); returns whether anything changed.
+    /// `Ok(false)` for the writer.
+    pub fn refresh(&self) -> Result<bool> {
+        match &self.reader {
+            Some(r) => r.sync(Duration::ZERO, true),
+            None => Ok(false),
+        }
     }
 
     /// With `publish_snapshots`, builds the current version's snapshot and
-    /// hands it to readers from now on. Callers hold the writer lock (or
-    /// are opening the database), so versions are published in order.
+    /// hands it to readers from now on, if a snapshot was taken since the
+    /// last one was published; if none was, readers build the version
+    /// themselves ([`Self::snapshot_inner`]) until one is published again,
+    /// so writes nobody reads (a bulk import) do not index memtable chunks
+    /// the flush indexes again. Callers hold the writer lock (or are
+    /// opening the database), so versions are published in order.
     fn republish(&self) {
         if self.opts.publish_snapshots {
-            let s = self.snapshot_inner(true);
-            *self.published.write().unwrap_or_else(|e| e.into_inner()) = Some(s);
+            let s = self.read.swap(false, Ordering::Relaxed).then(|| self.snapshot_inner(true));
+            *self.published.write().unwrap_or_else(|e| e.into_inner()) = s;
         }
     }
 
@@ -1951,16 +2213,16 @@ impl Database {
             }
             st.capture(&self.pins, with_mem)
         };
-        if cap.tables.iter().any(|t| t.mem.iter().any(|p| p.seg.is_none())) {
+        // Full chunks are built here, once each; the last chunk, which every
+        // write changes, when a query needs it (`snapshot::Tail`).
+        if cap.tables.iter().any(|t| t.mem.iter().any(|p| p.seg.is_none() && !p.last)) {
             let _b = lock(&self.build_lock);
-            let opts = self.opts.mem_build.as_ref().unwrap_or(&self.opts.build);
             for t in &mut cap.tables {
-                for part in t.mem.iter_mut().filter(|p| p.seg.is_none()) {
+                for part in t.mem.iter_mut().filter(|p| p.seg.is_none() && !p.last) {
                     // Another reader may have built it while we waited.
                     let built = lock(&self.state).memseg(part.table, part.gen, part.chunk, part.len);
                     part.seg = Some(built.unwrap_or_else(|| {
-                        let id = MEM_ID | self.mem_ids.fetch_add(1, Ordering::Relaxed);
-                        let seg = build_memseg(&t.schema, opts, part, id);
+                        let seg = build_memseg(&t.schema, &self.mem_opts, part, next_mem_id());
                         lock(&self.state).keep_memseg(part.table, &seg);
                         seg
                     }));
@@ -1968,7 +2230,7 @@ impl Database {
             }
         }
         let version = cap.version;
-        let inner = Arc::new(cap.assemble(self.path.clone()));
+        let inner = Arc::new(cap.assemble(self.path.clone(), &self.mem_opts));
         if with_mem {
             let mut st = lock(&self.state);
             if st.version == version {
@@ -2155,6 +2417,9 @@ impl Database {
     /// are refused, as without a flusher. The thread ends with the
     /// database; calling this again does nothing.
     pub fn spawn_flusher(self: &Arc<Self>) {
+        if self.reader.is_some() {
+            return;
+        }
         let sig = Arc::new(FlushSignal::default());
         if self.flush_signal.set(sig.clone()).is_err() {
             return;
@@ -2337,15 +2602,17 @@ impl Database {
         let mut chunk = Vec::new();
         let max = self.opts.segment_max_docs.max(1);
         let mut ties = Ties::default();
+        let mut vw_rows = 0u64;
         for doc in docs {
             let mut doc = doc?;
+            vw_rows += 1;
             conform(schema, &mut doc)?;
             self.fill_sids(&t, &mut doc, &mut ties, &[])?;
             if let Some(pk) = pk {
                 let dup = !seen.insert(Key::of(&doc[pk]).expect("validated key"))
                     || (check_existing && lock(&self.state).find_live(t.pos, &doc[pk]).is_some());
                 if dup {
-                    return Err(Error::Schema(format!("duplicate primary key {:?}", doc[pk])));
+                    return Err(Error::Schema(crate::query::hint::duplicate_key(schema, &doc[pk])));
                 }
             }
             chunk.push(doc);
@@ -2360,9 +2627,13 @@ impl Database {
             return Ok(());
         }
         let c = vw.commit(&mut wal)?;
+        let rows = vw_rows;
         self.publish(c, |st| {
-            if let Some(known) = st.table_index(t.id).and_then(|i| st.tables[i].ties.as_mut()) {
-                known.absorb(&ties);
+            if let Some(i) = st.table_index(t.id) {
+                st.tables[i].activity.wrote(super::state::now_ms(), rows);
+                if let Some(known) = st.tables[i].ties.as_mut() {
+                    known.absorb(&ties);
+                }
             }
         })
     }
@@ -2448,8 +2719,12 @@ impl Database {
             return Ok(ids);
         }
         let c = vw.commit(&mut wal)?;
+        let rows: u64 = loaded.iter().map(|(_, n)| *n as u64).sum();
         // Their semantic IDs are counted again when a write needs them.
-        self.publish(c, |st| st.tables[0].ties = None)?;
+        self.publish(c, |st| {
+            st.tables[0].ties = None;
+            st.tables[0].activity.wrote(super::state::now_ms(), rows);
+        })?;
         Ok(ids)
     }
 
@@ -2505,6 +2780,9 @@ impl Database {
     /// rate too). [`Database::merge_status`] says what they do. The threads
     /// end with the database; calling this again does nothing.
     pub fn spawn_merger(self: &Arc<Self>, opts: MergerOptions) {
+        if self.reader.is_some() {
+            return;
+        }
         let m = Arc::new(Merger {
             policy: opts.policy,
             budget: opts.memory_budget.or_else(|| memory_limit().map(|l| l / 2)),
@@ -2522,8 +2800,35 @@ impl Database {
         }
         let mut threads = lock(&self.merger_threads);
         for i in 0..opts.threads.max(1) {
-            let (db, m) = (Arc::downgrade(self), m.clone());
-            threads.push(std::thread::Builder::new().name(format!("strata-merger-{i}")).spawn(move || merger(db, m)).expect("spawn a merger thread"));
+            let (db, m, nice) = (Arc::downgrade(self), m.clone(), opts.nice);
+            threads.push(
+                std::thread::Builder::new()
+                    .name(format!("strata-merger-{i}"))
+                    .spawn(move || {
+                        lower_priority(nice);
+                        merger(db, m)
+                    })
+                    .expect("spawn a merger thread"),
+            );
+        }
+    }
+
+    /// Stops the merger [`Database::spawn_merger`] started: a merge running
+    /// finishes, none starts after it, and this returns once the merger's
+    /// threads have ended, so that the database closes when its last
+    /// reference goes rather than when a merge does. Calls to
+    /// [`Database::merge`] still merge; the merger does not start again.
+    pub fn stop_merger(&self) {
+        if let Some(m) = self.merger.get() {
+            m.close();
+        }
+        let threads = std::mem::take(&mut *lock(&self.merger_threads));
+        for h in threads {
+            // A merger thread that holds the last reference closes the
+            // database on its own thread, and so may call this.
+            if h.thread().id() != std::thread::current().id() {
+                let _ = h.join();
+            }
         }
     }
 
@@ -3070,6 +3375,8 @@ impl Database {
         };
         let tmp = beside(dest, "checkpoint")?;
         let r = self.write_checkpoint(&tmp, opts.layout, &manifest, &handles, link);
+        // The copy's writer is gone; its lock is no part of the copy.
+        share::remove(&tmp, opts.layout == Layout::Directory);
         let mut stats = match r {
             Ok(stats) => stats,
             Err(e) => {
@@ -3142,8 +3449,12 @@ impl Database {
     /// Returns space to the file system: moves segments and delete sets from
     /// the end of the file into free runs below them and truncates the free
     /// tail, committing until nothing moves (pages freed by a commit become
-    /// reusable two commits later). Space a live snapshot can still reach
-    /// stays. Returns the number of bytes the file shrank by.
+    /// reusable two commits later). If a sixteenth of the file is still free
+    /// then, in gaps too small for the segments above them, it moves those
+    /// segments to the end and back down into the one gap their old places
+    /// make: the file briefly grows by what lies above its first gap, which
+    /// is written twice. Space a live snapshot can still reach stays.
+    /// Returns the number of bytes the file shrank by.
     pub fn vacuum(&self) -> Result<u64> {
         let mut wal = self.try_writer()?;
         self.check_poisoned()?;
@@ -3172,14 +3483,32 @@ impl Database {
             return Ok(freed);
         }
         let before = lock(&self.state).meta.page_count;
-        let mut idle = 0;
+        let (mut lifted, mut wait, mut idle) = (false, 0, 0);
         while idle < 2 {
             let mut vw = VersionWriter::begin(self);
-            let moved = vw.relocate_down()?;
+            vw.meta_low = true;
+            let mut moved = 0;
+            if wait > 0 {
+                wait -= 1;
+            } else {
+                moved = vw.relocate_down()?;
+                // Nothing has fitted for a second commit running, so what
+                // earlier moves freed is reusable by now: if much of the file
+                // is still free, move everything out of the way once.
+                if moved == 0 && idle == 1 && !lifted && vw.fragmented() {
+                    moved = vw.lift_all()?;
+                    lifted = true;
+                    // The old places come free two commits on. Packing waits
+                    // for them: the extents would otherwise fill the small
+                    // runs first. The manifests of those commits go to the
+                    // front of the gap (`meta_low`), not inside it.
+                    wait = 2;
+                }
+            }
             let c = vw.commit(&mut wal)?;
             let shrank = c.meta.page_count < lock(&self.state).meta.page_count;
             self.publish(c, |_| {})?;
-            idle = if moved > 0 || shrank { 0 } else { idle + 1 };
+            idle = if moved > 0 || shrank || wait > 0 { 0 } else { idle + 1 };
         }
         Ok(before.saturating_sub(lock(&self.state).meta.page_count) * PAGE)
     }
@@ -3188,6 +3517,22 @@ impl Database {
     fn wal_bytes(&self) -> u64 {
         let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
         size(&self.wal_path) + lock(&self.sealed_wals).iter().map(|&t| size(&wal::sealed_path(&self.wal_path, t))).sum::<u64>()
+    }
+
+    /// The writes to table `table` since this database was opened
+    /// ([`Activity`]); `None` for a table it does not have.
+    pub fn activity(&self, table: &str) -> Option<super::Activity> {
+        let st = lock(&self.state);
+        st.tables.iter().find(|t| t.schema.table.eq_ignore_ascii_case(table)).map(|t| t.activity)
+    }
+
+    /// When the database last changed on disk, in milliseconds since
+    /// 1970: the newest modification time of its file (its directory, in
+    /// the directory layout) and its write-ahead log. A write changes the
+    /// log; a flush, merge or checkpoint the file.
+    pub fn modified_ms(&self) -> Option<u64> {
+        let at = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64);
+        [at(&self.path), at(&self.wal_path)].into_iter().flatten().max()
     }
 
     pub fn file_stats(&self) -> FileStats {
@@ -3203,6 +3548,7 @@ impl Database {
                 memtable_docs: st.mem_live_docs(),
                 pending_deletes: st.n_pending,
                 segments: segment_stats(&st.manifest),
+                readers: Vec::new(),
             };
         }
         let segments = segment_stats(&st.manifest);
@@ -3218,7 +3564,46 @@ impl Database {
             memtable_docs: st.mem_live_docs(),
             pending_deletes: st.n_pending,
             segments,
+            readers: share::readers(&self.share),
         }
+    }
+
+    /// Reads every segment of the current version, with its delete set
+    /// and updates, and compares each with its checksum, as [`Self::check`]
+    /// does, but without the writer lock: writes, flushes and merges go on
+    /// meanwhile. The version it reads stays pinned, so no commit reuses
+    /// its pages, and a segment merged away meanwhile is read through its
+    /// mapping (in the directory layout, its delete-set and updates files
+    /// are skipped once unlinked). Damage is listed, not an error: the
+    /// scrub reads on past it. `pace` is called after each segment with
+    /// the bytes it read, so that a caller can keep reads to a rate.
+    ///
+    /// A section of a segment is checked the first time a query reads it
+    /// ([`DbOptions::check_sections`]); a scrub finds the damage a query
+    /// has not read yet, as on a replica that serves few searches, or a
+    /// segment that only a merge would read.
+    pub fn scrub(&self, mut pace: impl FnMut(u64)) -> Result<ScrubReport> {
+        let t0 = Instant::now();
+        let (handles, txn, _pin) = {
+            let st = lock(&self.state);
+            (st.handles().cloned().collect::<Vec<_>>(), st.txn, self.pins.pin(st.txn))
+        };
+        let mut r = ScrubReport { txn, ..Default::default() };
+        for h in &handles {
+            let m = &h.meta;
+            let bytes = m.extent.len + m.deletes.map_or(0, |e| e.len) + m.updates.map_or(0, |e| e.len);
+            match h.verify(self.dir.as_deref()) {
+                Ok(()) => {}
+                // Merged away meanwhile, its small files unlinked.
+                Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => r.damaged.push(e.to_string()),
+            }
+            r.segments += 1;
+            r.bytes += bytes;
+            pace(bytes);
+        }
+        r.seconds = t0.elapsed().as_secs_f64();
+        Ok(r)
     }
 
     /// Verifies the file: the meta slot and manifest on disk match the open
@@ -3226,7 +3611,14 @@ impl Database {
     /// key is found by its segment's index, and every page is used exactly
     /// once (meta slot, extent, free run or pending free). `Error::Busy`
     /// while a write is in progress.
+    ///
+    /// A read-only database checks the version it holds: every segment,
+    /// delete set and set of updates against its checksum and every key;
+    /// which pages or files are used is for the writer's check.
     pub fn check(&self) -> Result<()> {
+        if self.reader.is_some() {
+            return self.check_read_only();
+        }
         let _w = self.try_writer()?;
         if let Some(d) = &self.dir {
             return self.check_dir(d);
@@ -3359,12 +3751,65 @@ impl Database {
         }
     }
 
-    /// The writer lock, or `Busy` when another write holds it. A background
-    /// flush holds it only to seal or install, briefly: that is waited for.
+    /// [`Database::check`] of a read-only database.
+    fn check_read_only(&self) -> Result<()> {
+        // The pin keeps the version's pages while they are read.
+        let (_pin, manifest, handles, map) = {
+            let st = lock(&self.state);
+            (self.pins.pin(st.meta.txn), st.manifest.clone(), st.handles().cloned().collect::<Vec<_>>(), st.map.clone())
+        };
+        check_field_lists(&manifest, &handles)?;
+        let bytes = |file: Option<&str>, e: Extent| -> Result<Vec<u8>> {
+            match (&self.dir, file) {
+                (Some(d), Some(f)) => std::fs::read(d.join(f)).map_err(|e| match e.kind() {
+                    // The writer replaced it since.
+                    std::io::ErrorKind::NotFound => Error::Busy(format!("{f} went while it was checked: the version changed; check again")),
+                    _ => e.into(),
+                }),
+                (Some(_), None) => Err(corrupt("a part of a segment has no file")),
+                (None, _) => Ok(map[e.range()].to_vec()),
+            }
+        };
+        for (s, h) in manifest.segments().zip(&handles) {
+            // The image as the reader maps it (the writer may have removed
+            // its file since, in the directory layout).
+            if crc32fast::hash(h.file.image()) != s.crc {
+                return Err(corrupt(format!("segment {} fails its checksum", s.id)));
+            }
+            if let Some(e) = s.deletes.or(s.deletes_file.as_ref().map(|_| Extent { page: 0, len: 0 })) {
+                if crc32fast::hash(&bytes(s.deletes_file.as_deref(), e)?) != s.deletes_crc {
+                    return Err(corrupt(format!("delete set of segment {} fails its checksum", s.id)));
+                }
+                let n: u32 = h.base.as_ref().map_or(0, |b| b.deleted_words().iter().map(|w| w.count_ones()).sum());
+                if n != s.n_deleted {
+                    return Err(corrupt(format!("segment {} has {n} deletes, manifest says {}", s.id, s.n_deleted)));
+                }
+            }
+            if let Some(e) = s.updates.or(s.updates_file.as_ref().map(|_| Extent { page: 0, len: 0 })) {
+                if crc32fast::hash(&bytes(s.updates_file.as_deref(), e)?) != s.updates_crc {
+                    return Err(corrupt(format!("updates of segment {} fail their checksum", s.id)));
+                }
+            }
+            if let Some(pk) = &h.pk {
+                for d in 0..s.n_docs {
+                    if !pk.lookup_all(&pk.key(d)).any(|x| x == d) {
+                        return Err(corrupt(format!("segment {} key of document {d} not found", s.id)));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The writer lock, waiting up to [`DbOptions::write_wait`] while
+    /// another write holds it, then `Busy`. A background flush holds it
+    /// only to seal or install, briefly: that is waited for however long.
     /// While one waits for the lock, so does this, for a few milliseconds,
     /// in case the lock is being handed to the flush.
     fn try_writer(&self) -> Result<MutexGuard<'_, Wal>> {
+        self.writable()?;
         let t0 = Instant::now();
+        let mut nap = Duration::from_micros(50);
         loop {
             match self.writer.try_lock() {
                 Ok(g) => return Ok(g),
@@ -3372,16 +3817,31 @@ impl Database {
                 Err(TryLockError::WouldBlock) => {
                     let holding = self.background_holding.load(Ordering::Acquire) > 0;
                     let waiting = self.background_waiting.load(Ordering::Acquire) > 0;
-                    if !holding && !(waiting && t0.elapsed() < Duration::from_millis(5)) {
+                    let waited = t0.elapsed();
+                    if !holding && !(waiting && waited < Duration::from_millis(5)) && waited >= self.opts.write_wait {
                         return Err(Error::Busy("another write is in progress".into()));
                     }
                 }
             }
-            std::thread::sleep(Duration::from_micros(100));
+            std::thread::sleep(nap);
+            // A write holding the lock long (a vacuum, a large transaction)
+            // is not polled hard.
+            nap = (nap * 2).min(Duration::from_millis(2));
         }
     }
 
+    /// `Error::Query` for a read-only database, which no write may change.
+    fn writable(&self) -> Result<()> {
+        match self.reader {
+            Some(_) => Err(read_only(&self.path)),
+            None => Ok(()),
+        }
+    }
+
+    /// Fails a write when an earlier one failed partway, or the database is
+    /// read-only.
     fn check_poisoned(&self) -> Result<()> {
+        self.writable()?;
         if self.poisoned.load(Ordering::Acquire) {
             return Err(Error::Io(std::io::Error::other("an earlier write failed; reopen the database")));
         }
@@ -3643,8 +4103,40 @@ impl Database {
         Ok(if field.indexed && matches!(field.ty, FieldType::Int | FieldType::Float) {
             crate::forward::NumericColumn::open(&h.file, &field.key())?.get(d)
         } else {
-            crate::forward::DocStore::open(&h.file, &t.schema)?.get_fields(d, &[f]).pop().unwrap_or(Value::Null)
+            crate::forward::DocStore::open(&h.file, &t.schema)?.get_fields(d, &[f])?.pop().unwrap_or(Value::Null)
         })
+    }
+
+    /// Every field of the live row with this key, as a merge reads it
+    /// ([`DocumentSource`]), with the values written in place; `None` when
+    /// no row has the key.
+    fn live_doc(&self, t: &TableRef, key: &Value) -> Result<Option<Document>> {
+        let st = lock(&self.state);
+        let (h, d) = match st.find_live(t.pos, key) {
+            None => return Ok(None),
+            Some(Loc::Mem(i)) => {
+                let mem = &st.tables[t.pos].mem;
+                let mut doc = mem.chunks[i as usize / mem.chunk][i as usize % mem.chunk].clone();
+                mem.updates.apply(i, &mut doc);
+                return Ok(Some(doc));
+            }
+            Some(Loc::Disk(id, d)) => (st.handle(id).cloned().expect("segment of a live key"), d),
+        };
+        // Values written in place since the segment's own were saved.
+        let pending: Vec<(usize, Value)> = match st.pending_updates.get(&h.meta.id) {
+            Some((_, u)) => (0..t.schema.fields.len()).filter_map(|f| Some((f, u.get(f, d)?.clone()))).collect(),
+            None => Vec::new(),
+        };
+        drop(st);
+        let source = self.opts.doc_source.as_ref().ok_or_else(|| Error::Schema("writing a row again needs DbOptions::doc_source".into()))?;
+        let mut doc = source.documents(&t.schema, &h.file, &[d])?.pop().ok_or_else(|| corrupt(format!("segment {} has no document {d}", h.meta.id)))?;
+        if let Some(u) = &h.updates {
+            u.apply(d, &mut doc);
+        }
+        for (f, v) in pending {
+            doc[f] = v;
+        }
+        Ok(Some(doc))
     }
 
     /// Commits `ops` as one transaction; returns its sequence number when
@@ -3679,10 +4171,22 @@ impl Database {
         let logged = wal.append(txn, seq, &ops, sync).map_err(|e| self.poison(e))?;
         let full = {
             let mut st = lock(&self.state);
+            let now = super::state::now_ms();
+            // Rows changed per table, for its activity.
+            let mut changed: Vec<(usize, u64)> = Vec::new();
             for (table, op) in ops {
                 // The writer lock kept every table of the transaction.
                 let t = st.table_index(table).expect("table of a logged write");
+                if !matches!(op, Op::Profile { .. }) {
+                    match changed.iter_mut().find(|(i, _)| *i == t) {
+                        Some((_, n)) => *n += 1,
+                        None => changed.push((t, 1)),
+                    }
+                }
                 st.apply(t, op, seq.map_or(0, |n| n.seq));
+            }
+            for (t, n) in changed {
+                st.tables[t].activity.wrote(now, n);
             }
             st.txn = txn;
             if let Some(n) = seq {
@@ -3743,6 +4247,12 @@ pub struct WriteTxn<'a> {
     keys: Vec<(u32, TxnKeys)>,
     /// The semantic-ID ties the transaction gave, by table id.
     ties: Vec<(u32, Ties)>,
+    /// The time at which rows of a table with `expire_by` have expired
+    /// for this transaction ([`crate::schema::Schema::with_expire_by`]):
+    /// a write by the key of such a row finds none, the row deleted first
+    /// by a logged delete. `None` for a replica's replay, which applies
+    /// the primary's deletes instead.
+    now: Option<i64>,
 }
 
 /// What a transaction did to one table's keys.
@@ -3894,6 +4404,18 @@ impl<'a> WriteTxn<'a> {
         self.table(SOURCES)?.upsert(vec![Value::Str(name.to_string()), Value::Int(offset), Value::Timestamp(now)])
     }
 
+    /// Logs `offset` as source `name`'s in this transaction, as
+    /// [`WriteTxn::set_source`] does, without keeping it: the row is
+    /// written and deleted again, so that `_sources` is left as it was and
+    /// only a reader of the log ([`crate::storage::feed`]) finds it. A mark
+    /// a server puts on a transaction of its own. The database needs the
+    /// table first ([`Database::ensure_sources`]).
+    pub fn mark_source(&mut self, name: &str, offset: i64, now: i64) -> Result<()> {
+        self.set_source(name, offset, now)?;
+        self.table(SOURCES)?.delete(&Value::Str(name.to_string()))?;
+        Ok(())
+    }
+
     /// Inserts a document; its primary key must not be live.
     pub fn insert(&mut self, doc: Document) -> Result<()> {
         let t = self.db.first_table();
@@ -3945,10 +4467,14 @@ impl<'a> WriteTxn<'a> {
         st.find_live(t.pos, key).map(|loc| st.seq_at(t.pos, loc)).transpose()
     }
 
-    /// Sets a numeric field of the live document with this primary key in
+    /// Sets a single-valued field of the live document with this primary
+    /// key. A number (INT, FLOAT, and so BOOL and TIMESTAMP) is set in
     /// place, without rewriting the document: its text and vectors stay as
-    /// they are. The field must be a single-valued INT or FLOAT. False if no
-    /// document has the key.
+    /// they are. Any other field (a keyword, a text, a JSON value) writes
+    /// the document again with the value, keeping its vectors, so a field
+    /// that a model embeds or another field is derived from is refused (an
+    /// UPDATE or an upsert makes those again). False if no document has
+    /// the key.
     pub fn set(&mut self, key: &Value, field: &str, value: Value) -> Result<bool> {
         let t = self.db.first_table();
         self.set_in(&t, key, field, value)
@@ -3983,8 +4509,9 @@ impl<'a> WriteTxn<'a> {
         self.fill_sids(t, &mut doc, false)?;
         if let Some(pk) = t.schema.primary_key {
             let key = Key::of(&doc[pk]).expect("validated key");
+            self.drop_expired(t, &key, &doc[pk])?;
             if self.is_live(t, &key, &doc[pk]) {
-                return Err(Error::Schema(format!("duplicate primary key {:?}", doc[pk])));
+                return Err(Error::Schema(crate::query::hint::duplicate_key(&t.schema, &doc[pk])));
             }
             let doc = Arc::new(doc);
             let k = self.keys(t.id);
@@ -4024,6 +4551,7 @@ impl<'a> WriteTxn<'a> {
         }
         let new = doc[vf].as_i64().ok_or_else(|| Error::Schema(format!("document has no {version}")))?;
         let key = Key::of(&doc[pk]).expect("validated key");
+        self.drop_expired(t, &key, &doc[pk])?;
         let k = self.keys(t.id);
         let old = match (k.touched.get(&key), k.written.get(&key)) {
             (Some(true), Some(d)) => d[vf].as_i64(),
@@ -4042,7 +4570,7 @@ impl<'a> WriteTxn<'a> {
 
     fn delete_in(&mut self, t: &TableRef, key: &Value) -> Result<bool> {
         let k = t.key_of(key)?;
-        if !self.is_live(t, &k, key) {
+        if self.drop_expired(t, &k, key)? || !self.is_live(t, &k, key) {
             return Ok(false);
         }
         let keys = self.keys(t.id);
@@ -4066,10 +4594,10 @@ impl<'a> WriteTxn<'a> {
             (FieldType::Float, Value::Int(x)) => Value::Float(x as f64),
             (FieldType::Float, Value::Float(x)) if !x.is_finite() => return Err(Error::Schema(format!("bad value for {field}: {x} (FLOAT values are finite)"))),
             (FieldType::Float, v @ (Value::Float(_) | Value::Null)) => v,
-            (FieldType::Int | FieldType::Float, v) => return Err(Error::Schema(format!("bad value for {field}: {v:?}"))),
-            _ => return Err(Error::Schema(format!("{field} is not a numeric field; only INT and FLOAT are set in place"))),
+            (FieldType::Int | FieldType::Float, v) => return Err(Error::Schema(format!("bad value for {field}: {} (it takes a number)", crate::query::hint::sql_value(&v)))),
+            (_, v) => return self.set_by_rewrite(t, &k, key, i, v),
         };
-        if !self.is_live(t, &k, key) {
+        if self.drop_expired(t, &k, key)? || !self.is_live(t, &k, key) {
             return Ok(false);
         }
         let keys = self.keys(t.id);
@@ -4080,6 +4608,45 @@ impl<'a> WriteTxn<'a> {
             }
         }
         self.ops.push((t.id, Op::Set { key: key.clone(), field: i as u16, value }));
+        Ok(true)
+    }
+
+    /// [`WriteTxn::set`] of field `i`, which is not a number (a keyword, a
+    /// text, ...): the live row with key `k` written again with the value,
+    /// as an UPDATE writes it. The row's vectors are kept, so a field that
+    /// a model embeds or a field is derived from is refused: an UPDATE or
+    /// an upsert, which make them again, changes it.
+    fn set_by_rewrite(&mut self, t: &TableRef, k: &Key, key: &Value, i: usize, value: Value) -> Result<bool> {
+        let s = &t.schema;
+        let name = &s.fields[i].name;
+        let reads = |from: &[String]| from.iter().filter_map(|x| s.field_index(x)).any(|g| g == i || s.fields[g].generated_from.iter().any(|y| s.field_index(y) == Some(i)));
+        if let Some(e) = s.fields.iter().find(|e| e.embed.as_ref().is_some_and(|m| reads(&m.from))) {
+            return Err(Error::Schema(format!("{name} is what {} embeds, which a set would leave stale: change it with UPDATE or an upsert, which embed it again", e.name)));
+        }
+        if let Some(g) = (0..s.fields.len()).find(|&g| s.derives_from(g) == Some(i)) {
+            return Err(Error::Schema(format!("{} is derived from {name}, which a set would leave stale: change it with UPDATE or an upsert", s.fields[g].name)));
+        }
+        if let Some(f) = s.unrebuildable() {
+            return Err(Error::Schema(format!("setting {name}, which is not a number, writes the row again, and {} is neither stored nor generated", f.name)));
+        }
+        if self.drop_expired(t, k, key)? || !self.is_live(t, k, key) {
+            return Ok(false);
+        }
+        let keys = self.keys(t.id);
+        let mut doc = match (keys.touched.get(k), keys.written.get(k)) {
+            (Some(true), Some(d)) => (**d).clone(),
+            _ => {
+                let set: Vec<(usize, Value)> = keys.sets.iter().filter(|((sk, _), _)| sk == k).map(|((_, f), v)| (*f, v.clone())).collect();
+                let Some(mut doc) = self.db.live_doc(t, key)? else { return Ok(false) };
+                for (f, v) in set {
+                    doc[f] = v;
+                }
+                doc
+            }
+        };
+        doc[i] = value;
+        s.fill_generated(&mut doc);
+        self.upsert_as(t, doc, Pooling::Fields(&[i]))?;
         Ok(true)
     }
 
@@ -4119,6 +4686,14 @@ impl<'a> WriteTxn<'a> {
     }
 
     fn value_of(&mut self, t: &TableRef, k: &Key, key: &Value, i: usize) -> Result<Option<Value>> {
+        if self.drop_expired(t, k, key)? {
+            return Ok(None);
+        }
+        self.current_value(t, k, key, i)
+    }
+
+    /// [`WriteTxn::value_of`], an expired row's too.
+    fn current_value(&mut self, t: &TableRef, k: &Key, key: &Value, i: usize) -> Result<Option<Value>> {
         if !self.is_live(t, k, key) {
             return Ok(None);
         }
@@ -4230,6 +4805,45 @@ impl<'a> WriteTxn<'a> {
         &mut self.keys[i].1
     }
 
+    /// Deletes the live row with this key if it has expired at the
+    /// transaction's time ([`WriteTxn::now`]), by a logged delete; true if
+    /// it did. The write that asked then finds no row.
+    fn drop_expired(&mut self, t: &TableRef, k: &Key, key: &Value) -> Result<bool> {
+        let (Some(f), Some(now)) = (t.schema.expire_field(), self.now) else { return Ok(false) };
+        match self.current_value(t, k, key, f)? {
+            Some(Value::Int(at) | Value::Timestamp(at)) if at <= now => {}
+            _ => return Ok(false),
+        }
+        let keys = self.keys(t.id);
+        keys.touched.insert(k.clone(), false);
+        keys.written.remove(k);
+        self.ops.push((t.id, Op::Delete(key.clone())));
+        Ok(true)
+    }
+
+    /// Deletes the rows with these keys of table `table` that have expired
+    /// at `now` ([`crate::schema::Schema::with_expire_by`]), by logged
+    /// deletes as [`WriteTxn::delete`] makes; returns how many it deleted.
+    /// What a primary's expirer runs ([`crate::db::Db::expire`]).
+    pub fn delete_expired(&mut self, table: &str, keys: &[Value], now: i64) -> Result<usize> {
+        let t = self.db.table_ref(Some(table))?;
+        let was = self.now.replace(now);
+        let mut n = 0;
+        for key in keys {
+            let k = t.key_of(key)?;
+            match self.drop_expired(&t, &k, key) {
+                Ok(true) => n += 1,
+                Ok(false) => {}
+                Err(e) => {
+                    self.now = was;
+                    return Err(e);
+                }
+            }
+        }
+        self.now = was;
+        Ok(n)
+    }
+
     fn is_live(&self, t: &TableRef, k: &Key, v: &Value) -> bool {
         match self.keys.iter().find(|(id, _)| *id == t.id).and_then(|(_, keys)| keys.touched.get(k)) {
             Some(&live) => live,
@@ -4272,16 +4886,26 @@ struct VersionWriter<'a> {
     segments_linked: usize,
     /// Ids of the reservations this version installs.
     installs: Vec<u64>,
+    /// Puts the manifest and the freelist in the lowest free run that holds
+    /// them rather than the smallest ([`FreeList::alloc_low`]): vacuum's,
+    /// so they stay in front of the gap it packs segments into.
+    meta_low: bool,
 }
 
 impl<'a> VersionWriter<'a> {
     fn begin(db: &'a Database) -> VersionWriter<'a> {
+        // Read before the state: a reader that registers after this cannot
+        // read a version older than the one in the newer meta slot now.
+        let readers = match db.dir {
+            None => share::oldest_pin(&db.share),
+            Some(_) => None,
+        };
         let st = lock(&db.state);
         let mut fl = st.freelist.clone();
         // Reusable: freed before the newest on-disk commit (so the older
         // meta slot cannot reach them) and by a commit no live snapshot
-        // predates.
-        fl.release((st.meta.txn - 1).min(db.pins.min().unwrap_or(u64::MAX)));
+        // predates, here or in a reader's process ([`share`]).
+        fl.release((st.meta.txn - 1).min(db.pins.min().unwrap_or(u64::MAX)).min(readers.unwrap_or(u64::MAX)));
         let mut manifest = st.manifest.clone();
         // Past the ids reserved for merges.
         manifest.next_segment_id = manifest.next_segment_id.max(st.next_segment_id);
@@ -4306,6 +4930,7 @@ impl<'a> VersionWriter<'a> {
             link: None,
             segments_linked: 0,
             installs: Vec::new(),
+            meta_low: false,
         }
     }
 
@@ -4479,16 +5104,10 @@ impl<'a> VersionWriter<'a> {
         Ok(())
     }
 
-    /// Copies extents into free runs below them, highest first. Returns how
-    /// many moved.
-    fn relocate_down(&mut self) -> Result<usize> {
-        if self.db.dir.is_some() {
-            return Ok(0);
-        }
-        let map = lock(&self.db.state).map.clone();
-        // (extent, (table, segment), what): 0 the image, 1 the delete set,
-        // 2 updates.
-        let mut extents: Vec<(Extent, (usize, usize), u8)> = Vec::new();
+    /// The extents of every segment: (extent, (table, segment), what), what
+    /// being 0 the image, 1 the delete set, 2 updates.
+    fn segment_extents(&self) -> Vec<(Extent, (usize, usize), u8)> {
+        let mut extents = Vec::new();
         for (t, table) in self.manifest.tables.iter().enumerate() {
             for (i, s) in table.segments.iter().enumerate() {
                 extents.push((s.extent, (t, i), 0));
@@ -4496,28 +5115,76 @@ impl<'a> VersionWriter<'a> {
                 extents.extend(s.updates.map(|e| (e, (t, i), 2)));
             }
         }
+        extents
+    }
+
+    /// Copies extent `e` of segment `(t, i)` to `page` (allocated) and points
+    /// the manifest at the copy; the old place is freed as of this commit.
+    fn move_extent(&mut self, map: &OwnedBytes, e: Extent, (t, i): (usize, usize), what: u8, page: u64) -> Result<()> {
+        // Copy out of the mapping first: on macOS, a pwrite whose source is
+        // a mapping of the same file can deadlock in the kernel.
+        let bytes = map[e.range()].to_vec();
+        io::write_at(&self.db.file, &bytes, page * PAGE)?;
+        self.bytes_written += e.len;
+        self.fl.defer(self.txn, e);
+        let to = Extent { page, len: e.len };
+        let s = &mut self.manifest.tables[t].segments[i];
+        if what == 2 {
+            s.updates = Some(to);
+        } else if what == 1 {
+            s.deletes = Some(to);
+        } else {
+            s.extent = to;
+        }
+        Ok(())
+    }
+
+    /// Copies extents into free runs below them, highest first. Returns how
+    /// many moved.
+    fn relocate_down(&mut self) -> Result<usize> {
+        if self.db.dir.is_some() {
+            return Ok(0);
+        }
+        let map = lock(&self.db.state).map.clone();
+        let mut extents = self.segment_extents();
         extents.sort_by_key(|&(e, _, _)| std::cmp::Reverse(e.page));
         let mut moved = 0;
-        for (e, (t, i), what) in extents {
+        for (e, at, what) in extents {
             let Some(page) = self.fl.alloc_below(e.pages(), e.page) else { continue };
-            // Copy out of the mapping first: on macOS, a pwrite whose source
-            // is a mapping of the same file can deadlock in the kernel.
-            let bytes = map[e.range()].to_vec();
-            io::write_at(&self.db.file, &bytes, page * PAGE)?;
-            self.bytes_written += e.len;
-            self.fl.defer(self.txn, e);
-            let to = Extent { page, len: e.len };
-            let s = &mut self.manifest.tables[t].segments[i];
-            if what == 2 {
-                s.updates = Some(to);
-            } else if what == 1 {
-                s.deletes = Some(to);
-            } else {
-                s.extent = to;
-            }
+            self.move_extent(&map, e, at, what, page)?;
             moved += 1;
         }
         Ok(moved)
+    }
+
+    /// Whether the free runs below the end of the file hold at least a
+    /// sixteenth of it (and 16 pages): worth [`lift_all`](Self::lift_all).
+    fn fragmented(&self) -> bool {
+        let free = self.fl.free_pages();
+        free >= 16 && free * 16 >= self.fl.page_count()
+    }
+
+    /// For when no extent fits in a free run below it although together the
+    /// runs could hold several (merging a table into one large segment
+    /// leaves the file like this: each gap is smaller than the segments
+    /// above it). Moves every extent above the lowest free run to the end of
+    /// the file, lowest first; once their old pages are reusable, the space
+    /// from that run up is one gap, and [`relocate_down`](Self::relocate_down)
+    /// packs them into it. Returns how many moved.
+    fn lift_all(&mut self) -> Result<usize> {
+        if self.db.dir.is_some() {
+            return Ok(0);
+        }
+        let Some((first, _)) = self.fl.runs().next() else { return Ok(0) };
+        let mut extents = self.segment_extents();
+        extents.retain(|(e, _, _)| e.page > first);
+        extents.sort_by_key(|&(e, _, _)| e.page);
+        let map = lock(&self.db.state).map.clone();
+        for &(e, at, what) in &extents {
+            let page = self.fl.alloc_end(e.pages());
+            self.move_extent(&map, e, at, what, page)?;
+        }
+        Ok(extents.len())
     }
 
     fn remove_segment(&mut self, id: u64) {
@@ -4581,9 +5248,17 @@ impl<'a> VersionWriter<'a> {
         self.fl.trim_tail();
         self.manifest.txn = c;
         let mbytes = self.manifest.encode();
-        let manifest = self.write(&mbytes)?;
+        let manifest = if self.meta_low {
+            let page = self.fl.alloc_low(pages_for(mbytes.len()));
+            self.grow()?;
+            io::write_at(&db.file, &mbytes, page * PAGE)?;
+            self.bytes_written += mbytes.len() as u64;
+            Extent { page, len: mbytes.len() as u64 }
+        } else {
+            self.write(&mbytes)?
+        };
         let reserved: Vec<Extent> = lock(&db.state).reserved.iter().filter(|r| !self.installs.contains(&r.id)).map(|r| r.extent).collect();
-        let (freelist, fbytes) = place_freelist(&mut self.fl, &reserved);
+        let (freelist, fbytes) = place_freelist(&mut self.fl, &reserved, self.meta_low);
         self.grow()?;
         io::write_at(&db.file, &fbytes, freelist.page * PAGE)?;
         self.bytes_written += fbytes.len() as u64;
@@ -4767,7 +5442,7 @@ fn added(schema: &Schema, i: usize, base: &Value, delta: &Value) -> Result<Value
     })
 }
 
-fn place_freelist(fl: &mut FreeList, reserved: &[Extent]) -> (Extent, Vec<u8>) {
+fn place_freelist(fl: &mut FreeList, reserved: &[Extent], low: bool) -> (Extent, Vec<u8>) {
     let on_disk = |fl: &FreeList| {
         let mut d = fl.clone();
         for &e in reserved {
@@ -4776,7 +5451,7 @@ fn place_freelist(fl: &mut FreeList, reserved: &[Extent]) -> (Extent, Vec<u8>) {
         d
     };
     let bound = if reserved.is_empty() { fl.encoded_len() } else { on_disk(fl).encoded_len() };
-    let page = fl.alloc(pages_for(bound));
+    let page = if low { fl.alloc_low(pages_for(bound)) } else { fl.alloc(pages_for(bound)) };
     let mut bytes = if reserved.is_empty() { fl.encode() } else { on_disk(fl).encode() };
     bytes.resize(bound, 0);
     (Extent { page, len: bound as u64 }, bytes)
@@ -4790,7 +5465,7 @@ fn pages_for(bytes: usize) -> u64 {
 /// could have committed (see [`WriteTxn`]'s checks). Replay takes one that
 /// is not, behind an intact checksum, as damage: applied, it would break
 /// what readers rely on.
-fn op_fits(schema: &Schema, op: &Op) -> bool {
+pub(crate) fn op_fits(schema: &Schema, op: &Op) -> bool {
     let is_key = |k: &Value| {
         schema.primary_key.is_some_and(|pk| matches!((&schema.fields[pk].ty, k), (FieldType::Keyword, Value::Str(_)) | (FieldType::Int, Value::Int(_))))
     };
@@ -4878,29 +5553,31 @@ fn wal_path(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// How long an open waits for a lock that is held.
-pub const LOCK_WAIT: Duration = Duration::from_millis(500);
+pub use crate::storage::share::LOCK_WAIT;
 
-/// One open `Database` per file: an exclusive `flock`, released when the
-/// file is closed (also by a crash). A child process holds a copy of every
-/// descriptor of its parent from its fork until its exec closes them, so a
-/// database that a process closes and opens again while it starts a child
-/// can find its own lock still held for a moment: a held lock is retried
-/// for [`LOCK_WAIT`] before the open fails.
-fn lock_exclusive(file: &File) -> Result<()> {
-    let deadline = Instant::now() + LOCK_WAIT;
-    loop {
-        // SAFETY: flock on a valid descriptor.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(());
+/// What a write to a read-only database fails with.
+fn read_only(path: &Path) -> Error {
+    Error::Query(format!("{} is open read-only", path.display()))
+}
+
+/// Lowers the calling thread's CPU priority to nice value `nice` (at most
+/// 19) unless it is lower already ([`MergerOptions::nice`]). On Linux a
+/// thread's nice value is its own, and the threads it starts inherit it;
+/// elsewhere this does nothing, since `setpriority` there sets the whole
+/// process's.
+pub(crate) fn lower_priority(nice: i32) {
+    #[cfg(target_os = "linux")]
+    if nice > 0 {
+        // SAFETY: gettid and get/setpriority on the calling thread take no
+        // pointers.
+        unsafe {
+            let tid = libc::syscall(libc::SYS_gettid) as libc::id_t;
+            let now = libc::getpriority(libc::PRIO_PROCESS, tid);
+            if now < nice.min(19) {
+                libc::setpriority(libc::PRIO_PROCESS, tid, nice.min(19));
+            }
         }
-        let e = std::io::Error::last_os_error();
-        if e.raw_os_error() != Some(libc::EWOULDBLOCK) {
-            return Err(e.into());
-        }
-        if Instant::now() >= deadline {
-            return Err(Error::Busy("the database is open elsewhere".into()));
-        }
-        std::thread::sleep(Duration::from_millis(2));
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = nice;
 }

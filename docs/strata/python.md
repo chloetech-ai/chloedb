@@ -10,12 +10,45 @@ nav_order: 5
 The `strata` package runs a Strata database inside a Python process, the way `sqlite3` runs SQLite, or talks to a running [strata-server](server.md). Both have the same methods, so a script written against a local file works against a server.
 {: .fs-5 .fw-300 }
 
+For dataframe work, `db["table"]` is a lazy frame written as Polars writes one, run where the data is, with the answer as Arrow: see [DataFrames](frames.md).
+
 1. TOC
 {:toc}
 
 ## Install
 
-The package is in [`strata-py/`](https://github.com/rkonow/strata/tree/main/strata-py): a Rust extension built with [maturin](https://www.maturin.rs), for CPython 3.10 and later. It needs Rust (stable) and a C compiler.
+The package is in [`strata-py/`](https://github.com/chloetech-ai/strata/tree/main/strata-py): a Rust extension built with [maturin](https://www.maturin.rs), for CPython 3.10 and later.
+
+### Prebuilt
+
+Each `strata-py-v<version>` release on [GitHub](https://github.com/chloetech-ai/strata/releases) has a wheel per platform, built for CPython's stable ABI (one wheel serves Python 3.10 and later), which installs with no Rust and no compiler. Given the release's assets page, pip picks the wheel for its machine:
+
+```sh
+pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0
+```
+
+| platform | wheel |
+|---|---|
+| macOS 11+ on Apple silicon | `strata_db-<version>-cp310-abi3-macosx_11_0_arm64.whl` |
+| macOS 11+ on Intel | `strata_db-<version>-cp310-abi3-macosx_11_0_x86_64.whl` |
+| Linux x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12 and later) | `strata_db-<version>-cp310-abi3-manylinux_2_35_x86_64.whl` |
+| Linux aarch64, glibc 2.35+ | `strata_db-<version>-cp310-abi3-manylinux_2_35_aarch64.whl` |
+
+The workflow [`py-release.yml`](https://github.com/chloetech-ai/strata/blob/main/.github/workflows/py-release.yml) builds them on a tag `strata-py-v<version>` (the version in `strata-py/pyproject.toml`), installs each one into an empty virtualenv and runs the embedded tests against it, then attaches them to the release. The package is not on PyPI yet. Windows and Alpine (musl) have no wheel: build from source there (Windows through WSL 2).
+
+### Only the client, with no build
+
+[`strata.connect`](#a-server-from-python), the client of a running strata-server, needs only Python's standard library. Without the extension, from a checkout of the repository, put `strata-py/python` on the path and import it:
+
+```sh
+PYTHONPATH=strata-py/python python3 -c 'import strata; print(strata.connect("http://127.0.0.1:7700").health())'
+```
+
+The package imports without the extension, and `strata.Client`, `strata.connect`, `strata.StrataError`, `Result` and the query builder work. A database in the process (`strata.open`, `strata.Database`, `from_sqlite`, the codebook training) raises `ImportError` saying what to install.
+
+### From source
+
+It needs Rust (stable) and a C compiler; the build takes about 12 minutes on 4 cores.
 
 ```sh
 pip install ./strata-py                    # from the repository's root: builds and installs a wheel
@@ -68,7 +101,7 @@ db.close()
 
 A database written by a version of Strata from before [field ids](index.md#wal-memtable-and-snapshots) does not open: `strata.upgrade(path)` copies it into this version's format in its place, keeps the old one as `<path>.before-field-ids`, and returns `(old_path, tables, rows)`, or `None` when the database needs no upgrade. Nothing may have it open meanwhile.
 
-A database file can be open in one process at a time. Within that process, threads can query at once: every call releases the GIL while it runs. To share a database between processes, serve it with `strata-server` and use the client below. A `with` block, or `close()`, merges the small segments that writes left and closes the file.
+One process at a time can have a database open to write it. Others can open it with `strata.open(path, read_only=True)` (or `Database.open(path, read_only=True)`) to read it while it is written, the other workers of a web server under gunicorn or uwsgi, say: each query sees the writer's commits so far, every write raises `StrataError`, and `refresh()` looks for new commits at once ([how readers follow the writer](index.md#readers-in-other-processes)). Within a process, threads can query at once: every call releases the GIL while it runs. Threads can write at once too: a write waits while another holds the writer, and the writes that wait share the next commit (one disk flush for all of them), so none fails as busy. For writes from several processes, serve the database with `strata-server` and use the client below. Segments are merged in the background as writes add them, one merge at a time, as a server merges them, so a table written to for weeks stays in a few segments without the rows its updates replaced. A `with` block, or `close()`, merges the small segments that writes left, gives the file system back the space merges freed when it is an eighth of the file or more, and closes the file. `optimize()` goes further, for a table that is done changing: one segment, up to 2,000,000 rows.
 
 ## Writing
 
@@ -76,17 +109,22 @@ Rows are dicts of field name to value: `str`, `int`, `float`, `None`, `bool` for
 
 | method | what it does |
 |---|---|
-| `insert(rows)` | adds a row (a dict) or rows (any iterable of dicts) whose keys must be new; all or none are written. From 1,000 rows on, they are bulk-loaded straight into segments. |
+| `insert(rows)` | adds a row (a dict) or rows (any iterable of dicts) whose keys must be new; all or none are written. Fewer than 10,000 rows go through the write-ahead log into memory, which gathers the rows of many inserts into one segment once it holds 10,000; from 10,000 rows on, they are bulk-loaded straight into segments. A vector may be a numpy array of float32 or float64, which is read from its bytes rather than a Python float at a time. |
 | `upsert(rows)` | adds rows, replacing the rows with their keys, in transactions of 10,000 |
 | `delete(keys)` | deletes the rows with a key or keys; returns how many there were |
+| `get(key)`, `get_many(keys)` | the row with a primary key (a dict of the columns `SELECT *` gives), or `None`, read without SQL ([rows by key](server.md#rows-by-key)); `get_many` answers a list in the keys' order. Each takes `table=` |
+| `expire()` | deletes the rows whose [`expire_by`](query-language.md#tables) time has passed, which reads leave out already; returns how many |
 | `sql("UPDATE ...")` | `INSERT`, `UPDATE` and `DELETE` statements; returns the rows written. It also runs `CREATE TABLE`, `ALTER TABLE` and `DROP TABLE` ([tables](query-language.md#tables)) and `CREATE` and `DROP RANK PROFILE` ([rank profiles](query-language.md#rank-profiles-a-ranking-kept-with-its-table)), which return 0, and writes any table |
 | `add_column(name, type, **options)`, `drop_column(name)`, `rename_column(old, new)` | change a table's columns while it holds rows, as [`ALTER TABLE`](query-language.md#changing-a-tables-columns) does: `options` are the field's, in the short form of a schema (`db.add_column("price", "float", default=0.0)`, `db.add_column("emb", "vector", embed=["title"], model="potion-retrieval-32M")`); rows written before a column was added read its default, or `None`. Each takes `table=`. In-process only: through the client, send `ALTER TABLE` with `sql` |
 | `import_file(path, format=None)` | loads a JSON Lines, JSON, CSV or TSV file ([how files are read](server.md#loading-rows)); returns `{rows, bulk, skipped_fields}` |
-| `write(ops)` | applies write operations in one transaction, as the server's `/v1/write` takes them: `insert`, `upsert` and `delete`, and `set` or `add` of a numeric field in place (`{"op": "add", "key": k, "field": "n", "value": 1}`; with a `doc` instead of a `key`, an `add` inserts the row when no row has its key); each names its `table` or writes the first; returns the rows written |
+| `write(ops)` | applies write operations in one transaction, as the server's `/v1/write` takes them: `insert`, `upsert` and `delete`, `set` of a field (`{"op": "set", "key": k, "field": "status", "value": "SOLD"}`: a number in place, another by writing the row again with the value), and `add` to a number in place (`{"op": "add", "key": k, "field": "n", "value": 1}`; with a `doc` instead of a `key`, an `add` inserts the row when no row has its key); each names its `table` or writes the first; returns the rows written |
 | `import_sqlite(path, tables=None, schemas=None)` | imports a SQLite database's tables, each into the table of its name, created when missing ([SQLite in and out](sqlite.md)); returns what it did and what did not carry over |
 | `export_sqlite(path, tables=None, fts=True, indexes=True)` | writes the tables to a new SQLite file, with indexes, an FTS5 index over the text and the Strata schemas |
+| `import_parquet(path, table=None, schema=None, key=None)` | imports a Parquet file or a directory of them (Spark's part files, Hive partitions) into one table, created from the columns when missing ([Parquet and S3](parquet.md)); returns what it did |
+| `export_parquet(path, tables=None)` | writes the tables to Parquet: a `.parquet` file for one table, else a directory of them, each keeping its Strata schema |
+| `import_arrow(data, table=None)` | writes the rows of a pyarrow Table or RecordBatchReader, a polars DataFrame, a DuckDB relation or anything with `__arrow_c_stream__`, columns into the fields of their names; bulk-loaded into an empty table, else upserted |
 
-`strata.from_sqlite("shop.sqlite", "shop.strata")` creates a database from a SQLite file's tables, and `strata.plan_sqlite("shop.sqlite")` says what it would make of them without writing; edit the plan and pass it to either as `schemas`.
+`strata.from_sqlite("shop.sqlite", "shop.strata")` creates a database from a SQLite file's tables, and `strata.plan_sqlite("shop.sqlite")` says what it would make of them without writing; edit the plan and pass it to either as `schemas`. `strata.from_parquet("events.parquet", "lake.strata")` and `strata.plan_parquet(...)` do the same for Parquet. Any of these paths, and `import_file`'s, may be an `s3://` URL, read with the `AWS_*` variables ([S3](parquet.md#s3-and-s3-compatible-stores)).
 
 `insert`, `upsert`, `delete` and `import_file` write the database's first table, the one `schema` describes, or the one `table=` names (`db.insert(rows, table="events")`); `sql` names the table it writes, and `tables()` lists every table's schema. Through a coordinator, `delete` on a table placed by a column takes that column's value as `routing=` ([tables on shards](server.md#tables-on-shards)). A key a row leaves out gets its field's `default`, and a field with `not_null` refuses a row without a value ([schema options](server.md#schemas)); a `timestamp` defaulting to `"now"` takes one time for all the rows of a call.
 
@@ -114,6 +152,29 @@ The answer is a `Result`:
 | `result.column("title")`, `result.scalar()` | one column; the first value (a count, a sum) |
 | `result.stats` | what the engine did |
 | `result.to_pandas()` | a DataFrame (with pandas installed) |
+
+`query_arrow(sql, params)` runs a `SELECT` as `query` does and answers with its columns as Arrow arrays, an `ArrowResult`, without making a Python object of each value; a query of one table that neither groups nor counts reads its columns from the database's segments straight into the arrays. pyarrow, polars, pandas and DuckDB read the arrays where the database wrote them, without copying them, through the [Arrow PyCapsule interface](https://arrow.apache.org/docs/format/CDataInterface/PyCapsuleInterface.html):
+
+```python
+r = db.query_arrow("SELECT id, year, rating FROM books WHERE year >= :y", y=1950)
+r.to_pyarrow()            # a pyarrow Table
+r.to_polars()             # a polars DataFrame (without pyarrow)
+r.to_pandas()             # a pandas DataFrame of the Arrow columns (pandas.ArrowDtype); arrow_dtypes=False copies them into numpy
+pyarrow.table(r)          # any library that reads Arrow streams reads r
+duckdb.sql("SELECT avg(rating) FROM r")
+```
+
+| Strata | Arrow |
+|---|---|
+| `int` | `int64` |
+| `float` | `float64` |
+| `keyword`, `text`, `json` | `string` (a JSON value as its text) |
+| `bool` | `bool` |
+| `timestamp` | `timestamp[us, tz=UTC]` |
+| `vector` | `list<float32>` |
+| a `multi` field | `list<int64>` or `list<string>` |
+
+A computed column has the type of its values: a column of only NULLs (or of no rows) is `null`, and one of integers and floats `float64`. Values of other types mixed in one column (a `CASE` that answers a number in some rows and text in others) are not one Arrow array: `query_arrow` raises `StrataError` naming the column, and `query` answers it. `r.columns`, `len(r)` and `r.stats` are as a `Result`'s. `query_arrow` comes with the package's default feature `datafusion`. A `Client`'s `query_arrow` asks the server for an Arrow answer (`"format": "arrow"`) and returns a pyarrow Table with the same column types; it needs pyarrow, and a server too old for Arrow answers JSON, which it types from the values.
 
 `search(text, limit=10, where=None, columns="*", mode="auto")` writes the query for the common case. It ranks by BM25 over the text fields (the generated ones if the table has any, such as a combined `body`, else every indexed text field) fused by reciprocal rank with the similarity of the first embedded vector field whose model is open; `mode="text"` or `"vector"` uses one side only. `where` adds a condition, [built in Python](#queries-built-in-python) or in SQL with `params` for its placeholders:
 
@@ -243,7 +304,7 @@ db.query("""SELECT id FROM items ORDER BY similarity(emb, encode('next',
 
 ## A server from Python
 
-`strata.connect(url, token=None)` returns a `Client` of a running strata-server, using only the standard library. It has `schema`, `tables`, `query`, `sql`, `search`, `insert`, `upsert`, `delete`, `import_file` (an upload to [`/v1/import`](server.md#loading-rows), up to the server's `--max-body-mb`, 256 MiB unless set), `import_sqlite(path, tables=None)` and `plan_sqlite(path)` (a SQLite file's tables, uploaded the same way; [SQLite in and out](sqlite.md#over-http-and-in-the-ui)), `export_sqlite(path, tables=None)` (the server's tables downloaded as a SQLite file) and `len()`, as above, plus `write(ops)` for raw [write operations](server.md#http-api), `explain`, `run(plan)` (a plan from `explain(...)["ir"]` or a `table()` query, run by [`/v1/plan`](server.md#http-api)), `table()` ([queries built in Python](#queries-built-in-python)), `embed(text, field=None)` (a text's vector by the server's model, from [`/v1/embed`](server.md#http-api), or `embed(image=data)` an image's and `embed(audio=data)` a sound's), `embed_tokens(text, field)` (a query's vectors a token, for a multi-vector field), `query_logged` and `export_rank_log` ([the rank log](#the-rank-log)), `health`, `stats` and `ask(question)` for the [agent](server.md#the-agent).
+`strata.connect(url, token=None, timeout=30, retry_for=10)` returns a `Client` of a running strata-server, using only the standard library. It has `schema`, `tables`, `query`, `sql`, `search`, `insert`, `upsert`, `delete`, `import_file` (an upload to [`/v1/import`](server.md#loading-rows), up to the server's `--max-body-mb`, 256 MiB unless set), `import_sqlite(path, tables=None)` and `plan_sqlite(path)` (a SQLite file's tables, uploaded the same way; [SQLite in and out](sqlite.md#over-http-and-in-the-ui)), `export_sqlite(path, tables=None)` (the server's tables downloaded as a SQLite file), `import_parquet(path, table=None, key=None)`, `plan_parquet(path)` and `export_parquet(path, table=None)` ([Parquet over HTTP](parquet.md#over-http-and-in-the-ui)) and `len()`, as above, plus `get(key)`, `get_many(keys)` and `put(key, row, if_seq_no=None)` for [rows by key](server.md#rows-by-key), `write(ops)` for raw [write operations](server.md#http-api), `explain`, `run(plan)` (a plan from `explain(...)["ir"]` or a `table()` query, run by [`/v1/plan`](server.md#http-api)), `table()` ([queries built in Python](#queries-built-in-python)), `embed(text, field=None)` (a text's vector by the server's model, from [`/v1/embed`](server.md#http-api), or `embed(image=data)` an image's and `embed(audio=data)` a sound's), `embed_tokens(text, field)` (a query's vectors a token, for a multi-vector field), `query_logged` and `export_rank_log` ([the rank log](#the-rank-log)), `health`, `stats` and `ask(question)` for the [agent](server.md#the-agent).
 
 ```python
 client = strata.connect("http://127.0.0.1:7700")   # token= or $STRATA_TOKEN for a server with --token
@@ -251,7 +312,25 @@ client.upsert({"id": "b3", "title": "Star letters", "year": 2024})
 client.search("letters", limit=3).dicts()
 ```
 
-The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `strata.StrataError`, with the HTTP status as `.status`; a server that cannot be reached raises `urllib.error.URLError`.
+A server answers at most `--max-result-window` rows a query (10,000 by default). `scroll(sql, params, page_size=10_000, arrow=False, keep_alive_ms=None)` reads past it: it yields the answer a page at a time, `Result`s or with `arrow=True` pyarrow Tables, each page at most `page_size` rows and at most the window, every page from the version of the database the first read ([scrolls](server.md#reading-past-the-window-scrolls)). Leaving the loop early ends the scroll on the server. A `Database` has `scroll` too, whose pages are slices of one answer, since a database in your process has no window.
+
+```python
+for page in client.scroll("SELECT id, title FROM books WHERE year >= :y", y=1950, page_size=5000):
+    handle(page.dicts())
+```
+
+The server embeds `{"embed": text}` parameters and the rows it is sent with its own models. Errors the server reports raise `strata.StrataError`, with the HTTP status as `.status` and the JSON answer as `.answer`; a server that cannot be reached raises `urllib.error.URLError`. A request the server refuses for its load (429: [behind on flushing](server.md#streams) its writes, its write queue full, too many queries running) did nothing, so the client sends it again after the `Retry-After` the server gives, for up to `retry_for` seconds (10; 0 sends each request once), and raises the 429 after that. A write that failed partway on a cluster (an error with `"partial": true`) is not sent again, since the shards that took it keep it, unless it has an idempotency key.
+
+`write(ops, idempotency_key=k)` and `sql(statement, idempotency_key=k)` send a write with an [idempotency key](server.md#when-a-write-fails), so that sending it again does not apply it twice. A write that failed partway through a coordinator, after some shards took their part, says so in its error's answer and names its key:
+
+```python
+try:
+    client.write(ops)
+except strata.StrataError as e:
+    if not (e.answer or {}).get("partial"):
+        raise
+    client.write(ops, idempotency_key=e.answer["idempotency_key"])   # the rest, once
+```
 
 ### Streams and Kafka
 

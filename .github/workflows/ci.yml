@@ -1,14 +1,14 @@
 name: CI
 
-# A change to the documentation site or to Markdown files alone builds and
-# tests nothing.
+# A change to the documentation site, to Markdown files or to benchmark
+# results alone builds and tests nothing.
 #
 # Main is protected by one required check, "CI result", which every run
 # reports: the jobs below run when a change touches more than the
-# documentation (job `changes`), and are skipped otherwise, which a
-# required check counts as passing. A workflow skipped by a path filter
-# would report nothing, and the pull request would wait for its check
-# forever.
+# documentation and benchmark results (job `changes`), and are skipped
+# otherwise, which a required check counts as passing. A workflow skipped
+# by a path filter would report nothing, and the pull request would wait
+# for its check forever.
 on:
   push:
     branches: [main]
@@ -22,12 +22,16 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
-# A new push to a pull request cancels its older run. Runs on main and in
-# the merge queue are never cancelled: each commit of main gets its whole
-# run (a group per commit, since a group holds one waiting run and would
-# drop the others).
+# A new push to a pull request cancels its older run. Pushes to main share
+# one group that never cancels the run in progress, so main's runs keep
+# finishing, but a group holds one waiting run and a newer push replaces
+# it: after a burst of merges only the newest waits, and it tests every
+# merge before it. (A group per commit queued every merge's whole run,
+# 5 macOS jobs each against a limit of 5 at once, and the queue grew by
+# hours.) The merge queue, the nightly run and a run by hand keep a group
+# per event and commit, so none of them is dropped.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: ci-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || format('{0}-{1}', github.event_name, github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -39,13 +43,35 @@ env:
 # 7 GB). The organisation's own runners (gh-linux, gh-mac and gh-mac2) are
 # billed by the minute even for a public repository, so no job uses them.
 #
-# macOS jobs are the scarcest (the account runs few at once), so a pull
-# request (and the merge queue) runs only Strata's tests on macOS, where
-# its NEON kernels and syncs differ from Linux; a push to main, the nightly
-# run and a run started by hand run every macOS job.
+# macOS jobs are the scarcest: the account runs five at once. A pull
+# request, the merge queue and a push to main run only Strata's tests on
+# macOS, where its NEON kernels and syncs differ from Linux, and CI result
+# does not wait for them (job `macos`): a pull request waited 9 to 12
+# minutes for a macOS runner and then 16 more, after every Linux job had
+# passed. Its check still turns red on a failure. The nightly run and a run
+# started by hand run every macOS job (8 of them), and CI result waits for
+# each. (Until 8 November a push to main ran all 8 too: they took the five
+# runners for up to 50 minutes a merge, and a pull request's macOS job
+# waited 46 minutes behind them.)
+#
+# Caches (Swatinem/rust-cache, one per job) are saved by runs on main, the
+# nightly and runs started by hand, and only restored by pull requests: a
+# repository keeps 10 GB of caches, and with every pull request saving its
+# own, main's were evicted and most jobs compiled every dependency (the
+# Python job took 26 to 39 minutes that way, 20 with a cache). For the same
+# reason Linux builds in strata/ name x86-64-v3 (AVX2, which every runner
+# has) instead of its config's target-cpu=native, so that one cache serves
+# every runner's CPU; on a runner with AVX-512 Strata still picks those
+# kernels at run time (strata::simd). macOS builds keep native, and the CPU
+# in their cache's key.
 jobs:
-  # Whether the change touches more than the documentation site and
-  # Markdown files: if not, every other job is skipped.
+  # Whether the change touches more than the documentation site, Markdown
+  # files and benchmark results (the data under strata/results,
+  # strata-server/results and engram/results, which nothing builds or
+  # reads): if not, every other job is skipped. A Python script there
+  # still counts as code, since a job runs strata/results/sequence/gate.py,
+  # and so does strata/results/workloads/, which tests/workload_gen.rs
+  # checks is not stale.
   changes:
     name: changes
     runs-on: ubuntu-latest
@@ -75,7 +101,9 @@ jobs:
             exit 0
           fi
           git diff --name-only "$base" HEAD | tee "$RUNNER_TEMP/changed"
-          if grep -qvE '^docs/|\.md$' "$RUNNER_TEMP/changed"; then
+          grep -vE '^docs/|\.md$' "$RUNNER_TEMP/changed" > "$RUNNER_TEMP/rest" || true
+          if grep -qvE '^(strata|strata-server|engram)/results/' "$RUNNER_TEMP/rest" \
+            || grep -qE '^(strata|strata-server|engram)/results/.*\.py$|^strata/results/workloads/' "$RUNNER_TEMP/rest"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
@@ -88,21 +116,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
-        crate: [strata, engram, strata-server]
-        # On a pull request, a job of its own; on main, already in the matrix.
-        include:
-          - os: macos-latest
-            crate: strata
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        # strata-crawl's crawl into a real cluster runs in server-smoke,
+        # which builds strata-server; here its other tests and clippy.
+        crate: [strata, engram, strata-server, strata-crawl]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    steps:
+    env: &test-env
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.crate == 'strata' && '-C target-cpu=x86-64-v3' || '' }}
+    steps: &test-steps
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      # The strata crate builds with -C target-cpu=native
-      # (strata/.cargo/config.toml), so a cache must not be restored on a
+      # On macOS the strata crate builds with -C target-cpu=native
+      # (strata/.cargo/config.toml), so its cache must not be restored on a
       # runner with another CPU: the key hashes the model and its
       # instruction sets (runners with the same model name differ in them,
       # and a cached proc macro then dies of SIGILL).
@@ -110,24 +138,80 @@ jobs:
         id: cpu
         shell: bash
         run: echo "model=$( (if [ -r /proc/cpuinfo ]; then grep -e 'model name' -e '^flags' /proc/cpuinfo | sort -u; else sysctl -n machdep.cpu.brand_string; fi) | cksum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      # The key names this job (`test`) rather than leaving the job's id to
+      # rust-cache, so that the pull request's macOS job (`macos`, the same
+      # steps) restores the cache main's macOS job saves.
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: ${{ matrix.crate }}
-          key: ${{ matrix.crate }}-${{ steps.cpu.outputs.model }}
+          shared-key: ${{ matrix.crate }}${{ runner.os == 'macOS' && matrix.crate == 'strata' && format('-{0}', steps.cpu.outputs.model) || '' }}-test
       # The ci profile is release without link-time optimisation and with
       # 16 codegen units (each crate's Cargo.toml): with release's, building
       # Strata's test binaries took 37 of the 40 minutes of its tests.
       # Strata's SQLite import and export (feature `sqlite`) are tested and
       # linted in the strata job; strata-server and the Python package turn
-      # the feature on.
+      # the feature on. --no-fail-fast runs every test binary even after one
+      # fails: cargo stops at the first otherwise, and from 11-05 to 11-07 a
+      # failing unit test of engine-compare kept strata-server's integration
+      # tests from running on macOS at all.
       - name: Tests
         working-directory: ${{ matrix.crate }}
-        run: cargo test --profile ci ${{ matrix.crate == 'strata' && '--features sqlite' || '' }}
+        run: cargo test --profile ci --no-fail-fast ${{ matrix.crate == 'strata' && '--features sqlite' || '' }}
+      # The cluster simulator over more seeds than its tests run (`cargo
+      # test` built strata-sim): the first 3,000 of each world on every
+      # change, and in the nightly run and a run started by hand 30,000 of
+      # each that no run checked before, a new range each day. A seed
+      # replays exactly: `strata-sim --seed N --trace` (with `--cluster`
+      # for the second world) shows what happened in it.
+      - name: Simulator seeds
+        if: matrix.crate == 'strata-server' && runner.os == 'Linux'
+        working-directory: strata-server
+        shell: bash
+        env:
+          NEW_SEEDS: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          n=3000
+          from=0
+          if [ "$NEW_SEEDS" = true ]; then
+            n=30000
+            from=$(( 1000000 + $(date -u +%s) / 86400 * n ))
+          fi
+          status=0
+          sim() {
+            echo "strata-sim $*"
+            if ! ./target/ci/strata-sim "$@" | tee "$RUNNER_TEMP/sim.out"; then
+              status=1
+              { echo "### strata-sim $*"; echo '```'; tail -n 60 "$RUNNER_TEMP/sim.out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+          sim --seeds "$from..$((from + n))"
+          sim --seeds "$from..$((from + n / 3))" --drop-ppm 150000
+          sim --cluster --seeds "$from..$((from + n))"
+          exit $status
       # Compiler warnings and clippy's correctness and suspicious lints fail
       # the build; style, complexity and performance lints are advice.
       - name: Clippy
         working-directory: ${{ matrix.crate }}
         run: cargo clippy --release --all-targets ${{ matrix.crate == 'strata' && '--features sqlite' || '' }} -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+
+  # Strata's tests on macOS for a pull request, the merge queue and a push
+  # to main: the `test` job's steps, in a job of its own that CI result does
+  # not wait for (see the top of this file). In the nightly run and a run
+  # started by hand they run in `test`, and this job is skipped. A push to
+  # main saves the cache that a pull request's run restores.
+  macos:
+    name: ${{ matrix.crate }} on ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push')
+    strategy:
+      matrix:
+        os: [macos-latest]
+        crate: [strata]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env: *test-env
+    steps: *test-steps
 
   # strata-server, engram and the Python package build for a generic CPU,
   # where Strata chooses its SIMD kernels at run time: test the kernels in
@@ -147,6 +231,7 @@ jobs:
       # A generic build runs on any x86-64 runner: no CPU model in the key.
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: strata
           key: strata-generic
       - name: Kernels
@@ -172,17 +257,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - name: CPU model
-        id: cpu
-        run: echo "model=$(grep -e 'model name' -e '^flags' /proc/cpuinfo | sort -u | cksum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
             strata
             strata-server
-          key: vision-${{ steps.cpu.outputs.model }}
+          key: vision
       - name: Strata
         working-directory: strata
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
         run: |
           cargo test --profile ci --features vision --test media_vectors --test media_fields --test derived_text --test rank_cross
           cargo clippy --profile ci --features vision --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
@@ -206,17 +291,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - name: CPU model
-        id: cpu
-        run: echo "model=$(grep -e 'model name' -e '^flags' /proc/cpuinfo | sort -u | cksum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
             strata
             strata-server
-          key: audio-${{ steps.cpu.outputs.model }}
+          key: audio
       - name: Strata
         working-directory: strata
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
         run: |
           cargo test --profile ci --features audio --test derived_audio --test audio_vectors
           cargo test --profile ci --features audio --lib -- audio:: clap::
@@ -227,33 +312,39 @@ jobs:
 
   # DataFusion as the engine of plans' operators (feature `datafusion`,
   # strata::query::df): the differential test against Strata's own
-  # operators, the compound-query suites again with DataFusion as the
-  # engine (STRATA_ENGINE=datafusion: a plan it does not lower runs on the
-  # operators), and clippy over the feature's code.
+  # operators, window functions on both engines against SQLite's answers,
+  # the compound-query suites again with DataFusion as the engine
+  # (STRATA_ENGINE=datafusion: a plan it does not lower runs on the
+  # operators), Parquet files in and out (feature parquet, on DataFusion's
+  # Arrow) with s3:// URLs (feature s3), and clippy over the features' code.
   datafusion:
     name: DataFusion engine (feature datafusion)
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - name: CPU model
-        id: cpu
-        run: echo "model=$(grep -e 'model name' -e '^flags' /proc/cpuinfo | sort -u | cksum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: strata
-          key: datafusion-${{ steps.cpu.outputs.model }}
+          key: datafusion
       - name: Strata
         working-directory: strata
         run: |
-          cargo test --profile ci --features datafusion --test datafusion_engine
-          STRATA_ENGINE=datafusion cargo test --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields
-          cargo clippy --profile ci --features datafusion --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+          cargo test --profile ci --features datafusion --test datafusion_engine --test hash_function
+          cargo test --profile ci --features datafusion,sqlite --test window_functions --test set_operations
+          STRATA_ENGINE=datafusion cargo test --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
+          # Parquet files in and out, and s3:// URLs (strata::parquet, strata::objects)
+          cargo test --profile ci --features datafusion,parquet,s3 --test parquet
+          cargo test --profile ci --features datafusion,parquet,s3 --lib -- parquet:: objects:: arrow_rows::
+          cargo clippy --profile ci --features datafusion,parquet,s3 --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
   # Power losses, full disks and failing syncs at every write of a storage
   # workload (storage::io, tests/storage_faults.rs). A job of its own: after
@@ -265,9 +356,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -277,8 +370,9 @@ jobs:
         run: echo "model=$( (if [ -r /proc/cpuinfo ]; then grep -e 'model name' -e '^flags' /proc/cpuinfo | sort -u; else sysctl -n machdep.cpu.brand_string; fi) | cksum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: strata
-          key: strata-faults-${{ steps.cpu.outputs.model }}
+          key: strata-faults${{ runner.os == 'macOS' && format('-{0}', steps.cpu.outputs.model) || '' }}
       - name: Fault injection
         working-directory: strata
         run: cargo test --profile ci --features fault-injection --test storage_faults
@@ -291,17 +385,17 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: CPU model
-        id: cpu
-        run: echo "model=$(grep -e 'model name' -e '^flags' /proc/cpuinfo | sort -u | cksum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: strata
-          key: relevance-${{ steps.cpu.outputs.model }}
+          key: relevance
       - uses: actions/cache@v6
         with:
           path: ~/beir
@@ -321,17 +415,17 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64-v3
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: CPU model
-        id: cpu
-        run: echo "model=$(grep -e 'model name' -e '^flags' /proc/cpuinfo | sort -u | cksum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: strata
-          key: relevance-bert-${{ steps.cpu.outputs.model }}
+          key: relevance-bert
       - uses: actions/cache@v6
         with:
           path: ~/beir
@@ -353,9 +447,9 @@ jobs:
   # undefined behaviour: misaligned or out-of-bounds reads, dangling
   # pointers, aliasing. It interprets the code about a thousand times
   # slower, and on one thread, so it runs the tests sized for it (`miri_*`)
-  # and other small ones, split in three parts of 10 to 16 minutes, on a
-  # portable build (scalar kernels; Miri has no CPUID). The nightly is
-  # pinned to the one the tests were run with.
+  # and other small ones, split in four parts of 6 to 12 minutes (the
+  # pyramid's is one test of 11), on a portable build (scalar kernels; Miri
+  # has no CPUID). The nightly is pinned to the one the tests were run with.
   miri:
     name: miri (${{ matrix.part }})
     needs: changes
@@ -368,8 +462,13 @@ jobs:
         include:
           - part: pyramid
             tests: "postings::codecs::pyramid::tests::miri_"
-          - part: bytes, loom, bit vectors, query pool
-            tests: "postings::bytes postings::codecs::loom::tests::miri_ postings::bits query::pool"
+          # The bit vectors' tests take 10 of these two parts' 12 minutes:
+          # one of them goes with the others, so that a new one lands in
+          # the first part.
+          - part: bit vectors
+            tests: "postings::bits --skip postings::bits::tests::next_one_and_ones"
+          - part: bytes, loom, bit vector ones, query pool
+            tests: "postings::bytes postings::codecs::loom::tests::miri_ postings::bits::tests::next_one_and_ones query::pool"
           - part: columns, graph, keys, text codec
             tests: "forward:: graph:: storage::pk::tests::collisions storage::pk::tests::section_written storage::live storage::updates::tests::round_trip text::codec --skip many_int_keys"
     steps:
@@ -380,6 +479,7 @@ jobs:
           components: miri, rust-src
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: strata
           key: miri
       - name: Miri
@@ -400,7 +500,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: strata-server
+          save-if: ${{ github.event_name != 'pull_request' }}
+          workspaces: |
+            strata-server
+            strata-crawl
           key: strata-server-smoke
       - name: Build
         working-directory: strata-server
@@ -439,6 +542,14 @@ jobs:
           curl -sf -X POST 'http://127.0.0.1:7702/v1/import?format=sqlite' -H 'content-type: application/vnd.sqlite3' --data-binary @"$RUNNER_TEMP/s.sqlite" | grep -q '"written":1'
           curl -sf http://127.0.0.1:7702/v1/export -o "$RUNNER_TEMP/s3.sqlite"
           python3 -c "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); assert c.execute('SELECT count(*) FROM t').fetchone() == (3,); assert c.execute('SELECT body FROM notes').fetchall() == [('a first note about rivers and mountains',)]" "$RUNNER_TEMP/s3.sqlite"
+      # The crawler on a site its test serves, into a cluster of this
+      # build's servers that it starts and grows to three shards.
+      - name: Crawl a site into a growing cluster
+        working-directory: strata-crawl
+        env:
+          STRATA_SERVER_BIN: ${{ github.workspace }}/strata-server/target/release/strata-server
+          STRATA_CRAWL_NEED_SERVER: "1"
+        run: cargo test --profile ci --test site
 
   python:
     name: Python package on ${{ matrix.os }}
@@ -447,7 +558,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -458,16 +569,15 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: CPU model
-        id: cpu
-        shell: bash
-        run: echo "model=$( (if [ -r /proc/cpuinfo ]; then grep -e 'model name' -e '^flags' /proc/cpuinfo | sort -u; else sysctl -n machdep.cpu.brand_string; fi) | cksum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      # strata-py and strata-server build for a generic CPU: one cache on
+      # every runner.
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.event_name != 'pull_request' }}
           workspaces: |
             strata-py
             strata-server
-          key: python-${{ steps.cpu.outputs.model }}
+          key: python
       # The client tests run against a real server.
       - name: Build strata-server
         working-directory: strata-server
@@ -491,14 +601,22 @@ jobs:
           python -m venv .venv
           . .venv/bin/activate
           pip install maturin pytest numpy confluent-kafka
+          # Database.query_arrow's and the Parquet tests (tests/test_arrow.py,
+          # tests/test_parquet.py), the S3 ones against moto's local server
+          pip install pyarrow polars pandas "moto[server]" boto3
           # strata.train.sequence's test: CPU PyTorch (PyPI's macOS wheel is one)
           if [ "$RUNNER_OS" = Linux ]; then pip install torch --index-url https://download.pytorch.org/whl/cpu; else pip install torch; fi
-          maturin develop --release
+          # The ci profile, as the crates' tests have: release's link-time
+          # optimisation and single codegen unit took most of this step.
+          maturin develop --profile ci
           pytest tests -v
       # The recommender gate (strata/results/sequence/gate.py): every
       # candidate source and two baselines on MovieLens-1M, checked against
-      # strata/tests/fixtures/recsys_gate.json. The ratings come from a
-      # mirror on Hugging Face, pinned by revision and SHA-256.
+      # strata/tests/fixtures/recsys_gate.json and recsys_gate_time.json.
+      # The ratings come from a mirror on Hugging Face, pinned by revision
+      # and SHA-256. The two protocols run at once, a process each (one
+      # after the other they took 6 and 2 minutes), and their output is
+      # printed when both have ended.
       - name: Recommender gate
         if: runner.os == 'Linux'
         working-directory: strata-py
@@ -506,18 +624,128 @@ jobs:
           . .venv/bin/activate
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/ml-1m-ratings.csv" https://huggingface.co/datasets/hazemessam/ml-1m/resolve/b7ed0ffb2157bfbc794a1e47e9044ab323bee57f/ratings.csv
           echo "d2baa264e8ef4c7fb0c555acae5dc80239612481efff5814df9eab98cb9e1fe0  $RUNNER_TEMP/ml-1m-ratings.csv" | sha256sum -c
-          python ../strata/results/sequence/gate.py --ratings "$RUNNER_TEMP/ml-1m-ratings.csv"
+          for protocol in loo time; do
+            python ../strata/results/sequence/gate.py --ratings "$RUNNER_TEMP/ml-1m-ratings.csv" --protocol "$protocol" > "$RUNNER_TEMP/gate-$protocol.log" 2>&1 &
+            echo $! > "$RUNNER_TEMP/gate-$protocol.pid"
+          done
+          status=0
+          for protocol in loo time; do
+            wait "$(cat "$RUNNER_TEMP/gate-$protocol.pid")" || status=1
+            cat "$RUNNER_TEMP/gate-$protocol.log"
+          done
+          exit $status
       - name: Clippy
         working-directory: strata-py
         run: cargo clippy --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
 
+  javascript:
+    name: JavaScript package on ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      # strata-js and strata-server build for a generic CPU: one cache on
+      # every runner.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+          workspaces: |
+            strata-js
+            strata-server
+          key: javascript
+      # The client tests run against a real server.
+      - name: Build strata-server
+        working-directory: strata-server
+        run: cargo build --release
+      - name: Build and test
+        working-directory: strata-js
+        run: |
+          node scripts/build.mjs --profile ci
+          node --test test/*.test.mjs
+      # The same addon from Bun and Deno: a file opened, written and
+      # searched in each runtime, and the client against a server.
+      - name: Bun and Deno
+        working-directory: strata-js
+        run: |
+          bun test/runtimes.mjs
+          deno run --allow-ffi --allow-read --allow-write --allow-env --allow-net --allow-run --allow-sys test/runtimes.mjs
+      - name: Clippy
+        working-directory: strata-js
+        run: cargo clippy --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+
+  # The Java package (strata-java): its native library, built by cargo
+  # inside mvn package, and the Java classes' tests against it on the
+  # oldest Java the package supports (11) and on the newest long-term one,
+  # which warns about native libraries loaded without
+  # --enable-native-access.
+  java:
+    name: Java package on ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # strata-java builds for a generic CPU: one cache on every runner.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+          workspaces: strata-java
+          key: java
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "11"
+          cache: maven
+      # The ci profile, as the crates' tests have.
+      - name: Build and test on Java 11
+        working-directory: strata-java
+        run: mvn -B -ntp -Dcargo.profile=ci package
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "25"
+      - name: Test on Java 25
+        working-directory: strata-java
+        run: mvn -B -ntp -Dcargo.profile=ci -Dcargo.skip=true test
+      - name: Native library's own tests
+        working-directory: strata-java
+        run: cargo test --profile ci
+      - name: Clippy
+        working-directory: strata-java
+        run: cargo clippy --release --all-targets -- -A clippy::style -A clippy::complexity -A clippy::perf -D warnings
+
   # The one check main requires: every job above passed, or was skipped
   # because the change touches only the documentation. A failed or
-  # cancelled job fails it.
+  # cancelled job fails it. It does not wait for `macos`, the Strata tests
+  # on macOS of a pull request and a push to main (see the top of this file).
   ci-result:
     name: CI result
     if: always()
-    needs: [changes, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python]
+    needs: [changes, test, kernels, vision, audio, datafusion, faults, relevance-gate, relevance-gate-cross-encoder, miri, server-smoke, python, javascript, java]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

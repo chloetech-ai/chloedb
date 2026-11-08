@@ -38,12 +38,12 @@ async fn serve() -> (String, Arc<Service>) {
 }
 
 async fn post(base: &str, path: &str, body: Json) -> (u16, String) {
-    let r = reqwest::Client::new().post(format!("{base}{path}")).json(&body).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{base}{path}")).json(&body).send().await.unwrap();
     (r.status().as_u16(), r.text().await.unwrap())
 }
 
 async fn get(base: &str, path: &str) -> Json {
-    reqwest::get(format!("{base}{path}")).await.unwrap().json().await.unwrap()
+    strata_server::http_client().build().unwrap().get(format!("{base}{path}")).send().await.unwrap().json().await.unwrap()
 }
 
 fn steps(v: &Json) -> Vec<Json> {
@@ -167,11 +167,11 @@ async fn an_allocation_profile_finds_where_a_query_allocates() {
     assert_eq!(long.await.unwrap().0, 200);
 
     // Folded lines, by bytes or by bytes still held.
-    let r = reqwest::Client::new().post(format!("{base}/v1/profile/heap?format=folded")).json(&json!({"seconds": 0.5, "every": 4096, "sql": BM25})).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{base}/v1/profile/heap?format=folded")).json(&json!({"seconds": 0.5, "every": 4096, "sql": BM25})).send().await.unwrap();
     assert_eq!(r.status(), 200);
     let text = r.text().await.unwrap();
     assert!(text.lines().count() > 0 && text.lines().all(|l| l.rsplit_once(' ').is_some_and(|(stack, n)| !stack.is_empty() && n.parse::<u64>().is_ok_and(|n| n > 0))), "{text}");
-    let r = reqwest::Client::new().post(format!("{base}/v1/profile/heap?format=folded&value=in_use")).json(&json!({"seconds": 0.2})).send().await.unwrap();
+    let r = strata_server::http_client().build().unwrap().post(format!("{base}/v1/profile/heap?format=folded&value=in_use")).json(&json!({"seconds": 0.2})).send().await.unwrap();
     assert_eq!(r.status(), 200);
 
     // Bad inputs.

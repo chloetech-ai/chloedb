@@ -1,0 +1,5 @@
+2026-11-02T05:42:05.514906Z  INFO strata_server::server: merging in the background threads=1 memory_mib=1280
+2026-11-02T05:42:05.516099Z  INFO strata_server::server: queries share a memory budget memory_mib=853
+2026-11-02T05:42:05.516463Z  WARN strata_server::server: cannot run this embedded field's model: writes must supply its vectors table=docs field=emb model=cohere/embed-english-v3.0 from=title + text error=schema error: model cohere/embed-english-v3.0: set $COHERE_API_KEY or $CO_API_KEY to the provider's API key (or COHERE_BASE_URL for a server of its API that takes none)
+2026-11-02T05:42:05.518704Z  INFO strata_server::server: keeps its logs in a log store path=/local/nq-1000k.shard1of2.strata.logs node=strata-1:7700 retain_s=604800 max_mib=1024
+2026-11-02T05:42:05.519712Z ERROR strata_server: 0.0.0.0:7700 is reachable beyond this machine: set --token (or $STRATA_TOKEN), make an API key, or pass --no-token to serve it open

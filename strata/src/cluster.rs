@@ -44,7 +44,7 @@
 use std::cmp::Ordering;
 
 use crate::error::{Error, Result};
-use crate::query::exec::{cmp_values, ExecOptions, ExecStats, RankParts, ResultSet, DEFAULT_K};
+use crate::query::exec::{cmp_values, path_order, ExecOptions, ExecStats, RankParts, ResultSet, DEFAULT_K};
 use crate::query::agg;
 use crate::query::steps::Clock;
 use crate::query::logical::{OrderBy, Pred, Projection, Score, Select, Tiebreak};
@@ -64,15 +64,7 @@ pub fn merge(q: &Select, shards: Vec<ResultSet>) -> Result<ResultSet> {
         return Err(Error::Query(format!("ranking model {m} is not open on the coordinator: it opens a plan's models from its models directory")));
     }
     let columns: Vec<String> = q.projection.iter().map(|(n, _)| n.clone()).collect();
-    let mut stats = ExecStats::default();
-    for (i, s) in shards.iter().enumerate() {
-        stats.filter_docs += s.stats.filter_docs;
-        stats.scored += s.stats.scored;
-        stats.reranked += s.stats.reranked;
-        stats.plan.extend(s.stats.plan.iter().map(|l| format!("shard {i}: {l}")));
-        // Each shard's steps, which its caller put on one clock.
-        stats.nest(&s.stats, 0);
-    }
+    let mut stats = shards_stats(&shards);
     let empty = |rows, stats| ResultSet { columns: columns.clone(), rows, keys: Vec::new(), scores: Vec::new(), parts: None, stats };
     // Groups and aggregates: each shard returns its groups with partial
     // aggregates.
@@ -125,6 +117,12 @@ pub fn merge(q: &Select, shards: Vec<ResultSet>) -> Result<ResultSet> {
             let want = if matches!(score, Score::Column { .. }) { q.limit } else { Some(q.limit.unwrap_or(DEFAULT_K)) };
             (rows, want)
         }
+        // By the path's column, which the query selects for it.
+        Some(OrderBy::Path { path, desc, nulls_first }) => {
+            let c = q.projection.iter().position(|(_, p)| *p == Projection::Path(*path)).ok_or_else(|| err("rows ordered by a path over shards select the path"))?;
+            rows.sort_by(|a, b| path_order(&a.values[c], &b.values[c], *desc, *nulls_first).then_with(|| by_key(&a.key, &b.key, key_desc)));
+            (rows, q.limit)
+        }
         Some(_) => return Err(err("ORDER BY COUNT(*) needs GROUP BY")),
     };
     if matches!(&q.order, Some(OrderBy::Score { score, .. }) if Rank::of(score, 0).is_some()) {
@@ -174,6 +172,68 @@ pub fn merge(q: &Select, shards: Vec<ResultSet>) -> Result<ResultSet> {
     Ok(out)
 }
 
+/// The statistics of the shards' answers, summed, their plan lines and
+/// steps (on one clock, as their caller put them) each shard's in turn.
+fn shards_stats(shards: &[ResultSet]) -> ExecStats {
+    let mut stats = ExecStats::default();
+    for (i, s) in shards.iter().enumerate() {
+        stats.filter_docs += s.stats.filter_docs;
+        stats.scored += s.stats.scored;
+        stats.reranked += s.stats.reranked;
+        stats.plan.extend(s.stats.plan.iter().map(|l| format!("shard {i}: {l}")));
+        stats.nest(&s.stats, 0);
+    }
+    stats
+}
+
+/// [`merge`] of the shards' answers to `q`, a query that [`concatenates`],
+/// which answered with Arrow columns: `shards` holds each answer's
+/// statistics (and the rows of those that answered rows), `columns` the
+/// Arrow answers. The rows one after another, the LIMIT and OFFSET
+/// applied, or `None` where one answered rows (it could not make its
+/// columns, of values of several types) or the columns' types differ
+/// ([`crate::query::arrow::concat_columns`]): the rows are then asked
+/// for again.
+#[cfg(feature = "datafusion")]
+pub fn merge_columns(q: &Select, shards: &[ResultSet], columns: Vec<Option<crate::query::arrow::Columns>>) -> Result<Option<crate::query::arrow::Columns>> {
+    use crate::query::arrow::{self, Columns};
+    let names: Vec<String> = q.projection.iter().map(|(n, _)| n.clone()).collect();
+    let mut parts: Vec<Columns> = Vec::with_capacity(columns.len());
+    for (s, c) in shards.iter().zip(columns) {
+        match c {
+            Some(c) if c.names.len() == names.len() => parts.push(c),
+            Some(c) => return Err(err(format!("a shard answered {} columns for {}", c.names.len(), names.len()))),
+            // A shard without rows answers no columns.
+            None if s.rows.is_empty() => {}
+            None => return Ok(None),
+        }
+    }
+    let stats = shards_stats(shards);
+    if parts.is_empty() {
+        return Ok(None);
+    }
+    let Some(mut all) = arrow::concat_columns(parts, stats)? else { return Ok(None) };
+    all.names = names;
+    Ok(Some(all.slice(q.offset, q.limit)))
+}
+
+/// Whether [`merge`] puts the shards' answers to `q` one after another, a
+/// LIMIT and OFFSET aside: a query without an order, groups, aggregates,
+/// a count, rerank phases, graphs, a guard or scores, as the leaves of a
+/// compound query that reads a table whole often are. Their shards may
+/// answer with Arrow columns ([`crate::query::arrow::concat_columns`]).
+pub fn concatenates(q: &Select) -> bool {
+    q.order.is_none()
+        && q.group_by.is_empty()
+        && q.having.is_none()
+        && q.phases.is_empty()
+        && q.graphs.is_empty()
+        && q.guard.is_none()
+        && q.per.is_none()
+        && !agg::is_general(q, |_| false)
+        && !q.projection.iter().any(|(_, p)| matches!(p, Projection::Count | Projection::Agg { .. } | Projection::Score))
+}
+
 /// Whether `q` scores BM25 (a `bm25` leaf of its ranking, alone or in an
 /// expression), so that a coordinator sums its shards' statistics of the
 /// terms first ([`ExecOptions::stats`]) and they score like one database.
@@ -181,6 +241,18 @@ pub fn scores_bm25(q: &Select) -> bool {
     let mut leaves = Vec::new();
     crate::query::exec::bm25_leaves(q, &mut leaves);
     !leaves.is_empty()
+}
+
+/// The terms of `q`'s BM25 inputs, by field name, when they follow from
+/// the query and `schema` alone, so that a coordinator can sum statistics
+/// it kept of them ([`crate::query::exec::stat_terms`]); `None` when only
+/// a shard can find them (typos, synonyms) or `q` scores no BM25.
+pub fn stat_terms(q: &Select, schema: &Schema) -> Result<Option<Vec<(String, Vec<String>)>>> {
+    let Some(leaves) = crate::query::exec::stat_terms(q, schema)? else { return Ok(None) };
+    if leaves.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(leaves.into_iter().map(|(f, terms)| (schema.fields[f].name.clone(), terms)).collect()))
 }
 
 /// Whether a fetch phase reads less than one round would: `q` returns a
@@ -193,7 +265,9 @@ pub fn fetches(q: &Select, schema: &Schema) -> bool {
     let Some(pk) = schema.primary_key else { return false };
     let rows = q.limit.is_some() && q.group_by.is_empty() && !agg::is_general(q, |_| false) && !q.projection.iter().any(|(_, p)| matches!(p, Projection::Count | Projection::Agg { .. }));
     // A BOOL or TIMESTAMP key would come back as its stored integer.
+    // Rows ordered by a path are merged by its column.
     rows && q.graphs.is_empty()
+        && !matches!(q.order, Some(OrderBy::Path { .. }))
         && schema.fields[pk].logical.is_none()
         && q.projection.iter().any(|(_, p)| matches!(p, Projection::Field(f) if *f != pk) || matches!(p, Projection::Feature(_)))
 }
@@ -217,6 +291,8 @@ pub fn fetch(q: &Select, schema: &Schema, keys: Vec<Value>) -> Result<Select> {
         filter: if keys.is_empty() { Pred::False } else { Pred::In { field: pk, values: keys } },
         order: None,
         group_by: Vec::new(),
+        paths: q.paths.clone(),
+        times: q.times.clone(),
         having: None,
         tiebreak: None,
         phases: Vec::new(),

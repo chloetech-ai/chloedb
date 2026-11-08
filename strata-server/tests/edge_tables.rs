@@ -58,7 +58,7 @@ fn edge_op(a: &str, b: &str) -> Json {
 async fn an_edge_table_kept_up_by_events_ranks_as_an_edges_field() {
     let dir = tempfile::tempdir().unwrap();
     let h = http(dir.path()).await;
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let post = |path: &str, body: Json| {
         let (c, url) = (c.clone(), format!("{h}{path}"));
         async move {

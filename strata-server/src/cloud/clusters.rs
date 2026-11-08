@@ -102,6 +102,17 @@ pub struct Made {
     /// The cloud was asked to delete it.
     #[serde(default)]
     pub delete_asked: bool,
+    /// When it deletes itself, as asked when it was made or since
+    /// ([`Clusters::delete_at`]): what it may cost is bounded by then.
+    #[serde(default)]
+    pub delete_at_ms: Option<u64>,
+    /// Tables of this server it copies in once it is ready
+    /// ([`crate::copy::bring_when_ready`]).
+    #[serde(default)]
+    pub bring: Vec<String>,
+    /// What bringing them did: the copy's answer, or `{"error"}`.
+    #[serde(default)]
+    pub brought: Option<Json>,
 }
 
 /// How long the parts that wait wait before giving up.
@@ -113,6 +124,12 @@ const STEPS_KEPT: usize = 60;
 
 fn now_ms() -> u64 {
     crate::operator::now_ms()
+}
+
+/// `YYYY-MM-DD HH:MM` (UTC) of a time in milliseconds.
+pub fn utc(ms: u64) -> String {
+    let a = crate::aws::sig::amz_date(ms);
+    format!("{}-{}-{} {}:{}", &a[..4], &a[4..6], &a[6..8], &a[9..11], &a[11..13])
 }
 
 impl Made {
@@ -140,6 +157,11 @@ impl Made {
         self.error = Some(e);
     }
 
+    /// Its time to delete itself has come, and nothing deletes it yet.
+    fn due(&self, now: u64) -> bool {
+        self.delete_at_ms.is_some_and(|t| now >= t) && !matches!(self.phase, Phase::Deleting | Phase::Deleted) && !(self.phase == Phase::Failed && self.cloud_id.is_none())
+    }
+
     fn installed(&self) -> bool {
         self.steps.iter().any(|s| s.phase == Phase::Starting) || matches!(self.phase, Phase::Starting | Phase::Ready)
     }
@@ -163,6 +185,10 @@ impl Made {
             "progress": self.progress.map(|(d, n)| json!({"done": d, "of": n})),
             "strata": self.strata, "summary": if self.strata.is_null() { Json::Null } else { json!(install::summary(&self.strata)) },
             "connect": if matches!(self.phase, Phase::Starting | Phase::Ready) { json!(connect) } else { json!([]) },
+            "delete_at_ms": self.delete_at_ms,
+            "bring": self.bring, "brought": self.brought,
+            // What it will have cost by then, at the planned price.
+            "cost_by_delete": self.delete_at_ms.map(|t| self.cost_hour * t.saturating_sub(self.created_ms) as f64 / 3_600_000.0),
         })
     }
 }
@@ -170,6 +196,9 @@ impl Made {
 /// The clusters made from this server, and the loop that moves them on.
 pub struct Clusters {
     made: Mutex<Vec<Made>>,
+    /// A client of each cluster's API, with its token and when it was
+    /// made ([`Clusters::kube_of`]).
+    kubes: Mutex<std::collections::HashMap<String, (Kube, u64)>>,
     file: Option<PathBuf>,
     every: Mutex<Duration>,
     wake: tokio::sync::Notify,
@@ -185,7 +214,7 @@ impl Default for Clusters {
 impl Clusters {
     /// Kept in memory only.
     pub fn memory() -> Clusters {
-        Clusters { made: Mutex::new(Vec::new()), file: None, every: Mutex::new(Duration::from_secs(15)), wake: tokio::sync::Notify::new(), running: AtomicBool::new(false) }
+        Clusters { made: Mutex::new(Vec::new()), kubes: Mutex::new(std::collections::HashMap::new()), file: None, every: Mutex::new(Duration::from_secs(15)), wake: tokio::sync::Notify::new(), running: AtomicBool::new(false) }
     }
 
     /// `<db>.cloud.json`, beside the database.
@@ -209,6 +238,11 @@ impl Clusters {
 
     /// How often the loop asks the clouds while a cluster is on its way
     /// (15 s; tests ask more often).
+    /// How often the loop looks at the clusters on their way.
+    pub fn every(&self) -> Duration {
+        *self.every.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn with_every(self, every: Duration) -> Clusters {
         *self.every.lock().unwrap_or_else(|e| e.into_inner()) = every;
         self
@@ -279,6 +313,39 @@ impl Clusters {
         Ok(out)
     }
 
+    /// Sets when the cluster `id` deletes itself (`None`: it is kept until
+    /// someone deletes it).
+    pub fn delete_at(&self, id: &str, at_ms: Option<u64>, by: &str) -> Result<Made, String> {
+        let mut list = self.lock();
+        let m = list.iter_mut().find(|m| m.id == id).ok_or_else(|| format!("no cluster {id}"))?;
+        if matches!(m.phase, Phase::Deleting | Phase::Deleted) {
+            return Err(format!("{} is {} already", m.cluster, if m.phase == Phase::Deleted { "deleted" } else { "being deleted" }));
+        }
+        m.generation += 1;
+        m.delete_at_ms = at_ms;
+        let text = match at_ms {
+            Some(t) => format!("{by} asked it to delete itself at {} UTC", utc(t)),
+            None => format!("{by} kept it: it no longer deletes itself"),
+        };
+        m.note(text);
+        let out = m.clone();
+        self.save(&list)?;
+        drop(list);
+        self.wake.notify_one();
+        Ok(out)
+    }
+
+    /// What bringing its tables did ([`crate::copy::bring_when_ready`]):
+    /// `text` on its steps, `answer` kept.
+    pub fn brought(&self, id: &str, text: String, answer: Json) -> Result<(), String> {
+        let mut list = self.lock();
+        let m = list.iter_mut().find(|m| m.id == id).ok_or_else(|| format!("no cluster {id}"))?;
+        m.generation += 1;
+        m.brought = Some(answer);
+        m.note(text);
+        self.save(&list)
+    }
+
     /// Forgets a cluster that is deleted, or that failed before the cloud
     /// made anything.
     pub fn forget(&self, id: &str) -> Result<Made, String> {
@@ -292,6 +359,27 @@ impl Clusters {
         let m = list.remove(i);
         self.save(&list)?;
         Ok(m)
+    }
+
+    /// A client of the API of the cluster `id`, made here, with a token
+    /// of its cloud's (EKS's last 15 minutes, DOKS's longer): kept for 5
+    /// minutes, so that the hub's calls through it ([`crate::hub`]) do
+    /// not each ask the cloud.
+    pub async fn kube_of(&self, id: &str, aws: &Aws, d: &DigitalOcean) -> Result<Kube, String> {
+        const KEPT_MS: u64 = 5 * 60 * 1000;
+        let now = now_ms();
+        if let Some((k, at)) = self.kubes.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
+            if now.saturating_sub(*at) < KEPT_MS {
+                return Ok(k.clone());
+            }
+        }
+        let m = self.get(id).ok_or_else(|| format!("no cluster {id} was made here"))?;
+        if matches!(m.phase, Phase::Deleting | Phase::Deleted) {
+            return Err(format!("{} is {}", m.cluster, if m.phase == Phase::Deleted { "deleted" } else { "being deleted" }));
+        }
+        let k = kube(&m, aws, d).await?;
+        self.kubes.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), (k.clone(), now));
+        Ok(k)
     }
 
     /// Starts the loop once (on the first cluster, or at start when the
@@ -322,7 +410,7 @@ impl Clusters {
     /// One pass: moves every cluster on its way one step.
     pub async fn tick(&self, aws: &Aws, d: &DigitalOcean) {
         let now = now_ms();
-        let todo: Vec<Made> = self.lock().iter().filter(|m| match m.phase {
+        let todo: Vec<Made> = self.lock().iter().filter(|m| m.due(now) || match m.phase {
             Phase::Deleted | Phase::Failed => false,
             Phase::Ready => now.saturating_sub(m.checked_ms) >= READY_EVERY_MS,
             _ => true,
@@ -350,6 +438,14 @@ impl Clusters {
 /// One step of `m`. A call that fails leaves it where it is, noted; the
 /// steps that cannot go on fail it.
 async fn advance(m: &mut Made, aws: &Aws, d: &DigitalOcean) {
+    // Its time is up: it deletes itself as a person's Delete would.
+    if m.due(now_ms()) {
+        m.deleting_since_ms = Some(now_ms());
+        m.delete_asked = false;
+        let hours = m.delete_at_ms.unwrap_or_default().saturating_sub(m.created_ms) as f64 / 3_600_000.0;
+        m.to(Phase::Deleting, format!("deleting itself, {hours:.1} hours after it was asked for, as set"));
+        return;
+    }
     let r = match m.phase {
         Phase::Creating => creating(m, aws, d).await,
         Phase::Installing => installing(m, aws, d).await,
@@ -381,7 +477,15 @@ async fn creating(m: &mut Made, aws: &Aws, d: &DigitalOcean) -> Result<(), Strin
             return Ok(());
         }
         let made = match m.provider.as_str() {
-            "aws" => aws.create_stack(&m.region, &m.cluster, &m.request, &m.id, &[("strata.chloetech.ai/cluster", &m.name), ("strata.chloetech.ai/made-by", "strata-server")]).await,
+            "aws" => {
+                // Who asked for it, as the stack's tags (and so its
+                // resources') say it. When it deletes itself is not a tag:
+                // the time may move after, and a tag left behind would
+                // tell a sweeper to delete a cluster someone kept.
+                let owner: String = m.by.chars().map(|c| if c.is_alphanumeric() || " _.:/=+-@".contains(c) { c } else { '-' }).take(200).collect();
+                let tags = [("strata.chloetech.ai/cluster", m.name.as_str()), ("strata.chloetech.ai/made-by", "strata-server"), ("strata.chloetech.ai/owner", owner.as_str())];
+                aws.create_stack(&m.region, &m.cluster, &m.request, &m.id, &tags).await
+            }
             _ => d.create_cluster(&m.request).await,
         };
         match made {
@@ -575,8 +679,25 @@ mod tests {
             id: "aws-strata-search-1".into(), provider: "aws".into(), name: "search".into(), cluster: "strata-search".into(), region: "us-east-1".into(),
             machine: "m8g.large".into(), nodes: 3, cost_hour: 0.4, by: "admin".into(), created_ms: 1, phase, cloud_id: None, request: json!({}),
             image: "img".into(), objects: Vec::new(), steps: Vec::new(), error: None, strata: Json::Null, progress: None, ready_ms: None, ended_ms: None,
-            generation: 0, tries: 0, checked_ms: 0, deleting_since_ms: None, volumes_gone: false, delete_asked: false,
+            generation: 0, tries: 0, checked_ms: 0, deleting_since_ms: None, volumes_gone: false, delete_asked: false, delete_at_ms: None, bring: Vec::new(), brought: None,
         }
+    }
+
+    #[test]
+    fn a_cluster_deletes_itself_when_its_time_is_up() {
+        let mut m = made(Phase::Ready);
+        m.cloud_id = Some("x".into());
+        assert!(!m.due(u64::MAX), "kept until someone deletes it");
+        m.delete_at_ms = Some(5);
+        assert!(m.due(5) && !m.due(4));
+        m.phase = Phase::Deleting;
+        assert!(!m.due(10), "deleting already");
+        let mut f = made(Phase::Failed);
+        f.delete_at_ms = Some(1);
+        assert!(!f.due(10), "nothing made, nothing to delete");
+        f.cloud_id = Some("x".into());
+        assert!(f.due(10), "a failed one may still bill");
+        assert_eq!(utc(1_793_966_400_000), "2026-11-06 12:00");
     }
 
     #[test]

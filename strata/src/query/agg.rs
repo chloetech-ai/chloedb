@@ -1,9 +1,13 @@
-//! Aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` and `COUNT(DISTINCT)`,
-//! over a whole result or per group, with `HAVING` and ordering of groups.
+//! Aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `COUNT(DISTINCT)` and
+//! percentiles ([`quantile`]), over a whole result or per group, with
+//! `HAVING` and ordering of groups.
 //!
 //! The executor accumulates rows segment by segment ([`Groups`]); shards of
 //! a split collection return partial accumulators (an average as its sum
 //! and count) that [`crate::cluster::merge`] combines before [`finish`].
+//! FLOAT values are summed exactly ([`ExactSum`]) and rounded once, so a
+//! sum does not depend on the order rows are added in, nor on how the
+//! segments or the shards' answers are combined.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
@@ -12,8 +16,13 @@ use crate::error::{Error, Result};
 use crate::query::ir::eval::{self, Ref};
 use crate::query::ir::{lower, Expr};
 use crate::query::memory::Charge;
-use crate::query::logical::{AggFn, Having, OrderBy, Projection, Select, Tiebreak};
+use crate::query::logical::{AggFn, Col, Having, OrderBy, Projection, Select, Tiebreak};
 use crate::value::Value;
+
+pub mod exact;
+pub mod quantile;
+pub use exact::{near_units, ExactSum, NEAR_EVERY};
+pub use quantile::Quantile;
 
 fn err(m: impl Into<String>) -> Error {
     Error::Query(m.into())
@@ -27,6 +36,8 @@ pub enum Part {
     /// Bits of an `f64` (no NaNs reach a group).
     Float(u64),
     Str(String),
+    /// A boolean group value ([`Part::group`]).
+    Bool(bool),
 }
 
 impl Part {
@@ -41,12 +52,22 @@ impl Part {
         }
     }
 
+    /// A value as a group of GROUP BY: a boolean stays one (a JSON path's
+    /// `true` is not the group of the number 1), else as [`Part::of`].
+    pub fn group(v: &Value) -> Part {
+        match v {
+            Value::Bool(b) => Part::Bool(*b),
+            v => Part::of(v),
+        }
+    }
+
     pub fn value(&self) -> Value {
         match self {
             Part::Null => Value::Null,
             Part::Int(x) => Value::Int(*x),
             Part::Float(b) => Value::Float(f64::from_bits(*b)),
             Part::Str(s) => Value::Str(s.clone()),
+            Part::Bool(b) => Value::Bool(*b),
         }
     }
 
@@ -65,16 +86,18 @@ impl Part {
 pub enum Acc {
     /// `COUNT(*)` (rows) or `COUNT(f)` (rows with a value).
     Count(i64),
-    /// The sum of the FLOAT values, of the INT values (exactly: an i128
-    /// cannot overflow), whether every value was an integer, and whether
-    /// any was seen.
-    Sum { sum: f64, isum: i128, int: bool, any: bool },
-    /// The FLOAT values' sum, the INT values' exact sum, and the values
-    /// counted: an average of integers is their exact sum divided once.
-    Avg { sum: f64, isum: i128, n: i64 },
+    /// The sum of the FLOAT values and of the INT values (both exactly: an
+    /// i128 cannot overflow), whether every value was an integer, and
+    /// whether any was seen.
+    Sum { sum: ExactSum, isum: i128, int: bool, any: bool },
+    /// The FLOAT values' exact sum, the INT values' exact sum, and the
+    /// values counted: an average is the exact total divided once.
+    Avg { sum: ExactSum, isum: i128, n: i64 },
     Min(Option<Value>),
     Max(Option<Value>),
     Distinct(BTreeSet<Part>),
+    /// A percentile's values.
+    Quantile(Box<Quantile>),
 }
 
 impl Acc {
@@ -82,11 +105,13 @@ impl Acc {
         match p {
             Projection::Agg { func, .. } => match func {
                 AggFn::Count => Acc::Count(0),
-                AggFn::Sum => Acc::Sum { sum: 0.0, isum: 0, int: true, any: false },
-                AggFn::Avg => Acc::Avg { sum: 0.0, isum: 0, n: 0 },
+                AggFn::Sum => Acc::Sum { sum: ExactSum::new(), isum: 0, int: true, any: false },
+                AggFn::Avg => Acc::Avg { sum: ExactSum::new(), isum: 0, n: 0 },
                 AggFn::Min => Acc::Min(None),
                 AggFn::Max => Acc::Max(None),
                 AggFn::CountDistinct => Acc::Distinct(BTreeSet::new()),
+                AggFn::PercentileCont(p) => Acc::Quantile(Box::new(Quantile::new(p.get(), true))),
+                AggFn::PercentileDisc(p) => Acc::Quantile(Box::new(Quantile::new(p.get(), false))),
             },
             _ => Acc::Count(0),
         }
@@ -100,7 +125,8 @@ impl Acc {
     }
 
     /// Adds one value of the aggregated field; returns about the bytes it
-    /// now holds more (a value `COUNT(DISTINCT)` had not seen).
+    /// now holds more (a value `COUNT(DISTINCT)` had not seen, any value of
+    /// a percentile).
     pub fn add(&mut self, v: &Value) -> u64 {
         if matches!(v, Value::Null) {
             return 0;
@@ -114,7 +140,7 @@ impl Acc {
                 }
                 v => {
                     if let Some(x) = v.as_f64() {
-                        *sum += x;
+                        sum.add(x);
                         *int = false;
                         *any = true;
                     }
@@ -127,7 +153,7 @@ impl Acc {
                 }
                 v => {
                     if let Some(x) = v.as_f64() {
-                        *sum += x;
+                        sum.add(x);
                         *n += 1;
                     }
                 }
@@ -149,8 +175,26 @@ impl Acc {
                     return bytes;
                 }
             }
+            Acc::Quantile(q) => return q.add(v),
         }
         0
+    }
+
+    /// About the bytes a percentile's values hold (0 for the others, whose
+    /// state does not grow with the rows, or is counted as it grows).
+    pub fn held(&self) -> u64 {
+        match self {
+            Acc::Quantile(q) => q.bytes(),
+            _ => 0,
+        }
+    }
+
+    /// Puts a percentile's values in order, so that reading its value
+    /// does not copy them.
+    pub fn settle(&mut self) {
+        if let Acc::Quantile(q) = self {
+            q.settle();
+        }
     }
 
     /// The final value.
@@ -161,23 +205,27 @@ impl Acc {
             // A sum of integers beyond the 64-bit range is a FLOAT rather
             // than a wrapped integer.
             Acc::Sum { isum, int: true, .. } => i64::try_from(*isum).map_or(Value::Float(*isum as f64), Value::Int),
-            Acc::Sum { sum, isum, .. } => Value::Float(sum + *isum as f64),
+            Acc::Sum { sum, isum, .. } => Value::Float(sum.value_plus(*isum)),
             Acc::Avg { n: 0, .. } => Value::Null,
-            Acc::Avg { sum, isum, n } => Value::Float((sum + *isum as f64) / *n as f64),
+            Acc::Avg { sum, isum, n } => Value::Float(sum.value_plus(*isum) / *n as f64),
             Acc::Min(m) | Acc::Max(m) => m.clone().unwrap_or(Value::Null),
             Acc::Distinct(s) => Value::Int(s.len() as i64),
+            Acc::Quantile(q) => q.value(),
         }
     }
 
     /// The state as one value, for a shard's answer: an average is
     /// `[sum, n, integer sum]`, a distinct count the list of values, a sum
     /// `[sum, int, any, integer sum]` (integer sums as decimal text: they
-    /// can exceed 64 bits).
+    /// can exceed 64 bits), a percentile its values and how many of each
+    /// ([`Quantile::partial`]). The FLOAT sum travels rounded once, and the
+    /// coordinator adds the shards' sums exactly.
     pub fn partial(&self) -> Value {
         match self {
-            Acc::Sum { sum, isum, int, any } => Value::List(vec![Value::Float(*sum), Value::Int(*int as i64), Value::Int(*any as i64), Value::Str(isum.to_string())]),
-            Acc::Avg { sum, isum, n } => Value::List(vec![Value::Float(*sum), Value::Int(*n), Value::Str(isum.to_string())]),
+            Acc::Sum { sum, isum, int, any } => Value::List(vec![Value::Float(sum.value()), Value::Int(*int as i64), Value::Int(*any as i64), Value::Str(isum.to_string())]),
+            Acc::Avg { sum, isum, n } => Value::List(vec![Value::Float(sum.value()), Value::Int(*n), Value::Str(isum.to_string())]),
             Acc::Distinct(s) => Value::List(s.iter().map(Part::value).collect()),
+            Acc::Quantile(q) => q.partial(),
             a => a.value(),
         }
     }
@@ -188,14 +236,14 @@ impl Acc {
         match (self, p) {
             (Acc::Count(n), v) => *n += v.as_i64().ok_or_else(bad)?,
             (Acc::Sum { sum, isum, int, any }, Value::List(xs)) if xs.len() == 4 => {
-                *sum += xs[0].as_f64().ok_or_else(bad)?;
+                sum.add(xs[0].as_f64().ok_or_else(bad)?);
                 *int &= xs[1].as_i64() == Some(1);
                 *any |= xs[2].as_i64() == Some(1);
                 *isum += xs[3].as_str().and_then(|s| s.parse::<i128>().ok()).ok_or_else(bad)?;
             }
             // An older shard's average is `[sum, n]`, its integers in `sum`.
             (Acc::Avg { sum, isum, n }, Value::List(xs)) if xs.len() == 2 || xs.len() == 3 => {
-                *sum += xs[0].as_f64().ok_or_else(bad)?;
+                sum.add(xs[0].as_f64().ok_or_else(bad)?);
                 *n += xs[1].as_i64().ok_or_else(bad)?;
                 if let Some(x) = xs.get(2) {
                     *isum += x.as_str().and_then(|s| s.parse::<i128>().ok()).ok_or_else(bad)?;
@@ -205,9 +253,37 @@ impl Acc {
                 a.add(v);
             }
             (Acc::Distinct(s), Value::List(xs)) => s.extend(xs.iter().map(Part::of)),
+            (Acc::Quantile(q), p) => q.merge(p).ok_or_else(bad)?,
             _ => return Err(bad()),
         }
         Ok(())
+    }
+
+    /// Adds another state of the same aggregate, over rows that come after
+    /// this one's (a later segment's): the state of all the rows.
+    pub fn absorb(&mut self, other: Acc) {
+        match (self, other) {
+            (Acc::Count(n), Acc::Count(m)) => *n += m,
+            (Acc::Sum { sum, isum, int, any }, Acc::Sum { sum: s2, isum: i2, int: n2, any: a2 }) => {
+                sum.merge(&s2);
+                *isum += i2;
+                *int &= n2;
+                *any |= a2;
+            }
+            (Acc::Avg { sum, isum, n }, Acc::Avg { sum: s2, isum: i2, n: n2 }) => {
+                sum.merge(&s2);
+                *isum += i2;
+                *n += n2;
+            }
+            // The earlier rows' extreme stays on a tie, as one pass keeps the first.
+            (a @ (Acc::Min(_) | Acc::Max(_)), Acc::Min(Some(v)) | Acc::Max(Some(v))) => {
+                a.add(&v);
+            }
+            (Acc::Min(_) | Acc::Max(_), _) => {}
+            (Acc::Distinct(s), Acc::Distinct(t)) => s.extend(t),
+            (Acc::Quantile(q), Acc::Quantile(r)) => q.absorb(*r),
+            (a, b) => unreachable!("absorbing {b:?} into {a:?}"),
+        }
     }
 }
 
@@ -279,11 +355,11 @@ pub fn needed(q: &Select) -> Vec<Projection> {
 
 /// Whether the query takes the general aggregate path (anything beyond
 /// counting the values of one keyword field, which facets answer).
-pub fn is_general(q: &Select, facet_field: impl Fn(usize) -> bool) -> bool {
+pub fn is_general(q: &Select, facet_field: impl Fn(Col) -> bool) -> bool {
     let facet = q.group_by.len() == 1
         && facet_field(q.group_by[0])
         && q.having.is_none()
-        && q.projection.iter().all(|(_, p)| matches!(p, Projection::Count) || *p == Projection::Field(q.group_by[0]))
+        && q.projection.iter().all(|(_, p)| matches!(p, Projection::Count) || *p == q.group_by[0].projection())
         && matches!(q.order, None | Some(OrderBy::Count { .. }) | Some(OrderBy::GroupValue { .. }));
     let plain_count = q.group_by.is_empty() && q.having.is_none() && q.projection.iter().all(|(_, p)| matches!(p, Projection::Count));
     !facet && !plain_count && (!q.group_by.is_empty() || q.projection.iter().any(|(_, p)| matches!(p, Projection::Agg { .. })) || q.having.is_some())
@@ -329,7 +405,13 @@ impl Groups {
 
     /// Shard-mode rows: the group values, then each needed aggregate's partial.
     pub fn partial_rows(self) -> Vec<Vec<Value>> {
-        self.map.into_iter().map(|(k, accs)| k.iter().map(Part::value).chain(accs.iter().map(Acc::partial)).collect()).collect()
+        self.map
+            .into_iter()
+            .map(|(k, mut accs)| {
+                accs.iter_mut().for_each(Acc::settle);
+                k.iter().map(Part::value).chain(accs.iter().map(Acc::partial)).collect()
+            })
+            .collect()
     }
 
     /// Adds shard-mode rows of `group_cols` group values followed by partials.
@@ -338,9 +420,12 @@ impl Groups {
             if r.len() != group_cols + needed.len() {
                 return Err(err("a shard's aggregate row has the wrong width"));
             }
-            let accs = self.entry(r[..group_cols].iter().map(Part::of).collect(), needed)?;
+            let charge = self.charge.clone();
+            let accs = self.entry(r[..group_cols].iter().map(Part::group).collect(), needed)?;
             for (a, v) in accs.iter_mut().zip(&r[group_cols..]) {
+                let before = a.held();
                 a.merge(v)?;
+                charge.add(a.held() - before)?;
             }
         }
         Ok(())
@@ -356,9 +441,10 @@ pub fn finish(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<V
     if q.group_by.is_empty() && groups.map.is_empty() {
         groups.map.insert(Vec::new(), needed.iter().map(Acc::new).collect());
     }
+    groups.map.values_mut().for_each(|accs| accs.iter_mut().for_each(Acc::settle));
     let value_of = |key: &[Part], accs: &[Acc], p: &Projection| -> Value {
         match p {
-            Projection::Field(f) => q.group_by.iter().position(|g| g == f).map_or(Value::Null, |i| key[i].value()),
+            Projection::Field(_) | Projection::Path(_) | Projection::Time(_) => q.group_by.iter().position(|g| g.projection() == *p).map_or(Value::Null, |i| key[i].value()),
             _ => needed.iter().position(|n| n == p).map_or(Value::Null, |i| accs[i].value()),
         }
     };
@@ -373,7 +459,38 @@ pub fn finish(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<V
             Expr::Output(i as u32)
         })
     });
-    let mut rows: Vec<(Vec<Part>, Vec<Acc>)> = Vec::with_capacity(groups.map.len());
+    let value_desc = matches!(q.tiebreak, Some(Tiebreak::GroupValue { desc: true }));
+    // Group values in the order values have (a part's order puts a
+    // negative double after a positive one, and a JSON path's values may be
+    // of several types); text and integers compared as they are.
+    // The group without a value (NULL) last in either direction, as rows
+    // without one are.
+    let by_key = |a: &[Part], b: &[Part]| {
+        for (x, y) in a.iter().zip(b) {
+            let o = match (x, y) {
+                (Part::Null, Part::Null) => continue,
+                (Part::Null, _) => return Ordering::Greater,
+                (_, Part::Null) => return Ordering::Less,
+                (Part::Str(x), Part::Str(y)) => x.cmp(y),
+                (Part::Int(x), Part::Int(y)) => x.cmp(y),
+                (x, y) => cmp(&x.value(), &y.value()),
+            };
+            if o.is_ne() {
+                return if value_desc { o.reverse() } else { o };
+            }
+        }
+        Ordering::Equal
+    };
+    let primary: Option<(Projection, bool)> = match &q.order {
+        Some(OrderBy::Count { desc }) => Some((Projection::Count, *desc)),
+        Some(OrderBy::GroupValue { desc }) => q.group_by.first().map(|g| (g.projection(), *desc)),
+        Some(OrderBy::Agg { what, desc }) => Some((what.clone(), *desc)),
+        // Without an ORDER BY, the largest groups first.
+        None if !q.group_by.is_empty() => Some((Projection::Count, true)),
+        _ => None,
+    };
+    // Each group with the value it is ordered by, read once.
+    let mut rows: Vec<(Value, Vec<Part>, Vec<Acc>)> = Vec::with_capacity(groups.map.len());
     for (k, a) in groups.map {
         let keep = match &having {
             None => true,
@@ -383,29 +500,20 @@ pub fn finish(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<V
             })?,
         };
         if keep {
-            rows.push((k, a));
+            let by = primary.as_ref().map_or(Value::Null, |(p, _)| value_of(&k, &a, p));
+            rows.push((by, k, a));
         }
     }
-    let value_desc = matches!(q.tiebreak, Some(Tiebreak::GroupValue { desc: true }));
-    let by_key = |a: &[Part], b: &[Part]| if value_desc { b.cmp(a) } else { a.cmp(b) };
-    let primary: Option<(Projection, bool)> = match &q.order {
-        Some(OrderBy::Count { desc }) => Some((Projection::Count, *desc)),
-        Some(OrderBy::GroupValue { desc }) => q.group_by.first().map(|g| (Projection::Field(*g), *desc)),
-        Some(OrderBy::Agg { what, desc }) => Some((what.clone(), *desc)),
-        // Without an ORDER BY, the largest groups first.
-        None if !q.group_by.is_empty() => Some((Projection::Count, true)),
-        _ => None,
-    };
-    rows.sort_by(|(ka, aa), (kb, ab)| {
+    rows.sort_by(|(va, ka, _), (vb, kb, _)| {
         let o = match &primary {
             // NULL (the group of rows without a value, an aggregate of no
             // values) last in either direction, as rows are.
-            Some((p, desc)) => match (value_of(ka, aa, p), value_of(kb, ab, p)) {
+            Some((_, desc)) => match (va, vb) {
                 (Value::Null, Value::Null) => Ordering::Equal,
                 (Value::Null, _) => Ordering::Greater,
                 (_, Value::Null) => Ordering::Less,
-                (x, y) if *desc => cmp(&x, &y).reverse(),
-                (x, y) => cmp(&x, &y),
+                (x, y) if *desc => cmp(x, y).reverse(),
+                (x, y) => cmp(x, y),
             },
             None => Ordering::Equal,
         };
@@ -415,7 +523,7 @@ pub fn finish(q: &Select, mut groups: Groups, needed: &[Projection]) -> Result<V
         .into_iter()
         .skip(q.offset)
         .take(q.limit.unwrap_or(usize::MAX))
-        .map(|(k, a)| q.projection.iter().map(|(_, p)| value_of(&k, &a, p)).collect())
+        .map(|(_, k, a)| q.projection.iter().map(|(_, p)| value_of(&k, &a, p)).collect())
         .collect())
 }
 
@@ -435,9 +543,9 @@ mod tests {
 
     #[test]
     fn accumulators_and_partials() {
-        let sum = Projection::Agg { func: AggFn::Sum, field: 0 };
-        let avg = Projection::Agg { func: AggFn::Avg, field: 0 };
-        let dis = Projection::Agg { func: AggFn::CountDistinct, field: 0 };
+        let sum = Projection::Agg { func: AggFn::Sum, of: Col::Field(0) };
+        let avg = Projection::Agg { func: AggFn::Avg, of: Col::Field(0) };
+        let dis = Projection::Agg { func: AggFn::CountDistinct, of: Col::Field(0) };
         let (mut a, mut b, mut c) = (Acc::new(&sum), Acc::new(&avg), Acc::new(&dis));
         for v in [Value::Int(2), Value::Int(4), Value::Null, Value::Int(4)] {
             a.add(&v);
@@ -463,7 +571,7 @@ mod tests {
     /// lost their low bits (`SUM(n) = 3` with `AVG(n) = 0.0`).
     #[test]
     fn avg_of_integers_sums_them_exactly() {
-        let avg = Projection::Agg { func: AggFn::Avg, field: 0 };
+        let avg = Projection::Agg { func: AggFn::Avg, of: Col::Field(0) };
         let big = (1i64 << 53) + 1;
         let values = [Value::Int(big), Value::Int(big), Value::Int(-2 * big + 2), Value::Int(1)];
         let mut a = Acc::new(&avg);

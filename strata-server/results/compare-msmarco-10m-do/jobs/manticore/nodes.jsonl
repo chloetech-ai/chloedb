@@ -1,0 +1,2 @@
+{"node": "manticore-d-a1-3eato1", "cpu": "Intel(R) Xeon(R) Platinum 8280 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 65853636, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 20.695, "sha256_1g_x_vcpus_s": 10.5, "disk_write_2g_s": 1.316, "copy_ms": 0, "time": 1793699072, "size": "m3-8vcpu-64gb"}
+{"node": "manticore-c-a1-3eatoz", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382188, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.102, "sha256_1g_x_vcpus_s": 11.484, "disk_write_2g_s": 2.004, "copy_ms": 622958, "time": 1793699700, "size": "c-8"}

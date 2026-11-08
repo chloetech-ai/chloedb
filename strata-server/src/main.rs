@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! strata-server --demo 20000 --db products.strata      # a demo catalogue, UI at http://127.0.0.1:7700
-//! strata-server --db my.strata                         # an existing database
+//! strata-server --db my.strata                         # an existing database, or a new one with no tables yet
 //! STRATA_TOKEN=... strata-server --db my.strata --listen 0.0.0.0:7700   # beyond loopback: a token
 //! strata-server --shards http://a:7701,http://b:7701   # a coordinator over shard servers
 //! strata-server --shards 'http://a0:7701|http://a1:7701,http://b0:7701|http://b1:7701'   # two replicas each
@@ -29,11 +29,12 @@ use strata_server::obs;
 use strata_server::server::{self, Options};
 
 #[derive(Parser)]
-#[command(about = "Strata over HTTP JSON and gRPC, with a query UI and an agent", args_conflicts_with_subcommands = true)]
+#[command(version, about = "Strata over HTTP JSON and gRPC, with a query UI and an agent", args_conflicts_with_subcommands = true)]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
-    /// The database to serve (created if missing, with --schema or --demo).
+    /// The database to serve. Created if missing: with --schema's table or
+    /// --demo's, else with no tables (CREATE TABLE and imports add them).
     #[arg(long)]
     db: Option<PathBuf>,
     /// Schema of a new database, as JSON.
@@ -126,6 +127,15 @@ struct Args {
     /// it serves no reads (0: no automatic failover; promote by hand).
     #[arg(long, default_value_t = 0)]
     failover_after_ms: u64,
+    /// On a database server: read every segment against its checksum every
+    /// this many seconds, while it serves, to find data damaged on disk
+    /// before a query or a failover does (0: only when asked, POST
+    /// /v1/admin/scrub). The first scrub starts within ten minutes.
+    #[arg(long, default_value_t = 86_400)]
+    scrub_every_s: u64,
+    /// The MiB a second a scheduled scrub reads at most.
+    #[arg(long, default_value_t = 64)]
+    scrub_mib_s: u64,
     /// Coordinate these shard servers (comma-separated gRPC URLs; replicas
     /// of one shard joined by '|'). Servers of protocol 9 hold the cluster
     /// map, which names every shard's servers: the coordinator then routes
@@ -144,17 +154,45 @@ struct Args {
     /// flagged "partial" (a request's "partial" overrides it).
     #[arg(long)]
     partial: bool,
+    /// With --shards: terms whose BM25 statistics the coordinator keeps
+    /// per shard copy, as of the copy's version, so that a BM25 query whose
+    /// terms are all kept skips the statistics round (0: none kept; every
+    /// such query asks every shard first).
+    #[arg(long, default_value_t = strata_server::coord::STATS_CACHE_TERMS)]
+    stats_cache_terms: usize,
     /// With --shards: the StrataCluster (namespace/name) that runs this
     /// coordinator on Kubernetes, read and scaled through the API server as
     /// the pod's service account (the operator sets it).
     #[arg(long, env = "STRATA_KUBE_CLUSTER")]
     kube_cluster: Option<String>,
+    /// With --db, --grpc and --shards: this shard server also coordinates
+    /// --shards, serving the coordinator's HTTP API at this address, in
+    /// the same process. The coordinator calls this server's own shard
+    /// (--local-shard) in-process, without a connection or HTTP/2, and the
+    /// others over the network.
+    #[arg(long)]
+    coordinator_listen: Option<String>,
+    /// With --coordinator-listen: the URL of --shards that is this server's
+    /// own gRPC address (http://strata-0.strata:7701).
+    #[arg(long)]
+    local_shard: Option<String>,
     /// HTTP address (API, metrics, UI).
     #[arg(long, default_value = "127.0.0.1:7700")]
     listen: String,
     /// gRPC address ("off" to disable).
     #[arg(long, default_value = "127.0.0.1:7701")]
     grpc: String,
+    /// Also serve an OpenSearch-compatible API (indexes, documents, _bulk,
+    /// _search with the Query DSL and aggregations) on this address, for
+    /// applications written for OpenSearch or Elasticsearch 7: the same
+    /// data, credentials and TLS as the HTTP API (a key or the token as a
+    /// Bearer token, or as Basic authentication's password).
+    #[arg(long, env = "STRATA_OPENSEARCH_LISTEN")]
+    opensearch_listen: Option<String>,
+    /// The version the OpenSearch API's root reports: OpenSearch 2's by
+    /// default; 7.10.2 for clients of Elasticsearch 7 that check it.
+    #[arg(long, env = "STRATA_OPENSEARCH_VERSION", default_value = strata_server::opensearch::VERSION_NUMBER)]
+    opensearch_version: String,
     /// Require "Authorization: Bearer TOKEN" on the API and on gRPC (the
     /// UI asks for it). Needed to listen beyond loopback.
     #[arg(long, env = "STRATA_TOKEN", hide_env_values = true)]
@@ -206,6 +244,12 @@ struct Args {
     /// (0: no limit).
     #[arg(long, default_value_t = 10_000)]
     max_result_window: usize,
+    /// The rows the open scrolls (`page_size`) of ordered queries, groups
+    /// and joins hold between them, or their places: a scroll that would
+    /// hold more is refused (0: only scrolls without ORDER BY, groups or
+    /// joins, which hold none).
+    #[arg(long, default_value_t = strata_server::service::MAX_SCROLL_ROWS)]
+    max_scroll_rows: usize,
     /// The most groups a GROUP BY may make before the query fails (0: no
     /// limit).
     #[arg(long, default_value_t = 65_536)]
@@ -224,6 +268,11 @@ struct Args {
     /// 0: no limit).
     #[arg(long)]
     query_memory_mb: Option<u64>,
+    /// Memory for filters kept between queries, in MiB: a filter a segment
+    /// sees twice is kept until less recently used ones need the room
+    /// (default: 64; 0: none kept).
+    #[arg(long)]
+    filter_cache_mb: Option<usize>,
     /// Write requests the server holds at once (embedding, waiting for the
     /// writer, or being applied); more are refused with 429 (0: no limit).
     #[arg(long, default_value_t = 1024)]
@@ -273,13 +322,18 @@ struct Args {
     /// How fast merges may write, in MiB/s (default: no limit).
     #[arg(long)]
     merge_write_mb_per_sec: Option<u64>,
+    /// The nice value merges run at, 0 to 19, on Linux (default 10): a
+    /// merge gets the cores reads and writes leave idle, and a tenth of a
+    /// busy one. 0 runs them at the priority of reads and writes.
+    #[arg(long)]
+    merge_nice: Option<i32>,
     /// Log queries and writes that take this many milliseconds or more,
     /// with their SQL (0: none).
     #[arg(long, default_value_t = 1000)]
     slow_ms: u64,
     /// The API keys' file (default: DB.keys.json beside --db; a
     /// coordinator keeps its keys in memory without it, and takes them
-    /// from its shards when it starts). Keys have scopes (read, write,
+    /// from its shards when it starts). Keys have scopes (feed, read, write,
     /// admin), are made in the UI or with POST /v1/admin/keys, and are
     /// passed on to the cluster's other servers.
     #[arg(long)]
@@ -306,6 +360,17 @@ struct Args {
     /// without it). No secrets: the clouds' keys stay in their own files.
     #[arg(long)]
     cloud_file: Option<PathBuf>,
+    /// The book of connections to other clusters that this server's command
+    /// center reaches (default: DB.hub.json beside --db). Their keys are
+    /// kept in the macOS Keychain or the Secret Service where there is one,
+    /// else in DB.hub-keys.json (mode 600); STRATA_HUB_SECRETS=file keeps
+    /// them in the file anyway.
+    #[arg(long)]
+    hub_file: Option<PathBuf>,
+    /// Who this hub's calls to other clusters say they come from (default:
+    /// $USER@host), in each cluster's audit log.
+    #[arg(long)]
+    hub_device: Option<String>,
     /// The alert rules' file, JSON (created when the rules are first
     /// edited; default rules in memory without it).
     #[arg(long)]
@@ -314,6 +379,10 @@ struct Args {
     /// {"text": ..., "alert": {...}} (a Slack incoming webhook takes it).
     #[arg(long)]
     alert_webhook: Option<String>,
+    /// Keep only the types of queries' parameters (not their values) in
+    /// the running and finished queries, statements and the log store.
+    #[arg(long, env = "STRATA_REDACT_PARAMS")]
+    redact_params: bool,
     /// What to log: a level (error, warn, info, debug, trace), or levels
     /// per module ("info,strata=debug"). debug logs every request.
     #[arg(long, env = "STRATA_LOG", default_value = "info")]
@@ -343,6 +412,65 @@ struct Args {
     /// the HTTP port).
     #[arg(long, env = "STRATA_NODE_NAME")]
     node_name: Option<String>,
+    /// The image repository whose versions the command center offers
+    /// (`GET /v1/admin/kube/versions`) when no StrataCluster names one.
+    #[arg(long, env = "STRATA_IMAGE_REPOSITORY")]
+    image_repository: Option<String>,
+    /// Once told to stop (SIGTERM, Ctrl-C), serve on this many
+    /// milliseconds with /readyz answering 503, so that a load balancer
+    /// (a Kubernetes Service) sends no more clients before the server
+    /// stops taking connections; then end the requests under way and stop.
+    #[arg(long, env = "STRATA_DRAIN_MS", default_value_t = 0)]
+    drain_ms: u64,
+    /// Do not count how often each document is retrieved and each key
+    /// asked for (the index inspector's reads; counted in memory by
+    /// default, cheaply: see docs/strata/server.md).
+    #[arg(long)]
+    no_read_stats: bool,
+    /// The cluster's name, as the command center shows it (default: the
+    /// StrataCluster, namespace/name, that runs a coordinator).
+    #[arg(long, env = "STRATA_CLUSTER_NAME")]
+    cluster_name: Option<String>,
+    /// The cluster's environment ("production", "staging"...): the
+    /// command center treats one starting with "prod", or none, as
+    /// production.
+    #[arg(long, env = "STRATA_ENVIRONMENT")]
+    environment: Option<String>,
+    /// Where people reach this server's command center
+    /// (https://strata.example.com), for links in alerts' webhooks.
+    #[arg(long, env = "STRATA_PUBLIC_URL")]
+    public_url: Option<String>,
+    /// The address other coordinators reach this coordinator's HTTP API at
+    /// (http://10.0.0.5:7700); it names itself so to its shards, which tell
+    /// the others. Default: $STRATA_POD_IP and the --listen port, else the
+    /// --listen address.
+    #[arg(long, env = "STRATA_PEER_URL")]
+    peer_url: Option<String>,
+    /// A coordinator's Contain rules' file, which they are kept in across a
+    /// restart. Default: contain.json beside --alerts' file (in memory
+    /// without either).
+    #[arg(long, env = "STRATA_CONTAIN")]
+    contain: Option<PathBuf>,
+    /// The share of queries that may fail on the server's side before
+    /// fleet health says so (GET /v1/health/fleet).
+    #[arg(long, default_value_t = 0.01)]
+    slo_error_ratio: f64,
+    /// The p99 latency of queries, in ms, above which fleet health says so.
+    #[arg(long, default_value_t = 250.0)]
+    slo_p99_ms: f64,
+    /// Proxies (addresses or networks, comma-separated: 10.0.0.0/8) whose
+    /// X-Forwarded-For names the client in the audit log; others' is
+    /// ignored.
+    #[arg(long, env = "STRATA_TRUST_PROXY", value_delimiter = ',')]
+    trust_proxy: Vec<String>,
+    /// An app the command center shows as a view, as name=url
+    /// (crawler=http://127.0.0.1:7800; repeatable, or comma-separated in
+    /// $STRATA_APPS): the server forwards /v1/apps/<name>/... to it.
+    #[arg(long = "app", env = "STRATA_APPS", value_delimiter = ',')]
+    apps: Vec<String>,
+    /// The token the server sends its apps (Authorization: Bearer).
+    #[arg(long, env = "STRATA_APP_TOKEN", hide_env_values = true)]
+    app_token: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -366,6 +494,22 @@ enum Command {
         /// ~/.local/share/strata/models).
         #[arg(long, env = "STRATA_MODELS")]
         models: Option<PathBuf>,
+    },
+    /// Serve the Model Context Protocol over stdin and stdout for an agent
+    /// such as Claude Code (`claude mcp add strata -- strata-server mcp
+    /// --url http://host:7700`): each message goes to the server's
+    /// /v1/mcp with the key, whose scope decides what the agent may change.
+    Mcp {
+        /// The server's HTTP URL (a coordinator, or a single server).
+        #[arg(long, env = "STRATA_URL", default_value = "http://127.0.0.1:7700")]
+        url: String,
+        /// The API key (or the server's token) to send as a bearer.
+        #[arg(long, env = "STRATA_KEY", hide_env_values = true)]
+        key: Option<String>,
+        /// A CA certificate (PEM) to trust for an https URL, beside the
+        /// system's.
+        #[arg(long)]
+        ca: Option<PathBuf>,
     },
     /// Make a running replica the primary of a new term (POST
     /// /v1/admin/promote), once a majority of its shard's copies vote for
@@ -396,6 +540,154 @@ enum Command {
         #[arg(long, env = "STRATA_TOKEN", hide_env_values = true)]
         token: Option<String>,
     },
+    /// Follow another cluster: copy its rows, tables and rank profiles into
+    /// this one, then keep applying its writes, a moment behind, until
+    /// stopped. While it follows, this cluster takes no writes but this
+    /// process's (POST /v1/admin/follow/stop ends that). It reads each of
+    /// the source's shards' feeds (shard protocol 14; 15 to catch up once
+    /// it falls behind a shard's log) and writes through this cluster's
+    /// coordinator; GET /v1/admin/follow there shows how far it is.
+    /// Started again, it goes on from where it was.
+    Follow {
+        /// The source cluster's HTTP URL: its coordinator, or a server of
+        /// its own, as https://east.example:7700.
+        #[arg(long)]
+        source: String,
+        /// A key of the source of the feed scope (or above).
+        #[arg(long, env = "STRATA_FOLLOW_KEY", hide_env_values = true)]
+        source_key: Option<String>,
+        /// A CA certificate (PEM) to check the source's TLS certificate by.
+        #[arg(long)]
+        source_ca: Option<PathBuf>,
+        /// This cluster's HTTP URL: its coordinator, or a server of its own.
+        #[arg(long)]
+        target: String,
+        /// This cluster's token (its --cluster-token, or the --token of a
+        /// server of its own).
+        #[arg(long, env = "STRATA_CLUSTER_TOKEN", hide_env_values = true)]
+        target_token: Option<String>,
+        /// A CA certificate (PEM) to check the target's TLS certificate by.
+        #[arg(long)]
+        target_ca: Option<PathBuf>,
+        /// The name this cluster knows the source by (letters, digits, '.',
+        /// '_' and '-'), which its marks and refusals name.
+        #[arg(long)]
+        name: String,
+        /// The most operations of one write.
+        #[arg(long, default_value_t = strata_server::cores::follow::BATCH)]
+        batch: usize,
+        /// Copy the source again from the start, whatever this cluster
+        /// kept: after a failover of the source lost transactions it
+        /// applied, or to follow again a cluster this one was promoted
+        /// from. (One that falls behind the source's log catches up by
+        /// itself.)
+        #[arg(long)]
+        copy: bool,
+        /// This cluster is the one the source was promoted from (a
+        /// switch-over): follow the source back from the promotion's
+        /// numbers, without a copy. Refused if this cluster took writes
+        /// the source never applied (then follow with --copy).
+        #[arg(long, conflicts_with = "copy")]
+        reverse: bool,
+        /// For a process started again by itself (the operator's follow
+        /// Deployment): when it was asked for, in ms since the epoch.
+        /// --copy is then done once (a copy begun since is resumed), and
+        /// once this cluster stopped following the source or was promoted
+        /// from it since, the process does not follow again: it waits,
+        /// saying so in GET /v1/admin/follow, until it is stopped.
+        #[arg(long, value_name = "MS")]
+        once: Option<u64>,
+    },
+    /// Follow a Postgres database by logical replication: copy the tables
+    /// of a publication into Strata (making the tables it lacks), then
+    /// keep applying their inserts, updates, deletes, truncates and new
+    /// columns, a moment behind, until stopped. Postgres needs wal_level =
+    /// logical and a publication (CREATE PUBLICATION strata FOR TABLE
+    /// ...); the user signs in with the REPLICATION attribute. What it
+    /// applied is kept in Strata's _sources (postgres/NAME/...), so that
+    /// started again it goes on from there and applies each change once.
+    FollowPostgres {
+        /// The database, as postgres://user:password@host:5432/database
+        /// (?sslmode=require and the like; PGPASSWORD gives a password the
+        /// URL leaves out).
+        #[arg(long, env = "STRATA_POSTGRES_URL", hide_env_values = true)]
+        source: String,
+        /// A CA certificate (PEM) to check the database's TLS certificate by.
+        #[arg(long)]
+        source_ca: Option<PathBuf>,
+        /// The publication whose tables it follows.
+        #[arg(long, default_value = "strata")]
+        publication: String,
+        /// The replication slot it reads and makes (strata_NAME by default).
+        #[arg(long)]
+        slot: Option<String>,
+        /// Strata's HTTP URL: a server, or a cluster's coordinator.
+        #[arg(long)]
+        target: String,
+        /// Strata's token (a server's --token, or a cluster's --cluster-token).
+        #[arg(long, env = "STRATA_CLUSTER_TOKEN", hide_env_values = true)]
+        target_token: Option<String>,
+        /// A CA certificate (PEM) to check the target's TLS certificate by.
+        #[arg(long)]
+        target_ca: Option<PathBuf>,
+        /// The name Strata knows the database by (letters, digits, '.', '_'
+        /// and '-'), which its marks in _sources name.
+        #[arg(long)]
+        name: String,
+        /// The most operations of one write while copying, and of the
+        /// transactions written together.
+        #[arg(long, default_value_t = strata_server::postgres::BATCH)]
+        batch: usize,
+        /// Copy the tables again from the start (with a new slot), whatever
+        /// Strata kept.
+        #[arg(long)]
+        copy: bool,
+        /// How many tables are copied at once.
+        #[arg(long, default_value_t = 4)]
+        copy_workers: usize,
+        /// Drop the replication slot and exit: stop following for good, so
+        /// that Postgres no longer keeps WAL for the follower.
+        #[arg(long)]
+        drop_slot: bool,
+    },
+    /// Switch clients over to a cluster that follows another: hold the
+    /// source's writes (POST /v1/admin/hold-writes there), wait until
+    /// the follower applied them all, and promote it
+    /// (POST /v1/admin/follow/promote), which then takes its own writes
+    /// having lost none. The old source can then follow it back
+    /// (strata-server follow --reverse). Prints the promotion.
+    SwitchOver {
+        /// The follower's HTTP URL: its coordinator, or a server of its own.
+        #[arg(long)]
+        target: String,
+        /// The follower's cluster token.
+        #[arg(long, env = "STRATA_CLUSTER_TOKEN", hide_env_values = true)]
+        target_token: Option<String>,
+        /// A CA certificate (PEM) to check the follower's TLS certificate by.
+        #[arg(long)]
+        target_ca: Option<PathBuf>,
+        /// The name the follower knows the source by.
+        #[arg(long)]
+        name: String,
+        /// The source's HTTP URL; by default the one its follow process
+        /// names.
+        #[arg(long)]
+        source: Option<String>,
+        /// An admin key of the source (or its token), which holds its writes.
+        #[arg(long, env = "STRATA_SOURCE_KEY", hide_env_values = true)]
+        source_key: Option<String>,
+        /// A CA certificate (PEM) to check the source's TLS certificate by.
+        #[arg(long)]
+        source_ca: Option<PathBuf>,
+        /// Promote though the source's writes cannot be held (it is gone):
+        /// the writes the follower did not apply are lost.
+        #[arg(long)]
+        unplanned: bool,
+        /// How long to wait for the follower to apply the source's writes,
+        /// in seconds.
+        #[arg(long, default_value_t = 120)]
+        wait_s: u64,
+    },
     /// Run the Kubernetes operator: it makes and changes the Strata clusters
     /// that StrataCluster resources describe (see deploy/README.md). In a
     /// pod it talks to the API server as its service account.
@@ -424,39 +716,51 @@ enum Command {
         #[arg(long)]
         kube_ca: Option<PathBuf>,
     },
-    /// Load rows from JSON Lines, JSON, CSV or TSV files, and the tables of
-    /// SQLite databases, into a database. A database that does not exist
-    /// is created with --schema, or from the first SQLite file's tables. A
-    /// SQLite table goes into the table of its name, created from SQLite's
-    /// declarations and values when missing. A server must not have the
-    /// database open (import through `POST /v1/import` instead).
+    /// Load rows from JSON Lines, JSON, CSV or TSV files, the tables of
+    /// SQLite databases, and Parquet files or directories of them (as Spark
+    /// writes), into a database. A file may be an s3:// URL: an object, or
+    /// every object under a prefix (configured by AWS_* variables). A
+    /// database that does not exist is created with --schema, or from the
+    /// first SQLite or Parquet file. A SQLite table goes into the table of
+    /// its name, and Parquet rows into --table (default: the file's name),
+    /// created from the files' types and values when missing. A server must
+    /// not have the database open (import through `POST /v1/import`
+    /// instead).
     Import {
         /// The database.
         #[arg(long)]
         db: PathBuf,
         /// Schema of a new database, as JSON. With SQLite files, schemas
         /// for the tables it creates, in place of the ones made from
-        /// SQLite's: one, an array, or the output of --plan, edited.
+        /// SQLite's: one, an array, or the output of --plan, edited. With
+        /// Parquet files, the schema of the table they create (the output
+        /// of --plan, edited).
         #[arg(long)]
         schema: Option<PathBuf>,
-        /// The table the rows go to (default: the first). A SQLite file's
-        /// tables go to the tables of their names.
+        /// The table the rows go to (default: the first; for Parquet, the
+        /// table an export kept in the file, else the file's name). A
+        /// SQLite file's tables go to the tables of their names.
         #[arg(long)]
         table: Option<String>,
-        /// The files' format: jsonl, json, csv, tsv or sqlite (default:
-        /// SQLite for a SQLite database, else from each file's extension).
+        /// The files' format: jsonl, json, csv, tsv, sqlite or parquet
+        /// (default: SQLite or Parquet when the file or directory is one,
+        /// else from each file's extension).
         #[arg(long)]
         format: Option<String>,
         /// SQLite: import only these tables (comma-separated).
         #[arg(long, value_delimiter = ',')]
         tables: Vec<String>,
-        /// SQLite: keep BLOB columns as base64 text, rather than leave
-        /// them out.
+        /// Parquet: the column that is the key of a table the import
+        /// creates, in place of one named id; "" for no key.
+        #[arg(long)]
+        key: Option<String>,
+        /// SQLite and Parquet: keep binary columns as base64 text, rather
+        /// than leave them out.
         #[arg(long)]
         blobs_base64: bool,
-        /// SQLite: print what the import would do as JSON (each table's
-        /// schema, its columns and what is left out), and write nothing.
-        /// Edit it and give it back with --schema.
+        /// SQLite and Parquet: print what the import would do as JSON (each
+        /// table's schema, its columns and what is left out), and write
+        /// nothing. Edit it and give it back with --schema.
         #[arg(long)]
         plan: bool,
         /// Where embedded fields' models are (see `fetch-model`).
@@ -465,15 +769,18 @@ enum Command {
         /// Create a new database as a directory of segment files.
         #[arg(long)]
         directory: bool,
-        /// The files, loaded in order.
+        /// The files (or s3:// URLs), loaded in order.
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
-    /// Write a database's tables to a new SQLite file, from one snapshot:
-    /// the rows, keys, references, NOT NULL and DEFAULT, a B-tree index on
+    /// Write a database's tables, from one snapshot, to a new SQLite file
+    /// (the rows, keys, references, NOT NULL and DEFAULT, a B-tree index on
     /// each indexed KEYWORD, INT, FLOAT, BOOL and TIMESTAMP field, an FTS5
     /// index over each table's TEXT fields, and the Strata schemas, which
-    /// `import` restores. A server must not have the database open.
+    /// `import` restores), or to Parquet: a `.parquet` file for one table,
+    /// else a directory of `<table>.parquet` files, each keeping its Strata
+    /// schema. OUT may be an s3:// URL. A server must not have the database
+    /// open.
     Export {
         /// The database.
         #[arg(long)]
@@ -481,18 +788,23 @@ enum Command {
         /// Only these tables (comma-separated).
         #[arg(long, value_delimiter = ',')]
         tables: Vec<String>,
-        /// No FTS5 indexes.
+        /// sqlite or parquet (default: Parquet when OUT ends in .parquet
+        /// or /, else SQLite).
+        #[arg(long)]
+        format: Option<String>,
+        /// SQLite: no FTS5 indexes.
         #[arg(long)]
         no_fts: bool,
-        /// No B-tree indexes.
+        /// SQLite: no B-tree indexes.
         #[arg(long)]
         no_indexes: bool,
-        /// Leave out the table that keeps the Strata schemas
-        /// (`_strata_tables`).
+        /// Leave out the Strata schemas: SQLite's table `_strata_tables`,
+        /// each Parquet file's `strata.schema` metadata.
         #[arg(long)]
         no_schemas: bool,
-        /// The SQLite file to write; it must not exist.
-        out: PathBuf,
+        /// The file or directory (or s3:// URL) to write; it must not
+        /// exist.
+        out: String,
     },
 }
 
@@ -528,10 +840,87 @@ async fn main() {
             }
             return;
         }
+        Some(Command::Mcp { url, key, ca }) => {
+            let ca = match ca.as_ref().map(std::fs::read).transpose() {
+                Ok(c) => c,
+                Err(e) => fail(&format!("--ca: {e}")),
+            };
+            if let Err(e) = strata_server::mcp::stdio(url, key.as_deref(), ca).await {
+                fail(&e);
+            }
+            return;
+        }
         Some(Command::Promote { url, replicas, write_acks, force, token }) => {
             match server::promote(url, replicas, write_acks, *force, token.as_deref()).await {
                 Ok(j) => println!("{}", serde_json::to_string_pretty(&j).unwrap_or_default()),
                 Err(e) => fail(&e),
+            }
+            return;
+        }
+        Some(Command::Follow { source, source_key, source_ca, target, target_token, target_ca, name, batch, copy, reverse, once }) => {
+            let read = |p: &Option<PathBuf>, what: &str| p.as_ref().map(|p| std::fs::read(p).unwrap_or_else(|e| fail(&format!("{what} {}: {e}", p.display()))));
+            let o = strata_server::follow::Options {
+                source: source.clone(),
+                source_key: source_key.clone(),
+                source_ca: read(source_ca, "--source-ca"),
+                target: target.clone(),
+                target_token: target_token.clone(),
+                target_ca: read(target_ca, "--target-ca"),
+                name: name.clone(),
+                batch: *batch,
+                copy: *copy,
+                reverse: *reverse,
+                once: *once,
+            };
+            if let Err(e) = strata_server::follow::run(o).await {
+                fail(&format!("follow {name}: {e}"));
+            }
+            return;
+        }
+        Some(Command::FollowPostgres { source, source_ca, publication, slot, target, target_token, target_ca, name, batch, copy, copy_workers, drop_slot }) => {
+            let read = |p: &Option<PathBuf>, what: &str| p.as_ref().map(|p| std::fs::read(p).unwrap_or_else(|e| fail(&format!("{what} {}: {e}", p.display()))));
+            let o = strata_server::postgres::Options {
+                source: source.clone(),
+                source_ca: read(source_ca, "--source-ca"),
+                publication: publication.clone(),
+                slot: slot.clone(),
+                target: target.clone(),
+                target_token: target_token.clone(),
+                target_ca: read(target_ca, "--target-ca"),
+                name: name.clone(),
+                batch: (*batch).max(1),
+                copy: *copy,
+                copy_workers: *copy_workers,
+                crash_after: None,
+            };
+            if *drop_slot {
+                match strata_server::postgres::drop_slot(o).await {
+                    Ok(j) => println!("{}", serde_json::to_string_pretty(&j).unwrap_or_default()),
+                    Err(e) => fail(&format!("follow-postgres {name}: {e}")),
+                }
+                return;
+            }
+            if let Err(e) = strata_server::postgres::run(o).await {
+                fail(&format!("follow-postgres {name}: {e}"));
+            }
+            return;
+        }
+        Some(Command::SwitchOver { target, target_token, target_ca, name, source, source_key, source_ca, unplanned, wait_s }) => {
+            let read = |p: &Option<PathBuf>, what: &str| p.as_ref().map(|p| std::fs::read(p).unwrap_or_else(|e| fail(&format!("{what} {}: {e}", p.display()))));
+            let o = strata_server::follow::SwitchOptions {
+                target: target.clone(),
+                target_token: target_token.clone(),
+                target_ca: read(target_ca, "--target-ca"),
+                name: name.clone(),
+                source: source.clone(),
+                source_key: source_key.clone(),
+                source_ca: read(source_ca, "--source-ca"),
+                unplanned: *unplanned,
+                wait: std::time::Duration::from_secs(*wait_s),
+            };
+            match strata_server::follow::switch_over(o).await {
+                Ok(j) => println!("{}", serde_json::to_string_pretty(&j).unwrap_or_default()),
+                Err(e) => fail(&format!("switch-over to {target}: {e}")),
             }
             return;
         }
@@ -554,18 +943,33 @@ async fn main() {
             }
             return;
         }
-        Some(Command::Import { db, schema, table, format, models, directory, files, tables, blobs_base64, plan }) => {
-            let sqlite = server::SqliteImport { format: format.as_deref().is_some_and(|f| f.eq_ignore_ascii_case("sqlite")), tables: tables.clone(), blobs_base64: *blobs_base64, plan: *plan };
-            let format = format.as_deref().filter(|_| !sqlite.format).map(|f| strata::ingest::Format::parse(f).unwrap_or_else(|| fail(&format!("unknown --format {f}: jsonl, json, csv, tsv or sqlite"))));
+        Some(Command::Import { db, schema, table, format, models, directory, files, tables, key, blobs_base64, plan }) => {
+            let named = |n: &str| format.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(n));
+            let files_of = server::FileImport { sqlite: named("sqlite"), parquet: named("parquet"), tables: tables.clone(), key: key.clone(), blobs_base64: *blobs_base64, plan: *plan };
+            let format = format
+                .as_deref()
+                .filter(|_| !files_of.sqlite && !files_of.parquet)
+                .map(|f| strata::ingest::Format::parse(f).unwrap_or_else(|| fail(&format!("unknown --format {f}: jsonl, json, csv, tsv, sqlite or parquet"))));
             let models = models.clone().unwrap_or_else(strata::embed::models_dir);
-            if let Err(e) = server::import_files(db, schema.as_deref(), table.as_deref(), &models, format, *directory, files, sqlite) {
+            if let Err(e) = server::import_files(db, schema.as_deref(), table.as_deref(), &models, format, *directory, files, files_of) {
                 fail(&e);
             }
             return;
         }
-        Some(Command::Export { db, tables, no_fts, no_indexes, no_schemas, out }) => {
-            let opts = strata::sqlite::ExportOptions { tables: tables.clone(), fts: !no_fts, indexes: !no_indexes, meta: !no_schemas };
-            if let Err(e) = server::export_sqlite(db, out, &opts) {
+        Some(Command::Export { db, tables, format, no_fts, no_indexes, no_schemas, out }) => {
+            let parquet = match format.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                Some("parquet") => true,
+                Some("sqlite") => false,
+                Some(f) => fail(&format!("unknown --format {f}: sqlite or parquet")),
+                None => out.to_ascii_lowercase().ends_with(".parquet") || out.ends_with('/'),
+            };
+            let r = if parquet {
+                server::export_parquet(db, out, &server::ParquetExport { tables: tables.clone(), meta: !no_schemas })
+            } else {
+                let opts = strata::sqlite::ExportOptions { tables: tables.clone(), fts: !no_fts, indexes: !no_indexes, meta: !no_schemas };
+                server::export_sqlite(db, out, &opts)
+            };
+            if let Err(e) = r {
                 fail(&e);
             }
             return;
@@ -593,6 +997,7 @@ async fn main() {
     if a.replica && a.grpc == "off" {
         fail("a replica takes its primary's writes over gRPC: --replica needs --grpc");
     }
+    strata_server::telemetry::set_redact_params(a.redact_params);
     let o = Options {
         db: a.db,
         schema: a.schema,
@@ -610,12 +1015,15 @@ async fn main() {
         ship_log_mb: a.ship_log_mb,
         verify_every_s: a.verify_every_s,
         failover_after_ms: a.failover_after_ms,
+        scrub_every_s: a.scrub_every_s,
+        scrub_mib_s: a.scrub_mib_s,
         shards: a.shards,
         kube_cluster: a.kube_cluster.filter(|c| !c.is_empty()),
         coord: strata_server::coord::CoordOptions {
             hedge: std::time::Duration::from_millis(a.hedge_ms),
             shard_timeout: (a.shard_timeout_ms > 0).then(|| std::time::Duration::from_millis(a.shard_timeout_ms)),
             partial: a.partial,
+            stats_cache_terms: a.stats_cache_terms,
             token: cluster.clone().or_else(|| token.clone()),
             ca: a.shard_ca.as_ref().map(read),
             slots: a.slot_map.as_ref().map(|p| {
@@ -628,9 +1036,11 @@ async fn main() {
         max_timeout_ms: a.max_timeout_ms,
         max_concurrent: a.max_concurrent,
         max_result_window: a.max_result_window,
+        max_scroll_rows: Some(a.max_scroll_rows),
         max_groups: a.max_groups,
         max_rerank: a.max_rerank,
         query_memory_mb: a.query_memory_mb,
+        filter_cache_mb: a.filter_cache_mb,
         max_queued_writes: a.max_queued_writes,
         max_body_mb: a.max_body_mb,
         model: a.model,
@@ -652,6 +1062,9 @@ async fn main() {
         aws_file: a.aws_file,
         digitalocean_file: a.digitalocean_file,
         cloud_file: a.cloud_file,
+        hub_file: a.hub_file,
+        hub_device: a.hub_device,
+        contain: a.contain.clone().or_else(|| a.alerts.as_ref().map(|p| p.with_file_name("contain.json"))),
         alerts: a.alerts,
         alert_webhook: a.alert_webhook.filter(|u| !u.is_empty()),
         log_store: a.log_store.as_deref().map(|p| (p != "off").then(|| PathBuf::from(p))),
@@ -662,18 +1075,63 @@ async fn main() {
         log_retain: std::time::Duration::from_secs(strata::schema::Retain::parse_period(&a.log_retain).unwrap_or_else(|e| fail(&format!("--log-retain: {e}"))) as u64),
         log_store_bytes: a.log_store_mb << 20,
         log_queries_per_sec: a.log_queries,
+        cluster_name: a.cluster_name.clone(),
+        environment: a.environment.clone(),
+        public_url: a.public_url.clone(),
+        slo_error_ratio: Some(a.slo_error_ratio),
+        slo_p99_ms: Some(a.slo_p99_ms),
+        trust_proxy: a.trust_proxy.clone(),
+        apps: a.apps.clone(),
+        app_token: a.app_token.clone(),
+        node_name_given: a.node_name.clone().filter(|n| !n.is_empty()),
+        image_repository: a.image_repository.clone().filter(|r| !r.trim().is_empty()),
         merger: {
             let d = strata::storage::MergerOptions::default();
             strata::storage::MergerOptions {
                 threads: a.merge_threads.unwrap_or(d.threads),
                 memory_budget: a.merge_memory_mb.map(|m| m << 20),
                 write_bytes_per_sec: a.merge_write_mb_per_sec.map(|m| m << 20),
+                nice: a.merge_nice.unwrap_or(d.nice),
                 ..d
             }
         },
     };
+    // --coordinator-listen: a shard server with a coordinator beside it, in
+    // this process. The coordinator keeps none of the files a server may
+    // be given (the shard does), nor a part in replication.
+    let beside = a.coordinator_listen.clone().map(|addr| {
+        let local = match (&o.db, a.grpc.as_str(), o.shards.is_empty(), &a.local_shard) {
+            (Some(_), g, false, Some(url)) if g != "off" && o.shards.iter().any(|s| s.split('|').any(|u| u == url)) => url.clone(),
+            _ => fail("--coordinator-listen serves a coordinator beside this shard server: it needs --db, --grpc, --shards and --local-shard, the URL of --shards that is this server"),
+        };
+        let co = Options {
+            db: None,
+            replicas: Vec::new(),
+            replica: false,
+            promote: false,
+            seq_no: false,
+            keys: None,
+            audit_log: None,
+            aws_file: None,
+            digitalocean_file: None,
+            cloud_file: None,
+            hub_file: None,
+            alerts: None,
+            contain: None,
+            backup_dir: None,
+            log_store: None,
+            ..o.clone()
+        };
+        (addr, local, co)
+    });
+    let o = match beside {
+        Some(_) => Options { shards: Vec::new(), ..o },
+        None => o,
+    };
     let coordinator = !o.shards.is_empty();
+    server::set_drain(std::time::Duration::from_millis(a.drain_ms));
     let svc = server::service(&o).await.unwrap_or_else(|e| fail(&e));
+    svc.reads.set_on(!a.no_read_stats);
     if token.is_none() && cluster.is_none() && !svc.keys.is_empty() && !svc.keys.managed() {
         tracing::warn!("this server has no token and no admin key that never expires: once its admin keys expire, only starting it with --token manages it. Make an admin key without expires_days");
     }
@@ -692,6 +1150,11 @@ async fn main() {
     };
     let (http, ip) = bind(&a.listen).await;
     let access = Access { token: token.clone(), cluster: cluster.clone(), hosts: auth::allowed_hosts(ip, &a.allow_host), tls };
+    // fleet: a coordinator names itself to its shards, which tell the others.
+    if coordinator {
+        let at = http.local_addr().unwrap_or_else(|e| fail(&format!("listen on {}: {e}", a.listen)));
+        strata_server::peers::start(&svc, strata_server::peers::own_url(a.peer_url.as_deref(), at, access.tls.is_some()));
+    }
     let h = svc.health().await;
     tracing::info!(table = %svc.schema.table, rows = %h["docs"], segments = %h["segments"], version = env!("CARGO_PKG_VERSION"), simd = %strata::simd::describe(), "serving");
     let scheme = if access.tls.is_some() { "https" } else { "http" };
@@ -712,6 +1175,42 @@ async fn main() {
             }
         }));
     }
+    // The OpenSearch API answers for what this process serves: beside a
+    // coordinator (--coordinator-listen), for the cluster, once the
+    // coordinator is up.
+    let mut opensearch = None;
+    if let Some(addr) = &a.opensearch_listen {
+        let (l, ip) = bind(addr).await;
+        let scheme = if access.tls.is_some() { "https" } else { "http" };
+        tracing::info!("OpenSearch API on {scheme}://{addr}/ (version {})", a.opensearch_version);
+        opensearch = Some((l, Access { hosts: auth::allowed_hosts(ip, &a.allow_host), ..access.clone() }, a.opensearch_version.clone()));
+    }
+    if beside.is_none() {
+        if let Some((l, os_access, version)) = opensearch.take() {
+            tasks.push(tokio::spawn(serve_opensearch(svc.clone(), l, os_access, version)));
+        }
+    }
+    if let Some((addr, url, mut co)) = beside {
+        co.coord.local = Some(strata_server::coord::LocalShard { url, service: server::grpc_service(svc.clone(), &access) });
+        let (l, cip) = bind(&addr).await;
+        let access = Access { hosts: auth::allowed_hosts(cip, &a.allow_host), ..access.clone() };
+        let (peer, no_read_stats) = (a.peer_url.clone(), a.no_read_stats);
+        // Its shards, this one among them, may answer only later: the
+        // shard serves meanwhile.
+        tasks.push(tokio::spawn(async move {
+            let c = server::service(&co).await.unwrap_or_else(|e| fail(&format!("the coordinator: {e}")));
+            c.reads.set_on(!no_read_stats);
+            let at = l.local_addr().unwrap_or_else(|e| fail(&format!("listen on {addr}: {e}")));
+            strata_server::peers::start(&c, strata_server::peers::own_url(peer.as_deref(), at, access.tls.is_some()));
+            tracing::info!("coordinator HTTP on {addr}, its own shard in-process");
+            if let Some((ol, os_access, version)) = opensearch {
+                tokio::spawn(serve_opensearch(c.clone(), ol, os_access, version));
+            }
+            if let Err(e) = server::serve_http(c, l, access).await {
+                fail(&format!("coordinator HTTP server: {e}"));
+            }
+        }));
+    }
     let store = svc.log_store.clone();
     if let Err(e) = server::serve_http(svc, http, access).await {
         fail(&format!("HTTP server: {e}"));
@@ -723,6 +1222,13 @@ async fn main() {
     if let Some(s) = store {
         tracing::info!("stopping");
         s.close();
+    }
+}
+
+/// The OpenSearch API of `svc` ([`server::serve_opensearch`]).
+async fn serve_opensearch(svc: std::sync::Arc<strata_server::service::Service>, l: tokio::net::TcpListener, access: Access, version: String) {
+    if let Err(e) = server::serve_opensearch(svc, l, access, &version).await {
+        tracing::error!(error = %e, "OpenSearch API stopped");
     }
 }
 

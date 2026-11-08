@@ -1,0 +1,171 @@
+service/typesense created
+pod/typesense-0 created
+pod/typesense-0 condition met
+job.batch/load-typesense created
+typesense: index created in 0.0 s
+typesense: 25000 documents sent, 25 s
+typesense: 50000 documents sent, 55 s
+typesense: 75000 documents sent, 87 s
+typesense: 100000 documents sent, 118 s
+typesense: 125000 documents sent, 149 s
+typesense: 150000 documents sent, 180 s
+typesense: 175000 documents sent, 214 s
+typesense: 200000 documents sent, 247 s
+typesense: 225000 documents sent, 277 s
+typesense: 250000 documents sent, 305 s
+typesense: 275000 documents sent, 336 s
+typesense: 300000 documents sent, 370 s
+typesense: 325000 documents sent, 404 s
+typesense: 350000 documents sent, 437 s
+typesense: 375000 documents sent, 470 s
+typesense: 400000 documents sent, 498 s
+typesense: 425000 documents sent, 529 s
+typesense: 450000 documents sent, 563 s
+typesense: 475000 documents sent, 598 s
+typesense: 500000 documents sent, 634 s
+typesense: 525000 documents sent, 670 s
+typesense: 550000 documents sent, 703 s
+typesense: 575000 documents sent, 737 s
+typesense: 600000 documents sent, 770 s
+typesense: 625000 documents sent, 803 s
+typesense: 650000 documents sent, 836 s
+typesense: 675000 documents sent, 871 s
+typesense: 700000 documents sent, 905 s
+typesense: 725000 documents sent, 940 s
+typesense: 750000 documents sent, 974 s
+typesense: 775000 documents sent, 1009 s
+read tcp 127.0.0.1:55850->127.0.0.1:36661: read: connection reset by peer
+error: read tcp 127.0.0.1:55850->127.0.0.1:36661: read: connection reset by peer
+typesense: 800000 documents sent, 1044 s
+typesense: 825000 documents sent, 1080 s
+typesense: 850000 documents sent, 1116 s
+typesense: 875000 documents sent, 1153 s
+typesense: 900000 documents sent, 1192 s
+typesense: 925000 documents sent, 1229 s
+typesense: 950000 documents sent, 1264 s
+typesense: 975000 documents sent, 1301 s
+typesense: 1000000 documents sent, 1336 s
+typesense: 1000000 documents (10.8 GB) sent in 1336.4 s
+typesense: indexed 0.0 s after the last write; 1336.4 s in all
+wrote /data/compare/load-typesense.json
+job.batch/run-typesense created
+typesense bm25                     c=1        130 q/s  p50   4.776 ms  p90  16.215 ms  p99  54.179 ms  errors 0
+typesense bm25                     c=4        424 q/s  p50   6.039 ms  p90  19.958 ms  p99  64.702 ms  errors 0
+typesense bm25                     c=16       638 q/s  p50  15.976 ms  p90  52.418 ms  p99 165.569 ms  errors 0
+typesense bm25 + filter            c=1         19 q/s  p50  51.353 ms  p90  57.647 ms  p99  93.319 ms  errors 0
+typesense bm25 + filter            c=4         62 q/s  p50  61.086 ms  p90  80.531 ms  p99 129.569 ms  errors 0
+typesense bm25 + filter            c=16        86 q/s  p50 187.884 ms  p90 233.806 ms  p99 358.684 ms  errors 0
+typesense vector                   c=1        205 q/s  p50   4.831 ms  p90   5.213 ms  p99   5.839 ms  errors 0
+typesense vector                   c=4        657 q/s  p50   5.817 ms  p90   7.784 ms  p99  10.132 ms  errors 0
+typesense vector                   c=16       999 q/s  p50  15.233 ms  p90  24.841 ms  p99  33.592 ms  errors 0
+typesense vector + filter          c=1         36 q/s  p50  27.848 ms  p90  29.269 ms  p99  32.074 ms  errors 0
+typesense vector + filter          c=4        120 q/s  p50  32.047 ms  p90  41.699 ms  p99  46.359 ms  errors 0
+typesense vector + filter          c=16       166 q/s  p50 101.330 ms  p90 116.781 ms  p99 140.219 ms  errors 0
+typesense hybrid (RRF)             c=1         97 q/s  p50   6.891 ms  p90  18.619 ms  p99  54.839 ms  errors 0
+typesense hybrid (RRF)             c=4        322 q/s  p50   8.761 ms  p90  21.929 ms  p99  71.938 ms  errors 0
+typesense hybrid (RRF)             c=16       475 q/s  p50  24.118 ms  p90  59.060 ms  p99 180.699 ms  errors 0
+typesense hybrid (weighted)        c=1         97 q/s  p50   6.842 ms  p90  18.627 ms  p99  56.004 ms  errors 0
+typesense hybrid (weighted)        c=4        325 q/s  p50   8.697 ms  p90  21.859 ms  p99  69.535 ms  errors 0
+typesense hybrid (weighted)        c=16       485 q/s  p50  23.388 ms  p90  57.338 ms  p99 180.528 ms  errors 0
+typesense boosted (bm25 × decay)   unavailable: no function scores: decay functions only sort (before or after the text match), they do not multiply it
+typesense facet                    c=1         93 q/s  p50   4.047 ms  p90  24.436 ms  p99 100.650 ms  errors 0
+typesense facet                    c=4        262 q/s  p50   6.292 ms  p90  35.645 ms  p99 136.786 ms  errors 0
+typesense facet                    c=16       354 q/s  p50  24.755 ms  p90  96.591 ms  p99 331.899 ms  errors 0
+typesense key lookup               c=1       1278 q/s  p50   0.766 ms  p90   0.868 ms  p99   1.070 ms  errors 0
+typesense key lookup               c=4       4274 q/s  p50   0.894 ms  p90   1.200 ms  p99   1.599 ms  errors 0
+typesense key lookup               c=16      9943 q/s  p50   1.514 ms  p90   2.212 ms  p99   2.880 ms  errors 0
+typesense phrase                   c=1        427 q/s  p50   0.601 ms  p90   4.926 ms  p99  26.019 ms  errors 0
+typesense phrase                   c=4       1408 q/s  p50   0.604 ms  p90   6.616 ms  p99  33.175 ms  errors 0
+typesense phrase                   c=16      2520 q/s  p50   2.717 ms  p90  13.879 ms  p99  59.771 ms  errors 0
+typesense typo                     c=1         55 q/s  p50   6.536 ms  p90  57.730 ms  p99 146.286 ms  errors 0
+typesense typo                     c=4        177 q/s  p50   8.564 ms  p90  70.127 ms  p99 163.330 ms  errors 0
+typesense typo                     c=16       253 q/s  p50  28.339 ms  p90 171.109 ms  p99 448.842 ms  errors 0
+typesense prefix                   c=1         78 q/s  p50   8.454 ms  p90  24.714 ms  p99  73.252 ms  errors 0
+typesense prefix                   c=4        251 q/s  p50  10.556 ms  p90  31.144 ms  p99  94.771 ms  errors 0
+typesense prefix                   c=16       364 q/s  p50  30.886 ms  p90  84.620 ms  p99 257.548 ms  errors 0
+typesense similar items            c=1         10 q/s  p50 105.014 ms  p90 108.052 ms  p99 111.188 ms  errors 0
+typesense similar items            c=4         33 q/s  p50 116.681 ms  p90 146.698 ms  p99 157.536 ms  errors 0
+typesense similar items            c=16        45 q/s  p50 367.862 ms  p90 415.650 ms  p99 517.860 ms  errors 0
+typesense sql aggregate            unavailable: no grouped aggregates: facets count values, and facet stats cover the whole result, not each group
+wrote /data/compare/run-typesense.json
+job.batch/run-typesense-pass2 created
+typesense-pass2 bm25                     c=1        130 q/s  p50   4.837 ms  p90  15.919 ms  p99  51.979 ms  errors 0
+typesense-pass2 bm25                     c=4        426 q/s  p50   6.102 ms  p90  19.551 ms  p99  65.494 ms  errors 0
+typesense-pass2 bm25                     c=16       638 q/s  p50  16.205 ms  p90  50.293 ms  p99 163.895 ms  errors 0
+typesense-pass2 bm25 + filter            c=1         19 q/s  p50  50.943 ms  p90  55.794 ms  p99  97.311 ms  errors 0
+typesense-pass2 bm25 + filter            c=4         63 q/s  p50  61.091 ms  p90  80.415 ms  p99 121.200 ms  errors 0
+typesense-pass2 bm25 + filter            c=16        88 q/s  p50 185.998 ms  p90 239.997 ms  p99 370.154 ms  errors 0
+typesense-pass2 vector                   c=1        208 q/s  p50   4.779 ms  p90   5.155 ms  p99   5.688 ms  errors 0
+typesense-pass2 vector                   c=4        661 q/s  p50   5.784 ms  p90   7.716 ms  p99  10.054 ms  errors 0
+typesense-pass2 vector                   c=16       995 q/s  p50  15.367 ms  p90  24.757 ms  p99  34.032 ms  errors 0
+typesense-pass2 vector + filter          c=1         36 q/s  p50  27.711 ms  p90  29.451 ms  p99  31.646 ms  errors 0
+typesense-pass2 vector + filter          c=4        119 q/s  p50  32.640 ms  p90  41.556 ms  p99  46.746 ms  errors 0
+typesense-pass2 vector + filter          c=16       166 q/s  p50  99.813 ms  p90 143.052 ms  p99 177.235 ms  errors 0
+typesense-pass2 hybrid (RRF)             c=1         97 q/s  p50   6.931 ms  p90  18.532 ms  p99  55.252 ms  errors 0
+typesense-pass2 hybrid (RRF)             c=4        319 q/s  p50   8.780 ms  p90  21.760 ms  p99  70.678 ms  errors 0
+typesense-pass2 hybrid (RRF)             c=16       479 q/s  p50  23.762 ms  p90  58.837 ms  p99 197.154 ms  errors 0
+typesense-pass2 hybrid (weighted)        c=1         98 q/s  p50   6.856 ms  p90  18.120 ms  p99  55.698 ms  errors 0
+typesense-pass2 hybrid (weighted)        c=4        319 q/s  p50   8.838 ms  p90  21.855 ms  p99  71.286 ms  errors 0
+typesense-pass2 hybrid (weighted)        c=16       481 q/s  p50  23.871 ms  p90  57.810 ms  p99 195.309 ms  errors 0
+typesense-pass2 boosted (bm25 × decay)   unavailable: no function scores: decay functions only sort (before or after the text match), they do not multiply it
+typesense-pass2 facet                    c=1         91 q/s  p50   4.185 ms  p90  23.966 ms  p99 103.681 ms  errors 0
+typesense-pass2 facet                    c=4        260 q/s  p50   6.444 ms  p90  36.440 ms  p99 136.202 ms  errors 0
+typesense-pass2 facet                    c=16       359 q/s  p50  24.950 ms  p90  95.748 ms  p99 328.139 ms  errors 0
+typesense-pass2 key lookup               c=1       1267 q/s  p50   0.769 ms  p90   0.868 ms  p99   1.116 ms  errors 0
+typesense-pass2 key lookup               c=4       4262 q/s  p50   0.899 ms  p90   1.205 ms  p99   1.590 ms  errors 0
+typesense-pass2 key lookup               c=16      9915 q/s  p50   1.522 ms  p90   2.224 ms  p99   2.874 ms  errors 0
+typesense-pass2 phrase                   c=1        427 q/s  p50   0.614 ms  p90   4.795 ms  p99  25.595 ms  errors 0
+typesense-pass2 phrase                   c=4       1386 q/s  p50   0.622 ms  p90   6.852 ms  p99  32.752 ms  errors 0
+typesense-pass2 phrase                   c=16      2490 q/s  p50   2.964 ms  p90  13.635 ms  p99  56.442 ms  errors 0
+typesense-pass2 typo                     c=1         56 q/s  p50   6.338 ms  p90  56.221 ms  p99 144.580 ms  errors 0
+typesense-pass2 typo                     c=4        172 q/s  p50   8.520 ms  p90  70.026 ms  p99 185.289 ms  errors 0
+typesense-pass2 typo                     c=16       249 q/s  p50  28.635 ms  p90 173.012 ms  p99 510.107 ms  errors 0
+typesense-pass2 prefix                   c=1         74 q/s  p50   8.714 ms  p90  25.166 ms  p99  76.826 ms  errors 0
+typesense-pass2 prefix                   c=4        253 q/s  p50  10.551 ms  p90  30.807 ms  p99  95.391 ms  errors 0
+typesense-pass2 prefix                   c=16       367 q/s  p50  28.991 ms  p90  82.944 ms  p99 277.427 ms  errors 0
+typesense-pass2 similar items            c=1         10 q/s  p50 103.140 ms  p90 107.184 ms  p99 107.688 ms  errors 0
+typesense-pass2 similar items            c=4         33 q/s  p50 116.275 ms  p90 145.600 ms  p99 167.162 ms  errors 0
+typesense-pass2 similar items            c=16        45 q/s  p50 361.288 ms  p90 534.170 ms  p99 651.585 ms  errors 0
+typesense-pass2 sql aggregate            unavailable: no grouped aggregates: facets count values, and facet stats cover the whole result, not each group
+wrote /data/compare/run-typesense-pass2.json
+job.batch/run-typesense-pass3 created
+typesense-pass3 bm25                     c=1        132 q/s  p50   4.777 ms  p90  15.757 ms  p99  51.808 ms  errors 0
+typesense-pass3 bm25                     c=4        429 q/s  p50   5.908 ms  p90  19.562 ms  p99  65.889 ms  errors 0
+typesense-pass3 bm25                     c=16       640 q/s  p50  15.851 ms  p90  49.464 ms  p99 172.664 ms  errors 0
+typesense-pass3 bm25 + filter            c=1         19 q/s  p50  50.544 ms  p90  57.647 ms  p99  93.985 ms  errors 0
+typesense-pass3 bm25 + filter            c=4         64 q/s  p50  58.961 ms  p90  76.791 ms  p99 137.146 ms  errors 0
+typesense-pass3 bm25 + filter            c=16        87 q/s  p50 187.579 ms  p90 240.547 ms  p99 357.448 ms  errors 0
+typesense-pass3 vector                   c=1        209 q/s  p50   4.736 ms  p90   5.120 ms  p99   5.601 ms  errors 0
+typesense-pass3 vector                   c=4        666 q/s  p50   5.591 ms  p90   7.723 ms  p99  10.052 ms  errors 0
+typesense-pass3 vector                   c=16      1004 q/s  p50  15.004 ms  p90  25.153 ms  p99  35.578 ms  errors 0
+typesense-pass3 vector + filter          c=1         36 q/s  p50  27.953 ms  p90  29.516 ms  p99  31.388 ms  errors 0
+typesense-pass3 vector + filter          c=4        119 q/s  p50  32.072 ms  p90  42.075 ms  p99  47.432 ms  errors 0
+typesense-pass3 vector + filter          c=16       165 q/s  p50 100.815 ms  p90 144.459 ms  p99 172.472 ms  errors 0
+typesense-pass3 hybrid (RRF)             c=1         99 q/s  p50   6.700 ms  p90  18.067 ms  p99  55.819 ms  errors 0
+typesense-pass3 hybrid (RRF)             c=4        325 q/s  p50   8.668 ms  p90  21.745 ms  p99  71.535 ms  errors 0
+typesense-pass3 hybrid (RRF)             c=16       482 q/s  p50  23.531 ms  p90  58.192 ms  p99 177.217 ms  errors 0
+typesense-pass3 hybrid (weighted)        c=1         97 q/s  p50   6.893 ms  p90  19.026 ms  p99  55.115 ms  errors 0
+typesense-pass3 hybrid (weighted)        c=4        322 q/s  p50   8.747 ms  p90  21.669 ms  p99  69.300 ms  errors 0
+typesense-pass3 hybrid (weighted)        c=16       481 q/s  p50  23.779 ms  p90  58.365 ms  p99 184.075 ms  errors 0
+typesense-pass3 boosted (bm25 × decay)   unavailable: no function scores: decay functions only sort (before or after the text match), they do not multiply it
+typesense-pass3 facet                    c=1         92 q/s  p50   4.159 ms  p90  24.039 ms  p99 103.477 ms  errors 0
+typesense-pass3 facet                    c=4        259 q/s  p50   6.380 ms  p90  35.550 ms  p99 134.488 ms  errors 0
+typesense-pass3 facet                    c=16       350 q/s  p50  25.643 ms  p90  97.050 ms  p99 316.126 ms  errors 0
+typesense-pass3 key lookup               c=1       1257 q/s  p50   0.775 ms  p90   0.888 ms  p99   1.082 ms  errors 0
+typesense-pass3 key lookup               c=4       4290 q/s  p50   0.889 ms  p90   1.197 ms  p99   1.591 ms  errors 0
+typesense-pass3 key lookup               c=16      9920 q/s  p50   1.519 ms  p90   2.221 ms  p99   2.855 ms  errors 0
+typesense-pass3 phrase                   c=1        426 q/s  p50   0.608 ms  p90   4.995 ms  p99  25.519 ms  errors 0
+typesense-pass3 phrase                   c=4       1419 q/s  p50   0.614 ms  p90   6.631 ms  p99  31.911 ms  errors 0
+typesense-pass3 phrase                   c=16      2511 q/s  p50   2.717 ms  p90  13.858 ms  p99  56.346 ms  errors 0
+typesense-pass3 typo                     c=1         53 q/s  p50   6.649 ms  p90  58.631 ms  p99 148.192 ms  errors 0
+typesense-pass3 typo                     c=4        175 q/s  p50   8.557 ms  p90  70.376 ms  p99 169.668 ms  errors 0
+typesense-pass3 typo                     c=16       247 q/s  p50  28.012 ms  p90 151.661 ms  p99 547.471 ms  errors 0
+typesense-pass3 prefix                   c=1         75 q/s  p50   8.573 ms  p90  25.269 ms  p99  74.346 ms  errors 0
+typesense-pass3 prefix                   c=4        252 q/s  p50  10.523 ms  p90  29.942 ms  p99  88.842 ms  errors 0
+typesense-pass3 prefix                   c=16       363 q/s  p50  30.216 ms  p90  85.106 ms  p99 281.550 ms  errors 0
+typesense-pass3 similar items            c=1         10 q/s  p50 103.866 ms  p90 107.026 ms  p99 109.556 ms  errors 0
+typesense-pass3 similar items            c=4         33 q/s  p50 116.366 ms  p90 143.077 ms  p99 154.503 ms  errors 0
+typesense-pass3 similar items            c=16        46 q/s  p50 368.569 ms  p90 417.209 ms  p99 494.807 ms  errors 0
+typesense-pass3 sql aggregate            unavailable: no grouped aggregates: facets count values, and facet stats cover the whole result, not each group
+wrote /data/compare/run-typesense-pass3.json
+pod "typesense-0" deleted from typesense namespace

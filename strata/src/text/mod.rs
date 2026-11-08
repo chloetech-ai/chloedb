@@ -36,6 +36,7 @@ pub mod query;
 pub mod reader;
 pub mod sparse;
 pub mod synonyms;
+pub mod terms;
 
 pub use analyzer::{analyze, analyze_query, analyze_query_with, analyze_with_positions, query_term_seq, Analyzer, QUERY_STOPWORDS};
 pub use bm25::{Bm25Params, Boost, CollectionStats, FilterStrategy, TopKAlgo};
@@ -58,9 +59,13 @@ pub fn field_builder(field: &Field, opts: &BuildOptions) -> Result<Box<dyn Field
 
 /// [`field_builder`] as its concrete type, for builds that analyse runs of
 /// documents on several threads and join them ([`TextFieldBuilder::append`]).
+/// A JSON field with text ([`Field::text`]) has one too, with positions,
+/// of its strings ([`crate::json::text_of`]).
 pub fn text_builder(field: &Field, opts: &BuildOptions) -> Result<TextFieldBuilder> {
-    let FieldType::Text { positions } = field.ty else {
-        return Err(Error::Schema(format!("field {} is not TEXT", field.name)));
+    let positions = match field.ty {
+        FieldType::Text { positions } => positions,
+        FieldType::Json if field.text => true,
+        _ => return Err(Error::Schema(format!("field {} is not TEXT", field.name))),
     };
     let (format, loom_min_df) = builder::options(opts)?;
     Ok(TextFieldBuilder::new(&field.key(), positions, format, loom_min_df).with_analyzer(field.text_analyzer()))

@@ -36,9 +36,9 @@ tantivy = { version = "0.26", optional = true }
 # Embedding models for VECTOR fields declared with `embed` (`embed`):
 # Model2Vec by default, BERT encoders through candle with `bert`.
 tokenizers = { version = "0.21", default-features = false, features = ["onig"], optional = true }
-candle-core = { version = "0.9", optional = true }
-candle-nn = { version = "0.9", optional = true }
-candle-transformers = { version = "0.9", optional = true }
+candle-core = { version = "0.11", optional = true }
+candle-nn = { version = "0.11", optional = true }
+candle-transformers = { version = "0.11", optional = true }
 # candle's matrix products, here only to turn on their AVX-512 kernels,
 # which run where the CPU has AVX-512 (checked at run time).
 gemm = { version = "0.19", features = ["x86-v4"], optional = true }
@@ -57,6 +57,14 @@ symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm
 # compression: Strata keeps its own parser and planner.
 datafusion = { version = "=55.2.0", default-features = false, optional = true }
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+# Parquet files in and out (`parquet`, `strata::parquet`), on the Arrow
+# that DataFusion brings: Snappy (Spark's and pandas' default), Zstandard
+# (what exports write), LZ4 and gzip (in Rust, zlib-rs).
+parquet = { version = "59.3", default-features = false, features = ["arrow", "snap", "zstd", "lz4", "flate2-zlib-rs"], optional = true }
+# Files on S3 and S3-compatible stores (`s3`, `strata::objects`): imports
+# read `s3://` URLs and exports write them.
+object_store = { version = "0.13.2", default-features = false, features = ["aws"], optional = true }
+futures = { version = "0.3", default-features = false, features = ["std"], optional = true }
 
 [features]
 default = ["embed", "hosted"]
@@ -83,6 +91,14 @@ fault-injection = []
 # DataFusion runs plans' operators with `ExecOptions::engine` (or
 # STRATA_ENGINE=datafusion): `strata::query::df`.
 datafusion = ["dep:datafusion", "dep:tokio"]
+# Importing Parquet files into Strata tables and exporting tables to
+# Parquet (`strata::parquet`), and rows as Arrow batches and back
+# (`strata::arrow_rows`).
+parquet = ["datafusion", "dep:parquet"]
+# `s3://` URLs wherever imports read files and exports write them
+# (`strata::objects`): AWS S3, and S3-compatible stores such as
+# DigitalOcean Spaces, MinIO and Cloudflare R2.
+s3 = ["dep:object_store", "dep:tokio", "tokio/net", "tokio/time", "dep:futures"]
 
 [[bin]]
 name = "strata-baselines"

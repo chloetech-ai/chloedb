@@ -14,6 +14,7 @@ use super::cursor::{PostingCursor, END};
 use super::dict::{Dict, TermInfo};
 use super::postings::{list_sizes, open_loom, ListSizes, PostingsFormat};
 use super::query::BoolQuery;
+use super::terms::TermTable;
 use crate::error::{corrupt, Result};
 use crate::segment::{DocFilter, DocId, DocSet, SegmentFile};
 
@@ -38,6 +39,9 @@ pub struct TextFieldReader {
     pub(crate) norms: Slice<u8>,
     /// [`Self::n_docs_with_terms`], counted when first asked for.
     with_terms: std::sync::OnceLock<u32>,
+    /// The terms laid out for typo walks, built at the first one
+    /// ([`TermTable`]; `None` when they do not fit one).
+    table: std::sync::OnceLock<Option<TermTable>>,
     /// Loom lists that passed [`Loom::validate`], one bit per term
     /// ordinal: a list's payload is checked when it is first used rather
     /// than when the segment opens.
@@ -73,7 +77,7 @@ impl TextFieldReader {
             return Err(corrupt(format!("text field {field}: inconsistent document or term counts")));
         }
         let checked = (0..(meta.n_terms as usize).div_ceil(64)).map(|_| AtomicU64::new(0)).collect();
-        Ok(TextFieldReader { meta, dict, post, pos, norms, with_terms: std::sync::OnceLock::new(), checked })
+        Ok(TextFieldReader { meta, dict, post, pos, norms, with_terms: std::sync::OnceLock::new(), table: std::sync::OnceLock::new(), checked })
     }
 
     /// Documents in the segment.
@@ -151,10 +155,41 @@ impl TextFieldReader {
     }
 
     /// The indexed terms within `edits` edits of `term` (itself included),
-    /// with their entries and distances, in dictionary order
-    /// ([`Dict::fuzzy`]).
+    /// with their entries and distances, in dictionary order: a walk of
+    /// the field's [`TermTable`] (built at the first), else of the
+    /// dictionary ([`Dict::fuzzy`]).
     pub fn fuzzy_terms(&self, term: &str, edits: u8) -> Vec<(String, TermInfo, u8)> {
-        self.dict.fuzzy(term, edits)
+        let Some(table) = self.term_table() else {
+            return self.dict.fuzzy(term, edits);
+        };
+        table
+            .fuzzy(term, edits)
+            .into_iter()
+            .filter_map(|(ord, d)| {
+                let info = self.dict.info_at(ord as usize)?;
+                Some((String::from_utf8_lossy(table.term(ord as usize)).into_owned(), info, d))
+            })
+            .collect()
+    }
+
+    /// The table of the field's terms for typo walks, built the first time
+    /// it is asked for; `None` when the terms do not fit one.
+    pub fn term_table(&self) -> Option<&TermTable> {
+        self.table.get_or_init(|| TermTable::of(&self.dict)).as_ref()
+    }
+
+    /// The terms of one field in several segments (`fields`) within
+    /// `edits` edits of `term`, each once, with its documents summed over
+    /// the segments and its distance, in order: a walk of each segment's
+    /// [`TermTable`] ([`Self::fuzzy_terms`]).
+    pub fn fuzzy_across(fields: &[&TextFieldReader], term: &str, edits: u8) -> Vec<(String, u64, u8)> {
+        let mut found: std::collections::BTreeMap<String, (u64, u8)> = Default::default();
+        for f in fields {
+            for (t, info, d) in f.fuzzy_terms(term, edits) {
+                found.entry(t).or_insert((0, d)).0 += info.df as u64;
+            }
+        }
+        found.into_iter().map(|(t, (df, d))| (t, df, d)).collect()
     }
 
     fn fuzzy_infos(&self, term: &str, edits: u8) -> Vec<TermInfo> {
@@ -287,6 +322,7 @@ impl TextFieldReader {
         match q {
             BoolQuery::Term(t) => self.doc_freq(t) as f64,
             BoolQuery::Phrase(ts) => ts.len() as f64 * ts.iter().map(|t| self.doc_freq(t) as f64).fold(f64::INFINITY, f64::min),
+            BoolQuery::PhrasePrefix { terms, prefix } => self.eval_cost(&self.phrases_of(terms, prefix)),
             BoolQuery::Prefix(p) => self.prefix_infos(p).iter().map(|i| i.df as f64).sum(),
             BoolQuery::Fuzzy { term, edits } => self.fuzzy_infos(term, *edits).iter().map(|i| i.df as f64).sum(),
             BoolQuery::Or(cs) | BoolQuery::AtLeast { items: cs, .. } => cs.iter().map(|c| self.eval_cost(c)).sum(),
@@ -308,6 +344,7 @@ impl TextFieldReader {
                 None => DocSet::empty(n),
             },
             BoolQuery::Phrase(ts) => DocSet::from_sorted(self.phrase_docs(ts), n),
+            BoolQuery::PhrasePrefix { terms, prefix } => self.eval_set(&self.phrases_of(terms, prefix)),
             BoolQuery::Prefix(p) => {
                 let infos = self.prefix_infos(p);
                 self.union_terms(&infos)
@@ -423,6 +460,18 @@ impl TextFieldReader {
         DocSet::from_sorted(out, n)
     }
 
+    /// A phrase prefix as phrases: `terms` and each of the first
+    /// [`PHRASE_PREFIX_TERMS`](super::query::PHRASE_PREFIX_TERMS) terms
+    /// with `prefix` in this field's dictionary.
+    fn phrases_of(&self, terms: &[String], prefix: &str) -> BoolQuery {
+        let phrase = |t: String| {
+            let mut ts = terms.to_vec();
+            ts.push(t);
+            BoolQuery::Phrase(ts)
+        };
+        BoolQuery::Or(self.expand_prefix(prefix, super::query::PHRASE_PREFIX_TERMS).into_iter().map(phrase).collect())
+    }
+
     /// Documents containing the terms at consecutive positions (all of
     /// them, without positions).
     pub fn phrase_docs(&self, terms: &[String]) -> Vec<DocId> {
@@ -460,6 +509,7 @@ impl TextFieldReader {
         match q {
             BoolQuery::Term(t) => self.doc_freq(t) as f64,
             BoolQuery::Phrase(ts) => n * ts.iter().map(|t| self.doc_freq(t) as f64 / n).product::<f64>(),
+            BoolQuery::PhrasePrefix { terms, prefix } => self.estimate(&self.phrases_of(terms, prefix)),
             BoolQuery::Prefix(p) => {
                 n * (1.0 - self.prefix_infos(p).iter().map(|i| 1.0 - i.df as f64 / n).product::<f64>())
             }
@@ -499,6 +549,7 @@ impl TextFieldReader {
         match q {
             BoolQuery::Term(t) => self.postings(t).map_or(Matcher::Never, Matcher::Term),
             BoolQuery::Phrase(ts) if ts.len() == 1 => self.matcher(&BoolQuery::Term(ts[0].clone())),
+            BoolQuery::PhrasePrefix { terms, prefix } => self.matcher(&self.phrases_of(terms, prefix)),
             BoolQuery::Phrase(ts) => {
                 let cs: Option<Vec<PostingCursor>> = ts.iter().map(|t| self.postings(t)).collect();
                 match cs {

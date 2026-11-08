@@ -1,0 +1,1090 @@
+{
+ "what": "examples/vector_partitions.rs on msmarco-1000k: the first 1,000,000 MS MARCO v2.1 passages with their Snowflake Arctic Embed M v1.5 vectors (768 d), ratings from engine-compare's generator, the first 300 MS MARCO dev queries embedded with the same model; one segment, HNSW m 16 ef_construction 200, SQ8 codes, the vector not stored (as engine-compare builds Strata); partitioned by rating at 1, 2, 3, 4 or not; recall@10 against the exact top 10 by dot product; one query thread, best of two passes per plan, then three alternated passes of the benchmark query with partitions off and on",
+ "machine": "cloud container, 4 cores, Intel(R) Xeon(R) Processor @ 2.10GHz, 260 MiB L3, 16 GB RAM",
+ "date": "2026-11-05",
+ "build": {
+  "partitioned": {
+   "build_s": 320.168892216,
+   "dim": 768,
+   "emb_sections": {
+    "vec.f32": 3072000000,
+    "vec.hnsw": 128000000,
+    "vec.hnsw_upper": 4542976,
+    "vec.meta": 515,
+    "vec.part.docs": 4000000,
+    "vec.part.hnsw": 128000000,
+    "vec.part.hnsw_upper": 4534784,
+    "vec.sq8": 768000000,
+    "vec.sq8p": 6160
+   },
+   "file_bytes": 4173529088,
+   "peak_rss_kb": 10717420,
+   "plain": false,
+   "rows": 1000000,
+   "segments": 1,
+   "threads": 4
+  },
+  "plain": {
+   "build_s": 178.661223646,
+   "dim": 768,
+   "emb_sections": {
+    "vec.f32": 3072000000,
+    "vec.hnsw": 128000000,
+    "vec.hnsw_upper": 4542976,
+    "vec.meta": 187,
+    "vec.sq8": 768000000,
+    "vec.sq8p": 6160
+   },
+   "file_bytes": 4036968448,
+   "peak_rss_kb": 10371012,
+   "plain": true,
+   "rows": 1000000,
+   "segments": 1,
+   "threads": 4
+  }
+ },
+ "runs": [
+  [
+   {
+    "filter": "none",
+    "first_plan": [
+     "seg 0: vector InIndex (Hnsw ran), filter None"
+    ],
+    "mean_us": 171.70009999999996,
+    "p50_us": 162.699,
+    "p95_us": 269.162,
+    "plan": "no partitions (today), auto",
+    "recall": 0.8763333333333344,
+    "share": 1.0
+   },
+   {
+    "filter": "none",
+    "first_plan": [
+     "seg 0: vector InIndex (Hnsw ran), filter None"
+    ],
+    "mean_us": 191.6324266666666,
+    "p50_us": 187.917,
+    "p95_us": 286.298,
+    "plan": "partitioned table, partitions off, auto",
+    "recall": 0.8763333333333344,
+    "share": 1.0
+   },
+   {
+    "filter": "none",
+    "first_plan": [
+     "seg 0: vector InIndex (Hnsw ran), filter None"
+    ],
+    "mean_us": 186.17649666666668,
+    "p50_us": 181.572,
+    "p95_us": 283.824,
+    "plan": "partitioned table, auto",
+    "recall": 0.8763333333333344,
+    "share": 1.0
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: selectivity 0.2003 global, 0.1667 near the query",
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 416.78120999999953,
+    "p50_us": 393.59,
+    "p95_us": 634.284,
+    "plan": "no partitions (today), auto",
+    "recall": 0.9610000000000004,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: selectivity 0.2003 global, 0.1667 near the query",
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 437.98340666666644,
+    "p50_us": 416.377,
+    "p95_us": 664.433,
+    "plan": "partitioned table, partitions off, auto",
+    "recall": 0.9610000000000004,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter none"
+    ],
+    "mean_us": 184.20106999999996,
+    "p50_us": 175.149,
+    "p95_us": 279.12899999999996,
+    "plan": "partitioned table, auto",
+    "recall": 0.9630000000000003,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 383.6319933333336,
+    "p50_us": 360.523,
+    "p95_us": 588.3050000000001,
+    "plan": "post-filter, ef 64",
+    "recall": 0.9610000000000004,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 415.5959966666667,
+    "p50_us": 399.48400000000004,
+    "p95_us": 622.834,
+    "plan": "post-filter, ef 128",
+    "recall": 0.9610000000000004,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 535.6952866666663,
+    "p50_us": 514.706,
+    "p95_us": 793.623,
+    "plan": "post-filter, ef 256",
+    "recall": 0.9730000000000003,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 803.5214733333332,
+    "p50_us": 757.315,
+    "p95_us": 1226.134,
+    "plan": "post-filter, ef 512",
+    "recall": 0.9873333333333335,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter none"
+    ],
+    "mean_us": 166.44743333333344,
+    "p50_us": 154.52900000000002,
+    "p95_us": 243.00400000000002,
+    "plan": "partitions, ef 32",
+    "recall": 0.9380000000000007,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter none"
+    ],
+    "mean_us": 215.93004666666667,
+    "p50_us": 205.795,
+    "p95_us": 323.252,
+    "plan": "partitions, ef 64",
+    "recall": 0.9630000000000003,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter none"
+    ],
+    "mean_us": 340.3505933333334,
+    "p50_us": 326.212,
+    "p95_us": 504.875,
+    "plan": "partitions, ef 128",
+    "recall": 0.9839999999999998,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter none"
+    ],
+    "mean_us": 582.7099499999997,
+    "p50_us": 542.043,
+    "p95_us": 880.738,
+    "plan": "partitions, ef 256",
+    "recall": 0.9899999999999998,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: filter materialised, 200457 docs",
+     "seg 0: vector PreFilter (PreFilter ran), filter Materialize"
+    ],
+    "mean_us": 16533.793949999992,
+    "p50_us": 16099.993999999999,
+    "p95_us": 24962.539999999997,
+    "plan": "pre-filter scan",
+    "recall": 0.9936666666666666,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: selectivity 0.0999 global, 0.0758 near the query",
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 699.6331166666671,
+    "p50_us": 646.295,
+    "p95_us": 1012.759,
+    "plan": "no partitions (today), auto",
+    "recall": 0.9820000000000003,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: selectivity 0.0999 global, 0.0758 near the query",
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 735.2693166666674,
+    "p50_us": 685.415,
+    "p95_us": 1139.3919999999998,
+    "plan": "partitioned table, partitions off, auto",
+    "recall": 0.9820000000000003,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 385.0212033333334,
+    "p50_us": 376.265,
+    "p95_us": 504.14700000000005,
+    "plan": "partitioned table, auto",
+    "recall": 0.9820000000000001,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 729.9822666666668,
+    "p50_us": 700.373,
+    "p95_us": 1032.7649999999999,
+    "plan": "post-filter, ef 64",
+    "recall": 0.9820000000000003,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 748.4947933333341,
+    "p50_us": 729.46,
+    "p95_us": 1081.376,
+    "plan": "post-filter, ef 128",
+    "recall": 0.9820000000000003,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 733.4849466666667,
+    "p50_us": 704.4459999999999,
+    "p95_us": 1050.55,
+    "plan": "post-filter, ef 256",
+    "recall": 0.9820000000000003,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 882.304506666667,
+    "p50_us": 842.2940000000001,
+    "p95_us": 1259.193,
+    "plan": "post-filter, ef 512",
+    "recall": 0.9866666666666668,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 254.00571333333332,
+    "p50_us": 243.7,
+    "p95_us": 357.574,
+    "plan": "partitions, ef 32",
+    "recall": 0.9640000000000005,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 375.3440500000002,
+    "p50_us": 356.383,
+    "p95_us": 523.1800000000001,
+    "plan": "partitions, ef 64",
+    "recall": 0.9820000000000001,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 659.6367000000001,
+    "p50_us": 629.376,
+    "p95_us": 922.181,
+    "plan": "partitions, ef 128",
+    "recall": 0.9916666666666667,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 1097.9176100000006,
+    "p50_us": 1029.8110000000001,
+    "p95_us": 1481.3999999999999,
+    "plan": "partitions, ef 256",
+    "recall": 0.9936666666666667,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: filter materialised, 101092 docs",
+     "seg 0: vector PreFilter (PreFilter ran), filter Materialize"
+    ],
+    "mean_us": 6434.586750000007,
+    "p50_us": 6041.749,
+    "p95_us": 8516.645,
+    "plan": "pre-filter scan",
+    "recall": 0.996,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: filter materialised, 21048 docs",
+     "seg 0: vector PreFilter (PreFilter ran), filter Materialize"
+    ],
+    "mean_us": 1626.6107533333336,
+    "p50_us": 1569.15,
+    "p95_us": 1823.538,
+    "plan": "no partitions (today), auto",
+    "recall": 0.9993333333333334,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: filter materialised, 21048 docs",
+     "seg 0: vector PreFilter (PreFilter ran), filter Materialize"
+    ],
+    "mean_us": 2199.0860000000002,
+    "p50_us": 2082.871,
+    "p95_us": 3707.766,
+    "plan": "partitioned table, partitions off, auto",
+    "recall": 0.9993333333333334,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 1159.67996,
+    "p50_us": 1100.414,
+    "p95_us": 1733.465,
+    "plan": "partitioned table, auto",
+    "recall": 0.995,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 2905.755016666669,
+    "p50_us": 2804.337,
+    "p95_us": 3976.7639999999997,
+    "plan": "post-filter, ef 64",
+    "recall": 0.9970000000000001,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 2850.53045,
+    "p50_us": 2785.33,
+    "p95_us": 3976.459,
+    "plan": "post-filter, ef 128",
+    "recall": 0.9970000000000001,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 2733.059833333334,
+    "p50_us": 2657.651,
+    "p95_us": 3779.819,
+    "plan": "post-filter, ef 256",
+    "recall": 0.9970000000000001,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 2539.4883000000013,
+    "p50_us": 2446.511,
+    "p95_us": 3353.7329999999997,
+    "plan": "post-filter, ef 512",
+    "recall": 0.9970000000000001,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 611.8187166666665,
+    "p50_us": 593.755,
+    "p95_us": 804.357,
+    "plan": "partitions, ef 32",
+    "recall": 0.9886666666666669,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 919.0298700000004,
+    "p50_us": 886.5459999999999,
+    "p95_us": 1231.301,
+    "plan": "partitions, ef 64",
+    "recall": 0.995,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 1910.2853600000008,
+    "p50_us": 1841.497,
+    "p95_us": 2576.2189999999996,
+    "plan": "partitions, ef 128",
+    "recall": 0.9986666666666667,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 3388.334606666664,
+    "p50_us": 3252.864,
+    "p95_us": 4786.072,
+    "plan": "partitions, ef 256",
+    "recall": 0.9993333333333334,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: filter materialised, 21048 docs",
+     "seg 0: vector PreFilter (PreFilter ran), filter Materialize"
+    ],
+    "mean_us": 2142.2627033333342,
+    "p50_us": 2060.775,
+    "p95_us": 2655.7690000000002,
+    "plan": "pre-filter scan",
+    "recall": 0.9993333333333334,
+    "share": 0.021048
+   },
+   {
+    "ab_round": 0,
+    "mean_us": 532.5256033333332,
+    "p50_us": 507.967,
+    "plan": "auto, partitions off",
+    "recall": 0.9610000000000004
+   },
+   {
+    "ab_round": 0,
+    "mean_us": 237.11197999999985,
+    "p50_us": 227.80700000000002,
+    "plan": "auto, partitions on",
+    "recall": 0.9630000000000003
+   },
+   {
+    "ab_round": 1,
+    "mean_us": 526.3132033333333,
+    "p50_us": 491.888,
+    "plan": "auto, partitions off",
+    "recall": 0.9610000000000004
+   },
+   {
+    "ab_round": 1,
+    "mean_us": 215.35938,
+    "p50_us": 206.044,
+    "plan": "auto, partitions on",
+    "recall": 0.9630000000000003
+   },
+   {
+    "ab_round": 2,
+    "mean_us": 494.34919999999966,
+    "p50_us": 462.601,
+    "plan": "auto, partitions off",
+    "recall": 0.9610000000000004
+   },
+   {
+    "ab_round": 2,
+    "mean_us": 214.94259999999994,
+    "p50_us": 205.018,
+    "plan": "auto, partitions on",
+    "recall": 0.9630000000000003
+   }
+  ],
+  [
+   {
+    "filter": "none",
+    "first_plan": [
+     "seg 0: vector InIndex (Hnsw ran), filter None"
+    ],
+    "mean_us": 152.46766000000002,
+    "p50_us": 146.233,
+    "p95_us": 246.253,
+    "plan": "no partitions (today), auto",
+    "recall": 0.8763333333333344,
+    "share": 1.0
+   },
+   {
+    "filter": "none",
+    "first_plan": [
+     "seg 0: vector InIndex (Hnsw ran), filter None"
+    ],
+    "mean_us": 163.92007000000015,
+    "p50_us": 163.147,
+    "p95_us": 253.329,
+    "plan": "partitioned table, partitions off, auto",
+    "recall": 0.8763333333333344,
+    "share": 1.0
+   },
+   {
+    "filter": "none",
+    "first_plan": [
+     "seg 0: vector InIndex (Hnsw ran), filter None"
+    ],
+    "mean_us": 170.23758333333328,
+    "p50_us": 168.256,
+    "p95_us": 260.208,
+    "plan": "partitioned table, auto",
+    "recall": 0.8763333333333344,
+    "share": 1.0
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: selectivity 0.2003 global, 0.1667 near the query",
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 364.4557966666666,
+    "p50_us": 346.73400000000004,
+    "p95_us": 537.923,
+    "plan": "no partitions (today), auto",
+    "recall": 0.9610000000000004,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: selectivity 0.2003 global, 0.1667 near the query",
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 423.70413666666633,
+    "p50_us": 400.462,
+    "p95_us": 645.698,
+    "plan": "partitioned table, partitions off, auto",
+    "recall": 0.9610000000000004,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter none"
+    ],
+    "mean_us": 175.68313333333327,
+    "p50_us": 167.971,
+    "p95_us": 259.477,
+    "plan": "partitioned table, auto",
+    "recall": 0.9630000000000003,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 376.82689666666676,
+    "p50_us": 355.698,
+    "p95_us": 575.039,
+    "plan": "post-filter, ef 64",
+    "recall": 0.9610000000000004,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 447.3978700000002,
+    "p50_us": 430.535,
+    "p95_us": 681.812,
+    "plan": "post-filter, ef 128",
+    "recall": 0.9610000000000004,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 521.0492900000003,
+    "p50_us": 486.457,
+    "p95_us": 838.388,
+    "plan": "post-filter, ef 256",
+    "recall": 0.9730000000000003,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 878.4174066666664,
+    "p50_us": 826.99,
+    "p95_us": 1337.663,
+    "plan": "post-filter, ef 512",
+    "recall": 0.9873333333333335,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter none"
+    ],
+    "mean_us": 136.2304566666666,
+    "p50_us": 128.642,
+    "p95_us": 213.404,
+    "plan": "partitions, ef 32",
+    "recall": 0.9380000000000007,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter none"
+    ],
+    "mean_us": 198.23811999999998,
+    "p50_us": 189.634,
+    "p95_us": 304.85799999999995,
+    "plan": "partitions, ef 64",
+    "recall": 0.9630000000000003,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter none"
+    ],
+    "mean_us": 344.4838466666666,
+    "p50_us": 331.452,
+    "p95_us": 514.1469999999999,
+    "plan": "partitions, ef 128",
+    "recall": 0.9839999999999998,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter none"
+    ],
+    "mean_us": 582.4855466666668,
+    "p50_us": 546.621,
+    "p95_us": 857.8080000000001,
+    "plan": "partitions, ef 256",
+    "recall": 0.9899999999999998,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4",
+    "first_plan": [
+     "seg 0: filter materialised, 200457 docs",
+     "seg 0: vector PreFilter (PreFilter ran), filter Materialize"
+    ],
+    "mean_us": 17999.76982333332,
+    "p50_us": 17548.344,
+    "p95_us": 26677.0,
+    "plan": "pre-filter scan",
+    "recall": 0.9936666666666666,
+    "share": 0.200457
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: selectivity 0.0999 global, 0.0758 near the query",
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 673.9907600000003,
+    "p50_us": 653.8530000000001,
+    "p95_us": 953.2860000000001,
+    "plan": "no partitions (today), auto",
+    "recall": 0.9820000000000003,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: selectivity 0.0999 global, 0.0758 near the query",
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 777.2552033333328,
+    "p50_us": 752.499,
+    "p95_us": 1157.77,
+    "plan": "partitioned table, partitions off, auto",
+    "recall": 0.9820000000000003,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 383.24915333333354,
+    "p50_us": 367.276,
+    "p95_us": 501.66200000000003,
+    "plan": "partitioned table, auto",
+    "recall": 0.9820000000000001,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 736.6231600000001,
+    "p50_us": 701.246,
+    "p95_us": 1038.7350000000001,
+    "plan": "post-filter, ef 64",
+    "recall": 0.9820000000000003,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 705.8850933333331,
+    "p50_us": 676.605,
+    "p95_us": 1022.27,
+    "plan": "post-filter, ef 128",
+    "recall": 0.9820000000000003,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 623.6990633333334,
+    "p50_us": 593.6500000000001,
+    "p95_us": 937.592,
+    "plan": "post-filter, ef 256",
+    "recall": 0.9820000000000003,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 858.4201266666668,
+    "p50_us": 829.293,
+    "p95_us": 1215.398,
+    "plan": "post-filter, ef 512",
+    "recall": 0.9866666666666668,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 293.05278000000004,
+    "p50_us": 288.247,
+    "p95_us": 394.09999999999997,
+    "plan": "partitions, ef 32",
+    "recall": 0.9640000000000005,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 388.84881999999976,
+    "p50_us": 377.27000000000004,
+    "p95_us": 516.657,
+    "plan": "partitions, ef 64",
+    "recall": 0.9820000000000001,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 655.3070866666668,
+    "p50_us": 627.959,
+    "p95_us": 876.8950000000001,
+    "plan": "partitions, ef 128",
+    "recall": 0.9916666666666667,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 1102.2947566666664,
+    "p50_us": 1041.423,
+    "p95_us": 1527.9950000000001,
+    "plan": "partitions, ef 256",
+    "recall": 0.9936666666666667,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.5",
+    "first_plan": [
+     "seg 0: filter materialised, 101092 docs",
+     "seg 0: vector PreFilter (PreFilter ran), filter Materialize"
+    ],
+    "mean_us": 7220.025560000004,
+    "p50_us": 7092.674,
+    "p95_us": 9404.46,
+    "plan": "pre-filter scan",
+    "recall": 0.996,
+    "share": 0.101092
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: filter materialised, 21048 docs",
+     "seg 0: vector PreFilter (PreFilter ran), filter Materialize"
+    ],
+    "mean_us": 1876.9462000000008,
+    "p50_us": 1895.788,
+    "p95_us": 2045.792,
+    "plan": "no partitions (today), auto",
+    "recall": 0.9993333333333334,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: filter materialised, 21048 docs",
+     "seg 0: vector PreFilter (PreFilter ran), filter Materialize"
+    ],
+    "mean_us": 2223.341806666667,
+    "p50_us": 2077.5080000000003,
+    "p95_us": 3350.3230000000003,
+    "plan": "partitioned table, partitions off, auto",
+    "recall": 0.9993333333333334,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 1089.854946666667,
+    "p50_us": 1047.958,
+    "p95_us": 1450.994,
+    "plan": "partitioned table, auto",
+    "recall": 0.995,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 2627.699446666668,
+    "p50_us": 2542.382,
+    "p95_us": 3481.9159999999997,
+    "plan": "post-filter, ef 64",
+    "recall": 0.9970000000000001,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 2378.861320000003,
+    "p50_us": 2290.232,
+    "p95_us": 3132.3430000000003,
+    "plan": "post-filter, ef 128",
+    "recall": 0.9970000000000001,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 2429.959769999999,
+    "p50_us": 2360.567,
+    "p95_us": 3249.719,
+    "plan": "post-filter, ef 256",
+    "recall": 0.9970000000000001,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector PostFilter (PostFilter ran), filter Probe"
+    ],
+    "mean_us": 2618.3752033333335,
+    "p50_us": 2511.8940000000002,
+    "p95_us": 3339.603,
+    "plan": "post-filter, ef 512",
+    "recall": 0.9970000000000001,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 656.7616400000006,
+    "p50_us": 633.896,
+    "p95_us": 904.856,
+    "plan": "partitions, ef 32",
+    "recall": 0.9886666666666669,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 961.9040366666677,
+    "p50_us": 922.124,
+    "p95_us": 1331.6650000000002,
+    "plan": "partitions, ef 64",
+    "recall": 0.995,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 1627.0171866666674,
+    "p50_us": 1548.53,
+    "p95_us": 2225.5099999999998,
+    "plan": "partitions, ef 128",
+    "recall": 0.9986666666666667,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: vector partitions range 4 (200457 of 1000000 rows), filter Probe"
+    ],
+    "mean_us": 3439.653976666666,
+    "p50_us": 3332.229,
+    "p95_us": 4797.811,
+    "plan": "partitions, ef 256",
+    "recall": 0.9993333333333334,
+    "share": 0.021048
+   },
+   {
+    "filter": "rating >= 4.9",
+    "first_plan": [
+     "seg 0: filter materialised, 21048 docs",
+     "seg 0: vector PreFilter (PreFilter ran), filter Materialize"
+    ],
+    "mean_us": 1843.528446666668,
+    "p50_us": 1741.265,
+    "p95_us": 2323.79,
+    "plan": "pre-filter scan",
+    "recall": 0.9993333333333334,
+    "share": 0.021048
+   },
+   {
+    "ab_round": 0,
+    "mean_us": 561.1761200000001,
+    "p50_us": 530.323,
+    "plan": "auto, partitions off",
+    "recall": 0.9610000000000004
+   },
+   {
+    "ab_round": 0,
+    "mean_us": 204.06276666666673,
+    "p50_us": 192.356,
+    "plan": "auto, partitions on",
+    "recall": 0.9630000000000003
+   },
+   {
+    "ab_round": 1,
+    "mean_us": 507.16638000000046,
+    "p50_us": 475.052,
+    "plan": "auto, partitions off",
+    "recall": 0.9610000000000004
+   },
+   {
+    "ab_round": 1,
+    "mean_us": 201.44989666666658,
+    "p50_us": 190.882,
+    "plan": "auto, partitions on",
+    "recall": 0.9630000000000003
+   },
+   {
+    "ab_round": 2,
+    "mean_us": 468.6008333333335,
+    "p50_us": 448.176,
+    "plan": "auto, partitions off",
+    "recall": 0.9610000000000004
+   },
+   {
+    "ab_round": 2,
+    "mean_us": 220.37657666666667,
+    "p50_us": 206.126,
+    "plan": "auto, partitions on",
+    "recall": 0.9630000000000003
+   }
+  ]
+ ]
+}

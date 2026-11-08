@@ -1,0 +1,16 @@
+{
+  "batch": 500,
+  "clients": 4,
+  "collection": "nq-1000k",
+  "docs": 1000000,
+  "engine": "weaviate",
+  "ingest_s": 366.308764126,
+  "merge_s": 0.000348875,
+  "prepare_s": 0.0,
+  "refresh_s": 0.0,
+  "request_bytes": 5433587234,
+  "searchable_docs": 1000000,
+  "setup_s": 0.340985416,
+  "steps": {},
+  "total_s": 366.309524667
+}

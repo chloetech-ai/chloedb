@@ -1,0 +1,77 @@
+Name:             strata-1
+Namespace:        compare
+Priority:         0
+Service Account:  default
+Node:             strata-worker2/172.19.0.2
+Start Time:       Sun, 01 Nov 2026 21:39:13 -0800
+Labels:           app=strata-shard
+                  engine=strata
+Annotations:      <none>
+Status:           Running
+IP:               10.244.3.3
+IPs:
+  IP:  10.244.3.3
+Containers:
+  strata:
+    Container ID:  containerd://2eaa976c23ae8c728d335d1bd10a1fa2ed7300b17a3bda96ee537968aa57c79c
+    Image:         strata-server:compare
+    Image ID:      docker.io/library/import-2026-11-02@sha256:558ed7893b0b5b27fdb3d8f76b47c88199cb97a642ae8bcb4d61e041afbbdeda
+    Ports:         7700/TCP (http), 7701/TCP (grpc)
+    Host Ports:    0/TCP (http), 0/TCP (grpc)
+    Args:
+      --db
+      /local/nq-1000k.shard1of2.strata
+      --listen
+      0.0.0.0:7700
+      --grpc
+      0.0.0.0:7701
+    State:          Waiting
+      Reason:       CrashLoopBackOff
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    1
+      Started:      Sun, 01 Nov 2026 21:42:05 -0800
+      Finished:     Sun, 01 Nov 2026 21:42:05 -0800
+    Ready:          False
+    Restart Count:  5
+    Limits:
+      cpu:     1
+      memory:  2560Mi
+    Requests:
+      cpu:        1
+      memory:     2560Mi
+    Readiness:    http-get http://:http/v1/health delay=0s timeout=1s period=2s successThreshold=1 failureThreshold=3
+    Environment:  <none>
+    Mounts:
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-d9l69 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  Directory
+  kube-api-access-d9l69:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason     Age                   From     Message
+  ----     ------     ----                  ----     -------
+  Normal   Pulled     2m9s (x6 over 5m)     kubelet  spec.containers{strata}: Container image "strata-server:compare" already present on machine and can be accessed by the pod
+  Normal   Created    2m9s (x6 over 5m)     kubelet  spec.containers{strata}: Container created
+  Normal   Started    2m9s (x6 over 5m)     kubelet  spec.containers{strata}: Container started
+  Warning  Unhealthy  2m9s (x8 over 5m)     kubelet  spec.containers{strata}: Readiness probe failed: Get "http://10.244.3.3:7700/v1/health": dial tcp 10.244.3.3:7700: connect: connection refused
+  Warning  BackOff    44s (x11 over 4m58s)  kubelet  spec.containers{strata}: Back-off restarting failed container strata in pod strata-1_compare(51d37600-d484-436c-afaa-2dd60f3fa29b)

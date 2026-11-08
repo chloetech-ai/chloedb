@@ -219,7 +219,7 @@ impl DigitalOcean {
             stored: Mutex::new(None),
             file: None,
             endpoint: None,
-            http: reqwest::Client::builder().timeout(Duration::from_secs(60)).build().unwrap_or_default(),
+            http: crate::http_client().timeout(Duration::from_secs(60)).build().unwrap_or_default(),
             catalogs: Mutex::new(HashMap::new()),
             calls: Mutex::new(Vec::new()),
         }
@@ -478,7 +478,7 @@ mod tests {
         let names: Vec<&str> = ms.iter().map(|m| m.name.as_str()).collect();
         // No GPU, no legacy size, nothing DOKS does not take (so-), nothing
         // not sold in nyc3 (g5-, the Premium Intel ones).
-        assert_eq!(names, ["c-16", "g-8vcpu-32gb", "m-2vcpu-16gb", "m-4vcpu-32gb", "m-8vcpu-64gb", "m-16vcpu-128gb", "s-4vcpu-8gb"], "{names:?}");
+        assert_eq!(names, ["c-16", "g-8vcpu-32gb", "m-2vcpu-16gb", "m-4vcpu-32gb", "m-8vcpu-64gb", "m-16vcpu-128gb", "s-2vcpu-4gb", "s-4vcpu-8gb"], "{names:?}");
         let m = ms.iter().find(|m| m.name == "m-8vcpu-64gb").unwrap();
         assert_eq!((m.family.as_str(), m.kind, m.vcpu, m.memory_gib, m.local_gb, m.max_pods, m.usd_hour), ("m", "memory", 8, 64.0, 200, 110, Some(0.5)));
         assert_eq!(m.processor.as_deref(), Some("Memory-Optimized"));

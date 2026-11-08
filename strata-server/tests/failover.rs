@@ -2,7 +2,8 @@
 //! a shard of three copies whose primary is killed (SIGKILL) elects a
 //! replica, which holds every write the old primary acknowledged; the old
 //! primary started again is a replica of the new one, and a primary is
-//! handed over by hand through the coordinator.
+//! handed over by hand through the coordinator; a primary that cannot
+//! write hands itself over.
 
 #![cfg(unix)]
 
@@ -14,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as Json};
 use strata::db::Db;
-use strata::storage::DbOptions;
+use strata::storage::{DbOptions, Layout};
 use strata_server::coord::Coordinator;
 use strata_server::demo;
 use strata_server::service::{AgentConfig, Backend, QueryReq, Service};
@@ -41,7 +42,11 @@ fn port() -> u16 {
 
 /// A database of the demo products (`rows` of them), numbered.
 fn create(path: &Path, rows: usize) {
-    let opts = DbOptions { publish_snapshots: true, ship_log_bytes: 16 << 20, ..DbOptions::default() };
+    create_in(path, rows, Layout::SingleFile)
+}
+
+fn create_in(path: &Path, rows: usize, layout: Layout) {
+    let opts = DbOptions { publish_snapshots: true, ship_log_bytes: 16 << 20, layout, ..DbOptions::default() };
     let db = Db::create(path, demo::schema(N), opts).unwrap();
     if rows > 0 {
         db.set_embedder("emb", Arc::new(strata::embed::HashEmbedder { dim: demo::DIM })).unwrap();
@@ -57,6 +62,8 @@ struct Node {
     log: PathBuf,
     http: u16,
     grpc: u16,
+    /// More flags it is started with.
+    args: Vec<String>,
     child: Option<Child>,
 }
 
@@ -64,7 +71,7 @@ impl Node {
     fn new(dir: &Path, name: &str, rows: usize) -> Node {
         let path = dir.join(format!("{name}.strata"));
         create(&path, rows);
-        Node { path, log: dir.join(format!("{name}.log")), http: port(), grpc: port(), child: None }
+        Node { path, log: dir.join(format!("{name}.log")), http: port(), grpc: port(), args: Vec::new(), child: None }
     }
 
     fn url(&self) -> String {
@@ -78,6 +85,7 @@ impl Node {
             .arg(&self.path)
             .args(["--listen", &format!("127.0.0.1:{}", self.http), "--grpc", &format!("127.0.0.1:{}", self.grpc)])
             .args(["--seq-no", "--log", "info", "--failover-after-ms", &AFTER_MS.to_string()])
+            .args(&self.args)
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()
@@ -98,7 +106,7 @@ impl Node {
     }
 
     async fn health(&self) -> Option<Json> {
-        let r = reqwest::get(format!("http://127.0.0.1:{}/v1/health", self.http)).await.ok()?;
+        let r = strata_server::http_client().build().unwrap().get(format!("http://127.0.0.1:{}/v1/health", self.http)).send().await.ok()?;
         r.json().await.ok()
     }
 
@@ -287,6 +295,55 @@ async fn a_shard_with_a_majority_up_elects_and_one_without_does_not() {
         assert!(t0.elapsed() < Duration::from_secs(30), "no write answered after the election");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    let got = sold(&svc).await;
+    assert_eq!((got[&format!("p{:07}", 1)], got[&format!("p{:07}", 2)]), (1001, 1002));
+}
+
+/// A primary that cannot write until it restarts (a write failed partway,
+/// as on a full disk) hands its shard over to a replica in sync by itself,
+/// and writes go on there: an operator need not find the copy's menu
+/// (finding chaos-4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_primary_that_cannot_write_hands_over_to_a_replica_in_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    // A directory database, whose commit a test can make fail.
+    let mut a = Node::new(d, "a", 0);
+    std::fs::remove_file(&a.path).ok();
+    create_in(&a.path, N, Layout::Directory);
+    a.args = vec!["--backup-dir".into(), d.join("backups").display().to_string()];
+    let mut b = Node::new(d, "b", 0);
+    let mut c = Node::new(d, "c", 0);
+    for n in [&mut a, &mut b, &mut c] {
+        n.start().await;
+    }
+    let (coord, svc) = coordinator(a.url()).await;
+    coord.add_replica(0, &b.url(), false).await.unwrap();
+    coord.add_replica(0, &c.url(), false).await.unwrap();
+    until("both replicas are in sync and vote", &[&a, &b, &c], || async {
+        let r = a.replication().await;
+        r["replicas"].as_array().is_some_and(|v| v.len() == 2 && v.iter().all(|f| f["in_sync"] == true && f["member"] == true))
+    })
+    .await;
+    svc.write_ops(set(1, 1001), None).await.unwrap();
+
+    // A commit that fails partway (CURRENT cannot be replaced) leaves the
+    // primary's database refusing writes until it is reopened.
+    std::fs::create_dir(a.path.join("CURRENT.tmp")).unwrap();
+    let http = strata_server::http_client().build().unwrap();
+    let r = http.post(format!("http://127.0.0.1:{}/v1/admin/checkpoint", a.http)).json(&json!({"name": "x"})).send().await.unwrap();
+    assert!(r.status().is_server_error(), "the checkpoint's flush fails: {}", r.text().await.unwrap());
+    assert_eq!(a.health().await.unwrap()["status"], "failing");
+
+    // It hands over to a replica in sync, which takes the writes.
+    until("a replica becomes the primary", &[&a, &b, &c], || async { role(&b).await.0 == "primary" || role(&c).await.0 == "primary" }).await;
+    let t0 = Instant::now();
+    while let Err(e) = svc.write_ops(set(2, 1002), None).await {
+        assert!(t0.elapsed() < Duration::from_secs(30), "no write answered after the handover: {}", e.message);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(a.logs().contains("handed its shard over to a replica in sync"), "{}", a.logs());
+    until("the failing primary steps down", &[&a], || async { role(&a).await.0 == "replica" }).await;
     let got = sold(&svc).await;
     assert_eq!((got[&format!("p{:07}", 1)], got[&format!("p{:07}", 2)]), (1001, 1002));
 }

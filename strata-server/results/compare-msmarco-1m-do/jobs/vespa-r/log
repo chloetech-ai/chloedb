@@ -1,0 +1,202 @@
+service/vespa created
+pod/vespa-0 created
+pod/vespa-1 created
+pod/vespa-2 created
+pod/vespa-0 condition met
+pod/vespa-1 condition met
+pod/vespa-2 condition met
+job.batch/load-vespa created
+vespa: index created in 1.1 s
+vespa: 25000 documents sent, 103 s
+vespa: 50000 documents sent, 156 s
+vespa: 75000 documents sent, 202 s
+vespa: 100000 documents sent, 237 s
+vespa: 125000 documents sent, 272 s
+vespa: 150000 documents sent, 301 s
+vespa: 175000 documents sent, 331 s
+vespa: 200000 documents sent, 362 s
+vespa: 225000 documents sent, 393 s
+vespa: 250000 documents sent, 422 s
+vespa: 275000 documents sent, 450 s
+vespa: 300000 documents sent, 481 s
+vespa: 325000 documents sent, 514 s
+vespa: 350000 documents sent, 545 s
+vespa: 375000 documents sent, 575 s
+vespa: 400000 documents sent, 604 s
+vespa: 425000 documents sent, 635 s
+vespa: 450000 documents sent, 665 s
+vespa: 475000 documents sent, 695 s
+vespa: 500000 documents sent, 727 s
+vespa: 525000 documents sent, 759 s
+vespa: 550000 documents sent, 789 s
+vespa: 575000 documents sent, 818 s
+vespa: 600000 documents sent, 848 s
+vespa: 625000 documents sent, 881 s
+vespa: 650000 documents sent, 910 s
+vespa: 675000 documents sent, 939 s
+vespa: 700000 documents sent, 973 s
+vespa: 725000 documents sent, 1005 s
+vespa: 750000 documents sent, 1034 s
+vespa: 775000 documents sent, 1064 s
+vespa: 800000 documents sent, 1093 s
+vespa: 825000 documents sent, 1125 s
+vespa: 850000 documents sent, 1154 s
+vespa: 875000 documents sent, 1183 s
+vespa: 900000 documents sent, 1212 s
+vespa: 925000 documents sent, 1243 s
+vespa: 950000 documents sent, 1274 s
+vespa: 975000 documents sent, 1304 s
+vespa: 1000000 documents sent, 1332 s
+vespa: 1000000 documents (11.8 GB of JSON) sent in 1331.5 s
+vespa: searchable after 0.0 s more, merged in 0.0 s; 1331.5 s in all
+wrote /data/compare/load-vespa.json
+job.batch/run-vespa created
+vespa    bm25                     c=1        134 q/s  p50   4.258 ms  p90  10.296 ms  p99  59.321 ms  errors 0
+vespa    bm25                     c=4        265 q/s  p50   4.662 ms  p90  68.610 ms  p99  84.020 ms  errors 0
+vespa    bm25                     c=16       393 q/s  p50  11.839 ms  p90  87.965 ms  p99  97.485 ms  errors 0
+vespa    bm25 + filter            c=1        141 q/s  p50   4.625 ms  p90  10.089 ms  p99  44.164 ms  errors 0
+vespa    bm25 + filter            c=4        351 q/s  p50   5.137 ms  p90  37.839 ms  p99  69.240 ms  errors 0
+vespa    bm25 + filter            c=16       443 q/s  p50  15.929 ms  p90  81.821 ms  p99  93.024 ms  errors 0
+vespa    vector                   c=1        197 q/s  p50   3.636 ms  p90   4.354 ms  p99  44.438 ms  errors 0
+vespa    vector                   c=4        351 q/s  p50   4.235 ms  p90  55.790 ms  p99  73.176 ms  errors 0
+vespa    vector                   c=16       407 q/s  p50  10.267 ms  p90  88.989 ms  p99  93.310 ms  errors 0
+vespa    vector + filter          c=1        162 q/s  p50   5.859 ms  p90   6.756 ms  p99  18.547 ms  errors 0
+vespa    vector + filter          c=4        473 q/s  p50   7.151 ms  p90   9.824 ms  p99  53.364 ms  errors 0
+vespa    vector + filter          c=16       516 q/s  p50  23.006 ms  p90  56.768 ms  p99  67.224 ms  errors 0
+vespa    hybrid (RRF)             c=1         70 q/s  p50   8.101 ms  p90  39.998 ms  p99  57.983 ms  errors 0
+vespa    hybrid (RRF)             c=4        217 q/s  p50   9.456 ms  p90  56.966 ms  p99  87.572 ms  errors 0
+vespa    hybrid (RRF)             c=16       324 q/s  p50  41.264 ms  p90  80.914 ms  p99 151.114 ms  errors 0
+vespa    hybrid (weighted)        c=1         95 q/s  p50   7.857 ms  p90  13.105 ms  p99  51.412 ms  errors 0
+vespa    hybrid (weighted)        c=4        278 q/s  p50   9.386 ms  p90  27.457 ms  p99  82.747 ms  errors 0
+vespa    hybrid (weighted)        c=16       298 q/s  p50  52.831 ms  p90  84.848 ms  p99 170.228 ms  errors 0
+vespa    boosted (bm25 × decay)   c=1        216 q/s  p50   3.619 ms  p90   5.961 ms  p99  23.003 ms  errors 0
+vespa    boosted (bm25 × decay)   c=4        763 q/s  p50   3.731 ms  p90   8.988 ms  p99  26.500 ms  errors 0
+vespa    boosted (bm25 × decay)   c=16       772 q/s  p50  10.428 ms  p90  59.134 ms  p99  80.002 ms  errors 0
+vespa    facet                    c=1        114 q/s  p50   3.700 ms  p90  17.848 ms  p99  75.180 ms  errors 0
+vespa    facet                    c=4        354 q/s  p50   3.748 ms  p90  38.976 ms  p99  75.671 ms  errors 0
+vespa    facet                    c=16       458 q/s  p50  16.909 ms  p90  82.762 ms  p99 118.779 ms  errors 0
+vespa    key lookup               c=1        354 q/s  p50   1.884 ms  p90   2.325 ms  p99  43.513 ms  errors 0
+vespa    key lookup               c=4        850 q/s  p50   1.877 ms  p90   2.394 ms  p99  68.799 ms  errors 0
+vespa    key lookup               c=16      1001 q/s  p50   3.152 ms  p90  83.413 ms  p99  85.685 ms  errors 0
+vespa    phrase                   c=1        367 q/s  p50   2.521 ms  p90   3.832 ms  p99   6.227 ms  errors 0
+vespa    phrase                   c=4        767 q/s  p50   2.638 ms  p90   4.625 ms  p99  54.589 ms  errors 0
+vespa    phrase                   c=16       820 q/s  p50   5.715 ms  p90  77.724 ms  p99  82.168 ms  errors 0
+vespa    typo                     unavailable: Vespa matches typos (fuzzy) on attributes only, not on indexed text fields
+vespa    prefix                   unavailable: Vespa matches prefixes on attributes only, not on indexed text fields (n-gram fields are its way)
+vespa    similar items            c=1        195 q/s  p50   5.081 ms  p90   5.787 ms  p99   6.718 ms  errors 0
+vespa    similar items            c=4        462 q/s  p50   6.260 ms  p90   9.453 ms  p99  43.057 ms  errors 0
+vespa    similar items            c=16       473 q/s  p50  18.475 ms  p90  70.123 ms  p99  84.476 ms  errors 0
+vespa    sql aggregate            c=1          6 q/s  p50 172.246 ms  p90 242.000 ms  p99 254.619 ms  errors 0
+vespa    sql aggregate            c=4         37 q/s  p50 106.560 ms  p90 169.858 ms  p99 187.101 ms  errors 0
+vespa    sql aggregate            c=16        38 q/s  p50 401.970 ms  p90 621.523 ms  p99 707.641 ms  errors 0
+wrote /data/compare/run-vespa.json
+job.batch/run-vespa-pass2 created
+vespa-pass2 bm25                     c=1        247 q/s  p50   3.307 ms  p90   5.299 ms  p99  15.333 ms  errors 0
+vespa-pass2 bm25                     c=4        766 q/s  p50   3.475 ms  p90   8.338 ms  p99  33.809 ms  errors 0
+vespa-pass2 bm25                     c=16       799 q/s  p50   9.162 ms  p90  63.479 ms  p99  75.444 ms  errors 0
+vespa-pass2 bm25 + filter            c=1        195 q/s  p50   4.238 ms  p90   8.210 ms  p99  28.254 ms  errors 0
+vespa-pass2 bm25 + filter            c=4        695 q/s  p50   4.582 ms  p90   9.542 ms  p99  28.813 ms  errors 0
+vespa-pass2 bm25 + filter            c=16       722 q/s  p50  13.874 ms  p90  54.148 ms  p99  66.799 ms  errors 0
+vespa-pass2 vector                   c=1        284 q/s  p50   3.477 ms  p90   4.021 ms  p99   4.687 ms  errors 0
+vespa-pass2 vector                   c=4        556 q/s  p50   4.001 ms  p90   5.312 ms  p99  51.364 ms  errors 0
+vespa-pass2 vector                   c=16       545 q/s  p50   9.358 ms  p90  80.396 ms  p99  84.338 ms  errors 0
+vespa-pass2 vector + filter          c=1        171 q/s  p50   5.831 ms  p90   6.655 ms  p99   7.504 ms  errors 0
+vespa-pass2 vector + filter          c=4        517 q/s  p50   7.134 ms  p90   9.401 ms  p99  20.936 ms  errors 0
+vespa-pass2 vector + filter          c=16       508 q/s  p50  22.771 ms  p90  58.603 ms  p99  68.705 ms  errors 0
+vespa-pass2 hybrid (RRF)             c=1         97 q/s  p50   7.559 ms  p90  12.681 ms  p99  52.436 ms  errors 0
+vespa-pass2 hybrid (RRF)             c=4        317 q/s  p50   9.046 ms  p90  20.089 ms  p99  67.821 ms  errors 0
+vespa-pass2 hybrid (RRF)             c=16       328 q/s  p50  39.052 ms  p90  77.198 ms  p99 155.907 ms  errors 0
+vespa-pass2 hybrid (weighted)        c=1         95 q/s  p50   7.778 ms  p90  13.175 ms  p99  52.698 ms  errors 0
+vespa-pass2 hybrid (weighted)        c=4        304 q/s  p50   9.380 ms  p90  21.931 ms  p99  63.676 ms  errors 0
+vespa-pass2 hybrid (weighted)        c=16       302 q/s  p50  54.699 ms  p90  82.209 ms  p99 159.192 ms  errors 0
+vespa-pass2 boosted (bm25 × decay)   c=1        216 q/s  p50   3.583 ms  p90   6.021 ms  p99  21.587 ms  errors 0
+vespa-pass2 boosted (bm25 × decay)   c=4        757 q/s  p50   3.740 ms  p90   8.818 ms  p99  30.286 ms  errors 0
+vespa-pass2 boosted (bm25 × decay)   c=16       773 q/s  p50  10.408 ms  p90  59.513 ms  p99  78.147 ms  errors 0
+vespa-pass2 facet                    c=1        124 q/s  p50   3.127 ms  p90  17.284 ms  p99  69.252 ms  errors 0
+vespa-pass2 facet                    c=4        548 q/s  p50   3.194 ms  p90  15.794 ms  p99  60.063 ms  errors 0
+vespa-pass2 facet                    c=16       578 q/s  p50  18.606 ms  p90  53.242 ms  p99 152.657 ms  errors 0
+vespa-pass2 key lookup               c=1        518 q/s  p50   1.897 ms  p90   2.358 ms  p99   2.791 ms  errors 0
+vespa-pass2 key lookup               c=4       1011 q/s  p50   1.831 ms  p90   2.256 ms  p99  56.504 ms  errors 0
+vespa-pass2 key lookup               c=16       979 q/s  p50   3.191 ms  p90  83.564 ms  p99  86.271 ms  errors 0
+vespa-pass2 phrase                   c=1        377 q/s  p50   2.533 ms  p90   3.777 ms  p99   5.910 ms  errors 0
+vespa-pass2 phrase                   c=4        824 q/s  p50   2.629 ms  p90   4.538 ms  p99  48.525 ms  errors 0
+vespa-pass2 phrase                   c=16       826 q/s  p50   5.699 ms  p90  77.634 ms  p99  82.164 ms  errors 0
+vespa-pass2 typo                     unavailable: Vespa matches typos (fuzzy) on attributes only, not on indexed text fields
+vespa-pass2 prefix                   unavailable: Vespa matches prefixes on attributes only, not on indexed text fields (n-gram fields are its way)
+vespa-pass2 similar items            c=1        196 q/s  p50   5.086 ms  p90   5.698 ms  p99   6.294 ms  errors 0
+vespa-pass2 similar items            c=4        500 q/s  p50   6.183 ms  p90   8.766 ms  p99  32.988 ms  errors 0
+vespa-pass2 similar items            c=16       496 q/s  p50  18.208 ms  p90  68.105 ms  p99  73.776 ms  errors 0
+vespa-pass2 sql aggregate            c=1          6 q/s  p50 167.231 ms  p90 260.454 ms  p99 276.470 ms  errors 0
+vespa-pass2 sql aggregate            c=4         37 q/s  p50 108.702 ms  p90 161.818 ms  p99 183.993 ms  errors 0
+vespa-pass2 sql aggregate            c=16        38 q/s  p50 412.357 ms  p90 605.210 ms  p99 751.143 ms  errors 0
+wrote /data/compare/run-vespa-pass2.json
+job.batch/run-vespa-pass3 created
+vespa-pass3 bm25                     c=1        248 q/s  p50   3.299 ms  p90   5.406 ms  p99  16.183 ms  errors 0
+vespa-pass3 bm25                     c=4        766 q/s  p50   3.520 ms  p90   8.120 ms  p99  31.890 ms  errors 0
+vespa-pass3 bm25                     c=16       808 q/s  p50   9.250 ms  p90  62.722 ms  p99  74.519 ms  errors 0
+vespa-pass3 bm25 + filter            c=1        198 q/s  p50   4.218 ms  p90   8.136 ms  p99  27.707 ms  errors 0
+vespa-pass3 bm25 + filter            c=4        711 q/s  p50   4.563 ms  p90   9.399 ms  p99  27.628 ms  errors 0
+vespa-pass3 bm25 + filter            c=16       725 q/s  p50  13.969 ms  p90  53.034 ms  p99  67.414 ms  errors 0
+vespa-pass3 vector                   c=1        288 q/s  p50   3.432 ms  p90   3.962 ms  p99   4.528 ms  errors 0
+vespa-pass3 vector                   c=4        562 q/s  p50   4.009 ms  p90   5.361 ms  p99  50.551 ms  errors 0
+vespa-pass3 vector                   c=16       542 q/s  p50   9.473 ms  p90  80.326 ms  p99  84.963 ms  errors 0
+vespa-pass3 vector + filter          c=1        170 q/s  p50   5.818 ms  p90   6.718 ms  p99   7.898 ms  errors 0
+vespa-pass3 vector + filter          c=4        511 q/s  p50   7.125 ms  p90   9.412 ms  p99  20.105 ms  errors 0
+vespa-pass3 vector + filter          c=16       518 q/s  p50  22.753 ms  p90  56.740 ms  p99  63.951 ms  errors 0
+vespa-pass3 hybrid (RRF)             c=1         97 q/s  p50   7.581 ms  p90  12.864 ms  p99  48.225 ms  errors 0
+vespa-pass3 hybrid (RRF)             c=4        316 q/s  p50   9.268 ms  p90  17.864 ms  p99  61.395 ms  errors 0
+vespa-pass3 hybrid (RRF)             c=16       332 q/s  p50  39.947 ms  p90  73.295 ms  p99 158.610 ms  errors 0
+vespa-pass3 hybrid (weighted)        c=1         94 q/s  p50   7.888 ms  p90  12.817 ms  p99  48.868 ms  errors 0
+vespa-pass3 hybrid (weighted)        c=4        292 q/s  p50   9.604 ms  p90  23.292 ms  p99  66.394 ms  errors 0
+vespa-pass3 hybrid (weighted)        c=16       302 q/s  p50  50.928 ms  p90  83.164 ms  p99 163.338 ms  errors 0
+vespa-pass3 boosted (bm25 × decay)   c=1        218 q/s  p50   3.562 ms  p90   5.875 ms  p99  20.991 ms  errors 0
+vespa-pass3 boosted (bm25 × decay)   c=4        740 q/s  p50   3.806 ms  p90   9.479 ms  p99  26.738 ms  errors 0
+vespa-pass3 boosted (bm25 × decay)   c=16       781 q/s  p50  10.632 ms  p90  58.239 ms  p99  75.579 ms  errors 0
+vespa-pass3 facet                    c=1        122 q/s  p50   3.172 ms  p90  17.276 ms  p99  74.676 ms  errors 0
+vespa-pass3 facet                    c=4        542 q/s  p50   3.252 ms  p90  16.196 ms  p99  60.622 ms  errors 0
+vespa-pass3 facet                    c=16       569 q/s  p50  19.186 ms  p90  54.735 ms  p99 163.305 ms  errors 0
+vespa-pass3 key lookup               c=1        555 q/s  p50   1.721 ms  p90   2.169 ms  p99   2.625 ms  errors 0
+vespa-pass3 key lookup               c=4       1013 q/s  p50   1.819 ms  p90   2.245 ms  p99  55.979 ms  errors 0
+vespa-pass3 key lookup               c=16      1009 q/s  p50   3.172 ms  p90  83.157 ms  p99  85.907 ms  errors 0
+vespa-pass3 phrase                   c=1        388 q/s  p50   2.449 ms  p90   3.673 ms  p99   5.930 ms  errors 0
+vespa-pass3 phrase                   c=4        833 q/s  p50   2.657 ms  p90   4.744 ms  p99  47.798 ms  errors 0
+vespa-pass3 phrase                   c=16       840 q/s  p50   5.757 ms  p90  76.717 ms  p99  81.260 ms  errors 0
+vespa-pass3 typo                     unavailable: Vespa matches typos (fuzzy) on attributes only, not on indexed text fields
+vespa-pass3 prefix                   unavailable: Vespa matches prefixes on attributes only, not on indexed text fields (n-gram fields are its way)
+vespa-pass3 similar items            c=1        196 q/s  p50   5.089 ms  p90   5.733 ms  p99   6.375 ms  errors 0
+vespa-pass3 similar items            c=4        494 q/s  p50   6.361 ms  p90   9.092 ms  p99  31.881 ms  errors 0
+vespa-pass3 similar items            c=16       492 q/s  p50  18.582 ms  p90  68.064 ms  p99  75.852 ms  errors 0
+vespa-pass3 sql aggregate            c=1          6 q/s  p50 180.513 ms  p90 228.318 ms  p99 255.705 ms  errors 0
+vespa-pass3 sql aggregate            c=4         37 q/s  p50 107.909 ms  p90 166.906 ms  p99 193.851 ms  errors 0
+vespa-pass3 sql aggregate            c=16        38 q/s  p50 409.623 ms  p90 611.113 ms  p99 716.981 ms  errors 0
+wrote /data/compare/run-vespa-pass3.json
+job.batch/writes-vespa created
+vespa    insert one     c=1        166 docs/s  p50    5.708 ms  p90    6.964 ms  p99    8.797 ms  errors 0
+vespa    insert one     c=4        549 docs/s  p50    6.595 ms  p90    8.871 ms  p99   13.574 ms  errors 0
+vespa    insert one     c=16       744 docs/s  p50   11.672 ms  p90   59.911 ms  p99   69.009 ms  errors 0
+vespa    insert batch   c=1        814 docs/s  p50  103.912 ms  p90  144.686 ms  p99  198.275 ms  errors 0
+vespa    insert batch   c=4        752 docs/s  p50  354.285 ms  p90 1261.559 ms  p99 1345.098 ms  errors 0
+vespa    insert batch   c=16       653 docs/s  p50 1168.119 ms  p90 6184.468 ms  p99 6895.755 ms  errors 0
+vespa    update one     c=1        219 docs/s  p50    3.352 ms  p90    4.194 ms  p99   40.664 ms  errors 0
+vespa    update one     c=4        674 docs/s  p50    3.634 ms  p90    4.986 ms  p99   57.198 ms  errors 0
+vespa    update one     c=16      1317 docs/s  p50    4.468 ms  p90   58.681 ms  p99   76.897 ms  errors 0
+vespa    visible        written in p50 6.8 ms, found after p50 9.4 ms  p90 12.2 ms  max 39.4 ms
+wrote /data/compare/writes-vespa.json
+vespa    deleted 23230 written documents and put back 13271 ratings in 21.5 s
+service/redpanda created
+pod/redpanda created
+pod/redpanda condition met
+job.batch/stream-vespa created
+vespa    topic docs-vespa-1793683529, 4 partitions; 1000000 documents before
+vespa    250/s            produced 7500 in 30.0 s; written 7500 in 30.0 s (250/s); lag p50 28 ms  p90 42 ms  p99 776 ms  max 1076 ms (read p50 21 ms)
+vespa    500/s            produced 15000 in 30.0 s; written 15000 in 30.0 s (500/s); lag p50 31 ms  p90 72 ms  p99 729 ms  max 1094 ms (read p50 20 ms)
+vespa    1000/s           produced 30000 in 30.0 s; written 30000 in 36.0 s (833/s); lag p50 3929 ms  p90 6448 ms  p99 7601 ms  max 8096 ms (read p50 1452 ms)
+vespa    fell behind at 1000/s: no higher rate
+vespa    flat out         produced 20000 in 0.7 s; written 20000 in 23.2 s (861/s); lag p50 12196 ms  p90 21561 ms  p99 22492 ms  max 22522 ms (read p50 9773 ms)
+vespa    before the crash produced 10000 in 23.3 s; written 5004 in 23.3 s (215/s); lag p50 28 ms  p90 37 ms  p99 45 ms  max 93 ms (read p50 19 ms)
+vespa    after the crash   resumed in 6.8 s: 211 events written a second time, 0 skipped by the server; 1082500 documents, 0 lost
+wrote /data/compare/stream-vespa.json
+vespa    deleted 82500 streamed documents in 37.5 s
+pod "vespa-0" deleted from vespa-r namespace
+pod "vespa-1" deleted from vespa-r namespace
+pod "vespa-2" deleted from vespa-r namespace

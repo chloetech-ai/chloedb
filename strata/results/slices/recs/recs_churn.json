@@ -1,0 +1,140 @@
+{
+ "days": [
+  {
+   "day_end": 23406200,
+   "new_tracks": 1431
+  },
+  {
+   "day_end": 23492600,
+   "new_tracks": 1465
+  },
+  {
+   "day_end": 23579000,
+   "new_tracks": 1515
+  },
+  {
+   "day_end": 23665400,
+   "new_tracks": 1813
+  },
+  {
+   "day_end": 23751800,
+   "new_tracks": 1454
+  },
+  {
+   "day_end": 23838200,
+   "new_tracks": 1583
+  },
+  {
+   "day_end": 23924600,
+   "new_tracks": 1570
+  },
+  {
+   "day_end": 24011000,
+   "new_tracks": 1357
+  },
+  {
+   "day_end": 24097400,
+   "new_tracks": 1483
+  },
+  {
+   "day_end": 24183800,
+   "new_tracks": 1369
+  },
+  {
+   "day_end": 24270200,
+   "new_tracks": 1864
+  },
+  {
+   "day_end": 24356600,
+   "new_tracks": 1709
+  },
+  {
+   "day_end": 24443000,
+   "new_tracks": 1468
+  },
+  {
+   "day_end": 24529400,
+   "new_tracks": 1523
+  },
+  {
+   "day_end": 24615800,
+   "new_tracks": 1337
+  },
+  {
+   "day_end": 24702200,
+   "new_tracks": 1638
+  },
+  {
+   "day_end": 24788600,
+   "new_tracks": 1758
+  },
+  {
+   "day_end": 24875000,
+   "new_tracks": 2192
+  },
+  {
+   "day_end": 24961400,
+   "new_tracks": 1532
+  },
+  {
+   "day_end": 25047800,
+   "new_tracks": 1422
+  },
+  {
+   "day_end": 25134200,
+   "new_tracks": 1731
+  },
+  {
+   "day_end": 25220600,
+   "new_tracks": 1791
+  },
+  {
+   "day_end": 25307000,
+   "new_tracks": 1831
+  },
+  {
+   "day_end": 25393400,
+   "new_tracks": 1552
+  },
+  {
+   "day_end": 25479800,
+   "new_tracks": 1815
+  },
+  {
+   "day_end": 25566200,
+   "new_tracks": 1477
+  },
+  {
+   "day_end": 25652600,
+   "new_tracks": 1421
+  },
+  {
+   "day_end": 25739000,
+   "new_tracks": 1548
+  },
+  {
+   "day_end": 25825400,
+   "new_tracks": 1669
+  },
+  {
+   "day_end": 25911800,
+   "new_tracks": 1637
+  }
+ ],
+ "base": {
+  "1000": {
+   "entered_per_day_mean": 46.724137931034484,
+   "entered_per_day_max": 61
+  },
+  "10000": {
+   "entered_per_day_mean": 591.1379310344828,
+   "entered_per_day_max": 665
+  },
+  "50000": {
+   "entered_per_day_mean": 3785.310344827586,
+   "entered_per_day_max": 4120
+  }
+ },
+ "new_tracks_per_day_mean": 1598.5,
+ "catalogue_tracks": 629298
+}

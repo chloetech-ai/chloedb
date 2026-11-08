@@ -53,7 +53,7 @@ async fn listen() -> (TcpListener, String) {
 }
 
 async fn call(base: &str, method: &str, path: &str, auth: Option<&str>, body: Option<Json>) -> (u16, String) {
-    let c = reqwest::Client::new();
+    let c = strata_server::http_client().build().unwrap();
     let mut r = match method {
         "GET" => c.get(format!("{base}{path}")),
         "DELETE" => c.delete(format!("{base}{path}")),

@@ -515,7 +515,8 @@ impl KeywordColumn {
 
     fn value_bytes(&self, code: u32) -> &[u8] {
         let (a, b) = (self.dict_offs[code as usize] as usize, self.dict_offs[code as usize + 1] as usize);
-        &self.dict_bytes[a.min(b)..b]
+        // Offsets past the bytes only come from a damaged file.
+        self.dict_bytes.get(a.min(b)..b).unwrap_or_default()
     }
 
     /// The code of `value` (its rank among the distinct values).
@@ -544,6 +545,20 @@ impl KeywordColumn {
     #[inline]
     pub fn code_of_doc(&self, d: DocId) -> Option<u32> {
         self.codes.get(d).map(|c| c as u32)
+    }
+
+    /// Writes the value codes of block `b`'s documents to `out` (`out[j]`
+    /// for document `BLOCK * b + j`) and returns the mask of those with a
+    /// value (bit `j % 64` of word `j / 64`): a single-valued field's codes,
+    /// as [`Self::code_of_doc`] reads them one by one.
+    pub fn block_codes_of(&self, b: usize, out: &mut [i64; BLOCK]) -> [u64; 2] {
+        self.codes.block_keys(b, out)
+    }
+
+    /// The bytes of document `d`'s value.
+    #[inline]
+    pub fn value_bytes_of_doc(&self, d: DocId) -> Option<&[u8]> {
+        self.code_of_doc(d).map(|c| self.value_bytes(c))
     }
 
     /// The value of document `d`.
@@ -611,6 +626,16 @@ impl KeywordColumn {
                 p.decode_into(&mut out);
                 DocSet::from_sorted(out, n)
             }
+        }
+    }
+
+    /// The documents with value `code`, in order, into `out` (cleared
+    /// first).
+    pub fn docs_code_into(&self, code: u32, out: &mut Vec<DocId>) {
+        out.clear();
+        match self.list(code) {
+            List::Rare(d) => out.extend_from_slice(d),
+            List::Pyramid(p) => p.decode_into(out),
         }
     }
 

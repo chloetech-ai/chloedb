@@ -4,10 +4,14 @@
 `strata.Database`), or talks to a running `strata-server` (`strata.connect`,
 `strata.Client`), with the same methods: `insert`, `upsert`, `delete`,
 `import_file`, `query`, `sql`, `search`, and `table()` for queries built
-from Python values instead of SQL text.
+from Python values instead of SQL text. A database in your process also
+answers with Arrow columns (`query_arrow`), which pyarrow, polars and pandas
+read without copying them.
 
 ```sh
-pip install ./strata-py          # from the repository's root; needs Rust
+# a release's prebuilt wheel (Linux glibc 2.35+, macOS 11+); no Rust needed
+pip install strata-db -f https://github.com/chloetech-ai/strata/releases/expanded_assets/strata-py-v0.1.0
+pip install ./strata-py          # or from source, from the repository's root; needs Rust
 ```
 
 ```python
@@ -29,9 +33,24 @@ for row in db.table().where(col("year") >= 1990).order_by(bm25("title", "dragon"
     print(row["title"])
 ```
 
-The guide is [docs/strata/python.md](../docs/strata/python.md). Tests:
+Frames are lazy dataframes over tables, run where the data is (pyarrow
+needed: `pip install "strata-db[frame]"`):
+
+```python
+import strata
+from strata import col
+
+shop = strata.connect("shop.strata")       # or a server: strata.connect("https://...")
+(shop["orders"].filter(col("status") == "paid")
+     .group_by("country").agg(revenue=col("amount").sum(), n=strata.len())
+     .sort("revenue", descending=True).to_polars())
+```
+
+The guide is [docs/strata/python.md](../docs/strata/python.md), and frames
+have [their own page](../docs/strata/frames.md). Tests:
 `maturin develop --release && pytest tests` in a virtualenv (the client
 tests use `../strata-server/target/release/strata-server`, or
 `$STRATA_SERVER`, and are skipped without it; the Kafka consumer's test
 needs a broker at `$STRATA_KAFKA`, such as Redpanda in Docker, and
-`confluent-kafka`).
+`confluent-kafka`; the Arrow tests need `pyarrow`, and `polars` and `pandas`
+for theirs).

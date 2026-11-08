@@ -10,10 +10,18 @@
 //! | `vec.<f>.sq8p` | per-dimension SQ8 minimum and scale |
 //! | `vec.<f>.bin` | binary codes instead of SQ8 ones, when the field asks for them (rows padded to 8 bytes) |
 //! | `vec.<f>.binp` | per-dimension threshold and spread of the binary codes |
+//! | `vec.<f>.rq` | RaBitQ codes instead, when the field asks for them: `n × stride` ([`rabitq`]) |
+//! | `vec.<f>.rqp` | the RaBitQ codes' centre (the segment's mean) and rotation seed |
 //! | `vec.<f>.present` | bitset of documents with a vector (only if some lack one) |
 //!
 //! plus the sections of its index: IVF (`ivf_centroids`, `ivf_dir`, `ivf`) or
-//! HNSW (`hnsw`, `hnsw_upper`); see [`ivf`] and [`hnsw`] for the layouts.
+//! HNSW (`hnsw`, `hnsw_upper`); see [`ivf`] and [`hnsw`] for the layouts. A
+//! partitioned HNSW field ([`crate::schema::VectorPartition`]) also has, for
+//! each partition `i` the header lists ([`PartitionsInfo`]), its rows'
+//! docIDs (`part<i>.docs`, u32) and a graph over them numbered from 0
+//! (`part<i>.hnsw`, `part<i>.hnsw_upper`), which scores the field's codes
+//! through the docIDs: a partition costs its links and docIDs, not a copy of
+//! its vectors.
 //! [`VectorReader`] views all of them in place. A multi-vector field
 //! (`VECTOR(d)[]`) has the same sections over its vectors rather than its
 //! rows, and maps between the two ([`multi`]).
@@ -22,7 +30,9 @@
 //! NEON `usdot`), keeps the best `rerank` candidates and re-ranks them with
 //! float32. A field with binary codes ([`crate::schema::VectorCodes`]) is
 //! searched the same way over a bit per dimension ([`bits`]) and keeps
-//! [`codes::BINARY_RERANK`]` × rerank` candidates. Only the codes (and the
+//! [`codes::BINARY_RERANK`]` × rerank` candidates; one with RaBitQ codes
+//! ([`rabitq`]) estimates each row's dot product from its bits and a
+//! correction factor, and keeps [`codes::oversample`]` × rerank`. Only the codes (and the
 //! index) need to stay in memory: the float32 rows are read for the
 //! candidates alone, so they can stay on disk. The [`Strategy`] decides which
 //! codes are scored:
@@ -33,8 +43,11 @@
 //! * `Hnsw`: a graph walk; with a filter, non-members are traversed but not
 //!   collected.
 //! * `PreFilter`: only the filter's members (exact up to SQ8 ties).
-//! * `PostFilter`: an unfiltered index search for `k·margin/selectivity`
-//!   candidates, then the filter; retried with 4× more if short.
+//! * `PostFilter`: an unfiltered index search for `max(rerank, k·margin)/
+//!   selectivity` candidates (so that as many members are re-ranked as an
+//!   unfiltered search re-ranks rows), then the filter; retried with 4× more
+//!   if short. Over HNSW it can go on from the planner's selectivity sample
+//!   ([`Sample`]).
 //! * `Auto`: the cheapest by the [`CostModel`].
 
 pub mod bits;
@@ -43,6 +56,7 @@ pub mod cost;
 pub mod exact;
 pub mod kernels;
 pub mod multi;
+pub mod rabitq;
 pub mod sq8;
 
 mod build;
@@ -68,7 +82,8 @@ pub use ivf::{default_nlist, filtered_probe_weight, filtered_probes};
 use hnsw::HnswView;
 use ivf::IvfView;
 use bits::Bits;
-use codes::{Quantiser, QueryCode, BINARY_RERANK};
+use codes::{Quantiser, QueryCode};
+use rabitq::Rabitq;
 use kernels::{dot_f32, prefetch};
 use sq8::Sq8;
 use topk::{Members, TopK};
@@ -85,6 +100,15 @@ pub fn field_builder(field: &Field, opts: &BuildOptions) -> Result<Box<dyn Field
 /// joined to it.
 pub fn field_builder_from(field: &Field, opts: &BuildOptions, segs: Vec<(SegmentFile, u32)>) -> Result<Box<dyn FieldIndexBuilder>> {
     Ok(Box::new(build::VectorBuilder::new(field, opts)?.start_from(segs)))
+}
+
+/// The sections of a field's codes and of their parameters.
+pub(crate) fn parts(codes: VectorCodes) -> (&'static str, &'static str) {
+    match codes {
+        VectorCodes::Sq8 => ("sq8", "sq8p"),
+        VectorCodes::Binary => ("bin", "binp"),
+        VectorCodes::Rabitq1 | VectorCodes::Rabitq2 | VectorCodes::Rabitq4 => ("rq", "rqp"),
+    }
 }
 
 /// Name of section `part` of vector field `field`.
@@ -124,6 +148,47 @@ pub struct VectorInfo {
     /// one-vector field, with `keep_f32` for a multi-vector one.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub f32: bool,
+    /// A partitioned field's graphs per partition
+    /// ([`crate::schema::VectorPartition`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partitions: Option<PartitionsInfo>,
+}
+
+/// The partitions of a segment's graph ([`VectorInfo::partitions`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PartitionsInfo {
+    /// The bounds of a numeric key's ranges when the segment was built;
+    /// empty for a KEYWORD key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bounds: Vec<f64>,
+    /// Whether every row with a vector and a key is in a partition: false
+    /// when a KEYWORD key had more values than
+    /// [`crate::schema::MAX_VALUE_PARTITIONS`], and only the most frequent
+    /// got one.
+    pub complete: bool,
+    /// The partitions with rows, by key.
+    pub parts: Vec<PartInfo>,
+}
+
+/// One partition's key, rows and graph.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PartInfo {
+    /// A numeric key's range: `bounds[bucket - 1] <= key < bounds[bucket]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<usize>,
+    /// A KEYWORD key's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Rows (all with a vector).
+    pub n: usize,
+    pub entry: u32,
+    pub max_level: usize,
+}
+
+/// A partition's rows and graph, viewed in place.
+struct Part {
+    docs: Slice<u32>,
+    graph: HnswView,
 }
 
 fn is_sq8(c: &VectorCodes) -> bool {
@@ -185,7 +250,8 @@ impl Strategy {
 }
 
 /// Search knobs. `rerank` is the number of candidates re-ranked with
-/// float32 (at least `k`; times [`BINARY_RERANK`] over binary codes); HNSW
+/// float32 (at least `k`; times [`codes::oversample`] over binary and
+/// RaBitQ codes); HNSW
 /// searches with `max(ef, rerank)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SearchParams {
@@ -217,6 +283,10 @@ pub struct SearchStats {
     pub centroids: usize,
     /// Candidates handed to the float32 re-ranking.
     pub candidates: usize,
+    /// Of those, the ones not rescored: RaBitQ codes bounded their dot
+    /// product below the `k`-th exact score already found
+    /// ([`rabitq::RabitqQuery::upper`]).
+    pub pruned: usize,
     pub clusters_probed: usize,
     /// HNSW nodes expanded on layer 0.
     pub nodes_visited: usize,
@@ -224,6 +294,9 @@ pub struct SearchStats {
     pub filter_checks: usize,
     /// Post-filter searches repeated with more candidates.
     pub retries: usize,
+    /// Partition graphs walked instead of the field's graph
+    /// ([`VectorReader::search_parts`]).
+    pub partitions: usize,
     /// The cost model's prediction for the chosen strategy (µs).
     pub estimated_us: f64,
 }
@@ -233,6 +306,15 @@ pub struct SearchStats {
 pub struct SearchOutput {
     pub hits: Vec<Hit>,
     pub stats: SearchStats,
+}
+
+/// An unfiltered index search of one query, kept open: [`VectorReader::sample`]
+/// widens it, and a post-filter search of the same query over HNSW
+/// ([`VectorReader::search_from`]) goes on from it instead of walking the
+/// graph again from the top.
+#[derive(Default)]
+pub struct Sample {
+    walk: hnsw::Walk,
 }
 
 /// How an in-filter HNSW search moves through non-members (see
@@ -250,19 +332,27 @@ pub enum HnswFilterMode {
     TwoHop,
 }
 
-/// Code rows by docID.
+/// Code rows by docID, or with `map`, by a partition's row numbers (row
+/// `i` is document `map[i]`).
 pub(crate) struct Codes<'a> {
     data: &'a [u8],
     stride: usize,
+    map: Option<&'a [u32]>,
 }
 
 impl<'a> Codes<'a> {
     #[inline]
     pub fn row(&self, d: DocId) -> &'a [u8] {
-        &self.data[d as usize * self.stride..(d as usize + 1) * self.stride]
+        let d = self.doc(d) as usize;
+        &self.data[d * self.stride..(d + 1) * self.stride]
+    }
+    /// The document of row `d`.
+    #[inline]
+    pub fn doc(&self, d: u32) -> DocId {
+        self.map.map_or(d, |m| m[d as usize])
     }
     pub fn n(&self) -> usize {
-        self.data.len() / self.stride
+        self.map.map_or(self.data.len() / self.stride, |m| m.len())
     }
     pub fn stride(&self) -> usize {
         self.stride
@@ -310,6 +400,9 @@ pub struct VectorReader {
     present: Option<Slice<u64>>,
     ivf: Option<IvfView>,
     hnsw: Option<HnswView>,
+    /// A partitioned field's graphs per partition, in
+    /// [`PartitionsInfo::parts`] order.
+    parts: Vec<Part>,
     shape: IndexShape,
     cost: CostModel,
     io_hints: bool,
@@ -346,6 +439,7 @@ pub(crate) fn absent_meta(field: &Field, n_docs: usize) -> Result<Vec<u8>> {
         max_level: None,
         rows: None,
         f32: true,
+        partitions: None,
     };
     serde_json::to_vec(&info).map_err(|e| Error::Schema(e.to_string()))
 }
@@ -361,29 +455,38 @@ impl VectorReader {
         if info.rows.is_none() && info.missing == n && !seg.has(&section(field, "f32")) {
             return Ok(Self::absent(info));
         }
-        let (codes_part, params_part) = match info.codes {
-            VectorCodes::Sq8 => ("sq8", "sq8p"),
-            VectorCodes::Binary => ("bin", "binp"),
-        };
+        let (codes_part, params_part) = parts(info.codes);
         let vectors: Slice<f32> = if info.f32 { Slice::view(seg.require(&section(field, "f32"))?).map_err(corrupt)? } else { Slice::Owned(Vec::new()) };
         let codes: Slice<u8> = Slice::view(seg.require(&section(field, codes_part))?).map_err(corrupt)?;
         if (info.f32 && vectors.len() != n * info.stride_f32) || codes.len() != n * info.stride_u8 {
             return Err(corrupt(format!("vector field {field}: sections have the wrong size")));
         }
         let mut r = ByteReader::new(seg.require(&section(field, params_part))?);
-        let (a, b): (Slice<f32>, Slice<f32>) = (r.array().map_err(corrupt)?, r.array().map_err(corrupt)?);
-        if a.len() != dim || b.len() != dim {
-            return Err(corrupt(format!("vector field {field}: bad code parameters")));
-        }
-        let quant = match info.codes {
-            VectorCodes::Sq8 => Quantiser::Sq8(Sq8 { min: a, scale: b }),
-            VectorCodes::Binary => Quantiser::Bits(Bits { mean: a, spread: b }),
+        let bad = || corrupt(format!("vector field {field}: bad code parameters"));
+        let quant = match info.codes.rabitq_bits() {
+            Some(bits) => {
+                let centre: Slice<f32> = r.array().map_err(corrupt)?;
+                if centre.len() != dim || r.u64().map_err(corrupt)? != rabitq::SEED {
+                    return Err(bad());
+                }
+                Quantiser::Rabitq(Rabitq::new(bits, centre))
+            }
+            None => {
+                let (a, b): (Slice<f32>, Slice<f32>) = (r.array().map_err(corrupt)?, r.array().map_err(corrupt)?);
+                if a.len() != dim || b.len() != dim {
+                    return Err(bad());
+                }
+                match info.codes {
+                    VectorCodes::Sq8 => Quantiser::Sq8(Sq8 { min: a, scale: b }),
+                    _ => Quantiser::Bits(Bits { mean: a, spread: b }),
+                }
+            }
         };
         let multi = info.rows.map(|r| multi::Rows::open(seg, field, r, n)).transpose()?;
         let rescore = match (&quant, info.f32) {
             (_, true) => None,
             (Quantiser::Sq8(sq), false) => Some((codes.clone(), sq.clone())),
-            (Quantiser::Bits(_), false) => {
+            (Quantiser::Bits(_) | Quantiser::Rabitq(_), false) => {
                 let c: Slice<u8> = Slice::view(seg.require(&section(field, "rescore"))?).map_err(corrupt)?;
                 let mut r = ByteReader::new(seg.require(&section(field, "rescorep"))?);
                 let (min, scale): (Slice<f32>, Slice<f32>) = (r.array().map_err(corrupt)?, r.array().map_err(corrupt)?);
@@ -423,8 +526,21 @@ impl VectorReader {
             }
             other => return Err(corrupt(format!("unknown vector index {other}"))),
         }
+        let mut parts = Vec::new();
+        if let Some(p) = &info.partitions {
+            let m = info.m.filter(|_| hnsw.is_some()).ok_or_else(|| corrupt(format!("vector field {field}: partitions without a graph")))?;
+            for (i, pi) in p.parts.iter().enumerate() {
+                let part = |x: &str| section(field, &format!("part{i}.{x}"));
+                let docs: Slice<u32> = Slice::view(seg.require(&part("docs"))?).map_err(corrupt)?;
+                if docs.len() != pi.n || docs.iter().any(|&d| d as usize >= n) || !docs.windows(2).all(|w| w[0] < w[1]) {
+                    return Err(corrupt(format!("vector field {field}: bad rows of partition {i}")));
+                }
+                let graph = HnswView::open(m, pi.entry, seg.require(&part("hnsw"))?, seg.require(&part("hnsw_upper"))?, pi.n)?;
+                parts.push(Part { docs, graph });
+            }
+        }
         let shape = IndexShape { n: n - info.missing, kind: info.index.clone(), nlist: info.nlist.unwrap_or(1), hnsw_m: info.m.unwrap_or(16) };
-        Ok(VectorReader { info, vectors, codes, quant, rescore, multi, present, ivf, hnsw, shape, cost: CostModel::default(), io_hints: false, hnsw_filter: HnswFilterMode::Traverse, absent: false })
+        Ok(VectorReader { info, vectors, codes, quant, rescore, multi, present, ivf, hnsw, parts, shape, cost: CostModel::default(), io_hints: false, hnsw_filter: HnswFilterMode::Traverse, absent: false })
     }
 
     /// The reader of an [`absent_meta`] header: no row has a vector.
@@ -433,6 +549,7 @@ impl VectorReader {
         let quant = match info.codes {
             VectorCodes::Sq8 => Quantiser::Sq8(Sq8 { min: zeros(), scale: zeros() }),
             VectorCodes::Binary => Quantiser::Bits(Bits { mean: zeros(), spread: zeros() }),
+            c => Quantiser::Rabitq(Rabitq::new(c.rabitq_bits().expect("rabitq"), zeros())),
         };
         let shape = IndexShape { n: 0, kind: info.index.clone(), nlist: 1, hnsw_m: 16 };
         VectorReader {
@@ -444,6 +561,7 @@ impl VectorReader {
             present: Some(Slice::Owned(vec![0u64; info.n.div_ceil(64)])),
             ivf: None,
             hnsw: None,
+            parts: Vec::new(),
             shape,
             cost: CostModel::default(),
             io_hints: false,
@@ -583,7 +701,7 @@ impl VectorReader {
     pub fn codes(&self, doc: DocId) -> &[u8] {
         match self.absent {
             true => &self.codes,
-            false => Codes { data: &self.codes, stride: self.info.stride_u8 }.row(doc),
+            false => Codes { data: &self.codes, stride: self.info.stride_u8, map: None }.row(doc),
         }
     }
 
@@ -592,7 +710,7 @@ impl VectorReader {
     pub fn sq8(&self) -> Option<&Sq8> {
         match &self.quant {
             Quantiser::Sq8(s) => Some(s),
-            Quantiser::Bits(_) => None,
+            Quantiser::Bits(_) | Quantiser::Rabitq(_) => None,
         }
     }
 
@@ -614,10 +732,12 @@ impl VectorReader {
             && match &self.quant {
                 Quantiser::Sq8(s) => matches!(s.min, Slice::Shared { .. }),
                 Quantiser::Bits(b) => matches!(b.mean, Slice::Shared { .. }),
+                Quantiser::Rabitq(r) => matches!(r.centre, Slice::Shared { .. }),
             }
             && self.present.as_ref().is_none_or(|p| matches!(p, Slice::Shared { .. }))
             && self.ivf.as_ref().is_none_or(|v| v.is_shared())
             && self.hnsw.as_ref().is_none_or(|v| v.is_shared())
+            && self.parts.iter().all(|p| matches!(p.docs, Slice::Shared { .. }) && p.graph.is_shared())
     }
 
     /// Predicted latency in microseconds of `strategy` for a top-`k` search
@@ -640,6 +760,36 @@ impl VectorReader {
 
     /// The top-`k` documents by similarity to `query`, best first.
     pub fn search(&self, query: &[f32], k: usize, params: &SearchParams, filter: Option<&dyn DocFilter>) -> SearchOutput {
+        self.search_from(query, k, params, filter, None)
+    }
+
+    /// The documents of the `m` nearest neighbours of `query` by code score
+    /// (not re-ranked), from an unfiltered index search that `sample` keeps:
+    /// called again with a larger `m`, an HNSW walk goes on where it stopped.
+    /// Without HNSW it is a plain index search of `m` (`params`' `nprobe`).
+    pub fn sample(&self, query: &[f32], m: usize, params: &SearchParams, sample: &mut Sample) -> Vec<DocId> {
+        assert_eq!(query.len(), self.info.dim, "query dimension");
+        let m = m.min(self.shape.n);
+        match &self.hnsw {
+            Some(h) if self.info.index == "hnsw" && self.multi.is_none() && m > 0 => {
+                let qc = self.quant.prepare(query, self.info.stride_u8);
+                let mut stats = SearchStats::default();
+                let mut c = h.walk(&mut sample.walk, &self.code_rows(), &qc, m, None, false, self.io_hints, &mut stats);
+                c.truncate(m);
+                c.into_iter().map(|(_, d)| d).collect()
+            }
+            _ => {
+                let strategy = if self.info.index == "ivf" { Strategy::Ivf } else { Strategy::Flat };
+                let sp = SearchParams { strategy, rerank: 0, ef: m, ..params.clone() };
+                self.search(query, m, &sp, None).hits.into_iter().map(|h| h.doc).collect()
+            }
+        }
+    }
+
+    /// [`Self::search`], going on from `sample` (an unfiltered search of the
+    /// same `query`, [`Self::sample`]) when the strategy is a post-filter
+    /// over HNSW, rather than walking the graph again.
+    pub fn search_from(&self, query: &[f32], k: usize, params: &SearchParams, filter: Option<&dyn DocFilter>, sample: Option<&mut Sample>) -> SearchOutput {
         assert_eq!(query.len(), self.info.dim, "query dimension");
         // No search returns more rows than the segment holds, and every
         // size derived from k (heaps, rerank pools) stays within it.
@@ -682,11 +832,63 @@ impl VectorReader {
             Strategy::PreFilter => self.scan(&qc, r, members, &mut stats),
             Strategy::Ivf => self.ivf.as_ref().expect("planned").search(&qc, &qf, r, params.nprobe, members.map(|m| (m, s)), self.io_hints, &mut stats),
             Strategy::Hnsw => self.hnsw_search(&qc, params.ef.max(r), r, members, &mut stats),
-            Strategy::PostFilter => self.post_filter(&qc, &qf, k, r, params, members.expect("filtered"), s, &mut stats),
+            Strategy::PostFilter => self.post_filter(&qc, &qf, k, r, params, members.expect("filtered"), s, sample, &mut stats),
             Strategy::Auto => unreachable!("planned"),
         };
         stats.candidates = cands.len();
-        let hits = self.rerank(query, &cands, k, &mut stats);
+        let hits = self.rerank(query, &qc, &cands, k, &mut stats);
+        SearchOutput { hits, stats }
+    }
+
+    /// The partitions of this segment's graph (a partitioned field's,
+    /// [`crate::schema::VectorPartition`]), or none.
+    pub fn partitions(&self) -> Option<&PartitionsInfo> {
+        self.info.partitions.as_ref()
+    }
+
+    /// [`Self::search`] over partitions `parts` (positions in
+    /// [`PartitionsInfo::parts`]) only: each one's graph is walked with
+    /// `params`' `ef` (at least the re-rank depth), testing `filter` inside
+    /// it, and the best candidates of all of them are re-ranked together.
+    /// A partition whose rows all pass the query's filter needs none: the
+    /// walk then costs what an unfiltered search of the partition costs.
+    pub fn search_parts(&self, query: &[f32], k: usize, params: &SearchParams, parts: &[usize], filter: Option<&dyn DocFilter>) -> SearchOutput {
+        assert_eq!(query.len(), self.info.dim, "query dimension");
+        let total: usize = parts.iter().map(|&i| self.parts[i].docs.len()).sum();
+        let k = k.min(total);
+        let card = filter.map(|f| f.cardinality());
+        let mut stats = SearchStats { strategy: Strategy::Hnsw, partitions: parts.len(), ..Default::default() };
+        if k == 0 || card == Some(0) {
+            return SearchOutput { hits: Vec::new(), stats };
+        }
+        let qc = self.quant.prepare(query, self.info.stride_u8);
+        let r = params.rerank.max(k) * self.oversample();
+        let members = filter.map(Members::of);
+        // Walks test far more documents than a sparse filter has members.
+        let bits: Vec<u64>;
+        let members = match members {
+            Some(Members::Sorted(docs)) => {
+                let mut b = vec![0u64; self.info.n.div_ceil(64)];
+                for &d in docs {
+                    b[d as usize / 64] |= 1 << (d % 64);
+                }
+                bits = b;
+                Some(Members::Bits(&bits))
+            }
+            m => m,
+        };
+        let mut cands: Vec<(i32, DocId)> = Vec::new();
+        for &i in parts {
+            let p = &self.parts[i];
+            let codes = Codes { data: &self.codes, stride: self.info.stride_u8, map: Some(&p.docs) };
+            let ef = params.ef.max(r).min(p.docs.len());
+            let c = p.graph.search(&codes, &qc, ef, members, false, self.io_hints, &mut stats);
+            cands.extend(c.into_iter().map(|(s, d)| (s, p.docs[d as usize])));
+        }
+        cands.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        cands.truncate(r);
+        stats.candidates = cands.len();
+        let hits = self.rerank(query, &qc, &cands, k, &mut stats);
         SearchOutput { hits, stats }
     }
 
@@ -703,17 +905,14 @@ impl VectorReader {
         all
     }
 
-    /// How many times more candidates the codes need rescored: 1 for SQ8,
-    /// [`BINARY_RERANK`] for binary codes.
+    /// How many times more candidates the codes need rescored
+    /// ([`codes::oversample`]).
     fn oversample(&self) -> usize {
-        match self.info.codes {
-            VectorCodes::Sq8 => 1,
-            VectorCodes::Binary => BINARY_RERANK,
-        }
+        codes::oversample(self.info.codes)
     }
 
     fn code_rows(&self) -> Codes<'_> {
-        Codes { data: &self.codes, stride: self.info.stride_u8 }
+        Codes { data: &self.codes, stride: self.info.stride_u8, map: None }
     }
 
     /// Code scan of every document, or of a filter's members.
@@ -783,22 +982,29 @@ impl VectorReader {
         c
     }
 
-    /// Unfiltered search for `k·margin/s` candidates, then the filter; the
-    /// candidate count grows 4× until `k` members survive or every document
-    /// was a candidate. An HNSW walk goes on from where it stopped instead of
-    /// starting over (pgvector's iterative scan).
+    /// Unfiltered search for enough candidates that `r` members (the re-rank
+    /// depth an unfiltered search keeps) are expected among them, and at
+    /// least `k·margin`: `max(r, k·margin)/s`; then the filter. The candidate
+    /// count grows 4× until `k` members survive or every document was a
+    /// candidate. An HNSW walk goes on from where it stopped instead of
+    /// starting over (pgvector's iterative scan), and starts from `sample`'s
+    /// walk when there is one.
     #[allow(clippy::too_many_arguments)]
-    fn post_filter(&self, q: &QueryCode, qf: &[f32], k: usize, r: usize, p: &SearchParams, m: Members, s: f64, stats: &mut SearchStats) -> Vec<(i32, DocId)> {
+    fn post_filter(&self, q: &QueryCode, qf: &[f32], k: usize, r: usize, p: &SearchParams, m: Members, s: f64, sample: Option<&mut Sample>, stats: &mut SearchStats) -> Vec<(i32, DocId)> {
         let n = self.shape.n;
         // Binary codes order candidates more loosely: keep as many members
         // as they rescore.
         let k = k * self.oversample();
-        let mut kp = ((k as f64 * self.cost.post_margin / s).ceil() as usize).max(r).min(n);
-        let mut walk = hnsw::Walk::default();
+        let mut kp = cost::post_filter_candidates(k, r, self.cost.post_margin, s, n);
+        let mut own = hnsw::Walk::default();
+        let walk = match sample {
+            Some(x) => &mut x.walk,
+            None => &mut own,
+        };
         loop {
             let cands = match self.info.index.as_str() {
                 "hnsw" => {
-                    let mut c = self.hnsw.as_ref().expect("hnsw").walk(&mut walk, &self.code_rows(), q, p.ef.max(kp), None, false, self.io_hints, stats);
+                    let mut c = self.hnsw.as_ref().expect("hnsw").walk(walk, &self.code_rows(), q, p.ef.max(kp), None, false, self.io_hints, stats);
                     c.truncate(kp);
                     c
                 }
@@ -817,8 +1023,9 @@ impl VectorReader {
     }
 
     /// Float32 scores of the candidates (best code score first), best `k`
-    /// kept.
-    fn rerank(&self, query: &[f32], cands: &[(i32, DocId)], k: usize, stats: &mut SearchStats) -> Vec<Hit> {
+    /// kept. Over RaBitQ codes, a candidate whose bound is below the `k`-th
+    /// exact score so far is passed over unread.
+    fn rerank(&self, query: &[f32], qc: &QueryCode, cands: &[(i32, DocId)], k: usize, stats: &mut SearchStats) -> Vec<Hit> {
         if !self.info.f32 {
             // A multi-vector field's SQ8 codes stand for its vectors.
             let q = self.prepare_exact(query);
@@ -829,15 +1036,44 @@ impl VectorReader {
             return hits;
         }
         let row_bytes = self.info.stride_f32 * 4;
-        if self.io_hints {
-            io::will_need(&mut cands.iter().map(|&(_, d)| (self.vector(d).as_ptr() as usize, row_bytes)).collect::<Vec<_>>());
-        }
+        let hint = |rows: &mut dyn Iterator<Item = DocId>| {
+            if self.io_hints {
+                io::will_need(&mut rows.map(|d| (self.vector(d).as_ptr() as usize, row_bytes)).collect::<Vec<_>>());
+            }
+        };
         let mut hits: Vec<Hit> = Vec::with_capacity(cands.len());
-        for (i, &(_, d)) in cands.iter().enumerate() {
+        let bounded = match qc {
+            QueryCode::Rabitq(q) if k > 0 => Some(q),
+            _ => None,
+        };
+        // Over RaBitQ codes the first k rows are read ahead, and once their
+        // scores set a bar, only the rest that can still pass it.
+        let first = if bounded.is_some() { k.min(cands.len()) } else { cands.len() };
+        hint(&mut cands[..first].iter().map(|&(_, d)| d));
+        // The k best exact scores so far, the k-th on top.
+        let mut best: std::collections::BinaryHeap<std::cmp::Reverse<i32>> = std::collections::BinaryHeap::with_capacity(k + 1);
+        for (i, &(s, d)) in cands.iter().enumerate() {
+            if let Some(q) = bounded {
+                if i == first {
+                    let bar = rabitq::unordered(best.peek().expect("k scores").0);
+                    hint(&mut cands[first..].iter().filter(|&&(s, d)| q.upper(s, self.codes(d)) >= bar).map(|&(_, d)| d));
+                }
+                if best.len() == k && q.upper(s, self.codes(d)) < rabitq::unordered(best.peek().expect("k scores").0) {
+                    stats.pruned += 1;
+                    continue;
+                }
+            }
             if let Some(&(_, next)) = cands.get(i + 1) {
                 prefetch(self.vector(next).as_ptr() as *const u8, row_bytes);
             }
-            hits.push(Hit { doc: d, score: self.similarity(d, query) });
+            let score = self.similarity(d, query);
+            hits.push(Hit { doc: d, score });
+            if bounded.is_some() {
+                best.push(std::cmp::Reverse(rabitq::ordered(score)));
+                if best.len() > k {
+                    best.pop();
+                }
+            }
         }
         stats.f32_distances += hits.len();
         sort_hits(&mut hits);

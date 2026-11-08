@@ -288,3 +288,58 @@ fn a_cancelled_query_stops() {
     let r = a.query_with(sql, &Params::new(), &opts);
     assert!(matches!(&r, Err(strata::Error::Timeout(m)) if m.contains("cancelled")), "{r:?}");
 }
+
+/// The terms a coordinator works out from a query alone
+/// (`cluster::stat_terms`), to sum the statistics it kept of each shard,
+/// are those each shard's statistics round answers, field by field; and a
+/// query whose terms a shard expands (typos, synonyms) has none, so that it
+/// keeps its round.
+#[test]
+fn kept_statistics_have_the_terms_a_round_answers() {
+    let docs = data::synthetic(N, DIM, 7);
+    let dir = tempfile::tempdir().unwrap();
+    let a = open(dir.path(), "a.strata", &docs[..N / 2]);
+    let b = open(dir.path(), "b.strata", &docs[N / 2..]);
+    let title = docs[42][data::col::TITLE].as_str().unwrap().to_string();
+    let words: Vec<&str> = title.split(' ').take(3).collect();
+    let params = Params::new()
+        .set("q", docs[42][data::col::EMB].clone())
+        .set("t", Value::Str(format!("The {} and of {}", words.join(" "), words[0])))
+        .set("s", Value::Str(format!("+{} \"{} {}\" -nothing {}^2", words[0], words[1], words[2], words[1])));
+    let kept = [
+        "SELECT id, score() FROM docs ORDER BY bm25(body, :t) DESC LIMIT 10",
+        "SELECT id, score() FROM docs ORDER BY bm25(body, :t, syntax => 'plain') DESC LIMIT 10",
+        "SELECT id, score() FROM docs ORDER BY bm25(body, :t, syntax => 'plain', stopwords => 0) DESC LIMIT 10",
+        "SELECT id, score() FROM docs ORDER BY bm25(body, :s) DESC LIMIT 10",
+        "SELECT id, score() FROM docs WHERE year >= 2005 ORDER BY bm25(body, :t, min => 2) DESC LIMIT 10",
+        "SELECT id, score() FROM docs ORDER BY rrf(bm25(body, :t), bm25(body, :s), similarity(emb, :q)) DESC LIMIT 10",
+        "SELECT id, score() FROM docs ORDER BY bm25(body, :t) * decay(year, 2020, 5) DESC LIMIT 10",
+    ];
+    for sql in kept {
+        let schema = a.snapshot().schema().clone();
+        let select = bind(sql, &schema, &params).unwrap();
+        let terms = cluster::stat_terms(&select, &schema).unwrap().unwrap_or_else(|| panic!("{sql}: no terms"));
+        for d in [&a, &b] {
+            let round = d.term_stats(&d.snapshot(), &select).unwrap();
+            let mut want: Vec<(String, Vec<String>)> = round.fields.iter().map(|(f, s)| (f.clone(), s.df.keys().cloned().collect())).collect();
+            let mut got: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = Default::default();
+            for (f, ts) in &terms {
+                got.entry(f.clone()).or_default().extend(ts.iter().cloned());
+            }
+            let mut got: Vec<(String, Vec<String>)> = got.into_iter().map(|(f, ts)| (f, ts.into_iter().collect())).collect();
+            want.sort();
+            got.sort();
+            assert_eq!(got, want, "{sql}");
+        }
+    }
+    for sql in [
+        "SELECT id, score() FROM docs ORDER BY bm25(body, :t, fuzzy => 'auto') DESC LIMIT 10",
+        "SELECT id, score() FROM docs ORDER BY bm25(body, :t, fuzzy => 1) DESC LIMIT 10",
+        "SELECT id, score() FROM docs ORDER BY rrf(bm25(body, :t), bm25(body, :s, fuzzy => 2)) DESC LIMIT 10",
+        "SELECT id, score() FROM docs ORDER BY similarity(emb, :q) DESC LIMIT 10",
+    ] {
+        let schema = a.snapshot().schema().clone();
+        let select = bind(sql, &schema, &params).unwrap();
+        assert!(cluster::stat_terms(&select, &schema).unwrap().is_none(), "{sql}");
+    }
+}

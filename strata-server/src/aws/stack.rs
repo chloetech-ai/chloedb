@@ -26,6 +26,12 @@ const NODE_PODS: u32 = 4;
 /// The cluster's own pods: two CoreDNS and two EBS controllers.
 const SYSTEM_PODS: u32 = 4;
 
+/// The CPU an EKS node keeps from its pods, in cores: what the EKS AMI
+/// reserves for the kubelet (70m to 90m on 2 to 8 vCPUs) and the
+/// requests of aws-node (25m), kube-proxy (100m) and the EBS driver's
+/// node pod on every node. Not measured on a running node yet.
+pub const SYSTEM_CPU: f64 = 0.25;
+
 /// What is asked for: `POST /v1/admin/aws/plan`.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -42,7 +48,7 @@ pub struct Plan {
     /// Each copy's volume (gp3), GiB.
     pub volume_gb: u32,
     /// The StrataCluster's spec, in part: what is left out is filled in
-    /// (`shards`, `replicas`, `coordinators`, `demo` 10,000, the image,
+    /// (`shards`, `replicas`, `coordinators`, no demo rows, the image,
     /// the volume's size and class, each copy's share of a node).
     pub cluster: Json,
 }
@@ -72,15 +78,25 @@ pub fn plan(p: &Plan, cat: &Catalog, principal_arn: &str) -> Result<Json, String
     if p.region != cat.region {
         return Err(format!("the machines are those of {}, not {}", cat.region, p.region));
     }
-    let m = cat.machines.iter().find(|m| m.name == p.machine).ok_or_else(|| format!("{} is not a machine a cluster runs on in {} (the current generation, on demand, without accelerators)", p.machine, p.region))?;
-    if !(1..=100).contains(&p.nodes) {
-        return Err("nodes is 1 to 100".into());
+    let m = if p.machine == crate::cloud::SMALLEST {
+        // The cheapest type that gives each copy the floor and runs the
+        // pods a node gets (EKS's VPC CNI caps them by type).
+        let types: Vec<_> = cat.machines.iter().filter(|m| if p.spot { m.spot_hour.is_some() } else { m.usd_hour.is_some() }).collect();
+        let offer: Vec<(f64, Node)> = types.iter().map(|m| (if p.spot { m.spot_hour } else { m.usd_hour }.unwrap_or(f64::MAX), Node { vcpu: m.vcpu, alloc_gib: allocatable_gib(m), system_cpu: SYSTEM_CPU })).collect();
+        let pods_fit = |i: &usize| fit(&p.cluster, p.nodes, &offer[*i].1, p.volume_gb, "gp3").is_ok_and(|f| f.per_node + NODE_PODS + (SYSTEM_PODS + f.coordinators + 1).div_ceil(p.nodes.max(1)) <= types[*i].max_pods);
+        let i = crate::cloud::by_price_with_floor(&p.cluster, p.nodes, &offer, p.volume_gb, "gp3").into_iter().find(pods_fit);
+        types[i.ok_or_else(|| format!("no machine in {} gives each copy {} GiB and {} CPU on {} nodes: more nodes, or fewer copies", p.region, crate::cloud::COPY_FLOOR_GIB, crate::cloud::COPY_FLOOR_CPU, p.nodes))?]
+    } else {
+        cat.machines.iter().find(|m| m.name == p.machine).ok_or_else(|| format!("{} is not a machine a cluster runs on in {} (the current generation, on demand, without accelerators)", p.machine, p.region))?
+    };
+    if !(1..=1000).contains(&p.nodes) {
+        return Err("nodes is 1 to 1,000".into());
     }
     if !(1..=16_384).contains(&p.volume_gb) {
         return Err("volume_gb is 1 to 16,384 (a gp3 volume's size)".into());
     }
     let alloc = allocatable_gib(m);
-    let f = fit(&p.cluster, p.nodes, &Node { vcpu: m.vcpu, alloc_gib: alloc }, p.volume_gb, "gp3")?;
+    let f = fit(&p.cluster, p.nodes, &Node { vcpu: m.vcpu, alloc_gib: alloc, system_cpu: SYSTEM_CPU }, p.volume_gb, "gp3")?;
     let (per_node, coordinators, replicas) = (f.per_node, f.coordinators, f.replicas);
 
     let mut warnings = f.warnings(p.nodes);
@@ -149,7 +165,7 @@ pub fn plan(p: &Plan, cat: &Catalog, principal_arn: &str) -> Result<Json, String
         "warnings": warnings,
         "manifests": {"operator": operator_yaml(&image)?, "cluster": cluster_yaml("A Strata cluster on EKS, from strata-server's cloud view", &objects)},
         "objects": objects,
-        "commands": commands,
+        "commands": crate::cloud::with_token_secret(&f.cluster, &commands),
         "teardown": teardown,
         "cluster": f.cluster,
         "template": template(p, m, principal_arn),
@@ -333,11 +349,25 @@ mod tests {
         assert_eq!(j["cost"]["lines"][0]["what"], "2 × m8g.medium (spot, latest price)");
         assert_eq!(j["template"]["Resources"]["Nodes"]["Properties"]["CapacityType"], "SPOT");
 
+        // The smallest machine: m8g.medium's one vCPU leaves a copy less
+        // than half of one beside what the node runs, so m8g.large, on
+        // demand and on spot; the larger r8g only when a large starves.
+        let smallest = |nodes: u32, cluster: Json, spot: bool| {
+            let j = plan(&Plan { machine: crate::cloud::SMALLEST.into(), nodes, cluster, spot, ..Plan::default() }, &catalog(32.0), "arn").unwrap();
+            assert!(!j["warnings"].to_string().contains("each copy"), "{}", j["warnings"]);
+            j["template"]["Resources"]["Nodes"]["Properties"]["InstanceTypes"][0].as_str().unwrap().to_string()
+        };
+        assert_eq!(smallest(3, json!({}), false), "m8g.large");
+        assert_eq!(smallest(3, json!({}), true), "m8g.large");
+        assert_eq!(smallest(1, json!({"shards": 1, "replicas": 1}), false), "m8g.large");
+        assert_eq!(smallest(3, json!({"shards": 4, "replicas": 3}), false), "r8g.xlarge");
+        assert!(plan(&Plan { machine: crate::cloud::SMALLEST.into(), nodes: 1, cluster: json!({"shards": 64, "replicas": 2}), ..Plan::default() }, &catalog(32.0), "arn").unwrap_err().contains("no machine in us-east-1 gives each copy"));
+
         // What cannot be planned.
         let bad = |p: Plan| plan(&p, &catalog(32.0), "arn").unwrap_err();
         assert!(bad(Plan { name: "Search!".into(), ..Plan::default() }).contains("not a cluster name"));
         assert!(bad(Plan { machine: "p5.48xlarge".into(), ..Plan::default() }).contains("not a machine a cluster runs on"));
-        assert!(bad(Plan { nodes: 0, ..Plan::default() }).contains("nodes is 1 to 100"));
+        assert!(bad(Plan { nodes: 0, ..Plan::default() }).contains("nodes is 1 to 1,000"));
         assert!(bad(Plan { region: "eu-west-1".into(), ..Plan::default() }).contains("those of us-east-1"));
         assert!(bad(Plan { cluster: json!({"replicas": 0}), ..Plan::default() }).contains("cluster: shards, replicas and coordinators are 1 or more"));
     }

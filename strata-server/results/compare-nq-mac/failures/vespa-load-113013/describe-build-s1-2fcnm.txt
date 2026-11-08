@@ -1,0 +1,94 @@
+Name:             build-s1-2fcnm
+Namespace:        compare
+Priority:         0
+Service Account:  default
+Node:             strata-worker2/172.19.0.2
+Start Time:       Mon, 02 Nov 2026 02:57:58 -0800
+Labels:           batch.kubernetes.io/controller-uid=c6ea5416-b9d0-4b6f-bc04-1eea89b3a21d
+                  batch.kubernetes.io/job-name=build-s1
+                  controller-uid=c6ea5416-b9d0-4b6f-bc04-1eea89b3a21d
+                  job-name=build-s1
+Annotations:      <none>
+Status:           Succeeded
+IP:               10.244.3.8
+IPs:
+  IP:           10.244.3.8
+Controlled By:  Job/build-s1
+Containers:
+  compare:
+    Container ID:  containerd://0e67cedada7ce13eaa2a465bdbd055e4223afd65d2fb83327e9756ca7133fcd6
+    Image:         strata-server:compare
+    Image ID:      docker.io/library/import-2026-11-02@sha256:a28f87720802b70cf496df806dc4c6d2f88510c0e3aa821b291176efffc5306c
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      engine-compare
+    Args:
+      build
+      --shard
+      1
+      --of
+      2
+      --out
+      /local/nq-1000k.shard1of2.strata
+      --threads
+      3
+      --collection
+      nq-1000k
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 02 Nov 2026 02:57:58 -0800
+      Finished:     Mon, 02 Nov 2026 02:59:24 -0800
+    Ready:          False
+    Restart Count:  0
+    Limits:
+      cpu:     3
+      memory:  6Gi
+    Requests:
+      cpu:     3
+      memory:  6Gi
+    Environment:
+      STRATA_DATA:   /beir
+      STRATA_TOKEN:  <set to the key 'token' in secret 'strata-token'>  Optional: true
+    Mounts:
+      /beir from beir (ro)
+      /data from data (rw)
+      /local from local (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-jxn94 (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   False 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  beir:
+    Type:          HostPath (bare host directory volume)
+    Path:          /beir
+    HostPathType:  Directory
+  data:
+    Type:          HostPath (bare host directory volume)
+    Path:          /data
+    HostPathType:  Directory
+  local:
+    Type:          HostPath (bare host directory volume)
+    Path:          /var/local/compare
+    HostPathType:  DirectoryOrCreate
+  kube-api-access-jxn94:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Guaranteed
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type    Reason   Age   From     Message
+  ----    ------   ----  ----     -------
+  Normal  Pulled   32m   kubelet  spec.containers{compare}: Container image "strata-server:compare" already present on machine and can be accessed by the pod
+  Normal  Created  32m   kubelet  spec.containers{compare}: Container created
+  Normal  Started  32m   kubelet  spec.containers{compare}: Container started

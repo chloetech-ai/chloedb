@@ -490,3 +490,46 @@ fn verify_checksums_skips_a_version_with_a_damaged_segment() {
 fn verify_opts(src: &Arc<MapSource>) -> DbOptions {
     DbOptions { verify_checksums: true, ..opts(src) }
 }
+
+// A segment damaged on disk went unseen until a query read the damaged
+// section or a merge read the segment: a replica that served few searches
+// held it for days (the chaos monkey's bit rot). A scrub reads every
+// segment against its checksum without the writer lock, while writes go
+// on, and lists the damage rather than stopping at it.
+#[test]
+fn a_scrub_finds_a_damaged_segment_while_writes_go_on() {
+    for name in ["db.strata", "db.dir"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        let src = Arc::new(MapSource::default());
+        {
+            let db = open_or_create(&path, opts(&src));
+            insert(&db, &src, 0..300);
+            db.flush().unwrap();
+            insert(&db, &src, 300..600);
+            db.flush().unwrap();
+        }
+        let db = Database::open(&path, opts(&src)).unwrap();
+        let mut paced = 0;
+        let r = db.scrub(|b| paced += b).unwrap();
+        assert_eq!((r.segments, r.damaged.len()), (2, 0), "{name}: {r:?}");
+        assert!(r.bytes > 0 && paced == r.bytes, "{name}: {r:?}");
+        drop(db);
+
+        let (file, off, len) = segment_bytes(&path)[1].0.clone();
+        corrupt_byte(&file, off + len / 2);
+        let db = Database::open(&path, opts(&src)).unwrap();
+        // A write between segments: the scrub holds no lock it waits for.
+        let mut next = 1000;
+        let r = db
+            .scrub(|_| {
+                insert(&db, &src, next..next + 1);
+                next += 1;
+            })
+            .unwrap();
+        assert_eq!(r.segments, 2, "{name}");
+        assert_eq!(r.damaged.len(), 1, "{name}: {r:?}");
+        assert!(r.damaged[0].contains("fails its checksum"), "{name}: {r:?}");
+        assert!(db.check().is_err(), "{name}");
+    }
+}

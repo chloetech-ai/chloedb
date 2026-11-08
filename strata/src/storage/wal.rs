@@ -40,6 +40,13 @@
 //! applies by making the same change
 //! ([`crate::storage::Database::apply_shipped`]).
 //!
+//! The log is only ever appended to. Emptying it (after a flush) writes a
+//! new log with only a header under a temporary name and renames it over
+//! the old one, as creating one does; a background flush renames it away
+//! and starts a new one. A process reading the database without writing
+//! it ([`LogTail`]) reads the log from where it left off, and knows the
+//! log was replaced when its name names another file.
+//!
 //! A transaction is its operation records followed by a commit record,
 //! written with one `write` and made durable with one `fdatasync`. Replay
 //! stops at the first record that is short, fails its checksum or holds an
@@ -69,7 +76,7 @@
 //! f32s).
 
 use std::fs::{File, OpenOptions};
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -137,6 +144,7 @@ pub struct WalTxn {
 /// The open log, appended to by the single writer.
 pub struct Wal {
     file: File,
+    path: PathBuf,
     db_id: u64,
     /// Whether its transactions carry sequence numbers (`STRWAL02` with
     /// `seq_no`).
@@ -193,12 +201,19 @@ fn header_bytes(db_id: u64, numbered: bool, profiles: bool) -> Vec<u8> {
 }
 
 impl Wal {
-    /// Creates (or truncates) the log, numbered (`STRWAL02`) or not.
+    /// Creates the log, numbered (`STRWAL02`) or not, in place of one
+    /// that is there.
     pub fn create(path: &Path, db_id: u64, numbered: bool, sync: bool) -> Result<Wal> {
-        let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?;
-        let mut wal = Wal { file, db_id, numbered, profiles: false, header: 0, len: 0, dropped: None, unsynced: true };
-        wal.reset(sync)?;
-        Ok(wal)
+        let h = header_bytes(db_id, numbered, false);
+        let file = fresh(path, &h, sync)?;
+        let header = h.len() as u64;
+        Ok(Wal { file, path: path.to_path_buf(), db_id, numbered, profiles: false, header, len: header, dropped: None, unsynced: !sync })
+    }
+
+    /// A log a read-only database holds in the writer's place, over a
+    /// descriptor opened for reading only: nothing can be written to it.
+    pub(crate) fn unwritable(file: File, path: &Path, db_id: u64) -> Wal {
+        Wal { file, path: path.to_path_buf(), db_id, numbered: false, profiles: false, header: 0, len: 0, dropped: None, unsynced: false }
     }
 
     /// Opens the log and returns its committed transactions. A missing log,
@@ -222,7 +237,7 @@ impl Wal {
         let mut buf = vec![0u8; size as usize];
         file.read_exact_at(&mut buf, 0)?;
         // What an earlier process appended may not be durable yet.
-        let mut wal = Wal { file, db_id, numbered, profiles: false, header: 0, len: size, dropped: None, unsynced: true };
+        let mut wal = Wal { file, path: path.to_path_buf(), db_id, numbered, profiles: false, header: 0, len: size, dropped: None, unsynced: true };
         let Some((logged, profiles, header)) = header(&buf, db_id, path)? else {
             wal.reset(sync)?;
             return Ok((wal, Vec::new()));
@@ -321,14 +336,10 @@ impl Wal {
         self.start(sync)
     }
 
-    /// Writes the header of an empty log.
+    /// Puts an empty log in place of this one ([`fresh`]).
     fn start(&mut self, sync: bool) -> Result<()> {
-        io::set_len(&self.file, 0)?;
         let h = header_bytes(self.db_id, self.numbered, self.profiles);
-        io::write_at(&self.file, &h, 0)?;
-        if sync {
-            io::sync(&self.file)?;
-        }
+        self.file = fresh(&self.path, &h, sync)?;
         self.unsynced = !sync;
         self.header = h.len() as u64;
         self.len = self.header;
@@ -379,6 +390,151 @@ impl Wal {
     pub fn is_empty(&self) -> bool {
         self.len <= self.header
     }
+}
+
+/// A new log at `path` holding `header`, in place of a file there: written
+/// under a temporary name ([`fresh_name`]) and renamed over it, so that no
+/// log is ever changed but by appends. Synced, with the rename, when `sync`.
+fn fresh(path: &Path, header: &[u8], sync: bool) -> Result<File> {
+    let tmp = fresh_name(path);
+    let file = OpenOptions::new().read(true).write(true).create_new(true).open(&tmp)?;
+    let made = (|| -> Result<()> {
+        io::write_at(&file, header, 0)?;
+        if sync {
+            io::sync(&file)?;
+        }
+        io::rename(&tmp, path)?;
+        if sync {
+            io::sync_dir(parent(path))?;
+        }
+        Ok(())
+    })();
+    match made {
+        Ok(()) => Ok(file),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// A temporary name beside the log at `path`: `.<name>.new-<random>`.
+fn fresh_name(path: &Path) -> PathBuf {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    path.with_file_name(format!(".{name}.new-{:016x}", rand::random::<u64>()))
+}
+
+fn parent(path: &Path) -> &Path {
+    path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."))
+}
+
+/// Removes the temporary files of logs a crash left before they were
+/// named ([`fresh`]); the writer does when it opens.
+pub fn remove_leftovers(path: &Path) {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let prefix = format!(".{name}.new-");
+    let Ok(entries) = std::fs::read_dir(parent(path)) else { return };
+    for e in entries.flatten() {
+        if e.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = io::remove_file(&e.path());
+        }
+    }
+}
+
+/// The device and inode of the file at `path`, `None` when there is none:
+/// a reader's log was replaced when its name names another one.
+pub fn file_id(path: &Path) -> Result<Option<(u64, u64)>> {
+    match std::fs::metadata(path) {
+        Ok(m) => Ok(Some((m.dev(), m.ino()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The log as a process that does not write the database reads it: from
+/// where the last read left off, which is past the last whole transaction
+/// it found. The writer only appends to a log, so the transactions read
+/// stay as they were and the next ones follow them; a torn record at the
+/// end is a transaction being written, read whole next time.
+pub struct LogTail {
+    file: File,
+    path: PathBuf,
+    /// The file's device and inode.
+    pub id: (u64, u64),
+    /// Where the next read starts; 0 until a read found the header whole.
+    offset: u64,
+    /// Whether its transactions are numbered, from the header.
+    numbered: bool,
+}
+
+impl LogTail {
+    /// The log at `path`; `None` when there is none (a background flush
+    /// renames it away an instant before it starts the next one).
+    pub fn open(path: &Path) -> Result<Option<LogTail>> {
+        let file = match File::open(path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let m = file.metadata()?;
+        Ok(Some(LogTail { file, path: path.to_path_buf(), id: (m.dev(), m.ino()), offset: 0, numbered: false }))
+    }
+
+    /// Whether the file holds bytes past the last read.
+    pub fn grew(&self) -> Result<bool> {
+        Ok(self.file.metadata()?.len() > self.offset)
+    }
+
+    /// The whole transactions past the last read, and where they end, as
+    /// replay reads them (`fits` as in [`Wal::open`]): for [`LogTail::advance`]
+    /// once the caller has checked that the database did not change under
+    /// the read. A file that is no log of database `db_id`, or whose header
+    /// is not whole yet, holds none; one numbered otherwise than the
+    /// database (`numbered`) and holding transactions is an error.
+    pub fn read(&self, db_id: u64, numbered: bool, fits: &dyn Fn(u32, &Op) -> bool) -> Result<(Vec<WalTxn>, u64, bool)> {
+        let size = self.file.metadata()?.len();
+        if size <= self.offset {
+            return Ok((Vec::new(), self.offset, self.numbered));
+        }
+        let mut buf = vec![0u8; (size - self.offset) as usize];
+        let n = read_up_to(&self.file, &mut buf, self.offset)?;
+        buf.truncate(n);
+        if self.offset > 0 {
+            let (txns, end) = decode(&buf, self.numbered, false, fits);
+            return Ok((txns, self.offset + end as u64, self.numbered));
+        }
+        let Some((logged, _, header)) = header(&buf, db_id, &self.path)? else { return Ok((Vec::new(), 0, false)) };
+        let (txns, end) = decode(&buf[header as usize..], logged, false, fits);
+        if logged != numbered {
+            if !txns.is_empty() {
+                return Err(corrupt(format!(
+                    "{} holds transactions {} sequence numbers, and the database {}",
+                    self.path.display(),
+                    if logged { "with" } else { "without" },
+                    if numbered { "numbers its writes" } else { "does not number its writes" }
+                )));
+            }
+            return Ok((Vec::new(), 0, logged));
+        }
+        Ok((txns, header + end as u64, logged))
+    }
+
+    /// Moves past what [`LogTail::read`] returned.
+    pub fn advance(&mut self, end: u64, numbered: bool) {
+        self.offset = end;
+        self.numbered = numbered;
+    }
+}
+
+fn read_up_to(f: &File, buf: &mut [u8], at: u64) -> std::io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match f.read_at(&mut buf[n..], at + n as u64)? {
+            0 => break,
+            k => n += k,
+        }
+    }
+    Ok(n)
 }
 
 /// The records of one transaction. A database with one table never writes
@@ -504,6 +660,24 @@ pub fn decode_shipped(buf: &[u8], fits: &dyn Fn(u32, &Op) -> bool) -> Result<Wal
         (mut txns, end) if txns.len() == 1 && end == buf.len() => Ok(txns.pop().expect("one")),
         _ => Err(corrupt("a shipped transaction is damaged, or is not one numbered transaction")),
     }
+}
+
+/// Whether the one transaction `buf` holds, as [`decode_shipped`] reads
+/// it, changes tables ([`Op::changes_tables`]): read from its records'
+/// kinds alone, without decoding its rows.
+pub fn ships_table_changes(buf: &[u8]) -> bool {
+    let mut pos = 0;
+    while pos + 9 <= buf.len() {
+        let len = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
+        if len == 0 {
+            return false;
+        }
+        if matches!(buf[pos + 8], TABLE_DEF | TABLE_ALTER) {
+            return true;
+        }
+        pos += 8 + len;
+    }
+    false
 }
 
 /// The txns of the intact commit records in `rest` (the log past the last

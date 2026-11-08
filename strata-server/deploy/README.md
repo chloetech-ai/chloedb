@@ -11,7 +11,7 @@ replicas dies, how to move to more shards, and what network latency does.
 
 | file | what |
 |---|---|
-| `Dockerfile` | strata-server and strata-server-bench on Debian slim (157 MB); build from the repository root |
+| `Dockerfile` | strata-server, strata-server-bench, engine-compare and strata-crawl on Debian slim; build from the repository root |
 | `k8s/shards.yaml` | a set of N shards × R replicas: a headless Service, and per shard a StatefulSet of R pods on different nodes; replica r of shard i serves `/data/<collection>.shard<i>of<N>.strata` (r = 0) or its own copy `...shard<i>of<N>.r<r>.strata` |
 | `k8s/coordinator.yaml` | the coordinator, a Deployment pointed at one set of shards (`--shards`, replicas of a shard joined by `\|`) |
 | `k8s/single.yaml` | one database holding the whole collection, to compare answers and latency with |
@@ -49,9 +49,12 @@ kubectl -n strata port-forward svc/demo 7700  # http://127.0.0.1:7700
 | `writeAcks` | `all` | every primary's `--write-acks` |
 | `tokenSecret` | | a Secret whose key `token` every server and coordinator requires; without it they run with `--no-token`, open to whatever reaches them |
 | `clusterTokenSecret` | | a Secret whose key `token` is the cluster's own token (`--cluster-token`), which the servers and coordinators send each other and clients never hold; with it, the `tokenSecret` token goes to the coordinators alone, as the admin token (the operator's too), and may not make the calls between servers. Needs `tokenSecret` |
+| `secretEnv` | | environment variables of every server and coordinator taken from Secrets, `[{name, secret, key}]` (`key` defaults to `key`): the keys of models behind an API, `ANTHROPIC_API_KEY` for the agents, LLM fields and reranking, `OPENAI_API_KEY` and the like for hosted embeddings ([model keys](#model-keys)). Changing it restarts the copies one at a time |
 | `image`, `imagePullPolicy`, `resources`, `coordinatorResources`, `args`, `coordinatorArgs` | `strata-server:dev` | the servers' image, containers and further arguments (`args` for every server, `coordinatorArgs` for every coordinator: `--hedge-ms 50`, `--partial`) |
-| `rollout` | `{holdAfterSeconds: 30, soakSeconds: 0}` | how a change is made: `paused`, `gates` (limits on `p99Ms`, `errorRatio`, `replicaBehind`, `diskUsedRatio`: one over its limit for `holdAfterSeconds` holds the change), and `soakSeconds`, how long a restarted copy serves before the next restarts. Not part of a version: changing it restarts nothing |
+| `rollout` | `{holdAfterSeconds: 30, soakSeconds: 0, onFailure: rollback, progressDeadlineSeconds: 600, verifySeconds: 60, extraCopies: true}` | how a change is made: `paused`, `gates` (limits on `p99Ms`, `errorRatio`, `replicaBehind`, `diskUsedRatio`: one over its limit for `holdAfterSeconds` holds the change), `soakSeconds`, how long a restarted copy serves before the next restarts, `progressDeadlineSeconds`, how long a step of a restart may take, `verifySeconds`, how long the new version must be healthy in a row before it is ready, and `onFailure`, what a version that fails becomes: `rollback` (to the last version that ran everywhere) or `hold`, and `extraCopies`, whether a shard of fewer than three copies takes extra ones while its copies restart. Not part of a version: changing it restarts nothing |
+| `upgrade` | `{mode: off, checkMinutes: 10}` | the upgrader: every `checkMinutes` it asks the registry which image the tag `track` names (by default the tag of `image`), and with `mode` `suggest` shows it, with `on` rolls it out, pinned by its digest, once the cluster is ready. Not part of a version ([upgrading](#upgrading-strata)) |
 | `autoscale` | `{mode: off, cooldownMinutes: 20}` | rules that change `replicas`, `shards` or `storage.size` from how busy and full the servers are: `grow` (`busyAbove`, `forMinutes`, `add`, `max`), `shrink` (`busyBelow`, `forMinutes`, `min`), `volumes` (`fullAbove`, `action`: `grow` or `addShard`), `freeze` (weekly windows in UTC, `from`/`to` like `Fri 16:00`, `allowGrow`) and `cooldownMinutes`; `mode` `on` (the operator acts), `suggest` (a person applies or dismisses) or `off`. Not part of a version: the changes it makes are ([autoscaling](../../docs/strata/server.md#autoscaling)) |
+| `crawler` | | a crawler beside the cluster: the operator runs `strata-crawl serve` (in the same image) as a Deployment of one, `<cluster>-crawler`, with a Service of that name on port 7800, and the coordinators list it as an app, so the command center shows **Apps → Crawler**. It writes, and its API requires, the `tokenSecret` token. `grow` (default true) adds a shard through this resource when a crawl's table holds more than `splitRows` rows on one (default 100,000), up to `maxShards` (8); `paused` keeps it at no pod; `args` and `resources` for its container. Turning it on or off restarts the coordinators, not the servers ([the crawler](../../docs/strata/crawler.md#on-kubernetes)) |
 
 What a change does:
 
@@ -75,10 +78,16 @@ What a change does:
   The operator restarts one copy at a time, replicas first: a primary is
   first handed to a copy in step, one already restarted when there is one,
   and the next restart waits until every copy is back and caught up with
-  its primary. Every row stays served and every shard keeps taking writes.
+  its primary. A copy told to stop drains for 5 s first (`STRATA_DRAIN_MS`:
+  `/readyz` answers 503 while it goes on serving), so the queries it holds
+  finish. Every row stays served, and every shard of three copies or more
+  keeps taking writes; a write that meets a handover waits for the new
+  primary. Once every server runs the new settings, the version is
+  verified ([upgrading](#upgrading-strata)).
 - **New settings for the coordinators** (`coordinatorArgs`,
   `coordinatorResources`, the image): their Deployment rolls them, one
-  coordinator at a time.
+  coordinator at a time, a new one ready before an old one stops
+  (`maxSurge: 1`, `maxUnavailable: 0`) and each old one draining first.
 - **A larger `storage.size`**: each copy's volume claim grows in place,
   which its storage class must allow (`allowVolumeExpansion: true`); the
   status says so when it does not. A volume never shrinks (a smaller size
@@ -164,6 +173,114 @@ then let through with each restarted copy serving a second first), and
 a set, grows its volumes, and keeps its versions, resumes a hold and rolls
 back on a real API server (`STRATA_ENVTEST_DIR`: a directory with `etcd` and `kube-apiserver`,
 as `setup-envtest` downloads them).
+
+### Model keys
+
+What calls a model behind an API reads its key from the environment: the
+query console's agent, relevance grading and the on-call agent
+(`ANTHROPIC_API_KEY`, on the coordinators), fields made by a language model
+from another field's text (on the servers, as they write), reranking by a
+language model (on the coordinators), and hosted embeddings
+(`OPENAI_API_KEY`, `COHERE_API_KEY`, ..., on both). `secretEnv` gives a
+Secret's key to every server and coordinator:
+
+```bash
+kubectl -n strata create secret generic anthropic --from-literal=key="$ANTHROPIC_API_KEY"
+kubectl -n strata patch strata demo --type merge -p '{"spec": {"secretEnv": [{"name": "ANTHROPIC_API_KEY", "secret": "anthropic"}]}}'
+```
+
+Make the Secret first: a copy that starts without it does not start, and
+the rollout stops at it. The copies restart one at a time with the
+variable, as for any other setting; `GET /v1/config` then says
+`"server_key": true`. A variable named `STRATA_...` is refused: those are
+the operator's own, and tokens go in `tokenSecret`.
+
+### Upgrading Strata
+
+A new version of Strata is a new image of the servers, rolled out while
+the cluster answers queries and takes writes:
+
+```bash
+# By hand: name it, as any change of the spec
+kubectl -n strata patch strata demo --type merge -p '{"spec": {"image": "ghcr.io/chloetech-ai/strata-server:<sha>"}}'
+# or through a coordinator: the plan first, then the upgrade (admin scope, audited)
+curl -H "Authorization: Bearer $TOKEN" -d '{"image": "ghcr.io/chloetech-ai/strata-server:<sha>", "plan": true}' http://127.0.0.1:7700/v1/admin/kube/upgrade
+curl -H "Authorization: Bearer $TOKEN" -d '{"image": "ghcr.io/chloetech-ai/strata-server:<sha>"}' http://127.0.0.1:7700/v1/admin/kube/upgrade
+# Or let the upgrader follow the tag: suggest shows a new image, on rolls it out
+kubectl -n strata patch strata demo --type merge -p '{"spec": {"image": "ghcr.io/chloetech-ai/strata-server:latest", "upgrade": {"mode": "on"}}}'
+```
+
+The command center's **Rollout** view (`#/rollout`) shows the same: what
+the servers run (by image digest, read from their pods), the newest image
+of the tag, the upgrader's mode, and **Upgrade now** with its plan.
+
+The operator then:
+
+1. **Tries the image on every node** that runs copies: a Deployment
+   `<cluster>-preflight` of one pod a node runs `strata-server --help`.
+   An image that cannot be pulled, or does not run there (an architecture
+   the image lacks), fails the version before any server restarts. The
+   pods are deleted once each one ran, and the nodes keep the image, so
+   that no restart waits for a pull.
+2. **Restarts the coordinators**, a new one ready before an old one stops.
+3. **Adds a third copy to each shard of two** (`rollout.extraCopies`, on
+   by default; two to a shard of one): it starts with the new image, is
+   sent a copy of the shard's data and catches up before either of the
+   shard's own copies restarts, so that a majority of the shard's copies
+   serves through each restart. It leaves, its volume deleted, once both
+   run the new image. A new image that does not run fails here, before any
+   copy of the shard's own restarts. One shard at a time has its extra
+   copy, so the nodes need room for one more copy (the Cloud view sizes
+   each copy's requests to leave it); an extra copy no node has room for
+   waits for room, the status quoting the scheduler, and fails the version
+   after `progressDeadlineSeconds`.
+4. **Restarts the copies** one at a time, as above.
+5. **Verifies the version** for `rollout.verifySeconds`: every copy up, in
+   sync and ready, no pod crash-looping or restarting, the gates under
+   their limits, and a `SELECT COUNT(*)` of the first table answered
+   through the coordinators. The version is ready only then
+   (`status.history[].readyMs`).
+
+A version fails when a server cannot run it (its pod crash-loops, cannot
+pull its image, or its process exits: the status quotes the pod's last
+words), a step takes longer than `progressDeadlineSeconds`, a check of the
+verification fails for `holdAfterSeconds`, or a gate is over its limit
+for as long. With `onFailure: rollback` the operator sets the spec back to
+the last version that ran everywhere, as a rollback (no gate holds it;
+`changed-by: operator`), and the history keeps the failed version with
+the step it failed in and why (`status.history[].failed`); the servers it
+reached restart with the version before, the others never left it. With
+`onFailure: hold` nothing more restarts until the change is resumed
+(`POST /v1/admin/kube/resume`, "Try it again" in the Rollout view) or the
+spec changes. A rollback that fails is held, not rolled back again.
+
+The upgrader asks the registry anonymously (public images, such as
+ghcr.io/chloetech-ai/strata-server), follows one tag (`upgrade.track`, or
+the tag of `image`), and reads the commit each image was built from (its
+label `org.opencontainers.image.revision`). An image it rolled out that
+failed is kept in `status.upgrade.rejected` and never rolled out again by
+the upgrader; `POST /v1/admin/kube/upgrade` refuses it too unless given
+`"force": true`.
+
+Without the extra copies (`extraCopies: false`), a shard of two copies
+serves no reads and takes no writes while one of them restarts: one of
+two is not a majority, which a primary needs to serve a read and a write
+to be acknowledged. The coordinator holds such a write up to 10 s, and
+a read up to 3 s, and answers 503 after that.
+
+A write in flight as its shard's primary is handed over may be answered
+409, in doubt: the old primary had it, and the new one may or may not.
+The coordinator does not send it again (an `UPDATE ... SET n = n + 1`
+applied twice would be wrong); read it back, or send it again when that
+does no harm.
+
+`tests/operator.rs` (`a_new_version_rolls_out_under_load_and_a_bad_one_rolls_back`)
+proves it on processes: 2 shards of 2 copies and 2 coordinators behind a
+Service that sends only to ready ones, four clients searching, looking up
+keys and counting rows and one writing every 20 ms while the cluster
+upgrades, then gets a version whose servers exit (rolled back to the one
+before) and one whose image does not exist (refused before any restart):
+no query or write fails, and every write is kept.
 
 ## In the cloud
 

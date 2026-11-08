@@ -1,6 +1,7 @@
 //! Opening the database, and serving HTTP and gRPC.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,8 +12,9 @@ use strata::segment::build::BuildOptions;
 use strata::storage::{DbOptions, Layout, MergePolicy, MergerOptions};
 use tokio::net::TcpListener;
 
-use crate::auth::{self, Access};
+use crate::auth::{self, Access, Secret};
 use crate::coord::{CoordOptions, Coordinator};
+use crate::cores::shard::{self, Restart};
 use crate::replication::{self, Acks, Follow, Primary, PrimaryOptions};
 use crate::service::{shard_of, AgentConfig, Backend, Replication, Service};
 use crate::alerts::Alerts;
@@ -69,6 +71,12 @@ pub struct Options {
     /// its primary before it asks its shard's copies to elect it, in
     /// milliseconds (0: never; [`Service::start_failover`]).
     pub failover_after_ms: u64,
+    /// On a database server: how often it reads every segment against its
+    /// checksum, in seconds (0: only when asked, `POST /v1/admin/scrub`;
+    /// [`Service::start_scrubs`]).
+    pub scrub_every_s: u64,
+    /// The MiB a second a scheduled scrub reads at most (0: 64).
+    pub scrub_mib_s: u64,
     /// Coordinate these shard servers (gRPC URLs; replicas of a shard
     /// joined by `|`) instead of serving a database.
     pub shards: Vec<String>,
@@ -83,6 +91,10 @@ pub struct Options {
     pub max_concurrent: usize,
     /// The most rows a query may reach, OFFSET included (0: no limit).
     pub max_result_window: usize,
+    /// The rows the open scrolls may hold between them
+    /// ([`crate::service::Service::max_scroll_rows`]; `None`:
+    /// [`crate::service::MAX_SCROLL_ROWS`]).
+    pub max_scroll_rows: Option<usize>,
     /// The most groups a query may make (0: no limit).
     pub max_groups: usize,
     /// The most rows a cross-encoder's rerank phase may score (0: no
@@ -91,6 +103,9 @@ pub struct Options {
     /// Memory the running queries may hold together, in MiB (`None`: a
     /// third of [`strata::storage::memory_limit`]; 0: no limit).
     pub query_memory_mb: Option<u64>,
+    /// Memory for filters kept between queries, in MiB (`None`:
+    /// [`strata::query::exec::FILTER_CACHE_BYTES`]; 0: none kept).
+    pub filter_cache_mb: Option<usize>,
     /// Write requests held at once before more are refused (0: no limit).
     pub max_queued_writes: usize,
     /// The largest write or import body, in MiB (0: 256).
@@ -142,8 +157,14 @@ pub struct Options {
     /// The clusters the cloud view made (default: `<db>.cloud.json` beside
     /// a database; in memory on a coordinator without it).
     pub cloud_file: Option<PathBuf>,
+    /// The hub's book of connections to other clusters ([`crate::hub`]).
+    pub hub_file: Option<PathBuf>,
+    /// Who this hub's calls to other clusters say they come from.
+    pub hub_device: Option<String>,
     /// The alert rules' file (default rules, in memory, without it).
     pub alerts: Option<PathBuf>,
+    /// A coordinator's Contain rules' file (in memory without it): fleet.
+    pub contain: Option<PathBuf>,
     /// Post alerts that fire or resolve to this URL.
     pub alert_webhook: Option<String>,
     /// The log store ([`crate::logstore`]): `None` beside the database
@@ -158,6 +179,28 @@ pub struct Options {
     pub log_store_bytes: u64,
     /// Queries a second the log store keeps besides slow and failed ones.
     pub log_queries_per_sec: u64,
+    // ----- core (command center rebuild)
+    /// The cluster's name and environment, as people call them, and where
+    /// its command center is, for links (`--cluster-name`,
+    /// `--environment`, `--public-url`; a coordinator run by the operator
+    /// is named by its StrataCluster without one).
+    pub cluster_name: Option<String>,
+    pub environment: Option<String>,
+    pub public_url: Option<String>,
+    /// The service levels fleet health checks (`None`: 1% of queries
+    /// failing, a p99 of 250 ms).
+    pub slo_error_ratio: Option<f64>,
+    pub slo_p99_ms: Option<f64>,
+    /// Proxies whose `X-Forwarded-For` names the client.
+    pub trust_proxy: Vec<String>,
+    /// `--node-name`, when given (`node_name` is always set).
+    pub node_name_given: Option<String>,
+    /// `--image-repository`.
+    pub image_repository: Option<String>,
+    /// `--app name=url`: apps the command center shows ([`crate::apps`]).
+    pub apps: Vec<String>,
+    /// What the server sends apps as its token (`STRATA_APP_TOKEN`).
+    pub app_token: Option<String>,
 }
 
 /// How writes resolve MEDIA values, from `--media-fetch`,
@@ -179,17 +222,23 @@ fn build_options() -> BuildOptions {
     BuildOptions::default().set("vector.threads", std::thread::available_parallelism().map_or(1, |n| n.get()))
 }
 
-/// How the server opens a database. Each write publishes its snapshot,
-/// rebuilding the newest in-memory chunk (up to 1,024 rows): those chunks
-/// keep their vectors flat, since a graph over so few rows costs more to
-/// build at every write than an exact scan of them costs a query. Segments
-/// build their vector indexes on every core.
+/// How the server opens a database. Each write publishes its snapshot
+/// while queries come in, building the in-memory chunks it filled (1,024
+/// rows each; a write nobody reads leaves them to the flush, or to the
+/// first query after it): those chunks keep their vectors flat, since a
+/// graph over so few rows costs more to build at every write than an
+/// exact scan of them costs a query. Segments build their vector indexes
+/// on every core.
 pub fn db_options(directory: bool) -> DbOptions {
     DbOptions {
         publish_snapshots: true,
         build: build_options(),
         mem_build: Some(BuildOptions::default().set("vector.index", "flat")),
         layout: if directory { Layout::Directory } else { Layout::SingleFile },
+        // The writer thread retries a busy write until each request's
+        // deadline, and refuses one whose deadline passed: it does not
+        // wait inside Strata past it.
+        write_wait: Duration::ZERO,
         ..DbOptions::default()
     }
 }
@@ -272,7 +321,10 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
             fill = o.copy_from.clone().map(Fill::Copy);
             Db::create_in(&path, schema, DbOptions { ship_log_bytes, ..db_options(o.directory) }, &o.models).map_err(|e| e.to_string())?
         } else {
-            return Err(format!("{} does not exist: pass --schema FILE or --demo N to create it", path.display()));
+            // No schema: a database with no tables yet, which CREATE TABLE
+            // and the imports that create tables fill.
+            tracing::info!(db = %path.display(), "creating the database with no tables: create one with CREATE TABLE or an import");
+            Db::create_empty(&path, DbOptions { ship_log_bytes, ..db_options(o.directory) }).map_err(|e| e.to_string())?
         };
         for (field, why) in db.open_codebooks(&o.models) {
             tracing::warn!(field = %field, error = %why, "cannot give this field semantic IDs: writes must carry them");
@@ -282,6 +334,10 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         }
         if replicating && db.storage().seq_no().is_none() {
             return Err(format!("{} does not number its writes, which replication ships by: pass --seq-no", path.display()));
+        }
+        let mut db = db;
+        if let Some(mb) = o.filter_cache_mb {
+            db.exec.filter_cache = Some(Arc::new(strata::query::exec::FilterCache::new(mb << 20)));
         }
         let db = Arc::new(db);
         // Writes go on while a full memtable becomes segments, and while
@@ -295,6 +351,21 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         (Backend::Local(db), schema)
     };
     let mut svc = Service::new(backend, schema, agent, o.max_concurrent.max(1), timeout);
+    let given = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(String::from);
+    svc.identity = crate::service::Identity {
+        name: given(&o.cluster_name).or_else(|| o.kube_cluster.clone().filter(|_| !o.shards.is_empty())),
+        environment: given(&o.environment),
+        public_url: given(&o.public_url).map(|u| u.trim_end_matches('/').to_string()),
+    };
+    let d = crate::service::Slo::default();
+    svc.slo = crate::service::Slo { error_ratio: o.slo_error_ratio.filter(|r| *r > 0.0).unwrap_or(d.error_ratio), p99_ms: o.slo_p99_ms.filter(|r| *r > 0.0).unwrap_or(d.p99_ms) };
+    svc.place = crate::service::Place::from_env(given(&o.node_name_given));
+    if let Some(r) = given(&o.image_repository) {
+        crate::operator::upgrade::Ref::parse(&r).map_err(|e| format!("--image-repository: {e}"))?;
+        svc.image_repository = r;
+    }
+    svc.apps = crate::apps::Apps::new(crate::apps::parse(&o.apps)?, o.app_token.clone());
+    svc.trusted_proxies = o.trust_proxy.iter().filter(|p| !p.trim().is_empty()).map(|p| crate::http::parse_net(p)).collect::<Result<_, _>>().map_err(|e| format!("--trust-proxy: {e}"))?;
     if let Some(path) = slots_file {
         svc.keep_slots_in(path)?;
         if let Some((m, shard)) = svc.slots() {
@@ -315,6 +386,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     svc.slow = (o.slow_ms > 0).then(|| Duration::from_millis(o.slow_ms));
     svc.max_rows = (o.max_result_window > 0).then_some(o.max_result_window);
+    svc.max_scroll_rows = o.max_scroll_rows.unwrap_or(crate::service::MAX_SCROLL_ROWS);
     svc.max_groups = (o.max_groups > 0).then_some(o.max_groups);
     svc.max_rerank = (o.max_rerank > 0).then_some(o.max_rerank);
     let query_memory = match o.query_memory_mb {
@@ -345,12 +417,24 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
             svc.clouds.start(svc.aws.clone(), svc.digitalocean.clone());
         }
     }
+    let hub = o.hub_file.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::hub::Hub::file_of));
+    if let Some(file) = hub {
+        let secrets = crate::hub::Secrets::detect(Some(crate::hub::Hub::keys_file_of(&file)));
+        svc.hub = Arc::new(crate::hub::Hub::open(file, secrets, o.hub_device.clone())?);
+    }
     let keys = o.keys.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(Keys::file_of));
     if let Some(file) = keys {
         svc.keys = Arc::new(Keys::open(file)?);
     }
     svc.audit = Audit::new(o.audit_log.clone())?;
     svc.alerts = Alerts::new(o.alerts.clone(), o.alert_webhook.clone())?;
+    svc.alerts.follow_slo(svc.slo.error_ratio, svc.slo.p99_ms);
+    // fleet: Contain rules kept across a restart.
+    if let Some(f) = &o.contain {
+        svc.contain = crate::contain::Contain::open(f.clone())?;
+    }
+    // The cluster's name in alerts and route tests from the start.
+    crate::alerts::identify(&svc);
     (svc.backfill, svc.fetch_models) = (o.backfill, o.fetch_models);
     svc.open_models(&o.models);
     for m in svc.models().iter() {
@@ -384,6 +468,8 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     if let Some(dir) = &o.backup_dir {
         svc.set_backup_dir(dir).map_err(|e| e.message)?;
     }
+    svc.scrubs.every = Duration::from_secs(o.scrub_every_s);
+    svc.scrubs.rate = if o.scrub_mib_s == 0 { crate::service::scrub::DEFAULT_RATE } else { o.scrub_mib_s << 20 };
     if !o.media_fetch.is_empty() || o.media_store.is_some() || o.media_max_bytes > 0 {
         svc.set_media(media_resolver(o)?).map_err(|e| e.message)?;
     }
@@ -408,19 +494,18 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         // until its shard's copies elect one: another may have been
         // elected while it was down.
         let elects = o.failover_after_ms > 0 && svc.slots().is_some_and(|(m, s)| m.replicas().get(s).is_some_and(|c| c.len() > 1));
-        if let (Some(replication::KeptRole::Primary { .. }), false, true) = (&kept.0, kept.1, elects) {
-            svc.set_replication(Replication::Replica(Arc::new(Follow::open(db.clone(), Some(file))?)));
-            tracing::info!("was its shard's primary: starts as a replica, until its shard's copies elect one (--failover-after-ms)");
-        } else if let (Some(replication::KeptRole::Primary { replicas, acks }), false) = &kept {
-            let opts = PrimaryOptions { replicas: replicas.clone(), acks: *acks, ..ships };
+        let was_primary = matches!(kept.0, Some(replication::KeptRole::Primary { .. })) && !kept.1;
+        if let Some(Restart::Primary { replicas, acks }) = shard::restart(kept.0.as_ref(), kept.1, elects) {
+            let opts = PrimaryOptions { replicas: replicas.clone(), acks, ..ships };
             let p = Primary::start(db.clone(), Some(file), opts)?;
             tracing::info!(replicas = %replicas.join(", "), write_acks = acks.name(), "primary, as kept beside the database: ships its writes to its replicas");
             svc.set_replication(Replication::Primary(p));
         } else if kept.0.is_some() {
             svc.set_replication(Replication::Replica(Arc::new(Follow::open(db.clone(), Some(file))?)));
-            match kept.1 {
-                true => tracing::info!("replica: a primary of a newer term replaced this one, which follows it"),
-                false => tracing::info!("replica, as kept beside the database: applies the writes its primary ships"),
+            match (was_primary, kept.1) {
+                (true, _) => tracing::info!("was its shard's primary: starts as a replica, until its shard's copies elect one (--failover-after-ms)"),
+                (false, true) => tracing::info!("replica: a primary of a newer term replaced this one, which follows it"),
+                (false, false) => tracing::info!("replica, as kept beside the database: applies the writes its primary ships"),
             }
         } else if (!o.replicas.is_empty() && !o.replica) || o.promote {
             let opts = PrimaryOptions { replicas: o.replicas.clone(), acks: o.write_acks, promote: o.promote, ..ships };
@@ -428,7 +513,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
             tracing::info!(replicas = %o.replicas.join(", "), write_acks = o.write_acks.name(), "primary: ships its writes to its replicas");
             svc.set_replication(Replication::Primary(p));
         } else if o.replica {
-            svc.set_replication(Replication::Replica(Arc::new(Follow::open(db.clone(), Some(file))?)));
+            svc.set_replication(Replication::Replica(Arc::new(Follow::open_first(db.clone(), Some(file))?)));
             // Its --replicas: the shard's other copies, the ones a
             // promotion ships to (Service::known_copies).
             svc.promote_options = Some(PrimaryOptions { replicas: o.replicas.clone(), acks: o.write_acks, ..ships });
@@ -437,10 +522,21 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     open_log_store(&mut svc, o)?;
     let svc = Arc::new(svc);
+    // Clusters made here that were to bring tables when ready, and have not.
+    for m in svc.clouds.list() {
+        if !m.bring.is_empty() && m.brought.is_none() {
+            crate::copy::bring_when_ready(svc.clone(), m.id);
+        }
+    }
     spawn_maintenance(&svc);
+    spawn_expirer(&svc, Duration::from_secs(5));
     spawn_sampler(&svc);
+    spawn_watch(&svc);
+    // workdata: every table's counts a minute apart (rates on a first look).
+    crate::inspect::keep_looking(&svc);
     tokio::spawn(svc.clone().keep_models());
     svc.start_failover();
+    svc.start_scrubs();
     // The cluster's keys: a coordinator takes them from its shards before
     // it serves, and a coordinator or primary passes changes on.
     crate::keysync::start(&svc).await;
@@ -452,6 +548,11 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
 /// service's queries; a coordinator keeps one only where told. Without one
 /// the lines kept for it are let go ([`obs::Sink::stop`]).
 fn open_log_store(svc: &mut Service, o: &Options) -> Result<(), String> {
+    // A coordinator in a shard server's process: the shard keeps the
+    // process's lines.
+    if o.coord.local.is_some() {
+        return Ok(());
+    }
     let path = match &o.log_store {
         Some(p) => p.clone(),
         None => o.db.as_deref().filter(|_| o.shards.is_empty()).map(crate::logstore::file_of),
@@ -474,6 +575,8 @@ fn open_log_store(svc: &mut Service, o: &Options) -> Result<(), String> {
     tracing::info!(path = %store.options().path.display(), node = %store.options().node, retain_s = store.options().retain.as_secs(), max_mib = store.options().max_bytes >> 20, "keeps its logs in a log store");
     let keep = store.clone();
     let _ = svc.query_log.keep.set(Box::new(move |q, slow| keep.keep_query(q, slow)));
+    let ev = store.clone();
+    svc.events.sink(move |r| ev.keep_event(r));
     svc.log_store = Some(store);
     Ok(())
 }
@@ -482,7 +585,9 @@ fn open_log_store(svc: &mut Service, o: &Options) -> Result<(), String> {
 /// term, shipping to `replicas` under `write_acks` (`POST
 /// /v1/admin/promote`), and answers what it said.
 pub async fn promote(url: &str, replicas: &[String], write_acks: &str, force: bool, token: Option<&str>) -> Result<serde_json::Value, String> {
-    let mut req = reqwest::Client::new()
+    let mut req = crate::http_client()
+        .build()
+        .map_err(|e| e.to_string())?
         .post(format!("{}/v1/admin/promote", url.trim_end_matches('/')))
         .json(&serde_json::json!({"replicas": replicas, "write_acks": write_acks, "force": force}));
     if let Some(t) = token.filter(|t| !t.is_empty()) {
@@ -516,7 +621,7 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
     };
     let out = dir.join(&local);
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    let client = reqwest::Client::new();
+    let client = crate::http_client().build().map_err(|e| e.to_string())?;
     // Each file's path in the repository, and its name here.
     let files: Vec<(&str, &str)> = match (derives, cross_encoder::fetch_files(&local)) {
         (true, _) => strata::derive::model_files(&local).iter().map(|&f| (f, f)).collect(),
@@ -547,41 +652,149 @@ pub async fn fetch_model(name: &str, dir: &std::path::Path) -> Result<PathBuf, S
     Ok(out)
 }
 
-/// What `strata-server import` does with SQLite files.
+/// What `strata-server import` does with SQLite and Parquet files.
 #[derive(Default)]
-pub struct SqliteImport {
+pub struct FileImport {
     /// Every file is a SQLite database (`--format sqlite`); otherwise a
     /// file is one when its first bytes say so.
-    pub format: bool,
-    /// Only these tables.
+    pub sqlite: bool,
+    /// Every file is Parquet, or a directory of Parquet files (`--format
+    /// parquet`); otherwise one is when its name or first bytes say so
+    /// ([`strata::parquet::is_parquet`]).
+    pub parquet: bool,
+    /// SQLite: only these tables.
     pub tables: Vec<String>,
-    /// BLOB columns as base64 text ([`strata::sqlite::ImportOptions::blobs_base64`]).
+    /// Parquet: the key of a table the import creates
+    /// ([`strata::parquet::ImportOptions::key`]).
+    pub key: Option<String>,
+    /// Binary columns as base64 text ([`strata::sqlite::ImportOptions::blobs_base64`]).
     pub blobs_base64: bool,
     /// Print the plan as JSON, and write nothing.
     pub plan: bool,
 }
 
+/// Whether `s` is an `s3://` (or `s3a://`) URL.
+pub fn is_url(s: &str) -> bool {
+    let l = s.get(..6).unwrap_or(s).to_ascii_lowercase();
+    l.starts_with("s3://") || l.starts_with("s3a://")
+}
+
+/// A file to read on this machine: the path given, or what an `s3://`
+/// URL names, read into a temporary directory removed when this is
+/// dropped.
+struct Fetched {
+    path: PathBuf,
+    #[cfg(feature = "s3")]
+    _held: Option<strata::objects::Input>,
+}
+
+fn fetch(f: &Path) -> Result<Fetched, String> {
+    let s = f.to_string_lossy();
+    if !is_url(&s) {
+        return Ok(Fetched {
+            path: f.to_path_buf(),
+            #[cfg(feature = "s3")]
+            _held: None,
+        });
+    }
+    #[cfg(feature = "s3")]
+    {
+        let t0 = std::time::Instant::now();
+        let i = strata::objects::Input::open(&s).map_err(|e| e.to_string())?;
+        tracing::info!(url = %s, secs = t0.elapsed().as_secs_f64(), "fetched");
+        Ok(Fetched { path: i.path().to_path_buf(), _held: Some(i) })
+    }
+    #[cfg(not(feature = "s3"))]
+    Err(format!("{s}: this strata-server was built without s3:// URLs (feature s3)"))
+}
+
+/// A path to write on this machine, and the URL it then goes to.
+struct Upload {
+    path: PathBuf,
+    #[cfg(feature = "s3")]
+    out: Option<strata::objects::Output>,
+}
+
+fn upload_to(out: &str) -> Result<Upload, String> {
+    if !is_url(out) {
+        return Ok(Upload {
+            path: PathBuf::from(out),
+            #[cfg(feature = "s3")]
+            out: None,
+        });
+    }
+    #[cfg(feature = "s3")]
+    {
+        let o = strata::objects::Output::new(out).map_err(|e| e.to_string())?;
+        Ok(Upload { path: o.path().to_path_buf(), out: Some(o) })
+    }
+    #[cfg(not(feature = "s3"))]
+    Err(format!("{out}: this strata-server was built without s3:// URLs (feature s3)"))
+}
+
+impl Upload {
+    /// Sends what was written to the URL, if there is one.
+    fn finish(self) -> Result<(), String> {
+        #[cfg(feature = "s3")]
+        if let Some(o) = self.out {
+            let url = o.url().unwrap_or_default().to_string();
+            let t0 = std::time::Instant::now();
+            let bytes = o.finish().map_err(|e| e.to_string())?;
+            tracing::info!(url = %url, bytes, secs = t0.elapsed().as_secs_f64(), "uploaded");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "parquet")]
+fn is_parquet(f: &Path) -> bool {
+    strata::parquet::is_parquet(f)
+}
+
+#[cfg(not(feature = "parquet"))]
+fn is_parquet(_: &Path) -> bool {
+    false
+}
+
 /// `strata-server import`: loads `files` into the database at `path`, rows
 /// from JSON Lines, JSON, CSV or TSV files (`format`, or each file's
-/// extension) into its table `table` (the first if `None`), and the tables
-/// of SQLite files into the tables of their names, and says what each
-/// wrote. A database that does not exist is created with `schema`, or from
-/// the first SQLite file's tables; with SQLite files, `schema` holds
-/// schemas for the tables they create ([`strata::sqlite::schemas_from_json`]).
+/// extension) into its table `table` (the first if `None`), the tables of
+/// SQLite files into the tables of their names, and Parquet files and
+/// directories into `table` (by default, the table an export kept in them
+/// or one named for them), and says what each wrote. A file may be an
+/// `s3://` URL. A database that does not exist is created with `schema`,
+/// or from the first SQLite or Parquet file; with SQLite files, `schema`
+/// holds schemas for the tables they create
+/// ([`strata::sqlite::schemas_from_json`]), with Parquet files the schema
+/// of the table they create.
 #[allow(clippy::too_many_arguments)]
-pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, models: &Path, format: Option<Format>, directory: bool, files: &[PathBuf], sqlite: SqliteImport) -> Result<(), String> {
+pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, models: &Path, format: Option<Format>, directory: bool, files: &[PathBuf], how: FileImport) -> Result<(), String> {
     let opts = || DbOptions { layout: if directory { Layout::Directory } else { Layout::SingleFile }, build: build_options(), ..DbOptions::default() };
-    let is_sqlite = |f: &Path| sqlite.format || (format.is_none() && strata::sqlite::is_sqlite_file(f));
-    let any_sqlite = files.iter().any(|f| is_sqlite(f));
-    if let Some(f) = files.iter().find(|f| table.is_some() && is_sqlite(f)) {
-        return Err(format!("{}: --table is for rows; a SQLite file's tables go to the tables of their names (--tables picks them)", f.display()));
+    if how.parquet && !cfg!(feature = "parquet") {
+        return Err("this strata-server was built without Parquet (feature parquet)".into());
+    }
+    let is_sqlite = |f: &Path| how.sqlite || (format.is_none() && !how.parquet && strata::sqlite::is_sqlite_file(f));
+    let is_parquet = |f: &Path| how.parquet || (format.is_none() && !how.sqlite && is_parquet(f));
+    let inputs: Vec<(String, Fetched)> = files.iter().map(|f| Ok((f.display().to_string(), fetch(f)?))).collect::<Result<_, String>>()?;
+    let any_sqlite = inputs.iter().any(|(_, f)| is_sqlite(&f.path));
+    let any_parquet = inputs.iter().any(|(_, f)| is_parquet(&f.path));
+    if let Some((f, _)) = inputs.iter().find(|(_, f)| table.is_some() && is_sqlite(&f.path)) {
+        return Err(format!("{f}: --table is for rows; a SQLite file's tables go to the tables of their names (--tables picks them)"));
+    }
+    if any_sqlite && any_parquet && schema.is_some() {
+        return Err("--schema with SQLite and Parquet files: import them one kind at a time".into());
     }
     let text = schema.map(|s| std::fs::read_to_string(s).map_err(|e| format!("read {}: {e}", s.display()))).transpose()?;
     let given = match (&text, schema, any_sqlite) {
         (Some(t), Some(s), true) => strata::sqlite::schemas_from_json(t).map_err(|e| format!("{}: {e}", s.display()))?,
         _ => Vec::new(),
     };
-    let sq = strata::sqlite::ImportOptions { tables: sqlite.tables, schemas: given, blobs_base64: sqlite.blobs_base64 };
+    let given_table = match (&text, schema, any_parquet) {
+        (Some(t), Some(s), true) => Some(Schema::from_json(t).map_err(|e| format!("{}: {e}", s.display()))?),
+        _ => None,
+    };
+    let sq = strata::sqlite::ImportOptions { tables: how.tables.clone(), schemas: given, blobs_base64: how.blobs_base64 };
+    let pq = ParquetImport { table: table.map(String::from), schema: given_table, key: how.key.clone(), blobs_base64: how.blobs_base64 };
     let created = |db: Db| {
         for (field, why) in db.open_embedders(models) {
             tracing::warn!(field = %field, error = %why, "cannot embed this field: its vectors must be in the files");
@@ -589,35 +802,39 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
         db
     };
     let mut db = if path.exists() {
-        if schema.is_some() && !any_sqlite {
+        if schema.is_some() && !any_sqlite && !any_parquet {
             return Err(format!("{} exists: --schema is only for a new database", path.display()));
         }
         Some(created(Db::open(path, opts()).map_err(|e| format!("open {}: {e}", path.display()))?))
     } else {
         None
     };
-    if sqlite.plan {
+    if how.plan {
         let mut plans = Vec::new();
-        for file in files {
-            if !is_sqlite(file) {
-                return Err(format!("{}: --plan is for SQLite files", file.display()));
+        for (shown, file) in &inputs {
+            if is_sqlite(&file.path) {
+                plans.push(strata::sqlite::plan(&file.path, db.as_ref(), &sq).map_err(|e| format!("{shown}: {e}"))?.to_json());
+            } else if is_parquet(&file.path) {
+                plans.push(pq.plan(&file.path, db.as_ref()).map_err(|e| format!("{shown}: {e}"))?);
+            } else {
+                return Err(format!("{shown}: --plan is for SQLite and Parquet files"));
             }
-            plans.push(strata::sqlite::plan(file, db.as_ref(), &sq).map_err(|e| format!("{}: {e}", file.display()))?.to_json());
         }
         let out = if plans.len() == 1 { plans.remove(0) } else { serde_json::Value::Array(plans) };
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
         return Ok(());
     }
-    for file in files {
+    for (shown, fetched) in &inputs {
+        let file = &fetched.path;
         let t0 = std::time::Instant::now();
         if is_sqlite(file) {
-            let at = |e: strata::Error| format!("{}: {e}", file.display());
+            let at = |e: strata::Error| format!("{shown}: {e}");
             let src = strata::sqlite::Source::open(file).map_err(at)?;
             let plan = src.plan(db.as_ref(), &sq).map_err(at)?;
             let d = match db.take() {
                 Some(d) => d,
                 None => {
-                    let first = plan.tables.first().ok_or_else(|| format!("{}: no table to import", file.display()))?;
+                    let first = plan.tables.first().ok_or_else(|| format!("{shown}: no table to import"))?;
                     created(Db::create_in(path, first.schema.clone(), opts(), models).map_err(|e| format!("create {}: {e}", path.display()))?)
                 }
             };
@@ -625,16 +842,20 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
             db = Some(d);
             let r = r.map_err(at)?;
             for (name, why) in &r.skipped {
-                tracing::info!(file = %file.display(), source = %name, "left out: {why}");
+                tracing::info!(file = %shown, source = %name, "left out: {why}");
             }
             for t in &r.tables {
                 let how = if t.bulk { "loaded" } else { "upserted" };
-                tracing::info!(file = %file.display(), source = %t.source, table = %t.table, created = t.created, rows = t.rows, how, "imported");
+                tracing::info!(file = %shown, source = %t.source, table = %t.table, created = t.created, rows = t.rows, how, "imported");
                 for n in &t.notes {
                     tracing::warn!(table = %t.table, "{n}");
                 }
             }
-            tracing::info!(file = %file.display(), tables = r.tables.len(), secs = t0.elapsed().as_secs_f64(), "imported the SQLite file");
+            tracing::info!(file = %shown, tables = r.tables.len(), secs = t0.elapsed().as_secs_f64(), "imported the SQLite file");
+            continue;
+        }
+        if is_parquet(file) {
+            db = Some(pq.import(shown, file, db.take(), |schema| Ok(created(Db::create_in(path, schema, opts(), models).map_err(|e| format!("create {}: {e}", path.display()))?)))?);
             continue;
         }
         let d = match db.take() {
@@ -646,13 +867,13 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
             }
         };
         let into = table.map_or_else(|| d.schema().table.clone(), String::from);
-        let r = strata::ingest::import_file_into(&d, &into, file, format).map_err(|e| format!("{}: {e}", file.display()));
+        let r = strata::ingest::import_file_into(&d, &into, file, format).map_err(|e| format!("{shown}: {e}"));
         db = Some(d);
         let r = r?;
         let how = if r.bulk { "loaded" } else { "upserted" };
-        tracing::info!(file = %file.display(), rows = r.rows, how, secs = t0.elapsed().as_secs_f64(), "imported");
+        tracing::info!(file = %shown, rows = r.rows, how, secs = t0.elapsed().as_secs_f64(), "imported");
         if !r.unknown.is_empty() {
-            tracing::warn!(file = %file.display(), fields = %r.unknown.join(", "), "skipped fields the schema lacks");
+            tracing::warn!(file = %shown, fields = %r.unknown.join(", "), "skipped fields the schema lacks");
         }
     }
     let db = db.ok_or("no files to import")?;
@@ -661,20 +882,113 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
     Ok(())
 }
 
-/// Writes the database at `path` to a new SQLite file `out`
-/// ([`strata::sqlite::export`]).
-pub fn export_sqlite(path: &Path, out: &Path, opts: &strata::sqlite::ExportOptions) -> Result<(), String> {
+/// How `strata-server import` reads Parquet files
+/// ([`strata::parquet::ImportOptions`]).
+#[cfg_attr(not(feature = "parquet"), allow(dead_code))]
+struct ParquetImport {
+    table: Option<String>,
+    schema: Option<Schema>,
+    key: Option<String>,
+    blobs_base64: bool,
+}
+
+#[cfg(feature = "parquet")]
+impl ParquetImport {
+    fn options(&self) -> strata::parquet::ImportOptions {
+        strata::parquet::ImportOptions { table: self.table.clone(), schema: self.schema.clone(), key: self.key.clone(), blobs_base64: self.blobs_base64 }
+    }
+
+    fn plan(&self, file: &Path, db: Option<&Db>) -> strata::Result<serde_json::Value> {
+        Ok(strata::parquet::plan(file, db, &self.options())?.to_json())
+    }
+
+    /// Imports `file` into `db`, or into a database `create` makes with the
+    /// table's schema, and gives the database back.
+    fn import(&self, shown: &str, file: &Path, db: Option<Db>, create: impl FnOnce(Schema) -> Result<Db, String>) -> Result<Db, String> {
+        let t0 = std::time::Instant::now();
+        let at = |e: strata::Error| format!("{shown}: {e}");
+        let src = strata::parquet::Source::open(file).map_err(at)?;
+        let plan = src.plan(db.as_ref(), &self.options()).map_err(at)?;
+        let d = match db {
+            Some(d) => d,
+            None => create(plan.schema.clone())?,
+        };
+        let r = src.load(&d, &plan).map_err(at)?;
+        for (column, why) in &r.skipped {
+            tracing::info!(file = %shown, column = %column, "left out: {why}");
+        }
+        for n in &r.notes {
+            tracing::warn!(table = %r.table, "{n}");
+        }
+        let how = if r.bulk { "loaded" } else { "upserted" };
+        tracing::info!(file = %shown, table = %r.table, created = r.created, files = r.files, rows = r.rows, how, secs = t0.elapsed().as_secs_f64(), "imported the Parquet rows");
+        Ok(d)
+    }
+}
+
+#[cfg(not(feature = "parquet"))]
+impl ParquetImport {
+    fn plan(&self, _: &Path, _: Option<&Db>) -> strata::Result<serde_json::Value> {
+        Err(strata::Error::Schema("this strata-server was built without Parquet (feature parquet)".into()))
+    }
+
+    fn import(&self, _: &str, _: &Path, _: Option<Db>, _: impl FnOnce(Schema) -> Result<Db, String>) -> Result<Db, String> {
+        Err("this strata-server was built without Parquet (feature parquet)".into())
+    }
+}
+
+/// Writes the database at `path` to a new SQLite file `out`, a path or an
+/// `s3://` URL ([`strata::sqlite::export`]).
+pub fn export_sqlite(path: &Path, out: &str, opts: &strata::sqlite::ExportOptions) -> Result<(), String> {
     let db = Db::open(path, DbOptions::default()).map_err(|e| format!("open {}: {e}", path.display()))?;
     let t0 = std::time::Instant::now();
-    let r = strata::sqlite::export(&db, out, opts).map_err(|e| format!("{}: {e}", out.display()))?;
+    let up = upload_to(out)?;
+    let r = strata::sqlite::export(&db, &up.path, opts).map_err(|e| format!("{out}: {e}"))?;
     for t in &r.tables {
         tracing::info!(table = %t.table, rows = t.rows, indexes = t.indexes.len(), fts = t.fts.as_deref().unwrap_or("none"), "exported");
         for n in &t.notes {
             tracing::info!(table = %t.table, "{n}");
         }
     }
-    tracing::info!(out = %out.display(), tables = r.tables.len(), secs = t0.elapsed().as_secs_f64(), "exported to SQLite");
+    up.finish()?;
+    tracing::info!(out = %out, tables = r.tables.len(), secs = t0.elapsed().as_secs_f64(), "exported to SQLite");
     Ok(())
+}
+
+/// Writes the database at `path` (its tables `opts.tables`, or all) to
+/// Parquet at `out`, a path or an `s3://` URL: a `.parquet` file for one table,
+/// else a directory of them ([`strata::parquet::export`]).
+#[cfg(feature = "parquet")]
+pub fn export_parquet(path: &Path, out: &str, opts: &ParquetExport) -> Result<(), String> {
+    let db = Db::open(path, DbOptions::default()).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let t0 = std::time::Instant::now();
+    let up = upload_to(out.trim_end_matches('/'))?;
+    let r = strata::parquet::export(&db, &up.path, opts).map_err(|e| format!("{out}: {e}"))?;
+    for t in &r.tables {
+        tracing::info!(table = %t.table, rows = t.rows, bytes = t.bytes, file = %t.path.file_name().unwrap_or_default().to_string_lossy(), "exported");
+        for n in &t.notes {
+            tracing::info!(table = %t.table, "{n}");
+        }
+    }
+    up.finish()?;
+    tracing::info!(out = %out, tables = r.tables.len(), secs = t0.elapsed().as_secs_f64(), "exported to Parquet");
+    Ok(())
+}
+
+/// What a Parquet export writes, in a build without Parquet.
+#[cfg(not(feature = "parquet"))]
+#[derive(Default)]
+pub struct ParquetExport {
+    pub tables: Vec<String>,
+    pub meta: bool,
+}
+
+#[cfg(feature = "parquet")]
+pub use strata::parquet::ExportOptions as ParquetExport;
+
+#[cfg(not(feature = "parquet"))]
+pub fn export_parquet(_: &Path, _: &str, _: &ParquetExport) -> Result<(), String> {
+    Err("this strata-server was built without Parquet (feature parquet)".into())
 }
 
 /// Releases expired snapshot leases, and reports merges that fail (the
@@ -688,12 +1002,45 @@ pub fn spawn_maintenance(svc: &Arc<Service>) {
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
             let Some(svc) = svc.upgrade() else { return };
+            svc.sweep_scrolls();
             svc.sweep_leases();
             let why = svc.failing().map(|w| format!("{w}; merges stop until then")).or_else(|| db.storage().merge_status().error.map(|e| format!("merge failed: {e}")));
             if why.is_some() && why != reported {
                 tracing::error!(error = why.as_deref().unwrap_or_default(), "the database cannot merge");
             }
             reported = why;
+        }
+    });
+}
+
+/// Deletes rows whose `expire_by` time has passed, every `every`
+/// ([`Service::expire_due`]), until the service is dropped.
+pub fn spawn_expirer(svc: &Arc<Service>, every: Duration) {
+    if svc.local_db().is_none() {
+        return;
+    }
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        let mut reported = None;
+        loop {
+            tokio::time::sleep(every).await;
+            let Some(svc) = svc.upgrade() else { return };
+            let r = tokio::task::spawn_blocking(move || svc.expire_due()).await;
+            match r {
+                Ok(Ok(0)) => reported = None,
+                Ok(Ok(n)) => {
+                    reported = None;
+                    tracing::debug!(rows = n, "deleted expired rows");
+                }
+                Ok(Err(e)) => {
+                    let why = e.to_string();
+                    if reported.as_ref() != Some(&why) {
+                        tracing::warn!(error = %why, "could not delete expired rows; reads leave them out meanwhile");
+                    }
+                    reported = Some(why);
+                }
+                Err(e) => tracing::error!(error = %e, "the expirer stopped"),
+            }
         }
     });
 }
@@ -714,11 +1061,8 @@ pub fn spawn_sampler(svc: &Arc<Service>) {
             let Some(svc) = svc.upgrade() else { return };
             let s = svc.sample();
             if let Some(point) = svc.series.add(s) {
-                let changes = svc.alerts.check(&point);
-                if !changes.is_empty() {
-                    let svc = svc.clone();
-                    tokio::spawn(async move { svc.alerts.notify(&changes).await });
-                }
+                // alerts agent: this server's rules, and a coordinator's cluster.
+                crate::alerts::tick(&svc, &point);
             }
             let now = crate::telemetry::now_ms();
             if now / 60_000 != minute {
@@ -731,19 +1075,77 @@ pub fn spawn_sampler(svc: &Arc<Service>) {
     });
 }
 
+/// How often a coordinator looks at its cluster without being asked, so
+/// that events (a copy down, a new primary) and fleet health's "since"
+/// are found when they happen rather than when someone looks.
+pub const WATCH_EVERY: Duration = Duration::from_secs(5);
+
+/// Judges fleet health every [`WATCH_EVERY`], which on a coordinator
+/// surveys the cluster when its snapshot is older than
+/// [`crate::coord::SNAPSHOT_EVERY`] ([`crate::events`]); notes a job of
+/// moves that ended; and keeps each table's size in the log store an
+/// hour apart.
+pub fn spawn_watch(svc: &Arc<Service>) {
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(WATCH_EVERY);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut hour = 0;
+        let mut job: Option<String> = None;
+        loop {
+            tick.tick().await;
+            let Some(svc) = svc.upgrade() else { return };
+            if matches!(svc.backend, Backend::Cluster(_)) {
+                svc.fleet_health().await;
+            }
+            // A job of moves that ended is an event.
+            if let crate::service::Backend::Cluster(c) = &svc.backend {
+                let m = c.moves();
+                let state = m["state"].as_str().map(String::from);
+                if job.as_deref() == Some("running") && state.as_deref() != Some("running") {
+                    let s = state.as_deref().unwrap_or("done");
+                    let title = format!("A job of moves ({}) ended: {s}, {} of {} moves, {} rows", m["job"]["kind"].as_str().unwrap_or("moves"), m["done"], m["of"], m["rows_done"]);
+                    let severity = if s == "failed" { "warning" } else { "info" };
+                    svc.events.add(crate::events::Event { kind: "moves_finished".into(), severity: severity.into(), title, detail: serde_json::json!({"state": s, "error": m["job"]["error"], "rows": m["rows_done"]}), where_: serde_json::Value::Null, who: m["started_by"].as_str().map(String::from) });
+                }
+                job = state;
+            }
+            // Each table's size, an hour apart.
+            let h = crate::telemetry::now_ms() / 3_600_000;
+            if h != hour && svc.log_store.is_some() {
+                hour = h;
+                crate::inspect::keep_sizes(&svc).await;
+            }
+        }
+    });
+}
+
 /// Serves the HTTP API and UI, over TLS with `access.tls`.
 pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access) -> std::io::Result<()> {
     let router = http::router(svc, &access);
+    serve_router(router, listener, &access).await
+}
+
+/// Serves the OpenSearch-compatible API ([`crate::opensearch`]) on its own
+/// listener (`--opensearch-listen`), with the HTTP API's credentials and
+/// TLS. `version` is the version its root reports.
+pub async fn serve_opensearch(svc: Arc<Service>, listener: TcpListener, access: Access, version: &str) -> std::io::Result<()> {
+    let router = crate::opensearch::router(svc, &access, version);
+    serve_router(router, listener, &access).await
+}
+
+/// Serves `router` on `listener`, over TLS with `access.tls`.
+async fn serve_router(router: axum::Router, listener: TcpListener, access: &Access) -> std::io::Result<()> {
     let Some(tls) = &access.tls else {
-        return axum::serve(listener, router).with_graceful_shutdown(shutdown()).await;
+        // Each request knows its peer's address (the audit log's `addr`).
+        return axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(shutdown()).await;
     };
     let config = auth::server_config(tls).map_err(std::io::Error::other)?;
     let acceptor = tokio_rustls::TlsAcceptor::from(config);
-    let service = hyper_util::service::TowerToHyperService::new(router);
     let stop = shutdown();
     tokio::pin!(stop);
     loop {
-        let (tcp, _) = tokio::select! {
+        let (tcp, peer) = tokio::select! {
             r = listener.accept() => match r {
                 Ok(c) => c,
                 // Out of descriptors, say: wait rather than spin.
@@ -755,7 +1157,8 @@ pub async fn serve_http(svc: Arc<Service>, listener: TcpListener, access: Access
             _ = &mut stop => return Ok(()),
         };
         let _ = tcp.set_nodelay(true);
-        let (acceptor, service) = (acceptor.clone(), service.clone());
+        let service = hyper_util::service::TowerToHyperService::new(router.clone().layer(axum::Extension(axum::extract::ConnectInfo(peer))));
+        let acceptor = acceptor.clone();
         tokio::spawn(async move {
             // A client that never finishes its handshake holds a task, not
             // the accept loop.
@@ -780,49 +1183,101 @@ pub async fn serve_grpc(svc: Arc<Service>, listener: TcpListener, access: Access
         }
         s
     });
-    let (token, cluster) = (access.token.clone(), access.cluster.clone());
-    let counted = svc.clone();
-    // Who the call is from, for each method to check its scope.
-    let check = move |mut req: tonic::Request<()>| match counted.keys.resolve(token.as_ref(), cluster.as_ref(), req.metadata().get("authorization").and_then(|v| v.to_str().ok())) {
-        Some(who) => {
-            req.extensions_mut().insert(who);
-            Ok(req)
-        }
-        None => {
-            counted.metrics.grpc("any", "Unauthenticated", 0.0);
-            // The method is not known yet: the path is the service's.
-            counted.audit.add(crate::keys::Entry {
-                ts_ms: crate::telemetry::now_ms(),
-                who: "unknown".into(),
-                key: None,
-                scope: None,
-                method: "gRPC".into(),
-                route: "any".into(),
-                status: 401,
-                ms: 0.0,
-                request_id: None,
-                detail: None,
-            });
-            Err(tonic::Status::unauthenticated("missing or wrong token"))
-        }
-    };
-    // A Write message carries rows, as an HTTP write's body does.
-    let max_body = svc.max_body;
-    let service = pb::strata_server::StrataServer::new(grpc::Grpc(svc)).max_decoding_message_size(max_body).max_encoding_message_size(256 << 20);
+    let service = grpc_service(svc, &access);
     let mut builder = tonic::transport::Server::builder();
     if let Some(tls) = &access.tls {
         builder = builder.tls_config(tonic::transport::ServerTlsConfig::new().identity(tonic::transport::Identity::from_pem(&tls.cert, &tls.key)))?;
     }
-    builder
-        .add_service(tonic::service::interceptor::InterceptedService::new(service, check))
-        .serve_with_incoming_shutdown(incoming, shutdown())
-        .await
+    builder.add_service(service).serve_with_incoming_shutdown(incoming, shutdown()).await
 }
 
-/// Ctrl-C, or SIGTERM: how Docker and Kubernetes stop a container. As a
-/// container's first process the server would otherwise ignore SIGTERM, and
-/// be killed only when the grace period ran out (30 s in Kubernetes).
+/// A shard server's gRPC service, its calls checked for their token or key
+/// ([`Check`]): what [`serve_grpc`] serves, and what a coordinator in the
+/// same process calls in-process ([`crate::coord::LocalShard`]).
+pub type GrpcService = tonic::service::interceptor::InterceptedService<pb::strata_server::StrataServer<grpc::Grpc>, Check>;
+
+pub fn grpc_service(svc: Arc<Service>, access: &Access) -> GrpcService {
+    // A Write message carries rows, as an HTTP write's body does.
+    let max_body = svc.max_body;
+    let check = Check { svc: svc.clone(), token: access.token.clone(), cluster: access.cluster.clone() };
+    let service = pb::strata_server::StrataServer::new(grpc::Grpc(svc)).max_decoding_message_size(max_body).max_encoding_message_size(256 << 20);
+    tonic::service::interceptor::InterceptedService::new(service, check)
+}
+
+/// Who a gRPC call is from, for each method to check its scope: the
+/// caller its token or key names, or a refusal.
+#[derive(Clone)]
+pub struct Check {
+    svc: Arc<Service>,
+    token: Option<Secret>,
+    cluster: Option<Secret>,
+}
+
+impl tonic::service::Interceptor for Check {
+    fn call(&mut self, mut req: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        match self.svc.keys.resolve(self.token.as_ref(), self.cluster.as_ref(), req.metadata().get("authorization").and_then(|v| v.to_str().ok())) {
+            Some(who) => {
+                req.extensions_mut().insert(who);
+                Ok(req)
+            }
+            None => {
+                self.svc.metrics.grpc("any", "Unauthenticated", 0.0);
+                // The method is not known yet: the path is the service's.
+                self.svc.audit.add(crate::keys::Entry {
+                    ts_ms: crate::telemetry::now_ms(),
+                    who: "unknown".into(),
+                    key: None,
+                    scope: None,
+                    method: "gRPC".into(),
+                    route: "any".into(),
+                    status: 401,
+                    ms: 0.0,
+                    request_id: None,
+                    detail: None,
+                    kind: crate::keys::REFUSAL.into(),
+                    ..Default::default()
+                });
+                Err(tonic::Status::unauthenticated("missing or wrong token"))
+            }
+        }
+    }
+}
+
+/// Whether the server was told to stop and serves out its drain time
+/// ([`set_drain`]): `/readyz` answers 503, so that a load balancer sends
+/// it no more clients, and each HTTP answer closes its connection.
+static DRAINING: AtomicBool = AtomicBool::new(false);
+static DRAIN_MS: AtomicU64 = AtomicU64::new(0);
+
+/// How long the server serves on once told to stop (`--drain-ms`), before
+/// it stops taking connections and ends with the requests under way.
+pub fn set_drain(d: Duration) {
+    DRAIN_MS.store(d.as_millis() as u64, Ordering::Relaxed);
+}
+
+/// Whether the server was told to stop and serves out its drain time.
+pub fn draining() -> bool {
+    DRAINING.load(Ordering::Relaxed)
+}
+
+/// Ctrl-C, or SIGTERM: how Docker and Kubernetes stop a container, then
+/// the drain time ([`set_drain`]). As a container's first process the
+/// server would otherwise ignore SIGTERM, and be killed only when the
+/// grace period ran out (30 s in Kubernetes). The HTTP and gRPC servers
+/// each wait for it, and so drain together.
 async fn shutdown() {
+    stop_signal().await;
+    let ms = DRAIN_MS.load(Ordering::Relaxed);
+    if !DRAINING.swap(true, Ordering::Relaxed) {
+        match ms {
+            0 => tracing::info!("stopping: no new connections; the requests under way end first"),
+            _ => tracing::info!(drain_ms = ms, "stopping: /readyz answers 503 while the server serves on for its drain time, then it takes no new connections"),
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(ms)).await;
+}
+
+async fn stop_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};

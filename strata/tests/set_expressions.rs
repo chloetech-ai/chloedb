@@ -132,7 +132,7 @@ fn set_refuses_what_a_row_cannot_give() {
         ("UPDATE items SET clicks = score()", "SCORE(...) works on one table's scan"),
         ("UPDATE items SET clicks = count(*)", "COUNT(...) is an aggregate"),
         ("UPDATE items SET clicks = price / 4 WHERE id = 'a'", "clicks is INT, and 2.625 is not an integer"),
-        ("UPDATE items SET clicks = title || '' WHERE id = 'a'", "does not fit"),
+        ("UPDATE items SET clicks = title || '' WHERE id = 'a'", "clicks is an INT field: give it a number, not text"),
         ("UPDATE items SET clicks = title + 1 WHERE id = 'a'", "cannot compute"),
         ("UPDATE items SET emb = title || '' WHERE id = 'a'", "emb is a VECTOR field"),
         ("UPDATE items SET label = tags WHERE id = 'c'", "label holds one value"),

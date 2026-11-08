@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Under the hood · Strata</title>
+<meta name="description" content="Why Strata is fast and flexible: one memory-mapped file read in place, posting lists and columns laid out for the CPU, top-k loops that skip what cannot rank, 8-bit and RaBitQ vector codes, and a planner that decides per segment from exact counts.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<div class="sample-banner gutter"><div class="wrap"><b>Draft</b><span>This site is a draft for review. Every benchmark number on it is read from the results committed with each run.</span></div></div>
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a>
+  <nav class="nav" aria-label="Site">
+    <a href="features.html" aria-current="page">Features</a>
+    <a href="scale.html">Laptop to cloud</a>
+    <a href="command-center.html">Command center</a>
+    <a href="benchmarks.html">Benchmarks</a>
+    <a href="use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="../">Docs</a><a href="https://github.com/chloetech-ai/strata">GitHub</a><a class="btn primary" href="index.html#start">Get started</a></div>
+</div></header>
+
+<main>
+  <div class="gutter head-band"><div class="wrap page-head">
+    <span class="eyebrow">Under the hood</span>
+    <h1>Why Strata is fast</h1>
+    <p class="lede">It does less work per query. Indexes are read in place from one file, laid out for the CPU, and every top-k loop skips what cannot rank. Each idea below links its code and one measured number.</p>
+    <nav class="toc" aria-label="Sections">
+      <a href="#short">Four habits</a><a href="#path">A query's path</a><a href="#storage">Storage</a><a href="#text">Full text</a><a href="#columns">Columns and keys</a><a href="#vectors">Vectors</a><a href="#planner">The planner</a><a href="#cluster">Cluster and merges</a><a href="#gaps">Not fast yet</a>
+    </nav>
+    <div class="note"><b>Machines</b><span><b>M2</b> is a MacBook Air (Apple M2, 24 GB). <b>Xeon VM</b> is a 4-core cloud container (Intel Xeon, 2.10 or 2.80 GHz). Commands and raw results are in <a href="../strata/results.html">Strata's results</a>, the <a href="../strata/index.html">design document</a> and the <a href="../posting-lists.html">posting-list study</a>.</span></div>
+  </div></div>
+
+  <section class="gutter" id="short"><div class="wrap block">
+    <div class="block-head center">
+      <h2>Four habits, in every index</h2>
+    </div>
+    <div class="facts">
+      <div class="fact"><b>Read in place</b><p>Opening maps the file. Every index is an aligned view of its bytes; nothing is decoded to open it.</p></div>
+      <div class="fact"><b>Compress for the CPU</b><p>Posting lists AND and OR 64 documents a word, columns are bit-packed in SIMD lanes, vectors score as 8-bit integers.</p></div>
+      <div class="fact"><b>Skip what cannot rank</b><p>Exact score bounds, zone maps, vector error bounds and Bloom filters let each loop skip work it can prove useless.</p></div>
+      <div class="fact"><b>Plan from exact counts</b><p>Each segment chooses its indexes from exact statistics, and measures a vector filter near the query.</p></div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="path"><div class="wrap block">
+    <div class="block-head center">
+      <h2>From SQL to rows in six steps</h2>
+      <p>The same path in one process and on every shard.</p>
+    </div>
+    <ol class="pipe">
+      <li><span class="k">1 · Parse</span><b>Parse once</b><p>A statement seen before skips parsing.</p><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/sql.rs">query/sql.rs</a></li>
+      <li><span class="k">2 · Bind</span><b>One tree, one scorer</b><p><code>WHERE</code> becomes text, column, vector and graph leaves.</p><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/logical.rs">query/logical.rs</a></li>
+      <li><span class="k">3 · Graphs</span><b>Walk first</b><p>Traversals leave each segment an exact set of rows.</p><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/graph/traverse.rs">graph/traverse.rs</a></li>
+      <li><span class="k">4 · Plan</span><b>Per segment</b><p>Each segment picks how to filter and which index ranks.</p><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/plan.rs">query/plan.rs</a></li>
+      <li><span class="k">5 · Run</span><b>Zero-copy</b><p>Operators read the mapped sections, on one shared thread pool.</p><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/pool.rs">query/pool.rs</a></li>
+      <li><span class="k">6 · Merge</span><b>Merge, fuse, join</b><p>Top-k lists merge; large joins and groups go to DataFusion.</p><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/exec.rs">query/exec.rs</a></li>
+    </ol>
+  </div></section>
+
+  <section class="gutter" id="storage"><div class="wrap block">
+    <div class="fam-head"><h2>Storage</h2><span class="fam">one file of immutable segments</span></div>
+    <p class="lede">Every index lives in segments written once and merged in the background, as in Lucene and Tantivy, for the whole table, in one file plus a write-ahead log.</p>
+    <div class="filemap" aria-label="The layout of a Strata file and of one of its segments">
+      <div class="fm-label">The file</div>
+      <div class="fm-row">
+        <span class="meta">meta slot 0</span><span class="meta">meta slot 1</span><span class="seg open">segment</span><span class="seg">segment</span><span>manifest</span><span>delete sets</span><span>free list</span><span class="seg grow">segment …</span>
+      </div>
+      <div class="fm-label">One segment: a directory of named sections</div>
+      <div class="sections">
+        <span style="--c: var(--fam-text)">text.body.dict<em class="r">random</em></span>
+        <span style="--c: var(--fam-text)">text.body.post<em>read-ahead</em></span>
+        <span style="--c: var(--fam-text)">text.body.pos<em>read-ahead</em></span>
+        <span style="--c: var(--fam-cols)">col.price<em>read-ahead</em></span>
+        <span style="--c: var(--fam-cols)">kw.brand.post<em>read-ahead</em></span>
+        <span style="--c: var(--fam-vec)">vec.emb.sq8<em class="r">random</em></span>
+        <span style="--c: var(--fam-vec)">vec.emb.hnsw<em class="r">random</em></span>
+        <span style="--c: var(--fam-vec)">vec.emb.f32<em class="r">random</em></span>
+        <span style="--c: var(--fam-graph)">graph.bought_with<em class="r">random</em></span>
+        <span>store.data<em class="r">random</em></span>
+        <span>pk<em class="r">random</em></span>
+      </div>
+      <div class="fm-key"><span><em class="r">random</em> advised <code>MADV_RANDOM</code>: a cold fault reads one page</span><span><em>read-ahead</em> read in runs</span></div>
+    </div>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>Commits by shadow paging</h4>
+        <p>A commit writes new pages, then flips one of two checksummed meta slots. No rollback journal; small transactions append to the WAL.</p>
+        <p class="proof"><b>Measured</b>4.1 ms for a durable one-row commit; 98,000 rows a second in 1,000-row transactions.<span class="on">M2 · <a href="../strata/results.html#transactions-and-storage">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/pager.rs">storage/pager.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/wal.rs">storage/wal.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Sections used where they lie</h4>
+        <p>Sections are 64-byte aligned, so a <code>&amp;[u64]</code> view is taken straight from the mapping. A query opens only the fields it uses.</p>
+        <p class="proof"><b>Measured</b>A cold open takes 6.8 ms with 10 segments, 40 ms with 100.<span class="on">M2 · <a href="../strata/results.html#transactions-and-storage">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/segment/mod.rs">segment/mod.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>A page-cache hint per section</h4>
+        <p>Sections read at random skip the kernel's read-around, and an HNSW search prefetches each hop's neighbours.</p>
+        <p class="proof"><b>Measured</b>A cold HNSW query on Quora: 136 ms by default, 113 ms advised, 28 ms with prefetching.<span class="on">M2 · <a href="../strata/results.html#vector-indexes">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/hnsw.rs">vector/hnsw.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>New rows searchable at once</h4>
+        <p>Commits fill 1,024-row chunks, built into small segments only when a query needs them. Readers pin a snapshot and never wait.</p>
+        <p class="proof"><b>Measured</b>The first query after a write: 17 to 20 ms, against 169 ms for an unchunked memtable of 10,000 rows.<span class="on">M2 · <a href="../strata/results.html#transactions-and-storage">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/state.rs">storage/state.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/snapshot.rs">storage/snapshot.rs</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="text"><div class="wrap block">
+    <div class="fam-head"><h2>Full text</h2><span class="fam text">dictionary, Loom lists, MaxScore</span></div>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>A dictionary walked as a trie</h4>
+        <p>A typed word skips every run of terms already too many edits away, computing 63 letters of edits at once in a machine word.</p>
+        <p class="proof"><b>Measured</b>1.4 ms with one edit among ORCAS's 797,472 terms, against 77 ms testing every term.<span class="on">Xeon VM, 2.10 GHz · <a href="../strata/query-language.html#typos-and-synonyms">typos</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/text/dict.rs">text/dict.rs</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/text/fuzzy.rs">text/fuzzy.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Loom posting lists</h4>
+        <p>Long lists are cut into bitmaps, Elias-Fano runs and ranges on one shared word grid, so two lists AND and OR word by word.</p>
+        <p class="proof"><b>Measured</b>Conjunctions 7.6 to 11× faster than BP128 lists, and 2 to 4% smaller.<span class="on">M2 · <a href="../strata/results.html#posting-formats-and-top-k">results</a>, <a href="../posting-lists.html#loom">the study</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/postings/codecs/loom/mod.rs">postings/codecs/loom</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Exact bounds, then MaxScore</h4>
+        <p>Each list and each 128-posting block carries its best possible score, so lists that cannot lift a row past the threshold only confirm candidates.</p>
+        <p class="proof"><b>Measured</b>Warm BM25 top 10 is 1.7 to 3.2× faster than Tantivy 0.26 on four BEIR collections.<span class="on">M2 · <a href="../strata/results.html#query-latency">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/text/bm25.rs">text/bm25.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>The same score everywhere</h4>
+        <p>BM25 statistics are summed over segments and shards, so a row scores the same wherever it lives. A CI gate holds relevance to committed numbers.</p>
+        <p class="proof"><b>Measured</b>Within 0.018 nDCG@10 of Tantivy and SQLite FTS5 on four BEIR collections.<span class="on">M2 · <a href="../strata/results.html#ranking-quality">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/stats.rs">query/stats.rs</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="columns"><div class="wrap block">
+    <div class="fam-head"><h2>Columns and keys</h2><span class="fam cols">bit-packed blocks, zone maps, Pyramid lists</span></div>
+    <p class="lede">Each structured field is stored twice: a column answers "what is this row's value", and a list per value answers "which rows have it".</p>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>Columns in 128-row blocks</h4>
+        <p>Frame-of-reference, bit-packed in four SIMD lanes; reading a row is two loads and a shift. Zone maps skip 4,096 rows per check.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/forward/blocks.rs">forward/blocks.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Pyramid lists per value</h4>
+        <p>Equality and <code>IN</code> are set operations, with an O(1) membership test at any density. Ranges use a 64-bucket histogram that also feeds the planner.</p>
+        <p class="proof"><b>Measured</b>Unions faster than Roaring on the clustered collection, in 24 to 33% less space.<span class="on">M2 · <a href="../posting-lists.html#pyramid">the study</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/tree/main/strata/src/postings/codecs/pyramid">postings/codecs/pyramid</a><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/forward/range.rs">forward/range.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>A read by key in a cache line</h4>
+        <p>Sorted key hashes under a radix directory, plus a Bloom filter per segment, so a lookup skips the segments that lack the key.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/pk.rs">storage/pk.rs</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="vectors"><div class="wrap block">
+    <div class="fam-head"><h2>Vectors</h2><span class="fam vec">SQ8 and RaBitQ codes, HNSW, IVF</span></div>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>Integer dot products</h4>
+        <p>Vectors are scanned as 8-bit codes with VNNI or <code>usdot</code> instructions, chosen at run time; float32 rows rerank the last candidates.</p>
+        <p class="proof"><b>Measured</b>14 ns for a 1,024-dimension code against 70 ns in float32; codes alone find 99.8% of the exact top 10.<span class="on">M2 · <a href="../strata/results.html#vector-indexes">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/kernels.rs">vector/kernels.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>HNSW on codes</h4>
+        <p>The graph is built and searched on the 8-bit codes, a byte per dimension instead of four.</p>
+        <p class="proof"><b>Measured</b>Recall@10 0.990 at 0.086 ms on Quora's 522,931 vectors.<span class="on">M2 · <a href="../strata/index.html#merges">design</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/hnsw.rs">vector/hnsw.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Merges keep the graph</h4>
+        <p>A merge keeps its largest input's graph and joins the others to it, as Lucene does, instead of building from scratch.</p>
+        <p class="proof"><b>Measured</b>12.2 s instead of 37.9 s for four TREC-COVID segments, at recall@10 0.987 to 0.989 against 0.992 to 0.993.<span class="on">Xeon VM, four threads · <a href="../strata/index.html#merges">design</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/hnsw.rs">vector/hnsw.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>RaBitQ codes</h4>
+        <p>Optional 1, 2 or 4-bit codes with an error bound: a float row is read only if it could still make the top k.</p>
+        <p class="proof"><b>Measured</b>On FiQA, 28 float reads a query instead of 320, recall@10 0.996, 0.49 ms.<span class="on">Xeon VM, 2.80 GHz · <a href="../strata/results.html#compressed-vectors">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/rabitq.rs">vector/rabitq.rs</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="planner"><div class="wrap block">
+    <div class="fam-head"><h2>The planner</h2><span class="fam">per segment, from exact counts</span></div>
+    <p class="lede">No fixed strategy wins every query, so each segment chooses, and <code>EXPLAIN</code> shows the choice.</p>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>Build the filter, or check it</h4>
+        <p>A filter is either built as a set from its lists or checked row by row, whichever the exact counts say is cheaper.</p>
+        <p class="proof"><b>Measured</b>Filtered BM25 3.1 to 4.0× faster than Tantivy's.<span class="on">M2 · <a href="../strata/results.html#query-latency">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/plan.rs">query/plan.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Vector filters measured near the query</h4>
+        <p>A 32-result probe tells how much of the filter lies near the query, then picks exact scan, IVF, HNSW or post-filter.</p>
+        <p class="proof"><b>Measured</b>2.7× (TREC-COVID) and 6.1× (Quora) faster than the best fixed strategy, recall@10 0.991 to 0.998.<span class="on">M2 · <a href="../strata/results.html#filtered-vector-search-and-the-planner">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/vector/cost.rs">vector/cost.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Hybrid as one plan</h4>
+        <p>Each input's top 100 under the same filter, rescored exactly by every input, then fused.</p>
+        <p class="proof"><b>Measured</b>0.2 to 0.8 ms, recovering 89 to 95% of the exact fused top 10.<span class="on">M2 · <a href="../strata/results.html#hybrid-ranking">results</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/fusion.rs">query/fusion.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Large plans on DataFusion</h4>
+        <p>Search stays on Strata's indexes; joins, groups and windows over more than 4,096 rows run as one Apache DataFusion plan that spills to disk.</p>
+        <p class="proof"><b>Measured</b>A join and group over two 100,000-row tables: 60 ms against 285 ms.<span class="on">Xeon VM, 2.10 GHz · <a href="../strata/query-language.html#subqueries-with-and-joins">engines</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/query/df.rs">query/df.rs</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="cluster"><div class="wrap block">
+    <div class="fam-head"><h2>Cluster and merges</h2><span class="fam">shards that answer like one database</span></div>
+    <p class="lede">A shard is the same file a program opens. Keys hash to 4,096 slots under an epoch, so slots move while the cluster serves.</p>
+    <div class="feat-grid mech-grid">
+      <div class="feat mech">
+        <h4>BM25 scored as one collection</h4>
+        <p>The coordinator sums every shard's term statistics, so each shard scores as the unsplit collection would. It caches them per shard version.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata-server/src/coord.rs">strata-server/src/coord.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Hedged reads</h4>
+        <p>When a replica is slow, the next is asked too and the first answer wins, with hedges capped to a share of calls.</p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/cluster.rs">cluster.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Merges that stream</h4>
+        <p>Flushes and merges run without the writer lock and stream their output, so memory stays bounded.</p>
+        <p class="proof"><b>Measured</b>A 2M-passage merge peaks at 4.0 to 4.1 GB of heap instead of 7.6 GB.<span class="on">Xeon VM, four threads · <a href="../strata/index.html#merges">design</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/storage/merge.rs">storage/merge.rs</a></div>
+      </div>
+      <div class="feat mech">
+        <h4>Parallel builds, identical bytes</h4>
+        <p>A segment builds on up to eight threads, byte for byte the same as a one-thread build.</p>
+        <p class="proof"><b>Measured</b>A TREC-COVID text segment in 2.9 to 3.2 s on four threads, against 9.0 to 9.7 s on one.<span class="on">Xeon VM · <a href="../strata/index.html#segments">design</a></span></p>
+        <div class="srcs"><a class="src" href="https://github.com/chloetech-ai/strata/blob/main/strata/src/segment/build.rs">segment/build.rs</a></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="gaps"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Not fast yet</span>
+      <h2>Where Strata is behind</h2>
+    </div>
+    <ul class="gaps">
+      <li><b>Key lookups through a coordinator.</b> <span>0.99 ms at 10M, where Postgres, Weaviate, ParadeDB and Qdrant read a row in 0.37 to 0.47 ms (<a href="bench-10m.html#behind">10M</a>). Most of it is the hop from a coordinator to the shard, not the read. At 16 clients Strata serves 11,993 a second with #299, which answers a pod's own shard in process, and OpenSearch 12,620.</span></li>
+      <li><b>Typo search.</b> <span>The typo walk (#242, then #266's in-memory term table) took the cloud medians from 120 to 11.9 ms at 1M and from 824 to 45.8 ms at 10M. Typesense and Meilisearch take about 6 ms at 1M, and Elasticsearch 34.6 at 10M (<a href="bench-10m.html#behind">10M</a>).</span></li>
+      <li><b>BM25 under load.</b> <span>At 10M and 16 clients Strata serves 625 queries a second, Elasticsearch 683 and OpenSearch 720 (on other nodes of the same type). Moving the coordinators into the shard pods (#287) added 3%: what waits is the shards' own scoring.</span></li>
+      <li><b>Builds.</b> <span>The HNSW graph is 146 s of Quora's 153.1 s load on an M2.</span></li>
+      <li><b>Cold filters and small facets.</b> <span>Tantivy is 1.4 to 3.4× faster on cold range filters, and 1.1 to 2.1× on facets in three of four BEIR collections (M2).</span></li>
+    </ul>
+    <div class="actions"><a class="btn primary" href="benchmarks.html">All the benchmarks</a><a class="btn" href="benchmarks.html#losses">Every loss</a><a class="btn" href="../strata/index.html">The design document</a></div>
+  </div></section>
+</main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="index.html"><i><b></b><b></b><b></b><b></b></i>Strata</a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Product</h4><ul><li><a href="features.html">Features</a></li><li><a href="under-the-hood.html">Under the hood</a></li><li><a href="scale.html">Laptop to cloud</a></li><li><a href="command-center.html">Command center</a></li><li><a href="compare.html">Compared with others</a></li></ul></div>
+  <div><h4>Benchmarks</h4><ul><li><a href="benchmarks.html">Overview</a></li><li><a href="bench-10m.html">10M documents</a></li><li><a href="bench-1m.html">1M documents</a></li><li><a href="bench-laptop.html">Laptop cluster</a></li><li><a href="bench-embedded.html">No server</a></li><li><a href="bench-graph.html">Graph</a></li><li><a href="bench-method.html">How we test</a></li></ul></div>
+  <div><h4>Learn</h4><ul><li><a href="use-cases.html">Use cases</a></li><li><a href="examples.html">Queries</a></li><li><a href="../strata/">Documentation</a></li><li><a href="../strata/query-language.html">Query language</a></li><li><a href="../strata/server.html">Server and cluster</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/strata">GitHub</a></li><li><a href="../reproduce.html">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="assets/site.js"></script>
+</body>
+</html>

@@ -94,8 +94,13 @@ editing their settings by hand.
 | `strata/` | the database (Rust crate), including the posting-list study in `src/postings/` |
 | `strata/fuzz/` | cargo-fuzz targets (nightly: `cargo +nightly fuzz run <target>` there) feeding Strata damaged files and arbitrary SQL; `strata/tests/corrupt_input.rs` runs the same targets on stable |
 | `strata-server/` | Strata over HTTP JSON and gRPC, a coordinator over shards, and the UI: the command center (`ui/index.html` and the modules under `ui/app/`, listed in `src/ui.rs`) and the query console (`ui/classic.html`), compiled in with `include_str!`; `STRATA_UI_DIR=strata-server/ui` serves them from disk without a rebuild |
+| `strata-crawl/` | the crawler (Rust, a client of strata-server over HTTP): `strata-crawl crawl URL --local DIR` crawls into a cluster it starts and grows; `serve` is its API, which the command center shows as an app (`strata-server --app crawler=URL`); its view is `ui/view.js`, compiled in (`STRATA_CRAWL_UI_DIR=strata-crawl/ui` reads it from disk) |
+| `strata-js/` | Strata from JavaScript (`import { open } from "strata-db"`): a Node-API addon (napi-rs) that Node, Bun and Deno load, and a `fetch` client of strata-server (`client.js`); `npm run build -- --profile ci && npm test` there |
 | `strata-py/` | Strata from Python (`import strata`): a PyO3 extension built with maturin, and an HTTP client of strata-server; tests in `strata-py/tests` |
-| `.github/workflows/ci.yml` | CI: tests and clippy for the three crates on Linux and macOS, Strata's fault-injection tests (`--features fault-injection`), a relevance gate (BM25 on three BEIR collections), Miri over Strata's byte views (nightly; tests sized for it are named `miri_*`), the Python package's tests, and a server smoke test; one job, `CI result`, sums them up and is the check main requires |
+| `strata-java/` | Strata from Java (`ai.chloetech.strata`, and a JDBC driver, `jdbc:strata:`, in `ai.chloetech.strata.jdbc`): a JNI library (the Rust crate, `src/*.rs`) and the Java package (`src/main/java`), built together by `mvn package` (Maven's output in `target/java`); JUnit tests in `src/test/java` |
+| `.github/workflows/ci.yml` | CI: tests and clippy for the crates (strata, engram, strata-server, strata-crawl) on Linux and macOS, Strata's fault-injection tests (`--features fault-injection`), a relevance gate (BM25 on three BEIR collections), Miri over Strata's byte views (nightly; tests sized for it are named `miri_*`), the Python and Java packages' tests, and a server smoke test; one job, `CI result`, sums them up and is the check main requires (on a pull request it does not wait for the macOS job, whose check still turns red) |
+| `.github/workflows/chaos.yml` | every night (or by hand, with a list of scenarios), `strata-chaos run` plays the chaos monkey's scenarios on a local cluster on one runner, as root, and fails when a write was lost or applied twice; its results.md is the run's summary |
+| `scripts/ci-local.sh` | CI's jobs on this machine (macOS or Linux), on the merge of a commit into main; `--post-status` records the result on GitHub as commit status `ci-local`, `--list` lists the jobs, and the header says what a Mac cannot test |
 | `.github/CODEOWNERS`, `.github/pull_request_template.md` | the one-way doors (on-disk format, shard protocol, replication, auth), which wait for a human review; a pull request says whether it touches one |
 | `docs/` | the documentation site (Jekyll, just-the-docs); `docs/demo/inspector.html` is a separate static copy of the inspector |
 | `install.sh` | the installer described above |
@@ -107,6 +112,15 @@ Build and test each crate from its own directory (`engram` and
 cd strata && cargo test --release
 cd engram && cargo test --release
 cd strata-server && cargo test --release
+cd strata-crawl && cargo test --release   # its crawl into a cluster needs strata-server built (or STRATA_SERVER_BIN)
+```
+
+The Java package builds with Maven, which runs cargo for its native library
+(`-Dcargo.profile=ci` skips link-time optimisation when only the tests
+matter):
+
+```bash
+cd strata-java && mvn -Dcargo.profile=ci package
 ```
 
 The Python package builds into a virtualenv (its client tests start
@@ -115,6 +129,13 @@ The Python package builds into a virtualenv (its client tests start
 ```bash
 cd strata-py && python3 -m venv .venv && . .venv/bin/activate
 pip install maturin pytest && maturin develop --release && pytest tests
+```
+
+The JavaScript package builds its addon with cargo (its client tests start
+`strata-server/target/release/strata-server` too):
+
+```bash
+cd strata-js && npm run build -- --profile ci && npm test
 ```
 
 CI also runs `cargo clippy --release --all-targets -- -A clippy::style -A

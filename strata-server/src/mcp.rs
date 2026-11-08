@@ -1,0 +1,778 @@
+//! The Model Context Protocol (MCP): agents such as Claude Code drive
+//! Strata through tools, over `POST /v1/mcp` (the protocol's Streamable
+//! HTTP transport, answering JSON) or over stdio with
+//! `strata-server mcp --url ...`, which sends each message to that route.
+//!
+//! A tool is one of the server's own routes: `query` is `POST /v1/query`,
+//! `execute` is `POST /v1/sql`, `write` is `POST /v1/write`, and so on. A
+//! call is sent to the router in this process with the caller's
+//! credential, so it passes the same checks as the route called directly:
+//! the key's scope (a read key's `execute` of an INSERT is refused), the
+//! contain rules, the audit log and the query log, where it is the
+//! client's app `mcp`. Two tools need no route: `check_sql` binds a
+//! statement against the tables without running it, and `search_docs`
+//! finds sections of the query language reference compiled into the
+//! binary.
+//!
+//! The server keeps no session: every message is answered on its own, so
+//! any coordinator of a cluster answers any message. It offers tools and
+//! resources (the query language and the Build an app guide), and no
+//! stream of its own (`GET /v1/mcp` answers 405).
+
+use std::net::SocketAddr;
+use std::sync::OnceLock;
+
+use axum::body::Body;
+use axum::http::{header, HeaderMap, HeaderValue, Method, Request, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::Router;
+use serde_json::{json, Value as Json};
+
+use crate::service::Service;
+
+/// Protocol versions this server speaks, newest first. `initialize`
+/// answers the client's version when it is one of these, else the newest.
+pub const VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// Rows a `query` answers unless it asks for more ([`MAX_ROWS`] at most):
+/// a model reads every row it is given.
+pub const DEFAULT_ROWS: usize = 100;
+pub const MAX_ROWS: usize = 2000;
+/// Characters of a tool's answer, past which it is cut.
+pub const MAX_TEXT: usize = 200_000;
+/// Bytes of a route's answer read.
+const MAX_BODY: usize = 64 << 20;
+
+/// The query language's reference and the Build an app guide, as the
+/// documentation site has them.
+pub const QUERY_LANGUAGE: &str = include_str!("../../docs/strata/query-language.md");
+pub const BUILD_AN_APP: &str = include_str!("../../docs/strata/build-an-app.md");
+
+const INSTRUCTIONS: &str = "Strata is a search database with SQL: full text (BM25), vectors, graphs and structured fields, in tables. \
+Start with list_tables: it gives each table's CREATE TABLE statement. \
+Strata SQL is its own dialect, not Postgres: MATCH(field, 'words') filters by text, ORDER BY bm25(field, 'words') DESC ranks by it, \
+similarity(vector_field, :p) ranks by meaning (bind :p in params as {\"embed\": \"some text\", \"field\": \"emb\"}), and search_docs finds the syntax of anything else. \
+query runs SELECT only; execute runs INSERT, UPDATE, DELETE, CREATE, ALTER and DROP; write sends rows as JSON. \
+check_sql parses and binds a statement against the tables without running it, and explain shows how a SELECT runs. \
+The key you connect with decides what you may change (whoami): read, write, or admin for tables.";
+
+/// What a tool's call does.
+enum Act {
+    /// A route of this server: its method, path (with its query string)
+    /// and body; then what is kept of its answer.
+    Route { method: Method, path: String, body: Option<Json>, shape: Shape },
+    /// `check_sql`: bound here.
+    CheckSql(String),
+    /// `search_docs`: found here.
+    SearchDocs { query: String, limit: usize },
+}
+
+/// What a tool keeps of a route's answer.
+#[derive(Clone, Copy)]
+enum Shape {
+    All,
+    /// `/v1/tables`, without each table's schema in full.
+    Tables,
+    /// Rows, at most this many.
+    Rows(usize),
+}
+
+/// Why a tool's call failed: arguments the tool does not take (a protocol
+/// error), or the call's own failure, which the model reads and may fix.
+enum Failed {
+    Arguments(String),
+    Call(String),
+}
+
+fn s<'a>(args: &'a Json, k: &str) -> Result<&'a str, Failed> {
+    args.get(k).and_then(|v| v.as_str()).filter(|v| !v.trim().is_empty()).ok_or_else(|| Failed::Arguments(format!("the arguments need a string {k:?}")))
+}
+
+fn opt_s<'a>(args: &'a Json, k: &str) -> Option<&'a str> {
+    args.get(k).and_then(|v| v.as_str()).filter(|v| !v.is_empty())
+}
+
+/// The body's members that are present, of those named.
+fn pick(args: &Json, keys: &[&str]) -> Json {
+    let mut o = serde_json::Map::new();
+    for k in keys {
+        if let Some(v) = args.get(*k).filter(|v| !v.is_null()) {
+            o.insert(k.to_string(), v.clone());
+        }
+    }
+    Json::Object(o)
+}
+
+/// Percent-encoding of a query string's value.
+pub fn encode(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    for b in v.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn route(method: Method, path: impl Into<String>, body: Option<Json>, shape: Shape) -> Act {
+    Act::Route { method, path: path.into(), body, shape }
+}
+
+/// The tools: name, title, description, input schema, annotations, and
+/// what a call does.
+struct Tool {
+    name: &'static str,
+    title: &'static str,
+    description: &'static str,
+    schema: fn() -> Json,
+    read_only: bool,
+    destructive: bool,
+    act: fn(&Json) -> Result<Act, Failed>,
+}
+
+const PARAMS: &str = "Values of the statement's :name parameters, by name. A vector parameter may be {\"embed\": \"text\", \"field\": \"emb\"} (the text embedded by that field's model) or {\"vector_of\": \"<key>\", \"field\": \"emb\"} (that row's vector).";
+
+fn sql_schema(more: Json) -> Json {
+    let mut props = json!({
+        "sql": {"type": "string", "description": "One Strata SQL statement."},
+        "params": {"type": "object", "description": PARAMS},
+    });
+    if let (Some(p), Some(m)) = (props.as_object_mut(), more.as_object()) {
+        p.extend(m.clone());
+    }
+    json!({"type": "object", "properties": props, "required": ["sql"]})
+}
+
+const TOOLS: &[Tool] = &[
+    Tool {
+        name: "list_tables",
+        title: "List tables",
+        description: "Every table: its CREATE TABLE statement (fields, types, options), primary key, shard key, rank profiles, and the models of its embedded and derived fields. Call it first.",
+        schema: || json!({"type": "object", "properties": {}}),
+        read_only: true,
+        destructive: false,
+        act: |_| Ok(route(Method::GET, "/v1/tables", None, Shape::Tables)),
+    },
+    Tool {
+        name: "describe_table",
+        title: "Describe a table",
+        description: "One table's schema in full: every field with its type and options, as JSON and as CREATE TABLE.",
+        schema: || json!({"type": "object", "properties": {"table": {"type": "string"}}, "required": ["table"]}),
+        read_only: true,
+        destructive: false,
+        act: |a| Ok(route(Method::GET, format!("/v1/schema?table={}", encode(s(a, "table")?)), None, Shape::All)),
+    },
+    Tool {
+        name: "query",
+        title: "Query",
+        description: "Run one SELECT (read-only) and get its columns and rows. Search with MATCH(text_field, 'words') to filter and ORDER BY bm25(text_field, 'words') DESC or similarity(vector_field, :p) DESC to rank; GROUP BY for facets; WITH, joins, window functions and UNION as in SQL. Answers at most max_rows rows (default 100), and says when it cut them.",
+        schema: || sql_schema(json!({
+            "max_rows": {"type": "integer", "minimum": 1, "maximum": MAX_ROWS, "default": DEFAULT_ROWS},
+            "timeout_ms": {"type": "integer", "minimum": 1}
+        })),
+        read_only: true,
+        destructive: false,
+        act: |a| {
+            s(a, "sql")?;
+            let rows = a.get("max_rows").and_then(|v| v.as_u64()).map_or(DEFAULT_ROWS, |n| (n as usize).clamp(1, MAX_ROWS));
+            Ok(route(Method::POST, "/v1/query", Some(pick(a, &["sql", "params", "timeout_ms"])), Shape::Rows(rows)))
+        },
+    },
+    Tool {
+        name: "explain",
+        title: "Explain a query",
+        description: "How a SELECT runs: the bound query, its plan and the executor's steps; with hits, also the top rows with their score() and the features that made it.",
+        schema: || sql_schema(json!({"hits": {"type": "integer", "minimum": 1, "maximum": 50}})),
+        read_only: true,
+        destructive: false,
+        act: |a| {
+            s(a, "sql")?;
+            Ok(route(Method::POST, "/v1/explain", Some(pick(a, &["sql", "params", "hits"])), Shape::All))
+        },
+    },
+    Tool {
+        name: "check_sql",
+        title: "Check a statement",
+        description: "Parse and bind one statement against the tables without running it: what it would do (a CREATE TABLE's schema, the table an INSERT, UPDATE or DELETE writes, the changes of an ALTER), or why Strata refuses it. Use it before execute. A SELECT is bound when it runs: check it with explain.",
+        schema: || json!({"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]}),
+        read_only: true,
+        destructive: false,
+        act: |a| Ok(Act::CheckSql(s(a, "sql")?.to_string())),
+    },
+    Tool {
+        name: "execute",
+        title: "Execute a statement",
+        description: "Run one statement that changes data or tables: INSERT, UPDATE, DELETE (a write key), CREATE TABLE, ALTER TABLE, DROP TABLE, CREATE RANK PROFILE (an admin key). Answers how many rows it wrote. A SELECT here answers rows too, but use query for those.",
+        schema: || sql_schema(json!({})),
+        read_only: false,
+        destructive: true,
+        act: |a| {
+            s(a, "sql")?;
+            Ok(route(Method::POST, "/v1/sql", Some(pick(a, &["sql", "params"])), Shape::Rows(MAX_ROWS)))
+        },
+    },
+    Tool {
+        name: "write",
+        title: "Write rows",
+        description: "Apply operations in one transaction: {\"op\": \"upsert\" | \"insert\" | \"upsert_if_newer\", \"table\": \"t\", \"doc\": {...}} writes a row (upsert replaces any row with its key; insert fails if one exists), {\"op\": \"delete\", \"table\": \"t\", \"key\": \"k\"} deletes one, {\"op\": \"set\", \"table\": \"t\", \"key\": \"k\", \"field\": \"f\", \"value\": v} sets one field, {\"op\": \"add\", ..., \"field\": \"stock\", \"value\": -1} adds to a number. Fields left out of a doc are NULL (or their DEFAULT); embedded vectors are computed by the server. Needs a write key.",
+        schema: || json!({"type": "object", "properties": {"ops": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
+            "op": {"type": "string", "enum": ["upsert", "insert", "upsert_if_newer", "delete", "set", "add"]},
+            "table": {"type": "string"},
+            "doc": {"type": "object"},
+            "key": {},
+            "field": {"type": "string"},
+            "value": {}
+        }, "required": ["op"]}}}, "required": ["ops"]}),
+        read_only: false,
+        destructive: true,
+        act: |a| match a.get("ops") {
+            Some(Json::Array(o)) if !o.is_empty() => Ok(route(Method::POST, "/v1/write", Some(json!({"ops": o})), Shape::All)),
+            _ => Err(Failed::Arguments("the arguments need an array \"ops\" of one operation or more".into())),
+        },
+    },
+    Tool {
+        name: "get_rows",
+        title: "Get rows by key",
+        description: "Rows by their primary keys, in the order given (null for a key with no live row), without SQL.",
+        schema: || json!({"type": "object", "properties": {
+            "keys": {"type": "array", "minItems": 1, "items": {}},
+            "table": {"type": "string"},
+            "columns": {"type": "array", "items": {"type": "string"}}
+        }, "required": ["keys"]}),
+        read_only: true,
+        destructive: false,
+        act: |a| match a.get("keys") {
+            Some(Json::Array(k)) if !k.is_empty() => Ok(route(Method::POST, "/v1/kv/get", Some(pick(a, &["keys", "table", "columns"])), Shape::All)),
+            _ => Err(Failed::Arguments("the arguments need an array \"keys\"".into())),
+        },
+    },
+    Tool {
+        name: "json_paths",
+        title: "Paths of a JSON field",
+        description: "The keys a JSON field's objects hold: each path, how many rows have it, its types, and its commonest values, under path if given and among the rows a where condition matches. Use it to learn what to filter on (attrs.color = 'red').",
+        schema: || json!({"type": "object", "properties": {
+            "table": {"type": "string"}, "field": {"type": "string"},
+            "path": {"type": "string"}, "where": {"type": "string", "description": "A WHERE condition over the table's columns."}
+        }, "required": ["table", "field"]}),
+        read_only: true,
+        destructive: false,
+        act: |a| {
+            let mut path = format!("/v1/tables/{}/paths?field={}", encode(s(a, "table")?), encode(s(a, "field")?));
+            for k in ["path", "where"] {
+                if let Some(v) = opt_s(a, k) {
+                    path.push_str(&format!("&{k}={}", encode(v)));
+                }
+            }
+            Ok(route(Method::GET, path, None, Shape::All))
+        },
+    },
+    Tool {
+        name: "list_models",
+        title: "List models",
+        description: "The embedding models a table's VECTOR field may name (local and hosted), their dimensions, and whether each would run on this server.",
+        schema: || json!({"type": "object", "properties": {}}),
+        read_only: true,
+        destructive: false,
+        act: |_| Ok(route(Method::GET, "/v1/models", None, Shape::All)),
+    },
+    Tool {
+        name: "judge",
+        title: "Judge results",
+        description: "Grade how well each row answers a search query, 0 (not at all) to 3 (perfectly), by a Claude model reading the row's text fields: a relevance check of a ranking before and after a change. Needs a write key and the server's Anthropic key.",
+        schema: || json!({"type": "object", "properties": {
+            "query": {"type": "string"},
+            "keys": {"type": "array", "minItems": 1, "items": {}, "description": "The primary keys of the rows to grade."},
+            "table": {"type": "string"},
+            "fields": {"type": "array", "items": {"type": "string"}},
+            "model": {"type": "string"}
+        }, "required": ["query", "keys"]}),
+        read_only: false,
+        destructive: false,
+        act: |a| {
+            s(a, "query")?;
+            Ok(route(Method::POST, "/v1/judge", Some(pick(a, &["query", "keys", "table", "fields", "model"])), Shape::All))
+        },
+    },
+    Tool {
+        name: "search_docs",
+        title: "Search the docs",
+        description: "Sections of Strata's query language reference and its Build an app guide that match the words given: the syntax of a function, an option, a type or a statement.",
+        schema: || json!({"type": "object", "properties": {
+            "query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 8, "default": 3}
+        }, "required": ["query"]}),
+        read_only: true,
+        destructive: false,
+        act: |a| Ok(Act::SearchDocs { query: s(a, "query")?.to_string(), limit: a.get("limit").and_then(|v| v.as_u64()).map_or(3, |n| (n as usize).clamp(1, 8)) }),
+    },
+    Tool {
+        name: "whoami",
+        title: "Who am I",
+        description: "The key this connection uses: its name and scope (read, write or admin), which decide what the other tools may change.",
+        schema: || json!({"type": "object", "properties": {}}),
+        read_only: true,
+        destructive: false,
+        act: |_| Ok(route(Method::GET, "/v1/whoami", None, Shape::All)),
+    },
+];
+
+/// `tools/list`'s answer.
+pub fn tools_json() -> Json {
+    let tools: Vec<Json> = TOOLS
+        .iter()
+        .map(|t| {
+            json!({
+                "name": t.name,
+                "title": t.title,
+                "description": t.description,
+                "inputSchema": (t.schema)(),
+                "annotations": {"title": t.title, "readOnlyHint": t.read_only, "destructiveHint": t.destructive, "idempotentHint": t.read_only, "openWorldHint": false},
+            })
+        })
+        .collect();
+    json!({"tools": tools})
+}
+
+struct Resource {
+    uri: &'static str,
+    name: &'static str,
+    description: &'static str,
+    text: &'static str,
+}
+
+const RESOURCES: &[Resource] = &[
+    Resource { uri: "strata://docs/query-language", name: "Strata query language", description: "The whole SQL reference: types, table options, search functions, ranking, joins, writes.", text: QUERY_LANGUAGE },
+    Resource { uri: "strata://docs/build-an-app", name: "Build an app on strata-server", description: "A shop in one page: tables, writes, search, stock that never oversells, holds that expire, events counted once.", text: BUILD_AN_APP },
+];
+
+fn resources_json() -> Json {
+    let list: Vec<Json> = RESOURCES.iter().map(|r| json!({"uri": r.uri, "name": r.name, "description": r.description, "mimeType": "text/markdown", "size": r.text.len()})).collect();
+    json!({"resources": list})
+}
+
+// ----- the docs, by section
+
+/// A section of a document: its heading path and text.
+struct Section {
+    doc: &'static str,
+    heading: String,
+    text: &'static str,
+}
+
+fn sections() -> &'static [Section] {
+    static S: OnceLock<Vec<Section>> = OnceLock::new();
+    S.get_or_init(|| {
+        let mut out = Vec::new();
+        for (doc, text) in [("query language", QUERY_LANGUAGE), ("build an app", BUILD_AN_APP)] {
+            let mut fence = false;
+            let mut start = 0;
+            let mut h2 = String::new();
+            let mut heading = String::new();
+            let mut at = 0;
+            for line in text.split_inclusive('\n') {
+                let t = line.trim_end();
+                if t.starts_with("```") {
+                    fence = !fence;
+                }
+                let level = if fence { 0 } else { t.bytes().take_while(|b| *b == b'#').count() };
+                if (level == 2 || level == 3) && t.as_bytes().get(level) == Some(&b' ') {
+                    if at > start {
+                        out.push(Section { doc, heading: heading.clone(), text: &text[start..at] });
+                    }
+                    let title = t[level + 1..].trim().to_string();
+                    if level == 2 {
+                        h2 = title.clone();
+                        heading = title;
+                    } else {
+                        heading = format!("{h2} > {title}");
+                    }
+                    start = at;
+                }
+                at += line.len();
+            }
+            if text.len() > start {
+                out.push(Section { doc, heading: heading.clone(), text: &text[start..] });
+            }
+        }
+        out
+    })
+}
+
+fn words(t: &str) -> Vec<String> {
+    t.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| w.len() > 1).map(|w| w.to_lowercase()).collect()
+}
+
+/// The sections that best match `query`: each query word scores by how
+/// rare it is among the sections (as BM25's idf), its count in the
+/// section (at most 5), and three times over in the heading.
+pub fn search_docs(query: &str, limit: usize) -> Json {
+    let all = sections();
+    let mut q = words(query);
+    q.sort();
+    q.dedup();
+    let texts: Vec<(Vec<String>, Vec<String>)> = all.iter().map(|s| (words(&s.heading), words(s.text))).collect();
+    let n = all.len() as f64;
+    let idf: Vec<f64> = q.iter().map(|w| {
+        let df = texts.iter().filter(|(_, t)| t.iter().any(|x| x == w)).count() as f64;
+        (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
+    }).collect();
+    let mut scored: Vec<(f64, usize)> = texts
+        .iter()
+        .enumerate()
+        .map(|(i, (h, t))| {
+            let score: f64 = q.iter().zip(&idf).map(|(w, idf)| {
+                let tf = t.iter().filter(|x| *x == w).count().min(5) as f64;
+                let hf = h.iter().filter(|x| *x == w).count() as f64;
+                idf * (tf + 3.0 * hf)
+            }).sum();
+            (score, i)
+        })
+        .filter(|(s, _)| *s > 0.0)
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    let hits: Vec<Json> = scored
+        .iter()
+        .take(limit)
+        .map(|&(score, i)| {
+            let s = &all[i];
+            let (text, cut) = clip(s.text, 6000);
+            json!({"doc": s.doc, "section": s.heading, "score": (score * 100.0).round() / 100.0, "text": text, "cut": cut})
+        })
+        .collect();
+    json!({"sections": hits, "searched": all.len()})
+}
+
+/// `t` cut to at most `max` bytes at a character boundary, and whether
+/// it was cut.
+fn clip(t: &str, max: usize) -> (&str, bool) {
+    if t.len() <= max {
+        return (t, false);
+    }
+    let mut end = max;
+    while !t.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&t[..end], true)
+}
+
+// ----- check_sql
+
+/// What a statement would do, bound against the tables and not run.
+pub fn check_sql(sql: &str, tables: &[std::sync::Arc<strata::Schema>]) -> Result<Json, String> {
+    use strata::query::sql::{bind_command, Command, Write};
+    let refs: Vec<&strata::Schema> = tables.iter().map(|t| &**t).collect();
+    let cmd = bind_command(sql, &refs, &strata::query::Params::default()).map_err(|e| e.to_string())?;
+    Ok(match cmd {
+        Command::Query => json!({"statement": "select", "note": "a SELECT is bound when it runs: explain shows its plan, or an error"}),
+        Command::Write { table, write } => {
+            let kind = match write {
+                Write::Insert { docs, .. } => json!({"statement": "insert", "rows": docs.len()}),
+                Write::Update { sets, .. } => json!({"statement": "update", "fields_set": sets.len()}),
+                Write::Delete { .. } => json!({"statement": "delete"}),
+            };
+            let mut k = kind;
+            k["table"] = json!(table);
+            k["needs"] = json!("a write key");
+            k
+        }
+        Command::CreateTable { schema, if_not_exists } => json!({
+            "statement": "create table", "table": schema.table, "if_not_exists": if_not_exists,
+            "exists": refs.iter().any(|t| t.table.eq_ignore_ascii_case(&schema.table)),
+            "sql": strata::query::ddl::create_sql(&schema), "short": schema.to_short_json(), "needs": "an admin key",
+        }),
+        Command::DropTable { tables, .. } => json!({"statement": "drop table", "tables": tables, "needs": "an admin key"}),
+        Command::AlterTable { table, alters } => json!({"statement": "alter table", "table": table, "changes": alters.len(), "needs": "an admin key"}),
+        Command::CreateRankProfile { table, replace, .. } => json!({"statement": "create rank profile", "table": table, "replace": replace, "needs": "an admin key"}),
+        Command::DropRankProfile { table, name, .. } => json!({"statement": "drop rank profile", "table": table, "name": name, "needs": "an admin key"}),
+        Command::Explain { json } => json!({"statement": "explain", "json": json, "note": "run it with query: it answers the plan without running the statement"}),
+    })
+}
+
+// ----- the protocol
+
+/// What a message is answered with: the request's credential and where
+/// it came from, to send each tool's route with.
+pub struct Caller<'a> {
+    pub headers: &'a HeaderMap,
+    pub peer: Option<SocketAddr>,
+}
+
+fn error(id: &Json, code: i64, message: impl Into<String>) -> Json {
+    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message.into()}})
+}
+
+fn ok(id: &Json, result: Json) -> Json {
+    json!({"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+/// `POST /v1/mcp`: one message or a batch. A request is answered with
+/// JSON; notifications and responses alone with 202 and no body.
+pub async fn serve(svc: &std::sync::Arc<Service>, router: Option<Router>, caller: Caller<'_>, body: &[u8]) -> Response {
+    let msg: Json = match serde_json::from_slice(body) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::BAD_REQUEST, axum::Json(error(&Json::Null, -32700, format!("parse error: {e}")))).into_response(),
+    };
+    let answer = match msg {
+        Json::Array(batch) if batch.is_empty() => Some(error(&Json::Null, -32600, "an empty batch")),
+        Json::Array(batch) => {
+            let mut out = Vec::new();
+            for m in &batch {
+                if let Some(a) = handle(svc, router.as_ref(), &caller, m).await {
+                    out.push(a);
+                }
+            }
+            (!out.is_empty()).then_some(Json::Array(out))
+        }
+        m => handle(svc, router.as_ref(), &caller, &m).await,
+    };
+    match answer {
+        Some(a) => axum::Json(a).into_response(),
+        None => StatusCode::ACCEPTED.into_response(),
+    }
+}
+
+/// One message's answer; none for a notification or a response.
+pub async fn handle(svc: &std::sync::Arc<Service>, router: Option<&Router>, caller: &Caller<'_>, m: &Json) -> Option<Json> {
+    if !m.is_object() {
+        return Some(error(&Json::Null, -32600, "a message is a JSON object"));
+    }
+    let id = m.get("id").cloned();
+    let method = match m.get("method").and_then(|v| v.as_str()) {
+        Some(x) => x,
+        // A response to a request of ours (this server sends none), or junk.
+        None => return id.filter(|_| m.get("result").is_none() && m.get("error").is_none()).map(|id| error(&id, -32600, "a request names its method")),
+    };
+    let id = id?; // A notification: nothing to answer.
+    if m.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0") {
+        return Some(error(&id, -32600, "jsonrpc must be \"2.0\""));
+    }
+    let params = m.get("params").cloned().unwrap_or(Json::Null);
+    Some(match method {
+        "initialize" => {
+            let asked = params.get("protocolVersion").and_then(|v| v.as_str()).unwrap_or(VERSIONS[0]);
+            let version = VERSIONS.iter().find(|v| **v == asked).copied().unwrap_or(VERSIONS[0]);
+            ok(&id, json!({
+                "protocolVersion": version,
+                "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false, "subscribe": false}},
+                "serverInfo": {"name": "strata", "title": "Strata", "version": env!("CARGO_PKG_VERSION")},
+                "instructions": INSTRUCTIONS,
+            }))
+        }
+        "ping" | "logging/setLevel" => ok(&id, json!({})),
+        "tools/list" => ok(&id, tools_json()),
+        "resources/list" => ok(&id, resources_json()),
+        "resources/templates/list" => ok(&id, json!({"resourceTemplates": []})),
+        "prompts/list" => ok(&id, json!({"prompts": []})),
+        "resources/read" => {
+            let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+            match RESOURCES.iter().find(|r| r.uri == uri) {
+                Some(r) => ok(&id, json!({"contents": [{"uri": r.uri, "mimeType": "text/markdown", "text": r.text}]})),
+                None => error(&id, -32002, format!("no resource {uri:?}: resources/list names them")),
+            }
+        }
+        "tools/call" => {
+            let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            match call(svc, router, caller, name, &args).await {
+                Ok(text) => ok(&id, json!({"content": [{"type": "text", "text": text}], "isError": false})),
+                Err(Failed::Call(why)) => ok(&id, json!({"content": [{"type": "text", "text": why}], "isError": true})),
+                Err(Failed::Arguments(why)) => error(&id, -32602, why),
+            }
+        }
+        other => error(&id, -32601, format!("no method {other:?}")),
+    })
+}
+
+/// A tool's call: its answer as text.
+async fn call(svc: &std::sync::Arc<Service>, router: Option<&Router>, caller: &Caller<'_>, name: &str, args: &Json) -> Result<String, Failed> {
+    let tool = TOOLS.iter().find(|t| t.name == name).ok_or_else(|| Failed::Arguments(format!("no tool {name:?}: tools/list names them")))?;
+    if !args.is_object() {
+        return Err(Failed::Arguments("arguments are an object".into()));
+    }
+    let answer = match (tool.act)(args)? {
+        Act::CheckSql(sql) => check_sql(&sql, &svc.tables_listed().await).map_err(Failed::Call)?,
+        Act::SearchDocs { query, limit } => search_docs(&query, limit),
+        Act::Route { method, path, body, shape } => {
+            let router = router.ok_or_else(|| Failed::Call("the server is still starting".into()))?;
+            let j = forward(router, caller, method, &path, body).await.map_err(Failed::Call)?;
+            shaped(j, shape)
+        }
+    };
+    let text = serde_json::to_string(&answer).unwrap_or_default();
+    Ok(match clip(&text, MAX_TEXT) {
+        (t, false) => t.to_string(),
+        (t, true) => format!("{t}\n[cut at {MAX_TEXT} characters of {}: ask for fewer rows or columns]", text.len()),
+    })
+}
+
+/// What a tool keeps of its route's answer.
+fn shaped(mut j: Json, shape: Shape) -> Json {
+    match shape {
+        Shape::All => j,
+        Shape::Tables => {
+            if let Some(ts) = j.get_mut("tables").and_then(|t| t.as_array_mut()) {
+                for t in ts.iter_mut() {
+                    if let Some(o) = t.as_object_mut() {
+                        o.remove("schema");
+                        o.remove("short");
+                        if let Some(Json::Array(p)) = o.get_mut("profiles") {
+                            *p = p.iter().map(|x| x.get("name").cloned().unwrap_or_else(|| x.clone())).collect();
+                        }
+                    }
+                }
+            }
+            j
+        }
+        Shape::Rows(max) => {
+            if let Some(rows) = j.get_mut("rows").and_then(|r| r.as_array_mut()) {
+                let n = rows.len();
+                if n > max {
+                    rows.truncate(max);
+                    j["truncated"] = json!({"rows": n, "shown": max});
+                }
+            }
+            j
+        }
+    }
+}
+
+/// A request to this server's own routes, with the caller's credential:
+/// its JSON answer, or why it failed (`<status>: <error>`).
+pub(crate) async fn forward(router: &Router, caller: &Caller<'_>, method: Method, path: &str, body: Option<Json>) -> Result<Json, String> {
+    use tower::ServiceExt;
+    let mut b = Request::builder().method(method).uri(path);
+    for h in [header::AUTHORIZATION, header::HOST, header::USER_AGENT, header::HeaderName::from_static(crate::hub::VIA_PROXY_AUTH), header::HeaderName::from_static("x-forwarded-for"), header::HeaderName::from_static("x-strata-reason")] {
+        if let Some(v) = caller.headers.get(&h) {
+            b = b.header(h, v.clone());
+        }
+    }
+    // Who the query log and Access name: the MCP client, as `mcp`.
+    let app = caller.headers.get("x-strata-app").cloned().unwrap_or(HeaderValue::from_static("mcp"));
+    b = b.header("x-strata-app", app);
+    if let Some(id) = caller.headers.get(crate::obs::HEADER) {
+        b = b.header(crate::obs::HEADER, id.clone());
+    }
+    let body = match body {
+        Some(j) => {
+            b = b.header(header::CONTENT_TYPE, "application/json");
+            Body::from(serde_json::to_vec(&j).map_err(|e| e.to_string())?)
+        }
+        None => Body::empty(),
+    };
+    let mut req = b.body(body).map_err(|e| e.to_string())?;
+    if let Some(p) = caller.peer {
+        req.extensions_mut().insert(axum::extract::ConnectInfo(p));
+    }
+    let res = match router.clone().oneshot(req).await {
+        Ok(r) => r,
+        Err(never) => match never {},
+    };
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), MAX_BODY).await.map_err(|e| format!("{status}: reading the answer: {e}"))?;
+    let j: Json = serde_json::from_slice(&bytes).unwrap_or_else(|_| Json::String(String::from_utf8_lossy(&bytes).into_owned()));
+    if !status.is_success() {
+        let why = match j.get("error").and_then(|e| e.as_str()) {
+            Some(e) => e.to_string(),
+            None if bytes.is_empty() => status.canonical_reason().unwrap_or("no answer").to_string(),
+            None => j.to_string(),
+        };
+        return Err(format!("{}: {why}", status.as_u16()));
+    }
+    Ok(j)
+}
+
+// ----- stdio
+
+/// `strata-server mcp --url URL`: MCP over stdin and stdout, each message
+/// sent to `URL/v1/mcp` with the key, each answer written back as one
+/// line. A server that cannot be reached answers the request with an error.
+pub async fn stdio(url: &str, key: Option<&str>, ca: Option<Vec<u8>>) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let mut builder = crate::http_client();
+    if let Some(pem) = ca {
+        let cert = reqwest::Certificate::from_pem(&pem).map_err(|e| format!("--ca: {e}"))?;
+        builder = builder.add_root_certificate(cert);
+    }
+    let client = builder.build().map_err(|e| e.to_string())?;
+    let endpoint = format!("{}/v1/mcp", url.trim_end_matches('/'));
+    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    let mut out = tokio::io::stdout();
+    while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let id = serde_json::from_str::<Json>(&line).ok().and_then(|m| m.get("id").cloned());
+        let mut r = client.post(&endpoint).header(header::CONTENT_TYPE, "application/json").header(header::ACCEPT, "application/json, text/event-stream").header("x-strata-app", "mcp-stdio");
+        if let Some(k) = key {
+            r = r.bearer_auth(k);
+        }
+        let answer = match r.body(line).send().await {
+            Ok(res) if res.status() == reqwest::StatusCode::ACCEPTED => None,
+            Ok(res) => {
+                let status = res.status();
+                match res.text().await {
+                    Ok(t) if serde_json::from_str::<Json>(&t).is_ok_and(|j| j.get("jsonrpc").is_some() || j.is_array()) => Some(t),
+                    Ok(t) => id.map(|id| error(&id, -32000, format!("{endpoint} answered {status}: {}", clip(&t, 500).0)).to_string()),
+                    Err(e) => id.map(|id| error(&id, -32000, format!("{endpoint}: {e}")).to_string()),
+                }
+            }
+            Err(e) => id.map(|id| error(&id, -32000, format!("{endpoint} cannot be reached: {e}")).to_string()),
+        };
+        if let Some(a) = answer {
+            // One message a line: JSON with no newline inside.
+            let one = serde_json::from_str::<Json>(&a).map(|j| j.to_string()).unwrap_or(a);
+            out.write_all(one.as_bytes()).await.map_err(|e| e.to_string())?;
+            out.write_all(b"\n").await.map_err(|e| e.to_string())?;
+            out.flush().await.map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn docs_split_into_sections_and_search_finds_them() {
+        assert!(sections().len() > 20, "{}", sections().len());
+        assert!(sections().iter().all(|s| !s.heading.is_empty() || s.doc == "query language" || s.doc == "build an app"));
+        let j = search_docs("bm25 fuzzy typos", 3);
+        let hits = j["sections"].as_array().unwrap();
+        assert!(!hits.is_empty(), "{j}");
+        assert!(hits.iter().any(|h| h["text"].as_str().unwrap().to_lowercase().contains("fuzzy")), "{j}");
+        let j = search_docs("expire_by holds", 2);
+        assert!(j["sections"].as_array().unwrap().iter().any(|h| h["text"].as_str().unwrap().contains("expire_by")), "{j}");
+        assert_eq!(search_docs("zzqqxx", 3)["sections"], json!([]));
+    }
+
+    #[test]
+    fn every_tool_has_a_schema_of_an_object() {
+        let j = tools_json();
+        let tools = j["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), TOOLS.len());
+        for t in tools {
+            assert_eq!(t["inputSchema"]["type"], "object", "{t}");
+        }
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "names are unique: {names:?}");
+    }
+
+    #[test]
+    fn values_are_percent_encoded() {
+        assert_eq!(encode("a b/c=d&é"), "a%20b%2Fc%3Dd%26%C3%A9");
+        assert_eq!(encode("attrs.dims-w_1~"), "attrs.dims-w_1~");
+    }
+
+    #[test]
+    fn rows_past_the_limit_are_cut_and_say_so() {
+        let j = shaped(json!({"columns": ["a"], "rows": [[1], [2], [3]]}), Shape::Rows(2));
+        assert_eq!(j["rows"], json!([[1], [2]]));
+        assert_eq!(j["truncated"], json!({"rows": 3, "shown": 2}));
+        let j = shaped(json!({"rows": [[1]]}), Shape::Rows(2));
+        assert!(j.get("truncated").is_none());
+    }
+}

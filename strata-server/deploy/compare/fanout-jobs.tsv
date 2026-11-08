@@ -1,0 +1,20 @@
+# fanout.sh's jobs: name, engine (compare.sh's), shape (sharded: 2 data
+# nodes; one: 1), timeout in hours. They start in this order, the longest
+# loads first (the Mac's NQ 1M run: Meilisearch 34 min, Qdrant 32, Milvus
+# 30, Vespa 22, Solr and Manticore 20, Typesense 18). strata-b is Strata on
+# other nodes: the gap between the two is the noise between machines.
+meili      meili      one      3
+qdrant     qdrant     one      3
+milvus     milvus     one      3
+vespa      vespa      sharded  3
+solr       solr       sharded  3
+manticore  manticore  one      3
+typesense  typesense  one      3
+os         os         sharded  3
+es         es         sharded  3
+postgres   postgres   one      3
+weaviate   weaviate   one      3
+strata     strata     sharded  3
+strata-b   strata     sharded  3
+redis      redis      one      3
+paradedb   paradedb   one      3

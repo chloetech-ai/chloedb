@@ -6,12 +6,12 @@
 // in two dimensions (their two main directions), with the query and its
 // hits marked on it. Files are read through /v1/media by their hash.
 
-import { h, s, icon, clear, fmt, api, store, empty, seg, failure, drawer, sqlBlock, debounce, authHeader, showTip, hideTip, toast, copy } from "../core.js";
+import { at, h, s, icon, clear, fmt, api, store, empty, seg, failure, drawer, sqlBlock, debounce, authHeader, showTip, hideTip, toast, copy } from "../core.js";
 import { tables, table as tableOf } from "../catalog.js";
 import { SERIES } from "../charts.js";
 import { quoteName } from "../sqledit.js";
 
-export default { id: "media", title: "Media search", icon: "media", group: "Explore", full: true, keywords: "media images photos pictures audio sound search by text image similarity siglip clap more like this embedding map visual search", render };
+export default { id: "media", title: "Media search", icon: "media", group: "Labs", full: true, range: false, keywords: "media images photos pictures audio sound search by text image similarity siglip clap more like this embedding map visual search", render };
 
 const COLORS = [["red", "#d64545"], ["orange", "#e8853d"], ["yellow", "#e6c62e"], ["green", "#3f9d55"], ["blue", "#3d7fd6"], ["purple", "#8a5cc7"], ["pink", "#e07aa8"], ["brown", "#8b5e3c"], ["black", "#1d1d1f"], ["white", "#f4f4f4"], ["gray", "#8d8f94"]];
 const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
@@ -36,7 +36,7 @@ function fileUrl(sha) {
   const p = new Promise((resolve) => {
     const go = () => {
       inflight++;
-      fetch("/v1/media/" + sha, { headers: authHeader() }).then((r) => r.ok ? r.blob() : null).then((b) => resolve(b ? URL.createObjectURL(b) : null)).catch(() => resolve(null))
+      fetch(at("/v1/media/" + sha), { headers: authHeader() }).then((r) => r.ok ? r.blob() : null).then((b) => resolve(b ? URL.createObjectURL(b) : null)).catch(() => resolve(null))
         .finally(() => { inflight--; waiting.shift()?.(); });
     };
     if (inflight < 6) go(); else waiting.push(go);
@@ -55,11 +55,39 @@ function render(page) {
   const body = h("div", { class: "md-body" });
   page.append(h("div", { class: "md" }, top, filters, info, body));
 
+  /** What this view needs, what this server has of it, and a table to start from. */
+  async function drawNone(all) {
+    const sql = "CREATE TABLE photos (\n  id KEYWORD PRIMARY KEY,\n  image MEDIA OPTIONS(kind = 'image'),\n  caption TEXT,\n  emb VECTOR OPTIONS(embed = 'image', model = 'siglip-base-patch16-224')\n);";
+    const mediaF = all.flatMap((t) => (t.short?.fields || []).filter((f) => f.type === "media").map((f) => `${t.table}.${f.name}`));
+    const need = (ok, what, how) => h("li", { class: "dt-need" }, h("span", { class: "pill " + (ok === null ? "" : ok ? "ok" : "warn") }, ok === null ? "unknown" : ok ? "here" : "needed"), h("div", {}, h("b", {}, what), how ? h("div", { class: "small dim" }, how) : null));
+    let modelLine = h("li", { class: "dt-need" });
+    const draw = (models, dir) => {
+      const want = (models || []).filter((m) => /^(siglip|clap)/.test(m.name));
+      const ready = want.filter((m) => m.ready);
+      const el = need(models ? ready.length > 0 : null, "A model of images and text, or of sound",
+        !models ? "siglip-base-patch16-224 (images) or clap-htsat-unfused (sound), in the server's models directory." :
+          ready.length ? `Ready here: ${ready.map((m) => m.name).join(", ")}.` :
+            ["Not fetched here: run ", (want.length ? want : [{ name: "siglip-base-patch16-224" }]).flatMap((m, i) => [i ? " or " : null, h("code", {}, `strata-server fetch-model ${m.name}`)]), ` on the server${dir ? ` (into ${dir})` : ""}. The server needs the vision or audio feature.`]);
+      modelLine.replaceWith(el); modelLine = el;
+    };
+    clear(body, h("div", { class: "dt-empty" },
+      h("div", { class: "dt-empty-hd" }, icon("media", "lg"), h("div", {}, h("h3", {}, "Media search needs a MEDIA field and a vector embedded from it"), h("div", { class: "small dim" }, `None of the ${fmt.plural(all.length, "table")} here has both. Then a text, a dropped image or a row finds the files that look (or sound) like it.`))),
+      h("ol", { class: "dt-needs" },
+        modelLine,
+        need(mediaF.length > 0, "A MEDIA field holding the files", mediaF.length ? `This server has ${mediaF.slice(0, 3).join(", ")}.` : "OPTIONS(kind = 'image') or kind = 'audio'; the files are kept by their hash and served by /v1/media."),
+        need(false, "A VECTOR field embedded from it by that model", "The server embeds each file as it is written, and each query's text with the same model.")),
+      sqlBlock(sql),
+      h("div", { class: "row", style: { gap: "8px" } },
+        h("a", { class: "btn primary", href: "#/schema?new=1" }, icon("schema"), "Design a table"),
+        h("a", { class: "btn", href: "#/sql?q=" + encodeURIComponent(sql) }, icon("sql"), "Open in the SQL workbench"))));
+    draw(null);
+    try { const j = await api("/v1/models"); draw(j.models || [], j.dir); } catch { /* the line stays as it is */ }
+  }
+
   tables().then((ts) => {
     mts = mediaTables(ts);
     if (!mts.length) {
-      clear(body, empty("media", "No media to search", "A MEDIA field with a VECTOR embedded from it by a model of images and text (siglip-base-patch16-224) or of sound (clap-htsat-unfused) makes a table searchable by what its files show."),
-        h("div", { class: "rx-howto" }, sqlBlock("CREATE TABLE photos (\n  id KEYWORD PRIMARY KEY,\n  image MEDIA OPTIONS(kind = 'image'),\n  caption TEXT,\n  emb VECTOR OPTIONS(embed = 'image', model = 'siglip-base-patch16-224')\n);")));
+      drawNone(ts);
       return;
     }
     if (!st || !mts.some((m) => m.t.table === st.table)) st = { table: mts[0].t.table, q: "", words: 0, facet: {}, color: "", mode: "grid", k: 40 };

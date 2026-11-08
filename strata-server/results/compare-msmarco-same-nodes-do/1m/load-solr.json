@@ -1,0 +1,63 @@
+{
+  "batch": 500,
+  "clients": 8,
+  "collection": "msmarco-1000k",
+  "cores": [
+    {
+      "core": "quora_shard1_replica_n2",
+      "index": {
+        "current": true,
+        "deletedDocs": 0,
+        "directory": "NRTCachingDirectory(MMapDirectory@/var/solr/data/quora_shard1_replica_n2/data/index lockFactory=org.apache.lucene.store.NativeFSLockFactory@2576507e; maxCacheMB=48.0 maxMergeSizeMB=4.0)",
+        "hasDeletions": false,
+        "lastModified": "2026-11-04T07:04:07.812Z",
+        "maxDoc": 500275,
+        "numDocs": 500275,
+        "segmentCount": 1,
+        "segmentsFile": "segments_10",
+        "segmentsFileSizeInBytes": 224,
+        "size": "1.91 GB",
+        "sizeInBytes": 2053519493,
+        "userData": {
+          "commitCommandVer": "1880909699130327040",
+          "commitTimeMSec": "1793775847812"
+        },
+        "version": 1076
+      }
+    },
+    {
+      "core": "quora_shard2_replica_n1",
+      "index": {
+        "current": false,
+        "deletedDocs": 0,
+        "directory": "NRTCachingDirectory(MMapDirectory@/var/solr/data/quora_shard2_replica_n1/data/index lockFactory=org.apache.lucene.store.NativeFSLockFactory@7058f8ec; maxCacheMB=48.0 maxMergeSizeMB=4.0)",
+        "hasDeletions": false,
+        "lastModified": "2026-11-04T06:54:29.683Z",
+        "maxDoc": 499725,
+        "numDocs": 499725,
+        "segmentCount": 73,
+        "segmentsFile": "segments_z",
+        "segmentsFileSizeInBytes": 6271,
+        "size": "6.43 GB",
+        "sizeInBytes": 6903623136,
+        "userData": {
+          "commitCommandVer": "1880909697183121408",
+          "commitTimeMSec": "1793775269683"
+        },
+        "version": 1199
+      }
+    }
+  ],
+  "docs": 1000000,
+  "engine": "solr",
+  "index_bytes": 8957142629,
+  "indexed_docs": 1000000,
+  "ingest_s": 505.533350008,
+  "json_bytes": 11755131809,
+  "merge_s": 600.014182598,
+  "refresh_s": 1.8808834989999998,
+  "searchable_docs": 1000000,
+  "segments": 74,
+  "setup_s": 4.641515426,
+  "total_s": 1107.428434823
+}

@@ -1,0 +1,52 @@
+LAST SEEN   TYPE      REASON                 OBJECT                    MESSAGE
+44m         Normal    Completed              job/load-milvus           Job completed
+44m         Normal    SuccessfulCreate       job/run-milvus            Created pod: run-milvus-gc6zx
+44m         Normal    Pulled                 pod/run-milvus-gc6zx      Container image "strata-server:compare" already present on machine and can be accessed by the pod
+44m         Normal    Created                pod/run-milvus-gc6zx      Container created
+44m         Normal    Started                pod/run-milvus-gc6zx      Container started
+41m         Normal    Completed              job/run-milvus            Job completed
+41m         Normal    Killing                pod/milvus-0              Stopping container milvus
+41m         Warning   Unhealthy              pod/milvus-0              Readiness probe failed: Get "http://10.244.2.13:9091/healthz": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+41m         Warning   Unhealthy              pod/milvus-0              Readiness probe failed: Get "http://10.244.2.13:9091/healthz": dial tcp 10.244.2.13:9091: connect: connection refused
+41m         Normal    Started                pod/paradedb-0            Container started
+41m         Normal    Created                pod/paradedb-0            Container created
+41m         Normal    Pulled                 pod/paradedb-0            Container image "paradedb/paradedb:0.26.4-pg17" already present on machine and can be accessed by the pod
+41m         Warning   Unhealthy              pod/paradedb-0            Readiness probe failed: /var/run/postgresql:5432 - no response
+41m         Warning   Unhealthy              pod/paradedb-0            Readiness probe failed: /var/run/postgresql:5432 - rejecting connections
+41m         Normal    Created                pod/load-paradedb-7kjg4   Container created
+41m         Normal    Pulled                 pod/load-paradedb-7kjg4   Container image "strata-server:compare" already present on machine and can be accessed by the pod
+41m         Normal    Started                pod/load-paradedb-7kjg4   Container started
+41m         Normal    SuccessfulCreate       job/load-paradedb         Created pod: load-paradedb-7kjg4
+39m         Normal    Completed              job/load-paradedb         Job completed
+39m         Normal    SuccessfulCreate       job/run-paradedb          Created pod: run-paradedb-dvj6g
+39m         Normal    Pulled                 pod/run-paradedb-dvj6g    Container image "strata-server:compare" already present on machine and can be accessed by the pod
+39m         Normal    Created                pod/run-paradedb-dvj6g    Container created
+39m         Normal    Started                pod/run-paradedb-dvj6g    Container started
+29m         Normal    Killing                pod/paradedb-0            Stopping container paradedb
+29m         Normal    Completed              job/run-paradedb          Job completed
+29m         Normal    Pulled                 pod/postgres-0            Container image "paradedb/paradedb:0.26.4-pg17" already present on machine and can be accessed by the pod
+29m         Normal    Created                pod/postgres-0            Container created
+29m         Normal    Started                pod/postgres-0            Container started
+29m         Warning   Unhealthy              pod/postgres-0            Readiness probe failed: /var/run/postgresql:5432 - no response
+29m         Warning   Unhealthy              pod/postgres-0            Readiness probe failed: /var/run/postgresql:5432 - rejecting connections
+29m         Normal    SuccessfulCreate       job/load-postgres         Created pod: load-postgres-ptxl5
+29m         Normal    Started                pod/load-postgres-ptxl5   Container started
+29m         Normal    Created                pod/load-postgres-ptxl5   Container created
+29m         Normal    Pulled                 pod/load-postgres-ptxl5   Container image "strata-server:compare" already present on machine and can be accessed by the pod
+19m         Normal    SuccessfulCreate       job/run-postgres          Created pod: run-postgres-rgzgw
+19m         Normal    Completed              job/load-postgres         Job completed
+19m         Normal    Pulled                 pod/run-postgres-rgzgw    Container image "strata-server:compare" already present on machine and can be accessed by the pod
+19m         Normal    Created                pod/run-postgres-rgzgw    Container created
+19m         Normal    Started                pod/run-postgres-rgzgw    Container started
+6m2s        Normal    Killing                pod/postgres-0            Stopping container postgres
+6m2s        Normal    Completed              job/run-postgres          Job completed
+6m1s        Warning   Unhealthy              pod/postgres-0            Readiness probe errored and resulted in unknown state: rpc error: code = Unknown desc = failed to exec in container: container is in CONTAINER_EXITED state
+6m          Warning   Unhealthy              pod/redis-0               Readiness probe failed: dial tcp 10.244.2.16:6379: connect: connection refused
+6m          Normal    Started                pod/redis-0               Container started
+6m          Normal    Created                pod/redis-0               Container created
+6m          Normal    Pulled                 pod/redis-0               Container image "redis:8.8.4" already present on machine and can be accessed by the pod
+5m58s       Normal    Pulled                 pod/load-redis-7zclr      Container image "strata-server:compare" already present on machine and can be accessed by the pod
+5m58s       Normal    Created                pod/load-redis-7zclr      Container created
+5m58s       Normal    Started                pod/load-redis-7zclr      Container started
+5m58s       Normal    SuccessfulCreate       job/load-redis            Created pod: load-redis-7zclr
+58s         Warning   BackoffLimitExceeded   job/load-redis            Job has reached the specified backoff limit

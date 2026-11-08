@@ -1,0 +1,66 @@
+{
+ "cov": {
+  "10000": {
+   "docs": 10000,
+   "file_bytes": 3428368,
+   "bytes_per_doc": 342.8368,
+   "text_bytes": 3168522
+  },
+  "30000": {
+   "docs": 30000,
+   "file_bytes": 9953296,
+   "bytes_per_doc": 331.77653333333336,
+   "text_bytes": 9511589
+  },
+  "100000": {
+   "docs": 100000,
+   "file_bytes": 32542736,
+   "bytes_per_doc": 325.42736,
+   "text_bytes": 31832101
+  },
+  "200000": {
+   "docs": 200000,
+   "file_bytes": 64700432,
+   "bytes_per_doc": 323.50216,
+   "text_bytes": 63773635
+  },
+  "400000": {
+   "docs": 400000,
+   "file_bytes": 128815120,
+   "bytes_per_doc": 322.0378,
+   "text_bytes": 127680770
+  }
+ },
+ "pop": {
+  "10000": {
+   "docs": 10000,
+   "file_bytes": 3387408,
+   "bytes_per_doc": 338.7408,
+   "text_bytes": 3171878
+  },
+  "30000": {
+   "docs": 30000,
+   "file_bytes": 9756688,
+   "bytes_per_doc": 325.22293333333334,
+   "text_bytes": 9486382
+  },
+  "100000": {
+   "docs": 100000,
+   "file_bytes": 31801360,
+   "bytes_per_doc": 318.0136,
+   "text_bytes": 31711950
+  },
+  "200000": {
+   "docs": 200000,
+   "file_bytes": 63283216,
+   "bytes_per_doc": 316.41608,
+   "text_bytes": 63619025
+  },
+  "400000": {
+   "docs": 400000,
+   "file_bytes": 126230544,
+   "bytes_per_doc": 315.57636,
+   "text_bytes": 127498192
+  }
+ }
+}

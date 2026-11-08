@@ -507,84 +507,142 @@ fn exp_snapshot(cx: &Ctx) -> Result<Json> {
 }
 
 /// The `pk` section, parsed as documented in `storage::pk`, to count the
-/// pages a lookup touches.
+/// pages a lookup touches. A binary search is counted over the sorted
+/// (hash, docID) pairs an index without a directory would hold, 16 bytes
+/// each on pages of their own.
 struct PkLayout {
-    base: usize,
+    n: usize,
     bits: u32,
+    /// File offsets of the directory and of the (fingerprint, docID)
+    /// entries, with their values.
     dir: (usize, Slice<u32>),
-    entries: (usize, Slice<u64>),
-    offsets: (usize, Slice<u64>),
-    bytes: (usize, Slice<u8>),
+    entries: (usize, Slice<u32>),
+    keys: KeysAt,
+    sorted: Vec<u64>,
 }
+
+/// Where a lookup reads a candidate's key to compare it, as file offsets.
+enum KeysAt {
+    /// Kind 3: the key field's keyword column, its code column (whose
+    /// block of a document is taken at the document's share of the
+    /// section) and its dictionary.
+    Column { col: Box<strata::forward::KeywordColumn>, codes: std::ops::Range<usize>, offs: (usize, Slice<u32>), bytes: usize },
+    /// Kind 4: the keys' offsets and bytes in the section.
+    Own { offsets: (usize, Slice<u64>), bytes: usize },
+    /// Kind 5: the keys in the section.
+    Ints(usize),
+}
+
+/// Where a binary search's pairs would be.
+const SORTED_AT: usize = 1 << 40;
 
 impl PkLayout {
     fn parse(seg: &SegmentFile) -> PkLayout {
         let base = seg.section_range("pk").unwrap().start;
         let mut r = ByteReader::new(seg.require("pk").unwrap());
-        let (_, _, bits) = (r.u64().unwrap(), r.u64().unwrap(), r.u64().unwrap() as u32);
+        let (kind, n, bits) = (r.u64().unwrap(), r.u64().unwrap() as usize, r.u64().unwrap() as u32);
+        assert!((3..=5).contains(&kind), "a key index of kind {kind}");
         // An array's elements follow its u64 length.
-        let arr = |r: &mut ByteReader| -> usize { r.position() + 8 };
+        let arr = |r: &mut ByteReader| -> usize { base + r.position() + 8 };
         let d0 = arr(&mut r);
         let dir: Slice<u32> = r.array().unwrap();
         let e0 = arr(&mut r);
-        let entries: Slice<u64> = r.array().unwrap();
-        let o0 = arr(&mut r);
-        let offsets: Slice<u64> = r.array().unwrap();
-        let b0 = arr(&mut r);
-        let bytes: Slice<u8> = r.array().unwrap();
-        PkLayout { base, bits, dir: (d0, dir), entries: (e0, entries), offsets: (o0, offsets), bytes: (b0, bytes) }
+        let entries: Slice<u32> = r.array().unwrap();
+        let keys = match kind {
+            3 => {
+                let field: Slice<u8> = r.array().unwrap();
+                let field = std::str::from_utf8(&field).unwrap().to_string();
+                let dict = format!("kw.{field}.dict");
+                let at = seg.section_range(&dict).unwrap().start;
+                let mut d = ByteReader::new(seg.require(&dict).unwrap());
+                d.u64().unwrap();
+                let o0 = at + d.position() + 8;
+                let offs: Slice<u32> = d.array().unwrap();
+                let b0 = at + d.position() + 8;
+                let col = Box::new(strata::forward::KeywordColumn::open(seg, &field).unwrap());
+                KeysAt::Column { col, codes: seg.section_range(&format!("kw.{field}.codes")).unwrap(), offs: (o0, offs), bytes: b0 }
+            }
+            4 => {
+                let o0 = arr(&mut r);
+                let offsets: Slice<u64> = r.array().unwrap();
+                KeysAt::Own { offsets: (o0, offsets), bytes: arr(&mut r) }
+            }
+            _ => KeysAt::Ints(arr(&mut r)),
+        };
+        let pk = PkIndex::open(seg).unwrap().unwrap();
+        let mut pairs: Vec<(u64, u64)> = (0..n as DocId).map(|d| (key_hash(pk.key_ref(d)), d as u64)).collect();
+        pairs.sort_unstable();
+        let sorted = pairs.into_iter().flat_map(|(h, d)| [h, d]).collect();
+        PkLayout { n, bits, dir: (d0, dir), entries: (e0, entries), keys, sorted }
     }
 
     fn page(&self, off: usize) -> usize {
-        (self.base + off) / iostat::PAGE
+        off / iostat::PAGE
     }
 
-    /// Pages read verifying a candidate's stored key.
+    /// Pages read comparing a candidate's key.
     fn key_pages(&self, d: usize, pages: &mut BTreeSet<usize>) {
-        let (o0, off) = (&self.offsets.0, &self.offsets.1);
-        pages.insert(self.page(o0 + 8 * d));
-        pages.insert(self.page(o0 + 8 * (d + 1)));
-        let (s, e) = (off[d] as usize, off[d + 1] as usize);
-        for b in [s, e.max(s + 1) - 1] {
-            pages.insert(self.page(self.bytes.0 + b));
+        match &self.keys {
+            KeysAt::Column { col, codes, offs, bytes } => {
+                pages.insert(self.page(codes.start + d * codes.len() / self.n.max(1)));
+                let c = col.code_of_doc(d as DocId).unwrap() as usize;
+                pages.insert(self.page(offs.0 + 4 * c));
+                pages.insert(self.page(offs.0 + 4 * (c + 1)));
+                let (s, e) = (offs.1[c] as usize, offs.1[c + 1] as usize);
+                for b in [s, e.max(s + 1) - 1] {
+                    pages.insert(self.page(bytes + b));
+                }
+            }
+            KeysAt::Own { offsets, bytes } => {
+                pages.insert(self.page(offsets.0 + 8 * d));
+                pages.insert(self.page(offsets.0 + 8 * (d + 1)));
+                let (s, e) = (offsets.1[d] as usize, offsets.1[d + 1] as usize);
+                for b in [s, e.max(s + 1) - 1] {
+                    pages.insert(self.page(bytes + b));
+                }
+            }
+            KeysAt::Ints(at) => {
+                pages.insert(self.page(at + 8 * d));
+            }
         }
     }
 
+    /// The directory slot, then the slot's entries up to the key's
+    /// fingerprint, comparing the key of each entry with it.
     fn radix(&self, h: u64, pages: &mut BTreeSet<usize>) {
         let b = h.checked_shr(64 - self.bits).unwrap_or(0) as usize;
         pages.insert(self.page(self.dir.0 + 4 * b));
         pages.insert(self.page(self.dir.0 + 4 * (b + 1)));
+        let fp = h as u32;
         for i in self.dir.1[b] as usize..self.dir.1[b + 1] as usize {
-            pages.insert(self.page(self.entries.0 + 16 * i));
-            if self.entries.1[2 * i] == h {
-                self.key_pages(self.entries.1[2 * i + 1] as usize, pages);
-                return;
-            }
-            if self.entries.1[2 * i] > h {
-                return;
+            pages.insert(self.page(self.entries.0 + 8 * i));
+            match self.entries.1[2 * i].cmp(&fp) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Equal => self.key_pages(self.entries.1[2 * i + 1] as usize, pages),
+                std::cmp::Ordering::Greater => return,
             }
         }
     }
 
     fn binary(&self, h: u64, pages: &mut BTreeSet<usize>) {
-        let (mut lo, mut hi) = (0usize, self.entries.1.len() / 2);
+        let (mut lo, mut hi) = (0usize, self.sorted.len() / 2);
         while lo < hi {
             let mid = (lo + hi) / 2;
-            pages.insert(self.page(self.entries.0 + 16 * mid));
-            if self.entries.1[2 * mid] < h {
+            pages.insert(self.page(SORTED_AT + 16 * mid));
+            if self.sorted[2 * mid] < h {
                 lo = mid + 1;
             } else {
                 hi = mid;
             }
         }
-        if lo < self.entries.1.len() / 2 && self.entries.1[2 * lo] == h {
-            pages.insert(self.page(self.entries.0 + 16 * lo));
-            self.key_pages(self.entries.1[2 * lo + 1] as usize, pages);
+        if lo < self.sorted.len() / 2 && self.sorted[2 * lo] == h {
+            pages.insert(self.page(SORTED_AT + 16 * lo));
+            self.key_pages(self.sorted[2 * lo + 1] as usize, pages);
         }
     }
 
     fn binary_lookup(&self, h: u64) -> Option<u64> {
-        let e = &self.entries.1;
+        let e = &self.sorted;
         let (mut lo, mut hi) = (0usize, e.len() / 2);
         while lo < hi {
             let mid = (lo + hi) / 2;
@@ -616,8 +674,8 @@ fn exp_pk(cx: &Ctx) -> Result<Json> {
             let found = keys.iter().filter(|k| snap.lookup(k).is_some()).count();
             radix_ns.push(secs(t) * 1e9 / keys.len() as f64);
             assert_eq!(found, if kind == "hit" { keys.len() } else { 0 });
-            // Binary search over the same entries (hash match only, without
-            // the stored-key check the radix lookup also does).
+            // Binary search over the sorted hashes (hash match only, without
+            // the key comparison the radix lookup also does).
             let t = Instant::now();
             let found = keys.iter().filter(|k| layout.binary_lookup(key_hash(KeyRef::of(k).unwrap())).is_some()).count();
             bin_ns.push(secs(t) * 1e9 / keys.len() as f64);

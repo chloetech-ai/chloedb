@@ -1,0 +1,469 @@
+configmap/milvus-config created
+service/milvus created
+pod/milvus-0 created
+pod/milvus-0 condition met
+job.batch/load-milvus created
+milvus: index created in 0.1 s
+milvus: 25000 documents sent, 5 s
+milvus: 50000 documents sent, 9 s
+milvus: 75000 documents sent, 17 s
+milvus: 100000 documents sent, 27 s
+milvus: 125000 documents sent, 40 s
+milvus: 150000 documents sent, 49 s
+milvus: 175000 documents sent, 60 s
+milvus: 200000 documents sent, 69 s
+milvus: 225000 documents sent, 78 s
+milvus: 250000 documents sent, 87 s
+milvus: 275000 documents sent, 97 s
+milvus: 300000 documents sent, 104 s
+milvus: 325000 documents sent, 112 s
+milvus: 350000 documents sent, 120 s
+milvus: 375000 documents sent, 127 s
+milvus: 400000 documents sent, 137 s
+milvus: 425000 documents sent, 147 s
+milvus: 450000 documents sent, 154 s
+milvus: 475000 documents sent, 161 s
+milvus: 500000 documents sent, 172 s
+milvus: 525000 documents sent, 185 s
+milvus: 550000 documents sent, 193 s
+milvus: 575000 documents sent, 201 s
+milvus: 600000 documents sent, 209 s
+milvus: 625000 documents sent, 217 s
+milvus: 650000 documents sent, 228 s
+milvus: 675000 documents sent, 239 s
+milvus: 700000 documents sent, 248 s
+milvus: 725000 documents sent, 259 s
+milvus: 750000 documents sent, 270 s
+milvus: 775000 documents sent, 282 s
+milvus: 800000 documents sent, 293 s
+milvus: 825000 documents sent, 300 s
+milvus: 850000 documents sent, 307 s
+milvus: 875000 documents sent, 316 s
+milvus: 900000 documents sent, 325 s
+milvus: 925000 documents sent, 334 s
+milvus: 950000 documents sent, 344 s
+milvus: 975000 documents sent, 354 s
+milvus: 1000000 documents sent, 364 s
+milvus: 1025000 documents sent, 372 s
+milvus: 1050000 documents sent, 381 s
+milvus: 1075000 documents sent, 388 s
+milvus: 1100000 documents sent, 396 s
+milvus: 1125000 documents sent, 404 s
+milvus: 1150000 documents sent, 412 s
+milvus: 1175000 documents sent, 420 s
+milvus: 1200000 documents sent, 428 s
+milvus: 1225000 documents sent, 436 s
+milvus: 1250000 documents sent, 442 s
+milvus: 1275000 documents sent, 451 s
+milvus: 1300000 documents sent, 463 s
+read tcp 127.0.0.1:56678->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:56678->127.0.0.1:36447: read: connection reset by peer
+milvus: 1325000 documents sent, 477 s
+milvus: 1350000 documents sent, 489 s
+milvus: 1375000 documents sent, 500 s
+milvus: 1400000 documents sent, 510 s
+milvus: 1425000 documents sent, 522 s
+milvus: 1450000 documents sent, 535 s
+milvus: 1475000 documents sent, 547 s
+milvus: 1500000 documents sent, 558 s
+milvus: 1525000 documents sent, 568 s
+milvus: 1550000 documents sent, 576 s
+milvus: 1575000 documents sent, 583 s
+milvus: 1600000 documents sent, 592 s
+milvus: 1625000 documents sent, 599 s
+milvus: 1650000 documents sent, 607 s
+milvus: 1675000 documents sent, 615 s
+milvus: 1700000 documents sent, 622 s
+milvus: 1725000 documents sent, 630 s
+milvus: 1750000 documents sent, 636 s
+milvus: 1775000 documents sent, 642 s
+milvus: 1800000 documents sent, 649 s
+milvus: 1825000 documents sent, 657 s
+milvus: 1850000 documents sent, 664 s
+milvus: 1875000 documents sent, 672 s
+milvus: 1900000 documents sent, 681 s
+milvus: 1925000 documents sent, 692 s
+milvus: 1950000 documents sent, 700 s
+milvus: 1975000 documents sent, 712 s
+milvus: 2000000 documents sent, 720 s
+milvus: 2025000 documents sent, 729 s
+milvus: 2050000 documents sent, 737 s
+milvus: 2075000 documents sent, 746 s
+milvus: 2100000 documents sent, 753 s
+milvus: 2125000 documents sent, 761 s
+milvus: 2150000 documents sent, 769 s
+milvus: 2175000 documents sent, 775 s
+milvus: 2200000 documents sent, 789 s
+milvus: 2225000 documents sent, 801 s
+milvus: 2250000 documents sent, 812 s
+milvus: 2275000 documents sent, 824 s
+milvus: 2300000 documents sent, 833 s
+milvus: 2325000 documents sent, 845 s
+milvus: 2350000 documents sent, 854 s
+milvus: 2375000 documents sent, 863 s
+milvus: 2400000 documents sent, 872 s
+milvus: 2425000 documents sent, 880 s
+milvus: 2450000 documents sent, 887 s
+milvus: 2475000 documents sent, 893 s
+milvus: 2500000 documents sent, 900 s
+milvus: 2525000 documents sent, 908 s
+milvus: 2550000 documents sent, 916 s
+milvus: 2575000 documents sent, 922 s
+milvus: 2600000 documents sent, 931 s
+milvus: 2625000 documents sent, 944 s
+milvus: 2650000 documents sent, 959 s
+milvus: 2675000 documents sent, 976 s
+milvus: 2700000 documents sent, 991 s
+milvus: 2725000 documents sent, 1003 s
+milvus: 2750000 documents sent, 1018 s
+milvus: 2775000 documents sent, 1031 s
+milvus: 2800000 documents sent, 1044 s
+milvus: 2825000 documents sent, 1056 s
+milvus: 2850000 documents sent, 1064 s
+milvus: 2875000 documents sent, 1073 s
+milvus: 2900000 documents sent, 1080 s
+milvus: 2925000 documents sent, 1090 s
+milvus: 2950000 documents sent, 1098 s
+milvus: 2975000 documents sent, 1106 s
+milvus: 3000000 documents sent, 1113 s
+milvus: 3025000 documents sent, 1121 s
+milvus: 3050000 documents sent, 1135 s
+milvus: 3075000 documents sent, 1146 s
+milvus: 3100000 documents sent, 1156 s
+milvus: 3125000 documents sent, 1167 s
+milvus: 3150000 documents sent, 1177 s
+milvus: 3175000 documents sent, 1188 s
+milvus: 3200000 documents sent, 1195 s
+milvus: 3225000 documents sent, 1203 s
+milvus: 3250000 documents sent, 1212 s
+milvus: 3275000 documents sent, 1221 s
+milvus: 3300000 documents sent, 1229 s
+milvus: 3325000 documents sent, 1236 s
+milvus: 3350000 documents sent, 1244 s
+milvus: 3375000 documents sent, 1252 s
+milvus: 3400000 documents sent, 1260 s
+milvus: 3425000 documents sent, 1267 s
+milvus: 3450000 documents sent, 1275 s
+milvus: 3475000 documents sent, 1281 s
+milvus: 3500000 documents sent, 1288 s
+milvus: 3525000 documents sent, 1300 s
+milvus: 3550000 documents sent, 1316 s
+milvus: 3575000 documents sent, 1329 s
+milvus: 3600000 documents sent, 1339 s
+milvus: 3625000 documents sent, 1353 s
+milvus: 3650000 documents sent, 1362 s
+milvus: 3675000 documents sent, 1369 s
+milvus: 3700000 documents sent, 1377 s
+milvus: 3725000 documents sent, 1383 s
+milvus: 3750000 documents sent, 1397 s
+milvus: 3775000 documents sent, 1412 s
+milvus: 3800000 documents sent, 1422 s
+milvus: 3825000 documents sent, 1432 s
+milvus: 3850000 documents sent, 1441 s
+milvus: 3875000 documents sent, 1452 s
+milvus: 3900000 documents sent, 1463 s
+milvus: 3925000 documents sent, 1471 s
+milvus: 3950000 documents sent, 1481 s
+milvus: 3975000 documents sent, 1492 s
+milvus: 4000000 documents sent, 1504 s
+milvus: 4025000 documents sent, 1512 s
+read tcp 127.0.0.1:42128->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:42128->127.0.0.1:36447: read: connection reset by peer
+milvus: 4050000 documents sent, 1522 s
+milvus: 4075000 documents sent, 1530 s
+milvus: 4100000 documents sent, 1537 s
+milvus: 4125000 documents sent, 1544 s
+milvus: 4150000 documents sent, 1556 s
+milvus: 4175000 documents sent, 1568 s
+milvus: 4200000 documents sent, 1580 s
+milvus: 4225000 documents sent, 1594 s
+milvus: 4250000 documents sent, 1609 s
+milvus: 4275000 documents sent, 1623 s
+milvus: 4300000 documents sent, 1634 s
+milvus: 4325000 documents sent, 1645 s
+milvus: 4350000 documents sent, 1657 s
+milvus: 4375000 documents sent, 1668 s
+milvus: 4400000 documents sent, 1680 s
+milvus: 4425000 documents sent, 1691 s
+milvus: 4450000 documents sent, 1700 s
+milvus: 4475000 documents sent, 1711 s
+milvus: 4500000 documents sent, 1721 s
+milvus: 4525000 documents sent, 1726 s
+milvus: 4550000 documents sent, 1734 s
+milvus: 4575000 documents sent, 1743 s
+milvus: 4600000 documents sent, 1753 s
+milvus: 4625000 documents sent, 1760 s
+milvus: 4650000 documents sent, 1768 s
+milvus: 4675000 documents sent, 1775 s
+milvus: 4700000 documents sent, 1783 s
+milvus: 4725000 documents sent, 1790 s
+milvus: 4750000 documents sent, 1797 s
+milvus: 4775000 documents sent, 1804 s
+milvus: 4800000 documents sent, 1812 s
+milvus: 4825000 documents sent, 1820 s
+milvus: 4850000 documents sent, 1827 s
+milvus: 4875000 documents sent, 1833 s
+milvus: 4900000 documents sent, 1838 s
+milvus: 4925000 documents sent, 1845 s
+milvus: 4950000 documents sent, 1853 s
+milvus: 4975000 documents sent, 1861 s
+milvus: 5000000 documents sent, 1869 s
+milvus: 5025000 documents sent, 1884 s
+milvus: 5050000 documents sent, 1898 s
+milvus: 5075000 documents sent, 1908 s
+milvus: 5100000 documents sent, 1922 s
+milvus: 5125000 documents sent, 1933 s
+milvus: 5150000 documents sent, 1941 s
+milvus: 5175000 documents sent, 1948 s
+milvus: 5200000 documents sent, 1955 s
+milvus: 5225000 documents sent, 1967 s
+milvus: 5250000 documents sent, 1974 s
+milvus: 5275000 documents sent, 1983 s
+milvus: 5300000 documents sent, 1994 s
+milvus: 5325000 documents sent, 2002 s
+milvus: 5350000 documents sent, 2014 s
+milvus: 5375000 documents sent, 2022 s
+milvus: 5400000 documents sent, 2034 s
+milvus: 5425000 documents sent, 2043 s
+milvus: 5450000 documents sent, 2054 s
+milvus: 5475000 documents sent, 2063 s
+milvus: 5500000 documents sent, 2073 s
+milvus: 5525000 documents sent, 2081 s
+milvus: 5550000 documents sent, 2089 s
+milvus: 5575000 documents sent, 2096 s
+milvus: 5600000 documents sent, 2103 s
+milvus: 5625000 documents sent, 2110 s
+milvus: 5650000 documents sent, 2118 s
+milvus: 5675000 documents sent, 2125 s
+milvus: 5700000 documents sent, 2131 s
+milvus: 5725000 documents sent, 2139 s
+milvus: 5750000 documents sent, 2152 s
+milvus: 5775000 documents sent, 2161 s
+milvus: 5800000 documents sent, 2170 s
+milvus: 5825000 documents sent, 2183 s
+milvus: 5850000 documents sent, 2195 s
+milvus: 5875000 documents sent, 2204 s
+milvus: 5900000 documents sent, 2211 s
+milvus: 5925000 documents sent, 2219 s
+milvus: 5950000 documents sent, 2227 s
+milvus: 5975000 documents sent, 2234 s
+milvus: 6000000 documents sent, 2242 s
+milvus: 6025000 documents sent, 2250 s
+milvus: 6050000 documents sent, 2257 s
+milvus: 6075000 documents sent, 2265 s
+milvus: 6100000 documents sent, 2273 s
+milvus: 6125000 documents sent, 2281 s
+milvus: 6150000 documents sent, 2289 s
+milvus: 6175000 documents sent, 2296 s
+milvus: 6200000 documents sent, 2302 s
+milvus: 6225000 documents sent, 2308 s
+milvus: 6250000 documents sent, 2318 s
+milvus: 6275000 documents sent, 2332 s
+milvus: 6300000 documents sent, 2341 s
+milvus: 6325000 documents sent, 2352 s
+milvus: 6350000 documents sent, 2362 s
+milvus: 6375000 documents sent, 2370 s
+milvus: 6400000 documents sent, 2379 s
+milvus: 6425000 documents sent, 2387 s
+milvus: 6450000 documents sent, 2394 s
+milvus: 6475000 documents sent, 2402 s
+milvus: 6500000 documents sent, 2410 s
+milvus: 6525000 documents sent, 2417 s
+milvus: 6550000 documents sent, 2425 s
+milvus: 6575000 documents sent, 2437 s
+milvus: 6600000 documents sent, 2447 s
+milvus: 6625000 documents sent, 2459 s
+milvus: 6650000 documents sent, 2469 s
+milvus: 6675000 documents sent, 2477 s
+milvus: 6700000 documents sent, 2486 s
+milvus: 6725000 documents sent, 2496 s
+milvus: 6750000 documents sent, 2504 s
+milvus: 6775000 documents sent, 2515 s
+milvus: 6800000 documents sent, 2526 s
+milvus: 6825000 documents sent, 2536 s
+milvus: 6850000 documents sent, 2545 s
+milvus: 6875000 documents sent, 2554 s
+milvus: 6900000 documents sent, 2563 s
+milvus: 6925000 documents sent, 2572 s
+milvus: 6950000 documents sent, 2581 s
+milvus: 6975000 documents sent, 2589 s
+milvus: 7000000 documents sent, 2602 s
+milvus: 7025000 documents sent, 2615 s
+milvus: 7050000 documents sent, 2626 s
+milvus: 7075000 documents sent, 2640 s
+milvus: 7100000 documents sent, 2652 s
+milvus: 7125000 documents sent, 2659 s
+milvus: 7150000 documents sent, 2668 s
+milvus: 7175000 documents sent, 2677 s
+milvus: 7200000 documents sent, 2684 s
+milvus: 7225000 documents sent, 2691 s
+milvus: 7250000 documents sent, 2698 s
+milvus: 7275000 documents sent, 2705 s
+milvus: 7300000 documents sent, 2712 s
+milvus: 7325000 documents sent, 2719 s
+milvus: 7350000 documents sent, 2725 s
+milvus: 7375000 documents sent, 2732 s
+milvus: 7400000 documents sent, 2740 s
+milvus: 7425000 documents sent, 2746 s
+milvus: 7450000 documents sent, 2752 s
+milvus: 7475000 documents sent, 2759 s
+milvus: 7500000 documents sent, 2766 s
+milvus: 7525000 documents sent, 2775 s
+milvus: 7550000 documents sent, 2788 s
+milvus: 7575000 documents sent, 2801 s
+milvus: 7600000 documents sent, 2814 s
+milvus: 7625000 documents sent, 2827 s
+milvus: 7650000 documents sent, 2840 s
+milvus: 7675000 documents sent, 2851 s
+milvus: 7700000 documents sent, 2862 s
+milvus: 7725000 documents sent, 2873 s
+milvus: 7750000 documents sent, 2880 s
+milvus: 7775000 documents sent, 2890 s
+milvus: 7800000 documents sent, 2900 s
+milvus: 7825000 documents sent, 2912 s
+milvus: 7850000 documents sent, 2924 s
+milvus: 7875000 documents sent, 2937 s
+milvus: 7900000 documents sent, 2948 s
+milvus: 7925000 documents sent, 2960 s
+milvus: 7950000 documents sent, 2970 s
+milvus: 7975000 documents sent, 2981 s
+milvus: 8000000 documents sent, 2988 s
+milvus: 8025000 documents sent, 2998 s
+milvus: 8050000 documents sent, 3006 s
+milvus: 8075000 documents sent, 3014 s
+milvus: 8100000 documents sent, 3021 s
+milvus: 8125000 documents sent, 3029 s
+milvus: 8150000 documents sent, 3037 s
+milvus: 8175000 documents sent, 3045 s
+milvus: 8200000 documents sent, 3053 s
+milvus: 8225000 documents sent, 3061 s
+milvus: 8250000 documents sent, 3068 s
+milvus: 8275000 documents sent, 3076 s
+milvus: 8300000 documents sent, 3084 s
+milvus: 8325000 documents sent, 3089 s
+milvus: 8350000 documents sent, 3095 s
+milvus: 8375000 documents sent, 3106 s
+milvus: 8400000 documents sent, 3119 s
+milvus: 8425000 documents sent, 3128 s
+milvus: 8450000 documents sent, 3139 s
+milvus: 8475000 documents sent, 3149 s
+milvus: 8500000 documents sent, 3157 s
+milvus: 8525000 documents sent, 3165 s
+milvus: 8550000 documents sent, 3175 s
+milvus: 8575000 documents sent, 3183 s
+milvus: 8600000 documents sent, 3191 s
+milvus: 8625000 documents sent, 3199 s
+milvus: 8650000 documents sent, 3207 s
+milvus: 8675000 documents sent, 3214 s
+milvus: 8700000 documents sent, 3222 s
+milvus: 8725000 documents sent, 3229 s
+milvus: 8750000 documents sent, 3237 s
+milvus: 8775000 documents sent, 3245 s
+milvus: 8800000 documents sent, 3252 s
+milvus: 8825000 documents sent, 3260 s
+milvus: 8850000 documents sent, 3267 s
+milvus: 8875000 documents sent, 3273 s
+milvus: 8900000 documents sent, 3279 s
+milvus: 8925000 documents sent, 3286 s
+milvus: 8950000 documents sent, 3295 s
+milvus: 8975000 documents sent, 3302 s
+milvus: 9000000 documents sent, 3313 s
+milvus: 9025000 documents sent, 3327 s
+milvus: 9050000 documents sent, 3338 s
+milvus: 9075000 documents sent, 3351 s
+milvus: 9100000 documents sent, 3360 s
+milvus: 9125000 documents sent, 3368 s
+milvus: 9150000 documents sent, 3376 s
+milvus: 9175000 documents sent, 3384 s
+milvus: 9200000 documents sent, 3390 s
+milvus: 9225000 documents sent, 3402 s
+milvus: 9250000 documents sent, 3416 s
+milvus: 9275000 documents sent, 3424 s
+milvus: 9300000 documents sent, 3431 s
+milvus: 9325000 documents sent, 3438 s
+milvus: 9350000 documents sent, 3445 s
+milvus: 9375000 documents sent, 3453 s
+milvus: 9400000 documents sent, 3460 s
+milvus: 9425000 documents sent, 3468 s
+milvus: 9450000 documents sent, 3476 s
+milvus: 9475000 documents sent, 3484 s
+milvus: 9500000 documents sent, 3497 s
+milvus: 9525000 documents sent, 3509 s
+milvus: 9550000 documents sent, 3520 s
+milvus: 9575000 documents sent, 3530 s
+milvus: 9600000 documents sent, 3538 s
+milvus: 9625000 documents sent, 3547 s
+milvus: 9650000 documents sent, 3554 s
+milvus: 9675000 documents sent, 3562 s
+milvus: 9700000 documents sent, 3569 s
+milvus: 9725000 documents sent, 3577 s
+milvus: 9750000 documents sent, 3583 s
+milvus: 9775000 documents sent, 3591 s
+milvus: 9800000 documents sent, 3599 s
+milvus: 9825000 documents sent, 3607 s
+milvus: 9850000 documents sent, 3621 s
+milvus: 9875000 documents sent, 3632 s
+milvus: 9900000 documents sent, 3643 s
+milvus: 9925000 documents sent, 3658 s
+milvus: 9950000 documents sent, 3671 s
+milvus: 9975000 documents sent, 3681 s
+milvus: 10000000 documents sent, 3690 s
+milvus: 10000000 documents (107.6 GB) sent in 3690.2 s
+milvus: flush_s in 1.5 s
+unexpected EOF
+error: unexpected EOF
+read tcp 127.0.0.1:56678->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:56678->127.0.0.1:36447: read: connection reset by peer
+read tcp 127.0.0.1:33244->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:33244->127.0.0.1:36447: read: connection reset by peer
+milvus: index_s in 3542.3 s
+milvus: load_s in 0.0 s
+milvus: indexed 3543.8 s after the last write; 7234.0 s in all
+wrote /data/compare/load-milvus.json
+job.batch/run-milvus created
+milvus    bm25                     warm-up: p50 22.904, 22.620 ms
+milvus    bm25                     c=1        113 q/s  p50   7.414 ms  p90  14.140 ms  p99  22.739 ms  errors 0
+milvus    bm25                     c=4        139 q/s  p50  23.070 ms  p90  51.767 ms  p99  69.902 ms  errors 0
+milvus    bm25                     c=16       165 q/s  p50  96.560 ms  p90 121.420 ms  p99 150.967 ms  errors 0
+milvus    bm25 + filter            warm-up: p50 75.588, 73.399 ms
+milvus    bm25 + filter            c=1         64 q/s  p50  14.118 ms  p90  21.614 ms  p99  28.194 ms  errors 0
+milvus    bm25 + filter            c=4         63 q/s  p50  73.652 ms  p90  83.146 ms  p99  89.990 ms  errors 0
+milvus    bm25 + filter            c=16        93 q/s  p50 177.158 ms  p90 191.744 ms  p99 200.736 ms  errors 0
+milvus    vector                   warm-up: p50 25.498, 25.177 ms
+milvus    vector                   c=1         99 q/s  p50  10.023 ms  p90  10.879 ms  p99  11.918 ms  errors 0
+milvus    vector                   c=4        113 q/s  p50  25.388 ms  p90  59.974 ms  p99  66.533 ms  errors 0
+milvus    vector                   c=16       134 q/s  p50 114.968 ms  p90 140.150 ms  p99 161.178 ms  errors 0
+milvus    vector + filter          warm-up: p50 70.762, 69.449 ms
+milvus    vector + filter          c=1         58 q/s  p50  15.542 ms  p90  26.078 ms  p99  30.992 ms  errors 0
+milvus    vector + filter          c=4         63 q/s  p50  70.844 ms  p90  82.808 ms  p99  96.586 ms  errors 0
+milvus    vector + filter          c=16        77 q/s  p50 206.703 ms  p90 225.041 ms  p99 251.316 ms  errors 0
+milvus    hybrid (RRF)             warm-up: p50 139.176, 139.469 ms
+milvus    hybrid (RRF)             c=1         28 q/s  p50  35.411 ms  p90  42.975 ms  p99  46.949 ms  errors 0
+milvus    hybrid (RRF)             c=4         28 q/s  p50 141.965 ms  p90 162.752 ms  p99 177.269 ms  errors 0
+milvus    hybrid (RRF)             c=16        36 q/s  p50 452.870 ms  p90 484.265 ms  p99 523.364 ms  errors 0
+milvus    hybrid (weighted)        warm-up: p50 137.399, 135.562 ms
+milvus    hybrid (weighted)        c=1         27 q/s  p50  36.117 ms  p90  42.697 ms  p99  48.115 ms  errors 0
+milvus    hybrid (weighted)        c=4         27 q/s  p50 144.083 ms  p90 162.967 ms  p99 173.838 ms  errors 0
+milvus    hybrid (weighted)        c=16        35 q/s  p50 453.815 ms  p90 489.521 ms  p99 516.076 ms  errors 0
+milvus    boosted (bm25 × decay)   warm-up: p50 36.905, 36.204 ms
+milvus    boosted (bm25 × decay)   c=1         71 q/s  p50  12.555 ms  p90  19.493 ms  p99  28.562 ms  errors 0
+milvus    boosted (bm25 × decay)   c=4         96 q/s  p50  37.090 ms  p90  64.916 ms  p99  77.578 ms  errors 0
+milvus    boosted (bm25 × decay)   c=16       112 q/s  p50 142.986 ms  p90 172.540 ms  p99 196.110 ms  errors 0
+milvus    facet                    unavailable: no aggregations: a query counts the rows of a filter, not of each value
+milvus    key lookup               warm-up: p50 1.359, 1.359 ms
+milvus    key lookup               c=1        711 q/s  p50   1.376 ms  p90   1.661 ms  p99   2.030 ms  errors 0
+milvus    key lookup               c=4       2911 q/s  p50   1.359 ms  p90   1.552 ms  p99   1.869 ms  errors 0
+milvus    key lookup               c=16      5540 q/s  p50   2.683 ms  p90   4.149 ms  p99   6.348 ms  errors 0
+milvus    phrase                   warm-up: p50 16.794, 16.732 ms
+milvus    phrase                   c=1        152 q/s  p50   6.082 ms  p90   8.858 ms  p99  11.570 ms  errors 0
+milvus    phrase                   c=4        188 q/s  p50  16.612 ms  p90  42.043 ms  p99  61.512 ms  errors 0
+milvus    phrase                   c=16       191 q/s  p50  85.036 ms  p90 103.585 ms  p99 131.138 ms  errors 0
+milvus    typo                     unavailable: no fuzzy matching
+milvus    prefix                   unavailable: no word prefixes: TEXT_MATCH matches whole terms and LIKE a prefix of the whole string
+milvus    similar items            warm-up: p50 68.199, 68.878 ms
+milvus    similar items            c=1         72 q/s  p50  13.681 ms  p90  15.160 ms  p99  18.723 ms  errors 0
+milvus    similar items            c=4         68 q/s  p50  69.541 ms  p90  77.623 ms  p99  84.247 ms  errors 0
+milvus    similar items            c=16        66 q/s  p50 232.402 ms  p90 272.130 ms  p99 283.492 ms  errors 0
+milvus    sql aggregate            unavailable: no GROUP BY
+wrote /data/compare/run-milvus.json
+pod "milvus-0" deleted from milvus namespace

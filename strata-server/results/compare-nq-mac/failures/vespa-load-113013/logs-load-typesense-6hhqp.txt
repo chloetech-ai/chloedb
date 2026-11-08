@@ -1,0 +1,44 @@
+typesense: index created in 0.0 s
+typesense: 25000 documents sent, 13 s
+typesense: 50000 documents sent, 31 s
+typesense: 75000 documents sent, 52 s
+typesense: 100000 documents sent, 74 s
+typesense: 125000 documents sent, 98 s
+typesense: 150000 documents sent, 123 s
+typesense: 175000 documents sent, 148 s
+typesense: 200000 documents sent, 173 s
+typesense: 225000 documents sent, 198 s
+typesense: 250000 documents sent, 223 s
+typesense: 275000 documents sent, 249 s
+typesense: 300000 documents sent, 274 s
+typesense: 325000 documents sent, 301 s
+typesense: 350000 documents sent, 327 s
+typesense: 375000 documents sent, 354 s
+typesense: 400000 documents sent, 381 s
+typesense: 425000 documents sent, 407 s
+typesense: 450000 documents sent, 435 s
+typesense: 475000 documents sent, 464 s
+typesense: 500000 documents sent, 492 s
+typesense: 525000 documents sent, 520 s
+typesense: 550000 documents sent, 548 s
+typesense: 575000 documents sent, 576 s
+typesense: 600000 documents sent, 605 s
+typesense: 625000 documents sent, 635 s
+typesense: 650000 documents sent, 664 s
+typesense: 675000 documents sent, 694 s
+typesense: 700000 documents sent, 723 s
+typesense: 725000 documents sent, 752 s
+typesense: 750000 documents sent, 783 s
+typesense: 775000 documents sent, 813 s
+typesense: 800000 documents sent, 843 s
+typesense: 825000 documents sent, 873 s
+typesense: 850000 documents sent, 904 s
+typesense: 875000 documents sent, 935 s
+typesense: 900000 documents sent, 967 s
+typesense: 925000 documents sent, 999 s
+typesense: 950000 documents sent, 1031 s
+typesense: 975000 documents sent, 1063 s
+typesense: 1000000 documents sent, 1094 s
+typesense: 1000000 documents (5.4 GB) sent in 1093.5 s
+typesense: indexed 0.0 s after the last write; 1093.5 s in all
+wrote /data/compare/load-typesense.json

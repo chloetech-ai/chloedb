@@ -67,26 +67,27 @@ fn random_documents_round_trip() {
         assert!(store.is_view());
         assert_eq!(store.len(), n);
         for (d, doc) in docs.iter().enumerate() {
-            assert_eq!(store.get(d as u32), expected(&schema, doc), "doc {d}");
+            assert_eq!(store.get(d as u32).unwrap(), expected(&schema, doc), "doc {d}");
         }
         for _ in 0..200.min(n) {
             let d = rng.gen_range(0..n);
             let fields: Vec<usize> = (0..rng.gen_range(0..5)).map(|_| rng.gen_range(0..schema.fields.len())).collect();
             let want: Vec<Value> = fields.iter().map(|&f| expected(&schema, &docs[d])[f].clone()).collect();
-            assert_eq!(store.get_fields(d as u32, &fields), want);
+            assert_eq!(store.get_fields(d as u32, &fields).unwrap(), want);
         }
         // Through a block cache: in docID order (each block decompressed
         // once), then in random order (the cache changes blocks).
         let all: Vec<usize> = (0..schema.fields.len()).collect();
-        let mut cache = StoreCache::default();
+        let (mut cache, mut whole) = (StoreCache::default(), StoreCache::default());
         for (d, doc) in docs.iter().enumerate() {
-            assert_eq!(store.get_fields_cached(d as u32, &all, &mut cache), expected(&schema, doc), "doc {d}, cached");
+            assert_eq!(store.get_fields_cached(d as u32, &all, &mut cache).unwrap(), expected(&schema, doc), "doc {d}, cached");
+            assert_eq!(store.get_cached(d as u32, &mut whole).unwrap(), expected(&schema, doc), "doc {d}, whole, cached");
         }
         for _ in 0..200.min(n) {
             let d = rng.gen_range(0..n);
             let fields: Vec<usize> = (0..rng.gen_range(0..5)).map(|_| rng.gen_range(0..schema.fields.len())).collect();
             let want: Vec<Value> = fields.iter().map(|&f| expected(&schema, &docs[d])[f].clone()).collect();
-            assert_eq!(store.get_fields_cached(d as u32, &fields, &mut cache), want, "doc {d}, cached");
+            assert_eq!(store.get_fields_cached(d as u32, &fields, &mut cache).unwrap(), want, "doc {d}, cached");
         }
         let (compressed, raw) = store.byte_sizes();
         assert!(n == 0 || compressed < raw, "{compressed} vs {raw}");
@@ -116,7 +117,7 @@ fn scifact_round_trip_and_zero_copy() {
     let seg = SegmentFile::from_vec(seg.image().to_vec()).unwrap();
     let store = DocStore::open(&seg, &schema).unwrap();
     for (d, doc) in c.docs.iter().enumerate() {
-        assert_eq!(store.get(d as u32), expected(&schema, doc));
+        assert_eq!(store.get(d as u32).unwrap(), expected(&schema, doc));
     }
     let (compressed, raw) = store.byte_sizes();
     eprintln!("scifact doc store: {raw} bytes raw, {compressed} compressed, {} blocks", store.n_blocks());
@@ -167,5 +168,104 @@ fn build_segment_writes_forward_sections() {
     assert!(!names.iter().any(|n| n.starts_with("kw.note")));
     let want = (0..500).filter(|d| (10..20).contains(&(d % 35))).count();
     assert_eq!(NumericColumn::open(&seg, &schema.key_of("year").unwrap()).unwrap().scan_count(2000.0, 2009.0), want);
-    assert_eq!(DocStore::open(&seg, &schema).unwrap().get(7)[3], Value::Str("n".into()));
+    assert_eq!(DocStore::open(&seg, &schema).unwrap().get(7).unwrap()[3], Value::Str("n".into()));
 }
+
+/// A segment of `n` random documents in small blocks, its image, and the
+/// documents as the store returns them.
+fn blocks_image(n: usize) -> (Schema, Vec<u8>, Vec<Document>) {
+    let schema = schema();
+    let docs = random_docs(&mut StdRng::seed_from_u64(5), n);
+    let seg = build(&schema, &docs, &BuildOptions::default().set("forward.store_block", 2048));
+    let want = docs.iter().map(|d| expected(&schema, d)).collect();
+    (schema, seg.image().to_vec(), want)
+}
+
+/// Where the directory entry of section `name` starts in `image` (at its
+/// `"name"`, which the entry's other fields follow).
+fn entry_at(image: &[u8], name: &str) -> usize {
+    let dir_len = u64::from_le_bytes(image[16..24].try_into().unwrap()) as usize;
+    let dir = std::str::from_utf8(&image[24..24 + dir_len]).unwrap();
+    24 + dir.find(&format!("\"name\":\"{name}\"")).unwrap_or_else(|| panic!("no section {name} in {dir}"))
+}
+
+#[test]
+fn a_damaged_block_fails_its_checksum_and_the_others_read() {
+    let (schema, mut image, want) = blocks_image(3000);
+    let seg = SegmentFile::from_vec(image.clone()).unwrap();
+    assert!(seg.has("store.crc"));
+    let n_blocks = DocStore::open(&seg, &schema).unwrap().n_blocks();
+    assert!(n_blocks > 20, "{n_blocks} blocks");
+    let data = seg.section_range("store.data").unwrap();
+    image[data.start + data.len() / 2] ^= 0x41;
+
+    let seg = SegmentFile::from_vec(image.clone()).unwrap().checked_on_read();
+    let store = DocStore::open(&seg, &schema).unwrap();
+    let mut cache = StoreCache::default();
+    let all: Vec<usize> = (0..schema.fields.len()).collect();
+    let mut failed = Vec::new();
+    for (d, doc) in want.iter().enumerate() {
+        match store.get(d as u32) {
+            Ok(got) => assert_eq!(&got, doc, "doc {d}"),
+            Err(e) => {
+                assert!(e.to_string().contains("fails its checksum"), "doc {d}: {e}");
+                failed.push(d);
+            }
+        }
+        // The cached path and the column scan read the same blocks.
+        assert_eq!(store.get_fields_cached(d as u32, &all, &mut cache).is_err(), failed.last() == Some(&d), "doc {d}, cached");
+    }
+    // One block's documents, and only those.
+    assert!(!failed.is_empty() && failed.len() < want.len() / 10, "{} of {} failed", failed.len(), want.len());
+    assert!(failed.windows(2).all(|w| w[1] == w[0] + 1), "{failed:?}");
+    assert!(store.field_values(1).unwrap_err().to_string().contains("fails its checksum"));
+    // The whole section still fails its own checksum.
+    assert!(seg.verify_sections().unwrap_err().to_string().contains("section store.data fails its checksum"));
+
+    // Not checked (memtable images), nothing is checked, and nothing panics.
+    let seg = SegmentFile::from_vec(image).unwrap();
+    let store = DocStore::open(&seg, &schema).unwrap();
+    for d in 0..want.len() {
+        if let Err(e) = store.get(d as u32) {
+            assert!(!e.to_string().contains("checksum"), "doc {d}: {e}");
+        }
+    }
+}
+
+#[test]
+fn a_store_with_block_checksums_does_not_check_its_data_whole() {
+    let (schema, mut image, want) = blocks_image(500);
+    // A wrong crc32 for the whole of store.data, its blocks intact: one
+    // digit changed, so the directory keeps its length.
+    let at = entry_at(&image, "store.data");
+    let crc = at + image[at..].windows(8).position(|w| w == b"\"crc32\":").unwrap() + "\"crc32\":".len();
+    image[crc] = if image[crc] == b'1' { b'2' } else { b'1' };
+    let seg = SegmentFile::from_vec(image).unwrap().checked_on_read();
+    let store = DocStore::open(&seg, &schema).unwrap();
+    for (d, doc) in want.iter().enumerate() {
+        assert_eq!(&store.get(d as u32).unwrap(), doc, "doc {d}");
+    }
+    assert!(seg.verify_sections().unwrap_err().to_string().contains("section store.data fails its checksum"));
+}
+
+#[test]
+fn a_store_without_block_checksums_is_checked_whole() {
+    // As a segment written before store.crc: the section renamed, so the
+    // reader does not find it (and passes it over).
+    let (schema, mut image, want) = blocks_image(500);
+    let at = entry_at(&image, "store.crc") + "\"name\":\"store.cr".len();
+    image[at] = b'x';
+    let seg = SegmentFile::from_vec(image.clone()).unwrap().checked_on_read();
+    assert!(!seg.has("store.crc"));
+    let store = DocStore::open(&seg, &schema).unwrap();
+    for (d, doc) in want.iter().enumerate() {
+        assert_eq!(&store.get(d as u32).unwrap(), doc, "doc {d}");
+    }
+    // A damaged block fails the whole section's checksum, as it did.
+    let data = seg.section_range("store.data").unwrap();
+    image[data.start + 10] ^= 0x41;
+    let seg = SegmentFile::from_vec(image).unwrap().checked_on_read();
+    let e = DocStore::open(&seg, &schema).unwrap_err().to_string();
+    assert!(e.contains("section store.data fails its checksum"), "{e}");
+}
+

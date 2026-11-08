@@ -774,6 +774,10 @@ pub enum OrderBy {
     GroupValue { desc: bool },
     /// Aggregate queries: order groups by an aggregate or a group field.
     Agg { what: Projection, desc: bool },
+    /// Rows by their value of a path ([`Select::paths`]), values of
+    /// different types in the order [`crate::query::agg::cmp`] gives them;
+    /// rows without one last unless `nulls_first`.
+    Path { path: usize, desc: bool, nulls_first: bool },
 }
 
 /// A rerank phase ([`Select::phases`]): the top `count` rows of the phase
@@ -802,6 +806,57 @@ pub enum AggFn {
     Min,
     Max,
     CountDistinct,
+    /// `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY f)` and `MEDIAN(f)` (p =
+    /// 0.5): the value at fraction p of the way from the least value to
+    /// the greatest, interpolated between the two values around it, a
+    /// FLOAT. Needs [`crate::query::ir::PERCENTILES`].
+    PercentileCont(Fraction),
+    /// `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY f)`: the least value that
+    /// at least fraction p of the values are at most, one of the values.
+    /// Needs [`crate::query::ir::PERCENTILES`].
+    PercentileDisc(Fraction),
+}
+
+impl AggFn {
+    /// A percentile's fraction and whether it interpolates.
+    pub fn percentile(self) -> Option<(f64, bool)> {
+        match self {
+            AggFn::PercentileCont(p) => Some((p.get(), true)),
+            AggFn::PercentileDisc(p) => Some((p.get(), false)),
+            _ => None,
+        }
+    }
+}
+
+/// A fraction from 0 to 1, of a percentile ([`AggFn::PercentileCont`]),
+/// held as its double's bits so that functions compare equal by value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "f64", into = "f64")]
+pub struct Fraction(u64);
+
+impl Fraction {
+    /// `p`, if it is from 0 to 1.
+    pub fn new(p: f64) -> Option<Fraction> {
+        // -0.0 is 0.0, so that the two are one function.
+        (0.0..=1.0).contains(&p).then(|| Fraction((p + 0.0).to_bits()))
+    }
+
+    pub fn get(self) -> f64 {
+        f64::from_bits(self.0)
+    }
+}
+
+impl TryFrom<f64> for Fraction {
+    type Error = String;
+    fn try_from(p: f64) -> std::result::Result<Fraction, String> {
+        Fraction::new(p).ok_or_else(|| format!("a percentile's fraction is from 0 to 1, not {p}"))
+    }
+}
+
+impl From<Fraction> for f64 {
+    fn from(p: Fraction) -> f64 {
+        p.get()
+    }
 }
 
 /// A `HAVING` condition on a group's aggregates or group values.
@@ -815,9 +870,95 @@ pub enum Having {
     Not(Box<Having>),
 }
 
+/// A column a SELECT groups by or aggregates: a field, a path of a JSON
+/// field ([`Select::paths`]), or a part of a TIMESTAMP field's times
+/// ([`Select::times`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Col {
+    Field(usize),
+    Path(usize),
+    Time(usize),
+}
+
+impl Col {
+    /// The column's value as a SELECT names it.
+    pub fn projection(self) -> Projection {
+        match self {
+            Col::Field(f) => Projection::Field(f),
+            Col::Path(p) => Projection::Path(p),
+            Col::Time(t) => Projection::Time(t),
+        }
+    }
+
+    /// The field, when the column is one.
+    pub fn field(self) -> Option<usize> {
+        match self {
+            Col::Field(f) => Some(f),
+            Col::Path(_) | Col::Time(_) => None,
+        }
+    }
+}
+
+/// A TIMESTAMP field's times as a column a SELECT groups by
+/// (`date_trunc('day', at)`, `EXTRACT(dow FROM at)`, `strftime('%Y-%m',
+/// at)`): what the function gives of each row's value, which the
+/// executor reads from the field's column.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimeCol {
+    pub field: usize,
+    pub of: TimeOf,
+}
+
+/// What a [`TimeCol`] gives of a time.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TimeOf {
+    /// `date_trunc`: the start of the unit the time is in, a TIMESTAMP.
+    Trunc(crate::timestamp::Unit),
+    /// `date_part` and `EXTRACT`: an INT, or a FLOAT for seconds.
+    Part(crate::timestamp::Part),
+    /// `strftime`: text.
+    Format(String),
+}
+
+impl TimeCol {
+    /// The column's value of a time (microseconds since 1970), as the row
+    /// evaluator's function gives it, but a TIMESTAMP as its integer (the
+    /// answer's type gives it as a TIMESTAMP, [`Select::types`]); NULL for
+    /// a time whose start is not one.
+    pub fn value(&self, micros: i64) -> crate::value::Value {
+        use crate::timestamp as ts;
+        use crate::value::Value;
+        match &self.of {
+            TimeOf::Trunc(u) => ts::trunc(micros, *u).map_or(Value::Null, Value::Int),
+            TimeOf::Part(p) => match ts::part(micros, *p) {
+                ts::PartValue::Int(x) => Value::Int(x),
+                ts::PartValue::Float(x) => Value::Float(x),
+            },
+            // The format was checked when the column was made.
+            TimeOf::Format(f) => ts::strftime(f, micros).map_or(Value::Null, Value::Str),
+        }
+    }
+}
+
+/// A path of a JSON field read as a column (`attrs.color`,
+/// `json_extract(attrs, 'price', 'number')`): its values are what
+/// `json_extract` returns for each row, read from the field's terms
+/// ([`crate::json::PathValues`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PathCol {
+    pub field: usize,
+    pub path: String,
+    pub kind: Option<crate::json::Kind>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Projection {
     Field(usize),
+    /// A path's value ([`Select::paths`]).
+    Path(usize),
+    /// A part of a TIMESTAMP field's time ([`Select::times`]), as a group's
+    /// value.
+    Time(usize),
     /// The ORDER BY score (`score()`), or the fused score for hybrids.
     Score,
     /// `COUNT(*)`: of the whole result, or per group.
@@ -829,8 +970,8 @@ pub enum Projection {
     /// ([`crate::storage::Database::seq_of`]).
     SeqNo,
     /// `SUM(f)`, `AVG(f)`, `MIN(f)`, `MAX(f)`, `COUNT(f)`, `COUNT(DISTINCT
-    /// f)`: of the whole result, or per group.
-    Agg { func: AggFn, field: usize },
+    /// f)`: of the whole result, or per group; of a field or a path.
+    Agg { func: AggFn, of: Col },
     /// A ranking expression that scores each row by itself (`bm25(title,
     /// :q)`, `ln(1 + rating)`; no set function, RRF or fusion): the value
     /// the query's ranking gives it ([`crate::query::rank`]), NULL where the
@@ -916,8 +1057,14 @@ pub struct Select {
     pub filter: Pred,
     pub order: Option<OrderBy>,
     /// Fields to group by (KEYWORD, INT or FLOAT, multi-valued ones
-    /// counting a row once per value), with aggregates per group.
-    pub group_by: Vec<usize>,
+    /// counting a row once per value) and paths, with aggregates per group.
+    pub group_by: Vec<Col>,
+    /// The paths of JSON fields the query reads as columns, which
+    /// [`Col::Path`], [`Projection::Path`] and [`OrderBy::Path`] index.
+    pub paths: Vec<PathCol>,
+    /// The parts of TIMESTAMP fields' times the query groups by, which
+    /// [`Col::Time`] and [`Projection::Time`] index.
+    pub times: Vec<TimeCol>,
     /// Which groups to keep.
     pub having: Option<Having>,
     /// Secondary order for rows that tie on the primary one.

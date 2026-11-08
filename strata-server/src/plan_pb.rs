@@ -7,8 +7,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use strata::query::ir::{Agg, ArithOp, CmpOp, Column, Cte, Expr, Func, Graph, GraphKind, Guard, GuardSite, JoinKey, JoinKind, KeyValue, Node, NormKind, OnConflict, Phase, Plan, ProfileRef, Search, Set, SortKey, When};
-use strata::query::{AggFn, Decay, DecayShape, Direction, Expand, Fuzzy};
+use strata::query::ir::{Agg, ArithOp, Bound, CmpOp, Column, Cte, Expr, Frame, FrameUnits, Func, Graph, GraphKind, Guard, GuardSite, JoinKey, JoinKind, KeyValue, Node, NormKind, OnConflict, Phase, Plan, ProfileRef, Search, Set, SetOp, SortKey, When, WindowFn, WindowFunc};
+use strata::query::{AggFn, Decay, DecayShape, Direction, Expand, Fraction, Fuzzy};
 use strata::text::query::Need;
 use strata::value::Value;
 
@@ -105,7 +105,7 @@ fn node(n: &Node) -> pb::Node {
         Node::Aggregate { input, keys, aggs } => N::Aggregate(Box::new(pb::Aggregate {
             input: boxed(input),
             keys: keys.iter().map(ex).collect(),
-            aggs: aggs.iter().map(|a| pb::Agg { func: agg_fn(a.func) as i32, arg: a.arg.as_ref().map(ex) }).collect(),
+            aggs: aggs.iter().map(|a| pb::Agg { func: agg_fn(a.func) as i32, arg: a.arg.as_ref().map(ex), fraction: a.func.percentile().map_or(0.0, |(p, _)| p) }).collect(),
         })),
         Node::Filter { input, cond } => N::Filter(Box::new(pb::Filter { input: boxed(input), cond: bex(cond) })),
         Node::Sort { input, keys } => N::Sort(Box::new(pb::Sort { input: boxed(input), keys: keys.iter().map(sort_key).collect() })),
@@ -138,8 +138,126 @@ fn node(n: &Node) -> pb::Node {
         Node::Distinct { input } => N::Distinct(Box::new(node(input))),
         Node::KeyOrder { input, by } => N::KeyOrder(Box::new(pb::KeyOrder { input: boxed(input), by: boxed(by) })),
         Node::DistinctOn { input, keys, per } => N::DistinctOn(Box::new(pb::DistinctOn { input: boxed(input), keys: keys.iter().map(ex).collect(), per: *per })),
+        Node::Window { input, funcs } => N::Window(Box::new(pb::Window { input: boxed(input), funcs: funcs.iter().map(window_fn).collect() })),
+        Node::SetOp { op, all, left, right } => {
+            use pb::set_op::Kind;
+            let kind = match op {
+                SetOp::Union => Kind::Union,
+                SetOp::Intersect => Kind::Intersect,
+                SetOp::Except => Kind::Except,
+            };
+            N::SetOp(Box::new(pb::SetOp { kind: kind as i32, all: *all, left: boxed(left), right: boxed(right) }))
+        }
     };
     pb::Node { node: Some(n) }
+}
+
+fn window_fn(w: &WindowFn) -> pb::WindowFn {
+    use pb::window_fn::Kind;
+    let mut f = pb::WindowFn { partition: w.partition.iter().map(ex).collect(), order: w.order.iter().map(sort_key).collect(), ..Default::default() };
+    let kind = match &w.func {
+        WindowFunc::RowNumber => Kind::RowNumber,
+        WindowFunc::Rank => Kind::Rank,
+        WindowFunc::DenseRank => Kind::DenseRank,
+        WindowFunc::PercentRank => Kind::PercentRank,
+        WindowFunc::CumeDist => Kind::CumeDist,
+        WindowFunc::Ntile(n) => {
+            f.n = *n;
+            Kind::Ntile
+        }
+        WindowFunc::Lag { arg, offset, default } | WindowFunc::Lead { arg, offset, default } => {
+            (f.n, f.arg, f.default) = (*offset, Some(ex(arg)), default.as_ref().map(ex));
+            if matches!(w.func, WindowFunc::Lag { .. }) { Kind::Lag } else { Kind::Lead }
+        }
+        WindowFunc::FirstValue(arg) => {
+            f.arg = Some(ex(arg));
+            Kind::FirstValue
+        }
+        WindowFunc::LastValue(arg) => {
+            f.arg = Some(ex(arg));
+            Kind::LastValue
+        }
+        WindowFunc::NthValue { arg, n } => {
+            (f.n, f.arg) = (*n, Some(ex(arg)));
+            Kind::NthValue
+        }
+        WindowFunc::Agg(a) => {
+            (f.agg, f.arg) = (agg_fn(a.func) as i32, a.arg.as_ref().map(ex));
+            Kind::Aggregate
+        }
+    };
+    f.kind = kind as i32;
+    f.frame = w.frame.as_ref().map(|fr| {
+        let bound = |b: &Bound| {
+            use pb::frame_bound::Kind as B;
+            let (kind, offset) = match b {
+                Bound::UnboundedPreceding => (B::UnboundedPreceding, None),
+                Bound::Preceding(e) => (B::Preceding, Some(ex(e))),
+                Bound::CurrentRow => (B::CurrentRow, None),
+                Bound::Following(e) => (B::Following, Some(ex(e))),
+                Bound::UnboundedFollowing => (B::UnboundedFollowing, None),
+            };
+            pb::FrameBound { kind: kind as i32, offset }
+        };
+        pb::WindowFrame { range: fr.units == FrameUnits::Range, start: Some(bound(&fr.start)), end: Some(bound(&fr.end)) }
+    });
+    f
+}
+
+fn from_window_fn(f: pb::WindowFn) -> Result<WindowFn, ApiError> {
+    use pb::window_fn::Kind;
+    let arg = |e: Option<pb::Expr>| from_ex(e);
+    let func = match en::<Kind>(f.kind, "window function")? {
+        Kind::RowNumber => WindowFunc::RowNumber,
+        Kind::Rank => WindowFunc::Rank,
+        Kind::DenseRank => WindowFunc::DenseRank,
+        Kind::PercentRank => WindowFunc::PercentRank,
+        Kind::CumeDist => WindowFunc::CumeDist,
+        Kind::Ntile => WindowFunc::Ntile(f.n),
+        Kind::Lag => WindowFunc::Lag { arg: arg(f.arg)?, offset: f.n, default: f.default.map(|e| from_ex(Some(e))).transpose()? },
+        Kind::Lead => WindowFunc::Lead { arg: arg(f.arg)?, offset: f.n, default: f.default.map(|e| from_ex(Some(e))).transpose()? },
+        Kind::FirstValue => WindowFunc::FirstValue(arg(f.arg)?),
+        Kind::LastValue => WindowFunc::LastValue(arg(f.arg)?),
+        Kind::NthValue => WindowFunc::NthValue { arg: arg(f.arg)?, n: f.n },
+        Kind::Aggregate => WindowFunc::Agg(Agg { func: from_agg_fn(f.agg, None)?, arg: f.arg.map(|e| from_ex(Some(e))).transpose()? }),
+    };
+    let frame = f
+        .frame
+        .map(|fr| {
+            let bound = |b: Option<pb::FrameBound>| -> Result<Bound, ApiError> {
+                use pb::frame_bound::Kind as B;
+                let b = need(b, "a frame's bound")?;
+                Ok(match en::<B>(b.kind, "frame bound")? {
+                    B::UnboundedPreceding => Bound::UnboundedPreceding,
+                    B::Preceding => Bound::Preceding(from_ex(b.offset)?),
+                    B::CurrentRow => Bound::CurrentRow,
+                    B::Following => Bound::Following(from_ex(b.offset)?),
+                    B::UnboundedFollowing => Bound::UnboundedFollowing,
+                })
+            };
+            Ok::<_, ApiError>(Frame { units: if fr.range { FrameUnits::Range } else { FrameUnits::Rows }, start: bound(fr.start)?, end: bound(fr.end)? })
+        })
+        .transpose()?;
+    Ok(WindowFn { func, partition: from_exprs(f.partition)?, order: f.order.into_iter().map(from_sort_key).collect::<Result<_, _>>()?, frame })
+}
+
+/// An aggregate function; `fraction` is an Aggregate's percentile's (a
+/// window computes none).
+fn from_agg_fn(n: i32, fraction: Option<f64>) -> Result<AggFn, ApiError> {
+    let fraction = || match fraction {
+        Some(p) => Fraction::new(p).ok_or_else(|| bad(format!("a percentile's fraction is from 0 to 1, not {p}"))),
+        None => Err(bad("a window function computes no percentile")),
+    };
+    Ok(match en::<pb::AggFn>(n, "aggregate")? {
+        pb::AggFn::Count => AggFn::Count,
+        pb::AggFn::Sum => AggFn::Sum,
+        pb::AggFn::Avg => AggFn::Avg,
+        pb::AggFn::Min => AggFn::Min,
+        pb::AggFn::Max => AggFn::Max,
+        pb::AggFn::CountDistinct => AggFn::CountDistinct,
+        pb::AggFn::PercentileCont => AggFn::PercentileCont(fraction()?),
+        pb::AggFn::PercentileDisc => AggFn::PercentileDisc(fraction()?),
+    })
 }
 
 fn agg_fn(f: AggFn) -> pb::AggFn {
@@ -150,6 +268,8 @@ fn agg_fn(f: AggFn) -> pb::AggFn {
         AggFn::Min => pb::AggFn::Min,
         AggFn::Max => pb::AggFn::Max,
         AggFn::CountDistinct => pb::AggFn::CountDistinct,
+        AggFn::PercentileCont(_) => pb::AggFn::PercentileCont,
+        AggFn::PercentileDisc(_) => pb::AggFn::PercentileDisc,
     }
 }
 
@@ -248,6 +368,10 @@ fn expr(e: &Expr) -> E {
                 Func::SidAt => pb::Func::SidAt,
                 Func::CountTrue => pb::Func::CountTrue,
                 Func::JsonExtract => pb::Func::JsonExtract,
+                Func::DateTrunc => pb::Func::DateTrunc,
+                Func::DatePart => pb::Func::DatePart,
+                Func::Strftime => pb::Func::Strftime,
+                Func::Hash => pb::Func::Hash,
             } as i32,
             args: args.iter().map(ex).collect(),
         }),
@@ -417,17 +541,7 @@ fn from_node_in(n: pb::Node) -> Result<Node, ApiError> {
             let aggs = a
                 .aggs
                 .into_iter()
-                .map(|g| {
-                    let func = match en::<pb::AggFn>(g.func, "aggregate")? {
-                        pb::AggFn::Count => AggFn::Count,
-                        pb::AggFn::Sum => AggFn::Sum,
-                        pb::AggFn::Avg => AggFn::Avg,
-                        pb::AggFn::Min => AggFn::Min,
-                        pb::AggFn::Max => AggFn::Max,
-                        pb::AggFn::CountDistinct => AggFn::CountDistinct,
-                    };
-                    Ok(Agg { func, arg: g.arg.map(|e| from_ex(Some(e))).transpose()? })
-                })
+                .map(|g| Ok(Agg { func: from_agg_fn(g.func, Some(g.fraction))?, arg: g.arg.map(|e| from_ex(Some(e))).transpose()? }))
                 .collect::<Result<_, ApiError>>()?;
             Node::Aggregate { input: from_bnode(a.input)?, keys: from_exprs(a.keys)?, aggs }
         }
@@ -485,6 +599,20 @@ fn from_node_in(n: pb::Node) -> Result<Node, ApiError> {
         N::DistinctOn(d) => {
             let d = *d;
             Node::DistinctOn { input: from_bnode(d.input)?, keys: from_exprs(d.keys)?, per: d.per.max(1) }
+        }
+        N::Window(w) => {
+            let w = *w;
+            Node::Window { input: from_bnode(w.input)?, funcs: w.funcs.into_iter().map(from_window_fn).collect::<Result<_, _>>()? }
+        }
+        N::SetOp(o) => {
+            use pb::set_op::Kind;
+            let o = *o;
+            let op = match en::<Kind>(o.kind, "set operation")? {
+                Kind::Union => SetOp::Union,
+                Kind::Intersect => SetOp::Intersect,
+                Kind::Except => SetOp::Except,
+            };
+            Node::SetOp { op, all: o.all, left: from_bnode(o.left)?, right: from_bnode(o.right)? }
         }
     })
 }
@@ -601,6 +729,10 @@ fn from_expr(e: E) -> Result<Expr, ApiError> {
                 pb::Func::SidAt => Func::SidAt,
                 pb::Func::CountTrue => Func::CountTrue,
                 pb::Func::JsonExtract => Func::JsonExtract,
+                pb::Func::DateTrunc => Func::DateTrunc,
+                pb::Func::DatePart => Func::DatePart,
+                pb::Func::Strftime => Func::Strftime,
+                pb::Func::Hash => Func::Hash,
             };
             Expr::Call { func, args: from_exprs(c.args)? }
         }

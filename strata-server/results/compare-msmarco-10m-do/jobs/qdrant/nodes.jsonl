@@ -1,0 +1,2 @@
+{"node": "qdrant-d-a1-3eaenm", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 65853636, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.271, "sha256_1g_x_vcpus_s": 11.394, "disk_write_2g_s": 2.109, "copy_ms": 0, "time": 1793697481, "size": "m3-8vcpu-64gb"}
+{"node": "qdrant-c-a1-3eaenx", "cpu": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz", "vcpus": 8, "mem_kb": 16382188, "kernel": "6.12.113+deb13-amd64", "sha256_4g_s": 21.285, "sha256_1g_x_vcpus_s": 11.424, "disk_write_2g_s": 2.458, "copy_ms": 1322102, "time": 1793698805, "size": "c-8"}

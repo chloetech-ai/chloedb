@@ -1,0 +1,500 @@
+service/vespa created
+pod/vespa-0 created
+pod/vespa-1 created
+pod/vespa-2 created
+pod/vespa-0 condition met
+pod/vespa-1 condition met
+pod/vespa-2 condition met
+job.batch/load-vespa created
+vespa: index created in 0.8 s
+vespa: 25000 documents sent, 115 s
+vespa: 50000 documents sent, 174 s
+vespa: 75000 documents sent, 223 s
+vespa: 100000 documents sent, 260 s
+vespa: 125000 documents sent, 300 s
+vespa: 150000 documents sent, 333 s
+vespa: 175000 documents sent, 367 s
+vespa: 200000 documents sent, 401 s
+vespa: 225000 documents sent, 435 s
+vespa: 250000 documents sent, 467 s
+vespa: 275000 documents sent, 499 s
+vespa: 300000 documents sent, 534 s
+vespa: 325000 documents sent, 571 s
+vespa: 350000 documents sent, 604 s
+vespa: 375000 documents sent, 636 s
+vespa: 400000 documents sent, 667 s
+vespa: 425000 documents sent, 700 s
+vespa: 450000 documents sent, 734 s
+vespa: 475000 documents sent, 767 s
+vespa: 500000 documents sent, 801 s
+vespa: 525000 documents sent, 835 s
+vespa: 550000 documents sent, 870 s
+vespa: 575000 documents sent, 902 s
+vespa: 600000 documents sent, 934 s
+vespa: 625000 documents sent, 969 s
+vespa: 650000 documents sent, 1003 s
+vespa: 675000 documents sent, 1035 s
+vespa: 700000 documents sent, 1066 s
+vespa: 725000 documents sent, 1101 s
+vespa: 750000 documents sent, 1135 s
+vespa: 775000 documents sent, 1167 s
+vespa: 800000 documents sent, 1200 s
+vespa: 825000 documents sent, 1234 s
+vespa: 850000 documents sent, 1269 s
+vespa: 875000 documents sent, 1301 s
+vespa: 900000 documents sent, 1333 s
+vespa: 925000 documents sent, 1366 s
+vespa: 950000 documents sent, 1401 s
+vespa: 975000 documents sent, 1432 s
+vespa: 1000000 documents sent, 1465 s
+vespa: 1025000 documents sent, 1500 s
+vespa: 1050000 documents sent, 1535 s
+vespa: 1075000 documents sent, 1567 s
+vespa: 1100000 documents sent, 1599 s
+vespa: 1125000 documents sent, 1632 s
+vespa: 1150000 documents sent, 1665 s
+vespa: 1175000 documents sent, 1698 s
+vespa: 1200000 documents sent, 1730 s
+vespa: 1225000 documents sent, 1765 s
+vespa: 1250000 documents sent, 1799 s
+vespa: 1275000 documents sent, 1831 s
+vespa: 1300000 documents sent, 1864 s
+vespa: 1325000 documents sent, 1899 s
+vespa: 1350000 documents sent, 1934 s
+vespa: 1375000 documents sent, 1965 s
+vespa: 1400000 documents sent, 1997 s
+vespa: 1425000 documents sent, 2030 s
+vespa: 1450000 documents sent, 2065 s
+vespa: 1475000 documents sent, 2097 s
+vespa: 1500000 documents sent, 2132 s
+vespa: 1525000 documents sent, 2168 s
+vespa: 1550000 documents sent, 2201 s
+vespa: 1575000 documents sent, 2233 s
+vespa: 1600000 documents sent, 2267 s
+vespa: 1625000 documents sent, 2301 s
+vespa: 1650000 documents sent, 2334 s
+vespa: 1675000 documents sent, 2367 s
+vespa: 1700000 documents sent, 2400 s
+vespa: 1725000 documents sent, 2435 s
+vespa: 1750000 documents sent, 2467 s
+vespa: 1775000 documents sent, 2499 s
+vespa: 1800000 documents sent, 2532 s
+vespa: 1825000 documents sent, 2565 s
+vespa: 1850000 documents sent, 2597 s
+vespa: 1875000 documents sent, 2628 s
+vespa: 1900000 documents sent, 2661 s
+vespa: 1925000 documents sent, 2696 s
+vespa: 1950000 documents sent, 2730 s
+vespa: 1975000 documents sent, 2763 s
+vespa: 2000000 documents sent, 2797 s
+vespa: 2025000 documents sent, 2833 s
+vespa: 2050000 documents sent, 2865 s
+vespa: 2075000 documents sent, 2898 s
+vespa: 2100000 documents sent, 2929 s
+vespa: 2125000 documents sent, 2968 s
+vespa: 2150000 documents sent, 3003 s
+vespa: 2175000 documents sent, 3036 s
+vespa: 2200000 documents sent, 3067 s
+vespa: 2225000 documents sent, 3099 s
+vespa: 2250000 documents sent, 3131 s
+vespa: 2275000 documents sent, 3165 s
+vespa: 2300000 documents sent, 3199 s
+vespa: 2325000 documents sent, 3231 s
+vespa: 2350000 documents sent, 3263 s
+vespa: 2375000 documents sent, 3294 s
+vespa: 2400000 documents sent, 3326 s
+vespa: 2425000 documents sent, 3357 s
+vespa: 2450000 documents sent, 3388 s
+vespa: 2475000 documents sent, 3420 s
+vespa: 2500000 documents sent, 3451 s
+vespa: 2525000 documents sent, 3483 s
+vespa: 2550000 documents sent, 3516 s
+vespa: 2575000 documents sent, 3547 s
+vespa: 2600000 documents sent, 3580 s
+vespa: 2625000 documents sent, 3612 s
+vespa: 2650000 documents sent, 3646 s
+vespa: 2675000 documents sent, 3677 s
+vespa: 2700000 documents sent, 3709 s
+vespa: 2725000 documents sent, 3742 s
+vespa: 2750000 documents sent, 3774 s
+vespa: 2775000 documents sent, 3805 s
+read tcp 127.0.0.1:60474->127.0.0.1:36447: read: connection reset by peer
+error: read tcp 127.0.0.1:60474->127.0.0.1:36447: read: connection reset by peer
+vespa: 2800000 documents sent, 3836 s
+vespa: 2825000 documents sent, 3867 s
+vespa: 2850000 documents sent, 3899 s
+vespa: 2875000 documents sent, 3932 s
+vespa: 2900000 documents sent, 3962 s
+vespa: 2925000 documents sent, 3994 s
+vespa: 2950000 documents sent, 4027 s
+vespa: 2975000 documents sent, 4059 s
+vespa: 3000000 documents sent, 4090 s
+vespa: 3025000 documents sent, 4122 s
+vespa: 3050000 documents sent, 4155 s
+vespa: 3075000 documents sent, 4188 s
+vespa: 3100000 documents sent, 4219 s
+vespa: 3125000 documents sent, 4251 s
+vespa: 3150000 documents sent, 4283 s
+vespa: 3175000 documents sent, 4317 s
+vespa: 3200000 documents sent, 4349 s
+vespa: 3225000 documents sent, 4381 s
+vespa: 3250000 documents sent, 4413 s
+vespa: 3275000 documents sent, 4447 s
+vespa: 3300000 documents sent, 4480 s
+vespa: 3325000 documents sent, 4511 s
+vespa: 3350000 documents sent, 4542 s
+vespa: 3375000 documents sent, 4576 s
+vespa: 3400000 documents sent, 4608 s
+vespa: 3425000 documents sent, 4640 s
+vespa: 3450000 documents sent, 4671 s
+vespa: 3475000 documents sent, 4706 s
+vespa: 3500000 documents sent, 4738 s
+vespa: 3525000 documents sent, 4771 s
+vespa: 3550000 documents sent, 4804 s
+vespa: 3575000 documents sent, 4838 s
+vespa: 3600000 documents sent, 4869 s
+vespa: 3625000 documents sent, 4901 s
+vespa: 3650000 documents sent, 4933 s
+vespa: 3675000 documents sent, 4967 s
+vespa: 3700000 documents sent, 4997 s
+vespa: 3725000 documents sent, 5032 s
+vespa: 3750000 documents sent, 5064 s
+vespa: 3775000 documents sent, 5097 s
+vespa: 3800000 documents sent, 5129 s
+vespa: 3825000 documents sent, 5161 s
+vespa: 3850000 documents sent, 5192 s
+vespa: 3875000 documents sent, 5226 s
+vespa: 3900000 documents sent, 5260 s
+vespa: 3925000 documents sent, 5295 s
+vespa: 3950000 documents sent, 5327 s
+vespa: 3975000 documents sent, 5362 s
+vespa: 4000000 documents sent, 5395 s
+vespa: 4025000 documents sent, 5429 s
+vespa: 4050000 documents sent, 5460 s
+vespa: 4075000 documents sent, 5493 s
+vespa: 4100000 documents sent, 5526 s
+vespa: 4125000 documents sent, 5559 s
+vespa: 4150000 documents sent, 5591 s
+vespa: 4175000 documents sent, 5625 s
+vespa: 4200000 documents sent, 5656 s
+vespa: 4225000 documents sent, 5687 s
+vespa: 4250000 documents sent, 5720 s
+vespa: 4275000 documents sent, 5753 s
+vespa: 4300000 documents sent, 5785 s
+vespa: 4325000 documents sent, 5817 s
+vespa: 4350000 documents sent, 5851 s
+vespa: 4375000 documents sent, 5883 s
+vespa: 4400000 documents sent, 5915 s
+vespa: 4425000 documents sent, 5948 s
+vespa: 4450000 documents sent, 5982 s
+vespa: 4475000 documents sent, 6014 s
+vespa: 4500000 documents sent, 6043 s
+vespa: 4525000 documents sent, 6071 s
+vespa: 4550000 documents sent, 6103 s
+vespa: 4575000 documents sent, 6137 s
+vespa: 4600000 documents sent, 6168 s
+vespa: 4625000 documents sent, 6200 s
+vespa: 4650000 documents sent, 6234 s
+vespa: 4675000 documents sent, 6268 s
+vespa: 4700000 documents sent, 6299 s
+vespa: 4725000 documents sent, 6330 s
+vespa: 4750000 documents sent, 6364 s
+vespa: 4775000 documents sent, 6397 s
+vespa: 4800000 documents sent, 6430 s
+vespa: 4825000 documents sent, 6462 s
+vespa: 4850000 documents sent, 6497 s
+vespa: 4875000 documents sent, 6528 s
+vespa: 4900000 documents sent, 6567 s
+vespa: 4925000 documents sent, 6601 s
+vespa: 4950000 documents sent, 6635 s
+vespa: 4975000 documents sent, 6667 s
+vespa: 5000000 documents sent, 6700 s
+vespa: 5025000 documents sent, 6731 s
+vespa: 5050000 documents sent, 6764 s
+vespa: 5075000 documents sent, 6797 s
+vespa: 5100000 documents sent, 6830 s
+vespa: 5125000 documents sent, 6862 s
+vespa: 5150000 documents sent, 6893 s
+vespa: 5175000 documents sent, 6924 s
+vespa: 5200000 documents sent, 6958 s
+vespa: 5225000 documents sent, 6990 s
+vespa: 5250000 documents sent, 7020 s
+vespa: 5275000 documents sent, 7053 s
+vespa: 5300000 documents sent, 7086 s
+vespa: 5325000 documents sent, 7119 s
+vespa: 5350000 documents sent, 7152 s
+vespa: 5375000 documents sent, 7186 s
+vespa: 5400000 documents sent, 7219 s
+vespa: 5425000 documents sent, 7250 s
+vespa: 5450000 documents sent, 7282 s
+vespa: 5475000 documents sent, 7314 s
+vespa: 5500000 documents sent, 7347 s
+vespa: 5525000 documents sent, 7379 s
+vespa: 5550000 documents sent, 7411 s
+vespa: 5575000 documents sent, 7441 s
+vespa: 5600000 documents sent, 7472 s
+vespa: 5625000 documents sent, 7504 s
+vespa: 5650000 documents sent, 7536 s
+vespa: 5675000 documents sent, 7567 s
+vespa: 5700000 documents sent, 7599 s
+vespa: 5725000 documents sent, 7632 s
+vespa: 5750000 documents sent, 7666 s
+vespa: 5775000 documents sent, 7698 s
+vespa: 5800000 documents sent, 7731 s
+vespa: 5825000 documents sent, 7764 s
+vespa: 5850000 documents sent, 7798 s
+vespa: 5875000 documents sent, 7828 s
+vespa: 5900000 documents sent, 7861 s
+vespa: 5925000 documents sent, 7893 s
+vespa: 5950000 documents sent, 7927 s
+vespa: 5975000 documents sent, 7958 s
+vespa: 6000000 documents sent, 7991 s
+vespa: 6025000 documents sent, 8022 s
+vespa: 6050000 documents sent, 8058 s
+vespa: 6075000 documents sent, 8090 s
+vespa: 6100000 documents sent, 8122 s
+vespa: 6125000 documents sent, 8154 s
+vespa: 6150000 documents sent, 8188 s
+vespa: 6175000 documents sent, 8220 s
+vespa: 6200000 documents sent, 8251 s
+vespa: 6225000 documents sent, 8284 s
+vespa: 6250000 documents sent, 8318 s
+vespa: 6275000 documents sent, 8349 s
+vespa: 6300000 documents sent, 8383 s
+vespa: 6325000 documents sent, 8415 s
+vespa: 6350000 documents sent, 8448 s
+vespa: 6375000 documents sent, 8481 s
+vespa: 6400000 documents sent, 8514 s
+vespa: 6425000 documents sent, 8545 s
+vespa: 6450000 documents sent, 8578 s
+vespa: 6475000 documents sent, 8612 s
+vespa: 6500000 documents sent, 8644 s
+vespa: 6525000 documents sent, 8675 s
+vespa: 6550000 documents sent, 8707 s
+vespa: 6575000 documents sent, 8739 s
+vespa: 6600000 documents sent, 8773 s
+vespa: 6625000 documents sent, 8806 s
+vespa: 6650000 documents sent, 8839 s
+vespa: 6675000 documents sent, 8874 s
+vespa: 6700000 documents sent, 8905 s
+vespa: 6725000 documents sent, 8940 s
+vespa: 6750000 documents sent, 8971 s
+vespa: 6775000 documents sent, 9006 s
+vespa: 6800000 documents sent, 9039 s
+vespa: 6825000 documents sent, 9072 s
+vespa: 6850000 documents sent, 9105 s
+vespa: 6875000 documents sent, 9139 s
+vespa: 6900000 documents sent, 9172 s
+vespa: 6925000 documents sent, 9205 s
+vespa: 6950000 documents sent, 9238 s
+vespa: 6975000 documents sent, 9271 s
+vespa: 7000000 documents sent, 9304 s
+vespa: 7025000 documents sent, 9338 s
+vespa: 7050000 documents sent, 9371 s
+vespa: 7075000 documents sent, 9405 s
+vespa: 7100000 documents sent, 9437 s
+vespa: 7125000 documents sent, 9471 s
+vespa: 7150000 documents sent, 9500 s
+vespa: 7175000 documents sent, 9530 s
+vespa: 7200000 documents sent, 9559 s
+vespa: 7225000 documents sent, 9590 s
+vespa: 7250000 documents sent, 9620 s
+vespa: 7275000 documents sent, 9650 s
+vespa: 7300000 documents sent, 9679 s
+vespa: 7325000 documents sent, 9711 s
+vespa: 7350000 documents sent, 9739 s
+vespa: 7375000 documents sent, 9770 s
+vespa: 7400000 documents sent, 9799 s
+vespa: 7425000 documents sent, 9828 s
+vespa: 7450000 documents sent, 9857 s
+vespa: 7475000 documents sent, 9888 s
+vespa: 7500000 documents sent, 9917 s
+vespa: 7525000 documents sent, 9947 s
+vespa: 7550000 documents sent, 9975 s
+vespa: 7575000 documents sent, 10006 s
+vespa: 7600000 documents sent, 10035 s
+vespa: 7625000 documents sent, 10065 s
+vespa: 7650000 documents sent, 10093 s
+vespa: 7675000 documents sent, 10123 s
+vespa: 7700000 documents sent, 10155 s
+vespa: 7725000 documents sent, 10190 s
+vespa: 7750000 documents sent, 10220 s
+vespa: 7775000 documents sent, 10250 s
+vespa: 7800000 documents sent, 10280 s
+vespa: 7825000 documents sent, 10308 s
+vespa: 7850000 documents sent, 10337 s
+vespa: 7875000 documents sent, 10367 s
+vespa: 7900000 documents sent, 10397 s
+vespa: 7925000 documents sent, 10427 s
+vespa: 7950000 documents sent, 10455 s
+vespa: 7975000 documents sent, 10485 s
+vespa: 8000000 documents sent, 10516 s
+vespa: 8025000 documents sent, 10545 s
+vespa: 8050000 documents sent, 10573 s
+vespa: 8075000 documents sent, 10602 s
+vespa: 8100000 documents sent, 10635 s
+vespa: 8125000 documents sent, 10668 s
+vespa: 8150000 documents sent, 10700 s
+vespa: 8175000 documents sent, 10735 s
+vespa: 8200000 documents sent, 10770 s
+unexpected EOF
+error: unexpected EOF
+vespa: 8225000 documents sent, 10801 s
+vespa: 8250000 documents sent, 10832 s
+vespa: 8275000 documents sent, 10863 s
+vespa: 8300000 documents sent, 10899 s
+vespa: 8325000 documents sent, 10928 s
+vespa: 8350000 documents sent, 10960 s
+vespa: 8375000 documents sent, 10994 s
+vespa: 8400000 documents sent, 11028 s
+vespa: 8425000 documents sent, 11058 s
+vespa: 8450000 documents sent, 11090 s
+vespa: 8475000 documents sent, 11123 s
+vespa: 8500000 documents sent, 11157 s
+vespa: 8525000 documents sent, 11191 s
+vespa: 8550000 documents sent, 11223 s
+vespa: 8575000 documents sent, 11258 s
+vespa: 8600000 documents sent, 11291 s
+vespa: 8625000 documents sent, 11325 s
+vespa: 8650000 documents sent, 11357 s
+vespa: 8675000 documents sent, 11389 s
+vespa: 8700000 documents sent, 11422 s
+vespa: 8725000 documents sent, 11452 s
+vespa: 8750000 documents sent, 11483 s
+vespa: 8775000 documents sent, 11516 s
+vespa: 8800000 documents sent, 11547 s
+vespa: 8825000 documents sent, 11580 s
+vespa: 8850000 documents sent, 11613 s
+vespa: 8875000 documents sent, 11645 s
+vespa: 8900000 documents sent, 11677 s
+vespa: 8925000 documents sent, 11710 s
+vespa: 8950000 documents sent, 11743 s
+vespa: 8975000 documents sent, 11777 s
+vespa: 9000000 documents sent, 11810 s
+vespa: 9025000 documents sent, 11842 s
+vespa: 9050000 documents sent, 11874 s
+vespa: 9075000 documents sent, 11905 s
+vespa: 9100000 documents sent, 11938 s
+vespa: 9125000 documents sent, 11970 s
+vespa: 9150000 documents sent, 12003 s
+vespa: 9175000 documents sent, 12037 s
+vespa: 9200000 documents sent, 12071 s
+vespa: 9225000 documents sent, 12104 s
+vespa: 9250000 documents sent, 12136 s
+vespa: 9275000 documents sent, 12169 s
+vespa: 9300000 documents sent, 12203 s
+vespa: 9325000 documents sent, 12235 s
+vespa: 9350000 documents sent, 12266 s
+vespa: 9375000 documents sent, 12298 s
+vespa: 9400000 documents sent, 12332 s
+vespa: 9425000 documents sent, 12364 s
+vespa: 9450000 documents sent, 12398 s
+vespa: 9475000 documents sent, 12432 s
+vespa: 9500000 documents sent, 12469 s
+vespa: 9525000 documents sent, 12502 s
+vespa: 9550000 documents sent, 12530 s
+vespa: 9575000 documents sent, 12560 s
+http2: server sent GOAWAY and closed the connection; LastStreamID=5, ErrCode=NO_ERROR, debug=""
+error: http2: server sent GOAWAY and closed the connection; LastStreamID=5, ErrCode=NO_ERROR, debug=""
+vespa: 9600000 documents sent, 12591 s
+vespa: 9625000 documents sent, 12625 s
+vespa: 9650000 documents sent, 12658 s
+vespa: 9675000 documents sent, 12691 s
+vespa: 9700000 documents sent, 12724 s
+vespa: 9725000 documents sent, 12758 s
+vespa: 9750000 documents sent, 12789 s
+vespa: 9775000 documents sent, 12823 s
+vespa: 9800000 documents sent, 12858 s
+vespa: 9825000 documents sent, 12892 s
+vespa: 9850000 documents sent, 12925 s
+vespa: 9875000 documents sent, 12959 s
+vespa: 9900000 documents sent, 12991 s
+vespa: 9925000 documents sent, 13024 s
+vespa: 9950000 documents sent, 13059 s
+vespa: 9975000 documents sent, 13090 s
+vespa: 10000000 documents sent, 13121 s
+vespa: 10000000 documents (118.2 GB of JSON) sent in 13120.8 s
+vespa: searchable after 0.0 s more, merged in 0.0 s; 13120.8 s in all
+wrote /data/compare/load-vespa.json
+job.batch/run-vespa created
+vespa    bm25                     warm-up: p50 9.345, 8.838 ms
+vespa    bm25                     c=1        101 q/s  p50   6.010 ms  p90  17.466 ms  p99  51.143 ms  errors 0
+vespa    bm25                     c=4        259 q/s  p50   7.683 ms  p90  49.748 ms  p99  84.316 ms  errors 0
+vespa    bm25                     c=16       351 q/s  p50  32.130 ms  p90  80.483 ms  p99 211.357 ms  errors 0
+vespa    bm25 + filter            warm-up: p50 11.637, 12.269 ms
+vespa    bm25 + filter            c=1         57 q/s  p50   8.206 ms  p90  49.244 ms  p99  71.847 ms  errors 0
+vespa    bm25 + filter            c=4        148 q/s  p50  11.807 ms  p90  74.825 ms  p99 119.549 ms  errors 0
+vespa    bm25 + filter            c=16       146 q/s  p50  76.099 ms  p90 239.180 ms  p99 364.663 ms  errors 0
+vespa    vector                   warm-up: p50 4.504, 4.491 ms
+vespa    vector                   c=1        274 q/s  p50   3.363 ms  p90   3.907 ms  p99   7.140 ms  errors 0
+vespa    vector                   c=4        379 q/s  p50   4.204 ms  p90  47.413 ms  p99  72.952 ms  errors 0
+vespa    vector                   c=16       433 q/s  p50   9.824 ms  p90  88.738 ms  p99  92.617 ms  errors 0
+vespa    vector + filter          warm-up: p50 13.700, 13.687 ms
+vespa    vector + filter          c=1         93 q/s  p50  10.706 ms  p90  11.828 ms  p99  13.128 ms  errors 0
+vespa    vector + filter          c=4        285 q/s  p50  13.592 ms  p90  16.880 ms  p99  22.829 ms  errors 0
+vespa    vector + filter          c=16       263 q/s  p50  63.116 ms  p90  79.782 ms  p99  88.352 ms  errors 0
+vespa    hybrid (RRF)             warm-up: p50 15.610, 15.426 ms
+vespa    hybrid (RRF)             c=1         52 q/s  p50  10.497 ms  p90  22.556 ms  p99 207.368 ms  errors 0
+vespa    hybrid (RRF)             c=4        132 q/s  p50  15.000 ms  p90  40.654 ms  p99 315.753 ms  errors 0
+vespa    hybrid (RRF)             c=16       129 q/s  p50  85.864 ms  p90 151.199 ms  p99 849.980 ms  errors 0
+vespa    hybrid (weighted)        warm-up: p50 15.059, 15.346 ms
+vespa    hybrid (weighted)        c=1         51 q/s  p50  10.745 ms  p90  23.051 ms  p99 195.775 ms  errors 0
+vespa    hybrid (weighted)        c=4        135 q/s  p50  15.599 ms  p90  53.858 ms  p99 309.813 ms  errors 0
+vespa    hybrid (weighted)        c=16       130 q/s  p50  85.813 ms  p90 152.917 ms  p99 797.559 ms  errors 0
+vespa    boosted (bm25 × decay)   warm-up: p50 7.781, 7.708 ms
+vespa    boosted (bm25 × decay)   c=1        115 q/s  p50   5.419 ms  p90  12.940 ms  p99  70.107 ms  errors 0
+vespa    boosted (bm25 × decay)   c=4        305 q/s  p50   7.804 ms  p90  20.918 ms  p99 104.982 ms  errors 0
+vespa    boosted (bm25 × decay)   c=16       283 q/s  p50  38.680 ms  p90  81.619 ms  p99 346.382 ms  errors 0
+vespa    facet                    warm-up: p50 22.861, 22.896 ms
+vespa    facet                    c=1         27 q/s  p50  12.523 ms  p90  93.725 ms  p99 355.779 ms  errors 0
+vespa    facet                    c=4         59 q/s  p50  22.354 ms  p90 185.247 ms  p99 705.784 ms  errors 0
+vespa    facet                    c=16        58 q/s  p50 176.039 ms  p90 546.888 ms  p99 1560.950 ms  errors 0
+vespa    key lookup               warm-up: p50 1.421, 1.362 ms
+vespa    key lookup               c=1        734 q/s  p50   1.143 ms  p90   1.375 ms  p99   2.002 ms  errors 0
+vespa    key lookup               c=4       2091 q/s  p50   1.174 ms  p90   1.480 ms  p99  37.337 ms  errors 0
+vespa    key lookup               c=16      2440 q/s  p50   1.705 ms  p90   2.646 ms  p99  77.174 ms  errors 0
+vespa    phrase                   warm-up: p50 5.701, 5.098, 5.170 ms
+vespa    phrase                   c=1        165 q/s  p50   3.887 ms  p90  11.391 ms  p99  30.882 ms  errors 0
+vespa    phrase                   c=4        500 q/s  p50   4.985 ms  p90  15.829 ms  p99  45.684 ms  errors 0
+vespa    phrase                   c=16       517 q/s  p50  22.368 ms  p90  60.910 ms  p99 116.134 ms  errors 0
+vespa    typo                     unavailable: Vespa matches typos (fuzzy) on attributes only, not on indexed text fields
+vespa    prefix                   unavailable: Vespa matches prefixes on attributes only, not on indexed text fields (n-gram fields are its way)
+vespa    similar items            warm-up: p50 18.737, 18.323 ms
+vespa    similar items            c=1         70 q/s  p50  14.156 ms  p90  14.845 ms  p99  16.271 ms  errors 0
+vespa    similar items            c=4        207 q/s  p50  17.942 ms  p90  25.826 ms  p99  32.174 ms  errors 0
+vespa    similar items            c=16       198 q/s  p50  83.653 ms  p90  98.306 ms  p99 108.677 ms  errors 0
+vespa    sql aggregate            warm-up: p50 1945.722, 1948.796 ms
+vespa    sql aggregate            c=1          1 q/s  p50 831.931 ms  p90 877.645 ms  p99 881.683 ms  errors 0
+vespa    sql aggregate            c=4          2 q/s  p50 1710.427 ms  p90 2133.447 ms  p99 2141.901 ms  errors 0
+vespa    sql aggregate            c=16         3 q/s  p50 4640.130 ms  p90 7631.763 ms  p99 8507.371 ms  errors 0
+wrote /data/compare/run-vespa.json
+job.batch/writes-vespa created
+vespa    insert one     c=1        150 docs/s  p50    6.333 ms  p90    7.769 ms  p99   10.407 ms  errors 0
+vespa    insert one     c=4        527 docs/s  p50    6.956 ms  p90    9.454 ms  p99   17.431 ms  errors 0
+vespa    insert one     c=16       689 docs/s  p50   13.949 ms  p90   58.095 ms  p99   69.965 ms  errors 0
+vespa    insert batch   c=1        779 docs/s  p50  113.655 ms  p90  146.335 ms  p99  169.984 ms  errors 0
+vespa    insert batch   c=4        702 docs/s  p50  369.317 ms  p90 1258.309 ms  p99 1551.428 ms  errors 0
+vespa    insert batch   c=16       632 docs/s  p50 1730.921 ms  p90 5073.630 ms  p99 5672.802 ms  errors 0
+vespa    update one     c=1        255 docs/s  p50    3.116 ms  p90    4.227 ms  p99   38.335 ms  errors 0
+vespa    update one     c=4        858 docs/s  p50    3.278 ms  p90    4.623 ms  p99   55.224 ms  errors 0
+vespa    update one     c=16      1493 docs/s  p50    3.805 ms  p90   56.338 ms  p99   77.150 ms  errors 0
+vespa    visible        written in p50 7.2 ms, found after p50 10.0 ms  p90 11.3 ms  max 13.8 ms
+wrote /data/compare/writes-vespa.json
+vespa    deleted 22630 written documents and put back 15643 ratings in 19.0 s
+service/redpanda created
+pod/redpanda created
+pod/redpanda condition met
+job.batch/stream-vespa created
+vespa    topic docs-vespa-1793714697, 4 partitions; 10000000 documents before
+vespa    250/s            produced 7500 in 30.0 s; written 7500 in 30.0 s (250/s); lag p50 27 ms  p90 37 ms  p99 47 ms  max 93 ms (read p50 20 ms)
+vespa    500/s            produced 15000 in 30.0 s; written 15000 in 30.0 s (499/s); lag p50 30 ms  p90 40 ms  p99 61 ms  max 107 ms (read p50 18 ms)
+vespa    1000/s           produced 30000 in 30.0 s; written 30000 in 37.4 s (803/s); lag p50 4799 ms  p90 7782 ms  p99 8889 ms  max 9310 ms (read p50 2125 ms)
+vespa    fell behind at 1000/s: no higher rate
+vespa    flat out         produced 20000 in 0.7 s; written 20000 in 24.3 s (824/s); lag p50 12799 ms  p90 22222 ms  p99 23473 ms  max 23556 ms (read p50 10154 ms)
+vespa    before the crash produced 10000 in 24.3 s; written 5007 in 24.3 s (206/s); lag p50 28 ms  p90 38 ms  p99 59 ms  max 95 ms (read p50 19 ms)
+vespa    after the crash   resumed in 7.0 s: 208 events written a second time, 0 skipped by the server; 10082500 documents, 0 lost
+wrote /data/compare/stream-vespa.json
+vespa    deleted 82500 streamed documents in 33.3 s
+pod "vespa-0" deleted from vespa namespace
+pod "vespa-1" deleted from vespa namespace
+pod "vespa-2" deleted from vespa namespace

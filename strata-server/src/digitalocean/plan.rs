@@ -23,6 +23,12 @@ const NODE_PODS: u32 = 4;
 /// The cluster's own pods: two CoreDNS, Cilium's operator.
 const SYSTEM_PODS: u32 = 3;
 
+/// The CPU a DOKS node keeps from its pods, in cores: 0.1 it does not
+/// offer them, and the requests of Cilium (310m) and the metrics agent
+/// (102m) on every node. Measured on a 2-vCPU node of Kubernetes
+/// 1.37.0-do.2 on 1 November 2026 (allocatable 1900m).
+pub const SYSTEM_CPU: f64 = 0.52;
+
 /// What is asked for: `POST /v1/admin/digitalocean/plan`.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -96,15 +102,28 @@ fn v5(m: &Machine) -> bool {
     m.processor.as_deref().is_some_and(|d| d.starts_with("v5"))
 }
 
+/// The size `p` names, or for [`crate::cloud::SMALLEST`] the cheapest one
+/// that gives each copy the floor (not a v5 size: its public address is
+/// billed apart).
+fn machine<'a>(p: &Plan, cat: &'a Catalog) -> Result<&'a Machine, String> {
+    if p.machine != crate::cloud::SMALLEST {
+        return cat.machines.iter().find(|m| m.name == p.machine).ok_or_else(|| format!("{} is not a size a DOKS node may be in {} (no GPUs, nothing legacy)", p.machine, p.region));
+    }
+    let sizes: Vec<_> = cat.machines.iter().filter(|m| m.usd_hour.is_some() && !v5(m)).collect();
+    let offer: Vec<(f64, Node)> = sizes.iter().map(|m| (m.usd_hour.unwrap_or(f64::MAX), Node { vcpu: m.vcpu, alloc_gib: allocatable_gib(m.memory_gib), system_cpu: SYSTEM_CPU })).collect();
+    let i = crate::cloud::by_price_with_floor(&p.cluster, p.nodes, &offer, p.volume_gb, STORAGE_CLASS).into_iter().next();
+    Ok(sizes[i.ok_or_else(|| format!("no size in {} gives each copy {} GiB and {} CPU on {} nodes: more nodes, or fewer copies", p.region, crate::cloud::COPY_FLOOR_GIB, crate::cloud::COPY_FLOOR_CPU, p.nodes))?])
+}
+
 /// The plan: `Err` when it cannot be made.
 pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
     check_name(&p.name)?;
     if p.region != cat.region {
         return Err(format!("the sizes are those of {}, not {}", cat.region, p.region));
     }
-    let m = cat.machines.iter().find(|m| m.name == p.machine).ok_or_else(|| format!("{} is not a size a DOKS node may be in {} (no GPUs, nothing legacy)", p.machine, p.region))?;
-    if !(1..=100).contains(&p.nodes) {
-        return Err("nodes is 1 to 100".into());
+    let m = machine(p, cat)?;
+    if !(1..=1000).contains(&p.nodes) {
+        return Err("nodes is 1 to 1,000".into());
     }
     if !(1..=16_384).contains(&p.volume_gb) {
         return Err("volume_gb is 1 to 16,384 (a volume's size)".into());
@@ -114,7 +133,7 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
         return Err(format!("DOKS offers Kubernetes {}, not {version}", cat.versions.join(", ")));
     }
     let alloc = allocatable_gib(m.memory_gib);
-    let f = fit(&p.cluster, p.nodes, &Node { vcpu: m.vcpu, alloc_gib: alloc }, p.volume_gb, STORAGE_CLASS)?;
+    let f = fit(&p.cluster, p.nodes, &Node { vcpu: m.vcpu, alloc_gib: alloc, system_cpu: SYSTEM_CPU }, p.volume_gb, STORAGE_CLASS)?;
 
     let mut warnings = f.warnings(p.nodes);
     if let (Some(limit), Some(running)) = (cat.droplet_limit, cat.droplets) {
@@ -179,7 +198,7 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
         "warnings": warnings,
         "manifests": {"operator": operator_yaml(&image)?, "cluster": cluster_yaml("A Strata cluster on DOKS, from strata-server's cloud view", &objects)},
         "objects": objects,
-        "commands": commands,
+        "commands": crate::cloud::with_token_secret(&f.cluster, &commands),
         "teardown": teardown,
         "cluster": f.cluster,
         "request": request,
@@ -219,7 +238,8 @@ pub fn checks(p: &Plan, cat: &Catalog, account: &str) -> Vec<Json> {
     let mut out = Vec::new();
     let mut check = |what: String, ok: bool| out.push(json!({"check": what, "ok": ok}));
     check(format!("the account is {account}"), account == "active");
-    check(format!("DOKS runs in {} and takes {} nodes there", p.region, p.machine), cat.region == p.region && cat.machines.iter().any(|m| m.name == p.machine));
+    let m = machine(p, cat);
+    check(format!("DOKS runs in {} and takes {} nodes there", p.region, m.as_ref().map_or(p.machine.as_str(), |m| m.name.as_str())), cat.region == p.region && m.is_ok());
     let version = if p.version.is_empty() { cat.versions.first().cloned().unwrap_or_default() } else { p.version.clone() };
     check(format!("DOKS offers Kubernetes {version}"), cat.versions.contains(&version));
     match (cat.droplet_limit, cat.droplets) {
@@ -282,5 +302,54 @@ mod tests {
         assert!(plan(&Plan { machine: "so-8vcpu-64gb".into(), ..p.clone() }, &cat).unwrap_err().contains("is not a size a DOKS node may be"));
         let c = checks(&Plan { nodes: 24, ..p.clone() }, &cat, "active");
         assert_eq!(c.iter().map(|c| c["ok"].as_bool().unwrap()).collect::<Vec<_>>(), [true, true, true, false], "{c:?}");
+    }
+
+    #[test]
+    fn the_smallest_size_is_the_cheapest_that_gives_each_copy_the_floor() {
+        let cat = catalog();
+        for (shards, replicas, nodes) in [(1, 2, 2), (2, 2, 2), (4, 2, 3), (8, 3, 3)] {
+            let p = Plan { machine: crate::cloud::SMALLEST.into(), nodes, cluster: json!({"shards": shards, "replicas": replicas}), ..Plan::default() };
+            let j = plan(&p, &cat).unwrap();
+            let name = j["machine"]["type"].as_str().unwrap();
+            let price = j["machine"]["usd_hour"].as_f64().unwrap();
+            assert_eq!(j["request"]["node_pools"][0]["size"], name);
+            let w = j["warnings"].to_string();
+            assert!(!w.contains("each copy"), "{name} for {shards}x{replicas} on {nodes}: {w}");
+            // Every cheaper size starves a copy, or is a v5 size.
+            for m in cat.machines.iter().filter(|m| m.usd_hour.is_some_and(|u| u < price) && !v5(m)) {
+                let cheaper = plan(&Plan { machine: m.name.clone(), ..p.clone() }, &cat);
+                assert!(cheaper.is_err() || cheaper.unwrap()["warnings"].to_string().contains("each copy"), "{} is cheaper than {name} and fits", m.name);
+            }
+        }
+        let p = Plan { machine: crate::cloud::SMALLEST.into(), nodes: 1, cluster: json!({"shards": 400, "replicas": 1}), ..Plan::default() };
+        assert!(plan(&p, &cat).unwrap_err().contains("no size in nyc3 gives each copy"));
+    }
+
+    #[test]
+    fn copies_request_what_a_small_node_has_free() {
+        // On 1 November 2026, a DOKS cluster of two 2-vCPU nodes ran one
+        // shard of two copies: the busier node had Cilium, the metrics
+        // agent, a CoreDNS, the operator and the coordinator, and 1088m and
+        // 2158 MiB of its 1900m and 3002 MiB free. Each copy asked 1575m
+        // and none started.
+        let cat = catalog();
+        let p = Plan { machine: "s-2vcpu-4gb".into(), nodes: 2, cluster: json!({"shards": 1, "replicas": 2}), ..Plan::default() };
+        let j = plan(&p, &cat).unwrap();
+        let req = &j["cluster"]["resources"]["requests"];
+        let (cpu, mem) = (req["cpu"].as_str().unwrap(), req["memory"].as_str().unwrap());
+        let milli: f64 = cpu.strip_suffix('m').unwrap().parse().unwrap();
+        let mib: f64 = mem.strip_suffix("Mi").unwrap().parse().unwrap();
+        // A copy now asks half of that: an upgrade adds a third copy beside
+        // a shard's two (rollout.extraCopies), on either node.
+        let free = 2000.0 - 100.0 - 412.0 - 100.0 - 50.0 - 250.0;
+        assert!(milli * 2.0 <= free, "two copies ask {cpu} each and the busier node has {free}m");
+        assert!(milli * 2.0 >= free * 0.85, "two copies ask {cpu} each, well under the {free}m free");
+        // Its pods could have 3002 MiB (allocatable 3074892Ki), of which
+        // Cilium, the metrics agent, CoreDNS, the operator and the
+        // coordinator asked 844. The plan keeps to DigitalOcean's table,
+        // which gives a 4 GB node less (2.5 GiB) than that.
+        let free = 3002.0 - 332.0 - 80.0 - 170.0 - 32.0 - 230.0;
+        assert!(mib * 2.0 <= free, "two copies ask {mem} each and the busier node has {free} MiB");
+        assert!(mib * 2.0 >= free * 0.7, "two copies ask {mem} each, well under the {free} MiB free");
     }
 }

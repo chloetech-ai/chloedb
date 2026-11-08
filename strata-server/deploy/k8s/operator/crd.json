@@ -190,15 +190,105 @@
                     "minimum": 1,
                     "type": "integer"
                   },
+                  "crawler": {
+                    "description": "A crawler beside the cluster: a strata-crawl Deployment of one, which the command center shows under Apps; it crawls sites into tables and adds shards as they fill.",
+                    "properties": {
+                      "args": {
+                        "description": "More arguments of strata-crawl serve.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "grow": {
+                        "description": "Add a shard when a crawl's table fills one (default true).",
+                        "type": "boolean"
+                      },
+                      "maxShards": {
+                        "description": "The most shards growing makes (default 8).",
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "paused": {
+                        "description": "No crawler pod for now.",
+                        "type": "boolean"
+                      },
+                      "resources": {
+                        "description": "Resources of the crawler's container.",
+                        "type": "object",
+                        "x-kubernetes-preserve-unknown-fields": true
+                      },
+                      "splitRows": {
+                        "description": "Rows of a crawl's table on a shard past which the cluster gets one more shard (0: never; default 100000).",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "demo": {
                     "description": "Instead of a schema: this many demo products, split over the shards the cluster starts with.",
                     "minimum": 0,
                     "type": "integer"
                   },
+                  "environment": {
+                    "description": "What the cluster is to its people (production, staging): the command center shows it on every page.",
+                    "type": "string"
+                  },
                   "failoverAfterMs": {
                     "description": "--failover-after-ms of every server (default 3000; 0: failover by hand).",
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "follow": {
+                    "description": "Following another cluster: a strata-server follow Deployment of one copies the source, then applies its feed; the cluster refuses its clients' writes meanwhile.",
+                    "properties": {
+                      "askedMs": {
+                        "description": "When following was asked for (ms since the epoch): a copy is made once, and a stop or promotion after it is final for this spec.",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "caSecret": {
+                        "description": "A Secret whose key ca.crt is the CA certificate (PEM) of the source's TLS certificate, for a self-signed one.",
+                        "type": "string"
+                      },
+                      "keySecret": {
+                        "description": "A Secret whose key key is a key of the source of the feed scope.",
+                        "type": "string"
+                      },
+                      "name": {
+                        "description": "The name this cluster knows the source by.",
+                        "pattern": "^[A-Za-z0-9._-]{1,64}$",
+                        "type": "string"
+                      },
+                      "paused": {
+                        "description": "No follow process for now; the cluster still refuses its clients' writes.",
+                        "type": "boolean"
+                      },
+                      "resources": {
+                        "description": "Resources of the follow process's container.",
+                        "type": "object",
+                        "x-kubernetes-preserve-unknown-fields": true
+                      },
+                      "source": {
+                        "description": "The source cluster's URL (its coordinators), as https://east.example:7700.",
+                        "type": "string"
+                      },
+                      "start": {
+                        "description": "follow (default): from where the cluster is, a copy the first time; copy: a copy afresh (an old source rejoining); reverse: back from the source's promotion from this cluster, without a copy.",
+                        "enum": [
+                          "follow",
+                          "copy",
+                          "reverse"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "name"
+                    ],
+                    "type": "object"
                   },
                   "image": {
                     "description": "The strata-server image of every server (default strata-server:dev).",
@@ -220,6 +310,10 @@
                   "rollout": {
                     "description": "How changes are made: paused, or held by gates on the cluster's live numbers.",
                     "properties": {
+                      "extraCopies": {
+                        "description": "A shard of fewer than three copies takes more, with the new settings, before its copies restart, and lets them go after: most of its copies serve while each restarts (default true).",
+                        "type": "boolean"
+                      },
                       "gates": {
                         "description": "Limits on live numbers: one over its limit for holdAfterSeconds holds the change until it is resumed.",
                         "properties": {
@@ -249,16 +343,34 @@
                         "type": "object"
                       },
                       "holdAfterSeconds": {
-                        "description": "How long a gate is over its limit before it holds the change (default 30).",
+                        "description": "How long a gate is over its limit before it holds the change, or a check fails while a version is verified (default 30).",
                         "minimum": 0,
                         "type": "integer"
+                      },
+                      "onFailure": {
+                        "description": "What a version that fails a check gets: rollback (default) restores the last version that ran everywhere; hold holds it until it is resumed.",
+                        "enum": [
+                          "rollback",
+                          "hold"
+                        ],
+                        "type": "string"
                       },
                       "paused": {
                         "description": "While true the operator takes no step toward the spec (a copy that lost its data still joins again).",
                         "type": "boolean"
                       },
+                      "progressDeadlineSeconds": {
+                        "description": "How long one step of a rollout (the image tried on every node, the coordinators restarting, a copy restarting and catching up, the verification) may take before the version fails (default 600).",
+                        "minimum": 10,
+                        "type": "integer"
+                      },
                       "soakSeconds": {
                         "description": "How long a copy restarted with new settings serves before the next restarts (default 0).",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "verifySeconds": {
+                        "description": "How long the cluster must stay healthy once every server runs a version that restarted them, before it counts as rolled out (default 60; 0: not verified).",
                         "minimum": 0,
                         "type": "integer"
                       }
@@ -266,9 +378,34 @@
                     "type": "object"
                   },
                   "schema": {
-                    "description": "The first table's schema, as strata-server --schema takes it.",
+                    "description": "The first table's schema, as strata-server --schema takes it. Without it and without demo, the cluster starts with no tables.",
                     "type": "object",
                     "x-kubernetes-preserve-unknown-fields": true
+                  },
+                  "secretEnv": {
+                    "description": "Environment variables of every server and coordinator taken from Secrets: the keys of models behind an API (ANTHROPIC_API_KEY for the agents, LLM fields and reranking; OPENAI_API_KEY, COHERE_API_KEY, ... for hosted embeddings). Changing it restarts the copies one at a time.",
+                    "items": {
+                      "properties": {
+                        "key": {
+                          "description": "The Secret's key that holds the value (default key).",
+                          "type": "string"
+                        },
+                        "name": {
+                          "description": "The variable, such as ANTHROPIC_API_KEY.",
+                          "type": "string"
+                        },
+                        "secret": {
+                          "description": "The Secret, in the cluster's namespace.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "secret"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
                   },
                   "shards": {
                     "description": "Shards, each holding a part of the 4,096 slots (default 1).",
@@ -290,6 +427,30 @@
                   "tokenSecret": {
                     "description": "A Secret whose key token every server and coordinator requires; with clusterTokenSecret, the coordinators only (the admin token).",
                     "type": "string"
+                  },
+                  "upgrade": {
+                    "description": "Following an image tag for new versions of Strata: a new image is suggested (suggest) or rolled out (on), by its digest.",
+                    "properties": {
+                      "checkMinutes": {
+                        "description": "Minutes between two looks at the registry (default 10).",
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "mode": {
+                        "description": "off (default): no registry is asked; suggest: a new image waits in status.upgrade for a person; on: the operator rolls it out once the cluster is ready.",
+                        "enum": [
+                          "off",
+                          "suggest",
+                          "on"
+                        ],
+                        "type": "string"
+                      },
+                      "track": {
+                        "description": "The image tag to follow (default: the image's repository at its tag, or at latest).",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
                   },
                   "writeAcks": {
                     "description": "--write-acks of every primary (default all).",

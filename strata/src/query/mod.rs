@@ -18,6 +18,8 @@
 //!   rerank phase scores rows' text with.
 
 pub mod agg;
+#[cfg(feature = "datafusion")]
+pub mod arrow;
 pub mod compound;
 pub mod cross_encoder;
 pub mod ddl;
@@ -25,6 +27,7 @@ pub mod ddl;
 pub mod df;
 pub mod exec;
 pub mod fusion;
+pub mod hint;
 pub mod ir;
 pub mod logical;
 pub mod memory;
@@ -41,6 +44,7 @@ pub mod sql;
 pub mod stats;
 pub mod steps;
 pub mod tables;
+pub(crate) mod window;
 
-pub use logical::{AggFn, Decay, DecayShape, Direction, Expand, Fuzzy, GraphKind, GraphQuery, Having, OrderBy, PathTest, Pred, Projection, Score, Seeds, Select, Tiebreak};
+pub use logical::{AggFn, Decay, DecayShape, Direction, Expand, Fraction, Fuzzy, GraphKind, GraphQuery, Having, OrderBy, PathTest, Pred, Projection, Score, Seeds, Select, Tiebreak};
 pub use sql::{bind, bind_command, bind_write, Assign, Command, Conflict, Params, Write};

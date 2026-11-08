@@ -1,0 +1,16 @@
+{
+  "batch": 500,
+  "clients": 8,
+  "collection": "msmarco-1000k",
+  "docs": 1000000,
+  "engine": "weaviate",
+  "ingest_s": 525.579351074,
+  "merge_s": 1.782e-6,
+  "prepare_s": 0.0,
+  "refresh_s": 0.0,
+  "request_bytes": 10828631541,
+  "searchable_docs": 1000000,
+  "setup_s": 0.324729557,
+  "steps": {},
+  "total_s": 525.579384117
+}

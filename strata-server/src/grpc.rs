@@ -14,6 +14,7 @@ use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
 use crate::pb::{self, value::Kind};
+use crate::cores::slots::Moved;
 use crate::service::{After, QueryReq, Service, Stream};
 use crate::keys::{self, KeySet, Principal, Scope};
 use crate::{obs, plan_pb, ApiError};
@@ -74,6 +75,8 @@ pub fn result_to_pb(rs: &ResultSet, took_ms: f64) -> pb::QueryResponse {
         stats_json: json_bytes(&rs.stats),
         took_ms,
         snapshot: 0,
+        arrow: Vec::new(),
+        stale: false,
     }
 }
 
@@ -94,10 +97,20 @@ pub fn result_from_pb(r: pb::QueryResponse) -> Result<ResultSet, ApiError> {
 /// a read must see (`min_seq_no`), which a replica waits for, 6 keeps
 /// stream sources' offsets ([`SOURCES_PROTOCOL`]), 7 answers the next
 /// codes of semantic-ID prefixes ([`SIDNEXT_PROTOCOL`]), 8 counts the
-/// rows of a guard's levels ([`GUARD_PROTOCOL`]), and 9 keeps the cluster
-/// map, every shard's servers, and takes `Configure` ([`CLUSTER_PROTOCOL`]).
+/// rows of a guard's levels ([`GUARD_PROTOCOL`]), 9 keeps the cluster
+/// map, every shard's servers, and takes `Configure` ([`CLUSTER_PROTOCOL`]),
+/// 10 answers a compound query's leaf as Arrow columns
+/// ([`ARROW_PROTOCOL`]), 11 reads rows by key without SQL (`Get`,
+/// [`GET_PROTOCOL`]), 12 names the version BM25 statistics came from,
+/// so that a coordinator can keep them ([`STATS_VERSION_PROTOCOL`]), 13
+/// answers a shard's feed (`Feed`, [`FEED_PROTOCOL`]), 14 starts a feed
+/// with a copy of the shard's rows ([`FEED_COPY_PROTOCOL`]), 15 copies
+/// only rows changed since a transaction and compares keys
+/// ([`FEED_KEYS_PROTOCOL`]), 16 keeps the stream offsets of slots that
+/// move ([`MOVE_OFFSETS_PROTOCOL`]), and 17 holds clients' writes on a
+/// mark and keeps promotions ([`HOLD_PROTOCOL`]).
 pub const MIN_PROTOCOL: u32 = 1;
-pub const PROTOCOL: u32 = 9;
+pub const PROTOCOL: u32 = 17;
 
 /// The protocol whose writes carry stream sources' offsets
 /// ([`crate::service::op_source`]), and that answers `Sources`.
@@ -113,6 +126,77 @@ pub const GUARD_PROTOCOL: u32 = 8;
 /// `Slots` asked without a map answers the shard's, and `Configure` sets a
 /// server's part in replication.
 pub const CLUSTER_PROTOCOL: u32 = 9;
+
+/// The protocol whose shards answer a compound query's leaf as Arrow
+/// columns (`QueryRequest.arrow`, `QueryResponse.arrow`).
+pub const ARROW_PROTOCOL: u32 = 10;
+
+/// The protocol of `Get`, rows by primary key without SQL.
+pub const GET_PROTOCOL: u32 = 11;
+
+/// The protocol whose `TermStats` answers the version of the statistics
+/// (`TermStatsResponse.version`) and whose queries run only on that
+/// version when they name it (`QueryRequest.stats_version`, else
+/// `QueryResponse.stale`): what a coordinator's cache of term statistics
+/// needs ([`crate::coord::StatsCache`]).
+pub const STATS_VERSION_PROTOCOL: u32 = 12;
+
+/// The protocol of `Feed`, a shard's changes for another cluster to follow
+/// ([`crate::service::Service::feed`]).
+pub const FEED_PROTOCOL: u32 = 13;
+
+/// The protocol whose `Feed` starts with a copy of the shard's rows
+/// (`FeedRequest.copy`): a follower's first start.
+pub const FEED_COPY_PROTOCOL: u32 = 14;
+
+/// The protocol whose copy feed takes `since` and `digests`, and that
+/// answers `FeedKeys`: what a follower that fell behind its source's log
+/// catches up by.
+pub const FEED_KEYS_PROTOCOL: u32 = 15;
+
+/// The protocol whose slot moves carry the stream sources' offsets of the
+/// slots on the shard they leave ([`crate::slots::Move::offsets`],
+/// `SourcesRequest.moving`), which the shard they go to keeps for them
+/// ([`crate::service::arrivals`]).
+pub const MOVE_OFFSETS_PROTOCOL: u32 = 16;
+
+/// The protocol whose shards hold their clients' writes on a mark
+/// (`_strata/hold`, [`crate::service::feed::HOLD`]), say so in their feeds,
+/// and keep a promotion from a cluster they followed: a switch-over to a
+/// follower, and back. Nothing new on the wire but the marks, which an
+/// older shard refuses as its own.
+pub const HOLD_PROTOCOL: u32 = 17;
+
+/// The most bytes of a feed one `FeedChunk` carries.
+const FEED_CHUNK: usize = 1 << 20;
+
+/// The first protocol all of whose coordinators fuse a rank-safe boost
+/// (`bm25(body, :t) * decay(year, 2015, 3)`) from the rows each shard's
+/// bound found alone ([`strata::cluster::merge`]): rank-safe boosts came
+/// while protocol 9 was the newest, so a coordinator of 10 or later has
+/// them, and a shard answers it without the boost's inputs' top rows,
+/// which only an older coordinator fuses from
+/// ([`strata::query::exec::ExecOptions::boost_inputs`]). Not a protocol of
+/// its own: nothing new goes on the wire.
+pub const BOOSTS_PROTOCOL: u32 = ARROW_PROTOCOL;
+
+/// What `Get` answers ([`crate::service::KeyRows`]).
+pub fn get_response(got: crate::service::KeyRows) -> pb::GetResponse {
+    let rows = got
+        .rows
+        .into_iter()
+        .map(|r| match r {
+            Some((v, seq_no)) => pb::KeyRow { found: true, v: v.iter().map(to_pb).collect(), seq_no },
+            None => pb::KeyRow::default(),
+        })
+        .collect();
+    pb::GetResponse { columns: got.columns, rows }
+}
+
+/// The rows of a `Get` answer: per key, its row's values and number.
+pub fn rows_from_pb(r: pb::GetResponse) -> Vec<Option<(Vec<Value>, u64)>> {
+    r.rows.into_iter().map(|r| r.found.then(|| (r.v.into_iter().map(from_pb).collect(), r.seq_no))).collect()
+}
 
 /// A write's answer ([`crate::service::Written`]).
 pub fn write_response(w: crate::service::Written) -> pb::WriteResponse {
@@ -150,6 +234,14 @@ pub fn query_req(r: pb::QueryRequest) -> Result<QueryReq, ApiError> {
         // also measures it when set to for every query.
         profile: r.profile,
         quiet: false,
+        // A coordinator's leaf: Arrow columns for any rows.
+        arrow: r.arrow.then_some(0),
+        // Set by the query itself, for a client's.
+        reads: false,
+        stats_version: r.stats_version,
+        boosts_alone: r.shard && r.protocol >= BOOSTS_PROTOCOL,
+        // Scrolls are HTTP's, on one server.
+        scroll: None,
     })
 }
 
@@ -211,10 +303,10 @@ pub fn code_name(c: tonic::Code) -> &'static str {
 /// Every method is named, so that a new one must say what it needs.
 fn method_scope(method: &str) -> Option<Scope> {
     match method {
-        "Replicate" | "Restore" | "Verify" | "Vote" | "Slots" | "Configure" | "ExportSlots" | "FreezeSlots" | "CleanupSlots" | "Write (moved)" | "Keys" => None,
+        "Replicate" | "Restore" | "Verify" | "Vote" | "Slots" | "Configure" | "ExportSlots" | "FreezeSlots" | "CleanupSlots" | "Write (moved)" | "Keys" | "Feed" | "FeedKeys" => None,
         "Write" | "WriteStream" => Some(Scope::Write),
         "Logs" | "Profile" => Some(Scope::Admin),
-        "Query" | "TermStats" | "GuardCounts" | "SidNext" | "Sources" | "Schema" | "Hello" | "Release" | "Health" => Some(Scope::Read),
+        "Query" | "TermStats" | "GuardCounts" | "SidNext" | "Sources" | "Schema" | "Hello" | "Release" | "Health" | "Get" => Some(Scope::Read),
         // An unknown method is the root's.
         _ => None,
     }
@@ -247,7 +339,9 @@ fn audit(svc: &Service, who: &Principal, method: &str, status: u16, t0: Instant,
         status,
         ms: t0.elapsed().as_secs_f64() * 1e3,
         request_id: obs::current().map(|id| id.to_string()),
+        kind: (if status == 401 || status == 403 { keys::REFUSAL } else { keys::CHANGE }).into(),
         detail,
+        ..Default::default()
     });
 }
 
@@ -262,13 +356,34 @@ impl Grpc {
         let id = obs::request_id(req.metadata().get(obs::HEADER).and_then(|v| v.to_str().ok()));
         let span = tracing::info_span!("request", id = %id, method);
         let t0 = Instant::now();
-        let (who, may) = may_call(&req, method);
+        let (who, mut may) = may_call(&req, method);
+        // A follow process's writes, through a coordinator
+        // ([`crate::service::FOLLOW`]).
+        let follow: Option<Arc<str>> = req.metadata().get(crate::service::FOLLOW_HEADER).and_then(|v| v.to_str().ok()).map(Into::into);
+        if follow.is_some() && !who.root && may.is_ok() {
+            may = Err(ApiError { status: 403, message: format!("{} is a coordinator's, with the cluster's token", crate::service::FOLLOW_HEADER) });
+        }
         if let Err(e) = may {
             self.0.metrics.grpc(method, "PermissionDenied", 0.0);
             obs::scope(Some(id.clone()), async { audit(&self.0, &who, method, e.status, t0, None) }).await;
             return Err(Status::from(e));
         }
-        let call = keys::noting(crate::service::ROUTED.scope(std::cell::Cell::new(0), f(self.0.clone(), who.clone(), req.into_inner())));
+        // Who the call's queries are from ([`crate::telemetry::Caller`]).
+        let caller = {
+            let md = |k: &str| req.metadata().get(k).and_then(|v| v.to_str().ok()).map(String::from);
+            let app = md("x-strata-app").or_else(|| md("user-agent").as_deref().and_then(keys::product));
+            let r = keys::Caller { addr: req.remote_addr().map(|a| a.ip().to_string()), client: md("x-strata-client"), app, reason: None };
+            crate::telemetry::Caller::of(&who, Some(r))
+        };
+        // A part whose deadline is its client's own (the coordinator says so):
+        // one that passes is the client's doing, counted and logged so.
+        let clients = req.metadata().get(crate::service::CLIENT_DEADLINE).is_some_and(|v| v == "client");
+        // The call itself, on the heap: a query's future is many kilobytes,
+        // and each wrapper below would otherwise move it again (a shard's
+        // query spent an eighth of its time copying it).
+        let call = Box::pin(f(self.0.clone(), who.clone(), req.into_inner()));
+        let call = keys::noting(crate::service::DEADLINE.scope(crate::service::Deadline::of_part(clients), crate::service::ROUTED.scope(std::cell::Cell::new(0), call)));
+        let call = crate::telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::OWN.scope(who.root, call)));
         let (r, note) = crate::telemetry::traced(crate::telemetry::Trace::new(), obs::scope(Some(id.clone()), call)).instrument(span.clone()).await;
         let status = r.as_ref().map_or_else(|e| e.status, |_| 200);
         obs::scope(Some(id.clone()), async { audit(&self.0, &who, method, status, t0, note) }).await;
@@ -284,7 +399,12 @@ impl Grpc {
                 ("Ok", Ok(Response::new(x)))
             }
             Err(e) => {
-                if e.status >= 500 {
+                if e.status == 504 && clients {
+                    static LIMIT: obs::RateLimit = obs::RateLimit::new(10);
+                    if let Some(held) = LIMIT.admit() {
+                        tracing::warn!(status = e.status, error = %e.message, held_back = held, "the client's own deadline passed");
+                    }
+                } else if e.status >= 500 {
                     obs::server_error(e.status, &e.message);
                 }
                 let s = Status::from(e);
@@ -313,7 +433,7 @@ impl pb::strata_server::Strata for Grpc {
         self.serve("Query", req, |svc, _who, r| async move {
             svc.check_epoch(r.epoch)?;
             let a = svc.query(query_req(r)?).await?;
-            Ok(pb::QueryResponse { snapshot: a.lease, ..result_to_pb(&a.rs, a.took_ms) })
+            Ok(pb::QueryResponse { snapshot: a.lease, arrow: a.arrow, stale: a.stale, ..result_to_pb(&a.rs, a.took_ms) })
         })
         .await
     }
@@ -332,8 +452,8 @@ impl pb::strata_server::Strata for Grpc {
             svc.check_epoch(r.epoch)?;
             let plan = request_plan(r.protocol, r.plan, &r.plan_json)?;
             let after = After::of(r.min_seq_no, r.min_seq_nos)?;
-            let (stats, snapshot) = svc.term_stats(&r.sql, plan.as_ref(), &params_from_pb(r.params), &after, r.timeout_ms as u64).await?;
-            Ok(pb::TermStatsResponse { stats_json: json_bytes(&stats), snapshot })
+            let (stats, snapshot, version) = svc.term_stats(&r.sql, plan.as_ref(), &params_from_pb(r.params), &after, r.timeout_ms as u64).await?;
+            Ok(pb::TermStatsResponse { stats_json: json_bytes(&stats), snapshot, version })
         })
         .await
     }
@@ -377,10 +497,13 @@ impl pb::strata_server::Strata for Grpc {
         }
         self.serve("Write", req, |svc, who, r| async move {
             svc.check_epoch(r.epoch)?;
+            let key = Some(r.idempotency_key).filter(|k| !k.is_empty());
             let w = if !r.ops_json.is_empty() {
                 let ops: Vec<serde_json::Value> = from_json(&r.ops_json, "write operations")?;
-                let key = Some(r.idempotency_key).filter(|k| !k.is_empty());
-                svc.write_ops_as(ops, key, r.moved).await?
+                match r.moved {
+                    true => svc.write_ops_as(ops, key, Moved::Copy).await?,
+                    false => svc.write_request(ops, key).await?,
+                }
             } else if r.moved {
                 return Err(ApiError::bad("rows of moving slots come as write operations (ops_json), not SQL"));
             } else {
@@ -391,7 +514,7 @@ impl pb::strata_server::Strata for Grpc {
                         Some(ranges.into_iter().flat_map(|(a, b)| a..b.min(crate::slots::SLOTS)).collect())
                     }
                 };
-                match svc.sql_in(&who, &r.sql, &params_from_pb(r.params), After::Any, 0, slots).await? {
+                match svc.sql_in(&who, &r.sql, &params_from_pb(r.params), After::Any, 0, slots, key).await? {
                     crate::service::SqlAnswer::Written { w, .. } => w,
                     crate::service::SqlAnswer::Rows(_) => return Err(ApiError::bad("Write takes INSERT, UPDATE or DELETE; use Query")),
                 }
@@ -463,8 +586,11 @@ impl pb::strata_server::Strata for Grpc {
     }
 
     async fn sources(&self, req: Request<pb::SourcesRequest>) -> Result<Response<pb::SourcesResponse>, Status> {
-        self.serve("Sources", req, |svc, _who, _| async move {
-            let sources = svc.sources().await?;
+        self.serve("Sources", req, |svc, _who, r| async move {
+            let sources = match r.moving {
+                true => svc.moving_offsets().await?,
+                false => svc.sources().await?,
+            };
             Ok(pb::SourcesResponse { sources: sources.into_iter().map(|s| pb::Source { name: s.name, offset: s.offset, updated_micros: s.updated.unwrap_or(0) }).collect() })
         })
         .await
@@ -547,6 +673,29 @@ impl pb::strata_server::Strata for Grpc {
         Ok(Response::new(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx).map(|c| c.map_err(Status::from)))))
     }
 
+    type FeedStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<pb::FeedChunk, Status>> + Send>>;
+
+    async fn feed(&self, req: Request<pb::FeedRequest>) -> Result<Response<Self::FeedStream>, Status> {
+        let rx = self
+            .serve("Feed", req, |svc, _who, r| async move {
+                let copy = r.copy.then_some(crate::service::feed::CopyOpts { since: r.since, whole: r.whole, digests: r.digests });
+                svc.feed(r.from, (r.after_term > 0).then_some(r.after_term), copy).await
+            })
+            .await?
+            .into_inner();
+        let chunks = tokio_stream::wrappers::ReceiverStream::new(rx).flat_map(|lines| futures::stream::iter(lines.chunks(FEED_CHUNK).map(|c| Ok(pb::FeedChunk { lines: c.to_vec() })).collect::<Vec<_>>()));
+        Ok(Response::new(Box::pin(chunks)))
+    }
+
+    async fn feed_keys(&self, req: Request<pb::FeedKeysRequest>) -> Result<Response<pb::FeedKeysResponse>, Status> {
+        self.serve("FeedKeys", req, |svc, _who, r| async move {
+            let slots = r.keys.then(|| r.slots.iter().map(|&s| s as usize).collect());
+            let j = svc.feed_keys(r.tables, slots).await?;
+            Ok(pb::FeedKeysResponse { json: serde_json::to_vec(&j).map_err(ApiError::internal)? })
+        })
+        .await
+    }
+
     async fn freeze_slots(&self, req: Request<pb::FreezeRequest>) -> Result<Response<pb::FreezeResponse>, Status> {
         self.serve("FreezeSlots", req, |svc, _who, r| async move {
             svc.check_epoch(r.epoch)?;
@@ -588,6 +737,20 @@ impl pb::strata_server::Strata for Grpc {
         .await
     }
 
+    async fn get(&self, req: Request<pb::GetRequest>) -> Result<Response<pb::GetResponse>, Status> {
+        self.serve("Get", req, |svc, _who, r| async move {
+            svc.check_epoch(r.epoch)?;
+            let after = After::of(r.min_seq_no, r.min_seq_nos)?;
+            let table = Some(r.table).filter(|t| !t.is_empty());
+            let keys = r.keys.into_iter().map(from_pb).collect();
+            // A coordinator's read names the protocol it speaks; it counts
+            // the keys itself ([`crate::reads`]).
+            let got = svc.get_rows(table.as_deref(), keys, None, &after, r.timeout_ms as u64, r.protocol == 0).await?;
+            Ok(get_response(got))
+        })
+        .await
+    }
+
     async fn release(&self, req: Request<pb::ReleaseRequest>) -> Result<Response<pb::Empty>, Status> {
         self.serve("Release", req, |svc, _who, r| async move {
             svc.release(&r.snapshots);
@@ -601,13 +764,29 @@ impl pb::strata_server::Strata for Grpc {
             let body: serde_json::Value = if r.body_json.is_empty() { serde_json::Value::Null } else { serde_json::from_slice(&r.body_json).map_err(|e| ApiError::bad(format!("bad profile body: {e}")))? };
             let asked = crate::profiling::Asked { kind: crate::profiling::Kind::of(&r.kind)?, body, folded: r.folded, in_use: r.in_use };
             // Audited as an admin's request over HTTP is.
-            keys::note(format!("a {} profile", asked.kind.name()));
+            keys::note(match asked.kind {
+                crate::profiling::Kind::LogFilter => format!("log filter {} from a coordinator, by {}", asked.body["filter"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
+                crate::profiling::Kind::Verify => format!("verify the replicas from a coordinator, by {}", asked.body["by"].as_str().unwrap_or("?")),
+                crate::profiling::Kind::Checkpoint => format!("checkpoint {} from a coordinator, by {}", asked.body["name"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
+                crate::profiling::Kind::Scrub => format!("scrub from a coordinator, by {}", asked.body["by"].as_str().unwrap_or("?")),
+                crate::profiling::Kind::Alerts => format!("alerts {} from a coordinator, by {}", asked.body["op"].as_str().unwrap_or("?"), asked.body["by"].as_str().unwrap_or("?")),
+                crate::profiling::Kind::Settings => match (asked.body.get("slow_ms"), asked.body.get("cpu_all")) {
+                    (None, None) => "profiling settings, read by a coordinator".to_string(),
+                    (slow, cpu) => format!("profiling settings from a coordinator, by {}: {}", asked.body["by"].as_str().unwrap_or("?"), [slow.map(|v| format!("slow_ms {v}")), cpu.map(|v| format!("cpu_all {v}"))].into_iter().flatten().collect::<Vec<_>>().join(", ")),
+                },
+                k => match asked.body["by"].as_str() {
+                    Some(by) => format!("a {} profile from a coordinator, by {by}", k.name()),
+                    None => format!("a {} profile", k.name()),
+                },
+            });
             Ok(pb::ProfileResponse { body: crate::profiling::take(&svc, asked).await?.bytes() })
         })
         .await
     }
 
     async fn health(&self, req: Request<pb::Empty>) -> Result<Response<pb::HealthResponse>, Status> {
+        // fleet: a coordinator that names itself ([`crate::peers`]).
+        crate::peers::heard_from(&self.0, req.metadata(), req.extensions().get::<Principal>());
         self.serve("Health", req, |svc, _who, _| async move {
             let d = svc.detail().await;
             let h = &d["health"];

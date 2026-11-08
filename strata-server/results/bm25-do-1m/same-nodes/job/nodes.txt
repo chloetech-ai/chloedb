@@ -1,0 +1,2 @@
+strata-ab-d-a1 m-4vcpu-32gb strata-ab-d-a1-3e2n47 strata-ab-d-a1-3e2n4m
+strata-ab-c-a1 c-8 strata-ab-c-a1-3e2n4q

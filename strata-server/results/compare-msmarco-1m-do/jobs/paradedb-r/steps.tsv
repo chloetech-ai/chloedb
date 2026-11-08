@@ -1,0 +1,6 @@
+1	ok	1793681026	1793681044	up paradedb
+2	ok	1793681044	1793681276	load paradedb
+3	ok	1793681276	1793682028	run paradedb
+4	ok	1793682028	1793682768	run paradedb --label paradedb-pass2
+5	ok	1793682768	1793683510	run paradedb --label paradedb-pass3
+6	ok	1793683510	1793683514	down paradedb
