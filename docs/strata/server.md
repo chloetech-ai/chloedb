@@ -439,6 +439,23 @@ For finding images by text, the captions add little to an image model's vectors.
 
 `rrf` weighs a weak list as much as a strong one; a small weight on the captions is level with the vectors on Flickr30K and 0.3 to 1.5 better on COCO, whose training captions BLIP was fine-tuned on. What a caption is for is text the rest of the database reads: `MATCH`, phrases, filters and a row's description.
 
+### Text from text
+
+A `text` field can also be a language model's text of another field's text: a summary, a category, the product a review names, keywords for search. The field's `prompt` tells the model what to make, and the model is a Claude model (`anthropic/claude-haiku-5-5`, its key in `ANTHROPIC_API_KEY`), an OpenAI chat model (`openai/<model>`, `OPENAI_API_KEY`), or a chat server of one's own that a directory `<models>/<name>` names in an `endpoint.json` (`{"api": "chat", "base_url": "http://gpu:8000/v1", "model": "qwen3-8b"}` for vLLM, Ollama, LM Studio or LiteLLM; `"api": "anthropic"` for a server of Anthropic's API).
+
+```sql
+CREATE TABLE reviews (
+  id KEYWORD PRIMARY KEY,
+  body TEXT,
+  product TEXT OPTIONS(derive = 'body', model = 'anthropic/claude-haiku-5-5',
+                       prompt = 'Name the product this review is about, in at most five words. Answer with the name only.')
+)
+```
+
+The source is a stored `TEXT` or `KEYWORD` field of one value (not generated, derived or multi-valued). The text is made as captions are: before the write queues for the writer, for `/v1/write`, SQL `INSERT` and imports, kept as given when a write gives it, made again by an `UPDATE` of the source, stored and logged with the row so that merges and replicas never call the model. Each distinct text of a write is one request (the prompt as the system prompt, the text as the user's message, at most 1,024 tokens back, temperature 0 for Claude), eight at once (`concurrency` in `endpoint.json`), each tried again on a rate limit or a server's error; one that keeps failing fails the write. An empty text makes an empty one, with no request. The answer is the field's text, without its surrounding spaces.
+
+A request costs a model call a row, so a table loaded with a million rows makes a million requests: load rows in batches and watch the provider's rate limits, or make the text elsewhere and write it with the rows. The table needs the `derive_text` feature, which a version of Strata without it refuses to open.
+
 ## Semantic IDs
 
 A semantic ID is a short code for a row's vector, such as `12.7.201.0`, that nearby vectors share a start of: rows whose codes start with `12` are alike, those that start with `12.7` more so. Generative recommenders predict an item's code a number at a time; a filter on a prefix finds every row under it.
