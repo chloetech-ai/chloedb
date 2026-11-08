@@ -4,9 +4,40 @@
 // settings, plugins and MCP servers are switched off: the model only answers.
 
 import { spawn } from 'node:child_process';
+import { readFile, writeFile, rename } from 'node:fs/promises';
 
 export const MODEL = process.env.STRATA_APPS_MODEL || 'claude-opus-5-5';
 const CLAUDE = process.env.STRATA_APPS_CLAUDE || 'claude';
+
+// A cap on what the model may cost here, for a studio other people can
+// reach: STRATA_APPS_SPEND_CAP_USD, in US dollars, counted from the cost
+// Claude Code reports for each answer and kept in a file (useSpendFile) so a
+// restart does not reset it. Once the total reaches the cap every call is
+// refused until the cap is raised. Calls already running finish, so the total
+// can pass the cap by what they cost; a call stopped before its answer is not
+// counted.
+export const spend = { cap: Number(process.env.STRATA_APPS_SPEND_CAP_USD) || 0, usd: 0, calls: 0, refused: 0, since: new Date().toISOString(), file: null };
+let saving = Promise.resolve();
+export async function useSpendFile(file) {
+  spend.file = file;
+  try {
+    const j = JSON.parse(await readFile(file, 'utf8'));
+    if (Number.isFinite(j.usd)) Object.assign(spend, { usd: j.usd, calls: j.calls || 0, refused: j.refused || 0, since: j.since || spend.since });
+  } catch { /* first start */ }
+  return spend;
+}
+function saveSpend() {
+  if (!spend.file) return;
+  const { usd, calls, refused, since, cap } = spend;
+  saving = saving.then(() => writeFile(`${spend.file}.tmp`, JSON.stringify({ usd, calls, refused, since, cap }))
+    .then(() => rename(`${spend.file}.tmp`, spend.file))).catch(() => {});
+}
+function overCap() {
+  if (!spend.cap || spend.usd < spend.cap) return null;
+  spend.refused++;
+  saveSpend();
+  return Object.assign(new Error(`this studio has reached its spending limit for the model ($${spend.usd.toFixed(2)} of $${spend.cap}); ask whoever shared it to raise the limit`), { status: 402, refused: true });
+}
 
 // How long one answer may take. A build is stopped only when the model goes
 // quiet (no new output for IDLE seconds) or runs past the hard cap, so a big
@@ -19,6 +50,8 @@ export const TIMEOUT_S = Number(process.env.STRATA_APPS_TIMEOUT_S) || 1200;
 // answer so far. images: [{data (base64), type ('image/png')}] go before the
 // prompt, in one message.
 export function ask({ system, prompt, images = [], model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite, bin = CLAUDE }) {
+  const over = overCap();
+  if (over) return Promise.reject(over);
   return new Promise((resolve, reject) => {
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--system-prompt', system,
       '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence'];
@@ -69,9 +102,13 @@ export function ask({ system, prompt, images = [], model = MODEL, effort = proce
       const data = result;
       if (!data) return reject(new Error(`claude exited ${code}: ${(err || buf || text).slice(0, 600)}`));
       if (data.is_error || data.subtype !== 'success' && data.subtype) {
+        if (data.total_cost_usd) { spend.usd += data.total_cost_usd; spend.calls++; saveSpend(); }
         return reject(new Error(`claude: ${data.result || data.terminal_reason || data.subtype}`));
       }
       const out = { text: data.result || text, usage: data.usage || {}, cost: data.total_cost_usd || 0, ms: data.duration_ms || 0, model };
+      spend.usd += out.cost;
+      spend.calls++;
+      saveSpend();
       // STRATA_APPS_DUMP=dir keeps every answer there, to study what the model writes.
       if (process.env.STRATA_APPS_DUMP) {
         import('node:fs').then((fs) => fs.promises.mkdir(process.env.STRATA_APPS_DUMP, { recursive: true })

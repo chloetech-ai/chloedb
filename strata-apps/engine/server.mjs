@@ -15,7 +15,7 @@ import { repairRequest } from './look.mjs';
 import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './sqlfns.mjs';
 import { Changes, joinAsks } from './changes.mjs';
 import { useTableFunctions } from './sql.mjs';
-import { MODEL } from './llm.mjs';
+import { MODEL, spend, useSpendFile } from './llm.mjs';
 import { newId } from './store.mjs';
 import { seedLibrary } from './library.mjs';
 import { appScript } from './source.mjs';
@@ -38,6 +38,8 @@ const PORT = Number(arg('port', process.env.PORT || 7730));
 const HOST = arg('host', process.env.HOST || '127.0.0.1');
 const DATA = path.resolve(arg('data', process.env.STRATA_APPS_DATA || path.join(ROOT, 'data')));
 const AUTOREPAIR = process.env.STRATA_APPS_AUTOREPAIR !== '0';
+// What the model has cost here, against STRATA_APPS_SPEND_CAP_USD (llm.mjs).
+if (spend.cap) await mkdir(DATA, { recursive: true }).then(() => useSpendFile(path.join(DATA, 'spend.json')));
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
 let strataUrl = arg('strata', process.env.STRATA_URL || '');
@@ -422,7 +424,8 @@ async function appState(appId) {
 }
 
 const routes = [
-  ['GET', /^\/api\/status$/, async () => ({ model: MODEL, strata: strataUrl, feed: engine.feed, data: child ? DATA : null, autorepair: AUTOREPAIR })],
+  ['GET', /^\/api\/status$/, async () => ({ model: MODEL, strata: strataUrl, feed: engine.feed, data: child ? DATA : null, autorepair: AUTOREPAIR,
+    spend: spend.cap ? { usd: Math.round(spend.usd * 100) / 100, cap: spend.cap, calls: spend.calls, refused: spend.refused, since: spend.since } : null })],
   ['GET', /^\/api\/apps$/, async () => ({ apps: await engine.store.listApps() })],
   ['POST', /^\/api\/apps$/, async (b) => {
     const description = String(b.description || '').trim();
