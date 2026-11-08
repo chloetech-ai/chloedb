@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Engine } from './engine.mjs';
-import { forge, suggestFromUse } from './forge.mjs';
+import { forge, suggestFromUse, useComponentVersion } from './forge.mjs';
 import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
 
@@ -76,7 +76,7 @@ const repaired = new Set();
 
 async function submit(appId, text, source = 'user', extra = {}) {
   const id = newId(10);
-  const req = { id, app: appId, text: String(text).slice(0, 4000), source, status: 'queued', comp: 0, summary: '', log: '', error: '', ms: 0, cost: 0 };
+  const req = { id, app: appId, text: String(text).slice(0, 4000), source, status: 'queued', comp: 0, summary: '', log: '', error: '', ms: 0, cost: 0, created: new Date().toISOString() };
   await engine.store.putRequest(req);
   const prev = queues.get(appId) || Promise.resolve();
   const next = prev.then(() => runRequest(req, extra)).catch(() => {});
@@ -84,7 +84,7 @@ async function submit(appId, text, source = 'user', extra = {}) {
   return req;
 }
 
-async function runRequest(req) {
+async function runRequest(req, extra = {}) {
   const lines = [];
   const state = { id: req.id, text: req.text, source: req.source, lines };
   running.set(req.app, state);
@@ -95,7 +95,7 @@ async function runRequest(req) {
   };
   await engine.store.putRequest({ ...req, status: 'running' });
   try {
-    const out = await forge(engine, req.app, req, progress);
+    const out = req.source === 'component' ? await useComponentVersion(engine, req.app, extra.cap, progress) : await forge(engine, req.app, req, progress);
     await engine.store.putRequest({ ...req, status: 'done', comp: out.n, summary: out.summary, log: lines.map((l) => l.line).join('\n'), ms: out.ms, cost: out.cost });
     broadcast('done', { app: req.app, request: req.id, n: out.n, summary: out.summary });
   } catch (e) {
@@ -178,6 +178,11 @@ async function appState(appId) {
     version: { n: view.comp.n, summary: view.comp.summary || '', request: view.comp.request || '' },
     views: view.views.map(cap).sort((a, b) => (a.spec.order ?? 50) - (b.spec.order ?? 50)),
     functions: view.functions.map(cap),
+    components: await (async () => {
+      const newest = await store.components();
+      const users = await store.componentUsers();
+      return view.components.map((c) => ({ ...cap(c), latest: newest.get(c.slug)?.version || Number(c.version), users: (users.get(c.slug) || []).length }));
+    })(),
     tables,
     suggestions: await store.suggestions(appId),
     versions: await store.compositions(appId),
@@ -201,7 +206,9 @@ const routes = [
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/requests$/, async (b, [id]) => {
     const text = String(b.text || '').trim();
     if (!text) throw Object.assign(new Error('say what to change'), { status: 400 });
-    if (b.suggestion) await engine.store.setSuggestion(String(b.suggestion), 'taken');
+    const taken = b.suggestion ? await engine.store.setSuggestion(String(b.suggestion), 'taken') : null;
+    // A newer shared component is taken without the model: its code is in Strata.
+    if (taken?.source === 'component' && taken.cap) return { request: (await submit(id, text, 'component', { cap: taken.cap })).id };
     const source = ['user', 'suggestion', 'library'].includes(b.source) ? b.source : 'user';
     const r = await submit(id, text, source);
     return { request: r.id };
@@ -220,6 +227,10 @@ const routes = [
   }],
   ['POST', /^\/api\/apps\/([a-z0-9]+)\/error$/, async (b, [id]) => {
     const cap = String(b.cap || '');
+    // An error from code the app no longer runs (a window still showing an
+    // older version) is not sent to the forge.
+    const live = await engine.store.resolve(id).catch(() => null);
+    if (!live?.comp.caps.includes(cap)) return { ok: true, repairing: false, stale: true };
     const repairing = AUTOREPAIR && !repaired.has(cap);
     engine.reportError(id, cap, String(b.message || '').slice(0, 1500), 'in the browser');
     return { ok: true, repairing };
@@ -240,9 +251,11 @@ const routes = [
   }],
   ['GET', /^\/api\/library$/, async (b, m, url) => {
     const q = url.searchParams.get('q');
-    const rows = q ? await engine.store.searchCapabilities(q, { limit: 40 }) : await engine.store.allCapabilities(300);
+    const rows = q ? await engine.store.searchCapabilities(q, { limit: 40 }) : await engine.store.liveCapabilities();
     const apps = new Map((await engine.store.listApps()).map((a) => [a.id, a.name]));
-    return { capabilities: rows.map((r) => ({ ...r, app_name: apps.get(r.app) || r.app })) };
+    const users = await engine.store.componentUsers();
+    return { capabilities: rows.map((r) => ({ ...r, app_name: r.kind === 'component' ? 'shared' : apps.get(r.app) || r.app,
+      used_by: r.kind === 'component' ? (users.get(r.slug) || []).map((u) => ({ app: u.app, name: u.name, version: u.version })) : undefined })) };
   }],
   ['GET', /^\/api\/capabilities\/(.+)$/, async (b, [id]) => {
     const [cap] = await engine.store.getCapabilities([decodeURIComponent(id)]);

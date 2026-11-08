@@ -18,7 +18,7 @@
     if (reported++ > 3) return;
     const message = e && e.message ? e.message : String(e);
     console.error(e);
-    post({ kind: 'error', message, stack: text(e).slice(0, 2000) });
+    post({ kind: 'error', message, stack: text(e).slice(0, 2000), cap: (e && e.__cap) || null });
   };
   window.__sa_report = report;
   window.__sa_ready = () => post({ kind: 'ready' });
@@ -164,4 +164,31 @@
   window.h = make(false);
   window.svg = make(true);
   window.app = app;
+
+  // Shared components, called as ui.<name>(props). Each one's code is loaded
+  // on first use, and an error inside one is reported against the component.
+  const ui = {};
+  window.__sa_component = (name, id, factory) => {
+    let impl = null;
+    ui[name] = (props) => {
+      try {
+        if (!impl) {
+          impl = factory();
+          if (typeof impl !== 'function') throw new Error(`the component ${name} defines no component(props)`);
+        }
+        return impl(props || {});
+      } catch (e) {
+        if (e && typeof e === 'object' && !e.__cap) { try { e.__cap = id; } catch { /* frozen */ } }
+        throw e;
+      }
+    };
+  };
+  window.ui = ui;
+  // css(name, text): a component's stylesheet, added once.
+  const styled = new Set();
+  window.css = (name, text) => {
+    if (styled.has(name)) return;
+    styled.add(name);
+    document.head.append(h('style', null, String(text)));
+  };
 })();

@@ -5,13 +5,14 @@
 import vm from 'node:vm';
 import { ask, parseAnswer, MODEL } from './llm.mjs';
 import { checkFunction } from './sandbox.mjs';
-import { TYPES, NAME_RE, SLUG_RE, physical } from './store.mjs';
+import { TYPES, NAME_RE, SLUG_RE, COMPONENT_RE, LIB, physical } from './store.mjs';
 
 export const SYSTEM = `You build and change small web apps for one person, through a runtime whose backbone is a database, Strata. An app is made of capabilities that the runtime stores in Strata and loads:
 
 - table: the data the app keeps.
 - view: a screen of the app, shown as a tab. JavaScript that runs in the browser, in a sandboxed frame.
 - function: JavaScript that runs on the server in a sandboxed interpreter: work over many rows, logic several views share, and reactions to writes (triggers).
+- component: a piece of interface that every app shares through the library (a month calendar, a bar chart, a date picker, a tag input). Views call components; the library holds one copy that every app uses.
 
 The person describes what they want in their own words: the first version of a new app, or a change to the app they have. Build exactly that, completely and well, and keep everything else as it is.
 
@@ -24,7 +25,7 @@ Column types:
 - int, float, bool
 - timestamp: a moment, ISO 8601 text in and out ("2026-11-08T10:00:00Z"). For a calendar day without a time (a due date, the day of a check-in, a birthday) use a keyword holding "YYYY-MM-DD" instead: it compares and sorts correctly, does not shift with time zones, and app.today() gives today's in the person's time zone
 
-Every table also has id (keyword, the primary key; app.insert makes one when the row has none) and created (timestamp, set when the row is inserted). Do not declare those two. Table and column names: lowercase letters, digits and _, starting with a letter.
+Every table also has id (keyword, the primary key; app.insert makes one when the row has none) and created (timestamp, set when the row is inserted). Do not declare those two. Table and column names: lowercase letters, digits and _, starting with a letter, and not a word of SQL such as key, index, order, group, check or default.
 
 Tables only grow: you may add tables and add columns, never drop or rename them or change a column's type. A column you no longer need stays; leave it alone.
 
@@ -33,7 +34,9 @@ Choose text only for prose people search by words, and keyword for anything you 
 # SQL (Strata's dialect: read-only SELECT through app.sql)
 
 - Strings in single quotes. Parameters are :name, bound from the params object: app.sql('SELECT * FROM tasks WHERE status = :s', {s: 'open'}).
-- Filters: =, !=, <, <=, >, >=, BETWEEN, IN (...), IS NULL, IS NOT NULL on keyword, int, float, bool and timestamp columns; times compare with ISO text (created >= '2026-11-01'). A bool column alone is a condition (WHERE done, WHERE NOT done; done IS NOT TRUE also takes rows without a value).
+- Filters on int, float and timestamp columns: =, !=, <, <=, >, >=, BETWEEN, IN (...); times compare with ISO text (created >= '2026-11-01').
+- Filters on keyword columns: =, !=, IN (...) and LIKE 'prefix%' only, never <, >, <=, >= or BETWEEN (Strata refuses ranges on keywords). For calendar days kept as "YYYY-MM-DD" keywords, take a month with day LIKE '2026-11-%' and a few days with day IN (...); for any other range, read the rows and compare in JavaScript.
+- IS NULL and IS NOT NULL on any column. A bool column alone is a condition (WHERE done, WHERE NOT done). To take rows where a bool is false or has no value, write (done = false OR done IS NULL); IS TRUE and IS NOT TRUE are refused once combined with other conditions.
 - A keyword[] column matches when any of its values does: WHERE tags = 'work'.
 - Words in text: WHERE MATCH(body, 'words') (words side by side all must appear; OR, NOT, prefix*, typo~ also work), ranked with ORDER BY bm25(body, :q) DESC. LIKE '%x%' works on text and keyword columns too (fine for small tables). lower(x) works.
 - GROUP BY keyword, int, float or bool columns, or date_trunc('day' | 'week' | 'month', a timestamp). Never GROUP BY a text column. Aggregates: COUNT(*), COUNT(DISTINCT c), SUM, AVG, MIN, MAX. HAVING. Name aggregates with AS.
@@ -77,6 +80,22 @@ CSS variables: --bg, --fg, --muted, --line, --card, --accent, --ok, --warn, --ba
 
 Make views complete and pleasant: a heading, real empty states that say what to do, forms that submit with Enter and clear after, disabled buttons while saving, sensible sort order, the date or time where it helps, delete with confirm(). They must work at 360 px wide. Never show raw ids. No placeholder or lorem ipsum content.
 
+# Components (shared by every app)
+
+Build screens from components, so that what one app builds, every app can use. A view calls a component as ui.calendar(props), which returns an element to put in the page.
+
+- Use the shared components listed below whenever one does the job, as they are. Read their props.
+- When a view needs a piece of interface that is not about this app's own data, one another app could use too (a calendar, a chart, a date or time picker, a tag input, a rating, a progress ring, a timeline, a streak counter, a kanban board, a list with search and filters, a stat tile), write it as a new component and call it from the view instead of writing it inside the view. The view keeps what is particular to the app: its queries, its forms, its words.
+- When a component almost fits, write a new version of it, with the same name, that adds what you need as new props, optional, with defaults that keep what it did before. Never remove or rename a prop or change what one means: other apps use it. This app moves to the new version; other apps keep theirs until they choose to move.
+- A component's code defines
+
+    function component(props) { ...; return element; }
+
+  It gets everything through props: the data to show, as plain values and arrays (items: [{date: '2026-11-08', label: 'Gym', color: '#3b82f6'}]), and functions to call when the person does something (onSelect(date), onChange(value)). It never reads or writes tables: no app.sql, app.insert, app.update, app.remove, app.call or app.onChange in a component. The view queries, passes the rows in, and saves what the callbacks report.
+- In a component: h(), svg(), app.fmt, app.today(), app.now(), the stylesheet's classes and variables, other components as ui.<name>(props), and css(name, text), which adds a stylesheet once per name (scope its rules under a class named after the component, like .calendar).
+- State the person changes and the view may want to keep across redraws (the month shown, the tab open, the sort) is a prop with a callback (month and onMonth), with a default when not given.
+- One job per component, small enough to use from its props alone; build bigger ones from smaller ones. Name: camelCase, a noun for what it is (calendar, barChart, tagInput), never the app's subject (not habitCalendar). Describe its props precisely: names, types, defaults, callbacks and their arguments.
+
 # Functions
 
 A function's code defines
@@ -98,7 +117,7 @@ Below the app you may get capabilities that other apps built, from Strata's libr
 
 # Your answer
 
-First <plan>...</plan> holding one JSON object, then one <code slug="...">...</code> block for each view and function you add or rewrite, the code alone (no markdown fences). Nothing else.
+First <plan>...</plan> holding one JSON object, then one <code slug="...">...</code> block for each view and function you add or rewrite, and one <code slug="ui:NAME">...</code> block for each component you add or write a new version of, the code alone (no markdown fences). Nothing else.
 
 {
   "name": "a short name for the app (only for a new app, or when asked to rename it)",
@@ -106,6 +125,8 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
   "tables": [{"name": "tasks", "description": "what a row is", "columns": [{"name": "title", "type": "text"}, {"name": "status", "type": "keyword"}]}],
   "views": [{"slug": "board", "title": "Board", "description": "what it shows and lets you do", "order": 1}],
   "functions": [{"slug": "weekly-summary", "description": "what it does, its input and output", "on": null}],
+  "components": [{"name": "calendar", "title": "Month calendar", "description": "what it shows and lets the person do", "props": "month: 'YYYY-MM', default this month; onMonth(month): the person moved to another month; items: [{date: 'YYYY-MM-DD', label, color}], ...", "change": "for a new version of an existing component: what it adds"}],
+  "upgrade": [],
   "remove": [],
   "reuse": [{"id": "abc123/view/board@2", "slug": "board", "title": "Board", "order": 2}],
   "seed": {"tasks": [{"title": "...", "status": "open"}]},
@@ -114,11 +135,19 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
 
 - tables: tables to add, and existing tables you add columns to (for an existing table, list only its new columns).
 - views and functions: the ones you add or rewrite, each with a code block of the same slug holding its whole code. Leave out the ones that stay as they are. Rewriting a view means writing all of it again. Keep slugs as they are (lowercase letters, digits, dashes). "order" places views (the lowest opens first).
+- components: components you add, or write a new version of, each with a <code slug="ui:NAME"> block holding its whole code. The components the views call are found from their code: the app keeps the version of each it has, and takes the newest of one it did not use before.
+- upgrade: names of components this app uses at an older version (see the list) that it should move to the newest.
 - remove: slugs of views or functions to take out.
 - reuse: capabilities from the library to copy, by id.
 - seed: example rows, only for a new app, and only when examples help the person see the app working (3 to 8 rows per table, realistic, dated near today). Leave it out when the app holds the person's own data from the start (an expense log, a journal), unless they asked for examples.
-- suggestions: 3 changes the person might ask for next, written as they would ask for them ("Let me snooze a task until a date"), each with a short why that refers to what they asked or did. Make them specific to this app, small enough to build in one step, and new: not what the app does already, not what was just asked.
+- suggestions: 3 changes the person might ask for next, written as they would ask for them ("Let me snooze a task until a date"), each with a short why that refers to what they asked, or to what they did as recorded above; never claim a habit the record does not show. Make them specific to this app, small enough to build in one step, and new: not what the app does already, not what was just asked, and not one of the suggestions made before (listed above with what became of them).
 - An app has one to five views. Do not split what belongs together across views.`;
+
+// Words of SQL that Strata's parser takes as keywords, so tables and columns
+// cannot be named after them.
+const RESERVED = new Set(('key index unique primary foreign check constraint references default select from where group order by limit offset ' +
+  'join left right inner outer cross on as and or not null true false in is like between case when then else end union intersect except with ' +
+  'having distinct all any exists table create alter drop insert update delete values set into match asc desc cast interval').split(' '));
 
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}\n... (${s.length - n} more characters)` : s);
 
@@ -151,6 +180,7 @@ export function summarizeEvents(events) {
 export async function buildContext(engine, appId, request) {
   const { store } = engine;
   const view = await store.resolve(appId);
+  const shared = await store.components();
   const parts = [];
   if (!view.comp.n) {
     parts.push('# The app\n\nThe app is new: nothing exists yet. Build its first version from the request.');
@@ -171,13 +201,46 @@ export async function buildContext(engine, appId, request) {
     parts.push(`## Views\n${views.join('\n\n') || '(none)'}`);
     const fns = view.functions.map((f) => `<function slug="${f.slug}" on='${JSON.stringify(f.spec.on || null)}' id="${f.id}">\n${f.description ? `// ${f.description}\n` : ''}${f.code}\n</function>`);
     parts.push(`## Functions\n${fns.join('\n\n') || '(none)'}`);
-    const events = await store.recentEvents(appId, 300);
+    const comps = view.components.map((c) => {
+      const newest = shared.get(c.slug);
+      const note = newest && newest.version > Number(c.version) ? ` newest="${newest.version}" (the newest adds: ${newest.spec?.change || 'see the library'})` : '';
+      return `<component name="${c.slug}" version="${c.version}"${note}>\n// ${c.title}: ${c.description}\n// props: ${c.spec?.props || ''}\n${c.code}\n</component>`;
+    });
+    parts.push(`## Components this app uses (shared with other apps)\n${comps.join('\n\n') || '(none)'}`);
+    const live = new Set(view.comp.caps);
+    const events = (await store.recentEvents(appId, 300)).filter((e) => e.kind !== 'error' || live.has(e.cap));
     parts.push(`## What the person did lately\n${summarizeEvents(events)}`);
     const errors = events.filter((e) => e.kind === 'error').slice(0, 5);
-    if (errors.length) parts.push(`## Errors lately\n${errors.map((e) => `- ${e.cap}: ${e.detail}`).join('\n')}`);
+    if (errors.length) parts.push(`## Errors lately, from the code that runs now\n${errors.map((e) => `- ${e.cap}: ${e.detail}`).join('\n')}`);
+    const history = await store.suggestionHistory(appId, 30);
+    if (history.length) parts.push(`## Suggestions made before\n${history.map((h) => `- [${h.status === 'taken' ? 'taken' : h.status === 'dismissed' ? 'dismissed' : h.status === 'open' ? 'still open' : 'replaced'}] ${h.text}`).join('\n')}`);
   }
-  // The library: what other apps built that may fit this request.
-  const lib = await store.searchCapabilities(`${request.text} ${view.app.description || ''}`, { excludeApp: appId, kinds: ['view', 'function'], limit: 4 });
+  // Shared components: all of them by name and props, and the code of those
+  // that match the request best (BM25), within a budget.
+  const own = new Set(view.components.map((c) => c.slug));
+  const others = [...shared.values()].filter((c) => !own.has(c.slug));
+  if (others.length) {
+    const users = await store.componentUsers();
+    const hits = await store.searchCapabilities(`${request.text} ${view.app.description || ''}`, { kinds: ['component'], limit: 12 });
+    const rank = new Map(hits.map((h, i) => [h.slug, i]));
+    others.sort((a, b) => (rank.get(a.slug) ?? 99) - (rank.get(b.slug) ?? 99));
+    let budget = 40000;
+    const entries = [];
+    for (const c of others.slice(0, 60)) {
+      const used = (users.get(c.slug) || []).map((u) => `${u.name} (v${u.version})`).join(', ') || 'no app yet';
+      let body = '';
+      if (budget > 0 && rank.has(c.slug)) {
+        const [full] = await store.getCapabilities([c.id]);
+        if (full?.code && full.code.length < budget) { body = `\n${full.code}`; budget -= full.code.length; }
+      }
+      entries.push(`<component name="${c.slug}" version="${c.version}" title="${c.title}" used_by="${used}">\n// ${c.description}\n// props: ${c.spec?.props || ''}${body}\n</component>`);
+    }
+    parts.push(`# Shared components in the library (use them as ui.NAME(props))\n\n${entries.join('\n\n')}`);
+  } else if (!own.size) {
+    parts.push('# Shared components in the library\n\nNone yet: the components you write now start it.');
+  }
+  // The library: whole views and functions other apps built that may fit this request.
+  const lib = await store.searchCapabilities(`${request.text} ${view.app.description || ''}`, { excludeApp: appId, kinds: ['view', 'function'], limit: 3 });
   const libCaps = await store.getCapabilities(lib.map((c) => c.id));
   if (libCaps.length) {
     const entries = [];
@@ -190,7 +253,47 @@ export async function buildContext(engine, appId, request) {
   }
   const source = { user: 'the person asked for this', suggestion: 'the person accepted this suggestion', repair: 'the runtime reported this error; fix its cause', library: 'the person asked to bring this in from the library' }[request.source] || 'the person asked for this';
   parts.push(`# The request (${source})\n\n${request.text}`);
-  return { prompt: parts.join('\n\n'), view, library: libCaps };
+  return { prompt: parts.join('\n\n'), view, library: libCaps, shared };
+}
+
+// The components a piece of code calls: ui.name(...) or ui['name'](...).
+export function uiRefs(code) {
+  const out = new Set();
+  for (const m of String(code || '').matchAll(/\bui\s*(?:\.\s*([a-z][a-zA-Z0-9]*)|\[\s*['"]([a-z][a-zA-Z0-9]*)['"]\s*\])/g)) out.add(m[1] || m[2]);
+  return out;
+}
+
+function checkComponent(code) {
+  const problems = [];
+  if (!/\bfunction\s+component\s*\(/.test(code)) problems.push('must define function component(props)');
+  const data = code.match(/\bapp\s*\.\s*(sql|insert|update|remove|call|onChange|open|track)\b/);
+  if (data) problems.push(`uses app.${data[1]}: a component gets its data through props and reports what the person does through callbacks`);
+  if (/\bimport\s+[\w{*]|\brequire\s*\(/.test(code)) problems.push('no import or require');
+  if (/\bfetch\s*\(/.test(code)) problems.push('no fetch: the frame has no network');
+  if (/\blocalStorage\b/.test(code)) problems.push('no localStorage');
+  try { new vm.Script(`(function () {\n${code}\n})`, { filename: 'component.js' }); } catch (e) { problems.push(`syntax: ${e.message}`); }
+  if (code.length > 60 * 1024) problems.push('the code is longer than 60 KiB: split it into smaller components');
+  return problems;
+}
+
+// Pins the components the app's views call, following components that call
+// others: one written in this version, else the version the app had (unless
+// upgraded), else the newest in the library.
+export async function pinComponents(store, viewIds, { written = new Map(), had = new Map(), upgrade = new Set(), shared } = {}) {
+  const lib = shared || await store.components();
+  const codeOf = async (id) => (await store.getCapabilities([id]))[0]?.code || '';
+  const want = new Map();
+  const queue = [];
+  for (const id of viewIds) queue.push(...uiRefs(await codeOf(id)));
+  while (queue.length) {
+    const name = queue.shift();
+    if (want.has(name)) continue;
+    const id = written.get(name) || (!upgrade.has(name) && had.get(name)) || lib.get(name)?.id;
+    if (!id) continue;
+    want.set(name, id);
+    queue.push(...uiRefs(await codeOf(id)));
+  }
+  return want;
 }
 
 function checkView(code) {
@@ -205,15 +308,17 @@ function checkView(code) {
 }
 
 // Checks a plan against the app as it is. Returns a list of problems.
-export async function validate(plan, code, view, library) {
+export async function validate(plan, code, view, library, shared = new Map()) {
   const problems = [];
   const tables = new Map(view.tables.map((t) => [t.spec.name, t.spec]));
   for (const t of plan.tables || []) {
     if (!NAME_RE.test(t.name || '')) { problems.push(`table name ${JSON.stringify(t.name)}: lowercase letters, digits and _`); continue; }
+    if (RESERVED.has(t.name)) problems.push(`table name ${t.name} is a word of SQL; choose another`);
     const have = new Map((tables.get(t.name)?.columns || []).map((c) => [c.name, c.type]));
     for (const c of t.columns || []) {
       if (!NAME_RE.test(c.name || '')) problems.push(`column ${t.name}.${c.name}: lowercase letters, digits and _`);
       else if (c.name === 'id' || c.name === 'created') problems.push(`column ${t.name}.${c.name}: every table has id and created already; do not declare them`);
+      else if (RESERVED.has(c.name)) problems.push(`column ${t.name}.${c.name}: ${c.name} is a word of SQL; choose another name (such as ${t.name.replace(/s$/, '')}_${c.name} or sort_${c.name})`);
       if (!TYPES[c.type]) problems.push(`column ${t.name}.${c.name}: type ${JSON.stringify(c.type)} is not one of ${Object.keys(TYPES).join(', ')}`);
       if (have.has(c.name) && have.get(c.name) !== c.type) problems.push(`column ${t.name}.${c.name} is ${have.get(c.name)} already; types never change (add a new column instead)`);
     }
@@ -236,6 +341,19 @@ export async function validate(plan, code, view, library) {
       }
     }
   }
+  const known = new Set([...shared.keys(), ...view.components.map((c) => c.slug)]);
+  for (const c of plan.components || []) {
+    if (!COMPONENT_RE.test(c.name || '')) { problems.push(`component name ${JSON.stringify(c.name)}: camelCase letters and digits, starting with a lowercase letter`); continue; }
+    known.add(c.name);
+    const src = code[`ui:${c.name}`];
+    if (!src || !src.trim()) { problems.push(`component ${c.name} has no <code slug="ui:${c.name}"> block`); continue; }
+    for (const x of checkComponent(src)) problems.push(`component ${c.name}: ${x}`);
+  }
+  const written = [...(plan.views || []).map((v) => [`view ${v.slug}`, code[v.slug]]), ...(plan.components || []).map((c) => [`component ${c.name}`, code[`ui:${c.name}`]])];
+  for (const [what, src] of written) {
+    for (const name of uiRefs(src)) if (!known.has(name)) problems.push(`${what} calls ui.${name}, which is not a shared component; write it (in "components") or use one that exists`);
+  }
+  for (const name of plan.upgrade || []) if (!view.components.some((c) => c.slug === name)) problems.push(`upgrade ${name}: the app does not use that component`);
   const libIds = new Set(library.map((c) => c.id));
   for (const r of plan.reuse || []) {
     if (!libIds.has(r.id)) problems.push(`reuse ${r.id}: not in the library given`);
@@ -254,7 +372,7 @@ export async function forge(engine, appId, request, progress = () => {}) {
   const { store } = engine;
   const started = Date.now();
   progress('Reading the app and its history from Strata');
-  const { prompt, view, library } = await buildContext(engine, appId, request);
+  const { prompt, view, library, shared } = await buildContext(engine, appId, request);
   if (library.length) progress(`Found ${library.length} capabilit${library.length === 1 ? 'y' : 'ies'} in the library that may fit: ${library.map((c) => c.title).join(', ')}`);
   let answer;
   let plan;
@@ -269,7 +387,7 @@ export async function forge(engine, appId, request, progress = () => {}) {
     progress(`The model answered in ${Math.round(answer.ms / 1000)} s`);
     try {
       ({ plan, code } = parseAnswer(answer.text));
-      problems = await validate(plan, code, view, library);
+      problems = await validate(plan, code, view, library, shared);
     } catch (e) {
       problems = [e.message];
     }
@@ -328,18 +446,41 @@ export async function forge(engine, appId, request, progress = () => {}) {
     caps.delete(`view/${s}`);
     caps.delete(`function/${s}`);
   }
-  if (!view.comp.n && plan.seed) {
-    let n = 0;
-    for (const [table, rows] of Object.entries(plan.seed)) {
-      for (const row of (rows || []).slice(0, 20)) {
-        try { await engine.insert(appId, table, row, { depth: 1 }); n++; } catch (e) { progress(`Example row skipped: ${e.message}`); }
-      }
-    }
-    if (n) progress(`Added ${n} example rows`);
+  // Components go to the shared library, then the app pins what its views call.
+  const writtenComps = new Map();
+  const newVersions = [];
+  for (const c of plan.components || []) {
+    const prev = shared.get(c.name);
+    const id = await store.putCapability({ app: LIB, slug: c.name, kind: 'component', title: c.title || c.name, description: c.description || '',
+      code: code[`ui:${c.name}`], spec: { props: String(c.props || ''), change: prev ? String(c.change || '') : '', by: appId }, author: request.source === 'repair' ? 'repair' : 'forge' });
+    writtenComps.set(c.name, id);
+    written.push(id);
+    const version = Number(id.split('@').pop());
+    progress(prev ? `Wrote version ${version} of the shared component ${c.name}` : `Wrote a new shared component, ${c.name}`);
+    if (prev) newVersions.push({ name: c.name, id, version, title: c.title || prev.title, change: String(c.change || '') });
+  }
+  const had = new Map(view.components.map((c) => [c.slug, c.id]));
+  const pinned = await pinComponents(store, [...caps.entries()].filter(([k]) => k.startsWith('view/')).map(([, id]) => id),
+    { written: writtenComps, had, upgrade: new Set(plan.upgrade || []), shared });
+  for (const k of [...caps.keys()]) if (k.startsWith('component/')) caps.delete(k);
+  for (const [name, id] of pinned) {
+    caps.set(`component/${name}`, id);
+    if (!writtenComps.has(name) && had.get(name) !== id) progress(`Uses the shared component ${name} (${id.split('@').pop() === '1' ? 'from the library' : `version ${id.split('@').pop()}`})`);
   }
   if (plan.name && (!view.comp.n || /\brename|\bname\b/i.test(request.text))) await store.updateApp(appId, { name: String(plan.name).slice(0, 60) });
   const n = await store.writeComposition(appId, [...caps.values()], request.text, plan.summary || '');
   progress(`Version ${n} is live: ${written.length} capabilit${written.length === 1 ? 'y' : 'ies'} written`);
+  // Example rows go in once the tables are part of the live version.
+  if (!view.comp.n && plan.seed) {
+    let added = 0;
+    for (const [table, rows] of Object.entries(plan.seed)) {
+      for (const row of (rows || []).slice(0, 20)) {
+        try { await engine.insert(appId, table, row, { depth: 1 }); added++; } catch (e) { progress(`Example row skipped: ${e.message}`); }
+      }
+    }
+    if (added) progress(`Added ${added} example rows`);
+  }
+  await offerNewVersions(engine, appId, newVersions, progress);
   const suggestions = (plan.suggestions || []).filter((s) => s && s.text).slice(0, 3)
     .map((s) => ({ text: String(s.text).slice(0, 300), why: String(s.why || '').slice(0, 300), source: 'forge' }));
   if (suggestions.length) {
@@ -347,6 +488,44 @@ export async function forge(engine, appId, request, progress = () => {}) {
     await store.putSuggestions(appId, suggestions);
   }
   return { n, summary: plan.summary || '', written, cost, ms: Date.now() - started };
+}
+
+// A new version of a shared component is offered to every other app that
+// uses an older one: taking it needs no model, the code is in Strata already.
+async function offerNewVersions(engine, appId, newVersions, progress) {
+  if (!newVersions.length) return;
+  const { store } = engine;
+  const users = await store.componentUsers();
+  const from = (await store.getApp(appId))?.name || appId;
+  for (const nv of newVersions) {
+    for (const u of users.get(nv.name) || []) {
+      if (u.app === appId || u.version >= nv.version) continue;
+      const open = (await store.suggestions(u.app)).filter((s) => s.source === 'component' && String(s.cap || '').startsWith(`${LIB}/component/${nv.name}@`));
+      if (open.length) await engine.db.write(open.map((s) => ({ op: 'set', table: 'sa_suggestions', key: s.id, field: 'status', value: 'stale' })));
+      await store.putSuggestions(u.app, [{ text: `Use the newer ${nv.title} (version ${nv.version}, made for ${from})`, why: nv.change ? `It adds: ${nv.change}` : `A newer version of a component this app uses (it has version ${u.version}).`, source: 'component', cap: nv.id }]);
+      progress(`Offered ${nv.name} version ${nv.version} to ${u.name}, which has version ${u.version}`);
+    }
+  }
+}
+
+// Moves an app to another version of a shared component, as a new version of
+// the app. No model call: the code is in Strata already.
+export async function useComponentVersion(engine, appId, capId, progress = () => {}) {
+  const started = Date.now();
+  const { store } = engine;
+  const view = await store.resolve(appId);
+  const [cap] = await store.getCapabilities([capId]);
+  if (!cap || cap.kind !== 'component') throw new Error(`no component ${capId}`);
+  progress(`Moving ${cap.title} to version ${cap.version}: the code is in Strata already, so no model is needed`);
+  const caps = new Map(view.comp.caps.map((id) => [id.startsWith(`${LIB}/component/`) ? `component/${id.split('/')[2].split('@')[0]}` : id, id]));
+  const had = new Map(view.components.map((c) => [c.slug, c.id]));
+  const pinned = await pinComponents(store, view.views.map((v) => v.id), { written: new Map([[cap.slug, cap.id]]), had });
+  for (const k of [...caps.keys()]) if (k.startsWith('component/')) caps.delete(k);
+  for (const [name, id] of pinned) caps.set(`component/${name}`, id);
+  const summary = `${cap.title} is now version ${cap.version}${cap.spec?.change ? `: ${String(cap.spec.change).replace(/\.\s*$/, '')}` : ''}.`;
+  const n = await store.writeComposition(appId, [...caps.values()], `Use ${cap.title} version ${cap.version}`, summary);
+  progress(`Version ${n} is live`);
+  return { n, summary, written: [], cost: 0, ms: Date.now() - started };
 }
 
 async function retireSuggestions(engine, appId) {
@@ -357,13 +536,16 @@ async function retireSuggestions(engine, appId) {
 
 // ---- suggestions from use
 
-const SUGGEST_SYSTEM = `You watch how one person uses a small app and suggest what to add or change next. You get the app (its tables, views and functions), what the person did with it lately, and capabilities other apps have in a shared library. Suggest up to 3 changes that the person's behaviour shows they would want: a step they repeat by hand, a filter they keep setting, a view they open to look for one thing, a field they keep writing into notes, something another app does that fits theirs. Each must be small enough to build in one step, new (not what the app does already), and specific. Answer with JSON only: {"suggestions": [{"text": "the change, as the person would ask for it", "why": "what in their use points to it, in plain words", "library": "the id of a library capability it would reuse, or null"}]}. When nothing in the use points anywhere, answer {"suggestions": []}.`;
+const SUGGEST_SYSTEM = `You watch how one person uses a small app and suggest what to add or change next. You get the app (its tables, views and functions), what the person did with it lately, and capabilities other apps have in a shared library. Suggest up to 3 changes that the person's behaviour shows they would want: a step they repeat by hand, a filter they keep setting, a view they open to look for one thing, a field they keep writing into notes, something another app does that fits theirs. Each must be small enough to build in one step, new (not what the app does already: read the versions, which say what each change added), specific, and not one of the suggestions made before. The why names what in the record points to it; never claim a habit the record does not show. Errors listed come from the code that runs now. Answer with JSON only: {"suggestions": [{"text": "the change, as the person would ask for it", "why": "what in their use points to it, in plain words", "library": "the id of a library capability it would reuse, or null"}]}. When nothing in the use points anywhere, answer {"suggestions": []}.`;
 
 export async function suggestFromUse(engine, appId) {
   const { store } = engine;
   const view = await store.resolve(appId);
   if (!view.comp.n) return [];
-  const events = await store.recentEvents(appId, 400);
+  const live = new Set(view.comp.caps);
+  const events = (await store.recentEvents(appId, 400)).filter((e) => e.kind !== 'error' || live.has(e.cap));
+  const versions = await store.compositions(appId);
+  const history = await store.suggestionHistory(appId, 40);
   const tables = [];
   for (const t of view.tables) tables.push(`- ${t.spec.name} (${await store.countRows(physical(appId, t.spec.name))} rows): ${(t.spec.columns || []).map((c) => `${c.name} ${c.type}`).join(', ')}`);
   const lib = await store.searchCapabilities(`${view.app.name} ${view.app.description} ${view.views.map((v) => v.title).join(' ')}`, { excludeApp: appId, limit: 8 });
@@ -372,6 +554,8 @@ export async function suggestFromUse(engine, appId) {
     `## Tables\n${tables.join('\n')}`,
     `## Views\n${view.views.map((v) => `- ${v.slug}: ${v.title}. ${v.description}`).join('\n')}`,
     `## Functions\n${view.functions.map((f) => `- ${f.slug}: ${f.description}${f.spec.on ? ` (runs on ${f.spec.on.event} ${f.spec.on.table})` : ''}`).join('\n') || '(none)'}`,
+    `## Versions, oldest first (what each change added)\n${versions.slice().reverse().map((c) => `- v${c.n}: ${c.summary || c.request}`).join('\n')}`,
+    `## Suggestions made before\n${history.map((h) => `- [${h.status}] ${h.text}`).join('\n') || '(none)'}`,
     `## What the person did\n${summarizeEvents(events)}`,
     `## Recent actions in order (newest first)\n${events.slice(0, 60).map((e) => `- ${e.ts} ${e.kind} ${e.detail}`).join('\n')}`,
     `## Library\n${lib.map((c) => `- ${c.id} (${c.kind}): ${c.title}. ${c.description}`).join('\n') || '(empty)'}`,

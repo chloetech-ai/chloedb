@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rewriteSql } from '../engine/sql.mjs';
 import { parseAnswer } from '../engine/llm.mjs';
-import { validate } from '../engine/forge.mjs';
+import { validate, uiRefs, pinComponents } from '../engine/forge.mjs';
 import { checkFunction, runFunction } from '../engine/sandbox.mjs';
 
 const P = (t) => `app_abc123_${t}`;
@@ -38,7 +38,7 @@ test('the answer parser keeps code verbatim', () => {
   assert.equal(code.v1, 'const x = "</div>";\nroot.append(x)');
 });
 
-const empty = { app: {}, comp: { n: 0, caps: [] }, tables: [], views: [], functions: [] };
+const empty = { app: {}, comp: { n: 0, caps: [] }, tables: [], views: [], functions: [], components: [] };
 
 test('a plan is checked before anything is stored', async () => {
   const good = { tables: [{ name: 'notes', columns: [{ name: 'body', type: 'text' }] }], views: [{ slug: 'home', title: 'Home' }] };
@@ -75,4 +75,38 @@ test('the sandbox stops runaway code and has no way out', async () => {
   const out = await runFunction('function run() { return [typeof require, typeof process, typeof fetch, typeof globalThis.std] }', null, async () => null);
   assert.deepEqual(out.result, ['undefined', 'undefined', 'undefined', 'undefined']);
   await assert.rejects(runFunction('function run(i, app) { return app.sql("x") }', null, async () => { throw new Error('refused') }), /refused/);
+});
+
+test('views call shared components; components take data only through props', async () => {
+  assert.deepEqual([...uiRefs("root.append(ui.calendar({ month }), ui['barChart']({}), app.ui, myui.x)")], ['calendar', 'barChart']);
+  const shared = new Map([['calendar', { id: 'lib/component/calendar@1', slug: 'calendar', version: 1 }]]);
+  const plan = { tables: [{ name: 'checks', columns: [{ name: 'day', type: 'keyword' }] }], views: [{ slug: 'month' }],
+    components: [{ name: 'streak', props: 'days: string[]' }, { name: 'Bad-Name' }, { name: 'peek' }] };
+  const code = {
+    month: 'async function render(root, app) { root.append(ui.calendar({}), ui.streak({}), ui.heatmap({})) }',
+    'ui:streak': 'function component(props) { return h("b", null, props.days.length) }',
+    'ui:peek': 'function component(props) { return app.sql("SELECT 1") }',
+  };
+  const text = (await validate(plan, code, empty, [], shared)).join('\n');
+  for (const want of ['component name "Bad-Name"', 'component peek: uses app.sql', 'calls ui.heatmap, which is not a shared component']) {
+    assert.ok(text.includes(want), `missing ${want} in:\n${text}`);
+  }
+  assert.ok(!text.includes('ui.calendar') && !text.includes('ui.streak'), text);
+});
+
+test('an app pins the components its views call, and keeps its version until it upgrades', async () => {
+  const caps = new Map([
+    ['a/view/home@1', { code: 'ui.calendar({}); ui.chart({})' }],
+    ['lib/component/calendar@1', { code: 'function component() { return ui.dayCell({}) }' }],
+    ['lib/component/calendar@2', { code: 'function component() { return ui.dayCell({}) }' }],
+    ['lib/component/dayCell@1', { code: 'function component() {}' }],
+    ['lib/component/chart@3', { code: 'function component() {}' }],
+  ]);
+  const store = { getCapabilities: async (ids) => ids.map((id) => caps.get(id)).filter(Boolean) };
+  const shared = new Map([['calendar', { id: 'lib/component/calendar@2' }], ['dayCell', { id: 'lib/component/dayCell@1' }], ['chart', { id: 'lib/component/chart@3' }], ['unused', { id: 'lib/component/unused@1' }]]);
+  const had = new Map([['calendar', 'lib/component/calendar@1']]);
+  const kept = await pinComponents(store, ['a/view/home@1'], { had, shared });
+  assert.deepEqual(Object.fromEntries(kept), { calendar: 'lib/component/calendar@1', chart: 'lib/component/chart@3', dayCell: 'lib/component/dayCell@1' });
+  const moved = await pinComponents(store, ['a/view/home@1'], { had, shared, upgrade: new Set(['calendar']) });
+  assert.equal(moved.get('calendar'), 'lib/component/calendar@2');
 });

@@ -197,7 +197,7 @@ async function renderLibrary() {
   const q = h('input', { class: 'search', placeholder: 'Search what every app has built (views, functions, tables)...' });
   const out = h('div', { class: 'lib' });
   main.replaceChildren(h('div', { class: 'page scroll' },
-    h('section', { class: 'hero' }, h('h1', 'Library'), h('p', 'Every capability any app has, each version a row of sa_capabilities in Strata, searched with BM25 over what it is and its code. The forge looks here before it writes something new.')),
+    h('section', { class: 'hero' }, h('h1', 'Library'), h('p', 'What every app runs now: shared components, which every app can call, and each app’s views, functions and tables. Each version is a row of sa_capabilities in Strata, searched with BM25 over what it is and its code. The forge looks here before it writes something new.')),
     q, out));
   let apps = [];
   try { ({ apps } = await api('GET', '/api/apps')); } catch { /* none */ }
@@ -208,17 +208,22 @@ async function renderLibrary() {
       const k = `${c.app}/${c.kind}/${c.slug}`;
       if (!latest.has(k) || Number(latest.get(k).version) < Number(c.version)) latest.set(k, c);
     }
-    const items = [...latest.values()].filter((c) => q.value.trim() || c.kind !== 'table');
+    const items = [...latest.values()].filter((c) => q.value.trim() || c.kind !== 'table')
+      .sort((a, b) => (a.kind === 'component' ? 0 : 1) - (b.kind === 'component' ? 0 : 1));
     out.replaceChildren(...(items.length ? items.map((c) => {
       const sel = h('select', { class: 'btn small' }, h('option', { value: '' }, 'Use in...'), apps.filter((a) => a.id !== c.app).map((a) => h('option', { value: a.id }, a.name)));
       sel.addEventListener('change', async () => {
         if (!sel.value) return;
         const target = sel.value;
-        await api('POST', `/api/apps/${target}/requests`, { source: 'library', text: `Bring in the ${c.kind} "${c.title}" from the app "${c.app_name}" (library id ${c.id}) and make it work with this app's data.` });
+        await api('POST', `/api/apps/${target}/requests`, { source: 'library', text: c.kind === 'component'
+          ? `Use the shared component ${c.slug} ("${c.title}") in this app, where it fits.`
+          : `Bring in the ${c.kind} "${c.title}" from the app "${c.app_name}" (library id ${c.id}) and make it work with this app's data.` });
         location.hash = `#/app/${target}`;
       });
       return h('div', { class: 'libitem' },
-        h('span', { class: `pill ${c.kind}` }, c.kind), h('span', { class: 't' }, c.title), h('span', { class: 'meta' }, `${c.app_name} · v${c.version}${c.author && c.author !== 'forge' ? ` · ${c.author}` : ''}`),
+        h('span', { class: `pill ${c.kind}` }, c.kind), h('span', { class: 't' }, c.title), h('span', { class: 'meta' }, c.kind === 'component'
+          ? `ui.${c.slug} · v${c.version} · ${c.used_by?.length ? `used by ${c.used_by.map((u) => `${u.name}${u.version < c.version ? ` (v${u.version})` : ''}`).join(', ')}` : 'not used yet'}`
+          : `${c.app_name} · v${c.version}${c.author && c.author !== 'forge' ? ` · ${c.author}` : ''}`),
         h('span', { style: 'margin-left:auto;display:flex;gap:6px' }, h('button', { class: 'btn small', onclick: () => showCode(c.id) }, 'Code'), c.kind !== 'table' ? sel : null),
         c.description ? h('div', { class: 'd' }, c.description) : null);
     }) : [h('div', { class: 'hint' }, q.value ? 'Nothing matches.' : 'Nothing yet: build an app first.')]));
@@ -328,14 +333,21 @@ function switchView(slug, params) {
   renderApp();
 }
 
-function srcdoc(view, params) {
-  const code = view.code.replace(/<\/(script)/gi, '<\\/$1');
+const noClose = (code) => String(code).replace(/<\/(script)/gi, '<\\/$1');
+
+function srcdoc(view, params, components) {
+  const code = noClose(view.code);
   const boot = JSON.stringify({ slug: view.slug, cap: view.id, params: params || {} }).replace(/</g, '\\u003c');
+  // One script per shared component, so a broken one does not take the others down.
+  const comps = (components || []).map((c) => `<script>__sa_component(${JSON.stringify(c.slug)}, ${JSON.stringify(c.id)}, function () {
+${noClose(c.code)}
+;return typeof component === 'function' ? component : null; });</script>`).join('\n');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src https: data: blob:; media-src https: data: blob:; font-src data:">
 <style>${KIT}</style></head><body><div id="root"></div>
 <script>window.__SA = ${boot};</script>
 <script>${FRAME}</script>
+${comps}
 <script>
 (async () => { try {
 ${code}
@@ -356,18 +368,19 @@ function renderFrames() {
     return;
   }
   box.querySelector('.building')?.remove();
-  // drop frames of views that are gone or changed
+  // drop frames of views that are gone or changed, or whose components changed
+  const compSig = (st.components || []).map((c) => c.id).join(',');
   for (const [slug, f] of S.frames) {
     const v = st.views.find((x) => x.slug === slug);
-    if (!v || v.id !== f.capId) { f.iframe.remove(); S.frames.delete(slug); S.errors.delete(slug); }
+    if (!v || v.id !== f.capId || f.comps !== compSig) { f.iframe.remove(); S.frames.delete(slug); S.errors.delete(slug); }
   }
   const v = st.views.find((x) => x.slug === S.view);
   if (v && !S.frames.has(v.slug)) {
     const params = S.params?.[v.slug] || {};
     const iframe = h('iframe', { sandbox: 'allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox', title: v.title });
-    iframe.srcdoc = srcdoc(v, params);
+    iframe.srcdoc = srcdoc(v, params, st.components);
     box.append(iframe);
-    S.frames.set(v.slug, { iframe, capId: v.id, params });
+    S.frames.set(v.slug, { iframe, capId: v.id, comps: compSig, params });
   }
   for (const [slug, f] of S.frames) f.iframe.hidden = slug !== S.view;
   box.querySelector('.viewerr')?.remove();
@@ -461,7 +474,7 @@ function changeTab(draft) {
         h('div', { class: 'bar' },
           h('button', { class: 'btn small primary', onclick: async (e) => { e.target.disabled = true; await ask(s.text, { source: 'suggestion', suggestion: s.id }); refreshApp(); } }, 'Do it'),
           h('button', { class: 'btn small ghost', onclick: async () => { await api('POST', `/api/apps/${S.appId}/suggestions/${s.id}`, { status: 'dismissed' }); refreshApp(); } }, 'Not now'),
-          h('span', { class: 'src' }, s.source === 'use' ? 'from your use' : 'from the last build'))))
+          h('span', { class: 'src' }, s.source === 'use' ? 'from your use' : s.source === 'component' ? 'newer shared component' : 'from the last build'))))
         : h('div', { class: 'hint' }, 'No suggestions open.')));
   }
   return out;
@@ -497,6 +510,8 @@ function insideTab() {
     h('div', { class: 'where' }, `This app is data in Strata: version ${st.version.n} is the row `, h('span', { class: 'mono' }, `${st.app.id}#${st.version.n}`),
       ' of sa_compositions; each piece below is a row of sa_capabilities with its code; the app\'s data is in tables named ', h('span', { class: 'mono' }, `app_${st.app.id}_*`), '. Click a piece to read its code.'),
     h('h2', { class: 'label' }, 'Views'), h('div', { class: 'caps' }, st.views.map((c) => cap(c))),
+    h('h2', { class: 'label' }, 'Components (shared with other apps)'), h('div', { class: 'caps' }, (st.components || []).length ? st.components.map((c) => cap(c,
+      [c.users > 1 ? `used by ${c.users} apps` : 'only this app so far', c.latest > c.version ? `v${c.latest} available` : null].filter(Boolean).join(' · '))) : h('div', { class: 'hint' }, 'None')),
     h('h2', { class: 'label' }, 'Functions'), h('div', { class: 'caps' }, st.functions.length ? st.functions.map((c) => cap(c, c.spec?.on ? `on ${c.spec.on.event || 'insert'} ${c.spec.on.table}` : null)) : h('div', { class: 'hint' }, 'None')),
     h('h2', { class: 'label' }, 'Tables'), h('div', { class: 'caps' }, st.tables.map((t) => h('div', null,
       h('div', { class: 'cap', onclick: () => showCode(t.id) }, h('span', { class: 'pill table' }, 'table'), h('span', { class: 't' }, t.name), h('span', { class: 'v' }, `${t.rows} rows`)),
@@ -532,7 +547,7 @@ window.addEventListener('message', async (e) => {
     } else if (m.kind === 'open') {
       if (S.app.views.find((v) => v.slug === m.slug)) switchView(m.slug, m.params);
     } else if (m.kind === 'error') {
-      const out = await api('POST', `${base}/error`, { cap: entry.capId, message: `${m.message}\n${m.stack || ''}`.slice(0, 1500) }).catch(() => ({}));
+      const out = await api('POST', `${base}/error`, { cap: m.cap || entry.capId, message: `${m.message}\n${m.stack || ''}`.slice(0, 1500) }).catch(() => ({}));
       S.errors.set(entry.slug, { message: m.message, repairing: !!out.repairing });
       renderApp();
     }

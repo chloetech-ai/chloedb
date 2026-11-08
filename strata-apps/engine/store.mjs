@@ -34,6 +34,10 @@ export const newId = (n = 8) => randomBytes(n).toString('base64url').replace(/[^
 export const physical = (app, table) => `app_${app}_${table}`;
 export const NAME_RE = /^[a-z][a-z0-9_]{0,30}$/;
 export const SLUG_RE = /^[a-z][a-z0-9-]{0,40}$/;
+// Components are shared by every app: they belong to the library, not to an
+// app, and views call them as ui.<name>(props), so names are JavaScript names.
+export const LIB = 'lib';
+export const COMPONENT_RE = /^[a-z][a-zA-Z0-9]{1,40}$/;
 
 const tableName = (t) => t.table || t.schema?.table || t.name;
 const parseSpec = (s) => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
@@ -116,7 +120,22 @@ export class Store {
     return id;
   }
 
-  // BM25 over what capabilities are and do, and over their code.
+  // What is live: each app's capabilities in its current version, and the
+  // newest version of every shared component. Older versions stay in Strata
+  // (going back needs them) but the library offers only what is live.
+  async liveMap() {
+    const live = new Map(); // app/kind/slug -> id
+    for (const a of await this.listApps()) {
+      if (!Number(a.head)) continue;
+      const view = await this.resolve(a.id).catch(() => null);
+      for (const c of view?.caps || []) if (c.kind !== 'component') live.set(`${c.app}/${c.kind}/${c.slug}`, c.id);
+    }
+    for (const c of (await this.components()).values()) live.set(`${LIB}/component/${c.slug}`, c.id);
+    return live;
+  }
+
+  // BM25 over what capabilities are and do, and over their code. A hit on
+  // any version of a capability counts for its live version.
   async searchCapabilities(text, { excludeApp, kinds, limit = 6 } = {}) {
     const words = String(text || '').replace(/[^\p{L}\p{N}\s]/gu, ' ').trim();
     if (!words) return [];
@@ -124,28 +143,34 @@ export class Store {
     const params = { t: words };
     if (excludeApp) { where.push('app != :x'); params.x = excludeApp; }
     if (kinds?.length) { where.push(`kind IN (${kinds.map((k, i) => `:k${i}`).join(', ')})`); kinds.forEach((k, i) => { params[`k${i}`] = k; }); }
-    const sql = `SELECT id, slug, version, kind, app, title, description, spec, score() AS score FROM sa_capabilities
+    const sql = `SELECT id, slug, kind, app, score() AS score FROM sa_capabilities
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-      ORDER BY bm25(title, :t) * 2 + bm25(description, :t) + 0.3 * bm25(code, :t) DESC LIMIT ${limit * 4}`;
+      ORDER BY bm25(title, :t) * 2 + bm25(description, :t) + 0.3 * bm25(code, :t) DESC LIMIT 200`;
     let rows;
     try { rows = await this.db.query(sql, params); } catch (e) { this.log(`search: ${e.message}`); return []; }
-    // Keep the newest version of each app's slug.
+    const live = await this.liveMap();
     const seen = new Set();
-    const out = [];
+    const ids = [];
+    const scores = new Map();
     for (const r of rows) {
       if (!(Number(r.score) > 0)) continue;
-      const key = `${r.app}/${r.kind}/${r.slug}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({ ...r, spec: parseSpec(r.spec) });
-      if (out.length >= limit) break;
+      const id = live.get(`${r.app}/${r.kind}/${r.slug}`);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+      scores.set(id, Number(r.score));
+      if (ids.length >= limit) break;
     }
-    return out;
+    return (await this.getCapabilities(ids)).map((c) => {
+      const { code, ...rest } = c;
+      return { ...rest, version: Number(c.version), score: scores.get(c.id) };
+    });
   }
 
-  async allCapabilities(limit = 300) {
-    const rows = await this.db.query(`SELECT id, slug, version, kind, app, title, description, forked_from, author, created FROM sa_capabilities ORDER BY created DESC LIMIT ${limit}`);
-    return rows;
+  async liveCapabilities() {
+    const ids = [...(await this.liveMap()).values()];
+    return (await this.getCapabilities(ids)).map(({ code, ...rest }) => ({ ...rest, version: Number(rest.version) }))
+      .sort((a, b) => String(b.created).localeCompare(String(a.created)));
   }
 
   // ---- compositions: an app's versions
@@ -188,12 +213,38 @@ export class Store {
       tables: caps.filter((c) => c.kind === 'table'),
       views: caps.filter((c) => c.kind === 'view'),
       functions: caps.filter((c) => c.kind === 'function'),
+      components: caps.filter((c) => c.kind === 'component'),
     };
     this.resolved.set(appId, { head: app.head, view });
     return view;
   }
 
   forget(appId) { this.resolved.delete(appId); }
+
+  // ---- shared components
+
+  // The newest version of every component in the library, by name.
+  async components() {
+    const rows = await this.db.query(`SELECT id, slug, version, title, description, spec, created FROM sa_capabilities
+      WHERE kind = 'component' ORDER BY version DESC LIMIT 1000`);
+    const out = new Map();
+    for (const r of rows) if (!out.has(r.slug)) out.set(r.slug, { ...r, version: Number(r.version), spec: parseSpec(r.spec) });
+    return out;
+  }
+
+  // Which apps use which component, and at which version (each app pins one).
+  async componentUsers() {
+    const users = new Map(); // slug -> [{app, name, id, version}]
+    for (const a of await this.listApps()) {
+      if (!Number(a.head)) continue;
+      const view = await this.resolve(a.id).catch(() => null);
+      for (const c of view?.components || []) {
+        if (!users.has(c.slug)) users.set(c.slug, []);
+        users.get(c.slug).push({ app: a.id, name: a.name, id: c.id, version: Number(c.version) });
+      }
+    }
+    return users;
+  }
 
   // ---- each app's data tables
 
@@ -253,6 +304,11 @@ export class Store {
 
   async suggestions(app) {
     return this.db.query(`SELECT id, text, why, source, cap, status, created FROM sa_suggestions WHERE app = :a AND status = 'open' ORDER BY created DESC LIMIT 12`, { a: app });
+  }
+
+  // Every suggestion made to an app, with what became of it.
+  async suggestionHistory(app, limit = 40) {
+    return this.db.query(`SELECT text, source, status, created FROM sa_suggestions WHERE app = :a ORDER BY created DESC LIMIT ${limit}`, { a: app });
   }
 
   async setSuggestion(id, status) {

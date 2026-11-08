@@ -3,7 +3,8 @@
 A prototype of the idea in the doc
 [Strata as a self-extending app engine](https://claude.ai/artifact/K7nVdw9VKT4d9u9QGDb35e):
 an app is data in Strata, made of capabilities (tables, views, server
-functions) that a model writes and the engine checks, stores and runs.
+functions) that a model writes and the engine checks, stores and runs, and of
+shared components that every app uses from one library.
 
 - **Start from a description.** "A reading list: I paste a link with a title
   and a note, tag it, and mark it read." The forge asks the model for the
@@ -19,9 +20,19 @@ functions) that a model writes and the engine checks, stores and runs.
   and the engine records what you do (views opened, rows added and changed,
   actions the views report). After 25 actions, or when you ask, it reads that
   use and suggests changes that it points to.
-- **It reuses.** Before writing anything the forge searches the library of
-  every capability any app has built (BM25 over what each one is and its
-  code) and either reuses one as it is or forks it.
+- **It shares.** Pieces of interface that are not about one app's data (a
+  month calendar, a chart, a day strip, a checklist) are written as shared
+  components: one copy in Strata that views call as `ui.calendar(props)`.
+  The forge is shown every component with its props and uses them before
+  writing anything, so a second app asking for a calendar gets the first
+  app's. A component takes its data through props and never touches tables,
+  so it fits any app. Each app pins the version it uses; when one app needs
+  more from a component, the forge writes a new version (new props only,
+  old ones keep their meaning) and the other apps are offered it, which
+  takes a fraction of a second and no model call.
+- **It reuses whole screens too.** The forge searches the library of what
+  every app runs now (BM25 over what each capability is and its code) and
+  can reuse a view or function as it is, or fork it.
 - **It repairs itself.** A view or function that fails at run time is sent
   back to the forge with its error, once per version, and the fixed version
   replaces it while the app stays open.
@@ -55,7 +66,7 @@ cd strata-apps
 | `STRATA_APPS_CLAUDE` | the Claude Code binary (default `claude`) |
 | `STRATA_APPS_AUTOREPAIR=0` | do not send failing capabilities back to the forge |
 
-A first version takes the model 40 to 90 seconds; a change about as long.
+A first version takes the model 40 seconds to 2.5 minutes (longer when it writes new shared components, which later apps then reuse); a change takes 25 to 50 seconds.
 
 ## What is where
 
@@ -75,8 +86,8 @@ In Strata:
 | table | holds |
 |---|---|
 | `sa_apps` | each app and its live version (`head`) |
-| `sa_capabilities` | every capability ever written, one row per version, with its code: `id` is `app/kind/slug@version` |
-| `sa_compositions` | each version of each app: the capability ids it is made of, the request and a summary |
+| `sa_capabilities` | every capability ever written, one row per version, with its code: `id` is `app/kind/slug@version`, and `lib/component/name@version` for a shared component |
+| `sa_compositions` | each version of each app: the capability ids it is made of (the component versions it pins included), the request and a summary |
 | `sa_requests` | requests to the forge, with their progress log, cost and errors |
 | `sa_events` | what people did in each app |
 | `sa_suggestions` | suggestions, from builds and from use |
@@ -92,6 +103,12 @@ from there to the engine: `app.sql` (one `SELECT`, over the app's own tables),
 `app.insert`, `app.update`, `app.remove`, `app.call`, `app.onChange`,
 `app.open`, `app.track`.
 
+A **component** is JavaScript that defines `function component(props)` and
+returns an element. Every frame gets the components its app pins, each in its
+own script and loaded on first call; an error inside one is reported (and
+repaired) against the component. Components may call other components and add
+a stylesheet once with `css(name, text)`.
+
 A **function** is JavaScript that defines `function run(input, app)`. It runs
 on the server in QuickJS (WebAssembly), with the same `app` calls answered by
 the engine synchronously, and may be a trigger (`on: {table, event}`) that
@@ -99,7 +116,9 @@ runs after each insert, update or delete of a table.
 
 The forge's checks: the plan's shape, names and types; types of existing
 columns never change; every view parses and defines `render`, uses no
-`fetch`, `import` or `localStorage`; every function compiles in QuickJS,
+`fetch`, `import` or `localStorage`; every component defines `component`
+and uses no `app.sql`, `app.insert` or other data call; every `ui.name` a
+view or component calls exists; every function compiles in QuickJS,
 defines `run` and uses no `async`; triggers name tables that exist. An answer
 that fails gets one more try with the problems listed.
 
