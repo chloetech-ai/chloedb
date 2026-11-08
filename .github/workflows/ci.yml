@@ -63,7 +63,9 @@ jobs:
   # files and benchmark results (the data under strata/results,
   # strata-server/results and engram/results, which nothing builds or
   # reads): if not, every other job is skipped. A Python script there
-  # still counts as code, since a job runs strata/results/sequence/gate.py.
+  # still counts as code, since a job runs strata/results/sequence/gate.py,
+  # and so does strata/results/workloads/, which tests/workload_gen.rs
+  # checks is not stale.
   changes:
     name: changes
     runs-on: ubuntu-latest
@@ -95,7 +97,7 @@ jobs:
           git diff --name-only "$base" HEAD | tee "$RUNNER_TEMP/changed"
           grep -vE '^docs/|\.md$' "$RUNNER_TEMP/changed" > "$RUNNER_TEMP/rest" || true
           if grep -qvE '^(strata|strata-server|engram)/results/' "$RUNNER_TEMP/rest" \
-            || grep -qE '^(strata|strata-server|engram)/results/.*\.py$' "$RUNNER_TEMP/rest"; then
+            || grep -qE '^(strata|strata-server|engram)/results/.*\.py$|^strata/results/workloads/' "$RUNNER_TEMP/rest"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
