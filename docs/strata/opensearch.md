@@ -29,7 +29,7 @@ curl -s localhost:9200/books/_search -H 'content-type: application/json' -d '{"q
 | `--opensearch-listen ADDR` | `STRATA_OPENSEARCH_LISTEN` | where the API listens (off when not given) |
 | `--opensearch-version V` | `STRATA_OPENSEARCH_VERSION` | the version `GET /` reports, `2.11.0` by default; a `7.x` version (`7.10.2`) answers as Elasticsearch 7 does, which clients of Elasticsearch 7 check for (elasticsearch-ruby 7.17, which Mastodon uses, refuses OpenSearch 2.x itself) |
 
-It shares the server's TLS (`--tls-cert`), hosts (`--allow-host`) and credentials. With a token or keys, a request carries one as `Authorization: Bearer <token>`, or as the password of Basic authentication (any user name), which is how most OpenSearch clients send one: `http://user:<token>@host:9200`. Reads need a key of scope `read`, writes of documents `write`, and changes to indexes, mappings, aliases and settings `admin`; an index made by its first document needs `admin` too. On a coordinator, the indexes are tables of the cluster, split over its shards.
+It shares the server's TLS (`--tls-cert`), hosts (`--allow-host`) and credentials. With a token or keys, a request carries one as `Authorization: Bearer <token>`, or as the password of Basic authentication (any user name), which is how most OpenSearch clients send one: `http://user:<token>@host:9200`. Reads need a key of scope `read`, writes of documents `write`, and changes to indexes, mappings, aliases and settings `admin`; an index made by its first document needs `admin` too. On a coordinator, or beside one (`--coordinator-listen`), the indexes are tables of the cluster, split over its shards.
 
 ## Tested with
 
@@ -73,7 +73,7 @@ An index `books` is the table `os_books`: its key `_id`, `_version`, `_hash` (a 
 
 Text is read by one of Strata's two analyzers, chosen from the field's: `english` for OpenSearch's `english` analyzer or a custom one with a stemmer, `simple` (lowercased, folded, nothing dropped) for the rest. Before Strata reads it, the text is cut into words as the field's analyzer would:
 
-- the `standard` tokenizer keeps `merge_segments`, `mastodon.social`, `children's`, `3.14` and a word with a soft hyphen in it whole, makes each emoji, each ideograph (Chinese, Japanese) and each hiragana a word, and a run of katakana one, and cuts at `²`, `¼` and `①`;
+- the `standard` tokenizer keeps `merge_segments`, `mastodon.social`, `children's`, `3.14`, a word with a soft hyphen in it and a word with combining marks, viramas or tone marks (`हिन्दी`, `ผู้ใหญ่`) whole, makes each emoji (`★`, `👩‍💻`, a flag), each ideograph (Chinese, Japanese) and each hiragana a word, and a run of katakana one, and cuts at `²`, `¼`, `①`, `☆` and `✓`. Each character from U+00A0 to U+1FBFF was compared with OpenSearch 2.11's `_analyze`: they differ only for a combining mark that follows a space;
 - accents are kept (`sévère` is not `severe`), unless the analyzer has an `asciifolding` filter;
 - the `english` analyzer, and a `stemmer` filter of `possessive_english`, drop a word's `'s`;
 - `whitespace` keeps every word between spaces whole, and `keyword` the whole text;
@@ -89,10 +89,33 @@ What a request gets that OpenSearch would answer otherwise:
 - **Ranking**: BM25 with OpenSearch's defaults (k1 1.2, b 0.75) over the same words and the same one-byte lengths, so scores agree to about five digits when the words do, and two documents of nearly equal scores can swap places. Hits of equal scores come in the order of their `_id` (OpenSearch's in the order they were written), which Strata keeps the same on one server and over shards. A phrase (`match_phrase`, or one in `query_string`) scores the sum of its words' BM25, where OpenSearch scores how often the phrase itself occurs: phrase searches find the same documents and rank them otherwise. A ranked query lists the rows none of its words scores after the others, with score 0.
 - **Queries**: `wildcard` takes a trailing `*` alone; `match_phrase`'s `slop` is ignored; `nested` queries read the paths of objects, without matching inside one object; `regexp`, `terms` lookups, `geo_*`, `more_like_this`, `percolate`, `span_*`, `intervals`, `rank_feature` and `random_score` are refused, as are per-function `filter`s and `min_score`; a range's `time_zone` is not applied (dates are UTC).
 - **Searches**: aggregations read one index at a time; `collapse` takes no `inner_hits`; point-in-time searches are refused; `track_scores` is ignored (a field sort scores nothing); a scroll ordered by score or a field is limited to 10,000 hits.
-- **Aggregations**: `composite` returns at most 9,999 groups a page; `cardinality` is exact; scripts are refused.
+- **Aggregations**: `composite` returns at most 9,999 groups a page; `cardinality` is exact; a `histogram` of a number field that some documents hold an array of is refused; scripts are refused.
 - **Documents**: a keyword holds at most 256 bytes as a term; `_source` holds at most 1,000 values, objects 16 deep and paths of 256 bytes (a document past them is refused, naming the limit); a date field holds one date; versions are read before the write, so two writers of one document at once can both pass an `if_seq_no` check.
 - **Cluster**: one node and one shard are reported; settings other than `max_result_window` and the analysis are kept and ignored. A write is searchable once it returns, so `refresh` is accepted and needs no wait.
 
 ## Numbers
 
-NUMBERS
+OpenSearch 2.11 (its default 1 GB heap) and Strata's OpenSearch API on the same machine, one at a time, the other stopped: a cloud container of 4 vCPUs (Intel Xeon @ 2.10GHz) and 15.7 GB, 2026-11-08. [BEIR's TREC-COVID](https://huggingface.co/datasets/BeIR/trec-covid) (171,332 abstracts) in one index, written with `_bulk`, then ten kinds of search 300 times each from one client, the same requests to both; OpenSearch's request cache off. The script, its output and how it was run: [`strata-server/results/opensearch`](https://github.com/chloetech-ai/strata/tree/main/strata-server/results/opensearch).
+
+| search | OpenSearch p50 / p99 ms | Strata p50 / p99 ms |
+|---|---|---|
+| `match`, one word | 2.96 / 8.06 | 1.70 / 3.06 |
+| `match`, a topic's words | 6.41 / 18.99 | 2.22 / 4.79 |
+| `match` + `term` + `range` filters | 9.47 / 31.87 | 3.69 / 7.57 |
+| `multi_match` | 6.89 / 30.16 | 4.10 / 9.75 |
+| `match_phrase` | 2.97 / 5.84 | 1.86 / 4.86 |
+| `term` filter | 2.00 / 7.00 | 1.49 / 2.23 |
+| `range`, sorted by date | 2.96 / 6.46 | 1.52 / 2.44 |
+| `terms` aggregation | 6.82 / 18.93 | 4.30 / 5.56 |
+| `date_histogram` of every document | 9.73 / 15.50 | 6.71 / 8.80 |
+| `match` + `highlight` | 7.69 / 24.84 | 3.27 / 5.66 |
+
+| | OpenSearch | Strata |
+|---|---|---|
+| searches a second, 8 clients | 638 | 1,183 |
+| `_bulk` of the 171,332 documents | 21.4 s | 39.0 s |
+| resident memory, empty | 1,348 MiB | 50 MiB |
+| resident memory, after the searches | 1,652 MiB | 726 MiB |
+| on disk | 415 MB (195 MB after a `_flush`) | 260 MB |
+
+All 3,000 searches find as many hits on both. Of the 2,400 that return hits, 808 return the same first page in the same order, and 1,292 the same scores or dates in the same places, with ties in another order (Strata's by `_id`); the 300 phrase searches find the same documents and rank them otherwise ([Differences](#differences)).

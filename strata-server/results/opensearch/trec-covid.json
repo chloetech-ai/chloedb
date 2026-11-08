@@ -1,0 +1,288 @@
+{
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cores": 4,
+    "ram_gb": 15.7,
+    "kernel": "6.18.44-fc-v310"
+  },
+  "when": "2026-11-08T07:39:38Z",
+  "engines": [
+    {
+      "engine": "opensearch",
+      "url": "http://127.0.0.1:9203",
+      "version": "2.11.0",
+      "rss_kb_empty": {
+        "VmHWM": 1380644,
+        "VmRSS": 1380644
+      },
+      "bulk": {
+        "docs": 171332,
+        "errors": 0,
+        "seconds": 21.41,
+        "docs_per_s": 8003,
+        "seconds_before_refresh": 21.21,
+        "count_after": 171332
+      },
+      "rss_kb_loaded": {
+        "VmHWM": 1600100,
+        "VmRSS": 1483236
+      },
+      "disk_bytes": 414517429,
+      "store_size_reported": "195180503",
+      "latency": {
+        "match one word (title)": {
+          "p50_ms": 2.96,
+          "p90_ms": 3.94,
+          "p99_ms": 8.06,
+          "mean_ms": 3.32,
+          "n": 300
+        },
+        "match a topic (text)": {
+          "p50_ms": 6.41,
+          "p90_ms": 11.07,
+          "p99_ms": 18.99,
+          "mean_ms": 7.16,
+          "n": 300
+        },
+        "match + filter + range": {
+          "p50_ms": 9.47,
+          "p90_ms": 19.2,
+          "p99_ms": 31.87,
+          "mean_ms": 11.45,
+          "n": 300
+        },
+        "multi_match title^2, text": {
+          "p50_ms": 6.89,
+          "p90_ms": 14.29,
+          "p99_ms": 30.16,
+          "mean_ms": 8.56,
+          "n": 300
+        },
+        "match_phrase (text)": {
+          "p50_ms": 2.97,
+          "p90_ms": 4.03,
+          "p99_ms": 5.84,
+          "mean_ms": 3.19,
+          "n": 300
+        },
+        "term filter only": {
+          "p50_ms": 2.0,
+          "p90_ms": 2.88,
+          "p99_ms": 7.0,
+          "mean_ms": 2.28,
+          "n": 300
+        },
+        "range + sort by date": {
+          "p50_ms": 2.96,
+          "p90_ms": 4.05,
+          "p99_ms": 6.46,
+          "mean_ms": 3.25,
+          "n": 300
+        },
+        "terms agg on a match": {
+          "p50_ms": 6.82,
+          "p90_ms": 10.95,
+          "p99_ms": 18.93,
+          "mean_ms": 7.2,
+          "n": 300
+        },
+        "date_histogram, all docs": {
+          "p50_ms": 9.73,
+          "p90_ms": 11.91,
+          "p99_ms": 15.5,
+          "mean_ms": 10.15,
+          "n": 300
+        },
+        "match + highlight": {
+          "p50_ms": 7.69,
+          "p90_ms": 13.1,
+          "p99_ms": 24.84,
+          "mean_ms": 8.84,
+          "n": 300
+        }
+      },
+      "throughput_8_clients": {
+        "kind": "match a topic (text)",
+        "seconds": 20,
+        "searches_per_s": 638.0
+      },
+      "rss_kb_after_searches": {
+        "VmHWM": 1691284,
+        "VmRSS": 1691284
+      },
+      "request_cache": {
+        "memory_size_in_bytes": 0,
+        "evictions": 0,
+        "hit_count": 0,
+        "miss_count": 0
+      }
+    },
+    {
+      "engine": "strata",
+      "url": "http://127.0.0.1:9204",
+      "version": "2.11.0",
+      "rss_kb_empty": {
+        "VmHWM": 50780,
+        "VmRSS": 50780
+      },
+      "bulk": {
+        "docs": 171332,
+        "errors": 0,
+        "seconds": 39.04,
+        "docs_per_s": 4389,
+        "seconds_before_refresh": 39.04,
+        "count_after": 171332
+      },
+      "rss_kb_loaded": {
+        "VmHWM": 831060,
+        "VmRSS": 530216
+      },
+      "disk_bytes": 259660935,
+      "store_size_reported": "-",
+      "latency": {
+        "match one word (title)": {
+          "p50_ms": 1.7,
+          "p90_ms": 2.16,
+          "p99_ms": 3.06,
+          "mean_ms": 1.77,
+          "n": 300
+        },
+        "match a topic (text)": {
+          "p50_ms": 2.22,
+          "p90_ms": 3.09,
+          "p99_ms": 4.79,
+          "mean_ms": 2.35,
+          "n": 300
+        },
+        "match + filter + range": {
+          "p50_ms": 3.69,
+          "p90_ms": 5.32,
+          "p99_ms": 7.57,
+          "mean_ms": 3.89,
+          "n": 300
+        },
+        "multi_match title^2, text": {
+          "p50_ms": 4.1,
+          "p90_ms": 6.83,
+          "p99_ms": 9.75,
+          "mean_ms": 4.52,
+          "n": 300
+        },
+        "match_phrase (text)": {
+          "p50_ms": 1.86,
+          "p90_ms": 2.34,
+          "p99_ms": 4.86,
+          "mean_ms": 2.0,
+          "n": 300
+        },
+        "term filter only": {
+          "p50_ms": 1.49,
+          "p90_ms": 1.72,
+          "p99_ms": 2.23,
+          "mean_ms": 1.49,
+          "n": 300
+        },
+        "range + sort by date": {
+          "p50_ms": 1.52,
+          "p90_ms": 1.83,
+          "p99_ms": 2.44,
+          "mean_ms": 1.56,
+          "n": 300
+        },
+        "terms agg on a match": {
+          "p50_ms": 4.3,
+          "p90_ms": 4.84,
+          "p99_ms": 5.56,
+          "mean_ms": 4.32,
+          "n": 300
+        },
+        "date_histogram, all docs": {
+          "p50_ms": 6.71,
+          "p90_ms": 7.51,
+          "p99_ms": 8.8,
+          "mean_ms": 6.85,
+          "n": 300
+        },
+        "match + highlight": {
+          "p50_ms": 3.27,
+          "p90_ms": 4.37,
+          "p99_ms": 5.66,
+          "mean_ms": 3.42,
+          "n": 300
+        }
+      },
+      "throughput_8_clients": {
+        "kind": "match a topic (text)",
+        "seconds": 20,
+        "searches_per_s": 1182.7
+      },
+      "rss_kb_after_searches": {
+        "VmHWM": 831060,
+        "VmRSS": 743736
+      },
+      "request_cache": null
+    }
+  ],
+  "same_totals": {
+    "match one word (title)": 300,
+    "match a topic (text)": 300,
+    "match + filter + range": 300,
+    "multi_match title^2, text": 300,
+    "match_phrase (text)": 300,
+    "term filter only": 300,
+    "range + sort by date": 300,
+    "terms agg on a match": 300,
+    "date_histogram, all docs": 300,
+    "match + highlight": 300
+  },
+  "same_first_page": {
+    "match one word (title)": {
+      "searches": 300,
+      "same_hits_same_order": 8,
+      "same_but_for_ties": 292,
+      "same_hits_any_order": 100
+    },
+    "match a topic (text)": {
+      "searches": 300,
+      "same_hits_same_order": 92,
+      "same_but_for_ties": 208,
+      "same_hits_any_order": 268
+    },
+    "match + filter + range": {
+      "searches": 300,
+      "same_hits_same_order": 265,
+      "same_but_for_ties": 35,
+      "same_hits_any_order": 296
+    },
+    "multi_match title^2, text": {
+      "searches": 300,
+      "same_hits_same_order": 48,
+      "same_but_for_ties": 252,
+      "same_hits_any_order": 237
+    },
+    "match_phrase (text)": {
+      "searches": 300,
+      "same_hits_same_order": 0,
+      "same_but_for_ties": 0,
+      "same_hits_any_order": 0
+    },
+    "term filter only": {
+      "searches": 300,
+      "same_hits_same_order": 300,
+      "same_but_for_ties": 0,
+      "same_hits_any_order": 300
+    },
+    "range + sort by date": {
+      "searches": 300,
+      "same_hits_same_order": 0,
+      "same_but_for_ties": 300,
+      "same_hits_any_order": 0
+    },
+    "match + highlight": {
+      "searches": 300,
+      "same_hits_same_order": 95,
+      "same_but_for_ties": 205,
+      "same_hits_any_order": 258
+    }
+  }
+}
