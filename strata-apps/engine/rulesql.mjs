@@ -198,6 +198,33 @@ function parseStatement(c, q) {
     return [{ let: m[1], value: valueOf(m[2]) }];
   }
   if ((m = c.match(/^RETURN\s+([\s\S]+)$/i))) return [{ return: valueOf(m[1]) }];
+  // SEND EMAIL TO value SUBJECT 'text' [TEXT 'text'] [ROWS (SELECT ...)] [NONE 'text']
+  if (/^SEND\s+EMAIL\b/i.test(c)) {
+    const body = c.replace(/^SEND\s+EMAIL\s*/i, '');
+    const how = "SEND EMAIL TO :to SUBJECT 'New this week' TEXT 'Hello :user.name' ROWS (SELECT title, created FROM requests WHERE ...)";
+    const at = ['TO', 'SUBJECT', 'TEXT', 'ROWS', 'NONE'].map((w) => [w, findWord(body, w)]).filter(([, i]) => i >= 0).sort((a, b) => a[1] - b[1]);
+    if (!at.length || body.slice(0, at[0][1]).trim()) fail(`SEND EMAIL: write ${how}`);
+    const part = {};
+    at.forEach(([w, i], k) => { part[w] = body.slice(i + w.length, k + 1 < at.length ? at[k + 1][1] : body.length).trim(); });
+    if (!part.TO) fail(`SEND EMAIL: say who it goes to (TO :to, TO :user.email, TO (SELECT email FROM ...)): ${how}`);
+    const text = (w) => {
+      if (part[w] === undefined) return undefined;
+      if (!/^'(?:[^']|'')*'$/.test(part[w])) fail(`SEND EMAIL ... ${w}: the text in single quotes (:name in it is filled in)`);
+      return unquote(part[w]);
+    };
+    const email = { to: valueOf(part.TO) };
+    if (part.SUBJECT !== undefined) email.subject = text('SUBJECT');
+    if (part.TEXT !== undefined) email.text = text('TEXT');
+    if (!email.subject && !email.text) fail(`SEND EMAIL: give it a SUBJECT or a TEXT: ${how}`);
+    if (part.ROWS !== undefined) {
+      const g = part.ROWS.startsWith('(') ? group(part.ROWS) : null;
+      const sql = (g && !g[1].trim() ? g[0] : part.ROWS).trim();
+      if (!SELECT_RE.test(sql)) fail('SEND EMAIL ... ROWS: give (SELECT ...), one line of the email per row');
+      email.rows = sql;
+    }
+    if (part.NONE !== undefined) email.none = text('NONE');
+    return [{ email }];
+  }
   // CALL fn(name => value, ...) [AS name]
   if ((m = c.match(/^CALL\s+([a-z][a-z0-9_-]*)\s*/i))) {
     let rest = c.slice(m[0].length);
@@ -289,7 +316,7 @@ function parseStatement(c, q) {
     return writeWhere(table, rest.slice(5).trim(), (idSql, id) => ({ remove: table, id }));
   }
   if (SELECT_RE.test(c)) fail('a SELECT among other statements does nothing: name its value (LET total = (SELECT ...)), check it (REQUIRE ...) or give it back (RETURN (SELECT ...)); a rule that is only a query is CREATE RULE name AS SELECT ...');
-  return fail(`"${c.slice(0, 40)}": a rule's statements are REQUIRE, LET, INSERT, UPDATE, DELETE, CALL, FOR ... DO ... END, IF ... THEN ... END and RETURN`);
+  return fail(`"${c.slice(0, 40)}": a rule's statements are REQUIRE, LET, INSERT, UPDATE, DELETE, CALL, SEND EMAIL, FOR ... DO ... END, IF ... THEN ... END and RETURN`);
 }
 
 // WHERE id = value writes one row; any other condition, each row it selects.
@@ -380,7 +407,7 @@ export function compileRuleStatements(plan, code) {
 
 export const RULE_SQL_DOC = `# Rules: functions and triggers written as SQL
 
-A function that is a query, or does a few writes (a checkout, an invoice from hours, a purchase order, a stock move), or a trigger that keeps a count, a total or a stock level right, is a rule: write it as one CREATE RULE statement in its function's code block, with no "rule" in its plan entry. The function keeps its slug, lowercase with dashes, in the plan and on the code block (<code slug="count-votes">CREATE RULE count_votes ...</code>, called as app.call('count-votes')); the name after CREATE RULE is only for reading. The engine runs it directly. Write JavaScript only for what a rule cannot say (text or date logic beyond SQL, email, building a CSV).
+A function that is a query, or does a few writes (a checkout, an invoice from hours, a purchase order, a stock move), or a trigger that keeps a count, a total or a stock level right, is a rule: write it as one CREATE RULE statement in its function's code block, with no "rule" in its plan entry. The function keeps its slug, lowercase with dashes, in the plan and on the code block (<code slug="count-votes">CREATE RULE count_votes ...</code>, called as app.call('count-votes')); the name after CREATE RULE is only for reading. The engine runs it directly. Write JavaScript only for what a rule cannot say (text or date logic beyond SQL and its functions, the model, outside services): email is a SEND EMAIL statement, and a list's CSV is its EXPORT clause on the screen.
 
 A query: CREATE RULE spent [RETURNS ROW | VALUE] AS SELECT SUM(amount) AS total FROM expenses WHERE day >= :from
   app.call('spent', {from: '2026-11-01'}) gives the rows (ROW: the first row; VALUE: its first column). Similar rows and "bought together" are queries too (similarity, ppr).
@@ -410,6 +437,7 @@ CREATE RULE checkout AS
 - FOR name IN (SELECT ...) DO statements END: once per row, the row as :name.col (at most 1000 rows).
 - IF condition THEN statements [ELSE statements] END.
 - RETURN value: what app.call gives back.
+- SEND EMAIL TO value SUBJECT 'text' [TEXT 'text'] [ROWS (SELECT ...)] [NONE 'text']: :name in the texts is filled in; ROWS adds a line per row (its values joined by " · "), NONE is what stands there when it has none. TO is :to, :user.email, 'a@b.c' or (SELECT email FROM ...) for several (at most 10). It goes out after the rule's writes are stored, never when the rule stops. A weekly digest: CREATE RULE digest AS SEND EMAIL TO :to SUBJECT 'New requests this week' ROWS (SELECT title, votes FROM requests WHERE days_between(created, :today) <= 7 ORDER BY votes DESC) NONE 'Nothing new this week.';
 - A condition or value is SQL: :name (the call's input, a LET, an AS), :row.col, a literal, an expression (:qty * :price), or a (SELECT ...) whose first value it is.
 
 Triggers: CREATE RULE count_votes AFTER INSERT OR DELETE ON votes AS
@@ -462,6 +490,10 @@ function stepSql(st, pad) {
   }
   if (st.remove !== undefined) return `DELETE FROM ${st.remove} WHERE id = ${valueSql(st.id)}`;
   if (st.call !== undefined) return `CALL ${st.call}(${Object.entries(st.input || {}).map(([k, v]) => `${k} => ${valueSql(v)}`).join(', ')})${as}`;
+  if (st.email !== undefined) {
+    const e = st.email || {};
+    return `SEND EMAIL TO ${valueSql(e.to)}${e.subject !== undefined ? ` SUBJECT ${sqlText(e.subject)}` : ''}${e.text !== undefined ? ` TEXT ${sqlText(e.text)}` : ''}${e.rows !== undefined ? ` ROWS (${e.rows})` : ''}${e.none !== undefined ? ` NONE ${sqlText(e.none)}` : ''}`;
+  }
   if (st.each !== undefined) return `FOR ${st.as} IN (${st.each}) DO\n${(st.do || []).map((x) => `${pad}  ${stepSql(x, `${pad}  `)};`).join('\n')}\n${pad}END`;
   throw new RuleSqlError(`a step of an unknown kind: ${Object.keys(st).join(', ')}`);
 }

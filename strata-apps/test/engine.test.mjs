@@ -675,7 +675,7 @@ test('a rule is checked against the tables it writes, and needs no writer', asyn
     { update: 'features', id: ':row.feature', set: { votes: 'DELETE FROM features' } },
     { wat: 1 },
   ] }, cols).join('\n');
-  for (const want of ['give "id"', 'nope is not a column of features', 'no table "ghosts"', 'only SELECT here', 'a step is update, insert, upsert, remove, call, let, each, require or return']) assert.ok(p.includes(want), `missing ${want} in:\n${p}`);
+  for (const want of ['give "id"', 'nope is not a column of features', 'no table "ghosts"', 'only SELECT here', 'a step is update, insert, upsert, remove, call, email, let, each, require or return']) assert.ok(p.includes(want), `missing ${want} in:\n${p}`);
   assert.match(checkRule({ query: 'UPDATE x SET a = 1' }).join(), /give a SELECT/);
   // In a plan: the rule becomes the function's code, is checked, and gets no writer.
   const plan = { tables: [{ name: 'features', columns: [{ name: 'votes', type: 'int' }] }, { name: 'votes', columns: [{ name: 'feature', type: 'keyword' }] }],
@@ -732,6 +732,26 @@ test('tests and rules name values as :name, and an =expression is refused at bui
   assert.match(checkRule({ steps: [{ update: 'hours', id: '=row.id', set: { client: 'x' } }] }, cols)[0], /steps\[0\]\.id: .* not an =expression/);
 });
 
+test('a rule sends its email once its writes are stored, and none when it stops', async () => {
+  const { Engine } = await import('../engine/engine.mjs');
+  const { compileRule } = await import('../engine/rulesql.mjs');
+  const order = [];
+  const engine = new Engine({ write: async (ops) => { order.push(`write ${ops.map((o) => `${o.op} ${o.table}`).join(', ')}`); }, get: async () => [] }, { log: () => {} });
+  engine.store = { track: async () => {} };
+  engine.services = { email: async (app, msg) => { order.push(`email ${msg.to.join(', ')}: ${msg.subject}`); return { status: 'held' }; } };
+  engine.sql = async (app, sql, params) => [{ v: params.ok ?? true }];
+  const fn = (slug, src) => ({ id: `a/function/${slug}`, slug, code: JSON.stringify(compileRule(src).rule), spec: { rule: true } });
+  const view = { comp: { n: 1 }, helpers: [], tables: [{ spec: { name: 'requests', columns: [{ name: 'title', type: 'text' }] } }], functions: [
+    fn('add', "CREATE RULE add AS INSERT INTO requests (title) VALUES (:title); SEND EMAIL TO :to SUBJECT 'New: :title';"),
+    fn('add-checked', "CREATE RULE add_checked AS SEND EMAIL TO :to SUBJECT 'New'; INSERT INTO requests (title) VALUES (:title); REQUIRE :ok ELSE 'Not now';"),
+  ] };
+  engine.view = async () => view;
+  await engine.call('a', 'add', { title: 'Dark mode', to: 'a@b.co' });
+  assert.deepEqual(order, ['write insert app_a_requests', 'email a@b.co: New: Dark mode']);
+  await assert.rejects(engine.call('a', 'add-checked', { title: 'x', to: 'a@b.co', ok: false }), /Not now/);
+  assert.equal(order.length, 2, 'a rule that stops writes nothing and sends nothing');
+});
+
 test('rule steps loop over rows, refuse with a message, insert or update, and return a value', async () => {
   const { Refused } = await import('../engine/rules.mjs');
   const writes = [];
@@ -778,6 +798,28 @@ test('rule steps loop over rows, refuse with a message, insert or update, and re
   assert.match(checkRule({ steps: [{ require: 'stock > 1' }] }, cols)[0], /require: give a SELECT/);
   assert.match(checkRule({ steps: [{ upsert: 'cart', values: { qty: 1 } }] }, cols)[0], /find: give a SELECT/);
   assert.match(checkRule({ steps: [{ each: 'SELECT 1', do: [{ insert: 'cart', values: { color: 'red' } }] }] }, cols)[0], /steps\[0\]\.do\[0\]: color is not a column of cart/);
+  // SEND EMAIL: a statement of its own, with a line per row; a bad address refuses before anything is sent
+  const { compileRule, ruleStatement } = await import('../engine/rulesql.mjs');
+  const digest = compileRule(`CREATE RULE digest AS
+    SEND EMAIL TO :to SUBJECT 'New for :team' TEXT 'This week:' ROWS (SELECT title, votes FROM requests ORDER BY votes DESC) NONE 'Nothing new.';`);
+  assert.deepEqual(digest.rule.steps, [{ email: { to: ':to', subject: 'New for :team', text: 'This week:', rows: 'SELECT title, votes FROM requests ORDER BY votes DESC', none: 'Nothing new.' } }]);
+  assert.ok(ruleStatement('digest', digest.rule, null), 'it reads back as the same statement');
+  assert.deepEqual(checkRule(digest.rule, cols), []);
+  const sent = [];
+  let rows = [{ title: 'Dark mode', votes: 4 }, { title: 'CSV', votes: 2 }];
+  const mail = async (method, args) => { if (method === 'sql') return /FROM people/.test(args[0]) ? [{ email: 'o@x.co' }, { email: 'p@x.co' }] : rows; if (method === 'email') sent.push(args[0]); return {}; };
+  await runRule(digest.rule, { to: 'a@b.co, c@d.co', team: 'Ops' }, mail);
+  rows = [];
+  await runRule(digest.rule, { to: 'a@b.co', team: 'Ops' }, mail);
+  assert.deepEqual(sent, [
+    { to: ['a@b.co', 'c@d.co'], subject: 'New for Ops', text: 'This week:\n\n- Dark mode · 4\n- CSV · 2' },
+    { to: ['a@b.co'], subject: 'New for Ops', text: 'This week:\n\nNothing new.' }]);
+  await assert.rejects(runRule(digest.rule, { to: 'nope' }, mail), (e) => e.refused && /nope is not an email address/.test(e.message));
+  const owners = compileRule("CREATE RULE popular AFTER INSERT ON requests AS IF :row.votes > 3 THEN SEND EMAIL TO (SELECT email FROM people WHERE role = 'owner') SUBJECT 'Popular: :row.title'; END;");
+  sent.length = 0;
+  await runRule(owners.rule, { row: { votes: 5, title: 'Dark mode' } }, async (m, a) => (m === 'sql' && /^SELECT :row_votes > 3/.test(a[0]) ? [{ x: true }] : mail(m, a)));
+  assert.deepEqual(sent, [{ to: ['o@x.co', 'p@x.co'], subject: 'Popular: Dark mode', text: '' }]);
+  assert.throws(() => compileRule("CREATE RULE x AS SEND EMAIL SUBJECT 'Hi';"), /say who it goes to/);
 });
 
 test('a design is a few tokens made readable, drawn as CSS variables for light and dark', async () => {

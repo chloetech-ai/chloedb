@@ -138,6 +138,29 @@
       document.body.append(el);
       setTimeout(() => el.remove(), 2400);
     },
+    // csv(rows, columns): CSV text; columns are names or {key, label} (default every column but id).
+    csv: (rows, columns) => {
+      const list = Array.isArray(rows) ? rows : [];
+      let cols = (Array.isArray(columns) && columns.length ? columns : [...new Set(list.flatMap((r) => Object.keys(r || {})))].filter((k) => k !== 'id'))
+        .map((c) => (typeof c === 'string' ? { key: c, label: c } : { key: c && (c.key || c.name), label: c && (c.label || c.key || c.name) })).filter((c) => c.key);
+      if (list.length) cols = cols.filter((c) => list.some((r) => r && r[c.key] !== undefined)); // computed columns have no value of their own
+      const cell = (v) => {
+        let t = v == null ? '' : Array.isArray(v) ? v.join('; ') : typeof v === 'object' ? JSON.stringify(v) : String(v);
+        if (typeof v === 'string' && /^[=+\-@\t\r]/.test(t)) t = `'${t}`; // a spreadsheet would run it as a formula
+        return /[",\r\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+      };
+      return [cols.map((c) => cell(String(c.label))), ...list.map((r) => cols.map((c) => cell(r && r[c.key])))].map((l) => l.join(',')).join('\r\n');
+    },
+    // download(name, text, type): a file the person keeps (a CSV by default).
+    download: (name, text, type) => {
+      const kind = String(type || 'text/csv');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([kind === 'text/csv' ? `\ufeff${text}` : String(text)], { type: `${kind};charset=utf-8` }));
+      a.download = String(name || 'export.csv').replace(/[\\/:*?"<>|]+/g, '-');
+      document.body.append(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+    },
     fmt: Object.freeze(fmt),
     today: () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; },
     now: () => new Date().toISOString(),

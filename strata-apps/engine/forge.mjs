@@ -83,6 +83,7 @@ app in a view (every call returns a Promise):
 - app.open(viewSlug, params): switches to another view of the app, which reads them as app.params (an object, {} when none)
 - app.track(action, detail): records something meaningful the person did (app.track('filter', 'status=done'), app.track('search', q)). Opening a view, inserts, updates and removes are recorded already. What is recorded is how the app learns what to offer next.
 - app.toast(text): a short message at the bottom
+- app.download(name, text, type = 'text/csv') saves a file the person keeps; app.csv(rows, columns) makes its CSV text (columns: names or {key, label}). A list's CSV needs neither: its EXPORT clause.
 - app.fmt.ago(iso) ("3 h ago"), app.fmt.date(iso) ("8 Nov 2026"), app.fmt.time(iso), app.fmt.datetime(iso), app.fmt.number(n), app.fmt.money(n, currency='USD')
 - app.today(): today's date as "YYYY-MM-DD"; app.now(): the time as ISO text
 
@@ -1100,7 +1101,7 @@ export const PARALLEL = STATEMENTS && process.env.STRATA_APPS_PARALLEL === 'on';
 const PLAN_STEP_PARALLEL = `# This step: the plan alone
 
 Answer with the <plan> alone this time, and no code blocks. Each view, function, component and helper in it is then written by its own writer, all at once, and the example rows and tests by one more; each writer sees this plan and the request but nothing the others write. So the plan is the contract between them, and it is short: no statements and no code in it.
-- Give every view "format": "screen" (a CREATE SCREEN statement; the default) or "code" (JavaScript, only for what a screen cannot say), and every function "format": "rule" (a CREATE RULE statement; the default for reading and writing rows) or "javascript" (email, the model, outside services, or logic a rule cannot say).
+- Give every view "format": "screen" (a CREATE SCREEN statement; the default) or "code" (JavaScript, only for what a screen cannot say), and every function "format": "rule" (a CREATE RULE statement; the default for reading and writing rows) or "javascript" (the model, outside services, or logic a rule cannot say; email is a rule's SEND EMAIL).
 - Give every view, function, component and helper a "spec", in a few lines, enough to be written alone. For a screen: its parts in order (LIST, BOARD, DETAIL, SUMMARY, WEEK, CALENDAR, FLASHCARDS, QUIZ, FIND, DASHBOARD, HEADING, or custom BLOCKS), the table and columns of each, the form's fields with their types and choices, filters, KPIs, row actions, the views it opens and the functions it calls with their input. For a code view, the same and the components and helpers it calls with their props or arguments. For a rule or function: its input, the rows it reads and writes, what it returns, and its trigger ("on"). For content (lessons, explanations, questions, texts), an outline; the writer writes it out in full.
 - Use the same names everywhere: view and function slugs, table and column names, the values a status column takes.
 - Give each one "uses": the shared components and helpers its code calls, as "ui:name" and "lib:name", new ones and ones from the library.
@@ -1114,7 +1115,7 @@ Write the screen ${slug} alone, as one CREATE SCREEN statement, as the plan abov
 
 const ruleStep = (slug) => `# This step: write the function ${slug}
 
-Write the function ${slug} alone, as one CREATE RULE statement (with its trigger, AFTER ... ON, when the plan gives one), as the plan above and its spec say. Other writers write the other pieces at the same time, from the same plan: use the tables and columns as the plan gives them. If what the spec asks cannot be said as a rule (email, the model, outside services), write it in JavaScript instead. Answer with one <code slug="${slug}">...</code> block, and nothing else.`;
+Write the function ${slug} alone, as one CREATE RULE statement (with its trigger, AFTER ... ON, when the plan gives one), as the plan above and its spec say. Other writers write the other pieces at the same time, from the same plan: use the tables and columns as the plan gives them. If what the spec asks cannot be said as a rule (the model, outside services; email can: SEND EMAIL), write it in JavaScript instead. Answer with one <code slug="${slug}">...</code> block, and nothing else.`;
 
 const EXAMPLES_STEP = `# This step: example rows and tests
 

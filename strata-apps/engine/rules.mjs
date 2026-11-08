@@ -115,6 +115,22 @@ export async function runRule(rule, input, host) {
         const out = await host('call', [s.call, await fields(s.input)]);
         if (s.as) lets[s.as] = out;
         done.push(`called ${s.call}`);
+      } else if (s.email) {
+        // Sent once the rule's writes are stored (the engine holds it until then).
+        const m = s.email;
+        const to = typeof m.to === 'string' && SELECT_RE.test(m.to) ? (await query(m.to)).map((r) => Object.values(r)[0]) : [await value(m.to)];
+        const list = [...new Set(to.flatMap((x) => String(x ?? '').split(',')).map((x) => x.trim()).filter(Boolean))];
+        if (!list.length) throw new Refused('There is nobody to send the email to.');
+        const bad = list.find((x) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x));
+        if (bad) throw new Refused(`${bad} is not an email address`);
+        let text = m.text ? say(m.text) : '';
+        if (m.rows) {
+          const rows = await query(m.rows);
+          const lines = rows.slice(0, MAX_EACH).map((r) => `- ${Object.values(r).filter((v) => v != null && v !== '').map((v) => (Array.isArray(v) ? v.join(', ') : String(v))).join(' · ')}`);
+          text = [text, lines.length ? lines.join('\n') : say(m.none || '(none)')].filter(Boolean).join('\n\n');
+        }
+        await host('email', [{ to: list, subject: say(m.subject || ''), text }]);
+        done.push(`emailed ${list.join(', ')}`);
       } else if (s.remove) {
         const id = await value(s.id);
         if (id == null) continue;
@@ -129,8 +145,8 @@ export async function runRule(rule, input, host) {
   return { done, lets: Object.fromEntries(Object.entries(lets).filter(([k]) => !k.startsWith('_'))) };
 }
 
-const KINDS = ['update', 'insert', 'upsert', 'remove', 'call', 'let', 'each', 'require', 'return'];
-const KINDS_TEXT = 'update, insert, upsert, remove, call, let, each, require or return';
+const KINDS = ['update', 'insert', 'upsert', 'remove', 'call', 'email', 'let', 'each', 'require', 'return'];
+const KINDS_TEXT = 'update, insert, upsert, remove, call, email, let, each, require or return';
 
 // Checks a rule: its shape, that its SQL is a SELECT, and that the tables and
 // columns it writes exist (columnsOf(table) -> Set | null).
@@ -166,6 +182,15 @@ export function checkRule(rule, columnsOf = () => null) {
       return;
     }
     if (kind === 'call') { for (const [k, v] of Object.entries(s.input || {})) sql(v, `${where}.input.${k}`); return; }
+    if (kind === 'email') {
+      const m = s.email;
+      if (!m || typeof m !== 'object') { problems.push(`${where}.email: {"to", "subject", "text", "rows"}`); return; }
+      if (m.to === undefined || m.to === null || m.to === '') problems.push(`${where}.email.to: who it goes to (:to, :user.email, an address, or a SELECT of addresses)`);
+      sql(m.to, `${where}.email.to`);
+      if (!m.subject && !m.text) problems.push(`${where}.email: give it a subject or a text`);
+      if (m.rows !== undefined && (typeof m.rows !== 'string' || !SELECT_RE.test(m.rows))) problems.push(`${where}.email.rows: give a SELECT, one line of the email per row`);
+      return;
+    }
     const cols = columnsOf(s[kind]);
     if (!cols) { problems.push(`${where}: no table ${JSON.stringify(s[kind])} in the app`); return; }
     if ((kind === 'update' || kind === 'remove') && s.id === undefined) problems.push(`${where}: give "id", the row to ${kind} (such as ":row.feature")`);
@@ -184,7 +209,7 @@ export function checkRule(rule, columnsOf = () => null) {
 
 export const RULES_DOC = `# Rules: functions and triggers as data
 
-A function that is a query, or does a few writes (a checkout, an invoice from hours, a purchase order, a stock move), or a trigger that keeps a count, a total or a stock level right, is a rule: give "rule" in its plan entry and no code block (it has no writer). Write JavaScript only for what a rule cannot say (text or date logic beyond SQL, email, building a CSV).
+A function that is a query, or does a few writes (a checkout, an invoice from hours, a purchase order, a stock move), or a trigger that keeps a count, a total or a stock level right, is a rule: give "rule" in its plan entry and no code block (it has no writer). Write JavaScript only for what a rule cannot say (text or date logic beyond SQL, the model, outside services): email is an "email" step.
 - A query: {"query": "SELECT SUM(amount) AS total FROM expenses WHERE day >= :from"} returns the rows; add "one": true for the first row, or "value": true for its first column. app.call('slug', {from: '2026-11-01'}) passes :from. Similar rows and "bought together" are queries too (similarity, ppr).
 - Steps, run in order: {"steps": [
     {"require": "SELECT stock >= :qty FROM products WHERE id = :product", "else": "Only :stock left"}  (when its first value is false or 0, the rule stops, writes nothing, and the person sees the message; :name in it is filled in)
@@ -197,6 +222,7 @@ A function that is a query, or does a few writes (a checkout, an invoice from ho
     {"remove": "holds", "id": ":row.hold"},
     {"let": "left", "value": "SELECT stock FROM items WHERE id = :item"}, then :left in later steps,
     {"call": "reorder", "input": {"item": ":row.id"}}  (another function of the app),
+    {"email": {"to": ":to", "subject": "New requests", "text": "Hello :user.name", "rows": "SELECT title, votes FROM requests ORDER BY votes DESC", "none": "Nothing new"}}  (sent once the writes are stored; a line per row; "to" may be a SELECT of addresses),
     {"return": ":order.id"}  (what app.call gives back)
   ]}; any step may have "if": a SELECT whose first value decides whether it runs, and an insert, update, upsert or call may have "as": a name for its result in later steps (:order.id).
 - A rule with steps is one transaction: its SELECTs see the data as it was when it started (not its own writes: compute a total from the cart, not from the order lines it adds), its writes happen together at the end or not at all, and two runs never overlap, so "require" really holds (nothing is sold twice). Triggers on its writes run after.

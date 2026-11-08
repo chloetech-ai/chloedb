@@ -205,13 +205,14 @@ export function compileStatement(text) {
       screen.body.push(p.use);
       return;
     }
+    if (p.kind === 'LIST' && p.use.export && p.use.columns) p.use.exportColumns = p.use.columns.map((c) => ({ key: c.key, label: c.label || c.key }));
     if (p.kind === 'LIST' || p.kind === 'BOARD' || p.kind === 'DETAIL' || p.kind === 'SUMMARY') {
       for (const need of p.needs || []) if (p.use[need] === undefined) fail(p.n, `${p.kind} ${p.use.table}: needs ${{ fields: 'FORM (...)', status: "BY <column> ('a', 'b')", group: 'GROUP BY <column>' }[need]}`);
       screen.body.push(p.use);
     }
   };
   const SIMPLE = /^(TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT)\b/i;
-  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM|PER|LAST|LINE)\\b';
+  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM|PER|LAST|LINE|EXPORT)\\b';
   // Several clauses may share a line: split after a simple clause (TITLE
   // 'x' NOUN 'y'), and at two or more spaces before a clause word, except in
   // the clauses that hold their own WHERE or JSON.
@@ -318,6 +319,7 @@ export function compileStatement(text) {
       case 'ORDER BY': u.order = rest; break;
       case 'QUERY': u.sql = rest.replace(/^\(([\s\S]*)\)$/, '$1').trim(); break;
       case 'SEARCH': u.search = names(rest, n, 'SEARCH'); break;
+      case 'EXPORT': if (part.kind !== 'LIST') fail(n, 'EXPORT belongs to a LIST'); u.export = rest.trim() ? literal(rest) : 'Export CSV'; break;
       case 'FILTER': {
         const m = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)\s+(?:IN\s+)?([\s\S]+)$/i);
         if (!m) fail(n, "FILTER <column> IN ('a', 'b')");
@@ -519,7 +521,8 @@ LIST <table> [AS key]          -- the crud pattern: rows, add/edit form, search,
   COLUMNS (col 'Label' DATE, col 'Label' MONEY BADGE, col 'Label' MONEY = <JavaScript of row>, ...)   after the label, one format word: ${COLUMN_FORMATS.join(' ')} (DAYS reads a day as "in 3 days", DURATION minutes as "1 h 05", CLOCK seconds as "5:30", HOURS a number as "2.5 h", PCT a percent as "12.5%"), and BADGE
   CARDS <title col> [SUB col, col]      (cards instead of a table)
   KPI 'Label' = COUNT(*) | SUM(col) | AVG(col) [WHERE condition] [${KPI_FORMATS.join(' | ')}]   (one line each; SQL over the table)
-  ON ROW OPEN <view slug>   ACTION 'Label' OPEN <view slug> | SET col = value, ... | DELETE
+  ON ROW OPEN <view slug>   ACTION 'Label' OPEN <view slug> | SET col = value, ... | DELETE ('Label' names the delete button every list has)
+  EXPORT ['Download CSV']               (a button that downloads the rows shown, searched and filtered, as a CSV file with the COLUMNS; no function needed)
 BOARD <table> [AS key]         -- the board pattern
   BY <status col> ('new', 'doing', 'done')  NAME <title col>  META col, col  FORM (...)  TITLE  NOUN  WHERE  ORDER BY
 DETAIL <table> [AS key]        -- the detail pattern: one row (opened with app.open(slug, {id})), edit, related rows

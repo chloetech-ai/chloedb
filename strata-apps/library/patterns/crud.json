@@ -84,6 +84,12 @@
    "about": "the label of each row's delete button",
    "default": "Delete"
   },
+  "export": {
+   "about": "a button's label that downloads the rows shown (searched and filtered) as a CSV file, such as 'Export CSV'"
+  },
+  "exportColumns": {
+   "about": "the columns the CSV has, [{\"key\", \"label\"}] (default every column but id)"
+  },
   "onRow": {
    "about": "a handler when a table row is tapped, such as \"=row => app.open('guest', {id: row.id})\""
   },
@@ -198,7 +204,7 @@
     ]
    },
    {
-    "$when": "search&form!=side|filter&form!=side",
+    "$when": "search&form!=side|filter&form!=side|export&form!=side",
     "row": [
      {
       "$when": "search",
@@ -216,6 +222,12 @@
        },
        "{{...filter.options}}"
       ]
+     },
+     {
+      "$when": "export",
+      "button": "{{export}}",
+      "class": "ghost small",
+      "do": "=() => app.download({{table|json}} + '-' + app.today() + '.csv', app.csv({{key}}_shown, {{exportColumns|json}}))"
      }
     ]
    },
@@ -306,6 +318,12 @@
          },
          "{{...filter.options}}"
         ]
+       },
+       {
+        "$when": "export",
+        "button": "{{export}}",
+        "class": "ghost small",
+        "do": "=() => app.download({{table|json}} + '-' + app.today() + '.csv', app.csv({{key}}_shown, {{exportColumns|json}}))"
        },
        {
         "$when": "!card",

@@ -225,7 +225,8 @@ export class Engine extends EventEmitter {
         case 'remove': return batch ? batch.remove(args[0], args[1]) : this.remove(appId, args[0], args[1], inner);
         case 'call': return (await this.call(appId, args[0], args[1], inner)).result;
         case 'people': return services().people(appId);
-        case 'email': return services().email(appId, args[0], fn.id);
+        // A rule's email goes once its writes are stored, so a rule that stops sends none.
+        case 'email': if (batch) { const msg = args[0]; batch.later(() => services().email(appId, msg, fn.id)); return { queued: true }; } return services().email(appId, args[0], fn.id);
         case 'geocode': return services().geocode(args[0]);
         case 'files': return services().fileInfo(appId, args[0]);
         default: throw new Error(`no app.${method}`);
@@ -271,6 +272,7 @@ export class Engine extends EventEmitter {
     const ops = [];
     const rows = new Map();
     const events = [];
+    const afterwards = [];
     const key = (table, id) => `${table}\u0000${id}`;
     const current = async (table, id) => {
       if (rows.has(key(table, id))) return rows.get(key(table, id));
@@ -308,11 +310,15 @@ export class Engine extends EventEmitter {
         if (old) events.push([table, 'delete', old]);
         return { removed: old ? 1 : 0 };
       },
+      // What runs once the writes are stored (a rule's email).
+      later: (fn) => { afterwards.push(fn); },
       commit: async () => {
-        if (!ops.length) return;
-        await this.db.write(ops.splice(0));
-        this.announce('data', { app: appId, tables: [...new Set(events.map((e) => e[0]))] });
-        for (const [table, event, row, changed] of events.splice(0)) await this.after(appId, table, event, row, { ...ctx, batch: undefined, changed });
+        if (ops.length) {
+          await this.db.write(ops.splice(0));
+          this.announce('data', { app: appId, tables: [...new Set(events.map((e) => e[0]))] });
+          for (const [table, event, row, changed] of events.splice(0)) await this.after(appId, table, event, row, { ...ctx, batch: undefined, changed });
+        }
+        for (const fn of afterwards.splice(0)) await fn();
       },
     };
   }
