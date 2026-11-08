@@ -663,9 +663,13 @@ impl Fleet {
 
         // ----- alerts: the rules firing here that nobody silenced, each once
         // (a coordinator's each_copy rule gathers its copies'), as the bell
-        // counts them.
-        let firing = i.alerts.len() as u64;
-        let critical = i.alerts.iter().filter(|a| a["severity"] == "critical").count() as u64;
+        // counts them. An info alert (a shard's primary changed) tells, but
+        // is no problem of the fleet: it does not turn Home amber.
+        let told: Vec<Json> = i.alerts.iter().filter(|a| a["severity"] != "info").cloned().collect();
+        let info = i.alerts.len() - told.len();
+        let alerts = &told;
+        let firing = alerts.len() as u64;
+        let critical = alerts.iter().filter(|a| a["severity"] == "critical").count() as u64;
         let al_status = if critical > 0 {
             "critical"
         } else if firing > 0 {
@@ -673,15 +677,14 @@ impl Fleet {
         } else {
             "ok"
         };
-        let rules: Vec<Json> = i
-            .alerts
+        let rules: Vec<Json> = alerts
             .iter()
             .map(|a| {
                 let copies: Vec<&str> = a["where"].as_array().map_or_else(Vec::new, |w| w.iter().filter(|c| c["state"].is_null() || c["state"] == "firing").filter_map(|c| c["short"].as_str().or(c["copy"].as_str())).collect());
                 json!({"rule": a["rule"], "name": a["name"], "severity": a["severity"], "since_ms": a["since_ms"], "copies": copies.len(), "where": copies})
             })
             .collect();
-        checks.push(json!({"id": "alerts", "status": al_status, "firing": firing, "critical": critical, "rules": rules}));
+        checks.push(json!({"id": "alerts", "status": al_status, "firing": firing, "critical": critical, "info": info, "rules": rules}));
         if firing > 0 {
             let on = |a: &Json| match a["copies"].as_u64().unwrap_or(0) {
                 0 => String::new(),
@@ -691,7 +694,7 @@ impl Fleet {
             let named: Vec<String> = rules.iter().take(2).map(|a| format!("{}{}", a["name"].as_str().unwrap_or("?"), on(a))).collect();
             let more = if rules.len() > 2 { format!(" and {} more", rules.len() - 2) } else { String::new() };
             let title = format!("{firing} {} firing{}: {}{more}", if firing == 1 { "alert is" } else { "alerts are" }, if critical > 0 { format!(", {critical} critical") } else { String::new() }, named.join("; "));
-            let since = i.alerts.iter().filter_map(|a| a["since_ms"].as_u64()).min();
+            let since = alerts.iter().filter_map(|a| a["since_ms"].as_u64()).min();
             // NEW-workload-4: each rule with its severity and where, not "see each alert".
             let each = |a: &Json| {
                 let at = match a["copies"].as_u64().unwrap_or(0) {
@@ -709,7 +712,7 @@ impl Fleet {
                 rank: if critical > 0 { 6 } else { 16 },
                 critical: critical > 0,
                 headline: title.clone(),
-                j: json!({"id": "alerts", "severity": severity(critical > 0), "title": title, "where": [], "since_ms": since, "impact": impact, "next": {"text": if firing == 1 { "Open the alert" } else { "Open Alerts" }, "view": if firing == 1 { format!("alert/{}", i.alerts[0]["rule"].as_str().unwrap_or("")) } else { "alerts".to_string() }, "params": {}}}),
+                j: json!({"id": "alerts", "severity": severity(critical > 0), "title": title, "where": [], "since_ms": since, "impact": impact, "next": {"text": if firing == 1 { "Open the alert" } else { "Open Alerts" }, "view": if firing == 1 { format!("alert/{}", alerts[0]["rule"].as_str().unwrap_or("")) } else { "alerts".to_string() }, "params": {}}}),
             });
         }
 
@@ -1079,6 +1082,19 @@ mod tests {
         let pr = Fleet::default().judge(i)["problems"][0].clone();
         assert_eq!(pr["title"], "1 alert is firing: Slow searches on s0-0");
         assert_eq!((pr["next"]["text"].as_str(), pr["next"]["view"].as_str()), (Some("Open the alert"), Some("alert/p99")));
+    }
+
+    /// An info alert (a shard's primary changed) is told, but Home stays
+    /// green: nothing is wrong.
+    #[test]
+    fn an_info_alert_does_not_turn_home_amber() {
+        let c = json!({"shards": [{"shard": 0, "state": "ok", "replicas": [copy("s0-0", true), copy("s0-1", true)]}]});
+        let mut i = inputs(&c, &[]);
+        i.alerts = vec![json!({"rule": "primary-changed", "name": "A shard's primary changed", "severity": "info", "state": "firing", "since_ms": 6000, "where": []})];
+        let j = Fleet::default().judge(i);
+        assert!(j["problems"].as_array().unwrap().iter().all(|p| p["id"] != "alerts"), "{j}");
+        let al = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "alerts").unwrap().clone();
+        assert_eq!((al["status"].as_str(), al["firing"].as_u64(), al["info"].as_u64()), (Some("ok"), Some(0), Some(1)), "{al}");
     }
 
     #[test]
