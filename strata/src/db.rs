@@ -28,7 +28,8 @@ use crate::query::{bind_command, compound, ops, profile, sql as qsql, Assign, Co
 use crate::rank_log::{self, Export, Log, Logged};
 use crate::schema::{Alter, Derive, Embed, FieldType, Schema};
 use crate::segment::{DocId, SegmentFile};
-use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, Found, Mask, MergePolicy, MergeStats, SeqNo, Snapshot, TableTxn, WriteTxn, SOURCES};
+use crate::query::function::{self, FunctionSet};
+use crate::storage::{Applied, Database, DbOptions, DocumentSource, DropOptions, Found, Mask, MergePolicy, MergeStats, SeqNo, Snapshot, TableTxn, WriteTxn, FUNCTIONS, SOURCES};
 use crate::value::{Document, Value};
 use crate::vector::VectorReader;
 
@@ -181,6 +182,12 @@ pub struct Db {
     media: RwLock<Arc<Resolver>>,
     /// Writes waiting for their turn, which share commits ([`Db::write_ops`]).
     writes: writes::Writes,
+    /// The stored functions last read from `_functions`, by the stamp of
+    /// the table's snapshot they were read from ([`Db::functions_at`]).
+    functions: std::sync::Mutex<Option<(u64, Arc<FunctionSet>)>>,
+    /// Held while a `CREATE FUNCTION` or `DROP FUNCTION` reads the
+    /// versions and writes the next one.
+    function_ddl: std::sync::Mutex<()>,
 }
 
 /// The model of an embedded VECTOR field, and the field it was set for: it
@@ -255,6 +262,8 @@ impl Db {
             media: RwLock::new(Arc::new(Resolver::default())),
             ranking: Models::default(),
             writes: writes::Writes::default(),
+            functions: std::sync::Mutex::new(None),
+            function_ddl: std::sync::Mutex::new(()),
         }
     }
 
@@ -330,6 +339,77 @@ impl Db {
     /// the first.
     pub fn sources(&self) -> Result<Vec<Source>> {
         self.sources_at(&self.snapshot())
+    }
+
+    /// The stored functions ([`crate::query::function`]): every version
+    /// of each, as `_functions` holds them; none before the first `CREATE
+    /// FUNCTION`.
+    pub fn functions(&self) -> Result<Arc<FunctionSet>> {
+        self.functions_at(&self.snapshot())
+    }
+
+    /// [`Db::functions`] as of version `snap`. They are read once per
+    /// version of `_functions`, and kept while the table is unchanged.
+    pub fn functions_at(&self, snap: &Snapshot) -> Result<Arc<FunctionSet>> {
+        let Some(t) = snap.table(FUNCTIONS) else { return Ok(Arc::default()) };
+        let stamp = t.stamp();
+        if let Some((s, set)) = &*self.functions.lock().unwrap_or_else(|e| e.into_inner()) {
+            if *s == stamp {
+                return Ok(set.clone());
+            }
+        }
+        // Read as a plain query, which calls no function.
+        let sql = format!("SELECT * FROM {FUNCTIONS} LIMIT {}", u32::MAX);
+        let q = qsql::parse_query_cached(&sql)?;
+        let plan = plan_of_parsed(snap, &q, &Params::new(), &FunctionSet::default())?;
+        let rs = self.run_on(snap, &plan, &ExecOptions { max_rows: None, ..self.exec.clone() })?;
+        let rows = rs.rows.into_iter().map(|r| function::Function::from_row(&rs.columns.iter().cloned().zip(r).collect()));
+        let set = Arc::new(FunctionSet::of(rows.collect::<Result<Vec<_>>>()?));
+        *self.functions.lock().unwrap_or_else(|e| e.into_inner()) = Some((stamp, set.clone()));
+        Ok(set)
+    }
+
+    /// Runs `CREATE FUNCTION` or `DROP FUNCTION` ([`crate::query::function`]),
+    /// the version it writes recorded as written by `by` (a server's key
+    /// name), and returns what it changed: the version written, the key of
+    /// the version deleted, or nothing (the same definition again, or `IF
+    /// EXISTS` of a function that is not there).
+    pub fn define_function(&self, stmt: &function::Statement, by: Option<&str>) -> Result<function::Change> {
+        let _ddl = self.function_ddl.lock().unwrap_or_else(|e| e.into_inner());
+        let set = self.functions()?;
+        let change = function::change(&set, stmt, Some(crate::timestamp::now()), by)?;
+        match &change {
+            function::Change::Nothing => {}
+            function::Change::Put(f) => {
+                if let function::Statement::Create { def, at: None, .. } = stmt {
+                    self.check_function(def)?;
+                }
+                self.storage.ensure_functions()?;
+                let mut t = self.storage.begin()?;
+                t.table(FUNCTIONS)?.upsert(f.to_row())?;
+                t.commit()?;
+            }
+            function::Change::Delete(id) => {
+                let mut t = self.storage.begin()?;
+                t.table(FUNCTIONS)?.delete(&Value::Str(id.clone()))?;
+                t.commit()?;
+            }
+        }
+        Ok(change)
+    }
+
+    /// Refuses a table function whose body does not plan against this
+    /// database's tables, each parameter given its default or a value of
+    /// its type.
+    fn check_function(&self, def: &function::Definition) -> Result<()> {
+        if def.kind != function::Kind::Table {
+            return Ok(());
+        }
+        // A vector of no stated size: the body is checked when called.
+        let Some(params) = function::sample_params(def) else { return Ok(()) };
+        let snap = self.snapshot();
+        let q = qsql::parse_query(&def.body)?;
+        plan_of(&snap, &q, &params, &*self.functions_at(&snap)?).map(drop).map_err(|e| Error::Query(format!("the body of {} does not plan: {e}", def.name)))
     }
 
     /// [`Db::sources`] as of version `snap`.
@@ -1083,7 +1163,7 @@ impl Db {
             return self.json_paths_at(snap, &call, params, opts).map(|p| p.to_result());
         }
         let q = qsql::parse_query_cached(sql)?;
-        let plan = plan_of_parsed(snap, &q, params)?;
+        let plan = plan_of_parsed(snap, &q, params, &*self.functions_at(snap)?)?;
         self.run_on(snap, &plan, opts)
     }
 
@@ -1171,7 +1251,7 @@ impl Db {
             return self.json_paths_at(&snap, &call, params, &self.exec).map(|p| Leaf::Rows(p.to_result()));
         }
         let q = qsql::parse_query_cached(sql)?;
-        let plan = plan_of_parsed(&snap, &q, params)?;
+        let plan = plan_of_parsed(&snap, &q, params, &*self.functions_at(&snap)?)?;
         self.run_leaf_on(&snap, &plan, &self.exec, Some(0))
     }
 
@@ -1258,7 +1338,16 @@ impl Db {
                 let plan = self.explain_statement(&statement, params)?;
                 let rows = match json {
                     true => vec![vec![Value::Str(plan.to_json_text()?)]],
-                    false => plan.explain(&tables).into_iter().map(|l| vec![Value::Str(l)]).collect(),
+                    false => {
+                        let mut lines = plan.explain(&tables);
+                        // The plan is the query's with the calls written out.
+                        if let sqlparser::ast::Statement::Query(q) = &*statement {
+                            if let Some((_, used)) = function::expand(q, &*self.functions()?)? {
+                                lines.insert(0, format!("calls stored function{} {}", if used.len() == 1 { "" } else { "s" }, used.join(", ")));
+                            }
+                        }
+                        lines.into_iter().map(|l| vec![Value::Str(l)]).collect()
+                    }
                 };
                 let stats = ExecStats::default();
                 Ok(SqlResult::Rows(ResultSet { columns: vec!["plan".into()], rows, keys: Vec::new(), scores: Vec::new(), parts: None, stats }))
@@ -1282,6 +1371,10 @@ impl Db {
             }
             Command::CreateRankProfile { table, profile, replace } => {
                 self.storage.set_rank_profile(&table, profile, replace)?;
+                Ok(SqlResult::Written(0))
+            }
+            Command::Function(stmt) => {
+                self.define_function(&stmt, None)?;
                 Ok(SqlResult::Written(0))
             }
             Command::DropRankProfile { table, name, if_exists } => {
@@ -1329,7 +1422,8 @@ impl Db {
     fn explain_statement(&self, stmt: &sqlparser::ast::Statement, params: &Params) -> Result<Plan> {
         if let sqlparser::ast::Statement::Query(q) = stmt {
             // The plan names the files of its ranking models.
-            let mut plan = plan_of(&self.snapshot(), q, params)?;
+            let snap = self.snapshot();
+            let mut plan = plan_of(&snap, q, params, &*self.functions_at(&snap)?)?;
             self.open_ranking_models(&mut plan, false)?;
             return Ok(plan);
         }
@@ -2686,16 +2780,17 @@ impl DocumentSource for StoredSource {
 /// The plan of a SELECT over `snap`'s tables: the executor's query of one
 /// table, or a compound one's operators ([`compound::needs`]) over any
 /// ([`compound::plan_read`]).
-fn plan_of(snap: &Snapshot, q: &sqlparser::ast::Query, params: &Params) -> Result<Plan> {
+fn plan_of(snap: &Snapshot, q: &sqlparser::ast::Query, params: &Params, functions: &FunctionSet) -> Result<Plan> {
     let catalog: Vec<&Schema> = snap.schemas().collect();
-    compound::plan_read_query(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()))
+    compound::plan_read_query(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()), functions)
 }
 
 /// [`plan_of`] of a query [`qsql::parse_query_cached`] parsed.
-fn plan_of_parsed(snap: &Snapshot, q: &qsql::Parsed, params: &Params) -> Result<Plan> {
+fn plan_of_parsed(snap: &Snapshot, q: &qsql::Parsed, params: &Params, functions: &FunctionSet) -> Result<Plan> {
     let catalog: Vec<&Schema> = snap.schemas().collect();
-    compound::plan_read_parsed(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()))
+    compound::plan_read_parsed(q, &catalog, params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()), functions)
 }
+
 
 /// Opening segments' readers takes microseconds once they are cached; a
 /// step when it took longer (a cold cache, new segments).

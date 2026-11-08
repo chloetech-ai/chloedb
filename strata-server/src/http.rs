@@ -202,6 +202,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/stats", get(stats))
         .route("/v1/schema", get(schema))
         .route("/v1/tables", get(tables))
+        .route("/v1/functions", get(functions))
         .route("/v1/tables/:table/paths", get(json_paths))
         .route("/v1/index", get(index))
         .route("/v1/index/reads/reset", post(reset_reads))
@@ -998,6 +999,33 @@ async fn schema(State(app): State<App>, Query(q): Query<std::collections::HashMa
 async fn tables(State(app): State<App>) -> AxJson<Json> {
     let tables: Vec<Json> = app.svc.tables_listed().await.iter().map(|s| table_json(&app.svc, s)).collect();
     AxJson(json!({"tables": tables}))
+}
+
+/// `GET /v1/functions`: the stored functions queries call
+/// ([`strata::query::function`]), by name: each one's current version
+/// (none once dropped) and every version kept, oldest first.
+async fn functions(State(app): State<App>) -> Res {
+    app.svc.learn_functions().await;
+    let set = app.svc.functions();
+    let mut out: Vec<Json> = Vec::new();
+    let mut names: Vec<&str> = set.all().map(|f| f.def.name.as_str()).collect();
+    names.dedup();
+    for name in names {
+        let versions: Vec<Json> = set
+            .all()
+            .filter(|f| f.def.name == name)
+            .map(|f| {
+                json!({
+                    "version": f.version, "dropped": f.dropped, "kind": f.def.kind.name(), "signature": f.def.signature(), "returns": f.def.returns,
+                    "body": (!f.dropped).then_some(&f.def.body), "description": f.def.description, "hash": f.hash,
+                    "created": f.created.map(strata::timestamp::format), "created_by": f.created_by,
+                    "sql": (!f.dropped).then(|| f.def.sql(false, None)),
+                })
+            })
+            .collect();
+        out.push(json!({"name": name, "current": set.current(name).map(|f| f.version), "versions": versions}));
+    }
+    Ok(AxJson(json!({"functions": out})))
 }
 
 /// `GET /v1/index?table=&sample=&seed=&terms=&top=`: the index
@@ -2355,7 +2383,7 @@ async fn explain(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     // of those ran is in "plan".
     let profiles = |t: &str, n: &str| app.svc.rank_profile(t, n);
     // The plan names the files of its ranking models.
-    let plan = app.svc.open_ranking_models(std::sync::Arc::new(strata::query::compound::plan_read(sql, &tables, &params, &profiles)?), false)?;
+    let plan = app.svc.open_ranking_models(std::sync::Arc::new(strata::query::compound::plan_read_calling(sql, &tables, &params, &profiles, &app.svc.functions())?), false)?;
     let logical = match plan.root.uses_operators() {
         true => "a compound query: operators over single-table queries (\"tree\"), whose runs are in \"plan\"".to_string(),
         false => {

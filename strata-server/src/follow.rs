@@ -50,7 +50,7 @@ use serde_json::{json, Value as Json};
 use strata::query::ddl::{alter_sql, create_sql};
 use strata::query::sql::ident;
 use strata::schema::Schema;
-use strata::storage::{RankProfile, SOURCES};
+use strata::storage::{RankProfile, FUNCTIONS, SOURCES};
 
 use crate::cores::follow::{Order, Step, Txn, Version};
 use crate::service::feed::{digests_of, follows_offset, next_offset, Digest, Marks, FOLLOWS, HOLD};
@@ -230,9 +230,11 @@ fn schema_of(j: &Json) -> Result<Schema, ApiError> {
     serde_json::from_value(j.clone()).map_err(|e| ApiError::bad(format!("a table's schema in the feed: {e}")))
 }
 
-/// Whether a table is the server's own, which the follower leaves.
+/// Whether a table is the server's own, which the follower leaves: its
+/// stream offsets, its stored functions (each cluster defines its own) and
+/// the placeholder.
 fn own_table(t: &str) -> bool {
-    t.eq_ignore_ascii_case(SOURCES) || t.eq_ignore_ascii_case(strata::schema::PLACEHOLDER_TABLE)
+    t.eq_ignore_ascii_case(SOURCES) || t.eq_ignore_ascii_case(FUNCTIONS) || t.eq_ignore_ascii_case(strata::schema::PLACEHOLDER_TABLE)
 }
 
 /// A transaction line of a feed as the follower orders it.

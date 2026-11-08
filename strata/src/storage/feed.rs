@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::schema::Schema;
-use crate::storage::manifest::{sources_schema, RankProfile, SeqNo, SOURCES_ID};
+use crate::storage::manifest::{system_schema, RankProfile, SeqNo, SOURCES_ID, SYSTEM_IDS};
 use crate::storage::ship::LogRead;
 use crate::storage::wal::{self, Op};
 use crate::storage::Database;
@@ -198,9 +198,12 @@ impl Database {
             LogRead::Txns(t) => t,
             LogRead::Gone { oldest } => return Ok(Start::Gone { oldest }),
         };
-        // A replica makes its own when its primary's first offset arrives.
-        if !tables.iter().any(|(id, _)| *id == SOURCES_ID) {
-            tables.push((SOURCES_ID, Arc::new(sources_schema())));
+        // A replica makes its own when its primary's first offset (or
+        // function) arrives.
+        for sys in SYSTEM_IDS {
+            if !tables.iter().any(|(id, _)| *id == sys) {
+                tables.push((sys, Arc::new(system_schema(sys).expect("a system table"))));
+            }
         }
         // Back from the log's last transaction to `from`.
         for t in txns.iter().rev().filter(|t| wal::ships_table_changes(&t.bytes)) {

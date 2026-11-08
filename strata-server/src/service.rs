@@ -18,10 +18,11 @@ use strata::query::ir::Plan;
 use strata::query::model::Models;
 use strata::query::paths::{Call, Paths};
 use strata::query::sql::{ident, quoted};
+use strata::query::function::FunctionSet;
 use strata::query::{bind_command, compound, ops, profile, steps, Command, Params, Select};
 use strata::rank_log::{self, Log};
 use strata::schema::{Alter, Schema};
-use strata::storage::{CheckpointOptions, CheckpointStats, Layout, RankProfile, Snapshot, TableTxn, WriteTxn};
+use strata::storage::{CheckpointOptions, CheckpointStats, Layout, RankProfile, Snapshot, TableTxn, WriteTxn, FUNCTIONS, SOURCES};
 use strata::text::Synonyms;
 use strata::value::Value;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -1842,6 +1843,58 @@ impl Service {
         }
     }
 
+    /// The stored functions queries call ([`strata::query::function`]): a
+    /// local database's as they are now. A coordinator calls none yet.
+    pub fn functions(&self) -> Arc<FunctionSet> {
+        match &self.backend {
+            Backend::Local(db) => db.functions().unwrap_or_default(),
+            Backend::Cluster(_) => Arc::default(),
+        }
+    }
+
+    /// A coordinator asks its shards for their functions again (at most
+    /// once a second, as [`Self::catalog_now`] asks for tables).
+    pub async fn learn_functions(&self) {
+        self.learn_tables(false).await;
+    }
+
+    /// The tables a query may read: [`Self::catalog`], and a local
+    /// database's system tables (`_functions`, `_sources`), which
+    /// [`Db::query`] reads too.
+    fn readable(&self) -> Vec<Arc<Schema>> {
+        let mut c = self.catalog();
+        if let Backend::Local(db) = &self.backend {
+            let snap = db.snapshot();
+            c.extend(snap.schemas().filter(|s| [FUNCTIONS, SOURCES].iter().any(|n| s.table.eq_ignore_ascii_case(n))).map(|s| Arc::new(s.clone())));
+        }
+        c
+    }
+
+    /// The table named `name` that a query reads ([`Self::table`]), a
+    /// local database's system tables too ([`Self::readable`]).
+    async fn readable_table(&self, name: &str) -> Result<Arc<Schema>, ApiError> {
+        match self.readable().into_iter().find(|t| t.table.eq_ignore_ascii_case(name)) {
+            Some(t) => Ok(t),
+            None => self.table(name).await,
+        }
+    }
+
+    /// The plan of a query `sql`, bound as [`Self::bound`] binds, over the
+    /// tables a query may read ([`Self::readable`]), its rank profiles and
+    /// its stored functions written out.
+    async fn bound_read(&self, sql: &str, params: &Params) -> Result<Plan, ApiError> {
+        let functions = self.functions();
+        let run = || {
+            let c = self.readable();
+            let refs: Vec<&Schema> = c.iter().map(|t| &**t).collect();
+            compound::plan_read_calling(sql, &refs, params, &|t, n| self.rank_profile(t, n), &functions)
+        };
+        match run() {
+            Err(e) if (["no such table", "has no rank profile named", "unknown function"].iter().any(|m| e.to_string().contains(m))) && self.learn_tables(false).await => Ok(run()?),
+            r => Ok(r?),
+        }
+    }
+
     /// Runs `bind` over the database's tables; a coordinator whose tables
     /// lack one the statement names, or a rank profile it ranks by, asks
     /// its shards again, then binds once more.
@@ -2185,7 +2238,7 @@ impl Service {
         let tp = Instant::now();
         let plan = match &req.plan {
             Some(p) => Ok(p.clone()),
-            None => self.bound(|tables| compound::plan_read(&req.sql, tables, &req.params, &|t, n| self.rank_profile(t, n))).await.map(Arc::new),
+            None => self.bound_read(&req.sql, &req.params).await.map(Arc::new),
         };
         // A plan made with a rank profile runs only on a database whose
         // profile of that name is the same.
@@ -2202,7 +2255,7 @@ impl Service {
                 req.plan = Some(plan.clone());
                 return self.compound(req, plan, t0, timeout).await;
             }
-            Ok(plan) => match self.table(plan.table()).await {
+            Ok(plan) => match self.readable_table(plan.table()).await {
                 Ok(schema) => {
                     // A coordinator sends the shards a plan by a rank
                     // profile or a model as is, naming the profile or the
@@ -2513,7 +2566,7 @@ impl Service {
         let kind = "compound";
         req.profile |= self.profiling.cpu_all.load(Ordering::Relaxed);
         let (profiled, quiet) = (req.profile, req.quiet);
-        let catalog = self.catalog();
+        let catalog = self.readable();
         let deadline = t0 + timeout;
         let req_sql = req.sql.clone();
         let meta = self.meta(&req);
@@ -2688,7 +2741,7 @@ impl Service {
     pub async fn term_stats(self: &Arc<Self>, sql: &str, plan: Option<&Plan>, params: &Params, after: &After, timeout_ms: u64) -> Result<(TermStats, u64, u64), ApiError> {
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound(|tables| compound::plan_read(sql, tables, params, &|t, n| self.rank_profile(t, n))).await?,
+            None => self.bound_read(sql, params).await?,
         };
         // Statistics are a shard's: its coordinator scores with the
         // cross-encoders.
@@ -2729,7 +2782,7 @@ impl Service {
         let t0 = Instant::now();
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound(|tables| compound::plan_read(sql, tables, params, &|t, n| self.rank_profile(t, n))).await?,
+            None => self.bound_read(sql, params).await?,
         };
         if bound.root.uses_operators() {
             return Err(ApiError::bad("query error: a guard's levels are counted over one table's rows: a query without subqueries"));
@@ -2764,7 +2817,7 @@ impl Service {
         let t0 = Instant::now();
         let bound = match plan {
             Some(p) => p.clone(),
-            None => self.bound(|tables| compound::plan_read(sql, tables, params, &|t, n| self.rank_profile(t, n))).await?,
+            None => self.bound_read(sql, params).await?,
         };
         if bound.root.uses_operators() {
             return Err(ApiError::bad("query error: the next codes count one table's rows: a condition without subqueries"));
@@ -2922,8 +2975,15 @@ impl Service {
     #[allow(clippy::too_many_arguments)]
     pub async fn sql_in(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>, key: Option<String>) -> Result<SqlAnswer, ApiError> {
         let command = self.bound(|tables| bind_command(sql, tables, params)).await?;
+        if let Command::Function(f) = &command {
+            // How a coordinator numbers a function's versions alike on
+            // every shard.
+            if f.at().is_some() && !who.root {
+                return Err(ApiError::bad("query error: AT VERSION is for a coordinator's own statements: CREATE OR REPLACE FUNCTION makes the next version"));
+            }
+        }
         let need = command_scope(&command);
-        who.may(need, &format!("a {} statement", match need { Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table or rank profile" }))?;
+        who.may(need, &format!("a {} statement", match need { Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table, rank profile or function" }))?;
         if need == Scope::Admin {
             keys::note(obs::truncate(sql, 500).into_owned());
         }
@@ -2933,7 +2993,7 @@ impl Service {
                 return Ok(SqlAnswer::Rows(a));
             }
             Command::Explain { .. } => return Err(ApiError::bad("query error: EXPLAIN runs through POST /v1/explain")),
-            Command::CreateTable { .. } | Command::DropTable { .. } | Command::CreateRankProfile { .. } | Command::DropRankProfile { .. } => true,
+            Command::CreateTable { .. } | Command::DropTable { .. } | Command::CreateRankProfile { .. } | Command::DropRankProfile { .. } | Command::Function(_) => true,
             Command::AlterTable { alters, .. } => {
                 // A coordinator's plans name a table's columns by their
                 // place, and its shards drop a column one by one: a query
@@ -2950,7 +3010,7 @@ impl Service {
         }
         let t0 = Instant::now();
         let r = match (&self.backend, ddl) {
-            (_, true) => self.ddl(sql, params, timeout_ms).await,
+            (_, true) => self.ddl(sql, params, timeout_ms, &who.name).await,
             (Backend::Local(db), false) => {
                 let (text, p) = (sql.to_string(), params.clone());
                 let slots_hashed = slots.clone();
@@ -2985,7 +3045,10 @@ impl Service {
     /// transaction in a database that numbers its writes, so a primary
     /// ships it as it ships a write, and answers once the copies its acks
     /// name hold it.
-    async fn ddl(self: &Arc<Self>, sql: &str, params: &Params, timeout_ms: u64) -> Result<Written, ApiError> {
+    ///
+    /// A stored function's version records `author`, the name of the key
+    /// that wrote it.
+    async fn ddl(self: &Arc<Self>, sql: &str, params: &Params, timeout_ms: u64, author: &str) -> Result<Written, ApiError> {
         let r = match &self.backend {
             Backend::Local(db) => {
                 self.takes_writes()?;
@@ -2994,10 +3057,13 @@ impl Service {
                 self.not_held()?;
                 let by = self.admitted();
                 let timeout = self.timeout_of(timeout_ms);
-                let (db, sql, params) = (db.clone(), sql.to_string(), params.clone());
+                let (db, sql, params, who) = (db.clone(), sql.to_string(), params.clone(), author.to_string());
                 let w = tokio::task::spawn_blocking(move || {
                     wait_for_writer(Instant::now() + timeout, || {
-                        db.sql(&sql, &params)?;
+                        match strata::query::function::parse_statement(&sql)? {
+                            Some(f) => drop(db.define_function(&f, Some(&who))?),
+                            None => drop(db.sql(&sql, &params)?),
+                        }
                         // Its number, or a later one.
                         Ok(Written { seq_no: db.storage().seq_no().map(|n| n.seq), ..Default::default() })
                     })
@@ -3594,7 +3660,7 @@ impl Service {
                 // cluster2: the rows of every table (`docs` counts the first
                 // only), which a move or a new copy sends: plans and moves
                 // count these.
-                let tables: serde_json::Map<String, Json> = s.schemas().filter(|t| t.table != strata::storage::SOURCES).filter_map(|t| s.table(&t.table).map(|v| (t.table.clone(), json!(v.n_live_docs())))).collect();
+                let tables: serde_json::Map<String, Json> = s.schemas().filter(|t| t.table != SOURCES && t.table != FUNCTIONS).filter_map(|t| s.table(&t.table).map(|v| (t.table.clone(), json!(v.n_live_docs())))).collect();
                 h["rows"] = json!(tables.values().filter_map(Json::as_u64).sum::<u64>());
                 h["tables"] = Json::Object(tables);
                 if let Some((m, shard)) = self.slots() {
@@ -4732,13 +4798,14 @@ pub fn has_source(op: &Json) -> bool {
 }
 
 /// The scope a SQL statement needs ([`crate::keys`]): a query read, a
-/// write write, and a table's or rank profile's statement admin. Every
+/// write write, and a table's, rank profile's or stored function's
+/// statement admin. Every
 /// kind is named, so that a new one must say what it needs.
 pub fn command_scope(c: &Command) -> Scope {
     match c {
         Command::Query | Command::Explain { .. } => Scope::Read,
         Command::Write { .. } => Scope::Write,
-        Command::CreateTable { .. } | Command::AlterTable { .. } | Command::DropTable { .. } | Command::CreateRankProfile { .. } | Command::DropRankProfile { .. } => Scope::Admin,
+        Command::CreateTable { .. } | Command::AlterTable { .. } | Command::DropTable { .. } | Command::CreateRankProfile { .. } | Command::DropRankProfile { .. } | Command::Function(_) => Scope::Admin,
     }
 }
 

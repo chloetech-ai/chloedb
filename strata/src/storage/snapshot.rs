@@ -277,6 +277,32 @@ impl Snapshot {
         self.rank_profiles().iter().find(|p| p.name.eq_ignore_ascii_case(name))
     }
 
+    /// A number that changes whenever a row of the table this snapshot
+    /// looks at is written or deleted (its segments, their live rows and
+    /// the memtable's last chunk), and stays while none is: what a cache
+    /// of a small table's rows is kept by ([`crate::db::Db::functions`]).
+    pub fn stamp(&self) -> u64 {
+        let slot = &self.inner.tables[self.table];
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |x: u64| {
+            for b in x.to_le_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100_0000_01b3);
+            }
+        };
+        for seg in &slot.base.segments {
+            mix(seg.id);
+            mix(seg.n_live as u64);
+        }
+        if let Some(t) = &slot.tail {
+            mix(t.part.gen);
+            mix(t.part.chunk as u64);
+            mix(t.part.len as u64);
+            mix(t.part.n_live as u64);
+        }
+        h
+    }
+
     /// The same version, looking at the table named `name` (any case).
     pub fn table(&self, name: &str) -> Option<Snapshot> {
         let t = self.inner.tables.iter().position(|t| t.base.schema.table.eq_ignore_ascii_case(name))?;

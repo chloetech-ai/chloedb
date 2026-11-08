@@ -1,5 +1,5 @@
-//! The writes behind the fixtures of formats 2 and 3, of numbered writes
-//! and of rank profiles in this directory (README.md):
+//! The writes behind the fixtures of formats 2 and 3, of numbered writes,
+//! of rank profiles and of stored functions in this directory (README.md):
 //! `examples/format_fixtures.rs` writes them with this module,
 //! and `tests/format_fixtures.rs` writes them again to check that Strata
 //! still writes the same bytes. The writes are deterministic: two runs give
@@ -12,7 +12,8 @@
 use std::path::Path;
 
 use strata::schema::{Analyzer, Field, FieldType, Schema};
-use strata::storage::{Database, DbOptions, Layout, RankProfile};
+use strata::query::function::{self, Change, FunctionSet};
+use strata::storage::{Database, DbOptions, Layout, RankProfile, FUNCTIONS};
 use strata::value::Value;
 
 /// 2026-10-01T00:00:00Z in microseconds.
@@ -239,6 +240,70 @@ fn profiles(path: &Path, layout: Layout) {
     ut.insert(u_doc(10)).unwrap();
     ut.upsert(u_doc(3)).unwrap();
     tx.commit().unwrap();
+}
+
+/// Writes a stored function's statement, as `Db::sql` does, into a
+/// database whose versions are `have`, at 2026-10-01 by `writer`:
+/// deterministic, where `Db::sql` takes the time now.
+pub fn define(db: &Database, have: &mut Vec<function::Function>, text: &str) {
+    let stmt = function::parse_statement(text).unwrap().expect("a function's statement");
+    db.ensure_functions().unwrap();
+    let mut tx = db.begin().unwrap();
+    match function::change(&FunctionSet::of(have.clone()), &stmt, Some(OCT1), Some("writer")).unwrap() {
+        Change::Put(f) => {
+            tx.table(FUNCTIONS).unwrap().upsert(f.to_row()).unwrap();
+            have.push(f);
+        }
+        Change::Delete(id) => {
+            assert!(tx.table(FUNCTIONS).unwrap().delete(&Value::Str(id.clone())).unwrap());
+            have.retain(|f| f.id() != id);
+        }
+        Change::Nothing => panic!("{text} writes nothing"),
+    }
+    tx.commit().unwrap();
+}
+
+/// Stored functions (format 3 with `field_ids`, `compact_keys` and
+/// `functions`): format 2's table `t` written and flushed; then a function
+/// that returns a value (`boosted`) and one that returns rows (`top`),
+/// and the deletes, flushed together; and left in the WAL, a new version
+/// of `boosted`, `top` dropped, a third function (`label`) and `t`'s last
+/// transaction.
+fn functions(path: &Path, layout: Layout) {
+    let db = create(path, t(), layout);
+    let mut tx = db.begin().unwrap();
+    for i in 0..30 {
+        tx.insert(t_doc(i, 0)).unwrap();
+    }
+    tx.commit().unwrap();
+    db.flush().unwrap();
+    let mut have = Vec::new();
+    define(&db, &mut have, "CREATE FUNCTION boosted(s FLOAT, n INT, w FLOAT DEFAULT 0.5) RETURNS FLOAT OPTIONS (description = 'a score raised by n') AS :s * (1 + :w * :n)");
+    define(&db, &mut have, "CREATE FUNCTION top(q TEXT, k INT DEFAULT 5) RETURNS TABLE AS SELECT id, n FROM t WHERE MATCH(body, :q) ORDER BY bm25(body, :q) DESC, id LIMIT :k");
+    let mut tx = db.begin().unwrap();
+    for i in 0..5 {
+        tx.delete(&key(i)).unwrap();
+    }
+    tx.commit().unwrap();
+    db.flush().unwrap();
+    // Left in the WAL.
+    define(&db, &mut have, "CREATE OR REPLACE FUNCTION boosted(s FLOAT, n INT, w FLOAT DEFAULT 0.25) RETURNS FLOAT AS :s * (1 + :w * :n)");
+    define(&db, &mut have, "DROP FUNCTION top");
+    define(&db, &mut have, "CREATE FUNCTION label(n INT) RETURNS KEYWORD AS CASE WHEN :n > 3 THEN 'many' ELSE 'few' END");
+    let mut tx = db.begin().unwrap();
+    for i in 30..35 {
+        tx.insert(t_doc(i, 1)).unwrap();
+    }
+    tx.commit().unwrap();
+}
+
+/// Writes the stored functions' set into `out`: `functions/`, with
+/// `db.strata` (and its WAL) and `db.dir`.
+pub fn write_functions(out: &Path) {
+    let d = out.join("functions");
+    std::fs::create_dir_all(&d).unwrap();
+    functions(&d.join("db.strata"), Layout::SingleFile);
+    functions(&d.join("db.dir"), Layout::Directory);
 }
 
 /// Writes every fixture set into `out`: `format2/`, `format3/`, `seqno/`
