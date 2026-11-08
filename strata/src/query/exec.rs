@@ -1300,7 +1300,7 @@ impl<'a> Executor<'a> {
         }
         let columns: Vec<String> = q.projection.iter().map(|(n, _)| n.clone()).collect();
         if self.opts.shard && has_graphs(q) {
-            return Err(err("graph queries cannot be split across shards: edges cross them"));
+            return Err(err("graph queries (REACHABLE, PATH, hops(), ppr) run on one database, not split across shards: a row's edges point at rows other shards hold"));
         }
         let m = self.mark();
         self.run_graphs(&q.graphs)?;

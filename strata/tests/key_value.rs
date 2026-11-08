@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use strata::db::{Db, SqlResult};
 use strata::query::exec::ExecOptions;
@@ -138,6 +139,42 @@ fn single_row_commits_leave_the_newest_chunk_unbuilt() {
     assert_eq!(rs.rows[0][0], Value::Int(2000));
     let rs = db.query("SELECT id FROM c ORDER BY v DESC LIMIT 2", &Params::new()).unwrap();
     assert_eq!(rs.rows, vec![vec![Value::Int(2999)], vec![Value::Int(2998)]]);
+}
+
+/// Many keys in a shuffled order, over segments of many doc store blocks
+/// (rows are read in docID order and answered in the keys'), whole and of
+/// some columns alone: each row as SQL answers it.
+#[test]
+fn reads_of_many_keys_in_any_order_and_of_some_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create(&dir.path().join("m.strata"), schema(), options()).unwrap();
+    for c in 0..4u64 {
+        let mut tx = db.storage().begin().unwrap();
+        for i in c * 500..(c + 1) * 500 {
+            tx.upsert(row(i, i as i64)).unwrap();
+        }
+        tx.commit().unwrap();
+        db.storage().flush().unwrap();
+    }
+    // Ten keys no row has.
+    let mut keys: Vec<Value> = (0..2010).map(|i| Value::Str(key(i))).collect();
+    keys.shuffle(&mut StdRng::seed_from_u64(3));
+    let snap = db.snapshot().table("t").unwrap();
+    let opts = ExecOptions::default();
+    let all = db.get_many_at(&snap, &keys, &opts).unwrap();
+    let some = db.get_columns_at(&snap, &keys, &["FLAG".into(), "body".into(), "id".into()], &opts).unwrap();
+    for ((k, a), s) in keys.iter().zip(&all).zip(&some) {
+        let Value::Str(k) = k else { unreachable!("keys are text") };
+        // id, n, body, flag: note is not stored.
+        let want = by_sql(&db, k);
+        assert_eq!(a.as_ref().map(|r| r.row.clone()), want, "{k}");
+        assert_eq!(s.as_ref().map(|r| r.row.clone()), want.map(|r| vec![r[3].clone(), r[2].clone(), r[0].clone()]), "{k}");
+    }
+    assert_eq!(all.iter().filter(|r| r.is_none()).count(), 10);
+    for bad in ["note", "nope"] {
+        let e = db.get_columns_at(&snap, &keys[..1], &[bad.to_string()], &opts).unwrap_err();
+        assert!(e.to_string().contains("id, n, body, flag"), "{e}");
+    }
 }
 
 /// Each row read by key carries the number of the write that last

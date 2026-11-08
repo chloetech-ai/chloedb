@@ -3189,3 +3189,97 @@ html.via-hub::before { content: ""; position: fixed; left: 0; right: 0; top: 0; 
 .fleet-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .fleet-tile { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-top: 3px solid var(--c, var(--line)); border-radius: var(--r-sm); background: var(--surface-2); min-width: 0; }
 .fleet-nums { display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline; }
+
+/* ---------------------------------------------------------------- following another cluster */
+.fleet-card > .hd { flex-wrap: wrap; } .fleet-card > .hd .tools { flex-wrap: wrap; justify-content: flex-end; }
+.follow-links { gap: 10px; }
+.follow-link { display: flex; align-items: center; gap: 10px; min-width: 0; --fc: var(--good); }
+.follow-link.warn { --fc: var(--warn); } .follow-link.bad { --fc: var(--crit); } .follow-link.info { --fc: var(--accent); }
+.follow-chip { gap: 6px; padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2); min-width: 0; max-width: 34%; overflow: hidden; text-overflow: ellipsis; }
+.follow-arrow { flex: 1 1 120px; min-width: 70px; height: 2px; background: var(--fc); position: relative; margin: 14px 8px 0 0; }
+.follow-link.warn .follow-arrow, .follow-link.bad .follow-arrow { background: repeating-linear-gradient(90deg, var(--fc) 0 8px, transparent 8px 13px); }
+.follow-arrow::after { content: ""; position: absolute; right: -8px; top: -5px; border-left: 9px solid var(--fc); border-top: 6px solid transparent; border-bottom: 6px solid transparent; }
+.follow-lag { position: absolute; left: 0; right: 0; bottom: 6px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; color: var(--text-2); }
+.follow-steps { padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.follow-step.done { color: var(--good-ink); } .follow-step.doing { font-weight: 600; } .follow-step.bad { color: var(--crit-ink); }
+.follow-note { margin-bottom: 10px; }
+.wb-follow:empty { display: none; } .wb-follow .follow-note { margin: 6px 0 4px; padding: 8px 12px; }
+.follow-note .btn { flex: none; }
+@media (max-width: 560px) { .follow-link { flex-wrap: wrap; } .follow-chip { max-width: 100%; } .follow-arrow { flex-basis: 100%; order: 1; margin: 18px 8px 4px 0; } .follow-link > .btn { order: 2; } }
+
+/* ---------------------------------------------------------------- simulator */
+.sim { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 1100px) { .sim { grid-template-columns: minmax(0, 1fr); } }
+.sim-side { position: sticky; top: 12px; }
+@media (max-width: 1100px) { .sim-side { position: static; } }
+.sim-form { gap: 12px; }
+.sim-form .seg { flex-wrap: wrap; }
+.sim-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.sim-two .input, .sim-two .select { width: 100%; }
+.sim-mix { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 6px 6px; background: var(--surface-2); }
+.sim-mixtoggle { width: 100%; justify-content: flex-start; }
+.sim-mixrow { display: flex; align-items: center; gap: 8px; padding: 2px 4px; }
+.sim-mixrow .grow { min-width: 0; font-size: 12.5px; }
+.sim-mixrow.off .grow { opacity: .55; }
+.sim-note, .sim-warn { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--text-2); }
+.sim-warn { background: var(--warn-soft); color: var(--text); font-size: 13px; }
+.sim-warn svg.i { color: var(--warn); flex: none; margin-top: 1px; }
+.sim-runs { display: flex; flex-direction: column; }
+.sim-run { text-align: left; border: 0; border-top: 1px solid var(--line); background: none; padding: 9px 14px; cursor: pointer; display: flex; flex-direction: column; gap: 3px; color: var(--text); }
+.sim-run:hover { background: var(--surface-2); }
+.sim-run.on { background: var(--accent-soft); }
+.sim-intro { max-width: 640px; margin: 10px auto; text-align: left; color: var(--text-2); }
+.sim-intro svg.i { width: 34px; height: 34px; color: var(--accent); }
+.sim-intro h2 { margin: 6px 0; font-size: 17px; color: var(--text); }
+.sim-intro ol { padding-left: 18px; }
+.sim-prog { display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap; }
+.sim-phases { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; flex: 0 1 300px; min-width: 240px; }
+.sim-phase { display: flex; gap: 10px; align-items: flex-start; color: var(--muted); }
+.sim-phase.running, .sim-phase.done { color: var(--text); }
+.sim-dot { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--line-2); display: grid; place-items: center; flex: none; margin-top: 1px; }
+.sim-phase.done .sim-dot { background: var(--good); border-color: var(--good); color: #fff; }
+.sim-phase.done .sim-dot svg.i { width: 12px; height: 12px; stroke-width: 3; }
+.sim-phase.running .sim-dot { border-color: var(--accent); }
+.sim-phase.stopped .sim-dot { border-color: var(--warn); }
+.sim-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--accent); border-top-color: transparent; animation: sim-spin 0.9s linear infinite; }
+@keyframes sim-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .sim-spin { animation: none; } }
+.sim-kv { display: flex; flex-direction: column; }
+.sim-kv b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.sim-kv.bad b, .sim-bad { color: var(--crit-ink); }
+.sim-verdict { gap: 16px; margin-bottom: 0; }
+.sim-score { width: 64px; height: 64px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; flex: none; border: 3px solid var(--line-2); background: var(--surface); }
+.sim-score b { font-size: 22px; line-height: 1; }
+.sim-score span { font-size: 10px; color: var(--muted); }
+.sim-score.ok { border-color: var(--good); }
+.sim-score.warn { border-color: var(--warn); }
+.sim-score.bad { border-color: var(--crit); }
+.sim-score.info { border-color: var(--accent); }
+.sim-kpis .kpi .val { font-size: 22px; }
+.sim-kpis .kpi .delta { white-space: normal; max-width: 100%; }
+.sim-checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.sim-advice { display: flex; flex-direction: column; }
+.sim-adv { display: flex; gap: 12px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.sim-adv .grow { min-width: 240px; flex: 1 1 320px; }
+.sim-badges { gap: 6px; flex-wrap: wrap; }
+.sim-delta { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sim-delta.good { background: var(--good-soft); color: var(--good-ink); }
+.sim-delta.bad { background: var(--crit-soft); color: var(--crit-ink); }
+.sim-wi-controls { gap: 16px; align-items: flex-end; }
+.sim-step { display: flex; flex-direction: column; gap: 3px; }
+.sim-cmps { display: grid; grid-template-columns: repeat(auto-fill, minmax(125px, 1fr)); gap: 10px; }
+.sim-cmp { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); align-items: flex-start; }
+.sim-cmp b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.sim-grid { border-collapse: separate; border-spacing: 3px; font-size: 12px; }
+.sim-grid th { font-weight: 600; color: var(--text-2); padding: 2px 6px; text-align: center; }
+.sim-grid td { padding: 0; }
+.sim-cell { width: 100%; min-width: 58px; height: 30px; border-radius: 6px; border: 2px solid transparent; cursor: pointer; font-variant-numeric: tabular-nums; font-weight: 600; font-size: 12px; color: var(--text); background: var(--surface-3); }
+.sim-cell.l1 { background: var(--seq-1); } .sim-cell.l2 { background: var(--seq-2); } .sim-cell.l3 { background: var(--seq-3); }
+.sim-cell.l4 { background: var(--seq-4); color: #fff; } .sim-cell.l5 { background: var(--seq-5); color: #fff; } .sim-cell.l6 { background: var(--seq-6); color: #fff; } .sim-cell.l7 { background: var(--seq-7); color: #fff; }
+.sim-cell.no { background-image: repeating-linear-gradient(135deg, transparent 0 5px, color-mix(in srgb, var(--surface) 55%, transparent) 5px 8px); }
+.sim-cell.now { border-color: var(--text); }
+.sim-cell.best { border-color: var(--good); box-shadow: 0 0 0 2px color-mix(in srgb, var(--good) 35%, transparent); }
+.sim-cell.sel { outline: 2px solid var(--s2); outline-offset: 1px; }
+.sim-key { width: 14px; height: 14px; border-radius: 4px; border: 2px solid var(--text); display: inline-block; }
+.sim-key.best { border-color: var(--good); }
+.sim-key.no { border-color: var(--line-2); background-image: repeating-linear-gradient(135deg, var(--seq-3) 0 3px, var(--surface) 3px 5px); }

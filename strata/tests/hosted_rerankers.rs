@@ -325,3 +325,89 @@ fn a_plan_names_the_endpoint_it_was_made_with() {
     let again = db.explain(&rerank("gpu"), &params).unwrap();
     assert!(!again.explain(&[&db.schema()]).join("\n").contains(&hash));
 }
+
+/// What a mock language model answers a grading prompt: three times the
+/// passage's overlap with the query, rounded, in UMBRELA's format.
+fn grade_answer(api: &str, body: &J) -> Answer {
+    let prompt = body["messages"][0]["content"].as_str().unwrap_or_else(|| panic!("no message in {body}"));
+    let query = prompt.split("\nQuery: ").nth(1).and_then(|t| t.split('\n').next()).unwrap();
+    let passage = prompt.split("\nPassage: ").nth(1).and_then(|t| t.split("\n\nSplit this problem").next()).unwrap();
+    let text = format!("##final score: {}", (3.0 * overlap(query, passage)).round() as u8);
+    let j = match api {
+        "anthropic" => json!({"id": "msg_1", "type": "message", "role": "assistant", "content": [{"type": "text", "text": text}], "stop_reason": "end_turn"}),
+        _ => json!({"id": "c1", "object": "chat.completion", "choices": [{"index": 0, "message": {"role": "assistant", "content": text}}]}),
+    };
+    (200, Vec::new(), j.to_string())
+}
+
+#[test]
+fn a_language_model_grades_each_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let docs = docs();
+    // Claude by its name, its requests sent to the mock.
+    let claude = Mock::start(|r, _| grade_answer("anthropic", &r.body));
+    std::env::set_var("ANTHROPIC_BASE_URL", &claude.url);
+    std::env::set_var("ANTHROPIC_API_KEY", "ak-1");
+    // A chat server of one's own, by its endpoint.json.
+    let chat = Mock::start(|r, _| grade_answer("chat", &r.body));
+    let models = models_with(dir.path(), "local-llm", json!({"api": "chat", "base_url": format!("{}/v1", chat.url), "model": "qwen3-8b"}));
+    let db = create(&dir.path().join("db.strata"), &models, &docs);
+    let params = Params::new().set("t", Value::Str(words(&docs, 5)));
+    let overlap_rows = query(&db, &rerank("builtin:overlap"), &params);
+    for (name, mock, path) in [("anthropic/claude-haiku-5-5", &claude, "/messages"), ("local-llm", &chat, "/v1/chat/completions")] {
+        let got = query(&db, &rerank(name), &params);
+        // Each score is a grade, 0 to 3: the overlap's, as the mock grades.
+        assert_eq!(got.keys.len(), 10, "{name}");
+        for (k, s) in got.keys.iter().zip(&got.scores) {
+            let i = overlap_rows.keys.iter().position(|x| x == k);
+            if let Some(i) = i {
+                assert_eq!(*s, (3.0 * overlap_rows.scores[i]).round(), "{name}: {k:?}");
+            }
+            assert!([0.0, 1.0, 2.0, 3.0].contains(s), "{name}: {s}");
+        }
+        assert!(got.scores.windows(2).all(|w| w[0] >= w[1]), "{name}: {:?}", got.scores);
+        // One request a row: the 30 rows of the first phase.
+        let seen = mock.seen();
+        assert_eq!(seen.len(), 30, "{name}");
+        for s in &seen {
+            assert_eq!(s.path, path, "{name}");
+            let prompt = s.body["messages"][0]["content"].as_str().unwrap();
+            assert!(prompt.contains("integer scale of 0 to 3") && prompt.contains("\nPassage: "), "{name}: {prompt}");
+        }
+        if name.starts_with("anthropic/") {
+            let s = &seen[0];
+            assert_eq!((s.header("x-api-key"), s.header("anthropic-version"), s.header("authorization")), (Some("ak-1"), Some("2023-06-01"), None));
+            assert_eq!((s.body["model"].as_str(), s.body["max_tokens"].as_u64(), s.body["temperature"].as_f64()), (Some("claude-haiku-5-5"), Some(16), Some(0.0)));
+        } else {
+            assert_eq!(seen[0].body["model"], "qwen3-8b");
+            assert!(seen[0].body.get("max_tokens").is_none(), "{}", seen[0].body);
+        }
+    }
+    // The first phase's score breaks the grades' ties, as the docs say.
+    let tie = "WITH top AS (SELECT * FROM docs ORDER BY bm25(body, :t) DESC LIMIT 30) SELECT id, score() FROM top ORDER BY cross_encoder('anthropic/claude-haiku-5-5', title, text, :t) + 0.01 * bm25(body, :t) DESC LIMIT 10";
+    let broken = query(&db, tie, &params);
+    assert_eq!(broken.keys.len(), 10);
+    assert!(broken.scores.iter().any(|s| s.fract() != 0.0), "{:?}", broken.scores);
+    // An answer without a grade leaves the row without a score (it sorts
+    // last, as a NULL does); the query still answers.
+    let mute = Mock::start(|_, _| (200, Vec::new(), json!({"content": [{"type": "text", "text": "I cannot tell."}]}).to_string()));
+    let models = models_with(dir.path(), "mute", json!({"api": "anthropic", "base_url": mute.url, "model": "claude-haiku-5-5", "key_env": "ANTHROPIC_API_KEY"}));
+    let db = create(&dir.path().join("mute.strata"), &models, &docs);
+    let got = query(&db, &rerank("mute"), &params);
+    assert_eq!(mute.seen().len(), 30);
+    assert_eq!(got.keys.len(), 10);
+    assert!(got.scores.iter().all(|s| *s == f64::NEG_INFINITY), "{:?}", got.scores);
+    // Anthropic has no embedding models.
+    let e = strata::hosted::Endpoint::from_config("anthropic/claude-haiku-5-5", None, &|_| None).err().expect("refused").to_string();
+    assert!(e.contains("anthropic has no embedding models"), "{e}");
+}
+
+#[test]
+fn grades_are_read_from_answers() {
+    use strata::hosted::grade_of;
+    assert_eq!(grade_of("##final score: 2"), Some(2));
+    assert_eq!(grade_of("M: 3, T: 2\n##final score: 1"), Some(1));
+    assert_eq!(grade_of("3"), Some(3));
+    assert_eq!(grade_of("between 1 and 2"), None);
+    assert_eq!(grade_of("##final score: 7"), None);
+}

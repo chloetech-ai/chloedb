@@ -6,6 +6,7 @@
 // far each event stream has been written, with a box to send one.
 
 import { h, icon, clear, fmt, api, at, authHeader, toast, empty, seg, sqlBlock, dropzone, every, failure, confirm, gate, can, bus } from "../core.js";
+import { followsWho, writeThere, followBanner } from "../follows.js";
 import { isProduction, isCoordinator } from "../data.js";
 import { tables, cached, invalidate, table as tableOf, typeBadge, typeMeta, TYPES } from "../catalog.js";
 import { quoteName } from "../sqledit.js";
@@ -126,6 +127,12 @@ function render(page) {
   };
   drawOutage();
   page.prepend(outage);
+  // A cluster that follows another refuses its clients' writes: say so
+  // above the loader, and again when a write is refused for it.
+  const fol = h("div");
+  page.prepend(fol);
+  followBanner(fol, "import").catch(() => {});
+  const failed = (msg, kind, ms) => { toast(msg, kind, ms); const n = followsWho(msg); if (n) { clear(fol, writeThere(n, "import", { banner: true })); fol.scrollIntoView?.({ block: "nearest" }); } };
   const offCluster = bus.on("cluster", drawOutage);
 
   // ------------------------------------------------------------ loading a file
@@ -247,7 +254,7 @@ function render(page) {
         const sent = Date.now();
         const j = await upload(`/v1/import?format=${format}&table=${encodeURIComponent(name)}`, file, CT[format], progress, reason);
         done(name, j, file, { sent, reason, route: "/v1/import" });
-      } catch (e) { toast(e.message, "bad", 9000); go.disabled = false; progress.classList.add("hidden"); }
+      } catch (e) { failed(e.message, "bad", 9000); go.disabled = false; progress.classList.add("hidden"); }
     };
     clear(left, h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Load a file")), h("div", { class: "bd" }, box)));
     clear(box, fileRow,
@@ -301,14 +308,14 @@ function render(page) {
     clear(left, h("section", { class: "card" }, h("div", { class: "bd" }, h("div", { class: "small muted" }, `Reading ${file.name}…`))));
     let plan;
     try { plan = await api("/v1/import?format=sqlite&plan=true", { body: file, type: CT.sqlite }); }
-    catch (e) { toast(e.message, "bad", 9000); start(); return; }
+    catch (e) { failed(e.message, "bad", 9000); start(); return; }
     const pick = new Set(plan.tables.map((t) => t.source));
     const progress = h("div", { class: "imp-prog hidden" }, h("div", { class: "bar" }, h("span")), h("span", { class: "small dim txt" }));
     const go = h("button", { class: "btn primary" }, icon("import"), "Import the tables");
     go.onclick = async () => {
       go.disabled = true;
       try { const j = await upload(`/v1/import?format=sqlite&tables=${encodeURIComponent([...pick].join(","))}`, file, CT.sqlite, progress); invalidate(); ts = await tables(true); done(j.tables.map((t) => t.table).join(", "), { written: j.written, took_ms: j.took_ms }, file); }
-      catch (e) { toast(e.message, "bad", 9000); go.disabled = false; }
+      catch (e) { failed(e.message, "bad", 9000); go.disabled = false; }
     };
     clear(left, h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Import a SQLite database")), h("div", { class: "bd stack" },
       h("div", { class: "imp-file" }, icon("db", "lg"), h("div", { class: "grow" }, h("b", {}, file.name), h("div", { class: "small muted" }, `${fmt.bytes(file.size)} · SQLite · ${fmt.plural(plan.tables.length, "table")}`)), h("button", { class: "btn ghost", onclick: start }, icon("x"), "Another file")),
@@ -333,7 +340,7 @@ function render(page) {
     catch (e) {
       // A file no export wrote names no table: the file's name does.
       if (!st.table && /\?table=/.test(e.message)) return parquetPlan(file, { ...st, table: stem });
-      toast(e.message, "bad", 9000); start(); return;
+      failed(e.message, "bad", 9000); start(); return;
     }
     st.table = plan.table;
     const progress = h("div", { class: "imp-prog hidden" }, h("div", { class: "bar" }, h("span")), h("span", { class: "small dim txt" }));
@@ -341,7 +348,7 @@ function render(page) {
     go.onclick = async () => {
       go.disabled = true;
       try { const j = await upload("/v1/import?" + q({}), file, CT.parquet, progress); invalidate(); ts = await tables(true); done(j.table, { written: j.written, took_ms: j.took_ms, skipped_fields: j.skipped }, file); if (j.notes?.length) toast(j.notes.join(" · "), "", 9000); }
-      catch (e) { toast(e.message, "bad", 9000); go.disabled = false; }
+      catch (e) { failed(e.message, "bad", 9000); go.disabled = false; }
     };
     const names = h("datalist", { id: "imp-pq-tables" }, ts.map((t) => h("option", { value: t.table })));
     const name = h("input", { class: "input mono", value: plan.table, list: "imp-pq-tables", style: { width: "220px" }, onchange: (e) => parquetPlan(file, { ...st, table: e.target.value.trim() || undefined }) });
@@ -393,7 +400,7 @@ function render(page) {
             download(b, `${t}.parquet`);
           }
           toast(`Exported ${fmt.plural(pick.size, "Parquet file")}, ${fmt.bytes(bytes)}`, "ok");
-        } catch (e) { toast(e.message, "bad", 8000); }
+        } catch (e) { failed(e.message, "bad", 8000); }
         go.disabled = false;
         return;
       }
@@ -406,7 +413,7 @@ function render(page) {
         const b = await r.blob();
         download(b, "strata-export.sqlite");
         toast(`Exported ${fmt.bytes(b.size)}`, "ok");
-      } catch (e) { toast(e.message, "bad", 8000); }
+      } catch (e) { failed(e.message, "bad", 8000); }
       go.disabled = false;
     } }, icon("download"), "Download as SQLite");
     const sqliteOpts = h("div", { class: "stack", style: { gap: "10px" } },

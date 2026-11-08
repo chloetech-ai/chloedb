@@ -689,7 +689,7 @@ impl Edit {
         match self {
             Edit::Start { slots, to } => m.start_move(slots, *to),
             Edit::Flip(mv) => match moving(mv) {
-                Some(x) if x.state == MoveState::Copying => m.flip_move(),
+                Some(x) if x.state == MoveState::Copying => m.flip_move_with(mv.offsets.clone()),
                 _ => Err("the move changed while its rows were copied".into()),
             },
             Edit::Abort(mv) => match moving(mv) {

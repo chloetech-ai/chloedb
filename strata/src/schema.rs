@@ -117,6 +117,9 @@ pub const JSON: &str = "json";
 /// as text too ([`Field::text`]): its segments hold a text index beside
 /// the field's terms.
 pub const JSON_TEXT: &str = "json_text";
+/// The feature of a TEXT field a language model makes of another's text
+/// ([`Derive::prompt`]): a version without it would not make the text.
+pub const DERIVE_TEXT: &str = "derive_text";
 
 /// The feature of a database with a VECTOR field searched by RaBitQ codes
 /// ([`VectorCodes::Rabitq1`], [`crate::vector::rabitq`]): versions of
@@ -377,11 +380,18 @@ pub const ADDED_FIELDS: &str = "added_fields";
 /// stored, so merges and replicas never run the model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Derive {
-    /// A MEDIA field.
+    /// A MEDIA field; or, with a prompt, a stored TEXT or KEYWORD field.
     pub from: String,
     /// The model, by the name [`crate::derive::open`] finds it under, such
-    /// as `blip-image-captioning-base` or `colors`.
+    /// as `blip-image-captioning-base` or `colors`; with a prompt, a
+    /// language model's (`anthropic/claude-haiku-5-5`, `openai/<model>`,
+    /// or a directory whose `endpoint.json` names a chat server).
     pub model: String,
+    /// What a language model is told to make of the source field's text
+    /// ([`crate::derive::open_for`]): a summary, a category, keywords.
+    /// Empty for a model of media.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prompt: String,
 }
 
 /// A semantic-ID field's source and codebook ([`crate::sid`]): the writer
@@ -661,7 +671,14 @@ impl Field {
 
     /// Makes a TEXT field `model`'s text of MEDIA field `from` ([`Derive`]).
     pub fn derived(mut self, model: &str, from: &str) -> Self {
-        self.derive = Some(Derive { from: from.to_string(), model: model.to_string() });
+        self.derive = Some(Derive { from: from.to_string(), model: model.to_string(), prompt: String::new() });
+        self
+    }
+
+    /// A stored TEXT field that language model `model` makes of TEXT or
+    /// KEYWORD field `from`, told `prompt` ([`Derive::prompt`]).
+    pub fn derived_by(mut self, model: &str, from: &str, prompt: &str) -> Self {
+        self.derive = Some(Derive { from: from.to_string(), model: model.to_string(), prompt: prompt.to_string() });
         self
     }
     /// A semantic-ID field: a stored KEYWORD[] filled from the vector of
@@ -1369,8 +1386,21 @@ impl Schema {
             if d.model.is_empty() {
                 return bad("a derived field names its model");
             }
-            if !self.field(&d.from).is_some_and(|m| m.media.is_some()) {
-                return bad(&format!("derive names {}, which is not a MEDIA field", d.from));
+            match self.field(&d.from) {
+                Some(m) if m.media.is_some() => {
+                    if !d.prompt.is_empty() {
+                        return bad("a model of media takes no prompt: a prompt is for text a language model makes of a TEXT or KEYWORD field");
+                    }
+                }
+                Some(m) if matches!(m.ty, FieldType::Text { .. } | FieldType::Keyword) => {
+                    if d.prompt.trim().is_empty() {
+                        return bad(&format!("derive names {}, which is not a MEDIA field: text made of a TEXT or KEYWORD field is a language model's, told what to make by prompt = '...'", d.from));
+                    }
+                    if m.name.eq_ignore_ascii_case(&f.name) || m.derive.is_some() || !m.stored || !m.generated_from.is_empty() || m.multi {
+                        return bad(&format!("derive names {}: a language model reads a stored TEXT or KEYWORD field of one value, not generated or derived itself", d.from));
+                    }
+                }
+                _ => return bad(&format!("derive names {}, which is not a MEDIA field (nor, with a prompt, a TEXT or KEYWORD field)", d.from)),
             }
         }
         Ok(())
@@ -1503,6 +1533,7 @@ impl Schema {
                 f.semantic_id.as_ref().map(|_| "semantic_id"),
                 f.media.map(|_| "media"),
                 f.derive.as_ref().map(|_| "derive"),
+                f.derive.as_ref().filter(|d| !d.prompt.is_empty()).map(|_| DERIVE_TEXT),
                 f.added.as_ref().map(|_| ADDED_FIELDS),
                 (f.ty == FieldType::Json).then_some(JSON),
                 (f.ty == FieldType::Json && f.text).then_some(JSON_TEXT),
@@ -1937,7 +1968,11 @@ impl Schema {
                     m.insert("semantic_id".into(), serde_json::to_value(s).expect("serialises"));
                 }
                 if let Some(d) = &f.derive {
-                    m.insert("derive".into(), json!({"from": d.from, "model": d.model}));
+                    let mut j = json!({"from": d.from, "model": d.model});
+                    if !d.prompt.is_empty() {
+                        j["prompt"] = json!(d.prompt);
+                    }
+                    m.insert("derive".into(), j);
                 }
                 if let Some(p) = &f.partition {
                     m.insert("partition".into(), serde_json::to_value(p).expect("serialises"));

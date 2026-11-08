@@ -57,6 +57,7 @@ flowchart LR
 
 | | Result | Where |
 |---|---|---|
+| Against 13 search engines and databases, 14 kinds of query (MS MARCO 1M on DigitalOcean, 7 November, with five pull requests in review) | **First** on places summed over 45 tests: 146 points, Solr 286, Elasticsearch 291, Qdrant 300; at 10M, 87 against OpenSearch's 181 and Elasticsearch's 186. Behind on typo search, key lookups and BM25 × recency | [Benchmarks](https://chloetech-ai.github.io/strata/site/benchmarks.html) |
 | Strata vs Tantivy, warm BM25 top-10 | **1.7–3.2× faster**; conjunctions 2.7–4.1× faster; 24 of 28 text and filter comparisons won | [Strata results](docs/strata/results.md#query-latency) |
 | Strata vector top-10 (HNSW, 1,024-d) | **0.05–0.10 ms**, recall@10 0.99 on Quora; SQLite's scan takes 7.7 ms to 0.7 s | [Strata results](docs/strata/results.md#vector-indexes) |
 | Filtered vector search planner | **1.8–6.1× faster** than the best fixed strategy, recall@10 0.991–0.998 | [Strata results](docs/strata/results.md#filtered-vector-search-and-the-planner) |
@@ -90,14 +91,23 @@ cd strata && cargo build --release
 target/release/strata db.strata "SELECT category, COUNT(*) FROM docs WHERE MATCH(body, 'india') GROUP BY category ORDER BY 2 DESC LIMIT 5" --plan
 ```
 
-Strata as a server, with a query builder and an agent in the browser:
+Strata as a server, with a query builder and an agent in the browser, prebuilt for Linux (x86_64, aarch64) and macOS (arm64, x86_64) ([more](docs/strata/server.md#run-it)):
+
+```sh
+v=0.1.0 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
+curl -LO https://github.com/chloetech-ai/strata/releases/download/strata-server-v$v/strata-server-$p.tar.gz
+tar xzf strata-server-$p.tar.gz
+strata-server-$p/strata-server --demo 20000 --db products.strata   # http://127.0.0.1:7700
+```
+
+Or built from source:
 
 ```sh
 cd strata-server && cargo build --release
-target/release/strata-server --demo 20000 --db products.strata   # http://127.0.0.1:7700
+target/release/strata-server --demo 20000 --db products.strata
 ```
 
-Or the same server without building it, from the published image (a new `--db` starts with no tables; add `--demo 20000` for the demo catalogue):
+Or from the published image (a new `--db` starts with no tables; add `--demo 20000` for the demo catalogue):
 
 ```sh
 docker run -p 127.0.0.1:7700:7700 -e STRATA_TOKEN=pick-a-secret -v strata:/data \
@@ -221,7 +231,7 @@ Each crate also carries its own design document ([Strata](strata/DESIGN.md), [En
 
 ## Status and limits
 
-This is a research prototype, measured carefully but on one machine (an Apple M2 MacBook Air; the model-based runs on an earlier 4-core cloud VM). A Strata database has one writer process (the multi-process writer lock is designed but not built), and `strata-server` serves a database's first table for now; its sharding, replication and agent are new and have been tested, not yet measured at scale. Engram's coding evidence comes from one long session, a handful of live runs and three small A/B projects; the public benchmarks it uses (LongMemEval, LoCoMo) are chat histories, not coding sessions. Each results page lists its own limitations.
+This is a research prototype, measured carefully, most of it on one machine (an Apple M2 MacBook Air; the model-based runs on an earlier 4-core cloud VM, and the comparisons with other engines on DigitalOcean). A Strata database has one writer process (the multi-process writer lock is designed but not built), and `strata-server` serves a database's first table for now; its sharding, replication and agent are new and have been tested, not yet measured at scale. Engram's coding evidence comes from one long session, a handful of live runs and three small A/B projects; the public benchmarks it uses (LongMemEval, LoCoMo) are chat histories, not coding sessions. Each results page lists its own limitations.
 
 The repository was called `rkonow/engram` until October 2026. GitHub redirects the old address, so existing clones keep working.
 

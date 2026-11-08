@@ -1,0 +1,4 @@
+<!-- r2 and r3 ask for 1,000 hits, above the default limit of 400. -->
+<query-profile id="default">
+    <field name="maxHits">2000</field>
+</query-profile>

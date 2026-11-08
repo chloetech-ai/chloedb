@@ -16,6 +16,8 @@ ENV RUSTFLAGS=${RUSTFLAGS}
 WORKDIR /src
 COPY strata strata
 COPY strata-server strata-server
+# Compiled in (src/mcp.rs).
+COPY docs/strata/query-language.md docs/strata/build-an-app.md docs/strata/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/strata-server/target \
     cargo build --release --manifest-path strata-server/Cargo.toml --bins \
