@@ -5,7 +5,9 @@
 //! threads ([`Executor::per_segment`]) and their groups merged in segment
 //! order, so the groups come out in the order one pass first sees them;
 //! FLOAT sums are exact ([`agg::ExactSum`]), so merging them gives the
-//! bits one pass gives.
+//! bits one pass gives. A field's values written in place are added beside
+//! its column's, the column's value of those rows left out, so a counter
+//! or rating set in place keeps an aggregate of it on the columns.
 //!
 //! It answers a query whose groups are single-valued keyword, INT or
 //! FLOAT fields and whose aggregates are `COUNT(*)`, or `COUNT`, `SUM`,
@@ -83,6 +85,16 @@ fn value(col: &NumericColumn, updates: Option<&Updates>, field: usize, d: DocId,
         Some(k) if col.kind() == NumericKind::Int => Value::Int(k),
         Some(k) => Value::Float(col.kind().decode(k)),
     }
+}
+
+/// Whether every value written in place of `field` (of type `ty`) is NULL
+/// or of that type.
+fn own_type(u: &Updates, field: usize, ty: &FieldType) -> bool {
+    let mut own = true;
+    u.each_oldest_first(field, |_, v| {
+        own &= matches!((ty, v), (_, Value::Null) | (FieldType::Int, Value::Int(_)) | (FieldType::Float, Value::Float(_)));
+    });
+    own
 }
 
 /// Calls `f` with each block of 128 rows of `set` that holds any: the
@@ -180,8 +192,9 @@ enum Sink {
     /// from it ([`agg::near_units`]), `pending` of them since they were
     /// last moved into it.
     Float { avg: bool, sum: Vec<ExactSum>, near: Vec<i128>, pending: u32, n: Vec<i64> },
-    /// `MIN`, `MAX`, percentiles, and any aggregate of a field written in
-    /// place: the row-by-row aggregate's accumulators.
+    /// `MIN`, `MAX`, percentiles, and any aggregate of a field with values
+    /// written in place of another type than its own: the row-by-row
+    /// aggregate's accumulators.
     Accs(Vec<Acc>),
 }
 
@@ -266,9 +279,12 @@ impl<'a> Executor<'a> {
     /// The groups and aggregates of [`plan`]'s query, read from the columns:
     /// each segment on its own thread, merged in segment order.
     pub(super) fn aggregate_columns(&mut self, q: &Select, needed: &[Projection], plan: &Plan) -> Result<agg::Groups> {
-        // Values written in place may be of another type than the column's:
-        // their aggregates add them as values, as the row-by-row one does.
-        let typed = !self.segs.iter().any(|s| plan.aggs.iter().flatten().any(|&f| self.updates(s, f).is_some()));
+        // Values written in place are added beside the column's
+        // (`aggregate_segment`) when each is NULL or of the field's type, as
+        // a write keeps them (`WriteTxn::set`). Should one be of another
+        // type, the aggregates add every value as a value, as the row-by-row
+        // one does.
+        let typed = self.segs.iter().all(|s| plan.aggs.iter().flatten().all(|&f| self.updates(s, f).is_none_or(|u| own_type(u, f, &self.schema.fields[f].ty))));
         let schema = self.schema;
         let new = || All { keys: Vec::new(), index: HashMap::new(), sinks: needed.iter().zip(&plan.aggs).map(|(p, &f)| Sink::new(p, f, schema, typed)).collect() };
         let per = self.per_segment(|ex, s, l| {
@@ -328,6 +344,25 @@ impl<'a> Executor<'a> {
                 Some(f) => self.numeric(s, f).map(|n| Some((f, n.col(), self.updates(s, f)))),
             })
             .collect::<Result<_>>()?;
+        // The values written in place of each aggregate's field that its
+        // typed sink adds itself, by docID: the column's value of those rows
+        // is not read. (A row-by-row sink reads each row's through `value`.)
+        let over: Vec<Vec<(DocId, &Value)>> = aggs
+            .iter()
+            .zip(&all.sinks)
+            .map(|(a, sink)| match (a, sink) {
+                (Some((f, _, Some(u))), Sink::Count(_) | Sink::Int { .. } | Sink::Float { .. }) => u.field(*f).collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let n_over: usize = over.iter().map(Vec::len).sum();
+        if n_over > 0 {
+            l.plan.push(format!("seg {}: {n_over} values written in place added as they are", s.ord));
+        }
+        // Each list's first entry not in a block before the current one, and
+        // its entries in the current one.
+        let mut at = vec![0usize; over.len()];
+        let mut here = vec![0..0; over.len()];
         // One keyword field: the group of each value code, and of rows
         // without a value; one numeric field of a few thousand keys (none
         // written in place): of each key from the smallest; else by the
@@ -347,9 +382,11 @@ impl<'a> Executor<'a> {
         let n_cols = keys.len() + aggs.len();
         let mut block = vec![[0i64; BLOCK]; n_cols];
         let mut masks = vec![[0u64; 2]; n_cols];
-        let (mut pos, mut gs) = ([0u8; BLOCK], [0u32; BLOCK]);
+        // Each picked row's place among the block's picked rows, by its row
+        // in the block.
+        let (mut pos, mut gs, mut slot) = ([0u8; BLOCK], [0u32; BLOCK], [0u8; BLOCK]);
         let mut err = None;
-        each_block(&set, |b, rows| {
+        each_block(&set, |b, picked| {
             if let Err(e) = tick.tick() {
                 err = Some(e);
                 return false;
@@ -365,11 +402,27 @@ impl<'a> Executor<'a> {
                     masks[keys.len() + i] = col.block_keys_of(b, &mut block[keys.len() + i]);
                 }
             }
+            // The rows of this block written in place, which the column's
+            // values then leave out.
+            let lo = (b * BLOCK) as DocId;
+            for (i, list) in over.iter().enumerate().filter(|(_, l)| !l.is_empty()) {
+                while at[i] < list.len() && list[at[i]].0 < lo {
+                    at[i] += 1;
+                }
+                let start = at[i];
+                while at[i] < list.len() && list[at[i]].0 < lo + BLOCK as DocId {
+                    let j = (list[at[i]].0 - lo) as usize;
+                    masks[keys.len() + i][j / 64] &= !(1 << (j % 64));
+                    at[i] += 1;
+                }
+                here[i] = start..at[i];
+            }
             let mut k = 0;
-            for (w, &bits) in rows.iter().enumerate() {
+            for (w, &bits) in picked.iter().enumerate() {
                 let mut x = bits;
                 while x != 0 {
-                    pos[k] = (w * 64 + x.trailing_zeros() as usize) as u8;
+                    let j = w * 64 + x.trailing_zeros() as usize;
+                    (pos[k], slot[j]) = (j as u8, k as u8);
                     k += 1;
                     x &= x - 1;
                 }
@@ -426,16 +479,30 @@ impl<'a> Executor<'a> {
                 gs[t] = g;
             }
             // Each aggregate over the block's rows.
-            for (i, (sink, a)) in all.sinks.iter_mut().zip(&aggs).enumerate() {
-                let i = keys.len() + i;
+            for (a_i, (sink, a)) in all.sinks.iter_mut().zip(&aggs).enumerate() {
+                let i = keys.len() + a_i;
                 let rows = pos[..k].iter().zip(&gs[..k]).map(|(&j, &g)| (j as usize, g as usize));
+                // The picked rows' values written in place, with their groups.
+                let written = over[a_i][here[a_i].clone()].iter().filter_map(|&(d, v)| {
+                    let j = (d - lo) as usize;
+                    (picked[j / 64] >> (j % 64) & 1 == 1).then(|| (gs[slot[j] as usize] as usize, v))
+                });
                 match (sink, a) {
                     (Sink::Count(c), None) => rows.for_each(|(_, g)| c[g] += 1),
-                    (Sink::Count(c), Some(_)) => rows.for_each(|(j, g)| c[g] += has(i, j) as i64),
+                    (Sink::Count(c), Some(_)) => {
+                        rows.for_each(|(j, g)| c[g] += has(i, j) as i64);
+                        written.for_each(|(g, v)| c[g] += !matches!(v, Value::Null) as i64);
+                    }
                     (Sink::Int { isum, n, .. }, Some(_)) => {
                         for (j, g) in rows.filter(|&(j, _)| has(i, j)) {
                             isum[g] += block[i][j] as i128;
                             n[g] += 1;
+                        }
+                        for (g, v) in written {
+                            if let Value::Int(x) = v {
+                                isum[g] += *x as i128;
+                                n[g] += 1;
+                            }
                         }
                     }
                     (Sink::Float { sum, near, pending, n, .. }, Some((_, col, _))) => {
@@ -444,6 +511,15 @@ impl<'a> Executor<'a> {
                             NumericKind::Decimal(s) => add_floats(|k| NumericKind::Decimal(s).decode(k), vals, rows, sum, near, n),
                             NumericKind::FloatBits => add_floats(|k| NumericKind::FloatBits.decode(k), vals, rows, sum, near, n),
                             NumericKind::Int => add_floats(|k| k as f64, vals, rows, sum, near, n),
+                        }
+                        for (g, v) in written {
+                            if let Value::Float(x) = v {
+                                match agg::near_units(*x) {
+                                    Some(u) => near[g] += u,
+                                    None => sum[g].add(*x),
+                                }
+                                n[g] += 1;
+                            }
                         }
                         // A block adds at most BLOCK to any group's integer.
                         *pending += k as u32;

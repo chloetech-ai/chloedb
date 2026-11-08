@@ -351,3 +351,88 @@ async fn a_crawl_grows_onto_servers_it_was_given() {
     assert_eq!(g["events"].as_array().unwrap().iter().filter(|e| e["kind"] == "shard").count(), 1, "{g:#}");
     assert!(g["waiting"].as_str().is_some_and(|w| w.contains("every server")), "{g:#}");
 }
+
+/// Politely, into a cluster: a page that answers 429 (Retry-After: 1)
+/// twice is asked again and written, the host waiting each time; and a
+/// site the crawl reaches through a link, not a seed, gets the
+/// Crawl-delay its robots.txt asks for although the crawl asks none.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crawl_waits_for_busy_pages_and_every_sites_crawl_delay() {
+    let Some(bin) = server_bin() else {
+        assert!(std::env::var_os("STRATA_CRAWL_NEED_SERVER").is_none(), "no strata-server binary (STRATA_SERVER_BIN)");
+        eprintln!("skipped: no strata-server binary (build strata-server, or set STRATA_SERVER_BIN)");
+        return;
+    };
+    // The other site, linked as localhost: its pages a link apart, the time of each hit kept.
+    let times: Arc<Mutex<Vec<Instant>>> = Arc::default();
+    let other = {
+        let t = times.clone();
+        let app = Router::new()
+            .route("/robots.txt", get(|| async { "User-agent: *\nCrawl-delay: 0.4\n" }))
+            .route(
+                "/b/:i",
+                get(move |Path(i): Path<usize>| {
+                    let t = t.clone();
+                    async move {
+                        t.lock().unwrap().push(Instant::now());
+                        let next = if i < 4 { format!(r#"<a href="/b/{}">next</a>"#, i + 1) } else { String::new() };
+                        html(format!("<html><head><title>Other {i}</title></head><body><main><p>Another site, page {i}.</p>{next}</main></body></html>"))
+                    }
+                }),
+            );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        format!("http://localhost:{port}")
+    };
+    let site = Site::default();
+    let home = format!(r#"<html><head><title>Home</title></head><body><main><a href="/flaky">Flaky</a> <a href="/a/1">One</a> <a href="/a/2">Two</a> <a href="{other}/b/1">Elsewhere</a></main></body></html>"#);
+    let app = Router::new()
+        .route("/", get(move |State(s): State<Site>| { let home = home.clone(); async move { s.hit("/"); html(home) } }))
+        .route("/a/:i", get(|State(s): State<Site>, Path(i): Path<usize>| async move { s.hit("/a/"); html(format!("<html><head><title>A {i}</title></head><body><main><p>Page {i}.</p></main></body></html>")) }))
+        .route(
+            "/flaky",
+            get(|State(s): State<Site>| async move {
+                s.hit("/flaky");
+                if s.hits("/flaky") <= 2 {
+                    (axum::http::StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, "1")], "slow down").into_response()
+                } else {
+                    html("<html><head><title>Flaky</title></head><body><main><p>Here at last.</p></main></body></html>".into())
+                }
+            }),
+        )
+        .with_state(site.clone());
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+
+    let dir = tempfile::tempdir().unwrap();
+    let coordinator = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().to_string()
+    };
+    let local = Local::new(dir.path().join("cluster"), bin, coordinator, free_base(1), None);
+    let url = local.start().await.unwrap();
+    let strata = Strata::new(&url, None);
+    let grower = Grower::new(Policy { how: How::Off, split_rows: 0, max_shards: 1 }, strata.clone(), None);
+    let svc = Service::new(strata.clone(), grower, None, true);
+    let job = svc.start(spec(json!({"seeds": [format!("{base}/")], "table": "polite", "scope": "any", "per_host": 2, "delay_ms": 0, "sitemaps": false, "batch": 5}))).unwrap();
+    let t0 = Instant::now();
+    while job.active() && t0.elapsed() < Duration::from_secs(60) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let s = job.status();
+    local.stop().await;
+    assert_eq!(s["phase"], "done", "{s:#}");
+    let c = &s["counts"];
+    assert_eq!(c["written"], 1 + 1 + 2 + 4, "{c:#}");
+    assert_eq!((site.hits("/flaky"), c["asked_again"].as_u64(), c["misses"]["busy"].as_u64()), (3, Some(2), Some(2)), "{c:#}");
+    let events = s["events"].as_array().unwrap();
+    assert!(events.iter().any(|e| e["text"] == "127.0.0.1: HTTP 429: the site is busy and asks to wait 1 s; waits 1 s before its next request, then asks for the page again"), "{events:#?}");
+    assert!(events.iter().any(|e| e["kind"] == "robots" && e["text"] == "localhost asks for 400 ms between requests"), "{events:#?}");
+    let t = times.lock().unwrap().clone();
+    assert_eq!(t.len(), 4);
+    for w in t.windows(2) {
+        assert!(w[1] - w[0] >= Duration::from_millis(380), "the other site's pages {:?} apart", w[1] - w[0]);
+    }
+}

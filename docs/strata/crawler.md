@@ -2,6 +2,7 @@
 title: Crawler
 parent: Strata
 nav_order: 8.5
+has_children: true
 ---
 
 # strata-crawl: a site into a table
@@ -39,6 +40,8 @@ target/release/strata-crawl crawl https://books.toscrape.com/ --local ./crawl-cl
 target/release/strata-crawl preview https://books.toscrape.com/ --pages 10
 ```
 
+At the default pace, a page a second for one site ([below](#what-it-does-with-a-page)), 600 pages take about ten minutes. books.toscrape.com is a sandbox made for crawlers, so `--per-host 4 --delay-ms 100` is fine there; keep the defaults for sites you don't run.
+
 ### Against a cluster that runs elsewhere
 
 The crawler writes to any strata-server, one server or a coordinator, with a key that can write (and an admin key to grow a cluster):
@@ -72,13 +75,15 @@ The operator runs `strata-crawl serve` from the cluster's own image (it carries 
 | `splitRows` | 100,000 | |
 | `maxShards` | 8 | the most shards it grows the cluster to |
 | `paused` | `false` | no crawler pod for now (the coordinators still list it, as an app that does not answer) |
-| `args`, `resources` | | more arguments of `strata-crawl serve`, and its container's resources (50m CPU and 64 MiB asked, 1 GiB at most) |
+| `args`, `resources` | | more arguments of `strata-crawl serve` (as `["--contact", "ops@example.com"]`, whom site owners reach), and its container's resources (50m CPU and 64 MiB asked, 1 GiB at most) |
 
 The upgrader moves the crawler with the servers, since it runs their image. Removing `spec.crawler` deletes its Deployment and Service and restarts the coordinators without it; the tables it filled stay. Its crawls live in its pod, so a pod started again (a new image, a node replaced) starts with none.
 
 ## What it does with a page
 
-**Fetching.** One queue per host, read breadth first, at most `per_host` requests to a host at once and `delay_ms` between their starts (a seed host's robots.txt `Crawl-delay`, up to 30 s, wins when it asks for more). robots.txt is read once per site (RFC 9309: the longest rule wins, `*` and `$` in paths, its own group or `*`); a 5xx answer for it stops the site, a 4xx allows everything. Sitemaps named there, or at `/sitemap.xml`, add their pages as seeds. Only HTML is kept, at most `max_bytes` a page; a URL is normalised once (no fragment, no tracking parameters, the query's parameters sorted) and fetched once, redirects included; a page whose text another page already had is counted as a duplicate and not written. Links are queued in turn from each shape of link on the page (`/catalogue/*/index.html`, `/catalogue/category/...`), so the first pages read are a site's items as well as its lists. `rel="nofollow"` links and pages with `noindex` or `nofollow` robots meta tags are honoured.
+**Fetching.** One queue per host, read breadth first. robots.txt is read before a site's first page and again once a day (RFC 9309: the longest rule wins, `*` and `$` in paths, its own group `strata-crawl` or `*`); a 4xx answer for it allows everything, and a 5xx, a 429 or no answer keeps the crawler off the site until it reads it again, a minute later (or when its `Retry-After` says, up to 10 minutes). Sitemaps named there, or at `/sitemap.xml`, add their pages as seeds. Only HTML is kept, at most `max_bytes` a page; a URL is normalised once (no fragment, no tracking parameters, the query's parameters sorted) and fetched once, redirects included; a page whose text another page already had is counted as a duplicate and not written. Links are queued in turn from each shape of link on the page (`/catalogue/*/index.html`, `/catalogue/category/...`), so the first pages read are a site's items as well as its lists. `rel="nofollow"` links and pages with `noindex` or `nofollow` robots meta tags are honoured.
+
+**Politeness.** A site gets at most `per_host` requests at once (1), and between the starts of two the longest of `delay_ms` (1 s), its robots.txt's `Crawl-delay` (up to 10 minutes; every site the crawl reaches, not only the seeds') and twice the time it has been taking to answer (up to 30 s), so a site that slows down is asked less often. A site that pushes back waits before its next request: a 429, 502, 503 or 504 as long as its `Retry-After` says, else 5 s, doubled at each refusal in a row up to 5 minutes, and the page is asked again later (4 times at most); a 403 or no answer waits the same, and the page is not asked again. After 10 refusals in a row, or when a site asks to wait more than 10 minutes, the crawl gives up on that site and drops its queued pages; the crawl's events say when a site was made to wait and when it was given up. The user agent names the crawler and links to [the page for site owners](crawler-bot.md), with the crawl's `contact`; a crawl's own `user_agent` keeps the crawler's name after it. Answers are asked compressed (gzip, Brotli).
 
 **Fields.** Each page gives:
 
@@ -120,15 +125,16 @@ The same names are the JSON fields of `POST /v1/crawls` and `POST /v1/preview`, 
 | `keep` | | regular expressions: write rows only for pages that match (the others are read for their links) |
 | `max_pages` | 1,000 | URLs to fetch at most |
 | `max_depth` | 5 | links from a seed |
-| `concurrency`, `per_host` | 16, 2 | requests at once, and to one host |
-| `delay_ms` | 250 | between requests to a host |
+| `concurrency`, `per_host` | 16, 1 | requests at once, and to one host |
+| `delay_ms` | 1,000 | between the starts of two requests to a host (longer when its robots.txt asks, or when it is slow to answer) |
 | `robots`, `sitemaps` | on | obey robots.txt; read sitemaps |
 | `sample` | 30 | pages the table is made from |
 | `promote_at` | 0.3 | the share of pages a field needs to be a column |
 | `rules` | | fields from CSS selectors, as above |
 | `learn` | on | learn the site's template |
 | `embed` | | a model to embed the title and body with, into `emb` |
-| `user_agent` | `strata-crawl/0.1.0 (+https://github.com/chloetech-ai/strata)` | |
+| `user_agent` | `strata-crawl/0.1.0 (+https://chloetech-ai.github.io/strata/strata/crawler-bot.html)` | a crawl's own is sent with that after it, unless it names `strata-crawl` |
+| `contact` | `--contact` of `strata-crawl serve` (or `STRATA_CRAWL_CONTACT`) | whom a site's owner reaches about the crawl, an email address or a URL, sent in the user agent: `strata-crawl/0.1.0 (+https://...; ops@example.com)` |
 | `timeout_ms`, `max_bytes`, `batch` | 20,000, 5 MB, 200 | |
 
 ## API

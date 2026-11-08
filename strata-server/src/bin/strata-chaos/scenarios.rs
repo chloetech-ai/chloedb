@@ -273,12 +273,29 @@ async fn play(w: &World, name: &str) -> Result<Json, String> {
             let verify = w.admin(reqwest::Method::POST, "/v1/admin/copies/verify", Some(json!({"url": grpc(w, &target)}))).await;
             let differ: u64 = verify.as_ref().ok().and_then(|v| v["replicas"].as_array()).into_iter().flatten().map(|r| r["differing_slots"].as_u64().unwrap_or(0)).sum();
             step(w, &format!("verify the copies (Cluster view): {} slots differ", differ));
-            // The checksum check, which only the server's own UI runs.
-            let url = w.cluster.with(&target, |p| p.http_url())?;
-            let r = w.http.post(format!("{url}/v1/admin/check")).header("authorization", format!("Bearer {}", w.cluster.layout.cluster_token)).timeout(Duration::from_secs(120)).send().await.map_err(|e| e.to_string())?;
-            let body = r.text().await.unwrap_or_default();
-            step(w, &format!("check the database on {target} itself: {}", body.chars().take(200).collect::<String>()));
-            if body.contains("corrupt") || differ > 0 {
+            // The checksum check: from the copy's menu ("Check its data"),
+            // or, on a coordinator without it, from the server's own UI.
+            let damaged = match w.admin(reqwest::Method::POST, "/v1/admin/copies/scrub", Some(json!({"url": grpc(w, &target)}))).await {
+                Ok(j) => {
+                    let found: Vec<&str> = j["scrub"]["damaged"].as_array().into_iter().flatten().filter_map(Json::as_str).collect();
+                    step(w, &format!("check its data (the copy's menu): {} damaged {}", found.len(), found.join("; ")));
+                    // Home names the damaged copy before it is replaced.
+                    sleep(5.0).await;
+                    !found.is_empty()
+                }
+                Err(e) if e.starts_with("404") => {
+                    let url = w.cluster.with(&target, |p| p.http_url())?;
+                    let r = w.http.post(format!("{url}/v1/admin/check")).header("authorization", format!("Bearer {}", w.cluster.layout.cluster_token)).timeout(Duration::from_secs(120)).send().await.map_err(|e| e.to_string())?;
+                    let body = r.text().await.unwrap_or_default();
+                    step(w, &format!("check the database on {target} itself: {}", body.chars().take(200).collect::<String>()));
+                    body.contains("corrupt")
+                }
+                Err(e) => {
+                    step(w, &format!("check its data: {e}"));
+                    false
+                }
+            };
+            if damaged || differ > 0 {
                 replace_copy(w, &mut step, shard, &target).await?;
             }
         }

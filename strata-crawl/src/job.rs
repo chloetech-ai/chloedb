@@ -21,6 +21,10 @@ use crate::infer::{Fetched, Plan, Source, Stats};
 use crate::strata::Strata;
 use crate::urls::{self, Scope};
 
+/// The longest robots.txt `Crawl-delay` honoured; a site that asks for more
+/// gets this.
+const MAX_CRAWL_DELAY: Duration = Duration::from_secs(600);
+
 fn d_max_pages() -> u64 {
     1000
 }
@@ -31,10 +35,10 @@ fn d_concurrency() -> usize {
     16
 }
 fn d_per_host() -> usize {
-    2
+    1
 }
 fn d_delay() -> u64 {
-    250
+    1000
 }
 fn d_true() -> bool {
     true
@@ -90,7 +94,7 @@ pub struct Spec {
     #[serde(default = "d_per_host")]
     pub per_host: usize,
     /// Milliseconds between the starts of two requests to a host (longer
-    /// when its robots.txt asks).
+    /// when its robots.txt asks, or when it takes long to answer).
     #[serde(default = "d_delay")]
     pub delay_ms: u64,
     #[serde(default = "d_true")]
@@ -115,8 +119,14 @@ pub struct Spec {
     /// (`potion-base-8M`), which the server downloads.
     #[serde(default)]
     pub embed: Option<String>,
+    /// The crawl's own user agent (the crawler's product token is added
+    /// after it, unless it names the crawler).
     #[serde(default)]
     pub user_agent: Option<String>,
+    /// Whom a site's owner reaches about this crawl (an email address or a
+    /// URL), in the user agent.
+    #[serde(default)]
+    pub contact: Option<String>,
     #[serde(default = "d_timeout")]
     pub timeout_ms: u64,
     #[serde(default = "d_max_bytes")]
@@ -170,6 +180,11 @@ impl Spec {
         if self.concurrency == 0 || self.concurrency > 1024 {
             return Err("concurrency is from 1 to 1024".into());
         }
+        for (name, v) in [("user_agent", &self.user_agent), ("contact", &self.contact)] {
+            if v.as_deref().is_some_and(|v| !crate::fetch::header_text(v)) {
+                return Err(format!("{name} is printable ASCII, at most 300 characters"));
+            }
+        }
         Ok(())
     }
 }
@@ -207,6 +222,10 @@ pub struct Counts {
     /// 429s from Strata waited out, and writes sent again.
     pub busy: u64,
     pub retries: u64,
+    /// Pages asked for again after a busy site's answer.
+    pub asked_again: u64,
+    /// Hosts the crawl gave up on (they kept refusing).
+    pub gave_up: Vec<String>,
     /// Columns added during the crawl.
     pub added_columns: u64,
 }
@@ -304,7 +323,7 @@ impl Job {
         let seeds = spec.seeds()?;
         let table = spec.table_name()?;
         let re = |v: &[String]| v.iter().map(|r| Regex::new(r).expect("checked")).collect::<Vec<_>>();
-        let agent = crate::fetch::user_agent(spec.user_agent.as_deref());
+        let agent = crate::fetch::user_agent(spec.user_agent.as_deref(), spec.contact.as_deref());
         Ok(Arc::new(Job {
             id,
             table,
@@ -396,6 +415,24 @@ impl Job {
         (self.include.is_empty() || self.include.iter().any(|r| r.is_match(s))) && !self.exclude.iter().any(|r| r.is_match(s))
     }
 
+    /// A host pushed back: it waits, the page may be asked again, and the
+    /// crawl may give up on the host; said in the crawl's events at the
+    /// first refusals in a row (1, 2, 4, 8) and when it gives up.
+    fn refused(&self, host: &str, item: &Item, miss: &Miss, again: bool, after: Option<Duration>) {
+        let r = self.frontier.refused(item, again, after);
+        if r.again {
+            self.st().counts.asked_again += 1;
+        }
+        if let Some(dropped) = r.gave_up {
+            self.st().counts.gave_up.push(host.to_string());
+            let why = if r.in_a_row >= crate::frontier::GIVE_UP { format!("{} refusals in a row, the last {miss}", r.in_a_row) } else { format!("{miss}, longer than the {} it waits at most", crate::fetch::secs(crate::frontier::MAX_WAIT)) };
+            self.event("polite", format!("gave up on {host}: {why}; {dropped} of its queued pages dropped"), None);
+        } else if r.in_a_row.is_power_of_two() {
+            let then = if r.again { ", then asks for the page again" } else { "" };
+            self.event("polite", format!("{host}: {miss}; waits {} before its next request{then}", crate::fetch::secs(r.wait)), None);
+        }
+    }
+
     fn kept(&self, u: &str) -> bool {
         self.keep.is_empty() || self.keep.iter().any(|r| r.is_match(u))
     }
@@ -405,7 +442,7 @@ impl Job {
     pub async fn run(self: Arc<Self>, strata: Strata) {
         let (tx, rx) = mpsc::channel::<Fetched>(512);
         for s in &self.seeds {
-            self.frontier.push(Item { url: s.clone(), depth: 0 });
+            self.frontier.push(Item::new(s.clone(), 0));
         }
         self.event("start", format!("crawling from {} into table {}", self.spec.seeds.join(", "), self.table), None);
 
@@ -424,7 +461,7 @@ impl Job {
                     for m in maps.iter().take(10) {
                         for loc in me.fetcher.sitemap(m, (me.spec.max_pages as usize).saturating_mul(2).min(200_000)).await {
                             if let Some(u) = Url::parse(&loc).ok().and_then(|u| urls::normalize(&u)) {
-                                if me.follows(&u) && me.frontier.push(Item { url: u, depth: 1 }) {
+                                if me.follows(&u) && me.frontier.push(Item::new(u, 1)) {
                                     n += 1;
                                 }
                             }
@@ -432,22 +469,6 @@ impl Job {
                     }
                     if n > 0 {
                         me.event("sitemap", format!("{n} pages from the sitemaps of {}", s.host_str().unwrap_or("")), None);
-                    }
-                }
-            });
-        }
-
-        // robots.txt's crawl delays, as soon as each seed host's is read.
-        for s in self.seeds.clone() {
-            let me = self.clone();
-            tokio::spawn(async move {
-                if me.spec.robots {
-                    if let Some(d) = me.fetcher.robots(&s).await.crawl_delay {
-                        let d = Duration::from_secs_f64(d.min(30.0));
-                        if d > Duration::from_millis(me.spec.delay_ms) {
-                            me.frontier.slow_down(s.host_str().unwrap_or(""), d);
-                            me.event("robots", format!("{} asks for {:.1} s between requests", s.host_str().unwrap_or(""), d.as_secs_f64()), None);
-                        }
                     }
                 }
             });
@@ -509,21 +530,38 @@ impl Job {
     /// Fetches one URL, reads it and queues its links; the page goes to
     /// the writer.
     async fn visit(&self, item: &Item, tx: &mpsc::Sender<Fetched>) {
+        let host = item.url.host_str().unwrap_or("").to_string();
+        // The Crawl-delay of every host the crawl reaches, as its
+        // robots.txt is read (and read again).
+        if self.spec.robots {
+            if let Some(d) = self.fetcher.robots(&item.url).await.crawl_delay {
+                let d = Duration::from_secs_f64(d.min(MAX_CRAWL_DELAY.as_secs_f64()));
+                if self.frontier.slow_down(&host, d) && d > Duration::from_millis(self.spec.delay_ms) {
+                    self.event("robots", format!("{host} asks for {} between requests", crate::fetch::secs(d)), None);
+                }
+            }
+        }
         let got = self.fetcher.page(&item.url).await;
         let got = match got {
             Ok(g) => g,
             Err(miss) => {
                 {
                     let mut g = self.st();
-                    g.counts.fetched += u64::from(miss != Miss::Robots);
+                    g.counts.fetched += u64::from(miss.fetched());
                     *g.counts.misses.entry(miss.kind().into()).or_default() += 1;
                 }
                 if miss.is_error() {
                     self.problem(item.url.as_str(), miss.kind(), miss.to_string());
                 }
+                match miss.refusal() {
+                    Some((again, after)) => self.refused(&host, item, &miss, again, after),
+                    None if miss.fetched() => self.frontier.answered(&host, None),
+                    None => {}
+                }
                 return;
             }
         };
+        self.frontier.answered(&host, Some(got.ms));
         {
             let mut g = self.st();
             g.counts.fetched += 1;
@@ -552,7 +590,7 @@ impl Job {
             let follow: Vec<Url> = page.links.iter().filter(|l| self.follows(l)).cloned().collect();
             let n = follow.len();
             for l in spread(follow, n, usize::MAX) {
-                self.frontier.push(Item { url: l, depth: item.depth + 1 });
+                self.frontier.push(Item::new(l, item.depth + 1));
             }
         }
         {
@@ -622,6 +660,13 @@ impl Job {
             let g = self.st();
             if g.counts.fetched == 0 && g.counts.misses.get("robots").copied().unwrap_or(0) > 0 {
                 return Err("robots.txt does not allow the seeds".into());
+            }
+            if g.counts.fetched == 0 && g.counts.misses.get("robots_unreachable").copied().unwrap_or(0) > 0 {
+                let why = g.problems.iter().rev().find(|p| p.kind == "robots_unreachable").map(|p| p.message.clone()).unwrap_or_default();
+                return Err(format!("the seeds' robots.txt could not be read, so nothing was fetched: {why}"));
+            }
+            if !g.counts.gave_up.is_empty() && g.counts.pages == 0 {
+                return Err(format!("{} kept refusing the crawler, so the crawl gave up (see its events)", g.counts.gave_up.join(", ")));
             }
             if g.counts.fetched > 0 && g.counts.pages == 0 {
                 return Err(format!("no HTML page among the {} fetched (see the problems)", g.counts.fetched));
@@ -980,7 +1025,7 @@ pub async fn preview(spec: &Spec, n: usize) -> Result<Value, String> {
     spec.check()?;
     let seeds = spec.seeds()?;
     let table = spec.table_name()?;
-    let fetcher = Fetcher::new(&crate::fetch::user_agent(spec.user_agent.as_deref()), Duration::from_millis(spec.timeout_ms.max(1000)), spec.max_bytes.max(64 << 10), 4, spec.robots);
+    let fetcher = Fetcher::new(&crate::fetch::user_agent(spec.user_agent.as_deref(), spec.contact.as_deref()), Duration::from_millis(spec.timeout_ms.max(1000)), spec.max_bytes.max(64 << 10), 4, spec.robots);
     let opts_learn = spec.learn;
     let read = |body: String, u: Url, rules: Vec<Rule>| tokio::task::spawn_blocking(move || extract::extract(&body, &u, &extract::Options { rules: &rules, template: &[], learn: opts_learn, max_text: 200_000 }));
     let mut pages: Vec<Fetched> = Vec::new();
