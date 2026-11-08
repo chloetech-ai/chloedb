@@ -324,7 +324,8 @@ async fn play(w: &World, name: &str) -> Result<Json, String> {
             sleep(30.0).await;
         }
         "move-interrupted" => {
-            let spare = w.cluster.procs.lock().unwrap().iter().find(|p| p.kind == crate::cluster::Kind::Spare).map(|p| p.name.clone()).ok_or("no spare")?;
+            let in_map: BTreeSet<String> = look(w).shards.iter().flatten().cloned().collect();
+            let spare = w.cluster.procs.lock().unwrap().iter().find(|p| p.kind == crate::cluster::Kind::Spare && !in_map.contains(&p.name) && p.running()).map(|p| p.name.clone()).ok_or("no spare left: an earlier scenario put each in a shard")?;
             let url = grpc(w, &spare);
             let r = w.admin(reqwest::Method::POST, "/v1/admin/shards", Some(json!({"servers": [url]}))).await?;
             step(w, &format!("add {spare} as a shard: {}", r.to_string().chars().take(200).collect::<String>()));
@@ -332,9 +333,12 @@ async fn play(w: &World, name: &str) -> Result<Json, String> {
             let _ = until(w, 15.0, |l| l.shards.len() > shards).await;
             // On coord0, whose death interrupts it.
             let coord0 = w.cluster.with("coord0", |p| p.http_url())?;
-            let r = w.http.post(format!("{coord0}/v1/admin/rebalance")).header("authorization", format!("Bearer {}", w.cluster.layout.admin_token)).json(&json!({"chunk": 256})).send().await.map_err(|e| e.to_string())?;
+            // Small chunks, so that the job outlasts the half second
+            // before the kill: a slot of the demo's rows moves in well
+            // under a millisecond.
+            let r = w.http.post(format!("{coord0}/v1/admin/rebalance")).header("authorization", format!("Bearer {}", w.cluster.layout.admin_token)).json(&json!({"chunk": 8})).send().await.map_err(|e| e.to_string())?;
             step(w, &format!("rebalance on coord0: {}", r.status()));
-            sleep(1.5).await;
+            sleep(0.5).await;
             let id = inject(w, "stop", "coord0")?;
             step(w, "inject: coord0 dies during the move");
             sleep(20.0).await;
