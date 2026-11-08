@@ -14,6 +14,8 @@ classifiers = ["Programming Language :: Python :: 3", "Programming Language :: R
 
 [project.optional-dependencies]
 test = ["pytest"]
+# strata.Frame (dataframes run in Strata; Arrow in and out)
+frame = ["pyarrow>=14"]
 # strata.ingest.kafka
 kafka = ["confluent-kafka>=2.3"]
 

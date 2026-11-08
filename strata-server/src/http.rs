@@ -9,7 +9,7 @@
 //! | `GET /v1/tables` | | `{tables: [...]}`: every table's schema and rank profiles, the first first |
 //! | `GET /v1/tables/:table/paths?field=attrs&path=dims&where=cond` | | `{table, field, rows, paths: [{path, keys, rows, types: {string, number, bool}, distinct, min?, max?, values?: [{value, rows}]}], truncated}`: the paths a JSON field's objects hold ([`strata::query::paths`]), under `path` if given, among the rows `where` matches; from a coordinator, every shard's summed |
 //! | `GET /metrics` | | Prometheus text |
-//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, profile?}` | rows, and in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`strata::rank_log`]) |
+//! | `POST /v1/query` | `{sql, params?, timeout_ms?, shard?, stats?, snapshot?, min_seq_no?, min_seq_nos?, log?, trace?, profile?, format?}` | rows, and in `stats.steps` the query's timed steps (with `profile`, their CPU time too, and with `trace` or `profile` the request's spans in `trace`); with `log` (`true` or `{table?, request?, context?, variant?, candidates?, ts?, interleave?: {sql, variants?}}`) also `request`, `logged` and, interleaved, `teams` ([`strata::rank_log`]); with `"format": "arrow"` the rows as an Arrow IPC stream (`application/vnd.apache.arrow.stream`, typed as `strata::query::arrow::answer_batch` types them; `x-strata-took-ms` and `x-strata-stats` headers) |
 //! | `POST /v1/sql` | `{sql, params?, timeout_ms?, min_seq_no?, min_seq_nos?, log?}` | rows, or `{written, seq_no?, seq_nos?}` |
 //! | `POST /v1/rank_log/export` | `{table?, since?, until?, events?, history?, window?, grades?}` | NDJSON: one record per logged row ([`strata::rank_log::export`]) |
 //! | `POST /v1/rank_log/interleaving` | the export's body | `{pairs: [{variants, requests, acted, wins, ties, delta, p}], took_ms}`: which of two interleaved rankings the users preferred ([`strata::rank_log::Credit`]) |
@@ -34,6 +34,9 @@
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
 //! | `POST /v1/judge` | `{query, keys, table?, fields?, model?, api_key?}` | `{grades: [{key, grade, error?}], model, usage}`: each row graded 0 to 3 for the query by a Claude model ([`crate::judge`]) |
+//! | `POST /v1/admin/oncall` | `{question?, alert?, model?, effort?, api_key?, max_steps?, note?}` | `{run, answer, proposals, steps, usage}`: a Claude model looks into an alert or a question with read-only tools and proposes actions ([`crate::oncall`]); `note` also writes the answer on the events timeline |
+//! | `GET /v1/admin/oncall/proposals?state=&run=` | | `{proposals}`: the on-call agent's proposed actions, newest first, each `pending`, `applied`, `failed`, `rejected` or `expired` (after an hour) |
+//! | `POST /v1/admin/oncall/proposals/:id/approve`, `.../reject` | `{reason?}` to reject | the proposal: approving makes its request with the approver's credential and its reason, audited as theirs |
 //! | `POST /v1/mcp` | a JSON-RPC message or a batch | the Model Context Protocol's answer, or 202 for notifications: tools that call these routes with the caller's credential ([`crate::mcp`]) |
 //! | `GET /v1/queries` | | `{queries, running}`: the queries running now, the longest first, each with its trace so far; on a coordinator, every coordinator's (another's ids are `id@name`, with `local_id` and `nodes`: who answered) |
 //! | `DELETE /v1/queries/:id` | | `{cancelled}`: the query stops at its next check and answers 499; an `id@name` is cancelled on that coordinator |
@@ -164,8 +167,9 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
     crate::coord::plan::start(&app.svc);
     // mcp: the routes an MCP tool's call goes to, with the caller's
     // credential, through the same checks (a copy, so the router does not
-    // hold itself).
-    let tools = api(&app).layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))).with_state(app.clone());
+    // hold itself); and health, which takes no credential (the on-call
+    // agent's first look, [`crate::oncall`]).
+    let tools = api(&app).route("/v1/health", get(health)).layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))).with_state(app.clone());
     let app = App { mcp: Some(tools), ..app };
     let api = api(&app);
     Router::new()
@@ -251,6 +255,10 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/moves/finish", post(finish_move))
         .route("/v1/agent", post(agent_run))
         .route("/v1/judge", post(judge))
+        .route("/v1/admin/oncall", post(oncall_run))
+        .route("/v1/admin/oncall/proposals", get(oncall_proposals))
+        .route("/v1/admin/oncall/proposals/:id/approve", post(oncall_approve))
+        .route("/v1/admin/oncall/proposals/:id/reject", post(oncall_reject))
         .route("/v1/mcp", post(mcp).layer(rows))
         // workload (alerts agent): grouped, and cancelled by statement
         .route("/v1/queries", get(live_queries).delete(cancel_queries))
@@ -277,6 +285,9 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/logs/store", get(log_store))
         .route("/v1/system", get(system))
         .route("/v1/cluster", get(cluster))
+        // Apps: their list, and requests forwarded to them (crate::apps).
+        .route("/v1/apps", get(apps_list))
+        .route("/v1/apps/:name/*rest", axum::routing::any(app_forward))
         .route("/v1/kube", get(kube))
         .route("/v1/admin/kube", post(kube_change))
         .route("/v1/admin/kube/plan", post(kube_plan))
@@ -348,6 +359,13 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/copies/verify", post(copy_verify))
         .route("/v1/admin/copies/checkpoint", post(copy_checkpoint))
         .route("/v1/admin/copies/scrub", post(copy_scrub))
+        // The Simulator: a test run of the traffic simulator's mix against
+        // this cluster, graded, with a model of other shapes (src/traffic).
+        .route("/v1/admin/simulator", get(sim_view).post(sim_start))
+        .route("/v1/admin/simulator/stop", post(sim_stop))
+        .route("/v1/admin/simulator/predict", post(sim_predict))
+        .route("/v1/admin/simulator/runs/:id", get(sim_report))
+        .route("/v1/admin/simulator/table", axum::routing::delete(sim_drop))
         // ----- end core
         .route_layer(middleware::from_fn_with_state(app.clone(), auth))
 }
@@ -760,7 +778,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // cloud's plan or check) changes nothing: a read too.
     let plan = matches!(
         route,
-        "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
+        "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/admin/simulator/predict" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
             // alerts agent: a rule replayed.
             | "/v1/alerts/backtest"
     );
@@ -869,6 +887,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         // alerts (alerts agent): acknowledging, silencing and noting write.
         "/v1/alerts/:rule/ack" | "/v1/alerts/:rule/silence" | "/v1/alerts/:rule/notes" => Scope::Write,
         "/v1/events/notes" => Scope::Admin,
+        // An app's reads are a reader's; what changes it (starts a crawl) an admin's.
+        "/v1/apps/:name/*rest" if method != Method::GET && method != Method::HEAD => Scope::Admin,
         // The inspector names the keys most read.
         // The hub's calls to other clusters carry their keys: its owner's.
         r if r.starts_with("/c/") => Scope::Admin,
@@ -1061,7 +1081,13 @@ async fn metrics(State(app): State<App>) -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], app.svc.prometheus().await)
 }
 
-async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let arrow = match b.get("format") {
+        None | Some(Json::Null) => false,
+        Some(f) if f == "json" => false,
+        Some(f) if f == "arrow" => true,
+        Some(f) => return Err(ApiError::bad(format!("format is \"json\" (the default) or \"arrow\", not {f}"))),
+    };
     let stats = match b.get("stats") {
         None | Some(Json::Null) => None,
         Some(s) => Some(serde_json::from_value(s.clone()).map_err(|e| ApiError::bad(format!("bad stats: {e}")))?),
@@ -1082,16 +1108,62 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         if req.shard {
             return Err(ApiError::bad("a shard's query is not logged: log through the coordinator"));
         }
-        return logged(&app, &who(w), req, log, body_bool(&b, "objects")?).await;
+        if arrow {
+            return Err(ApiError::bad("a logged query answers JSON: leave out format"));
+        }
+        return logged(&app, &who(w), req, log, body_bool(&b, "objects")?).await.map(IntoResponse::into_response);
+    }
+    if arrow && req.shard {
+        return Err(ApiError::bad("a shard's query answers its coordinator over gRPC: leave out format"));
     }
     let a = app.svc.query(req).await?;
+    if arrow {
+        return arrow_answer(a).await;
+    }
     let mut j = answer_of(&b, &a)?;
     // `"trace": true`: the timed steps the request took; `"profile":
     // true` answers them too, beside its steps' CPU time.
     if b.get("trace").and_then(|v| v.as_bool()) == Some(true) || b.get("profile").and_then(|v| v.as_bool()) == Some(true) {
         j["trace"] = json!(telemetry::trace().map(|t| t.spans()).unwrap_or_default());
     }
-    Ok(AxJson(j))
+    Ok(AxJson(j).into_response())
+}
+
+/// A query's answer as an Arrow IPC stream of one batch, for clients that
+/// want columns (`"format": "arrow"`): no JSON to write or read, and each
+/// column typed as an Arrow answer in a client's own process is
+/// ([`strata::query::arrow::answer_batch`]). How long it took and what the
+/// engine did go in headers; an answer without some shards (`partial`)
+/// names them in `x-strata-missing-shards`.
+#[cfg(feature = "datafusion")]
+async fn arrow_answer(a: crate::service::Answer) -> Result<Response, ApiError> {
+    let took = a.took_ms;
+    let missing = a.missing.join(",");
+    let (bytes, stats) = tokio::task::spawn_blocking(move || {
+        let (batch, stats) = strata::query::arrow::answer_batch(strata::query::exec::Leaf::Rows(a.rs))?;
+        Ok::<_, strata::Error>((strata::query::arrow::ipc_of(&batch)?, stats))
+    })
+    .await
+    .map_err(ApiError::internal)??;
+    let mut r = (StatusCode::OK, [(header::CONTENT_TYPE, "application/vnd.apache.arrow.stream")], bytes).into_response();
+    // A header holds visible ASCII: one that would not is left out rather
+    // than failing the answer.
+    let mut put = |name: &'static str, v: String| {
+        if let Ok(v) = axum::http::HeaderValue::from_str(&v) {
+            r.headers_mut().insert(name, v);
+        }
+    };
+    put("x-strata-took-ms", format!("{took:.3}"));
+    put("x-strata-stats", serde_json::to_string(&stats).unwrap_or_default());
+    if !missing.is_empty() {
+        put("x-strata-missing-shards", missing);
+    }
+    Ok(r)
+}
+
+#[cfg(not(feature = "datafusion"))]
+async fn arrow_answer(_: crate::service::Answer) -> Result<Response, ApiError> {
+    Err(ApiError::bad("this server was built without Arrow answers (feature datafusion): leave out format"))
 }
 
 /// A query run and logged ([`Service::query_logged`]): its answer, with
@@ -2617,6 +2689,46 @@ async fn plan_apply(State(app): State<App>, w: Option<axum::Extension<Principal>
     Ok(audited(j, detail.chars().take(1500).collect()))
 }
 
+/// `GET /v1/admin/simulator`: the test run under way or last, the reports
+/// kept, and what a run can be given (presets, kinds, machines).
+async fn sim_view(State(app): State<App>) -> Res {
+    Ok(AxJson(crate::traffic::run::view(&app.svc)))
+}
+
+/// `POST /v1/admin/simulator {profile?, mix?, docs?, shape?, ...}`: starts
+/// a test run: it loads a table of test documents, measures each kind of
+/// request alone, sends the mix at a rising (or a steady) rate, and fits a
+/// model to it ([`crate::traffic::run::Config`]).
+async fn sim_start(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let config: crate::traffic::run::Config = serde_json::from_value(b).map_err(|e| ApiError::bad(format!("a test run's settings: {e}")))?;
+    let p = who(w);
+    let j = crate::traffic::run::start(&app.svc, &keys::audit_name(&p), config)?;
+    let detail = format!("started a simulator test run ({})", j["id"].as_str().unwrap_or("?"));
+    Ok(audited(j, detail))
+}
+
+/// `POST /v1/admin/simulator/stop`: the run stops after its requests under way.
+async fn sim_stop(State(app): State<App>) -> Result<Response, ApiError> {
+    let j = crate::traffic::run::stop(&app.svc);
+    Ok(audited(j, "stopped the simulator's test run".into()))
+}
+
+/// `POST /v1/admin/simulator/predict`: other shapes, by a report's model.
+async fn sim_predict(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::traffic::run::predict(&app.svc, &b)?))
+}
+
+/// `GET /v1/admin/simulator/runs/:id`: a report kept.
+async fn sim_report(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(crate::traffic::run::report(&app.svc, &id)?))
+}
+
+/// `DELETE /v1/admin/simulator/table`: drops the test table a run kept.
+async fn sim_drop(State(app): State<App>) -> Result<Response, ApiError> {
+    let j = crate::traffic::run::drop_table(&app.svc).await?;
+    Ok(audited(j, format!("dropped the simulator's test table {}", crate::traffic::data::TABLE)))
+}
+
 /// `GET /v1/admin/plan/run`: the plan this coordinator applies or applied
 /// last, step by step; and, under `elsewhere`, the plan each other
 /// coordinator of the cluster applies or applied, so that every
@@ -2740,6 +2852,48 @@ async fn agent_run(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
 /// server's routes with the caller's credential ([`crate::mcp`]).
 async fn mcp(State(app): State<App>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, body: Bytes) -> Response {
     crate::mcp::serve(&app.svc, app.mcp.clone(), crate::mcp::Caller { headers: &headers, peer: peer.map(|c| c.0) }, &body).await
+}
+
+/// `POST /v1/admin/oncall`: the on-call agent looks into an alert or a
+/// question, and proposes actions ([`crate::oncall`]).
+async fn oncall_run(State(app): State<App>, w: Option<axum::Extension<Principal>>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Res {
+    let opt = |k: &str| b.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+    let req = crate::oncall::OncallReq {
+        question: opt("question"),
+        alert: opt("alert"),
+        model: opt("model"),
+        effort: opt("effort"),
+        api_key: opt("api_key"),
+        max_steps: b.get("max_steps").and_then(|v| v.as_u64()).map(|n| (n as usize).clamp(1, crate::oncall::MAX_STEPS)).unwrap_or(crate::oncall::STEPS),
+        note: b.get("note").and_then(Json::as_bool).unwrap_or(false),
+        by: by(&who(w)),
+    };
+    app.svc.metrics.agent_run();
+    Ok(AxJson(crate::oncall::run(&app.svc, app.mcp.clone(), &headers, peer.map(|c| c.0), req).await?))
+}
+
+/// `GET /v1/admin/oncall/proposals?state=&run=`: the on-call agent's
+/// proposals, newest first.
+async fn oncall_proposals(State(app): State<App>, Query(q): Params) -> Res {
+    let pick = |k: &str| q.get(k).map(String::as_str).filter(|s| !s.is_empty());
+    Ok(AxJson(json!({"proposals": app.svc.oncall.list(pick("state"), pick("run"))})))
+}
+
+/// `POST /v1/admin/oncall/proposals/:id/approve`: makes the proposal's
+/// request, as the approver.
+async fn oncall_approve(State(app): State<App>, w: Option<axum::Extension<Principal>>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    let by = by(&who(w));
+    let p = crate::oncall::approve(&app.svc, app.mcp.clone(), &headers, peer.map(|c| c.0), &id, &by).await?;
+    keys::note(format!("approved on-call proposal {id}: {}", p["what"].as_str().unwrap_or_default()));
+    Ok(AxJson(p))
+}
+
+/// `POST /v1/admin/oncall/proposals/:id/reject`: `{reason?}`.
+async fn oncall_reject(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, b: Option<AxJson<Json>>) -> Res {
+    let reason = b.and_then(|AxJson(b)| b.get("reason").and_then(Json::as_str).map(String::from)).unwrap_or_default();
+    let p = app.svc.oncall.reject(&id, &by(&who(w)), &reason)?;
+    keys::note(format!("rejected on-call proposal {id}: {}", p["what"].as_str().unwrap_or_default()));
+    Ok(AxJson(p))
 }
 
 /// `POST /v1/judge`: a Claude model's grade of each row for a query
@@ -3558,6 +3712,21 @@ async fn system(State(app): State<App>) -> AxJson<Json> {
     j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some()});
     j["logs"] = json!({"filter": obs::log_filter()});
     AxJson(j)
+}
+
+async fn apps_list(State(app): State<App>) -> AxJson<Json> {
+    AxJson(app.svc.apps.listing().await)
+}
+
+async fn app_forward(
+    State(app): State<App>,
+    axum::extract::Path((name, rest)): axum::extract::Path<(String, String)>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    app.svc.apps.forward(&name, method, &rest, uri.query(), &headers, body).await
 }
 
 async fn cluster(State(app): State<App>, Query(q): Params) -> AxJson<Json> {
