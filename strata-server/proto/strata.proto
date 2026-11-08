@@ -87,7 +87,8 @@ service Strata {
   rpc Health(Empty) returns (HealthResponse);
   // The protocol versions the server speaks, and the plans it reads.
   rpc Hello(HelloRequest) returns (HelloResponse);
-  // Protocol 3: ends snapshot leases before they expire.
+  // Protocol 3: ends snapshot leases before they expire; protocol 18 also
+  // ends scrolls (ReleaseRequest.cursors).
   rpc Release(ReleaseRequest) returns (Empty);
   // Protocol 4: gives a shard the coordinator's slot map and its place in
   // it, which it keeps. Refused for a map older than the shard's, another
@@ -468,6 +469,9 @@ message KeysResponse {
 
 message ReleaseRequest {
   repeated uint64 snapshots = 1;
+  // Protocol 18: scrolls the caller started (QueryResponse.cursor), ended
+  // before their last page.
+  repeated string cursors = 2;
 }
 
 message HelloRequest {
@@ -586,6 +590,25 @@ message QueryRequest {
   // run the query only on that version, and otherwise answer stale
   // (QueryResponse.stale) without running it. 0: any version.
   uint64 stats_version = 17;
+  // Protocol 18: a coordinator's scroll over its shards (shard mode). With
+  // scroll, start a scroll of the query (strata::query::exec::Scroll, as
+  // POST /v1/query with page_size starts one): answer its first page_size
+  // rows (none: open it on the snapshot without reading), and the cursor
+  // of the rest (QueryResponse.cursor) while rows are left. Only a plain
+  // scan or rows ordered by one score or column scroll on a shard
+  // (strata::cluster::streams).
+  bool scroll = 18;
+  // Protocol 18: the rows of this page of a scroll, started (scroll) or
+  // next (cursor): at most the server's --max-result-window; 0 reads
+  // none and keeps the scroll open.
+  uint64 page_size = 19;
+  // Protocol 18: the next page of the scroll of this cursor, which this
+  // caller started; nothing else of the request but page_size,
+  // keep_alive_ms and timeout_ms is read.
+  string cursor = 20;
+  // Protocol 18: how long the scroll is kept after this page (0: the
+  // server's lease TTL), an hour at most.
+  uint64 keep_alive_ms = 21;
 }
 
 // A plan (strata::query::ir): a statement as a tree of operators over typed
@@ -1307,6 +1330,9 @@ message QueryResponse {
   // Protocol 12: the query named a stats_version that is not the version
   // it would read: it did not run, and the answer holds nothing else.
   bool stale = 10;
+  // Protocol 18: the cursor of the scroll's next page (QueryRequest.scroll,
+  // cursor); empty after its last.
+  string cursor = 11;
 }
 
 message TermStatsResponse {

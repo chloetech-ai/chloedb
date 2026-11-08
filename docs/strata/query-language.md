@@ -1225,6 +1225,7 @@ CREATE TABLE sessions (
 ) OPTIONS(expire_by = 'until');
 INSERT INTO sessions (id, usr, until) VALUES ('s1', 'u7', '2026-11-02T12:00:00Z');
 ```
+- **`OPTIONS(compression = 'zstd')`** compresses the table's stored rows (its doc store) with zstd in 32 KiB blocks instead of LZ4 in 16 KiB ones. On four logs from Loghub the doc store took 32% to 39% less, and the database 9% to 16% less, while a read of one row by key took 12% to 40% longer (48 µs instead of 34 on 11M lines) and a scan of every row about as long (`strata/results/log-bytes/`, on a 4-core cloud container). It suits tables that are written far more than read row by row, such as logs; queries that count, filter, group or search without returning rows read no stored rows either way. Segments written after the option use it, and older ones keep LZ4 until a merge rewrites them. It makes the database format 3, feature `zstd`. In JSON it is `"compression": "zstd"`; `'lz4'` is the default.
 - **`OPTIONS(edges = 'src, dst, w')`** makes each row an edge of a graph over another table's rows, which walks over that table follow ([edge tables](#edge-tables)). In JSON it is `"edges": "src, dst, w"`.
 - **`DROP TABLE`** drops tables other than the first. A table that another table references goes with it (`DROP TABLE wrote, authors`) or with `CASCADE`, which removes those references.
 - Every other clause (`UNIQUE`, `CHECK`, `ON DELETE`, constraint names, a `DEFAULT` that is an expression, `CREATE TABLE ... AS SELECT`) is an error.

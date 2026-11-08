@@ -126,6 +126,8 @@ pub struct Options {
     pub synonyms: Option<PathBuf>,
     /// Where `POST /v1/admin/checkpoint` writes checkpoints.
     pub backup_dir: Option<PathBuf>,
+    /// Keep segments cold on object storage ([`strata::storage::cold`]).
+    pub cold: Option<ColdFlags>,
     /// What writes may fetch for MEDIA fields: `file:` roots and hosts
     /// ([`strata::media::Allowlist::parse`]).
     pub media_fetch: Vec<String>,
@@ -217,6 +219,33 @@ fn media_resolver(o: &Options) -> Result<strata::media::Resolver, String> {
     Ok(strata::media::Resolver { allow, max_bytes, store: o.media_store.clone(), http: Some(std::sync::Arc::new(http)) })
 }
 
+/// The cold tier's flags ([`strata::storage::ColdOptions`]).
+#[derive(Clone, Debug)]
+pub struct ColdFlags {
+    /// An `s3://` URL or a directory ([`strata::storage::open_store`]).
+    pub store: String,
+    pub cache_bytes: u64,
+    pub keep_local_bytes: Option<u64>,
+    pub min_segment_bytes: u64,
+    pub cache_dir: Option<PathBuf>,
+}
+
+impl ColdFlags {
+    fn options(&self) -> Result<strata::storage::ColdOptions, String> {
+        let store = strata::storage::open_store(&self.store).map_err(|e| format!("--cold-store {}: {e}", self.store))?;
+        Ok(strata::storage::ColdOptions {
+            cache_dir: self.cache_dir.clone(),
+            cache_bytes: self.cache_bytes,
+            keep_local_bytes: self.keep_local_bytes,
+            min_segment_bytes: self.min_segment_bytes,
+            ..strata::storage::ColdOptions::new(store)
+        })
+    }
+}
+
+/// How often the cold tier looks for segments to make cold.
+const COLD_EVERY: Duration = Duration::from_secs(30);
+
 /// Segment builds (flushes, merges, imports): vector indexes on every core.
 fn build_options() -> BuildOptions {
     BuildOptions::default().set("vector.threads", std::thread::available_parallelism().map_or(1, |n| n.get()))
@@ -307,6 +336,14 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         if o.copy_from.is_some() && (path.exists() || o.schema.is_none()) {
             return Err("--copy-from fills a new database: pass a --db that does not exist and its --schema".into());
         }
+        let cold = match &o.cold {
+            Some(c) if path.is_file() || (!path.exists() && !o.directory) => {
+                return Err(format!("--cold-store {}: cold segments need a database in the directory layout (--directory)", c.store));
+            }
+            Some(c) => Some(c.options()?),
+            None => None,
+        };
+        let db_options = |directory: bool| DbOptions { cold: cold.clone(), ..db_options(directory) };
         let db = if path.exists() {
             let db = Db::open(&path, DbOptions { wal_drop_damaged: o.wal_drop_damaged, verify_checksums: o.verify_checksums, ship_log_bytes, ..db_options(o.directory) })
                 .map_err(|e| format!("open {}: {e}", path.display()))?;
@@ -346,6 +383,10 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         // segments are merged.
         db.spawn_flusher();
         db.spawn_merger(o.merger.clone());
+        if let Some(c) = &o.cold {
+            db.spawn_cold(COLD_EVERY);
+            tracing::info!(store = %c.store, cache_mib = c.cache_bytes >> 20, keep_local_mib = ?c.keep_local_bytes.map(|b| b >> 20), "cold segments: kept on object storage, read through a local cache");
+        }
         if let Some(b) = db.storage().merge_status().memory_budget {
             tracing::info!(threads = o.merger.threads.max(1), memory_mib = b >> 20, "merging in the background");
         }
@@ -532,6 +573,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     }
     spawn_maintenance(&svc);
     spawn_expirer(&svc, Duration::from_secs(5));
+    spawn_key_forgetter(&svc, Duration::from_secs(60));
     spawn_sampler(&svc);
     spawn_watch(&svc);
     // workdata: every table's counts a minute apart (rates on a first look).
@@ -993,11 +1035,23 @@ pub fn export_parquet(_: &Path, _: &str, _: &ParquetExport) -> Result<(), String
     Err("this strata-server was built without Parquet (feature parquet)".into())
 }
 
-/// Releases expired snapshot leases, and reports merges that fail (the
+/// Releases expired snapshot leases and scrolls, and reports merges that fail (the
 /// database's merger threads merge as writes add segments; a database
 /// that cannot write, [`Service::failing`], merges nothing).
 pub fn spawn_maintenance(svc: &Arc<Service>) {
-    let Some(db) = svc.local_db().cloned() else { return };
+    let Some(db) = svc.local_db().cloned() else {
+        // A coordinator ends the scrolls not read over their keep-alive,
+        // and their shards' with them.
+        let svc = Arc::downgrade(svc);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let Some(svc) = svc.upgrade() else { return };
+                svc.sweep_scrolls();
+            }
+        });
+        return;
+    };
     let svc = Arc::downgrade(svc);
     tokio::spawn(async move {
         let mut reported = None;
@@ -1042,6 +1096,38 @@ pub fn spawn_expirer(svc: &Arc<Service>, every: Duration) {
                     reported = Some(why);
                 }
                 Err(e) => tracing::error!(error = %e, "the expirer stopped"),
+            }
+        }
+    });
+}
+
+/// Deletes the database's records of idempotency keys older than
+/// [`crate::idem::TTL`], every `every` ([`Service::forget_keys_due`]),
+/// until the service is dropped.
+pub fn spawn_key_forgetter(svc: &Arc<Service>, every: Duration) {
+    if svc.local_db().is_none() {
+        return;
+    }
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        let mut reported = None;
+        loop {
+            tokio::time::sleep(every).await;
+            let Some(svc) = svc.upgrade() else { return };
+            match tokio::task::spawn_blocking(move || svc.forget_keys_due()).await {
+                Ok(Ok(n)) => {
+                    reported = None;
+                    if n > 0 {
+                        tracing::debug!(keys = n, "forgot expired idempotency keys");
+                    }
+                }
+                Ok(Err(e)) => {
+                    if reported.as_ref() != Some(&e.message) {
+                        tracing::warn!(error = %e.message, "could not delete expired idempotency keys; retries ignore them meanwhile");
+                    }
+                    reported = Some(e.message);
+                }
+                Err(e) => tracing::error!(error = %e, "the idempotency key forgetter stopped"),
             }
         }
     });
@@ -1185,12 +1271,15 @@ pub async fn serve_grpc(svc: Arc<Service>, listener: TcpListener, access: Access
         }
         s
     });
+    // otlp: OpenTelemetry's LogsService, behind the same check.
+    let otlp = crate::otlp::grpc_service(svc.clone(), svc.max_body);
+    let otlp = tonic::service::interceptor::InterceptedService::new(otlp, Check { svc: svc.clone(), token: access.token.clone(), cluster: access.cluster.clone() });
     let service = grpc_service(svc, &access);
     let mut builder = tonic::transport::Server::builder();
     if let Some(tls) = &access.tls {
         builder = builder.tls_config(tonic::transport::ServerTlsConfig::new().identity(tonic::transport::Identity::from_pem(&tls.cert, &tls.key)))?;
     }
-    builder.add_service(service).serve_with_incoming_shutdown(incoming, shutdown()).await
+    builder.add_service(service).add_service(otlp).serve_with_incoming_shutdown(incoming, shutdown()).await
 }
 
 /// A shard server's gRPC service, its calls checked for their token or key

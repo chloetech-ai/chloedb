@@ -255,7 +255,14 @@ impl Reader {
         let (manifest, meta, slot, freelist, map, handles, damaged) = match &self.dir {
             Some(d) => {
                 let (cur, manifest) = dir::read_current(d)?;
-                let handles = self.open_segments(&manifest, before, |m, schema, check| SegHandle::open_in(d, m, schema, self.opts.read_ahead, self.opts.read_ahead && self.opts.random_hints, check))?;
+                let handles = self.open_segments(&manifest, before, |m, schema, check| {
+                    // The cache files are the writer's: it fetches, evicts and
+                    // cleans up after them ([`crate::storage::cold`]).
+                    if m.cold.is_some() {
+                        return Err(Error::Schema(format!("segment {} is kept on object storage, which a read-only open does not read", m.id)));
+                    }
+                    SegHandle::open_in(d, m, schema, self.opts.read_ahead, self.opts.read_ahead && self.opts.random_hints, check, None)
+                })?;
                 (manifest, dir_meta(&cur), 0, FreeList::new(META_PAGES), OwnedBytes::empty(), handles, None)
             }
             None => {

@@ -12,6 +12,16 @@
 //! places and scores in order and reads each page's rows from them; one of
 //! groups, counts or graphs holds its rows. Either holds at most the
 //! `hold` rows its start allows.
+//!
+//! A shard scrolls for a coordinator ([`ExecOptions::shard`]) a plain scan,
+//! or rows ordered by one score or column ([`crate::cluster::streams`]),
+//! as a shard answers them: OFFSET folded into LIMIT, the stored integers
+//! untyped, each row with its key and score, so that the coordinator
+//! merges the pages of every shard as they come ([`crate::cluster::Pages`]).
+//! It may ask for pages of no rows: one that opens the scroll on the
+//! snapshot, or keeps it open, without reading.
+//!
+//! [`ExecOptions::shard`]: super::ExecOptions::shard
 
 use std::sync::Arc;
 
@@ -74,13 +84,14 @@ impl Scroll {
         (first, s)
     }
 
-    /// The next page of an answer the scroll holds: at most `page` rows.
-    /// Empty when it holds none (a scan, or the last page read).
+    /// The next page of an answer the scroll holds: at most `page` rows
+    /// (none: it stays where it is). Empty when it holds none (a scan, or
+    /// the last page read).
     pub fn next_rows(&mut self, page: usize) -> ResultSet {
         let Paging::Rows { rs, at } = &mut self.at else {
             return ResultSet { columns: self.columns.clone(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() };
         };
-        let end = at.saturating_add(page.max(1)).min(rs.rows.len());
+        let end = at.saturating_add(page).min(rs.rows.len());
         let out = ResultSet {
             columns: self.columns.clone(),
             rows: rs.rows[*at..end].to_vec(),
@@ -103,10 +114,10 @@ impl<'a> Executor<'a> {
     /// other than a plain scan may hold at most `hold` rows: one that
     /// answers more fails. Expired rows are those of the scroll's start.
     pub fn scroll(mut self, q: &Select, page: usize, hold: usize) -> Result<(ResultSet, Scroll)> {
-        if self.opts.shard {
-            return Err(err("a scroll reads a database's answer, not a shard's for a coordinator"));
+        let shard = self.opts.shard;
+        if shard && !crate::cluster::streams(q) {
+            return Err(err("a shard scrolls rows in no order, or ordered by one score or column, for a coordinator that merges them as they come; it answers any other query whole"));
         }
-        let page = page.max(1);
         let grouped = !q.group_by.is_empty() || q.projection.iter().any(|(_, p)| matches!(p, Projection::Count | Projection::Agg { .. })) || agg::is_general(q, |f| self.facet_field(f));
         if grouped || !q.graphs.is_empty() {
             let rs = match self.answer(q, None)? {
@@ -130,17 +141,24 @@ impl<'a> Executor<'a> {
         self.refuse(q)?;
         let columns: Vec<String> = q.projection.iter().map(|(n, _)| n.clone()).collect();
         let scan = q.order.is_none() && q.phases.is_empty() && q.per.is_none();
+        // A shard answers from the first row, OFFSET's too: the coordinator
+        // skips them in the merged order.
+        let skip = if shard { 0 } else { q.offset };
         let mut s = if scan {
-            Scroll { columns, at: Paging::Scan { q: Box::new(Select { offset: 0, limit: None, ..q.clone() }), after: None, left: q.limit, set: None } }
+            let left = q.limit.map(|l| if shard { l.saturating_add(q.offset) } else { l });
+            Scroll { columns, at: Paging::Scan { q: Box::new(Select { offset: 0, limit: None, ..q.clone() }), after: None, left, set: None } }
         } else {
             let m = self.mark();
             let mut hits = self.held_hits(q, hold)?;
             let (op, detail) = self.order_label(q);
             self.step(m, op, detail, Some(hits.len() as u64));
-            hits.drain(..q.offset.min(hits.len()));
-            Scroll { columns, at: Paging::Held { q: Box::new(q.clone()), hits, at: 0 } }
+            hits.drain(..skip.min(hits.len()));
+            match hits.is_empty() {
+                true => Scroll { columns, at: Paging::Done },
+                false => Scroll { columns, at: Paging::Held { q: Box::new(q.clone()), hits, at: 0 } },
+            }
         };
-        let first = self.page(&mut s, page, if scan { q.offset } else { 0 })?;
+        let first = self.page(&mut s, page, if scan { skip } else { 0 })?;
         Ok((first, s))
     }
 
@@ -148,13 +166,18 @@ impl<'a> Executor<'a> {
     /// snapshot it started on. The scroll moves on only once the page is
     /// read: a page that fails is read again by the next call.
     pub fn scroll_next(mut self, s: &mut Scroll, page: usize) -> Result<ResultSet> {
-        self.page(s, page.max(1), 0)
+        self.page(s, page, 0)
     }
 
     /// The next page of `s`, at most `page` rows after the first `skip`
     /// (a scan's OFFSET, on its first page).
     fn page(&mut self, s: &mut Scroll, page: usize, skip: usize) -> Result<ResultSet> {
         let columns = &s.columns;
+        // A page of no rows reads nothing (a coordinator's, which opens a
+        // shard's scroll, or keeps it open).
+        if page == 0 {
+            return Ok(ResultSet { columns: columns.clone(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: std::mem::take(&mut self.stats) });
+        }
         match &mut s.at {
             Paging::Rows { .. } | Paging::Done => Ok(s.next_rows(page)),
             Paging::Scan { q, after, left, set } => {
@@ -246,7 +269,10 @@ impl<'a> Executor<'a> {
         let m = self.mark();
         let mut rows = self.project(q, hits)?;
         self.step(m, "project", format!("{} column{}", columns.len(), if columns.len() == 1 { "" } else { "s" }), Some(rows.len() as u64));
-        q.typed(&mut rows);
+        // A shard answers the stored integers, which the merge types.
+        if !self.opts.shard {
+            q.typed(&mut rows);
+        }
         let keys = hits.iter().map(|h| self.key(h)).collect();
         let scores = hits.iter().map(|h| h.score).collect();
         Ok(ResultSet { columns: columns.to_vec(), rows, keys, scores, parts: None, stats: std::mem::take(&mut self.stats) })
