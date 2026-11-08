@@ -1092,8 +1092,10 @@ Answer with the <plan> alone this time, and no code blocks${STATEMENTS || RULE_S
 // with a spec and no statement, and each is then written by its own writer
 // at once, with the example rows and tests by one more, so a first version
 // takes the time of its plan and its biggest piece rather than of all of it
-// in one answer. STRATA_APPS_PARALLEL=off writes screens and rules in the plan.
-export const PARALLEL = STATEMENTS && process.env.STRATA_APPS_PARALLEL !== 'off';
+// in one answer. Measured on 12 first versions (2026-11-08) it was not
+// faster (36.6 s each against 33.7 s, the plan alone taking 14 s) and cost
+// more, so it is off unless STRATA_APPS_PARALLEL=on.
+export const PARALLEL = STATEMENTS && process.env.STRATA_APPS_PARALLEL === 'on';
 
 const PLAN_STEP_PARALLEL = `# This step: the plan alone
 

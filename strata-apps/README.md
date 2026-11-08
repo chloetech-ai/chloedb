@@ -161,7 +161,7 @@ cd strata-apps
 | `STRATA_APPS_RULES=off`, `STRATA_APPS_TESTS=off` | functions and triggers only as JavaScript; no tests in plans |
 | `STRATA_APPS_RULE_SQL=off` | rules written as JSON steps rather than CREATE RULE statements |
 | `STRATA_APPS_STATEMENTS=off` | screens written as JSON rather than CREATE SCREEN statements (still stored as the statement that makes them) |
-| `STRATA_APPS_PARALLEL=off` | a first version's plan holds its screens' and rules' statements, rather than each being written by its own writer at once with the example rows and tests |
+| `STRATA_APPS_PARALLEL=on` | a first version's plan names its screens and rules, and each is then written by its own writer at once (with the example rows and tests by one more), rather than the plan holding their statements; measured slower and dearer on 12 first versions (36.6 s against 33.7 s each), so it is off by default |
 | `STRATA_APPS_SMALL_MODEL` | the model a small change (a label, a colour, a sort order, renaming, hiding or moving something) goes to first, before the usual one if its answer fails the checks (default `claude-haiku-5-5`; `off` sends every change to the usual model) |
 | `STRATA_APPS_SUGGEST=inline` | the build's own answer suggests what to ask next, rather than `STRATA_APPS_SUGGEST_MODEL` (default `claude-haiku-5-5`) once the version is live |
 | `STRATA_APPS_DUMP` | a folder that keeps every answer of the model, with its timing, tokens and cost, to study what it writes |
