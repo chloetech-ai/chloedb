@@ -2573,6 +2573,10 @@ async fn media_file(State(app): State<App>, axum::extract::Path(sha256): axum::e
 async fn explain(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     let sql = body_str(&b, "sql")?;
     let params = app.svc.params(b.get("params")).await?;
+    // A query that asks a language model about its rows: the plan of the
+    // rows it asks about, and nothing asked.
+    let first = strata::query::llm::split_sql(sql, &app.svc.functions(), &params)?.map(|s| s.first.to_string());
+    let sql = first.as_deref().unwrap_or(sql);
     let catalog = app.svc.catalog();
     let tables: Vec<&strata::schema::Schema> = catalog.iter().map(|t| &**t).collect();
     // A compound query is operators over single-table queries; what each

@@ -1175,8 +1175,23 @@ impl Db {
             return self.json_paths_at(snap, &call, params, opts).map(|p| p.to_result());
         }
         let q = qsql::parse_query_cached(sql)?;
-        let plan = plan_of_parsed(snap, &q, params, &*self.functions_at(snap)?)?;
+        let functions = self.functions_at(snap)?;
+        // Calls of a language model: on the rows the query finds.
+        if crate::query::llm::may_call(sql, &functions) {
+            if let Some(split) = crate::query::llm::split(&q.query, &functions, params)? {
+                let plan = plan_of(snap, &split.first, params, &functions)?;
+                let rs = self.run_on(snap, &plan, opts)?;
+                return split.finish(rs, params, &self.models_dir());
+            }
+        }
+        let plan = plan_of_parsed(snap, &q, params, &functions)?;
         self.run_on(snap, &plan, opts)
+    }
+
+    /// Where this database's models are: the directory
+    /// [`Db::open_embedders`] was given, else [`crate::embed::models_dir`].
+    pub fn models_dir(&self) -> std::path::PathBuf {
+        self.models.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(crate::embed::models_dir)
     }
 
     /// Runs a query ([`Db::query`]) and logs what it served to a log table
@@ -1435,7 +1450,14 @@ impl Db {
         if let sqlparser::ast::Statement::Query(q) = stmt {
             // The plan names the files of its ranking models.
             let snap = self.snapshot();
-            let mut plan = plan_of(&snap, q, params, &*self.functions_at(&snap)?)?;
+            let functions = self.functions_at(&snap)?;
+            // A query that calls a language model: the plan of the rows it
+            // asks about.
+            let split = match crate::query::llm::may_call(&q.to_string(), &functions) {
+                true => crate::query::llm::split(q, &functions, params)?,
+                false => None,
+            };
+            let mut plan = plan_of(&snap, split.as_ref().map_or(&**q, |s| &s.first), params, &functions)?;
             self.open_ranking_models(&mut plan, false)?;
             return Ok(plan);
         }

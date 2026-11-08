@@ -42,6 +42,7 @@ mod index_inspector;
 mod json_cluster;
 mod key_value;
 mod limits;
+mod llm_calls;
 mod local_shard;
 mod mcp;
 mod oncall;

@@ -262,6 +262,17 @@ struct Args {
     /// int8 export, 0.4 s and 2 s).
     #[arg(long, default_value_t = 20)]
     max_rerank: usize,
+    /// Rows a query may ask a language model about with `llm()`, on a
+    /// database or a coordinator: a query that returns more, or whose
+    /// `ORDER BY llm(...)` ranks more, fails before asking. Each is a
+    /// request to the model, of about a second, eight at once.
+    #[arg(long, default_value_t = 100)]
+    llm_rows: usize,
+    /// Requests this server makes to language models for `llm()` a minute,
+    /// over every query (answers it keeps in memory are free): a query
+    /// that would make more fails with 503 (0: no limit).
+    #[arg(long, default_value_t = 600)]
+    llm_per_minute: u64,
     /// Memory the running queries may hold together, in MiB: their groups,
     /// candidate rows, answers and joins; a query that needs more fails
     /// with 429 (default: a third of the cgroup memory limit, or of RAM;
@@ -842,6 +853,7 @@ enum Command {
 #[tokio::main]
 async fn main() {
     let a = Args::parse();
+    strata::query::llm::set_limits(strata::query::llm::Limits { rows: a.llm_rows, per_minute: (a.llm_per_minute > 0).then_some(a.llm_per_minute) });
     let format = obs::LogFormat::parse(&a.log_format).unwrap_or_else(|| {
         eprintln!("strata-server: --log-format is text or json, not {:?}", a.log_format);
         std::process::exit(1)
