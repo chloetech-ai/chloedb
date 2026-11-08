@@ -103,8 +103,10 @@ function connect() {
   es.addEventListener('progress', (e) => {
     const d = mine(e);
     if (!d) return;
-    if (S.runningText !== d.text) { S.runningText = d.text; S.lines = []; }
-    S.lines.push(d.line);
+    if (S.runningText !== d.text) { S.runningText = d.text; S.lines = []; S.lastReplace = false; }
+    if (d.replace && S.lastReplace) S.lines[S.lines.length - 1] = d.line;
+    else S.lines.push(d.line);
+    S.lastReplace = !!d.replace;
     S.failed = null;
     renderProgress();
   });

@@ -8,29 +8,67 @@ import { spawn } from 'node:child_process';
 export const MODEL = process.env.STRATA_APPS_MODEL || 'claude-opus-5-5';
 const CLAUDE = process.env.STRATA_APPS_CLAUDE || 'claude';
 
-export function ask({ system, prompt, model = MODEL, effort, timeoutMs = 300000 }) {
+// How long one answer may take. A build is stopped only when the model goes
+// quiet (no new output for IDLE seconds) or runs past the hard cap, so a big
+// app that is still being written is not cut off.
+export const IDLE_S = Number(process.env.STRATA_APPS_IDLE_S) || 180;
+export const TIMEOUT_S = Number(process.env.STRATA_APPS_TIMEOUT_S) || 1200;
+
+// onWrite(progress) is called as the answer streams in, with
+// {chars, thinking}: characters of answer and of thinking so far.
+export function ask({ system, prompt, model = MODEL, effort = process.env.STRATA_APPS_EFFORT, idleMs = IDLE_S * 1000, timeoutMs = TIMEOUT_S * 1000, onWrite }) {
   return new Promise((resolve, reject) => {
-    const args = ['-p', '--output-format', 'json', '--model', model, '--system-prompt', system,
+    const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--system-prompt', system,
       '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence'];
     if (effort) args.push('--effort', effort);
     const env = { ...process.env, ENGRAM_DISABLE: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
     const child = spawn(CLAUDE, args, { env, stdio: ['pipe', 'pipe', 'pipe'], cwd: process.env.TMPDIR || '/tmp' });
-    let out = '';
+    let buf = '';
     let err = '';
-    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`the model took longer than ${Math.round(timeoutMs / 1000)} s`)); }, timeoutMs);
-    child.stdout.on('data', (d) => { out += d; });
+    let result = null;
+    let text = '';
+    const seen = { chars: 0, thinking: 0 };
+    let settled = false;
+    const fail = (e) => { if (settled) return; settled = true; clearTimeout(cap); clearTimeout(idle); child.kill('SIGKILL'); reject(e); };
+    const cap = setTimeout(() => fail(new Error(`the model took longer than ${Math.round(timeoutMs / 1000)} s`)), timeoutMs);
+    let idle;
+    const quiet = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => fail(new Error(`the model wrote nothing for ${Math.round(idleMs / 1000)} s (${seen.chars} characters written)`)), idleMs);
+    };
+    quiet();
+    const line = (l) => {
+      if (!l.trim()) return;
+      let j;
+      try { j = JSON.parse(l); } catch { return; }
+      quiet();
+      if (j.type === 'result') { result = j; return; }
+      if (j.type !== 'stream_event') return;
+      const d = j.event?.type === 'content_block_delta' ? j.event.delta : null;
+      if (!d) return;
+      if (d.type === 'text_delta') { text += d.text; seen.chars += d.text.length; } else if (d.type === 'thinking_delta') seen.thinking += (d.thinking || '').length;
+      else return;
+      onWrite?.(seen);
+    };
+    child.stdout.on('data', (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) { line(buf.slice(0, i)); buf = buf.slice(i + 1); }
+    });
     child.stderr.on('data', (d) => { err += d; });
-    child.on('error', (e) => { clearTimeout(timer); reject(new Error(`could not run ${CLAUDE}: ${e.message}. Install Claude Code and sign in, or set STRATA_APPS_CLAUDE`)); });
+    child.on('error', (e) => fail(new Error(`could not run ${CLAUDE}: ${e.message}. Install Claude Code and sign in, or set STRATA_APPS_CLAUDE`)));
     child.on('close', (code) => {
-      clearTimeout(timer);
-      let data;
-      try { data = JSON.parse(out); } catch {
-        return reject(new Error(`claude exited ${code}: ${(err || out).slice(0, 600)}`));
-      }
+      line(buf);
+      if (settled) return;
+      settled = true;
+      clearTimeout(cap);
+      clearTimeout(idle);
+      const data = result;
+      if (!data) return reject(new Error(`claude exited ${code}: ${(err || buf || text).slice(0, 600)}`));
       if (data.is_error || data.subtype !== 'success' && data.subtype) {
         return reject(new Error(`claude: ${data.result || data.terminal_reason || data.subtype}`));
       }
-      resolve({ text: data.result || '', usage: data.usage || {}, cost: data.total_cost_usd || 0, ms: data.duration_ms || 0, model });
+      resolve({ text: data.result || text, usage: data.usage || {}, cost: data.total_cost_usd || 0, ms: data.duration_ms || 0, model });
     });
     child.stdin.end(prompt);
   });

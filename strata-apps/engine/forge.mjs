@@ -198,6 +198,11 @@ export function summarizeEvents(events) {
   return `${events.length} events since ${first}:\n${lines.join('\n')}`;
 }
 
+// How much library code a change request carries: the code of the best few
+// pieces, within a budget of characters.
+const CODE_PIECES = 4;
+const CODE_BUDGET = 15000;
+
 export async function buildContext(engine, appId, request) {
   const { store } = engine;
   const view = await store.resolve(appId);
@@ -236,8 +241,11 @@ export async function buildContext(engine, appId, request) {
     const history = await store.suggestionHistory(appId, 30);
     if (history.length) parts.push(`## Suggestions made before\n${history.map((h) => `- [${h.status === 'taken' ? 'taken' : h.status === 'dismissed' ? 'dismissed' : h.status === 'open' ? 'still open' : 'replaced'}] ${h.text}`).join('\n')}`);
   }
-  // Shared components and helpers: all of them by name and props, and the
-  // code of those that fit best, within a budget. Fit is two rankings fused:
+  // Shared components and helpers: all of them by name and props, and, for a
+  // change to an app that exists, the code of the few that fit best (to use a
+  // piece the model needs its props; it needs the code only to write a new
+  // version of it, which a first version almost never does, and every
+  // character here is read on every build). Fit is two rankings fused:
   // BM25 of the request over what pieces are and do, and PageRank over the
   // graph from this app and the best text matches, which finds the pieces
   // that go with them (used by the same views, called by them).
@@ -255,18 +263,18 @@ export async function buildContext(engine, appId, request) {
     const top = [...fused.entries()].sort((a, b) => b[1] - a[1]).slice(0, 14);
     const rank = new Map(top.map(([k], i) => [k, i]));
     others.sort((a, b) => (rank.get(key(a)) ?? 99) - (rank.get(key(b)) ?? 99) || (a.kind === b.kind ? 0 : a.kind === 'helper' ? 1 : -1));
-    let budget = 45000;
+    let budget = view.comp.n ? CODE_BUDGET : 0;
     const entries = [];
     for (const c of others.slice(0, 80)) {
       const used = (users.get(key(c)) || []).map((u) => `${u.name} (v${u.version})`).join(', ') || 'no app yet';
       let body = '';
-      if (budget > 0 && rank.has(key(c))) {
+      if (budget > 0 && (rank.get(key(c)) ?? 99) < CODE_PIECES) {
         const [full] = await store.getCapabilities([c.id]);
         if (full?.code && full.code.length < budget) { body = `\n${full.code}`; budget -= full.code.length; }
       }
       entries.push(`<${c.kind} name="${c.slug}" version="${c.version}" title="${c.title}" used_by="${used}">\n// ${c.description}\n// ${c.kind === 'helper' ? 'api' : 'props'}: ${c.spec?.props || ''}${body}\n</${c.kind}>`);
     }
-    parts.push(`# Shared components (ui.NAME(props)) and helpers (lib.NAME.fn(...)) in the library\n\nThe first ones, with their code, fit best: by the request's words, and by what goes with the pieces this app and the request's best matches use (other views use them together, or they call each other).\n\n${entries.join('\n\n')}`);
+    parts.push(`# Shared components (ui.NAME(props)) and helpers (lib.NAME.fn(...)) in the library\n\nThe first ones fit best: by the request's words, and by what goes with the pieces this app and the request's best matches use (other views use them together, or they call each other).${budget === 0 && !view.comp.n ? ' Their code is left out: use them by their props and api.' : ''}\n\n${entries.join('\n\n')}`);
   } else if (!own.size) {
     parts.push('# Shared components and helpers in the library\n\nNone yet: the ones you write now start it.');
   }
@@ -417,6 +425,20 @@ export async function validate(plan, code, view, library, shared = new Map()) {
   return problems;
 }
 
+// Reports how far the model has got, at most every 5 s, on one line that
+// each report replaces.
+function writing(progress) {
+  const t0 = Date.now();
+  let last = 0;
+  return ({ chars, thinking }) => {
+    const now = Date.now();
+    if (now - last < 5000) return;
+    last = now;
+    const secs = Math.round((now - t0) / 1000);
+    progress(chars ? `The model is writing: ${chars.toLocaleString('en-US')} characters so far (${secs} s)` : `The model is thinking (${secs} s${thinking ? `, ${thinking.toLocaleString('en-US')} characters` : ''})`, { replace: true });
+  };
+}
+
 // Runs a request through the model and applies its answer as the next version.
 export async function forge(engine, appId, request, progress = () => {}) {
   const { store } = engine;
@@ -432,7 +454,7 @@ export async function forge(engine, appId, request, progress = () => {}) {
   let attemptPrompt = prompt;
   for (let attempt = 1; attempt <= 2; attempt++) {
     progress(attempt === 1 ? `Asking the model (${MODEL}) to ${view.comp.n ? 'change the app' : 'build the first version'}` : `Asking the model again to fix: ${problems.slice(0, 3).join('; ')}`);
-    answer = await ask({ system: SYSTEM, prompt: attemptPrompt });
+    answer = await ask({ system: SYSTEM, prompt: attemptPrompt, onWrite: writing(progress) });
     cost += answer.cost || 0;
     progress(`The model answered in ${Math.round(answer.ms / 1000)} s`);
     try {

@@ -95,12 +95,14 @@ cd strata-apps
 | `STRATA_SERVER_BIN` | the strata-server to start |
 | `STRATA_APPS_MODEL` | the model (default `claude-opus-5-5`) |
 | `STRATA_APPS_CLAUDE` | the Claude Code binary (default `claude`) |
+| `STRATA_APPS_EFFORT` | the model's effort level (default: the model's own) |
+| `STRATA_APPS_IDLE_S`, `STRATA_APPS_TIMEOUT_S` | a build stops when the model writes nothing for this many seconds (default 180), or after this many in all (default 1200) |
 | `STRATA_APPS_AUTOREPAIR=0` | do not send failing capabilities back to the forge |
 | `SMTP_URL`, `SMTP_FROM` | a mail server (`smtps://user:pass@host:465`, or `smtp://` with STARTTLS when offered) and the From address; without them email waits in the outbox, marked held |
 | `STRATA_APPS_GEOCODER` | the address search (default OpenStreetMap's Nominatim, at most one request a second, cached; `off` turns it off) |
 | `STRATA_APPS_TILES` | the map tile URL template (default OpenStreetMap's, fetched by the engine with a user agent and kept under `DATA/tiles`; `off` turns maps off) |
 
-A first version takes the model 40 seconds to 2.5 minutes (longer when it writes new shared components, which later apps then reuse); a change takes 25 to 50 seconds.
+A first version of a small app takes the model 45 seconds to 1.5 minutes; a bigger one, such as a course with lessons, a playground and a quiz, takes up to 8 minutes (most of it thinking, and the rest writing 50,000 characters of code). The studio shows how far the model has got while it writes. A change takes 25 to 50 seconds.
 
 ## What is where
 
