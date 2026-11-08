@@ -115,6 +115,12 @@ cd strata-server && cargo test --release
 cd strata-crawl && cargo test --release   # its crawl into a cluster needs strata-server built (or STRATA_SERVER_BIN)
 ```
 
+strata-server's integration tests build as one test binary, `tests/all.rs`,
+with a module per file: `cargo test --test all sim::` runs `tests/sim.rs`.
+A new test file needs `mod <name>;` in `tests/all.rs`, or a `[[test]]` in
+strata-server's Cargo.toml when it needs the process to itself (`all.rs` says
+which do and why); a test fails when a file is in neither.
+
 The Java package builds with Maven, which runs cargo for its native library
 (`-Dcargo.profile=ci` skips link-time optimisation when only the tests
 matter):
