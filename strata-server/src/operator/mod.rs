@@ -32,10 +32,12 @@
 //! not choose primaries, except to hand one over before its pod goes.
 
 pub mod autoscale;
+pub mod crawler;
 pub mod follow;
 pub mod kube;
 pub mod upgrade;
 
+pub use crawler::CrawlerSpec;
 pub use follow::FollowSpec;
 
 use std::collections::HashMap;
@@ -115,6 +117,10 @@ pub struct Spec {
     /// version: it changes no server.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub follow: Option<FollowSpec>,
+    /// A crawler beside the cluster ([`crawler`]): `strata-crawl serve`
+    /// in a Deployment of one, which the coordinators list as an app.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crawler: Option<CrawlerSpec>,
 }
 
 /// How the operator makes a change (`spec.rollout`). Not part of a
@@ -333,6 +339,7 @@ impl Default for Spec {
             autoscale: autoscale::Autoscale::default(),
             upgrade: upgrade::Upgrade::default(),
             follow: None,
+            crawler: None,
         }
     }
 }
@@ -350,10 +357,16 @@ impl Spec {
 
     /// The settings every coordinator starts with, as a short hash.
     pub fn coordinator_config(&self) -> String {
-        short_hash(&json!({
+        let mut j = json!({
             "image": self.image, "imagePullPolicy": self.image_pull_policy, "resources": self.coordinator_resources,
             "args": self.coordinator_args, "tokenSecret": self.token_secret, "clusterTokenSecret": self.cluster_token_secret,
-        }))
+        });
+        // Only when there is one, so that a cluster without one keeps its
+        // hash (and its coordinators) across the operator's upgrade.
+        if self.crawler.is_some() {
+            j["apps"] = json!([crawler::APP]);
+        }
+        short_hash(&j)
     }
 
     /// The spec but for `rollout`, `autoscale` and `upgrade`, as a short
@@ -399,6 +412,9 @@ impl Spec {
         self.upgrade.check(&self.image)?;
         if let Some(f) = &self.follow {
             f.check()?;
+        }
+        if let Some(c) = &self.crawler {
+            c.check()?;
         }
         if let Some(c) = &self.cluster_token_secret {
             if self.token_secret.is_none() {
@@ -533,6 +549,12 @@ pub trait Platform {
     /// ([`follow`]): a Deployment of one on Kubernetes. Applied once the
     /// coordinators are there.
     async fn follow(&self, _spec: &Spec) -> Result<(), String> {
+        Ok(())
+    }
+    /// Runs the crawler `spec.crawler` asks for, or none ([`crawler`]): a
+    /// Deployment of one and its Service on Kubernetes. Applied once the
+    /// coordinators are there.
+    async fn crawler(&self, _spec: &Spec) -> Result<(), String> {
         Ok(())
     }
 }
@@ -945,6 +967,7 @@ async fn step<P: Platform>(spec: &Spec, p: &P, admin: &Admin, before: &Rollout) 
         return Ok(Outcome::new(Phase::Creating, "starting the coordinator, which lays the cluster out"));
     };
     p.follow(spec).await?;
+    p.crawler(spec).await?;
     let view = match admin.view().await {
         Ok(v) => v,
         Err(e) => return Ok(Outcome::new(Phase::Creating, format!("waiting for the coordinator: {e}"))),
@@ -1773,6 +1796,9 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
     }
     if new.token_secret.is_none() {
         warnings.push("no token: anything that reaches the pods may read, write and change the cluster".into());
+        if new.crawler.is_some() {
+            warnings.push("no token: anything that reaches the crawler's pod may start crawls into the cluster and grow it".into());
+        }
     }
     if shards < shards_now || new.replicas < copies_now {
         warnings.push("what goes is deleted with its volumes once its data has moved".into());
@@ -1814,6 +1840,27 @@ pub fn plan(old: &Spec, new: &Spec, shards_now: usize, copies_now: usize) -> Jso
             (Some(a), Some(b)) if a.paused && !b.paused => format!("the follow process of {} starts again, from where it was", b.name),
             (_, Some(b)) => format!("the follow process of {} restarts with the new settings, from where it was", b.name),
             (None, None) => unreachable!("the follow specs differ"),
+        });
+    }
+    if new.crawler != old.crawler {
+        let grows = |c: &CrawlerSpec| match (c.grow, c.split_rows) {
+            (false, _) | (true, Some(0)) => "it never adds a shard".to_string(),
+            (true, n) => format!(
+                "it adds a shard when one holds more than {} rows of a crawl's table, up to {} shards",
+                n.unwrap_or(100_000),
+                c.max_shards.unwrap_or(8)
+            ),
+        };
+        steps.push(match (&old.crawler, &new.crawler) {
+            (None, Some(c)) => format!(
+                "a crawler starts beside the cluster (strata-crawl serve, a Deployment of one) and the coordinators list it, so the command center shows Apps → Crawler; {}",
+                grows(c)
+            ),
+            (Some(_), None) => "the crawler stops (its Deployment and Service go; the tables it filled stay) and the coordinators no longer list it".into(),
+            (Some(a), Some(b)) if b.paused && !a.paused => "the crawler pauses: its pod goes, with the crawls running in it (their tables stay)".into(),
+            (Some(a), Some(b)) if a.paused && !b.paused => format!("the crawler starts again, with no crawls; {}", grows(b)),
+            (_, Some(b)) => format!("the crawler restarts with the new settings, ending the crawls running in it (their tables stay); {}", grows(b)),
+            (None, None) => unreachable!("the crawler specs differ"),
         });
     }
     if steps.is_empty() && changes.is_empty() {
@@ -1885,6 +1932,7 @@ pub fn crd() -> Json {
             "autoscale": autoscale::schema(),
             "upgrade": upgrade::schema(),
             "follow": follow::schema(),
+            "crawler": crawler::schema(),
         },
     });
     let status = free("What the operator found and does.");

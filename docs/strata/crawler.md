@@ -15,7 +15,7 @@ nav_order: 8.5
 
 ## Run it
 
-Build both programs, then start the crawler with a cluster of its own on this machine:
+On a cluster the Kubernetes operator runs, one field of its `StrataCluster` starts the crawler beside it ([below](#on-kubernetes)). On one machine, build both programs, then start the crawler with a cluster of its own:
 
 ```bash
 (cd strata-server && cargo build --release)
@@ -55,6 +55,26 @@ STRATA_APP_TOKEN="$CRAWL_TOKEN" strata-server --shards ... --app crawler=http://
 ```
 
 `--grow` says how the cluster gets a shard: `kube` asks the Kubernetes operator for one more (`POST /v1/admin/kube`, the coordinator must run under the operator), `servers=URL,URL` adds empty servers started for it, by their gRPC URLs, one at a time, and `off` never grows. Each new shard gets its share of the slots by a rebalance (`POST /v1/admin/rebalance`) while the crawl keeps writing.
+
+### On Kubernetes
+
+A cluster the [operator](server.md#on-kubernetes) runs gets a crawler of its own from its `StrataCluster`, with nothing to start by hand:
+
+```bash
+kubectl -n strata patch strata demo --type merge -p '{"spec": {"crawler": {}}}'
+```
+
+The operator runs `strata-crawl serve` from the cluster's own image (it carries both programs) as a Deployment of one pod, `<cluster>-crawler`, behind a Service of that name, and restarts the coordinators so that they list it: **Apps → Crawler** appears in the command center, and a crawl starts from its form. The crawler writes with the cluster's admin token (`tokenSecret`), which its API requires too, so the coordinators send it that token and nothing else reaches it. It grows the cluster through the operator, a shard at a time:
+
+| `spec.crawler` | default | |
+|---|---|---|
+| `grow` | `true` | add a shard (one more in `spec.shards`) when a crawl's table holds more than `splitRows` rows on one |
+| `splitRows` | 100,000 | |
+| `maxShards` | 8 | the most shards it grows the cluster to |
+| `paused` | `false` | no crawler pod for now (the coordinators still list it, as an app that does not answer) |
+| `args`, `resources` | | more arguments of `strata-crawl serve`, and its container's resources (50m CPU and 64 MiB asked, 1 GiB at most) |
+
+The upgrader moves the crawler with the servers, since it runs their image. Removing `spec.crawler` deletes its Deployment and Service and restarts the coordinators without it; the tables it filled stay. Its crawls live in its pod, so a pod started again (a new image, a node replaced) starts with none.
 
 ## What it does with a page
 
