@@ -324,6 +324,9 @@ impl Fleet {
             let copies = s["replicas"].as_array().cloned().unwrap_or_default();
             let gone: Vec<String> = copies.iter().filter(|r| down(r)).map(short).collect();
             let up: Vec<String> = copies.iter().filter(|r| !down(r)).map(short).collect();
+            // Down to the coordinators, but answering: started with another
+            // --cluster-token.
+            let refusing: Vec<String> = copies.iter().filter(|r| r["refuses_token"] == true).map(short).collect();
             let since = copies.iter().filter_map(|r| r["down_since_ms"].as_u64()).min();
             let why = s["why"].as_str().unwrap_or("").to_string();
             let name = format!("shard {n}");
@@ -378,6 +381,19 @@ impl Fleet {
                     };
                     Some((2, true, head, title, format!("Writes to {name}'s rows fail; searches still answer"), next(todo)))
                 }
+                _ if !refusing.is_empty() && refusing.len() == gone.len() => {
+                    degraded += 1;
+                    let (who, them, refuses) = (both(&refusing), if refusing.len() == 1 { "it" } else { "them" }, if refusing.len() == 1 { "refuses" } else { "refuse" });
+                    let more = if why.contains("one more copy down") { "; one more copy down stops its reads and writes" } else { "" };
+                    Some((
+                        10,
+                        false,
+                        format!("{who} {refuses} the cluster's token; {name} still serves reads and takes writes"),
+                        format!("Shard {n}'s {who} {} up but {refuses} the cluster's token", if refusing.len() == 1 { "is" } else { "are" }),
+                        format!("None yet: the coordinators read from its other copies{more}"),
+                        next(format!("Start {who} again with the cluster's --cluster-token, as its other copies have it, or replace {them}")),
+                    ))
+                }
                 _ => {
                     degraded += 1;
                     let more = if why.contains("one more copy down") { "; one more copy down stops its reads and writes" } else { "" };
@@ -392,6 +408,14 @@ impl Fleet {
                     ))
                 }
             };
+            let p = p.map(|(rank, critical, headline, title, impact, mut next)| {
+                if !refusing.is_empty() && !headline.contains("cluster's token") {
+                    let todo = next["text"].as_str().unwrap_or_default().to_string();
+                    let refuses = if refusing.len() == 1 { "answers but refuses" } else { "answer but refuse" };
+                    next["text"] = json!(format!("{todo}. {} {refuses} the cluster's token: start it again with the cluster's --cluster-token", both(&refusing)));
+                }
+                (rank, critical, headline, title, impact, next)
+            });
             if let Some((rank, critical, headline, title, impact, next)) = p {
                 where_shards.push(name.clone());
                 problems.push(Problem {
@@ -875,6 +899,23 @@ mod tests {
 
     /// 1 of 2 copies answering is no majority: no election can choose a
     /// primary, so the advice is not to wait for one.
+    /// A copy that answers but refuses the cluster's token is named so,
+    /// not as one to bring back.
+    #[test]
+    fn a_copy_refusing_the_cluster_token_says_so() {
+        let mut bad = copy("s0-0", false);
+        bad["refuses_token"] = json!(true);
+        bad["error"] = json!("missing or wrong token");
+        let c = json!({"shards": [
+            {"shard": 0, "state": "degraded", "failover": true, "majority": true, "primary": "s0-1", "why": "", "replicas": [bad, copy("s0-1", true), copy("s0-2", true)]},
+        ]});
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        let p = &j["problems"][0];
+        assert_eq!(p["title"], "Shard 0's s0-0 is up but refuses the cluster's token");
+        assert!(p["next"]["text"].as_str().unwrap().starts_with("Start s0-0 again with the cluster's --cluster-token"), "{p}");
+        assert!(j["headline"].as_str().unwrap_or_default().contains("refuses the cluster's token") || p["severity"] == "warning", "{j}");
+    }
+
     #[test]
     fn a_shard_of_two_with_one_down_cannot_elect() {
         let c = json!({"shards": [
