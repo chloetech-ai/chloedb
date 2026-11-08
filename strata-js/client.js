@@ -93,21 +93,36 @@ function rowsOf(rows) {
   return rows !== null && typeof rows === "object" && !Array.isArray(rows) && !(Symbol.iterator in rows) ? [rows] : [...rows];
 }
 
+/** The milliseconds a 429's `Retry-After` says to wait (a second when it
+ * says none), at most 10 s. */
+function retryAfter(v) {
+  const s = Number(v ?? 1);
+  return Number.isFinite(s) ? Math.min(Math.max(s, 0), 10) * 1000 : 1000;
+}
+
 /**
  * A strata-server at `url` ("http://host:7700"). `token` is the server's
  * --token or an API key, if it needs one ($STRATA_TOKEN by default).
  * Errors the server reports reject with `StrataError` (its `status` and
  * `answer` set); one it cannot be reached rejects with fetch's error.
+ *
+ * A request the server refuses for its load (429: behind on flushing its
+ * writes, its write queue full, too many queries running) did nothing, and
+ * is sent again after the `Retry-After` it gives, for up to `retryFor`
+ * milliseconds (0: never). A write that failed partway is not, unless it
+ * has an idempotency key.
  */
 export class Client extends Searchable {
   #schema;
 
-  constructor(url = "http://127.0.0.1:7700", { token, timeout = 30_000, fetch: f } = {}) {
+  constructor(url = "http://127.0.0.1:7700", { token, timeout = 30_000, retryFor = 10_000, fetch: f } = {}) {
     super();
     this.url = String(url).replace(/\/+$/, "");
     this.token = token ?? env("STRATA_TOKEN");
     /** Milliseconds a request may take (0 for no limit). */
     this.timeout = timeout;
+    /** Milliseconds a request refused with 429 is sent again for. */
+    this.retryFor = retryFor;
     this.fetch = f ?? globalThis.fetch.bind(globalThis);
   }
 
@@ -120,11 +135,17 @@ export class Client extends Searchable {
       h["content-type"] = "application/json";
     }
     if (this.token) h.authorization = `Bearer ${this.token}`;
-    const init = { method, headers: h, body: data };
-    if (this.timeout) init.signal = AbortSignal.timeout(this.timeout);
-    if (data !== undefined && typeof data?.getReader === "function") init.duplex = "half";
-    const r = await this.fetch(this.url + path, init);
-    if (!r.ok) {
+    // A stream is read once: an import of one is not sent again.
+    const again = data === undefined || typeof data === "string" || data instanceof Uint8Array;
+    const keyed = Boolean(body && typeof body === "object" && body.idempotency_key);
+    const giveUp = Date.now() + (this.retryFor || 0);
+    let r;
+    for (;;) {
+      const init = { method, headers: h, body: data };
+      if (this.timeout) init.signal = AbortSignal.timeout(this.timeout);
+      if (data !== undefined && typeof data?.getReader === "function") init.duplex = "half";
+      r = await this.fetch(this.url + path, init);
+      if (r.ok) break;
       const raw = await r.text();
       let answer;
       let msg = raw || r.statusText;
@@ -133,6 +154,12 @@ export class Client extends Searchable {
         if (answer && typeof answer === "object" && answer.error) msg = answer.error;
       } catch {
         answer = undefined;
+      }
+      const partial = answer?.partial === true;
+      const wait = retryAfter(r.headers.get("retry-after"));
+      if (r.status === 429 && this.retryFor > 0 && again && (keyed || !partial) && Date.now() + wait <= giveUp) {
+        await new Promise((ok) => setTimeout(ok, wait));
+        continue;
       }
       throw new StrataError(`${msg} (HTTP ${r.status})`, { status: r.status, answer });
     }
@@ -193,8 +220,8 @@ export class Client extends Searchable {
 
   /** Runs any statement: a SELECT's `Result`, or the number of rows an
    * INSERT, UPDATE or DELETE wrote. */
-  async sql(sql, params) {
-    return resultOrWritten(await this._call("POST", "/v1/sql", given({ sql, params })));
+  async sql(sql, params, { idempotencyKey } = {}) {
+    return resultOrWritten(await this._call("POST", "/v1/sql", given({ sql, params, idempotency_key: idempotencyKey })));
   }
 
   /** @internal */
@@ -248,8 +275,8 @@ export class Client extends Searchable {
 
   /** Write operations as /v1/write takes them ({op: "insert", doc}, {op:
    * "delete", key}, ...), in one request. Returns the rows written. */
-  async write(ops) {
-    return Number((await this._call("POST", "/v1/write", { ops: [...ops] })).written);
+  async write(ops, { idempotencyKey } = {}) {
+    return Number((await this._call("POST", "/v1/write", given({ ops: [...ops], idempotency_key: idempotencyKey }))).written);
   }
 
   async #ops(op, rows, table) {
@@ -303,13 +330,18 @@ export class Client extends Searchable {
     }
   }
 
-  /** `get` of several keys, 10,000 a request, in their order. */
-  async getMany(keys, { table } = {}) {
+  /**
+   * `get` of several keys, 10,000 a request, in their order; with
+   * `columns`, each row of those columns alone (a ranker's features, say),
+   * which reads no other.
+   */
+  async getMany(keys, { table, columns } = {}) {
     const list = [...keys];
-    const t = await this.#table(table);
+    const body = { table: await this.#table(table) };
+    if (columns !== undefined) body.columns = [...columns];
     const out = [];
     for (let i = 0; i < list.length; i += GET_BATCH) {
-      out.push(...(await this._call("POST", "/v1/kv/get", { table: t, keys: list.slice(i, i + GET_BATCH) })).rows);
+      out.push(...(await this._call("POST", "/v1/kv/get", { ...body, keys: list.slice(i, i + GET_BATCH) })).rows);
     }
     return out;
   }

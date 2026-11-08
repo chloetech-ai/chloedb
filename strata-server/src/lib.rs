@@ -33,9 +33,11 @@ pub mod cores;
 pub mod demo;
 pub mod events;
 pub mod fleet;
+pub mod follow;
 pub mod grpc;
 pub mod heap;
 pub mod hub;
+pub mod hub_follow;
 pub mod http;
 pub mod idem;
 pub mod inspect;
@@ -44,9 +46,11 @@ pub mod judge;
 pub mod keys;
 pub mod keysync;
 pub mod logstore;
+pub mod mcp;
 pub mod media;
 pub mod metrics;
 pub mod obs;
+pub mod oncall;
 pub mod operator;
 // fleet: coordinators that know each other.
 pub mod peers;
@@ -60,6 +64,7 @@ pub mod service;
 pub mod sim;
 pub mod slots;
 pub mod telemetry;
+pub mod traffic;
 pub mod ui;
 
 /// A builder of the HTTP clients the server makes. They trust the roots
@@ -121,6 +126,7 @@ impl From<tonic::Status> for ApiError {
         let status = match s.code() {
             Code::InvalidArgument => 400,
             Code::FailedPrecondition => 409,
+            Code::AlreadyExists => 422,
             Code::DeadlineExceeded => 504,
             Code::ResourceExhausted => 429,
             Code::Unavailable => 503,
@@ -142,6 +148,9 @@ impl From<ApiError> for tonic::Status {
             // Refused in the state the server is in: an older slot map, a
             // write with the same idempotency key still running.
             409 => Code::FailedPrecondition,
+            // An idempotency key used already, for other operations or
+            // another statement.
+            422 => Code::AlreadyExists,
             // Too many queries running: another replica would only be
             // loaded more ([`crate::coord`] does not retry it elsewhere).
             429 => Code::ResourceExhausted,

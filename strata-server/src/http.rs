@@ -15,7 +15,7 @@
 //! | `POST /v1/rank_log/interleaving` | the export's body | `{pairs: [{variants, requests, acted, wins, ties, delta, p}], took_ms}`: which of two interleaved rankings the users preferred ([`strata::rank_log::Credit`]) |
 //! | `POST /v1/write` | `{ops: [...]}` (see `proto/strata.proto`; each op writes the first table, or its `table`) | `{written, seq_no?, seq_nos?}` |
 //! | `GET /v1/kv/:table/:key?min_seq_no=n` | | `{table, key, found, row?, seq_no?}`: the row with that primary key, read without SQL, as `SELECT *` answers it ([`Service::get_rows`]); 404 when no live row has it (or it has expired) |
-//! | `POST /v1/kv/get` | `{keys, table?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{table, columns, rows, seq_nos, took_ms}`: per key, in their order, its row as an object (null for none) and its number; a coordinator asks each key's shard |
+//! | `POST /v1/kv/get` | `{keys, table?, columns?, timeout_ms?, min_seq_no?, min_seq_nos?}` | `{table, columns, rows, seq_nos, took_ms}`: per key, in their order, its row as an object (null for none) and its number, of `columns` alone when given; a coordinator asks each key's shard |
 //! | `PUT /v1/kv/:table/:key?if_seq_no=n` | the row's fields as an object (the key may be left out) | `{written, seq_no?}`: the row written in place of any with the key (an upsert; with `if_seq_no`, only while the row's number is that) |
 //! | `DELETE /v1/kv/:table/:key?if_seq_no=n&routing=v` | | `{deleted, written, seq_no?}` |
 //! | `POST /v1/plan` | `{plan, timeout_ms?, min_seq_no?, min_seq_nos?}` (a plan as `/v1/explain` gives it) | rows, or `{written, seq_no?, seq_nos?}` |
@@ -34,6 +34,10 @@
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
 //! | `POST /v1/judge` | `{query, keys, table?, fields?, model?, api_key?}` | `{grades: [{key, grade, error?}], model, usage}`: each row graded 0 to 3 for the query by a Claude model ([`crate::judge`]) |
+//! | `POST /v1/admin/oncall` | `{question?, alert?, model?, effort?, api_key?, max_steps?, note?}` | `{run, answer, proposals, steps, usage}`: a Claude model looks into an alert or a question with read-only tools and proposes actions ([`crate::oncall`]); `note` also writes the answer on the events timeline |
+//! | `GET /v1/admin/oncall/proposals?state=&run=` | | `{proposals}`: the on-call agent's proposed actions, newest first, each `pending`, `applied`, `failed`, `rejected` or `expired` (after an hour) |
+//! | `POST /v1/admin/oncall/proposals/:id/approve`, `.../reject` | `{reason?}` to reject | the proposal: approving makes its request with the approver's credential and its reason, audited as theirs |
+//! | `POST /v1/mcp` | a JSON-RPC message or a batch | the Model Context Protocol's answer, or 202 for notifications: tools that call these routes with the caller's credential ([`crate::mcp`]) |
 //! | `GET /v1/queries` | | `{queries, running}`: the queries running now, the longest first, each with its trace so far; on a coordinator, every coordinator's (another's ids are `id@name`, with `local_id` and `nodes`: who answered) |
 //! | `DELETE /v1/queries/:id` | | `{cancelled}`: the query stops at its next check and answers 499; an `id@name` is cancelled on that coordinator |
 //! | `GET /v1/queries/recent?since=ms&limit=n`, `/v1/queries/slow?limit=n` | | `{queries}`: the latest that ended (or the slow ones), the newest first, each with its trace |
@@ -121,8 +125,9 @@ impl IntoResponse for ApiError {
         if let Some(c) = client {
             r.extensions_mut().insert(c);
         }
-        // Refused for the server's load: when to try again.
-        if self.status == 429 {
+        // Refused for the server's load, or while it holds its writes: when
+        // to try again.
+        if self.status == 429 || self.status == 503 {
             r.headers_mut().insert(header::RETRY_AFTER, header::HeaderValue::from(crate::service::RETRY_AFTER.as_secs()));
         }
         if let Some(f) = failure {
@@ -140,6 +145,9 @@ struct App {
     token: Option<Secret>,
     cluster: Option<Secret>,
     hosts: Option<Arc<[String]>>,
+    /// The API's routes again, which `/v1/mcp`'s tools call ([`crate::mcp`]):
+    /// none in that copy itself.
+    mcp: Option<Router>,
 }
 
 impl App {
@@ -151,14 +159,42 @@ impl App {
 }
 
 pub fn router(svc: Arc<Service>, access: &Access) -> Router {
-    // Rows come in writes and imports; every other body is small.
-    let rows = DefaultBodyLimit::max(svc.max_body);
-    let app = App { svc, token: access.token.clone(), cluster: access.cluster.clone(), hosts: access.hosts.clone().map(Into::into) };
+    let app = App { svc, token: access.token.clone(), cluster: access.cluster.clone(), hosts: access.hosts.clone().map(Into::into), mcp: None };
     // alerts2: coordinators tell each other of their alerts.
     crate::alerts::peering(&app.svc);
     // cluster2: a plan a restart stopped is taken up (interrupted).
     crate::coord::plan::start(&app.svc);
-    let api = Router::new()
+    // mcp: the routes an MCP tool's call goes to, with the caller's
+    // credential, through the same checks (a copy, so the router does not
+    // hold itself); and health, which takes no credential (the on-call
+    // agent's first look, [`crate::oncall`]).
+    let tools = api(&app).route("/v1/health", get(health)).layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))).with_state(app.clone());
+    let app = App { mcp: Some(tools), ..app };
+    let api = api(&app);
+    Router::new()
+        .route("/", get(ui::index))
+        .route("/classic", get(ui::classic))
+        .route("/ui/*file", get(ui::file))
+        .route("/v1/health", get(health))
+        .route("/livez", get(live))
+        .route("/readyz", get(ready))
+        // The command center of a connection of the hub's book: the same
+        // page, whose calls go to /c/<name>/v1/...
+        .route("/c/:name", get(ui::index))
+        .merge(api)
+        // One stack, outermost first, put on each route once: each layer
+        // put on its own wraps the routes in another boxed service, and
+        // each request then clones every box inside the layer it passes
+        // (some 40 allocations a request, with five layers).
+        .layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY)).layer(compression()))
+        .with_state(app)
+}
+
+/// The API's routes, behind [`auth`].
+fn api(app: &App) -> Router<App> {
+    // Rows come in writes and imports; every other body is small.
+    let rows = DefaultBodyLimit::max(app.svc.max_body);
+    Router::new()
         .route("/v1/stats", get(stats))
         .route("/v1/schema", get(schema))
         .route("/v1/tables", get(tables))
@@ -175,12 +211,14 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/kv/get", post(kv_get))
         .route("/v1/kv/:table/:key", get(kv_one).merge(put(kv_put)).merge(axum::routing::delete(kv_delete)).layer(rows.clone()))
         .route("/v1/plan", post(run_plan).layer(rows.clone()))
-        .route("/v1/import", post(import).layer(rows))
+        .route("/v1/import", post(import).layer(rows.clone()))
         .route("/v1/export", get(export))
         // A stream's body has no end set.
         .route("/v1/stream", post(stream).layer(DefaultBodyLimit::disable()))
         .route("/v1/sources", get(sources))
         .route("/v1/feed", get(feed))
+        .route("/v1/feed/promoted", get(feed_promoted))
+        .route("/v1/feed/keys", post(feed_keys))
         .route("/v1/sources/*name", get(source))
         .route("/v1/schema/check", post(schema_check))
         .route("/v1/explain", post(explain))
@@ -198,6 +236,12 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/vacuum", post(admin_vacuum))
         .route("/v1/admin/verify", post(admin_verify))
         .route("/v1/admin/promote", post(admin_promote))
+        .route("/v1/admin/follow", get(follow_view))
+        .route("/v1/admin/follow/status", post(follow_status))
+        .route("/v1/admin/follow/stop", post(follow_stop))
+        .route("/v1/admin/follow/pause", post(follow_pause))
+        .route("/v1/admin/follow/promote", post(follow_promote))
+        .route("/v1/admin/hold-writes", get(hold_view).post(hold_writes))
         .route("/v1/admin/shards", post(add_shard))
         .route("/v1/admin/shards/:i", axum::routing::delete(remove_shard))
         .route("/v1/admin/shards/:i/replicas", post(add_replica).merge(axum::routing::delete(remove_replica)))
@@ -209,6 +253,11 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/moves/finish", post(finish_move))
         .route("/v1/agent", post(agent_run))
         .route("/v1/judge", post(judge))
+        .route("/v1/admin/oncall", post(oncall_run))
+        .route("/v1/admin/oncall/proposals", get(oncall_proposals))
+        .route("/v1/admin/oncall/proposals/:id/approve", post(oncall_approve))
+        .route("/v1/admin/oncall/proposals/:id/reject", post(oncall_reject))
+        .route("/v1/mcp", post(mcp).layer(rows))
         // workload (alerts agent): grouped, and cancelled by statement
         .route("/v1/queries", get(live_queries).delete(cancel_queries))
         .route("/v1/admin/contain", get(contain_rules).post(add_contain))
@@ -260,6 +309,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/hub/connections/:name/check", post(hub_check))
         .route("/v1/admin/hub/adopt", post(hub_adopt))
         .route("/v1/admin/hub/copy", post(hub_copy))
+        .route("/v1/admin/hub/follow", post(hub_follow))
         .route("/c/:name/*rest", axum::routing::any(hub_forward))
         .route("/v1/admin/cloud/clusters", get(cloud_list).post(cloud_create))
         .route("/v1/admin/cloud/clusters/:id", get(cloud_one).merge(axum::routing::delete(cloud_forget)))
@@ -303,25 +353,15 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/index/tables", get(index_tables))
         .route("/v1/admin/copies/verify", post(copy_verify))
         .route("/v1/admin/copies/checkpoint", post(copy_checkpoint))
+        // The Simulator: a test run of the traffic simulator's mix against
+        // this cluster, graded, with a model of other shapes (src/traffic).
+        .route("/v1/admin/simulator", get(sim_view).post(sim_start))
+        .route("/v1/admin/simulator/stop", post(sim_stop))
+        .route("/v1/admin/simulator/predict", post(sim_predict))
+        .route("/v1/admin/simulator/runs/:id", get(sim_report))
+        .route("/v1/admin/simulator/table", axum::routing::delete(sim_drop))
         // ----- end core
-        .route_layer(middleware::from_fn_with_state(app.clone(), auth));
-    Router::new()
-        .route("/", get(ui::index))
-        .route("/classic", get(ui::classic))
-        .route("/ui/*file", get(ui::file))
-        .route("/v1/health", get(health))
-        .route("/livez", get(live))
-        .route("/readyz", get(ready))
-        // The command center of a connection of the hub's book: the same
-        // page, whose calls go to /c/<name>/v1/...
-        .route("/c/:name", get(ui::index))
-        .merge(api)
-        // One stack, outermost first, put on each route once: each layer
-        // put on its own wraps the routes in another boxed service, and
-        // each request then clones every box inside the layer it passes
-        // (some 40 allocations a request, with five layers).
-        .layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY)).layer(compression()))
-        .with_state(app)
+        .route_layer(middleware::from_fn_with_state(app.clone(), auth))
 }
 
 /// gzip for a client that asks for it (`Accept-Encoding: gzip`), of JSON
@@ -679,9 +719,13 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
         Some(_) => None,
     };
     let need = route_scope(&method, route);
+    // A follow process's writes ([`crate::service::FOLLOW`]).
+    let follow = header_str(req.headers(), header::HeaderName::from_static(crate::service::FOLLOW_HEADER)).map(str::to_string);
     let refused = match &who {
         None => Some(ApiError { status: 401, message: "missing or wrong token".into() }),
         Some(w) if w.scope < need => w.may(need, &format!("{method} {route}")).err(),
+        Some(w) if follow.is_some() && !w.root => Some(ApiError { status: 403, message: format!("{} names a cluster this one follows: only its follow process sends it, with the cluster's token", crate::service::FOLLOW_HEADER) }),
+        Some(_) if follow.as_deref().is_some_and(|f| !crate::service::follow_name_ok(f)) => Some(ApiError::bad(format!("{} is 1 to 64 letters, digits, '.', '_' or '-'", crate::service::FOLLOW_HEADER))),
         Some(_) => None,
     };
     let (res, note, change) = match refused {
@@ -695,7 +739,9 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
             if let Some(w) = &who {
                 req.extensions_mut().insert(w.clone());
             }
-            telemetry::calling(Arc::new(caller), keys::noting_change(next.run(req))).await
+            let follow: Option<Arc<str>> = follow.map(Into::into);
+            let own = who.as_ref().is_some_and(|w| w.root);
+            telemetry::calling(Arc::new(caller), crate::service::FOLLOW.scope(follow, crate::service::OWN.scope(own, keys::noting_change(next.run(req))))).await
         }
     };
     let status = res.status().as_u16();
@@ -709,7 +755,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // cloud's plan or check) changes nothing: a read too.
     let plan = matches!(
         route,
-        "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
+        "/v1/admin/plan" | "/v1/admin/kube/plan" | "/v1/admin/simulator/predict" | "/v1/logs/query" | "/v1/admin/autoscale/replay" | "/v1/admin/aws/plan" | "/v1/admin/aws/validate" | "/v1/admin/digitalocean/plan" | "/v1/admin/digitalocean/validate"
             // alerts agent: a rule replayed.
             | "/v1/alerts/backtest"
     );
@@ -806,7 +852,7 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
     use axum::http::Method;
     match route {
         // All a feed key may read: the feed, and whether it is up.
-        "/v1/feed" | "/v1/health" | "/v1/whoami" => Scope::Feed,
+        "/v1/feed" | "/v1/feed/keys" | "/v1/feed/promoted" | "/v1/health" | "/v1/whoami" => Scope::Feed,
         "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" => Scope::Write,
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
         "/v1/export" => Scope::Admin,
@@ -1031,10 +1077,10 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
         if req.shard {
             return Err(ApiError::bad("a shard's query is not logged: log through the coordinator"));
         }
-        return logged(&app, &who(w), req, log).await;
+        return logged(&app, &who(w), req, log, body_bool(&b, "objects")?).await;
     }
     let a = app.svc.query(req).await?;
-    let mut j = answer(&a);
+    let mut j = answer_of(&b, &a)?;
     // `"trace": true`: the timed steps the request took; `"profile":
     // true` answers them too, beside its steps' CPU time.
     if b.get("trace").and_then(|v| v.as_bool()) == Some(true) || b.get("profile").and_then(|v| v.as_bool()) == Some(true) {
@@ -1048,10 +1094,13 @@ async fn query(State(app): State<App>, w: Option<axum::Extension<Principal>>, Ax
 /// (`"teams"`: per row, the ranking that placed it) and the log's write
 /// (`"logged"`: the rows, and the write's sequence numbers as a write's
 /// answer gives them).
-async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json) -> Res {
+async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json, objects: bool) -> Res {
     let log = strata::rank_log::Log::from_json(log)?;
     let (a, served, w) = app.svc.query_logged(who, req, log).await?;
     let mut j = answer(&a);
+    if objects {
+        as_objects(&mut j);
+    }
     j["request"] = json!(served.request);
     if !served.teams.is_empty() {
         j["teams"] = json!(served.teams);
@@ -1071,16 +1120,24 @@ async fn logged(app: &App, who: &Principal, req: QueryReq, log: &Json) -> Res {
 /// changes of the server's numbered transactions from `from` on (default
 /// 1), or of shard `i`'s through its primary, as NDJSON that goes on as
 /// they are written ([`crate::service::Service::feed`]). `after_term` is
-/// the term of transaction `from - 1` as the reader holds it. A failure
-/// after the answer started ends it with `{"error": ..., "status": ..}`.
+/// the term of transaction `from - 1` as the reader holds it. With
+/// `copy=true`, a copy of the rows first (`since=n`: those changed after
+/// transaction n, whose term `after_term` is then; `whole=a,b`: but every
+/// row of tables a and b; `digests=true`: with the digests of the keys). A
+/// failure after the answer started ends it with `{"error": ..., "status": ..}`.
 async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
     let num = |k: &str| -> Result<Option<u64>, ApiError> { q.get(k).map(|v| v.parse::<u64>().map_err(|_| ApiError::bad(format!("{k} is a whole number, not {v:?}")))).transpose() };
     let (from, after) = (num("from")?.unwrap_or(1), num("after_term")?.filter(|&t| t > 0));
     let shard = num("shard")?;
+    let whole: Vec<String> = q.get("whole").into_iter().flat_map(|w| w.split(',')).filter(|t| !t.is_empty()).map(String::from).collect();
+    let copy = flag(&q, "copy", false)?.then_some(crate::service::feed::CopyOpts { since: num("since")?.unwrap_or(0), whole, digests: flag(&q, "digests", false)? });
+    if copy.is_none() && ["since", "whole", "digests"].iter().any(|k| q.contains_key(*k)) {
+        return Err(ApiError::bad("since, whole and digests are a copy's (copy=true)"));
+    }
     let ndjson = |body: axum::body::Body| ([(header::CONTENT_TYPE, "application/x-ndjson")], body).into_response();
     if let Ok(c) = app.svc.coordinator() {
         let shard = shard.ok_or_else(|| ApiError::bad("a cluster's feed is each shard's: name one (?shard=0 for the first)"))?;
-        let chunks = c.feed(shard as usize, from, after.unwrap_or(0)).await?;
+        let chunks = c.feed(shard as usize, from, after.unwrap_or(0), copy).await?;
         let lines = chunks.map(|c| {
             Ok::<_, std::convert::Infallible>(match c {
                 Ok(c) => Bytes::from(c.lines),
@@ -1097,9 +1154,32 @@ async fn feed(State(app): State<App>, Query(q): Query<std::collections::HashMap<
     if shard.is_some_and(|s| s != own) {
         return Err(ApiError::bad(format!("this server holds shard {own} alone: ask its coordinator for shard {}", shard.unwrap_or(0))));
     }
-    let rx = app.svc.feed(from, after).await?;
+    let rx = app.svc.feed(from, after, copy).await?;
     let lines = tokio_stream::wrappers::ReceiverStream::new(rx).map(|v| Ok::<_, std::convert::Infallible>(Bytes::from(v)));
     Ok(ndjson(axum::body::Body::from_stream(lines)))
+}
+
+/// `POST /v1/feed/keys {"tables": [...], "slots"?: [...]}`: the keys of
+/// `tables` as a follower's sweep compares them with its source's: with no
+/// `slots`, `{"digests": [[slot, count, "sum in hex"], ...]}` of the slots
+/// that hold one; with `slots`, `{"keys": [{"table", "key", "place"?},
+/// ...]}` of the rows those place ([`crate::service::Service::feed_keys`];
+/// a coordinator asks each shard's primary).
+async fn feed_keys(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<AxJson<Json>, ApiError> {
+    let names = |k: &str| -> Result<Vec<String>, ApiError> {
+        b.get(k).and_then(Json::as_array).ok_or_else(|| ApiError::bad(format!("{k} is a list")))?.iter().map(|t| t.as_str().map(String::from).ok_or_else(|| ApiError::bad(format!("{k} lists names")))).collect()
+    };
+    let tables = names("tables")?;
+    let slots = match b.get("slots") {
+        None | Some(Json::Null) => None,
+        Some(Json::Array(a)) => Some(a.iter().map(|s| s.as_u64().filter(|&s| (s as usize) < crate::slots::SLOTS).map(|s| s as usize).ok_or_else(|| ApiError::bad(format!("slots are 0 to {}", crate::slots::SLOTS - 1)))).collect::<Result<Vec<_>, _>>()?),
+        Some(_) => return Err(ApiError::bad("slots is a list")),
+    };
+    let j = match app.svc.coordinator() {
+        Ok(c) => c.feed_keys(tables, slots).await?,
+        Err(_) => app.svc.feed_keys(tables, slots).await?,
+    };
+    Ok(AxJson(j))
 }
 
 /// The records of a log table ([`strata::rank_log::export`]) as NDJSON,
@@ -1147,14 +1227,47 @@ fn answer(a: &crate::service::Answer) -> Json {
     j
 }
 
+/// [`answer`], its rows as objects keyed by column when the body asks
+/// (`"objects": true`; [`as_objects`]).
+fn answer_of(b: &Json, a: &crate::service::Answer) -> Result<Json, ApiError> {
+    let mut j = answer(a);
+    if body_bool(b, "objects")? {
+        as_objects(&mut j);
+    }
+    Ok(j)
+}
+
+/// An answer's rows as objects, `{"id": "p1", "price": 9.5}`, in place of
+/// lists in the order of its `columns`. A column named as an earlier one
+/// (`SELECT a.id, b.id`) is keyed by its name and its place among those of
+/// its name: `id`, then `id_2`, `id_3` (or the next suffix no column has).
+pub fn as_objects(j: &mut Json) {
+    let mut names: Vec<String> = Vec::new();
+    for c in j["columns"].as_array().into_iter().flatten() {
+        let c = c.as_str().unwrap_or_default();
+        let mut name = c.to_string();
+        let mut k = 1;
+        while names.contains(&name) {
+            k += 1;
+            name = format!("{c}_{k}");
+        }
+        names.push(name);
+    }
+    for r in j.get_mut("rows").and_then(Json::as_array_mut).into_iter().flatten() {
+        if let Json::Array(values) = std::mem::take(r) {
+            *r = Json::Object(names.iter().cloned().zip(values).collect());
+        }
+    }
+}
+
 /// Any statement: the service checks that the request's credential may
 /// run it ([`Service::sql`]), and audits a table's or rank profile's.
-async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let params = app.svc.params(b.get("params")).await?;
     let w = who(w);
     if let Some(log) = b.get("log") {
         let req = QueryReq { sql: body_str(&b, "sql")?.to_string(), params, timeout_ms: body_u64(&b, "timeout_ms"), after: after(&b)?, ..Default::default() };
-        return logged(&app, &w, req, log).await.map(IntoResponse::into_response);
+        return logged(&app, &w, req, log, body_bool(&b, "objects")?).await.map(IntoResponse::into_response);
     }
     let statement = body_str(&b, "sql")?;
     // A write from the command center is audited whatever its answer.
@@ -1162,29 +1275,50 @@ async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJs
     if writes {
         audit_ui_write(statement, None, None);
     }
-    let (r, partial) = crate::coord::with_partial(app.svc.sql(&w, statement, &params, after(&b)?, body_u64(&b, "timeout_ms"))).await;
+    let key = body_key(&b, &headers)?;
+    let (r, partial) = crate::coord::with_partial(app.svc.sql_in(&w, statement, &params, after(&b)?, body_u64(&b, "timeout_ms"), None, key)).await;
     match r {
-        Ok(SqlAnswer::Rows(a)) => Ok(AxJson(answer(&a)).into_response()),
+        Ok(SqlAnswer::Rows(a)) => Ok(AxJson(answer_of(&b, &a)?).into_response()),
         Ok(SqlAnswer::Written { w, took_ms }) => {
             audit_ui_write(statement, Some(w.rows as u64), None);
             Ok(AxJson(written(w, took_ms)).into_response())
         }
         Err(e) => {
             if writes {
-                audit_ui_write(statement, None, partial.as_ref());
+                audit_ui_write(statement, None, partial.as_ref().map(|p| &p["shards"]));
             }
             Ok(write_failed(e, partial))
         }
     }
 }
 
+/// A write's idempotency key: the body's `idempotency_key`, or an
+/// `Idempotency-Key` header.
+fn body_key(b: &Json, headers: &HeaderMap) -> Result<Option<String>, ApiError> {
+    let key = match (b.get("idempotency_key"), headers.get("idempotency-key")) {
+        (Some(Json::String(k)), _) => Some(k.clone()),
+        (Some(_), _) => return Err(ApiError::bad("idempotency_key is a string")),
+        (None, Some(h)) => Some(h.to_str().map_err(|_| ApiError::bad("the Idempotency-Key header is not text"))?.to_string()),
+        (None, None) => None,
+    };
+    if key.as_ref().is_some_and(|k| k.is_empty() || k.len() > 256) {
+        return Err(ApiError::bad("an idempotency key has 1 to 256 characters"));
+    }
+    Ok(key)
+}
+
 /// The answer of a write that failed: its error, and when it failed
 /// partway through a coordinator, what each shard did (`shards`: `{shard,
 /// short, rows}` for those that took it, `{shard, short, error}` for the
-/// others; [`crate::coord::with_partial`]).
+/// others) and the idempotency key to send it again with
+/// (`idempotency_key`; [`crate::coord::with_partial`]).
 fn write_failed(e: ApiError, partial: Option<Json>) -> Response {
-    let Some(shards) = partial else { return e.into_response() };
-    let body = json!({"error": e.message, "partial": true, "shards": shards}).to_string();
+    let Some(partial) = partial else { return e.into_response() };
+    let mut body = json!({"error": e.message, "partial": true, "shards": partial["shards"]});
+    if let Some(k) = partial.get("idempotency_key") {
+        body["idempotency_key"] = k.clone();
+    }
+    let body = body.to_string();
     let mut r = e.into_response();
     *r.body_mut() = axum::body::Body::from(body);
     r
@@ -1268,7 +1402,7 @@ fn written(w: Written, took_ms: f64) -> Json {
 async fn run_plan(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
     let plan = strata::query::ir::Plan::from_json(b.get("plan").ok_or_else(|| ApiError::bad("the body needs a \"plan\""))?)?;
     match app.svc.run_plan(&who(w), plan, after(&b)?, body_u64(&b, "timeout_ms")).await? {
-        SqlAnswer::Rows(a) => Ok(AxJson(answer(&a))),
+        SqlAnswer::Rows(a) => Ok(AxJson(answer_of(&b, &a)?)),
         SqlAnswer::Written { w, took_ms } => Ok(AxJson(written(w, took_ms))),
     }
 }
@@ -1280,15 +1414,7 @@ async fn write(State(app): State<App>, headers: HeaderMap, AxJson(mut b): AxJson
         Some(Json::Array(ops)) => ops,
         _ => return Err(ApiError::bad("the body needs an array \"ops\"")),
     };
-    let key = match (b.get("idempotency_key"), headers.get("idempotency-key")) {
-        (Some(Json::String(k)), _) => Some(k.clone()),
-        (Some(_), _) => return Err(ApiError::bad("idempotency_key is a string")),
-        (None, Some(h)) => Some(h.to_str().map_err(|_| ApiError::bad("the Idempotency-Key header is not text"))?.to_string()),
-        (None, None) => None,
-    };
-    if key.as_ref().is_some_and(|k| k.is_empty() || k.len() > 256) {
-        return Err(ApiError::bad("an idempotency key has 1 to 256 characters"));
-    }
+    let key = body_key(&b, &headers)?;
     let t0 = std::time::Instant::now();
     // A write from the command center is audited whatever its answer: its
     // table is its first operation's.
@@ -1302,14 +1428,14 @@ async fn write(State(app): State<App>, headers: HeaderMap, AxJson(mut b): AxJson
         }
     };
     note(None, None);
-    let (r, partial) = crate::coord::with_partial(app.svc.write_ops(ops, key)).await;
+    let (r, partial) = crate::coord::with_partial(app.svc.write_request(ops, key)).await;
     match r {
         Ok(w) => {
             note(Some(w.rows as u64), None);
             Ok(AxJson(written(w, t0.elapsed().as_secs_f64() * 1e3)).into_response())
         }
         Err(e) => {
-            note(None, partial.as_ref());
+            note(None, partial.as_ref().map(|p| &p["shards"]));
             Ok(write_failed(e, partial))
         }
     }
@@ -1347,7 +1473,7 @@ fn path_key(schema: &strata::schema::Schema, key: &str) -> Result<Json, ApiError
 async fn kv_one(State(app): State<App>, axum::extract::Path((table, key)): axum::extract::Path<(String, String)>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, ApiError> {
     let t0 = Instant::now();
     let timeout_ms = q.get("timeout_ms").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let got = app.svc.get_rows(Some(&table), vec![strata::value::Value::Str(key.clone())], &after_of_query(&q)?, timeout_ms, true).await?;
+    let got = app.svc.get_rows(Some(&table), vec![strata::value::Value::Str(key.clone())], None, &after_of_query(&q)?, timeout_ms, true).await?;
     let took_ms = t0.elapsed().as_secs_f64() * 1e3;
     Ok(match got.rows.into_iter().next().flatten() {
         Some((row, seq_no)) => AxJson(json!({"table": got.table, "key": key, "found": true, "row": key_row(&got.columns, &row), "seq_no": seq_no, "took_ms": took_ms})).into_response(),
@@ -1367,7 +1493,12 @@ async fn kv_get(State(app): State<App>, AxJson(b): AxJson<Json>) -> Result<Respo
         Some(Json::String(t)) => Some(t.as_str()),
         Some(_) => return Err(ApiError::bad("table is a table's name")),
     };
-    let got = app.svc.get_rows(table, keys, &after(&b)?, body_u64(&b, "timeout_ms"), true).await?;
+    let columns = match b.get("columns") {
+        None | Some(Json::Null) => None,
+        Some(Json::Array(c)) => Some(c.iter().map(|c| c.as_str().map(str::to_string)).collect::<Option<Vec<_>>>().ok_or_else(|| ApiError::bad("columns are the names of columns"))?),
+        Some(_) => return Err(ApiError::bad("columns is an array of the names of columns")),
+    };
+    let got = app.svc.get_rows(table, keys, columns, &after(&b)?, body_u64(&b, "timeout_ms"), true).await?;
     Ok(AxJson(KeyRowsJson { got: &got, took_ms: t0.elapsed().as_secs_f64() * 1e3 }).into_response())
 }
 
@@ -1517,7 +1648,7 @@ async fn import(State(app): State<App>, w: Option<axum::Extension<Principal>>, Q
             Ok(AxJson(j).into_response())
         }
         Err(e) => {
-            note(None, partial.as_ref());
+            note(None, partial.as_ref().map(|p| &p["shards"]));
             Ok(write_failed(e, partial))
         }
     }
@@ -1929,10 +2060,143 @@ fn line_ops(line: &[u8]) -> Result<Vec<Json>, ApiError> {
 }
 
 /// Every stream source written from, with the offset of the last event
-/// each wrote ([`Service::sources`]).
-async fn sources(State(app): State<App>) -> Res {
+/// each wrote ([`Service::sources`]): on a coordinator the least over its
+/// shards; `?shards=true` also lists each shard's own (`shards`).
+async fn sources(State(app): State<App>, Query(q): Query<std::collections::HashMap<String, String>>) -> Res {
+    if flag(&q, "shards", false)? {
+        let by_shard = app.svc.sources_by_shard().await?;
+        let least = match app.svc.coordinator() {
+            Ok(_) => app.svc.sources().await?,
+            Err(_) => by_shard.first().cloned().unwrap_or_default(),
+        };
+        let shards: Vec<Json> = by_shard.into_iter().map(|s| Json::Array(s.into_iter().map(source_json).collect())).collect();
+        return Ok(AxJson(json!({"sources": least.into_iter().map(source_json).collect::<Vec<_>>(), "shards": shards})));
+    }
     let sources: Vec<Json> = app.svc.sources().await?.into_iter().map(source_json).collect();
     Ok(AxJson(json!({"sources": sources})))
+}
+
+/// `GET /v1/admin/follow`: the clusters this one follows or followed
+/// ([`crate::follow`]): whether it follows each now, how far its follow
+/// process applied each source shard's feed, and what that process last
+/// said of itself.
+async fn follow_view(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.follow_view().await?))
+}
+
+/// `POST /v1/admin/follow/status`: a follow process says how it stands
+/// (the cluster's token only).
+async fn follow_status(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Res {
+    root_only(&who(w), "a follow process's status")?;
+    let name = b["name"].as_str().filter(|n| crate::service::follow_name_ok(n)).ok_or_else(|| ApiError::bad("the status names its cluster: {\"name\": ...}"))?.to_string();
+    app.svc.note_follow_status(&name, b);
+    Ok(AxJson(json!({"noted": name})))
+}
+
+/// `POST /v1/admin/follow/stop {"name"}`: stops following cluster `name`
+/// (an admin's call): from then on this cluster takes its clients'
+/// writes, and refuses its follow process's. When the operator runs that
+/// process (`spec.follow`), its spec goes too ([`follow_spec`]).
+async fn follow_stop(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let name = b["name"].as_str().ok_or_else(|| ApiError::bad("name the cluster to stop following: {\"name\": ...}"))?;
+    let mut r = app.svc.stop_following(name).await?;
+    keys::note(format!("stopped following {name}"));
+    if let Some(s) = follow_spec(&app, name, Json::Null).await {
+        r["spec"] = s;
+    }
+    Ok(AxJson(r))
+}
+
+/// `POST /v1/admin/follow/pause {"name", "paused"?: true}`: the operator's
+/// follow process of `name` stops for now (`spec.follow.paused`), or
+/// starts again from where it was; the cluster still refuses its
+/// clients' writes meanwhile. Only where the operator runs it.
+async fn follow_pause(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let name = b["name"].as_str().ok_or_else(|| ApiError::bad("name the cluster this one follows: {\"name\": ..., \"paused\"?: true}"))?;
+    let paused = b.get("paused").map(|p| p.as_bool().ok_or_else(|| ApiError::bad("paused is true or false"))).transpose()?.unwrap_or(true);
+    match follow_spec(&app, name, json!({"paused": paused})).await {
+        None => Err(ApiError { status: 409, message: format!("the follow process of {name} is not this cluster's operator's (no spec.follow names it): stop or start it where it runs") }),
+        Some(s) if s.get("error").is_some() => Err(ApiError { status: 502, message: format!("the Kubernetes API: {}", s["error"].as_str().unwrap_or_default()) }),
+        Some(s) => {
+            keys::note(format!("{} following {name}", if paused { "paused" } else { "resumed" }));
+            Ok(AxJson(json!({"name": name, "paused": paused, "spec": s})))
+        }
+    }
+}
+
+/// When the operator runs this cluster's follow process of `name`
+/// (`spec.follow` names it): merges `patch` into `spec.follow` (null:
+/// none), and answers `{"changed": true}` or the error. None when it does
+/// not.
+async fn follow_spec(app: &App, name: &str, patch: Json) -> Option<Json> {
+    let l = app.svc.kube.as_ref()?;
+    let now = match l.get().await {
+        Ok(j) => j,
+        Err(e) => return Some(json!({"error": e})),
+    };
+    if now["spec"]["follow"]["name"] != name {
+        return None;
+    }
+    Some(match l.change(&json!({"follow": patch}), &[]).await {
+        Ok(_) => json!({"changed": true}),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not change spec.follow");
+            json!({"error": e})
+        }
+    })
+}
+
+/// `POST /v1/admin/follow/promote {"name", "unplanned"?}`: promotes this
+/// cluster, which follows cluster `name`: it stops following and takes its
+/// own clients' writes ([`crate::service::Service::promote_follower`]).
+/// Refused (409) unless `name` held its writes on every shard as far as
+/// this cluster applied, or with `"unplanned": true`, which loses the
+/// writes it did not apply. An admin's call, as stopping is; where the
+/// operator runs the follow process, its spec goes ([`follow_spec`]).
+async fn follow_promote(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    let name = b["name"].as_str().ok_or_else(|| ApiError::bad("name the cluster this one follows: {\"name\": ..., \"unplanned\"?: false}"))?;
+    let unplanned = b.get("unplanned").map(|u| u.as_bool().ok_or_else(|| ApiError::bad("unplanned is true or false"))).transpose()?.unwrap_or(false);
+    let mut r = app.svc.promote_follower(name, unplanned).await?;
+    if let Some(s) = follow_spec(&app, name, Json::Null).await {
+        r["spec"] = s;
+    }
+    keys::note(match unplanned {
+        true => format!("promoted from {name}, unplanned: {} transactions lost", r["lost"]),
+        false => format!("promoted from {name}"),
+    });
+    Ok(AxJson(r))
+}
+
+/// `POST /v1/admin/hold-writes {"hold"?: true}`: holds this cluster's
+/// clients' writes on every shard (503 to each from then on), as a
+/// switch-over to a cluster that follows it begins; `{"hold": false}`
+/// ends the hold. `GET`: whether it holds them.
+async fn hold_writes(State(app): State<App>, b: Option<AxJson<Json>>) -> Res {
+    let on = match b.as_ref().and_then(|AxJson(b)| b.get("hold")) {
+        None => true,
+        Some(h) => h.as_bool().ok_or_else(|| ApiError::bad("hold is true or false"))?,
+    };
+    let r = app.svc.hold_writes(on).await?;
+    keys::note(if on { "held the cluster's writes" } else { "ended the hold of the cluster's writes" }.to_string());
+    Ok(AxJson(r))
+}
+
+async fn hold_view(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.hold_view().await?))
+}
+
+/// `GET /v1/feed/promoted`: the clusters this one was promoted from, with
+/// its shards' numbers then, by which the old source follows it back
+/// ([`crate::service::Service::promotions`]).
+async fn feed_promoted(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.promotions().await?))
+}
+
+fn root_only(w: &Principal, what: &str) -> Result<(), ApiError> {
+    match w.root {
+        true => Ok(()),
+        false => Err(ApiError { status: 403, message: format!("{what} takes the cluster's token, not a key") }),
+    }
 }
 
 /// One source's offset, null for one not written from (start from the
@@ -2341,6 +2605,46 @@ async fn plan_apply(State(app): State<App>, w: Option<axum::Extension<Principal>
     Ok(audited(j, detail.chars().take(1500).collect()))
 }
 
+/// `GET /v1/admin/simulator`: the test run under way or last, the reports
+/// kept, and what a run can be given (presets, kinds, machines).
+async fn sim_view(State(app): State<App>) -> Res {
+    Ok(AxJson(crate::traffic::run::view(&app.svc)))
+}
+
+/// `POST /v1/admin/simulator {profile?, mix?, docs?, shape?, ...}`: starts
+/// a test run: it loads a table of test documents, measures each kind of
+/// request alone, sends the mix at a rising (or a steady) rate, and fits a
+/// model to it ([`crate::traffic::run::Config`]).
+async fn sim_start(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let config: crate::traffic::run::Config = serde_json::from_value(b).map_err(|e| ApiError::bad(format!("a test run's settings: {e}")))?;
+    let p = who(w);
+    let j = crate::traffic::run::start(&app.svc, &keys::audit_name(&p), config)?;
+    let detail = format!("started a simulator test run ({})", j["id"].as_str().unwrap_or("?"));
+    Ok(audited(j, detail))
+}
+
+/// `POST /v1/admin/simulator/stop`: the run stops after its requests under way.
+async fn sim_stop(State(app): State<App>) -> Result<Response, ApiError> {
+    let j = crate::traffic::run::stop(&app.svc);
+    Ok(audited(j, "stopped the simulator's test run".into()))
+}
+
+/// `POST /v1/admin/simulator/predict`: other shapes, by a report's model.
+async fn sim_predict(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
+    Ok(AxJson(crate::traffic::run::predict(&app.svc, &b)?))
+}
+
+/// `GET /v1/admin/simulator/runs/:id`: a report kept.
+async fn sim_report(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    Ok(AxJson(crate::traffic::run::report(&app.svc, &id)?))
+}
+
+/// `DELETE /v1/admin/simulator/table`: drops the test table a run kept.
+async fn sim_drop(State(app): State<App>) -> Result<Response, ApiError> {
+    let j = crate::traffic::run::drop_table(&app.svc).await?;
+    Ok(audited(j, format!("dropped the simulator's test table {}", crate::traffic::data::TABLE)))
+}
+
 /// `GET /v1/admin/plan/run`: the plan this coordinator applies or applied
 /// last, step by step; and, under `elsewhere`, the plan each other
 /// coordinator of the cluster applies or applied, so that every
@@ -2458,6 +2762,54 @@ async fn agent_run(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     };
     app.svc.metrics.agent_run();
     Ok(AxJson(agent::run(&app.svc, req).await?))
+}
+
+/// `POST /v1/mcp`: the Model Context Protocol, whose tools call this
+/// server's routes with the caller's credential ([`crate::mcp`]).
+async fn mcp(State(app): State<App>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, body: Bytes) -> Response {
+    crate::mcp::serve(&app.svc, app.mcp.clone(), crate::mcp::Caller { headers: &headers, peer: peer.map(|c| c.0) }, &body).await
+}
+
+/// `POST /v1/admin/oncall`: the on-call agent looks into an alert or a
+/// question, and proposes actions ([`crate::oncall`]).
+async fn oncall_run(State(app): State<App>, w: Option<axum::Extension<Principal>>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Res {
+    let opt = |k: &str| b.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+    let req = crate::oncall::OncallReq {
+        question: opt("question"),
+        alert: opt("alert"),
+        model: opt("model"),
+        effort: opt("effort"),
+        api_key: opt("api_key"),
+        max_steps: b.get("max_steps").and_then(|v| v.as_u64()).map(|n| (n as usize).clamp(1, crate::oncall::MAX_STEPS)).unwrap_or(crate::oncall::STEPS),
+        note: b.get("note").and_then(Json::as_bool).unwrap_or(false),
+        by: by(&who(w)),
+    };
+    app.svc.metrics.agent_run();
+    Ok(AxJson(crate::oncall::run(&app.svc, app.mcp.clone(), &headers, peer.map(|c| c.0), req).await?))
+}
+
+/// `GET /v1/admin/oncall/proposals?state=&run=`: the on-call agent's
+/// proposals, newest first.
+async fn oncall_proposals(State(app): State<App>, Query(q): Params) -> Res {
+    let pick = |k: &str| q.get(k).map(String::as_str).filter(|s| !s.is_empty());
+    Ok(AxJson(json!({"proposals": app.svc.oncall.list(pick("state"), pick("run"))})))
+}
+
+/// `POST /v1/admin/oncall/proposals/:id/approve`: makes the proposal's
+/// request, as the approver.
+async fn oncall_approve(State(app): State<App>, w: Option<axum::Extension<Principal>>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, axum::extract::Path(id): axum::extract::Path<String>) -> Res {
+    let by = by(&who(w));
+    let p = crate::oncall::approve(&app.svc, app.mcp.clone(), &headers, peer.map(|c| c.0), &id, &by).await?;
+    keys::note(format!("approved on-call proposal {id}: {}", p["what"].as_str().unwrap_or_default()));
+    Ok(AxJson(p))
+}
+
+/// `POST /v1/admin/oncall/proposals/:id/reject`: `{reason?}`.
+async fn oncall_reject(State(app): State<App>, w: Option<axum::Extension<Principal>>, axum::extract::Path(id): axum::extract::Path<String>, b: Option<AxJson<Json>>) -> Res {
+    let reason = b.and_then(|AxJson(b)| b.get("reason").and_then(Json::as_str).map(String::from)).unwrap_or_default();
+    let p = app.svc.oncall.reject(&id, &by(&who(w)), &reason)?;
+    keys::note(format!("rejected on-call proposal {id}: {}", p["what"].as_str().unwrap_or_default()));
+    Ok(AxJson(p))
 }
 
 /// `POST /v1/judge`: a Claude model's grade of each row for a query
@@ -3890,6 +4242,22 @@ async fn hub_copy(State(app): State<App>, w: Option<axum::Extension<Principal>>,
     let who = who(w);
     let j = crate::copy::copy(&app.svc, &who, &from, &to, &tables).await?;
     let detail = format!("copied {} from {} to {}: {} rows", tables.join(", "), from.describe(), to.describe(), j["written"].as_u64().unwrap_or(0));
+    Ok(audited(j, detail))
+}
+
+/// `POST /v1/admin/hub/follow {follower, source, name?, start?,
+/// source_url?, key_secret?, ca_secret?, plan?}`: sets the connection
+/// `follower` to follow `source` ([`crate::hub_follow`]): a feed key made
+/// on the source, kept in a Secret of the follower's namespace, and its
+/// `spec.follow`. With `plan`, what would be done, and why it would be
+/// refused (`refused`); nothing is made.
+async fn hub_follow(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let a = crate::hub_follow::Ask::from(&b)?;
+    let j = crate::hub_follow::follow(&app.svc, &who(w), &a).await?;
+    if a.plan {
+        return Ok(AxJson(j).into_response());
+    }
+    let detail = format!("set {} to follow {} (as {}, at {})", a.follower, a.source, j["name"].as_str().unwrap_or_default(), j["source_url"].as_str().unwrap_or_default());
     Ok(audited(j, detail))
 }
 

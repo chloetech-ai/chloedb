@@ -35,7 +35,8 @@ import json
 import os
 from typing import Any, Iterable, Mapping
 
-from . import _strata, ngrams, train
+from . import ngrams, train
+from ._native import _strata
 from ._search import Search, ordered_schema, params as _params
 from .build import (
     Expr,
@@ -74,7 +75,7 @@ from .build import (
     similarity,
     sqrt,
 )
-from ._strata import StrataError
+from ._native import StrataError
 from .client import Client
 from .ngrams import next_items
 from .result import ArrowResult, Result
@@ -512,7 +513,7 @@ def plan_parquet(parquet_path: str | os.PathLike, *, table: str | None = None, s
     return json.loads(_strata.Database.plan_parquet(os.fspath(parquet_path), table, None if schema is None else _schema_json(schema), key, blobs_base64, None if db is None else db._db))
 
 
-def connect(url: str = "http://127.0.0.1:7700", *, token: str | None = None, timeout: float = 30.0) -> Client:
+def connect(url: str = "http://127.0.0.1:7700", *, token: str | None = None, timeout: float = 30.0, retry_for: float = 10.0) -> Client:
     """A `Client` of the strata-server at `url`."""
-    return Client(url, token=token, timeout=timeout)
+    return Client(url, token=token, timeout=timeout, retry_for=retry_for)
 

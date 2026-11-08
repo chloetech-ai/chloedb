@@ -65,6 +65,12 @@ struct Tree {
     /// The least and greatest leaf under each node, which bounds skip
     /// subtrees by ([`Tree::reach`]).
     range: Vec<(f64, f64)>,
+    /// The most steps from the root to a leaf.
+    depth: u32,
+    /// No categorical split and none where 0 is missing: each split's
+    /// side for NaN is then fixed ([`NAN_LEFT`]), and a step is a
+    /// comparison ([`Tree::simple_step`]).
+    simple: bool,
 }
 
 /// A split, or a leaf: a node whose children are both itself, so that a
@@ -92,6 +98,9 @@ const MISSING_ZERO: u8 = 4;
 /// LightGBM's categorical split: left when the value, as an integer, is
 /// one of the categories (sorted); NaN and negatives go right.
 const CATEGORICAL: u8 = 8;
+/// NaN goes left, as [`Tree::step`] takes it: set when the model is read,
+/// for [`Tree::simple_step`].
+const NAN_LEFT: u8 = 16;
 
 /// LightGBM's `kZeroThreshold`.
 const ZERO: f64 = 1e-35_f32 as f64;
@@ -136,6 +145,26 @@ impl Gbdt {
         for (t, tree) in m.trees.iter_mut().enumerate() {
             tree.check(name, t, m.features)?;
             tree.range = vec![(0.0, 0.0); tree.nodes.len()];
+            let mut depth = vec![0u32; tree.nodes.len()];
+            for (i, n) in tree.nodes.iter().enumerate() {
+                if n.left as usize != i {
+                    depth[n.left as usize] = depth[i] + 1;
+                    depth[n.right as usize] = depth[i] + 1;
+                }
+            }
+            tree.depth = depth.into_iter().max().unwrap_or(0);
+            tree.simple = tree.nodes.iter().all(|n| n.flags & (CATEGORICAL | MISSING_ZERO) == 0);
+            let xgboost = m.xgboost;
+            for i in 0..tree.nodes.len() {
+                let n = tree.nodes[i];
+                let nan_left = match xgboost {
+                    true => tree.step::<true>(&n, f64::NAN),
+                    false => tree.step::<false>(&n, f64::NAN),
+                } == n.left;
+                if nan_left && n.left != n.right {
+                    tree.nodes[i].flags |= NAN_LEFT;
+                }
+            }
             // Children come after their parent.
             for (i, n) in tree.nodes.iter().enumerate().rev() {
                 tree.range[i] = match n.left as usize == i {
@@ -181,14 +210,30 @@ impl Gbdt {
         let (mut wide, mut narrow) = (vec![0.0f64; n], vec![self.base; n]);
         let nf = self.features;
         let rows: Vec<f64> = (0..n).flat_map(|r| columns.iter().map(move |c| c[r])).collect();
+        let mut add = |r: usize, v: f64| {
+            if XGB {
+                narrow[r] += v as f32;
+            } else {
+                wide[r] += v;
+            }
+        };
         for t in &self.trees {
-            for (r, x) in rows.chunks_exact(nf).enumerate() {
-                let v = t.leaf::<XGB>(x);
-                if XGB {
-                    narrow[r] += v as f32;
-                } else {
-                    wide[r] += v;
+            // LANES rows walk the tree together, a step each in turn: each
+            // step waits on its node's load, and the rows' walks do not
+            // wait on each other's, so the loads overlap.
+            let mut blocks = rows.chunks_exact(nf * LANES);
+            for (b, block) in blocks.by_ref().enumerate() {
+                let leaves = match t.simple {
+                    true => t.leaves::<XGB, true>(block, nf),
+                    false => t.leaves::<XGB, false>(block, nf),
+                };
+                for (l, v) in leaves.into_iter().enumerate() {
+                    add(b * LANES + l, v);
                 }
+            }
+            let done = n - n % LANES;
+            for (r, x) in blocks.remainder().chunks_exact(nf).enumerate() {
+                add(done + r, t.leaf::<XGB>(x));
             }
         }
         match XGB {
@@ -227,13 +272,47 @@ impl Gbdt {
     }
 }
 
+/// The rows [`Gbdt::predict_columns`] walks a tree with at once.
+const LANES: usize = 8;
+
 impl Tree {
+    /// The leaf values the `LANES` rows of `block` (each `nf` features)
+    /// reach, as [`Tree::leaf`] of each: every row takes the tree's
+    /// [`depth`](Tree::depth) of steps, a row at its leaf staying there,
+    /// so that no step waits on a branch.
+    #[inline]
+    fn leaves<const XGB: bool, const SIMPLE: bool>(&self, block: &[f64], nf: usize) -> [f64; LANES] {
+        let mut at = [0u32; LANES];
+        let rows: [&[f64]; LANES] = std::array::from_fn(|l| &block[l * nf..(l + 1) * nf]);
+        for _ in 0..self.depth {
+            at = std::array::from_fn(|l| {
+                let node = &self.nodes[at[l] as usize];
+                let v = rows[l][node.feature as usize];
+                match SIMPLE {
+                    true => Self::simple_step::<XGB>(node, v),
+                    false => self.step::<XGB>(node, v),
+                }
+            });
+        }
+        at.map(|i| self.nodes[i as usize].value)
+    }
+
+    /// [`Tree::step`] in a tree that is [`Tree::simple`]: NaN fails the
+    /// comparison and goes where [`NAN_LEFT`] says.
+    #[inline(always)]
+    fn simple_step<const XGB: bool>(node: &Node, v: f64) -> u32 {
+        let below = if XGB { (v as f32) < node.value as f32 } else { v <= node.value };
+        let left = below | (v.is_nan() & (node.flags & NAN_LEFT != 0));
+        node.right ^ ((node.left ^ node.right) & (left as u32).wrapping_neg())
+    }
+
     /// The leaf value row `x` reaches.
     fn leaf<const XGB: bool>(&self, x: &[f64]) -> f64 {
         let mut i = 0;
         loop {
             let node = &self.nodes[i as usize];
-            let next = self.step::<XGB>(node, x[node.feature as usize]);
+            let v = x[node.feature as usize];
+            let next = if self.simple { Self::simple_step::<XGB>(node, v) } else { self.step::<XGB>(node, v) };
             if next == i {
                 return node.value;
             }
@@ -257,7 +336,9 @@ impl Tree {
             let below = if XGB { (v as f32) < node.value as f32 } else { v0 <= node.value };
             (missing & (f & DEFAULT_LEFT != 0)) | (!missing & below)
         };
-        if left { node.left } else { node.right }
+        // By a mask rather than a branch, which half the steps would
+        // mispredict.
+        node.right ^ ((node.left ^ node.right) & (left as u32).wrapping_neg())
     }
 
     /// Widens `found` to the least and greatest leaf the rows in `inputs`
@@ -353,7 +434,7 @@ fn lightgbm(name: &str, j: &Json) -> Result<Gbdt> {
     let trees = j["tree_info"].as_array().ok_or_else(|| bad(name, "tree_info is not a list"))?;
     let mut out = Vec::with_capacity(trees.len());
     for (t, info) in trees.iter().enumerate() {
-        let mut tree = Tree { nodes: Vec::new(), cats: Vec::new(), range: Vec::new() };
+        let mut tree = Tree { nodes: Vec::new(), cats: Vec::new(), range: Vec::new(), depth: 0, simple: false };
         lightgbm_node(&info["tree_structure"], &mut tree).map_err(|e| bad(name, format!("tree {t}: {e}")))?;
         out.push(tree);
     }
@@ -477,7 +558,7 @@ fn xgboost_tree(t: &Json) -> std::result::Result<Tree, String> {
             }),
         })
         .collect::<std::result::Result<_, String>>()?;
-    Ok(Tree { nodes, cats: Vec::new(), range: Vec::new() })
+    Ok(Tree { nodes, cats: Vec::new(), range: Vec::new(), depth: 0, simple: false })
 }
 
 /// 64-bit FNV-1a of bytes.
@@ -692,6 +773,47 @@ mod tests {
         // The trees' sum.
         let two = format!("{}, {}", tree(leaf(0.25)), tree(split(0, "0", "<=", "None", false, &leaf(1.0), &leaf(3.0))));
         assert_eq!(lgb(&two).predict(&[1.0, 0.0]), 3.25);
+    }
+
+    /// Scoring columns of rows, LANES at a time and the rest one by one,
+    /// answers each row's `predict`, to the bit.
+    #[test]
+    fn columns_score_as_rows_do() {
+        let t = |a: &str, c: &str| tree(split(0, "0.5", "<=", "NaN", true, &split(1, "-2", "<=", a, false, &leaf(1.0), &split(0, "0.1", "<=", "None", false, &leaf(-4.0), &leaf(0.3))), &split(1, r#""0||2""#, "==", "None", false, &leaf(c.parse().unwrap()), &leaf(0.5))));
+        // Numerical splits alone, NaN missing or read as 0, on either side
+        // of 0: simple trees.
+        let s = |a: &str, x: &str, dl: bool| tree(split(0, x, "<=", a, dl, &split(1, "-2", "<=", "NaN", !dl, &leaf(1.0), &split(0, "-0.1", "<=", "None", false, &leaf(-4.0), &leaf(0.3))), &leaf(0.5)));
+        let complex = lgb(&format!("{}, {}, {}", t("None", "7"), t("Zero", "-3"), tree(leaf(0.125))));
+        let simple = lgb(&format!("{}, {}, {}, {}", s("None", "0.5", true), s("None", "-0.5", false), s("NaN", "0.5", false), s("NaN", "-1", true)));
+        assert!(!complex.trees[0].simple && simple.trees.iter().all(|t| t.simple));
+        let points = [f64::NAN, 0.0, -0.5, 0.05, 0.5, 2.0, -2.0, 1.0, 3.0, -7.0];
+        for m in [complex, simple] {
+            for n in [0, 1, 7, 8, 9, 17, 100] {
+                let a: Vec<f64> = (0..n).map(|i| points[(i * 7) % points.len()]).collect();
+                let b: Vec<f64> = (0..n).map(|i| points[(i * 3 + 1) % points.len()]).collect();
+                let got = m.predict_columns(&[&a, &b], n);
+                // Each row walked by the steps of a tree that is not simple.
+                let want: Vec<f64> = (0..n).map(|i| m.trees.iter().fold(0.0, |s, t| s + t.slow_leaf(&[a[i], b[i]]))).collect();
+                assert_eq!(got.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), want.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), "{n} rows");
+                let one: Vec<f64> = (0..n).map(|i| m.predict(&[a[i], b[i]])).collect();
+                assert_eq!(one.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), want.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), "{n} rows");
+            }
+        }
+    }
+
+    impl Tree {
+        /// [`Tree::leaf`] by [`Tree::step`] alone (LightGBM's).
+        fn slow_leaf(&self, x: &[f64]) -> f64 {
+            let mut i = 0;
+            loop {
+                let node = &self.nodes[i as usize];
+                let next = self.step::<false>(node, x[node.feature as usize]);
+                if next == i {
+                    return node.value;
+                }
+                i = next;
+            }
+        }
     }
 
     #[test]

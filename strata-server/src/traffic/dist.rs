@@ -51,7 +51,6 @@ impl Ranks {
 
 /// The share of draws of Zipf's law over n ranks with exponent s that go to
 /// the first `top` ranks.
-#[cfg(test)]
 pub fn zipf_head_share(n: usize, s: f64, top: usize) -> f64 {
     let (mut all, mut head) = (0.0, 0.0);
     for r in 1..=n {

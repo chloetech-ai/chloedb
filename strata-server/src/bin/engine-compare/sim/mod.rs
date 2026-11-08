@@ -4,9 +4,10 @@
 //! sends a schedule to an engine as an open loop. See
 //! deploy/compare/README.md, "Traffic simulator".
 
-pub mod dist;
+// The profile and the draws are the library's (`strata_server::traffic`),
+// which the command center's simulator reads too.
+pub use strata_server::traffic::{dist, profile};
 pub mod gen;
-pub mod profile;
 pub mod schedule;
 
 use std::path::Path;

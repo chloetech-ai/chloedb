@@ -179,6 +179,22 @@ impl Conns {
         }
     }
 
+    /// Redis commands sent together, every reply in order.
+    pub(crate) async fn redis_all(&mut self, url: &str, cmds: &[Vec<Vec<u8>>]) -> Result<Vec<Json>, String> {
+        if !self.redis.contains_key(url) {
+            let c = Resp::connect(url).await.map_err(|e| format!("connect {url}: {e}"))?;
+            self.redis.insert(url.to_string(), c);
+        }
+        match self.redis.get_mut(url).unwrap().run_all(cmds).await {
+            Ok(j) => Ok(j),
+            Err(Fault::Answer(e)) => Err(e),
+            Err(Fault::Io(e)) => {
+                self.redis.remove(url);
+                Err(e)
+            }
+        }
+    }
+
     async fn redis(&mut self, url: &str, args: &[&str]) -> Result<Json, String> {
         self.exec(&Req::Redis { url: url.to_string(), cmds: vec![args.iter().map(|a| a.as_bytes().to_vec()).collect()] }).await
     }
@@ -401,6 +417,31 @@ impl Resp {
             }
         }
         err.map_or(Ok(last), |e| Err(Fault::Answer(e)))
+    }
+
+    /// Every reply of commands sent together (a pipeline of reads), in order.
+    async fn run_all(&mut self, cmds: &[Vec<Vec<u8>>]) -> Result<Vec<Json>, Fault> {
+        let mut buf = Vec::new();
+        for c in cmds {
+            buf.extend_from_slice(format!("*{}\r\n", c.len()).as_bytes());
+            for a in c {
+                buf.extend_from_slice(format!("${}\r\n", a.len()).as_bytes());
+                buf.extend_from_slice(a);
+                buf.extend_from_slice(b"\r\n");
+            }
+        }
+        self.w.write_all(&buf).await.map_err(io)?;
+        let (mut all, mut err) = (Vec::with_capacity(cmds.len()), None);
+        for _ in cmds {
+            match self.reply().await? {
+                Ok(v) => all.push(v),
+                Err(e) => {
+                    err.get_or_insert(e);
+                    all.push(Json::Null);
+                }
+            }
+        }
+        err.map_or(Ok(all), |e| Err(Fault::Answer(e)))
     }
 
     /// One reply (an error reply anywhere in it makes it an error).

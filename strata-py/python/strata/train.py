@@ -30,7 +30,7 @@ import json
 import os
 from typing import Any, Mapping
 
-from . import _strata
+from ._native import _strata
 
 __all__ = ["codebook", "sequence", "write_vectors"]
 
