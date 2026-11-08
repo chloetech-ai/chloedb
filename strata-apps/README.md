@@ -86,16 +86,28 @@ each other in a graph that Strata walks.
   around it, for a phone or to hand to someone.
 - **It knows what goes with what.** Every app, view, function, table and
   shared piece is a node of `sa_graph`, and what each one uses, reads, calls
-  or opens is its `EDGES` field. The forge ranks the library for a request by
-  BM25 over what pieces do fused with personalized PageRank from the pieces
-  the app and the best text matches use (pieces other views use together,
+  or opens is its `EDGES` field. The forge ranks the library for a request
+  by the words and meaning of what pieces do, fused with personalized
+  PageRank from the pieces the app and the best matches use (pieces other views use together,
   pieces that call each other). A new version of a piece is offered to the
   apps found by walking the graph backwards from it (`REACHABLE ... dir =>
   'in'`), through the pieces that use it. The Library's Graph view and each
   app's Map draw it and ask Strata about any node.
 - **It reuses whole screens too.** The forge searches the library of what
-  every app runs now (BM25 over what each capability is and its code) and
-  can reuse a view or function as it is, or fork it.
+  every app runs now and can reuse a screen, rule or function as it is, or
+  fork it. Search is two rankings fused (reciprocal rank fusion): BM25 over
+  what each piece is and its code, and the cosine of the request's
+  embedding and the piece's (`sa_capabilities.meaning`, its title and
+  description embedded by Strata as each version is written, with the
+  model of the apps' meaning columns). So "let customers vote on which
+  coffee we roast next" asked of a coffee shop finds the voting board's
+  screen and its two rules, and "purchase the items in my basket" finds a
+  checkout with none of its words. A piece found by meaning alone must be
+  close (`STRATA_APPS_MEANING_MIN`, cosine 0.2). The plan prompt gets the
+  best 3 screens, rules and functions (each saying whether its words, its
+  meaning or both found it), and of the patterns apps added the best 3 in
+  full and the others by name. The studio's Library search is the same
+  search.
 - **It repairs itself.** A view or function that fails at run time is sent
   back to the forge with its error, once per version, and the fixed version
   replaces it while the app stays open.
@@ -141,6 +153,8 @@ cd strata-apps
 | `STRATA_APPS_TILES` | the map tile URL template (default OpenStreetMap's, fetched by the engine with a user agent and kept under `DATA/tiles`; `off` turns maps off) |
 | `STRATA_APPS_UNSPLASH_KEY` | an Unsplash access key (free at unsplash.com/developers): front pages get photos of any subject from Unsplash, credited as its guidelines ask |
 | `STRATA_APPS_PHOTOS=builtin` | photos from the built-in set only (no Openverse) |
+| `STRATA_APPS_EMBED_MODEL` | the embedding model of meaning columns and of the library's search (default `potion-retrieval-32M`); a Strata that cannot load it searches the library by words alone |
+| `STRATA_APPS_MEANING_MIN` | the least cosine at which a piece found by meaning alone is offered (default 0.2) |
 
 A first version of a small app takes 50 seconds to a minute; a bigger one takes 2 to 4 minutes (a CRM with a pipeline board 110 s, a course on linked lists with lessons, a playground and a quiz 216 s; written in one answer, that course took 7.5 to 9 minutes). The studio shows how far the model has got while it writes. A change takes 20 seconds to 2 minutes.
 

@@ -1134,3 +1134,55 @@ test('patterns are rows: seeded from library/patterns, versioned, used from Stra
     for (const [k, v] of builtins) PATTERNS.set(k, v);
   }
 });
+
+test('the prompt gives the patterns that fit in full and the others by name', async () => {
+  const { addedPatternsPart } = await import('../engine/forge.mjs');
+  const p = (title) => ({ title, about: `${title}.`, params: { table: { about: 'the table', need: true } }, example: { use: 'x', table: 't' } });
+  const added = new Map([['leaderboard', p('Ranked rows')], ['gallery', p('Photo grid')], ['timeline', p('Events in order')]]);
+  const part = addedPatternsPart(added, ['gallery', 'missing']);
+  assert.match(part, /The ones that fit this request best/);
+  assert.match(part, /## gallery: Photo grid\nPhoto grid\.\n {2}- table \(needed\): the table/);
+  assert.doesNotMatch(part, /## leaderboard/);
+  assert.match(part, /The others, by name only[^\n]*\n- leaderboard: Ranked rows\n- timeline: Events in order/);
+  // When every pattern fits, there is no list of others.
+  const all = addedPatternsPart(added, ['leaderboard', 'gallery', 'timeline']);
+  assert.doesNotMatch(all, /The others|fit this request best/);
+});
+
+// Against a real strata-server (skipped without one): pieces are found by
+// what they mean, not only by their words, and each says how it was found.
+test('pieces are searched by words and by meaning', async (t) => {
+  const { findServerBinary, startServer } = await import('../engine/strata.mjs');
+  const { Store } = await import('../engine/store.mjs');
+  const bin = findServerBinary(join(import.meta.dirname, '..', '..'));
+  if (!bin) return t.skip('no strata-server binary');
+  const dir = mkdtempSync(join(tmpdir(), 'sa-meaning-'));
+  const port = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+  const { child, client } = await startServer({ bin, db: join(dir, 'apps.strata'), listen: `127.0.0.1:${port}`, log: () => {} });
+  try {
+    const store = new Store(client, () => {});
+    await store.init();
+    if (!store.meaning) return t.skip('this strata-server cannot load the embedding model');
+    const put = (slug, kind, title, description) => store.putCapability({ app: 'lib', slug, kind, title, description, code: '{}', spec: {}, author: 'builtin' });
+    await put('checkout', 'function', 'Checkout', 'Turns the shopping cart into an order and charges the card on file.');
+    await put('vote-board', 'view', 'Vote board', 'People suggest ideas and upvote the ones they like; the most voted rise to the top.');
+    await put('gallery', 'view', 'Gallery', 'A grid of photos that open full screen.');
+    await put('chore-chart', 'view', 'Chore chart', 'Chores worth points for each kid, ticked off through the week.');
+    // No word of the request is in the piece: found by meaning alone.
+    const [pay] = await store.searchCapabilities('purchase the items in my basket', { limit: 2 });
+    assert.equal(pay?.slug, 'checkout');
+    assert.equal(pay.found, 'meaning');
+    assert.ok(pay.cosine > 0);
+    // Words and meaning agree.
+    const [vote] = await store.searchCapabilities('let people vote on ideas', { limit: 2 });
+    assert.equal(vote?.slug, 'vote-board');
+    assert.equal(vote.found, 'both');
+    // Kinds still filter, and the vector is not handed out with a piece.
+    const views = await store.searchCapabilities('photos', { kinds: ['view'], limit: 3 });
+    assert.ok(views.every((c) => c.kind === 'view'));
+    assert.equal(views[0]?.slug, 'gallery');
+    assert.ok(!('meaning' in views[0]));
+  } finally {
+    child.kill();
+  }
+});

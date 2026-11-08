@@ -234,14 +234,14 @@ async function renderHome() {
 async function renderLibrary(selected) {
   $('#crumbs').replaceChildren(h('span', { class: 'sep' }, '/'), h('b', 'Library'));
   const main = $('#main');
-  const q = h('input', { class: 'search', placeholder: 'Search what every app has built (views, functions, tables)...' });
+  const q = h('input', { class: 'search', placeholder: 'Search what every app has built, by words or meaning ("let people pay for their basket")...' });
   const out = h('div', { class: 'lib' });
   const mode = location.hash.includes('graph') ? 'graph' : 'list';
   const switcher = h('div', { class: 'seg' },
     h('button', { class: mode === 'list' ? 'on' : '', onclick: () => { location.hash = '#/library'; } }, 'List'),
     h('button', { class: mode === 'graph' ? 'on' : '', onclick: () => { location.hash = '#/library/graph'; } }, 'Graph'));
   main.replaceChildren(h('div', { class: `page scroll${mode === 'graph' ? ' wide' : ''}` },
-    h('section', { class: 'hero' }, h('h1', 'Library'), h('p', 'What every app runs now: shared components and helpers, which every app can call, screen patterns every app’s screens expand from, and each app’s views, functions and tables. Each version is a row of sa_capabilities in Strata, searched with BM25 over what it is and its code, and linked to what it uses in a graph. The forge looks here before it writes something new.')),
+    h('section', { class: 'hero' }, h('h1', 'Library'), h('p', 'What every app runs now: shared components and helpers, which every app can call, screen patterns every app’s screens expand from, and each app’s views, functions and tables. Each version is a row of sa_capabilities in Strata, searched by its words (BM25 over what it is and its code) and by its meaning (its title and description embedded), and linked to what it uses in a graph. The forge looks here before it writes something new.')),
     switcher, mode === 'graph' ? out : q, mode === 'graph' ? null : out));
   if (mode === 'graph') return libraryGraph(out, { selected });
   let apps = [];
@@ -253,8 +253,10 @@ async function renderLibrary(selected) {
       const k = `${c.app}/${c.kind}/${c.slug}`;
       if (!latest.has(k) || Number(latest.get(k).version) < Number(c.version)) latest.set(k, c);
     }
-    const items = [...latest.values()].filter((c) => q.value.trim() || c.kind !== 'table')
-      .sort((a, b) => ({ component: 0, helper: 1, pattern: 2 }[a.kind] ?? 3) - ({ component: 0, helper: 1, pattern: 2 }[b.kind] ?? 3));
+    // A search keeps its order, the best fit first; the whole list goes by kind.
+    const items = [...latest.values()].filter((c) => q.value.trim() || c.kind !== 'table');
+    if (!q.value.trim()) items.sort((a, b) => ({ component: 0, helper: 1, pattern: 2 }[a.kind] ?? 3) - ({ component: 0, helper: 1, pattern: 2 }[b.kind] ?? 3));
+    const found = (c) => (c.found === 'meaning' ? ' · found by meaning' : c.found === 'both' ? ' · found by words and meaning' : '');
     out.replaceChildren(...(items.length ? items.map((c) => {
       const sel = h('select', { class: 'btn small' }, h('option', { value: '' }, 'Use in...'), apps.filter((a) => a.id !== c.app).map((a) => h('option', { value: a.id }, a.name)));
       sel.addEventListener('change', async () => {
@@ -268,8 +270,8 @@ async function renderLibrary(selected) {
       });
       return h('div', { class: 'libitem' },
         h('span', { class: `pill ${c.kind}` }, c.kind), h('span', { class: 't' }, c.title), h('span', { class: 'meta' }, c.kind === 'component' || c.kind === 'helper'
-          ? `${c.kind === 'helper' ? 'lib' : 'ui'}.${c.slug} · v${c.version}${c.author === 'builtin' ? ' · built in' : ''} · ${c.used_by?.length ? `used by ${c.used_by.map((u) => `${u.name}${u.version < c.version ? ` (v${u.version})` : ''}`).join(', ')}` : 'not used yet'}`
-          : `${c.app_name} · v${c.version}${c.author && c.author !== 'forge' ? ` · ${c.author}` : ''}`),
+          ? `${c.kind === 'helper' ? 'lib' : 'ui'}.${c.slug} · v${c.version}${c.author === 'builtin' ? ' · built in' : ''} · ${c.used_by?.length ? `used by ${c.used_by.map((u) => `${u.name}${u.version < c.version ? ` (v${u.version})` : ''}`).join(', ')}` : 'not used yet'}${found(c)}`
+          : `${c.app_name} · v${c.version}${c.author && c.author !== 'forge' ? ` · ${c.author}` : ''}${found(c)}`),
         h('span', { style: 'margin-left:auto;display:flex;gap:6px' }, h('button', { class: 'btn small', onclick: () => showCode(c.id) }, 'Code'),
           c.kind === 'pattern' ? null : h('button', { class: 'btn small', title: 'what it uses, what depends on it, what goes with it', onclick: () => { location.hash = `#/library/graph/${encodeURIComponent(`${c.app}/${c.kind}/${c.slug}`)}`; } }, 'Links'), c.kind !== 'table' ? sel : null),
         c.description ? h('div', { class: 'd' }, c.description) : null);

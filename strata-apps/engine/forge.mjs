@@ -674,6 +674,21 @@ export function summarizeEvents(events) {
 // piece by name and title).
 const FULL_ENTRIES = 30;
 const PROPS_ENTRIES = 12;
+// How many of the patterns apps added a prompt gives in full (the others by
+// name and title), and how many whole screens, rules and functions of other
+// apps it offers: the best fits, by words and by meaning.
+const PATTERN_ENTRIES = 3;
+const LIBRARY_ENTRIES = 3;
+
+// The prompt's part on the patterns apps added: the ones that fit (names,
+// best first) in full, with their parameters and example, the others by
+// name and title.
+export function addedPatternsPart(added, fit) {
+  const full = new Map(fit.filter((k) => added.has(k)).map((k) => [k, added.get(k)]));
+  const rest = [...added.entries()].filter(([k]) => !full.has(k)).map(([k, p]) => `- ${k}: ${p.title}`);
+  const doc = full.size ? patternsDoc(full).replace(/^# Screen patterns\n\n[^\n]*\n\n/, '') : '';
+  return `## Screen patterns other apps added (use them like the built-in ones)\n${full.size < added.size ? 'The ones that fit this request best:\n\n' : ''}${doc}${rest.length ? `${doc ? '\n\n' : ''}The others, by name only (a request that names one gets it in full):\n${rest.join('\n')}` : ''}`;
+}
 
 export async function buildContext(engine, appId, request) {
   const { store } = engine;
@@ -716,9 +731,23 @@ export async function buildContext(engine, appId, request) {
     const history = await store.suggestionHistory(appId, 30);
     if (history.length) parts.push(`## Suggestions made before\n${history.map((h) => `- [${h.status === 'taken' ? 'taken' : h.status === 'dismissed' ? 'dismissed' : h.status === 'open' ? 'still open' : 'replaced'}] ${h.text}`).join('\n')}`);
   }
-  // Patterns apps added (the built-in ones are in the system prompt).
+  // What to look for: the request, and for the shared pieces the app's
+  // description too (they serve the whole app). Whole screens, rules and
+  // patterns are looked for by the request alone, so that a change to a shop
+  // ("let customers vote on the next roast") finds voting, not more shop.
+  const want = `${request.text} ${view.app.description || ''}`;
+  // Patterns apps added (the built-in ones are in the system prompt): the
+  // ones that fit the request best in full, the others by name, so the
+  // prompt stays short however many apps add.
   const added = new Map([...PATTERNS].filter(([k]) => !BUILTIN.has(k)));
-  if (added.size) parts.push(`## Screen patterns other apps added (use them like the built-in ones)\n${patternsDoc(added).replace(/^# Screen patterns\n\n[^\n]*\n\n/, '')}`);
+  if (added.size) {
+    // A pattern the request names comes first (the library's "Use in..."
+    // names it), then the best fits by words and meaning.
+    const named = [...added.keys()].filter((k) => new RegExp(`\\b${k}\\b`, 'i').test(request.text));
+    const fit = added.size <= PATTERN_ENTRIES ? [...added.keys()]
+      : [...new Set([...named, ...(await store.searchCapabilities(request.text, { kinds: ['pattern'], limit: PATTERN_ENTRIES })).map((c) => c.slug).filter((k) => added.has(k))])].slice(0, Math.max(PATTERN_ENTRIES, named.length));
+    parts.push(addedPatternsPart(added, fit));
+  }
   // Shared components and helpers: all of them by name and props, and, for a
   // change to an app that exists, the code of the few that fit best (to use a
   // piece the model needs its props; it needs the code only to write a new
@@ -734,7 +763,7 @@ export async function buildContext(engine, appId, request) {
   if (others.length) {
     const users = await store.sharedUsers();
     const key = (c) => `${c.kind}/${c.slug}`;
-    const hits = await store.searchCapabilities(`${request.text} ${view.app.description || ''}`, { kinds: SHARED_KINDS, limit: FULL_ENTRIES });
+    const hits = await store.searchCapabilities(want, { kinds: SHARED_KINDS, limit: FULL_ENTRIES });
     const near = await store.related([appNode(appId), ...hits.slice(0, 3).map((h) => `${LIB}/${key(h)}`)], { limit: FULL_ENTRIES });
     const fused = new Map();
     const vote = (k, i) => fused.set(k, (fused.get(k) || 0) + 1 / (60 + i));
@@ -758,8 +787,10 @@ export async function buildContext(engine, appId, request) {
   } else if (!own.size) {
     parts.push('# Shared components and helpers in the library\n\nNone yet: the ones you write now start it.');
   }
-  // The library: whole views and functions other apps built that may fit this request.
-  const lib = await store.searchCapabilities(`${request.text} ${view.app.description || ''}`, { excludeApp: appId, kinds: ['view', 'function'], limit: 3 });
+  // The library: whole screens, rules and functions other apps built that
+  // fit this request best, by its words and by what it means.
+  const lib = await store.searchCapabilities(request.text, { excludeApp: appId, kinds: ['view', 'function'], limit: LIBRARY_ENTRIES });
+  const how = new Map(lib.map((c) => [c.id, c.found === 'meaning' ? `found by meaning (cosine ${c.cosine})` : c.found === 'both' ? 'found by its words and its meaning' : 'found by its words']));
   const libCaps = await store.getCapabilities(lib.map((c) => c.id));
   let capIndex = -1;
   const capEntries = new Map();
@@ -773,14 +804,18 @@ export async function buildContext(engine, appId, request) {
       const about = starter
         ? (c.kind === 'view' ? `// a built-in starter screen; reusing it adds its tables to the app when missing: ${tables || 'none'}` : `// a built-in starter function, for any table; input: ${c.spec?.input || ''}`)
         : `// its app's tables: ${tables}`;
-      const head = `<capability id="${c.id}" kind="${c.kind}" title="${c.title}" app="${starter ? 'built-in starter' : src?.app?.name || c.app}">\n// ${c.description}\n${about}`;
+      const format = c.kind === 'view' ? (c.spec?.statement || c.spec?.screen ? 'screen' : 'code') : c.spec?.rule ? 'rule' : 'code';
+      const head = `<capability id="${c.id}" kind="${c.kind}" format="${format}" title="${c.title}" app="${starter ? 'built-in starter' : src?.app?.name || c.app}">\n// ${c.description}\n// ${how.get(c.id) || 'found by its words'}\n${about}`;
+      // A screen or rule written as a statement is shown as its statement:
+      // shorter than its JSON, and what a fork edits.
+      const body = clip(c.spec?.statement || c.code, 5000);
       // A starter is reused as it is, so its header says enough to choose it;
       // its code goes to the writer of a version forked from it.
-      entries.push(starter ? `${head}\n</capability>` : `${head}\n${clip(c.code, 5000)}\n</capability>`);
-      capEntries.set(c.id, `${head}\n${clip(c.code, 5000)}\n</capability>`);
+      entries.push(starter ? `${head}\n</capability>` : `${head}\n${body}\n</capability>`);
+      capEntries.set(c.id, `${head}\n${body}\n</capability>`);
     }
     capIndex = parts.length;
-    parts.push(`# Library: capabilities other apps have that may fit\n\n${entries.join('\n\n')}`);
+    parts.push(`# Library: screens, rules and functions other apps have that fit this request best\n\nThe best first, found by the request's words and by what it means. Reuse or fork one when it does what the request asks; leave them otherwise.\n\n${entries.join('\n\n')}`);
   }
   const source = { user: 'the person asked for this', suggestion: 'the person accepted this suggestion', repair: 'the runtime reported this error; fix its cause', library: 'the person asked to bring this in from the library', evolve: 'nobody asked: the engine saw this in how people use the app, and builds it as a version they can try beside the live one and keep or drop. Make it small, in the app\'s own style, and change nothing it does not need' }[request.source] || 'the person asked for this';
   parts.push(`# The request (${source})\n\n${request.text}`);
@@ -801,7 +836,8 @@ export async function buildContext(engine, appId, request) {
     }
     return copy.filter(Boolean).join('\n\n');
   };
-  return { prompt: parts.join('\n\n'), forPiece, view, library: libCaps, shared, system: systemWith(shared) };
+  const found = new Map(lib.map((c) => [c.id, c.found]));
+  return { prompt: parts.join('\n\n'), forPiece, view, library: libCaps.map((c) => ({ ...c, found: found.get(c.id) })), shared, system: systemWith(shared) };
 }
 
 // The system prompt with the whole library of shared pieces, by name and
@@ -1140,7 +1176,7 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   progress('Reading the app and its history from Strata');
   const context = await tr.span('strata', 'Read the app, its data and the library from Strata', () => buildContext(engine, appId, request));
   const { prompt, view, library, shared, system } = context;
-  if (library.length) progress(`Found ${library.length} capabilit${library.length === 1 ? 'y' : 'ies'} in the library that may fit: ${library.map((c) => c.title).join(', ')}`);
+  if (library.length) progress(`Found ${library.length} capabilit${library.length === 1 ? 'y' : 'ies'} in the library that may fit: ${library.map((c) => `${c.title} (${c.found === 'meaning' ? 'by meaning' : c.found === 'both' ? 'by words and meaning' : 'by words'})`).join(', ')}`);
   let answer;
   let plan;
   let code;

@@ -70,7 +70,13 @@ const SYSTEM_TABLES = {
 const ADDED_COLUMNS = {
   sa_events: ['person KEYWORD', 'v INT'],
   sa_suggestions: ['signal KEYWORD', 'measure TEXT'],
+  // What a piece is and does, embedded, so that pieces are found by meaning
+  // as well as by their words (searchCapabilities). A store whose Strata
+  // cannot load the model searches by words alone.
+  sa_capabilities: [`meaning VECTOR OPTIONS(embed = 'title, description', model = '${EMBED_MODEL}')`],
 };
+// Below this cosine a piece found only by meaning is too far to show.
+export const MEANING_MIN = Number(process.env.STRATA_APPS_MEANING_MIN || 0.2);
 
 export const newId = (n = 8) => randomBytes(n).toString('base64url').replace(/[^a-zA-Z0-9]/g, '').slice(0, n).toLowerCase().padEnd(n, '0');
 export const physical = (app, table) => `app_${app}_${table}`;
@@ -102,6 +108,7 @@ export class Store {
     this.resolved = new Map(); // app -> {head, view}
     this.resolvedAt = new Map(); // "app#n" -> view of a version that is not the head (versions never change)
     this.capCache = new Map();  // capability id -> row (capabilities never change once written)
+    this.meaning = false;       // whether sa_capabilities has its meaning column
   }
 
   async init() {
@@ -114,12 +121,18 @@ export class Store {
     }
     const tables = await this.db.tables();
     for (const [name, cols] of Object.entries(ADDED_COLUMNS)) {
-      if (!have.has(name)) continue;
       const fields = new Set((tables.find((t) => tableName(t) === name)?.schema?.fields || []).map((f) => f.name));
       for (const c of cols) {
-        if (fields.has(c.split(' ')[0])) continue;
-        await this.db.sql(`ALTER TABLE ${name} ADD COLUMN ${c}`);
-        this.log(`added ${c.split(' ')[0]} to ${name}`);
+        const col = c.split(' ')[0];
+        if (fields.has(col)) { if (col === 'meaning') this.meaning = true; continue; }
+        try {
+          await this.db.sql(`ALTER TABLE ${name} ADD COLUMN ${c}`);
+          if (col === 'meaning') this.meaning = true;
+          this.log(`added ${col} to ${name}`);
+        } catch (e) {
+          if (col !== 'meaning') throw e;
+          this.log(`pieces are searched by their words only: ${e.message}`);
+        }
       }
     }
     await this.rebuildGraph();
@@ -179,7 +192,8 @@ export class Store {
     const missing = ids.filter((id) => !this.capCache.has(id));
     if (missing.length) {
       const rows = await this.db.get('sa_capabilities', missing);
-      rows.forEach((r, i) => { if (r) this.capCache.set(missing[i], { ...r, spec: parseSpec(r.spec) }); });
+      // The vector stays in Strata: nothing here reads it.
+      rows.forEach((r, i) => { if (r) { const { meaning, ...rest } = r; this.capCache.set(missing[i], { ...rest, spec: parseSpec(r.spec) }); } });
     }
     return ids.map((id) => this.capCache.get(id)).filter(Boolean);
   }
@@ -230,36 +244,51 @@ export class Store {
     return starters(live);
   }
 
-  // BM25 over what capabilities are and do, and over their code. A hit on
-  // any version of a capability counts for its live version.
+  // Pieces that fit a text, two rankings fused (reciprocal rank fusion):
+  // BM25 over what pieces are and do and over their code, and the cosine of
+  // the text's embedding and theirs, so "let people pay for their basket"
+  // finds a checkout with none of its words. A piece found by meaning alone
+  // must be close (MEANING_MIN). A hit on any version of a piece counts for
+  // its live version. Each result says how it was found: words, meaning or
+  // both, and its cosine.
   async searchCapabilities(text, { excludeApp, kinds, limit = 6 } = {}) {
-    const words = String(text || '').replace(/[^\p{L}\p{N}\s]/gu, ' ').trim();
+    const raw = String(text || '').trim();
+    const words = raw.replace(/[^\p{L}\p{N}\s]/gu, ' ').trim();
     if (!words) return [];
     const where = [];
     const params = { t: words };
     if (excludeApp) { where.push('app != :x'); params.x = excludeApp; }
     if (kinds?.length) { where.push(`kind IN (${kinds.map((k, i) => `:k${i}`).join(', ')})`); kinds.forEach((k, i) => { params[`k${i}`] = k; }); }
-    const sql = `SELECT id, slug, kind, app, score() AS score FROM sa_capabilities
-      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-      ORDER BY bm25(title, :t) * 2 + bm25(description, :t) + 0.3 * bm25(code, :t) DESC LIMIT 200`;
-    let rows;
-    try { rows = await this.db.query(sql, params); } catch (e) { this.log(`search: ${e.message}`); return []; }
+    const filter = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const byWords = this.db.query(`SELECT id, slug, kind, app, score() AS score FROM sa_capabilities ${filter}
+      ORDER BY bm25(title, :t) * 2 + bm25(description, :t) + 0.3 * bm25(code, :t) DESC LIMIT 200`, params)
+      .catch((e) => { this.log(`search: ${e.message}`); return []; });
+    const byMeaning = this.meaning
+      ? this.db.query(`SELECT id, slug, kind, app, score() AS score FROM sa_capabilities ${filter}
+        ORDER BY similarity(meaning, :q) DESC LIMIT 100`, { ...params, q: { embed: raw.slice(0, 2000), field: 'meaning', table: 'sa_capabilities' } })
+        .catch((e) => { this.log(`search by meaning: ${e.message}`); return []; })
+      : [];
+    const [wordRows, meaningRows] = await Promise.all([byWords, byMeaning]);
     const live = await this.liveMap();
-    const seen = new Set();
-    const ids = [];
-    const scores = new Map();
-    for (const r of rows) {
-      if (!(Number(r.score) > 0)) continue;
-      const id = live.get(`${r.app}/${r.kind}/${r.slug}`);
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      ids.push(id);
-      scores.set(id, Number(r.score));
-      if (ids.length >= limit) break;
-    }
+    // Each ranking, by live piece, best first, a piece once.
+    const ranking = (rows, keep) => {
+      const out = new Map();
+      for (const r of rows) {
+        if (!keep(Number(r.score))) continue;
+        const id = live.get(`${r.app}/${r.kind}/${r.slug}`);
+        if (id && !out.has(id)) out.set(id, Number(r.score));
+      }
+      return out;
+    };
+    const w = ranking(wordRows, (x) => x > 0);
+    const m = ranking(meaningRows, (x) => x >= MEANING_MIN);
+    const fused = new Map();
+    for (const r of [w, m]) [...r.keys()].forEach((id, i) => fused.set(id, (fused.get(id) || 0) + 1 / (60 + i)));
+    const ids = [...fused.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([id]) => id);
     return (await this.getCapabilities(ids)).map((c) => {
       const { code, ...rest } = c;
-      return { ...rest, version: Number(c.version), score: scores.get(c.id) };
+      const found = w.has(c.id) && m.has(c.id) ? 'both' : w.has(c.id) ? 'words' : 'meaning';
+      return { ...rest, version: Number(c.version), score: fused.get(c.id), found, ...(m.has(c.id) ? { cosine: Math.round(m.get(c.id) * 1000) / 1000 } : {}) };
     });
   }
 
