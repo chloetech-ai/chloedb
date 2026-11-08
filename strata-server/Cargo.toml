@@ -11,10 +11,10 @@ strata = { path = "../strata", features = ["sqlite"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive", "env"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync", "io-std", "io-util"] }
 axum = "0.7"
 # Answers gzip-compressed for clients that ask (the command center polls large JSON).
-tower = { version = "0.5", default-features = false }
+tower = { version = "0.5", default-features = false, features = ["util"] }
 tower-http = { version = "0.6", default-features = false, features = ["compression-gzip"] }
 tonic = { version = "0.12", features = ["tls", "tls-webpki-roots"] }
 prost = "0.13"
@@ -87,6 +87,8 @@ tonic-build = "0.12"
 protox = "0.7"
 
 [dev-dependencies]
+# tests/mcp.rs runs `strata-server mcp` as a child process.
+tokio = { version = "1", features = ["process"] }
 # The operator's manifests read in a test, to keep src/cloud/install.rs the same.
 serde_yaml = "0.9"
 # PNGs written by the tests of `vision`.

@@ -34,6 +34,7 @@
 //! | `POST /v1/snapshot` | | `{snapshot, txn, ttl_s}` |
 //! | `POST /v1/agent` | `{question, model?, effort?, api_key?, max_steps?}` | an answer and the steps taken |
 //! | `POST /v1/judge` | `{query, keys, table?, fields?, model?, api_key?}` | `{grades: [{key, grade, error?}], model, usage}`: each row graded 0 to 3 for the query by a Claude model ([`crate::judge`]) |
+//! | `POST /v1/mcp` | a JSON-RPC message or a batch | the Model Context Protocol's answer, or 202 for notifications: tools that call these routes with the caller's credential ([`crate::mcp`]) |
 //! | `GET /v1/queries` | | `{queries, running}`: the queries running now, the longest first, each with its trace so far; on a coordinator, every coordinator's (another's ids are `id@name`, with `local_id` and `nodes`: who answered) |
 //! | `DELETE /v1/queries/:id` | | `{cancelled}`: the query stops at its next check and answers 499; an `id@name` is cancelled on that coordinator |
 //! | `GET /v1/queries/recent?since=ms&limit=n`, `/v1/queries/slow?limit=n` | | `{queries}`: the latest that ended (or the slow ones), the newest first, each with its trace |
@@ -141,6 +142,9 @@ struct App {
     token: Option<Secret>,
     cluster: Option<Secret>,
     hosts: Option<Arc<[String]>>,
+    /// The API's routes again, which `/v1/mcp`'s tools call ([`crate::mcp`]):
+    /// none in that copy itself.
+    mcp: Option<Router>,
 }
 
 impl App {
@@ -152,14 +156,41 @@ impl App {
 }
 
 pub fn router(svc: Arc<Service>, access: &Access) -> Router {
-    // Rows come in writes and imports; every other body is small.
-    let rows = DefaultBodyLimit::max(svc.max_body);
-    let app = App { svc, token: access.token.clone(), cluster: access.cluster.clone(), hosts: access.hosts.clone().map(Into::into) };
+    let app = App { svc, token: access.token.clone(), cluster: access.cluster.clone(), hosts: access.hosts.clone().map(Into::into), mcp: None };
     // alerts2: coordinators tell each other of their alerts.
     crate::alerts::peering(&app.svc);
     // cluster2: a plan a restart stopped is taken up (interrupted).
     crate::coord::plan::start(&app.svc);
-    let api = Router::new()
+    // mcp: the routes an MCP tool's call goes to, with the caller's
+    // credential, through the same checks (a copy, so the router does not
+    // hold itself).
+    let tools = api(&app).layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY))).with_state(app.clone());
+    let app = App { mcp: Some(tools), ..app };
+    let api = api(&app);
+    Router::new()
+        .route("/", get(ui::index))
+        .route("/classic", get(ui::classic))
+        .route("/ui/*file", get(ui::file))
+        .route("/v1/health", get(health))
+        .route("/livez", get(live))
+        .route("/readyz", get(ready))
+        // The command center of a connection of the hub's book: the same
+        // page, whose calls go to /c/<name>/v1/...
+        .route("/c/:name", get(ui::index))
+        .merge(api)
+        // One stack, outermost first, put on each route once: each layer
+        // put on its own wraps the routes in another boxed service, and
+        // each request then clones every box inside the layer it passes
+        // (some 40 allocations a request, with five layers).
+        .layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY)).layer(compression()))
+        .with_state(app)
+}
+
+/// The API's routes, behind [`auth`].
+fn api(app: &App) -> Router<App> {
+    // Rows come in writes and imports; every other body is small.
+    let rows = DefaultBodyLimit::max(app.svc.max_body);
+    Router::new()
         .route("/v1/stats", get(stats))
         .route("/v1/schema", get(schema))
         .route("/v1/tables", get(tables))
@@ -176,7 +207,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/kv/get", post(kv_get))
         .route("/v1/kv/:table/:key", get(kv_one).merge(put(kv_put)).merge(axum::routing::delete(kv_delete)).layer(rows.clone()))
         .route("/v1/plan", post(run_plan).layer(rows.clone()))
-        .route("/v1/import", post(import).layer(rows))
+        .route("/v1/import", post(import).layer(rows.clone()))
         .route("/v1/export", get(export))
         // A stream's body has no end set.
         .route("/v1/stream", post(stream).layer(DefaultBodyLimit::disable()))
@@ -218,6 +249,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/moves/finish", post(finish_move))
         .route("/v1/agent", post(agent_run))
         .route("/v1/judge", post(judge))
+        .route("/v1/mcp", post(mcp).layer(rows))
         // workload (alerts agent): grouped, and cancelled by statement
         .route("/v1/queries", get(live_queries).delete(cancel_queries))
         .route("/v1/admin/contain", get(contain_rules).post(add_contain))
@@ -314,24 +346,7 @@ pub fn router(svc: Arc<Service>, access: &Access) -> Router {
         .route("/v1/admin/copies/verify", post(copy_verify))
         .route("/v1/admin/copies/checkpoint", post(copy_checkpoint))
         // ----- end core
-        .route_layer(middleware::from_fn_with_state(app.clone(), auth));
-    Router::new()
-        .route("/", get(ui::index))
-        .route("/classic", get(ui::classic))
-        .route("/ui/*file", get(ui::file))
-        .route("/v1/health", get(health))
-        .route("/livez", get(live))
-        .route("/readyz", get(ready))
-        // The command center of a connection of the hub's book: the same
-        // page, whose calls go to /c/<name>/v1/...
-        .route("/c/:name", get(ui::index))
-        .merge(api)
-        // One stack, outermost first, put on each route once: each layer
-        // put on its own wraps the routes in another boxed service, and
-        // each request then clones every box inside the layer it passes
-        // (some 40 allocations a request, with five layers).
-        .layer(tower::ServiceBuilder::new().layer(middleware::from_fn_with_state(app.clone(), observe)).layer(DefaultBodyLimit::max(crate::service::SMALL_BODY)).layer(compression()))
-        .with_state(app)
+        .route_layer(middleware::from_fn_with_state(app.clone(), auth))
 }
 
 /// gzip for a client that asks for it (`Accept-Encoding: gzip`), of JSON
@@ -2692,6 +2707,12 @@ async fn agent_run(State(app): State<App>, AxJson(b): AxJson<Json>) -> Res {
     };
     app.svc.metrics.agent_run();
     Ok(AxJson(agent::run(&app.svc, req).await?))
+}
+
+/// `POST /v1/mcp`: the Model Context Protocol, whose tools call this
+/// server's routes with the caller's credential ([`crate::mcp`]).
+async fn mcp(State(app): State<App>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, body: Bytes) -> Response {
+    crate::mcp::serve(&app.svc, app.mcp.clone(), crate::mcp::Caller { headers: &headers, peer: peer.map(|c| c.0) }, &body).await
 }
 
 /// `POST /v1/judge`: a Claude model's grade of each row for a query
