@@ -143,6 +143,21 @@ function fieldSpec(spec, line) {
     if ((mm = rest.match(/^PLACEHOLDER\s+('(?:[^']|'')*')/i))) { f.placeholder = literal(mm[1]); rest = rest.slice(mm[0].length); continue; }
     if ((mm = rest.match(/^(NOT\s+NULL|REQUIRED)\b/i))) { f.required = true; rest = rest.slice(mm[0].length); continue; }
     if ((mm = rest.match(/^TYPE\s+/i))) { rest = rest.slice(mm[0].length); continue; }
+    // FROM table [(value col [, label col])]: a pick list of that table's rows (default (id, name))
+    if ((mm = rest.match(/^FROM\s+([A-Za-z_][A-Za-z0-9_]*)\s*/i))) {
+      f.from = { table: mm[1], value: 'id', label: 'name' };
+      rest = rest.slice(mm[0].length);
+      if (rest.startsWith('(')) {
+        const p = parens(rest, line, `FORM ${f.name} FROM ${mm[1]}`);
+        const cols = splitTop(p.inside).map((x) => x.trim()).filter(Boolean);
+        if (!cols.length || cols.length > 2 || !cols.every((x) => NAME.test(x))) fail(line, `FORM ${f.name} FROM ${mm[1]} (value column [, label column])`);
+        f.from.value = cols[0];
+        f.from.label = cols[1] || cols[0];
+        rest = p.rest;
+      }
+      f.type = 'select';
+      continue;
+    }
     if ((mm = rest.match(/^([A-Za-z]+)\b/)) && FIELD_TYPES.includes(mm[1].toUpperCase())) { f.type = mm[1].toLowerCase(); if (f.type === 'text') delete f.type; rest = rest.slice(mm[0].length); continue; }
     fail(line, `FORM ${f.name}: cannot read ${JSON.stringify(rest.slice(0, 40))}; a field is name 'Label' TYPE REQUIRED DEFAULT value ('option', ...), types ${FIELD_TYPES.join(', ')}`);
   }
@@ -398,6 +413,21 @@ export function compileStatement(text) {
     }
   }
   finish();
+  // A field FROM a table picks among its rows: their query is the screen's data.
+  const picks = (o) => {
+    if (Array.isArray(o)) { o.forEach(picks); return; }
+    if (!o || typeof o !== 'object') return;
+    for (const f of Array.isArray(o.fields) ? o.fields : []) {
+      if (!f || !f.from) continue;
+      const { table, value, label } = f.from;
+      const name = `${table}_${label === value ? value : `${value}_${label}`}_choices`;
+      screen.data[name] = `SELECT ${value} AS value, ${label} AS label FROM ${table} ORDER BY ${label} LIMIT 500`;
+      f.options = `=[...new Map(${name}.filter((r) => r.value != null && r.value !== '').map((r) => [String(r.value), {value: r.value, label: String(r.label ?? r.value)}])).values()]`;
+      delete f.from;
+    }
+    for (const v of Object.values(o)) if (v && typeof v === 'object') picks(v);
+  };
+  picks(screen.body);
   for (const k of ['state', 'data', 'let']) if (!Object.keys(screen[k]).length) delete screen[k];
   return { slug: head[1], title, screen, ...(photos?.length ? { photos } : {}) };
 }
@@ -518,6 +548,7 @@ LIST <table> [AS key]          -- the crud pattern: rows, add/edit form, search,
   WHERE <SQL condition>  ORDER BY <SQL>  QUERY (SELECT ... when the rows need a join or computed columns)
   SEARCH col, col                       FILTER col IN ('a', 'b')        TOGGLE <bool col> ['Done']
   FORM [SIDE | NONE] (col 'Label' NUMBER REQUIRED DEFAULT 0, col SELECT ('a', 'b'), ...)   after the label, one type word: ${FIELD_TYPES.join(' ')}
+    a choice among another table's rows: col 'Label' FROM <table> (<value col>, <label col>)  -- client FROM clients (id, name) keeps the id; category FROM categories (name) keeps the name. Use it whenever the choices are rows people add, never a fixed list
   COLUMNS (col 'Label' DATE, col 'Label' MONEY BADGE, col 'Label' MONEY = <JavaScript of row>, ...)   after the label, one format word: ${COLUMN_FORMATS.join(' ')} (DAYS reads a day as "in 3 days", DURATION minutes as "1 h 05", CLOCK seconds as "5:30", HOURS a number as "2.5 h", PCT a percent as "12.5%"), and BADGE
   CARDS <title col> [SUB col, col]      (cards instead of a table)
   KPI 'Label' = COUNT(*) | SUM(col) | AVG(col) [WHERE condition] [${KPI_FORMATS.join(' | ')}]   (one line each; SQL over the table)

@@ -550,6 +550,12 @@ TREND runs AS weekly
   assert.equal((JSON.stringify(we.screen).match(/"Remove"/g) || []).length, 1);
   assert.deepEqual(checkScreen(we.screen, (t) => ({ runs: new Set(['id', 'created', 'day', 'distance_km', 'minutes']), bills: new Set(['id', 'amount', 'paid']) })[t] || null), []);
   assert.throws(() => compileStatement("CREATE SCREEN x\nTREND t\n  PER year"), /PER/);
+  // A field FROM a table picks among its rows (the choices people add), not a fixed list.
+  const pick = compileStatement("CREATE SCREEN s\nLIST spending\n  FORM (category 'Category' FROM categories (name) REQUIRED, client FROM clients, amount NUMBER)").screen;
+  assert.equal(pick.data.categories_name_choices, 'SELECT name AS value, name AS label FROM categories ORDER BY name LIMIT 500');
+  assert.equal(pick.data.clients_id_name_choices, 'SELECT id AS value, name AS label FROM clients ORDER BY name LIMIT 500');
+  assert.deepEqual(pick.body[0].fields.map((f) => [f.name, f.type, String(f.options).includes('_choices')]), [['category', 'select', true], ['client', 'select', true], ['amount', 'number', false]]);
+  assert.ok(!pick.body[0].fields.some((f) => f.from));
   // mistakes name their line and what to write
   assert.throws(() => compileStatement("CREATE SCREEN x\nLIST t\n  FORM (a WIDGET)"), /line 3: FORM a: cannot read "WIDGET"/);
   assert.throws(() => compileStatement('CREATE SCREEN x\nLIST t\n  SEARCH a'), /needs FORM/);
