@@ -21,7 +21,7 @@
 // the pattern's parameters: [parameter, kind of value].
 const MORE = {
   CHECKS: { use: 'checks', need: { items: 'ITEMS <table of the things to check off>', item: "ITEM <column holding the thing's id>" },
-    clauses: { ITEMS: ['items', 'name'], ITEM: ['item', 'name'], DAY: ['day', 'name'], NAME: ['name', 'name'], DAYS: ['days', 'num'], WHERE: ['itemWhere', 'sql'], 'ORDER BY': ['itemOrder', 'sql'], ADD: ['add', 'flag'], NOUN: ['noun', 'str'], TITLE: ['title', 'str'] } },
+    clauses: { ITEMS: ['items', 'name'], ITEM: ['item', 'name'], DAY: ['day', 'name'], NAME: ['name', 'name'], DAYS: ['days', 'num'], WHERE: ['itemWhere', 'sql'], 'ORDER BY': ['itemOrder', 'sql'], ADD: ['add', 'flag'], NOUN: ['noun', 'str'], TITLE: ['title', 'str'], SKIP: ['skip', 'name'] } },
   WEEK: { use: 'week', need: { items: 'ITEMS <table of the things to tick>', item: "ITEM <column holding the thing's id>" },
     clauses: { ITEMS: ['items', 'name'], ITEM: ['item', 'name'], DAY: ['day', 'name'], NAME: ['name', 'name'], SUB: ['sub', 'name'], LABEL: ['label', 'str'], EXTRA: ['extra', 'js'], TITLE: ['title', 'str'] } },
   CALENDAR: { use: 'calendar', need: { fields: 'FORM (...)' },
@@ -244,7 +244,7 @@ export function compileStatement(text) {
     }
   };
   const SIMPLE = /^(TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT)\b/i;
-  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM|PER|LAST|LINE|EXPORT|ADD)\\b';
+  const CLAUSE = '(?:TITLE|NOUN|EMPTY|LABEL|NAME|BACK|LIMIT|MONEY|DONUT|WHERE|ORDER BY|GROUP BY|VALUE|SEARCH|FILTER|TOGGLE|FORM|COLUMNS|CARDS|KPI|META|BY|ON ROW|ACTION|SHOW|PICK|RELATED|QUERY|ITEMS|ITEM|DAYS|DAY|SUB|DATE|TIME|PLACE|COLOR|FRONT|DUE|INTERVAL|MASTERED|QUESTION|CHOICES|ANSWER|EXPLANATION|COUNT|RESULTS|TEXT|MEANING|PLACEHOLDER|FORMAT|RECENT|EXTRA|PARAM|PER|LAST|LINE|EXPORT|ADD|SKIP)\\b';
   // Several clauses may share a line: split after a simple clause (TITLE
   // 'x' NOUN 'y'), and at two or more spaces before a clause word, except in
   // the clauses that hold their own WHERE or JSON.
@@ -579,7 +579,7 @@ DETAIL <table> [AS key]        -- the detail pattern: one row (opened with app.o
 SUMMARY <table> [AS key]       -- the summary pattern: a total and a bar (or donut) per group
   GROUP BY <SQL>  VALUE SUM(col)  LABEL 'Spent'  WHERE <SQL>  MONEY  DONUT  LIMIT 20  TITLE 'Heading'
 CHECKS <table of checks> [AS key] -- the daily check-off, for the screen people open every day: each thing with one big tap for today, its last days, its streak, and how many are done today (habits, medication, plants watered, chores); a check is a row
-  ITEMS <table of the things>  ITEM <checks column holding the thing's id>  DAY <checks column, 'YYYY-MM-DD'>  NAME <things column>  DAYS 7  WHERE <SQL on the things>  ADD  NOUN 'habit'  TITLE 'Today'
+  ITEMS <table of the things>  ITEM <checks column holding the thing's id>  DAY <checks column, 'YYYY-MM-DD'>  NAME <things column>  DAYS 7  WHERE <SQL on the things>  ORDER BY <SQL>  ADD  NOUN 'habit'  TITLE 'Today'  SKIP <bool checks column: a day skipped keeps the streak>
 WEEK <table of marks> [AS key] -- the week pattern: a row per thing with its 7 days to tick (habits, chores); a mark is a row
   ITEMS <table of the things>  ITEM <marks column holding the thing's id>  DAY <marks column, 'YYYY-MM-DD'>  NAME <things column>  SUB <things column>  LABEL 'Done'  EXTRA {points: it.points}  TITLE
 CALENDAR <table> [AS key]      -- the calendar pattern: a month, the picked day's rows, a form to add one

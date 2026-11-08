@@ -13,7 +13,7 @@ import { Engine } from './engine.mjs';
 import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT, useSqlFunctions } from './forge.mjs';
 import { repairRequest } from './look.mjs';
 import { readSqlLibrary, readSqlFile, install as installSqlFunctions } from './sqlfns.mjs';
-import { Changes } from './changes.mjs';
+import { Changes, joinAsks } from './changes.mjs';
 import { useTableFunctions } from './sql.mjs';
 import { MODEL } from './llm.mjs';
 import { newId } from './store.mjs';
@@ -188,12 +188,25 @@ const queues = new Map();
 const running = new Map(); // app -> {id, text, source, lines}
 const repaired = new Set();
 
+// What a person asks while a change is being built waits as one request:
+// the asks (and suggestions taken) that come before it starts join it, and
+// are built together as one design rather than one change on top of another.
+const waiting = new Map(); // app -> {req, asks}
 async function submit(appId, text, source = 'user', extra = {}) {
+  const joins = ['user', 'suggestion'].includes(source) && !extra.cap;
+  const w = joins ? waiting.get(appId) : null;
+  if (w) {
+    w.asks.push(String(text));
+    w.req.text = joinAsks(w.asks);
+    await engine.store.putRequest(w.req);
+    return w.req;
+  }
   const id = newId(10);
   const req = { id, app: appId, text: String(text).slice(0, 4000), source, status: 'queued', comp: 0, summary: '', log: '', error: '', ms: 0, cost: 0, created: new Date().toISOString() };
   await engine.store.putRequest(req);
   const prev = queues.get(appId) || Promise.resolve();
-  const next = prev.then(() => runRequest(req, extra)).catch(() => {});
+  if (joins && running.has(appId)) waiting.set(appId, { req, asks: [String(text)] });
+  const next = prev.then(() => { if (waiting.get(appId)?.req === req) waiting.delete(appId); return runRequest(req, extra); }).catch(() => {});
   queues.set(appId, next);
   return req;
 }
@@ -300,7 +313,8 @@ engine.on('drawn', (d) => {
   const look = d.looked ? ` (look $${(d.cost || 0).toFixed(3)})` : d.lookError ? ` (no look: ${d.lookError.slice(0, 120)})` : '';
   log(`[${d.app}] drew version ${d.n} on a phone and a computer: ${said}${look}`);
   const text = repairRequest(d.found);
-  const fixing = !!text && AUTOREPAIR && d.source !== 'look' && Date.now() - (lookedAt.get(d.app) || 0) > 600000;
+  // A newer change already being built is drawn and checked in turn.
+  const fixing = !!text && AUTOREPAIR && d.source !== 'look' && !running.has(d.app) && Date.now() - (lookedAt.get(d.app) || 0) > 600000;
   broadcast('drawn', { app: d.app, n: d.n, found: d.found.length, high: high.length, fixing });
   if (fixing) {
     lookedAt.set(d.app, Date.now());

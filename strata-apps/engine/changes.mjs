@@ -182,3 +182,10 @@ export class Changes {
     return [...items.filter((s) => !low(s)), ...items.filter(low)];
   }
 }
+
+// Asks that waited for the same build, as one request: built together as
+// one design rather than one change on top of another.
+export function joinAsks(asks) {
+  if (asks.length === 1) return asks[0];
+  return `Make these ${asks.length} changes together, as one design: fold them into the screens that are there rather than adding a part for each, and keep the first screen for the job.\n${asks.map((a, i) => `${i + 1}. ${a}`).join('\n')}`.slice(0, 4000);
+}

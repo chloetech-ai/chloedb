@@ -452,7 +452,7 @@ test('a change to a screen can be a patch on the paths the model is shown', () =
 test('a screen pattern expands into blocks, state, data and lets that pass the screen check', async () => {
   const { PATTERNS, expandScreen, fill } = await import('../engine/patterns.mjs');
   assert.ok(PATTERNS.size >= 4);
-  const cols = { guests: ['name', 'rsvp', 'table_no'], orders: ['customer', 'items', 'total', 'status'], clients: ['name', 'email', 'rate'], invoices: ['number', 'total', 'status', 'client'], expenses: ['amount', 'category', 'day'], chores: ['title', 'kid', 'points'], chore_done: ['chore', 'day', 'points', 'kid'], events: ['title', 'day', 'at', 'who'], cards: ['question', 'answer', 'deck', 'due', 'interval_days'], questions: ['question', 'options', 'correct', 'explanation', 'deck'], quiz_results: ['score', 'total', 'deck'], notes: ['title', 'body', 'meaning', 'paper', 'authors', 'year', 'tags'], hours: ['day', 'client', 'hours'], habits: ['name'], checkins: ['habit', 'day'] };
+  const cols = { guests: ['name', 'rsvp', 'table_no'], orders: ['customer', 'items', 'total', 'status'], clients: ['name', 'email', 'rate'], invoices: ['number', 'total', 'status', 'client'], expenses: ['amount', 'category', 'day'], chores: ['title', 'kid', 'points'], chore_done: ['chore', 'day', 'points', 'kid'], events: ['title', 'day', 'at', 'who'], cards: ['question', 'answer', 'deck', 'due', 'interval_days'], questions: ['question', 'options', 'correct', 'explanation', 'deck'], quiz_results: ['score', 'total', 'deck'], notes: ['title', 'body', 'meaning', 'paper', 'authors', 'year', 'tags'], hours: ['day', 'client', 'hours'], habits: ['name'], checkins: ['habit', 'day', 'skipped'] };
   const columnsOf = (t) => (cols[t] ? new Set(['id', 'created', ...cols[t]]) : null);
   for (const [name, p] of PATTERNS) {
     const r = expandScreen({ body: [{ h: 'Top' }, p.example] });
@@ -1864,4 +1864,33 @@ test('every version is drawn on a phone and a computer, and the rules find what 
     assert.deepEqual(m.ids, ['ai7nozxh2o']);
     assert.equal(m.fieldsOnFirstScreen, 3);
   } finally { await browser.close(); }
+});
+
+test('a screen has a budget: a change consolidates rather than piling up, and keeps its parts', async () => {
+  const { budgetOf, overBudget, isBudget, BUDGET } = await import('../engine/forge.mjs');
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const { joinAsks } = await import('../engine/changes.mjs');
+  const part = compileStatement(`CREATE SCREEN today TITLE 'Today'
+CHECKS checkins
+  ITEMS habits  ITEM habit  SKIP skipped`).screen;
+  const before = budgetOf(part);
+  assert.deepEqual(before, { parts: 1, kpis: 0, fields: 0, code: 0, uses: ['checks'] });
+  // the same screen said with code instead of the part
+  const code = { let: { rows: '=habits.map(h => ({h, days: [6,5,4,3,2,1,0].map(i => lib.dates.addDays(today, -i))}))' },
+    body: [{ h: 'Today' }, { each: '=rows', as: 'v', body: [{ text: '=v.h.name' }, { each: '=v.days', as: 'd', body: [{ button: '=d.slice(8)', do: "=() => app.insert('checkins', {habit: v.h.id, day: d})" }] }] }] };
+  const now = budgetOf(code);
+  assert.ok(now.code > 100 && now.uses.length === 0);
+  const said = overBudget('today', now, before);
+  assert.equal(said.length, 1);
+  assert.match(said[0], /^over budget: screen today gives up its CHECKS part for code: keep it/);
+  assert.ok(said.every(isBudget));
+  // code grows by at most BUDGET.grow per change; parts, numbers and fields have ceilings
+  const big = { parts: 9, kpis: 5, fields: 10, code: 300 + BUDGET.grow + 1, uses: [] };
+  const msgs = overBudget('home', big, { parts: 3, kpis: 2, fields: 4, code: 300, uses: [] }).join('\n');
+  for (const want of ['has 9 parts', 'has 5 big numbers', 'has 10 fields', `grows by ${(BUDGET.grow + 1).toLocaleString('en-US')} characters`]) assert.ok(msgs.includes(want), want);
+  // a screen already over a ceiling may stay there, but not grow past it
+  assert.deepEqual(overBudget('home', { parts: 9, kpis: 0, fields: 0, code: 0, uses: [] }, { parts: 9, kpis: 0, fields: 0, code: 0, uses: [] }), []);
+  // asks made while a build runs are built as one change
+  assert.equal(joinAsks(['Add a note']), 'Add a note');
+  assert.match(joinAsks(['Let me skip a day', 'Show a weekly count']), /^Make these 2 changes together, as one design: .*\n1\. Let me skip a day\n2\. Show a weekly count$/);
 });

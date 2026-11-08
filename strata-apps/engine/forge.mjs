@@ -19,6 +19,9 @@ import { checkRule, RULES_DOC } from './rules.mjs';
 import { TESTS_DOC, TESTS_SQL_DOC, checkTests, runTests, openViews } from './checks.mjs';
 import { LOOK, checkDrawn } from './look.mjs';
 
+// A screen's budget (budgetOf, below): what a change may grow it to.
+export const BUDGET = { parts: 7, kpis: 4, fields: 8, code: 1000, grow: 400 };
+
 const BASE_SYSTEM = `You build and change small web apps for one person, through a runtime whose backbone is a database, Strata. An app is made of capabilities that the runtime stores in Strata and loads:
 
 - table: the data the app keeps.
@@ -185,6 +188,7 @@ First <plan>...</plan> holding one JSON object, then one <code slug="...">...</c
 - reuse: capabilities from the library to copy, by id.
 - seed: example rows, only for a new app, and only when examples help the person see the app working (3 to 8 rows per table, realistic, dated near today). Leave it out when the app holds the person's own data from the start (an expense log, a journal), unless they asked for examples.
 - suggestions: 3 changes the person might ask for next, written as they would ask for them ("Let me snooze a task until a date"), each with a short why that refers to what they asked, or to what they did as recorded above; never claim a habit the record does not show. Make them specific to this app, small enough to build in one step, and new: not what the app does already, not what was just asked, and not one of the suggestions made before (listed above with what became of them).
+- Each screen has a budget: at most ${BUDGET.parts} parts, ${BUDGET.kpis} big numbers, ${BUDGET.fields} fields in a form (more go under {"section"} headings), and ${BUDGET.code.toLocaleString('en-US')} characters of code in its expressions and code blocks. A change that would go past one folds what it adds into what is there (a column, a filter, an action on the row), moves it to a later screen, or says it with a part instead of code.
 - An app has one to five views. Do not split what belongs together across views.`;
 
 // Screens: views written as data (web/screen.js draws them). On unless
@@ -324,10 +328,59 @@ export const SYSTEM = withoutSuggestions(withRules(!SCREENS ? BASE_SYSTEM : STAT
 // to the screens the app has, patterns expanded, and each screen put in the
 // code of its view (as JSON). Returns problems.
 export function prepareScreens(plan, code, view) {
-  const problems = [...(SCREENS ? editCode(plan, code, view) : []), ...compileStatements(plan, code), ...compileRuleStatements(plan, code), ...patchScreens(plan, view), ...expandPlan(plan, withPlanPatterns(plan))];
+  const written = [...(SCREENS ? editCode(plan, code, view) : []), ...compileStatements(plan, code), ...compileRuleStatements(plan, code), ...patchScreens(plan, view)];
+  for (const v of plan?.views || []) if (v && v.screen && typeof v.screen === 'object') BUDGETS.set(v, budgetOf(v.screen));
+  const problems = [...written, ...expandPlan(plan, withPlanPatterns(plan))];
   screensToCode(plan, code);
   rulesToCode(plan, code);
   return problems;
+}
+
+// A screen's budget: parts, big numbers, fields in a form, and characters
+// of code (its expressions and code blocks), measured on the screen as
+// written (a pattern is one part; what its parameters say in code counts).
+// A screen a change makes go past one is sent back to be consolidated; an
+// answer over budget only in that is kept on the last try (a soft limit).
+const BUDGETS = new WeakMap();
+export function budgetOf(screen) {
+  const out = { parts: Array.isArray(screen?.body) ? screen.body.length : 0, kpis: 0, fields: 0, code: 0, uses: [] };
+  const walk = (x) => {
+    if (typeof x === 'string') { if (x.startsWith('=')) out.code += x.length - 1; return; }
+    if (Array.isArray(x)) { x.forEach(walk); return; }
+    if (!x || typeof x !== 'object') return;
+    if (typeof x.code === 'string') out.code += x.code.length;
+    if (typeof x.use === 'string') out.uses.push(x.use);
+    if (Array.isArray(x.kpis)) out.kpis += x.kpis.length;
+    if (x.form !== undefined && Array.isArray(x.fields) && !x.fields.some((f) => f && f.section !== undefined)) out.fields = Math.max(out.fields, x.fields.filter((f) => typeof f === 'string' || (f && f.name)).length);
+    if (x.use !== undefined && Array.isArray(x.fields) && !x.fields.some((f) => f && f.section !== undefined)) out.fields = Math.max(out.fields, x.fields.length);
+    for (const [k, v] of Object.entries(x)) if (k !== 'code' && k !== 'data') walk(v);
+  };
+  walk(screen?.body);
+  for (const v of Object.values(screen?.let || {})) walk(v);
+  return out;
+}
+export const isBudget = (p) => /^over budget: /.test(p);
+export function overBudget(slug, now, before) {
+  const out = [];
+  const grew = (k) => now[k] > BUDGET[k] && (!before || now[k] > before[k]);
+  if (grew('parts')) out.push(`over budget: screen ${slug} has ${now.parts} parts (its budget is ${BUDGET.parts}): fold what the change adds into a part that is there (a column, a filter, an action on the row) or move it to a later screen, rather than adding parts`);
+  if (grew('kpis')) out.push(`over budget: screen ${slug} has ${now.kpis} big numbers (its budget is ${BUDGET.kpis}): keep the ones its first glance needs`);
+  if (grew('fields')) out.push(`over budget: a form on ${slug} has ${now.fields} fields (its budget is ${BUDGET.fields}): ask only what is needed now, with sensible defaults, or group the rest under {"section"} headings`);
+  // A part given up for code: the part's rules (taps, phone layout, empty
+  // states) go with it, so a change keeps the part and uses its clauses.
+  const lost = before ? [...new Set(before.uses || [])].filter((u) => !(now.uses || []).includes(u)) : [];
+  if (lost.length && now.code > before.code) out.push(`over budget: screen ${slug} gives up its ${lost.map((u) => u.toUpperCase()).join(' and ')} part${lost.length === 1 ? '' : 's'} for code: keep ${lost.length === 1 ? 'it' : 'them'} and change what ${lost.length === 1 ? 'it shows' : 'they show'} through ${lost.length === 1 ? 'its' : 'their'} clauses`);
+  else if (before && now.code - before.code > BUDGET.grow) out.push(`over budget: screen ${slug} grows by ${(now.code - before.code).toLocaleString('en-US')} characters of code (a change adds at most ${BUDGET.grow}): say what it adds with parts and their clauses, or a rule`);
+  if (grew('code')) out.push(`over budget: screen ${slug} has ${now.code.toLocaleString('en-US')} characters of code in its expressions and code blocks (its budget is ${BUDGET.code.toLocaleString('en-US')}): say it with parts and their clauses (LIST, CHECKS, FIND...), move logic into a rule, and keep code to what no part can say`);
+  return out;
+}
+// The budget a screen had before this change, from its statement when it
+// has one (as written), else its stored screen.
+function budgetBefore(view, slug) {
+  const v = view.views.find((x) => x.slug === slug);
+  if (!v || !v.spec?.screen) return null;
+  try { if (v.spec.statement) return budgetOf(compileStatement(v.spec.statement).screen); } catch { /* fall back */ }
+  try { return budgetOf(typeof v.code === 'string' ? JSON.parse(v.code) : v.spec.screen); } catch { return null; }
 }
 
 // The patterns in use and the ones this plan adds, so its screens may use
@@ -642,7 +695,7 @@ export function checkScreen(screen, columnsOf = () => null) {
       if (kind === 'checks') {
         const cols = typeof b.table === 'string' && !b.table.startsWith('=') ? columnsOf(b.table) : null;
         if (!cols) problems.push(typeof b.table === 'string' && b.table && !b.table.startsWith('=') ? `${where}: the checks write table ${JSON.stringify(b.table)}, which the app does not have` : `${where}: checks names "table", the app's table whose rows are the checks`);
-        else for (const k of ['item', 'day']) { const n = b[k] || k; if (!cols.has(n)) problems.push(`${where}: the checks' ${k} column ${n} is not a column of ${b.table}`); }
+        else for (const k of ['item', 'day', 'skip']) { const n = b[k] || (k === 'skip' ? null : k); if (n && !cols.has(n)) problems.push(`${where}: the checks' ${k} column ${n} is not a column of ${b.table}`); }
         if (b.done === undefined) problems.push(`${where}: checks needs "done": the rows of ${b.table || 'its table'}`);
       }
       if (kind === 'form') {
@@ -993,6 +1046,7 @@ export async function validate(plan, code, view, library, shared = new Map()) {
       slugs.add(item.slug);
       if (kind === 'view' && item.screen) {
         for (const x of checkScreen(item.screen, columnsFor(view, plan))) problems.push(`view ${item.slug}: ${x}`);
+        if (BUDGETS.has(item)) problems.push(...overBudget(item.slug, BUDGETS.get(item), budgetBefore(view, item.slug)));
         continue;
       }
       const src = code[item.slug];
@@ -1241,6 +1295,10 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
       } catch (e) { problems = [e.message]; }
       c.problems = problems.slice(0, 8);
     });
+    if (problems.length && problems.every(isBudget) && attempt === 2) {
+      progress(`Kept over a screen's budget: ${problems.map((p) => p.replace(/^over budget: /, '').split(':')[0]).join('; ')}`);
+      problems = [];
+    }
     if (!problems.length) { decidedAt = span.end; progress(`The model planned it in ${Math.round(answer.ms / 1000)} s`); break; }
     planPrompt = `${prompt}\n\n${STEP}\n\n# Your previous plan\n\n${answer.text}\n\n# Its problems\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\nAnswer again with the whole plan, these fixed.`;
   }
@@ -1332,6 +1390,11 @@ async function buildSplit({ prompt, forPiece, view, library, shared, system = SY
       problems = await tr.span('check', 'Check the code again', async (c) => { const p = [...prepareScreens(plan, code, view), ...await validate(plan, code, view, library, shared)]; c.problems = p.slice(0, 8); return p; });
     }
   }
+  // A screen's budget was asked of the plan already; over it, it is kept.
+  if (problems.some(isBudget)) {
+    progress(`Kept over a screen's budget: ${problems.filter(isBudget).map((p) => p.replace(/^over budget: /, '').split(':')[0]).join('; ')}`);
+    problems = problems.filter((p) => !isBudget(p));
+  }
   // Tests that are still wrong are left out rather than holding up the app.
   if (parallel && problems.length && problems.every((p) => /^tests\[/.test(p))) {
     progress(`Left out the tests: ${problems.slice(0, 2).join('; ').slice(0, 300)}`);
@@ -1397,6 +1460,10 @@ async function forgeTraced(engine, appId, request, progress, tr) {
       }
       c.problems = problems.slice(0, 8);
     });
+    if (problems.length && problems.every(isBudget) && attempt === (small ? 3 : 2)) {
+      progress(`Kept over a screen's budget: ${problems.map((p) => p.replace(/^over budget: /, '').split(':')[0]).join('; ')}`);
+      problems = [];
+    }
     if (!problems.length) { decidedAt = span.end; break; }
     progress(`Checking the code: ${problems.length} problem${problems.length === 1 ? '' : 's'}`);
     attemptPrompt = `${prompt}\n\n# Your previous answer\n\n${answer.text}\n\n# Its problems\n\n${problems.map((p) => `- ${p}`).join('\n')}\n\nAnswer again, in full, with these fixed.`;

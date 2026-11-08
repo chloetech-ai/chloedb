@@ -358,6 +358,10 @@ tr:has(> td.tick input:checked) > td.tick + td { text-decoration: line-through; 
 .checks button.check.today.on .mark { opacity: 1; color: var(--accent-fg); animation: check-pop .35s ease; animation-play-state: var(--play, running); }
 @keyframes check-pop { 0% { transform: translateY(-2px) rotate(-45deg) scale(.4); } 70% { transform: translateY(-2px) rotate(-45deg) scale(1.2); } 100% { transform: translateY(-2px) rotate(-45deg) scale(1); } }
 .checks-row.done .title { color: var(--fg); }
+.checks-row.skipped .title { color: var(--muted); }
+.checks button.check.skip { border-style: dashed; border-color: var(--muted); }
+.checks button.check .dash { width: 12px; height: 2.5px; border-radius: 2px; background: var(--muted); }
+.checks .skip-today { align-self: flex-start; font-size: calc(var(--text) * .82); color: var(--muted); font-weight: 500; text-decoration: underline; text-underline-offset: 2px; }
 /* On a phone: yesterday and today, both big enough to tap. */
 @media (max-width: 560px) {
   .checks :is(button.check, .check-day).past:not([data-age="1"]) { display: none; }

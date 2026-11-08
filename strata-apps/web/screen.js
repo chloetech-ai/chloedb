@@ -493,6 +493,7 @@
       if (!table) throw new Error('checks needs "table": the table a check is a row of');
       const itemCol = b.item || 'item';
       const dayCol = b.day || 'day';
+      const skipCol = typeof b.skip === 'string' && b.skip ? b.skip : null;
       const n = Math.max(1, Math.min(14, Number(val(b.days, s, path)) || 7));
       if (!items.length) return h('div', { class: 'empty' }, T(b.empty ?? 'Nothing to check off yet.', s, path));
       const pad = (x) => String(x).padStart(2, '0');
@@ -504,50 +505,59 @@
       for (const r of log) if (r && r[itemCol] != null && r[dayCol] != null) has.set(`${r[itemCol]}|${String(r[dayCol]).slice(0, 10)}`, r);
       const key = (it, d) => `${it.id}|${d}`;
       const nameOf = (it) => (b.name ? String(it[b.name] ?? '') : rowName(it)) || 'Untitled';
+      // A day is done, skipped (with SKIP: it keeps the streak without adding
+      // to it) or not done.
+      const stateOf = (it, d) => { const r = has.get(key(it, d)); return !r ? null : skipCol && r[skipCol] ? 'skip' : 'done'; };
       const streak = (it) => {
-        let k = has.has(key(it, today)) ? 0 : 1;
+        let k = stateOf(it, today) ? 0 : 1;
         let c = 0;
-        while (has.has(key(it, ymd(back(k))))) { c++; k++; }
+        for (let st = stateOf(it, ymd(back(k))); st && k < 400; st = stateOf(it, ymd(back(++k)))) if (st === 'done') c++;
         return c;
       };
       const label = (d) => (ymd(d) === today ? 'today' : d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' }));
-      const toggle = async (it, d, btn) => {
+      // A tap on an empty day marks it done; on a done or skipped day, clears it.
+      const toggle = async (it, d, btn, skip = false) => {
         const day = ymd(d);
         const row = has.get(key(it, day));
         btn.setAttribute('aria-pressed', String(!row));
-        btn.classList.toggle('on', !row);
+        btn.classList.toggle('on', !row && !skip);
         btn.disabled = true;
         try {
           if (row) { await app.remove(table, row.id, { undo: false }); has.delete(key(it, day)); }
-          else { has.set(key(it, day), await app.insert(table, { ...(b.fields || {}), [itemCol]: it.id, [dayCol]: day })); }
+          else { has.set(key(it, day), await app.insert(table, { ...(b.fields || {}), [itemCol]: it.id, [dayCol]: day, ...(skipCol ? { [skipCol]: skip } : {}) })); }
         } catch (e) { report(fail(path, e)); }
         btn.disabled = false;
         await refresh();
       };
       const dayBtn = (it, d, k) => {
-        const on = has.has(key(it, ymd(d)));
+        const st = stateOf(it, ymd(d));
         const now = k === n - 1;
-        const btn = h('button', { type: 'button', class: `check${now ? ' today' : ' past'}${on ? ' on' : ''}`, 'data-age': String(n - 1 - k), 'aria-pressed': String(on),
-          'aria-label': `${nameOf(it)}, ${label(d)}`, title: label(d), onclick: () => toggle(it, d, btn) },
-          h('span', { class: 'mark', 'aria-hidden': 'true' }));
+        const btn = h('button', { type: 'button', class: `check${now ? ' today' : ' past'}${st === 'done' ? ' on' : st === 'skip' ? ' skip' : ''}`, 'data-age': String(n - 1 - k), 'aria-pressed': String(st === 'done'),
+          'aria-label': `${nameOf(it)}, ${label(d)}${st === 'skip' ? ', skipped' : ''}`, title: `${label(d)}${st === 'skip' ? ' (skipped)' : ''}`, onclick: () => toggle(it, d, btn) },
+          h('span', { class: st === 'skip' ? 'dash' : 'mark', 'aria-hidden': 'true' }));
         return btn;
       };
       // The days named once, above the rows, in the same columns.
       const legend = h('div', { class: 'checks-legend', 'aria-hidden': 'true' }, h('div', { class: 'checks-name' }),
         h('div', { class: 'checks-days' }, days.map((d, k) => h('span', { class: `check-day${k === n - 1 ? ' today' : ' past'}`, 'data-age': String(n - 1 - k) },
           k === n - 1 ? 'Today' : d.toLocaleDateString(undefined, { weekday: 'short' })))));
-      const doneToday = items.filter((it) => has.has(key(it, today))).length;
-      const all = doneToday === items.length;
+      const doneToday = items.filter((it) => stateOf(it, today) === 'done').length;
+      const skipped = items.filter((it) => stateOf(it, today) === 'skip').length;
+      const due = items.length - skipped;
+      const all = doneToday === due;
       return h('div', { class: `checks${all ? ' all' : ''}` },
         b.summary === false ? null : h('div', { class: 'checks-head' },
-          h('div', { class: 'checks-count' }, h('b', `${doneToday} of ${items.length}`), all ? ' done today. Well done.' : ' done today'),
-          h('div', { class: 'checks-bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(items.length), 'aria-valuenow': String(doneToday) }, h('span', { style: `width:${Math.round((doneToday / items.length) * 100)}%` }))),
+          h('div', { class: 'checks-count' }, h('b', `${doneToday} of ${due}`), all ? ' done today. Well done.' : ' done today', skipped ? h('span', { class: 'muted' }, ` · ${skipped} skipped`) : null),
+          h('div', { class: 'checks-bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(due), 'aria-valuenow': String(doneToday) }, h('span', { style: `width:${due ? Math.round((doneToday / due) * 100) : 100}%` }))),
         legend,
         h('ul', { class: 'checks-list' }, items.map((it) => {
           const st = b.streak === false ? 0 : streak(it);
-          return h('li', { class: `checks-row${has.has(key(it, today)) ? ' done' : ''}` },
+          const todayIs = stateOf(it, today);
+          return h('li', { class: `checks-row${todayIs ? ` ${todayIs === 'skip' ? 'skipped' : 'done'}` : ''}` },
             h('div', { class: 'checks-name' }, h('span', { class: 'title' }, nameOf(it)),
-              b.streak === false ? null : h('span', { class: `streak${st ? '' : ' none'}` }, st ? `${st}-day streak` : 'No streak yet')),
+              b.streak === false ? null : h('span', { class: `streak${st ? '' : ' none'}` }, st ? `${st}-day streak` : 'No streak yet'),
+              skipCol && !todayIs ? h('button', { type: 'button', class: 'link skip-today', 'aria-label': `Skip ${nameOf(it)} today`, onclick: (e) => toggle(it, days[n - 1], e.currentTarget, true) }, 'Skip today') : null,
+              skipCol && todayIs === 'skip' ? h('span', { class: 'streak none' }, 'Skipped today') : null),
             h('div', { class: 'checks-days' }, days.map((d, k) => dayBtn(it, d, k))));
         })));
     }
