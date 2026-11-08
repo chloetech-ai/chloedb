@@ -71,25 +71,29 @@ SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 # without comments and blank lines (ci_job_hashes).
 CI_JOBS="
 changes 0543cb44ccca
-test a90488564980
+test bee71619d2fe
+macos 12396d934241
 kernels bbdbd5cc6f67
 vision f285537564ca
 audio 32586eda6771
-datafusion 1db129cd23d9
+datafusion 967c0f3e2e5e
 faults 1ab1d52fa757
 relevance-gate c4733098fbd0
 relevance-gate-cross-encoder 578f9a601bd6
-miri fdeae055c68e
-server-smoke 2cc29955c528
-python e700805469a1
-ci-result d810e556389e
+miri 9a2f1972f4b9
+server-smoke 071041a3fea9
+python bb3189501156
+javascript 9c48a39f7630
+java d5d337dbe574
+ci-result 05940e7f0565
 "
 
 # This script's jobs: name, the ci.yml job it mirrors, what it runs.
 JOBS="
 test-strata|test|strata's tests (feature sqlite) and clippy
 test-engram|test|engram's tests and clippy
-test-strata-server|test|strata-server's tests and clippy
+test-strata-server|test|strata-server's tests, the simulator's seeds, and clippy
+test-strata-crawl|test|strata-crawl's tests and clippy
 kernels|kernels|Strata's SIMD kernels in a generic build, then with SIMD off (x86-64 under Rosetta on a Mac, then the native generic build)
 faults|faults|power losses, full disks and failing syncs (feature fault-injection)
 datafusion|datafusion|DataFusion as the engine (feature datafusion) and the compound-query suites on it
@@ -97,14 +101,17 @@ audio|audio|sound (feature audio): tests and clippy, Strata and strata-server
 vision|vision|images (feature vision): tests and clippy, Strata and strata-server
 relevance-gate|relevance-gate|BM25 on three BEIR collections against the committed baseline
 relevance-gate-cross-encoder|relevance-gate-cross-encoder|BM25 reranked by ms-marco-MiniLM-L-6-v2 against its baseline
-server-smoke|server-smoke|a release strata-server with a demo catalogue, queried over HTTP; imports and exports
+server-smoke|server-smoke|a release strata-server with a demo catalogue, queried over HTTP; imports and exports; a crawl into a growing cluster
 python|python|the Python package's tests against a real server, the recommender gate, clippy
-miri|miri|Miri over Strata's byte views, in CI's three parts, beside the other jobs
+javascript|javascript|the JavaScript package on Node, Bun and Deno, against a real server; clippy
+java|java|the Java package on Java 11 and 25, the native library's tests, clippy
+miri|miri|Miri over Strata's byte views, in CI's four parts, beside the other jobs
 "
 
-# Miri's three parts, as ci.yml's matrix has them.
+# Miri's four parts, as ci.yml's matrix has them.
 MIRI_PARTS="pyramid|postings::codecs::pyramid::tests::miri_
-bytes, loom, bit vectors, query pool|postings::bytes postings::codecs::loom::tests::miri_ postings::bits query::pool
+bit vectors|postings::bits --skip postings::bits::tests::next_one_and_ones
+bytes, loom, bit vector ones, query pool|postings::bytes postings::codecs::loom::tests::miri_ postings::bits::tests::next_one_and_ones query::pool
 columns, graph, keys, text codec|forward:: graph:: storage::pk::tests::collisions storage::pk::tests::section_written storage::live storage::updates::tests::round_trip text::codec --skip many_int_keys"
 
 CLIPPY_LINTS="-A clippy::style -A clippy::complexity -A clippy::perf -D warnings"
@@ -215,7 +222,7 @@ while [ $# -gt 0 ]; do
         -*) die "unknown option $1 (see --help)" ;;
         *)
             if [ "$1" = test ]; then
-                SELECTED="$SELECTED test-strata test-engram test-strata-server"
+                SELECTED="$SELECTED test-strata test-engram test-strata-server test-strata-crawl"
             elif job_names | grep -qx -- "$1"; then
                 SELECTED="$SELECTED $1"
             else
@@ -430,7 +437,7 @@ crate_tests() {
         cargo nextest run --cargo-profile ci --no-fail-fast --retries 2 "$@"
         cargo test --profile ci --doc "$@"
     else
-        cargo test --profile ci "$@"
+        cargo test --profile ci --no-fail-fast "$@"
     fi
 }
 
@@ -470,6 +477,12 @@ job_test_strata_server() {
     cargo clippy --release --all-targets -- $CLIPPY_LINTS
 }
 
+job_test_strata_crawl() {
+    cd strata-crawl
+    crate_tests
+    cargo clippy --release --all-targets -- $CLIPPY_LINTS
+}
+
 # RUSTFLAGS, even empty, replaces strata/.cargo/config.toml's target-cpu=native.
 kernels() {
     export RUSTFLAGS=$1
@@ -504,7 +517,9 @@ job_datafusion() {
     cargo test --profile ci --features datafusion --test datafusion_engine
     cargo test --profile ci --features datafusion,sqlite --test window_functions --test set_operations
     STRATA_ENGINE=datafusion cargo test --profile ci --features datafusion --test compound_queries --test joins_across_tables --test operators --test distinct_on --test per_cap --test one_evaluator --test sql_tables --test correlated --test query_memory --test plan_ir --test json_fields --test json_columns
-    cargo clippy --profile ci --features datafusion --all-targets -- $CLIPPY_LINTS
+    cargo test --profile ci --features datafusion,parquet,s3 --test parquet
+    cargo test --profile ci --features datafusion,parquet,s3 --lib -- parquet:: objects:: arrow_rows::
+    cargo clippy --profile ci --features datafusion,parquet,s3 --all-targets -- $CLIPPY_LINTS
 }
 
 job_audio() {
@@ -578,6 +593,10 @@ job_server_smoke() {
     curl -sf -X POST "http://127.0.0.1:$p2/v1/import?format=sqlite" -H 'content-type: application/vnd.sqlite3' --data-binary @"$t/s.sqlite" | grep -q '"written":1'
     curl -sf http://127.0.0.1:$p2/v1/export -o "$t/s3.sqlite"
     python3 -c "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); assert c.execute('SELECT count(*) FROM t').fetchone() == (3,); assert c.execute('SELECT body FROM notes').fetchall() == [('a first note about rivers and mountains',)]" "$t/s3.sqlite"
+    # The crawler on a site its test serves, into a cluster of this build's
+    # servers that it starts and grows to three shards.
+    cd ../strata-crawl
+    STRATA_SERVER_BIN="$CI_LOCAL_TREE/strata-server/target/release/strata-server" STRATA_CRAWL_NEED_SERVER=1 cargo test --profile ci --test site
 }
 
 # Redpanda for the Kafka consumer's exactly-once test: CI's container on
@@ -609,6 +628,7 @@ job_python() {
     . "$PY_VENV/bin/activate"
     pip install -q --upgrade pip
     pip install -q --upgrade maturin pytest numpy confluent-kafka
+    pip install -q --upgrade pyarrow polars pandas "moto[server]" boto3
     # strata.train.sequence's test: CPU PyTorch (PyPI's macOS wheel is one)
     if [ "$(uname -s)" = Linux ]; then pip install -q --upgrade torch --index-url https://download.pytorch.org/whl/cpu; else pip install -q --upgrade torch; fi
     (cd strata-server && cargo build --release)
@@ -623,7 +643,57 @@ job_python() {
         [ "$(sha256 "$ratings.tmp")" = "$ML1M_SHA" ]
         mv "$ratings.tmp" "$ratings"
     fi
-    python ../strata/results/sequence/gate.py --ratings "$ratings"
+    # Both protocols at once, as on GitHub.
+    local protocol status=0
+    for protocol in loo time; do
+        python ../strata/results/sequence/gate.py --ratings "$ratings" --protocol "$protocol" >"$JOB_DIR/gate-$protocol.log" 2>&1 &
+        echo $! >"$JOB_DIR/gate-$protocol.pid"
+    done
+    for protocol in loo time; do
+        wait "$(cat "$JOB_DIR/gate-$protocol.pid")" || status=1
+        cat "$JOB_DIR/gate-$protocol.log"
+    done
+    [ "$status" = 0 ]
+    cargo clippy --release --all-targets -- $CLIPPY_LINTS
+}
+
+# The tools a job needs that this script does not install: it fails at once,
+# saying what is missing, rather than pass with a part left out.
+need() {
+    local missing="" t
+    for t in "$@"; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done
+    [ -z "$missing" ] || { echo "ci-local: this job needs$missing (on a Mac: brew install$missing)" >&2; return 1; }
+}
+
+# A JDK of the given major version (macOS's java_home, or JAVA_HOME_<N>_X64
+# as on GitHub's runners).
+jdk() {
+    local home
+    home=$( (/usr/libexec/java_home -v "$1" 2>/dev/null) || eval "echo \${JAVA_HOME_$1_X64:-}")
+    [ -n "$home" ] || { echo "ci-local: this job needs a JDK $1 (on a Mac: brew install --cask temurin@$1)" >&2; return 1; }
+    echo "$home"
+}
+
+job_javascript() {
+    need node bun deno
+    (cd strata-server && cargo build --release)
+    cd strata-js
+    node scripts/build.mjs --profile ci
+    node --test test/*.test.mjs
+    bun test/runtimes.mjs
+    deno run --allow-ffi --allow-read --allow-write --allow-env --allow-net --allow-run --allow-sys test/runtimes.mjs
+    cargo clippy --release --all-targets -- $CLIPPY_LINTS
+}
+
+job_java() {
+    local jdk11 jdk25
+    need mvn
+    jdk11=$(jdk 11)
+    jdk25=$(jdk 25)
+    cd strata-java
+    JAVA_HOME=$jdk11 mvn -B -ntp -Dcargo.profile=ci package
+    JAVA_HOME=$jdk25 mvn -B -ntp -Dcargo.profile=ci -Dcargo.skip=true test
+    cargo test --profile ci
     cargo clippy --release --all-targets -- $CLIPPY_LINTS
 }
 
@@ -654,7 +724,7 @@ miri_part() {
 # lanes. Each job's outcome is a line of $RUN_DIR/results.
 
 MIRI_PIDS="" LANE_PIDS=""
-LANE2_JOBS="test-engram test-strata-server server-smoke python"
+LANE2_JOBS="test-engram test-strata-server test-strata-crawl server-smoke python javascript java"
 record() { printf '%s|%s|%s\n' "$1" "$2" "$3" >>"$RUN_DIR/results"; }
 failed_any() { [ -f "$RUN_DIR/results" ] && grep -qv '|success|' "$RUN_DIR/results"; }
 lane_of() {
@@ -689,12 +759,12 @@ prune_dirs() {
 prune_job() {
     local rel crate
     if [ "$LANES" = 1 ]; then
-        prune_dirs strata/target strata-server/target engram/target strata-py/target
+        prune_dirs strata/target strata-server/target engram/target strata-py/target strata-crawl/target strata-js/target strata-java/target
         return 0
     fi
     case "$LANE" in
         1) prune_dirs strata/target ;;
-        2) prune_dirs engram/target strata-py/target ;;
+        2) prune_dirs engram/target strata-py/target strata-crawl/target strata-js/target strata-java/target ;;
     esac
     { sed -n 's/^ *Running .* (\(target\/[^)]*\))$/\1/p' "$1"; cat "$1.binaries" 2>/dev/null; } | sort -u | while read -r rel; do
         case "$rel" in
@@ -827,7 +897,7 @@ EOF
 # --fast runs only the jobs a change can affect: a job whose crate, and the
 # crates it builds on, are as on main runs main's code, which main's own run
 # tested. strata, ci.yml and this script reach every job; anything outside
-# the four crates' directories but docs and Markdown is taken to as well.
+# the packages' directories but docs and Markdown is taken to as well.
 AFFECTED=""
 find_affected() {
     local f all=0
@@ -836,7 +906,10 @@ find_affected() {
             docs/*|*.md) ;;
             engram/*|install.sh) AFFECTED="$AFFECTED test-engram" ;;
             strata-py/*) AFFECTED="$AFFECTED python" ;;
-            strata-server/*) AFFECTED="$AFFECTED test-strata-server server-smoke python audio vision" ;;
+            strata-js/*) AFFECTED="$AFFECTED javascript" ;;
+            strata-java/*) AFFECTED="$AFFECTED java" ;;
+            strata-crawl/*) AFFECTED="$AFFECTED test-strata-crawl server-smoke" ;;
+            strata-server/*) AFFECTED="$AFFECTED test-strata-server server-smoke python javascript audio vision" ;;
             *) all=1 ;;
         esac
     done
@@ -911,7 +984,7 @@ else
         LANE_PIDS="$LANE_PIDS $!"
     done
     supervise
-    [ "$KEEP_BINARIES" = 1 ] || prune_dirs strata/target strata-server/target engram/target strata-py/target
+    [ "$KEEP_BINARIES" = 1 ] || prune_dirs strata/target strata-server/target engram/target strata-py/target strata-crawl/target strata-js/target strata-java/target
     finish_miri
 fi
 
