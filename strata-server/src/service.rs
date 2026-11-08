@@ -4190,6 +4190,18 @@ impl Service {
                     one("strata_merge_failing", "gauge", "1 while merges fail.", m.error.is_some() as u8 as f64),
                     one("strata_damaged_segments", "gauge", "Segments the last scrub found failing their checksums (--scrub-every-s).", self.scrubs.damaged().len() as f64),
                 ]);
+                if let Some(c) = db.storage().cold_stats() {
+                    more.extend([
+                        one("strata_cold_segments", "gauge", "Segments kept on object storage.", c.segments as f64),
+                        one("strata_cold_bytes", "gauge", "Bytes of the segments kept on object storage.", c.bytes as f64),
+                        one("strata_cold_cache_bytes", "gauge", "Bytes of cold segments in the local cache, their headers and keys included.", c.cached_bytes as f64),
+                        one("strata_cold_cache_limit_bytes", "gauge", "The local cache's limit, headers and keys apart.", c.cache_limit as f64),
+                        one("strata_cold_fetches_total", "counter", "Reads of object storage for cold segments' parts.", c.fetches as f64),
+                        one("strata_cold_fetched_bytes_total", "counter", "Bytes read from object storage.", c.fetched_bytes as f64),
+                        one("strata_cold_evictions_total", "counter", "Cold segments whose cached parts were dropped.", c.evictions as f64),
+                        one("strata_cold_offloaded_total", "counter", "Segments made cold.", c.segments_offloaded as f64),
+                    ]);
+                }
                 match &self.replication() {
                     Replication::None => {}
                     Replication::Primary(p) => more.extend(p.metrics()),

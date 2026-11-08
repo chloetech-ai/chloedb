@@ -287,7 +287,8 @@ fn api(app: &App) -> Router<App> {
         // workload (alerts agent): one statement over a window
         .route("/v1/queries/stats/:fingerprint", get(query_stat))
         .route("/v1/timeseries", get(timeseries))
-        .route("/v1/logs", get(logs))
+        // otlp: OpenTelemetry logs in (POST), beside the log store's own lines (GET).
+        .route("/v1/logs", get(logs).merge(post(otlp_logs).layer(rows.clone())))
         .route("/v1/logs/filter", put(log_filter).merge(get(log_filter_now)))
         .route("/v1/logs/query", post(log_query))
         .route("/v1/logs/store", get(log_store))
@@ -886,6 +887,8 @@ fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
         "/v1/feed" | "/v1/feed/keys" | "/v1/feed/promoted" | "/v1/health" | "/v1/whoami" => Scope::Feed,
         "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" => Scope::Write,
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
+        // otlp: logs in; reading the server's own lines stays the admin's.
+        "/v1/logs" if method == Method::POST => Scope::Write,
         "/v1/export" => Scope::Admin,
         "/v1/synonyms" if method == Method::PUT => Scope::Admin,
         "/v1/alerts/rules" => Scope::Admin,
@@ -3654,6 +3657,11 @@ async fn copies_load(State(app): State<App>, Query(q): Params) -> Res {
         }
     }
     Ok(AxJson(json!({"from_ms": from, "to_ms": to, "interval_ms": interval, "asked": copies.len() + missing.len(), "answered": copies.len(), "copies": copies, "missing": missing})))
+}
+
+/// OpenTelemetry logs in, over OTLP/HTTP ([`crate::otlp`]).
+async fn otlp_logs(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, Query(q): Params, body: axum::body::Bytes) -> Response {
+    crate::otlp::http(&app.svc, &who(w), &headers, q.get("table").map(String::as_str), body).await
 }
 
 async fn logs(State(app): State<App>, Query(q): Params) -> Res {

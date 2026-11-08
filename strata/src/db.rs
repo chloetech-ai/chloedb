@@ -167,6 +167,10 @@ pub struct Db {
     /// snapshot, not the readers), but a vacuum can move their bytes;
     /// in-memory ones get a fresh id per rebuild.
     readers: RwLock<HashMap<u64, (usize, Arc<Schema>, Arc<SegmentReaders>)>>,
+    /// The storage's [`Database::image_generation`] the cache last saw: once
+    /// it changes, readers of images no snapshot holds are dropped, so that
+    /// the files of segments made cold or evicted can go.
+    readers_gen: std::sync::atomic::AtomicU64,
     pub exec: ExecOptions,
     /// Models of embedded VECTOR fields ([`Db::set_embedder_in`]).
     embedders: RwLock<Vec<Model>>,
@@ -248,6 +252,7 @@ impl Db {
         Db {
             storage: Arc::new(storage),
             readers: RwLock::new(HashMap::new()),
+            readers_gen: std::sync::atomic::AtomicU64::new(0),
             exec: ExecOptions { filter_cache: Some(Arc::new(crate::query::exec::FilterCache::new(crate::query::exec::FILTER_CACHE_BYTES))), ..ExecOptions::default() },
             embedders: RwLock::new(Vec::new()),
             derivers: RwLock::new(Vec::new()),
@@ -270,6 +275,13 @@ impl Db {
     /// Merges in the background from now on ([`Database::spawn_merger`]).
     pub fn spawn_merger(&self, opts: crate::storage::MergerOptions) {
         self.storage.spawn_merger(opts);
+    }
+
+    /// Makes segments cold and evicts the cold tier's cache in the
+    /// background from now on ([`Database::spawn_cold`]); without a cold
+    /// tier, does nothing.
+    pub fn spawn_cold(&self, every: std::time::Duration) {
+        self.storage.spawn_cold(every);
     }
 
     /// Readies the database for queries once its tables are done changing
@@ -2013,7 +2025,9 @@ impl Db {
         // them with, so its address is not reused while an entry names it.
         let schema = snap.shared_schema();
         let fits = |(p, s, _): &&(usize, Arc<Schema>, Arc<SegmentReaders>), v: &crate::storage::SegmentView| *p == at(v) && Arc::ptr_eq(s, schema);
-        {
+        let gen = self.storage.image_generation();
+        let swapped = gen != self.readers_gen.load(std::sync::atomic::Ordering::Acquire);
+        if !swapped {
             let cache = self.readers.read().unwrap_or_else(|e| e.into_inner());
             let hit = |v: &crate::storage::SegmentView| cache.get(&v.id).filter(|e| fits(e, v)).map(|(_, _, r)| r.clone());
             if let Some(all) = snap.segments().iter().map(hit).collect() {
@@ -2021,6 +2035,11 @@ impl Db {
             }
         }
         let mut cache = self.readers.write().unwrap_or_else(|e| e.into_inner());
+        if swapped {
+            let live: HashMap<u64, usize> = snap.all_segments().map(|v| (v.id, at(v))).collect();
+            cache.retain(|id, (p, _, _)| live.get(id) == Some(p));
+            self.readers_gen.store(gen, std::sync::atomic::Ordering::Release);
+        }
         let mut out = Vec::with_capacity(snap.segments().len());
         for v in snap.segments() {
             let r = match cache.get(&v.id).filter(|e| fits(e, v)) {

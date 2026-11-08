@@ -1259,8 +1259,9 @@ impl Coordinator {
             return Err(ApiError::bad("the shards serve different schemas"));
         }
         let schema = parsed.into_iter().next().ok_or_else(|| ApiError::bad("no shard answered"))?;
-        if schema.primary_key.is_none() {
-            return Err(ApiError::bad("a sharded table needs a primary key to route writes"));
+        // otlp: a table without a key places its rows by shard_by.
+        if schema.primary_key.is_none() && schema.shard_by_field().is_none() {
+            return Err(ApiError::bad("a sharded table needs a primary key or shard_by to route writes"));
         }
         let catalog = common_tables(&tables)?;
         let profiles = common_profiles(&tables);
