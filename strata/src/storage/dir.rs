@@ -5,7 +5,9 @@
 //! reading: [`crate::storage::Database::checkpoint`] copies it consistently.
 //!
 //! ```text
-//! <dir>/LOCK                          held with flock by the open database
+//! <dir>/LOCK                          flock shared by the writer and its
+//!                                     readers ([`crate::storage::share`])
+//! <dir>/WRITER                        flock exclusive by the writer
 //! <dir>/CURRENT                       {db_id, txn, manifest, crc} as JSON
 //! <dir>/MANIFEST-<txn>                the manifest CURRENT names (JSON)
 //! <dir>/seg-<id>.strata               one segment image
@@ -122,12 +124,18 @@ pub fn write_current(dir: &Path, cur: &Current, sync: bool) -> Result<()> {
     Ok(())
 }
 
-/// Reads `CURRENT` and the manifest it names.
-pub fn read_current(dir: &Path) -> Result<(Current, Manifest)> {
+/// Reads `CURRENT`.
+pub fn read_current_file(dir: &Path) -> Result<Current> {
     let cur: Current = serde_json::from_slice(&std::fs::read(dir.join(CURRENT))?).map_err(|e| corrupt(format!("CURRENT: {e}")))?;
     if cur.format > crate::storage::pager::FORMAT_VERSION {
         return Err(corrupt(format!("unsupported format version {}", cur.format)));
     }
+    Ok(cur)
+}
+
+/// Reads `CURRENT` and the manifest it names.
+pub fn read_current(dir: &Path) -> Result<(Current, Manifest)> {
+    let cur = read_current_file(dir)?;
     let bytes = std::fs::read(dir.join(&cur.manifest))?;
     if crc32fast::hash(&bytes) != cur.crc {
         return Err(corrupt(format!("{} fails its checksum", cur.manifest)));

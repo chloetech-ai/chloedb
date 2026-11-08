@@ -246,7 +246,7 @@ function nodePicker(tab, node) {
     q = q.trim().toLowerCase();
     if (!q) return all.filter((c) => c.cpu != null).sort((a, b) => b.cpu - a.cpu).slice(0, 8);
     const num = /^(?:s|shard\s*)?(\d+)$/.exec(q);
-    const hit = (c) => (num && String(c.shard) === num[1]) || [c.name, c.url, c.node, c.zone, `s${c.shard}-${c.j}`].some((x) => x && String(x).toLowerCase().includes(q));
+    const hit = (c) => (num && String(c.shard) === num[1]) || [c.name, c.url, c.node, c.zone].some((x) => x && String(x).toLowerCase().includes(q));
     // The shard's own copies first, then by CPU.
     const own = (c) => (num && String(c.shard) === num[1]) || (c.name || "").toLowerCase() === q ? 1 : 0;
     return all.filter(hit).sort((a, b) => own(b) - own(a) || (b.cpu ?? -1) - (a.cpu ?? -1));

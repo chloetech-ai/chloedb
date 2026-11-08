@@ -287,7 +287,7 @@ function render(page, r0) {
     const dark = m.shards.filter((s) => ["no_reads", "no_writes", "down"].includes(s.st));
     if (dark.length) {
       // "Fully serving": a shard that answers searches but takes no writes is not counted.
-      out.push({ key: "shards", label: "Shards fully serving", icon: "shard", val: [String(m.shards.length - dark.length), h("small", {}, "/" + m.shards.length)], tone: "bad", sub: dark.slice(0, 3).map((s) => `shard ${s.n} ${s.st === "no_reads" ? "has no majority" : stText(s.st)}`).join(", "), why: `${fmt.plural(dark.length, "shard")} serve no reads or take no writes`, link: link("cluster", { shard: dark[0].n }) });
+      out.push({ key: "shards", label: "Shards fully serving", icon: "shard", val: [String(m.shards.length - dark.length), h("small", {}, "/" + m.shards.length)], tone: "bad", sub: dark.slice(0, 3).map((s) => `shard ${s.n} ${s.st === "no_reads" && s.sh.majority === false ? "has no majority" : stText(s.st)}`).join(", "), why: `${fmt.plural(dark.length, "shard")} serve no reads or take no writes`, link: link("cluster", { shard: dark[0].n }) });
     } else {
       out.push({ key: "qps", label: coords.length > 1 ? "Queries, fleet" : "Queries", icon: "queries", val: [fmt.si(qpsFleet), h("small", {}, "/s")], spark: ps.map((p) => p.qps), color: SERIES[0],
         sub: coords.length > 1 ? `${now}${answered.length} of ${coords.length} coordinators, over 5 min` : f?.derived ? "this coordinator, now" : `${now}its one coordinator, now`, link: link("performance") });

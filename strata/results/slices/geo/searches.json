@@ -1,0 +1,23 @@
+{
+ "checkins": 227428,
+ "users": 1083,
+ "searches": {
+  "category": 135225,
+  "name": 88607
+ },
+ "skipped": {
+  "name: no place within 50 m": 46618,
+  "not a search": 83279,
+  "outside the box": 7841
+ },
+ "distinct_queries": {
+  "category": 212,
+  "name": 12381
+ },
+ "venues_named": 16998,
+ "venues": 27415,
+ "from_home_m": {
+  "median": 2847.9928294932647,
+  "p90": 14687.76938150569
+ }
+}
